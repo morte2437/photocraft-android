@@ -15,7 +15,10 @@ def copyIcon = tasks.register('copyLauncherIcon', Copy) {
 // the Android build number (RELEASE_BUILD, from build.sh) for repeat releases of one version:
 // 0.8.2 build 3 is "0.8.2-3", released as android-v0.8.2-3 (the updater compares these).
 // versionCode must grow with every release Android should accept as an update: 0.8.2-3 → 80203.
-def cargoVersion = (rootProject.file('../../../Cargo.toml').text =~ /(?m)^version = "(\d+)\.(\d+)\.(\d+)"/)[0]
+// APP_VERSION (x.y.z) overrides it when the workspace is ahead of the release it's based on
+// (upstream's main already says the next version before it's released).
+def versionSource = System.getenv('APP_VERSION') ? "version = \"${System.getenv('APP_VERSION')}\"" : rootProject.file('../../../Cargo.toml').text
+def cargoVersion = (versionSource =~ /(?m)^version = "(\d+)\.(\d+)\.(\d+)"/)[0]
 def releaseBuild = (System.getenv('RELEASE_BUILD') ?: '0').toInteger()
 def appVersionName = "${cargoVersion[1]}.${cargoVersion[2]}.${cargoVersion[3]}" + (releaseBuild > 0 ? "-${releaseBuild}" : '')
 def appVersionCode = (cargoVersion[1].toInteger() * 10000 + cargoVersion[2].toInteger() * 100 + cargoVersion[3].toInteger()) * 100 + Math.min(releaseBuild, 99)

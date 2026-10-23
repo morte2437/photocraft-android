@@ -41,7 +41,7 @@ cargo ndk -t arm64-v8a -P "$API" -o "$HERE/android/app/src/main/jniLibs" \
 cd "$HERE/android"
 if [[ "${OS:-}" == "Windows_NT" ]]; then ./gradlew.bat --no-daemon assembleRelease; else ./gradlew --no-daemon assembleRelease; fi
 
-VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/Cargo.toml" | head -1)"
+VERSION="${APP_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/Cargo.toml" | head -1)}"
 if [[ "${RELEASE_BUILD:-0}" != 0 ]]; then VERSION="$VERSION-$RELEASE_BUILD"; fi
 OUT="${CARGO_TARGET_DIR:-$ROOT/target}/android"
 mkdir -p "$OUT"
