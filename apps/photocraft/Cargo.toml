@@ -33,6 +33,7 @@ eframe = { workspace = true, features = ["wgpu", "accesskit", "wayland", "x11", 
 egui = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
+chrono = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rfd = { workspace = true }
@@ -50,11 +51,12 @@ core-graphics2 = { version = "=0.6.1", default-features = false, features = ["di
 # safe API. Pinned exactly: review the diff before bumping.
 fmv-macos-events = "=0.1.0"
 # Safe AppKit calls only: turn off AppKit's title bar dragging (mac_window.rs) and find where the
-# pointer is when files are dropped (cursor.rs; winit 0.30 drops carry no position). Already in
+# pointer is when files are dropped (cursor.rs; winit 0.30 drops carry no position), and play the
+# system alert sound for Beep When Done (services.rs, NSBeep). Already in
 # Cargo.lock (winit, photocraft-tablet); pinned exactly to the same versions.
 objc2 = "=0.6.4"
 objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSArray", "NSEnumerator", "NSGeometry"] }
-objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSApplication", "NSApplicationScripting", "NSEvent", "NSResponder", "NSView", "NSWindow"] }
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSApplication", "NSApplicationScripting", "NSEvent", "NSGraphics", "NSResponder", "NSView", "NSWindow"] }
 # The macOS menu bar (mac_menu.rs): a standalone native menu crate (from the tauri-apps org, but
 # not Tauri: no webview, no JS), AppKit menus behind a safe API (no GTK with default features off). Pinned exactly: review the diff before bumping.
 muda = { version = "=0.21.1", default-features = false }

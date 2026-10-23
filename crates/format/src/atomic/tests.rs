@@ -41,6 +41,9 @@ struct Faulty {
     /// Fail the first N renames with PermissionDenied (a transient lock), then succeed.
     locked_renames: Cell<u32>,
     renames: Cell<u32>,
+    /// Failure of the durability barrier after publication (#7858).
+    fail_sync_dir: bool,
+    synced: Cell<u32>,
 }
 
 impl AtomicFs for Faulty {
@@ -66,7 +69,12 @@ impl AtomicFs for Faulty {
     fn remove(&self, path: &Path) -> io::Result<()> {
         RealFs.remove(path)
     }
+    /// Count publication barriers and optionally fail before the real directory flush.
     fn sync_dir(&self, dir: &Path) -> io::Result<()> {
+        self.synced.set(self.synced.get() + 1);
+        if self.fail_sync_dir {
+            return Err(io::Error::other("injected publication flush failure"));
+        }
         RealFs.sync_dir(dir)
     }
     fn copy_metadata(&self, from: &Path, to: &Path) -> io::Result<()> {
@@ -75,6 +83,39 @@ impl AtomicFs for Faulty {
 }
 
 const NO_RETRY: RenameRetry = RenameRetry { attempts: 0, first_delay_ms: 0 };
+
+/// A successful rename does not establish power-loss durability. A failed Windows publication
+/// barrier must leave the new bytes in place, report uncertainty, and allow a subsequent retry.
+#[cfg(windows)]
+#[test]
+fn a_failed_publication_flush_is_reported_and_can_be_retried() {
+    let d = TempDir::new("publication-flush");
+    let p = d.0.join("document.pcraft");
+    std::fs::write(&p, ORIGINAL).unwrap();
+    let fs = Faulty { fail_sync_dir: true, ..Default::default() };
+
+    let error = atomic_write_with(&fs, NO_RETRY, &p, b"new document").unwrap_err();
+    assert_eq!(fs.synced.get(), 1, "{error}");
+    assert_eq!(error.kind(), io::ErrorKind::Other);
+    assert!(error.to_string().contains("document.pcraft"), "{error}");
+    assert!(error.to_string().contains("may not survive"), "{error}");
+    assert!(!error.to_string().contains(UNCHANGED), "the replacement already happened: {error}");
+    assert_eq!(std::fs::read(&p).unwrap(), b"new document");
+    assert_no_temp(&d.0);
+
+    atomic_write(&p, b"retried document").unwrap();
+    assert_eq!(std::fs::read(&p).unwrap(), b"retried document");
+    assert_no_temp(&d.0);
+}
+
+/// A real Windows directory handle must flush successfully and preserve directory-open errors.
+#[cfg(windows)]
+#[test]
+fn windows_directory_flush_opens_a_directory_and_reports_open_errors() {
+    let d = TempDir::new("sync-directory");
+    RealFs.sync_dir(&d.0).unwrap();
+    assert_eq!(RealFs.sync_dir(&d.0.join("missing")).unwrap_err().kind(), io::ErrorKind::NotFound);
+}
 
 #[test]
 fn replaces_and_creates() {
@@ -113,6 +154,7 @@ fn creates_missing_parent_folders() {
     assert_eq!(std::fs::read(&p).unwrap(), b"x");
 }
 
+/// A partial temporary write must preserve the original and never reach publication or its flush.
 #[test]
 fn write_failure_halfway_keeps_original() {
     let d = TempDir::new("write");
@@ -124,9 +166,11 @@ fn write_failure_halfway_keeps_original() {
     assert!(e.to_string().contains("not changed"), "{e}");
     assert_eq!(std::fs::read(&p).unwrap(), ORIGINAL);
     assert_eq!(fs.renames.get(), 0, "never renames after a failed write");
+    assert_eq!(fs.synced.get(), 0, "nothing was published");
     assert_no_temp(&d.0);
 }
 
+/// A failed replacement must preserve the original and skip the publication barrier.
 #[test]
 fn rename_failure_keeps_original() {
     let d = TempDir::new("rename");
@@ -134,6 +178,7 @@ fn rename_failure_keeps_original() {
     std::fs::write(&p, ORIGINAL).unwrap();
     let fs = Faulty { fail_rename: Some(io::ErrorKind::Other), ..Default::default() };
     assert!(atomic_write_with(&fs, NO_RETRY, &p, b"new").is_err());
+    assert_eq!(fs.synced.get(), 0, "a failed replacement never reaches the publication barrier");
     assert_eq!(std::fs::read(&p).unwrap(), ORIGINAL);
     assert_no_temp(&d.0);
 }
@@ -281,6 +326,19 @@ fn keeps_the_original_file_mode() {
     std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)).unwrap();
     atomic_write(&p, b"new").unwrap();
     assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
+}
+
+#[cfg(unix)]
+#[test]
+fn new_file_follows_the_process_umask() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = TempDir::new("umask");
+    let probe = d.0.join("probe.psd");
+    std::fs::File::create(&probe).unwrap();
+    let expected = std::fs::metadata(&probe).unwrap().permissions().mode() & 0o777;
+    let p = d.0.join("fresh.psd");
+    atomic_write(&p, b"new").unwrap();
+    assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, expected);
 }
 
 #[cfg(unix)]

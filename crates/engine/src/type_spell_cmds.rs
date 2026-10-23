@@ -16,7 +16,7 @@ use photocraft_text::spell::Dictionary;
 use serde_json::{Value, json};
 
 use crate::commands::{CommandSpec, layer_param};
-use crate::type_cmds::{check_text_unlocked, norm_text, refresh, replace_text};
+use crate::type_cmds::{check_text_unlocked, norm_text, refresh_at, replace_text};
 use crate::{EngineError, Result, Session};
 
 fn bad(cmd: &str, msg: impl Into<String>) -> EngineError {
@@ -27,8 +27,30 @@ fn byte_at(text: &str, ci: usize) -> usize {
     text.char_indices().nth(ci).map_or(text.len(), |(b, _)| b)
 }
 
-fn char_at(text: &str, bi: usize) -> usize {
-    text[..bi.min(text.len())].chars().count()
+/// Maps ascending byte offsets to character offsets in a single forward pass. Calling
+/// `char_at` per offset rescans the text prefix each time, which is quadratic when a layer
+/// has many misspellings; this walks the text once for the whole batch. `offsets` must be
+/// sorted ascending (misspelling start/end pairs are, since words are found left to right).
+fn char_offsets(text: &str, offsets: &[usize]) -> Vec<usize> {
+    // (byte offset, char index) for each char boundary, plus the end-of-text boundary.
+    let mut boundaries = text.char_indices().map(|(b, _)| b);
+    let mut char_index = 0usize;
+    let mut current = boundaries.next();
+    let mut result = Vec::with_capacity(offsets.len());
+    for &target in offsets {
+        let clamped = target.min(text.len());
+        // Advance to the first boundary at or past `clamped`; byte offsets from char
+        // boundaries land exactly on one, so the char index there is the answer.
+        while let Some(b) = current {
+            if b >= clamped {
+                break;
+            }
+            char_index += 1;
+            current = boundaries.next();
+        }
+        result.push(char_index);
+    }
+    result
 }
 
 /// Type layers top to bottom (Layers panel order), skipping fully locked ones.
@@ -76,10 +98,17 @@ fn list(s: &Session, p: &Value) -> Result<Value> {
     let mut out = Vec::new();
     for id in layers_param(s, p) {
         let Some(t) = text(&st.doc, id) else { continue };
-        for m in dict.misspellings(t, &ok) {
-            out.push(
-                json!({ "layer": id.0, "start": char_at(t, m.start), "end": char_at(t, m.end), "word": m.word, "suggestions": dict.suggest(&m.word, max) }),
-            );
+        let found = dict.misspellings(t, &ok);
+        // Convert every start/end byte offset to a character offset in one pass over the
+        // text, instead of rescanning the prefix with char_at twice per misspelling.
+        let mut offsets = Vec::with_capacity(found.len() * 2);
+        for m in &found {
+            offsets.push(m.start);
+            offsets.push(m.end);
+        }
+        let chars = char_offsets(t, &offsets);
+        for (i, m) in found.iter().enumerate() {
+            out.push(json!({ "layer": id.0, "start": chars[i * 2], "end": chars[i * 2 + 1], "word": m.word, "suggestions": dict.suggest(&m.word, max) }));
         }
     }
     Ok(json!({ "misspellings": out, "count": out.len() }))
@@ -102,10 +131,10 @@ fn change(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(cmd, format!("the text at {start}..{end} is {:?}, not {w:?}", &t[a..b])));
     }
     s.edit("Check Spelling", |doc, _| {
-        let snapshot = doc.clone();
+        let (dpi, format) = (doc.resolution_dpi, doc.pixel_format());
         if let Some(LayerContent::Text(t)) = doc.layer_mut(id).map(|l| &mut l.content) {
             replace_text(t, a, b, &to);
-            refresh(&snapshot, t);
+            refresh_at(dpi, format, t);
         }
         Ok(())
     })?;
@@ -129,13 +158,13 @@ fn change_all(s: &mut Session, p: &Value) -> Result<Value> {
     let count: usize = plan.iter().map(|(_, h)| h.len()).sum();
     if count > 0 {
         s.edit("Check Spelling", |doc, _| {
-            let snapshot = doc.clone();
+            let (dpi, format) = (doc.resolution_dpi, doc.pixel_format());
             for (id, hits) in &plan {
                 if let Some(LayerContent::Text(t)) = doc.layer_mut(*id).map(|l| &mut l.content) {
                     for (a, b) in hits.iter().rev() {
                         replace_text(t, *a, *b, &to);
                     }
-                    refresh(&snapshot, t);
+                    refresh_at(dpi, format, t);
                 }
             }
             Ok(())
@@ -215,10 +244,10 @@ fn insert_text(s: &mut Session, p: &Value) -> Result<Value> {
     let (ba, bb) = (byte_at(t, a), byte_at(t, b));
     let label = p.get("label").and_then(Value::as_str).unwrap_or("Insert Glyph").to_string();
     s.edit(&label, |doc, _| {
-        let snapshot = doc.clone();
+        let (dpi, format) = (doc.resolution_dpi, doc.pixel_format());
         if let Some(LayerContent::Text(t)) = doc.layer_mut(id).map(|l| &mut l.content) {
             replace_text(t, ba, bb, &new);
-            refresh(&snapshot, t);
+            refresh_at(dpi, format, t);
         }
         Ok(())
     })?;
@@ -262,6 +291,17 @@ pub fn specs() -> Vec<CommandSpec> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn char_offsets_matches_per_offset_counting() {
+        // Multibyte text so byte offsets and char offsets differ. The batch result must
+        // equal counting chars in each prefix individually, including the end-of-text offset.
+        let text = "café naïve ☃ résumé";
+        let targets: Vec<usize> = text.char_indices().map(|(b, _)| b).chain(std::iter::once(text.len())).collect();
+        let got = char_offsets(text, &targets);
+        let want: Vec<usize> = targets.iter().map(|&b| text[..b.min(text.len())].chars().count()).collect();
+        assert_eq!(got, want);
+    }
 
     fn session(text: &str) -> (Session, u64) {
         let mut s = Session::new();

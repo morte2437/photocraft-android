@@ -45,13 +45,45 @@ const IDS: [&str; 7] = [
     "view.show.showExtrasOptions",
 ];
 
+/// Window › Workspace items of saved workspaces: `window.workspace.saved.<index>`, an index into
+/// [`saved_names`].
+pub const SAVED: &str = "window.workspace.saved.";
+
 /// Menu ids handled here (live menu items).
 pub fn handles(id: &str) -> bool {
-    IDS.contains(&id)
+    IDS.contains(&id) || id.starts_with(SAVED)
+}
+
+/// Saved workspace names, in menu order.
+pub fn saved_names(app: &PhotocraftApp) -> Vec<String> {
+    app.session.prefs().workspaces.keys().cloned().collect()
+}
+
+fn saved_name(app: &PhotocraftApp, id: &str) -> Option<String> {
+    let i = id.strip_prefix(SAVED)?.parse::<usize>().ok()?;
+    app.session.prefs().workspaces.keys().nth(i).cloned()
+}
+
+/// The top-bar workspace switcher's options as (key, label): the presets, then saved workspaces.
+pub fn switcher_options(app: &PhotocraftApp) -> Vec<(String, String)> {
+    // Keys stay English (`apply_workspace` matches them); the dropdown shows the preset labels
+    // in the UI language.
+    let presets = [
+        ("Essentials", tl!("Essentials")),
+        ("Photography", tl!("Photography")),
+        ("Painting", tl!("Painting")),
+        ("Graphic and Web", tl!("Graphic and Web")),
+        ("Pixel Art", tl!("Pixel Art")),
+        ("Motion", tl!("Motion")),
+    ];
+    let mut opts: Vec<(String, String)> = presets.iter().map(|(k, l)| ((*k).to_string(), (*l).to_string())).collect();
+    opts.extend(saved_names(app).into_iter().map(|n| (n.clone(), n)));
+    opts
 }
 
 pub fn checked(app: &PhotocraftApp, id: &str) -> Option<bool> {
     match id {
+        i if i.starts_with(SAVED) => Some(saved_name(app, i).is_some_and(|n| n == app.ui.workspace)),
         "window.panel.modifierKeys" => Some(app.ui.shell.modifier_keys),
         "window.workspace.lockWorkspace" => Some(app.session.prefs().workspace_locked),
         "view.pixelAspectRatio.custom" => Some(app.ui.view.pixel_aspect.starts_with("custom:")),
@@ -140,6 +172,10 @@ pub fn menu(app: &mut PhotocraftApp, id: &str, params: &Value) -> Option<Result<
         }
         "window.workspace.deleteWorkspace" => delete_workspace(app, params),
         "window.workspace.select" => select_workspace(app, params),
+        i if i.starts_with(SAVED) => match saved_name(app, i) {
+            Some(name) => select_workspace(app, &json!({"name": name})),
+            None => Err(format!("no saved workspace for `{i}`")),
+        },
         "view.pixelAspectRatio.custom" if no_params(params) => open(app, "customPar", json!({"name": "", "ratio": 1.0})),
         "view.pixelAspectRatio.custom" => custom_par(app, params),
         "view.show.showExtrasOptions" if no_params(params) => {
@@ -607,6 +643,40 @@ mod tests {
         let mut s2 = photocraft_engine::Session::new();
         s2.load_prefs_json(&json).unwrap();
         assert!(s2.prefs().workspaces.contains_key("Mine"));
+    }
+
+    #[test]
+    fn saved_workspaces_are_listed_checked_and_selectable() {
+        let (mut app, ctx) = app();
+        let ws_items =
+            |app: &PhotocraftApp| crate::menus::menu_items(app).into_iter().filter(|i| i.path == ["Window", "Workspace"] && i.id != "---").collect::<Vec<_>>();
+        assert!(!ws_items(&app).iter().any(|i| i.id.starts_with(SAVED)));
+        app.ui.panels.history = true;
+        crate::menus::invoke(&mut app, &ctx, "window.workspace.newWorkspace", json!({"name": "Retouch"})).unwrap();
+        crate::menus::invoke(&mut app, &ctx, "window.workspace.newWorkspace", json!({"name": "Comp"})).unwrap();
+        // Listed right after the presets, in name order; only the current one is checked.
+        let items = ws_items(&app);
+        let motion = items.iter().position(|i| i.id == "window.workspace.motion").unwrap();
+        let saved: Vec<(&str, Option<bool>, bool)> = items[motion + 1..].iter().take(2).map(|i| (i.label.as_str(), i.checked, i.enabled)).collect();
+        assert_eq!(saved, [("Comp", Some(true), true), ("Retouch", Some(false), true)]);
+        assert!(items.iter().filter(|i| !i.id.starts_with(SAVED)).all(|i| i.checked != Some(true) || i.id == "window.workspace.lockWorkspace"));
+        assert!(crate::menus::is_live(&format!("{SAVED}1")));
+        // Switch to a preset, then back through the menu item.
+        crate::menus::invoke(&mut app, &ctx, "window.workspace.painting", json!({})).unwrap();
+        assert!(!app.ui.panels.history);
+        let retouch = ws_items(&app).into_iter().find(|i| i.label == "Retouch").unwrap();
+        crate::menus::invoke(&mut app, &ctx, &retouch.id, json!({})).unwrap();
+        assert_eq!(app.ui.workspace, "Retouch");
+        assert!(app.ui.panels.history);
+        assert_eq!(checked(&app, &retouch.id), Some(true));
+        // Stale or malformed ids fail instead of panicking.
+        for bad in ["9", "-1", "x", ""] {
+            assert!(crate::menus::invoke(&mut app, &ctx, &format!("{SAVED}{bad}"), json!({})).is_err(), "{bad}");
+        }
+        // The top-bar switcher lists them after the presets.
+        let keys: Vec<String> = switcher_options(&app).into_iter().map(|(k, _)| k).collect();
+        assert_eq!(keys[6..], ["Comp", "Retouch"]);
+        assert!(keys.contains(&app.ui.workspace));
     }
 
     #[test]

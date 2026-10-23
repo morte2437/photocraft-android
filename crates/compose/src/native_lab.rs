@@ -89,6 +89,9 @@ fn collect<'a>(layers: &'a [Layer], depth: SampleType, adjustments: bool, items:
 /// A Lab document's visible layers, prepared for compositing on their stored L, a and b.
 pub struct LabStack<'a> {
     items: Vec<Item<'a>>,
+    /// Steps per unit of the document's samples (`None` at 32 bits): adjustment results are
+    /// whole samples, as Photoshop stores them.
+    quantum: Option<f32>,
 }
 
 impl<'a> LabStack<'a> {
@@ -101,7 +104,7 @@ impl<'a> LabStack<'a> {
         }
         let mut items = Vec::new();
         collect(&doc.layers, doc.depth, true, &mut items, 0)?;
-        Some(LabStack { items })
+        Some(LabStack { items, quantum: crate::adjustment_quantum(doc.depth) })
     }
 
     /// Whether the stack has an adjustment layer (the RGB compositor can't match it exactly).
@@ -161,6 +164,9 @@ impl<'a> LabStack<'a> {
                         op(&mut lab);
                         for (c, v) in lab.iter().enumerate() {
                             d[c] += (v - d[c]) * mix;
+                            if let Some(q) = self.quantum {
+                                d[c] = (d[c] * q + 0.5).floor() / q;
+                            }
                         }
                     }
                 }

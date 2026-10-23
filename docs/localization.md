@@ -28,9 +28,12 @@ contextual, command-ID and plural translations; missing entries fall back to Eng
 | Magyar | `hu` | one form |
 | Tiếng Việt | `vi` | one form |
 | Srpski | `sr` | one / few / many (teens use many) |
+| हिन्दी | `hi` | one / other |
 
 Languages registered with `complete_menus` cover the current menu labels, `tl!` literals, blend
-mode names, and generated preference labels; tests enforce that coverage. Vietnamese (`vi`) is
+mode names, and generated preference labels. A string a catalog lacks shows in English:
+`cargo xtask i18n-coverage` lists the missing strings per language, and `cargo xtask ci` prints
+that list as its last step without failing. Vietnamese (`vi`) is
 selectable, resolves regional tags such as `vi-VN`, and covers all current stable localization
 keys. `complete_menus` remains false while generated/dynamic long-tail labels are still under
 review. This does not include every engine error or status message: those remain English, as do
@@ -133,7 +136,7 @@ detection remain separate outstanding work. Switching catalogs does not supply m
 3. Translate the meaning of the English source keys. Preserve `{name}` placeholders, escaped
    characters and the trailing `…` on dialog commands. Use `@id` to disambiguate a command
    label and `@plural` for count-sensitive text. Keep product names such as PhotoCraft.
-4. Set `complete_menus` when the catalog covers all enforced keys. Add source and license
+4. Set `complete_menus` once `cargo xtask i18n-coverage` lists nothing missing for the language. Add source and license
    attribution for translation assets, then run the catalog and shell tests.
 
 ```sh

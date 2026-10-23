@@ -47,13 +47,53 @@ fn plugin_params(p: &Value) -> Value {
         return v.clone();
     }
     match p {
-        Value::Object(m) => Value::Object(
-            m.iter()
-                .filter(|(k, _)| !matches!(k.as_str(), "id" | "layer" | "target" | "channel") && !k.starts_with("__"))
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect(),
-        ),
+        Value::Object(m) => Value::Object(m.iter().filter(|(k, _)| !command_key(k)).map(|(k, v)| (k.clone(), v.clone())).collect()),
         _ => Value::Object(Map::new()),
+    }
+}
+
+/// A top-level `plugin.run` key the command itself uses (or a dialog's private `__` key), not a
+/// plug-in parameter.
+fn command_key(k: &str) -> bool {
+    matches!(k, "id" | "layer" | "target" | "channel") || k.starts_with("__")
+}
+
+/// Proxy factor for a live preview of `plugin.run` with `p` on a document reduced `k` times: the
+/// plug-in's [`photocraft_plugins::Manifest::preview_factor`] (its `"unit": "px"` parameters set
+/// the limit, not the built-in filters' parameter names). `k` when the plug-in isn't installed.
+pub fn preview_factor(p: &Value, k: u32) -> u32 {
+    let Ok(plugin) = plugin_by_id(RUN, p) else { return k };
+    match plugin_params(p) {
+        Value::Object(params) => plugin.manifest().preview_factor(&params, k),
+        // `null` means the defaults (see `Manifest::resolve_params`).
+        Value::Null => plugin.manifest().preview_factor(&Map::new(), k),
+        _ => k,
+    }
+}
+
+/// Rewrites `plugin.run` params `p` for a live preview on a copy of the document reduced `k`
+/// times: the plug-in's pixel-sized parameters (`"unit": "px"`, under `params` or at the top
+/// level, as [`plugin_params`] reads them) are divided by `k`, so the preview shows the lengths OK
+/// applies (#7524). Nothing changes when the plug-in isn't installed (the run then fails as usual)
+/// or for values of the wrong type (the run rejects them).
+pub fn scale_for_preview(p: &mut Value, k: u32) {
+    if k <= 1 {
+        return;
+    }
+    let Ok(plugin) = plugin_by_id(RUN, p) else { return };
+    let nested = p.get("params").is_some();
+    let mut params = match plugin_params(p) {
+        Value::Object(params) => params,
+        Value::Null => Map::new(),
+        _ => return,
+    };
+    plugin.manifest().scale_for_preview(&mut params, k);
+    let Value::Object(o) = p else { return };
+    if nested {
+        o.insert("params".into(), Value::Object(params));
+    } else {
+        // Top-level form: write back only plug-in keys, never the command's own (`id`, `channel`…).
+        o.extend(params.into_iter().filter(|(key, _)| !command_key(key)));
     }
 }
 
@@ -86,7 +126,7 @@ fn run(s: &mut Session, p: &Value) -> Result<Value> {
                 let before = keep_alpha.then(|| surf.clone());
                 *surf = plugin.apply(surf, canvas, selection.as_ref(), &resolved).map_err(err)?;
                 if let Some(before) = &before {
-                    crate::filters::keep_alpha(before, surf);
+                    crate::filters::keep_alpha(before, surf, &|| false)?;
                 }
                 Ok(())
             }

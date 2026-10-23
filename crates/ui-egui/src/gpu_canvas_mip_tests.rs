@@ -64,6 +64,31 @@ fn canvas_mips_preserve_opaque_pixels_and_partial_updates() {
         gpu.rs.renderer.write().callback_resources.get_mut::<Resources>().unwrap().separate_mip_targets = separate;
         check_mips(&gpu);
     }
+    // On the same device (see the top of the file).
+    canvas_textures_the_gpu_refuses_leave_it_working(&gpu);
+}
+
+/// #4017: a 3 GP canvas's 16 GB of textures failed with Out of Memory, and the uncaptured error
+/// disabled the GPU for the session. A refused set is now caught: nothing is kept, the budget
+/// drops below it (that canvas goes to the CPU canvas) and the device stays usable. A texture
+/// wider than the device allows is refused the same way, synchronously, on any adapter.
+fn canvas_textures_the_gpu_refuses_leave_it_working(gpu: &GpuCanvas) {
+    let max = gpu.rs.device.limits().max_texture_dimension_2d;
+    let (size, tile) = ([max + 1, 1], max + 1);
+    let bytes = canvas_texture_bytes(size, tile, texel_bytes(FORMAT));
+    {
+        let mut renderer = gpu.rs.renderer.write();
+        let res = renderer.callback_resources.get_mut::<Resources>().unwrap();
+        res.canvas_budget.store(u64::MAX, Ordering::Relaxed);
+        assert!(DocTextures::new(&gpu.rs.device, res, size, tile, FORMAT).is_none());
+        let budget = res.canvas_budget.load(Ordering::Relaxed);
+        assert!(budget < bytes, "{budget} >= {bytes}");
+    }
+    assert!(gpu.health.is_ok(), "{:?}", gpu.fault());
+    // Smaller canvases still get GPU textures.
+    gpu.upload_buffer_full(3, &Buffer::filled(Rect::from_xywh(0, 0, 64, 64), [0.5, 0.5, 0.5, 1.0]), SampleType::U8);
+    assert!(gpu.rs.renderer.read().callback_resources.get::<Resources>().unwrap().docs.contains_key(&3));
+    assert!(gpu.health.is_ok(), "{:?}", gpu.fault());
 }
 
 fn check_mips(gpu: &GpuCanvas) {

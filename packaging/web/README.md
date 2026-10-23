@@ -73,6 +73,10 @@ save/download work before closing or reloading the page. A browser with WebGPU o
 required; `?webgl` forces the fallback when troubleshooting. In a browser that can't
 inflate a stream itself (no `DecompressionStream`: before Safari 16.4 and Firefox 113), the
 release zip's site inflates the app's parts in its own code, a little slower.
+A server that recognises the gzip in a part and sends it with `Content-Encoding: gzip` or
+`x-gzip` (Apache with `mod_mime_magic` does) works too: the browser inflates it on the way, and
+the page then uses it as it is. (That holds while the app ships as one part, as it does today:
+such a server labels only the first part, the one that starts with gzip's header.)
 
 To verify the browser deployment, open the page, open an image and save/export it.
 

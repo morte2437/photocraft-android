@@ -70,7 +70,7 @@ const MAP16: wgpu::TextureFormat = wgpu::TextureFormat::R16Float;
 pub const CHUNK: u32 = 1024;
 const STRIDE: u64 = 256;
 const CHUNK_UNIFORM: u64 = 16;
-const OP_UNIFORM: u64 = 176;
+const OP_UNIFORM: u64 = 256;
 /// GPU memory the effect-map cache may hold before evicting layers not drawn this frame.
 pub const FX_BUDGET: usize = 1536 << 20;
 /// Largest side of the square pages layer surfaces are stored in on the GPU (smaller when the
@@ -139,6 +139,10 @@ pub struct Stats {
     pub prefix_hits: usize,
     /// Planned prefix passes skipped, summed over the reused chunks.
     pub prefix_passes_skipped: usize,
+    /// Plain layers blended inside another layer's pass (`fs_layerbatch`), summed over chunks.
+    pub layers_batched: usize,
+    /// Batched passes drawn with Normal's code alone (`fs_layerbatch_normal`), summed over chunks.
+    pub normal_batches: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -474,6 +478,10 @@ pub struct Compositor {
     staged: u64,
     /// Copies and render passes recorded since the last submit.
     recorded: u32,
+    /// Why a layer page texture couldn't be created this refresh (it then ends on the CPU).
+    layer_alloc: Option<String>,
+    /// Bytes of pages dropped to admit new ones, not yet counted towards an intermediate submit.
+    admit_freed: u64,
     acc_format: wgpu::TextureFormat,
     /// Whether the effect-map pipelines could be built (else documents with layer effects are
     /// [`Unsupported`] and use the CPU compositor).
@@ -583,6 +591,25 @@ fn field_reaches(progs: &[fx::MapProgram]) -> HashMap<FieldKind, i32> {
         *w = (*w).max(*r);
     }
     want
+}
+
+/// Why a refresh whose layer pages don't fit GPU memory is drawn on the CPU.
+pub const OVER_BUDGET: &str = "layers exceed the GPU memory budget; full refresh on the CPU";
+
+/// Which of `pages` (LRU clock, key, bytes) to drop, least recently used first, so `incoming`
+/// more bytes fit `budget` on top of the `total` held now. Callers leave out pages that must stay.
+fn lru_victims<K>(mut pages: Vec<(u64, K, u64)>, total: u64, incoming: u64, budget: u64) -> Vec<K> {
+    pages.sort_unstable_by_key(|p| p.0);
+    let mut total = total;
+    let mut out = Vec::new();
+    for (_, k, bytes) in pages {
+        if total.saturating_add(incoming) <= budget {
+            break;
+        }
+        total = total.saturating_sub(bytes);
+        out.push(k);
+    }
+    out
 }
 
 /// Runs `f` inside GPU error scopes and returns the first error raised.
@@ -716,6 +743,8 @@ impl Compositor {
             stamp: 0,
             staged: 0,
             recorded: 0,
+            layer_alloc: None,
+            admit_freed: 0,
             acc_format,
             effect_maps: map_error.is_none(),
             cmyk: 0,
@@ -1158,10 +1187,22 @@ impl Compositor {
         self.stamp += 1;
         self.staged = 0;
         self.recorded = 0;
+        self.layer_alloc = None;
+        self.admit_freed = 0;
 
         // Only render owns submission. A caller may discard encode's command buffer, so it
         // cannot establish (or consume) a checkpoint whose GPU copy might never execute.
-        let checkpoint = if flush { self.prefix.prepare(doc, &plan) } else { None };
+        // Runs of plain layers drawn as one pass each (`fs_layerbatch`). The grouping is the same
+        // for every render of this plan, so a layer's bits don't depend on the cache: renders
+        // capture and resume only where a run starts.
+        let runs = batch_runs(&plan);
+        let checkpoint = if flush {
+            let starts = run_starts(&runs);
+            let resumable: Vec<_> = plan.checkpoints.iter().filter(|c| starts.get(c.pass_end).copied().unwrap_or(false)).copied().collect();
+            self.prefix.prepare(doc, &resumable)
+        } else {
+            None
+        };
 
         // Effect maps of whole regions first (they may render group shapes through sub-plans);
         // regions larger than the limit are built per cell below.
@@ -1206,14 +1247,50 @@ impl Compositor {
             stats.chunks += chunks.len();
             work += part.width() as u64 * part.height() as u64 * plan.passes.len() as u64;
             let mut batch = flush.then_some(&mut last_submit);
-            self.run_cell(device, queue, encoder, doc.id, &plan, &paged, cell, &fr, &chunks, checkpoint, &mut stats, sink, &mut batch);
+            self.run_cell(device, queue, encoder, doc.id, &plan, &runs, &paged, cell, &fr, &chunks, checkpoint, &mut stats, sink, &mut batch);
             // The device was lost in a submit inside the cell: issue no more work.
             if let Some(f) = self.fault() {
                 return Err(Unsupported(f.to_string()));
             }
+            // Out of memory although every page this cell doesn't use was dropped: the work recorded
+            // since the last submit can still hold those pages. Submit it, wait until the GPU is done
+            // with it so their memory is released, and run the cell once more. `encode` can't
+            // submit, so there the refresh goes to the CPU straight away.
+            if flush && self.layer_alloc.as_deref() == Some(OVER_BUDGET) {
+                self.layer_alloc = None;
+                submit_batch(device, queue, encoder, self.health.as_ref(), self.timer.as_mut(), &mut last_submit);
+                #[cfg(not(target_arch = "wasm32"))]
+                match self.health.as_ref() {
+                    Some(h) => {
+                        h.wait(device, last_submit.clone());
+                    }
+                    None => {
+                        let _ = device.poll(wgpu::PollType::Wait { submission_index: last_submit.clone(), timeout: None });
+                    }
+                }
+                self.staged = 0;
+                self.recorded = 0;
+                work = 0;
+                freed = 0;
+                self.admit_freed = 0;
+                stats.flushes += 1;
+                if let Some(f) = self.fault() {
+                    return Err(Unsupported(f.to_string()));
+                }
+                let mut batch = Some(&mut last_submit);
+                self.run_cell(device, queue, encoder, doc.id, &plan, &runs, &paged, cell, &fr, &chunks, checkpoint, &mut stats, sink, &mut batch);
+                if let Some(f) = self.fault() {
+                    return Err(Unsupported(f.to_string()));
+                }
+            }
+            // A page didn't fit even after evicting: this refresh goes to the CPU, the next one
+            // tries the GPU again (#6563).
+            if let Some(e) = self.layer_alloc.take() {
+                return Err(Unsupported(e));
+            }
             let (evicted, bytes) = self.evict();
             stats.evicted += evicted;
-            freed += bytes;
+            freed = freed.saturating_add(bytes.saturating_add(std::mem::take(&mut self.admit_freed)));
             if flush && (self.staged >= flush_bytes || work >= FLUSH_WORK || freed >= flush_bytes || self.recorded >= FLUSH_OPS) {
                 submit_batch(device, queue, encoder, self.health.as_ref(), self.timer.as_mut(), &mut last_submit);
                 self.staged = 0;
@@ -1266,22 +1343,7 @@ impl Compositor {
     /// whole-region effect maps drawn this frame. Returns how many textures were dropped and
     /// their bytes.
     fn evict(&mut self) -> (usize, u64) {
-        let (mut n, mut freed) = (0, 0u64);
-        let mut total = self.resident_bytes();
-        if total > self.resident_budget {
-            let mut lru: Vec<(u64, ResKey, u64)> =
-                self.residents.iter().filter(|(_, r)| r.stamp != self.stamp).map(|(k, r)| (r.stamp, *k, r.bytes())).collect();
-            lru.sort_unstable_by_key(|c| c.0);
-            for (_, k, bytes) in lru {
-                if total <= self.resident_budget {
-                    break;
-                }
-                self.residents.remove(&k);
-                total = total.saturating_sub(bytes);
-                n += 1;
-                freed += bytes;
-            }
-        }
+        let (mut n, mut freed) = self.evict_residents(self.resident_budget, 0, None);
         let mut total = self.fx_cache_bytes();
         let fx_budget = usize::try_from(self.fx_budget).unwrap_or(usize::MAX);
         if total > fx_budget {
@@ -1305,6 +1367,67 @@ impl Compositor {
             }
         }
         (n, freed)
+    }
+
+    /// Drop least recently used resident pages until `incoming` more bytes fit in `budget`.
+    /// Never drops what the current cell uses, nor `keep`. Returns how many pages were dropped
+    /// and their bytes.
+    fn evict_residents(&mut self, budget: u64, incoming: u64, keep: Option<ResKey>) -> (usize, u64) {
+        let stamp = self.stamp;
+        let pages: Vec<(u64, ResKey, u64)> =
+            self.residents.iter().filter(|(k, r)| r.stamp != stamp && Some(**k) != keep).map(|(k, r)| (r.stamp, *k, r.bytes())).collect();
+        let (mut n, mut freed) = (0, 0u64);
+        for k in lru_victims(pages, self.resident_bytes(), incoming, budget) {
+            if let Some(r) = self.residents.remove(&k) {
+                n += 1;
+                freed += r.bytes();
+            }
+        }
+        (n, freed)
+    }
+
+    /// Create the page texture for `key`, `bytes` large. Least recently used pages make room in
+    /// the budget first; when the device is still out of memory, every page the current cell
+    /// doesn't use is dropped and creation is tried once more (#6563). `None` (with
+    /// `layer_alloc` set) when it still fails: `render` submits the recorded work, which can still
+    /// hold the dropped pages, and runs the cell once more; after that the CPU draws the refresh.
+    fn create_layer_texture(
+        &mut self,
+        device: &wgpu::Device,
+        desc: &wgpu::TextureDescriptor<'_>,
+        key: ResKey,
+        bytes: u64,
+        stats: &mut Stats,
+    ) -> Option<wgpu::Texture> {
+        let replaced = self.residents.get(&key).map_or(0, Resident::bytes);
+        let (n, dropped) = self.evict_residents(self.resident_budget, bytes.saturating_sub(replaced), Some(key));
+        stats.evicted += n;
+        self.admit_freed = self.admit_freed.saturating_add(dropped);
+        // WebGPU reports errors asynchronously: its failures reach the health callbacks.
+        if cfg!(target_arch = "wasm32") {
+            return Some(device.create_texture(desc));
+        }
+        for retry in [false, true] {
+            let (texture, error) = first_error(device, || device.create_texture(desc));
+            match error {
+                None => return Some(texture),
+                Some(wgpu::Error::OutOfMemory { .. }) if !retry => {
+                    let (n, dropped) = self.evict_residents(0, 0, Some(key));
+                    stats.evicted += n;
+                    self.admit_freed = self.admit_freed.saturating_add(dropped);
+                }
+                Some(wgpu::Error::OutOfMemory { .. }) => {
+                    self.layer_alloc = Some(OVER_BUDGET.into());
+                    return None;
+                }
+                Some(e) => {
+                    self.layer_alloc = Some(format!("GPU layer texture failed: {e}"));
+                    return None;
+                }
+            }
+        }
+        self.layer_alloc = Some(OVER_BUDGET.into());
+        None
     }
 
     /// Per-frame resources of `plan`: the tile area of each pass's surfaces, its LUT and pattern.
@@ -1377,8 +1500,8 @@ impl Compositor {
         Bound { views, keys, maps }
     }
 
-    /// Run `plan` over the `chunks` of one page cell (document rects, at most a chunk square),
-    /// handing each finished chunk to `sink`.
+    /// Run `plan` (drawn as `runs`, its `batch_runs`) over the `chunks` of one page cell
+    /// (document rects, at most a chunk square), handing each finished chunk to `sink`.
     #[allow(clippy::too_many_arguments)]
     fn run_cell(
         &mut self,
@@ -1387,6 +1510,7 @@ impl Compositor {
         encoder: &mut wgpu::CommandEncoder,
         doc: DocId,
         plan: &Plan<'_>,
+        runs: &[usize],
         paged: &[bool],
         cell: Cell,
         fr: &FrameRes,
@@ -1405,6 +1529,10 @@ impl Compositor {
             .and_then(|_| chunks.iter().map(|c| self.prefix.restore_point(*c).map(|r| r.pass_end)).try_fold(usize::MAX, |m, p| Some(m.min(p?))))
             .unwrap_or(0);
         let bound = self.bind_cell(device, queue, encoder, doc, plan, paged, cell, fr, first_pass, stats);
+        // A page couldn't be created: draw nothing with the pages missing (the caller ends the refresh).
+        if self.layer_alloc.is_some() {
+            return;
+        }
 
         // Chunk pool.
         while self.pool.len() < plan.slots as usize {
@@ -1439,7 +1567,13 @@ impl Compositor {
             }
             let (tex, mask) = bound.views[i];
             let map = bound.maps[i].as_ref().map(|(_, r)| *r);
-            let w = op_words(p, tex.map(|t| t.1), mask.map(|m| m.1), map);
+            let run = runs.get(i).copied().unwrap_or(1);
+            let w = if run > 1 {
+                let extras: Vec<_> = (i + 1..i + run).filter_map(|j| Some((plan.passes.get(j)?, bound.views.get(j).and_then(|v| v.0).map(|t| t.1)))).collect();
+                batch_op_words(p, tex.map(|t| t.1), mask.map(|m| m.1), &extras)
+            } else {
+                op_words(p, tex.map(|t| t.1), mask.map(|m| m.1), map)
+            };
             let off = (op_base + i as u64 * STRIDE) as usize;
             data[off..][..w.len()].copy_from_slice(&w);
         }
@@ -1468,6 +1602,13 @@ impl Compositor {
             let lv = fr.luts.get(i).and_then(Option::as_ref).map_or(dummy, |(_, v)| v);
             let map = bound.maps[i].as_ref().map_or(dummy, |(v, _)| v);
             let pat = fr.patterns.get(i).and_then(Option::as_ref).unwrap_or(dummy);
+            let run = runs.get(i).copied().unwrap_or(1);
+            if run > 1 {
+                // The extra layers' pixels in tex_b, tex_c and map_tex (`batch_layer`).
+                let extra = |e: usize| bound.views.get(i + e).and_then(|v| v.0).map_or(dummy, |(k, _)| resident_views[k]);
+                bg1.push(Some(texture_group(device, &self.kit.bgl1, &[slot(p.a), extra(1), tv, mv, lv, extra(2), extra(3), pat])));
+                continue;
+            }
             bg1.push(Some(texture_group(device, &self.kit.bgl1, &[slot(p.a), slot(p.b), tv, mv, lv, slot(p.c), map, pat])));
         }
 
@@ -1481,8 +1622,10 @@ impl Compositor {
                 stats.prefix_hits = stats.prefix_hits.saturating_add(1);
                 stats.prefix_passes_skipped = stats.prefix_passes_skipped.saturating_add(resume);
             }
+            // Passes drawn inside the previous `fs_layerbatch` pass.
+            let mut batched_to = 0;
             for (i, p) in plan.passes.iter().enumerate() {
-                if i < resume {
+                if i < resume || i < batched_to {
                     continue;
                 }
                 // Chunk textures, uniforms and bind groups outlive the submit, and the queue
@@ -1542,7 +1685,21 @@ impl Compositor {
                     _ => {}
                 }
                 self.recorded += 1;
-                let target = &self.pool[p.dst as usize].1;
+                // A run draws as one pass into the slot its last layer writes.
+                let run = runs.get(i).copied().unwrap_or(1);
+                let (kernel, dst) = match plan.passes.get(i + run - 1) {
+                    Some(last) if run > 1 => {
+                        batched_to = i + run;
+                        stats.layers_batched = stats.layers_batched.saturating_add(run - 1);
+                        let kernel = plan.passes.get(i..i + run).map_or(Kernel::LayerBatch, batch_kernel);
+                        if kernel == Kernel::LayerBatchNormal {
+                            stats.normal_batches = stats.normal_batches.saturating_add(1);
+                        }
+                        (kernel, last.dst)
+                    }
+                    _ => (p.kernel, p.dst),
+                };
+                let target = &self.pool[dst as usize].1;
                 let clear = p.kernel == Kernel::Clear;
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("pc_compose_pass"),
@@ -1563,7 +1720,7 @@ impl Compositor {
                 if clear {
                     continue;
                 }
-                pass.set_pipeline(&self.kit.pipelines[&(p.kernel, self.acc_format)]);
+                pass.set_pipeline(&self.kit.pipelines[&(kernel, self.acc_format)]);
                 pass.set_scissor_rect(scissor.x0 as u32, scissor.y0 as u32, scissor.width(), scissor.height());
                 pass.set_bind_group(0, &bg0, &[(ci as u64 * STRIDE) as u32, (op_base + i as u64 * STRIDE) as u32]);
                 pass.set_bind_group(1, bg1[i].as_ref(), &[]);
@@ -1594,7 +1751,8 @@ impl Compositor {
         region: Rect,
         stats: &mut Stats,
     ) -> Option<(ResKey, [i32; 4])> {
-        if region.is_empty() {
+        // An earlier page of this cell didn't fit: the refresh ends after the cell anyway.
+        if region.is_empty() || self.layer_alloc.is_some() {
             return None;
         }
         let format = surface.format();
@@ -1607,7 +1765,7 @@ impl Compositor {
             .get(&key)
             .is_none_or(|r| r.region != region || r.kind != kind || r.format != format || r.cmyk != cmyk || r.default_bits != default_bits);
         if stale {
-            let texture = device.create_texture(&wgpu::TextureDescriptor {
+            let desc = wgpu::TextureDescriptor {
                 label: Some("pc_compose_layer"),
                 size: wgpu::Extent3d { width: region.width(), height: region.height(), depth_or_array_layers: 1 },
                 mip_level_count: 1,
@@ -1616,7 +1774,9 @@ impl Compositor {
                 format: kind.format(),
                 usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC,
                 view_formats: &[],
-            });
+            };
+            let bytes = region.width() as u64 * region.height() as u64 * kind.bytes_per_pixel() as u64;
+            let texture = self.create_layer_texture(device, &desc, key, bytes, stats)?;
             let view = texture.create_view(&Default::default());
             let default_nonzero = default_pixel.iter().any(|v| *v != 0.0);
             let mut r = Resident {
@@ -2061,6 +2221,38 @@ fn web_time_now() -> Option<std::time::Instant> {
 
 /// The uniform record of a pass.
 fn op_words(p: &plan::Pass<'_>, tex: Option<[i32; 4]>, mask: Option<[i32; 4]>, map: Option<Rect>) -> Vec<u8> {
+    words(&op_values(p, tex, mask, map))
+}
+
+/// The uniform record of the `fs_layerbatch` pass that draws `p` (whose texture and mask cover
+/// `tex` and `mask`) and then `extras`, each an unmasked plain layer's `LayerBlend` pass with the
+/// area its texture covers. Layout: see `batch_layer` in compose.wgsl.
+fn batch_op_words(p: &plan::Pass<'_>, tex: Option<[i32; 4]>, mask: Option<[i32; 4]>, extras: &[(&plan::Pass<'_>, Option<[i32; 4]>)]) -> Vec<u8> {
+    let mut v = op_values(p, tex, mask, None);
+    // Word offsets of the record's vec4s holding the extra layers, three each: p0, p1, p2 | p3,
+    // q0, q1 | q2, q3, q4.
+    const AT: [usize; 9] = [20, 24, 28, 32, 44, 48, 52, 56, 60];
+    if let Some(kind) = v.get_mut(1) {
+        *kind = I(extras.len().min(AT.len() / 3) as i32);
+    }
+    for (e, (x, area)) in extras.iter().take(AT.len() / 3).enumerate() {
+        let r = area.unwrap_or([0; 4]);
+        let geo = [r[0] as f32, r[1] as f32, r[2] as f32, r[3] as f32];
+        let prm = [x.opacity, x.fill, plan::mode_index(x.mode) as f32, if area.is_some() { 1.0 } else { 0.0 }];
+        for (k, vals) in [geo, x.color, prm].into_iter().enumerate() {
+            let at = AT[e * 3 + k];
+            for (c, f) in vals.into_iter().enumerate() {
+                if let Some(w) = v.get_mut(at + c) {
+                    *w = F(f);
+                }
+            }
+        }
+    }
+    words(&v)
+}
+
+/// The words of a pass's uniform record (`Op` in compose.wgsl).
+fn op_values(p: &plan::Pass<'_>, tex: Option<[i32; 4]>, mask: Option<[i32; 4]>, map: Option<Rect>) -> Vec<W> {
     let mut flags = p.flags;
     let (mut to, mut ts, mut mo, mut ms) = ([0; 2], [0; 2], [0; 2], [0; 2]);
     if let Some(r) = tex {
@@ -2107,7 +2299,82 @@ fn op_words(p: &plan::Pass<'_>, tex: Option<[i32; 4]>, mask: Option<[i32; 4]>, m
     }
     v.extend([I(mpo[0]), I(mpo[1]), I(mps[0]), I(mps[1])]);
     v.extend(p.extra.iter().map(|f| F(*f)));
-    words(&v)
+    // q0..q4: only `fs_layerbatch` reads them (`batch_op_words`).
+    v.extend((0..20).map(|_| F(0.0)));
+    v
+}
+
+/// Most layers one `fs_layerbatch` pass blends: its own and the three more its record holds.
+const BATCH: usize = 4;
+
+/// For each pass, how many passes from it on the executor draws as one `fs_layerbatch` pass
+/// (1: the pass alone). A run starts at a `LayerBlend` pass over the whole chunk (no clip) that
+/// isn't a gradient (whose parameters use the words the extra layers go in), and continues while
+/// the next pass is a `LayerBlend` of an unmasked plain layer (no text gamma, no Dissolve) onto
+/// exactly what the previous pass wrote, a slot nothing else reads before it is written again.
+/// A run never ends in the slot it reads from.
+///
+/// The runs depend on the plan alone, never on the prefix cache: a compiler may give a layer
+/// other bits batched than drawn alone (FXC on D3D12 does), and reusing a prefix must stay exact
+/// (#5286). The cache captures and resumes only at `run_starts` instead.
+fn batch_runs(plan: &Plan<'_>) -> Vec<usize> {
+    let passes = &plan.passes;
+    let n = passes.len();
+    let reads = |p: &plan::Pass<'_>, s: plan::Slot| [p.a, p.b, p.c, p.d].contains(&Some(s));
+    // feeds_next[i]: what pass i writes is read by pass i + 1 alone.
+    let feeds_next: Vec<bool> = (0..n)
+        .map(|i| {
+            let (Some(this), Some(next)) = (passes.get(i), passes.get(i + 1)) else { return false };
+            let dst = this.dst;
+            if next.a != Some(dst) || [next.b, next.c, next.d].contains(&Some(dst)) {
+                return false;
+            }
+            for later in passes.iter().skip(i + 2) {
+                // A copy into a slot keeps what lies outside its rect: that is a read too.
+                if reads(later, dst) || (later.dst == dst && later.kernel == Kernel::CopyRect) {
+                    return false;
+                }
+                if later.dst == dst {
+                    return true;
+                }
+            }
+            dst != plan.root
+        })
+        .collect();
+    let lead = |p: &plan::Pass<'_>| p.kernel == Kernel::LayerBlend && p.clip.is_none() && !p.gradient;
+    let extra = |p: &plan::Pass<'_>| lead(p) && p.mask.is_none() && p.flags & plan::F_TEXT_GAMMA == 0 && p.mode != photocraft_color::BlendMode::Dissolve;
+    (0..n)
+        .map(|i| {
+            let Some(first) = passes.get(i).filter(|p| lead(p)) else { return 1 };
+            let (mut k, mut best) = (1, 1);
+            while k < BATCH && feeds_next.get(i + k - 1).copied().unwrap_or(false) && passes.get(i + k).is_some_and(extra) {
+                k += 1;
+                if passes.get(i + k - 1).is_some_and(|p| Some(p.dst) != first.a) {
+                    best = k;
+                }
+            }
+            best
+        })
+        .collect()
+}
+
+/// For each pass and the end of the plan, whether the executor draws `runs` (`batch_runs`) so
+/// that a pass starts there rather than inside a run.
+fn run_starts(runs: &[usize]) -> Vec<bool> {
+    let mut starts = vec![false; runs.len() + 1];
+    let mut i = 0;
+    while let Some(s) = starts.get_mut(i) {
+        *s = true;
+        i += runs.get(i).copied().unwrap_or(1).max(1);
+    }
+    starts
+}
+
+/// The pipeline that draws `run` (passes `batch_runs` joined): `fs_layerbatch_normal` when every
+/// layer blends Normal without text gamma outside Lab documents, else `fs_layerbatch`.
+fn batch_kernel(run: &[plan::Pass<'_>]) -> Kernel {
+    let normal = |p: &plan::Pass<'_>| p.mode == photocraft_color::BlendMode::Normal && p.flags & (plan::F_TEXT_GAMMA | plan::F_LAB) == 0;
+    if run.iter().all(normal) { Kernel::LayerBatchNormal } else { Kernel::LayerBatch }
 }
 
 /// Canvas rounded out to whole tiles.
@@ -2272,15 +2539,43 @@ fn convert_tiles(surface: &Surface, tiles: Vec<(TileCoord, Arc<Tile>)>, kind: Te
             }
         }
     }
+    // CMYK and Lab tiles convert pixel by pixel through a colour transform (a CMYK tile took
+    // ~5 ms on one thread, the whole of a brush dab's refresh on an A4 CMYK page, #5108): those
+    // go in bands of rows, so even the one tile a dab touches spreads over the threads. Workers
+    // don't inherit this thread's CMYK profile scope, so each band enters it.
+    let bands = if colour_managed(&surface.format(), kind) { TILE_SIZE / MANAGED_BAND_ROWS } else { 1 };
+    let space = photocraft_color::convert::active_cmyk_space();
     for batch in groups.chunks(CONVERT_BATCH) {
         // A tile's content is the same at every coordinate sharing it: convert it at the first.
-        let jobs: Vec<_> = batch.iter().filter_map(|(t, cs)| cs.first().map(|c| (t, *c))).collect();
-        let converted = fx::par_map(jobs, |(t, c)| convert_tile(surface, Some(t), kind, c));
-        for ((t, cs), bytes) in batch.iter().zip(&converted) {
-            put(t, cs, bytes);
+        let jobs: Vec<_> = batch.iter().filter_map(|(t, cs)| cs.first().map(|c| (t, *c))).flat_map(|(t, c)| (0..bands).map(move |b| (t, c, b))).collect();
+        let parts = fx::par_map(jobs, |(t, c, b)| {
+            photocraft_color::convert::with_cmyk_space(space.as_ref(), || {
+                if bands == 1 {
+                    return convert_tile(surface, Some(t), kind, c);
+                }
+                let r = c.rect();
+                let y0 = r.y0 + b * MANAGED_BAND_ROWS;
+                convert_rows(surface, Some(t), kind, Rect::new(r.x0, y0, r.x1, y0 + MANAGED_BAND_ROWS))
+            })
+        });
+        for ((t, cs), bytes) in batch.iter().zip(parts.chunks(bands as usize)) {
+            // One part (every format but CMYK and Lab) goes through as is: no copy per tile.
+            match bytes {
+                [one] => put(t, cs, one),
+                _ => put(t, cs, &bytes.concat()),
+            }
         }
     }
     groups.len()
+}
+
+/// Rows per parallel band of a colour-managed (CMYK, Lab) tile conversion.
+const MANAGED_BAND_ROWS: i32 = 16;
+
+/// Whether `fmt` pixels reach `kind` texels through a per-pixel colour transform (CMYK, Lab).
+fn colour_managed(fmt: &PixelFormat, kind: TexKind) -> bool {
+    use photocraft_color::ColorMode;
+    matches!(kind, TexKind::Rgba8 | TexKind::Rgba16F) && matches!(fmt.mode, ColorMode::Cmyk | ColorMode::Lab)
 }
 
 /// Tile pixels in the texture's format. `tile = None` gives the default pixel everywhere.
@@ -2288,27 +2583,47 @@ fn convert_tile(surface: &Surface, tile: Option<&Arc<Tile>>, kind: TexKind, c: T
     if let (Some(t), TexKind::Rgba8Direct | TexKind::R8Direct) = (tile, kind) {
         return t.bytes().to_vec();
     }
-    let n = (TILE_SIZE * TILE_SIZE) as usize;
     let fmt = surface.format();
-    let ch = fmt.channels();
     if let (Some(t), TexKind::Rgba16F) = (tile, kind)
         && let Some(out) = rgb_gray16_to_f16(&fmt, t.bytes()).or_else(|| rgb_gray32_to_f16(&fmt, t.bytes()))
     {
         return out;
     }
+    convert_rows(surface, tile, kind, c.rect())
+}
+
+/// [`convert_tile`]'s general path for `rect` (rows of one tile): each pixel through
+/// `photocraft_raster::to_rgba`. A run of identical pixels (the transparent or flat areas around a
+/// brush dab) is converted once: the same samples give the same texels.
+fn convert_rows(surface: &Surface, tile: Option<&Arc<Tile>>, kind: TexKind, rect: Rect) -> Vec<u8> {
+    let n = rect.width() as usize * rect.height() as usize;
+    let fmt = surface.format();
+    let ch = fmt.channels();
     let raw: Vec<f32> = match tile {
-        Some(_) => surface.read_region(c.rect()),
+        Some(_) => surface.read_region(rect),
         None => surface.default_pixel().repeat(n),
     };
     let mut out = Vec::with_capacity(n * kind.bytes_per_pixel());
-    for px in raw.chunks_exact(ch) {
+    // The previous pixel and its colour.
+    let mut last: Option<(usize, [f32; 4])> = None;
+    for (i, px) in raw.chunks_exact(ch).enumerate() {
+        let mut rgba = || -> [f32; 4] {
+            if let Some((j, v)) = last
+                && raw.get(j * ch..j * ch + ch).is_some_and(|p| p.iter().zip(px).all(|(a, b)| a.to_bits() == b.to_bits()))
+            {
+                return v;
+            }
+            let v = photocraft_raster::to_rgba(&fmt, px);
+            last = Some((i, v));
+            v
+        };
         match kind {
             TexKind::Rgba8Direct | TexKind::Rgba8 => {
-                let v = photocraft_raster::to_rgba(&fmt, px);
+                let v = rgba();
                 out.extend(v.map(|x| (x.clamp(0.0, 1.0) * 255.0 + 0.5) as u8));
             }
             TexKind::Rgba16F => {
-                let v = photocraft_raster::to_rgba(&fmt, px);
+                let v = rgba();
                 for x in v {
                     out.extend(f32_to_f16(x).to_le_bytes());
                 }
@@ -2552,6 +2867,120 @@ pub fn render_to_vec_stats(
 mod tests {
     use super::*;
 
+    /// A run joins `LayerBlend` passes that only feed each other, at most `BATCH` of them, and
+    /// never ends in the slot it reads from.
+    fn check_runs(p: &Plan<'_>) -> Vec<usize> {
+        let runs = batch_runs(p);
+        assert_eq!(runs.len(), p.passes.len());
+        for (i, &k) in runs.iter().enumerate() {
+            assert!((1..=BATCH).contains(&k), "pass {i}: run {k}");
+            if k > 1 {
+                assert_ne!(Some(p.passes[i + k - 1].dst), p.passes[i].a, "run at {i} renders into its input");
+                for j in i + 1..i + k {
+                    assert_eq!(p.passes[j].kernel, Kernel::LayerBlend);
+                    assert_eq!(p.passes[j].a, Some(p.passes[j - 1].dst), "run at {i}: pass {j} doesn't read the one before");
+                    assert!(p.passes[j].mask.is_none() && p.passes[j].mode != photocraft_color::BlendMode::Dissolve, "run at {i}: pass {j}");
+                }
+            }
+        }
+        runs
+    }
+
+    #[test]
+    fn plain_layers_batch_and_runs_stop_where_a_pass_must_stand_alone() {
+        use photocraft_color::{BlendMode, Color, ColorMode, SampleType};
+        use photocraft_doc::{Document, Layer, LayerMask};
+        let mut d = Document::with_background("t", photocraft_geom::Size::new(8, 8), ColorMode::Rgb, SampleType::U8, Color::WHITE);
+        for i in 0..12 {
+            let mut l = Layer::raster(format!("l{i}"), d.pixel_format());
+            l.surface_mut().unwrap().fill_rect(Rect::new(0, 0, 8, 8), &[0.2, 0.4, 0.6, 0.5]);
+            d.layers.push(l);
+        }
+        let p = plan::plan(&d).unwrap();
+        let runs = check_runs(&p);
+        assert!(runs.iter().any(|k| *k >= 3), "{runs:?}");
+        // The cache resumes only where a run starts, so a cached render draws the passes above
+        // its checkpoint in the same runs as an uncached one; checkpoints inside a run are
+        // skipped, but a stack of plain layers keeps some to resume at.
+        let starts = run_starts(&runs);
+        assert_eq!(starts.len(), runs.len() + 1);
+        assert!(starts[0] && starts[runs.len()]);
+        let (mut at, mut i) = (Vec::new(), 0);
+        while i < runs.len() {
+            at.push(i);
+            i += runs[i];
+        }
+        assert_eq!(starts.iter().enumerate().filter(|(_, s)| **s).map(|(i, _)| i).collect::<Vec<_>>(), [at, vec![runs.len()]].concat());
+        let resumable = p.checkpoints.iter().filter(|c| c.pass_end > 1 && starts[c.pass_end]).count();
+        assert!(resumable >= 2 && resumable < p.checkpoints.len(), "{resumable} of {:?}", p.checkpoints);
+        // A masked or Dissolve layer, or a clipped one, never joins a run as an extra layer.
+        d.layers[3].mask = Some(LayerMask::hide_all());
+        d.layers[6].blend = BlendMode::Dissolve;
+        d.layers[9].clipped = true;
+        check_runs(&plan::plan(&d).unwrap());
+        // Nothing to batch: a lone layer.
+        d.layers.truncate(1);
+        assert_eq!(check_runs(&plan::plan(&d).unwrap()), vec![1; plan::plan(&d).unwrap().passes.len()]);
+    }
+
+    #[test]
+    fn batch_records_hold_three_extra_layers_in_the_spare_words() {
+        let lead = plan::Pass::new(Kernel::LayerBlend, 0);
+        let mut x = plan::Pass::new(Kernel::LayerBlend, 1);
+        x.opacity = 0.25;
+        x.fill = 0.5;
+        x.color = [0.1, 0.2, 0.3, 0.4];
+        let w = batch_op_words(&lead, None, None, &[(&x, Some([1, 2, 3, 4])), (&x, None), (&x, None), (&x, None)]);
+        assert_eq!(w.len() as u64, OP_UNIFORM);
+        let word = |i: usize| <[u8; 4]>::try_from(&w[i * 4..i * 4 + 4]).unwrap();
+        let f = |i: usize| f32::from_le_bytes(word(i));
+        // At most three extras; the first's geometry, colour and parameters in p0, p1, p2.
+        assert_eq!(i32::from_le_bytes(word(1)), 3);
+        assert_eq!([f(20), f(21), f(22), f(23)], [1.0, 2.0, 3.0, 4.0]);
+        assert_eq!([f(24), f(25), f(26), f(27)], [0.1, 0.2, 0.3, 0.4]);
+        assert_eq!([f(28), f(29), f(31)], [0.25, 0.5, 1.0]);
+        // The third's parameters in q4; one without pixels says so.
+        assert_eq!([f(60), f(61), f(63)], [0.25, 0.5, 0.0]);
+        // Other passes leave the batch words zero.
+        let plain = op_words(&x, None, None, None);
+        assert!(plain[44 * 4..].iter().all(|b| *b == 0));
+    }
+
+    #[test]
+    fn runs_of_normal_layers_draw_with_normal_code_alone() {
+        use photocraft_color::BlendMode;
+        let pass = |mode: BlendMode, flags: u32| {
+            let mut p = plan::Pass::new(Kernel::LayerBlend, 0);
+            p.mode = mode;
+            p.flags = flags;
+            p
+        };
+        let normal = pass(BlendMode::Normal, plan::F_HDR);
+        assert_eq!(batch_kernel(&[normal.clone(), pass(BlendMode::Normal, 0)]), Kernel::LayerBatchNormal);
+        // Any other mode, text gamma or a Lab document anywhere in the run takes the full shader.
+        for other in
+            [pass(BlendMode::Multiply, 0), pass(BlendMode::Dissolve, 0), pass(BlendMode::Normal, plan::F_TEXT_GAMMA), pass(BlendMode::Normal, plan::F_LAB)]
+        {
+            assert_eq!(batch_kernel(&[normal.clone(), other.clone()]), Kernel::LayerBatch);
+            assert_eq!(batch_kernel(&[other, normal.clone()]), Kernel::LayerBatch);
+        }
+    }
+
+    #[test]
+    fn layer_pages_are_admitted_by_evicting_least_recently_used_first() {
+        let pages = || vec![(5, 'c', 40), (1, 'a', 30), (3, 'b', 20)];
+        // Fits already: nothing dropped.
+        assert!(lru_victims(pages(), 90, 10, 100).is_empty());
+        // 90 held + 40 incoming over 100: the oldest page goes first, then the next.
+        assert_eq!(lru_victims(pages(), 90, 40, 100), vec!['a']);
+        assert_eq!(lru_victims(pages(), 90, 60, 100), vec!['a', 'b']);
+        // Out of memory: a zero budget drops every candidate, and an impossible request stops
+        // when none are left instead of looping or overflowing.
+        assert_eq!(lru_victims(pages(), 90, 0, 0), vec!['a', 'b', 'c']);
+        assert_eq!(lru_victims(pages(), u64::MAX, u64::MAX, 1), vec!['a', 'b', 'c']);
+        assert!(lru_victims(Vec::<(u64, char, u64)>::new(), 90, 40, 100).is_empty());
+    }
+
     #[test]
     fn uniform_buffer_sizes_are_checked_before_allocation() {
         assert_eq!(uniform_buffer_len(1, 255, 65_536).unwrap(), 65_536);
@@ -2753,6 +3182,78 @@ mod tests {
         assert!(rgb_gray16_to_f16(&PixelFormat { sample: SampleType::U16, ..PixelFormat::CMYKA8 }, &[]).is_none());
         assert!(rgb_gray32_to_f16(&PixelFormat::RGBA16, &[]).is_none());
         assert!(rgb_gray32_to_f16(&PixelFormat { sample: SampleType::F32, ..PixelFormat::CMYKA8 }, &[]).is_none());
+    }
+
+    /// CMYK and Lab tiles convert in parallel bands of rows, each run of equal pixels once
+    /// (#5108): the texels are still exactly the per-pixel conversion's, at 8 and 16 bits, with
+    /// the built-in CMYK profile and with a document's own (which the worker threads enter).
+    #[test]
+    fn colour_managed_tiles_match_the_per_pixel_conversion() {
+        use photocraft_cms::synth::{CmykParams, cmyk_profile};
+        use photocraft_color::ColorMode;
+        use photocraft_color::convert::{CmykSpace, with_cmyk_space};
+        let icc = Arc::new(
+            cmyk_profile(&CmykParams { description: "GPU test CMYK".into(), tvi: [0.26, 0.26, 0.26, 0.3], grid_a2b: 5, grid_b2a: 9, ..Default::default() })
+                .to_bytes(),
+        );
+        let own = CmykSpace::for_profile(Some(&icc));
+        assert!(own.is_some(), "the synthetic profile is not the built-in one");
+        let area = Rect::new(0, 0, TILE_SIZE * 3, TILE_SIZE);
+        for (mode, sample, space) in [
+            (ColorMode::Cmyk, SampleType::U8, None),
+            (ColorMode::Cmyk, SampleType::U16, None),
+            (ColorMode::Cmyk, SampleType::U8, own.clone()),
+            (ColorMode::Cmyk, SampleType::U16, own.clone()),
+            (ColorMode::Lab, SampleType::U8, None),
+            (ColorMode::Lab, SampleType::U16, None),
+        ] {
+            let fmt = PixelFormat { mode, sample, alpha: true };
+            let kind = TexKind::for_surface(Role::Content, fmt);
+            assert!(colour_managed(&fmt, kind), "{fmt:?}");
+            let ch = fmt.channels();
+            let mut s = Surface::new(fmt);
+            // Tile 0: noise. Tile 1: transparent with a soft dab (runs of equal pixels). Tile 2:
+            // a flat colour with a few lines of noise.
+            let n = (TILE_SIZE * TILE_SIZE) as usize * ch;
+            let noise: Vec<f32> = (0..n).map(|i| (i as u32).wrapping_mul(2_654_435_761) as f32 / u32::MAX as f32).collect();
+            s.write_region(Rect::new(0, 0, TILE_SIZE, TILE_SIZE), &noise);
+            let mut dab = [0.8, 0.6, 0.1, 0.05, 0.0];
+            for r in (1..30).rev() {
+                dab[ch - 1] = 1.0 - r as f32 / 30.0;
+                s.fill_rect(Rect::new(TILE_SIZE + 100 - r, 90 - r, TILE_SIZE + 100 + r, 90 + r), &dab[..ch]);
+            }
+            s.fill_rect(Rect::new(TILE_SIZE * 2, 0, TILE_SIZE * 3, TILE_SIZE), &[0.3, 0.2, 0.7, 0.1, 1.0][..ch]);
+            s.write_region(Rect::new(TILE_SIZE * 2, 40, TILE_SIZE * 3, 43), &noise[..TILE_SIZE as usize * 3 * ch]);
+            let tiles: Vec<_> = area.tiles().filter_map(|c| s.tile(c).map(|t| (c, t.clone()))).collect();
+            assert_eq!(tiles.len(), 3, "{fmt:?}");
+            let mut seen = 0;
+            with_cmyk_space(space.as_ref(), || {
+                convert_tiles(&s, tiles, kind, |_, cs, bytes| {
+                    for &c in cs {
+                        // The old path: every pixel through `to_rgba` on this thread, in this scope.
+                        let want: Vec<u8> = s
+                            .read_region(c.rect())
+                            .chunks_exact(ch)
+                            .flat_map(|px| {
+                                let v = photocraft_raster::to_rgba(&fmt, px);
+                                match kind {
+                                    TexKind::Rgba16F => v.iter().flat_map(|x| f32_to_f16(*x).to_le_bytes()).collect::<Vec<u8>>(),
+                                    _ => v.map(|x| (x.clamp(0.0, 1.0) * 255.0 + 0.5) as u8).to_vec(),
+                                }
+                            })
+                            .collect();
+                        assert!(
+                            bytes == want.as_slice(),
+                            "{fmt:?} {c:?} with {}",
+                            if space.is_some() { "the document's profile" } else { "the built-in profile" }
+                        );
+                        assert_eq!(convert_tile(&s, s.tile(c), kind, c), want, "{fmt:?} {c:?}");
+                        seen += 1;
+                    }
+                });
+            });
+            assert_eq!(seen, 3, "{fmt:?}");
+        }
     }
 
     #[test]

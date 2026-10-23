@@ -159,8 +159,37 @@ fn cover(o: i32, scale: f64) -> (i32, i32) {
     (a, ((o + 1) as f64 / scale + 1e-9).floor().max(a as f64 + 1.0) as i32)
 }
 
-/// Unclamped weights of output sample `o` over source samples `lo..lo + len`.
-fn weights(o: i32, scale: f64, kernel: Kernel, edge: Option<(i32, i32)>) -> (i32, Vec<f64>) {
+/// The source samples worth a weight each: the edge, or the content with one sample of slack on
+/// each side to carry the weight of everything beyond it (read as the default pixel).
+fn keep_range(edge: Option<(i32, i32)>, content: (i32, i32)) -> (i64, i64) {
+    let (a, b) = edge.unwrap_or((content.0.saturating_sub(1), content.1.saturating_add(1)));
+    (i64::from(a), i64::from(b.max(a)))
+}
+
+/// Adds `v` spread evenly over the source samples `[a, b)` to `w`, which holds the samples
+/// from `lo`: samples beyond either end of it add to that end slot instead of needing a slot.
+fn spread(w: &mut [f64], lo: i64, a: i64, b: i64, v: f64) {
+    let Some(last) = w.len().checked_sub(1) else { return };
+    let each = v / (b - a).max(1) as f64;
+    let end = lo + w.len() as i64;
+    let (ia, ib) = (a.max(lo), b.min(end));
+    if ia < ib {
+        for slot in w.get_mut((ia - lo) as usize..(ib - lo) as usize).into_iter().flatten() {
+            *slot += each;
+        }
+    }
+    if a < lo {
+        w[0] += each * (b.min(lo) - a) as f64;
+    }
+    if b > end {
+        w[last] += each * (b - a.max(end)) as f64;
+    }
+}
+
+/// Weights of output sample `o` over source samples `lo..lo + len`, unclamped except that
+/// reductions fold what lies beyond the edge (or the `content`) onto its ends, so a tiny scale
+/// doesn't cost a weight per source sample it covers.
+fn weights(o: i32, scale: f64, kernel: Kernel, edge: Option<(i32, i32)>, content: (i32, i32)) -> (i32, Vec<f64>) {
     match kernel {
         Kernel::Nearest => {
             let u = (o as f64 + 0.5) / scale - 0.5;
@@ -168,7 +197,11 @@ fn weights(o: i32, scale: f64, kernel: Kernel, edge: Option<(i32, i32)>) -> (i32
         }
         Kernel::Bilinear if scale < 0.5 => {
             let (a, b) = cover(o, scale);
-            (a, vec![1.0 / (b - a) as f64; (b - a) as usize])
+            let (ka, kb) = keep_range(edge, content);
+            let (lo, hi) = (i64::from(a).clamp(ka, kb), (i64::from(b) - 1).clamp(ka, kb));
+            let mut w = vec![0.0; (hi - lo + 1) as usize];
+            spread(&mut w, lo, i64::from(a), i64::from(b), 1.0);
+            (lo as i32, w)
         }
         Kernel::Bilinear => {
             let u = position(o, scale, edge);
@@ -179,18 +212,18 @@ fn weights(o: i32, scale: f64, kernel: Kernel, edge: Option<(i32, i32)>) -> (i32
             // Averaged down to four times the target first (pixels of `inner`), then filtered.
             let inner = 4.0 * scale;
             let inner_edge = edge.map(|(a, b)| ((a as f64 * inner - 1e-9).ceil() as i32, ((b + 1) as f64 * inner - 1e-9).ceil() as i32 - 1));
-            let (k0, kw) = weights(o, 0.25, Kernel::Keys { a, stretch }, inner_edge);
+            let (k0, kw) = weights(o, 0.25, Kernel::Keys { a, stretch }, inner_edge, (i32::MIN / 4, i32::MAX / 4));
             let clamp = |k: i32| inner_edge.map_or(k, |(a, b)| k.clamp(a, b.max(a)));
             let boxes: Vec<(i32, i32)> = (k0..).zip(&kw).map(|(k, _)| cover(clamp(k), inner)).collect();
-            let lo = boxes.iter().map(|b| b.0).min().unwrap_or(0);
-            let hi = boxes.iter().map(|b| b.1).max().unwrap_or(lo);
-            let mut w = vec![0.0; (hi - lo).max(0) as usize];
+            let (ka, kb) = keep_range(edge, content);
+            let lo = i64::from(boxes.iter().map(|b| b.0).min().unwrap_or(0));
+            let hi = i64::from(boxes.iter().map(|b| b.1).max().unwrap_or(lo as i32));
+            let (klo, khi) = (lo.clamp(ka, kb), (hi - 1).clamp(ka, kb));
+            let mut w = vec![0.0; (khi - klo + 1) as usize];
             for ((a, b), v) in boxes.into_iter().zip(kw) {
-                for slot in w.get_mut((a - lo) as usize..(b - lo) as usize).into_iter().flatten() {
-                    *slot += v / (b - a) as f64;
-                }
+                spread(&mut w, klo, i64::from(a), i64::from(b), v);
             }
-            (lo, w)
+            (klo as i32, w)
         }
         Kernel::Keys { a, stretch } => {
             let u = position(o, scale, edge);
@@ -225,7 +258,7 @@ fn taps(dst0: i32, dst1: i32, scale: f64, kernel: Kernel, edge: Option<(i32, i32
     let kernel = if scale == 1.0 { Kernel::Nearest } else { kernel };
     (dst0..dst1)
         .map(|o| {
-            let (lo, w) = weights(o, scale, kernel, edge);
+            let (lo, w) = weights(o, scale, kernel, edge, content);
             let hi = lo + w.len() as i32 - 1;
             // Fold the weights of taps beyond the edge onto the edge sample.
             let start = clamp(lo);
@@ -722,6 +755,22 @@ mod tests {
         let o = resize_surface(&s, 0.25, 0.25, Resample::Bicubic);
         let p = o.pixel(8, 8);
         assert!((p[0] - 0.5).abs() < 0.05, "{p:?}");
+    }
+
+    /// A reduction by a tiny scale covers millions of source samples per output sample; only the
+    /// ones in the content get a weight, the rest fold onto its ends or into `outside`.
+    #[test]
+    fn tiny_scales_do_not_get_a_weight_per_covered_sample() {
+        for kernel in [Kernel::Bilinear, Kernel::Keys { a: -0.5, stretch: 1.0 }] {
+            for edge in [None, Some((0, 99))] {
+                let t = taps(0, 3, 1e-6, kernel, edge, (0, 99));
+                for t in &t {
+                    assert!(t.weights.len() <= 100, "{}", t.weights.len());
+                    let total = t.weights.iter().sum::<f32>() + t.outside;
+                    assert!((total - 1.0).abs() < 1e-3, "{total}");
+                }
+            }
+        }
     }
 
     #[test]

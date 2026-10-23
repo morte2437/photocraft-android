@@ -412,13 +412,19 @@ fn live_from_params(cmd: &str, kind: &str, p: &Value, prev: Option<&LiveShape>) 
         }
         "ellipse" => LiveShape::Ellipse { rect: rect()? },
         "polygon" | "star" => {
-            let (ps, pr) = match prev {
-                Some(LiveShape::Polygon { sides, star_ratio, .. }) => (*sides, *star_ratio),
-                _ => (5, if kind == "star" { 0.5 } else { 1.0 }),
+            let (ps, pr, pc) = match prev {
+                Some(LiveShape::Polygon { sides, star_ratio, corner_radius, .. }) => (*sides, *star_ratio, *corner_radius),
+                _ => (5, if kind == "star" { 0.5 } else { 1.0 }, 0.0),
             };
+            let corner_radius = f64p(p, "cornerRadius").map_or(pc, |v| if v.is_finite() { v.clamp(0.0, 1.0e6) } else { pc });
             let sides = f64p(p, "sides").map_or(ps, |v| v.round().clamp(3.0, 100.0) as u32);
             let ratio = f64p(p, "starRatio").map_or(if kind == "star" && pr >= 1.0 { 0.5 } else { pr }, |v| v.clamp(0.01, 1.0));
-            LiveShape::Polygon { rect: rect()?, sides, star_ratio: if kind == "polygon" && f64p(p, "starRatio").is_none() { 1.0 } else { ratio } }
+            LiveShape::Polygon {
+                rect: rect()?,
+                sides,
+                star_ratio: if kind == "polygon" && f64p(p, "starRatio").is_none() { 1.0 } else { ratio },
+                corner_radius,
+            }
         }
         "line" => {
             let (pf, pto, pw) = match prev {
@@ -481,16 +487,37 @@ pub fn translate_vectors(doc: &Document, l: &mut Layer, dx: f64, dy: f64) {
         vm.path = vm.path.transform(&a);
     }
     match &mut l.content {
-        LayerContent::Shape(sh) => {
-            transform_shape(sh, &a);
-            refresh_shape(doc, sh);
-        }
+        LayerContent::Shape(sh) => shift_shape(doc, sh, dx, dy),
         LayerContent::Group(g) => {
             for c in &mut g.children {
                 translate_vectors(doc, c, dx, dy);
             }
         }
         _ => {}
+    }
+}
+
+/// Moves a shape by `(dx, dy)`. A whole-pixel move shifts the rendered pixels as they are, so a
+/// shape from a PSD keeps Photoshop's anti-aliasing (as moved type does). The render is cut at
+/// the canvas, so a shape reaching past it renders again, as does a fractional move.
+pub(crate) fn shift_shape(doc: &Document, sh: &mut ShapeLayer, dx: f64, dy: f64) {
+    transform_shape(sh, &Affine::translate(dx, dy));
+    let whole = |v: f64| (v.fract() == 0.0 && v.abs() <= f64::from(i32::MAX)).then_some(v as i32);
+    let canvas = doc.bounds();
+    let inside = sh.cache.as_ref().is_some_and(|c| {
+        let b = photocraft_compose::bounds::content_bounds(c);
+        b.is_empty() || (b.x0 > canvas.x0 && b.y0 > canvas.y0 && b.x1 < canvas.x1 && b.y1 < canvas.y1)
+    });
+    let stroke_pad = sh.stroke.as_ref().filter(|s| s.opacity > 0.0).map_or(0.0, |s| f64::from(s.width.ceil()));
+    let stays_inside = sh.path.control_bounds().is_some_and(|(x0, y0, x1, y1)| {
+        (x0 - stroke_pad) > canvas.x0 as f64
+            && (y0 - stroke_pad) > canvas.y0 as f64
+            && (x1 + stroke_pad) < canvas.x1 as f64
+            && (y1 + stroke_pad) < canvas.y1 as f64
+    });
+    match (&mut sh.cache, whole(dx), whole(dy)) {
+        (Some(c), Some(dx), Some(dy)) if inside && stays_inside => *c = crate::layer_multi_cmds::shift_surface(c, dx, dy),
+        _ => refresh_shape(doc, sh),
     }
 }
 
@@ -510,7 +537,9 @@ pub fn transform_shape(sh: &mut ShapeLayer, a: &Affine) {
                     LiveShape::Rect { rect: r(rect), radii: radii.map(|v| v * k) }
                 }
                 LiveShape::Ellipse { rect } => LiveShape::Ellipse { rect: r(rect) },
-                LiveShape::Polygon { rect, sides, star_ratio } => LiveShape::Polygon { rect: r(rect), sides, star_ratio },
+                LiveShape::Polygon { rect, sides, star_ratio, corner_radius } => {
+                    LiveShape::Polygon { rect: r(rect), sides, star_ratio, corner_radius: corner_radius * m0.min(m3) }
+                }
                 LiveShape::Line { from, to, weight } => {
                     // Live-shape edits regenerate the line's filled bar from its parameters.
                     // Keep the weight in sync with a positive scale of the path, or an
@@ -704,7 +733,7 @@ fn shape_edit(s: &mut Session, p: &Value) -> Result<Value> {
             sh.live = None;
             sh.psd_raw = None;
         }
-        let geom_keys = ["kind", "rect", "radii", "radius", "sides", "starRatio", "from", "to", "weight"];
+        let geom_keys = ["kind", "rect", "radii", "radius", "sides", "starRatio", "cornerRadius", "from", "to", "weight"];
         if geom_keys.iter().any(|k| p.get(*k).is_some()) {
             let kind = p.get("kind").and_then(Value::as_str).map(str::to_string).or_else(|| sh.live.as_ref().map(|l| live_kind(l).to_string()));
             let kind = kind.ok_or_else(|| bad(CMD, "this shape has no live-shape parameters; pass `kind` or `path`"))?;
@@ -1385,11 +1414,15 @@ fn path_stroke(s: &mut Session, p: &Value) -> Result<Value> {
 fn vector_mask_info(s: &Session, id: LayerId) -> Result<Value> {
     let d = s.active().ok_or(EngineError::NoDocument)?;
     let l = d.doc.layer(id).ok_or(EngineError::NoLayer(id))?;
-    Ok(match &l.vector_mask {
-        Some(v) => {
+    Ok(match (&l.vector_mask, &l.content) {
+        (Some(v), _) => {
             json!({ "layer": id.0, "path": path_json(&v.path), "enabled": v.enabled, "linked": v.linked, "density": v.density * 100.0, "feather": v.feather })
         }
-        None => json!({ "layer": id.0, "vectorMask": null }),
+        // A shape layer's path is its vector mask.
+        (None, LayerContent::Shape(sh)) => {
+            json!({ "layer": id.0, "path": path_json(&sh.path), "enabled": true, "linked": true, "shape": true, "density": sh.density * 100.0, "feather": sh.feather })
+        }
+        (None, _) => json!({ "layer": id.0, "vectorMask": null }),
     })
 }
 
@@ -1421,7 +1454,8 @@ fn vector_mask_add(s: &mut Session, p: &Value, from_path: bool) -> Result<Value>
         if locked {
             return Err(EngineError::Other(format!("layer \"{}\" is locked", l.name)));
         }
-        l.vector_mask = Some(VectorMask::new(path));
+        crate::extra_cmds::background_to_layer(doc, id);
+        doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?.vector_mask = Some(VectorMask::new(path));
         Ok(())
     })?;
     vector_mask_info(s, id)
@@ -1441,6 +1475,35 @@ fn vector_mask_edit(s: &mut Session, p: &Value) -> Result<Value> {
                 .ok_or_else(|| bad(CMD, "`feather` must be a finite number within 0..1000"))
         })
         .transpose()?;
+    let density = p
+        .get("density")
+        .map(|v| {
+            v.as_f64()
+                .filter(|n| n.is_finite() && (0.0..=100.0).contains(n))
+                .map(|n| (n / 100.0) as f32)
+                .ok_or_else(|| bad(CMD, "`density` must be a finite number within 0..100 (%)"))
+        })
+        .transpose()?;
+    // A shape layer's path is its vector mask (Photoshop's Properties › Masks): Density and
+    // Feather soften its fill; the path itself is edited with the shape and path commands.
+    if s.active().and_then(|d| d.doc.layer(id)).is_some_and(|l| matches!(l.content, LayerContent::Shape(_)) && l.vector_mask.is_none()) {
+        if let Some(k) = ["path", "enabled", "linked", "invert"].into_iter().find(|k| p.get(*k).is_some()) {
+            return Err(bad(CMD, format!("`{k}`: a shape layer's vector mask is its path; only `density` and `feather` apply")));
+        }
+        if density.is_none() && feather.is_none() {
+            return vector_mask_info(s, id);
+        }
+        with_shape(s, id, "Edit Vector Mask", |sh, _| {
+            if let Some(d) = density {
+                sh.density = d;
+            }
+            if let Some(f) = feather {
+                sh.feather = f;
+            }
+            Ok(())
+        })?;
+        return vector_mask_info(s, id);
+    }
     s.edit("Edit Vector Mask", |doc, _| {
         let l = doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?;
         let vm = l.vector_mask.as_mut().ok_or_else(|| EngineError::Other("layer has no vector mask".into()))?;
@@ -1453,8 +1516,8 @@ fn vector_mask_edit(s: &mut Session, p: &Value) -> Result<Value> {
         if let Some(b) = p.get("linked").and_then(Value::as_bool) {
             vm.linked = b;
         }
-        if let Some(d) = f64p(p, "density") {
-            vm.density = (d / 100.0).clamp(0.0, 1.0) as f32;
+        if let Some(d) = density {
+            vm.density = d;
         }
         if let Some(f) = feather {
             vm.feather = f;
@@ -1699,7 +1762,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "New Shape Layer",
             ["Layer", "New"],
             leak(format!(
-                r##"{{"kind":"rect|roundedRect|ellipse|polygon|star|line|path"="rect","rect":[x,y,w,h] (rect/roundedRect/ellipse/polygon/star),"radii":[tl,tr,br,bl]|r (roundedRect=10),"sides":3..100=5,"starRatio":0..1 (star=0.5),"from":[x,y],"to":[x,y],"weight":px=1 (line),"path":{{…}} (kind path),{fill}=foreground,{stroke}=none,"name":str?,"addTo":layerId? + "op":"combine|subtract|intersect|exclude" (append to an existing shape layer)}} → shape.info. {PATH_FORM}"##
+                r##"{{"kind":"rect|roundedRect|ellipse|polygon|star|line|path"="rect","rect":[x,y,w,h] (rect/roundedRect/ellipse/polygon/star),"radii":[tl,tr,br,bl]|r (roundedRect=10),"sides":3..100=5,"starRatio":0..1 (star=0.5),"cornerRadius":px=0 (polygon/star: rounds every vertex; the Triangle tool is a 3-sided polygon),"from":[x,y],"to":[x,y],"weight":px=1 (line),"path":{{…}} (kind path),{fill}=foreground,{stroke}=none,"name":str?,"addTo":layerId? + "op":"combine|subtract|intersect|exclude" (append to an existing shape layer)}} → shape.info. {PATH_FORM}"##
             )),
             has_doc,
             shape_create
@@ -1709,7 +1772,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Edit Shape",
             [],
             leak(format!(
-                r##"{{"layer":id?,"path":{{…}}? (replaces; drops live shape),"kind":str?,"rect":[x,y,w,h]?,"radii":[tl,tr,br,bl]|r?,"sides":n?,"starRatio":r?,"from":[x,y]?,"to":[x,y]?,"weight":px? (live-shape params regenerate the path),"move":[dx,dy]?,"transform":[a,b,c,d,e,f]?,"op":"combine|…"? + "subpath":index? (default all but the first),"fillRule":"nonzero|evenodd"?,{fill}?,{stroke}? (merged into the current stroke),"name":str?}} → shape.info"##
+                r##"{{"layer":id?,"path":{{…}}? (replaces; drops live shape),"kind":str?,"rect":[x,y,w,h]?,"radii":[tl,tr,br,bl]|r?,"sides":n?,"starRatio":r?,"cornerRadius":px?,"from":[x,y]?,"to":[x,y]?,"weight":px? (live-shape params regenerate the path),"move":[dx,dy]?,"transform":[a,b,c,d,e,f]?,"op":"combine|…"? + "subpath":index? (default all but the first),"fillRule":"nonzero|evenodd"?,{fill}?,{stroke}? (merged into the current stroke),"name":str?}} → shape.info"##
             )),
             has_layer,
             shape_edit
@@ -1848,7 +1911,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Edit Vector Mask",
             [],
             leak(format!(
-                r##"{{"layer":id?,"path":{{…}}?,"enabled":bool?,"linked":bool?,"density":0..100?,"feather":0..1000? (pixels),"invert":true?}}. {PATH_FORM}"##
+                r##"{{"layer":id?,"path":{{…}}?,"enabled":bool?,"linked":bool?,"density":0..100?,"feather":0..1000? (pixels),"invert":true?}}. On a shape layer (whose path is its vector mask) only density and feather apply: they soften its fill, which shows beyond the path at 100 − density %. {PATH_FORM}"##
             )),
             has_layer,
             vector_mask_edit

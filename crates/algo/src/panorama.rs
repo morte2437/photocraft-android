@@ -897,14 +897,39 @@ pub fn seam_labels(w: usize, h: usize, luma: &[Vec<f32>], cover: &[Vec<bool>], o
                 label[i] = img as i32;
             }
         }
-        if no == 0 || nn == no {
+        if no == 0 {
             continue;
         }
-        let (ox, oy) = (sx / no as f64, sy / no as f64);
         let (cx, cy) = (nx / nn as f64, ny / nn as f64);
+        let contained = nn == no;
+        let (ox, oy) = if contained {
+            // Wholly inside the composite (#5745: two photos in one document, the second moved
+            // by Auto-Align so the canvas crops it to the part over the first). Its side of the
+            // seam is the one it lies towards from the composite's centre; an image centred on
+            // the composite has no side, and the earlier images keep it.
+            let (mut px, mut py, mut pn) = (0.0f64, 0.0f64, 0usize);
+            for (i, l) in label.iter().enumerate() {
+                if *l >= 0 {
+                    px += (i % w) as f64;
+                    py += (i / w) as f64;
+                    pn += 1;
+                }
+            }
+            let (px, py) = (px / pn.max(1) as f64, py / pn.max(1) as f64);
+            if (cx - px).abs() < 0.5 && (cy - py).abs() < 0.5 {
+                continue;
+            }
+            (px, py)
+        } else {
+            (sx / no as f64, sy / no as f64)
+        };
         let vertical = (cx - ox).abs() >= (cy - oy).abs();
         // Image on the increasing side along the seam's cross axis?
         let positive = if vertical { cx > ox } else { cy > oy };
+        // A contained image has no pixels of its own, so a seam on its outer edge would leave it
+        // nothing: break cost ties away from its side (towards larger k when it lies on the
+        // decreasing side) so it keeps its side of the overlap.
+        let prefer_high = contained && !positive;
         let cost = |i: usize| -> f32 { 0.002 + (luma[img][i] - luma[label[i] as usize][i]).abs() };
         let (lines, len) = if vertical { (h, w) } else { (w, h) };
         let idx = |line: usize, k: usize| if vertical { line * w + k } else { k * w + line };
@@ -925,7 +950,8 @@ pub fn seam_labels(w: usize, h: usize, luma: &[Vec<f32>], cover: &[Vec<bool>], o
                 let mut best = (0.0f32, usize::MAX);
                 if let Some(pl) = prev_line.filter(|pl| *pl + 1 == line) {
                     best = (f32::INFINITY, usize::MAX);
-                    for dk in [-1i64, 0, 1] {
+                    let dks = if prefer_high { [1i64, 0, -1] } else { [-1i64, 0, 1] };
+                    for dk in dks {
                         let kk = k as i64 + dk;
                         if kk < 0 || kk >= len as i64 {
                             continue;
@@ -952,7 +978,12 @@ pub fn seam_labels(w: usize, h: usize, luma: &[Vec<f32>], cover: &[Vec<bool>], o
             if seam[line] != usize::MAX {
                 continue;
             }
-            let Some(k) = (0..len).filter(|&k| overlap[idx(line, k)]).min_by(|&a, &b| acc[idx(line, a)].total_cmp(&acc[idx(line, b)])) else { continue };
+            let Some(k) = (0..len)
+                .filter(|&k| overlap[idx(line, k)])
+                .min_by(|&a, &b| acc[idx(line, a)].total_cmp(&acc[idx(line, b)]).then(if prefer_high { b.cmp(&a) } else { a.cmp(&b) }))
+            else {
+                continue;
+            };
             let (mut l, mut k) = (line, k);
             loop {
                 seam[l] = k;
@@ -972,9 +1003,13 @@ pub fn seam_labels(w: usize, h: usize, luma: &[Vec<f32>], cover: &[Vec<bool>], o
             if s == usize::MAX {
                 continue;
             }
+            let on_side = |k: usize| if positive { k > s } else { k < s };
+            // A contained image has no other cells, so where the overlap has nothing on its side
+            // of the seam (a line one cell wide) it takes the seam cell rather than nothing.
+            let take_seam = contained && !(0..len).any(|k| overlap[idx(line, k)] && on_side(k));
             for k in 0..len {
                 let i = idx(line, k);
-                if overlap[i] && ((positive && k > s) || (!positive && k < s)) {
+                if overlap[i] && (on_side(k) || (take_seam && k == s)) {
                     label[i] = img as i32;
                 }
             }
@@ -1584,6 +1619,58 @@ mod tests {
         let max_jump = row.windows(2).map(|p| (p[1] - p[0]).abs()).fold(0.0f32, f32::max);
         assert!(max_jump < 0.1, "max step {max_jump}");
         assert!(cov.iter().all(|c| *c == 1.0));
+    }
+
+    #[test]
+    fn an_image_wholly_inside_the_composite_still_gets_its_side() {
+        // #5745: the first image covers the whole 120×40 grid, the second only its right part
+        // (x ≥ 70), all of it overlap. It used to be skipped, so the first image kept everything.
+        let (w, h) = (120usize, 40usize);
+        let luma = vec![vec![0.5f32; w * h], vec![0.5f32; w * h]];
+        let cover: Vec<Vec<bool>> = vec![vec![true; w * h], (0..w * h).map(|i| i % w >= 70).collect()];
+        let labels = seam_labels(w, h, &luma, &cover, &[0, 1]);
+        for y in 0..h {
+            assert_eq!(labels[y * w + 5], 0, "row {y}");
+            assert_eq!(labels[y * w + w - 1], 1, "row {y}");
+            // The second image's region is one run at the right of its seam.
+            let row = &labels[y * w..(y + 1) * w];
+            let first = row.iter().position(|l| *l == 1).unwrap();
+            assert!(first >= 70 && row[first..].iter().all(|l| *l == 1), "row {y}: {row:?}");
+        }
+        // The same on the left (x < 50) and on top (y < 15): the seam stays inside the overlap
+        // instead of on the image's outer edge, which used to leave it nothing.
+        let left: Vec<Vec<bool>> = vec![vec![true; w * h], (0..w * h).map(|i| i % w < 50).collect()];
+        let labels = seam_labels(w, h, &luma, &left, &[0, 1]);
+        for y in 0..h {
+            let row = &labels[y * w..(y + 1) * w];
+            assert_eq!(row[0], 1, "row {y}: {row:?}");
+            assert_eq!(row[w - 1], 0, "row {y}");
+            let last = row.iter().rposition(|l| *l == 1).unwrap();
+            assert!(last < 50 && row[..=last].iter().all(|l| *l == 1), "row {y}: {row:?}");
+        }
+        let (tw, th) = (40usize, 120usize);
+        let tluma = vec![vec![0.5f32; tw * th], vec![0.5f32; tw * th]];
+        let top: Vec<Vec<bool>> = vec![vec![true; tw * th], (0..tw * th).map(|i| i / tw < 50).collect()];
+        let labels = seam_labels(tw, th, &tluma, &top, &[0, 1]);
+        for x in 0..tw {
+            assert_eq!(labels[x], 1, "column {x}");
+            assert_eq!(labels[(th - 1) * tw + x], 0, "column {x}");
+        }
+        // One column or row wide: the seam can only run through it, and the image keeps it.
+        for col in [0, w - 1] {
+            let strip: Vec<Vec<bool>> = vec![vec![true; w * h], (0..w * h).map(|i| i % w == col).collect()];
+            let labels = seam_labels(w, h, &luma, &strip, &[0, 1]);
+            assert!(labels.iter().enumerate().all(|(i, l)| *l == i32::from(i % w == col)), "column {col}: {labels:?}");
+        }
+        let strip: Vec<Vec<bool>> = vec![vec![true; tw * th], (0..tw * th).map(|i| i / tw == 0).collect()];
+        let labels = seam_labels(tw, th, &tluma, &strip, &[0, 1]);
+        assert!(labels.iter().enumerate().all(|(i, l)| *l == i32::from(i / tw == 0)), "{labels:?}");
+        // An image centred on the composite has no side: the first image keeps the overlap.
+        let centred: Vec<Vec<bool>> = vec![vec![true; w * h], (0..w * h).map(|i| (20..100).contains(&(i % w))).collect()];
+        assert!(seam_labels(w, h, &luma, &centred, &[0, 1]).iter().all(|l| *l == 0));
+        // Two images covering the same cells, likewise.
+        let same = vec![vec![true; w * h]; 2];
+        assert!(seam_labels(w, h, &luma, &same, &[0, 1]).iter().all(|l| *l == 0));
     }
 }
 

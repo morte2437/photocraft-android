@@ -672,6 +672,53 @@ fn panel_tab_context_menu_closes_one_tab_or_its_group() {
     }
 }
 
+/// #7265: Studio's floating Properties card has the docked group's Adjustments tab, so Window ›
+/// Adjustments shows the grid of adjustment layers instead of Properties.
+#[test]
+fn studio_properties_card_shows_the_adjustments_tab() {
+    use egui_kittest::kittest::Queryable;
+
+    let (mut app, _, _) = app_with_layers();
+    app.last_canvas_rect = Rect::from_min_size(Pos2::ZERO, vec2(900.0, 700.0));
+    let mut h = Harness::builder().with_size(vec2(900.0, 700.0)).build_ui_state(
+        |ui, app: &mut PhotocraftApp| {
+            let ctx = ui.ctx().clone();
+            if ctx.fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
+                crate::panels::properties_window(app, &ctx);
+            }
+        },
+        app,
+    );
+    PhotocraftApp::setup_context(&h.ctx, ThemeKind::Studio);
+    h.state_mut().ui.theme = ThemeKind::Studio;
+    h.run_steps(3);
+    let ctx = h.ctx.clone();
+    crate::menus::invoke(h.state_mut(), &ctx, "window.panel.adjustments", json!({})).unwrap();
+    h.run_steps(3);
+    assert!(h.state().ui.panels.properties && h.state().ui.dock_tabs.properties == 1);
+    assert!(h.query_by_label("Add an adjustment").is_some(), "Window › Adjustments shows the Adjustments grid");
+    // The Properties tab switches back to the layer's properties.
+    h.get_by_label("Properties").click();
+    h.run_steps(3);
+    assert_eq!(h.state().ui.dock_tabs.properties, 0);
+    assert!(h.query_by_label("Add an adjustment").is_none());
+    assert!(h.query_by_label("Reset to defaults").is_some(), "the Curves layer's properties");
+    // Closing the Adjustments tab leaves Properties alone on the card.
+    h.get_by_label("Adjustments").click();
+    h.run_steps(3);
+    let p = h.get_by_label("Adjustments").rect().center();
+    h.hover_at(p);
+    h.run_steps(1);
+    h.event(egui::Event::PointerButton { pos: p, button: PointerButton::Secondary, pressed: true, modifiers: Modifiers::NONE });
+    h.step();
+    h.event(egui::Event::PointerButton { pos: p, button: PointerButton::Secondary, pressed: false, modifiers: Modifiers::NONE });
+    h.run_steps(2);
+    h.get_by_label("Close").click();
+    h.run_steps(3);
+    assert!(h.state().ui.panels.properties && h.state().ui.dock_tabs.properties == 0);
+    assert!(h.query_by_label("Adjustments").is_none() && h.query_by_label("Reset to defaults").is_some());
+}
+
 fn is_pro(theme: ThemeKind) -> bool {
     theme.is_pro()
 }
@@ -943,6 +990,53 @@ fn tab_hides_all_panels_and_shift_tab_only_the_dock() {
     assert!(serde_json::from_value::<crate::state::Panels>(v).unwrap().dock);
 }
 
+#[test]
+fn tab_in_full_screen_shows_and_hides_the_chrome_and_leaving_restores_the_panels() {
+    // #6760: Full Screen Mode starts with the chrome hidden; Tab shows the menu bar and panels over
+    // the canvas, Tab again hides them. Tab there never touches the panels' own state, so leaving
+    // Full Screen brings them back exactly as they were, however many Tabs were pressed.
+    let (mut app, _, _) = app_with_layers();
+    let ctx = egui::Context::default();
+    let run = |app: &mut PhotocraftApp, id: &str| crate::menus::invoke(app, &ctx, id, json!({})).unwrap();
+    let state = |app: &PhotocraftApp| {
+        let p = &app.ui.panels;
+        (p.toolbar, p.options_bar, p.dock, p.hidden_by_tab)
+    };
+    // Before entering: the options bar hidden by hand, then everything hidden by Tab (outside Full Screen).
+    for (hide_by_hand, tab_first) in [(false, false), (true, false), (false, true)] {
+        app.ui.panels = crate::state::Panels::default();
+        app.ui.panels.options_bar = !hide_by_hand;
+        if tab_first {
+            run(&mut app, "window.togglePanels");
+        }
+        let before = state(&app);
+        run(&mut app, "view.screenMode.fullScreen");
+        assert!(!app.ui.panels.full_screen_chrome, "hidden on entry");
+        run(&mut app, "window.togglePanels");
+        assert!(app.ui.panels.full_screen_chrome, "Tab shows the chrome");
+        assert_eq!(state(&app), before, "Tab in Full Screen leaves the panels alone");
+        run(&mut app, "view.screenMode.standard");
+        assert!(!app.ui.panels.full_screen_chrome);
+        assert_eq!(state(&app), before, "one Tab: restored as before entering");
+        run(&mut app, "view.screenMode.fullScreen");
+        run(&mut app, "window.togglePanels");
+        run(&mut app, "window.togglePanels");
+        assert!(!app.ui.panels.full_screen_chrome, "Tab twice hides the chrome again");
+        assert_eq!(state(&app), before);
+        run(&mut app, "view.screenMode.standard");
+        assert_eq!(state(&app), before, "two Tabs: restored as before entering");
+    }
+    // Entering again starts hidden, even when the last visit left the chrome shown.
+    run(&mut app, "view.screenMode.fullScreen");
+    run(&mut app, "window.togglePanels");
+    run(&mut app, "view.screenMode.standard");
+    run(&mut app, "view.screenMode.fullScreen");
+    assert!(!app.ui.panels.full_screen_chrome);
+    // The flag is not saved.
+    let v = serde_json::to_value(&app.ui.panels).unwrap();
+    assert!(v.get("full_screen_chrome").is_none());
+}
+
 /// #2726: the Navigator sizes its own preview to the group (no outer scroll area, so no scroll
 /// fade over the thumbnail), keeping the document's aspect, with the zoom controls below it.
 #[test]
@@ -1147,4 +1241,25 @@ fn brush_settings_window_is_closed_on_restart_but_can_be_reopened() {
     let mut workspace = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     apply(&mut workspace, &saved);
     assert!(workspace.ui.panels.brush_settings, "switching workspaces still restores their saved layout");
+}
+
+/// Layers panel options live in the preferences on their own (like Photoshop's Panel Options),
+/// so a workspace layout neither saves nor restores them.
+#[test]
+fn workspace_layouts_leave_the_layers_panel_options_alone() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.ui.layers_panel_options.show_filters = false;
+    crate::layers_panel_ui::persist_options(&mut app);
+    let stored = app.session.prefs().dialogs.get("ui.layersPanelOptions").cloned();
+    assert!(stored.is_some(), "the options are saved in the preferences");
+
+    let mut saved = snapshot(&app);
+    assert!(saved.get("layersPanelOptions").is_none(), "a layout does not carry the options");
+
+    // A layout saved by an earlier build still has the key; it must not win over the preferences.
+    saved["layersPanelOptions"] = json!({"showFilters": true, "thumbnailSize": "large"});
+    apply(&mut app, &saved);
+    assert!(!app.ui.layers_panel_options.show_filters);
+    assert_ne!(app.ui.layers_panel_options.thumbnail_size, crate::state::LayerThumbnailSize::Large);
+    assert_eq!(app.session.prefs().dialogs.get("ui.layersPanelOptions").cloned(), stored);
 }

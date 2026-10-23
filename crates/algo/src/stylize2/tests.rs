@@ -29,14 +29,25 @@ const MODELS: [ColorMode; 8] =
 #[test]
 fn swept_blocks_match_the_pixel_search() {
     let bounds = Rect::new(-13, -9, 31, 26);
+    // Unless the heights are level-based, the colour mode reaches extrude only through the channel
+    // count and whether the samples are CMYK ink, so modes that agree on both repeat those cases.
+    // A run takes a quarter of the rest, a different quarter each day.
+    let mut seen = std::collections::HashSet::new();
+    let sweep = photocraft_testkit::Sweep::new(4);
+    let mut case = 0;
     for mode in MODELS {
         for alpha in [false, true] {
             let n = PixelFormat::new(mode, SampleType::F32, alpha).channels();
             let ctx = Ctx { bounds, mode, alpha };
+            let repeat = !seen.insert((n, alpha, mode == ColorMode::Cmyk));
             for kind in 0..5 {
                 let src = image(bounds.inflate(20), n, kind);
                 for (size, depth) in [(2.0, 0.0), (2.0, 255.0), (3.5, 190.0), (8.0, 64.0), (22.0, 255.0), (255.0, 100.0)] {
-                    for flags in 0..8 {
+                    for flags in (0..8).filter(|f| !repeat || f & 1 != 0) {
+                        case += 1;
+                        if !sweep.includes(case) {
+                            continue;
+                        }
                         let spec = ExtrudeSpec {
                             kind: ExtrudeType::Blocks,
                             size,

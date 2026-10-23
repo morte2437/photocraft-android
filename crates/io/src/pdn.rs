@@ -154,6 +154,12 @@ pub(super) fn import(name: &str, bytes: &[u8], ctl: &Interrupt<'_>) -> Result<Im
     let bounds = Rect::from_xywh(0, 0, width as u32, height as u32);
     let mut layouts = HashMap::new();
     let mut output = Vec::with_capacity(len);
+    // Each output layer owns a copy of its name, but the NRBF graph charges a shared string
+    // only once when serialized. Repeated references to one large name would multiply into
+    // gigabytes of retained copies, so cap each name and the aggregate copied bytes.
+    const MAX_NAME_BYTES: usize = 64 * 1024;
+    const MAX_TOTAL_NAME_BYTES: usize = 4 * 1024 * 1024;
+    let mut name_bytes = 0usize;
     for layer in layers {
         ctl.check().map_err(|_| IoError::Cancelled)?;
         if graph.class_name(layer)? != "PaintDotNet.BitmapLayer" {
@@ -182,7 +188,20 @@ pub(super) fn import(name: &str, bytes: &[u8], ctl: &Interrupt<'_>) -> Result<Im
         if opacity > 255 {
             return Err(invalid("opacity exceeds 255"));
         }
-        let mut l = Layer::raster(graph.string(graph.field(props, "name")?)?, PixelFormat::RGBA8);
+        let mut l = Layer::raster(
+            {
+                let name = graph.string(graph.field(props, "name")?)?;
+                if name.len() > MAX_NAME_BYTES {
+                    return Err(invalid("layer name is too long"));
+                }
+                name_bytes = name_bytes.saturating_add(name.len());
+                if name_bytes > MAX_TOTAL_NAME_BYTES {
+                    return Err(invalid("layer names exceed the total metadata budget"));
+                }
+                name.to_string()
+            },
+            PixelFormat::RGBA8,
+        );
         l.visible = graph.boolean(graph.field(props, "visible")?)?;
         l.opacity = opacity as f32 / 255.0;
         l.blend = blend(&graph, layer, props)?;

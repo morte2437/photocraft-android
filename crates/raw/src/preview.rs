@@ -74,12 +74,13 @@ pub fn embedded_previews(bytes: &[u8]) -> Vec<Preview<'_>> {
             if let (Some(off), Some(len)) = (t.tag_uint(&ifd, tag::JPEG_INTERCHANGE_FORMAT), t.tag_uint(&ifd, tag::JPEG_INTERCHANGE_FORMAT_LENGTH)) {
                 found.extend(candidate(bytes, off as usize, len as usize));
             }
-            if matches!(t.tag_uint(&ifd, tag::COMPRESSION), Some(6 | 7)) {
-                let offs = t.tag_uints(&ifd, tag::STRIP_OFFSETS);
-                let lens = t.tag_uints(&ifd, tag::STRIP_BYTE_COUNTS);
-                if let ([off], [len]) = (offs.as_slice(), lens.as_slice()) {
-                    found.extend(candidate(bytes, *off as usize, *len as usize));
-                }
+            if matches!(t.tag_uint(&ifd, tag::COMPRESSION), Some(6 | 7))
+                && let (Some(offsets), Some(lengths)) = (ifd.get(tag::STRIP_OFFSETS), ifd.get(tag::STRIP_BYTE_COUNTS))
+                && offsets.count == 1
+                && lengths.count == 1
+                && let (Some(off), Some(len)) = (t.uint(offsets, 0), t.uint(lengths, 0))
+            {
+                found.extend(candidate(bytes, off as usize, len as usize));
             }
             // Panasonic RW2 JpgFromRaw (0x002E) holds a complete JPEG.
             if let Some(e) = ifd.get(0x002E).filter(|e| e.typ == 7)
@@ -107,24 +108,46 @@ pub enum PreviewColorSpace {
     AdobeRgb,
 }
 
-/// The colour space the raw's EXIF gives for the camera's JPEG rendering, for a preview that declares none itself:
-/// ColorSpace (0xA001) 1 = sRGB, or Uncalibrated (0xFFFF) with the Interoperability IFD's InteropIndex "R03", the
-/// DCF option file for Adobe RGB (as a Sony body set to Adobe RGB writes; Exif and DCF specifications). `None` when
-/// the file doesn't say, and for a DNG, whose EXIF describes the original capture while its previews are the
-/// converter's. A preview's own ICC profile takes precedence over this.
+/// Nikon maker note tag ColorSpace: 1 = sRGB, 2 = Adobe RGB (4 = BT.2100, which is not a preview colour space we
+/// read), from ExifTool's public Nikon tag documentation.
+const NIKON_COLOR_SPACE: u16 = 0x001E;
+
+/// The colour space the raw states for the camera's JPEG rendering, for a preview that declares none itself:
+/// * the EXIF ColorSpace (0xA001) 1 = sRGB, or Uncalibrated (0xFFFF) with the Interoperability IFD's InteropIndex
+///   "R03", the DCF option file for Adobe RGB (as a Sony body set to Adobe RGB writes; Exif and DCF specifications);
+/// * else, where the EXIF doesn't decide, a Nikon maker note's ColorSpace (0x001E): Nikon bodies write no EXIF
+///   ColorSpace, and say Adobe RGB only here.
+///
+/// `None` when the file doesn't say, and for a DNG, whose EXIF describes the original capture while its previews
+/// are the converter's. A preview's own ICC profile takes precedence over this.
 pub fn embedded_preview_color_space(bytes: &[u8]) -> Option<PreviewColorSpace> {
     let t = Tiff::new(bytes)?;
     let ifd0 = t.ifd_at(t.first_ifd, 0)?;
     if ifd0.has(tag::DNG_VERSION) {
         return None;
     }
-    let exif = t.ifd_at(t.tag_uint(&ifd0, tag::EXIF_IFD)? as usize, 0)?;
+    exif_color_space(&t, &ifd0).or_else(|| nikon_color_space(&t))
+}
+
+/// The colour space the EXIF IFD gives (see [`embedded_preview_color_space`]).
+fn exif_color_space(t: &Tiff<'_>, ifd0: &crate::tiff::Ifd) -> Option<PreviewColorSpace> {
+    let exif = t.ifd_at(t.tag_uint(ifd0, tag::EXIF_IFD)? as usize, 0)?;
     match t.tag_uint(&exif, tag::COLOR_SPACE)? {
         1 => Some(PreviewColorSpace::Srgb),
         0xFFFF => {
             let interop = t.ifd_at(t.tag_uint(&exif, tag::INTEROP_IFD)? as usize, 0)?;
             t.raw(interop.get(tag::INTEROP_INDEX)?)?.starts_with(b"R03").then_some(PreviewColorSpace::AdobeRgb)
         }
+        _ => None,
+    }
+}
+
+/// The colour space a Nikon maker note gives.
+fn nikon_color_space(t: &Tiff<'_>) -> Option<PreviewColorSpace> {
+    let (note, ifd) = crate::tiffep::nikon_maker_note(t, &t.all_ifds())?;
+    match note.tag_uint(&ifd, NIKON_COLOR_SPACE)? {
+        1 => Some(PreviewColorSpace::Srgb),
+        2 => Some(PreviewColorSpace::AdobeRgb),
         _ => None,
     }
 }
@@ -166,5 +189,96 @@ mod tests {
         for junk in [&b""[..], b"II*\0", b"II*\0\x08\0\0\0\xff\xff", b"not a tiff at all"] {
             assert_eq!(embedded_preview_color_space(junk), None);
         }
+    }
+
+    /// The maker note's embedded TIFF stream (`ifd` entries, in the given byte order) behind `header`.
+    fn maker_note(header: &[u8], tags: Vec<(u16, Val)>, big_endian: bool) -> Vec<u8> {
+        let mut note = TiffBuilder { big_endian, ..Default::default() };
+        let ifd = note.ifd(tags);
+        note.chain = vec![ifd];
+        let mut maker = header.to_vec();
+        maker.extend(note.build());
+        maker
+    }
+
+    /// A raw whose EXIF IFD holds the entries `exif` makes (it may add directories to the builder) and a maker note.
+    fn raw_with_note(maker: Vec<u8>, exif: impl FnOnce(&mut TiffBuilder) -> Vec<(u16, Val)>, dng: bool) -> Vec<u8> {
+        let mut t = TiffBuilder::default();
+        let mut exif = exif(&mut t);
+        exif.push((tag::MAKER_NOTE, Val::Undefined(maker)));
+        let exif = t.ifd(exif);
+        let mut ifd0 = vec![(tag::MAKE, Val::Ascii("NIKON CORPORATION".into())), (tag::EXIF_IFD, Val::Ifds(vec![exif]))];
+        if dng {
+            ifd0.push((tag::DNG_VERSION, Val::Byte(vec![1, 6, 0, 0])));
+        }
+        t.chain = vec![t.ifd(ifd0)];
+        t.build()
+    }
+
+    const NIKON: &[u8] = b"Nikon\0\x02\x10\0\0";
+
+    /// A Nikon raw whose maker note has ColorSpace `color_space` (when given) and whose EXIF IFD holds `exif`.
+    fn nikon_raw(color_space: Option<u16>, exif: impl FnOnce(&mut TiffBuilder) -> Vec<(u16, Val)>, big_endian: bool) -> Vec<u8> {
+        let tags = color_space.map(|cs| (NIKON_COLOR_SPACE, Val::Short(vec![cs]))).into_iter().chain([(0x0002, Val::Ascii("200".into()))]).collect();
+        raw_with_note(maker_note(NIKON, tags, big_endian), exif, false)
+    }
+
+    /// EXIF entries for a preview in Adobe RGB the way a Sony body writes it: Uncalibrated, Interoperability "R03".
+    fn exif_r03(t: &mut TiffBuilder) -> Vec<(u16, Val)> {
+        let interop = t.ifd(vec![(tag::INTEROP_INDEX, Val::Ascii("R03".into()))]);
+        vec![(tag::COLOR_SPACE, Val::Short(vec![0xFFFF])), (tag::INTEROP_IFD, Val::Ifds(vec![interop]))]
+    }
+
+    /// Nikon bodies write no EXIF ColorSpace; the maker note's ColorSpace (1 sRGB, 2 Adobe RGB) is
+    /// what says their JPEG previews are Adobe RGB.
+    #[test]
+    fn nikon_maker_note_colour_space_of_the_previews() {
+        for big_endian in [false, true] {
+            assert_eq!(embedded_preview_color_space(&nikon_raw(Some(2), |_| vec![], big_endian)), Some(PreviewColorSpace::AdobeRgb), "be {big_endian}");
+            assert_eq!(embedded_preview_color_space(&nikon_raw(Some(1), |_| vec![], big_endian)), Some(PreviewColorSpace::Srgb), "be {big_endian}");
+        }
+        // BT.2100 (4), unknown values, a note without the tag
+        for cs in [Some(4), Some(0), Some(3), Some(0xFFFF), None] {
+            assert_eq!(embedded_preview_color_space(&nikon_raw(cs, |_| vec![], false)), None, "{cs:?}");
+        }
+    }
+
+    /// The EXIF IFD, when it states a colour space, comes before the maker note; when it does not decide, the
+    /// maker note does.
+    #[test]
+    fn exif_colour_space_comes_before_the_nikon_maker_note() {
+        // EXIF says sRGB, the note Adobe RGB: EXIF wins.
+        let raw = nikon_raw(Some(2), |_| vec![(tag::COLOR_SPACE, Val::Short(vec![1]))], false);
+        assert_eq!(embedded_preview_color_space(&raw), Some(PreviewColorSpace::Srgb));
+        // EXIF says Adobe RGB (R03), the note sRGB: EXIF wins.
+        assert_eq!(embedded_preview_color_space(&nikon_raw(Some(1), exif_r03, false)), Some(PreviewColorSpace::AdobeRgb));
+        // EXIF says Uncalibrated without R03, which decides nothing: the note does.
+        let raw = nikon_raw(Some(2), |_| vec![(tag::COLOR_SPACE, Val::Short(vec![0xFFFF]))], false);
+        assert_eq!(embedded_preview_color_space(&raw), Some(PreviewColorSpace::AdobeRgb));
+    }
+
+    /// Only a Nikon maker note is read, and not for a DNG, whose previews are the converter's.
+    #[test]
+    fn only_a_nikon_maker_note_of_a_non_dng_is_read() {
+        let tags = || vec![(NIKON_COLOR_SPACE, Val::Short(vec![2]))];
+        assert_eq!(embedded_preview_color_space(&raw_with_note(maker_note(NIKON, tags(), false), |_| vec![], false)), Some(PreviewColorSpace::AdobeRgb));
+        assert_eq!(embedded_preview_color_space(&raw_with_note(maker_note(NIKON, tags(), false), |_| vec![], true)), None);
+        for header in [&b"OLYMPUS\0II\x03\0"[..], b"SONY DSC \0\0\0", b"Nikon", b""] {
+            assert_eq!(embedded_preview_color_space(&raw_with_note(maker_note(header, tags(), false), |_| vec![], false)), None, "{header:?}");
+        }
+    }
+
+    /// A maker note that is cut short or points outside the file states nothing, and never panics.
+    #[test]
+    fn a_damaged_nikon_maker_note_states_nothing() {
+        let good = maker_note(NIKON, vec![(NIKON_COLOR_SPACE, Val::Short(vec![2]))], false);
+        assert_eq!(embedded_preview_color_space(&raw_with_note(good.clone(), |_| vec![], false)), Some(PreviewColorSpace::AdobeRgb));
+        for len in 0..good.len() {
+            let _ = embedded_preview_color_space(&raw_with_note(good[..len].to_vec(), |_| vec![], false));
+        }
+        // the embedded TIFF's first-IFD offset (bytes 14..18 of the note) points outside the file
+        let mut wild = good.clone();
+        wild[14..18].copy_from_slice(&[0xFF; 4]);
+        assert_eq!(embedded_preview_color_space(&raw_with_note(wild, |_| vec![], false)), None);
     }
 }

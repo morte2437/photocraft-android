@@ -15,6 +15,10 @@
 # Product and technology names (PhotoCraft, ArtCraft, OpenType, CMYK, Lab ...) stay in Latin
 # letters; the trailing "…" of dialog commands is kept.
 
+# Layer Mask Display Options (the layer mask rubylith's colour and opacity)
+	Mask Options…	マスクオプション…
+	Layer Mask Display Options…	レイヤーマスクの表示オプション…
+
 # Channel Options and New Spot Channel (#3761)
 	Channel Color	チャンネルカラー
 	Color Indicates:	着色表示:
@@ -328,6 +332,7 @@
 	Blending Options…	レイヤー効果…
 	Bevel & Emboss…	ベベルとエンボス…
 	Use Global Light	グローバルライトを使用
+	Overprint	オーバープリント
 	Inner Shadow…	シャドウ (内側)…
 	Inner Glow…	光彩 (内側)…
 	Satin…	サテン…
@@ -811,6 +816,7 @@
 	Split Warp Vertically	ワープを垂直方向に分割
 	Statistics…	統計情報…
 	Refine Strokes	調整ストローク
+	Edits	編集
 @plural	{n} item|{n} items	{n} 件
 	Auto	自動
 
@@ -1092,7 +1098,7 @@
 	Done	完了
 	Dots	ドット
 	Drag a rectangle around the object	オブジェクトを囲む矩形をドラッグ
-	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click to delete.	画像上をドラッグして制約を追加。Shift で水平/垂直、右クリックで削除。
+	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click a constraint to change or delete it.	画像上をドラッグして制約を追加。Shift で水平/垂直、制約を右クリックで変更・削除。
 	Drag to move the active shape's path or the Work Path	ドラッグして、アクティブなシェイプのパスまたは作業用パスを移動
 	Click: select anchor · Drag: move anchor, handle or segment · {shift}-click: add · {alt}-click: whole subpath	クリック: アンカーポイントを選択 · ドラッグ: ポイント、ハンドル、セグメントを移動 · {shift}+クリック: 追加 · {alt}+クリック: サブパス全体
 	Draw with the Pen tool (P) or make a work path from a selection.	ペンツール(P)で描くか、選択範囲から作業用パスを作成します。
@@ -1334,6 +1340,8 @@
 	Override Pressure	筆圧を上書き
 	Override Rotation	回転を上書き
 	Override Tilt	傾きを上書き
+	Override Tilt X	傾き X を上書き
+	Override Tilt Y	傾き Y を上書き
 	PRESET DETAILS	プリセットの詳細
 	PSD	PSD
 	Paint Overlay	ペイントオーバーレイ
@@ -1485,6 +1493,7 @@
 	Set shape fill type	シェイプの塗りの種類を設定
 	Set shape stroke type	シェイプの線の種類を設定
 	Set the text color	文字色を設定
+	Create warped text	ワープテキストを作成
 	Shadows	シャドウ
 	Shape:	シェイプ:
 	Sharpening	シャープ
@@ -1991,6 +2000,7 @@
 	Quick export format	クイック書き出しの形式
 	Quick export location	クイック書き出しの保存先
 	Recent file count	最近使ったファイルの数
+	LUT folder	LUT フォルダー
 	Recent files	最近使ったファイル
 	Recent fonts	最近使ったフォント
 	Recover on launch	起動時に復元
@@ -2153,6 +2163,11 @@
 	Mixer Brush Tool	混合ブラシツール
 	Color Replacement Tool	色の置き換えツール
 	Wet	ウェット
+	Current Brush Load	現在のブラシの絵の具
+	Load Brush	ブラシに補充
+	Clean Brush	ブラシを洗浄
+	Load the brush after each stroke	ストロークごとにブラシに補充
+	Clean the brush after each stroke	ストロークごとにブラシを洗浄
 	Mix	混合
 	Wetness Jitter	ウェットのジッター
 	Mix Jitter	混合のジッター
@@ -2228,6 +2243,8 @@
 	GPU acceleration could not continue. Your documents are unchanged.	GPU アクセラレーションを継続できませんでした。ドキュメントは変更されていません。
 	PhotoCraft is using the CPU image compositor. The window may still use your graphics adapter.	PhotoCraft は CPU で画像を合成しています。ウィンドウは引き続きグラフィックスアダプターを使用する場合があります。
 	Retry GPU requires a restart. Save your work first.	GPU の再試行には再起動が必要です。先に作業を保存してください。
+	Retry GPU tries the graphics processor again now.	GPU を再試行すると、すぐにグラフィックプロセッサーをもう一度試します。
+	GPU acceleration resumed.	GPU アクセラレーションを再開しました。
 	Keep Using CPU	CPU を使い続ける
 	Retry GPU	GPU を再試行
 	Advanced	詳細設定
@@ -2281,6 +2298,11 @@ cameraRaw	Color	カラー
 	Content-Aware Move Tool	コンテンツに応じた移動ツール
 	TIFF Options	TIFF オプション
 	Targa Options	Targa オプション
+	JPEG Options	JPEG オプション
+	Image Options	画像オプション
+	Format Options	形式オプション
+	Baseline ("Standard")	ベースライン（標準）
+	Baseline Optimized	ベースライン（最適化）
 	24 bits/pixel	24 ビット/ピクセル
 	32 bits/pixel	32 ビット/ピクセル
 	Including layers will increase file size.	レイヤーを含めるとファイルサイズが大きくなります。
@@ -2871,6 +2893,7 @@ fontWeight	Italic	斜体
 	Duplicate Layer Comp	レイヤーカンプを複製
 	Duplicate Layers	レイヤーを複製
 	Duplicate Path	パスを複製
+	Rename Path…	パス名を変更…
 	Dust & Scratches	ダスト&スクラッチ
 	EXIF	EXIF
 	Export As	書き出し形式を指定
@@ -3042,6 +3065,8 @@ fontWeight	Italic	斜体
 	Cooling80	寒色フィルター (80)
 	Cooling82	寒色フィルター (82)
 	Copyright Status	著作権の状態
+	Copyright Notice	著作権表示
+	Document Title	ドキュメントタイトル
 	Copyrighted	著作権あり
 	Corners	角
 	Correct C A	色収差を補正
@@ -3662,6 +3687,32 @@ cameraData	Lens	レンズ
 	Mirror	ミラー
 	Output Settings	出力設定
 	Output To	出力先
+
+	Animation Options	アニメーションオプション
+	Entire Document	ドキュメント全体
+	Filter Options	フィルターオプション
+	Layer Bounds	レイヤーの境界
+	Layers Panel Options	レイヤーパネルオプション
+	New Artboard…	新規アートボード…
+	New Group…	新規グループ…
+	Prevent Auto-Nesting	自動的な入れ子を防ぐ
+	Show Layers	レイヤーを表示
+	Thumbnail Contents	サムネールの内容
+	Thumbnail Size	サムネールのサイズ
+	Use Default Masks on Fill Layers	塗りつぶしレイヤーにデフォルトのマスクを使用
+	Expand New Effects	新しい効果を展開
+	Add “copy” to Copied Layers and Groups	コピーしたレイヤーとグループの名前に「コピー」を追加
+	Preview on canvas when reordering layers	レイヤーの並べ替え時にカンバスでプレビュー
+	Show layer mask badges	レイヤーマスクのバッジを表示
+
+# Smart Filter editors
+	Blending Options ({filter})	描画オプション ({filter})
+	Hide the layer's effects and Smart Filters  ({key}-click: all layers)	レイヤー効果とスマートフィルターを非表示  ({key}+クリック: すべてのレイヤー)
+	Show the layer's effects and Smart Filters  ({key}-click: all layers)	レイヤー効果とスマートフィルターを表示  ({key}+クリック: すべてのレイヤー)
+	Wait for the current job to finish.	現在の処理が完了するまでお待ちください。
+	The document or Smart Filter changed. Reopen its dialog.	ドキュメントまたはスマートフィルターが変更されました。ダイアログを開き直してください。
+	Opacity must be between 0% and 100%.	不透明度は0%から100%の範囲で指定してください。
+	Dissolve is approximated: it blends without Photoshop's dither.	ディザ合成は近似です。Photoshop のディザなしでブレンドします。
 	Loading fonts…	フォントを読み込み中…
 	Response curve	応答カーブ
 	Simulate Pressure	筆圧をシミュレート
@@ -3705,6 +3756,10 @@ curves	Smooth	スムーズ
 	Click to place · Alt-click or drag off-canvas to remove	クリックで配置 · Alt キーを押しながらクリック、またはカンバス外へドラッグで削除
 	No document open	ドキュメントが開かれていません
 	{n} of {max} sample points	{max} 個中 {n} 個のサンプルポイント
+
+# History panel menu (#2966)
+	New Snapshot…	新規スナップショット…
+	History Options…	ヒストリーオプション…
 # Print dialog (#2697)
 	Emulsion Down	乳剤面を下
 	Functions	機能
@@ -3739,14 +3794,24 @@ curves	Smooth	スムーズ
 	Light Gray	ライトグレー
 	Object Finder	オブジェクトファインダー
 	No object found there — drag a rectangle around it	そこにオブジェクトが見つかりません — 周囲に矩形をドラッグしてください
+	The active layer has no pixels here — turn on Sample All Layers or select a layer with pixels	アクティブなレイヤーのここにはピクセルがありません — 「すべてのレイヤーをサンプル」をオンにするか、ピクセルのあるレイヤーを選択してください
 	Remove after each stroke	ストロークごとに削除
 	Apply the removal ({key})	削除を適用 ({key})
 	Strokes to remove: {n} (Enter applies, Esc cancels)	削除するストローク: {n}（Enter で適用、Esc で取り消し）
+	Load Contours…	カーブを読み込み…
+	Replace Contours…	カーブを置き換え…
+	Save Contours…	カーブを保存…
+	Delete Contour	カーブを削除
+	Loaded contours from {file}	{file} からカーブを読み込みました
+	Saved contours to {file}	カーブを {file} に保存しました
 	Show home recent files	ホーム画面に最近使ったファイルを表示
 
 # Actions panel: Load/Save Actions (.atn) and kept Photoshop steps
 	Load Actions…	アクションを読み込み…
 	Save Actions…	アクションを保存…
+	New Action…	新規アクション…
+	Start Recording	記録を開始
+	Stop Recording	記録を停止
 	{name} (Photoshop)	{name}（Photoshop）
 	{message} ({note})	{message}（{note}）
 @plural	Loaded {n} action from {file}|Loaded {n} actions from {file}	{file} からアクション {n} 個を読み込みました
@@ -3848,6 +3913,16 @@ curves	Smooth	スムーズ
 	Reset All Locked Settings	ロックされた設定をすべて初期化
 	Copy Texture to Other Tools	テクスチャを他のツールにコピー
 	ICO is limited to 256 × 256 pixels	ICO は 256 × 256 ピクセルまでです
+# History panel › History Brush source (#2966)
+	Paints from the History panel's source state	ヒストリーパネルのソース状態からペイントします
+	Sets the source for the history brush	ヒストリーブラシのソースを設定します
+# Bevel & Emboss shading controls.
+	Highlight Mode	ハイライトモード
+	Highlight Color	ハイライトカラー
+	Highlight Opacity	ハイライト不透明度
+	Shadow Mode	シャドウモード
+	Shadow Color	シャドウカラー
+	Shadow Opacity	シャドウ不透明度
 # Embedded Profile Mismatch: profile names beside the choices, Remember this choice
 	Use the embedded profile ({profile})	埋め込みプロファイルを使用 ({profile})
 	Convert to the working space ({profile})	作業用スペースに変換 ({profile})
@@ -3863,9 +3938,13 @@ curves	Smooth	スムーズ
 	Chisel Hard	チゼルハード
 	Chisel Soft	チゼルソフト
 	Open color-less EXR as ACEScg	色空間のないEXRをACEScgとして開く
+	Do not append "copy" to filename when saving a copy	コピーを保存するときにファイル名に「copy」を付けない
 # View › Guides › right-click a guide
 	Edit Selected Guides	選択したガイドを編集
 	Clear Selected Guides	選択したガイドを消去
+	Bicubic Automatic	バイキュービック法 (自動)
+	Bicubic Smoother	バイキュービック法 - 滑らか
+	Bicubic Sharper	バイキュービック法 - シャープ
 	Pasting from other apps is unavailable	他のアプリからの貼り付けは利用できません
 	PhotoCraft can't reach the system clipboard in this session. On Wayland, a Flatpak sandbox hides the protocol that images from other apps are read through.	このセッションでは PhotoCraft がシステムのクリップボードにアクセスできません。Wayland では、Flatpak のサンドボックスが他のアプリの画像を読み取るためのプロトコルを隠します。
 	To paste from other apps, start PhotoCraft under XWayland: `{command}`	他のアプリから貼り付けるには、XWayland 上で PhotoCraft を起動してください: `{command}`
@@ -3885,6 +3964,17 @@ curves	Smooth	スムーズ
 	set name	セット名
 	{set} (modified)	{set}（変更あり）
 	Show file name in title	タイトルにファイル名を表示
+
+# Image › Mode › Bitmap (#5559)
+	50% Threshold	50% しきい値
+	Pattern Dither	パターンディザ
+	Diffusion Dither	拡散ディザ
+	Halftone Screen	ハーフトーンスクリーン
+	Custom Pattern	カスタムパターン
+	Frequency:	線数:
+	Lines/Inch	線/インチ
+	Lines/Centimeter	線/センチメートル
+	Ellipse	楕円
 	Accept and Go to Conflict	適用して競合へ移動
 	Changes undone.	変更を取り消しました。
 	Choose a new shortcut for this command, or leave it without one.	このコマンドに新しいショートカットを選択するか、なしのままにしてください。
@@ -3902,9 +3992,11 @@ curves	Smooth	スムーズ
 	GPU Memory Full	GPU メモリ不足
 	The layers need {needed} of GPU memory and may hold {budget}, so edits that redraw the whole document do it on the CPU. Click to set GPU Memory.	レイヤーには {needed} の GPU メモリが必要ですが、使えるのは {budget} のため、ドキュメント全体を再描画する編集は CPU で行われます。クリックして GPU メモリを設定します。
 	GPU memory budget: {budget}	GPU メモリ予算: {budget}
+	Graphics memory: {size}	グラフィックメモリ: {size}
 	This document's layers: {needed} of {budget} for layers	このドキュメントのレイヤー: レイヤー用 {budget} のうち {needed}
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	このドキュメントのレイヤーには {needed} が必要ですが、使えるのは {budget} です: ドキュメント全体の再描画は CPU で行われます
 	GPU Memory (MB, 0 = Automatic)	GPU メモリ（MB、0 = 自動）
+	{path}: the path is not valid Unicode; save under another name.	{path}: パスが有効な Unicode ではありません。別の名前で保存してください。
 	Replace	置き換え
 	{name} was changed by another app after it was opened or saved here.	{name} は、ここで開くか保存した後に別のアプリで変更されました。
 	Replace it with this document, or cancel and use File › Save As to keep both.	この書類で置き換えるか、キャンセルしてファイル › 名前を付けて保存で両方を残してください。
@@ -3912,6 +4004,22 @@ curves	Smooth	スムーズ
 	Increase Brush Size	ブラシサイズを大きく
 	Decrease Brush Hardness	ブラシの硬さを下げる
 	Increase Brush Hardness	ブラシの硬さを上げる
+	Demosaic	デモザイク
+	How the camera's colour filter mosaic is filled in. It is applied when the file opens; the preview shows the method it was opened with.	カメラのカラーフィルター配列をどのように補間するか。ファイルを開くときに適用されます。プレビューは開いたときの方式で表示されます。
+	AHD (adaptive homogeneity)	AHD（適応的均質性）
+	Malvar–He–Cutler	Malvar–He–Cutler
+	Hirakawa–Parks: the cleanest edges and the least colour fringing, the slowest.	Hirakawa–Parks：エッジが最もきれいで色にじみが最も少ないが、最も遅い。
+	Gradient-corrected interpolation: sharp and fast, with some colour fringing on fine detail.	勾配補正補間：シャープで高速だが、細部に多少の色にじみが出る。
+	The fastest and the softest, with colour fringing on fine detail.	最も高速で最も柔らかく、細部に色にじみが出る。
+	“{name}” already exists. Replace it?	「{name}」は既に存在します。置き換えますか？
+	The name in the save dialog was “{name}”.	保存ダイアログで指定した名前は「{name}」でした。
+	Move Up	上へ移動
+	Move Down	下へ移動
+	Previous Brush	前のブラシ
+	Next Brush	次のブラシ
+	First Brush	最初のブラシ
+	Last Brush	最後のブラシ
+	Preview size	Preview size
 	Memory Usage	メモリ使用量
 	Per-document RAM limit (MB)	ドキュメントあたりの RAM 上限 (MB)
 	Installed RAM: {ram} MB; this limit: {percent}%	搭載 RAM: {ram} MB、この上限: {percent}%
@@ -3921,3 +4029,34 @@ curves	Smooth	スムーズ
 	Use	使用
 	In Front	前面
 	Behind	背面
+
+# DDS Options (#1327)
+	DDS Options	DDS オプション
+	Compression	圧縮
+	Generate Mipmaps	ミップマップを生成
+
+# Color Table (.act) dialog
+	There is no color table to save.	保存するカラーテーブルがありません。
+@plural	Saved {n} color to {file}|Saved {n} colors to {file}	{file} に {n} 色を保存しました
+
+# Graphics Adapter preference (#1885)
+	GPU adapter	GPU アダプター
+# Actions: a step dialog holds a suspended recording (#7365)
+	Confirm or cancel the open action step dialog first	先に開いているアクションのステップのダイアログを確定またはキャンセルしてください
+	Pro Medium Gray	プロ(中間グレー)
+	Solarized	Solarized
+	Breeze	Breeze
+	Pro Light Gray	プロ(ライトグレー)
+	Pro Light	プロ(ライト)
+	Resize Windows to Fit	ウィンドウサイズを合わせる
+
+	EXR	EXR
+
+# Paragraph direction (TYPE-218-2)
+	Automatic paragraph direction	段落の方向を自動判別
+	Left-to-right paragraph direction	左から右への段落方向
+	Right-to-left paragraph direction	右から左への段落方向
+	Not rendered: this adjustment ({key}) is kept as imported.	レンダリングされません: この調整（{key}）はインポートされたまま保持されます。
+
+# Print preview image (#8236)
+	Print preview image	Print preview image

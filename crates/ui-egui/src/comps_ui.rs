@@ -24,11 +24,58 @@ fn clear_warning_action(comp: u32) -> (&'static str, Value) {
     ("layerComp.updateWarnings", json!({"clear": true, "comp": comp}))
 }
 
+/// The comp whose name is being edited in place, kept in egui's temp memory under its row id.
+#[derive(Clone)]
+struct RenameComp {
+    text: String,
+    focused: bool,
+}
+
+/// The in-place name field of a comp. Enter, Tab or clicking elsewhere returns the new name to
+/// commit; Escape cancels and keeps the old name.
+fn rename_field(ui: &mut egui::Ui, id: egui::Id, rect: Rect) -> Option<String> {
+    let mut r = ui.data(|d| d.get_temp::<RenameComp>(id))?;
+    ui.data_mut(|d| d.remove::<RenameComp>(id));
+    let te = ui.put(rect, egui::TextEdit::singleline(&mut r.text).id(id).font(egui::FontId::proportional(12.0)));
+    if !r.focused {
+        te.request_focus();
+        // Like Photoshop, the whole name starts selected so typing replaces it.
+        if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), id) {
+            let all = egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(r.text.chars().count()));
+            state.cursor.set_char_range(Some(all));
+            state.store(ui.ctx(), id);
+        }
+        r.focused = true;
+        ui.data_mut(|d| d.insert_temp(id, r));
+        return None;
+    }
+    let (enter, tab, esc) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Tab), i.key_pressed(egui::Key::Escape)));
+    if esc {
+        None
+    } else if enter || tab || te.lost_focus() || !te.has_focus() {
+        Some(r.text)
+    } else {
+        ui.data_mut(|d| d.insert_temp(id, r));
+        None
+    }
+}
+
 fn run(app: &mut PhotocraftApp, id: &str, p: Value) {
     if let Err(e) = app.run(id, p) {
         app.ui.status = e;
         app.ui.status_error = true;
     }
+}
+
+#[derive(Clone, Copy)]
+struct DragComp {
+    document: photocraft_doc::DocId,
+    comp: u32,
+}
+
+fn drop_index(from: usize, target: usize, after: bool) -> usize {
+    let slot = target + usize::from(after);
+    if from < slot { slot - 1 } else { slot }
 }
 
 pub fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
@@ -77,8 +124,35 @@ pub fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                     .size(11.5),
             );
         }
-        for c in &doc.layer_comps {
-            let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::click());
+        for (index, c) in doc.layer_comps.iter().enumerate() {
+            let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::click_and_drag());
+            resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected == Some(c.id), &c.name));
+            resp.dnd_set_drag_payload(DragComp { document: doc.id, comp: c.id });
+            if let Some(source) = resp.dnd_hover_payload::<DragComp>()
+                && source.document == doc.id
+                && let Some(from) = doc.layer_comps.iter().position(|c| c.id == source.comp)
+            {
+                let after = ui.input(|i| i.pointer.hover_pos().is_some_and(|p| p.y >= rect.center().y));
+                let to = drop_index(from, index, after);
+                let y = if after { rect.bottom() } else { rect.top() };
+                ui.painter().line_segment([pos2(rect.left(), y), pos2(rect.right(), y)], Stroke::new(2.0, t.accent));
+                if resp.dnd_release_payload::<DragComp>().is_some() && from != to {
+                    select = Some(source.comp);
+                    action = Some(("layerComp.reorder", json!({"comp":source.comp, "index":to})));
+                }
+            }
+            resp.context_menu(|ui| {
+                if ui.add_enabled(index > 0, egui::Button::new(tl!("Move Up"))).clicked() {
+                    action = Some(("layerComp.reorder", json!({"comp":c.id, "index":index.saturating_sub(1)})));
+                    select = Some(c.id);
+                    ui.close();
+                }
+                if ui.add_enabled(index + 1 < doc.layer_comps.len(), egui::Button::new(tl!("Move Down"))).clicked() {
+                    action = Some(("layerComp.reorder", json!({"comp":c.id, "index":index + 1})));
+                    select = Some(c.id);
+                    ui.close();
+                }
+            });
             if selected == Some(c.id) {
                 ui.painter().rect_filled(rect, 0.0, t.row_selected);
             } else if resp.hovered() {
@@ -137,7 +211,20 @@ pub fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             }
             let galley_w = (x - name_x).max(20.0);
             let name = ui.painter().layout(c.name.clone(), egui::FontId::proportional(12.0), t.text, galley_w);
-            ui.painter().galley(pos2(name_x, rect.center().y - name.size().y / 2.0), name, t.text);
+            let name_rect = Rect::from_min_size(pos2(name_x, rect.center().y - name.size().y / 2.0), name.size());
+            // Comp ids restart in every document, so the pending name is keyed by the document too.
+            let rename_id = egui::Id::new(("comp-rename", doc.id.0, c.id));
+            if ui.data(|d| d.get_temp::<RenameComp>(rename_id)).is_some() {
+                let field = Rect::from_min_max(pos2(name_x - 3.0, rect.top() + 3.0), pos2((x + 10.0).max(name_x + 60.0), rect.bottom() - 3.0));
+                if let Some(text) = rename_field(ui, rename_id, field) {
+                    let text = text.trim();
+                    if !text.is_empty() && text != c.name {
+                        action = Some(("layerComp.rename", json!({"comp": c.id, "name": text})));
+                    }
+                }
+            } else {
+                ui.painter().galley(name_rect.min, name, t.text);
+            }
             if !c.comment.is_empty() && resp.hovered() {
                 resp.clone().on_hover_text(&c.comment);
             }
@@ -148,7 +235,12 @@ pub fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 }
             }
             if resp.double_clicked() && !toggle_hit {
-                action = Some(("layerComp.apply", json!({"comp": c.id})));
+                // Photoshop renames in place when the name itself is double-clicked.
+                if resp.interact_pointer_pos().is_some_and(|p| name_rect.expand2(vec2(4.0, 13.0)).contains(p)) {
+                    ui.data_mut(|d| d.insert_temp(rename_id, RenameComp { text: c.name.clone(), focused: false }));
+                } else {
+                    action = Some(("layerComp.apply", json!({"comp": c.id})));
+                }
             }
             ui.painter().line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(1.0, t.separator.gamma_multiply(0.5)));
         }
@@ -198,6 +290,48 @@ mod tests {
     use photocraft_engine::Session;
 
     #[test]
+    fn dragging_a_comp_row_reorders_without_applying_it() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        let mut app = PhotocraftApp::new(Session::new(), crate::Services::default());
+        app.run("file.new", json!({"width":16,"height":16})).unwrap();
+        for name in ["First", "Second", "Third"] {
+            app.run("layerComp.new", json!({"name":name})).unwrap();
+        }
+        let applied = app.session.active().unwrap().doc.last_applied_comp;
+        let first = app.session.active().unwrap().doc.layer_comps[0].id;
+        let mut h = Harness::builder().with_size(vec2(360.0, 300.0)).build_ui_state(|ui, app| panel(app, ui), app);
+        h.run_steps(3);
+        let from = h.get_by_label("First").rect().center();
+        let row = h.get_by_label("Third").rect();
+        let to = pos2(row.center().x, row.bottom() - 2.0);
+        h.event(egui::Event::PointerMoved(from));
+        h.run_steps(1);
+        h.event(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+        h.run_steps(1);
+        h.event(egui::Event::PointerMoved(from + vec2(10.0, 0.0)));
+        h.run_steps(2);
+        h.event(egui::Event::PointerMoved(to));
+        h.run_steps(2);
+        h.event(egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+        h.run_steps(3);
+        let app = h.state();
+        let doc = &app.session.active().unwrap().doc;
+        assert_eq!(doc.layer_comps.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["Second", "Third", "First"]);
+        assert_eq!(doc.last_applied_comp, applied);
+        assert_eq!(app.ui.layer_comp_selected, Some(first));
+    }
+
+    #[test]
+    fn comp_drop_slots_account_for_the_removed_source_row() {
+        assert_eq!(drop_index(0, 2, false), 1);
+        assert_eq!(drop_index(0, 2, true), 2);
+        assert_eq!(drop_index(2, 0, false), 0);
+        assert_eq!(drop_index(2, 0, true), 1);
+        assert_eq!(drop_index(1, 1, false), 1);
+        assert_eq!(drop_index(1, 1, true), 1);
+    }
+
+    #[test]
     fn warning_icon_clears_only_its_own_comp() {
         // Regression for #4197.
         let mut s = Session::new();
@@ -212,5 +346,96 @@ mod tests {
         let doc = &s.active().unwrap().doc;
         assert!(doc.comp(c1).unwrap().missing_layers(doc).is_empty());
         assert_eq!(doc.comp(c2).unwrap().missing_layers(doc).iter().map(|l| l.0).collect::<Vec<_>>(), vec![layer]);
+    }
+
+    #[test]
+    fn double_clicking_a_comp_name_renames_it_in_place() {
+        // #6496.
+        use egui_kittest::{
+            Harness,
+            kittest::{NodeT, Queryable},
+        };
+        let mut app = PhotocraftApp::new(Session::new(), crate::Services::default());
+        app.run("file.new", json!({"width": 16, "height": 16})).unwrap();
+        let first = app.run("layerComp.new", json!({"name": "Comp number one"})).unwrap()["comp"].as_u64().unwrap() as u32;
+        let second = app.run("layerComp.new", json!({"name": "Two"})).unwrap()["comp"].as_u64().unwrap() as u32;
+        // 60 fps steps, so two clicks a frame apart count as a double-click.
+        let mut h = Harness::builder().with_size(vec2(320.0, 260.0)).with_step_dt(1.0 / 60.0).build_ui_state(|ui, app| panel(app, ui), app);
+        h.run_steps(3);
+        // The footer starts at the panel's left edge; the first comp is the second 26 px row. The
+        // name starts at left + 30 and is as wide as its text, so the click stays near its start
+        // to hit the short "Hero" too.
+        let left = h.get_by_label("Apply previous selected layer comp").rect().left();
+        let (name, rest) = (pos2(left + 35.0, left + 39.0), pos2(left + 190.0, left + 39.0));
+        let double_click = |h: &mut Harness<'_, PhotocraftApp>, pos: egui::Pos2| {
+            h.event(egui::Event::PointerMoved(pos));
+            // Wait out the double-click window of the previous attempt.
+            h.run_steps(30);
+            for pressed in [true, false, true, false] {
+                h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE });
+                h.step();
+            }
+            h.run_steps(3);
+        };
+        let type_name = |h: &mut Harness<'_, PhotocraftApp>, text: &str, key: egui::Key| {
+            double_click(h, name);
+            h.event(egui::Event::Text(text.into()));
+            h.run_steps(1);
+            let fields: Vec<_> = h.query_all_by_role(egui::accesskit::Role::TextInput).map(|n| n.accesskit_node().value()).collect();
+            assert_eq!(fields, vec![Some(text.to_string())], "the name field opened and holds {text:?}");
+            h.key_press(key);
+            h.run_steps(3);
+        };
+        let comp_name = |h: &Harness<'_, PhotocraftApp>| h.state().session.active().unwrap().doc.comp(first).unwrap().name.clone();
+        let applied = |h: &Harness<'_, PhotocraftApp>| h.state().session.active().unwrap().doc.last_applied_comp;
+        // Whitespace keeps the old name.
+        type_name(&mut h, "  ", egui::Key::Enter);
+        assert_eq!(comp_name(&h), "Comp number one");
+        type_name(&mut h, "Hero", egui::Key::Enter);
+        assert_eq!(comp_name(&h), "Hero");
+        assert_eq!(applied(&h), Some(second), "renaming must not apply the comp");
+        type_name(&mut h, "Lost", egui::Key::Escape);
+        assert_eq!(comp_name(&h), "Hero", "Escape cancels");
+        assert_eq!(applied(&h), Some(second), "Escape applies nothing");
+        // Double-clicking the rest of the row still applies the comp.
+        double_click(&mut h, rest);
+        assert_eq!(applied(&h), Some(first));
+        assert_eq!(comp_name(&h), "Hero");
+    }
+
+    #[test]
+    fn a_rename_left_open_does_not_carry_over_to_another_document() {
+        // Comp ids restart in every document, so the pending name must stay with its own document.
+        use egui_kittest::{
+            Harness,
+            kittest::{NodeT, Queryable},
+        };
+        let mut app = PhotocraftApp::new(Session::new(), crate::Services::default());
+        app.run("file.new", json!({"width": 16, "height": 16})).unwrap();
+        let a = app.run("layerComp.new", json!({"name": "Alpha comp"})).unwrap()["comp"].as_u64().unwrap() as u32;
+        app.run("file.new", json!({"width": 16, "height": 16})).unwrap();
+        let b = app.run("layerComp.new", json!({"name": "Beta comp"})).unwrap()["comp"].as_u64().unwrap() as u32;
+        assert_eq!(a, b, "the two documents' comps share an id");
+        app.session.set_active(0);
+        let mut h = Harness::builder().with_size(vec2(320.0, 260.0)).with_step_dt(1.0 / 60.0).build_ui_state(|ui, app| panel(app, ui), app);
+        h.run_steps(3);
+        let left = h.get_by_label("Apply previous selected layer comp").rect().left();
+        let name = pos2(left + 35.0, left + 39.0);
+        h.event(egui::Event::PointerMoved(name));
+        h.run_steps(3);
+        for pressed in [true, false, true, false] {
+            h.event(egui::Event::PointerButton { pos: name, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE });
+            h.step();
+        }
+        h.run_steps(3);
+        h.event(egui::Event::Text("Leak".into()));
+        h.run_steps(1);
+        let fields: Vec<_> = h.query_all_by_role(egui::accesskit::Role::TextInput).map(|n| n.accesskit_node().value()).collect();
+        assert_eq!(fields, vec![Some("Leak".to_string())], "the name field opened in the first document");
+        h.state_mut().session.set_active(1);
+        h.run_steps(3);
+        h.key_press(egui::Key::Enter);
+        h.run_steps(3);
+        assert_eq!(h.state().session.active().unwrap().doc.comp(b).unwrap().name, "Beta comp");
     }
 }

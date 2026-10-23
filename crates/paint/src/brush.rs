@@ -410,9 +410,9 @@ pub struct SectionLocks {
     pub protect_texture: bool,
 }
 
-/// Brush Pose: stylus values used instead of (override) or for missing device data.
+/// Brush Pose: fixed values used for the selected stylus-component overrides.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
+#[serde(from = "PoseWire", into = "PoseWire")]
 pub struct Pose {
     pub enabled: bool,
     /// Degrees, -90..90 (W3C Pointer Events convention).
@@ -422,7 +422,8 @@ pub struct Pose {
     pub rotation: f32,
     /// 0..1.
     pub pressure: f32,
-    pub override_tilt: bool,
+    pub override_tilt_x: bool,
+    pub override_tilt_y: bool,
     pub override_rotation: bool,
     pub override_pressure: bool,
 }
@@ -435,9 +436,84 @@ impl Default for Pose {
             tilt_y: 0.0,
             rotation: 0.0,
             pressure: 1.0,
-            override_tilt: false,
+            override_tilt_x: false,
+            override_tilt_y: false,
             override_rotation: false,
             override_pressure: false,
+        }
+    }
+}
+
+// Old presets used one combined flag. Keep that JSON input and readback while the
+// model has only the two independent sources of truth. Explicit axis fields win.
+#[derive(Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct PoseWire {
+    enabled: bool,
+    tilt_x: f32,
+    tilt_y: f32,
+    rotation: f32,
+    pressure: f32,
+    override_tilt: bool,
+    #[serde(default, deserialize_with = "pose_axis_bool")]
+    override_tilt_x: Option<bool>,
+    #[serde(default, deserialize_with = "pose_axis_bool")]
+    override_tilt_y: Option<bool>,
+    override_rotation: bool,
+    override_pressure: bool,
+}
+
+// Missing axis keys migrate from the old flag; a present null/non-boolean is an error.
+fn pose_axis_bool<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<bool>, D::Error> {
+    bool::deserialize(d).map(Some)
+}
+
+impl Default for PoseWire {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            tilt_x: 0.0,
+            tilt_y: 0.0,
+            rotation: 0.0,
+            pressure: 1.0,
+            override_tilt: false,
+            override_tilt_x: None,
+            override_tilt_y: None,
+            override_rotation: false,
+            override_pressure: false,
+        }
+    }
+}
+
+impl From<PoseWire> for Pose {
+    fn from(p: PoseWire) -> Self {
+        Self {
+            enabled: p.enabled,
+            tilt_x: p.tilt_x,
+            tilt_y: p.tilt_y,
+            rotation: p.rotation,
+            pressure: p.pressure,
+            override_tilt_x: p.override_tilt_x.unwrap_or(p.override_tilt),
+            override_tilt_y: p.override_tilt_y.unwrap_or(p.override_tilt),
+            override_rotation: p.override_rotation,
+            override_pressure: p.override_pressure,
+        }
+    }
+}
+
+impl From<Pose> for PoseWire {
+    fn from(p: Pose) -> Self {
+        Self {
+            enabled: p.enabled,
+            tilt_x: p.tilt_x,
+            tilt_y: p.tilt_y,
+            rotation: p.rotation,
+            pressure: p.pressure,
+            override_tilt: p.override_tilt_x && p.override_tilt_y,
+            override_tilt_x: Some(p.override_tilt_x),
+            override_tilt_y: Some(p.override_tilt_y),
+            override_rotation: p.override_rotation,
+            override_pressure: p.override_pressure,
         }
     }
 }

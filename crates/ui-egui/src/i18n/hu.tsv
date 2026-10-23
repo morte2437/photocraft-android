@@ -1114,6 +1114,8 @@
 	Height:	Magasság:
 	Hide Auto Slices	Automatikus szeletek elrejtése
 	History Brush	Előzményecset
+	Paints from the History panel's source state	Az Előzmények panel forrásállapotából fest
+	Sets the source for the history brush	Beállítja az előzményecset forrását
 	Horizontal scale	Vízszintes méretarány
 	Horizontal type	Vízszintes szöveg
 	Hue Jitter	Színárnyalat ingadozása
@@ -1218,6 +1220,8 @@
 	Override Pressure	Nyomás felülbírálása
 	Override Rotation	Elforgatás felülbírálása
 	Override Tilt	Dőlés felülbírálása
+	Override Tilt X	X dőlés felülbírálása
+	Override Tilt Y	Y dőlés felülbírálása
 	Paints from the document's opening state	A dokumentum megnyitáskori állapotából fest
 	Paper	Papír
 	Paragraph	Bekezdés
@@ -1304,6 +1308,7 @@
 	Set painting symmetry options	Festési szimmetria beállításai
 	Set the overlay options for the Crop tool	A Körbevágás eszköz fedvénybeállításai
 	Set the text color	Szövegszín beállítása
+	Create warped text	Torzított szöveg létrehozása
 	Settings:	Beállítások:
 	Shape Dynamics	Alakdinamika
 	Sharpen Tool	Élesítő
@@ -1407,6 +1412,11 @@
 	Warp:	Hajlítás:
 	Weight	Vastagság
 	Wet	Nedvesség
+	Current Brush Load	Az ecset jelenlegi töltete
+	Load Brush	Ecset feltöltése
+	Clean Brush	Ecset tisztítása
+	Load the brush after each stroke	Az ecset feltöltése minden ecsetvonás után
+	Clean the brush after each stroke	Az ecset tisztítása minden ecsetvonás után
 	Wet Edges	Nedves szélek
 	Wetness Jitter	Nedvesség ingadozása
 	Width	Szélesség
@@ -1609,6 +1619,7 @@ fontWeight	Thin	Hajszálvékony
 	Overlay	Átfedés
 	Overlay Color	Átfedés színe
 	Overlay Opacity	Átfedés átlátszatlansága
+	Overprint	Felülnyomás
 	Paint over hair or fur on the image; Alt paints the other mode	Fesd át a hajat vagy a szőrzetet a képen; Alt lenyomásával a másik módban festesz
 	Pass Through	Áteresztés
 	Pattern Overlay	Mintázatfedés
@@ -1624,6 +1635,7 @@ fontWeight	Thin	Hajszálvékony
 	Refine	Finomítás
 	Refine Edge Brush (R)	Élfinomító ecset (R)
 	Refine Strokes	Finomító ecsetvonások
+	Edits	Szerkesztések
 	Reflect	Visszaverődés
 	Reflected	Tükrözött
 	Rename Channel…	Csatorna átnevezése…
@@ -2069,7 +2081,7 @@ navigator	Zoom	Nagyítás mértéke
 	Distortion	Torzítás
 	Dither	Árnyalatkeverés
 	Double Line	Kettős vonal
-	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click to delete.	Húzással kényszert adhatsz a képhez; Shift: vízszintes/függőleges; jobb kattintás: törlés.
+	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click a constraint to change or delete it.	Húzással kényszert adhatsz a képhez; Shift: vízszintes/függőleges; jobb kattintás egy kényszeren: módosítás vagy törlés.
 	Dry Brush	Száraz ecset
 	Dust & Scratches	Por és karcolások
 	Dynamic color sliders	Dinamikus színcsúszkák
@@ -2984,6 +2996,11 @@ cameraRaw	Yellow	Sárga
 	Table	Táblázat
 	Tabloid	Tabloid
 	Targa Options	Targa-beállítások
+	JPEG Options	JPEG-beállítások
+	Image Options	Képbeállítások
+	Format Options	Formátumbeállítások
+	Baseline ("Standard")	Alapvonalas („Szabványos”)
+	Baseline Optimized	Optimalizált alapvonalas
 	Target:	Cél:
 	Teal Orange	Kékeszöld-narancs
 	The document does not have an embedded colour profile. Working space: {working}.	A dokumentumnak nincs beágyazott színprofilja. Munkaszíntér: {working}.
@@ -3140,6 +3157,8 @@ cameraRaw	Yellow	Sárga
 	Convert to Profile	Átalakítás profilra
 	Convert to srgb	Átalakítás sRGB-re
 	Copyright Status	Szerzői jogi állapot
+	Copyright Notice	Szerzői jogi értesítés
+	Document Title	Dokumentum címe
 	Corner radius	Sarokkerekítés sugara
 	Correct C A	Kromatikus aberráció javítása
 	Correct Distortion	Torzítás javítása
@@ -3193,6 +3212,7 @@ cameraRaw	Yellow	Sárga
 	Drop an image or PSD anywhere to open it.	Húzz ide bárhová egy képet vagy PSD-fájlt a megnyitásához.
 	Duplicate Layer Comp	Rétegkompozíció kettőzése
 	Duplicate Path	Útvonal kettőzése
+	Rename Path…	Útvonal átnevezése…
 	Duplication	Kettőzés
 	East asian	Kelet-ázsiai
 	Edge Extension	Szélek kiterjesztése
@@ -3471,6 +3491,7 @@ cameraRaw	Yellow	Sárga
 	Random	Véletlenszerű
 	Rasterize svg groups deeper than	SVG-csoportok raszterizálása ennél mélyebb szinten
 	Recent file count	Legutóbbi fájlok száma
+	LUT folder	LUT-mappa
 	Recent files	Legutóbbi fájlok
 	Recent Files	Legutóbbi fájlok
 	Recent fonts	Legutóbbi betűtípusok
@@ -3499,6 +3520,8 @@ cameraRaw	Yellow	Sárga
 	Restore	Előző méret
 	Retry GPU	GPU újrapróbálása
 	Retry GPU requires a restart. Save your work first.	A GPU újrapróbálásához újraindítás kell. Előbb mentsd a munkádat.
+	Retry GPU tries the graphics processor again now.	A GPU újrapróbálása most újra megpróbálja a grafikus processzort.
+	GPU acceleration resumed.	A GPU-gyorsítás újra működik.
 	Rgb	RGB
 	Ridges	Hullámgerincek
 	Right	Jobbra
@@ -3869,6 +3892,8 @@ cameraRaw	Yellow	Sárga
 	New Layer from Brush	Új réteg ecsetből
 	New Path	Új útvonal
 	New Snapshot	Új pillanatkép
+	New Snapshot…	Új pillanatkép…
+	History Options…	Előzménybeállítások…
 	New Video Group	Új videócsoport
 	Newspaper	Újságpapír
 	No Layer Comps	Nincs rétegkompozíció
@@ -4017,6 +4042,12 @@ cameraRaw	Yellow	Sárga
 	The layer or its mask changed. Drag the mask onto the Trash again.	A réteg vagy a maszkja megváltozott. Húzd újra a maszkot a Kukába.
 	Transform On Drop	Átalakítás elengedéskor
 	Vanishing Point is not active	Az Enyészpont nem aktív
+	Load Contours…	Kontúrok betöltése…
+	Replace Contours…	Kontúrok cseréje…
+	Save Contours…	Kontúrok mentése…
+	Delete Contour	Kontúr törlése
+	Loaded contours from {file}	Kontúrok betöltve: {file}
+	Saved contours to {file}	Kontúrok mentve: {file}
 # Edit › Content-Aware Fill workspace
 	Excluded Area	Kizárt terület
 	Fill Settings	Kitöltési beállítások
@@ -4043,6 +4074,9 @@ cameraRaw	Yellow	Sárga
 # Actions panel: Load/Save Actions (.atn) and kept Photoshop steps
 	Load Actions…	Műveletek betöltése…
 	Save Actions…	Műveletek mentése…
+	New Action…	Új művelet…
+	Start Recording	Felvétel indítása
+	Stop Recording	Felvétel leállítása
 	{name} (Photoshop)	{name} (Photoshop)
 	{message} ({note})	{message} ({note})
 @plural	Loaded {n} action from {file}|Loaded {n} actions from {file}	{n} művelet betöltve. Forrás: {file}
@@ -4063,6 +4097,7 @@ cameraRaw	Yellow	Sárga
 @plural	{n} action|{n} actions	{n} művelet
 	Object Finder	Objektumkereső
 	No object found there — drag a rectangle around it	Ott nem található objektum – húzz köré egy téglalapot
+	The active layer has no pixels here — turn on Sample All Layers or select a layer with pixels	Az aktív rétegnek itt nincsenek képpontjai – kapcsold be a Mintavétel minden rétegből beállítást, vagy válassz képpontokat tartalmazó réteget
 	Drag to pan · Scroll to zoom · Double-click to fit	Húzás: mozgatás · Görgetés: nagyítás · Dupla kattintás: igazítás
 	Gradient Preset Options	Színátmenet-előbeállítás beállításai
 	Import .GRD	.GRD importálása
@@ -4083,12 +4118,23 @@ cameraRaw	Yellow	Sárga
 	set in Print Settings…	a nyomtatási beállításokban adható meg…
 	ICO is limited to 256 × 256 pixels	Az ICO legfeljebb 256 × 256 képpont lehet
 
+# Layer Mask Display Options (the layer mask rubylith's colour and opacity)
+	Mask Options…	Maszkbeállítások…
+	Layer Mask Display Options…	Rétegmaszk megjelenítési beállításai…
+
 # Channel Options and New Spot Channel (#3761)
 	Channel Color	Csatorna színe
 	Color Indicates:	A szín jelzése:
 	Ink Characteristics	Festék jellemzői
 	Solidity:	Fedőképesség:
 	Redrawing	Újrarajzolás
+# Bevel & Emboss shading controls.
+	Highlight Mode	Csúcsfény módja
+	Highlight Color	Csúcsfény színe
+	Highlight Opacity	Csúcsfény fedettsége
+	Shadow Mode	Árnyék módja
+	Shadow Color	Árnyék színe
+	Shadow Opacity	Árnyék fedettsége
 # Embedded Profile Mismatch: profile names beside the choices, Remember this choice
 	Use the embedded profile ({profile})	A beágyazott profil használata ({profile})
 	Convert to the working space ({profile})	Átalakítás a munkaszíntérbe ({profile})
@@ -4105,10 +4151,14 @@ cameraRaw	Yellow	Sárga
 	Chisel Hard	Kemény vésés
 	Chisel Soft	Lágy vésés
 	Open color-less EXR as ACEScg	Színinformáció nélküli EXR megnyitása ACEScg-ként
+	Do not append "copy" to filename when saving a copy	Ne fűzze a „copy” szót a fájlnévhez másolat mentésekor
 
 # View › Guides › right-click a guide
 	Edit Selected Guides	Kijelölt segédvonalak szerkesztése
 	Clear Selected Guides	Kijelölt segédvonalak törlése
+	Bicubic Automatic	Automatikus bikubikus
+	Bicubic Smoother	Simább bikubikus
+	Bicubic Sharper	Élesebb bikubikus
 	Pasting from other apps is unavailable	A beillesztés más alkalmazásokból nem érhető el
 	PhotoCraft can't reach the system clipboard in this session. On Wayland, a Flatpak sandbox hides the protocol that images from other apps are read through.	A PhotoCraft ebben a munkamenetben nem fér hozzá a rendszer vágólapjához. Waylanden a Flatpak homokozó elrejti azt a protokollt, amelyen keresztül más alkalmazások képei olvashatók.
 	To paste from other apps, start PhotoCraft under XWayland: `{command}`	Ha más alkalmazásokból szeretne beilleszteni, indítsa a PhotoCraftot XWayland alatt: `{command}`
@@ -4128,6 +4178,43 @@ cameraRaw	Yellow	Sárga
 	set name	készlet neve
 	{set} (modified)	{set} (módosítva)
 	Show file name in title	Fájlnév megjelenítése a címben
+
+# Image › Mode › Bitmap (#5559)
+	50% Threshold	50%-os küszöb
+	Pattern Dither	Mintázatos keverés
+	Diffusion Dither	Diffúziós keverés
+	Halftone Screen	Féltónusrács
+	Custom Pattern	Egyéni mintázat
+	Frequency:	Gyakoriság:
+	Lines/Inch	Vonal/hüvelyk
+	Lines/Centimeter	Vonal/centiméter
+	Ellipse	Ellipszis
+
+# Layers panel options and Smart Filter editors
+	Add “copy” to Copied Layers and Groups	„másolat” hozzáadása a másolt rétegekhez és csoportokhoz
+	Animation Options	Animációs beállítások
+	Entire Document	Teljes dokumentum
+	Expand New Effects	Új effektusok kibontása
+	Filter Options	Szűrési beállítások
+	Layer Bounds	Réteghatárok
+	Layers Panel Options	Rétegek panel beállításai
+	New Artboard…	Új rajztábla…
+	New Group…	Új csoport…
+	Prevent Auto-Nesting	Automatikus beágyazás tiltása
+	Preview on canvas when reordering layers	Előnézet a vásznon a rétegek átrendezésekor
+	Show Layers	Rétegek megjelenítése
+	Show layer mask badges	Rétegmaszk-jelvények megjelenítése
+	Thumbnail Contents	Bélyegkép tartalma
+	Thumbnail Size	Bélyegképméret
+	Use Default Masks on Fill Layers	Alapértelmezett maszkok kitöltőrétegeken
+
+	Blending Options ({filter})	Keverési beállítások ({filter})
+	Hide the layer's effects and Smart Filters  ({key}-click: all layers)	A réteg effektusainak és intelligens szűrőinek elrejtése  ({key}+kattintás: minden réteg)
+	Opacity must be between 0% and 100%.	Az átlátszatlanságnak 0% és 100% között kell lennie.
+	Dissolve is approximated: it blends without Photoshop's dither.	A Szétszórás csak közelítés: a Photoshop raszterezése nélkül keveredik.
+	Show the layer's effects and Smart Filters  ({key}-click: all layers)	A réteg effektusainak és intelligens szűrőinek megjelenítése  ({key}+kattintás: minden réteg)
+	The document or Smart Filter changed. Reopen its dialog.	A dokumentum vagy az intelligens szűrő megváltozott. Nyisd meg újra a párbeszédablakát.
+	Wait for the current job to finish.	Várd meg, amíg az aktuális feladat befejeződik.
 	Accept and Go to Conflict	Elfogadás és ugrás az ütközéshez
 	Changes undone.	Változások visszavonva.
 	Choose a new shortcut for this command, or leave it without one.	Válasszon új billentyűparancsot ehhez a parancshoz, vagy hagyja nélküle.
@@ -4145,15 +4232,33 @@ cameraRaw	Yellow	Sárga
 	GPU Memory Full	GPU-memória megtelt
 	The layers need {needed} of GPU memory and may hold {budget}, so edits that redraw the whole document do it on the CPU. Click to set GPU Memory.	A rétegeknek {needed} GPU-memória kell, és {budget} foglalhatnak, ezért a teljes dokumentumot újrarajzoló szerkesztések a CPU-n futnak. Kattints a GPU-memória beállításához.
 	GPU memory budget: {budget}	GPU-memóriakeret: {budget}
+	Graphics memory: {size}	Grafikus memória: {size}
 	This document's layers: {needed} of {budget} for layers	A dokumentum rétegei: {needed} / {budget} a rétegeknek
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	A dokumentum rétegeinek {needed} kell, de {budget} foglalhatnak: a teljes dokumentum újrarajzolása a CPU-n fut
 	GPU Memory (MB, 0 = Automatic)	GPU-memória (MB, 0 = Automatikus)
+	{path}: the path is not valid Unicode; save under another name.	{path}: az elérési út nem érvényes Unicode-szöveg. Mentsd más néven.
 	{name} was changed by another app after it was opened or saved here.	A(z) {name} fájlt egy másik alkalmazás módosította, miután itt megnyitották vagy mentették.
 	Replace it with this document, or cancel and use File › Save As to keep both.	Cserélje le erre a dokumentumra, vagy válassza a Mégse gombot, és a Fájl › Mentés másként paranccsal tartsa meg mindkettőt.
 	Decrease Brush Size	Ecsetméret csökkentése
 	Increase Brush Size	Ecsetméret növelése
 	Decrease Brush Hardness	Ecsetkeménység csökkentése
 	Increase Brush Hardness	Ecsetkeménység növelése
+	Demosaic	Demozaikolás
+	How the camera's colour filter mosaic is filled in. It is applied when the file opens; the preview shows the method it was opened with.	Hogyan tölti ki a program a kamera színszűrő-mozaikját. A fájl megnyitásakor érvényesül; az előnézet a megnyitáskor használt módszert mutatja.
+	AHD (adaptive homogeneity)	AHD (adaptív homogenitás)
+	Malvar–He–Cutler	Malvar–He–Cutler
+	Hirakawa–Parks: the cleanest edges and the least colour fringing, the slowest.	Hirakawa–Parks: a legtisztább élek és a legkevesebb színes szegély, a leglassabb.
+	Gradient-corrected interpolation: sharp and fast, with some colour fringing on fine detail.	Gradienskorrigált interpoláció: éles és gyors, apró részleteken némi színes szegéllyel.
+	The fastest and the softest, with colour fringing on fine detail.	A leggyorsabb és a leglágyabb, apró részleteken színes szegéllyel.
+	“{name}” already exists. Replace it?	„{name}” már létezik. Lecseréli?
+	The name in the save dialog was “{name}”.	A mentési párbeszédpanelen megadott név: „{name}”.
+	Move Up	Mozgatás felfelé
+	Move Down	Mozgatás lefelé
+	Previous Brush	Előző ecset
+	Next Brush	Következő ecset
+	First Brush	Első ecset
+	Last Brush	Utolsó ecset
+	Preview size	Preview size
 	Memory Usage	Memóriahasználat
 	Per-document RAM limit (MB)	Dokumentumonkénti RAM-korlát (MB)
 	Installed RAM: {ram} MB; this limit: {percent}%	Telepített RAM: {ram} MB; ez a korlát: {percent}%
@@ -4163,3 +4268,33 @@ cameraRaw	Yellow	Sárga
 	Use	Használat
 	In Front	Elöl
 	Behind	Mögött
+
+# DDS Options (#1327)
+	DDS Options	DDS-beállítások
+	Generate Mipmaps	Mipmapek létrehozása
+
+# Color Table (.act) dialog
+	There is no color table to save.	Nincs menthető színtábla.
+@plural	Saved {n} color to {file}|Saved {n} colors to {file}	{n} szín mentve ide: {file}
+
+# Graphics Adapter preference (#1885)
+	GPU adapter	GPU-adapter
+# Actions: a step dialog holds a suspended recording (#7365)
+	Confirm or cancel the open action step dialog first	Előbb hagyd jóvá vagy vond vissza a művelet lépésének nyitott párbeszédablakát
+	Pro Medium Gray	Pro középszürke
+	Solarized	Solarized
+	Breeze	Breeze
+	Pro Light Gray	Pro világosszürke
+	Pro Light	Pro világos
+	Resize Windows to Fit	Ablakok átméretezése a képhez
+
+	EXR	EXR
+
+# Paragraph direction (TYPE-218-2)
+	Automatic paragraph direction	Automatikus bekezdésirány
+	Left-to-right paragraph direction	Balról jobbra irányuló bekezdés
+	Right-to-left paragraph direction	Jobbról balra irányuló bekezdés
+	Not rendered: this adjustment ({key}) is kept as imported.	Nem jelenik meg: ez a korrekció ({key}) importált állapotában marad.
+
+# Print preview image (#8236)
+	Print preview image	Print preview image

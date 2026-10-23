@@ -54,19 +54,35 @@ pub fn revision() -> u64 {
     REVISION.load(Ordering::Relaxed)
 }
 
+/// Opens `path` for reading without waiting on a FIFO or device that has no writer.
+#[cfg(unix)]
+fn open_regular(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    // O_NONBLOCK: opening a writer-less FIFO read-only returns at once; the caller then sees it
+    // is not a regular file. Regular files ignore the flag.
+    std::fs::OpenOptions::new().read(true).custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32).open(path)
+}
+
+#[cfg(not(unix))]
+fn open_regular(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    std::fs::File::open(path)
+}
+
 /// Reads a `.wasm` file (refusing anything that isn't a regular file or exceeds the module limit)
 /// and loads it.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn load_file(path: &std::path::Path, limits: Limits) -> Result<Plugin> {
     use std::io::Read;
-    let meta = std::fs::metadata(path).map_err(|e| Error::Io(format!("{}: {e}", path.display())))?;
+    // Open first, without blocking on a FIFO, and judge the file that was opened: a name checked
+    // and then opened again can be swapped for a special file in between.
+    let f = open_regular(path).map_err(|e| Error::Io(format!("{}: {e}", path.display())))?;
+    let meta = f.metadata().map_err(|e| Error::Io(format!("{}: {e}", path.display())))?;
     if !meta.is_file() {
         return Err(Error::Io(format!("{} is not a file", path.display())));
     }
     if meta.len() > limits.max_module_bytes as u64 {
         return Err(Error::Module(format!("{} is {} bytes (limit {})", path.display(), meta.len(), limits.max_module_bytes)));
     }
-    let f = std::fs::File::open(path).map_err(|e| Error::Io(format!("{}: {e}", path.display())))?;
     let mut bytes = Vec::new();
     f.take(limits.max_module_bytes as u64 + 1).read_to_end(&mut bytes).map_err(|e| Error::Io(format!("{}: {e}", path.display())))?;
     Ok(Plugin::load(&bytes, limits)?.with_source(path.display().to_string()))

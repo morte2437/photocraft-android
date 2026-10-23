@@ -193,6 +193,7 @@ pub fn composite_fill(mode: BlendMode, backdrop: [f32; 4], source: [f32; 4], opa
 
 /// Straight-alpha source over straight-alpha backdrop (W3C/PDF general
 /// formula) using [`blend_rgb`].
+#[inline]
 pub fn composite(mode: BlendMode, backdrop: [f32; 4], source: [f32; 4], opacity: f32) -> [f32; 4] {
     let ab = backdrop[3];
     let as_ = source[3] * opacity;
@@ -236,6 +237,64 @@ pub(crate) fn composite_normal_rgb(backdrop: [f32; 4], source: [f32; 4], opacity
     }
     let ao = as_ + ab * (1.0 - as_);
     normal_rgb(backdrop, source, as_, ao)
+}
+
+/// [`composite_normal_rgb`] over a row, with the same bits, in blocks the compiler vectorizes (see
+/// [`normal_lanes`]); the tail that doesn't fill a block goes through the scalar kernel.
+pub(crate) fn composite_normal_rgb_span(dst: &mut [[f32; 4]], src: &[[f32; 4]], opacity: f32) {
+    let n = dst.len().min(src.len());
+    let (dc, dt) = dst[..n].as_chunks_mut::<LANES>();
+    let (sc, st) = src[..n].as_chunks::<LANES>();
+    for (b, s) in dc.iter_mut().zip(sc) {
+        normal_lanes(b, s, opacity);
+    }
+    for (b, s) in dt.iter_mut().zip(st) {
+        // Not `s[3] > 0`: a NaN alpha is blended (into NaN), as the scalar loop does.
+        if s[3] <= 0.0 {
+            continue;
+        }
+        *b = composite_normal_rgb(*b, *s, opacity);
+    }
+}
+
+/// Pixels per block of [`normal_lanes`]: two 128-bit vectors (or one 256-bit) per channel.
+const LANES: usize = 8;
+
+/// [`composite_normal_rgb`] (after the caller's `source alpha > 0` test) on one block of pixels,
+/// without branches: one array per channel, fixed-length loops the compiler vectorizes, and a
+/// select per pixel between the backdrop, zero and the mix. Same operations in the same order
+/// (Rust never fuses them into multiply-adds) and the same tests: the same bits, except that a
+/// NaN's sign and payload may differ (IEEE 754 doesn't fix which operand's NaN is passed on).
+#[inline]
+#[allow(clippy::needless_range_loop)] // lanes index several arrays in lockstep
+fn normal_lanes(b: &mut [[f32; 4]; LANES], s: &[[f32; 4]; LANES], opacity: f32) {
+    let lane = |p: &[[f32; 4]; LANES], c: usize| -> [f32; LANES] { std::array::from_fn(|i| p[i][c]) };
+    let (b0, b1, b2, ab) = (lane(b, 0), lane(b, 1), lane(b, 2), lane(b, 3));
+    let (s0, s1, s2, s3) = (lane(s, 0), lane(s, 1), lane(s, 2), lane(s, 3));
+    let mut as_ = [0.0f32; LANES];
+    let mut ao = [0.0f32; LANES];
+    let mut kb = [0.0f32; LANES];
+    let mut inv = [0.0f32; LANES];
+    for i in 0..LANES {
+        as_[i] = s3[i] * opacity;
+        ao[i] = as_[i] + ab[i] * (1.0 - as_[i]);
+        kb[i] = ab[i] * (1.0 - as_[i]);
+        inv[i] = 1.0 / ao[i];
+    }
+    for i in 0..LANES {
+        let mix = [(kb[i] * b0[i] + as_[i] * s0[i]) * inv[i], (kb[i] * b1[i] + as_[i] * s1[i]) * inv[i], (kb[i] * b2[i] + as_[i] * s2[i]) * inv[i], ao[i]];
+        // The scalar path's tests: skipped where the source is empty (`s[3] <= 0`) or adds
+        // nothing (`as_ <= 0`), zero where nothing is left (`ao <= 0`).
+        let keep = (s3[i] <= 0.0) | (as_[i] <= 0.0);
+        let gone = ao[i] <= 0.0;
+        b[i] = if keep {
+            b[i]
+        } else if gone {
+            [0.0; 4]
+        } else {
+            mix
+        };
+    }
 }
 
 #[inline]
@@ -293,6 +352,7 @@ pub fn text_decode(v: f32, gamma: f32) -> f32 {
 
 /// [`composite`] with the coverage mix done in the text blending space of `gamma`
 /// ([`text_encode`]; `gamma == 1` is [`composite`], the setting switched off).
+#[inline]
 pub fn composite_gamma(mode: BlendMode, backdrop: [f32; 4], source: [f32; 4], opacity: f32, gamma: f32) -> [f32; 4] {
     if gamma == 1.0 {
         return composite(mode, backdrop, source, opacity);

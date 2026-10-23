@@ -121,7 +121,7 @@ fn stamp_down(s: &mut Session, p: &Value) -> Result<Value> {
             return Err(EngineError::Other("the layer is hidden".into()));
         }
         // The two layers on their own, composited in bands; the lower one keeps its id, name and
-        // blend mode, as Merge Down does.
+        // blend mode, clipping, label and link, as Merge Down does.
         let mut tmp = doc.clone();
         let mut base = lower.clone();
         base.visible = true;
@@ -134,6 +134,9 @@ fn stamp_down(s: &mut Session, p: &Value) -> Result<Value> {
         merged.blend = lower.blend;
         merged.visible = lower.visible;
         merged.locks = lower.locks;
+        merged.clipped = lower.clipped;
+        merged.label = lower.label;
+        merged.link_group = lower.link_group;
         merged.opacity = 1.0;
         *doc.layer_at_mut(&below).ok_or(EngineError::NoLayer(lower.id))? = merged;
         Ok(())
@@ -322,6 +325,23 @@ mod tests {
         assert_eq!(s.active().unwrap().active_layer, Some(blue));
         s.undo();
         assert!(close(rgba(&s, hidden, 30, 30), [0.0, 1.0, 0.0, 1.0]));
+    }
+
+    #[test]
+    fn stamp_down_keeps_the_lower_layers_clipping_label_and_link() {
+        let (mut s, _, hidden, blue) = session(8);
+        let l = std::sync::Arc::make_mut(&mut s.active_mut().unwrap().doc).layer_mut(hidden).unwrap();
+        l.visible = true;
+        l.clipped = true;
+        l.label = photocraft_doc::LabelColor::Red;
+        l.link_group = Some(7);
+        s.execute("layer.stampDown", json!({})).unwrap();
+        let l = s.active().unwrap().doc.layer(hidden).unwrap();
+        assert!(close(rgba(&s, hidden, 30, 30), [0.0, 0.0, 1.0, 1.0]), "stamped");
+        assert!(l.clipped, "still clipped to the layer below");
+        assert_eq!(l.label, photocraft_doc::LabelColor::Red);
+        assert_eq!(l.link_group, Some(7));
+        assert_eq!(s.active().unwrap().active_layer, Some(blue));
     }
 
     #[test]

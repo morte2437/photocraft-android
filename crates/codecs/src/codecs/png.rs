@@ -676,8 +676,8 @@ mod stereo_tests {
 
     #[test]
     fn reads_both_defined_views() {
-        assert_eq!(stereo(&png_with(&[0])), Some(PngStereo::Horizontal));
-        assert_eq!(stereo(&png_with(&[1])), Some(PngStereo::Vertical));
+        assert_eq!(stereo(&png_with(&[0])), Some(PngStereo::CrossFuse));
+        assert_eq!(stereo(&png_with(&[1])), Some(PngStereo::DivergingFuse));
         assert_eq!(stereo(&png_with(&[])), None);
         // Reserved and unknown mode bytes are not a pairing we can keep.
         assert_eq!(stereo(&png_with(&[2])), None);
@@ -685,6 +685,24 @@ mod stereo_tests {
         // A two-byte payload is not sTER data.
         assert_eq!(stereo(&png_with(&[0, 0])), None);
         assert_eq!(stereo(b"not a png"), None);
+    }
+
+    #[test]
+    fn ster_mode_bytes_describe_eye_order_not_vertical_packing() {
+        // PNG Extensions 1.4.0 §3.6: both views occupy horizontal halves.
+        // Each view is eight columns, so the second starts on an eight-column boundary.
+        for (mode, left_pixel, right_pixel) in [(0, [0, 0, 255], [255, 0, 0]), (1, [255, 0, 0], [0, 0, 255])] {
+            let pixels: Vec<u8> = [left_pixel; 8].into_iter().chain([right_pixel; 8]).flatten().collect();
+            let img = Image::from_raw(16, 1, ChannelLayout::Rgb, SampleType::U8, pixels.clone()).unwrap();
+            let pairing = if mode == 0 { PngStereo::CrossFuse } else { PngStereo::DivergingFuse };
+            let opts = EncodeOptions { png_stereo: Some(pairing), ..Default::default() };
+            let bytes = crate::encode(&img, Format::Png, &opts).unwrap();
+            let chunk = bytes.windows(4).position(|w| w == b"sTER").unwrap();
+            assert_eq!(bytes[chunk + 4], mode, "the specification's literal mode byte");
+            let decoded = decode(&bytes, &Limits::default()).unwrap();
+            assert_eq!(decoded.dimensions(), (16, 1));
+            assert_eq!(decoded.data(), pixels);
+        }
     }
 
     #[test]
@@ -699,7 +717,7 @@ mod stereo_tests {
     #[test]
     fn encode_writes_the_chunk_before_idat_and_it_reads_back() {
         let img = Image::from_raw(2, 1, ChannelLayout::Rgb, SampleType::U8, vec![9; 6]).unwrap();
-        for view in [PngStereo::Horizontal, PngStereo::Vertical] {
+        for view in [PngStereo::CrossFuse, PngStereo::DivergingFuse] {
             let opts = EncodeOptions { png_stereo: Some(view), ..Default::default() };
             let bytes = crate::encode(&img, Format::Png, &opts).unwrap();
             assert_eq!(stereo(&bytes), Some(view));
@@ -716,12 +734,12 @@ mod stereo_tests {
     #[test]
     fn interlaced_and_indexed_encoders_keep_the_mark() {
         let img = Image::from_raw(2, 2, ChannelLayout::Rgb, SampleType::U8, vec![9; 12]).unwrap();
-        let opts = EncodeOptions { png_stereo: Some(PngStereo::Vertical), png_interlaced: true, ..Default::default() };
+        let opts = EncodeOptions { png_stereo: Some(PngStereo::DivergingFuse), png_interlaced: true, ..Default::default() };
         let bytes = crate::encode(&img, Format::Png, &opts).unwrap();
-        assert_eq!(stereo(&bytes), Some(PngStereo::Vertical));
+        assert_eq!(stereo(&bytes), Some(PngStereo::DivergingFuse));
         let pal = [[255, 0, 0], [0, 0, 255]];
-        let bytes = encode_indexed(2, 1, &[0, 1], &pal, None, None, Some(PngStereo::Horizontal)).unwrap();
-        assert_eq!(stereo(&bytes), Some(PngStereo::Horizontal));
+        let bytes = encode_indexed(2, 1, &[0, 1], &pal, None, None, Some(PngStereo::CrossFuse)).unwrap();
+        assert_eq!(stereo(&bytes), Some(PngStereo::CrossFuse));
         assert_eq!(palette(&bytes).unwrap().map(|p| p.colors), Some(pal.to_vec()));
     }
 }

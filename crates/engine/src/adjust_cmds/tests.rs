@@ -731,3 +731,23 @@ fn invert_turns_the_black_of_quick_mask_and_alpha_channels_white() {
         }
     }
 }
+
+/// #6558: a LUT folder lists its LUT files by name, case-insensitively, and nothing else.
+#[test]
+fn folder_luts_lists_lut_files_by_name() {
+    let dir = tempfile::tempdir().unwrap();
+    for f in ["b.cube", "A.3DL", "c.look", "notes.txt", ".hidden.cube", "noext"] {
+        std::fs::write(dir.path().join(f), "LUT_3D_SIZE 2\n").unwrap();
+    }
+    std::fs::create_dir(dir.path().join("sub.cube")).unwrap();
+    // Too large to be a LUT (sparse, so cheap to make).
+    std::fs::File::create(dir.path().join("huge.cube")).unwrap().set_len(MAX_FOLDER_LUT_BYTES + 1).unwrap();
+    // A symlink to a LUT is listed: shared LUT libraries are often linked in.
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(dir.path().join("b.cube"), dir.path().join("linked.cube")).unwrap();
+    let want: Vec<_> = ["A.3DL", "b.cube", "c.look"].into_iter().chain(cfg!(unix).then_some("linked.cube")).collect();
+    let names: Vec<_> = folder_luts(dir.path().to_str().unwrap()).into_iter().map(|(name, _)| name).collect();
+    assert_eq!(names, want);
+    assert!(folder_luts("").is_empty());
+    assert!(folder_luts(dir.path().join("missing").to_str().unwrap()).is_empty());
+}

@@ -88,3 +88,88 @@ fn rle_row(row: &[u8], bpp: usize, out: &mut Vec<u8>) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_packets_at_the_128_pixel_boundary() {
+        for bpp in 1..=4 {
+            for (pixels, headers) in [(1, vec![0]), (2, vec![0x81]), (127, vec![0xfe]), (128, vec![0xff]), (129, vec![0xff, 0])] {
+                let pixel: Vec<u8> = (1..=bpp as u8).collect();
+                let mut encoded = Vec::new();
+                rle_row(&pixel.repeat(pixels), bpp, &mut encoded);
+                let expected: Vec<u8> = headers.into_iter().flat_map(|header| std::iter::once(header).chain(pixel.iter().copied())).collect();
+                assert_eq!(encoded, expected, "{pixels} pixels, {bpp} bytes per pixel");
+            }
+        }
+    }
+
+    #[test]
+    fn raw_packets_at_the_128_pixel_boundary() {
+        for bpp in 1..=4 {
+            for pixels in [127usize, 128, 129] {
+                let row: Vec<u8> = (0..pixels).flat_map(|x| vec![x as u8; bpp]).collect();
+                let mut encoded = Vec::new();
+                rle_row(&row, bpp, &mut encoded);
+                let mut expected = vec![(pixels.min(128) - 1) as u8];
+                expected.extend_from_slice(&row[..pixels.min(128) * bpp]);
+                if pixels > 128 {
+                    expected.push(0);
+                    expected.extend_from_slice(&row[128 * bpp..]);
+                }
+                assert_eq!(encoded, expected, "{pixels} pixels, {bpp} bytes per pixel");
+            }
+        }
+    }
+
+    #[test]
+    fn raw_packets_stop_before_a_run_of_complete_pixels() {
+        // Equal first channels alone do not make an RGBA run; alpha participates too.
+        let a = [10, 20, 30, 40];
+        let b = [10, 20, 30, 41];
+        let c = [50, 60, 70, 80];
+        let row = [a, b, c, c, a].concat();
+        let mut encoded = Vec::new();
+        rle_row(&row, 4, &mut encoded);
+        assert_eq!(encoded, [vec![1], a.to_vec(), b.to_vec(), vec![0x81], c.to_vec(), vec![0], a.to_vec()].concat());
+    }
+
+    #[test]
+    fn rejects_sample_types_and_layouts_targa_cannot_store() {
+        for sample in [SampleType::U16, SampleType::F16, SampleType::F32] {
+            let img = Image::new(1, 1, ChannelLayout::Rgb, sample).unwrap();
+            assert!(matches!(encode(&img), Err(CodecError::Encode { format: Format::Tga, .. })), "{sample:?}");
+        }
+        for layout in [ChannelLayout::Cmyk, ChannelLayout::CmykA, ChannelLayout::Lab, ChannelLayout::LabA] {
+            let img = Image::new(1, 1, layout, SampleType::U8).unwrap();
+            assert!(matches!(encode(&img), Err(CodecError::Encode { format: Format::Tga, .. })), "{layout:?}");
+        }
+    }
+
+    #[test]
+    fn dimensions_fit_the_unsigned_16_bit_header() {
+        for (width, height) in [(65535, 1), (1, 65535)] {
+            let img = Image::new(width, height, ChannelLayout::Gray, SampleType::U8).unwrap();
+            let file = encode(&img).unwrap();
+            assert_eq!(&file[12..14], &(width as u16).to_le_bytes());
+            assert_eq!(&file[14..16], &(height as u16).to_le_bytes());
+        }
+        for (width, height) in [(65536, 1), (1, 65536)] {
+            let img = Image::new(width, height, ChannelLayout::Gray, SampleType::U8).unwrap();
+            assert!(matches!(encode(&img), Err(CodecError::Encode { format: Format::Tga, .. })), "{width}x{height}");
+        }
+    }
+
+    #[test]
+    fn invalid_buffers_are_rejected_before_targa_encoding() {
+        // Image keeps its buffer private, so malformed buffers must fail at construction.
+        for layout in [ChannelLayout::Gray, ChannelLayout::GrayA, ChannelLayout::Rgb, ChannelLayout::Rgba] {
+            let len = 2 * 2 * layout.channels();
+            for bytes in [len - 1, len + 1] {
+                assert!(matches!(Image::from_u8(2, 2, layout, vec![0; bytes]), Err(CodecError::InvalidImage(_))), "{layout:?}: {bytes} bytes");
+            }
+        }
+    }
+}

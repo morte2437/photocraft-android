@@ -82,6 +82,41 @@ pub(crate) fn confirm(app: &mut PhotocraftApp, f: &Map<String, Value>) -> Result
     app.run(COMMAND, json!({"layer": layer.0, "fill": [color.c[0], color.c[1], color.c[2], color.alpha]}))
 }
 
+/// A new foreground colour from the Color panel, a swatch or the Color Picker fills the selected
+/// shape layer, keeping the fill's own opacity, as in Photoshop (#5568). Edits sharing `coalesce`
+/// (one Color panel drag) are one undo step. Locked shapes and other layers are left alone.
+pub(crate) fn foreground_changed(app: &mut PhotocraftApp, coalesce: Option<String>) {
+    let Some(st) = app.session.active() else { return };
+    let Some(layer) = st.active_layer else { return };
+    let Some(LayerContent::Shape(sh)) = st.doc.layer(layer).map(|l| &l.content) else { return };
+    let locks = st.doc.effective_locks(layer);
+    if locks.all || locks.pixels {
+        return;
+    }
+    let fg = app.session.tools.foreground;
+    let alpha = match &sh.fill {
+        Some(Fill::Solid(c)) => c.alpha,
+        _ => 1.0,
+    };
+    if sh.fill == Some(Fill::Solid(Color::rgba(fg[0], fg[1], fg[2], alpha))) {
+        return;
+    }
+    let mut p = json!({"layer": layer.0, "fill": [fg[0], fg[1], fg[2], alpha]});
+    if let Some(key) = coalesce {
+        p["coalesce"] = json!(key);
+    }
+    if let Err(e) = app.run(COMMAND, p) {
+        app.ui.status = e;
+        app.ui.status_error = true;
+    }
+}
+
+/// The coalesce key of the pointer gesture under way (its press time), so one Color panel drag
+/// is one undo step; `None` for clicks and typed values.
+pub(crate) fn gesture(ui: &egui::Ui) -> Option<String> {
+    ui.input(|i| i.pointer.press_start_time()).map(|t| format!("color-panel-fill:{}", t.to_bits()))
+}
+
 /// The canvas preview while the picker is open: the document with the shape re-rendered in the
 /// picked colour, cached per dialog, revision and colour.
 pub(crate) fn display_doc(app: &mut PhotocraftApp, idx: usize) -> Option<(Arc<Document>, u64)> {

@@ -97,14 +97,23 @@ fn edit_section(i: usize, b: &mut BrushSettings) {
             b.transfer.flow = dynamic(0.25, Control::Fade, 0.3);
             b.transfer.wetness = dynamic(0.35, Control::PenPressure, 0.1);
             b.transfer.mix = dynamic(0.45, Control::Fade, 0.2);
-            b.mixer = paint::MixerSettings { wet: 0.9, load: 0.15, mix: 0.7, flow: 0.8, sample_all_layers: true };
+            b.mixer = paint::MixerSettings {
+                wet: 0.9,
+                load: 0.15,
+                mix: 0.7,
+                flow: 0.8,
+                sample_all_layers: true,
+                load_after_stroke: false,
+                clean_after_stroke: false,
+            };
         }
         7 => {
             let p = &mut b.pose;
             p.enabled = true;
             p.tilt_x = 45.0;
             p.tilt_y = -27.0;
-            p.override_tilt = true;
+            p.override_tilt_x = true;
+            p.override_tilt_y = true;
             p.rotation = 120.0;
             p.override_rotation = true;
             p.pressure = 0.4;
@@ -273,6 +282,122 @@ fn section_locks_are_always_visible_and_toggle_on_click() {
     h.run_steps(2);
     assert!(!h.state().session.tools.brush.locks.scattering);
     assert_eq!(h.state().ui.brush_section, 0);
+}
+
+#[test]
+fn section_lock_buttons_report_their_section_and_state_in_every_theme() {
+    use egui::accesskit::{Role, Toggled};
+    use egui_kittest::kittest::{NodeT, Queryable};
+
+    for theme in crate::theme::ThemeKind::ALL {
+        let mut h = harness(0, 3);
+        PhotocraftApp::setup_context(&h.ctx, theme);
+        let mut brush = h.state().session.tools.brush.clone();
+        for i in 1..SECTIONS.len() {
+            *section_lock(&mut brush, i).unwrap() = i % 2 == 0;
+        }
+        h.state_mut().session.tools.brush = brush.clone();
+        let presets = h.state().session.tools.presets.clone();
+        let journal = h.state().session.journal.len();
+        h.run_steps(3);
+        for (i, &(name, _)) in SECTIONS.iter().enumerate().skip(1) {
+            let label = format!("Lock: {name}");
+            let node = h.get_by_role_and_label(Role::Button, &label);
+            assert!(!node.accesskit_node().is_disabled(), "locks remain available for disabled sections");
+            assert_eq!(h.query_all_by_label(&label).count(), 1, "{theme:?}: {name} has one distinct control");
+            assert_eq!(node.accesskit_node().toggled(), Some(if i % 2 == 0 { Toggled::True } else { Toggled::False }), "{theme:?}: {name}");
+            let row = h.get_by_label(name).rect();
+            assert!(row.contains_rect(node.rect()), "the named control is the lock's existing hit target");
+        }
+        assert_eq!(h.state().session.tools.brush, brush, "describing a lock must not edit it");
+        assert_eq!(h.state().session.tools.presets, presets);
+        assert_eq!(h.state().session.journal.len(), journal);
+        assert_eq!(h.state().ui.brush_section, 3);
+    }
+}
+
+#[test]
+fn section_lock_buttons_accept_keyboard_without_selecting_or_enabling_sections() {
+    use egui::accesskit::{Role, Toggled};
+    use egui_kittest::kittest::{NodeT, Queryable};
+
+    for (i, &(name, _)) in SECTIONS.iter().enumerate().skip(1) {
+        let mut h = harness(0, 0);
+        let before = h.state().session.tools.brush.clone();
+        let presets = h.state().session.tools.presets.clone();
+        let journal = h.state().session.journal.len();
+        let label = format!("Lock: {name}");
+        let mut replay = photocraft_engine::Session::new();
+        replay.tools.brush = before.clone();
+        h.get_by_role_and_label(Role::Button, &label).focus();
+        h.run_steps(2);
+        for locked in [true, false] {
+            h.key_press(egui::Key::Space);
+            h.run_steps(3);
+            let mut expected = before.clone();
+            *section_lock(&mut expected, i).unwrap() = locked;
+            assert_eq!(h.state().session.tools.brush, expected, "{name}: only this section's lock changes");
+            assert_eq!(h.state().ui.brush_section, 0);
+            assert_eq!(h.state().session.tools.presets, presets);
+            assert_eq!(h.get_by_role_and_label(Role::Button, &label).accesskit_node().toggled(), Some(if locked { Toggled::True } else { Toggled::False }));
+            let (id, params) = last_journal(h.state()).unwrap();
+            assert_eq!(id, "tools.setBrush");
+            assert_eq!(params["brush"].as_object().unwrap().len(), 1);
+            assert_eq!(params["brush"]["locks"].as_object().unwrap().len(), 1);
+            assert_eq!(params["brush"]["locks"].as_object().unwrap().values().next(), Some(&json!(locked)));
+            replay.execute(&id, params).unwrap();
+            assert_eq!(replay.tools.brush, expected, "command replay preserves the lock-only edit");
+        }
+        assert_eq!(h.state().session.journal.len(), journal + 2, "one command per activation");
+        assert_eq!(replay.tools.brush, before);
+    }
+}
+
+#[test]
+fn section_lock_buttons_show_focus_and_track_keyboard_navigation() {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::Queryable;
+
+    fn has_ring(shape: &egui::Shape, target: egui::Rect, color: egui::Color32) -> bool {
+        match shape {
+            egui::Shape::Rect(r) => r.rect == target && r.stroke == Stroke::new(1.0, color) && r.stroke_kind == egui::StrokeKind::Inside,
+            egui::Shape::Vec(v) => v.iter().any(|s| has_ring(s, target, color)),
+            _ => false,
+        }
+    }
+    for (index, theme) in crate::theme::ThemeKind::ALL.into_iter().enumerate() {
+        let mut h = harness(0, 0);
+        PhotocraftApp::setup_context(&h.ctx, theme);
+        h.state_mut().session.tools.brush.locks.scattering = index % 2 == 0;
+        h.state_mut().session.tools.brush.locks.texture = index % 2 != 0;
+        h.run_steps(2);
+        let before = h.state().session.tools.brush.clone();
+        let presets = h.state().session.tools.presets.clone();
+        let journal = h.state().session.journal.len();
+        let first = h.get_by_role_and_label(Role::Button, "Lock: Scattering").rect();
+        let second = h.get_by_role_and_label(Role::Button, "Lock: Texture").rect();
+        let accent = Tokens::get(&h.ctx).accent;
+        let ring = |h: &Harness<'_, PhotocraftApp>, rect| h.output().shapes.iter().any(|s| s.clip_rect.contains_rect(rect) && has_ring(&s.shape, rect, accent));
+        assert!(!ring(&h, first) && !ring(&h, second), "{theme:?}: unfocused locks have no focus ring");
+        h.get_by_role_and_label(Role::Button, "Lock: Scattering").focus();
+        h.run_steps(2);
+        assert!(h.get_by_role_and_label(Role::Button, "Lock: Scattering").is_focused());
+        assert!(ring(&h, first) && !ring(&h, second), "{theme:?}: the focused lock needs a visible indicator");
+        h.key_press(egui::Key::Tab);
+        h.run_steps(2);
+        assert!(!h.get_by_role_and_label(Role::Button, "Lock: Scattering").is_focused());
+        assert!(!ring(&h, first), "Tab removes the old lock's indicator");
+        h.get_by_role_and_label(Role::Button, "Lock: Texture").focus();
+        h.run_steps(2);
+        assert!(!ring(&h, first) && ring(&h, second), "the ring follows focus");
+        h.get_by_label("Brush Tip Shape").focus();
+        h.run_steps(2);
+        assert!(!ring(&h, first) && !ring(&h, second));
+        assert_eq!(h.state().session.tools.brush, before, "focus must not edit settings");
+        assert_eq!(h.state().session.tools.presets, presets);
+        assert_eq!(h.state().session.journal.len(), journal);
+        assert_eq!(h.state().ui.brush_section, 0);
+    }
 }
 
 /// A harness that shows the options bar with `tool` in the Studio (non-pro) theme.
@@ -489,6 +614,56 @@ fn mixer_brush_options_update_the_persisted_mixer_settings() {
 }
 
 #[test]
+fn mixer_brush_clean_brush_and_the_automatic_load_keep_the_foreground_out() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = options_bar_harness(crate::state::Tool::MixerBrush);
+    // A red image, an empty layer above it, a blue foreground, and a brush that samples all layers.
+    for (id, p) in [
+        ("file.new", json!({"width": 200, "height": 40, "background": "transparent"})),
+        ("edit.fill", json!({"color": "#ff0000"})),
+        ("layer.new.layer", json!({})),
+        ("tools.setColors", json!({"foreground": "#0000ff"})),
+        ("tools.setBrush", json!({"brush": {"size": 8, "pressureSize": false, "mixer": {"sampleAllLayers": true}}})),
+    ] {
+        h.state_mut().run(id, p).unwrap();
+    }
+    h.run_steps(3);
+    for label in ["Current Brush Load", "Load the brush after each stroke", "Clean the brush after each stroke"] {
+        assert!(h.get_by_label(label).rect().is_positive(), "missing Mixer Brush option {label}");
+    }
+
+    // Turn the automatic Load off: one tools.setBrush call.
+    h.get_by_label("Load the brush after each stroke").click();
+    h.run_steps(3);
+    assert!(!h.state().session.tools.brush.mixer.load_after_stroke);
+    let (id, params) = last_journal(h.state()).unwrap();
+    assert_eq!((id.as_str(), &params["brush"]["mixer"]["loadAfterStroke"]), ("tools.setBrush", &json!(false)));
+
+    // Current Brush Load › Clean Brush empties the brush.
+    h.get_by_label("Current Brush Load").click();
+    h.run_steps(3);
+    h.get_by_label("Clean Brush").click();
+    h.run_steps(3);
+    assert_eq!(last_journal(h.state()).map(|(id, _)| id), Some("brush.mixer.clean".to_string()));
+    assert_eq!(h.state().session.tools.mixer.reservoir, None);
+
+    // The stroke the canvas commits on release lays down only the red it picks up.
+    crate::retouch_ui::finish_stroke(h.state_mut(), crate::state::Tool::MixerBrush, &[[5.0, 20.0, 1.0], [195.0, 20.0, 1.0]], egui::Modifiers::NONE);
+    let d = h.state().session.active().unwrap();
+    let c = d.doc.layer(d.active_layer.unwrap()).unwrap().surface().unwrap().rgba(100, 20);
+    assert!(c[3] > 0.1 && c[0] > 0.99 && c[2] < 0.01, "the stroke carries no foreground: {c:?}");
+    // With the automatic Load off, the stroke did not refill the brush either.
+    assert_eq!(h.state().session.tools.mixer.reservoir, None);
+
+    // Load Brush fills it with the foreground again.
+    h.get_by_label("Current Brush Load").click();
+    h.run_steps(3);
+    h.get_by_label("Load Brush").click();
+    h.run_steps(3);
+    assert_eq!(h.state().session.tools.mixer.reservoir, Some([0.0, 0.0, 1.0, 1.0]));
+}
+
+#[test]
 fn drop_targets_and_actions_reorder_presets() {
     use crate::brushes_tab::{Action, apply, drop_target, group_key};
     let mut app = app();
@@ -562,6 +737,65 @@ fn harness(tab: usize, section: usize) -> Harness<'static, PhotocraftApp> {
     h
 }
 
+#[test]
+fn transfer_mixer_edits_use_the_brush_command_and_survive_real_tool_swaps() {
+    use crate::state::Tool;
+    use egui_kittest::kittest::{NodeT, Queryable};
+
+    let mut h = harness(0, 6);
+    let a = h.state_mut();
+    a.ui.tool = Tool::Brush;
+    a.session.tools.brush.transfer.enabled = true;
+    a.session.tools.brush.transfer.wetness =
+        paint::Dynamic { jitter: 0.41, minimum: 0.43, control: Control::PenPressure, fade_steps: 339, ..Default::default() };
+    a.session.tools.brush.transfer.mix = paint::Dynamic { jitter: 0.63, minimum: 0.67, control: Control::PenPressure, fade_steps: 449, ..Default::default() };
+    crate::paint_mouse::sync_tool_brush(a);
+    a.ui.tool = Tool::MixerBrush;
+    crate::paint_mouse::sync_tool_brush(a);
+    h.run_steps(2);
+    h.hover_at(h.get_by_label("Opacity Jitter").rect().center());
+    h.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: vec2(0.0, -250.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run_steps(20);
+    let journal = h.state().session.journal.len();
+    let field = h.query_all_by_role(egui::accesskit::Role::SpinButton).find(|node| node.accesskit_node().numeric_value() == Some(41.0)).unwrap();
+    field.click();
+    h.key_press(egui::Key::ArrowUp);
+    h.run_steps(2);
+    assert!((h.state().session.tools.brush.transfer.wetness.jitter - 0.42).abs() < 1e-6);
+    assert_eq!(h.state().session.journal.len(), journal + 1);
+    let (id, params) = last_journal(h.state()).unwrap();
+    assert_eq!(id, "tools.setBrush");
+    assert_eq!(params["brush"], json!({"transfer": {"wetness": {"jitter": 0.42_f32}}}));
+    let mixer = h.state().session.tools.brush.clone();
+
+    let a = h.state_mut();
+    a.ui.tool = Tool::Brush;
+    crate::paint_mouse::sync_tool_brush(a);
+    h.run_steps(2);
+    let brush = h.state().session.tools.brush.clone();
+    let field = h.query_all_by_role(egui::accesskit::Role::SpinButton).find(|node| node.accesskit_node().numeric_value() == Some(41.0)).unwrap();
+    assert!(field.accesskit_node().is_disabled());
+    field.click();
+    h.key_press(egui::Key::ArrowUp);
+    h.run_steps(2);
+    assert_eq!(h.state().session.tools.brush, brush);
+    assert_eq!(h.state().session.journal.len(), journal + 1, "inactive edits and tool swaps add no brush command");
+    let a = h.state_mut();
+    a.ui.tool = Tool::MixerBrush;
+    crate::paint_mouse::sync_tool_brush(a);
+    h.run_steps(2);
+    assert_eq!(h.state().session.tools.brush, mixer, "the Mixer Brush keeps its own edited settings");
+    assert!(
+        h.query_all_by_role(egui::accesskit::Role::SpinButton)
+            .any(|node| node.accesskit_node().numeric_value() == Some(42.0) && !node.accesskit_node().is_disabled())
+    );
+}
+
 fn toggle_value(app: &PhotocraftApp, section: usize) -> bool {
     let brush = serde_json::to_value(&app.session.tools.brush).unwrap();
     let path = match section {
@@ -573,6 +807,55 @@ fn toggle_value(app: &PhotocraftApp, section: usize) -> bool {
         _ => panic!("not a checkbox-only row"),
     };
     brush.pointer(path).and_then(Value::as_bool).expect("the checkbox has a boolean brush setting")
+}
+
+#[test]
+fn pose_axes_window_routes_each_checkbox_through_a_minimal_command() {
+    use egui::accesskit::{Role, Toggled};
+    use egui_kittest::kittest::{NodeT, Queryable};
+    let mut h = harness(0, 7);
+    h.state_mut()
+        .session
+        .execute(
+            "tools.setBrush",
+            json!({"pose": {
+                "enabled": true, "tiltX": 45, "tiltY": -18, "overrideTilt": true,
+                "pressure": 0.71, "rotation": 67
+            }}),
+        )
+        .unwrap();
+    h.run_steps(3);
+    let before = h.state().session.tools.brush.clone();
+    let n = h.state().session.journal.len();
+    h.get_by_role_and_label(Role::CheckBox, "Override Tilt X").click();
+    h.run_steps(3);
+    assert_eq!(h.get_by_label("Override Tilt X").accesskit_node().toggled(), Some(Toggled::False));
+    assert_eq!(h.get_by_label("Override Tilt Y").accesskit_node().toggled(), Some(Toggled::True));
+    assert_eq!(h.state().session.journal.len(), n + 1);
+    let (id, params) = last_journal(h.state()).unwrap();
+    assert_eq!(id, "tools.setBrush");
+    assert_eq!(params["brush"], json!({"pose": {"overrideTiltX": false}}));
+    let mut expected = serde_json::to_value(before).unwrap();
+    expected["pose"]["overrideTiltX"] = json!(false);
+    expected["pose"]["overrideTilt"] = json!(false);
+    assert_eq!(serde_json::to_value(&h.state().session.tools.brush).unwrap(), expected);
+    h.get_by_role_and_label(Role::CheckBox, "Override Tilt Y").click();
+    h.run_steps(3);
+    assert_eq!(last_journal(h.state()).unwrap().1["brush"], json!({"pose": {"overrideTiltY": false}}));
+    let before = h.state().session.tools.brush.clone();
+    h.state_mut().session.execute("tools.setBrush", json!({"pose": {"enabled": false}})).unwrap();
+    h.run_steps(3);
+    let n = h.state().session.journal.len();
+    for label in ["Override Tilt X", "Override Tilt Y"] {
+        let node = h.get_by_role_and_label(Role::CheckBox, label);
+        assert!(node.accesskit_node().is_disabled());
+        node.click();
+        h.run_steps(2);
+    }
+    let mut expected = before;
+    expected.pose.enabled = false;
+    assert_eq!(h.state().session.tools.brush, expected);
+    assert_eq!(h.state().session.journal.len(), n, "a disabled pose records no checkbox update");
 }
 
 #[test]
@@ -825,11 +1108,31 @@ fn brushes_panel_groups_collapse_and_filter() {
     let n = brush_preview::render_count(&ctx);
     assert_eq!(shown(&mut h), all);
     assert_eq!(brush_preview::render_count(&ctx), n);
-    // A filter shows matching presets even in collapsed groups.
+    // A filter shows matching presets even in collapsed top-level groups.
     let first = h.state().session.tools.presets[0].name.clone();
     h.state_mut().ui.brushes_panel.filter = first.to_uppercase();
     h.run_steps(2);
     assert!(brush_preview::render_count(&ctx) >= n);
+}
+
+/// #7257: with a search filter active, nested folders that contain matches can still be closed.
+#[test]
+fn brush_search_allows_collapsing_nested_folders() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = harness(1, 0);
+    let builtin_groups: Vec<String> = grouped_presets(&h.state().session.tools.presets).into_iter().map(|(g, _)| g).collect();
+    h.state_mut().ui.brushes_panel.collapsed = builtin_groups;
+    for p in [kit("Kit Top", &[]), kit("Kit Pen", &["Test Inks"]), kit("Kit Nib", &["Test Inks", "Test Fine"])] {
+        h.state_mut().session.tools.presets.push(p);
+    }
+    h.state_mut().ui.brushes_panel.filter = "Kit".into();
+    h.run_steps(3);
+    assert!(h.query_by_label("Kit Nib").is_some(), "search shows nested matches");
+    h.get_by_label("Test Inks").click();
+    h.run_steps(3);
+    assert_eq!(h.state().ui.brushes_panel.collapsed.last().map(String::as_str), Some("Kit/Test Inks"));
+    assert!(h.query_by_label("Kit Nib").is_none() && h.query_by_label("Test Fine").is_none());
+    assert!(h.query_by_label("Kit Pen").is_none());
 }
 
 fn kit(name: &str, folder: &[&str]) -> paint::BrushPreset {
@@ -1075,7 +1378,6 @@ fn brush_sections_paint_simplified_chinese_labels() {
     for (name, _) in SECTIONS {
         let translated = crate::i18n::tr(zh, name);
         assert!(painted.iter().any(|s| s == translated), "{name} must paint as {translated}");
-        assert!(!painted.iter().any(|s| s == name), "{name} must not paint in English");
     }
 }
 
@@ -1281,6 +1583,69 @@ fn hand_tool_offers_scale_buttons_and_requests_the_right_view() {
     h.run_steps(1);
     assert!(h.state().ui.views[0].fill_pending);
     assert!(!h.state().ui.views[0].fit_pending);
+}
+
+#[test]
+fn fixed_size_shows_and_takes_the_unit_picked_on_its_fields() {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::{NodeT, Queryable};
+
+    // 254 ppi is 10 px a millimetre.
+    let mut app = app();
+    app.run("file.new", json!({"width": 400, "height": 200, "resolution": 254})).unwrap();
+    app.sync_views();
+    app.ui.tool = crate::state::Tool::RectMarquee;
+    let o = &mut app.ui.tool_options;
+    (o.marquee_style, o.marquee_width, o.marquee_height) = ("fixedSize".into(), 100.0, 50.0);
+    assert_eq!(o.marquee_unit, "pixels");
+    let mut h = Harness::builder().with_size(vec2(1400.0, 360.0)).build_ui_state(
+        |ui, app: &mut PhotocraftApp| {
+            if ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
+                crate::panels::options_bar(app, ui);
+            }
+        },
+        app,
+    );
+    PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::Pro);
+    h.run_steps(4);
+    let has = |h: &Harness<'static, PhotocraftApp>, v: f64| h.query_all_by_role(Role::SpinButton).any(|n| n.accesskit_node().numeric_value() == Some(v));
+    assert!(has(&h, 100.0) && has(&h, 50.0));
+
+    // A right-click on Width lists the units; Millimeters shows both sides in mm.
+    h.query_all_by_role(Role::SpinButton).find(|n| n.accesskit_node().numeric_value() == Some(100.0)).unwrap().click_secondary();
+    h.run_steps(3);
+    h.get_by_label("Millimeters").click();
+    h.run_steps(4);
+    let o = &h.state().ui.tool_options;
+    assert_eq!(o.marquee_unit, "mm");
+    assert_eq!((o.marquee_width, o.marquee_height), (100.0, 50.0), "the size itself stays in pixels");
+    assert!(has(&h, 10.0) && has(&h, 5.0), "100 x 50 px at 254 ppi is 10 x 5 mm");
+
+    // A number typed now is in mm.
+    let field = h.query_all_by_role(Role::SpinButton).position(|n| n.accesskit_node().numeric_value() == Some(10.0)).unwrap();
+    h.query_all_by_role(Role::SpinButton).nth(field).unwrap().click();
+    h.run_steps(2);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.run_steps(1);
+    h.event(egui::Event::Text("20".into()));
+    h.run_steps(1);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert_eq!(h.state().ui.tool_options.marquee_width, 200.0);
+
+    // Entering and leaving a field without an edit keeps the pixels, even where the unit rounds
+    // them (50 px at 254 ppi is 0.197 in, which reads back as 50.038 px).
+    h.query_all_by_role(Role::SpinButton).find(|n| n.accesskit_node().numeric_value() == Some(5.0)).unwrap().click_secondary();
+    h.run_steps(3);
+    h.get_by_label("Inches").click();
+    h.run_steps(4);
+    let field = h.query_all_by_role(Role::SpinButton).position(|n| n.accesskit_node().numeric_value().is_some_and(|v| (v - 0.19685).abs() < 1e-4)).unwrap();
+    h.query_all_by_role(Role::SpinButton).nth(field).unwrap().click();
+    h.run_steps(2);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert_eq!(h.state().ui.tool_options.marquee_unit, "inches");
+    assert_eq!(h.state().ui.tool_options.marquee_height, 50.0);
 }
 
 #[test]

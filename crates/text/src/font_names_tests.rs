@@ -124,7 +124,7 @@ fn collection_isolation_preserves_requested_face() {
     let blob = Blob::new(Arc::new(bytes));
     assert!(isolated_face(blob.clone(), 2).is_none());
     let mut db = FontDb::new();
-    db.register_blob(blob.clone());
+    db.register_blob(blob.clone(), None);
     let mut style = CharStyle { font_family: "Numeric Test".into(), font_style: "30".into(), ..Default::default() };
     db.select_named_face(&mut style);
     assert_eq!(db.faces(&style.font_family)[0].postscript_name.as_deref(), Some("Collection30"));
@@ -187,4 +187,67 @@ fn localized_family_names_map_english_families_to_native_names() {
     assert_eq!(local.get("Gothic Test").map(String::as_str), Some("ゴシック テスト"));
     assert!(!local.contains_key(DEFAULT_FAMILY));
     assert!(local.values().all(|v| !v.is_empty()));
+}
+
+/// A craft-fonts manifest entry for `bytes`, as `build.rs` writes one per manifest line.
+fn craft(family: &'static str, scripts: &'static [&'static str], bytes: Vec<u8>) -> crate::CraftFont {
+    crate::CraftFont { family, style: "Regular", scripts, bytes: bytes.leak() }
+}
+
+/// A TrueType collection of single-face fonts.
+fn collection(faces: &[Vec<u8>]) -> Vec<u8> {
+    let mut bytes = b"ttcf\0\x01\0\0".to_vec();
+    bytes.extend((faces.len() as u32).to_be_bytes());
+    let mut start = 12 + 4 * faces.len();
+    for face in faces {
+        bytes.extend((start as u32).to_be_bytes());
+        start += face.len();
+    }
+    for face in faces {
+        let start = bytes.len();
+        bytes.extend(face);
+        let count = u16::from_be_bytes(bytes[start + 4..start + 6].try_into().unwrap()) as usize;
+        for i in 0..count {
+            let r = start + 12 + i * 16 + 8;
+            let offset = u32::from_be_bytes(bytes[r..r + 4].try_into().unwrap()) + start as u32;
+            bytes[r..r + 4].copy_from_slice(&offset.to_be_bytes());
+        }
+    }
+    bytes
+}
+
+/// Single-face craft fonts of every script register under their manifest family names, whatever
+/// family their `name` tables give, and the ones the fallback lists name are in the fallback
+/// stack. The Hans and Arab families are fallback-list names, and no craft-fonts manifest uses
+/// any of the three, so `FontDb::new` does not register them from the build's own craft fonts.
+#[test]
+fn craft_fonts_of_every_script_register_under_their_manifest_families() {
+    let fonts = [
+        craft("WenQuanYi Micro Hei", &["Hans", "Latn"], localized_font(&INTER_REGULAR, "WenQuanYi Micro Hei", "WenQuanYi Micro Hei")),
+        // The `name` tables of these two give the family "Numeric Test".
+        craft("Geeza Pro", &["Arab"], numeric_font(&INTER_REGULAR, "20", "CraftTestArabic")),
+        craft("Craft Test Gothic", &["Jpan", "Latn"], numeric_font(&INTER_SEMIBOLD, "30", "CraftTestGothic")),
+    ];
+    let mut db = FontDb::new();
+    assert!(fonts.iter().all(|f| !db.has_family(f.family)));
+    db.register_craft_fonts(&fonts);
+    let families = db.families();
+    for f in &fonts {
+        assert!(families.iter().any(|n| n == f.family), "{} registered under its manifest family: {families:?}", f.family);
+    }
+    assert!(!db.has_family("Numeric Test"), "{families:?}");
+    for family in ["WenQuanYi Micro Hei", "Geeza Pro"] {
+        assert!(db.fallback_stack().any(|f| f == family), "{family} in {:?}", db.fallback_stack().collect::<Vec<_>>());
+    }
+}
+
+/// Each face of a craft font collection keeps the family its `name` table gives.
+#[test]
+fn craft_font_collections_keep_their_face_families() {
+    let faces = [localized_font(&INTER_REGULAR, "Craft Test A", "クラフト A"), localized_font(&INTER_SEMIBOLD, "Craft Test B", "クラフト B")];
+    let fonts = [craft("Craft Test Collection", &["Jpan", "Latn"], collection(&faces))];
+    let mut db = FontDb::new();
+    db.register_craft_fonts(&fonts);
+    assert!(db.has_family("Craft Test A") && db.has_family("Craft Test B"), "{:?}", db.families());
+    assert!(!db.has_family("Craft Test Collection"));
 }

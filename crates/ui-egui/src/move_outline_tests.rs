@@ -38,7 +38,18 @@ fn app() -> (PhotocraftApp, LayerId, LayerId) {
     app.ui.view.extras = true;
     app.ui.view.show.layer_edges = true;
     // 4 screen px per document px, the document centred.
-    app.ui.views = vec![View { zoom: 4.0, center: [32.0, 32.0], fit_pending: false, fill_pending: false, doc_size: [64, 64], rotation: 0.0 }];
+    app.ui.views = vec![View {
+        zoom: 4.0,
+        center: [32.0, 32.0],
+        fit_pending: false,
+        fill_pending: false,
+        doc_size: [64, 64],
+        rotation: 0.0,
+        zoom_animating: false,
+        zoom_anchor: None,
+        display_camera: None,
+        zoom_transition: None,
+    }];
     (app, ids[0], ids[1])
 }
 

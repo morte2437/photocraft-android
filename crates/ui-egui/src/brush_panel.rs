@@ -98,8 +98,9 @@ pub struct BrushesPanelState {
     pub show_stroke: bool,
     /// The Brush Preset picker's cards: show the tip thumbnail.
     pub show_tip: bool,
-    /// The Brush Preset picker's cards: their size scale, from the picker's footer slider
-    /// (`crate::brush_picker::body`). 1 is the standard size; the cards' width, height and
+    /// The Brush Preset picker's cards and the Brushes tab's grid cells and list rows: their size
+    /// scale, from the picker's footer slider (`crate::brush_picker::body`) or the tab's preview-size
+    /// slider. 1 is the standard size; the cards' width, height and
     /// insides multiply by it (`crate::brushes_tab`) — the height down to a 0.50 floor, the
     /// width all the way — the text holds its 1.0 size, and at or below the compact threshold
     /// the tips drop the size number under them and take their cell whole.
@@ -211,7 +212,7 @@ pub fn commit_gesture(app: &mut PhotocraftApp, ctx: &egui::Context, before: &Bru
 }
 
 /// Group label for presets saved without a group.
-pub const UNGROUPED: &str = "My Brushes";
+pub const UNGROUPED: &str = photocraft_engine::brush_key_cmds::UNGROUPED;
 
 /// Preset indices in panel order: groups in order of first appearance.
 pub fn grouped_presets(presets: &[paint::BrushPreset]) -> Vec<(String, Vec<usize>)> {
@@ -323,9 +324,13 @@ fn section_list(app: &mut PhotocraftApp, ui: &mut egui::Ui, b: &mut BrushSetting
             if let Some(lock) = section_lock(b, i) {
                 let lr = egui::Rect::from_center_size(egui::pos2(r.right() - 11.0, r.center().y), vec2(18.0, 18.0));
                 let lresp = ui.interact(lr, ui.id().with(("brush-sec-lock", i)), Sense::click());
+                lresp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), *lock, format!("{}: {}", tl!("Lock"), tl!(*name))));
                 // Like Photoshop: lock icons stay visible on every lockable section row.
                 let tint = if *lock { t.text } else { t.text_faint };
                 icons::paint(ui, lr, if *lock { "lock" } else { "lock-open" }, 12.0, tint);
+                if lresp.has_focus() {
+                    ui.painter().rect_stroke(lr, t.radius_sm, Stroke::new(1.0, t.accent), egui::StrokeKind::Inside);
+                }
                 let tip =
                     if *lock { tl!("Unlock: picking a preset replaces these settings") } else { tl!("Lock: keep these settings when picking another preset") };
                 if lresp.on_hover_text(tip).clicked() {
@@ -368,9 +373,11 @@ fn settings_tab(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 // The picked preset is recorded by name (`brush.presets.setCurrent`, identity, so
                 // look-alike duplicates stay distinct), since the engine can't infer it from the
                 // brush afterwards.
-                ui.add_enabled_ui(on, |ui| section_body(ui, &mut b, section, &app.session.tools.presets, app.session.tools.current_preset.as_deref()))
-                    .inner
-                    .inspect(|name| run_or_status(app, "brush.presets.setCurrent", json!({ "name": name })));
+                ui.add_enabled_ui(on, |ui| {
+                    section_body(ui, &mut b, section, &app.session.tools.presets, app.session.tools.current_preset.as_deref(), app.ui.tool)
+                })
+                .inner
+                .inspect(|name| run_or_status(app, "brush.presets.setCurrent", json!({ "name": name })));
             });
         });
     });

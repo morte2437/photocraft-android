@@ -56,6 +56,58 @@ pub(crate) fn probe(bytes: &[u8], limits: &Limits) -> Result<(u32, u32, Option<V
     Ok((w, h, dec.exif_metadata().ok().flatten()))
 }
 
+/// Whether `bytes` is an animated WebP of more than one frame.
+pub(crate) fn is_animated(bytes: &[u8]) -> bool {
+    image_webp::WebPDecoder::new(Cursor::new(bytes)).is_ok_and(|d| d.is_animated() && d.num_frames() > 1)
+}
+
+/// Every frame of an animated WebP, or `None` when it is a still one (or an animation of one
+/// frame), which [`decode`] reads whole. The frames come composited onto the canvas by
+/// `image-webp` (offsets, blending and disposal applied), each a full picture with the file's
+/// ICC profile and its duration in milliseconds.
+///
+/// The first frame must decode. If a later frame is damaged the frames before it are returned
+/// and the first one carries [`DecodeWarning::Truncated`]. The frame count
+/// ([`super::gif_frames::MAX_GIF_FRAMES`]) and the total decoded bytes are checked against
+/// `limits` before each frame is kept.
+pub(crate) fn decode_frames(bytes: &[u8], limits: &Limits) -> Result<Option<Vec<super::gif_frames::AnimationFrame>>, CodecError> {
+    use super::gif_frames::{AnimationFrame, MAX_GIF_FRAMES};
+    if !is_animated(bytes) {
+        return Ok(None);
+    }
+    let (mut dec, w, h, layout) = open(bytes, limits)?;
+    let size = dec.output_buffer_size().ok_or_else(|| err("image too large"))?;
+    let icc = dec.icc_profile().ok().flatten();
+    let mut buf = alloc_zeroed::<u8>(size)?;
+    let mut out: Vec<AnimationFrame> = Vec::new();
+    let mut damaged = false;
+    for _ in 0..dec.num_frames() {
+        if out.len() >= MAX_GIF_FRAMES {
+            return Err(CodecError::LimitExceeded(format!("more than {MAX_GIF_FRAMES} frames")));
+        }
+        // Every frame keeps its own copy of the file's ICC profile along with its pixels.
+        let frame_bytes = (size as u64).saturating_add(icc.as_ref().map_or(0, |p| p.len() as u64));
+        if frame_bytes.saturating_mul(out.len() as u64 + 1) > limits.max_alloc {
+            return Err(CodecError::LimitExceeded(format!("{} frames of {w}x{h} exceed max_alloc {}", out.len() + 1, limits.max_alloc)));
+        }
+        let delay_ms = match dec.read_frame(&mut buf) {
+            Ok(d) => d,
+            Err(e) if out.is_empty() => return Err(err(e)),
+            Err(_) => {
+                damaged = true;
+                break;
+            }
+        };
+        let mut image = Image::from_u8(w, h, layout, buf.clone())?;
+        image.icc.clone_from(&icc);
+        out.push(AnimationFrame { image, delay_ms });
+    }
+    if damaged && let Some(first) = out.first_mut() {
+        first.image.warnings.push(DecodeWarning::Truncated { format: F });
+    }
+    Ok(Some(out))
+}
+
 pub(crate) fn encode(src: &Image, plan: Plan, opts: &EncodeOptions) -> Result<Vec<u8>, CodecError> {
     let img = src.converted(plan.layout, plan.sample);
     if !opts.webp_lossless {

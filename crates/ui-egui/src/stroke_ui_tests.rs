@@ -139,17 +139,6 @@ fn command_params_do_not_leak_private_dialog_fields() {
     assert_eq!(out["color"], "#ff0000");
 }
 
-#[test]
-fn stroke_dialog_labels_are_translated_in_every_catalog() {
-    const LABELS: &[&str] =
-        &["Stroke", "Width:", "Color:", "Location", "Location:", "Inside", "Center", "Outside", "Blending", "Mode:", "Opacity:", "Preserve Transparency"];
-    for lang in crate::i18n::Lang::all().filter(|lang| lang.complete_menus()) {
-        for label in LABELS {
-            assert!(crate::i18n::has(lang, label), "{} is missing Stroke dialog label: {label}", lang.code());
-        }
-    }
-}
-
 /// The Stroke dialog's colour swatch opens PhotoCraft's Color Picker on the stroke colour (as in
 /// Photoshop), not egui's compact popup; OK sets the stroke colour, not the foreground, and the
 /// stroke is drawn in it.

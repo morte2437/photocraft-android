@@ -460,12 +460,11 @@ fn gain_row(s: &Sensor, y: usize, x0: usize, w: usize, k: usize) -> Option<Vec<f
         if k < m.plane || k >= m.plane.saturating_add(m.planes) || ay < m.top || ay >= m.bottom || !(ay - m.top).is_multiple_of(m.row_pitch) {
             continue;
         }
-        let row = m.row(rv, k - m.plane);
         let o = out.get_or_insert_with(|| vec![1.0; w]);
         for (i, f) in o.iter_mut().enumerate() {
             let x = x0 + i;
             if x >= a.x && m.covers(x - a.x, ay) {
-                *f *= m.at(&row, ((x - a.x) as f64 + 0.5) / a.width as f64);
+                *f *= m.at_rv(rv, k - m.plane, ((x - a.x) as f64 + 0.5) / a.width as f64);
             }
         }
     }

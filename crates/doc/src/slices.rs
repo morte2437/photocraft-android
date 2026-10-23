@@ -168,10 +168,17 @@ pub struct ResolvedSlice {
 }
 
 /// The visible part of every stored slice (later slices cover earlier ones, as in Photoshop),
-/// clipped to the canvas.
-fn clipped(doc: &Document) -> Vec<(u32, Rect)> {
+/// clipped to the canvas: a covered slice is cut into the rectangles that stay visible, each
+/// paired with the slice's index in the list.
+fn visible(doc: &Document) -> Vec<(usize, Rect)> {
     let canvas = doc.bounds();
-    doc.slices.list.iter().map(|s| (s.id, s.rect.intersect(&canvas))).filter(|(_, r)| !r.is_empty()).collect()
+    let rects: Vec<Rect> = doc.slices.list.iter().map(|s| s.rect.intersect(&canvas)).collect();
+    let mut out = Vec::new();
+    for (i, r) in rects.iter().enumerate() {
+        let above = rects.get(i + 1..).unwrap_or_default();
+        out.extend(auto_slices(*r, above).into_iter().map(|p| (i, p)));
+    }
+    out
 }
 
 /// Rectangles that tile `canvas` minus `taken`. The canvas is cut into a grid along every slice
@@ -195,33 +202,61 @@ pub fn auto_slices(canvas: Rect, taken: &[Rect]) -> Vec<Rect> {
     xs.dedup();
     ys.sort_unstable();
     ys.dedup();
-    let covered = |x0: i32, y0: i32| taken.iter().any(|r| x0 >= r.x0 && x0 < r.x1 && y0 >= r.y0 && y0 < r.y1);
-    // Horizontal runs per row band.
+    // Clip the taken rectangles to the canvas once, so band coverage only considers rects that
+    // can actually cover a cell.
+    let clipped: Vec<Rect> = taken.iter().map(|r| r.intersect(&canvas)).filter(|r| !r.is_empty()).collect();
+    // Map an x edge to its cell index in `xs` (xs is sorted/deduped).
+    let x_cell = |x: i32| xs.partition_point(|&e| e <= x).saturating_sub(1);
+    // Horizontal runs per row band. For each band, mark covered x-cells in a single pass over
+    // the rects intersecting that band, instead of scanning every rect for every cell (which
+    // was cubic in the slice count and let a crafted document stall canvas drawing).
+    let ncells = xs.len().saturating_sub(1);
     let mut runs: Vec<Rect> = Vec::new();
     for yw in ys.windows(2) {
+        let (band_y0, band_y1) = (yw[0], yw[1]);
+        let mut covered_cell = vec![false; ncells];
+        for r in &clipped {
+            if r.y0 <= band_y0 && band_y1 <= r.y1 {
+                // Rect spans this whole band vertically; mark the x-cells it covers.
+                let (c0, c1) = (x_cell(r.x0), x_cell(r.x1));
+                for c in covered_cell.iter_mut().take(c1).skip(c0) {
+                    *c = true;
+                }
+            }
+        }
         let mut start: Option<i32> = None;
-        for xw in xs.windows(2) {
-            let free = !covered(xw[0], yw[0]);
+        for (ci, xw) in xs.windows(2).enumerate() {
+            let free = !covered_cell.get(ci).copied().unwrap_or(false);
             match (free, start) {
                 (true, None) => start = Some(xw[0]),
                 (false, Some(s)) => {
-                    runs.push(Rect::new(s, yw[0], xw[0], yw[1]));
+                    runs.push(Rect::new(s, band_y0, xw[0], band_y1));
                     start = None;
                 }
                 _ => {}
             }
         }
         if let Some(s) = start {
-            runs.push(Rect::new(s, yw[0], *xs.last().unwrap_or(&canvas.x1), yw[1]));
+            runs.push(Rect::new(s, band_y0, *xs.last().unwrap_or(&canvas.x1), band_y1));
         }
     }
     // Merge vertically adjacent runs with the same columns.
+    // `open` finds the slice a run continues by its columns and bottom edge: searching the output
+    // for each run is quadratic in the runs, and bars crossing in a grid leave a million of them.
     let mut out: Vec<Rect> = Vec::new();
+    let mut open: std::collections::HashMap<(i32, i32, i32), usize> = std::collections::HashMap::new();
     for r in runs {
-        if let Some(prev) = out.iter_mut().find(|p| p.x0 == r.x0 && p.x1 == r.x1 && p.y1 == r.y0) {
-            prev.y1 = r.y1;
-        } else {
-            out.push(r);
+        match open.remove(&(r.x0, r.x1, r.y0)) {
+            Some(i) => {
+                if let Some(prev) = out.get_mut(i) {
+                    prev.y1 = r.y1;
+                }
+                open.insert((r.x0, r.x1, r.y1), i);
+            }
+            None => {
+                open.insert((r.x0, r.x1, r.y1), out.len());
+                out.push(r);
+            }
         }
     }
     out
@@ -229,26 +264,31 @@ pub fn auto_slices(canvas: Rect, taken: &[Rect]) -> Vec<Rect> {
 
 /// Every slice of `doc` in display order (see [`ResolvedSlice`]). Without user or layer slices
 /// the whole canvas is one auto slice named `<base>` alone (as Photoshop's Save for Web names
-/// it); with several, generated names are numbered `<base>_NN`.
+/// it); with several, generated names are numbered `<base>_NN`. A slice covered by later ones
+/// appears once per visible piece: the first piece keeps its name, the others are `<name>-NN`.
 pub fn resolve(doc: &Document) -> Vec<ResolvedSlice> {
     let base = base_name(doc);
-    let stored = clipped(doc);
+    let stored = visible(doc);
     let rects: Vec<Rect> = stored.iter().map(|(_, r)| *r).collect();
-    let mut all: Vec<(Option<u32>, Rect)> = stored.iter().map(|(id, r)| (Some(*id), *r)).collect();
+    let mut all: Vec<(Option<usize>, Rect)> = stored.iter().map(|(i, r)| (Some(*i), *r)).collect();
     all.extend(auto_slices(doc.bounds(), &rects).into_iter().map(|r| (None, r)));
     all.sort_by_key(|(_, r)| (r.y0, r.x0));
     let single = all.len() == 1;
+    let mut named = vec![false; doc.slices.list.len()];
     all.into_iter()
         .enumerate()
-        .map(|(i, (id, rect))| {
-            let s = id.and_then(|id| doc.slices.get(id));
-            let number = i + 1;
+        .map(|(n, (i, rect))| {
+            let s = i.and_then(|i| doc.slices.list.get(i));
+            let number = n + 1;
+            let first = i.and_then(|i| named.get_mut(i)).is_none_or(|seen| !std::mem::replace(seen, true));
             let name = match s.map(|s| s.name.as_str()).filter(|n| !n.is_empty()) {
-                Some(n) => n.to_string(),
+                Some(n) if first => n.to_string(),
+                Some(n) => format!("{n}-{number:02}"),
                 None if single => base.clone(),
                 None => format!("{base}_{number:02}"),
             };
-            ResolvedSlice { number, id, origin: s.map_or(SliceOrigin::Auto, |s| s.origin), rect, name, kind: s.map_or(SliceKind::Image, |s| s.kind) }
+            let (id, origin, kind) = s.map_or((None, SliceOrigin::Auto, SliceKind::Image), |s| (Some(s.id), s.origin, s.kind));
+            ResolvedSlice { number, id, origin, rect, name, kind }
         })
         .collect()
 }
@@ -288,6 +328,53 @@ mod tests {
     }
 
     #[test]
+    fn auto_slices_cover_exactly_with_many_overlapping_slices() {
+        // Several overlapping slices form a non-trivial grid. The per-band coverage pass must
+        // still tile the complement exactly: auto area + taken-union area == canvas, with no
+        // auto slice overlapping a taken rect or another auto slice.
+        let canvas = Rect::new(0, 0, 200, 150);
+        let taken = [Rect::new(10, 10, 90, 70), Rect::new(50, 40, 160, 120), Rect::new(120, 0, 200, 50), Rect::new(0, 100, 60, 150)];
+        let auto = auto_slices(canvas, &taken);
+        // No auto slice intersects any taken rect.
+        for a in &auto {
+            for t in &taken {
+                assert!(a.intersect(t).is_empty(), "{a:?} overlaps taken {t:?}");
+            }
+        }
+        // Auto slices do not overlap each other.
+        for (i, a) in auto.iter().enumerate() {
+            for b in &auto[i + 1..] {
+                assert!(a.intersect(b).is_empty(), "{a:?} overlaps {b:?}");
+            }
+        }
+        // Auto area equals the canvas minus the union of taken rects (computed on the same grid).
+        let union_cells: i64 = {
+            // Sum cell areas covered by at least one taken rect, over the fine grid.
+            let mut xs = vec![canvas.x0, canvas.x1];
+            let mut ys = vec![canvas.y0, canvas.y1];
+            for t in &taken {
+                xs.extend([t.x0, t.x1]);
+                ys.extend([t.y0, t.y1]);
+            }
+            xs.sort_unstable();
+            xs.dedup();
+            ys.sort_unstable();
+            ys.dedup();
+            let mut sum = 0i64;
+            for yw in ys.windows(2) {
+                for xw in xs.windows(2) {
+                    let covered = taken.iter().any(|r| xw[0] >= r.x0 && xw[0] < r.x1 && yw[0] >= r.y0 && yw[0] < r.y1);
+                    if covered {
+                        sum += i64::from(xw[1] - xw[0]) * i64::from(yw[1] - yw[0]);
+                    }
+                }
+            }
+            sum
+        };
+        assert_eq!(area(&auto) + union_cells, i64::from(canvas.width()) * i64::from(canvas.height()));
+    }
+
+    #[test]
     fn resolve_numbers_top_to_bottom() {
         let mut d = Document::new("site.psd", Size::new(100, 80), ColorMode::Rgb, SampleType::U8);
         assert_eq!(resolve(&d).len(), 1);
@@ -301,6 +388,30 @@ mod tests {
         assert_eq!(user.origin, SliceOrigin::User);
         d.slices.list[0].name = "logo".into();
         assert!(resolve(&d).iter().any(|s| s.name == "logo"));
+    }
+
+    #[test]
+    fn later_slices_cover_earlier_ones() {
+        // Photoshop's Save for Web on this document writes sliceA [0,0,60,40], o82_02, sliceA-03
+        // [0,40,40,60], sliceB and o82_05: the covered slice is cut into its visible pieces.
+        let mut d = Document::new("o82.psd", Size::new(100, 100), ColorMode::Rgb, SampleType::U8);
+        d.slices.list.push(Slice { id: 1, name: "sliceA".into(), rect: Rect::new(0, 0, 60, 60), ..Default::default() });
+        d.slices.list.push(Slice { id: 2, name: "sliceB".into(), rect: Rect::new(40, 40, 100, 100), ..Default::default() });
+        let r = resolve(&d);
+        let got: Vec<(&str, Option<u32>, Rect)> = r.iter().map(|s| (s.name.as_str(), s.id, s.rect)).collect();
+        assert_eq!(
+            got,
+            [
+                ("sliceA", Some(1), Rect::new(0, 0, 60, 40)),
+                ("o82_02", None, Rect::new(60, 0, 100, 40)),
+                ("sliceA-03", Some(1), Rect::new(0, 40, 40, 60)),
+                ("sliceB", Some(2), Rect::new(40, 40, 100, 100)),
+                ("o82_05", None, Rect::new(0, 60, 40, 100)),
+            ]
+        );
+        d.slices.list[0].name.clear();
+        let names: Vec<String> = resolve(&d).into_iter().filter(|s| s.id == Some(1)).map(|s| s.name).collect();
+        assert_eq!(names, ["o82_01", "o82_03"]);
     }
 
     #[test]

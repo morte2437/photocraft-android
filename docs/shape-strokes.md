@@ -1,6 +1,6 @@
 # Shape stroke options
 
-Updated 2026-10-11: direct editing, compact layout, and clickable colour/style controls.
+Updated 2026-10-15: retain stroke paint and options when width reaches zero (#6191).
 
 PhotoCraft's Shape tool options bar has a Stroke Options button beside the existing width
 and colour controls. It sets defaults for new Rectangle, Ellipse, Triangle, Polygon, Line
@@ -14,6 +14,11 @@ the foreground colour and stroke uses the background colour, as before. Choosing
 colour or style deliberately enables a 3 px stroke when no stroke is present. The style button
 remains available with no stroke, but opening or dismissing it alone does not enable one.
 Properties edits the selected shape; the options bar continues to set defaults for new shapes.
+
+Setting an existing shape's stroke width to 0 px hides the stroke while retaining its paint,
+opacity and geometry options. Raising the width restores the same style, including after a
+native save and reopen. No Color still removes the stroke; deliberately choosing a colour or
+style enables a zero-width stroke at 3 px. Width edits remain one undo step per numeric drag.
 
 The editor offers Solid, Dashed (4 widths on, 2 off), Dotted (zero-length dashes with round
 caps, spaced every 2 widths), and custom repeating dash/gap sequences. Dash lengths and

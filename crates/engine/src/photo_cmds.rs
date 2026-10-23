@@ -807,7 +807,11 @@ fn merge_to_hdr(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let mut surf = Surface::new(fmt);
     surf.write_region(area, &data);
-    doc.layers.push(Layer::new("Background", LayerContent::Raster(surf)));
+    // The merged result is opaque: a real Background, as Crop and Straighten makes.
+    let mut bg = Layer::new("Background", LayerContent::Raster(surf));
+    bg.locks.transparency = true;
+    bg.locks.position = true;
+    doc.layers.push(bg);
     let idx = s.add_document(doc, None);
     let ev0 = exposures[order[0]];
     Ok(json!({
@@ -1094,6 +1098,7 @@ mod tests {
         assert!((ev[1] - 2.0).abs() < 1e-6 && (ev[2] - 4.0).abs() < 1e-6, "{ev:?}");
         let d = &s.active().unwrap().doc;
         assert_eq!(d.depth, SampleType::F32);
+        assert!(d.is_background(d.layers[0].id), "the merged layer is a real (locked) Background");
         let l = d.layers[0].surface().unwrap();
         // Linear output: ratios across the ramp follow the radiance.
         let (a, b) = (l.rgba(20, 30)[1] as f64, l.rgba(80, 30)[1] as f64);

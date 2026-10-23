@@ -25,7 +25,7 @@ Implemented only from public specifications, papers and observation of files:
 * ITU-T T.81 (ISO 10918-1) Annex H: lossless JPEG, process 14 ("LJ92").
 * The published description of Canon's CR2 container (header, raw IFD, slice tag 0xC640).
 * Publicly documented maker-note / private tags (ExifTool's tag tables): Canon ModelID (0x0010),
-  SensorInfo (0x00E0) and ColorData (0x4001), Nikon WB_RBLevels (0x000C) and BlackLevel (0x003D), Sony
+  SensorInfo (0x00E0) and ColorData (0x4001), Nikon WB_RBLevels (0x000C), ColorSpace (0x001E) and BlackLevel (0x003D), Sony
   BlackLevel (0x7310), WB_RGGBLevels (0x7313), SonyRawFileType (0x7000) and SonyToneCurve
   (0x7010), the PanasonicRaw IFD0 tags, Olympus ImageProcessing (0x2040) and CameraSettings
   (0x2020) preview tags, the Fujifilm RAF header and metadata records (RawImageCropTopLeft /
@@ -119,7 +119,11 @@ out). One cell in three is held out: the look is used only when it shows the sam
 the matrix is plausible and the held-out mean CIE76 ΔE drops to at most 85 % of the fallback's.
 Pass it as `DevelopOptions::camera_look`; `develop` then notes "colour fitted to the camera's
 embedded JPEG (mean ΔE …)". The crate cannot decode JPEG itself: `photocraft-io` decodes the
-smallest preview at least 512 pixels long, fits and develops in one go.
+smallest preview at least 512 pixels long, fits and develops in one go. A preview without an ICC
+profile is read in the colour space the raw states (`embedded_preview_color_space`): the EXIF
+ColorSpace (a Sony body set to Adobe RGB writes Uncalibrated with Interoperability "R03"), else a
+Nikon maker note's ColorSpace (0x001E; Nikon writes no EXIF ColorSpace), sRGB when the file says
+nothing.
 Camera Raw's tuned import fits at the default exposure and as-shot white balance first,
 then applies the user's Exposure, Temperature and Tint to that same rendering.
 The D5100's measured image area is 4928 × 3264 at (8, 8) in a 4992 × 3280
@@ -149,7 +153,10 @@ Raw rendering (quarter size, medians over the frames) the measured profile is 0.
 luminance with a mean CIE76 ΔE of 1.8; the look fitted to the embedded JPEG would be 0.30 stop and
 ΔE 6.4, as it follows the camera's picture style instead. The open-time re-develop
 (`photocraft-io`'s `import_raw_tuned`) and the tone curve its previews use (`tone_curve`) take the
-same look as the default open, so changing a slider does not change the colour rendering.
+same look as the default open, so changing a slider does not change the colour rendering. The D4's
+saturation level was measured on 14-bit files and follows the sample depth (a 12-bit frame is the
+14-bit one shifted right by two, so its level is a quarter of it): the three public 12-bit D4 files
+develop within 0.02 stop of their 14-bit twin.
 
 ## Tools
 

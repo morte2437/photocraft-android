@@ -7,7 +7,7 @@ use crate::security::MAX_REQUEST_BYTES;
 /// Read a complete request before allowing any of its bytes to reach rmcp. `lines()`
 /// buffers without a limit, while forwarding partial input can make a valid JSON prefix
 /// executable at EOF after an oversized suffix is rejected.
-async fn bounded_line<R: tokio::io::AsyncRead + Unpin>(source: &mut BufReader<R>, maximum: usize) -> std::io::Result<Option<String>> {
+async fn bounded_line<R: tokio::io::AsyncRead + Unpin>(source: &mut BufReader<R>, maximum: usize) -> std::io::Result<Option<Vec<u8>>> {
     let mut bytes = Vec::new();
     loop {
         let available = source.fill_buf().await?;
@@ -15,7 +15,7 @@ async fn bounded_line<R: tokio::io::AsyncRead + Unpin>(source: &mut BufReader<R>
             if bytes.is_empty() {
                 return Ok(None);
             }
-            return String::from_utf8(bytes).map(Some).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e));
+            return Ok(Some(bytes));
         }
         let newline = available.iter().position(|&byte| byte == b'\n');
         let length = newline.map_or(available.len(), |at| at + 1);
@@ -29,7 +29,7 @@ async fn bounded_line<R: tokio::io::AsyncRead + Unpin>(source: &mut BufReader<R>
             if bytes.last() == Some(&b'\r') {
                 bytes.pop();
             }
-            return String::from_utf8(bytes).map(Some).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e));
+            return Ok(Some(bytes));
         }
     }
 }
@@ -48,11 +48,16 @@ impl PhotocraftMcp {
         let reader = tokio::spawn(async move {
             let mut lines = BufReader::new(input);
             while let Some(line) = bounded_line(&mut lines, MAX_REQUEST_BYTES).await? {
-                if line.trim().is_empty() {
+                if std::str::from_utf8(&line).is_ok_and(|text| text.trim().is_empty()) {
                     continue;
                 }
-                match serde_json::from_str::<Value>(&line) {
-                    Ok(_) => to_service.write_all(format!("{line}\n").as_bytes()).await?,
+                // Bytes that are not UTF-8 are malformed JSON too: they get the -32700 reply
+                // like any other bad line instead of ending the session.
+                match serde_json::from_slice::<Value>(&line) {
+                    Ok(_) => {
+                        to_service.write_all(&line).await?;
+                        to_service.write_all(b"\n").await?;
+                    }
                     Err(e) => {
                         let reply = json!({"jsonrpc":"2.0", "id":null, "error":{"code":-32700, "message":format!("parse error: {e}")}});
                         if errors.send(reply.to_string()).await.is_err() {
@@ -99,8 +104,8 @@ mod tests {
     #[tokio::test]
     async fn bounded_line_accepts_exact_limit_and_final_line() {
         let mut input = BufReader::new(std::io::Cursor::new(b"1234\nlast!".to_vec()));
-        assert_eq!(bounded_line(&mut input, 5).await.unwrap().as_deref(), Some("1234"));
-        assert_eq!(bounded_line(&mut input, 5).await.unwrap().as_deref(), Some("last!"));
+        assert_eq!(bounded_line(&mut input, 5).await.unwrap().as_deref(), Some(&b"1234"[..]));
+        assert_eq!(bounded_line(&mut input, 5).await.unwrap().as_deref(), Some(&b"last!"[..]));
         assert!(bounded_line(&mut input, 5).await.unwrap().is_none());
 
         let mut oversized_eof = BufReader::new(std::io::Cursor::new(b"longer".to_vec()));
@@ -142,5 +147,43 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("request exceeds 1048576 bytes"));
         let documents = observer.headless_op(|h| Ok(h.session.documents().len())).await.unwrap().unwrap();
         assert_eq!(documents, 0, "the oversized tool call must not run");
+    }
+
+    async fn next_reply(replies: &mut tokio::io::Lines<BufReader<tokio::io::DuplexStream>>) -> Value {
+        let line = tokio::time::timeout(std::time::Duration::from_secs(5), replies.next_line()).await.expect("a reply in time").unwrap().expect("a reply line");
+        serde_json::from_str(&line).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_line_that_is_not_utf8_gets_a_parse_error_and_the_session_keeps_serving() {
+        let (mut client, input) = tokio::io::duplex(1 << 16);
+        let (output, replies) = tokio::io::duplex(1 << 16);
+        let server = PhotocraftMcp::headless();
+        let observer = server.clone();
+        let session = tokio::spawn(server.serve_io(input, output));
+        let mut replies = BufReader::new(replies).lines();
+
+        let initialize = json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "utf8-test", "version": "1"}
+        }});
+        client.write_all(format!("{initialize}\n").as_bytes()).await.unwrap();
+        assert_eq!(next_reply(&mut replies).await["id"], 1);
+        client.write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n").await.unwrap();
+
+        client.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":\xff\xfe}\n").await.unwrap();
+        let error = next_reply(&mut replies).await;
+        assert_eq!(error["error"]["code"], -32700, "{error}");
+        assert_eq!(error["id"], Value::Null, "{error}");
+
+        let call = json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "doc_new", "arguments": {"width": 8, "height": 8}}});
+        client.write_all(format!("{call}\n").as_bytes()).await.unwrap();
+        let reply = next_reply(&mut replies).await;
+        assert_eq!(reply["id"], 2, "{reply}");
+        assert_ne!(reply["result"]["isError"], true, "{reply}");
+        let documents = observer.headless_op(|h| Ok(h.session.documents().len())).await.unwrap().unwrap();
+        assert_eq!(documents, 1, "the call after the bad line must run");
+
+        drop(client);
+        session.await.unwrap().unwrap();
     }
 }

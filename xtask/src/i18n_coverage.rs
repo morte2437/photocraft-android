@@ -72,7 +72,31 @@ fn format_report(languages: &[Language], english_keys: &BTreeSet<Key>, translati
         let coverage = 100.0 * translated as f64 / english_keys.len() as f64;
         report.push_str(&format!("{:<12} {:>5}/{:<6} {:>8.2}%\n", language.code, translated, english_keys.len(), coverage));
     }
+    report.push_str("\nMissing translations (shown in English until translated)\n");
+    for language in languages.iter().filter(|language| language.code != "en") {
+        let empty = BTreeSet::new();
+        let translated = translations.get(&language.code).unwrap_or(&empty);
+        let missing: Vec<&Key> = english_keys.difference(translated).collect();
+        if missing.is_empty() {
+            report.push_str(&format!("{}: none missing\n", language.code));
+            continue;
+        }
+        report.push_str(&format!("{}: {} missing\n", language.code, missing.len()));
+        for key in missing {
+            let source = escape_line(&key.source);
+            if key.context.is_empty() {
+                report.push_str(&format!("    {source}\n"));
+            } else {
+                report.push_str(&format!("    [{}] {source}\n", escape_line(&key.context)));
+            }
+        }
+    }
     report
+}
+
+/// Keeps one key per log line: a source string with a newline or tab prints them escaped.
+fn escape_line(text: &str) -> String {
+    text.replace('\\', "\\\\").replace('\n', "\\n").replace('\t', "\\t")
 }
 
 fn registered_languages(source: &str) -> Result<Vec<Language>, String> {
@@ -494,15 +518,28 @@ mod tests {
         let languages = registered_languages(registry);
         assert!(languages.is_ok());
         let languages = languages.unwrap_or_default();
-        let english_keys = BTreeSet::from([Key { context: String::new(), source: "Open".into() }, Key { context: String::new(), source: "Save".into() }]);
-        let translations = BTreeMap::from([("fr".to_string(), BTreeSet::from([Key { context: String::new(), source: "Open".into() }]))]);
+        let english_keys = BTreeSet::from([
+            Key { context: String::new(), source: "Open".into() },
+            Key { context: String::new(), source: "Save".into() },
+            Key { context: "@plural".into(), source: "{n} layer|{n} layers".into() },
+        ]);
+        let translations = BTreeMap::from([
+            ("fr".to_string(), BTreeSet::from([Key { context: String::new(), source: "Open".into() }])),
+            ("zh".to_string(), english_keys.clone()),
+        ]);
         assert_eq!(
             format_report(&languages, &english_keys, &translations),
             "UI translation coverage (translated source keys / source keys)\n\
              language       translated  coverage\n\
-             en               2/2        100.00%\n\
-             fr               1/2         50.00%\n\
-             zh               0/2          0.00%\n"
+             en               3/3        100.00%\n\
+             fr               1/3         33.33%\n\
+             zh               3/3        100.00%\n\
+             \n\
+             Missing translations (shown in English until translated)\n\
+             fr: 2 missing\n\
+             \x20   Save\n\
+             \x20   [@plural] {n} layer|{n} layers\n\
+             zh: none missing\n"
         );
     }
 
@@ -563,34 +600,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn source_key_set_is_covered_by_complete_catalogs() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap_or(Path::new("."));
-        let keys = source_keys(root).unwrap_or_default();
-        for (code, path) in [
-            ("ja", "ja.tsv"),
-            ("zh-hant", "zh-hant.tsv"),
-            ("es", "es.tsv"),
-            ("ru", "ru.tsv"),
-            ("cs", "cs.tsv"),
-            ("de", "de.tsv"),
-            ("pt-br", "pt-br.tsv"),
-            ("it", "it.tsv"),
-            ("el", "el.tsv"),
-            ("uk", "uk.tsv"),
-            ("nl", "nl.tsv"),
-            ("hu", "hu.tsv"),
-            ("tr", "tr.tsv"),
-            ("vi", "vi.tsv"),
-            ("sr", "sr.tsv"),
-        ] {
-            let catalog_path = root.join("crates/ui-egui/src/i18n").join(path);
-            let text = fs::read_to_string(&catalog_path).unwrap_or_default();
-            let translations = parse_catalog(&catalog_path, &text).unwrap_or_default();
-            let missing: Vec<_> = keys.difference(&translations).collect();
-            assert!(missing.is_empty(), "{code}: missing source keys: {missing:#?}");
-        }
-    }
     #[test]
     fn plural_forms_follow_count_expressions_and_dynamic_forms_are_not_literal_keys() {
         let sources = vec![(

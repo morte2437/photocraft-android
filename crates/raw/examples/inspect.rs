@@ -1,5 +1,5 @@
 //! Prints the raw metadata of files: `cargo run -p photocraft-raw --example inspect -- a.cr2 b.nef`
-//! (handy while adding corpus files; the oracle expectations in `tests/raw_corpus.rs` come from it).
+//! (handy while adding corpus files; the oracle expectations in `tests/it/raw_corpus.rs` come from it).
 use std::env;
 
 fn main() {

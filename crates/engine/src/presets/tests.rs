@@ -766,6 +766,48 @@ fn clone_source_errors_and_overlay() {
     assert_eq!(v["rotation"], json!(-90.0));
 }
 
+fn shape_fill(s: &Session, id: LayerId) -> Option<Fill> {
+    match &s.active().unwrap().doc.layer(id).unwrap().content {
+        LayerContent::Shape(sh) => sh.fill.clone(),
+        _ => panic!("not a shape layer"),
+    }
+}
+
+/// #5568: clicking a gradient with a shape layer selected fills the shape with it in one undo
+/// step; a gradient fill keeps its angle, style, scale and reverse.
+#[test]
+fn gradient_preset_click_fills_the_selected_shape_layer() {
+    let mut s = session(8);
+    let id = LayerId(s.execute("shape.create", json!({"rect": [8, 8, 40, 30], "fill": "#336699"})).unwrap()["layer"].as_u64().unwrap());
+    let before = shape_fill(&s, id);
+    let r = s.execute("gradient.presets.select", json!({"preset": "Red 01"})).unwrap();
+    assert_eq!(r["layer"], json!(id.0));
+    let Some(Fill::Gradient { stops, angle, style, .. }) = shape_fill(&s, id) else { panic!("not a gradient") };
+    // Red 01 starts at #7f0000; a new gradient fill is linear at 90°.
+    assert_eq!(stops[0].1.to_rgba8(), [0x7f, 0, 0, 0xff]);
+    assert_eq!((angle, style), (90.0, photocraft_doc::GradientStyle::Linear));
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(shape_fill(&s, id), before);
+
+    s.execute("shape.edit", json!({"layer": id.0, "fill": {"gradient": {"angle": 30, "style": "radial", "scale": 80, "reverse": true}}})).unwrap();
+    s.execute("gradient.presets.select", json!({"preset": "Green 01"})).unwrap();
+    let Some(Fill::Gradient { angle, style, scale, reverse, .. }) = shape_fill(&s, id) else { panic!("not a gradient") };
+    assert_eq!((angle, style, scale, reverse), (30.0, photocraft_doc::GradientStyle::Radial, 0.8, true));
+}
+
+/// A locked shape refuses the click before anything changes, the Gradient tool's gradient included.
+#[test]
+fn gradient_preset_click_on_a_locked_shape_changes_nothing() {
+    let mut s = session(8);
+    let id = LayerId(s.execute("shape.create", json!({"rect": [8, 8, 40, 30], "fill": "#336699"})).unwrap()["layer"].as_u64().unwrap());
+    let (before, gradient) = (shape_fill(&s, id), s.presets.gradient.name.clone());
+    s.execute("layer.lockLayers", json!({"all": true})).unwrap();
+    let err = s.execute("gradient.presets.select", json!({"preset": "Red 01"})).unwrap_err().to_string();
+    assert!(err.contains("locked"), "{err}");
+    assert_eq!(shape_fill(&s, id), before);
+    assert_eq!(s.presets.gradient.name, gradient);
+}
+
 // ------------------------------------------------------------------ persistence
 
 /// #5602: one damaged preset set in the preferences file must not discard the saved New
@@ -775,21 +817,46 @@ fn a_damaged_preset_set_keeps_the_other_sets() {
     let mut s = Session::new();
     let settings = json!({"width": 1600, "height": 900, "resolution": 144});
     s.execute("document.presets.save", json!({"name": "Banner", "settings": settings})).unwrap();
+    let export = json!({
+        "format": "jpg", "quality": 70, "lossless": false, "transparency": false, "scale": 50, "width": 640, "height": 480,
+        "lockAspect": true, "sizing": "pixels", "metadata": "exif", "profile": "srgb", "embedProfile": false, "tgaBits": "24"
+    });
+    s.execute("file.export.presets.save", json!({"name": "Web JPEG", "settings": export})).unwrap();
     let saved = s.presets.to_json(&s);
-    for key in ["gradients", "gradient", "styles", "shapes", "pattern_groups", "custom_shapes", "layer_defaults", "swatches"] {
+    for key in
+        ["gradients", "gradient", "styles", "shapes", "pattern_groups", "recent_documents", "custom_shapes", "layer_defaults", "swatches", "export_presets"]
+    {
         let mut blob = saved.clone();
         blob[key] = json!("not a preset set");
         let mut next = Session::new();
         next.load_presets_json(blob);
         assert_eq!(next.presets.documents, s.presets.documents, "damaged `{key}`");
         assert_eq!(next.presets.tool_presets.len(), Session::new().presets.tool_presets.len(), "damaged `{key}`");
+        if key != "export_presets" {
+            assert_eq!(next.presets.export_presets, s.presets.export_presets, "damaged `{key}`");
+        }
     }
+    let mut blob = saved.clone();
+    blob["export_presets"] = json!("not a preset set");
+    let mut next = Session::new();
+    next.load_presets_json(blob);
+    assert!(next.presets.export_presets.is_empty());
+    assert_eq!(next.presets.documents, s.presets.documents);
+    let mut blob = saved.clone();
+    blob["documents"] = json!("not a preset set");
+    let mut next = Session::new();
+    next.load_presets_json(blob);
+    assert!(next.presets.documents.is_empty());
+    assert_eq!(next.presets.export_presets, s.presets.export_presets);
     // Null sets keep their defaults, as before.
     let mut next = Session::new();
-    next.load_presets_json(json!({"tool_presets": null, "gradients": null, "documents": saved["documents"].clone()}));
+    next.load_presets_json(
+        json!({"tool_presets": null, "gradients": null, "documents": saved["documents"].clone(), "export_presets": saved["export_presets"].clone()}),
+    );
     assert_eq!(next.presets.tool_presets.len(), Session::new().presets.tool_presets.len());
     assert_eq!(next.presets.gradients.len(), Session::new().presets.gradients.len());
     assert_eq!(next.presets.documents, s.presets.documents);
+    assert_eq!(next.presets.export_presets, s.presets.export_presets);
 }
 
 // ------------------------------------------------------------------ export presets

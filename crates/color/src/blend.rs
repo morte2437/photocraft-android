@@ -460,6 +460,22 @@ pub fn composite(mode: BlendMode, backdrop: [f32; 4], source: [f32; 4], opacity:
     out
 }
 
+/// [`composite`] with the backdrop's alpha kept (Lock Transparent Pixels, Fill's Preserve
+/// Transparency): "source atop", `Co = (1−αs)·Cb + αs·B(Cb,Cs)`, `αo = αb`. Unlike source-over
+/// followed by restoring the alpha, a half-transparent backdrop takes the new colour by `αs` alone.
+pub fn composite_atop(mode: BlendMode, backdrop: [f32; 4], source: [f32; 4], opacity: f32) -> [f32; 4] {
+    let as_ = source[3] * opacity;
+    if as_ <= 0.0 {
+        return backdrop;
+    }
+    let b = blend_rgb(mode, [backdrop[0], backdrop[1], backdrop[2]], [source[0], source[1], source[2]]);
+    let mut out = backdrop;
+    for i in 0..3 {
+        out[i] = (1.0 - as_) * backdrop[i] + as_ * b[i];
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -815,5 +831,21 @@ mod tests {
         // Alpha accumulates.
         let r = composite(BlendMode::Screen, [0.0, 0.0, 0.0, 0.5], [0.0, 0.0, 0.0, 0.5], 1.0);
         assert!(close(r[3], 0.75));
+    }
+
+    #[test]
+    fn composite_atop_keeps_alpha_and_moves_colour_by_source_alpha() {
+        let bg = [1.0, 1.0, 1.0, 0.5];
+        // Half-transparent white, black at 50%: halfway, alpha kept (#5783).
+        let r = composite_atop(BlendMode::Normal, bg, [0.0, 0.0, 0.0, 1.0], 0.5);
+        assert!(close(r[0], 0.5) && close(r[2], 0.5) && r[3] == 0.5, "{r:?}");
+        // Non-Normal modes blend against the backdrop as it is: Multiply by black at 50% halves it.
+        let r = composite_atop(BlendMode::Multiply, bg, [0.0, 0.0, 0.0, 1.0], 0.5);
+        assert!(close(r[0], 0.5) && r[3] == 0.5, "{r:?}");
+        // Opaque backdrops agree with source-over.
+        let opaque = [0.2, 0.4, 0.6, 1.0];
+        assert_eq!(composite_atop(BlendMode::Screen, opaque, [0.5, 0.5, 0.5, 0.7], 0.8), composite(BlendMode::Screen, opaque, [0.5, 0.5, 0.5, 0.7], 0.8));
+        // A transparent source leaves the backdrop.
+        assert_eq!(composite_atop(BlendMode::Normal, bg, [0.0, 0.0, 0.0, 0.0], 1.0), bg);
     }
 }

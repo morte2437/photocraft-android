@@ -6,7 +6,7 @@ use std::fmt;
 
 use crate::format::{Format, caps};
 use crate::image::{ChannelLayout, Image, SampleType};
-use crate::options::EncodeOptions;
+use crate::options::{DdsCompression, EncodeOptions};
 
 /// Something that will be lost or altered when writing an image to a format.
 #[derive(Debug, Clone, PartialEq)]
@@ -165,6 +165,8 @@ pub(crate) fn plan(image: &Image, format: Format, opts: &EncodeOptions) -> Plan 
         },
         // CIELab has no float form: float Lab is written with 16 bits.
         Format::Tiff if layout.is_lab() && sample.is_float() => Plan { layout: pick_layout(layout, c.layouts, c.alpha), sample: SampleType::U16 },
+        // A block-compressed DDS stores RGBA whatever the source; uncompressed keeps gray and RGB.
+        Format::Dds if opts.dds.compression.is_block() => Plan { layout: ChannelLayout::Rgba, sample: SampleType::U8 },
         _ => Plan { layout: pick_layout(layout, c.layouts, c.alpha), sample: pick_sample(sample, c.depths) },
     }
 }
@@ -211,7 +213,8 @@ pub fn fidelity_warnings_with(image: &Image, format: Format, opts: &EncodeOption
     if sl.has_alpha() && !p.layout.has_alpha() && image.has_translucency() {
         w.push(W::AlphaDiscarded);
     }
-    if format == Format::Gif && p.layout.has_alpha() && image.has_translucency() {
+    let binary_alpha = format == Format::Gif || (format == Format::Dds && opts.dds.compression == DdsCompression::Bc1);
+    if binary_alpha && p.layout.has_alpha() && image.has_translucency() {
         w.push(W::AlphaBinarized);
     }
     if sl.is_cmyk() && !p.layout.is_cmyk() {
@@ -227,7 +230,7 @@ pub fn fidelity_warnings_with(image: &Image, format: Format, opts: &EncodeOption
     // Compression
     if format == Format::Gif {
         w.push(W::PaletteQuantized);
-    } else if c.lossy || (format == Format::WebP && !opts.webp_lossless) {
+    } else if c.lossy || (format == Format::WebP && !opts.webp_lossless) || (format == Format::Dds && opts.dds.compression.is_block()) {
         w.push(W::LossyCompression);
     }
 

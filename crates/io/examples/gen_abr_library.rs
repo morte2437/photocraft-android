@@ -10,7 +10,7 @@
 //!
 //! Options (defaults in brackets): `--brushes N` [600], `--edge PX` largest tip edge [2000],
 //! `--min-edge PX` smallest tip edge [800], `--depth 8|16` [16], `--per-file N` presets per file [100],
-//! `--raw` store tips uncompressed (bigger files). Each file stays under the reader's 512 MB decoded cap.
+//! `--raw` store tips uncompressed (bigger files). Each file stays under the reader's decoded cap (1 GiB; 512 MiB on 32-bit).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use photocraft_paint::procedural::*;

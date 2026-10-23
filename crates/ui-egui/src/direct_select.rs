@@ -174,7 +174,14 @@ pub(crate) fn active_paths(app: &PhotocraftApp) -> Vec<(PathRef, Path)> {
 /// The paths Direct Selection edits, front first: the Pen path being drawn, the active paths, then
 /// every visible shape layer.
 pub(crate) fn candidates(app: &PhotocraftApp) -> Vec<(PathRef, Path)> {
-    let pen = app.ui.pen.as_ref().filter(|p| !p.dragging && !p.knots.is_empty()).map(|p| (PathRef::Pen, crate::vector_ui::pen_path(p)));
+    let active = app.session.active().map(|st| st.doc.id);
+    let pen = app
+        .ui
+        .pen
+        .as_ref()
+        .filter(|_| app.ui.pen_doc.is_none_or(|owner| Some(owner) == active))
+        .filter(|p| !p.dragging && !p.knots.is_empty())
+        .map(|p| (PathRef::Pen, crate::vector_ui::pen_path(p)));
     let mut out: Vec<_> = pen.into_iter().chain(active_paths(app)).collect();
     if let Some(st) = app.session.active() {
         for (path, _, l) in st.doc.walk().iter().rev() {

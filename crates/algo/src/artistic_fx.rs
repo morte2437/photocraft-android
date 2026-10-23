@@ -437,7 +437,7 @@ pub(crate) fn effect_reach(e: &GalleryEffect) -> i32 {
         F::Chrome => gs(1.0 + g("smoothness") * 0.4) + 2,
         F::ConteCrayon => 0,
         F::GraphicPen => (g("strokeLength") / 2.0) as i32 + 2,
-        F::HalftonePattern => gs(0.5 + g("size") * 0.3),
+        F::HalftonePattern => gs(halftone_cell(e) * 0.15),
         F::NotePaper => gs(1.0) + gs(1.2) + 2,
         F::Photocopy => gs(1.0 + g("detail") * 0.5),
         F::Plaster => gs(0.5 + g("smoothness") * 0.8) + gs(1.5) + 2,
@@ -453,6 +453,55 @@ pub(crate) fn effect_reach(e: &GalleryEffect) -> i32 {
 
 fn cutout_sigma(e: &GalleryEffect) -> f32 {
     0.5 + e.get("edgeSimplicity") * (1.1 - 0.3 * e.get("edgeFidelity"))
+}
+/// Halftone Pattern's screen spacing in pixels (about 3.5 at Size 1, 25.5 at 12).
+fn halftone_cell(e: &GalleryEffect) -> f32 {
+    1.5 + 2.0 * e.get("size").clamp(1.0, 12.0)
+}
+/// The round-dot spot function `(cos 2πu + cos 2πv) / 2` sampled over a cell and sorted: a
+/// value's rank among them is the share of the cell below it, which makes the thresholds even.
+fn halftone_dot_ranks() -> &'static [f32] {
+    static RANKS: std::sync::OnceLock<Vec<f32>> = std::sync::OnceLock::new();
+    RANKS.get_or_init(|| {
+        const N: usize = 128;
+        let mut v: Vec<f32> = (0..N * N)
+            .map(|i| {
+                let (u, w) = (((i % N) as f32 + 0.5) / N as f32, ((i / N) as f32 + 0.5) / N as f32);
+                ((2.0 * PI * u).cos() + (2.0 * PI * w).cos()) / 2.0
+            })
+            .collect();
+        v.sort_by(f32::total_cmp);
+        v
+    })
+}
+/// For each tone (0 = paper … 1 = solid ink, 256 steps), the level `τ` at which the soft
+/// threshold `clamp(0.5 + (τ − s) · gain)` over evenly spread thresholds `s` inks exactly that
+/// share of a cell on average.
+fn halftone_offsets(gain: f32) -> Vec<f32> {
+    let half = 0.5 / gain.max(1e-3);
+    // Average ink over s in [0, 1] for level τ: 1 below τ − half, a ramp to 0 at τ + half.
+    let cover = |tau: f32| {
+        let (a, z) = (tau - half, tau + half);
+        let solid = a.clamp(0.0, 1.0);
+        let (r0, r1) = (a.clamp(0.0, 1.0), z.clamp(0.0, 1.0));
+        let ramp = if r1 > r0 { (0.5 + tau * gain) * (r1 - r0) - 0.5 * gain * (r1 * r1 - r0 * r0) } else { 0.0 };
+        solid + ramp
+    };
+    (0..256)
+        .map(|i| {
+            let target = i as f32 / 255.0;
+            let (mut lo, mut hi) = (-half - 1.0, 1.0 + half + 1.0);
+            for _ in 0..40 {
+                let mid = (lo + hi) / 2.0;
+                if cover(mid) < target { lo = mid } else { hi = mid }
+            }
+            match i {
+                0 => -half - 1.0,
+                255 => 1.0 + half + 1.0,
+                _ => (lo + hi) / 2.0,
+            }
+        })
+        .collect()
 }
 fn daubs_radius(e: &GalleryEffect) -> usize {
     let wide = matches!(e.choice("brushType"), "wideSharp" | "wideBlurry");
@@ -506,6 +555,7 @@ pub(crate) fn run(effects: &[GalleryEffect], src: &Image, out: Rect, ctx: &Ctx) 
     res
 }
 
+/// Applies one gallery effect to the working window in place.
 fn apply(e: &GalleryEffect, win: &mut Win, ctx: &Ctx) {
     let g = |k: &str| e.get(k);
     let (w, h) = (win.w, win.h);
@@ -933,36 +983,46 @@ fn apply(e: &GalleryEffect, win: &mut Win, ctx: &Ctx) {
             }
         }
         F::HalftonePattern => {
-            let size = g("size");
-            let con = g("contrast") / 50.0;
-            let cell = 3.0 + size * 2.0;
+            // A halftone screen that keeps a continuous range of tones: each pixel compares its
+            // ink (the darkness of the image) with the screen's threshold there, and Contrast is
+            // how steeply: at 0 the image keeps its tones with the screen faintly through it, at
+            // 50 it is crisp dots, lines or rings. The thresholds are spread evenly over each cell,
+            // and each tone is offset so a cell's average ink is exactly that tone: black stays
+            // solid and white stays paper at any Contrast.
+            let cell = halftone_cell(e);
+            let gain = 0.5 + g("contrast") * 0.6;
+            let offsets = halftone_offsets(gain);
             let mut l = win.lum();
-            blur1(&mut l, w, h, 0.5 + size * 0.3);
+            blur1(&mut l, w, h, cell * 0.15);
             let b = ctx.bounds;
             let (cx, cy) = ((b.x0 + b.x1) as f32 / 2.0, (b.y0 + b.y1) as f32 / 2.0);
             let ty = e.choice("patternType");
+            let dots = halftone_dot_ranks();
             for i in 0..win.c.len() {
                 let (x, y) = win.xy(i);
                 let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
-                let d = clamp01((1.0 - l[i] - 0.5) * (1.0 + con * 3.0) + 0.5);
-                let aa = 1.0 / cell;
-                let ink = match ty {
-                    "circle" => {
-                        let r = ((fx - cx).powi(2) + (fy - cy).powi(2)).sqrt() / cell;
-                        let q = (r.fract() - 0.5).abs() * 2.0;
-                        smoothstep(d + aa, d - aa, q)
-                    }
-                    "line" => {
-                        let q = ((fy / cell).fract() - 0.5).abs() * 2.0;
-                        smoothstep(d + aa, d - aa, q)
-                    }
+                let band = |t: f32| ((t / cell).rem_euclid(1.0) - 0.5).abs() * 2.0;
+                let spot = match ty {
+                    // Rings round the middle of the image, inked from the middle of each ring.
+                    "circle" => band(((fx - cx).powi(2) + (fy - cy).powi(2)).sqrt()),
+                    // Horizontal lines, inked from the middle of each.
+                    "line" => band(fy),
+                    // Round dots on a screen at 45° (as a black halftone screen is), that grow
+                    // from each cell's centre, meet at 50% as a checkerboard of squares square to
+                    // the image, and fill the cell at 100%.
                     _ => {
-                        let (u, v) = ((fx / cell).fract() - 0.5, (fy / cell).fract() - 0.5);
-                        let q = (u * u + v * v).sqrt() * 2.0;
-                        let rr = d.sqrt() * 1.15;
-                        smoothstep(rr + aa, rr - aa, q)
+                        let (rx, ry) = ((fx + fy) * std::f32::consts::FRAC_1_SQRT_2, (fy - fx) * std::f32::consts::FRAC_1_SQRT_2);
+                        let (u, v) = ((rx / cell).rem_euclid(1.0), (ry / cell).rem_euclid(1.0));
+                        let f = ((2.0 * PI * u).cos() + (2.0 * PI * v).cos()) / 2.0;
+                        let k = dots.partition_point(|&r| r < f);
+                        k as f32 / dots.len().max(1) as f32
                     }
                 };
+                let tone = clamp01(1.0 - l[i]) * (offsets.len() - 1) as f32;
+                let (k, f) = (tone.floor() as usize, tone.fract());
+                let at = |j: usize| offsets.get(j.min(offsets.len() - 1)).copied().unwrap_or(0.5);
+                let level = at(k) + (at(k + 1) - at(k)) * f;
+                let ink = clamp01(0.5 + (level - spot) * gain);
                 win.c[i] = mix(bg, fg, ink);
             }
         }
@@ -1254,6 +1314,43 @@ mod tests {
         }
     }
 
+    /// Flat greys keep their tone through every pattern and Contrast, black and white stay
+    /// solid, and Contrast makes the screen crisper.
+    #[test]
+    fn halftone_keeps_tones_and_contrast_sets_how_hard() {
+        // It used to be all ink or paper at any Contrast, with white crosses in the shadows
+        // (dots could never fill their cell) and mid-greys that came out the wrong darkness.
+        use crate::GalleryFilter as G;
+        let b = Rect::new(0, 0, 60, 60);
+        let run = |grey: f32, pattern: &str, contrast: f32| {
+            let mut s = Surface::new(PixelFormat::new(ColorMode::Rgb, SampleType::F32, true));
+            s.fill_rect(b, &[grey, grey, grey, 1.0]);
+            let mut e = GalleryEffect::new(G::HalftonePattern);
+            assert!(e.set_choice("patternType", pattern));
+            e.set("size", 4.0);
+            e.set("contrast", contrast);
+            let out = apply_tiled(&s, &FilterParams::FilterGallery { effects: vec![e] }, b, b, None, 256, Some(b)).read_region(b);
+            // Ink (1 = foreground black) of every pixel away from the canvas edge.
+            out.chunks(4).enumerate().filter(|(i, _)| (6..54).contains(&(i % 60)) && (6..54).contains(&(i / 60))).map(|(_, p)| 1.0 - p[0]).collect::<Vec<f32>>()
+        };
+        for pattern in ["dot", "circle", "line"] {
+            for contrast in [0.0, 5.0, 50.0] {
+                for grey in [0.2, 0.5, 0.8] {
+                    let ink = run(grey, pattern, contrast);
+                    let mean = ink.iter().sum::<f32>() / ink.len() as f32;
+                    assert!((mean - (1.0 - grey)).abs() < 0.06, "{pattern} contrast {contrast}: grey {grey} inks {mean}");
+                }
+                let solid = run(0.0, pattern, contrast);
+                assert!(solid.iter().all(|&v| v > 0.99), "{pattern} contrast {contrast}: black isn't solid");
+                let paper = run(1.0, pattern, contrast);
+                assert!(paper.iter().all(|&v| v < 0.01), "{pattern} contrast {contrast}: white isn't paper");
+            }
+            let soft = run(0.5, pattern, 0.0).iter().filter(|&&v| v > 0.05 && v < 0.95).count();
+            let hard = run(0.5, pattern, 50.0).iter().filter(|&&v| v > 0.05 && v < 0.95).count();
+            assert!(hard * 4 < soft, "{pattern}: contrast 50 should be much crisper ({hard} vs {soft} grey pixels)");
+        }
+    }
+
     #[test]
     fn params_parse_and_clamp() {
         for f in crate::GalleryFilter::ALL {
@@ -1305,7 +1402,7 @@ mod tests {
     }
 
     /// Visual check: `GALLERY_RAW=src.raw GALLERY_W=480 GALLERY_H=322 cargo test -p photocraft-algo --release gallery_sheet -- --ignored`
-    /// writes `<key>.raw` (RGB8) beside the input for every filter.
+    /// writes `<key>.raw` (RGB8) beside the input for every filter (or one, see `GALLERY_ONLY`).
     #[test]
     #[ignore]
     fn gallery_sheet() {
@@ -1318,11 +1415,29 @@ mod tests {
         let b = Rect::new(0, 0, w, h);
         s.write_region(b, &data);
         let dir = std::path::Path::new(&path).parent().unwrap().to_path_buf();
-        for f in crate::GalleryFilter::ALL {
-            let fp = FilterParams::FilterGallery { effects: vec![GalleryEffect::new(*f)] };
+        // Optional: GALLERY_ONLY=<key> renders one filter; GALLERY_SET="key=value,key=name" sets its
+        // sliders (numbers) or choices (names); GALLERY_TAG is appended to the file name.
+        let only = std::env::var("GALLERY_ONLY").ok();
+        let set = std::env::var("GALLERY_SET").unwrap_or_default();
+        let tag = std::env::var("GALLERY_TAG").unwrap_or_default();
+        if let Some(k) = &only {
+            assert!(crate::GalleryFilter::ALL.iter().any(|f| f.key() == k), "GALLERY_ONLY={k} is not a gallery filter");
+        }
+        for f in crate::GalleryFilter::ALL.iter().filter(|f| only.as_deref().is_none_or(|k| k == f.key())) {
+            let mut e = GalleryEffect::new(*f);
+            for kv in set.split(',').filter(|kv| !kv.is_empty()) {
+                let (k, v) = kv.split_once('=').unwrap();
+                // `set` ignores unknown keys; a misspelt one would render the default unnoticed.
+                assert!(f.params().iter().any(|p| p.key == k), "{k} is not a parameter of {}", f.key());
+                match v.parse::<f32>() {
+                    Ok(n) => e.set(k, n),
+                    Err(_) => assert!(e.set_choice(k, v), "{k} has no choice {v}"),
+                }
+            }
+            let fp = FilterParams::FilterGallery { effects: vec![e] };
             let out = crate::apply_in(&s, &fp, b, b, None, b).read_region(b);
             let raw: Vec<u8> = out.chunks(4).flat_map(|p| [p[0], p[1], p[2]].map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)).collect();
-            std::fs::write(dir.join(format!("{}.raw", f.key())), raw).unwrap();
+            std::fs::write(dir.join(format!("{}{tag}.raw", f.key())), raw).unwrap();
         }
     }
 }

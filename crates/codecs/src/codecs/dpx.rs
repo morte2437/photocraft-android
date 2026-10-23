@@ -21,6 +21,8 @@
 //! Writing: one element, big-endian, unencoded, descriptor 6, 50 or 51; 8 and 16 bits with
 //! packing 0, 10 and 12 bits with packing 1 (method A). The bit depth follows the image
 //! (8 → 8, 16 → 16) unless [`EncodeOptions::dpx_bits`] picks one.
+//!
+//! Kodak Cineon (`.cin`), the format DPX grew from, is read and written here too (see its section).
 
 use crate::Format;
 use crate::error::CodecError;
@@ -344,7 +346,7 @@ pub(crate) fn decode(bytes: &[u8], limits: &Limits) -> Result<Image, CodecError>
 // orientation (1 byte), the channel count (1 byte) and up to eight 28-byte channel descriptors
 // (the first carries the bits per pixel and the line/image dimensions). Image data is three
 // 10-bit samples packed into each 32-bit word, lines on a word boundary — the same layout as
-// DPX's 10-bit packing method A, so the unpacking is shared.
+// DPX's 10-bit packing method A, so the unpacking and packing are shared.
 
 /// The Cineon magic number (`802A5FD7` hex), big-endian.
 pub(crate) fn is_cineon(b: &[u8]) -> bool {
@@ -407,6 +409,81 @@ pub(crate) fn decode_cineon(bytes: &[u8], limits: &Limits) -> Result<Image, Code
     }
     let wide: Vec<u16> = codes.iter().map(|&c| widen(c, 1023)).collect();
     Image::from_u16(width, height, layout, &wide)
+}
+
+/// Cineon's generic plus film header: where our image data starts.
+const CINEON_HEADER_LEN: usize = 2048;
+const CINEON_GENERIC_LEN: u32 = 1024;
+/// Offset of the first of the eight 28-byte channel descriptors.
+const CINEON_CHANNEL0: usize = 196;
+
+/// Encode a Cineon 4.5 frame: the generic header, an undefined film header, then the samples as
+/// 10-bit code values `round(v × 1023 / 65535)`, three to a big-endian word, left justified
+/// (packing 5), lines on a word boundary. The plan has already made the image U16 gray or RGB.
+pub(crate) fn encode_cineon(src: &Image, plan: Plan) -> Result<Vec<u8>, CodecError> {
+    let enc = |msg: String| CodecError::encode(Format::Cineon, msg);
+    let img = src.converted(plan.layout, plan.sample);
+    let (w, h) = img.dimensions();
+    // Channel designators: 0 for black and white, 1–3 for red, green and blue.
+    let designators: &[u8] = match img.layout() {
+        ChannelLayout::Gray => &[0],
+        ChannelLayout::Rgb => &[1, 2, 3],
+        l => return Err(enc(format!("Cineon cannot store {l:?}"))),
+    };
+    let samples = img.to_u16_samples().ok_or_else(|| enc(format!("cannot write {:?} samples at 10 bits", img.sample_type())))?;
+    let codes: Vec<u16> = samples.into_iter().map(|v| narrow(v, 1023)).collect();
+    let per_line = (w as usize).checked_mul(designators.len()).ok_or_else(|| enc("image too large".into()))?;
+    if codes.len() != per_line.checked_mul(h as usize).ok_or_else(|| enc("image too large".into()))? {
+        return Err(enc("the image has the wrong number of samples".into()));
+    }
+    let data_len = line_bytes(per_line, 10, 1).and_then(|l| l.checked_mul(h as usize)).ok_or_else(|| enc("image too large".into()))?;
+    let total =
+        CINEON_HEADER_LEN.checked_add(data_len).and_then(|t| u32::try_from(t).ok()).ok_or_else(|| enc("image too large for a Cineon file (4 GiB)".into()))?;
+
+    let mut wr = Writer { h: vec![0; CINEON_HEADER_LEN] };
+    // File information.
+    wr.u32(0, 0x802A_5FD7);
+    wr.u32(4, CINEON_HEADER_LEN as u32);
+    wr.u32(8, CINEON_GENERIC_LEN);
+    wr.u32(12, CINEON_HEADER_LEN as u32 - CINEON_GENERIC_LEN);
+    wr.u32(16, 0);
+    wr.u32(20, total);
+    wr.string((24, 8), "V4.5");
+    // Image information: default orientation, then each channel's descriptor; the unused ones,
+    // the white point and the primaries are undefined.
+    wr.u8(192, 0);
+    wr.u8(193, designators.len() as u8);
+    wr.undefined(CINEON_CHANNEL0, 420);
+    for (i, &designator) in designators.iter().enumerate() {
+        let c = CINEON_CHANNEL0 + 28 * i;
+        wr.u8(c, 0);
+        wr.u8(c + 1, designator);
+        wr.u8(c + 2, 10);
+        wr.u8(c + 3, 0);
+        wr.u32(c + 4, w);
+        wr.u32(c + 8, h);
+        // Code values 0–1023 stand for printing densities 0–2.048, the Cineon convention. All
+        // four are 32-bit floats here (DPX stores the data values as integers).
+        wr.u32(c + 12, 0f32.to_bits());
+        wr.u32(c + 16, 0f32.to_bits());
+        wr.u32(c + 20, 1023f32.to_bits());
+        wr.u32(c + 24, 2.048f32.to_bits());
+    }
+    // Pixel-interleaved, unsigned, positive, no line or channel padding.
+    wr.u8(681, 5);
+    // Image origination: pixel pitches and gamma unknown.
+    wr.undefined(972, 984);
+    // Film header: manufacturer, type, perforation offset, prefix, count, frame position and rate
+    // unknown; its strings stay empty.
+    wr.undefined(1024, 1036);
+    wr.undefined(1068, 1076);
+
+    let mut out = wr.h;
+    out.try_reserve_exact(data_len).map_err(|_| enc("out of memory".into()))?;
+    for row in codes.chunks_exact(per_line.max(1)) {
+        pack_line(&mut out, row, 10);
+    }
+    Ok(out)
 }
 
 /// The kept header fields as text metadata, in [`KEYS`] order; undefined ones are left out.

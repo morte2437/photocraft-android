@@ -119,7 +119,18 @@ fn check_reopening(tool: Tool, modifiers: Modifiers, popup: Popup) {
 
 #[test]
 fn secondary_taps_keep_selection_menus_open() {
-    for tool in [Tool::RectMarquee, Tool::EllipseMarquee, Tool::Lasso, Tool::PolygonLasso, Tool::MagneticLasso, Tool::MagicWand, Tool::ObjectSelection] {
+    // Quick Selection too, though it has a brush: Photoshop's right-click there is the selection
+    // menu (#7268), the brush is set from the options bar.
+    for tool in [
+        Tool::RectMarquee,
+        Tool::EllipseMarquee,
+        Tool::Lasso,
+        Tool::PolygonLasso,
+        Tool::MagneticLasso,
+        Tool::MagicWand,
+        Tool::ObjectSelection,
+        Tool::QuickSelection,
+    ] {
         check_reopening(tool, Modifiers::NONE, Popup::Tool);
     }
 }
@@ -128,6 +139,30 @@ fn secondary_taps_keep_selection_menus_open() {
 fn secondary_taps_keep_canvas_layer_menus_open() {
     check_reopening(Tool::Move, Modifiers::NONE, Popup::Layers);
     check_reopening(Tool::RectMarquee, Modifiers::COMMAND, Popup::Layers);
+}
+
+/// A macOS Control-click (control_click.rs) reaches the canvas as a right-click that still holds
+/// Control: it opens the same menu as a plain right-click and paints nothing.
+#[test]
+fn control_clicks_open_the_right_click_menus() {
+    for (tool, popup) in [(Tool::RectMarquee, Popup::Tool), (Tool::Pen, Popup::Tool), (Tool::Move, Popup::Layers), (Tool::Brush, Popup::Brush)] {
+        let mut h = harness(tool, true, 1.0);
+        let at = fractional_point(&h, 1.0);
+        let before = document_state(&h);
+        let mut clicks = crate::control_click::ControlClick::default();
+        h.event(Event::ModifiersChanged(Modifiers::CTRL));
+        h.event(Event::PointerMoved(at));
+        h.run_steps(2);
+        for pressed in [true, false] {
+            let mut events = vec![Event::PointerButton { pos: at, button: PointerButton::Primary, pressed, modifiers: Modifiers::CTRL }];
+            clicks.normalize(&mut events, true);
+            h.input_mut().events.extend(events);
+            h.run_steps(1);
+        }
+        h.run_steps(3);
+        assert!(is_open(&h, popup), "{tool:?}");
+        assert!(document_state(&h) == before, "{tool:?}: a Control-click paints nothing");
+    }
 }
 
 #[test]
@@ -229,7 +264,8 @@ fn control_channel_opening_uses_the_same_dismissal_guard() {
         (Tool::RectMarquee, Popup::Tool, true),
         (Tool::Brush, Popup::Brush, false),
         (Tool::Eraser, Popup::Brush, false),
-        (Tool::QuickSelection, Popup::Brush, false),
+        // Its right-click is the selection menu (#7268).
+        (Tool::QuickSelection, Popup::Tool, false),
     ] {
         for scale in [1.0, 2.0] {
             let mut h = harness(tool, true, scale);
@@ -266,14 +302,14 @@ fn control_channel_right_click_on_committed_type_opens_the_type_layer_menu() {
 
 #[test]
 fn brush_picker_taps_preserve_pixels_selection_and_history_after_reopening() {
-    for tool in [Tool::Brush, Tool::Eraser, Tool::QuickSelection] {
+    for tool in [Tool::Brush, Tool::Eraser] {
         check_reopening(tool, Modifiers::NONE, Popup::Brush);
     }
 }
 
 #[test]
 fn brush_chip_toggles_after_canvas_and_control_opening() {
-    for tool in [Tool::Brush, Tool::Eraser, Tool::QuickSelection] {
+    for tool in [Tool::Brush, Tool::Eraser] {
         for scale in [1.0, 2.0] {
             let mut h = harness(tool, true, scale);
             let before = document_state(&h);
@@ -297,6 +333,27 @@ fn brush_chip_toggles_after_canvas_and_control_opening() {
             assert!(document_state(&h) == before, "pixels, selection, layers and history are unchanged");
         }
     }
+}
+
+/// #7268: the Quick Selection tool's brush chip still opens and closes the Brush Preset picker;
+/// only its canvas right-click is the selection menu.
+#[test]
+fn quick_selection_chip_toggles_the_picker_and_right_click_opens_the_selection_menu() {
+    let mut h = harness(Tool::QuickSelection, true, 1.0);
+    let before = document_state(&h);
+    for _ in 0..2 {
+        h.get_by_label(crate::i18n::t("Brush Preset picker")).click();
+        h.run_steps(3);
+        assert!(h.state().ui.brush_picker.is_some(), "the chip opens the picker");
+        h.get_by_label(crate::i18n::t("Brush Preset picker")).click();
+        h.run_steps(3);
+        assert!(h.state().ui.brush_picker.is_none(), "the chip closes it");
+    }
+    let at = fractional_point(&h, 1.0);
+    tap(&mut h, at, Modifiers::NONE, true);
+    assert!(h.state().ui.brush_picker.is_none(), "no picker on a right-click");
+    assert!(h.state().ui.canvas_tool_menu.as_ref().is_some_and(|m| m.has_selection), "the selection menu");
+    assert!(document_state(&h) == before);
 }
 
 #[test]

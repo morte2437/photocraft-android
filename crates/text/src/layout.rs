@@ -22,7 +22,7 @@ use parley::{
     PositionedLayoutItem, StyleProperty,
 };
 use photocraft_doc::TextLayer;
-use photocraft_doc::text::{Caps, CharStyle, Kerning, Orientation, TextAlign, TextDirection, TextShape};
+use photocraft_doc::text::{Caps, CharStyle, FontBaseline, Kerning, Orientation, TextAlign, TextDirection, TextShape};
 use skrifa::raw::types::Tag;
 
 use crate::fonts::FontDb;
@@ -30,6 +30,23 @@ use crate::fonts::FontDb;
 /// Photoshop synthesizes small caps for faces without an OpenType `smcp` table. Keep the same
 /// readable hierarchy for every font instead of silently rendering lowercase text unchanged.
 const SYNTHETIC_SMALL_CAPS_SCALE: f32 = 0.7;
+
+/// Photoshop's default superscript / subscript size and position (Type preferences, stored in a
+/// PSD's text resources as `SuperscriptSize` .583, `SuperscriptPosition` .333 and their
+/// `Subscript` twins): the run is drawn at 58.3% of its size and moved by 33.3% of its size.
+const SCRIPT_SIZE: f32 = 0.583;
+const SCRIPT_POSITION: f32 = 0.333;
+
+/// The style a run is drawn with: superscript and subscript shrink it and shift its baseline.
+fn drawn_style(s: &mut CharStyle) {
+    let dir = match s.baseline {
+        FontBaseline::Normal => return,
+        FontBaseline::Superscript => 1.0,
+        FontBaseline::Subscript => -1.0,
+    };
+    s.baseline_shift_pt += dir * SCRIPT_POSITION * s.size_pt;
+    s.size_pt *= SCRIPT_SIZE;
+}
 
 /// Photoshop's default tab stops: every half inch, measured from the anchor of point text or the
 /// left edge of a paragraph box. PSD type carries no custom tab stops, so these are the only ones.
@@ -480,6 +497,7 @@ impl Layouter {
                 crate::served::request(&s.font_family);
             }
             fonts.select_named_face(&mut s);
+            drawn_style(&mut s);
             out.styles.push(s);
         }
         let run_starts: Vec<usize> = runs
@@ -579,12 +597,13 @@ impl Layouter {
             // fetches it (`served`); it joins the fallback stack once it arrives.
             crate::served::request_for_text(&ptext);
             let fallback: Vec<String> = fonts.fallback_stack().map(str::to_string).collect();
+            let si0 = style_at(prange.start);
+            let si_end = run_starts.partition_point(|&rs| rs < content_end).max(si0 + 1).min(out.styles.len());
             // Shapes the paragraph, each tab widened by its letter spacing in `tab_spacing` (px).
             let build = |lcx: &mut LayoutContext<RunBrush>, fcx: &mut parley::FontContext, tab_spacing: &[f32]| -> Layout<RunBrush> {
                 let mut b = lcx.ranged_builder(fcx, &ptext, 1.0, false);
                 // Paragraph-start style as the default (covers the direction mark and empty
                 // paragraphs), then every run piece intersecting this paragraph.
-                let si0 = style_at(prange.start);
                 for p in style_props(&out.styles[si0], k, &fallback, si0 as u32, small_caps[si0]) {
                     b.push_default(p);
                 }
@@ -594,7 +613,7 @@ impl Layouter {
                 if is_box {
                     b.push_default(StyleProperty::OverflowWrap(parley::style::OverflowWrap::BreakWord));
                 }
-                for (ri, st) in out.styles.iter().enumerate() {
+                for (ri, st) in out.styles.iter().enumerate().take(si_end).skip(si0) {
                     let rs = run_starts[ri];
                     let (a, z) = (rs.max(prange.start), (rs + runs[ri].len).min(content_end));
                     if a >= z {
@@ -657,8 +676,7 @@ impl Layouter {
             // width divided by it (#5565). Mixed scales break at the largest, so no line
             // overflows the box.
             let break_scale = if is_box {
-                let si0 = style_at(prange.start);
-                (0..out.styles.len())
+                (si0..si_end)
                     .filter(|&ri| {
                         let rs = run_starts.get(ri).copied().unwrap_or(0);
                         let end = rs.saturating_add(runs.get(ri).map_or(0, |r| r.len));

@@ -8,7 +8,8 @@
 //! They are assigned per menu level from the labels as shown (so translated), unique within
 //! the level: Photoshop's letters for the top menus where the label has them (F E I L Y S T V
 //! W H), else the first unused letter, word starts first. Only ASCII letters and digits are keys
-//! the keyboard reports as such, so a label without one (Japanese, Chinese…) has no mnemonic.
+//! the keyboard reports as such, so a label without one (Japanese, Chinese…) shows its English
+//! label's letter after it, as Windows menus do in those languages: "文件(F)" ([`localized`]).
 //!
 //! The state is view state in egui memory, like [`crate::menu_nav::Nav`]. On macOS the native
 //! menu bar replaces the in-window one and this never runs.
@@ -42,6 +43,9 @@ pub struct Keys {
     alt_down: bool,
     /// Alt went down and nothing else was pressed since: releasing it is a tap.
     alt_tap: bool,
+    /// The mouse buttons that are down, one bit each, from the button events in order (the
+    /// frame's pointer state is its end state, which a whole click within one frame doesn't show).
+    buttons_held: u8,
     /// A menu was just opened from the keyboard: light its first row once it is drawn.
     first_row: bool,
 }
@@ -59,6 +63,40 @@ fn focus_id() -> Id {
 pub fn is_focused(ctx: &egui::Context) -> bool {
     let pass = ctx.cumulative_pass_nr();
     ctx.data(|d| d.get_temp::<u64>(focus_id())).is_some_and(|seen| seen + 2 >= pass)
+}
+
+/// A command shortcut pressed while the keyboard is on the bar with no menu open (⌘D, ⌘⇧I, F7…)
+/// takes it off the bar, so the shortcut runs in the same press, as a native menu bar does
+/// (#6573). Keys the bar uses (arrows, ↩, Esc, letters, Alt+letter, F10) keep driving it, and
+/// an open menu still swallows shortcuts. True when the bar was left.
+pub fn leave_for_shortcut(ctx: &egui::Context) -> bool {
+    if !is_focused(ctx) || crate::menu_nav::is_open(ctx) {
+        return false;
+    }
+    let shortcut = ctx.input(|i| i.events.iter().any(|e| matches!(e, Event::Key { key, pressed: true, modifiers, .. } if is_command_key(*key, *modifiers))));
+    if !shortcut {
+        return false;
+    }
+    let mut keys = Keys::load(ctx);
+    keys.focus = None;
+    keys.underline = false;
+    keys.store(ctx);
+    ctx.request_repaint();
+    true
+}
+
+/// A key press that is a command shortcut rather than a key of the bar: ⌘ / Ctrl with a key
+/// (not the modifier keys themselves), or a function key other than F10 (which toggles the bar).
+fn is_command_key(key: Key, mods: Modifiers) -> bool {
+    let modifier_key = matches!(
+        key,
+        Key::ShiftLeft | Key::ShiftRight | Key::ControlLeft | Key::ControlRight | Key::AltLeft | Key::AltRight | Key::SuperLeft | Key::SuperRight
+    );
+    if modifier_key {
+        return false;
+    }
+    let function_key = key != Key::F10 && key.name().strip_prefix('F').is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+    mods.command || mods.ctrl || mods.mac_cmd || function_key
 }
 
 /// The mnemonic a key press stands for: the letter or digit of a plain key.
@@ -92,6 +130,49 @@ pub fn assign(labels: &[&str], preferred: &[Option<char>]) -> Vec<Option<char>> 
         out.push(pick);
     }
     out
+}
+
+/// The labels to show and their mnemonics for translated `labels` whose English originals are
+/// `english` (same order). A label with an ASCII letter or digit keeps its text and is assigned
+/// as [`assign`] does. One without (Chinese, Japanese, Korean…) can't be typed on its own, so it
+/// shows its English label's letter after it in parentheses and takes that letter, as Windows menus
+/// do in those languages ("文件(F)", #5863). Mnemonics stay unique within the group, and a shown
+/// "(F)" is always the row's key.
+pub fn localized(labels: &[String], english: &[&str], preferred: &[Option<char>]) -> (Vec<String>, Vec<Option<char>>) {
+    let typed = |l: &str| l.chars().any(|c| c.is_ascii_alphanumeric());
+    // The key goes before a trailing ellipsis, as Windows writes it: "新建(N)…".
+    let with_key = |l: &str, k: char| match l.strip_suffix('…').map(|b| (b, "…")).or_else(|| l.strip_suffix("...").map(|b| (b, "..."))) {
+        Some((base, tail)) => format!("{base}({k}){tail}"),
+        None => format!("{l}({k})"),
+    };
+    let english_keys = assign(english, preferred);
+    let mut shown = Vec::with_capacity(labels.len());
+    let mut pref = Vec::with_capacity(labels.len());
+    for (i, label) in labels.iter().enumerate() {
+        match english_keys.get(i).copied().flatten().filter(|_| !typed(label)) {
+            Some(k) => {
+                shown.push(with_key(label, k));
+                pref.push(Some(k));
+            }
+            None => {
+                shown.push(label.clone());
+                pref.push(preferred.get(i).copied().flatten());
+            }
+        }
+    }
+    // The suffixed labels take their keys first: a label with letters of its own must not take
+    // the key a suffix shows ("Camera Raw 滤镜…" before "转换为智能滤镜(C)" leaves C to the latter).
+    let suffixed = |i: &usize| shown.get(*i) != labels.get(*i);
+    let order: Vec<usize> = (0..shown.len()).filter(suffixed).chain((0..shown.len()).filter(|i| !suffixed(i))).collect();
+    let ordered: Vec<&str> = order.iter().map(|&i| shown.get(i).map_or("", String::as_str)).collect();
+    let ordered_pref: Vec<Option<char>> = order.iter().map(|&i| pref.get(i).copied().flatten()).collect();
+    let mut keys = vec![None; shown.len()];
+    for (&i, key) in order.iter().zip(assign(&ordered, &ordered_pref)) {
+        if let Some(slot) = keys.get_mut(i) {
+            *slot = key;
+        }
+    }
+    (shown, keys)
 }
 
 /// `prefix + label` as menu text with the mnemonic's first occurrence in `label` underlined
@@ -208,22 +289,43 @@ impl Keys {
         }
         let events = ctx.input(|i| i.events.clone());
         let mut tap = false;
-        for e in &events {
+        // The tap is judged on every event of the frame, also those another handler consumed
+        // before the bar's turn: the shortcuts run first, so Ctrl+Alt+I (Image Size) left no
+        // trace in `events`, and releasing Alt counted as a tap that put the keyboard on the bar;
+        // Enter then opened File instead of confirming the dialog (#7481).
+        let raw = ctx.input(|i| i.raw.events.clone());
+        for e in &raw {
             match e {
                 Event::Key { key: Key::AltLeft | Key::AltRight, pressed: true, .. } => {
                     self.alt_down = true;
-                    self.alt_tap = true;
+                    // Alt pressed while a mouse button is down is a modifier for that drag
+                    // (Free Transform's scale-from-centre), never a tap (#8113).
+                    self.alt_tap = self.buttons_held == 0;
                 }
                 Event::Key { key: Key::AltLeft | Key::AltRight, pressed: false, .. } => {
                     self.alt_down = false;
                     tap |= std::mem::take(&mut self.alt_tap);
                 }
-                // Alt+wheel (zoom, brush size…) or Alt going to the desktop is no tap either.
-                Event::Key { pressed: true, .. }
-                | Event::Text(_)
-                | Event::PointerButton { pressed: true, .. }
-                | Event::MouseWheel { .. }
-                | Event::WindowFocused(false) => self.alt_tap = false,
+                // A click or the end of a drag while Alt is held is no tap. It also cancels a tap
+                // taken earlier in this frame: a whole drag can arrive in one frame (press, Alt
+                // down, Alt up, release).
+                Event::PointerButton { button, pressed, .. } => {
+                    let bit = 1u8 << (*button as u8);
+                    if *pressed {
+                        self.buttons_held |= bit;
+                    } else {
+                        self.buttons_held &= !bit;
+                    }
+                    self.alt_tap = false;
+                    tap = false;
+                }
+                // Alt going to the desktop is no tap, and a button let go out there is up.
+                Event::WindowFocused(false) => {
+                    self.alt_tap = false;
+                    self.buttons_held = 0;
+                }
+                // Alt+wheel (zoom, brush size…) is no tap either.
+                Event::Key { pressed: true, .. } | Event::Text(_) | Event::MouseWheel { .. } => self.alt_tap = false,
                 _ => {}
             }
         }
@@ -347,6 +449,21 @@ mod tests {
         assert_eq!(key_char(Key::F10), None);
         assert_eq!(key_char(Key::ArrowDown), None);
         assert_eq!(key_char(Key::Space), None);
+    }
+
+    #[test]
+    fn command_keys_are_command_combos_and_function_keys_but_f10() {
+        assert!(is_command_key(Key::D, Modifiers::COMMAND));
+        assert!(is_command_key(Key::I, Modifiers::COMMAND | Modifiers::SHIFT));
+        assert!(is_command_key(Key::F7, Modifiers::NONE));
+        assert!(is_command_key(Key::F12, Modifiers::SHIFT));
+        assert!(!is_command_key(Key::F10, Modifiers::NONE), "F10 toggles the bar");
+        assert!(!is_command_key(Key::ControlLeft, Modifiers::CTRL), "Ctrl going down is no shortcut yet");
+        assert!(!is_command_key(Key::E, Modifiers::NONE), "a letter is a mnemonic");
+        assert!(!is_command_key(Key::E, Modifiers::ALT), "Alt+letter opens a menu");
+        assert!(!is_command_key(Key::ArrowRight, Modifiers::NONE));
+        assert!(!is_command_key(Key::Enter, Modifiers::NONE));
+        assert!(!is_command_key(Key::Escape, Modifiers::NONE));
     }
 }
 

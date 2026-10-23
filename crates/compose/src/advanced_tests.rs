@@ -267,6 +267,56 @@ fn interior_effects_blend_over_the_layer_mode_unless_grouped() {
 }
 
 #[test]
+fn interior_effects_blend_with_the_backdrop_through_a_see_through_normal_layer() {
+    // #6232: #04170F under a Normal layer at fill 0 with a yellow Soft Light colour overlay. The
+    // overlay soft-lights the dark green it sees through the layer (Photoshop's soft light of
+    // yellow: sqrt(b) for red and green, b² for blue), not transparency, which would leave plain
+    // yellow. A half-transparent part of the layer mixes it in at half strength.
+    let bg: [f32; 3] = [4.0 / 255.0, 23.0 / 255.0, 15.0 / 255.0];
+    let lit = [bg[0].sqrt(), bg[1].sqrt(), bg[2] * bg[2]];
+    let half = |c: usize| (bg[c] + lit[c]) / 2.0;
+    for depth in DEPTHS {
+        let mut d = doc(depth, false);
+        d.layers.push(solid(&d, "green", full(&d), [bg[0], bg[1], bg[2], 1.0]));
+        let mut l = solid(&d, "fade", Rect::new(0, 0, 6, 8), [0.2, 0.6, 0.9, 1.0]);
+        l.surface_mut().unwrap().fill_rect(Rect::new(6, 0, 12, 8), &photocraft_raster::from_rgba(&d.pixel_format(), [0.2, 0.6, 0.9, 0.5]));
+        l.fill_opacity = 0.0;
+        l.effects.items = vec![Effect::ColorOverlay { common: FxCommon::new(BlendMode::SoftLight, 1.0), color: Color::rgb(1.0, 1.0, 0.0) }];
+        d.layers.push(l);
+        check(&d, 2, 2, [lit[0], lit[1], lit[2], 1.0], "opaque part");
+        check(&d, 9, 2, [half(0), half(1), half(2), 1.0], "half-transparent part");
+    }
+}
+
+#[test]
+fn a_see_through_normal_layer_without_interior_effects_counts_the_backdrop_once() {
+    // A half-transparent backdrop under a Normal layer at fill 50 % whose only effect is a drop
+    // shadow (cast off the canvas): plain Normal compositing, blue at 50 % over red at 50 %. The
+    // layer must not merge into the backdrop first, or the backdrop shows twice (alpha 0.875).
+    for depth in DEPTHS {
+        let mut d = doc(depth, false);
+        d.layers.push(solid(&d, "red", full(&d), [1.0, 0.0, 0.0, 0.5]));
+        let mut l = solid(&d, "blue", Rect::new(0, 0, 12, 4), BLUE);
+        l.fill_opacity = 0.5;
+        l.effects.items = vec![Effect::DropShadow(photocraft_doc::Shadow {
+            common: FxCommon::new(BlendMode::Normal, 1.0),
+            color: Color::BLACK,
+            angle: 90.0,
+            use_global_light: false,
+            distance: 20.0,
+            spread: 1.0,
+            size: 0.0,
+            contour: photocraft_doc::Contour::Linear,
+            anti_alias: false,
+            noise: 0.0,
+            knocks_out: true,
+        })];
+        d.layers.push(l);
+        check(&d, 2, 2, [1.0 / 3.0, 0.0, 2.0 / 3.0, 0.75], "inside the layer");
+    }
+}
+
+#[test]
 fn transparency_shapes_off_spreads_effects_over_the_whole_layer() {
     for depth in DEPTHS {
         let mut d = doc(depth, true);
@@ -289,6 +339,7 @@ fn inside_stroke() -> Effect {
         size: 2.0,
         position: StrokePosition::Inside,
         paint: FxPaint::Color(Color::rgb(1.0, 0.0, 0.0)),
+        overprint: false,
     })
 }
 
@@ -298,6 +349,7 @@ fn outside_stroke() -> Effect {
         size: 6.0,
         position: StrokePosition::Outside,
         paint: FxPaint::Color(Color::rgb(1.0, 0.0, 0.0)),
+        overprint: false,
     })
 }
 
@@ -318,6 +370,7 @@ fn shapeless_stroke_tile_skips_match_full_region_across_blending_settings() {
                             size: 6.0,
                             position,
                             paint: FxPaint::Color(Color::rgb(1.0, 0.0, 0.0)),
+                            overprint: false,
                         })];
                         l.blend = blend;
                         l.fill_opacity = fill;

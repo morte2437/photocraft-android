@@ -2,6 +2,9 @@
 //! Quick Mask row): name, Color Indicates Masked Areas / Selected Areas / Spot Color, the overlay
 //! or ink colour, and opacity (solidity for spot channels). OK runs the engine's
 //! `channel.options`, which agents can also call directly with params (#3761).
+//!
+//! On the layer mask (double-click its Channels row, or Mask Options… on its Layers thumbnail)
+//! it is Photoshop's Layer Mask Display Options: just the rubylith's colour and opacity.
 
 use egui::{Align2, Sense, pos2, vec2};
 use photocraft_doc::ColorIndicates;
@@ -21,11 +24,27 @@ fn hex(rgb: [f32; 3]) -> String {
     crate::color_picker_ui::hex(rgb)
 }
 
-/// The dialog's fields for `channel` (an alpha/spot channel index, or `"quickMask"`), or `None`
-/// when there's no document or no such channel.
+/// Whether `f` is Layer Mask Display Options rather than a channel's options.
+fn layer_mask(f: &Map<String, Value>) -> bool {
+    f.get("channel").and_then(Value::as_str) == Some("mask")
+}
+
+/// The dialog's fields for `channel` (an alpha/spot channel index, `"quickMask"`, or `"mask"` for
+/// Layer Mask Display Options), or `None` when there's no document or no such channel.
 pub fn fields(app: &PhotocraftApp, channel: &Value) -> Option<Map<String, Value>> {
     let doc = &app.session.active()?.doc;
     let kind = |i: ColorIndicates| if i == ColorIndicates::SelectedAreas { "selected" } else { "masked" };
+    if channel.as_str() == Some("mask") {
+        let o = &app.session.prefs().layer_mask_overlay;
+        let mut f = Map::new();
+        f.insert(MARK.into(), json!(true));
+        f.insert("__command".into(), json!(COMMAND));
+        f.insert("__label".into(), json!("Layer Mask Display Options…"));
+        f.insert("channel".into(), json!("mask"));
+        f.insert("color".into(), json!(hex(o.rgb())));
+        f.insert("opacity".into(), json!((o.alpha() * 100.0).round()));
+        return Some(f);
+    }
     let (name, indicates, color, percent) = if channel.as_str() == Some("quickMask") {
         let o = app.session.quick_mask_options;
         (None, kind(o.indicates), o.color, o.opacity)
@@ -84,6 +103,9 @@ fn label(ui: &mut egui::Ui, text: &str) {
 
 pub fn body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
     ui.spacing_mut().item_spacing.y = 6.0;
+    if layer_mask(f) {
+        return mask_body(ui, f);
+    }
     let quick = f.get("channel").and_then(Value::as_str) == Some("quickMask");
     if let Some(mut name) = f.get("name").and_then(Value::as_str).map(str::to_string) {
         ui.horizontal(|ui| {
@@ -122,6 +144,24 @@ pub fn body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
         }
         ui.add_space(12.0);
         ui.label(if spot { tl!("Solidity:") } else { tl!("Opacity:") });
+        let mut pct = f.get("opacity").and_then(Value::as_f64).unwrap_or(50.0) as f32;
+        if crate::widgets::value_field(ui, &mut pct, 0.0..=100.0, "%", 64.0).changed() {
+            f.insert("opacity".into(), json!(pct.round()));
+        }
+    });
+}
+
+/// Layer Mask Display Options: Color and Opacity, as Photoshop's dialog has them.
+fn mask_body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
+    ui.horizontal(|ui| {
+        label(ui, tl!("Color:"));
+        let current = f.get("color").and_then(Value::as_str).and_then(crate::color_picker_ui::parse_hex).unwrap_or([1.0, 0.0, 0.0]);
+        let c = current.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8);
+        if crate::widgets::color_swatch_button(ui, egui::Color32::from_rgb(c[0], c[1], c[2]), tl!("Overlay Color")).clicked() {
+            crate::color_picker_ui::request(f, &crate::color_picker_ui::title_for(tl!("Overlay Color")));
+        }
+        ui.add_space(12.0);
+        ui.label(tl!("Opacity:"));
         let mut pct = f.get("opacity").and_then(Value::as_f64).unwrap_or(50.0) as f32;
         if crate::widgets::value_field(ui, &mut pct, 0.0..=100.0, "%", 64.0).changed() {
             f.insert("opacity".into(), json!(pct.round()));

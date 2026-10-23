@@ -131,10 +131,15 @@ fn map_pixels(s: &mut Session, label: &str, p: &Value, f: impl FnOnce(Rect, &mut
     Ok(Value::Null)
 }
 
+/// The effective whole-pixel Stroke width, shared by execution and ATN export.
+pub(crate) fn stroke_width(p: &Value) -> usize {
+    // Whole pixels, rounded up, as in Photoshop (0.5 px strokes 1 px).
+    p.get("width").and_then(Value::as_f64).filter(|w| w.is_finite()).unwrap_or(1.0).clamp(1.0, 250.0).ceil() as usize
+}
+
 /// Edit › Stroke: a band along the selection edge (or the layer's opaque edge without a selection).
 fn stroke(s: &mut Session, p: &Value) -> Result<Value> {
-    // Whole pixels, rounded up, as in Photoshop (0.5 px strokes 1 px).
-    let width = p.get("width").and_then(Value::as_f64).filter(|w| w.is_finite()).unwrap_or(1.0).clamp(1.0, 250.0).ceil() as usize;
+    let width = stroke_width(p);
     let color = color_param("edit.stroke", p, "color", s.tools.foreground)?;
     // A colour picked as CMYK strokes a CMYK document with the picked inks (#4196).
     let picked = s.tools.picked_cmyk([color[0], color[1], color[2]]);
@@ -275,57 +280,6 @@ fn average(s: &mut Session, p: &Value) -> Result<Value> {
         }
         let avg = [(sum[0] / wsum) as f32, (sum[1] / wsum) as f32, (sum[2] / wsum) as f32, (asum / n.max(1e-9)) as f32];
         px.fill(avg);
-    })
-}
-
-fn hash(x: i32, y: i32, seed: u32) -> f32 {
-    let mut h = (x as u32).wrapping_mul(0x8da6_b343) ^ (y as u32).wrapping_mul(0xd816_3841) ^ seed.wrapping_mul(0xcb1a_b31f);
-    h ^= h >> 13;
-    h = h.wrapping_mul(0x5bd1_e995);
-    h ^= h >> 15;
-    (h & 0x00ff_ffff) as f32 / 0x00ff_ffff as f32
-}
-
-/// Smooth value noise, summed over octaves (fBm), in 0..1.
-pub(crate) fn clouds_value(x: f32, y: f32, base: f32, seed: u32) -> f32 {
-    let (mut sum, mut amp, mut freq, mut norm) = (0.0, 1.0, 1.0 / base, 0.0);
-    for o in 0..8u32 {
-        let (fx, fy) = (x * freq, y * freq);
-        let (ix, iy) = (fx.floor() as i32, fy.floor() as i32);
-        let (tx, ty) = (fx - ix as f32, fy - iy as f32);
-        let (sx, sy) = (tx * tx * (3.0 - 2.0 * tx), ty * ty * (3.0 - 2.0 * ty));
-        let s = seed.wrapping_add(o * 7919);
-        let top = hash(ix, iy, s) + (hash(ix + 1, iy, s) - hash(ix, iy, s)) * sx;
-        let bot = hash(ix, iy + 1, s) + (hash(ix + 1, iy + 1, s) - hash(ix, iy + 1, s)) * sx;
-        sum += (top + (bot - top) * sy) * amp;
-        norm += amp;
-        amp *= 0.5;
-        freq *= 2.0;
-    }
-    // Stretch the bell-shaped sum so the clouds use the full foreground→background range.
-    ((sum / norm - 0.5) * 2.2 + 0.5).clamp(0.0, 1.0)
-}
-
-/// Filter › Render › Clouds / Difference Clouds, between the foreground and background colours.
-fn clouds(s: &mut Session, p: &Value, difference: bool) -> Result<Value> {
-    let (fg, bg) = (s.tools.foreground, s.tools.background);
-    let seed = p.get("seed").and_then(Value::as_u64).unwrap_or(0) as u32;
-    let size = s.active().map_or(256.0, |d| d.doc.size.width.max(d.doc.size.height) as f32);
-    let base = (size / 4.0).clamp(16.0, 512.0);
-    map_pixels(s, if difference { "Difference Clouds" } else { "Clouds" }, p, |area, px, _| {
-        let w = area.width() as usize;
-        for (i, p) in px.iter_mut().enumerate() {
-            let (x, y) = ((area.x0 + (i % w) as i32) as f32, (area.y0 + (i / w) as i32) as f32);
-            let t = clouds_value(x, y, base, seed);
-            let c: [f32; 3] = std::array::from_fn(|k| fg[k] + (bg[k] - fg[k]) * t);
-            if difference {
-                for k in 0..3 {
-                    p[k] = (p[k] - c[k]).abs();
-                }
-            } else {
-                *p = [c[0], c[1], c[2], 1.0];
-            }
-        }
     })
 }
 
@@ -933,6 +887,7 @@ pub fn specs() -> Vec<CommandSpec> {
                         gray
                     };
                     for id in ids {
+                        background_to_layer(doc, id);
                         let l = doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?;
                         l.effects = fx.clone();
                         // Pass Through is a group's mode: a group's style pastes onto other layers as
@@ -1057,8 +1012,6 @@ pub fn specs() -> Vec<CommandSpec> {
             show_only
         ),
         spec!("filter.blur.average", "Average", &["Filter", "Blur"], None, "{}", has_pixels, average),
-        spec!("filter.render.clouds", "Clouds", &["Filter", "Render"], None, r##"{"seed":u32=0}"##, has_pixels, |s, p| clouds(s, p, false)),
-        spec!("filter.render.differenceClouds", "Difference Clouds", &["Filter", "Render"], None, r##"{"seed":u32=0}"##, has_pixels, |s, p| clouds(s, p, true)),
     ]
 }
 
@@ -1538,6 +1491,31 @@ mod tests {
             s.execute("image.adjustments.equalize", json!({})).unwrap();
             let (dark, light) = (pixel(&s, 1, 1)[0], pixel(&s, 1, 20)[0]);
             assert!(dark < 0.05 && light > 0.95, "{depth}: {dark} {light}");
+        }
+    }
+
+    /// A selection masks Clouds but doesn't change their size: inside it they are the canvas's
+    /// clouds, as when Clouds sized itself by the document (before it became a filter).
+    #[test]
+    fn clouds_in_a_selection_are_the_canvas_clouds() {
+        // Big enough that the canvas (cloud size 100 px) and the selection (16 px) size differently.
+        let big = |depth: u32| {
+            let mut s = Session::new();
+            s.execute("file.new", json!({"width": 400, "height": 300, "depth": depth})).unwrap();
+            s.execute("layer.new.layer", json!({})).unwrap();
+            s
+        };
+        for depth in [8, 16, 32] {
+            let mut whole = big(depth);
+            whole.execute("filter.render.clouds", json!({"seed": 4})).unwrap();
+            let mut s = big(depth);
+            s.execute("select.rect", json!({"x": 50, "y": 40, "width": 60, "height": 50})).unwrap();
+            s.execute("filter.render.clouds", json!({"seed": 4})).unwrap();
+            for (x, y) in [(50, 40), (75, 60), (100, 85), (109, 89)] {
+                let (a, b) = (pixel(&s, x, y), pixel(&whole, x, y));
+                assert!((0..4).all(|c| (a[c] - b[c]).abs() < 1e-3), "depth {depth} at {x},{y}: {a:?} vs {b:?}");
+            }
+            assert_eq!(pixel(&s, 300, 200)[3], 0.0, "outside the selection the layer stays empty");
         }
     }
 

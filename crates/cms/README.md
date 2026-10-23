@@ -20,11 +20,15 @@ t.eval(&[1.0, 0.0, 0.0], &mut out);                        // exact single colou
 * `Transform::proof(src, proof, display, intent, bpc, simulate_paper)`: soft-proof chain.
 * `GamutCheck::new(src, proof, ΔE)`: out-of-gamut test (gamut warning).
 * `Lut3d::from_transform(&t, 33).to_rgba16f_bytes()`: display transform as a 3D texture.
+* `Transform::gpu_matrix_shaper()`: accurate RGB input curves + matrix + output curves for
+  display shaders. Float tables retain near-black detail; unsupported chains return `None`
+  for the 3D LUT fallback. No GPU dependency is required by this crate.
 * `transform::cached(src, dst, opts)`: process-wide transform cache.
 * `Profile::to_bytes()`: original bytes of parsed profiles (byte-exact), or an ICC v4.3 encoding.
 * `Profile::same_colors(&other)`: the same colour space whatever the encoding (every sample of
   a device grid within ΔE 0.5 through both), e.g. Photoshop's sRGB IEC61966-2.1 and the built-in
-  sRGB. `content_hash()` compares bytes and suits cache keys only.
+  sRGB. `same_bytes(&other)` compares the ICC bytes. `content_hash()` is a 64-bit hash of them
+  that another profile can share: a cache key, confirmed with `same_bytes`.
 
 ### Evaluation
 
@@ -36,6 +40,10 @@ t.eval(&[1.0, 0.0, 0.0], &mut out);                        // exact single colou
   tetrahedral interpolation (4D: linear on the first input between two tetrahedra); purely
   analytic chains (e.g. Lab ↔ RGB) are evaluated exactly. Buffers ≥ 16k pixels run on rayon
   (native only).
+* GPU matrix/TRC display transforms reuse the 4097-entry input curves, 3×3 matrix plus
+  offsets, and 4096-entry output curves indexed by `x^(1/4)`. Each channel is interpolated
+  separately using float texels; SDR input/output are clamped to `[0, 1]`. A final RGB
+  33³ table cannot resolve steep inverse gamma curves near black, even with float texels.
 * Rendering intents: AToB0/1/2 and BToA0/1/2 by intent with AToB0/BToA0 fallback; absolute
   colorimetric scales by media white (`wtpt`; v2 display profiles treated as D50; a zero,
   negative or non-finite white is refused with `CmsError::Invalid`); BPC uses
@@ -68,7 +76,7 @@ sampled gamut boundary. `profiles/photocraft-coated-cmyk.icc` (237 KB, AToB 11�
 21³ lut16) is that output, dedicated to the public domain (CC0-1.0). Regenerate with
 
 ```sh
-PHOTOCRAFT_REGEN_PROFILES=1 cargo test -p photocraft-cms --release --test regen
+PHOTOCRAFT_REGEN_PROFILES=1 cargo test -p photocraft-cms --release --test it -- regen::
 ```
 
 It is a plausible coated-offset profile, not a measured characterisation: use your printer's

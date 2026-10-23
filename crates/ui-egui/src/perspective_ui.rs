@@ -255,7 +255,9 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, _mods: egui::Modifiers) {
     }
 }
 
-pub fn draw(s: &PerspSession, painter: &egui::Painter, xf: &ViewXform) {
+/// The warped pixels: image content, drawn under the grid and guides like the document so a
+/// guide stays visible across the layer being warped (#7781). The planes and pins are [`draw`].
+pub fn draw_content(s: &PerspSession, painter: &egui::Painter, xf: &ViewXform) {
     let scr = |p: [f64; 2]| xf.to_screen(p[0] as f32, p[1] as f32);
     let mut mesh = egui::Mesh::with_texture(s.texture.id());
     let tint = Color32::from_white_alpha((s.opacity.clamp(0.0, 1.0) * 255.0) as u8);
@@ -273,6 +275,11 @@ pub fn draw(s: &PerspSession, painter: &egui::Painter, xf: &ViewXform) {
         }
     }
     painter.add(mesh);
+}
+
+/// The planes, their grids and pins over the warped pixels ([`draw_content`]) and the guides.
+pub fn draw(s: &PerspSession, painter: &egui::Painter, xf: &ViewXform) {
+    let scr = |p: [f64; 2]| xf.to_screen(p[0] as f32, p[1] as f32);
     let accent = crate::theme::Tokens::get(painter.ctx()).accent;
     let warp = s.mode == PerspMode::Warp;
     for p in &s.planes {

@@ -1,5 +1,5 @@
 //! Colour-managed canvas display: the document's composite shown through document profile →
-//! monitor profile, on the GPU canvas (folded into the display 3D LUT) and the CPU canvas
+//! monitor profile, on the GPU canvas (matrix/shaper or display 3D LUT) and the CPU canvas
 //! (an 8-bit transform of the composite).
 //!
 //! * The composite is in [`composite_profile`] (the document profile for RGB, its gray curve as

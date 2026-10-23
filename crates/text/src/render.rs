@@ -21,6 +21,64 @@ pub const FAUX_ITALIC_DEG: f32 = 12.0;
 pub const FAUX_BOLD_RADIUS: f32 = 0.036;
 /// Largest raster we produce (pixels), as a guard against absurd sizes.
 const MAX_PIXELS: u64 = 256 * 1024 * 1024;
+/// Cumulative coverage-pixel work budget across all colour and faux-bold passes of one render.
+const MAX_PASS_PIXELS: u64 = MAX_PIXELS * 4;
+/// Peak working bytes one rasterization may keep live. [`MAX_PIXELS`] does not bound them: the
+/// accumulator and the output surface are both `stride` deep, and a faux-bold pass keeps one more
+/// coverage buffer live, so a CMYK bold render reserves several times what a plain grey one does
+/// for the same pixels.
+const MAX_RASTER_BYTES: u64 = if cfg!(target_pointer_width = "64") { 4 << 30 } else { 1 << 30 };
+
+/// Whether a `w` x `h` render's peak working bytes fit `max_bytes`: the f32 accumulator and the
+/// output surface (both `stride` deep), plus the coverage buffers live at the peak. A plain pass
+/// peaks inside `Coverage::finish`, which holds its accumulator and the vector it builds beside
+/// it; a faux-bold pass peaks one buffer higher, since the resolved plain coverage is kept while
+/// the bold pass resolves into it. `false` when the arithmetic overflows, so an absurd size is
+/// refused rather than wrapping.
+fn fits_raster_budget(w: usize, h: usize, stride: usize, sample: SampleType, bold: bool, max_bytes: u64) -> bool {
+    let f32s = size_of::<f32>() as u64;
+    let peak = (w as u64).checked_mul(h as u64).and_then(|px| {
+        let deep = px.checked_mul(stride as u64)?.checked_mul(f32s + sample.bytes() as u64)?;
+        let coverage = px.checked_mul(if bold { 3 } else { 2 })?.checked_mul(f32s)?;
+        deep.checked_add(coverage)
+    });
+    peak.is_some_and(|b| b <= max_bytes)
+}
+
+/// A zeroed buffer, or `None` when its bytes cannot be reserved.
+fn zeroed(len: usize) -> Option<Vec<f32>> {
+    let mut v = Vec::new();
+    v.try_reserve_exact(len).ok()?;
+    v.resize(len, 0.0);
+    Some(v)
+}
+
+/// What a refused or unrenderable layout returns.
+fn nothing(format: PixelFormat) -> Rendered {
+    Rendered { surface: Surface::new(format), rect: Rect::new(0, 0, 0, 0) }
+}
+
+/// Maps raw area-coverage to the opacity Photoshop's anti-alias modes imply. Exponents above 1 thin
+/// the fringe (sharper); below 1 widen it (stronger smoothing).
+fn shape_antialias_coverage(cv: f32, mode: AntiAlias) -> f32 {
+    if !cv.is_finite() {
+        return 0.0;
+    }
+    let cv = cv.clamp(0.0, 1.0);
+    match mode {
+        AntiAlias::None => {
+            if cv >= 0.5 {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        AntiAlias::Smooth => cv,
+        AntiAlias::Strong => cv.powf(0.55),
+        AntiAlias::Crisp => cv.powf(1.35),
+        AntiAlias::Sharp | AntiAlias::Windows | AntiAlias::WindowsLcd => cv.powf(2.2),
+    }
+}
 
 /// Rendered text: pixels in document space plus the covered rectangle.
 pub struct Rendered {
@@ -77,6 +135,54 @@ const BOLD_OFFSETS: [(f64, f64); 8] = [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.
 fn is_bold(layout: &TextLayout, g: &PlacedGlyph) -> bool {
     let face_bold = layout.faces.get(g.face as usize).is_some_and(|f| f.embolden);
     layout.styles.get(g.style as usize).is_some_and(|s| s.faux_bold) || face_bold
+}
+
+fn glyph_is_placed(layout: &TextLayout, g: &PlacedGlyph, warp: Option<&Warp>) -> bool {
+    let Some(face) = layout.faces.get(g.face as usize) else {
+        return false;
+    };
+    let Ok(font) = skrifa::FontRef::from_index(face.font.data.as_ref(), face.font.index) else {
+        return false;
+    };
+    if font.outline_glyphs().get(GlyphId::new(g.id)).is_none() {
+        return false;
+    }
+    if let Some(w) = warp {
+        let coords: Vec<NormalizedCoord> = face.coords.iter().map(|&c| NormalizedCoord::from_bits(c)).collect();
+        if matches!(w.place_glyph(glyph_center(layout, g, &font, face.size_px, &coords)), Placement::Hidden) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Distinct visible colours (`alpha > 0.0`) used by placed glyphs or decorations, each paired with
+/// whether any placed glyph of that colour uses faux/synthetic bold.
+fn visible_color_passes(layout: &TextLayout, warp: Option<&Warp>) -> Vec<(Color, bool)> {
+    let mut colors: Vec<(Color, bool)> = Vec::new();
+    let mut record = |c: Color, bold: bool| {
+        if !(c.alpha.is_finite() && c.alpha > 0.0) {
+            return;
+        }
+        match colors.iter_mut().find(|(existing, _)| *existing == c) {
+            Some((_, b)) => *b |= bold,
+            None => colors.push((c, bold)),
+        }
+    };
+    for g in &layout.glyphs {
+        let Some(st) = layout.styles.get(g.style as usize) else { continue };
+        if !(st.color.alpha.is_finite() && st.color.alpha > 0.0) {
+            continue;
+        }
+        if glyph_is_placed(layout, g, warp) {
+            record(st.color, is_bold(layout, g));
+        }
+    }
+    for d in &layout.decorations {
+        let Some(st) = layout.styles.get(d.style as usize) else { continue };
+        record(st.color, false);
+    }
+    colors
 }
 
 fn draw_pass(layout: &TextLayout, transform: &Xform, sink: &mut impl LineSink, only_color: Option<&Color>, warp: Option<&Warp>, pass: Pass) {
@@ -246,6 +352,19 @@ pub fn rasterize(layout: &TextLayout, transform: &Affine, format: PixelFormat, a
 
 /// [`rasterize`] with the glyph outlines bent by `warp` (Type › Warp Text).
 pub fn rasterize_warped(layout: &TextLayout, transform: &Affine, format: PixelFormat, antialias: AntiAlias, warp: Option<&Warp>) -> Rendered {
+    rasterize_passes(layout, transform, format, antialias, warp, true)
+}
+
+/// [`rasterize_warped`] with every colour's coverage either confined to that colour's own ink
+/// (`per_colour`) or spanning the whole text, the oracle the tests compare it with (#8602).
+pub(crate) fn rasterize_passes(
+    layout: &TextLayout,
+    transform: &Affine,
+    format: PixelFormat,
+    antialias: AntiAlias,
+    warp: Option<&Warp>,
+    per_colour: bool,
+) -> Rendered {
     let format = PixelFormat { alpha: true, ..format };
     let rect = ink_rect_warped(layout, transform, warp);
     let (w, h) = (rect.width() as usize, rect.height() as usize);
@@ -253,33 +372,71 @@ pub fn rasterize_warped(layout: &TextLayout, transform: &Affine, format: PixelFo
     if w == 0 || h == 0 || (w as u64) * (h as u64) > MAX_PIXELS {
         return Rendered { surface, rect: Rect::new(0, 0, 0, 0) };
     }
+    let colors = visible_color_passes(layout, warp);
+    if colors.is_empty() {
+        return Rendered { surface, rect: Rect::new(0, 0, 0, 0) };
+    }
     let n = format.mode.color_channels();
     let stride = n + 1;
-    // Premultiplied accumulation.
-    let mut acc = vec![0.0f32; w * h * stride];
-    let xf = Xform([1.0, 0.0, 0.0, 1.0, -rect.x0 as f64, -rect.y0 as f64]).mul(&Xform(transform.m));
-    let mut colors: Vec<Color> = Vec::new();
-    for st in &layout.styles {
-        if !colors.contains(&st.color) {
-            colors.push(st.color);
-        }
+    let any_bold = colors.iter().any(|&(_, b)| b);
+    if !fits_raster_budget(w, h, stride, format.sample, any_bold, MAX_RASTER_BYTES) {
+        return nothing(format);
     }
-    for c in &colors {
-        let mut cov = Coverage::new(w, h);
-        draw_pass(layout, &xf, &mut cov, Some(c), warp, Pass::Plain);
-        let mut cov = cov.finish();
-        if layout.glyphs.iter().any(|g| is_bold(layout, g)) {
+    // Premultiplied accumulation.
+    let Some(mut acc) = zeroed(w * h * stride) else {
+        return nothing(format);
+    };
+    let xf = Xform([1.0, 0.0, 0.0, 1.0, -rect.x0 as f64, -rect.y0 as f64]).mul(&Xform(transform.m));
+    let whole = Rect::new(0, 0, w as i32, h as i32);
+    let mut pass_pixels = 0u64;
+    for &(c, color_bold) in &colors {
+        // Rasterise each colour only over its own glyphs (every offset of faux bold included):
+        // a full-size pass per colour made text with many coloured runs cost colours x area
+        // (#8602). Outside its ink a colour's coverage is zero, so the result is the same.
+        let sub = if per_colour {
+            let mut b = Bounds::default();
+            draw_pass(layout, &xf, &mut b, Some(&c), warp, Pass::All);
+            b.rect.map(rect_from_bounds).unwrap_or(Rect::EMPTY).intersect(&whole)
+        } else {
+            whole
+        };
+        if sub.is_empty() {
+            continue;
+        }
+        let (sw, sh) = (sub.width() as usize, sub.height() as usize);
+        let passes = 1 + if color_bold { BOLD_OFFSETS.len() } else { 0 };
+        let Some(cost) = (sw as u64).checked_mul(sh as u64).and_then(|px| px.checked_mul(passes as u64)) else {
+            return nothing(format);
+        };
+        let Some(total) = pass_pixels.checked_add(cost).filter(|&t| t <= MAX_PASS_PIXELS) else {
+            return nothing(format);
+        };
+        pass_pixels = total;
+        let xf = Xform([1.0, 0.0, 0.0, 1.0, -sub.x0 as f64, -sub.y0 as f64]).mul(&xf);
+        let Some(mut cov) = Coverage::try_new(sw, sh) else {
+            return nothing(format);
+        };
+        draw_pass(layout, &xf, &mut cov, Some(&c), warp, Pass::Plain);
+        let Some(mut cov) = cov.finish() else {
+            return nothing(format);
+        };
+        if color_bold {
             for k in 0..BOLD_OFFSETS.len() {
-                let mut bc = Coverage::new(w, h);
-                draw_pass(layout, &xf, &mut bc, Some(c), warp, Pass::Bold(k));
-                for (a, b) in cov.iter_mut().zip(bc.finish()) {
+                let Some(mut bc) = Coverage::try_new(sw, sh) else {
+                    return nothing(format);
+                };
+                draw_pass(layout, &xf, &mut bc, Some(&c), warp, Pass::Bold(k));
+                let Some(bold_cov) = bc.finish() else {
+                    return nothing(format);
+                };
+                for (a, b) in cov.iter_mut().zip(bold_cov) {
                     *a = a.max(b);
                 }
             }
         }
-        let comps = color_in(&format, c);
+        let comps = color_in(&format, &c);
         let a = c.alpha.clamp(0.0, 1.0);
-        composite(&mut acc, &cov, w, stride, &comps, a, antialias);
+        composite(&mut acc, w, sub, &cov, stride, &comps, a, antialias);
     }
     // Unpremultiply.
     unpremultiply(&mut acc, n, stride, format.sample);
@@ -288,14 +445,21 @@ pub fn rasterize_warped(layout: &TextLayout, transform: &Affine, format: PixelFo
     Rendered { surface, rect }
 }
 
-/// Composites one colour's coverage over the premultiplied accumulator, resolving `AntiAlias::None`
-/// to 0/1 first. A pixel's maths reads and writes only its own slots, so the rows are done in any
-/// order — one per thread — for exactly the same bytes.
-fn composite(acc: &mut [f32], cov: &[f32], width: usize, stride: usize, comps: &[f32], a: f32, antialias: AntiAlias) {
+/// Composites one colour's coverage, covering `sub` of a `width`-pixel-wide premultiplied
+/// accumulator, after [`shape_antialias_coverage`]. A pixel's maths reads and writes only its own
+/// slots, so the rows are done in any order — one per thread — for exactly the same bytes.
+#[allow(clippy::too_many_arguments)]
+fn composite(acc: &mut [f32], width: usize, sub: Rect, cov: &[f32], stride: usize, comps: &[f32], a: f32, antialias: AntiAlias) {
     let n = comps.len();
+    let (x0, x1) = (sub.x0.max(0) as usize * stride, sub.x1.max(0) as usize * stride);
+    let (y0, sw, sh) = (sub.y0.max(0) as usize, sub.width() as usize, sub.height() as usize);
+    if sw == 0 || sh == 0 {
+        return;
+    }
     let row = |acc: &mut [f32], cov: &[f32]| {
+        let Some(acc) = acc.get_mut(x0..x1) else { return };
         for (cv, px) in cov.iter().zip(acc.chunks_exact_mut(stride)) {
-            let cv = if antialias == AntiAlias::None { if *cv >= 0.5 { 1.0 } else { 0.0 } } else { *cv };
+            let cv = shape_antialias_coverage(*cv, antialias);
             let s = cv * a;
             if s <= 0.0 {
                 continue;
@@ -308,9 +472,9 @@ fn composite(acc: &mut [f32], cov: &[f32], width: usize, stride: usize, comps: &
         }
     };
     #[cfg(not(target_arch = "wasm32"))]
-    acc.par_chunks_mut(width * stride).zip(cov.par_chunks(width)).for_each(|(a, c)| row(a, c));
+    acc.par_chunks_mut(width * stride).skip(y0).take(sh).zip(cov.par_chunks(sw)).for_each(|(a, c)| row(a, c));
     #[cfg(target_arch = "wasm32")]
-    acc.chunks_mut(width * stride).zip(cov.chunks(width)).for_each(|(a, c)| row(a, c));
+    acc.chunks_mut(width * stride).skip(y0).take(sh).zip(cov.chunks(sw)).for_each(|(a, c)| row(a, c));
 }
 
 /// Divides the premultiplied accumulator back to straight colour. Each pixel stands alone.
@@ -423,7 +587,8 @@ pub fn outlines(layout: &TextLayout, transform: &Affine, warp: Option<&Warp>) ->
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_PIXELS, rect_from_bounds};
+    use super::{MAX_PIXELS, fits_raster_budget, rect_from_bounds, zeroed};
+    use photocraft_color::SampleType;
     use photocraft_geom::Rect;
 
     #[test]
@@ -443,5 +608,26 @@ mod tests {
             assert_eq!(first, expected, "bounds: {bounds:?}");
             assert_eq!(rect_from_bounds(bounds), first, "bounds: {bounds:?}");
         }
+    }
+
+    /// #4979: the pixel cap says nothing about bytes, so the peak is admitted from the channel
+    /// depth of the accumulator and surface, the sample size and the faux-bold coverage buffers.
+    /// A 100 x 100 grey+alpha render at 8-bit keeps 2 x (4 + 1) + 2 x 4 = 18 bytes a pixel live.
+    #[test]
+    fn the_byte_budget_follows_channels_depth_and_faux_bold() {
+        let px = 100 * 100;
+        assert!(fits_raster_budget(100, 100, 2, SampleType::U8, false, px * 18));
+        assert!(!fits_raster_budget(100, 100, 2, SampleType::U8, false, px * 18 - 1), "the allowance is exact");
+
+        // The same pixels cost more with more channels, a wider sample, or a bold pass.
+        assert!(!fits_raster_budget(100, 100, 5, SampleType::U8, false, px * 18), "CMYK is deeper");
+        assert!(!fits_raster_budget(100, 100, 2, SampleType::F32, false, px * 18), "f32 output is wider");
+        assert!(!fits_raster_budget(100, 100, 2, SampleType::U8, true, px * 18), "bold holds one more buffer");
+        assert!(fits_raster_budget(100, 100, 2, SampleType::U8, true, px * 22), "2 x 5 + 3 x 4 bytes a pixel");
+
+        // A size whose peak overflows is refused rather than wrapping to a small number.
+        assert!(!fits_raster_budget(usize::MAX, usize::MAX, 5, SampleType::F32, true, u64::MAX));
+        // Nothing is reserved for a buffer that cannot be served.
+        assert!(zeroed(usize::MAX).is_none());
     }
 }

@@ -30,6 +30,14 @@ flate2 = { workspace = true }
 parley = { version = "0.11", default-features = false, features = ["std", "complex-scripts"] }
 rayon = { workspace = true }
 
+# macOS only: the `system` feature adds fontique's Core Text backend, which lists every font the
+# system offers wherever its file lives (fonts a font manager or Adobe Fonts activated, Office's
+# own, Apple's on-demand downloads). `fonts.rs` reads only its list of files and registers them
+# like the folder scan's, so our own collection keeps its behaviour (generic families, merging
+# installed faces into the bundled families). It uses no fontconfig, unlike `system` on Linux.
+[target.'cfg(target_os = "macos")'.dependencies]
+parley = { version = "0.11", default-features = false, features = ["std", "complex-scripts", "system"] }
+
 [build-dependencies]
 # Deflates the bundled fonts (build.rs); `flate2` above inflates them.
 flate2 = { workspace = true }

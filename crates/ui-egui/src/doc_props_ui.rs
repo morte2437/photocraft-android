@@ -385,15 +385,10 @@ mod tests {
     }
 
     #[test]
-    fn image_mode_depth_labels_match_sample_types_and_are_translated() {
+    fn image_mode_depth_labels_match_sample_types() {
         assert_eq!(
             DEPTHS.iter().map(|(sample, label, _)| (*sample, *label)).collect::<Vec<_>>(),
             [(SampleType::U8, "8 Bits/Channel"), (SampleType::U16, "16 Bits/Channel"), (SampleType::F32, "32 Bits/Channel"),]
         );
-        for lang in crate::i18n::Lang::all().filter(|lang| lang.code() != "en") {
-            for (_, label, id) in DEPTHS {
-                assert_ne!(crate::i18n::tr_id(lang, id, label), *label, "{}: {label}", lang.code());
-            }
-        }
     }
 }

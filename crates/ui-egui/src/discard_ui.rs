@@ -787,8 +787,11 @@ mod tests {
         assert_eq!(button_labels(false, &buttons), ["(Y)es", "(N)o", "(C)ancel"]);
         let german = crate::i18n::Lang::from_code("de").unwrap();
         crate::i18n::with_language(german, || {
-            assert_eq!(button_labels(false, &buttons), ["Ja (Y)", "Nein (N)", "Abbrechen (C)"]);
-            assert_eq!(button_labels(true, &buttons), ["Ja", "Nein", "Abbrechen"]);
+            let shown: Vec<&str> = buttons.iter().map(|(label, _)| crate::i18n::tr(german, label)).collect();
+            assert_eq!(button_labels(true, &buttons), shown);
+            let labels = button_labels(false, &buttons);
+            let appended: Vec<String> = shown.iter().zip(&buttons).map(|(text, (_, key))| format!("{text} ({})", key.map_or("", |k| k.name()))).collect();
+            assert!(labels.iter().all(|label| label.starts_with('(')) || labels == appended, "{labels:?}");
         });
     }
 
@@ -883,6 +886,53 @@ mod tests {
         assert!(h.state().session.documents().is_empty());
     }
 
+    /// Save on closing an untitled document, answered with `kept` while `kept.psd` exists: the
+    /// prompt waits for the question whether to replace it. Cancel brings the prompt back with
+    /// nothing written; Replace saves and closes the document.
+    #[test]
+    fn saving_from_the_prompt_waits_for_the_question_whether_to_replace() {
+        use crate::{FileDialogAnswer, FileDialogReply};
+        use egui_kittest::kittest::Queryable;
+        use std::{cell::RefCell, rc::Rc};
+        let written: Rc<RefCell<Vec<String>>> = Rc::default();
+        let (w, waiting): (_, Rc<RefCell<Option<FileDialogReply>>>) = (written.clone(), Rc::default());
+        let held = waiting.clone();
+        let mut app = app_with_docs(1);
+        make_dirty(&mut app, 0);
+        app.services.export = Some(Box::new(|_: &photocraft_doc::Document, _: &str, _: &crate::ExportSettings| Ok((b"out".to_vec(), Vec::new()))));
+        app.services.write = Some(Box::new(move |p: &str, _: &[u8]| {
+            w.borrow_mut().push(p.to_string());
+            Ok(())
+        }));
+        app.services.file_stamp = Some(Box::new(|p: &str| (p == "/pics/kept.psd").then_some(crate::FileStamp { len: 1, modified: None })));
+        app.services.file_dialog = Some(Box::new(move |_, _, reply| *held.borrow_mut() = Some(reply)));
+        let mut h = prompt_for(app, "file.close", egui::os::OperatingSystem::Windows);
+        let save = |h: &mut Prompted| {
+            h.key_press(Key::Y);
+            h.run_steps(3);
+            waiting.borrow_mut().take().expect("the save dialog is open").send(Some(FileDialogAnswer::SaveTo("/pics/kept".into())));
+            h.run_steps(2);
+            h.state().ui.dialogs.iter().find(|d| crate::replace_prompt::owns(&d.fields)).map(|d| d.id).expect("the save asks first")
+        };
+        let id = save(&mut h);
+        assert!(h.state().file_dialog_open());
+        assert!(h.query_by_label("(Y)es").is_none(), "the prompt waits behind the question");
+        assert!(written.borrow().is_empty());
+
+        crate::dialogs::cancel(h.state_mut(), id).unwrap();
+        h.run_steps(2);
+        assert!(written.borrow().is_empty(), "Cancel writes nothing");
+        assert_eq!(docs_left(&h), Some(1));
+        assert_eq!(focused(&h, &["(Y)es", "(N)o", "(C)ancel"]), Some("(Y)es"), "the prompt comes back");
+
+        let id = save(&mut h);
+        crate::dialogs::confirm(h.state_mut(), id).unwrap();
+        h.run_steps(2);
+        assert_eq!(*written.borrow(), ["/pics/kept.psd"]);
+        assert!(h.state().discard.is_none());
+        assert!(h.state().session.documents().is_empty());
+    }
+
     #[test]
     fn saving_from_the_prompt_waits_for_a_background_save_then_closes() {
         use egui_kittest::kittest::Queryable;
@@ -958,6 +1008,12 @@ mod tests {
 
     #[path = "targa_tests.rs"]
     mod targa_tests;
+
+    #[path = "dds_tests.rs"]
+    mod dds_tests;
+
+    #[path = "jpeg_tests.rs"]
+    mod jpeg_tests;
 
     /// One frame with the window's close button pressed; the commands the guard sent.
     fn window_close_commands(app: &mut PhotocraftApp) -> Vec<egui::ViewportCommand> {

@@ -1,4 +1,28 @@
 use super::*;
+
+#[test]
+#[ignore = "release Object Finder timing on a 24 MP document"]
+#[allow(clippy::assertions_on_constants)]
+fn object_finder_large_foreground_release_timing() {
+    assert!(!cfg!(debug_assertions), "run with --release");
+    let (w, h) = (6000, 4000);
+    let img = RgbImage::from_fn(w, h, |x, y| if (300..5700).contains(&x) && (200..3800).contains(&y) { [0.8, 0.2, 0.1] } else { [0.1, 0.2, 0.8] });
+    let sampler = ImageSampler { img: &img, origin: (0, 0) };
+    let canvas = Rect::new(0, 0, w as i32, h as i32);
+    for (name, x, y) in [("foreground", 3000.0, 2000.0), ("background", 10.0, 10.0)] {
+        let start = std::time::Instant::now();
+        let region = grabcut::object_at(&sampler, canvas, x, y, grabcut::OBJECT_AT_WORK_PX);
+        println!("OBJECT_FINDER {w}x{h} {name}: {:.1} ms", start.elapsed().as_secs_f64() * 1000.0);
+        if name == "foreground" {
+            let region = region.unwrap();
+            assert!(region.at(3000, 2000) > 0.9 && region.at(310, 210) > 0.9);
+            assert!(region.at(10, 10) < 0.1);
+        } else {
+            assert!(region.is_none());
+        }
+    }
+}
+
 #[test]
 #[ignore = "release comparison of actual Quick Selection strokes on 24-36 MP documents"]
 #[allow(clippy::assertions_on_constants)]

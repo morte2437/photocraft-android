@@ -247,7 +247,15 @@ pub fn busy(ctx: &Context) -> bool {
 }
 pub fn cancel(ctx: &Context) {
     let r = runtime(ctx);
-    lock(&r).answer = Some(Ok(None));
+    let mut state = lock(&r);
+    if state.owner.is_some() {
+        state.answer = Some(Ok(None));
+    } else {
+        // A request can be queued by the button before tick starts the capture service.
+        // Dropping that request cancels it without leaving an answer for the next pick.
+        state.request = None;
+    }
+    drop(state);
     ctx.request_repaint();
 }
 
@@ -534,6 +542,31 @@ mod tests {
         assert!(tick(app, ctx));
         (owner, tx, cancelled)
     }
+    #[test]
+    fn cancel_while_queued_does_not_start_or_poison_the_next_pick() {
+        let ctx = Context::default();
+        let mut app = app();
+        let launched = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let started = launched.clone();
+        app.services.screen_pick = Some(Box::new(move |_| {
+            started.store(true, std::sync::atomic::Ordering::Relaxed);
+            let (_tx, rx) = std::sync::mpsc::channel();
+            Pending { receiver: rx, cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)) }
+        }));
+        let owner = Id::new("queued");
+        lock(&runtime(&ctx)).request = Some(owner);
+        cancel(&ctx);
+        assert!(!tick(&mut app, &ctx));
+        assert!(!launched.load(std::sync::atomic::Ordering::Relaxed));
+        assert_eq!(take(&ctx, owner), None);
+        // An idle Cancel must not be retained as the reply to a future request.
+        cancel(&ctx);
+        let (owner, tx, _) = queued(&mut app, &ctx);
+        tx.send(Ok(Capture::Color(Some([0.2, 0.4, 0.6])))).unwrap();
+        assert!(!tick(&mut app, &ctx));
+        assert_eq!(take(&ctx, owner), Some([0.2, 0.4, 0.6]));
+    }
+
     #[test]
     fn cancellation_wins_over_a_simultaneously_completed_pick() {
         let mut app = app();

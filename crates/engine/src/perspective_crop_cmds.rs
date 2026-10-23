@@ -202,6 +202,18 @@ fn apply(doc: &mut Document, q: &[[f64; 2]; 4], h: &Homography, size: (u32, u32)
     Ok(())
 }
 
+/// Color Sampler points (pixel indices) through `h`, as Photoshop maps them: each pixel's centre
+/// goes where the crop takes it, and the points outside the quad, now off the canvas, are dropped.
+fn map_samplers(points: &[[f64; 2]], h: &Homography, (w, ht): (u32, u32)) -> Vec<[f64; 2]> {
+    let bounds = Rect::from_xywh(0, 0, w, ht);
+    points
+        .iter()
+        .map(|p| h.apply(p[0] + 0.5, p[1] + 0.5))
+        .map(|(x, y)| [x - 0.5, y - 0.5])
+        .filter(|p| p[0].is_finite() && p[1].is_finite() && bounds.contains(p[0].floor() as i32, p[1].floor() as i32))
+        .collect()
+}
+
 fn perspective_crop(s: &mut Session, p: &Value) -> Result<Value> {
     let q = corners(p)?;
     let (w, h) = out_size(p, &q)?;
@@ -216,6 +228,10 @@ fn perspective_crop(s: &mut Session, p: &Value) -> Result<Value> {
         .any(|(_, _, l)| matches!(l.content, LayerContent::Text(_) | LayerContent::Shape(_) | LayerContent::Fill(_) | LayerContent::Smart(_)));
     let map = quad_to_rect(&q, f64::from(w), f64::from(h)).ok_or_else(|| bad("the corners don't define a perspective"))?;
     let bg = s.tools.background;
+    // The Color Sampler points follow their pixels through the homography, which the edit's
+    // affine sampler map can't express: mapped here once the crop has gone through (#7760).
+    let samplers = s.active().map(|d| d.color_samplers.clone()).unwrap_or_default();
+    let removed = s.samplers_removed;
     crate::analysis_cmds::compound(s, "Perspective Crop", |s| {
         if rasterize {
             crate::extra_cmds::rasterize_all(s)?;
@@ -228,6 +244,11 @@ fn perspective_crop(s: &mut Session, p: &Value) -> Result<Value> {
             Ok(())
         })
     })?;
+    let kept = map_samplers(&samplers, &map, (w, h));
+    s.samplers_removed = removed + (samplers.len() - kept.len());
+    if let Some(d) = s.active_mut() {
+        d.color_samplers = kept;
+    }
     let dpi = s.active().map(|d| d.doc.resolution_dpi);
     Ok(json!({"width": w, "height": h, "resolution": dpi, "corners": q}))
 }
@@ -299,6 +320,28 @@ mod tests {
         }
     }
 
+    /// #7760: Color Sampler points move with the image through the crop, as in Photoshop, so they
+    /// keep reading the same content; points outside the quad are deleted, also those whose old
+    /// coordinates lie inside the smaller new canvas.
+    #[test]
+    fn color_samplers_follow_the_perspective_crop() {
+        let q = [[30.0, 12.0], [140.0, 25.0], [128.0, 110.0], [14.0, 95.0]];
+        let (w, h) = (100.0, 80.0);
+        let mut s = skewed_ramp(SampleType::U16, &q, w, h);
+        s.active_mut().unwrap().color_samplers = vec![[70.0, 60.0], [5.0, 5.0], [120.0, 40.0]];
+        s.execute(CMD, json!({"corners": q, "width": w, "height": h})).unwrap();
+        let to_out = Homography::rect_to_quad([0.0, 0.0, w, h], q).unwrap().inverse().unwrap();
+        let st = s.active().unwrap();
+        assert_eq!(st.color_samplers.len(), 2, "(5, 5) lies outside the quad: {:?}", st.color_samplers);
+        for (p, old) in st.color_samplers.iter().zip([[70.0, 60.0], [120.0, 40.0]]) {
+            let (u, v) = to_out.apply(old[0] + 0.5, old[1] + 0.5);
+            assert!((p[0] + 0.5 - u).abs() < 1e-6 && (p[1] + 0.5 - v).abs() < 1e-6, "{old:?} -> {p:?}, want ({u:.2}, {v:.2})");
+            let px = st.doc.layers[0].surface().unwrap().rgba(p[0].round() as i32, p[1].round() as i32);
+            assert!((f64::from(px[0]) * w - u).abs() < 1.5 && (f64::from(px[1]) * h - v).abs() < 1.5, "{old:?} reads {px:?}");
+        }
+        assert_eq!(s.take_samplers_removed(), 1);
+    }
+
     /// Corners past the canvas: the uncovered Background is the background colour, opaque even
     /// when that colour has alpha (the Background stays opaque).
     #[test]
@@ -328,6 +371,10 @@ mod tests {
     #[test]
     fn perspective_crop_rejects_bad_quads() {
         let mut s = skewed_ramp(SampleType::U8, &[[0.0, 0.0], [160.0, 0.0], [160.0, 120.0], [0.0, 120.0]], 160.0, 120.0);
+        // A rejected crop leaves the Color Sampler points and the removed count alone.
+        let samplers = vec![[5.0, 5.0], [150.0, 110.0]];
+        s.active_mut().unwrap().color_samplers = samplers.clone();
+        s.samplers_removed = 2;
         for p in [
             json!({}),
             json!({"corners": [[0, 0], [10, 0], [10, 10]]}),
@@ -345,5 +392,7 @@ mod tests {
             assert!(s.execute(CMD, p.clone()).is_err(), "{p}");
         }
         assert_eq!(s.active().unwrap().doc.size, Size::new(160, 120));
+        assert_eq!(s.active().unwrap().color_samplers, samplers);
+        assert_eq!(s.take_samplers_removed(), 2);
     }
 }

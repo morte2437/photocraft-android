@@ -152,6 +152,11 @@ fn drag_to(app: &mut PhotocraftApp, p: [f64; 2], mods: egui::Modifiers) -> [f64;
     [start[0] + d[0], start[1] + d[1]]
 }
 
+/// The Move drag in progress is an ⌥-drag that has duplicated the layers (it now moves the copies).
+pub(crate) fn duplicated(app: &PhotocraftApp) -> bool {
+    moving(app) && app.move_mods.dup_from.is_some()
+}
+
 /// Call after the Move tool finished its drag: an ⌥-drag's copy and move become one step.
 pub fn finish(app: &mut PhotocraftApp) {
     let st = std::mem::take(&mut app.move_mods);

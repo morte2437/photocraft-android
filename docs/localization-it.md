@@ -44,8 +44,16 @@ command names joined by a slash, which keep both capitals (*Luminosità/Contrast
 | HDR Toning | Mappatura tonale HDR | tone mapping; *Viraggio* stays for colour toning (*Viraggio separato*) |
 | Bevel & Emboss | Smusso e rilievo | pairs with *Rilievo* (Emboss) |
 | Linked (smart object) | Oggetto collegato | *Inserisci oggetto collegato*, *Converti in oggetto collegato* |
+| Screen (blend mode) | Scherma | the blend mode; *Schermo* stays for the display (*Modalità schermo*, *Risoluzione schermo*) |
+| Dodge / Burn / Sponge (tools) | Scherma / Brucia / Spugna | the *tools*, one family. *Scherma* is also the `Screen` blend mode (Adobe's own collision). *Schiarisci* is the `Lighten` blend mode and is never the Dodge tool |
 
 ## Native review
+
+2026-10-13: `Screen` was *Schermo* — the display, not the blend mode — and is now *Scherma*, the
+word Adobe uses. The Dodge/Burn/Sponge tools were left as they were (*Scherma*, *Brucia*, *Spugna*):
+a first pass also wanted to rename the Dodge tool to *Schiarisci*, but that is the `Lighten` blend
+mode and would have given two different things the same name. Keep the tool family's names
+together when editing these rows.
 
 2026-10-12: a native Italian speaker read the catalog and fixed mistranslations (Trap, HDR
 Toning, Display Text, Vine Color, Override Action "Save" Commands) and unnatural phrasing (Bevel &
@@ -60,10 +68,8 @@ current code; they are translated to stay aligned with the other catalogs.
 
 ## Validation
 
-- `italian_covers_generated_filter_options_and_gallery_names` (`crates/ui-egui/src/filter_dialog.rs`)
-  enumerates every filter and adjustment parameter, symbolic choice and gallery name, like the
-  Korean test, and requires an Italian row for each. With the catalog on `main` before this change
-  it lists 388 missing labels; now none.
+- Every filter and adjustment parameter, symbolic choice and gallery name has an Italian row. The
+  catalog on `main` before this change lacked 388 of them.
 - `cargo test -p photocraft-ui-egui --lib`: the catalog tests pass. Two layout tests,
   `type_controls_fill_the_panel_at_every_width_and_scale` and
   `properties_edit_shown_metrics_and_paragraphs_with_a_non_type_primary`, fail on `main` as well

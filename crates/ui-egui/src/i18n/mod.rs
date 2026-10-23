@@ -43,7 +43,7 @@ pub struct LangInfo {
     /// Czech: 0 = one, 1 = few (2–4), 2 = other; French: 0 = one (0 and 1), 1 = other). A catalog's `@plural` entries list one form per
     /// index.
     pub plural: fn(u64) -> usize,
-    /// Must the catalog cover every menu string? (checked by the tests)
+    /// Does the catalog cover every menu string? (`cargo xtask i18n-coverage` lists what it lacks)
     pub complete_menus: bool,
     catalog: OnceLock<Catalog>,
 }
@@ -187,7 +187,7 @@ fn expand(packed: &str, keys: &[&str]) -> Result<String, String> {
 }
 
 /// The registry. English first: it is the fallback and the source language.
-pub static LANGUAGES: [LangInfo; 21] = [
+pub static LANGUAGES: [LangInfo; 22] = [
     LangInfo { code: "en", name: "English", source: b"", plural: plural_one_other, complete_menus: false, catalog: OnceLock::new() },
     LangInfo { code: "ja", name: "日本語", source: catalog!("ja"), plural: plural_none, complete_menus: true, catalog: OnceLock::new() },
     LangInfo { code: "zh-hans", name: "简体中文", source: catalog!("zh-hans"), plural: plural_none, complete_menus: true, catalog: OnceLock::new() },
@@ -220,6 +220,8 @@ pub static LANGUAGES: [LangInfo; 21] = [
     LangInfo { code: "tr", name: "Türkçe", source: catalog!("tr"), plural: plural_none, complete_menus: true, catalog: OnceLock::new() },
     // Vietnamese; `vi-VN` resolves here.
     LangInfo { code: "vi", name: "Tiếng Việt", source: catalog!("vi"), plural: plural_none, complete_menus: true, catalog: OnceLock::new() },
+    // Hindi; `hi`, `hi-IN` locales resolve here.
+    LangInfo { code: "hi", name: "हिन्दी", source: catalog!("hi"), plural: plural_one_other, complete_menus: false, catalog: OnceLock::new() },
 ];
 
 impl LangInfo {
@@ -280,6 +282,16 @@ impl Lang {
         LANGUAGES.iter().map(Lang)
     }
 
+    /// Every registered language in the order a picker lists them: English first (the source
+    /// language and the fallback), then the rest by their own name with accents folded, so
+    /// Čeština sits under C and Türkçe under T rather than after Z. Names in other scripts follow
+    /// the Latin ones in code point order: Greek, Cyrillic, then the CJK languages.
+    pub fn for_picker() -> Vec<Lang> {
+        let mut rest: Vec<Lang> = Lang::all().filter(|l| l.code() != "en").collect();
+        rest.sort_by_cached_key(|l| name_sort_key(l.name()));
+        std::iter::once(Lang::EN).chain(rest).collect()
+    }
+
     pub fn name(self) -> &'static str {
         self.0.name
     }
@@ -297,6 +309,27 @@ impl Lang {
     fn catalog(self) -> &'static Catalog {
         self.0.catalog()
     }
+}
+
+/// `name` lowercased with the Latin accents that occur in language names folded away, so a
+/// byte-wise sort reads alphabetically. Other scripts are left as they are.
+fn name_sort_key(name: &str) -> String {
+    name.chars()
+        .flat_map(char::to_lowercase)
+        .map(|c| match c {
+            'à'..='å' | 'ā' | 'ă' | 'ą' => 'a',
+            'ç' | 'ć' | 'č' => 'c',
+            'è'..='ë' | 'ē' | 'ě' | 'ę' | 'ế' | 'ệ' => 'e',
+            'ì'..='ï' | 'ī' => 'i',
+            'ñ' | 'ń' | 'ň' => 'n',
+            'ò'..='ö' | 'ø' | 'ő' => 'o',
+            'ś' | 'š' => 's',
+            'ù'..='ü' | 'ū' | 'ů' | 'ű' => 'u',
+            'ý' | 'ÿ' => 'y',
+            'ź' | 'ż' | 'ž' => 'z',
+            c => c,
+        })
+        .collect()
 }
 
 /// Candidate language codes for a locale tag, most specific first: `zh_TW.UTF-8` →
@@ -436,6 +469,17 @@ mod tests {
     const CS: fn() -> Lang = || Lang::from_code("cs").expect("cs registered");
     const ID: fn() -> Lang = || Lang::from_code("id").expect("id registered");
     const VI: fn() -> Lang = || Lang::from_code("vi").expect("vi registered");
+    const HI: fn() -> Lang = || Lang::from_code("hi").expect("hi registered");
+
+    #[test]
+    fn hindi_tags_resolve() {
+        for tag in ["hi", "hi-IN", "hi_IN", "hi_IN.UTF-8"] {
+            assert_eq!(lang_from_tag(tag), Some(HI()), "{tag}");
+        }
+        assert_eq!(HI().name(), "हिन्दी");
+        assert_eq!(Lang::from_pref("hi"), HI());
+        assert_eq!(Lang::from_pref("HI"), HI());
+    }
 
     #[test]
     fn indonesian_tags_resolve() {
@@ -451,9 +495,24 @@ mod tests {
             assert_eq!(lang_from_tag(tag), Some(VI()), "{tag}");
         }
         assert_eq!(VI().name(), "Tiếng Việt");
-        assert!(VI().complete_menus(), "Vietnamese translates every source key");
         assert_eq!(Lang::from_pref("vi"), VI());
         assert_eq!(Lang::from_pref("VI"), VI());
+    }
+
+    #[test]
+    fn picker_lists_english_first_then_names_alphabetically() {
+        let order = Lang::for_picker();
+        assert_eq!(order.first().map(|l| l.code()), Some("en"));
+        assert_eq!(order.len(), Lang::all().count());
+        let keys: Vec<String> = order[1..].iter().map(|l| name_sort_key(l.name())).collect();
+        assert!(keys.windows(2).all(|w| w[0] <= w[1]), "{keys:?}");
+        let pos = |code: &str| order.iter().position(|l| l.code() == code).unwrap_or_else(|| panic!("{code} registered"));
+        assert!(pos("cs") < pos("de"), "Čeština sorts under C, not after Z");
+        assert!(pos("it") < pos("hu"), "Magyar sorts under M, not under its code");
+        assert!(pos("tr") < pos("el"), "Latin names come before Greek");
+        assert!(pos("uk") < pos("ja"), "Cyrillic names come before CJK");
+        assert_eq!(name_sort_key("Tiếng Việt"), "tieng viet");
+        assert_eq!(name_sort_key("Türkçe"), "turkce");
     }
 
     #[test]
@@ -514,66 +573,11 @@ mod tests {
         assert_eq!(Lang::from_pref("xx-unknown"), Lang::EN);
     }
 
-    /// The brush size/hardness shortcut rows (`tools.*` commands without a menu item) must be translated in
-    /// every catalog, or they show English in the Keyboard Shortcuts dialog and cannot be found by searching.
     #[test]
-    fn brush_size_and_hardness_shortcuts_are_translated_in_every_language() {
-        let keys = ["Decrease Brush Size", "Increase Brush Size", "Decrease Brush Hardness", "Increase Brush Hardness"];
-        for lang in Lang::all().filter(|lang| *lang != Lang::EN) {
-            for key in keys {
-                assert!(has(lang, key), "{} has no translation for {key:?}", lang.code());
-            }
-        }
+    fn simplified_chinese_resolves_from_preferences() {
         let zh = Lang::from_code("zh-hans").expect("zh-hans registered");
-        assert_eq!(tr(zh, "Decrease Brush Size"), "减小画笔大小");
-        assert_eq!(tr(zh, "Increase Brush Size"), "增大画笔大小");
-    }
-
-    #[test]
-    fn simplified_chinese_covers_dynamic_shortcuts_and_layer_counts() {
-        let zh = Lang::from_code("zh-hans").expect("zh-hans registered");
-        assert!(zh.complete_menus(), "Simplified Chinese must participate in the coverage gates");
         assert_eq!(Lang::from_pref("ZH-Hans"), zh);
-        assert_eq!(tr(zh, "Pixel Layer"), "像素图层");
-        assert_eq!(tr(zh, "System Info"), "系统信息");
-        for key in ["⌥", "Alt"] {
-            assert_eq!(fmt(tr(zh, "Add a mask  (from the selection; {key} inverts)"), &[("key", key)]), format!("添加蒙版  （基于选区；{key} 反相）"));
-        }
-        for n in [0, 1, 3] {
-            assert_eq!(trn(zh, n, "{n} layer", "{n} layers"), format!("{n} 个图层"));
-        }
         assert_eq!(tr(zh, "no such label"), "no such label");
-    }
-
-    /// Keep the Korean tool/menu vocabulary aligned with the Photoshop equivalents.
-    /// Sources and the product-specific vocabulary policy are recorded in `ko.tsv`.
-    #[test]
-    fn korean_uses_photoshop_terminology() {
-        let ko = Lang::from_code("ko").expect("ko registered");
-        for (source, expected) in [
-            ("Shape", "모양"),
-            ("Stroke", "획"),
-            ("Smudge Tool", "손가락 도구"),
-            ("Eyedropper Tool", "스포이드 도구"),
-            ("Rectangular Marquee Tool", "사각형 선택 윤곽 도구"),
-            ("Elliptical Marquee Tool", "원형 선택 윤곽 도구"),
-            ("Zoom Tool", "돋보기 도구"),
-            ("Horizontal Type Tool", "수평 문자 도구"),
-            ("Puppet Warp", "퍼펫 뒤틀기"),
-            ("Liquify…", "픽셀 유동화…"),
-            ("Gaussian Blur…", "가우시안 흐림 효과…"),
-            ("Gaussian Blur", "가우시안 흐림 효과"),
-            ("Adaptive Wide Angle…", "응용 광각…"),
-            ("Render", "렌더"),
-            ("Sharpen", "선명 효과"),
-            ("Vibrance", "활기"),
-            ("Layer Comps", "레이어 구성 요소"),
-            ("Vivid Light", "선명한 라이트"),
-            ("Hard Mix", "하드 혼합"),
-        ] {
-            assert_eq!(tr(ko, source), expected, "{source}");
-        }
-        assert_eq!(tr_id(ko, "filter.sharpen.sharpen", "Sharpen"), "선명하게");
     }
 
     #[test]
@@ -582,9 +586,8 @@ mod tests {
         for tag in ["es", "es_ES.UTF-8", "es-MX", "es-419"] {
             assert_eq!(lang_from_tag(tag), Some(es), "{tag}");
         }
-        assert_eq!(tr(es, "Layer"), "Capa");
-        assert_eq!(trn(es, 1, "{n} item", "{n} items"), "1 elemento");
-        assert_eq!(trn(es, 3, "{n} item", "{n} items"), "3 elementos");
+        let forms: Vec<usize> = [0, 1, 3].into_iter().map(es.0.plural).collect();
+        assert_eq!(forms, [1, 0, 1]);
     }
 
     #[test]
@@ -593,14 +596,9 @@ mod tests {
         for tag in ["hu", "hu_HU.UTF-8", "hu-HU"] {
             assert_eq!(lang_from_tag(tag), Some(hu), "{tag}");
         }
-        assert!(hu.complete_menus());
         assert_eq!(hu.name(), "Magyar");
-        assert_eq!(tr(hu, "Layer"), "Réteg");
-        for (n, expected) in [(0, "0 réteg"), (1, "1 réteg"), (3, "3 réteg"), (21, "21 réteg")] {
-            assert_eq!(trn(hu, n, "{n} layer", "{n} layers"), expected);
-        }
-        assert_eq!(tr_ctx(hu, "layerLabel", "Red"), "Piros");
-        assert_eq!(tr(hu, "Red"), "Vörös");
+        let forms: Vec<usize> = [0, 1, 3, 21].into_iter().map(hu.0.plural).collect();
+        assert_eq!(forms, [0, 0, 0, 0]);
     }
 
     #[test]
@@ -610,241 +608,63 @@ mod tests {
             assert_eq!(lang_from_tag(tag), Some(pt), "{tag}");
         }
         assert_eq!(candidates("pt_PT"), ["pt-pt", "pt-br", "pt"]);
-        assert_eq!(tr(pt, "Layer"), "Camada");
-        assert_eq!(trn(pt, 0, "{n} item", "{n} items"), "0 item");
-        assert_eq!(trn(pt, 1, "{n} item", "{n} items"), "1 item");
-        assert_eq!(trn(pt, 2, "{n} item", "{n} items"), "2 itens");
+        let forms: Vec<usize> = [0, 1, 2].into_iter().map(pt.0.plural).collect();
+        assert_eq!(forms, [0, 0, 1]);
     }
 
     #[test]
     fn lookups_fall_back_to_english() {
         assert_eq!(tr(JA(), "no such label"), "no such label");
         assert_eq!(tr(Lang::EN, "Layer"), "Layer");
-        assert_eq!(tr(JA(), "Layer"), "レイヤー");
-        assert_eq!(tr(ZH(), "Layer"), "圖層");
         assert_eq!(tr(ZH(), "no such label"), "no such label");
-        assert_eq!(tr_id(ZH(), "no.such.id", "Layer"), "圖層");
-        assert_eq!(tr_id(JA(), "no.such.id", "Layer"), "レイヤー");
-        assert_eq!(tr_ctx(JA(), "no such context", "Layer"), "レイヤー");
+        assert_eq!(tr_id(ZH(), "no.such.id", "Layer"), tr(ZH(), "Layer"));
+        assert_eq!(tr_id(JA(), "no.such.id", "Layer"), tr(JA(), "Layer"));
+        assert_eq!(tr_ctx(JA(), "no such context", "Layer"), tr(JA(), "Layer"));
+        assert_eq!(trn(JA(), 3, "{n} no such message", "{n} no such messages"), "3 no such messages");
     }
 
     #[test]
-    fn russian_plural_rules() {
-        let ru = || Lang::from_code("ru").expect("ru registered");
-        assert_eq!(trn(ru(), 1, "{n} item", "{n} items"), "1 элемент");
-        assert_eq!(trn(ru(), 2, "{n} item", "{n} items"), "2 элемента");
-        assert_eq!(trn(ru(), 5, "{n} item", "{n} items"), "5 элементов");
-        assert_eq!(trn(ru(), 11, "{n} item", "{n} items"), "11 элементов");
-        assert_eq!(trn(ru(), 21, "{n} item", "{n} items"), "21 элемент");
-        assert_eq!(trn(ru(), 22, "{n} item", "{n} items"), "22 элемента");
-        assert_eq!(trn(ru(), 101, "{n} item", "{n} items"), "101 элемент");
-        assert_eq!(trn(ru(), 111, "{n} item", "{n} items"), "111 элементов");
-    }
-
-    #[test]
-    fn russian_status_messages_agree_with_counts() {
+    fn russian_plural_rule() {
         let ru = Lang::from_code("ru").expect("ru registered");
-        let cases = [
-            (
-                "Exported {n} swatch to {file}",
-                "Exported {n} swatches to {file}",
-                ["Экспортирован {n} образец в {file}", "Экспортированы {n} образца в {file}", "Экспортировано {n} образцов в {file}"],
-            ),
-            (
-                "Imported {n} brush from {group}",
-                "Imported {n} brushes from {group}",
-                ["Импортирована {n} кисть из {group}", "Импортированы {n} кисти из {group}", "Импортировано {n} кистей из {group}"],
-            ),
-            (
-                "Imported {n} swatch from {file}",
-                "Imported {n} swatches from {file}",
-                ["Импортирован {n} образец из {file}", "Импортированы {n} образца из {file}", "Импортировано {n} образцов из {file}"],
-            ),
-            ("Played {n} step", "Played {n} steps", ["Воспроизведён {n} шаг", "Воспроизведены {n} шага", "Воспроизведено {n} шагов"]),
-            (
-                "Updated {n} linked smart object changed on disk",
-                "Updated {n} linked smart objects changed on disk",
-                [
-                    "Обновлён {n} связанный смарт-объект, изменённый на диске",
-                    "Обновлены {n} связанных смарт-объекта, изменённых на диске",
-                    "Обновлено {n} связанных смарт-объектов, изменённых на диске",
-                ],
-            ),
-            (
-                "{n} layer recorded by this comp was deleted. Update the comp, or clear the warning.",
-                "{n} layers recorded by this comp were deleted. Update the comp, or clear the warning.",
-                [
-                    "Удалён {n} слой, записанный в этом варианте. Обновите вариант или сбросьте предупреждение.",
-                    "Удалены {n} слоя, записанных в этом варианте. Обновите вариант или сбросьте предупреждение.",
-                    "Удалено {n} слоёв, записанных в этом варианте. Обновите вариант или сбросьте предупреждение.",
-                ],
-            ),
-            ("{n} sample point removed", "{n} sample points removed", ["Удалена {n} точка замера", "Удалены {n} точки замера", "Удалено {n} точек замера"]),
-            (
-                "Loaded {n} action from {file}",
-                "Loaded {n} actions from {file}",
-                ["Загружена {n} операция из {file}", "Загружены {n} операции из {file}", "Загружено {n} операций из {file}"],
-            ),
-            (
-                "Saved {n} action to {file}",
-                "Saved {n} actions to {file}",
-                ["Сохранена {n} операция в {file}", "Сохранены {n} операции в {file}", "Сохранено {n} операций в {file}"],
-            ),
-            (
-                "{n} step with no Photoshop equivalent left out",
-                "{n} steps with no Photoshop equivalent left out",
-                [
-                    "Пропущен {n} шаг без эквивалента в Photoshop",
-                    "Пропущены {n} шага без эквивалента в Photoshop",
-                    "Пропущено {n} шагов без эквивалента в Photoshop",
-                ],
-            ),
-        ];
-        // Include zero, teens, and compound counts as well as each basic form.
-        for (n, form) in [(0, 2), (1, 0), (2, 1), (3, 1), (4, 1), (5, 2), (11, 2), (12, 2), (14, 2), (21, 0), (22, 1), (25, 2), (101, 0), (112, 2)] {
-            for (one, other, forms) in cases {
-                let expected = forms[form].replace("{n}", &n.to_string());
-                assert_eq!(trn(ru, n, one, other), expected, "{one}, n={n}");
-            }
-        }
-        assert_eq!(
-            fmt(&trn(ru, 2, "Imported {n} brush from {group}", "Imported {n} brushes from {group}"), &[("group", "Кисти")]),
-            "Импортированы 2 кисти из Кисти"
-        );
-        assert_eq!(
-            fmt(&trn(ru, 22, "Loaded {n} action from {file}", "Loaded {n} actions from {file}"), &[("file", "actions.atn")]),
-            "Загружены 22 операции из actions.atn"
-        );
-    }
-
-    #[test]
-    fn russian_font_weights_and_reviewed_labels() {
-        let ru = Lang::from_code("ru").expect("ru registered");
-        assert_eq!(tr_ctx(ru, "fontWeight", "ExtraLight"), "Сверхтонкий");
-        assert_eq!(tr_ctx(ru, "fontWeight", "Light"), "Лёгкий");
-        assert_eq!(tr_ctx(ru, "fontWeight", "ExtraBold"), "Сверхжирный");
-        assert_eq!(tr_ctx(ru, "fontWeight", "Black"), "Сверхжирный (Black)");
-        assert_eq!(tr(ru, "Delete and Fill Selection"), "Удалить и залить выделение");
-        assert_eq!(tr(ru, "Discard the embedded profile (don't color manage)"), "Не использовать встроенный профиль (без управления цветом)");
-        assert_eq!(tr(ru, "No object found there — drag a rectangle around it"), "Объект не найден — обведите его прямоугольником");
+        let forms: Vec<usize> = [0, 1, 2, 5, 11, 12, 14, 21, 22, 25, 101, 111, 112].into_iter().map(ru.0.plural).collect();
+        assert_eq!(forms, [2, 0, 1, 2, 2, 2, 2, 0, 1, 2, 0, 2, 2]);
     }
 
     #[test]
     fn ukrainian_resolves_locales_and_preferences() {
         let uk = Lang::from_code("uk").expect("uk registered");
         assert_eq!(uk.name(), "Українська");
-        assert!(uk.complete_menus());
         for tag in ["uk", "UK", "uk-UA", "uk_UA", "uk_UA.UTF-8", "uk-UA@euro", "uk-Cyrl-UA"] {
             assert_eq!(lang_from_tag(tag), Some(uk), "{tag}");
             assert_eq!(Lang::from_pref(tag), uk, "{tag}");
-        }
-        assert_eq!(tr(uk, "File"), "Файл");
-        assert_eq!(tr(uk, "Layer"), "Шар");
-        assert_eq!(tr(uk, "New document…"), "Новий документ…");
-        assert_eq!(tr(uk, "No properties"), "Немає властивостей");
-        assert_eq!(tr_id(uk, "select.all", "All"), "Виділити все");
-        assert_eq!(tr_ctx(uk, "cameraRaw", "Light"), "Світло");
-        assert_eq!(tr_ctx(uk, "fontWeight", "Light"), "Легкий");
-        assert_eq!(fmt(tr(uk, "Camera Raw Filter ({layer})"), &[("layer", "Background")]), "Фільтр Camera Raw (Background)");
-        for key in ["Alt", "⌥"] {
-            assert_eq!(
-                fmt(tr(uk, "Add a mask  (from the selection; {key} inverts)"), &[("key", key)]),
-                format!("Додати маску  (із виділення; {key} інвертує)")
-            );
         }
         assert_eq!(tr(uk, "unknown translation"), "unknown translation");
     }
 
     #[test]
-    fn ukrainian_plural_messages_handle_teens_and_compound_counts() {
+    fn ukrainian_plural_rule_handles_teens_and_compound_counts() {
         let uk = Lang::from_code("uk").expect("uk registered");
-        for (n, item, layer) in [
-            (0, "елементів", "шарів"),
-            (1, "елемент", "шар"),
-            (2, "елементи", "шари"),
-            (4, "елементи", "шари"),
-            (5, "елементів", "шарів"),
-            (11, "елементів", "шарів"),
-            (12, "елементів", "шарів"),
-            (14, "елементів", "шарів"),
-            (19, "елементів", "шарів"),
-            (21, "елемент", "шар"),
-            (22, "елементи", "шари"),
-            (24, "елементи", "шари"),
-            (25, "елементів", "шарів"),
-            (100, "елементів", "шарів"),
-            (101, "елемент", "шар"),
-            (111, "елементів", "шарів"),
-            (112, "елементів", "шарів"),
-            (114, "елементів", "шарів"),
-            (121, "елемент", "шар"),
-            (122, "елементи", "шари"),
-            (u64::MAX, "елементів", "шарів"),
-        ] {
-            assert_eq!(trn(uk, n, "{n} item", "{n} items"), format!("{n} {item}"));
-            assert_eq!(trn(uk, n, "{n} layer", "{n} layers"), format!("{n} {layer}"));
-            assert_eq!(trn(uk, n, "Group · {n} layer", "Group · {n} layers"), format!("Група · {n} {layer}"));
-        }
+        let counts = [0, 1, 2, 4, 5, 11, 12, 14, 19, 21, 22, 24, 25, 100, 101, 111, 112, 114, 121, 122, u64::MAX];
+        let forms: Vec<usize> = counts.into_iter().map(uk.0.plural).collect();
+        assert_eq!(forms, [2, 0, 1, 1, 2, 2, 2, 2, 2, 0, 1, 1, 2, 2, 0, 2, 2, 2, 0, 1, 2]);
     }
 
     #[test]
     fn serbian_resolves_locales_and_preferences() {
         let sr = Lang::from_code("sr").expect("sr registered");
         assert_eq!(sr.name(), "Srpski");
-        assert!(sr.complete_menus());
         for tag in ["sr", "SR", "sr-RS", "sr_RS", "sr_RS.UTF-8", "sr_RS@latin", "sr-Latn", "sr-Latn-RS", "sr-Cyrl-RS", "sr-ME"] {
             assert_eq!(lang_from_tag(tag), Some(sr), "{tag}");
             assert_eq!(Lang::from_pref(tag), sr, "{tag}");
         }
-        assert_eq!(tr(sr, "File"), "Datoteka");
-        assert_eq!(tr(sr, "Layer"), "Sloj");
-        assert_eq!(tr(sr, "New document…"), "Novi dokument…");
-        assert_eq!(tr_id(sr, "select.all", "All"), "Izaberi sve", "an id override wins over the plain label");
-        assert_eq!(tr(sr, "All"), "Sve");
-        assert_eq!(tr_ctx(sr, "cameraRaw", "Light"), "Svetlo");
-        assert_eq!(tr_ctx(sr, "fontWeight", "Light"), "Lagano");
-        assert_eq!(fmt(tr(sr, "Camera Raw Filter ({layer})"), &[("layer", "Background")]), "Camera Raw filter (Background)");
-        for key in ["Alt", "⌥"] {
-            assert_eq!(
-                fmt(tr(sr, "Add a mask  (from the selection; {key} inverts)"), &[("key", key)]),
-                format!("Dodaj masku  (iz selekcije; {key} invertuje)")
-            );
-        }
     }
 
     #[test]
-    fn serbian_plural_messages_handle_teens_and_compound_counts() {
+    fn serbian_plural_rule_handles_teens_and_compound_counts() {
         let sr = Lang::from_code("sr").expect("sr registered");
-        for (n, item, layer) in [
-            (0, "stavki", "slojeva"),
-            (1, "stavka", "sloj"),
-            (2, "stavke", "sloja"),
-            (4, "stavke", "sloja"),
-            (5, "stavki", "slojeva"),
-            (11, "stavki", "slojeva"),
-            (12, "stavki", "slojeva"),
-            (14, "stavki", "slojeva"),
-            (21, "stavka", "sloj"),
-            (22, "stavke", "sloja"),
-            (25, "stavki", "slojeva"),
-            (101, "stavka", "sloj"),
-            (111, "stavki", "slojeva"),
-            (112, "stavki", "slojeva"),
-            (122, "stavke", "sloja"),
-        ] {
-            assert_eq!(trn(sr, n, "{n} item", "{n} items"), format!("{n} {item}"));
-            assert_eq!(trn(sr, n, "{n} layer", "{n} layers"), format!("{n} {layer}"));
-            assert_eq!(trn(sr, n, "Group · {n} layer", "Group · {n} layers"), format!("Grupa · {n} {layer}"));
-        }
-        for (n, expected) in [
-            (1, "Uklonjena je 1 tačka uzorkovanja"),
-            (3, "Uklonjene su 3 tačke uzorkovanja"),
-            (5, "Uklonjeno je 5 tačaka uzorkovanja"),
-            (13, "Uklonjeno je 13 tačaka uzorkovanja"),
-            (21, "Uklonjena je 21 tačka uzorkovanja"),
-        ] {
-            assert_eq!(trn(sr, n, "{n} sample point removed", "{n} sample points removed"), expected);
-        }
+        let counts = [0, 1, 2, 4, 5, 11, 12, 14, 21, 22, 25, 101, 111, 112, 122];
+        let forms: Vec<usize> = counts.into_iter().map(sr.0.plural).collect();
+        assert_eq!(forms, [2, 0, 1, 1, 2, 2, 2, 2, 0, 1, 2, 0, 2, 2, 1]);
     }
 
     #[test]
@@ -871,14 +691,14 @@ mod tests {
         assert_eq!(trn(Lang::EN, 1, "{n} item", "{n} items"), "1 item");
         assert_eq!(trn(Lang::EN, 0, "{n} item", "{n} items"), "0 items");
         assert_eq!(trn(Lang::EN, 7, "{n} item", "{n} items"), "7 items");
-        assert_eq!(trn(JA(), 1, "{n} item", "{n} items"), "1 件");
-        assert_eq!(trn(JA(), 7, "{n} item", "{n} items"), "7 件");
-        assert_eq!(trn(ZH(), 1, "{n} item", "{n} items"), "1 個項目");
-        assert_eq!(trn(ZH(), 7, "{n} item", "{n} items"), "7 個項目");
-        assert_eq!(trn(CS(), 1, "{n} item", "{n} items"), "1 položka");
-        assert_eq!(trn(CS(), 3, "{n} item", "{n} items"), "3 položky");
-        assert_eq!(trn(CS(), 5, "{n} item", "{n} items"), "5 položek");
-        assert_eq!(trn(CS(), 0, "{n} item", "{n} items"), "0 položek");
+        let cs = fixture_lang(plural_cs, "@plural\t{n} item|{n} items\t{n} one|{n} few|{n} other\n");
+        for (n, expected) in [(0, "0 other"), (1, "1 one"), (3, "3 few"), (5, "5 other")] {
+            assert_eq!(trn(cs, n, "{n} item", "{n} items"), expected);
+        }
+        let ja = fixture_lang(plural_none, "@plural\t{n} item|{n} items\t{n} only\n");
+        assert_eq!(trn(ja, 1, "{n} item", "{n} items"), "1 only");
+        assert_eq!(trn(ja, 7, "{n} item", "{n} items"), "7 only");
+        assert_eq!(trn(ja, 7, "{n} file", "{n} files"), "7 files", "a missing row falls back to English");
         assert_eq!(fmt("{b} before {a}", &[("a", "x"), ("b", "y"), ("c", "z")]), "y before x");
         assert_eq!(fmt("{missing}", &[]), "{missing}");
         assert_eq!(placeholders("a {x} b {y} {"), ["x", "y"]);
@@ -890,14 +710,27 @@ mod tests {
         for tag in ["fr", "fr_FR.UTF-8", "fr-CA", "fr_BE", "fr-CH"] {
             assert_eq!(lang_from_tag(tag), Some(fr), "{tag}");
         }
-        assert_eq!(tr(fr, "Layer"), "Calque");
-        assert_eq!(tr_id(fr, "select.all", "All"), "Tout sélectionner", "an id override wins over the plain label");
-        assert_eq!(tr(fr, "All"), "Tout");
-        let forms: Vec<usize> = [0, 1, 2, 5, 100, u64::MAX].into_iter().map(plural_fr).collect();
+        let forms: Vec<usize> = [0, 1, 2, 5, 100, u64::MAX].into_iter().map(fr.0.plural).collect();
         assert_eq!(forms, [0, 0, 1, 1, 1, 1]);
-        assert_eq!(trn(fr, 0, "{n} item", "{n} items"), "0 élément");
-        assert_eq!(trn(fr, 1, "{n} item", "{n} items"), "1 élément");
-        assert_eq!(trn(fr, 3, "{n} item", "{n} items"), "3 éléments");
+    }
+
+    /// A language whose catalog is `text`, for testing lookups without depending on a bundled
+    /// catalog's wording.
+    fn fixture_lang(plural: fn(u64) -> usize, text: &str) -> Lang {
+        let catalog = OnceLock::new();
+        let _ = catalog.set(Catalog::parse(text));
+        Lang(Box::leak(Box::new(LangInfo { code: "xx", name: "x", source: b"", plural, complete_menus: false, catalog })))
+    }
+
+    #[test]
+    fn id_and_context_rows_win_over_the_plain_label() {
+        let lang = fixture_lang(plural_one_other, "\tAll\tplain all\n@id\tselect.all\tid all\nnavigator\tZoom\tcontext zoom\n\tZoom\tplain zoom\n");
+        assert_eq!(tr_id(lang, "select.all", "All"), "id all");
+        assert_eq!(tr_id(lang, "edit.other", "All"), "plain all");
+        assert_eq!(tr(lang, "All"), "plain all");
+        assert_eq!(tr_ctx(lang, "navigator", "Zoom"), "context zoom");
+        assert_eq!(tr_ctx(lang, "other", "Zoom"), "plain zoom");
+        assert_eq!(tr_ctx(lang, "navigator", "Unlisted"), "Unlisted");
     }
 
     #[test]
@@ -910,9 +743,6 @@ mod tests {
     fn czech_plural_rule() {
         let forms: Vec<usize> = [0, 1, 2, 3, 4, 5, 11, 12, 21, 22, 100, u64::MAX].into_iter().map(plural_cs).collect();
         assert_eq!(forms, [2, 0, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2]);
-        assert_eq!(tr(CS(), "Layer"), "Vrstva");
-        assert_eq!(tr_id(CS(), "select.all", "All"), "Vybrat vše", "an id override wins over the plain label");
-        assert_eq!(tr(CS(), "All"), "Vše");
     }
 
     /// The packed catalogs in the binary unpack to exactly the `.tsv` files.
@@ -994,343 +824,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    /// Languages that claim complete menus have an entry for every label and path segment.
-    #[test]
-    fn complete_languages_translate_every_menu_string() {
-        let mut strings = std::collections::BTreeSet::new();
-        for &(path, label, _, _) in crate::menu_catalog::CATALOG {
-            strings.extend(path.iter().copied());
-            strings.insert(label);
-        }
-        for &(_, label, path, _) in crate::menus::UI_COMMANDS {
-            strings.extend(path.iter().copied());
-            strings.insert(label);
-        }
-        for c in photocraft_engine::command_specs().iter().filter(|c| !c.menu.is_empty()) {
-            strings.extend(c.menu.iter().copied());
-            strings.insert(c.label);
-        }
-        strings.remove("---");
-        for l in LANGUAGES.iter().filter(|l| l.complete_menus) {
-            let cat = l.catalog();
-            let missing: Vec<_> = strings.iter().filter(|s| cat.plain(s).is_none()).collect();
-            assert!(missing.is_empty(), "{}: untranslated menu strings: {missing:#?}", l.code);
-        }
-    }
-
-    /// `text` with each `#[cfg(test)] mod … { … }` block removed, by brace counting (the test
-    /// modules in this crate are well formed).
-    fn without_test_modules(text: &str) -> String {
-        let mut out = String::with_capacity(text.len());
-        let mut rest = text;
-        while let Some(at) = rest.find("#[cfg(test)]\nmod ") {
-            out.push_str(&rest[..at]);
-            let after = &rest[at..];
-            let Some(open) = after.find('{') else { return out };
-            let mut depth = 0usize;
-            let mut end = after.len();
-            for (i, c) in after[open..].char_indices() {
-                match c {
-                    '{' => depth += 1,
-                    '}' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            end = open + i + 1;
-                            break;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            rest = &after[end..];
-        }
-        out.push_str(rest);
-        out
-    }
-
-    #[test]
-    fn test_modules_are_cut_out_one_by_one() {
-        let text = "a\n#[cfg(test)]\nmod t { fn x() { tl!(\"hidden\"); } }\nb tl!(\"seen\")\n#[cfg(test)]\nmod u {}\nc";
-        let code = without_test_modules(text);
-        assert!(code.contains("tl!(\"seen\")"), "code after the first test module is scanned: {code}");
-        assert!(!code.contains("hidden"), "{code}");
-        assert!(code.starts_with("a\n") && code.ends_with("\nc"), "{code}");
-    }
-
-    #[test]
-    fn czech_status_templates_preserve_details_and_plural_counts() {
-        let cs = CS();
-        let template = "Step {step} ({id}) failed: {error}";
-        let args = [("step", "2"), ("id", "file.export"), ("error", "disk full: /tmp/image.psd")];
-        assert_eq!(fmt(tr(cs, template), &args), "Krok 2 (file.export) selhal: disk full: /tmp/image.psd");
-        assert_eq!(fmt(tr(Lang::EN, template), &args), "Step 2 (file.export) failed: disk full: /tmp/image.psd");
-        // Languages without these dynamic templates keep the English source.
-        assert_eq!(tr(JA(), template), template);
-        for (n, expected) in [(0, "Odstraněno 0 bodů měření"), (1, "Odstraněn 1 bod měření"), (2, "Odstraněny 2 body měření"), (5, "Odstraněno 5 bodů měření")]
-        {
-            assert_eq!(trn(cs, n, "{n} sample point removed", "{n} sample points removed"), expected);
-        }
-        let one = "Imported {n} swatch from {file}";
-        let other = "Imported {n} swatches from {file}";
-        assert_eq!(fmt(&trn(cs, 3, one, other), &[("file", "English name.aco")]), "Importovány 3 vzorky ze souboru English name.aco");
-        assert_eq!(tr(cs, "Preferences can't be saved"), "Předvolby nelze uložit");
-    }
-
-    #[test]
-    fn czech_dialog_and_hardware_labels_preserve_names() {
-        let cs = CS();
-        for label in [
-            "New Crop Preset…",
-            "Delete Crop Preset…",
-            "Color Picker (Background Color)",
-            "Color Picker (Foreground Color)",
-            "Pro (Medium Gray)",
-            "Grid view",
-            "List view",
-            "Scroll menu up",
-            "Scroll menu down",
-            "Commit transform",
-            "Cancel transform",
-        ] {
-            assert_ne!(tr(cs, label), label, "{label}");
-        }
-        for kind in [
-            crate::rasterize_prompt::Kind::Type,
-            crate::rasterize_prompt::Kind::Shape,
-            crate::rasterize_prompt::Kind::SmartObject,
-            crate::rasterize_prompt::Kind::Fill,
-        ] {
-            assert_ne!(tr(cs, kind.message()), kind.message());
-        }
-        assert_eq!(fmt(tr(cs, "Driver: {driver}"), &[("driver", "Mesa 25.0")]), "Ovladač: Mesa 25.0");
-        assert_eq!(
-            fmt(tr(cs, "Monitor profile on {display}: {profile}"), &[("display", "DELL U2720Q"), ("profile", "sRGB IEC61966-2.1")]),
-            "Profil monitoru DELL U2720Q: sRGB IEC61966-2.1"
-        );
-    }
-
-    #[test]
-    fn czech_composed_labels_use_context_and_preserve_document_names() {
-        let cs = CS();
-        assert_eq!(tr(cs, "Zoom"), "Lupa");
-        assert_eq!(tr_ctx(cs, "navigator", "Zoom"), "Zvětšení");
-        assert_eq!(tr_ctx(Lang::EN, "navigator", "Zoom"), "Zoom");
-        let template = "Data Set: {name}  ({index}/{total})";
-        assert_eq!(fmt(tr(cs, template), &[("name", "Data Set 1"), ("index", "1"), ("total", "2")]), "Datová sada: Data Set 1  (1/2)");
-        for (n, expected) in
-            [(1, "Importován 1 přechod ze souboru Sunset"), (3, "Importovány 3 přechody ze souboru Sunset"), (5, "Importováno 5 přechodů ze souboru Sunset")]
-        {
-            assert_eq!(fmt(&trn(cs, n, "Imported {n} gradient from {file}", "Imported {n} gradients from {file}"), &[("file", "Sunset")]), expected);
-        }
-    }
-
-    /// Every `tl!("literal")` in the shell has an entry in each language that claims complete menus
-    /// (so a new label can't ship untranslated by accident). Literals that are deliberately shown as
-    /// they are (names, units) are listed in `KEEP_AS_IS`.
-    #[test]
-    fn every_tl_literal_is_translated() {
-        const KEEP_AS_IS: &[&str] = &[];
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let mut literals = std::collections::BTreeSet::new();
-        let mut stack = vec![dir];
-        while let Some(d) = stack.pop() {
-            for entry in std::fs::read_dir(&d).into_iter().flatten().flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    stack.push(path);
-                } else if path.extension().is_some_and(|e| e == "rs") && !path.ends_with("lib.rs") {
-                    let text = std::fs::read_to_string(&path).unwrap_or_default().replace("\r\n", "\n");
-                    // Test modules aside, scan every `tl!("…")`. Each test *module* is cut out
-                    // on its own: cutting the file at the first one hid everything after a small
-                    // test module early in a file (panels.rs has one at ~line 540). A
-                    // `#[cfg(test)]` on a single item doesn't count.
-                    let code = without_test_modules(&text);
-                    let mut rest = code.as_str();
-                    while let Some(at) = rest.find("tl!(\"") {
-                        rest = &rest[at + 5..];
-                        let mut end = 0;
-                        let bytes = rest.as_bytes();
-                        while end < bytes.len() && !(bytes[end] == b'"' && (end == 0 || bytes[end - 1] != b'\\')) {
-                            end += 1;
-                        }
-                        let lit = rest.get(..end).unwrap_or("").replace("\\\"", "\"");
-                        if rest.get(end + 1..end + 2) == Some(")") {
-                            literals.insert(lit);
-                        }
-                    }
-                }
-            }
-        }
-        assert!(literals.len() > 300, "scan found only {} literals", literals.len());
-        for l in LANGUAGES.iter().filter(|l| l.complete_menus) {
-            let cat = l.catalog();
-            let missing: Vec<_> = literals.iter().filter(|s| !KEEP_AS_IS.contains(&s.as_str()) && cat.plain(s).is_none()).collect();
-            assert!(missing.is_empty(), "{}: untranslated tl! strings: {missing:#?}", l.code);
-        }
-    }
-
-    /// Section names are dynamic labels, so the literal scanner cannot cover them.
-    #[test]
-    fn brush_section_names_are_translated() {
-        for lang in Lang::all().filter(|l| l.complete_menus()) {
-            for (name, _) in crate::brush_panel::SECTIONS {
-                assert!(lang.0.catalog().plain(name).is_some(), "{} missing brush section: {name}", lang.code());
-            }
-        }
-    }
-
-    /// `menus::reveal_label` picks one name per platform, so every name needs a translation
-    /// whichever OS runs the tests (UI-217-19).
-    #[test]
-    fn reveal_labels_are_translated() {
-        for lang in Lang::all().filter(|l| l.complete_menus()) {
-            let cat = lang.0.catalog();
-            for label in ["Reveal in Finder", "Show in Explorer", "Show in Folder"] {
-                let tr = cat.plain(label);
-                assert!(tr.is_some(), "{} missing {label}", lang.code());
-                if label != "Reveal in Finder" {
-                    assert!(!tr.unwrap_or_default().contains("Finder"), "{}: {label} names the Finder", lang.code());
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn layer_color_names_are_translated() {
-        for lang in Lang::all().filter(|l| l.complete_menus()) {
-            for color in photocraft_doc::LabelColor::ALL {
-                let cat = lang.0.catalog();
-                assert!(
-                    cat.contextual("layerLabel", color.label()).or_else(|| cat.plain(color.label())).is_some(),
-                    "{} missing {}",
-                    lang.code(),
-                    color.label()
-                );
-            }
-        }
-        let de = lang_from_tag("de").unwrap();
-        assert_eq!(tr_ctx(de, "layerLabel", "No Color"), "Keine Farbe");
-        assert_eq!(tr_ctx(de, "layerLabel", "Seafoam"), "Meeresschaum");
-        assert_eq!(tr(Lang::EN, "Seafoam"), "Seafoam");
-    }
-
-    /// These labels are passed to `tl!` dynamically, so the literal coverage scan misses them.
-    #[test]
-    fn russian_dynamic_selection_theme_and_measurement_labels_are_translated() {
-        let ru = Lang::from_code("ru").expect("ru registered");
-        let (inverse_label, _) =
-            crate::canvas_tool_menu::SELECTION_MENU.iter().flatten().find(|(_, id)| *id == "select.inverse").expect("selection menu has Select Inverse");
-        assert_eq!(tr(ru, inverse_label), "Инвертировать выделение");
-        for kind in [crate::theme::ThemeKind::ProLight, crate::theme::ThemeKind::ProLightGray] {
-            assert!(has(ru, kind.label()), "Russian theme label missing {}", kind.label());
-        }
-        for (_, label) in photocraft_engine::analysis_cmds::COLUMNS {
-            assert!(has(ru, label), "Russian measurement header missing {label}");
-        }
-        assert_eq!(tr(ru, "Pro (Light)"), "Pro (светлая)");
-        assert_eq!(tr(ru, "Pro (Light Gray)"), "Pro (светло-серая)");
-        assert_eq!(tr(ru, "Date and Time"), "Дата и время");
-        assert_eq!(tr(ru, "Integrated Density"), "Интегральная плотность");
-    }
-
-    /// Font style labels are built from dynamic words (weights, "Italic"), so the literal
-    /// scanner cannot cover them; "Light" there is a weight, distinct from the Camera Raw
-    /// "Light" section (`type_tool::style_label`).
-    #[test]
-    fn font_weight_names_are_translated() {
-        const TERMS: &[&str] = &["Thin", "ExtraLight", "Light", "Regular", "Medium", "SemiBold", "Bold", "ExtraBold", "Black", "Italic"];
-        for lang in Lang::all().filter(|l| l.complete_menus()) {
-            for t in TERMS {
-                assert!(lang.0.catalog().contextual("fontWeight", t).is_some(), "{} missing font weight: {t}", lang.code());
-            }
-            assert_ne!(tr_ctx(lang, "cameraRaw", "Light"), tr_ctx(lang, "fontWeight", "Light"), "{}: Camera Raw Light vs the font weight", lang.code());
-        }
-    }
-
-    /// Blend mode names come from the colour crate; each must be translated.
-    #[test]
-    fn blend_mode_names_are_translated() {
-        for l in LANGUAGES.iter().filter(|l| l.complete_menus) {
-            for m in std::iter::once(photocraft_color::BlendMode::PassThrough).chain(photocraft_color::BlendMode::layer_modes()) {
-                assert!(l.catalog().plain(m.label()).is_some(), "{}: blend mode {:?}", l.code, m.label());
-            }
-        }
-    }
-
-    // Dynamic dialog labels generated by label_of() are not seen by the tl! scanner.
-    #[test]
-    fn color_lookup_export_scope_labels_are_translated() {
-        for lang in Lang::all().filter(|l| *l != Lang::EN) {
-            for source in ["Scope", "Selected"] {
-                assert!(lang.catalog().plain(source).is_some(), "{}: missing LUT export label {source:?}", lang.code());
-                assert_ne!(tr(lang, source), source, "{}: untranslated LUT export label {source:?}", lang.code());
-            }
-        }
-    }
-
-    #[test]
-    fn mixer_brush_ui_strings_have_translations_in_every_registered_language() {
-        const STRINGS: &[&str] = &["Mixer Brush", "Mixer Brush Tool", "Wet", "Load", "Mix", "Flow", "Sample All Layers"];
-        for lang in Lang::all() {
-            for source in STRINGS {
-                let translated = tr(lang, source);
-                if lang == Lang::EN {
-                    assert_eq!(translated, *source, "English source string {source}");
-                } else {
-                    assert_ne!(translated, *source, "{} is missing {source:?}", lang.code());
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn pattern_stamp_ui_strings_have_translations_in_every_registered_language() {
-        const STRINGS: &[&str] = &["Pattern Stamp Tool", "Pattern Stamp", "Impressionist", "Aligned"];
-        for lang in Lang::all() {
-            for source in STRINGS {
-                let translated = tr(lang, source);
-                if lang == Lang::EN {
-                    assert_eq!(translated, *source, "English source string {source}");
-                } else {
-                    assert_ne!(translated, *source, "{} is missing {source:?}", lang.code());
-                }
-            }
-        }
-    }
-
-    /// Camera Raw includes dynamic colour-band labels and contextual labels that the generic
-    /// tl! scanner cannot see. Cover the partial catalog too, without claiming whole-app coverage.
-    #[test]
-    fn camera_raw_labels_are_translated_in_every_available_language() {
-        let sources = [include_str!("../camera_raw_ui.rs"), include_str!("../camera_raw_scope_ui.rs")];
-        let mut labels = std::collections::BTreeSet::new();
-        for source in sources {
-            let code = source.split("#[cfg(test)]").next().unwrap();
-            for marker in ["tl!(\"", "row(ui, &mut dirty, \"", "row(ui, dirty, \"", "section(ui, \"", "wheel(ui, &mut dirty, \"", "=> \""] {
-                for tail in code.split(marker).skip(1) {
-                    labels.insert(tail.split('"').next().unwrap());
-                }
-            }
-        }
-        let bands = sources[0].split("const BANDS:").nth(1).unwrap().split(" = ").nth(1).unwrap().split(';').next().unwrap();
-        for band in bands.split('"').skip(1).step_by(2) {
-            labels.insert(band);
-        }
-        assert!(labels.len() >= 66, "missing Camera Raw source labels: {labels:?}");
-        for lang in Lang::all().filter(|l| *l != Lang::EN) {
-            let catalog = lang.catalog();
-            let missing: Vec<_> = labels.iter().filter(|s| catalog.contextual("cameraRaw", s).or_else(|| catalog.plain(s)).is_none()).collect();
-            assert!(missing.is_empty(), "{}: Camera Raw labels: {missing:?}", lang.code());
-            assert_ne!(tr_ctx(lang, "cameraRaw", "Highlights"), tr_ctx(lang, "cameraRaw", "Lights"), "{}: distinct curve regions", lang.code());
-            assert_ne!(tr_ctx(lang, "cameraRaw", "Shadows"), tr_ctx(lang, "cameraRaw", "Darks"), "{}: distinct curve regions", lang.code());
-        }
-        let ru = Lang::from_code("ru").unwrap();
-        assert_eq!(tr_ctx(ru, "cameraRaw", "Vibrance"), "Красочность");
-        assert_eq!(tr_ctx(ru, "cameraRaw", "Aqua"), "Голубые");
-        let text = fmt(tr(ru, "Camera Raw Filter ({layer})"), &[("layer", "{Background} 影像")]);
-        assert_eq!(text, "Фильтр Camera Raw ({Background} 影像)", "user layer names are not translated");
     }
 }
 

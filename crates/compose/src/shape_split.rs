@@ -8,7 +8,7 @@ use std::sync::{Mutex, OnceLock};
 
 use photocraft_color::{PixelFormat, SampleType};
 use photocraft_doc::vector::ShapeLayer;
-use photocraft_geom::Rect;
+use photocraft_geom::{Rect, TileCoord};
 use photocraft_raster::Surface;
 
 /// (fill, stroke), last use, and the shape's pixels the stroke was fitted to (kept alive so
@@ -53,6 +53,7 @@ pub fn split(sh: &ShapeLayer, canvas: Rect, depth: SampleType) -> Option<(Surfac
     (canvas.x0, canvas.y0, canvas.x1, canvas.y1).hash(&mut h);
     depth.hash(&mut h);
     format!("{:?}{:?}{:?}{:?}", sh.path, sh.fill, sh.stroke, sh.live).hash(&mut h);
+    (sh.density.to_bits(), sh.feather.to_bits()).hash(&mut h);
     if let Some(c) = &sh.cache {
         format!("{:?}{:?}", c.format(), c.default_pixel()).hash(&mut h);
         for (k, t) in c.tiles() {
@@ -117,13 +118,42 @@ fn fit_stroke(fill: &Surface, stroke: &mut Surface, cache: &Surface, canvas: Rec
     if r.is_empty() {
         return;
     }
+    let float = stroke.format().sample == SampleType::F32;
+    // Tiles none of the three reaches read as the defaults; with transparent defaults the fit
+    // leaves the stroke's default pixel there, so those tiles are exact skips and we can scan
+    // just the union of the three surfaces' allocated tiles instead of every canvas tile (two
+    // sparse regions on a 300k×300k document would otherwise walk ~1.4M empty tiles). A
+    // non-transparent default is everywhere, so the scan falls back to the full rectangle.
+    let whole = r;
+    let bare_transparent = [fill, &*stroke, cache].iter().all(|s| s.default_pixel().iter().all(|v| *v == 0.0));
+    if bare_transparent {
+        let mut coords: Vec<TileCoord> = fill.tiles().map(|(c, _)| *c).chain(stroke.tiles().map(|(c, _)| *c)).chain(cache.tiles().map(|(c, _)| *c)).collect();
+        coords.sort_unstable();
+        coords.dedup();
+        for c in coords {
+            let r = c.rect().intersect(&whole);
+            if !r.is_empty() {
+                fit_stroke_rect(fill, stroke, cache, r, float);
+            }
+        }
+    } else {
+        for t in whole.tiles() {
+            let r = t.rect().intersect(&whole);
+            if !r.is_empty() {
+                fit_stroke_rect(fill, stroke, cache, r, float);
+            }
+        }
+    }
+}
+
+/// [`fit_stroke`] over one rectangle.
+fn fit_stroke_rect(fill: &Surface, stroke: &mut Surface, cache: &Surface, r: Rect, float: bool) {
     let n = r.width() as usize * r.height() as usize;
     let (mut f, mut s, mut c) = (vec![[0.0f32; 4]; n], vec![[0.0f32; 4]; n], vec![[0.0f32; 4]; n]);
     fill.read_rgba_into(r, &mut f);
     stroke.read_rgba_into(r, &mut s);
     cache.read_rgba_into(r, &mut c);
     let mut out = Vec::with_capacity(n * 4);
-    let float = stroke.format().sample == SampleType::F32;
     for ((fp, sp), cp) in f.iter().zip(&s).zip(&c) {
         let mut p = *sp;
         if fp[3] < 1.0 - 1e-3 {
@@ -163,6 +193,7 @@ mod tests {
             live: None,
             cache: None,
             psd_raw: None,
+            ..ShapeLayer::default()
         }
     }
 

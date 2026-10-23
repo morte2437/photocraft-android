@@ -16,10 +16,12 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
 use egui::{Color32, ColorImage, TextureHandle, TextureId, TextureOptions};
+use photocraft_engine::display_color::CanvasDisplay;
 
 /// One uploaded texture: its mip level, filter and the uv extent covering the source.
 struct Level {
     level: u32,
+    display_key: u64,
     nearest: bool,
     tex: TextureHandle,
     uv: [f32; 2],
@@ -43,7 +45,12 @@ impl PreviewTextures {
         let image = Arc::new(image);
         let tex = ctx.load_texture(format!("{name}-0-linear"), Arc::clone(&image), TextureOptions::LINEAR);
         let base_uv = [base_uv[0].clamp(0.0, 1.0), base_uv[1].clamp(0.0, 1.0)];
-        Self { name, images: Mutex::new(vec![image]), base_uv, uploaded: Mutex::new(vec![Level { level: 0, nearest: false, tex, uv: base_uv }]) }
+        Self {
+            name,
+            images: Mutex::new(vec![image]),
+            base_uv,
+            uploaded: Mutex::new(vec![Level { level: 0, display_key: 0, nearest: false, tex, uv: base_uv }]),
+        }
     }
 
     /// Size of the full-resolution level in texels.
@@ -72,20 +79,38 @@ impl PreviewTextures {
     }
 
     /// Texture and uv extent to draw with (uploading a level / filter on first use).
+    #[cfg(test)]
     pub fn pick(&self, ctx: &egui::Context, zoom: f32, scale: f32, nearest_interpolation: bool) -> (TextureId, [f32; 2]) {
+        self.pick_display(ctx, zoom, scale, nearest_interpolation, None)
+    }
+
+    /// Convert only the displayed upload: effects still read the raw mip levels.
+    pub fn pick_display(
+        &self,
+        ctx: &egui::Context,
+        zoom: f32,
+        scale: f32,
+        nearest_interpolation: bool,
+        display: Option<&CanvasDisplay>,
+    ) -> (TextureId, [f32; 2]) {
         let (level, nearest) = Self::choose(zoom, scale, nearest_interpolation);
+        let display = display.filter(|d| !d.is_identity());
+        let display_key = display.map_or(0, |d| d.key);
         let mut up = self.uploaded.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(l) = up.iter().find(|l| l.level == level && l.nearest == nearest) {
+        if let Some(l) = up.iter().find(|l| l.level == level && l.nearest == nearest && l.display_key == display_key) {
             return (l.tex.id(), l.uv);
         }
         let Some((img, uv)) = self.level_image(level) else {
             // Can't build it (shouldn't happen): fall back to the first upload.
             return up.first().map_or((TextureId::default(), [1.0, 1.0]), |l| (l.tex.id(), l.uv));
         };
+        let img = display.map_or_else(|| Arc::clone(&img), |d| Arc::new(display_image(&img, d)));
         let opts = if nearest { TextureOptions::NEAREST } else { TextureOptions::LINEAR };
         let tex = ctx.load_texture(format!("{}-{level}-{}", self.name, if nearest { "nearest" } else { "linear" }), img, opts);
         let id = tex.id();
-        up.push(Level { level, nearest, tex, uv });
+        // Profile changes must not accumulate another full set of GPU textures.
+        up.retain(|l| l.display_key == display_key);
+        up.push(Level { level, display_key, nearest, tex, uv });
         (id, uv)
     }
 
@@ -108,6 +133,28 @@ impl PreviewTextures {
         let uv = [self.base_uv[0] * base[0] as f32 / (img.size[0] as f32 * f).max(1.0), self.base_uv[1] * base[1] as f32 / (img.size[1] as f32 * f).max(1.0)];
         Some((img, [uv[0].min(1.0), uv[1].min(1.0)]))
     }
+}
+
+/// Premultiplied preview texels -> straight document values -> monitor values.
+/// Bound the temporary float buffer independently of the texture size.
+fn display_image(image: &ColorImage, display: &CanvasDisplay) -> ColorImage {
+    let mut out = image.clone();
+    let convert = |pixels: &mut [Color32]| {
+        let px = pixels.iter().map(|p| p.to_srgba_unmultiplied().map(|c| f32::from(c) / 255.0)).collect();
+        let buffer = photocraft_compose::Buffer { rect: photocraft_geom::Rect::new(0, 0, pixels.len() as i32, 1), px };
+        let converted = display.to_rgba8(&buffer);
+        for (p, rgba) in pixels.iter_mut().zip(converted.pixels.as_chunks::<4>().0) {
+            *p = Color32::from_rgba_unmultiplied(rgba[0], rgba[1], rgba[2], rgba[3]);
+        }
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use rayon::prelude::*;
+        out.pixels.par_chunks_mut(4096).for_each(convert);
+    }
+    #[cfg(target_arch = "wasm32")]
+    out.pixels.chunks_mut(4096).for_each(convert);
+    out
 }
 
 /// 2×2 box filter of a premultiplied image (odd edges repeat the last row/column).
@@ -198,6 +245,67 @@ pub fn read_surface(surf: &photocraft_raster::Surface, mask: Option<&PreviewMask
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "reports CPU preparation cost; run explicitly for profile-preview changes"]
+    fn transform_profile_upload_cost() {
+        let mut session = photocraft_engine::Session::new();
+        session.execute("file.new", serde_json::json!({"width": 6000, "height": 4000})).unwrap();
+        let doc = session.active().unwrap().doc.clone();
+        for monitor in ["raw", "srgb", "display-p3"] {
+            session.color.settings.monitor_profile = if monitor == "raw" { "srgb" } else { monitor }.into();
+            let display = session.color.canvas_display(&doc).unwrap();
+            let ctx = egui::Context::default();
+            let image = ColorImage::new([6000, 4000], vec![Color32::from_rgb(140, 89, 51); 6000 * 4000]);
+            let display = (monitor != "raw").then_some(display.as_ref());
+            let started = std::time::Instant::now();
+            let textures = PreviewTextures::new(&ctx, "profile-cost".into(), image, [1.0, 1.0]);
+            let texture = textures.pick_display(&ctx, 1.0, 1.0, false, display).0;
+            let prepare = started.elapsed();
+            ctx.tex_manager().write().take_delta().clear();
+            let started = std::time::Instant::now();
+            for _ in 0..1000 {
+                assert_eq!(std::hint::black_box(textures.pick_display(&ctx, 1.0, 1.0, false, display)).0, texture);
+            }
+            let cached = started.elapsed();
+            let mut delta = ctx.tex_manager().write().take_delta();
+            assert!(delta.set.is_empty(), "cached dragging must not upload or reconvert pixels");
+            delta.clear();
+            eprintln!(
+                "profile={monitor}, pixels=24000000, first_prepare_ms={:.3}, cached_1000_us={:.3}; CPU preparation only, not GPU completion",
+                prepare.as_secs_f64() * 1000.0,
+                cached.as_secs_f64() * 1_000_000.0
+            );
+        }
+    }
+
+    #[test]
+    fn display_upload_changes_with_monitor_but_keeps_raw_alpha_and_mips() {
+        let mut session = photocraft_engine::Session::new();
+        session.execute("file.new", serde_json::json!({"width": 2, "height": 1})).unwrap();
+        let doc = session.active().unwrap().doc.clone();
+        session.color.settings.monitor_profile = "srgb".into();
+        let srgb = session.color.canvas_display(&doc).unwrap();
+        session.color.settings.monitor_profile = "display-p3".into();
+        let p3 = session.color.canvas_display(&doc).unwrap();
+        assert!(srgb.is_identity());
+        assert!(!p3.is_identity());
+        let raw = ColorImage::new([2, 1], vec![Color32::from_rgba_unmultiplied(140, 89, 51, 128), Color32::TRANSPARENT]);
+        let converted = display_image(&raw, &p3);
+        assert_eq!(converted.pixels[0].a(), 128);
+        assert_eq!(converted.pixels[1], Color32::TRANSPARENT);
+        assert_ne!(converted.pixels[0], raw.pixels[0]);
+        let ctx = egui::Context::default();
+        let textures = PreviewTextures::new(&ctx, "profile-test".into(), raw.clone(), [1.0, 1.0]);
+        let first = textures.pick_display(&ctx, 1.0, 1.0, false, Some(&srgb)).0;
+        let second = textures.pick_display(&ctx, 1.0, 1.0, false, Some(&p3)).0;
+        assert_ne!(first, second);
+        assert_eq!(textures.pick_display(&ctx, 1.0, 1.0, false, Some(&p3)).0, second);
+        assert_eq!(textures.level_image(0).unwrap().0.pixels, raw.pixels);
+        assert_eq!(textures.level_image(1).unwrap().0.pixels, halve(&raw).pixels);
+        assert_eq!(textures.uploaded.lock().unwrap().len(), 1, "old profile uploads are released");
+        ctx.tex_manager().write().take_delta().clear();
+    }
+
     use super::*;
 
     #[test]

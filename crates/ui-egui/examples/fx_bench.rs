@@ -46,6 +46,7 @@ fn effects() -> Vec<Effect> {
             size: 6.0,
             position: StrokePosition::Outside,
             paint: FxPaint::Color(Color::rgb(0.95, 0.85, 0.2)),
+            overprint: false,
         }),
         Effect::BevelEmboss(Bevel {
             enabled: true,
@@ -59,6 +60,7 @@ fn effects() -> Vec<Effect> {
             altitude: 30.0,
             use_global_light: true,
             gloss_contour: Contour::Linear,
+            gloss_anti_alias: false,
             highlight: FxCommon::new(BlendMode::Screen, 0.75),
             highlight_color: Color::WHITE,
             shadow: FxCommon::new(BlendMode::Multiply, 0.75),

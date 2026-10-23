@@ -36,6 +36,7 @@ fn err(e: photocraft_heif::Error) -> CodecError {
 
 #[cfg(feature = "heif")]
 pub(crate) fn decode(bytes: &[u8], limits: &Limits, keep_orientation: bool) -> Result<Image, CodecError> {
+    use crate::cicp::Cicp;
     use crate::image::{ChannelLayout, Metadata, SampleType};
 
     // The container alone: the declared size is checked before any pixel is decoded.
@@ -44,6 +45,13 @@ pub(crate) fn decode(bytes: &[u8], limits: &Limits, keep_orientation: bool) -> R
     let sample = if info.sixteen_bit { SampleType::U16 } else { SampleType::U8 };
     let (w, h) = if keep_orientation { (info.coded_width, info.coded_height) } else { (info.width, info.height) };
     limits.check(w, h, layout, sample)?;
+    // The delegated decoder allocates the full coded image before applying any clean-aperture
+    // crop or orientation transform, so the coded dimensions must pass the limit policy even
+    // when the displayed (transformed) size is small. Checking only the transformed size let a
+    // tiny visible image hide a large coded allocation.
+    if !keep_orientation && (info.coded_width, info.coded_height) != (w, h) {
+        limits.check(info.coded_width, info.coded_height, layout, sample)?;
+    }
     let options = photocraft_heif::Options { max_pixels: limits.max_pixels, apply_transforms: !keep_orientation };
     let decoded = photocraft_heif::decode(bytes, &options).map_err(err)?;
     // The decoder re-reads the container; trust its output's shape, not the probe's.
@@ -51,12 +59,21 @@ pub(crate) fn decode(bytes: &[u8], limits: &Limits, keep_orientation: bool) -> R
     let sample = if decoded.sixteen_bit { SampleType::U16 } else { SampleType::U8 };
     let mut img = Image::from_raw(decoded.width, decoded.height, layout, sample, decoded.data)?;
     img.icc = decoded.icc;
+    img.cicp = decoded.nclx.map(|n| Cicp { primaries: n.primaries, transfer: n.transfer, matrix: n.matrix, full_range: n.full_range });
     img.meta = Metadata {
         exif: decoded.exif.map(|e| if keep_orientation { e } else { crate::orientation::upright_exif(&e).into_owned() }),
         xmp: decoded.xmp.map(|x| if keep_orientation { x } else { crate::orientation::upright_xmp(&x).into_owned() }),
         ..Default::default()
     };
-    Ok(img)
+    // A 10-bit HDR HEIC (BT.2100 HLG or PQ) opens as linear light in 32-bit float (#6752): no
+    // ICC curve can describe those transfers, and an 8/16-bit document would clip the highlights.
+    match img.cicp.filter(|c| c.is_hdr()) {
+        Some(c) => {
+            limits.check(decoded.width, decoded.height, layout, SampleType::F32)?;
+            crate::cicp::linearize(img, c)
+        }
+        None => Ok(img),
+    }
 }
 
 #[cfg(test)]

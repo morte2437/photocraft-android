@@ -803,6 +803,71 @@ fn vector_mask_edit_rejects_out_of_range_feather() {
     assert_eq!(feather(&s), 1000.0);
 }
 
+/// #5846: a shape layer's path is its vector mask; `layer.vectorMask.edit` sets its Density and
+/// Feather in one undoable step, re-rendering the fill, which shows beyond the path at 100 −
+/// density %. Hostile values are refused before any edit.
+#[test]
+fn shape_density_and_feather_through_vector_mask_edit() {
+    for depth in [8, 16, 32] {
+        let mut s = session(200, 200, depth);
+        let id = s.execute("shape.create", json!({"kind": "rect", "rect": [50, 50, 100, 100], "fill": "#000000"})).unwrap()["layer"].as_u64().unwrap();
+        let info = s.execute("layer.vectorMask.info", json!({})).unwrap();
+        assert_eq!((info["shape"].clone(), info["density"].clone(), info["feather"].clone()), (json!(true), json!(100.0), json!(0.0)), "{depth}");
+        let steps = s.active().unwrap().history.past_len();
+        let r = s.execute("layer.vectorMask.edit", json!({"density": 50})).unwrap();
+        assert_eq!(r["density"], 50.0);
+        assert_eq!(s.active().unwrap().history.past_len(), steps + 1, "one history step");
+        let sh = shape(&s, id);
+        assert_eq!((sh.density, sh.feather), (0.5, 0.0));
+        // The shape's own pixels carry the soft fill (half-transparent black beyond the path).
+        let cache = sh.cache.as_ref().unwrap();
+        assert!((cache.rgba(10, 10)[3] - 0.5).abs() < 0.01, "{depth}: {:?}", cache.rgba(10, 10));
+        assert!(cache.rgba(100, 100)[3] > 0.99);
+        s.execute("layer.vectorMask.edit", json!({"feather": 10, "density": 100})).unwrap();
+        let sh = shape(&s, id);
+        assert_eq!((sh.density, sh.feather), (1.0, 10.0));
+        let a = |x| sh.cache.as_ref().unwrap().rgba(x, 100)[3];
+        assert!(a(30) > 0.0 && a(30) < 0.05 && (a(49) + a(50) - 1.0).abs() < 0.02 && a(70) > 0.95, "{depth}: {} {} {} {}", a(30), a(49), a(50), a(70));
+        // Fill and stroke stay editable: the shape is still a shape.
+        s.execute("shape.edit", json!({"fill": "#ff0000"})).unwrap();
+        assert_eq!(shape(&s, id).feather, 10.0, "shape.edit keeps the feather");
+        s.undo();
+        s.undo();
+        assert_eq!((shape(&s, id).density, shape(&s, id).feather), (0.5, 0.0), "{depth}: undo restores");
+    }
+}
+
+#[test]
+fn shape_vector_mask_edit_fails_gracefully() {
+    let mut s = session(64, 64, 8);
+    let id = s.execute("shape.create", json!({"kind": "rect", "rect": [8, 8, 30, 30]})).unwrap()["layer"].as_u64().unwrap();
+    let before = doc(&s).clone();
+    let steps = s.active().unwrap().history.past_len();
+    let bad = [
+        json!({"density": -1}),
+        json!({"density": 100.5}),
+        json!({"density": 1e39}),
+        json!({"density": "50"}),
+        json!({"density": null}),
+        json!({"feather": -0.5}),
+        json!({"feather": 1001}),
+        json!({"feather": [1]}),
+        json!({"feather": 5, "path": {"subpaths": []}}),
+        json!({"density": 50, "enabled": false}),
+        json!({"invert": true}),
+        json!({"layer": u64::MAX, "density": 50}),
+    ];
+    for p in bad {
+        assert!(s.execute("layer.vectorMask.edit", p.clone()).is_err(), "{p}");
+        assert_eq!(*doc(&s), before, "{p}");
+        assert_eq!(s.active().unwrap().history.past_len(), steps, "{p}");
+    }
+    // A locked shape refuses it too.
+    s.execute("layer.lockLayers", json!({"all": true})).unwrap();
+    assert!(s.execute("layer.vectorMask.edit", json!({"layer": id, "density": 50})).is_err());
+    assert_eq!(shape(&s, id).density, 1.0);
+}
+
 #[test]
 fn translate_vectors_moves_shapes_and_masks() {
     let mut s = session(100, 100, 8);
@@ -874,6 +939,74 @@ fn shape_info_bounds_of_curved_shapes_are_exact() {
             assert_eq!(info["bounds"], want, "{params} at {depth}-bit");
         }
     }
+}
+
+/// A shape layer as a PSD import leaves it: Photoshop's rendering as the cache (deliberately not
+/// what PhotoCraft would draw, a block of another colour, so a re-render shows).
+fn add_imported_shape(s: &mut Session, r: Rect) -> LayerId {
+    s.edit("shape", |doc, active| {
+        let fmt = doc.pixel_format();
+        let path = photocraft_vector::shapes::rect(f64::from(r.x0), f64::from(r.y0), f64::from(r.width()), f64::from(r.height()));
+        let mut cache = photocraft_raster::Surface::new(fmt);
+        cache.fill_rect(r, &photocraft_raster::from_rgba(&fmt, [0.9, 0.5, 0.1, 1.0]));
+        let sh = ShapeLayer { path, fill: Some(photocraft_doc::Fill::Solid(photocraft_color::Color::BLACK)), cache: Some(cache), ..Default::default() };
+        let id = doc.insert_above(None, Layer::new("Rectangle 1", LayerContent::Shape(sh)));
+        *active = Some(id);
+        Ok(id)
+    })
+    .unwrap()
+}
+
+fn shape_layer(doc: &Document, id: LayerId) -> ShapeLayer {
+    match &doc.layer(id).unwrap().content {
+        LayerContent::Shape(sh) => sh.clone(),
+        other => panic!("not a shape layer: {}", other.kind_name()),
+    }
+}
+
+fn orange_at(sh: &ShapeLayer, x: i32, y: i32) -> bool {
+    let c = sh.cache.as_ref().unwrap();
+    let px = photocraft_raster::to_rgba(&c.format(), &c.pixel(x, y));
+    (px[0] - 0.9).abs() < 0.01 && (px[1] - 0.5).abs() < 0.01
+}
+
+#[test]
+fn moving_and_exporting_imported_shapes_keeps_their_rendering() {
+    for depth in [8, 16, 32] {
+        let mut s = session(100, 80, depth);
+        let id = add_imported_shape(&mut s, Rect::new(30, 20, 60, 40));
+        // The Move tool: the same pixels, moved; the path moves with them.
+        s.execute("layer.translate", json!({"layer": id.0, "dx": 5, "dy": -3})).unwrap();
+        let sh = shape_layer(doc(&s), id);
+        assert_eq!(sh.cache.as_ref().unwrap().content_bounds(), Rect::new(35, 17, 65, 37), "depth {depth}");
+        assert!(orange_at(&sh, 40, 20), "depth {depth}: not re-rendered");
+        assert_eq!(sh.path.control_bounds().map(|b| (b.0.round(), b.1.round())), Some((35.0, 17.0)), "the path moves too");
+        // Artboards to Files moves the board to the origin the same way.
+        s.execute("layer.new.artboard", json!({"rect": [20, 10, 60, 40]})).unwrap();
+        let board = doc(&s).artboards()[0].0;
+        s.edit("into board", |doc, _| {
+            let l = doc.remove(id).unwrap();
+            let Some(LayerContent::Group(g)) = doc.layer_mut(board).map(|b| &mut b.content) else { panic!("artboard group") };
+            g.children.push(l);
+            Ok(())
+        })
+        .unwrap();
+        let one = crate::artboard_cmds::artboard_document(doc(&s), board).unwrap().unwrap();
+        let sh = shape_layer(&one, id);
+        assert_eq!(sh.cache.as_ref().unwrap().content_bounds(), Rect::new(15, 7, 45, 27), "depth {depth}");
+        assert!(orange_at(&sh, 20, 10), "depth {depth}: exported as rendered");
+    }
+}
+
+#[test]
+fn a_shape_reaching_past_the_canvas_renders_again_when_moved() {
+    let mut s = session(100, 80, 8);
+    // Cut at the canvas's right edge (100 px), so its pixels can't simply be shifted back in.
+    let id = add_imported_shape(&mut s, Rect::new(80, 20, 120, 40));
+    s.execute("layer.translate", json!({"layer": id.0, "dx": -30, "dy": 0})).unwrap();
+    let sh = shape_layer(doc(&s), id);
+    assert!(!orange_at(&sh, 60, 30), "re-rendered from the path (black fill)");
+    assert_eq!(sh.cache.as_ref().unwrap().content_bounds(), Rect::new(50, 20, 90, 40), "the whole shape shows");
 }
 
 #[test]
@@ -1004,4 +1137,36 @@ fn combine_shapes_fails_gracefully() {
     let before = doc(&s).clone();
     assert!(s.execute("layer.combineShapes.unite", json!({})).is_err());
     assert_eq!(*doc(&s), before);
+}
+
+#[test]
+fn triangles_and_polygons_take_a_corner_radius_kept_through_edits_and_scaling() {
+    let mut s = session(200, 200, 8);
+    let r = s.execute("shape.create", json!({"kind": "polygon", "rect": [20, 20, 120, 120], "sides": 3, "cornerRadius": 12})).unwrap();
+    let id = r["layer"].as_u64().unwrap();
+    let live = |s: &Session| match &s.active().unwrap().doc.layer(LayerId(id)).unwrap().content {
+        LayerContent::Shape(sh) => sh.live.clone(),
+        _ => None,
+    };
+    let path_len = |s: &Session| match &s.active().unwrap().doc.layer(LayerId(id)).unwrap().content {
+        LayerContent::Shape(sh) => sh.path.subpaths[0].knots.len(),
+        _ => 0,
+    };
+    assert!(matches!(live(&s), Some(LiveShape::Polygon { sides: 3, corner_radius, .. }) if corner_radius == 12.0));
+    assert_eq!(path_len(&s), 6, "every vertex rounded");
+    // Other edits keep the radius; a radius edit regenerates the path; 0 makes it sharp again.
+    s.execute("shape.edit", json!({"layer": id, "sides": 6})).unwrap();
+    assert!(matches!(live(&s), Some(LiveShape::Polygon { sides: 6, corner_radius, .. }) if corner_radius == 12.0));
+    assert_eq!(path_len(&s), 12);
+    s.execute("shape.edit", json!({"layer": id, "cornerRadius": 0})).unwrap();
+    assert_eq!(path_len(&s), 6);
+    // Hostile values never panic: negative and non-finite radii are clamped or ignored.
+    for bad in [json!(-5), json!(1e300), json!("x")] {
+        let _ = s.execute("shape.edit", json!({"layer": id, "cornerRadius": bad}));
+    }
+    assert!(matches!(live(&s), Some(LiveShape::Polygon { corner_radius, .. }) if corner_radius.is_finite() && corner_radius >= 0.0));
+    // Scaling the layer by half halves the radius, as for a rectangle's radii.
+    s.execute("shape.edit", json!({"layer": id, "cornerRadius": 10})).unwrap();
+    s.execute("shape.edit", json!({"layer": id, "transform": [0.5, 0, 0, 0.5, 0, 0]})).unwrap();
+    assert!(matches!(live(&s), Some(LiveShape::Polygon { corner_radius, .. }) if (corner_radius - 5.0).abs() < 1e-9));
 }

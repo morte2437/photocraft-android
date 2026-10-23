@@ -180,12 +180,65 @@ fn space_is_a_temporary_hand_and_gives_the_tool_back() {
     assert!(!st.session.active().unwrap().history.can_undo(), "nothing was painted");
 }
 
+/// The open paths the last frame painted, as their screen points.
+fn painted_paths(h: &Harness<'static, PhotocraftApp>) -> Vec<Vec<Pos2>> {
+    fn walk(s: &egui::Shape, out: &mut Vec<Vec<Pos2>>) {
+        match s {
+            egui::Shape::Path(p) if !p.closed => out.push(p.points.clone()),
+            egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    for c in &h.output().shapes {
+        walk(&c.shape, &mut out);
+    }
+    out
+}
+
+#[test]
+fn the_pen_path_being_drawn_stays_visible_while_space_pans() {
+    // #6592: the path vanished for as long as the Hand dragged.
+    let mut h = harness(Tool::Pen);
+    click(&mut h, 100.0, 100.0, Modifiers::NONE);
+    click(&mut h, 200.0, 100.0, Modifiers::NONE);
+    assert_eq!(h.state().ui.pen.as_ref().map(|p| p.knots.len()), Some(2));
+    key(&mut h, Key::Space, true, Modifiers::NONE);
+    let before = h.state().ui.views[0].center;
+    press_at(&mut h, 150.0, 200.0);
+    move_to(&mut h, 190.0, 230.0);
+    assert_ne!(h.state().ui.views[0].center, before, "the view is panning");
+    // Mid-drag: the segment is painted where its anchors now are on screen.
+    let (a, b) = (screen(&h, 100.0, 100.0), screen(&h, 200.0, 100.0));
+    let near = |p: &Pos2, q: Pos2| p.distance(q) < 1.0;
+    assert!(
+        painted_paths(&h).iter().any(|pts| pts.first().is_some_and(|p| near(p, a)) && pts.last().is_some_and(|p| near(p, b))),
+        "the Pen path from {a:?} to {b:?} is drawn while panning"
+    );
+    // The fist (#2196): the OS's own on macOS and Linux; on Windows our bitmap, over the
+    // `Crosshair` fallback `CursorLifecycle` leaves under it.
+    let out = &h.output().platform_output;
+    let fist = if cfg!(target_os = "windows") {
+        (egui::CursorIcon::Crosshair, crate::tool_cursor::hand_bitmap(&h.ctx, true).map(|i| i.rgba))
+    } else {
+        (egui::CursorIcon::Grabbing, None)
+    };
+    assert_eq!((out.cursor_icon, out.cursor_image.as_ref().map(|i| i.rgba.clone())), fist, "the fist while panning (#2196)");
+    release(&mut h, 190.0, 230.0, Modifiers::NONE);
+    key(&mut h, Key::Space, false, Modifiers::NONE);
+    h.run_steps(2);
+    let st = h.state();
+    assert_eq!(st.ui.pen.as_ref().map(|p| p.knots.len()), Some(2), "the path is still being drawn");
+    assert_eq!(st.ui.tool, Tool::Pen);
+}
+
 #[test]
 fn space_while_editing_type_is_not_the_hand_tool() {
     let mut h = harness(Tool::Type);
     let id = h.state_mut().run("type.create", json!({"text": "ئا", "size": 20, "x": 100, "y": 100})).unwrap()["layer"].as_u64().unwrap();
     h.state_mut().ui.text_edit = Some(crate::state::TextEdit {
         layer: id,
+        document: None,
         caret: 2,
         anchor: 2,
         session: "t".into(),
@@ -643,7 +696,9 @@ fn cmd_is_not_the_move_tool_for_selection_hand_zoom_pen_shape_or_type_tools() {
         let mut h = harness(tool);
         h.event(Event::ModifiersChanged(platform(Modifiers::COMMAND)));
         h.run_steps(1);
-        assert_eq!(held_tool(h.state(), &h.ctx), None, "{tool:?}");
+        // The Hand's own ⌘ is Zoom In (#6434).
+        let want = (tool == Tool::Hand).then_some(Temporary::ZoomIn);
+        assert_eq!(held_tool(h.state(), &h.ctx), want, "{tool:?}");
     }
     for tool in [Tool::Brush, Tool::Eraser, Tool::Gradient, Tool::CloneStamp, Tool::Eyedropper, Tool::MagneticLasso, Tool::QuickSelection] {
         assert!(cmd_moves(tool), "{tool:?}");
@@ -795,4 +850,172 @@ fn a_held_key_keeps_a_pending_crop_and_another_tools_key_commits_it() {
     assert_eq!(h.state().ui.tool, Tool::Move);
     assert_eq!(h.state().session.active().unwrap().doc.size, photocraft_doc::Size::new(200, 150));
     assert_eq!(h.state().ui.crop_rect, None);
+}
+
+/// #6434: with the Hand tool selected, ⌘ (Ctrl off the Mac) held is Zoom In and ⌥ (with or
+/// without ⌘) Zoom Out, as in Photoshop; letting go gives the Hand back.
+#[test]
+fn cmd_and_alt_with_the_hand_tool_zoom_in_and_out() {
+    let mut h = harness(Tool::Hand);
+    let z0 = h.state().ui.views[0].zoom;
+    hold_mods(&mut h, Modifiers::COMMAND);
+    assert_eq!(held_tool(h.state(), &h.ctx), Some(Temporary::ZoomIn));
+    click(&mut h, 200.0, 150.0, Modifiers::COMMAND);
+    let z1 = h.state().ui.views[0].zoom;
+    assert!(z1 > z0, "{z0} -> {z1}");
+    hold_mods(&mut h, Modifiers::NONE);
+    assert_eq!(held_tool(h.state(), &h.ctx), None);
+
+    hold_mods(&mut h, Modifiers::ALT);
+    assert_eq!(held_tool(h.state(), &h.ctx), Some(Temporary::ZoomOut));
+    click(&mut h, 200.0, 150.0, Modifiers::ALT);
+    let z2 = h.state().ui.views[0].zoom;
+    assert!(z2 < z1, "{z1} -> {z2}");
+    hold_mods(&mut h, Modifiers::COMMAND | Modifiers::ALT);
+    assert_eq!(held_tool(h.state(), &h.ctx), Some(Temporary::ZoomOut));
+    click(&mut h, 200.0, 150.0, Modifiers::COMMAND | Modifiers::ALT);
+    assert!(h.state().ui.views[0].zoom < z2);
+    hold_mods(&mut h, Modifiers::NONE);
+    assert_eq!(held_tool(h.state(), &h.ctx), None);
+    assert_eq!(h.state().ui.tool, Tool::Hand, "the Hand is still the tool");
+}
+
+/// A ⌘-drag with the Hand is the Zoom tool's drag, not a pan: a scrubby zoom with Scrubby Zoom on
+/// (the default).
+#[test]
+fn cmd_drag_with_the_hand_tool_is_a_scrubby_zoom() {
+    let mut h = harness(Tool::Hand);
+    let z0 = h.state().ui.views[0].zoom;
+    drag_with(&mut h, Modifiers::COMMAND, 200.0, 150.0, 300.0, 150.0);
+    assert!(h.state().ui.views[0].zoom > z0 * 1.5, "{z0} -> {}", h.state().ui.views[0].zoom);
+    assert_eq!(h.state().ui.tool, Tool::Hand);
+}
+
+/// With Scrubby Zoom off, a ⌘-drag with the Hand draws the Zoom tool's rectangle instead. The
+/// drag is nearly vertical, so a scrubby zoom (horizontal motion only) would barely change the
+/// zoom, while zooming to the narrow rectangle fills the view with it.
+#[test]
+fn cmd_drag_with_the_hand_tool_follows_scrubby_zoom_off() {
+    let mut h = harness(Tool::Hand);
+    h.state_mut().ui.tool_options.zoom_scrubby = false;
+    let z0 = h.state().ui.views[0].zoom;
+    drag_with(&mut h, Modifiers::COMMAND, 150.0, 100.0, 160.0, 180.0);
+    assert!(h.state().ui.views[0].zoom > z0 * 2.0, "{z0} -> {}", h.state().ui.views[0].zoom);
+    assert_eq!(h.state().ui.tool, Tool::Hand);
+}
+
+/// ⌘ or ⌥ pressed during a Hand pan doesn't turn the drag into a zoom: the pan goes on.
+#[test]
+fn modifiers_pressed_during_a_hand_pan_keep_panning() {
+    for m in [Modifiers::COMMAND, Modifiers::ALT] {
+        let mut h = harness(Tool::Hand);
+        let (z0, c0) = (h.state().ui.views[0].zoom, h.state().ui.views[0].center);
+        press_at(&mut h, 200.0, 150.0);
+        hold_mods(&mut h, m);
+        assert_eq!(held_tool(h.state(), &h.ctx), None, "{m:?}");
+        let p = screen(&h, 200.0, 150.0) + vec2(60.0, 40.0);
+        h.event(Event::PointerMoved(p));
+        h.run_steps(2);
+        button(&mut h, p, false, m);
+        hold_mods(&mut h, Modifiers::NONE);
+        let v = &h.state().ui.views[0];
+        assert_eq!(v.zoom, z0, "{m:?}: no zoom");
+        assert!(v.center[0] < c0[0] - 30.0 && v.center[1] < c0[1] - 20.0, "{m:?}: panned {c0:?} -> {:?}", v.center);
+    }
+}
+
+/// A middle-button pan with the Hand selected keeps panning when ⌘ or ⌥ goes down during it.
+#[test]
+fn modifiers_pressed_during_a_middle_button_pan_keep_panning() {
+    for m in [Modifiers::COMMAND, Modifiers::ALT] {
+        let mut h = harness(Tool::Hand);
+        let (z0, c0) = (h.state().ui.views[0].zoom, h.state().ui.views[0].center);
+        let p = screen(&h, 200.0, 150.0);
+        h.event(Event::PointerMoved(p));
+        h.run_steps(1);
+        h.event(Event::PointerButton { pos: p, button: PointerButton::Middle, pressed: true, modifiers: Modifiers::NONE });
+        h.run_steps(1);
+        hold_mods(&mut h, m);
+        assert_eq!(held_tool(h.state(), &h.ctx), None, "{m:?}");
+        let q = p + vec2(60.0, 40.0);
+        h.event(Event::PointerMoved(q));
+        h.run_steps(2);
+        h.event(Event::PointerButton { pos: q, button: PointerButton::Middle, pressed: false, modifiers: platform(m) });
+        h.run_steps(1);
+        hold_mods(&mut h, Modifiers::NONE);
+        let v = &h.state().ui.views[0];
+        assert_eq!(v.zoom, z0, "{m:?}: no zoom");
+        assert!(v.center[0] < c0[0] - 30.0 && v.center[1] < c0[1] - 20.0, "{m:?}: panned {c0:?} -> {:?}", v.center);
+    }
+}
+
+/// Free Transform keeps ⌘ (its distort handles) while the Hand is selected.
+#[test]
+fn cmd_with_the_hand_tool_is_not_a_zoom_during_free_transform() {
+    let mut h = harness(Tool::Hand);
+    with_layer(&mut h);
+    let ctx = h.ctx.clone();
+    crate::menus::invoke(h.state_mut(), &ctx, "edit.freeTransform", json!({})).unwrap();
+    h.run_steps(2);
+    assert!(h.state().ui.transform.is_some());
+    hold_mods(&mut h, Modifiers::COMMAND);
+    assert_eq!(held_tool(h.state(), &h.ctx), None);
+}
+
+/// The Modifier Keys panel's latched ⌥ and ⌘ count, for desktops that take Alt+click.
+#[test]
+fn latched_modifier_keys_zoom_with_the_hand_tool() {
+    let mut h = harness(Tool::Hand);
+    h.state_mut().ui.shell.sticky_command = true;
+    h.run_steps(1);
+    assert_eq!(held_tool(h.state(), &h.ctx), Some(Temporary::ZoomIn));
+    h.state_mut().ui.shell.sticky_alt = true;
+    h.run_steps(1);
+    assert_eq!(held_tool(h.state(), &h.ctx), Some(Temporary::ZoomOut));
+    h.state_mut().ui.shell = Default::default();
+    h.state_mut().ui.tool = Tool::Brush;
+    h.state_mut().ui.shell.sticky_alt = true;
+    h.run_steps(1);
+    assert_eq!(held_tool(h.state(), &h.ctx), None, "only the Hand's ⌥ zooms");
+}
+
+/// A Hand press made without a modifier stays the Hand through its release: ⌘ or ⌥ pressed
+/// before letting go (without moving past the drag threshold) doesn't zoom on the release.
+#[test]
+fn modifiers_pressed_before_a_hand_click_is_released_do_not_zoom() {
+    for m in [Modifiers::COMMAND, Modifiers::ALT] {
+        let mut h = harness(Tool::Hand);
+        let (z0, c0) = (h.state().ui.views[0].zoom, h.state().ui.views[0].center);
+        let p = screen(&h, 200.0, 150.0);
+        h.event(Event::PointerMoved(p));
+        h.run_steps(1);
+        button(&mut h, p, true, Modifiers::NONE);
+        hold_mods(&mut h, m);
+        button(&mut h, p, false, m);
+        h.run_steps(1);
+        let v = &h.state().ui.views[0];
+        assert_eq!((v.zoom, v.center), (z0, c0), "{m:?}: the release didn't zoom");
+        // The modifier still zooms the next click.
+        click(&mut h, 200.0, 150.0, m);
+        assert_ne!(h.state().ui.views[0].zoom, z0, "{m:?}");
+        hold_mods(&mut h, Modifiers::NONE);
+    }
+}
+
+/// A click whose press and release arrive in one frame, with ⌘ held, still zooms.
+#[test]
+fn a_one_frame_cmd_click_with_the_hand_tool_zooms() {
+    let mut h = harness(Tool::Hand);
+    let z0 = h.state().ui.views[0].zoom;
+    hold_mods(&mut h, Modifiers::COMMAND);
+    let p = screen(&h, 200.0, 150.0);
+    h.event(Event::PointerMoved(p));
+    h.run_steps(1);
+    let m = platform(Modifiers::COMMAND);
+    h.input_mut().events.extend([
+        Event::PointerButton { pos: p, button: PointerButton::Primary, pressed: true, modifiers: m },
+        Event::PointerButton { pos: p, button: PointerButton::Primary, pressed: false, modifiers: m },
+    ]);
+    h.run_steps(2);
+    assert!(h.state().ui.views[0].zoom > z0);
 }

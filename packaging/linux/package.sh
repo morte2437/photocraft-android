@@ -27,7 +27,7 @@ APP_ID=ai.storyteller.photocraft
 
 SKIP_BUILD=0
 FORMATS="appimage deb rpm tar"
-while [ $# -gt 0 ]; do
+while [[ $# -gt 0 ]]; do
   case "$1" in
     --skip-build) SKIP_BUILD=1; shift ;;
     --formats) FORMATS="$2"; shift 2 ;;
@@ -48,8 +48,8 @@ BASENAME="photocraft-$VERSION-linux-$ARCH"
 
 echo "==> PhotoCraft $VERSION for Linux $ARCH ($FORMATS)"
 
-if [ "$SKIP_BUILD" = 0 ]; then
-  if [ -n "${CROSS_TARGET:-}" ]; then
+if [[ "$SKIP_BUILD" = 0 ]]; then
+  if [[ -n "${CROSS_TARGET:-}" ]]; then
     (cd "$ROOT" && cargo build --release --locked -p photocraft -p photocraft-cli --features heif --target "$CROSS_TARGET")
   else
     (cd "$ROOT" && cargo build --release --locked -p photocraft -p photocraft-cli --features heif)
@@ -136,7 +136,7 @@ if has appimage; then
   esac
   mkdir -p "$CARGO_TARGET_DIR"
   TOOL="${APPIMAGETOOL:-$CARGO_TARGET_DIR/appimagetool-$TOOL_VERSION-$ARCH.AppImage}"
-  if [ -n "${APPIMAGETOOL:-}" ]; then
+  if [[ -n "${APPIMAGETOOL:-}" ]]; then
     verify_appimagetool_override "$TOOL" "$TOOL_SHA256" "$TOOL_VERSION" "$ARCH"
   else
     download_verified \
@@ -167,16 +167,16 @@ if has appimage; then
   (cd "$DIST" && ARCH="$ARCH" APPIMAGE_EXTRACT_AND_RUN=1 "$TOOL" --no-appstream \
     --runtime-file "$RUNTIME" -u "$UPDATE_INFO" "$APPDIR" "$OUT")
   echo "wrote $OUT"
-  if [ -s "$OUT.zsync" ]; then
+  if [[ -s "$OUT.zsync" ]]; then
     echo "wrote $OUT.zsync"
   else
     warn "zsyncmake not found, so $OUT.zsync was not written; AppImage delta updates need it"
   fi
 fi
 
-if [ -z "${CROSS_TARGET:-}" ]; then
+if [[ -z "${CROSS_TARGET:-}" ]]; then
   "$STAGE/usr/bin/photocraft-cli" --version
-elif [ -n "${EMULATOR:-}" ]; then
+elif [[ -n "${EMULATOR:-}" ]]; then
   "$EMULATOR" "$STAGE/usr/bin/photocraft-cli" --version
 fi
 echo "==> done"

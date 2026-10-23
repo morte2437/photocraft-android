@@ -340,6 +340,8 @@ fn params_contain_ambient_path(id: &str, params: &Value) -> bool {
         }
         "image.mode.rgb" | "image.mode.grayscale" | "image.mode.cmyk" | "image.mode.lab" => &["profile"],
         "edit.assignProfile" | "edit.convertToProfile" | "edit.profileInfo" | "view.proofSetup" | "view.gamutWarning" => &["profile"],
+        // New Document's Color Profile (#321) can name an .icc file.
+        "file.new" => &["profile"],
         "edit.colorSettings" => &["workingRgb", "workingCmyk", "workingGray"],
         _ => &[],
     };
@@ -355,6 +357,13 @@ fn profile_command_may_read_ambient(id: &str, params: &Value) -> bool {
     // Installed profiles scan OS and user directories even without a request path.
     if matches!(id, "color.profileMismatch" | "edit.colorSettings" | "edit.installedProfiles" | "view.proofSetup") {
         return true;
+    }
+    // New Document skips exact `working` and `none`; the other working aliases resolve
+    // the configured working space, which may be an .icc path.
+    if id == "file.new" {
+        return params.get("profile").and_then(Value::as_str).is_some_and(|profile| {
+            matches!(profile, "default" | "working-cmyk" | "workingCmyk" | "working-rgb" | "workingRgb" | "working-gray" | "workingGray")
+        });
     }
     matches!(id, "edit.assignProfile" | "edit.convertToProfile" | "edit.profileInfo")
         && params.get("profile").and_then(Value::as_str).is_some_and(|profile| {
@@ -374,18 +383,27 @@ fn preferences_may_grant_ambient_paths(id: &str, params: &Value) -> bool {
 fn preference_uses_ambient_filesystem(path: &str) -> bool {
     // The engine skips empty segments (`.scriptEvents.enabled` sets `scriptEvents.enabled`), so
     // judge the first non-empty one; no segment at all is the whole-preferences update.
-    let Some(section) = path.split('.').find(|segment| !segment.is_empty()) else { return true };
+    let mut segments = path.split('.').filter(|segment| !segment.is_empty());
+    let Some(section) = segments.next() else { return true };
+    // File Handling's LUT folder (#6558) is listed from disk; the rest of that section is not.
     matches!(section, "colorSettings" | "scriptEvents" | "historyLog" | "plugIns" | "scratchDisks")
+        || (section == "fileHandling" && segments.next().is_none_or(|key| key == "lutFolder"))
 }
 
 fn command_uses_ambient_path(id: &str, params: &Value) -> bool {
     match id {
-        "actions.load" | "brush.presets.importAbr" | "brush.presets.importImage" | "gradient.presets.importGrd" | "plugin.install" | "swatches.import" => {
+        "actions.load"
+        | "brush.presets.importAbr"
+        | "brush.presets.importImage"
+        | "gradient.presets.importGrd"
+        | "plugin.install"
+        | "swatches.import"
+        | "layer.layerStyle.contours.load" => {
             // `data` wins over `path` in these commands; any `path` without it reads the filesystem.
             params.get("data").is_none() && params.get("path").is_some()
         }
         // With a `path` the file is written there; without one the bytes come back as `data`.
-        "actions.save" | "swatches.export" => params.get("path").is_some(),
+        "actions.save" | "swatches.export" | "layer.layerStyle.contours.save" => params.get("path").is_some(),
         // Shortcut sets: a .kys read or written by path, or a Summarize page written by path.
         "edit.keyboardShortcuts" => {
             params.get("path").is_some() || ["importKys", "exportKys", "summarize"].iter().any(|k| params.get(*k).and_then(|v| v.get("path")).is_some())
@@ -759,6 +777,12 @@ mod tests {
         assert!(authorize_desktop_engine_command("image.mode.cmyk", &serde_json::json!({})).is_err());
         assert!(authorize_engine_command("image.mode.rgb", &serde_json::json!({"profile": "/outside/profile.icc"})).is_err());
         assert!(authorize_engine_command("image.mode.rgb", &serde_json::json!({"profile": "srgb"})).is_ok());
+        assert!(authorize_engine_command("file.new", &serde_json::json!({"profile": "/outside/profile.icc"})).is_err());
+        assert!(authorize_engine_command("file.new", &serde_json::json!({"profile": "adobe-rgb-compat"})).is_ok());
+        assert!(authorize_engine_command("file.new", &serde_json::json!({"profile": "working"})).is_ok());
+        assert!(authorize_engine_command("file.new", &serde_json::json!({"profile": "none"})).is_ok());
+        assert!(authorize_engine_command("file.new", &serde_json::json!({"profile": "default"})).is_err());
+        assert!(authorize_engine_command("file.new", &serde_json::json!({"profile": "working-cmyk"})).is_err());
         // Shortcut sets: text in and out is fine; a path reads or writes the filesystem.
         let ks = |p: serde_json::Value| authorize_engine_command("edit.keyboardShortcuts", &p);
         assert!(ks(serde_json::json!({"exportKys": true, "summarize": true, "importKys": "<photoshop-keyboard-shortcuts/>"})).is_ok());
@@ -821,6 +845,8 @@ mod tests {
             ("swatches.export", serde_json::json!({"path": "/outside/set.ase"})),
             ("actions.load", serde_json::json!({"path": "/outside/set.atn"})),
             ("actions.save", serde_json::json!({"path": "/outside/set.atn"})),
+            ("layer.layerStyle.contours.load", serde_json::json!({"path": "/outside/set.shc"})),
+            ("layer.layerStyle.contours.save", serde_json::json!({"path": "/outside/set.shc"})),
         ] {
             assert!(authorize_engine_command(id, &params).is_err(), "{id}: {params}");
         }
@@ -833,6 +859,8 @@ mod tests {
             ("swatches.export", serde_json::json!({"format": "ase"})),
             ("actions.load", serde_json::json!({"data": "QUJD"})),
             ("actions.save", serde_json::json!({"set": "S"})),
+            ("layer.layerStyle.contours.load", serde_json::json!({"data": "QUJD"})),
+            ("layer.layerStyle.contours.save", serde_json::json!({"names": ["a"]})),
         ] {
             assert!(authorize_engine_command(id, &params).is_ok(), "{id}: {params}");
         }
@@ -847,6 +875,8 @@ mod tests {
             "historyLog.filePath",
             ".historyLog.filePath",
             "plugIns.additionalPluginsFolder",
+            "fileHandling.lutFolder",
+            "fileHandling",
             "scratchDisks.disks",
             ".",
             "..historyLog.filePath",
@@ -857,6 +887,7 @@ mod tests {
             authorize_engine_command("prefs.set", &serde_json::json!({"values": {"interface.language": "fr", "historyLog.filePath": "/outside/log"}})).is_err()
         );
         assert!(authorize_engine_command("prefs.set", &serde_json::json!({"path": "interface.language", "value": "fr"})).is_ok());
+        assert!(authorize_engine_command("prefs.set", &serde_json::json!({"path": "fileHandling.autosave", "value": false})).is_ok());
     }
 
     #[test]
@@ -887,7 +918,9 @@ mod tests {
     }
 
     fn documents_filesystem_path_params(id: &str, params: &str) -> bool {
-        if matches!(id, "prefs.get" | "prefs.reset") {
+        // These commands return settings or installed-profile paths; they do not accept a host
+        // filesystem path as an automation input.
+        if matches!(id, "prefs.get" | "prefs.reset" | "edit.installedProfiles") {
             return false;
         }
         // These registry descriptions refer to document vector paths, not host files.

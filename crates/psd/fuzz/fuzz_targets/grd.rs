@@ -3,7 +3,7 @@
 //!
 //! The cap assertions below are invariants, not fast checks: at libFuzzer default `-max_len`
 //! of 4096 no input can carry 10 001 gradients or 1001 stops, so they only fire on long runs with
-//! a raised limit. The inputs that do reach those caps are in `crates/psd/tests/swatch_malformed.rs`.
+//! a raised limit. The inputs that do reach those caps are in `crates/psd/tests/it/swatch_malformed.rs`.
 #![no_main]
 use libfuzzer_sys::fuzz_target;
 use photocraft_psd::grd::{self, GrdColor};

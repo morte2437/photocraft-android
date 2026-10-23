@@ -57,6 +57,25 @@ fn use_sets_foreground_and_background_through_colour_management() {
     assert!(s.tools.background.iter().all(|v| (v - 1.0).abs() < 0.01), "{:?}", s.tools.background);
 }
 
+/// #7474: a CMYK swatch (an .ase Pantone colour) keeps its inks when it becomes the foreground,
+/// instead of reading back as what its sRGB stand-in converts to (0/0/100/0 -> 5/1/92/0).
+#[test]
+fn using_a_cmyk_swatch_remembers_its_inks() {
+    let mut s = Session::new();
+    s.execute("swatches.add", json!({"name": "P 1-8 C", "kind": "spot", "color": {"model": "cmyk", "values": [0, 0, 100, 0]}})).unwrap();
+    s.execute("swatches.use", json!({"swatch": "P 1-8 C"})).unwrap();
+    let fg = s.tools.foreground;
+    assert_eq!(s.tools.picked_cmyk([fg[0], fg[1], fg[2]]), Some([0.0, 0.0, 1.0, 0.0]));
+    s.execute("swatches.add", json!({"name": "Print cyan", "color": {"model": "cmyk", "values": [100, 0, 0, 0]}})).unwrap();
+    s.execute("swatches.use", json!({"swatch": "Print cyan", "target": "background"})).unwrap();
+    let bg = s.tools.background;
+    assert_eq!(s.tools.picked_cmyk([bg[0], bg[1], bg[2]]), Some([1.0, 0.0, 0.0, 0.0]));
+    // An RGB swatch records nothing.
+    s.execute("swatches.use", json!({"swatch": "Red"})).unwrap();
+    let fg = s.tools.foreground;
+    assert_eq!(s.tools.picked_cmyk([fg[0], fg[1], fg[2]]), None);
+}
+
 #[test]
 fn rename_delete_move_and_groups() {
     let mut s = Session::new();
@@ -144,6 +163,64 @@ fn aco_round_trip_keeps_16_bit_values_and_books() {
     assert_eq!((r["format"].as_str(), r["count"].as_u64()), (Some("ase"), Some(5)), "the book can't go to .ase");
     assert!(std::fs::read(&out).unwrap().starts_with(b"ASEF"));
     std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn act_round_trip_loads_a_photoshop_color_table() {
+    // A Photoshop-saved table: 256 RGB colors plus the count/transparent trailer.
+    let mut colors = [[0u8; 3]; 256];
+    colors[0] = [255, 255, 255];
+    for (i, c) in colors.iter_mut().enumerate().skip(1) {
+        let v = i as u8;
+        *c = [v, 255 - v, 128];
+    }
+    let file = photocraft_psd::act::write(&colors, Some(256), Some(255)).unwrap();
+    assert_eq!(file.len(), 772);
+    let mut s = Session::new();
+    let r = s.execute("swatches.import", json!({"data": b64_encode(&file), "group": "Table", "mode": "replace"})).unwrap();
+    assert_eq!((r["format"].as_str(), r["count"].as_u64()), (Some("act"), Some(256)));
+    assert_eq!(r["warnings"].as_array().unwrap().len(), 1, "the transparent color is reported");
+    assert_eq!(s.presets.swatches[0].items[0].color, SwatchColor::Rgb([1.0, 1.0, 1.0]));
+    assert_eq!(s.presets.swatches[0].items[1].name, "Swatch 2");
+    // Sniffed by length without a format, and by extension from a path.
+    let r = s.execute("swatches.import", json!({"data": b64_encode(&file), "mode": "replace"})).unwrap();
+    assert_eq!(r["format"].as_str(), Some("act"));
+    // Export keeps the 256 RGB colors; the trailer comes back in canonical form
+    // (swatches have no transparency to preserve).
+    let canon = photocraft_psd::act::write(&colors, Some(256), None).unwrap();
+    assert_eq!(export_bytes(&mut s, json!({"format": "act"})), canon);
+    // A bigger library is capped at 256 with a warning; groups collapse to one list.
+    for i in 0..300 {
+        s.execute("swatches.add", json!({"name": format!("Extra {i}"), "color": {"model": "rgb", "values": [1, 0, 0]}})).unwrap();
+    }
+    let r = s.execute("swatches.export", json!({"format": "act"})).unwrap();
+    assert_eq!(r["count"], 256);
+    assert!(r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().is_some_and(|w| w.contains("first 256"))));
+}
+
+#[test]
+fn act_that_starts_like_an_aco_is_still_an_act() {
+    // First colour 0, 1, 0 and second colour 5, …: the first four bytes read as an .aco version 1
+    // header with five swatches, and the .aco reader would take 50 bytes of junk from it.
+    let mut colors = [[0u8; 3]; 256];
+    colors[0] = [0, 1, 0];
+    for (i, c) in colors.iter_mut().enumerate().skip(1) {
+        *c = [(i as u8).wrapping_add(4), 7, 9];
+    }
+    for file in [photocraft_psd::act::write(&colors, None, None).unwrap(), photocraft_psd::act::write(&colors, Some(256), None).unwrap()] {
+        assert_eq!(&file[..4], &[0, 1, 0, 5]);
+        let mut s = Session::new();
+        let r = s.execute("swatches.import", json!({"data": b64_encode(&file), "mode": "replace"})).unwrap();
+        assert_eq!((r["format"].as_str(), r["count"].as_u64()), (Some("act"), Some(256)), "{} bytes", file.len());
+    }
+    // A real .aco of exactly 768 bytes (ten swatches with 25-character names) stays an .aco.
+    let swatches: Vec<AcoSwatch> = (0..10u16).map(|i| AcoSwatch { name: format!("{i:0>25}"), color: AcoColor::Rgb([i * 1000, 0, 65535]) }).collect();
+    let file = photocraft_psd::aco::write(&swatches).unwrap();
+    assert_eq!(file.len(), photocraft_psd::act::PALETTE_LEN);
+    let mut s = Session::new();
+    let r = s.execute("swatches.import", json!({"data": b64_encode(&file), "mode": "replace"})).unwrap();
+    assert_eq!((r["format"].as_str(), r["count"].as_u64()), (Some("aco"), Some(10)));
+    assert_eq!(s.presets.swatches[0].items[9].name, format!("{:0>25}", 9));
 }
 
 #[test]

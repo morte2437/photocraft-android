@@ -348,6 +348,46 @@ fn clearing_warnings_of_an_unknown_comp_is_an_error() {
     assert_eq!(s.execute("layerComp.updateWarnings", json!({})).unwrap()["count"], 1);
 }
 
+#[test]
+fn reorder_comps_preserves_capture_and_applied_state_and_undoes() {
+    let (mut s, _, _) = session(8);
+    for name in ["One", "Two", "Three"] {
+        s.execute("layerComp.new", json!({"name":name})).unwrap();
+    }
+    let before = doc(&s).layer_comps.clone();
+    let applied = doc(&s).last_applied_comp;
+    let steps = s.active().unwrap().history.past_len();
+    s.execute("layerComp.reorder", json!({"comp":"One", "index":2})).unwrap();
+    assert_eq!(doc(&s).layer_comps, vec![before[1].clone(), before[2].clone(), before[0].clone()]);
+    assert_eq!(doc(&s).last_applied_comp, applied);
+    assert_eq!(s.active().unwrap().history.past_len(), steps + 1);
+    assert!(s.undo());
+    assert_eq!(doc(&s).layer_comps, before);
+    assert!(s.redo());
+    s.execute("layerComp.reorder", json!({"comp":before[0].id, "index":0})).unwrap();
+    assert_eq!(doc(&s).layer_comps, before);
+    let steps = s.active().unwrap().history.past_len();
+    s.execute("layerComp.reorder", json!({"comp":"One", "index":0})).unwrap();
+    assert_eq!(s.active().unwrap().history.past_len(), steps);
+}
+
+#[test]
+fn reorder_comps_rejects_bad_indices_without_changes() {
+    let mut s = Session::new();
+    assert!(!s.is_enabled("layerComp.reorder"));
+    s.execute("file.new", json!({"width":8, "height":8})).unwrap();
+    assert!(!s.is_enabled("layerComp.reorder"));
+    s.execute("layerComp.new", json!({"name":"Only"})).unwrap();
+    let before = doc(&s).layer_comps.clone();
+    let steps = s.active().unwrap().history.past_len();
+    for index in [Value::Null, json!(-1), json!(1), json!(1.5), json!("0"), json!(u64::MAX)] {
+        assert!(s.execute("layerComp.reorder", json!({"index":index})).is_err());
+    }
+    assert!(s.execute("layerComp.reorder", json!({"comp":"Missing", "index":0})).is_err());
+    assert_eq!(doc(&s).layer_comps, before);
+    assert_eq!(s.active().unwrap().history.past_len(), steps);
+}
+
 /// Apply Layer Comp is recorded by the comp's name, not its document-local id: played in another
 /// document it applies that document's comp of the name, or stops when there is none (#7181).
 #[test]

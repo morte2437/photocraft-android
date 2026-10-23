@@ -216,6 +216,18 @@ pub(crate) fn export_layered(doc: &Document, opts: &ExportOptions, ctl: &photocr
         merged_compression: Compression::Raw,
         maximize_compatibility: true,
         document_path: opts.document_path.clone(),
+        read_linked_files: opts.read_linked_files,
+    };
+    // TIFF has no palette, bitmap or duotone layout: the PSD model of an Indexed Color, Bitmap
+    // or Duotone document is made in its pixel format (RGB or Grayscale), which the PSD exporter
+    // otherwise writes in the document's own mode.
+    let plain;
+    let doc = if matches!(doc.mode, ColorMode::Indexed | ColorMode::Bitmap | ColorMode::Duotone) {
+        plain = Document { mode: doc.pixel_format().mode, ..doc.clone() };
+        warnings.push(format!("{:?} document written as {:?}", doc.mode, plain.mode));
+        &plain
+    } else {
+        doc
     };
     let (mut file, w) = crate::with_span(ctl, 0.0, TIFF_MODEL_DONE, |ctl| crate::psd_export::document_to_psd_interruptible(doc, &psd_opts, ctl));
     // A cancelled conversion stops early with an incomplete model: never encode it.

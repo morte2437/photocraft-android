@@ -168,53 +168,24 @@ pub fn draw_badge(painter: &egui::Painter, p: Pos2, b: Badge, centred: bool) {
     }
 }
 
-/// Dash length of the marching ants, in screen points.
-pub const DASH: f32 = 4.0;
-
-/// Marching ants along a polyline: a solid white line under black dashes, the dashes shifted by
-/// `phase` (animate it with time). Visible on any image, like Photoshop's selection edges.
-pub fn ants(points: &[Pos2], closed: bool, phase: f32) -> Vec<Shape> {
-    let Some(&first) = points.first().filter(|_| points.len() >= 2) else { return Vec::new() };
-    let mut pts = points.to_vec();
-    if closed {
-        pts.push(first);
-    }
-    let mut out = vec![Shape::line(pts.clone(), Stroke::new(1.0, Color32::WHITE))];
-    let black = Stroke::new(1.0, Color32::BLACK);
-    // Arc length so dashes run continuously across vertices.
-    let mut along = -phase.rem_euclid(DASH * 2.0);
-    for w in pts.windows(2) {
-        let (a, b) = (w[0], w[1]);
-        let len = a.distance(b);
-        if len < 1e-3 {
-            continue;
-        }
-        let dir = (b - a) / len;
-        // Position of this segment's start within the dash period.
-        let mut t = -(along.rem_euclid(DASH * 2.0));
-        while t < len {
-            let (s0, s1) = (t.max(0.0), (t + DASH).min(len));
-            if s1 > s0 {
-                out.push(Shape::line_segment([a + dir * s0, a + dir * s1], black));
-            }
-            t += DASH * 2.0;
-        }
-        along += len;
-    }
-    out
-}
-
-/// Marching-ants phase for the frame time `time` (s), and keep the animation running.
-pub fn ants_phase(ctx: &egui::Context) -> f32 {
-    let time = ctx.input(|i| i.time);
-    ctx.request_repaint_after(std::time::Duration::from_millis(100));
-    ((time * 10.0) % (DASH as f64 * 2.0)) as f32
-}
-
-/// Draw animated marching ants along `points`.
+/// Draw animated marching ants along `points`: the same ants as a selection's (`crate::ants`),
+/// visible on any image, like Photoshop's selection edges.
 pub fn draw_ants(painter: &egui::Painter, points: &[Pos2], closed: bool) {
-    let phase = ants_phase(painter.ctx());
-    painter.extend(ants(points, closed, phase));
+    crate::ants::draw_polyline(painter, points, closed);
+}
+
+/// A selection outline still being drawn (Lasso, Polygonal Lasso, Magnetic Lasso): a solid line,
+/// as Photoshop draws it until the selection is made (#7495). Marching ants are for selections
+/// that exist. A thin dark line on a soft light edge: Photoshop's look on light pixels, and still
+/// visible on dark ones.
+pub fn solid_path(points: &[Pos2], closed: bool) -> Vec<Shape> {
+    let make = |s: Stroke| if closed { Shape::closed_line(points.to_vec(), s) } else { Shape::line(points.to_vec(), s) };
+    vec![make(Stroke::new(3.0, Color32::from_white_alpha(140))), make(Stroke::new(1.0, Color32::BLACK))]
+}
+
+/// Draw [`solid_path`].
+pub fn draw_solid_path(painter: &egui::Painter, points: &[Pos2], closed: bool) {
+    painter.extend(solid_path(points, closed));
 }
 
 /// Polygon approximating the ellipse inscribed in `r` (enough vertices to look smooth).
@@ -294,24 +265,21 @@ mod tests {
         assert!(badge_glyph(Badge::Intersect, c, 3.0).iter().all(|[a, b]| a.x != b.x && a.y != b.y));
     }
 
+    /// #7495: an outline still being drawn is one unbroken line (no dashes, nothing marching),
+    /// black over a light edge.
     #[test]
-    fn ants_use_two_contrasting_colours_and_march() {
+    fn solid_path_is_one_unbroken_dark_line_on_a_light_edge() {
         let pts = [pos2(0.0, 0.0), pos2(40.0, 0.0), pos2(40.0, 30.0)];
-        let a = ants(&pts, true, 0.0);
-        let cols = strokes(&a);
-        assert!(cols.contains(&Color32::WHITE) && cols.contains(&Color32::BLACK), "{cols:?}");
-        // Roughly half the length is black dashes: (40 + 30 + 50) / 8 ≈ 15 dashes.
-        let dashes = cols.iter().filter(|c| **c == Color32::BLACK).count();
-        assert!((13..=18).contains(&dashes), "{dashes}");
-        // The phase moves the dashes (the ants march).
-        let first = |s: &[Shape]| {
-            s.iter().find_map(|s| match s {
-                Shape::LineSegment { points, stroke } if stroke.color == Color32::BLACK => Some(points[0]),
-                _ => None,
-            })
-        };
-        assert_ne!(first(&a), first(&ants(&pts, true, 2.0)));
-        assert!(ants(&pts[..1], false, 0.0).is_empty());
+        for closed in [false, true] {
+            let shapes = solid_path(&pts, closed);
+            assert!(shapes.iter().all(|s| matches!(s, Shape::Path(p) if p.closed == closed && p.points.len() == 3)), "{shapes:?}");
+            assert_eq!(strokes(&shapes), vec![Color32::from_white_alpha(140), Color32::BLACK], "the dark line on top");
+        }
+    }
+
+    #[test]
+    fn shape_previews_contrast_and_ellipses_close() {
+        let pts = [pos2(0.0, 0.0), pos2(40.0, 0.0), pos2(40.0, 30.0)];
         // Shape previews: the accent path over a dark halo.
         let s = contrast_path(pts.to_vec(), true, Color32::from_rgb(0, 120, 255));
         let cols = strokes(&s);

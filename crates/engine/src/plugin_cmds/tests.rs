@@ -155,6 +155,62 @@ fn params_are_validated_and_passed() {
     Session::new().execute("plugin.remove", json!({"id": "test.cmds.grey"})).unwrap();
 }
 
+/// #7524: a reduced live preview divides the plug-in's `"unit": "px"` params by the reduction, in
+/// both param shapes, and leaves unitless params (even ones named like built-in pixel params) and
+/// the command's own keys alone.
+#[test]
+fn preview_scales_the_plugin_pixel_params() {
+    let id = "test.cmds.px";
+    let params = concat!(
+        r#"{"amount":{"type":"number","min":0,"max":100,"default":12,"unit":"px"},"#,
+        r#""radius":{"type":"int","min":2,"max":50,"default":10,"unit":"px"},"#,
+        r#""size":{"type":"number","min":0,"max":100,"default":50}}"#
+    );
+    Session::new().execute("plugin.install", json!({"data": b64(&wat_plugin(id, params, GREY))})).unwrap();
+    let list = Session::new().execute("plugin.list", json!({})).unwrap();
+    let me = list["plugins"].as_array().unwrap().iter().find(|p| p["id"] == id).unwrap().clone();
+    assert_eq!(me["paramsSchema"]["amount"]["unit"], "px");
+
+    // Top level (the dialog's shape): px params scaled, `size` and the command's keys untouched.
+    let mut p = json!({"id": id, "amount": 12, "radius": 10, "size": 40, "channel": 1, "__preview": true});
+    scale_for_preview(&mut p, 4);
+    assert_eq!(p, json!({"id": id, "amount": 3.0, "radius": 3, "size": 40, "channel": 1, "__preview": true}));
+    // Nested: scaled inside `params`, missing ones from their defaults.
+    let mut p = json!({"id": id, "params": {"size": 40}});
+    scale_for_preview(&mut p, 2);
+    assert_eq!(p, json!({"id": id, "params": {"amount": 6.0, "radius": 5, "size": 40}}));
+    let mut p = json!({"id": id, "params": null});
+    scale_for_preview(&mut p, 2);
+    assert_eq!(p["params"], json!({"amount": 6.0, "radius": 5}));
+    // The scaled params still run.
+    doc(8).execute("plugin.run", p).unwrap();
+    // Full resolution, an unknown plug-in or bad shapes change nothing and never panic.
+    for (mut p, k) in [
+        (json!({"id": id, "amount": 12}), 1),
+        (json!({"id": "test.cmds.none", "amount": 12}), 4),
+        (json!({"amount": 12}), 4),
+        (json!({"id": id, "params": [1]}), 4),
+        (json!([1, 2]), 4),
+    ] {
+        let before = p.clone();
+        scale_for_preview(&mut p, k);
+        assert_eq!(p, before);
+    }
+    // A value of the wrong type is kept for the run to reject.
+    let mut p = json!({"id": id, "amount": "lots", "radius": 10});
+    scale_for_preview(&mut p, 4);
+    assert_eq!(p, json!({"id": id, "amount": "lots", "radius": 3}));
+    assert!(doc(8).execute("plugin.run", p).is_err());
+
+    // The factor: radius (min 2) 10 allows 4, 5 allows 2; unitless and missing plug-ins don't limit it.
+    assert_eq!(preview_factor(&json!({"id": id, "radius": 10}), 4), 4);
+    assert_eq!(preview_factor(&json!({"id": id, "radius": 5, "size": 0.5}), 4), 2);
+    assert_eq!(preview_factor(&json!({"id": id, "params": {"radius": 3}}), 4), 1);
+    assert_eq!(preview_factor(&json!({"id": id}), 8), 5, "the default radius");
+    assert_eq!(preview_factor(&json!({"id": "test.cmds.none", "radius": 3}), 4), 4);
+    Session::new().execute("plugin.remove", json!({"id": id})).unwrap();
+}
+
 #[test]
 fn locked_layers_refuse_plugin_filters() {
     // Like built-in filters: locked pixels (or Lock All) refuse the run with no undo step.

@@ -399,3 +399,39 @@ fn card_tips_never_cover_their_size_number() {
         assert!(r.min.is_finite() && r.max.is_finite(), "{n} {size} {scale}: {r:?}");
     }
 }
+
+/// #7256: the Brushes tab's preview slider scales the grid cells and list rows; it is not the
+/// Size of the current brush.
+#[test]
+fn the_preview_slider_scales_the_previews_not_the_brush_size() {
+    for grid in [true, false] {
+        let mut sizes = Vec::new();
+        for scale in [0.5f32, 1.0, 2.0] {
+            let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+            app.ui.panels.brush_settings = true;
+            app.ui.brush_tab = 1;
+            app.ui.brushes_panel.view = if grid { BrushesView::Grid } else { BrushesView::List };
+            app.ui.brushes_panel.scale = scale;
+            let size = app.session.tools.brush.size;
+            let name = app.session.tools.presets[0].name.clone();
+            let mut h = Harness::builder().with_size(vec2(1200.0, 900.0)).build_eframe(move |cc| {
+                PhotocraftApp::setup_context(&cc.egui_ctx, crate::theme::ThemeKind::ALL[0]);
+                app
+            });
+            h.run_steps(4);
+            let r = h.get_by_role_and_label(Role::Button, &name).rect();
+            sizes.push(if grid { r.width() } else { r.height() });
+            assert_eq!(h.state().session.tools.brush.size, size, "the preview slider leaves the brush size alone");
+        }
+        assert!(sizes[0] < sizes[1] && sizes[1] < sizes[2], "grid {grid}: previews grow with the slider: {sizes:?}");
+    }
+}
+
+#[test]
+fn preview_scale_is_clamped_to_its_range() {
+    assert_eq!(list_row_height(1.0), 44.0);
+    assert_eq!(list_row_height(100.0), 88.0);
+    assert_eq!(list_row_height(f32::NAN), 44.0);
+    assert_eq!(grid_cell_width(52.0, 0.0), 26.0);
+    assert_eq!(grid_cell_width(52.0, f32::INFINITY), 52.0);
+}

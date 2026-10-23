@@ -127,10 +127,23 @@ fn main() {
         photocraft_algo::puppet::ITERATIONS,
         t.elapsed().as_secs_f64() * 1e3
     );
-    let dst: Vec<[f64; 2]> = pw.pins.iter().map(|p| p.dst).collect();
-    let t = Instant::now();
-    let _ = solver.solve(&dst, &[None; 3], PuppetMode::Normal, 4, Some(&v));
-    println!("puppet interactive re-solve (4 warm rounds): {:.2} ms", t.elapsed().as_secs_f64() * 1e3);
+    // Compare the old path-dependent preview with the command-equivalent drag solve, using
+    // changing destinations and the same cached factorization (no remeshing per event).
+    for (label, rounds, warm) in [("6 warm rounds", 6, true), ("canonical cold solve", photocraft_algo::puppet::ITERATIONS, false)] {
+        let mut previous = v.clone();
+        let mut times = Vec::new();
+        for step in 1..=60 {
+            let mut dst: Vec<[f64; 2]> = pw.pins.iter().map(|p| p.dst).collect();
+            dst[1][0] -= f64::from(step) * 10.0;
+            dst[1][1] += (f64::from(step) * 0.1).sin() * 400.0;
+            let t = Instant::now();
+            let (next, _) = solver.solve(&dst, &[None; 3], pw.mode, rounds, warm.then_some(previous.as_slice()));
+            times.push(t.elapsed().as_secs_f64() * 1e3);
+            previous = std::hint::black_box(next);
+        }
+        times.sort_by(f64::total_cmp);
+        println!("puppet drag ({label}, 60 moves): median {:.2} ms, p95 {:.2} ms, max {:.2} ms", times[30], times[56], times[59]);
+    }
     let t = Instant::now();
     let _ = render(&s, b, &solver.mesh, &v, &order, Interp::Bicubic);
     println!("puppet render 24 MP: {:.0} ms", t.elapsed().as_secs_f64() * 1e3);

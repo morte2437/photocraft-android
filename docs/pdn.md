@@ -32,8 +32,8 @@ padding, reversed chunks, old/new mode records, native saves, cancellation and m
 The GPU parity tests include the additional modes. Local real-file checks are opt-in:
 
 ```sh
-PDN_TEST_DIR=/path/to/pdn-and-png-exports cargo test -p photocraft-io --test pdn_corpus -- --ignored --nocapture
-PDN_TEST_FILE=/path/to/layered.pdn cargo test -p photocraft-engine --test pdn -- --ignored
+PDN_TEST_DIR=/path/to/pdn-and-png-exports cargo test -p photocraft-io --test it -- pdn_corpus:: --ignored --nocapture
+PDN_TEST_FILE=/path/to/layered.pdn cargo test -p photocraft-engine --test it -- pdn:: --ignored
 ```
 
 Each PDN in `PDN_TEST_DIR` needs a corresponding `.png` export with the same basename. The

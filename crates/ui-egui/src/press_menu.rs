@@ -79,6 +79,22 @@ impl PressMenu {
     }
 }
 
+/// Keep an open popup or dropdown layer above `parent` when `parent` is also in
+/// [`egui::Order::Foreground`] (a modal dialog or popover, #7113): a 1-frame trackpad tap raises
+/// both the parent modal (`pointer_pressed_on_area`) and the reopened popup (`!visible_last_frame`)
+/// in the same pass, and egui's stable `wants_to_be_on_top` sort then leaves a previously used
+/// popup behind the dialog.
+pub fn above_parent(ctx: &egui::Context, parent: egui::LayerId, child: egui::LayerId) {
+    if parent.order == child.order && parent != child {
+        ctx.set_sublayer(parent, child);
+    }
+}
+
+/// [`above_parent`] for an open popup's `Ui`.
+pub fn above_parent_ui(parent: egui::LayerId, popup_ui: &egui::Ui) {
+    above_parent(popup_ui.ctx(), parent, popup_ui.layer_id());
+}
+
 /// Shows `button`'s menu (an `egui::Popup::menu`) with press-drag-release; `content` chooses its
 /// items with [`PressMenu::item`].
 pub fn show<R>(button: &Response, content: impl FnOnce(&mut Ui, &PressMenu) -> R) -> Option<R> {
@@ -89,6 +105,9 @@ pub fn show<R>(button: &Response, content: impl FnOnce(&mut Ui, &PressMenu) -> R
     // close it again.
     let close = if button.clicked() && menu.owns_gesture(&ctx) { PopupCloseBehavior::IgnoreClicks } else { PopupCloseBehavior::CloseOnClick };
     let shown = Popup::menu(button).open_memory(open).close_behavior(close).show(|ui| content(ui, &menu)).map(|r| r.inner);
+    if shown.is_some() || Popup::is_id_open(&ctx, menu.popup) {
+        above_parent(&ctx, button.layer_id, egui::LayerId::new(egui::Order::Foreground, menu.popup));
+    }
     // This menu's gesture ends with the button (its release was handled by the items above).
     if menu.owns_gesture(&ctx) && ctx.input(|i| i.pointer.primary_released() || !i.pointer.primary_down()) {
         ctx.data_mut(|d| d.remove::<egui::Id>(gesture_id()));
@@ -149,6 +168,9 @@ impl PressCombo {
             ctx.request_repaint();
         } else if self.owns_gesture(ctx) && ctx.input(|i| i.pointer.primary_released() || !i.pointer.primary_down()) {
             ctx.data_mut(|d| d.remove::<egui::Id>(gesture_id()));
+        }
+        if Popup::is_id_open(ctx, self.popup) {
+            above_parent(ctx, button.layer_id, egui::LayerId::new(egui::Order::Foreground, self.popup));
         }
     }
 }

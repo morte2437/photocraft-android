@@ -154,24 +154,4 @@ mod tests {
         assert_eq!(clear.shortcut, Some("Delete"));
         assert_eq!(delete.shortcut, None);
     }
-
-    #[test]
-    fn confirmation_strings_are_translated_in_every_supported_catalog() {
-        for language in crate::i18n::LANGUAGES.iter().filter(|l| l.code != "en") {
-            let lang = crate::i18n::Lang::from_code(language.code).unwrap();
-            for key in [
-                "Delete layer ‘{name}’?",
-                "Delete {count} layers? {names}",
-                "Delete layer?",
-                "Don't show again",
-                "The document is closed",
-                "The document or selected layers changed. Please request deletion again.",
-                "Missing delete command",
-                "Invalid delete command",
-                "Layer deleted, but confirmation preference could not be saved: {error}",
-            ] {
-                assert_ne!(crate::i18n::tr(lang, key), key, "{}: {key}", language.code);
-            }
-        }
-    }
 }

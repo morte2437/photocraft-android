@@ -4,7 +4,8 @@
 //!   web), optional system fonts from platform directory scans plus Fontconfig's Linux file list,
 //!   user font data, TrueType collections, PostScript-name lookup. Builds made with the optional
 //!   craft-fonts input
-//!   (`CRAFT_FONTS_DIR`, see [`craft_fonts`]) also carry its Japanese fonts as fallbacks.
+//!   (`CRAFT_FONTS_DIR`, see [`craft_fonts`]) also carry its fonts of every script (a single-face
+//!   file under its manifest family name); the ones the fallback lists name are fallbacks.
 //! * [`layout`]: shaping and line layout with [parley] (HarfRust shaping, bidi, line breaking),
 //!   point and paragraph (box) text, per-run styles, Photoshop leading/indent/spacing rules.
 //! * [`render`]: anti-aliased rasterization (exact-area accumulation, f32 coverage) into a

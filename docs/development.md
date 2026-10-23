@@ -39,14 +39,15 @@ cargo run --release -p photocraft -- path/to/image.psd      # desktop app
 cargo run --release -p photocraft -- --control 7878 --control-token-file .private/control.token \
   --automation-read-root work --automation-write-root work
 cargo test --workspace                                     # everything
-cargo xtask ci                                             # fmt + clippy + tests + layers + wasm
+cargo xtask test                                           # tests (nextest when installed) + doctests
+cargo xtask ci                                             # fmt + clippy + tests + doctests + layers + wasm
 cargo xtask stats                                          # tests and lines per crate
 cargo xtask parity                                         # Photoshop menu coverage -> docs/parity-checklist.md
 ```
 
 Image code is slow at `opt-level 0`, so the workspace profile builds dependencies at `opt-level 2`. Use `--release` for anything interactive. Test builds compile ui-egui itself at `opt-level 0` (`[profile.test.package.photocraft-ui-egui]` in `Cargo.toml`): it was one of the biggest test-build units, and its tests run no heavy pixel code of their own.
 
-The dev profile builds with `debug = "line-tables-only"`: panic backtraces keep file and line, and test binaries link about twice as fast. To inspect local variables in a debugger, build with `CARGO_PROFILE_DEV_DEBUG=true`.
+The dev profile builds PhotoCraft's crates with `debug = "line-tables-only"` and dependencies with no debug info: panic backtraces keep file and line in PhotoCraft code, and test binaries link about twice as fast. To inspect local variables in a debugger, build with `CARGO_PROFILE_DEV_DEBUG=true`.
 
 ### Faster test loops
 
@@ -54,12 +55,43 @@ Most of a `cargo test` run is linking test binaries and running them one after a
 
 ```sh
 cargo test -p <crate> --lib --tests        # skip examples and doctests (ui-egui has 11 examples)
-cargo test -p <crate> --test <file>        # one integration-test file
+cargo test -p <crate> --test it <module>:: # one integration-test module (tests/it/<module>.rs)
 cargo nextest run --workspace              # parallel across binaries (cargo install cargo-nextest --locked)
 cargo test --doc --workspace               # nextest does not run doctests
 ```
 
-[cargo-nextest](https://nexte.st) runs each test in its own process. `.config/nextest.toml` puts the GPU tests (`photocraft-gpu`, and ui-egui's integration and canvas/GPU tests) in a group of at most 4 at a time, because each process opens its own wgpu device and the in-process `gpu_lock()` no longer serializes them. On a 32-thread Windows machine the full workspace went from 297 s (`cargo test`) to about 120 s (#2204). Ignored tests run with `cargo nextest run --run-ignored only`. CI runs it with `--profile ci` (fail-fast, a 10-minute hang timeout), plus `cargo test --doc` for the doctests (#6117); a full `cargo test` stays the final check before a PR.
+[cargo-nextest](https://nexte.st) runs each test in its own process. `.config/nextest.toml` puts the GPU tests (`photocraft-gpu`, and ui-egui's integration and canvas/GPU tests) in a group of at most 4 at a time, because each process opens its own wgpu device and the in-process `gpu_lock()` no longer serializes them. On a 32-thread Windows machine the full workspace went from 297 s (`cargo test`) to about 120 s (#2204). Ignored tests run with `cargo nextest run --run-ignored only`. The longest sweeps (`photocraft-testkit`'s `Sweep`) run a quarter of their cases, a different quarter each UTC day; `PHOTOCRAFT_FULL_SWEEP=1` runs all of them, and `PHOTOCRAFT_SWEEP_PART=<n>` replays the part a failing run printed. CI runs it with `--profile ci` (fail-fast, a 10-minute hang timeout), plus `cargo test --doc` for the doctests (#6117); `PHOTOCRAFT_FULL_SWEEP=1 cargo test --workspace` stays the final check before a PR.
+
+### Shortcut capture without a GPU, and native snapshots
+
+The ordinary `shortcut_capture_tests` check modifier capture, conflicts, restored bindings and
+visible labels without starting a GPU renderer. `captured_shortcut_gpu_snapshots` repeats the Ctrl+K
+capture assertions at 1x and 2x with a native renderer when `PHOTOCRAFT_SHORTCUT_SNAPSHOTS` names
+an output directory. Its `gpu` test name selects the existing Nextest GPU group. It also holds
+`photocraft_testkit::gpu_lock`, requires successful rendering and
+checks physical image dimensions before saving both PNGs. As with the Camera Raw localization
+snapshots, pixel appearance is reviewed from the saved images rather than a golden-image test.
+
+On a native host with a working wgpu adapter, capture the two images into a fresh directory:
+
+```sh
+(
+    set -eu
+    shortcut_snapshots="$(mktemp -d)"
+    PHOTOCRAFT_SHORTCUT_SNAPSHOTS="$shortcut_snapshots" cargo test -p photocraft-ui-egui --lib \
+        prefs_ui::shortcut_capture_tests::captured_shortcut_gpu_snapshots -- --exact
+    test -s "$shortcut_snapshots/ctrl-k-1x.png"
+    test -s "$shortcut_snapshots/ctrl-k-2x.png"
+    printf 'Review the shortcut row and conflict message in %s\n' "$shortcut_snapshots"
+)
+```
+
+The file checks intentionally reject a successful zero-test selection. Keep the fresh directory
+until both scales have been inspected: the row must show the captured shortcut without a stray ControlLeft
+key name, and the conflict message must remain readable. Rendering and file-write failures fail
+the opted-in test; an unset variable leaves the ordinary behavior tests available without a GPU.
+After review, remove only the two generated PNGs and their owned temporary directory. The same
+Rust test and variable work on Windows with the native shell's environment-variable syntax.
 
 ## Fonts (craft-fonts)
 
@@ -78,15 +110,17 @@ CRAFT_FONTS_DIR="$PWD/../craft-fonts" cargo test --workspace     # runs the Japa
 - **UI:** the Japanese fonts (BIZ UDPGothic Regular first) are the first Japanese fallback in the lazy CJK loader (`crates/ui-egui/src/cjk_fonts.rs`), ahead of the system Japanese fonts and in the same locale script order, appended last to every egui family with the usual baseline alignment.
 - **Type tool:** the text engine registers them in `FontDb::new` (so also with no system fonts) and puts them first in the Japanese slot of the locale-ordered fallback list: BIZ UDPGothic for sans runs, Shippori Mincho / BIZ UDMincho for serif runs.
 - **Web:** the wasm32 build never embeds craft-fonts, even with `CRAFT_FONTS_DIR` set: measured on 2026-10-06, the UI face alone took the release wasm from 24.19 MB to 28.87 MB, over the 24 MiB gate in `packaging/web/package.sh`. Instead it loads fonts served next to it, on demand: `fonts/manifest.txt` beside `index.html`, in craft-fonts' manifest format (`crates/text/src/served.rs`; hosting: `packaging/web/README.md` › Fonts). `PHOTOCRAFT_WEB_FONTS_DIR="$PWD/../craft-fonts" packaging/web/package.sh` puts craft-fonts there. Served families are in the font menus and are fetched when picked or when a document's text needs them; they aren't in the script fallback list yet, so Japanese text set in a Latin font still needs a Japanese font picked (#1615).
-- Tests that need the fonts skip with a message when `CRAFT_FONTS` is empty; CI runs them again with `CRAFT_FONTS_DIR` set, in its own Linux job (`test (with craft-fonts)`). Desktop releases check out craft-fonts at the commit pinned in `.github/workflows/release.yml` (`CRAFT_FONTS_REF`; ci.yml pins the same commit) and ship each font's `OFL.txt` as `OFL-<family>.txt`.
+- Tests that need the fonts skip with a message when `CRAFT_FONTS` is empty; CI's Linux gate builds with `CRAFT_FONTS_DIR` set and `CRAFT_FONTS_REQUIRED=1`, so they run there. Desktop releases check out craft-fonts at the commit pinned in `.github/workflows/release.yml` (`CRAFT_FONTS_REF`; ci.yml pins the same commit) and ship each font's `OFL.txt` as `OFL-<family>.txt`.
 
 ## One instance per user
 
-On Windows and Linux the first PhotoCraft holds an exclusive lock on `instance.lock` in the config directory and listens on a loopback port named in `instance.json` (with a fresh 256-bit token; the file is 0600 on Unix). A later launch hands its file arguments there and exits, so files opened from Explorer or a file manager become tabs in the running window (#3708). The primary answers `ok` only once its UI has taken the files; a launch that gets anything else (the primary is starting, hung or closing) keeps retrying the lock for up to 10 s, becoming the primary itself once the old one lets go, and then starts a separate instance, so a file is never acknowledged and lost. When the event loop ends (and before the CPU-compatibility relaunch) the primary refuses new files and frees the lock. It applies only with the per-user settings folder: a portable copy (`PhotoCraftData` beside the executable) or `PHOTOCRAFT_CONFIG_DIR` may be shared between users, so those launches run separately. So do `--new-instance` (or `PHOTOCRAFT_NEW_INSTANCE=1`), every `--control` launch, and launches given a per-process option (`--safe-gpu`, `--present-mode`, `--frame-latency`, `--stroke-trace`, `--in-window-menus`, `--automation-*-root`). A `cargo run` while an installed PhotoCraft is running forwards to it: pass `--new-instance` or set `PHOTOCRAFT_CONFIG_DIR`. macOS gets the same behaviour from LaunchServices (`apple_events.rs`). On native Wayland the running window can't bring itself forward (that takes the launcher's `XDG_ACTIVATION_TOKEN`, and winit 0.30 can't activate an existing window with one), so it asks for attention instead and the taskbar highlights it; X11, XWayland and Windows bring it to the front. Flatpak needs its own follow-up (#1540). Code: `apps/photocraft/src/single_instance.rs`.
+On Windows and Linux the first PhotoCraft holds an exclusive lock on `instance.lock` in the config directory and listens on a loopback port named in `instance.json` (with a fresh 256-bit token; the file is 0600 on Unix). Inside a Flatpak it listens on a Unix socket instead, `$XDG_RUNTIME_DIR/app/<app id>/instance.sock` (0600), because Flatpak isolates each sandbox's network namespace, loopback included, unless the app is granted `--share=network`, while that runtime directory is shared by all sandboxes of the app (#1540); the lock, token and protocol are the same. A later launch hands its file arguments there and exits, so files opened from Explorer or a file manager become tabs in the running window (#3708). The primary answers `ok` only once its UI has taken the files; a launch that gets anything else (the primary is starting, hung or closing) keeps retrying the lock for up to 10 s, becoming the primary itself once the old one lets go, and then starts a separate instance, so a file is never acknowledged and lost. When the event loop ends (and before the CPU-compatibility relaunch) the primary refuses new files and frees the lock. It applies only with the per-user settings folder: a portable copy (`PhotoCraftData` beside the executable) or `PHOTOCRAFT_CONFIG_DIR` may be shared between users, so those launches run separately. So do `--new-instance` (or `PHOTOCRAFT_NEW_INSTANCE=1`), every `--control` launch, and launches given a per-process option (`--safe-gpu`, `--present-mode`, `--frame-latency`, `--stroke-trace`, `--in-window-menus`, `--automation-*-root`). A `cargo run` while an installed PhotoCraft is running forwards to it: pass `--new-instance` or set `PHOTOCRAFT_CONFIG_DIR`. macOS gets the same behaviour from LaunchServices (`apple_events.rs`). On native Wayland the running window can't bring itself forward (that takes the launcher's `XDG_ACTIVATION_TOKEN`, and winit 0.30 can't activate an existing window with one), so it asks for attention instead and the taskbar highlights it; X11, XWayland and Windows bring it to the front. Code: `apps/photocraft/src/single_instance.rs`.
 
 ## Graphics startup and device loss
 
-`--safe-gpu` starts with the CPU renderer for one launch (no GPU canvas; a software adapter for the window where the platform has one: WARP on Windows, llvmpipe over GL on Linux). Before creating the wgpu device the app writes and locks `gpu-starting.json` in the config directory; it clears it once the first frames have rendered. A launch that finds an unlocked marker knows the previous start died inside the graphics driver (#4) and uses the next safer backend (Windows: Vulkan → DX12 → CPU; Linux: Vulkan → GL → CPU; macOS: Metal → CPU), remembering a working hardware backend in `performance.gpuBackend` (Preferences › Performance › GPU Backend, with **Reset GPU Backend**). CPU recovery is temporary until **Keep Using CPU** is chosen in the recovery dialog; dismissing the dialog or quitting without a choice preserves the previous GPU preference (#3483). With `auto`, Intel adapters on Windows use DX12. Help › System Info shows the adapter, backend, driver and fallback state.
+`--safe-gpu` starts with the CPU renderer for one launch (no GPU canvas; a software adapter for the window where the platform has one: WARP on Windows, llvmpipe over GL on Linux). Before creating the wgpu device the app writes and locks `gpu-starting.json` in the config directory; it clears it once the first frames have rendered. A launch that finds an unlocked marker knows the previous start died inside the graphics driver (#4) and uses the next safer backend (Windows: Vulkan → DX12 → CPU; Linux: Vulkan → GL → CPU; macOS: Metal → CPU), remembering a working hardware backend in `performance.gpuBackend` (Preferences › Performance › GPU Backend, with **Reset GPU Backend**). CPU recovery is temporary until **Keep Using CPU** is chosen in the recovery dialog; dismissing the dialog or quitting without a choice preserves the previous GPU preference (#3483). With `auto`, Intel and Qualcomm (Windows on ARM) adapters on Windows use DX12; when DXGI lists an Intel adapter, the app creates its wgpu instance with DX12 and GL only, so the first start doesn't load the Intel Vulkan driver, and a discrete GPU beside the Intel one also runs on DX12. Help › System Info shows the adapter, backend, driver and fallback state.
+
+On Linux, on a machine with several GPUs (say an eGPU, a discrete laptop GPU and an iGPU), `auto` takes the first discrete adapter the driver lists; choose another in Preferences › Performance › Advanced › GPU adapter (`performance.gpuAdapter`, Linux; a case-insensitive piece of the adapter's name, empty is automatic), or for one launch with `PHOTOCRAFT_GPU_ADAPTER=nvidia`. An adapter that is missing or can't present to the window falls back to the automatic choice, with a note in System Info.
 
 On DX12 the shader compiler is FXC (`d3dcompiler_47.dll`, part of Windows), or a `dxcompiler.dll` placed beside `photocraft.exe`, loaded by its full path. wgpu's default looks `dxcompiler.dll` up by name, which reaches the current directory and `PATH` and loaded other programs' incompatible builds (#712).
 
@@ -96,6 +130,8 @@ change the next launch's graphics backend. Renderer initialization errors and dr
 keep the marker for recovery.
 
 If the device is lost while running (#243), every GPU entry point checks the device's health flag first, the canvas switches to the CPU compositor for the rest of the session and a notice says "GPU device was lost; using the CPU renderer." `ui.gpu.simulateLoss` triggers this path from the control channel.
+
+The window itself draws with the same device (or, with the CPU canvas, one it watches), and nothing can draw it once wgpu reports that device lost, for example after a driver reset while the PC slept (#3438). A frame with shapes then panicked inside egui-wgpu ("Failed to create staging buffer", #1215). A frame without any froze the window, and the close button opened an unsaved-changes prompt nobody could see. `gpu_status::check_window` polls the device each frame. Once wgpu reports it lost, frames draw nothing, every unsaved document is written to crash recovery (`Services::flush_autosaves` waits for the writes), and the app closes; the next launch reopens them. `ui.gpu.simulateLoss {destroy: true}` destroys the real device to test this path.
 
 ## Logs
 
@@ -116,9 +152,11 @@ By default PhotoCraft's own crates log at `info` and everything else at `warn`. 
 | `PHOTOCRAFT_AUTOMATION_WRITE_ROOT` | Desktop app only: automation write root. Headless CLI modes require the `--automation-write-root` flag |
 | `PHOTOCRAFT_CPU_CANVAS=1` | Force the CPU canvas path instead of the wgpu shader canvas |
 | `PHOTOCRAFT_NATIVE_WAYLAND=1` | Linux: stay on native Wayland when a pen is attached (by default the window then opens through Xwayland, because Wayland gives the app no pen input; #639). A pen is an input device with `BTN_TOOL_PEN` and the `ABS_X`/`ABS_Y` axes; virtual keyboards that claim every key are not pens (#1072) |
+| `PHOTOCRAFT_GPU_ADAPTER=nvidia` | Linux: use the graphics adapter whose name contains this (case-insensitive); overrides `performance.gpuAdapter` for one launch |
 | `WGPU_BACKEND=dx12` | Pick the wgpu backend(s) (`vulkan`, `dx12`, `metal`, `gl`); overrides `performance.gpuBackend` and the startup fallback |
 | `WGPU_DX12_COMPILER=fxc` | DX12 shader compiler (`fxc`, `dxc`, `auto`); `dxc` and `auto` look `dxcompiler.dll` up through the DLL search path |
 | `PHOTOCRAFT_GPU_TILE=2048` | Force GPU canvas tiling (tests tile seams) |
+| `PHOTOCRAFT_TEXEL_GUARD=1` (or `=0`) | Force on (off) uploading egui's fully transparent texels as alpha 1/255. On by default only for Intel Iris Xe on DX12, whose driver shows stale memory in all-zero texture blocks: red squares in brush previews and tool icons (`ui-egui/src/texel_guard.rs`; check a GPU with `cargo run --release -p photocraft-gpu --example zero_block_probe -- dx12 400`) |
 | `PHOTOCRAFT_FX_NOCACHE=1` | Bypass the CPU layer-effect map cache (`compose::effect_maps`) |
 | `PHOTOCRAFT_CPU_COMPOSE=1` | Keep the wgpu canvas but composite on the CPU (compare GPU vs CPU renders, e.g. with the snapshot example) |
 | `PHOTOCRAFT_LOCALE` | Override Auto's native UI language for this launch; unsupported tags use English. See [system language detection](localization.md#first-launch-and-system-language). |
@@ -209,6 +247,7 @@ cargo run -p photocraft-cli -- commands --filter blur                    # the c
 - `manifest.json`: the versioned document tree, with migrations in `format/src/migrate.rs`.
 - `tiles/<blake3>.zst` and `blobs/<blake3>.zst`: zstd-compressed objects, content-addressed by the BLAKE3 hash of their uncompressed bytes.
 - `thumb.png` and `composite/preview.png`: previews.
+- `save.lock` (directory bundles only): an empty file a save holds an OS file lock on, so two writers or processes saving one bundle take turns (#4957).
 
 Keep one `PcraftWriter` per open document: re-saving then only compresses and writes tiles that changed. Directory bundles verify objects on first encounter in a folder; later saves reuse them while their file size and modification time are unchanged, and re-verify changed objects, repair missing or damaged objects, and garbage-collect unreferenced ones. `format::Autosaver` writes snapshots into a recovery directory on a background thread. `list_recovery` / `recover` / `discard_recovery` implement crash recovery, and `format::RecoveryStore` is the lifecycle the desktop app uses: new documents autosave under per-launch keys (document ids restart every launch, so they never overwrite an older entry), and a recovered document adopts the entry it came from. That entry is replaced in place by the next autosave and removed only when the document is saved or closed, never just because it was recovered, so a second crash loses nothing. The web build has no crash recovery (no autosave services).
 
@@ -265,7 +304,7 @@ PSD placed layer, the `Idnt` uuid its duplicates share), shared contents (`smart
 every copy of the same contents has, and the number of `instances`; Replace Contents changes them
 all and lists them in its result), type
 text, adjustment settings, channels and history, so agents can verify what they did without a
-screenshot. `crates/automation/tests/agent_tasks.rs` is the reference: ten realistic edit tasks
+screenshot. `crates/automation/tests/it/agent_tasks.rs` is the reference: ten realistic edit tasks
 (title card, colour grade, undo/redo, editable smart blur, masks, saved selections, align,
 capability-scoped export, resize/crop, CMYK + native save) driven purely over MCP.
 
@@ -303,7 +342,11 @@ the live command registry (`menus::is_live`) and rewrites [`docs/parity-checklis
 `crates/ui-egui/src/i18n/mod.rs` registry, in stable language-code order. Its English-key set is
 derived from UI `tl!` literals, the menu catalog and UI command table, and menu command labels in
 the engine source. Catalog rows are validated for malformed and duplicate keys; unused legacy
-translations do not affect the denominator. Unregistered locale TSV files are ignored.
+translations do not affect the denominator. Unregistered locale TSV files are ignored. After the
+counts it lists, per language, the source keys the catalog lacks (one line for a language with
+none). A missing translation shows in English and fails nothing: `cargo xtask ci` runs the report
+as its last step so the list appears in the log, and only prints a warning if the report itself
+can't run.
 
 ## Testing strategy
 
@@ -357,7 +400,7 @@ cargo xtask perf --update-baseline   # also write perf/baseline.json from this r
 - `perf/baseline.json`: the numbers the scorecard shows, written only by
   `cargo xtask perf --update-baseline`, with the machine (CPU, RAM, GPU adapter, OS), its machine
   class, commit, date and load average.
-- `crates/io/tests/corpus.rs`: the corpus floors (every `Source { .. }` constant).
+- `crates/io/tests/it/corpus.rs`: the corpus floors (every `Source { .. }` constant).
 - The prefs audit: `Preferences` fields that no code reads (target 0, #204), plus counts taken
   from the tree (never-crash attribute coverage, `docs/parity-checklist.md`).
 
@@ -372,6 +415,40 @@ against a baseline from the same machine class and mode, or when a bench fails. 
 different machine classes are never compared, and `--quick` numbers are only compared with a
 quick baseline. Machines that run other work give noisy numbers: check the load average in the
 summary before trusting a regression, and record it next to any number you quote.
+
+**Measuring one scenario.** A full run is tens of minutes; one row is seconds once its bench is
+built. `xtask perf`'s own flags are `--quick`, `--update-baseline`, `--threshold`, `--bench`
+(repeatable, one bench per name), `--skip-build` and `--reuse`; it has no way to pick a single
+*row*. The bench binary takes those filters itself — `--only <substring>` (row names are matched
+with `contains`), `--group <name>` and `--reps N` — so to time one row run the bench directly:
+
+```sh
+cargo run --release -p photocraft-ui-egui --example perf_scenarios -- \
+  --only "Select > Modify > Smooth" --json target/perf/p26.json
+```
+
+That writes the row's own report and stops there: it does **not** evaluate the budget, so read
+`p50_ms`/`p95_ms`/`max_ms` out of the JSON yourself. Use `cargo xtask perf --bench <name>` when you
+want the verdict, the merged `results.json`/`summary.md` and the regression check.
+
+Read the sample count before quoting a percentile. `--reps` defaults to 7 in `--quick` and 15
+otherwise, it is per bench, and some rows cap it themselves (the `#211` algorithm rows use
+`b.reps.min(5)`); percentiles are nearest-rank, so **at n ≤ 5 the "p95" is simply the maximum**. A
+budgeted scenario the baseline has no row for fails the run (`missing` is in `Status::fails()`),
+so add the `[[scenario]]` and its baseline row together.
+
+**A red `cargo xtask perf` is not always your budget.** The committed baseline carries
+`failed.P12` (a wgpu panic writing `pc_compose_uniforms`), so the command exits non-zero before
+any of this is about your change: read the row, not the exit code. And do not read the committed
+verdicts as a clean-machine measurement: `perf/baseline.json` was written on 2026-10-05 at a load
+average near 225 on a 14-core Apple M4 Pro, which is why P26 and P27 are over budget there while
+`perf/budgets.toml` records 20–45 ms p95 for P26 on a clean 16-core machine (`enforce = false`
+until CI cores are measured). Quote a number with the load average and the machine class beside it.
+
+**Flipping `enforce`.** `enforce = true` makes the nightly fail whenever that budget breaks, and a
+baseline file belongs to exactly one machine class. Flip the row and refresh the baseline on the
+nightly's own class in the same change, or `docs/scorecard.md` turns "BUDGET BROKEN" from numbers
+nobody measured on that machine.
 
 **Adding a scenario.** Add a row to a bench (keep its name stable: it is the key), give the
 bench `--json` support through `photocraft_testkit::perf::{row, report, write_report}`, then add a
@@ -468,7 +545,13 @@ recorded) when adding an event to the table:
 
 ```sh
 cargo run -p photocraft-psd --example atn_dump -- "Default Actions.atn"
+cargo run -p photocraft-psd --example atn_roundtrip -- "Default Actions.atn"   # parse, write, diff
 ```
+
+The real-file oracles are `corpus/atn/` (16 sets from seven public repositories, see *Test
+corpora*): `photocraft-psd`'s corpus test parses every file and rewrites it byte for byte;
+`photocraft-engine`'s loads, saves and reloads every set and caps the steps that still have no
+PhotoCraft equivalent.
 
 Events outside the table load as `actions.photoshopStep` steps that keep the descriptor
 verbatim (so Save Actions writes them back) and fail at playback with the step's Photoshop name.
@@ -504,11 +587,13 @@ against committed **sha256 manifests**. All pins are in one place:
 | Directory | What | Source | Manifest |
 |---|---|---|---|
 | `corpus/photoshop/` | 256 PSDs we authored with Photoshop: smart filters, layer-style effect shapes, the text engine, adjustments in every mode and depth | https://github.com/storytold/photocraft-corpus (ours, MIT OR Apache-2.0) | `xtask/photoshop-corpus.sha256` |
+| `corpus/gimp/` | 14 XCF files written by GIMP 3.2.6 with GIMP's merged rendering of each as a PNG (28 files), the oracles of the XCF reader | https://github.com/storytold/photocraft-corpus (ours, MIT OR Apache-2.0; its own pin) | `xtask/gimp-corpus.sha256` |
 | `corpus/psd/` | 170 small psd-tools and ag-psd files, the mix most PSD tests use | psd-tools and ag-psd upstreams (MIT) | `xtask/psd-corpus.sha256` |
 | `corpus/psd-tools/` | the complete psd-tools test set (309 files) | psd-tools upstream (MIT) | `xtask/psd-tools-corpus.sha256` |
 | `corpus/heif/` | 9 small HEIC/HEIF files (checkerboards, RGB strips, a grid-tiled photo with EXIF/XMP, each with Apple's decode as `.ref.png`; a 10-bit RGBA file with its source PNG), for the `heif` feature | heic-rs (MIT OR Apache-2.0) and pillow-heif (BSD-3-Clause) upstreams | `xtask/heif-corpus.sha256` |
 | `corpus/exr/` | the 5 deep OpenEXR test images (scanline deep data with half colour and u32 ID channels; 2.3 MB), checked against the ID manifests of their upstream sidecars | OpenEXR upstream at v3.5.2 (BSD-3-Clause) | `xtask/exr-corpus.sha256` |
 | `corpus/affinity/` | 21 public Affinity documents and the 18 Affinity 3 samples for #1606, with exported PNG references | vector-art and affinity-samples (CC0), AFDesignLoad, Jac21/Branding and AssetStoreTemplate (MIT) upstreams | `xtask/affinity-corpus.sha256` |
+| `corpus/atn/` | 16 Photoshop Actions sets from seven public repositories (frequency separation, adjustments, Save for Web, generative workflows…), the real-file oracles of the `.atn` parser and import | sbaril, bjango, BKWLD, atntools, trimmer, alpha-utility, gif-creator upstreams (MIT, BSD, Unlicense) | `xtask/atn-corpus.sha256` |
 | `corpus/pngsuite/` | PngSuite | schaik.com release archive (public domain) | (fixed archive) |
 
 ```sh
@@ -543,13 +628,13 @@ scripts/fetch-corpus.sh            # the same as cargo xtask corpus --all
   and push there.
 - **Consuming copy:** `corpus/photoshop/` here. It is a plain directory: the pinned snapshot
   (downloaded as the codeload tarball of the pinned commit, then verified).
-- **Local mode:** `cargo xtask corpus --photoshop --local` copies `photoshop/` from
+- **Local mode:** `cargo xtask corpus --photoshop --local` copies `photoshop/` (and `--gimp --local` `gimp/`) from
   `../photocraft-corpus` (or `PHOTOCRAFT_CORPUS_REPO=<path>`) instead of downloading. It warns when
   the clone's HEAD isn't the pin or its files differ from the manifest. Use it to test regenerated
   files before pushing: `cargo xtask test-corpus --local` copies them and runs every corpus test.
 - **Bumping the pin:** commit and push in photocraft-corpus, then in a PR here set
-  `PHOTOCRAFT_CORPUS_COMMIT` in `corpus_pins.rs`, run
-  `cargo xtask corpus --photoshop --update-manifest`, commit the manifest diff, run
+  `PHOTOCRAFT_CORPUS_COMMIT` in `corpus_pins.rs` (`PHOTOCRAFT_CORPUS_GIMP_COMMIT` for `gimp/`), run
+  `cargo xtask corpus --photoshop --update-manifest` (or `--gimp --update-manifest`), commit the manifest diff, run
   `cargo xtask test-corpus`, and raise floors that improved.
 - **Not a submodule or a subtree:** a subtree would put the binaries back into this repository's
   history, and submodules cause init and detached-HEAD friction for every contributor. A pin plus a
@@ -565,12 +650,12 @@ per source with its own floors: `corpus/psd`, the psd-tools set (also a truncati
 over every file that must never panic) and our Photoshop set `corpus/photoshop` (per-feature-group
 totals: `smart-filters`, `effects`, `text`, `adjustments/<mode><bits>`). Smart objects and type
 layers composite Photoshop's cached pixels there; `cargo xtask test-corpus -p engine -- --nocapture`
-(`crates/engine/tests/photoshop_oracles.rs`) re-renders them with our smart-filter stack and text
+(`crates/engine/tests/it/photoshop_oracles.rs`) re-renders them with our smart-filter stack and text
 engine and is the failure map for both. A panic is reported as `CRASH` and fails the run. Files without a real merged image (Maximize Compatibility off)
 are judged against their embedded thumbnail instead (`PASS (thumbnail)`, a strict low-resolution
-check); a file only SKIPs when it has no oracle at all. Raise the floors in `crates/io/tests/corpus.rs` when they
+check); a file only SKIPs when it has no oracle at all. Raise the floors in `crates/io/tests/it/corpus.rs` when they
 improve; never lower them. Synthetic reproductions of corpus findings live in
-`crates/io/tests/corpus_regressions.rs` (corpus files are never committed). To dig into one file:
+`crates/io/tests/it/corpus_regressions.rs` (corpus files are never committed). To dig into one file:
 
 ```sh
 cargo run --release -p photocraft-io --example oracle_diff -- corpus/psd/<file>.psd 0 png /tmp/diff.png

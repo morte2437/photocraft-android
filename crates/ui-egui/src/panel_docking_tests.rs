@@ -561,7 +561,9 @@ fn legacy_dock_width_is_consumed_by_custom_renderer_and_clamped_to_existing_rang
     app.run("window.panel.float", json!({"panel":"properties"})).unwrap();
     let mut h = harness(app, vec2(1280.0, 800.0));
     let ctx = h.ctx.clone();
-    for (requested, expected) in [(410.0, 410.0), (900.0, 520.0), (20.0, 250.0)] {
+    // A 1280-point window: the dock may take all but 400 points (#7896), so 700 is no longer
+    // cut to 520.
+    for (requested, expected) in [(410.0, 410.0), (700.0, 700.0), (900.0, 880.0), (20.0, 250.0)] {
         assert_eq!(control_set(h.state_mut(), &ctx, json!({"dockWidth":requested}))["ok"], true);
         h.run_steps(2);
         let state = egui::containers::panel::PanelState::load(&h.ctx, egui::Id::new("shared-panel-dock")).unwrap();
@@ -674,6 +676,25 @@ fn customized_panel_menus_and_rail_remain_reachable_after_float_and_restore() {
 }
 
 #[test]
+fn actions_panel_menu_includes_load_and_save_actions() {
+    let mut ready = false;
+    let mut menu = Harness::builder().build_ui_state(
+        move |ui, app: &mut PhotocraftApp| {
+            if !ready {
+                PhotocraftApp::setup_context(ui.ctx(), crate::theme::ThemeKind::ProMedium);
+                ready = true;
+            }
+            panel_menu(app, ui, "actions");
+        },
+        self::app(),
+    );
+    menu.run_steps(2);
+    assert!(menu.query_all_by_label("Load Actions…").count() > 0);
+    assert!(menu.query_all_by_label("Save Actions…").count() > 0);
+    assert!(menu.query_all_by_label("New Action…").count() > 0);
+}
+
+#[test]
 fn custom_workspace_saves_shared_layout_and_timeline_without_embedding_flags() {
     let mut app = app();
     app.run("window.panel.float", json!({"panel":"properties"})).unwrap();
@@ -767,4 +788,14 @@ fn native_tab_reorder_stays_native_until_drag_crosses_the_strip() {
     let layers = tabs.iter().position(|(_, label)| *label == "Layers").unwrap();
     let channels = tabs.iter().position(|(_, label)| *label == "Channels").unwrap();
     assert!(channels < layers, "upstream native reorder remains effective");
+}
+
+/// #7896: the dock's widest is the window less what the toolbar and the canvas keep, never
+/// below the old 520 points, so a wide window allows a two-column dock.
+#[test]
+fn the_dock_can_be_as_wide_as_the_window_allows() {
+    for (window, max) in [(2560.0, 2160.0), (1280.0, 880.0), (800.0, 520.0), (f32::NAN, 520.0)] {
+        let range = crate::panels::dock_width_range(window);
+        assert_eq!((*range.start(), *range.end()), (crate::panels::DOCK_MIN_WIDTH, max), "{window}");
+    }
 }

@@ -34,6 +34,13 @@ pub fn sets_runtime_icon(exe: Option<&std::path::Path>) -> bool {
     !(cfg!(target_os = "macos") && exe.is_some_and(in_app_bundle))
 }
 
+/// Value for [`egui::ViewportBuilder::with_icon`]: [`window_icon`] when [`sets_runtime_icon`]
+/// is true; otherwise [`egui::IconData::default`] so eframe does not substitute its own icon
+/// on the Dock after the window opens (#7253).
+pub fn viewport_icon(exe: Option<&std::path::Path>) -> egui::IconData {
+    if sets_runtime_icon(exe) { window_icon() } else { egui::IconData::default() }
+}
+
 /// Whether `exe` is an app bundle's executable: `…/Name.app/Contents/MacOS/binary`.
 fn in_app_bundle(exe: &std::path::Path) -> bool {
     let name = |p: Option<&std::path::Path>| p.and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned());
@@ -78,6 +85,19 @@ mod tests {
         assert!(sets_runtime_icon(None));
         assert!(sets_runtime_icon(Some(Path::new("/usr/bin/photocraft"))));
         assert_eq!(sets_runtime_icon(Some(Path::new("/Applications/PhotoCraft.app/Contents/MacOS/photocraft"))), !cfg!(target_os = "macos"));
+    }
+
+    /// #7253: omitting `with_icon` made eframe paint its default glyph on the Dock once the window loaded.
+    #[test]
+    fn viewport_icon_blocks_eframe_default_when_runtime_icon_is_skipped() {
+        use std::path::Path;
+        let bundled = Some(Path::new("/Applications/PhotoCraft.app/Contents/MacOS/photocraft"));
+        if sets_runtime_icon(bundled) {
+            let icon = viewport_icon(bundled);
+            assert!(icon.width >= 256 && icon.width == icon.height);
+        } else {
+            assert_eq!(viewport_icon(bundled), egui::IconData::default());
+        }
     }
 
     #[test]

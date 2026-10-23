@@ -236,6 +236,60 @@ pub fn combine_surfaces(a: &Surface, b: &Surface, area: Rect, f: impl Fn(f32, f3
     out
 }
 
+/// [`combine_surfaces`] for an `f` that keeps `a` wherever `b` reads 0 (Add, Subtract), visiting
+/// only `b`'s tiles within `area`: the rest of `a` (its other tiles and its untouched value) is
+/// kept as it is, so painting a thin stroke across a huge canvas costs the tiles it paints, not
+/// the canvas (#8783). Falls back to [`combine_surfaces`] over `area` for other inputs.
+pub fn combine_sparse(a: &Surface, b: &Surface, area: Rect, f: impl Fn(f32, f32) -> f32) -> Surface {
+    let gray = PixelFormat::GRAY8;
+    let lut: Vec<u8> = (0..=u16::MAX).map(|i| encode8(f(decode8((i >> 8) as u8), decode8(i as u8)))).collect();
+    let pair = |x: u8, y: u8| lut.get(usize::from(x) << 8 | usize::from(y)).copied().unwrap_or(0);
+    if a.format() != gray || b.format() != gray || b.default_bytes() != [0] || !(0..=255u8).all(|v| pair(v, 0) == v) {
+        return combine_surfaces(a, b, area, f);
+    }
+    let da = a.default_bytes().first().copied().unwrap_or(0);
+    let mut out = a.clone();
+    let (full, untouched) = (out.solid_tile(&[1.0]), out.solid_tile(&[decode8(da)]));
+    let coords: Vec<TileCoord> = b.tiles().map(|(c, _)| *c).filter(|c| !c.rect().intersect(&area).is_empty()).collect();
+    // Each tile: `Some(tile)` to store, `None` when it reads as `a`'s untouched value.
+    let built = par_map(coords.len(), |k| {
+        let tc = *coords.get(k)?;
+        let rect = tc.rect();
+        let tr = rect.intersect(&area);
+        let tb = b.tile(tc)?;
+        let mut tile = Tile::clone(a.tile(tc).unwrap_or(&untouched));
+        let data = tile.bytes_mut();
+        let (x0, x1) = ((tr.x0 - rect.x0) as usize, (tr.x1 - rect.x0) as usize);
+        for ly in (tr.y0 - rect.y0) as usize..(tr.y1 - rect.y0) as usize {
+            let (s, e) = (ly * TS + x0, ly * TS + x1);
+            let (Some(dst), Some(src)) = (data.get_mut(s..e), tb.bytes().get(s..e)) else { continue };
+            for (d, y) in dst.iter_mut().zip(src) {
+                *d = pair(*d, *y);
+            }
+        }
+        let (lo, hi) = tile.bytes().iter().fold((u8::MAX, 0u8), |(lo, hi), v| (lo.min(*v), hi.max(*v)));
+        Some((
+            tc,
+            if lo == da && hi == da {
+                None
+            } else if lo == u8::MAX {
+                Some(Arc::clone(&full))
+            } else {
+                Some(Arc::new(tile))
+            },
+        ))
+    });
+    for (tc, tile) in built.into_iter().flatten() {
+        match tile {
+            Some(t) => out.put_tiles([(tc, t)]),
+            // `take_tiles` only allocates for a tile that is missing; this one is there.
+            None if out.tile(tc).is_some() => drop(out.take_tiles(tc.rect())),
+            None => {}
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -310,5 +364,31 @@ mod tests {
                 assert!(combine_surfaces(a, b, area, f) == old_combine(a, b, area, f));
             }
         }
+    }
+
+    /// Add and Subtract through only the new shape's tiles give the bytes of the whole-area
+    /// combination, keep the old selection's other tiles shared, and keep an untouched value
+    /// (a layer mask's reveal-all) outside them.
+    #[test]
+    fn sparse_combination_matches_the_whole_area_one() {
+        let area = Rect::new(0, 0, 1100, 700);
+        let mut rect = Surface::new(PixelFormat::GRAY8);
+        rect.fill_rect(Rect::from_xywh(200, 100, 600, 520), &[1.0]);
+        let ell = old_ellipse(Rect::from_xywh(-60, 250, 700, 500), area, true);
+        let far = ellipse_surface(Rect::from_xywh(900, 20, 150, 150), area, true);
+        let ops: [fn(f32, f32) -> f32; 2] = [|a, b| a.max(b), |a, b| (a - b).max(0.0)];
+        for (a, b) in [(&rect, &ell), (&ell, &rect), (&ell, &ell), (&rect, &far)] {
+            for f in ops {
+                let sparse = combine_sparse(a, b, area, f);
+                assert!(sparse.read_region(area) == old_combine(a, b, area, f).read_region(area));
+                assert!(sparse.tiles().all(|(_, t)| t.bytes().iter().any(|v| *v != 0)), "no empty tiles kept");
+            }
+        }
+        let kept = combine_sparse(&rect, &far, area, |a, b| a.max(b));
+        let tc = TileCoord::new(1, 1);
+        assert!(Arc::ptr_eq(kept.tile(tc).expect("kept"), rect.tile(tc).expect("there")), "untouched tiles stay shared");
+        let reveal = Surface::with_default(PixelFormat::GRAY8, &[1.0]);
+        let cut = combine_sparse(&reveal, &far, area, |a, b| (a - b).max(0.0));
+        assert!(cut.pixel(5000, 5000)[0] == 1.0 && cut.pixel(975, 95)[0] == 0.0);
     }
 }

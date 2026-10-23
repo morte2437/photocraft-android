@@ -275,3 +275,58 @@ fn bench_magic_eraser_24mp() {
     let t3 = t0.elapsed().as_secs_f64() * 1000.0;
     println!("phases: sample {t1:.1} ms, wand {:.1} ms, erase {:.1} ms", t2 - t1, t3 - t2);
 }
+
+/// The live Background Eraser shows exactly what the commit erases, fed point by point: on the
+/// Background (which the commit turns into a normal layer first), with every sampling mode, at
+/// 8 and 16 bits (the live working pixels are floats between dabs, as the commit's are).
+#[test]
+fn live_background_eraser_matches_the_commit() {
+    let all = [[6.0, 20.0], [18.0, 22.0], [30.0, 18.0], [44.0, 24.0], [56.0, 20.0]];
+    for depth in [8, 16] {
+        for sampling in ["continuous", "once", "backgroundSwatch"] {
+            let mut s = session("rgb", depth);
+            s.execute("tools.setColors", json!({"background": "#000000"})).unwrap();
+            let opts = |pts: &[[f64; 2]]| json!({"points": pts, "size": 14, "hardness": 0.6, "sampling": sampling, "limits": "discontiguous", "tolerance": 30, "seed": 7});
+            let (doc, h) = (s.active().unwrap().doc.clone(), history_len(&s));
+            let mut live = live_background_eraser(&s, &opts(&all[..1])).unwrap();
+            for q in &all[1..] {
+                live.push(&[photocraft_paint::StrokePoint::new(q[0], q[1], 1.0)]).unwrap();
+            }
+            let st = s.active().unwrap();
+            assert!(std::sync::Arc::ptr_eq(&doc, &st.doc) && history_len(&s) == h, "the preview leaves the document alone");
+            let id = st.active_layer.unwrap();
+            let shown = live.doc.layer(id).unwrap().surface().unwrap().clone();
+            s.execute("paint.backgroundEraser", opts(&all)).unwrap();
+            assert_eq!(history_len(&s), h + 1, "one History step");
+            let mut erased = false;
+            for y in 0..48 {
+                for x in 0..64 {
+                    let (got, want) = (shown.rgba(x, y), surface(&s).rgba(x, y));
+                    erased |= want[3] < 0.5;
+                    // The colour under a fully erased pixel doesn't show.
+                    if got[3] == 0.0 && want[3] == 0.0 {
+                        continue;
+                    }
+                    assert_eq!(got, want, "{sampling} {depth}-bit ({x}, {y})");
+                }
+            }
+            assert!(erased, "{sampling} {depth}: the stroke erased something");
+        }
+    }
+}
+
+#[test]
+fn live_background_eraser_refuses_what_the_command_refuses() {
+    let mut s = session("rgb", 8);
+    s.execute("layer.new.layer", json!({})).unwrap();
+    s.execute("layer.setProps", json!({"locks": {"transparency": true}})).unwrap();
+    let p = json!({"points": [[20, 20]]});
+    assert!(live_background_eraser(&s, &p).is_err());
+    assert!(s.execute("paint.backgroundEraser", p).is_err());
+    let s = session("rgb", 8);
+    for p in [json!({}), json!({"points": []}), json!({"points": [[f64::NAN, 0]]}), json!({"points": [[1e300, 0]]}), json!({"points": [[0, 0]], "sampling": 3})]
+    {
+        assert!(live_background_eraser(&s, &p).is_err(), "{p}");
+    }
+    assert!(live_background_eraser(&Session::new(), &json!({"points": [[0, 0]]})).is_err());
+}

@@ -8,9 +8,10 @@
 
 use std::sync::Arc;
 
-use photocraft_color::Color;
+use photocraft_color::{Color, PixelFormat};
 use photocraft_doc::text::{
-    AntiAlias, Caps, CharStyle, FontFeature, FontVariation, Kerning, Orientation, ParagraphRun, ParagraphStyle, TextAlign, TextDirection, TextRun, TextShape,
+    AntiAlias, Caps, CharStyle, FontBaseline, FontFeature, FontVariation, Kerning, Orientation, ParagraphRun, ParagraphStyle, TextAlign, TextDirection,
+    TextRun, TextShape,
 };
 use photocraft_doc::{Affine, Document, Layer, LayerContent, LayerId, TextLayer};
 use serde_json::{Value, json};
@@ -107,7 +108,8 @@ pub fn check_kerning(p: &Value) -> std::result::Result<(), String> {
 }
 
 /// Validates text metrics (size, tracking, leading, baseline shift, scales) that can otherwise
-/// exceed the rasterizer's supported range or overflow `f32`, which a .pcraft manifest cannot hold.
+/// exceed the rasterizer's supported range or overflow `f32`, which a .pcraft manifest cannot hold,
+/// and the superscript/subscript `baseline`, so a typo is an error rather than a reset to Normal.
 pub fn check_size_tracking(p: &Value) -> std::result::Result<(), String> {
     if let Some(v) = p.get("size") {
         match v.as_f64() {
@@ -136,6 +138,11 @@ pub fn check_size_tracking(p: &Value) -> std::result::Result<(), String> {
             Some(shift) if shift.is_finite() && shift.abs() <= max => {}
             _ => return Err(format!("baselineShift must be between -{max} and {max} pt")),
         }
+    }
+    if let Some(v) = p.get("baseline").filter(|v| !v.is_null())
+        && !matches!(v.as_str(), Some("normal" | "superscript" | "subscript"))
+    {
+        return Err("baseline must be \"normal\", \"superscript\" or \"subscript\"".into());
     }
     for key in ["horizontalScale", "verticalScale"] {
         if let Some(v) = p.get(key) {
@@ -243,6 +250,19 @@ pub fn apply_char_props(s: &mut CharStyle, p: &Value) -> bool {
     if let Some(v) = p.get("font").or_else(|| p.get("family")).and_then(Value::as_str) {
         s.font_family = v.to_string();
         s.postscript_name = None;
+        // Photoshop accepts either a family name or a face's PostScript name in the font field.
+        // Resolve only exact PostScript matches here so an unknown family remains untouched.
+        let mut text = photocraft_text::shared().lock().unwrap_or_else(|e| e.into_inner());
+        if !text.fonts.has_family(v) {
+            let resolved = text.fonts.resolve_postscript(v);
+            if resolved.exact {
+                s.variations.retain(|f| f.axis != "wght");
+                s.font_family = resolved.family;
+                s.weight = resolved.weight;
+                s.italic = resolved.italic;
+                s.postscript_name = Some(v.to_string());
+            }
+        }
         hit(true);
     }
     if let Some(v) = p.get("fontStyle").and_then(Value::as_str) {
@@ -362,6 +382,19 @@ pub fn apply_char_props(s: &mut CharStyle, p: &Value) -> bool {
             _ => Caps::Normal,
         };
         hit(true);
+    }
+    if let Some(v) = p.get("baseline").and_then(Value::as_str) {
+        let baseline = match v {
+            "superscript" => Some(FontBaseline::Superscript),
+            "subscript" => Some(FontBaseline::Subscript),
+            "normal" => Some(FontBaseline::Normal),
+            _ => None,
+        };
+        // An unknown value keeps the style (the commands reject it in `check_size_tracking`).
+        if let Some(b) = baseline {
+            s.baseline = b;
+            hit(true);
+        }
     }
     if let Some(Value::Object(m)) = p.get("features") {
         for (tag, v) in m {
@@ -570,9 +603,15 @@ pub fn replace_text(t: &mut TextLayer, a: usize, b: usize, new: &str) {
 
 /// Re-renders the layer's pixels and regenerates its PSD `TySh` data.
 pub fn refresh(doc: &Document, t: &mut TextLayer) {
-    let dpi = doc.resolution_dpi;
+    refresh_at(doc.resolution_dpi, doc.pixel_format(), t);
+}
+
+/// [`refresh`] given only the two things it reads from the document: its resolution and its
+/// pixel format. A caller holding the layer mutably reads them first instead of cloning the whole
+/// document to pass it, once per keystroke and pointer move while typing (#7092).
+pub fn refresh_at(dpi: f32, format: PixelFormat, t: &mut TextLayer) {
     let mut eng = photocraft_text::shared().lock().unwrap_or_else(|e| e.into_inner());
-    let (layout, r) = eng.render(t, dpi, doc.pixel_format());
+    let (layout, r) = eng.render(t, dpi, format);
     t.cache = Some(r.surface);
     t.psd_raw = Some(Arc::new(photocraft_text::psd::build_tysh(t, dpi, layout.bounds())));
 }
@@ -589,11 +628,12 @@ pub(crate) fn check_text_unlocked(doc: &Document, id: LayerId) -> Result<()> {
 
 /// Runs `f` on a type layer as one undo step. `f` may set an explicit layer name (`type.edit`'s
 /// `name`), which is applied in the same step; otherwise an auto-named layer follows its text.
-fn with_text_layer<R>(s: &mut Session, p: &Value, label: &str, f: impl FnOnce(&mut TextLayer, &Document, &mut Option<String>) -> Result<R>) -> Result<R> {
+/// `f` gets the document's resolution (dpi).
+fn with_text_layer<R>(s: &mut Session, p: &Value, label: &str, f: impl FnOnce(&mut TextLayer, f32, &mut Option<String>) -> Result<R>) -> Result<R> {
     let id = layer_id(s, p)?;
     check_text_unlocked(&s.active().ok_or(EngineError::NoDocument)?.doc, id)?;
     let (r, damage) = s.edit(label, |doc, _| {
-        let snapshot = doc.clone();
+        let (dpi, format) = (doc.resolution_dpi, doc.pixel_format());
         let l = doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?;
         let auto_named = is_auto_named(l);
         let LayerContent::Text(t) = &mut l.content else {
@@ -601,8 +641,8 @@ fn with_text_layer<R>(s: &mut Session, p: &Value, label: &str, f: impl FnOnce(&m
         };
         let before = t.cache.as_ref().map(|c| c.tile_bounds());
         let mut rename = None;
-        let r = f(t, &snapshot, &mut rename)?;
-        refresh(&snapshot, t);
+        let r = f(t, dpi, &mut rename)?;
+        refresh_at(dpi, format, t);
         // Only this layer's pixels changed: the canvas recomposites their old and new area
         // instead of the whole document (#124). Unknown old pixels mean a full refresh.
         let damage = before.zip(t.cache.as_ref().map(|c| c.tile_bounds())).map(|(a, b)| a.union(&b));
@@ -669,14 +709,14 @@ pub(crate) fn with_text_targets(
         check_text_unlocked(doc, *id)?;
     }
     let damage = s.edit(label, |doc, _| {
-        let snapshot = doc.clone();
+        let (dpi, format) = (doc.resolution_dpi, doc.pixel_format());
         let mut damage = Some(photocraft_geom::Rect::EMPTY);
         for id in &ids {
             let Some(LayerContent::Text(t)) = doc.layer_mut(*id).map(|l| &mut l.content) else { return Err(EngineError::NoLayer(*id)) };
             let before = t.cache.as_ref().map(|c| c.tile_bounds());
             let range = if p.get("layers").is_none() || p.get("layer").is_some() { range_param(&t.text, p) } else { (0, t.text.len()) };
             f(t, range)?;
-            refresh(&snapshot, t);
+            refresh_at(dpi, format, t);
             // An unknown old/new cache retains Session.edit's full-refresh fallback.
             damage = damage.zip(before).zip(t.cache.as_ref().map(|c| c.tile_bounds())).map(|((all, a), b)| all.union(&a).union(&b));
         }
@@ -826,7 +866,7 @@ pub(crate) fn new_text_layer(s: &Session, p: &Value, cmd: &str) -> Result<TextLa
     Ok(t)
 }
 
-const CHAR_PARAMS: &str = r##""font":str,"fontStyle":str,"weight":100..900,"italic":bool,"size":0.1..=1296 pt,"color":"#rrggbb"|[r,g,b,a],"tracking":-1000..=10000 (1/1000 em),"leading":pt|"auto","baselineShift":pt,"horizontalScale":%,"verticalScale":%,"underline":bool,"strikethrough":bool,"fauxBold":bool,"fauxItalic":bool,"kerning":1/1000em (manual, after each character)|"metrics"|"optical"|"off","caps":"normal|small|all","ligatures":bool,"discretionaryLigatures":bool,"features":{"ss01":1},"variations":{"wght":650},"language":str"##;
+const CHAR_PARAMS: &str = r##""font":str,"fontStyle":str,"weight":100..900,"italic":bool,"size":0.1..=1296 pt,"color":"#rrggbb"|[r,g,b,a],"tracking":-1000..=10000 (1/1000 em),"leading":pt|"auto","baselineShift":pt,"horizontalScale":%,"verticalScale":%,"underline":bool,"strikethrough":bool,"fauxBold":bool,"fauxItalic":bool,"kerning":1/1000em (manual, after each character)|"metrics"|"optical"|"off","caps":"normal|small|all","baseline":"normal|superscript|subscript","ligatures":bool,"discretionaryLigatures":bool,"features":{"ss01":1},"variations":{"wght":650},"language":str"##;
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
@@ -897,7 +937,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     }
                 };
                 let label = if kern_pair.is_some() { "Kerning" } else { "Edit Type" };
-                with_text_layer(s, p, label, |t, doc, rename| {
+                with_text_layer(s, p, label, |t, dpi, rename| {
                     if let Some((at, by)) = kern_pair {
                         // Photoshop's Alt+←/→: the pair before the caret becomes manually kerned,
                         // starting from what it shows now (its metrics/optical or manual value).
@@ -909,7 +949,7 @@ pub fn specs() -> Vec<CommandSpec> {
                         let b = byte_at(&t.text, at);
                         let now = {
                             let mut eng = photocraft_text::shared().lock().unwrap_or_else(|e| e.into_inner());
-                            eng.pair_kerning(t, doc.resolution_dpi, a)
+                            eng.pair_kerning(t, dpi, a)
                         }
                         .ok_or_else(|| bad("type.edit", "no kerning pair at the caret (line break or line end)"))?;
                         let value = (f64::from(now.round()) + by).clamp(KERN_MIN, KERN_MAX) as f32;
@@ -1025,16 +1065,16 @@ pub fn specs() -> Vec<CommandSpec> {
             run: |s, p| {
                 let id = layer_id(s, p)?;
                 s.edit("Rasterize Type", |doc, _| {
-                    let snapshot = doc.clone();
+                    let (dpi, format) = (doc.resolution_dpi, doc.pixel_format());
                     let l = doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?;
                     let LayerContent::Text(t) = &mut l.content else {
                         return Err(EngineError::Other(format!("layer {} is not a type layer", id.0)));
                     };
                     if t.cache.is_none() {
-                        refresh(&snapshot, t);
+                        refresh_at(dpi, format, t);
                     }
-                    let surface = t.cache.take().unwrap_or_else(|| photocraft_raster::Surface::new(snapshot.pixel_format()));
-                    let surface = if surface.format() == snapshot.pixel_format() { surface } else { surface.convert(snapshot.pixel_format()) };
+                    let surface = t.cache.take().unwrap_or_else(|| photocraft_raster::Surface::new(format));
+                    let surface = if surface.format() == format { surface } else { surface.convert(format) };
                     l.content = LayerContent::Raster(surface);
                     l.psd_blocks.retain(|(k, _)| k != b"TySh");
                     Ok(())
@@ -1606,6 +1646,23 @@ mod tests {
         // Inserting at a caret still follows the character before it.
         s.execute("type.edit", json!({"layer": id, "replace": {"start": 4, "end": 4, "text": "!"}})).unwrap();
         assert_eq!(sizes(&s), [(5, 40.0), (1, 12.0)]);
+    }
+
+    /// A misspelt `baseline` is an error and keeps superscript, instead of resetting it to Normal.
+    #[test]
+    fn unknown_baseline_is_rejected_and_keeps_the_style() {
+        let mut s = session();
+        let id = s.execute("type.create", json!({"x": 5, "y": 50, "text": "x2", "size": 30})).unwrap()["layer"].as_u64().unwrap();
+        s.execute("type.setStyle", json!({"layer": id, "range": [1, 2], "baseline": "superscript"})).unwrap();
+        let before = text_layer(&s, id).runs;
+        for b in [json!("superscipt"), json!("Superscript"), json!(1)] {
+            assert!(matches!(s.execute("type.setStyle", json!({"layer": id, "baseline": b})), Err(EngineError::BadParams { .. })), "{b}");
+            assert!(s.execute("type.edit", json!({"layer": id, "baseline": b})).is_err(), "{b}");
+            assert!(s.execute("type.create", json!({"x": 0, "y": 10, "text": "a", "baseline": b})).is_err(), "{b}");
+        }
+        assert_eq!(text_layer(&s, id).runs, before);
+        s.execute("type.setStyle", json!({"layer": id, "baseline": "normal"})).unwrap();
+        assert!(text_layer(&s, id).char_runs().iter().all(|r| r.style.baseline == FontBaseline::Normal));
     }
 
     fn kerning_of(s: &Session, id: u64) -> Vec<(Kerning, f32)> {

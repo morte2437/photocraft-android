@@ -22,11 +22,12 @@ pub fn import_flat(name: &str, bytes: &[u8]) -> Result<ImportResult, IoError> {
         return import_tiff_page(name, bytes, None);
     }
     let img = codecs::decode_as(format.ok_or(codecs::CodecError::UnknownFormat)?, bytes)?;
-    // A palette BMP or PNG opens in Indexed Color mode with its colour table, as in Photoshop
-    // (#3802, #4804).
+    // A palette BMP, PNG or GIF opens in Indexed Color mode with its colour table, as in
+    // Photoshop (#3802, #4804, #7886). A GIF is always palette-based: the first frame's table.
     let palette = match format {
         Some(Format::Bmp) => codecs::bmp_palette(bytes).ok().flatten().map(|c| (c, None)),
         Some(Format::Png) => codecs::png_palette(bytes).ok().flatten().map(|p| (p.colors, p.transparent)),
+        Some(Format::Gif) => codecs::gif_palette(bytes),
         _ => None,
     };
     let mut r = image_to_document(name, &img)?;
@@ -51,14 +52,57 @@ pub fn import_flat(name: &str, bytes: &[u8]) -> Result<ImportResult, IoError> {
             _ => None,
         };
     }
+    if d.icc_profile.is_none() && d.mode == ColorMode::Rgb {
+        d.icc_profile = cicp_profile(&img);
+        if d.icc_profile.is_none()
+            && let Some((profile, warning)) = hdr_fallback(&img)
+        {
+            d.icc_profile = Some(profile);
+            r.warnings.push(warning);
+        }
+    }
     Ok(r)
+}
+
+/// A PQ or HLG image, which the decoder turned into linear light, on primaries
+/// [`cicp_profile`] has no profile for: left untagged it would be read as sRGB-encoded, so it is
+/// tagged linear sRGB (its tones right, its primaries assumed) and the warning says so.
+fn hdr_fallback(img: &Image) -> Option<(Arc<Vec<u8>>, String)> {
+    let c = img.cicp.filter(|c| c.is_hdr() && img.sample_type().is_float())?;
+    let warning = format!("the HDR colour primaries (H.273 code {}) aren't supported; the image is read as linear sRGB", c.primaries);
+    Some((photocraft_cms::Builtin::LinearSrgb.profile().to_bytes(), warning))
+}
+
+/// The profile a HEIF's `nclx` colour description stands for, when the file has no ICC profile
+/// (#6752): a BT.2020 or P3 image is tagged so, and a PQ or HLG one, which the decoder turned into
+/// linear light, gets a linear profile on its primaries. BT.709 SDR stays untagged, read as sRGB
+/// as before; BT.709 with a linear transfer (8) is tagged linear sRGB.
+fn cicp_profile(img: &Image) -> Option<Arc<Vec<u8>>> {
+    let c = img.cicp?;
+    let linear = img.sample_type().is_float();
+    if c.primaries == 1 && !linear && matches!(c.transfer, 1 | 2 | 6 | 13 | 14 | 15) {
+        return None;
+    }
+    // Unspecified primaries on an HDR image: BT.2100's, which PQ and HLG are defined with.
+    let primaries = if c.primaries == 2 && c.is_hdr() { 9 } else { c.primaries };
+    photocraft_cms::builtin::cicp_rgb(primaries, c.transfer, linear).map(|p| p.to_bytes())
 }
 
 /// Every frame of a GIF as a single-layer document, handed to `each` in order with its delay in
 /// milliseconds (a still GIF has one). One frame at a time becomes a document, so the caller
 /// can flatten and drop it. Returns the number of frames; stops at the first error `each` gives.
 pub fn import_gif_frames(name: &str, bytes: &[u8], each: &mut dyn FnMut(Document, u32) -> Result<(), IoError>) -> Result<usize, IoError> {
-    let frames = codecs::decode_gif_frames(bytes, &codecs::DecodeOptions::default())?;
+    import_frames(name, codecs::decode_gif_frames(bytes, &codecs::DecodeOptions::default())?, each)
+}
+
+/// Every frame of a WebP as a single-layer document, as [`import_gif_frames`] does for a GIF: an
+/// animation's frames composited onto its canvas, with their durations in milliseconds; a still
+/// WebP is one frame.
+pub fn import_webp_frames(name: &str, bytes: &[u8], each: &mut dyn FnMut(Document, u32) -> Result<(), IoError>) -> Result<usize, IoError> {
+    import_frames(name, codecs::decode_webp_frames(bytes, &codecs::DecodeOptions::default())?, each)
+}
+
+fn import_frames(name: &str, frames: Vec<codecs::AnimationFrame>, each: &mut dyn FnMut(Document, u32) -> Result<(), IoError>) -> Result<usize, IoError> {
     let n = frames.len();
     for f in frames {
         each(image_to_document(name, &f.image)?.document, f.delay_ms)?;
@@ -813,15 +857,16 @@ fn cmyk_image_to_srgb(img: &Image) -> Result<Image, IoError> {
     Ok(Image::from_normalized(w, h, layout, sample, &out)?.with_icc(Some(dst.to_bytes().to_vec())).with_meta(img.meta.clone()))
 }
 
-/// Indexed Color → PNG-8 with its colour table; Duotone → the inks rendered as RGB.
+/// Indexed Color → PNG-8 or an 8-bit BMP with its colour table; Duotone → the inks rendered as RGB.
 fn export_mode_specific(doc: &Document, format: Format, opts: &ExportOptions) -> Result<Option<ExportResult>, IoError> {
     match doc.mode {
-        ColorMode::Indexed if format == Format::Png => {
+        ColorMode::Indexed if matches!(format, Format::Png | Format::Bmp) => {
             let Some(table) = doc.color_table.as_ref().filter(|t| !t.colors.is_empty() && t.colors.len() <= 256) else { return Ok(None) };
             // PNG transparency belongs to a palette index, not its RGB value. Keep the
             // transparent entry out of opaque lookup, even when it duplicates an opaque colour.
+            let png_transparent_index = table.transparent.map(usize::from).filter(|_| format == Format::Png);
             let (opaque_indices, colors): (Vec<u8>, Vec<_>) =
-                table.colors.iter().copied().enumerate().filter(|(i, _)| Some(*i) != table.transparent.map(usize::from)).map(|(i, c)| (i as u8, c)).unzip();
+                table.colors.iter().copied().enumerate().filter(|(i, _)| Some(*i) != png_transparent_index).map(|(i, c)| (i as u8, c)).unzip();
             let opaque = photocraft_doc::ColorTable { colors, transparent: None };
             let mut idx = try_buffer(doc.size.area() as usize, 1)?;
             photocraft_compose::render_bands(doc, doc.bounds(), 0, |band| -> Result<(), IoError> {
@@ -830,12 +875,20 @@ fn export_mode_specific(doc: &Document, format: Format, opts: &ExportOptions) ->
                         Some(t) if p[3] < 0.5 => t,
                         _ => *opaque_indices
                             .get(opaque.nearest([p[0], p[1], p[2]]))
-                            .ok_or_else(|| IoError::Unsupported("Indexed PNG palette has no opaque entry; add an opaque colour or convert to RGB".into()))?,
+                            .ok_or_else(|| IoError::Unsupported("Indexed palette has no opaque entry; add an opaque colour or convert to RGB".into()))?,
                     };
                     idx.push(i);
                 }
                 Ok(())
             })?;
+            if format == Format::Bmp {
+                let bytes = codecs::encode_bmp_indexed(doc.size.width, doc.size.height, &idx, &table.colors)?;
+                let mut warnings = vec![format!("written as an 8-bit palette BMP ({} colours)", table.colors.len())];
+                if let Some(t) = table.transparent {
+                    warnings.push(format!("BMP has no transparency; transparent pixels are written in the colour of palette entry {t}"));
+                }
+                return Ok(Some(ExportResult { bytes, warnings }));
+            }
             // Same rule as the ordinary PNG encoder: the resolution goes into `pHYs` with the metadata.
             let dpi = opts.encode.embed_metadata.then_some((doc.resolution_dpi, doc.resolution_dpi));
             let bytes = codecs::encode_png_indexed(doc.size.width, doc.size.height, &idx, &table.colors, table.transparent, dpi, opts.encode.png_stereo)?;
@@ -858,6 +911,59 @@ fn export_mode_specific(doc: &Document, format: Format, opts: &ExportOptions) ->
             Ok(Some(r))
         }
         _ => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod cicp_tests {
+    use super::*;
+    use photocraft_cms::{Builtin, Profile};
+
+    fn tagged(sample: CSample, cicp: codecs::Cicp) -> Image {
+        let mut img = Image::new(1, 1, ChannelLayout::Rgb, sample).unwrap();
+        img.cicp = Some(cicp);
+        img
+    }
+
+    fn description(p: Option<Arc<Vec<u8>>>) -> Option<String> {
+        p.map(|b| Profile::parse(&b).unwrap().description)
+    }
+
+    #[test]
+    fn hlg_bt2020_is_tagged_linear_bt2020() {
+        let hlg = codecs::Cicp { primaries: 9, transfer: codecs::Cicp::TRANSFER_HLG, matrix: 9, full_range: true };
+        let d = description(cicp_profile(&tagged(CSample::F32, hlg))).unwrap();
+        assert!(d.contains("BT.2020") && d.contains("linear"), "{d}");
+        // Unspecified primaries on HLG are BT.2100's.
+        let d = description(cicp_profile(&tagged(CSample::F32, codecs::Cicp { primaries: 2, ..hlg }))).unwrap();
+        assert!(d.contains("BT.2020"), "{d}");
+    }
+
+    #[test]
+    fn sdr_nclx_is_unchanged_or_tagged_with_its_builtin() {
+        // BT.709 / sRGB: untagged, as before.
+        for transfer in [1, 2, 13] {
+            assert_eq!(cicp_profile(&tagged(CSample::U16, codecs::Cicp { primaries: 1, transfer, matrix: 6, full_range: false })), None);
+        }
+        // BT.709 with a linear transfer: linear sRGB, not read as sRGB.
+        let linear = codecs::Cicp { primaries: 1, transfer: 8, matrix: 6, full_range: true };
+        assert_eq!(description(cicp_profile(&tagged(CSample::U16, linear))).as_deref(), Some(Builtin::LinearSrgb.description()));
+        let p3 = codecs::Cicp { primaries: 12, transfer: 13, matrix: 6, full_range: true };
+        assert_eq!(description(cicp_profile(&tagged(CSample::U8, p3))).as_deref(), Some(Builtin::DisplayP3.description()));
+        assert_eq!(cicp_profile(&Image::new(1, 1, ChannelLayout::Rgb, CSample::U8).unwrap()), None, "no nclx, no profile");
+    }
+
+    #[test]
+    fn hdr_on_unsupported_primaries_is_tagged_linear_srgb_with_a_warning() {
+        // DCI-P3 (11) primaries: no profile, but the linear pixels must not be read as sRGB.
+        let hlg = codecs::Cicp { primaries: 11, transfer: codecs::Cicp::TRANSFER_HLG, matrix: 9, full_range: true };
+        let img = tagged(CSample::F32, hlg);
+        assert_eq!(cicp_profile(&img), None);
+        let (profile, warning) = hdr_fallback(&img).unwrap();
+        assert_eq!(description(Some(profile)).as_deref(), Some(Builtin::LinearSrgb.description()));
+        assert!(warning.contains("11"), "{warning}");
+        // SDR on the same primaries keeps its samples as decoded: no fallback.
+        assert!(hdr_fallback(&tagged(CSample::U16, codecs::Cicp { transfer: 13, ..hlg })).is_none());
     }
 }
 

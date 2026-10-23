@@ -322,6 +322,24 @@ mod tests {
     }
 
     #[test]
+    fn lock_transparency_blends_source_atop_on_semi_transparent_pixels() {
+        // Half-transparent white under a black stroke at 50%: the colour moves halfway (Photoshop's
+        // source-atop), not by the source-over weight 0.5 / 0.75 (#5783).
+        for f in [PixelFormat::RGBA8, PixelFormat::RGBA16, PixelFormat::RGBA32F] {
+            for mode in [photocraft_color::BlendMode::Normal, photocraft_color::BlendMode::Multiply] {
+                let mut s = Surface::new(f);
+                s.fill_rect(Rect::new(0, 0, 100, 20), &[1.0, 1.0, 1.0, 0.5]);
+                let mut st = stroke(&[(10.0, 10.0), (90.0, 10.0)], 8.0);
+                st.brush.opacity = 0.5;
+                st.brush.mode = mode;
+                apply_stroke(&mut s, &st, None, true);
+                let p = s.rgba(50, 10);
+                assert!((p[0] - 0.5).abs() < 0.01 && (p[3] - 0.5).abs() < 0.01, "{f:?} {mode:?} {p:?}");
+            }
+        }
+    }
+
+    #[test]
     fn pressure_changes_size() {
         let mut st = stroke(&[(0.0, 0.0), (100.0, 0.0)], 20.0);
         st.brush.pressure_size = true;

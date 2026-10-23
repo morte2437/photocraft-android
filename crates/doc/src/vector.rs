@@ -192,7 +192,8 @@ pub struct VectorMask {
     pub linked: bool,
     /// Density `0..=1` (Properties panel), like [`crate::LayerMask::density`].
     pub density: f32,
-    /// Feather radius in px (stored; rendered unfeathered for now).
+    /// Feather radius in px (Properties panel); the compositor blurs the rasterised path by it
+    /// (`photocraft_compose::masks::feather_sigma`), as it does a pixel mask's feather.
     pub feather: f32,
 }
 
@@ -302,10 +303,14 @@ pub enum LiveShape {
         rect: [f64; 4],
     },
     /// Regular polygon or star inscribed in `rect`; `star_ratio` = inner/outer radius (1 = polygon).
+    /// `corner_radius` rounds every vertex (0 = sharp), each within what its edges allow; the
+    /// Triangle tool draws a 3-sided one.
     Polygon {
         rect: [f64; 4],
         sides: u32,
         star_ratio: f64,
+        #[serde(default)]
+        corner_radius: f64,
     },
     /// Line from `from` to `to` drawn as a filled bar `weight` px thick.
     Line {
@@ -316,7 +321,7 @@ pub enum LiveShape {
 }
 
 /// A shape layer: a filled and/or stroked path.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ShapeLayer {
     pub path: Path,
     /// `None` = no fill (Photoshop's fill "none").
@@ -328,6 +333,25 @@ pub struct ShapeLayer {
     /// Data of the PSD vector mask block (`vsms`, else `vmsk`). On export it replaces that entry
     /// in [`crate::Layer::psd_blocks`] while it still decodes to `path`.
     pub psd_raw: Option<Arc<Vec<u8>>>,
+    /// Density `0..=1` of the path as the fill's mask (Properties › Masks, like
+    /// [`VectorMask::density`]): below 1 the fill shows beyond the path at `1 - density`.
+    pub density: f32,
+    /// Feather radius in px of the path as the fill's mask (like [`VectorMask::feather`]).
+    pub feather: f32,
+}
+
+impl Default for ShapeLayer {
+    fn default() -> Self {
+        ShapeLayer { path: Path::default(), fill: None, stroke: None, live: None, cache: None, psd_raw: None, density: 1.0, feather: 0.0 }
+    }
+}
+
+impl ShapeLayer {
+    /// Whether the fill's edge is softened by a density below 100 % or a feather (non-finite
+    /// values count as the defaults).
+    pub fn has_soft_mask(&self) -> bool {
+        (self.density.is_finite() && self.density < 1.0) || (self.feather.is_finite() && self.feather > 0.0)
+    }
 }
 
 #[cfg(test)]
@@ -350,6 +374,15 @@ mod tests {
         assert_eq!(p.control_bounds(), Some((1.0, 2.0, 5.0, 9.0)));
         let t = p.transform(&Affine::translate(1.0, 1.0));
         assert_eq!(t.control_bounds(), Some((2.0, 3.0, 6.0, 10.0)));
+    }
+
+    #[test]
+    fn a_polygon_saved_before_corner_radii_loads_sharp() {
+        let old = r#"{"kind":"polygon","rect":[0.0,0.0,10.0,10.0],"sides":3,"star_ratio":1.0}"#;
+        let back: LiveShape = serde_json::from_str(old).unwrap();
+        assert_eq!(back, LiveShape::Polygon { rect: [0.0, 0.0, 10.0, 10.0], sides: 3, star_ratio: 1.0, corner_radius: 0.0 });
+        let round = LiveShape::Polygon { rect: [0.0; 4], sides: 6, star_ratio: 1.0, corner_radius: 4.5 };
+        assert_eq!(serde_json::from_str::<LiveShape>(&serde_json::to_string(&round).unwrap()).unwrap(), round);
     }
 
     #[test]

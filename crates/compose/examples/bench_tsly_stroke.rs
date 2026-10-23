@@ -26,6 +26,7 @@ fn document_with_strokes(layer_count: usize) -> Result<Document, Box<dyn Error>>
             size: 6.0,
             position: StrokePosition::Outside,
             paint: FxPaint::Color(Color::rgb(0.8, 0.1, 0.2)),
+            overprint: false,
         }));
         layer.advanced.transparency_shapes = false;
         document.layers.push(layer);

@@ -65,13 +65,7 @@ pub fn lens_params(cmd: &str, p: &Value, frame: Rect, info: Option<&exif::Camera
         "background" | "color" => EdgeMode::Color(crate::commands::color_param(cmd, p, "edgeColor", [0.0, 0.0, 0.0, 1.0])?),
         other => return Err(bad(cmd, format!("unknown edge `{other}` (transparency|edgeExtension|black|white|color)"))),
     };
-    let focal = num(p, "focalLength", 0.0);
-    lc.profile = match p.get("profile").and_then(Value::as_str).unwrap_or("none") {
-        "none" | "" => None,
-        "generic" => Some(lens::generic_profile(if focal > 0.0 { focal } else { 50.0 })),
-        "auto" => info.and_then(|i| i.focal_length_35mm.or(i.focal_length)).or((focal > 0.0).then_some(focal)).map(lens::generic_profile),
-        other => return Err(bad(cmd, format!("unknown profile `{other}` (none|auto|generic)"))),
-    };
+    lc.profile = profile_focal(cmd, p, info)?.map(lens::generic_profile);
     if let Some(Value::Array(line)) = p.get("straighten") {
         let pt = |v: &Value| -> Option<[f64; 2]> { Some([v.get(0)?.as_f64()?, v.get(1)?.as_f64()?]) };
         let (Some(a), Some(b)) = (line.first().and_then(pt), line.get(1).and_then(pt)) else {
@@ -85,8 +79,20 @@ pub fn lens_params(cmd: &str, p: &Value, frame: Rect, info: Option<&exif::Camera
     Ok(lc)
 }
 
-/// Writes the resolved profile / angle / scale back into the params (for smart filters).
-fn resolved_lens_params(p: &Value, lc: &LensCorrection) -> Value {
+/// The 35 mm-equivalent focal length of the generic profile the params ask for (`None`: no profile).
+fn profile_focal(cmd: &str, p: &Value, info: Option<&exif::CameraInfo>) -> Result<Option<f64>> {
+    let focal = num(p, "focalLength", 0.0);
+    Ok(match p.get("profile").and_then(Value::as_str).unwrap_or("none") {
+        "none" | "" => None,
+        "generic" => Some(if focal > 0.0 { focal } else { 50.0 }),
+        "auto" => info.and_then(|i| i.focal_length_35mm.or(i.focal_length)).or((focal > 0.0).then_some(focal)),
+        other => return Err(bad(cmd, format!("unknown profile `{other}` (none|auto|generic)"))),
+    })
+}
+
+/// Writes the resolved profile (its exact focal length, not the rounded one in its name) /
+/// angle / scale back into the params (for smart filters).
+fn resolved_lens_params(p: &Value, lc: &LensCorrection, focal: Option<f64>) -> Value {
     let mut q = p.clone();
     if let Value::Object(m) = &mut q {
         m.remove("straighten");
@@ -94,10 +100,9 @@ fn resolved_lens_params(p: &Value, lc: &LensCorrection) -> Value {
         m.remove("layer");
         m.insert("angle".into(), json!(lc.angle));
         m.insert("scale".into(), json!(lc.scale));
-        match &lc.profile {
-            Some(pr) => {
+        match lc.profile.as_ref().and(focal) {
+            Some(f) => {
                 m.insert("profile".into(), json!("generic"));
-                let f = pr.name.trim_start_matches("Generic Lens (").split(' ').next().and_then(|v| v.parse::<f64>().ok()).unwrap_or(50.0);
                 m.insert("focalLength".into(), json!(f));
             }
             None => {
@@ -292,12 +297,13 @@ fn run_filter(s: &mut Session, cmd: &str, label: &str, stored: Value, float_bg: 
         let locks = doc.effective_locks(id);
         let background = doc.is_background(id);
         let l = doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?;
+        // A pixel or full lock refuses the smart filter too, as it does for other filters.
+        if locks.all || locks.pixels {
+            return Err(EngineError::Other(format!("layer \"{}\" is locked", l.name)));
+        }
         if let LayerContent::Smart(_) = l.content {
             let sf = SmartFilter { command: cmd.to_string(), params: stored.clone(), blend: photocraft_color::BlendMode::Normal, opacity: 1.0, visible: true };
             return crate::smart_cmds::add_smart_filter(doc, id, sf, selection.as_ref());
-        }
-        if locks.all || locks.pixels {
-            return Err(EngineError::Other(format!("layer \"{}\" is locked", l.name)));
         }
         // A Background layer gains transparency when the edge mode exposes it (as in Photoshop).
         if float_bg && background {
@@ -323,7 +329,7 @@ fn lens_correction(s: &mut Session, p: &Value) -> Result<Value> {
     let frame = st.doc.bounds();
     let info = camera_info(&st.doc);
     let lc = lens_params(LENS, p, frame, info.as_ref())?;
-    let stored = resolved_lens_params(p, &lc);
+    let stored = resolved_lens_params(p, &lc, profile_focal(LENS, p, info.as_ref())?);
     let t0 = Stopwatch::start();
     let id =
         run_filter(s, LENS, "Lens Correction", stored.clone(), matches!(lc.edge, EdgeMode::Transparency), &|surf, canvas| lens::correct(surf, canvas, &lc))?;
@@ -427,7 +433,7 @@ fn lens_batch(s: &mut Session, p: &Value) -> Result<Value> {
         // Batch default: the EXIF-driven profile, as Photoshop's dialog suggests.
         m.entry("profile").or_insert(json!("auto"));
     }
-    let r = crate::file_cmds::process_files(&inputs, &output, &format, crate::file_cmds::SaveOpts::from_params(s, p, LENS_BATCH)?, "", &|scratch| {
+    let r = crate::file_cmds::process_files(s, &inputs, &output, &format, crate::file_cmds::SaveOpts::from_params(s, p, LENS_BATCH)?, "", &|scratch| {
         if scratch.active().is_some_and(|d| d.doc.layers.len() > 1) {
             scratch.execute("layer.flattenImage", json!({}))?;
         }
@@ -555,6 +561,63 @@ mod tests {
         assert_eq!(sm.smart_filters[0].command, LENS);
         let corner = active_px(&s, 3, 3);
         assert!(corner[0] > 0.4, "{corner:?}");
+    }
+
+    #[test]
+    fn lens_smart_filter_keeps_the_exact_focal_length() {
+        // A generic profile at a fractional focal length, and the auto profile from EXIF.
+        let generic = json!({"profile": "generic", "focalLength": 27.4, "edge": "edgeExtension"});
+        let auto = json!({"profile": "auto", "edge": "edgeExtension"});
+        for (p, focal) in [(generic, 27.4), (auto, 18.5)] {
+            let mut s = session(8);
+            s.edit("exif", |doc, _| {
+                doc.metadata.exif = Some(std::sync::Arc::new(exif::build(&exif::CameraInfo { focal_length: Some(18.5), ..Default::default() })));
+                Ok(())
+            })
+            .unwrap();
+            let d = s.active().unwrap();
+            let src = d.doc.layer(d.active_layer.unwrap()).unwrap().surface().unwrap().clone();
+            let (frame, info) = (d.doc.bounds(), camera_info(&d.doc));
+            s.execute("layer.smartObjects.convertToSmartObject", json!({})).unwrap();
+            let r = s.execute(LENS, p.clone()).unwrap();
+            assert_eq!(r["params"]["focalLength"], focal, "{r}");
+            // Re-rendering from the stored params gives the pixels the command rendered.
+            let d = s.active().unwrap();
+            let LayerContent::Smart(sm) = &d.doc.layer(LayerId(r["layer"].as_u64().unwrap())).unwrap().content else { panic!("smart") };
+            let original = lens::correct(&src, frame, &lens_params(LENS, &p, frame, info.as_ref()).unwrap());
+            let rerender = apply_to_surface(LENS, &sm.smart_filters[0].params, &src, frame).unwrap();
+            assert!(original == rerender, "re-render differs for {p}");
+        }
+    }
+
+    #[test]
+    fn locked_smart_objects_refuse_lens_filters() {
+        // As other filters do: a pixel or full lock (the layer's own or its group's) refuses the
+        // smart filter, leaving the layer and the history as they were.
+        let filters = [(LENS, json!({"distortion": 10})), (WIDE, json!({"model": "perspective", "scale": 90})), (RAW, json!({"saturation": -100}))];
+        for lock in [json!({"all": true}), json!({"pixels": true})] {
+            for on_group in [false, true] {
+                for (cmd, p) in &filters {
+                    let mut s = session(8);
+                    s.execute("layer.smartObjects.convertToSmartObject", json!({})).unwrap();
+                    let layer = s.active().unwrap().active_layer.unwrap();
+                    if on_group {
+                        s.execute("layer.new.groupFromLayers", json!({})).unwrap();
+                    }
+                    s.execute("layer.lockLayers", lock.clone()).unwrap();
+                    s.execute("layer.select", json!({"layer": layer.0})).unwrap();
+                    let locks = s.active().unwrap().doc.effective_locks(layer);
+                    assert!(locks.all || locks.pixels, "the lock reaches the smart object ({lock}, group: {on_group})");
+                    let steps = s.active().unwrap().history.past_len();
+                    let r = s.execute(cmd, p.clone());
+                    assert!(r.is_err(), "{cmd} edited a smart object locked with {lock} (group: {on_group}): {r:?}");
+                    let st = s.active().unwrap();
+                    let LayerContent::Smart(sm) = &st.doc.layer(layer).unwrap().content else { panic!("not smart") };
+                    assert!(sm.smart_filters.is_empty(), "{cmd} {lock} group: {on_group}");
+                    assert_eq!(st.history.past_len(), steps, "{cmd} {lock} group: {on_group}: no history step");
+                }
+            }
+        }
     }
 
     #[test]

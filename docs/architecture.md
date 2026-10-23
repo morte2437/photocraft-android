@@ -1,6 +1,6 @@
 # PhotoCraft architecture
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-13 · **Change:** minor (workspace size and test counts recounted; current-state summary added; the design plan below is kept, with its deviations listed) · **Target:** Adobe Photoshop 2026
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-20 · **Change:** minor (accurate GPU matrix/TRC display conversion; original design plan retained) · **Target:** Adobe Photoshop 2026
 
 ## Current state (2026-10-10)
 
@@ -18,7 +18,7 @@ What exists on `main` today. The numbered sections below are the original design
   UI, CLI, JSON control channel and MCP server all dispatch by command id. 628 Photoshop menu items
   map to them (`crates/ui-egui/src/menu_catalog.rs`).
 - **Rendering:** CPU compositor (`compose`, the oracle) and wgpu compositor (`gpu`, ≤ 1/255 of the
-  CPU); colour through our own ICC engine (`cms`), display transform folded into a GPU 3D LUT.
+  CPU); colour through our own ICC engine (`cms`), GPU display conversion through matrix/shaper stages or a 3D LUT fallback.
 - **Files:** own PSD/PSB crate (`psd`), flat codecs (`codecs`), camera raw (`raw`), HEIF (`heif`),
   Affinity (`affinity`), document mapping (`io`), native `.pcraft` (`format`, atomic saves).
   Coverage: [`file-format-parity.md`](file-format-parity.md).
@@ -349,7 +349,7 @@ Both backends consume the same plan. This is the only place that encodes Photosh
 ### 7.3 Color
 
 - Blending happens in document space by default, which is Photoshop-compatible. A per-document "linear light blending" option is also available.
-- **Display transform** (`engine/src/display_color.rs`): the canvas is always colour-managed, document profile → monitor profile (relative colorimetric + BPC), cached per (document profile, mode, monitor). On the GPU canvas the transform, plus Proof Colors / Gamut Warning / 32-bit preview, is baked into a 33³ 3D LUT the canvas shader's final pass applies; the CPU canvas runs an 8-bit `photocraft-cms` transform on the composite. When the document profile matches the monitor (sRGB on sRGB) there is no LUT and no transform. Linear composites (EXR/HDR, tagged linear sRGB on import) are stored sRGB-encoded in the 8-bit canvas texture. CMYK documents are read through their embedded CMYK profile (`photocraft_color::convert::with_cmyk_space`, entered by the compositors and composite exports).
+- **Display transform** (`engine/src/display_color.rs`): the canvas is always colour-managed, document profile → monitor profile (relative colorimetric + BPC), cached per (document profile, mode, monitor). On the GPU canvas RGB matrix/TRC transforms retain separate full-float input curves, matrix/offsets and inverse output curves (sampled densely near black); this avoids the shadow darkening of a uniform RGB cube (#7958). Other transforms and Gamut Warning retain the 33³ display LUT, and the shader applies 32-bit preview before either conversion; the CPU canvas runs an 8-bit `photocraft-cms` transform on the composite. When the document profile matches the monitor (sRGB on sRGB) there is no LUT and no transform. Linear composites (EXR/HDR, tagged linear sRGB on import) are stored sRGB-encoded in the 8-bit canvas texture. CMYK documents are read through their embedded CMYK profile (`photocraft_color::convert::with_cmyk_space`, entered by the compositors and composite exports).
 - **Monitor profile:** Edit › Color Settings › Monitor Profile: `auto`, a built-in RGB profile or an `.icc` path. In `auto` each window uses the profile of the display it is on (#569): the desktop app reads every display's id, name, frame and ICC profile at launch and again when the app comes back to the front, when any window is on an unknown or resized display (at most every 30 s; a trigger inside that window is deferred) and when Edit › Color Settings opens (`ui-egui/src/monitor_status.rs`). macOS reads AppKit `NSScreen` through `osascript` (no FFI); X11 reads RandR outputs and the default colord profile matched by exact `XRANDR_name`; native Wayland and Xwayland windows from a Wayland session stay on sRGB because eframe/winit cannot safely set the app surface's Wayland image description. The macOS helper is stopped after 10 s. There is deliberately no periodic re-read (#569 decision: a read costs about 0.2 s of CPU), so a profile reassigned while PhotoCraft stays in front with no window moving is picked up at the next return to the front or Color Settings. X11 selects the root window's RandR output by winit's current-monitor name and other windows by their overlapping RandR frame; macOS follows `NSWindow.screen`. Elsewhere `auto` is sRGB. The GPU canvas keeps one texture per document and a display LUT per (document, display); CPU canvas textures are per (document, display). `ColorState::monitor_status_for` says what is applied per display: `auto`, `manual`, or `fallback` to sRGB with the reason (missing, unreadable, non-RGB or unusable as a destination), and whether the reading is an earlier one kept after a failed re-read; `edit.colorSettings` (`monitorStatus`, `displays`), Help › System Info and the Color Settings dialog show it, and a fallback in `auto` posts a notice. Letting macOS colour-match the canvas instead is #581 (an architecture decision).
 - **HDR/EDR output** (an `rgba16float` surface with an extended-range colorspace) is a later-phase feature. The interfaces already carry `f32` pixels.
 
@@ -555,7 +555,7 @@ codegen-units = 1
 opt-level = 2          # image code is unusable at opt-level 0
 ```
 
-Versions get pinned when we scaffold, using the numbers in `rust-framework-options.md`.
+Dependency requirements are centralized in the workspace `Cargo.toml` (`[workspace.dependencies]`); `Cargo.lock` records the exact resolved versions.
 
 ---
 
@@ -578,17 +578,17 @@ Each phase ends with a demoable build and green CI on all targets. Phases 8–10
 
 ## 16. Open decisions
 
-1. **UI toolkit.** The leading option is egui on winit + wgpu. Bevy, Slint and Qt are the alternatives (see `rust-framework-options.md`). This plan works with any of them.
-2. **License.** MIT/Apache-2.0 is maximally reusable. GPL-3.0 is the Krita/GIMP model and protects against proprietary forks. Note that some candidate deps are LGPL (rawler) or GPL-or-commercial (Slint), and MIT/Apache would constrain which of them we can use.
-3. **Project name.** `photocraft` (the repo name) is assumed.
-4. **PSD crate.** Build our own, or adopt or fork `ag-psd`/`psd`. Decide after the week-1 spike.
-5. **Default working depth and blending.** 8-bit + gamma-space blending matches Photoshop. 16-bit/float + linear is the modern default. The proposal is to follow Photoshop by default and make the other a per-document option.
-6. **Scope of Photoshop plugin compatibility.** Decided: no native `.8BF` hosting; a sandboxed WebAssembly plug-in API instead (see [`plugins.md`](plugins.md)).
+1. **License.** MIT/Apache-2.0 is maximally reusable. GPL-3.0 is the Krita/GIMP model and protects against proprietary forks. Note that some candidate deps are LGPL (rawler) or GPL-or-commercial (Slint), and MIT/Apache would constrain which of them we can use.
+2. **Project name.** `photocraft` (the repo name) is assumed.
+3. **PSD crate.** Build our own, or adopt or fork `ag-psd`/`psd`. Decide after the week-1 spike.
+4. **Default working depth and blending.** 8-bit + gamma-space blending matches Photoshop. 16-bit/float + linear is the modern default. The proposal is to follow Photoshop by default and make the other a per-document option.
 
 ## Revision history
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-21 | minor | Removed references to the deleted `rust-framework-options.md`; dropped the UI toolkit and plug-in items from Open decisions, both recorded as decided |
+| 2026-10-20 | minor | GPU display matrix/shaper path preserves near-black ICC values; complex transforms retain the 3D LUT fallback (#7958) |
 | 2026-10-13 | minor | Workspace size and `#[test]` counts recounted (393k → 539k lines, 5,460 → 8,040 tests); other current-state figures unchanged |
 | 2026-10-10 | minor | Current-state summary and deviations from the plan; status line; broken link to `photoshop-parity.md` repointed to `target-app-parity.md` |
 | 2026-09-30 | major | Design plan v1 |

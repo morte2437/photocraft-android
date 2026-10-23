@@ -307,6 +307,10 @@ pub struct CafWorkspace {
     pub error: Option<String>,
 }
 
+/// The preview's error when the sampling area has no pixels outside the fill area (the engine's
+/// fill refuses that case with the same words).
+const NOTHING_TO_SAMPLE: &str = "nothing to sample from: the sampling area has no pixels outside the fill area";
+
 /// The plan of the current state (without strokes when `strokes` is false).
 fn plan_params(w: &CafWorkspace, strokes: bool) -> Value {
     let o = &w.opts;
@@ -623,14 +627,23 @@ pub fn apply(app: &mut PhotocraftApp) -> Result<Value, String> {
     r
 }
 
-/// OK: fill and close.
+/// OK: fill and close. A fill that fails (nothing to sample from, a fill area too large, …)
+/// leaves the workspace open with the error in its panel, so the areas can be fixed and OK
+/// pressed again instead of the work being thrown away.
 pub fn commit(app: &mut PhotocraftApp) {
-    let ok = apply(app);
-    if let Err(e) = ok {
-        app.ui.status = e;
-        app.ui.status_error = true;
+    match apply(app) {
+        Ok(_) => close(app),
+        Err(e) => report(app, e),
     }
-    close(app);
+}
+
+/// An Apply or OK that failed: the error in the panel and the status bar.
+fn report(app: &mut PhotocraftApp, e: String) {
+    if let Some(w) = app.distort.caf.as_mut() {
+        w.error = Some(e.clone());
+    }
+    app.ui.status = e;
+    app.ui.status_error = true;
 }
 
 /// Cancel (button, Esc): closes; what was applied stays. The settings are kept.
@@ -678,6 +691,9 @@ fn undo(app: &mut PhotocraftApp) {
             w.redo.push(step);
             w.restate_all();
             w.stale();
+            // The sampling area changed, as with a new stroke: an error a failed OK or Apply left
+            // in the panel no longer applies (the other steps rebase, which clears it too).
+            w.error = None;
             false
         }
         Step::Fill(_) => {
@@ -710,6 +726,7 @@ fn redo(app: &mut PhotocraftApp) {
             w.undo.push(step);
             w.restate_all();
             w.stale();
+            w.error = None;
             false
         }
         Step::Fill(e) => {
@@ -895,10 +912,14 @@ pub fn control(app: &mut PhotocraftApp, ui: &Value) -> Result<Value, String> {
     if flag("waitPreview") {
         wait_preview(app)?;
     }
-    // OK last, with the settings given alongside.
+    // OK last, with the settings given alongside. A failed fill keeps the workspace open, as
+    // the OK button does.
     if flag("commit") {
         let r = apply(app);
-        close(app);
+        match &r {
+            Ok(_) => close(app),
+            Err(e) => report(app, e.clone()),
+        }
         return r.map(|v| json!({"committed": true, "result": v}));
     }
     Ok(app.distort.caf.as_ref().map(CafWorkspace::describe).unwrap_or(Value::Null))
@@ -932,6 +953,12 @@ fn compute_preview(
         photocraft_engine::EngineError::Cancelled => "cancelled".to_string(),
         e => e.to_string(),
     })?;
+    // Patches come only from the sampling area outside the fill area. With none (the Sampling
+    // Brush erased it all, a Custom area not painted yet) the fill would come out black, so the
+    // preview says so instead of showing that.
+    if !plan.source.iter().any(|s| *s) {
+        return Err(NOTHING_TO_SAMPLE.into());
+    }
     let (w, h) = (plan.rect.width() as usize, plan.rect.height() as usize);
     let n = plan.fmt.channels();
     let filled =
@@ -1566,8 +1593,7 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         Some("cancel") => cancel(app),
         Some("apply") => {
             if let Err(e) = apply(app) {
-                app.ui.status = e;
-                app.ui.status_error = true;
+                report(app, e);
             }
         }
         _ => {}
@@ -1676,6 +1702,65 @@ mod tests {
         // The reset button goes back to the selection.
         let d = control(&mut app, &json!({"reset": "lasso"})).unwrap();
         assert_eq!(d["fillArea"], json!(400));
+    }
+
+    /// A sampling area the Sampling Brush erased entirely previews as an error naming the
+    /// problem, not as the black fill it would make; undoing the stroke brings the preview back.
+    #[test]
+    fn an_erased_sampling_area_previews_as_an_error() {
+        let mut app = app_with_selection();
+        open(&mut app).unwrap();
+        control(&mut app, &json!({"sampling": "rectangular", "waitPreview": true})).unwrap();
+        assert!(ws(&app).describe()["previewError"].is_null());
+        // Subtracting (the default) with a brush wider than the 200 × 160 window.
+        let e = control(&mut app, &json!({"stroke": {"points": [[100.0, 80.0]], "size": 600}, "waitPreview": true})).unwrap_err();
+        assert!(e.contains("nothing to sample from"), "{e}");
+        let d = ws(&app).describe();
+        assert_eq!(d["sampledProxyPixels"].as_u64(), Some(0), "{d}");
+        assert!(d["previewError"].as_str().is_some_and(|e| e.contains("nothing to sample from")), "{d}");
+        let d = control(&mut app, &json!({"undo": true, "waitPreview": true})).unwrap();
+        assert!(d["previewError"].is_null(), "{d}");
+    }
+
+    /// OK whose fill fails keeps the workspace open with the error in its panel, from the button
+    /// and from the control channel, so the work isn't thrown away; once the fill can run, OK
+    /// fills and closes.
+    #[test]
+    fn a_failed_ok_keeps_the_workspace_open() {
+        let mut app = app_with_selection();
+        open(&mut app).unwrap();
+        let steps = app.session.active().unwrap().history.past_len();
+        app.session.execute("layer.setProps", json!({"locks": {"pixels": true}})).unwrap();
+        commit(&mut app);
+        assert!(app.distort.caf.is_some(), "OK keeps the workspace open when the fill fails");
+        assert!(ws(&app).error.as_deref().is_some_and(|e| e.contains("locked")), "{:?}", ws(&app).error);
+        assert!(app.ui.status_error);
+        assert!(control(&mut app, &json!({"commit": true})).unwrap_err().contains("locked"));
+        assert!(app.distort.caf.is_some(), "the control channel's OK too");
+        app.session.execute("layer.setProps", json!({"locks": {"pixels": false}})).unwrap();
+        let steps = app.session.active().unwrap().history.past_len().max(steps);
+        commit(&mut app);
+        assert!(app.distort.caf.is_none(), "OK closes once the fill runs");
+        assert!(app.session.active().unwrap().history.past_len() > steps, "and fills");
+    }
+
+    /// Undo or Redo of a sampling stroke changes what OK would fill, so it clears the error a
+    /// failed OK left in the panel, as a new stroke does; otherwise the stale error would stay
+    /// drawn over the recovered preview.
+    #[test]
+    fn undo_and_redo_of_a_stroke_clear_a_failed_oks_error() {
+        let mut app = app_with_selection();
+        open(&mut app).unwrap();
+        control(&mut app, &json!({"stroke": {"points": [[20.0, 20.0], [60.0, 20.0]], "size": 10}})).unwrap();
+        app.session.execute("layer.setProps", json!({"locks": {"pixels": true}})).unwrap();
+        commit(&mut app);
+        assert!(ws(&app).error.is_some(), "the failed OK reports in the panel");
+        control(&mut app, &json!({"undo": true})).unwrap();
+        assert!(ws(&app).error.is_none(), "Undo of the stroke clears it");
+        commit(&mut app);
+        assert!(ws(&app).error.is_some());
+        control(&mut app, &json!({"redo": true})).unwrap();
+        assert!(ws(&app).error.is_none(), "Redo of the stroke clears it too");
     }
 
     #[test]

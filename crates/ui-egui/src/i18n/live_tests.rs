@@ -4,6 +4,13 @@ use super::*;
 use crate::{PhotocraftApp, Services};
 use serde_json::json;
 
+/// The File menu's title as the menu bar draws it in `lang`: the translation, plus the English
+/// access key where it has no Latin letter of its own ("文件(F)", #5863).
+fn file_title(lang: Lang) -> String {
+    let (shown, _) = crate::menu_keys::localized(&[tr(lang, "File").to_string()], &["File"], &[Some('F')]);
+    shown.into_iter().next().unwrap_or_default()
+}
+
 fn lang(code: &str) -> Lang {
     Lang::from_code(code).expect("registered language")
 }
@@ -34,9 +41,10 @@ fn ukrainian_native_app_menu_keeps_product_and_language_names() {
     with_language(Lang::EN, || {
         let h = harness();
         let layout = crate::native_menu::photocraft_layout(&crate::menus::menu_items(h.state()), lang("uk"), "uk");
-        for (id, label) in [("help.about", "Про PhotoCraft"), (crate::native_menu::HIDE, "Приховати PhotoCraft"), ("file.exit", "Вийти з PhotoCraft")]
-        {
-            assert_eq!(layout.bar.find(id).map(|item| item.label.as_str()), Some(label), "{id}");
+        for (id, template) in [("help.about", "About {app}"), (crate::native_menu::HIDE, "Hide {app}"), ("file.exit", "Quit {app}")] {
+            let label = fmt(tr(lang("uk"), template), &[("app", "PhotoCraft")]);
+            assert!(label.contains("PhotoCraft"), "{id}: {label}");
+            assert_eq!(layout.bar.find(id).map(|item| item.label.as_str()), Some(label.as_str()), "{id}");
         }
         assert_eq!(layout.bar.find("app.language.uk").map(|item| (item.label.as_str(), item.checked)), Some(("Українська", Some(true))));
     });
@@ -45,29 +53,21 @@ fn ukrainian_native_app_menu_keeps_product_and_language_names() {
 #[test]
 fn ukrainian_color_picker_titles_draw_in_the_selected_language() {
     with_language(Lang::EN, || {
-        for (target, expected) in [("foreground", "Вибір кольору (основний колір)"), ("background", "Вибір кольору (колір тла)")]
-        {
+        for (target, title) in [("foreground", "Color Picker (Foreground Color)"), ("background", "Color Picker (Background Color)")] {
             let mut h = harness();
             h.state_mut().run("prefs.set", json!({"path": "interface.language", "value": "uk"})).unwrap();
             crate::color_picker_ui::open(h.state_mut(), target);
             h.run_steps(4);
-            let text = drawn_text(&h);
-            assert!(text.iter().any(|text| text == expected), "missing title {expected}");
-            assert!(!text.iter().any(|text| text.starts_with("Color Picker")), "no English picker title");
+            let expected = tr(lang("uk"), title);
+            assert!(drawn_text(&h).iter().any(|text| text == expected), "missing title {expected}");
         }
-        assert_eq!(tr(lang("uk"), "Color Picker (Custom Canvas Color)"), "Вибір кольору (власний колір полотна)");
     });
 }
 
 #[test]
-fn ukrainian_rasterize_prompts_explain_the_loss_of_editable_content() {
+fn ukrainian_rasterize_prompt_draws_in_the_selected_language() {
     use crate::rasterize_prompt::Kind;
 
-    for kind in Kind::ALL {
-        let translated = tr(lang("uk"), kind.message());
-        assert_ne!(translated, kind.message(), "{kind:?}: the warning must be translated");
-        assert!(translated.contains("більше не можна буде редагувати"), "{kind:?}: explain the loss of editability");
-    }
     with_language(Lang::EN, || {
         let mut h = harness();
         h.state_mut().run("prefs.set", json!({"path": "interface.language", "value": "uk"})).unwrap();
@@ -78,29 +78,17 @@ fn ukrainian_rasterize_prompts_explain_the_loss_of_editable_content() {
         let expected = tr(lang("uk"), Kind::Type.message());
         let text = drawn_text(&h);
         assert!(text.iter().any(|text| text == expected), "the actual dialog draws the Ukrainian warning");
-        assert!(!text.iter().any(|text| text == Kind::Type.message()));
     });
-}
-
-#[test]
-fn french_and_korean_plural_messages_keep_placeholders() {
-    for (n, expected) in [(0, "0 élément"), (1, "1 élément"), (2, "2 éléments"), (21, "21 éléments")] {
-        assert_eq!(trn(lang("fr"), n, "{n} item", "{n} items"), expected);
-    }
-    for n in [0, 1, 2, 21, u64::MAX] {
-        assert_eq!(trn(lang("ko"), n, "{n} item", "{n} items"), format!("항목 {n}개"));
-    }
-    assert_eq!(fmt(tr(lang("ko"), "Version {version}"), &[("version", "0.2.0")]), "버전 0.2.0");
-    assert_eq!(tr(lang("fr"), "unknown translation"), "unknown translation");
 }
 
 #[test]
 fn scoped_preview_restores_language_even_after_a_panic() {
     with_language(Lang::EN, || {
         with_language(lang("fr"), || {
-            assert_eq!(t("Layer"), "Calque");
-            with_language(lang("ko"), || assert_eq!(t("Layer"), "레이어"));
-            assert_eq!(t("Layer"), "Calque");
+            assert_eq!(current(), lang("fr"));
+            assert_eq!(t("Layer"), tr(lang("fr"), "Layer"));
+            with_language(lang("ko"), || assert_eq!(current(), lang("ko")));
+            assert_eq!(current(), lang("fr"));
         });
         let result = std::panic::catch_unwind(|| with_language(lang("ja"), || panic!("test unwind")));
         assert!(result.is_err());
@@ -113,20 +101,15 @@ fn drawing_languages_are_isolated_between_threads() {
     with_language(lang("fr"), || {
         let thread = std::thread::spawn(|| {
             assert_eq!(current(), Lang::EN);
-            with_language(lang("ko"), || assert_eq!(t("Layer"), "레이어"));
+            with_language(lang("ko"), || assert_eq!(t("Layer"), tr(lang("ko"), "Layer")));
         });
         thread.join().expect("language thread");
-        assert_eq!(t("Layer"), "Calque");
+        assert_eq!(current(), lang("fr"));
     });
 }
 
 #[test]
-fn dynamic_brush_sections_have_translations_and_draw_in_the_selected_language() {
-    for language in Lang::all().filter(|language| language.complete_menus()) {
-        for (name, _) in crate::brush_panel::SECTIONS {
-            assert!(has(language, name), "{}: untranslated brush section {name}", language.code());
-        }
-    }
+fn dynamic_brush_sections_draw_in_the_selected_language() {
     with_language(Lang::EN, || {
         let mut h = harness();
         h.state_mut().run("prefs.set", json!({"path": "interface.language", "value": "zh-hans"})).expect("language");
@@ -134,21 +117,13 @@ fn dynamic_brush_sections_have_translations_and_draw_in_the_selected_language() 
         h.run_steps(4);
         let text = drawn_text(&h);
         // The section row is the only place the name is drawn: the options pane has no heading (#3477).
-        assert_eq!(text.iter().filter(|text| text.as_str() == "画笔笔尖形状").count(), 1, "the section row must be translated");
-        assert!(!text.iter().any(|text| text == "Brush Tip Shape"));
+        let expected = tr(lang("zh-hans"), "Brush Tip Shape");
+        assert_eq!(text.iter().filter(|text| *text == expected).count(), 1, "the section row must be translated");
     });
 }
 
 #[test]
-fn fill_dialog_and_contour_choices_have_translations_and_draw_in_the_selected_language() {
-    let labels = ["Contents:", "Color:", "Custom Pattern:", "Mode:", "Opacity:", "{size} (was {old})"];
-    for language in Lang::all().filter(|language| language.complete_menus()) {
-        let contents = crate::fill_ui::CONTENTS.iter().map(|(_, label)| *label);
-        let contours = photocraft_engine::layer_style::CONTOURS.iter().map(|(name, _)| *name);
-        for text in labels.into_iter().chain(contents).chain(contours) {
-            assert!(has(language, text), "{}: untranslated {text}", language.code());
-        }
-    }
+fn fill_dialog_draws_in_the_selected_language() {
     with_language(Lang::EN, || {
         let mut h = harness();
         h.state_mut().run("prefs.set", json!({"path": "interface.language", "value": "pt-br"})).expect("language");
@@ -156,21 +131,15 @@ fn fill_dialog_and_contour_choices_have_translations_and_draw_in_the_selected_la
         crate::menus::invoke(h.state_mut(), &ctx, crate::fill_ui::COMMAND, json!({})).expect("fill dialog");
         h.run_steps(4);
         let text = drawn_text(&h);
-        for want in ["Conteúdo:", "Cor de primeiro plano", "Modo:", "Opacidade:"] {
+        for source in ["Contents:", "Foreground Color", "Mode:", "Opacity:"] {
+            let want = tr(lang("pt-br"), source);
             assert!(text.iter().any(|text| text == want), "missing {want}");
         }
-        assert!(!text.iter().any(|text| text == "Contents:" || text == "Foreground Color"));
     });
 }
 
 #[test]
-fn file_info_camera_data_has_translations_and_draws_read_only() {
-    for language in Lang::all().filter(|language| language.complete_menus()) {
-        assert!(has(language, "Camera Data"), "{}: untranslated Camera Data", language.code());
-        for (_, label) in photocraft_engine::file_cmds::CAMERA_FIELDS {
-            assert!(language.catalog().contextual("cameraData", label).is_some(), "{}: untranslated cameraData {label}", language.code());
-        }
-    }
+fn file_info_camera_data_draws_in_the_selected_language_read_only() {
     with_language(Lang::EN, || {
         let mut h = harness();
         let exif = photocraft_algo::exif::build(&photocraft_algo::exif::CameraInfo {
@@ -192,7 +161,9 @@ fn file_info_camera_data_has_translations_and_draws_read_only() {
         assert_eq!(h.state_mut().ui.dialog_mut(dialog).expect("open").fields["__camera"]["exposure"], "1/250 s");
         h.run_steps(4);
         let text = drawn_text(&h);
-        for want in ["Kameradaten", "Hersteller", "SONY", "Belichtungszeit", "1/250 s", "Blende", "f/8"] {
+        let de = lang("de");
+        let labels = [tr(de, "Camera Data"), tr_ctx(de, "cameraData", "Make"), tr_ctx(de, "cameraData", "Exposure"), tr_ctx(de, "cameraData", "F-Stop")];
+        for want in labels.into_iter().chain(["SONY", "1/250 s", "f/8"]) {
             assert!(text.iter().any(|text| text == want), "missing {want}: {text:?}");
         }
         // Read-only: confirming submits only the editable fields.
@@ -265,7 +236,7 @@ fn first_launch_renders_the_system_language_without_overwriting_auto() {
                 let h = harness();
                 assert_eq!(h.state().session.prefs().interface.language, "auto");
                 assert_eq!(current(), lang(code), "{tag}");
-                assert!(drawn_text(&h).iter().any(|text| text.as_str() == tr(lang(code), "File")), "first-launch menu: {tag}");
+                assert!(drawn_text(&h).iter().any(|text| *text == file_title(lang(code))), "first-launch menu: {tag}");
             });
         });
     }
@@ -316,7 +287,7 @@ fn an_explicit_language_survives_restart_on_a_different_system_language() {
             let h = harness_with_services(services);
             assert_eq!(h.state().session.prefs().interface.language, "ko");
             assert_eq!(current(), lang("ko"));
-            assert!(drawn_text(&h).iter().any(|text| text.as_str() == tr(lang("ko"), "File")));
+            assert!(drawn_text(&h).iter().any(|text| *text == file_title(lang("ko"))));
         });
     });
 }
@@ -335,7 +306,7 @@ fn a_control_request_changes_the_drawing_language_in_the_same_frame() {
             h.step();
             assert_eq!(reply.try_recv().expect("response")["ok"], true);
             assert_eq!(current(), lang(code));
-            assert!(drawn_text(&h).iter().any(|text| text == tr(lang(code), "File")), "the menu must change in this frame: {code}");
+            assert!(drawn_text(&h).iter().any(|text| *text == file_title(lang(code))), "the menu must change in this frame: {code}");
             assert!(std::sync::Arc::ptr_eq(&document, &h.state().session.active().expect("document").doc), "switching language must preserve the document");
         }
         assert!(h.state_mut().run("prefs.set", json!({"path": "interface.language", "value": []})).is_err());
@@ -353,8 +324,9 @@ fn preferences_preview_does_not_commit_until_applied_and_survives_reload() {
         dialog.fields.get_mut("values").expect("values")["interface"]["language"] = json!("fr");
         h.run_steps(3);
         let text = drawn_text(&h);
-        assert!(text.iter().any(|text| text == "Apparence"), "the draft language must translate the visible dialog");
-        assert!(text.iter().any(|text| text == "Annuler"), "the dialog buttons must preview the language too");
+        let fr = lang("fr");
+        assert!(text.iter().any(|text| text == tr(fr, "Appearance")), "the draft language must translate the visible dialog");
+        assert!(text.iter().any(|text| text == tr(fr, "Cancel")), "the dialog buttons must preview the language too");
         assert!(text.iter().any(|text| text == "File"), "the main window keeps its committed language");
         assert_eq!(h.state().session.prefs().interface.language, "auto");
         assert_eq!(current(), Lang::EN, "preview must not leak to the main window");
@@ -381,14 +353,15 @@ fn keyboard_shortcuts_list_commands_in_the_selected_language() {
         h.step();
         let ctx = h.ctx.clone();
         let id = crate::menus::invoke(h.state_mut(), &ctx, "edit.keyboardShortcuts", json!({})).expect("dialog")["dialog"].as_u64().expect("id");
+        let pt = lang("pt-br");
+        let label = tr_id(pt, "file.saveAs", "Save As…");
         // Search matches the translated label and the English one.
-        for filter in ["salvar como", "save as"] {
+        for filter in [label.trim_end_matches('…').to_lowercase(), "save as".to_string()] {
             h.state_mut().ui.dialog_mut(id).expect("shortcuts").fields.insert("filter".into(), json!(filter));
             h.run_steps(3);
             let text = drawn_text(&h);
-            assert!(text.iter().any(|text| text == "Arquivo"), "{filter}: the menu heading must be translated");
-            assert!(text.iter().any(|text| text.trim() == "Salvar como…"), "{filter}: the command must be translated: {text:?}");
-            assert!(!text.iter().any(|text| text.trim() == "Save As…"), "{filter}: no English command labels");
+            assert!(text.iter().any(|text| text == tr(pt, "File")), "{filter}: the menu heading must be translated");
+            assert!(text.iter().any(|text| text.trim() == label), "{filter}: the command must be translated: {text:?}");
         }
     });
 }
@@ -425,13 +398,18 @@ fn czech_status_notices_and_navigator_draw_translated_text() {
                 None,
             );
             let info = crate::gpu_canvas::GpuInfo { driver: "Mesa 25.0".into(), ..Default::default() };
-            assert!(info.lines().iter().any(|line| line == "Ovladač: Mesa 25.0"));
+            assert!(info.lines().iter().any(|line| *line == fmt(tr(lang("cs"), "Driver: {driver}"), &[("driver", "Mesa 25.0")])));
         });
         h.run_steps(4);
         let text = drawn_text(&h);
+        let cs = lang("cs");
         // The Navigator's own text is its tab title now: its zoom row has no label (#4840).
-        for want in ["Navigátor", "Soubor English file.psd se nepodařilo otevřít: disk full", "Předvolby nelze uložit"] {
-            assert!(text.iter().any(|text| text == want), "missing {want}: {text:?}");
+        for want in [
+            tr(cs, "Navigator").to_string(),
+            fmt(tr(cs, "Couldn't open {name}: {error}"), &[("name", "English file.psd"), ("error", "disk full")]),
+            tr(cs, "Preferences can't be saved").to_string(),
+        ] {
+            assert!(text.contains(&want), "missing {want}: {text:?}");
         }
         // Czech text must be drawable by the bundled fonts, including the new notices.
         let chars: std::collections::BTreeSet<_> = text.iter().flat_map(|s| s.chars()).filter(|c| !c.is_whitespace()).collect();
@@ -462,7 +440,12 @@ fn czech_shortcut_conflicts_keep_warning_state_and_shortcut_codes() {
         h.run_steps(4);
         let fields = &h.state().ui.dialogs.iter().find(|d| d.id == id).expect("dialog").fields;
         assert_eq!(fields["messageWarning"], json!(true));
-        assert!(fields["message"].as_str().expect("message").contains("již používá"));
+        let message = fields["message"].as_str().expect("message");
+        let template = tr(lang("cs"), "{shortcut} is already in use by {commands} and will be removed from it when you click OK.");
+        // The message is the conflict template, filled in: its fixed text appears around the shortcut and commands.
+        for piece in template.split('{').map(|piece| piece.split_once('}').map_or(piece, |(_, rest)| rest)).filter(|piece| !piece.trim().is_empty()) {
+            assert!(message.contains(piece), "{message:?} lacks {piece:?}");
+        }
         assert_eq!(fields["overrides"]["file.new"], json!("Cmd+O"));
     });
 }

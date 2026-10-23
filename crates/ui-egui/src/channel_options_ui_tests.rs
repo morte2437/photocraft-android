@@ -103,13 +103,42 @@ fn quick_mask_options_have_no_name_or_spot_and_bad_channels_open_nothing() {
     assert!(app.ui.dialogs.is_empty());
 }
 
+/// Layer Mask Display Options: just the colour and opacity, from and to the
+/// `layer_mask_overlay` preference; Channel Options… opens it on a targeted layer mask.
+#[test]
+fn layer_mask_display_options_set_the_rubylith() {
+    let mut app = app();
+    let f = fields(&app, &json!("mask")).unwrap();
+    assert_eq!(f["__label"], json!("Layer Mask Display Options…"));
+    assert!(!f.contains_key("name") && !f.contains_key("indicates"));
+    assert_eq!((f["color"].clone(), f["opacity"].clone()), (json!("#ff0000"), json!(50.0)));
+    assert_eq!(params(&f), json!({"channel": "mask", "color": "#ff0000", "opacity": 50.0}));
+    let id = open(&mut app, &json!("mask")).unwrap();
+    app.ui.dialog_mut(id).unwrap().fields.insert("color".into(), json!("#00ff00"));
+    crate::dialogs::confirm(&mut app, id).unwrap();
+    assert_eq!(app.session.prefs().layer_mask_overlay.color, "#00ff00");
+    // Channels › Channel Options… with the layer mask targeted.
+    app.run("layer.layerMask.revealAll", json!({})).unwrap();
+    app.run("channel.target", json!({"channel": "mask"})).unwrap();
+    let ctx = egui::Context::default();
+    crate::menus::invoke(&mut app, &ctx, COMMAND, json!({})).unwrap();
+    assert_eq!(app.ui.dialogs.last().unwrap().fields["channel"], json!("mask"));
+    // Or with it targeted by `\` (the rubylith), which leaves the Channels target alone.
+    app.run("channel.target", json!({"channel": "composite"})).unwrap();
+    app.ui.dialogs.clear();
+    app.run(photocraft_engine::mask_view_cmds::OVERLAY_ID, json!({})).unwrap();
+    app.sync_mask_targets();
+    crate::menus::invoke(&mut app, &ctx, COMMAND, json!({})).unwrap();
+    assert_eq!(app.ui.dialogs.last().unwrap().fields["channel"], json!("mask"));
+}
+
 #[test]
 fn dialog_body_renders_for_alpha_spot_and_quick_mask() {
     let mut app = app();
     app.run("channel.options", json!({"channel": 0, "indicates": "spot"})).unwrap();
     let ctx = egui::Context::default();
     crate::theme::install_fonts(&ctx);
-    for channel in [json!(0), json!("quickMask")] {
+    for channel in [json!(0), json!("quickMask"), json!("mask")] {
         let mut f = fields(&app, &channel).unwrap();
         ctx.run_ui(Default::default(), |ui| body(ui, &mut f)).textures_delta.clear();
         assert!(owns(&f));

@@ -50,6 +50,20 @@ pub(crate) fn pointer(app: &mut PhotocraftApp, ev: ToolEvent) -> bool {
             let b = LayerBox { end: [x, y], ..*b };
             app.layer_box = None;
             let (w, h) = (b.end[0] - b.start[0], b.end[1] - b.start[1]);
+            if w == 0.0 && h == 0.0 && !b.add {
+                // A click on the pasteboard clears the layer target; a drag from there still
+                // uses the marquee, and a click on transparent pixels inside the canvas does not.
+                if let Some(st) = app.session.active() {
+                    let rect = st.doc.bounds();
+                    let outside = b.start[0] < f64::from(rect.x0)
+                        || b.start[1] < f64::from(rect.y0)
+                        || b.start[0] >= f64::from(rect.x1)
+                        || b.start[1] >= f64::from(rect.y1);
+                    if outside {
+                        let _ = app.run("select.deselectLayers", json!({}));
+                    }
+                }
+            }
             if w == 0.0 || h == 0.0 {
                 return true;
             }
@@ -113,6 +127,31 @@ mod tests {
         let mut sel = app.session.active().unwrap().selected_layers();
         sel.sort_unstable_by_key(|l| l.0);
         assert_eq!(sel, ids);
+    }
+
+    /// #4923: clicking the pasteboard, but not empty canvas pixels, clears layer targets.
+    /// A Shift-click preserves the selection, and a pasteboard drag remains a marquee.
+    #[test]
+    fn pasteboard_click_deselects_layers_without_affecting_empty_canvas_clicks() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"width": 64, "height": 64, "background": "transparent"})).unwrap();
+        app.run("layer.new.layer", json!({})).unwrap();
+        app.ui.tool = Tool::Move;
+        app.ui.tool_options.move_auto_select = true;
+        let layer = app.session.active().unwrap().active_layer.unwrap();
+        assert_eq!(app.session.active().unwrap().selected_layers(), vec![layer]);
+        let click = |app: &mut PhotocraftApp, p: [f64; 2], mods| {
+            tool_event(app, ToolEvent::Down { x: p[0], y: p[1], pressure: 1.0 }, mods);
+            tool_event(app, ToolEvent::Up { x: p[0], y: p[1] }, mods);
+        };
+        click(&mut app, [30.0, 30.0], egui::Modifiers::NONE);
+        assert_eq!(app.session.active().unwrap().selected_layers(), vec![layer], "empty pixels are still in the canvas");
+        click(&mut app, [-10.0, 30.0], egui::Modifiers::SHIFT);
+        assert_eq!(app.session.active().unwrap().selected_layers(), vec![layer], "Shift adds, not clears");
+        click(&mut app, [-10.0, 30.0], egui::Modifiers::NONE);
+        let st = app.session.active().unwrap();
+        assert!(st.selected_layers().is_empty() && st.active_layer.is_none());
+        assert!(app.layer_box.is_none());
     }
 
     /// #4058: a drag that starts on the locked Background draws the layer marquee. It does not

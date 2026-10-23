@@ -42,11 +42,15 @@ roxmltree = "0.20"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tempfile = "3"
+chrono = { workspace = true }
 
 # `file_cmds::same_file` on Windows: the volume serial number and file index, so a hard link to a
 # file is that file (std's `MetadataExt::file_index` is unstable).
 [target.'cfg(windows)'.dependencies]
 same-file = "1"
+# `file.print` loads Windows.Data.Pdf.dll before calling into it (#5884): the safe binding
+# ui-egui and craft-print already use, pinned to the same version.
+winsafe = { version = "=0.0.29", default-features = false, features = ["kernel"] }
 
 # Printing on Unix: an IPP client for CUPS (pure Rust); the web build cannot print.
 [target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "windows")))'.dependencies]
@@ -56,6 +60,7 @@ photocraft-ipp = { workspace = true }
 photocraft-affinity = { workspace = true, features = ["synth"] }
 # Synthetic camera raw files for the open tests.
 photocraft-raw = { workspace = true, features = ["testgen"] }
+photocraft-testkit = { workspace = true }
 # WebAssembly text -> binary for plug-in test modules (Apache-2.0 WITH LLVM-exception).
 wat = "1.228"
 # Synthetic multi-part EXR fixtures for the parts-commands tests.

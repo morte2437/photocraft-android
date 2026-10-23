@@ -254,6 +254,21 @@ pub fn warp_output_size(src_rect: Rect, h: &Homography) -> Option<(u64, u64)> {
     Some((((x1 - x0) as u64).saturating_add(2), ((y1 - y0) as u64).saturating_add(2)))
 }
 
+/// The farthest from the origin (px) [`warp_surface`] places a pixel: each side of
+/// [`warp_output_bounds`] is clamped to ±2²⁰.
+pub const WARP_REACH: i32 = 1 << 20;
+
+/// Would [`warp_surface`] clip the result of warping `src_rect` by `h`: does a warped corner land
+/// past [`WARP_REACH`], whether the result is that large or only placed that far out? A caller
+/// refuses such a warp rather than lose the pixels beyond it. Empty and singular inputs have no
+/// output to clip.
+pub fn warp_output_clipped(src_rect: Rect, h: &Homography) -> bool {
+    let Some(corners) = warp_corners(src_rect, h) else { return false };
+    let lim = f64::from(WARP_REACH);
+    let within = |v: f64| v.is_finite() && v.floor() >= -lim && v.ceil() <= lim;
+    !corners.iter().all(|&(x, y)| within(x) && within(y))
+}
+
 fn warp_corners(src_rect: Rect, h: &Homography) -> Option<[(f64, f64); 4]> {
     if src_rect.is_empty() || h.inverse().is_none() {
         return None;
@@ -264,11 +279,13 @@ fn warp_corners(src_rect: Rect, h: &Homography) -> Option<[(f64, f64); 4]> {
     )
 }
 
+/// The pixel rectangle over the warped `corners` plus a pixel for filter support, each side
+/// clamped to [`WARP_REACH`]; `None` when a corner is not finite.
 fn corner_bounds(corners: &[(f64, f64); 4]) -> Option<Rect> {
     if !corners.iter().all(|c| c.0.is_finite() && c.1.is_finite()) {
         return None;
     }
-    let lim = (1 << 20) as f64;
+    let lim = f64::from(WARP_REACH);
     let bx0 = corners.iter().map(|c| c.0).fold(f64::MAX, f64::min).floor().max(-lim) as i32 - 1;
     let by0 = corners.iter().map(|c| c.1).fold(f64::MAX, f64::min).floor().max(-lim) as i32 - 1;
     let bx1 = corners.iter().map(|c| c.0).fold(f64::MIN, f64::max).ceil().min(lim) as i32 + 1;
@@ -294,7 +311,7 @@ fn warp(
         converted = src.try_convert(fmt)?;
         &converted
     };
-    let mut out = Surface::new(fmt);
+    let out = Surface::new(fmt);
     if src_rect.is_empty() || clip.is_some_and(|c| c.is_empty()) {
         return Ok(out);
     }
@@ -366,7 +383,7 @@ fn warp(
             return Ok(None);
         }
         let k = finished.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-        // The last few percent are the writes.
+        // Short of 100 %: the result is still pruned and handed back after the last tile.
         ctl.progress(0.98 * k as f32 / total as f32);
         // Source footprint of this tile (inverse-mapped corners of its sampled part), padded for the filter.
         let tc = [(t.x0, t.y0), (t.x1, t.y0), (t.x1, t.y1), (t.x0, t.y1)].map(|(x, y)| (x as f64, y as f64));
@@ -495,41 +512,40 @@ fn warp(
                 any = true;
                 let o = ((y - t.y0) as usize * w + (x - t.x0) as usize) * n;
                 for c in 0..a {
-                    // Integer storage clips on write; float colours retain their signed/HDR range.
-                    outp[o + c] = (acc[c] / al) as f32;
+                    // Un-premultiply by the unclamped alpha: bicubic overshoots it past 1 next to
+                    // partly transparent pixels, and dividing by the clamped 1 would lighten the
+                    // colour by the overshoot (#6203). Integer storage clips on write; float
+                    // colours retain their signed/HDR range.
+                    outp[o + c] = (acc[c] / acc[a]) as f32;
                 }
                 outp[o + a] = al as f32;
             }
         }
         Ok(any.then_some((*t, outp)))
     };
-    let result_bytes = tiles.len().checked_mul(std::mem::size_of::<(Rect, Vec<f32>)>()).ok_or(photocraft_raster::AllocationError::SizeOverflow)?;
-    let mut done = Vec::new();
-    done.try_reserve_exact(tiles.len()).map_err(|_| photocraft_raster::AllocationError::NotEnoughMemory { bytes: result_bytes })?;
-    let done = std::sync::Mutex::new(done);
+    // Each tile is written as soon as it is warped, so only the tiles in flight hold their `f32`
+    // pixels: kept until the last one was done, they cost 16 bytes a pixel of an RGBA result on
+    // top of the result's own (#7807).
+    let out = std::sync::Mutex::new(out);
+    let warp_and_write = |tile: &Rect| -> Result<(), photocraft_raster::AllocationError> {
+        if let Some((r, v)) = work(tile)? {
+            out.lock().unwrap_or_else(std::sync::PoisonError::into_inner).try_write_region(r, &v)?;
+        }
+        Ok(())
+    };
     #[cfg(not(target_arch = "wasm32"))]
     {
         use rayon::prelude::*;
-        tiles.into_par_iter().try_for_each(|tile| -> Result<(), photocraft_raster::AllocationError> {
-            if let Some(result) = work(&tile)? {
-                done.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(result);
-            }
-            Ok(())
-        })?;
+        tiles.into_par_iter().try_for_each(|tile| warp_and_write(&tile))?;
     }
     #[cfg(target_arch = "wasm32")]
     for tile in tiles {
-        if let Some(result) = work(&tile)? {
-            done.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(result);
-        }
+        warp_and_write(&tile)?;
     }
-    let done = done.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
     if ctl.cancelled() {
-        return Ok(out);
+        return Ok(Surface::new(fmt));
     }
-    for (r, v) in done {
-        out.try_write_region(r, &v)?;
-    }
+    let mut out = out.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
     out.prune();
     Ok(out)
 }
@@ -551,6 +567,8 @@ mod tests {
         }
     }
 
+    /// The unclipped size matches the clipped bounds where nothing is clipped, saturates when it
+    /// can't be represented, and is `None` for empty or singular inputs.
     #[test]
     fn output_size_saturates_overflows_and_preserves_filter_support() {
         let src = Rect::new(0, 0, 24, 16);
@@ -561,6 +579,20 @@ mod tests {
         assert_eq!(warp_output_size(src, &huge), Some((u64::MAX, u64::MAX)));
         assert_eq!(warp_output_size(Rect::EMPTY, &Homography::IDENTITY), None);
         assert_eq!(warp_output_size(src, &Homography([0.0; 9])), None);
+    }
+
+    /// [`warp_output_clipped`] says yes exactly when [`warp_output_bounds`] clamps a side (#7807).
+    #[test]
+    fn output_clipped_matches_the_clamped_bounds() {
+        let src = Rect::new(0, 0, 24, 16);
+        let at = |dx: f64| Homography([1.0, 0.0, dx, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+        let edge = f64::from(WARP_REACH) - 24.0;
+        assert!(!warp_output_clipped(src, &at(edge)), "the right edge lands on the reach");
+        assert_eq!(warp_output_bounds(src, &at(edge)).map(|b| b.x1), Some(WARP_REACH + 1));
+        assert!(warp_output_clipped(src, &at(edge + 1.0)), "one pixel past it");
+        assert_eq!(warp_output_bounds(src, &at(edge + 1.0)).map(|b| b.x1), Some(WARP_REACH + 1), "clamped");
+        assert!(warp_output_clipped(src, &at(-f64::from(WARP_REACH) - 1.0)));
+        assert!(!warp_output_clipped(Rect::EMPTY, &at(1e12)), "nothing to clip");
     }
 
     #[test]
@@ -806,6 +838,32 @@ mod tests {
         assert!(b.width().abs_diff(20) <= 2 && b.height().abs_diff(40) <= 2, "{b:?}");
         let p = rot.pixel(20, 10);
         assert!((p[0] - 0.2).abs() < 0.01 && p[3] > 0.99, "{p:?}");
+    }
+
+    /// #6203: a bicubic rotation of a sprite whose edge pixels are partly transparent overshoots
+    /// its alpha past 1. The colour must stay the sprite's, not grow with the overshoot into a
+    /// light border.
+    #[test]
+    fn rotation_keeps_the_colour_of_a_soft_edged_sprite() {
+        let mut s = rgba();
+        s.fill_rect(Rect::new(10, 10, 30, 30), &[0.8, 0.6, 0.4, 0.5]);
+        s.fill_rect(Rect::new(11, 11, 29, 29), &[0.8, 0.6, 0.4, 1.0]);
+        let (c, k) = (20.0, std::f64::consts::FRAC_1_SQRT_2 * 10.0);
+        let q = [[c, c - 2.0 * k], [c + 2.0 * k, c], [c, c + 2.0 * k], [c - 2.0 * k, c]];
+        let h = Homography::rect_to_quad([10.0, 10.0, 30.0, 30.0], q).unwrap();
+        for interp in [Interp::Bicubic, Interp::Bilinear] {
+            let out = warp_surface(&s, s.content_bounds(), &h, interp).unwrap();
+            let b = out.content_bounds();
+            for y in b.y0..b.y1 {
+                for x in b.x0..b.x1 {
+                    let p = out.pixel(x, y);
+                    if p[3] > 0.0 {
+                        let off = (0..3).map(|i| (p[i] - [0.8, 0.6, 0.4][i]).abs()).fold(0.0f32, f32::max);
+                        assert!(off <= 1.0 / 255.0, "{interp:?} ({x}, {y}): {p:?}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]

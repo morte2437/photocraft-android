@@ -157,7 +157,7 @@ pub fn option_keys(tool: Tool) -> &'static [&'static str] {
     }
     match tool {
         Tool::Move => reset!(move_auto_select, move_target, move_show_transform),
-        Tool::RectMarquee | Tool::EllipseMarquee => reset!(feather, anti_alias, marquee_style, marquee_width, marquee_height),
+        Tool::RectMarquee | Tool::EllipseMarquee => reset!(feather, anti_alias, marquee_style, marquee_width, marquee_height, marquee_unit),
         // The single-pixel marquees are never anti-aliased: Feather is their only option.
         Tool::SingleRowMarquee | Tool::SingleColumnMarquee => reset!(feather),
         Tool::Lasso | Tool::PolygonLasso => reset!(feather, anti_alias),
@@ -191,7 +191,9 @@ pub fn option_keys(tool: Tool) -> &'static [&'static str] {
         Tool::MagicEraser => reset!(tolerance, anti_alias, contiguous, magic_eraser_opacity),
         Tool::Gradient => reset!(gradient_style, gradient_reverse, gradient_dither, gradient_classic, gradient_blend_mode, fill_opacity),
         Tool::PaintBucket => reset!(bucket_fill_pattern, fill_opacity, tolerance, anti_alias, contiguous),
-        Tool::Type | Tool::VerticalType | Tool::HorizontalTypeMask | Tool::VerticalTypeMask => reset!(type_font, type_style, type_size, type_aa, type_align),
+        Tool::Type | Tool::VerticalType | Tool::HorizontalTypeMask | Tool::VerticalTypeMask => {
+            reset!(type_font, type_style, type_size, type_aa, type_align, type_direction, type_style_defaults)
+        }
         Tool::Zoom => reset!(zoom_scrubby),
         Tool::SpotHealing => reset!(spot_type),
         Tool::Healing => reset!(clone_aligned, clone_sample),

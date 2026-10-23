@@ -71,13 +71,53 @@ impl PinnedCorpus {
             .collect()
     }
 
+    /// Upper bound on directories visited and files collected during a single `collect` walk.
+    /// A corpus clone is operator-selected but can still contain attacker-planted symlinks; these
+    /// budgets keep a malformed tree from expanding into an unbounded traversal before the
+    /// manifest check runs. Real corpora are a few thousand files at most.
+    const MAX_DIRS: usize = 100_000;
+    const MAX_FILES: usize = 1_000_000;
+
     fn collect(&self, dir: &Path, base: &Path, out: &mut Vec<PathBuf>) {
+        let mut visited = std::collections::HashSet::new();
+        let mut dirs = 0usize;
+        self.collect_inner(dir, base, out, &mut visited, &mut dirs);
+    }
+
+    /// Walks `dir`, skipping directory symlinks and directories already seen through another
+    /// alias, and stops once the traversal or file budget is reached. `visited` holds resolved
+    /// directory identities (canonical paths) so two links to the same ancestor cannot make the
+    /// walk revisit it.
+    fn collect_inner(&self, dir: &Path, base: &Path, out: &mut Vec<PathBuf>, visited: &mut std::collections::HashSet<PathBuf>, dirs: &mut usize) {
+        if out.len() >= Self::MAX_FILES || *dirs >= Self::MAX_DIRS {
+            return;
+        }
+        // Record this directory by its resolved identity; bail if we have already walked it
+        // (a symlink cycle) or cannot resolve it.
+        match std::fs::canonicalize(dir) {
+            Ok(real) => {
+                if !visited.insert(real) {
+                    return;
+                }
+            }
+            Err(_) => return,
+        }
+        *dirs += 1;
         let Ok(rd) = std::fs::read_dir(dir) else { return };
         for e in rd.flatten() {
+            if out.len() >= Self::MAX_FILES || *dirs >= Self::MAX_DIRS {
+                return;
+            }
             let p = e.path();
-            if p.is_dir() {
-                self.collect(&p, base, out);
-            } else if p.extension().and_then(|e| e.to_str()).is_some_and(|e| self.exts.iter().any(|x| e.eq_ignore_ascii_case(x))) {
+            // Use the entry's own metadata (do not follow links) to classify it. A directory
+            // symlink is skipped entirely so aliases to ancestors cannot drive the recursion.
+            let Ok(ft) = e.file_type() else { continue };
+            if ft.is_symlink() {
+                continue;
+            }
+            if ft.is_dir() {
+                self.collect_inner(&p, base, out, visited, dirs);
+            } else if ft.is_file() && p.extension().and_then(|e| e.to_str()).is_some_and(|e| self.exts.iter().any(|x| e.eq_ignore_ascii_case(x))) {
                 out.push(p.strip_prefix(base).unwrap_or(&p).to_path_buf());
             }
         }
@@ -89,7 +129,11 @@ impl PinnedCorpus {
         self.collect(dir, dir, &mut found);
         let mut out = Vec::new();
         for f in found {
-            let rel = f.to_string_lossy().replace('\\', "/");
+            // Build the manifest-relative path from the path's own components, joined with `/`.
+            // This preserves platform filename semantics: a Unix file literally named `a\b` keeps
+            // its backslash instead of being split into a fake `a/b` traversal component. Reject
+            // anything that is not a sequence of plain names (absolute roots, `..`, etc.).
+            let rel = rel_manifest_path(&f).ok_or_else(|| format!("unsafe corpus path {}", f.display()))?;
             let bytes = std::fs::read(dir.join(&f)).map_err(|e| format!("read {rel}: {e}"))?;
             out.push((sha256::hex(&bytes), format!("{prefix}{rel}")));
         }
@@ -144,12 +188,14 @@ impl PinnedCorpus {
             }
         };
         for (_, file) in files {
+            let to = safe_dest_join(&dest, file).ok_or_else(|| format!("{file}: escapes corpus destination"))?;
             let from = locate(file).ok_or_else(|| format!("{file}: no upstream"))?;
-            place(&from, &dest.join(file))?;
+            place(&from, &to)?;
         }
-        for (from, to) in extras {
+        for (from, to_rel) in extras {
             if from.is_file() {
-                place(from, &dest.join(to))?;
+                let to = safe_dest_join(&dest, to_rel).ok_or_else(|| format!("{to_rel}: escapes corpus destination"))?;
+                place(from, &to)?;
             }
         }
         std::fs::write(dest.join("SOURCES.md"), (self.sources_md)(self)).map_err(|e| format!("write SOURCES.md: {e}"))?;
@@ -180,7 +226,8 @@ impl PinnedCorpus {
             let out = staging.join(format!("u{i}"));
             std::fs::create_dir_all(&out).map_err(|e| format!("create {}: {e}", out.display()))?;
             let mut tar = Command::new("tar");
-            tar.arg("-xzf").arg(&tgz).arg("-C").arg(&out).arg(format!("{top}/{}", up.subdir));
+            // macOS folder icons (`Icon\r`) can't be created on Windows and are never corpus files.
+            tar.arg("-xzf").arg(&tgz).arg("-C").arg(&out).arg("--exclude=Icon\r").arg(format!("{top}/{}", up.subdir));
             for (from, _) in up.extras {
                 // A root-level corpus selection (`subdir == ""`) already extracts the whole repo
                 // root; adding the same root files as individual tar selectors fails on GNU tar.
@@ -268,6 +315,49 @@ impl PinnedCorpus {
     }
 }
 
+/// Builds a `/`-joined manifest-relative path from a scanned relative path, using only the path's
+/// own `Normal` components. Returns `None` if any component is a root, prefix, current-dir, or
+/// parent-dir (`..`) element, so a scanned entry can never introduce traversal. Literal
+/// backslashes inside a single Unix filename are preserved (they are part of the name, not a
+/// separator).
+fn rel_manifest_path(rel: &Path) -> Option<String> {
+    use std::path::Component;
+    let mut parts = Vec::new();
+    for comp in rel.components() {
+        match comp {
+            Component::Normal(os) => parts.push(os.to_str()?.to_string()),
+            // Root, prefix, `.` and `..` are all rejected: a corpus entry must be a plain,
+            // forward relative path beneath the scan root.
+            _ => return None,
+        }
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    Some(parts.join("/"))
+}
+
+/// Joins a manifest-relative corpus path onto `dest`, guaranteeing the result stays within
+/// `dest`. Rejects absolute paths, parent-directory components, and any entry that would resolve
+/// outside the destination. Returns the concrete target path on success.
+fn safe_dest_join(dest: &Path, rel: &str) -> Option<PathBuf> {
+    use std::path::Component;
+    let rel_path = Path::new(rel);
+    let mut out = dest.to_path_buf();
+    for comp in rel_path.components() {
+        match comp {
+            Component::Normal(os) => out.push(os),
+            // Any non-plain component (root, prefix, `.`, `..`) could escape the destination.
+            _ => return None,
+        }
+    }
+    // The join must have added at least one component and must remain under `dest`.
+    if out == *dest || !out.starts_with(dest) {
+        return None;
+    }
+    Some(out)
+}
+
 /// Hex sha256 of a corpus file (reused by every corpus fetch, `xtask/pixls.sha256` included).
 fn file_hex(path: &std::path::Path) -> Option<String> {
     std::fs::read(path).ok().map(|b| crate::sha256::hex(&b))
@@ -315,4 +405,76 @@ pub fn fetch_pixls(update: bool) -> Result<(), String> {
     }
     println!("pixls: {} files verified in {}", crate::corpus_pins::PIXLS_FILES.len(), dest.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{rel_manifest_path, safe_dest_join};
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn rel_manifest_joins_normal_components_with_forward_slash() {
+        assert_eq!(rel_manifest_path(Path::new("a/b/c.psd")).as_deref(), Some("a/b/c.psd"));
+        assert_eq!(rel_manifest_path(Path::new("file.psd")).as_deref(), Some("file.psd"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn rel_manifest_preserves_literal_backslash_in_unix_filename() {
+        // On Unix a backslash is an ordinary filename character, not a separator. The old code
+        // turned `weird\name.psd` into `weird/name.psd`, inventing a path component that the
+        // installer would then treat as a subdirectory. The component must be kept intact.
+        let rel = Path::new("weird\\name.psd");
+        assert_eq!(rel_manifest_path(rel).as_deref(), Some("weird\\name.psd"));
+    }
+
+    #[test]
+    fn rel_manifest_rejects_traversal_and_absolute() {
+        assert_eq!(rel_manifest_path(Path::new("../escape.psd")), None);
+        assert_eq!(rel_manifest_path(Path::new("a/../../escape.psd")), None);
+        assert_eq!(rel_manifest_path(Path::new("/abs/path.psd")), None);
+        assert_eq!(rel_manifest_path(Path::new("")), None);
+    }
+
+    #[test]
+    fn safe_dest_join_contains_normal_paths() {
+        let dest = PathBuf::from("/corpus/psd");
+        let got = safe_dest_join(&dest, "sub/dir/file.psd").expect("normal path allowed");
+        assert!(got.starts_with(&dest));
+        assert!(got.ends_with("sub/dir/file.psd"));
+    }
+
+    #[test]
+    fn safe_dest_join_rejects_escapes() {
+        let dest = PathBuf::from("/corpus/psd");
+        assert_eq!(safe_dest_join(&dest, "../../etc/passwd"), None);
+        assert_eq!(safe_dest_join(&dest, "/etc/passwd"), None);
+        assert_eq!(safe_dest_join(&dest, "a/../../b"), None);
+        // An empty relative path would resolve to `dest` itself, not a file within it.
+        assert_eq!(safe_dest_join(&dest, ""), None);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn collect_skips_directory_symlinks_and_cycles() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = std::env::temp_dir().join(format!("pinned-collect-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("real")).unwrap();
+        std::fs::write(tmp.join("real/a.psd"), b"data").unwrap();
+        // A symlink back to an ancestor: the old collector would follow it and recurse forever.
+        symlink(&tmp, tmp.join("real/loop")).unwrap();
+        // A symlink to a sibling directory also must not be descended into.
+        symlink(tmp.join("real"), tmp.join("alias")).unwrap();
+
+        let corpus =
+            super::PinnedCorpus { name: "t", dest: "t", upstreams: &[], manifest: "t.sha256", exts: &["psd"], subset: false, sources_md: |_| String::new() };
+        let mut out = Vec::new();
+        corpus.collect(&tmp, &tmp, &mut out);
+        // Exactly one real file is found; symlinked directories are skipped (no cycle, no dupes).
+        assert_eq!(out, vec![PathBuf::from("real/a.psd")]);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }

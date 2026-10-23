@@ -21,27 +21,38 @@ pub fn mix(base: &Surface, filtered: &Surface, mask: &LayerMask) -> Surface {
         return out;
     }
     let n = fmt.channels();
-    let (b, f) = (base.read_region(area), filtered.read_region(area));
-    let mut k = Vec::new();
-    mask.values_into(area, &mut k);
-    let mut o = vec![0.0f32; b.len()];
-    for (i, ((bp, fp), op)) in b.chunks_exact(n).zip(f.chunks_exact(n)).zip(o.chunks_exact_mut(n)).enumerate() {
-        let m = k.get(i).copied().unwrap_or(1.0).clamp(0.0, 1.0);
-        if !fmt.alpha {
-            for c in 0..n {
-                op[c] = bp[c] + (fp[c] - bp[c]) * m;
-            }
+    // Tile by tile: the union of two sparse surfaces far apart is a rectangle of mostly nothing,
+    // and transparent pixels in tiles neither surface has stay as they are.
+    let whole = area;
+    let same_default = base.default_pixel() == filtered.default_pixel();
+    for t in whole.tiles() {
+        let area = t.rect().intersect(&whole);
+        let bare = !base.has_tiles_in(area) && !filtered.has_tiles_in(area);
+        if area.is_empty() || (bare && (fmt.alpha || same_default)) {
             continue;
         }
-        let a = n - 1;
-        let oa = bp[a] + (fp[a] - bp[a]) * m;
-        op[a] = oa;
-        for c in 0..a {
-            let pm = bp[c] * bp[a] + (fp[c] * fp[a] - bp[c] * bp[a]) * m;
-            op[c] = if oa > 0.0 { (pm / oa).clamp(0.0, 1.0) } else { 0.0 };
+        let (b, f) = (base.read_region(area), filtered.read_region(area));
+        let mut k = Vec::new();
+        mask.values_into(area, &mut k);
+        let mut o = vec![0.0f32; b.len()];
+        for (i, ((bp, fp), op)) in b.chunks_exact(n).zip(f.chunks_exact(n)).zip(o.chunks_exact_mut(n)).enumerate() {
+            let m = k.get(i).copied().unwrap_or(1.0).clamp(0.0, 1.0);
+            if !fmt.alpha {
+                for c in 0..n {
+                    op[c] = bp[c] + (fp[c] - bp[c]) * m;
+                }
+                continue;
+            }
+            let a = n - 1;
+            let oa = bp[a] + (fp[a] - bp[a]) * m;
+            op[a] = oa;
+            for c in 0..a {
+                let pm = bp[c] * bp[a] + (fp[c] * fp[a] - bp[c] * bp[a]) * m;
+                op[c] = if oa > 0.0 { (pm / oa).clamp(0.0, 1.0) } else { 0.0 };
+            }
         }
+        out.write_region(area, &o);
     }
-    out.write_region(area, &o);
     out.prune();
     out
 }
@@ -61,38 +72,51 @@ pub fn unmix(base: &Surface, mixed: &Surface, mask: &LayerMask) -> Surface {
         return out;
     }
     let n = fmt.channels();
-    let (b, x) = (base.read_region(area), mixed.read_region(area));
-    let mut k = Vec::new();
-    mask.values_into(area, &mut k);
-    let mut o = vec![0.0f32; b.len()];
-    for (i, ((bp, xp), op)) in b.chunks_exact(n).zip(x.chunks_exact(n)).zip(o.chunks_exact_mut(n)).enumerate() {
-        let m = k.get(i).copied().unwrap_or(1.0).clamp(0.0, 1.0);
-        if m < HIDDEN {
-            // A transparent base pixel (Photoshop's cache keeps white there) stays empty, so the
-            // stored pixels don't grow past the content.
-            if !fmt.alpha || bp[n - 1] > 0.0 {
-                op.copy_from_slice(bp);
+    // Tile by tile: the union of two sparse surfaces far apart is a rectangle of mostly nothing,
+    // and transparent pixels in tiles neither surface has stay as they are.
+    let whole = area;
+    // Non-alpha still needs every tile whose defaults differ (an unmix through a non-unit mask
+    // would change that default, and the clone already holds the old one).
+    let same_default = base.default_pixel() == mixed.default_pixel();
+    for t in whole.tiles() {
+        let area = t.rect().intersect(&whole);
+        let bare = !base.has_tiles_in(area) && !mixed.has_tiles_in(area);
+        if area.is_empty() || (bare && (fmt.alpha || same_default)) {
+            continue;
+        }
+        let (b, x) = (base.read_region(area), mixed.read_region(area));
+        let mut k = Vec::new();
+        mask.values_into(area, &mut k);
+        let mut o = vec![0.0f32; b.len()];
+        for (i, ((bp, xp), op)) in b.chunks_exact(n).zip(x.chunks_exact(n)).zip(o.chunks_exact_mut(n)).enumerate() {
+            let m = k.get(i).copied().unwrap_or(1.0).clamp(0.0, 1.0);
+            if m < HIDDEN {
+                // A transparent base pixel (Photoshop's cache keeps white there) stays empty, so the
+                // stored pixels don't grow past the content.
+                if !fmt.alpha || bp[n - 1] > 0.0 {
+                    op.copy_from_slice(bp);
+                }
+                continue;
             }
-            continue;
-        }
-        if !fmt.alpha {
-            for c in 0..n {
-                op[c] = (bp[c] + (xp[c] - bp[c]) / m).clamp(0.0, 1.0);
+            if !fmt.alpha {
+                for c in 0..n {
+                    op[c] = (bp[c] + (xp[c] - bp[c]) / m).clamp(0.0, 1.0);
+                }
+                continue;
             }
-            continue;
+            let a = n - 1;
+            let fa = (bp[a] + (xp[a] - bp[a]) / m).clamp(0.0, 1.0);
+            if fa <= 0.0 {
+                continue;
+            }
+            op[a] = fa;
+            for c in 0..a {
+                let pm = bp[c] * bp[a] + (xp[c] * xp[a] - bp[c] * bp[a]) / m;
+                op[c] = (pm / fa).clamp(0.0, 1.0);
+            }
         }
-        let a = n - 1;
-        let fa = (bp[a] + (xp[a] - bp[a]) / m).clamp(0.0, 1.0);
-        if fa <= 0.0 {
-            continue;
-        }
-        op[a] = fa;
-        for c in 0..a {
-            let pm = bp[c] * bp[a] + (xp[c] * xp[a] - bp[c] * bp[a]) / m;
-            op[c] = (pm / fa).clamp(0.0, 1.0);
-        }
+        out.write_region(area, &o);
     }
-    out.write_region(area, &o);
     out.prune();
     out
 }
@@ -120,6 +144,19 @@ mod tests {
         let mut m = LayerMask::reveal_all();
         m.surface = surface(PixelFormat::new(ColorMode::Grayscale, SampleType::F32, false), |x, _| vec![x as f32 / 7.0]);
         m
+    }
+
+    #[test]
+    fn mixing_sparse_surfaces_far_apart_does_not_build_their_union() {
+        // 10¹⁰ px between two single pixels would be 160 GB of floats read densely.
+        let fmt = PixelFormat::new(ColorMode::Rgb, SampleType::F32, true);
+        let (mut base, mut filtered) = (Surface::new(fmt), Surface::new(fmt));
+        base.write_pixel(0, 0, &[0.2, 0.4, 0.6, 1.0]);
+        filtered.write_pixel(100_000, 100_000, &[1.0, 0.0, 0.0, 1.0]);
+        let mixed = mix(&base, &filtered, &LayerMask::reveal_all());
+        assert_eq!(mixed.pixel(100_000, 100_000), vec![1.0, 0.0, 0.0, 1.0]);
+        let back = unmix(&base, &mixed, &LayerMask::reveal_all());
+        assert_eq!(back.pixel(100_000, 100_000), vec![1.0, 0.0, 0.0, 1.0]);
     }
 
     #[test]

@@ -108,11 +108,11 @@ The same reader is shared, as an independent copy, with VectorCraft's `vectorcra
 
 * Unit tests on synthetic containers built by the `synth` feature (stored, zlib and zstd entries,
   checksums, budgets, cycles, hostile streams, every truncation) and property tests of random
-  mutations, here and in `photocraft-io`'s `tests/affinity.rs`.
+  mutations, here and in `photocraft-io`'s `tests/it/affinity.rs`.
 * `cargo xtask corpus --affinity` fetches 21 public CC0/MIT documents, including the four
   Affinity 3 `.af` files of [samuel-etver/vector-art](https://github.com/samuel-etver/vector-art)
-  (CC0), at pinned commits, each checked against `xtask/affinity-corpus.sha256`. `tests/real_files.rs`
-  parses them; `photocraft-io`'s `tests/affinity_corpus.rs` imports and flattens each one and
+  (CC0), at pinned commits, each checked against `xtask/affinity-corpus.sha256`. `tests/it/real_files.rs`
+  parses them; `photocraft-io`'s `tests/it/affinity_corpus.rs` imports and flattens each one and
   compares it with the thumbnail Affinity saved in it (mean difference 0–4.6 of 255, with a
   ceiling per file).
 * `fuzz/` has `cargo-fuzz` targets for the whole reader (`preview`), the object stream (`stream`)

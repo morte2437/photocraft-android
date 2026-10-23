@@ -248,7 +248,8 @@ fn clicking_shape_with_path_selection_selects_its_layer() {
     assert_eq!(h.state().session.active().unwrap().active_layer.unwrap().0, rect_layer);
 }
 
-/// Work paths remain visible (outline) regardless of the active tool. Before the fix,
+/// A work path selected in the Paths panel remains visible (outline) regardless of the active tool
+/// (one that is not selected is hidden, #6551). Before the fix,
 /// `draw_overlay` was gated on `vector_tool` so paths disappeared when switching to Brush, Move,
 /// etc. This test renders the canvas with a Brush tool active and a work path present, then
 /// confirms the path's outline pixels are painted in the accent colour, proving the path is drawn.
@@ -259,6 +260,7 @@ fn path_overlay_drawn_for_non_vector_tools() {
     app.sync_views();
     // Place a work path whose top edge runs exactly along y=10 in document space.
     app.run("path.set", json!({"name": "work", "path": rect_path(50.0, 10.0, 100.0, 80.0)})).unwrap();
+    app.ui.selected_path = Some("work".into());
     // Switch to a non-vector tool — before the fix this hid the path outline.
     app.ui.tool = Tool::Brush;
 
@@ -330,4 +332,38 @@ fn path_overlay_drawn_for_non_vector_tools() {
          (accent = #{accent_r:02x}{accent_g:02x}{accent_b:02x}); \
          the path must be drawn regardless of the active tool",
     );
+}
+
+#[test]
+fn thumbnail_selection_after_hiding_extras_restores_outline() {
+    let mut h = harness();
+    let shape =
+        h.state_mut().run("shape.create", json!({"kind":"rect","rect":[40,20,60,40],"fill":"#cc3333","name":"Badge"})).unwrap()["layer"].as_u64().unwrap();
+    let active = h.state_mut().run("layer.new.layer", json!({"name":"Other"})).unwrap()["layer"].as_u64().unwrap();
+    panel(&mut h, 0);
+    let ctx = h.ctx.clone();
+    crate::menus::invoke(h.state_mut(), &ctx, "view.extras", json!({})).unwrap();
+    assert!(!h.state().ui.view.extras);
+    let row = crate::layer_row_ui::recorded(&h.ctx).into_iter().find(|r| r.layer == shape).unwrap();
+    click(&mut h, row.name.unwrap().center(), command());
+    assert!(!h.state().ui.view.extras, "selecting layers must not reveal Extras");
+    h.state_mut().run("layer.select", json!({"layer": active})).unwrap();
+    h.run_steps(2);
+    click(&mut h, egui::pos2(row.row.left() + 46.0, row.row.center().y), command());
+    assert_eq!(selection(&h), Some([40, 20, 60, 40]));
+    assert!(h.state().ui.view.shows(h.state().ui.view.show.selection_edges), "Ctrl-clicking the thumbnail reveals the new selection");
+    assert_eq!(h.state().session.active().unwrap().active_layer, Some(photocraft_doc::LayerId(active)));
+}
+
+#[test]
+fn loading_a_path_after_hiding_extras_restores_outline() {
+    let mut h = harness();
+    h.state_mut().run("path.set", json!({"name": "work", "path": rect_path(10.0, 10.0, 50.0, 40.0)})).unwrap();
+    h.state_mut().ui.tool = Tool::Pen;
+    let ctx = h.ctx.clone();
+    crate::menus::invoke(h.state_mut(), &ctx, "view.extras", json!({})).unwrap();
+    assert!(!h.state().ui.view.extras);
+    press(&mut h, Key::Enter, command());
+    assert_eq!(selection(&h), Some([10, 10, 50, 40]));
+    assert!(h.state().ui.view.shows(h.state().ui.view.show.selection_edges));
 }

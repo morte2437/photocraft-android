@@ -164,7 +164,7 @@ pub(crate) fn decode(bytes: &[u8], limits: &Limits) -> Result<Image, CodecError>
     // composite the samples into the flat image (a warning says what was lost).
     if meta.requirements.has_deep_data {
         let deep = super::deep_exr::decode_deep(&meta, bytes, limits)?;
-        return super::deep_exr::flatten(&deep);
+        return super::deep_exr::flatten(&deep, limits);
     }
 
     let pick = pick_part(&meta);

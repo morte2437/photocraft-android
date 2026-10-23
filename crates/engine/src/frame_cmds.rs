@@ -72,8 +72,8 @@ fn frame_group(s: &mut Session, grouped: &Value) -> Result<Value> {
         crate::layer_multi_cmds::layer_bounds(d.doc.layer(gid).ok_or(EngineError::NoLayer(gid))?).filter(|r| !r.is_empty()).unwrap_or_else(|| d.doc.bounds());
 
     s.edit("Frame from Layers", |doc, _| {
-        let g = doc.layer_mut(gid).ok_or(EngineError::NoLayer(gid))?;
-        g.mask = Some(clip_mask(rect));
+        let mask = crate::commands::mask_at_depth(clip_mask(rect), doc.depth)?;
+        doc.layer_mut(gid).ok_or(EngineError::NoLayer(gid))?.mask = Some(mask);
         Ok(())
     })?;
     Ok(json!({"layer": gid.0, "frame": [rect.x0, rect.y0, rect.width(), rect.height()]}))
@@ -133,7 +133,8 @@ fn new_frame(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let name = p.get("name").and_then(Value::as_str).map(str::to_string);
     let gid = s.edit("New Frame", |doc, active| {
-        let mask = if ellipse { ellipse_mask(rect, doc.bounds()) } else { clip_mask(rect.intersect(&doc.bounds())) };
+        let mask =
+            crate::commands::mask_at_depth(if ellipse { ellipse_mask(rect, doc.bounds()) } else { clip_mask(rect.intersect(&doc.bounds())) }, doc.depth)?;
         let name = name.unwrap_or_else(|| doc.next_layer_name("Frame"));
         let gid = match content {
             Some(id) => {

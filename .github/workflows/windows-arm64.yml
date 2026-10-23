@@ -7,6 +7,8 @@ name: Windows ARM64
 # Nightly on main (dependency and runner-image drift shows up within a day), and on PRs that
 # change the Windows packaging itself.
 on:
+  push:
+    branches: [release]
   pull_request:
     paths:
       - .github/workflows/windows-arm64.yml

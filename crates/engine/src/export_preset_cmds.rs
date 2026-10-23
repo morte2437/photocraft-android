@@ -12,6 +12,33 @@ const MAX_PRESETS: usize = 256;
 const MAX_PX: u32 = 300_000;
 const FORMATS: [&str; 6] = ["png", "jpg", "webp", "tif", "tga", "ico"];
 
+/// Export As › Image Size › Resample, in Photoshop's order: the `image.imageSize` method each
+/// choice sends, and its menu label. The first one is the default.
+pub const RESAMPLE: [(&str, &str); 6] = [
+    ("bicubicAutomatic", "Bicubic Automatic"),
+    ("bicubic", "Bicubic"),
+    ("bicubicSmoother", "Bicubic Smoother"),
+    ("bicubicSharper", "Bicubic Sharper"),
+    ("bilinear", "Bilinear"),
+    ("nearest", "Nearest Neighbor"),
+];
+
+/// Photoshop's Export As default: Bicubic Automatic.
+pub const DEFAULT_RESAMPLE: &str = "bicubicAutomatic";
+
+/// `v` when it names one of [`RESAMPLE`]; otherwise an error listing the choices. Export As
+/// never falls back silently: Image Size would quietly use Bicubic for an unknown name.
+pub fn export_resample(v: &str) -> std::result::Result<&'static str, String> {
+    RESAMPLE.iter().map(|(k, _)| *k).find(|k| *k == v).ok_or_else(|| {
+        let names: Vec<&str> = RESAMPLE.iter().map(|(k, _)| *k).collect();
+        format!("resample must be one of {}", names.join(", "))
+    })
+}
+
+fn default_resample() -> String {
+    DEFAULT_RESAMPLE.into()
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExportPresetSettings {
@@ -33,6 +60,9 @@ pub struct ExportPresetSettings {
     pub embed_profile: bool,
     /// `"auto"`, `"24"` or `"32"`.
     pub tga_bits: String,
+    /// One of [`RESAMPLE`]; presets saved before the choice existed load as the default.
+    #[serde(default = "default_resample")]
+    pub resample: String,
 }
 
 impl ExportPresetSettings {
@@ -61,6 +91,7 @@ impl ExportPresetSettings {
         if !matches!(self.tga_bits.as_str(), "auto" | "24" | "32") {
             return Err("tgaBits must be auto, 24 or 32".into());
         }
+        export_resample(&self.resample)?;
         Ok(())
     }
 
@@ -79,7 +110,8 @@ impl ExportPresetSettings {
             "metadata": "none",
             "profile": "document",
             "embedProfile": true,
-            "tgaBits": "auto"
+            "tgaBits": "auto",
+            "resample": DEFAULT_RESAMPLE
         });
         if let Some(defaults) = defaults.as_object() {
             for (k, v) in defaults {
@@ -196,7 +228,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Save Export Preset",
             menu: &[],
             shortcut: None,
-            params: r#"{"name":str,"settings":{"format":"png|jpg|webp|tif|tga|ico","quality":1..100,"lossless":bool,"transparency":bool,"scale":1..1000,"width":px,"height":px,"lockAspect":bool,"sizing":"scale|pixels","metadata":"none|exif|all","profile":"document|srgb","embedProfile":bool,"tgaBits":"auto|24|32"}} (a saved name is replaced)"#,
+            params: r#"{"name":str,"settings":{"format":"png|jpg|webp|tif|tga|ico","quality":1..100,"lossless":bool,"transparency":bool,"scale":1..1000,"width":px,"height":px,"lockAspect":bool,"sizing":"scale|pixels","metadata":"none|exif|all","profile":"document|srgb","embedProfile":bool,"tgaBits":"auto|24|32","resample":"bicubicAutomatic|bicubic|bicubicSmoother|bicubicSharper|bilinear|nearest"="bicubicAutomatic"}} (a saved name is replaced)"#,
             enabled: always,
             run: save,
             journal: false,
@@ -232,7 +264,8 @@ mod tests {
             "metadata": "exif",
             "profile": "srgb",
             "embedProfile": false,
-            "tgaBits": "24"
+            "tgaBits": "24",
+            "resample": "nearest"
         })
     }
 
@@ -255,6 +288,7 @@ mod tests {
         assert_eq!(presets[0]["settings"]["width"], 640);
         assert_eq!(presets[0]["settings"]["embedProfile"], false);
         assert_eq!(presets[0]["settings"]["metadata"], "exif");
+        assert_eq!(presets[0]["settings"]["resample"], "nearest");
 
         let got = restored.execute("file.export.presets.get", json!({"name": "WEB JPEG"})).unwrap();
         assert_eq!(got["preset"]["settings"]["profile"], "srgb");
@@ -276,6 +310,9 @@ mod tests {
         assert!(s.execute("file.export.presets.save", json!({"name": "x", "settings": {"scale": 0}})).is_err());
         assert!(s.execute("file.export.presets.save", json!({"name": "x", "settings": {"metadata": "copyright"}})).is_err());
         assert!(s.execute("file.export.presets.save", json!({"name": "x", "settings": {"profile": "fogra39"}})).is_err());
+        let err = s.execute("file.export.presets.save", json!({"name": "x", "settings": {"resample": "lanczos"}})).unwrap_err().to_string();
+        assert!(err.contains("resample must be one of"), "{err}");
+        assert!(s.execute("file.export.presets.save", json!({"name": "x", "settings": {"resample": 3}})).is_err());
         assert!(s.execute("file.export.presets.delete", json!({"name": "missing"})).is_err());
         assert!(s.execute("file.export.presets.get", json!({"name": ""})).is_err());
 
@@ -286,5 +323,6 @@ mod tests {
         ]));
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].name, "ok");
+        assert_eq!(loaded[0].settings.resample, DEFAULT_RESAMPLE, "a preset saved before Resample existed loads with the default");
     }
 }

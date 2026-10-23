@@ -659,6 +659,10 @@ pub struct Layer {
     pub advanced: AdvancedBlending,
     /// Layer › Video Layers frame stack (None for a normal layer).
     pub video: Option<VideoData>,
+    /// The layer's own XMP packet (Photoshop's `layer.xmpMetadata.rawData`), where scripts and
+    /// embedding apps keep data about the layer under their own namespaces. Copied by
+    /// [`Layer::duplicate`], as in Photoshop. PSD `shmd` › `cust` › `layerXMP`.
+    pub xmp: Option<Arc<str>>,
 }
 
 impl Layer {
@@ -692,6 +696,7 @@ impl Layer {
             blend_if: BlendIf::default(),
             advanced: AdvancedBlending::default(),
             video: None,
+            xmp: None,
         }
     }
     pub fn raster(name: impl Into<String>, format: PixelFormat) -> Self {
@@ -933,7 +938,8 @@ pub struct FileEncoding {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub webp_quality: Option<u8>,
     /// PNG stereo pairing (the `sTER` chunk's mode byte, PNG Extensions 1.4.0 §3.6): `Some(0)`
-    /// side by side, `Some(1)` stacked, so saving a stereo PNG keeps the mark (#6063).
+    /// cross-fuse (right eye first), `Some(1)` diverging-fuse (left eye first). Both are
+    /// side by side; saving a stereo PNG keeps this eye-order mark (#6063).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub png_stereo: Option<u8>,
 }

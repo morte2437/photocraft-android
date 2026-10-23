@@ -23,10 +23,11 @@
 //! The target behaviour is exact ×1.1 steps, one per notch, with no easing in between
 //! (measured frame by frame on a screen recording). egui smooths a wheel notch over several
 //! frames, so zooming reads the wheel events themselves and ignores that smoothed tail; panning
-//! keeps the smoothed delta. The Alt state is taken from the wheel events and kept until the next
-//! wheel event: releasing Alt while the tail is still settling must not turn it into a pan.
+//! keeps the smoothed delta. The Alt state is taken from the wheel events (and the Alt key's own
+//! press and release, `wheel_events`) and kept until the next wheel event: releasing Alt while
+//! the tail is still settling must not turn it into a pan.
 
-use egui::{Context, Event, Id, InputState, Modifiers, MouseWheelUnit, RawInput, Vec2};
+use egui::{Context, Event, Id, InputState, Key, Modifiers, MouseWheelUnit, RawInput, Vec2};
 
 /// Zoom factor of one wheel notch: every step is exactly ×1.1.
 pub const NOTCH: f32 = 1.1;
@@ -214,22 +215,9 @@ pub fn read_with(ctx: &Context, zoom_with_wheel: bool, pinch_zooms: bool, owner:
 
     // --- Modifier tracking (always runs for all callers) ---
     let (scroll, zoom_delta, latest_alt, latest_shift, wheel, page) = ctx.input(|i| {
-        let latest_alt = i.events.iter().rev().find_map(|e| match e {
-            Event::MouseWheel { modifiers, .. } => Some(modifiers.alt && !modifiers.command && !modifiers.ctrl),
-            _ => None,
-        });
-        let latest_shift = i.events.iter().rev().find_map(|e| match e {
-            Event::MouseWheel { modifiers, .. } => Some(modifiers.shift && !modifiers.command && !modifiers.ctrl),
-            _ => None,
-        });
-        let wheel: Vec<(MouseWheelUnit, Vec2, Modifiers)> = i
-            .events
-            .iter()
-            .filter_map(|e| match e {
-                Event::MouseWheel { unit, delta, modifiers, .. } => Some((*unit, *delta, *modifiers)),
-                _ => None,
-            })
-            .collect();
+        let wheel = wheel_events(i);
+        let latest_alt = wheel.last().map(|(_, _, m)| m.alt && !m.command && !m.ctrl);
+        let latest_shift = wheel.last().map(|(_, _, m)| m.shift && !m.command && !m.ctrl);
         (i.smooth_scroll_delta, pinch_factor(i, touch_gestures), latest_alt, latest_shift, wheel, i.content_rect().height())
     });
     let alt = match latest_alt {
@@ -332,6 +320,37 @@ pub fn read_with(ctx: &Context, zoom_with_wheel: bool, pinch_zooms: bool, owner:
         let scroll = if smooth || alt || shift { scroll } else { raw };
         classify(Input { scroll, raw, zoom_delta, alt, shift, zoom_with_wheel, pinch_zooms, notch })
     }
+}
+
+fn is_alt_key(key: Key) -> bool {
+    matches!(key, Key::AltLeft | Key::AltRight)
+}
+
+/// This frame's wheel events, in order, with ⌥/Alt added to their modifiers while an Alt key is
+/// down (#8049). The modifiers a wheel event carries are the windowing layer's modifier state,
+/// which on Windows can miss a held Alt (the wheel then scrolled until another modifier was
+/// tapped), while the Alt key's own press and release still arrive; the menu bar follows those
+/// too (`menu_keys`). Alt is down from its press until its release, starting from whether it
+/// was down before this frame's first Alt key event (egui's `keys_down` when there is none).
+fn wheel_events(i: &InputState) -> Vec<(MouseWheelUnit, Vec2, Modifiers)> {
+    let first_alt_key = i.events.iter().find_map(|e| match e {
+        // A repeat means the key was already down; a release means it was down until then.
+        Event::Key { key, pressed, repeat, .. } if is_alt_key(*key) => Some(!*pressed || *repeat),
+        _ => None,
+    });
+    let mut alt_key = first_alt_key.unwrap_or_else(|| i.key_down(Key::AltLeft) || i.key_down(Key::AltRight));
+    let mut wheel = Vec::new();
+    for e in &i.events {
+        match e {
+            Event::Key { key, pressed, .. } if is_alt_key(*key) => alt_key = *pressed,
+            Event::MouseWheel { unit, delta, modifiers, .. } => {
+                let modifiers = Modifiers { alt: modifiers.alt || alt_key, ..*modifiers };
+                wheel.push((*unit, *delta, modifiers));
+            }
+            _ => {}
+        }
+    }
+    wheel
 }
 
 /// This frame's pinch zoom factor (1 = none). While two fingers are down on a touch screen, egui's

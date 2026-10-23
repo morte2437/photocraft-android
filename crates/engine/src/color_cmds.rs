@@ -459,6 +459,21 @@ impl ColorState {
         self.canvas_lut_with(doc, size, false, display)
     }
 
+    /// Accurate GPU representation of RGB matrix/TRC display transforms. Gamut warnings,
+    /// proof simulations beyond profile conversion, and transforms containing a CLUT retain
+    /// the existing 3D LUT path. The shader applies the 32-bit preview before this transform,
+    /// just as it does before the display LUT.
+    pub fn gpu_canvas_matrix_shaper_for(&self, doc: &Document, display: Option<u32>) -> Result<Option<photocraft_cms::GpuMatrixShaper>> {
+        let proof = self.proof(doc.id);
+        if proof.gamut_warning || (proof.enabled && proof.setup.kind != crate::proof_sim::ProofKind::Profile) {
+            return Ok(None);
+        }
+        if !proof.enabled && self.canvas_display_for(doc, display)?.transform.is_none() {
+            return Ok(None);
+        }
+        Ok(self.display_transform_for(doc, display)?.gpu_matrix_shaper())
+    }
+
     fn canvas_lut_with(&self, doc: &Document, size: usize, hdr: bool, on: Option<u32>) -> Result<Option<Vec<u8>>> {
         let size = size.max(2);
         let pv = self.proof(doc.id);
@@ -1336,6 +1351,44 @@ mod tests {
         assert!(c.c[0] > 0.6, "{c:?}");
         let Effect::DropShadow(sh) = &l.effects.items[0] else { panic!() };
         assert_eq!(sh.color.mode, ColorMode::Cmyk);
+    }
+
+    #[test]
+    fn gpu_matrix_shaper_keeps_special_proof_simulations_on_the_lut_path() {
+        let mut s = session("rgb", 8);
+        let d = doc(&s).clone();
+        // These valid synthetic RGB profiles make the ordinary profile-proof pipeline
+        // separable. Thus the test cannot pass just because a typical proof happens to
+        // contain unsupported stages; the simulation kind must be excluded explicitly.
+        let mut proof = Builtin::LinearSrgb.profile().clone();
+        proof.description = "Synthetic identity-matrix proof".into();
+        proof.matrix = Some([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
+        proof.trc = Some([photocraft_cms::Curve::Identity, photocraft_cms::Curve::Identity, photocraft_cms::Curve::Identity]);
+        let proof = proof.with_encoded_bytes();
+        let mut monitor = proof.clone();
+        monitor.description = "Synthetic identity-matrix gamma monitor".into();
+        monitor.trc = Some(std::array::from_fn(|_| photocraft_cms::Curve::Gamma(2.2)));
+        let monitor = monitor.with_encoded_bytes();
+        s.color.set_displays(Ok(vec![crate::display_color::Display {
+            id: 1,
+            name: "Synthetic monitor".into(),
+            frame: [0.0, 0.0, 800.0, 600.0],
+            profile_name: None,
+            icc: Some(monitor.to_bytes()),
+        }]));
+        let pv = s.color.proof_mut(d.id);
+        pv.setup.profile = Arc::new(Profile::parse(&proof.to_bytes()).unwrap());
+        pv.enabled = true;
+        assert!(s.color.gpu_canvas_matrix_shaper_for(&d, Some(1)).unwrap().is_some(), "ordinary profile conversion is separable");
+        for command in ["view.proofSetup.legacyMacintoshRgb", "view.proofSetup.colorBlindnessProtanopia", "view.proofSetup.colorBlindnessDeuteranopia"] {
+            // These commands retain the previously selected custom profile.
+            s.execute(command, json!({})).unwrap();
+            assert!(s.color.display_transform_for(&d, Some(1)).unwrap().gpu_matrix_shaper().is_some(), "fixture must exercise the shortcut");
+            assert!(s.color.gpu_canvas_matrix_shaper_for(&d, Some(1)).unwrap().is_none(), "{command} must retain its simulation");
+            assert!(s.color.gpu_canvas_lut_for(&d, 9, Some(1)).unwrap().is_some(), "{command} still has its LUT fallback");
+        }
+        s.execute("view.proofColors", json!({"on": false})).unwrap();
+        assert!(s.color.gpu_canvas_matrix_shaper_for(&d, Some(1)).unwrap().is_some(), "disabled simulations do not block ordinary display conversion");
     }
 
     #[test]

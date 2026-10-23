@@ -12,7 +12,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 use std::io::{Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -67,6 +67,8 @@ pub struct Printer {
 /// Timeouts: connecting, and each request (a Print-Job carries the whole PDF).
 const CONNECT: Duration = Duration::from_secs(3);
 const REQUEST: Duration = Duration::from_secs(60);
+/// The whole reply, however it trickles in: the timeouts above only cover each read.
+const REPLY_DEADLINE: Duration = Duration::from_secs(120);
 /// Largest reply read.
 const MAX_REPLY: usize = 16 << 20;
 /// Largest number of attributes taken from a reply.
@@ -111,12 +113,36 @@ impl Endpoint {
         .find(Endpoint::reachable)
     }
 
-    /// `server` as a socket path (starts with `/`) or `host[:port]` (port 631 by default).
+    /// `server` as a socket path (starts with `/`) or `host[:port]` (port 631 by default). An IPv6
+    /// server is `[address]` or `[address]:port`; written bare (more than one `:`) it keeps the
+    /// default port, because its last `:` cannot be told apart from a port separator. Anything else
+    /// after the bracket (`[::1]:abc`) stays the host, so a mistyped endpoint cannot resolve rather
+    /// than quietly becoming the default one.
     pub fn parse(server: &str) -> Endpoint {
         if server.starts_with('/') {
             return Endpoint::Unix(PathBuf::from(server));
         }
-        let (host, port) = server.rsplit_once(':').and_then(|(h, p)| p.parse().ok().map(|p| (h.to_string(), p))).unwrap_or((server.to_string(), 631));
+        // `[IPv6]:port` - the brackets tell the address from the port, and are not part of the host.
+        if let Some(rest) = server.strip_prefix('[')
+            && let Some((host, tail)) = rest.split_once(']')
+        {
+            // Nothing after the bracket, or a real `:port`, is understood. Anything else (`[::1]:abc`,
+            // `[::1]:70000`, `[::1]junk`) keeps the whole string as the host, so the mistyped endpoint
+            // stays unresolvable instead of quietly becoming the default one.
+            let port = if tail.is_empty() {
+                631
+            } else if let Some(port) = tail.strip_prefix(':').and_then(|p| p.parse().ok()) {
+                port
+            } else {
+                return Endpoint::Tcp(server.to_string(), 631);
+            };
+            return Endpoint::Tcp(host.to_string(), port);
+        }
+        // A bare IPv6 literal has more than one ':', so splitting on the last one would cut the
+        // address in half: it is the host, and the port stays the default. A zone id (`fe80::1%eth0`)
+        // carries no ':', so there a port can still follow the address.
+        let host_port = if server.matches(':').count() > 1 && !server.contains('%') { None } else { server.rsplit_once(':') };
+        let (host, port) = host_port.and_then(|(h, p)| p.parse().ok().map(|p| (h.to_string(), p))).unwrap_or((server.to_string(), 631));
         Endpoint::Tcp(host, port)
     }
 
@@ -142,17 +168,23 @@ impl Endpoint {
             Endpoint::Tcp(host, port) => {
                 let addr = (host.as_str(), *port).to_socket_addrs().map_err(|e| Error::Unreachable(format!("{host}:{port}: {e}")))?.next();
                 let addr = addr.ok_or_else(|| Error::Unreachable(format!("{host}:{port}: no address")))?;
-                let s = TcpStream::connect_timeout(&addr, CONNECT).map_err(|e| Error::Unreachable(format!("{host}:{port}: {e}")))?;
-                let _ = s.set_read_timeout(Some(REQUEST));
-                let _ = s.set_write_timeout(Some(REQUEST));
-                Ok(Stream::Tcp(s))
+                open_tcp(host, *port, addr, |addr| TcpStream::connect_timeout(&addr, CONNECT))
             }
         }
     }
 
+    /// The endpoint as an HTTP authority: an IPv6 host is bracketed, or its last colon reads as the
+    /// port separator and the request carries a host CUPS has never heard of. A scoped address keeps
+    /// its zone id and writes it escaped as "%25": "%" is not valid inside an authority (RFC 3986
+    /// section 3.2.2 reserves it for escaping), and the escaped form is what CUPS, curl and the
+    /// ipp:// URIs CUPS writes use for a zone. RFC 9844 (Aug 2025) obsoleted RFC 6874, which had made
+    /// that form URI syntax, so this is interop rather than a standard; dropping the zone instead
+    /// would name a different host on the wire than the socket was opened to. The socket still gets
+    /// the raw address%zone, which is the form a resolver understands.
     fn host(&self) -> String {
         match self {
             Endpoint::Unix(_) => "localhost".into(),
+            Endpoint::Tcp(host, port) if host.contains(':') => format!("[{}]:{port}", host.replace('%', "%25")),
             Endpoint::Tcp(host, port) => format!("{host}:{port}"),
         }
     }
@@ -162,9 +194,20 @@ impl std::fmt::Display for Endpoint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Endpoint::Unix(p) => write!(f, "{}", p.display()),
+            Endpoint::Tcp(h, p) if h.contains(':') => write!(f, "[{h}]:{p}"),
             Endpoint::Tcp(h, p) => write!(f, "{h}:{p}"),
         }
     }
+}
+
+/// Open one address and put the request timeouts on it. The connect call is a parameter so the
+/// refusal path can be tested at all: no port is guaranteed to stay free between picking one and
+/// using it, and what a refused connect reported is what the caller is supposed to hear.
+fn open_tcp(host: &str, port: u16, addr: SocketAddr, open: impl FnOnce(SocketAddr) -> std::io::Result<TcpStream>) -> Result<Stream> {
+    let s = open(addr).map_err(|e| Error::Unreachable(format!("{host}:{port}: {e}")))?;
+    let _ = s.set_read_timeout(Some(REQUEST));
+    let _ = s.set_write_timeout(Some(REQUEST));
+    Ok(Stream::Tcp(s))
 }
 
 enum Stream {
@@ -393,7 +436,13 @@ fn read_response(stream: &mut Stream) -> Result<Vec<u8>> {
     let mut body_at = None;
     let mut expected: Option<usize> = None;
     let mut chunked = false;
+    // Where the chunk walk resumes, so each read costs its own bytes, not the whole body again.
+    let mut chunk_at = 0usize;
+    let started = std::time::Instant::now();
     loop {
+        if started.elapsed() > REPLY_DEADLINE {
+            return Err(Error::Protocol("the print server took too long to reply".into()));
+        }
         let n = stream.read(&mut buf).map_err(|e| Error::Protocol(format!("reading: {e}")))?;
         if n == 0 {
             return Ok(raw);
@@ -414,7 +463,7 @@ fn read_response(stream: &mut Stream) -> Result<Vec<u8>> {
         let body = raw.get(at..).unwrap_or_default();
         let complete = match expected {
             Some(len) if !chunked => body.len() >= len,
-            _ if chunked => chunked_complete(body),
+            _ if chunked => chunked_complete(body, &mut chunk_at),
             _ => false,
         };
         if complete {
@@ -442,8 +491,11 @@ fn http_response(raw: &[u8]) -> Result<(u16, Headers, &[u8])> {
 /// `0\r\n\r\n` inside a chunk's payload (an attribute value can hold it) does not count. A
 /// malformed or impossible size counts as complete, so [`dechunk`] reports it instead of
 /// waiting for more.
-fn chunked_complete(mut b: &[u8]) -> bool {
+fn chunked_complete(body: &[u8], resume: &mut usize) -> bool {
+    let mut b = body.get(*resume..).unwrap_or_default();
     loop {
+        // Chunks already walked are not walked again: `resume` marks the start of this one.
+        *resume = body.len() - b.len();
         let Some(line_end) = b.windows(2).position(|w| w == b"\r\n") else { return false };
         let size_str = String::from_utf8_lossy(b.get(..line_end).unwrap_or(&[]));
         let Ok(size) = usize::from_str_radix(size_str.split(';').next().unwrap_or_default().trim(), 16) else { return true };
@@ -480,8 +532,19 @@ fn dechunk(mut b: &[u8]) -> Result<Vec<u8>> {
 }
 
 /// Where `/path` lands on the server: `/printers/<name>` or `/classes/<name>`.
-fn queue_path(name: &str, is_class: bool) -> String {
-    format!("/{}/{name}", if is_class { "classes" } else { "printers" })
+fn queue_path(name: &str, is_class: bool) -> Result<String> {
+    if name.is_empty() || name.bytes().any(|b| b < 0x20 || b == 0x7f) {
+        return Err(Error::Protocol("printer name contains an invalid control character".into()));
+    }
+    let mut encoded = String::with_capacity(name.len());
+    for &b in name.as_bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(char::from(b));
+        } else {
+            encoded.push_str(&format!("%{b:02X}"));
+        }
+    }
+    Ok(format!("/{}/{encoded}", if is_class { "classes" } else { "printers" }))
 }
 
 /// The printers the server knows (CUPS-Get-Printers), then its classes (CUPS-Get-Classes, which
@@ -568,7 +631,7 @@ pub struct Job<'a> {
 /// Submits `job` (Print-Job) and returns the job id.
 pub fn print_job(endpoint: &Endpoint, job: &Job<'_>) -> Result<u32> {
     let mut r = Request::new(OP_PRINT_JOB, 3);
-    let path = queue_path(job.printer, job.is_class);
+    let path = queue_path(job.printer, job.is_class)?;
     r.attr(TAG_URI, "printer-uri", format!("ipp://{}{path}", endpoint.host()).as_bytes());
     r.attr(TAG_NAME, "requesting-user-name", job.user.as_bytes());
     r.attr(TAG_NAME, "job-name", job.title.as_bytes());

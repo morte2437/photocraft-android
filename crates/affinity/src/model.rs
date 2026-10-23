@@ -283,6 +283,14 @@ const MAX_TREE_DEPTH: usize = 128;
 /// Total layer nodes imported.
 const MAX_NODES: usize = 500_000;
 
+/// Total raw `Chld` slots inspected across the whole traversal, including null slots and slots
+/// reached through repeated references to a shared group. The node limit only counts produced
+/// nodes, so a shared group holding a large null-filled child array could still be rescanned
+/// many times; this bounds that work. Generous relative to MAX_NODES for real documents.
+const MAX_CHILD_SLOTS: usize = 8_000_000;
+/// Bytes of layer names the model may retain across all occurrences.
+const MAX_NAME_BYTES: usize = 64 << 20;
+
 /// Read a document: archive, `doc.dat` and the model.
 pub fn read(bytes: &[u8], limits: Limits) -> Result<Document, Error> {
     let mut archive = Archive::open(bytes, limits)?;
@@ -297,6 +305,8 @@ pub(crate) struct Reader<'s, 'a, 'b> {
     pub(crate) dpi: f64,
     warnings: BTreeMap<String, usize>,
     nodes: usize,
+    child_slots: usize,
+    name_bytes: usize,
     active: HashSet<ObjId>,
     pub(crate) geometry_budget: crate::geometry::Budget,
     /// Decoded pixels still available ([`Limits::max_pixel_bytes`] less what the layers read so
@@ -312,6 +322,8 @@ impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
             dpi: 72.0,
             warnings: BTreeMap::new(),
             nodes: 0,
+            child_slots: 0,
+            name_bytes: 0,
             active: HashSet::new(),
             geometry_budget: crate::geometry::Budget::default(),
             pixels_left: limits.max_pixel_bytes,
@@ -383,6 +395,10 @@ impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
         let s = self.s;
         let mut out = Vec::new();
         let mut mask = None;
+        // Charge every raw child slot (null slots included) against a document-wide budget
+        // before filtering. A shared group with a large null-filled Chld array could otherwise
+        // be rescanned through each reference without the node limit noticing.
+        self.charge_slots(s.array_len(parent, b"Chld").unwrap_or(0))?;
         for c in s.objs(parent, b"Chld") {
             if s.is(c, b"MRst") {
                 // A mask layer inside a group or layer masks that container.
@@ -404,6 +420,15 @@ impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
         Ok((out, mask))
     }
 
+    /// Counts raw array slots (null ones included) against [`MAX_CHILD_SLOTS`].
+    fn charge_slots(&mut self, n: usize) -> Result<(), Error> {
+        self.child_slots = self.child_slots.saturating_add(n);
+        if self.child_slots > MAX_CHILD_SLOTS {
+            return Err(Error::Limit("too many child slots in the layer tree"));
+        }
+        Ok(())
+    }
+
     fn node(&mut self, id: ObjId, parent: Affine, depth: usize) -> Result<Option<Node>, Error> {
         let s = self.s;
         if depth > MAX_TREE_DEPTH {
@@ -422,7 +447,13 @@ impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
         let local = s.floats::<6>(id, b"Xfrm").map(Affine::from_xfrm).unwrap_or(Affine::IDENTITY);
         let world = local.then(parent);
         let class = s.class(id).unwrap_or(Tag(0));
-        let name = s.str(id, b"Desc").unwrap_or_default().to_string();
+        // A shared layer's name is copied for every occurrence, so charge the bytes first.
+        let name = s.str(id, b"Desc").unwrap_or_default();
+        self.name_bytes = self.name_bytes.saturating_add(name.len());
+        if self.name_bytes > MAX_NAME_BYTES {
+            return Err(Error::Limit("layer names too large"));
+        }
+        let name = name.to_string();
         let visible = s.bool(id, b"Visi").unwrap_or(true);
         let locked = s.bool(id, b"Edtb").is_some_and(|e| !e);
         let opacity = s.f64(id, b"Opac").map_or(1.0, |o| o.clamp(0.0, 1.0));
@@ -445,6 +476,7 @@ impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
         let (mask, attached_mask) = self.attached_masks(id, world)?;
         let pixel_mask = attached_mask.or(child_mask);
         self.active.remove(&id);
+        self.charge_slots(s.array_len(id, b"FiEf").unwrap_or(0))?;
         if s.objs(id, b"FiEf").iter().any(|e| s.bool(*e, b"Enab") != Some(false)) {
             self.warn("layer effects (shadows, glows, outlines, bevels…)");
         }

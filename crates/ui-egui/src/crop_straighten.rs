@@ -70,6 +70,8 @@ pub fn reset(app: &mut PhotocraftApp) {
 pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: Modifiers) -> bool {
     match ev {
         ToolEvent::Down { x, y, .. } => {
+            // A line whose release went elsewhere (Space's Hand took it) never continues here.
+            app.crop.straighten.line = None;
             let s = app.crop.straighten;
             if app.crop.drag.is_some() || !(s.armed || mods.command) {
                 return false;
@@ -156,7 +158,7 @@ pub fn draw(app: &PhotocraftApp, painter: &egui::Painter, to_screen: impl Fn([f6
     let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
     let deg = (-dy).atan2(dx).to_degrees();
     if let Some(h) = hover.filter(|_| deg.is_finite() && (dx != 0.0 || dy != 0.0)) {
-        crate::canvas::draw_value_readout(app, painter.ctx(), "crop-straighten-readout", h, ["Angle:"], [format!("{deg:.1}°")]);
+        crate::canvas::draw_value_readout(app, painter.ctx(), "crop-straighten-readout", h, ["Angle:"], [crate::canvas::angle_readout(deg)]);
     }
 }
 
@@ -229,6 +231,32 @@ mod tests {
         assert_eq!(frame_angle([5.0, 5.0], [6.0, 6.0], 3.0), None);
         assert_eq!(frame_angle([f64::NAN, 0.0], [10.0, 0.0], 1.0), None);
         assert_eq!(frame_angle([0.0, 0.0], [f64::INFINITY, 1.0], 1.0), None);
+    }
+
+    /// A straighten is one box Undo step (#3145): Undo turns the frame back instead of undoing the
+    /// document under the pending crop, and Redo turns it again.
+    #[test]
+    fn straighten_is_a_box_undo_step() {
+        let mut app = app(SampleType::U8);
+        let before = (app.ui.crop_rect, app.ui.crop_angle);
+        drag(&mut app, &[[0.0, 0.0], [100.0, 17.6]], CMD);
+        let turned = (app.ui.crop_rect, app.ui.crop_angle);
+        assert!(turned.1.abs() > 5.0, "{turned:?}");
+        assert!(crate::crop_ui::intercept(&mut app, "edit.undo").is_some(), "Undo steps the box");
+        assert_eq!((app.ui.crop_rect, app.ui.crop_angle), before);
+        assert!(crate::crop_ui::intercept(&mut app, "edit.redo").is_some());
+        assert_eq!((app.ui.crop_rect, app.ui.crop_angle), turned);
+    }
+
+    #[test]
+    fn the_angle_readout_never_shows_minus_zero_or_minus_180() {
+        use crate::canvas::angle_readout;
+        assert_eq!(angle_readout(-0.03), "0.0°");
+        assert_eq!(angle_readout(0.0), "0.0°");
+        assert_eq!(angle_readout(-179.97), "180.0°");
+        assert_eq!(angle_readout(179.97), "180.0°");
+        assert_eq!(angle_readout(12.34), "12.3°");
+        assert_eq!(angle_readout(-12.36), "-12.4°");
     }
 
     #[test]
@@ -323,6 +351,21 @@ mod tests {
         toggle(&mut app);
         drag(&mut app, &[[f64::NAN, 50.0], [190.0, f64::INFINITY]], NONE);
         assert!(app.ui.crop_angle.is_finite() && app.ui.crop_rect.unwrap().iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn a_line_whose_release_was_lost_never_takes_over_the_next_drag() {
+        let mut app = app(SampleType::U8);
+        app.ui.crop_rect = Some([20.0, 20.0, 120.0, 70.0]);
+        app.crop.default_frame = false;
+        // A ⌘-drag whose release went to the temporary Hand (Space pressed mid-line).
+        tool_event(&mut app, ToolEvent::Down { x: 0.0, y: 0.0, pressure: 1.0 }, CMD);
+        tool_event(&mut app, ToolEvent::Move { x: 100.0, y: 17.6, pressure: 1.0 }, CMD);
+        assert!(app.crop.straighten.line.is_some());
+        // The next plain drag inside the frame moves it, and ends.
+        drag(&mut app, &[[50.0, 40.0], [60.0, 40.0]], NONE);
+        assert_eq!((app.ui.crop_rect, app.ui.crop_angle), (Some([30.0, 20.0, 130.0, 70.0]), 0.0));
+        assert!(app.crop.drag.is_none() && app.crop.straighten.line.is_none());
     }
 
     #[test]

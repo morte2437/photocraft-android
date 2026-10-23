@@ -29,7 +29,7 @@ const MAX_EDGE: u32 = 30_000;
 /// Budget for zero-padded channel planes summed over every pattern of one parse (a block, a `.pat`
 /// file, an `.abr`). Photoshop writes every channel at the pattern rectangle, so a smaller channel
 /// rectangle is only padding; without this cap a few hundred bytes (1x1 channels, a huge pattern
-/// rectangle) would allocate up to `MAX_DECODED_BYTES` of zeros. Matches `abr::MAX_TOTAL_BYTES`.
+/// rectangle) would allocate up to `MAX_DECODED_BYTES` of zeros.
 const MAX_PADDED_PATTERN_BYTES: u64 = 512 << 20;
 // A PackBits run packet emits at most 128 bytes from a 2-byte packet.
 const MAX_RLE_EXPANSION: u64 = 64;
@@ -54,6 +54,12 @@ impl PatternBudget {
     pub fn with_decoded_limit(decoded: u64) -> Self {
         let d = Self::default();
         PatternBudget { decoded_left: d.decoded_left.min(decoded), padded_left: d.padded_left.min(decoded) }
+    }
+
+    /// Cap both decoded and padded bytes to the amount still available to a containing file.
+    pub fn cap_decoded_to(&mut self, decoded: u64) {
+        self.decoded_left = self.decoded_left.min(decoded);
+        self.padded_left = self.padded_left.min(decoded);
     }
 
     /// Decoded bytes still available.
@@ -425,9 +431,8 @@ pub fn parse_pattern_block(data: &[u8]) -> Result<Vec<PsdPattern>> {
 }
 
 /// [`parse_pattern_block`] charging `budget`, so several blocks of one document share one limit.
-/// The budget is charged only for patterns that are returned.
+/// Charges are monotonic even when a later record in the block fails.
 pub fn parse_pattern_block_with(data: &[u8], budget: &mut PatternBudget) -> Result<Vec<PsdPattern>> {
-    let mut left = budget.clone();
     let mut r = Rd { b: data, p: 0 };
     let mut out = Vec::new();
     while r.p + 4 <= data.len() {
@@ -436,11 +441,10 @@ pub fn parse_pattern_block_with(data: &[u8], budget: &mut PatternBudget) -> Resu
             break;
         }
         let body = r.take(len)?;
-        out.push(read_pattern(&mut Rd { b: body, p: 0 }, &mut left)?);
+        out.push(read_pattern(&mut Rd { b: body, p: 0 }, budget)?);
         let pad = (4 - len % 4) % 4;
         r.p = (r.p + pad).min(data.len());
     }
-    *budget = left;
     Ok(out)
 }
 
@@ -730,6 +734,18 @@ mod tests {
     }
 
     #[test]
+    fn failed_pattern_block_keeps_partial_charge_for_the_next_block() {
+        let one = padded_gray_block(100);
+        let mut malformed = one.clone();
+        malformed.extend_from_slice(&100u32.to_be_bytes());
+        let mut budget = PatternBudget::with_decoded_limit(15_000);
+        assert!(parse_pattern_block_with(&malformed, &mut budget).is_err());
+        assert_eq!(budget.decoded_left(), 5_000);
+        assert!(parse_pattern_block_with(&one, &mut budget).is_err());
+        assert_eq!(budget.decoded_left(), 5_000);
+    }
+
+    #[test]
     fn padding_budget_is_shared_by_every_pattern_of_a_parse() {
         // Each pattern pads 100x100 = 10000 bytes; a 15000-byte budget fits one, not two. Before
         // the fix each pattern got a fresh allowance, so N tiny patterns committed N times the cap.
@@ -741,8 +757,9 @@ mod tests {
         let two = [one.clone(), one.clone()].concat();
         let mut budget = PatternBudget::with_decoded_limit(15_000);
         assert!(matches!(parse_pattern_block_with(&two, &mut budget), Err(PsdError::LimitExceeded(_))));
-        // A failed parse keeps nothing, so it charges nothing.
-        assert_eq!(budget.decoded_left(), 15_000);
+        // Charges are monotonic: the first pattern's 10000 bytes stay charged even when the second
+        // record fails.
+        assert_eq!(budget.decoded_left(), 5_000);
 
         // Two blocks of one document share a budget too.
         let mut budget = PatternBudget::with_decoded_limit(15_000);

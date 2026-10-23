@@ -18,6 +18,12 @@ pub fn dimensions(doc: &photocraft_doc::Document, p: &Value) -> Result<(f64, f64
     Ok((w.round().max(1.0), h.round().max(1.0)))
 }
 
+/// The method a preview proxy is resampled with: the export's own when the proxy is at full
+/// size, so the preview, palette and size estimate show it; bilinear for a reduced proxy.
+pub fn proxy_resample(p: &Value, scale: f64) -> &str {
+    if scale >= 1.0 { p.get("resample").and_then(Value::as_str).unwrap_or("bicubic") } else { "bilinear" }
+}
+
 pub fn prepare_table(app: &PhotocraftApp, f: &mut Map<String, Value>) -> Result<(), String> {
     if !matches!(s(f, "format", "jpeg").as_str(), "gif" | "png8") {
         return Ok(());
@@ -55,7 +61,7 @@ pub fn prepare_table(app: &PhotocraftApp, f: &mut Map<String, Value>) -> Result<
             m.remove("percent");
             m.insert("width".into(), json!((w * scale).round().max(1.0)));
             m.insert("height".into(), json!((h * scale).round().max(1.0)));
-            m.insert("resample".into(), json!("bilinear"));
+            m.insert("resample".into(), json!(proxy_resample(&source, scale)));
         }
         let (doc, _, _) = web_cmds::web_document(&st.doc, &proxy, &settings).map_err(|e| e.to_string())?;
         f.insert("__paletteApproximate".into(), json!(scale < 1.0));

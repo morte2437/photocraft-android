@@ -17,7 +17,7 @@ use photocraft_doc::{Document, LayerContent, LayerId, TextLayer, TextStyles};
 use serde_json::{Map, Value, json};
 
 use crate::commands::CommandSpec;
-use crate::type_cmds::{apply_char_props, apply_para_props, refresh};
+use crate::type_cmds::{apply_char_props, apply_para_props, refresh_at};
 use crate::{EngineError, Result, Session};
 
 const FAMILY: &str = photocraft_text::fonts::DEFAULT_FAMILY;
@@ -84,7 +84,7 @@ fn id_param(cmd: &str, p: &Value) -> Result<Option<u32>> {
 /// A character style with every field changed from the default, to see which fields a set of
 /// Character-panel keys touches.
 fn perturbed_char() -> CharStyle {
-    use photocraft_doc::text::{Caps, FontFeature, FontVariation, Kerning};
+    use photocraft_doc::text::{Caps, FontBaseline, FontFeature, FontVariation, Kerning};
     CharStyle {
         font_family: "\u{1}".into(),
         font_style: "\u{1}".into(),
@@ -105,6 +105,7 @@ fn perturbed_char() -> CharStyle {
         kerning: Kerning::Off,
         kern: -12345.0,
         caps: Caps::AllCaps,
+        baseline: FontBaseline::Subscript,
         ligatures: false,
         discretionary_ligatures: true,
         features: vec![FontFeature { tag: "\u{1}".into(), value: 9 }],
@@ -291,7 +292,7 @@ fn commit(s: &mut Session, label: &str, new: TextStyles, target: &[Target], op: 
 fn apply_styles(doc: &mut Document, new: &TextStyles, target: &[Target], op: Op) -> usize {
     let old = doc.text_styles.clone();
     doc.text_styles = new.clone();
-    let snapshot = doc.clone();
+    let (dpi, format) = (doc.resolution_dpi, doc.pixel_format());
     let ids: Vec<LayerId> = doc.walk().into_iter().filter(|(_, _, l)| matches!(l.content, LayerContent::Text(_))).map(|(_, _, l)| l.id).collect();
     let mut changed = 0;
     for id in ids {
@@ -302,7 +303,7 @@ fn apply_styles(doc: &mut Document, new: &TextStyles, target: &[Target], op: Op)
             None => restyle(t, &old, new, Some((0, 0)), Op::default()),
         };
         if did {
-            refresh(&snapshot, t);
+            refresh_at(dpi, format, t);
             changed += 1;
         }
     }
@@ -516,7 +517,7 @@ fn delete(s: &mut Session, p: &Value, paragraph: bool) -> Result<Value> {
         } else {
             doc.text_styles.character.retain(|d| d.id != id);
         }
-        let snapshot = doc.clone();
+        let (dpi, format) = (doc.resolution_dpi, doc.pixel_format());
         let ids: Vec<LayerId> = doc.walk().into_iter().map(|(_, _, l)| l.id).collect();
         for lid in ids {
             let Some(LayerContent::Text(t)) = doc.layer_mut(lid).map(|l| &mut l.content) else { continue };
@@ -537,7 +538,7 @@ fn delete(s: &mut Session, p: &Value, paragraph: bool) -> Result<Value> {
                 }
             }
             if hit {
-                refresh(&snapshot, t);
+                refresh_at(dpi, format, t);
                 n += 1;
             }
         }

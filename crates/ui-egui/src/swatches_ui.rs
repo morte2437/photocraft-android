@@ -2,10 +2,11 @@
 //! preset browser: groups with disclosure triangles, a colour grid with name tooltips, a context
 //! menu (Rename, Delete, Move to), and the footer (size · New Group · New Swatch · Delete).
 //!
-//! As in Photoshop, clicking a swatch sets the foreground colour (and recolours selected type);
+//! As in Photoshop, clicking a swatch sets the foreground colour (and recolours selected type or
+//! fills the selected shape layer);
 //! Alt- or Ctrl/Cmd-clicking sets the background colour; double-clicking renames it. The
 //! panel menu (the group's "…" button) adds New Swatch, New Group, Import/Replace (`.aco`,
-//! `.ase`), Export (`.aco`) and Export for Exchange (`.ase`) and Reset. Every action is a
+//! `.act`, `.ase`), Export (`.aco`) and Export for Exchange (`.ase`) and Reset. Every action is a
 //! `swatches.*` engine command; this module only draws and dispatches. Colours are shown in the
 //! RGB working space through `photocraft-cms` (cached per library revision and colour settings).
 
@@ -51,8 +52,10 @@ fn colors(app: &PhotocraftApp, ctx: &egui::Context) -> Arc<Vec<Vec<Color32>>> {
 pub fn use_swatch(app: &mut PhotocraftApp, name: &str, background: bool) {
     let target = if background { "background" } else { "foreground" };
     if run(app, "swatches.use", json!({"swatch": name, "target": target})).is_some() && !background {
-        // Clicking a swatch while characters are selected recolours them (#364).
+        // Clicking a swatch while characters are selected recolours them (#364), and with a
+        // shape layer selected fills the shape (#5568).
         crate::type_tool::foreground_changed(app);
+        crate::shape_fill_ui::foreground_changed(app, None);
     }
 }
 
@@ -139,7 +142,7 @@ fn new_group(app: &mut PhotocraftApp) {
 
 /// Command params for a picked file: a real path keeps the journal small; browser files arrive
 /// as bytes.
-fn source(name: &str, bytes: &[u8]) -> Value {
+pub(crate) fn source(name: &str, bytes: &[u8]) -> Value {
     #[cfg(not(target_arch = "wasm32"))]
     if std::path::Path::new(name).is_absolute() && std::path::Path::new(name).is_file() {
         return json!({"path": name});
@@ -148,11 +151,16 @@ fn source(name: &str, bytes: &[u8]) -> Value {
     json!({"data": photocraft_engine::paint::tile::b64_encode(bytes)})
 }
 
-/// Import an `.aco`/`.ase` file's bytes (File › Open, drag and drop, the panel menu).
+/// Import an `.aco`/`.act`/`.ase` file's bytes (File › Open, drag and drop, the panel menu).
 pub fn import_bytes(app: &mut PhotocraftApp, name: &str, bytes: &[u8], replace: bool) -> Result<Value, String> {
     let stem = std::path::Path::new(name).file_stem().map(|s| s.to_string_lossy().to_string()).filter(|s| !s.trim().is_empty());
     let mut p = source(name, bytes);
     p["mode"] = json!(if replace { "replace" } else { "append" });
+    // Bytes without a path (the browser, drag and drop) are sniffed by content, and `.act` has
+    // no signature: one starting 00 01 or 00 02 reads as `.aco`. Its file name decides.
+    if std::path::Path::new(name).extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("act")) {
+        p["format"] = json!("act");
+    }
     if let Some(stem) = stem {
         p["group"] = json!(stem);
     }
@@ -273,6 +281,43 @@ mod tests {
     use egui::{Modifiers, vec2};
     use egui_kittest::Harness;
 
+    /// Bytes without a path (the browser) go by the file name: an `.act` whose first color is
+    /// 00 01 xx looks like an `.aco` header by content.
+    #[test]
+    fn an_act_from_bytes_imports_by_its_file_name() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        let mut colors = vec![[10u8, 20, 30]; 256];
+        colors[0] = [0, 1, 5];
+        let bytes = photocraft_psd::act::write(&colors, None, None).unwrap();
+        let r = import_bytes(&mut app, "Palette.act", &bytes, true).unwrap();
+        assert_eq!((r["format"].as_str(), r["count"].as_u64()), (Some("act"), Some(256)));
+    }
+
+    /// #5568: clicking a swatch with a shape layer selected fills the shape with it, one undo
+    /// step each, a gradient fill included.
+    #[test]
+    fn swatch_click_fills_the_selected_shape() {
+        use photocraft_doc::{Fill, LayerContent, LayerId};
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", json!({"width": 64, "height": 48})).unwrap();
+        let id = LayerId(app.run("shape.create", json!({"rect": [8, 8, 40, 30], "fill": {"gradient": {}}})).unwrap()["layer"].as_u64().unwrap());
+        let fill = |app: &PhotocraftApp| match &app.session.active().unwrap().doc.layer(id).unwrap().content {
+            LayerContent::Shape(sh) => sh.fill.clone(),
+            _ => panic!("not a shape layer"),
+        };
+        let steps = |app: &PhotocraftApp| app.session.active().unwrap().history.entries().len();
+        let before = steps(&app);
+        let names: Vec<String> = app.session.presets.swatches[0].items.iter().take(2).map(|s| s.name.clone()).collect();
+        use_swatch(&mut app, &names[0], false);
+        let fg = app.session.tools.foreground;
+        assert_eq!(fill(&app), Some(Fill::Solid(photocraft_doc::Color::rgba(fg[0], fg[1], fg[2], 1.0))), "{} filled the shape", names[0]);
+        assert_eq!(steps(&app), before + 1);
+        use_swatch(&mut app, &names[1], false);
+        let fg = app.session.tools.foreground;
+        assert_eq!(fill(&app), Some(Fill::Solid(photocraft_doc::Color::rgba(fg[0], fg[1], fg[2], 1.0))), "{} filled the shape", names[1]);
+        assert_eq!(steps(&app), before + 2, "each swatch click is its own undo step");
+    }
+
     fn click(h: &mut Harness<'_, PhotocraftApp>, p: egui::Pos2, modifiers: Modifiers) {
         h.hover_at(p);
         // Held modifiers, as when the user holds Alt while clicking.
@@ -327,6 +372,7 @@ mod tests {
         app.ui.tool = Tool::Type;
         app.ui.text_edit = Some(crate::state::TextEdit {
             layer: id,
+            document: None,
             caret: 0,
             anchor: 5,
             session: "s".into(),
@@ -440,6 +486,32 @@ mod tests {
         let out = written.lock().unwrap();
         assert_eq!(out[0].0, "out/Swatches.ase");
         assert!(out[0].1.starts_with(b"ASEF"));
+    }
+
+    /// The Linux save dialog shows the export's name without its extension, `Swatches`, and asks
+    /// only about that name. The export adds `.aco`, so with `Swatches.aco` in the folder it asks
+    /// before replacing it.
+    #[test]
+    fn export_asks_before_replacing_the_file_its_added_extension_names() {
+        use crate::file_dialog::FileDialogAnswer;
+        let written: std::rc::Rc<std::cell::RefCell<Vec<String>>> = Default::default();
+        let w = written.clone();
+        let services = crate::Services {
+            file_dialog: Some(crate::file_dialog::fake(vec![Some(FileDialogAnswer::SaveTo("/swatches/Swatches".into()))]).0),
+            write: Some(Box::new(move |p: &str, _: &[u8]| {
+                w.borrow_mut().push(p.to_string());
+                Ok(())
+            })),
+            file_stamp: Some(Box::new(|p: &str| (p == "/swatches/Swatches.aco").then_some(crate::FileStamp { len: 1, modified: None }))),
+            ..Default::default()
+        };
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), services);
+        export_dialog(&mut app, "aco").unwrap();
+        app.poll_file_dialog(&egui::Context::default(), None);
+        let id = app.ui.dialogs.iter().find(|d| crate::replace_prompt::owns(&d.fields)).map(|d| d.id).expect("the export asks first");
+        assert!(written.borrow().is_empty(), "nothing is written before the answer");
+        crate::dialogs::confirm(&mut app, id).unwrap();
+        assert_eq!(*written.borrow(), ["/swatches/Swatches.aco"]);
     }
 
     /// #3658: dragging a group header reorders the folders, and the new order sticks in the UI

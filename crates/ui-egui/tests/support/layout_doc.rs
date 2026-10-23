@@ -88,6 +88,7 @@ fn stroke_fx(size: f32, c: [f32; 3]) -> Effect {
         size,
         position: StrokePosition::Outside,
         paint: FxPaint::Color(Color::rgb(c[0], c[1], c[2])),
+        overprint: false,
     })
 }
 

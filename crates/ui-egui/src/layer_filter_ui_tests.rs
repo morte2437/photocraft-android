@@ -17,6 +17,7 @@ fn session() -> photocraft_engine::Session {
     s.execute("file.new", json!({"width": 64, "height": 48})).unwrap();
     s.execute("layer.new.layer", json!({"name": "Paper"})).unwrap();
     s.execute("layer.groupLayers", json!({"name": "Sheets"})).unwrap();
+    s.execute("layer.setExpanded", json!({"all": true, "expanded": true})).unwrap();
     let paper = layer(&s.active().unwrap().doc, "Paper");
     s.execute("layer.select", json!({"layer": paper})).unwrap();
     let ink = s.execute("layer.new.layer", json!({"name": "Ink"})).unwrap()["layer"].as_u64().unwrap();

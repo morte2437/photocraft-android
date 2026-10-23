@@ -1,10 +1,12 @@
-//! Pen tablet pressure, tilt, rotation and eraser end on macOS and Linux X11 (issue #79).
+//! Pen tablet pressure, tilt, rotation and eraser end on macOS and Linux X11 (issue #79), and
+//! barrel button on Windows (#5905).
 //!
-//! winit 0.30 drops tablet data on both, so `photocraft-tablet` reads it beside winit (an AppKit
-//! local event monitor; XInput2 raw events on a second X connection) and this module writes each
-//! sample into the UI's [`StylusFeed`], where the canvas reads it exactly like the web runner's
-//! Pointer Events and automation's simulated pen. Windows needs nothing here: winit forwards
-//! `WM_POINTER` pressure as touch force.
+//! winit 0.30 drops tablet data on both macOS and X11, so `photocraft-tablet` reads it beside winit
+//! (an AppKit local event monitor; XInput2 raw events on a second X connection) and this module writes
+//! each sample into the UI's [`StylusFeed`], where the canvas reads it exactly like the web runner's
+//! Pointer Events and automation's simulated pen. On Windows, winit forwards `WM_POINTER` pressure
+//! as touch force, but drops `PEN_FLAG_BARREL` (`0x0001`); `photocraft-tablet` recovers the barrel
+//! button through a thread-local message hook beside winit.
 //!
 //! Wayland compositors give a pen only to clients that bind the tablet protocol
 //! (`zwp_tablet_v2`), which winit 0.30 doesn't (and binding it on winit's connection needs
@@ -19,13 +21,34 @@ use photocraft_tablet::Sample;
 use photocraft_ui_egui::stylus::{PenSample, StylusFeed};
 
 /// A tablet sample as the UI's pen sample.
+#[allow(dead_code)]
 pub fn pen_sample(s: Sample) -> PenSample {
     PenSample { pressure: s.pressure, tilt_x: s.tilt_x, tilt_y: s.tilt_y, rotation: s.rotation, eraser: s.eraser }.sanitized()
 }
 
 /// Writes tablet samples into `feed` (`None` = a mouse).
+#[allow(dead_code)]
 pub fn sink(feed: StylusFeed) -> impl Fn(Option<Sample>) + Send + 'static {
     move |s| feed.set(s.map(pen_sample))
+}
+
+/// Install the Windows pointer message hook (main thread; keep the result until the event loop
+/// returns). On failure this logs why: the pen barrel button is then missed.
+#[cfg(target_os = "windows")]
+pub fn install_windows() -> Option<photocraft_tablet::windows::Monitor> {
+    photocraft_tablet::windows::Monitor::install().map_err(|e| log::warn!("{e}")).ok()
+}
+
+/// Stylus barrel button down check (Windows). The right mouse button is left to egui, which
+/// reports the logical secondary button (swapped buttons included) for the app's own window only.
+#[cfg(target_os = "windows")]
+pub fn right_button_service() -> Option<photocraft_ui_egui::RightButtonDownFn> {
+    Some(Box::new(photocraft_tablet::windows::is_barrel_button_down))
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn right_button_service() -> Option<photocraft_ui_egui::RightButtonDownFn> {
+    None
 }
 
 /// Install the AppKit tablet monitor (main thread, once winit created the shared application:

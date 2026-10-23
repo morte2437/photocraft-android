@@ -1,5 +1,8 @@
 use super::*;
-use egui_kittest::{Harness, kittest::Queryable};
+use egui_kittest::{
+    Harness,
+    kittest::{NodeT, Queryable},
+};
 
 fn harness(adjustment: bool, theme: crate::theme::ThemeKind) -> Harness<'static, PhotocraftApp> {
     let mut session = photocraft_engine::Session::new();
@@ -172,6 +175,75 @@ fn vector_mask_properties_edit_density_and_feather() {
     drag(&mut h, 0, &[1.0, 0.8, 0.5]);
     let vm = h.state().session.active().unwrap().doc.layer(photocraft_doc::LayerId(id)).unwrap().vector_mask.clone().unwrap();
     assert!((vm.density - 0.5).abs() < 0.02, "density edited through the vector mask command: {}", vm.density);
+}
+
+/// #5846: a selected shape layer shows its path's Density and Feather (Photoshop's Properties ›
+/// Masks), in both themes; a drag previews live and leaves one undo step per gesture, and the
+/// shape stays a shape.
+#[test]
+fn shape_properties_edit_density_and_feather() {
+    for theme in [crate::theme::ThemeKind::Pro, crate::theme::ThemeKind::Studio] {
+        let mut session = photocraft_engine::Session::new();
+        session.execute("file.new", json!({"width": 64, "height": 64})).unwrap();
+        let id = session.execute("shape.create", json!({"kind": "rect", "rect": [16, 16, 32, 32]})).unwrap()["layer"].as_u64().unwrap();
+        let mut app = PhotocraftApp::new(session, crate::Services::default());
+        app.ui.panels.properties = true;
+        app.last_canvas_rect = Rect::from_min_size(egui::Pos2::ZERO, vec2(800.0, 1600.0));
+        let mut h = Harness::builder().with_size(vec2(800.0, 1600.0)).with_step_dt(1.0 / 60.0).build_ui_state(
+            |ui, app: &mut PhotocraftApp| {
+                if ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("semibold".into()))) {
+                    if Tokens::get(ui.ctx()).pro {
+                        egui::ScrollArea::vertical().show(ui, |ui| properties_body(app, ui));
+                    } else {
+                        properties_window(app, ui.ctx());
+                    }
+                }
+            },
+            app,
+        );
+        PhotocraftApp::setup_context(&h.ctx, theme);
+        h.run_steps(4);
+        let shape = |h: &Harness<'_, PhotocraftApp>| match &h.state().session.active().unwrap().doc.layer(photocraft_doc::LayerId(id)).unwrap().content {
+            photocraft_doc::LayerContent::Shape(sh) => sh.clone(),
+            other => panic!("not a shape: {}", other.kind_name()),
+        };
+        let slider = |h: &Harness<'_, PhotocraftApp>, label: &str| {
+            h.query_all_by_role(egui::accesskit::Role::Slider)
+                .position(|n| n.accesskit_node().label().as_deref() == Some(label))
+                .unwrap_or_else(|| panic!("{theme:?}: no {label} slider"))
+        };
+        let (density, feather) = (slider(&h, "Density"), slider(&h, "Feather"));
+        let before = h.state().session.active().unwrap().history.past_len();
+        drag(&mut h, density, &[1.0, 0.8, 0.6, 0.5]);
+        assert!((shape(&h).density - 0.5).abs() < 0.02, "{theme:?}: density {}", shape(&h).density);
+        assert_eq!(h.state().session.active().unwrap().history.past_len(), before + 1, "{theme:?}: one step per drag");
+        // Live: the fill already shows beyond the path at half strength.
+        let a = shape(&h).cache.as_ref().unwrap().rgba(2, 2)[3];
+        assert!((a - 0.5).abs() < 0.03, "{theme:?}: {a}");
+        // Feather's track is curved (#6545): a fifth of the way is 8 px.
+        drag(&mut h, feather, &[0.0, 0.1, 0.2]);
+        assert!((shape(&h).feather - 8.0).abs() < 0.3, "{theme:?}: feather {}", shape(&h).feather);
+        assert_eq!(h.state().session.active().unwrap().history.past_len(), before + 2);
+        h.state_mut().run("edit.undo", json!({})).unwrap();
+        assert_eq!(shape(&h).feather, 0.0);
+        h.state_mut().run("edit.undo", json!({})).unwrap();
+        assert_eq!(shape(&h).density, 1.0, "{theme:?}");
+    }
+}
+
+/// #5846: Properties › Transform (X, Y, W, H) frames a soft shape by its path, as its transform
+/// frame does, though its Density renders it over the whole canvas.
+#[test]
+fn a_soft_shapes_transform_fields_follow_its_path() {
+    let mut session = photocraft_engine::Session::new();
+    session.execute("file.new", json!({"width": 64, "height": 64})).unwrap();
+    let id = session.execute("shape.create", json!({"kind": "rect", "rect": [16, 8, 20, 30]})).unwrap()["layer"].as_u64().unwrap();
+    session.execute("layer.vectorMask.edit", json!({"density": 60, "feather": 20})).unwrap();
+    let mut app = PhotocraftApp::new(session, crate::Services::default());
+    let layer = app.session.active().unwrap().doc.layer(photocraft_doc::LayerId(id)).unwrap().clone();
+    let surface = layer.surface().unwrap().clone();
+    assert_eq!(surface.content_bounds(), photocraft_geom::Rect::new(0, 0, 64, 64), "the soft fill covers the canvas");
+    assert_eq!(app.layer_frame_bounds(&layer, &surface), photocraft_geom::Rect::new(16, 8, 36, 38));
 }
 
 /// Document-wide row of mask coverage (or of the layer's own red channel) across the middle.

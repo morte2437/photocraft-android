@@ -38,7 +38,8 @@ pub fn parse(s: &str) -> Option<KeyboardShortcut> {
         ";" => Some(Key::Semicolon),
         "'" => Some(Key::Quote),
         "]" => Some(Key::CloseBracket),
-        name => Key::from_name(name),
+        // Case-insensitive too: bindings saved as `Shift+Pageup` before #6827 still work.
+        name => Key::from_name(name).or_else(|| Key::ALL.iter().find(|k| k.name().eq_ignore_ascii_case(name)).copied()),
     }?;
     Some(KeyboardShortcut::new(mods, key))
 }
@@ -195,18 +196,23 @@ fn new_layer_without_dialog(app: &mut PhotocraftApp, ctx: &egui::Context) -> boo
 }
 
 fn nav_keys(app: &mut PhotocraftApp, ctx: &egui::Context) -> bool {
-    for id in NAV_COMMANDS {
-        let main = crate::menus::UI_COMMANDS.iter().find(|c| c.0 == id).and_then(|c| app.session.prefs().shortcut(id, c.3));
+    let Some(id) = nav_shortcut(app, ctx) else { return false };
+    if crate::menus::is_enabled(app, id) {
+        let _ = crate::menus::invoke(app, ctx, id, json!({}));
+    }
+    true
+}
+
+/// The [`NAV_COMMANDS`] entry whose shortcut (or an Edit › Keyboard Shortcuts override) was
+/// pressed this frame, with the key press consumed. A view with its own zoom, like Liquify's
+/// preview, steps it with the same keys (#7210).
+pub(crate) fn nav_shortcut(app: &PhotocraftApp, ctx: &egui::Context) -> Option<&'static str> {
+    NAV_COMMANDS.into_iter().find(|id| {
+        let main = crate::menus::UI_COMMANDS.iter().find(|c| c.0 == *id).and_then(|c| app.session.prefs().shortcut(id, c.3));
         let keys: Vec<KeyboardShortcut> =
             main.into_iter().map(str::to_string).chain(app.session.prefs().alternates(id, main)).filter_map(|k| parse(&k)).collect();
-        if keys.iter().any(|sc| consume(ctx, sc)) {
-            if crate::menus::is_enabled(app, id) {
-                let _ = crate::menus::invoke(app, ctx, id, json!({}));
-            }
-            return true;
-        }
-    }
-    false
+        keys.iter().any(|sc| consume(ctx, sc))
+    })
 }
 
 /// The key press a clipboard event stands for outside text fields, with `mods` held: Copy, Cut
@@ -220,6 +226,37 @@ fn clipboard_press(e: &egui::Event, mods: Modifiers, is_windows: bool) -> Option
         egui::Event::Cut => Some((Key::X, held)),
         egui::Event::Paste(_) => Some((Key::V, held)),
         _ => None,
+    }
+}
+
+/// Text is selected in a label (an error notice's message, say): dragged across, double- or
+/// triple-clicked or shift-clicked, as egui selects it. ⌘C then copies that text, as in a text
+/// field, rather than running Edit › Copy on the layer (#7807). A plain click on a label leaves an
+/// empty selection behind, which must not take ⌘C from the document. Read once a frame, from the
+/// frame before.
+fn label_text_selected(ctx: &egui::Context) -> bool {
+    let id = egui::Id::new("pc-label-text-selected");
+    let any = ctx.plugin_opt::<egui::text_selection::LabelSelectionState>().is_some_and(|p| p.lock().has_selection());
+    let (selects, pressed) = ctx.input(|i| {
+        let p = &i.pointer;
+        let selects = (p.primary_down() && p.is_decidedly_dragging())
+            || p.button_double_clicked(egui::PointerButton::Primary)
+            || p.button_triple_clicked(egui::PointerButton::Primary)
+            || (p.primary_pressed() && i.modifiers.shift);
+        (selects, p.primary_pressed())
+    });
+    let selected = any && (selects || (!pressed && ctx.data(|d| d.get_temp::<bool>(id)).unwrap_or(false)));
+    ctx.data_mut(|d| d.insert_temp(id, selected));
+    selected
+}
+
+/// ⌘C, as egui-winit's `Event::Copy` or as a key press (the web, the Mac menu's key equivalent),
+/// without ⇧ (Copy Merged) or ⌥.
+fn plain_copy(e: &egui::Event, mods: Modifiers) -> bool {
+    match e {
+        egui::Event::Copy => !mods.shift && !mods.alt,
+        egui::Event::Key { key: Key::C, pressed: true, modifiers: m, .. } => m.command && !m.shift && !m.alt,
+        _ => false,
     }
 }
 
@@ -239,7 +276,11 @@ fn clipboard_press(e: &egui::Event, mods: Modifiers, is_windows: bool) -> Option
 ///
 /// Ctrl+Insert copies and Shift+Insert pastes: egui-winit maps them on Windows (a Shift+Insert
 /// release without a paste event pastes the image, like ⌘V), and we map them here on Linux.
+///
+/// With text selected in a label ([`label_text_selected`]) ⌘C copies the text; ⌘X and ⌘V stay
+/// the document's.
 pub fn clipboard_keys(ctx: &egui::Context, typing: bool, raw: &mut egui::RawInput) {
+    let text_selected = label_text_selected(ctx);
     let press = |key, modifiers| egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers };
     if cfg!(target_os = "linux") {
         raw.events.retain_mut(|e| {
@@ -301,6 +342,10 @@ pub fn clipboard_keys(ctx: &egui::Context, typing: bool, raw: &mut egui::RawInpu
             if mods.command {
                 ctx.data_mut(|d| d.insert_temp(command_lately, true));
             }
+        }
+        if text_selected && plain_copy(&e, mods) {
+            out.push(egui::Event::Copy);
+            continue;
         }
         if let Some((key, held)) = clipboard_press(&e, mods, cfg!(target_os = "windows")) {
             if key == Key::V {
@@ -375,9 +420,16 @@ pub fn handle(app: &mut PhotocraftApp, ctx: &egui::Context) {
     if app.camera_raw.is_some() {
         return;
     }
+    // A foreground save (Save in Background off, #6207) blocks the app until the file is written;
+    // only Esc reaches it, to cancel while it still encodes (see `jobs_ui::tick`).
+    if crate::jobs_ui::foreground_save(app).is_some() {
+        return;
+    }
     // An open menu owns the keyboard (arrows, ↩, Esc), like a native menu; so does the menu bar
     // once Alt or F10 put the keyboard on it (#4988), and an open dropdown list, whose letters
-    // pick an option rather than a tool (#1481).
+    // pick an option rather than a tool (#1481). A command shortcut (⌘D, F7…) takes the keyboard
+    // off the bar first and runs, as with a native menu bar (#6573).
+    crate::menu_keys::leave_for_shortcut(ctx);
     if crate::menu_nav::is_open(ctx) || crate::menu_keys::is_focused(ctx) || crate::widgets::dropdown_list_open(ctx) {
         return;
     }
@@ -555,6 +607,14 @@ pub fn handle(app: &mut PhotocraftApp, ctx: &egui::Context) {
     if crate::guide_select::keys(app, ctx) {
         return;
     }
+    // A slice selected with Slice Select: ⌫/Delete deletes the slice, not the layer (#7862).
+    if crate::slice_ui::keys(app, ctx) {
+        return;
+    }
+    // A selected smart filter row: ⌫/Delete removes the filter, not its smart object (#4751).
+    if crate::smart_ui::keys(app, ctx) {
+        return;
+    }
     // Space+F (⇧Space+F backwards) cycles the pasteboard colour, as in Photoshop: F while the
     // Hand key is held, before F's own Cycle Screen Mode.
     if !matches!(focus, Focus::Text) && app.ui.text_edit.is_none() && crate::hold_keys::reposition_held(app, ctx) {
@@ -703,6 +763,10 @@ pub fn handle(app: &mut PhotocraftApp, ctx: &egui::Context) {
             }
             return;
         }
+    }
+    // Page Up / Page Down (⌘ sideways, ⇧ a small step), Home and End scroll the canvas (#8057).
+    if crate::page_keys::handle(app, ctx) {
+        return;
     }
     // 1–0 set opacity, ⇧1–0 flow or fill (`opacity_keys`).
     crate::opacity_keys::handle(app, ctx);

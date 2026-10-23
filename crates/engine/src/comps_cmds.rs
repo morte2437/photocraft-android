@@ -251,6 +251,27 @@ fn delete(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"deleted": id}))
 }
 
+fn reorder(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "layerComp.reorder";
+    let doc = &s.active().ok_or(EngineError::NoDocument)?.doc;
+    let id = comp_param(doc, p, CMD)?;
+    let index = p
+        .get("index")
+        .and_then(Value::as_u64)
+        .and_then(|n| usize::try_from(n).ok())
+        .filter(|i| *i < doc.layer_comps.len())
+        .ok_or_else(|| bad(CMD, "index must name a position in the comp list"))?;
+    let from = index_of(doc, id);
+    if from != index {
+        s.edit("Reorder Layer Comp", |doc, _| {
+            let comp = doc.layer_comps.remove(from);
+            doc.layer_comps.insert(index, comp);
+            Ok(())
+        })?;
+    }
+    Ok(json!({"comp": id, "index": index}))
+}
+
 fn duplicate(s: &mut Session, p: &Value) -> Result<Value> {
     let d = s.active().ok_or(EngineError::NoDocument)?;
     let id = comp_param(&d.doc, p, "layerComp.duplicate")?;
@@ -444,6 +465,7 @@ pub fn specs() -> Vec<CommandSpec> {
         spec!("layerComp.previous", "Apply Previous Layer Comp", &[], "{}", has_comps, |s, _| step(s, -1)),
         spec!("layerComp.next", "Apply Next Layer Comp", &[], "{}", has_comps, |s, _| step(s, 1)),
         spec!("layerComp.delete", "Delete Layer Comp", &[], r##"{"comp":id|name?}"##, has_comps, delete),
+        spec!("layerComp.reorder", "Reorder Layer Comp", &[], r##"{"comp":id|name?,"index":integer (zero-based final position)}"##, has_comps, reorder),
         spec!("layerComp.duplicate", "Duplicate Layer Comp", &[], r##"{"comp":id|name?} → {comp}"##, has_comps, duplicate),
         spec!("layerComp.rename", "Rename Layer Comp", &[], r##"{"comp":id|name?,"name":str}"##, has_comps, rename),
         spec!("layerComp.setComment", "Layer Comp Comment", &[], r##"{"comp":id|name?,"comment":str}"##, has_comps, set_comment),

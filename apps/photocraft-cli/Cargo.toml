@@ -31,6 +31,10 @@ photocraft-codecs = { workspace = true }
 serde_json = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
+[dev-dependencies]
+# Synthetic camera raws (#7789).
+photocraft-raw = { workspace = true, features = ["testgen"] }
+
 [build-dependencies]
 # Icon + VERSIONINFO for photocraft-cli.exe; build.rs only uses it when targeting Windows.
 winresource = "0.1"

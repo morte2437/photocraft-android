@@ -138,8 +138,18 @@ struct Bits<'a> {
 }
 
 impl<'a> Bits<'a> {
+    #[cfg(test)]
     fn new(buf: &'a [u8], base: usize) -> Self {
         Bits { buf, base, pos: 0, nbits: 0 }
+    }
+
+    /// Positions the cursor `skip_in_page` bytes into the page at `base`, in constant time.
+    /// Equivalent to `new(buf, base)` followed by `skip_in_page` calls of `get(8)`: the first
+    /// read loads one page (`pos = PAGE`), and each byte skipped consumes 8 bits. Narrow images
+    /// repeated this replay per row, which made cursor setup quadratic.
+    fn new_at(buf: &'a [u8], base: usize, skip_in_page: usize) -> Self {
+        debug_assert!(skip_in_page < PAGE);
+        Bits { buf, base, pos: PAGE, nbits: PAGE as u32 * 8 - 8 * skip_in_page as u32 }
     }
 
     #[inline]
@@ -162,10 +172,7 @@ impl<'a> Bits<'a> {
 /// Decodes one row of the vendor-compressed stream.
 fn compressed_row(buf: &[u8], row_bytes: usize, row: usize, out: &mut [u16]) {
     let skip = row_bytes * row;
-    let mut bits = Bits::new(buf, skip / PAGE * PAGE);
-    for _ in 0..(skip % PAGE) {
-        bits.get(8);
-    }
+    let mut bits = Bits::new_at(buf, skip / PAGE * PAGE, skip % PAGE);
     let mut sh: i32 = 0;
     for group in out.as_chunks_mut::<14>().0 {
         let mut pred = [0i32; 2];
@@ -352,6 +359,29 @@ mod tests {
             b.get(8);
         }
         assert_eq!(b.get(8), 0x55);
+    }
+
+    #[test]
+    fn new_at_matches_byte_replay() {
+        // new_at must position the cursor identically to new() followed by skip_in_page
+        // get(8) calls, so the quadratic per-row replay can be removed safely.
+        let mut buf = vec![0u8; 0x8000];
+        for (i, b) in buf.iter_mut().enumerate() {
+            *b = (i * 7 + 3) as u8;
+        }
+        for base in [0usize, PAGE, 2 * PAGE] {
+            for skip in [0usize, 1, 7, 100, PAGE - 1] {
+                let mut replay = Bits::new(&buf, base);
+                for _ in 0..skip {
+                    replay.get(8);
+                }
+                let mut direct = Bits::new_at(&buf, base, skip);
+                for _ in 0..20 {
+                    assert_eq!(replay.get(5), direct.get(5), "base {base} skip {skip}");
+                    assert_eq!(replay.get(8), direct.get(8), "base {base} skip {skip}");
+                }
+            }
+        }
     }
 
     #[test]

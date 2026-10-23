@@ -76,8 +76,13 @@ pub struct Coverage {
 }
 
 impl Coverage {
-    pub fn new(width: usize, height: usize) -> Self {
-        Self { width, height, acc: vec![0.0; width * height + 2] }
+    /// A zeroed accumulator, or `None` when its bytes cannot be reserved.
+    pub fn try_new(width: usize, height: usize) -> Option<Self> {
+        let n = width.checked_mul(height)?.checked_add(2)?;
+        let mut acc = Vec::new();
+        acc.try_reserve_exact(n).ok()?;
+        acc.resize(n, 0.0);
+        Some(Self { width, height, acc })
     }
 
     /// Adds a line segment (pixel coordinates, y down).
@@ -148,15 +153,18 @@ impl Coverage {
     }
 
     /// Resolves the accumulation into per-pixel coverage in 0..=1.
-    pub fn finish(self) -> Vec<f32> {
+    /// The accumulated coverage, or `None` when the output cannot be reserved. The input
+    /// accumulator is still live while this builds, so both count toward a caller's budget.
+    pub fn finish(self) -> Option<Vec<f32>> {
         let n = self.width * self.height;
-        let mut out = Vec::with_capacity(n);
+        let mut out = Vec::new();
+        out.try_reserve_exact(n).ok()?;
         let mut sum = 0.0f32;
         for v in &self.acc[..n] {
             sum += v;
             out.push(sum.abs().min(1.0));
         }
-        out
+        Some(out)
     }
 }
 
@@ -240,9 +248,9 @@ mod tests {
 
     #[test]
     fn square_area_exact() {
-        let mut c = Coverage::new(10, 10);
+        let mut c = Coverage::try_new(10, 10).unwrap();
         rect_to(&mut c, &Xform::IDENTITY, 2.25, 3.5, 6.75, 8.0);
-        let v = c.finish();
+        let v = c.finish().unwrap();
         assert!((sum(&v) - 4.5 * 4.5).abs() < 1e-3, "{}", sum(&v));
         assert_eq!(v[5 * 10 + 4], 1.0);
         assert_eq!(v[0], 0.0);
@@ -250,13 +258,13 @@ mod tests {
 
     #[test]
     fn triangle_area_and_clipping() {
-        let mut c = Coverage::new(8, 8);
+        let mut c = Coverage::try_new(8, 8).unwrap();
         // Right triangle partly outside on the left and bottom.
         let pts = [(-4.0, 2.0), (6.0, 2.0), (-4.0, 12.0)];
         for i in 0..3 {
             c.line(pts[i], pts[(i + 1) % 3]);
         }
-        let v = c.finish();
+        let v = c.finish().unwrap();
         // Visible part: region x in [0,6], y in [2,8] under the hypotenuse x + y <= 8.
         // Area = ∫_{y=2}^{8} (8 - y) dy = 18.
         assert!((sum(&v) - 18.0).abs() < 1e-3, "{}", sum(&v));
@@ -266,7 +274,7 @@ mod tests {
     #[test]
     fn circle_area_via_pen() {
         use skrifa::outline::OutlinePen;
-        let mut c = Coverage::new(40, 40);
+        let mut c = Coverage::try_new(40, 40).unwrap();
         {
             let mut p = Pen::new(&mut c, Xform([1.0, 0.0, 0.0, -1.0, 20.0, 20.0]));
             // Cubic circle approximation, r = 15.
@@ -278,7 +286,7 @@ mod tests {
             p.curve_to(k, -r, r, -k, r, 0.0);
             p.close();
         }
-        let a = sum(&c.finish());
+        let a = sum(&c.finish().unwrap());
         let exact = std::f32::consts::PI * 225.0;
         assert!((a - exact).abs() / exact < 0.005, "{a} vs {exact}");
     }

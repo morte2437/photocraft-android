@@ -166,6 +166,9 @@ pub struct StrokeFx {
     pub size: f32,
     pub position: StrokePosition,
     pub paint: FxPaint,
+    /// Overprint (PSD `overprint`).
+    #[serde(default)]
+    pub overprint: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -213,6 +216,9 @@ pub struct Bevel {
     pub altitude: f32,
     pub use_global_light: bool,
     pub gloss_contour: Contour,
+    /// Gloss Contour › Anti-aliased (PSD `antialiasGloss`).
+    #[serde(default)]
+    pub gloss_anti_alias: bool,
     pub highlight: FxCommon,
     pub highlight_color: Color,
     pub shadow: FxCommon,

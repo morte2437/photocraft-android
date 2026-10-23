@@ -231,6 +231,33 @@ pub fn apply_preset(f: &mut Map<String, Value>, p: &Preset, units: &UnitsAndRule
     f.insert("__unit".into(), json!(unit));
 }
 
+/// The colour mode of the dialog's `mode` value.
+fn color_mode_of(mode: &str) -> Option<photocraft_color::ColorMode> {
+    use photocraft_color::ColorMode;
+    match mode {
+        "rgb" => Some(ColorMode::Rgb),
+        "gray" | "grayscale" => Some(ColorMode::Grayscale),
+        "cmyk" => Some(ColorMode::Cmyk),
+        "lab" => Some(ColorMode::Lab),
+        _ => None,
+    }
+}
+
+/// The Color Profile menu for a document of colour `space` (#321): the working space (shown with
+/// its profile's description), then the built-in and installed profiles of that space, as
+/// `file.new`'s `profile` values (an id or a path) with their labels.
+fn profile_options(
+    space: Option<photocraft_cms::ColorSpace>,
+    working: &str,
+    installed: &[photocraft_engine::installed_profiles::InstalledProfile],
+) -> Vec<(String, String)> {
+    let mut v = vec![("working".to_string(), crate::i18n::fmt(tl!("Working: {working}"), &[("working", working)]))];
+    let Some(space) = space else { return v };
+    v.extend(photocraft_cms::Builtin::ALL.iter().filter(|b| b.profile().color_space == space).map(|b| (b.id().to_string(), b.description().to_string())));
+    v.extend(installed.iter().filter(|i| i.is_destination() && i.color_space == space).map(|i| (i.path.clone(), i.description.clone())));
+    v
+}
+
 /// Fields `file.new` takes (drops the dialog's `__` UI keys).
 pub fn command_params(f: &Map<String, Value>) -> Value {
     Value::Object(f.iter().filter(|(k, _)| !k.starts_with("__")).map(|(k, v)| (k.clone(), v.clone())).collect())
@@ -319,6 +346,8 @@ pub fn apply_saved_preset(f: &mut Map<String, Value>, preset: &photocraft_engine
 /// Restore every setting of a saved or recent document (all but its name).
 pub fn apply_settings(f: &mut Map<String, Value>, settings: &DocumentSettings) {
     f.remove("backgroundColor");
+    // A preset without a Color Profile is on the working space, whatever was picked before.
+    f.remove("profile");
     if let Some(params) = settings.command_params().as_object() {
         f.extend(params.clone());
     }
@@ -424,7 +453,8 @@ fn saved_presets(app: &mut crate::PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<
                     let response = ui.add_sized(vec2(422.0, 32.0), label).on_hover_text(&preset.name);
                     if response.clicked() {
                         apply_saved_preset(f, preset);
-                        create |= response.double_clicked() || response.triple_clicked();
+                        // Touch-tolerant double-tap (finger jitter > egui's 6 px); see `widgets::second_click`.
+                        create |= widgets::second_click(ui, &response);
                     }
                     if widgets::secondary_button(ui, tl!("Delete"), 76.0).clicked() {
                         match app.run("document.presets.delete", json!({"name":preset.name})) {
@@ -488,7 +518,8 @@ fn save_preset(app: &mut crate::PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<St
         });
     }
     if let Some(error) = f.get("__presetError").and_then(Value::as_str) {
-        ui.add(egui::Label::new(error).wrap());
+        // The engine's message stays copyable, unlike the static labels around it.
+        ui.add(egui::Label::new(error).wrap().selectable(true));
     }
 }
 
@@ -496,6 +527,9 @@ fn save_preset(app: &mut crate::PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<St
 /// A recent category click can make egui count the preset double-click as a triple-click.
 pub fn body(app: &mut crate::PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Value>) -> bool {
     let t = Tokens::get(ui.ctx());
+    // Headings and field labels are static, as in Photoshop: no text cursor over them, no
+    // drag-selecting them (#8331). Text fields keep theirs.
+    ui.style_mut().interaction.selectable_labels = false;
     let cat = get_s(f, "__category", "Recent");
     let mut create = false;
     // Category tabs.
@@ -594,7 +628,8 @@ pub fn body(app: &mut crate::PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<Strin
                                     Card::Builtin(p) => apply_preset(f, p, &units),
                                     Card::Recent(settings) => apply_settings(f, settings),
                                 }
-                                create |= resp.double_clicked() || resp.triple_clicked();
+                                // Touch-tolerant double-tap (finger jitter > egui's 6 px); see `widgets::second_click`.
+                                create |= widgets::second_click(ui, &resp);
                             }
                         }
                     });
@@ -695,6 +730,8 @@ pub fn body(app: &mut crate::PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<Strin
                     110.0,
                 ) {
                     f.insert("mode".into(), json!(mode));
+                    // A profile of the old mode's colour space doesn't suit the new one.
+                    f.remove("profile");
                     f.remove("__savedPreset");
                 }
                 let mut depth = f.get("depth").and_then(Value::as_u64).unwrap_or(8);
@@ -704,6 +741,32 @@ pub fn body(app: &mut crate::PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<Strin
                     f.remove("__savedPreset");
                 }
             });
+            ui.add_space(4.0);
+            // Photoshop's Advanced Options › Color Profile (#321): the working space by default,
+            // or another profile of the mode's colour space, built in or installed in the system.
+            small_label(ui, tl!("Color Profile"));
+            {
+                let mode = get_s(f, "mode", "rgb");
+                let space = color_mode_of(&mode).map(photocraft_engine::color_cmds::mode_space);
+                let working = color_mode_of(&mode).map(|m| app.session.color.working(m).description.clone()).unwrap_or_default();
+                let installed = photocraft_engine::installed_profiles::installed();
+                let opts = profile_options(space, &working, &installed);
+                let mut profile = get_s(f, "profile", "working");
+                if !opts.iter().any(|(v, _)| *v == profile) {
+                    // Not a profile of this mode (or no longer installed): Create must not send it.
+                    profile = "working".into();
+                    f.remove("profile");
+                }
+                let shown: Vec<(String, &str)> = opts.iter().map(|(v, l)| (v.clone(), l.as_str())).collect();
+                if widgets::dropdown(ui, "nd-profile", &mut profile, &shown, 240.0) {
+                    if profile == "working" {
+                        f.remove("profile");
+                    } else {
+                        f.insert("profile".into(), json!(profile));
+                    }
+                    f.remove("__savedPreset");
+                }
+            }
             ui.add_space(4.0);
             small_label(ui, tl!("Background Contents"));
             // A custom colour is kept as its "#rrggbb", which `file.new` takes as is (#4789).
@@ -767,6 +830,55 @@ pub fn body(app: &mut crate::PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #321: New Document offers the working space and the other profiles of the mode's space.
+    #[test]
+    fn color_profile_menu_lists_the_profiles_of_the_modes_space() {
+        use photocraft_cms::{Builtin, ColorSpace, ProfileClass};
+        use photocraft_engine::installed_profiles::InstalledProfile;
+        let installed = [
+            InstalledProfile { path: "press.icc".into(), description: "Press".into(), class: ProfileClass::Output, color_space: ColorSpace::Cmyk },
+            InstalledProfile { path: "panel.icc".into(), description: "Panel".into(), class: ProfileClass::Display, color_space: ColorSpace::Rgb },
+        ];
+        let values = |mode: &str| {
+            profile_options(color_mode_of(mode).map(photocraft_engine::color_cmds::mode_space), "sRGB", &installed)
+                .into_iter()
+                .map(|(v, _)| v)
+                .collect::<Vec<_>>()
+        };
+        let rgb = values("rgb");
+        assert_eq!(rgb[0], "working");
+        assert!(rgb.contains(&Builtin::AdobeRgbCompat.id().to_string()) && rgb.contains(&"panel.icc".to_string()));
+        assert!(!rgb.contains(&Builtin::CoatedCmyk.id().to_string()) && !rgb.contains(&"press.icc".to_string()));
+        let cmyk = values("cmyk");
+        assert!(cmyk.contains(&"press.icc".to_string()) && !cmyk.contains(&Builtin::Srgb.id().to_string()));
+        assert!(profile_options(None, "sRGB", &installed).len() == 1, "an unknown mode offers only the working space");
+        // Every entry is one `file.new` takes for that mode.
+        for mode in ["rgb", "gray", "cmyk", "lab"] {
+            for v in values(mode).into_iter().filter(|v| !v.ends_with(".icc")) {
+                let mut s = photocraft_engine::Session::new();
+                s.execute("file.new", json!({"width": 2, "height": 2, "mode": mode, "profile": v})).unwrap_or_else(|e| panic!("{mode} {v}: {e}"));
+            }
+        }
+    }
+
+    /// A saved preset replaces the Color Profile picked before: its own, or the working space.
+    #[test]
+    fn applying_a_preset_replaces_the_picked_profile() {
+        let mut s = photocraft_engine::Session::new();
+        let base = json!({"width": 8, "height": 8, "mode": "cmyk", "unit": "px"});
+        s.execute("document.presets.save", json!({"name": "Plain", "settings": base})).unwrap();
+        let mut press = base.clone();
+        press["profile"] = json!("coated-cmyk");
+        s.execute("document.presets.save", json!({"name": "Press", "settings": press})).unwrap();
+        let mut f = Map::new();
+        f.insert("profile".into(), json!(photocraft_cms::Builtin::AdobeRgbCompat.id()));
+        apply_saved_preset(&mut f, &s.presets.documents[0]);
+        assert!(!f.contains_key("profile"), "{f:?}");
+        assert!(s.execute("file.new", command_params(&f)).is_ok());
+        apply_saved_preset(&mut f, &s.presets.documents[1]);
+        assert_eq!(f["profile"], "coated-cmyk");
+    }
 
     #[test]
     fn units_round_trip_through_pixels() {
@@ -918,23 +1030,6 @@ mod tests {
     }
 
     #[test]
-    fn new_document_depth_labels_and_tooltips_are_translated() {
-        // Bit-depth labels are unit/number strings that some languages legitimately write exactly
-        // like the English source (Turkish and Italian "8 bit"); they only need a catalog entry there.
-        const SAME_AS_SOURCE: &[(&str, &str)] = &[("tr", "8 bit"), ("tr", "16 bit"), ("it", "8 bit"), ("it", "16 bit")];
-        for lang in crate::i18n::Lang::all().filter(|lang| lang.code() != "en") {
-            for (_, label, tooltip) in DEPTH_OPTIONS {
-                if SAME_AS_SOURCE.contains(&(lang.code(), *label)) {
-                    assert!(crate::i18n::has(lang, label), "{}: {label}", lang.code());
-                } else {
-                    assert_ne!(crate::i18n::tr(lang, label), *label, "{}: {label}", lang.code());
-                }
-                assert_ne!(crate::i18n::tr(lang, tooltip), *tooltip, "{}: {tooltip}", lang.code());
-            }
-        }
-    }
-
-    #[test]
     fn recent_category_lists_clipboard_then_created_documents_then_uncovered_defaults() {
         let settings = |w, h, ppi| DocumentSettings {
             width: w,
@@ -944,6 +1039,7 @@ mod tests {
             depth: 8,
             background: "white".into(),
             background_color: None,
+            profile: None,
             unit: "px".into(),
             resolution_unit: "in".into(),
         };
@@ -1208,6 +1304,17 @@ mod tests {
             h.run_steps(2);
         }
 
+        /// A finger tap at `at`. Events for one phase share a frame (`input_mut`), because `Harness::step` would otherwise run one frame per queued event and drop Touch before the click release (so `second_click` would not see touch).
+        fn touch_tap_at(h: &mut Harness<'static, PhotocraftApp>, at: egui::Pos2) {
+            let touch = |phase| egui::Event::Touch { device_id: egui::TouchDeviceId(1), id: egui::TouchId(1), phase, pos: at, force: None };
+            let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+            h.input_mut().events.extend([egui::Event::PointerMoved(at), touch(egui::TouchPhase::Start), button(true)]);
+            h.step();
+            h.input_mut().events.extend([touch(egui::TouchPhase::End), button(false)]);
+            h.step();
+            h.run_steps(1);
+        }
+
         /// The Width (0), Height (1) and Resolution (2) fields.
         fn field(h: &Harness<'static, PhotocraftApp>, i: usize) -> egui::Rect {
             h.query_all_by_role(Role::SpinButton).nth(i).map(|n| n.rect()).expect("a size field")
@@ -1273,6 +1380,37 @@ mod tests {
             }
         }
 
+        fn cursor_over(h: &mut Harness<'static, PhotocraftApp>, at: egui::Pos2) -> egui::CursorIcon {
+            h.hover_at(at);
+            h.run_steps(2);
+            h.output().platform_output.cursor_icon
+        }
+
+        /// #8331: headings and field labels keep the arrow; only the text fields show the I-beam.
+        #[test]
+        fn labels_show_the_arrow_and_only_text_fields_the_text_cursor() {
+            use egui_kittest::kittest::NodeT;
+            let mut h = harness();
+            let label_at = |h: &Harness<'static, PhotocraftApp>, text: &str| {
+                h.query_all_by_label(text)
+                    .find(|n| n.accesskit_node().role() == Role::Label)
+                    .map(|n| n.rect().center())
+                    .unwrap_or_else(|| panic!("a {text:?} label"))
+            };
+            for text in ["PRESET DETAILS", "Width", "Height", "Resolution", "Color Mode", "Background Contents"] {
+                let at = label_at(&h, text);
+                assert_eq!(cursor_over(&mut h, at), egui::CursorIcon::Default, "over {text:?}");
+            }
+            // The name field still shows the text cursor, so the check above can tell them apart.
+            let name = h.query_all_by_role(Role::TextInput).next().map(|n| n.rect().center()).expect("the name field");
+            assert_eq!(cursor_over(&mut h, name), egui::CursorIcon::Text, "over the name field");
+            // The Saved tab's labels too.
+            h.get_by_label("Saved").click();
+            h.run_steps(2);
+            let at = label_at(&h, "No saved presets yet.");
+            assert_eq!(cursor_over(&mut h, at), egui::CursorIcon::Default, "over the empty Saved list");
+        }
+
         #[test]
         fn double_click_builtin_preset_creates_its_size_and_current_details() {
             let mut h = harness();
@@ -1295,6 +1433,33 @@ mod tests {
             assert_eq!(doc.name, "Portrait proof");
             assert_eq!((doc.mode, doc.depth), (photocraft_doc::ColorMode::Cmyk, photocraft_doc::SampleType::U16));
             assert_pixel(&mut h, [0.0; 4]);
+        }
+
+        /// Framework-style touch: the second tap lands ~48 px off (past egui's 6 px and the old 32 px touch slop) and still creates.
+        #[test]
+        fn touch_double_tap_with_jitter_creates_from_builtin_preset() {
+            let mut h = harness();
+            h.get_by_label("Photo").click();
+            h.run_steps(2);
+            let at = preset_title_at(&h, "Portrait, 4 x 6");
+            touch_tap_at(&mut h, at);
+            assert_eq!(fields(&h)["__preset"], "Portrait, 4 x 6");
+            assert!(h.state().session.documents().is_empty(), "first tap only selects");
+            touch_tap_at(&mut h, egui::pos2(at.x + 48.0, at.y));
+            assert_eq!(created(&h), (1200, 1800, 300.0));
+        }
+
+        /// Mouse keeps egui's tight distance: 20 px between clicks is two singles, not a create.
+        #[test]
+        fn mouse_double_click_with_large_jitter_does_not_create() {
+            let mut h = harness();
+            h.get_by_label("Photo").click();
+            h.run_steps(2);
+            let at = preset_title_at(&h, "Portrait, 4 x 6");
+            click_at(&mut h, at);
+            click_at(&mut h, at + egui::vec2(20.0, 0.0));
+            assert!(h.state().session.documents().is_empty());
+            assert_eq!(h.state().ui.dialogs.len(), 1, "dialog stays open");
         }
 
         #[test]

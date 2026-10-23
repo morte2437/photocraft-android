@@ -66,8 +66,8 @@ fn main() {
                     for item in &a.items {
                         let flags = format!("{}{}", if item.enabled { "" } else { " off" }, if item.with_dialog { " dialog" } else { "" });
                         match &item.descriptor {
-                            Some(d) => println!("    {:<22} {:<28}{flags}  {}", item.event.id(), item.dictionary, keys(d)),
-                            None => println!("    {:<22} {:<28}{flags}", item.event.id(), item.dictionary),
+                            Some(d) => println!("    {:<22} {:<28}{flags}  {}", item.event.id(), item.label(), keys(d)),
+                            None => println!("    {:<22} {:<28}{flags}", item.event.id(), item.label()),
                         }
                     }
                 }

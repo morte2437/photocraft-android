@@ -13,6 +13,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub mod cicp;
 mod codecs;
 mod error;
 pub mod exif_color;
@@ -25,7 +26,7 @@ pub mod orientation;
 pub mod resolution;
 pub mod source_settings;
 pub mod web;
-
+pub use crate::cicp::Cicp;
 pub use crate::codecs::exr_cryptomatte::{cryptomatte_id, cryptomatte_key, cryptomatte_preview_color};
 pub use crate::codecs::gif_frames::{AnimationFrame, MAX_GIF_FRAMES};
 pub use crate::codecs::png::{PngPalette, encode_indexed as encode_png_indexed, palette as png_palette, stereo as png_stereo};
@@ -38,13 +39,15 @@ pub use crate::format::{ASYMMETRIC_EXCEPTIONS, Format, FormatCaps, caps, detect,
 pub use crate::image::{
     ChannelLayout, CryptomatteBuffer, CryptomatteLayer, DecodeWarning, DeepChannel, DeepImage, ExrChannelInfo, ExrPartInfo, Image, Metadata, SampleType,
 };
-pub use crate::options::{DecodeOptions, DpxBits, EncodeOptions, ExrCompression, Limits, PngCompression, PngStereo, TiffCompression};
+pub use crate::options::{
+    DdsCompression, DdsOptions, DecodeOptions, DpxBits, EncodeOptions, ExrCompression, JpegFormat, Limits, PngCompression, PngStereo, TiffCompression,
+};
 pub use crate::orientation::{exif_orientation, upright_exif, upright_xmp};
 pub use crate::resolution::{exif_resolution, export_exif, export_xmp, photoshop_resolution, xmp_resolution};
 pub use crate::source_settings::{WebpEncoding, jpeg_quality, webp_encoding};
 pub use half::f16;
 
-use crate::codecs::{dds, dpx, exr, fits, heif, jpeg, pcx, png, pnm, tiff, via_image, webp, xpm};
+use crate::codecs::{dds, dicom, dpx, exr, fits, heif, iff, jpeg, pcx, png, pnm, tiff, via_image, webp, xpm};
 
 /// Detect the format and decode with default [`Limits`].
 pub fn decode(bytes: &[u8]) -> Result<Image, CodecError> {
@@ -81,6 +84,8 @@ pub fn decode_as_with(format: Format, bytes: &[u8], opts: &DecodeOptions) -> Res
         Format::Fits => fits::decode(bytes, l),
         Format::Dpx => dpx::decode(bytes, l),
         Format::Cineon => dpx::decode_cineon(bytes, l),
+        Format::Dicom => dicom::decode(bytes, l),
+        Format::Iff => iff::decode(bytes, l),
         Format::OpenExr => exr::decode(bytes, l),
         Format::Heif => heif::decode(bytes, l, opts.keep_orientation),
         Format::Gif | Format::Bmp | Format::Tga | Format::Ico | Format::Qoi | Format::Hdr | Format::Avif => via_image::decode(format, bytes, l),
@@ -126,9 +131,21 @@ pub fn probe_size(bytes: &[u8]) -> Result<(u32, u32), CodecError> {
     Ok(if (5..=8).contains(&o) { (h, w) } else { (w, h) })
 }
 
+/// The colour table of a GIF's first frame (its Local Color Table, else the Global one) and the
+/// entry its Graphic Control Extension makes transparent, read without decoding pixels.
+pub fn gif_palette(bytes: &[u8]) -> Option<(Vec<[u8; 3]>, Option<u8>)> {
+    crate::codecs::gif_palette::palette(bytes)
+}
+
 /// Returns the embedded colour table for an indexed BMP, if it has one.
 pub fn bmp_palette(bytes: &[u8]) -> Result<Option<Vec<[u8; 3]>>, CodecError> {
     via_image::bmp_palette(bytes)
+}
+
+/// Encodes `indices` (row-major, one byte per pixel) as an 8-bit palette BMP with the colour
+/// table `palette` (1 to 256 entries). Used for Indexed Color documents; BMP has no transparency.
+pub fn encode_bmp_indexed(width: u32, height: u32, indices: &[u8], palette: &[[u8; 3]]) -> Result<Vec<u8>, CodecError> {
+    via_image::encode_bmp_indexed(width, height, indices, palette)
 }
 
 /// Lists the pages (image directories) of a TIFF or BigTIFF file without decoding pixels: the
@@ -152,6 +169,23 @@ pub fn decode_gif_frames(bytes: &[u8], opts: &DecodeOptions) -> Result<Vec<Anima
     crate::codecs::gif_frames::decode(bytes, opts)
 }
 
+/// Decodes every frame of a WebP (a still one yields one frame with a 0 delay, as [`decode`]
+/// reads it), each a full picture of the canvas with its duration and the file's ICC profile.
+/// [`decode`] keeps the first frame only. See [`MAX_GIF_FRAMES`] and `opts.limits` for what is
+/// refused.
+pub fn decode_webp_frames(bytes: &[u8], opts: &DecodeOptions) -> Result<Vec<AnimationFrame>, CodecError> {
+    match crate::codecs::webp::decode_frames(bytes, &opts.limits)? {
+        Some(frames) => Ok(frames),
+        None => Ok(vec![AnimationFrame { image: decode_as_with(Format::WebP, bytes, opts)?, delay_ms: 0 }]),
+    }
+}
+
+/// Whether `bytes` is an animated WebP of more than one frame (which [`decode`] opens as its
+/// first frame, with a warning, and [`decode_webp_frames`] reads whole).
+pub fn webp_is_animated(bytes: &[u8]) -> bool {
+    crate::codecs::webp::is_animated(bytes)
+}
+
 /// The Orientation (1–8) of the page [`decode`] opens from a TIFF or BigTIFF file; 1 when it is
 /// absent, malformed or out of range.
 pub fn tiff_orientation(bytes: &[u8]) -> u16 {
@@ -162,6 +196,18 @@ pub fn tiff_orientation(bytes: &[u8]) -> u16 {
 /// absent, malformed or out of range, or the page does not exist.
 pub fn tiff_page_orientation(bytes: &[u8], page: usize) -> u16 {
     tiff::orientation(bytes, Some(page))
+}
+
+/// The EXIF block (`Metadata::exif`) of a camera raw built on TIFF (NEF, ARW, CR2, DNG,
+/// Panasonic RW2), for the image developed from it: IFD0's descriptive tags (make, model,
+/// date…) and the Exif and GPS directories, as a TIFF opens with. Orientation is not part of
+/// it, nor the Exif directory's pixel dimensions (the sensor's or the preview's size). When those
+/// were all its Exif directory held, the block is IFD0's tags alone, so the camera's make and
+/// model are still kept. `None` when the file is not built on a classic TIFF stream or has none
+/// of these tags.
+pub fn raw_exif(bytes: &[u8]) -> Option<Vec<u8>> {
+    let dirs = crate::codecs::tiff_exif::read_raw(bytes).filter(|d| d.has_directories() || !d.ifd0.is_empty())?;
+    Some(crate::codecs::tiff_exif::block(&dirs))
 }
 
 /// The limits check and the orientation, shared by every decoder.
@@ -252,10 +298,12 @@ pub fn encode(image: &Image, format: Format, opts: &EncodeOptions) -> Result<Vec
         Format::Pnm => pnm::encode(image, plan, opts),
         Format::Pcx => Err(CodecError::unsupported(format, "PCX is import-only; save as PNG instead")),
         Format::Xpm => Err(CodecError::unsupported(format, "XPM is import-only; save as PNG instead")),
-        Format::Dds => Err(CodecError::unsupported(format, "DDS is import-only; save as PNG instead")),
+        Format::Dds => dds::encode(image, plan, opts),
         Format::Fits => fits::encode(image, plan, opts),
         Format::Dpx => dpx::encode(image, plan, opts),
-        Format::Cineon => Err(CodecError::unsupported(format, "Cineon is import-only; save as DPX, TIFF or EXR instead")),
+        Format::Cineon => dpx::encode_cineon(image, plan),
+        Format::Dicom => Err(CodecError::unsupported(format, "DICOM is import-only; save as TIFF or PNG instead")),
+        Format::Iff => Err(CodecError::unsupported(format, "IFF/ILBM is import-only; save as PNG instead")),
         Format::OpenExr => exr::encode(image, plan, opts),
         Format::Heif => Err(CodecError::unsupported(format, "encoding is not available in this build")),
         Format::Gif | Format::Bmp | Format::Tga | Format::Ico | Format::Qoi | Format::Hdr | Format::Avif => via_image::encode(format, image, plan, opts),

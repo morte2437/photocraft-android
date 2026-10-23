@@ -555,23 +555,39 @@ pub fn retone(px: &mut [[f32; 4]], w: usize, h: usize, curve: &[[f32; 2]], tone:
         let i = table.partition_point(|t| *t < e).clamp(1, N);
         let (a, b) = (table[i - 1], table[i]);
         let f = if b > a { ((e - a) / (b - a)).clamp(0.0, 1.0) } else { 0.0 };
-        ((i - 1) as f32 + f) / N as f32
+        (((i - 1) as f32 + f) / N as f32).powi(2)
     };
-    let mut lin: Vec<[f32; 3]> = px.iter().map(|p| [0, 1, 2].map(|k| inverse(p[k]).powi(2))).collect();
-    if let Some(haze) = Haze::new(w, h, |i| lin[i], tone.dehaze) {
-        for (i, l) in lin.iter_mut().enumerate() {
-            *l = haze.apply(i % w, i / w, *l);
-        }
-    }
+    let linear = |p: &[f32; 4]| [inverse(p[0]), inverse(p[1]), inverse(p[2])];
+    // Full-size images (the detail preview develops 16–45 MP): rows in parallel, and the linear
+    // colours recomputed where needed instead of kept as a second copy of the image.
+    let haze = Haze::new(w, h, |i| linear(&px[i]), tone.dehaze);
     let y = crate::color::rgb_to_xyz(crate::color::ROMM, crate::color::D50_XY)[1].map(|v| v as f32);
-    let lum = |c: &[f32; 3]| y[0] * c[0] + y[1] * c[1] + y[2] * c[2];
-    let map = ToneMap::new(w, h, |i| lum(&lin[i]), tone, 0.0);
-    for (i, (p, l)) in px.iter_mut().zip(&lin).enumerate() {
-        let g = map.as_ref().map_or(1.0, |m| m.gain(i % w, i / w, lum(l)));
-        for k in 0..3 {
-            p[k] = forward(l[k] * g);
+    let lum_of = |c: &[f32; 3]| y[0] * c[0] + y[1] * c[1] + y[2] * c[2];
+    let dehazed = |i: usize| {
+        let l = linear(&px[i]);
+        haze.as_ref().map_or(l, |hz| hz.apply(i % w, i / w, l))
+    };
+    let rows = crate::par::band_rows(w);
+    let lum: Vec<f32> = crate::par::map(h.div_ceil(rows), |band| {
+        let (y0, y1) = (band * rows, ((band + 1) * rows).min(h));
+        (y0 * w..y1 * w).map(|i| lum_of(&dehazed(i))).collect::<Vec<_>>()
+    })
+    .concat();
+    let map = ToneMap::new(w, h, |i| lum[i], tone, 0.0);
+    let haze = haze.as_ref();
+    crate::par::chunks_mut(&mut px[..w * h], rows * w, |band, chunk| {
+        for (j, p) in chunk.iter_mut().enumerate() {
+            let i = band * rows * w + j;
+            let mut l = [inverse(p[0]), inverse(p[1]), inverse(p[2])];
+            if let Some(hz) = haze {
+                l = hz.apply(i % w, i / w, l);
+            }
+            let g = map.as_ref().map_or(1.0, |m| m.gain(i % w, i / w, lum[i]));
+            for k in 0..3 {
+                p[k] = forward(l[k] * g);
+            }
         }
-    }
+    });
 }
 
 #[cfg(test)]

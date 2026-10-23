@@ -173,6 +173,12 @@ pub fn params_for(id: &str, p: &Value) -> Option<FilterParams> {
             },
         },
         // ---- Render ----
+        "filter.render.clouds" | "filter.render.differenceClouds" => FilterParams::Clouds {
+            seed: seed(p),
+            difference: id == "filter.render.differenceClouds",
+            foreground: colour(p, "foreground", BLACK),
+            background: colour(p, "background", WHITE),
+        },
         "filter.render.fibers" => FilterParams::Fibers {
             variance: f(p, "variance", 16.0).clamp(1.0, 64.0),
             strength: f(p, "strength", 4.0).clamp(1.0, 64.0),
@@ -401,7 +407,8 @@ pub fn params_for(id: &str, p: &Value) -> Option<FilterParams> {
 
 /// Ids whose rendering uses the foreground/background colours.
 fn uses_colours(id: &str) -> bool {
-    matches!(id, "filter.render.fibers" | "filter.stylize.tiles" | "filter.pixelate.pointillize") || crate::gallery_cmds::uses_colours(id)
+    matches!(id, "filter.render.clouds" | "filter.render.differenceClouds" | "filter.render.fibers" | "filter.stylize.tiles" | "filter.pixelate.pointillize")
+        || crate::gallery_cmds::uses_colours(id)
 }
 
 /// Fills in session state a filter reads (the current colours) as explicit params, so the
@@ -450,7 +457,7 @@ pub(crate) fn resolve(s: &Session, fp: &mut FilterParams, p: &Value) -> Result<(
     let layer = p.get("mapLayer").and_then(Value::as_u64);
     let img = if let Some(path) = map_path(p) {
         map_from_path(path, layer)?
-    } else if let Some(d) = p.get("mapDocument") {
+    } else if let Some(d) = map_document(p) {
         let docs = s.documents();
         let found = match d {
             Value::String(name) => docs.iter().find(|ds| ds.doc.name == *name || ds.path.as_deref() == Some(name.as_str())),
@@ -465,8 +472,21 @@ pub(crate) fn resolve(s: &Session, fp: &mut FilterParams, p: &Value) -> Result<(
     Ok(())
 }
 
-fn map_path(p: &Value) -> Option<&str> {
+/// Displace's params as a request for its map: a map named in them (`mapPath` or `mapDocument`)
+/// wins over the one already embedded, which is read only when none is named. Otherwise a dialog
+/// or agent passing the filter's stored params back with a new map got the old map again.
+pub(crate) fn displace_request(p: &Value) -> Value {
+    if map_path(p).is_some() || map_document(p).is_some() { photocraft_io::smart_map::displace_without_map(p) } else { p.clone() }
+}
+
+pub(crate) fn map_path(p: &Value) -> Option<&str> {
     p.get("mapPath").and_then(Value::as_str).filter(|p| !p.is_empty())
+}
+
+/// Displace's `mapDocument`: an index or a name. Null and a negative index (the dialog's "None")
+/// name no document.
+pub(crate) fn map_document(p: &Value) -> Option<&Value> {
+    p.get("mapDocument").filter(|d| !d.is_null() && d.as_i64().is_none_or(|i| i >= 0))
 }
 
 /// Displace's map read from a file (flattened, or its `mapLayer`).
@@ -628,6 +648,8 @@ pub fn specs() -> Vec<CommandSpec> {
             r##"{"amount":-100..100=10,"ridges":0..20=5,"style":"pondRipples|outFromCenter|aroundCenter"}"##
         ),
         // Render
+        cmd!("filter.render.clouds", "Clouds", ["Filter", "Render"], r##"{"seed":u32=0,"foreground":json,"background":json}"##),
+        cmd!("filter.render.differenceClouds", "Difference Clouds", ["Filter", "Render"], r##"{"seed":u32=0,"foreground":json,"background":json}"##),
         cmd!(
             "filter.render.fibers",
             "Fibers…",

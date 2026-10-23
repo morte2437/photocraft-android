@@ -170,6 +170,11 @@ pub fn color_from_desc(d: &Descriptor) -> Option<Color> {
         b"Grsc" => Color::gray(1.0 - g("Gry ")? / 100.0),
         // CIE L*a*b*: L 0..100, a / b −128..127 (stored like Lab pixels: offset by 128).
         b"LbCl" => Color { mode: ColorMode::Lab, c: [g("Lmnc")? / 100.0, (g("A   ")? + 128.0) / 255.0, (g("B   ")? + 128.0) / 255.0, 0.0], alpha: 1.0 },
+        // HSB: hue an angle in degrees, saturation / brightness 0..100.
+        b"HSBC" => {
+            let [r, gr, b] = crate::channel_map::hsb_to_rgb(g("H   ")?, g("Strt")? / 100.0, g("Brgh")? / 100.0);
+            Color::rgb(r, gr, b)
+        }
         // Newer Photoshop writes 0..1 floats.
         _ if d.get("redFloat").is_some() => Color::rgb(g("redFloat")?, g("greenFloat")?, g("blueFloat")?),
         _ => {
@@ -252,7 +257,8 @@ pub(crate) fn gradient_style_value(s: GradientStyle) -> Value {
 pub(crate) type Stops = (Vec<(f32, Color)>, Vec<(f32, f32)>);
 
 /// Stops of a `Grdn` descriptor, baked to Photoshop's interpolation (smoothness `Intr`, stop
-/// midpoints, and the parent's interpolation method when given, see [`gradient_method`]).
+/// midpoints, and the parent's interpolation method when given, see [`gradient_method`]); the
+/// opacity stops as [`baked_opacity_stops`].
 pub(crate) fn gradient_stops_with(grad: &Descriptor, method: Option<&[u8]>) -> Stops {
     let raw = gradient_stops_raw(grad);
     let stops = if raw.stops.len() >= 2 {
@@ -260,7 +266,7 @@ pub(crate) fn gradient_stops_with(grad: &Descriptor, method: Option<&[u8]>) -> S
     } else {
         raw.stops
     };
-    (stops, raw.opacity)
+    (stops, baked_opacity_stops(grad, method))
 }
 
 /// A `Grdn` descriptor's stops as stored: colour stops (sorted), the midpoint of each segment
@@ -292,6 +298,29 @@ pub(crate) fn gradient_stops_editable(grad: &Descriptor, method: Option<&[u8]>) 
         raw.opacity.clear();
     }
     raw
+}
+
+/// The exact, constant-RGB subset of Photoshop noise gradients. If every RGB component has the
+/// same minimum and maximum, the generated field is constant regardless of seed or roughness.
+/// Other models, transparency, and varying ranges are not approximated.
+fn constant_rgb_noise_color(grad: &Descriptor) -> Option<Color> {
+    if enum_of(grad, "GrdF")? != b"ClNs" || enum_of(grad, "ClrS")? != b"RGBC" || bool_of(grad, "ShTr") {
+        return None;
+    }
+    let components = |key: &str| -> Option<[f32; 4]> {
+        let Some(Value::List(values)) = grad.get(key) else { return None };
+        if values.len() != 4 {
+            return None;
+        }
+        let converted: Vec<f32> = values.iter().map(|value| num(Some(value)).map(|v| v as f32)).collect::<Option<_>>()?;
+        converted.try_into().ok()
+    };
+    let min = components("Mnm ")?;
+    let max = components("Mxm ")?;
+    if min.iter().zip(max).take(3).any(|(a, b)| !a.is_finite() || *a < 0.0 || *a > 100.0 || *a != b) {
+        return None;
+    }
+    Some(Color::rgb(min[0] / 100.0, min[1] / 100.0, min[2] / 100.0))
 }
 
 fn gradient_stops_raw(grad: &Descriptor) -> RawStops {
@@ -376,26 +405,27 @@ pub(crate) fn gradient_desc_with(stops: &[(f32, Color)], opacity: &[(f32, f32)],
         .with("Trns", Value::List(trns))
 }
 
-/// Opacity stops of a `Grdn` descriptor with Photoshop's smoothness and midpoints applied (the
-/// same curve as the colour stops, Classic interpolation), densely sampled.
-fn smoothed_opacity_stops(grad: &Descriptor) -> Vec<(f32, f32)> {
+/// Opacity stops of a `Grdn` descriptor with Photoshop's smoothness, opacity midpoints and
+/// interpolation method applied (densely sampled; as stored when the interpolation is plain).
+/// Gradient fill layers and the gradient layer effects share it: Photoshop renders their
+/// transparency identically.
+fn baked_opacity_stops(grad: &Descriptor, method: Option<&[u8]>) -> Vec<(f32, f32)> {
     let mut stops = Vec::new();
     let mut mids = Vec::new();
     if let Some(Value::List(items)) = grad.get("Trns") {
         for it in items {
             if let Value::Descriptor(s) = it {
-                let a = num(s.get("Opct")).unwrap_or(100.0) as f32 / 100.0;
-                stops.push((num(s.get("Lctn")).unwrap_or(0.0) as f32 / 4096.0, Color::rgba(a, a, a, 1.0)));
+                stops.push((num(s.get("Lctn")).unwrap_or(0.0) as f32 / 4096.0, num(s.get("Opct")).unwrap_or(100.0) as f32 / 100.0));
                 mids.push(num(s.get("Mdpn")).unwrap_or(50.0) as f32 / 100.0);
             }
         }
     }
+    // Midpoint k applies to the segment after stop k (stored on the stop that ends it).
     let mut order: Vec<usize> = (0..stops.len()).collect();
     order.sort_by(|a, b| stops[*a].0.total_cmp(&stops[*b].0));
     let mids: Vec<f32> = order.iter().skip(1).filter_map(|i| mids.get(*i).copied()).collect();
     let smooth = num(grad.get("Intr")).map_or(0.0, |v| (v / 4096.0) as f32);
-    let baked = if stops.len() >= 2 { crate::gradient_bake::bake(stops, &mids, smooth, crate::gradient_bake::Method::Classic) } else { stops };
-    baked.into_iter().map(|(t, c)| (t, c.to_rgb()[0])).collect()
+    crate::gradient_bake::bake_opacity(stops, &mids, smooth, crate::gradient_bake::Method::from_code(method))
 }
 
 /// Parses a fill block (`SoCo`, `GdFl`, `PtFl`).
@@ -413,16 +443,27 @@ pub fn fill_from_desc(key: &[u8; 4], d: &Descriptor) -> Option<Fill> {
         b"GdFl" => {
             let angle = num(d.get("Angl")).unwrap_or(90.0) as f32;
             let scale = num(d.get("Scl ")).map_or(1.0, |v| v as f32 / 100.0);
-            let raw = get_desc(d, "Grad").map(|g| gradient_stops_editable(g, gradient_method(d)));
+            let gradient = get_desc(d, "Grad");
+            let raw = gradient.map(|g| gradient_stops_editable(g, gradient_method(d)));
             let (mut stops, midpoints) = raw.map(|r| (r.stops, r.mids)).unwrap_or_default();
-            // Opacity stops with Photoshop's smoothness and opacity midpoints applied (raw when
-            // the interpolation is plain); none when fully opaque.
-            let mut opacity_stops = get_desc(d, "Grad").map(smoothed_opacity_stops).unwrap_or_default();
+            // Opacity stops with Photoshop's smoothness, opacity midpoints and method applied
+            // (raw when the interpolation is plain); none when fully opaque.
+            let mut opacity_stops = get_desc(d, "Grad").map(|g| baked_opacity_stops(g, gradient_method(d))).unwrap_or_default();
             if opacity_stops.iter().all(|o| o.1 >= 1.0 - 1e-4) {
                 opacity_stops.clear();
             }
             if stops.is_empty() {
-                stops = vec![(0.0, Color::BLACK), (1.0, Color::WHITE)];
+                // A provably constant-RGB noise gradient renders one exact colour. Any other
+                // noise gradient (variable ranges, transparency, other models) has no stops to
+                // read: keep the placeholder ramp rather than failing the whole fill — the
+                // layer stays a fill layer, Photoshop's own pixels ride along as `fill_cache`,
+                // and the raw `GdFl` block survives the round trip byte for byte. Failing
+                // here would import the layer as pixels and drop `GdFl` on save (#6272).
+                stops = gradient
+                    .filter(|g| enum_of(g, "GrdF") == Some(b"ClNs"))
+                    .and_then(constant_rgb_noise_color)
+                    .map(|color| vec![(0.0, color), (1.0, color)])
+                    .unwrap_or_else(|| vec![(0.0, Color::BLACK), (1.0, Color::WHITE)]);
             }
             let pct = |o: &Descriptor, k: &str| num(o.get(k)).map_or(0.0, |v| v as f32 / 100.0);
             let offset = get_desc(d, "Ofst").map_or((0.0, 0.0), |o| (pct(o, "Hrzn"), pct(o, "Vrtc")));
@@ -525,22 +566,25 @@ pub(crate) fn with_pattern_placement(mut d: Descriptor, angle: f32, link: bool, 
     )
 }
 
-/// The warp of a placed layer (`SoLd`/`SoLE` `warp` descriptor): style, bend, distortions,
-/// axis, bounds and, for `warpCustom`, the 4 × 4 `customEnvelopeWarp` mesh. Read-only: the raw
-/// block is what gets written back. `None` when absent or `warpNone` with no mesh. A `PlLd`
+/// The warp of a placed layer (`SoLd`/`SoLE` `quiltWarp` or `warp` descriptor): style, bend,
+/// distortions, axis, bounds and, for `warpCustom`, the `customEnvelopeWarp` mesh: one 4 × 4
+/// patch, or the multi-patch grid Photoshop's split warp writes as `quiltWarp`. Read-only: the
+/// raw block is what gets written back. `None` when absent or `warpNone` with no mesh. A `PlLd`
 /// record keeps its warp elsewhere: see [`parse_plld_warp`].
 pub fn parse_placed_warp(key: &[u8; 4], data: &[u8]) -> Option<photocraft_geom::warp::Warp> {
     if key != b"SoLd" && key != b"SoLE" {
         return None;
     }
     let d = data.get(8..).and_then(parse_prefix_versioned)?;
-    warp_of(get_desc(&d, "warp")?).flatten()
+    // A split (quilt) warp is stored under `quiltWarp`; `warp` then holds no usable mesh.
+    warp_of(get_desc(&d, "quiltWarp").or_else(|| get_desc(&d, "warp"))?).flatten()
 }
 
-/// A `warp` descriptor (the `SoLd` key, or the whole descriptor after a `PlLd` record's corners)
-/// as a warp: `Some(None)` for no warp (`warpNone`, or a warp that moves nothing), `None` when it
-/// can't be read (an unknown style, missing bounds, a mesh that isn't 4 × 4).
-fn warp_of(w: &Descriptor) -> Option<Option<photocraft_geom::warp::Warp>> {
+/// A `warp` or `quiltWarp` descriptor (the `SoLd` key, or the whole descriptor after a `PlLd`
+/// record's corners) as a warp: `Some(None)` for no warp (`warpNone`, or a warp that moves
+/// nothing), `None` when it can't be read (an unknown style, missing bounds, a mesh that is
+/// neither one 4 × 4 patch nor a consistent quilt grid).
+pub(crate) fn warp_of(w: &Descriptor) -> Option<Option<photocraft_geom::warp::Warp>> {
     use photocraft_geom::warp::{BezierMesh, Warp, WarpStyle};
     let style = enum_of(w, "warpStyle").and_then(|v| WarpStyle::parse(&String::from_utf8_lossy(v)))?;
     if style == WarpStyle::None {
@@ -561,14 +605,79 @@ fn warp_of(w: &Descriptor) -> Option<Option<photocraft_geom::warp::Warp>> {
             _ => None,
         };
         let (xs, ys) = (vals("Hrzn")?, vals("Vrtc")?);
-        if xs.len() != 16 || ys.len() != 16 {
+        if xs.len() != ys.len() {
             return None;
         }
-        let mesh = BezierMesh { us: vec![0.0, 1.0], vs: vec![0.0, 1.0], points: xs.iter().zip(&ys).map(|(x, y)| [*x, *y]).collect() };
+        let points: Vec<[f64; 2]> = xs.iter().zip(&ys).map(|(x, y)| [*x, *y]).collect();
+        let mesh = if points.len() == 16 && env.get("quiltSliceX").is_none() {
+            BezierMesh { us: vec![0.0, 1.0], vs: vec![0.0, 1.0], points }
+        } else {
+            quilt_mesh(w, env, points)?
+        };
         warp.mesh = mesh.is_valid().then_some(mesh);
         warp.mesh.as_ref()?;
     }
     Some((!warp.is_identity()).then_some(warp))
+}
+
+/// The most patches a `quiltWarp` is read with along each side.
+pub(crate) const QUILT_MAX_PATCHES: usize = 64;
+
+/// The control-point grid of a split ("quilt") custom warp. `deformNumCols` × `deformNumRows`
+/// control points, three per patch side plus one, in row-major order; `quiltSliceX` and
+/// `quiltSliceY` are the patch boundaries in the mesh's own units, first and last at its edges,
+/// which become the knots on the unit square. `None` for anything inconsistent.
+fn quilt_mesh(w: &Descriptor, env: &Descriptor, points: Vec<[f64; 2]>) -> Option<photocraft_geom::warp::BezierMesh> {
+    // Photoshop's split grid tops out far below this; it only bounds what a file can claim.
+    const MAX_SIDE: usize = 3 * QUILT_MAX_PATCHES + 1;
+    let count = |k: &str| -> Option<usize> {
+        let n = num(w.get(k))?;
+        (n.is_finite() && n >= 4.0 && n <= MAX_SIDE as f64 && n.fract() == 0.0).then_some(n as usize)
+    };
+    let (cols, rows) = (count("deformNumCols")?, count("deformNumRows")?);
+    if (cols - 1) % 3 != 0 || (rows - 1) % 3 != 0 || points.len() != cols.checked_mul(rows)? {
+        return None;
+    }
+    let us = quilt_knots(env, "quiltSliceX", (cols - 1) / 3)?;
+    let vs = quilt_knots(env, "quiltSliceY", (rows - 1) / 3)?;
+    Some(photocraft_geom::warp::BezierMesh { us, vs, points })
+}
+
+/// The knots of a quilt's patch boundaries `key` (`quiltSliceX` or `quiltSliceY` in its
+/// `customEnvelopeWarp`): `patches + 1` strictly increasing slices, mapped onto `0..=1` with the
+/// first and last at the ends. `None` for anything else.
+pub(crate) fn quilt_knots(env: &Descriptor, key: &str, patches: usize) -> Option<Vec<f64>> {
+    // Stored as an object array holding one unit-float list under the same key; a plain list
+    // of numbers is taken too.
+    let s: Vec<f64> = match env.get(key)? {
+        Value::ObjectArray(arr) => match arr.body.get(key)? {
+            Value::UnitFloats { values, .. } => values.clone(),
+            Value::List(l) => l.iter().map(|v| num(Some(v))).collect::<Option<_>>()?,
+            _ => return None,
+        },
+        Value::List(l) => l.iter().map(|v| num(Some(v))).collect::<Option<_>>()?,
+        _ => return None,
+    };
+    let (first, last) = (*s.first()?, *s.last()?);
+    let span = last - first;
+    if s.len() != patches + 1 || !(span.is_finite() && span > 0.0) || !s.windows(2).all(|p| p[1] > p[0]) {
+        return None;
+    }
+    let n = s.len() - 1;
+    Some(
+        s.iter()
+            .enumerate()
+            .map(|(i, v)| {
+                if i == 0 {
+                    0.0
+                } else if i == n {
+                    1.0
+                } else {
+                    (v - first) / span
+                }
+            })
+            .collect(),
+    )
 }
 
 /// Text content and transform from a `TySh` block (best effort).
@@ -593,13 +702,12 @@ pub(crate) fn parse_prefix_versioned(data: &[u8]) -> Option<Descriptor> {
 }
 
 /// The source-space box Photoshop maps onto a placed layer's `Trnf` quad: the bounding box of a
-/// single-patch custom warp's 16 control points, which may spill past the source, else the source
-/// rect `0..w × 0..h`. Mapping the source rect instead counts the overhang twice and stretches the
-/// placement. A degenerate or non-finite box falls back to the source rect.
+/// custom warp's control points (one patch or a split grid), which may spill past the source,
+/// else the source rect `0..w × 0..h`. Mapping the source rect instead counts the overhang twice
+/// and stretches the placement. A degenerate or non-finite box falls back to the source rect.
 pub(crate) fn placed_frame(warp: Option<&photocraft_geom::warp::Warp>, w: f64, h: f64) -> [f64; 4] {
     let rect = [0.0, 0.0, w, h];
-    let Some(m) = warp.filter(|wp| wp.style == photocraft_geom::warp::WarpStyle::Custom).and_then(|wp| wp.mesh.as_ref()).filter(|m| m.points.len() == 16)
-    else {
+    let Some(m) = warp.filter(|wp| wp.style == photocraft_geom::warp::WarpStyle::Custom).and_then(|wp| wp.mesh.as_ref()).filter(|m| m.is_valid()) else {
         return rect;
     };
     let inf = f64::INFINITY;
@@ -757,6 +865,43 @@ pub fn effects_enabled(lfx2: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    fn noise_gradient_fill(min: [i32; 4], max: [i32; 4], add_transparency: bool) -> Descriptor {
+        let values = |v: [i32; 4]| Value::List(v.into_iter().map(Value::Integer).collect());
+        let gradient = Descriptor::new("Grdn")
+            .with("GrdF", Value::Enumerated { type_id: Id::new("GrdF"), value: Id::new("ClNs") })
+            .with("ClrS", Value::Enumerated { type_id: Id::new("ClrS"), value: Id::new("RGBC") })
+            .with("ShTr", Value::Boolean(add_transparency))
+            .with("VctC", Value::Boolean(true))
+            .with("RndS", Value::Integer(9052369))
+            .with("Smth", Value::Integer(2048))
+            .with("Mnm ", values(min))
+            .with("Mxm ", values(max));
+        Descriptor::new("null").with("Grad", Value::Descriptor(gradient))
+    }
+
+    #[test]
+    fn constant_rgb_noise_fill_uses_its_exact_colour() {
+        use photocraft_doc::Fill;
+        let fill = fill_from_desc(b"GdFl", &noise_gradient_fill([50, 25, 0, 0], [50, 25, 0, 100], false));
+        let Some(Fill::Gradient { stops, .. }) = fill else { panic!("constant noise gradient") };
+        assert_eq!(stops, vec![(0.0, Color::rgb(0.5, 0.25, 0.0)), (1.0, Color::rgb(0.5, 0.25, 0.0))]);
+    }
+
+    #[test]
+    fn variable_or_transparent_noise_stays_a_fill_with_the_placeholder_ramp() {
+        use photocraft_doc::Fill;
+        // Photoshop's default Noise gradient (min 0, max 100) and a transparent variant: no
+        // exact colour is provable, but the fill must parse — the layer keeps its type, its
+        // stored pixels (`fill_cache`) and its raw `GdFl` block. Only the uncached preview
+        // shows the placeholder ramp.
+        for descriptor in [noise_gradient_fill([0, 0, 0, 0], [100, 100, 100, 100], false), noise_gradient_fill([50, 25, 0, 0], [50, 25, 0, 100], true)] {
+            let Some(Fill::Gradient { stops, .. }) = fill_from_desc(b"GdFl", &descriptor) else { panic!("variable noise gradient must stay a fill layer") };
+            assert_eq!(stops, vec![(0.0, Color::BLACK), (1.0, Color::WHITE)]);
+        }
+    }
+
     /// psd-tools layers-minimal/gradient-fill.psd ("Color to Transparent", no stored pixels): a
     /// gradient fill's opacity stops reach the model (as its opacity stops; written from stop
     /// alpha) and survive a write; the ramp's alpha follows them.
@@ -820,6 +965,30 @@ mod tests {
         }
         // Missing components are rejected, not defaulted.
         assert!(super::color_from_desc(&Descriptor::new("LbCl").with("Lmnc", Value::Double(50.0))).is_none());
+    }
+
+    /// Colours stored as HSB (`HSBC`: `H   ` an angle in degrees, `Strt`/`Brgh` 0..100), as in
+    /// psd-tools `stroke-color-descriptors-hsb-with-rgb-mode.psd`, used to be dropped (#6774).
+    #[test]
+    fn hsb_descriptor_colours_parse() {
+        use photocraft_doc::Fill;
+        use photocraft_psd::descriptor::{Descriptor, Value};
+        let hsb = |h: f64, s: f64, b: f64| {
+            Descriptor::new("HSBC").with("H   ", Value::UnitFloat { unit: *b"#Ang", value: h }).with("Strt", Value::Double(s)).with("Brgh", Value::Double(b))
+        };
+        let close = |c: [f32; 3], e: [f32; 3]| c.iter().zip(e).all(|(a, b)| (a - b).abs() < 1e-5);
+        let green = super::color_from_desc(&hsb(120.0, 100.0, 100.0)).unwrap().to_rgb();
+        assert!(close(green, [0.0, 1.0, 0.0]), "{green:?}");
+        let white = super::color_from_desc(&hsb(0.0, 0.0, 100.0)).unwrap().to_rgb();
+        assert!(close(white, [1.0, 1.0, 1.0]), "{white:?}");
+        let half = super::color_from_desc(&hsb(240.0, 50.0, 50.0)).unwrap().to_rgb();
+        assert!(close(half, [0.25, 0.25, 0.5]), "{half:?}");
+        // A solid fill (`SoCo`) with an HSB colour is read, not lost.
+        let soco = Descriptor::new("null").with("Clr ", Value::Descriptor(hsb(0.0, 100.0, 100.0)));
+        let Some(Fill::Solid(c)) = super::fill_from_desc(b"SoCo", &soco) else { panic!("solid fill") };
+        assert!(close(c.to_rgb(), [1.0, 0.0, 0.0]), "{:?}", c.to_rgb());
+        // Missing components are rejected, not defaulted.
+        assert!(super::color_from_desc(&Descriptor::new("HSBC").with("Strt", Value::Double(50.0))).is_none());
     }
 
     #[test]
@@ -887,8 +1056,6 @@ mod tests {
         assert_eq!(super::brst_data(0b101).unwrap(), vec![0, 0, 0, 0, 0, 0, 0, 2]);
         assert_eq!(super::brst_data(0), None);
     }
-
-    use super::*;
 
     #[test]
     fn placed_layer_warp_is_read() {
@@ -1210,6 +1377,117 @@ mod more_tests {
         data.extend_from_slice(&4u32.to_be_bytes());
         data.extend(VersionedDescriptor::new(d).to_bytes());
         data
+    }
+
+    /// `SoLd` data with a split (quilt) custom warp, as Photoshop writes it: a `quiltWarp`
+    /// descriptor with `deformNumCols` × `deformNumRows` control points and the patch boundaries
+    /// in `quiltSliceX` / `quiltSliceY`. With `plain_warp`, a `warpNone` `warp` key sits next to it.
+    fn sold_with_quilt(trnf: [f64; 8], cols: f64, rows: f64, sx: &[f64], sy: &[f64], pts: &[[f64; 2]], plain_warp: bool) -> Vec<u8> {
+        use photocraft_psd::descriptor::ObjectArray;
+        let e = |t: &str, v: &str| Value::Enumerated { type_id: Id::new(t), value: Id::new(v) };
+        let bounds = || {
+            Descriptor::new("Rctn")
+                .with("Top ", Value::Double(0.0))
+                .with("Left", Value::Double(0.0))
+                .with("Btom", Value::Double(25.0))
+                .with("Rght", Value::Double(50.0))
+        };
+        let slices = |k: &str, v: &[f64]| {
+            let body = Descriptor::new("null").with(k, Value::UnitFloats { unit: *b"#Pxl", values: v.to_vec() });
+            Value::ObjectArray(ObjectArray { prefix: v.len() as u32, body })
+        };
+        let mesh = Descriptor::new("null")
+            .with("Hrzn", Value::UnitFloats { unit: *b"#Pxl", values: pts.iter().map(|p| p[0]).collect() })
+            .with("Vrtc", Value::UnitFloats { unit: *b"#Pxl", values: pts.iter().map(|p| p[1]).collect() });
+        let envelope = Descriptor::new("customEnvelopeWarp")
+            .with("quiltSliceX", slices("quiltSliceX", sx))
+            .with("quiltSliceY", slices("quiltSliceY", sy))
+            .with("meshPoints", Value::ObjectArray(ObjectArray { prefix: 16, body: mesh }));
+        let quilt = Descriptor::new("quiltWarp")
+            .with("warpStyle", e("warpStyle", "warpCustom"))
+            .with("bounds", Value::Descriptor(bounds()))
+            .with("deformNumRows", Value::Integer(rows as i32))
+            .with("deformNumCols", Value::Double(cols))
+            .with("customEnvelopeWarp", Value::Descriptor(envelope));
+        let mut d = Descriptor::new("null")
+            .with("Idnt", Value::Text(UnicodeString::new_nul("uuid-1")))
+            .with("Trnf", Value::List(trnf.map(Value::Double).to_vec()))
+            .with("Sz  ", Value::Descriptor(Descriptor::new("Pnt ").with("Wdth", Value::Double(50.0)).with("Hght", Value::Double(25.0))));
+        if plain_warp {
+            d = d.with(
+                "warp",
+                Value::Descriptor(Descriptor::new("warp").with("warpStyle", e("warpStyle", "warpNone")).with("bounds", Value::Descriptor(bounds()))),
+            );
+        }
+        d = d.with("quiltWarp", Value::Descriptor(quilt));
+        let mut data = b"soLD".to_vec();
+        data.extend_from_slice(&4u32.to_be_bytes());
+        data.extend(VersionedDescriptor::new(d).to_bytes());
+        data
+    }
+
+    /// A 3 × 2 patch identity grid over the 50 × 25 source with one interior control point pulled.
+    fn quilt_points() -> Vec<[f64; 2]> {
+        let mut pts = photocraft_geom::warp::BezierMesh::identity([0.0, 0.0, 50.0, 25.0], 3, 2).points;
+        if let Some(p) = pts.get_mut(10 * 3 + 4) {
+            p[1] += 3.0;
+        }
+        pts
+    }
+
+    /// Photoshop's split warp (`quiltWarp`, mockups' usual warp) reads as a multi-patch mesh: the
+    /// patch boundaries become the knots, the control points stay in order, and the quilt wins over
+    /// the `warpNone` `warp` key written next to it. Before, any mesh but 4 × 4 was dropped and the
+    /// layer re-rendered flat.
+    #[test]
+    fn quilt_warp_is_read_as_a_multi_patch_mesh() {
+        let quad = [100.0, 200.0, 240.0, 200.0, 240.0, 260.0, 100.0, 260.0];
+        let pts = quilt_points();
+        // Photoshop pads the outer boundaries a little past the grid's edges.
+        let data = sold_with_quilt(quad, 10.0, 7.0, &[-0.5, 12.5, 37.5, 50.5], &[-0.5, 12.5, 25.5], &pts, true);
+        let warp = parse_placed_warp(b"SoLd", &data).expect("a quilt warp");
+        let mesh = warp.mesh.as_ref().expect("its mesh");
+        assert_eq!(mesh.points, pts);
+        assert_eq!(mesh.us.len(), 4);
+        assert_eq!(mesh.vs.len(), 3);
+        assert_eq!((mesh.us[0], mesh.us[3], mesh.vs[0], mesh.vs[2]), (0.0, 1.0, 0.0, 1.0));
+        assert!((mesh.us[1] - 13.0 / 51.0).abs() < 1e-12 && (mesh.vs[1] - 13.0 / 26.0).abs() < 1e-12);
+        assert!(mesh.is_valid());
+    }
+
+    /// A quilt's control points frame the placed quad as a single patch's do (#3677): a grid
+    /// spilling to x = -10, y = -5 and x = 60 frames a 70 × 30 box.
+    #[test]
+    fn quilt_warp_control_box_frames_the_quad() {
+        let mut pts = quilt_points();
+        pts[0] = [-10.0, -5.0];
+        if let Some(last) = pts.last_mut() {
+            *last = [60.0, 25.0];
+        }
+        let quad = [100.0, 200.0, 240.0, 200.0, 240.0, 260.0, 100.0, 260.0];
+        let data = sold_with_quilt(quad, 10.0, 7.0, &[0.0, 12.5, 37.5, 50.0], &[0.0, 12.5, 25.0], &pts, false);
+        assert_eq!(parse_smart(b"SoLd", &data).1.m, [2.0, 0.0, 0.0, 2.0, 120.0, 210.0]);
+    }
+
+    /// An inconsistent quilt reads as no warp rather than a wrong one, and never panics.
+    #[test]
+    fn inconsistent_quilt_warps_are_not_read() {
+        let quad = [100.0, 200.0, 240.0, 200.0, 240.0, 260.0, 100.0, 260.0];
+        let pts = quilt_points();
+        let (sx, sy) = ([0.0, 12.5, 37.5, 50.0], [0.0, 12.5, 25.0]);
+        let read =
+            |cols: f64, rows: f64, sx: &[f64], sy: &[f64], pts: &[[f64; 2]]| parse_placed_warp(b"SoLd", &sold_with_quilt(quad, cols, rows, sx, sy, pts, false));
+        assert!(read(10.0, 7.0, &sx, &sy, &pts).is_some());
+        assert!(read(9.0, 7.0, &sx, &sy, &pts).is_none(), "not three points per patch side plus one");
+        assert!(read(13.0, 7.0, &sx, &sy, &pts).is_none(), "more points claimed than stored");
+        assert!(read(10.0, 7.0, &[0.0, 12.5, 50.0], &sy, &pts).is_none(), "one slice per patch boundary");
+        assert!(read(10.0, 7.0, &[0.0, 37.5, 12.5, 50.0], &sy, &pts).is_none(), "slices must increase");
+        assert!(read(10.0, 7.0, &[0.0, f64::NAN, 37.5, 50.0], &sy, &pts).is_none());
+        assert!(read(1e9, 7.0, &sx, &sy, &pts).is_none(), "an absurd grid is refused before any arithmetic");
+        assert!(read(10.0, 7.0, &sx, &sy, &pts[..pts.len() - 1]).is_none());
+        let mut nan = pts.clone();
+        nan[3] = [f64::NAN, 0.0];
+        assert!(read(10.0, 7.0, &sx, &sy, &nan).is_none());
     }
 
     /// Photoshop's `Trnf` is the image of the custom warp's control-point bounding box, not of the

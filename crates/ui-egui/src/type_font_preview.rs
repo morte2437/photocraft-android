@@ -10,6 +10,11 @@ use crate::PhotocraftApp;
 
 const TAG: u64 = 1 << 60;
 
+/// How long the pointer has to rest on a served family that isn't fetched yet before hovering it
+/// fetches it (seconds). Hovering asks the host for the whole family, and sweeping the font menu
+/// would otherwise download every family the pointer passes; installed fonts preview at once.
+const HOVER_FETCH_DELAY: f64 = 0.25;
+
 #[derive(Clone)]
 pub struct TypeFontPreview {
     document: DocId,
@@ -25,15 +30,33 @@ pub struct TypeFontPreview {
 
 pub(crate) fn follow_hover(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let hover_id = egui::Id::new("type-font-hover");
+    let since_id = egui::Id::new("type-font-hover-since");
     let family = ctx.data_mut(|d| {
         let family = d.get_temp::<String>(hover_id);
         d.remove::<String>(hover_id);
         family
     });
     if let Some(family) = family {
-        set(app, family);
-    } else if app.type_font_preview.is_some() {
-        clear(app);
+        let now = ctx.input(|i| i.time);
+        let since = ctx.data_mut(|d| match d.get_temp::<(String, f64)>(since_id) {
+            Some((f, t)) if f == family => t,
+            _ => {
+                d.insert_temp(since_id, (family.clone(), now));
+                now
+            }
+        });
+        let installed = photocraft_text::shared().lock().unwrap_or_else(|e| e.into_inner()).fonts.has_family(&family);
+        let rested = now - since;
+        if installed || rested >= HOVER_FETCH_DELAY {
+            set(app, family);
+        } else {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(HOVER_FETCH_DELAY - rested));
+        }
+    } else {
+        ctx.data_mut(|d| d.remove::<(String, f64)>(since_id));
+        if app.type_font_preview.is_some() {
+            clear(app);
+        }
     }
 }
 
@@ -134,4 +157,69 @@ fn preview_key(revision: u64, layer: LayerId, range: Option<[usize; 2]>, family:
     let range_key = range.map_or(0, |[start, end]| (start as u64).rotate_left(17) ^ end as u64);
     let h = family.bytes().fold(revision.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ layer.0 ^ range_key, |h, b| h.wrapping_mul(31).wrapping_add(u64::from(b)));
     (h & (TAG - 1)) | TAG
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Services;
+    use serde_json::json;
+
+    /// One frame at `time` (seconds) with the pointer on `family`'s row in the font menu (`None`:
+    /// on no row), as the menu reports it each frame.
+    fn frame(app: &mut PhotocraftApp, ctx: &egui::Context, family: Option<&str>, time: f64) {
+        let mut out = ctx.run_ui(egui::RawInput { time: Some(time), ..Default::default() }, |ui| {
+            if let Some(f) = family {
+                ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("type-font-hover"), f.to_string()));
+            }
+            follow_hover(app, ui.ctx());
+        });
+        out.textures_delta.clear();
+    }
+
+    fn previewed(app: &PhotocraftApp) -> Option<&str> {
+        app.type_font_preview.as_ref().and_then(|p| p.family.as_deref())
+    }
+
+    fn app_with_type_layer() -> PhotocraftApp {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Services::default());
+        app.run("file.new", json!({"width": 200, "height": 100})).unwrap();
+        app.run("type.create", json!({"text": "Sample", "font": "Inter", "size": 18})).unwrap();
+        app
+    }
+
+    #[test]
+    fn a_served_family_is_asked_for_only_once_the_pointer_rests_on_its_row() {
+        // Families the host serves but hasn't sent (own names: the served catalog is process-wide).
+        let (a, b) = ("Served Hover Rest A", "Served Hover Rest B");
+        let (fonts, _) = photocraft_text::served::parse_manifest(&format!("{a} | Regular | fonts/a/A.ttf\n{b} | Regular | fonts/b/B.ttf\n"));
+        photocraft_text::served::add_fonts(&fonts);
+        let mut app = app_with_type_layer();
+        let ctx = egui::Context::default();
+
+        // Passing over rows asks for nothing: each new row starts the wait again.
+        frame(&mut app, &ctx, Some(a), 1.0);
+        frame(&mut app, &ctx, Some(a), 1.0 + HOVER_FETCH_DELAY / 2.0);
+        frame(&mut app, &ctx, Some(b), 1.0 + HOVER_FETCH_DELAY);
+        frame(&mut app, &ctx, Some(a), 1.0 + HOVER_FETCH_DELAY * 1.5);
+        assert_eq!(previewed(&app), None);
+
+        // Resting on a row asks for the family and previews it.
+        frame(&mut app, &ctx, Some(a), 1.0 + HOVER_FETCH_DELAY * 3.0);
+        assert_eq!(previewed(&app), Some(a));
+
+        // Leaving the menu clears the preview, and the next hover waits again.
+        frame(&mut app, &ctx, None, 3.0);
+        assert_eq!(previewed(&app), None);
+        frame(&mut app, &ctx, Some(a), 3.1);
+        assert_eq!(previewed(&app), None);
+    }
+
+    #[test]
+    fn an_installed_family_previews_at_once() {
+        let mut app = app_with_type_layer();
+        let ctx = egui::Context::default();
+        frame(&mut app, &ctx, Some("JetBrains Mono"), 1.0);
+        assert_eq!(previewed(&app), Some("JetBrains Mono"));
+    }
 }

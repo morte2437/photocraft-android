@@ -35,13 +35,20 @@ impl std::error::Error for NotFollowed {}
 /// a relative `document` is taken from the working directory, where it was opened from.
 pub fn resolve(stored: &str, document: Option<&Path>) -> Result<PathBuf, NotFollowed> {
     let document = document.map(|d| if d.is_relative() { std::path::absolute(d).unwrap_or_else(|_| d.to_path_buf()) } else { d.to_path_buf() });
-    let path = craft_docpath::resolve(stored, document.as_deref()).map_err(NotFollowed::Refused)?;
-    // A path that is still relative would be taken from the working directory, which the
-    // document does not choose.
-    if path.is_relative() {
-        return Err(NotFollowed::NoDocumentFolder);
-    }
-    Ok(path)
+    craft_docpath::resolve_absolute(stored, document.as_deref()).map_err(|r| match r {
+        // Without a document, a relative path resolves but stays relative.
+        Refused::Invalid if document.is_none() && craft_docpath::resolve(stored, None).is_ok_and(|p| cfg!(windows) || !is_windows_form(&p)) => {
+            NotFollowed::NoDocumentFolder
+        }
+        r => NotFollowed::Refused(r),
+    })
+}
+
+/// Whether `path`, as `craft_docpath` writes it, has a Windows drive or share root (`C:x`, `C:\x`,
+/// `\\server\share\x`). Outside Windows no document folder makes such a path absolute.
+fn is_windows_form(path: &Path) -> bool {
+    let s = path.as_os_str().as_encoded_bytes();
+    s.starts_with(b"\\") || matches!(s, [l, b':', ..] if l.is_ascii_alphabetic())
 }
 
 #[cfg(test)]
@@ -55,5 +62,22 @@ mod tests {
         assert_eq!(resolve("logo.png", None), Err(NotFollowed::NoDocumentFolder));
         assert_eq!(resolve(r"\\192.0.2.1\share\x.png", Some(&doc)), Err(NotFollowed::Refused(Refused::Network)));
         assert_eq!(resolve("//192.0.2.1/share/x.png", None), Err(NotFollowed::Refused(Refused::Network)));
+        assert_eq!(resolve("jar:logo.png", None), Err(NotFollowed::Refused(Refused::Url)));
+        // Colons in names: an alternate data stream or a URL on Windows, a plain character elsewhere.
+        if cfg!(windows) {
+            assert_eq!(resolve("img/fig:1.png", Some(&doc)), Err(NotFollowed::Refused(Refused::Invalid)));
+            assert_eq!(resolve("chapter1:intro.png", None), Err(NotFollowed::Refused(Refused::Url)));
+        } else {
+            assert_eq!(resolve("img/fig:1.png", Some(&doc)), Ok(std::env::temp_dir().join("art").join("img").join("fig:1.png")));
+            assert_eq!(resolve("chapter1:intro.png", None), Err(NotFollowed::NoDocumentFolder));
+        }
+        // Outside Windows a Windows path names no file: it is refused, not reported as relative.
+        if !cfg!(windows) {
+            for stored in [r"C:\art\logo.png", "C:logo.png"] {
+                assert_eq!(resolve(stored, Some(&doc)), Err(NotFollowed::Refused(Refused::Invalid)), "{stored}");
+                assert_eq!(resolve(stored, None), Err(NotFollowed::Refused(Refused::Invalid)), "{stored}");
+            }
+            assert_eq!(resolve("../logo.png", None), Err(NotFollowed::NoDocumentFolder));
+        }
     }
 }

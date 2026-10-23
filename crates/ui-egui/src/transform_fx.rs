@@ -348,6 +348,7 @@ impl Frame<'_> {
 #[derive(Clone, PartialEq)]
 struct Key {
     revision: u64,
+    display_key: u64,
     quad: [u64; 8],
     plan: Plan,
     level: u32,
@@ -389,12 +390,18 @@ impl StyledPreview {
     /// The composite for `frame` and the document rectangle it covers (x0, y0, x1, y1),
     /// compositing it again if anything it depends on changed. `None` when there is nothing to
     /// draw this way: the caller falls back to the plain texels.
-    pub fn texture(&self, ctx: &egui::Context, frame: &Frame) -> Option<(TextureId, [f32; 4])> {
+    pub fn texture(
+        &self,
+        ctx: &egui::Context,
+        frame: &Frame,
+        display: Option<&photocraft_engine::display_color::CanvasDisplay>,
+    ) -> Option<(TextureId, [f32; 4])> {
         let (plan, work, level) = frame.plan()?;
         let crisp = plan.scale >= 1.0 && frame.zoom >= CRISP_ZOOM;
         let q = frame.quad.map(|q| q.map(f64::to_bits));
         let key = Key {
             revision: frame.revision,
+            display_key: display.map_or(0, |d| d.key),
             quad: [q[0][0], q[0][1], q[1][0], q[1][1], q[2][0], q[2][1], q[3][0], q[3][1]],
             plan,
             level,
@@ -407,7 +414,11 @@ impl StyledPreview {
         }
         let out = frame.compose(&plan, &work, level)?;
         let options = if crisp { TextureOptions::NEAREST } else { TextureOptions::LINEAR };
-        let tex = ctx.load_texture(self.name.clone(), image(&out), options);
+        let pixels = match display {
+            Some(d) if !d.is_identity() => crate::canvas::display_image(Some(d), &out),
+            _ => image(&out),
+        };
+        let tex = ctx.load_texture(self.name.clone(), pixels, options);
         let (id, rect) = (tex.id(), plan.doc_rect());
         state.shown = Some(Shown { key, tex, rect });
         state.builds += 1;
@@ -429,6 +440,7 @@ mod tests {
             size,
             position: StrokePosition::Outside,
             paint: FxPaint::Color(Color::rgb(1.0, 0.0, 0.0)),
+            overprint: false,
         })
     }
 

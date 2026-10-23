@@ -1,5 +1,5 @@
-//! #2561: the Layers panel New Group button. Like Photoshop a plain click adds an empty group
-//! and Shift-click groups the selected layers.
+//! The Layers panel New Group button groups multiple selected layers on a plain click.
+//! Shift-click also groups a single selected layer; otherwise it creates an empty group.
 
 use egui::Modifiers;
 use egui_kittest::kittest::Queryable;
@@ -42,8 +42,42 @@ fn shift_click_groups_the_selected_layers_in_order() {
 }
 
 #[test]
-fn plain_click_still_adds_an_empty_group() {
+fn plain_click_groups_all_selected_layers_in_order_and_undoes_in_one_step() {
+    for active in ["A", "B"] {
+        let (mut h, a, b) = two_selected();
+        let id = if active == "A" { a } else { b };
+        h.state_mut().session.execute("layer.select", json!({"layer": id.0, "mode": "add"})).unwrap();
+        h.run_steps(4);
+        h.get_by_label("Create a new group").click();
+        h.run_steps(4);
+        let groups = groups(&h);
+        assert_eq!(groups.len(), 1);
+        let group = &groups[0];
+        let children: Vec<LayerId> = group.children().unwrap().iter().map(|l| l.id).collect();
+        assert_eq!(children, vec![a, b]);
+        let st = h.state().session.active().unwrap();
+        assert_eq!(st.doc.layers.len(), 2, "only the background and group remain at the top level");
+        assert_eq!(st.selected_layers(), vec![group.id]);
+
+        h.state_mut().session.execute("edit.undo", json!({})).unwrap();
+        let st = h.state().session.active().unwrap();
+        assert_eq!(st.doc.layers.len(), 3);
+        assert_eq!(st.doc.layers[1].id, a);
+        assert_eq!(st.doc.layers[2].id, b);
+        assert_eq!(st.active_layer, Some(id));
+
+        h.state_mut().session.execute("edit.redo", json!({})).unwrap();
+        let st = h.state().session.active().unwrap();
+        let children: Vec<LayerId> = st.doc.layer(group.id).unwrap().children().unwrap().iter().map(|l| l.id).collect();
+        assert_eq!(children, vec![a, b]);
+    }
+}
+
+#[test]
+fn plain_click_with_one_selected_layer_still_adds_an_empty_group() {
     let (mut h, a, b) = two_selected();
+    h.state_mut().session.execute("layer.select", json!({"layer": a.0})).unwrap();
+    h.run_steps(4);
     h.get_by_label("Create a new group").click();
     h.run_steps(4);
     let groups = groups(&h);
@@ -51,5 +85,6 @@ fn plain_click_still_adds_an_empty_group() {
     assert!(groups[0].children().unwrap().is_empty());
     let doc = &h.state().session.active().unwrap().doc;
     let top: Vec<LayerId> = doc.layers.iter().map(|l| l.id).collect();
-    assert_eq!(top[1..3], [a, b], "the selected layers stay where they were");
+    assert_eq!(top[1], a, "the selected layer stays where it was");
+    assert_eq!(top[3], b, "the unselected layer stays above the new group");
 }

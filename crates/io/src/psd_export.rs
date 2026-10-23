@@ -50,6 +50,10 @@ pub struct PsdExportOptions {
     /// The path of the document's own file: linked smart objects are resolved against it
     /// ([`crate::doc_path::resolve`]) before they are read and embedded.
     pub document_path: Option<std::path::PathBuf>,
+    /// Read and embed the files linked smart objects name. On by default; automation turns it
+    /// off, since a stored path is document data rather than a granted file: such a layer is
+    /// then written as pixels, with a warning.
+    pub read_linked_files: bool,
 }
 
 impl Default for PsdExportOptions {
@@ -61,6 +65,7 @@ impl Default for PsdExportOptions {
             merged_compression: Compression::Rle,
             maximize_compatibility: true,
             document_path: None,
+            read_linked_files: true,
         }
     }
 }
@@ -71,6 +76,8 @@ struct Ex {
     dpi: f32,
     /// The document's own file, which linked smart objects are resolved against.
     document: Option<std::path::PathBuf>,
+    /// Whether linked files may be read and embedded ([`PsdExportOptions::read_linked_files`]).
+    read_linked_files: bool,
     /// Character/paragraph styles written into every type layer's engine data.
     text_styles: photocraft_doc::TextStyles,
     mask_fmt: PixelFormat,
@@ -455,7 +462,11 @@ impl Ex {
         self.warnings.extend(warnings);
         let mut mask = MaskData::None;
         // Vector mask density/feather live in the mask parameters, with or without a user mask.
-        let vector = l.vector_mask.as_ref().map(|vm| (vm.density, vm.feather));
+        // A shape layer's path is its vector mask, with the shape's own density and feather.
+        let vector = match &l.content {
+            LayerContent::Shape(sh) if l.vector_mask.is_none() => Some((sh.density, sh.feather)),
+            _ => l.vector_mask.as_ref().map(|vm| (vm.density, vm.feather)),
+        };
         if let Some(m) = &l.mask {
             let (md, ch) = self.mask(m, vector);
             mask = md;
@@ -607,16 +618,29 @@ impl Ex {
                     // It parses here, but Photoshop requires four-byte alignment, so repair
                     // that legacy record on re-save rather than preserving the broken bytes.
                     let legacy_phfl = k == b"phfl" && d.starts_with(&[0, 2]) && d.len() % 4 != 0;
-                    !legacy_phfl && adjust_map::ADJUSTMENT_KEYS.contains(&k) && adjust_map::parse(k, d, cged.as_deref(), channels) == *a
+                    // Older PhotoCraft builds wrote `grdm` 2 bytes short of four-byte alignment,
+                    // which makes Photoshop refuse the file (#8070): regenerate it too.
+                    let legacy_grdm = k == b"grdm" && adjust_map::is_unpadded_photocraft_gradient_map(d);
+                    !legacy_phfl && !legacy_grdm && adjust_map::ADJUSTMENT_KEYS.contains(&k) && adjust_map::parse(k, d, cged.as_deref(), channels) == *a
                 });
                 // A Gradient Map whose stops are unchanged keeps the file's own block (stops in
                 // the document's CMYK/Lab/Gray space, smoothness, method) with Reverse and Dither
                 // updated in place.
                 let keep = keep
                     || (matches!(a, photocraft_doc::Adjustment::GradientMap { .. })
-                        && raw.iter_mut().any(|(k, d)| k == b"grdm" && adjust_map::retarget_gradient_map(d, a, channels)));
+                        && raw.iter_mut().any(|(k, d)| {
+                            k == b"grdm" && !adjust_map::is_unpadded_photocraft_gradient_map(d) && adjust_map::retarget_gradient_map(d, a, channels)
+                        }));
+                // An adjustment type no mapper knows (#6575) is its block: kept verbatim, and
+                // never written a second time beside a stale copy.
+                let own = match a {
+                    photocraft_doc::Adjustment::Unsupported { psd_key, .. } => Some(psd_key.as_bytes()),
+                    _ => None,
+                };
+                let keep =
+                    keep || matches!(a, photocraft_doc::Adjustment::Unsupported { raw: r, .. } if raw.iter().any(|(k, d)| own == Some(&k[..]) && d == r));
                 if !keep {
-                    raw.retain(|(k, _)| !adjust_map::ADJUSTMENT_KEYS.contains(&k) && k != b"CgEd");
+                    raw.retain(|(k, _)| !adjust_map::ADJUSTMENT_KEYS.contains(&k) && k != b"CgEd" && own != Some(&k[..]));
                     let w = adjust_map::write(a);
                     if w.is_empty() {
                         self.warnings.push(format!("layer \"{}\": {} adjustment is not yet written to PSD", l.name, a.label()));
@@ -714,7 +738,22 @@ impl Ex {
             let id = self.layer_ids.get(&l.id).copied().unwrap_or(0);
             crate::comps_map::set_cmls(&mut raw, crate::comps_map::write_cmls(comps, last.as_ref(), l, id));
         }
+        self.layer_xmp_block(l, &mut raw);
         regenerated.into_iter().chain(raw).map(|(k, d)| TaggedBlock::new(k, d)).collect()
+    }
+
+    /// Writes the layer's XMP packet into its `shmd` block (created when it has none). Import
+    /// takes the packet out of `shmd`, so a layer without one keeps the block as it was.
+    fn layer_xmp_block(&mut self, l: &Layer, raw: &mut Vec<([u8; 4], Vec<u8>)>) {
+        let Some(xmp) = l.xmp.as_deref() else { return };
+        let pos = raw.iter().position(|(k, _)| k == b"shmd");
+        match photocraft_psd::metadata::put_layer_xmp(pos.map(|i| raw[i].1.as_slice()), xmp) {
+            Ok(data) => match pos {
+                Some(i) => raw[i].1 = data,
+                None => raw.push((*b"shmd", data)),
+            },
+            Err(e) => self.warnings.push(format!("layer \"{}\": its XMP metadata was not saved (its metadata block can't be read: {e})", l.name)),
+        }
     }
 
     /// Keeps, regenerates or removes the `vmsk`/`vsms` block of a non-shape layer.
@@ -945,6 +984,9 @@ impl Ex {
             SmartSource::Linked { path } => {
                 #[cfg(not(target_arch = "wasm32"))]
                 {
+                    if !self.read_linked_files {
+                        return Err(format!("the linked file {path} is not read for this export"));
+                    }
                     let file = crate::doc_path::resolve(path, self.document.as_deref()).map_err(|e| format!("the linked file {path} is not opened: {e}"))?;
                     let bytes = std::fs::read(file).map_err(|e| format!("the linked file {path} can't be read: {e}"))?;
                     let name = path.rsplit(['/', '\\']).next().unwrap_or(path).to_string();
@@ -1017,7 +1059,7 @@ impl Ex {
             let doc = photocraft_format::load_from_bytes(bytes).map_err(|e| format!("its contents can't be read: {e}"))?;
             let (file, warnings) = document_to_psd_nested(
                 &doc,
-                &PsdExportOptions { force_psb: true, document_path: self.document.clone(), ..Default::default() },
+                &PsdExportOptions { force_psb: true, document_path: self.document.clone(), read_linked_files: self.read_linked_files, ..Default::default() },
                 self.smart.depth + 1,
                 &Interrupt::NONE,
             );
@@ -1516,9 +1558,16 @@ pub(crate) fn estimate_psd_size(doc: &Document) -> Option<u64> {
 
 /// The signature a kept tagged block is written with. `8B64` exists only in PSB files: a PSD
 /// with an `8B64` block (kept from a PSB source, e.g. its global `FMsk` or `cinf`) is refused by
-/// Photoshop as "not compatible with this version" (measured in Photoshop 27.11).
-fn block_signature(sig: [u8; 4], version: Version) -> [u8; 4] {
-    if version == Version::Psd && sig == *b"8B64" { *b"8BIM" } else { sig }
+/// Photoshop as "not compatible with this version" (measured in Photoshop 27.11). The other way
+/// round, a PSB block with an 8-byte length is `8B64`, as Photoshop writes it: an `8BIM` `lnk2`,
+/// `pths` or `cinf` (kept from a PSD source, whose lengths the PSB widens) makes Photoshop read
+/// the length as 4 bytes and refuse the whole file (#7937).
+pub(crate) fn block_signature(sig: [u8; 4], key: [u8; 4], version: Version) -> [u8; 4] {
+    match version {
+        Version::Psd if sig == *b"8B64" => *b"8BIM",
+        Version::Psb if sig == *b"8BIM" && photocraft_psd::tagged::uses_long_length(version, &key) => *b"8B64",
+        _ => sig,
+    }
 }
 
 pub(crate) fn psd_version(doc: &Document, force_psb: bool, size_exceeds_limit: bool) -> Version {
@@ -1535,7 +1584,18 @@ fn document_to_psd_nested(doc: &Document, opts: &PsdExportOptions, depth: u32, c
     if doc.mode == ColorMode::Multichannel {
         return crate::multichannel_map::document_to_psd(doc, opts.force_psb);
     }
+    if let Some(file) = crate::palette_map::document_to_psd(doc, opts.force_psb) {
+        return file;
+    }
     let fmt = doc.pixel_format();
+    // A Duotone is written over its grey plate with its inks: the block it was imported with,
+    // verbatim, while the inks are unedited, else one made from them (`duotone_map`). Photoshop
+    // has only 8-bit Duotone: it refuses to open a 16-bit one.
+    let duotone_inks: Option<Vec<u8>> = doc
+        .duotone
+        .as_ref()
+        .filter(|d| !d.inks.is_empty() && doc.mode == ColorMode::Duotone && fmt.mode == ColorMode::Grayscale && fmt.sample == SampleType::U8)
+        .map(|d| d.psd_raw.clone().unwrap_or_else(|| crate::duotone_map::write(d)));
     let sample = fmt.sample;
     let cc = fmt.mode.color_channels();
     let big = doc.size.width > 30_000 || doc.size.height > 30_000;
@@ -1545,6 +1605,7 @@ fn document_to_psd_nested(doc: &Document, opts: &PsdExportOptions, depth: u32, c
         fmt,
         dpi: doc.resolution_dpi,
         document: opts.document_path.clone(),
+        read_linked_files: opts.read_linked_files,
         text_styles: doc.text_styles.clone(),
         text_index: Default::default(),
         mask_fmt: PixelFormat::new(ColorMode::Grayscale, sample, false),
@@ -1568,7 +1629,7 @@ fn document_to_psd_nested(doc: &Document, opts: &PsdExportOptions, depth: u32, c
     } else if size_exceeds_limit && !opts.force_psb {
         ex.warnings.push("estimated encoded size exceeds 2 GB; written as PSB".into());
     }
-    if fmt.mode != doc.mode {
+    if fmt.mode != doc.mode && duotone_inks.is_none() {
         ex.warnings.push(format!("{:?} document written as {:?}", doc.mode, fmt.mode));
     }
     // Assign layer ids up front (stable across round trips): keep unique
@@ -1597,26 +1658,36 @@ fn document_to_psd_nested(doc: &Document, opts: &PsdExportOptions, depth: u32, c
         ex.used_ids = used;
         // Text objects' number in the generated `Txt2` (#1348): a preserved `TySh` keeps the
         // number it already names — its `Txt2` object must sit at that slot for `apply_txt2` —
-        // and new layers get the next free number.
+        // and new layers get numbers past every kept one and every object in the file's `Txt2`.
+        // Kept numbers are claimed first: a layer added below others must not take a number a
+        // layer above it keeps, or each of those would be renumbered onto its neighbour's object
+        // and take its style (#7773); nor may it land on a deleted layer's object.
         let mut used_txt = std::collections::HashSet::new();
-        let mut next_txt = 0i32;
         ex.text_index = Default::default();
+        let mut fresh = Vec::new();
         for (_, _, l) in &walk {
             let LayerContent::Text(t) = &l.content else {
                 continue;
             };
-            let kept = t.psd_raw.as_deref().and_then(|d| photocraft_text::psd::text_index(d));
-            let index = match kept {
-                Some(i) if used_txt.insert(i) => i,
-                _ => {
-                    while used_txt.contains(&next_txt) {
-                        next_txt += 1;
-                    }
-                    used_txt.insert(next_txt);
-                    next_txt
+            match t.psd_raw.as_deref().and_then(|d| photocraft_text::psd::text_index(d)) {
+                Some(i) if used_txt.insert(i) => {
+                    ex.text_index.insert(l.id, i);
                 }
-            };
-            ex.text_index.insert(l.id, index);
+                _ => fresh.push(l.id),
+            }
+        }
+        let objects =
+            doc.metadata.psd_global_blocks.iter().find(|(_, key, _)| key == b"Txt2").map_or(0, |(_, _, d)| photocraft_text::psd::txt2_object_count(d));
+        let mut next_txt = used_txt.iter().max().map_or(0, |m| m + 1).max(i32::try_from(objects).unwrap_or(i32::MAX));
+        if next_txt.saturating_add(fresh.len() as i32) > photocraft_text::psd::MAX_TEXT_INDEX + 1 {
+            next_txt = 0;
+        }
+        for id in fresh {
+            while used_txt.contains(&next_txt) {
+                next_txt += 1;
+            }
+            used_txt.insert(next_txt);
+            ex.text_index.insert(id, next_txt);
         }
     }
     // Progress: one unit per layer record, then the merged composite (#3389).
@@ -1634,8 +1705,9 @@ fn document_to_psd_nested(doc: &Document, opts: &PsdExportOptions, depth: u32, c
 
     // Without Maximize Compatibility the merged image is a white placeholder and the composite
     // isn't rendered at all. A document without layer records keeps the real image: its pixels
-    // live nowhere else.
-    let real_merged = opts.maximize_compatibility || ex.records.is_empty();
+    // live nowhere else. So does a Duotone: it opens flattened from that image (its layer records
+    // are not read back).
+    let real_merged = opts.maximize_compatibility || ex.records.is_empty() || duotone_inks.is_some();
     let (mut planes, has_alpha) = if real_merged {
         // Merged composite, rendered and encoded in bands (no full-size float composite). Matting
         // against white only changes pixels with alpha < 1; if some are slightly translucent but
@@ -1679,7 +1751,8 @@ fn document_to_psd_nested(doc: &Document, opts: &PsdExportOptions, depth: u32, c
         planes.extend(deinterleave(&bytes, 1, sample, &[false]).remove(0));
     }
     let channels = (cc + usize::from(has_alpha) + extra.len()) as u16;
-    let header = Header::new(version, doc.size.width, doc.size.height, channels, psd_depth(sample), psd_mode(fmt.mode));
+    let mode = if duotone_inks.is_some() { PsdMode::Duotone } else { psd_mode(fmt.mode) };
+    let header = Header::new(version, doc.size.width, doc.size.height, channels, psd_depth(sample), mode);
     let mcomp = if sample == SampleType::F32 { Compression::Raw } else { opts.merged_compression };
     let image_data = ImageData::encode(mcomp, &planes, &header)
         .or_else(|_| ImageData::encode(Compression::Raw, &planes, &header))
@@ -1745,8 +1818,8 @@ fn document_to_psd_nested(doc: &Document, opts: &PsdExportOptions, depth: u32, c
     // writes its empty `<< /0 << >> >>` stub — readers such as Photopea reject it (#3514). Keep the
     // block when the file had one (round-trip its pen positions/extras) or a layer is Optical (the
     // one mode EngineData can't carry; #1348).
-    let txt2 =
-        (previous.is_some() || photocraft_text::psd::needs_txt2(&text_layers)).then(|| photocraft_text::psd::build_txt2(&text_layers, previous.as_deref()));
+    let txt2 = (previous.is_some() || photocraft_text::psd::needs_txt2(&text_layers))
+        .then(|| photocraft_text::psd::build_txt2_at(&text_layers, previous.as_deref(), ex.dpi));
     for (sig, key, data) in preserved {
         if txt2.is_some() && key == *b"Txt2" {
             continue;
@@ -1757,7 +1830,7 @@ fn document_to_psd_nested(doc: &Document, opts: &PsdExportOptions, depth: u32, c
         if !ex.records.is_empty() && matches!(&key, b"Lr16" | b"Lr32" | b"Layr") {
             continue;
         }
-        global_blocks.push(global_block(block_signature(sig, version), key, &data));
+        global_blocks.push(global_block(block_signature(sig, key, version), key, &data));
     }
     if let Some(txt2) = txt2 {
         let mut tb = TaggedBlock::new(*b"Txt2", txt2.clone());
@@ -1822,7 +1895,10 @@ fn document_to_psd_nested(doc: &Document, opts: &PsdExportOptions, depth: u32, c
     }
     // 32-bit files carry Photoshop's HDR toning records as Color Mode Data; Photoshop will not
     // open a 32-bit file without them (#291).
-    let color_mode_data = photocraft_psd::hdr::color_mode_data_for_depth(header.depth);
+    let color_mode_data = match duotone_inks {
+        Some(raw) => raw,
+        None => photocraft_psd::hdr::color_mode_data_for_depth(header.depth),
+    };
     let file = PsdFile {
         header,
         color_mode_data,
@@ -1841,7 +1917,7 @@ fn document_to_psd_nested(doc: &Document, opts: &PsdExportOptions, depth: u32, c
 /// every value is the default (density 1, feather 0).
 fn mask_parameters(user: Option<(f32, f32)>, vector: Option<(f32, f32)>) -> Option<MaskParameters> {
     let density = |v: Option<(f32, f32)>| v.and_then(|(d, _)| (d < 1.0).then(|| q255(d)));
-    let feather = |v: Option<(f32, f32)>| v.and_then(|(_, f)| (f != 0.0).then_some(f64::from(f)));
+    let feather = |v: Option<(f32, f32)>| v.and_then(|(_, f)| (f.is_finite() && f > 0.0).then_some(f64::from(f)));
     let p =
         MaskParameters { flags: 0, user_density: density(user), user_feather: feather(user), vector_density: density(vector), vector_feather: feather(vector) };
     let flags = u8::from(p.user_density.is_some())
@@ -1896,8 +1972,14 @@ mod tests {
         let doc = crate::import("flat.psd", &file.to_bytes().unwrap()).unwrap().document;
         let bg = &doc.layers[0];
         assert!(bg.name == "Background" && bg.locks.transparency && bg.locks.position, "{:?}", bg.locks);
+        // Bitmap has no layers in Photoshop (#4814): the file is saved flat in Bitmap mode, without
+        // a layer section, and opens as a Background again.
         let out = document_to_psd(&doc);
-        assert!(out.layer_info.unwrap().layers[0].channels.iter().all(|c| c.id >= 0));
+        assert_eq!(out.header.color_mode, PsdMode::Bitmap);
+        assert!(out.layer_info.as_ref().is_none_or(|li| li.layers.is_empty()));
+        let back = crate::import("flat.psd", &out.to_bytes().unwrap()).unwrap().document;
+        let bg = &back.layers[0];
+        assert!(back.layers.len() == 1 && bg.name == "Background" && bg.locks.transparency && bg.locks.position, "{:?}", bg.locks);
     }
 
     #[test]
@@ -2075,6 +2157,35 @@ mod tests {
         };
         assert_eq!(signatures(false), vec![(*b"8BIM", *b"FMsk"), (*b"8BIM", *b"Patt")]);
         assert_eq!(signatures(true), vec![(*b"8B64", *b"FMsk"), (*b"8BIM", *b"Patt")], "a PSB keeps 8B64");
+    }
+
+    /// A PSB writes every global block with an 8-byte length as `8B64`, the way Photoshop does:
+    /// kept from a PSD source, `lnk2`, `pths` and `cinf` arrive as `8BIM`, and with that signature
+    /// and the PSB's 8-byte length Photoshop 27.11 refused the whole file (#7937). Blocks with a
+    /// 4-byte length keep `8BIM`, and a PSD keeps `8BIM` throughout.
+    #[test]
+    fn psb_writes_long_length_blocks_as_8b64() {
+        let mut doc = document(4, 4);
+        doc.metadata.psd_global_blocks = vec![
+            (*b"8BIM", *b"cinf", std::sync::Arc::new(vec![0, 0, 0, 16, 0, 0, 0, 0])),
+            (*b"8BIM", *b"pths", std::sync::Arc::new(vec![0, 0, 0, 16, 0, 0, 0, 0])),
+            (*b"8BIM", *b"Patt", std::sync::Arc::new(Vec::new())),
+        ];
+        let written = |force_psb| {
+            let opts = PsdExportOptions { force_psb, ..PsdExportOptions::default() };
+            let bytes = document_to_psd_with(&doc, &opts).0.to_bytes().unwrap();
+            let file = PsdFile::from_bytes(&bytes).unwrap();
+            let blocks = file.global_blocks.iter().map(|b| (b.signature, b.key, b.data.len())).collect::<Vec<_>>();
+            (bytes, blocks)
+        };
+        let (bytes, blocks) = written(true);
+        assert_eq!(blocks, vec![(*b"8B64", *b"cinf", 8), (*b"8B64", *b"pths", 8), (*b"8BIM", *b"Patt", 0)]);
+        // On disk: the signature, the key, then the 8-byte length.
+        let at = bytes.windows(8).position(|w| w == b"8B64cinf").expect("8B64cinf in the file");
+        assert_eq!(bytes.get(at + 8..at + 16), Some(&[0u8, 0, 0, 0, 0, 0, 0, 8][..]));
+        assert!(!bytes.windows(8).any(|w| w == b"8BIMcinf" || w == b"8BIMpths"));
+        let (_, blocks) = written(false);
+        assert_eq!(blocks, vec![(*b"8BIM", *b"cinf", 8), (*b"8BIM", *b"pths", 8), (*b"8BIM", *b"Patt", 0)], "a PSD keeps 8BIM");
     }
 
     /// A layered document with transparency in the merged image and an alpha channel: the name

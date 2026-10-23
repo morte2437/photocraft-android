@@ -2,8 +2,9 @@
 //!
 //! [`atomic_write`] never truncates the destination. It writes a temporary file in the **same
 //! directory**, flushes it to stable storage (`sync_all`), renames it over the destination and,
-//! on Unix, fsyncs the directory so the rename itself survives a power loss. If anything fails,
-//! the destination keeps its previous bytes and the temporary file is removed.
+//! flushes the directory so the rename itself survives a power loss. Failures before replacement
+//! keep the destination's previous bytes. On Windows a failed publication flush reports that the
+//! new file is in place but its durability could not be confirmed (#7858).
 //!
 //! - **Windows:** antivirus scanners and the search indexer briefly hold files open, which makes
 //!   the replacing rename fail with `PermissionDenied`. The rename is retried with exponential
@@ -59,7 +60,7 @@ pub trait AtomicFs {
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()>;
     /// Remove a (temporary) file.
     fn remove(&self, path: &Path) -> io::Result<()>;
-    /// Flush a directory entry change (Unix); a no-op elsewhere.
+    /// Flush a directory entry change on Unix and Windows; a no-op elsewhere.
     fn sync_dir(&self, dir: &Path) -> io::Result<()>;
     /// Copy the metadata a replacement should keep — mode, extended attributes, ACL — from the
     /// file about to be replaced onto the temporary file. Best effort; see [`meta`].
@@ -100,12 +101,27 @@ impl AtomicFs for RealFs {
     fn remove(&self, path: &Path) -> io::Result<()> {
         std::fs::remove_file(path)
     }
+    /// Flush directory publication using a directory handle on Unix and Windows.
+    /// Windows requests only `FILE_ADD_FILE`; opening or flushing the handle can fail the save.
     fn sync_dir(&self, dir: &Path) -> io::Result<()> {
         #[cfg(unix)]
         {
             sync_file(&std::fs::File::open(dir)?)
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+
+            // FILE_ADD_FILE is the directory equivalent of FILE_WRITE_DATA. Requesting only
+            // this right permits FlushFileBuffers without requiring GENERIC_WRITE's additional
+            // directory permissions. BACKUP_SEMANTICS opens a directory, not a volume: no
+            // administrative privilege or volume-wide flush is needed.
+            const FILE_ADD_FILE: u32 = 0x0002;
+            const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+            let directory = std::fs::OpenOptions::new().access_mode(FILE_ADD_FILE).custom_flags(FILE_FLAG_BACKUP_SEMANTICS).open(dir)?;
+            directory.sync_all()
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = dir;
             Ok(())
@@ -172,8 +188,8 @@ impl RenameRetry {
 
 /// Atomically replace (or create) `path` with `bytes`. See the module docs.
 ///
-/// Errors keep their [`io::ErrorKind`] and say what happened and that the original file is
-/// unchanged.
+/// Errors keep their [`io::ErrorKind`]. Before replacement they say the original is unchanged;
+/// a Windows publication-flush error says the new file may not survive a power loss.
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     atomic_write_with(&RealFs, RenameRetry::platform(), path, bytes)
 }
@@ -238,8 +254,10 @@ pub fn atomic_write_with_progress(fs: &dyn AtomicFs, retry: RenameRetry, path: &
         let _ = fs.remove(&tmp);
         return Err(rename_error(e, path));
     }
-    // The new bytes are in place; a failed directory fsync can't be undone and must not report
-    // the save as failed, so it is best effort.
+    #[cfg(windows)]
+    fs.sync_dir(&dir).map_err(|e| publication_error(e, path))?;
+    // Keep the existing Unix policy here; #5420 separately changes its error handling.
+    #[cfg(not(windows))]
     let _ = fs.sync_dir(&dir);
     Ok(())
 }
@@ -315,6 +333,15 @@ fn context(e: io::Error, msg: String) -> io::Error {
 }
 
 const UNCHANGED: &str = "the original file was not changed";
+
+/// Replacement already happened: never claim that the original file is unchanged or undo it.
+#[cfg(windows)]
+pub(crate) fn publication_error(error: io::Error, path: &Path) -> io::Error {
+    io::Error::new(
+        error.kind(),
+        format!("wrote {}, but could not confirm the save is durable; it may not survive a power loss or crash: {error}", path.display()),
+    )
+}
 
 fn write_error(e: io::Error, path: &Path, dir: &Path) -> io::Error {
     let msg = match e.kind() {

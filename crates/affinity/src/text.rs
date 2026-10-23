@@ -26,11 +26,17 @@ pub(crate) fn read(r: &mut Reader, id: ObjId, world: Affine) -> Option<Text> {
             None => {
                 // Inline objects (page numbers, anchors) each take one index before the segment text.
                 let mut v = Vec::new();
+                // One past the allowance is enough to trip the check below; shared segments
+                // repeated by reference must not expand beyond it first.
+                let room = MAX_CHARS.saturating_sub(total).saturating_add(1);
                 for seg in s.objs(glyphs, b"Mixd") {
+                    if v.len() >= room {
+                        break;
+                    }
                     let inline = s.objs(seg, b"Glys").len();
-                    v.extend(std::iter::repeat_n('\u{FFFC}', inline));
+                    v.extend(std::iter::repeat_n('\u{FFFC}', inline.min(room - v.len())));
                     placeholders |= inline > 0;
-                    v.extend(s.str(seg, b"Utf8").unwrap_or_default().chars());
+                    v.extend(s.str(seg, b"Utf8").unwrap_or_default().chars().take(room.saturating_sub(v.len())));
                 }
                 v
             }

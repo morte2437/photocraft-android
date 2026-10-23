@@ -95,6 +95,36 @@ fn free_transform_runs_as_a_job_with_the_inline_result() {
 }
 
 #[test]
+fn warp_runs_as_a_job_with_the_inline_result() {
+    let arc = json!({"style": "arc", "bend": 30});
+    let mut inline = session(300, 200);
+    inline.execute("edit.transform.warp", arc.clone()).unwrap();
+
+    let mut s = session(300, 200);
+    let steps = s.active().unwrap().history.past_len();
+    let id = job(s.start("edit.transform.warp", arc).unwrap());
+    let e = wait_event(&mut s, id);
+    assert!(matches!(e.outcome, JobOutcome::Done(_)), "{e:?}");
+    assert_eq!(e.label, "Warp");
+    assert_eq!(s.active().unwrap().history.past_len(), steps + 1, "one undo step");
+    assert_eq!(pixels(&s), pixels(&inline), "same pixels as the synchronous command");
+}
+
+#[test]
+fn a_cancelled_warp_leaves_the_document_unchanged() {
+    let mut s = session(1600, 1200);
+    let doc_before = s.active().unwrap().doc.clone();
+    let steps = s.active().unwrap().history.past_len();
+    let id = job(s.start("edit.transform.warp", json!({"style": "flag", "bend": 40})).unwrap());
+    assert!(s.cancel_job(id));
+    assert_eq!(wait_event(&mut s, id).outcome, JobOutcome::Cancelled);
+    s.join_cancelled_jobs();
+    let st = s.active().unwrap();
+    assert!(Arc::ptr_eq(&st.doc, &doc_before), "the document snapshot was not replaced");
+    assert_eq!(st.history.past_len(), steps);
+}
+
+#[test]
 fn cancel_leaves_the_document_byte_identical() {
     let mut s = session(1600, 1200);
     let doc_before = s.active().unwrap().doc.clone();
@@ -320,6 +350,56 @@ fn background_job_finishes_bookkeeping_on_edited_document_after_tab_switch() {
 
     assert!(s.set_active(0));
     assert!(s.is_enabled("edit.fade"), "Fade must be available on the document that was edited");
+}
+
+/// #7382: a background filter on a targeted alpha channel or the Quick Mask, finished while another
+/// document is shown, leaves Fade on that channel of the edited document: at 0 % it restores the
+/// channel exactly and leaves the layer alone.
+#[test]
+fn background_filter_on_a_channel_fades_that_channel_after_a_tab_switch() {
+    use crate::edit_menu_cmds::FadeTarget;
+    for quick_mask in [false, true] {
+        let mut s = session(32, 24);
+        let edited_doc = s.active().unwrap().doc.id;
+        if quick_mask {
+            s.execute("select.editInQuickMaskMode", json!({"on": true})).unwrap();
+        } else {
+            s.execute("channel.new", json!({"fill": "black"})).unwrap();
+            s.execute("channel.target", json!({"channel": 0})).unwrap();
+        }
+        // A pattern for the blur to change.
+        s.edit("pattern", |doc, _| {
+            let c = if quick_mask { doc.quick_mask.as_mut() } else { doc.channels.first_mut() };
+            let c = c.ok_or_else(|| EngineError::Other("no channel".into()))?;
+            c.surface.fill_rect(photocraft_geom::Rect::new(0, 0, 32, 24), &[0.0]);
+            c.surface.fill_rect(photocraft_geom::Rect::new(8, 6, 20, 16), &[1.0]);
+            Ok(())
+        })
+        .unwrap();
+        let channel = |s: &Session, d: usize| {
+            let doc = &s.documents()[d].doc;
+            let c = if quick_mask { doc.quick_mask.as_ref() } else { doc.channels.first() };
+            let c = c.unwrap();
+            (0..24).flat_map(|y| (0..32).map(move |x| (x, y))).map(|(x, y)| c.surface.pixel(x, y)[0]).collect::<Vec<f32>>()
+        };
+        let layer = |s: &Session| {
+            let st = &s.documents()[0];
+            st.doc.layer(st.active_layer.unwrap()).unwrap().surface().unwrap().pixel(5, 5)
+        };
+        let (pattern, pixels) = (channel(&s, 0), layer(&s));
+        let id = job(s.start("filter.blur.gaussianBlur", json!({"radius": 2})).unwrap());
+        s.execute("file.new", json!({"width": 8, "height": 8})).unwrap();
+        let event = wait_event(&mut s, id);
+        assert!(matches!(event.outcome, JobOutcome::Done(_)), "{event:?}");
+        assert_ne!(channel(&s, 0), pattern, "quick mask {quick_mask}: the blur changed the channel");
+        let fade = s.edit_state.fade.clone().unwrap();
+        assert_eq!(fade.doc, edited_doc);
+        assert_eq!(fade.target, if quick_mask { FadeTarget::QuickMask } else { FadeTarget::Channel(0) });
+        assert!(s.set_active(0));
+        s.execute("edit.fade", json!({"opacity": 0})).unwrap();
+        assert_eq!(channel(&s, 0), pattern, "quick mask {quick_mask}: Fade at 0 % restores the channel");
+        assert_eq!(layer(&s), pixels, "quick mask {quick_mask}: the layer is left alone");
+    }
 }
 
 #[test]
@@ -604,4 +684,46 @@ fn an_inline_job_ctx_lets_another_thread_cancel_inline_work() {
     assert_ne!(pixels(&s), before);
     s.set_inline_job_ctx(None);
     s.execute("filter.blur.gaussianBlur", json!({"radius": 2})).unwrap();
+}
+
+/// The command ids an action holds.
+fn action_steps(s: &mut Session, name: &str) -> Vec<String> {
+    let a = s.execute("actions.get", json!({"action": name})).unwrap();
+    a["steps"].as_array().unwrap().iter().map(|step| step[0].as_str().unwrap().to_string()).collect()
+}
+
+/// A job's result is recorded only by the recording it was started in: one started later keeps
+/// its own steps around it but doesn't pick up the older edit (#7289).
+#[test]
+fn a_job_lands_in_the_recording_it_was_started_in_only() {
+    // Started while recording A, applied after A stopped and B started.
+    let mut s = session(40, 30);
+    s.execute("actions.record", json!({"name": "A"})).unwrap();
+    let id = job(s.start("filter.blur.gaussianBlur", json!({"radius": 1})).unwrap());
+    s.execute("actions.stop", json!({})).unwrap();
+    s.execute("actions.record", json!({"name": "B"})).unwrap();
+    // B's own steps before and after the result lands stay in B (a new document, so the job's
+    // document is unchanged and its result applies).
+    s.execute("file.new", json!({"width": 8, "height": 8})).unwrap();
+    s.wait_job(id).unwrap();
+    s.execute("image.adjustments.desaturate", json!({})).unwrap();
+    s.execute("actions.stop", json!({})).unwrap();
+    assert!(action_steps(&mut s, "A").is_empty());
+    assert_eq!(action_steps(&mut s, "B"), ["file.new", "image.adjustments.desaturate"]);
+
+    // Started before any recording, applied while B records.
+    let mut s = session(40, 30);
+    let id = job(s.start("filter.blur.gaussianBlur", json!({"radius": 1})).unwrap());
+    s.execute("actions.record", json!({"name": "B"})).unwrap();
+    s.wait_job(id).unwrap();
+    s.execute("actions.stop", json!({})).unwrap();
+    assert!(action_steps(&mut s, "B").is_empty());
+
+    // Started and applied while A records: A has it, as before.
+    let mut s = session(40, 30);
+    s.execute("actions.record", json!({"name": "A"})).unwrap();
+    let id = job(s.start("filter.blur.gaussianBlur", json!({"radius": 1})).unwrap());
+    s.wait_job(id).unwrap();
+    s.execute("actions.stop", json!({})).unwrap();
+    assert_eq!(action_steps(&mut s, "A"), ["filter.blur.gaussianBlur"]);
 }

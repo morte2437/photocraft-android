@@ -91,6 +91,8 @@ pub struct PresetState {
     pub layer_defaults: BTreeMap<String, Value>,
     /// Swatches panel library.
     pub swatches: Vec<Group<swatches::Swatch>>,
+    /// The user contour library of the Layer Style dialog (`layer.layerStyle.contours.*`).
+    pub contours: Vec<photocraft_doc::Contour>,
     /// Bumped on every preset change (UIs key thumbnail caches on it).
     pub rev: u64,
 }
@@ -111,6 +113,7 @@ impl Default for PresetState {
             clone: Default::default(),
             layer_defaults: BTreeMap::new(),
             swatches: swatches::builtin(),
+            contours: Vec::new(),
             rev: 0,
         }
     }
@@ -144,6 +147,9 @@ struct Persisted {
     #[serde(default)]
     layer_defaults: Option<BTreeMap<String, Value>>,
     swatches: Option<Vec<Group<swatches::Swatch>>>,
+    // Read entry by entry: a bad contour must not discard the other presets.
+    #[serde(default)]
+    contours: Option<Value>,
 }
 
 impl PresetState {
@@ -162,6 +168,7 @@ impl PresetState {
             custom_shapes: Some(s.edit_state.custom_shapes.clone()),
             layer_defaults: Some(self.layer_defaults.clone()),
             swatches: Some(self.swatches.clone()),
+            contours: Some(crate::contour_lib_cmds::to_json(&self.contours)),
         };
         serde_json::to_value(p).unwrap_or(Value::Null)
     }
@@ -190,6 +197,7 @@ impl Session {
             custom_shapes: take(&mut m, "custom_shapes"),
             layer_defaults: take(&mut m, "layer_defaults"),
             swatches: take(&mut m, "swatches"),
+            contours: take(&mut m, "contours"),
         };
         let st = &mut self.presets;
         if let Some(g) = p.gradients {
@@ -229,6 +237,9 @@ impl Session {
             // A hand-edited preferences file can't make the library unbounded.
             crate::swatch_cmds::cap_library(&mut g);
             self.presets.swatches = g;
+        }
+        if let Some(c) = p.contours.filter(Value::is_array) {
+            self.presets.contours = crate::contour_lib_cmds::from_json(&c);
         }
         self.presets.rev += 1;
     }

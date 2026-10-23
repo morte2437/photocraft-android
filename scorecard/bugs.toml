@@ -60,7 +60,7 @@ id = "BUG-204-2"
 target = "workspace.large_tabs, animated_zoom, auto_show_home_screen wired or hidden"
 status = "done"
 issue = 204
-note = "workspace.large_tabs controls document tab height in canvas.rs; auto_show_home_screen drives the Home screen; animated_zoom is in prefs::HIDDEN_UNTIL_IMPLEMENTED"
+note = "workspace.large_tabs controls document tab height in canvas.rs; auto_show_home_screen drives the Home screen; general.animated_zoom gates discrete canvas zoom transitions and continuous held Zoom tool presses (zoom_hold.rs, #6210), and is exposed in General preferences"
 
 [[item]]
 id = "BUG-204-3"
@@ -88,7 +88,7 @@ id = "BUG-204-6"
 target = "Test: every Prefs field is read somewhere or on a hidden allowlist"
 status = "done"
 issue = 204
-note = "crates/engine/tests/prefs_usage.rs every_preference_is_read_or_hidden: each field is read outside prefs.rs or listed in prefs::HIDDEN_UNTIL_IMPLEMENTED, never both"
+note = "crates/engine/tests/it/prefs_usage.rs every_preference_is_read_or_hidden: each field is read outside prefs.rs or listed in prefs::HIDDEN_UNTIL_IMPLEMENTED, never both"
 
 [[item]]
 id = "BUG-205-1"
@@ -137,14 +137,14 @@ id = "BUG-206-2"
 target = "PSD import keeps Optical and manual Kerning values"
 status = "done"
 issue = 206
-note = "io/tests/psd_kerning.rs manual_and_off_kerning_round_trip_through_psd and optical_kerning_round_trips_through_psd import an exported layer and compare every character's (mode, kern) pair; the optical mode travels in the document Txt2 block (#1348)"
+note = "io/tests/it/psd_kerning.rs manual_and_off_kerning_round_trip_through_psd and optical_kerning_round_trips_through_psd import an exported layer and compare every character's (mode, kern) pair; the optical mode travels in the document Txt2 block (#1348)"
 
 [[item]]
 id = "BUG-206-3"
 target = "PSD export writes the real AutoKerning mode and Kerning values"
 status = "done"
 issue = 206
-note = "manual_and_off_kerning_round_trip_through_psd (io/tests/psd_kerning.rs) reads the AutoKerning flag and Kerning value of every character back out of the written TySh: (false, 100) after A, (true, -50) after T, and automatic kerning off where the style says so"
+note = "manual_and_off_kerning_round_trip_through_psd (io/tests/it/psd_kerning.rs) reads the AutoKerning flag and Kerning value of every character back out of the written TySh: (false, 100) after A, (true, -50) after T, and automatic kerning off where the style says so"
 
 [[item]]
 id = "BUG-206-4"
@@ -158,7 +158,7 @@ id = "BUG-206-5"
 target = "Tests: PSD round trip of manual and Optical kerning, a real file in the oracle corpus"
 status = "partial"
 issue = 206
-note = "Round trips covered by io/tests/psd_kerning.rs (manual, Off and Optical, plus hostile_kerning_values and txt2_extras_survive_a_resave_of_unchanged_text); corpus_text_layers reads real PSDs and applies their Txt2 optical kerning, but no oracle file is dedicated to kerning values"
+note = "Round trips covered by io/tests/it/psd_kerning.rs (manual, Off and Optical, plus hostile_kerning_values and txt2_extras_survive_a_resave_of_unchanged_text); corpus_text_layers reads real PSDs and applies their Txt2 optical kerning, but no oracle file is dedicated to kerning values"
 
 [[item]]
 id = "BUG-207-1"
@@ -191,9 +191,9 @@ note = "edit.transform follows a targeted alpha channel or Quick Mask (explicit 
 [[item]]
 id = "BUG-207-5"
 target = "Tests: per-tool mask/channel targeting, Sample All Layers, no smudge fringe"
-status = "missing"
+status = "done"
 issue = 207
-note = "Only smudge_drags_colour_along_the_stroke (retouch.rs:407)"
+note = "Every retouch tool (Clone Stamp, Pattern Stamp, Healing, Spot Healing, Dodge, Burn, Sponge, Blur, Sharpen, Smudge, History Brush, Remove) is tested to paint only a targeted mask and only a targeted alpha channel (engine retouch_cmds/tests.rs:786 retouch_tools_paint_only_the_targeted_mask, :805 retouch_tools_paint_only_the_targeted_alpha_channel; Healing, Spot Healing, Sponge and Remove are checked to leave the rest untouched, not to change the target, since they may leave grey noise as it was); the other eight follow the Channels panel target (:822 retouch_tools_follow_the_channels_panel_target); Quick Mask and bad targets: :840 retouch_tools_paint_the_quick_mask, :853 retouch_targets_fail_gracefully. Sample All Layers changes the result over two layers (:879 sample_all_layers_blur_and_sharpen_work_on_an_empty_layer, :907 sample_all_layers_smudge_drags_colour_from_below, :923 sample_all_layers_spot_healing_heals_onto_an_empty_layer, :313 clone_stamp_sample_all_layers_onto_empty_layer_and_opacity; ui retouch_ui.rs:818 sample_all_layers_reaches_the_command); no smudge fringe (:942 smudge_across_a_transparent_edge_has_no_dark_fringe). Brush/Eraser/Gradient/Bucket targets: engine tests.rs:1263 painting_can_target_the_layer_mask, channel_cmds/tests.rs:301 painting_filtering_and_adjusting_into_an_alpha_channel. Not covered: Pencil and Mixer Brush into a mask or channel; the Channels panel target for Healing, Spot Healing, Sponge and Remove"
 
 [[item]]
 id = "BUG-208-1"
@@ -219,9 +219,9 @@ note = "canvas.rs marquee_readout draws the readout; marquee_tests.rs asserts di
 [[item]]
 id = "BUG-208-4"
 target = "Add/subtract/intersect from modifiers pressed before the drag, kept by a test"
-status = "partial"
+status = "done"
 issue = 208
-note = "Mods captured at press (canvas.rs:1679, used :1779); only a badge test (tool_feedback.rs:195)"
+note = "Mods captured at press. Marquee: Shift at the press adds and Alt subtracts, with no square or centring (ui-egui marquee_tests.rs:361 modifiers_held_before_the_drag_pick_the_mode_not_the_shape), and Shift+Alt held at the press intersects (marquee_tests.rs:410 shift_alt_before_the_drag_intersects_the_selection). Lasso: Alt, Shift and Shift+Alt at the start subtract, add and intersect (lasso_ui/tests.rs:96 initial_alt_still_subtracts_and_initial_shift_still_adds). Polygonal Lasso: Shift or Alt at the first click keeps the selection in view, and a Shift polygon adds to it (polygon_lasso_tests.rs:209 modifiers_at_the_first_click_keep_and_combine_the_selection); no test commits an Alt (subtract) polygon"
 
 [[item]]
 id = "BUG-208-5"

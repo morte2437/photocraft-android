@@ -411,6 +411,14 @@ pub enum FilterParams {
     },
 
     // ---- Render ----
+    /// Clouds (or Difference Clouds, which subtracts them from the pixels) between two straight
+    /// sRGB RGBA colours; the cloud size follows the bounds.
+    Clouds {
+        seed: u32,
+        difference: bool,
+        foreground: [f32; 4],
+        background: [f32; 4],
+    },
     /// Variance 1–64, strength 1–64; colours straight sRGB RGBA.
     Fibers {
         variance: f32,
@@ -552,7 +560,7 @@ pub enum FilterParams {
 impl FilterParams {
     /// Pixels read outside an output tile.
     pub fn halo(&self) -> Halo {
-        let g = |sigma: f32| Halo::Radius((sigma.max(0.0) * 3.0).ceil() as i32 + 1);
+        let g = |sigma: f32| Halo::Radius(((sigma.max(0.0) * 3.0).ceil() as i32).saturating_add(1));
         match self {
             FilterParams::GaussianBlur { radius } | FilterParams::HighPass { radius } => g(*radius),
             FilterParams::UnsharpMask { radius, .. } => Halo::Radius(sharpen::exact::halo(*radius)),
@@ -562,9 +570,9 @@ impl FilterParams {
             | FilterParams::Median { radius }
             | FilterParams::DustAndScratches { radius, .. }
             | FilterParams::Minimum { radius, .. }
-            | FilterParams::Maximum { radius, .. } => Halo::Radius(radius.max(0.0).ceil() as i32 + 1),
+            | FilterParams::Maximum { radius, .. } => Halo::Radius((radius.max(0.0).ceil() as i32).saturating_add(1)),
             FilterParams::MotionBlur { distance, .. } => Halo::Radius((distance.abs() / 2.0).ceil() as i32 + 2),
-            FilterParams::Mosaic { cell_size } => Halo::Radius(cell_size.max(1.0).ceil() as i32 + 1),
+            FilterParams::Mosaic { cell_size } => Halo::Radius((cell_size.max(1.0).ceil() as i32).saturating_add(1)),
             FilterParams::Emboss { height, .. } => Halo::Radius(height.abs().ceil() as i32 + 2),
             FilterParams::FindEdges => Halo::Radius(1),
             FilterParams::AddNoise { .. } | FilterParams::Solarize | FilterParams::Invert | FilterParams::Desaturate => Halo::Radius(0),
@@ -606,7 +614,13 @@ impl FilterParams {
     /// the reference bounds even where the layer is transparent, as Photoshop's does on an
     /// empty layer, while still reading no neighbourhood.
     pub fn renders_from_nothing(&self) -> bool {
-        matches!(self, FilterParams::Fibers { .. })
+        matches!(self, FilterParams::Fibers { .. } | FilterParams::Clouds { difference: false, .. })
+    }
+
+    /// Whether the filter places and sizes its pattern by the canvas even with a selection
+    /// (Clouds, Fibers): its bounds are then the canvas, and the selection only masks the result.
+    pub fn sizes_by_canvas(&self) -> bool {
+        matches!(self, FilterParams::Clouds { .. } | FilterParams::Fibers { .. })
     }
 
     /// Human-readable name.
@@ -653,6 +667,8 @@ impl FilterParams {
             FilterParams::Displace { .. } => "Displace",
             FilterParams::Shear { .. } => "Shear",
             FilterParams::ZigZag { .. } => "ZigZag",
+            FilterParams::Clouds { difference: false, .. } => "Clouds",
+            FilterParams::Clouds { difference: true, .. } => "Difference Clouds",
             FilterParams::Fibers { .. } => "Fibers",
             FilterParams::LensFlare { .. } => "Lens Flare",
             FilterParams::LightingEffects { .. } => "Lighting Effects",
@@ -681,7 +697,7 @@ impl FilterParams {
 
 /// Halos of the second filter batch.
 fn halo_ext(p: &FilterParams) -> Halo {
-    let r = |v: f32| Halo::Radius(v.max(0.0).ceil() as i32 + 1);
+    let r = |v: f32| Halo::Radius((v.max(0.0).ceil() as i32).saturating_add(1));
     match p {
         FilterParams::ColorHalftone { max_radius, .. } => r(max_radius * 3.0),
         FilterParams::Crystallize { cell_size, .. } => r(cell_size.max(1.0) * 3.0),
@@ -697,13 +713,14 @@ fn halo_ext(p: &FilterParams) -> Halo {
         FilterParams::Wind { method, .. } => r(stylize2::wind_reach(*method)),
         FilterParams::Displace { .. } | FilterParams::Shear { .. } | FilterParams::ZigZag { .. } | FilterParams::SpinBlur { .. } => Halo::Bounds,
         // Generators and per-pixel renders only need the bounds geometry (always in the context).
-        FilterParams::Fibers { .. } | FilterParams::LensFlare { .. } => Halo::Radius(0),
+        FilterParams::Fibers { .. } | FilterParams::LensFlare { .. } | FilterParams::Clouds { .. } => Halo::Radius(0),
         FilterParams::LightingEffects { .. } => r(1.0),
         FilterParams::Relight { intensity, .. } if *intensity == 0.0 => Halo::Radius(0),
         FilterParams::Relight { .. } => Halo::Radius(relight::halo_radius_max()),
         FilterParams::ReduceNoise { .. } => r(denoise::reach()),
-        FilterParams::SmartBlur { radius, .. } => r(*radius),
-        FilterParams::LensBlur { radius, .. } => r(*radius),
+        // The kernels clamp the radius to 100 px: size the source window by what they use.
+        FilterParams::SmartBlur { radius, .. } => r(radius.min(100.0)),
+        FilterParams::LensBlur { radius, .. } => r(radius.min(100.0)),
         FilterParams::ShapeBlur { radius, .. } => r(shape_blur::radius(*radius)),
         FilterParams::TiltShift { blur, .. } => r(gallery::reach(*blur)),
         FilterParams::IrisBlur { pins } => r(gallery::reach(pins.iter().map(|p| p.blur).fold(0.0, f32::max))),
@@ -817,6 +834,7 @@ pub fn kernel(params: &FilterParams, src: &Image, out: Rect, ctx: &Ctx) -> Vec<f
         }
         FilterParams::Shear { points, undefined } => distort2::shear(src, out, ctx, points, *undefined),
         FilterParams::ZigZag { amount, ridges, style } => distort2::zigzag(src, out, ctx, *amount, *ridges, *style),
+        FilterParams::Clouds { seed, difference, foreground, background } => render::clouds(src, out, ctx, *seed, *difference, (*foreground, *background)),
         FilterParams::Fibers { variance, strength, seed, foreground, background } => {
             render::fibers(src, out, ctx, *variance, *strength, *seed, (*foreground, *background))
         }
@@ -981,10 +999,18 @@ pub fn apply_in_with(
 }
 
 /// Results do not depend on the tiling, so wide-halo filters use bigger tiles to keep the
-/// re-read margin (and its cost) below ~2× the tile area.
+/// re-read margin (and its cost) below ~2× the tile area. The radius is input-derived, so the
+/// halo arithmetic is done in `i64` and the result capped: an `i32::MAX` radius must not
+/// overflow in debug builds, and must not produce a tile bigger than the hard cap.
 fn auto_tile(params: &FilterParams, bounds: Rect) -> i32 {
     match params.halo_for(bounds) {
-        Halo::Radius(r) => TILE.max((2 * r + 63) / 64 * 64).min(2048),
+        // The radius is input-derived: widen to i64 before the arithmetic and cap the
+        // conversion, so an i32::MAX radius cannot overflow (debug panic) and cannot make a
+        // tile bigger than the hard cap below (131_072 = 2048 * 64, one tile row).
+        Halo::Radius(r) => {
+            let halo = ((2 * i64::from(r) + 63) / 64 * 64).min(131_072);
+            TILE.max(halo as i32).min(2048)
+        }
         Halo::Bounds => TILE,
     }
 }
@@ -1078,14 +1104,16 @@ fn apply_tiled_with_impl(
         return None;
     }
     let halo = params.halo_for(bounds);
-    if matches!(params, FilterParams::UnsharpMask { .. }) {
-        let Halo::Radius(reach) = halo else { return None };
+    // Every windowed filter: a Filter Gallery stack sums its effects' reach, and a radius is
+    // caller-supplied, so a short parameter set can ask for a huge source window per tile.
+    if let Halo::Radius(reach) = halo {
         let (w, h) = (area.width().min(tile as u32) as usize, area.height().min(tile as u32) as usize);
         let read_samples = w.checked_add(2 * reach as usize)?.checked_mul(h.checked_add(2 * reach as usize)?)?.checked_mul(fmt.channels())?;
         let tile_count = u64::from(area.width()).div_ceil(tile as u64).checked_mul(u64::from(area.height()).div_ceil(tile as u64))?;
         // Reject hostile source-window sizes before Image::read allocates them.
         // Ordinary filter parameters and automatic tiles fit these bounds.
-        if read_samples > 512 * 1024 * 1024 || read_samples.checked_mul(std::mem::size_of::<f32>())? > isize::MAX as usize || tile_count > 1_048_576 {
+        let too_many_tiles = matches!(params, FilterParams::UnsharpMask { .. }) && tile_count > 1_048_576;
+        if read_samples > 512 * 1024 * 1024 || read_samples.checked_mul(std::mem::size_of::<f32>())? > isize::MAX as usize || too_many_tiles {
             return None;
         }
     }

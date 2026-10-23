@@ -172,11 +172,16 @@ impl Clut {
         }
         let o = self.outputs;
         out[..o].iter_mut().for_each(|v| *v = 0.0);
-        for corner in 0..(1usize << n) {
+        // Only dimensions with more than one grid point contribute a cube axis. Degenerate
+        // dimensions have step 0 and ratio 0, so they always multiply the corner weight by 1
+        // and never change the offset; enumerating 2^n corners over all declared inputs would
+        // do 2^(degenerate) redundant iterations. Interpolate over the effective dims only.
+        let eff: Vec<usize> = (0..n).filter(|&d| s[d] != 0).collect();
+        for corner in 0..(1usize << eff.len()) {
             let mut w = 1.0f32;
             let mut off = base;
-            for d in 0..n {
-                if corner & (1 << d) != 0 {
+            for (bit, &d) in eff.iter().enumerate() {
+                if corner & (1 << bit) != 0 {
                     w *= r[d];
                     off += s[d];
                 } else {
@@ -244,5 +249,21 @@ mod tests {
         let c = Clut::sample(vec![2, 2], 1, |p, o| o[0] = p[0] + p[1]);
         c.eval(&[0.5, 0.25], &mut o);
         assert!((o[0] - 0.75).abs() < 1e-6);
+    }
+
+    #[test]
+    fn degenerate_dimensions_do_not_change_the_result() {
+        // Dimensions with a single grid point contribute nothing, but the old code still
+        // enumerated 2^inputs corners over them. Interpolating over effective dims only must
+        // give the same answer as a reference built without the degenerate axes.
+        let f = |p: &[f32], o: &mut [f32]| o[0] = 0.25 * p[0] + 0.5 * p[2] + 0.125 * p[4];
+        // Axes 1 and 3 have a single grid point (degenerate); axes 0, 2, 4 vary.
+        let c = Clut::sample(vec![3, 1, 4, 1, 5], 1, f);
+        let mut got = [0.0];
+        for p in [[0.2f32, 0.0, 0.7, 0.0, 0.4], [1.0, 0.0, 0.0, 0.0, 1.0], [0.5, 0.0, 0.5, 0.0, 0.5]] {
+            c.eval_multilinear(&p, &mut got);
+            let want = 0.25 * p[0] + 0.5 * p[2] + 0.125 * p[4];
+            assert!((got[0] - want).abs() < 1e-5, "got {} want {want}", got[0]);
+        }
     }
 }

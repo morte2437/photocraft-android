@@ -28,6 +28,10 @@ pub const EXTENSIONS: &[&str] = &["af", "afphoto", "afdesign", "afpub"];
 const MAX_PIXELS: u64 = 64 << 20;
 /// Canvas side in pixels.
 const MAX_SIDE: f64 = 300_000.0;
+/// Decoded pixel bytes allowed across the whole import: the caps above are per call, so a small
+/// container of embedded images could still decode (and keep) a surface each until the process
+/// dies. ORA and KRA budget their decoded pixels the same way.
+const MAX_PIXEL_BYTES: u64 = 1 << 30;
 
 pub fn has_extension(name: &str) -> bool {
     name.rsplit(['/', '\\']).next().and_then(|n| n.rsplit_once('.')).is_some_and(|(_, ext)| EXTENSIONS.iter().any(|e| ext.eq_ignore_ascii_case(e)))
@@ -82,6 +86,20 @@ struct Builder {
     /// Document pixels (in the canvas) per Affinity document pixel: always 1; spreads are offset.
     format: PixelFormat,
     canvas: Rect,
+    /// Decoded pixel bytes left for embedded images and their resampled surfaces.
+    pixel_budget: u64,
+}
+
+/// Deduct `cost` bytes from a decoded-pixel budget; `false` (leaving the budget alone) when it
+/// cannot cover them.
+fn charge(budget: &mut u64, cost: u64) -> bool {
+    match budget.checked_sub(cost) {
+        Some(rest) => {
+            *budget = rest;
+            true
+        }
+        None => false,
+    }
 }
 
 fn affine(a: af::Affine) -> Affine {
@@ -108,7 +126,7 @@ impl Builder {
         let mut doc = Document::new(name, size, ColorMode::Rgb, SampleType::U8);
         doc.resolution_dpi = d.dpi as f32;
         let canvas = Rect::new(0, 0, size.width as i32, size.height as i32);
-        Ok(Self { doc, warnings: Vec::new(), format: PixelFormat::RGBA8, canvas })
+        Ok(Self { doc, warnings: Vec::new(), format: PixelFormat::RGBA8, canvas, pixel_budget: MAX_PIXEL_BYTES })
     }
 
     fn warn(&mut self, w: &str) {
@@ -424,7 +442,7 @@ impl Builder {
                 dash_offset: s.dash.as_ref().map_or(0.0, |(_, o)| (o / s.width.max(1e-9)) as f32),
             })
         });
-        let mut sh = ShapeLayer { path, fill, stroke, live: None, cache: None, psd_raw: None };
+        let mut sh = ShapeLayer { path, fill, stroke, ..ShapeLayer::default() };
         sh.cache = Some(photocraft_vector::render_shape(&sh, self.format, self.canvas));
         sh
     }
@@ -494,6 +512,10 @@ impl Builder {
                 match photocraft_codecs::decode_with(bytes, &opts) {
                     Ok(d) => {
                         let (w, h) = d.dimensions();
+                        if !charge(&mut self.pixel_budget, u64::from(w).saturating_mul(u64::from(h)).saturating_mul(4)) {
+                            self.warn("the document's embedded images need more pixel memory than the import allows; the rest were left out");
+                            return None;
+                        }
                         Some((w, h, d.to_rgba8()))
                     }
                     Err(_) => {
@@ -548,6 +570,10 @@ impl Builder {
         let exact = a == 1.0 && d == 1.0 && b == 0.0 && c == 0.0 && e.fract() == 0.0 && f.fract() == 0.0;
         let inv = m.inverse()?;
         let (rw, rh) = (r.width() as usize, r.height() as usize);
+        if !charge(&mut self.pixel_budget, (rw as u64).saturating_mul(rh as u64).saturating_mul(channels as u64)) {
+            self.warn("the document's images need more pixel memory than the import allows; the rest were left out");
+            return None;
+        }
         let mut buf = vec![0u8; rw * rh * channels];
         let at = |x: i64, y: i64, ch: usize| -> f64 {
             if x < 0 || y < 0 || x >= i64::from(w) || y >= i64::from(h) {
@@ -617,5 +643,77 @@ fn color(c: ap::Color) -> Color {
             let [r, g, bl] = lab.to_rgb();
             Color::rgba(r, g, bl, f(alpha))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A transparent 64×64 page holding one image node per entry; the identity transform maps
+    /// each image onto the page's top-left corner.
+    fn affinity_document(images: Vec<(u32, u32, Pixels)>) -> af::Document {
+        let nodes = images
+            .into_iter()
+            .enumerate()
+            .map(|(i, (width, height, pixels))| af::Node {
+                class: photocraft_affinity::synth::tag(b"ImgN"),
+                name: format!("Image {i}"),
+                visible: true,
+                locked: false,
+                opacity: 1.0,
+                blend: Blend::Normal,
+                kind: Kind::Image(af::Image { width, height, pixels, transform: af::Affine::IDENTITY }),
+                mask: None,
+                pixel_mask: None,
+                children: Vec::new(),
+            })
+            .collect();
+        af::Document {
+            dpi: 72.0,
+            spreads: vec![af::Spread { bounds: af::Rect { x0: 0.0, y0: 0.0, x1: 64.0, y1: 64.0 }, pages: Vec::new(), transparent: true, nodes }],
+            saved_by: None,
+            warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_pixel_budget_refuses_what_does_not_fit() {
+        let mut budget = 100u64;
+        assert!(charge(&mut budget, 60));
+        assert!(!charge(&mut budget, 60), "a later image cannot overdraw the import's budget");
+        assert_eq!(budget, 40, "a refused charge leaves the budget alone");
+    }
+
+    #[test]
+    fn images_past_the_pixel_budget_are_left_out() {
+        // Two 64×64 RGBA images cost 16 KiB each when resampled; a 16 KiB budget admits one and
+        // the second is dropped with a warning instead of being staged anyway.
+        let d = affinity_document(vec![(64, 64, Pixels::Rgba8(vec![0; 64 * 64 * 4])), (64, 64, Pixels::Rgba8(vec![0; 64 * 64 * 4]))]);
+        let mut b = Builder::new("budget", &d).unwrap();
+        b.pixel_budget = 64 * 64 * 4;
+        b.document(&d).unwrap();
+        assert_eq!(b.doc.layers.len(), 1, "the image past the budget must not import");
+        assert!(b.warnings.iter().any(|w| w.contains("pixel memory")), "{:?}", b.warnings);
+    }
+
+    #[test]
+    fn embedded_images_past_the_pixel_budget_are_not_decoded_into_it() {
+        // An 8×8 embedded PNG costs 256 bytes decoded and 256 more resampled.
+        let png = {
+            let img = photocraft_codecs::Image::from_u8(8, 8, photocraft_codecs::ChannelLayout::Rgba, vec![0; 8 * 8 * 4]).unwrap();
+            photocraft_codecs::encode(&img, photocraft_codecs::Format::Png, &photocraft_codecs::EncodeOptions::default()).unwrap()
+        };
+        let d = affinity_document(vec![(8, 8, Pixels::Encoded(png))]);
+        let mut b = Builder::new("budget", &d).unwrap();
+        b.pixel_budget = 8 * 8 * 4 - 1;
+        b.document(&d).unwrap();
+        assert!(b.doc.layers.is_empty(), "the embedded image must not import past the budget");
+        assert!(b.warnings.iter().any(|w| w.contains("pixel memory")), "{:?}", b.warnings);
+        // The same image imports when the budget covers the decode and the resample.
+        let mut ok = Builder::new("room", &d).unwrap();
+        ok.pixel_budget = 8 * 8 * 4 * 2;
+        ok.document(&d).unwrap();
+        assert_eq!(ok.doc.layers.len(), 1, "within the budget the image imports as a smart object");
     }
 }

@@ -30,5 +30,5 @@ inside it (fuzzing found two in 0.1.1) becomes `Error::Malformed`.
 
 The crate depends on no other PhotoCraft crate and knows nothing of `photocraft-codecs`' types;
 `codecs` → `heif` is the one allowed dependency between standalone crates (`cargo xtask layers`).
-Tests on real files live in `photocraft-codecs` (`tests/heif.rs`, features `corpus,heif`, files
+Tests on real files live in `photocraft-codecs` (`tests/it/heif.rs`, features `corpus,heif`, files
 fetched by `cargo xtask corpus --heif`).

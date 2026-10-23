@@ -70,13 +70,36 @@ fn picker_target(effect: &str, key: &str) -> Value {
 
 /// Picks a preset for `effect`'s `key` (the picker's click).
 pub(super) fn pick(f: &mut Map<String, Value>, effect: &str, key: &str, name: &str) {
-    set_param(f, effect, key, json!(name));
+    pick_param(f, effect, key, json!(name));
+}
+
+/// Picks a contour param (a preset name, or a user contour's curve object).
+pub(super) fn pick_param(f: &mut Map<String, Value>, effect: &str, key: &str, param: Value) {
+    set_param(f, effect, key, param);
     f.remove(PICKER);
+}
+
+/// What the picker's menu asked for (Photoshop's Load, Save and Replace Contours).
+#[derive(Clone, Copy, PartialEq)]
+enum Act {
+    Load,
+    Replace,
+    Save,
 }
 
 /// The Contour row of an effect page: label, thumbnail (opens the Contour Editor), the preset
 /// picker arrow and, when the effect has one, Anti-aliased.
-pub(super) fn row(ui: &mut egui::Ui, f: &mut Map<String, Value>, effect: &str, key: &str, label: &str, aa_key: Option<&str>, disp: &mut Value) {
+#[allow(clippy::too_many_arguments)]
+pub(super) fn row(
+    app: &mut PhotocraftApp,
+    ui: &mut egui::Ui,
+    f: &mut Map<String, Value>,
+    effect: &str,
+    key: &str,
+    label: &str,
+    aa_key: Option<&str>,
+    disp: &mut Value,
+) {
     let t = Tokens::get(ui.ctx());
     ui.horizontal(|ui| {
         if label.is_empty() {
@@ -105,7 +128,13 @@ pub(super) fn row(ui: &mut egui::Ui, f: &mut Map<String, Value>, effect: &str, k
             open = !open;
         }
         let mut chosen: Option<&str> = None;
+        let mut chosen_user: Option<Value> = None;
+        let mut delete: Option<String> = None;
+        let mut act: Option<Act> = None;
+        let user = &app.session.presets.contours;
+        let parent_layer = arrow.layer_id;
         egui::Popup::from_response(&arrow).open_bool(&mut open).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+            crate::press_menu::above_parent_ui(parent_layer, ui);
             ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
             egui::Grid::new(("contour-presets", effect, key)).spacing(vec2(4.0, 4.0)).show(ui, |ui| {
                 for (i, (name, _)) in CONTOURS.iter().enumerate() {
@@ -123,7 +152,55 @@ pub(super) fn row(ui: &mut egui::Ui, f: &mut Map<String, Value>, effect: &str, k
                     }
                 }
             });
+            // The user's own contours follow the standard ones (Contour Editor › New…).
+            if !user.is_empty() {
+                ui.add_space(4.0);
+                egui::Grid::new(("contour-user", effect, key)).spacing(vec2(4.0, 4.0)).show(ui, |ui| {
+                    for (i, u) in user.iter().enumerate() {
+                        let (r, resp) = ui.allocate_exact_size(vec2(40.0, 40.0), Sense::click());
+                        draw(ui.painter(), r, u, t.text, &t);
+                        if *u == c || resp.hovered() {
+                            ui.painter().rect_stroke(r, 0.0, Stroke::new(1.5, t.accent), StrokeKind::Outside);
+                        }
+                        let name = name_of(u).to_string();
+                        let resp = resp.on_hover_text(name.as_str());
+                        if resp.clicked() {
+                            chosen_user = Some(contour_param(u));
+                        }
+                        resp.context_menu(|ui| {
+                            if ui.button(tl!("Delete Contour")).clicked() {
+                                delete = Some(name.clone());
+                                ui.close();
+                            }
+                        });
+                        if i % 4 == 3 {
+                            ui.end_row();
+                        }
+                    }
+                });
+            }
+            ui.separator();
+            if ui.button(tl!("Load Contours…")).clicked() {
+                act = Some(Act::Load);
+            }
+            if ui.button(tl!("Replace Contours…")).clicked() {
+                act = Some(Act::Replace);
+            }
+            if ui.add_enabled(!user.is_empty(), egui::Button::new(tl!("Save Contours…"))).clicked() {
+                act = Some(Act::Save);
+            }
         });
+        if let Some(name) = delete {
+            let r = app.run("layer.layerStyle.contours.delete", json!({"name": name}));
+            report(app, r);
+        }
+        if let Some(act) = act {
+            library_action(app, act);
+        }
+        if let Some(param) = chosen_user {
+            disp[key] = param.clone();
+            pick_param(f, effect, key, param);
+        }
         if let Some(name) = chosen {
             disp[key] = json!(name);
             pick(f, effect, key, name);
@@ -259,6 +336,10 @@ pub(super) fn editor(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<Str
     let mut close: Option<bool> = None;
     let mut load = false;
     let mut save = false;
+    let naming_id = mem.with("naming");
+    let mut naming: Option<String> = ctx.data(|d| d.get_temp(naming_id));
+    let mut new_clicked = false;
+    let mut commit_name = false;
     let mut preset: Option<String> = None;
     let modal = egui::Modal::new(mem.with("modal")).show(&ctx, |ui| {
         ui.label(RichText::new(tl!("Contour Editor")).font(crate::theme::semibold(14.0)).color(t.text));
@@ -321,6 +402,20 @@ pub(super) fn editor(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<Str
                     }
                 }
                 ui.add_space(6.0);
+                if let Some(name) = naming.as_mut() {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(tl!("Name:")).color(t.text_dim));
+                        let r = widgets::text_field(ui, mem.with("name-field"), name, "", 150.0, false);
+                        r.request_focus();
+                        if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            commit_name = true;
+                        }
+                        if widgets::primary_button(ui, tl!("OK"), 60.0).clicked() {
+                            commit_name = true;
+                        }
+                    });
+                    ui.add_space(6.0);
+                }
                 let sel = st.selected.filter(|i| *i < pts.len());
                 ui.horizontal(|ui| {
                     let (mut vi, mut vo) = sel.and_then(|i| pts.get(i)).map_or((0.0, 0.0), |q| ((q[0] / 2.55).round(), (q[1] / 2.55).round()));
@@ -355,20 +450,42 @@ pub(super) fn editor(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<Str
                 load = widgets::secondary_button(ui, tl!("Load…"), 84.0).clicked();
                 ui.add_space(4.0);
                 save = widgets::secondary_button(ui, tl!("Save…"), 84.0).clicked();
+                ui.add_space(4.0);
+                new_clicked = widgets::secondary_button(ui, tl!("New…"), 84.0).clicked();
             });
         });
     });
     ctx.data_mut(|d| d.insert_temp(mem, st));
+    if new_clicked && naming.is_none() {
+        // Photoshop asks for the new contour's name; "Contour N" is its suggestion.
+        naming = Some(format!("Contour {}", app.session.presets.contours.len() + 1));
+    }
+    if commit_name && let Some(name) = naming.take() {
+        let name = if name.trim().is_empty() { "Contour".to_string() } else { name };
+        match app.run("layer.layerStyle.contours.new", json!({"contour": contour_param(&shown_contour(&pts, &corners, name_of(&c))), "name": name})) {
+            Ok(v) => set_param(f, &effect, &key, v["contour"].clone()),
+            Err(e) => report(app, Err(e)),
+        }
+    }
+    ctx.data_mut(|d| match &naming {
+        Some(n) => {
+            d.insert_temp(naming_id, n.clone());
+        }
+        None => {
+            d.remove_temp::<String>(naming_id);
+        }
+    });
     if let Some(name) = preset {
         set_param(f, &effect, &key, json!(name));
     }
     if close.is_none() && modal.should_close() {
         close = Some(false);
     }
-    if close.is_none() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)) {
+    if close.is_none() && naming.is_none() && !commit_name && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)) {
         close = Some(true);
     }
     if let Some(keep) = close {
+        ctx.data_mut(|d| d.remove_temp::<String>(naming_id));
         close_editor(f, keep);
         return;
     }
@@ -396,11 +513,76 @@ pub(super) fn editor(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<Str
     }
 }
 
+/// The edited curve (levels `0..=255`) as a contour.
+fn shown_contour(pts: &[[f32; 2]], corners: &[bool], name: &str) -> Contour {
+    Contour::Custom {
+        name: name.to_string(),
+        points: pts.iter().map(|q| CurvePoint { input: q[0] / 255.0, output: q[1] / 255.0 }).collect(),
+        corners: corners.to_vec(),
+    }
+}
+
+/// Load, Replace or Save Contours: the library lives in the session, the file is an `.shc`.
+fn library_action(app: &mut PhotocraftApp, act: Act) {
+    let r = match act {
+        Act::Load | Act::Replace => app.pick_file_bytes_filtered(&["shc"], move |app, name, bytes| {
+            let mut p = crate::swatches_ui::source(&name, &bytes);
+            p["mode"] = json!(if act == Act::Replace { "replace" } else { "append" });
+            let r = app.run("layer.layerStyle.contours.load", p)?;
+            let template = "Loaded contours from {file}";
+            app.ui.status_error = false;
+            app.ui.status = crate::i18n::fmt(tl!(template), &[("file", &crate::file_open::display_name(&name))]);
+            Ok(r)
+        }),
+        Act::Save => app.run("layer.layerStyle.contours.save", json!({})).and_then(|r| {
+            let bytes = r["data"].as_str().and_then(photocraft_engine::paint::tile::b64_decode).ok_or("the export returned no data")?;
+            app.pick_save("Contours.shc", move |app, path| {
+                let write = app.services.write.as_mut().ok_or("no writer configured")?;
+                write(&path, &bytes)?;
+                let template = "Saved contours to {file}";
+                app.ui.status_error = false;
+                app.ui.status = crate::i18n::fmt(tl!(template), &[("file", &crate::file_open::display_name(&path))]);
+                Ok(json!({"path": path}))
+            })
+        }),
+    };
+    report(app, r);
+}
+
 fn report(app: &mut PhotocraftApp, r: Result<Value, String>) {
     if let Err(e) = r
         && e != crate::file_dialog::CANCELLED
     {
         app.ui.status_error = true;
         app.ui.status = e;
+    }
+}
+
+#[cfg(test)]
+mod library_tests {
+    use super::*;
+
+    #[test]
+    fn cancelling_the_editor_discards_the_contour_name_draft() {
+        let ctx = egui::Context::default();
+        PhotocraftApp::setup_context(&ctx, Default::default());
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+        app.run("file.new", json!({"width": 32, "height": 32})).unwrap();
+        app.run("layer.new.layer", json!({})).unwrap();
+        app.run("layer.layerStyle.dropShadow", json!({})).unwrap();
+        let st = app.session.active().unwrap();
+        let mut fields = crate::layer_style::initial_fields(st.doc.layer(st.active_layer.unwrap()).unwrap(), None, 120.0);
+        open_editor(&mut fields, "fx1", "contour");
+        let naming = egui::Id::new(("contour-editor", "fx1", "contour")).with("naming");
+        ctx.data_mut(|d| d.insert_temp(naming, "Unfinished".to_string()));
+        ctx.run_ui(Default::default(), |ui| editor(&mut app, ui, &mut fields)).textures_delta.clear();
+        let input = egui::RawInput {
+            events: vec![egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }],
+            ..Default::default()
+        };
+        ctx.run_ui(input, |ui| editor(&mut app, ui, &mut fields)).textures_delta.clear();
+        assert!(!fields.contains_key(EDITOR));
+        assert!(ctx.data(|d| d.get_temp::<String>(naming)).is_none());
+        assert!(app.session.presets.contours.is_empty());
     }
 }

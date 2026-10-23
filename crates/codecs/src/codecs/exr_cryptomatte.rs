@@ -156,9 +156,13 @@ pub(crate) fn layers(bytes: &[u8], limits: &Limits) -> Result<Vec<CryptomatteLay
         let size = header.layer_size;
         let (w, h) = (u32::try_from(size.0).unwrap_or(u32::MAX), u32::try_from(size.1).unwrap_or(u32::MAX));
         limits.check_bytes(w, h, 8)?;
+        // Cache stream lists by resolved layer name: layer_streams() rescans every channel,
+        // and distinct file-controlled keys can all name the same layer, which would turn
+        // channel discovery into O(keys * channels) work and allocate a fresh list each time.
+        let mut streams_for: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
         for key in cryptomatte_keys(&header.own_attributes.other) {
             let Some(name) = attribute(&header.own_attributes.other, &key, "name") else { continue };
-            let channels = layer_streams(header, name.as_str());
+            let channels = streams_for.entry(name.clone()).or_insert_with(|| layer_streams(header, name.as_str())).clone();
             if channels.is_empty() {
                 continue;
             }
@@ -184,11 +188,15 @@ pub(crate) fn layers(bytes: &[u8], limits: &Limits) -> Result<Vec<CryptomatteLay
 /// Every `cryptomatte/<key>/` key of a header, in file order, without duplicates.
 fn cryptomatte_keys(other: &std::collections::HashMap<exr::meta::attribute::Text, exr::meta::attribute::AttributeValue>) -> Vec<String> {
     let mut keys = Vec::new();
+    // Track seen keys in a set: the attribute names are file-controlled, so membership with
+    // keys.iter().any() is O(n^2) in the number of distinct `cryptomatte/<key>/<field>`
+    // groups. The Vec still records file order; the set only answers "seen before".
+    let mut seen = std::collections::HashSet::new();
     for name in other.keys() {
         let full = name.to_string();
         let Some(rest) = full.strip_prefix("cryptomatte/") else { continue };
         let Some((key, _field)) = rest.split_once('/') else { continue };
-        if !key.is_empty() && !keys.iter().any(|k| k == key) {
+        if !key.is_empty() && seen.insert(key.to_string()) {
             keys.push(key.to_string());
         }
     }
@@ -217,14 +225,18 @@ pub(crate) fn decode(bytes: &[u8], layer_name: &str, limits: &Limits) -> Result<
     let too_large = || CodecError::malformed(F, "the layer is too large");
     let (w32, h32) = (u32::try_from(w).map_err(|_| too_large())?, u32::try_from(h).map_err(|_| too_large())?);
     // Each pixel also gets a pair list, so count its header with the channel samples (four
-    // f32 channels per set: two ranks of ID and coverage).
-    let per_pixel = (layer.channels.len().max(1) as u64).saturating_mul(16).saturating_add(std::mem::size_of::<Vec<(f32, f32)>>() as u64);
+    // f32 channels per set: two ranks of ID and coverage). Include the heap capacity the pair
+    // list can reach: up to one (id, coverage) pair per rank, 8 bytes each. Without this the
+    // returned per-pixel vectors could exceed the caller's max_alloc budget.
+    let ranks = layer.channels.len().saturating_mul(2);
+    let pair_capacity = (ranks as u64).saturating_mul(std::mem::size_of::<(f32, f32)>() as u64);
+    let per_pixel =
+        (layer.channels.len().max(1) as u64).saturating_mul(16).saturating_add(std::mem::size_of::<Vec<(f32, f32)>>() as u64).saturating_add(pair_capacity);
     limits.check_bytes(w32, h32, per_pixel)?;
 
     let ex_layer = super::exr::read_layer(bytes, layer.part)?;
 
     // Two (ID, coverage) ranks per set: rank `slot * 2 + stream.rank`.
-    let ranks = layer.channels.len().saturating_mul(2);
     let mut ids: Vec<Vec<f32>> = vec![Vec::new(); ranks];
     let mut coverages: Vec<Vec<f32>> = vec![Vec::new(); ranks];
     for c in &ex_layer.channel_data.list {

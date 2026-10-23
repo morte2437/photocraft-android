@@ -474,38 +474,50 @@ impl BezierMesh {
 
     /// Control points per row.
     pub fn nx(&self) -> usize {
-        3 * (self.us.len() - 1) + 1
+        3usize.saturating_mul(self.us.len().saturating_sub(1)).saturating_add(1)
     }
     /// Control point rows.
     pub fn ny(&self) -> usize {
-        3 * (self.vs.len() - 1) + 1
+        3usize.saturating_mul(self.vs.len().saturating_sub(1)).saturating_add(1)
     }
     pub fn point(&self, i: usize, j: usize) -> [f64; 2] {
-        self.points[j * self.nx() + i]
+        self.points.get(j.saturating_mul(self.nx()).saturating_add(i)).copied().unwrap_or([0.0; 2])
     }
 
     /// Checks the invariants (knots and point count); malformed data from files is rejected.
     pub fn is_valid(&self) -> bool {
-        let knots_ok = |k: &[f64]| k.len() >= 2 && k[0] == 0.0 && k[k.len() - 1] == 1.0 && k.windows(2).all(|w| w[1] > w[0]);
-        knots_ok(&self.us)
-            && knots_ok(&self.vs)
-            && self.points.len() == self.nx() * self.ny()
-            && self.points.iter().all(|p| p[0].is_finite() && p[1].is_finite())
+        let knots_ok = |k: &[f64]| (2..=65).contains(&k.len()) && k[0] == 0.0 && k[k.len() - 1] == 1.0 && k.windows(2).all(|w| w[1] > w[0]);
+        if !knots_ok(&self.us) || !knots_ok(&self.vs) {
+            return false;
+        }
+        let Some(nx) = (self.us.len() - 1).checked_mul(3).and_then(|v| v.checked_add(1)) else {
+            return false;
+        };
+        let Some(ny) = (self.vs.len() - 1).checked_mul(3).and_then(|v| v.checked_add(1)) else {
+            return false;
+        };
+        let Some(expected) = nx.checked_mul(ny) else {
+            return false;
+        };
+        self.points.len() == expected && self.points.iter().all(|p| p[0].is_finite() && p[1].is_finite())
     }
 
     fn locate(knots: &[f64], s: f64) -> (usize, f64) {
-        let n = knots.len() - 1;
-        let s = s.clamp(0.0, 1.0);
-        let mut i = 0;
-        while i + 1 < n && s > knots[i + 1] {
-            i += 1;
+        if knots.len() < 2 {
+            return (0, 0.0);
         }
+        let n = knots.len() - 1;
+        let s = if s.is_finite() { s.clamp(0.0, 1.0) } else { 0.0 };
+        let i = knots[1..n].partition_point(|&k| k < s);
         let w = knots[i + 1] - knots[i];
         (i, if w > 0.0 { (s - knots[i]) / w } else { 0.0 })
     }
 
     /// Evaluates the surface at normalised `(s, t)`.
     pub fn eval(&self, s: f64, t: f64) -> [f64; 2] {
+        if self.us.len() < 2 || self.vs.len() < 2 {
+            return [0.0; 2];
+        }
         let (pi, a) = Self::locate(&self.us, s);
         let (pj, b) = Self::locate(&self.vs, t);
         let (ba, bb) = (bernstein(a), bernstein(b));
@@ -513,7 +525,10 @@ impl BezierMesh {
         let mut out = [0.0; 2];
         for (j, wb) in bb.iter().enumerate() {
             for (i, wa) in ba.iter().enumerate() {
-                let p = self.points[(3 * pj + j) * nx + 3 * pi + i];
+                let idx = (3 * pj + j).saturating_mul(nx).saturating_add(3 * pi + i);
+                let Some(&p) = self.points.get(idx) else {
+                    return [0.0; 2];
+                };
                 let k = wa * wb;
                 out[0] += p[0] * k;
                 out[1] += p[1] * k;
@@ -555,7 +570,7 @@ impl BezierMesh {
     /// Exact when the patches came from an unedited split; otherwise the outer control points are
     /// kept and the inner handles extrapolated.
     pub fn remove_split_u(&mut self, k: usize) -> bool {
-        if k == 0 || k + 1 >= self.us.len() {
+        if k == 0 || k >= self.us.len().saturating_sub(1) {
             return false;
         }
         let a = (self.us[k] - self.us[k - 1]) / (self.us[k + 1] - self.us[k - 1]);
@@ -949,8 +964,29 @@ impl Warp {
             WarpStyle::Custom => match &self.mesh {
                 None => true,
                 Some(m) => {
-                    let id = BezierMesh::fit(&|s, t| self.box_point(s, t), m.us.clone(), m.vs.clone());
-                    m.points.iter().zip(&id.points).all(|(a, b)| (a[0] - b[0]).abs() < 1e-9 && (a[1] - b[1]).abs() < 1e-9)
+                    if !m.is_valid() {
+                        return false;
+                    }
+                    let nx = m.nx();
+                    let (pc, pr) = (m.us.len() - 1, m.vs.len() - 1);
+                    for pj in 0..pr {
+                        for j in 0..4 {
+                            let v = m.vs[pj] + (m.vs[pj + 1] - m.vs[pj]) * j as f64 / 3.0;
+                            for pi in 0..pc {
+                                for i in 0..4 {
+                                    let u = m.us[pi] + (m.us[pi + 1] - m.us[pi]) * i as f64 / 3.0;
+                                    let expected = self.box_point(u, v);
+                                    let actual = m.points[(3 * pj + j) * nx + 3 * pi + i];
+                                    // Relative to the magnitude so the fit's rounding at large origins isn't rejected.
+                                    let tol = |e: f64| (1e-9 * e.abs().max(1.0)).min(1e-6);
+                                    if (actual[0] - expected[0]).abs() >= tol(expected[0]) || (actual[1] - expected[1]).abs() >= tol(expected[1]) {
+                                        return false;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    true
                 }
             },
             _ => self.style_warp().is_none(),
@@ -1276,6 +1312,26 @@ mod tests {
     }
 
     #[test]
+    fn remove_split_u_rejects_out_of_range_indices() {
+        let original = BezierMesh::identity(B, 2, 3);
+        for k in [0, original.us.len() - 1, original.us.len(), usize::MAX - 1, usize::MAX] {
+            let mut mesh = original.clone();
+            assert!(!mesh.remove_split_u(k), "index {k}");
+            assert_eq!(mesh, original, "index {k} must leave the mesh unchanged");
+        }
+    }
+
+    #[test]
+    fn remove_split_v_rejects_out_of_range_indices() {
+        let original = BezierMesh::identity(B, 2, 3);
+        for k in [0, original.vs.len() - 1, original.vs.len(), usize::MAX - 1, usize::MAX] {
+            let mut mesh = original.clone();
+            assert!(!mesh.remove_split_v(k), "index {k}");
+            assert_eq!(mesh, original, "index {k} must leave the mesh unchanged");
+        }
+    }
+
+    #[test]
     fn splits_are_exact_and_removable() {
         let mut m = BezierMesh::identity(B, 1, 1);
         // Bend it: move an inner control point.
@@ -1363,5 +1419,39 @@ mod tests {
         assert!(close(t.map(50.0, 50.0), (55.0, 48.0), 1e-9));
         let ob = Warp::none(B).output_bounds();
         assert!((ob[0] - 10.0).abs() < 1e-9 && (ob[3] - 70.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn is_identity_rejects_malformed_custom_mesh_without_allocating() {
+        let us: Vec<f64> = (0..=1000).map(|i| i as f64 / 1000.0).collect();
+        let vs: Vec<f64> = (0..=1000).map(|i| i as f64 / 1000.0).collect();
+        let malformed = BezierMesh { us, vs, points: Vec::new() };
+        assert!(!malformed.is_valid());
+        let w = Warp::custom(malformed.clone(), B);
+        assert!(!w.is_identity());
+        assert_eq!(malformed.eval(0.5, 0.5), [0.0, 0.0]);
+    }
+
+    #[test]
+    fn locate_binary_search_matches_linear_scan() {
+        let knots = [0.0, 0.1, 0.25, 0.5, 0.85, 1.0];
+        let linear = |s: f64| {
+            let n = knots.len() - 1;
+            let s = if s.is_finite() { s.clamp(0.0, 1.0) } else { 0.0 };
+            let mut i = 0;
+            while i + 1 < n && s > knots[i + 1] {
+                i += 1;
+            }
+            let w = knots[i + 1] - knots[i];
+            (i, if w > 0.0 { (s - knots[i]) / w } else { 0.0 })
+        };
+        for k in -10..=110 {
+            let s = k as f64 / 100.0;
+            assert_eq!(BezierMesh::locate(&knots, s), linear(s), "s={s}");
+        }
+        for &s in &knots {
+            assert_eq!(BezierMesh::locate(&knots, s), linear(s), "knot={s}");
+        }
+        assert_eq!(BezierMesh::locate(&knots, f64::NAN), linear(f64::NAN));
     }
 }

@@ -71,8 +71,7 @@ mod services;
 // macOS gets one instance from LaunchServices (open-documents Apple events).
 #[cfg(any(not(target_os = "macos"), test))]
 mod single_instance;
-// Windows gets pen pressure from winit (WM_POINTER); the web runner has its own listener.
-#[cfg(any(target_os = "macos", target_os = "linux", test))]
+// Tablet support (macOS AppKit monitor, Linux X11/Wayland, Windows barrel button).
 mod tablet;
 mod ui_state;
 mod window_frame;
@@ -103,9 +102,7 @@ fn custom_titlebar(prefs_file: Option<&std::path::Path>) -> bool {
 /// different offset every launch (#419). A later launch restores the saved position instead
 /// (`main` turns `centered` off, #4826). Wayland compositors place windows themselves.
 fn native_options(custom_titlebar: bool) -> eframe::NativeOptions {
-    let viewport = egui::ViewportBuilder::default();
-    // Not inside a macOS app bundle: its Dock icon is the bundle's .icns (`app_icon`, #5849).
-    let viewport = if app_icon::sets_runtime_icon(std::env::current_exe().ok().as_deref()) { viewport.with_icon(app_icon::window_icon()) } else { viewport };
+    let viewport = egui::ViewportBuilder::default().with_icon(app_icon::viewport_icon(std::env::current_exe().ok().as_deref()));
     eframe::NativeOptions {
         viewport: viewport
             .with_app_id(APP_ID)
@@ -496,7 +493,7 @@ fn main() -> eframe::Result {
         unreadable_paths,
         safe_gpu,
         new_instance,
-        launch_options,
+        mut launch_options,
         present_mode_arg,
         frame_latency_arg,
         stroke_trace_arg,
@@ -516,12 +513,24 @@ fn main() -> eframe::Result {
         }
     }
 
+    // An adapter named in the environment is chosen at startup, which a forwarded launch never reaches.
+    let rendering_mode = gpu_startup::read_rendering_prefs(services::prefs_file().as_deref()).1;
+    if gpu_startup::adapter_override_is_process_specific(std::env::var("PHOTOCRAFT_GPU_ADAPTER").ok().as_deref(), rendering_mode, gpu_startup::ADAPTER_CHOICE) {
+        launch_options.push("PHOTOCRAFT_GPU_ADAPTER");
+    }
     // One PhotoCraft per user (#3708): files opened from Explorer or a file manager while it runs
     // become tabs in its window. Only with the per-user settings folder (a portable copy's may be
     // shared between users), and not for automation, `--new-instance` or per-process options.
     #[cfg(not(target_os = "macos"))]
     let single_instance = {
         let new_instance_env = std::env::var("PHOTOCRAFT_NEW_INSTANCE").ok();
+        // A variable documented as the equivalent of a per-launch flag counts as that flag: a
+        // launch that sets only `PHOTOCRAFT_PRESENT_MODE` (say) has per-process options too, so it
+        // keeps its own process instead of handing its files over and being ignored.
+        // Folded in here, inside the block that only non-macOS builds compile, so the binding
+        // above keeps its `mut` off macOS, where nothing is folded in.
+        let mut launch_options = launch_options;
+        launch_options.extend_from_slice(&single_instance::env_launch_options());
         let context = single_instance::LaunchContext {
             per_user_settings: app_dirs::current().mode == app_dirs::Mode::Platform,
             new_instance_flag: new_instance,
@@ -627,6 +636,11 @@ fn main() -> eframe::Result {
     let tablet_monitor = std::cell::OnceCell::new();
     #[cfg(target_os = "macos")]
     let tablet_monitor = &tablet_monitor;
+    // The Windows pointer message hook; dropping it unhooks when the event loop returns.
+    #[cfg(target_os = "windows")]
+    let tablet_monitor_win = std::cell::OnceCell::new();
+    #[cfg(target_os = "windows")]
+    let tablet_monitor_win = &tablet_monitor_win;
 
     // Read the displays' ICC profiles while the window opens (colour-managed canvas; `None`
     // where the platform has no reader).
@@ -678,7 +692,9 @@ fn main() -> eframe::Result {
     }
     let gpu_note: std::sync::Arc<std::sync::Mutex<Option<String>>> = Default::default();
     // The adapter's real texture limits (egui asks for 8192 px), so big documents stay on the GPU.
-    gpu_startup::configure(&mut options.wgpu_options.wgpu_setup, &plan, os, sentinel.clone(), gpu_note.clone());
+    let wanted_adapter =
+        gpu_startup::wanted_adapter(std::env::var("PHOTOCRAFT_GPU_ADAPTER").ok().as_deref(), &gpu_startup::read_gpu_adapter(services::prefs_file().as_deref()));
+    gpu_startup::configure(&mut options.wgpu_options.wgpu_setup, &plan, os, wanted_adapter, sentinel.clone(), gpu_note.clone());
     // Preferences › Performance › Low-Latency Drawing (#1343): without vsync a stroke shows about
     // 50 ms sooner; wgpu picks Immediate, else Mailbox, else Fifo by what the driver offers.
     if gpu_startup::read_low_latency(services::prefs_file().as_deref()) {
@@ -774,9 +790,19 @@ fn main() -> eframe::Result {
             info.canvas = "cpu".into();
             if let Some(rs) = cc.wgpu_render_state.clone() {
                 app.perf.gpu_info.set_adapter(&rs.adapter.get_info());
+                app.perf.gpu_info.set_available(&rs.available_adapters);
+                // Every egui texture uploads through this adapter, whichever canvas draws:
+                // Iris Xe on DX12 shows stale memory in all-zero texels (texel_guard.rs).
+                photocraft_ui_egui::texel_guard::install(&cc.egui_ctx, &rs.adapter.get_info());
                 let software_window = rs.adapter.get_info().device_type == eframe::wgpu::DeviceType::Cpu;
                 if software_window && mode != photocraft_engine::prefs::RenderingMode::Cpu {
-                    app.perf.gpu_info.fallback = Some("No compatible hardware graphics adapter; using software graphics.".into());
+                    // Keep an earlier note, such as a requested adapter that couldn't be used.
+                    let software = "No compatible hardware graphics adapter; using software graphics.";
+                    let fallback = &mut app.perf.gpu_info.fallback;
+                    *fallback = Some(match fallback.take() {
+                        Some(earlier) => format!("{earlier}. {software}"),
+                        None => software.into(),
+                    });
                 }
                 if !software_window
                     && plan.backend != photocraft_engine::prefs::GpuBackend::Cpu
@@ -785,8 +811,9 @@ fn main() -> eframe::Result {
                 {
                     app.set_wgpu(rs);
                 } else {
-                    // The window still draws with wgpu: record its errors instead of panicking.
-                    let _ = photocraft_ui_egui::gpu_canvas::DeviceHealth::watch(&rs.device);
+                    // The window still draws with wgpu: record its errors instead of panicking,
+                    // and notice when the device is lost (#3438).
+                    app.watch_window_device(&rs.device);
                 }
             }
             let fallback_reason = std::env::var("PHOTOCRAFT_GPU_STARTUP_FAILURE").ok().or_else(|| {
@@ -853,8 +880,13 @@ fn main() -> eframe::Result {
             if let Some(monitor) = tablet::install_macos(&app.stylus.feed) {
                 let _ = tablet_monitor.set(monitor);
             }
+            #[cfg(target_os = "windows")]
+            if let Some(monitor) = tablet::install_windows() {
+                let _ = tablet_monitor_win.set(monitor);
+            }
             #[cfg(target_os = "linux")]
             tablet::spawn_x11(&app.stylus.feed, display);
+            app.services.right_button_down = tablet::right_button_service();
             // Paths on the command line (Linux/Windows file associations, `photocraft a.psd`).
             app.open_paths(&files);
             if !unreadable_paths.is_empty() {

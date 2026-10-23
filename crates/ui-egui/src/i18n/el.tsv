@@ -3,6 +3,10 @@
 # Original translations based on general Greek graphics/computing terminology.
 # Covers every source label the i18n coverage check lists.
 
+# Layer Mask Display Options (the layer mask rubylith's colour and opacity)
+	Mask Options…	Επιλογές μάσκας…
+	Layer Mask Display Options…	Επιλογές εμφάνισης μάσκας επιπέδου…
+
 # Channel Options and New Spot Channel (#3761)
 	Channel Color	Χρώμα καναλιού
 	Color Indicates:	Το χρώμα υποδεικνύει:
@@ -798,6 +802,8 @@
 	Override Pressure	Παράκαμψη πίεσης
 	Override Rotation	Παράκαμψη περιστροφής
 	Override Tilt	Παράκαμψη κλίσης
+	Override Tilt X	Παράκαμψη κλίσης X
+	Override Tilt Y	Παράκαμψη κλίσης Y
 	PRESET DETAILS	ΛΕΠΤΟΜΕΡΕΙΕΣ ΠΡΟΕΠΙΛΟΓΗΣ
 	Pattern Size	Μέγεθος μοτίβου
 	Perspective Warp is not active	Ο μετασχηματισμός προοπτικής δεν είναι ενεργός
@@ -995,6 +1001,8 @@
 	Keywords	Λέξεις-κλειδιά
 	Copyright Info URL	Σύνδεσμος πληροφοριών πνευματικών δικαιωμάτων
 	Copyright Status	Κατάσταση πνευματικών δικαιωμάτων
+	Copyright Notice	Σημείωση πνευματικών δικαιωμάτων
+	Document Title	Τίτλος εγγράφου
 	Copyrighted	Προστατεύεται από πνευματικά δικαιώματα
 	Public Domain	Κοινό κτήμα
 	Unknown	Άγνωστο
@@ -1106,6 +1114,8 @@
 	GPU acceleration could not continue. Your documents are unchanged.	Η επιτάχυνση GPU δεν μπόρεσε να συνεχιστεί. Τα έγγραφά σας δεν έχουν αλλάξει.
 	PhotoCraft is using the CPU image compositor. The window may still use your graphics adapter.	Το PhotoCraft χρησιμοποιεί σύνθεση εικόνας μέσω CPU. Το παράθυρο μπορεί να εξακολουθεί να χρησιμοποιεί την κάρτα γραφικών.
 	Retry GPU requires a restart. Save your work first.	Η νέα προσπάθεια χρήσης GPU απαιτεί επανεκκίνηση. Αποθηκεύστε πρώτα την εργασία σας.
+	Retry GPU tries the graphics processor again now.	Η νέα προσπάθεια χρήσης GPU δοκιμάζει ξανά τον επεξεργαστή γραφικών αμέσως.
+	GPU acceleration resumed.	Η επιτάχυνση GPU συνεχίζεται.
 	Keep Using CPU	Συνέχεια με CPU
 	Retry GPU	Νέα προσπάθεια χρήσης GPU
 	GPU Backend	Σύστημα GPU
@@ -1117,6 +1127,11 @@
 	Hold Alt while drawing for straight segments	Κρατήστε πατημένο το Alt κατά τη σχεδίαση για ευθύγραμμα τμήματα
 	TIFF Options	Επιλογές TIFF
 	Targa Options	Επιλογές Targa
+	JPEG Options	Επιλογές JPEG
+	Image Options	Επιλογές εικόνας
+	Format Options	Επιλογές μορφής
+	Baseline ("Standard")	Βασική («Τυπική»)
+	Baseline Optimized	Βασική βελτιστοποιημένη
 	24 bits/pixel	24 bit/εικονοστοιχείο
 	32 bits/pixel	32 bit/εικονοστοιχείο
 	Including layers will increase file size.	Η συμπερίληψη επιπέδων θα αυξήσει το μέγεθος του αρχείου.
@@ -1582,6 +1597,7 @@
 	Reset Alignment	Επαναφορά στοίχισης
 	Centre the gradient (offset 0, 0)	Κεντράρισμα διαβάθμισης (μετατόπιση 0, 0)
 	Refine Strokes	Πινελιές βελτίωσης
+	Edits	Επεξεργασίες
 # Gradient Editor window, opened from the options bar's gradient swatch.
 	Gradient Editor	Επεξεργασία διαβάθμισης
 	Gradient picker	Επιλογή διαβάθμισης
@@ -1819,6 +1835,7 @@
 	Blending Options…	Επιλογές ανάμειξης…
 	Bevel & Emboss…	Λοξότμηση και ανάγλυφο…
 	Use Global Light	Χρήση καθολικού φωτισμού
+	Overprint	Υπερεκτύπωση
 	Inner Shadow…	Εσωτερική σκιά…
 	Inner Glow…	Εσωτερική λάμψη…
 	Satin…	Σατινέ…
@@ -1984,6 +2001,11 @@
 	Color Replacement Tool	Αντικατάσταση χρώματος (Color Replacement Tool)
 	Color Replacement	Αντικατάσταση χρώματος
 	Wet	Υγρασία
+	Current Brush Load	Τρέχουσα φόρτωση πινέλου
+	Load Brush	Φόρτωση πινέλου
+	Clean Brush	Καθαρισμός πινέλου
+	Load the brush after each stroke	Φόρτωση του πινέλου μετά από κάθε πινελιά
+	Clean the brush after each stroke	Καθαρισμός του πινέλου μετά από κάθε πινελιά
 	Load	Φόρτωση
 	Mix	Ανάμειξη
 	8 bit	8 bit ανά κανάλι
@@ -2341,13 +2363,14 @@
 	Drag (lasso) or click points (polygonal) · {add} add · {sub} subtract	Σύρετε για λάσο ή κάντε κλικ για πολυγωνική επιλογή · {add} προσθήκη · {sub} αφαίρεση
 	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} centre) · Space moves while drawing · arrows nudge · X swaps orientation · {commit} commits · Esc cancels	Σύρετε για περιοχή περικοπής · σύρετε στο εσωτερικό για μετακίνηση · από τα άκρα αλλάζει μέγεθος ({ratio} αναλογία, {centre} κέντρο) · Space για μετακίνηση κατά τη σχεδίαση · βέλη για μετακίνηση · X εναλλαγή προσανατολισμού · {commit} εφαρμογή · Esc ακύρωση
 	Drag around the centre to rotate the view  ·  Shift constrains to 15°	Σύρετε γύρω από το κέντρο για να περιστρέψετε την προβολή  ·  Shift περιορίζει στις 15°
-	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click to delete.	Σύρετε πάνω στην εικόνα για προσθήκη περιορισμού· Shift για οριζόντιο/κατακόρυφο· δεξί κλικ για διαγραφή.
+	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click a constraint to change or delete it.	Σύρετε πάνω στην εικόνα για προσθήκη περιορισμού· Shift για οριζόντιο/κατακόρυφο· δεξί κλικ σε έναν περιορισμό για αλλαγή ή διαγραφή.
 	Drag or click polygon points · hold Alt during lasso for straight segments · {add} add · {sub} before drawing subtracts	Σύρετε ή κάντε κλικ για πολυγωνικά σημεία · κρατήστε Alt κατά το λάσο για ευθείες · {add} προσθήκη · {sub} αφαίρεση πριν από τη σχεδίαση
 	Drag to draw a gradient	Σύρετε για να σχεδιάσετε διαβάθμιση
 	Drag to move the active layer	Σύρετε για μετακίνηση του ενεργού επιπέδου
 	Drag to move the active shape's path or the Work Path	Σύρετε για μετακίνηση της διαδρομής του ενεργού σχήματος ή της διαδρομής εργασίας
 	Dual Brush	Διπλό πινέλο
 	Duplicate Path	Διπλασιασμός διαδρομής
+	Rename Path…	Μετονομασία διαδρομής…
 	Duplicate style	Διπλασιασμός στυλ
 	Dust & Scratches	Σκόνη και γρατζουνιές
 	Dust & Scratches…	Σκόνη και γρατζουνιές…
@@ -2892,6 +2915,7 @@
 	Raw Data	Ακατέργαστα δεδομένα
 	Raw Defaults	Προεπιλογές RAW
 	Recent file count	Αριθμός πρόσφατων αρχείων
+	LUT folder	Φάκελος LUT
 	Recent files	Πρόσφατα αρχεία
 	Recent fonts	Πρόσφατες γραμματοσειρές
 	Reconstruct	Ανακατασκευή
@@ -3033,6 +3057,7 @@
 	Set shape fill type	Ορισμός τύπου γεμίσματος σχήματος
 	Set shape stroke type	Ορισμός τύπου περιγράμματος σχήματος
 	Set the text color	Ορισμός χρώματος κειμένου
+	Create warped text	Δημιουργία παραμορφωμένου κειμένου
 	Shadows/Highlights	Σκιές/φωτεινές περιοχές
 	Shape	Σχήμα
 	Shape Blur	Θόλωση σχήματος
@@ -3747,6 +3772,32 @@ cameraData	Lens	Φακός
 	Mirror	Κατοπτρισμός
 	Output Settings	Ρυθμίσεις εξόδου
 	Output To	Έξοδος σε
+
+	Animation Options	Επιλογές κίνησης
+	Entire Document	Ολόκληρο έγγραφο
+	Filter Options	Επιλογές φίλτρου
+	Layer Bounds	Όρια επιπέδου
+	Layers Panel Options	Επιλογές πίνακα επιπέδων
+	New Artboard…	Νέος πίνακας σχεδίασης…
+	New Group…	Νέα ομάδα…
+	Prevent Auto-Nesting	Αποτροπή αυτόματης ένθεσης
+	Show Layers	Εμφάνιση επιπέδων
+	Thumbnail Contents	Περιεχόμενο μικρογραφιών
+	Thumbnail Size	Μέγεθος μικρογραφιών
+	Use Default Masks on Fill Layers	Χρήση προεπιλεγμένων μασκών σε επίπεδα γεμίσματος
+	Expand New Effects	Ανάπτυξη νέων εφέ
+	Add “copy” to Copied Layers and Groups	Προσθήκη «αντίγραφο» σε αντιγραμμένα επίπεδα και ομάδες
+	Preview on canvas when reordering layers	Προεπισκόπηση στον καμβά κατά την αναδιάταξη επιπέδων
+	Show layer mask badges	Εμφάνιση σημάτων μασκών επιπέδου
+
+# Smart Filter editors
+	Blending Options ({filter})	Επιλογές ανάμειξης ({filter})
+	Hide the layer's effects and Smart Filters  ({key}-click: all layers)	Απόκρυψη εφέ επιπέδου και έξυπνων φίλτρων  ({key}-κλικ: όλα τα επίπεδα)
+	Show the layer's effects and Smart Filters  ({key}-click: all layers)	Εμφάνιση εφέ επιπέδου και έξυπνων φίλτρων  ({key}-κλικ: όλα τα επίπεδα)
+	Wait for the current job to finish.	Περιμένετε να ολοκληρωθεί η τρέχουσα εργασία.
+	The document or Smart Filter changed. Reopen its dialog.	Το έγγραφο ή το έξυπνο φίλτρο άλλαξε. Ανοίξτε ξανά το παράθυρό του.
+	Opacity must be between 0% and 100%.	Η αδιαφάνεια πρέπει να είναι μεταξύ 0% και 100%.
+	Dissolve is approximated: it blends without Photoshop's dither.	Η Διάλυση προσεγγίζεται: η ανάμειξη γίνεται χωρίς το dither του Photoshop.
 	Loading fonts…	Φόρτωση γραμματοσειρών…
 	Response curve	Καμπύλη απόκρισης
 	Simulate Pressure	Προσομοίωση πίεσης
@@ -3792,6 +3843,10 @@ curves	Smooth	Εξομάλυνση
 # Color Sampler (added with the i18n coverage repair)
 	Click to place · Alt-click or drag off-canvas to remove	Κλικ για τοποθέτηση · Alt-κλικ ή σύρσιμο εκτός καμβά για αφαίρεση
 	{n} of {max} sample points	{n} από {max} σημεία δειγματοληψίας
+
+# History panel menu (#2966)
+	New Snapshot…	Νέο στιγμιότυπο…
+	History Options…	Επιλογές ιστορικού…
 # Print dialog (#2697)
 	Emulsion Down	Γαλάκτωμα προς τα κάτω
 	Functions	Λειτουργίες
@@ -3826,9 +3881,16 @@ curves	Smooth	Εξομάλυνση
 	Light Gray	Ανοιχτό γκρι
 	Object Finder	Εύρεση αντικειμένων
 	No object found there — drag a rectangle around it	Δεν βρέθηκε αντικείμενο εκεί — σύρετε ένα ορθογώνιο γύρω του
+	The active layer has no pixels here — turn on Sample All Layers or select a layer with pixels	Το ενεργό επίπεδο δεν έχει εικονοστοιχεία εδώ — ενεργοποιήστε τη Δειγματοληψία όλων των επιπέδων ή επιλέξτε ένα επίπεδο με εικονοστοιχεία
 	Remove after each stroke	Αφαίρεση μετά από κάθε πινελιά
 	Apply the removal ({key})	Εφαρμογή της αφαίρεσης ({key})
 	Strokes to remove: {n} (Enter applies, Esc cancels)	Πινελιές προς αφαίρεση: {n} (Enter εφαρμόζει, Esc ακυρώνει)
+	Load Contours…	Φόρτωση περιγραμμάτων…
+	Replace Contours…	Αντικατάσταση περιγραμμάτων…
+	Save Contours…	Αποθήκευση περιγραμμάτων…
+	Delete Contour	Διαγραφή περιγράμματος
+	Loaded contours from {file}	Φορτώθηκαν περιγράμματα από {file}
+	Saved contours to {file}	Τα περιγράμματα αποθηκεύτηκαν στο {file}
 	Show home recent files	Εμφάνιση πρόσφατων αρχείων στην αρχική οθόνη
 	Clear Brush Controls	Απαλοιφή στοιχείων ελέγχου πινέλου
 	Reset All Locked Settings	Επαναφορά όλων των κλειδωμένων ρυθμίσεων
@@ -3837,6 +3899,9 @@ curves	Smooth	Εξομάλυνση
 # Actions panel: Load/Save Actions (.atn) and kept Photoshop steps
 	Load Actions…	Φόρτωση ενεργειών…
 	Save Actions…	Αποθήκευση ενεργειών…
+	New Action…	Νέα ενέργεια…
+	Start Recording	Έναρξη εγγραφής
+	Stop Recording	Διακοπή εγγραφής
 	{name} (Photoshop)	{name} (Photoshop)
 	{message} ({note})	{message} ({note})
 @plural	Loaded {n} action from {file}|Loaded {n} actions from {file}	Φορτώθηκε {n} ενέργεια από το {file}|Φορτώθηκαν {n} ενέργειες από το {file}
@@ -3868,6 +3933,16 @@ curves	Smooth	Εξομάλυνση
 	Sent to {printer}	Στάλθηκε στον {printer}
 	set in Print Settings…	ορίζεται στις ρυθμίσεις εκτύπωσης…
 	ICO is limited to 256 × 256 pixels	Το ICO περιορίζεται σε 256 × 256 εικονοστοιχεία
+# History panel › History Brush source (#2966)
+	Paints from the History panel's source state	Βάφει από την κατάσταση πηγής του πίνακα Ιστορικό
+	Sets the source for the history brush	Ορίζει την πηγή για το πινέλο ιστορικού
+# Bevel & Emboss shading controls.
+	Highlight Mode	Λειτουργία φωτεινών τόνων
+	Highlight Color	Χρώμα φωτεινών τόνων
+	Highlight Opacity	Αδιαφάνεια φωτεινών τόνων
+	Shadow Mode	Λειτουργία σκιών
+	Shadow Color	Χρώμα σκιών
+	Shadow Opacity	Αδιαφάνεια σκιών
 # Embedded Profile Mismatch: profile names beside the choices, Remember this choice
 	Use the embedded profile ({profile})	Χρήση ενσωματωμένου προφίλ ({profile})
 	Convert to the working space ({profile})	Μετατροπή στον χώρο εργασίας ({profile})
@@ -3884,12 +3959,16 @@ curves	Smooth	Εξομάλυνση
 	Chisel Hard	Σκληρή σμίλευση
 	Chisel Soft	Μαλακή σμίλευση
 	Open color-less EXR as ACEScg	Άνοιγμα EXR χωρίς χρωματική δήλωση ως ACEScg
+	Do not append "copy" to filename when saving a copy	Να μην προστίθεται «copy» στο όνομα αρχείου κατά την αποθήκευση αντιγράφου
 # Export As metadata and profile options
 	EXIF	EXIF
 
 # View › Guides › right-click a guide
 	Edit Selected Guides	Επεξεργασία επιλεγμένων οδηγών
 	Clear Selected Guides	Απαλοιφή επιλεγμένων οδηγών
+	Bicubic Automatic	Δικυβική αυτόματη
+	Bicubic Smoother	Δικυβική πιο ομαλή
+	Bicubic Sharper	Δικυβική πιο ευκρινής
 	Pasting from other apps is unavailable	Η επικόλληση από άλλες εφαρμογές δεν είναι διαθέσιμη
 	PhotoCraft can't reach the system clipboard in this session. On Wayland, a Flatpak sandbox hides the protocol that images from other apps are read through.	Το PhotoCraft δεν έχει πρόσβαση στο πρόχειρο του συστήματος σε αυτή τη συνεδρία. Στο Wayland, το sandbox του Flatpak κρύβει το πρωτόκολλο μέσω του οποίου διαβάζονται εικόνες από άλλες εφαρμογές.
 	To paste from other apps, start PhotoCraft under XWayland: `{command}`	Για επικόλληση από άλλες εφαρμογές, ξεκινήστε το PhotoCraft σε XWayland: `{command}`
@@ -3909,6 +3988,17 @@ curves	Smooth	Εξομάλυνση
 	set name	όνομα συνόλου
 	{set} (modified)	{set} (τροποποιημένο)
 	Show file name in title	Εμφάνιση ονόματος αρχείου στον τίτλο
+
+# Image › Mode › Bitmap (#5559)
+	50% Threshold	Κατώφλι 50%
+	Pattern Dither	Πρόσμιξη μοτίβου
+	Diffusion Dither	Πρόσμιξη διάχυσης
+	Halftone Screen	Ράστερ ημιτόνων
+	Custom Pattern	Προσαρμοσμένο μοτίβο
+	Frequency:	Συχνότητα:
+	Lines/Inch	Γραμμές/ίντσα
+	Lines/Centimeter	Γραμμές/εκατοστό
+	Ellipse	Έλλειψη
 	Accept and Go to Conflict	Αποδοχή και μετάβαση στη σύγκρουση
 	Changes undone.	Οι αλλαγές αναιρέθηκαν.
 	Choose a new shortcut for this command, or leave it without one.	Επιλέξτε νέα συντόμευση για αυτήν την εντολή ή αφήστε την χωρίς.
@@ -3926,15 +4016,33 @@ curves	Smooth	Εξομάλυνση
 	GPU Memory Full	Η μνήμη GPU είναι πλήρης
 	The layers need {needed} of GPU memory and may hold {budget}, so edits that redraw the whole document do it on the CPU. Click to set GPU Memory.	Τα επίπεδα χρειάζονται {needed} μνήμης GPU και μπορούν να καταλάβουν {budget}, οπότε οι αλλαγές που ξανασχεδιάζουν όλο το έγγραφο το κάνουν στη CPU. Κάντε κλικ για να ορίσετε τη Μνήμη GPU.
 	GPU memory budget: {budget}	Όριο μνήμης GPU: {budget}
+	Graphics memory: {size}	Μνήμη γραφικών: {size}
 	This document's layers: {needed} of {budget} for layers	Επίπεδα αυτού του εγγράφου: {needed} από {budget} για επίπεδα
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	Τα επίπεδα αυτού του εγγράφου χρειάζονται {needed} αλλά μπορούν να καταλάβουν {budget}: η επανασχεδίαση όλου του εγγράφου γίνεται στη CPU
 	GPU Memory (MB, 0 = Automatic)	Μνήμη GPU (MB, 0 = Αυτόματο)
+	{path}: the path is not valid Unicode; save under another name.	{path}: η διαδρομή δεν είναι έγκυρο Unicode· αποθηκεύστε με άλλο όνομα.
 	{name} was changed by another app after it was opened or saved here.	Το {name} άλλαξε από άλλη εφαρμογή αφού ανοίχτηκε ή αποθηκεύτηκε εδώ.
 	Replace it with this document, or cancel and use File › Save As to keep both.	Αντικαταστήστε το με αυτό το έγγραφο ή ακυρώστε και χρησιμοποιήστε Αρχείο › Αποθήκευση ως για να κρατήσετε και τα δύο.
 	Decrease Brush Size	Μείωση μεγέθους πινέλου
 	Increase Brush Size	Αύξηση μεγέθους πινέλου
 	Decrease Brush Hardness	Μείωση σκληρότητας πινέλου
 	Increase Brush Hardness	Αύξηση σκληρότητας πινέλου
+	Demosaic	Αποψηφιδοποίηση
+	How the camera's colour filter mosaic is filled in. It is applied when the file opens; the preview shows the method it was opened with.	Πώς συμπληρώνεται το ψηφιδωτό του χρωματικού φίλτρου της κάμερας. Εφαρμόζεται όταν ανοίγει το αρχείο· η προεπισκόπηση δείχνει τη μέθοδο με την οποία άνοιξε.
+	AHD (adaptive homogeneity)	AHD (προσαρμοστική ομοιογένεια)
+	Malvar–He–Cutler	Malvar–He–Cutler
+	Hirakawa–Parks: the cleanest edges and the least colour fringing, the slowest.	Hirakawa–Parks: οι πιο καθαρές ακμές και τα λιγότερα χρωματικά περιθώρια, η πιο αργή.
+	Gradient-corrected interpolation: sharp and fast, with some colour fringing on fine detail.	Παρεμβολή με διόρθωση κλίσης: ευκρινής και γρήγορη, με λίγα χρωματικά περιθώρια στις λεπτές λεπτομέρειες.
+	The fastest and the softest, with colour fringing on fine detail.	Η πιο γρήγορη και η πιο μαλακή, με χρωματικά περιθώρια στις λεπτές λεπτομέρειες.
+	“{name}” already exists. Replace it?	Το «{name}» υπάρχει ήδη. Να αντικατασταθεί;
+	The name in the save dialog was “{name}”.	Το όνομα στο παράθυρο αποθήκευσης ήταν «{name}».
+	Move Up	Μετακίνηση επάνω
+	Move Down	Μετακίνηση κάτω
+	Previous Brush	Προηγούμενο πινέλο
+	Next Brush	Επόμενο πινέλο
+	First Brush	Πρώτο πινέλο
+	Last Brush	Τελευταίο πινέλο
+	Preview size	Preview size
 	Memory Usage	Χρήση μνήμης
 	Per-document RAM limit (MB)	Όριο RAM ανά έγγραφο (MB)
 	Installed RAM: {ram} MB; this limit: {percent}%	Εγκατεστημένη RAM: {ram} MB· αυτό το όριο: {percent}%
@@ -3944,3 +4052,33 @@ curves	Smooth	Εξομάλυνση
 	Use	Χρήση
 	In Front	Μπροστά
 	Behind	Πίσω
+
+# DDS Options (#1327)
+	DDS Options	Επιλογές DDS
+	Generate Mipmaps	Δημιουργία mipmap
+
+# Color Table (.act) dialog
+	There is no color table to save.	Δεν υπάρχει πίνακας χρωμάτων για αποθήκευση.
+@plural	Saved {n} color to {file}|Saved {n} colors to {file}	Αποθηκεύτηκε {n} χρώμα στο {file}|Αποθηκεύτηκαν {n} χρώματα στο {file}
+
+# Graphics Adapter preference (#1885)
+	GPU adapter	Προσαρμογέας GPU
+# Actions: a step dialog holds a suspended recording (#7365)
+	Confirm or cancel the open action step dialog first	Επιβεβαιώστε ή ακυρώστε πρώτα το ανοιχτό παράθυρο βήματος της ενέργειας
+	Pro Medium Gray	Pro μεσαίου γκρι
+	Solarized	Solarized
+	Breeze	Breeze
+	Pro Light Gray	Pro ανοιχτού γκρι
+	Pro Light	Φωτεινό Pro
+	Resize Windows to Fit	Προσαρμογή μεγέθους παραθύρων
+
+	EXR	EXR
+
+# Paragraph direction (TYPE-218-2)
+	Automatic paragraph direction	Αυτόματη κατεύθυνση παραγράφου
+	Left-to-right paragraph direction	Κατεύθυνση παραγράφου από αριστερά προς τα δεξιά
+	Right-to-left paragraph direction	Κατεύθυνση παραγράφου από δεξιά προς τα αριστερά
+	Not rendered: this adjustment ({key}) is kept as imported.	Δεν αποδίδεται: αυτή η προσαρμογή ({key}) διατηρείται όπως εισήχθη.
+
+# Print preview image (#8236)
+	Print preview image	Print preview image

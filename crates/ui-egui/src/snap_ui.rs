@@ -44,7 +44,7 @@ pub struct ActiveSnap {
     pub gesture: Gesture,
     pub start: [f64; 2],
     pub targets: SnapTargets,
-    /// Layer alignments only (smart guides), used when View › Snap is off.
+    /// Layer alignments only (smart guides), when View › Snap and Smart Guides are on.
     pub smart: SnapTargets,
     pub disabled: bool,
 }
@@ -101,12 +101,28 @@ fn moving_rect(app: &PhotocraftApp, tool: Tool) -> Option<[f64; 4]> {
     union(st.selected_layers().into_iter().filter_map(|id| layer_rect(&st.doc, id)))
 }
 
-/// The selection's bounds where it is shown: moved by its floating piece's offset.
+/// The bounds of the pixels a selection moves, where they are shown: its floating piece's outline
+/// at its offset (#7538), else (nothing cut yet, or a mask or empty piece) the selection's bounds.
 fn selection_rect(app: &PhotocraftApp) -> Option<[f64; 4]> {
     let st = app.session.active()?;
-    let (dx, dy) = photocraft_engine::float_cmds::floating(st).map_or((0, 0), |f| f.offset);
-    let r = st.doc.selection.as_ref()?.content_bounds().translate(dx, dy);
+    let sel = st.doc.selection.as_ref()?;
+    let r = match photocraft_engine::float_cmds::floating(st) {
+        Some(f) => f.parts.outline().unwrap_or(sel).content_bounds().translate(f.offset.0, f.offset.1),
+        None => sel.content_bounds(),
+    };
     (!r.is_empty()).then(|| [r.x0, r.y0, r.x1, r.y1].map(f64::from))
+}
+
+/// A press cut the selected pixels after snapping began (`filter_event` runs before the tools):
+/// the move now snaps the cut piece's outline, not the selection it was cut with (#7538).
+pub(crate) fn follow_cut(app: &mut PhotocraftApp) {
+    let Some(rect) = selection_rect(app) else { return };
+    if let Some(snap) = app.prefs_rt.snap.as_mut() {
+        match &mut snap.gesture {
+            Gesture::Move { rect: r } | Gesture::SelectionMove { rect: r } => *r = rect,
+            _ => {}
+        }
+    }
 }
 
 fn is_point_tool(t: Tool) -> bool {
@@ -235,6 +251,12 @@ fn begin(app: &mut PhotocraftApp, p: [f64; 2], mods: egui::Modifiers) {
         // doesn't snap to its own layer.
         let exclude = if cut { app.session.active().map(|s| s.selected_layers()).unwrap_or_default() } else { Vec::new() };
         selection_rect(app).map(|rect| (Gesture::SelectionMove { rect }, exclude))
+    } else if tool.is_type()
+        && let Some(layer) = app.ui.text_edit.as_ref().map(|e| LayerId(e.layer))
+    {
+        // Editing type: a paragraph-box handle drag snaps to guides and other layers, not to the
+        // text being resized; a press in the text places the caret where it is (#6819).
+        crate::type_tool::box_handle_at(app, layer, p[0], p[1]).map(|_| (Gesture::Point, vec![layer]))
     } else if is_point_tool(tool) {
         Some((Gesture::Point, Vec::new()))
     } else {
@@ -250,11 +272,11 @@ fn begin(app: &mut PhotocraftApp, p: [f64; 2], mods: egui::Modifiers) {
         // A guide never snaps to itself (or other guides).
         targets = targets.filtered(|k| k != SnapKind::Guide);
     }
-    if matches!(gesture, Gesture::SelectionMove { .. }) {
+    if matches!(gesture, Gesture::SelectionMove { .. }) || (matches!(gesture, Gesture::Move { .. }) && crate::move_ui::moves_selected_pixels_with(app, tool)) {
         // A moving selection never snaps back to where it started.
         targets = targets.filtered(|k| k != SnapKind::Selection);
     }
-    let smart = if matches!(gesture, Gesture::Move { .. }) && smart_on(app) { build(app, &exclude, true) } else { SnapTargets::default() };
+    let smart = if snap_on(app) && matches!(gesture, Gesture::Move { .. }) && smart_on(app) { build(app, &exclude, true) } else { SnapTargets::default() };
     app.prefs_rt.snap = Some(ActiveSnap { gesture, start: p, targets, smart, disabled: false });
 }
 
@@ -282,7 +304,7 @@ fn pixel_round(app: &PhotocraftApp, p: [f64; 2]) -> [f64; 2] {
 fn apply(app: &mut PhotocraftApp, p: [f64; 2], mods: egui::Modifiers) -> [f64; 2] {
     let tol = tolerance(app);
     let Some(snap) = app.prefs_rt.snap.as_ref() else { return p };
-    if snap.disabled {
+    if !snap_on(app) || snap.disabled {
         app.prefs_rt.snap_lines.clear();
         return p;
     }
@@ -485,7 +507,8 @@ pub fn snap_guide(app: &mut PhotocraftApp, vertical: bool, pos: f64) -> f64 {
         return pos;
     }
     let Some(st) = app.session.active() else { return pos };
-    let key = (st.doc.id, st.revision);
+    // The Snap To options (grid, layers, document bounds, grid step) change the targets too.
+    let key = (st.doc.id, st.revision, options(app));
     if app.prefs_rt.guide_targets.as_ref().is_none_or(|(k, _)| *k != key) {
         let t = build(app, &[], false).filtered(|k| k != SnapKind::Guide);
         app.prefs_rt.guide_targets = Some((key, t));
@@ -499,10 +522,15 @@ fn hex_color(s: &str, fallback: Color32) -> Color32 {
     photocraft_engine::prefs::parse_hex(s).map_or(fallback, |c| Color32::from_rgb(c[0], c[1], c[2]))
 }
 
+/// The Smart Guides colour from Preferences › Guides, Grid & Slices (magenta by default).
+pub(crate) fn smart_color(app: &PhotocraftApp) -> Color32 {
+    hex_color(&app.session.prefs().guides_grid_and_slices.smart_guide_color, Color32::from_rgb(255, 0, 255))
+}
+
 /// Draw smart guides (and the moving bounds) for the drag in progress.
 pub fn draw(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform) {
     let Some(snap) = &app.prefs_rt.snap else { return };
-    let smart_color = hex_color(&app.session.prefs().guides_grid_and_slices.smart_guide_color, Color32::from_rgb(255, 0, 255));
+    let smart_color = smart_color(app);
     // The moved layers' bounds follow the Move tool (Free Transform draws its own box).
     if let (Gesture::Move { rect }, Some(d)) =
         (&snap.gesture, app.drag.as_ref().and_then(|d| d.points.last()).map(|p| [p[0] - snap.start[0], p[1] - snap.start[1]]))
@@ -553,6 +581,43 @@ mod tests {
         app.run("edit.fill", json!({"color": "#0000ff"})).unwrap();
         app.run("select.deselect", json!({})).unwrap();
         app
+    }
+
+    /// #7538: moving selected pixels snaps (and frames) the pixels, not a loose marquee round them.
+    /// Snapping starts before the press cuts them, so the cut retargets it to their outline.
+    #[test]
+    fn moving_selected_pixels_snaps_their_bounds_not_the_marquee() {
+        for alt in [false, true] {
+            let mut app = app_with_box();
+            app.ui.tool = Tool::Move;
+            app.run("select.rect", json!({"x": 20, "y": 20, "width": 100, "height": 90})).unwrap();
+            let m = egui::Modifiers { alt, ..Default::default() };
+            crate::canvas::tool_event(&mut app, ToolEvent::Down { x: 60.0, y: 60.0, pressure: 1.0 }, m);
+            let gesture = app.prefs_rt.snap.as_ref().map(|s| s.gesture.clone());
+            assert_eq!(gesture, Some(Gesture::Move { rect: [40.0, 40.0, 90.0, 80.0] }), "alt {alt}: the blue box, not the marquee");
+            // 263 px right puts the box's left edge 3 px from the target's (the marquee's 20 px off).
+            crate::canvas::tool_event(&mut app, ToolEvent::Move { x: 323.0, y: 100.0, pressure: 1.0 }, m);
+            crate::canvas::tool_event(&mut app, ToolEvent::Up { x: 323.0, y: 100.0 }, m);
+            app.run("select.drop", json!({})).unwrap();
+            let sel = app.session.active().unwrap().doc.selection.as_ref().map(|s| s.content_bounds().x0);
+            assert_eq!(sel, Some(300), "alt {alt}: snapped to the target's edge");
+        }
+        // A marquee's ⌘-drag cuts them the same way.
+        let mut app = app_with_box();
+        app.ui.tool = Tool::RectMarquee;
+        app.run("select.rect", json!({"x": 20, "y": 20, "width": 100, "height": 90})).unwrap();
+        let cmd = egui::Modifiers { mac_cmd: true, command: true, ..Default::default() };
+        crate::canvas::tool_event(&mut app, ToolEvent::Down { x: 60.0, y: 60.0, pressure: 1.0 }, cmd);
+        let gesture = app.prefs_rt.snap.as_ref().map(|s| s.gesture.clone());
+        assert_eq!(gesture, Some(Gesture::SelectionMove { rect: [40.0, 40.0, 90.0, 80.0] }), "⌘-drag with the marquee");
+        // The Background has no transparency to shrink to.
+        let mut app = app_with_box();
+        app.ui.tool = Tool::Move;
+        app.run("layer.select", json!({"name": "Background"})).unwrap();
+        app.run("select.rect", json!({"x": 20, "y": 20, "width": 100, "height": 90})).unwrap();
+        crate::canvas::tool_event(&mut app, ToolEvent::Down { x: 60.0, y: 60.0, pressure: 1.0 }, egui::Modifiers::NONE);
+        let gesture = app.prefs_rt.snap.as_ref().map(|s| s.gesture.clone());
+        assert_eq!(gesture, Some(Gesture::Move { rect: [20.0, 20.0, 120.0, 110.0] }), "the Background");
     }
 
     fn mover_bounds(app: &PhotocraftApp) -> photocraft_geom::Rect {
@@ -654,6 +719,19 @@ mod tests {
     }
 
     #[test]
+    fn view_snap_off_blocks_smart_guide_snapping() {
+        let mut app = app_with_box();
+        app.ui.tool = Tool::Move;
+        app.ui.view.show.smart_guides = true;
+        app.ui.extras.snap = false;
+        app.ui.tool_options.move_auto_select = false;
+        let m = egui::Modifiers::NONE;
+        crate::canvas::tool_event(&mut app, ToolEvent::Down { x: 60.0, y: 60.0, pressure: 1.0 }, m);
+        crate::canvas::tool_event(&mut app, ToolEvent::Up { x: 323.0, y: 100.0 }, m);
+        assert_eq!(mover_bounds(&app).x0, 303, "View › Snap off must not snap via smart guides");
+    }
+
+    #[test]
     fn ctrl_or_snap_off_disables_snapping() {
         let mut app = app_with_box();
         app.ui.tool = Tool::Move;
@@ -678,6 +756,20 @@ mod tests {
         // ⌘ on the Mac is not the override.
         let cmd = egui::Modifiers { mac_cmd: true, command: true, ..Default::default() };
         assert!(!override_held(cmd) && override_held(ctrl));
+    }
+
+    #[test]
+    fn snap_off_disables_all_snapping_even_with_smart_guides() {
+        let mut app = app_with_box();
+        app.ui.tool = Tool::Move;
+        assert!(app.ui.view.show.smart_guides);
+        app.ui.extras.snap = false;
+        app.ui.tool_options.move_auto_select = false;
+        let m = egui::Modifiers::NONE;
+        crate::canvas::tool_event(&mut app, ToolEvent::Down { x: 60.0, y: 60.0, pressure: 1.0 }, m);
+        crate::canvas::tool_event(&mut app, ToolEvent::Up { x: 323.0, y: 100.0 }, m);
+        assert_eq!(mover_bounds(&app).x0, 303);
+        assert!(app.prefs_rt.snap_lines.is_empty());
     }
 
     #[test]
@@ -1141,8 +1233,33 @@ mod tests {
         assert_eq!(snap_guide(&mut app, true, 297.0), 300.0);
         assert_eq!(snap_guide(&mut app, false, 150.0), 150.0, "document centre");
         assert_eq!(snap_guide(&mut app, false, 170.0), 170.0);
+        // Dragging an existing guide with the Move tool while a selection is active still snaps to the selection.
+        app.run("view.newGuide", json!({"orientation": "vertical", "position": 10})).unwrap();
+        app.run("select.rect", json!({"x": 100, "y": 100, "width": 50, "height": 40})).unwrap();
+        app.ui.tool = Tool::Move;
+        begin(&mut app, [10.0, 50.0], egui::Modifiers::NONE);
+        assert_eq!(apply(&mut app, [98.0, 50.0], egui::Modifiers::NONE)[0], 100.0);
         app.ui.extras.snap = false;
         assert_eq!(snap_guide(&mut app, true, 297.0), 297.0);
+    }
+
+    /// The cached ruler-guide targets follow the Snap To options, not just document edits.
+    #[test]
+    fn guide_targets_follow_snap_to_options() {
+        let mut app = app_with_box();
+        app.run(
+            "prefs.set",
+            json!({"values": {"guidesGridAndSlices.gridlineEvery": 100, "guidesGridAndSlices.gridUnit": "pixels", "guidesGridAndSlices.subdivisions": 4}}),
+        )
+        .unwrap();
+        app.ui.extras.grid = false;
+        assert_eq!(snap_guide(&mut app, true, 23.0), 23.0, "grid hidden");
+        app.ui.extras.grid = true;
+        app.ui.view.snap_to.grid = true;
+        assert_eq!(snap_guide(&mut app, true, 23.0), 25.0, "grid shown");
+        app.ui.extras.grid = false;
+        app.ui.view.snap_to.layers = false;
+        assert_eq!(snap_guide(&mut app, true, 297.0), 297.0, "Snap To Layers off");
     }
 
     #[test]

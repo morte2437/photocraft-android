@@ -120,6 +120,29 @@ pub fn read_sample(bytes: &[u8], sample: SampleType, index: usize) -> f32 {
     }
 }
 
+/// [`read_sample`] for the `out.len()` samples from sample index `start` on, matching the sample
+/// type once instead of per sample.
+pub fn read_samples(bytes: &[u8], sample: SampleType, start: usize, out: &mut [f32]) {
+    let end = start + out.len();
+    match sample {
+        SampleType::U8 => {
+            for (o, b) in out.iter_mut().zip(&bytes[start..end]) {
+                *o = *b as f32 / 255.0;
+            }
+        }
+        SampleType::U16 => {
+            for (o, b) in out.iter_mut().zip(bytes[start * 2..end * 2].as_chunks::<2>().0) {
+                *o = u16::from_ne_bytes(*b) as f32 / 65535.0;
+            }
+        }
+        SampleType::F32 => {
+            for (o, b) in out.iter_mut().zip(bytes[start * 4..end * 4].as_chunks::<4>().0) {
+                *o = f32::from_ne_bytes(*b);
+            }
+        }
+    }
+}
+
 /// Write a normalised f32 sample; integer types are clamped and rounded.
 #[inline]
 pub fn write_sample(bytes: &mut [u8], sample: SampleType, index: usize, v: f32) {

@@ -106,6 +106,7 @@ testgen::{all_cases, merged_only, layered, small, sample_descriptor, pattern_pla
 | PSB 8-byte-length keys | ✓ | ✓ | – | LMsk Lr16 Lr32 Layr Mt16 Mt32 Mtrn Alph FMsk lnk2 FEid FXid PxSD |
 | Lr16 / Lr32 / Layr layer info | ✓ | ✓ | ✓ | lifted into `layer_info`; re-inserted at its original position |
 | luni lsct lsdk lyid lnsr clbl infx knko lspf lclr iOpa shmd | ✓ | ✓ | ✓ | `TaggedBlock::parsed()` |
+| Layer XMP (`shmd` › `cust` › `layerXMP`) | ✓ | ✓ | ✓ | `metadata::layer_xmp` / `take_layer_xmp` / `put_layer_xmp`, laid out as Photoshop 2026 writes it |
 | ActionDescriptor (all OSTypes) | ✓ | ✓ | ✓ | including references, `ObAr` (best effort), `UnFl`, `Pth `, version-16 wrapper |
 | Layer tree (groups) | ✓ | ✓ | ✓ | open/closed folders plus bounding dividers; tolerant of malformed nesting |
 | RGBA8 extraction | ✓ | – | – | RGB / gray / CMYK layers; merged image also supports indexed / bitmap / duotone |
@@ -144,7 +145,7 @@ allocations for padded channels return an error on failure.
 * Builder → `rgba8` correctness.
 * Unknown blend modes and unknown blocks pass through unchanged.
 
-`tests/corpus.rs` walks `corpus/psd/**/*.{psd,psb}` at the workspace root when that directory exists. For each file it asserts that parsing succeeds and the file round-trips byte for byte, and it prints a result per file. Without the directory it skips silently.
+`tests/it/corpus.rs` walks `corpus/psd/**/*.{psd,psb}` at the workspace root when that directory exists. For each file it asserts that parsing succeeds and the file round-trips byte for byte, and it prints a result per file. Without the directory it skips silently.
 
 A `cargo-fuzz` skeleton lives in `fuzz/`. It is its own workspace and is excluded from photocraft's. Run it with `cargo +nightly fuzz run parse` (or `descriptor`) from `crates/psd`.
 

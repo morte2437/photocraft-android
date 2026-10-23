@@ -447,11 +447,15 @@ fn saves_run_in_the_background_and_are_recorded_when_they_end() {
     let st = h.state().session.active().unwrap();
     assert!(st.is_dirty() && st.path.is_none());
     assert!(h.state_mut().run("layer.new.layer", json!({})).is_err(), "the saving document is locked");
-    // The progress dialog names the save and shows its stage; the status bar reads "Saving 0%"
-    // until the encoder reports progress (#3389).
-    assert_eq!(h.query_all_by_label("Saving big.psd").count(), 1);
-    h.get_by_label("Encoding");
+    // Save in Background is on by default: no modal dialog, so the rest of the app stays usable
+    // (#6207); the status bar reads "Saving 0%" until the encoder reports progress (#3389).
+    assert!(h.query_by_label("Esc to cancel").is_none() && h.query_by_label("Encoding").is_none(), "no progress dialog");
     h.get_by_label("Saving 0%");
+    assert!(crate::jobs_ui::foreground_save(h.state()).is_none());
+    h.state_mut().ui.tool = crate::state::Tool::Move;
+    h.key_press(egui::Key::B);
+    h.run_steps(2);
+    assert_eq!(h.state().ui.tool, crate::state::Tool::Brush, "shortcuts still work while it saves");
 
     gates.encode.store(true, Ordering::Relaxed);
     step_until(&mut h, |a| !a.saving());
@@ -463,6 +467,86 @@ fn saves_run_in_the_background_and_are_recorded_when_they_end() {
     assert_eq!(h.state().ui.status, "Saved big.psd: a warning");
     assert!(noticed(h.state(), "a warning"), "the export warnings are shown");
     assert!(h.state_mut().run("layer.new.layer", json!({})).is_ok(), "unlocked again");
+}
+
+/// Save in Background off (#6207): the same worker writes the file, but the app waits for it
+/// like Photoshop's foreground save. The progress dialog shows at once, shortcuts don't reach the
+/// app, and a close asked for meanwhile happens only once the file is complete.
+#[test]
+fn save_in_background_off_blocks_the_app_until_the_file_is_written() {
+    let mut h = app_harness();
+    h.state_mut().run("prefs.set", json!({"path": "fileHandling.saveInBackground", "value": false})).unwrap();
+    let gates = Gates { write: Arc::new(AtomicBool::new(true)), ..Gates::default() };
+    h.state_mut().services.save_file = Some(gates.save(None));
+    h.state_mut().ui.tool = crate::state::Tool::Move;
+    let r = h.state_mut().save_as(Some("/tmp/photocraft-test/fg.psd".into())).unwrap();
+    assert_eq!(r["pending"], true, "the same background job does the work");
+    h.run_steps(1);
+    // The dialog is up from the first frame (no delay), titled with the save, then its stage.
+    h.get_by_label("Saving fg.psd");
+    h.get_by_label("Esc to cancel");
+    let t = Instant::now();
+    while h.query_by_label("Encoding").is_none() && t.elapsed() < Duration::from_secs(30) {
+        h.step();
+    }
+    h.get_by_label("Encoding");
+    assert!(crate::jobs_ui::foreground_save(h.state()).is_some());
+    h.key_press(egui::Key::B);
+    h.run_steps(2);
+    assert_eq!(h.state().ui.tool, crate::state::Tool::Move, "no shortcut reaches the app while it saves");
+    assert!(h.state_mut().run("layer.new.layer", json!({})).is_err(), "the saving document is locked");
+    // Quitting now waits for the file.
+    let st = h.state_mut().session.active_mut().unwrap();
+    st.saved_revision = st.revision;
+    assert!(press_window_close(h.state_mut()), "the close waits for the save");
+    assert!(h.state().jobs.close_after_saves);
+
+    gates.encode.store(true, Ordering::Relaxed);
+    let t = Instant::now();
+    while h.state().jobs.close_after_saves && t.elapsed() < Duration::from_secs(30) {
+        h.step();
+        if h.state().jobs.close_after_saves {
+            assert!(h.query_by_label("Esc to cancel").is_some(), "the dialog stays up until the save ends");
+        }
+    }
+    assert_eq!(gates.written(), ["/tmp/photocraft-test/fg.psd"], "the file is complete before the close goes on");
+    assert!(!h.state().jobs.close_after_saves, "then the held close is repeated");
+    h.run_steps(2);
+    assert!(h.query_by_label("Esc to cancel").is_none(), "the dialog is gone");
+    let st = h.state().session.active().unwrap();
+    assert_eq!(st.path.as_deref(), Some("/tmp/photocraft-test/fg.psd"));
+    assert!(!st.is_dirty());
+    h.key_press(egui::Key::B);
+    h.run_steps(2);
+    assert_eq!(h.state().ui.tool, crate::state::Tool::Brush, "shortcuts work again");
+}
+
+/// A failing foreground save reports its error, closes its dialog and leaves the document
+/// unsaved, as a background one does; Esc still cancels one that is encoding.
+#[test]
+fn a_failed_or_cancelled_foreground_save_leaves_the_document_unsaved() {
+    let mut h = app_harness();
+    h.state_mut().run("prefs.set", json!({"path": "fileHandling.saveInBackground", "value": false})).unwrap();
+    let gates = Gates::open();
+    h.state_mut().services.save_file = Some(gates.save(Some("disk full")));
+    h.state_mut().save_as(Some("/tmp/photocraft-test/f.psd".into())).unwrap();
+    step_until(&mut h, |a| !a.saving());
+    let st = h.state().session.active().unwrap();
+    assert!(st.is_dirty() && st.path.is_none());
+    assert!(noticed(h.state(), "disk full"), "the failure is reported");
+    assert!(h.query_by_label("Esc to cancel").is_none(), "the dialog is gone");
+
+    gates.encode.store(false, Ordering::Relaxed);
+    h.state_mut().services.save_file = Some(gates.save(None));
+    h.state_mut().save_as(Some("/tmp/photocraft-test/g.psd".into())).unwrap();
+    h.run_steps(2);
+    h.key_press(egui::Key::Escape);
+    step_until(&mut h, |a| !a.saving());
+    assert!(gates.written().is_empty(), "nothing written");
+    let st = h.state().session.active().unwrap();
+    assert!(st.is_dirty() && st.path.is_none());
+    assert_eq!(h.state().ui.status, "Cancelled Saving g.psd");
+    assert!(crate::jobs_ui::foreground_save(h.state()).is_none());
 }
 
 #[test]
@@ -784,6 +868,60 @@ fn esc_cancels_a_background_free_transform_commit() {
     assert_eq!(st.doc.layers.len(), before.layers.len());
 }
 
+/// Warp the active layer into an arc, then ↩.
+fn warp_and_commit(h: &mut Harness<'static, PhotocraftApp>) {
+    let ctx = h.ctx.clone();
+    let app = h.state_mut();
+    crate::transform_tool::begin(app, &ctx).unwrap();
+    let t = app.ui.transform.as_mut().unwrap();
+    t.warp = Some(photocraft_geom::warp::Warp::preset(photocraft_geom::warp::WarpStyle::Arc, 40.0, t.rect));
+    crate::transform_tool::commit(app);
+}
+
+#[test]
+fn a_warp_commit_runs_in_the_background_and_keeps_its_preview() {
+    let mut h = app_harness();
+    let steps = h.state().session.active().unwrap().history.past_len();
+    warp_and_commit(&mut h);
+    let app = h.state();
+    let job = crate::transform_tool::committing(app).expect("the commit runs as a job");
+    assert!(app.session.job(job).is_some_and(|j| j.label == "Warp"));
+    assert!(app.ui.transform.is_some() && app.transform_preview.is_some());
+    assert_eq!(h.state_mut().run("edit.undo", json!({})).err().as_deref(), Some("Warp is still being applied"));
+    let t = Instant::now();
+    while h.state().session.has_jobs() && t.elapsed() < Duration::from_secs(10) {
+        h.step();
+    }
+    h.run_steps(2);
+    let app = h.state();
+    assert!(app.ui.transform.is_none() && app.transform_preview.is_none(), "the session ends with the job");
+    let st = app.session.active().unwrap();
+    assert_eq!(st.history.past_len(), steps + 1);
+    assert_eq!(st.history.undo_label(), Some("Warp"));
+    // The arc bulges the layer past its old edges.
+    let b = st.doc.layer(st.active_layer.unwrap()).unwrap().surface().unwrap().content_bounds();
+    assert_ne!(b, photocraft_geom::Rect::new(0, 0, 320, 240), "the layer was warped");
+}
+
+#[test]
+fn esc_cancels_a_background_warp_commit() {
+    let mut h = app_harness();
+    let steps = h.state().session.active().unwrap().history.past_len();
+    let before = h.state().session.active().unwrap().doc.clone();
+    warp_and_commit(&mut h);
+    let job = crate::transform_tool::committing(h.state()).expect("the commit runs as a job");
+    crate::transform_tool::cancel(h.state_mut());
+    h.run_steps(3);
+    let app = h.state();
+    assert!(app.session.job(job).is_none());
+    assert!(app.ui.transform.is_none() && app.transform_preview.is_none());
+    let st = app.session.active().unwrap();
+    assert_eq!(st.history.past_len(), steps);
+    let id = st.active_layer.unwrap();
+    let px = |d: &photocraft_doc::Document| d.layer(id).unwrap().surface().unwrap().read_region(photocraft_geom::Rect::new(0, 0, 320, 240));
+    assert_eq!(px(&st.doc), px(&before), "the layer is untouched");
+}
+
 /// #4559: a background open (the desktop app's) also warns, when its document arrives, about
 /// type in a font that isn't installed.
 #[test]
@@ -795,7 +933,161 @@ fn background_open_warns_about_missing_fonts() {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     // What the open job leaves behind: the decoded document in the session, then its result.
     let (index, _) = app.session.open_document(doc, None);
-    super::finish_open(&mut app, "poster.psd", None, &json!({"document": index, "warnings": []}), None).unwrap();
+    let id = app.session.documents()[index].doc.id;
+    super::finish_open(&mut app, "poster.psd", None, &json!({"document": index, "docId": id.0, "warnings": []}), None).unwrap();
     let want = vec!["font 'NoSuchFamily4559' is not installed; text may render using a fallback face".to_string()];
     assert!(app.ui.notices.last().is_some_and(|n| n.title.contains("poster.psd") && n.lines == want), "{:?}", app.ui.notices);
+}
+
+fn identity_app() -> PhotocraftApp {
+    let mut session = photocraft_engine::Session::new();
+    session.execute("file.new", json!({"width": 8, "height": 6})).unwrap();
+    session.execute("layer.new.layer", json!({})).unwrap();
+    session.execute("edit.fill", json!({"color": "#336699"})).unwrap();
+    session.active_mut().unwrap().path = Some("accepted-control.pcraft".into());
+    assert!(session.active().unwrap().is_dirty());
+    PhotocraftApp::new(session, crate::Services::default())
+}
+
+fn identity_png(profile: Option<photocraft_cms::Builtin>) -> Vec<u8> {
+    let app = identity_app();
+    let mut doc = (*app.session.active().unwrap().doc).clone();
+    doc.icc_profile = profile.map(|profile| profile.profile().to_bytes());
+    photocraft_io::export(&doc, "synthetic.png", &Default::default()).unwrap().bytes
+}
+
+/// Complete the real decoder/apply path without delivering its result to the UI yet. This is
+/// the same boundary as a poll that applies all ready jobs before handling their UI events.
+fn completed_identity_open(app: &mut PhotocraftApp, name: &str, bytes: Vec<u8>) -> Value {
+    match app.session.start_open(name, photocraft_engine::jobs::OpenSource::Bytes(Arc::new(bytes))).unwrap() {
+        Started::Done(result) => result,
+        Started::Job(job) => app.session.wait_job(job).unwrap(),
+    }
+}
+
+struct IdentityControl {
+    doc: Arc<photocraft_doc::Document>,
+    path: Option<String>,
+    revision: u64,
+    saved_revision: u64,
+    history: usize,
+    redo: bool,
+}
+
+impl IdentityControl {
+    fn capture(app: &PhotocraftApp) -> Self {
+        let state = app.session.active().unwrap();
+        Self {
+            doc: state.doc.clone(),
+            path: state.path.clone(),
+            revision: state.revision,
+            saved_revision: state.saved_revision,
+            history: state.history.past_len(),
+            redo: state.history.can_redo(),
+        }
+    }
+
+    fn assert_untouched(&self, app: &PhotocraftApp) {
+        let state = app.session.documents().iter().find(|state| state.doc.id == self.doc.id).expect("the accepted control remains open");
+        assert!(Arc::ptr_eq(&state.doc, &self.doc), "the accepted control's pixels and document data must not change");
+        assert_eq!(state.path, self.path, "an import must not rebind another document's save path");
+        assert_eq!(
+            (state.revision, state.saved_revision, state.history.past_len(), state.history.can_redo()),
+            (self.revision, self.saved_revision, self.history, self.redo)
+        );
+        assert!(state.is_dirty(), "the unrelated document must still need saving");
+    }
+}
+
+/// Exercise the consumer separately from the engine result-schema regression: the identity is
+/// observed from the real imported document, then supplied even on the old producer.
+fn identified_result(app: &PhotocraftApp, mut result: Value) -> (Value, photocraft_doc::DocId) {
+    let id = app.session.documents()[result["document"].as_u64().unwrap() as usize].doc.id;
+    result["docId"] = json!(id.0);
+    (result, id)
+}
+
+#[test]
+fn open_identity_survives_tab_reordering() {
+    let mut app = identity_app();
+    let control = IdentityControl::capture(&app);
+    let result = completed_identity_open(&mut app, "imported.png", identity_png(None));
+    let (result, imported) = identified_result(&app, result);
+    let old_index = result["document"].as_u64().unwrap() as usize;
+    app.session.move_document(old_index, 0).unwrap();
+    assert_eq!(app.session.documents()[old_index].doc.id, control.doc.id);
+    super::finish_open(&mut app, "imported.png", Some("imported.png"), &result, None).unwrap();
+    control.assert_untouched(&app);
+    assert_eq!(app.session.active().unwrap().doc.id, imported);
+    assert_eq!(app.session.active().unwrap().path.as_deref(), Some("imported.png"));
+}
+
+#[test]
+fn open_identity_survives_an_earlier_tab_closing() {
+    let mut app = identity_app();
+    let control = IdentityControl::capture(&app);
+    app.session.execute("file.new", json!({"width": 2, "height": 2})).unwrap();
+    let result = completed_identity_open(&mut app, "imported.png", identity_png(None));
+    let (result, imported) = identified_result(&app, result);
+    app.session.close(1).unwrap();
+    app.session.set_active(0);
+    super::finish_open(&mut app, "imported.png", Some("imported.png"), &result, Some(0)).unwrap();
+    control.assert_untouched(&app);
+    assert_eq!(app.session.active().unwrap().doc.id, imported);
+    assert_eq!(app.session.documents()[0].doc.id, imported, "the requested destination slot applies to the correct document");
+}
+
+#[test]
+fn open_identity_rejects_closed_missing_and_invalid_identities() {
+    for identity in [None, Some(Value::Null), Some(json!("not-an-id")), Some(json!(-1)), Some(json!(u64::MAX)), Some(json!(1.5))] {
+        let mut app = identity_app();
+        let control = IdentityControl::capture(&app);
+        let result = completed_identity_open(&mut app, "closed.png", identity_png(None));
+        let (mut result, imported) = identified_result(&app, result);
+        app.session.close(result["document"].as_u64().unwrap() as usize).unwrap();
+        // A reused/stale index must never become permission to finish another document.
+        result["document"] = json!(0);
+        match identity {
+            None => {
+                result.as_object_mut().unwrap().remove("docId");
+            }
+            Some(value) => result["docId"] = value,
+        }
+        assert!(super::finish_open(&mut app, "closed.png", Some("closed.png"), &result, Some(0)).is_err(), "invalid identity was accepted: {result}");
+        control.assert_untouched(&app);
+        assert_eq!(app.session.active().unwrap().doc.id, control.doc.id);
+        assert_eq!(app.session.documents().len(), 1);
+        result["docId"] = json!(imported.0);
+        assert!(
+            super::finish_open(&mut app, "closed.png", Some("closed.png"), &result, None).is_err(),
+            "a closed identity must not fall back to the old tab index"
+        );
+        control.assert_untouched(&app);
+    }
+}
+
+#[test]
+fn open_identity_keeps_same_poll_results_in_the_profile_queue() {
+    let mut app = identity_app();
+    let control = IdentityControl::capture(&app);
+    app.session.execute("edit.colorSettings", json!({"askOnMismatch": true, "askOnMissing": false, "policyRgb": "preserve"})).unwrap();
+    let mismatched = identity_png(photocraft_cms::Builtin::from_id("adobe-rgb-compat"));
+    let prompt = completed_identity_open(&mut app, "profile.png", mismatched);
+    assert!(prompt["held"].as_u64().is_some());
+    let first = completed_identity_open(&mut app, "first.png", identity_png(None));
+    let (first, first_id) = identified_result(&app, first);
+    let second = completed_identity_open(&mut app, "second.png", identity_png(None));
+    let (second, second_id) = identified_result(&app, second);
+    // All engine applies have finished. Handling the first ordinary result removes its tab,
+    // shifting the second result before its UI callback runs.
+    super::finish_open(&mut app, "profile.png", Some("profile.png"), &prompt, None).unwrap();
+    super::finish_open(&mut app, "first.png", Some("first.png"), &first, None).unwrap();
+    super::finish_open(&mut app, "second.png", Some("second.png"), &second, None).unwrap();
+    assert_eq!(app.held_opens.iter().map(|held| held.name.as_str()).collect::<Vec<_>>(), ["profile.png", "first.png", "second.png"]);
+    assert_eq!(app.held_opens.iter().skip(1).map(|held| held.doc.id).collect::<Vec<_>>(), [first_id, second_id]);
+    assert_eq!(app.session.documents().len(), 1, "both completed imports wait behind the profile prompt");
+    control.assert_untouched(&app);
+    assert_eq!(crate::open_prompt::answer(&mut app, None).unwrap()["cancelled"], 3);
+    assert!(app.held_opens.is_empty());
+    control.assert_untouched(&app);
 }

@@ -20,8 +20,8 @@ pub fn services(bridge: Arc<Bridge>, files_dir: &Path) -> Services {
     let prefs_w = prefs.clone();
     let (b_dialog, b_save, b_write, b_quit) = (bridge.clone(), bridge.clone(), bridge.clone(), bridge);
     Services {
-        import: Some(Box::new(|name: &str, bytes: &[u8], max_svg_group_depth: usize| {
-            photocraft_io::import_with_svg_group_depth(name, bytes, max_svg_group_depth).map(|r| (r.document, r.warnings)).map_err(|e| e.to_string())
+        import: Some(Box::new(|name: &str, bytes: &[u8], opts: &photocraft_io::ImportOptions| {
+            photocraft_io::import_with_options(name, bytes, opts).map(|r| (r.document, r.warnings)).map_err(|e| e.to_string())
         })),
         export: Some(Box::new(|doc: &Document, path: &str, settings: &photocraft_ui_egui::ExportSettings| {
             photocraft_io::export(doc, path, &export_options(settings)).map(|r| (r.bytes, r.warnings)).map_err(|e| e.to_string())

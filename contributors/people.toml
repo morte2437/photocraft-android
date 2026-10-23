@@ -17,6 +17,13 @@
 # To remove your names, delete your entry (or set fields empty) in a PR. The next
 # contributors.py run, and the next build, drop them.
 
+[people.brianblakely]
+sync_github_name = true
+
+[people.abdul-karim-mia]
+real_name = "Abdul karim mia"
+sync_github_name = false
+
 [people.jonathanwxh-cell]
 display_name = "jonathnwxh"
 sync_github_name = false
@@ -116,6 +123,9 @@ sync_github_name = false
 [people.axlecoffee]
 sync_github_name = true
 
+[people.zi-ger]
+sync_github_name = true
+
 [people.Losminek]
 sync_github_name = true
 
@@ -166,6 +176,9 @@ sync_github_name = true
 real_name = "Sidney Markowitz"
 sync_github_name = true
 
+[people.theoabw]
+real_name = "Theo Wilenius"
+
 [people.TaylorBurke]
 sync_github_name = true
 
@@ -181,3 +194,60 @@ sync_github_name = true
 
 [people.00xJS]
 sync_github_name = true
+
+[people.guillehr2]
+real_name = "Guillem Hermida"
+sync_github_name = true
+
+[people.fjamesprice]
+sync_github_name = true
+
+[people.ha1des]
+sync_github_name = true
+
+[people.webdevtodayjason]
+display_name = "Jason Brashear"
+
+[people.AndreeSalazar]
+real_name = "Andreé Salazar"
+sync_github_name = true
+
+[people.LorenzoFasolino]
+real_name = "Lorenzo Fasolino"
+display_name = "Lorenzo Fasolino"
+sync_github_name = false
+
+[people.zolyy]
+real_name = "Gall Zoltan"
+sync_github_name = false
+
+[people.theshubh77]
+real_name = "Shubham Bhamare"
+sync_github_name = true
+
+[people.ksaxena149]
+sync_github_name = true
+
+[people.giang17]
+real_name = "Giang Nguyen"
+sync_github_name = true
+
+[people.aqibmohd271]
+sync_github_name = true
+
+[people.marcoarnulfo]
+real_name = "Marco Arnulfo"
+display_name = "Marco Arnulfo"
+sync_github_name = false
+
+[people.Gotix-eg]
+real_name = "Ahmed Tammam"
+display_name = "Gotix"
+sync_github_name = true
+
+[people.adi-1108]
+real_name = "Aditya Vishwakarma"
+sync_github_name = true
+
+[people.benandez]
+real_name = "Martin Ball"

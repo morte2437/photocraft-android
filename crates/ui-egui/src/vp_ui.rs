@@ -438,18 +438,24 @@ pub fn escape(app: &mut PhotocraftApp) {
     }
 }
 
-pub fn draw(s: &VpSession, painter: &egui::Painter, xf: &ViewXform) {
+/// The paste on its plane: image content, drawn under the grid and guides like the document so a
+/// guide stays visible across it (#7781). The planes and their grids are [`draw`].
+pub fn draw_content(s: &VpSession, painter: &egui::Painter, xf: &ViewXform) {
     let scr = |p: [f64; 2]| xf.to_screen(p[0] as f32, p[1] as f32);
-    let tokens = crate::theme::Tokens::get(painter.ctx());
-    let center = s.center();
-    // The paste first, under the grids.
     if let Some(i) = s.paste_plane()
-        && s.planes.get(i).is_some_and(|p| p.check(center) != PlaneCheck::Invalid)
+        && s.planes.get(i).is_some_and(|p| p.check(s.center()) != PlaneCheck::Invalid)
         && let (Some((h, lu, lv)), Some(c)) = (s.frame(i), s.clip.as_ref())
         && let Some(ext) = s.paste_extent(lu, lv)
     {
         draw_paste(painter, &scr, &h, s.paste_at, ext, &c.texture);
     }
+}
+
+/// The planes, their grids and nodes over the paste ([`draw_content`]) and the guides.
+pub fn draw(s: &VpSession, painter: &egui::Painter, xf: &ViewXform) {
+    let scr = |p: [f64; 2]| xf.to_screen(p[0] as f32, p[1] as f32);
+    let tokens = crate::theme::Tokens::get(painter.ctx());
+    let center = s.center();
     for (i, p) in s.planes.iter().enumerate() {
         let check = p.check(center);
         let colour = match check {

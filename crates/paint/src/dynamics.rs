@@ -29,8 +29,8 @@ const MAX_AIRBRUSH_DABS_PER_SEGMENT: usize = 512;
 
 /// The dab centre of the pixel-grid cell holding `v` (see [`PathWalker::pixel_grid`]): the
 /// pixel's centre for `offset` 0.5, the nearest pixel corner for 0. A value within rounding
-/// noise of a cell boundary counts as on it, so a line lands on the same pixels both ways.
-fn grid_cell(v: f64, offset: f64) -> f64 {
+/// noise of a cell boundary counts as on it, so snapping and line stepping agree.
+pub(crate) fn grid_cell(v: f64, offset: f64) -> f64 {
     let w = v - offset + 0.5;
     let w = if (w - w.round()).abs() < 1e-7 { w.round() } else { w };
     w.floor() + offset
@@ -74,6 +74,18 @@ fn pull(brush: &StrokePoint, p: &StrokePoint, f: f64) -> StrokePoint {
         wheel: brush.wheel + (p.wheel - brush.wheel) * ff,
         time: p.time,
     }
+}
+
+/// Does the brush's pose (pressure, tilt, rotation, wheel) differ from `p`'s by more than `eps`?
+/// [`pull`] moves the pose with the position, so a pen that only changes pressure or tilt in place
+/// leaves the brush behind too (#7747).
+fn pose_differs(brush: &StrokePoint, p: &StrokePoint, eps: f32) -> bool {
+    let dr = (p.rotation - brush.rotation + 540.0).rem_euclid(360.0) - 180.0;
+    (p.pressure - brush.pressure).abs() > eps
+        || (p.tilt_x - brush.tilt_x).abs() > eps
+        || (p.tilt_y - brush.tilt_y).abs() > eps
+        || dr.abs() > eps
+        || (p.wheel - brush.wheel).abs() > eps
 }
 
 /// Incremental stroke smoothing: exponential (with optional time-based catch-up) or pulled string.
@@ -153,7 +165,7 @@ impl Smoother {
     /// stroke needs time to keep passing (repeats of the last point) while the pointer is held.
     pub fn lagging(&self) -> bool {
         match (self.active() && self.cfg.catch_up && !self.cfg.pulled_string, self.pos, self.last_input) {
-            (true, Some(pos), Some(last)) => (pos.x - last.x).abs() + (pos.y - last.y).abs() > 0.01,
+            (true, Some(pos), Some(last)) => (pos.x - last.x).abs() + (pos.y - last.y).abs() > 0.01 || pose_differs(&pos, &last, 1e-3),
             _ => false,
         }
     }
@@ -166,13 +178,14 @@ impl Smoother {
         (self.active() && (pos.x != last.x || pos.y != last.y)).then_some(([pos.x, pos.y], [last.x, last.y]))
     }
 
-    /// End of stroke: with Catch-Up On Stroke End the brush finishes at the last pointer position.
+    /// End of stroke: with Catch-Up On Stroke End the brush finishes at the last pointer position
+    /// and pose.
     pub fn finish(&mut self, out: &mut Vec<StrokePoint>) {
         if !self.active() || !self.cfg.catch_up_on_end {
             return;
         }
         if let (Some(pos), Some(last)) = (self.pos, self.last_input)
-            && (pos.x != last.x || pos.y != last.y)
+            && (pos.x != last.x || pos.y != last.y || pose_differs(&pos, &last, 0.0))
         {
             self.pos = Some(last);
             out.push(last);
@@ -693,8 +706,10 @@ impl DualBuilder {
 pub fn apply_pose(b: &BrushSettings, mut p: StrokePoint) -> StrokePoint {
     let pose = &b.pose;
     if pose.enabled {
-        if pose.override_tilt {
+        if pose.override_tilt_x {
             p.tilt_x = pose.tilt_x;
+        }
+        if pose.override_tilt_y {
             p.tilt_y = pose.tilt_y;
         }
         if pose.override_rotation {

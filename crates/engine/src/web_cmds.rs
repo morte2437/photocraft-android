@@ -19,7 +19,7 @@ use photocraft_geom::Rect;
 use serde_json::{Value, json};
 
 use crate::commands::CommandSpec;
-use crate::file_cmds::{join, native_doc, stem, write_file};
+use crate::file_cmds::{is_windows_device_name, join, native_doc, portable_device_name, stem, write_file};
 use crate::{EngineError, Result, Session};
 
 fn bad(cmd: &str, msg: impl Into<String>) -> EngineError {
@@ -732,7 +732,7 @@ fn slice_file(name: &str) -> String {
 /// Generated filenames should remain usable on Windows even when a document or slice is named
 /// after a reserved device. Caller-supplied path components are still rejected below.
 fn portable_generated_stem(stem: String) -> String {
-    if is_windows_device_asset_name(&stem) { format!("{stem}_") } else { stem }
+    portable_device_name(stem)
 }
 
 fn html_escape(s: &str) -> String {
@@ -964,53 +964,42 @@ fn save_for_web_impl(s: &mut Session, p: &Value, write: &mut dyn FnMut(&str, &[u
         }
         name
     };
-    // Stacking order: later stored slices are on top (auto slices never overlap anything).
-    let z = |r: &ResolvedSlice| r.id.and_then(|id| doc.slices.list.iter().position(|sl| sl.id == id));
+    // Slices never overlap here: one covered by later slices comes as its visible pieces (see
+    // `slices::resolve`), each its own image and cell, as Photoshop's subslices. A no-image cell's
+    // text goes into its first piece only.
+    let mut texted = std::collections::HashSet::new();
     for r in &chosen {
-        let rect = scale_rect(r.rect, sx, sy).intersect(&wdoc.bounds());
-        if rect.is_empty() {
+        let piece = scale_rect(r.rect, sx, sy).intersect(&wdoc.bounds());
+        if piece.is_empty() {
             continue;
         }
-        // In the HTML table a slice shows only where no slice above covers it; that visible part
-        // is cut into rectangles, each its own cell (and image), as Photoshop's subslices.
-        let pieces = if html {
-            let above: Vec<Rect> = chosen.iter().filter(|o| z(o) > z(r)).map(|o| scale_rect(o.rect, sx, sy).intersect(&wdoc.bounds())).collect();
-            slices::auto_slices(rect, &above)
-        } else {
-            vec![rect]
-        };
-        let split = pieces.len() > 1;
         let stored = r.id.and_then(|id| doc.slices.get(id));
-        for (k, piece) in pieces.into_iter().enumerate() {
-            if r.kind == SliceKind::NoImage {
-                let text = if k > 0 {
-                    String::new()
-                } else {
-                    stored.map(|s| if trusted_slice_html && s.cell_text_is_html { s.cell_text.clone() } else { html_escape(&s.cell_text) }).unwrap_or_default()
-                };
-                let bg = stored.and_then(|s| s.background).map(|c| format!(" bgcolor=\"#{:02X}{:02X}{:02X}\"", c[1], c[2], c[3])).unwrap_or_default();
-                cells.push((piece, bg, text));
-                continue;
-            }
-            let o = optimize(&buf.px, bw, piece, &st, icc, exif, xmp.as_deref(), dpi, false)?;
-            let stem = if split { format!("{}_{:02}", slice_file(&r.name), k + 1) } else { slice_file(&r.name) };
-            let name = unique(&stem, o.ext);
-            let rel = if images.is_empty() { name.clone() } else { format!("{images}/{name}") };
-            let out = join(&dir, &rel);
-            write(&web_derived_path(&dir, &rel, native_paths)?, &o.bytes)?;
-            total += o.bytes.len();
-            files.push(out);
-            let alt = stored.map_or(String::new(), |s| html_escape(&s.alt));
-            let img = format!("\n\t\t\t<img src=\"{}\" width=\"{}\" height=\"{}\" alt=\"{alt}\">", html_escape(&rel), piece.width(), piece.height());
-            let body = match stored.filter(|s| safe_slice_url(&s.url)) {
-                Some(s) => {
-                    let target = if s.target.is_empty() { String::new() } else { format!(" target=\"{}\"", html_escape(&s.target)) };
-                    format!("\n\t\t\t<a href=\"{}\"{target}>{img}</a>", html_escape(&s.url))
-                }
-                None => img,
-            };
-            cells.push((piece, String::new(), body));
+        if r.kind == SliceKind::NoImage {
+            let text = stored
+                .filter(|s| texted.insert(s.id))
+                .map(|s| if trusted_slice_html && s.cell_text_is_html { s.cell_text.clone() } else { html_escape(&s.cell_text) })
+                .unwrap_or_default();
+            let bg = stored.and_then(|s| s.background).map(|c| format!(" bgcolor=\"#{:02X}{:02X}{:02X}\"", c[1], c[2], c[3])).unwrap_or_default();
+            cells.push((piece, bg, text));
+            continue;
         }
+        let o = optimize(&buf.px, bw, piece, &st, icc, exif, xmp.as_deref(), dpi, false)?;
+        let name = unique(&slice_file(&r.name), o.ext);
+        let rel = if images.is_empty() { name.clone() } else { format!("{images}/{name}") };
+        let out = join(&dir, &rel);
+        write(&web_derived_path(&dir, &rel, native_paths)?, &o.bytes)?;
+        total += o.bytes.len();
+        files.push(out);
+        let alt = stored.map_or(String::new(), |s| html_escape(&s.alt));
+        let img = format!("\n\t\t\t<img src=\"{}\" width=\"{}\" height=\"{}\" alt=\"{alt}\">", html_escape(&rel), piece.width(), piece.height());
+        let body = match stored.filter(|s| safe_slice_url(&s.url)) {
+            Some(s) => {
+                let target = if s.target.is_empty() { String::new() } else { format!(" target=\"{}\"", html_escape(&s.target)) };
+                format!("\n\t\t\t<a href=\"{}\"{target}>{img}</a>", html_escape(&s.url))
+            }
+            None => img,
+        };
+        cells.push((piece, String::new(), body));
     }
     let mut html_path = None;
     if html {
@@ -1097,8 +1086,25 @@ fn quick_export(s: &mut Session, p: &Value) -> Result<Value> {
             target
         }
     };
+    // The name typed in the save dialog wins over Export Preferences' format: Quick Export as PNG
+    // renamed to `photo.jpeg` must write a JPEG, not PNG bytes upload checks refuse (#8519).
+    let fmt = match crate::file_cmds::extension(&path).as_deref() {
+        None => fmt,
+        Some("jpg" | "jpeg") => "jpg".into(),
+        Some(e @ ("png" | "gif" | "webp" | "exr")) => e.into(),
+        Some(e) => return Err(bad(cmd, format!("Quick Export writes PNG, JPEG, GIF, WebP or EXR, not .{e}; use Export As"))),
+    };
     let d = s.active().ok_or(EngineError::NoDocument)?;
     let doc = d.doc.clone();
+    if fmt == "exr" {
+        // EXR keeps floating-point scene values. The ordinary exporter converts to linear
+        // light; the web/sRGB pipeline would instead clamp HDR and negative values.
+        let opts = photocraft_io::ExportOptions { xmp: photocraft_io::XmpEmbed::None, ..Default::default() };
+        let out = photocraft_io::export(&doc, "exr", &opts).map_err(other)?;
+        write_file(&path, &out.bytes)?;
+        crate::automate_cmds::fire_event(s, "export");
+        return Ok(json!({"path": path, "format": fmt, "bytes": out.bytes.len(), "warnings": out.warnings}));
+    }
     let metadata = serde_json::to_value(prefs.metadata).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
     let mut o = serde_json::Map::new();
     o.insert(
@@ -1307,13 +1313,6 @@ fn asset_settings(spec: &AssetSpec) -> WebSettings {
     }
 }
 
-fn is_windows_device_asset_name(component: &str) -> bool {
-    let stem = component.split('.').next().unwrap_or(component).trim_end_matches(' ').to_ascii_uppercase();
-    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CLOCK$" | "CONIN$" | "CONOUT$")
-        || stem.strip_prefix("COM").is_some_and(|n| matches!(n, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"))
-        || stem.strip_prefix("LPT").is_some_and(|n| matches!(n, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"))
-}
-
 /// Layer names and `default` folders are document data, so reject unsafe output components.
 fn asset_path_components(relative: &str) -> Result<Vec<&str>> {
     // Split both separator styles even on Unix, where a backslash would otherwise be a legal
@@ -1327,7 +1326,7 @@ fn asset_path_components(relative: &str) -> Result<Vec<&str>> {
             || part.ends_with(' ')
             || part.contains(':')
             || part.contains('\0')
-            || is_windows_device_asset_name(part)
+            || is_windows_device_name(part)
         {
             return Err(other(format!("asset path {relative:?} has an unsafe component {part:?}")));
         }
@@ -1548,7 +1547,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Export Preferences…",
             &["File", "Export"],
             None,
-            r##"{"quickExportFormat":"png|jpg|gif|webp"?,"quickExportLocation":"ask|sameFolder"?,"jpegQuality":1..100?,"webpLossless":bool?,"webpQuality":1..100?,"metadata":"none|copyright|all"?,"convertToSrgb":bool?} → {values}"##,
+            r##"{"quickExportFormat":"png|jpg|gif|webp|exr"?,"quickExportLocation":"ask|sameFolder"?,"jpegQuality":1..100?,"webpLossless":bool?,"webpQuality":1..100?,"metadata":"none|copyright|all"?,"convertToSrgb":bool?} → {values}"##,
             |_| Ok(()),
             export_preferences
         ),

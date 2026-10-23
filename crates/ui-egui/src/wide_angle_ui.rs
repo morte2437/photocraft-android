@@ -1,12 +1,13 @@
 //! Filter › Adaptive Wide Angle…: a full-window dialog like Photoshop's. Drag on the image to
 //! draw a constraint (the scene line between the two points, curved by the lens model); hold
-//! Shift when releasing to make it horizontal or vertical; right-click a constraint to delete
-//! it. The right panel holds the correction model, focal length, crop factor, scale and the
+//! Shift when releasing to make it horizontal or vertical; right-click a constraint for its menu
+//! (Free, Horizontal, Vertical, Delete), as in Photoshop. The right panel holds the correction model, focal length, crop factor, scale and the
 //! constraint list. The preview solves the mesh warp on a CPU proxy (≤ 800 px); OK runs
 //! `filter.adaptiveWideAngle` with the constraints in document pixels.
 //!
 //! Control channel: `ui.menu.invoke {"id":"filter.adaptiveWideAngle","params":{"ui":{"set":{…},
-//! "add":{"a":[x,y],"b":[x,y],"orientation":"…"}, "remove":i, "commit":true | "cancel":true}}}`.
+//! "add":{"a":[x,y],"b":[x,y],"orientation":"…"}, "orient":{"index":i,"orientation":"…"}, "remove":i,
+//! "commit":true | "cancel":true}}}`.
 
 use egui::{Align2, Color32, FontId, Pos2, Rect as ERect, Sense, Stroke, TextureHandle, pos2, vec2};
 use photocraft_algo::transform::Interp;
@@ -40,6 +41,8 @@ pub struct WideAngleDialog {
     dirty: bool,
     pub preview: bool,
     drag: Option<([f64; 2], [f64; 2])>,
+    /// The constraint a right-click opened the constraint menu on.
+    menu_for: Option<usize>,
     pub residual: f64,
     pub render_ms: f64,
     history: EditHistory<WideAngle>,
@@ -143,6 +146,7 @@ pub fn open(app: &mut PhotocraftApp, ctx: &egui::Context) -> Result<(), String> 
         dirty: true,
         preview: true,
         drag: None,
+        menu_for: None,
         residual: 0.0,
         render_ms: 0.0,
     };
@@ -192,6 +196,12 @@ pub fn menu(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: &Val
         d.params.constraints.push(Constraint { a: pa, b: pb, orientation: parse_orientation(a.get("orientation").and_then(Value::as_str).unwrap_or("free")) });
         d.dirty = true;
     }
+    if let Some(o) = ui.get("orient") {
+        let i = o.get("index").and_then(Value::as_u64).and_then(|i| usize::try_from(i).ok());
+        let Some(c) = i.and_then(|i| d.params.constraints.get_mut(i)) else { return Some(Err("`orient` needs the index of a constraint".into())) };
+        c.orientation = parse_orientation(o.get("orientation").and_then(Value::as_str).unwrap_or("free"));
+        d.dirty = true;
+    }
     if let Some(i) = ui.get("remove").and_then(Value::as_u64)
         && (i as usize) < d.params.constraints.len()
     {
@@ -215,6 +225,32 @@ pub fn menu(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: &Val
 fn commit(app: &mut PhotocraftApp) -> Result<Value, String> {
     let d = app.wide_angle.take().ok_or(tl!("Adaptive Wide Angle isn't open"))?;
     app.run("filter.adaptiveWideAngle", d.command_params())
+}
+
+/// Photoshop's right-click menu on a constraint: its orientation (the current one checked) and
+/// Delete. A right-click away from every constraint opens nothing.
+fn constraint_menu(ui: &mut egui::Ui, d: &mut WideAngleDialog) {
+    let Some(i) = d.menu_for.filter(|i| *i < d.params.constraints.len()) else {
+        ui.close();
+        return;
+    };
+    for (o, label) in [(Orientation::Free, tl!("Free")), (Orientation::Horizontal, tl!("Horizontal")), (Orientation::Vertical, tl!("Vertical"))] {
+        let current = d.params.constraints.get(i).is_some_and(|c| c.orientation == o);
+        if ui.radio(current, label).clicked() {
+            if let Some(c) = d.params.constraints.get_mut(i) {
+                c.orientation = o;
+                d.dirty = true;
+            }
+            ui.close();
+        }
+    }
+    ui.separator();
+    if ui.button(tl!("Delete")).clicked() {
+        d.params.constraints.remove(i);
+        d.menu_for = None;
+        d.dirty = true;
+        ui.close();
+    }
 }
 
 pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
@@ -274,7 +310,7 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         if resp.secondary_clicked()
             && let Some(p) = resp.interact_pointer_pos()
         {
-            // Delete the constraint whose curve passes nearest the click.
+            // The constraint whose curve passes nearest the click gets the menu.
             let near = d
                 .params
                 .constraints
@@ -282,13 +318,9 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
                 .enumerate()
                 .map(|(i, c)| (i, cam.arc(c.a, c.b, 24).iter().map(|q| (to_screen(*q) - p).length()).fold(f32::MAX, f32::min)))
                 .min_by(|a, b| a.1.total_cmp(&b.1));
-            if let Some((i, dist)) = near
-                && dist < 10.0
-            {
-                d.params.constraints.remove(i);
-                d.dirty = true;
-            }
+            d.menu_for = near.filter(|(_, dist)| *dist < 10.0).map(|(i, _)| i);
         }
+        resp.context_menu(|ui| constraint_menu(ui, d));
         let show_src = !d.preview || d.drag.is_some();
         let tex = if show_src { d.src_tex.as_ref() } else { d.out_tex.as_ref() };
         widgets::checker(&painter, img_r, 8.0);
@@ -393,9 +425,11 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
             widgets::hairline(ui);
             widgets::checkbox(ui, &mut d.preview, tl!("Preview"));
             ui.label(
-                egui::RichText::new(tl!("Drag on the image to add a constraint; Shift for horizontal/vertical; right-click to delete."))
-                    .color(t.text_faint)
-                    .size(11.0),
+                egui::RichText::new(tl!(
+                    "Drag on the image to add a constraint; Shift for horizontal/vertical; right-click a constraint to change or delete it."
+                ))
+                .color(t.text_faint)
+                .size(11.0),
             );
         });
         let foot = ERect::from_min_max(pos2(full.left(), full.bottom() - footer_h), full.max);
@@ -456,6 +490,74 @@ mod tests {
         assert!(menu(&mut app, &ctx, "filter.adaptiveWideAngle", &json!({"ui": {"add": {"a": [1, 1]}}})).unwrap().is_err());
         menu(&mut app, &ctx, "filter.adaptiveWideAngle", &json!({"ui": {"cancel": true}})).unwrap().unwrap();
         assert!(app.wide_angle.is_none());
+    }
+
+    /// A 160 × 100 grey layer to open the dialog on.
+    fn grey_layer() -> PhotocraftApp {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+        app.run("file.new", json!({"width": 160, "height": 100})).unwrap();
+        app.run("layer.new.layer", json!({})).unwrap();
+        app.run("edit.fill", json!({"color": "#808080"})).unwrap();
+        app
+    }
+
+    /// Open the dialog with one free constraint across the middle of the layer.
+    fn open_with_a_constraint(app: &mut PhotocraftApp, ctx: &egui::Context) {
+        menu(app, ctx, "filter.adaptiveWideAngle", &json!({"ui": {"add": {"a": [20, 50], "b": [140, 50]}}})).unwrap().unwrap();
+    }
+
+    /// `orient` sets a constraint's orientation, as the right-click menu does; a bad index is
+    /// an error that changes nothing.
+    #[test]
+    fn orient_sets_a_constraint_orientation() {
+        let mut app = grey_layer();
+        let ctx = egui::Context::default();
+        open_with_a_constraint(&mut app, &ctx);
+        let r = menu(&mut app, &ctx, "filter.adaptiveWideAngle", &json!({"ui": {"orient": {"index": 0, "orientation": "vertical"}}})).unwrap().unwrap();
+        assert_eq!(r["params"]["constraints"][0]["orientation"], "vertical");
+        for bad in [json!({"index": 1, "orientation": "horizontal"}), json!({"orientation": "horizontal"}), json!({"index": -1})] {
+            assert!(menu(&mut app, &ctx, "filter.adaptiveWideAngle", &json!({"ui": {"orient": bad}})).unwrap().is_err(), "{bad}");
+        }
+        assert_eq!(app.wide_angle.as_ref().unwrap().params.constraints[0].orientation, Orientation::Vertical);
+    }
+
+    /// Right-clicking a constraint opens Photoshop's constraint menu: an orientation (the
+    /// current one checked) or Delete. A right-click away from every constraint deletes nothing
+    /// and opens no menu (it used to delete the nearest constraint outright).
+    #[test]
+    fn right_click_on_a_constraint_opens_its_menu() {
+        use egui_kittest::kittest::Queryable;
+        let size = vec2(1000.0, 600.0);
+        let mut h = egui_kittest::Harness::builder().with_size(size).build_ui_state(|ui, app: &mut PhotocraftApp| show(app, ui.ctx()), grey_layer());
+        PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+        let ctx = h.ctx.clone();
+        open_with_a_constraint(h.state_mut(), &ctx);
+        h.run_steps(2);
+        // The image view (see `show`): the window less the title, footer and panel, inset 16 pt.
+        let view = ERect::from_min_max(pos2(16.0, 30.0 + 16.0), pos2(size.x - PANEL_W - 16.0, size.y - 48.0 - 16.0));
+        let right_click = |h: &mut egui_kittest::Harness<'_, PhotocraftApp>, p: Pos2| {
+            let button = |pressed| egui::Event::PointerButton { pos: p, button: egui::PointerButton::Secondary, pressed, modifiers: egui::Modifiers::NONE };
+            h.input_mut().events.extend([egui::Event::PointerMoved(p), button(true)]);
+            h.run_steps(1);
+            h.input_mut().events.push(button(false));
+            h.run_steps(2);
+        };
+        let constraints = |h: &egui_kittest::Harness<'_, PhotocraftApp>| h.state().wide_angle.as_ref().unwrap().params.constraints.clone();
+        // The constraint runs through the document's centre, which the view centres.
+        right_click(&mut h, view.center());
+        h.get_by_label("Horizontal").click();
+        h.run_steps(2);
+        assert_eq!(constraints(&h).len(), 1, "choosing an orientation keeps the constraint");
+        assert_eq!(constraints(&h)[0].orientation, Orientation::Horizontal);
+        // Away from it: no menu, nothing deleted.
+        right_click(&mut h, view.left_top() + vec2(4.0, 4.0));
+        assert!(h.query_by_label("Horizontal").is_none(), "no menu away from a constraint");
+        assert_eq!(constraints(&h).len(), 1);
+        // Delete from the menu (the panel's list has its own Delete button too).
+        right_click(&mut h, view.center());
+        h.get_all_by_label("Delete").last().expect("the menu's Delete").click();
+        h.run_steps(2);
+        assert!(constraints(&h).is_empty());
     }
 
     #[test]

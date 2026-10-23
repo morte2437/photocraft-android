@@ -33,6 +33,8 @@ fn main() {
             depth_map: None,
         },
         FilterParams::SmartBlur { radius: 3.0, threshold: 25.0, quality: BlurQuality::High, mode: SmartBlurMode::Normal },
+        FilterParams::SmartBlur { radius: 12.0, threshold: 25.0, quality: BlurQuality::High, mode: SmartBlurMode::Normal },
+        FilterParams::SmartBlur { radius: 100.0, threshold: 25.0, quality: BlurQuality::High, mode: SmartBlurMode::Normal },
         FilterParams::ShapeBlur { radius: 10.0, shape: BlurShape::Star },
         FilterParams::TiltShift { blur: 15.0, center_x: 0.5, center_y: 0.5, angle: 0.0, focus: 0.1, transition: 0.15 },
         FilterParams::IrisBlur { pins: vec![IrisPin::default()] },
@@ -60,7 +62,12 @@ fn main() {
         let area = output_area(&p, s.content_bounds(), r, None).intersect(&r);
         let t = std::time::Instant::now();
         let out = apply(&s, &p, area, r, None);
-        println!("{:<18} {w}x{h} RGBA8: {:.2?}", p.label(), t.elapsed());
+        // Smart Blur's cost peaks near radius 12, where High quality visits every pixel in the circle.
+        let name = match p {
+            FilterParams::SmartBlur { radius, .. } => format!("{} r{radius}", p.label()),
+            _ => p.label().to_string(),
+        };
+        println!("{name:<18} {w}x{h} RGBA8: {:.2?}", t.elapsed());
         drop(out);
     }
 }

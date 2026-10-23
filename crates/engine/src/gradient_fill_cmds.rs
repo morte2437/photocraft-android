@@ -37,6 +37,14 @@ fn bad(cmd: &str, msg: impl Into<String>) -> EngineError {
     EngineError::BadParams { cmd: cmd.into(), msg: msg.into() }
 }
 
+/// The `angle` param (degrees) normalised to (-180, 180], or `default` when absent. Rejects
+/// a non-number or one beyond f32 range: an infinite angle renders NaN and can't be saved.
+pub(crate) fn angle_param(cmd: &str, p: &Value, default: f32) -> Result<f32> {
+    let Some(a) = p.get("angle") else { return Ok(default) };
+    let a = a.as_f64().map(|v| v as f32).filter(|v| v.is_finite()).ok_or_else(|| bad(cmd, "`angle` is a number (degrees)"))?.rem_euclid(360.0);
+    Ok(if a > 180.0 { a - 360.0 } else { a })
+}
+
 fn num(p: &Value, k: &str) -> Option<f32> {
     p.get(k).and_then(Value::as_f64).map(|v| v as f32).filter(|v| v.is_finite())
 }
@@ -177,12 +185,7 @@ pub fn apply_set(layer: &Layer, f: &Fill, canvas: Rect, p: &Value, fg: [f32; 4],
     }
     let new_style = style_param(CMD, p)?;
     let explicit_geometry = ["angle", "scale", "offset"].iter().any(|k| p.get(*k).is_some());
-    if let Some(a) = p.get("angle") {
-        *angle = a.as_f64().map(|v| v as f32).filter(|v| v.is_finite()).ok_or_else(|| bad(CMD, "`angle` is a number (degrees)"))?.rem_euclid(360.0);
-        if *angle > 180.0 {
-            *angle -= 360.0;
-        }
-    }
+    *angle = angle_param(CMD, p, *angle)?;
     if p.get("scale").is_some() {
         let v = num(p, "scale").filter(|v| *v > 0.0).ok_or_else(|| bad(CMD, "`scale` is a positive percentage"))?;
         *scale = clamp_scale(v / 100.0);

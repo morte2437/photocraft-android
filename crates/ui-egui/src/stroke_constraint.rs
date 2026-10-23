@@ -23,9 +23,10 @@ pub struct Axis {
     pub dir: Option<[f64; 2]>,
 }
 
-/// Tools whose drag ⇧ constrains: every painting tool and the Gradient tool.
+/// Tools whose drag ⇧ constrains: every painting tool, the Gradient tool, and the Freeform Pen
+/// (Photoshop's freehand path segment with ⇧, #7171).
 pub fn applies(tool: Tool) -> bool {
-    tool.is_brushlike() || tool == Tool::Gradient
+    tool.is_brushlike() || tool == Tool::Gradient || tool == Tool::FreeformPen
 }
 
 /// Tools that ⇧-click connects to the previous stroke with a straight line.

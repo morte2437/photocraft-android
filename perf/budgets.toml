@@ -60,6 +60,12 @@ package = "photocraft-ui-egui"
 args = ["--size", "14000x14000", "--op", "refresh"]
 note = "196 MP: open and full refresh"
 
+[[bench]]
+name = "large_file_bench"
+package = "photocraft-ui-egui"
+args = ["--reps", "3"]
+note = "generated 2 GB PSD and 4.4 GB PSB (6.4 GB cached in <target>/fixtures): read + decode + open; needs ~30 GB of memory (the PSB)"
+
 # Hook: the layout-document bench lands with perf/layout-documents (#125/#128). It runs (and its
 # rows are kept in results.json) as soon as the example exists; add scenarios for its rows then.
 [[bench]]
@@ -250,12 +256,23 @@ bench = "perf_scenarios"
 row = "open 20 MP layered PSD (decode + first composite)"
 budget_ms = 3000
 
+# P20/P63: generated fixtures (`photocraft_psd::fixtures`, #5107); the row checks a pixel, so a
+# blank document fails it. No time budget yet: the target is the behaviour (progress, editable).
 [[scenario]]
 id = "P20"
-title = "Open a 2 GB PSD / 4–5 GB PSB"
+title = "Open a 2 GB PSD: editable"
 issue = 210
+bench = "large_file_bench"
+row = "open 2 GB PSD (read + decode + document)"
 target = "opens with progress, editable, never blank"
-not_measurable = "opens run in the background with progress (#210), but there are no generated large-file fixtures yet (#216)"
+
+[[scenario]]
+id = "P63"
+title = "Open a 4–5 GB PSB: editable"
+issue = 210
+bench = "large_file_bench"
+row = "open 4.4 GB PSB (read + decode + document)"
+target = "opens with progress, editable, never blank"
 
 [[scenario]]
 id = "P21"
@@ -536,3 +553,10 @@ bench = "perf_scenarios"
 row = "hide a layer among many full-canvas layers + refresh"
 budget_ms = 30
 enforce = false  # new; no baseline yet
+
+[[scenario]]
+id = "P62"
+title = "File > New 10 x 5 m at 200 ppi (3.1 GP) + first reduced canvas refresh"
+issue = 4017
+bench = "perf_scenarios"
+row = "new 3 GP document + first reduced canvas refresh"

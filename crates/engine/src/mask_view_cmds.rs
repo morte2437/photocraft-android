@@ -160,7 +160,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Toggle Layer Mask Overlay",
             menu: &[],
             shortcut: Some("\\"),
-            params: r##"{"layer":id?} (shows or hides the active layer's mask as a 50% red rubylith over the composite, the `\` key; view state, not an undo step; painting while shown paints the mask)"##,
+            params: r##"{"layer":id?} (shows or hides the active layer's mask as a rubylith over the composite, the `\` key; red at 50% unless Layer Mask Display Options, channel.options {"channel":"mask"}, set it; view state, not an undo step; painting while shown paints the mask)"##,
             enabled: active_has_mask,
             run: toggle_overlay,
             journal: false,

@@ -231,22 +231,34 @@ pub fn now_iso() -> String {
     #[cfg(not(target_arch = "wasm32"))]
     {
         let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
-        let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
-        // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
-        let z = days + 719_468;
-        let era = z.div_euclid(146_097);
-        let doe = z - era * 146_097;
-        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-        let mp = (5 * doy + 2) / 153;
-        let d = doy - (153 * mp + 2) / 5 + 1;
-        let m = if mp < 10 { mp + 3 } else { mp - 9 };
-        let y = yoe + era * 400 + i64::from(m <= 2);
-        format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", rem / 3600, rem % 3600 / 60, rem % 60)
+        iso_from_unix(secs)
     }
     #[cfg(target_arch = "wasm32")]
     {
         String::new()
+    }
+}
+
+/// `YYYY-MM-DDTHH:MM:SSZ` for Unix seconds `secs` (UTC, proleptic Gregorian). A time outside
+/// chrono's year range still converts (the calendar repeats every 400 years, so the instant is
+/// moved into range by whole cycles and only the year is carried, matching the old hand-rolled
+/// code), never a silent reset to the epoch. chrono is the only calendar logic.
+#[cfg(not(target_arch = "wasm32"))]
+fn iso_from_unix(secs: i64) -> String {
+    use chrono::Datelike;
+    let (days, sod) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    let (cycles, rest) = (days.div_euclid(146_097), days.rem_euclid(146_097));
+    // `rest + 719_163` (1970-01-01 is CE day 719_163) is always a valid CE day, and `sod` < 86_400.
+    let date = i32::try_from(rest + 719_163).ok().and_then(chrono::NaiveDate::from_num_days_from_ce_opt);
+    let time = u32::try_from(sod).ok().and_then(|s| chrono::NaiveTime::from_num_seconds_from_midnight_opt(s, 0));
+    match (date, time) {
+        (Some(d), Some(t)) => {
+            let y = i128::from(d.year()) + i128::from(cycles) * 400;
+            let y = i64::try_from(y).unwrap_or(if y < 0 { i64::MIN } else { i64::MAX });
+            // `{:04}` rather than `%Y`, which writes a `+` before years past 9999.
+            format!("{y:04}-{}", d.and_time(t).format("%m-%dT%H:%M:%SZ"))
+        }
+        _ => "1970-01-01T00:00:00Z".to_string(), // unreachable
     }
 }
 

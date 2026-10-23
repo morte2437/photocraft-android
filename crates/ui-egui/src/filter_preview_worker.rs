@@ -95,8 +95,11 @@ impl Worker {
 
 /// Stop and release previews of closed dialogs even when their canvas is no longer being drawn.
 pub(crate) fn discard_closed(app: &mut crate::PhotocraftApp) {
-    let visible =
-        app.ui.dialogs.iter().any(|d| d.fields.contains_key("__filter") && d.fields.get("__preview").and_then(serde_json::Value::as_bool) == Some(true));
+    let visible = app.ui.dialogs.iter().any(|d| {
+        d.fields.contains_key("__filter")
+            && d.fields.get("__preview").and_then(serde_json::Value::as_bool) == Some(true)
+            && d.fields.get("__smartFilter").is_none_or(|target| crate::smart_filter_dialog::validate_target(app, target).is_ok())
+    });
     if !visible {
         if let Some(r) = &app.filter_preview_worker.running {
             r.job.cancel();

@@ -78,6 +78,7 @@ pub(crate) fn validate_new_params(s: &Session, p: &Value) -> Result<()> {
                 continue;
             }
             "name" => (value.is_string(), "a string".into()),
+            "profile" => (value.as_str().is_some_and(|v| !v.is_empty()), "working, a built-in profile id or an .icc path".into()),
             _ => return Err(bad(cmd, format!("unknown parameter `{key}`"))),
         };
         if !valid {
@@ -101,6 +102,10 @@ pub struct DocumentSettings {
     pub background: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub background_color: Option<[f32; 3]>,
+    /// `file.new`'s Color Profile (#321): a built-in profile id or an .icc path; absent is the
+    /// working space, as in presets saved before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
     /// Display units only; width/height are always pixels and resolution is always ppi.
     pub unit: String,
     pub resolution_unit: String,
@@ -126,6 +131,9 @@ impl DocumentSettings {
         }
         if self.background_color.is_some_and(|c| !c.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v))) {
             return Err("Background colour components must be within 0..1".into());
+        }
+        if self.profile.as_deref().is_some_and(|p| p.trim().is_empty()) {
+            return Err("A saved Color Profile needs a profile id or path".into());
         }
         if !matches!(self.unit.as_str(), "px" | "in" | "cm" | "mm" | "pt" | "pica") || !matches!(self.resolution_unit.as_str(), "in" | "cm") {
             return Err("Unknown dimension or resolution display unit".into());
@@ -169,6 +177,9 @@ impl DocumentSettings {
             "mode":self.mode,"depth":self.depth,"background":self.background});
         if let Some(c) = self.background_color {
             p["backgroundColor"] = json!(c);
+        }
+        if let Some(profile) = &self.profile {
+            p["profile"] = json!(profile);
         }
         p
     }
@@ -358,6 +369,27 @@ mod tests {
         next
     }
 
+    /// #321: a preset keeps New Document's Color Profile through a reload and back into
+    /// `file.new`; one saved without it (or before it existed) stays on the working space.
+    #[test]
+    fn the_color_profile_survives_save_reload_and_file_new() {
+        let mut s = Session::new();
+        let mut config = settings();
+        config["mode"] = json!("cmyk");
+        config["profile"] = json!("coated-cmyk");
+        let preset = saved(&mut s, "Press", config.clone());
+        assert_eq!(preset["settings"]["profile"], "coated-cmyk");
+        let next = reload(&s);
+        let params = next.presets.documents[0].settings.command_params();
+        assert_eq!(params["profile"], "coated-cmyk");
+        let mut s2 = Session::new();
+        s2.execute("file.new", params).unwrap();
+        assert!(s2.active().unwrap().doc.icc_profile.is_some());
+        let plain = saved(&mut s, "Plain", settings());
+        assert!(plain["settings"].get("profile").is_none());
+        assert!(s.presets.documents[1].settings.command_params().get("profile").is_none());
+    }
+
     #[test]
     fn every_field_survives_save_reload_and_file_new() {
         for mode in ["rgb", "gray", "cmyk", "lab"] {
@@ -495,6 +527,9 @@ mod tests {
             ("backgroundColor", json!([2, 0, 0])),
             ("unit", json!("yards")),
             ("resolutionUnit", json!("px")),
+            ("profile", json!("")),
+            ("profile", json!(" \t")),
+            ("profile", json!(12)),
         ] {
             let mut config = settings();
             config[key] = bad;

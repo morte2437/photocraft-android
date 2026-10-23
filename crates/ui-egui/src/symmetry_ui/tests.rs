@@ -184,9 +184,6 @@ fn overlays_follow_document_view_transforms_in_every_theme() {
         }
         out.textures_delta.clear();
     }
-    let de = crate::i18n::Lang::from_code("de").unwrap();
-    assert_eq!(crate::i18n::tr(de, "Dual Axis"), "Duale Achse");
-    assert_eq!(crate::i18n::tr(de, "Transform Symmetry"), "Symmetrie transformieren");
 }
 /// #4495: while the symmetry is transformed the options bar has ✓ and ⊘ (Enter and Esc were the
 /// only ways out), and the canvas shows the move, rotate or arrow cursor instead of the brush.

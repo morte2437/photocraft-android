@@ -18,6 +18,7 @@ use photocraft_geom::Rect;
 use photocraft_paint::retouch::{Footprint, Region, Smudge, alpha_index, apply_coverage, apply_dab_stroke};
 use photocraft_paint::{BrushSettings, Stroke, StrokePoint};
 use photocraft_raster::{Surface, from_rgba_into, to_rgba};
+use rayon::prelude::*;
 use serde_json::{Value, json};
 
 use crate::commands::{CommandSpec, blend_from_str};
@@ -26,6 +27,7 @@ use crate::{EngineError, Result, Session};
 mod content_aware_move;
 mod patch;
 mod pattern_stamp;
+pub use pattern_stamp::live_impressionist as live_pattern_impressionist;
 mod periodic;
 mod remove;
 pub use content_aware_move::{ContentAwarePreview, preview as content_aware_move_preview};
@@ -414,6 +416,9 @@ enum LivePaint {
     Clone { which: SampleLayers, map: crate::presets::clone_source::Mapping, cmd: &'static str },
     /// The History Brush's history state.
     History(Surface),
+    /// The Pattern Stamp's pattern, tiled from its aligned placement (Impressionist strokes are
+    /// laid dab by dab: `pattern_stamp::live_impressionist`).
+    Pattern { tile: std::sync::Arc<photocraft_compose::pattern::Tile>, place: photocraft_compose::pattern::Placement },
 }
 
 /// A retouching stroke shown while it is drawn: the dabs so far composited onto a copy of the
@@ -444,10 +449,19 @@ pub struct LiveRetouch {
 }
 
 impl LiveRetouch {
-    /// Start a live stroke of `cmd` (`paint.cloneStamp`, `paint.healingBrush` or
-    /// `paint.historyBrush`) from its params; their `points` are rendered.
+    /// Start a live stroke of `cmd` (`paint.cloneStamp`, `paint.healingBrush`,
+    /// `paint.historyBrush` or an aligned, non-Impressionist `paint.patternStamp`) from its
+    /// params; their `points` are rendered.
     pub fn begin(s: &Session, cmd: &str, p: &Value) -> Result<Self> {
         has_pixel_layer(s).map_err(EngineError::Other)?;
+        if cmd == "paint.patternStamp" {
+            let st = pattern_stamp::Setup::parse(s, p)?;
+            if st.impressionist {
+                return Err(bad(cmd, "Impressionist strokes are laid dab by dab (pattern_stamp::live_impressionist)"));
+            }
+            let paint = LivePaint::Pattern { place: st.placement(), tile: st.tile };
+            return Self::with_paint(s, cmd, p, st.stroke, st.id, paint, st.mode);
+        }
         let (stroke, id) = parse_brush(s, p, cmd)?;
         let mode = blend_param(p, cmd)?;
         let paint = match cmd {
@@ -460,8 +474,13 @@ impl LiveRetouch {
                 }
             }
             "paint.historyBrush" => LivePaint::History(history_source(s, id, p, cmd)?),
-            other => return Err(bad(other, "live retouching strokes are the Clone Stamp, Healing Brush and History Brush")),
+            other => return Err(bad(other, "live retouching strokes are the Clone Stamp, Healing Brush, History Brush and Pattern Stamp")),
         };
+        Self::with_paint(s, cmd, p, stroke, id, paint, mode)
+    }
+
+    /// Start a live stroke of `cmd` painting `paint` through `stroke`'s coverage.
+    fn with_paint(s: &Session, cmd: &str, p: &Value, stroke: Stroke, id: Option<LayerId>, paint: LivePaint, mode: BlendMode) -> Result<Self> {
         let st = s.active().ok_or(EngineError::NoDocument)?;
         let (pre, base) = (st.doc.clone(), (st.doc.id, st.revision));
         let mut doc = (*pre).clone();
@@ -603,6 +622,7 @@ impl LiveRetouch {
                 clone_sample(&self.pre, self.id, &self.pre_surf, *which, r, map, *cmd == "paint.cloneStamp" && flag(&self.params, "wrap", false), cmd)?
             }
             LivePaint::History(src) => Region::read(src, r),
+            LivePaint::Pattern { tile, place } => pattern_stamp::paint_region(tile, place, &self.pre_surf.format(), r),
         };
         let (surf, _) = crate::channel_cmds::target_surface(std::sync::Arc::make_mut(&mut self.doc), self.id, &self.params)?;
         surf.write_region(r, &self.pre_surf.read_region(r));
@@ -672,16 +692,12 @@ fn healing_brush(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(clone_result(dmg, off, aligned, p, &stroke))
 }
 
-/// The History Brush's source: the targeted surface (pixels, mask, channel) as it was in history
-/// state `state` (default: the oldest state still held, the "Open" snapshot unless trimmed).
+/// The History Brush's source: the targeted surface (pixels, mask, channel) as it was in History
+/// panel row `state` or snapshot `snapshot` (default: the source set in the History panel,
+/// `history.setSource`, else the oldest state still held, the "Open" state unless trimmed).
 fn history_source(s: &Session, id: Option<LayerId>, p: &Value, cmd: &str) -> Result<Surface> {
     let st = s.active().ok_or(EngineError::NoDocument)?;
-    let explicit = p.get("state").and_then(Value::as_u64).map(|v| v as usize);
-    let source_doc = match explicit {
-        Some(i) if i == st.history.past_len() => st.doc.clone(),
-        Some(i) => st.history.state(i).ok_or_else(|| bad(cmd, format!("no history state {i} (0..={})", st.history.past_len())))?,
-        None => st.history.state(0).unwrap_or_else(|| st.doc.clone()),
-    };
+    let source_doc = crate::history_source_cmds::paint_source(st, p, cmd)?;
     crate::channel_cmds::read_target_surface(source_doc.as_ref(), id, p)
         .cloned()
         .map_err(|_| EngineError::Other("the target did not exist (as pixels, a mask or a channel) in that history state".into()))
@@ -1042,19 +1058,26 @@ impl DabTool {
                     let win = ((r.x0 - work.rect.x0) as usize, (r.y0 - work.rect.y0) as usize, (r.x1 - work.rect.x0) as usize, (r.y1 - work.rect.y0) as usize);
                     let out = if sharpen { local_sharpen(&work.data, w, h, n, a, win, 1.0, protect) } else { local_blur(&work.data, w, h, n, a, win, sigma) };
                     let rw = r.width() as usize;
-                    for y in r.y0..r.y1 {
+                    // Row-parallel, like the blur itself (#5426).
+                    let (wx0, wy0) = (work.rect.x0, work.rect.y0);
+                    work.data.par_chunks_mut(w * n).enumerate().for_each(|(row, line)| {
+                        let y = wy0 + row as i32;
+                        if y < r.y0 || y >= r.y1 {
+                            return;
+                        }
                         for x in r.x0..r.x1 {
                             let k = per_dab(fp.at(x, y) * strength, sp);
                             if k <= 0.0 {
                                 continue;
                             }
                             let o = ((y - r.y0) as usize * rw + (x - r.x0) as usize) * n;
-                            let px = work.px_mut(x, y);
+                            let i = (x - wx0) as usize * n;
+                            let px = &mut line[i..i + n];
                             for c in 0..n {
                                 px[c] += (out[o + c] - px[c]) * k;
                             }
                         }
-                    }
+                    });
                 })
             }
             Self::Smudge { strength, finger, max_size } => {
@@ -1085,6 +1108,52 @@ fn dab_cmd(s: &mut Session, p: &Value, cmd: &str) -> Result<Value> {
     Ok(json!({ "damage": damage_json(dmg) }))
 }
 
+/// The working pixels of a [`LiveDab`]: a copy of the target in its own depth, or (`precise`)
+/// float pixels copied from it a tile at a time as dabs first reach them, so only the stroke's
+/// area is ever copied.
+struct WorkPixels {
+    surf: Surface,
+    /// Tiles (`TILE` px) copied from the target so far; `None` when `surf` is a full copy.
+    filled: Option<std::collections::HashSet<(i32, i32)>>,
+}
+
+impl WorkPixels {
+    const TILE: i32 = 64;
+
+    fn new(pre: &Surface, precise: bool) -> Self {
+        if precise {
+            let f = pre.format();
+            let fmt = PixelFormat::new(f.mode, SampleType::F32, f.alpha);
+            Self { surf: Surface::new(fmt), filled: Some(std::collections::HashSet::new()) }
+        } else {
+            Self { surf: pre.clone(), filled: None }
+        }
+    }
+
+    /// The working pixels of `r` (`pre` = the target before the stroke).
+    fn read(&mut self, pre: &Surface, r: Rect) -> Region {
+        if let Some(filled) = &mut self.filled
+            && !r.is_empty()
+        {
+            let t = Self::TILE;
+            for ty in r.y0.div_euclid(t)..=(r.y1 - 1).div_euclid(t) {
+                for tx in r.x0.div_euclid(t)..=(r.x1 - 1).div_euclid(t) {
+                    if filled.insert((tx, ty)) {
+                        let cell = Rect::new(tx * t, ty * t, tx * t + t, ty * t + t);
+                        // Normalised samples, stored unrounded as floats.
+                        self.surf.write_region(cell, &pre.read_region(cell));
+                    }
+                }
+            }
+        }
+        Region::read(&self.surf, r)
+    }
+
+    fn write(&mut self, region: &Region) {
+        region.write(&mut self.surf);
+    }
+}
+
 /// A Dodge, Burn, Sponge, Blur, Sharpen or Smudge stroke shown while it is drawn: each new dab
 /// runs the tool's effect on a working copy of the target, in order, and the changed area is
 /// mixed back over the original at the brush opacity, as `apply_dab_stroke` does on release.
@@ -1098,7 +1167,7 @@ pub struct LiveDab {
     effect: DabEffect,
     halo: i32,
     pre_surf: Surface,
-    work: Surface,
+    work: WorkPixels,
     id: Option<LayerId>,
     params: Value,
     opacity: f32,
@@ -1138,7 +1207,25 @@ impl LiveDab {
         halo: i32,
         effect: impl FnOnce(&Surface) -> DabEffect,
     ) -> Result<Self> {
-        let mut doc = (*s.active().ok_or(EngineError::NoDocument)?.doc).clone();
+        let doc = (*s.active().ok_or(EngineError::NoDocument)?.doc).clone();
+        Self::with_effect_on(doc, cmd, p, stroke, id, halo, false, effect)
+    }
+
+    /// [`Self::with_effect`] on `doc`, a copy of the active document with what the commit's own
+    /// edit does first (the Background Eraser's Background turned into a normal layer, say). With
+    /// `precise` the working pixels between dabs are kept as floats, as the commit keeps them, so
+    /// the preview is the commit at any depth (else they are stored in the target's depth).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn with_effect_on(
+        mut doc: Document,
+        cmd: &str,
+        p: &Value,
+        stroke: Stroke,
+        id: Option<LayerId>,
+        halo: i32,
+        precise: bool,
+        effect: impl FnOnce(&Surface) -> DabEffect,
+    ) -> Result<Self> {
         let sel = doc.selection.clone();
         let (surf, lock) = crate::channel_cmds::target_surface(&mut doc, id, p)?;
         let pre_surf = surf.clone();
@@ -1152,7 +1239,7 @@ impl LiveDab {
             done: 0,
             effect,
             halo,
-            work: pre_surf.clone(),
+            work: WorkPixels::new(&pre_surf, precise),
             pre_surf,
             id,
             params: p.clone(),
@@ -1192,9 +1279,9 @@ impl LiveDab {
             if r.is_empty() {
                 continue;
             }
-            let mut region = Region::read(&self.work, r.inflate(self.halo));
+            let mut region = self.work.read(&self.pre_surf, r.inflate(self.halo));
             (self.effect)(&mut region, &ctx.footprint(d, self.done + k));
-            region.crop(r).write(&mut self.work);
+            self.work.write(&region.crop(r));
             dmg = dmg.union(&r);
         }
         self.done += new.len();
@@ -1204,7 +1291,7 @@ impl LiveDab {
             let ds = self.renderer.tail_dabs();
             let r = ds.iter().fold(Rect::EMPTY, |a, d| a.union(&ctx.dab_rect(d, false)));
             if !r.is_empty() {
-                let mut region = Region::read(&self.work, r.inflate(self.halo));
+                let mut region = self.work.read(&self.pre_surf, r.inflate(self.halo));
                 for (k, d) in ds.iter().enumerate() {
                     (self.effect)(&mut region, &ctx.footprint(d, self.done + k));
                 }
@@ -1221,7 +1308,7 @@ impl LiveDab {
         self.bounds = self.bounds.union(&dmg).union(&tail_rect);
         let (surf, _) = crate::channel_cmds::target_surface(std::sync::Arc::make_mut(&mut self.doc), self.id, &self.params)?;
         if !shown.is_empty() {
-            let (orig, work) = (Region::read(&self.pre_surf, shown), Region::read(&self.work, shown));
+            let (orig, work) = (Region::read(&self.pre_surf, shown), self.work.read(&self.pre_surf, shown));
             photocraft_paint::retouch::mix_back(surf, &orig, &work, shown, self.opacity, self.sel.as_ref(), self.lock);
         }
         if let Some((r, work)) = tail {
@@ -1428,7 +1515,9 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "History Brush",
             menu: &[],
             shortcut: None,
-            params: brush_params!(r#","state":index (into history.entries; default 0 = the oldest held state, normally the Open snapshot)"#),
+            params: brush_params!(
+                r#","state":row (a History panel row, as history.setSource: 0 = oldest state, then the current one, then the greyed redo states),"snapshot":id (a history.newSnapshot id; default: the History panel's source, else the oldest held state; a source of another canvas size is an error)"#
+            ),
             enabled: has_pixel_layer,
             run: history_brush,
             journal: true,

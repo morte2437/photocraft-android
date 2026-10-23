@@ -790,6 +790,7 @@
 	Split Warp Vertically	Podeli krivljenje vertikalno
 	Statistics…	Statistika…
 	Refine Strokes	Doteraj poteze
+	Edits	Izmene
 @plural	{n} item|{n} items	{n} stavka|{n} stavke|{n} stavki
 	Auto	Automatski
 	(print to the printer)	(štampaj na štampaču)
@@ -1061,7 +1062,7 @@
 	Done	Gotovo
 	Dots	Tačke
 	Drag a rectangle around the object	Prevucite pravougaonik oko objekta
-	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click to delete.	Prevucite po slici da dodate ograničenje; Shift za horizontalno/vertikalno; desni klik za brisanje.
+	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click a constraint to change or delete it.	Prevucite po slici da dodate ograničenje; Shift za horizontalno/vertikalno; desni klik na ograničenje za izmenu ili brisanje.
 	Drag to move the active shape's path or the Work Path	Prevucite da pomerite putanju aktivnog oblika ili radnu putanju
 	Click: select anchor · Drag: move anchor, handle or segment · {shift}-click: add · {alt}-click: whole subpath	Klik: izaberi sidrišnu tačku · Prevlačenje: pomeri tačku, ručicu ili segment · {shift}-klik: dodaj · {alt}-klik: cela podputanja
 	Draw with the Pen tool (P) or make a work path from a selection.	Crtajte alatkom pero (P) ili napravite radnu putanju od selekcije.
@@ -1294,6 +1295,8 @@
 	Override Pressure	Nadjačaj pritisak
 	Override Rotation	Nadjačaj rotaciju
 	Override Tilt	Nadjačaj nagib
+	Override Tilt X	Nadjačaj nagib X
+	Override Tilt Y	Nadjačaj nagib Y
 	PRESET DETAILS	DETALJI ŠABLONA
 	PSD	PSD
 	Paint Overlay	Preklop za slikanje
@@ -1446,6 +1449,7 @@
 	Set shape fill type	Podesi vrstu popune oblika
 	Set shape stroke type	Podesi vrstu obruba oblika
 	Set the text color	Postavi boju teksta
+	Create warped text	Napravi iskrivljeni tekst
 	Shadows	Senke
 	Shape:	Oblik:
 	Sharpening	Izoštravanje
@@ -1711,6 +1715,8 @@
 	Overlay	Preklapanje
 	Paint Bucket Tool	Alatka kofica s bojom
 	Paints from the document's opening state	Slika iz stanja dokumenta pri otvaranju
+	Paints from the History panel's source state	Slika iz izvornog stanja panela Istorija
+	Sets the source for the history brush	Postavlja izvor za četkicu istorije
 	Path Selection Tool	Alatka za selekciju putanje
 	Direct Selection Tool	Alatka za direktnu selekciju
 	Add Anchor Point Tool	Alatka za dodavanje sidrišne tačke
@@ -1942,6 +1948,7 @@
 	Quick export format	Format brzog izvoza
 	Quick export location	Lokacija brzog izvoza
 	Recent file count	Broj nedavnih datoteka
+	LUT folder	Fascikla LUT
 	Recent files	Nedavne datoteke
 	Recent fonts	Nedavni fontovi
 	Recover on launch	Oporavi pri pokretanju
@@ -2095,6 +2102,11 @@
 	Apply the pen's tilt and rotation to the tip shape	Primeni nagib i rotaciju olovke na oblik vrha
 	Mixer Brush	Četkica za mešanje
 	Wet	Vlažnost
+	Current Brush Load	Trenutno punjenje četkice
+	Load Brush	Napuni četkicu
+	Clean Brush	Očisti četkicu
+	Load the brush after each stroke	Napuni četkicu posle svakog poteza
+	Clean the brush after each stroke	Očisti četkicu posle svakog poteza
 	Mix	Mešanje
 	Wetness Jitter	Kolebanje vlažnosti
 	Mix Jitter	Kolebanje mešanja
@@ -2270,6 +2282,8 @@
 	Create Snapshot	Napravi snimak stanja
 	Delete Snapshot	Obriši snimak stanja
 	New Snapshot	Novi snimak stanja
+	New Snapshot…	Novi snimak stanja…
+	History Options…	Opcije istorije…
 	Snapshot 1	Snimak stanja 1
 	Step Forward	Korak napred
 	Step Backward	Korak nazad
@@ -2343,6 +2357,7 @@
 	Clipping Path	Putanja isecanja
 	New Path	Nova putanja
 	Duplicate Path	Dupliraj putanju
+	Rename Path…	Preimenuj putanju…
 	Delete Path	Obriši putanju
 	Auto-Hide	Automatski sakrij
 	W	Š
@@ -2408,6 +2423,8 @@
 	Keywords	Ključne reči
 	Copyright Info URL	URL informacija o autorskim pravima
 	Copyright Status	Status autorskih prava
+	Copyright Notice	Obaveštenje o autorskim pravima
+	Document Title	Naslov dokumenta
 	Copyrighted	Zaštićeno autorskim pravima
 	Public Domain	Javno dobro
 	Unknown	Nepoznato
@@ -2629,6 +2646,7 @@
 	32 bit (float)	32 bita (pokretni zarez)
 	Floating point	Pokretni zarez
 	Use Global Light	Koristi globalno svetlo
+	Overprint	Pretisak
 	Native file drag-and-drop is unavailable	Izvorno prevlačenje i otpuštanje datoteka nije dostupno
 	Native file drag-and-drop is not supported on Wayland yet. Use File › Open, or copy the image in your file manager and paste it with {paste}.	Izvorno prevlačenje i otpuštanje datoteka još nije podržano na Wayland-u. Koristite Datoteka › Otvori ili kopirajte sliku u menadžeru datoteka i nalepite je pomoću {paste}.
 	To drop files, start PhotoCraft under XWayland: `{command}`	Da biste otpuštali datoteke, pokrenite PhotoCraft pod XWayland-om: `{command}`
@@ -2650,6 +2668,8 @@
 	GPU acceleration could not continue. Your documents are unchanged.	GPU ubrzanje nije moglo da se nastavi. Vaši dokumenti su nepromenjeni.
 	PhotoCraft is using the CPU image compositor. The window may still use your graphics adapter.	PhotoCraft koristi CPU kompozitor slike. Prozor i dalje može da koristi vaš grafički adapter.
 	Retry GPU requires a restart. Save your work first.	Ponovni pokušaj sa GPU-om zahteva ponovno pokretanje. Prvo sačuvajte svoj rad.
+	Retry GPU tries the graphics processor again now.	Ponovo pokušaj sa GPU-om odmah ponovo isprobava grafički procesor.
+	GPU acceleration resumed.	GPU ubrzanje je nastavljeno.
 	Keep Using CPU	Nastavi sa CPU-om
 	Retry GPU	Ponovo pokušaj sa GPU-om
 	GPU Backend	GPU pozadinski sistem
@@ -2707,6 +2727,11 @@ cameraRaw	Blending	Stapanje
 	Content-Aware Move Tool	Alatka za pomeranje prema sadržaju
 	TIFF Options	TIFF opcije
 	Targa Options	Targa opcije
+	JPEG Options	JPEG opcije
+	Image Options	Opcije slike
+	Format Options	Opcije formata
+	Baseline ("Standard")	Osnovno („standardno“)
+	Baseline Optimized	Osnovno optimizovano
 	24 bits/pixel	24 bita/piksel
 	32 bits/pixel	32 bita/piksel
 	Including layers will increase file size.	Uključivanje slojeva povećaće veličinu datoteke.
@@ -3090,6 +3115,12 @@ curves	Smooth	Izgladi
 	Remove after each stroke	Ukloni posle svakog poteza
 	Apply the removal ({key})	Primeni uklanjanje ({key})
 	Strokes to remove: {n} (Enter applies, Esc cancels)	Potezi za uklanjanje: {n} (Enter primenjuje, Esc otkazuje)
+	Load Contours…	Učitaj konture…
+	Replace Contours…	Zameni konture…
+	Save Contours…	Sačuvaj konture…
+	Delete Contour	Obriši konturu
+	Loaded contours from {file}	Konture učitane iz {file}
+	Saved contours to {file}	Konture sačuvane u {file}
 
 # Gradient Editor window, opened from the options bar's gradient swatch.
 	The current gradient (pick one in Window › Gradients)	Tekući gradijent (izaberite ga u Prozor › Gradijenti)
@@ -4181,11 +4212,15 @@ shape	Appearance	Izgled
 	Drag to pan · Scroll to zoom · Double-click to fit	Prevucite za pomeranje · Skrolujte za zumiranje · Dvaput kliknite za uklapanje
 	Object Finder	Pronalazač objekata
 	No object found there — drag a rectangle around it	Tu nije pronađen nijedan objekat — prevucite pravougaonik oko njega
+	The active layer has no pixels here — turn on Sample All Layers or select a layer with pixels	Aktivni sloj ovde nema piksela — uključite Uzorkuj sve slojeve ili izaberite sloj sa pikselima
 	Clear Brush Controls	Obriši kontrole četkice
 	Reset All Locked Settings	Vrati sva zaključana podešavanja
 	Copy Texture to Other Tools	Kopiraj teksturu u druge alatke
 	Load Actions…	Učitaj radnje…
 	Save Actions…	Sačuvaj radnje…
+	New Action…	Nova radnja…
+	Start Recording	Započni snimanje
+	Stop Recording	Zaustavi snimanje
 	{name} (Photoshop)	{name} (Photoshop)
 	{message} ({note})	{message} ({note})
 @plural	Loaded {n} action from {file}|Loaded {n} actions from {file}	Učitana je {n} radnja iz {file}|Učitane su {n} radnje iz {file}|Učitano je {n} radnji iz {file}
@@ -4219,12 +4254,24 @@ shape	Appearance	Izgled
 # ICO dimensions
 	ICO is limited to 256 × 256 pixels	ICO je ograničen na 256 × 256 piksela
 
+# Layer Mask Display Options (the layer mask rubylith's colour and opacity)
+	Mask Options…	Opcije maske…
+	Layer Mask Display Options…	Opcije prikaza maske sloja…
+
 # Channel Options and New Spot Channel (#3761)
 	Channel Color	Boja kanala
 	Color Indicates:	Boja označava:
 	Ink Characteristics	Karakteristike mastila
 	Solidity:	Punoća:
 	Redrawing	Ponovno iscrtavanje
+
+# Bevel & Emboss shading controls.
+	Highlight Mode	Режим осветљења
+	Highlight Color	Боја осветљења
+	Highlight Opacity	Непрозирност осветљења
+	Shadow Mode	Режим сенке
+	Shadow Color	Боја сенке
+	Shadow Opacity	Непрозирност сенке
 # Edit › Content-Aware Fill workspace
 	Sampling Brush Tool	Alatka četkica za uzorkovanje
 	Sampling Area Overlay	Preklop oblasti uzorkovanja
@@ -4258,11 +4305,15 @@ shape	Appearance	Izgled
 	Chisel Hard	Tvrdo klesanje
 	Chisel Soft	Meko klesanje
 	Open color-less EXR as ACEScg	Otvori EXR bez podatka o bojama kao ACEScg
+	Do not append "copy" to filename when saving a copy	Ne dodaji „copy“ u ime fajla pri čuvanju kopije
 	Show home recent files	Prikaži nedavne datoteke na početnom ekranu
 
 # View › Guides › right-click a guide
 	Edit Selected Guides	Uredi izabrane vodilje
 	Clear Selected Guides	Ukloni izabrane vodilje
+	Bicubic Automatic	Bikubično automatski
+	Bicubic Smoother	Bikubično glađe
+	Bicubic Sharper	Bikubično oštrije
 	Pasting from other apps is unavailable	Lepljenje iz drugih aplikacija nije dostupno
 	PhotoCraft can't reach the system clipboard in this session. On Wayland, a Flatpak sandbox hides the protocol that images from other apps are read through.	PhotoCraft u ovoj sesiji ne može da pristupi sistemskoj ostavi. Na Wayland-u, Flatpak sandbox skriva protokol preko kog se čitaju slike iz drugih aplikacija.
 	To paste from other apps, start PhotoCraft under XWayland: `{command}`	Da biste lepili iz drugih aplikacija, pokrenite PhotoCraft pod XWayland-om: `{command}`
@@ -4282,6 +4333,44 @@ shape	Appearance	Izgled
 	set name	ime skupa
 	{set} (modified)	{set} (izmenjen)
 	Show file name in title	Prikaži naziv datoteke u naslovu
+
+# Image › Mode › Bitmap (#5559)
+	50% Threshold	Prag 50%
+	Pattern Dither	Dither šarom
+	Diffusion Dither	Difuzni dither
+	Halftone Screen	Polutonski raster
+	Custom Pattern	Prilagođena šara
+	Frequency:	Frekvencija:
+	Lines/Inch	Linija/inč
+	Lines/Centimeter	Linija/centimetar
+	Ellipse	Elipsa
+
+# Layers panel options
+	Add “copy” to Copied Layers and Groups	Dodaj „kopija” kopiranim slojevima i grupama
+	Animation Options	Opcije animacije
+	Entire Document	Ceo dokument
+	Expand New Effects	Proširi nove efekte
+	Filter Options	Opcije filtera
+	Layer Bounds	Granice sloja
+	Layers Panel Options	Opcije panela Slojevi
+	New Artboard…	Nova radna tabla…
+	New Group…	Nova grupa…
+	Prevent Auto-Nesting	Spreči automatsko ugnežđavanje
+	Preview on canvas when reordering layers	Pregled na platnu pri promeni redosleda slojeva
+	Show Layers	Prikaži slojeve
+	Show layer mask badges	Prikaži oznake maske sloja
+	Thumbnail Contents	Sadržaj sličice
+	Thumbnail Size	Veličina sličice
+	Use Default Masks on Fill Layers	Koristi podrazumevane maske na slojevima popune
+
+# Smart Filter editors
+	Blending Options ({filter})	Opcije stapanja ({filter})
+	Hide the layer's effects and Smart Filters  ({key}-click: all layers)	Sakrij efekte i pametne filtere sloja  ({key}-klik: svi slojevi)
+	Opacity must be between 0% and 100%.	Neprozirnost mora biti između 0% i 100%.
+	Dissolve is approximated: it blends without Photoshop's dither.	Rastapanje je približno: mešanje se vrši bez diteringa programa Photoshop.
+	Show the layer's effects and Smart Filters  ({key}-click: all layers)	Prikaži efekte i pametne filtere sloja  ({key}-klik: svi slojevi)
+	The document or Smart Filter changed. Reopen its dialog.	Dokument ili pametni filter se promenio. Ponovo otvorite njegov dijalog.
+	Wait for the current job to finish.	Sačekajte da se trenutni posao završi.
 	Accept and Go to Conflict	Prihvati i idi na sukob
 	Changes undone.	Izmene su poništene.
 	Choose a new shortcut for this command, or leave it without one.	Izaberite novu prečicu za ovu komandu ili je ostavite bez prečice.
@@ -4299,15 +4388,33 @@ shape	Appearance	Izgled
 	GPU Memory Full	GPU memorija je puna
 	The layers need {needed} of GPU memory and may hold {budget}, so edits that redraw the whole document do it on the CPU. Click to set GPU Memory.	Slojevima treba {needed} GPU memorije, a smeju da zauzmu {budget}, pa izmene koje ponovo iscrtavaju ceo dokument to rade na CPU-u. Kliknite da podesite GPU memoriju.
 	GPU memory budget: {budget}	Budžet GPU memorije: {budget}
+	Graphics memory: {size}	Grafička memorija: {size}
 	This document's layers: {needed} of {budget} for layers	Slojevi ovog dokumenta: {needed} od {budget} za slojeve
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	Slojevima ovog dokumenta treba {needed}, a smeju da zauzmu {budget}: ceo dokument se ponovo iscrtava na CPU-u
 	GPU Memory (MB, 0 = Automatic)	GPU memorija (MB, 0 = Automatski)
+	{path}: the path is not valid Unicode; save under another name.	{path}: putanja nije ispravan Unicode; sačuvajte pod drugim imenom.
 	{name} was changed by another app after it was opened or saved here.	Datoteku {name} je izmenila druga aplikacija nakon što je ovde otvorena ili sačuvana.
 	Replace it with this document, or cancel and use File › Save As to keep both.	Zameni je ovim dokumentom ili otkaži i koristi Datoteka › Sačuvaj kao da zadržiš obe.
 	Decrease Brush Size	Smanji veličinu četkice
 	Increase Brush Size	Povećaj veličinu četkice
 	Decrease Brush Hardness	Smanji tvrdoću četkice
 	Increase Brush Hardness	Povećaj tvrdoću četkice
+	Demosaic	Demozaikovanje
+	How the camera's colour filter mosaic is filled in. It is applied when the file opens; the preview shows the method it was opened with.	Kako se popunjava mozaik filtera boja kamere. Primenjuje se pri otvaranju datoteke; pregled prikazuje metod kojim je datoteka otvorena.
+	AHD (adaptive homogeneity)	AHD (adaptivna homogenost)
+	Malvar–He–Cutler	Malvar–He–Cutler
+	Hirakawa–Parks: the cleanest edges and the least colour fringing, the slowest.	Hirakawa–Parks: najčistije ivice i najmanje obojenih rubova, najsporiji.
+	Gradient-corrected interpolation: sharp and fast, with some colour fringing on fine detail.	Interpolacija sa korekcijom gradijenta: oštra i brza, sa malo obojenih rubova na finim detaljima.
+	The fastest and the softest, with colour fringing on fine detail.	Najbrži i najmekši, sa obojenim rubovima na finim detaljima.
+	“{name}” already exists. Replace it?	„{name}“ već postoji. Zameniti?
+	The name in the save dialog was “{name}”.	Ime u dijalogu za čuvanje je bilo „{name}“.
+	Move Up	Pomeri nagore
+	Move Down	Pomeri nadole
+	Previous Brush	Prethodna četkica
+	Next Brush	Sledeća četkica
+	First Brush	Prva četkica
+	Last Brush	Poslednja četkica
+	Preview size	Preview size
 	Memory Usage	Upotreba memorije
 	Per-document RAM limit (MB)	RAM limit po dokumentu (MB)
 	Installed RAM: {ram} MB; this limit: {percent}%	Instalisan RAM: {ram} MB; ovaj limit: {percent}%
@@ -4317,3 +4424,33 @@ shape	Appearance	Izgled
 	Use	Koristi
 	In Front	Ispred
 	Behind	Iza
+
+# DDS Options (#1327)
+	DDS Options	DDS opcije
+	Generate Mipmaps	Generiši mipmape
+
+# Color Table (.act) dialog
+	There is no color table to save.	Нема табеле боја за чување.
+@plural	Saved {n} color to {file}|Saved {n} colors to {file}	Сачувана је {n} боја у {file}|Сачуване су {n} боје у {file}|Сачувано је {n} боја у {file}
+
+# Graphics Adapter preference (#1885)
+	GPU adapter	GPU adapter
+# Actions: a step dialog holds a suspended recording (#7365)
+	Confirm or cancel the open action step dialog first	Prvo potvrdite ili otkažite otvoreni dijalog koraka radnje
+	Pro Medium Gray	Pro srednje siva
+	Solarized	Solarized
+	Breeze	Breeze
+	Pro Light Gray	Pro svetlosiva
+	Pro Light	Pro svetla
+	Resize Windows to Fit	Prilagodi veličinu prozora
+
+	EXR	EXR
+
+# Paragraph direction (TYPE-218-2)
+	Automatic paragraph direction	Automatski smer pasusa
+	Left-to-right paragraph direction	Smer pasusa sleva nadesno
+	Right-to-left paragraph direction	Smer pasusa zdesna nalevo
+	Not rendered: this adjustment ({key}) is kept as imported.	Није приказано: ово прилагођавање ({key}) је задржано онако како је увезено.
+
+# Print preview image (#8236)
+	Print preview image	Print preview image

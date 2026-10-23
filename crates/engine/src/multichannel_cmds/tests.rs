@@ -120,6 +120,33 @@ fn flattens_layers_and_keeps_alpha_channels() {
 }
 
 #[test]
+fn targeted_alpha_channel_stays_targeted_across_conversions() {
+    use crate::channel_cmds::ChannelTarget;
+    let mut s = session("rgb", 8);
+    s.execute("channel.new", json!({})).unwrap();
+    let view = |s: &Session| s.active().unwrap().channel_view.clone();
+    assert_eq!(view(&s).target, ChannelTarget::Alpha(0));
+    assert_eq!(view(&s).alpha_visible, [true]);
+    s.execute("image.mode.multichannel", json!({})).unwrap();
+    // The alpha channel now follows the three inks.
+    assert_eq!(view(&s).target, ChannelTarget::Alpha(3));
+    assert_eq!(view(&s).alpha_visible, [false, false, false, true]);
+    let cyan = doc(&s).channels[0].surface.pixel(4, 3)[0];
+    s.execute("edit.fill", json!({"color": "#ffffff"})).unwrap();
+    assert_eq!(doc(&s).channels[0].surface.pixel(4, 3)[0], cyan, "the fill must not touch the Cyan plate");
+    assert_eq!(doc(&s).channels[3].name, "Alpha 1");
+    // Back to RGB: the inks leave, the alpha channel is index 0 again.
+    s.execute("image.mode.rgb", json!({})).unwrap();
+    assert_eq!(view(&s).target, ChannelTarget::Alpha(0));
+    assert_eq!(view(&s).alpha_visible, [true]);
+    // A targeted ink becomes the composite.
+    s.execute("image.mode.multichannel", json!({})).unwrap();
+    s.active_mut().unwrap().channel_view.target = ChannelTarget::Alpha(1);
+    s.execute("image.mode.rgb", json!({})).unwrap();
+    assert_eq!(view(&s).target, ChannelTarget::Composite);
+}
+
+#[test]
 fn mismatched_channel_count_converts_the_printed_look() {
     let mut s = session("rgb", 8);
     s.execute("image.mode.multichannel", json!({})).unwrap();

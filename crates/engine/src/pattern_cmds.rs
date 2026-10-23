@@ -300,34 +300,49 @@ fn export(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"path": path, "count": pats.len(), "bytes": bytes.len()}))
 }
 
-pub(crate) fn placement(p: &Value) -> (f32, f32, bool, (f32, f32)) {
-    let num = |k: &str, d: f64| p.get(k).and_then(Value::as_f64).unwrap_or(d) as f32;
-    let phase = p
-        .get("phase")
-        .and_then(Value::as_array)
-        .map_or((0.0, 0.0), |a| (a.first().and_then(Value::as_f64).unwrap_or(0.0) as f32, a.get(1).and_then(Value::as_f64).unwrap_or(0.0) as f32));
-    ((num("scale", 100.0) / 100.0).clamp(0.01, 10.0), num("angle", 0.0), p.get("link").and_then(Value::as_bool).unwrap_or(true), phase)
+/// A pattern's scale, angle, link and phase from `p`. The angle is normalised to (-180, 180];
+/// a non-finite angle or a phase beyond ±`MAX_PHASE` is an error (it would render NaN).
+pub(crate) fn placement(cmd: &str, p: &Value) -> Result<(f32, f32, bool, (f32, f32))> {
+    let scale = p.get("scale").and_then(Value::as_f64).unwrap_or(100.0) as f32;
+    let max = crate::pattern_fill_cmds::MAX_PHASE;
+    let a = p.get("phase").and_then(Value::as_array);
+    let c = |i: usize| {
+        let v = a.and_then(|a| a.get(i)).and_then(Value::as_f64).unwrap_or(0.0);
+        (v.is_finite() && v.abs() <= max).then_some(v as f32).ok_or_else(|| bad(cmd, format!("`phase` needs finite coordinates within ±{max}")))
+    };
+    let phase = (c(0)?, c(1)?);
+    let angle = crate::gradient_fill_cmds::angle_param(cmd, p, 0.0)?;
+    Ok(((scale / 100.0).clamp(0.01, 10.0), angle, p.get("link").and_then(Value::as_bool).unwrap_or(true), phase))
 }
 
 /// The edit of `layer.newFillLayer.pattern`: a Pattern Fill layer of `pat` placed as `p` asks,
 /// above `active`. The Pattern Fill dialog previews it on a copy of the document.
-pub(crate) fn insert_fill_layer(doc: &mut Document, active: &mut Option<photocraft_doc::LayerId>, pat: &Pattern, p: &Value) -> Result<photocraft_doc::LayerId> {
-    let (scale, angle, link, phase) = placement(p);
+pub(crate) fn insert_fill_layer(
+    doc: &mut Document,
+    active: &mut Option<photocraft_doc::LayerId>,
+    pat: &Pattern,
+    p: &Value,
+    default_mask: bool,
+) -> Result<photocraft_doc::LayerId> {
+    let (scale, angle, link, phase) = placement("layer.newFillLayer.pattern", p)?;
     ensure_in_doc(doc, pat);
     let fill = Fill::Pattern { name: pat.name.clone(), scale, id: pat.id.clone(), angle, link, phase };
     let mut l = Layer::new(doc.next_layer_name("Pattern Fill"), LayerContent::Fill(fill));
-    crate::commands::mask_new_layer(doc, &mut l, p, "layer.newFillLayer.pattern")?;
+    crate::commands::mask_new_layer(doc, &mut l, p, "layer.newFillLayer.pattern", default_mask)?;
     let id = doc.insert_above(*active, l);
     *active = Some(id);
     Ok(id)
 }
 
+/// `layer.newFillLayer.pattern`: a Pattern Fill layer above the active one, masked as the Layers panel's Use Default Masks on Fill Layers option says.
 fn new_fill_layer(s: &mut Session, p: &Value) -> Result<Value> {
     let pat = resolve_param(s, "layer.newFillLayer.pattern", p)?;
-    let id = s.edit("New Pattern Fill Layer", |doc, active| insert_fill_layer(doc, active, &pat, p))?;
+    let default_mask = crate::commands::layer_panel_option(s, "useDefaultMasksOnFillLayers", true);
+    let id = s.edit("New Pattern Fill Layer", |doc, active| insert_fill_layer(doc, active, &pat, p, default_mask))?;
     Ok(json!({"layer": id.0, "pattern": pat.id}))
 }
 
+/// `brush.texturePattern`: use a pattern as the brush texture, converted to grey as the luminance of its composite over white.
 fn brush_texture(s: &mut Session, p: &Value) -> Result<Value> {
     let pat = resolve_param(s, "brush.texturePattern", p)?;
     let n = pat.is_paintable().then(|| usize::try_from(pat.pixel_count()).ok()).flatten();
@@ -536,6 +551,26 @@ mod tests {
     }
 
     #[test]
+    fn pattern_placement_rejects_non_finite_angle_and_phase() {
+        // 1e39 overflowed f32 to infinity: a NaN render, and a fill layer .pcraft refused to save.
+        let mut s = session(8);
+        let n = s.active().unwrap().doc.layers.len();
+        for cmd in ["layer.newFillLayer.pattern", "edit.fill", "paint.bucket"] {
+            for bad in [json!({"angle": 1e39}), json!({"angle": "x"}), json!({"phase": [1e39, 0]}), json!({"phase": [0, -1e300]})] {
+                let mut p = json!({"pattern": "Checkerboard", "contents": "pattern", "x": 1, "y": 1});
+                p.as_object_mut().unwrap().extend(bad.as_object().unwrap().clone());
+                assert!(s.execute(cmd, p).is_err(), "{cmd} {bad}");
+            }
+        }
+        assert_eq!(s.active().unwrap().doc.layers.len(), n);
+        // The angle is normalised to (-180, 180] like the Pattern Fill dialog's.
+        let r = s.execute("layer.newFillLayer.pattern", json!({"pattern": "Checkerboard", "angle": 270, "phase": [3, -4]})).unwrap();
+        let id = LayerId(r["layer"].as_u64().unwrap());
+        let Some(LayerContent::Fill(Fill::Pattern { angle, phase, .. })) = s.active().unwrap().doc.layer(id).map(|l| &l.content) else { panic!() };
+        assert_eq!((*angle, *phase), (-90.0, (3.0, -4.0)));
+    }
+
+    #[test]
     fn fill_with_pattern_respects_selection() {
         for depth in [8u64, 16, 32] {
             let mut s = session(depth);
@@ -557,7 +592,7 @@ mod tests {
         s.execute("edit.fill", json!({"color": "#0000ff"})).unwrap();
         s.execute("select.deselect", json!({})).unwrap();
         s.execute("layer.layerStyle.patternOverlay", json!({"pattern": "Diagonal Lines"})).unwrap();
-        s.execute("layer.layerStyle.stroke", json!({"size": 3, "color": "#00ff00", "add": true})).unwrap();
+        s.execute("layer.layerStyle.stroke", json!({"size": 3, "position": "outside", "color": "#00ff00", "add": true})).unwrap();
         let out = pixel(&s, 8, 15);
         assert!(out[1] > 0.9 && out[0] < 0.1, "stroke outside: {out:?}");
     }

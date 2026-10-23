@@ -79,6 +79,38 @@ pub(crate) fn color_replacement_params(app: &PhotocraftApp) -> Value {
     })
 }
 
+/// `paint.patternStamp` params from the options bar and the Patterns panel (without `points` and
+/// `target`): shared by the live preview and the commit. The jitter `seed` comes from the stroke's
+/// first point, so the live stroke (which starts with only that point) and the commit agree.
+pub(crate) fn pattern_stamp_params(app: &PhotocraftApp, points: &[[f64; 3]]) -> Value {
+    let o = &app.ui.tool_options;
+    let mut p = json!({
+        "aligned": o.pattern_stamp_aligned,
+        "impressionist": o.pattern_stamp_impressionist,
+        "scale": o.pattern_stamp_scale,
+        "angle": o.pattern_stamp_angle,
+        "seed": stroke_seed(points),
+    });
+    if o.pattern_stamp_aligned
+        && let Some(ph) = app.ui.pattern_stamp_phase
+    {
+        p["phase"] = json!(ph);
+    }
+    if let Some(id) = photocraft_engine::presets::patterns::current(&app.session).or(app.session.patterns.items.first()).map(|x| x.id.clone()) {
+        p["pattern"] = json!(id);
+    }
+    p
+}
+
+/// The jitter seed of a stroke drawn live and committed on release: from its first position, which
+/// the live stroke and the commit share (the engine's default hashes every point, which the live
+/// stroke doesn't have yet).
+pub(crate) fn stroke_seed(points: &[[f64; 3]]) -> u64 {
+    // Position only: a pen tap raises the first point's pressure on release (#1798).
+    let first = points.first().map(|p| json!([p[0], p[1]]).to_string()).unwrap_or_default();
+    photocraft_engine::paint::rng::seed_from_bytes(first.as_bytes())
+}
+
 /// Finish a stroke with a retouching tool. Returns false if `tool` isn't one.
 pub fn finish_stroke(app: &mut PhotocraftApp, tool: Tool, points: &[[f64; 3]], mods: egui::Modifiers) -> bool {
     let o = app.ui.tool_options.clone();
@@ -94,23 +126,7 @@ pub fn finish_stroke(app: &mut PhotocraftApp, tool: Tool, points: &[[f64; 3]], m
         }
         Tool::MixerBrush => ("paint.mixerBrush", json!({})),
         Tool::ColorReplacement => ("paint.colorReplacement", color_replacement_params(app)),
-        Tool::PatternStamp => {
-            let mut p = json!({
-                "aligned": o.pattern_stamp_aligned,
-                "impressionist": o.pattern_stamp_impressionist,
-                "scale": o.pattern_stamp_scale,
-                "angle": o.pattern_stamp_angle,
-            });
-            if o.pattern_stamp_aligned
-                && let Some(ph) = app.ui.pattern_stamp_phase
-            {
-                p["phase"] = json!(ph);
-            }
-            if let Some(id) = photocraft_engine::presets::patterns::current(&app.session).or(app.session.patterns.items.first()).map(|x| x.id.clone()) {
-                p["pattern"] = json!(id);
-            }
-            ("paint.patternStamp", p)
-        }
+        Tool::PatternStamp => ("paint.patternStamp", pattern_stamp_params(app, points)),
         Tool::Healing | Tool::CloneStamp => {
             let Some(p) = clone_params(app) else {
                 // Option-click on the Mac, Alt-click on Windows.
@@ -622,7 +638,7 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
             crate::widgets::value_field(ui, &mut o.cr_tolerance, 0.0..=100.0, "%", 62.0);
             crate::widgets::checkbox(ui, &mut o.cr_anti_alias, tl!("Anti-alias"));
         }
-        Tool::HistoryBrush => opt(ui, "Paints from the document's opening state"),
+        Tool::HistoryBrush => opt(ui, tl!("Paints from the History panel's source state")),
         Tool::QuickSelection => {
             crate::widgets::checkbox(ui, &mut o.sample_all.quick_selection, tl!("Sample All Layers"));
             crate::widgets::checkbox(ui, &mut o.enhance_edge, tl!("Enhance Edge"));

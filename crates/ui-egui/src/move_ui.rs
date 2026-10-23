@@ -39,7 +39,10 @@ pub(crate) fn float_selected(app: &mut PhotocraftApp, copy: bool, dx: f64, dy: f
     let floating = app.session.active().is_some_and(|st| photocraft_engine::float_cmds::floating(st).is_some());
     let dropped = if copy && floating { app.run("select.drop", json!({})) } else { Ok(json!(null)) };
     match dropped.and_then(|_| app.run("select.float", json!({"dx": dx, "dy": dy, "copy": copy}))) {
-        Ok(_) => true,
+        Ok(_) => {
+            crate::snap_ui::follow_cut(app);
+            true
+        }
         Err(e) => {
             app.ui.status = e;
             app.ui.status_error = true;
@@ -94,6 +97,15 @@ fn drag_offset(app: &PhotocraftApp) -> Option<(i32, i32)> {
     let dx = (end[0] - d.start[0]).round().clamp(-1e7, 1e7) as i32;
     let dy = (end[1] - d.start[1]).round().clamp(-1e7, 1e7) as i32;
     Some((dx, dy))
+}
+
+/// The ΔX/ΔY values shown beside the pointer while the Move tool drags layers or selected pixels,
+/// as in Photoshop (#5727): the whole pixels the release will move them. Free Transform shows its
+/// own (`transform_tool::live_readout`). `None` until the pointer moves.
+pub(crate) fn offset_readout(app: &PhotocraftApp) -> Option<[String; 2]> {
+    app.drag.as_ref().filter(|d| d.points.len() > 1)?;
+    let (dx, dy) = drag_offset(app)?;
+    Some([dx, dy].map(|v| format!("{v} px")))
 }
 
 /// The document to show while a Move drag is under way on document `idx`: the moving layers at
@@ -213,6 +225,9 @@ fn floating_doc(app: &mut PhotocraftApp, idx: usize) -> Option<(Arc<Document>, u
             floating: true,
         });
     }
+    if offset == (0, 0) && app.move_preview.as_ref().is_none_or(|p| p.offsets.is_empty()) {
+        return None;
+    }
     let st = app.session.documents().get(idx)?;
     let shown = app.move_preview.as_ref()?.offsets.last() != Some(&offset);
     if shown {
@@ -256,16 +271,26 @@ pub(crate) fn is_preview_key(key: u64) -> bool {
     key > BASE && key < BASE << 1
 }
 
+/// Does a Move drag of whole layers take the selection along? With several layers selected, as
+/// in Photoshop (#7538): their selected pixels can't float, so the layers move and the marching
+/// ants follow them.
+pub(crate) fn carries_selection(app: &PhotocraftApp) -> bool {
+    app.session.active().is_some_and(|st| st.doc.selection.is_some() && st.selected_layers().len() > 1)
+}
+
 /// Release: one `layer.translate` by the drag's offset. The canvas already shows the result, so
 /// its caches are told it showed the document: the command's damage rect refreshes that area.
 pub(crate) fn finish(app: &mut PhotocraftApp, dx: f64, dy: f64) {
+    // Within the range the preview and the ΔX/ΔY readout show (`drag_offset`), so the release
+    // commits the offset they showed even at the lowest zoom of a huge document.
+    let (dx, dy) = (dx.clamp(-1e7, 1e7), dy.clamp(-1e7, 1e7));
     // Only when the canvas shows this very offset (else it recomposites everything once).
-    let at = (dx.clamp(-1e7, 1e7) as i32, dy.clamp(-1e7, 1e7) as i32);
+    let at = (dx as i32, dy as i32);
     let shown = app.move_preview.take().filter(|p| p.shown.is_some() && p.offsets.last() == Some(&at));
     if dx == 0.0 && dy == 0.0 {
         return;
     }
-    if app.run("layer.translate", json!({"dx": dx, "dy": dy})).is_err() {
+    if app.run("layer.translate", json!({"dx": dx, "dy": dy, "selection": carries_selection(app)})).is_err() {
         return;
     }
     let Some(p) = shown else { return };
@@ -307,6 +332,52 @@ mod tests {
         // From +10 to +20 the strip x 0..10 shows pixels that were off the canvas a frame ago.
         let r = super::damage(&app, st.doc.id, st.revision, keys[0], keys[1]).unwrap();
         assert_eq!(r, Rect::new(0, 0, 64, 64));
+    }
+
+    /// The Move tool shows how far it has moved the layer, ΔX/ΔY in whole pixels, as Photoshop
+    /// and Free Transform do (#5727): once the pointer moves, until the release.
+    #[test]
+    fn a_move_drag_reads_out_the_offset_it_will_commit() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", json!({"width": 64, "height": 64})).unwrap();
+        app.sync_views();
+        app.session.execute("layer.new.layer", json!({})).unwrap();
+        app.session
+            .edit("paint", |doc, a| {
+                doc.layer_mut(a.unwrap()).unwrap().surface_mut().unwrap().fill_rect(Rect::new(16, 16, 32, 32), &[1.0, 0.0, 0.0, 1.0]);
+                Ok(())
+            })
+            .unwrap();
+        app.ui.tool = Tool::Move;
+        app.ui.extras.snap = false;
+        app.ui.view.show.smart_guides = false;
+        let m = egui::Modifiers::NONE;
+        assert_eq!(super::offset_readout(&app), None, "no drag");
+        // Pressed on the red square (16..32): with Auto-Select (on by default) an empty spot would
+        // start the layer marquee instead of a move.
+        crate::canvas::tool_event(&mut app, ToolEvent::Down { x: 24.0, y: 24.0, pressure: 1.0 }, m);
+        assert_eq!(super::offset_readout(&app), None, "pressed, not moved yet");
+        crate::canvas::tool_event(&mut app, ToolEvent::Move { x: 34.4, y: 20.8, pressure: 1.0 }, m);
+        assert_eq!(super::offset_readout(&app), Some(["10 px".to_string(), "-3 px".to_string()]));
+        crate::canvas::tool_event(&mut app, ToolEvent::Up { x: 34.4, y: 20.8 }, m);
+        assert_eq!(super::offset_readout(&app), None, "released");
+    }
+
+    /// A release past the ±10,000,000 px the preview and the readout show commits the offset they
+    /// showed, not the raw pointer distance.
+    #[test]
+    fn a_release_commits_the_offset_the_readout_caps_at() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", json!({"width": 64, "height": 64, "background": "transparent"})).unwrap();
+        app.sync_views();
+        app.session.execute("layer.new.layer", json!({})).unwrap();
+        app.session.execute("select.rect", json!({"x": 8, "y": 8, "width": 16, "height": 16})).unwrap();
+        app.session.execute("edit.fill", json!({"color": "#ff0000"})).unwrap();
+        app.session.execute("select.deselect", json!({})).unwrap();
+        super::finish(&mut app, 2.5e7, -2.5e7);
+        let st = app.session.active().unwrap();
+        let s = st.active_layer.and_then(|id| st.doc.layer(id)).and_then(|l| l.surface()).unwrap();
+        assert!(s.pixel(16 + 10_000_000, 16 - 10_000_000)[3] > 0.5, "moved by the capped offset");
     }
 
     /// A shape reaching past the canvas edge renders cut at the canvas, but its path goes on: a
@@ -478,6 +549,28 @@ mod tests {
         }
     }
 
+    /// #7538: a loose marquee round the red square shrinks to it as the drag starts: the canvas
+    /// outlines the moved pixels while they float, and the dropped selection is theirs. Alt-drag
+    /// (a copy) too.
+    #[test]
+    fn dragging_selected_pixels_shrinks_the_ants_to_them() {
+        for depth in [8, 16, 32] {
+            for m in [egui::Modifiers::NONE, egui::Modifiers::ALT] {
+                let (mut app, _) = selected_pixels(depth);
+                app.session.execute("select.rect", json!({"x": 2, "y": 2, "width": 30, "height": 30})).unwrap();
+                drag(&mut app, [16.0, 16.0], [26.0, 21.0], m);
+                assert_eq!(offset(&app), Some((10, 5)), "{depth}-bit, {m:?}: floating");
+                let ants = crate::canvas::floating_outline(&app, 0).map(|s| s.content_bounds());
+                assert_eq!(ants, Some(Rect::new(8, 8, 24, 24)), "{depth}-bit, {m:?}: the ants hug the red square");
+                assert!(crate::canvas::floating_outline(&app, 1).is_none(), "only the active document's");
+                app.run("select.drop", json!({})).unwrap();
+                let sel = app.session.active().unwrap().doc.selection.as_ref().map(|s| s.content_bounds());
+                assert_eq!(sel, Some(Rect::new(18, 13, 34, 29)), "{depth}-bit, {m:?}: dropped");
+                assert!(crate::canvas::floating_outline(&app, 0).is_none(), "nothing floats");
+            }
+        }
+    }
+
     /// ⌘-drag with a painting tool drags the selected pixels as the Move tool does, also when ⌘
     /// comes with the event (control channel, MCP) rather than as the held-key override.
     #[test]
@@ -534,5 +627,21 @@ mod tests {
         app.session.execute("select.deselect", json!({})).unwrap();
         drag(&mut app, [16.0, 16.0], [26.0, 16.0], egui::Modifiers::NONE);
         assert!(alpha(&app, id, 10, 10) == 0.0 && alpha(&app, id, 58, 16) == 1.0, "the whole layer moved");
+    }
+
+    #[test]
+    fn floating_selection_does_not_snap_to_its_own_starting_outline_or_preview_at_zero() {
+        let (mut app, _id) = selected_pixels(8);
+        app.ui.extras.snap = true;
+        app.ui.view.snap_to.document_bounds = false;
+        let m = egui::Modifiers::NONE;
+        crate::canvas::tool_event(&mut app, ToolEvent::Down { x: 16.0, y: 16.0, pressure: 1.0 }, m);
+        assert!(super::display_doc(&mut app, 0).is_none(), "no preview composite at offset (0, 0) before the pointer moves");
+        // A small 2 px move within the snap radius must move immediately instead of snapping back to (0, 0).
+        crate::canvas::tool_event(&mut app, ToolEvent::Move { x: 18.0, y: 17.0, pressure: 1.0 }, m);
+        assert_eq!(super::floating_offset(&app), Some((2, 1)), "small drag moves without snapping to own selection bounds");
+        assert!(super::display_doc(&mut app, 0).is_some(), "preview is shown once offset is non-zero");
+        crate::canvas::tool_event(&mut app, ToolEvent::Up { x: 18.0, y: 17.0 }, m);
+        assert_eq!(offset(&app), Some((2, 1)));
     }
 }

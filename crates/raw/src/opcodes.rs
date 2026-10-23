@@ -58,6 +58,27 @@ impl GainMap {
         a + (b - a) * t
     }
 
+    /// Bilinearly interpolates the gain at image-relative row `rv` and column `rh` for map
+    /// plane `mp`, touching only the four surrounding grid points. This avoids building the
+    /// whole `points_h`-wide row per image row, which made development work proportional to
+    /// image height times horizontal map size even when each output row needs few values.
+    #[inline]
+    pub fn at_rv(&self, rv: f64, mp: usize, rh: f64) -> f32 {
+        let mp = mp.min(self.map_planes.saturating_sub(1));
+        let fv = ((rv - self.origin_v) / self.spacing_v).clamp(0.0, (self.points_v - 1) as f64);
+        let i0 = (fv.floor() as usize).min(self.points_v - 1);
+        let i1 = (i0 + 1).min(self.points_v - 1);
+        let tv = (fv - i0 as f64) as f32;
+        let fh = ((rh - self.origin_h) / self.spacing_h).clamp(0.0, (self.points_h - 1) as f64);
+        let j0 = (fh.floor() as usize).min(self.points_h - 1);
+        let j1 = (j0 + 1).min(self.points_h - 1);
+        let th = (fh - j0 as f64) as f32;
+        let g = |i: usize, j: usize| self.gains.get((i * self.points_h + j) * self.map_planes + mp).copied().unwrap_or(1.0);
+        let top = g(i0, j0) + (g(i0, j1) - g(i0, j0)) * th;
+        let bot = g(i1, j0) + (g(i1, j1) - g(i1, j0)) * th;
+        top + (bot - top) * tv
+    }
+
     /// `true` if the map covers active-area pixel (`ax`, `ay`).
     #[inline]
     pub fn covers(&self, ax: usize, ay: usize) -> bool {
@@ -215,5 +236,22 @@ mod tests {
         let mut huge = b.clone();
         huge[4 + 16 + 32..4 + 16 + 40].copy_from_slice(&[0xFF; 8]); // points
         assert!(parse(&huge).0.is_empty());
+    }
+
+    #[test]
+    fn at_rv_matches_row_then_at() {
+        // at_rv (direct 4-corner bilinear) must equal the old row() + at() path for a range of
+        // sample positions, including points outside the grid that clamp.
+        let b = list(&[(9, gain_map_params([0, 0, 10, 10], 1, &[[1.0, 2.0], [3.0, 4.5]]))]);
+        let (maps, _) = parse(&b);
+        let m = &maps[0];
+        for &rv in &[-1.0, 0.0, 0.17, 0.5, 0.83, 1.0, 2.0] {
+            let row = m.row(rv, 0);
+            for &rh in &[-1.0, 0.0, 0.1, 0.5, 0.9, 1.0, 3.0] {
+                let want = m.at(&row, rh);
+                let got = m.at_rv(rv, 0, rh);
+                assert!((got - want).abs() < 1e-6, "rv={rv} rh={rh}: {got} vs {want}");
+            }
+        }
     }
 }

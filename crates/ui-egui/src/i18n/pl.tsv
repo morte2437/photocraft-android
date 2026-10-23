@@ -18,6 +18,10 @@
 # Conventions: menus are nouns (Plik, Edycja, Obraz ...), commands are infinitives (Otwórz…,
 # Zapisz jako…), sentence case as in the English source. Quotes: „…”.
 
+# Layer Mask Display Options (the layer mask rubylith's colour and opacity)
+	Mask Options…	Opcje maski…
+	Layer Mask Display Options…	Opcje wyświetlania maski warstwy…
+
 # Channel Options and New Spot Channel (#3761)
 	Channel Color	Kolor kanału
 	Color Indicates:	Kolor oznacza:
@@ -326,6 +330,7 @@
 	Blending Options…	Opcje mieszania…
 	Bevel & Emboss…	Ukos i płaskorzeźba…
 	Use Global Light	Użyj światła globalnego
+	Overprint	Nadrukowywanie
 	Inner Shadow…	Cień wewnętrzny…
 	Inner Glow…	Poświata wewnętrzna…
 	Satin…	Satyna…
@@ -810,6 +815,23 @@
 	Split Warp Vertically	Podziel wypaczenie w pionie
 	Statistics…	Statystyki…
 	Refine Strokes	Pociągnięcia udoskonalania
+	Edits	Edycje
+# Counted status and panel messages (plural forms: 1 | 2–4 except 12–14 | the rest)
+@plural	Exported {n} swatch to {file}|Exported {n} swatches to {file}	Wyeksportowano {n} próbkę koloru do {file}|Wyeksportowano {n} próbki kolorów do {file}|Wyeksportowano {n} próbek kolorów do {file}
+@plural	Imported {n} swatch from {file}|Imported {n} swatches from {file}	Zaimportowano {n} próbkę koloru z {file}|Zaimportowano {n} próbki kolorów z {file}|Zaimportowano {n} próbek kolorów z {file}
+@plural	Imported {n} brush from {group}|Imported {n} brushes from {group}	Zaimportowano {n} pędzel z {group}|Zaimportowano {n} pędzle z {group}|Zaimportowano {n} pędzli z {group}
+@plural	Played {n} step|Played {n} steps	Odtworzono {n} krok|Odtworzono {n} kroki|Odtworzono {n} kroków
+@plural	{n} step|{n} steps	{n} krok|{n} kroki|{n} kroków
+@plural	Saved for Web: {n} file|Saved for Web: {n} files	Zapisano dla Internetu: {n} plik|Zapisano dla Internetu: {n} pliki|Zapisano dla Internetu: {n} plików
+@plural	Updated {n} linked smart object changed on disk|Updated {n} linked smart objects changed on disk	Zaktualizowano {n} połączony obiekt inteligentny zmieniony na dysku|Zaktualizowano {n} połączone obiekty inteligentne zmienione na dysku|Zaktualizowano {n} połączonych obiektów inteligentnych zmienionych na dysku
+@plural	{n} layer recorded by this comp was deleted. Update the comp, or clear the warning.|{n} layers recorded by this comp were deleted. Update the comp, or clear the warning.	Usunięto {n} warstwę zapisaną w tej kompozycji. Zaktualizuj kompozycję lub usuń ostrzeżenie.|Usunięto {n} warstwy zapisane w tej kompozycji. Zaktualizuj kompozycję lub usuń ostrzeżenie.|Usunięto {n} warstw zapisanych w tej kompozycji. Zaktualizuj kompozycję lub usuń ostrzeżenie.
+@plural	{n} plane|{n} planes	{n} płaszczyzna|{n} płaszczyzny|{n} płaszczyzn
+@plural	{n} preset|{n} presets	{n} ustawienie wstępne|{n} ustawienia wstępne|{n} ustawień wstępnych
+@plural	{n} sample point removed|{n} sample points removed	Usunięto {n} punkt próbkowania|Usunięto {n} punkty próbkowania|Usunięto {n} punktów próbkowania
+@plural	{n} slice|{n} slices	{n} plasterek|{n} plasterki|{n} plasterków
+@plural	{warning} (+{n} more brush preset warning)|{warning} (+{n} more brush preset warnings)	{warning} (+{n} kolejne ostrzeżenie dotyczące ustawień wstępnych pędzli)|{warning} (+{n} kolejne ostrzeżenia dotyczące ustawień wstępnych pędzli)|{warning} (+{n} kolejnych ostrzeżeń dotyczących ustawień wstępnych pędzli)
+@plural	{what} with {n} warning|{what} with {n} warnings	{what}: {n} ostrzeżenie|{what}: {n} ostrzeżenia|{what}: {n} ostrzeżeń
+
 @plural	{n} item|{n} items	{n} element|{n} elementy|{n} elementów
 	Auto	Automatycznie
 
@@ -1092,7 +1114,7 @@
 	Done	Gotowe
 	Dots	Kropki
 	Drag a rectangle around the object	Przeciągnij prostokąt wokół obiektu
-	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click to delete.	Przeciągnij po obrazie, aby dodać ograniczenie; Shift — poziomo/pionowo; prawy przycisk usuwa.
+	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click a constraint to change or delete it.	Przeciągnij po obrazie, aby dodać ograniczenie; Shift — poziomo/pionowo; prawy przycisk na ograniczeniu — zmiana lub usunięcie.
 	Drag to move the active shape's path or the Work Path	Przeciągnij, aby przesunąć ścieżkę aktywnego kształtu lub ścieżkę roboczą
 	Click: select anchor · Drag: move anchor, handle or segment · {shift}-click: add · {alt}-click: whole subpath	Klik: zaznacz punkt kontrolny · Przeciągnięcie: przesuń punkt, uchwyt lub segment · {shift}-klik: dodaj · {alt}-klik: cała podścieżka
 	Draw with the Pen tool (P) or make a work path from a selection.	Rysuj narzędziem Pióro (P) lub utwórz ścieżkę roboczą z zaznaczenia.
@@ -1330,6 +1352,8 @@
 	Override Pressure	Zastąp nacisk
 	Override Rotation	Zastąp obrót
 	Override Tilt	Zastąp nachylenie
+	Override Tilt X	Zastąp nachylenie X
+	Override Tilt Y	Zastąp nachylenie Y
 	PRESET DETAILS	SZCZEGÓŁY USTAWIENIA WSTĘPNEGO
 	PSD	PSD
 	Paint Overlay	Nakładka malowania
@@ -1481,6 +1505,7 @@
 	Set shape fill type	Ustaw typ wypełnienia kształtu
 	Set shape stroke type	Ustaw typ obrysu kształtu
 	Set the text color	Ustaw kolor tekstu
+	Create warped text	Utwórz wypaczony tekst
 	Shadows	Cienie
 	Shape:	Kształt:
 	Sharpening	Wyostrzanie
@@ -1984,6 +2009,7 @@
 	Quick export format	Format szybkiego eksportu
 	Quick export location	Lokalizacja szybkiego eksportu
 	Recent file count	Liczba ostatnich plików
+	LUT folder	Folder LUT
 	Recent files	Ostatnie pliki
 	Recent fonts	Ostatnie czcionki
 	Recover on launch	Odzyskaj przy uruchomieniu
@@ -2137,6 +2163,11 @@
 	Mixer Brush Tool	Narzędzie Pędzel mieszający
 	Color Replacement Tool	Narzędzie Zamiana koloru
 	Wet	Wilgotność
+	Current Brush Load	Bieżący ładunek pędzla
+	Load Brush	Napełnij pędzel
+	Clean Brush	Wyczyść pędzel
+	Load the brush after each stroke	Napełniaj pędzel po każdym pociągnięciu
+	Clean the brush after each stroke	Czyść pędzel po każdym pociągnięciu
 	Mix	Mieszanie
 	Wetness Jitter	Rozrzut wilgotności
 	Mix Jitter	Rozrzut mieszania
@@ -2389,6 +2420,7 @@
 	Clipping Path	Ścieżka przycinająca
 	New Path	Nowa ścieżka
 	Duplicate Path	Duplikuj ścieżkę
+	Rename Path…	Zmień nazwę ścieżki…
 	Delete Path	Usuń ścieżkę
 	Auto-Hide	Ukrywanie automatyczne
 	W	Sz.
@@ -2454,6 +2486,8 @@
 	Keywords	Słowa kluczowe
 	Copyright Info URL	Adres URL informacji o prawach autorskich
 	Copyright Status	Status praw autorskich
+	Copyright Notice	Informacja o prawach autorskich
+	Document Title	Tytuł dokumentu
 	Copyrighted	Chronione prawem autorskim
 	Public Domain	Domena publiczna
 	Unknown	Nieznany
@@ -2673,6 +2707,8 @@
 	GPU acceleration could not continue. Your documents are unchanged.	Akceleracja GPU nie mogła być kontynuowana. Twoje dokumenty nie zostały zmienione.
 	PhotoCraft is using the CPU image compositor. The window may still use your graphics adapter.	PhotoCraft używa kompozytora obrazu CPU. Okno może nadal korzystać z karty graficznej.
 	Retry GPU requires a restart. Save your work first.	Ponowna próba z GPU wymaga restartu. Najpierw zapisz swoją pracę.
+	Retry GPU tries the graphics processor again now.	Spróbuj ponownie z GPU od razu ponawia próbę z procesorem graficznym.
+	GPU acceleration resumed.	Akceleracja GPU wznowiona.
 	Keep Using CPU	Nadal używaj CPU
 	Retry GPU	Spróbuj ponownie z GPU
 	GPU Backend	Backend GPU
@@ -2745,6 +2781,11 @@ cameraRaw	Roughness	Chropowatość
 	Content-Aware Move Tool	Narzędzie Przesunięcie z uwzględnieniem zawartości
 	TIFF Options	Opcje TIFF
 	Targa Options	Opcje Targa
+	JPEG Options	Opcje JPEG
+	Image Options	Opcje obrazu
+	Format Options	Opcje formatu
+	Baseline ("Standard")	Linia bazowa („Standardowa”)
+	Baseline Optimized	Linia bazowa zoptymalizowana
 	24 bits/pixel	24 bity/piksel
 	32 bits/pixel	32 bity/piksel
 	Including layers will increase file size.	Dołączenie warstw zwiększy rozmiar pliku.
@@ -3664,6 +3705,32 @@ cameraData	Lens	Obiektyw
 	Mirror	Odbicie lustrzane
 	Output Settings	Ustawienia wyjścia
 	Output To	Wyjście do
+
+	Animation Options	Opcje animacji
+	Entire Document	Cały dokument
+	Filter Options	Opcje filtrowania
+	Layer Bounds	Granice warstwy
+	Layers Panel Options	Opcje panelu Warstwy
+	New Artboard…	Nowy obszar roboczy…
+	New Group…	Nowa grupa…
+	Prevent Auto-Nesting	Zapobiegaj automatycznemu zagnieżdżaniu
+	Show Layers	Pokaż warstwy
+	Thumbnail Contents	Zawartość miniaturek
+	Thumbnail Size	Rozmiar miniaturek
+	Use Default Masks on Fill Layers	Użyj domyślnych masek na warstwach wypełnienia
+	Expand New Effects	Rozwijaj nowe efekty
+	Add “copy” to Copied Layers and Groups	Dodawaj „kopia” do skopiowanych warstw i grup
+	Preview on canvas when reordering layers	Podgląd na obszarze roboczym podczas zmiany kolejności warstw
+	Show layer mask badges	Pokaż odznaki masek warstw
+
+# Smart Filter editors
+	Blending Options ({filter})	Opcje mieszania ({filter})
+	Hide the layer's effects and Smart Filters  ({key}-click: all layers)	Ukryj efekty warstwy i inteligentne filtry  (kliknięcie z {key}: wszystkie warstwy)
+	Show the layer's effects and Smart Filters  ({key}-click: all layers)	Pokaż efekty warstwy i inteligentne filtry  (kliknięcie z {key}: wszystkie warstwy)
+	Wait for the current job to finish.	Poczekaj na zakończenie bieżącego zadania.
+	The document or Smart Filter changed. Reopen its dialog.	Dokument lub inteligentny filtr został zmieniony. Otwórz ponownie jego okno dialogowe.
+	Opacity must be between 0% and 100%.	Krycie musi wynosić od 0% do 100%.
+	Dissolve is approximated: it blends without Photoshop's dither.	Rozpuszczanie jest przybliżone: miesza się bez ditheringu Photoshopa.
 	Loading fonts…	Wczytywanie czcionek…
 	Response curve	Krzywa odpowiedzi
 	Simulate Pressure	Symuluj nacisk
@@ -3707,6 +3774,10 @@ curves	Smooth	Wygładź
 	Click to place · Alt-click or drag off-canvas to remove	Kliknij, aby umieścić · Alt-kliknij lub przeciągnij poza obszar roboczy, aby usunąć
 	No document open	Brak otwartego dokumentu
 	{n} of {max} sample points	{n} z {max} punktów próbkowania
+
+# History panel menu (#2966)
+	New Snapshot…	Nowa migawka…
+	History Options…	Opcje historii…
 # Print dialog (#2697)
 	Emulsion Down	Emulsja w dół
 	Functions	Funkcje
@@ -3726,9 +3797,16 @@ curves	Smooth	Wygładź
 	Light Gray	Jasnoszary
 	Object Finder	Wyszukiwanie obiektów
 	No object found there — drag a rectangle around it	Nie znaleziono tam obiektu — przeciągnij wokół niego prostokąt
+	The active layer has no pixels here — turn on Sample All Layers or select a layer with pixels	Aktywna warstwa nie ma tu pikseli — włącz Próbkuj wszystkie warstwy albo wybierz warstwę z pikselami
 	Remove after each stroke	Usuwaj po każdym pociągnięciu
 	Apply the removal ({key})	Zastosuj usuwanie ({key})
 	Strokes to remove: {n} (Enter applies, Esc cancels)	Pociągnięcia do usunięcia: {n} (Enter stosuje, Esc anuluje)
+	Load Contours…	Wczytaj kontury…
+	Replace Contours…	Zamień kontury…
+	Save Contours…	Zapisz kontury…
+	Delete Contour	Usuń kontur
+	Loaded contours from {file}	Wczytano kontury z {file}
+	Saved contours to {file}	Zapisano kontury w {file}
 	Show home recent files	Pokaż ostatnie pliki na ekranie głównym
 	Clear Brush Controls	Wyczyść elementy sterujące pędzlem
 	Reset All Locked Settings	Resetuj wszystkie zablokowane ustawienia
@@ -3737,6 +3815,9 @@ curves	Smooth	Wygładź
 # Actions panel: Load/Save Actions (.atn) and kept Photoshop steps
 	Load Actions…	Wczytaj operacje…
 	Save Actions…	Zapisz operacje…
+	New Action…	Nowa operacja…
+	Start Recording	Rozpocznij nagrywanie
+	Stop Recording	Zatrzymaj nagrywanie
 	{name} (Photoshop)	{name} (Photoshop)
 	{message} ({note})	{message} ({note})
 @plural	Loaded {n} action from {file}|Loaded {n} actions from {file}	Wczytano {n} operację z {file}|Wczytano {n} operacje z {file}|Wczytano {n} operacji z {file}
@@ -3768,6 +3849,16 @@ curves	Smooth	Wygładź
 	Sent to {printer}	Wysłano do {printer}
 	set in Print Settings…	ustawiane w ustawieniach druku…
 	ICO is limited to 256 × 256 pixels	ICO jest ograniczony do 256 × 256 pikseli
+# History panel › History Brush source (#2966)
+	Paints from the History panel's source state	Maluje ze stanu źródłowego panelu Historia
+	Sets the source for the history brush	Ustawia źródło dla pędzla historii
+# Bevel & Emboss shading controls.
+	Highlight Mode	Tryb świateł
+	Highlight Color	Kolor świateł
+	Highlight Opacity	Krycie świateł
+	Shadow Mode	Tryb cieni
+	Shadow Color	Kolor cieni
+	Shadow Opacity	Krycie cieni
 # Embedded Profile Mismatch: profile names beside the choices, Remember this choice
 	Use the embedded profile ({profile})	Użyj osadzonego profilu ({profile})
 	Convert to the working space ({profile})	Konwertuj na przestrzeń roboczą ({profile})
@@ -3784,10 +3875,14 @@ curves	Smooth	Wygładź
 	Chisel Hard	Dłuto twarde
 	Chisel Soft	Dłuto miękkie
 	Open color-less EXR as ACEScg	Otwieraj EXR bez profilu koloru jako ACEScg
+	Do not append "copy" to filename when saving a copy	Nie dodawaj „copy” do nazwy pliku przy zapisywaniu kopii
 
 # View › Guides › right-click a guide
 	Edit Selected Guides	Edytuj zaznaczone prowadnice
 	Clear Selected Guides	Usuń zaznaczone prowadnice
+	Bicubic Automatic	Dwusześcienna automatyczna
+	Bicubic Smoother	Dwusześcienna wygładzona
+	Bicubic Sharper	Dwusześcienna wyostrzona
 	Pasting from other apps is unavailable	Wklejanie z innych aplikacji jest niedostępne
 	PhotoCraft can't reach the system clipboard in this session. On Wayland, a Flatpak sandbox hides the protocol that images from other apps are read through.	PhotoCraft nie ma w tej sesji dostępu do schowka systemowego. W Waylandzie piaskownica Flatpaka ukrywa protokół, przez który odczytywane są obrazy z innych aplikacji.
 	To paste from other apps, start PhotoCraft under XWayland: `{command}`	Aby wklejać z innych aplikacji, uruchom PhotoCraft pod XWaylandem: `{command}`
@@ -3807,6 +3902,17 @@ curves	Smooth	Wygładź
 	set name	nazwa zestawu
 	{set} (modified)	{set} (zmieniony)
 	Show file name in title	Pokaż nazwę pliku w tytule
+
+# Image › Mode › Bitmap (#5559)
+	50% Threshold	Próg 50%
+	Pattern Dither	Rozpraszanie wzorkiem
+	Diffusion Dither	Rozpraszanie dyfuzyjne
+	Halftone Screen	Raster półtonowy
+	Custom Pattern	Własny wzór
+	Frequency:	Częstotliwość:
+	Lines/Inch	Linii/cal
+	Lines/Centimeter	Linii/centymetr
+	Ellipse	Elipsa
 	Accept and Go to Conflict	Akceptuj i przejdź do konfliktu
 	Changes undone.	Zmiany cofnięte.
 	Choose a new shortcut for this command, or leave it without one.	Wybierz nowy skrót dla tego polecenia lub zostaw je bez skrótu.
@@ -3824,9 +3930,11 @@ curves	Smooth	Wygładź
 	GPU Memory Full	Pamięć GPU pełna
 	The layers need {needed} of GPU memory and may hold {budget}, so edits that redraw the whole document do it on the CPU. Click to set GPU Memory.	Warstwy potrzebują {needed} pamięci GPU i mogą zająć {budget}, więc edycje, które odświeżają cały dokument, robią to na CPU. Kliknij, aby ustawić Pamięć GPU.
 	GPU memory budget: {budget}	Budżet pamięci GPU: {budget}
+	Graphics memory: {size}	Pamięć graficzna: {size}
 	This document's layers: {needed} of {budget} for layers	Warstwy tego dokumentu: {needed} z {budget} na warstwy
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	Warstwy tego dokumentu potrzebują {needed}, ale mogą zająć {budget}: odświeżanie całego dokumentu używa CPU
 	GPU Memory (MB, 0 = Automatic)	Pamięć GPU (MB, 0 = Automatycznie)
+	{path}: the path is not valid Unicode; save under another name.	{path}: ścieżka nie jest prawidłowym Unicode; zapisz pod inną nazwą.
 	Replace	Zastąp
 	{name} was changed by another app after it was opened or saved here.	Plik {name} został zmieniony przez inną aplikację po otwarciu lub zapisaniu go tutaj.
 	Replace it with this document, or cancel and use File › Save As to keep both.	Zastąp go tym dokumentem albo anuluj i użyj Plik › Zapisz jako, aby zachować oba.
@@ -3834,6 +3942,22 @@ curves	Smooth	Wygładź
 	Increase Brush Size	Zwiększ rozmiar pędzla
 	Decrease Brush Hardness	Zmniejsz twardość pędzla
 	Increase Brush Hardness	Zwiększ twardość pędzla
+	Demosaic	Demozaikowanie
+	How the camera's colour filter mosaic is filled in. It is applied when the file opens; the preview shows the method it was opened with.	Sposób uzupełniania mozaiki filtra barwnego aparatu. Stosowany przy otwieraniu pliku; podgląd pokazuje metodę, z którą plik został otwarty.
+	AHD (adaptive homogeneity)	AHD (adaptacyjna jednorodność)
+	Malvar–He–Cutler	Malvar–He–Cutler
+	Hirakawa–Parks: the cleanest edges and the least colour fringing, the slowest.	Hirakawa–Parks: najczystsze krawędzie i najmniej barwnych obwódek, najwolniejsza.
+	Gradient-corrected interpolation: sharp and fast, with some colour fringing on fine detail.	Interpolacja z korekcją gradientu: ostra i szybka, z niewielkimi barwnymi obwódkami na drobnych szczegółach.
+	The fastest and the softest, with colour fringing on fine detail.	Najszybsza i najmiększa, z barwnymi obwódkami na drobnych szczegółach.
+	“{name}” already exists. Replace it?	„{name}” już istnieje. Zastąpić?
+	The name in the save dialog was “{name}”.	Nazwa w oknie zapisywania: „{name}”.
+	Move Up	Przesuń w górę
+	Move Down	Przesuń w dół
+	Previous Brush	Poprzedni pędzel
+	Next Brush	Następny pędzel
+	First Brush	Pierwszy pędzel
+	Last Brush	Ostatni pędzel
+	Preview size	Preview size
 	Memory Usage	Użycie pamięci
 	Per-document RAM limit (MB)	Limit RAM na dokument (MB)
 	Installed RAM: {ram} MB; this limit: {percent}%	Zainstalowany RAM: {ram} MB; ten limit: {percent}%
@@ -3843,3 +3967,34 @@ curves	Smooth	Wygładź
 	Use	Użyj
 	In Front	Z przodu
 	Behind	Z tyłu
+
+# DDS Options (#1327)
+	DDS Options	Opcje DDS
+	Compression	Kompresja
+	Generate Mipmaps	Generuj mipmapy
+
+# Color Table (.act) dialog
+	There is no color table to save.	Brak tabeli kolorów do zapisania.
+@plural	Saved {n} color to {file}|Saved {n} colors to {file}	Zapisano {n} kolor do {file}|Zapisano {n} kolory do {file}|Zapisano {n} kolorów do {file}
+
+# Graphics Adapter preference (#1885)
+	GPU adapter	Karta GPU
+# Actions: a step dialog holds a suspended recording (#7365)
+	Confirm or cancel the open action step dialog first	Najpierw zatwierdź lub anuluj otwarte okno kroku operacji
+	Pro Medium Gray	Pro (średni szary)
+	Solarized	Solarized
+	Breeze	Breeze
+	Pro Light Gray	Pro (jasnoszary)
+	Pro Light	Pro (jasny)
+	Resize Windows to Fit	Dopasuj rozmiar okien
+
+	EXR	EXR
+
+# Paragraph direction (TYPE-218-2)
+	Automatic paragraph direction	Automatyczny kierunek akapitu
+	Left-to-right paragraph direction	Kierunek akapitu od lewej do prawej
+	Right-to-left paragraph direction	Kierunek akapitu od prawej do lewej
+	Not rendered: this adjustment ({key}) is kept as imported.	Nie jest renderowana: ta korekta ({key}) jest zachowana w postaci zaimportowanej.
+
+# Print preview image (#8236)
+	Print preview image	Print preview image

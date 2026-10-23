@@ -299,6 +299,11 @@ fn parse(data: &[u8]) -> Result<Parsed<'_>> {
     let mut pos = 2;
     let mut frame: Option<Frame> = None;
     let mut comp_ids: Vec<u8> = Vec::new();
+    // A lossless JPEG uses at most a handful of Huffman tables. Each Huffman::new allocates a
+    // ~48 KiB lookup pair and fills it, so a stream that repeats DHT definitions could rebuild
+    // tables thousands of times. Cap the cumulative builds to bound that header-processing work.
+    const MAX_HUFFMAN_BUILDS: usize = 64;
+    let mut huffman_builds = 0usize;
     let mut huff: [Option<Huffman>; 4] = [None, None, None, None];
     let mut restart = 0usize;
     loop {
@@ -355,6 +360,10 @@ fn parse(data: &[u8]) -> Result<Parsed<'_>> {
                     let total: usize = counts.iter().map(|&c| usize::from(c)).sum();
                     let vals = seg.get(p + 17..p + 17 + total).ok_or_else(|| RawError::malformed("short DHT"))?;
                     if id < 4 {
+                        huffman_builds += 1;
+                        if huffman_builds > MAX_HUFFMAN_BUILDS {
+                            return Err(RawError::malformed("lossless JPEG defines too many Huffman tables"));
+                        }
                         huff[id] = Some(Huffman::new(&counts, vals)?);
                     }
                     p += 17 + total;
@@ -572,5 +581,27 @@ mod tests {
         // Lossy JPEG markers are reported as unsupported.
         let lossy = [0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x0B, 8, 0, 1, 0, 1, 1, 1, 0x11, 0];
         assert!(matches!(decode(&lossy, usize::MAX), Err(RawError::Unsupported(_))));
+    }
+
+    #[test]
+    fn too_many_huffman_tables_are_rejected() {
+        // A valid stream still decodes; the same stream with thousands of repeated DHT
+        // definitions injected after the SOI is rejected before rebuilding tables endlessly.
+        let (w, h) = (8, 8);
+        let v = samples(w * h, 12, 5);
+        let j = lj92_encode(&v, w, h, 1, 12, 1, None);
+        assert!(decode(&j, usize::MAX).is_ok());
+
+        // Minimal DHT for id 0 (one length-1 code, value 0): FF C4, len=0x0014, then
+        // tc_th, 16 count bytes, one value.
+        let mut dht = vec![0xFF, 0xC4, 0x00, 0x14, 0x00];
+        dht.extend_from_slice(&[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]); // counts
+        dht.push(0x00); // one value
+        let mut flooded = j[..2].to_vec(); // SOI
+        for _ in 0..5000 {
+            flooded.extend_from_slice(&dht);
+        }
+        flooded.extend_from_slice(&j[2..]); // the rest of the valid stream
+        assert!(matches!(decode(&flooded, usize::MAX), Err(RawError::Malformed(_))));
     }
 }

@@ -238,7 +238,7 @@ pub fn morph(src: &[f32], w: usize, h: usize, r: usize, grow: bool) -> Vec<f32> 
 mod brush;
 mod morphology;
 
-pub use brush::{EdgeBrush, EdgeStroke, MAX_SWEPT_AREA, SIZE_RANGE as BRUSH_SIZE_RANGE, swept_area};
+pub use brush::{EdgeBrush, EdgeStroke, MAX_SWEPT_AREA, SIZE_RANGE as BRUSH_SIZE_RANGE, brush_surface, painted_tiles, stroke_area, swept_area};
 
 /// Running max (or min) over a window of radius `r` (edge-clipped), van Herk / Gil–Werman:
 /// three comparisons per sample whatever the radius.
@@ -413,6 +413,22 @@ where
     lo.into_iter().zip(hi).map(|(a, b)| a + (b - a) * frac).collect()
 }
 
+/// Most pixels one refine should cover. Its result is a dense [`Region`] over [`refine_area`]
+/// (about two bytes a pixel while it is assembled), so callers refuse a larger refine up front
+/// rather than allocate it: 2³⁰ pixels, a 32k × 32k selection.
+pub const MAX_REFINE_AREA: u64 = 1 << 30;
+
+/// The area [`refine_mask`] and [`refine_mask_brushed`] compute and allocate their result over:
+/// `content` grown by how far `p` can spread it, plus where `brush` adds, within `canvas`. Empty
+/// when `content` misses the canvas.
+pub fn refine_area(content: Rect, canvas: Rect, p: &RefineParams, brush: Option<&EdgeBrush>) -> Rect {
+    let content = content.intersect(&canvas);
+    if content.is_empty() {
+        return Rect::EMPTY;
+    }
+    content.inflate(p.spread()).union(&brush.map_or(Rect::EMPTY, EdgeBrush::added_bounds)).intersect(&canvas)
+}
+
 /// Refines a selection mask. `mask(r)` returns coverage over `r` (row-major); `content` bounds
 /// its non-zero pixels; the result is clipped to `canvas`. `sampler` supplies the guide image
 /// (only read when `radius > 0`). Returns `None` when nothing remains selected.
@@ -446,11 +462,10 @@ fn refine_mask_with<F>(
 where
     F: Fn(&[f32], usize, usize, usize, bool) -> Vec<f32> + Copy + Sync + Send,
 {
-    let content = content.intersect(&canvas);
-    if content.is_empty() {
+    let bbox = refine_area(content, canvas, p, brush);
+    if bbox.is_empty() {
         return None;
     }
-    let bbox = content.inflate(p.spread()).union(&brush.map_or(Rect::EMPTY, EdgeBrush::added_bounds)).intersect(&canvas);
     let halo = p.halo() + brush.map_or(0, |b| i32::try_from(b.window() * 4).unwrap_or(i32::MAX));
     let mut tiles = Vec::new();
     let mut y = bbox.y0;

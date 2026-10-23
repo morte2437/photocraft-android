@@ -54,4 +54,5 @@ photocraft-affinity = { workspace = true, features = ["synth"] }
 flate2 = { workspace = true }
 photocraft-psd = { workspace = true, features = ["testgen"] }
 photocraft-raw = { workspace = true, features = ["testgen"] }
+photocraft-testkit = { workspace = true }
 proptest = { workspace = true }

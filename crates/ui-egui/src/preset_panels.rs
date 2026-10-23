@@ -223,8 +223,8 @@ fn pattern_texture(ctx: &egui::Context, pat: &photocraft_doc::Pattern) -> Textur
     cached_texture(ctx, ("pattern", pat.id.clone()), || {
         let (w, h) = (pat.width.max(1), pat.height.max(1));
         let fmt = pat.surface.format();
-        let px = pat.surface.read_region(photocraft_geom::Rect::new(0, 0, w as i32, h as i32));
-        let n = fmt.channels();
+        // Only the pixels the swatch shows are read: a pattern file can declare a padded source
+        // of any size, and reading it whole to pick 4096 of its pixels is gigabytes of floats.
         // Tiles smaller than the swatch repeat; larger ones are shown shrunk.
         const S: u32 = 64;
         let step = (w.max(h) as f32 / S as f32).max(1.0);
@@ -233,8 +233,8 @@ fn pattern_texture(ctx: &egui::Context, pat: &photocraft_doc::Pattern) -> Textur
             for x in 0..S {
                 let sx = ((x as f32 * step) as u32) % w;
                 let sy = ((y as f32 * step) as u32) % h;
-                let i = (sy * w + sx) as usize * n;
-                img.pixels[(y * S + x) as usize] = c32(photocraft_raster::to_rgba(&fmt, &px[i..i + n]));
+                let px = pat.surface.read_region(photocraft_geom::Rect::from_xywh(sx as i32, sy as i32, 1, 1));
+                img.pixels[(y * S + x) as usize] = c32(photocraft_raster::to_rgba(&fmt, &px));
             }
         }
         img
@@ -1453,7 +1453,18 @@ mod tests {
     fn preset_drops_map_through_the_ruler_inset() {
         let (mut app, _) = app();
         app.last_canvas_rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
-        app.ui.views[0] = crate::state::View { zoom: 2.0, center: [32.0, 24.0], fit_pending: false, fill_pending: false, doc_size: [64, 48], rotation: 0.0 };
+        app.ui.views[0] = crate::state::View {
+            zoom: 2.0,
+            center: [32.0, 24.0],
+            fit_pending: false,
+            fill_pending: false,
+            doc_size: [64, 48],
+            rotation: 0.0,
+            zoom_animating: false,
+            zoom_anchor: None,
+            display_camera: None,
+            zoom_transition: None,
+        };
         let p = egui::pos2(400.0, 300.0);
         let off = crate::canvas::doc_point_at(&app, p).unwrap();
         assert_eq!(off, [32.0, 24.0], "without rulers the widget rect is the whole mapping");

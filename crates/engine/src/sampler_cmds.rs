@@ -5,7 +5,7 @@
 //! document, are discarded when it closes, and are not saved to `.pcraft` or PSD. Placing, moving
 //! and removing them changes no pixels and adds no History step, so they are not journaled. Each
 //! point reads one composite pixel (no averaging); its values match the Info panel's pointer
-//! readout (RGB 0–255 and the naive device CMYK percentages, without an ICC profile).
+//! readout (RGB 0–255 and colour-managed CMYK percentages, as in the Color Picker).
 
 use photocraft_doc::Document;
 use serde_json::{Value, json};
@@ -24,22 +24,23 @@ fn has_doc(s: &Session) -> std::result::Result<(), String> {
     s.active().map(|_| ()).ok_or_else(|| "no document open".into())
 }
 
-/// Naive device CMYK (no ICC profile), in percent, as the Info panel shows it. 32-bit samples can
-/// lie outside 0..1, so each channel is clamped first (NaN reads as 0), like the RGB readout.
+/// Colour-managed CMYK, in percent, as the Info panel shows it: the same conversion the Color
+/// Picker uses (`photocraft_color::convert::rgb_to_cmyk`: the CMYK profile active on this thread,
+/// else the built-in coated CMYK), so both panels agree (#8101). 32-bit samples can lie outside
+/// 0..1, so each channel is clamped first (NaN reads as 0), like the RGB readout.
 pub fn device_cmyk(r: f32, g: f32, b: f32) -> [i32; 4] {
     let unit = |v: f32| if v.is_nan() { 0.0 } else { v.clamp(0.0, 1.0) };
-    let (r, g, b) = (unit(r), unit(g), unit(b));
-    let k = 1.0 - r.max(g).max(b);
-    let f = |v: f32| if k >= 1.0 { 0.0 } else { (1.0 - v - k) / (1.0 - k) };
-    [f(r), f(g), f(b), k].map(|v| (v * 100.0).round() as i32)
+    photocraft_color::convert::rgb_to_cmyk([unit(r), unit(g), unit(b)]).map(|v| (unit(v) * 100.0).round() as i32)
 }
 
 /// The Info-panel values for a sample point at document pixel `pos`: composite RGB 0–255 and
-/// naive device CMYK percentages. One composite pixel, no averaging.
+/// colour-managed CMYK percentages (the document's CMYK profile when it has one). One composite
+/// pixel, no averaging.
 pub fn readout(doc: &Document, pos: [f64; 2]) -> ([i32; 3], [i32; 4]) {
     let rgba = crate::sample_cmds::sample_color(doc, None, pos[0], pos[1], 1, crate::sample_cmds::SampleLayers::All);
     let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as i32;
-    ([q(rgba[0]), q(rgba[1]), q(rgba[2])], device_cmyk(rgba[0], rgba[1], rgba[2]))
+    let cmyk = photocraft_color::convert::with_cmyk_space(photocraft_compose::cmyk_space(doc).as_ref(), || device_cmyk(rgba[0], rgba[1], rgba[2]));
+    ([q(rgba[0]), q(rgba[1]), q(rgba[2])], cmyk)
 }
 
 /// One point as the list command reports it.
@@ -257,7 +258,7 @@ mod tests {
         .unwrap();
         let r = s.execute("view.colorSamplers.add", json!({"x": 3, "y": 3})).unwrap();
         assert_eq!(r["point"]["rgb"], json!([0, 0, 0]));
-        assert_eq!(r["point"]["cmyk"], json!([0, 0, 0, 100]));
+        assert_eq!(r["point"]["cmyk"], json!(device_cmyk(0.0, 0.0, 0.0)), "the profile's black, not the naive 0/0/0/100");
         // Painting over the point changes its readout (the list is computed live).
         s.edit("paint", |doc, _| {
             let surf = doc.layers[0].surface_mut().unwrap();
@@ -448,6 +449,25 @@ mod tests {
     }
 
     #[test]
+    fn a_crop_to_a_target_size_scales_points() {
+        // The crop resamples the 20 x 20 area to 40 x 40: the point (10, 10 after the shift; 10, 9
+        // turned 90°, as in `a_rotated_crop_moves_points`) doubles.
+        for (angle, at) in [(None, [20.0, 20.0]), (Some(90), [20.0, 18.0])] {
+            let mut s = session();
+            s.execute("view.colorSamplers.add", json!({"x": 50, "y": 40})).unwrap();
+            let mut p = json!({"x": 40, "y": 30, "width": 20, "height": 20, "targetWidth": 40, "targetHeight": 40});
+            if let Some(a) = angle {
+                p["angle"] = json!(a);
+            }
+            s.execute("image.crop", p).unwrap();
+            let p = points(&mut s);
+            assert_eq!(p.len(), 1, "angle {angle:?}");
+            assert_eq!(p[0]["position"], json!(at), "angle {angle:?}");
+            assert_eq!(s.take_samplers_removed(), 0, "angle {angle:?}");
+        }
+    }
+
+    #[test]
     fn bad_params_and_no_document_are_errors_not_panics() {
         let mut s = Session::new();
         for id in ["view.colorSamplers.add", "view.colorSamplers.move", "view.colorSamplers.delete", "view.colorSamplers.clear", "view.colorSamplers.list"] {
@@ -472,12 +492,16 @@ mod tests {
         assert!(points(&mut s).is_empty());
     }
 
+    /// The Info panel and the Color Picker read CMYK through one conversion (#8101): the
+    /// colour-managed `rgb_to_cmyk`, not a naive formula that disagrees with it by tens of percent.
     #[test]
-    fn device_cmyk_matches_the_info_panel_formula() {
+    fn device_cmyk_agrees_with_the_color_picker_conversion() {
+        for rgb in [[1.0, 1.0, 1.0], [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.5, 0.5, 0.5], [0.2, 0.6, 0.9], [1.0, 0.93, 0.0]] {
+            let picker = photocraft_color::convert::rgb_to_cmyk(rgb).map(|v| (v * 100.0).round() as i32);
+            assert_eq!(device_cmyk(rgb[0], rgb[1], rgb[2]), picker, "{rgb:?}");
+        }
         assert_eq!(device_cmyk(1.0, 1.0, 1.0), [0, 0, 0, 0]);
-        assert_eq!(device_cmyk(0.0, 0.0, 0.0), [0, 0, 0, 100]);
-        assert_eq!(device_cmyk(1.0, 0.0, 0.0), [0, 100, 100, 0]);
-        assert_eq!(device_cmyk(0.5, 0.5, 0.5), [0, 0, 0, 50]);
+        assert_ne!(device_cmyk(1.0, 0.0, 0.0), [0, 100, 100, 0], "pure red is not the naive 0/100/100/0");
     }
 
     /// 32-bit samples can lie outside 0..1 (or be NaN); the CMYK readout clamps them like the RGB
@@ -485,13 +509,13 @@ mod tests {
     #[test]
     fn device_cmyk_clamps_out_of_range_and_nan_samples() {
         assert_eq!(device_cmyk(1.5, 1.5, 1.5), [0, 0, 0, 0]);
-        assert_eq!(device_cmyk(2.0, 0.0, 0.0), [0, 100, 100, 0]);
+        assert_eq!(device_cmyk(2.0, 0.0, 0.0), device_cmyk(1.0, 0.0, 0.0));
         let in_range = |c: [i32; 4]| c.iter().all(|v| (0..=100).contains(v));
         for (r, g, b) in [(-0.2, 0.5, 0.5), (-1.0, -1.0, -1.0), (f32::NAN, 0.5, 0.5), (f32::NAN, f32::NAN, f32::NAN), (f32::INFINITY, f32::NEG_INFINITY, 0.5)] {
             let c = device_cmyk(r, g, b);
             assert!(in_range(c), "{r} {g} {b} -> {c:?}");
         }
-        assert_eq!(device_cmyk(f32::NAN, f32::NAN, f32::NAN), [0, 0, 0, 100]);
+        assert_eq!(device_cmyk(f32::NAN, f32::NAN, f32::NAN), device_cmyk(0.0, 0.0, 0.0));
     }
 
     #[test]

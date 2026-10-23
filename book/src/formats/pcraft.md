@@ -8,7 +8,10 @@ tiles/<blake3>.zst
 blobs/<blake3>.zst
 thumb.png
 composite/preview.png
+save.lock
 ```
+
+`save.lock` exists only in directory bundles: a save holds an OS file lock on it while it writes objects, publishes the manifest and removes unreferenced objects, so concurrent saves of one bundle take turns. It is empty, and readers ignore it.
 
 The manifest is versioned and describes the document tree. Tiles and blobs are content-addressed. Loaders verify ZIP entry bounds and CRCs; document content also uses stored hashes to detect mismatched or corrupted tile/blob content. Unsupported newer format versions fail explicitly.
 

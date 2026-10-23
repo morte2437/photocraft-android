@@ -1,10 +1,8 @@
 //! Native platform services: file dialogs (rfd), filesystem, codecs.
 
-use photocraft_codecs::{ChannelLayout, EncodeOptions, Image, SampleType as CS};
-use photocraft_color::{ColorMode, SampleType};
-use photocraft_doc::{Document, Layer, Size};
+use photocraft_codecs::{ChannelLayout, EncodeOptions, Image};
+use photocraft_doc::Document;
 use photocraft_format::RecoveryStore;
-use photocraft_geom::Rect;
 use photocraft_ui_egui::{FileDialogAnswer, FileDialogReply, FileDialogRequest, Recoverable, Services};
 use std::cell::{Cell, RefCell};
 use std::future::Future;
@@ -17,12 +15,13 @@ use std::sync::Arc;
 mod recovery_tests;
 
 /// Everything File › Open reads: PhotoCraft, Photoshop, OpenRaster, Krita and Affinity documents, flat images, and
-/// Photoshop brushes (.abr), gradients (.grd), swatches (.aco, .ase) and keyboard shortcut sets
+/// Photoshop brushes (.abr), gradients (.grd), swatches (.aco, .act, .ase) and keyboard shortcut sets
 /// (.kys), which go to the preset libraries and Edit › Keyboard Shortcuts.
 const OPEN_EXTS: &[&str] = &[
-    "pcraft", "pdn", "ora", "kra", "krz", "psd", "psb", "psdt", "png", "jpg", "jpeg", "tif", "tiff", "webp", "gif", "bmp", "tga", "ico", "qoi", "exr", "hdr",
-    "pbm", "pgm", "ppm", "pam", "pfm", "pcx", "dds", "xpm", "fits", "fit", "fts", "dpx", "cin", "heic", "heif", "hif", "dng", "cr2", "cr3", "nef", "nrw",
-    "arw", "pef", "orf", "rw2", "raf", "abr", "grd", "svg", "svgz", "aco", "ase", "kys", "af", "afdesign", "afphoto", "afpub",
+    "pcraft", "pdn", "ora", "xcf", "xcfgz", "gz", "kra", "krz", "psd", "psb", "psdt", "png", "jpg", "jpeg", "tif", "tiff", "webp", "gif", "bmp", "tga", "ico",
+    "qoi", "exr", "hdr", "pbm", "pgm", "ppm", "pam", "pfm", "pcx", "dds", "xpm", "fits", "fit", "fts", "dpx", "cin", "dcm", "dicom", "dc3", "iff", "lbm",
+    "ilbm", "heic", "heif", "hif", "dng", "cr2", "cr3", "nef", "nrw", "arw", "pef", "orf", "rw2", "raf", "abr", "grd", "svg", "svgz", "aco", "act", "ase",
+    "kys", "af", "afdesign", "afphoto", "afpub",
 ];
 const SVG_EXTS: &[&str] = &["svg", "svgz"];
 
@@ -45,6 +44,7 @@ const OPEN_FILTERS: &[(&str, &[&str])] = &[
     ("Photoshop", &["psd", "psb", "psdt"]),
     ("Affinity", &["af", "afdesign", "afphoto", "afpub"]),
     ("Krita", &["kra", "krz"]),
+    ("GIMP", &["xcf", "xcfgz", "gz"]),
     ("OpenRaster", &["ora"]),
     ("Paint.NET", &["pdn"]),
     ("SVG", SVG_EXTS),
@@ -66,10 +66,12 @@ const OPEN_FILTERS: &[(&str, &[&str])] = &[
     ("Radiance HDR", &["hdr"]),
     ("FITS", &["fits", "fit", "fts"]),
     ("DPX and Cineon", &["dpx", "cin"]),
+    ("Amiga IFF", &["iff", "lbm", "ilbm"]),
+    ("DICOM", &["dcm", "dicom", "dc3"]),
     ("Camera Raw", &["dng", "cr2", "cr3", "nef", "nrw", "arw", "pef", "orf", "rw2", "raf"]),
     ("Brushes", &["abr"]),
     ("Gradients", &["grd"]),
-    ("Swatches", &["aco", "ase"]),
+    ("Swatches", &["aco", "act", "ase"]),
     ("Keyboard Shortcuts", &["kys"]),
 ];
 
@@ -99,11 +101,14 @@ const SAVE_FILTERS: &[(&str, &[&str])] = &[
     ("OpenEXR", &["exr"]),
     ("FITS", &["fits", "fit"]),
     ("DPX", &["dpx"]),
+    // Game and 3D textures; DDS Options asks for the compression and mipmaps (#1327).
+    ("DDS", &["dds"]),
+    ("Cineon", &["cin"]),
 ];
 
 /// Non-document files the shell saves (Swatches panel exports): offered alone, so the dialog
 /// never swaps their extension for a document format's.
-const OTHER_SAVE_FILTERS: &[(&str, &[&str])] = &[("Color Swatches", &["aco"]), ("Swatch Exchange", &["ase"])];
+const OTHER_SAVE_FILTERS: &[(&str, &[&str])] = &[("Color Swatches", &["aco"]), ("Color Table", &["act"]), ("Swatch Exchange", &["ase"])];
 
 /// Lists the save dialog's file types with the `suggested` type first (added if unlisted), so the dialog keeps that extension instead of .psd.
 fn save_filters(suggested: &str) -> Vec<(String, Vec<String>)> {
@@ -195,10 +200,10 @@ fn show_file_dialog(request: FileDialogRequest, parent: Option<&eframe::Frame>, 
             };
             if multiple {
                 let picked = dialog.pick_files();
-                Box::pin(async move { picked.await.map(|files| FileDialogAnswer::Paths(files.iter().map(path_of).collect())) })
+                Box::pin(async move { picked.await.map(|files| answer(files.iter().map(|f| f.path()), false, FileDialogAnswer::Paths)) })
             } else {
                 let picked = dialog.pick_file();
-                Box::pin(async move { picked.await.map(|file| FileDialogAnswer::Paths(vec![path_of(&file)])) })
+                Box::pin(async move { picked.await.map(|file| answer([file.path()], false, FileDialogAnswer::Paths)) })
             }
         }
         FileDialogRequest::Folder { initial_dir } => {
@@ -206,7 +211,7 @@ fn show_file_dialog(request: FileDialogRequest, parent: Option<&eframe::Frame>, 
                 dialog = dialog.set_directory(dir);
             }
             let picked = dialog.pick_folder();
-            Box::pin(async move { picked.await.map(|folder| FileDialogAnswer::FolderTo(path_of(&folder))) })
+            Box::pin(async move { picked.await.map(|folder| answer_one(folder.path(), true, FileDialogAnswer::FolderTo)) })
         }
         FileDialogRequest::Save { suggested } => {
             let filters = save_filters(&suggested);
@@ -241,10 +246,10 @@ fn show_file_dialog(request: FileDialogRequest, parent: Option<&eframe::Frame>, 
                         .map_err(|e| e.to_string())
                         .and_then(|conn| crate::portal_save::save_as(&conn, req));
                     match portal {
-                        Ok(path) => path.map(|p| FileDialogAnswer::SaveTo(p.to_string_lossy().into_owned())),
+                        Ok(path) => path.map(|p| answer_one(&p, true, FileDialogAnswer::SaveTo)),
                         Err(e) => {
                             log::info!("portal save dialog unavailable ({e}), using rfd");
-                            dialog.save_file().await.map(|file| FileDialogAnswer::SaveTo(path_of(&file)))
+                            dialog.save_file().await.map(|file| answer_one(file.path(), true, FileDialogAnswer::SaveTo))
                         }
                     }
                 })
@@ -253,7 +258,7 @@ fn show_file_dialog(request: FileDialogRequest, parent: Option<&eframe::Frame>, 
             {
                 let _ = filters;
                 let picked = dialog.save_file();
-                Box::pin(async move { picked.await.map(|file| FileDialogAnswer::SaveTo(path_of(&file))) })
+                Box::pin(async move { picked.await.map(|file| answer_one(file.path(), true, FileDialogAnswer::SaveTo)) })
             }
         }
     };
@@ -267,12 +272,26 @@ fn show_file_dialog(request: FileDialogRequest, parent: Option<&eframe::Frame>, 
     }
 }
 
-fn path_of(file: &rfd::FileHandle) -> String {
-    file.path().to_string_lossy().into_owned()
+/// The dialog's answer for the chosen `paths`, or the error for one whose name isn't valid
+/// Unicode, which a lossy copy would turn into another file's name (#6601). `saving`: the paths
+/// are to be written to.
+fn answer<'a>(paths: impl IntoIterator<Item = &'a Path>, saving: bool, make: impl FnOnce(Vec<String>) -> FileDialogAnswer) -> FileDialogAnswer {
+    match paths.into_iter().map(|p| photocraft_ui_egui::file_open::path_text(p, saving)).collect() {
+        Ok(paths) => make(paths),
+        Err(e) => FileDialogAnswer::Unavailable(e),
+    }
+}
+
+/// [`answer`] for a dialog that picks one path.
+fn answer_one(path: &Path, saving: bool, make: impl FnOnce(String) -> FileDialogAnswer) -> FileDialogAnswer {
+    match photocraft_ui_egui::file_open::path_text(path, saving) {
+        Ok(path) => make(path),
+        Err(e) => FileDialogAnswer::Unavailable(e),
+    }
 }
 
 /// Runs `future` to completion on this thread, sleeping until it is woken.
-fn block_on<T>(future: impl Future<Output = T>) -> T {
+pub(crate) fn block_on<T>(future: impl Future<Output = T>) -> T {
     struct Unpark(std::thread::Thread);
     impl std::task::Wake for Unpark {
         fn wake(self: Arc<Self>) {
@@ -325,6 +344,44 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
 /// [`write_atomic`] reporting the fraction written (a background save's progress, #3389).
 fn write_atomic_progress(path: &Path, bytes: &[u8], progress: &dyn Fn(f32)) -> Result<(), String> {
     photocraft_format::atomic_write_progress(path, bytes, progress).map_err(|e| e.to_string())
+}
+
+/// Whether `a` and `b` reach the same file: the same device and inode on Unix, the same final path
+/// on Windows (where it holds the name's letter case as stored). False when either can't be read.
+fn same_file(a: &Path, b: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        match (std::fs::metadata(a), std::fs::metadata(b)) {
+            (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+            _ => false,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+/// Whether `a` and `b` name one entry in one folder: `same_file` finds they reach the same file
+/// in the same folder, and the folder doesn't list both names. Another spelling of a name on a
+/// file system that ignores letter case is the same entry; a hard link is another entry, which a
+/// save replaces while the first name keeps the old file. False when the folder can't be read.
+fn same_entry(a: &Path, b: &Path, same_file: impl Fn(&Path, &Path) -> bool) -> bool {
+    let folder = |p: &Path| p.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new(".")).to_path_buf();
+    if !same_file(a, b) || !same_file(&folder(a), &folder(b)) {
+        return false;
+    }
+    let (Some(x), Some(y)) = (a.file_name(), b.file_name()) else { return false };
+    if x == y {
+        return true;
+    }
+    let Ok(entries) = std::fs::read_dir(folder(a)) else { return false };
+    let listed: Vec<_> = entries.filter_map(|e| e.ok().map(|e| e.file_name())).collect();
+    !(listed.iter().any(|n| n == x) && listed.iter().any(|n| n == y))
 }
 
 fn export_options(settings: &photocraft_ui_egui::ExportSettings) -> photocraft_io::ExportOptions {
@@ -384,12 +441,13 @@ fn with_store<R>(store: &SharedRecovery, f: impl FnOnce(&mut RecoveryStore) -> R
 fn recovery_services(dir: Option<PathBuf>) -> Services {
     let recover_dir = dir.clone();
     let store: SharedRecovery = Rc::new(RefCell::new(dir.map(RecoveryStore::new)));
-    let (s1, s2, s4) = (store.clone(), store.clone(), store.clone());
+    let (s1, s2, s4, s5) = (store.clone(), store.clone(), store.clone(), store.clone());
     Services {
         autosave: Some(Box::new(move |doc: &Arc<Document>, revision: u64, path: Option<&str>| {
             with_store(&s1, |s| s.autosave_checked(doc, revision, path.map(str::to_string)))?
         })),
         autosave_results: Some(Box::new(move || with_store(&s4, |s| s.take_completed()).unwrap_or_default())),
+        flush_autosaves: Some(Box::new(move || with_store(&s5, RecoveryStore::flush).unwrap_or_default())),
         discard_autosave: Some(Box::new(move |id: u64| {
             let _ = with_store(&s2, |s| s.discard(id));
         })),
@@ -410,6 +468,17 @@ fn recovery_services(dir: Option<PathBuf>) -> Services {
         })),
         ..Default::default()
     }
+}
+
+/// The OS clipboard read and write run under the crash guard, like Open and Export (#7582): a
+/// panic in arboard, or in decoding a copied file, becomes the paste's (or copy's) error and the
+/// app keeps its documents.
+fn guarded_clipboard_get(mut read: impl FnMut() -> Result<Option<(u32, u32, Vec<u8>)>, String> + 'static) -> photocraft_ui_egui::ClipboardGetFn {
+    Box::new(move || crate::crash_guard::guard("Paste", &mut read))
+}
+
+fn guarded_clipboard_set(mut write: impl FnMut(u32, u32, &[u8]) -> Result<(), String> + 'static) -> photocraft_ui_egui::ClipboardSetFn {
+    Box::new(move |w: u32, h: u32, px: &[u8]| crate::crash_guard::guard("Copy", || write(w, h, px)))
 }
 
 /// The pixels to paste when the clipboard holds copied files rather than an image (Copy in
@@ -524,9 +593,9 @@ pub fn native(automation: Option<photocraft_automation::AuthorizedWorkspace>) ->
         }) as photocraft_ui_egui::AutomationCommandFn
     });
     Services {
-        import: Some(Box::new(|name: &str, bytes: &[u8], max_svg_group_depth: usize| {
+        import: Some(Box::new(|name: &str, bytes: &[u8], opts: &photocraft_io::ImportOptions| {
             crate::crash_guard::guard("Open", || {
-                photocraft_io::import_with_svg_group_depth(name, bytes, max_svg_group_depth).map(|r| (r.document, r.warnings)).map_err(|e| e.to_string())
+                photocraft_io::import_with_options(name, bytes, opts).map(|r| (r.document, r.warnings)).map_err(|e| e.to_string())
             })
         })),
         export: Some(Box::new(|doc: &Document, path: &str, settings: &photocraft_ui_egui::ExportSettings| {
@@ -541,6 +610,7 @@ pub fn native(automation: Option<photocraft_automation::AuthorizedWorkspace>) ->
             let meta = std::fs::metadata(path).ok()?;
             Some(photocraft_ui_egui::FileStamp { len: meta.len(), modified: meta.modified().ok() })
         })),
+        same_file: Some(Box::new(|a: &str, b: &str| same_entry(Path::new(a), Path::new(b), same_file))),
         automation_read,
         automation_write,
         automation_open_pcraft,
@@ -556,7 +626,7 @@ pub fn native(automation: Option<photocraft_automation::AuthorizedWorkspace>) ->
         beep: Some(platform_beep),
         clipboard_set_image: Some({
             let clip = clip.clone();
-            Box::new(move |w: u32, h: u32, px: &[u8]| {
+            guarded_clipboard_set(move |w: u32, h: u32, px: &[u8]| {
                 let mut slot = clip.try_borrow_mut().map_err(|_| "clipboard is busy".to_string())?;
                 let cb = match slot.as_mut() {
                     Some(c) => c,
@@ -568,8 +638,8 @@ pub fn native(automation: Option<photocraft_automation::AuthorizedWorkspace>) ->
         clipboard_get_image: Some({
             let clip = clip.clone();
             let unreadable = clip_unreadable.clone();
-            Box::new(move || {
-                let mut slot = clip.try_borrow_mut().ok()?;
+            guarded_clipboard_get(move || {
+                let mut slot = clip.try_borrow_mut().map_err(|_| "clipboard is busy".to_string())?;
                 let cb = match slot.as_mut() {
                     Some(c) => c,
                     None => {
@@ -578,21 +648,33 @@ pub fn native(automation: Option<photocraft_automation::AuthorizedWorkspace>) ->
                         // `--socket=fallback-x11` gives no X server while a compositor runs.
                         let opened = arboard::Clipboard::new();
                         unreadable.set(opened.is_err());
-                        slot.insert(opened.ok()?)
+                        slot.insert(opened.map_err(|e| e.to_string())?)
                     }
                 };
                 // Copied files first: Finder also puts the file's icon on the clipboard as an
                 // image, which would otherwise paste instead of the file.
-                if let Some(img) = cb.get().file_list().ok().and_then(|paths| image_from_files(&paths)) {
-                    return Some(img);
+                match cb.get().file_list() {
+                    Ok(paths) => {
+                        if let Some(img) = image_from_files(&paths) {
+                            return Ok(Some(img));
+                        }
+                    }
+                    Err(error @ arboard::Error::ClipboardOccupied) => return Err(error.to_string()),
+                    Err(_) => {}
                 }
-                if let Ok(img) = cb.get_image() {
-                    return Some((img.width as u32, img.height as u32, img.bytes.into_owned()));
+                match cb.get_image() {
+                    Ok(img) => Ok(Some((img.width as u32, img.height as u32, img.bytes.into_owned()))),
+                    Err(error) => {
+                        #[cfg(target_os = "linux")]
+                        if let Some(image) = wayland_clipboard_image() {
+                            return Ok(Some(image));
+                        }
+                        match error {
+                            arboard::Error::ContentNotAvailable => Ok(None),
+                            _ => Err(error.to_string()),
+                        }
+                    }
                 }
-                #[cfg(target_os = "linux")]
-                return wayland_clipboard_image();
-                #[cfg(not(target_os = "linux"))]
-                None
             })
         }),
         clipboard_unreadable: Some(Box::new(move || clip_unreadable.get())),
@@ -620,75 +702,17 @@ fn platform_beep() {
     {
         let _ = winsafe::MessageBeep(winsafe::co::MBP::OK);
     }
-    #[cfg(not(target_os = "windows"))]
+    // The user's alert sound, at the alert volume set in System Settings ▸ Sound. The terminal
+    // bell below is silent for an app started from the Finder or the Dock.
+    #[cfg(target_os = "macos")]
+    objc2_app_kit::NSBeep();
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
-        // No beep API among this app's other platforms' dependencies: write the terminal bell
-        // (audible when launched from a terminal, which is the same cue macOS terminals use).
+        // No beep API among the other platforms' dependencies: write the terminal bell (audible
+        // when launched from a terminal).
         use std::io::Write as _;
         let _ = std::io::stdout().write_all(b"\x07").and_then(|()| std::io::stdout().flush());
     }
-}
-
-/// Flat-image import via photocraft-codecs (kept for reference/tests; the app uses photocraft-io).
-#[allow(dead_code)]
-pub fn import_flat(name: &str, bytes: &[u8]) -> Result<Document, String> {
-    let img = photocraft_codecs::decode(bytes).map_err(|e| e.to_string())?;
-    let (w, h) = (img.width(), img.height());
-    let depth = match img.sample_type() {
-        CS::U8 => SampleType::U8,
-        CS::U16 => SampleType::U16,
-        _ => SampleType::F32,
-    };
-    let gray = matches!(img.layout(), ChannelLayout::Gray | ChannelLayout::GrayA);
-    let cmyk = matches!(img.layout(), ChannelLayout::Cmyk | ChannelLayout::CmykA);
-    let mode = if gray {
-        ColorMode::Grayscale
-    } else if cmyk {
-        ColorMode::Cmyk
-    } else {
-        ColorMode::Rgb
-    };
-    let target = match mode {
-        ColorMode::Grayscale => ChannelLayout::GrayA,
-        ColorMode::Cmyk => ChannelLayout::CmykA,
-        _ => ChannelLayout::Rgba,
-    };
-    let sample = match depth {
-        SampleType::U8 => CS::U8,
-        SampleType::U16 => CS::U16,
-        SampleType::F32 => CS::F32,
-    };
-    let conv = img.convert(target, sample);
-    let stem = std::path::Path::new(name).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or(name.to_string());
-    let mut doc = Document::new(stem, Size::new(w, h), mode, depth);
-    doc.icc_profile = img.icc.clone().map(std::sync::Arc::new);
-    if let Some((x, _)) = img.meta.dpi {
-        doc.resolution_dpi = x;
-    }
-    let mut layer = Layer::raster("Background", doc.pixel_format());
-    let data = conv.to_normalized();
-    layer.surface_mut().ok_or("new raster layer has no pixels")?.write_region(Rect::from_xywh(0, 0, w, h), &data);
-    doc.layers.push(layer);
-    Ok(doc)
-}
-
-#[allow(dead_code)]
-pub fn export_flat(doc: &Document, path: &str) -> Result<Vec<u8>, String> {
-    let format = photocraft_codecs::from_extension(path).ok_or_else(|| format!("unknown file type for {path}"))?;
-    let buf = photocraft_compose::flatten(doc);
-    let (w, h) = (buf.rect.width(), buf.rect.height());
-    let data: Vec<f32> = buf.px.iter().flat_map(|p| *p).collect();
-    let img = match doc.depth {
-        SampleType::U8 => Image::from_u8(w, h, ChannelLayout::Rgba, buf.to_rgba8().pixels),
-        SampleType::U16 => Image::from_u16(w, h, ChannelLayout::Rgba, &data.iter().map(|v| (v.clamp(0.0, 1.0) * 65535.0 + 0.5) as u16).collect::<Vec<_>>()),
-        SampleType::F32 => Image::from_f32(w, h, ChannelLayout::Rgba, &data),
-    }
-    .map_err(|e| e.to_string())?;
-    let img = match &doc.icc_profile {
-        Some(icc) if doc.mode == ColorMode::Rgb => img.with_icc(Some((**icc).clone())),
-        _ => img,
-    };
-    photocraft_codecs::encode(&img, format, &EncodeOptions::default()).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -698,6 +722,31 @@ mod tests {
     use photocraft_format::list_recovery;
     use photocraft_ui_egui::{PhotocraftApp, prefs_ui};
     use serde_json::{Value, json};
+
+    /// #6601: a chosen path whose name isn't valid Unicode is reported, never handed on lossily
+    /// (Open would fail with "No such file", Save would write a second, renamed file).
+    #[test]
+    fn a_chosen_path_that_is_not_valid_unicode_is_an_error_not_another_name() {
+        #[cfg(unix)]
+        let bad = {
+            use std::os::unix::ffi::OsStrExt;
+            std::env::temp_dir().join(std::ffi::OsStr::from_bytes(b"img\xFF.png"))
+        };
+        #[cfg(windows)]
+        let bad = {
+            use std::os::windows::ffi::OsStringExt;
+            let mut wide: Vec<u16> = "img".encode_utf16().collect();
+            wide.push(0xD800);
+            wide.extend(".png".encode_utf16());
+            std::env::temp_dir().join(std::ffi::OsString::from_wide(&wide))
+        };
+        let good = std::env::temp_dir().join("ok.png");
+        let save = |path: &Path| answer_one(path, true, FileDialogAnswer::SaveTo);
+        assert!(matches!(save(&bad), FileDialogAnswer::Unavailable(e) if e.contains("not valid Unicode") && e.contains("another name")));
+        assert!(matches!(save(&good), FileDialogAnswer::SaveTo(p) if p == good.to_str().unwrap()));
+        let open = answer([good.as_path(), bad.as_path()], false, FileDialogAnswer::Paths);
+        assert!(matches!(open, FileDialogAnswer::Unavailable(e) if e.contains("open it again")));
+    }
 
     /// #6121: the file type picked in the save dialog gives the name its extension where the
     /// dialog left the one it opened with, and only there.
@@ -734,6 +783,57 @@ mod tests {
         assert_eq!(with_chosen_type(Path::new("/pics/art.psd"), opened, &[]), PathBuf::from("/pics/art.psd"));
     }
 
+    /// Regression using the real clipboard on an isolated Windows CI runner.
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "requires exclusive use of the Windows clipboard"]
+    fn busy_native_clipboard_preserves_copied_shape() {
+        for id in ["edit.paste", "edit.pasteSpecial.pasteInPlace"] {
+            let mut native = native(None);
+            let services = Services {
+                clipboard_set_image: native.clipboard_set_image.take(),
+                clipboard_get_image: native.clipboard_get_image.take(),
+                ..Default::default()
+            };
+            let mut app = PhotocraftApp::new(Session::new(), services);
+            app.run("file.new", json!({"width": 80, "height": 60})).unwrap();
+            app.run("shape.create", json!({"kind": "rect", "rect": [10, 10, 40, 20], "fill": "#ff0000"})).unwrap();
+            app.run("edit.copy", json!({})).unwrap();
+            assert!(app.session.clipboard.as_ref().unwrap().layers.is_some());
+            assert!(app.services.clipboard_get_image.as_mut().unwrap()().unwrap().is_some(), "native export succeeded");
+            app.run("file.new", json!({"width": 80, "height": 60})).unwrap();
+
+            // Another thread holds the OS clipboard open beyond arboard's bounded retry window.
+            let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let holder = std::thread::spawn(move || {
+                // A non-null window distinguishes this owner from arboard's null-window opens.
+                let guard = winsafe::HWND::GetDesktopWindow().OpenClipboard().unwrap();
+                ready_tx.send(()).unwrap();
+                release_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+                drop(guard);
+            });
+            ready_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+            let contention = arboard::Clipboard::new().unwrap().get_image().err();
+            let first = app.run(id, json!({}));
+            release_tx.send(()).unwrap();
+            holder.join().unwrap();
+            assert!(matches!(contention, Some(arboard::Error::ClipboardOccupied)), "diagnostic must actually occupy the clipboard: {contention:?}");
+            eprintln!("paste while clipboard occupied: {first:?}");
+            assert!(first.is_err(), "report contention rather than a successful no-op");
+            assert!(
+                app.session.clipboard.as_ref().is_some_and(|clip| clip.layers.is_some()),
+                "a temporary OS read failure must not discard the copied editable shape"
+            );
+            app.run(id, json!({})).unwrap();
+            let state = app.session.active().unwrap();
+            assert!(
+                matches!(state.doc.layer(state.active_layer.unwrap()).unwrap().content, photocraft_doc::LayerContent::Shape(_)),
+                "retry keeps the shape editable"
+            );
+        }
+    }
+
     #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn open_filters_cover_uppercase_and_mixed_case_extensions() {
@@ -765,6 +865,9 @@ mod tests {
         assert!(!globs.iter().any(|glob| matches(glob, "txt")));
         let svg_filter = open_filters().into_iter().find(|(name, _)| *name == "SVG").map(|(_, exts)| exts).unwrap_or_default();
         assert_eq!(svg_filter, open_filter_extensions(SVG_EXTS));
+        let psd_filter = open_filters().into_iter().find(|(name, _)| *name == "Photoshop").map(|(_, exts)| exts).unwrap_or_default();
+        assert_eq!(psd_filter, open_filter_extensions(&["psd", "psb", "psdt"]));
+        assert!(psd_filter.iter().any(|glob| matches(glob, "psd")) && psd_filter.iter().any(|glob| matches(glob, "PSD")));
         assert!(svg_filter.iter().any(|glob| matches(glob, "svg")) && svg_filter.iter().any(|glob| matches(glob, "svgz")));
     }
 
@@ -794,6 +897,10 @@ mod tests {
         assert_eq!(open_filter_extensions(OPEN_EXTS), OPEN_EXTS);
         assert_eq!(open_filter_extensions(&["pcraft"]), ["pcraft"]);
         assert_eq!(open_filters().into_iter().find(|(name, _)| *name == "SVG").map(|(_, exts)| exts), Some(vec!["svg".to_string(), "svgz".to_string()]));
+        assert_eq!(
+            open_filters().into_iter().find(|(name, _)| *name == "Photoshop").map(|(_, exts)| exts),
+            Some(vec!["psd".to_string(), "psb".to_string(), "psdt".to_string()])
+        );
     }
 
     #[test]
@@ -903,7 +1010,7 @@ mod tests {
                 assert!(format.caps().write, "{name}: .{ext} can't be written");
             }
         }
-        for ext in ["ico", "gif", "bmp"] {
+        for ext in ["ico", "gif", "bmp", "dds"] {
             assert!(save_filters("Untitled-1.psd").iter().any(|(_, exts)| exts.iter().any(|e| e == ext)), ".{ext} is offered");
         }
         assert_eq!(save_filters("icon.ico")[0].0, "ICO", "an .ico name leads with its own type");
@@ -945,6 +1052,50 @@ mod tests {
             assert_eq!(dialog_file_name(name, true).as_deref(), Some(name));
         }
         assert_eq!(dialog_file_name("", true), None);
+    }
+
+    /// A name in another letter case reaches the same file where the file system ignores case
+    /// (Windows, and macOS by default), and only there. Two files with the same contents are two.
+    #[test]
+    fn same_file_follows_the_file_system() {
+        let dir = std::env::temp_dir().join(format!("photocraft-same-file-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (cat, dog, upper) = (dir.join("CAT.psd"), dir.join("dog.psd"), dir.join("CAT.PSD"));
+        std::fs::write(&cat, b"same").unwrap();
+        std::fs::write(&dog, b"same").unwrap();
+        assert!(same_file(&cat, &cat));
+        assert!(!same_file(&cat, &dog));
+        assert_eq!(same_file(&upper, &cat), upper.exists(), "the same file only where letter case is ignored");
+        assert!(!same_file(&dir.join("missing.psd"), &cat));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A hard link is another entry in the folder, though it reaches the same file: a save to it
+    /// replaces that entry and leaves the other name on the old file. Another spelling of a name,
+    /// where letter case is ignored, is the same entry.
+    #[test]
+    fn a_hard_link_is_another_entry() {
+        let dir = std::env::temp_dir().join(format!("photocraft-same-entry-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("other")).unwrap();
+        let (cat, bare, upper, other) = (dir.join("CAT.psd"), dir.join("CAT"), dir.join("CAT.PSD"), dir.join("other").join("CAT.psd"));
+        std::fs::write(&cat, b"cat").unwrap();
+        std::fs::hard_link(&cat, &bare).unwrap();
+        std::fs::hard_link(&cat, &other).unwrap();
+        // Where both names reach one file (one inode on Unix), the folder still lists both.
+        let one_file = |_: &Path, _: &Path| true;
+        assert!(!same_entry(&bare, &cat, one_file));
+        assert!(!same_entry(&bare, &cat, same_file));
+        assert!(!same_entry(&other, &cat, same_file), "another folder");
+        assert!(same_entry(&cat, &cat, one_file));
+        assert!(same_entry(&cat, &cat, same_file));
+        if upper.exists() {
+            assert!(same_entry(&upper, &cat, same_file), "one entry where letter case is ignored");
+        } else {
+            std::fs::hard_link(&cat, &upper).unwrap();
+            assert!(!same_entry(&upper, &cat, same_file), "two entries where letter case tells names apart");
+        }
+        assert!(!same_entry(&dir.join("missing.psd"), &cat, same_file));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -1223,5 +1374,30 @@ mod tests {
         std::fs::write(&bin, tga_1x1()).unwrap();
         assert_eq!(image_from_files(&[tga]), Some((1, 1, vec![255, 0, 0, 255])));
         assert!(image_from_files(&[bin]).is_none());
+    }
+
+    /// #7582: a panic while reading the OS clipboard (in arboard, or decoding a copied file) is
+    /// the paste's error in the status bar, not a crash: the document stays and the next paste
+    /// works. The same for a panic while writing it.
+    #[test]
+    fn a_panicking_clipboard_read_is_reported_not_a_crash() {
+        let panics = Rc::new(Cell::new(true));
+        let p = panics.clone();
+        let get = guarded_clipboard_get(move || if p.get() { panic!("clipboard decoder bug") } else { Ok(Some((2, 2, [0u8, 0, 255, 255].repeat(4)))) });
+        let mut app = PhotocraftApp::new(Session::new(), Services { clipboard_get_image: Some(get), ..Default::default() });
+        app.run("file.new", json!({"width": 8, "height": 8})).unwrap();
+        let layers = app.session.active().unwrap().doc.layers.len();
+
+        let error = app.run("edit.paste", json!({})).unwrap_err();
+        assert!(error.contains("Paste failed"), "{error}");
+        assert!(app.ui.status_error && app.ui.status.contains("Paste failed"), "{}", app.ui.status);
+        assert_eq!(app.session.active().unwrap().doc.layers.len(), layers, "the document is unchanged");
+
+        panics.set(false);
+        app.run("edit.paste", json!({})).unwrap();
+        assert_eq!(app.session.active().unwrap().doc.layers.len(), layers + 1, "the next paste works");
+
+        let mut set = guarded_clipboard_set(|_: u32, _: u32, _: &[u8]| panic!("clipboard writer bug"));
+        assert!(set(1, 1, &[0; 4]).unwrap_err().contains("Copy failed"));
     }
 }

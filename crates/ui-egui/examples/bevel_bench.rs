@@ -52,6 +52,7 @@ fn bevel(size: f32) -> Effect {
         altitude: 32.0,
         use_global_light: false,
         gloss_contour: Contour::Linear,
+        gloss_anti_alias: false,
         highlight: FxCommon::new(BlendMode::Screen, 0.75),
         highlight_color: Color::WHITE,
         shadow: FxCommon::new(BlendMode::Multiply, 0.75),

@@ -3,6 +3,9 @@
 //! Size"…); here they are ordinary commands with default shortcuts, so they can be rebound,
 //! recorded and driven by agents. Each one is a `tools.setBrush` on the session brush.
 //!
+//! `,` / `.` pick the previous or next brush preset and ⇧, / ⇧. the first or last, in the order
+//! the Brushes panel lists them (Photoshop's "Previous Brush"… in Keyboard Shortcuts › Tools).
+//!
 //! `tools.rotateBrush` turns the tip: Photoshop's ← / → while painting (1°, ⇧ 15°). Arrows mean
 //! other things with other tools, so the shell gives them to it only for the painting tools
 //! (`move_mods::arrow_keys`).
@@ -32,6 +35,82 @@ fn hardness_step(hardness: f32, up: bool) -> f32 {
 fn size(s: &mut Session, up: bool) -> Result<Value> {
     let size = size_step(s.tools.brush.size, up);
     crate::brush_cmds::set_brush(s, &json!({ "brush": { "size": size } }))
+}
+
+/// The Brushes panel's label for presets saved without a group: they share its group with presets
+/// in a group of that name.
+pub const UNGROUPED: &str = "My Brushes";
+
+/// Brush preset indices in the Brushes panel's order: groups in order of first appearance (no
+/// group is [`UNGROUPED`]), and in each group its folders where their first preset is, depth first
+/// (as `brushes_tab` draws them). A preset its name can't select (an earlier one has the same name
+/// up to case, and `tools.setBrush` picks that one) is left out afterwards, so stepping never
+/// gets stuck.
+fn panel_order(presets: &[photocraft_paint::BrushPreset]) -> Vec<usize> {
+    fn path(p: &photocraft_paint::BrushPreset) -> &[String] {
+        p.folder.get(..p.folder.len().min(crate::brush_preset_cmds::MAX_FOLDER_DEPTH)).unwrap_or_default()
+    }
+    fn flatten(presets: &[photocraft_paint::BrushPreset], items: &[usize], depth: usize, out: &mut Vec<usize>) {
+        let mut seen: Vec<&str> = Vec::new();
+        for &i in items {
+            let Some(p) = presets.get(i) else { continue };
+            match path(p).get(depth) {
+                None => out.push(i),
+                Some(name) if !seen.contains(&name.as_str()) => {
+                    seen.push(name);
+                    let inside: Vec<usize> = items.iter().copied().filter(|&j| presets.get(j).is_some_and(|q| path(q).get(depth) == Some(name))).collect();
+                    flatten(presets, &inside, depth + 1, out);
+                }
+                Some(_) => {}
+            }
+        }
+    }
+    let mut groups: Vec<(&str, Vec<usize>)> = Vec::new();
+    for (i, p) in presets.iter().enumerate() {
+        let group = if p.group.is_empty() { UNGROUPED } else { p.group.as_str() };
+        match groups.iter_mut().find(|(g, _)| *g == group) {
+            Some((_, v)) => v.push(i),
+            None => groups.push((group, vec![i])),
+        }
+    }
+    let mut out = Vec::with_capacity(presets.len());
+    for (_, items) in &groups {
+        flatten(presets, items, 0, &mut out);
+    }
+    // Groups and folders are placed by every preset, as the panel places them; only then are the
+    // presets their names can't select left out.
+    out.retain(|&i| presets.get(i).is_some_and(|p| photocraft_paint::presets::find(presets, &p.name).is_some_and(|q| std::ptr::eq(q, p))));
+    out
+}
+
+/// Which way [`step_preset`] moves through the presets.
+#[derive(Clone, Copy)]
+enum Step {
+    Previous,
+    Next,
+    First,
+    Last,
+}
+
+/// `,` / `.` / ⇧, / ⇧.: pick the previous, next, first or last brush preset (wrapping around), as
+/// a click in the Brushes panel would (`tools.setBrush` with the preset). With no preset picked
+/// yet, Next starts at the first and Previous at the last.
+fn step_preset(s: &mut Session, step: Step) -> Result<Value> {
+    let order = panel_order(&s.tools.presets);
+    let n = order.len();
+    if n == 0 {
+        return Err(EngineError::Other("there are no brush presets".into()));
+    }
+    let at = s.tools.current_preset.as_deref().and_then(|c| order.iter().position(|&i| s.tools.presets.get(i).is_some_and(|p| p.name.eq_ignore_ascii_case(c))));
+    let k = match (step, at) {
+        (Step::First, _) | (Step::Next, None) => 0,
+        (Step::Last, _) | (Step::Previous, None) => n - 1,
+        (Step::Next, Some(k)) => (k + 1) % n,
+        (Step::Previous, Some(k)) => (k + n - 1) % n,
+    };
+    let name = order.get(k).and_then(|&i| s.tools.presets.get(i)).map(|p| p.name.clone()).ok_or_else(|| EngineError::Other("no such brush preset".into()))?;
+    crate::brush_cmds::set_brush(s, &json!({ "preset": name }))?;
+    Ok(json!({ "preset": name }))
 }
 
 fn hardness(s: &mut Session, up: bool) -> Result<Value> {
@@ -68,6 +147,10 @@ pub fn specs() -> Vec<CommandSpec> {
         key_cmd!("tools.increaseBrushSize", "Increase Brush Size", "]", |s, _| size(s, true)),
         key_cmd!("tools.decreaseBrushHardness", "Decrease Brush Hardness", "Shift+[", |s, _| hardness(s, false)),
         key_cmd!("tools.increaseBrushHardness", "Increase Brush Hardness", "Shift+]", |s, _| hardness(s, true)),
+        key_cmd!("tools.previousBrush", "Previous Brush", ",", |s, _| step_preset(s, Step::Previous)),
+        key_cmd!("tools.nextBrush", "Next Brush", ".", |s, _| step_preset(s, Step::Next)),
+        key_cmd!("tools.firstBrush", "First Brush", "Shift+,", |s, _| step_preset(s, Step::First)),
+        key_cmd!("tools.lastBrush", "Last Brush", "Shift+.", |s, _| step_preset(s, Step::Last)),
         CommandSpec {
             id: "tools.rotateBrush",
             label: "Rotate Brush Tip",
@@ -118,6 +201,78 @@ mod tests {
             assert!(s.execute("tools.rotateBrush", bad.clone()).is_err(), "{bad}");
         }
         assert_eq!(s.tools.brush.angle, -15.0);
+    }
+
+    fn preset(name: &str, group: &str, folder: &[&str], size: f32) -> photocraft_paint::BrushPreset {
+        photocraft_paint::BrushPreset {
+            name: name.into(),
+            brush: photocraft_paint::BrushSettings { size, ..Default::default() },
+            builtin: false,
+            group: group.into(),
+            folder: folder.iter().map(|f| f.to_string()).collect(),
+            captures: Default::default(),
+        }
+    }
+
+    #[test]
+    fn panel_order_groups_then_folders_depth_first() {
+        let presets = vec![
+            preset("a", "G1", &[], 1.0),
+            preset("b", "G2", &[], 2.0),
+            preset("c", "G1", &["F"], 3.0),
+            preset("d", "G1", &[], 4.0),
+            preset("e", "G1", &["F"], 5.0),
+            preset("f", "G1", &["F", "Sub"], 6.0),
+            preset("g", "G1", &["F"], 7.0),
+        ];
+        let names: Vec<&str> = panel_order(&presets).into_iter().map(|i| presets[i].name.as_str()).collect();
+        // G1: a, folder F (c, e, then Sub's f where its first preset is, g), d; then G2: b.
+        assert_eq!(names, ["a", "c", "e", "f", "g", "d", "b"]);
+        // No group is the panel's "My Brushes": one group with presets named into it.
+        let presets = vec![preset("x", "", &[], 1.0), preset("y", UNGROUPED, &[], 1.0), preset("z", "", &[], 1.0), preset("w", "G", &[], 1.0)];
+        let names: Vec<&str> = panel_order(&presets).into_iter().map(|i| presets[i].name.as_str()).collect();
+        assert_eq!(names, ["x", "y", "z", "w"]);
+        // A name only a case apart from an earlier one can't be picked by name: skipped.
+        let presets = vec![preset("Foo", "", &[], 1.0), preset("foo", "", &[], 1.0), preset("Bar", "", &[], 1.0)];
+        let names: Vec<&str> = panel_order(&presets).into_iter().map(|i| presets[i].name.as_str()).collect();
+        assert_eq!(names, ["Foo", "Bar"]);
+        // A skipped duplicate still places its group where the panel does: G2 (from `foo`) comes
+        // before G3, so the panel's Foo, foo, Baz, Bar steps as Foo, Baz, Bar.
+        let presets = vec![preset("Foo", "G1", &[], 1.0), preset("foo", "G2", &[], 1.0), preset("Bar", "G3", &[], 1.0), preset("Baz", "G2", &[], 1.0)];
+        let names: Vec<&str> = panel_order(&presets).into_iter().map(|i| presets[i].name.as_str()).collect();
+        assert_eq!(names, ["Foo", "Baz", "Bar"]);
+    }
+
+    #[test]
+    fn previous_and_next_brush_walk_the_presets_and_wrap() {
+        let mut s = Session::new();
+        s.tools.presets = vec![preset("One", "", &[], 11.0), preset("Two", "", &[], 22.0), preset("Three", "", &[], 33.0)];
+        s.tools.current_preset = None;
+        let picked = |s: &Session| (s.tools.current_preset.clone().unwrap_or_default(), s.tools.brush.size);
+        s.execute("tools.nextBrush", Value::Null).unwrap();
+        assert_eq!(picked(&s), ("One".into(), 11.0), "Next with no preset picked starts at the first");
+        s.execute("tools.nextBrush", Value::Null).unwrap();
+        assert_eq!(picked(&s), ("Two".into(), 22.0));
+        s.execute("tools.lastBrush", Value::Null).unwrap();
+        assert_eq!(picked(&s), ("Three".into(), 33.0));
+        s.execute("tools.nextBrush", Value::Null).unwrap();
+        assert_eq!(picked(&s).0, "One", "wraps past the last");
+        s.execute("tools.previousBrush", Value::Null).unwrap();
+        assert_eq!(picked(&s).0, "Three", "wraps before the first");
+        s.execute("tools.firstBrush", Value::Null).unwrap();
+        assert_eq!(picked(&s).0, "One");
+        let sc = |id: &str| crate::commands::find(id).and_then(|c| c.shortcut);
+        assert_eq!(
+            [sc("tools.previousBrush"), sc("tools.nextBrush"), sc("tools.firstBrush"), sc("tools.lastBrush")],
+            [Some(","), Some("."), Some("Shift+,"), Some("Shift+.")]
+        );
+        // No presets: an error, and the brush and the current preset stay as they were.
+        s.tools.presets.clear();
+        let (brush, current) = (s.tools.brush.clone(), s.tools.current_preset.clone());
+        for id in ["tools.previousBrush", "tools.nextBrush", "tools.firstBrush", "tools.lastBrush"] {
+            assert!(s.execute(id, Value::Null).is_err(), "{id}");
+        }
+        assert_eq!((s.tools.brush.clone(), s.tools.current_preset.clone()), (brush, current));
     }
 
     #[test]

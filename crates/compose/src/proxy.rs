@@ -112,7 +112,8 @@ pub fn proxy_document(doc: &Document, k: u32) -> Document {
 /// with it. Empty vector masks have constant coverage, including inversion and density.
 /// Nonempty paths can still anchor fill layouts even when their mask density is zero.
 pub fn proxy_faithful(doc: &Document) -> bool {
-    doc.walk().iter().all(|(_, _, l)| !crate::effects::has_effects(l) && l.vector_mask.as_ref().is_none_or(|v| !v.enabled || v.path.is_empty()))
+    // Hidden layers (and what they hold) are not composited, so they don't count.
+    crate::visible_layers(&doc.layers).iter().all(|l| !crate::effects::has_effects(l) && l.vector_mask.as_ref().is_none_or(|v| !v.enabled || v.path.is_empty()))
 }
 
 #[cfg(test)]
@@ -260,6 +261,25 @@ mod tests {
         doc.layers[1].effects.enabled = true;
         assert!(!proxy_faithful(&doc));
         doc.layers[1].effects.items[0].set_enabled(false);
+        assert!(proxy_faithful(&doc));
+    }
+
+    #[test]
+    fn a_hidden_layer_with_effects_does_not_rule_out_the_proxy_or_the_uniform_shortcut() {
+        let mut doc = two_colors(Size::new(32, 16), SampleType::U8);
+        doc.layers[1].effects.items.push(Effect::default_drop_shadow());
+        doc.layers[1].effects.enabled = true;
+        assert!(!proxy_faithful(&doc));
+        assert!(crate::uniform::UniformAreas::new(&doc).is_none());
+        doc.layers[1].visible = false;
+        assert!(proxy_faithful(&doc));
+        assert!(crate::uniform::UniformAreas::new(&doc).is_some());
+        // Inside a hidden group too.
+        doc.layers[1].visible = true;
+        let group = Layer::group("g", vec![doc.layers.remove(1)]);
+        doc.layers.push(group);
+        assert!(!proxy_faithful(&doc));
+        doc.layers[1].visible = false;
         assert!(proxy_faithful(&doc));
     }
 

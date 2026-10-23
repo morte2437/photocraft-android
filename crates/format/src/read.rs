@@ -23,8 +23,28 @@ pub fn read_file(path: &Path) -> io::Result<Vec<u8>> {
 
 /// [`read_file`] with a chosen read size (tests use small ones to exercise the loop).
 pub fn read_file_with(path: &Path, chunk: usize) -> io::Result<Vec<u8>> {
-    let mut f = std::fs::File::open(path)?;
-    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    #[cfg(unix)]
+    let (mut f, metadata) = {
+        use rustix::fs::{Mode, OFlags, open};
+        let fd = open(path, OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC, Mode::empty()).map_err(io::Error::from)?;
+        let f = std::fs::File::from(fd);
+        let metadata = f.metadata()?;
+        if !metadata.is_file() {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "path is not a regular file"));
+        }
+        rustix::fs::fcntl_setfl(&f, OFlags::empty()).map_err(io::Error::from)?;
+        (f, metadata)
+    };
+    #[cfg(not(unix))]
+    let (mut f, metadata) = {
+        let f = std::fs::File::open(path)?;
+        let metadata = f.metadata()?;
+        if !metadata.is_file() {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "path is not a regular file"));
+        }
+        (f, metadata)
+    };
+    let len = metadata.len();
     read_all_with(&mut f, len, chunk)
 }
 

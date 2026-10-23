@@ -212,12 +212,17 @@ fn box_pass_px<const N: usize>(src: &[f32], dst: &mut [f32], r: usize) {
 }
 
 /// Box passes of the given radii in turn along the line in `s.line` (`w`-float elements, as many
-/// as `dst` holds plus twice the radii's sum; consumed), ending in `dst`.
-fn line_passes(dst: &mut [f32], w: usize, radii: &[usize], s: &mut Scratch) {
+/// as `dst` holds plus twice the radii's sum; consumed), ending in `dst`. Stops early (leaving
+/// `dst` unfinished) when `ctl` is cancelled before a pass: a column strip's passes take tens of
+/// milliseconds on a tall image, too long to finish once cancelled (#6205).
+fn line_passes(dst: &mut [f32], w: usize, radii: &[usize], s: &mut Scratch, ctl: &Interrupt) {
     let Scratch { line, next, acc } = s;
     let Some(len) = dst.len().checked_div(w) else { return };
     let mut tail: usize = radii.iter().sum();
     for (k, &r) in radii.iter().enumerate() {
+        if ctl.cancelled() {
+            return;
+        }
         tail -= r;
         if k + 1 == radii.len() {
             box_pass(line, dst, w, r, acc);
@@ -281,7 +286,7 @@ pub(crate) fn box_blur(
             (0..left).for_each(|_| s.line.extend_from_slice(first));
             s.line.extend_from_slice(&row);
             (0..right).for_each(|_| s.line.extend_from_slice(last));
-            line_passes(dst, n, &radii, &mut s);
+            line_passes(dst, n, &radii, &mut s, ctl);
         }
     });
     // Vertical passes, strip by strip, the same way down the columns.
@@ -300,7 +305,10 @@ pub(crate) fn box_blur(
         (0..rows).for_each(|y| s.line.extend_from_slice(row(y)));
         (0..bottom).for_each(|_| s.line.extend_from_slice(row(rows - 1)));
         let mut res = vec![0.0f32; oh * w];
-        line_passes(&mut res, w, &radii, &mut s);
+        line_passes(&mut res, w, &radii, &mut s, ctl);
+        if ctl.cancelled() {
+            return (t, Vec::new());
+        }
         unpremultiply(&mut res, n, alpha);
         (t, res)
     });
@@ -1178,6 +1186,63 @@ mod tests {
                 let err = direct.iter().zip(&ranked).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
                 println!("{label} r {r:3}: direct {td:>10.2?}  ranked {tr:>10.2?}  max err {err:.2e}");
             }
+        }
+    }
+
+    /// A column strip's passes stop between passes once cancelled, not only before the strip
+    /// (#6205); uncancelled, every pass runs.
+    #[test]
+    fn line_passes_stop_between_passes_when_cancelled() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let (radii, w, len) = ([2usize, 3, 2], 4usize, 50usize);
+        let reach: usize = radii.iter().sum();
+        let line: Vec<f32> = (0..(len + 2 * reach) * w).map(|i| (i % 7) as f32 + 1.0).collect();
+        let run = |ctl: &Interrupt| {
+            let mut s = Scratch { line: line.clone(), ..Scratch::default() };
+            let mut dst = vec![0.0f32; len * w];
+            line_passes(&mut dst, w, &radii, &mut s, ctl);
+            dst
+        };
+        assert!(run(&Interrupt::NONE).iter().all(|v| *v > 0.0));
+        let calls = AtomicUsize::new(0);
+        let cancel = || calls.fetch_add(1, Ordering::SeqCst) >= 1;
+        // Cancelled after the first pass: the last pass (the one writing `dst`) never runs.
+        assert!(run(&Interrupt::cancel_only(&cancel)).iter().all(|v| *v == 0.0));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    /// A box blur cancelled at any of its checks returns `None` (never a half-blurred result);
+    /// one that is asked but never cancelled is bit-identical to the uninterruptible run.
+    #[test]
+    fn box_blur_honours_a_cancel_at_every_check() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let (n, src) = (4usize, Rect::new(0, 0, 150, 90));
+        let px: Vec<f32> = (0..src.width() as usize * src.height() as usize * n).map(|i| (i as f32 * 0.13).sin() * 0.5 + 0.5).collect();
+        let read = |r: Rect, buf: &mut Vec<f32>| {
+            buf.clear();
+            let (x0, x1) = ((r.x0 * n as i32) as usize, (r.x1 * n as i32) as usize);
+            let row = r.y0 as usize * src.width() as usize * n;
+            buf.extend_from_slice(&px[row + x0..row + x1]);
+        };
+        let Some(boxes) = box_widths(&FilterParams::GaussianBlur { radius: 12.0 }) else { panic!("box passes") };
+        let out = Rect::new(-5, 3, 155, 80);
+        let want = box_blur(src, &read, out, n, true, &boxes, &Interrupt::NONE).unwrap();
+        let checks = AtomicUsize::new(0);
+        let count = || {
+            checks.fetch_add(1, Ordering::SeqCst);
+            false
+        };
+        let got = box_blur(src, &read, out, n, true, &boxes, &Interrupt::cancel_only(&count)).unwrap();
+        assert_eq!(got.len(), want.len());
+        for ((ta, a), (tb, b)) in got.iter().zip(&want) {
+            assert_eq!(ta, tb);
+            assert!(a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits()), "strip {ta:?} differs");
+        }
+        let total = checks.load(Ordering::SeqCst);
+        for k in (0..total).step_by((total / 40).max(1)) {
+            let seen = AtomicUsize::new(0);
+            let cancel = || seen.fetch_add(1, Ordering::SeqCst) >= k;
+            assert!(box_blur(src, &read, out, n, true, &boxes, &Interrupt::cancel_only(&cancel)).is_none(), "cancelled at check {k}");
         }
     }
 }

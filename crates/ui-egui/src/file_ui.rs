@@ -242,6 +242,7 @@ pub fn open_web(app: &mut PhotocraftApp) -> u64 {
         ("convertToSrgb", json!(true)),
         ("metadata", json!("copyright")),
         ("percent", json!(100.0)),
+        ("resample", json!("bicubic")),
         ("webSnap", json!(0)),
     ] {
         f.entry(k.to_string()).or_insert(v);
@@ -284,7 +285,7 @@ fn web_pane(app: &PhotocraftApp, ui: &mut egui::Ui, size: egui::Vec2, p: Option<
     let rev = st.revision;
     // A bounded proxy; navigation never recomposites or re-encodes it.
     let base = p.cloned().unwrap_or_else(|| json!({}));
-    let size_sig = format!("{}|{}|{}|{}", base["percent"], base["width"], base["height"], base["convertToSrgb"]);
+    let size_sig = format!("{}|{}|{}|{}|{}", base["percent"], base["width"], base["height"], base["resample"], base["convertToSrgb"]);
     let wkey = egui::Id::new(("web-proxy", doc.id.0, pane));
     let proxy_sig = format!("{rev}|{frame:?}|{size_sig}");
     let cached_proxy: Option<(String, WebProxy)> = ui.data(|d| d.get_temp(wkey));
@@ -302,8 +303,9 @@ fn web_pane(app: &PhotocraftApp, ui: &mut egui::Ui, size: egui::Vec2, p: Option<
             let k = (2048.0 / fw.max(fh)).min(1.0);
             let st = WebSettings::from_params(&base, "preview").unwrap_or_default();
             let Ok(doc) = web_frame_document(&doc, frame) else { return };
+            let resample = web_preview::proxy_resample(&base, k);
             let Ok((wd, _, _)) =
-                web_cmds::web_document(&doc, &json!({"width": (fw * k).round().max(1.0), "height": (fh * k).round().max(1.0), "resample": "bilinear"}), &st)
+                web_cmds::web_document(&doc, &json!({"width": (fw * k).round().max(1.0), "height": (fh * k).round().max(1.0), "resample": resample}), &st)
             else {
                 return;
             };
@@ -628,13 +630,7 @@ fn web_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Valu
                 }
                 ui.add_space(8.0);
                 ui.label(egui::RichText::new(tl!("Image Size")).font(crate::theme::semibold(12.0)).color(t.text));
-                number(ui, f, "percent", tl!("Percent"), 1.0..=1000.0, "%", 100.0);
-                let pct = n(f, "percent", 100.0) / 100.0;
-                ui.label(
-                    egui::RichText::new(format!("W: {} px   H: {} px", (f64::from(doc.size.width) * pct).round(), (f64::from(doc.size.height) * pct).round()))
-                        .color(t.text_dim)
-                        .size(11.5),
-                );
+                web_size(ui, f, &doc);
                 let nslices = photocraft_doc::slices::resolve(&doc).len();
                 if !doc.slices.is_empty() {
                     ui.add_space(6.0);
@@ -644,6 +640,86 @@ fn web_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Valu
                 }
             });
         });
+    });
+}
+
+/// A size row in a two-column grid: the label, then a field showing `shown`. Returns the typed
+/// value when it changed, compared with the value the widget was given so a field that only
+/// clamps does not count as an edit.
+fn size_field(ui: &mut egui::Ui, label: &str, shown: f64, range: std::ops::RangeInclusive<f32>, unit: &str, decimals: u32) -> Option<f64> {
+    let t = Tokens::get(ui.ctx());
+    let passed = (shown as f32).clamp(*range.start(), *range.end());
+    let mut v = passed;
+    ui.label(egui::RichText::new(label).color(t.text_dim));
+    crate::widgets::value_field_prec(ui, &mut v, range, unit, 90.0, decimals);
+    ui.end_row();
+    (v != passed).then_some(f64::from(v))
+}
+
+/// Image Size, as in Photoshop's Save for Web: Width and Height linked in proportion (on at
+/// each opening), Percent and the resampling method. A side edit sets exact pixels and drops
+/// `percent`, which the engine would otherwise apply first; a Percent edit sets both sides.
+fn web_size(ui: &mut egui::Ui, f: &mut Map<String, Value>, doc: &photocraft_doc::Document) {
+    use crate::export_dialog::{MAX_PX, resize_from_scale, resize_from_side};
+    let (w0, h0) = (f64::from(doc.size.width).max(1.0), f64::from(doc.size.height).max(1.0));
+    let (w, h) = web_preview::dimensions(doc, &params(f)).unwrap_or((w0, h0));
+    let lock = b(f, "__constrain", true);
+    let pct = n(f, "percent", w / w0 * 100.0);
+    let write = |f: &mut Map<String, Value>, width: f64, height: f64| {
+        f.insert("width".into(), json!(width));
+        f.insert("height".into(), json!(height));
+    };
+    let max = MAX_PX as f32;
+    let (width, height, percent) = egui::Grid::new("web-size")
+        .num_columns(2)
+        .show(ui, |ui| {
+            (
+                size_field(ui, tl!("Width"), w, 1.0..=max, "px", 0),
+                size_field(ui, tl!("Height"), h, 1.0..=max, "px", 0),
+                size_field(ui, tl!("Percent"), pct, 1.0..=1000.0, "%", 2),
+            )
+        })
+        .inner;
+    let side = match (width, height) {
+        (Some(v), _) => resize_from_side(w0, h0, v.round(), h, lock, true).ok(),
+        (_, Some(v)) => resize_from_side(w0, h0, w, v.round(), lock, false).ok(),
+        _ => None,
+    };
+    if let Some(size) = side {
+        f.remove("percent");
+        write(f, size.width, size.height);
+    } else if let Some(v) = percent
+        && let Ok(size) = resize_from_scale(w0, h0, v)
+    {
+        f.insert("percent".into(), json!(size.scale));
+        write(f, size.width, size.height);
+    }
+    let mut linked = lock;
+    if crate::widgets::checkbox(ui, &mut linked, tl!("Constrain proportions")).changed() {
+        f.insert("__constrain".into(), json!(linked));
+        // Linked again, the height follows the width in the document's proportions.
+        if linked && let Ok(size) = resize_from_side(w0, h0, w, h, true, true) {
+            f.remove("percent");
+            write(f, size.width, size.height);
+        }
+    }
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(tl!("Resample")).color(Tokens::get(ui.ctx()).text_dim));
+        // Photoshop's Save for Web list, in its order.
+        dropdown_str(
+            ui,
+            "web-resample",
+            f,
+            "resample",
+            &[
+                ("nearest", tl!("Nearest Neighbor (hard edges)")),
+                ("bilinear", tl!("Bilinear")),
+                ("bicubic", tl!("Bicubic (smooth gradients)")),
+                ("bicubicSmoother", tl!("Bicubic Smoother (enlargement)")),
+                ("bicubicSharper", tl!("Bicubic Sharper (reduction)")),
+            ],
+            170.0,
+        );
     });
 }
 
@@ -723,6 +799,10 @@ fn download_for_web(app: &mut PhotocraftApp, mut p: Value) -> Result<Value, Stri
 
 // ---------- Print ----------
 
+/// Opens a Print dialog seeded from the last print, filling missing fields with defaults.
+/// Refreshes the printer list on each opening; when native driver enumeration succeeds,
+/// an unavailable saved printer is replaced and its stale driver settings are discarded.
+/// Returns the dialog ID without submitting a print job.
 pub fn open_print(app: &mut PhotocraftApp) -> u64 {
     let mut f = Map::new();
     f.insert("__print".into(), json!(true));
@@ -772,6 +852,44 @@ pub fn open_print(app: &mut PhotocraftApp) -> u64 {
     app.ui.open_dialog(DialogKind::Command, f)
 }
 
+/// Whether the driver's paper, as `driver_page` took it, is wider than tall: the Orientation
+/// buttons show landscape then.
+fn driver_paper_is_wide(f: &Map<String, Value>) -> bool {
+    let side = |i: usize| f.get("paper").and_then(Value::as_array).and_then(|a| a.get(i)).and_then(Value::as_f64);
+    matches!((side(0), side(1)), (Some(w), Some(h)) if w > h)
+}
+
+/// The Orientation buttons: the driver settings (or the printer's own) turned portrait or
+/// landscape through `file.print.page`. An error stays on the dialog, with the settings left as
+/// they were.
+fn turn_driver(app: &mut PhotocraftApp, f: &mut Map<String, Value>, landscape: bool) {
+    let mut q = json!({"printer": s(f, "printer", ""), "orientation": if landscape { "landscape" } else { "portrait" }});
+    if let (Some(h), Some(o)) = (f.get("printerSettings").cloned(), q.as_object_mut()) {
+        o.insert("printerSettings".into(), h);
+    }
+    match app.session.execute("file.print.page", q) {
+        Ok(r) => take_turned_page(f, &r),
+        Err(e) => {
+            f.insert("__pageError".into(), json!(e.to_string()));
+        }
+    }
+}
+
+/// The turned settings and the paper they give, both from the one `file.print.page` answer, as
+/// `driver_page` takes a page: asking the driver again could fail and leave new settings with the
+/// old paper. An answer without both leaves the dialog as it was, with the reason shown.
+fn take_turned_page(f: &mut Map<String, Value>, r: &Value) {
+    let paper = r.get("paper").and_then(Value::as_array).and_then(|a| Some((a.first()?.as_f64()?, a.get(1)?.as_f64()?)));
+    let (Some(settings), Some((w, h))) = (r.get("printerSettings").and_then(Value::as_str), paper) else {
+        f.insert("__pageError".into(), json!("the printer did not report the turned page"));
+        return;
+    };
+    f.insert("printerSettings".into(), json!(settings));
+    f.insert("paper".into(), json!([w, h]));
+    f.insert("orientation".into(), json!("portrait"));
+    f.remove("__pageError");
+}
+
 /// Takes the paper from the printer's driver settings (Windows), as Photoshop does.
 fn driver_page(f: &mut Map<String, Value>) {
     let printer = s(f, "printer", "");
@@ -779,10 +897,12 @@ fn driver_page(f: &mut Map<String, Value>) {
     match craft_print::rgb::page(&printer, settings.as_ref()) {
         Ok(pg) => {
             f.insert("paper".into(), json!([pg.paper.0, pg.paper.1]));
+            f.insert("printable".into(), json!([pg.printable.0, pg.printable.1, pg.printable.2, pg.printable.3]));
             f.insert("orientation".into(), json!("portrait"));
             f.remove("__pageError");
         }
         Err(e) => {
+            f.remove("printable");
             f.insert("__pageError".into(), json!(e.to_string()));
         }
     }
@@ -802,7 +922,15 @@ fn length_field(ui: &mut egui::Ui, label: &str, pt: &mut f64, units: &str) -> bo
     length_field_prec(ui, label, pt, units, 0)
 }
 
+/// Edits a point-valued length in the selected units, with the requested decimal precision.
+/// Retains the nonnegative 0..=10000 display-unit range used by existing size fields.
 fn length_field_prec(ui: &mut egui::Ui, label: &str, pt: &mut f64, units: &str, decimals: u32) -> bool {
+    length_field_range(ui, label, pt, units, decimals, 0.0..=10000.0)
+}
+
+/// Edits a length stored in print points (72 per inch), returning true for a finite edit.
+/// `range` is in the displayed `units`; a signed range permits negative Top/Left offsets.
+fn length_field_range(ui: &mut egui::Ui, label: &str, pt: &mut f64, units: &str, decimals: u32, range: std::ops::RangeInclusive<f32>) -> bool {
     let t = Tokens::get(ui.ctx());
     let k = unit_pt(units);
     let mut v = (*pt / k) as f32;
@@ -810,7 +938,7 @@ fn length_field_prec(ui: &mut egui::Ui, label: &str, pt: &mut f64, units: &str, 
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new(label).color(t.text_dim));
         let before = v;
-        crate::widgets::value_field_prec(ui, &mut v, 0.0..=10000.0, units, 70.0, decimals);
+        crate::widgets::value_field_prec(ui, &mut v, range, units, 70.0, decimals);
         if (v - before).abs() > 1e-4 && v.is_finite() {
             *pt = f64::from(v) * k;
             changed = true;
@@ -829,6 +957,9 @@ fn print_paper_size(value: Option<&Value>) -> (f64, f64) {
     }
 }
 
+/// Edits the paper preset, orientation and custom dimensions, remembering custom sizes
+/// across preset switches. Dimensions are displayed in the selected units but stored as
+/// unrotated print points; the engine applies orientation and validates the final size.
 fn print_paper_controls(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
     let previous = f.get("paper").cloned();
     let mut selected = if previous.as_ref().is_some_and(Value::is_array) { "custom".to_string() } else { s(f, "paper", "letter") };
@@ -881,6 +1012,44 @@ fn browse_pdf(app: &mut PhotocraftApp, id: u64, suggested: &str) {
     }
 }
 
+/// Converts total displacement from a fixed drag-start layout into manual inch offsets.
+/// Resolving Center before the drag avoids a jump; each update replaces the offsets rather
+/// than accumulating movement. Emulsion Down reverses horizontal layout-space movement.
+///
+/// `delta` and the painter use egui points, including on Retina displays; the scale is egui
+/// points per print point (1/72 inch). Applying pixels_per_point would count HiDPI twice.
+/// Invalid scales or nonfinite displacement/offsets return false without changing fields.
+/// Accepted offsets are clamped to the engine's safety bound and Center is disabled.
+fn drag_print_position(f: &mut Map<String, Value>, start: photocraft_engine::print_cmds::PrintLayout, delta: egui::Vec2, points_per_print_point: f32) -> bool {
+    if !points_per_print_point.is_finite() || points_per_print_point <= 0.0 || !delta.is_finite() {
+        return false;
+    }
+    let (x, y, _, h) = start.rect;
+    let direction = if start.emulsion_down { -1.0 } else { 1.0 };
+    let left = (x + direction * f64::from(delta.x) / f64::from(points_per_print_point)) / 72.0;
+    let top = (start.paper.1 - y - h + f64::from(delta.y) / f64::from(points_per_print_point)) / 72.0;
+    if !left.is_finite() || !top.is_finite() {
+        return false;
+    }
+    let limit = photocraft_engine::print_cmds::MAX_POSITION_INCHES;
+    f.insert("center".into(), json!(false));
+    f.insert("left".into(), json!(left.clamp(-limit, limit)));
+    f.insert("top".into(), json!(top.clamp(-limit, limit)));
+    true
+}
+
+/// Maps the engine's bottom-left print-point rectangle into top-left egui coordinates.
+/// `k` is egui points per print point; Emulsion Down mirrors placement across the page,
+/// matching the PDF page transform. Returns the full image bounds for the caller to clip.
+fn print_preview_image(l: photocraft_engine::print_cmds::PrintLayout, page: egui::Rect, k: f32) -> egui::Rect {
+    let (x, y, w, h) = l.rect;
+    let x = if l.emulsion_down { l.paper.0 - x - w } else { x };
+    egui::Rect::from_min_size(egui::pos2(page.left() + x as f32 * k, page.bottom() - (y + h) as f32 * k), egui::vec2(w as f32 * k, h as f32 * k))
+}
+
+/// Draws the print controls and paper-clipped preview using the engine's shared layout.
+/// Dragging the visible image updates dialog offsets live from a fixed gesture origin;
+/// the position row stays present while centered so switching to manual cannot move the page.
 fn print_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Value>, id: u64) {
     let t = Tokens::get(ui.ctx());
     let Some(doc) = app.session.active().map(|d| d.doc.clone()) else { return };
@@ -898,7 +1067,9 @@ fn print_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Va
             f.insert("__driverPageInitialized".into(), json!(true));
         }
     } else {
+        // PDF output and previews have no driver page: Scale to Fit Media uses the paper.
         f.remove("__driverPageInitialized");
+        f.remove("printable");
     }
     let p = params(f);
     let mut browse = false;
@@ -908,19 +1079,39 @@ fn print_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Va
             let (area, _) = ui.allocate_exact_size(egui::vec2(330.0, 400.0), egui::Sense::hover());
             ui.painter().rect_filled(area, 0.0, t.canvas);
             match photocraft_engine::print_cmds::layout(&doc, &p, "file.print") {
-                Ok(l) => {
+                Ok(mut l) => {
                     let (pw, ph) = l.paper;
                     let k = ((area.width() - 20.0) / pw as f32).min((area.height() - 20.0) / ph as f32);
                     let page = egui::Rect::from_center_size(area.center(), egui::vec2(pw as f32 * k, ph as f32 * k));
                     ui.painter().rect_filled(page, 0.0, egui::Color32::WHITE);
                     ui.painter().rect_stroke(page, 0.0, egui::Stroke::new(1.0, t.separator), egui::StrokeKind::Outside);
+                    let mut img = print_preview_image(l, page, k);
+                    let drag_id = ui.id().with(("print-position", id));
+                    let visible = img.intersect(page).intersect(ui.clip_rect());
+                    let response = ui.interact(visible, drag_id, egui::Sense::drag()).on_hover_cursor(egui::CursorIcon::Grab);
+                    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, tl!("Print preview image")));
+                    // Keep a fixed layout and press origin for the whole gesture: rounding and
+                    // the transition from Center must never accumulate or move the grab point.
+                    if response.drag_started_by(egui::PointerButton::Primary)
+                        && let Some(origin) = ui.input(|i| i.pointer.press_origin())
+                    {
+                        ui.data_mut(|d| d.insert_temp(drag_id, (l, origin, k)));
+                    }
+                    if (response.dragged_by(egui::PointerButton::Primary) || response.drag_stopped_by(egui::PointerButton::Primary))
+                        && let Some((start, origin, scale)) = ui.data(|d| d.get_temp::<(photocraft_engine::print_cmds::PrintLayout, egui::Pos2, f32)>(drag_id))
+                        && let Some(pointer) = response.interact_pointer_pos()
+                        && drag_print_position(f, start, pointer - origin, scale)
+                    {
+                        if let Ok(updated) = photocraft_engine::print_cmds::layout(&doc, &params(f), "file.print") {
+                            l = updated;
+                            img = print_preview_image(l, page, k);
+                        }
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                    }
+                    if !ui.input(|i| i.pointer.primary_down()) {
+                        ui.data_mut(|d| d.remove::<(photocraft_engine::print_cmds::PrintLayout, egui::Pos2, f32)>(drag_id));
+                    }
                     let (x, y, w, h) = l.rect;
-                    // Emulsion Down shows the page as it prints: mirrored.
-                    let x = if l.emulsion_down { pw - x - w } else { x };
-                    let img = egui::Rect::from_min_size(
-                        egui::pos2(page.left() + x as f32 * k, page.bottom() - (y + h) as f32 * k),
-                        egui::vec2(w as f32 * k, h as f32 * k),
-                    );
                     let key = egui::Id::new(("print-thumb", doc.id.0, app.session.active().map_or(0, |d| d.revision)));
                     let tex: Option<Arc<egui::TextureHandle>> = ui.data(|d| d.get_temp(key));
                     let tex = tex.unwrap_or_else(|| {
@@ -939,11 +1130,13 @@ fn print_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Va
                     clip.image(tex.id(), img, uv, egui::Color32::WHITE);
                     let mark = egui::Stroke::new(1.0, egui::Color32::BLACK);
                     if l.marks.corner_crop {
+                        // Bleed puts the marks on the trim line, inside the image edge.
+                        let b = l.marks.bleed as f32 * k;
                         for (c, dx, dy) in
                             [(img.left_top(), -1.0, -1.0), (img.right_top(), 1.0, -1.0), (img.left_bottom(), -1.0, 1.0), (img.right_bottom(), 1.0, 1.0)]
                         {
-                            clip.line_segment([c + egui::vec2(dx * 3.0, 0.0), c + egui::vec2(dx * 12.0, 0.0)], mark);
-                            clip.line_segment([c + egui::vec2(0.0, dy * 3.0), c + egui::vec2(0.0, dy * 12.0)], mark);
+                            clip.line_segment([c + egui::vec2(dx * 3.0, -dy * b), c + egui::vec2(dx * 12.0, -dy * b)], mark);
+                            clip.line_segment([c + egui::vec2(-dx * b, dy * 3.0), c + egui::vec2(-dx * b, dy * 12.0)], mark);
                         }
                     }
                     if l.marks.registration {
@@ -1003,6 +1196,17 @@ fn print_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Va
                             Err(e) => {
                                 f.insert("__pageError".into(), json!(e.to_string()));
                             }
+                        }
+                    }
+                });
+                // Photoshop's Layout: Portrait / Landscape turn the driver settings, so the paper
+                // and the preview turn with them without opening Print Settings….
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(tl!("Orientation")).color(t.text_dim));
+                    let wide = driver_paper_is_wide(f);
+                    for (landscape, label) in [(false, "Portrait"), (true, "Landscape")] {
+                        if crate::widgets::pill_tab(ui, label, wide == landscape).clicked() && wide != landscape {
+                            turn_driver(app, f, landscape);
                         }
                     }
                 });
@@ -1089,17 +1293,24 @@ fn print_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Va
             dropdown_str(ui, "print-units", f, "units", &[("cm", tl!("Centimeters")), ("mm", tl!("Millimeters")), ("in", tl!("Inches"))], 130.0);
             let units = s(f, "units", "cm");
             check(ui, f, "center", tl!("Center"), true);
-            if !b(f, "center", true) {
+            let centered = b(f, "center", true);
+            let centered_layout = centered.then(|| photocraft_engine::print_cmds::layout(&doc, &params(f), "file.print").ok()).flatten();
+            // Revealing this row during a drag resizes the centered modal and moves the paper.
+            // Keep it present, showing the resolved position while Center owns the offsets.
+            ui.add_enabled_ui(!centered, |ui| {
                 ui.horizontal(|ui| {
                     // Kept in inches (Photoshop's Position fields), shown in the chosen units.
                     for (key, label) in [("top", tl!("Top")), ("left", tl!("Left"))] {
-                        let mut pt = n(f, key, 0.0) * 72.0;
-                        if length_field(ui, label, &mut pt, &units) {
-                            f.insert(key.into(), json!(pt / 72.0));
+                        let mut pt =
+                            centered_layout.map_or_else(|| n(f, key, 0.0) * 72.0, |l| if key == "top" { l.paper.1 - l.rect.1 - l.rect.3 } else { l.rect.0 });
+                        let limit = (photocraft_engine::print_cmds::MAX_POSITION_INCHES * 72.0 / unit_pt(&units)) as f32;
+                        if length_field_range(ui, label, &mut pt, &units, 2, -limit..=limit) {
+                            let limit = photocraft_engine::print_cmds::MAX_POSITION_INCHES;
+                            f.insert(key.into(), json!((pt / 72.0).clamp(-limit, limit)));
                         }
                     }
                 });
-            }
+            });
             check(ui, f, "scaleToFit", tl!("Scale to Fit Media"), false);
             // Scaled Print Size: Scale, Height and Width move together; Print Resolution follows.
             if let Ok(l) = photocraft_engine::print_cmds::layout(&doc, &params(f), "file.print") {
@@ -1167,8 +1378,22 @@ fn print_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Va
     }
 }
 
+/// `file.print`'s params. The driver's printable area only goes with a print to the printer:
+/// an output path or a preview set in the same frame as the confirm still drops it.
+fn print_params(f: &Map<String, Value>) -> Value {
+    let mut p = params(f);
+    if (b(f, "dryRun", false) || !s(f, "output", "").is_empty())
+        && let Some(o) = p.as_object_mut()
+    {
+        o.remove("printable");
+    }
+    p
+}
+
+/// Submits the dialog parameters to `file.print`, propagating command errors unchanged.
+/// Updates the status for completed results only; pending jobs report completion later.
 fn print_confirm(app: &mut PhotocraftApp, f: &Map<String, Value>) -> Result<Value, String> {
-    let r = app.run("file.print", params(f))?;
+    let r = app.run("file.print", print_params(f))?;
     if r["pending"] != json!(true) {
         print_status(app, &r);
     }
@@ -1191,6 +1416,63 @@ pub(crate) fn print_status(app: &mut PhotocraftApp, r: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Checks no-jump centering and nonaccumulating screen displacement against shared layout
+    /// across fit, percentage scaling, orientation and mirroring combinations.
+    #[test]
+    fn print_drag_uses_the_resolved_layout_and_screen_points_without_accumulation() {
+        let (app, _) = app();
+        let doc = &app.session.active().unwrap().doc;
+        for fit in [false, true] {
+            for mirror in [false, true] {
+                for orientation in ["portrait", "landscape"] {
+                    let mut f = json!({"center": true, "scale": 175, "scaleToFit": fit,
+                        "emulsionDown": mirror, "orientation": orientation})
+                    .as_object()
+                    .unwrap()
+                    .clone();
+                    let start = photocraft_engine::print_cmds::layout(doc, &Value::Object(f.clone()), "file.print").unwrap();
+                    let page = egui::Rect::from_min_size(egui::pos2(20.0, 30.0), egui::vec2(start.paper.0 as f32, start.paper.1 as f32));
+                    assert!(drag_print_position(&mut f, start, egui::Vec2::ZERO, 1.0));
+                    let manual = photocraft_engine::print_cmds::layout(doc, &Value::Object(f.clone()), "file.print").unwrap();
+                    assert!((manual.rect.0 - start.rect.0).abs() < 1e-9);
+                    assert!((manual.rect.1 - start.rect.1).abs() < 1e-9);
+                    assert_eq!(manual.scale, start.scale);
+                    for k in [0.25, 0.5, 1.0, 2.0] {
+                        let delta = egui::vec2(-90.0, 45.0) * k;
+                        assert!(drag_print_position(&mut f, start, delta, k));
+                        let moved = photocraft_engine::print_cmds::layout(doc, &Value::Object(f.clone()), "file.print").unwrap();
+                        let old_img = print_preview_image(start, page, k);
+                        let new_img = print_preview_image(moved, page, k);
+                        assert!((new_img.min - old_img.min - delta).length() < 0.001);
+                        assert_eq!((moved.rect.2, moved.rect.3, moved.scale), (start.rect.2, start.rect.3, start.scale));
+                        let once = f.clone();
+                        assert!(drag_print_position(&mut f, start, delta, k));
+                        assert_eq!(f, once, "total drag displacement must not accumulate");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Checks rejected pointer geometry leaves fields untouched and extreme finite drags
+    /// clamp both inch offsets to the same safety limits as numeric positioning.
+    #[test]
+    fn print_drag_rejects_nonfinite_input_and_bounds_offsets() {
+        let (app, _) = app();
+        let doc = &app.session.active().unwrap().doc;
+        let start = photocraft_engine::print_cmds::layout(doc, &json!({}), "file.print").unwrap();
+        let mut f = Map::new();
+        for k in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            assert!(!drag_print_position(&mut f, start, egui::vec2(10.0, 10.0), k));
+            assert!(f.is_empty());
+        }
+        assert!(!drag_print_position(&mut f, start, egui::vec2(f32::NAN, 0.0), 1.0));
+        assert!(f.is_empty());
+        assert!(drag_print_position(&mut f, start, egui::vec2(-f32::MAX, f32::MAX), 1.0));
+        assert_eq!(f["left"], -photocraft_engine::print_cmds::MAX_POSITION_INCHES);
+        assert_eq!(f["top"], photocraft_engine::print_cmds::MAX_POSITION_INCHES);
+    }
 
     fn app() -> (PhotocraftApp, egui::Context) {
         let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
@@ -1258,6 +1540,98 @@ mod tests {
         assert_eq!(f["percent"], 100.0);
         assert!(!f.contains_key("width"));
         assert!(!f.contains_key("height"));
+    }
+
+    /// Save for Web's Image Size on a 120 x 80 document, as a PNG-24 (no other number fields).
+    fn web_size_dialog(app: PhotocraftApp) -> (egui_kittest::Harness<'static, PhotocraftApp>, u64) {
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1600.0, 1100.0)).build_ui_state(
+            |ui, app: &mut PhotocraftApp| {
+                if ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("semibold".into()))) {
+                    crate::dialogs::show(app, ui.ctx());
+                }
+            },
+            app,
+        );
+        PhotocraftApp::setup_context(&h.ctx, Default::default());
+        let id = open_web(h.state_mut());
+        h.state_mut().ui.dialog_mut(id).unwrap().fields.insert("format".into(), json!("png24"));
+        h.run_steps(5);
+        (h, id)
+    }
+
+    /// Types `text` into the number field now showing `value`, and leaves it with Tab.
+    fn type_into_field(h: &mut egui_kittest::Harness<'static, PhotocraftApp>, value: f64, text: &str) {
+        use egui_kittest::kittest::{NodeT, Queryable};
+        let field = h
+            .query_all_by_role(egui::accesskit::Role::SpinButton)
+            .find(|n| n.accesskit_node().numeric_value() == Some(value))
+            .map(|n| n.rect())
+            .expect("a field showing the value");
+        h.hover_at(field.center());
+        h.run_steps(1);
+        h.drag_at(field.center());
+        h.run_steps(1);
+        h.drop_at(field.center());
+        h.run_steps(2);
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.event(egui::Event::Text(text.into()));
+        h.run_steps(1);
+        h.key_press(egui::Key::Tab);
+        h.run_steps(3);
+    }
+
+    /// #6388: Save for Web's Image Size has Width and Height linked in proportion, as in
+    /// Photoshop. A typed width sets the height, the file comes out at that size, and the
+    /// document itself is never resized.
+    #[test]
+    fn save_for_web_width_keeps_proportions_and_sizes_the_file() {
+        let (app, _) = app();
+        let (mut h, id) = web_size_dialog(app);
+        let revision = h.state().session.active().unwrap().revision;
+        type_into_field(&mut h, 120.0, "60");
+        let f = h.state().ui.dialogs[0].fields.clone();
+        assert_eq!((f["width"].as_f64(), f["height"].as_f64()), (Some(60.0), Some(40.0)), "{f:?}");
+        // Unlinked, the height changes alone; linked again, it follows the width.
+        {
+            use egui_kittest::kittest::Queryable;
+            h.get_by_label("Constrain proportions").click();
+            h.run_steps(3);
+            type_into_field(&mut h, 40.0, "50");
+            let f = h.state().ui.dialogs[0].fields.clone();
+            assert_eq!((f["width"].as_f64(), f["height"].as_f64()), (Some(60.0), Some(50.0)), "{f:?}");
+            h.get_by_label("Constrain proportions").click();
+            h.run_steps(3);
+        }
+        let f = h.state().ui.dialogs[0].fields.clone();
+        assert_eq!((f["width"].as_f64(), f["height"].as_f64(), f.get("__constrain")), (Some(60.0), Some(40.0), Some(&json!(true))), "{f:?}");
+        let path = std::env::temp_dir().join(format!("pc-webui-wh-{}.png", std::process::id())).to_string_lossy().into_owned();
+        h.state_mut().ui.dialog_mut(id).unwrap().fields.insert("path".into(), json!(path));
+        let r = crate::dialogs::confirm(h.state_mut(), id).unwrap();
+        assert_eq!((r["width"].as_u64(), r["height"].as_u64()), (Some(60), Some(40)), "{r}");
+        let st = h.state().session.active().unwrap();
+        assert_eq!((st.revision, st.doc.size), (revision, photocraft_doc::Size::new(120, 80)));
+    }
+
+    /// Reopened on another document, Save for Web starts at that document's full size again
+    /// (#1857) but keeps the resampling method, like the other encoding choices.
+    #[test]
+    fn save_for_web_reopens_at_full_size_with_the_resample_method() {
+        let (app, _) = app();
+        let (mut h, id) = web_size_dialog(app);
+        type_into_field(&mut h, 120.0, "60");
+        let path = std::env::temp_dir().join(format!("pc-webui-reopen-{}.png", std::process::id())).to_string_lossy().into_owned();
+        let d = h.state_mut().ui.dialog_mut(id).unwrap();
+        d.fields.insert("resample".into(), json!("nearest"));
+        d.fields.insert("path".into(), json!(path));
+        crate::dialogs::confirm(h.state_mut(), id).unwrap();
+        h.state_mut().run("file.new", json!({"width": 240, "height": 160, "name": "next"})).unwrap();
+        let id = open_web(h.state_mut());
+        h.run_steps(3);
+        let f = h.state().ui.dialogs.iter().find(|d| d.id == id).unwrap().fields.clone();
+        assert_eq!(f["resample"], "nearest");
+        assert!(!f.contains_key("width") && !f.contains_key("height"), "{f:?}");
+        let p = web_preview::dimensions(&h.state().session.active().unwrap().doc, &params(&f)).unwrap();
+        assert_eq!(p, (240.0, 160.0));
     }
 
     #[test]
@@ -1478,6 +1852,20 @@ mod tests {
         assert!(params(f).get("__printers").is_none());
     }
 
+    /// An output path or a preview typed and confirmed in one frame doesn't take the driver's area.
+    #[test]
+    fn the_printable_area_goes_only_with_a_print_to_the_printer() {
+        let area = json!([0.0, 0.0, 842.29, 1191.14]);
+        let mut f = Map::new();
+        f.insert("printable".into(), area.clone());
+        assert_eq!(print_params(&f)["printable"], area);
+        f.insert("output".into(), json!("/tmp/out.pdf"));
+        assert!(print_params(&f).get("printable").is_none());
+        f.insert("output".into(), json!(""));
+        f.insert("dryRun".into(), json!(true));
+        assert!(print_params(&f).get("printable").is_none());
+    }
+
     /// #7410: File › Print opens with the settings of the last print, also those remembered from
     /// an earlier session (the preferences), before anything was printed in this one.
     #[test]
@@ -1528,6 +1916,65 @@ mod tests {
             let id = r["dialog"].as_u64().unwrap();
             assert!(app.ui.dialog_mut(id).unwrap().fields.get("send").is_none());
             std::fs::remove_file(out).unwrap();
+        }
+    }
+
+    /// The Orientation buttons show the driver paper's shape: landscape when it is wider than tall.
+    #[test]
+    fn orientation_follows_the_driver_paper() {
+        let with = |paper: Value| {
+            let mut f = Map::new();
+            f.insert("paper".into(), paper);
+            f
+        };
+        assert!(driver_paper_is_wide(&with(json!([1191.14, 842.29]))));
+        assert!(!driver_paper_is_wide(&with(json!([842.29, 1191.14]))));
+        assert!(!driver_paper_is_wide(&with(json!("a3"))), "a named paper is not a driver page");
+        assert!(!driver_paper_is_wide(&Map::new()));
+    }
+
+    /// Turning a printer whose driver can't be asked keeps its settings and says why on the dialog.
+    #[test]
+    fn turning_without_a_driver_keeps_the_settings_and_shows_the_error() {
+        // Valid driver settings (a minimal DEVMODEW: 220 bytes, no private part), so the command
+        // gets past reading them and fails where it asks the (missing) printer for its page.
+        let mut dm = vec![0u8; 220];
+        dm[68..70].copy_from_slice(&220u16.to_le_bytes());
+        let hex: String = dm.iter().map(|b| format!("{b:02x}")).collect();
+        assert!(craft_print::rgb::DevMode::from_hex(&hex).is_ok());
+        let (mut app, _) = app();
+        let mut f = Map::new();
+        f.insert("printer".into(), json!("photocraft-no-such-printer"));
+        f.insert("printerSettings".into(), json!(hex));
+        f.insert("paper".into(), json!([595.28, 841.89]));
+        turn_driver(&mut app, &mut f, true);
+        assert_eq!(f.get("printerSettings"), Some(&json!(hex)));
+        assert_eq!(f.get("paper"), Some(&json!([595.28, 841.89])));
+        let error = f.get("__pageError").and_then(Value::as_str).unwrap_or_default();
+        // Reading bad settings fails with "printer settings are too short / damaged"; this must not.
+        assert!(!error.is_empty() && !error.contains("printer settings are"), "failed at the printer, not at reading the settings: {error}");
+    }
+
+    /// A turn takes the settings and the paper from the same answer, never one without the other.
+    #[test]
+    fn a_turn_takes_settings_and_paper_together() {
+        let fields = || {
+            let mut f = Map::new();
+            f.insert("printerSettings".into(), json!("old"));
+            f.insert("paper".into(), json!([595.28, 841.89]));
+            f.insert("__pageError".into(), json!("earlier"));
+            f
+        };
+        let mut f = fields();
+        take_turned_page(&mut f, &json!({"printerSettings": "new", "paper": [841.89, 595.28]}));
+        assert_eq!((f.get("printerSettings"), f.get("paper")), (Some(&json!("new")), Some(&json!([841.89, 595.28]))));
+        assert_eq!(f.get("orientation"), Some(&json!("portrait")), "the driver paper is already turned");
+        assert!(f.get("__pageError").is_none());
+        for partial in [json!({"printerSettings": "new"}), json!({"paper": [841.89, 595.28]}), json!({"printerSettings": "new", "paper": [841.89]})] {
+            let mut f = fields();
+            take_turned_page(&mut f, &partial);
+            assert_eq!((f.get("printerSettings"), f.get("paper")), (Some(&json!("old")), Some(&json!([595.28, 841.89]))), "{partial}");
+            assert!(f.get("__pageError").is_some(), "{partial}");
         }
     }
 }

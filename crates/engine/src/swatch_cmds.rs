@@ -328,6 +328,13 @@ fn use_swatch(s: &mut Session, p: &Value) -> Result<Value> {
         "background" => s.tools.background = c,
         t => return Err(bad(CMD, format!("unknown target `{t}` (foreground|background)"))),
     }
+    // A CMYK swatch keeps its inks (as a colour picked in CMYK does, #4196): the Color Picker
+    // shows them and a CMYK document is painted with them, not with the sRGB round trip (#7474).
+    if let SwatchColor::Cmyk(inks) = sw.color
+        && inks.iter().all(|v| v.is_finite())
+    {
+        s.tools.remember_cmyk(rgb, inks.map(|v| v.clamp(0.0, 1.0)));
+    }
     Ok(json!({"swatch": sw.name, "target": target, "hex": hex(rgb)}))
 }
 
@@ -362,6 +369,7 @@ fn reset(s: &mut Session, p: &Value) -> Result<Value> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Format {
     Aco,
+    Act,
     Ase,
 }
 
@@ -369,6 +377,7 @@ impl Format {
     fn parse(s: &str) -> Option<Format> {
         match s.trim_start_matches('.').to_ascii_lowercase().as_str() {
             "aco" => Some(Format::Aco),
+            "act" => Some(Format::Act),
             "ase" => Some(Format::Ase),
             _ => None,
         }
@@ -376,6 +385,7 @@ impl Format {
     fn id(self) -> &'static str {
         match self {
             Format::Aco => "aco",
+            Format::Act => "act",
             Format::Ase => "ase",
         }
     }
@@ -462,6 +472,21 @@ fn kind_to_ase(k: SwatchKind) -> AseKind {
     }
 }
 
+/// Colors in an `.act` color table (what the format holds).
+pub const ACT_COLORS: usize = photocraft_psd::act::COLOR_COUNT;
+
+/// `.act` bytes as `#rrggbb` colors plus the transparent index, for the Color Table dialog.
+pub fn act_table(bytes: &[u8]) -> std::result::Result<(Vec<String>, Option<u64>), String> {
+    let f = photocraft_psd::act::parse(bytes).map_err(|e| e.to_string())?;
+    let hex = |c: &[u8; 3]| format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]);
+    Ok((f.used().iter().map(hex).collect(), f.transparent_index().map(|i| i as u64)))
+}
+
+/// Encode colors as `.act` bytes (at most [`ACT_COLORS`]); the transparent index is kept.
+pub fn act_bytes(colors: &[[u8; 3]], transparent: Option<u16>) -> std::result::Result<Vec<u8>, String> {
+    photocraft_psd::act::write(colors, Some(colors.len().min(ACT_COLORS) as u16), transparent).map_err(|e| e.to_string())
+}
+
 /// Parse a swatch file into groups (`group` names the group for ungrouped colours).
 pub fn read_file(bytes: &[u8], format: Format, group: &str) -> std::result::Result<(Vec<Group<Swatch>>, Vec<String>), String> {
     let mut warnings = Vec::new();
@@ -481,6 +506,19 @@ pub fn read_file(bytes: &[u8], format: Format, group: &str) -> std::result::Resu
                 .iter()
                 .enumerate()
                 .map(|(i, s)| Swatch { name: fallback(i, &s.name), color: from_aco(s.color), kind: SwatchKind::Process })
+                .collect();
+            out.push(Group::new(group, items));
+        }
+        Format::Act => {
+            let f = photocraft_psd::act::parse(bytes).map_err(|e| format!("not a readable .act color table: {e}"))?;
+            if let Some(t) = f.transparent_index() {
+                warnings.push(format!("color {} is the table's transparent color; swatches have no transparency so it was kept opaque", t + 1));
+            }
+            let items = f
+                .used()
+                .iter()
+                .enumerate()
+                .map(|(i, c)| Swatch { name: format!("Swatch {}", i + 1), color: SwatchColor::Rgb(c.map(|v| f32::from(v) / 255.0)), kind: SwatchKind::Process })
                 .collect();
             out.push(Group::new(group, items));
         }
@@ -541,6 +579,32 @@ pub fn write_file(groups: &[Group<Swatch>], format: Format) -> std::result::Resu
             let bytes = photocraft_psd::aco::write(&swatches).map_err(|e| e.to_string())?;
             Ok((bytes, n, warnings))
         }
+        Format::Act => {
+            // `.act` holds RGB only: HSB rides along as RGB, anything else is left out.
+            let rgb8 = |v: [f32; 3]| v.map(|c| (unit(c) * 255.0).round() as u8);
+            let mut triplets = Vec::new();
+            let mut skipped = 0;
+            for s in groups.iter().flat_map(|g| g.items.iter()) {
+                match s.color {
+                    SwatchColor::Rgb(v) => triplets.push(rgb8(v)),
+                    SwatchColor::Hsb(v) => triplets.push(rgb8(hsb_to_rgb(v))),
+                    _ => skipped += 1,
+                }
+            }
+            if groups.len() > 1 {
+                warnings.push(".act files have no groups; the swatches were saved as one list".into());
+            }
+            if skipped > 0 {
+                warnings.push(format!("{skipped} non-RGB swatches can't be stored in an .act file and were left out (save as .aco to keep them)"));
+            }
+            if triplets.len() > photocraft_psd::act::COLOR_COUNT {
+                warnings.push(format!("only the first {} swatches fit in an .act file", photocraft_psd::act::COLOR_COUNT));
+                triplets.truncate(photocraft_psd::act::COLOR_COUNT);
+            }
+            let n = triplets.len();
+            let bytes = photocraft_psd::act::write(&triplets, Some(n as u16), None).map_err(|e| e.to_string())?;
+            Ok((bytes, n, warnings))
+        }
         Format::Ase => {
             let mut books = 0;
             let mut entries = Vec::with_capacity(groups.len());
@@ -571,12 +635,18 @@ pub fn write_file(groups: &[Group<Swatch>], format: Format) -> std::result::Resu
 
 fn import(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "swatches.import";
-    let (bytes, stem) = crate::preset_import_cmds::file_bytes(p, CMD, ".aco or .ase file")?;
+    let (bytes, stem) = crate::preset_import_cmds::file_bytes(p, CMD, ".aco, .act or .ase file")?;
+    // `.act` has no magic: exactly 768/772 bytes. An `.act` whose first colour is `0, 1, x` or
+    // `0, 2, x` starts like an `.aco`, and the .aco reader ignores trailing bytes, so at those
+    // lengths an .aco header only counts when its sections fill the file exactly.
+    let act_len = bytes.len() == photocraft_psd::act::PALETTE_LEN || bytes.len() == photocraft_psd::act::PALETTE_LEN + photocraft_psd::act::TRAILER_LEN;
     let format = match str_param(p, "format") {
-        Some(f) => Format::parse(f).ok_or_else(|| bad(CMD, format!("unknown format `{f}` (aco|ase)")))?,
+        Some(f) => Format::parse(f).ok_or_else(|| bad(CMD, format!("unknown format `{f}` (aco|act|ase)")))?,
+        None if ext_format(str_param(p, "path")) == Some(Format::Act) => Format::Act,
         None if bytes.starts_with(photocraft_psd::ase::SIGNATURE) => Format::Ase,
-        None if matches!(bytes.get(..2), Some([0, 1] | [0, 2])) => Format::Aco,
-        None => ext_format(str_param(p, "path")).ok_or_else(|| bad(CMD, "not an .aco or .ase swatch file"))?,
+        None if matches!(bytes.get(..2), Some([0, 1] | [0, 2])) && (!act_len || photocraft_psd::aco::sections_len(&bytes) == Some(bytes.len())) => Format::Aco,
+        None if act_len => Format::Act,
+        None => ext_format(str_param(p, "path")).ok_or_else(|| bad(CMD, "not an .aco, .act or .ase swatch file"))?,
     };
     let mode = str_param(p, "mode").unwrap_or("append");
     let replace = match mode {
@@ -634,7 +704,7 @@ fn export(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "swatches.export";
     let path = str_param(p, "path");
     let format = match str_param(p, "format") {
-        Some(f) => Format::parse(f).ok_or_else(|| bad(CMD, format!("unknown format `{f}` (aco|ase)")))?,
+        Some(f) => Format::parse(f).ok_or_else(|| bad(CMD, format!("unknown format `{f}` (aco|act|ase)")))?,
         None => ext_format(path).unwrap_or(Format::Aco),
     };
     let mut groups: Vec<Group<Swatch>> = match name_param(p, "group", CMD)? {
@@ -790,7 +860,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Import Swatches…",
             menu: &[],
             shortcut: None,
-            params: r##"{"path":".aco or .ase file"?,"data":base64 bytes?,"format":"aco|ase"? (detected),"mode":"append|replace"="append","group":str?=file name (the group for ungrouped colours)} → {format,mode,groups,count,warnings}"##,
+            params: r##"{"path":".aco, .act or .ase file"?,"data":base64 bytes?,"format":"aco|act|ase"? (detected; an .act by its .act path or its 768/772-byte length),"mode":"append|replace"="append","group":str?=file name (the group for ungrouped colours)} → {format,mode,groups,count,warnings}"##,
             enabled: always,
             run: import,
             journal: true,
@@ -800,7 +870,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Export Swatches…",
             menu: &[],
             shortcut: None,
-            params: r##"{"format":"aco|ase"?=from path, else aco,"path":file? (else the bytes come back as base64 `data`),"group":name? (only that group),"swatches":[names]? (only these)} → {format,count,bytes,warnings,path|data}"##,
+            params: r##"{"format":"aco|act|ase"?=from path, else aco,"path":file? (else the bytes come back as base64 `data`),"group":name? (only that group),"swatches":[names]? (only these)} → {format,count,bytes,warnings,path|data}"##,
             enabled: has_swatches,
             run: export,
             journal: true,

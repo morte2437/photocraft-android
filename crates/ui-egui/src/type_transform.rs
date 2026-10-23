@@ -17,6 +17,11 @@ use crate::transform_tool::{Gesture, Hit};
 
 const PREVIEW_BASE: u64 = 1 << 37;
 const ROTATE_PX: f64 = 28.0;
+/// How far outside the text being typed a plain press moves it, as the Move tool (#5956), in
+/// screen points. Photoshop 2025, measured at 100 %: a drag from 35 pt off the glyphs moved the
+/// text without ending typing, one from 48 pt committed it instead. Kept under 40 pt, so a press
+/// 40 pt outside a paragraph box still commits the text (#7606).
+const MOVE_REACH_PT: f64 = 38.0;
 
 /// Cached rendered preview and bounded damage history. Unchanged pointer positions render nothing.
 pub(crate) struct Preview {
@@ -140,6 +145,65 @@ fn near_border(t: &TransformSession, p: [f64; 2], tol: f64) -> bool {
     })
 }
 
+/// Screen points from `p` to the frame's outline, as the view draws it (zoom, rotation and pixel
+/// aspect).
+fn border_points(app: &PhotocraftApp, t: &TransformSession, p: [f64; 2]) -> f64 {
+    let xf = ViewXform::active(app);
+    let zoom = f64::from(app.point_zoom().max(0.01));
+    let on_screen = |q: [f64; 2]| {
+        let d = [q[0] - p[0], q[1] - p[1]];
+        match xf {
+            Some(xf) => {
+                let v = xf.map_vec(egui::vec2(d[0] as f32, d[1] as f32));
+                [f64::from(v.x), f64::from(v.y)]
+            }
+            None => [d[0] * zoom, d[1] * zoom],
+        }
+    };
+    t.quad
+        .iter()
+        .zip(t.quad.iter().cycle().skip(1))
+        .take(4)
+        .map(|(a, b)| {
+            let (a, b) = (on_screen(*a), on_screen(*b));
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            let len = dx * dx + dy * dy;
+            let f = if len > 0.0 { (-a[0] * dx - a[1] * dy) / len } else { 0.0 }.clamp(0.0, 1.0);
+            (a[0] + f * dx).hypot(a[1] + f * dy)
+        })
+        .fold(f64::INFINITY, f64::min)
+}
+
+/// The text's frame when `p` is just outside it, where a plain press moves the text (#5956). Over
+/// another type layer the press is the Type tool's, as before.
+fn move_zone(app: &mut PhotocraftApp, p: [f64; 2]) -> Option<TransformSession> {
+    let t = frame(app)?;
+    if crate::transform_tool::hit(&t, p, 0.0) != Hit::Outside || border_points(app, &t, p) > MOVE_REACH_PT {
+        return None;
+    }
+    // Inside a paragraph box, off the glyphs, a press places the caret, as in Photoshop (#7606).
+    if crate::type_tool::inside_box(app, LayerId(t.layer), p[0], p[1]) {
+        return None;
+    }
+    let other = crate::type_tool::hit_layer(app, p[0], p[1]).is_some_and(|id| id.0 != t.layer);
+    (!other).then_some(t)
+}
+
+/// Start a temporary drag of `frame` from `p` on `h`. Returns false when it can't start.
+fn start(app: &mut PhotocraftApp, mut frame: TransformSession, h: Hit, p: [f64; 2]) -> bool {
+    let Some((_, original, _)) = crate::type_tool::layout(app, LayerId(frame.layer)) else { return false };
+    let Some(st) = app.session.active() else { return false };
+    let (document, revision) = (st.doc.id.0, st.revision);
+    frame.session = app.ui.alloc_id();
+    let gesture = Gesture { hit: h, start: p, quad0: frame.quad, pivot0: frame.pivot };
+    app.ui.type_transform = Some(TypeTransform { document, revision, original, frame, gesture });
+    if let Some(ed) = app.ui.text_edit.as_mut() {
+        ed.dragging = false;
+        ed.resize = None;
+    }
+    true
+}
+
 fn hit(app: &PhotocraftApp, t: &TransformSession, p: [f64; 2]) -> Option<Hit> {
     let h = crate::transform_tool::hit(t, p, crate::transform_tool::handle_tolerance(app));
     (h != Hit::Outside || near_border(t, p, ROTATE_PX / f64::from(app.point_zoom().max(0.01)))).then_some(h)
@@ -242,19 +306,21 @@ pub(crate) fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: Modifiers) -
             if !p.iter().all(|v| v.is_finite()) {
                 return true;
             }
-            let Some(mut frame) = frame(app) else { return true };
+            let Some(frame) = frame(app) else { return true };
             let Some(h) = hit(app, &frame, p) else { return true };
-            let Some((_, original, _)) = crate::type_tool::layout(app, LayerId(frame.layer)) else { return true };
-            let Some(st) = app.session.active() else { return true };
-            let (document, revision) = (st.doc.id.0, st.revision);
-            frame.session = app.ui.alloc_id();
-            let gesture = Gesture { hit: h, start: p, quad0: frame.quad, pivot0: frame.pivot };
-            app.ui.type_transform = Some(TypeTransform { document, revision, original, frame, gesture });
-            if let Some(ed) = app.ui.text_edit.as_mut() {
-                ed.dragging = false;
-                ed.resize = None;
-            }
+            start(app, frame, h, p);
             true
+        }
+        // Just outside the text, a plain press moves it as the Move tool would, without ending
+        // typing, as in Photoshop (#5956). Further out the press commits (`type_tool`), and a
+        // paragraph box's handles still resize it.
+        ToolEvent::Down { x, y, .. } if x.is_finite() && y.is_finite() => {
+            let id = app.ui.text_edit.as_ref().map(|e| LayerId(e.layer));
+            if id.is_some_and(|id| crate::type_tool::box_handle_at(app, id, x, y).is_some()) {
+                return false;
+            }
+            let Some(frame) = move_zone(app, [x, y]) else { return false };
+            start(app, frame, Hit::Inside, [x, y])
         }
         ToolEvent::Move { x, y, .. } | ToolEvent::Up { x, y } if active(app) => {
             update(app, [x, y], mods);
@@ -380,26 +446,21 @@ pub(crate) fn cursor(app: &mut PhotocraftApp, ctx: &egui::Context, xf: &ViewXfor
     if !visible(app, mods) {
         let id = LayerId(app.ui.text_edit.as_ref()?.layer);
         let q = xf.to_doc(p);
-        let handle = crate::type_tool::box_handle_at(app, id, q[0], q[1])?;
-        let t = frame(app)?;
-        let direction = if handle < 4 {
-            let a = *t.quad.get(usize::from(handle))?;
-            let b = *t.quad.get((usize::from(handle) + 2) % 4)?;
-            [a[0] - b[0], a[1] - b[1]]
-        } else {
-            let b = if handle.is_multiple_of(2) { t.quad[3] } else { t.quad[1] };
-            [b[0] - t.quad[0][0], b[1] - t.quad[0][1]]
+        let Some(handle) = crate::type_tool::box_handle_at(app, id, q[0], q[1]) else {
+            // Just outside the text a press moves it (#5956): the Move cursor, as in Photoshop.
+            return move_zone(app, q).map(|_| CursorIcon::Move);
         };
-        return Some(crate::tool_cursor::resize(direction, xf));
+        let t = frame(app)?;
+        if handle < 4 {
+            return Some(crate::tool_cursor::corner_resize(&t.quad, usize::from(handle), xf));
+        }
+        let b = if handle.is_multiple_of(2) { t.quad[3] } else { t.quad[1] };
+        return Some(crate::tool_cursor::resize([b[0] - t.quad[0][0], b[1] - t.quad[0][1]], xf));
     }
     let Some(t) = frame(app) else { return Some(CursorIcon::Default) };
     let h = app.ui.type_transform.as_ref().map(|t| t.gesture.hit).or_else(|| hit(app, &t, xf.to_doc(p)));
     Some(match h {
-        Some(Hit::Corner(i)) => {
-            let q = *t.quad.get(i)?;
-            let opposite = *t.quad.get((i + 2) % 4)?;
-            crate::tool_cursor::resize([q[0] - opposite[0], q[1] - opposite[1]], xf)
-        }
+        Some(Hit::Corner(i)) => crate::tool_cursor::corner_resize(&t.quad, i, xf),
         Some(Hit::Edge(_)) => {
             // Original arrowhead indicator, above the canvas, without a proprietary cursor asset.
             let tokens = crate::theme::Tokens::get(ctx);

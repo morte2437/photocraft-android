@@ -168,6 +168,19 @@ fn reserved_document_and_slice_names_export_with_portable_names() {
 }
 
 #[test]
+fn a_dotted_device_file_name_exports_without_the_device_stem() {
+    // `nul.v2_` would still be the NUL device on Windows; `nul_.v2` is a file.
+    let dir = tmp("reserved-dotted-name");
+    let mut s = session(8);
+    s.execute("slice.new", json!({"rect": [0, 0, 16, 16], "name": "logo"})).unwrap();
+    let path = format!("{dir}/nul.v2.png");
+    let result = s.execute("file.export.saveForWebLegacy", json!({"path": path, "slices": "all", "format": "png24", "html": true})).unwrap();
+    let html = result["html"].as_str().unwrap();
+    assert!(html.ends_with("/nul_.v2.html"), "{html}");
+    assert!(std::path::Path::new(html).is_file());
+}
+
+#[test]
 fn platform_writer_failure_stops_export_and_preserves_saved_settings() {
     let mut s = session(8);
     let saved = json!({"format": "png24", "path": "saved.png"});
@@ -463,6 +476,33 @@ fn quick_export_never_replaces_the_documents_own_file_unasked() {
     s.active_mut().unwrap().path = Some(format!("{dir}/photo.psd"));
     assert!(!quick_export_target_is_own_file(&s));
     assert_eq!(s.execute("file.export.quickExport", json!({})).unwrap()["path"], json!(own));
+    s.execute("prefs.reset", json!({"path": "export"})).unwrap();
+}
+
+/// #8519: Quick Export as PNG renamed to `photo.jpeg` in the save dialog wrote PNG bytes under a
+/// JPEG name, which upload checks refuse. A Quick Export extension picks the format; another
+/// image extension is refused; no extension keeps Export Preferences' format.
+#[test]
+fn quick_export_writes_the_format_its_path_names() {
+    let dir = tmp("quick_ext");
+    let mut s = session(8);
+    s.execute("file.export.exportPreferences", json!({"quickExportFormat": "png"})).unwrap();
+    for (name, format, magic) in [
+        ("a.jpeg", "jpg", &b"\xFF\xD8\xFF"[..]),
+        ("b.JPG", "jpg", b"\xFF\xD8\xFF"),
+        ("c.gif", "gif", b"GIF8"),
+        ("d.webp", "webp", b"RIFF"),
+        ("e", "png", b"\x89PNG"),
+    ] {
+        let path = format!("{dir}/{name}");
+        let r = s.execute("file.export.quickExport", json!({"path": path})).unwrap();
+        assert_eq!(r["format"], json!(format), "{name}");
+        assert!(std::fs::read(&path).unwrap().starts_with(magic), "{name} holds {format} data");
+    }
+    let tif = format!("{dir}/f.tif");
+    let e = s.execute("file.export.quickExport", json!({"path": tif})).unwrap_err().to_string();
+    assert!(e.contains("Export As"), "{e}");
+    assert!(!std::path::Path::new(&tif).exists());
     s.execute("prefs.reset", json!({"path": "export"})).unwrap();
 }
 
@@ -786,6 +826,21 @@ fn slices_with_the_same_name_get_distinct_files() {
 }
 
 #[test]
+fn overlapping_slices_export_each_pixel_once() {
+    // #7770: without HTML too, a slice covered by a later one is written as its visible pieces.
+    let dir = tmp("overlap_images");
+    let mut s = session(8);
+    s.execute("slice.new", json!({"rect": [0, 0, 40, 30], "name": "under"})).unwrap();
+    s.execute("slice.new", json!({"rect": [20, 15, 40, 30], "name": "over"})).unwrap();
+    let r = s.execute("file.export.saveForWebLegacy", json!({"format": "png24", "dir": dir, "slices": "user"})).unwrap();
+    let mut files: Vec<String> = r["files"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect();
+    let dims: Vec<(u32, u32)> = files.iter().map(|f| decode(f).dimensions()).collect();
+    files.iter_mut().for_each(|f| *f = f.rsplit('/').next().unwrap().to_string());
+    assert_eq!(files, ["under.png", "under-03.png", "over.png"]);
+    assert_eq!(dims, [(40, 15), (20, 15), (40, 30)]);
+}
+
+#[test]
 fn overlapping_slices_keep_the_later_slice_in_html() {
     // #909: the later slice is on top; the earlier one shows only where it isn't covered.
     let dir = tmp("overlap");
@@ -809,7 +864,10 @@ fn overlapping_slices_keep_the_later_slice_in_html() {
         })
         .sum();
     assert_eq!(area, 64 * 48);
-    assert!(files.iter().any(|f| f.ends_with("images/under_01.png")), "the covered slice is cut into pieces: {files:?}");
+    // As Photoshop names subslices: the first piece keeps the name, the others add their number.
+    let under = files.iter().find(|f| f.ends_with("images/under.png")).unwrap();
+    assert_eq!(decode(under).dimensions(), (40, 15), "the covered slice is cut into pieces: {files:?}");
+    assert!(files.iter().any(|f| f.ends_with("images/under-03.png")), "{files:?}");
 }
 
 #[path = "color_table_tests.rs"]
@@ -976,4 +1034,39 @@ fn web_exif_that_does_not_fit_is_reported_and_bad_exif_is_harmless() {
         s.execute("file.export.saveForWebLegacy", json!({"format": "jpeg", "metadata": "all", "path": path})).unwrap();
         assert_eq!(decode(&path).dimensions(), (64, 48));
     }
+}
+
+#[test]
+fn quick_export_exr_preserves_linear_hdr_and_alpha() {
+    use photocraft_codecs::{ChannelLayout, Format, Image, SampleType};
+    let dir = tmp("quick_exr_hdr");
+    let samples = [-0.25, 2.0, 0.125, 1.0, 4.0, 0.25, 0.5, 0.5];
+    let image = Image::from_f32(2, 1, ChannelLayout::Rgba, &samples).unwrap();
+    let bytes = photocraft_codecs::encode(&image, Format::OpenExr, &Default::default()).unwrap();
+    let doc = photocraft_io::import("hdr.exr", &bytes).unwrap().document;
+    let mut s = Session::new();
+    s.add_document(doc, Some(format!("{dir}/source.psd")));
+    for convert in [true, false] {
+        s.execute("file.export.exportPreferences", json!({"quickExportFormat": "exr", "quickExportLocation": "sameFolder", "convertToSrgb": convert})).unwrap();
+        let result = s.execute("file.export.quickExport", json!({})).unwrap();
+        assert_eq!(result["format"], "exr");
+        let path = format!("{dir}/source.exr");
+        assert_eq!(result["path"], path);
+        assert_eq!(result["bytes"].as_u64(), Some(std::fs::metadata(&path).unwrap().len()));
+        let decoded = decode(&path);
+        assert_eq!(decoded.sample_type(), SampleType::F32);
+        let actual = decoded.convert(ChannelLayout::Rgba, SampleType::F32).to_f32_samples().unwrap();
+        for (got, expected) in actual.iter().zip(samples) {
+            assert!((got - expected).abs() < 0.0001, "EXR preserves scene values: {actual:?}");
+        }
+        assert_eq!(actual.len(), samples.len());
+    }
+    // The format preference must never silently overwrite the source EXR.
+    let own = format!("{dir}/source.exr");
+    s.active_mut().unwrap().path = Some(own.clone());
+    let before = std::fs::read(&own).unwrap();
+    assert!(s.execute("file.export.quickExport", json!({})).is_err());
+    assert_eq!(std::fs::read(&own).unwrap(), before);
+    s.execute("file.export.quickExport", json!({"path": format!("{dir}/explicit.exr")})).unwrap();
+    assert_eq!(decode(&format!("{dir}/explicit.exr")).dimensions(), (2, 1));
 }

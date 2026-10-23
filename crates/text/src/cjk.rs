@@ -564,19 +564,48 @@ pub fn mac_pingfang() -> Option<std::path::PathBuf> {
     None
 }
 
+/// Maximum collection faces and cumulative `name` records inspected by [`face_index_for_family`].
+const MAX_COLLECTION_FACES: usize = 256;
+const MAX_NAME_RECORDS: usize = 8192;
+
 /// Face index in a font file (or collection) whose family name is `family`; 0 when `family` is
 /// empty or no face matches. Never panics on malformed data.
 pub fn face_index_for_family(bytes: &[u8], family: &str) -> u32 {
-    use skrifa::{MetadataProvider, raw::FileRef, string::StringId};
+    use skrifa::{
+        MetadataProvider,
+        raw::{FileRef, types::Tag},
+        string::StringId,
+    };
     if family.is_empty() {
         return 0;
     }
     let Ok(FileRef::Collection(c)) = FileRef::new(bytes) else { return 0 };
-    for (i, f) in c.iter().enumerate() {
+    let mut seen_faces = std::collections::HashSet::new();
+    let mut seen_names = std::collections::HashSet::new();
+    let mut budget = MAX_NAME_RECORDS;
+    for (i, f) in c.iter().take(MAX_COLLECTION_FACES).enumerate() {
+        if let Some(off_bytes) = bytes.get(12 + i * 4..12 + (i + 1) * 4)
+            && let Ok(arr) = <[u8; 4]>::try_from(off_bytes)
+            && !seen_faces.insert(u32::from_be_bytes(arr))
+        {
+            continue;
+        }
         let Ok(f) = f else { continue };
-        let named = [StringId::TYPOGRAPHIC_FAMILY_NAME, StringId::FAMILY_NAME].iter().any(|id| f.localized_strings(*id).any(|s| s.chars().eq(family.chars())));
-        if named {
-            return i as u32;
+        if let Some(rec) = f.table_directory.table_records().iter().find(|r| r.tag() == Tag::new(b"name"))
+            && !seen_names.insert((rec.offset(), rec.length()))
+        {
+            continue;
+        }
+        for id in [StringId::TYPOGRAPHIC_FAMILY_NAME, StringId::FAMILY_NAME] {
+            for s in f.localized_strings(id) {
+                let Some(rem) = budget.checked_sub(1) else {
+                    return 0;
+                };
+                budget = rem;
+                if s.chars().eq(family.chars()) {
+                    return i as u32;
+                }
+            }
         }
     }
     0

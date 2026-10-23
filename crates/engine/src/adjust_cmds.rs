@@ -168,6 +168,44 @@ fn base_name(path: &str) -> String {
     path.rsplit(['/', '\\']).next().unwrap_or(path).to_string()
 }
 
+/// Most LUT files [`folder_luts`] lists.
+const MAX_FOLDER_LUTS: usize = 500;
+/// Largest LUT file [`folder_luts`] lists: a 129³ `.cube` (the parser's largest) is about 60 MB.
+const MAX_FOLDER_LUT_BYTES: u64 = 64 << 20;
+
+/// The `.cube`, `.3dl` and `.look` files directly in `dir`, as (file name, path) sorted by name,
+/// for Color Lookup's dropdown (Preferences › File Handling › LUT Folder, #6558). An empty,
+/// missing or unreadable folder lists nothing; hidden files, subfolders and files too large to be
+/// a LUT are skipped. A symlink to a LUT file is listed, as a studio's shared library often is.
+/// Contents are only parsed when one is picked, which reports a malformed file.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn folder_luts(dir: &str) -> Vec<(String, String)> {
+    let dir = dir.trim();
+    let Some(entries) = (!dir.is_empty()).then(|| std::fs::read_dir(dir).ok()).flatten() else { return Vec::new() };
+    let mut out: Vec<(String, String)> = entries
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().into_string().ok()?;
+            let ext = name.rsplit_once('.')?.1.to_ascii_lowercase();
+            if name.starts_with('.') || !matches!(ext.as_str(), "cube" | "3dl" | "look") {
+                return None;
+            }
+            let path = e.path();
+            let meta = std::fs::metadata(&path).ok()?;
+            (meta.is_file() && meta.len() <= MAX_FOLDER_LUT_BYTES).then_some((name, path.to_str()?.to_string()))
+        })
+        .collect();
+    out.sort_by_key(|(name, _)| name.to_lowercase());
+    out.truncate(MAX_FOLDER_LUTS);
+    out
+}
+
+/// No file system on the web: a LUT folder lists nothing there.
+#[cfg(target_arch = "wasm32")]
+pub fn folder_luts(_: &str) -> Vec<(String, String)> {
+    Vec::new()
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn read_file(path: &str) -> Option<Vec<u8>> {
     std::fs::read(path).ok()

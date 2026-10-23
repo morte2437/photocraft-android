@@ -1,5 +1,5 @@
 # Scorecard checklist: file compatibility (#215 formats, #216 measurement).
-# Corpus numbers come from crates/io/tests/corpus.rs, not from here.
+# Corpus numbers come from crates/io/tests/it/corpus.rs, not from here.
 # Statuses must be true on main. Verified against 4b53f62 on 2026-10-05 (smart objects: #215 PR).
 area = "file"
 title = "File compatibility"
@@ -10,14 +10,14 @@ id = "FILE-215-1"
 target = "Smart Objects export as embedded Smart Objects (SoLd + lnk2), not flat pixels"
 status = "done"
 issue = 215
-note = "psd_export.rs smart_blocks: PlLd + SoLd, source in lnk2 (.pcraft -> PSB); engine tests/smart_psd.rs; Photoshop 2026 opens 8/16-bit exports as live smart objects. Linked files are embedded"
+note = "psd_export.rs smart_blocks: PlLd + SoLd, source in lnk2 (.pcraft -> PSB); engine tests/it/smart_psd.rs; Photoshop 2026 opens 8/16-bit exports as live smart objects. Linked files are embedded"
 
 [[item]]
 id = "FILE-215-2"
 target = "Smart Filters survive PSD save and re-open (filterFX descriptor read and written)"
 status = "partial"
 issue = 215
-note = "smart_map.rs: 14 filters plus a verified Camera Raw subset mapped both ways, others kept verbatim, mask in FEid; io tests/smart_corpus.rs. PhotoCraft-only filters (Twirl, Liquify…) and unmapped Camera Raw settings are left out of filterFX with a warning"
+note = "smart_map.rs: 41 filters plus Hue/Saturation, Perspective Warp, Filter Gallery (Chrome) and a verified Camera Raw subset mapped both ways, others kept verbatim, mask in FEid; io tests/it/smart_corpus.rs. PhotoCraft-only filters (Twirl, Liquify…) and unmapped Camera Raw settings are left out of filterFX with a warning"
 
 [[item]]
 id = "FILE-215-3"
@@ -94,7 +94,7 @@ id = "FILE-215-13"
 target = "Video layer frames persist in .pcraft; PSD video layers mapped"
 status = "partial"
 issue = 215
-note = "format convert.rs:89 + tests/roundtrip.rs:282 persist frames; no PSD video mapping"
+note = "format convert.rs:89 + tests/it/roundtrip.rs:282 persist frames; no PSD video mapping"
 
 [[item]]
 id = "FILE-215-14"
@@ -108,7 +108,7 @@ id = "FILE-215-15"
 target = "Layer Style contour picker, curve editor, presets, .shc import/export"
 status = "partial"
 issue = 2912
-note = "Layer Style dialog: contour thumbnail + preset picker (12 standard shapes, own control points) and Anti-aliased on Drop/Inner Shadow, Outer/Inner Glow, Satin, Bevel Gloss Contour and Contour element; Contour Editor (add/drag/delete, Corner, Input/Output, Preset, Load…/Save… .shc per Adobe's public spec, psd shc.rs); corner points render (compose contour_curve_lut) and map to PSD Cnty. Missing: a user contour library (New…, picker Load/Save/Replace Contours), Anti-aliased doesn't change the render yet, .shc not yet checked against a Photoshop-written file"
+note = "Layer Style dialog: contour thumbnail + preset picker (12 standard shapes, own control points) and Anti-aliased on Drop/Inner Shadow, Outer/Inner Glow, Satin, Bevel Gloss Contour and Contour element; Contour Editor (add/drag/delete, Corner, Input/Output, Preset, Load…/Save… .shc per Adobe's public spec, psd shc.rs); corner points render (compose contour_curve_lut) and map to PSD Cnty. User contour library: Contour Editor New… saves the curve under a name (layer.layerStyle.contours.new/list/delete/load/save, kept with the preferences), the picker lists user contours after the standard ones and has Load/Replace/Save Contours… (.shc). Missing: Anti-aliased doesn't change the render yet, .shc not yet checked against a Photoshop-written file"
 
 [[item]]
 id = "FILE-215-16"
@@ -127,16 +127,16 @@ note = "compose multichannel.rs:1 spot preview for Multichannel only"
 [[item]]
 id = "FILE-215-18"
 target = "Save for Web per-slice settings remembered; Export As remembers and offers nearest scaling"
-status = "partial"
+status = "done"
 issue = 215
-note = "Save for Web settings survive a restart through the remembered dialog settings in prefs.dialogs (web_cmds::remember_web_settings stores them on a complete export, never the destination; file_ui.rs open_web seeds from the session's last export, else the preferences). export_dialog seeds Export As the same way (seed_remembered: format, quality, transparency, scale, metadata, TGA bits) and confirm remembers them as used. Missing: Export As nearest-neighbour scaling"
+note = "Save for Web settings survive a restart through the remembered dialog settings in prefs.dialogs (web_cmds::remember_web_settings stores them on a complete export, never the destination; file_ui.rs open_web seeds from the session's last export, else the preferences). export_dialog seeds Export As the same way (seed_remembered: format, quality, transparency, scale, resample, metadata, TGA bits) and confirm remembers them as used. Export As › Image Size › Resample offers Photoshop's six methods (Bicubic Automatic default, Nearest Neighbor included; export_preset_cmds::RESAMPLE, unknown values are errors) for the exported copy only; also layer.exportAs `resample` and export presets (#5838). Tests: export_dialog nearest_neighbor_doubles_each_pixel_into_an_exact_block (8/16-bit), resample_choices_are_checked, resample_is_remembered_and_a_bad_saved_value_falls_back; layer_menu_cmds export_layer_resamples_with_the_chosen_method; tests/it/export_as_scaling.rs export_as_resample_menu_writes_nearest_neighbor_blocks"
 
 [[item]]
 id = "FILE-215-19"
 target = "Save As JPEG opens a JPEG Options dialog (quality 0-12, format options)"
-status = "missing"
+status = "partial"
 issue = 215
-note = "ExportSettings has jpeg_quality 1-100 only (lib.rs:118)"
+note = "jpeg_options_ui.rs: File > Save, Save As and Save a Copy to a JPEG ask for Quality 0-12 (Low/Medium/High/Maximum) and Baseline / Baseline Optimized / Progressive before writing, starting at an opened JPEG's own quality (file_encoding) or else the Export preference; scripts pass quality/jpegFormat (file.saveAs, file.saveACopy, app.save, CLI --jpeg-format) and recorded actions replay the answer (discard_ui/tests/jpeg_tests.rs, codecs roundtrip jpeg_format_options_round_trip). Baseline Optimized fits the Huffman tables only at 4:4:4 (Gray, CMYK) or progressive: RGB is written 4:2:0, which zune-jpeg 0.5.15 decodes wrongly with fitted tables, as in Save for Web, so RGB Baseline Optimized writes the same file as Baseline. Missing: Matte, progressive Scans (3-5) and the size preview"
 
 [[item]]
 id = "FILE-215-20"
@@ -162,16 +162,16 @@ note = "ci.yml has a corpus job (name: corpus tests) on every PR and on main: th
 [[item]]
 id = "FILE-216-2"
 target = "Large-file fixtures: 20 MP, 150-layer, generated 2 GB PSD and 4-5 GB PSB stress tests"
-status = "partial"
+status = "done"
 issue = 216
-note = "4-5 GB PSB fixtures: psd example big_psb writes them (raw and RLE, planes past 2 GiB), io example big_psb_check opens and checks them; opt-in io tests/large_psb.rs (2.5 GB merged image). No 2 GB PSD, 150-layer or 20 MP fixture, nothing in CI"
+note = "Generated at test time by psd fixtures.rs (feature testgen; never committed). io tests/it/large_files.rs: layered_20_mp_psd_opens_and_saves (5472x3648, 5 layers in 2 groups, mask, drop shadow) and layout_with_150_layers_opens_and_saves (A4 300 ppi, 150 layers in 15 groups, masks, hidden layers, closed groups, drop shadows) run in every cargo test (~2 s each); opt-in psd_just_under_2_gb_opens_and_saves (17,000 px, 2.02 GB PSD) and psb_of_4_gb_opens_and_saves (25,000 px, 4.38 GB PSB, data past 4 GiB), each opened, pixel-checked, saved and re-opened; plus large_psb.rs (2.5 GB merged image). Open times: ui-egui large_file_bench (P20, P63). The 2 GB and 4 GB files are not run in CI (6.4 GB on disk; ~12 GB of memory for the PSD test, ~25 GB for the PSB test) (#5107)"
 
 [[item]]
 id = "FILE-216-3"
 target = "TIFF, RAW and EXR corpora read by tests; per-camera RAW coverage reported"
 status = "partial"
 issue = 216
-note = "EXR: corpus/exr (the OpenEXR deep test images, pinned) is read by codecs tests/deep_exr.rs in the CI corpus job, against the ID manifests of the upstream sidecars. corpus/tiff and corpus/raw are still copied in by hand and no test reads them; no per-camera RAW report"
+note = "EXR: corpus/exr (the OpenEXR deep test images, pinned) is read by codecs tests/it/deep_exr.rs in the CI corpus job, against the ID manifests of the upstream sidecars. corpus/tiff and corpus/raw are still copied in by hand and no test reads them; no per-camera RAW report"
 
 [[item]]
 id = "FILE-216-4"
@@ -185,11 +185,11 @@ id = "FILE-216-5"
 target = "Save-path tests: layered TIFF, PDF, SVG, ACO/ASE, .shc, Smart Filters, atomic-save failure"
 status = "partial"
 issue = 216
-note = "Every save path that exists is tested by saving and reading back: layered TIFF io tests/tiff_layers.rs (every_compression_keeps_the_layers, advanced_blending_survives_layered_tiff_in_both_byte_orders), print PDF engine print_cmds/tests.rs (print_dry_run_renders_a_pdf_and_reports_the_platform_backend decodes the image back), ACO/ASE engine swatch_cmds/tests.rs (aco_round_trip_keeps_16_bit_values_and_books, ase_round_trip_keeps_groups_floats_and_kinds), .shc psd shc.rs shc_round_trips_and_rejects_hostile_input and engine layer_style.rs contour_presets_and_custom_curves_apply_in_one_undo_step, Smart Filters engine tests/smart_psd.rs (smart_filters_survive_psd_in_every_colour_model), atomic-save failure format/src/atomic/tests.rs (BUG-203-6). There is no SVG writer (SVG opens only) and no Photoshop PDF save (FILE-215-10), so those have nothing to test yet; the row stays partial until they exist"
+note = "Every save path that exists is tested by saving and reading back: layered TIFF io tests/it/tiff_layers.rs (every_compression_keeps_the_layers, advanced_blending_survives_layered_tiff_in_both_byte_orders), print PDF engine print_cmds/tests.rs (print_dry_run_renders_a_pdf_and_reports_the_platform_backend decodes the image back), ACO/ASE engine swatch_cmds/tests.rs (aco_round_trip_keeps_16_bit_values_and_books, ase_round_trip_keeps_groups_floats_and_kinds), .shc psd shc.rs shc_round_trips_and_rejects_hostile_input and engine layer_style.rs contour_presets_and_custom_curves_apply_in_one_undo_step, Smart Filters engine tests/it/smart_psd.rs (smart_filters_survive_psd_in_every_colour_model), atomic-save failure format/src/atomic/tests.rs (BUG-203-6). There is no SVG writer (SVG opens only) and no Photoshop PDF save (FILE-215-10), so those have nothing to test yet; the row stays partial until they exist"
 
 [[item]]
 id = "FILE-216-6"
 target = "30-50 end-to-end workflow acceptance tasks driven through MCP or commands"
 status = "partial"
 issue = 216
-note = "automation/tests/agent_tasks.rs: 20 MCP tasks"
+note = "automation/tests/it/agent_tasks.rs, agent_tasks_extended.rs and agent_tasks_more.rs: 36 MCP tasks"

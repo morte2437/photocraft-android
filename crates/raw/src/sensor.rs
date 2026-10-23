@@ -255,6 +255,19 @@ pub(crate) fn read_plane(t: &Tiff, ifd: &Ifd, limits: &Limits, layout: JpegLayou
     }
     limits.check(width as u64, height as u64, samples as u64 * 2)?;
     let segments = segments(t, ifd, width, height)?;
+    // The decoded tiles are all retained in `decoded` before assembly copies only the useful
+    // pixels. Each tile is charged individually below, but file-controlled padding and repeated
+    // source ranges can make the *cumulative* retained samples far exceed both the input and the
+    // useful image. Reject that up front: the sum of padded tile samples (two bytes each) must
+    // fit the allocation budget.
+    let mut total_tile_samples: u64 = 0;
+    for s in &segments {
+        let tile = (s.w as u64).saturating_mul(s.h as u64).saturating_mul(samples as u64);
+        total_tile_samples = total_tile_samples.saturating_add(tile);
+    }
+    if total_tile_samples.saturating_mul(2) > limits.max_alloc {
+        return Err(RawError::LimitExceeded(format!("{} bytes of retained raw tiles exceed {}", total_tile_samples.saturating_mul(2), limits.max_alloc)));
+    }
     let le = t.le;
     let tiled = t.tag_uint(ifd, tag::TILE_WIDTH).is_some();
     let decoded: Vec<Result<Vec<u16>>> = par::map(segments.len(), |i| {
@@ -301,7 +314,7 @@ pub(crate) fn read_plane(t: &Tiff, ifd: &Ifd, limits: &Limits, layout: JpegLayou
                 let scatter = if layout == JpegLayout::Quads && samples == 1 { s.w.saturating_mul(s.h).saturating_mul(2) as u64 } else { 0 };
                 let budget = usize::try_from(limits.max_alloc.saturating_sub(scatter) / 2).unwrap_or(usize::MAX);
                 let geom = s.w.saturating_mul(s.h).saturating_mul(samples).saturating_mul(4);
-                let (f, v) = ljpeg::decode(src, geom.min(budget))?;
+                let (f, mut v) = ljpeg::decode(src, geom.min(budget))?;
                 if v.len() < need {
                     return Err(RawError::malformed("lossless JPEG tile is smaller than its tile"));
                 }
@@ -316,6 +329,9 @@ pub(crate) fn read_plane(t: &Tiff, ifd: &Ifd, limits: &Limits, layout: JpegLayou
                     }
                     return Ok(tile);
                 }
+                // The frame may be declared larger than the tile; keep (and so charge) the tile.
+                v.truncate(s.w.saturating_mul(s.h).saturating_mul(samples));
+                v.shrink_to_fit();
                 Ok(v)
             }
         }

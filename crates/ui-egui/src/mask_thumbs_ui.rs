@@ -22,6 +22,7 @@ pub const CHAIN_W: f32 = 12.0;
 pub const THUMB_LAYER: u8 = 0;
 pub const THUMB_MASK: u8 = 1;
 pub const THUMB_VECTOR: u8 = 2;
+pub const THUMB_SMART_MASK: u8 = 3;
 
 /// Which of a layer's masks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -150,6 +151,12 @@ pub fn paint(
                 painter.line_segment([k.right_top(), k.left_bottom()], st);
             }
         }
+        if app.ui.layers_panel_options.show_layer_mask_badges {
+            // Distinguish pixel and vector masks without altering their thumbnails.
+            let badge = Rect::from_min_size(pos2(r.right() - 9.0, r.bottom() - 9.0), vec2(9.0, 9.0));
+            painter.rect_filled(badge, 1.0, t.card);
+            crate::icons::paint(ui, badge, if kind == MaskKind::Vector { "pen-tool" } else { "circle-dot" }, 8.0, t.text);
+        }
         painter.rect_stroke(
             r,
             if t.pro { 0.0 } else { 4.0 },
@@ -166,6 +173,7 @@ pub fn paint(
 
 type Rects = (Vec<(MaskKind, Rect)>, Vec<(MaskKind, Rect)>);
 
+/// Memory key of the per-layer record of where the mask thumbnails and chains were drawn.
 fn rects_id() -> egui::Id {
     egui::Id::new("mask-thumb-rects")
 }
@@ -173,6 +181,12 @@ fn rects_id() -> egui::Id {
 /// The mask thumbnails and chains last drawn for layer `id` (for tests and automation).
 pub fn recorded(ctx: &egui::Context, id: u64) -> Option<Rects> {
     ctx.data(|d| d.get_temp::<std::collections::HashMap<u64, Rects>>(rects_id())).and_then(|m| m.get(&id).cloned())
+}
+
+/// Drop what was recorded for layer `id`, so a row drawn without mask thumbnails (thumbnail size
+/// None) can't be hit through rects from an earlier frame.
+pub fn forget(ctx: &egui::Context, id: u64) {
+    ctx.data_mut(|d| d.get_temp_mut_or_default::<std::collections::HashMap<u64, Rects>>(rects_id()).remove(&id));
 }
 
 /// A small vertical chain: two interlocking links.

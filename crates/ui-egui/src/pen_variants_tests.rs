@@ -169,3 +169,107 @@ fn new_pens_with_command_edit_paths_as_direct_selection() {
         assert_eq!(app.ui.tool, tool);
     }
 }
+
+/// #6593: a Pen press on an endpoint of an open path carries on drawing it, as in Photoshop,
+/// from its last anchor or (reversed) its first; the commit extends that subpath in one step
+/// instead of adding a second one. Elsewhere the press starts a new subpath as before.
+#[test]
+fn the_pen_carries_on_an_open_path_from_either_end() {
+    let mut app = app(Tool::Pen);
+    let anchors = |app: &PhotocraftApp| -> Vec<Vec<[f64; 2]>> {
+        work_path(app).subpaths.iter().map(|s| s.knots.iter().map(|k| [k.anchor.x, k.anchor.y]).collect()).collect()
+    };
+    let steps = |app: &PhotocraftApp| app.session.active().unwrap().history.past_len();
+    click(&mut app, 20.0, 20.0);
+    click(&mut app, 80.0, 20.0);
+    crate::vector_ui::pen_commit(&mut app, false);
+    assert_eq!(anchors(&app), [vec![[20.0, 20.0], [80.0, 20.0]]]);
+    // From the last anchor.
+    let before = steps(&app);
+    click(&mut app, 80.0, 20.0);
+    click(&mut app, 80.0, 80.0);
+    crate::vector_ui::pen_commit(&mut app, false);
+    assert_eq!(anchors(&app), [vec![[20.0, 20.0], [80.0, 20.0], [80.0, 80.0]]], "the same subpath, extended");
+    assert_eq!(steps(&app), before + 1, "one History step");
+    // From the first anchor: the subpath runs the other way and carries on past it.
+    click(&mut app, 20.0, 20.0);
+    click(&mut app, 20.0, 80.0);
+    crate::vector_ui::pen_commit(&mut app, false);
+    assert_eq!(anchors(&app), [vec![[80.0, 80.0], [80.0, 20.0], [20.0, 20.0], [20.0, 80.0]]]);
+    // Anywhere else: a new subpath next to it.
+    click(&mut app, 150.0, 150.0);
+    click(&mut app, 200.0, 150.0);
+    crate::vector_ui::pen_commit(&mut app, false);
+    assert_eq!(anchors(&app).len(), 2, "a second subpath");
+    // Closing on the far end of a resumed path closes that subpath.
+    click(&mut app, 200.0, 150.0);
+    click(&mut app, 175.0, 190.0);
+    click(&mut app, 150.0, 150.0);
+    assert!(app.ui.pen.is_none(), "closed and committed");
+    let work = work_path(&app);
+    assert_eq!((work.subpaths.len(), work.subpaths[1].closed, work.subpaths[1].knots.len()), (2, true, 3));
+}
+
+/// #6593 review: carrying on a subpath keeps its path operation, and a draft whose subpath changed
+/// meanwhile is added as a new subpath instead of overwriting another one.
+#[test]
+fn a_resumed_subpath_keeps_its_operation_and_a_stale_draft_adds_a_new_one() {
+    let mut app = app(Tool::Pen);
+    let open = |ax: f64, bx: f64, op: &str| json!({"closed": false, "op": op, "knots": [{"anchor": [ax, 20.0]}, {"anchor": [bx, 20.0]}]});
+    app.run("path.set", json!({"name": "work", "path": {"subpaths": [open(20.0, 80.0, "subtract")]}})).unwrap();
+    click(&mut app, 80.0, 20.0);
+    click(&mut app, 80.0, 80.0);
+    crate::vector_ui::pen_commit(&mut app, false);
+    let work = work_path(&app);
+    assert_eq!((work.subpaths.len(), work.subpaths[0].knots.len()), (1, 3));
+    assert_eq!(work.subpaths[0].op, photocraft_doc::vector::PathOp::Subtract, "the operation is kept");
+    // The work path is replaced while the draft is open: the draft becomes a new subpath.
+    click(&mut app, 20.0, 20.0);
+    click(&mut app, 20.0, 80.0);
+    app.run("path.set", json!({"name": "work", "path": {"subpaths": [open(120.0, 180.0, "combine")]}})).unwrap();
+    crate::vector_ui::pen_commit(&mut app, false);
+    let work = work_path(&app);
+    assert_eq!(work.subpaths.len(), 2, "a new subpath, the replaced one untouched");
+    assert_eq!(work.subpaths[0].knots.iter().map(|k| k.anchor.x).collect::<Vec<_>>(), [120.0, 180.0]);
+    // The same with nothing selected in the Paths panel: still added to the Work Path it came from.
+    click(&mut app, 180.0, 20.0);
+    click(&mut app, 180.0, 90.0);
+    app.ui.selected_path = None;
+    app.run("path.set", json!({"name": "work", "path": {"subpaths": [open(120.0, 160.0, "combine")]}})).unwrap();
+    crate::vector_ui::pen_commit(&mut app, false);
+    assert_eq!(work_path(&app).subpaths.len(), 2, "added, not replacing the Work Path");
+    // And with another path selected: the draft still goes back to the path it came from.
+    app.run("path.set", json!({"name": "Other", "path": {"subpaths": [open(10.0, 30.0, "combine")]}})).unwrap();
+    click(&mut app, 160.0, 20.0);
+    click(&mut app, 160.0, 90.0);
+    app.ui.selected_path = Some("Other".into());
+    app.run("path.set", json!({"name": "work", "path": {"subpaths": [open(120.0, 150.0, "combine")]}})).unwrap();
+    crate::vector_ui::pen_commit(&mut app, false);
+    assert_eq!(work_path(&app).subpaths.len(), 2, "joined the Work Path it came from");
+    let st = app.session.active().unwrap();
+    let other = st.doc.paths.iter().find(|p| p.name == "Other").unwrap();
+    assert_eq!(other.path.subpaths.len(), 1, "the selected path is untouched");
+}
+
+/// #6593 review: undoing points in a resumed draft never removes the path's own anchors; past the
+/// added ones it drops the draft and the path stays as it was.
+#[test]
+fn undo_in_a_resumed_draft_stops_at_the_paths_own_anchors() {
+    let mut app = app(Tool::Pen);
+    click(&mut app, 20.0, 20.0);
+    click(&mut app, 80.0, 20.0);
+    crate::vector_ui::pen_commit(&mut app, false);
+    let before = work_path(&app);
+    click(&mut app, 80.0, 20.0);
+    click(&mut app, 80.0, 80.0);
+    assert!(crate::vector_ui::pen_undo_last_point(&mut app), "takes back the added anchor");
+    assert_eq!(app.ui.pen.as_ref().map(|p| p.knots.len()), Some(2));
+    // A ⌘/Ctrl selection on the draft's anchors.
+    app.ui.direct_selection.target = Some(crate::direct_select::PathRef::Pen);
+    app.ui.direct_selection.anchors = vec![[0, 1]];
+    assert!(crate::vector_ui::pen_undo_last_point(&mut app), "drops the draft");
+    assert!(app.ui.pen.is_none());
+    assert_eq!(app.ui.direct_selection.target, None, "the selection on the dropped draft goes with it");
+    assert!(app.ui.direct_selection.anchors.is_empty());
+    assert_eq!(work_path(&app), before, "the path is as it was");
+}

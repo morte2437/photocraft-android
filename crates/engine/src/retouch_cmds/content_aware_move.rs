@@ -149,31 +149,36 @@ fn mapped_bounds(h: &Homography, r: Rect) -> Rect {
 }
 
 /// `src` resampled (bilinear, edges clamped) through `inv` (destination → source) over `rect`:
-/// the content as it lands. Works on float samples, so at any depth.
+/// the content as it lands. Works on float samples, so at any depth; rows in parallel.
 fn resample(src: &Region, inv: &Homography, rect: Rect) -> Region {
+    use rayon::prelude::*;
     let (sw, sh, n) = (src.rect.width() as usize, src.rect.height() as usize, src.ch);
-    let mut out = Region { rect, ch: n, data: vec![0.0; rect.width() as usize * rect.height() as usize * n] };
-    if sw == 0 || sh == 0 {
+    let w = rect.width() as usize;
+    let mut out = Region { rect, ch: n, data: vec![0.0; w * rect.height() as usize * n] };
+    if sw == 0 || sh == 0 || w == 0 || n == 0 {
         return out;
     }
     let px = |x: usize, y: usize, c: usize| src.data.get((y * sw + x) * n + c).copied().unwrap_or(0.0);
-    for (i, dst) in out.data.chunks_exact_mut(n).enumerate() {
-        let (qx, qy) = (rect.x0 + (i % rect.width() as usize) as i32, rect.y0 + (i / rect.width() as usize) as i32);
-        let (sx, sy) = inv.apply(f64::from(qx) + 0.5, f64::from(qy) + 0.5);
-        let fx = (sx - 0.5 - f64::from(src.rect.x0)).clamp(0.0, (sw - 1) as f64);
-        let fy = (sy - 0.5 - f64::from(src.rect.y0)).clamp(0.0, (sh - 1) as f64);
-        if !(fx.is_finite() && fy.is_finite()) {
-            continue;
+    out.data.par_chunks_mut(w * n).enumerate().for_each(|(row, line)| {
+        let qy = rect.y0 + row as i32;
+        for (col, dst) in line.chunks_exact_mut(n).enumerate() {
+            let qx = rect.x0 + col as i32;
+            let (sx, sy) = inv.apply(f64::from(qx) + 0.5, f64::from(qy) + 0.5);
+            let fx = (sx - 0.5 - f64::from(src.rect.x0)).clamp(0.0, (sw - 1) as f64);
+            let fy = (sy - 0.5 - f64::from(src.rect.y0)).clamp(0.0, (sh - 1) as f64);
+            if !(fx.is_finite() && fy.is_finite()) {
+                continue;
+            }
+            let (x0, y0) = (fx.floor() as usize, fy.floor() as usize);
+            let (x1, y1) = ((x0 + 1).min(sw - 1), (y0 + 1).min(sh - 1));
+            let (tx, ty) = ((fx - x0 as f64) as f32, (fy - y0 as f64) as f32);
+            for (c, d) in dst.iter_mut().enumerate() {
+                let top = px(x0, y0, c) * (1.0 - tx) + px(x1, y0, c) * tx;
+                let bottom = px(x0, y1, c) * (1.0 - tx) + px(x1, y1, c) * tx;
+                *d = top * (1.0 - ty) + bottom * ty;
+            }
         }
-        let (x0, y0) = (fx.floor() as usize, fy.floor() as usize);
-        let (x1, y1) = ((x0 + 1).min(sw - 1), (y0 + 1).min(sh - 1));
-        let (tx, ty) = ((fx - x0 as f64) as f32, (fy - y0 as f64) as f32);
-        for (c, d) in dst.iter_mut().enumerate() {
-            let top = px(x0, y0, c) * (1.0 - tx) + px(x1, y0, c) * tx;
-            let bottom = px(x0, y1, c) * (1.0 - tx) + px(x1, y1, c) * tx;
-            *d = top * (1.0 - ty) + bottom * ty;
-        }
-    }
+    });
     out
 }
 
@@ -217,18 +222,26 @@ fn plan(s: &Session, p: &Value, margin: i32) -> Result<Plan> {
         return Err(bad(CMD, format!("the selection is too large to move ({pixels} pixels, at most {MAX_PIXELS})")));
     }
     let map = placement(p, area, (dx, dy))?;
-    let dest = match &map {
+    if map.is_none() && (dx, dy) == (0, 0) {
+        return Err(bad(CMD, "drag the selection to where the content should go"));
+    }
+    let dest = landing(map.as_ref(), area, (dx, dy), canvas)?;
+    let all_layers = flag(p, "sampleAllLayers", false) && targets_pixels(p);
+    Ok(Plan { target: Target { id, all_layers }, canvas, area, offset: (dx, dy), map, dest, mode, structure, color, margin })
+}
+
+/// Where the content of `area` lands on `canvas`: moved by `offset`, or (Transform On Drop) the
+/// bounds of the area mapped by `map`, clipped to the canvas.
+fn landing(map: Option<&Homography>, area: Rect, (dx, dy): (i32, i32), canvas: Rect) -> Result<Rect> {
+    match map {
         None => {
-            if (dx, dy) == (0, 0) {
-                return Err(bad(CMD, "drag the selection to where the content should go"));
-            }
             // Content dropped beyond the edge would be lost: keep it on the canvas, as the Patch
             // Tool does.
             let dest = area.translate(dx, dy);
             if !canvas.contains_rect(&dest) {
                 return Err(bad(CMD, "the moved selection must stay inside the canvas"));
             }
-            dest
+            Ok(dest)
         }
         Some(h) => {
             let landed = mapped_bounds(h, area);
@@ -240,11 +253,9 @@ fn plan(s: &Session, p: &Value, margin: i32) -> Result<Plan> {
             if dest.is_empty() {
                 return Err(bad(CMD, "the transformed selection must land on the canvas"));
             }
-            dest
+            Ok(dest)
         }
-    };
-    let all_layers = flag(p, "sampleAllLayers", false) && targets_pixels(p);
-    Ok(Plan { target: Target { id, all_layers }, canvas, area, offset: (dx, dy), map, dest, mode, structure, color, margin })
+    }
 }
 
 /// Width in pixels of the edge band re-synthesised at the new place, for Structure 1..7 and content
@@ -528,18 +539,24 @@ pub(super) fn content_aware_move(s: &mut Session, p: &Value) -> Result<Value> {
     )
 }
 
-/// Largest selection (bounding box, in pixels) the live preview computes.
+/// Largest area (the selection's bounding box, or where it lands if that is larger, in pixels) a
+/// preview solves at full resolution. A larger one is solved on a copy scaled down to about this
+/// size ([`ContentAwarePreview::is_coarse`]).
 const PREVIEW_MAX_PIXELS: u64 = 256 * 256;
 /// Sampling margin of a preview: a fraction of the command's, so a preview is a small solve.
 const PREVIEW_MARGIN: i32 = 48;
 
 /// A live preview of `paint.contentAwareMove` that can run on any thread: the document as of
-/// [`preview`], with the move's params. Cheaper than the command (a small sampling margin, and
-/// only small selections), so the result is close to, not the same as, what the command makes.
+/// [`preview`], with the move's params. Cheaper than the command: a small sampling margin, and a
+/// selection larger than [`PREVIEW_MAX_PIXELS`] is solved scaled down and enlarged back (coarse).
+/// The result is close to, not the same as, what the command makes; [`Self::refine`] gives the
+/// command's own result for a coarse one.
 pub struct ContentAwarePreview {
     doc: std::sync::Arc<Document>,
     plan: Plan,
     params: Value,
+    /// Below 1: the scale the move is solved at before it is enlarged back.
+    scale: f64,
 }
 
 impl ContentAwarePreview {
@@ -548,19 +565,226 @@ impl ContentAwarePreview {
     pub fn run(&self, ctx: &crate::jobs::JobCtx) -> Result<(Document, Rect)> {
         let mut work = (*self.doc).clone();
         let sel = self.doc.selection.as_ref().ok_or_else(|| bad(CMD, "select the area to move first"))?;
+        if self.is_coarse() {
+            let damage = run_scaled(&mut work, sel, &self.plan, &self.params, self.scale, ctx)?;
+            return Ok((work, damage));
+        }
         let (_, damage, _) = run_move(&mut work, sel, &self.plan, &self.params, ctx, "Content-Aware Move preview")?;
         Ok((work, damage))
+    }
+
+    /// Whether the preview is solved on a scaled-down copy (a selection larger than a preview
+    /// solves at full resolution): fast, but softer than the result.
+    pub fn is_coarse(&self) -> bool {
+        self.scale < 1.0
+    }
+
+    /// For a coarse preview, the full-resolution one: exactly what `paint.contentAwareMove` makes
+    /// (the command's sampling margin), and as slow. `None` when this preview already is at full
+    /// resolution.
+    pub fn refine(&self) -> Option<ContentAwarePreview> {
+        self.is_coarse().then(|| ContentAwarePreview {
+            doc: self.doc.clone(),
+            plan: Plan { margin: MAX_MARGIN, ..self.plan },
+            params: self.params.clone(),
+            scale: 1.0,
+        })
     }
 }
 
 /// Prepare the preview of `paint.contentAwareMove` with params `p` on the active document. Errors
-/// like the command does, and for a selection larger than a preview takes.
+/// as the command does (bad params, nothing to move, a selection larger than the command takes).
 pub fn preview(s: &Session, p: &Value) -> Result<ContentAwarePreview> {
     let plan = plan(s, p, PREVIEW_MARGIN)?;
-    let pixels = u64::from(plan.area.width()) * u64::from(plan.area.height());
-    if pixels > PREVIEW_MAX_PIXELS {
-        return Err(bad(CMD, format!("the selection is too large to preview ({pixels} pixels, at most {PREVIEW_MAX_PIXELS})")));
-    }
+    let px = |r: Rect| u64::from(r.width()) * u64::from(r.height());
+    let pixels = px(plan.area).max(px(plan.dest));
+    let scale = if pixels > PREVIEW_MAX_PIXELS { (PREVIEW_MAX_PIXELS as f64 / pixels as f64).sqrt() } else { 1.0 };
     let d = s.active().ok_or(EngineError::NoDocument)?;
-    Ok(ContentAwarePreview { doc: d.doc.clone(), plan, params: p.clone() })
+    Ok(ContentAwarePreview { doc: d.doc.clone(), plan, params: p.clone(), scale })
+}
+
+/// The surface's tiles over `r` (shared, not copied) on a surface of their own: what a resize of
+/// that part reads.
+fn crop(surf: &Surface, r: Rect) -> Surface {
+    let mut all = surf.clone();
+    let mut out = Surface::with_default(surf.format(), &surf.default_pixel());
+    out.put_tiles(all.take_tiles(r));
+    out
+}
+
+/// A translation by `(dx, dy)`.
+fn shift(dx: f64, dy: f64) -> Homography {
+    Homography([1.0, 0.0, dx, 0.0, 1.0, dy, 0.0, 0.0, 1.0])
+}
+
+/// [`run_move`] solved `scale` times smaller (`scale` < 1) and enlarged back: the area around the
+/// selection and where it lands is scaled down (area average), moved there with a preview's
+/// sampling margin, and the result enlarged (bilinear) over the selection's shape where it lands
+/// and, for a move, where it left. The landed content is sampled where the scaled solve put it, so
+/// rounding the scaled offset doesn't shift it. Writes into `doc` (a copy) and returns the
+/// rectangle it changed.
+fn run_scaled(doc: &mut Document, sel: &Surface, plan: &Plan, p: &Value, scale: f64, ctx: &crate::jobs::JobCtx) -> Result<Rect> {
+    use photocraft_algo::resample::{Resample, resize_surface_in_canvas, scaled_rect};
+    let f = scale;
+    if !(f > 0.0 && f < 1.0) {
+        return Err(EngineError::Other("internal error: a coarse preview needs a scale below 1".into()));
+    }
+    let (dx, dy) = plan.offset;
+    let full_map = plan.map.unwrap_or_else(|| shift(f64::from(dx), f64::from(dy)));
+    let full_inv = full_map.inverse().ok_or_else(|| bad(CMD, "the transform collapses the selection"))?;
+    // What the scaled solve reads: both windows, with two scaled pixels to spare for the filter.
+    let reach = (f64::from(PREVIEW_MARGIN + 2) / f).ceil().min(1e6) as i32;
+    let reach_rect = plan.area.union(&plan.dest).inflate(reach).intersect(&plan.canvas);
+    ctx.check()?;
+
+    // 1. The pixels and the selection scaled down, on a document of their own (one layer).
+    let fmt = crate::channel_cmds::target_surface(doc, plan.target.id, p)?.0.format();
+    let src = if plan.target.all_layers {
+        let region = read(doc, plan.target, p, reach_rect)?;
+        let mut s = Surface::new(fmt);
+        s.write_region(reach_rect, &region.data);
+        s
+    } else {
+        crop(crate::channel_cmds::target_surface(doc, plan.target.id, p)?.0, reach_rect)
+    };
+    let small = resize_surface_in_canvas(&src, f, f, Resample::Bilinear, plan.canvas);
+    // The selection is scaled in 32-bit float: in 8 bits a faint, sparse one (scattered 1/255
+    // pixels) averages to 0 and the scaled solve would find nothing selected.
+    let sel_f32 = photocraft_color::PixelFormat { sample: photocraft_color::SampleType::F32, ..sel.format() };
+    let small_sel = resize_surface_in_canvas(&crop(sel, reach_rect).convert(sel_f32), f, f, Resample::Bilinear, plan.canvas);
+    ctx.check()?;
+    let canvas = scaled_rect(plan.canvas, f, f);
+    let size = photocraft_geom::Size { width: canvas.width(), height: canvas.height() };
+    let mut mini = Document::new("Content-Aware Move preview", size, doc.mode, doc.depth);
+    let layer = photocraft_doc::Layer::new("preview", LayerContent::Raster(small));
+    let id = layer.id;
+    mini.layers.push(layer);
+
+    // 2. The move, scaled.
+    let area = selection_area(&small_sel, canvas);
+    if area.is_empty() {
+        return Err(bad(CMD, "the selection is empty"));
+    }
+    let mut offset = ((f64::from(dx) * f).round() as i32, (f64::from(dy) * f).round() as i32);
+    if plan.map.is_none() {
+        // Rounding may push the scaled patch a pixel past the edge: keep it on the canvas.
+        let moved = area.translate(offset.0, offset.1);
+        offset.0 += (canvas.x0 - moved.x0).max(0) - (moved.x1 - canvas.x1).max(0);
+        offset.1 += (canvas.y0 - moved.y0).max(0) - (moved.y1 - canvas.y1).max(0);
+    }
+    let map = match plan.map {
+        Some(_) => placement(p, area, offset)?,
+        None => None,
+    };
+    let dest = landing(map.as_ref(), area, offset, canvas)?;
+    let small_plan = Plan { target: Target { id: Some(id), all_layers: false }, canvas, area, offset, map, dest, margin: PREVIEW_MARGIN, ..*plan };
+    // The small document's layer is the target: no channel or mask targeting there.
+    let mut small_p = p.clone();
+    if let Some(o) = small_p.as_object_mut() {
+        o.remove("target");
+    }
+    let (solved, _, _) = run_move(&mut mini, &small_sel, &small_plan, &small_p, ctx, "Content-Aware Move preview")?;
+    ctx.check()?;
+
+    // 3. Enlarged back over the selection's shape: where it lands (through the scaled placement)
+    // and, for a move, where it left (in place).
+    let solved = Region::read(&solved, scaled_rect(reach_rect, f, f).inflate(1).intersect(&canvas));
+    let to_small = Homography([f, 0.0, 0.0, 0.0, f, 0.0, 0.0, 0.0, 1.0]);
+    let small_map = map.unwrap_or_else(|| shift(f64::from(offset.0), f64::from(offset.1)));
+    let cov = if plan.map.is_some() { coverage(sel, plan.area) } else { Vec::new() };
+    let landed_in = |r: Rect| -> Vec<bool> {
+        match &plan.map {
+            None => mask(sel, r.translate(-dx, -dy)),
+            Some(_) => landed_mask(&cov, plan.area, &full_inv, r),
+        }
+    };
+    let landed = landed_in(plan.dest);
+    let content = resample(&solved, &small_map.mul(&to_small).mul(&full_inv), plan.dest);
+    let mut damage = replace(doc, plan.target, p, &content, &landed)?;
+    if plan.mode == Mode::Move {
+        ctx.check()?;
+        let hole: Vec<bool> = mask(sel, plan.area).iter().zip(landed_in(plan.area)).map(|(s, l)| *s && !l).collect();
+        if hole.iter().any(|h| *h) {
+            damage = damage.union(&replace(doc, plan.target, p, &resample(&solved, &to_small, plan.area), &hole)?);
+        }
+    }
+    Ok(damage)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::jobs::JobCtx;
+
+    fn textured(w: u32, h: u32) -> Session {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": w, "height": h})).unwrap();
+        s.edit("setup", |doc, active| {
+            let b = doc.bounds();
+            let surf = doc.layer_mut(active.unwrap()).unwrap().surface_mut().unwrap();
+            let fmt = surf.format();
+            let mut data = Vec::new();
+            for y in b.y0..b.y1 {
+                for x in b.x0..b.x1 {
+                    let v = ((x * 7 + y * 13) % 17) as f32 / 17.0;
+                    data.extend(photocraft_raster::from_rgba(&fmt, [v, 1.0 - v, 0.5, 1.0]));
+                }
+            }
+            surf.write_region(b, &data);
+            Ok(())
+        })
+        .unwrap();
+        s
+    }
+
+    #[test]
+    fn a_preview_within_the_full_resolution_budget_is_the_plain_solve_bit_for_bit() {
+        let mut s = textured(300, 300);
+        s.execute("select.rect", json!({"x": 20, "y": 30, "width": 60, "height": 50})).unwrap();
+        for p in [json!({"offset": [120, 90]}), json!({"offset": [120, 90], "rotate": 30, "mode": "extend"})] {
+            let job = preview(&s, &p).unwrap();
+            assert!(!job.is_coarse());
+            let (got, damage) = job.run(&JobCtx::new()).unwrap();
+            // What the preview has always computed: the move at full resolution, with the
+            // preview's margin.
+            let plan = plan(&s, &p, PREVIEW_MARGIN).unwrap();
+            let d = s.active().unwrap();
+            let mut want = (*d.doc).clone();
+            let (_, want_damage, _) = run_move(&mut want, d.doc.selection.as_ref().unwrap(), &plan, &p, &JobCtx::new(), "test").unwrap();
+            let b = want.bounds();
+            assert_eq!(damage, want_damage);
+            assert!(got.layers[0].surface().unwrap().read_region(b) == want.layers[0].surface().unwrap().read_region(b), "{p}");
+        }
+        // 256 × 256 is the largest selection solved at full resolution.
+        s.execute("select.rect", json!({"x": 0, "y": 0, "width": 256, "height": 256})).unwrap();
+        assert!(!preview(&s, &json!({"offset": [20, 20]})).unwrap().is_coarse());
+        s.execute("select.rect", json!({"x": 0, "y": 0, "width": 257, "height": 256})).unwrap();
+        assert!(preview(&s, &json!({"offset": [20, 20]})).unwrap().is_coarse());
+    }
+
+    #[test]
+    fn a_coarse_preview_keeps_a_faint_sparse_selection() {
+        // An 8-bit selection of scattered 1/255 pixels: scaled down in 8 bits it averaged to 0
+        // everywhere, so the coarse preview failed with "the selection is empty" while the
+        // command itself moves it.
+        let mut s = textured(1200, 800);
+        s.edit("faint selection", |doc, _| {
+            let mut sel = Surface::new(photocraft_color::PixelFormat::GRAY8);
+            let r = Rect::new(20, 20, 1120, 720);
+            let data: Vec<f32> = (r.y0..r.y1).flat_map(|y| (r.x0..r.x1).map(move |x| if x % 4 == 0 && y % 4 == 0 { 1.0 / 255.0 } else { 0.0 })).collect();
+            sel.write_region(r, &data);
+            doc.selection = Some(sel);
+            Ok(())
+        })
+        .unwrap();
+        let p = json!({"offset": [40, 40]});
+        let job = preview(&s, &p).unwrap();
+        assert!(job.is_coarse());
+        let (got, damage) = job.run(&JobCtx::new()).unwrap();
+        assert!(!damage.is_empty());
+        let b = got.bounds();
+        let before = s.active().unwrap().doc.layers[0].surface().unwrap().read_region(b);
+        assert!(got.layers[0].surface().unwrap().read_region(b) != before, "the preview moves something");
+        s.execute("paint.contentAwareMove", p).unwrap();
+    }
 }

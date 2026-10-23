@@ -306,6 +306,21 @@ fn clicking_the_last_point_again_closes_the_outline() {
     assert!(app.session.active().unwrap().doc.selection.as_ref().unwrap().sample_channel(150, 100, 0) > 0.9);
 }
 
+#[test]
+fn shift_drag_constrains_freeform_pen_to_a_straight_line() {
+    let mut app = app();
+    app.ui.tool = Tool::FreeformPen;
+    let shift = Modifiers::SHIFT;
+    event(&mut app, "down", 10.0, 60.0, shift);
+    for (x, y) in [(30.0, 63.0), (50.0, 55.0), (80.0, 68.0), (100.0, 52.0)] {
+        event(&mut app, "move", x, y, shift);
+    }
+    let pts = &app.drag.as_ref().unwrap().points;
+    assert!(pts.len() >= 2, "{pts:?}");
+    let y0 = pts[0][1];
+    assert!(pts.iter().all(|p| (p[1] - y0).abs() < 1e-6), "⇧ keeps the freehand segment horizontal: {pts:?}");
+}
+
 /// ⌘ (Ctrl) with the Lasso is the Move tool for the drag: through the real canvas, a ⌘-drag outside
 /// the selection (here: without one) moves the layer and draws no outline (`canvas::command_moves_layer`).
 #[test]

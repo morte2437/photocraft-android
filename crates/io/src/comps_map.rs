@@ -12,6 +12,8 @@
 //! Both are re-emitted verbatim while they still decode to the document's state, and are
 //! regenerated otherwise (comp appearance is not written to PSD; `.pcraft` keeps it).
 
+use std::collections::HashMap;
+
 use photocraft_doc::comps::layer_position;
 use photocraft_doc::{Artboard, ArtboardBackground, CompLayerState, Document, Guides, Layer, LayerComp};
 use photocraft_geom::Rect;
@@ -203,6 +205,14 @@ pub(crate) fn decode_comps(resource: Option<&[u8]>, doc: &Document) -> (Vec<Laye
         }
     }
     let last_applied = int(d, "lastAppliedComp").map(|v| v as u32).filter(|id| comps.iter().any(|c| c.id == *id));
+    // Index each comp ID to its first occurrence once. Both the comp list and the
+    // per-layer setting ID lists are file-controlled, so matching settings against comps
+    // with iter_mut().find() per ID is O(n*m) and lets a crafted document stall import.
+    // or_insert preserves first-match behavior for duplicate comp IDs.
+    let mut id_to_index: HashMap<u32, usize> = HashMap::with_capacity(comps.len());
+    for (i, c) in comps.iter().enumerate() {
+        id_to_index.entry(c.id).or_insert(i);
+    }
     let mut last = LayerComp {
         id: 0,
         name: "Last Document State".into(),
@@ -215,33 +225,37 @@ pub(crate) fn decode_comps(resource: Option<&[u8]>, doc: &Document) -> (Vec<Laye
     for (_, _, l) in doc.walk() {
         let Some(settings) = layer_cmls(l).and_then(|c| parse_cmls(&c)) else { continue };
         let here = layer_position(l);
+        // Photoshop writes `enab` only where the layer's visibility changes from one comp to the
+        // next: a comp's entry without it has the last `enab` before it, or visible when none
+        // came before (#8093). Only comps that capture visibility take that inherited value; the
+        // Last Document State entry (comp 0) and the others keep what the entry says.
+        let mut inherited = true;
         for s in settings {
-            if s.visible.is_none() && s.offset.is_none() {
-                continue;
+            let resolved = s.visible.unwrap_or(inherited);
+            if s.comps.iter().any(|id| *id != 0) {
+                inherited = resolved;
             }
-            let state = CompLayerState {
-                layer: l.id,
-                visible: s.visible,
-                position: match (here, s.offset) {
-                    (Some(h), Some(o)) => {
-                        let p = offset_position(h, o);
-                        if p.is_none() {
-                            warnings.push(format!(
-                                "layer \"{}\": layer comp position offset ({}, {}) is out of range; that position was not imported",
-                                l.name, o.0, o.1
-                            ));
-                        }
-                        p
+            let position = match (here, s.offset) {
+                (Some(h), Some(o)) => {
+                    let p = offset_position(h, o);
+                    if p.is_none() {
+                        warnings.push(format!(
+                            "layer \"{}\": layer comp position offset ({}, {}) is out of range; that position was not imported",
+                            l.name, o.0, o.1
+                        ));
                     }
-                    _ => None,
-                },
-                appearance: None,
+                    p
+                }
+                _ => None,
             };
             for id in &s.comps {
-                let target = if *id == 0 { Some(&mut last) } else { comps.iter_mut().find(|c| c.id == *id) };
-                if let Some(c) = target {
-                    c.states.push(state.clone());
+                let target = if *id == 0 { Some(&mut last) } else { id_to_index.get(id).map(|&i| &mut comps[i]) };
+                let Some(c) = target else { continue };
+                let visible = if *id != 0 && c.apply_visibility { Some(resolved) } else { s.visible };
+                if visible.is_none() && s.offset.is_none() {
+                    continue;
                 }
+                c.states.push(CompLayerState { layer: l.id, visible, position, appearance: None });
             }
         }
     }
@@ -404,6 +418,72 @@ mod tests {
         let mut only = vec![(*b"shmd", write_shmd(&[MetadataItem::new(*b"cmls", vec![0, 0])]))];
         set_cmls(&mut only, None);
         assert!(only.is_empty());
+    }
+
+    /// #8093: Photoshop writes `enab` only where a layer's visibility changes between comps. An
+    /// entry without it has the last `enab` before it, or visible when none came before: a layer
+    /// added after comp 1 and shown in it on Recapture is visible there, and comp 3, saved in the
+    /// same state as comp 2, hides the layer comp 2 hides.
+    #[test]
+    fn a_comp_entry_without_enab_inherits_the_previous_visibility() {
+        let mut d = Document::with_background("t", Size::new(32, 32), ColorMode::Rgb, SampleType::U8, Color::WHITE);
+        let comp = |id: u32, name: &str| LayerComp {
+            id,
+            name: name.into(),
+            comment: String::new(),
+            apply_visibility: true,
+            apply_position: true,
+            apply_appearance: false,
+            states: Vec::new(),
+        };
+        // c4 records positions only: it never takes a visibility.
+        let mut c4 = comp(4, "c4");
+        c4.apply_visibility = false;
+        d.layer_comps = vec![comp(1, "c1"), comp(2, "c2"), comp(3, "c3"), c4];
+        let entry = |ids: &[u32], enab: Option<bool>| {
+            let mut e = obj("null");
+            if let Some(v) = enab {
+                e = e.with("enab", Value::Boolean(v));
+            }
+            Value::Descriptor(e.with("compList", Value::List(ids.iter().map(|i| Value::Integer(*i as i32)).collect())))
+        };
+        let attach = |l: &mut Layer, settings: Vec<Value>| {
+            let cmls = VersionedDescriptor::new(Descriptor::new("null").with("layerSettings", Value::List(settings))).to_bytes();
+            let mut raw = vec![(*b"shmd", write_shmd(&[]))];
+            set_cmls(&mut raw, Some(cmls));
+            l.psd_blocks = raw.iter().map(|(k, v)| (*k, std::sync::Arc::new(v.clone()))).collect();
+        };
+        // Layer A: [c1 {}], [c2 {enab false}], [c3 {}], [0 {}] (repro_comp_inherit.psd).
+        let mut a = Layer::raster("A", PixelFormat::RGBA8);
+        attach(&mut a, vec![entry(&[1], None), entry(&[2], Some(false)), entry(&[3], None), entry(&[0], None)]);
+        // Layer C: [c1 {}], [0 {enab false}] (repro_comp_new_layer.psd).
+        let mut c = Layer::raster("C", PixelFormat::RGBA8);
+        attach(&mut c, vec![entry(&[1], None), entry(&[0], Some(false))]);
+        // Layer E: [c1 {enab false}], [c4 {Ofst}], [c3 + 0 {}]: c4 keeps no visibility, c3 inherits
+        // hidden, and the Last Document State sharing c3's entry records nothing.
+        let mut e = Layer::raster("E", PixelFormat::RGBA8);
+        e.surface_mut().unwrap().fill_rect(Rect::new(4, 4, 8, 8), &[1.0, 0.0, 0.0, 1.0]);
+        let moved = obj("null")
+            .with("compList", Value::List(vec![Value::Integer(4)]))
+            .with("Ofst", Value::Descriptor(obj("null").with("Hrzn", Value::Integer(2)).with("Vrtc", Value::Integer(3))));
+        attach(&mut e, vec![entry(&[1], Some(false)), Value::Descriptor(moved), entry(&[3, 0], None)]);
+        let (a_id, c_id, e_id) = (a.id, c.id, e.id);
+        d.layers.push(a);
+        d.layers.push(c);
+        d.layers.push(e);
+        let res = write_comps_resource(&d).unwrap();
+        let (comps, _, last) = comps_from_psd(Some(&res), &d);
+        let visible = |id: u32, layer| comps.iter().find(|c| c.id == id).and_then(|c| c.state(layer)).and_then(|s| s.visible);
+        assert_eq!([visible(1, a_id), visible(2, a_id), visible(3, a_id)], [Some(true), Some(false), Some(false)]);
+        assert_eq!(visible(1, c_id), Some(true), "no enab before it: visible");
+        // The Last Document State entry keeps exactly what it records.
+        let last = last.unwrap();
+        assert_eq!(last.state(c_id).and_then(|s| s.visible), Some(false));
+        assert_eq!(last.state(a_id), None);
+        let c4 = comps.iter().find(|c| c.id == 4).and_then(|c| c.state(e_id)).unwrap();
+        assert_eq!((c4.visible, c4.position), (None, Some((6, 7))), "a comp without visibility takes none");
+        assert_eq!(visible(3, e_id), Some(false), "inherited from c1, past c4");
+        assert_eq!(last.state(e_id), None, "the shared entry gives the Last Document State nothing");
     }
 
     /// A layer at origin (4, 4) whose `shmd` carries a `cmls` item with one `layerSettings`

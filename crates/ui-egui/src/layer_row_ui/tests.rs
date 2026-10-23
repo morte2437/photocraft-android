@@ -37,6 +37,8 @@ fn busy() -> photocraft_engine::Session {
         s.execute("layer.layerStyle.dropShadow", json!({"layer": g})).unwrap();
         prev = Some(g);
     }
+    // Group Layers creates collapsed groups (#5571); these tests start with every group open.
+    s.execute("layer.setExpanded", json!({"all": true, "expanded": true})).unwrap();
     s
 }
 
@@ -106,6 +108,26 @@ fn long_names_never_run_under_the_indicators() {
     }
 }
 
+/// A layer inside a group sits one step right of the group's row, so the hierarchy shows: its
+/// name used to start where the group's did. Top-level layers stay where they were.
+#[test]
+fn a_groups_layers_indent_past_the_group() {
+    let mut s = photocraft_engine::Session::new();
+    s.execute("file.new", json!({"width": 64, "height": 48})).unwrap();
+    let child = s.execute("layer.new.layer", json!({"name": "Child"})).unwrap()["layer"].as_u64().unwrap();
+    let group = s.execute("layer.groupLayers", json!({"name": "Group"})).unwrap()["layer"].as_u64().unwrap();
+    // Group Layers creates the group collapsed; open it so the panel lists its layers.
+    s.execute("layer.setExpanded", json!({"layer": group, "expanded": true})).unwrap();
+    let top = s.execute("layer.new.layer", json!({"name": "Top"})).unwrap()["layer"].as_u64().unwrap();
+    let h = harness(s, 1.0, "promedium", 290.0);
+    let rows = recorded(&h.ctx);
+    let left = |id: u64| rows.iter().find(|r| r.layer == id).and_then(|r| r.name).map(|n| n.left()).unwrap_or_else(|| panic!("layer {id} drawn"));
+    let step = crate::layer_tree_ui::TRIANGLE_W;
+    assert!((left(child) - left(group) - step).abs() < 0.5, "child {} vs group {}", left(child), left(group));
+    assert!((left(group) - left(top) - step).abs() < 0.5, "a top-level layer keeps its place: {} vs group {}", left(top), left(group));
+}
+
+/// A primary click at `at`: hover, press and release a frame apart, then let the panel settle.
 fn click(h: &mut Harness<'_, PhotocraftApp>, at: Pos2) {
     h.hover_at(at);
     h.run_steps(1);
@@ -535,6 +557,35 @@ fn press_drag_release_on_the_fx_button_opens_that_style() {
     assert_eq!(open.len(), 1, "releasing on Drop Shadow… opened Layer Style");
     let effects = open[0].fields["effects"].as_array().unwrap();
     assert!(effects.iter().any(|e| e["kind"] == json!("dropShadow")), "on Drop Shadow: {effects:?}");
+}
+
+/// Integration regression: a display preference must resize the *actual painted*
+/// thumbnails and row hitboxes, not only its Preview dialog.
+#[test]
+fn panel_thumbnail_sizes_change_real_row_geometry() {
+    use crate::state::LayerThumbnailSize;
+    let mut session = photocraft_engine::Session::new();
+    session.execute("file.new", json!({"width": 64, "height": 48})).unwrap();
+    session.execute("layer.new.layer", json!({"name": "Photo"})).unwrap();
+    session.execute("edit.fill", json!({"color": "#9acb32"})).unwrap();
+    let layer = session.active().unwrap().active_layer.unwrap();
+    let mut h = harness(session, 1.0, "promedium", 290.0);
+    for (size, expected_thumb, expected_row) in [
+        (LayerThumbnailSize::None, 0.0, 23.0),
+        (LayerThumbnailSize::Small, 18.0, 32.0),
+        (LayerThumbnailSize::Medium, 24.0, 32.0),
+        (LayerThumbnailSize::Large, 48.0, 56.0),
+    ] {
+        h.state_mut().ui.layers_panel_options.thumbnail_size = size;
+        h.run_steps(5);
+        let found = recorded(&h.ctx).into_iter().find(|r| r.layer == layer.0).expect("visible layer row");
+        assert!((found.row.height() - expected_row).abs() < 0.1, "{size:?}: row {}", found.row.height());
+        match found.thumbnail {
+            Some(rect) => assert!((rect.width() - expected_thumb).abs() < 0.1, "{size:?}: thumbnail {}", rect.width()),
+            None => assert_eq!(expected_thumb, 0.0, "{size:?} should display a thumbnail"),
+        }
+        assert!(found.name.is_some(), "{size:?}: layer name still visible");
+    }
 }
 
 /// One layer per lock, each with only that lock set (#4158).

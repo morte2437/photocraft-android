@@ -19,6 +19,7 @@ use photocraft_doc::{AlphaChannel, Document, Layer, LayerContent};
 use photocraft_raster::Surface;
 use serde_json::{Value, json};
 
+use crate::channel_cmds::ChannelTarget;
 use crate::commands::CommandSpec;
 use crate::{EngineError, Result, Session};
 
@@ -119,6 +120,9 @@ fn inks_of(doc: &Document) -> Vec<(String, Color, Vec<f32>)> {
 }
 
 fn to_multichannel(s: &mut Session, _p: &Value) -> Result<Value> {
+    let Some((old, view)) = s.active().map(|st| (st.doc.channels.len(), (st.channel_view.target, st.channel_view.alpha_visible.clone()))) else {
+        return Err(EngineError::NoDocument);
+    };
     let names = s.edit("Multichannel", |doc, active| {
         let inks = inks_of(doc);
         let mut channels: Vec<AlphaChannel> = inks
@@ -143,7 +147,29 @@ fn to_multichannel(s: &mut Session, _p: &Value) -> Result<Value> {
         doc.icc_profile = None;
         Ok(inks.into_iter().map(|(n, _, _)| n).collect::<Vec<_>>())
     })?;
+    // The alpha channels moved behind the inks.
+    let map: Vec<Option<usize>> = (0..old).map(|i| Some(i + names.len())).collect();
+    remap_view(s, view, &map);
     Ok(json!({ "mode": "multichannel", "channels": names }))
+}
+
+/// Keep the Channels target and eyes on the same channels after a conversion moved them:
+/// `view` is the target and alpha eyes before the conversion, `map[i]` the new index of old
+/// channel `i`, `None` when it left (a targeted ink becomes the composite).
+fn remap_view(s: &mut Session, (target, eyes): (ChannelTarget, Vec<bool>), map: &[Option<usize>]) {
+    let Some(st) = s.active_mut() else { return };
+    let mut visible = vec![false; st.doc.channels.len()];
+    for (&on, to) in eyes.iter().zip(map) {
+        if let (true, Some(slot)) = (on, to.and_then(|j| visible.get_mut(j))) {
+            *slot = true;
+        }
+    }
+    let v = &mut st.channel_view;
+    v.alpha_visible = visible;
+    if let ChannelTarget::Alpha(t) = target {
+        v.target = map.get(t).copied().flatten().map_or(ChannelTarget::Composite, ChannelTarget::Alpha);
+    }
+    crate::channel_cmds::fix_view(st);
 }
 
 /// Image › Mode › RGB / CMYK / Lab / Grayscale from a Multichannel document (called by
@@ -152,6 +178,14 @@ pub(crate) fn convert_from(s: &mut Session, mode: ColorMode, _p: &Value) -> Resu
     if !matches!(mode, ColorMode::Rgb | ColorMode::Cmyk | ColorMode::Lab | ColorMode::Grayscale) {
         return Err(EngineError::Other(format!("a Multichannel document can't be converted to {mode:?}")));
     }
+    // The inks leave; the other channels close up.
+    let Some((spots, view)) = s
+        .active()
+        .map(|st| (st.doc.channels.iter().map(|c| c.spot.is_some()).collect::<Vec<_>>(), (st.channel_view.target, st.channel_view.alpha_visible.clone())))
+    else {
+        return Err(EngineError::NoDocument);
+    };
+    let map: Vec<Option<usize>> = spots.iter().enumerate().map(|(i, &spot)| (!spot).then(|| spots.iter().take(i).filter(|&&sp| !sp).count())).collect();
     let how = s.edit("Mode Change", |doc, active| {
         let (inks, others): (Vec<AlphaChannel>, Vec<AlphaChannel>) = std::mem::take(&mut doc.channels).into_iter().partition(|c| c.spot.is_some());
         let canvas = doc.bounds();
@@ -195,6 +229,7 @@ pub(crate) fn convert_from(s: &mut Session, mode: ColorMode, _p: &Value) -> Resu
         doc.channels = others;
         Ok(if reinterpret { "channels" } else { "appearance" })
     })?;
+    remap_view(s, view, &map);
     Ok(json!({ "mode": format!("{mode:?}").to_lowercase(), "from": "multichannel", "converted": how }))
 }
 

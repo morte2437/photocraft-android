@@ -12,6 +12,10 @@ use photocraft_doc::{ColorMode, Pattern, PixelFormat, Rect, SampleType};
 
 pub(crate) const PREPARED_PATTERN_BYTES: usize = 64 << 20;
 const MAX_PREPARED_PATTERNS: usize = 64;
+/// Absolute cap on a single pattern's RGBA conversion on the uncached path. A pattern this
+/// large cannot be cached, so re-expanding it for every output tile would be a DoS; above the
+/// cap it is skipped instead. Independent of the cache budget so small patterns still convert.
+const MAX_UNCACHED_PATTERN_BYTES: usize = 256 << 20;
 type PreparedSlot = Arc<OnceLock<Option<Arc<Tile>>>>;
 
 struct PreparedState {
@@ -78,6 +82,13 @@ impl<'a> PreparedPatterns<'a> {
                 // Run on the requesting worker to preserve its active CMYK profile.
                 slot.get_or_init(|| Tile::new_in(p, self.mode).map(Arc::new)).clone()
             }
+            // Uncached path: a pattern whose full conversion would exceed an absolute cap is
+            // not materialized at all. Otherwise every output tile would re-expand the entire
+            // sparse pattern into RGBA floats (and could do so concurrently), exhausting CPU and
+            // memory even though cache admission already refused to retain it. The cap is
+            // independent of the (possibly zero) cache budget, so small patterns still convert
+            // on demand when nothing is cached.
+            None if bytes.is_none_or(|b| b > MAX_UNCACHED_PATTERN_BYTES) => None,
             None => Tile::new_in(p, self.mode).map(Arc::new),
         }
     }

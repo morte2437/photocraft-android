@@ -8,6 +8,10 @@
 # stay as they are; the trailing "…" of dialog commands is kept. UI text addresses the user
 # informally ("je") and uses sentence case.
 
+# Layer Mask Display Options (the layer mask rubylith's colour and opacity)
+	Mask Options…	Maskeropties…
+	Layer Mask Display Options…	Weergaveopties voor laagmasker…
+
 # Channel Options and New Spot Channel (#3761)
 	Channel Color	Kanaalkleur
 	Color Indicates:	Kleur geeft aan:
@@ -319,6 +323,7 @@
 	Blending Options…	Overvloeiopties…
 	Bevel & Emboss…	Schuine kant en reliëf…
 	Use Global Light	Globaal licht gebruiken
+	Overprint	Overdrukken
 	Inner Shadow…	Binnenschaduw…
 	Inner Glow…	Gloed binnen…
 	Satin…	Satijn…
@@ -793,6 +798,7 @@
 	Split Warp Vertically	Verbuiging verticaal splitsen
 	Statistics…	Statistieken…
 	Refine Strokes	Verfijningsstreken
+	Edits	Bewerkingen
 @plural	{n} item|{n} items	{n} element|{n} elementen
 	Auto	Automatisch
 	(print to the printer)	(naar de printer afdrukken)
@@ -1073,7 +1079,7 @@
 	Done	Gereed
 	Dots	Stippen
 	Drag a rectangle around the object	Sleep een rechthoek rond het object
-	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click to delete.	Sleep over de afbeelding om een beperking toe te voegen; Shift voor horizontaal/verticaal; rechtsklik om te verwijderen.
+	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click a constraint to change or delete it.	Sleep over de afbeelding om een beperking toe te voegen; Shift voor horizontaal/verticaal; rechtsklik op een beperking om deze te wijzigen of te verwijderen.
 	Drag to move the active shape's path or the Work Path	Sleep om het pad van de actieve vorm of het werkpad te verplaatsen
 	Click: select anchor · Drag: move anchor, handle or segment · {shift}-click: add · {alt}-click: whole subpath	Klik: ankerpunt selecteren · Slepen: ankerpunt, greep of segment verplaatsen · {shift}-klik: toevoegen · {alt}-klik: heel subpad
 	Draw with the Pen tool (P) or make a work path from a selection.	Teken met het pengereedschap (P) of maak een werkpad van een selectie.
@@ -1315,6 +1321,8 @@
 	Override Pressure	Druk overschrijven
 	Override Rotation	Rotatie overschrijven
 	Override Tilt	Kanteling overschrijven
+	Override Tilt X	Kanteling X overschrijven
+	Override Tilt Y	Kanteling Y overschrijven
 	PRESET DETAILS	DETAILS VOORINSTELLING
 	PSD	PSD
 	Paint Overlay	Verfbedekking
@@ -1466,6 +1474,7 @@
 	Set shape fill type	Vultype van vorm instellen
 	Set shape stroke type	Lijntype van vorm instellen
 	Set the text color	De tekstkleur instellen
+	Create warped text	Verbogen tekst maken
 	Shadows	Schaduwen
 	Shape:	Vorm:
 	Sharpening	Verscherping
@@ -1963,6 +1972,7 @@
 	Quick export format	Formaat snel exporteren
 	Quick export location	Locatie snel exporteren
 	Recent file count	Aantal recente bestanden
+	LUT folder	LUT-map
 	Recent files	Recente bestanden
 	Recent fonts	Recente lettertypen
 	Recover on launch	Herstellen bij opstarten
@@ -2118,6 +2128,11 @@
 	Mixer Brush Tool	Mengpenseelgereedschap
 	Color Replacement Tool	Kleurvervangingsgereedschap
 	Wet	Nat
+	Current Brush Load	Huidige penseellading
+	Load Brush	Penseel laden
+	Clean Brush	Penseel reinigen
+	Load the brush after each stroke	Penseel laden na elke streek
+	Clean the brush after each stroke	Penseel reinigen na elke streek
 	Mix	Mengen
 	Wetness Jitter	Nattigheidsvariatie
 	Mix Jitter	Mengvariatie
@@ -2274,6 +2289,8 @@
 	GPU acceleration could not continue. Your documents are unchanged.	GPU-versnelling kon niet doorgaan. Je documenten zijn ongewijzigd.
 	PhotoCraft is using the CPU image compositor. The window may still use your graphics adapter.	PhotoCraft gebruikt de CPU-beeldcompositor. Het venster kan nog steeds je grafische adapter gebruiken.
 	Retry GPU requires a restart. Save your work first.	GPU opnieuw proberen vereist een herstart. Sla eerst je werk op.
+	Retry GPU tries the graphics processor again now.	GPU opnieuw proberen probeert de grafische processor nu opnieuw.
+	GPU acceleration resumed.	GPU-versnelling hervat.
 	Keep Using CPU	CPU blijven gebruiken
 	Retry GPU	GPU opnieuw proberen
 	Advanced	Geavanceerd
@@ -2319,6 +2336,11 @@
 	Content-Aware Move Tool	Inhoudsbewust verplaatsen
 	TIFF Options	TIFF-opties
 	Targa Options	Targa-opties
+	JPEG Options	JPEG-opties
+	Image Options	Afbeeldingsopties
+	Format Options	Indelingsopties
+	Baseline ("Standard")	Basislijn ("Standaard")
+	Baseline Optimized	Basislijn geoptimaliseerd
 	24 bits/pixel	24 bits/pixel
 	32 bits/pixel	32 bits/pixel
 	Including layers will increase file size.	Lagen meenemen vergroot de bestandsgrootte.
@@ -2830,6 +2852,8 @@ cameraRaw	Color	Kleur
 	Keywords	Trefwoorden
 	Copyright Info URL	URL copyrightinformatie
 	Copyright Status	Copyrightstatus
+	Copyright Notice	Copyrightvermelding
+	Document Title	Documenttitel
 	Copyrighted	Auteursrechtelijk beschermd
 	Public Domain	Publiek domein
 	Unknown	Onbekend
@@ -3346,6 +3370,7 @@ cameraRaw	Color	Kleur
 	Do you want to save you made to “{name}” before quitting?	Wil je de wijzigingen in “{name}” opslaan voordat je afsluit?
 	Dodge/Burn	Tegenhouden/doordrukken
 	Duplicate Path	Pad dupliceren
+	Rename Path…	Pad hernoemen…
 	Dust & Scratches	Stof en krassen
 	Dynamics	Dynamiek
 	Edit Plane	Vlak bewerken
@@ -3806,6 +3831,32 @@ cameraData	Lens	Lens
 	Mirror	Spiegelen
 	Output Settings	Uitvoerinstellingen
 	Output To	Uitvoer naar
+
+	Animation Options	Animatieopties
+	Entire Document	Hele document
+	Filter Options	Filteropties
+	Layer Bounds	Laaggrenzen
+	Layers Panel Options	Opties van het deelvenster Lagen
+	New Artboard…	Nieuw tekengebied…
+	New Group…	Nieuwe groep…
+	Prevent Auto-Nesting	Automatisch nesten voorkomen
+	Show Layers	Lagen tonen
+	Thumbnail Contents	Inhoud van miniaturen
+	Thumbnail Size	Grootte van miniaturen
+	Use Default Masks on Fill Layers	Standaardmaskers gebruiken op opvullagen
+	Expand New Effects	Nieuwe effecten uitvouwen
+	Add “copy” to Copied Layers and Groups	„kopie” toevoegen aan gekopieerde lagen en groepen
+	Preview on canvas when reordering layers	Voorvertoning op canvas bij herschikken van lagen
+	Show layer mask badges	Badges voor laagmaskers tonen
+
+# Smart Filter editors
+	Blending Options ({filter})	Overvloeiopties ({filter})
+	Hide the layer's effects and Smart Filters  ({key}-click: all layers)	Laageffecten en slimme filters verbergen  ({key}-klik: alle lagen)
+	Show the layer's effects and Smart Filters  ({key}-click: all layers)	Laageffecten en slimme filters tonen  ({key}-klik: alle lagen)
+	Wait for the current job to finish.	Wacht tot de huidige taak is voltooid.
+	The document or Smart Filter changed. Reopen its dialog.	Het document of het slimme filter is gewijzigd. Open het dialoogvenster opnieuw.
+	Opacity must be between 0% and 100%.	De dekking moet tussen 0% en 100% liggen.
+	Dissolve is approximated: it blends without Photoshop's dither.	Verspreiden is benaderd: het mengt zonder de dither van Photoshop.
 	Loading fonts…	Lettertypen laden…
 	Response curve	Responscurve
 	Simulate Pressure	Druk simuleren
@@ -3854,6 +3905,10 @@ curves	Smooth	Vloeiend maken
 # Color Sampler (added with the i18n coverage repair)
 	Click to place · Alt-click or drag off-canvas to remove	Klik om te plaatsen · Alt-klik of sleep buiten het canvas om te verwijderen
 	{n} of {max} sample points	{n} van {max} steekproefpunten
+
+# History panel menu (#2966)
+	New Snapshot…	Nieuwe momentopname…
+	History Options…	Geschiedenisopties…
 # Print dialog (#2697)
 	Emulsion Down	Emulsie omlaag
 	Functions	Functies
@@ -3888,9 +3943,16 @@ curves	Smooth	Vloeiend maken
 	Light Gray	Lichtgrijs
 	Object Finder	Objectzoeker
 	No object found there — drag a rectangle around it	Daar is geen object gevonden — sleep er een rechthoek omheen
+	The active layer has no pixels here — turn on Sample All Layers or select a layer with pixels	De actieve laag heeft hier geen pixels — zet Alle lagen samplen aan of selecteer een laag met pixels
 	Remove after each stroke	Verwijderen na elke streek
 	Apply the removal ({key})	Verwijdering toepassen ({key})
 	Strokes to remove: {n} (Enter applies, Esc cancels)	Streken om te verwijderen: {n} (Enter past toe, Esc annuleert)
+	Load Contours…	Contouren laden…
+	Replace Contours…	Contouren vervangen…
+	Save Contours…	Contouren opslaan…
+	Delete Contour	Contour verwijderen
+	Loaded contours from {file}	Contouren geladen uit {file}
+	Saved contours to {file}	Contouren opgeslagen in {file}
 	Show home recent files	Recente bestanden tonen op het startscherm
 	Clear Brush Controls	Penseelbesturing wissen
 	Reset All Locked Settings	Alle vergrendelde instellingen opnieuw instellen
@@ -3899,6 +3961,9 @@ curves	Smooth	Vloeiend maken
 # Actions panel: Load/Save Actions (.atn) and kept Photoshop steps
 	Load Actions…	Handelingen laden…
 	Save Actions…	Handelingen opslaan…
+	New Action…	Nieuwe handeling…
+	Start Recording	Opname starten
+	Stop Recording	Opname stoppen
 	{name} (Photoshop)	{name} (Photoshop)
 	{message} ({note})	{message} ({note})
 @plural	Loaded {n} action from {file}|Loaded {n} actions from {file}	{n} handeling geladen uit {file}|{n} handelingen geladen uit {file}
@@ -3930,6 +3995,16 @@ curves	Smooth	Vloeiend maken
 	Sent to {printer}	Verzonden naar {printer}
 	set in Print Settings…	instellen in de afdrukinstellingen…
 	ICO is limited to 256 × 256 pixels	ICO is beperkt tot 256 × 256 pixels
+# History panel › History Brush source (#2966)
+	Paints from the History panel's source state	Schildert vanuit de bronstatus van het deelvenster Geschiedenis
+	Sets the source for the history brush	Stelt de bron voor het historiepenseel in
+# Bevel & Emboss shading controls.
+	Highlight Mode	Hooglichtmodus
+	Highlight Color	Hooglichtkleur
+	Highlight Opacity	Hooglichtdekking
+	Shadow Mode	Schaduwmodus
+	Shadow Color	Schaduwkleur
+	Shadow Opacity	Schaduwdekking
 # Embedded Profile Mismatch: profile names beside the choices, Remember this choice
 	Use the embedded profile ({profile})	Het ingesloten profiel gebruiken ({profile})
 	Convert to the working space ({profile})	Omzetten naar de werkruimte ({profile})
@@ -3946,10 +4021,14 @@ curves	Smooth	Vloeiend maken
 	Chisel Hard	Beitel hard
 	Chisel Soft	Beitel zacht
 	Open color-less EXR as ACEScg	EXR zonder kleurruimte als ACEScg openen
+	Do not append "copy" to filename when saving a copy	Geen "copy" aan de bestandsnaam toevoegen bij het opslaan van een kopie
 
 # View › Guides › right-click a guide
 	Edit Selected Guides	Geselecteerde hulplijnen bewerken
 	Clear Selected Guides	Geselecteerde hulplijnen wissen
+	Bicubic Automatic	Bicubisch automatisch
+	Bicubic Smoother	Bicubisch vloeiender
+	Bicubic Sharper	Bicubisch scherper
 	Pasting from other apps is unavailable	Plakken vanuit andere apps is niet beschikbaar
 	PhotoCraft can't reach the system clipboard in this session. On Wayland, a Flatpak sandbox hides the protocol that images from other apps are read through.	PhotoCraft heeft in deze sessie geen toegang tot het systeemklembord. Onder Wayland verbergt een Flatpak-sandbox het protocol waarmee afbeeldingen uit andere apps worden gelezen.
 	To paste from other apps, start PhotoCraft under XWayland: `{command}`	Om vanuit andere apps te plakken, start je PhotoCraft onder XWayland: `{command}`
@@ -3969,6 +4048,17 @@ curves	Smooth	Vloeiend maken
 	set name	naam van de set
 	{set} (modified)	{set} (gewijzigd)
 	Show file name in title	Bestandsnaam in titel weergeven
+
+# Image › Mode › Bitmap (#5559)
+	50% Threshold	50% drempel
+	Pattern Dither	Patroondithering
+	Diffusion Dither	Diffusiedithering
+	Halftone Screen	Halftoonraster
+	Custom Pattern	Aangepast patroon
+	Frequency:	Frequentie:
+	Lines/Inch	Lijnen/inch
+	Lines/Centimeter	Lijnen/centimeter
+	Ellipse	Ellips
 	Accept and Go to Conflict	Accepteren en naar conflict
 	Changes undone.	Wijzigingen ongedaan gemaakt.
 	Choose a new shortcut for this command, or leave it without one.	Kies een nieuwe sneltoets voor deze opdracht of laat hem zonder.
@@ -3986,15 +4076,33 @@ curves	Smooth	Vloeiend maken
 	GPU Memory Full	GPU-geheugen vol
 	The layers need {needed} of GPU memory and may hold {budget}, so edits that redraw the whole document do it on the CPU. Click to set GPU Memory.	De lagen hebben {needed} GPU-geheugen nodig en mogen {budget} gebruiken, dus bewerkingen die het hele document opnieuw tekenen doen dat op de CPU. Klik om GPU-geheugen in te stellen.
 	GPU memory budget: {budget}	GPU-geheugenbudget: {budget}
+	Graphics memory: {size}	Grafisch geheugen: {size}
 	This document's layers: {needed} of {budget} for layers	Lagen van dit document: {needed} van {budget} voor lagen
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	De lagen van dit document hebben {needed} nodig maar mogen {budget} gebruiken: het hele document wordt op de CPU opnieuw getekend
 	GPU Memory (MB, 0 = Automatic)	GPU-geheugen (MB, 0 = Automatisch)
+	{path}: the path is not valid Unicode; save under another name.	{path}: het pad is geen geldige Unicode; sla op onder een andere naam.
 	{name} was changed by another app after it was opened or saved here.	{name} is door een andere app gewijzigd nadat het hier is geopend of bewaard.
 	Replace it with this document, or cancel and use File › Save As to keep both.	Vervang het door dit document, of annuleer en gebruik Bestand › Opslaan als om beide te houden.
 	Decrease Brush Size	Penseelgrootte verkleinen
 	Increase Brush Size	Penseelgrootte vergroten
 	Decrease Brush Hardness	Penseelhardheid verlagen
 	Increase Brush Hardness	Penseelhardheid verhogen
+	Demosaic	Demosaicing
+	How the camera's colour filter mosaic is filled in. It is applied when the file opens; the preview shows the method it was opened with.	Hoe het kleurfiltermozaïek van de camera wordt ingevuld. Wordt toegepast bij het openen van het bestand; de voorvertoning toont de methode waarmee het is geopend.
+	AHD (adaptive homogeneity)	AHD (adaptieve homogeniteit)
+	Malvar–He–Cutler	Malvar–He–Cutler
+	Hirakawa–Parks: the cleanest edges and the least colour fringing, the slowest.	Hirakawa–Parks: de schoonste randen en de minste kleurranden, het traagst.
+	Gradient-corrected interpolation: sharp and fast, with some colour fringing on fine detail.	Gradiëntgecorrigeerde interpolatie: scherp en snel, met wat kleurranden in fijne details.
+	The fastest and the softest, with colour fringing on fine detail.	Het snelst en het zachtst, met kleurranden in fijne details.
+	“{name}” already exists. Replace it?	“{name}” bestaat al. Vervangen?
+	The name in the save dialog was “{name}”.	De naam in het venster Opslaan was “{name}”.
+	Move Up	Omhoog
+	Move Down	Omlaag
+	Previous Brush	Vorig penseel
+	Next Brush	Volgend penseel
+	First Brush	Eerste penseel
+	Last Brush	Laatste penseel
+	Preview size	Preview size
 	Memory Usage	Geheugengebruik
 	Per-document RAM limit (MB)	RAM-limiet per document (MB)
 	Installed RAM: {ram} MB; this limit: {percent}%	Geïnstalleerd RAM: {ram} MB; deze limiet: {percent}%
@@ -4004,3 +4112,33 @@ curves	Smooth	Vloeiend maken
 	Use	Gebruiken
 	In Front	Voor
 	Behind	Achter
+
+# DDS Options (#1327)
+	DDS Options	DDS-opties
+	Generate Mipmaps	Mipmaps genereren
+
+# Color Table (.act) dialog
+	There is no color table to save.	Er is geen kleurtabel om op te slaan.
+@plural	Saved {n} color to {file}|Saved {n} colors to {file}	{n} kleur opgeslagen in {file}|{n} kleuren opgeslagen in {file}
+
+# Graphics Adapter preference (#1885)
+	GPU adapter	GPU-adapter
+# Actions: a step dialog holds a suspended recording (#7365)
+	Confirm or cancel the open action step dialog first	Bevestig of annuleer eerst het geopende dialoogvenster van de handelingsstap
+	Pro Medium Gray	Pro middelgrijs
+	Solarized	Solarized
+	Breeze	Breeze
+	Pro Light Gray	Pro lichtgrijs
+	Pro Light	Pro licht
+	Resize Windows to Fit	Venstergrootte aanpassen
+
+	EXR	EXR
+
+# Paragraph direction (TYPE-218-2)
+	Automatic paragraph direction	Automatische alinearichting
+	Left-to-right paragraph direction	Alinearichting van links naar rechts
+	Right-to-left paragraph direction	Alinearichting van rechts naar links
+	Not rendered: this adjustment ({key}) is kept as imported.	Niet weergegeven: deze aanpassing ({key}) blijft behouden zoals geïmporteerd.
+
+# Print preview image (#8236)
+	Print preview image	Print preview image

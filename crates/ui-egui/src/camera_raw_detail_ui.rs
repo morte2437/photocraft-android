@@ -22,6 +22,9 @@ type OverlayKey = (u64, bool, PixelRect, crate::camera_raw_scope_ui::ClippingMod
 
 pub(crate) struct DetailPreview {
     source: Surface,
+    /// The open-time dialog's camera tone curve: Shadows, Highlights, Clarity, Texture and Dehaze
+    /// then act on the raw data, in linear light before it (see [`develop`]).
+    pub(crate) raw_curve: Option<Arc<Vec<[f32; 2]>>>,
     area: PixelRect,
     coverage: Coverage,
     result: Option<(u64, Surface)>,
@@ -46,6 +49,7 @@ impl DetailPreview {
     pub(crate) fn new(source: Surface, area: PixelRect, coverage: Coverage) -> Self {
         Self {
             source,
+            raw_curve: None,
             area,
             coverage,
             result: None,
@@ -105,6 +109,7 @@ impl DetailPreview {
             return;
         }
         let source = self.source.clone();
+        let raw_curve = self.raw_curve.clone();
         let area = self.area;
         let coverage = self.coverage.clone();
         let mut params = params.clone();
@@ -116,9 +121,10 @@ impl DetailPreview {
             if cancel.load(Ordering::Relaxed) {
                 return;
             }
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| develop(&source, area, &params, &coverage)))
-                .map(|surface| (revision, surface))
-                .map_err(|_| "Camera Raw detail preview failed; the proxy remains available".into());
+            let result =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| develop(&source, raw_curve.as_deref().map(Vec::as_slice), area, &params, &coverage)))
+                    .map(|surface| (revision, surface))
+                    .map_err(|_| "Camera Raw detail preview failed; the proxy remains available".into());
             if !cancel.load(Ordering::Relaxed) {
                 let _ = tx.send(result);
                 ctx.request_repaint();
@@ -291,8 +297,53 @@ impl DetailPreview {
     }
 }
 
-fn develop(source: &Surface, area: PixelRect, params: &CameraRaw, coverage: &Coverage) -> Surface {
-    let mut result = photocraft_engine::lens_cmds::camera_raw_surface(source, area, params);
+/// The full-size result of `params` over `area`. With a raw file's tone `curve`, the raw-stage
+/// sliders are applied first to the whole area, from the whole frame's maps as Open computes them
+/// ([`photocraft_io::raw::retone`]), then the rest of the pipeline: at 1:1 the preview shows close
+/// to what Open will make. It retones the developed pixels, which already carry the black point,
+/// so it differs from Open only in the deepest shadows, as `retone` documents.
+fn develop(source: &Surface, curve: Option<&[[f32; 2]]>, area: PixelRect, params: &CameraRaw, coverage: &Coverage) -> Surface {
+    let tone = photocraft_io::raw::Tone {
+        shadows: params.shadows,
+        highlights: params.highlights,
+        clarity: params.clarity,
+        texture: params.texture,
+        dehaze: params.dehaze,
+    };
+    let (retoned, params) = match curve {
+        Some(curve) if !tone.is_neutral() => {
+            let (w, h) = (area.width() as usize, area.height() as usize);
+            let mut px = vec![[0.0f32; 4]; w * h];
+            source.read_rgba_into(area, &mut px);
+            photocraft_io::raw::retone(&mut px, w, h, curve, tone);
+            let fmt = source.format();
+            let n = fmt.channels();
+            // Written back in bands of rows, so only one band-sized buffer lives next to `px`
+            // (a whole-area one is another 4 bytes per channel and pixel). Each band is read from
+            // the source first to keep its stored alpha.
+            let mut out = source.clone();
+            let band = (65_536 / w.max(1)).max(1);
+            let mut data = Vec::new();
+            for (b, rows) in px.chunks(band * w.max(1)).enumerate() {
+                let y0 = area.y0 + (b * band) as i32;
+                let rect = PixelRect::new(area.x0, y0, area.x1, y0 + (rows.len() / w.max(1)) as i32);
+                source.read_region_into(rect, &mut data);
+                for (o, q) in data.chunks_exact_mut(n).zip(rows) {
+                    let alpha = if fmt.alpha { o.get(n - 1).copied() } else { None };
+                    photocraft_raster::from_rgba_into(&fmt, *q, o);
+                    if let (Some(a), Some(last)) = (alpha, o.get_mut(n - 1)) {
+                        *last = a;
+                    }
+                }
+                out.write_region(rect, &data);
+            }
+            let rest = CameraRaw { shadows: 0.0, highlights: 0.0, clarity: 0.0, texture: 0.0, dehaze: 0.0, ..params.clone() };
+            (Some(out), rest)
+        }
+        _ => (None, params.clone()),
+    };
+    let base = retoned.as_ref().unwrap_or(source);
+    let mut result = photocraft_engine::lens_cmds::camera_raw_surface(base, area, &params);
     if matches!(coverage, Coverage::None) {
         return result;
     }
@@ -403,10 +454,47 @@ mod tests {
         source.write_region(area, &values);
         let params = CameraRaw { exposure: 0.5, texture: 15.0, grain_amount: 30.0, ..Default::default() };
         let expected = photocraft_engine::lens_cmds::camera_raw_surface(&source, area, &params);
-        assert_eq!(develop(&source, area, &params, &Coverage::None), expected);
+        assert_eq!(develop(&source, None, area, &params, &Coverage::None), expected);
         let mask = Surface::with_default(PixelFormat::GRAY8, &[0.0]);
-        assert_eq!(develop(&source, area, &params, &Coverage::Selection(mask)), source);
+        assert_eq!(develop(&source, None, area, &params, &Coverage::Selection(mask)), source);
     }
+    #[test]
+    fn a_raw_open_refines_raw_stage_sliders_from_the_whole_frame() {
+        // Shadows on a raw being opened: the full-size refinement retones the whole frame (as
+        // Open does) and runs the rest of the pipeline after, instead of the filter's Shadows.
+        let area = PixelRect::new(0, 0, 96, 64);
+        let mut source = Surface::new(PixelFormat::RGBA16);
+        let mut values = vec![0.0; 96 * 64 * 4];
+        for (i, p) in values.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            let v = if (i % 96) < 48 { 0.12 } else { 0.7 };
+            p.copy_from_slice(&[v, v * 0.9, v * 0.8, 1.0]);
+        }
+        source.write_region(area, &values);
+        let curve = [[0.01, 0.01], [0.05, 0.12], [0.3, 0.6], [1.0, 1.0]];
+        let params = CameraRaw { shadows: 80.0, exposure: 0.25, ..Default::default() };
+        let refined = develop(&source, Some(&curve), area, &params, &Coverage::None);
+        let mut px = vec![[0.0f32; 4]; 96 * 64];
+        source.read_rgba_into(area, &mut px);
+        let tone = photocraft_io::raw::Tone { shadows: 80.0, ..Default::default() };
+        photocraft_io::raw::retone(&mut px, 96, 64, &curve, tone);
+        let mut retoned = source.clone();
+        let flat: Vec<f32> = px.iter().flatten().copied().collect();
+        retoned.write_region(area, &flat);
+        let expected = photocraft_engine::lens_cmds::camera_raw_surface(&retoned, area, &CameraRaw { exposure: 0.25, ..Default::default() });
+        let (a, b) = (refined.rgba(10, 30), expected.rgba(10, 30));
+        assert!(a.iter().zip(&b).all(|(x, y)| (x - y).abs() < 2e-4), "{a:?} vs {b:?}");
+        assert!(
+            refined.rgba(10, 30)[0] > source.rgba(10, 30)[0] + 0.02,
+            "the shadow side is lifted: {:?} from {:?}, retoned {:?}",
+            refined.rgba(10, 30),
+            source.rgba(10, 30),
+            retoned.rgba(10, 30)
+        );
+        // Without a raw curve Shadows is the filter's.
+        let filter = develop(&source, None, area, &params, &Coverage::None);
+        assert_eq!(filter, photocraft_engine::lens_cmds::camera_raw_surface(&source, area, &params));
+    }
+
     #[test]
     fn stale_refinements_and_failed_old_revisions_do_not_replace_new_settings() {
         let source = Surface::with_default(PixelFormat::RGBA8, &[0.2, 0.4, 0.6, 1.0]);
@@ -446,7 +534,7 @@ mod tests {
                 }
                 source.write_region(area, &pixels);
                 let params = CameraRaw { exposure: 0.5, sharpen_amount: 20.0, grain_amount: 30.0, ..Default::default() };
-                let full = develop(&source, area, &params, &Coverage::None);
+                let full = develop(&source, None, area, &params, &Coverage::None);
                 let expected = photocraft_engine::lens_cmds::camera_raw_surface(&source, area, &params);
                 assert_eq!(full, expected);
                 let mut preview = DetailPreview::new(source, area, Coverage::None);

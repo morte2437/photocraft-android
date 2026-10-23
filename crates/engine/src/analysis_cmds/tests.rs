@@ -535,3 +535,20 @@ fn count_add_keeps_first_group_creation_and_targets_the_requested_group() {
     let r = s.execute("count.add", json!({"x": 6, "y": 7})).unwrap();
     assert_eq!(r["groups"][1]["points"], json!([[6.0, 7.0]]));
 }
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn iso_from_unix_matches_the_old_cycle_conversion_including_beyond_chrono() {
+    use super::iso_from_unix;
+    assert_eq!(iso_from_unix(0), "1970-01-01T00:00:00Z");
+    assert_eq!(iso_from_unix(951_782_400), "2000-02-29T00:00:00Z");
+    assert_eq!(iso_from_unix(1_791_446_357), "2026-10-08T07:59:17Z");
+    // Years past 9999 keep the plain zero-padded year (no `+`).
+    assert_eq!(iso_from_unix(253_402_300_800), "10000-01-01T00:00:00Z");
+    // Beyond chrono's year range the old hand-rolled code still converted; pin that output
+    // (never the epoch) in both directions and at the i64 extremes.
+    assert_eq!(iso_from_unix(10_000_000_000_000), "318857-05-20T17:46:40Z");
+    assert_eq!(iso_from_unix(-10_000_000_000_000), "-314918-08-13T06:13:20Z");
+    assert_eq!(iso_from_unix(i64::MAX), "292277026596-12-04T15:30:07Z");
+    assert_eq!(iso_from_unix(i64::MIN), "-292277022657-01-27T08:29:52Z");
+}

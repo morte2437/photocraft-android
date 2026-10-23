@@ -79,7 +79,7 @@ fn closing_after_tiff_save_waits_for_options_and_writes_the_requested_document()
 
 #[test]
 fn cancelling_failing_or_copying_a_tiff_keeps_the_original_unsaved() {
-    for outcome in ["cancel", "export error", "write error", "copy"] {
+    for outcome in ["cancel", "enter on cancel", "export error", "write error", "copy"] {
         let (mut h, writes, saved, _) = tiff_prompt("file.close");
         h.key_press(Key::Y);
         h.run_steps(3);
@@ -88,6 +88,11 @@ fn cancelling_failing_or_copying_a_tiff_keeps_the_original_unsaved() {
             "write error" => h.state_mut().services.write = Some(Box::new(|_, _| Err("disk full".into()))),
             "copy" => {
                 h.get_by_label("Discard Layers and Save a Copy").click();
+                h.run_steps(2);
+            }
+            // Enter on a focused Cancel is its click, not OK.
+            "enter on cancel" => {
+                h.get_by_label("Cancel").focus();
                 h.run_steps(2);
             }
             _ => {}

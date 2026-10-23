@@ -181,24 +181,30 @@ fn plane(
     let height = s.int(bitmap, b"BmpH").and_then(|v| usize::try_from(v).ok()).unwrap_or(0);
     let tw = s.int(bitmap, &tag(b"TWi", c)).and_then(|v| usize::try_from(v).ok()).unwrap_or_else(|| (width * bps).div_ceil(TILE));
     let th = s.int(bitmap, &tag(b"THi", c)).and_then(|v| usize::try_from(v).ok()).unwrap_or_else(|| height.div_ceil(TILE));
-    let states: Vec<u8> = match s.field(bitmap, &tag(b"Sta", c)) {
-        Some(Value::Array(a)) => a.iter().map(|v| if let Value::UInt(u) = v { u8::try_from(*u).unwrap_or(255) } else { 255 }).collect(),
-        _ => Vec::new(),
+    // Borrow the file-controlled arrays: collecting the whole state array first costs its full
+    // length on every occurrence of a shared layer, however small the declared grid is.
+    let states: &[Value] = match s.field(bitmap, &tag(b"Sta", c)) {
+        Some(Value::Array(a)) => a,
+        _ => &[],
     };
-    let tiles = s.objs(bitmap, &tag(b"Idx", c));
+    let mut tiles = match s.field(bitmap, &tag(b"Idx", c)) {
+        Some(Value::Array(a)) => a.as_slice(),
+        _ => &[],
+    }
+    .iter()
+    .filter_map(|v| if let Value::Obj(Some(o)) = v { Some(*o) } else { None });
     let row = (w as usize) * bps;
     let mut out = vec![0u8; row * h as usize];
     let (bx0, bx1) = (x0 as usize * bps, (x0 + w) as usize * bps);
     let (py0, py1) = (y0 as usize, (y0 + h) as usize);
-    let mut next = 0usize;
     for (t, state) in states.iter().enumerate().take(tw.saturating_mul(th)) {
+        let state = &if let Value::UInt(u) = state { u8::try_from(*u).unwrap_or(255) } else { 255 };
         let (ty, tx) = (t / tw.max(1), t % tw.max(1));
         let fill = match state {
             0 | 1 => None,
             2 => Some(0xFF),
             4 => {
-                let Some(blck) = tiles.get(next).copied() else { return Err(Error::Malformed("missing pixel tile")) };
-                next += 1;
+                let Some(blck) = tiles.next() else { return Err(Error::Malformed("missing pixel tile")) };
                 let (ox, oy) = (tx * TILE, ty * TILE);
                 if ox >= bx1 || ox + TILE <= bx0 || oy >= py1 || oy + TILE <= py0 {
                     continue;

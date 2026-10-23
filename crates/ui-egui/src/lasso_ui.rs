@@ -42,6 +42,11 @@ pub fn active(app: &PhotocraftApp) -> bool {
     app.drag.as_ref().is_some_and(|d| owns(d.tool) && d.lasso.is_some())
 }
 
+/// How far from the last vertex a click still counts as that same vertex clicked again (points
+/// on screen): a hand's jitter, not an aiming radius -- a vertex placed further away than this is
+/// the next vertex of the outline, however short the segment (#7629).
+const SAME_POINT: f64 = 3.0;
+
 /// Between polygonal clicks, Backspace/right-click retracts the last fixed vertex.
 /// Do not affect a freehand stroke whose primary button is still held.
 pub fn waiting_for_vertex(app: &PhotocraftApp) -> bool {
@@ -154,13 +159,18 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: Modifiers) -> bool 
     match ev {
         ToolEvent::Down { .. } => {
             if active(app) {
-                // A click on the first point, or on the last one again, closes the outline.
-                let reach = 8.0 / app.point_zoom().max(0.01) as f64;
-                let near = |q: [f64; 2]| (q[0] - p[0]).hypot(q[1] - p[1]) < reach;
-                let close = app.drag.as_ref().is_some_and(|d| d.points.len() >= 3 && (near(d.start) || d.points.last().is_some_and(|l| near([l[0], l[1]]))));
+                // A click on the first point, or on the last one again, closes the outline. Aiming
+                // at the first point is a grab; clicking the last one again is the same click
+                // repeated, so it has only to allow for a pixel of hand jitter. Sharing the grab
+                // radius made every segment shorter than it impossible to draw, because the click
+                // meant to place the next vertex closed the outline instead (#7629).
+                let zoom = app.point_zoom().max(0.01) as f64;
+                let near = |q: [f64; 2], reach: f64| (q[0] - p[0]).hypot(q[1] - p[1]) < reach / zoom;
+                let again = |d: &Drag| d.points.last().is_some_and(|l| near([l[0], l[1]], SAME_POINT));
+                let close = app.drag.as_ref().is_some_and(|d| d.points.len() >= 3 && (near(d.start, 8.0) || again(d)));
                 if close {
                     // A path closes on its start point (a selection outline always closes).
-                    if let Some(d) = app.drag.as_mut().filter(|d| d.tool == Tool::FreeformPen && near(d.start)) {
+                    if let Some(d) = app.drag.as_mut().filter(|d| d.tool == Tool::FreeformPen && near(d.start, 8.0)) {
                         let (start, n) = (d.start, d.points.len());
                         append(d, start);
                         if let Some(lasso) = d.lasso.as_mut().filter(|_| d.points.len() > n) {
@@ -197,12 +207,21 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: Modifiers) -> bool 
         }
         ToolEvent::Move { .. } | ToolEvent::Up { .. } => {
             let up = matches!(ev, ToolEvent::Up { .. });
+            let zoom = app.point_zoom();
             let Some(d) = app.drag.as_mut().filter(|d| d.tool == tool) else { return true };
+            d.track(mods);
             let Some(lasso) = &d.lasso else { return true };
             let (down, polygonal, previous) = (lasso.down, lasso.polygonal, lasso.cursor);
+            let p = if down && tool == Tool::FreeformPen {
+                let last = d.points.last().map_or(d.start, |pt| [pt[0], pt[1]]);
+                let [x, y] = crate::stroke_constraint::constrain(d.tool, &mut d.constrain, d.start, last, p, mods.shift, zoom);
+                [x, y]
+            } else {
+                p
+            };
             if d.reposition {
                 // Move relative to the rubber-band endpoint, not the last fixed vertex.
-                let last = d.points.last().map_or(d.start, |p| [p[0], p[1]]);
+                let last = d.points.last().map_or(d.start, |pt| [pt[0], pt[1]]);
                 d.shift_to([last[0] + p[0] - previous[0], last[1] + p[1] - previous[1]]);
             } else if down {
                 // While the button is down the outline follows the pointer (freehand), Alt or

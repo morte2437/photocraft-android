@@ -242,6 +242,9 @@ pub struct LayerM {
     pub advanced: photocraft_doc::AdvancedBlending,
     #[serde(default)]
     pub video: Option<VideoDataM>,
+    /// The layer's own XMP packet (missing in older files = none).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub xmp: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -294,6 +297,12 @@ pub enum ContentM {
         stroke: Option<ShapeStroke>,
         #[serde(default)]
         live: Option<LiveShape>,
+        /// The path's density as the fill's mask; older files have none (100 %).
+        #[serde(default = "full_density")]
+        density: f32,
+        /// The path's feather in px; older files have none.
+        #[serde(default)]
+        feather: f32,
     },
     Smart {
         /// Shared source identity; older bundles did not record it.
@@ -316,6 +325,10 @@ pub enum ContentM {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         perspective: Option<[f64; 9]>,
     },
+}
+
+fn full_density() -> f32 {
+    1.0
 }
 
 fn yes() -> bool {
@@ -383,5 +396,18 @@ mod channel_tests {
         assert_eq!(c.color, photocraft_doc::AlphaChannel::DEFAULT_COLOR);
         assert_eq!(c.opacity, 0.5);
         assert_eq!(c.indicates, photocraft_doc::ColorIndicates::MaskedAreas);
+    }
+}
+
+#[cfg(test)]
+mod shape_tests {
+    use super::*;
+
+    /// Shapes saved before Density and Feather load at 100 % and no feather.
+    #[test]
+    fn older_shapes_load_at_full_density_without_feather() {
+        let old = serde_json::json!({ "kind": "shape", "fill": null, "cache": null, "psd_raw": null });
+        let ContentM::Shape { density, feather, .. } = serde_json::from_value(old).unwrap() else { panic!("a shape") };
+        assert_eq!((density, feather), (1.0, 0.0));
     }
 }

@@ -201,3 +201,46 @@ fn closing_after_a_targa_save_waits_for_targa_options() {
     assert!(h.state().discard.is_none());
     assert!(h.state().session.documents().is_empty());
 }
+
+/// File › Save confirming the document's own Targa asks Targa Options, and an action being
+/// recorded keeps it as a plain Save with the bits chosen: played back, it writes the Targa the
+/// action is played on with them, without asking (#3531).
+#[test]
+fn recorded_plain_save_of_a_targa_keeps_its_bits() {
+    let (mut h, writes) = targa_app(false, "own.tga");
+    let ctx = h.ctx.clone();
+    crate::menus::invoke(h.state_mut(), &ctx, "file.saveAs", json!({"path": "own.tga", "tgaBits": 24})).unwrap();
+    h.state_mut().run("actions.record", json!({})).unwrap();
+    crate::menus::invoke(h.state_mut(), &ctx, "file.save", json!({})).unwrap();
+    h.run_steps(3);
+    assert!(h.state().targa_options.is_some(), "confirming its own Targa asks Targa Options");
+    h.get_by_label("32 bits/pixel").click();
+    h.run_steps(2);
+    h.get_by_label("OK").click();
+    h.run_steps(3);
+    h.state_mut().run("actions.stop", json!({})).unwrap();
+    let steps = &h.state().session.actions.list[0].steps;
+    assert_eq!(steps, &[("file.save".into(), json!({"tgaBits": 32}))]);
+    crate::menus::invoke(h.state_mut(), &ctx, "file.saveAs", json!({"path": "other.tga", "tgaBits": 24})).unwrap();
+    writes.borrow_mut().clear();
+    let played = h.state_mut().run("actions.play", json!({"action": 0})).unwrap();
+    assert!(played.get("failed").is_none(), "{played}");
+    assert!(h.state().targa_options.is_none(), "playback doesn't ask");
+    assert_eq!(writes.borrow().as_slice(), &[("other.tga".to_string(), asked(Some(32)))]);
+}
+
+/// Enter on a focused Cancel cancels: egui clicks the focused button on Enter without consuming
+/// the key, so the dialog's Enter-for-OK must not save as well.
+#[test]
+fn enter_on_a_focused_cancel_writes_nothing() {
+    let (mut h, writes) = targa_app(false, "unused.tga");
+    h.state_mut().save_as(Some("t.tga".into())).unwrap();
+    h.run_steps(2);
+    h.get_by_label("Cancel").focus();
+    h.run_steps(2);
+    h.key_press(Key::Enter);
+    h.run_steps(3);
+    assert!(h.state().targa_options.is_none());
+    assert!(writes.borrow().is_empty(), "nothing written");
+    assert_eq!(h.state().ui.status, "Save cancelled");
+}

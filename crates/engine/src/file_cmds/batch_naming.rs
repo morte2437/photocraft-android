@@ -87,8 +87,7 @@ pub(super) fn plan(inputs: &[BatchInput], output: &str, format: &str, params: &V
         if base.is_empty() || base.ends_with(['.', ' ']) {
             return Err(bad("naming must produce a nonempty filename stem without a trailing dot or space"));
         }
-        let ext =
-            if format == "same" { path.rsplit('.').next().unwrap_or("png").to_ascii_lowercase() } else { format.trim_start_matches('.').to_ascii_lowercase() };
+        let ext = if format == "same" { super::same_format(path) } else { format.trim_start_matches('.').to_ascii_lowercase() };
         let name = format!("{base}.{ext}");
         if name.len() > 255 || name.chars().any(|c| c.is_control() || "/\\<>:\"|?*".contains(c)) {
             return Err(bad("naming must produce a filename of at most 255 bytes without path separators or reserved characters"));

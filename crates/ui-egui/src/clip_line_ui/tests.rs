@@ -83,14 +83,17 @@ fn the_clip_cursor_shows_only_with_alt_over_a_line() {
     assert_ne!(h.output().platform_output.cursor_icon, egui::CursorIcon::None, "mid-row: no line");
 }
 
+/// A 32-point-high row for `layer` starting `top` points down, with no thumbnail, name or indicators.
 fn row(layer: LayerId, top: f32) -> RowRects {
-    RowRects { layer: layer.0, row: Rect::from_min_size(pos2(0.0, top), vec2(240.0, 32.0)), name: None, indicators: Vec::new() }
+    RowRects { layer: layer.0, row: Rect::from_min_size(pos2(0.0, top), vec2(240.0, 32.0)), thumbnail: None, name: None, indicators: Vec::new() }
 }
 
+/// The id of the layer called `name`, wherever it sits in the tree.
 fn named(doc: &Document, name: &str) -> LayerId {
     doc.walk().into_iter().find(|(_, _, l)| l.name == name).unwrap().2.id
 }
 
+/// A clipping line appears only between siblings that are neighbours in the stack, not at a group's edge, in the eye column or inside a row.
 #[test]
 fn only_siblings_next_to_each_other_meet_at_a_line() {
     // Background, `d`, and the group `g { c }` above it.

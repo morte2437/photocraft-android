@@ -20,6 +20,10 @@
 # (`plural_none` in i18n/mod.rs).
 
 
+# Layer Mask Display Options (the layer mask rubylith's colour and opacity)
+	Mask Options…	Tùy chọn mặt nạ…
+	Layer Mask Display Options…	Tùy chọn hiển thị mặt nạ lớp…
+
 # Channel Options and New Spot Channel (#3761)
 	Channel Color	Màu kênh
 	Color Indicates:	Màu biểu thị:
@@ -870,6 +874,7 @@
 	Right align text	Căn chữ phải
 	Toggle text orientation	Đổi hướng chữ
 	Set the text color	Đặt màu chữ
+	Create warped text	Tạo chữ uốn
 	Cancel any current edits (Esc)	Hủy chỉnh sửa hiện tại (Esc)
 	Commit any current edits ({key})	Áp dụng chỉnh sửa hiện tại ({key})
 	Author:	Tác giả:
@@ -1184,6 +1189,8 @@
 	Tilt X	Độ nghiêng X
 	Tilt Y	Độ nghiêng Y
 	Override Tilt	Ghi đè nghiêng
+	Override Tilt X	Ghi đè độ nghiêng X
+	Override Tilt Y	Ghi đè độ nghiêng Y
 	Override Rotation	Ghi đè xoay
 	Override Pressure	Ghi đè áp lực
 	Pressure	Áp lực
@@ -1272,6 +1279,7 @@
 	Stroke Path	Đi nét đường dẫn
 	Save Path	Lưu đường dẫn
 	Duplicate Path	Nhân bản đường dẫn
+	Rename Path…	Đổi tên đường dẫn…
 	Delete Path	Xóa đường dẫn
 	Delete Vector Mask	Xóa mặt nạ vector
 	Draw with the Pen tool (P) or make a work path from a selection.	Vẽ bằng công cụ Bút (P) hoặc tạo đường dẫn làm việc từ vùng chọn.
@@ -1296,6 +1304,11 @@
 	Mixer Brush	Cọ trộn
 	Mixer Brush Tool	Công cụ Cọ trộn
 	Wet	Ướt
+	Current Brush Load	Lượng sơn hiện tại của cọ
+	Load Brush	Nạp sơn cho cọ
+	Clean Brush	Làm sạch cọ
+	Load the brush after each stroke	Nạp sơn cho cọ sau mỗi nét vẽ
+	Clean the brush after each stroke	Làm sạch cọ sau mỗi nét vẽ
 	Load	Tải
 	Mix	Trộn
 	Flow	Lưu lượng
@@ -1497,6 +1510,7 @@ cameraRaw	Shadows	Vùng tối
 	Quick export format	Định dạng xuất nhanh
 	Quick export location	Vị trí xuất nhanh
 	Recent file count	Số tệp gần đây
+	LUT folder	Thư mục LUT
 	Recent files	Tệp gần đây
 	Recover on launch	Khôi phục khi khởi chạy
 	Remember workspace changes	Ghi nhớ thay đổi không gian làm việc
@@ -1590,6 +1604,8 @@ cameraRaw	Shadows	Vùng tối
 	PhotoCraft is using the CPU image compositor. The window may still use your graphics adapter.	PhotoCraft đang dùng bộ kết hợp ảnh CPU. Cửa sổ vẫn có thể dùng bộ điều hợp đồ họa của bạn.
 	Retry GPU	Thử lại GPU
 	Retry GPU requires a restart. Save your work first.	Thử lại GPU cần khởi động lại. Hãy lưu công việc trước.
+	Retry GPU tries the graphics processor again now.	Thử lại GPU sẽ thử lại bộ xử lý đồ họa ngay bây giờ.
+	GPU acceleration resumed.	Đã tiếp tục tăng tốc GPU.
 	Keep Using CPU	Tiếp tục dùng CPU
 
 # Phase 4.3 — Keyboard Shortcuts and Menus editor
@@ -1904,6 +1920,7 @@ document	Orientation	Hướng trang
 	Preview	Xem trước
 	Blend Mode	Chế độ hòa trộn
 	Use Global Light	Dùng ánh sáng chung
+	Overprint	In chồng
 	Distance	Khoảng cách
 	Spread	Lan rộng
 	Choke	Thu hẹp
@@ -2250,7 +2267,7 @@ layers	Fill:	Độ tô:
 	Delete Timeline	Xóa dòng thời gian
 	Deselect All	Bỏ chọn tất cả
 	Display Text	Hiển thị văn bản
-	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click to delete.	Kéo trên ảnh để thêm ràng buộc; Shift cho ngang/dọc; nhấp chuột phải để xóa.
+	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click a constraint to change or delete it.	Kéo trên ảnh để thêm ràng buộc; Shift cho ngang/dọc; nhấp chuột phải vào ràng buộc để thay đổi hoặc xóa.
 	Export selected measurements (CSV)	Xuất các phép đo đã chọn (CSV)
 	Focal Length	Tiêu cự
 	Font Size:	Cỡ chữ:
@@ -2495,6 +2512,11 @@ shape	Appearance	Diện mạo
 	Snap to Origin	Bám vào gốc tọa độ
 	Solid	Liền
 	Targa Options	Tùy chọn Targa
+	JPEG Options	Tùy chọn JPEG
+	Image Options	Tùy chọn hình ảnh
+	Format Options	Tùy chọn định dạng
+	Baseline ("Standard")	Đường cơ sở ("Chuẩn")
+	Baseline Optimized	Đường cơ sở tối ưu
 	Target:	Đích:
 	The layer or its mask changed. Drag the mask onto the Trash again.	Lớp hoặc mặt nạ của nó đã thay đổi. Hãy kéo mặt nạ vào Thùng rác lần nữa.
 	There is no crop size or ratio to save	Không có kích thước hoặc tỷ lệ cắt để lưu
@@ -2980,6 +3002,9 @@ cameraData	Lens	Ống kính
 	Cooling80	Lạnh80
 	Cooling82	Lạnh82
 	Copyright Status	Trạng thái bản quyền
+	Copyright Info URL	URL thông tin bản quyền
+	Copyright Notice	Thông báo bản quyền
+	Document Title	Tiêu đề tài liệu
 	Copyrighted	Được bảo vệ bản quyền
 	Correct C A	Hiệu chỉnh C A
 	Correct Distortion	Hiệu chỉnh độ méo
@@ -3566,6 +3591,7 @@ cameraData	Lens	Ống kính
 	Decontaminate	Khử nhiễm màu
 	Refine Edge	Tinh chỉnh cạnh
 	Refine Strokes	Tinh chỉnh nét
+	Edits	Chỉnh sửa
 	New Document With Mask	Tài liệu mới có mặt nạ
 	New Layer With Mask	Lớp mới có mặt nạ
 	Convert Point Tool	Công cụ Chuyển đổi điểm
@@ -3594,9 +3620,16 @@ curves	Smooth	Làm mượt
 	Response curve	Đường cong phản hồi
 	Object Finder	Trình tìm đối tượng
 	No object found there — drag a rectangle around it	Không tìm thấy đối tượng ở đó — hãy kéo một hình chữ nhật quanh nó
+	The active layer has no pixels here — turn on Sample All Layers or select a layer with pixels	Lớp đang hoạt động không có điểm ảnh ở đây — hãy bật Lấy mẫu mọi lớp hoặc chọn một lớp có điểm ảnh
 	Remove after each stroke	Xóa sau mỗi nét vẽ
 	Apply the removal ({key})	Áp dụng việc xóa ({key})
 	Strokes to remove: {n} (Enter applies, Esc cancels)	Nét vẽ cần xóa: {n} (Enter áp dụng, Esc hủy)
+	Load Contours…	Tải đường viền…
+	Replace Contours…	Thay thế đường viền…
+	Save Contours…	Lưu đường viền…
+	Delete Contour	Xóa đường viền
+	Loaded contours from {file}	Đã tải đường viền từ {file}
+	Saved contours to {file}	Đã lưu đường viền vào {file}
 # Edit › Content-Aware Fill workspace
 	Excluded Area	Vùng loại trừ
 	Fill Settings	Cài đặt tô
@@ -3621,6 +3654,9 @@ curves	Smooth	Làm mượt
 # Actions panel: Load/Save Actions (.atn) and kept Photoshop steps
 	Load Actions…	Nạp hành động…
 	Save Actions…	Lưu hành động…
+	New Action…	Hành động mới…
+	Start Recording	Bắt đầu ghi
+	Stop Recording	Dừng ghi
 	{name} (Photoshop)	{name} (Photoshop)
 	{message} ({note})	{message} ({note})
 @plural	Loaded {n} action from {file}|Loaded {n} actions from {file}	Đã nạp {n} hành động từ {file}
@@ -3640,6 +3676,11 @@ curves	Smooth	Làm mượt
 	Action playback stopped	Đã dừng phát hành động
 	Step {step} is waiting for its dialog	Bước {step} đang chờ hộp thoại của nó
 @plural	{n} action|{n} actions	{n} hành động
+# History panel menu (#2966)
+	Step Forward	Tiến một bước
+	New Snapshot…	Ảnh chụp trạng thái mới…
+	Clear History	Xóa lịch sử
+	History Options…	Tùy chọn lịch sử…
 	Background (Default)	Nền (mặc định)
 	Presentation	Trình bày
 # Batch / Image Processor
@@ -3656,6 +3697,16 @@ curves	Smooth	Làm mượt
 	Sent to {printer}	Đã gửi tới {printer}
 	set in Print Settings…	đặt trong thiết lập in…
 	ICO is limited to 256 × 256 pixels	ICO giới hạn ở 256 × 256 pixel
+# History panel › History Brush source (#2966)
+	Paints from the History panel's source state	Vẽ từ trạng thái nguồn của bảng Lịch sử
+	Sets the source for the history brush	Đặt nguồn cho cọ lịch sử
+# Bevel & Emboss shading controls.
+	Highlight Mode	Chế độ vùng sáng
+	Highlight Color	Màu vùng sáng
+	Highlight Opacity	Độ mờ vùng sáng
+	Shadow Mode	Chế độ bóng
+	Shadow Color	Màu bóng
+	Shadow Opacity	Độ mờ bóng
 # Embedded Profile Mismatch: profile names beside the choices, Remember this choice
 	Use the embedded profile ({profile})	Dùng hồ sơ nhúng ({profile})
 	Convert to the working space ({profile})	Chuyển sang không gian làm việc ({profile})
@@ -3672,10 +3723,14 @@ curves	Smooth	Làm mượt
 	Chisel Hard	Đục cứng
 	Chisel Soft	Đục mềm
 	Open color-less EXR as ACEScg	Mở EXR không khai báo màu sắc dưới dạng ACEScg
+	Do not append "copy" to filename when saving a copy	Không thêm "copy" vào tên tệp khi lưu bản sao
 
 # View › Guides › right-click a guide
 	Edit Selected Guides	Sửa đường căn đã chọn
 	Clear Selected Guides	Xóa đường căn đã chọn
+	Bicubic Automatic	Bicubic tự động
+	Bicubic Smoother	Bicubic mượt hơn
+	Bicubic Sharper	Bicubic sắc hơn
 	Pasting from other apps is unavailable	Không thể dán từ ứng dụng khác
 	PhotoCraft can't reach the system clipboard in this session. On Wayland, a Flatpak sandbox hides the protocol that images from other apps are read through.	PhotoCraft không truy cập được bộ nhớ tạm của hệ thống trong phiên này. Trên Wayland, sandbox của Flatpak ẩn giao thức dùng để đọc hình ảnh từ ứng dụng khác.
 	To paste from other apps, start PhotoCraft under XWayland: `{command}`	Để dán từ ứng dụng khác, hãy khởi động PhotoCraft dưới XWayland: `{command}`
@@ -3695,6 +3750,44 @@ curves	Smooth	Làm mượt
 	set name	tên bộ
 	{set} (modified)	{set} (đã sửa đổi)
 	Show file name in title	Hiển thị tên tệp trong tiêu đề
+
+# Image › Mode › Bitmap (#5559)
+	50% Threshold	Ngưỡng 50%
+	Pattern Dither	Hòa sắc họa tiết
+	Diffusion Dither	Hòa sắc khuếch tán
+	Halftone Screen	Màn bán sắc
+	Custom Pattern	Họa tiết tùy chỉnh
+	Frequency:	Tần số:
+	Lines/Inch	Đường/inch
+	Lines/Centimeter	Đường/centimet
+	Ellipse	Elip
+
+# Layers panel options and Smart Filter editors
+	Add “copy” to Copied Layers and Groups	Thêm “bản sao” vào lớp và nhóm được sao chép
+	Animation Options	Tùy chọn hoạt ảnh
+	Entire Document	Toàn bộ tài liệu
+	Expand New Effects	Mở rộng hiệu ứng mới
+	Filter Options	Tùy chọn bộ lọc
+	Layer Bounds	Đường biên lớp
+	Layers Panel Options	Tùy chọn bảng Lớp
+	New Artboard…	Bảng vẽ mới…
+	New Group…	Nhóm mới…
+	Panel Options…	Tùy chọn bảng…
+	Prevent Auto-Nesting	Chặn tự lồng
+	Preview on canvas when reordering layers	Xem trước trên Canvas khi sắp xếp lại lớp
+	Show Layers	Hiện các lớp
+	Show layer mask badges	Hiện huy hiệu mặt nạ lớp
+	Thumbnail Contents	Nội dung hình thu nhỏ
+	Thumbnail Size	Kích thước hình thu nhỏ
+	Use Default Masks on Fill Layers	Dùng mặt nạ mặc định cho lớp tô
+
+	Blending Options ({filter})	Tùy chọn hòa trộn ({filter})
+	Hide the layer's effects and Smart Filters  ({key}-click: all layers)	Ẩn hiệu ứng và bộ lọc thông minh của lớp  ({key}-bấm: tất cả các lớp)
+	Opacity must be between 0% and 100%.	Độ mờ phải nằm trong khoảng từ 0% đến 100%.
+	Dissolve is approximated: it blends without Photoshop's dither.	Hoà tan chỉ được mô phỏng gần đúng: hòa trộn không có dither của Photoshop.
+	Show the layer's effects and Smart Filters  ({key}-click: all layers)	Hiện hiệu ứng và bộ lọc thông minh của lớp  ({key}-bấm: tất cả các lớp)
+	The document or Smart Filter changed. Reopen its dialog.	Tài liệu hoặc bộ lọc thông minh đã thay đổi. Hãy mở lại hộp thoại của nó.
+	Wait for the current job to finish.	Hãy chờ tác vụ hiện tại hoàn tất.
 	Accept and Go to Conflict	Chấp nhận và đến xung đột
 	Changes undone.	Đã hoàn tác thay đổi.
 	Choose a new shortcut for this command, or leave it without one.	Chọn phím tắt mới cho lệnh này, hoặc để lệnh không có phím tắt.
@@ -3704,6 +3797,7 @@ curves	Smooth	Làm mượt
 	{shortcut} is reserved by the system and can't be assigned.	{shortcut} được hệ thống dành riêng và không thể gán.
 	Low-Latency Drawing (vsync off, applies at next launch)	Vẽ độ trễ thấp (tắt vsync, áp dụng ở lần khởi động sau)
 # Free Transform: a new layer while the box is open (#5859)
+	Reference point location	Vị trí điểm tham chiếu
 	Free Transform is still being applied; try again when it has finished.	Biến đổi tự do vẫn đang được áp dụng; hãy thử lại khi hoàn tất.
 	The transform couldn't be applied.	Không thể áp dụng phép biến đổi.
 # Preferences › Performance › GPU Memory; the status bar and slow-redraw notice
@@ -3712,9 +3806,11 @@ curves	Smooth	Làm mượt
 	GPU Memory Full	Bộ nhớ GPU đầy
 	The layers need {needed} of GPU memory and may hold {budget}, so edits that redraw the whole document do it on the CPU. Click to set GPU Memory.	Các lớp cần {needed} bộ nhớ GPU và chỉ được dùng {budget}, nên những chỉnh sửa vẽ lại toàn bộ tài liệu sẽ làm trên CPU. Nhấp để đặt Bộ nhớ GPU.
 	GPU memory budget: {budget}	Ngân sách bộ nhớ GPU: {budget}
+	Graphics memory: {size}	Bộ nhớ đồ họa: {size}
 	This document's layers: {needed} of {budget} for layers	Các lớp của tài liệu này: {needed} trên {budget} dành cho lớp
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	Các lớp của tài liệu này cần {needed} nhưng chỉ được dùng {budget}: vẽ lại toàn bộ tài liệu dùng CPU
 	GPU Memory (MB, 0 = Automatic)	Bộ nhớ GPU (MB, 0 = Tự động)
+	{path}: the path is not valid Unicode; save under another name.	{path}: đường dẫn không phải Unicode hợp lệ; hãy lưu với tên khác.
 	Replace	Thay thế
 	{name} was changed by another app after it was opened or saved here.	{name} đã bị một ứng dụng khác thay đổi sau khi được mở hoặc lưu ở đây.
 	Replace it with this document, or cancel and use File › Save As to keep both.	Thay thế bằng tài liệu này, hoặc hủy và dùng Tệp › Lưu thành để giữ cả hai.
@@ -3722,6 +3818,22 @@ curves	Smooth	Làm mượt
 	Increase Brush Size	Tăng kích thước cọ
 	Decrease Brush Hardness	Giảm độ cứng của cọ
 	Increase Brush Hardness	Tăng độ cứng của cọ
+	Demosaic	Giải khảm
+	How the camera's colour filter mosaic is filled in. It is applied when the file opens; the preview shows the method it was opened with.	Cách lấp đầy khảm lọc màu của máy ảnh. Áp dụng khi mở tệp; bản xem trước hiển thị phương pháp đã dùng khi mở.
+	AHD (adaptive homogeneity)	AHD (đồng nhất thích ứng)
+	Malvar–He–Cutler	Malvar–He–Cutler
+	Hirakawa–Parks: the cleanest edges and the least colour fringing, the slowest.	Hirakawa–Parks: cạnh sạch nhất và ít viền màu nhất, chậm nhất.
+	Gradient-corrected interpolation: sharp and fast, with some colour fringing on fine detail.	Nội suy hiệu chỉnh gradient: sắc nét và nhanh, có chút viền màu ở chi tiết nhỏ.
+	The fastest and the softest, with colour fringing on fine detail.	Nhanh nhất và mềm nhất, có viền màu ở chi tiết nhỏ.
+	“{name}” already exists. Replace it?	“{name}” đã tồn tại. Thay thế?
+	The name in the save dialog was “{name}”.	Tên trong hộp thoại lưu là “{name}”.
+	Move Up	Di chuyển lên
+	Move Down	Di chuyển xuống
+	Previous Brush	Cọ trước
+	Next Brush	Cọ tiếp theo
+	First Brush	Cọ đầu tiên
+	Last Brush	Cọ cuối cùng
+	Preview size	Preview size
 	Memory Usage	Sử dụng bộ nhớ
 	Per-document RAM limit (MB)	Giới hạn RAM mỗi tài liệu (MB)
 	Installed RAM: {ram} MB; this limit: {percent}%	RAM đã cài: {ram} MB; giới hạn này: {percent}%
@@ -3731,3 +3843,34 @@ curves	Smooth	Làm mượt
 	Use	Dùng
 	In Front	Phía trước
 	Behind	Phía sau
+
+# DDS Options (#1327)
+	DDS Options	Tùy chọn DDS
+	Compression	Nén
+	Generate Mipmaps	Tạo mipmap
+
+# Color Table (.act) dialog
+	There is no color table to save.	Không có bảng màu nào để lưu.
+@plural	Saved {n} color to {file}|Saved {n} colors to {file}	Đã lưu {n} màu vào {file}
+
+# Graphics Adapter preference (#1885)
+	GPU adapter	Bộ điều hợp GPU
+# Actions: a step dialog holds a suspended recording (#7365)
+	Confirm or cancel the open action step dialog first	Hãy xác nhận hoặc hủy hộp thoại bước hành động đang mở trước
+	Pro Medium Gray	Pro xám vừa
+	Solarized	Solarized
+	Breeze	Breeze
+	Pro Light Gray	Pro xám nhạt
+	Pro Light	Pro sáng
+	Resize Windows to Fit	Đổi cỡ cửa sổ cho vừa ảnh
+
+	EXR	EXR
+
+# Paragraph direction (TYPE-218-2)
+	Automatic paragraph direction	Hướng đoạn văn tự động
+	Left-to-right paragraph direction	Hướng đoạn văn từ trái sang phải
+	Right-to-left paragraph direction	Hướng đoạn văn từ phải sang trái
+	Not rendered: this adjustment ({key}) is kept as imported.	Không được kết xuất: điều chỉnh này ({key}) được giữ nguyên như khi nhập.
+
+# Print preview image (#8236)
+	Print preview image	Print preview image

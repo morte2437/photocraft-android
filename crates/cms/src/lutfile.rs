@@ -107,7 +107,14 @@ pub fn parse_cube(text: &str) -> Result<LutFile, LutError> {
     let (mut dmin, mut dmax) = ([0.0f32; 3], [1.0f32; 3]);
     let mut rows: Vec<f32> = Vec::new();
     for line in text.lines() {
-        let line = line.split('#').next().unwrap_or("").trim();
+        // A '#' inside a quoted TITLE is part of the title, not a comment.
+        let raw = line.trim_start();
+        let skip = if raw.starts_with("TITLE") { raw.find('"').and_then(|q| raw[q + 1..].find('"').map(|e| q + e + 2)) } else { None }.unwrap_or(0);
+        let line = match raw[skip..].find('#') {
+            Some(i) => &raw[..skip + i],
+            None => raw,
+        }
+        .trim();
         if line.is_empty() {
             continue;
         }
@@ -230,6 +237,10 @@ pub fn write_cube(l: &LutFile) -> String {
         s.push_str(&format!("TITLE \"{}\"\n", l.title.replace('"', "'")));
     }
     s.push_str(&format!("LUT_3D_SIZE {}\n", l.size));
+    if l.domain_min != [0.0; 3] || l.domain_max != [1.0; 3] {
+        s.push_str(&format!("DOMAIN_MIN {} {} {}\n", l.domain_min[0], l.domain_min[1], l.domain_min[2]));
+        s.push_str(&format!("DOMAIN_MAX {} {} {}\n", l.domain_max[0], l.domain_max[1], l.domain_max[2]));
+    }
     for c in l.data.as_chunks::<3>().0 {
         s.push_str(&format!("{:.6} {:.6} {:.6}\n", c[0], c[1], c[2]));
     }
@@ -300,6 +311,32 @@ pub fn builtin(id: &str) -> Option<LutFile> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cube_title_with_hash_round_trips() {
+        let l = LutFile::from_fn("Look #3", 2, |c| c);
+        assert_eq!(parse_cube(&write_cube(&l)).unwrap().title, "Look #3");
+        let t = "TITLE \"A #b\" # note\nLUT_3D_SIZE 2 # c\n# comment\n";
+        let rows = "0 0 0 # x\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n";
+        let p = parse_cube(&format!("{t}{rows}")).unwrap();
+        assert_eq!(p.title, "A #b");
+    }
+
+    #[test]
+    fn write_cube_keeps_non_default_domain() {
+        let mut l = LutFile::identity(2);
+        l.domain_min = [0.1; 3];
+        l.domain_max = [0.9; 3];
+        let back = parse_cube(&write_cube(&l)).unwrap();
+        assert_eq!(back.domain_min, [0.1; 3]);
+        assert_eq!(back.domain_max, [0.9; 3]);
+        l.domain_min = [0.0, 0.0, 0.5];
+        l.domain_max = [1.0; 3];
+        let back = parse_cube(&write_cube(&l)).unwrap();
+        assert_eq!(back.domain_min, [0.0, 0.0, 0.5]);
+        assert_eq!(back.domain_max, [1.0; 3]);
+        assert!(!write_cube(&LutFile::identity(2)).contains("DOMAIN"));
+    }
 
     #[test]
     fn cube_domain_is_kept_and_validated() {

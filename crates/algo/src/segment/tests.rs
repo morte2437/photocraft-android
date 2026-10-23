@@ -752,6 +752,38 @@ fn object_at_finds_the_disc_under_the_cursor() {
 }
 
 #[test]
+fn object_at_keeps_large_foregrounds_but_not_the_surrounding_background() {
+    let (w, h) = (400, 300);
+    for margin in [30, 20, 8] {
+        let inside = |x: usize, y: usize| x >= margin && x < w - margin && y >= margin && y < h - margin;
+        let img = RgbImage::from_fn(w, h, |x, y| {
+            let noise = ((x * 13 + y * 7) % 17) as f32 / 850.0;
+            if inside(x, y) { [0.8 + noise, 0.2, 0.1] } else { [0.1, 0.2, 0.8 + noise] }
+        });
+        let truth: Vec<_> = (0..w * h).map(|i| inside(i % w, i / w)).collect();
+        let sampler = ImageSampler { img: &img, origin: (-40, 25) };
+        let canvas = Rect::new(-40, 25, w as i32 - 40, h as i32 + 25);
+        let region = grabcut::object_at(&sampler, canvas, 160.0, 175.0, grabcut::OBJECT_AT_WORK_PX)
+            .unwrap_or_else(|| panic!("missing large foreground with margin {margin}"));
+        let local = Region { bbox: region.bbox.translate(40, -25), mask: region.mask };
+        assert!(iou(&local, &truth, w, h) > 0.95, "margin {margin}");
+        assert!(grabcut::object_at(&sampler, canvas, -39.0, 26.0, grabcut::OBJECT_AT_WORK_PX).is_none(), "background margin {margin}");
+    }
+}
+
+#[test]
+fn object_at_allows_a_foreground_touching_one_edge_but_rejects_a_flat_image() {
+    let img = RgbImage::from_fn(400, 300, |x, y| if x < 360 && (20..280).contains(&y) { [0.8, 0.2, 0.1] } else { [0.1, 0.2, 0.8] });
+    let sampler = ImageSampler { img: &img, origin: (0, 0) };
+    let canvas = Rect::new(0, 0, 400, 300);
+    let region = grabcut::object_at(&sampler, canvas, 200.0, 150.0, grabcut::OBJECT_AT_WORK_PX).unwrap();
+    assert!(region.at(0, 150) > 0.9 && region.at(350, 150) > 0.9);
+    assert!(region.at(380, 150) < 0.1 && region.at(200, 5) < 0.1);
+    let flat = RgbImage::from_fn(400, 300, |_, _| [0.5; 3]);
+    assert!(grabcut::object_at(&ImageSampler { img: &flat, origin: (0, 0) }, canvas, 200.0, 150.0, grabcut::OBJECT_AT_WORK_PX).is_none());
+}
+
+#[test]
 fn object_at_on_the_background_or_off_canvas_finds_nothing() {
     let (img, _) = disc_scene(320, 240, 160.0, 120.0, 70.0, 7);
     let s = ImageSampler { img: &img, origin: (0, 0) };
@@ -760,6 +792,28 @@ fn object_at_on_the_background_or_off_canvas_finds_nothing() {
     assert!(grabcut::object_at(&s, canvas, -5.0, 10.0, 20_000).is_none());
     assert!(grabcut::object_at(&s, canvas, f32::NAN, 10.0, 20_000).is_none());
     assert!(grabcut::object_at(&s, canvas, 400.0, 10.0, 0).is_none());
+}
+
+/// #6576: a 24 px object in a 4000×3000 document is found (a 1000×800 one still is).
+#[test]
+fn object_at_finds_small_object_in_large_canvas() {
+    let (w, h) = (4000usize, 3000usize);
+    let canvas = Rect::new(0, 0, w as i32, h as i32);
+    for (ox, oy, ow, oh) in [(188usize, 138usize, 24usize, 24usize), (1500, 1100, 1000, 800)] {
+        let inside = |x: usize, y: usize| x >= ox && x < ox + ow && y >= oy && y < oy + oh;
+        let img = RgbImage::from_fn(w, h, |x, y| if inside(x, y) { [0.8, 0.1, 0.1] } else { [0.9, 0.9, 0.9] });
+        let truth: Vec<bool> = (0..w * h).map(|i| inside(i % w, i / w)).collect();
+        let s = ImageSampler { img: &img, origin: (0, 0) };
+        let (cx, cy) = ((ox + ow / 2) as f32, (oy + oh / 2) as f32);
+        let reg = grabcut::object_at(&s, canvas, cx, cy, grabcut::OBJECT_AT_WORK_PX);
+        let reg = reg.unwrap_or_else(|| panic!("the {ow}×{oh} object is not found"));
+        let v = iou(&reg, &truth, w, h);
+        assert!(v > 0.8, "{ow}×{oh}: IoU {v}");
+    }
+    // The flat background around the small object is still nothing.
+    let img = RgbImage::from_fn(w, h, |x, y| if (188..212).contains(&x) && (138..162).contains(&y) { [0.8, 0.1, 0.1] } else { [0.9, 0.9, 0.9] });
+    let s = ImageSampler { img: &img, origin: (0, 0) };
+    assert!(grabcut::object_at(&s, canvas, 400.0, 300.0, grabcut::OBJECT_AT_WORK_PX).is_none());
 }
 
 // ---------- Select Subject on the cases reported in #2788 ----------

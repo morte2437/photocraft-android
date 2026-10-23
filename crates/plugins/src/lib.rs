@@ -26,7 +26,7 @@ pub mod registry;
 mod runtime;
 
 pub use apply::format_code;
-pub use manifest::{Area, Kind, Manifest, ParamSpec};
+pub use manifest::{Area, Kind, Manifest, ParamSpec, Unit};
 pub use runtime::{ABI_VERSION, Limits, Plugin};
 
 /// A plug-in error. Every way a module can misbehave ends here, never in a panic.

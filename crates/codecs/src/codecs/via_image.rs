@@ -35,7 +35,51 @@ fn map_err(f: Format, e: image::ImageError) -> CodecError {
 
 pub(crate) fn bmp_palette(bytes: &[u8]) -> Result<Option<Vec<[u8; 3]>>, CodecError> {
     let decoder = image::codecs::bmp::BmpDecoder::new(Cursor::new(bytes)).map_err(|e| map_err(Format::Bmp, e))?;
-    Ok(decoder.get_palette().map(|palette| palette.to_vec()))
+    let mut palette = decoder.get_palette().map(|palette| palette.to_vec());
+    // The decoder always hands back 256 entries (it pads a short table with black to survive
+    // corrupt files); the file's own count is what the document's colour table should hold.
+    if let (Some(p), Some(n)) = (palette.as_mut(), bmp_palette_len(bytes)) {
+        p.truncate(n.max(1));
+    }
+    Ok(palette)
+}
+
+/// How many colours a palette BMP's header declares: `biClrUsed`, or 2^bits when it is 0.
+/// `None` for a header this does not recognise, which leaves the table as decoded.
+fn bmp_palette_len(bytes: &[u8]) -> Option<usize> {
+    let u16_at = |at: usize| bytes.get(at..at + 2).and_then(|b| b.try_into().ok()).map(u16::from_le_bytes);
+    let u32_at = |at: usize| bytes.get(at..at + 4).and_then(|b| b.try_into().ok()).map(u32::from_le_bytes);
+    let (bit_count, used) = match u32_at(14)? {
+        // OS/2 BITMAPCOREHEADER: no colour count, the bit depth sets the table size.
+        12 => (u16_at(24)?, 0),
+        n if n >= 40 => (u16_at(28)?, u32_at(46)?),
+        _ => return None,
+    };
+    if !(1..=8).contains(&bit_count) {
+        return None;
+    }
+    let max = 1usize << bit_count;
+    Some(if used == 0 { max } else { (used as usize).min(max) })
+}
+
+/// Writes an 8-bit palette BMP: `indices` row-major, `palette` RGB entries (1..=256). The
+/// counterpart of [`bmp_palette`], for Indexed Color documents.
+pub(crate) fn encode_bmp_indexed(width: u32, height: u32, indices: &[u8], palette: &[[u8; 3]]) -> Result<Vec<u8>, CodecError> {
+    let f = Format::Bmp;
+    if width == 0 || height == 0 || u64::from(width) * u64::from(height) != indices.len() as u64 {
+        return Err(CodecError::InvalidImage("index data does not match the size".into()));
+    }
+    if palette.is_empty() || palette.len() > 256 {
+        return Err(CodecError::InvalidImage("a palette BMP holds 1 to 256 colours".into()));
+    }
+    if indices.iter().any(|&i| usize::from(i) >= palette.len()) {
+        return Err(CodecError::InvalidImage("palette index out of range".into()));
+    }
+    let mut out = Cursor::new(Vec::new());
+    image::codecs::bmp::BmpEncoder::new(&mut out)
+        .encode_with_palette(indices, width, height, image::ExtendedColorType::L8, Some(palette))
+        .map_err(|e| CodecError::encode(f, e))?;
+    Ok(out.into_inner())
 }
 
 /// The `image` decoder for `f` with our limits, its header read and its size checked.
@@ -182,4 +226,46 @@ pub(crate) fn encode(f: Format, src: &Image, plan: Plan, opts: &EncodeOptions) -
         }
     }
     Ok(cursor.into_inner())
+}
+
+#[cfg(test)]
+mod indexed_tests {
+    use super::*;
+
+    #[test]
+    fn palette_bmp_roundtrips_its_table_and_pixels() {
+        // 3 px wide: rows are padded to 4 bytes, so a wrong stride shows in the second row.
+        let pal = [[255, 0, 0], [0, 0, 255], [10, 20, 30]];
+        let idx = [0u8, 1, 2, 2, 1, 0];
+        let bytes = encode_bmp_indexed(3, 2, &idx, &pal).unwrap();
+        assert_eq!(bmp_palette(&bytes).unwrap().as_deref(), Some(&pal[..]), "the table survives, not a 256-entry grey ramp");
+        let img = decode(Format::Bmp, &bytes, &Limits::default()).unwrap();
+        assert_eq!(img.dimensions(), (3, 2));
+        let rgb = img.convert(ChannelLayout::Rgb, SampleType::U8);
+        let want: Vec<u8> = idx.iter().flat_map(|&i| pal[usize::from(i)]).collect();
+        assert_eq!(rgb.data(), want.as_slice());
+    }
+
+    #[test]
+    fn palette_len_follows_the_header() {
+        let mut bytes = encode_bmp_indexed(2, 1, &[0, 1], &[[1, 2, 3], [4, 5, 6]]).unwrap();
+        assert_eq!(bmp_palette_len(&bytes), Some(2));
+        // biClrUsed = 0 means the full 2^bits table.
+        bytes[46..50].copy_from_slice(&0u32.to_le_bytes());
+        assert_eq!(bmp_palette_len(&bytes), Some(256));
+        // A short or unknown header leaves the decoded table alone instead of panicking.
+        assert_eq!(bmp_palette_len(&bytes[..30]), None);
+        bytes[14..18].copy_from_slice(&7u32.to_le_bytes());
+        assert_eq!(bmp_palette_len(&bytes), None);
+    }
+
+    #[test]
+    fn palette_bmp_rejects_bad_input() {
+        let pal = [[0, 0, 0], [255, 255, 255]];
+        assert!(encode_bmp_indexed(3, 2, &[0; 5], &pal).is_err(), "size mismatch");
+        assert!(encode_bmp_indexed(0, 2, &[], &pal).is_err(), "empty");
+        assert!(encode_bmp_indexed(2, 1, &[0, 2], &pal).is_err(), "index past the table");
+        assert!(encode_bmp_indexed(1, 1, &[0], &[]).is_err(), "no colours");
+        assert!(encode_bmp_indexed(1, 1, &[0], &[[0; 3]; 257]).is_err(), "more than 256 colours");
+    }
 }

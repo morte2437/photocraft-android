@@ -189,6 +189,11 @@ mod shape_tests;
 /// Smart Blur: averages only neighbours within `threshold` levels of the
 /// centre pixel (so edges stay crisp); Edge Only / Overlay Edge draw the
 /// edges (where neighbours differ by more than the threshold) in white.
+///
+/// Neighbours outside `src` read as zero, as [`Image::get`] does. Pixels whose whole
+/// kernel lies inside `src` (all of them, with the usual halo) read neighbours at
+/// precomputed offsets into the window instead of by coordinates, and for up to five
+/// channels go through [`smart_rows`] (#7921).
 pub(crate) fn smart_blur(src: &Image, out: Rect, ctx: &Ctx, radius: f32, threshold: f32, quality: BlurQuality, mode: SmartBlurMode) -> Vec<f32> {
     let n = src.ch;
     let cc = ncol(ctx, n);
@@ -201,31 +206,48 @@ pub(crate) fn smart_blur(src: &Image, out: Rect, ctx: &Ctx, radius: f32, thresho
         BlurQuality::High => 12,
     };
     let stride = ((ri + target - 1) / target).max(1);
-    let offs: Vec<(i32, i32)> = (-ri..=ri)
+    let win = src.rect;
+    let ww = win.width() as isize;
+    // Each offset with its distance in samples within the window.
+    let offs: Vec<(i32, i32, isize)> = (-ri..=ri)
         .step_by(stride as usize)
         .flat_map(|dy| (-ri..=ri).step_by(stride as usize).map(move |dx| (dx, dy)))
         .filter(|(dx, dy)| ((dx * dx + dy * dy) as f32) <= r * r + 0.5)
+        .map(|(dx, dy)| (dx, dy, (dy as isize * ww + dx as isize) * n as isize))
         .collect();
+    let at = |x: i32, y: i32| win.contains(x, y).then(|| ((y - win.y0) as usize * ww as usize + (x - win.x0) as usize) * n);
+    let zeros = [0.0f32; MAXC];
+    let data = &src.data[..];
+    // The pixel at sample `i`, or zeros outside the window.
+    let sample = |i: Option<usize>| i.and_then(|i| data.get(i..i + n)).unwrap_or(&zeros[..n]);
     let white = native(ctx, [1.0, 1.0, 1.0, 1.0]);
     let black = native(ctx, [0.0, 0.0, 0.0, 1.0]);
     let mut res = src.crop(out);
-    let mut q = [0.0f32; MAXC];
+    let inner = Rect::new(win.x0.saturating_add(ri), win.y0.saturating_add(ri), win.x1.saturating_sub(ri), win.y1.saturating_sub(ri)).intersect(&out);
+    let lin: Vec<isize> = offs.iter().map(|o| o.2).collect();
+    let rows = match (mode, n, ctx.alpha) {
+        (SmartBlurMode::Normal, 1, false) => smart_rows::<1, false>(src, out, inner, &lin, t, &mut res),
+        (SmartBlurMode::Normal, 1, true) => smart_rows::<1, true>(src, out, inner, &lin, t, &mut res),
+        (SmartBlurMode::Normal, 2, false) => smart_rows::<2, false>(src, out, inner, &lin, t, &mut res),
+        (SmartBlurMode::Normal, 2, true) => smart_rows::<2, true>(src, out, inner, &lin, t, &mut res),
+        (SmartBlurMode::Normal, 3, false) => smart_rows::<3, false>(src, out, inner, &lin, t, &mut res),
+        (SmartBlurMode::Normal, 3, true) => smart_rows::<3, true>(src, out, inner, &lin, t, &mut res),
+        (SmartBlurMode::Normal, 4, false) => smart_rows::<4, false>(src, out, inner, &lin, t, &mut res),
+        (SmartBlurMode::Normal, 4, true) => smart_rows::<4, true>(src, out, inner, &lin, t, &mut res),
+        (SmartBlurMode::Normal, 5, false) => smart_rows::<5, false>(src, out, inner, &lin, t, &mut res),
+        (SmartBlurMode::Normal, 5, true) => smart_rows::<5, true>(src, out, inner, &lin, t, &mut res),
+        _ => Rect::EMPTY,
+    };
     let mut acc = [0.0f32; MAXC];
     for (i, px) in res.chunks_exact_mut(n).enumerate() {
         let (x, y) = xy(out, i);
+        if rows.contains(x, y) {
+            continue;
+        }
         let me: [f32; MAXC] = std::array::from_fn(|c| if c < n { px[c] } else { 0.0 });
-        let differs = |q: &[f32]| (0..cc).any(|c| (q[c] - me[c]).abs() > t);
+        let differs = |q: &[f32]| q[..cc].iter().zip(&me).any(|(q, m)| (q - m).abs() > t);
         if mode != SmartBlurMode::Normal {
-            let mut edge = false;
-            for (dx, dy) in [(1, 0), (0, 1), (-1, 0), (0, -1)] {
-                for (c, v) in q.iter_mut().enumerate().take(n) {
-                    *v = src.get(x + dx, y + dy, c);
-                }
-                if differs(&q[..n]) {
-                    edge = true;
-                    break;
-                }
-            }
+            let edge = [(1, 0), (0, 1), (-1, 0), (0, -1)].into_iter().any(|(dx, dy)| differs(sample(at(x + dx, y + dy))));
             let a = if ctx.alpha { px[n - 1] } else { 1.0 };
             if edge {
                 px[..cc].copy_from_slice(&white[..cc]);
@@ -237,18 +259,28 @@ pub(crate) fn smart_blur(src: &Image, out: Rect, ctx: &Ctx, radius: f32, thresho
             }
             continue;
         }
+        let interior = x - ri >= win.x0 && x + ri < win.x1 && y - ri >= win.y0 && y + ri < win.y1;
+        let centre = if interior { at(x, y) } else { None };
         acc[..n].fill(0.0);
         let mut wsum = 0.0f32;
-        for &(dx, dy) in &offs {
-            for (c, v) in q.iter_mut().enumerate().take(n) {
-                *v = src.get(x + dx, y + dy, c);
-            }
-            if differs(&q[..n]) {
+        for &(dx, dy, d) in &offs {
+            let q = sample(match centre {
+                Some(c) => c.checked_add_signed(d),
+                None => at(x + dx, y + dy),
+            });
+            if differs(q) {
                 continue;
             }
-            let a = if ctx.alpha { q[n - 1] } else { 1.0 };
-            for c in 0..n {
-                acc[c] += if ctx.alpha && c < n - 1 { q[c] * a } else { q[c] };
+            if ctx.alpha {
+                let a = q[n - 1];
+                for (s, v) in acc.iter_mut().zip(&q[..cc]) {
+                    *s += v * a;
+                }
+                acc[n - 1] += a;
+            } else {
+                for (s, v) in acc.iter_mut().zip(q) {
+                    *s += v;
+                }
             }
             wsum += 1.0;
         }
@@ -261,6 +293,77 @@ pub(crate) fn smart_blur(src: &Image, out: Rect, ctx: &Ctx, radius: f32, thresho
     }
     res
 }
+
+/// Smart Blur's normal mode over `inner` (pixels whose whole kernel lies in `src`) for `N`
+/// channels, the last alpha if `A`; `lin` are the neighbours as sample offsets in the window.
+/// Each offset sweeps a whole row, so neighbours load contiguously and a rejected one adds
+/// `-0.0` (an exact identity) instead of branching: every pixel sums its neighbours in the same
+/// order as [`smart_blur`]'s per-pixel loop, giving the same bits. Returns the area written: the
+/// rows finished, empty if the layout doesn't match.
+fn smart_rows<const N: usize, const A: bool>(src: &Image, out: Rect, inner: Rect, lin: &[isize], t: f32, res: &mut [f32]) -> Rect {
+    let win = src.rect;
+    if src.ch != N || inner.is_empty() || !win.contains_rect(&inner) || !out.contains_rect(&inner) {
+        return Rect::EMPTY;
+    }
+    let cc = if A { N - 1 } else { N };
+    let (ww, ow, len) = (win.width() as usize, out.width() as usize, inner.width() as usize);
+    let pixels = len * N;
+    let mut acc = vec![[0.0f32; N]; len];
+    let mut wsum = vec![0.0f32; len];
+    // Rows before `y` are done; a row is written only once all its neighbours were read.
+    let done = |y: i32| Rect::new(inner.x0, inner.y0, inner.x1, y);
+    for y in inner.y0..inner.y1 {
+        let centre = ((y - win.y0) as usize * ww + (inner.x0 - win.x0) as usize) * N;
+        let Some(me) = src.data.get(centre..centre + pixels) else {
+            return done(y);
+        };
+        let me = me.as_chunks::<N>().0;
+        acc.fill([0.0; N]);
+        wsum.fill(0.0);
+        for &d in lin {
+            let Some(q) = centre.checked_add_signed(d).and_then(|i| src.data.get(i..i + pixels)) else {
+                return done(y);
+            };
+            for (((s, w), q), m) in acc.iter_mut().zip(wsum.iter_mut()).zip(q.as_chunks::<N>().0).zip(me) {
+                // As `differs`: a NaN difference is not over the threshold.
+                let mut far = false;
+                for c in 0..cc {
+                    far |= (q[c] - m[c]).abs() > t;
+                }
+                let keep = !far;
+                if A {
+                    let a = q[N - 1];
+                    for c in 0..N - 1 {
+                        s[c] += if keep { q[c] * a } else { -0.0 };
+                    }
+                    s[N - 1] += if keep { a } else { -0.0 };
+                } else {
+                    for c in 0..N {
+                        s[c] += if keep { q[c] } else { -0.0 };
+                    }
+                }
+                *w += if keep { 1.0 } else { 0.0 };
+            }
+        }
+        let o = ((y - out.y0) as usize * ow + (inner.x0 - out.x0) as usize) * N;
+        let Some(dst) = res.get_mut(o..o + pixels) else {
+            return done(y);
+        };
+        for ((px, s), &w) in dst.as_chunks_mut::<N>().0.iter_mut().zip(&acc).zip(&wsum) {
+            if w > 0.0 {
+                for c in 0..N {
+                    px[c] = s[c] / w;
+                }
+                unpremul_px(px, A);
+            }
+        }
+    }
+    inner
+}
+
+#[cfg(test)]
+#[path = "smart_blur_tests.rs"]
+mod smart_tests;
 
 // ---------- lens blur ----------
 

@@ -125,7 +125,7 @@ const LINK_W: f32 = 20.0;
 pub fn properties(app: &mut PhotocraftApp, ui: &mut egui::Ui, layer: &Layer) {
     let mut run: Vec<(String, Value)> = Vec::new();
     if let Some(s) = layer.surface() {
-        let b = app.cached_bounds(layer.id.0, s);
+        let b = app.layer_frame_bounds(layer, s);
         let u = LenUnit::of(app);
         let (dw, dh) = app.session.active().map_or((1.0, 1.0), |s| (f64::from(s.doc.size.width), f64::from(s.doc.size.height)));
         if section(ui, "transform", tl!("Transform")) {
@@ -176,7 +176,10 @@ pub fn properties(app: &mut PhotocraftApp, ui: &mut egui::Ui, layer: &Layer) {
     }
     match &layer.content {
         LayerContent::Text(_) => crate::type_tool::type_properties(app, ui),
-        LayerContent::Shape(_) => crate::vector_ui::shape_properties(app, ui, layer.id),
+        LayerContent::Shape(_) => {
+            crate::vector_ui::shape_properties(app, ui, layer.id);
+            crate::mask_props_ui::shape_properties(app, ui, layer);
+        }
         _ => {}
     }
     // Re-read: a section above may have changed the layer (e.g. point to paragraph type).

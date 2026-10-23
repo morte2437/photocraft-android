@@ -77,6 +77,40 @@ fn retag_text(dpi: f32, t: &mut TextLayer) {
     t.psd_raw = Some(Arc::new(photocraft_text::psd::build_tysh(t, dpi, layout.bounds())));
 }
 
+/// Sets the document resolution keeping every type layer's size in pixels, as Photoshop does (its
+/// point size changes instead). Text space is in pixels at `pt x dpi / 72`, so it grows by
+/// new / old: box and path scale with it, and the layer transform undoes that.
+pub(crate) fn set_resolution(doc: &mut Document, dpi: f32) {
+    let old = std::mem::replace(&mut doc.resolution_dpi, dpi);
+    if !(old.is_finite() && old > 0.0 && dpi.is_finite() && dpi > 0.0) || old == dpi {
+        return;
+    }
+    let k = f64::from(dpi) / f64::from(old);
+    let grow = Affine::scale(k);
+    crate::image_cmds::for_each_layer(&mut doc.layers, &mut |l| {
+        let LayerContent::Text(t) = &mut l.content else { return };
+        t.transform = t.transform.mul(&Affine::scale(1.0 / k));
+        match &mut t.shape {
+            photocraft_doc::text::TextShape::Box { x, y, width, height } => {
+                for v in [x, y, width, height] {
+                    *v = grown(*v, k);
+                }
+            }
+            photocraft_doc::text::TextShape::Path { path, start, .. } => {
+                path.knots.iter_mut().for_each(|kn| *kn = kn.transform(&grow));
+                *start = grown(*start, k);
+            }
+            photocraft_doc::text::TextShape::Point => {}
+        }
+        retag_text(dpi, t);
+    });
+}
+
+/// `v x k` kept finite (a huge box from a file must not become infinite).
+fn grown(v: f32, k: f64) -> f32 {
+    (f64::from(v) * k).clamp(-f64::from(f32::MAX), f64::from(f32::MAX)) as f32
+}
+
 /// Applies `a` to one layer's (and its children's) non-pixel geometry. With `content` false only
 /// the parts Free Transform (`transform_layer`) doesn't move are touched: unlinked vector masks,
 /// gradient fill angles, effect reference points and artboards.

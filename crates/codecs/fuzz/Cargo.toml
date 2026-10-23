@@ -69,3 +69,10 @@ path = "fuzz_targets/decode_gif.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "decode_webp"
+path = "fuzz_targets/decode_webp.rs"
+test = false
+doc = false
+bench = false

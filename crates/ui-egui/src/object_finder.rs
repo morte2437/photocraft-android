@@ -16,7 +16,7 @@ use std::sync::Arc;
 use egui::{Color32, TextureOptions, pos2};
 use photocraft_algo::selection::Region;
 use photocraft_doc::{DocId, Document, LayerId};
-use photocraft_engine::smartselect_cmds::{find_object, sampled_target};
+use photocraft_engine::smartselect_cmds::{empty_sampled_area, find_object, sampled_target};
 
 use crate::PhotocraftApp;
 use crate::canvas::ViewXform;
@@ -57,6 +57,13 @@ pub(crate) struct Update {
     pub shown: Option<Arc<Region>>,
     /// A lookup is pending or running: repaint soon to pick it up.
     pub busy: bool,
+    /// Why nothing can be found here: [`empty_layer_hint`] when the sampled layer has no pixels under the pointer.
+    pub hint: Option<&'static str>,
+}
+
+/// The status-bar hint while hovering where the sampled layer has no pixels (the click reports the same as an error).
+fn empty_layer_hint() -> &'static str {
+    tl!("The active layer has no pixels here — turn on Sample All Layers or select a layer with pixels")
 }
 
 /// Whether the preview applies now (`pressed`: a pointer button is down).
@@ -87,6 +94,11 @@ pub(crate) fn update(app: &mut PhotocraftApp, at: Option<[f64; 2]>, pressed: boo
         app.object_finder = Some(Finder { doc, revision, target, all_layers, at: px, since: now, job: None, misses: Vec::new(), shown: None, texture: None });
     }
     let doc_arc = Arc::clone(&st.doc);
+    // The click reports an empty sampled layer; the hover says so too instead of showing nothing.
+    let here = photocraft_geom::Rect::from_xywh(px[0], px[1], 1, 1);
+    if doc_arc.bounds().contains(px[0], px[1]) && empty_sampled_area(&doc_arc, layer, all_layers, here).is_some() {
+        return Update { shown: None, busy: false, hint: Some(empty_layer_hint()) };
+    }
     let Some(f) = app.object_finder.as_mut() else { return Update::default() };
     if f.at != px {
         f.at = px;
@@ -121,7 +133,7 @@ pub(crate) fn update(app: &mut PhotocraftApp, at: Option<[f64; 2]>, pressed: boo
         f.job = Some(spawn(Arc::clone(&doc_arc), layer, all_layers, px, at));
     }
     let busy = f.job.is_some() || (f.shown.is_none() && !missed && now - f.since < DEBOUNCE);
-    Update { shown: f.shown.clone(), busy }
+    Update { shown: f.shown.clone(), busy, hint: None }
 }
 
 fn spawn(doc: Arc<Document>, layer: Option<LayerId>, all_layers: bool, px: [i32; 2], at: [f64; 2]) -> Job {
@@ -192,6 +204,15 @@ pub(crate) fn draw(app: &mut PhotocraftApp, painter: &egui::Painter, xf: &ViewXf
     let up = update(app, hover.map(|p| xf.to_doc(p)), pressed, now);
     if up.busy {
         ctx.request_repaint_after(std::time::Duration::from_millis(40));
+    }
+    match up.hint {
+        Some(h) if app.ui.status != h => {
+            app.ui.status = h.to_owned();
+            app.ui.status_error = false;
+        }
+        // The pointer moved on: drop our hint, never another message.
+        None if app.ui.status == empty_layer_hint() => app.ui.status.clear(),
+        _ => {}
     }
     let Some(r) = up.shown else { return };
     let Some(f) = app.object_finder.as_mut() else { return };
@@ -269,6 +290,19 @@ mod tests {
         assert_eq!(app.session.object_finder.len(), 1);
         // The background highlights nothing.
         assert!(hover(&mut app, [4.0, 4.0]).shown.is_none());
+    }
+
+    #[test]
+    fn hovering_an_empty_active_layer_gives_a_hint_not_silence() {
+        let mut app = disc_app();
+        app.session.execute("layer.new.layer", json!({})).unwrap();
+        let u = update(&mut app, Some([100.0, 80.0]), false, 100.0);
+        assert!(u.shown.is_none() && !u.busy);
+        assert_eq!(u.hint, Some(empty_layer_hint()));
+        // Sample All Layers on: no hint, the object is looked up.
+        app.ui.tool_options.sample_all.object_selection = true;
+        assert!(update(&mut app, Some([100.0, 80.0]), false, 100.0).hint.is_none());
+        assert!(hover(&mut app, [100.0, 80.0]).shown.is_some());
     }
 
     #[test]

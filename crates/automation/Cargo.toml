@@ -10,7 +10,6 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-photocraft-geom = { workspace = true }
 photocraft-doc = { workspace = true }
 photocraft-compose = { workspace = true }
 photocraft-codecs = { workspace = true }
@@ -28,6 +27,8 @@ getrandom = { workspace = true }
 cap-std = "4"
 
 [dev-dependencies]
+# Synthetic camera raws (#7789).
+photocraft-raw = { workspace = true, features = ["testgen"] }
 rmcp = { version = "3.5", default-features = false, features = ["client", "server", "macros", "transport-io"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "sync", "net", "io-util", "time"] }
 

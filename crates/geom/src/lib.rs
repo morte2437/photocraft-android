@@ -96,6 +96,14 @@ impl Rect {
     pub fn inflate(&self, d: i32) -> Rect {
         Rect::new(self.x0.saturating_sub(d), self.y0.saturating_sub(d), self.x1.saturating_add(d), self.y1.saturating_add(d))
     }
+    /// How many tiles overlap this rect, without visiting them (a rect can span billions).
+    pub fn tile_count(&self) -> u64 {
+        if self.is_empty() {
+            return 0;
+        }
+        let (a, b) = (TileCoord::containing(self.x0, self.y0), TileCoord::containing(self.x1 - 1, self.y1 - 1));
+        ((i64::from(b.tx) - i64::from(a.tx) + 1) as u64) * ((i64::from(b.ty) - i64::from(a.ty) + 1) as u64)
+    }
     /// All tiles overlapping this rect.
     pub fn tiles(&self) -> impl Iterator<Item = TileCoord> + use<> {
         let (a, b) = if self.is_empty() {

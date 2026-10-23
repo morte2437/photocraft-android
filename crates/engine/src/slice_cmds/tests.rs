@@ -52,6 +52,39 @@ fn user_slices_and_options() {
 }
 
 #[test]
+fn covered_slices_keep_their_options() {
+    // #7770: a slice under a later one shows as its visible pieces, yet stays one slice.
+    let mut s = session(8);
+    let under = s.execute("slice.new", json!({"rect": [0, 0, 60, 60], "name": "under"})).unwrap()["slice"].as_u64().unwrap();
+    s.execute("slice.new", json!({"rect": [40, 40, 60, 50], "name": "over"})).unwrap();
+    let listed = |s: &mut Session| -> Vec<Value> {
+        let l = s.execute("slice.list", json!({})).unwrap();
+        l["slices"].as_array().unwrap().iter().filter(|v| v["id"] == json!(under)).cloned().collect()
+    };
+    // Listed once, with its own rectangle and name; the visible pieces are numbered separately.
+    let entries = listed(&mut s);
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    let e = &entries[0];
+    assert_eq!((&e["name"], &e["rect"], &e["number"]), (&json!("under"), &json!([0, 0, 60, 60]), &json!(1)));
+    let pieces = e["pieces"].as_array().unwrap();
+    assert_eq!(pieces.len(), 2, "{pieces:?}");
+    assert_eq!(pieces[0], json!({"number": 1, "name": "under", "rect": [0, 0, 60, 40]}));
+    assert_eq!(pieces[1]["rect"], json!([0, 40, 40, 20]));
+    // Its listed rectangle written back through Slice Options keeps the slice whole.
+    s.execute("slice.set", json!({"slice": under, "rect": e["rect"]})).unwrap();
+    assert_eq!(doc(&s).slices.get(under as u32).unwrap().rect, Rect::new(0, 0, 60, 60));
+    // Moved wholly under the later slice, it is still on the canvas, and still listed.
+    let r = s.execute("slice.set", json!({"slice": under, "rect": [50, 50, 10, 10], "alt": "hidden"})).unwrap();
+    assert_eq!(r["number"], Value::Null);
+    assert_eq!(r["alt"], "hidden");
+    assert_eq!(r["pieces"], json!([]));
+    assert_eq!(doc(&s).slices.get(under as u32).unwrap().rect, Rect::new(50, 50, 60, 60));
+    let entries = listed(&mut s);
+    assert_eq!(entries.len(), 1, "a wholly covered slice is still listed: {entries:?}");
+    assert_eq!((&entries[0]["number"], &entries[0]["rect"]), (&Value::Null, &json!([50, 50, 10, 10])));
+}
+
+#[test]
 fn rect_param_rejects_corner_overflow() {
     assert_eq!(rect_param(&json!({"rect": [1, 2, 3, 4]})), Some(Rect::new(1, 2, 4, 6)));
     assert_eq!(rect_param(&json!({"x": 1, "y": 2, "width": 3, "height": 4})), Some(Rect::new(1, 2, 4, 6)));
@@ -276,7 +309,9 @@ fn rejected_slice_options_change_nothing() {
     // A user slice moved off the canvas is rejected without committing the move.
     let id = s.execute("slice.new", json!({"rect": [0, 0, 10, 10]})).unwrap()["slice"].as_u64().unwrap() as u32;
     let past = s.active().unwrap().history.past_len();
-    assert!(s.execute("slice.set", json!({"slice": id, "rect": [500, 500, 10, 10]})).is_err());
+    let before = doc(&s).slices.clone();
+    assert!(s.execute("slice.set", json!({"slice": id, "rect": [500, 500, 10, 10], "alt": "gone"})).is_err());
+    assert_eq!(doc(&s).slices, before, "neither the move nor the option is committed");
     assert_eq!(doc(&s).slices.get(id).unwrap().rect, Rect::new(0, 0, 10, 10));
     assert_eq!(s.active().unwrap().history.past_len(), past);
 }

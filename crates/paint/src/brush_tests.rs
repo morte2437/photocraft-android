@@ -155,6 +155,8 @@ fn pencil_dabs_sit_on_the_pixel_grid() {
     // Odd sizes centre on the pixel holding the point, even ones on the nearest corner.
     assert_eq!(grid_center(10.0, 5.0, 1.0), (10.5, 5.5));
     assert_eq!(grid_center(10.9, 5.2, 3.0), (10.5, 5.5));
+    assert_eq!(grid_center(10.0 - 5e-8, 5.0 - 5e-8, 1.0), (10.5, 5.5));
+    assert_eq!(grid_center(10.0 - 2e-7, 5.0 - 2e-7, 1.0), (9.5, 4.5));
     assert_eq!(grid_center(10.4, 5.6, 2.0), (10.0, 6.0));
     assert_eq!(grid_square(10.2, 5.7, 1.0), [10.0, 5.0, 11.0, 6.0]);
     assert_eq!(grid_square(10.2, 5.7, 4.0), [8.0, 4.0, 12.0, 8.0]);
@@ -937,6 +939,133 @@ fn a_pulled_string_brush_takes_the_pose_along_the_string() {
     assert!((p.tilt_x - 32.0).abs() < 1e-3, "{}", p.tilt_x);
     // Rotation the short way round: 350° + 80 % of 20°.
     assert!((p.rotation - 6.0).abs() < 1e-3, "{}", p.rotation);
+}
+
+#[test]
+fn a_smoothed_brush_catches_up_with_a_pen_lifted_in_place() {
+    // #7747: only the pressure changes while the pointer stands still. The brush lags in pose,
+    // so catch-up must keep running and the stroke end at the pen's last pressure.
+    let cfg = Smoothing { amount: 0.8, ..Default::default() };
+    let mut s = Smoother::new(&cfg, 1.0);
+    let mut out = Vec::new();
+    s.push(StrokePoint::new(50.0, 50.0, 1.0), &mut out);
+    s.push(StrokePoint { time: 32.0, ..StrokePoint::new(50.0, 50.0, 0.0) }, &mut out);
+    assert!(out.last().unwrap().pressure > 0.5, "the brush trails in pressure: {:?}", out.last());
+    assert!(s.lagging(), "a pose behind the pointer is still catching up");
+    // Held long enough, the brush arrives and stops asking for time.
+    for i in 1..=200 {
+        s.push(StrokePoint { time: 32.0 + f64::from(i) * 16.0, ..StrokePoint::new(50.0, 50.0, 0.0) }, &mut out);
+    }
+    assert!(!s.lagging(), "{:?}", out.last());
+    s.finish(&mut out);
+    assert_eq!(out.last().unwrap().pressure, 0.0);
+}
+
+#[test]
+fn catch_up_on_stroke_end_finishes_the_pose_of_a_still_pen() {
+    // #7747: tilt, rotation and wheel changed in place; the end catch-up lands on all of them.
+    let cfg = Smoothing { amount: 0.8, ..Default::default() };
+    let a = StrokePoint { rotation: 350.0, ..StrokePoint::new(50.0, 50.0, 1.0) };
+    let b = StrokePoint { time: 16.0, tilt_x: 40.0, tilt_y: -20.0, rotation: 10.0, wheel: 0.5, ..StrokePoint::new(50.0, 50.0, 1.0) };
+    let mut s = Smoother::new(&cfg, 1.0);
+    let mut out = Vec::new();
+    s.push(a, &mut out);
+    s.push(b, &mut out);
+    assert!(s.lagging());
+    s.finish(&mut out);
+    let p = out.last().unwrap();
+    assert_eq!((p.tilt_x, p.tilt_y, p.rotation, p.wheel), (40.0, -20.0, 10.0, 0.5));
+    // Nothing left to catch up: no extra point.
+    let n = out.len();
+    s.finish(&mut out);
+    assert_eq!(out.len(), n);
+}
+
+#[test]
+fn pose_axes_override_only_the_selected_stylus_components() {
+    let input = StrokePoint { x: 20.0, y: 30.0, pressure: 0.71, tilt_x: 13.0, tilt_y: -27.0, rotation: 67.0, wheel: 0.24, time: 73.0 };
+    for enabled in [false, true] {
+        for (x, y) in [(false, false), (true, false), (false, true), (true, true)] {
+            let b: BrushSettings = serde_json::from_value(serde_json::json!({"pose": {
+                "enabled": enabled, "tiltX": 45, "tiltY": -18,
+                "overrideTiltX": x, "overrideTiltY": y,
+                "pressure": 0.4, "rotation": 120
+            }}))
+            .unwrap();
+            let mut expected = input;
+            if enabled && x {
+                expected.tilt_x = 45.0;
+            }
+            if enabled && y {
+                expected.tilt_y = -18.0;
+            }
+            assert_eq!(crate::dynamics::apply_pose(&b, input), expected, "enabled={enabled}, X={x}, Y={y}");
+        }
+    }
+}
+
+#[test]
+fn pose_axes_reach_dabs_and_pixels_at_all_rgba_depths() {
+    let points = [
+        StrokePoint { tilt_x: 13.0, tilt_y: -27.0, ..StrokePoint::new(20.0, 30.0, 0.71) },
+        StrokePoint { tilt_x: -31.0, tilt_y: 42.0, ..StrokePoint::new(75.0, 45.0, 0.83) },
+    ];
+    for (x, y) in [(true, false), (false, true), (true, true)] {
+        let b: BrushSettings = serde_json::from_value(serde_json::json!({
+            "size": 20, "roundness": 0.47, "angle": -23,
+            "pressureSize": false, "smoothing": {"enabled": false},
+            "shapeDynamics": {"enabled": true, "brushProjection": true},
+            "pose": {"enabled": true, "tiltX": 45, "tiltY": -18, "overrideTiltX": x, "overrideTiltY": y}
+        }))
+        .unwrap();
+        let expected_points: Vec<_> =
+            points.iter().map(|p| StrokePoint { tilt_x: if x { 45.0 } else { p.tilt_x }, tilt_y: if y { -18.0 } else { p.tilt_y }, ..*p }).collect();
+        let mut expected_brush = b.clone();
+        expected_brush.pose.enabled = false;
+        let actual_dabs = dabs_of(&b, &points);
+        let expected_dabs = dabs_of(&expected_brush, &expected_points);
+        assert_eq!(actual_dabs.len(), expected_dabs.len());
+        for (index, (actual, expected)) in actual_dabs.iter().zip(&expected_dabs).enumerate() {
+            assert_eq!(actual, expected, "resolved tilt reaches dab {index}");
+        }
+        for format in [PixelFormat::RGBA8, PixelFormat::RGBA16, PixelFormat::RGBA32F] {
+            let mut actual = Surface::new(format);
+            let mut expected = Surface::new(format);
+            render_stroke(&mut actual, &b, &points, None, false, 1.0);
+            render_stroke(&mut expected, &expected_brush, &expected_points, None, false, 1.0);
+            assert!(actual.rgba(20, 30)[3] > 0.0, "the comparison includes painted pixels");
+            for py in 0..80 {
+                for px in 0..100 {
+                    assert_eq!(actual.rgba(px, py), expected.rgba(px, py), "{format:?}, X={x}, Y={y}, pixel ({px},{py})");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn pose_axes_legacy_combined_override_and_existing_rotation_pressure_are_preserved() {
+    let input = StrokePoint { tilt_x: 13.0, tilt_y: -27.0, pressure: 0.71, rotation: 67.0, ..Default::default() };
+    for enabled in [false, true] {
+        for legacy in [false, true] {
+            let b: BrushSettings = serde_json::from_value(serde_json::json!({"pose": {
+                "enabled": enabled, "tiltX": 45, "tiltY": -18, "overrideTilt": legacy,
+                "pressure": 0.4, "overridePressure": true, "rotation": 120, "overrideRotation": true
+            }}))
+            .unwrap();
+            let expected = StrokePoint {
+                tilt_x: if enabled && legacy { 45.0 } else { input.tilt_x },
+                tilt_y: if enabled && legacy { -18.0 } else { input.tilt_y },
+                pressure: if enabled { 0.4 } else { input.pressure },
+                rotation: if enabled { 120.0 } else { input.rotation },
+                ..input
+            };
+            assert_eq!(crate::dynamics::apply_pose(&b, input), expected);
+            let stored = serde_json::to_vec(&b).unwrap();
+            let restored: BrushSettings = serde_json::from_slice(&stored).unwrap();
+            assert_eq!(crate::dynamics::apply_pose(&restored, input), expected, "legacy brush settings retain their painting behavior through persistence");
+        }
+    }
 }
 
 #[test]

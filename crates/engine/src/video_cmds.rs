@@ -216,7 +216,7 @@ fn rasterize(s: &mut Session, _p: &Value) -> Result<Value> {
 /// Frames loaded from a file or an image sequence.
 struct Footage {
     frames: Vec<Surface>,
-    /// The frame rate the footage itself implies (a single animated GIF's delays); `None` for
+    /// The frame rate the footage itself implies (a single animated GIF's or WebP's delays); `None` for
     /// stills and sequences, which carry none.
     fps: Option<f32>,
 }
@@ -227,21 +227,36 @@ struct Footage {
 /// do, since they would otherwise play at an unintended 50-100 fps.
 fn fps_from_delays(delays: &[u32]) -> Option<f32> {
     let clean = |d: u32| if d < 20 { 100 } else { d };
-    let mut counts: Vec<(u32, usize)> = Vec::new();
+    // Count delays with a map keyed on the cleaned delay, recording first-seen order
+    // separately. A linear scan per frame (iter_mut().find) was O(n^2) for a GIF with many
+    // distinct delays. order[] preserves the tie-break: the earliest-seen delay wins.
+    let mut counts: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+    let mut order: Vec<u32> = Vec::new();
     for d in delays.iter().copied().map(clean) {
-        match counts.iter_mut().find(|(k, _)| *k == d) {
-            Some((_, n)) => *n += 1,
-            None => counts.push((d, 1)),
-        }
+        let n = counts.entry(d).or_insert_with(|| {
+            order.push(d);
+            0
+        });
+        *n += 1;
     }
-    let best = counts.iter().fold(None::<(u32, usize)>, |best, &(d, n)| match best {
-        Some((_, bn)) if bn >= n => best,
-        _ => Some((d, n)),
+    let best = order.iter().fold(None::<(u32, usize)>, |best, &d| {
+        let n = counts[&d];
+        match best {
+            Some((_, bn)) if bn >= n => best,
+            _ => Some((d, n)),
+        }
     });
     best.map(|(d, _)| 1000.0 / d as f32)
 }
 
-/// Load frames from `path`: a single image (1 frame, or every frame of an animated GIF), or a
+/// `photocraft_io::import_gif_frames` / `import_webp_frames`.
+type ImportFrames = fn(
+    &str,
+    &[u8],
+    &mut dyn FnMut(photocraft_doc::Document, u32) -> std::result::Result<(), photocraft_io::IoError>,
+) -> std::result::Result<usize, photocraft_io::IoError>;
+
+/// Load frames from `path`: a single image (1 frame, or every frame of an animated GIF or WebP), or a
 /// directory of images (sorted = an image sequence). Each becomes a full raster frame in the
 /// document's format.
 fn load_frames(path: &str, fmt: photocraft_color::PixelFormat) -> Result<Footage> {
@@ -271,8 +286,14 @@ fn load_frames(path: &str, fmt: photocraft_color::PixelFormat) -> Result<Footage
     for f in &files {
         let bytes = std::fs::read(f).map_err(|e| EngineError::Other(format!("read `{}`: {e}", f.display())))?;
         let name = f.to_string_lossy();
-        if photocraft_codecs::detect(&bytes) == Some(photocraft_codecs::Format::Gif) {
-            photocraft_io::import_gif_frames(&name, &bytes, &mut |doc, delay_ms| {
+        // A GIF (a still one is its only frame) or an animated WebP brings every frame.
+        let animation = match photocraft_codecs::detect(&bytes) {
+            Some(photocraft_codecs::Format::Gif) => Some(photocraft_io::import_gif_frames as ImportFrames),
+            Some(photocraft_codecs::Format::WebP) if photocraft_codecs::webp_is_animated(&bytes) => Some(photocraft_io::import_webp_frames as ImportFrames),
+            _ => None,
+        };
+        if let Some(import) = animation {
+            import(&name, &bytes, &mut |doc, delay_ms| {
                 frames.push(crate::file_cmds::flattened(&doc, fmt));
                 delays.push(delay_ms);
                 Ok(())
@@ -287,7 +308,7 @@ fn load_frames(path: &str, fmt: photocraft_color::PixelFormat) -> Result<Footage
         }
         frames.push(crate::file_cmds::flattened(&doc, fmt));
     }
-    // Only a lone GIF says how fast it plays; a sequence mixing files has no single rate.
+    // Only a lone GIF or WebP says how fast it plays; a sequence mixing files has no single rate.
     let fps = if files.len() == 1 { fps_from_delays(&delays) } else { None };
     Ok(Footage { frames, fps })
 }

@@ -319,6 +319,10 @@ fn peel_affordable(w: usize, px: &[Px], hb: Bounds, sources: usize) -> bool {
 
 /// Bounds of the hole pixels of a role grid.
 fn hole_bounds(w: usize, h: usize, px: &[Px]) -> Option<Bounds> {
+    // A zero-width grid holds no pixels whatever its height; don't size a row table by it.
+    if w == 0 || h == 0 {
+        return None;
+    }
     // Per row the first and last hole column; the union of the rows' spans.
     let rows: Vec<Option<(usize, usize)>> = par::map(h, w * h >= PAR_MIN, |y| {
         let row = px.get(y * w..(y + 1) * w)?;
@@ -2045,6 +2049,14 @@ mod tests {
         // Where the mean can't be reached anyway, the limits hold as before.
         let (g, b) = fit(a, n, 0.2 * n, 0.04 * n, 0.9 * n, 0.81 * n);
         assert!((a.gain.0..=a.gain.1).contains(&g) && b.abs() <= a.bias + 1e-6);
+    }
+
+    /// A zero-width image has no pixels however tall it is claimed to be: no per-row table.
+    #[test]
+    fn zero_width_images_complete_without_sizing_by_height() {
+        let p = CompleteParams::default();
+        assert_eq!(complete(0, 1 << 40, 3, &[], &[], &p), Some(Vec::new()));
+        assert_eq!(complete(1 << 40, 0, 3, &[], &[], &p), Some(Vec::new()));
     }
 
     /// Smooth gradient plus deterministic fine noise.

@@ -159,6 +159,33 @@ fn file_new_keeps_defaults_and_supported_modes_and_depths() {
 }
 
 #[test]
+fn file_new_tags_the_document_with_the_chosen_profile() {
+    // #321: New Document › Color Profile, as in Photoshop: another profile than the working space.
+    let desc = |s: &Session| {
+        let bytes = s.active().unwrap().doc.icc_profile.clone();
+        bytes.map(|b| photocraft_cms::Profile::parse(&b).unwrap().description)
+    };
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 4, "height": 4, "profile": "adobe-rgb-compat"})).unwrap();
+    assert_eq!(desc(&s).as_deref(), Some(photocraft_cms::Builtin::AdobeRgbCompat.description()));
+    s.execute("file.new", json!({"width": 4, "height": 4, "mode": "cmyk", "profile": "coated-cmyk"})).unwrap();
+    assert!(desc(&s).is_some());
+    // The working space (the default, or asked for) leaves it as before.
+    for p in [json!({"width": 4, "height": 4}), json!({"width": 4, "height": 4, "profile": "working"})] {
+        s.execute("file.new", p).unwrap();
+        assert_eq!(desc(&s), None);
+    }
+    // A profile that doesn't suit the mode, an unknown one or a wrong type opens nothing.
+    let open = s.documents().len();
+    let (active, steps) = (s.active().unwrap().doc.id, s.active().unwrap().history.past_len());
+    for bad in [json!("coated-cmyk"), json!("no-such-profile"), json!(""), json!(7), json!(null)] {
+        assert!(s.execute("file.new", json!({"width": 4, "height": 4, "profile": bad})).is_err(), "{bad}");
+        assert_eq!(s.documents().len(), open, "{bad}");
+        assert_eq!((s.active().unwrap().doc.id, s.active().unwrap().history.past_len()), (active, steps), "{bad}");
+    }
+}
+
+#[test]
 fn file_new_variants() {
     let mut s = Session::new();
     s.execute("file.new", json!({"width": 10, "height": 5, "background": "transparent"})).unwrap();
@@ -633,6 +660,33 @@ fn fill_layers_and_colors() {
     let l = px(&mut s, 0, 10)[0];
     let r = px(&mut s, 63, 10)[0];
     assert!(l < r);
+}
+
+#[test]
+fn gradient_fill_layer_angles_are_finite_and_normalised() {
+    // `angle` 1e39 overflowed f32 to infinity: the render went NaN and .pcraft refused to save.
+    let mut s = session_with_doc();
+    let angle = |s: &Session| {
+        let st = s.active().unwrap();
+        match &st.doc.layer(st.active_layer.unwrap()).unwrap().content {
+            photocraft_doc::LayerContent::Fill(photocraft_doc::Fill::Gradient { angle, .. }) => *angle,
+            _ => panic!("not a gradient fill"),
+        }
+    };
+    for cmd in ["layer.newFillLayer.gradient", "gradient.presets.apply"] {
+        let layers = s.active().unwrap().doc.layers.len();
+        for bad in [json!(1e39), json!(-1e300), json!("90")] {
+            assert!(s.execute(cmd, json!({"angle": bad})).is_err(), "{cmd} {bad}");
+        }
+        assert_eq!(s.active().unwrap().doc.layers.len(), layers, "{cmd}: nothing added");
+        // Normalised to (-180, 180] like gradient.fill.set.
+        for (a, want) in [(450.0, 90.0), (-90.0, -90.0), (-180.0, 180.0)] {
+            s.execute(cmd, json!({"angle": a})).unwrap();
+            assert_eq!(angle(&s), want, "{cmd} {a}");
+        }
+        s.execute(cmd, json!({})).unwrap();
+        assert_eq!(angle(&s), 90.0, "{cmd}: default");
+    }
 }
 
 #[test]
@@ -1162,6 +1216,55 @@ fn selecting_a_layer_does_not_dirty_the_document() {
 }
 
 #[test]
+fn selection_tools_do_not_dirty_the_document() {
+    // #6865: marquee, lasso, Select All / Inverse / Deselect and their undo and redo are
+    // history steps, but not edits, so a clean document stays clean.
+    for depth in [8, 16, 32] {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 64, "height": 48, "depth": depth})).unwrap();
+        let past = s.active().unwrap().history.past_len();
+        s.execute("select.rect", json!({"x": 2, "y": 2, "width": 20, "height": 10})).unwrap();
+        s.execute("select.rect", json!({"x": 30, "y": 20, "width": 8, "height": 8, "ellipse": true, "mode": "add"})).unwrap();
+        s.execute("select.lasso", json!({"points": [[0, 0], [40, 0], [20, 30]], "mode": "subtract"})).unwrap();
+        s.execute("select.inverse", json!({})).unwrap();
+        s.execute("select.all", json!({})).unwrap();
+        s.execute("select.deselect", json!({})).unwrap();
+        assert!(s.active().unwrap().history.past_len() > past, "selections are still history steps");
+        assert!(!s.active().unwrap().is_dirty(), "depth {depth}: selecting is not an edit");
+        assert!(s.undo() && s.undo());
+        assert!(s.redo());
+        assert!(!s.active().unwrap().is_dirty(), "depth {depth}: undoing a selection is not an edit");
+        s.execute("history.selectState", json!({"state": past})).unwrap();
+        assert!(!s.active().unwrap().is_dirty(), "depth {depth}: stepping back over selections is not an edit");
+        // A real edit still dirties, with or without a selection, and a selection can't clean it.
+        s.execute("select.rect", json!({"x": 0, "y": 0, "width": 4, "height": 4})).unwrap();
+        s.execute("layer.new.layer", json!({})).unwrap();
+        assert!(s.active().unwrap().is_dirty());
+        s.execute("select.deselect", json!({})).unwrap();
+        assert!(s.active().unwrap().is_dirty());
+        assert!(s.undo());
+        assert!(s.active().unwrap().is_dirty(), "the new layer is still unsaved");
+    }
+}
+
+#[test]
+fn selections_keep_a_document_with_a_video_layer_clean() {
+    // #6865: video frames compare by tile pointer, so selecting in a document with a video
+    // layer doesn't mark it modified either; changing the frames still does.
+    let mut s = session_with_doc();
+    s.execute("layer.videoLayers.newBlankVideoLayer", json!({})).unwrap();
+    let st = s.active_mut().unwrap();
+    st.saved_revision = st.revision;
+    s.execute("select.rect", json!({"x": 1, "y": 1, "width": 4, "height": 4})).unwrap();
+    s.execute("select.deselect", json!({})).unwrap();
+    assert!(!s.active().unwrap().is_dirty(), "selecting is not an edit");
+    assert!(s.undo());
+    assert!(!s.active().unwrap().is_dirty(), "undoing a selection is not an edit");
+    s.execute("layer.videoLayers.insertBlankFrame", json!({})).unwrap();
+    assert!(s.active().unwrap().is_dirty(), "a new frame is an edit");
+}
+
+#[test]
 fn coalesced_edits_share_one_history_step() {
     let mut s = Session::new();
     s.execute("file.new", json!({"width": 20, "height": 20})).unwrap();
@@ -1470,6 +1573,53 @@ fn document_inspect_and_activate_invalid_index() {
     assert_eq!(err_act.to_string(), "no document at index 9");
 }
 
+/// #7103: Photoshop's Select Document by offset (previous is -1, next +1) walks the open
+/// documents in tab order from the active one. Past either end it is refused, not wrapped onto
+/// another document, and bad params leave the active document as it was.
+#[test]
+fn document_activate_by_offset_walks_the_tabs() {
+    let mut s = Session::new();
+    for name in ["a", "b", "c"] {
+        s.execute("file.new", json!({"width": 2, "height": 2, "name": name})).unwrap();
+    }
+    let active = |s: &Session| s.active().unwrap().doc.name.clone();
+    assert_eq!(active(&s), "c");
+    assert_eq!(s.execute("document.activate", json!({"offset": -2})).unwrap(), json!({"document": 0}));
+    assert_eq!(active(&s), "a");
+    assert_eq!(s.execute("document.activate", json!({"offset": 1})).unwrap(), json!({"document": 1}));
+    assert_eq!(active(&s), "b");
+    s.execute("document.activate", json!({"offset": 0})).unwrap();
+    assert_eq!(active(&s), "b");
+    assert_eq!(s.execute("document.activate", json!({"document": 2})).unwrap(), json!({"document": 2}));
+    // A null key counts as omitted.
+    s.execute("document.activate", json!({"document": null, "offset": -1})).unwrap();
+    assert_eq!(active(&s), "b");
+
+    let err = s.execute("document.activate", json!({"offset": 2})).unwrap_err().to_string();
+    assert_eq!(err, "no document 2 after the active one, which is 2 of 3");
+    let err = s.execute("document.activate", json!({"offset": -2})).unwrap_err().to_string();
+    assert_eq!(err, "no document 2 before the active one, which is 2 of 3");
+    for bad in [
+        json!({}),
+        json!({"offset": null}),
+        json!({"offset": 1.5}),
+        json!({"offset": "1"}),
+        json!({"offset": i64::MAX}),
+        json!({"offset": i64::MIN}),
+        json!({"offset": u64::MAX}),
+        json!({"document": 0, "offset": 1}),
+        json!({"document": -1}),
+    ] {
+        assert!(s.execute("document.activate", bad.clone()).is_err(), "{bad}");
+        assert_eq!(active(&s), "b", "{bad}");
+    }
+    // Tabs, not the order the documents were opened in: with "c" dragged to the front, two tabs
+    // before "b" is "c".
+    s.execute("document.move", json!({"document": 2, "to": 0})).unwrap();
+    s.execute("document.activate", json!({"offset": -2})).unwrap();
+    assert_eq!(active(&s), "c");
+}
+
 /// #2166, measured in Photoshop 25.1: a layer mask and the layer pixels keep separate
 /// foreground/background pairs, swapped when the edit target changes.
 #[test]
@@ -1611,4 +1761,31 @@ fn merge_down_on_a_group_merges_the_group() {
     // Undo brings the group back.
     s.execute("edit.undo", json!({})).unwrap();
     assert!(s.active().unwrap().doc.layer(photocraft_doc::LayerId(group)).is_some());
+}
+
+/// `restore_layer_selection` puts a multi-layer selection back, drops gone layers, keeps a clean
+/// document clean, and refuses a gone active layer without changing anything.
+#[test]
+fn restore_layer_selection_puts_back_what_still_exists() {
+    let mut s = session_with_doc();
+    let id = |v: Value| LayerId(v["layer"].as_u64().unwrap());
+    let a = id(s.execute("layer.new.layer", json!({})).unwrap());
+    let b = id(s.execute("layer.new.layer", json!({})).unwrap());
+    let gone = LayerId(u64::MAX);
+    s.active_mut().unwrap().saved_revision = s.active().unwrap().revision;
+    s.restore_layer_selection(Some(b), &[a, gone, b], Some(a)).unwrap();
+    let st = s.active().unwrap();
+    assert_eq!((st.active_layer, st.selected_layers(), st.layer_anchor), (Some(b), vec![a, b], Some(a)));
+    assert_eq!(st.saved_revision, st.revision, "selection is not an edit");
+    let snap = |s: &Session| {
+        let st = s.active().unwrap();
+        (st.active_layer, st.selected_layers(), st.layer_anchor, st.revision, st.saved_revision)
+    };
+    let before = snap(&s);
+    assert!(matches!(s.restore_layer_selection(Some(gone), &[gone], None), Err(EngineError::NoLayer(_))));
+    assert_eq!(snap(&s), before, "an error changes nothing");
+    s.restore_layer_selection(None, &[a], Some(a)).unwrap();
+    let st = s.active().unwrap();
+    assert_eq!((st.active_layer, st.selected_layers(), st.layer_anchor), (None, vec![], None), "no layer selected");
+    assert!(Session::new().restore_layer_selection(None, &[], None).is_err(), "no document");
 }

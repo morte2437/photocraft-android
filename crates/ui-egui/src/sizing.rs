@@ -296,6 +296,15 @@ fn image_size(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
                 // Without resampling the pixel count is fixed: physical size follows resolution.
                 f.insert("width".into(), json!(ow));
                 f.insert("height".into(), json!(oh));
+            } else if !matches!(unit.as_str(), "px" | "percent") {
+                // Resampling in a physical unit keeps the print size: the pixels follow the
+                // resolution (Photoshop). In pixels or percent the pixel count stays.
+                let old = f.get("resolution").and_then(Value::as_f64).unwrap_or(num(f, "__origRes"));
+                if old > 0.0 && old.is_finite() {
+                    for key in ["width", "height"] {
+                        f.insert(key.into(), json!((num(f, key) * r / old).max(1.0)));
+                    }
+                }
             }
             f.insert("resolution".into(), json!(r));
         }
@@ -645,9 +654,14 @@ mod tests {
 
     /// Types `text` into the Width field and leaves it with Tab.
     fn type_width(h: &mut egui_kittest::Harness<'static, PhotocraftApp>, text: &str) {
+        type_into(h, 0, text);
+    }
+
+    /// Types `text` into the `n`th number field (Width, Height, Resolution) and leaves it with Tab.
+    fn type_into(h: &mut egui_kittest::Harness<'static, PhotocraftApp>, n: usize, text: &str) {
         use egui::accesskit::Role;
         use egui_kittest::kittest::Queryable;
-        let width = h.query_all_by_role(Role::SpinButton).next().map(|n| n.rect()).expect("the Width field");
+        let width = h.query_all_by_role(Role::SpinButton).nth(n).map(|n| n.rect()).expect("the number field");
         h.hover_at(width.center());
         h.run_steps(1);
         h.drag_at(width.center());
@@ -694,6 +708,32 @@ mod tests {
         let doc = &h.state().session.active().unwrap().doc;
         assert_eq!(doc.size, photocraft_doc::Size::new(100, 50));
         assert!((doc.resolution_dpi - 50.0).abs() < 1e-3, "{}", doc.resolution_dpi);
+    }
+
+    /// #6979: with Resample on, a new Resolution keeps the print size in a physical unit and
+    /// resamples the pixels (Photoshop): 720 x 576 px at 72 ppi is 10 x 8 in, so 300 ppi is
+    /// 3000 x 2400 px. In pixels the pixel count stays.
+    #[test]
+    fn resample_on_resolution_keeps_the_physical_size() {
+        for (unit, size) in [("in", (3000.0, 2400.0)), ("cm", (3000.0, 2400.0)), ("px", (720.0, 576.0))] {
+            let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+            app.session.execute("file.new", json!({"width": 720, "height": 576, "resolution": 72})).unwrap();
+            let mut h = egui_kittest::Harness::builder()
+                .with_size(egui::vec2(1400.0, 900.0))
+                .build_ui_state(|ui, app: &mut PhotocraftApp| crate::dialogs::show(app, ui.ctx()), app);
+            PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+            let id = open(h.state_mut(), "image.imageSize").unwrap();
+            let d = h.state_mut().ui.dialog_mut(id).unwrap();
+            d.fields.insert("resample".into(), json!("bicubic"));
+            d.fields.insert("__unit".into(), json!(unit));
+            h.run_steps(3);
+            type_into(&mut h, 2, "300");
+            let f = fields(&h);
+            assert_eq!((num(&f, "width"), num(&f, "height"), num(&f, "resolution")), (size.0, size.1, 300.0), "{unit}: {f:?}");
+            crate::dialogs::confirm(h.state_mut(), id).unwrap();
+            let doc = &h.state().session.active().unwrap().doc;
+            assert_eq!((doc.size, doc.resolution_dpi), (photocraft_doc::Size::new(size.0 as u32, size.1 as u32), 300.0), "{unit}");
+        }
     }
 
     /// #4162: a document wider than 30000 units in a physical unit (40000 px at 72 ppi is 40000 pt)

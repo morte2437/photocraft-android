@@ -65,6 +65,88 @@ fn camera_raw_opens_as_16_bit_with_notes() {
     assert!(open_bytes_as(&mut s, "bad.dng", &bad, None, None).is_err());
 }
 
+/// #5799: Batch with Format "Same" over a folder of camera raws saved nothing (every output was
+/// a raw PhotoCraft can't write). Raws are saved as PSD; other inputs keep their format.
+#[test]
+fn batch_same_format_saves_camera_raws_as_psd() {
+    use photocraft_raw::testgen::{DngSpec, mosaic, scene};
+    let dir = tmp("batch-same-raw");
+    let (w, h) = (24, 16);
+    std::fs::write(join(&dir, "IMG_0001.dng"), DngSpec::cfa(w, h, mosaic(&scene(w, h), w, [0, 1, 1, 2], 0, 65535)).build()).unwrap();
+    png(&dir, "b.png", 8, 8, "#ff0000");
+    // Also with a file naming template, which picks the output extension separately.
+    for (out, naming) in [("out", None), ("named", Some("{name}_{serial}"))] {
+        let out = join(&dir, out);
+        let mut p = json!({"steps": [["image.adjustments.invert", {}]], "input": dir, "output": out, "format": "same"});
+        if let Some(naming) = naming {
+            p["naming"] = json!(naming);
+        }
+        let r = Session::new().execute("file.automate.batch", p).unwrap();
+        assert!(r["errors"].as_array().unwrap().is_empty(), "{naming:?}: {r}");
+        let mut files: Vec<String> = r["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap().replace('\\', "/")).collect();
+        files.sort();
+        assert_eq!(files.len(), 2, "{r}");
+        assert!(files[0].contains("/IMG_0001") && files[0].ends_with(".psd") && files[1].contains("/b") && files[1].ends_with(".png"), "{files:?}");
+        let psd = photocraft_io::import("IMG_0001.psd", &std::fs::read(&files[0]).unwrap()).unwrap().document;
+        assert_eq!((psd.size.width, psd.size.height), (w as u32, h as u32));
+    }
+}
+
+/// Edit › Preferences › Raw Defaults › Resolution sets the ppi a raw opens with, through
+/// File › Open (the background open job) and through opening bytes; other files keep their own.
+#[test]
+fn a_developed_raw_opens_at_the_raw_defaults_resolution() {
+    use photocraft_raw::testgen::{DngSpec, mosaic, scene};
+    let (w, h) = (24, 16);
+    let raw = DngSpec::cfa(w, h, mosaic(&scene(w, h), w, [0, 1, 1, 2], 0, 65535)).build();
+    let dir = tmp("raw-defaults");
+    let path = join(&dir, "IMG_0002.dng");
+    std::fs::write(&path, &raw).unwrap();
+    let open = |s: &mut Session, path: &str| match s.start_open(path, crate::jobs::OpenSource::Path(path.into())).unwrap() {
+        crate::jobs::Started::Job(id) => {
+            s.wait_job(id).unwrap();
+        }
+        crate::jobs::Started::Done(_) => {}
+    };
+    let mut s = Session::new();
+    open_bytes_as(&mut s, "IMG_0001.dng", &raw, None, None).unwrap();
+    assert_eq!(doc(&s).resolution_dpi, 300.0, "the default");
+    s.execute("prefs.set", json!({"path": "rawDefaults.resolution", "value": 240})).unwrap();
+    open_bytes_as(&mut s, "IMG_0001.dng", &raw, None, None).unwrap();
+    assert_eq!(doc(&s).resolution_dpi, 240.0);
+    open(&mut s, &path);
+    assert_eq!(doc(&s).resolution_dpi, 240.0, "File › Open");
+    let png = png(&dir, "a.png", 4, 4, "#ff0000");
+    open(&mut s, &png);
+    assert_eq!(doc(&s).resolution_dpi, 72.0, "not a raw");
+}
+
+/// The other ways a raw becomes a document of its own take Raw Defaults › Resolution too:
+/// File › Revert, Batch and Load Files into Stack (all of them opened a raw at 72 ppi).
+#[test]
+fn revert_batch_and_stack_open_a_raw_at_the_raw_defaults_resolution() {
+    use photocraft_raw::testgen::{DngSpec, mosaic, scene};
+    let (w, h) = (24, 16);
+    let dir = tmp("raw-defaults-siblings");
+    let path = join(&dir, "IMG_0003.dng");
+    std::fs::write(&path, DngSpec::cfa(w, h, mosaic(&scene(w, h), w, [0, 1, 1, 2], 0, 65535)).build()).unwrap();
+    let mut s = Session::new();
+    s.execute("prefs.set", json!({"path": "rawDefaults.resolution", "value": 240})).unwrap();
+    open_bytes_as(&mut s, &path, &std::fs::read(&path).unwrap(), None, Some(path.clone())).unwrap();
+    s.execute("image.imageSize", json!({"resolution": 150, "resample": "none"})).unwrap();
+    assert_eq!(doc(&s).resolution_dpi, 150.0);
+    s.execute("file.revert", json!({})).unwrap();
+    assert_eq!(doc(&s).resolution_dpi, 240.0, "File › Revert");
+    let out = join(&dir, "out");
+    let r = s.execute("file.automate.batch", json!({"steps": [], "input": [path.clone()], "output": out, "format": "psd"})).unwrap();
+    let files = r["files"].as_array().unwrap();
+    assert_eq!(files.len(), 1, "{r}");
+    let psd = photocraft_io::import("IMG_0003.psd", &std::fs::read(files[0].as_str().unwrap()).unwrap()).unwrap().document;
+    assert_eq!(psd.resolution_dpi, 240.0, "Batch");
+    s.execute("file.scripts.loadFilesIntoStack", json!({"paths": [path]})).unwrap();
+    assert_eq!(doc(&s).resolution_dpi, 240.0, "Load Files into Stack");
+}
+
 #[test]
 fn revert_reloads_as_one_undoable_step() {
     let dir = tmp("revert");
@@ -219,6 +301,53 @@ fn save_a_copy_writes_the_dpx_bits_asked_for() {
     }
 }
 
+/// `ddsCompression` picks the DDS FourCC (or none, uncompressed) and `ddsMipmaps` the mip count
+/// in the header; unset, an uncompressed texture without mipmaps. Bad values are refused before
+/// anything is written.
+#[test]
+fn save_a_copy_writes_the_dds_options_asked_for() {
+    let dir = tmp("dds-options");
+    let le32 = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
+    for (params, fourcc, mips) in [
+        (json!({}), [0; 4], 1),
+        (json!({"ddsCompression": "none", "ddsMipmaps": true}), [0; 4], 5),
+        (json!({"ddsCompression": "bc1"}), *b"DXT1", 1),
+        (json!({"ddsCompression": "DXT3", "ddsMipmaps": false}), *b"DXT3", 1),
+        (json!({"ddsCompression": "bc3", "ddsMipmaps": true}), *b"DXT5", 5),
+        (json!({"ddsCompression": null, "ddsMipmaps": null}), [0; 4], 1),
+    ] {
+        let mut s = session(16, 12, 8);
+        let out = join(&dir, "a.dds");
+        let mut p = params.clone();
+        p["path"] = json!(out);
+        s.execute("file.saveACopy", p).unwrap();
+        let bytes = std::fs::read(&out).unwrap();
+        assert_eq!((&bytes[..4], &bytes[84..88], le32(&bytes, 28)), (&b"DDS "[..], &fourcc[..], mips), "{params}");
+        assert_eq!(photocraft_io::import("a.dds", &bytes).unwrap().document.size, photocraft_geom::Size::new(16, 12), "{params}");
+    }
+    let mut s = session(8, 8, 8);
+    let state = |s: &Session| s.active().map(|st| (st.revision, st.path.clone(), st.is_dirty()));
+    let before = state(&s);
+    for bad in [json!({"ddsCompression": "bc7"}), json!({"ddsCompression": 1}), json!({"ddsMipmaps": "yes"}), json!({"ddsMipmaps": 1})] {
+        let out = join(&dir, "bad.dds");
+        let mut p = bad.clone();
+        p["path"] = json!(out);
+        let r = s.execute("file.saveACopy", p);
+        assert!(matches!(r, Err(EngineError::BadParams { .. })), "{bad}: {r:?}");
+        assert!(!std::path::Path::new(&out).exists(), "{bad}: nothing written");
+        assert_eq!(state(&s), before, "{bad}: the document is untouched");
+    }
+}
+
+#[test]
+fn dds_params_are_none_until_one_is_given() {
+    use photocraft_io::{DdsCompression, DdsOptions};
+    assert_eq!(dds_param(&json!({}), "file.saveAs").unwrap(), None);
+    assert_eq!(dds_param(&json!({"ddsCompression": null}), "file.saveAs").unwrap(), None);
+    assert_eq!(dds_param(&json!({"ddsMipmaps": true}), "file.saveAs").unwrap(), Some(DdsOptions { compression: DdsCompression::None, mipmaps: true }));
+    assert_eq!(dds_param(&json!({"ddsCompression": "bc2"}), "file.saveAs").unwrap(), Some(DdsOptions { compression: DdsCompression::Bc2, mipmaps: false }));
+}
+
 /// A `tgaBits` other than 24 or 32 is a bad parameter, reported before anything is written.
 #[test]
 fn bad_targa_bits_are_refused_before_writing() {
@@ -230,6 +359,57 @@ fn bad_targa_bits_are_refused_before_writing() {
         assert!(matches!(r, Err(EngineError::BadParams { .. })), "{bad}: {r:?}");
         assert!(!std::path::Path::new(&out).exists(), "{bad}: nothing written");
         let r = s.execute("file.export.layersToFiles", json!({"dir": dir, "format": "tga", "tgaBits": bad}));
+        assert!(matches!(r, Err(EngineError::BadParams { .. })), "{bad}: {r:?}");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "{bad}: no layer written");
+    }
+}
+
+/// `jpegFormat` picks JPEG Options' format: Progressive writes a progressive frame (SOF2), the
+/// others a baseline one (SOF0); `quality` keeps Photoshop's 0–12 scale.
+#[test]
+fn save_a_copy_writes_the_jpeg_format_asked_for() {
+    let dir = tmp("jpeg-format");
+    let mut s = session(40, 30, 8);
+    let marker = |b: &[u8], m: u8| b.windows(2).any(|w| w == [0xFF, m]);
+    for (params, progressive) in [
+        (json!({}), false),
+        (json!({"jpegFormat": null}), false),
+        (json!({"jpegFormat": "baseline", "quality": 12}), false),
+        (json!({"jpegFormat": "optimized", "quality": 10}), false),
+        (json!({"jpegFormat": "progressive", "quality": 3}), true),
+    ] {
+        let out = join(&dir, "a.jpg");
+        let mut p = params.clone();
+        p["path"] = json!(out);
+        s.execute("file.saveACopy", p).unwrap();
+        let bytes = std::fs::read(&out).unwrap();
+        assert_eq!(marker(&bytes, 0xC2), progressive, "{params}");
+        assert_eq!(marker(&bytes, 0xC0), !progressive, "{params}");
+        assert_eq!(photocraft_io::import("a.jpg", &bytes).unwrap().document.size.width, 40, "{params}");
+    }
+    // Layers to Files takes it too.
+    s.execute("file.export.layersToFiles", json!({"dir": dir, "format": "jpg", "jpegFormat": "progressive"})).unwrap();
+    let layers: Vec<_> = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| !p.ends_with("a.jpg")).collect();
+    assert!(!layers.is_empty());
+    for p in layers {
+        assert!(marker(&std::fs::read(&p).unwrap(), 0xC2), "{p:?} is progressive");
+    }
+    assert_eq!((jpeg_quality(0.0), jpeg_quality(12.0), jpeg_quality(6.0)), (1, 100, 51));
+    assert_eq!((jpeg_quality(-3.0), jpeg_quality(40.0), jpeg_quality(f64::NAN), jpeg_quality(f64::NEG_INFINITY)), (1, 100, 100, 100));
+}
+
+/// A `jpegFormat` other than the three names is a bad parameter, reported before anything is
+/// written.
+#[test]
+fn bad_jpeg_formats_are_refused_before_writing() {
+    let dir = tmp("jpeg-bad");
+    let mut s = session(8, 8, 8);
+    for bad in [json!("Progressive"), json!(""), json!(2), json!(true), json!(["baseline"]), json!({"format": "baseline"})] {
+        let out = join(&dir, "a.jpg");
+        let r = s.execute("file.saveACopy", json!({"path": out, "jpegFormat": bad}));
+        assert!(matches!(r, Err(EngineError::BadParams { .. })), "{bad}: {r:?}");
+        assert!(!std::path::Path::new(&out).exists(), "{bad}: nothing written");
+        let r = s.execute("file.export.layersToFiles", json!({"dir": dir, "format": "jpg", "jpegFormat": bad}));
         assert!(matches!(r, Err(EngineError::BadParams { .. })), "{bad}: {r:?}");
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "{bad}: no layer written");
     }
@@ -494,6 +674,54 @@ fn camera_data_formats_like_photoshop_and_falls_back_to_xmp() {
     assert_eq!(camera_data(Some(b"II*\0\xff\xff\xff\xff"), Some("<exif:FNumber>0/0</exif:FNumber> exif:ExposureTime=\"-1/0\"")), json!({}));
 }
 
+/// A slow shutter speed whose reciprocal is not whole prints as the nearest fraction a camera
+/// would write, not as two decimals. The old 1 %-of-the-reciprocal test shrank as the exposure
+/// slowed, so below 1/50 s it fell below half a rounding step and nearly every such fraction fell
+/// through to the decimal form (#6958).
+#[test]
+fn camera_data_prints_a_slow_exposure_as_the_fraction_a_camera_writes() {
+    let text = |t: f64| exposure_text(t).expect("an exposure");
+    // The two values from the report: 31714/1000000 s and 215/10000 s.
+    assert_eq!(text(0.031_714), "1/32 s", "a stored 0.031714 s is about 1/32 s");
+    assert_eq!(text(0.0215), "1/47 s", "a stored 0.0215 s is about 1/47 s");
+    // The rest of a slow shutter scale, and the exact reciprocals that already worked.
+    assert_eq!(text(0.125), "1/8 s");
+    assert_eq!(text(1.0 / 60.0), "1/60 s");
+    assert_eq!(text(1.0 / 4000.0), "1/4000 s");
+    assert_eq!(text(0.04), "1/25 s");
+    assert_eq!(text(0.09), "1/11 s");
+    // Every shown time stays within 5 % of the stored one — the point of the report.
+    for t in [0.031_714, 0.0215, 0.04, 0.09, 0.125, 1.0 / 60.0, 1.0 / 4000.0] {
+        let n: f64 = text(t).split('/').nth(1).and_then(|d| d.split(' ').next()).expect("1/n s").parse().expect("a number");
+        assert!((1.0 / n / t - 1.0).abs() <= 0.05, "{t} shown as {} is more than 5 % off", text(t));
+    }
+    // A tenth of a second and longer keeps the Photoshop forms: a near-whole reciprocal is a
+    // fraction, anything else is the decimal at three significant digits.
+    assert_eq!(text(0.5), "1/2 s");
+    assert_eq!(text(0.25), "1/4 s");
+    assert_eq!(text(0.4), "0.4 s");
+    assert_eq!(text(0.105), "0.105 s", "two decimals would read 0.11 s");
+    assert_eq!(text(1.25), "1.25 s", "one decimal would read 1.3 s");
+    assert_eq!(text(2.0), "2 s");
+    // A hostile value cannot panic, and a positive exposure never reads as "0 s" (never-crash, rule 9).
+    assert_ne!(exposure_text(f64::MIN_POSITIVE).as_deref(), Some("0 s"));
+    assert_ne!(exposure_text(f64::MIN_POSITIVE), None);
+    assert_eq!(exposure_text(0.0), None);
+    assert_eq!(exposure_text(-1.0), None);
+    assert_eq!(exposure_text(f64::NAN), None);
+    assert_eq!(exposure_text(f64::INFINITY), None);
+    assert_ne!(exposure_text(f64::MAX), None);
+    // The same through a real EXIF block, so the round trip to File Info is covered too.
+    let camera = |t: f64| {
+        let exif = photocraft_algo::exif::build(&photocraft_algo::exif::CameraInfo { exposure_time: Some(t), ..Default::default() });
+        camera_data(Some(&exif), None)["exposure"].as_str().map(str::to_owned)
+    };
+    assert_eq!(camera(0.031_714), Some("1/32 s".to_owned()));
+    assert_eq!(camera(0.0215), Some("1/47 s".to_owned()));
+    // An absurd exposure is capped to one dialog line, as every other camera field is.
+    assert!(camera(f64::MAX).expect("an exposure").len() <= 200, "a huge exposure must stay on one dialog line");
+}
+
 const MULTILINGUAL_XMP: &str = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/">
 <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
 <rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/"
@@ -570,6 +798,13 @@ fn fit_image_and_conditional_mode_change() {
     assert_eq!(r["changed"], false);
     s.execute("file.automate.fitImage", json!({"width": 1000, "height": 1000})).unwrap();
     assert_eq!(doc(&s).size.width, 1000);
+
+    // Zero or negative width or height leaves that side unconstrained.
+    let mut s2 = session(1000, 800, 8);
+    s2.execute("file.automate.fitImage", json!({"width": 0, "height": 400})).unwrap();
+    assert_eq!((doc(&s2).size.width, doc(&s2).size.height), (500, 400));
+    s2.execute("file.automate.fitImage", json!({"width": 250, "height": -10})).unwrap();
+    assert_eq!((doc(&s2).size.width, doc(&s2).size.height), (250, 200));
     let r = s.execute("file.automate.conditionalModeChange", json!({"from": ["cmyk"], "to": "grayscale"})).unwrap();
     assert_eq!(r["changed"], false);
     s.execute("file.automate.conditionalModeChange", json!({"from": ["rgb", "lab"], "to": "grayscale"})).unwrap();
@@ -577,6 +812,36 @@ fn fit_image_and_conditional_mode_change() {
     s.execute("file.automate.conditionalModeChange", json!({"to": "rgb"})).unwrap();
     assert_eq!(doc(&s).mode, ColorMode::Rgb);
     assert!(s.execute("file.automate.conditionalModeChange", json!({"to": "duotone"})).is_err());
+}
+
+#[test]
+fn fit_image_zero_or_negative_side_is_unconstrained() {
+    // Dialogs send 0 for an empty field: that side is not a limit, not a 1 px box.
+    let mut s = session(1000, 800, 8);
+    s.execute("file.automate.fitImage", json!({"width": 0, "height": 400})).unwrap();
+    assert_eq!((doc(&s).size.width, doc(&s).size.height), (500, 400));
+    s.execute("file.automate.fitImage", json!({"width": 250, "height": -5})).unwrap();
+    assert_eq!((doc(&s).size.width, doc(&s).size.height), (250, 200));
+    let r = s.execute("file.automate.fitImage", json!({"width": 0, "height": 0})).unwrap();
+    assert_eq!(r["changed"], false);
+    assert_eq!((doc(&s).size.width, doc(&s).size.height), (250, 200));
+}
+
+#[test]
+fn conditional_mode_change_single_gray_source_matches_grayscale() {
+    // A single `"from"` string is normalised like the array form: "gray" names Grayscale (#7042).
+    let mut s = session(4, 4, 8);
+    s.execute("image.mode.grayscale", json!({})).unwrap();
+    let r = s.execute("file.automate.conditionalModeChange", json!({"from": "rgb", "to": "rgb"})).unwrap();
+    assert_eq!(r["changed"], false);
+    assert_eq!(doc(&s).mode, ColorMode::Grayscale);
+    let r = s.execute("file.automate.conditionalModeChange", json!({"from": "gray", "to": "rgb"})).unwrap();
+    assert_eq!(r["changed"], true, "{r}");
+    assert_eq!(doc(&s).mode, ColorMode::Rgb);
+    s.execute("image.mode.grayscale", json!({})).unwrap();
+    let r = s.execute("file.automate.conditionalModeChange", json!({"from": "Gray", "to": "rgb"})).unwrap();
+    assert_eq!(r["changed"], true, "{r}");
+    assert_eq!(doc(&s).mode, ColorMode::Rgb);
 }
 
 #[test]
@@ -1353,4 +1618,156 @@ fn batch_naming_rejects_outputs_that_replace_inputs_before_processing() {
     assert!(error.to_string().contains("input"), "{error}");
     assert_eq!(std::fs::read(&first).unwrap(), before[0]);
     assert_eq!(std::fs::read(&second).unwrap(), before[1]);
+}
+
+/// Batch takes the result at the action's recorded Save, Save As or Save a Copy, as Photoshop's
+/// "Override Action 'Save As' Commands" does: a document closed after its save is written as the
+/// save found it. The usual "…, Save As, Close" ending failed on every file: the Save was dropped,
+/// and nothing was left open to save after the action.
+#[test]
+fn batch_saves_at_the_recorded_save_so_a_close_after_it_keeps_the_result() {
+    let dir = tmp("batch-save-close");
+    let red = png(&dir, "red.png", 8, 8, "#ff0000");
+    let saved = |out: &str| photocraft_io::import("red.png", &std::fs::read(join(out, "red.png")).unwrap()).unwrap().document;
+    let mut s = Session::new();
+    let out = join(&dir, "close");
+    let steps = json!([["image.adjustments.invert", {}], ["file.saveAs", {}], ["file.close", {}]]);
+    let r = s.execute("file.automate.batch", json!({"input": [red], "output": out, "format": "png", "steps": steps})).unwrap();
+    assert_eq!(r["errors"], json!([]), "{r}");
+    assert_eq!(r["files"], json!([join(&out, "red.png")]));
+    assert_eq!(photocraft_compose::render(&saved(&out), Rect::new(1, 1, 2, 2)).px[0], [0.0, 1.0, 1.0, 1.0], "the inverted red");
+
+    // Save a Copy marks the result the same way, and its recorded path is never written.
+    let out = join(&dir, "copy");
+    let elsewhere = join(&dir, "elsewhere.png");
+    let steps = json!([["image.adjustments.invert", {}], ["file.saveACopy", {"path": elsewhere}], ["file.close", {}]]);
+    let r = s.execute("file.automate.batch", json!({"input": [red], "output": out, "format": "png", "steps": steps})).unwrap();
+    assert_eq!(r["errors"], json!([]), "{r}");
+    assert_eq!(photocraft_compose::render(&saved(&out), Rect::new(1, 1, 2, 2)).px[0], [0.0, 1.0, 1.0, 1.0]);
+    assert!(!std::path::Path::new(&elsewhere).exists());
+
+    // With no Save step the result is still saved after the action; with nothing left open then,
+    // the file is an error, not a silent skip.
+    let out = join(&dir, "closed");
+    let r = s.execute("file.automate.batch", json!({"input": [red], "output": out, "format": "png", "steps": [["file.close", {}]]})).unwrap();
+    assert_eq!(r["files"], json!([]), "{r}");
+    assert!(r["errors"][0]["error"].as_str().unwrap().contains("no active document"), "{r}");
+}
+
+/// The document a recorded save marked is the result, not the one left active after it closed.
+/// Here the action saves and closes a second document it made, then inverts the input; the output
+/// used to be the inverted input, written in place of the result without an error.
+#[test]
+fn batch_saves_the_document_active_at_the_save_not_the_one_left_after_it() {
+    let dir = tmp("batch-save-second");
+    let red = png(&dir, "red.png", 8, 8, "#ff0000");
+    let out = join(&dir, "out");
+    let steps = json!([
+        ["file.new", {"width": 4, "height": 4, "background": "#00ff00"}],
+        ["file.save", {}],
+        ["file.close", {}],
+        ["image.adjustments.invert", {}]
+    ]);
+    let r = Session::new().execute("file.automate.batch", json!({"input": [red], "output": out, "format": "png", "steps": steps})).unwrap();
+    assert_eq!(r["errors"], json!([]), "{r}");
+    let saved = photocraft_io::import("red.png", &std::fs::read(join(&out, "red.png")).unwrap()).unwrap().document;
+    assert_eq!((saved.size.width, saved.size.height), (4, 4));
+    assert_eq!(photocraft_compose::render(&saved, Rect::new(1, 1, 2, 2)).px[0], [0.0, 1.0, 0.0, 1.0]);
+}
+
+/// While the saved document is open, the steps after its save still reach the result (#3058: a
+/// recorded Save then Rotate writes the rotated image). A step failing after the save writes
+/// nothing, as when Batch saved only after the action.
+#[test]
+fn batch_applies_the_steps_after_a_save_while_its_document_is_open() {
+    let dir = tmp("batch-save-then-edit");
+    let red = png(&dir, "red.png", 8, 8, "#ff0000");
+    let mut s = Session::new();
+    let out = join(&dir, "edited");
+    let steps = json!([["file.saveAs", {}], ["image.adjustments.invert", {}]]);
+    let r = s.execute("file.automate.batch", json!({"input": [red], "output": out, "format": "png", "steps": steps})).unwrap();
+    assert_eq!(r["errors"], json!([]), "{r}");
+    let saved = photocraft_io::import("red.png", &std::fs::read(join(&out, "red.png")).unwrap()).unwrap().document;
+    assert_eq!(photocraft_compose::render(&saved, Rect::new(1, 1, 2, 2)).px[0], [0.0, 1.0, 1.0, 1.0]);
+
+    let out = join(&dir, "failed");
+    let steps = json!([["image.adjustments.invert", {}], ["file.saveAs", {}], ["layer.select", {"layer": "missing"}]]);
+    let r = s.execute("file.automate.batch", json!({"input": [red], "output": out, "format": "png", "steps": steps})).unwrap();
+    assert_eq!(r["errors"].as_array().unwrap().len(), 1, "{r}");
+    assert!(!std::path::Path::new(&join(&out, "red.png")).exists(), "{r}");
+}
+
+#[test]
+fn exposure_text_near_one_second_is_not_one_over_one() {
+    assert_eq!(exposure_text(0.996).as_deref(), Some("0.996 s"), "not \"1/1 s\"; three significant digits");
+    assert_eq!(exposure_text(0.99).as_deref(), Some("0.99 s"));
+    assert_eq!(exposure_text(1.0 / 250.0).as_deref(), Some("1/250 s"));
+}
+
+/// A folder batch picks up GIMP's gzipped `.xcf.gz`, whose last extension alone (`gz`) says nothing.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn folder_listing_recognises_gzipped_xcf_by_its_double_extension() {
+    assert!(super::openable_name("/scans/page 01.xcf.gz"));
+    assert!(super::openable_name("C:\\scans\\PAGE.XCF.GZ"));
+    assert!(super::openable_name("page.xcfgz"));
+    assert!(super::openable_name("page.PNG"));
+    assert!(!super::openable_name("archive.tar.gz"));
+    assert!(!super::openable_name("notes.txt"));
+}
+
+/// The Compression tag (259) of a TIFF's first directory.
+fn tiff_compression_tag(b: &[u8]) -> Option<u16> {
+    let le = b.get(..2)? == b"II";
+    let u16_at = |i: usize| b.get(i..i + 2).map(|s| if le { u16::from_le_bytes([s[0], s[1]]) } else { u16::from_be_bytes([s[0], s[1]]) });
+    let u32_at =
+        |i: usize| b.get(i..i + 4).map(|s| if le { u32::from_le_bytes([s[0], s[1], s[2], s[3]]) } else { u32::from_be_bytes([s[0], s[1], s[2], s[3]]) });
+    let ifd = u32_at(4)? as usize;
+    (0..usize::from(u16_at(ifd)?)).map(|k| ifd + 2 + 12 * k).find(|e| u16_at(*e) == Some(259)).and_then(|e| u16_at(e + 8))
+}
+
+/// #5301: `tiffCompression` picks a TIFF's compression (TIFF Options: None, LZW, ZIP); unset,
+/// none. Anything else is refused before anything is written.
+#[test]
+fn save_a_copy_writes_the_tiff_compression_asked_for() {
+    let dir = tmp("tiff-compression");
+    for (params, tag) in
+        [(json!({}), 1), (json!({"tiffCompression": "none"}), 1), (json!({"tiffCompression": "lzw"}), 5), (json!({"tiffCompression": "zip"}), 8)]
+    {
+        let mut s = session(12, 6, 8);
+        let out = join(&dir, "a.tif");
+        let mut p = params.clone();
+        p["path"] = json!(out);
+        s.execute("file.saveACopy", p).unwrap();
+        let bytes = std::fs::read(&out).unwrap();
+        assert_eq!(tiff_compression_tag(&bytes), Some(tag), "{params}");
+        assert_eq!(photocraft_io::import("a.tif", &bytes).unwrap().document.size, photocraft_geom::Size::new(12, 6));
+    }
+    let mut s = session(8, 8, 8);
+    let state = |s: &Session| s.active().map(|st| (st.revision, st.path.clone(), st.is_dirty()));
+    let before = state(&s);
+    for bad in [json!("jpeg"), json!("LZW"), json!(5), json!(true)] {
+        let out = join(&dir, "bad.tif");
+        let r = s.execute("file.saveACopy", json!({"path": out, "tiffCompression": bad}));
+        assert!(matches!(r, Err(EngineError::BadParams { .. })), "{bad}: {r:?}");
+        assert!(!std::path::Path::new(&out).exists(), "{bad}: nothing written");
+        assert_eq!(state(&s), before, "{bad}: the document is as it was");
+    }
+}
+
+#[test]
+fn sanitize_keeps_windows_device_names_off_the_disk() {
+    assert_eq!(sanitize("nul"), "nul_");
+    assert_eq!(sanitize("CON"), "CON_");
+    assert_eq!(sanitize("com1.v2"), "com1_.v2");
+    assert_eq!(sanitize("lpt9 .final"), "lpt9 _.final");
+    assert_eq!(sanitize("COM¹"), "COM¹_");
+    assert_eq!(sanitize("LPT².txt"), "LPT²_.txt");
+    for name in ["nul", "CON", "com1.v2", "lpt9 .final", "aux", "prn", "conin$", "clock$", "COM¹", "lpt³.x"] {
+        assert!(!is_windows_device_name(&sanitize(name)), "{name} -> {}", sanitize(name));
+    }
+    // Names that only start like a device are files like any other.
+    for name in ["console", "normal", "com10", "lpt0", "nullify", "con_", "com⁴", "com¹¹"] {
+        assert_eq!(sanitize(name), name);
+    }
 }

@@ -223,6 +223,10 @@ pub fn show(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             if row == Row::QuickMask && resp.double_clicked() {
                 actions.push(("ui.channelOptions".into(), json!("quickMask")));
             }
+            // The layer mask's row: Layer Mask Display Options (the rubylith's colour, opacity).
+            if row == Row::LayerMask && resp.double_clicked() {
+                actions.push(("ui.channelOptions".into(), json!("mask")));
+            }
             if let Row::Alpha(i) = row {
                 if resp.double_clicked() && on_thumb {
                     actions.push(("ui.channelOptions".into(), json!(i)));
@@ -281,6 +285,7 @@ pub fn show(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                             let enabled = masked.as_ref().and_then(|l| l.mask.as_ref()).is_none_or(|m| m.enabled);
                             item(ui, a, crate::layer_menu_ui::mask_toggle_label(enabled), "layer.layerMask.enabled", json!({}));
                             item(ui, a, "Delete Layer Mask", "layer.layerMask.delete", json!({}));
+                            item(ui, a, "Layer Mask Display Options…", "ui.channelOptions", json!("mask"));
                         }
                     }
                     ui.separator();
@@ -541,7 +546,8 @@ mod tests {
         let masked = s.execute("layer.new.layer", json!({"name": "Masked"})).unwrap()["layer"].as_u64().unwrap();
         s.execute("layer.layerMask.revealAll", json!({"layer": masked})).unwrap();
         s.execute("channel.new", json!({})).unwrap();
-        let mut h = egui_kittest::Harness::builder().with_size(vec2(1440.0, 1000.0)).with_max_steps(64).build_eframe(move |cc| {
+        // 60 fps steps, so two clicks a frame apart count as a double-click.
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(1440.0, 1000.0)).with_step_dt(1.0 / 60.0).with_max_steps(64).build_eframe(move |cc| {
             PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
             PhotocraftApp::new(s, crate::Services::default())
         });
@@ -701,6 +707,33 @@ mod tests {
         assert_eq!(alphas(&h), ["Alpha 1"]);
         assert_eq!(h.state().session.active().unwrap().history.past_len(), steps, "nothing ran");
         assert!(h.ctx.data(|d| d.get_temp::<(Row, String)>(drag_id())).is_none(), "the drag ended");
+    }
+
+    /// Double-clicking the layer mask's row opens Layer Mask Display Options, as in Photoshop; OK
+    /// sets the rubylith's colour and opacity, a view setting rather than an undo step.
+    #[test]
+    fn double_clicking_the_layer_mask_row_opens_its_display_options() {
+        let (mut h, _) = channels_harness();
+        let steps = h.state().session.active().unwrap().history.past_len();
+        let p = at(&h, "Masked Mask");
+        h.hover_at(p);
+        h.run_steps(30);
+        for pressed in [true, false, true, false] {
+            h.event(egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE });
+            h.step();
+        }
+        h.run_steps(3);
+        let d = h.state().ui.dialogs.last().expect("a dialog opens");
+        assert!(crate::channel_options_ui::owns(&d.fields), "{:?}", d.fields);
+        assert_eq!((d.fields["channel"].clone(), d.fields["color"].clone(), d.fields["opacity"].clone()), (json!("mask"), json!("#ff0000"), json!(50.0)));
+        let id = d.id;
+        let d = h.state_mut().ui.dialog_mut(id).unwrap();
+        d.fields.insert("color".into(), json!("#0000ff"));
+        d.fields.insert("opacity".into(), json!(80.0));
+        crate::dialogs::confirm(h.state_mut(), id).unwrap();
+        let o = &h.state().session.prefs().layer_mask_overlay;
+        assert_eq!((o.color.as_str(), o.opacity), ("#0000ff", 80.0));
+        assert_eq!(h.state().session.active().unwrap().history.past_len(), steps, "no history step");
     }
 
     /// The layer mask's row asks "Apply mask to layer before removing?", like its Layers thumbnail.

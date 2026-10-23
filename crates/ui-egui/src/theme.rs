@@ -113,6 +113,23 @@ impl ThemeKind {
     pub fn is_pro(self) -> bool {
         matches!(self, ThemeKind::Pro | ThemeKind::ProMedium | ThemeKind::ProLightGray | ThemeKind::ProLight)
     }
+    /// Whether this theme belongs to the dark appearance family.
+    pub fn is_dark(self) -> bool {
+        matches!(
+            self,
+            ThemeKind::Studio
+                | ThemeKind::Pro
+                | ThemeKind::ProMedium
+                | ThemeKind::SolarizedDark
+                | ThemeKind::AdwaitaDark
+                | ThemeKind::BreezeDark
+                | ThemeKind::SoftDark
+        )
+    }
+    /// Whether this theme belongs to the light appearance family.
+    pub fn is_light(self) -> bool {
+        !self.is_dark()
+    }
     pub fn next(self) -> Self {
         let i = Self::ALL.iter().position(|k| *k == self).unwrap_or(0);
         Self::ALL[(i + 1) % Self::ALL.len()]
@@ -808,17 +825,21 @@ impl Tokens {
         if self.pro { Color32::from_gray(if self.dark() { 96 } else { 201 }) } else { self.accent_soft }
     }
 
+    /// The 1 px ring round a slider knob, if the theme draws one: the Pro layouts' dark ring, and
+    /// in the light themes the dim text colour, so their white knob stands out from a pale panel
+    /// (#7927). The dark Studio-layout themes need none; Classic draws a bevelled knob instead.
+    pub fn knob_outline(&self) -> Option<Color32> {
+        if self.pro {
+            Some(Color32::from_gray(40))
+        } else if self.dark() {
+            None
+        } else {
+            Some(self.text_dim)
+        }
+    }
+
     pub fn dark(&self) -> bool {
-        matches!(
-            self.kind,
-            ThemeKind::Studio
-                | ThemeKind::Pro
-                | ThemeKind::ProMedium
-                | ThemeKind::SolarizedDark
-                | ThemeKind::AdwaitaDark
-                | ThemeKind::BreezeDark
-                | ThemeKind::SoftDark
-        )
+        self.kind.is_dark()
     }
 }
 
@@ -1259,6 +1280,32 @@ mod tests {
         let lum = |c: Color32| 0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b());
         let (hi, lo) = if lum(a) > lum(b) { (lum(a), lum(b)) } else { (lum(b), lum(a)) };
         (hi + 0.05) / (lo + 0.05)
+    }
+
+    /// The light themes outline their white slider knob so its edge holds WCAG's 3:1 non-text
+    /// contrast against the panels sliders sit on (#7927); the dark ones keep the plain knob.
+    #[test]
+    fn light_themes_outline_the_slider_knob() {
+        for kind in ThemeKind::ALL {
+            let t = Tokens::for_kind(kind);
+            // The Pro layouts keep their dark ring (it rims a grey knob), Classic its bevelled knob.
+            if t.pro || t.bevel {
+                continue;
+            }
+            match t.knob_outline() {
+                Some(outline) => {
+                    assert!(!t.dark(), "{kind:?}");
+                    for panel in [t.dock, t.card, t.chrome] {
+                        assert!(contrast(outline, panel) >= 3.0, "{kind:?}: knob outline {outline:?} on {panel:?}");
+                    }
+                }
+                None => assert!(t.dark(), "{kind:?}: a light theme without a knob outline"),
+            }
+        }
+        assert_eq!(Tokens::for_kind(ThemeKind::Pro).knob_outline(), Some(Color32::from_gray(40)), "Pro is unchanged");
+        for kind in [ThemeKind::StudioLight, ThemeKind::Adwaita, ThemeKind::BreezeLight, ThemeKind::SoftLight] {
+            assert!(Tokens::for_kind(kind).knob_outline().is_some(), "{kind:?}");
+        }
     }
 
     #[test]

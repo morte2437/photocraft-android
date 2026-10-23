@@ -671,7 +671,7 @@ mod tests {
             let b = vogk_bytes(&s, 72.0).unwrap();
             assert_eq!(live_from_vogk(&b), Some(s));
         }
-        assert!(vogk_bytes(&LiveShape::Polygon { rect: [0.0; 4], sides: 5, star_ratio: 1.0 }, 72.0).is_none());
+        assert!(vogk_bytes(&LiveShape::Polygon { rect: [0.0; 4], sides: 5, star_ratio: 1.0, corner_radius: 0.0 }, 72.0).is_none());
     }
 
     #[test]
@@ -699,7 +699,7 @@ mod tests {
         // Edit: path changes → vmsk regenerated, live dropped when polygon.
         let mut edited = sh.clone();
         edited.path.subpaths.pop();
-        edited.live = Some(LiveShape::Polygon { rect: [0.0; 4], sides: 3, star_ratio: 1.0 });
+        edited.live = Some(LiveShape::Polygon { rect: [0.0; 4], sides: 3, star_ratio: 1.0, corner_radius: 0.0 });
         shape_blocks(&edited, &mut raw, 64, 64, 72.0);
         assert!(!raw.iter().any(|(k, _)| k == b"vogk"));
         let (p, _) = path_from_vmsk(&raw[0].1, 64, 64).unwrap();

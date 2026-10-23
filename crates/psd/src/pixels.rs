@@ -245,12 +245,14 @@ impl<'a> Layer<'a> {
         let rect = self.record.rect;
         let (w, h) = rect.size()?;
         let n = w.checked_mul(h).ok_or(PsdError::LimitExceeded("layer size overflow"))?;
-        if n.checked_mul(4).is_none_or(|len| len as u64 > crate::compression::MAX_DECODED_BYTES) {
-            return Err(PsdError::LimitExceeded("RGBA output exceeds MAX_DECODED_BYTES"));
-        }
         let depth = self.header.depth;
         let mode = self.header.color_mode;
         let cc = color_channel_count(mode)?;
+        // The planes (one per colour channel, filled in for channels the layer lacks, and alpha)
+        // coexist with the RGBA output, so the cap covers all of them, not the output alone.
+        if n.checked_mul(cc + 2 + 4).is_none_or(|len| len as u64 > crate::compression::MAX_DECODED_BYTES) {
+            return Err(PsdError::LimitExceeded("RGBA output exceeds MAX_DECODED_BYTES"));
+        }
         let mut color = Vec::with_capacity(cc);
         for id in 0..cc as i16 {
             let plane = if self.record.channel(id).is_some() {

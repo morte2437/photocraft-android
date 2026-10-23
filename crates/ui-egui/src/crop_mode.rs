@@ -425,6 +425,42 @@ mod tests {
         assert!(r.iter().zip([20.0, 30.0, 80.0, 70.0]).all(|(a, b)| (a - b).abs() < 1e-3), "{r:?}");
     }
 
+    /// #7088: the box's own Undo/Redo of a move (or a turn) in default mode puts the frame back
+    /// and moves the image, not the box: it stays put on screen (Auto Center Preview off) or goes
+    /// to the middle of the canvas (on).
+    #[test]
+    fn box_undo_and_redo_keep_the_box_put() {
+        for auto in [false, true] {
+            let mut app = app();
+            app.ui.tool_options.crop_shield.auto_center_preview = auto;
+            with_frame(&mut app);
+            // A quarter turn, then a move inside: two box steps.
+            screen_drag(&mut app, &[pos2(450.0, 300.0), pos2(370.0, 380.0)], NONE);
+            let turned = app.ui.crop_rect;
+            screen_drag(&mut app, &[pos2(370.0, 300.0), pos2(380.0, 305.0), pos2(390.0, 310.0)], NONE);
+            let moved = app.ui.crop_rect;
+            assert_ne!(moved, turned);
+            let want = if auto { pos2(400.0, 300.0) } else { pos2(370.0, 300.0) };
+            let check = |app: &PhotocraftApp, what: &str| {
+                let q = screen_box(app);
+                assert_upright(q);
+                assert!(mid_of(q).distance(want) < 0.05, "auto={auto} {what}: the box moved on screen to {:?}", mid_of(q));
+            };
+            app.run("edit.undo", json!({})).unwrap();
+            assert_eq!(app.ui.crop_rect, turned, "auto={auto}: the move is undone");
+            check(&app, "undo move");
+            app.run("edit.undo", json!({})).unwrap();
+            assert_eq!(app.ui.crop_rect, Some([40.0, 30.0, 100.0, 70.0]));
+            assert!(crate::crop_ui::angle(&app).abs() < 1e-9, "the turn is undone");
+            check(&app, "undo turn");
+            app.run("edit.redo", json!({})).unwrap();
+            check(&app, "redo turn");
+            app.run("edit.redo", json!({})).unwrap();
+            assert_eq!(app.ui.crop_rect, moved, "auto={auto}: the move is redone");
+            check(&app, "redo move");
+        }
+    }
+
     fn mid_of(q: [Pos2; 4]) -> Pos2 {
         pos2((q[0].x + q[2].x) / 2.0, (q[0].y + q[2].y) / 2.0)
     }

@@ -3,8 +3,9 @@
 //! A Multichannel document has no layers: its image is a set of ink (spot) channels, stored in
 //! [`Document::channels`] with ink density as the value (1 = solid ink, like every spot channel).
 //! A PSD stores the same planes the way Photoshop shows them in the Channels panel: 0 (black) =
-//! solid ink, max = paper. Channel names come from resources 1006 / 1045 and ink colours from
-//! DisplayInfo (1077), exactly as for spot channels in the other modes.
+//! solid ink, max = paper. Alpha-type channels (DisplayInfo kind 0 / 1) are stored as-is, like the
+//! alpha channels of every other mode (max = selected). Channel names come from resources 1006 /
+//! 1045 and ink colours from DisplayInfo (1077), exactly as for spot channels in the other modes.
 
 use photocraft_color::{Color, ColorMode, PixelFormat, SampleType};
 use photocraft_doc::{AlphaChannel, Document};
@@ -61,6 +62,14 @@ pub(crate) fn import(file: &PsdFile, all: &[u8], doc: &mut Document, names: &[St
     } else if let Some(r) = file.resource(crate::channel_map::DISPLAY_INFO_OLD) {
         crate::channel_map::apply_display_info(&r.data, false, 0, &mut doc.channels);
     }
+    // Alpha-type planes are stored as-is, not as ink: undo the inversion for them.
+    for ch in doc.channels.iter_mut().filter(|c| c.spot.is_none()) {
+        let vals: Vec<f32> = ch.surface.read_region(canvas).chunks_exact(ch.surface.channels()).map(|v| 1.0 - v[0]).collect();
+        let mut s = Surface::new(fmt);
+        s.write_region(canvas, &vals);
+        s.prune();
+        ch.surface = s;
+    }
 }
 
 /// Writes a Multichannel document as a mode-7 PSD (no layer section; every channel a plane).
@@ -90,8 +99,10 @@ pub(crate) fn document_to_psd(doc: &Document, force_psb: bool) -> (PsdFile, Vec<
         }
     }
     for ch in &channels {
+        // Inks are stored as tone (0 = solid ink), alpha-type channels as-is.
+        let ink = ch.spot.is_some();
         for v in ch.surface.read_region(canvas).chunks_exact(ch.surface.channels()) {
-            encode_be(1.0 - v[0], sample, &mut planes);
+            encode_be(if ink { 1.0 - v[0] } else { v[0] }, sample, &mut planes);
         }
     }
     let big = doc.size.width > 30_000 || doc.size.height > 30_000;
@@ -119,7 +130,27 @@ pub(crate) fn document_to_psd(doc: &Document, force_psb: bool) -> (PsdFile, Vec<
         resources.push(ImageResource::new(1045, crate::psd_export::unicode_names_resource(&names)));
         resources.push(ImageResource::new(crate::channel_map::DISPLAY_INFO, crate::channel_map::display_info(&channels, false)));
     }
-    resources.extend(crate::psd_export::path_resources(doc, &mut warnings));
+    // Alpha identifiers: one u32 per channel, only while they still match the channels.
+    let keep = |id: u16, data: &[u8]| id != ALPHA_IDENTIFIERS || data.len() == channels.len().saturating_mul(4);
+    let color_mode_data = photocraft_psd::hdr::color_mode_data_for_depth(header.depth);
+    let file = layerless_file(doc, header, image_data, color_mode_data, resources, keep, &mut warnings);
+    (file, warnings)
+}
+
+/// A PSD without layers around `image_data`: `resources` (the mode's own) plus the paths, XMP,
+/// EXIF and every other imported resource `keep` accepts (except the ones that only describe
+/// layers and any already in `resources`), and the document-level tagged blocks. Shared by the
+/// modes that have no layers in Photoshop: Multichannel, Indexed Color and Bitmap.
+pub(crate) fn layerless_file(
+    doc: &Document,
+    header: Header,
+    image_data: ImageData,
+    color_mode_data: Vec<u8>,
+    mut resources: Vec<ImageResource>,
+    keep: impl Fn(u16, &[u8]) -> bool,
+    warnings: &mut Vec<String>,
+) -> PsdFile {
+    resources.extend(crate::psd_export::path_resources(doc, warnings));
     // The XMP and EXIF resolution follow the ResolutionInfo resource, so no copy contradicts it.
     let ppi = Some((doc.resolution_dpi, doc.resolution_dpi)).filter(|d| d.0 > 0.0);
     if let Some(x) = &doc.metadata.xmp {
@@ -132,11 +163,7 @@ pub(crate) fn document_to_psd(doc: &Document, force_psb: bool) -> (PsdFile, Vec<
     // ones that only describe layers and any already written above.
     let written: Vec<u16> = resources.iter().map(|r| r.id).collect();
     for (id, name, data) in &doc.metadata.psd_resources {
-        if LAYER_ONLY_RESOURCES.contains(id) || written.contains(id) || !crate::psd_export::keep_imported_resource(doc, *id, data) {
-            continue;
-        }
-        // Alpha identifiers: one u32 per channel, only while they still match the channels.
-        if *id == ALPHA_IDENTIFIERS && data.len() != channels.len().saturating_mul(4) {
+        if LAYER_ONLY_RESOURCES.contains(id) || written.contains(id) || !crate::psd_export::keep_imported_resource(doc, *id, data) || !keep(*id, data) {
             continue;
         }
         let mut r = ImageResource::new(*id, data.to_vec());
@@ -152,10 +179,9 @@ pub(crate) fn document_to_psd(doc: &Document, force_psb: bool) -> (PsdFile, Vec<
     let global_blocks: Vec<TaggedBlock> = crate::annotations_map::export_blocks(doc, crate::pattern_map::export_global_blocks(doc))
         .into_iter()
         .filter(|(_, key, _)| !matches!(key, b"Layr" | b"Lr16" | b"Lr32"))
-        .map(|(sig, key, data)| crate::psd_export::global_block(sig, key, &data))
+        .map(|(sig, key, data)| crate::psd_export::global_block(crate::psd_export::block_signature(sig, key, header.version), key, &data))
         .collect();
-    let color_mode_data = photocraft_psd::hdr::color_mode_data_for_depth(header.depth);
-    let file = PsdFile {
+    PsdFile {
         header,
         color_mode_data,
         resources,
@@ -165,6 +191,5 @@ pub(crate) fn document_to_psd(doc: &Document, force_psb: bool) -> (PsdFile, Vec<
         global_blocks,
         layer_mask_trailing: Vec::new(),
         image_data,
-    };
-    (file, warnings)
+    }
 }

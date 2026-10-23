@@ -168,11 +168,12 @@ fn apply_mask(s: &mut Session, p: &Value) -> Result<Value> {
 fn mask_from_transparency(s: &mut Session, p: &Value) -> Result<Value> {
     let id = layer_param(s, p)?;
     s.edit("From Transparency", |doc, _| {
+        let depth = doc.depth;
         let surf = crate::commands::paint_surface(doc, id, &Value::Null)?;
         // Masks are attached to layer coordinates, including pixels temporarily off-canvas.
         // Clipping to document bounds loses their alpha permanently when moved back (#3043).
         let r = surf.content_bounds();
-        let mut mask = LayerMask::hide_all();
+        let mut mask = crate::commands::mask_at_depth(LayerMask::hide_all(), depth)?;
         if !r.is_empty() {
             let mut px = read_rgba(surf, r);
             let alpha: Vec<f32> = px.iter().map(|q| q[3]).collect();
@@ -183,6 +184,7 @@ fn mask_from_transparency(s: &mut Session, p: &Value) -> Result<Value> {
             }
             write_rgba(surf, r, &px);
         }
+        crate::extra_cmds::background_to_layer_for_mask(doc, id);
         doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?.mask = Some(mask);
         Ok(Value::Null)
     })
@@ -198,7 +200,7 @@ fn hide_selection(s: &mut Session, p: &Value) -> Result<Value> {
         for x in &mut v {
             *x = 1.0 - *x;
         }
-        let mut mask = LayerMask::reveal_all();
+        let mut mask = crate::commands::mask_at_depth(LayerMask::reveal_all(), doc.depth)?;
         mask.surface.write_region(bounds, &v);
         mask.surface.prune();
         for id in ids {
@@ -235,10 +237,11 @@ fn mask_all_objects(s: &mut Session, p: &Value) -> Result<Value> {
     let region = region.ok_or_else(|| other("no objects were found"))?;
     let bbox = region.bbox;
     s.edit("Mask All Objects", |doc, _| {
-        let mut mask = LayerMask::hide_all();
+        let mut mask = crate::commands::mask_at_depth(LayerMask::hide_all(), doc.depth)?;
         let v: Vec<f32> = region.mask.iter().map(|m| f32::from(*m) / 255.0).collect();
         mask.surface.write_region(bbox, &v);
         mask.surface.prune();
+        crate::extra_cmds::background_to_layer_for_mask(doc, id);
         doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?.mask = Some(mask);
         Ok(())
     })?;
@@ -902,11 +905,16 @@ fn export_layer(s: &mut Session, p: &Value, cmd: &str, png_only: bool) -> Result
         return Err(bad(cmd, "Quick Export as PNG writes .png files"));
     }
     let scale = num(p, "scale", 100.0).clamp(1.0, 1000.0);
+    // Export As › Resample; checked even at 100 % so a typo never goes unnoticed.
+    let resample = match p.get("resample") {
+        None | Some(Value::Null) => crate::export_preset_cmds::DEFAULT_RESAMPLE,
+        Some(v) => crate::export_preset_cmds::export_resample(v.as_str().ok_or_else(|| bad(cmd, "`resample` must be a string"))?).map_err(|e| bad(cmd, e))?,
+    };
     if (scale - 100.0).abs() > 1e-3 {
         let mut tmp = Session::new();
         tmp.add_document(ldoc, None);
         let w = (tmp.active().map_or(1, |d| d.doc.size.width) as f32 * scale / 100.0).round().max(1.0);
-        tmp.execute("image.imageSize", json!({"width": w}))?;
+        tmp.execute("image.imageSize", json!({"width": w, "resample": resample}))?;
         ldoc = (*tmp.active().ok_or(EngineError::NoDocument)?.doc).clone();
     }
     let out = photocraft_io::export(&ldoc, path, &Default::default()).map_err(|e| other(e.to_string()))?;
@@ -1020,7 +1028,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "layer.exportAs",
             "Export As…",
             ["Layer"],
-            r##"{"layer":id?,"path":text,"scale":1..1000=100} (format from the path's extension)"##,
+            r##"{"layer":id?,"path":text,"scale":1..1000=100,"resample":"bicubicAutomatic|bicubic|bicubicSmoother|bicubicSharper|bilinear|nearest"="bicubicAutomatic"} (format from the path's extension; the document is not resampled)"##,
             has_layer,
             |s, p| export_layer(s, p, "layer.exportAs", false)
         ),

@@ -63,7 +63,7 @@ fn bucket(s: &mut Session, p: &Value) -> Result<Value> {
         let pat = crate::pattern_cmds::resolve_param(s, "paint.bucket", p)?;
         let tile = photocraft_compose::pattern::Tile::new(&pat)
             .ok_or_else(|| EngineError::BadParams { cmd: "paint.bucket".into(), msg: "the pattern is empty or too large to paint".into() })?;
-        let (scale, angle, _, phase) = crate::pattern_cmds::placement(p);
+        let (scale, angle, _, phase) = crate::pattern_cmds::placement("paint.bucket", p)?;
         Some((tile, scale, angle, phase))
     } else {
         None

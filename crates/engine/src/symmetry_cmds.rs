@@ -4,7 +4,7 @@
 use photocraft_doc::{LayerContent, vector::Path};
 use photocraft_paint::{
     StrokePoint,
-    symmetry::{PresetSymmetry, SymmetryMode},
+    symmetry::{MAX_COORDINATE, PresetSymmetry, SymmetryMode},
 };
 use serde_json::{Value, json};
 
@@ -56,6 +56,44 @@ impl PaintingSymmetry {
         match self {
             Self::Path(axis) => json!({"mode":"path", "source":axis.source, "segments":axis.segments.len()}),
             Self::Preset(p) => json!({"mode":p.mode.id(), "center":p.center, "rotation":p.rotation}),
+        }
+    }
+    /// The symmetry after a canvas edit (crop, Canvas Size, Image Size, rotation) moved the pixels
+    /// through `a`, so the axis stays on the same image content. `None` when it lands beyond the
+    /// coordinate limits.
+    pub fn transform(&self, a: &photocraft_geom::Affine) -> Option<Self> {
+        let map = |[x, y]: [f64; 2]| {
+            let q = a.apply(photocraft_geom::Point::new(x, y));
+            [q.x, q.y].into_iter().all(|v| v.is_finite() && v.abs() <= MAX_COORDINATE).then_some([q.x, q.y])
+        };
+        match self {
+            Self::Path(axis) => {
+                let segments = axis.segments.iter().map(|&[p, q]| Some([map(p)?, map(q)?])).collect::<Option<_>>()?;
+                Some(Self::Path(SymmetryAxis { source: axis.source.clone(), segments }))
+            }
+            Self::Preset(p) => {
+                // The first axis' direction through the map's linear part gives the new angle; a
+                // flip mirrors it.
+                let directions = p.directions();
+                let [dx, dy] = *directions.first()?;
+                let [m0, m1, m2, m3, _, _] = a.m;
+                let mapped = |[dx, dy]: [f64; 2]| (m1 * dx + m3 * dy).atan2(m0 * dx + m2 * dy);
+                let mut axis = mapped([dx, dy]);
+                // A non-uniform Image Size leaves a turned dual preset's two axes non-perpendicular,
+                // which it can't represent: the new axes split the difference, each turned off its
+                // mapped axis by the same angle. Maps that keep right angles give no difference.
+                if let Some(&second) = directions.get(1) {
+                    let off = (mapped(second) - axis - std::f64::consts::FRAC_PI_2).rem_euclid(std::f64::consts::PI);
+                    let off = if off > std::f64::consts::FRAC_PI_2 { off - std::f64::consts::PI } else { off };
+                    axis += off / 2.0;
+                }
+                let turn = axis - dy.atan2(dx);
+                let rotation = (p.rotation + turn.to_degrees()).rem_euclid(360.0);
+                if !rotation.is_finite() {
+                    return None;
+                }
+                Some(Self::Preset(PresetSymmetry { center: map(p.center)?, rotation, ..*p }))
+            }
         }
     }
 }
@@ -244,6 +282,42 @@ mod tests {
         assert!(s.execute("paint.symmetryDisable", json!({})).is_err());
         let long = Subpath::polyline(&(0..=MAX_SEGMENTS + 1).map(|x| (x as f64, 0.0)).collect::<Vec<_>>());
         assert!(SymmetryAxis::from_path("long".into(), &Path::new(vec![long])).is_err(), "path complexity remains bounded");
+    }
+
+    #[test]
+    fn canvas_edits_move_the_symmetry_with_the_pixels() {
+        let preset = |s: &Session| s.active().unwrap().symmetry.as_ref().unwrap().preset().unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 100, "height": 100})).unwrap();
+        s.execute("paint.setSymmetry", json!({"mode": "vertical"})).unwrap();
+        s.execute("image.crop", json!({"x": 40, "y": 0, "width": 60, "height": 100})).unwrap();
+        assert_eq!(preset(&s).center, [10.0, 50.0], "the axis stays on the pixels it was on");
+        s.execute("image.imageSize", json!({"width": 120, "height": 200})).unwrap();
+        assert_eq!(preset(&s).center, [20.0, 100.0]);
+        s.execute("paint.setSymmetry", json!({"mode": "diagonal", "center": [30, 40]})).unwrap();
+        s.execute("image.imageRotation.flipCanvasHorizontal", json!({})).unwrap();
+        let p = preset(&s);
+        assert_eq!(p.center, [90.0, 40.0], "edge coordinates mirror about the canvas width, not the last pixel");
+        assert!((p.rotation - 90.0).abs() < 1e-9, "the 45° axis mirrors to 135°: {}", p.rotation);
+        // A turned dual preset under a non-uniform Image Size: its axes (135° and 45°) map to
+        // 153.4° and 26.6°, no longer perpendicular; the preset splits the difference.
+        s.execute("paint.setSymmetry", json!({"mode": "dual", "center": [30, 40], "rotation": 45})).unwrap();
+        s.execute("image.imageSize", json!({"width": 240, "height": 200})).unwrap();
+        let p = preset(&s);
+        assert_eq!(p.center, [60.0, 40.0]);
+        assert!((p.rotation - 45.0).abs() < 1e-9, "both axes 18.4° off, not one 0° and one 36.9°: {}", p.rotation);
+        s.execute("image.imageRotation.flipCanvasHorizontal", json!({})).unwrap();
+        assert!((preset(&s).rotation - 315.0).abs() < 1e-9, "a flip keeps right angles (axes at 45° and 135° again): {}", preset(&s).rotation);
+
+        // A path axis keeps lying on its (moved) source path.
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 100, "height": 100})).unwrap();
+        s.execute("path.set", json!({"name": "work", "path": {"subpaths": [{"closed": false, "knots": [[40, 0], [60, 100]]}]}})).unwrap();
+        s.execute("paint.symmetryFromPath", json!({"name": "work"})).unwrap();
+        s.execute("image.crop", json!({"x": 30, "y": 10, "width": 50, "height": 80})).unwrap();
+        let st = s.active().unwrap();
+        let moved = SymmetryAxis::from_path("work".into(), st.doc.work_path.as_ref().unwrap()).unwrap();
+        assert_eq!(st.symmetry, Some(PaintingSymmetry::Path(moved)));
     }
 
     #[test]

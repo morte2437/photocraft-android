@@ -954,8 +954,9 @@ mod tests {
         use photocraft_color::{BlendMode, Color};
         use photocraft_doc::{FxCommon, FxPaint, StrokeFx, StrokePosition};
         let light = GlobalLight::default();
-        let stroke =
-            |size, position| Effect::Stroke(StrokeFx { common: FxCommon::new(BlendMode::Normal, 1.0), size, position, paint: FxPaint::Color(Color::BLACK) });
+        let stroke = |size, position| {
+            Effect::Stroke(StrokeFx { common: FxCommon::new(BlendMode::Normal, 1.0), size, position, paint: FxPaint::Color(Color::BLACK), overprint: false })
+        };
         // Narrow (< STROKE_CHAMFER_MAX): the chamfer, exactly as before #3646.
         let narrow = program(&stroke(6.0, StrokePosition::Outside), &light, false);
         assert!(narrow.fields.iter().any(|(k, _)| *k == FieldKind::StrokeOutside), "a narrow raster outside stroke keeps the chamfer: {:?}", narrow.fields);

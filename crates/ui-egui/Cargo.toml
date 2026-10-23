@@ -60,8 +60,11 @@ photocraft-raw = { workspace = true, features = ["testgen"] }
 egui_kittest = { workspace = true, features = ["wgpu", "snapshot", "eframe"] }
 # Benchmark helpers for the `--json` benches `cargo xtask perf` runs (in-process RSS, percentiles).
 photocraft-testkit = { workspace = true }
-# Only for examples/perf_scenarios.rs (a 500-brush .abr for the #210 import row).
-photocraft-psd = { workspace = true }
+# examples/perf_scenarios.rs (a 500-brush .abr for the #210 import row) and large_file_bench.rs
+# (the generated 2 GB PSD and 4.4 GB PSB of P20, `fixtures`).
+photocraft-psd = { workspace = true, features = ["testgen"] }
+# Isolated, self-cleaning folders for filesystem tests (the LUT folder, #6558).
+tempfile = "3"
 
 [build-dependencies]
 # Deflates the translation catalogs and egui's default fonts (build.rs); already linked at run time to inflate them.

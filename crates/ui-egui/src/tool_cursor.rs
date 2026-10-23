@@ -127,7 +127,34 @@ pub(crate) fn native_scale(ctx: &egui::Context) -> f32 {
 /// and Warp splits), the type box, Content-Aware Move's box, the Artboard tool and guides pick
 /// their arrows here.
 pub(crate) fn resize(d: [f64; 2], xf: &ViewXform) -> CursorIcon {
-    let s = xf.map_vec(vec2(d[0] as f32, d[1] as f32));
+    resize_on_screen(xf.map_vec(vec2(d[0] as f32, d[1] as f32)))
+}
+
+/// The resize arrow for corner `i` of a box's `quad` (corners in order round the box), as the view
+/// shows it: along the corner's bisector, so an upright box's corners always show a diagonal arrow,
+/// as in Photoshop, however wide or tall the box is. Aiming from the opposite corner instead gave a
+/// box wider than about 2.4:1 the horizontal arrow at its corners (and a tall one the vertical).
+pub(crate) fn corner_resize(quad: &[[f64; 2]; 4], i: usize, xf: &ViewXform) -> CursorIcon {
+    let at = quad[i % 4];
+    let edge = |k: usize| {
+        let to = quad[k % 4];
+        let v = xf.map_vec(vec2((at[0] - to[0]) as f32, (at[1] - to[1]) as f32));
+        let l = v.length();
+        (l.is_finite() && l > 1e-6).then(|| v / l)
+    };
+    let bisector = edge(i + 1).zip(edge(i + 3)).map(|(a, b)| a + b).filter(|s| s.length() > 1e-3);
+    match bisector {
+        Some(s) => resize_on_screen(s),
+        // A collapsed or folded corner has no bisector: aim away from the opposite corner.
+        None => {
+            let opposite = quad[(i + 2) % 4];
+            resize([at[0] - opposite[0], at[1] - opposite[1]], xf)
+        }
+    }
+}
+
+/// The nearest of the four resize arrows to screen direction `s`.
+fn resize_on_screen(s: Vec2) -> CursorIcon {
     let angle = f64::from(s.y).atan2(f64::from(s.x)).rem_euclid(std::f64::consts::PI);
     match (angle / std::f64::consts::FRAC_PI_4).round() as u8 % 4 {
         0 => CursorIcon::ResizeHorizontal,
@@ -150,6 +177,12 @@ fn hand_with(ctx: &egui::Context, closed: bool, bitmap: bool) -> CursorIcon {
         return CursorIcon::None;
     }
     if closed { CursorIcon::Grabbing } else { CursorIcon::Grab }
+}
+
+/// The bitmap [`hand`] hands Windows, for tests that check the Hand's pointer on every platform.
+#[cfg(test)]
+pub(crate) fn hand_bitmap(ctx: &egui::Context, closed: bool) -> Option<CustomCursorImage> {
+    rasterize(&Shape::Hand { closed }, native_scale(ctx))
 }
 
 /// The Zoom tool's pointer: a magnifier with a plus, or a minus when it zooms `out`. winit maps

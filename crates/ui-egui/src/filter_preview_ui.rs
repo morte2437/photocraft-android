@@ -234,7 +234,7 @@ fn upload(ctx: &egui::Context, app: &PhotocraftApp, name: &str, doc: &Document) 
     let (width, height) = (doc.size.width.div_ceil(factor), doc.size.height.div_ceil(factor));
     if let Some(st) = app.session.active()
         && let Some(pixels) =
-            crate::channel_view::render(doc, &st.channel_view, doc.bounds(), factor, app.session.prefs().interface.show_channels_in_color, st.active_layer)
+            crate::channel_view::render(doc, &st.channel_view, doc.bounds(), factor, crate::channel_view::Look::of(&app.session), st.active_layer)
     {
         let image = egui::ColorImage::new([width as usize, height as usize], pixels);
         return ctx.load_texture(name, image, egui::TextureOptions::LINEAR);
@@ -342,7 +342,9 @@ mod tests {
                 let egui::ImageData::Color(image) = &delta.set.get(&texture.id()).unwrap()[0].image;
                 let pixels = image.pixels.clone();
                 delta.clear();
-                let expected = crate::channel_view::render(&preview, &st.channel_view, preview.bounds(), 1, false, st.active_layer).unwrap();
+                let expected =
+                    crate::channel_view::render(&preview, &st.channel_view, preview.bounds(), 1, crate::channel_view::Look::default(), st.active_layer)
+                        .unwrap();
                 assert_eq!(pixels, expected, "depth {depth}, factor {k}");
                 assert_ne!(pixels[0], pixels[pixels.len() - 1], "the alpha edge is visible, not the white RGB layer");
                 assert!(pixels.iter().any(|p| p.r() > 0 && p.r() < 255), "the blurred edge is visible");

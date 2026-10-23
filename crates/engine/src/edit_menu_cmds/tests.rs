@@ -72,7 +72,7 @@ fn fade_uniform_layer_mask_invert_at_all_depths() {
             assert!((mask_pixel(&s) - 1.0).abs() < 0.01);
             s.execute("image.adjustments.invert", json!({})).unwrap();
             assert!(mask_pixel(&s) < 0.01, "depth {depth}: invert changed the mask");
-            assert!(s.edit_state.fade.as_ref().is_some_and(|f| f.mask), "depth {depth}: Fade must target the mask");
+            assert!(s.edit_state.fade.as_ref().is_some_and(|f| matches!(f.target, FadeTarget::Mask(_))), "depth {depth}: Fade must target the mask");
             let history_before_fade = s.active().unwrap().history.past_len();
 
             s.execute("edit.fade", json!({"opacity": opacity})).unwrap();
@@ -87,6 +87,69 @@ fn fade_uniform_layer_mask_invert_at_all_depths() {
             assert!((mask_pixel(&s) - expected).abs() < 0.02, "redo restores faded mask");
         }
     }
+}
+
+/// #7382: with an alpha channel or the Quick Mask targeted, the edit changes it, not the layer, and
+/// Fade blends it back: at 0 % to the channel as it was, at every depth.
+#[test]
+fn fade_an_alpha_channel_or_the_quick_mask_at_all_depths() {
+    for depth in [8, 16, 32] {
+        for quick_mask in [false, true] {
+            for (opacity, k) in [(0, 0.0), (25, 0.25), (100, 1.0)] {
+                let mut s = session(depth);
+                if quick_mask {
+                    s.execute("select.editInQuickMaskMode", json!({"on": true})).unwrap();
+                } else {
+                    s.execute("channel.new", json!({"fill": "black"})).unwrap();
+                    s.execute("channel.target", json!({"channel": 0})).unwrap();
+                }
+                let channel = |s: &Session, x, y| {
+                    let doc = &s.active().unwrap().doc;
+                    let c = if quick_mask { doc.quick_mask.as_ref() } else { doc.channels.first() };
+                    c.unwrap().surface.pixel(x, y)[0]
+                };
+                let was = channel(&s, 5, 5);
+                s.execute("image.adjustments.invert", json!({})).unwrap();
+                assert!((channel(&s, 5, 5) - (1.0 - was)).abs() < 0.01, "depth {depth}, quick mask {quick_mask}: inverted");
+                let expected = was + (1.0 - 2.0 * was) * k;
+                let steps = s.active().unwrap().history.past_len();
+                s.execute("edit.fade", json!({"opacity": opacity})).unwrap();
+                for (x, y) in [(0, 0), (5, 5), (63, 47)] {
+                    let v = channel(&s, x, y);
+                    assert!((v - expected).abs() < 0.02, "depth {depth}, quick mask {quick_mask}, {opacity} %, ({x}, {y}): {v}");
+                }
+                assert_eq!(px(&s, 5, 5)[0], 1.0, "the layer is left alone");
+                let st = s.active().unwrap();
+                assert_eq!((st.history.past_len(), st.history.undo_label()), (steps + 1, Some("Fade Invert")));
+                assert!(s.undo());
+                assert!((channel(&s, 5, 5) - (1.0 - was)).abs() < 0.01, "undo puts the inverted channel back");
+            }
+        }
+    }
+}
+
+/// A command told to edit the layer (`"target": "pixels"`) does so with an alpha channel targeted,
+/// and Fade then fades the layer, not the channel.
+#[test]
+fn fade_follows_the_target_the_command_ran_on() {
+    let mut s = session(8);
+    s.execute("channel.new", json!({"fill": "black"})).unwrap();
+    s.execute("channel.target", json!({"channel": 0})).unwrap();
+    s.execute("edit.fill", json!({"color": "#000000", "target": "pixels"})).unwrap();
+    assert_eq!(px(&s, 5, 5)[0], 0.0, "the layer was filled");
+    assert!(matches!(s.edit_state.fade.as_ref().map(|f| f.target), Some(FadeTarget::Pixels(_))));
+    s.execute("edit.fade", json!({"opacity": 25})).unwrap();
+    assert!((px(&s, 5, 5)[0] - 0.75).abs() < 0.01, "the layer faded");
+    assert_eq!(s.active().unwrap().doc.channels[0].surface.pixel(5, 5)[0], 0.0, "the channel is left alone");
+}
+
+/// A command that only edits layers (Auto Tone) fades the layer, even given a channel `target`.
+#[test]
+fn fade_ignores_a_target_the_command_doesnt_take() {
+    let mut s = session(8);
+    s.execute("select.editInQuickMaskMode", json!({"on": true})).unwrap();
+    s.execute("image.autoTone", json!({"target": "quickMask"})).unwrap();
+    assert!(matches!(s.edit_state.fade.as_ref().map(|f| f.target), Some(FadeTarget::Pixels(_))));
 }
 
 #[test]

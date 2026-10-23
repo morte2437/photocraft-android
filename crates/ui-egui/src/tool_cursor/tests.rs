@@ -382,6 +382,80 @@ fn harness() -> Harness<'static, crate::PhotocraftApp> {
 
 #[test]
 #[cfg(not(target_arch = "wasm32"))]
+fn brush_cursor_follows_pen_orientation_6350() {
+    for control in ["penTilt", "rotation"] {
+        let mut h = harness();
+        h.state_mut()
+            .run(
+                "tools.setBrush",
+                json!({"brush": {
+                    "size": 60, "hardness": 1.0, "roundness": 0.25,
+                    "shapeDynamics": {"enabled": true, "angle": {"control": control}}
+                }}),
+            )
+            .unwrap();
+        h.state_mut().stylus.feed.set(Some(crate::stylus::PenSample { tilt_x: 45.0, ..Default::default() }));
+        h.run_steps(3);
+        let initial = h.output().platform_output.cursor_image.clone().expect("initial brush cursor");
+        h.state_mut().stylus.feed.set(Some(crate::stylus::PenSample { tilt_y: -45.0, rotation: 90.0, ..Default::default() }));
+        h.run_steps(3);
+        let turned = h.output().platform_output.cursor_image.clone().expect("turned brush cursor");
+        save_pen_cursor_image(&format!("{control}-initial"), &initial);
+        save_pen_cursor_image(&format!("{control}-turned"), &turned);
+        let pen = h.state().stylus.sample().expect("simulated pen reaches the canvas");
+        assert_eq!((pen.tilt_y, pen.rotation), (-45.0, 90.0));
+        let point = photocraft_paint::StrokePoint { tilt_y: pen.tilt_y, rotation: pen.rotation, ..Default::default() };
+        let step = photocraft_paint::dynamics::StepInput { point, direction: 0.0, initial_direction: 0.0, step: 0 };
+        let mut dabs = Vec::new();
+        photocraft_paint::dynamics::DabBuilder::new(&h.state().session.tools.brush).build(&step, &mut dabs);
+        assert_eq!(dabs.len(), 1);
+        assert!((dabs[0].angle.to_degrees() - 90.0).abs() < 0.001, "painted dab turns: {control}");
+        assert_ne!(initial.rgba, turned.rgba, "cursor must follow pen orientation: {control}");
+        // The dynamically rotated cursor must match the same tip set to that angle directly.
+        h.state_mut().session.tools.brush.shape_dynamics.enabled = false;
+        h.state_mut().session.tools.brush.angle = 90.0;
+        h.run_steps(3);
+        let reference = h.output().platform_output.cursor_image.clone().expect("static rotated reference");
+        assert_eq!(turned.size, reference.size);
+        assert_eq!(turned.hotspot, reference.hotspot);
+        assert_eq!(turned.rgba, reference.rgba, "dynamic cursor matches the dab angle: {control}");
+    }
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn round_cursor_shows_brush_projection_6350() {
+    let mut h = harness();
+    h.state_mut().session.tools.brush.shape_dynamics.enabled = true;
+    h.state_mut().session.tools.brush.shape_dynamics.brush_projection = true;
+    h.state_mut().stylus.feed.set(Some(crate::stylus::PenSample::default()));
+    h.run_steps(3);
+    let upright = h.output().platform_output.cursor_image.clone().unwrap();
+    h.state_mut().stylus.feed.set(Some(crate::stylus::PenSample { tilt_x: 60.0, ..Default::default() }));
+    h.run_steps(3);
+    let tilted = h.output().platform_output.cursor_image.clone().unwrap();
+    save_pen_cursor_image("projection-upright", &upright);
+    save_pen_cursor_image("projection-tilted", &tilted);
+    assert_ne!(upright.rgba, tilted.rgba, "a projected round brush must not keep a circular cursor");
+    h.state_mut().stylus.feed.set(None);
+    h.run_steps(3);
+    assert_eq!(upright.rgba, h.output().platform_output.cursor_image.clone().unwrap().rgba, "mouse restores the unprojected tip");
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn save_pen_cursor_image(name: &str, cursor: &egui::CustomCursorImage) {
+    let Some(dir) = std::env::var_os("PHOTOCRAFT_CURSOR_OUTPUT") else { return };
+    let dir = std::path::PathBuf::from(dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let image =
+        photocraft_codecs::Image::from_u8(u32::from(cursor.size[0]), u32::from(cursor.size[1]), photocraft_codecs::ChannelLayout::Rgba, cursor.rgba.to_vec())
+            .unwrap();
+    let png = photocraft_codecs::encode(&image, photocraft_codecs::Format::Png, &Default::default()).unwrap();
+    std::fs::write(dir.join(format!("{name}.png")), png).unwrap();
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
 fn brush_hover_uses_an_os_bitmap_that_survives_motion_but_not_tool_or_panel_changes() {
     let mut h = harness();
     let initial = h.output().platform_output.cursor_image.clone().expect("brush hover must reach the OS, not the painter");

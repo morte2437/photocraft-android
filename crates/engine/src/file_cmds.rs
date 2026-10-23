@@ -105,7 +105,7 @@ pub fn list_images(dir: &str) -> Result<Vec<String>> {
     let mut out: Vec<String> = rd
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| p.is_file() && p.extension().and_then(|x| x.to_str()).is_some_and(|x| OPENABLE.contains(&x.to_ascii_lowercase().as_str())))
+        .filter(|p| p.is_file() && openable_name(&p.to_string_lossy()))
         .map(|p| p.to_string_lossy().into_owned())
         .collect();
     out.sort();
@@ -116,12 +116,20 @@ pub fn list_images(dir: &str) -> Result<Vec<String>> {
     Err(EngineError::Other(format!("cannot list {dir}: no file system on the web")))
 }
 
+/// Whether a folder entry is one the batch commands open: an `OPENABLE` extension, or GIMP's
+/// gzipped `.xcf.gz`, whose last extension alone says nothing.
+#[cfg(not(target_arch = "wasm32"))]
+fn openable_name(path: &str) -> bool {
+    let lower = file_name(path).to_ascii_lowercase();
+    lower.ends_with(".xcf.gz") || lower.rsplit_once('.').is_some_and(|(_, ext)| OPENABLE.contains(&ext))
+}
+
 /// Extensions the batch commands pick up from a folder.
 #[cfg(not(target_arch = "wasm32"))]
 const OPENABLE: &[&str] = &[
-    "pdn", "ora", "kra", "krz", "psd", "psb", "pcraft", "png", "jpg", "jpeg", "tif", "tiff", "webp", "gif", "bmp", "tga", "exr", "hdr", "qoi", "ico", "pnm",
-    "ppm", "pgm", "fits", "fit", "fts", "dpx", "heic", "heif", "hif", "dng", "cr2", "nef", "nrw", "arw", "pef", "svg", "svgz", "af", "afdesign", "afphoto",
-    "afpub",
+    "pdn", "ora", "xcf", "xcfgz", "kra", "krz", "psd", "psb", "pcraft", "png", "jpg", "jpeg", "tif", "tiff", "webp", "gif", "bmp", "tga", "exr", "hdr", "qoi",
+    "ico", "pnm", "ppm", "pgm", "fits", "fit", "fts", "dpx", "heic", "heif", "hif", "dng", "cr2", "nef", "nrw", "arw", "pef", "svg", "svgz", "af", "afdesign",
+    "afphoto", "afpub",
 ];
 
 /// Whether saving `doc` as a TIFF writes Photoshop layer data (anything beyond a lone
@@ -268,14 +276,56 @@ pub(crate) fn join(dir: &str, name: &str) -> String {
     }
 }
 
-/// A file-name-safe version of a layer name.
+/// A file-name-safe version of a layer name. A Windows device name (`nul`, `con.v2`) gets a `_`
+/// before its first dot, so the file or folder is usable on Windows, wherever it was written.
 pub(crate) fn sanitize(name: &str) -> String {
     let s: String = name.chars().map(|c| if c.is_alphanumeric() || matches!(c, '-' | '_' | ' ' | '.') { c } else { '_' }).collect();
     let s = s.trim().trim_matches('.').to_string();
-    if s.is_empty() { "layer".into() } else { s }
+    if s.is_empty() { "layer".into() } else { portable_device_name(s) }
+}
+
+/// `name` with a `_` before its first dot when it is a Windows device name (`nul` → `nul_`,
+/// `com1.v2` → `com1_.v2`); a `_` at the end would leave the device stem in place.
+pub(crate) fn portable_device_name(name: String) -> String {
+    if !is_windows_device_name(&name) {
+        return name;
+    }
+    match name.split_once('.') {
+        Some((device, rest)) => format!("{device}_.{rest}"),
+        None => format!("{name}_"),
+    }
+}
+
+/// Whether `component` names a Windows device (`CON`, `NUL`, `COM1`…, with any extension):
+/// Windows opens the device instead of a file or folder of that name. `COM` and `LPT` take the
+/// superscript digits ¹ ² ³ as well, as Windows does.
+pub(crate) fn is_windows_device_name(component: &str) -> bool {
+    let stem = component.split('.').next().unwrap_or(component).trim_end_matches(' ').to_ascii_uppercase();
+    let port = |n: &str| matches!(n, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³");
+    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CLOCK$" | "CONIN$" | "CONOUT$")
+        || stem.strip_prefix("COM").is_some_and(port)
+        || stem.strip_prefix("LPT").is_some_and(port)
 }
 
 pub(crate) fn import(name: &str, bytes: &[u8]) -> Result<Document> {
+    import_result(name, bytes).map(|r| r.document)
+}
+
+/// [`import`] for a file that becomes a document of its own (Revert, Load Files into Stack;
+/// Batch's scratch sessions use [`import_at_raw_ppi`]): a developed raw gets Preferences › Raw
+/// Defaults › Resolution, as it does through File › Open.
+pub(crate) fn import_opened(s: &Session, name: &str, bytes: &[u8]) -> Result<Document> {
+    import_at_raw_ppi(s.prefs().raw_defaults.resolution, name, bytes)
+}
+
+fn import_at_raw_ppi(raw_ppi: f64, name: &str, bytes: &[u8]) -> Result<Document> {
+    let r = import_result(name, bytes)?;
+    let mut doc = r.document;
+    raw_resolution(raw_ppi, &r.warnings, &mut doc);
+    Ok(doc)
+}
+
+fn import_result(name: &str, bytes: &[u8]) -> Result<photocraft_io::ImportResult> {
     crate::allocation::checkpoint("importing document")?;
     let r = photocraft_io::import(name, bytes).map_err(|e| EngineError::Other(format!("{name}: {e}")))?;
     // Auxiliary imports return only a document and cannot surface the preview's fidelity warning.
@@ -285,15 +335,17 @@ pub(crate) fn import(name: &str, bytes: &[u8]) -> Result<Document> {
             "{name}: only this Affinity file's embedded preview could be read; open it with File › Open to see the warning, or export PSD or PNG from Affinity before using it here"
         )));
     }
-    Ok(r.document)
+    Ok(r)
 }
 
-/// What a headless save writes beyond the format: JPEG quality, TIFF layers, Targa bits, PSD
-/// previews and the PSD merged image.
+/// What a headless save writes beyond the format: JPEG quality and format, TIFF layers, Targa
+/// bits, DPX bits, DDS compression and mipmaps, PSD previews and the PSD merged image.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SaveOpts {
     /// Photoshop's 0–12 JPEG scale.
     pub quality: Option<f64>,
+    /// JPEG Options › Format Options (`"jpegFormat"`); unset, Baseline ("Standard").
+    pub jpeg_format: Option<photocraft_codecs::JpegFormat>,
     /// TIFF: keep the layers. Off unless a command's params ask (`"tiffLayers": true`).
     pub tiff_layers: bool,
     /// Targa: 24 or 32 bits per pixel (`"tgaBits"`); unset, 32 with an alpha channel or
@@ -301,6 +353,11 @@ pub(crate) struct SaveOpts {
     pub tga_bits: Option<photocraft_io::TgaBits>,
     /// DPX: 8, 10, 12 or 16 bits per sample (`"dpxBits"`); unset, 8 for an 8-bit document, else 16.
     pub dpx_bits: Option<photocraft_io::DpxBits>,
+    /// TIFF: the image compression (`"tiffCompression": "none" | "lzw" | "zip"`); unset, none.
+    pub tiff_compression: Option<photocraft_codecs::TiffCompression>,
+    /// DDS: the compression and whether to write the mip chain (`"ddsCompression"`,
+    /// `"ddsMipmaps"`); unset, uncompressed without mipmaps.
+    pub dds: photocraft_io::DdsOptions,
     /// PSD/PSB: embed the thumbnail resource (Preferences › File Handling › Image Previews).
     pub image_previews: bool,
     /// PSD/PSB: write the real merged image (Preferences › File Handling › Maximize PSD and PSB
@@ -310,22 +367,36 @@ pub(crate) struct SaveOpts {
 
 impl Default for SaveOpts {
     fn default() -> Self {
-        SaveOpts { quality: None, tiff_layers: false, tga_bits: None, dpx_bits: None, image_previews: true, psd_maximize_compatibility: true }
+        SaveOpts {
+            quality: None,
+            jpeg_format: None,
+            tiff_layers: false,
+            tga_bits: None,
+            dpx_bits: None,
+            tiff_compression: None,
+            dds: photocraft_io::DdsOptions::default(),
+            image_previews: true,
+            psd_maximize_compatibility: true,
+        }
     }
 }
 
 impl SaveOpts {
-    /// `quality`, `tiffLayers` and `tgaBits` from command `cmd`'s params (a `tgaBits` other than
-    /// 24 or 32 is an error); the image previews and the PSD merged image from the session's File
-    /// Handling preferences (Ask When Saving has no dialog here, so it saves them, as Photoshop's
-    /// Save As checkbox and its Maximize Compatibility checkbox both start on).
+    /// `quality`, `jpegFormat`, `tiffLayers` and `tgaBits` from command `cmd`'s params (a
+    /// `jpegFormat` it doesn't name or a `tgaBits` other than 24 or 32 is an error); the image
+    /// previews and the PSD merged image from the session's File Handling preferences (Ask When
+    /// Saving has no dialog here, so it saves them, as Photoshop's Save As checkbox and its
+    /// Maximize Compatibility checkbox both start on).
     pub(crate) fn from_params(s: &Session, p: &Value, cmd: &str) -> Result<Self> {
         let file_handling = &s.prefs().file_handling;
         Ok(SaveOpts {
             quality: f64_param(p, "quality"),
+            jpeg_format: jpeg_format_param(p, cmd)?,
             tiff_layers: p.get("tiffLayers").and_then(Value::as_bool).unwrap_or(false),
             tga_bits: tga_bits_param(p, cmd)?,
             dpx_bits: dpx_bits_param(p, cmd)?,
+            tiff_compression: tiff_compression_param(p, cmd)?,
+            dds: dds_param(p, cmd)?.unwrap_or_default(),
             image_previews: file_handling.image_previews != crate::prefs::Ask::Never,
             psd_maximize_compatibility: file_handling.maximize_psd_compatibility != crate::prefs::Ask::Never,
         })
@@ -357,6 +428,40 @@ pub fn tga_bits_param(p: &Value, cmd: &str) -> Result<Option<photocraft_io::TgaB
     }
 }
 
+/// The TIFF compression in `p` (`"tiffCompression": "none" | "lzw" | "zip"`, Photoshop's TIFF
+/// Options; absent or null: none). Anything else is a bad parameter of command `cmd` (#5301).
+pub fn tiff_compression_param(p: &Value, cmd: &str) -> Result<Option<photocraft_codecs::TiffCompression>> {
+    use photocraft_codecs::TiffCompression;
+    match p.get("tiffCompression") {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => match v.as_str() {
+            Some("none") => Ok(Some(TiffCompression::None)),
+            Some("lzw") => Ok(Some(TiffCompression::Lzw)),
+            Some("zip") => Ok(Some(TiffCompression::Deflate)),
+            _ => Err(EngineError::BadParams { cmd: cmd.into(), msg: format!("`tiffCompression` must be \"none\", \"lzw\" or \"zip\", got {v}") }),
+        },
+    }
+}
+
+/// The JPEG format in `p` (`"jpegFormat": "baseline" | "optimized" | "progressive"`; absent or
+/// null: Baseline). Anything else is a bad parameter of command `cmd`. Shared like
+/// [`tga_bits_param`].
+pub fn jpeg_format_param(p: &Value, cmd: &str) -> Result<Option<photocraft_codecs::JpegFormat>> {
+    match p.get("jpegFormat") {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v.as_str().and_then(photocraft_codecs::JpegFormat::parse).map(Some).ok_or_else(|| EngineError::BadParams {
+            cmd: cmd.into(),
+            msg: format!("`jpegFormat` must be \"baseline\", \"optimized\" or \"progressive\", got {v}"),
+        }),
+    }
+}
+
+/// Photoshop's 0–12 JPEG quality as the encoder's 1–100 (0 → 1, 12 → 100, linear between; out of
+/// range is clamped, and NaN or infinite is 100).
+pub fn jpeg_quality(q: f64) -> u8 {
+    if q.is_finite() { (q.clamp(0.0, 12.0) / 12.0 * 99.0 + 1.0).round() as u8 } else { 100 }
+}
+
 /// The DPX bits per sample in `p` (`"dpxBits": 8 | 10 | 12 | 16`; absent or null: the document's
 /// depth). Anything else is a bad parameter of command `cmd`.
 pub fn dpx_bits_param(p: &Value, cmd: &str) -> Result<Option<photocraft_io::DpxBits>> {
@@ -370,6 +475,30 @@ pub fn dpx_bits_param(p: &Value, cmd: &str) -> Result<Option<photocraft_io::DpxB
     }
 }
 
+/// The DDS options in `p`: `"ddsCompression": "none" | "bc1" | "bc2" | "bc3"` (or the DXT names)
+/// and `"ddsMipmaps": bool`. `None` when neither is given (Save As then asks); either alone
+/// leaves the other at its default (uncompressed, no mipmaps). Anything else is a bad parameter
+/// of command `cmd`.
+pub fn dds_param(p: &Value, cmd: &str) -> Result<Option<photocraft_io::DdsOptions>> {
+    let bad = |msg: String| EngineError::BadParams { cmd: cmd.into(), msg };
+    let compression = match p.get("ddsCompression") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(
+            v.as_str()
+                .and_then(photocraft_io::DdsCompression::from_name)
+                .ok_or_else(|| bad(format!("`ddsCompression` must be \"none\", \"bc1\", \"bc2\" or \"bc3\", got {v}")))?,
+        ),
+    };
+    let mipmaps = match p.get("ddsMipmaps") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(v.as_bool().ok_or_else(|| bad(format!("`ddsMipmaps` must be true or false, got {v}")))?),
+    };
+    if compression.is_none() && mipmaps.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(photocraft_io::DdsOptions { compression: compression.unwrap_or_default(), mipmaps: mipmaps.unwrap_or(false) }))
+}
+
 /// Encodes `doc` for `path`'s extension.
 pub(crate) fn encode(doc: &Document, path: &str, save: impl Into<SaveOpts>) -> Result<(Vec<u8>, Vec<String>)> {
     crate::allocation::checkpoint("saving document")?;
@@ -381,18 +510,27 @@ pub(crate) fn encode(doc: &Document, path: &str, save: impl Into<SaveOpts>) -> R
         psd_maximize_compatibility: save.psd_maximize_compatibility,
         // Linked files a PSD embeds are resolved against the document being worked on.
         document_path: crate::doc_path::current(),
+        // An untrusted session's stored paths are document data: embed none of them.
+        read_linked_files: !crate::jobs::authorization_installed(),
         ..Default::default()
     };
     // No quality chosen: write the file the way it was opened (a JPEG at its own quality, a WebP
     // lossy or lossless as it was), as Photoshop's Save does.
     photocraft_io::apply_file_encoding(doc, &mut opts.encode);
     opts.encode.dpx_bits = save.dpx_bits;
+    if let Some(c) = save.tiff_compression {
+        opts.encode.tiff_compression = c;
+    }
+    opts.encode.dds = save.dds;
     if let Some(q) = save.quality {
-        let q = (q.clamp(0.0, 12.0) / 12.0 * 99.0 + 1.0).round() as u8;
+        let q = jpeg_quality(q);
         opts.encode.jpeg_quality = q;
         // A quality on a WebP save asks for the lossy encoder; the default WebP stays lossless.
         opts.encode.webp_quality = q;
         opts.encode.webp_lossless = false;
+    }
+    if let Some(f) = save.jpeg_format {
+        opts.encode.jpeg_format = f;
     }
     photocraft_io::export(doc, path, &opts).map(|r| (r.bytes, r.warnings)).map_err(|e| EngineError::Other(format!("{path}: {e}")))
 }
@@ -468,7 +606,7 @@ fn close_others(s: &mut Session, p: &Value) -> Result<Value> {
 fn revert(s: &mut Session) -> Result<Value> {
     let path = s.active().and_then(|d| d.path.clone()).ok_or(EngineError::Other("the document has never been saved".into()))?;
     let bytes = read_file(&path)?;
-    let fresh = import(&file_name(&path), &bytes)?;
+    let fresh = import_opened(s, &file_name(&path), &bytes)?;
     s.edit("Revert", |doc, active| {
         let (id, name) = (doc.id, doc.name.clone());
         *doc = fresh;
@@ -521,6 +659,19 @@ pub(crate) fn tag_exr_colorspace(s: &Session, name: &str, doc: &mut Document) {
     }
 }
 
+/// Edit › Preferences › Raw Defaults › Resolution: the ppi a raw developed on open gets, as
+/// Camera Raw's workflow options set it (the raw itself states none). `warnings` are the
+/// import's notes, which say whether the raw was developed or only its preview opened.
+pub fn raw_defaults(s: &Session, warnings: &[String], doc: &mut Document) {
+    raw_resolution(s.prefs().raw_defaults.resolution, warnings, doc);
+}
+
+fn raw_resolution(ppi: f64, warnings: &[String], doc: &mut Document) {
+    if ppi.is_finite() && warnings.iter().any(|w| w.contains(photocraft_io::raw::DEVELOPED_NOTE)) {
+        doc.resolution_dpi = ppi.clamp(1.0, 10_000.0) as f32;
+    }
+}
+
 pub fn open_bytes_as(s: &mut Session, name: &str, bytes: &[u8], as_ext: Option<&str>, path: Option<String>) -> Result<Value> {
     crate::allocation::checkpoint("importing document")?;
     let decode_name = match as_ext {
@@ -530,6 +681,7 @@ pub fn open_bytes_as(s: &mut Session, name: &str, bytes: &[u8], as_ext: Option<&
     let r = photocraft_io::import(&decode_name, bytes).map_err(|e| EngineError::Other(format!("{decode_name}: {e}")))?;
     let mut doc = r.document;
     tag_exr_colorspace(s, &decode_name, &mut doc);
+    raw_defaults(s, &r.warnings, &mut doc);
     let path = match template_name(s, name) {
         Some(untitled) => {
             doc.name = untitled;
@@ -571,8 +723,8 @@ pub fn place_bytes(s: &mut Session, name: &str, bytes: Vec<u8>, linked: Option<S
     let (cw, ch) = (d.doc.size.width as f64, d.doc.size.height as f64);
     let fmt = d.doc.pixel_format();
     let vector = photocraft_io::svg::is_svg(&bytes);
-    let max_svg_group_depth = s.prefs().file_handling.rasterize_svg_groups_deeper_than as usize;
-    let imported = photocraft_io::import_with_svg_group_depth(name, &bytes, max_svg_group_depth).map_err(|e| EngineError::Other(format!("{name}: {e}")))?;
+    let opts = crate::jobs::import_options(s.prefs());
+    let imported = photocraft_io::import_with_options(name, &bytes, &opts).map_err(|e| EngineError::Other(format!("{name}: {e}")))?;
     if imported.preview_only {
         return Err(EngineError::Other(format!(
             "{name}: only this Affinity file's embedded preview could be read; open it with File › Open to see the warning, or export PSD or PNG from Affinity before using it here"
@@ -657,7 +809,42 @@ fn xml_escape(s: &str) -> String {
 }
 
 fn xml_unescape(s: &str) -> String {
-    s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'").replace("&amp;", "&")
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find('&') {
+        out.push_str(&rest[..i]);
+        rest = &rest[i..];
+        let decoded = rest.as_bytes().iter().take(13).position(|&b| b == b';').and_then(|e| {
+            let c = match &rest[1..e] {
+                "lt" => '<',
+                "gt" => '>',
+                "quot" => '"',
+                "apos" => '\'',
+                "amp" => '&',
+                n => {
+                    let n = n.strip_prefix('#')?;
+                    let code = match n.strip_prefix(['x', 'X']) {
+                        Some(h) => u32::from_str_radix(h, 16).ok()?,
+                        None => n.parse().ok()?,
+                    };
+                    char::from_u32(code)?
+                }
+            };
+            Some((c, e + 1))
+        });
+        match decoded {
+            Some((c, len)) => {
+                out.push(c);
+                rest = &rest[len..];
+            }
+            None => {
+                out.push('&');
+                rest = &rest[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// The element `<tag …>…</tag>` (first occurrence) as (start, end, inner).
@@ -758,6 +945,18 @@ fn short_num(v: f64, decimals: usize) -> String {
     if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.').to_string() } else { s }
 }
 
+/// `v` to three significant digits, with no trailing zeros (0.031714 → "0.0317", 0.4 → "0.4").
+/// Two decimals threw away most of a slow shutter speed: a stored 0.031714 s printed as "0.03 s",
+/// which is 5 % off, and a stored 0.0215 s printed as "0.02 s", 7 % off (#6958).
+fn sig3(v: f64) -> String {
+    let magnitude = v.abs().log10().floor();
+    // Clamped at both ends: a value at the large end must not ask for a negative field width, and
+    // at the small end the field is widened rather than truncated, so a positive exposure never
+    // reads as "0 s". 320 is beyond f64's decimal range, so it always terminates.
+    let decimals = if magnitude.is_finite() { (2.0 - magnitude).clamp(0.0, 320.0) } else { 0.0 };
+    short_num(v, decimals as usize)
+}
+
 /// Exposure time as cameras print it: "1/250 s" for fractions of a second, "0.4 s" or "2 s"
 /// when the reciprocal isn't a whole number or the exposure is a second or longer.
 fn exposure_text(t: f64) -> Option<String> {
@@ -765,10 +964,18 @@ fn exposure_text(t: f64) -> Option<String> {
         return None;
     }
     let r = 1.0 / t;
-    if t < 1.0 && (r - r.round()).abs() <= r * 0.01 {
-        return Some(format!("1/{} s", r.round()));
+    let n = r.round();
+    // Below 1/10 s the reciprocal is above 10, so its nearest whole number puts the shown time
+    // within 5 % of the stored one, and is the form a photographer expects ("1/32 s"). The test
+    // used to be relative to the reciprocal, so it shrank as the exposure slowed: under 1/50 s it
+    // fell below half a rounding step and nearly every fraction fell through to the decimal form
+    // (#6958). Above 1/10 s the fraction is only right when the reciprocal is very nearly whole
+    // (1/2 s, 1/4 s) — 0.4 s stays "0.4 s" rather than becoming "1/3 s".
+    let fraction = n.is_finite() && (1.0..=1e9).contains(&n) && (t < 0.1 || (t < 1.0 && n > 1.0 && (r - n).abs() <= r * 0.01));
+    if fraction {
+        return Some(format!("1/{} s", n as u64));
     }
-    Some(format!("{} s", short_num(t, if t < 1.0 { 2 } else { 1 })))
+    Some(format!("{} s", sig3(t)))
 }
 
 /// EXIF (`2024:02:17 12:40:19`) or XMP (`2024-02-17T12:40:19.00+01:00`) dates as
@@ -926,8 +1133,8 @@ fn file_info(s: &mut Session, p: &Value) -> Result<Value> {
 fn fit_image(s: &mut Session, p: &Value) -> Result<Value> {
     let d = s.active().ok_or(EngineError::NoDocument)?;
     let (w, h) = (d.doc.size.width as f64, d.doc.size.height as f64);
-    let bw = f64_param(p, "width").unwrap_or(w).max(1.0);
-    let bh = f64_param(p, "height").unwrap_or(h).max(1.0);
+    let bw = size_param(p, "width").unwrap_or(w);
+    let bh = size_param(p, "height").unwrap_or(h);
     let k = (bw / w).min(bh / h);
     if (k > 1.0 && p.get("dontEnlarge").and_then(Value::as_bool).unwrap_or(false)) || ((w * k).round() == w && (h * k).round() == h) {
         return Ok(json!({"width": w, "height": h, "changed": false}));
@@ -962,11 +1169,14 @@ fn conditional_mode_change(s: &mut Session, p: &Value) -> Result<Value> {
         other => return Err(EngineError::BadParams { cmd: cmd.into(), msg: format!("unsupported target mode \"{other}\" (rgb, grayscale, cmyk, lab)") }),
     };
     let cur = mode_name(s.active().ok_or(EngineError::NoDocument)?.doc.mode);
+    // One spelling per source mode, for the array and the single-string forms alike (#7042).
+    let norm = |v: &str| {
+        let v = v.to_ascii_lowercase();
+        if v == "gray" { "grayscale".to_string() } else { v }
+    };
     let from: Vec<String> = match p.get("from") {
-        Some(Value::Array(a)) => {
-            a.iter().filter_map(Value::as_str).map(|v| v.to_ascii_lowercase().replace("gray", "grayscale").replace("grayscalescale", "grayscale")).collect()
-        }
-        Some(Value::String(v)) if v != "any" => vec![v.to_ascii_lowercase()],
+        Some(Value::Array(a)) => a.iter().filter_map(Value::as_str).map(norm).collect(),
+        Some(Value::String(v)) => vec![norm(v)],
         _ => vec!["any".into()],
     };
     if cur == to || !(from.iter().any(|f| f == "any" || f == cur)) {
@@ -1092,23 +1302,72 @@ pub(crate) fn list_images_tree(dir: &str, _skip: &str, _cmd: &str) -> Result<Vec
 
 /// Opens each input in a scratch session, runs `f` on it and saves it to `output` as `format`
 /// (`"same"` keeps the input's extension). Errors per file are collected, not fatal.
-pub(crate) fn process_files(inputs: &[String], output: &str, format: &str, save: SaveOpts, suffix: &str, f: &dyn Fn(&mut Session) -> Result<()>) -> Value {
+pub(crate) fn process_files(
+    s: &Session,
+    inputs: &[String],
+    output: &str,
+    format: &str,
+    save: SaveOpts,
+    suffix: &str,
+    f: &dyn Fn(&mut Session) -> Result<()>,
+) -> Value {
     let inputs: Vec<BatchInput> = inputs.iter().map(|path| BatchInput { path: path.clone(), rel_dir: String::new() }).collect();
-    process_tree(&inputs, output, format, save, suffix, f)
+    process_tree(s, &inputs, output, format, save, suffix, &|scratch, _| f(scratch).map(|()| false))
 }
 
 /// [`process_files`] for inputs from subfolders: each result goes to its input's relative folder
-/// under `output` (created as needed), so `a/x.png` and `b/x.png` don't collide.
-pub(crate) fn process_tree(inputs: &[BatchInput], output: &str, format: &str, save: SaveOpts, suffix: &str, f: &dyn Fn(&mut Session) -> Result<()>) -> Value {
+/// under `output` (created as needed), so `a/x.png` and `b/x.png` don't collide. `f` gets the
+/// output path and returns `true` when it wrote the result there itself (Batch writes what a
+/// recorded save marked); otherwise the active document is saved after it.
+pub(crate) fn process_tree(
+    s: &Session,
+    inputs: &[BatchInput],
+    output: &str,
+    format: &str,
+    save: SaveOpts,
+    suffix: &str,
+    f: &dyn Fn(&mut Session, &str) -> Result<bool>,
+) -> Value {
     let outputs = inputs.iter().map(|BatchInput { path, rel_dir }| {
-        let ext =
-            if format == "same" { path.rsplit('.').next().unwrap_or("png").to_ascii_lowercase() } else { format.trim_start_matches('.').to_ascii_lowercase() };
+        let ext = if format == "same" { same_format(path) } else { format.trim_start_matches('.').to_ascii_lowercase() };
         (path.as_str(), join(&join(output, rel_dir), &format!("{}{suffix}.{ext}", stem(path))))
     });
-    process_outputs(outputs, save, f)
+    process_outputs(s, outputs, save, f)
 }
 
-fn process_outputs<'a>(outputs: impl IntoIterator<Item = (&'a str, String)>, save: SaveOpts, f: &dyn Fn(&mut Session) -> Result<()>) -> Value {
+/// The extension a batch output takes with Format "Same": the input's own, except for formats
+/// PhotoCraft opens but can't write, camera raws above all (#5799: a folder of ARWs failed on
+/// every file). Those are saved as PSD, the format Photoshop's Save As offers for a raw. An input
+/// whose file name has no extension (a dot in a folder name doesn't count) is saved as PNG.
+fn same_format(path: &str) -> String {
+    const IMPORT_ONLY: &[&str] = &["pdn", "kra", "krz", "af", "afdesign", "afphoto", "afpub", "heic", "heif", "hif", "svg", "svgz", "cin", "pcx", "xpm"];
+    let ext = extension(path).unwrap_or_else(|| "png".into());
+    if photocraft_io::raw::EXTENSIONS.contains(&ext.as_str()) || IMPORT_ONLY.contains(&ext.as_str()) { "psd".into() } else { ext }
+}
+
+#[cfg(test)]
+#[test]
+fn same_format_takes_the_file_names_extension() {
+    assert_eq!(same_format("/in/a.PNG"), "png");
+    assert_eq!(same_format("/in/IMG_0001.ARW"), "psd");
+    assert_eq!(same_format("/in/a.kra"), "psd");
+    assert_eq!(same_format("/in/IMG_0001.HEIC"), "psd");
+    assert_eq!(same_format("/in/logo.svg"), "psd");
+    assert_eq!(same_format("/in/scan.cin"), "psd");
+    // No extension in the file name: PNG, not the path after a dot in a folder name.
+    assert_eq!(same_format("/in/v1.2/scan"), "png");
+    assert_eq!(same_format("C:\\in.d\\scan"), "png");
+    assert_eq!(same_format("/in/.hidden"), "png");
+}
+
+fn process_outputs<'a>(
+    s: &Session,
+    outputs: impl IntoIterator<Item = (&'a str, String)>,
+    save: SaveOpts,
+    f: &dyn Fn(&mut Session, &str) -> Result<bool>,
+) -> Value {
+    // The scratch sessions have default preferences; a raw opens at the user's Raw Defaults.
+    let raw_ppi = s.prefs().raw_defaults.resolution;
     let mut files = Vec::new();
     let mut errors = Vec::new();
     let mut written = OutputClaims::default();
@@ -1117,11 +1376,12 @@ fn process_outputs<'a>(outputs: impl IntoIterator<Item = (&'a str, String)>, sav
             written.check(&out).map_err(EngineError::Other)?;
             let bytes = read_file(path)?;
             let mut scratch = Session::new();
-            let doc = import(&file_name(path), &bytes)?;
+            let doc = import_at_raw_ppi(raw_ppi, &file_name(path), &bytes)?;
             scratch.add_document(doc, Some(path.to_string()));
-            f(&mut scratch)?;
-            let d = scratch.active().ok_or(EngineError::NoDocument)?;
-            save_doc(&d.doc, &out, save)?;
+            if !f(&mut scratch, &out)? {
+                let d = scratch.active().ok_or(EngineError::NoDocument)?;
+                save_doc(&d.doc, &out, save)?;
+            }
             Ok(())
         })();
         match r {
@@ -1156,15 +1416,26 @@ impl OutputClaims {
     }
 }
 
+/// A recorded Save, Save As or Save a Copy, which marks the result Batch writes to its destination
+/// (Photoshop's "Override Action 'Save As' Commands").
+pub(crate) fn batch_save_point(id: &str) -> bool {
+    matches!(id, "file.save" | "file.saveAs" | "file.saveACopy")
+}
+
+/// Whether Batch and droplets keep a recorded step: save points mark the result, while other
+/// shell-only saves and view steps (zoom, fit) don't change the output (#2752).
+pub(crate) fn batch_keeps_step(id: &str) -> bool {
+    (batch_save_point(id) || !crate::actions_cmds::shell_save_command(id)) && !crate::actions_cmds::shell_view_command(id)
+}
+
 fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "file.automate.batch";
     let mut steps =
         parse_steps(p.get("steps").or_else(|| p.get("action")).ok_or_else(|| EngineError::BadParams { cmd: cmd.into(), msg: "missing \"steps\"".into() })?)?;
     // Each result goes to the destination folder, which overrides the action's recorded Save /
-    // Save As steps (Photoshop's "Override Action 'Save As' Commands"). Recorded view steps
-    // (zoom, fit) don't change the output, so they are skipped (#2752).
-    steps.retain(|(id, _)| !crate::actions_cmds::shell_save_command(id) && !crate::actions_cmds::shell_view_command(id) && id != "file.export.quickExport");
-    if let Some((id, _)) = steps.iter().find(|(id, _)| crate::commands::find(id).is_none()) {
+    // Save As steps: they only mark the result.
+    steps.retain(|(id, _)| batch_keeps_step(id) && id != "file.export.quickExport");
+    if let Some((id, _)) = steps.iter().find(|(id, _)| !batch_save_point(id) && crate::commands::find(id).is_none()) {
         return Err(EngineError::BadParams { cmd: cmd.into(), msg: format!("unknown command `{id}` in the action") });
     }
     let output = str_param(p, "output", cmd)?.to_string();
@@ -1187,20 +1458,38 @@ fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     let actions = crate::actions_cmds::ActionState { list, playing: s.actions.playing, playback_stack: s.actions.playback_stack.clone(), ..Default::default() };
     let names = batch_naming::plan(&inputs, &output, &format, p)?;
     let save = SaveOpts::from_params(s, p, cmd)?;
-    let run = |scratch: &mut Session| {
+    let authorize = s.authorize;
+    let run = move |scratch: &mut Session, out: &str| {
+        scratch.authorize = authorize;
         scratch.actions = actions.clone();
+        // The document as the last recorded save found it, written once the action has run so a
+        // failing step still writes nothing.
+        let mut saved: Option<Arc<Document>> = None;
         for (id, params) in &steps {
+            if batch_save_point(id) {
+                saved = Some(scratch.active().ok_or(EngineError::NoDocument)?.doc.clone());
+                continue;
+            }
             let r = scratch.execute(id, params.clone())?;
             // A failed step inside a called action makes this file an error, not a saved result.
             if let Some(error) = crate::actions_cmds::nested_failure(id, &r) {
                 return Err(EngineError::Other(error));
             }
         }
-        Ok(())
+        // While the saved document is still open the steps after the save reach the result too
+        // (#3058), so it is saved after the action as usual. Closed after its save, or with another
+        // document left active, it is written as the save found it.
+        match saved {
+            Some(doc) if scratch.active().is_none_or(|d| d.doc.id != doc.id) => {
+                save_doc(&doc, out, save)?;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
     };
     let r = match names {
-        Some(names) => process_outputs(inputs.iter().map(|i| i.path.as_str()).zip(names), save, &run),
-        None => process_tree(&inputs, &output, &format, save, "", &run),
+        Some(names) => process_outputs(s, inputs.iter().map(|i| i.path.as_str()).zip(names), save, &run),
+        None => process_tree(s, &inputs, &output, &format, save, "", &run),
     };
     Ok(r)
 }
@@ -1215,14 +1504,14 @@ fn image_processor(s: &mut Session, p: &Value) -> Result<Value> {
         (w, h) => Some(json!({"width": w.unwrap_or(1e9), "height": h.unwrap_or(1e9), "dontEnlarge": true})),
     };
     let to_srgb = p.get("convertToSrgb").and_then(Value::as_bool).unwrap_or(false);
-    let r = process_tree(&inputs, &output, &format, SaveOpts::from_params(s, p, cmd)?.or_quality(8.0), "", &|scratch| {
+    let r = process_tree(s, &inputs, &output, &format, SaveOpts::from_params(s, p, cmd)?.or_quality(8.0), "", &|scratch, _| {
         if to_srgb && scratch.active().is_some_and(|d| d.doc.mode != ColorMode::Rgb) {
             scratch.execute("image.mode.rgb", json!({}))?;
         }
         if let Some(fp) = &fit {
             fit_image(scratch, fp)?;
         }
-        Ok(())
+        Ok(false)
     });
     Ok(r)
 }
@@ -1240,7 +1529,7 @@ fn load_files_into_stack(s: &mut Session, p: &Value) -> Result<Value> {
     let mut docs = Vec::new();
     for path in &paths {
         let bytes = read_file(path)?;
-        docs.push((file_name(path), import(&file_name(path), &bytes)?));
+        docs.push((file_name(path), import_opened(s, &file_name(path), &bytes)?));
     }
     let first = &docs[0].1;
     let w = docs.iter().map(|(_, d)| d.size.width).max().unwrap_or(1);
@@ -1392,6 +1681,9 @@ pub fn export_layers_with(s: &Session, p: &Value, mut write: impl FnMut(&str, &[
     let cmd = "file.export.layersToFiles";
     let format = p.get("format").and_then(Value::as_str).unwrap_or("png").trim_start_matches('.').to_ascii_lowercase();
     let visible_only = p.get("visibleOnly").and_then(Value::as_bool).unwrap_or(true);
+    // Callers outside `Session::execute` (headless workspace exports) carry the session's gate
+    // into `encode`, so a PSD embeds no file a linked smart object names.
+    let _authorization = crate::jobs::render_authorization_scope(s.authorize);
     let save = SaveOpts::from_params(s, p, cmd)?;
     let d = s.active().ok_or(EngineError::NoDocument)?;
     let prefix = p.get("prefix").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| stem(&d.doc.name));
@@ -1651,7 +1943,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Save a Copy…",
             &["File"],
             Some("Cmd+Alt+S"),
-            r##"{"path":str (format from the extension),"quality":0..12? (JPEG),"layers":bool=true,"overwrite":bool=false (replace the document's own file),"tiffLayers":bool=false (TIFF: keep the layers; flat by default),"tgaBits":24|32? (TGA: 32 writes the alpha channel, or else the transparency, as the alpha; unset, 32 with an alpha channel or transparency, else 24),"dpxBits":8|10|12|16? (DPX: bits per sample; unset, 8 for an 8-bit document, else 16)}"##,
+            r##"{"path":str (format from the extension),"quality":0..12? (JPEG),"jpegFormat":"baseline|optimized|progressive"? (JPEG; default baseline),"layers":bool=true,"overwrite":bool=false (replace the document's own file),"tiffLayers":bool=false (TIFF: keep the layers; flat by default),"tiffCompression":"none|lzw|zip"? (TIFF: image compression; unset, none),"tgaBits":24|32? (TGA: 32 writes the alpha channel, or else the transparency, as the alpha; unset, 32 with an alpha channel or transparency, else 24),"dpxBits":8|10|12|16? (DPX: bits per sample; unset, 8 for an 8-bit document, else 16),"ddsCompression":"none|bc1|bc2|bc3"="none" (DDS: uncompressed, or block compression; BC1 keeps alpha on or off),"ddsMipmaps":bool=false (DDS: also write the full mip chain)}"##,
             native_doc,
             save_a_copy
         ),
@@ -1714,7 +2006,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Batch…",
             &["File", "Automate"],
             None,
-            r##"{"steps":[[commandId,params]|{"command":id,"params":{}}…] (a recorded action),"input":folder|[paths],"includeSubfolders":bool=false (a folder input also takes the images in its subfolders, up to 32 levels and 100000 files; each result keeps its subfolder under output),"output":folder,"format":"same|png|jpg|psd|tiff|…"="same","quality":0..12?,"naming":string? (blank keeps source names; {name}, {serial} padded to 3 digits, {date} as YYYY-MM-DD UTC; extension added automatically),"startingSerial":1..4294967295=1 (input position, including failed inputs),"tiffLayers":bool=false,"tgaBits":24|32?,"dpxBits":8|10|12|16? (DPX: bits per sample; unset, 8 for an 8-bit document, else 16),"calledActions":[{"name","steps"}…]? (the actions Play Action steps call; default: the session's)} → {files, errors} (an input whose output name was already written in the run goes to errors)"##,
+            r##"{"steps":[[commandId,params]|{"command":id,"params":{}}…] (a recorded action; a Save, Save As or Save a Copy step marks the document written to output, in this command's format and options: as the save found it if it was closed or another document is active at the end, else as the action leaves it; with no such step, the active document at the end),"input":folder|[paths],"includeSubfolders":bool=false (a folder input also takes the images in its subfolders, up to 32 levels and 100000 files; each result keeps its subfolder under output),"output":folder,"format":"same|png|jpg|psd|tiff|…"="same","quality":0..12?,"jpegFormat":"baseline|optimized|progressive"?,"naming":string? (blank keeps source names; {name}, {serial} padded to 3 digits, {date} as YYYY-MM-DD UTC; extension added automatically),"startingSerial":1..4294967295=1 (input position, including failed inputs),"tiffLayers":bool=false,"tiffCompression":"none|lzw|zip"?,"tgaBits":24|32?,"dpxBits":8|10|12|16? (DPX: bits per sample; unset, 8 for an 8-bit document, else 16),"ddsCompression":"none|bc1|bc2|bc3"="none" (DDS: uncompressed, or block compression; BC1 keeps alpha on or off),"ddsMipmaps":bool=false (DDS: also write the full mip chain),"calledActions":[{"name","steps"}…]? (the actions Play Action steps call; default: the session's)} → {files, errors} (an input whose output name was already written in the run goes to errors)"##,
             native,
             batch
         ),
@@ -1723,7 +2015,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Image Processor…",
             &["File", "Scripts"],
             None,
-            r##"{"input":folder|[paths],"includeSubfolders":bool=false (a folder input also takes the images in its subfolders, up to 32 levels and 100000 files; each result keeps its subfolder under output),"output":folder,"format":"jpg|png|psd|tiff|…"="jpg","quality":0..12=8,"tiffLayers":bool=false,"tgaBits":24|32?,"dpxBits":8|10|12|16? (DPX: bits per sample; unset, 8 for an 8-bit document, else 16),"width":px?,"height":px? (fit, never enlarge),"convertToSrgb":bool=false} → {files, errors} (an input whose output name was already written in the run goes to errors)"##,
+            r##"{"input":folder|[paths],"includeSubfolders":bool=false (a folder input also takes the images in its subfolders, up to 32 levels and 100000 files; each result keeps its subfolder under output),"output":folder,"format":"jpg|png|psd|tiff|…"="jpg","quality":0..12=8,"jpegFormat":"baseline|optimized|progressive"?,"tiffLayers":bool=false,"tiffCompression":"none|lzw|zip"?,"tgaBits":24|32?,"dpxBits":8|10|12|16? (DPX: bits per sample; unset, 8 for an 8-bit document, else 16),"ddsCompression":"none|bc1|bc2|bc3"="none" (DDS: uncompressed, or block compression; BC1 keeps alpha on or off),"ddsMipmaps":bool=false (DDS: also write the full mip chain),"width":px?,"height":px? (fit, never enlarge),"convertToSrgb":bool=false} → {files, errors} (an input whose output name was already written in the run goes to errors)"##,
             native,
             image_processor
         ),
@@ -1751,7 +2043,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Layers to Files…",
             &["File", "Export"],
             None,
-            r##"{"dir":folder,"format":"png|jpg|psd|tiff|…"="png","prefix":str=document name,"visibleOnly":bool=true,"quality":0..12?,"tiffLayers":bool=false,"tgaBits":24|32?,"dpxBits":8|10|12|16? (DPX: bits per sample; unset, 8 for an 8-bit document, else 16)} → {files}"##,
+            r##"{"dir":folder,"format":"png|jpg|psd|tiff|…"="png","prefix":str=document name,"visibleOnly":bool=true,"quality":0..12?,"jpegFormat":"baseline|optimized|progressive"?,"tiffLayers":bool=false,"tiffCompression":"none|lzw|zip"?,"tgaBits":24|32?,"dpxBits":8|10|12|16? (DPX: bits per sample; unset, 8 for an 8-bit document, else 16),"ddsCompression":"none|bc1|bc2|bc3"="none" (DDS: uncompressed, or block compression; BC1 keeps alpha on or off),"ddsMipmaps":bool=false (DDS: also write the full mip chain)} → {files}"##,
             native_doc,
             layers_to_files
         ),

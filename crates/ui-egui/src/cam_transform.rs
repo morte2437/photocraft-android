@@ -210,10 +210,7 @@ pub(crate) fn cursor(app: &PhotocraftApp, ctx: &egui::Context, xf: &ViewXform, p
         Some([(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0])
     };
     Some(match h {
-        Hit::Corner(i) => {
-            let (a, b) = (q.get(i)?, q.get((i + 2) % 4)?);
-            crate::tool_cursor::resize([a[0] - b[0], a[1] - b[1]], xf)
-        }
+        Hit::Corner(i) => crate::tool_cursor::corner_resize(&q, i, xf),
         Hit::Edge(i) => {
             let (a, b) = (mid(i)?, mid(i + 2)?);
             crate::tool_cursor::resize([a[0] - b[0], a[1] - b[1]], xf)

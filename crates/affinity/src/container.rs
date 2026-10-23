@@ -15,6 +15,8 @@ const DOCUMENT_KIND: &[u8; 4] = b"nsrP";
 
 /// A save appends one table; real files have one to a few hundred.
 const MAX_TABLES: usize = 4096;
+/// Distinct ids the allocation tables may name; each costs a map slot even when only deleted.
+const MAX_ENTRIES: usize = 1 << 22;
 /// zstd window ceiling: real documents use a few MiB; this stops a header from reserving gigabytes.
 const MAX_ZSTD_WINDOW: u64 = 64 << 20;
 
@@ -164,7 +166,7 @@ impl<'a> Archive<'a> {
     pub fn open(bytes: &'a [u8], limits: Limits) -> Result<Self, Error> {
         let header = header(bytes)?;
         // Newest record per id: (table date, table index, record).
-        let mut latest: HashMap<u32, (u64, usize, Option<Entry>)> = HashMap::new();
+        let mut latest: HashMap<u32, (u64, usize, Option<Box<Entry>>)> = HashMap::new();
         let mut names: HashMap<u32, String> = HashMap::new();
         let mut seen = HashSet::new();
         let mut next = header.fat_offset;
@@ -222,7 +224,7 @@ impl<'a> Archive<'a> {
                         } else {
                             stored
                         };
-                        record = Some(Entry { id, name: String::new(), offset, size, compressed, crc, compression });
+                        record = Some(Box::new(Entry { id, name: String::new(), offset, size, compressed, crc, compression }));
                     }
                     2 => {}
                     _ => return Err(Error::Malformed("unknown allocation record")),
@@ -235,6 +237,10 @@ impl<'a> Archive<'a> {
                 // Equal dates: the first table in the chain (the newest) wins, as in afread.
                 let replace = latest.get(&id).is_none_or(|(d, _, _)| date > *d);
                 if replace {
+                    // Deletion records are five bytes each: cap what distinct ids may retain.
+                    if latest.len() >= MAX_ENTRIES && !latest.contains_key(&id) {
+                        return Err(Error::Limit("too many archive entries"));
+                    }
                     latest.insert(id, (date, tables, record));
                 }
             }
@@ -248,7 +254,7 @@ impl<'a> Archive<'a> {
         for (id, (_, _, record)) in latest {
             if let (Some(mut e), Some(name)) = (record, names.get(&id)) {
                 e.name = name.clone();
-                entries.insert(e.name.clone(), e);
+                entries.insert(e.name.clone(), *e);
             }
         }
         Ok(Self { bytes, header, entries, revisions: tables, extracted: 0, limits })

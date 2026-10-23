@@ -5,7 +5,7 @@
 use std::sync::{Mutex, PoisonError};
 
 use photocraft_doc::{DocId, LayerContent, LayerId, TextLayer};
-pub use photocraft_text::served::{ServedFont, add_families, add_fonts, parse_manifest, request_for_languages, take_requests};
+pub use photocraft_text::served::{ServedFont, add_families, add_fonts, is_relative_path, parse_manifest, request_for_languages, take_requests};
 
 use crate::PhotocraftApp;
 

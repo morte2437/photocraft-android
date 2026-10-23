@@ -59,8 +59,9 @@ pub fn cancel(app: &mut PhotocraftApp) {
     app.pcrop.clicks.clear();
 }
 
-/// Another document became active: its pending quad is dropped.
-fn cancel_stale(app: &mut PhotocraftApp) {
+/// Another document became active: its pending quad is dropped (also from `sync_views`, so it is
+/// never drawn on the other document).
+pub(crate) fn cancel_stale(app: &mut PhotocraftApp) {
     let doc = app.session.active().map(|st| st.doc.id);
     if pending(app) && app.pcrop.doc.is_some() && app.pcrop.doc != doc {
         cancel(app);
@@ -130,7 +131,9 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent) -> bool {
                 } else {
                     app.pcrop.clicks.clear();
                     let (x0, y0, x1, y1) = (start[0].min(cur[0]), start[1].min(cur[1]), start[0].max(cur[0]), start[1].max(cur[1]));
-                    app.ui.perspective_crop = Some([[x0, y0], [x1, y0], [x1, y1], [x0, y1]]);
+                    // A straight drag has no area: no box (it could neither be committed nor
+                    // replaced by a new drag).
+                    app.ui.perspective_crop = (x1 > x0 && y1 > y0).then_some([[x0, y0], [x1, y0], [x1, y1], [x0, y1]]);
                 }
             }
             app.pcrop.drag = None;
@@ -157,13 +160,15 @@ fn drag_to(app: &mut PhotocraftApp, p: [f64; 2]) {
 
 /// `image.perspectiveCrop`'s size params from W, H and the resolution (the Crop tool's fields):
 /// lengths in physical units convert at the typed resolution, else the document's.
-fn size_params(app: &PhotocraftApp, p: &mut Value) {
+pub(crate) fn size_params(app: &PhotocraftApp, p: &mut Value) {
     let o = &app.ui.tool_options;
     let res = crate::crop_size::resolution_ppi(o);
     let dpi = res.unwrap_or_else(|| app.session.active().map_or(72.0, |st| f64::from(st.doc.resolution_dpi)));
+    // Points and picas per Preferences › Point/Pica Size.
+    let pt_per_in = app.session.prefs().units_and_rulers.point_size.per_inch();
     let px = |text: &str| {
         let (v, u) = crate::crop_size::parse_length(text, Unit::Pixels)?;
-        let px = u.to_px(v, dpi, 0.0, 72.0).round();
+        let px = u.to_px(v, dpi, 0.0, pt_per_in).round();
         (px.is_finite() && px >= 1.0).then_some(px)
     };
     if let Some(w) = px(&o.crop_width) {
@@ -299,6 +304,29 @@ mod tests {
     use super::*;
     use photocraft_doc::{Color, ColorMode, Document, SampleType, Size};
 
+    /// A straight drag (no width or no height) leaves no zero-area box that only Esc could clear,
+    /// and a plain click still counts as a corner click.
+    #[test]
+    fn a_drag_without_area_leaves_no_quad() {
+        let doc = Document::with_background("p", Size::new(200, 150), ColorMode::Rgb, SampleType::U8, Color::WHITE);
+        let mut s = photocraft_engine::Session::new();
+        s.add_document(doc, None);
+        let mut app = PhotocraftApp::new(s, crate::Services::default());
+        app.ui.tool = Tool::PerspectiveCrop;
+        let ev = |app: &mut PhotocraftApp, e| assert!(pointer(app, e));
+        for (x1, y1) in [(10.0, 60.0), (90.0, 10.0)] {
+            ev(&mut app, ToolEvent::Down { x: 10.0, y: 10.0, pressure: 1.0 });
+            ev(&mut app, ToolEvent::Move { x: x1, y: y1, pressure: 1.0 });
+            ev(&mut app, ToolEvent::Up { x: x1, y: y1 });
+            assert_eq!(app.ui.perspective_crop, None, "drag to ({x1}, {y1})");
+            assert!(app.pcrop.clicks.is_empty());
+        }
+        ev(&mut app, ToolEvent::Down { x: 30.0, y: 30.0, pressure: 1.0 });
+        ev(&mut app, ToolEvent::Up { x: 30.0, y: 30.0 });
+        assert_eq!(app.pcrop.clicks, vec![[30.0, 30.0]]);
+        assert_eq!(app.ui.perspective_crop, None);
+    }
+
     /// A box drag makes the quad, corners drag alone, and ↵'s commit crops the document to the
     /// quad's size; four clicks in any order make a quad in TL, TR, BR, BL order.
     #[test]
@@ -322,5 +350,28 @@ mod tests {
         assert_eq!((size.width, size.height), (110, 86), "the quad's mean side lengths");
 
         assert_eq!(ordered([[10.0, 90.0], [100.0, 5.0], [0.0, 0.0], [90.0, 100.0]]), [[0.0, 0.0], [100.0, 5.0], [90.0, 100.0], [10.0, 90.0]]);
+    }
+
+    /// The pending quad belongs to its document (#1918): switching documents drops it, so it is
+    /// never drawn on the other one; on its own document it stays.
+    #[test]
+    fn switching_documents_drops_the_pending_quad() {
+        let mut s = photocraft_engine::Session::new();
+        for name in ["a", "b"] {
+            s.add_document(Document::with_background(name, Size::new(200, 150), ColorMode::Rgb, SampleType::U8, Color::WHITE), None);
+        }
+        s.set_active(0);
+        let mut app = PhotocraftApp::new(s, crate::Services::default());
+        app.ui.tool = Tool::PerspectiveCrop;
+        let ev = |app: &mut PhotocraftApp, e| assert!(pointer(app, e));
+        ev(&mut app, ToolEvent::Down { x: 20.0, y: 10.0, pressure: 1.0 });
+        ev(&mut app, ToolEvent::Move { x: 120.0, y: 90.0, pressure: 1.0 });
+        ev(&mut app, ToolEvent::Up { x: 120.0, y: 90.0 });
+        app.sync_views();
+        assert!(app.ui.perspective_crop.is_some(), "same document: the quad stays");
+        app.session.set_active(1);
+        app.sync_views();
+        assert_eq!(app.ui.perspective_crop, None);
+        assert!(app.pcrop.drag.is_none() && app.pcrop.clicks.is_empty());
     }
 }

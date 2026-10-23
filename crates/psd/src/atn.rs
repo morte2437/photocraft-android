@@ -17,8 +17,10 @@
 //!
 //! The descriptor is a plain ActionDescriptor body ([`Descriptor`], no version prefix): the
 //! event's parameters, exactly as Photoshop's own "Make", "Set", "Gaussian Blur"… events
-//! carry them. Photoshop 5-era files (version 12) use a different, undocumented layout and are
-//! rejected as unsupported.
+//! carry them. The event name and the panel name are byte strings (ASCII, or the platform's
+//! legacy encoding for a localised panel name: Mac Roman "Définir"), kept verbatim;
+//! [`AtnItem::label`] gives a readable name. Photoshop 5-era files (version 12) use a
+//! different, undocumented layout and are rejected as unsupported.
 //!
 //! [`parse`] never panics: every count is bounds-checked against the bytes left, descriptor
 //! nesting is bounded, and allocations are capped. [`write`] produces the same layout, so
@@ -26,7 +28,7 @@
 
 use crate::descriptor::{Descriptor, UnicodeString};
 use crate::error::{PsdError, Result};
-use crate::io::{Reader, WriteExt};
+use crate::io::{Reader, WriteExt, decode_legacy_name};
 
 /// The only version this module reads and writes (Photoshop 6 and every later release).
 pub const VERSION: u32 = 16;
@@ -84,8 +86,9 @@ pub struct AtnItem {
     pub dialog_options: u8,
     /// The event.
     pub event: AtnEvent,
-    /// The name the Actions panel shows for the step ("Gaussian Blur", "Make", …).
-    pub dictionary: String,
+    /// The name the Actions panel shows for the step ("Gaussian Blur", "Make", …), as stored:
+    /// ASCII, or the authoring platform's legacy encoding when localised. See [`Self::label`].
+    pub dictionary: Vec<u8>,
     /// The event's parameters; `None` for events without any.
     pub descriptor: Option<Descriptor>,
 }
@@ -98,9 +101,27 @@ impl Default for AtnItem {
             with_dialog: false,
             dialog_options: 0,
             event: AtnEvent::Code(*b"    "),
-            dictionary: String::new(),
+            dictionary: Vec::new(),
             descriptor: None,
         }
+    }
+}
+
+impl AtnItem {
+    /// The panel name as text: UTF-8 when it is, otherwise decoded byte by byte (Latin-1).
+    pub fn dictionary(&self) -> String {
+        decode_legacy_name(&self.dictionary)
+    }
+
+    /// A readable name for the step: the descriptor's class name when Photoshop stored one
+    /// (Unicode, so a localised name survives), else [`Self::dictionary`], else the event id.
+    pub fn label(&self) -> String {
+        let class = self.descriptor.as_ref().map(|d| d.name.to_string_lossy()).unwrap_or_default();
+        if !class.trim().is_empty() {
+            return class;
+        }
+        let dict = self.dictionary();
+        if dict.trim().is_empty() { self.event.id() } else { dict }
     }
 }
 
@@ -110,37 +131,41 @@ impl Default for AtnItem {
 pub enum AtnEvent {
     /// Stored as `long` + 4 bytes.
     Code([u8; 4]),
-    /// Stored as `TEXT` + length-prefixed ASCII.
-    Name(String),
+    /// Stored as `TEXT` + length-prefixed bytes (ASCII in every file seen).
+    Name(Vec<u8>),
 }
 
 impl AtnEvent {
+    /// A string-named event.
+    pub fn name(s: &str) -> Self {
+        AtnEvent::Name(s.as_bytes().to_vec())
+    }
     /// The event id as text: the code's four characters, or the name.
     pub fn id(&self) -> String {
         match self {
             AtnEvent::Code(c) => String::from_utf8_lossy(c).into_owned(),
-            AtnEvent::Name(n) => n.clone(),
+            AtnEvent::Name(n) => String::from_utf8_lossy(n).into_owned(),
         }
     }
     /// `true` if the event is the code or name `s`.
     pub fn is(&self, s: &str) -> bool {
         match self {
             AtnEvent::Code(c) => c == s.as_bytes(),
-            AtnEvent::Name(n) => n == s,
+            AtnEvent::Name(n) => n == s.as_bytes(),
         }
     }
 }
 
-/// Reads a u32 length + ASCII bytes (event and dictionary names).
-fn read_ascii(r: &mut Reader<'_>) -> Result<String> {
+/// Reads a u32 length + bytes (event and dictionary names), verbatim.
+fn read_ascii(r: &mut Reader<'_>) -> Result<Vec<u8>> {
     let n = r.u32()?;
-    Ok(String::from_utf8_lossy(r.bytes_u64(u64::from(n))?).into_owned())
+    Ok(r.bytes_u64(u64::from(n))?.to_vec())
 }
 
-fn write_ascii(out: &mut Vec<u8>, s: &str) -> Result<()> {
+fn write_ascii(out: &mut Vec<u8>, s: &[u8]) -> Result<()> {
     let n = u32::try_from(s.len()).map_err(|_| PsdError::LimitExceeded("action name too long"))?;
     out.put_u32(n);
-    out.put(s.as_bytes());
+    out.put(s);
     Ok(())
 }
 
@@ -277,12 +302,12 @@ mod tests {
             with_dialog: true,
             dialog_options: 2,
             event: AtnEvent::Code(*b"GsnB"),
-            dictionary: "Gaussian Blur".into(),
+            dictionary: b"Gaussian Blur".to_vec(),
             descriptor: Some(Descriptor::new("null").with("Rds ", px(2.5))),
         };
         let trim = AtnItem {
-            event: AtnEvent::Name("trim".into()),
-            dictionary: "Trim".into(),
+            event: AtnEvent::name("trim"),
+            dictionary: b"Trim".to_vec(),
             descriptor: Some(
                 Descriptor { name: UnicodeString::new_nul("Trim"), class_id: crate::descriptor::Id::Str(b"trim".to_vec()), items: Vec::new() }
                     .with(
@@ -293,7 +318,7 @@ mod tests {
             ),
             ..Default::default()
         };
-        let flatten = AtnItem { enabled: false, event: AtnEvent::Code(*b"Fltn"), dictionary: "Flatten Image".into(), ..Default::default() };
+        let flatten = AtnItem { enabled: false, event: AtnEvent::Code(*b"Fltn"), dictionary: b"Flatten Image".to_vec(), ..Default::default() };
         AtnFile {
             name: UnicodeString::new_nul("Set ✓"),
             expanded: true,
@@ -324,6 +349,21 @@ mod tests {
         assert_eq!(parsed.actions[0].items[0].event.id(), "GsnB");
         assert!(parsed.actions[1].items[0].event.is("trim"));
         assert_eq!(parsed.actions[1].items[0].event.id(), "trim");
+        assert_eq!(parsed.actions[0].items[0].label(), "Gaussian Blur");
+        assert_eq!(parsed.actions[1].items[0].label(), "Trim");
+        // A localised panel name in the platform's legacy encoding survives a round trip and
+        // the Unicode class name is the readable label.
+        let localised = AtnItem {
+            event: AtnEvent::name("set"),
+            dictionary: b"D\x8efinir".to_vec(),
+            descriptor: Some(Descriptor { name: UnicodeString::new_nul("Définir"), class_id: crate::descriptor::Id::new("setd"), items: Vec::new() }),
+            ..Default::default()
+        };
+        assert_eq!(localised.label(), "Définir");
+        let f = AtnFile { actions: vec![AtnAction { items: vec![localised.clone()], ..Default::default() }], ..Default::default() };
+        let bytes = write(&f).unwrap();
+        assert_eq!(parse(&bytes).unwrap().actions[0].items[0], localised);
+        assert_eq!(AtnItem { event: AtnEvent::name("x"), ..Default::default() }.label(), "x");
     }
 
     /// The layout Photoshop writes for a one-step Trim action, assembled by hand from the
@@ -338,8 +378,8 @@ mod tests {
                 expanded: true,
                 items: vec![AtnItem {
                     expanded: true,
-                    event: AtnEvent::Name("trim".into()),
-                    dictionary: "Trim".into(),
+                    event: AtnEvent::name("trim"),
+                    dictionary: b"Trim".to_vec(),
                     descriptor: Some(Descriptor {
                         name: UnicodeString::new_nul("Trim"),
                         class_id: crate::descriptor::Id::Str(b"trim".to_vec()),

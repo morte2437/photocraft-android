@@ -315,7 +315,18 @@ mod tests {
         assert_eq!(clamp_axis(-400.0, 1000.0, 500.0, 0.2), -250.0, "the image's right edge on the view's");
         assert_eq!(clamp_axis(1400.0, 1000.0, 500.0, 0.2), 1250.0, "its left edge on the view's");
         assert_eq!(clamp_axis(500.0, 1000.0, 1000.0, 1.0), 500.0, "exactly the view's size: centred");
-        let mut v = View { zoom: 1.0, center: [-500.0, 20.0], fit_pending: false, fill_pending: false, doc_size: [1000, 800], rotation: 0.0 };
+        let mut v = View {
+            zoom: 1.0,
+            center: [-500.0, 20.0],
+            fit_pending: false,
+            fill_pending: false,
+            doc_size: [1000, 800],
+            rotation: 0.0,
+            zoom_animating: false,
+            zoom_anchor: None,
+            display_camera: None,
+            zoom_transition: None,
+        };
         assert!(clamp_view(&mut v, vec2(500.0, 400.0), 1.0));
         assert_eq!(v.center, [250.0, 200.0]);
         assert!(!clamp_view(&mut v, vec2(500.0, 400.0), 1.0), "stable: no repaint loop");
@@ -334,7 +345,18 @@ mod tests {
         let (at, len) = s.thumb((0.0, 1000.0), 0.0);
         assert!(at.is_finite() && len.is_finite());
         assert_eq!(s.doc_per_point((0.0, 1000.0), 0.0), 0.0);
-        let mut v = View { zoom: 1.0, center: [0.0, 0.0], fit_pending: false, fill_pending: false, doc_size: [0, 0], rotation: 0.0 };
+        let mut v = View {
+            zoom: 1.0,
+            center: [0.0, 0.0],
+            fit_pending: false,
+            fill_pending: false,
+            doc_size: [0, 0],
+            rotation: 0.0,
+            zoom_animating: false,
+            zoom_anchor: None,
+            display_camera: None,
+            zoom_transition: None,
+        };
         assert!(!clamp_view(&mut v, vec2(500.0, 400.0), 1.0));
     }
 

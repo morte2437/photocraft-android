@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use photocraft_doc::{Layer, LayerContent, SmartContentsId, SmartSource};
+use photocraft_doc::{Adjustment, Layer, LayerContent, SmartContentsId, SmartSource};
 use serde_json::{Value, json};
 
 use crate::{DocState, Session};
@@ -43,6 +43,7 @@ pub fn document(d: &DocState) -> Value {
         "selectionBounds": doc.selection.as_ref().map(|s| { let r = s.content_bounds(); [r.x0, r.y0, r.width() as i32, r.height() as i32] }),
         "layers": doc.layers.iter().rev().map(|l| layer_sel(l, &selected, &instances, Some(&doc.metadata))).collect::<Vec<_>>(),
         "history": d.history.entries(),
+        "historySource": crate::history_source_cmds::source_json(d),
         "snapshots": d.snapshots.iter().map(|snap| json!({"id": snap.id, "name": snap.name})).collect::<Vec<_>>(),
         "canUndo": d.history.can_undo(),
         "canRedo": d.history.can_redo(),
@@ -105,6 +106,7 @@ fn layer_sel(l: &Layer, selected: &[photocraft_doc::LayerId], instances: &HashMa
         "bounds": bounds,
         "selected": selected.contains(&l.id),
         "linkGroup": l.link_group,
+        "hasXmp": l.xmp.is_some(),
     });
     match &l.content {
         LayerContent::Group(g) => {
@@ -118,6 +120,11 @@ fn layer_sel(l: &Layer, selected: &[photocraft_doc::LayerId], instances: &HashMa
             // The same kind and parameters the adjustment commands take (`inBlack` 0..255, …),
             // not the internal model.
             v["adjustment"] = json!({"kind": crate::commands::adjustment_kind(a), "params": crate::adjust_params::to_params(a)});
+            // Kept as imported and never rendered (#6541): agents and the Layers panel can tell.
+            if let Adjustment::Unsupported { psd_key, .. } = a {
+                v["adjustment"]["unsupported"] = json!(true);
+                v["adjustment"]["psdKey"] = json!(psd_key);
+            }
         }
         LayerContent::Smart(sm) => {
             v["smartFilters"] = Value::Array(
@@ -208,6 +215,32 @@ mod tests {
         let back = crate::adjust_params::from_params("levels", &adj["params"], None, photocraft_color::ColorMode::Rgb).unwrap();
         assert_eq!(crate::adjust_params::to_params(&back), crate::adjust_params::to_params(&model));
         assert!(!adj.to_string().contains('_'), "{adj}");
+    }
+
+    /// #6541: an adjustment PhotoCraft keeps but cannot render is reported as such, not as an Invert.
+    #[test]
+    fn an_unsupported_adjustment_layer_is_reported_as_kept_not_rendered() {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 4, "height": 4})).unwrap();
+        s.execute("layer.newAdjustmentLayer.invert", json!({})).unwrap();
+        s.edit("unsupported fixture", |doc, active| {
+            let l = Layer::new("Mystery", LayerContent::Adjustment(Adjustment::Unsupported { psd_key: "xyzw".into(), raw: vec![1, 2, 3] }));
+            let id = l.id;
+            doc.layers.push(l);
+            *active = Some(id);
+            Ok(())
+        })
+        .unwrap();
+        let info = s.execute("document.inspect", json!({})).unwrap();
+        let layers = info["layers"].as_array().unwrap();
+        let unsupported = &layers[0]["adjustment"];
+        assert_eq!(unsupported["kind"], "unsupported", "{unsupported}");
+        assert_eq!(unsupported["unsupported"], json!(true));
+        assert_eq!(unsupported["psdKey"], "xyzw");
+        // A real Invert reports neither flag.
+        let invert = &layers[1]["adjustment"];
+        assert_eq!(invert["kind"], "invert");
+        assert!(invert.get("unsupported").is_none(), "{invert}");
     }
 
     #[test]

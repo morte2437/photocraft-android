@@ -15,7 +15,7 @@ set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/../env.sh"
 HERE="$ROOT/packaging/web"
 
-if [ "${1:-}" != "--skip-build" ]; then
+if [[ "${1:-}" != "--skip-build" ]]; then
   command -v trunk >/dev/null || { echo "error: trunk not found (cargo install trunk --locked)" >&2; exit 1; }
   (cd "$ROOT/apps/photocraft-web" && trunk build --release)
   (cd "$ROOT/apps/photocraft-web-boot" && trunk build --release)
@@ -24,7 +24,7 @@ fi
 APP="$ROOT/dist/web"       # the app: index.html, wasm-bindgen glue, one .wasm
 BOOT="$ROOT/dist/web-boot" # the page that ships, and the module that starts the app from parts
 for site in "$APP" "$BOOT"; do
-  [ -f "$site/index.html" ] || { echo "error: $site/index.html missing; run without --skip-build" >&2; exit 1; }
+  [[ -f "$site/index.html" ]] || { echo "error: $site/index.html missing; run without --skip-build" >&2; exit 1; }
   # Paths must be relative so the site works under any prefix (public_url = "./" in Trunk.toml).
   if grep -Eq '(src|href)="/[^/]' "$site/index.html"; then
     echo "error: $site/index.html has root-absolute URLs; it would break when served from a sub-path" >&2
@@ -35,23 +35,23 @@ done
 # Size limit (issues #198, #5302): Cloudflare Pages/Workers reject any single file over 25 MiB,
 # and other hosts and CDNs have similar caps. No file in the site may come near that; the app's
 # wasm, the one file that does, ships as parts of PART_BYTES. Override only to investigate.
-MAX_FILE_BYTES="${PHOTOCRAFT_WEB_MAX_FILE_BYTES:-25165824}" # 24 MiB
-PART_BYTES="${PHOTOCRAFT_WEB_PART_BYTES:-20971520}"         # 20 MiB
-if [ "$PART_BYTES" -le 0 ] || [ "$PART_BYTES" -gt "$MAX_FILE_BYTES" ]; then
+MAX_FILE_BYTES=$((10#${PHOTOCRAFT_WEB_MAX_FILE_BYTES:-25165824})) # 24 MiB
+PART_BYTES=$((10#${PHOTOCRAFT_WEB_PART_BYTES:-20971520}))         # 20 MiB
+if [[ "$PART_BYTES" -le 0 ]] || [[ "$PART_BYTES" -gt "$MAX_FILE_BYTES" ]]; then
   echo "error: a part of $PART_BYTES bytes doesn't fit the $MAX_FILE_BYTES-byte file limit" >&2
   exit 1
 fi
 
 WASM=""
 for wasm in "$APP"/*_bg.wasm; do
-  [ -f "$wasm" ] || continue
-  [ -z "$WASM" ] || { echo "error: more than one .wasm in $APP; remove it and run without --skip-build" >&2; exit 1; }
+  [[ -f "$wasm" ]] || continue
+  [[ -z "$WASM" ]] || { echo "error: more than one .wasm in $APP; remove it and run without --skip-build" >&2; exit 1; }
   WASM="$wasm"
 done
-[ -n "$WASM" ] || { echo "error: no .wasm in $APP" >&2; exit 1; }
+[[ -n "$WASM" ]] || { echo "error: no .wasm in $APP" >&2; exit 1; }
 STEM="$(basename "$WASM" _bg.wasm)" # photocraft-web-<content hash>
 GLUE="$APP/$STEM.js"
-[ -f "$GLUE" ] || { echo "error: $GLUE missing" >&2; exit 1; }
+[[ -f "$GLUE" ]] || { echo "error: $GLUE missing" >&2; exit 1; }
 
 NAME="photocraft-web-$VERSION"
 WORK="$CARGO_TARGET_DIR/web-package"
@@ -80,9 +80,9 @@ copy_docs "$WORK/$NAME"
 # Optional served fonts (README.md › Fonts): PHOTOCRAFT_WEB_FONTS_DIR=<a craft-fonts checkout, or any
 # folder with a fonts/manifest.txt in its format> copies the manifest, every font and licence file
 # it lists into the site, at the same paths. The wasm is unchanged; the app fetches fonts on demand.
-if [ -n "${PHOTOCRAFT_WEB_FONTS_DIR:-}" ]; then
+if [[ -n "${PHOTOCRAFT_WEB_FONTS_DIR:-}" ]]; then
   FONTS_MANIFEST="$PHOTOCRAFT_WEB_FONTS_DIR/fonts/manifest.txt"
-  [ -f "$FONTS_MANIFEST" ] || { echo "error: $FONTS_MANIFEST missing (PHOTOCRAFT_WEB_FONTS_DIR)" >&2; exit 1; }
+  [[ -f "$FONTS_MANIFEST" ]] || { echo "error: $FONTS_MANIFEST missing (PHOTOCRAFT_WEB_FONTS_DIR)" >&2; exit 1; }
   mkdir -p "$WORK/$NAME/fonts"
   cp "$FONTS_MANIFEST" "$WORK/$NAME/fonts/manifest.txt"
   # Field 3 is the font file, field 6 (if any) its licence file; both relative to the folder.
@@ -98,8 +98,8 @@ fi
 largest=0
 while IFS= read -r file; do
   bytes=$(size "$file")
-  [ "$bytes" -le "$largest" ] || largest=$bytes
-  if [ "$bytes" -gt "$MAX_FILE_BYTES" ]; then
+  [[ "$bytes" -le "$largest" ]] || largest=$bytes
+  if [[ "$bytes" -gt "$MAX_FILE_BYTES" ]]; then
     echo "error: ${file#"$WORK/$NAME/"} is $bytes bytes, over the $MAX_FILE_BYTES-byte limit (Cloudflare's per-file cap is 25 MiB)" >&2
     exit 1
   fi

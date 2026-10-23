@@ -19,7 +19,7 @@ PhotoCraft is an open-source, native, Photoshop-comparable image editor written 
 | `docs/parity-checklist.md` | Generated list of every Photoshop menu item, live or missing |
 | `docs/scorecard.md` | Generated scorecard: performance budgets and numbers, corpus floors, per-area checklists (tools, files, UI, type, automation, reliability, distribution), settings that do nothing |
 | `crates/<name>/README.md` (where present) | Public API of that crate |
-| [photocraft-corpus](https://github.com/storytold/photocraft-corpus) + `docs/development.md` › Test corpora | Real-file test oracles (our Photoshop-authored PSDs); with psd-tools, ag-psd and PngSuite fetched into `corpus/` by `cargo xtask corpus --all` at the pins in `xtask/src/corpus_pins.rs` |
+| [photocraft-corpus](https://github.com/storytold/photocraft-corpus) + `docs/development.md` › Test corpora | Real-file test oracles (our Photoshop-authored PSDs and GIMP-authored XCFs); with psd-tools, ag-psd and PngSuite fetched into `corpus/` by `cargo xtask corpus --all` at the pins in `xtask/src/corpus_pins.rs` |
 
 ## 2. Workspace map
 
@@ -27,7 +27,7 @@ PhotoCraft is an open-source, native, Photoshop-comparable image editor written 
 crates/
   geom cms color raster      L0 foundation (geometry, ICC colour management, pixel formats + blend math, COW tiles)
   psd codecs                 L0 standalone format crates (no workspace deps; publishable)
-  tablet                     L0 standalone pen tablet input (macOS AppKit, X11 XInput2, Android MotionEvent); the one isolated unsafe crate
+  tablet                     L0 standalone pen tablet input (macOS AppKit, X11 XInput2, Windows barrel button, Android MotionEvent); the one isolated unsafe crate
   doc                        L1 document model (layers, masks, adjustments, effects, smart objects: pure data)
   ops paint algo text vector L2 history, brush engine, imaging algorithms, type engine, paths/shapes
   compose gpu format         L3 CPU compositor (the oracle), wgpu compositor, .pcraft native format
@@ -53,7 +53,7 @@ xtask/                       cargo xtask layers | wasm | ci | stats | corpus | t
 People trust PhotoCraft with their work, and a crash loses it. A malformed file, a bad command or MCP param, a corrupt settings file, an odd keystroke or a full disk must produce an error the user or agent can act on, never a panic. Don't ship a feature by adding a panic path; fix a crash before building on top of it. The shared standard is `../craftrules/standards/never-crash.md`.
 
 - **Non-test code never panics.** No `unwrap()`, `expect()`, `panic!`, `unreachable!`, `todo!` or `unimplemented!`. Return the crate's error type and propagate with `?`; use `ok_or(..)?`, `let .. else { return Err(..) }`, `if let`, or `unwrap_or*` where a fallback is truly correct (never one that silently corrupts a document). Unfinished features return an "unsupported" error. The only exception is a provably infallible literal: `#[allow(clippy::expect_used)]` plus `.expect("why it can't fail")`.
-- **No `unsafe`.** The workspace sets `unsafe_code = "forbid"`. The one exception is the isolated helper crate `photocraft-tablet` (`crates/tablet`): winit drops pen tablet data, and reading it on macOS needs an AppKit event monitor (Objective-C interop). Only its `src/macos.rs` allows `unsafe` (`unsafe_code = "deny"` crate-wide, every block has a `SAFETY:` comment, tested against real `NSEvent`s); its X11 path and all mapping code are safe. On Android, symbol-name entry points need `#[unsafe(no_mangle)]`: the tablet crate's JNI pen hook (`src/android.rs`) and `android_main` in `apps/photocraft-android` (which also denies `unsafe` crate-wide); neither dereferences a pointer. Don't add `unsafe` anywhere else.
+- **No `unsafe`.** The workspace sets `unsafe_code = "forbid"`. The one exception is the isolated helper crate `photocraft-tablet` (`crates/tablet`): winit drops pen tablet data, and reading it on macOS needs an AppKit event monitor (Objective-C interop) and on Windows a pointer message hook (`GetPointerPenInfo`). Only its `src/macos.rs` and `src/windows.rs` allow `unsafe` (`unsafe_code = "deny"` crate-wide, every block has a `SAFETY:` comment, tested against real `NSEvent`s and pointer messages); its X11 path and all mapping code are safe. On Android, symbol-name entry points need `#[unsafe(no_mangle)]`: the tablet crate's JNI pen hook (`src/android.rs`) and `android_main` in `apps/photocraft-android` (which also denies `unsafe` crate-wide); neither dereferences a pointer. Don't add `unsafe` anywhere else.
 - **Input-derived numbers are hostile.** Use `get()` rather than `[i]`/`[a..b]` for indices from files, params, selections or arithmetic on them; slice strings only at char boundaries; use `checked_*`/`saturating_*` for lengths, offsets and counts; guard division by zero and NaN/inf casts; cap allocations sized by input.
 - **Bound recursion** with depth limits or seen-sets (documents can be deep or cyclic).
 - **Don't cascade.** Handle lock poisoning (`lock().unwrap_or_else(PoisonError::into_inner)`) and treat thread joins as `Result`s.
@@ -71,6 +71,7 @@ People trust PhotoCraft with their work, and a crash loses it. A malformed file,
 8. **Performance is a feature.** Benchmark heavy operations on a 24–36 MP image in release. Work per tile in parallel (rayon), skip empty tiles, never scan a full surface per frame (cache per revision), and record before/after timings in the dev log.
 
 9. **Never panic on input** (see *Never crash* above). A command's `run` closure and anything it calls must return `Err`, never panic, for *any* params or document state: validate params, check bounds before indexing or dividing, and reject absurd sizes before allocating. The `panic_hunt` integration test fuzzes every command with adversarial params and must stay green.
+10. **Time goes through `chrono`** (workspace dependency). Never hand-roll UTC/calendar conversion (days-to-date algorithms, leap-year math); a crate owns only its output format string. The one exception is range extension: past the years chrono can represent, shift the date by whole 400-year Gregorian cycles (146,097 days, after which the calendar repeats), let chrono compute the month and day, and add the cycles back to the year (splitting seconds into hours, minutes and seconds is plain arithmetic).
 
 ## 4. Picking work
 
@@ -108,7 +109,7 @@ cargo xtask test-corpus     # if you touched psd, io, codecs, compose, gpu, text
 
 While iterating, run less and keep the full commands above as the final gate: `cargo test -p <crate> --lib --tests` skips the examples and doctests plain `cargo test` builds every time (ui-egui has 11 examples), and `cargo test -p <crate> --test <file>` runs one integration-test file. `cargo nextest run` runs tests in parallel across binaries; see `docs/development.md` › Faster test loops.
 
-**Test corpora.** Real-file corpora live in `corpus/` (gitignored, never committed), fetched at pinned commits and sha256-verified by `cargo xtask corpus --all`: our Photoshop-authored oracles from https://github.com/storytold/photocraft-corpus plus psd-tools, ag-psd and PngSuite from their upstreams. Pins: `xtask/src/corpus_pins.rs`. The corpus tests are opt-in (cargo feature `corpus`): plain `cargo test` skips them, and with the feature on a missing corpus fails ("run `cargo xtask corpus --all`"). `cargo xtask test-corpus` fetches and runs them all. CI always runs them (the `corpus` job, cached by pin). Never commit corpus files; new oracles go to photocraft-corpus (its `AGENTS.md`), then a pin bump here. Details: `docs/development.md` › Test corpora.
+**Test corpora.** Real-file corpora live in `corpus/` (gitignored, never committed), fetched at pinned commits and sha256-verified by `cargo xtask corpus --all`: our Photoshop- and GIMP-authored oracles from https://github.com/storytold/photocraft-corpus plus psd-tools, ag-psd and PngSuite from their upstreams. Pins: `xtask/src/corpus_pins.rs`. The corpus tests are opt-in (cargo feature `corpus`): plain `cargo test` skips them, and with the feature on a missing corpus fails ("run `cargo xtask corpus --all`"). `cargo xtask test-corpus` fetches and runs them all. CI always runs them (the `corpus` job, cached by pin). Never commit corpus files; new oracles go to photocraft-corpus (its `AGENTS.md`), then a pin bump here. Details: `docs/development.md` › Test corpora.
 
 Commands must **never panic** on bad input (Rule 9): every `run` closure and the code it calls returns `Err`, not a panic, for any params or document state. New commands come with a graceful-failure test (empty/out-of-range/wrong-type params → `Err`, not a crash).
 

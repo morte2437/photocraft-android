@@ -28,8 +28,8 @@ language manually there.
 - `crates/ui-egui/src/i18n/zh-hans.tsv` contains the translations, independent of
   the lookup implementation. Its UTF-8 columns are `context<TAB>source<TAB>translation`.
 - `crates/ui-egui/src/i18n/mod.rs` registers `zh-hans` with one plural form and
-  `complete_menus: true`. Shared tests enforce coverage of every menu string,
-  `tl!` literal, blend mode, brush section and generated preference label.
+  `complete_menus: true`. `cargo xtask i18n-coverage` lists any menu string,
+  `tl!` literal or other source key the catalog lacks; those show in English.
 - Shortcut templates retain `{key}` so the shell supplies the correct key for
   the current platform. Layer-count messages use one Chinese plural form.
 
@@ -62,9 +62,8 @@ complete catalog coverage does not claim those strings are translated.
 
 Run `cargo test -p photocraft-ui-egui`, the touched-crate all-target clippy check,
 `cargo xtask layers` and `cargo xtask wasm`. The shared catalog tests validate
-duplicate keys, placeholders, ellipses, menu coverage, `tl!` literals, brush
-sections and blend modes. Chinese-specific tests cover locale selection, fallback,
-plural messages, formatted labels and the painted brush section rows and heading. Render and inspect the menus, Preferences and representative
+duplicate keys, placeholders, ellipses and plural forms. Chinese-specific tests
+cover locale selection, fallback and the painted brush section rows. Render and inspect the menus, Preferences and representative
 dialogs with the existing offscreen `snapshot` example.
 
 Font delivery is separate from the translation data. The catalog adds no font
@@ -73,7 +72,6 @@ label layout and platform-specific shortcuts visually on each target platform,
 and verify web glyph coverage separately.
 
 When English labels change, update their source keys and translations together,
-preserving contexts and placeholders. The complete-catalog tests catch missing
-keys, and the Simplified Chinese regression test checks dynamic shortcut labels,
-layer counts and English fallback. Review changed source meanings against the
-current English UI.
+preserving contexts and placeholders. `cargo xtask i18n-coverage` (also the last
+step of `cargo xtask ci`) lists the keys still missing. Review changed source
+meanings against the current English UI.

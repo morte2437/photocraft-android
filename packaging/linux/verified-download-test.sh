@@ -22,7 +22,7 @@ expected="$(sha256 "$source_asset")"
 cp "$source_asset" "$cache"
 /bin/chmod 644 "$cache"
 download_verified "file://$TMP/unavailable" "$cache" "$expected" true || fail "offline cache was not reused"
-[ -x "$cache" ] || fail "valid preseed did not become executable"
+[[ -x "$cache" ]] || fail "valid preseed did not become executable"
 
 # If a valid but non-executable cache cannot be chmod'd, fail here rather than at invocation.
 /bin/chmod 644 "$cache"
@@ -44,27 +44,27 @@ cp "$source_asset" "$runtime"
 chmod() { fail "chmod called for a readable runtime cache"; }
 download_verified "file://$TMP/unavailable" "$runtime" "$expected" || fail "readable runtime was not reused"
 unset -f chmod
-[ ! -x "$runtime" ] || fail "runtime was needlessly made executable"
+[[ ! -x "$runtime" ]] || fail "runtime was needlessly made executable"
 
 # A fresh runtime download is verified, readable data rather than an executable program.
 fresh_runtime="$TMP/fresh-runtime"
 download_verified "file://$source_asset" "$fresh_runtime" "$expected" || fail "fresh runtime download failed"
 cmp -s "$source_asset" "$fresh_runtime" || fail "fresh runtime differs from verified asset"
-[ -r "$fresh_runtime" ] || fail "fresh runtime is not readable"
-[ ! -x "$fresh_runtime" ] || fail "fresh runtime was made executable"
+[[ -r "$fresh_runtime" ]] || fail "fresh runtime is not readable"
+[[ ! -x "$fresh_runtime" ]] || fail "fresh runtime was made executable"
 mode="$(stat -c %a "$fresh_runtime" 2>/dev/null || stat -f %Lp "$fresh_runtime")"
-[ "$mode" = 644 ] || fail "fresh runtime mode is $mode, expected 644"
+[[ "$mode" = 644 ]] || fail "fresh runtime mode is $mode, expected 644"
 
 # A corrupt cache is replaced only by bytes with the pinned digest.
 printf 'corrupt' >"$cache"
 download_verified "file://$source_asset" "$cache" "$expected" true || fail "corrupt cache was not replaced"
 cmp -s "$source_asset" "$cache" || fail "replacement differs from verified asset"
-[ -x "$cache" ] || fail "replacement is not executable"
+[[ -x "$cache" ]] || fail "replacement is not executable"
 
 wrong_digest="$(printf '%064d' 0)"
 bad="$TMP/bad.AppImage"
 if download_verified "file://$source_asset" "$bad" "$wrong_digest" >/dev/null 2>&1; then fail "wrong digest accepted"; fi
-[ ! -e "$bad" ] || fail "wrong-digest download left a cache entry"
+[[ ! -e "$bad" ]] || fail "wrong-digest download left a cache entry"
 
 verify_appimagetool_override "$cache" "$expected" 1.9.1 x86_64 || fail "valid override rejected"
 /bin/chmod 644 "$cache"

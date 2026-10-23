@@ -104,6 +104,11 @@ fn set_props(s: &mut Session, p: &Value) -> Result<Value> {
                 t.fps = fps;
             }
             if let Some(d) = duration {
+                // A work area that reached the old end follows the new one, as in
+                // `video_cmds::grow_duration` (#4170); a shrink is left to `Timeline::clamp`.
+                if t.work_end >= t.duration {
+                    t.work_end = d;
+                }
                 t.duration = d;
             }
             if let Some(ws) = p.get("workStart").and_then(Value::as_u64) {
@@ -243,6 +248,23 @@ mod tests {
         }
         s.execute("timeline.nextFrame", json!({})).unwrap();
         assert_eq!(current(&mut s), 1);
+    }
+
+    /// A longer `duration` moves a work area that reached the old end to the new end, like
+    /// `video_cmds::grow_duration` (#4170); a narrowed one and an explicit `workEnd` stay put.
+    #[test]
+    fn set_props_longer_duration_moves_full_work_area() {
+        let work = |r: &Value| (r["timeline"]["workStart"].as_u64(), r["timeline"]["workEnd"].as_u64());
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 8, "height": 8})).unwrap();
+        s.execute("timeline.create", json!({"duration": 30})).unwrap();
+        let r = s.execute("timeline.setProps", json!({"duration": 60})).unwrap();
+        assert_eq!(work(&r), (Some(0), Some(60)), "the full work area follows the new end");
+        let r = s.execute("timeline.setProps", json!({"duration": 90, "workEnd": 45})).unwrap();
+        assert_eq!(work(&r), (Some(0), Some(45)), "an explicit workEnd wins");
+        s.execute("timeline.setProps", json!({"workStart": 2, "workEnd": 10})).unwrap();
+        let r = s.execute("timeline.setProps", json!({"duration": 120})).unwrap();
+        assert_eq!(work(&r), (Some(2), Some(10)), "a narrowed work area stays put");
     }
 
     /// #1009: a timeline stored with `duration` 0 or `u64::MAX` (an old or hand-edited file) steps

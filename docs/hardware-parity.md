@@ -22,6 +22,7 @@ HDR display to verify.
 | GPU filters (Blur Gallery, Liquify, Smart Sharpen, Camera Raw) | yes | CPU (rayon) for filters; GPU for compose and effects | partial |
 | Documents larger than the GPU texture limit | yes (tiled) | CPU fallback; tiling in progress (#49) | partial |
 | CPU-only fallback when no GPU | yes, reduced | `cpu` canvas preference; fails to start without an adapter on some Linux systems (#2519, #2412) | partial |
+| Choosing the GPU on a multi-GPU machine | Preferences › Performance › Use Graphics Processor | Linux only: Preferences › Performance › Advanced › GPU adapter and `PHOTOCRAFT_GPU_ADAPTER` (#1885); ignored on Windows and macOS | partial |
 | Old / integrated GPUs | yes | black line on Intel HD (#2426), OpenCore Macs fail (#1859), Rgba32Float panic (#2020) | partial |
 
 ## Pen tablets
@@ -63,3 +64,4 @@ HDR display to verify.
 |---|---|---|
 | 2026-10-10 | major | First version |
 | 2026-10-10 | minor | Android column (apps/photocraft-android prototype) |
+| 2026-10-19 | minor | Graphics Adapter choice on Linux (#1885) |

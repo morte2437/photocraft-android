@@ -100,12 +100,23 @@ pub fn isolation_shows(doc: &Document, isolated: &[LayerId], id: LayerId) -> boo
 
 // ---------------------------------------------------------------- Transform Selection
 
-fn reference_point(p: &Value, r: [f64; 4]) -> [f64; 2] {
+/// The point the scale / rotate / skew params pivot about: a named point of the frame `r` or
+/// `[x, y]`; missing (or null) is the centre. Anything else is an error, not a silent centre.
+fn reference_point(cmd: &str, p: &Value, r: [f64; 4]) -> Result<[f64; 2]> {
     let (x0, y0, x1, y1) = (r[0], r[1], r[2], r[3]);
     let (cx, cy) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
-    match p.get("reference") {
-        Some(Value::Array(a)) if a.len() >= 2 => [a[0].as_f64().unwrap_or(cx), a[1].as_f64().unwrap_or(cy)],
+    let unknown = || bad(cmd, "`reference` must be one of center|topLeft|top|topRight|left|right|bottomLeft|bottom|bottomRight or [x, y]");
+    Ok(match p.get("reference") {
+        None | Some(Value::Null) => [cx, cy],
+        Some(Value::Array(a)) => match a.as_slice() {
+            [x, y] => match (x.as_f64(), y.as_f64()) {
+                (Some(x), Some(y)) if x.is_finite() && y.is_finite() => [x, y],
+                _ => return Err(unknown()),
+            },
+            _ => return Err(unknown()),
+        },
         Some(Value::String(k)) => match k.as_str() {
+            "center" => [cx, cy],
             "topLeft" => [x0, y0],
             "top" => [cx, y0],
             "topRight" => [x1, y0],
@@ -114,10 +125,10 @@ fn reference_point(p: &Value, r: [f64; 4]) -> [f64; 2] {
             "bottomLeft" => [x0, y1],
             "bottom" => [cx, y1],
             "bottomRight" => [x1, y1],
-            _ => [cx, cy],
+            _ => return Err(unknown()),
         },
-        _ => [cx, cy],
-    }
+        Some(_) => return Err(unknown()),
+    })
 }
 
 fn quad(p: &Value) -> Option<[[f64; 2]; 4]> {
@@ -134,8 +145,8 @@ fn quad(p: &Value) -> Option<[[f64; 2]; 4]> {
 }
 
 /// The homography of the scale / rotate / skew / move params about the reference point.
-fn affine_params(p: &Value, r: [f64; 4]) -> Homography {
-    let [px, py] = reference_point(p, r);
+fn affine_params(cmd: &str, p: &Value, r: [f64; 4]) -> Result<Homography> {
+    let [px, py] = reference_point(cmd, p, r)?;
     let (sx, sy) = (f(p, "scaleX", 100.0) / 100.0, f(p, "scaleY", 100.0) / 100.0);
     let a = f(p, "rotate", 0.0).to_radians();
     let (kx, ky) = (f(p, "skewX", 0.0).to_radians().tan(), f(p, "skewY", 0.0).to_radians().tan());
@@ -145,9 +156,11 @@ fn affine_params(p: &Value, r: [f64; 4]) -> Homography {
     let rot = Homography([ca, -sa, 0.0, sa, ca, 0.0, 0.0, 0.0, 1.0]);
     let skew = Homography([1.0, kx, 0.0, ky, 1.0, 0.0, 0.0, 0.0, 1.0]);
     let scale = Homography([sx, 0.0, 0.0, 0.0, sy, 0.0, 0.0, 0.0, 1.0]);
-    t(px + dx, py + dy).mul(&rot).mul(&skew).mul(&scale).mul(&t(-px, -py))
+    Ok(t(px + dx, py + dy).mul(&rot).mul(&skew).mul(&scale).mul(&t(-px, -py)))
 }
 
+/// Select › Transform Selection: warps the selection outline by the params' matrix, quad or
+/// scale/rotate/move, refused when the result would not fit the transform budget.
 fn transform_selection(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "select.transformSelection";
     let d = s.active().ok_or(EngineError::NoDocument)?;
@@ -185,7 +198,7 @@ fn transform_selection(s: &mut Session, p: &Value) -> Result<Value> {
         }
         Homography([v[0], v[2], v[4], v[1], v[3], v[5], 0.0, 0.0, 1.0])
     } else {
-        affine_params(p, rect)
+        affine_params(CMD, p, rect)?
     };
     if h.inverse().is_none() {
         return Err(bad(CMD, "the transform collapses the selection"));
@@ -195,7 +208,7 @@ fn transform_selection(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let selected = s.edit("Transform Selection", |doc, _| {
         if let Some(sel) = &doc.selection {
-            crate::transform_cmds::check_budget(sel.content_bounds(), &h, "selection")?;
+            crate::transform_cmds::check_budget(sel.content_bounds(), &h, "selection", sel.format())?;
             doc.selection = Some(crate::transform_cmds::warp_gray(sel, &h, interp)?).filter(|s| !s.content_bounds().is_empty());
         }
         Ok(doc.selection.is_some())
@@ -355,6 +368,25 @@ mod tests {
         s.undo();
         s.execute("select.transformSelection", json!({"dx": 30, "dy": -10, "reference": "topLeft"})).unwrap();
         assert_eq!(sel_bounds(&s), Some(Rect::new(50, 20, 70, 30)));
+    }
+
+    /// A misspelt or malformed `reference` is an error, not a silent scale about the centre.
+    #[test]
+    fn transform_selection_rejects_an_unknown_reference() {
+        let mut s = rect_sel();
+        for r in [json!("topleft"), json!("top-left"), json!(["a", 0]), json!([1]), json!([1, 2, 3]), json!(7)] {
+            assert!(s.execute("select.transformSelection", json!({"scaleX": 50, "reference": r})).is_err(), "{r}");
+            assert_eq!(sel_bounds(&s), Some(Rect::new(20, 30, 40, 40)), "{r}");
+        }
+        s.execute("select.transformSelection", json!({"scaleX": 50, "reference": "center"})).unwrap();
+        let centre = sel_bounds(&s);
+        s.undo();
+        s.execute("select.transformSelection", json!({"scaleX": 50})).unwrap();
+        assert_eq!(sel_bounds(&s), centre);
+        s.undo();
+        s.execute("select.transformSelection", json!({"scaleX": 50, "reference": [20, 30]})).unwrap();
+        let b = sel_bounds(&s).unwrap();
+        assert!(b.x0.abs_diff(20) <= 1 && b.x1.abs_diff(30) <= 1, "{b:?}");
     }
 
     #[test]

@@ -11,6 +11,10 @@
 # Licensed MIT OR Apache-2.0, as the code.
 # Product and technology names retain their spelling. See docs/localization-zh-hans.md.
 
+# Layer Mask Display Options (the layer mask rubylith's colour and opacity)
+	Mask Options…	蒙版选项…
+	Layer Mask Display Options…	图层蒙版显示选项…
+
 # Channel Options and New Spot Channel (#3761)
 	Channel Color	通道颜色
 	Color Indicates:	色彩指示：
@@ -333,6 +337,7 @@
 	Blending Options…	混合选项…
 	Bevel & Emboss…	斜面和浮雕…
 	Use Global Light	使用全局光
+	Overprint	叠印
 	Inner Shadow…	内阴影…
 	Inner Glow…	内发光…
 	Satin…	光泽…
@@ -818,6 +823,23 @@
 	Split Warp Vertically	垂直分割变形
 	Statistics…	统计…
 	Refine Strokes	调整描边
+	Edits	编辑
+# Counted status and panel messages
+@plural	Exported {n} swatch to {file}|Exported {n} swatches to {file}	已将 {n} 个色板导出到 {file}
+@plural	Imported {n} swatch from {file}|Imported {n} swatches from {file}	已从 {file} 导入 {n} 个色板
+@plural	Imported {n} brush from {group}|Imported {n} brushes from {group}	已从 {group} 导入 {n} 个画笔
+@plural	Played {n} step|Played {n} steps	已播放 {n} 个步骤
+@plural	{n} step|{n} steps	{n} 个步骤
+@plural	Saved for Web: {n} file|Saved for Web: {n} files	已存储为 Web 所用格式：{n} 个文件
+@plural	Updated {n} linked smart object changed on disk|Updated {n} linked smart objects changed on disk	已更新 {n} 个在磁盘上更改过的链接智能对象
+@plural	{n} layer recorded by this comp was deleted. Update the comp, or clear the warning.|{n} layers recorded by this comp were deleted. Update the comp, or clear the warning.	此图层复合记录的 {n} 个图层已被删除。请更新图层复合，或清除警告。
+@plural	{n} plane|{n} planes	{n} 个平面
+@plural	{n} preset|{n} presets	{n} 个预设
+@plural	{n} sample point removed|{n} sample points removed	已移除 {n} 个取样点
+@plural	{n} slice|{n} slices	{n} 个切片
+@plural	{warning} (+{n} more brush preset warning)|{warning} (+{n} more brush preset warnings)	{warning}（另有 {n} 条画笔预设警告）
+@plural	{what} with {n} warning|{what} with {n} warnings	{what}，含 {n} 条警告
+
 @plural	{n} item|{n} items	{n} 项
 	Auto	自动
 	(print to the printer)	（输出到打印机）
@@ -998,6 +1020,9 @@
 	Copper	铜色
 	Copyright	版权
 	Copyright and Contact Info	版权与联系信息
+	Copyright Info URL	版权信息 URL
+	Copyright Notice	版权声明
+	Document Title	文档标题
 	Corner Crop Marks	角落裁剪标记
 	Corner radius	圆角半径
 	Correction	校正
@@ -1098,7 +1123,7 @@
 	Done	完成
 	Dots	点
 	Drag a rectangle around the object	围绕对象拖出矩形
-	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click to delete.	在图像上拖动以添加约束；按 Shift 保持水平或垂直；右键单击删除。
+	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click a constraint to change or delete it.	在图像上拖动以添加约束；按 Shift 保持水平或垂直；右键单击约束可更改或删除。
 	Drag to move the active shape's path or the Work Path	拖动以移动当前形状的路径或工作路径
 	Click: select anchor · Drag: move anchor, handle or segment · {shift}-click: add · {alt}-click: whole subpath	单击：选择锚点 · 拖动：移动锚点、手柄或线段 · {shift}-单击：添加 · {alt}-单击：整个子路径
 	Draw with the Pen tool (P) or make a work path from a selection.	使用钢笔工具（P）绘制，或从选区创建工作路径。
@@ -1347,6 +1372,8 @@
 	Override Pressure	覆盖压感
 	Override Rotation	覆盖旋转
 	Override Tilt	覆盖倾斜
+	Override Tilt X	覆盖 X 倾斜
+	Override Tilt Y	覆盖 Y 倾斜
 	PRESET DETAILS	预设详细信息
 	PSD	PSD
 	Paint Overlay	绘制叠加层
@@ -1432,6 +1459,7 @@
 	Rename	重命名
 	Rename Group…	重命名组…
 	Rename Layer…	重命名图层…
+	Rename Path…	重命名路径…
 	Rename Tool Preset…	重命名工具预设…
 	Rename…	重命名…
 	Resample	重新采样
@@ -1500,6 +1528,7 @@
 	Set shape fill type	设置形状填充类型
 	Set shape stroke type	设置形状描边类型
 	Set the text color	设置文字颜色
+	Create warped text	创建变形文字
 	Shadows	阴影
 	Shape:	形状：
 	Sharpening	锐化
@@ -1649,6 +1678,7 @@
 	Brush Pose	画笔姿态
 	Brush Tip Shape	画笔笔尖形状
 	Brush Tool	画笔工具
+	Pencil Tool	铅笔工具
 	Build-up	累积
 	Burn Tool	加深工具
 	Centimeters	厘米
@@ -1703,6 +1733,7 @@
 	ExtraBold	特粗
 	ExtraLight	特细
 	Eyedropper Tool	吸管工具
+	Color Sampler Tool	颜色取样器工具
 	Fade	渐隐
 	Fill Opacity	填充不透明度
 	Film & Video	电影与视频
@@ -1719,6 +1750,7 @@
 	Highlights from:	高光下限：
 	History Brush Tool	历史记录画笔工具
 	Horizontal Type Tool	横排文字工具
+	Vertical Type Tool	直排文字工具
 	Horizontal Type Mask Tool	横排文字蒙版工具
 	Vertical Type Mask Tool	直排文字蒙版工具
 	Image Size:	图像大小：
@@ -1850,9 +1882,11 @@
 	Tabloid	Tabloid 纸
 	Text Replacement	文字替换
 	Thin	纤细
+	To	到
 	Traditional (72.27 points/inch)	传统（72.27 点/英寸）
 	Transfer	传递
 	Triangle Tool	三角形工具
+	Up	向上
 	Unsaved changes	未保存的更改
 	Uses the foreground and background colours.	使用前景色和背景色。
 	Watercolour look: lighter interior, darker rims.	水彩效果：内部较浅，边缘较深。
@@ -2007,6 +2041,7 @@
 	Quick export format	快速导出格式
 	Quick export location	快速导出位置
 	Recent file count	最近使用的文件数量
+	LUT folder	LUT 文件夹
 	Recent files	最近使用的文件
 	Recent fonts	最近使用的字体
 	Recover on launch	启动时恢复
@@ -2221,6 +2256,11 @@ cameraRaw	Blending	混合
 	Apply the pen's tilt and rotation to the tip shape	将笔的倾斜和旋转应用于笔尖形状
 	Mixer Brush	混合器画笔
 	Wet	湿润
+	Current Brush Load	当前画笔载入
+	Load Brush	载入画笔
+	Clean Brush	清理画笔
+	Load the brush after each stroke	每次描边后载入画笔
+	Clean the brush after each stroke	每次描边后清理画笔
 	Mix	混合
 	Wetness Jitter	湿润度抖动
 	Mix Jitter	混合抖动
@@ -2293,6 +2333,8 @@ cameraRaw	Blending	混合
 	GPU acceleration could not continue. Your documents are unchanged.	GPU 加速无法继续。您的文档未更改。
 	PhotoCraft is using the CPU image compositor. The window may still use your graphics adapter.	PhotoCraft 正在使用 CPU 合成图像。窗口仍可能使用您的显卡。
 	Retry GPU requires a restart. Save your work first.	重试 GPU 需要重新启动。请先保存您的工作。
+	Retry GPU tries the graphics processor again now.	重试 GPU 会立即再次尝试使用图形处理器。
+	GPU acceleration resumed.	已恢复 GPU 加速。
 	Keep Using CPU	继续使用 CPU
 	Retry GPU	重试 GPU
 	Advanced	高级
@@ -2321,6 +2363,11 @@ cameraRaw	Blending	混合
 	Content-Aware Move Tool	内容感知移动工具
 	TIFF Options	TIFF 选项
 	Targa Options	Targa 选项
+	JPEG Options	JPEG 选项
+	Image Options	图像选项
+	Format Options	格式选项
+	Baseline ("Standard")	基线（“标准”）
+	Baseline Optimized	基线已优化
 	24 bits/pixel	24 位/像素
 	32 bits/pixel	32 位/像素
 	Including layers will increase file size.	包含图层会增加文件大小。
@@ -2669,6 +2716,36 @@ cameraData	Lens	镜头
 	Output To	输出到
 	Duplicate Layer	复制图层
 	Contract	收缩
+
+	Animation Options	动画选项
+	Entire Document	整个文档
+	Filter Options	过滤选项
+	Layer Bounds	图层边界
+	Layers Panel Options	图层面板选项
+	Lock Layers	锁定图层
+	New Artboard…	新建画板…
+	New Group	新建组
+	New Group…	新建组…
+	New Layer…	新建图层…
+	Panel Options…	面板选项…
+	Prevent Auto-Nesting	防止自动嵌套
+	Show Layers	显示图层
+	Thumbnail Contents	缩略图内容
+	Thumbnail Size	缩略图大小
+	Use Default Masks on Fill Layers	在填充图层上使用默认蒙版
+	Expand New Effects	展开新效果
+	Add “copy” to Copied Layers and Groups	为复制的图层和组添加“副本”
+	Preview on canvas when reordering layers	重新排列图层时在画布上预览
+	Show layer mask badges	显示图层蒙版标记
+
+# Smart Filter editors
+	Blending Options ({filter})	混合选项 ({filter})
+	Hide the layer's effects and Smart Filters  ({key}-click: all layers)	隐藏图层效果和智能滤镜  （{key} 单击：所有图层）
+	Show the layer's effects and Smart Filters  ({key}-click: all layers)	显示图层效果和智能滤镜  （{key} 单击：所有图层）
+	Wait for the current job to finish.	请等待当前任务完成。
+	The document or Smart Filter changed. Reopen its dialog.	文档或智能滤镜已更改。请重新打开其对话框。
+	Opacity must be between 0% and 100%.	不透明度必须介于 0% 和 100% 之间。
+	Dissolve is approximated: it blends without Photoshop's dither.	“溶解”为近似效果：混合时没有 Photoshop 的抖动。
 	Loading fonts…	正在加载字体…
 	Response curve	响应曲线
 	Tool	工具
@@ -2726,6 +2803,13 @@ curves	Smooth	平滑
 	Click to place · Alt-click or drag off-canvas to remove	单击以放置 · Alt 单击或拖到画布外以移除
 	No document open	未打开任何文档
 	{n} of {max} sample points	{max} 个取样点中的 {n} 个
+
+# History panel menu (#2966)
+	Step Forward	前进一步
+	Step Backward	后退一步
+	Clear History	清除历史记录
+	New Snapshot…	新建快照…
+	History Options…	历史记录选项…
 # Print dialog (#2697)
 	Emulsion Down	药膜朝下
 	Functions	功能
@@ -2743,11 +2827,19 @@ curves	Smooth	平滑
 	Light Red	浅红色
 	Medium Blue	中蓝色
 	Light Gray	浅灰色
+	Stop	停止
 	Object Finder	对象查找程序
 	No object found there — drag a rectangle around it	那里未找到对象 — 请在其周围拖动矩形
+	The active layer has no pixels here — turn on Sample All Layers or select a layer with pixels	当前图层在此处没有像素 — 请打开“对所有图层采样”或选择有像素的图层
 	Remove after each stroke	每次描边后移除
 	Apply the removal ({key})	应用移除 ({key})
 	Strokes to remove: {n} (Enter applies, Esc cancels)	待移除的描边：{n}（Enter 应用，Esc 取消）
+	Load Contours…	载入等高线…
+	Replace Contours…	替换等高线…
+	Save Contours…	存储等高线…
+	Delete Contour	删除等高线
+	Loaded contours from {file}	已从 {file} 载入等高线
+	Saved contours to {file}	已将等高线存储到 {file}
 	Show home recent files	在主屏幕上显示最近的文件
 	Clear Brush Controls	清除画笔控件
 	Reset All Locked Settings	复位所有锁定的设置
@@ -2756,6 +2848,9 @@ curves	Smooth	平滑
 # Actions panel: Load/Save Actions (.atn) and kept Photoshop steps
 	Load Actions…	载入动作…
 	Save Actions…	存储动作…
+	New Action…	新建动作…
+	Start Recording	开始录制
+	Stop Recording	停止录制
 	{name} (Photoshop)	{name}（Photoshop）
 	{message} ({note})	{message}（{note}）
 @plural	Loaded {n} action from {file}|Loaded {n} actions from {file}	已从 {file} 载入 {n} 个动作
@@ -2788,6 +2883,16 @@ curves	Smooth	平滑
 	Sent to {printer}	已发送到 {printer}
 	set in Print Settings…	在打印设置中设置…
 	ICO is limited to 256 × 256 pixels	ICO 最大为 256 × 256 像素
+# History panel › History Brush source (#2966)
+	Paints from the History panel's source state	从历史记录面板的源状态绘画
+	Sets the source for the history brush	设置历史记录画笔的源
+# Bevel & Emboss shading controls.
+	Highlight Mode	高光模式
+	Highlight Color	高光颜色
+	Highlight Opacity	高光不透明度
+	Shadow Mode	阴影模式
+	Shadow Color	阴影颜色
+	Shadow Opacity	阴影不透明度
 # Embedded Profile Mismatch: profile names beside the choices, Remember this choice
 	Use the embedded profile ({profile})	使用嵌入的配置文件（{profile}）
 	Convert to the working space ({profile})	转换到工作空间（{profile}）
@@ -2804,6 +2909,7 @@ curves	Smooth	平滑
 	Chisel Hard	雕刻清晰
 	Chisel Soft	雕刻柔和
 	Open color-less EXR as ACEScg	将无色彩空间信息的 EXR 以 ACEScg 打开
+	Do not append "copy" to filename when saving a copy	存储副本时不在文件名后添加“copy”
 # Export As metadata and profile options
 	Color Profile	颜色配置文件
 	EXIF	EXIF
@@ -2811,6 +2917,10 @@ curves	Smooth	平滑
 # View › Guides › right-click a guide
 	Edit Selected Guides	编辑所选参考线
 	Clear Selected Guides	清除所选参考线
+	Make Selection	建立选区
+	Bicubic Automatic	双三次（自动）
+	Bicubic Smoother	双三次（较平滑）
+	Bicubic Sharper	双三次（较锐利）
 	Pasting from other apps is unavailable	无法从其他应用粘贴
 	PhotoCraft can't reach the system clipboard in this session. On Wayland, a Flatpak sandbox hides the protocol that images from other apps are read through.	PhotoCraft 在此会话中无法访问系统剪贴板。在 Wayland 上，Flatpak 沙盒会隐藏读取其他应用图像所用的协议。
 	To paste from other apps, start PhotoCraft under XWayland: `{command}`	要从其他应用粘贴，请在 XWayland 下启动 PhotoCraft：`{command}`
@@ -2831,6 +2941,19 @@ curves	Smooth	平滑
 	{set} (modified)	{set}（已修改）
 	Random	随机
 	Show file name in title	标题中显示文件名
+
+# Image › Mode › Bitmap (#5559)
+	50% Threshold	50% 阈值
+	Pattern Dither	图案仿色
+	Diffusion Dither	扩散仿色
+	Halftone Screen	半调网屏
+	Custom Pattern	自定图案
+	Frequency:	频率：
+	Lines/Inch	线/英寸
+	Lines/Centimeter	线/厘米
+	Ellipse	椭圆
+	Cross	十字
+	Method	方法
 	Accept and Go to Conflict	接受并转到冲突
 	Changes undone.	已撤消更改。
 	Choose a new shortcut for this command, or leave it without one.	为此命令选择新的快捷键，或保留为无快捷键。
@@ -2840,6 +2963,7 @@ curves	Smooth	平滑
 	{shortcut} is reserved by the system and can't be assigned.	{shortcut} 由系统保留，无法指定。
 	Low-Latency Drawing (vsync off, applies at next launch)	低延迟绘画（关闭垂直同步，下次启动时生效）
 # Free Transform: a new layer while the box is open (#5859)
+	Reference point location	参考点位置
 	Free Transform is still being applied; try again when it has finished.	自由变换仍在应用中；请在完成后重试。
 	The transform couldn't be applied.	无法应用变换。
 # Preferences › Performance › GPU Memory; the status bar and slow-redraw notice
@@ -2848,9 +2972,11 @@ curves	Smooth	平滑
 	GPU Memory Full	GPU 内存已满
 	The layers need {needed} of GPU memory and may hold {budget}, so edits that redraw the whole document do it on the CPU. Click to set GPU Memory.	图层需要 {needed} GPU 内存，但只能占用 {budget}，因此重绘整个文档的编辑会在 CPU 上进行。点击以设置 GPU 内存。
 	GPU memory budget: {budget}	GPU 内存预算：{budget}
+	Graphics memory: {size}	显存：{size}
 	This document's layers: {needed} of {budget} for layers	此文档的图层：图层可用 {budget} 中的 {needed}
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	此文档的图层需要 {needed}，但只能占用 {budget}：整个文档的重绘使用 CPU
 	GPU Memory (MB, 0 = Automatic)	GPU 内存（MB，0 = 自动）
+	{path}: the path is not valid Unicode; save under another name.	{path}：路径不是有效的 Unicode；请以其他名称存储。
 	Replace	替换
 	{name} was changed by another app after it was opened or saved here.	{name} 在此处打开或存储后已被其他应用更改。
 	Replace it with this document, or cancel and use File › Save As to keep both.	用此文档替换它，或取消并使用“文件 › 另存为”以保留两者。
@@ -2858,6 +2984,22 @@ curves	Smooth	平滑
 	Increase Brush Size	增大画笔大小
 	Decrease Brush Hardness	减小画笔硬度
 	Increase Brush Hardness	增大画笔硬度
+	Demosaic	去马赛克
+	How the camera's colour filter mosaic is filled in. It is applied when the file opens; the preview shows the method it was opened with.	如何填补相机彩色滤镜阵列的马赛克。在打开文件时应用；预览显示打开时所用的方法。
+	AHD (adaptive homogeneity)	AHD（自适应同质性）
+	Malvar–He–Cutler	Malvar–He–Cutler
+	Hirakawa–Parks: the cleanest edges and the least colour fringing, the slowest.	Hirakawa–Parks：边缘最干净、色边最少，速度最慢。
+	Gradient-corrected interpolation: sharp and fast, with some colour fringing on fine detail.	梯度校正插值：锐利且快速，细节处有些许色边。
+	The fastest and the softest, with colour fringing on fine detail.	最快也最柔和，细节处有色边。
+	“{name}” already exists. Replace it?	“{name}”已存在。要替换它吗？
+	The name in the save dialog was “{name}”.	存储对话框中的名称是“{name}”。
+	Move Up	上移
+	Move Down	下移
+	Previous Brush	上一个画笔
+	Next Brush	下一个画笔
+	First Brush	第一个画笔
+	Last Brush	最后一个画笔
+	Preview size	Preview size
 	Memory Usage	内存使用
 	Per-document RAM limit (MB)	每个文档的 RAM 上限 (MB)
 	Installed RAM: {ram} MB; this limit: {percent}%	已安装 RAM：{ram} MB；此上限：{percent}%
@@ -2868,3 +3010,34 @@ curves	Smooth	平滑
 	In Front	前面
 	Behind	后面
 	Blend	混合
+
+# DDS Options (#1327)
+	DDS Options	DDS 选项
+	Compression	压缩
+	Generate Mipmaps	生成 Mipmap
+
+# Color Table (.act) dialog
+	There is no color table to save.	没有可保存的色表。
+@plural	Saved {n} color to {file}|Saved {n} colors to {file}	已将 {n} 种颜色保存到 {file}
+
+# Graphics Adapter preference (#1885)
+	GPU adapter	GPU 适配器
+# Actions: a step dialog holds a suspended recording (#7365)
+	Confirm or cancel the open action step dialog first	请先确认或取消打开的动作步骤对话框
+	Pro Medium Gray	专业中灰
+	Solarized	Solarized
+	Breeze	Breeze
+	Pro Light Gray	专业浅灰
+	Pro Light	专业浅色
+	Resize Windows to Fit	调整窗口大小以适合
+
+	EXR	EXR
+
+# Paragraph direction (TYPE-218-2)
+	Automatic paragraph direction	自动段落方向
+	Left-to-right paragraph direction	从左到右的段落方向
+	Right-to-left paragraph direction	从右到左的段落方向
+	Not rendered: this adjustment ({key}) is kept as imported.	未渲染：此调整（{key}）按导入时的原样保留。
+
+# Print preview image (#8236)
+	Print preview image	Print preview image

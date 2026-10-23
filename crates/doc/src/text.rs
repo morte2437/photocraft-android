@@ -32,6 +32,16 @@ pub enum Caps {
     AllCaps,
 }
 
+/// Superscript / subscript (Photoshop's `FontBaseline`). The run is drawn smaller and raised or
+/// lowered; `size_pt` and `baseline_shift_pt` keep their own values.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FontBaseline {
+    #[default]
+    Normal,
+    Superscript,
+    Subscript,
+}
+
 /// An OpenType feature setting, e.g. `{ tag: "ss01", value: 1 }`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FontFeature {
@@ -79,6 +89,8 @@ pub struct CharStyle {
     /// per character run as `Kerning`). Added to the automatic kerning of the pair.
     pub kern: f32,
     pub caps: Caps,
+    /// Superscript or subscript.
+    pub baseline: FontBaseline,
     /// Standard ligatures (`liga`/`clig`).
     pub ligatures: bool,
     /// Discretionary ligatures (`dlig`).
@@ -117,6 +129,7 @@ impl Default for CharStyle {
             kerning: Kerning::Metrics,
             kern: 0.0,
             caps: Caps::Normal,
+            baseline: FontBaseline::Normal,
             ligatures: true,
             discretionary_ligatures: false,
             features: Vec::new(),

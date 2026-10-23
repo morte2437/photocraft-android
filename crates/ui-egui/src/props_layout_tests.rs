@@ -231,10 +231,16 @@ fn character_and_paragraph_dock_panels_share_the_headers_without_type_options() 
         let names: Vec<&str> = hs.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(names, [want], "tab {tab}");
     }
-    // No type layer: the empty-state message, no sections.
+    // No type layer: the same dedicated sections edit Type tool defaults (#5556).
     select(&mut h, px);
-    assert!(headers(&h).is_empty());
-    assert!(h.query_by_value("Select a type layer to edit its character and paragraph settings.").is_some());
+    for (tab, want) in [(0, "Character"), (1, "Paragraph")] {
+        set(&mut h, json!({"dockTabs": {"character": tab}}));
+        let hs = headers(&h);
+        assert!(hs.iter().all(|(_, r)| (r.height() - SECTION_H).abs() < 0.5), "{hs:?}");
+        let names: Vec<&str> = hs.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, [want], "default tab {tab}");
+    }
+    assert!(h.query_by_value("Select a type layer to edit its character and paragraph settings.").is_none());
 }
 
 /// #2085: like Photoshop, Opacity and Fill stack in one right-aligned column: both fields end at

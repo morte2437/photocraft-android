@@ -437,7 +437,7 @@ fn main() {
     }
 }
 
-/// The corpus oracle table (as `tests/corpus.rs`), files in parallel, without a test build.
+/// The corpus oracle table (as `tests/it/corpus.rs`), files in parallel, without a test build.
 fn corpus_summary(root: &std::path::Path) {
     fn collect(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
         let Ok(rd) = std::fs::read_dir(dir) else { return };

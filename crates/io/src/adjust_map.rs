@@ -228,8 +228,10 @@ fn parse_any(key: &[u8; 4], data: &[u8], cged: Option<&[u8]>) -> Adjustment {
                     *r = HueRange { hue: h, saturation: s, lightness: l, bounds: HueRange::canonical_bounds([a, b, c, d]) };
                 }
             }
+            let hue = f32::from(bei16(data, base)?);
             Some(Adjustment::HueSaturation {
-                hue: f32::from(bei16(data, base)?),
+                // Photoshop stores the colorize hue signed (200 as -160); the model keeps 0..360.
+                hue: if colorize { hue.rem_euclid(360.0) } else { hue },
                 saturation: f32::from(bei16(data, base + 2)?),
                 lightness: f32::from(bei16(data, base + 4)?),
                 colorize,
@@ -328,6 +330,22 @@ pub(crate) fn retarget_gradient_map(data: &mut [u8], target: &Adjustment, channe
     }
 }
 
+/// `true` for a `grdm` block exactly as older PhotoCraft builds wrote it: [`write_gradient_map`]'s
+/// output without the two padding bytes, which makes Photoshop refuse the file (#8070). Blocks
+/// from other writers, whatever their length, are not matched.
+pub(crate) fn is_unpadded_photocraft_gradient_map(data: &[u8]) -> bool {
+    if data.len().is_multiple_of(4) {
+        return false;
+    }
+    match parse_gradient_map(data) {
+        Some(Adjustment::GradientMap { stops, reverse, dither }) => {
+            let padded = write_gradient_map(&stops, reverse, dither);
+            padded.len() == data.len() + 2 && padded.starts_with(data)
+        }
+        _ => false,
+    }
+}
+
 /// `grdm` version 1 for [`Adjustment::GradientMap`] (Classic interpolation, Smoothness 0, so
 /// the stops are reproduced exactly).
 fn write_gradient_map(stops: &[(f32, [f32; 3])], reverse: bool, dither: bool) -> Vec<u8> {
@@ -370,6 +388,8 @@ fn write_gradient_map(stops: &[(f32, [f32; 3])], reverse: bool, dither: bool) ->
         put16(&mut v, x);
     }
     put16(&mut v, 0);
+    // Photoshop includes the two-byte pad in the `grdm` length when the block is 2 mod 4 (#8070).
+    v.resize(v.len().next_multiple_of(4), 0);
     v
 }
 
@@ -621,10 +641,16 @@ pub fn write(adj: &Adjustment) -> Vec<([u8; 4], Vec<u8>)> {
             put16(&mut v, 2);
             v.push(u8::from(*colorize));
             v.push(0);
-            for _ in 0..2 {
-                for x in [hue, saturation, lightness] {
-                    v.extend_from_slice(&clamp_i16(*x).to_be_bytes());
-                }
+            // The colorize triplet, then the master triplet. The inactive one gets Photoshop's
+            // defaults; the colorize hue (0..360 in the model) is stored signed, -180..180.
+            let (colorize_hsl, master) = if *colorize {
+                let h = hue.rem_euclid(360.0);
+                ([if h > 180.0 { h - 360.0 } else { h }, *saturation, *lightness], [0.0; 3])
+            } else {
+                ([30.0, 25.0, 0.0], [*hue, *saturation, *lightness])
+            };
+            for x in colorize_hsl.into_iter().chain(master) {
+                v.extend_from_slice(&clamp_i16(x).to_be_bytes());
             }
             // Six hue ranges (reds, yellows, greens, cyans, blues, magentas): range values in
             // 0..360, then the range's hue, saturation and lightness.
@@ -827,7 +853,8 @@ mod tests {
         // Smoothness 100 % (4096) bends a three-stop ramp.
         let three = vec![(0.0, [0.0; 3]), (0.25, [1.0, 0.0, 0.0]), (0.75, [0.0, 0.0, 1.0]), (1.0, [1.0; 3])];
         let mut smooth = write_gradient_map(&three, false, false);
-        let at = smooth.len() - 2 - 16 - 2 - 4 - 2 - 2 - 4 - 2 - 2 - 2;
+        // v1 header/name/count + colour stops + transparency stops + expansion count.
+        let at = 48 + three.len() * 20;
         smooth[at..at + 2].copy_from_slice(&4096u16.to_be_bytes());
         let (a, b) = (at_t(&write_gradient_map(&three, false, false), 0.4), at_t(&smooth, 0.4));
         assert!((0..3).any(|k| (a[k] - b[k]).abs() > 1e-3), "{a:?} {b:?}");
@@ -946,6 +973,21 @@ mod tests {
         let cged = blocks.iter().find(|b| &b.0 == b"CgEd").map(|b| &b.1[..]);
         let back = parse(&blocks[0].0, &blocks[0].1, cged, Channels::Rgb);
         assert_eq!(back, a);
+    }
+
+    /// Photoshop keeps the colorize triplet at byte 4 and the master triplet at byte 10, and fills
+    /// the inactive one with its defaults: colorize (30, 25, 0), master (0, 0, 0). The colorize hue
+    /// is stored signed (200 -> -160).
+    #[test]
+    fn hue2_writes_each_triplet_in_its_own_slot() {
+        let triplets = |a: &Adjustment| -> Vec<i16> {
+            let blocks = write(a);
+            (0..6).map(|i| bei16(&blocks[0].1, 4 + 2 * i).unwrap_or(i16::MIN)).collect()
+        };
+        let on = Adjustment::HueSaturation { hue: 200.0, saturation: 40.0, lightness: 10.0, colorize: true, ranges: HueRange::defaults() };
+        assert_eq!(triplets(&on), [-160, 40, 10, 0, 0, 0]);
+        let off = Adjustment::HueSaturation { hue: -30.0, saturation: 20.0, lightness: 5.0, colorize: false, ranges: HueRange::defaults() };
+        assert_eq!(triplets(&off), [30, 25, 0, -30, 20, 5]);
     }
 
     #[test]

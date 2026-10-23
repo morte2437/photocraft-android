@@ -9,17 +9,21 @@ const MAX_NODES: usize = 4_000_000;
 const MAX_COMPOUND_DEPTH: usize = 64;
 const MAX_OUTLINE_VISITS: usize = 500_000;
 const MAX_OUTLINE_POINTS: usize = 4_000_000;
+/// Curve records decoded across the document. A shared curve is decoded again for each
+/// occurrence, and records that only move handles add no points.
+const MAX_OUTLINE_RECORDS: usize = 8_000_000;
 
 /// Geometry is expanded per occurrence, since parametric outlines can depend on their world
 /// transform. Bound work across the entire document instead of memoizing by object id alone.
 pub(crate) struct Budget {
     visits_left: usize,
     points_left: usize,
+    records_left: usize,
 }
 
 impl Default for Budget {
     fn default() -> Self {
-        Self { visits_left: MAX_OUTLINE_VISITS, points_left: MAX_OUTLINE_POINTS }
+        Self { visits_left: MAX_OUTLINE_VISITS, points_left: MAX_OUTLINE_POINTS, records_left: MAX_OUTLINE_RECORDS }
     }
 }
 
@@ -27,6 +31,12 @@ impl Budget {
     /// Charge an outline call or a raw compound operand slot before inspecting it.
     fn visit(&mut self) -> Result<(), &'static str> {
         self.visits_left = self.visits_left.checked_sub(1).ok_or("compound geometry budget exhausted")?;
+        Ok(())
+    }
+
+    /// Charge curve records before they are decoded.
+    fn records(&mut self, n: usize) -> Result<(), &'static str> {
+        self.records_left = self.records_left.checked_sub(n).ok_or("curve geometry budget exhausted")?;
         Ok(())
     }
 
@@ -152,6 +162,10 @@ pub(crate) fn curves(r: &mut Reader, crvs: ObjId) -> Option<Path> {
             r.warn("curves with more than four million nodes");
             return None;
         }
+        if let Err(reason) = r.geometry_budget.records(records.len()) {
+            r.warn(reason);
+            return None;
+        }
         let anchors = anchors(records)?;
         let radii = if index == 0 { corners.as_ref() } else { None };
         if let Some(sp) = subpath(&anchors, closed, radii) {
@@ -210,7 +224,16 @@ fn anchors(records: &[Value]) -> Option<Vec<Anchor>> {
 fn subpath(anchors: &[Anchor], closed: bool, radii: Option<&Vec<(usize, f64)>>) -> Option<SubPath> {
     let first = anchors.first()?;
     if let Some(radii) = radii.filter(|r| !r.is_empty()) {
-        let corner = |a: &Anchor| radii.iter().filter(|(rec, _)| *rec == a.record).map(|(_, r)| *r).fold(0.0, f64::max);
+        // Index each record's maximum radius once. Scanning the whole radius list per anchor
+        // was O(anchors * radii), which a file with large anchor and radius arrays could drive
+        // into quadratic work. Duplicate record indices keep the maximum, matching the prior
+        // fold(0.0, f64::max) behavior.
+        let mut radius_by_record: std::collections::HashMap<usize, f64> = std::collections::HashMap::with_capacity(radii.len());
+        for &(rec, r) in radii {
+            let slot = radius_by_record.entry(rec).or_insert(0.0);
+            *slot = slot.max(r);
+        }
+        let corner = |a: &Anchor| radius_by_record.get(&a.record).copied().unwrap_or(0.0);
         let polyline = anchors.iter().all(|a| a.inh.is_none_or(|h| h == a.p) && a.out.is_none_or(|h| h == a.p));
         if polyline {
             let mut pts: Vec<(Point, f64)> = anchors.iter().map(|a| (a.p, corner(a))).collect();
@@ -248,4 +271,16 @@ fn corner_radii(fields: Vec<&Value>) -> Option<Vec<(usize, f64)>> {
             })
             .collect(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn curve_records_are_charged_across_the_document() {
+        let mut b = Budget::default();
+        assert!(b.records(MAX_OUTLINE_RECORDS).is_ok());
+        assert_eq!(b.records(1), Err("curve geometry budget exhausted"));
+    }
 }

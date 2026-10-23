@@ -184,3 +184,86 @@ fn the_cursor_and_readout_follow_the_widgets() {
     tool_event(&mut app, ToolEvent::Up { x: 62.0, y: 62.0 }, Modifiers::NONE);
     assert!(!super::hovers(&app, [100.0, 80.0]));
 }
+
+/// The live polygon of layer `id`: its corner radius.
+fn corner_radius_of(app: &PhotocraftApp, id: photocraft_doc::LayerId) -> f64 {
+    match &app.session.active().unwrap().doc.layer(id).unwrap().content {
+        LayerContent::Shape(sh) => match sh.live {
+            Some(LiveShape::Polygon { corner_radius, .. }) => corner_radius,
+            _ => panic!("live polygon"),
+        },
+        _ => panic!("shape"),
+    }
+}
+
+/// A live triangle (a 3-sided polygon) in (40, 40) 120 × 120, as the Triangle tool draws it.
+fn triangle(tool: Tool, radius: f64) -> (PhotocraftApp, photocraft_doc::LayerId) {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.session.execute("file.new", json!({"width": 200, "height": 200})).unwrap();
+    app.sync_views();
+    app.run("shape.create", json!({"kind": "polygon", "rect": [40, 40, 120, 120], "sides": 3, "cornerRadius": radius})).unwrap();
+    app.ui.tool = tool;
+    let id = app.session.active().unwrap().active_layer.unwrap();
+    (app, id)
+}
+
+/// Where the widget of corner `i` of the first target is, and the way its arc's centre moves.
+fn widget_of(app: &PhotocraftApp, i: usize) -> ([f64; 2], [f64; 2]) {
+    let t = &super::targets(app)[0];
+    let z = f64::from(app.point_zoom());
+    (t.widget(t.radii, i, z).unwrap(), t.corner(i).unwrap().step)
+}
+
+#[test]
+fn a_triangle_rounds_all_its_corners_from_any_widget_in_one_step() {
+    for tool in [Tool::Triangle, Tool::Polygon, Tool::PathSelection] {
+        let (mut app, id) = triangle(tool, 6.0);
+        assert_eq!(super::targets(&app)[0].corners(), 3, "{tool:?}");
+        let n = steps(&app);
+        // Drag the bottom-right widget inwards by 4 radius units along its step: 6 + 4 = 10.
+        let (w, step) = widget_of(&app, 1);
+        let to = [w[0] + step[0] * 4.0, w[1] + step[1] * 4.0];
+        drag(&mut app, w, to, Modifiers::NONE);
+        assert!((corner_radius_of(&app, id) - 10.0).abs() < 1e-9, "{tool:?}: {}", corner_radius_of(&app, id));
+        assert_eq!(steps(&app), n + 1, "one history step");
+        // ⌥ makes no difference: a triangle has one radius for all its corners.
+        let (w, step) = widget_of(&app, 0);
+        drag(&mut app, w, [w[0] + step[0] * 2.0, w[1] + step[1] * 2.0], Modifiers::ALT);
+        assert!((corner_radius_of(&app, id) - 12.0).abs() < 1e-9);
+        assert!(app.session.undo());
+        assert!((corner_radius_of(&app, id) - 10.0).abs() < 1e-9);
+    }
+}
+
+#[test]
+fn a_triangle_radius_is_capped_and_a_click_on_a_sharp_corner_changes_nothing() {
+    let (mut app, id) = triangle(Tool::PathSelection, 0.0);
+    let n = steps(&app);
+    let (w, step) = widget_of(&app, 2);
+    drag(&mut app, w, w, Modifiers::NONE);
+    assert_eq!((corner_radius_of(&app, id), steps(&app)), (0.0, n), "a click commits nothing");
+    // Dragged far in: the radius stops where the arcs meet halfway along the edges.
+    drag(&mut app, w, [w[0] + step[0] * 1000.0, w[1] + step[1] * 1000.0], Modifiers::NONE);
+    let max = super::targets(&app)[0].max_radius();
+    assert!(max > 0.0 && (corner_radius_of(&app, id) - max).abs() < 1e-9, "{} vs {max}", corner_radius_of(&app, id));
+}
+
+#[test]
+fn rectangles_and_triangles_selected_together_take_the_same_radius() {
+    let (mut app, tri) = triangle(Tool::PathSelection, 0.0);
+    app.run("shape.create", json!({"kind": "rect", "rect": [10, 170, 100, 20], "radii": 0})).unwrap();
+    let rect = app.session.active().unwrap().active_layer.unwrap();
+    app.run("layer.select", json!({"layer": tri.0, "mode": "add"})).unwrap();
+    // The rectangle's top-left widget (10 px inside, at (20, 180)), 4 px in each direction: 4.
+    drag(&mut app, [20.0, 180.0], [24.0, 184.0], Modifiers::NONE);
+    assert_eq!(radii(&app), None, "the active layer is the triangle");
+    let rr = match &app.session.active().unwrap().doc.layer(rect).unwrap().content {
+        LayerContent::Shape(sh) => match sh.live {
+            Some(LiveShape::Rect { radii, .. }) => radii,
+            _ => panic!(),
+        },
+        _ => panic!(),
+    };
+    assert_eq!(rr, [4.0; 4]);
+    assert!((corner_radius_of(&app, tri) - 4.0).abs() < 1e-9);
+}

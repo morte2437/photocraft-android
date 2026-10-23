@@ -454,6 +454,9 @@ pub struct Image {
     data: Vec<u8>,
     /// Embedded ICC profile (must describe `layout`'s colour model).
     pub icc: Option<Vec<u8>>,
+    /// The file's CICP colour description (a HEIF `nclx`), when it has one. Only an image whose
+    /// `icc` is `None` relies on it.
+    pub cicp: Option<crate::cicp::Cicp>,
     pub meta: Metadata,
     /// What the decoder noticed about the file: empty for a complete, single image and for
     /// images built in memory. Encoders ignore it.
@@ -468,7 +471,7 @@ impl Image {
     /// A zero-filled image, or an error if the byte size overflows `usize`.
     pub fn new(width: u32, height: u32, layout: ChannelLayout, sample: SampleType) -> Result<Self, CodecError> {
         let len = byte_len(width, height, layout, sample).ok_or_else(|| CodecError::InvalidImage("image size overflows usize".into()))?;
-        Ok(Image { width, height, layout, sample, data: vec![0; len], icc: None, meta: Metadata::default(), warnings: Vec::new() })
+        Ok(Image { width, height, layout, sample, data: vec![0; len], icc: None, cicp: None, meta: Metadata::default(), warnings: Vec::new() })
     }
 
     /// Wrap raw interleaved, native-endian bytes.
@@ -477,7 +480,7 @@ impl Image {
         if data.len() != expected {
             return Err(CodecError::InvalidImage(format!("buffer has {} bytes, expected {expected} for {width}x{height} {layout:?} {sample:?}", data.len())));
         }
-        Ok(Image { width, height, layout, sample, data, icc: None, meta: Metadata::default(), warnings: Vec::new() })
+        Ok(Image { width, height, layout, sample, data, icc: None, cicp: None, meta: Metadata::default(), warnings: Vec::new() })
     }
 
     pub fn from_u8(width: u32, height: u32, layout: ChannelLayout, data: Vec<u8>) -> Result<Self, CodecError> {
@@ -646,6 +649,7 @@ impl Image {
             sample,
             data,
             icc: if layout.same_model(self.layout) { self.icc.clone() } else { None },
+            cicp: if layout.same_model(self.layout) { self.cicp } else { None },
             meta: self.meta.clone(),
             warnings: self.warnings.clone(),
         }

@@ -184,7 +184,7 @@ pub fn keys(app: &mut PhotocraftApp, ctx: &egui::Context) -> bool {
     }
     if app.distort.liquify.is_some() {
         if enter(ctx) {
-            crate::liquify_ui::commit(app);
+            let _ = crate::liquify_ui::commit(app);
         } else if esc(ctx) {
             crate::liquify_ui::cancel(app);
         } else {
@@ -202,6 +202,8 @@ pub fn keys(app: &mut PhotocraftApp, ctx: &egui::Context) -> bool {
             p.redo();
         } else if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Z)) {
             p.undo();
+        } else if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Delete) || i.consume_key(Modifiers::NONE, Key::Backspace)) {
+            p.delete_selected_pin();
         }
         return true;
     }
@@ -226,7 +228,22 @@ pub fn keys(app: &mut PhotocraftApp, ctx: &egui::Context) -> bool {
     false
 }
 
-/// Canvas overlay for the on-canvas modes.
+/// The warped (or pasted) pixels of the open on-canvas mode: image content, which the canvas
+/// draws right after the document and under the grid and guides (#7781), as Free Transform's
+/// preview is (#5086). Its pins, planes and meshes are [`draw_overlay`], drawn over the guides.
+pub fn draw_content(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform) {
+    if let Some(p) = &app.distort.puppet {
+        crate::puppet_ui::draw_content(p, painter, xf);
+    }
+    if let Some(p) = &app.distort.perspective {
+        crate::perspective_ui::draw_content(p, painter, xf);
+    }
+    if let Some(v) = &app.distort.vanishing {
+        crate::vp_ui::draw_content(v, painter, xf);
+    }
+}
+
+/// Canvas overlay for the on-canvas modes: pins, planes and meshes over the guides.
 pub fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform) {
     if let Some(p) = &app.distort.puppet {
         crate::puppet_ui::draw(p, painter, xf);

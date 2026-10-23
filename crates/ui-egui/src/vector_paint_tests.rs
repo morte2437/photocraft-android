@@ -62,6 +62,101 @@ fn pointer(h: &mut Harness<'_, PhotocraftApp>, pos: Pos2, pressed: bool) {
     h.step();
 }
 
+fn stroke_width(h: &mut Harness<'_, PhotocraftApp>, width: &str) {
+    h.get_all_by_role(egui::accesskit::Role::SpinButton).next().expect("the stroke width").click();
+    h.run();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+    h.event(Event::Text(width.into()));
+    h.key_press(Key::Enter);
+    h.run_steps(3);
+}
+
+/// #6191: passing through zero hides the stroke without discarding its paint or style.
+#[test]
+fn zero_width_preserves_selected_shape_stroke_and_restores_it() {
+    for depth in [8, 16, 32] {
+        for (properties, tool) in [(true, Tool::Rectangle), (false, Tool::Rectangle), (false, Tool::PathSelection), (false, Tool::DirectSelection)] {
+            let mut app = app("rgb", depth);
+            app.ui.tool = tool;
+            app.run(
+                "shape.create",
+                json!({"rect": [20, 20, 80, 60], "fill": null,
+                    "stroke": {"width": 4, "color": [0.123456, 0.345678, 0.567891, 0.618237],
+                        "align": "inside", "cap": "round", "join": "bevel", "miterLimit": 7,
+                        "dashes": [3, 2], "dashOffset": 1.25, "opacity": 63}}),
+            )
+            .unwrap();
+            let original = shape(&app).clone();
+            let history = app.session.active().unwrap().history.past_len();
+            let mut h = harness(app, properties);
+            stroke_width(&mut h, "0");
+            let zero = shape(h.state()).clone();
+            let mut expected = original.stroke.clone().unwrap();
+            expected.width = 0.0;
+            assert_eq!(zero.stroke, Some(expected), "{tool:?}, Properties={properties}, depth={depth}: zero width retains the stroke");
+            assert_eq!(zero.path, original.path);
+            assert!(zero.cache.as_ref().unwrap().content_bounds().is_empty(), "a zero-width stroke paints nothing");
+            assert_eq!(h.state().session.active().unwrap().history.past_len(), history + 1);
+
+            // A save at zero must retain the dormant stroke too.
+            let st = h.state().session.active().unwrap();
+            let bytes = photocraft_format::save_to_bytes(&st.doc, &Default::default()).unwrap();
+            let loaded = photocraft_format::load_from_bytes(&bytes).unwrap();
+            let LayerContent::Shape(saved) = &loaded.layer(st.active_layer.unwrap()).unwrap().content else { panic!("saved shape") };
+            assert_eq!(saved.stroke, zero.stroke);
+
+            stroke_width(&mut h, "4");
+            assert_eq!(shape(h.state()), &original, "restoring width restores the complete style and rendered pixels");
+            h.state_mut().run("edit.undo", json!({})).unwrap();
+            assert_eq!(shape(h.state()), &zero);
+            h.state_mut().run("edit.undo", json!({})).unwrap();
+            assert_eq!(shape(h.state()), &original);
+            h.state_mut().run("edit.redo", json!({})).unwrap();
+            assert_eq!(shape(h.state()), &zero);
+            h.state_mut().run("edit.redo", json!({})).unwrap();
+            assert_eq!(shape(h.state()), &original);
+        }
+    }
+}
+
+#[test]
+fn zero_width_style_can_be_inspected_removed_or_reenabled_explicitly() {
+    for properties in [true, false] {
+        let mut app = app("rgb", 8);
+        app.run("shape.create", json!({"rect": [20, 20, 80, 60], "stroke": {"width": 4, "color": "#e73581", "dashes": [3, 2]}})).unwrap();
+        let paint = shape(&app).stroke.as_ref().unwrap().paint.clone();
+        let mut h = harness(app, properties);
+        stroke_width(&mut h, "0");
+        let zero = shape(h.state()).clone();
+        h.get_by_label("Stroke Options").click();
+        h.run_steps(3);
+        assert_eq!(h.state().ui.stroke_editor.as_ref().unwrap().draft.dashes, [3.0, 2.0], "zero width still exposes the saved options");
+        h.key_press(Key::Escape);
+        h.run_steps(2);
+        assert_eq!(shape(h.state()), &zero, "merely inspecting the style does not enable it");
+
+        h.get_by_label(if properties { "Set shape stroke type" } else { "Stroke color" }).click();
+        h.run_steps(3);
+        h.get_by_label("No Color").click();
+        h.run_steps(2);
+        assert!(shape(h.state()).stroke.is_none(), "No Color still removes the stroke");
+        h.key_press(Key::Escape);
+        h.run_steps(2);
+        h.state_mut().run("edit.undo", json!({})).unwrap();
+        assert_eq!(shape(h.state()), &zero);
+        h.run_steps(2);
+
+        h.get_by_label("Stroke Options").click();
+        h.run_steps(3);
+        h.get_by_role_and_label(egui::accesskit::Role::RadioButton, "Dotted").click();
+        h.run_steps(3);
+        let stroke = shape(h.state()).stroke.as_ref().unwrap();
+        assert_eq!(stroke.width, 3.0, "a deliberate style choice enables the dormant stroke");
+        assert_eq!(stroke.paint, paint);
+        assert_eq!(stroke.dashes, [0.0, 2.0]);
+    }
+}
+
 #[test]
 fn fill_and_stroke_swatches_open_with_pointer_and_keyboard_without_changing_paint() {
     for label in ["Fill color", "Stroke color"] {
@@ -91,6 +186,84 @@ fn fill_and_stroke_swatches_open_with_pointer_and_keyboard_without_changing_pain
         assert_eq!(h.state().session.active().unwrap().doc, document);
         assert_eq!(h.state().session.tools.foreground, foreground);
         assert_eq!(h.state().session.tools.background, background);
+    }
+}
+
+#[test]
+fn shape_paint_hex_input_keeps_partial_text_and_preserves_alpha() {
+    for label in ["Fill color", "Stroke color"] {
+        let mut app = app("rgb", 32);
+        let original = [0.123456, 0.345678, 0.567891, 0.372819];
+        app.run("tools.setColors", json!({"foreground": original, "background": original})).unwrap();
+        let mut h = harness(app, false);
+        h.get_by_label(label).click();
+        h.run_steps(3);
+        h.get_by_label("#").click();
+        h.run_steps(1);
+        h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+        h.run_steps(1);
+        for ch in "12AB".chars() {
+            h.event(Event::Text(ch.to_string()));
+            h.run_steps(1);
+        }
+        assert_eq!(h.get_by_label("#").value().as_deref(), Some("12AB"));
+        assert_eq!(h.state().session.tools.foreground, original);
+        assert_eq!(h.state().session.tools.background, original);
+        for ch in "EF".chars() {
+            h.event(Event::Text(ch.to_string()));
+            h.run_steps(1);
+        }
+        let want = [18.0 / 255.0, 171.0 / 255.0, 239.0 / 255.0, original[3]];
+        let tools = &h.state().session.tools;
+        assert_eq!(if label == "Fill color" { tools.foreground } else { tools.background }, want);
+        assert_eq!(if label == "Fill color" { tools.background } else { tools.foreground }, original);
+        // An invalid/multi-byte value leaves the selected paint untouched.
+        h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+        h.run_steps(1);
+        h.event(Event::Text("颜色".into()));
+        h.run_steps(2);
+        let tools = &h.state().session.tools;
+        assert_eq!(if label == "Fill color" { tools.foreground } else { tools.background }, want);
+        h.key_press(Key::Escape);
+        h.run_steps(2);
+        finish_shape(h.state_mut(), Tool::Rectangle, [20.0, 20.0], [100.0, 80.0], Modifiers::NONE);
+        let drawn = shape(h.state());
+        let paint = if label == "Fill color" { drawn.fill.as_ref().and_then(color_of) } else { drawn.stroke.as_ref().and_then(|s| color_of(&s.paint)) };
+        assert_eq!(paint, Some(want), "the next shape takes the typed colour");
+    }
+}
+
+#[test]
+fn a_pasted_hex_colour_updates_the_selected_shape_and_undoes_once() {
+    for label in ["Fill color", "Stroke color"] {
+        let mut app = app("rgb", 32);
+        app.run("tools.setColors", json!({"foreground": [0.2, 0.3, 0.4, 0.6], "background": [0.5, 0.6, 0.7, 0.8]})).unwrap();
+        app.ui.tool_options.stroke_width = 3.0;
+        finish_shape(&mut app, Tool::Rectangle, [20.0, 20.0], [100.0, 80.0], Modifiers::NONE);
+        let original = shape(&app).clone();
+        let history = app.session.active().unwrap().history.past_len();
+        let mut h = harness(app, false);
+        h.get_by_label(label).click();
+        h.run_steps(3);
+        h.get_by_label("#").click();
+        h.run_steps(1);
+        h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+        h.run_steps(1);
+        h.event(Event::Paste("#12ABEF".into()));
+        h.run_steps(2);
+        let edited = shape(h.state());
+        let (paint, untouched) = if label == "Fill color" {
+            (edited.fill.as_ref().and_then(color_of), edited.stroke == original.stroke)
+        } else {
+            (edited.stroke.as_ref().and_then(|s| color_of(&s.paint)), edited.fill == original.fill)
+        };
+        let alpha = if label == "Fill color" { 0.6 } else { 0.8 };
+        let want = [18.0 / 255.0, 171.0 / 255.0, 239.0 / 255.0, alpha];
+        assert_eq!(paint, Some(want));
+        assert!(untouched, "the other paint stays unchanged");
+        assert_eq!(h.state().session.active().unwrap().history.past_len(), history + 1);
+        h.state_mut().run("edit.undo", json!({})).unwrap();
+        assert_eq!(shape(h.state()), &original);
     }
 }
 

@@ -447,7 +447,7 @@ pub(crate) fn show(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> bool {
     let output = if layout.root.is_some() {
         let mut panel = egui::Panel::right("shared-panel-dock")
             .default_size(if t.pro { 290.0 } else { 300.0 })
-            .size_range(crate::panels::DOCK_WIDTH)
+            .size_range(crate::panels::dock_width_range(ui.ctx().content_rect().width()))
             .resizable(!locked)
             .frame(egui::Frame::NONE.fill(t.card));
         if let Some(width) = requested_width {
@@ -855,11 +855,15 @@ fn panel_menu(app: &mut PhotocraftApp, ui: &mut egui::Ui, panel: &str) {
             crate::swatches_ui::panel_menu(app, ui);
             ui.separator();
         }
+        "history" => {
+            crate::history_menu_ui::panel_menu(app, ui);
+            ui.separator();
+        }
         "brushSettings" | "brush_settings" => {
             crate::brush_panel::panel_menu(app, ui);
             ui.separator();
         }
-        "actions" => {
+        "actions" | "Actions" => {
             crate::actions::panel_menu(app, ui);
             ui.separator();
         }

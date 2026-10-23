@@ -640,3 +640,12 @@ fn mix_selection_reads_the_selection_once_per_tile() {
         assert!(a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()), "alpha {alpha}: results differ");
     }
 }
+
+#[test]
+fn blur_halos_follow_the_clamped_radius_and_never_overflow() {
+    let smart = |radius| FilterParams::SmartBlur { radius, threshold: 25.0, quality: BlurQuality::default(), mode: SmartBlurMode::default() };
+    assert_eq!(smart(1e9).halo(), Halo::Radius(101));
+    assert_eq!(smart(f32::INFINITY).halo(), Halo::Radius(101));
+    let gaussian = FilterParams::GaussianBlur { radius: f32::INFINITY };
+    assert_eq!(gaussian.halo(), Halo::Radius(i32::MAX));
+}

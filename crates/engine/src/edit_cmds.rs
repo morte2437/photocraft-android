@@ -456,9 +456,9 @@ pub(crate) fn paste_offset(clip: &Clip, canvas: Rect, p: &Value, in_place: bool)
         return (0, 0);
     }
     let c = p.get("center").and_then(Value::as_array).filter(|a| a.len() >= 2).map(|a| (a[0].as_f64().unwrap_or(0.0), a[1].as_f64().unwrap_or(0.0)));
-    let (cx, cy) = c.unwrap_or(((canvas.x0 + canvas.x1) as f64 / 2.0, (canvas.y0 + canvas.y1) as f64 / 2.0));
+    let (cx, cy) = c.unwrap_or(((f64::from(canvas.x0) + f64::from(canvas.x1)) / 2.0, (f64::from(canvas.y0) + f64::from(canvas.y1)) / 2.0));
     let b = clip.bounds;
-    ((cx - (b.x0 + b.x1) as f64 / 2.0).round() as i32, (cy - (b.y0 + b.y1) as f64 / 2.0).round() as i32)
+    ((cx - (f64::from(b.x0) + f64::from(b.x1)) / 2.0).round() as i32, (cy - (f64::from(b.y0) + f64::from(b.y1)) / 2.0).round() as i32)
 }
 
 pub(crate) fn shifted(surface: &Surface, dx: i32, dy: i32) -> Surface {
@@ -1107,6 +1107,20 @@ mod tests {
         assert!(s.execute("file.newFromClipboard", json!({})).is_err());
         assert!(s.documents().is_empty());
         assert_eq!(s.clipboard.as_ref().unwrap().surface.rgba(i32::MIN, 0), [1.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn paste_centers_clipboard_bounds_near_coordinate_limits() {
+        for origin in [i32::MAX - 512, i32::MIN + 512] {
+            let clip = Clip { surface: Surface::new(PixelFormat::RGBA8), bounds: Rect::from_xywh(origin, origin, 2, 2), layers: None, resolution: None };
+            let (dx, dy) = paste_offset(&clip, Rect::new(0, 0, 20, 20), &json!({}), false);
+            assert_eq!(i64::from(origin) + i64::from(dx), 9);
+            assert_eq!(i64::from(origin) + i64::from(dy), 9);
+            let clip = Clip { bounds: Rect::new(0, 0, 2, 2), ..clip };
+            let (dx, dy) = paste_offset(&clip, Rect::from_xywh(origin, origin, 20, 20), &json!({}), false);
+            assert_eq!(dx, origin + 9);
+            assert_eq!(dy, origin + 9);
+        }
     }
 
     #[test]

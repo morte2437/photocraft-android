@@ -28,6 +28,48 @@ use crate::{ImportResult, IoError};
 pub const MAX_SIDE: u32 = 16_384;
 /// A rasterised fallback layer or a smart-object render never exceeds this many pixels.
 const MAX_RASTER_PIXELS: u64 = 24_000_000;
+/// Largest decoded byte size (RGBA8) accepted for an embedded raster image before resvg decodes
+/// it. resvg/tiny-skia allocate the full intrinsic image before any destination-size scaling,
+/// so a highly compressed PNG or WebP could otherwise trigger gigabyte-scale allocation and
+/// decompression that the destination pixmap's size check never sees.
+const MAX_EMBEDDED_IMAGE_BYTES: u64 = MAX_RASTER_PIXELS * 4;
+
+/// The IHDR width/height of a PNG, read directly from its header (no decoding): the signature
+/// (8 bytes), the IHDR chunk's length and type (8 bytes), then big-endian width and height.
+fn png_dimensions(data: &[u8]) -> Option<(u32, u32)> {
+    let sig = data.get(0..8)?;
+    if sig != [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A] {
+        return None;
+    }
+    if data.get(12..16)? != b"IHDR" {
+        return None;
+    }
+    let w = u32::from_be_bytes(data.get(16..20)?.try_into().ok()?);
+    let h = u32::from_be_bytes(data.get(20..24)?.try_into().ok()?);
+    Some((w, h))
+}
+
+/// Intrinsic dimensions of a raster image resvg can embed, from its header alone, for formats
+/// where decoding allocates the full image before any destination scaling (PNG, WebP).
+/// Returns `Some(Some((w, h)))` when the format is PNG/WebP and its header parses cleanly,
+/// `Some(None)` when the format is PNG/WebP (by MIME or magic bytes under `"text/plain"`)
+/// and its header is malformed, or `None` for other formats.
+fn embedded_image_dimensions(mime: &str, data: &[u8]) -> Option<Option<(u32, u32)>> {
+    match mime {
+        "image/png" => Some(png_dimensions(data)),
+        "image/webp" => Some(photocraft_codecs::probe_size(data).ok()),
+        "text/plain" => {
+            if data.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
+                Some(png_dimensions(data))
+            } else if data.get(0..4) == Some(b"RIFF") && data.get(8..12) == Some(b"WEBP") {
+                Some(photocraft_codecs::probe_size(data).ok())
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
 /// Aggregate memory for retained fallback surfaces in the document's pixel format.
 const MAX_PIXEL_BYTES: u64 = 1 << 30;
 /// Estimated peak during raster conversion (retained surfaces + RGBA8 pixmap + f32 staging + tiles).
@@ -65,9 +107,73 @@ fn fonts() -> Arc<usvg::fontdb::Database> {
         }
         #[cfg(not(target_arch = "wasm32"))]
         db.load_system_fonts();
+        resolve_generic_families(&mut db, system_generic_family);
         Arc::new(db)
     })
     .clone()
+}
+
+/// Installed families that stand in for each generic one, best first: the metric-compatible
+/// Liberation and Croscore fonts, then common Linux defaults, then the bundled craft fonts.
+const SANS_SERIF: &[&str] = &["Liberation Sans", "Arimo", "Helvetica", "DejaVu Sans", "Noto Sans", photocraft_text::fonts::DEFAULT_FAMILY];
+const SERIF: &[&str] = &["Liberation Serif", "Tinos", "Times", "DejaVu Serif", "Noto Serif"];
+const MONOSPACE: &[&str] = &["Liberation Mono", "Cousine", "Courier", "DejaVu Sans Mono", "Noto Sans Mono", photocraft_text::fonts::MONO_FAMILY];
+
+/// Points the generic families (`sans-serif`, `serif`, `monospace`, `cursive`, `fantasy`) at
+/// fonts the database holds. fontdb names Windows fonts for them (Arial, Times New Roman,
+/// Courier New…): on a system without those, every family of a usual
+/// `font-family="Arial, Helvetica, sans-serif"` misses, and usvg drops the text although
+/// hundreds of fonts are installed, where a browser sets it in a fallback font. A generic whose
+/// font is installed is left alone. Otherwise the system's choice (`system`, Fontconfig on Linux)
+/// wins when the database has it, then the first installed stand-in, then the sans-serif choice,
+/// then any font at all.
+fn resolve_generic_families(db: &mut usvg::fontdb::Database, system: impl Fn(&str) -> Option<String>) {
+    use usvg::fontdb::Family;
+    let has = |db: &usvg::fontdb::Database, name: &str| db.faces().any(|f| f.families.iter().any(|(n, _)| n.eq_ignore_ascii_case(name)));
+    let Some(any) = db.faces().find_map(|f| f.families.first()).map(|(n, _)| n.clone()) else { return };
+    let mut sans = None;
+    for (generic, css, stand_ins) in [
+        (Family::SansSerif, "sans-serif", SANS_SERIF),
+        (Family::Serif, "serif", SERIF),
+        (Family::Monospace, "monospace", MONOSPACE),
+        (Family::Cursive, "cursive", &[][..]),
+        (Family::Fantasy, "fantasy", &[][..]),
+    ] {
+        let current = db.family_name(&generic).to_string();
+        let pick = if has(db, &current) {
+            current
+        } else {
+            system(css)
+                .filter(|n| has(db, n))
+                .or_else(|| stand_ins.iter().find(|n| has(db, n)).map(|n| n.to_string()))
+                .or_else(|| sans.clone())
+                .unwrap_or_else(|| any.clone())
+        };
+        match generic {
+            Family::SansSerif => db.set_sans_serif_family(pick.clone()),
+            Family::Serif => db.set_serif_family(pick.clone()),
+            Family::Monospace => db.set_monospace_family(pick.clone()),
+            Family::Cursive => db.set_cursive_family(pick.clone()),
+            _ => db.set_fantasy_family(pick.clone()),
+        }
+        if generic == Family::SansSerif {
+            sans = Some(pick);
+        }
+    }
+}
+
+/// The family Fontconfig sets a generic family in (`fc-match sans-serif`), as the rest of the
+/// desktop does; `None` without Fontconfig.
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+fn system_generic_family(generic: &str) -> Option<String> {
+    let out = std::process::Command::new("fc-match").args(["--format=%{family[0]}", generic]).output().ok()?;
+    let name = String::from_utf8(out.stdout).ok()?;
+    Some(name.trim().to_string()).filter(|n| out.status.success() && !n.is_empty())
+}
+
+#[cfg(not(all(target_os = "linux", not(target_arch = "wasm32"))))]
+fn system_generic_family(_generic: &str) -> Option<String> {
+    None
 }
 
 /// Parse options for an untrusted drawing. `<image href>` resolves only `data:` URLs: a file path
@@ -75,9 +181,36 @@ fn fonts() -> Arc<usvg::fontdb::Database> {
 /// `~/.ssh/...`) into the document. Embedded SVG images get no `<image>` resolution at all
 /// (`usvg` already blanks it for sub-SVGs).
 fn options(fontdb: Arc<usvg::fontdb::Database>) -> usvg::Options<'static> {
+    let default_resolver = usvg::ImageHrefResolver::default_data_resolver();
+    let resolve_data: usvg::ImageHrefDataResolverFn<'static> = Box::new(move |mime, data, opts| {
+        // Reject embedded images whose decoded RGBA storage would exceed the budget before
+        // resvg (which allocates the full intrinsic image before any destination scaling) ever
+        // sees them. Formats without a cheap header probe fall through unchanged; their decode
+        // path is bounded elsewhere or accepted as-is, matching the previous behavior.
+        if let Some(probed) = embedded_image_dimensions(mime, &data) {
+            let (w, h) = probed?;
+            let decoded = u64::from(w).saturating_mul(u64::from(h)).saturating_mul(4);
+            if decoded > MAX_EMBEDDED_IMAGE_BYTES {
+                return None;
+            }
+        }
+        // An embedded `image/svg+xml` value can itself be gzip-compressed (SVGZ-in-data-URL).
+        // The default resolver's sub-SVG loader checks for the gzip magic and decompresses
+        // again with no byte limit of its own. Apply our bounded inflate first: if the data is
+        // gzip-compressed, hand the default resolver the already-decompressed (and
+        // size-checked) bytes, which no longer start with the gzip magic, so it parses them
+        // directly instead of decompressing a second time.
+        if (mime == "image/svg+xml" || mime == "text/plain") && data.starts_with(&[0x1f, 0x8b]) {
+            return match inflate(&data) {
+                Ok(xml) if !xml.starts_with(&[0x1f, 0x8b]) => default_resolver("image/svg+xml", std::sync::Arc::new(xml.into_owned()), opts),
+                _ => None,
+            };
+        }
+        default_resolver(mime, data, opts)
+    });
     usvg::Options {
         resources_dir: None,
-        image_href_resolver: usvg::ImageHrefResolver { resolve_data: usvg::ImageHrefResolver::default_data_resolver(), resolve_string: Box::new(|_, _| None) },
+        image_href_resolver: usvg::ImageHrefResolver { resolve_data, resolve_string: Box::new(|_, _| None) },
         fontdb,
         ..usvg::Options::default()
     }
@@ -110,7 +243,11 @@ fn parse_with(bytes: &[u8], fonts: fn() -> Arc<usvg::fontdb::Database>) -> Resul
     let fontdb = if has_text { fonts() } else { Arc::new(usvg::fontdb::Database::new()) };
     let fontless_text = has_text && fontdb.faces().next().is_none();
     let opt = options(fontdb);
-    let tree = usvg::Tree::from_data(&xml, &opt).map_err(|e| IoError::Svg(e.to_string()))?;
+    // Parse the already-bounded-and-decoded text with from_str, not from_data: from_data
+    // re-checks the gzip magic and would decompress a second time without our size limit if
+    // the inflated content happened to start with a nested gzip stream.
+    let text = std::str::from_utf8(&xml).map_err(|_| IoError::Svg("the SVG is not valid UTF-8".into()))?;
+    let tree = usvg::Tree::from_str(text, &opt).map_err(|e| IoError::Svg(e.to_string()))?;
     Ok(Parsed { tree, fontless_text })
 }
 
@@ -780,6 +917,64 @@ mod tests {
         assert!(r.warnings.iter().all(|w| !w.contains("font")), "{:?}", r.warnings);
     }
 
+    /// #4806: text placed by a `transform` (Illustrator writes `matrix(1 0 0 1 x y)` on every text
+    /// element), on the text or on a group around it, lands where resvg draws it. usvg leaves the
+    /// glyph outlines' absolute transforms at identity, so reading them dropped the transform: the
+    /// text went off the canvas or kept its untransformed place and size.
+    ///
+    /// Shaped with the bundled Inter alone, never a system font: on a machine without fonts (a
+    /// bare CI image or VM) the test would otherwise have nothing to check, and the drawing and
+    /// its reference come from the same parse, so both use that face.
+    #[test]
+    fn transformed_text_lands_where_resvg_draws_it() {
+        fn inter() -> Arc<usvg::fontdb::Database> {
+            let mut db = usvg::fontdb::Database::new();
+            db.load_font_data(photocraft_text::fonts::INTER_REGULAR.to_vec());
+            Arc::new(db)
+        }
+        assert!(inter().faces().next().is_some(), "the bundled Inter loads");
+        let font = r#"font-size="24" font-family="Inter" fill="black""#;
+        let cases = [
+            format!(r#"<text transform="translate(10 40)" {font}>IHI</text>"#),
+            format!(r#"<text transform="matrix(1 0 0 1 10 40)" {font}>IHI</text>"#),
+            format!(r#"<text transform="translate(10 0)" x="20" y="40" {font}>IHI</text>"#),
+            format!(r#"<text transform="scale(2)" x="5" y="25" {font}>IHI</text>"#),
+            format!(r#"<g transform="translate(10 40)"><text {font}>IHI</text></g>"#),
+            format!(r#"<g transform="translate(60 0)"><g transform="rotate(90)"><text x="5" y="20" {font}>IHI</text></g></g>"#),
+        ];
+        for c in cases {
+            let svg = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="120" height="60">{c}</svg>"#);
+            let parsed = parse_with(svg.as_bytes(), inter).unwrap();
+            assert!(!parsed.fontless_text, "{c}");
+            let mut reference = tiny_skia::Pixmap::new(120, 60).unwrap();
+            resvg::render(&parsed.tree, tiny_skia::Transform::default(), &mut reference.as_mut());
+            let r = import_parsed("t", parsed, MAX_GROUP_DEPTH).unwrap();
+            let [layer] = r.document.layers.as_slice() else { panic!("one text layer, got {}: {c}", r.document.layers.len()) };
+            assert!(matches!(layer.content, LayerContent::Group(_)), "text stays outline shapes: {c}");
+            let imported = photocraft_compose::flatten(&r.document);
+            let (mut both, mut either) = (0usize, 0usize);
+            let (mut a_box, mut b_box) = ([i32::MAX, i32::MAX, i32::MIN, i32::MIN], [i32::MAX, i32::MAX, i32::MIN, i32::MIN]);
+            let grow = |bx: &mut [i32; 4], x: i32, y: i32| *bx = [bx[0].min(x), bx[1].min(y), bx[2].max(x), bx[3].max(y)];
+            for (i, px) in reference.pixels().iter().enumerate() {
+                let (x, y) = ((i % 120) as i32, (i / 120) as i32);
+                let (a, b) = (imported.get(x, y)[3] > 0.5, px.alpha() > 127);
+                if a {
+                    grow(&mut a_box, x, y);
+                }
+                if b {
+                    grow(&mut b_box, x, y);
+                }
+                both += usize::from(a && b);
+                either += usize::from(a || b);
+            }
+            assert!(either > 50, "resvg draws the text on the canvas: {c}");
+            // Same place and size to the pixel; the outlines are filled by a different rasteriser,
+            // so the edges of thin stems may differ by half a pixel.
+            assert!(a_box.iter().zip(b_box).all(|(a, b)| (a - b).abs() <= 1), "imported {a_box:?}, resvg {b_box:?}: {c}");
+            assert!(both * 10 >= either * 7, "imported glyphs cover what resvg draws ({both} of {either} px): {c}");
+        }
+    }
+
     /// #4266: a group clipped by one path (the PhotoCraft icon's rounded square) stays editable
     /// shapes with the clip as its vector mask, and looks as resvg draws the drawing; a clip of
     /// two shapes is still rasterised, with the warning.
@@ -826,6 +1021,53 @@ mod tests {
             <g clip-path="url(#c)"><rect width="64" height="64"/><rect width="9" height="9" fill="red"/></g></svg>"##;
         let r = import_svg("t", two).unwrap();
         assert!(r.warnings.iter().any(|w| w.contains("clip-path")), "{:?}", r.warnings);
+    }
+
+    /// A database with the bundled Inter alone, generics resolved without Fontconfig: none of
+    /// fontdb's Windows defaults (Arial, Times New Roman, Courier New) is in it.
+    fn inter_only() -> Arc<usvg::fontdb::Database> {
+        let mut db = usvg::fontdb::Database::new();
+        db.load_font_data(include_bytes!("../../../assets/fonts/Inter-Regular.ttf").to_vec());
+        resolve_generic_families(&mut db, |_| None);
+        Arc::new(db)
+    }
+
+    /// Text asking for fonts that aren't installed (`Arial, Helvetica, sans-serif` on a Linux
+    /// without them) is set in an installed font, as a browser does, instead of being dropped.
+    #[test]
+    fn text_in_missing_fonts_falls_back_to_an_installed_one() {
+        for family in ["Arial, Helvetica, sans-serif", "Times New Roman", "Courier New, monospace", "cursive", "fantasy"] {
+            let svg = format!(
+                "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"120\" height=\"60\"><text x=\"5\" y=\"45\" font-size=\"48\" font-family=\"{family}\">II</text></svg>"
+            );
+            let parsed = parse_with(svg.as_bytes(), inter_only).unwrap();
+            assert!(!parsed.fontless_text);
+            let r = import_parsed("t", parsed, MAX_GROUP_DEPTH).unwrap();
+            assert_eq!(r.document.layers.first().map(|l| l.name.as_str()), Some("II"), "{family}: {:?}", r.warnings);
+        }
+    }
+
+    #[test]
+    fn generic_families_point_at_installed_fonts() {
+        use usvg::fontdb::Family;
+        let db = inter_only();
+        for g in [Family::SansSerif, Family::Serif, Family::Monospace, Family::Cursive, Family::Fantasy] {
+            assert_eq!(db.family_name(&g), "Inter", "{g:?}");
+        }
+        // The system's choice wins when installed; a generic whose font is installed stays.
+        let mut db = usvg::fontdb::Database::new();
+        db.load_font_data(include_bytes!("../../../assets/fonts/Inter-Regular.ttf").to_vec());
+        db.load_font_data(include_bytes!("../../../assets/fonts/JetBrainsMono-Regular.ttf").to_vec());
+        db.set_cursive_family("Inter");
+        resolve_generic_families(&mut db, |g| Some(if g == "serif" { "JetBrains Mono" } else { "Not Installed" }.to_string()));
+        assert_eq!(db.family_name(&Family::Serif), "JetBrains Mono");
+        assert_eq!(db.family_name(&Family::Monospace), "JetBrains Mono", "the bundled mono stand-in");
+        assert_eq!(db.family_name(&Family::SansSerif), "Inter");
+        assert_eq!(db.family_name(&Family::Cursive), "Inter");
+        // An empty database is left alone.
+        let mut empty = usvg::fontdb::Database::new();
+        resolve_generic_families(&mut empty, |_| Some("Inter".into()));
+        assert_eq!(empty.family_name(&Family::SansSerif), "Arial");
     }
 
     #[test]
@@ -888,5 +1130,47 @@ mod tests {
         let cv = canvas(&tree, &mut w);
         assert_eq!((cv.size.width, cv.size.height), (MAX_SIDE, MAX_SIDE / 2));
         assert_eq!(w.len(), 1);
+    }
+
+    #[test]
+    fn resolve_data_rejects_oversized_and_malformed_embedded_png_and_webp() {
+        let opt = options(Arc::new(usvg::fontdb::Database::new()));
+        let resolve = &opt.image_href_resolver.resolve_data;
+        let img = photocraft_codecs::Image::from_u8(2, 2, photocraft_codecs::ChannelLayout::Rgb, vec![255; 12]).unwrap();
+        let valid_png = photocraft_codecs::encode(&img, photocraft_codecs::Format::Png, &Default::default()).unwrap();
+        assert!(resolve("image/png", Arc::new(valid_png.clone()), &opt).is_some());
+        assert!(resolve("text/plain", Arc::new(valid_png.clone()), &opt).is_some());
+
+        let mut huge_png = valid_png;
+        huge_png[16..20].copy_from_slice(&40_000u32.to_be_bytes());
+        huge_png[20..24].copy_from_slice(&40_000u32.to_be_bytes());
+        assert!(resolve("image/png", Arc::new(huge_png.clone()), &opt).is_none(), "oversized PNG rejected before decode");
+        assert!(resolve("text/plain", Arc::new(huge_png), &opt).is_none(), "oversized mime-less PNG rejected before decode");
+
+        // Malformed WebP header under image/webp or text/plain must be rejected at the probe step.
+        let bad_webp = b"RIFF\x10\x00\x00\x00WEBPVP8 ".to_vec();
+        assert!(resolve("image/webp", Arc::new(bad_webp.clone()), &opt).is_none());
+        assert!(resolve("text/plain", Arc::new(bad_webp), &opt).is_none());
+    }
+
+    #[test]
+    fn resolve_data_rejects_nested_gzip_and_handles_text_plain_svgz() {
+        use std::io::Write;
+        fn gz(bytes: &[u8]) -> Vec<u8> {
+            let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+            e.write_all(bytes).unwrap();
+            e.finish().unwrap()
+        }
+        let opt = options(Arc::new(usvg::fontdb::Database::new()));
+        let resolve = &opt.image_href_resolver.resolve_data;
+        let svg = b"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"4\"><rect width=\"4\" height=\"4\"/></svg>";
+        let once = gz(svg);
+        assert!(resolve("image/svg+xml", Arc::new(once.clone()), &opt).is_some());
+        assert!(resolve("text/plain", Arc::new(once.clone()), &opt).is_some());
+
+        // Doubly gzip-compressed payload must be rejected rather than decompressed a second time by usvg.
+        let twice = gz(&once);
+        assert!(resolve("image/svg+xml", Arc::new(twice.clone()), &opt).is_none());
+        assert!(resolve("text/plain", Arc::new(twice), &opt).is_none());
     }
 }

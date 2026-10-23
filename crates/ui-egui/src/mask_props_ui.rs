@@ -1,6 +1,6 @@
 //! Non-destructive layer-mask controls (pixel and vector), shared by docked and floating Properties.
 
-use photocraft_doc::Layer;
+use photocraft_doc::{Layer, LayerContent};
 use serde_json::json;
 
 use crate::props_layout::COL_GAP;
@@ -46,6 +46,23 @@ pub fn vector_properties(app: &mut PhotocraftApp, ui: &mut egui::Ui, layer: &Lay
         }
         let (density, feather) = (vm.density, vm.feather);
         sliders(app, ui, layer.id.0, document, "layer.vectorMask.edit", "vector-mask", density, feather);
+    });
+}
+
+/// A shape layer's path is its vector mask (Photoshop's Properties › Masks): its Density and
+/// Feather soften the fill through `layer.vectorMask.edit`, the shape staying editable.
+pub fn shape_properties(app: &mut PhotocraftApp, ui: &mut egui::Ui, layer: &Layer) {
+    let LayerContent::Shape(sh) = &layer.content else { return };
+    if layer.vector_mask.is_some() {
+        return;
+    }
+    let Some(document) = app.session.active().map(|s| s.doc.id.0) else { return };
+    ui.push_id((document, layer.id, "shape-mask-properties"), |ui| {
+        if !crate::props_layout::section(ui, "shape-mask", "Vector Mask") {
+            return;
+        }
+        let (density, feather) = (sh.density, sh.feather);
+        sliders(app, ui, layer.id.0, document, "layer.vectorMask.edit", "shape-mask", density, feather);
     });
 }
 

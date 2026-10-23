@@ -170,6 +170,13 @@ pub struct SaveParams {
     /// DPX: 8, 10, 12 or 16 bits per sample. Unset: 8 for an 8-bit document, else 16.
     #[serde(default, rename = "dpxBits")]
     pub dpx_bits: Option<u8>,
+    /// DDS: "none" (uncompressed, the default), "bc1" (DXT1: alpha on or off), "bc2" (DXT3) or
+    /// "bc3" (DXT5).
+    #[serde(default, rename = "ddsCompression")]
+    pub dds_compression: Option<String>,
+    /// DDS: also write the full mip chain, each level a box filter of the one above.
+    #[serde(default, rename = "ddsMipmaps")]
+    pub dds_mipmaps: bool,
     #[serde(default)]
     pub index: Option<usize>,
 }
@@ -1001,10 +1008,18 @@ impl PhotocraftMcp {
             Some((_, Some(bits))) => Some(bits),
             Some((b, None)) => return Ok(fail(format!("`dpxBits` must be 8, 10, 12 or 16, got {b}"))),
         };
+        if let Some(q) = p.quality.filter(|q| !(1..=100).contains(q)) {
+            return Ok(fail(format!("`quality` must be a whole number from 1 to 100, got {q}")));
+        }
+        let dds_compression = match p.dds_compression.as_deref().map(|c| (c, photocraft_io::DdsCompression::from_name(c))) {
+            None => None,
+            Some((_, Some(c))) => Some(c),
+            Some((c, None)) => return Ok(fail(format!("`ddsCompression` must be none, bc1, bc2 or bc3, got {c:?}"))),
+        };
         if let Some(b) = self.bridge_client() {
             // The bridge forwards to the running app's `app.save`, which takes only an optional
             // path (without one it writes back to the document's own layered file, as headless
-            // does) and the Targa bits, so the other options are headless-only. Saying so beats
+            // does), the Targa bits and the DDS options, so the other options are headless-only. Saying so beats
             // saving with defaults while the caller believes their quality or format was applied.
             let unsupported: Vec<&str> = [
                 p.format.is_some().then_some("format"),
@@ -1026,15 +1041,22 @@ impl PhotocraftMcp {
             if let Some(bits) = tga_bits {
                 params["tgaBits"] = json!(bits.bits());
             }
+            if let Some(c) = dds_compression {
+                params["ddsCompression"] = json!(c.name());
+            }
+            if p.dds_mipmaps {
+                params["ddsMipmaps"] = json!(true);
+            }
             return to_result(b.call("app.save", params).await);
         }
         let Some(r) = self
             .headless_op(move |h| {
                 let mut opts = photocraft_io::ExportOptions { tiff_layers: p.tiff_layers, tga_bits, ..Default::default() };
                 opts.encode.dpx_bits = dpx_bits;
+                opts.encode.dds = photocraft_io::DdsOptions { compression: dds_compression.unwrap_or_default(), mipmaps: p.dds_mipmaps };
                 if let Some(q) = p.quality {
-                    opts.encode.jpeg_quality = q.clamp(1, 100);
-                    opts.encode.webp_quality = q.clamp(1, 100);
+                    opts.encode.jpeg_quality = q;
+                    opts.encode.webp_quality = q;
                     opts.encode.webp_lossless = false;
                 }
                 let path = p.path.map(PathBuf::from);
@@ -1175,7 +1197,7 @@ mod tests {
                 break;
             }
             assert!(t.elapsed().as_secs() < 60, "doc_inspect never saw the finished job: {inspected}");
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
     }
 }

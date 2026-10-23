@@ -183,6 +183,28 @@ fn arrange_layouts_floating_windows_and_matching() {
     assert_eq!(app.ui.windows.len(), 1);
 }
 
+/// Match Zoom clamps the matched zoom to each document's own range: a 10 x 10 document can't go
+/// below the zoom at which its shorter side is 2 px, even when the source view is lower.
+#[test]
+fn match_zoom_clamps_to_each_documents_zoom_range() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 10, "height": 10})).unwrap();
+    app.run("file.new", json!({"width": 2000, "height": 2000})).unwrap();
+    app.sync_views();
+    let ctx = egui::Context::default();
+    assert_eq!(app.session.active_index(), Some(1));
+    app.ui.views[1].zoom = 0.05;
+    menu(&mut app, &ctx, "window.arrange.matchZoom", json!({})).unwrap();
+    assert_eq!(app.ui.views[1].zoom, 0.05);
+    assert_eq!(app.ui.views[0].zoom, crate::zoom_levels::min([10, 10]));
+    // Floating windows too, before their first frame (no `doc_size` yet).
+    menu(&mut app, &ctx, "window.arrange.floatAllInWindows", json!({})).unwrap();
+    app.ui.views[1].zoom = 0.05;
+    menu(&mut app, &ctx, "window.arrange.matchZoom", json!({})).unwrap();
+    assert_eq!(app.ui.windows.len(), 2);
+    assert!(app.ui.windows.iter().all(|w| w.view.zoom == if w.document == 0 { crate::zoom_levels::min([10, 10]) } else { 0.05 }));
+}
+
 #[test]
 fn two_up_and_stacked_cells_keep_their_existing_boundaries() {
     let rect = egui::Rect::from_min_max(egui::pos2(40.0, 75.0), egui::pos2(940.0, 675.0));
@@ -231,6 +253,20 @@ fn type_menu_checkmarks_follow_the_layer() {
     assert_eq!(checked(&app, "type.openType.fractions"), Some(true));
     assert_eq!(checked(&app, "type.openType.standardLigatures"), Some(true));
     assert_eq!(checked(&app, "type.orientation.horizontal"), Some(true));
+}
+
+#[test]
+fn batch_menu_requires_a_recorded_action() {
+    let (mut app, ctx) = app_with(1);
+    assert!(!crate::menus::is_enabled(&app, "file.automate.batch"));
+
+    app.run("actions.record", json!({"name": "Invert"})).unwrap();
+    app.run("image.adjustments.invert", json!({})).unwrap();
+    app.run("actions.stop", json!({})).unwrap();
+
+    assert!(crate::menus::is_enabled(&app, "file.automate.batch"));
+    let dialog = menu(&mut app, &ctx, "file.automate.batch", json!({})).unwrap()["dialog"].as_u64().unwrap();
+    assert_eq!(app.ui.dialog_mut(dialog).unwrap().fields["action"], "Invert");
 }
 
 #[test]
@@ -489,6 +525,24 @@ fn load_selection_without_alpha_channels_offers_the_composite() {
     crate::dialogs::confirm(&mut app, dialog).unwrap();
 }
 
+#[test]
+fn video_menu_commands_open_pickers_and_dialogs() {
+    let (mut app, ctx) = app_with(1);
+    app.services.file_dialog = Some(Box::new(|_, _, _| {}));
+
+    for id in ["layer.videoLayers.newVideoLayerFromFile", "layer.videoLayers.replaceFootage"] {
+        assert!(is_live(id), "{id}");
+        assert_eq!(menu(&mut app, &ctx, id, json!({})).unwrap(), json!({"fileDialog": "open"}), "{id}");
+        app.file_dialog = None;
+    }
+
+    let interpret = menu(&mut app, &ctx, "layer.videoLayers.interpretFootage", json!({})).unwrap()["dialog"].as_u64().unwrap();
+    let fields = &app.ui.dialog_mut(interpret).unwrap().fields;
+    assert_eq!(fields["__command"], "layer.videoLayers.interpretFootage");
+    assert_eq!(fields["fps"], 30.0);
+    app.ui.close_dialog(interpret);
+}
+
 /// One frame of the shortcut handler with a plain Esc press.
 fn press_esc(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let key = egui::Key::Escape;
@@ -556,6 +610,87 @@ fn esc_leaves_full_screen_modes_unless_something_else_owns_it() {
     assert!(app.session.active().unwrap().doc.selection.is_some());
 }
 
+#[test]
+fn creating_a_selection_restores_hidden_extras() {
+    let mut hidden = Vec::new();
+    for (command, params) in [
+        ("select.rect", json!({"x": 10, "y": 10, "width": 20, "height": 20})),
+        ("select.rect", json!({"x": 10, "y": 10, "width": 20, "height": 20, "ellipse": true})),
+        ("select.lasso", json!({"points": [[10,10], [30,10], [20,30]]})),
+        ("select.magneticLasso", json!({"points": [[10,10], [30,10], [20,30]], "trace": false})),
+        ("select.magicWand", json!({"x": 10, "y": 10})),
+        ("select.quick", json!({"points": [[10,10]], "size": 8})),
+        ("select.loadSelection", json!({"channel": "transparency"})),
+        ("select.loadLuminosity", json!({})),
+    ] {
+        let (mut app, ctx) = app_with(1);
+        app.run("edit.fill", json!({"color": "#cc4422"})).unwrap();
+        menu(&mut app, &ctx, "view.extras", json!({})).unwrap();
+        assert!(!app.ui.view.extras, "explicit hide remains effective before a new selection");
+        app.run(command, params).unwrap();
+        assert!(app.session.active().unwrap().doc.selection.is_some(), "{command} creates a selection");
+        if !app.ui.view.shows(app.ui.view.show.selection_edges) || checked(&app, "view.extras") != Some(true) {
+            hidden.push(command);
+        }
+    }
+    assert!(hidden.is_empty(), "new selections stayed hidden after Extras was disabled: {hidden:?}");
+}
+
+#[test]
+fn failed_selection_and_unrelated_edits_keep_extras_hidden() {
+    let (mut app, ctx) = app_with(1);
+    app.run("select.rect", json!({"x": 10, "y": 10, "width": 20, "height": 20})).unwrap();
+    menu(&mut app, &ctx, "view.extras", json!({})).unwrap();
+    assert!(!app.ui.view.extras);
+    assert!(app.run("select.rect", json!({"x": "invalid"})).is_err());
+    assert!(!app.ui.view.extras, "failed selection must not change the view");
+    app.run("edit.fill", json!({"color": "#cc4422"})).unwrap();
+    assert!(!app.ui.view.extras, "painting an existing hidden selection keeps it hidden");
+    app.run("select.deselect", json!({})).unwrap();
+    assert!(!app.ui.view.extras, "deselecting has no new outline to reveal");
+}
+
+#[test]
+fn new_selection_preserves_individual_show_preferences() {
+    let (mut app, ctx) = app_with(1);
+    app.ui.view.show.selection_edges = false;
+    app.ui.view.show.pixel_grid = false;
+    menu(&mut app, &ctx, "view.extras", json!({})).unwrap();
+    app.run("select.rect", json!({"x": 10, "y": 10, "width": 20, "height": 20})).unwrap();
+    assert!(app.ui.view.extras);
+    assert!(!app.ui.view.show.selection_edges);
+    assert!(!app.ui.view.show.pixel_grid);
+}
+
+#[test]
+fn object_selection_finding_nothing_keeps_extras_hidden() {
+    let (mut app, ctx) = app_with(1);
+    app.run("edit.fill", json!({"color": "#ffffff"})).unwrap();
+    app.run("select.rect", json!({"x": 10, "y": 10, "width": 20, "height": 20})).unwrap();
+    menu(&mut app, &ctx, "view.extras", json!({})).unwrap();
+    let result = app.run("select.object", json!({"point": [3,3]})).unwrap();
+    assert_eq!(result["changed"], false);
+    assert!(app.session.active().unwrap().doc.selection.is_some());
+    assert!(!app.ui.view.extras, "finding no object must not reveal an old selection");
+}
+
+#[test]
+fn object_selection_restores_extras_when_it_finds_an_object() {
+    let (mut app, ctx) = app_with(0);
+    app.run("file.new", json!({"width": 200, "height": 160})).unwrap();
+    app.run("edit.fill", json!({"color": "#4073b3"})).unwrap();
+    app.run("select.rect", json!({"x": 55, "y": 35, "width": 90, "height": 90, "ellipse": true})).unwrap();
+    app.run("edit.fill", json!({"color": "#e64d26"})).unwrap();
+    app.run("select.deselect", json!({})).unwrap();
+    menu(&mut app, &ctx, "view.extras", json!({})).unwrap();
+    assert!(!app.ui.view.extras);
+    let result = app.run("select.object", json!({"rect": [45,25,110,110]})).unwrap();
+    assert_eq!(result["changed"], true, "the fixture must produce a new object selection");
+    let selection = app.session.active().unwrap().doc.selection.as_ref().unwrap();
+    assert!(selection.sample_channel(100, 80, 0) > 0.5, "the central object is selected");
+    assert!(app.ui.view.shows(app.ui.view.show.selection_edges));
+}
+
 /// #6017: a click into another tile activated that document and moved it to the first tile, so
 /// the two side-by-side documents swapped places. Each document keeps its tile; with more
 /// documents than tiles, the shown run slides just enough to include the active one.
@@ -617,4 +752,29 @@ fn every_arranged_tile_has_rulers() {
         }
     }
     assert!(labels[0] > 0 && labels[1] > 0, "ruler labels per tile: {labels:?}");
+}
+
+#[test]
+fn file_info_dialog_matches_photoshop_field_order_and_labels() {
+    crate::i18n::with_language(crate::i18n::Lang::EN, || {
+        let (mut app, ctx) = app_with(1);
+        let d = menu(&mut app, &ctx, "file.fileInfo", json!({})).unwrap()["dialog"].as_u64().unwrap();
+        let fields = app.ui.dialog_mut(d).unwrap().fields.clone();
+        assert_eq!(
+            form_keys(&fields).iter().map(String::as_str).collect::<Vec<_>>(),
+            ["title", "author", "authorTitle", "description", "keywords", "copyrightStatus", "copyright", "copyrightUrl"]
+        );
+        let labels = fields["__labels"].as_object().unwrap();
+        assert_eq!(labels["title"], "Document Title");
+        assert_eq!(labels["copyright"], "Copyright Notice");
+        assert_eq!(labels["copyrightUrl"], "Copyright Info URL");
+    });
+}
+
+#[test]
+fn form_keys_orders_by_order_then_catalogue() {
+    let f = json!({"zeta": "", "alpha": "", "mid": "", "__order": ["mid", "zeta", "ghost"]}).as_object().unwrap().clone();
+    assert_eq!(form_keys(&f).iter().map(String::as_str).collect::<Vec<_>>(), ["mid", "zeta", "alpha"]);
+    let f = json!({"zeta": "", "alpha": ""}).as_object().unwrap().clone();
+    assert_eq!(form_keys(&f).iter().map(String::as_str).collect::<Vec<_>>(), ["alpha", "zeta"]);
 }

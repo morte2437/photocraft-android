@@ -12,6 +12,10 @@
 # Product and technology names (PhotoCraft, ArtCraft, OpenType, CMYK, Lab ...) stay in Latin
 # letters; the trailing … of dialog commands is kept.
 
+# Layer Mask Display Options (the layer mask rubylith's colour and opacity)
+	Mask Options…	Opzioni maschera…
+	Layer Mask Display Options…	Opzioni di visualizzazione maschera di livello…
+
 # Channel Options and New Spot Channel (#3761)
 	Channel Color	Colore canale
 	Color Indicates:	Il colore indica:
@@ -327,6 +331,7 @@
 	Blending Options…	Opzioni di fusione…
 	Bevel & Emboss…	Smusso e rilievo…
 	Use Global Light	Usa luce globale
+	Overprint	Sovrastampa
 	Inner Shadow…	Ombra interna…
 	Inner Glow…	Bagliore interno…
 	Satin…	Raso…
@@ -808,6 +813,7 @@
 	Split Warp Vertically	Dividi altera verticalmente
 	Statistics…	Statistiche…
 	Refine Strokes	Tracce di perfezionamento
+	Edits	Modifiche
 @plural	{n} item|{n} items	{n} elemento|{n} elementi
 	Auto	Automatico
 
@@ -1089,7 +1095,7 @@
 	Done	Fatto
 	Dots	Punti
 	Drag a rectangle around the object	Trascina un rettangolo attorno all'oggetto
-	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click to delete.	Trascina sull'immagine per aggiungere un vincolo; Maiusc per orizz/vert; clic destro per eliminare.
+	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click a constraint to change or delete it.	Trascina sull'immagine per aggiungere un vincolo; Maiusc per orizz/vert; clic destro su un vincolo per modificarlo o eliminarlo.
 	Drag to move the active shape's path or the Work Path	Trascina per spostare il tracciato forma attiva o il Tracciato di lavoro
 	Click: select anchor · Drag: move anchor, handle or segment · {shift}-click: add · {alt}-click: whole subpath	Clic: seleziona punto · Trascina: sposta punto, maniglia o segmento · {shift}-clic: aggiungi · {alt}-clic: intero sottotracciato
 	Draw with the Pen tool (P) or make a work path from a selection.	Disegna con Penna (P) o crea un tracciato di lavoro da una selezione.
@@ -1331,6 +1337,8 @@
 	Override Pressure	Sovrascrivi pressione
 	Override Rotation	Sovrascrivi rotazione
 	Override Tilt	Sovrascrivi inclinazione
+	Override Tilt X	Sovrascrivi inclinazione X
+	Override Tilt Y	Sovrascrivi inclinazione Y
 	PRESET DETAILS	DETTAGLI PREDEFINITO
 	PSD	PSD
 	Paint Overlay	Sovrapposizione pittura
@@ -1483,6 +1491,7 @@
 	Set shape fill type	Imposta tipo riempimento forma
 	Set shape stroke type	Imposta tipo traccia forma
 	Set the text color	Imposta colore testo
+	Create warped text	Crea testo deformato
 	Shadows	Ombre
 	Shape:	Forma:
 	Sharpening	Contrasto
@@ -1989,6 +1998,7 @@
 	Quick export format	Formato esportazione rapida
 	Quick export location	Posizione esportazione rapida
 	Recent file count	Conteggio file recenti
+	LUT folder	Cartella LUT
 	Recent files	File recenti
 	Recent fonts	Font recenti
 	Recover on launch	Recupera all'avvio
@@ -1998,7 +2008,7 @@
 	Same folder	Stessa cartella
 	Save in background	Salva in background
 	Scratch Disks	Dischi virtuali
-	Screen	Schermo
+	Screen	Scherma
 	Screen resolution	Risoluzione schermo
 	Scrubby slider acceleration	Accelerazione slider scrubby
 	Sessions only	Solo sessioni
@@ -2153,6 +2163,11 @@
 	Mixer Brush Tool	Strumento Pennello miscelatore
 	Color Replacement Tool	Strumento Sostituzione colore
 	Wet	Bagnato
+	Current Brush Load	Carico attuale del pennello
+	Load Brush	Carica pennello
+	Clean Brush	Pulisci pennello
+	Load the brush after each stroke	Carica il pennello dopo ogni tratto
+	Clean the brush after each stroke	Pulisci il pennello dopo ogni tratto
 	Mix	Miscela
 	Wetness Jitter	Variazione bagnato
 	Mix Jitter	Variazione miscela
@@ -2319,6 +2334,8 @@
 	GPU acceleration could not continue. Your documents are unchanged.	Accelerazione GPU non ha potuto continuare. I documenti sono invariati.
 	PhotoCraft is using the CPU image compositor. The window may still use your graphics adapter.	PhotoCraft sta componendo immagini su CPU. La finestra può ancora usare adattatore grafico.
 	Retry GPU requires a restart. Save your work first.	Riprovare GPU richiede riavvio. Salva prima il lavoro.
+	Retry GPU tries the graphics processor again now.	Riprova GPU riprova subito il processore grafico.
+	GPU acceleration resumed.	Accelerazione GPU ripresa.
 	Keep Using CPU	Continua su CPU
 	Retry GPU	Riprova GPU
 	Advanced	Avanzato
@@ -2373,6 +2390,11 @@ cameraRaw	Amount	Quantità
 	Drag or click polygon points · hold Alt during lasso for straight segments · {add} add · {sub} before drawing subtracts	Trascina o fai clic sui punti del poligono · tieni premuto Alt durante il lazo per segmenti dritti · {add} aggiunge · {sub} prima di disegnare sottrae
 	TIFF Options	Opzioni TIFF
 	Targa Options	Opzioni Targa
+	JPEG Options	Opzioni JPEG
+	Image Options	Opzioni immagine
+	Format Options	Opzioni formato
+	Baseline ("Standard")	Linea di base ("Standard")
+	Baseline Optimized	Linea di base ottimizzata
 	24 bits/pixel	24 bit/pixel
 	32 bits/pixel	32 bit/pixel
 	Including layers will increase file size.	Includere i livelli aumenterà le dimensioni del file.
@@ -2721,6 +2743,32 @@ cameraData	Lens	Obiettivo
 	Mirror	Rifletti
 	Output Settings	Impostazioni di output
 	Output To	Output in
+
+	Animation Options	Opzioni animazione
+	Entire Document	Documento intero
+	Filter Options	Opzioni filtro
+	Layer Bounds	Limiti livello
+	Layers Panel Options	Opzioni pannello Livelli
+	New Artboard…	Nuova tavola da disegno…
+	New Group…	Nuovo gruppo…
+	Prevent Auto-Nesting	Impedisci annidamento automatico
+	Show Layers	Mostra livelli
+	Thumbnail Contents	Contenuto miniature
+	Thumbnail Size	Dimensione miniature
+	Use Default Masks on Fill Layers	Usa maschere predefinite sui livelli di riempimento
+	Expand New Effects	Espandi nuovi effetti
+	Add “copy” to Copied Layers and Groups	Aggiungi «copia» ai livelli e ai gruppi duplicati
+	Preview on canvas when reordering layers	Anteprima sulla tela durante il riordino dei livelli
+	Show layer mask badges	Mostra distintivi delle maschere di livello
+
+# Smart Filter editors
+	Blending Options ({filter})	Opzioni di fusione ({filter})
+	Hide the layer's effects and Smart Filters  ({key}-click: all layers)	Nascondi effetti del livello e filtri avanzati  ({key}-clic: tutti i livelli)
+	Show the layer's effects and Smart Filters  ({key}-click: all layers)	Mostra effetti del livello e filtri avanzati  ({key}-clic: tutti i livelli)
+	Wait for the current job to finish.	Attendi il completamento dell'attività corrente.
+	The document or Smart Filter changed. Reopen its dialog.	Il documento o il filtro avanzato è cambiato. Riapri la sua finestra di dialogo.
+	Opacity must be between 0% and 100%.	L'opacità deve essere compresa tra 0% e 100%.
+	Dissolve is approximated: it blends without Photoshop's dither.	Dissolvi è approssimato: la fusione avviene senza il dither di Photoshop.
 	Loading fonts…	Caricamento font…
 	Response curve	Curva di risposta
 	Tool	Strumento
@@ -2768,6 +2816,10 @@ curves	Smooth	Leviga
 	Click to place · Alt-click or drag off-canvas to remove	Fai clic per posizionare · Alt-clic o trascina fuori dal quadro per rimuovere
 	No document open	Nessun documento aperto
 	{n} of {max} sample points	{n} di {max} punti di campionamento
+
+# History panel menu (#2966)
+	New Snapshot…	Nuova istantanea…
+	History Options…	Opzioni cronologia…
 # Print dialog (#2697)
 	Emulsion Down	Emulsione sotto
 	Functions	Funzioni
@@ -2943,6 +2995,7 @@ curves	Smooth	Leviga
 	Clipping Path	Tracciato di ritaglio
 	New Path	Nuovo tracciato
 	Duplicate Path	Duplica tracciato
+	Rename Path…	Rinomina tracciato…
 	Auto-Hide	Nascondi automaticamente
 	X	X
 	Y	Y
@@ -2997,6 +3050,8 @@ curves	Smooth	Leviga
 	Keywords	Parole chiave
 	Copyright Info URL	URL info copyright
 	Copyright Status	Stato copyright
+	Copyright Notice	Avviso sul copyright
+	Document Title	Titolo documento
 	Copyrighted	Protetto da copyright
 	Public Domain	Pubblico dominio
 	Unknown	Sconosciuto
@@ -4092,9 +4147,16 @@ navigator	Zoom	Zoom
 	{shortcut} is already in use by {commands} and will be removed from it when you click OK.	{shortcut} è già usata da {commands} e verrà rimossa quando fai clic su OK.
 	Object Finder	Ricerca oggetti
 	No object found there — drag a rectangle around it	Nessun oggetto trovato lì: trascina un rettangolo intorno
+	The active layer has no pixels here — turn on Sample All Layers or select a layer with pixels	Il livello attivo non ha pixel qui: attiva Campiona tutti i livelli o seleziona un livello con pixel
 	Remove after each stroke	Rimuovi dopo ogni tratto
 	Apply the removal ({key})	Applica la rimozione ({key})
 	Strokes to remove: {n} (Enter applies, Esc cancels)	Tratti da rimuovere: {n} (Invio applica, Esc annulla)
+	Load Contours…	Carica profili…
+	Replace Contours…	Sostituisci profili…
+	Save Contours…	Salva profili…
+	Delete Contour	Elimina profilo
+	Loaded contours from {file}	Profili caricati da {file}
+	Saved contours to {file}	Profili salvati in {file}
 	Show home recent files	Mostra i file recenti nella schermata iniziale
 	Clear Brush Controls	Cancella controlli pennello
 	Reset All Locked Settings	Ripristina tutte le impostazioni bloccate
@@ -4103,6 +4165,9 @@ navigator	Zoom	Zoom
 # Actions panel: Load/Save Actions (.atn) and kept Photoshop steps
 	Load Actions…	Carica azioni…
 	Save Actions…	Salva azioni…
+	New Action…	Nuova azione…
+	Start Recording	Avvia registrazione
+	Stop Recording	Interrompi registrazione
 	{name} (Photoshop)	{name} (Photoshop)
 	{message} ({note})	{message} ({note})
 @plural	Loaded {n} action from {file}|Loaded {n} actions from {file}	Caricata {n} azione da {file}|Caricate {n} azioni da {file}
@@ -4134,6 +4199,16 @@ navigator	Zoom	Zoom
 	Sent to {printer}	Inviato a {printer}
 	set in Print Settings…	impostato nelle impostazioni di stampa…
 	ICO is limited to 256 × 256 pixels	ICO è limitato a 256 × 256 pixel
+# History panel › History Brush source (#2966)
+	Paints from the History panel's source state	Dipinge dallo stato di origine del pannello Cronologia
+	Sets the source for the history brush	Imposta l'origine del pennello storia
+# Bevel & Emboss shading controls.
+	Highlight Mode	Metodo luci
+	Highlight Color	Colore luci
+	Highlight Opacity	Opacità luci
+	Shadow Mode	Metodo ombre
+	Shadow Color	Colore ombre
+	Shadow Opacity	Opacità ombre
 # Embedded Profile Mismatch: profile names beside the choices, Remember this choice
 	Use the embedded profile ({profile})	Usa profilo incorporato ({profile})
 	Convert to the working space ({profile})	Converti in spazio di lavoro ({profile})
@@ -4149,6 +4224,7 @@ navigator	Zoom	Zoom
 	Chisel Hard	Cesello duro
 	Chisel Soft	Cesello morbido
 	Open color-less EXR as ACEScg	Apri gli EXR senza spazio colore come ACEScg
+	Do not append "copy" to filename when saving a copy	Non aggiungere "copy" al nome del file quando si salva una copia
 
 # Color management, Liquify, glyph group, warp and Camera Raw labels the Serbian, Vietnamese and Japanese catalogs added
 	Adobe-rgb-compat	Adobe RGB (compatibile)
@@ -4251,6 +4327,11 @@ navigator	Zoom	Zoom
 	Increase Brush Size	Aumenta dimensione pennello
 	Decrease Brush Hardness	Riduci durezza pennello
 	Increase Brush Hardness	Aumenta durezza pennello
+	Previous Brush	Pennello precedente
+	Next Brush	Pennello successivo
+	First Brush	Primo pennello
+	Last Brush	Ultimo pennello
+	Preview size	Preview size
 	Space	Barra spaziatrice
 	Hand Tool (hold)	Strumento Mano (tieni premuto)
 	Zoom In (hold, drag to scrub)	Ingrandisci (tieni premuto, trascina per lo zoom continuo)
@@ -4311,6 +4392,9 @@ shape	Appearance	Aspetto
 # View › Guides › right-click a guide
 	Edit Selected Guides	Modifica guide selezionate
 	Clear Selected Guides	Cancella guide selezionate
+	Bicubic Automatic	Bicubica automatica
+	Bicubic Smoother	Bicubica più morbida
+	Bicubic Sharper	Bicubica più nitida
 	Pasting from other apps is unavailable	Incollare da altre app non è disponibile
 	PhotoCraft can't reach the system clipboard in this session. On Wayland, a Flatpak sandbox hides the protocol that images from other apps are read through.	PhotoCraft non può accedere agli appunti di sistema in questa sessione. Su Wayland, la sandbox di Flatpak nasconde il protocollo con cui vengono lette le immagini delle altre app.
 	To paste from other apps, start PhotoCraft under XWayland: `{command}`	Per incollare da altre app, avvia PhotoCraft in XWayland: `{command}`
@@ -4330,6 +4414,17 @@ shape	Appearance	Aspetto
 	set name	nome del set
 	{set} (modified)	{set} (modificato)
 	Show file name in title	Mostra nome file nel titolo
+
+# Image › Mode › Bitmap (#5559)
+	50% Threshold	Soglia 50%
+	Pattern Dither	Dithering pattern
+	Diffusion Dither	Dithering diffusione
+	Halftone Screen	Retino mezzetinte
+	Custom Pattern	Pattern personalizzato
+	Frequency:	Frequenza:
+	Lines/Inch	Linee/Pollice
+	Lines/Centimeter	Linee/Centimetro
+	Ellipse	Ellisse
 	Accept and Go to Conflict	Accetta e vai al conflitto
 	Changes undone.	Modifiche annullate.
 	Choose a new shortcut for this command, or leave it without one.	Scegli una nuova scorciatoia per questo comando o lascialo senza.
@@ -4347,11 +4442,24 @@ shape	Appearance	Aspetto
 	GPU Memory Full	Memoria GPU piena
 	The layers need {needed} of GPU memory and may hold {budget}, so edits that redraw the whole document do it on the CPU. Click to set GPU Memory.	I livelli richiedono {needed} di memoria GPU e possono occuparne {budget}, quindi le modifiche che ridisegnano tutto il documento lo fanno sulla CPU. Fai clic per impostare Memoria GPU.
 	GPU memory budget: {budget}	Budget di memoria GPU: {budget}
+	Graphics memory: {size}	Memoria grafica: {size}
 	This document's layers: {needed} of {budget} for layers	Livelli di questo documento: {needed} su {budget} per i livelli
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	I livelli di questo documento richiedono {needed} ma possono occupare {budget}: i ridisegni dell'intero documento usano la CPU
 	GPU Memory (MB, 0 = Automatic)	Memoria GPU (MB, 0 = Automatico)
+	{path}: the path is not valid Unicode; save under another name.	{path}: il percorso non è Unicode valido; salva con un altro nome.
 	{name} was changed by another app after it was opened or saved here.	{name} è stato modificato da un'altra app dopo essere stato aperto o salvato qui.
 	Replace it with this document, or cancel and use File › Save As to keep both.	Sostituiscilo con questo documento, oppure annulla e usa File › Salva con nome per tenerli entrambi.
+	Demosaic	Demosaicizzazione
+	How the camera's colour filter mosaic is filled in. It is applied when the file opens; the preview shows the method it was opened with.	Come viene completato il mosaico del filtro colore della fotocamera. Si applica all'apertura del file; l'anteprima mostra il metodo con cui è stato aperto.
+	AHD (adaptive homogeneity)	AHD (omogeneità adattiva)
+	Malvar–He–Cutler	Malvar–He–Cutler
+	Hirakawa–Parks: the cleanest edges and the least colour fringing, the slowest.	Hirakawa–Parks: i bordi più puliti e le minori frange di colore, il più lento.
+	Gradient-corrected interpolation: sharp and fast, with some colour fringing on fine detail.	Interpolazione con correzione del gradiente: nitida e veloce, con qualche frangia di colore nei dettagli fini.
+	The fastest and the softest, with colour fringing on fine detail.	Il più veloce e il più morbido, con frange di colore nei dettagli fini.
+	“{name}” already exists. Replace it?	“{name}” esiste già. Sostituirlo?
+	The name in the save dialog was “{name}”.	Il nome nella finestra di salvataggio era “{name}”.
+	Move Up	Sposta su
+	Move Down	Sposta giù
 	Memory Usage	Utilizzo memoria
 	Per-document RAM limit (MB)	Limite RAM per documento (MB)
 	Installed RAM: {ram} MB; this limit: {percent}%	RAM installata: {ram} MB; questo limite: {percent}%
@@ -4361,3 +4469,33 @@ shape	Appearance	Aspetto
 	Use	Usa
 	In Front	Davanti
 	Behind	Dietro
+
+# DDS Options (#1327)
+	DDS Options	Opzioni DDS
+	Generate Mipmaps	Genera mipmap
+
+# Color Table (.act) dialog
+	There is no color table to save.	Non c'è alcuna tabella colori da salvare.
+@plural	Saved {n} color to {file}|Saved {n} colors to {file}	Salvato {n} colore in {file}|Salvati {n} colori in {file}
+
+# Graphics Adapter preference (#1885)
+	GPU adapter	Adattatore GPU
+# Actions: a step dialog holds a suspended recording (#7365)
+	Confirm or cancel the open action step dialog first	Conferma o annulla prima la finestra di dialogo aperta del passo dell’azione
+	Pro Medium Gray	Pro grigio medio
+	Solarized	Solarized
+	Breeze	Breeze
+	Pro Light Gray	Pro grigio chiaro
+	Pro Light	Pro chiaro
+	Resize Windows to Fit	Ridimensiona finestre per adattare
+
+	EXR	EXR
+
+# Paragraph direction (TYPE-218-2)
+	Automatic paragraph direction	Direzione del paragrafo automatica
+	Left-to-right paragraph direction	Direzione del paragrafo da sinistra a destra
+	Right-to-left paragraph direction	Direzione del paragrafo da destra a sinistra
+	Not rendered: this adjustment ({key}) is kept as imported.	Non renderizzato: questa regolazione ({key}) viene conservata come importata.
+
+# Print preview image (#8236)
+	Print preview image	Print preview image

@@ -169,6 +169,8 @@ fn open(app: &mut PhotocraftApp, held: Held, action: Option<&str>) -> Result<Val
     } else {
         app.session.open_document(doc, None).0
     };
+    // add_document may remap a persisted ID already owned by another open document.
+    let document = app.session.documents().get(index).map(|st| st.doc.id).ok_or("the opened document is missing")?;
     if let Some(st) = app.session.active_mut() {
         st.source_read_only = read_only;
     }
@@ -181,6 +183,6 @@ fn open(app: &mut PhotocraftApp, held: Held, action: Option<&str>) -> Result<Val
         None => index,
     };
     app.session.set_active(index);
-    crate::jobs_ui::after_open(app, &name, path.as_deref(), &warnings, bytes.as_deref().map(Vec::as_slice));
+    crate::jobs_ui::after_open(app, document, &name, path.as_deref(), &warnings, bytes.as_deref().map(Vec::as_slice))?;
     Ok(json!({"document": index, "action": action}))
 }

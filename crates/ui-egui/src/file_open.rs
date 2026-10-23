@@ -68,6 +68,21 @@ fn dropped_name(f: &egui::DroppedFileHandle) -> String {
     f.path().file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "dropped".into())
 }
 
+/// `path` as the `String` file paths are carried in, or what to tell the user when its name isn't
+/// valid Unicode (#6601): non-UTF-8 bytes on Linux, an unpaired surrogate on Windows. A lossy copy
+/// would name another file, so Open would fail with "No such file" and Save would write a second,
+/// renamed file beside the original. `saving`: the path is to be written to.
+pub fn path_text(path: &std::path::Path, saving: bool) -> Result<String, String> {
+    path.to_str().map(str::to_owned).ok_or_else(|| {
+        let line = if saving {
+            tl!("{path}: the path is not valid Unicode; save under another name.")
+        } else {
+            tl!("{path}: the path is not valid Unicode; rename the file and open it again.")
+        };
+        crate::i18n::fmt(line, &[("path", &path.to_string_lossy())])
+    })
+}
+
 /// The file name of `path` (the document's display name), or `path` itself when it has none.
 pub fn display_name(path: &str) -> String {
     std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).filter(|n| !n.is_empty()).unwrap_or_else(|| path.to_string())
@@ -270,7 +285,7 @@ impl PhotocraftApp {
         // Opens append: a background open's tab, or a document.
         let (docs, opens) = (self.session.documents().len(), self.jobs.opens.len());
         if f.path().is_absolute() {
-            self.open_path(&f.path().to_string_lossy())?;
+            self.open_path(&path_text(f.path(), false)?)?;
         } else {
             self.open_bytes(name, &crate::read_dropped(&**f)?)?;
         }
@@ -289,7 +304,7 @@ impl PhotocraftApp {
             let Some(next) = self.drop_places.pop_front() else { return };
             let (name, placed) = match next {
                 DropPlace::File(f) if f.path().is_absolute() => {
-                    (dropped_name(&f), self.run("file.placeEmbedded", serde_json::json!({"path": f.path().to_string_lossy()})))
+                    (dropped_name(&f), path_text(f.path(), false).and_then(|path| self.run("file.placeEmbedded", serde_json::json!({"path": path}))))
                 }
                 DropPlace::File(f) => {
                     let name = dropped_name(&f);

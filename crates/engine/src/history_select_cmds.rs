@@ -59,8 +59,10 @@ fn select_state(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let damage = crate::layer_multi_cmds::step_damage(&start, &doc);
     st.doc = doc;
+    // Stepping only over selection changes keeps a clean document clean (#6865).
+    let keep_clean = st.keeps_clean(&start);
     crate::restore_target(st, layers);
-    st.revision += 1;
+    st.bump_revision(keep_clean);
     st.last_damage = damage;
     if at != target {
         // Not reached (the bounds were checked): the document is consistent at the state reached.

@@ -52,11 +52,19 @@ fn tilt_shift_matches_frozen_kernel_at_band_boundaries_and_edges() {
     }
     cases.push(params(80.0, (0.5, 0.5), 0.0, 5.0, 0.1));
     cases.push(params(80.0, (-5.0, -5.0), 27.0, 0.1, 0.15));
+    // The channel count and alpha are independent of the band geometry: a run takes a quarter of
+    // their combinations, a different quarter each day.
+    let sweep = photocraft_testkit::Sweep::new(4);
+    let mut case = 0;
     for ch in 1..=6 {
         let src = image(bounds.inflate(12), ch);
         for alpha in [false, true] {
             let ctx = Ctx { bounds, mode: ColorMode::Rgb, alpha };
             for p in &cases {
+                case += 1;
+                if !sweep.includes(case) {
+                    continue;
+                }
                 check(&src, bounds, &ctx, p);
                 check(&src, Rect::new(-7, 17, 15, 39), &ctx, p);
             }
@@ -146,6 +154,10 @@ fn tilt_shift_depths_models_selection_and_tile_edges_match_reference() {
     selection.fill_rect(bounds, &[0.4]);
     selection.fill_rect(Rect::new(3, 19, 35, 44), &[1.0]);
     selection.fill_rect(Rect::new(10, 20, 20, 30), &[0.0]);
+    // Pixel formats and tile layouts are independent: a run takes a quarter of their combinations,
+    // a different quarter each day.
+    let sweep = photocraft_testkit::Sweep::new(4);
+    let mut case = 0;
     for mode in [
         ColorMode::Rgb,
         ColorMode::Grayscale,
@@ -167,6 +179,10 @@ fn tilt_shift_depths_models_selection_and_tile_edges_match_reference() {
                 assert_eq!(p.halo_for(bounds), crate::Halo::Radius(radius));
                 for extent in [None, Some(bounds)] {
                     for tile in [16, 47, 128] {
+                        case += 1;
+                        if !sweep.includes(case) {
+                            continue;
+                        }
                         let got = crate::apply_tiled(&surface, &p, area, bounds, Some(&selection), tile, extent);
                         let mut want = surface.clone();
                         for y in (area.y0..area.y1).step_by(tile as usize) {

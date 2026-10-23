@@ -27,3 +27,5 @@ wgpu = { version = "30" }
 pollster = "1"
 # Shape layers in the effect parity tests.
 photocraft-vector = { workspace = true }
+# A document-tagged CMYK profile in the tile conversion test.
+photocraft-cms = { workspace = true }

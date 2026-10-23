@@ -31,6 +31,7 @@ pub mod pattern;
 pub mod proxy;
 pub mod psblend;
 pub mod shape_split;
+mod uniform;
 
 use photocraft_color::blend::BlendMode;
 use photocraft_doc::{Document, Fill, Layer, LayerContent, Pattern};
@@ -95,6 +96,75 @@ impl Buffer {
 
 /// Tile size for parallel rendering (tile results are independent).
 pub const RENDER_TILE: i32 = 256;
+
+// One tile of scratch per worker; nested rendering takes its own buffer.
+thread_local! {
+    static SCRATCH: std::cell::RefCell<Vec<[f32; 4]>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn scratch_buffer(rect: Rect) -> Buffer {
+    if rect.width() as usize * rect.height() as usize > (RENDER_TILE * RENDER_TILE) as usize {
+        return Buffer::transparent(rect);
+    }
+    let mut px = SCRATCH.with(|slot| std::mem::take(&mut *slot.borrow_mut()));
+    px.resize(rect.width() as usize * rect.height() as usize, [0.0; 4]);
+    Buffer { rect, px }
+}
+
+fn recycle_buffer(buf: Buffer) {
+    if buf.px.capacity() <= (RENDER_TILE * RENDER_TILE) as usize {
+        SCRATCH.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            if slot.capacity() < buf.px.capacity() {
+                *slot = buf.px;
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn scratch_reuse_preserves_pixels_and_bounds_retention() {
+    SCRATCH.with(|slot| slot.borrow_mut().clear());
+    let rect = Rect::new(-2, -3, 18, 11);
+    for fmt in [photocraft_color::PixelFormat::RGBA8, photocraft_color::PixelFormat::RGBA16, photocraft_color::PixelFormat::RGBA32F] {
+        let s = Surface::with_default(fmt, &[0.2, 0.4, 0.6, 0.8]);
+        let buf = surface_to_scratch(&s, rect);
+        assert_eq!(buf, surface_to_buffer(&s, rect));
+        let ptr = buf.px.as_ptr();
+        recycle_buffer(buf);
+        let reused = surface_to_scratch(&Surface::new(fmt), rect);
+        assert_eq!(reused.px.as_ptr(), ptr);
+        assert!(reused.px.iter().all(|p| p == &[0.0; 4]));
+        let nested = scratch_buffer(rect);
+        assert_ne!(nested.px.as_ptr(), reused.px.as_ptr());
+        recycle_buffer(nested);
+        recycle_buffer(reused);
+    }
+    let cached = SCRATCH.with(|slot| slot.borrow().as_ptr());
+    let huge = scratch_buffer(Rect::new(0, 0, RENDER_TILE + 1, RENDER_TILE));
+    recycle_buffer(huge);
+    SCRATCH.with(|slot| {
+        assert_eq!(slot.borrow().as_ptr(), cached);
+        assert!(slot.borrow().capacity() <= (RENDER_TILE * RENDER_TILE) as usize);
+    });
+}
+
+/// Every layer the compositor draws, groups before their children: hidden layers and everything
+/// inside hidden groups are left out.
+pub(crate) fn visible_layers(layers: &[Layer]) -> Vec<&Layer> {
+    fn rec<'a>(layers: &'a [Layer], out: &mut Vec<&'a Layer>) {
+        for l in layers.iter().filter(|l| l.visible) {
+            out.push(l);
+            if let Some(children) = l.children() {
+                rec(children, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    rec(layers, &mut out);
+    out
+}
 
 /// Composite the whole document over `rect`, in parallel 256² tiles on
 /// native targets (single-threaded on wasm).
@@ -193,14 +263,18 @@ fn render_tiled_with(doc: &Document, rect: Rect, tile: i32, cx: &Ctx) -> Buffer 
                 }
             });
         } else {
-            // Few, wide bands: the tiles of each band in parallel.
-            for (i, band) in out.px.chunks_mut(band_len).enumerate() {
+            // Few, wide bands: the tiles of each band in parallel, and the bands too, so a band's
+            // slowest tile doesn't leave the other cores idle until the next band starts. Each
+            // tile is written as soon as it is done, so only the tiles in flight are held.
+            out.px.par_chunks_mut(band_len).enumerate().for_each(|(i, band)| {
                 let y0 = rect.y0 + i as i32 * tile;
-                let parts: Vec<Buffer> = band_tiles(y0).into_par_iter().map(run).collect();
-                for part in &parts {
-                    put(band, y0, part);
-                }
-            }
+                let band = std::sync::Mutex::new(band);
+                band_tiles(y0).into_par_iter().for_each(|t| {
+                    let part = run(t);
+                    let mut band = band.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    put(&mut band, y0, &part);
+                });
+            });
         }
     }
     #[cfg(target_arch = "wasm32")]
@@ -325,7 +399,11 @@ pub fn flatten(doc: &Document) -> Buffer {
 }
 
 /// Render an arbitrary subset: a single layer (e.g. for thumbnails), isolated.
+/// Rects past [`MAX_RENDER_PIXELS`] give an empty buffer.
 pub fn render_layer(layer: &Layer, rect: Rect) -> Buffer {
+    if u64::from(rect.width()) * u64::from(rect.height()) > MAX_RENDER_PIXELS {
+        return Buffer::transparent(Rect::EMPTY);
+    }
     let mut buf = Buffer::transparent(rect);
     let patterns = pattern::PreparedPatterns::new(&[], pattern::PREPARED_PATTERN_BYTES);
     composite_stack_at(
@@ -341,6 +419,8 @@ pub fn render_layer(layer: &Layer, rect: Rect) -> Buffer {
             vector_masks: RenderVectorMasks::default(),
             fx_maps: Default::default(),
             fx_clip: Default::default(),
+            fx_over_budget: false,
+            tone_luts: prepare_tones(std::slice::from_ref(layer), 0),
             doc: None,
             layer_keys: Default::default(),
         },
@@ -431,6 +511,38 @@ pub fn render_reduced_damage(doc: &Document, w: u32, h: u32, damage: Rect) -> Bu
 /// [`render_reduced_rect`] (or, with `damage`, [`render_reduced_damage`]) of area `b` with an
 /// explicit band height (see [`render_bands`]).
 fn render_reduced_in_bands(doc: &Document, b: Rect, w: u32, h: u32, damage: Option<Rect>, band_rows: i32) -> Buffer {
+    render_reduced_with(doc, b, w, h, damage, band_rows, true, &mut ReducedStats::default())
+}
+
+/// What a reduced render composited (tests check that one-colour areas are not composited).
+#[derive(Debug, Default)]
+struct ReducedStats {
+    /// Whether one-colour areas were looked for ([`uniform::UniformAreas`]).
+    uniform: bool,
+    /// Document pixels composited one by one.
+    composited: u64,
+}
+
+/// A tile of a reduced render: one colour (premultiplied), or its composited pixels.
+enum Part {
+    Solid([f32; 4]),
+    Px(Buffer),
+}
+
+/// A column of document tiles in a reduced render (`b`-relative source columns).
+struct TileColumn {
+    /// The columns rendered: the tile's, within the source area.
+    x0: usize,
+    x1: usize,
+    /// The whole tile's columns within `b`, whose values decide whether it is one colour.
+    whole: (i64, i64),
+    /// Runs of (output column, how many of the rendered columns it averages).
+    runs: Vec<(usize, f32)>,
+}
+
+/// [`render_reduced_in_bands`]; `uniform` off composites every pixel (the reference in tests).
+#[allow(clippy::too_many_arguments)]
+fn render_reduced_with(doc: &Document, b: Rect, w: u32, h: u32, damage: Option<Rect>, band_rows: i32, uniform: bool, stats: &mut ReducedStats) -> Buffer {
     let (fw, fh) = (b.width() as usize, b.height() as usize);
     let (w, h) = (w.clamp(1, b.width().max(1)) as usize, h.clamp(1, b.height().max(1)) as usize);
     let full = Rect::from_xywh(0, 0, w as u32, h as u32);
@@ -474,22 +586,14 @@ fn render_reduced_in_bands(doc: &Document, b: Rect, w: u32, h: u32, damage: Opti
     let (cols, rows) = (map(fw, w), map(fh, h));
     let cols = &cols[sx0..sx1];
     let mut acc = vec![[0.0f32; 4]; ow * oh];
-    let ok: Result<(), ()> = render_bands(doc, src, band_rows, |band| {
-        let (by0, by1) = ((band.rect.y0 - b.y0) as usize, (band.rect.y1 - b.y0) as usize);
+    // Each output row sums its source rows in a band (in order, top to bottom), each row's pixels
+    // left to right: `row(y, out)` adds source row `y` (band-relative) to output row `out`.
+    let sum_band = |acc: &mut [[f32; 4]], by0: usize, by1: usize, row: &(dyn Fn(usize, &mut [[f32; 4]]) + Sync)| {
         let (t0, t1) = (rows[by0] as usize, rows[by1 - 1] as usize + 1);
-        let sw = sx1 - sx0;
-        // Each output row sums its source rows in this band (in order, top to bottom).
         let sum_row = |t: usize, out: &mut [[f32; 4]]| {
             let (a, z) = span(t, fh, h);
             for y in a.max(by0)..z.min(by1) {
-                let src = &band.px[(y - by0) * sw..(y - by0 + 1) * sw];
-                for (p, &c) in src.iter().zip(cols) {
-                    let o = &mut out[c as usize - ox0];
-                    for i in 0..3 {
-                        o[i] += p[i] * p[3];
-                    }
-                    o[3] += p[3];
-                }
+                row(y - by0, out);
             }
         };
         let part = &mut acc[(t0 - oy0) * ow..(t1 - oy0) * ow];
@@ -502,14 +606,137 @@ fn render_reduced_in_bands(doc: &Document, b: Rect, w: u32, h: u32, damage: Opti
         for (i, out) in part.chunks_mut(ow).enumerate() {
             sum_row(t0 + i, out);
         }
-        Ok(())
-    });
-    debug_assert!(ok.is_ok());
-    for (i, p) in acc.iter_mut().enumerate() {
-        let ((x0, x1), (y0, y1)) = (span(ox0 + i % ow, fw, w), span(oy0 + i / ow, fh, h));
-        let n = ((y1 - y0) * (x1 - x0)).max(1) as f32;
-        let a = p[3];
-        *p = if a > 0.0 { [p[0] / a, p[1] / a, p[2] / a, a / n] } else { [0.0; 4] };
+    };
+    let add = |o: &mut [f32; 4], p: &[f32; 4]| {
+        for i in 0..3 {
+            o[i] += p[i] * p[3];
+        }
+        o[3] += p[3];
+    };
+    if let Some(uniform) = uniform.then(|| uniform::UniformAreas::new(doc)).flatten() {
+        stats.uniform = true;
+        // One-colour tiles (a new document's background, the empty parts of a sparse one) are
+        // composited once per colour and summed per run of source columns, not per pixel
+        // (#4017). Tiles lie on the document's tile grid whatever `damage` is, so a damage
+        // render sums exactly what the whole reduction does.
+        let patterns = pattern::PreparedPatterns::new(&doc.patterns, pattern::PREPARED_PATTERN_BYTES).in_mode(doc.pixel_format().mode);
+        let cx = Ctx::for_doc(doc, &patterns);
+        let t = RENDER_TILE as usize;
+        // The document tile grid (the surfaces' own), in `b`-relative coordinates: the start of
+        // the tile holding `v` (negative when `b` starts inside a tile).
+        let grid = |v: usize, o: i32| (i64::from(o) + v as i64).div_euclid(t as i64) * t as i64 - i64::from(o);
+        let tile_cols: Vec<TileColumn> = (grid(sx0, b.x0)..sx1 as i64)
+            .step_by(t)
+            .map(|gx| {
+                let (x0, x1) = ((gx.max(0) as usize).max(sx0), ((gx + t as i64) as usize).min(sx1));
+                let mut runs: Vec<(usize, f32)> = Vec::new();
+                for &c in &cols[x0 - sx0..x1 - sx0] {
+                    match runs.last_mut() {
+                        Some((last, n)) if *last == c as usize - ox0 => *n += 1.0,
+                        _ => runs.push((c as usize - ox0, 1.0)),
+                    }
+                }
+                TileColumn { x0, x1, whole: (gx.max(0), (gx + t as i64).min(fw as i64)), runs }
+            })
+            .collect();
+        let band_h = band_rows_for(src.width(), band_rows).max(RENDER_TILE) as usize;
+        let mut y = grid(sy0, b.y0);
+        while y < sy1 as i64 {
+            let y1 = (y + band_h as i64).min(sy1 as i64);
+            let tiles: Vec<(Rect, Rect)> = (y..y1)
+                .step_by(t)
+                .flat_map(|gy| {
+                    tile_cols.iter().map(move |&TileColumn { x0, x1, whole: (gx0, gx1), .. }| {
+                        let at = |x0: i64, y0: i64, x1: i64, y1: i64| Rect::new(b.x0 + x0 as i32, b.y0 + y0 as i32, b.x0 + x1 as i32, b.y0 + y1 as i32);
+                        let (gy0, gy1) = (gy.max(0), (gy + t as i64).min(fh as i64));
+                        (at(gx0, gy0, gx1, gy1), at(x0 as i64, gy0.max(sy0 as i64), x1 as i64, gy1.min(sy1 as i64)))
+                    })
+                })
+                .collect();
+            let one = |(whole, part): &(Rect, Rect)| -> Part {
+                let render = |r: Rect| render_tiled_with(doc, r, RENDER_TILE, &cx);
+                match uniform.color(*whole, |r| render(r).px.first().copied()) {
+                    Some(p) => Part::Solid([p[0] * p[3], p[1] * p[3], p[2] * p[3], p[3]]),
+                    None => Part::Px(render(*part)),
+                }
+            };
+            #[cfg(not(target_arch = "wasm32"))]
+            let parts: Vec<Part> = {
+                use rayon::prelude::*;
+                tiles.par_iter().map(one).collect()
+            };
+            #[cfg(target_arch = "wasm32")]
+            let parts: Vec<Part> = tiles.iter().map(one).collect();
+            stats.composited += parts.iter().map(|p| if let Part::Px(b) = p { b.px.len() as u64 } else { 0 }).sum::<u64>();
+            let (by0, by1) = (y.max(sy0 as i64) as usize, y1 as usize);
+            let n = tile_cols.len();
+            let band_y = y;
+            sum_band(&mut acc, by0, by1, &|row: usize, out: &mut [[f32; 4]]| {
+                let y = (by0 + row) as i64;
+                let j = (y - band_y) as usize / t;
+                let ty = (y - (band_y + (j * t) as i64).max(sy0 as i64)) as usize;
+                for (TileColumn { x0, x1, runs, .. }, part) in tile_cols.iter().zip(parts.iter().skip(j * n).take(n)) {
+                    match part {
+                        Part::Solid(pa) => {
+                            for &(c, k) in runs {
+                                let o = &mut out[c];
+                                for i in 0..4 {
+                                    o[i] += pa[i] * k;
+                                }
+                            }
+                        }
+                        Part::Px(buf) => {
+                            let tw = x1 - x0;
+                            for (p, &c) in buf.px.iter().skip(ty * tw).take(tw).zip(&cols[x0 - sx0..x1 - sx0]) {
+                                add(&mut out[c as usize - ox0], p);
+                            }
+                        }
+                    }
+                }
+            });
+            y = y1;
+        }
+    } else {
+        let ok: Result<(), ()> = render_bands(doc, src, band_rows, |band| {
+            stats.composited += band.px.len() as u64;
+            let (by0, by1) = ((band.rect.y0 - b.y0) as usize, (band.rect.y1 - b.y0) as usize);
+            let sw = sx1 - sx0;
+            sum_band(&mut acc, by0, by1, &|y: usize, out: &mut [[f32; 4]]| {
+                for (p, &c) in band.px[y * sw..(y + 1) * sw].iter().zip(cols) {
+                    add(&mut out[c as usize - ox0], p);
+                }
+            });
+            Ok(())
+        });
+        debug_assert!(ok.is_ok());
+    }
+    let col_w: Vec<usize> = (0..ow)
+        .map(|x| {
+            let (x0, x1) = span(ox0 + x, fw, w);
+            (x1 - x0).max(1)
+        })
+        .collect();
+    let norm_row = |row: usize, out: &mut [[f32; 4]]| {
+        let (y0, y1) = span(oy0 + row, fh, h);
+        let rh = (y1 - y0).max(1);
+        for (p, &cw) in out.iter_mut().zip(&col_w) {
+            let a = p[3];
+            if a > 0.0 {
+                let n = (rh * cw) as f32;
+                *p = [p[0] / a, p[1] / a, p[2] / a, a / n];
+            } else {
+                *p = [0.0; 4];
+            }
+        }
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use rayon::prelude::*;
+        acc.par_chunks_mut(ow).enumerate().for_each(|(row, out)| norm_row(row, out));
+    }
+    #[cfg(target_arch = "wasm32")]
+    for (row, out) in acc.chunks_mut(ow).enumerate() {
+        norm_row(row, out);
     }
     Buffer { rect: out, px: acc }
 }
@@ -556,6 +783,8 @@ struct Ctx<'a> {
     /// The document's colour mode (channel restrictions name its channels).
     mode: photocraft_color::ColorMode,
     depth: photocraft_color::SampleType,
+    /// At most 1 MiB of tone tables, initialized once and shared by this render's tiles and bands.
+    tone_luts: Vec<(&'a photocraft_doc::Adjustment, std::sync::OnceLock<[Vec<f32>; 4]>)>,
     vector_masks: RenderVectorMasks,
     /// Effect maps used by this render, by cache key: built before the parallel tiles (see
     /// [`prepare_effects`]) and held for the whole render (or band, for maps clipped to it: the
@@ -563,6 +792,9 @@ struct Ctx<'a> {
     fx_maps: std::sync::Mutex<std::collections::HashMap<u64, (std::sync::Arc<effects::FxMaps>, bool)>>,
     /// The rectangle being rendered (a band of [`render_bands`]); see [`effect_region`].
     fx_clip: std::sync::Mutex<Option<Rect>>,
+    /// The whole-region effect maps of this render's layers wouldn't fit in the effect cache
+    /// together ([`fx_over_budget`]), so local ones are clipped to the render rect (#8330).
+    fx_over_budget: bool,
     /// The document being rendered (deep knockouts reveal its Background); `None` for a lone layer.
     doc: Option<&'a Document>,
     /// Effect-map identities of this render's document layers (see [`LayerKeys`]).
@@ -634,7 +866,9 @@ impl<'a> Ctx<'a> {
             vector_masks: RenderVectorMasks::default(),
             fx_maps: Default::default(),
             fx_clip: Default::default(),
+            fx_over_budget: fx_over_budget(&doc.layers, doc.bounds()),
             layer_keys: Default::default(),
+            tone_luts: prepare_tones(&doc.layers, 0),
         }
     }
 
@@ -646,9 +880,41 @@ impl<'a> Ctx<'a> {
             self.fx_maps.lock().unwrap_or_else(|e| e.into_inner()).retain(|_, (_, clipped)| !*clipped);
         }
     }
+
+    fn apply_adjustment(&self, adj: &photocraft_doc::Adjustment, buf: &mut Buffer) {
+        if let photocraft_doc::Adjustment::Levels { space, .. } | photocraft_doc::Adjustment::Curves { space, .. } = adj
+            && !matches!(adj, photocraft_doc::Adjustment::Levels { space: photocraft_doc::adjust::ToneSpace::Rgb, .. } if self.depth == photocraft_color::SampleType::F32)
+            && let Some((_, luts)) = self.tone_luts.iter().find(|(a, _)| std::ptr::eq(*a, adj))
+        {
+            let identity = adjust::float_tone_identity(adj, Some(self.depth));
+            if identity == [true; 3] {
+                return;
+            }
+            adjust::apply_tone(buf, *space, luts.get_or_init(|| adjust::tone_luts_depth(adj, Some(self.depth))), identity);
+        } else {
+            adjust::apply_in(adj, buf, self.transfer, Some(self.depth), self.mode);
+        }
+    }
 }
 
-/// Deepest group nesting [`prepare_effects`] walks (deeper layers build their maps on demand).
+fn prepare_tones(layers: &[Layer], depth: u32) -> Vec<(&photocraft_doc::Adjustment, std::sync::OnceLock<[Vec<f32>; 4]>)> {
+    let mut out = Vec::new();
+    for layer in layers.iter().filter(|l| l.visible) {
+        if out.len() == 16 {
+            break;
+        }
+        match &layer.content {
+            LayerContent::Adjustment(a @ (photocraft_doc::Adjustment::Levels { .. } | photocraft_doc::Adjustment::Curves { .. })) => {
+                out.push((a, Default::default()))
+            }
+            LayerContent::Group(g) if depth < PREPARE_DEPTH => out.extend(prepare_tones(&g.children, depth + 1).into_iter().take(16 - out.len())),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Deepest group nesting preparation walks (deeper layers prepare on demand).
 const PREPARE_DEPTH: u32 = 64;
 
 /// Build the effect maps of every visible layer in `layers` (groups included) that can reach
@@ -743,8 +1009,38 @@ pub fn adjustment_quantum(depth: photocraft_color::SampleType) -> Option<f32> {
 fn quantize(b: &mut Buffer, q: f32) {
     for p in &mut b.px {
         for v in p.iter_mut() {
-            *v = (*v * q + 0.5).floor() / q;
+            *v = branchless_floor(*v * q + 0.5) / q;
         }
+    }
+}
+
+/// `x.floor()`, bit for bit (signed zeros, infinities and NaNs included), without a call: baseline
+/// x86-64 has no SSE4.1 `roundss`, so `floor` is a software routine there, called once per sample
+/// of the backdrop under every adjustment layer ([`quantize`]). This form has no branch, so the
+/// loop vectorizes.
+#[inline]
+fn branchless_floor(x: f32) -> f32 {
+    // From 2^23 on every f32 is whole. Below it, adding and taking away 2^23 rounds to the
+    // nearest whole number; where that went up, step down.
+    const WHOLE: f32 = 8_388_608.0;
+    let a = x.abs();
+    let r = ((a + WHOLE) - WHOLE).copysign(x);
+    let r = if r > x { r - 1.0 } else { r };
+    if a < WHOLE { r } else { x }
+}
+
+/// Blend an adjustment layer's result (`adjusted`) back into the backdrop it was made from, each
+/// pixel by its coverage `ks` (opacity × mask) in blend mode `mode`.
+fn blend_back(backdrop: &mut [[f32; 4]], adjusted: &[[f32; 4]], ks: impl Iterator<Item = f32>, mode: BlendMode) {
+    for ((b, a), k) in backdrop.iter_mut().zip(adjusted).zip(ks) {
+        if k <= 0.0 {
+            continue;
+        }
+        let s = [a[0], a[1], a[2]];
+        // Normal is the source as it is (`blend_rgb` gives exactly that), and most adjustment
+        // layers are Normal: no per-pixel mode dispatch for them.
+        let blended = if mode == BlendMode::Normal { s } else { blend::blend_rgb(mode, [b[0], b[1], b[2]], s) };
+        *b = [b[0] + (blended[0] - b[0]) * k, b[1] + (blended[1] - b[1]) * k, b[2] + (blended[2] - b[2]) * k, b[3]];
     }
 }
 
@@ -828,11 +1124,13 @@ pub fn effect_source_bounds(layer: &Layer, canvas: Rect) -> Rect {
 /// shape's layer effects from its vector outline, not from its pixels: a stroke runs along the
 /// whole path even where a gradient fill fades out (psd-tools stroke-effects). `None` for other
 /// layers, shapes without fill, empty and inverted paths, and shapes whose vector stroke reaches
-/// past the path (their pixels give the outline: psd-tools double-stroke-effects).
+/// past the path (their pixels give the outline: psd-tools double-stroke-effects), and shapes
+/// with a density or feather.
 pub fn effect_outline(layer: &Layer) -> Option<&photocraft_doc::vector::Path> {
     let LayerContent::Shape(sh) = &layer.content else { return None };
     let stroke_inside = sh.stroke.as_ref().is_none_or(|s| s.width <= 0.0 || s.align == photocraft_doc::vector::StrokeAlign::Inside);
-    (sh.fill.is_some() && stroke_inside && !sh.path.is_empty() && !sh.path.inverted).then_some(&sh.path)
+    // A soft (feathered or less dense) fill's own alpha is its outline.
+    (sh.fill.is_some() && stroke_inside && !sh.path.is_empty() && !sh.path.inverted && !sh.has_soft_mask()).then_some(&sh.path)
 }
 
 /// The shape a layer's effects are built from over `rect` (row-major): its content's alpha
@@ -922,8 +1220,9 @@ pub fn relayout_damage(a: &Document, b: &Document) -> Rect {
     out
 }
 
-/// The bounding box of a shape layer's vector content: its path control bounds plus stroke width.
-pub fn shape_bounds(sh: &photocraft_doc::ShapeLayer) -> Option<Rect> {
+/// The bounding box of a shape layer's path and stroke, ignoring its Density and Feather: its
+/// path control bounds plus stroke width (a conservative reach for any alignment, cap and join).
+pub fn hard_shape_bounds(sh: &photocraft_doc::ShapeLayer) -> Option<Rect> {
     if sh.fill.is_none() && sh.stroke.as_ref().is_none_or(|s| s.width <= 0.0 || s.opacity <= 0.0) {
         return None;
     }
@@ -931,6 +1230,89 @@ pub fn shape_bounds(sh: &photocraft_doc::ShapeLayer) -> Option<Rect> {
     let stroke_margin = sh.stroke.as_ref().filter(|s| s.opacity > 0.0).map_or(0.0, |s| s.width.ceil()) as i32;
     let r = Rect::new(x0.floor() as i32, y0.floor() as i32, x1.ceil() as i32, y1.ceil() as i32).inflate(stroke_margin);
     (!r.is_empty()).then_some(r)
+}
+
+/// The frame Free Transform, the Move tool's transform controls, snapping and Properties show for
+/// a soft shape (Density below 100 % or a Feather), whose rendering reaches past its path: the
+/// pixels the same shape renders in `format` over `canvas` at full Density without Feather, so
+/// the frame is exactly the hard shape's whatever the stroke's alignment, cap and join (in
+/// Photoshop a shape's transform frame follows its path and stroke whatever its mask Density and
+/// Feather, #5846). An inverted path's frame is its own outline, not the whole canvas. Renders
+/// only the strips along the edges of the rasterizers' (1 px conservative) bounds.
+pub fn soft_shape_frame(sh: &photocraft_doc::ShapeLayer, format: photocraft_color::PixelFormat, canvas: Rect) -> Option<Rect> {
+    let mut path = sh.path.clone();
+    path.inverted = false;
+    let hard = photocraft_doc::ShapeLayer { density: 1.0, feather: 0.0, path, fill: sh.fill.clone(), stroke: sh.stroke.clone(), ..Default::default() };
+    let shape = photocraft_vector::CompiledShape::new(&hard, photocraft_vector::DEFAULT_TOLERANCE, canvas);
+    let r = shape.bounds()?.intersect(&canvas);
+    trim_to_painted(r, |strip| shape.render(format, strip).content_bounds())
+}
+
+/// `r` shrunk to the pixels `painted` reports (the painted bounds within a strip of `r`, empty if
+/// none), looking in from each edge through strips that double in thickness: a few renders per
+/// edge however wide the empty margin (a subtracted or intersected subpath can leave most of the
+/// rasterizers' bounds empty), and none of `r`'s inside rendered at once.
+fn trim_to_painted(mut r: Rect, mut painted: impl FnMut(Rect) -> Rect) -> Option<Rect> {
+    // Top: the first strip holding paint gives the first painted row.
+    let mut t = 1;
+    while !r.is_empty() {
+        let strip = Rect::new(r.x0, r.y0, r.x1, r.y0.saturating_add(t).min(r.y1));
+        let p = painted(strip).intersect(&strip);
+        if !p.is_empty() {
+            r.y0 = p.y0;
+            break;
+        }
+        r.y0 = strip.y1;
+        t = t.saturating_mul(2);
+    }
+    let mut t = 1;
+    while !r.is_empty() {
+        let strip = Rect::new(r.x0, r.y1.saturating_sub(t).max(r.y0), r.x1, r.y1);
+        let p = painted(strip).intersect(&strip);
+        if !p.is_empty() {
+            r.y1 = p.y1;
+            break;
+        }
+        r.y1 = strip.y0;
+        t = t.saturating_mul(2);
+    }
+    let mut t = 1;
+    while !r.is_empty() {
+        let strip = Rect::new(r.x0, r.y0, r.x0.saturating_add(t).min(r.x1), r.y1);
+        let p = painted(strip).intersect(&strip);
+        if !p.is_empty() {
+            r.x0 = p.x0;
+            break;
+        }
+        r.x0 = strip.x1;
+        t = t.saturating_mul(2);
+    }
+    let mut t = 1;
+    while !r.is_empty() {
+        let strip = Rect::new(r.x1.saturating_sub(t).max(r.x0), r.y0, r.x1, r.y1);
+        let p = painted(strip).intersect(&strip);
+        if !p.is_empty() {
+            r.x1 = p.x1;
+            break;
+        }
+        r.x1 = strip.x0;
+        t = t.saturating_mul(2);
+    }
+    (!r.is_empty()).then_some(r)
+}
+
+/// The bounding box of a shape layer's vector content: its path control bounds plus stroke width
+/// (and the reach of a soft fill).
+pub fn shape_bounds(sh: &photocraft_doc::ShapeLayer) -> Option<Rect> {
+    let r = hard_shape_bounds(sh)?;
+    // A soft fill reaches past the path: by its feather, or everywhere below 100 % density.
+    if sh.fill.is_some() && sh.has_soft_mask() {
+        if sh.density.is_finite() && sh.density < 1.0 {
+            return Some(Rect::new(i32::MIN / 4, i32::MIN / 4, i32::MAX / 4, i32::MAX / 4));
+        }
+        return Some(r.union(&photocraft_vector::feather::path_area(&sh.path, masks::feather_sigma(sh.feather))));
+    }
+    Some(r)
 }
 
 /// The layer's effective mask over `rect` (row-major), read once per tile: the pixel mask
@@ -972,7 +1354,7 @@ fn render_content(layer: &Layer, rect: Rect, cx: &Ctx) -> Option<Buffer> {
         }
         LayerContent::Fill(f) => match &layer.fill_cache {
             // Photoshop's own rendering, valid while the fill is unchanged.
-            Some(c) if c.fill == *f => surface_to_buffer(&c.surface, rect),
+            Some(c) if c.fill == *f => surface_to_scratch(&c.surface, rect),
             _ if cx.mode == photocraft_color::ColorMode::Cmyk => {
                 let frame = fill_frame(layer, cx.canvas);
                 let native_rect = if matches!(f, Fill::Solid(_)) { Rect::new(0, 0, 1, 1) } else { rect };
@@ -986,7 +1368,7 @@ fn render_content(layer: &Layer, rect: Rect, cx: &Ctx) -> Option<Buffer> {
         },
         LayerContent::Adjustment(_) => return None,
         _ => match layer.surface() {
-            Some(s) => surface_to_buffer(s, rect),
+            Some(s) => surface_to_scratch(s, rect),
             None => Buffer::transparent(rect),
         },
     };
@@ -1025,6 +1407,12 @@ pub fn surface_to_buffer(s: &Surface, rect: Rect) -> Buffer {
     let mut px = vec![[0.0f32; 4]; rect.width() as usize * rect.height() as usize];
     s.read_rgba_into(rect, &mut px);
     Buffer { rect, px }
+}
+
+fn surface_to_scratch(s: &Surface, rect: Rect) -> Buffer {
+    let mut buf = scratch_buffer(rect);
+    s.read_rgba_into(rect, &mut buf.px);
+    buf
 }
 
 /// The frame a fill layer's gradient is laid out in ("Align with layer", Photoshop's default):
@@ -1213,9 +1601,14 @@ pub fn composite_bounds(layer: &Layer, canvas: Rect) -> Option<Rect> {
 pub fn change_bounds(layer: &Layer, canvas: Rect) -> Option<Rect> {
     fn reaches_below(l: &Layer) -> bool {
         match &l.content {
-            // Clipped, it changes only its base's pixels.
             LayerContent::Adjustment(_) => !l.clipped,
-            LayerContent::Group(g) if l.blend == BlendMode::PassThrough => g.children.iter().any(reaches_below),
+            // Clipped to a base, an adjustment changes only the base's pixels; one with no base
+            // beneath it in its list composites as an ordinary adjustment (#6535).
+            LayerContent::Group(g) if l.blend == BlendMode::PassThrough => g.children.iter().enumerate().any(|(k, c)| {
+                let orphan =
+                    c.clipped && matches!(c.content, LayerContent::Adjustment(_)) && g.children.get(..k).is_none_or(|below| below.iter().all(|b| b.clipped));
+                orphan || reaches_below(c)
+            }),
             _ => false,
         }
     }
@@ -1223,6 +1616,35 @@ pub fn change_bounds(layer: &Layer, canvas: Rect) -> Option<Rect> {
         return None;
     }
     composite_bounds(layer, canvas)
+}
+
+/// [`change_bounds`] of `layers[k]` in its sibling list (bottom→top), which also bounds a clipped
+/// adjustment layer: it changes only its clip base's pixels, so it reaches as far as showing,
+/// hiding or restyling that base does (#6535). Still `None` when there is no base below it (the
+/// compositor then draws it as an ordinary adjustment) or the base is an adjustment itself
+/// (layers clipped to one composite atop the adjusted backdrop, everywhere). `outer` is the list
+/// holding the group whose children `layers` are, and that group's index there (`None` at the
+/// top level): a pass-through group that is a clip base renders isolated while it holds a visible
+/// adjustment, so showing or hiding one inside can change the whole group.
+pub fn change_bounds_in(layers: &[Layer], k: usize, outer: Option<(&[Layer], usize)>, canvas: Rect) -> Option<Rect> {
+    let layer = layers.get(k)?;
+    if layer.clipped && matches!(layer.content, LayerContent::Adjustment(_)) {
+        let base = layers.get(..k)?.iter().rev().find(|l| !l.clipped)?;
+        if matches!(base.content, LayerContent::Adjustment(_)) {
+            return None;
+        }
+        if let Some((outer, g)) = outer
+            && let Some(group) = outer.get(g)
+            && group.blend == BlendMode::PassThrough
+            && !group.clipped
+            && outer.get(g + 1).is_some_and(|above| above.clipped)
+        {
+            // The group bounds its base too.
+            return change_bounds(group, canvas);
+        }
+        return change_bounds(base, canvas);
+    }
+    change_bounds(layer, canvas)
 }
 
 /// Whether the layer's content is transparent outside its bounds (every surface it draws from
@@ -1318,14 +1740,34 @@ fn blend_if_level(x: f32) -> f32 {
     if (v - r).abs() < 1e-4 { r } else { v }
 }
 
+/// Blend If groups inside one another whose own colour is still rendered separately. Each extra
+/// level multiplies the work by the tree's depth, so the cost is polynomial, not exponential.
+const MAX_BLEND_IF_GROUP_DEPTH: u32 = 2;
+
+thread_local! {
+    /// Blend If groups being rendered for their own colour on this thread.
+    static BLEND_IF_GROUPS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
 /// Apply `layer`'s Blend If to a finished composite: `out` (the backdrop with the layer drawn)
 /// is mixed back towards `before` (the backdrop without it) where the ranges hide the layer.
 /// Mixing premultiplied colour by `k` equals compositing the layer at `k` × its alpha, since
 /// every blend mode's source-over result is linear in the source alpha.
 fn apply_blend_if(layer: &Layer, before: &Buffer, out: &mut Buffer, cx: &Ctx) {
     // "This Layer" is the layer's own colour; adjustment layers (no content of their own) are
-    // judged by their result.
-    let own = if matches!(layer.content, LayerContent::Adjustment(_)) { None } else { render_content(layer, out.rect, cx) };
+    // judged by their result. So are groups nested deeper than `MAX_BLEND_IF_GROUP_DEPTH` Blend
+    // Ifs: a group's own colour re-composites its children, which doubles the work at every
+    // level of Blend If groups inside one another.
+    let is_group = matches!(layer.content, LayerContent::Group(_));
+    let nested = BLEND_IF_GROUPS.with(std::cell::Cell::get);
+    let own = if matches!(layer.content, LayerContent::Adjustment(_)) || (is_group && nested >= MAX_BLEND_IF_GROUP_DEPTH) {
+        None
+    } else {
+        BLEND_IF_GROUPS.with(|d| d.set(nested + u32::from(is_group)));
+        let own = render_content(layer, out.rect, cx);
+        BLEND_IF_GROUPS.with(|d| d.set(nested));
+        own
+    };
     for (i, (p, b)) in out.px.iter_mut().zip(&before.px).enumerate() {
         let this = match &own {
             Some(o) => Some(o.px[i]).filter(|q| q[3] > 0.0),
@@ -1407,6 +1849,38 @@ fn composite_artboard(layer: &Layer, ab: &photocraft_doc::Artboard, clipped: &[L
     }
 }
 
+/// The surface `render_content` reads `layer`'s pixels from, when that is all it draws.
+fn pixel_surface(layer: &Layer) -> Option<&Surface> {
+    if matches!(layer.content, LayerContent::Group(_) | LayerContent::Fill(_) | LayerContent::Adjustment(_)) {
+        return None;
+    }
+    layer.surface()
+}
+
+/// A pixel layer (nothing clipped to it) onto `backdrop`, read from its tiles a row at a time:
+/// the same arithmetic as `render_content` + `blend_into_fill`, without a tile-sized copy of the
+/// layer (a megabyte per 256² render tile).
+fn composite_pixel_layer(layer: &Layer, surf: &Surface, backdrop: &mut Buffer, cx: &Ctx) {
+    let rect = backdrop.rect;
+    let w = rect.width() as usize;
+    if w == 0 {
+        return;
+    }
+    let mv = mask_vals(layer, rect, cx);
+    let gamma = text_gamma(layer);
+    let mut row = vec![[0.0f32; 4]; w];
+    for (ry, dst) in backdrop.px.chunks_exact_mut(w).enumerate() {
+        let y = rect.y0 + ry as i32;
+        surf.read_rgba_into(Rect::new(rect.x0, y, rect.x1, y + 1), &mut row);
+        if let Some(m) = mv.as_ref().and_then(|m| m.get(ry * w..(ry + 1) * w)) {
+            for (p, k) in row.iter_mut().zip(m) {
+                p[3] *= k;
+            }
+        }
+        blend_span_fill(dst, &row, rect.x0, y, layer.blend, layer.opacity, layer.fill_opacity, gamma);
+    }
+}
+
 fn composite_layer_plain(layer: &Layer, clipped: &[Layer], backdrop: &mut Buffer, cx: &Ctx, scope: advanced::Scope) {
     let rect = backdrop.rect;
     // A TSL-off stroke base that is transparent here can still have visible clipped siblings;
@@ -1482,25 +1956,35 @@ fn composite_layer_plain(layer: &Layer, clipped: &[Layer], backdrop: &mut Buffer
 
     // Adjustment layers transform the backdrop, then blend the result back in.
     if let LayerContent::Adjustment(adj) = &layer.content {
-        let mut adjusted = backdrop.clone();
-        adjust::apply_in(adj, &mut adjusted, cx.transfer, Some(cx.depth), cx.mode);
+        let mv = mask_vals(layer, rect, cx);
+        if mv.as_ref().is_some_and(|values| values.iter().all(|&value| opacity * value <= 0.0)) {
+            return;
+        }
+        let mut adjusted = scratch_buffer(rect);
+        adjusted.px.copy_from_slice(&backdrop.px);
+        cx.apply_adjustment(adj, &mut adjusted);
         // Clipped layers onto an adjustment are uncommon; they composite atop the adjusted result.
         advanced::composite_clipped(clipped, &mut adjusted, cx);
-        let mv = mask_vals(layer, rect, cx);
-        for y in rect.y0..rect.y1 {
-            for x in rect.x0..rect.x1 {
-                let i = ((y - rect.y0) as usize) * rect.width() as usize + (x - rect.x0) as usize;
-                let k = opacity * mask_k(&mv, i);
-                if k <= 0.0 {
-                    continue;
+        if layer.blend == BlendMode::Dissolve {
+            // An adjustment has no standalone source alpha. Its effective coverage comes from its
+            // own opacity and mask, not a continuous RGB mix (#3050).
+            for y in rect.y0..rect.y1 {
+                for x in rect.x0..rect.x1 {
+                    let i = ((y - rect.y0) as usize) * rect.width() as usize + (x - rect.x0) as usize;
+                    let k = opacity * mask_k(&mv, i);
+                    if k > 0.0 && dissolve_noise(x, y) < k {
+                        let a = adjusted.px[i];
+                        backdrop.px[i] = [a[0], a[1], a[2], backdrop.px[i][3]];
+                    }
                 }
-                // Only `adjusted` has changed; this pixel's original backdrop is still in place.
-                let b = backdrop.px[i];
-                let a = adjusted.px[i];
-                let blended = blend::blend_rgb(layer.blend, [b[0], b[1], b[2]], [a[0], a[1], a[2]]);
-                backdrop.px[i] = [b[0] + (blended[0] - b[0]) * k, b[1] + (blended[1] - b[1]) * k, b[2] + (blended[2] - b[2]) * k, b[3]];
+            }
+        } else {
+            match &mv {
+                Some(m) => blend_back(&mut backdrop.px, &adjusted.px, m.iter().map(|v| opacity * v), layer.blend),
+                None => blend_back(&mut backdrop.px, &adjusted.px, std::iter::repeat(opacity), layer.blend),
             }
         }
+        recycle_buffer(adjusted);
         return;
     }
 
@@ -1525,9 +2009,36 @@ fn composite_layer_plain(layer: &Layer, clipped: &[Layer], backdrop: &mut Buffer
         blend_into_fill(backdrop, &content, layer.blend, layer.opacity, layer.fill_opacity, 1.0);
         return;
     }
+    if !matches!(layer.content, LayerContent::Group(_) | LayerContent::Fill(_) | LayerContent::Adjustment(_))
+        && let Some(s) = layer.surface()
+        && layer.blend == BlendMode::Normal
+        && opacity >= 1.0
+        && !clipped.iter().any(|c| c.visible)
+        && layer.mask.is_none()
+        && layer.vector_mask.is_none()
+        && text_gamma(layer) == 1.0
+        && !psblend::LAB_MIX.with(|l| l.get())
+        && backdrop.px.iter().all(|p| p[3] <= 0.0)
+    {
+        s.read_rgba_into(rect, &mut backdrop.px);
+        for p in &mut backdrop.px {
+            if p[3] <= 0.0 {
+                *p = [0.0; 4];
+            } else if p[3] < 1.0 {
+                *p = psblend::composite_normal_rgb([0.0; 4], *p, 1.0);
+            }
+        }
+        return;
+    }
+    if clipped.is_empty()
+        && let Some(surf) = pixel_surface(layer)
+    {
+        return composite_pixel_layer(layer, surf, backdrop, cx);
+    }
     let Some(mut content) = render_content(layer, rect, cx) else { return };
     advanced::composite_clipped(clipped, &mut content, cx);
     blend_into_fill(backdrop, &content, layer.blend, layer.opacity, layer.fill_opacity, text_gamma(layer));
+    recycle_buffer(content);
 }
 
 /// A layer with effects (and its clipping group) onto `backdrop`.
@@ -1705,7 +2216,9 @@ fn fx_cache() -> &'static std::sync::Mutex<FxCache> {
 /// 1920 × 103675 webtoon page each such layer's maps took about 2.4 GB, and a render held them for
 /// every layer at once (60 GB with 25 stroked type layers, #1909). When its effects are local
 /// ([`effects::maps_are_local`]), such a layer's maps are built over the render rectangle padded
-/// by twice the effect reach instead, which gives the same pixels there. Only when `rect`, what
+/// by twice the effect reach instead, which gives the same pixels there. So are any layer's local
+/// maps when the render's whole-region maps wouldn't fit in the effect cache ([`fx_over_budget`]).
+/// Only when `rect`, what
 /// the caller composites the layer over, lies within the render rectangle: a group's effect shape
 /// (or anything else rendering children over a wider area) gets the whole region.
 fn effect_region(layer: &Layer, rect: Rect, cx: &Ctx) -> (Rect, bool) {
@@ -1713,7 +2226,7 @@ fn effect_region(layer: &Layer, rect: Rect, cx: &Ctx) -> (Rect, bool) {
     let region = effect_source_bounds(layer, cx.canvas).inflate(m).intersect(&cx.canvas.inflate(m));
     let clip = *cx.fx_clip.lock().unwrap_or_else(|e| e.into_inner());
     match clip {
-        Some(c) if c.contains_rect(&rect) && advanced::shapeless(layer) && effects::maps_are_local(layer) => {
+        Some(c) if c.contains_rect(&rect) && (advanced::shapeless(layer) || cx.fx_over_budget) && effects::maps_are_local(layer) => {
             let part = region.intersect(&c.inflate(m.saturating_mul(2)));
             (part, part != region)
         }
@@ -1721,12 +2234,53 @@ fn effect_region(layer: &Layer, rect: Rect, cx: &Ctx) -> (Rect, bool) {
     }
 }
 
+/// Whether the effect maps of the visible layers of `layers` (groups included), each over its
+/// whole region, would take more than the effect cache budget together. A render needs all of
+/// them, so when they don't fit, building one evicts the next one needed and every render builds
+/// them all again, seconds even for a small rect (#8330). Counted as [`effects::FxMaps::bytes`]
+/// counts the built maps ([`effects::map_count`] arrays over each region).
+fn fx_over_budget(layers: &[Layer], canvas: Rect) -> bool {
+    fx_region_bytes(layers, canvas) > effect_cache_budget() as u64
+}
+
+/// The bytes [`fx_over_budget`] compares with the budget.
+fn fx_region_bytes(layers: &[Layer], canvas: Rect) -> u64 {
+    fn bytes(layers: &[Layer], canvas: Rect, depth: u32) -> u64 {
+        let mut total = 0u64;
+        for l in layers.iter().filter(|l| l.visible) {
+            if effects::has_effects(l) {
+                let m = effects::margin(l);
+                let region = effect_source_bounds(l, canvas).inflate(m).intersect(&canvas.inflate(m));
+                let maps = effects::map_count(l) as u64;
+                let px = u64::from(region.width()) * u64::from(region.height());
+                total = total.saturating_add(maps.saturating_mul(px).saturating_mul(4));
+            }
+            if let LayerContent::Group(g) = &l.content
+                && depth < PREPARE_DEPTH
+            {
+                total = total.saturating_add(bytes(&g.children, canvas, depth + 1));
+            }
+        }
+        total
+    }
+    bytes(layers, canvas, 0)
+}
+
+/// Most bytes one layer's effect maps and source may take to build, whatever the cache budget.
+const MAX_FX_BUILD_BYTES: u64 = if cfg!(target_pointer_width = "64") { 4 << 30 } else { 512 << 20 };
+
 /// The layer's effect maps over its region (layer bounds grown by the effect reach, within the
 /// canvas grown likewise; see [`effect_region`]), built once per layer state and shared by every
 /// tile. `rect` is what the caller composites the layer over (see [`effect_region`]).
 fn effect_maps(layer: &Layer, rect: Rect, cx: &Ctx) -> std::sync::Arc<effects::FxMaps> {
     use std::hash::{Hash, Hasher};
-    let (region, clipped) = effect_region(layer, rect, cx);
+    let (mut region, clipped) = effect_region(layer, rect, cx);
+    // Non-local effects keep their whole source region, which a few distant pixels stretch over
+    // the canvas: past the cap the effects are left out instead of allocating it.
+    let region_px = u64::from(region.width()) * u64::from(region.height());
+    if (effects::map_count(layer) as u64 + 1).saturating_mul(region_px).saturating_mul(4) > MAX_FX_BUILD_BYTES {
+        region = Rect::EMPTY;
+    }
     static NO_CACHE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     if *NO_CACHE.get_or_init(|| std::env::var_os("PHOTOCRAFT_FX_NOCACHE").is_some()) {
         let shape = if region.is_empty() { Vec::new() } else { effect_shape(layer, region, cx) };
@@ -1829,11 +2383,19 @@ fn composite_atop_any(layer: &Layer, base: &mut Buffer, cx: &Ctx) {
     let rect = base.rect;
     if let LayerContent::Adjustment(adj) = &layer.content {
         let mut adjusted = base.clone();
-        adjust::apply_in(adj, &mut adjusted, cx.transfer, Some(cx.depth), cx.mode);
+        cx.apply_adjustment(adj, &mut adjusted);
         let mv = mask_vals(layer, rect, cx);
         for (i, p) in base.px.iter_mut().enumerate() {
             let k = layer.opacity * layer.fill_opacity * mask_k(&mv, i);
             let a = adjusted.px[i];
+            if layer.blend == BlendMode::Dissolve {
+                let x = rect.x0 + (i % rect.width() as usize) as i32;
+                let y = rect.y0 + (i / rect.width() as usize) as i32;
+                if dissolve_noise(x, y) < k {
+                    *p = [a[0], a[1], a[2], p[3]];
+                }
+                continue;
+            }
             let bl = blend::blend_rgb(layer.blend, [p[0], p[1], p[2]], [a[0], a[1], a[2]]);
             for c in 0..3 {
                 p[c] += (bl[c] - p[c]) * k;
@@ -1880,6 +2442,16 @@ fn composite_atop_any(layer: &Layer, base: &mut Buffer, cx: &Ctx) {
             continue;
         }
         let s = content.px[i];
+        if layer.blend == BlendMode::Dissolve {
+            // Clipping preserves the opaque base's alpha. Dissolve still selects source
+            // pixels by spatial coverage instead of continuously mixing the colours (#3052).
+            let x = rect.x0 + (i as i32 % rect.width() as i32);
+            let y = rect.y0 + (i as i32 / rect.width() as i32);
+            if dissolve_noise(x, y) < s[3] * opacity {
+                *p = [s[0], s[1], s[2], alpha];
+            }
+            continue;
+        }
         // Blend as if the base were opaque, then keep the base's alpha.
         let r = blend::composite_gamma(layer.blend, [p[0], p[1], p[2], 1.0], s, opacity, gamma);
         *p = [r[0], r[1], r[2], alpha];
@@ -1894,50 +2466,59 @@ fn blend_into(backdrop: &mut Buffer, src: &Buffer, mode: BlendMode, opacity: f32
 /// [`blend_into_g`] for a layer's own `opacity` and `fill`: Fill is part of the blend for
 /// Photoshop's special eight ([`psblend::composite_fill`]), plain coverage otherwise.
 fn blend_into_fill(backdrop: &mut Buffer, src: &Buffer, mode: BlendMode, opacity: f32, fill: f32, gamma: f32) {
-    if fill >= 1.0 || !psblend::fill_is_special(mode) {
-        return blend_into_g(backdrop, src, mode, opacity * fill, gamma);
+    for_rows(backdrop, src, |dst, s, x0, y| blend_span_fill(dst, s, x0, y, mode, opacity, fill, gamma));
+}
+
+/// [`blend_into`] mixing coverage in a `gamma` space (type layers).
+fn blend_into_g(backdrop: &mut Buffer, src: &Buffer, mode: BlendMode, opacity: f32, gamma: f32) {
+    for_rows(backdrop, src, |dst, s, x0, y| blend_span_g(dst, s, x0, y, mode, opacity, gamma));
+}
+
+/// Runs `f(backdrop row, src row, x0, y)` over the rows of two buffers covering the same rect.
+fn for_rows(backdrop: &mut Buffer, src: &Buffer, mut f: impl FnMut(&mut [[f32; 4]], &[[f32; 4]], i32, i32)) {
+    let rect = backdrop.rect;
+    let w = (rect.width() as usize).max(1);
+    for (ry, (dst, s)) in backdrop.px.chunks_mut(w).zip(src.px.chunks(w)).enumerate() {
+        f(dst, s, rect.x0, rect.y0 + ry as i32);
     }
-    for (b, s) in backdrop.px.iter_mut().zip(&src.px) {
+}
+
+/// [`blend_into_fill`] of one row: `dst` and `src` start at pixel (`x0`, `y`).
+#[allow(clippy::too_many_arguments)]
+fn blend_span_fill(dst: &mut [[f32; 4]], src: &[[f32; 4]], x0: i32, y: i32, mode: BlendMode, opacity: f32, fill: f32, gamma: f32) {
+    if fill >= 1.0 || !psblend::fill_is_special(mode) {
+        return blend_span_g(dst, src, x0, y, mode, opacity * fill, gamma);
+    }
+    for (b, s) in dst.iter_mut().zip(src) {
         if s[3] > 0.0 {
             *b = psblend::composite_fill(mode, *b, *s, opacity, fill, gamma);
         }
     }
 }
 
-/// [`blend_into`] mixing coverage in a `gamma` space (type layers).
-fn blend_into_g(backdrop: &mut Buffer, src: &Buffer, mode: BlendMode, opacity: f32, gamma: f32) {
+/// [`blend_into_g`] of one row: `dst` and `src` start at pixel (`x0`, `y`).
+fn blend_span_g(dst: &mut [[f32; 4]], src: &[[f32; 4]], x0: i32, y: i32, mode: BlendMode, opacity: f32, gamma: f32) {
     // The blend space is constant in this loop. Some TLS implementations synchronise even a
     // boolean read, so select the common Normal kernel once instead of once per pixel.
     if mode == BlendMode::Normal && gamma == 1.0 && !psblend::LAB_MIX.with(|l| l.get()) {
-        for (i, b) in backdrop.px.iter_mut().enumerate() {
-            let s = src.px[i];
-            if s[3] <= 0.0 {
-                continue;
-            }
-            *b = psblend::composite_normal_rgb(*b, s, opacity);
-        }
-        return;
+        return psblend::composite_normal_rgb_span(dst, src, opacity);
     }
-    let rect = backdrop.rect;
-    let w = rect.width() as i32;
-    for (i, b) in backdrop.px.iter_mut().enumerate() {
-        let mut s = src.px[i];
+    for (x, (b, s)) in (x0..).zip(dst.iter_mut().zip(src)) {
+        let mut s = *s;
         if s[3] <= 0.0 {
             continue;
         }
-        let mut mode = mode;
         if mode == BlendMode::Dissolve {
-            let x = rect.x0 + (i as i32 % w);
-            let y = rect.y0 + (i as i32 / w);
             s[3] = if dissolve_noise(x, y) < s[3] * opacity { 1.0 } else { 0.0 };
-            mode = BlendMode::Normal;
-            *b = blend::composite(mode, *b, s, 1.0);
+            *b = blend::composite(BlendMode::Normal, *b, s, 1.0);
             continue;
         }
         *b = blend::composite_gamma(mode, *b, s, opacity, gamma);
     }
 }
 
+#[cfg(test)]
+mod soft_shape_tests;
 #[cfg(test)]
 mod stroke_tests;
 #[cfg(test)]

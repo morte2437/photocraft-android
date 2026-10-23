@@ -20,6 +20,10 @@ use super::tiff_ifd::{File, Ifd};
 pub(crate) const TAG_EXIF_IFD: u16 = 34665;
 /// IFD0's pointer to the GPS directory.
 pub(crate) const TAG_GPS_IFD: u16 = 34853;
+/// The Exif directory's PixelXDimension and PixelYDimension: the size of the image the
+/// directory describes.
+const TAG_PIXEL_X_DIMENSION: u16 = 40962;
+const TAG_PIXEL_Y_DIMENSION: u16 = 40963;
 /// The Exif directory's pointer to the Interoperability directory (not carried: it holds only
 /// the interoperability index, and a copied pointer would point nowhere).
 const TAG_INTEROP_IFD: u16 = 40965;
@@ -92,7 +96,20 @@ fn sub(f: &File<'_>, ifd: &Ifd, tag: u16) -> Option<Ifd> {
 /// is left are left out (the small descriptive directories come first, so a huge maker note
 /// cannot crowd out the GPS position).
 pub(crate) fn read(b: &[u8]) -> Option<ExifDirs> {
-    let f = File::parse(b)?;
+    read_file(File::parse(b)?)
+}
+
+/// The EXIF parts of a camera raw built on TIFF (NEF, ARW, CR2, DNG, Panasonic RW2), as
+/// [`read`] gives them, without the Exif directory's PixelXDimension and PixelYDimension: in a
+/// raw they give the sensor's or the preview's size, not the developed image's.
+pub(crate) fn read_raw(b: &[u8]) -> Option<ExifDirs> {
+    let mut dirs = read_file(File::parse_raw(b)?)?;
+    dirs.exif.retain(|f| !matches!(f.tag, TAG_PIXEL_X_DIMENSION | TAG_PIXEL_Y_DIMENSION));
+    Some(dirs)
+}
+
+fn read_file(f: File<'_>) -> Option<ExifDirs> {
+    let b = f.b;
     if f.big {
         return None;
     }

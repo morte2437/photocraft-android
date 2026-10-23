@@ -24,6 +24,7 @@
 use photocraft_algo::panorama::Layout;
 use photocraft_algo::pyramid;
 use photocraft_algo::transform::Interp;
+use photocraft_algo::warp::warp_mesh_gray;
 use photocraft_doc::{Document, Layer, LayerContent, LayerId, LayerMask};
 use photocraft_geom::Rect;
 use photocraft_raster::{Surface, to_rgba};
@@ -107,11 +108,13 @@ fn auto_align(s: &mut Session, p: &Value) -> Result<Value> {
             let surf = l.surface().ok_or(EngineError::NoLayer(ids[i]))?;
             let b = surf.content_bounds();
             let px = if b.is_empty() { surf.clone() } else { warp_placed(surf, b, (0.0, 0.0), pl, (0.0, 0.0), interp)? };
+            // Masks warp as masks: one grey channel whose outside keeps its default (reveal-all
+            // stays revealed), not as colour, which would come back grey + alpha reading 0 outside.
             let mask = match l.mask.as_ref() {
-                Some(m) => {
-                    let mb = m.surface.content_bounds();
-                    Some(if mb.is_empty() { m.surface.clone() } else { warp_placed(&m.surface, mb, (0.0, 0.0), pl, (0.0, 0.0), Interp::Bilinear)? })
-                }
+                Some(m) => Some(match plane_matrix(pl, (0.0, 0.0)) {
+                    Some(h) => crate::transform_cmds::warp_gray(&m.surface, &h, Interp::Bilinear)?,
+                    None => warp_mesh_gray(&m.surface, &|x, y| pl.forward(x, y), Interp::Bilinear),
+                }),
                 None => None,
             };
             Ok((ids[i], px, mask))
@@ -148,11 +151,19 @@ fn auto_align(s: &mut Session, p: &Value) -> Result<Value> {
     )
 }
 
-/// Native-channel pixels of a layer over `area` (transparent outside its content).
-fn pixels(l: &Layer, area: Rect) -> Option<(Vec<f32>, photocraft_color::PixelFormat)> {
-    let s = l.surface()?;
-    Some((s.read_region(area), s.format()))
+/// The most memory Auto-Blend's working buffers may take past the canvas: a bound independent
+/// of the layers' own bounding boxes, which a sparse layer (a dot at each far corner) can make
+/// arbitrarily large, and of how many layers are blended.
+const MAX_BLEND_BYTES: u64 = 4 << 30;
+
+/// What Auto-Blend's buffers hold per work-area pixel, as f32: each layer's pixels, luminance,
+/// alpha and mask weight, plus the merged picture and the depth map.
+fn blend_bytes_per_pixel(layers: u64, channels: u64) -> u64 {
+    layers.saturating_mul(channels.saturating_add(3)).saturating_add(channels.saturating_mul(2)).saturating_mul(4)
 }
+
+/// Auto-Blend's buffers, for allocation errors.
+const BLEND_BUFFERS: &str = "Auto-Blend Layers";
 
 fn auto_blend(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "edit.autoBlendLayers";
@@ -178,13 +189,24 @@ fn auto_blend(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let st = s.active().ok_or(EngineError::NoDocument)?;
     let doc: std::sync::Arc<Document> = st.doc.clone();
-    let mut area = Rect::EMPTY;
+    let mut union = Rect::EMPTY;
+    let mut content_px = 0u64;
+    let px_of = |r: &Rect| u64::from(r.width()) * u64::from(r.height());
     for id in &ids {
         if let Some(b) = doc.layer(*id).and_then(|l| l.surface()).map(|s| s.content_bounds()) {
-            area = area.union(&b);
+            union = union.union(&b);
+            content_px = content_px.saturating_add(px_of(&b));
         }
     }
-    let area = area.intersect(&doc.bounds());
+    // The whole layers, past the canvas too (#5745): Auto-Align leaves a panorama's layers
+    // partly off the canvas, and Photoshop masks and blends all of each layer, so Reveal All
+    // shows the whole panorama. Layers so far apart that their bounds are mostly empty, or
+    // whose buffers would exceed `MAX_BLEND_BYTES`, keep to the canvas.
+    let canvas = doc.bounds();
+    let channels = ids.iter().filter_map(|id| doc.layer(*id).and_then(|l| l.surface()).map(|s| s.channels() as u64)).max().unwrap_or(4);
+    let per_px = blend_bytes_per_pixel(ids.len() as u64, channels);
+    let fits = px_of(&union).saturating_mul(per_px) <= MAX_BLEND_BYTES && px_of(&union) <= content_px.max(px_of(&canvas)).saturating_mul(2);
+    let area = if fits { union } else { union.intersect(&canvas) };
     if area.is_empty() {
         return Err(EngineError::Other("the selected layers are empty".into()));
     }
@@ -195,9 +217,10 @@ fn auto_blend(s: &mut Session, p: &Value) -> Result<Value> {
     let mut fmt = None;
     for id in &ids {
         let l = doc.layer(*id).ok_or(EngineError::NoLayer(*id))?;
-        let (px, f) = pixels(l, area).ok_or(EngineError::NoLayer(*id))?;
+        let surf = l.surface().ok_or(EngineError::NoLayer(*id))?;
+        let (px, f) = (crate::allocation::read_region(surf, area, BLEND_BUFFERS)?, surf.format());
         let n = f.channels();
-        let (mut lv, mut av) = (vec![0.0f32; w * h], vec![0.0f32; w * h]);
+        let (mut lv, mut av) = (crate::allocation::filled(w * h, 0.0f32, BLEND_BUFFERS)?, crate::allocation::filled(w * h, 0.0f32, BLEND_BUFFERS)?);
         for i in 0..w * h {
             let c = to_rgba(&f, &px[i * n..(i + 1) * n]);
             lv[i] = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
@@ -225,7 +248,9 @@ fn auto_blend(s: &mut Session, p: &Value) -> Result<Value> {
         let surfs: Vec<Surface> =
             ids.iter().map(|id| doc.layer(*id).and_then(|l| l.surface()).cloned().ok_or(EngineError::NoLayer(*id))).collect::<Result<_>>()?;
         let order = seam_order(&surfs, 0);
-        let b = seam_blend(&surfs, area, &order, seamless, false, None);
+        // Seamless Tones and Colors also evens out exposure and colour between the layers (gain
+        // compensation over their overlaps), as in Photomerge.
+        let b = seam_blend(&surfs, area, &order, seamless, seamless, None);
         let weights: Vec<Vec<f32>> = b.layers.iter().map(|(_, m)| m.read_region(area)).collect();
         let blended = seamless.then(|| b.composite.read_region(area));
         (weights, blended)
@@ -258,6 +283,8 @@ fn auto_blend(s: &mut Session, p: &Value) -> Result<Value> {
     let label = "Auto-Blend Layers";
     let (new_layer, depth_layer) = s.edit(label, |doc, active| {
         for (id, wt) in ids.iter().zip(&weights) {
+            // The Background can't have a mask: it becomes a normal layer first, as in Photoshop.
+            crate::extra_cmds::background_to_layer_for_mask(doc, *id);
             let l = doc.layer_mut(*id).ok_or(EngineError::NoLayer(*id))?;
             let mut mask = LayerMask::hide_all();
             mask.surface.write_region(area, wt);
@@ -384,6 +411,37 @@ mod tests {
         assert!(s.execute("edit.autoAlignLayers", json!({"reference": u64::MAX})).is_err());
     }
 
+    /// The moving layer's mask is warped as a mask: one grey channel whose outside keeps its
+    /// default (reveal-all stays revealed, hide-all stays hidden), for planar and mesh warps.
+    #[test]
+    fn auto_align_warps_layer_masks_keeping_their_default() {
+        for (projection, reveal) in [("reposition", true), ("reposition", false), ("cylindrical", true)] {
+            let mut s = Session::new();
+            s.execute("file.new", json!({"width": 300, "height": 240, "background": "transparent"})).unwrap();
+            let a = texture_layer(&mut s, "A", 20, 20);
+            let b = texture_layer(&mut s, "B", 31, 13);
+            let (inside, outside) = if reveal { (0.0, 1.0) } else { (1.0, 0.0) };
+            s.edit("mask", |doc, _| {
+                let mut m = if reveal { LayerMask::reveal_all() } else { LayerMask::hide_all() };
+                m.surface.fill_rect(Rect::new(100, 100, 110, 110), &[inside]);
+                doc.layer_mut(b).unwrap().mask = Some(m);
+                Ok(())
+            })
+            .unwrap();
+            select(&mut s, &[a, b]);
+            let r = s.execute("edit.autoAlignLayers", json!({"projection": projection})).unwrap();
+            let doc = &s.active().unwrap().doc;
+            let m = doc.layer(b).unwrap().mask.as_ref().unwrap();
+            assert_eq!(m.surface.format().channels(), 1, "{projection}: {r}");
+            assert_eq!(m.value(250, 200), outside, "{projection} reveal={reveal}: {r}");
+            assert_eq!(m.value(5, 5), outside, "{projection} reveal={reveal}: {r}");
+            if projection == "reposition" {
+                // The square moved with the layer (by about (-11, +7)).
+                assert!((m.value(94, 112) - inside).abs() < 0.01, "{r}");
+            }
+        }
+    }
+
     #[test]
     fn auto_blend_panorama_masks_and_seamless_layer() {
         for depth in [8, 16, 32] {
@@ -416,6 +474,155 @@ mod tests {
             s.undo();
             assert!(s.active().unwrap().doc.layer(left).unwrap().mask.is_none());
         }
+    }
+
+    /// #5745: the Background can't take a mask, so Auto-Blend turns it into a normal layer first.
+    #[test]
+    fn auto_blend_turns_the_background_into_a_layer() {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 200, "height": 60, "background": "white"})).unwrap();
+        let bg = s.active().unwrap().doc.background().unwrap().id;
+        s.execute("layer.new.layer", json!({"name": "right"})).unwrap();
+        s.edit("r", |doc, active| {
+            doc.layer_mut(active.unwrap()).unwrap().surface_mut().unwrap().fill_rect(Rect::new(70, 0, 200, 60), &[0.9, 0.6, 0.2, 1.0]);
+            Ok(())
+        })
+        .unwrap();
+        let right = s.active().unwrap().active_layer.unwrap();
+        select(&mut s, &[bg, right]);
+        s.execute("edit.autoBlendLayers", json!({"method": "panorama"})).unwrap();
+        let doc = &s.active().unwrap().doc;
+        assert!(!doc.is_background(bg), "the Background became a layer to take its mask");
+        assert!(doc.layer(bg).unwrap().mask.is_some());
+        s.undo();
+        assert!(s.active().unwrap().doc.is_background(bg), "undo restores the Background");
+    }
+
+    /// Seamless Tones and Colors evens out a 10% exposure step between two panorama layers.
+    #[test]
+    fn auto_blend_panorama_seamless_matches_exposure() {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 200, "height": 60, "background": "transparent"})).unwrap();
+        let mut ids = Vec::new();
+        for (name, x0, x1, gain) in [("left", 0, 130, 1.0f32), ("right", 70, 200, 1.1)] {
+            s.execute("layer.new.layer", json!({ "name": name })).unwrap();
+            s.edit(name, |doc, active| {
+                doc.layer_mut(active.unwrap()).unwrap().surface_mut().unwrap().fill_rect(Rect::new(x0, 0, x1, 60), &[0.2 * gain, 0.4 * gain, 0.5 * gain, 1.0]);
+                Ok(())
+            })
+            .unwrap();
+            ids.push(s.active().unwrap().active_layer.unwrap());
+        }
+        select(&mut s, &ids);
+        let r = s.execute("edit.autoBlendLayers", json!({"method": "panorama"})).unwrap();
+        let doc = &s.active().unwrap().doc;
+        let blended = doc.layer(LayerId(r["blended"].as_u64().unwrap())).unwrap().surface().unwrap();
+        let (a, b) = (blended.pixel(10, 30), blended.pixel(190, 30));
+        // 0.5 vs 0.55 without gain compensation.
+        assert!((a[2] - b[2]).abs() < 0.015, "{a:?} {b:?}");
+    }
+
+    /// #5745: the top layer hangs off the canvas's right edge, so cropped to the canvas it lies
+    /// wholly over the bottom one. It used to get an all-black mask; now it shows on its side.
+    #[test]
+    fn auto_blend_panorama_of_a_layer_the_canvas_crops_to_all_overlap() {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 200, "height": 60, "background": "transparent"})).unwrap();
+        s.execute("layer.new.layer", json!({"name": "left"})).unwrap();
+        s.edit("l", |doc, active| {
+            doc.layer_mut(active.unwrap()).unwrap().surface_mut().unwrap().fill_rect(Rect::new(0, 0, 200, 60), &[0.2, 0.4, 0.5, 1.0]);
+            Ok(())
+        })
+        .unwrap();
+        let left = s.active().unwrap().active_layer.unwrap();
+        s.execute("layer.new.layer", json!({"name": "right"})).unwrap();
+        s.edit("r", |doc, active| {
+            doc.layer_mut(active.unwrap()).unwrap().surface_mut().unwrap().fill_rect(Rect::new(120, 0, 320, 60), &[0.2, 0.4, 0.5, 1.0]);
+            Ok(())
+        })
+        .unwrap();
+        let right = s.active().unwrap().active_layer.unwrap();
+        select(&mut s, &[left, right]);
+        s.execute("edit.autoBlendLayers", json!({"method": "panorama", "seamlessTones": false})).unwrap();
+        let doc = &s.active().unwrap().doc;
+        let ml = doc.layer(left).unwrap().mask.as_ref().unwrap();
+        let mr = doc.layer(right).unwrap().mask.as_ref().unwrap();
+        assert_eq!((ml.value(10, 30), mr.value(10, 30)), (1.0, 0.0));
+        assert_eq!((ml.value(195, 30), mr.value(195, 30)), (0.0, 1.0));
+        for x in 0..200 {
+            assert_eq!(ml.value(x, 30) + mr.value(x, 30), 1.0, "x {x} shows one layer");
+        }
+    }
+
+    /// #5745: a layer Auto-Align left partly off the canvas is masked and blended over all of
+    /// its bounds, not cut off at the canvas edge.
+    #[test]
+    fn auto_blend_panorama_masks_past_the_canvas() {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 200, "height": 60, "background": "transparent"})).unwrap();
+        s.execute("layer.new.layer", json!({"name": "left"})).unwrap();
+        s.edit("l", |doc, active| {
+            doc.layer_mut(active.unwrap()).unwrap().surface_mut().unwrap().fill_rect(Rect::new(0, 0, 150, 60), &[0.2, 0.4, 0.5, 1.0]);
+            Ok(())
+        })
+        .unwrap();
+        let left = s.active().unwrap().active_layer.unwrap();
+        s.execute("layer.new.layer", json!({"name": "right"})).unwrap();
+        s.edit("r", |doc, active| {
+            doc.layer_mut(active.unwrap()).unwrap().surface_mut().unwrap().fill_rect(Rect::new(120, 0, 320, 60), &[0.2, 0.4, 0.5, 1.0]);
+            Ok(())
+        })
+        .unwrap();
+        let right = s.active().unwrap().active_layer.unwrap();
+        select(&mut s, &[left, right]);
+        let r = s.execute("edit.autoBlendLayers", json!({"method": "panorama"})).unwrap();
+        let doc = &s.active().unwrap().doc;
+        let ml = doc.layer(left).unwrap().mask.as_ref().unwrap();
+        let mr = doc.layer(right).unwrap().mask.as_ref().unwrap();
+        assert_eq!((ml.value(10, 30), mr.value(10, 30)), (1.0, 0.0));
+        assert_eq!((ml.value(300, 30), mr.value(300, 30)), (0.0, 1.0), "off the canvas");
+        let blended = doc.layer(LayerId(r["blended"].as_u64().unwrap())).unwrap().surface().unwrap();
+        assert_eq!(blended.pixel(300, 30)[3], 1.0, "the merged layer covers the off-canvas part");
+    }
+
+    /// A sparse layer whose bounds are huge (a dot at each far corner) raises its own content
+    /// estimate, so the extent past the canvas is capped independently: it keeps to the canvas.
+    #[test]
+    fn auto_blend_sparse_huge_bounds_keep_to_the_canvas() {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 200, "height": 200, "background": "transparent"})).unwrap();
+        s.execute("layer.new.layer", json!({"name": "a"})).unwrap();
+        s.edit("a", |doc, active| {
+            let surf = doc.layer_mut(active.unwrap()).unwrap().surface_mut().unwrap();
+            surf.fill_rect(Rect::new(0, 0, 150, 200), &[0.2, 0.4, 0.5, 1.0]);
+            surf.fill_rect(Rect::new(100_000, 100_000, 100_001, 100_001), &[0.2, 0.4, 0.5, 1.0]);
+            Ok(())
+        })
+        .unwrap();
+        let a = s.active().unwrap().active_layer.unwrap();
+        s.execute("layer.new.layer", json!({"name": "b"})).unwrap();
+        s.edit("b", |doc, active| {
+            doc.layer_mut(active.unwrap()).unwrap().surface_mut().unwrap().fill_rect(Rect::new(50, 0, 200, 200), &[0.2, 0.4, 0.5, 1.0]);
+            Ok(())
+        })
+        .unwrap();
+        let b = s.active().unwrap().active_layer.unwrap();
+        select(&mut s, &[a, b]);
+        let r = s.execute("edit.autoBlendLayers", json!({"method": "panorama"})).unwrap();
+        let doc = &s.active().unwrap().doc;
+        let bb = doc.layer(LayerId(r["blended"].as_u64().unwrap())).unwrap().surface().unwrap().content_bounds();
+        assert!(bb.x1 <= 200 && bb.y1 <= 200, "{bb:?}");
+    }
+
+    /// The budget past the canvas counts every layer's buffers, not just the work-area pixels.
+    #[test]
+    fn auto_blend_budget_counts_layers_and_channels() {
+        // Two RGBA layers: 4 bytes × (2 layers × (4 channels + luma, alpha, weight) + merged + depth).
+        assert_eq!(blend_bytes_per_pixel(2, 4), 88);
+        assert!(blend_bytes_per_pixel(5, 4) > blend_bytes_per_pixel(2, 4));
+        // A 2^27-pixel area would need about 11 GiB for just two RGBA layers: it keeps to the canvas.
+        assert!((1u64 << 27).saturating_mul(blend_bytes_per_pixel(2, 4)) > MAX_BLEND_BYTES);
+        assert_eq!(blend_bytes_per_pixel(u64::MAX, 4), u64::MAX, "saturates instead of overflowing");
     }
 
     #[test]

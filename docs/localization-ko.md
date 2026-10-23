@@ -23,14 +23,11 @@ resources, fonts, screenshots or user documents are included.
 Command-ID translations disambiguate menu names from actions. Photoshop terms
 are used when the operation matches; PhotoCraft-specific features retain their
 own meaning. Technology names, units and user-provided names are not translated.
-The terminology test protects representative tool names and this distinction.
 
 ## Dynamic coverage
 
 Generated filter parameter names, symbolic choices, gallery categories/effects,
 job titles, layer-style menus and shortcut labels now go through the catalog.
-The filter test enumerates engine filter/adjustment parameter specs and gallery
-names to catch new Korean omissions that literal-only scans cannot find.
 Two newly introduced literals, `Enable {name}` and `No patterns`, are present in
 all nine non-English catalogs. Existing fallback behavior is preserved for
 untranslated dynamic labels in other languages.

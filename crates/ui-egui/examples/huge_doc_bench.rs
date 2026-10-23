@@ -97,6 +97,7 @@ fn text(name: &str, r: Rect) -> Layer {
             size: 4.0,
             position: StrokePosition::Outside,
             paint: FxPaint::Color(Color::rgb(1.0, 1.0, 1.0)),
+            overprint: false,
         }),
     ];
     l
@@ -144,6 +145,7 @@ fn build(w: u32, h: u32) -> Document {
             size: 3.0,
             position: StrokePosition::Outside,
             paint: FxPaint::Color(Color::rgb(0.1, 0.1, 0.1)),
+            overprint: false,
         }),
     ];
     d.layers.push(band);

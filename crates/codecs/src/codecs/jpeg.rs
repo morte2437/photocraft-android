@@ -7,8 +7,9 @@
 //! these wins: the APP13 Photoshop ResolutionInfo, the XMP `tiff:` resolution, the EXIF IFD0
 //! resolution, and last the JFIF density (a unit-0 JFIF density is only an aspect ratio and
 //! never counts). Cameras record their resolution in EXIF only, and many tools write a default
-//! 72 into JFIF, so JFIF can't outrank EXIF (see [`crate::resolution`]). On export the JFIF
-//! density, the EXIF and the XMP resolution are all written as the image's resolution.
+//! 72 into JFIF, so JFIF can't outrank EXIF (see [`crate::resolution`]). On export RGB and gray
+//! images carry density in JFIF; CMYK omits JFIF APP0, which is invalid for four components, and
+//! carries an available density in EXIF instead.
 
 use zune_core::bytestream::ZCursor;
 use zune_core::colorspace::ColorSpace;
@@ -18,7 +19,7 @@ use crate::Format;
 use crate::error::CodecError;
 use crate::fidelity::Plan;
 use crate::image::{ChannelLayout, DecodeWarning, Image, Metadata, SampleType};
-use crate::options::{EncodeOptions, Limits};
+use crate::options::{EncodeOptions, JpegFormat, Limits};
 use crate::resolution::{exif_resolution, export_exif, export_xmp, photoshop_resolution, xmp_resolution};
 
 const F: Format = Format::Jpeg;
@@ -136,32 +137,39 @@ enum DataEnd {
 /// Walks the marker segments (skipped by their length) and the entropy-coded scan data
 /// (skipped up to the next marker that isn't a stuffed `FF 00`, a restart or a fill byte),
 /// so an embedded thumbnail's end marker or data after the end of the image don't count.
-fn data_end(b: &[u8]) -> DataEnd {
+/// Also returns how many scan-data bytes the walk crossed: the truncated-input budget is
+/// measured on these, not on the file length, which APP padding can inflate without
+/// adding image data.
+fn data_end(b: &[u8]) -> (DataEnd, u64) {
     // Where the bytes run out: inside the image data once a scan has held some.
-    let cut = |scan_data: bool| if scan_data { DataEnd::Truncated } else { DataEnd::Empty };
+    let cut = |scan_data: bool, scanned: u64| (if scan_data { DataEnd::Truncated } else { DataEnd::Empty }, scanned);
     let mut i = 2; // past SOI
     let mut scan_data = false;
+    let mut scanned = 0u64;
     loop {
-        let Some(&byte) = b.get(i) else { return cut(scan_data) };
+        let Some(&byte) = b.get(i) else { return cut(scan_data, scanned) };
         if byte != 0xFF {
             // Not where a marker should be: too odd to judge.
-            return DataEnd::Complete;
+            return (DataEnd::Complete, scanned);
         }
-        let Some(&code) = b.get(i + 1) else { return cut(scan_data) };
+        let Some(&code) = b.get(i + 1) else { return cut(scan_data, scanned) };
         match code {
-            0xD9 => return DataEnd::Complete,
+            0xD9 => return (DataEnd::Complete, scanned),
             0xFF => i += 1,
             0x01 | 0xD0..=0xD8 => i += 2,
             _ => {
                 let Some(len) = b.get(i + 2..i + 4).and_then(|s| <[u8; 2]>::try_from(s).ok()).map(u16::from_be_bytes) else {
-                    return cut(scan_data);
+                    return cut(scan_data, scanned);
                 };
                 i = i.saturating_add(2 + usize::from(len));
                 if code == 0xDA {
                     let start = i;
                     loop {
                         let Some(p) = b.get(i..).and_then(|r| r.iter().position(|&v| v == 0xFF)) else {
-                            return cut(scan_data || b.len() > start);
+                            // EOF inside this scan: everything from the scan start to the end
+                            // of the file is scan data (inside a declared segment it may not
+                            // be, so only count what remains).
+                            return cut(scan_data || b.len() > start, scanned + u64::try_from(b.len().saturating_sub(start)).unwrap_or(0));
                         };
                         i += p;
                         match b.get(i + 1) {
@@ -171,6 +179,7 @@ fn data_end(b: &[u8]) -> DataEnd {
                         }
                     }
                     scan_data |= i > start;
+                    scanned += u64::try_from(i - start).unwrap_or(0);
                 }
             }
         }
@@ -181,8 +190,12 @@ fn err(e: impl std::fmt::Display) -> CodecError {
     CodecError::malformed(F, e)
 }
 
+/// Most pixels one byte of truncated scan data may account for. Even a flat image costs a few
+/// bits per 8×8 block, and truncated photographs are far above this.
+const MAX_TRUNCATED_PIXELS_PER_BYTE: u64 = 2048;
+
 pub(crate) fn decode(bytes: &[u8], limits: &Limits) -> Result<Image, CodecError> {
-    let end = data_end(bytes);
+    let (end, scan_bytes) = data_end(bytes);
     if end == DataEnd::Empty {
         return Err(err("the file ends before any image data"));
     }
@@ -203,6 +216,13 @@ pub(crate) fn decode(bytes: &[u8], limits: &Limits) -> Result<Image, CodecError>
         _ => (ColorSpace::RGB, ChannelLayout::Rgb),
     };
     limits.check(w, h, layout, SampleType::U8)?;
+    // The backend fills whatever the scan no longer describes, so a short scan under a large
+    // frame is a gigabyte of synthesized output from a few kilobytes of file. The budget is
+    // measured on the scan data itself: APP padding can inflate `bytes.len()` arbitrarily
+    // without describing one more pixel.
+    if end == DataEnd::Truncated && u64::from(w) * u64::from(h) / MAX_TRUNCATED_PIXELS_PER_BYTE > scan_bytes {
+        return Err(err("the truncated scan is too short for the frame it declares"));
+    }
     dec.set_options(dec.options().jpeg_set_out_colorspace(out_cs));
     let mut px = dec.decode().map_err(err)?;
     let expected = w as usize * h as usize * layout.channels();
@@ -255,15 +275,21 @@ pub(crate) fn encode(src: &Image, plan: Plan, opts: &EncodeOptions) -> Result<Ve
     let mut enc = jpeg_encoder::Encoder::new(&mut out, opts.jpeg_quality.clamp(1, 100));
     // CMYK is always written 4:4:4: subsampled 4-component JPEGs are not
     // decoded consistently across implementations.
-    let sampling = if opts.jpeg_chroma_subsampling && img.layout() == ChannelLayout::Rgb {
-        jpeg_encoder::SamplingFactor::R_4_2_0
-    } else {
-        jpeg_encoder::SamplingFactor::R_4_4_4
-    };
+    let subsampled = opts.jpeg_chroma_subsampling && img.layout() == ChannelLayout::Rgb;
+    let sampling = if subsampled { jpeg_encoder::SamplingFactor::R_4_2_0 } else { jpeg_encoder::SamplingFactor::R_4_4_4 };
     enc.set_sampling_factor(sampling);
+    // JPEG Options › Format Options. Fitted Huffman tables make a baseline scan non-interleaved
+    // (one scan per component), which zune-jpeg 0.5.15 decodes wrongly with 4:2:0 chroma
+    // (etemesi254/zune-image#419; see `web::encode_jpeg_rgb8`), so a subsampled Baseline
+    // Optimized keeps the standard tables until that decoder is updated. Progressive is fine.
+    let progressive = opts.jpeg_format == JpegFormat::Progressive;
+    enc.set_progressive(progressive);
+    let optimized = opts.jpeg_format == JpegFormat::Optimized && !subsampled;
+    enc.set_optimized_huffman_tables(progressive || optimized);
     let e = |e: jpeg_encoder::EncodingError| CodecError::encode(F, e);
     if opts.embed_metadata {
-        if let Some((x, y)) = img.meta.dpi
+        if img.layout() != ChannelLayout::Cmyk
+            && let Some((x, y)) = img.meta.dpi
             && x >= 1.0
             && y >= 1.0
         {
@@ -271,7 +297,16 @@ pub(crate) fn encode(src: &Image, plan: Plan, opts: &EncodeOptions) -> Result<Ve
         }
         // Metadata too large for its one segment is left out (and reported by the fidelity
         // warnings) rather than failing the whole export.
-        if let Some(seg) = img.meta.exif.as_deref().and_then(|x| exif_segment(x, img.meta.dpi)) {
+        let exif = if img.layout() == ChannelLayout::Cmyk {
+            match img.meta.exif.as_deref() {
+                Some(exif) => exif_segment_with_resolution(exif, img.meta.dpi),
+                None if usable_dpi(img.meta.dpi) => exif_segment_with_resolution(&[], img.meta.dpi),
+                None => None,
+            }
+        } else {
+            img.meta.exif.as_deref().and_then(|x| exif_segment(x, img.meta.dpi))
+        };
+        if let Some(seg) = exif {
             enc.add_app_segment(1, &seg).map_err(e)?;
         }
         if let Some(seg) = img.meta.xmp.as_deref().and_then(|x| xmp_segment(x, img.meta.dpi)) {
@@ -284,7 +319,56 @@ pub(crate) fn encode(src: &Image, plan: Plan, opts: &EncodeOptions) -> Result<Ve
         enc.add_icc_profile(icc).map_err(e)?;
     }
     enc.encode(img.data(), w16, h16, ct).map_err(e)?;
+    if img.layout() == ChannelLayout::Cmyk {
+        strip_jfif_app0(&mut out);
+    }
     Ok(out)
+}
+
+/// JFIF APP0 requires one or three image components. A four-component CMYK JPEG must not carry
+/// that marker; keep Adobe APP14, which identifies the CMYK encoding instead.
+fn strip_jfif_app0(bytes: &mut Vec<u8>) {
+    if !bytes.starts_with(&[0xff, 0xd8]) {
+        return;
+    }
+    let mut i = 2usize;
+    loop {
+        if bytes.get(i) != Some(&0xff) {
+            return;
+        }
+        let Some(&marker) = bytes.get(i.saturating_add(1)) else { return };
+        if matches!(marker, 0xda | 0xd9) {
+            return;
+        }
+        if marker == 0xff {
+            i = i.saturating_add(1);
+            continue;
+        }
+        if marker == 0x01 || (0xd0..=0xd8).contains(&marker) {
+            i = i.saturating_add(2);
+            continue;
+        }
+        let Some(length_bytes) = i.checked_add(2).and_then(|at| bytes.get(at..at.checked_add(2)?)) else { return };
+        let Ok(length_bytes) = <[u8; 2]>::try_from(length_bytes) else { return };
+        let length = usize::from(u16::from_be_bytes(length_bytes));
+        if length < 2 {
+            return;
+        }
+        let Some(end) = i.checked_add(2).and_then(|at| at.checked_add(length)) else { return };
+        if end > bytes.len() {
+            return;
+        }
+        if marker == 0xe0 && bytes.get(i.saturating_add(4)..i.saturating_add(9)) == Some(b"JFIF\0") {
+            bytes.drain(i..end);
+        } else {
+            i = end;
+        }
+    }
+}
+
+/// Return whether both resolution values are finite and within the supported metadata range.
+fn usable_dpi(dpi: Option<(f32, f32)>) -> bool {
+    dpi.is_some_and(|(x, y)| x.is_finite() && y.is_finite() && (1.0..=1_000_000.0).contains(&x) && (1.0..=1_000_000.0).contains(&y))
 }
 
 /// The most data one APP segment holds (its 16-bit length counts its own two bytes).
@@ -297,9 +381,15 @@ const LAYERED_ONLY_XMP: [&str; 2] = ["DocumentAncestors", "TextLayers"];
 
 /// The EXIF APP1 segment, or `None` when it doesn't fit in one segment.
 pub(crate) fn exif_segment(exif: &[u8], dpi: Option<(f32, f32)>) -> Option<Vec<u8>> {
-    // The pixels are written as they are shown: never let a viewer rotate them again; and the
-    // resolution is the one written to JFIF, not the source's (#1691).
+    // The pixels are written as they are shown: never let a viewer rotate them again; and store
+    // the output resolution, not the source's (#1691).
     let seg = [EXIF_HEADER, export_exif(exif, dpi).as_ref()].concat();
+    (seg.len() <= MAX_SEGMENT).then_some(seg)
+}
+
+/// Build an EXIF APP1 segment, adding missing resolution tags when the source metadata is valid.
+fn exif_segment_with_resolution(exif: &[u8], dpi: Option<(f32, f32)>) -> Option<Vec<u8>> {
+    let seg = [EXIF_HEADER, crate::resolution::export_exif_adding_missing_resolution(exif, dpi).as_ref()].concat();
     (seg.len() <= MAX_SEGMENT).then_some(seg)
 }
 
@@ -346,4 +436,121 @@ fn remove_element(xmp: &str, name: &str) -> String {
     }
     out.push_str(rest);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Format, Metadata};
+
+    /// Build a little-endian TIFF with an empty IFD0 for metadata tests.
+    fn empty_tiff() -> Vec<u8> {
+        // Little-endian TIFF with an empty IFD0 and no next IFD.
+        b"II*\0\x08\0\0\0\0\0\0\0\0\0\0\0".to_vec()
+    }
+
+    /// Return whether the JPEG begins with a JFIF APP0 segment.
+    fn has_jfif_app0(bytes: &[u8]) -> bool {
+        bytes.get(2..11) == Some(b"\xff\xe0\0\x10JFIF\0")
+    }
+
+    /// A tiny truncated scan under a frame patched to 20000×20000 is refused before the backend
+    /// fills 400 million pixels from it; the same file with its real size still recovers.
+    #[test]
+    fn a_short_truncated_scan_cannot_declare_a_huge_frame() {
+        let img = Image::from_raw(16, 16, ChannelLayout::Rgb, SampleType::U8, vec![128; 16 * 16 * 3]).unwrap();
+        let full = crate::encode(&img, Format::Jpeg, &EncodeOptions::default()).unwrap();
+        let cut = &full[..full.len() - 4];
+        assert_eq!(data_end(cut).0, DataEnd::Truncated);
+        assert!(crate::decode_as(Format::Jpeg, cut).is_ok());
+        let sof = cut.windows(2).position(|w| w == [0xFF, 0xC0] || w == [0xFF, 0xC2]).unwrap();
+        let mut huge = cut.to_vec();
+        huge[sof + 5..sof + 9].copy_from_slice(&[0x4E, 0x20, 0x4E, 0x20]);
+        let e = crate::decode_as(Format::Jpeg, &huge).unwrap_err();
+        assert!(e.to_string().contains("too short"), "{e}");
+    }
+
+    /// The truncated-scan budget counts scan data, not the file length: APP padding before the
+    /// window cannot admit an oversized output. The same padded file with its real size still
+    /// decodes (with the truncation warning).
+    #[test]
+    fn app_padding_cannot_admit_an_oversized_truncated_frame() {
+        let img = Image::from_raw(16, 16, ChannelLayout::Rgb, SampleType::U8, vec![128; 16 * 16 * 3]).unwrap();
+        let full = crate::encode(&img, Format::Jpeg, &EncodeOptions::default()).unwrap();
+        let cut = &full[..full.len() - 4];
+        // Four full-length COMMENT segments (~256 KiB) stand where APP padding would; they are
+        // complete, so the file otherwise parses normally.
+        let fill = [b'p'; 65533];
+        let mut padded = cut[..2].to_vec();
+        for _ in 0..4 {
+            padded.extend_from_slice(&[0xFF, 0xFE]);
+            padded.extend_from_slice(&0xFFFFu16.to_be_bytes());
+            padded.extend_from_slice(&fill);
+        }
+        padded.extend_from_slice(&cut[2..]);
+        assert_eq!(data_end(&padded).0, DataEnd::Truncated);
+        // Well above the frame's pixels / budget, yet far above the scan data: the old
+        // file-length bound admitted this frame.
+        assert!(padded.len() > (u64::from(20_000u32) * u64::from(20_000u32) / MAX_TRUNCATED_PIXELS_PER_BYTE) as usize, "padding too small");
+        assert!(crate::decode_as(Format::Jpeg, &padded).is_ok());
+        let sof = padded.windows(2).position(|w| w == [0xFF, 0xC0] || w == [0xFF, 0xC2]).unwrap();
+        let mut huge = padded.clone();
+        huge[sof + 5..sof + 9].copy_from_slice(&[0x4E, 0x20, 0x4E, 0x20]);
+        let e = crate::decode_as(Format::Jpeg, &huge).unwrap_err();
+        assert!(e.to_string().contains("too short"), "{e}");
+    }
+
+    /// CMYK JPEG output must omit JFIF while retaining Adobe's CMYK marker.
+    #[test]
+    fn cmyk_jpeg_omits_jfif_but_keeps_adobe_cmyk_marker() {
+        let img = Image::from_raw(2, 1, ChannelLayout::Cmyk, SampleType::U8, vec![0, 32, 64, 96, 255, 224, 192, 160]).unwrap();
+        let bytes = crate::encode(&img, Format::Jpeg, &EncodeOptions::default()).unwrap();
+
+        let meta = scan_metadata(&bytes);
+        assert!(!has_jfif_app0(&bytes));
+        assert_eq!(meta.frame, Some((2, 1, 4)));
+        assert_eq!(meta.adobe_transform, Some(0));
+        assert_eq!(crate::decode_as(Format::Jpeg, &bytes).unwrap().layout(), ChannelLayout::Cmyk);
+    }
+
+    /// CMYK JPEG output stores image resolution in EXIF when the source has no EXIF.
+    #[test]
+    fn cmyk_jpeg_preserves_dpi_without_source_exif() {
+        let mut img = Image::from_raw(1, 1, ChannelLayout::Cmyk, SampleType::U8, vec![0, 0, 0, 0]).unwrap();
+        img.meta.dpi = Some((300.0, 150.0));
+        let bytes = crate::encode(&img, Format::Jpeg, &EncodeOptions::default()).unwrap();
+
+        assert!(!has_jfif_app0(&bytes));
+        assert_eq!(crate::decode_as(Format::Jpeg, &bytes).unwrap().meta.dpi, Some((300.0, 150.0)));
+    }
+
+    /// CMYK JPEG output adds missing EXIF resolution tags to existing metadata.
+    #[test]
+    fn cmyk_jpeg_preserves_dpi_with_source_exif_without_resolution_tags() {
+        let mut img = Image::from_raw(1, 1, ChannelLayout::Cmyk, SampleType::U8, vec![0, 0, 0, 0]).unwrap();
+        img.meta = Metadata { exif: Some(empty_tiff()), dpi: Some((240.0, 120.0)), ..Default::default() };
+        let bytes = crate::encode(&img, Format::Jpeg, &EncodeOptions::default()).unwrap();
+
+        assert_eq!(crate::decode_as(Format::Jpeg, &bytes).unwrap().meta.dpi, Some((240.0, 120.0)));
+    }
+
+    /// Adding missing resolution tags makes them readable from the rewritten IFD0.
+    #[test]
+    fn exif_with_resolution_adds_missing_ifd0_entries() {
+        let exif = empty_tiff();
+        let rewritten = crate::resolution::export_exif_adding_missing_resolution(&exif, Some((240.0, 120.0)));
+
+        assert_eq!(crate::resolution::exif_resolution(&rewritten), Some((240.0, 120.0)));
+    }
+
+    /// RGB JPEG output continues to store image resolution in JFIF density fields.
+    #[test]
+    fn rgb_jpeg_keeps_jfif_density() {
+        let mut img = Image::from_raw(1, 1, ChannelLayout::Rgb, SampleType::U8, vec![12, 34, 56]).unwrap();
+        img.meta.dpi = Some((96.0, 96.0));
+        let bytes = crate::encode(&img, Format::Jpeg, &EncodeOptions::default()).unwrap();
+
+        assert!(has_jfif_app0(&bytes));
+        assert_eq!(scan_metadata(&bytes).dpi, Some((96.0, 96.0)));
+    }
 }

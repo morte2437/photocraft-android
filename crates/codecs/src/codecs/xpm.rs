@@ -206,11 +206,16 @@ fn decode_lines(lines: &[Vec<u8>], limits: &Limits) -> Result<Image, CodecError>
         }
     }
     let row_len = width.checked_mul(cpp).ok_or_else(|| bad("row byte count overflow"))?;
-    let mut pixels = vec![0u8; width.checked_mul(height).and_then(|n| n.checked_mul(4)).ok_or_else(|| bad("pixel size overflow"))?];
+    // Validate all source rows before reserving the decoded RGBA image. A malformed
+    // short row must not be able to make a large header-sized allocation first.
+    if lines[1 + colours..required].iter().any(|line| line.len() != row_len) {
+        return Err(bad("XPM row has the wrong width"));
+    }
+    let total = width.checked_mul(height).and_then(|n| n.checked_mul(4)).ok_or_else(|| bad("pixel size overflow"))?;
+    let mut pixels = Vec::new();
+    pixels.try_reserve_exact(total).map_err(|_| bad("XPM pixel buffer is too large"))?;
+    pixels.resize(total, 0);
     for (y, line) in lines[1 + colours..required].iter().enumerate() {
-        if line.len() != row_len {
-            return Err(bad("XPM row has the wrong width"));
-        }
         for x in 0..width {
             let key = &line[x * cpp..(x + 1) * cpp];
             let rgba = palette.get(key).ok_or_else(|| bad("unknown palette key"))?;

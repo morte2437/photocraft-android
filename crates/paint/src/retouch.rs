@@ -161,15 +161,20 @@ pub fn over_native(fmt: &PixelFormat, dst: &mut [f32], src: &[f32], k: f32, lock
     match alpha_index(fmt) {
         Some(a) => {
             let (da, sa) = (dst[a], src[a] * k);
+            if lock_transparency {
+                // Alpha kept: source atop, the colour moves by the source alpha alone (#5783).
+                for c in 0..a {
+                    dst[c] += (src[c] - dst[c]) * sa;
+                }
+                return;
+            }
             let oa = sa + da * (1.0 - sa);
             if oa > 0.0 {
                 for c in 0..a {
                     dst[c] = (src[c] * sa + dst[c] * da * (1.0 - sa)) / oa;
                 }
             }
-            if !lock_transparency {
-                dst[a] = oa;
-            }
+            dst[a] = oa;
         }
         None => {
             for c in 0..dst.len() {
@@ -220,10 +225,8 @@ pub fn apply_coverage(
         } else {
             let d = to_rgba(&fmt, px);
             let s = to_rgba(&fmt, src);
-            let mut o = photocraft_color::blend::composite(blend, d, s, k);
-            if lock_transparency {
-                o[3] = d[3];
-            }
+            let o =
+                if lock_transparency { photocraft_color::blend::composite_atop(blend, d, s, k) } else { photocraft_color::blend::composite(blend, d, s, k) };
             let mut enc = [0.0f32; 8];
             from_rgba_into(&fmt, o, &mut enc);
             px.copy_from_slice(&enc[..n]);
@@ -478,6 +481,23 @@ mod tests {
             let p = s.pixel(20, 20);
             assert!(p[..n - 1].iter().all(|v| (v - 0.8).abs() < 1e-2) && p[n - 1] == 1.0, "{fmt:?} {p:?}");
             assert!((s.pixel(40, 40)[0] - 0.2).abs() < 1e-2);
+        }
+    }
+
+    #[test]
+    fn coverage_composite_under_lock_blends_source_atop() {
+        // Locked half-transparent white, black at coverage 0.5: colour halfway, alpha kept (#5783).
+        for fmt in [PixelFormat::RGBA8, PixelFormat::RGBA16, PixelFormat::RGBA32F] {
+            for mode in [BlendMode::Normal, BlendMode::Multiply] {
+                let mut s = Surface::new(fmt);
+                s.fill_rect(Rect::new(0, 0, 4, 4), &[1.0, 1.0, 1.0, 0.5]);
+                let r = Rect::new(0, 0, 4, 4);
+                let mut paint = Region::new(r, 4);
+                paint.data.chunks_mut(4).for_each(|p| p.copy_from_slice(&[0.0, 0.0, 0.0, 1.0]));
+                apply_coverage(&mut s, r, &[1.0; 16], 0.5, None, true, &paint, mode);
+                let p = s.rgba(1, 1);
+                assert!((p[0] - 0.5).abs() < 0.01 && (p[3] - 0.5).abs() < 0.01, "{fmt:?} {mode:?} {p:?}");
+            }
         }
     }
 

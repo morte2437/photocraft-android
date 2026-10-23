@@ -6,6 +6,7 @@
 use photocraft_algo::matting::{self, RefineParams};
 use photocraft_algo::segment::subject;
 use photocraft_doc::{Document, Layer, LayerContent, LayerMask};
+use photocraft_geom::Rect;
 use serde_json::{Value, json};
 
 use crate::commands::{CommandSpec, layer_param};
@@ -35,21 +36,32 @@ fn enabled(s: &Session) -> std::result::Result<(), String> {
     check(&d.doc, crate::active_layer_of(s)?)
 }
 
+/// Where the subject is looked for: the layer's own pixels within the canvas. A photo that
+/// doesn't fill the canvas (placed, or the canvas grown) would otherwise stand out from the
+/// empty canvas around it as the subject, and the mask would reveal its whole rectangle, which a
+/// Stroke then outlines (#8235). The whole canvas when sampling all layers.
+fn subject_area(l: &Layer, canvas: Rect, sample_all: bool) -> Rect {
+    let Some(s) = l.surface().filter(|_| !sample_all) else { return canvas };
+    let empty_around = s.format().alpha && s.default_pixel().last().is_some_and(|a| *a <= 0.0);
+    let b = s.content_bounds().intersect(&canvas);
+    if empty_around && !b.is_empty() { b } else { canvas }
+}
+
 fn run(s: &mut Session, p: &Value) -> Result<Value> {
     let id = layer_param(s, p)?;
     let doc = &s.active().ok_or(EngineError::NoDocument)?.doc;
-    check(doc, doc.layer(id).ok_or(EngineError::NoLayer(id))?).map_err(EngineError::Other)?;
+    let layer = doc.layer(id).ok_or(EngineError::NoLayer(id))?;
+    check(doc, layer).map_err(EngineError::Other)?;
     let sample_all = p.get("sampleAllLayers").and_then(Value::as_bool).unwrap_or(false);
     let refine = p.get("refine").and_then(Value::as_bool).unwrap_or(true);
+    let area = subject_area(layer, doc.bounds(), sample_all);
     crate::jobs::edit_job(
         s,
         "Remove Background",
         move |doc, _, ctx| {
             // Cancel reaches the min cuts inside Select Subject, so Esc doesn't wait for them.
             let found = ctx
-                .stage(0.1, 0.6, "Finding subject", |ctl| {
-                    with_doc_sampler(doc, Some(id), sample_all, |smp, d| subject::select_subject_with(smp, d.bounds(), ctl))
-                })
+                .stage(0.1, 0.6, "Finding subject", |ctl| with_doc_sampler(doc, Some(id), sample_all, |smp, _| subject::select_subject_with(smp, area, ctl)))
                 .map_err(|_| EngineError::Cancelled)?;
             let mut region = found.ok_or_else(|| EngineError::Other("no subject found".into()))?;
             if ctx.cancelled() {
@@ -57,8 +69,8 @@ fn run(s: &mut Session, p: &Value) -> Result<Value> {
             }
             if refine {
                 ctx.progress(0.6, "Refining edge");
-                let refined = with_doc_sampler(doc, Some(id), sample_all, |smp, d| {
-                    matting::refine_mask(smp, &matting::region_reader(&region), region.bbox, d.bounds(), &REFINE)
+                let refined = with_doc_sampler(doc, Some(id), sample_all, |smp, _| {
+                    matting::refine_mask(smp, &matting::region_reader(&region), region.bbox, area, &REFINE)
                 });
                 region = refined.unwrap_or(region);
                 if ctx.cancelled() {
@@ -66,7 +78,8 @@ fn run(s: &mut Session, p: &Value) -> Result<Value> {
                 }
             }
             crate::extra_cmds::background_to_layer_for_mask(doc, id);
-            doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?.mask = Some(LayerMask { surface: matting::region_surface(&region), ..LayerMask::reveal_all() });
+            let mask = crate::commands::mask_at_depth(LayerMask { surface: matting::region_surface(&region), ..LayerMask::reveal_all() }, doc.depth)?;
+            doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?.mask = Some(mask);
             doc.selection = None;
             let b = region.bbox;
             Ok([b.x0, b.y0, b.width() as i32, b.height() as i32])
@@ -94,7 +107,6 @@ mod tests {
     use super::*;
     use photocraft_algo::segment::Rng;
     use photocraft_doc::LayerId;
-    use photocraft_geom::Rect;
 
     fn session_with(w: u32, h: u32, depth: u32, px: impl Fn(u32, u32) -> [f32; 3]) -> Session {
         let mut s = Session::new();
@@ -286,5 +298,43 @@ mod tests {
         s.execute(CMD, json!({"refine": false})).unwrap();
         let masks = s.active().unwrap().doc.walk().into_iter().filter(|(_, _, l)| l.mask.is_some()).count();
         assert_eq!(masks, 1);
+    }
+
+    #[test]
+    fn remove_background_on_a_layer_smaller_than_the_canvas_masks_the_subject_not_the_layer() {
+        // The photo doesn't fill the canvas (a placed photo, or the canvas grown): the empty
+        // canvas around it is not the background, and a Stroke must not outline the photo's
+        // rectangle (#8235).
+        for depth in [8, 16, 32] {
+            let (mut s, inside) = disc(depth);
+            s.execute("layer.new.layerFromBackground", json!({})).unwrap();
+            s.execute("image.canvasSize", json!({"width": 260, "height": 220, "anchor": "center"})).unwrap();
+            let id = active_id(&s);
+            s.execute(CMD, json!({})).unwrap();
+            // The photo now sits at (30, 30).
+            let v = mask_iou(&s, 260, 220, |x, y| inside(x - 30, y - 30));
+            assert!(v >= 0.75, "depth {depth}: IoU {v}");
+            for (x, y) in [(31, 31), (228, 31), (31, 188), (228, 188), (40, 110)] {
+                assert!(mask_cov(&s, x, y) < 0.2, "depth {depth}: photo background at ({x}, {y}) revealed");
+            }
+            s.edit("stroke", |doc, _| {
+                let l = doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?;
+                l.effects.items = vec![photocraft_doc::Effect::Stroke(photocraft_doc::StrokeFx {
+                    common: photocraft_doc::FxCommon::new(photocraft_color::BlendMode::Normal, 1.0),
+                    size: 3.0,
+                    position: photocraft_doc::StrokePosition::Outside,
+                    paint: photocraft_doc::FxPaint::Color(photocraft_color::Color::rgb(0.0, 0.0, 1.0)),
+                    overprint: false,
+                })];
+                Ok(())
+            })
+            .unwrap();
+            let img = photocraft_compose::render(&s.active().unwrap().doc, Rect::new(0, 0, 260, 220));
+            // Just outside the photo's left edge, and just inside it: no stroke.
+            for x in [27, 28, 29, 30, 31] {
+                let a = img.px[110 * 260 + x][3];
+                assert!(a < 0.05, "depth {depth}: stroke along the layer's edge at x = {x} (alpha {a})");
+            }
+        }
     }
 }

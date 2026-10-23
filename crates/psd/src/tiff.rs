@@ -859,15 +859,7 @@ pub mod transcode {
                 // Type: version, transform, text version + descriptor, warp version + descriptor,
                 // and the bounds as four 32-bit values (the specification says doubles; Photoshop
                 // writes 16 bytes).
-                b"TySh" => {
-                    self.u16()?;
-                    self.f64s(6)?;
-                    self.u16()?;
-                    self.versioned_descriptor()?;
-                    self.u16()?;
-                    self.versioned_descriptor()?;
-                    self.i32s(4)?;
-                }
+                b"TySh" => self.type_layer()?,
                 b"vmsk" | b"vsms" => {
                     self.u32()?;
                     self.u32()?;
@@ -1165,6 +1157,31 @@ pub mod transcode {
 
         // ---- descriptors ----
 
+        /// Photoshop's Intel-order TIFF type blocks can use PSD byte order for the
+        /// text descriptor, then container order again for warp and bounds (#4758).
+        fn type_layer(&mut self) -> Result<()> {
+            self.u16()?;
+            self.f64s(6)?;
+            self.type_descriptor(50)?;
+            self.type_descriptor(1)?;
+            self.i32s(4)
+        }
+
+        fn type_descriptor(&mut self, version: u16) -> Result<()> {
+            let [hi, lo] = version.to_be_bytes();
+            let from = if self.from.is_little() && self.r.peek_rest().starts_with(&[hi, lo, 0, 0, 0, 16]) { ByteOrder::Big } else { self.from };
+            let data = self.r.peek_rest();
+            let mut descriptor = Tx::new(data, self.version, from, self.to);
+            descriptor.depth = self.depth;
+            descriptor.u16()?;
+            descriptor.versioned_descriptor()?;
+            let used = data.len() - descriptor.remaining();
+            self.r.bytes(used)?;
+            self.warnings.append(&mut descriptor.warnings);
+            self.out.extend_from_slice(&descriptor.out);
+            Ok(())
+        }
+
         fn versioned_descriptor(&mut self) -> Result<()> {
             self.u32()?;
             self.descriptor()
@@ -1284,6 +1301,7 @@ pub mod transcode {
                     self.i32()?;
                 }
                 b"Idnt" | b"indx" => {
+                    self.class()?;
                     self.u32()?;
                 }
                 b"name" => {
@@ -1410,9 +1428,27 @@ pub mod transcode {
             })
         }
 
-        /// `FEid` / `FXid`: version, u64 length, items with per-channel planes (4-byte RLE counts).
+        /// `FEid` / `FXid`: version, then one section per smart object (u64 length, items with
+        /// per-channel planes and 4-byte RLE counts), each padded to 4 bytes.
         fn filter_effects(&mut self) -> Result<()> {
             self.u32()?;
+            loop {
+                let len = self.r.clone().len_field(true)?;
+                self.filter_effects_section()?;
+                // Mirrors `FilterEffects::parse`: the last section's padding may be cut short.
+                let pad = usize::try_from((4 - len % 4) % 4).unwrap_or(0).min(self.remaining());
+                self.raw(pad)?;
+                let rest = self.r.peek_rest();
+                if rest.len() <= 3 && rest.iter().all(|&b| b == 0) {
+                    return Ok(());
+                }
+                if rest.len() < 8 {
+                    return Err(PsdError::invalid(format!("filter effects: {} unexpected bytes after the data", rest.len())));
+                }
+            }
+        }
+
+        fn filter_effects_section(&mut self) -> Result<()> {
             self.sized_region(true, |t| {
                 while !t.r.is_empty() {
                     t.pascal(1)?;
@@ -1790,6 +1826,17 @@ mod tests {
     }
 
     #[test]
+    fn descriptor_references_by_identifier_and_index_keep_their_class() {
+        use crate::descriptor::{Class, ReferenceItem};
+        let class = || Class { name: UnicodeString::new(""), class_id: Id::new("Lyr ") };
+        let desc = Descriptor::new("null")
+            .with("null", Value::Reference(vec![ReferenceItem::Identifier { class: class(), id: 7 }, ReferenceItem::Index { class: class(), index: 2 }]));
+        let mut data = 0u32.to_be_bytes().to_vec();
+        data.extend(VersionedDescriptor::new(desc).to_bytes());
+        block_rt(*b"lfx2", data);
+    }
+
+    #[test]
     fn type_block_layout() {
         let mut data = Vec::new();
         data.put_u16(1);
@@ -1806,6 +1853,39 @@ mod tests {
         let (_, little) = block_rt(*b"TySh", data);
         assert!(little[48..].starts_with(&[1, 0]));
         assert_eq!(&little[50..58], &1.0f64.to_le_bytes());
+    }
+
+    #[test]
+    fn photoshop_type_block_switches_to_big_endian_after_its_matrix() {
+        let mut data = Vec::new();
+        data.put_u16(1);
+        for v in [1.8054202887117468, 0.0, -0.143, 1.8063853899082987, 247.25, 2864.5] {
+            data.put_f64(v);
+        }
+        data.put_u16(50);
+        let text = Descriptor::new("TxLr").with("Txt ", Value::Text(UnicodeString::new_nul("Synthetic headline")));
+        data.extend(VersionedDescriptor::new(text).to_bytes());
+        data.put_u16(1);
+        data.extend(VersionedDescriptor::new(Descriptor::new("warp")).to_bytes());
+        for v in [0, 0, 120, 30] {
+            data.put_i32(v);
+        }
+        let (_, mut little) = block_rt(*b"TySh", data.clone());
+        // Photoshop uses big-endian text but returns to little-endian for warp/bounds.
+        let (_, used) = VersionedDescriptor::parse_prefix(&data[52..]).unwrap();
+        little[98..100 + used].copy_from_slice(&data[50..52 + used]);
+        let (back, warnings) = ImageSourceData::from_bytes(&little).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(!back.global_blocks[0].is_foreign_order());
+        assert_eq!(back.global_blocks[0].data, data);
+        // The normalized model remains writable in either order.
+        for order in [ByteOrder::Big, ByteOrder::Little] {
+            let (bytes, warnings) = back.to_bytes(order).unwrap();
+            assert!(warnings.is_empty());
+            let (again, warnings) = ImageSourceData::from_bytes(&bytes).unwrap();
+            assert!(warnings.is_empty());
+            assert_eq!(again.global_blocks[0].data, data);
+        }
     }
 
     #[test]
@@ -2049,6 +2129,39 @@ mod tests {
         let d = ImageSourceData { global_blocks: vec![TaggedBlock::new(*b"FEid", data)], ..Default::default() };
         let (little, _) = d.to_bytes(ByteOrder::Little).unwrap();
         let (back, _) = ImageSourceData::from_bytes(&little).unwrap();
+        assert_eq!(FilterEffects::parse(&back.global_blocks[0].data).unwrap(), fx);
+    }
+
+    /// Photoshop writes one `FEid` section per smart object: every section's lengths and
+    /// numbers are swapped, not only the first one's.
+    #[test]
+    fn filter_effects_block_swaps_every_section() {
+        use crate::filter_effects::{EffectsPlane, FilterEffects, FilterEffectsItem};
+        let rect = crate::layer::Rect { top: 0, left: 0, bottom: 2, right: 3 };
+        let item = |id: &str, v: u8| FilterEffectsItem {
+            id: id.into(),
+            version: 1,
+            rect,
+            depth: 8,
+            max_channels: 1,
+            slots: vec![Some(EffectsPlane::encode(Compression::Raw, &[v; 6], 3, 2, 8).unwrap()), None, None],
+            mask: None,
+        };
+        let fx = FilterEffects { version: 1, items: vec![item("first", 1), item("second-object", 2)] };
+        let data = fx.to_bytes();
+        let len1 = u64::from_be_bytes(data[4..12].try_into().unwrap()) as usize;
+        let second = 12 + len1 + (4 - len1 % 4) % 4;
+        let len2 = &data[second..second + 8];
+        block_rt(*b"FEid", data.clone());
+        let d = ImageSourceData { global_blocks: vec![TaggedBlock::new(*b"FEid", data.clone())], ..Default::default() };
+        let (little, _) = d.to_bytes(ByteOrder::Little).unwrap();
+        // 36-byte signature, then `MIB8`, the reversed key and a u32 length: the block data.
+        let body = &little[36 + 12..];
+        let mut swapped = len2.to_vec();
+        swapped.reverse();
+        assert_eq!(&body[second..second + 8], &swapped[..], "second section's length is little-endian");
+        let (back, w) = ImageSourceData::from_bytes(&little).unwrap();
+        assert!(w.is_empty(), "{w:?}");
         assert_eq!(FilterEffects::parse(&back.global_blocks[0].data).unwrap(), fx);
     }
 

@@ -344,6 +344,163 @@ fn bitmap_halftone_rejects_bad_angles_and_frequencies_without_editing_the_docume
     assert_eq!(doc(&s).mode, ColorMode::Bitmap);
 }
 
+/// A grayscale document `w` x `h` whose column x holds the 8-bit level `x` (a 0..255 ramp).
+fn ramp(w: u32, h: u32, depth: u64, dpi: f32) -> Session {
+    let mut s = session(w, h, depth, "grayscale");
+    paint(&mut s, |x, _| [x as f32 / 255.0, x as f32 / 255.0, x as f32 / 255.0, 1.0]);
+    s.edit("dpi", |doc, _| {
+        doc.resolution_dpi = dpi;
+        Ok(())
+    })
+    .unwrap();
+    s
+}
+
+/// The first column of row `y` whose pixel is white among columns `x % m == k`.
+fn first_white(d: &Document, y: i32, m: i32, k: i32) -> Option<i32> {
+    let surf = d.layers[0].surface().unwrap();
+    (0..d.size.width as i32).filter(|x| x % m == k).find(|x| surf.pixel(*x, y)[0] > 0.5)
+}
+
+fn add_pattern(s: &mut Session, name: &str, w: u32, h: u32, levels: &[u8]) {
+    let mut surf = photocraft_raster::Surface::new(PixelFormat::new(ColorMode::Grayscale, SampleType::U8, false));
+    let data: Vec<f32> = levels.iter().map(|v| f32::from(*v) / 255.0).collect();
+    surf.write_region(Rect::new(0, 0, w as i32, h as i32), &data);
+    let pat = photocraft_doc::pattern::Pattern::new(name, surf, w, h);
+    s.edit("pattern", |doc, _| {
+        doc.patterns.push(pat);
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
+fn bitmap_output_resolution_resamples_and_sets_the_resolution() {
+    // Photoshop: a 256 x 4 ramp at 72 ppi converted with Output 144 ppi is 512 x 8 at 144 ppi,
+    // its 50% threshold at column 256; at 36 ppi it is 128 x 2, the threshold at column 64.
+    for depth in [8, 16] {
+        let mut s = ramp(256, 4, depth, 72.0);
+        let r = s.execute("image.mode.bitmap", json!({"method": "threshold", "resolution": 144})).unwrap();
+        assert_eq!(r, json!({"width": 512, "height": 8, "resolution": 144.0}), "{depth}");
+        let d = doc(&s);
+        assert_eq!((d.size.width, d.size.height, d.resolution_dpi, d.mode), (512, 8, 144.0, ColorMode::Bitmap), "{depth}");
+        assert!(first_white(d, 3, 1, 0).is_some_and(|x| (255..=257).contains(&x)), "{depth}: {:?}", first_white(d, 3, 1, 0));
+        // One step back is the grayscale document at its own size and resolution.
+        s.execute("edit.undo", json!({})).unwrap();
+        let d = doc(&s);
+        assert_eq!((d.size.width, d.size.height, d.resolution_dpi, d.mode), (256, 4, 72.0, ColorMode::Grayscale), "{depth}");
+        s.execute("image.mode.bitmap", json!({"method": "diffusion", "resolution": 36})).unwrap();
+        assert_eq!((doc(&s).size.width, doc(&s).size.height, doc(&s).resolution_dpi), (128, 2, 36.0), "{depth}");
+    }
+    // Without `resolution`, the input resolution: the size stays.
+    let mut s = ramp(256, 4, 8, 300.0);
+    s.execute("image.mode.bitmap", json!({"method": "threshold"})).unwrap();
+    assert_eq!((doc(&s).size.width, doc(&s).resolution_dpi), (256, 300.0));
+    assert_eq!(first_white(doc(&s), 0, 1, 0), Some(128));
+}
+
+#[test]
+fn bitmap_halftone_screen_is_laid_out_at_the_output_resolution() {
+    // The same 10 lines/inch screen has twice the cell (in pixels) at twice the resolution: the
+    // output equals the 72 ppi screen of the image upsampled first.
+    let mut a = ramp(64, 64, 8, 72.0);
+    a.execute("image.mode.bitmap", json!({"method": "halftone", "frequency": 10, "angle": 0, "resolution": 144})).unwrap();
+    let mut b = ramp(64, 64, 8, 72.0);
+    b.execute("image.imageSize", json!({"resolution": 144, "resample": "bicubic", "keepPrintSize": true})).unwrap();
+    b.execute("image.mode.bitmap", json!({"method": "halftone", "frequency": 10, "angle": 0})).unwrap();
+    let (da, db) = (doc(&a), doc(&b));
+    assert_eq!(da.size, db.size);
+    let (sa, sb) = (da.layers[0].surface().unwrap(), db.layers[0].surface().unwrap());
+    let r = da.bounds();
+    assert_eq!(sa.read_region(r), sb.read_region(r));
+}
+
+#[test]
+fn bitmap_custom_pattern_thresholds_against_the_tiled_pattern() {
+    // Measured in Photoshop on a 0..255 ramp: a 7x1 pattern 0, 40 .. 240 turns column x white
+    // from level 237, 201, 164, 128, 92, 55, 19 (by x % 7): the lighter the pattern pixel, the
+    // sooner. A 1x3 pattern 30 / 220 / 120 does the same down the rows.
+    for depth in [8, 16] {
+        let mut s = ramp(256, 3, depth, 72.0);
+        add_pattern(&mut s, "Ramp 7", 7, 1, &[0, 40, 80, 120, 160, 200, 240]);
+        add_pattern(&mut s, "Rows 3", 1, 3, &[30, 220, 120]);
+        let r = s.execute("image.mode.bitmap", json!({"method": "customPattern", "pattern": "Ramp 7"})).unwrap();
+        assert_eq!(r["width"], 256);
+        let d = doc(&s);
+        assert_eq!(d.mode, ColorMode::Bitmap);
+        let firsts: Vec<i32> = (0..7).map(|k| first_white(d, 0, 7, k).unwrap()).collect();
+        // The first column at or past each level in its residue class.
+        let expect: Vec<i32> = [237, 201, 164, 128, 92, 55, 19].iter().enumerate().map(|(k, t)| (k as i32..256).step_by(7).find(|x| x >= t).unwrap()).collect();
+        assert_eq!(firsts, expect, "{depth}");
+        s.execute("edit.undo", json!({})).unwrap();
+        s.execute("image.mode.bitmap", json!({"method": "customPattern", "pattern": "Rows 3"})).unwrap();
+        let rows: Vec<i32> = (0..3).map(|y| first_white(doc(&s), y, 1, 0).unwrap()).collect();
+        assert_eq!(rows, [213, 43, 128], "{depth}");
+    }
+}
+
+#[test]
+fn bitmap_rejects_bad_resolutions_and_patterns_without_editing_the_document() {
+    let mut s = ramp(64, 4, 16, 72.0);
+    let before = s.active().unwrap().history.past_len();
+    let bad = [
+        json!({"resolution": 0}),
+        json!({"resolution": -72}),
+        json!({"resolution": 0.5}),
+        json!({"resolution": 30_001}),
+        json!({"resolution": 1e39}),
+        json!({"resolution": "high"}),
+        json!({"resolution": [72]}),
+        json!({"method": "customPattern", "pattern": "no such pattern"}),
+        json!({"method": "customPattern", "pattern": 7}),
+        json!({"method": "custom"}),
+    ];
+    for p in bad {
+        assert!(s.execute("image.mode.bitmap", p.clone()).is_err(), "{p}");
+        assert_eq!(s.active().unwrap().history.past_len(), before, "{p}");
+        let d = doc(&s);
+        assert_eq!((d.mode, d.size.width, d.resolution_dpi), (ColorMode::Grayscale, 64, 72.0), "{p}");
+    }
+    // NaN can't be written in JSON; null is "not given" (the input resolution).
+    s.execute("image.mode.bitmap", json!({"resolution": null})).unwrap();
+    assert_eq!((doc(&s).size.width, doc(&s).resolution_dpi), (64, 72.0));
+    s.execute("edit.undo", json!({})).unwrap();
+    // The bounds themselves are fine.
+    s.execute("image.mode.bitmap", json!({"resolution": 1})).unwrap();
+    assert_eq!((doc(&s).size.width, doc(&s).size.height, doc(&s).resolution_dpi), (1, 1, 1.0));
+}
+
+#[test]
+fn bitmap_output_resolution_budgets_the_whole_conversion_not_just_the_resample() {
+    // 100 x 100 px at 1 ppi to 200 ppi is 20000 x 20000 px: 400 MP. Resampling an 8/16-bit gray
+    // document to it fits the resample budget (under 2 GB), but the conversion's f32 working
+    // buffers at that size (~40 B/px, 16 GB) don't: it is refused before anything is allocated.
+    for depth in [8, 16] {
+        let mut s = ramp(100, 100, depth, 1.0);
+        let d = &s.active().unwrap().doc;
+        assert!(crate::image_cmds::check_resample_budget("t", d, 20_000, 20_000, "").is_ok(), "{depth}");
+        let before = s.active().unwrap().history.past_len();
+        let e = s.execute("image.mode.bitmap", json!({"method": "diffusion", "resolution": 200})).unwrap_err().to_string();
+        assert!(e.contains("megapixels") && e.contains("Output resolution"), "{depth}: {e}");
+        assert_eq!(s.active().unwrap().history.past_len(), before, "{depth}");
+        let d = doc(&s);
+        assert_eq!((d.mode, d.size.width, d.resolution_dpi), (ColorMode::Grayscale, 100, 1.0), "{depth}");
+        // A side past the 300,000 px document limit is refused, not clamped (that would change
+        // the print size): 20000 px at 72 ppi is 333,333 px at 1200 ppi.
+        let mut wide = ramp(20_000, 1, depth, 72.0);
+        let e = wide.execute("image.mode.bitmap", json!({"method": "threshold", "resolution": 1200})).unwrap_err().to_string();
+        assert!(e.contains("300000 px"), "{depth}: {e}");
+        assert_eq!((doc(&wide).mode, doc(&wide).size.width), (ColorMode::Grayscale, 20_000), "{depth}");
+        // 18000 px to 300,000 px exactly is allowed.
+        let mut edge = ramp(18_000, 1, depth, 72.0);
+        edge.execute("image.mode.bitmap", json!({"method": "threshold", "resolution": 1200})).unwrap();
+        assert_eq!(doc(&edge).size.width, 300_000, "{depth}");
+        // A size that fits is still converted.
+        s.execute("image.mode.bitmap", json!({"method": "diffusion", "resolution": 3})).unwrap();
+        assert_eq!((doc(&s).size.width, doc(&s).mode), (300, ColorMode::Bitmap), "{depth}");
+    }
+}
+
 #[test]
 fn duotone_inks_and_display() {
     let mut s = session(16, 8, 8, "gray");

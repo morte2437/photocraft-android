@@ -191,6 +191,36 @@ fn smart_filters_reread_only_followed_files() {
     assert_eq!(replayed(&mut s, id, json!({"file": network_alias(&d.join("invert.cube"))})), unfiltered);
 }
 
+/// #7423 (review on #7799): Displace on a Smart Object keeps a `mapPath` as a path, as before
+/// (only a map from an open document is embedded). A path relative to the saved document, set
+/// through the filter's own edit, displaces as the absolute one did, and the dialog's "None"
+/// (`mapDocument: -1`) names no map instead of failing.
+#[test]
+fn smart_displace_keeps_a_relative_map_path() {
+    let d = dir("displace-relative");
+    png(&d.join("ramp.png"), |x| [(x * 8) as u8, 0, 0]);
+    png(&d.join("map.png"), |_| [255, 255, 255]);
+    let (mut s, id) = document(&d, &d.join("ramp.png"));
+    let path = d.join("map.png").to_string_lossy().into_owned();
+    let unfiltered = photocraft_compose::render(&s.active().unwrap().doc, s.active().unwrap().doc.bounds()).px;
+    s.execute("filter.distort.displace", json!({"layer": id.0, "mapPath": path, "horizontal": 50, "vertical": 0})).unwrap();
+    let state = |s: &Session| {
+        let doc = &s.active().unwrap().doc;
+        let Some(LayerContent::Smart(sm)) = doc.layer(id).map(|l| &l.content) else { panic!("a smart object") };
+        (sm.smart_filters[0].params.clone(), photocraft_compose::render(doc, doc.bounds()).px)
+    };
+    let (params, displaced) = state(&s);
+    assert_eq!(params["mapPath"], json!(path));
+    assert!(photocraft_io::smart_map::displace_embedded_map(&params).is_none(), "a path, not an embedded map");
+    assert_ne!(displaced, unfiltered, "the map moves the pixels");
+    s.execute("layer.smartFilter.setParams", json!({"layer": id.0, "index": 0, "params": {"mapPath": "map.png"}})).unwrap();
+    let (params, relative) = state(&s);
+    assert_eq!(params["mapPath"], json!("map.png"));
+    assert_eq!(relative, displaced, "a relative map next to the document");
+    s.execute("layer.smartFilter.setParams", json!({"layer": id.0, "index": 0, "params": {"mapDocument": -1}})).unwrap();
+    assert_eq!(state(&s).1, displaced, "\"None\" changes nothing");
+}
+
 #[test]
 fn data_sets_and_footage_read_only_followed_files() {
     let d = dir("datasets");

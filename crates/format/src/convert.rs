@@ -152,6 +152,8 @@ fn layer_m(l: &Layer, sink: &mut dyn Sink) -> LayerM {
             path: s.path.clone(),
             stroke: s.stroke.clone(),
             live: s.live.clone(),
+            density: s.density,
+            feather: s.feather,
         },
         LayerContent::Smart(s) => ContentM::Smart {
             contents_id: Some(s.contents_id.0),
@@ -209,6 +211,7 @@ fn layer_m(l: &Layer, sink: &mut dyn Sink) -> LayerM {
         blend_if: l.blend_if.clone(),
         advanced: l.advanced,
         video: l.video.as_ref().map(|v| video_m(v, sink)),
+        xmp: l.xmp.as_deref().map(str::to_string),
     }
 }
 
@@ -466,13 +469,15 @@ impl Loader<'_> {
                     warp: warp.clone(),
                 })
             }
-            ContentM::Shape { fill, cache, psd_raw, path, stroke, live } => LayerContent::Shape(ShapeLayer {
+            ContentM::Shape { fill, cache, psd_raw, path, stroke, live, density, feather } => LayerContent::Shape(ShapeLayer {
                 path: path.clone(),
                 fill: fill.clone(),
                 stroke: stroke.clone(),
                 live: live.clone(),
                 cache: self.opt_surface(cache)?,
                 psd_raw: self.opt_blob(psd_raw)?,
+                density: *density,
+                feather: *feather,
             }),
             ContentM::Smart { contents_id, source, transform, smart_filters, cache, psd_raw, filters_enabled, filter_mask, warp, stack_mode, perspective } => {
                 LayerContent::Smart(SmartObject {
@@ -543,6 +548,7 @@ impl Loader<'_> {
             blend_if: m.blend_if.clone(),
             advanced: m.advanced,
             video: m.video.as_ref().map(|v| self.video(v)).transpose()?,
+            xmp: m.xmp.as_deref().map(Arc::from),
         })
     }
 

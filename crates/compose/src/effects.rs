@@ -87,13 +87,18 @@ pub const MAX_REACH: f32 = 512.0;
 /// shape's extent), Precise glows and chiselled bevels (exact Euclidean distances, whose f32
 /// arithmetic depends on where the region starts) and noise (it speckles any coverage above
 /// zero, so it would pick up the blur's float noise, which depends on where the region starts).
+/// Dissolve is not local for the same reason: it turns any coverage above zero into a chance of
+/// a full pixel.
 pub(crate) fn maps_are_local(layer: &Layer) -> bool {
-    layer.effects.items.iter().filter(|e| e.enabled()).all(|e| match e {
-        Effect::Stroke(s) => !matches!(s.paint, FxPaint::Gradient(_)),
-        Effect::DropShadow(s) | Effect::InnerShadow(s) => s.noise <= 0.0,
-        Effect::OuterGlow(g) | Effect::InnerGlow(g) => g.technique != GlowTechnique::Precise && g.noise <= 0.0,
-        Effect::BevelEmboss(b) => b.technique == BevelTechnique::Smooth,
-        _ => true,
+    layer.effects.items.iter().filter(|e| e.enabled()).all(|e| {
+        !dissolves(e)
+            && match e {
+                Effect::Stroke(s) => !matches!(s.paint, FxPaint::Gradient(_)),
+                Effect::DropShadow(s) | Effect::InnerShadow(s) => s.noise <= 0.0,
+                Effect::OuterGlow(g) | Effect::InnerGlow(g) => g.technique != GlowTechnique::Precise && g.noise <= 0.0,
+                Effect::BevelEmboss(b) => b.technique == BevelTechnique::Smooth,
+                _ => true,
+            }
     })
 }
 
@@ -997,7 +1002,9 @@ pub fn hash_noise(x: i64, y: i64) -> f32 {
 }
 
 /// Effect noise (Photoshop's Noise slider): monochrome speckle in the coverage,
-/// applied after the contour. `amount` is 0..=1; 0 leaves the map untouched.
+/// applied after the contour. `amount` is 0..=1; 0 leaves the map untouched. The speckle is
+/// scaled by the coverage, so it fades out with the effect instead of lighting up the blur's
+/// near-zero tail out to the edge of its rectangular reach (#7833).
 fn noise(m: &mut Map, amount: f32, x0: i32, y0: i32) {
     if !amount.is_finite() || amount <= 0.0 {
         return;
@@ -1009,7 +1016,7 @@ fn noise(m: &mut Map, amount: f32, x0: i32, y0: i32) {
                 continue;
             }
             let n = hash_noise(i64::from(x0 + x as i32), i64::from(y0 + y as i32));
-            *v = (*v + (n - 0.5) * 2.0 * amount).clamp(0.0, 1.0);
+            *v = (*v * (1.0 + (n - 0.5) * 2.0 * amount)).clamp(0.0, 1.0);
         }
     }
 }
@@ -1017,12 +1024,7 @@ fn noise(m: &mut Map, amount: f32, x0: i32, y0: i32) {
 fn apply_contour(m: Map, c: &Contour) -> Map {
     match contour_lut(c) {
         None => m,
-        Some(l) => m.map(|v| {
-            let x = v.clamp(0.0, 1.0) * (l.len() - 1) as f32;
-            let i = x.floor() as usize;
-            let j = (i + 1).min(l.len() - 1);
-            l[i] + (l[j] - l[i]) * (x - i as f32)
-        }),
+        Some(l) => m.map(|v| lut_at(&l, v)),
     }
 }
 
@@ -1127,14 +1129,41 @@ fn sample_stops(stops: &[(f32, [f32; 3])], t: f32) -> [f32; 3] {
 
 /// Composite `color × coverage` into `dst` (both over the same rectangle).
 fn paint(dst: &mut Buffer, m: &Map, color: impl Fn(usize) -> [f32; 4], blend: BlendMode, opacity: f32) {
+    let (x0, y0, w) = (i64::from(dst.rect.x0), i64::from(dst.rect.y0), (dst.rect.width().max(1)) as usize);
     for (i, p) in dst.px.iter_mut().enumerate() {
         let a = m.v[i] * opacity;
         if a <= 0.0 {
             continue;
         }
         let c = color(i);
+        if blend == BlendMode::Dissolve {
+            if dissolves_in(x0 + (i % w) as i64, y0 + (i / w) as i64, c[3] * a) {
+                *p = psblend::composite(BlendMode::Normal, *p, [c[0], c[1], c[2], 1.0], 1.0);
+            }
+            continue;
+        }
         *p = psblend::composite(blend, *p, [c[0], c[1], c[2], c[3] * a], 1.0);
     }
+}
+
+/// Whether `e` paints anything in Dissolve mode.
+fn dissolves(e: &Effect) -> bool {
+    let d = |m: BlendMode| m == BlendMode::Dissolve;
+    match e {
+        Effect::DropShadow(s) | Effect::InnerShadow(s) => d(s.common.blend),
+        Effect::OuterGlow(g) | Effect::InnerGlow(g) => d(g.common.blend),
+        Effect::Stroke(s) => d(s.common.blend),
+        Effect::ColorOverlay { common, .. } | Effect::GradientOverlay { common, .. } | Effect::PatternOverlay { common, .. } => d(common.blend),
+        Effect::Satin(s) => d(s.common.blend),
+        Effect::BevelEmboss(b) => d(b.highlight.blend) || d(b.shadow.blend),
+    }
+}
+
+/// Dissolve on an effect (#6995): a pixel takes the effect fully or not at all, with probability
+/// `coverage`, picked by the same document-coordinate noise as a Dissolve layer. A soft glow or
+/// shadow turns into scattered speckle instead of a smooth falloff.
+fn dissolves_in(x: i64, y: i64, coverage: f32) -> bool {
+    hash_noise(x, y) < coverage
 }
 
 fn paint_color(dst: &mut Buffer, m: &Map, c: [f32; 3], blend: BlendMode, opacity: f32) {
@@ -1348,11 +1377,23 @@ fn box_line(src: &[f64], x0: i64, dst: &mut [f64], bw: f32) {
         }
         return;
     }
-    let mut inner: f64 = (x0 - (r - 1)..=x0 + (r - 1)).map(at).sum();
+    let window = x0 - (r - 1)..=x0 + (r - 1);
+    let mut inner: f64 = window.clone().map(at).sum();
+    let mut last_covered = window.rev().find(|&x| at(x) != 0.0).unwrap_or(i64::MIN);
     for (k, d) in dst.iter_mut().enumerate() {
         let x = x0 + k as i64;
         *d = (inner + f * (at(x - r) + at(x + r))) * norm;
-        inner += at(x + r) - at(x - r + 1);
+        let entering = at(x + r);
+        inner += entering - at(x - r + 1);
+        if entering != 0.0 {
+            last_covered = x + r;
+        }
+        // Cancellation can leave positive residue after the last covered pixel leaves.
+        // Noise amplifies even that residue into visible speckles (#5638). Reset only
+        // truly empty windows, preserving arbitrarily faint real coverage.
+        if last_covered < x - r + 2 {
+            inner = 0.0;
+        }
     }
 }
 
@@ -1654,6 +1695,12 @@ fn bevel_maps(shape: &Map, b: &Bevel, light: &GlobalLight, tex: &TextureCtx, pat
     let on_bevel = |x: i64, y: i64| {
         hmap.get(x, y) > BEVEL_H_EPS || (reach_past && [(1, 0), (-1, 0), (0, 1), (0, -1)].iter().any(|(dx, dy)| hmap.get(x + dx, y + dy) > BEVEL_H_EPS))
     };
+    // The gloss contour remaps the shading `n · light` before it splits into highlight (above
+    // what it maps a flat face's `sin(altitude)` to) and shadow. Applied to the highlight and shadow amounts
+    // instead, a contour that starts high (Rolling Slope - Descending) lit every pixel the light
+    // missed, so a bevelled glyph's flat face took the full highlight (#7360) where Photoshop
+    // leaves it at the layer's colour. The Linear contour changes nothing either way.
+    let gloss = contour_lut(&b.gloss_contour);
     let shade_into = |depth: f32, region_kind: u8| -> (Map, Map) {
         let (mut hi, mut sh) = (Map::new(shape.w, shape.h, 0.0), Map::new(shape.w, shape.h, 0.0));
         // Rows on threads: every pixel reads only `hmap` and `shape`.
@@ -1674,7 +1721,7 @@ fn bevel_maps(shape: &Map, b: &Bevel, light: &GlobalLight, tex: &TextureCtx, pat
                     let len = (n[0] * n[0] + n[1] * n[1] + 1.0).sqrt();
                     let shade = (n[0] * light_v[0] + n[1] * light_v[1] + n[2] * light_v[2]) / len;
                     let region = if region_kind == 0 { shape.v[i] } else { f32::from(shape.v[i] < 1.0 - INSIDE_EPS && on_bevel(x, y)) };
-                    let k = shade - se;
+                    let k = gloss.as_ref().map_or(shade - se, |l| lut_at(l, shade) - lut_at(l, se));
                     if k > 0.0 {
                         hi_row[x as usize] = (k / (1.0 - se).max(1e-3)).clamp(0.0, 1.0) * region;
                     } else {
@@ -1683,7 +1730,7 @@ fn bevel_maps(shape: &Map, b: &Bevel, light: &GlobalLight, tex: &TextureCtx, pat
                 }
             },
         );
-        (apply_contour(hi, &b.gloss_contour), apply_contour(sh, &b.gloss_contour))
+        (hi, sh)
     };
     let maps = match g.paint {
         BevelPaint::Inner | BevelPaint::Outer => {
@@ -1812,6 +1859,29 @@ pub fn build_maps(layer: &Layer, shape: Vec<f32>, rect: Rect, light: &GlobalLigh
     build_maps_prepared(layer, shape, rect, light, tex, &prepared)
 }
 
+/// How many region-sized arrays [`build_maps_prepared`] builds for `layer` (what
+/// [`FxMaps::bytes`] counts): the shape, each effect's maps, and a stroke's distance fields. Kept
+/// next to the builder so the effect cache's estimate (#8330) follows it.
+pub(crate) fn map_count(layer: &Layer) -> usize {
+    let items: Vec<&Effect> = layer.effects.items.iter().filter(|e| e.enabled()).collect();
+    let per: usize = items
+        .iter()
+        .map(|e| match e {
+            Effect::DropShadow(_) | Effect::InnerShadow(_) | Effect::OuterGlow(_) | Effect::InnerGlow(_) | Effect::Satin(_) => 1,
+            Effect::BevelEmboss(_) => 2,
+            _ => 0,
+        })
+        .sum();
+    let out_widths: Vec<f32> =
+        items.iter().filter_map(|e| if let Effect::Stroke(st) = e { Some(stroke_widths(st).1) } else { None }).filter(|w| *w > 0.0).collect();
+    let has_stroke = items.iter().any(|e| matches!(e, Effect::Stroke(_)));
+    let outside = usize::from(out_widths.iter().any(|&w| !stroke_outside_exact(w))) + usize::from(out_widths.iter().any(|&w| stroke_outside_exact(w)));
+    let stroke = if has_stroke { 1 + outside } else { 0 };
+    let vector_outline =
+        if has_stroke && matches!(layer.content, photocraft_doc::LayerContent::Shape(_)) && crate::effect_outline(layer).is_none() { outside } else { 0 };
+    1 + per + stroke + vector_outline
+}
+
 pub(crate) fn build_maps_prepared(
     layer: &Layer,
     shape: Vec<f32>,
@@ -1911,9 +1981,33 @@ pub fn shadow_see_through(layer: &Layer) -> f32 {
 /// Blend Interior Effects as Group off (Photoshop's default): the layer's mode applies to its
 /// own pixels only, and the interior effects paint over the blended result. The layer is merged
 /// into the backdrop before they paint, so an Overlay colour overlay on a black Color-mode layer
-/// tints the grey beneath it (#3996). Normal-like modes give the same result either way.
+/// tints the grey beneath it (#3996). A Normal layer merges only when an interior effect blends
+/// in another mode: below 100 % fill that effect sees the backdrop through the layer, so a Soft
+/// Light overlay on a Fill 0 % layer soft-lights the backdrop instead of showing its own colour
+/// (#6232). Normal effects give the same result either way, and the merge would count a
+/// half-transparent backdrop twice, so those layers keep the plain composite.
 pub fn premerges_layer(layer: &Layer) -> bool {
-    !layer.advanced.blend_interior && !matches!(layer.blend, BlendMode::Normal | BlendMode::PassThrough | BlendMode::Dissolve)
+    !layer.advanced.blend_interior
+        && match layer.blend {
+            BlendMode::PassThrough | BlendMode::Dissolve => false,
+            BlendMode::Normal => blends_inside(layer),
+            _ => true,
+        }
+}
+
+/// `true` if an enabled effect painted inside the layer (with its content) blends in a mode
+/// other than Normal.
+fn blends_inside(layer: &Layer) -> bool {
+    let blends = |m: BlendMode| m != BlendMode::Normal;
+    layer.effects.items.iter().filter(|e| e.enabled()).any(|e| match e {
+        Effect::ColorOverlay { common, .. } | Effect::GradientOverlay { common, .. } | Effect::PatternOverlay { common, .. } => blends(common.blend),
+        Effect::Satin(s) => blends(s.common.blend),
+        Effect::InnerGlow(g) => blends(g.common.blend),
+        Effect::InnerShadow(s) => blends(s.common.blend),
+        Effect::Stroke(s) => stroke_widths(s).0 > 0.0 && blends(s.common.blend),
+        Effect::BevelEmboss(b) => bevel_geom(b).paint == BevelPaint::Inner && (blends(b.highlight.blend) || blends(b.shadow.blend)),
+        Effect::DropShadow(_) | Effect::OuterGlow(_) => false,
+    })
 }
 
 /// Composites `content` (the layer's own pixels over `big`, alpha already
@@ -2157,13 +2251,20 @@ pub(crate) fn composite_with_effects_prepared(
                 } else {
                     band
                 };
-                *sh = k * st.common.opacity * (1.0 - cover[i]);
+                let mut k = k * st.common.opacity;
+                if st.common.blend == BlendMode::Dissolve {
+                    let (x, y) = (i64::from(big.x0) + (i % w) as i64, i64::from(big.y0) + (i / w) as i64);
+                    k = if k > 0.0 && dissolves_in(x, y, k) { 1.0 } else { 0.0 };
+                }
+                *sh = k * (1.0 - cover[i]);
                 cover[i] += *sh;
             }
             // The stroke blended over the backdrop at full coverage.
             let mut blended = base.clone();
             let ones = Map { w, h, v: share.iter().map(|&s| if s > 0.0 { 1.0 } else { 0.0 }).collect() };
-            paint_fx(&mut blended, &ones, &st.paint, frame(st), anchor, big, st.common.blend, 1.0, patterns);
+            // The share already carries the Dissolve choice, so the paint itself composites as Normal.
+            let paint_blend = if st.common.blend == BlendMode::Dissolve { BlendMode::Normal } else { st.common.blend };
+            paint_fx(&mut blended, &ones, &st.paint, frame(st), anchor, big, paint_blend, 1.0, patterns);
             for ((a, b), s) in acc.iter_mut().zip(&blended.px).zip(&share) {
                 if *s > 0.0 {
                     for c in 0..3 {
@@ -2219,7 +2320,13 @@ pub(crate) fn composite_with_effects_prepared(
             let i = ((y - rect.y0) as usize) * rect.width() as usize + (x - rect.x0) as usize;
             let a = before.px[i];
             let b = if x >= big.x0 && x < big.x1 && y >= big.y0 && y < big.y1 { work.px[((y - big.y0) as usize) * w + (x - big.x0) as usize] } else { a };
-            backdrop.px[i] = mix_premul(a, b, op);
+            backdrop.px[i] = if layer.blend == BlendMode::Dissolve {
+                // Dissolve applies layer opacity to the completed interior/exterior effect
+                // stack as pixel coverage, not continuous gray interpolation (#3051).
+                if crate::dissolve_noise(x, y) < op { b } else { a }
+            } else {
+                mix_premul(a, b, op)
+            };
         }
     }
 }
@@ -2521,6 +2628,7 @@ mod tests {
             altitude: 30.0,
             use_global_light: false,
             gloss_contour: Contour::Linear,
+            gloss_anti_alias: false,
             highlight: photocraft_doc::FxCommon::new(BlendMode::Screen, 0.75),
             highlight_color: photocraft_color::Color::WHITE,
             shadow: photocraft_doc::FxCommon::new(BlendMode::Multiply, 0.75),
@@ -3302,6 +3410,37 @@ mod tests {
     }
 
     #[test]
+    fn box_blur_preserves_faint_coverage_and_empty_gaps() {
+        let src = [0.0, 0.3, 0.7, 0.0, 0.0, 0.0, 0.0, 1e-20, 0.0, 0.0, 0.0];
+        let mut actual = [0.0; 11];
+        box_line(&src, 0, &mut actual, 3.0);
+        assert_eq!(actual[5], 0.0, "an empty window must be exactly empty");
+        assert_eq!(actual[10], 0.0, "the second tail must also be empty");
+        assert!((actual[7] - 1e-20 / 3.0).abs() < 1e-30, "real faint coverage is not rounded away");
+    }
+
+    #[test]
+    fn effect_noise_does_not_light_up_empty_blur_tails() {
+        // A sloping antialiased shape leaves rounding residue in a running-sum blur.
+        // The direct finite-support convolution is the oracle for untouched pixels.
+        for size in [5.0, 5.5, 13.0] {
+            let mut shape = Map::new(96, 64, 0.0);
+            for y in 8..48 {
+                for x in 8..48 {
+                    shape.v[y * shape.w + x] = ((x as f32 - y as f32 * 0.7) * 0.3).clamp(0.0, 1.0);
+                }
+            }
+            let mut direct = shape.clone();
+            tent_direct(&mut direct, size);
+            let mut actual = shape;
+            blur(&mut actual, size);
+            noise(&mut actual, 0.26, 0, 0);
+            let stray = direct.v.iter().zip(&actual.v).filter(|(reference, noisy)| **reference == 0.0 && **noisy > 1e-5).count();
+            assert_eq!(stray, 0, "noise created {stray} visible pixels outside a size-{size} blur");
+        }
+    }
+
+    #[test]
     fn glow_noise_follows_the_contour_and_range() {
         let g = |noise: f32| Glow {
             common: photocraft_doc::FxCommon::new(BlendMode::Screen, 1.0),
@@ -3320,6 +3459,56 @@ mod tests {
         let noisy = glow_map(&square_shape(40), &g(0.6), false, (0, 0));
         let diff: f32 = plain.v.iter().zip(&noisy.v).map(|(a, b)| (a - b).abs()).sum();
         assert!(diff > 5.0, "glow noise changes the coverage: {diff}");
+    }
+
+    /// Issue #7833: the speckle stays inside the glow's visible falloff instead of filling the
+    /// blur's whole rectangular reach out to the map edge.
+    #[test]
+    fn effect_noise_stays_inside_the_visible_falloff() {
+        let mut shape = Map::new(80, 80, 0.0);
+        for y in 35..45 {
+            for x in 35..45 {
+                shape.v[y * 80 + x] = 1.0;
+            }
+        }
+        let g = |noise: f32| Glow {
+            common: photocraft_doc::FxCommon::new(BlendMode::Screen, 1.0),
+            paint: FxPaint::Color(photocraft_color::Color::WHITE),
+            technique: GlowTechnique::Softer,
+            spread: 0.0,
+            size: 10.0,
+            contour: Contour::Linear,
+            anti_alias: false,
+            range: 0.5,
+            jitter: 0.0,
+            noise,
+            source: GlowSource::Edge,
+        };
+        let s = |noise: f32| Shadow {
+            common: photocraft_doc::FxCommon::new(BlendMode::Multiply, 1.0),
+            color: photocraft_color::Color::BLACK,
+            angle: 0.0,
+            use_global_light: false,
+            distance: 0.0,
+            spread: 0.0,
+            size: 10.0,
+            contour: Contour::Linear,
+            anti_alias: false,
+            noise,
+            knocks_out: true,
+        };
+        let light = GlobalLight::default();
+        let pairs = [
+            ("glow", glow_map(&shape, &g(0.0), false, (0, 0)), glow_map(&shape, &g(0.5), false, (0, 0))),
+            ("shadow", shadow_map(&shape, &s(0.0), &light, false, (0, 0)), shadow_map(&shape, &s(0.5), &light, false, (0, 0))),
+        ];
+        for (name, plain, noisy) in pairs {
+            for (i, (p, n)) in plain.v.iter().zip(&noisy.v).enumerate() {
+                if *p < 1.0 / 255.0 {
+                    assert!(*n <= 2.0 / 255.0, "{name}: pixel ({}, {}) invisible without noise: {p} -> {n}", i % 80, i / 80);
+                }
+            }
+        }
     }
 
     #[test]

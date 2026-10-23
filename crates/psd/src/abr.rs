@@ -43,8 +43,11 @@ use crate::patterns::{PatternBudget, PsdPattern, parse_pattern_block_with, write
 pub const MAX_EDGE: u32 = 8192;
 /// Most brushes read from one file.
 pub const MAX_BRUSHES: usize = 20_000;
-/// Cap on decoded sample bytes over the whole file.
-pub const MAX_TOTAL_BYTES: usize = 512 << 20;
+/// Cap on decoded sample bytes over the whole file. 32-bit targets (wasm) keep 512 MiB: the file,
+/// its base64 copies and the decoded tips must all fit a 4 GiB address space, and running out
+/// there aborts instead of returning an error.
+pub const MAX_TOTAL_BYTES: usize = if cfg!(target_pointer_width = "64") { 1 << 30 } else { 512 << 20 };
+const _: () = assert!(cfg!(target_pointer_width = "64") || MAX_TOTAL_BYTES == 512 << 20);
 
 /// A sampled tip: one grayscale plane where the maximum value is full paint.
 #[derive(Debug, Clone, PartialEq)]
@@ -432,6 +435,7 @@ fn parse_v6_within(r: &mut Rd, out: &mut AbrFile, budget: &mut Budget) -> Result
         return Err(PsdError::Unsupported(format!("brush file subversion {}", out.subversion)));
     }
     let mut hierarchy = None;
+    let mut patterns = PatternBudget::default();
     while r.left() >= 12 {
         let sig = r.arr::<4>()?;
         if &sig != b"8BIM" {
@@ -455,16 +459,17 @@ fn parse_v6_within(r: &mut Rd, out: &mut AbrFile, budget: &mut Budget) -> Result
         match &key {
             b"samp" => read_samp(data, out.subversion, out, budget)?,
             b"patt" => {
-                // Patterns share the samples' budget, so neither can claim it twice.
+                // Patterns share the samples' budget and one padding budget across every `patt`
+                // section, so neither can be claimed twice and failed blocks still deduct their
+                // decoded charges.
                 let limit = u64::try_from(budget.0).unwrap_or(u64::MAX);
-                let mut patterns = PatternBudget::with_decoded_limit(limit);
+                patterns.cap_decoded_to(limit);
                 let left = patterns.decoded_left();
-                match parse_pattern_block_with(data, &mut patterns) {
-                    Ok(p) => {
-                        let spent = usize::try_from(left.saturating_sub(patterns.decoded_left())).unwrap_or(usize::MAX);
-                        budget.spend(spent)?;
-                        out.patterns.extend(p);
-                    }
+                let res = parse_pattern_block_with(data, &mut patterns);
+                let spent = usize::try_from(left.saturating_sub(patterns.decoded_left())).unwrap_or(usize::MAX);
+                budget.spend(spent)?;
+                match res {
+                    Ok(p) => out.patterns.extend(p),
                     Err(e) => out.warnings.push(format!("embedded patterns unreadable: {e}")),
                 }
             }
@@ -703,8 +708,37 @@ mod tests {
         assert_eq!((out.samples.len(), out.patterns.len(), left), (1, 2, 0));
         // One byte short: the patterns no longer fit after the sample (they used not to count).
         let (out, left) = parse_within(189);
-        assert_eq!((out.samples.len(), out.patterns.len(), left), (1, 0, 89));
+        assert_eq!((out.samples.len(), out.patterns.len(), left), (1, 0, 14));
         assert!(out.warnings.iter().any(|w| w.contains("embedded patterns unreadable")), "{:?}", out.warnings);
+    }
+
+    #[test]
+    fn failed_pattern_section_does_not_refund_budget_to_later_sections() {
+        let p = PsdPattern {
+            mode: 3,
+            width: 5,
+            height: 3,
+            name: "p".into(),
+            id: "id".into(),
+            palette: None,
+            depth: 8,
+            channels: vec![vec![1; 15], vec![2; 15], vec![3; 15]],
+            alpha: None,
+        };
+        let valid = write_pattern_block(std::slice::from_ref(&p)).unwrap();
+        let mut malformed = valid.clone();
+        malformed.extend_from_slice(&100u32.to_be_bytes());
+
+        let mut body = 2u16.to_be_bytes().to_vec();
+        section(&mut body, b"patt", &malformed);
+        section(&mut body, b"patt", &valid);
+        let mut out = AbrFile::default();
+        let mut budget = Budget(60);
+        parse_v6_within(&mut Rd::new(&body), &mut out, &mut budget).unwrap();
+
+        assert!(out.patterns.is_empty(), "a failed block is discarded atomically");
+        assert_eq!(budget.0, 0, "the failed block's first 45 bytes and later partial 15-byte charge are retained");
+        assert_eq!(out.warnings.iter().filter(|w| w.contains("embedded patterns unreadable")).count(), 2);
     }
 
     #[test]

@@ -399,6 +399,80 @@ fn video_frames_to_layers_takes_every_gif_frame() {
     assert_eq!(r["layers"], 4);
 }
 
+// ------------------------------------------------------------------ animated WebP footage (#1198)
+
+/// An animated WebP of solid `w`x`h` frames: one `(colour, duration in ms)` each, every frame a
+/// lossless still in an ANMF chunk.
+fn write_webp(path: &str, w: u32, h: u32, frames: &[([u8; 3], u32)]) {
+    use photocraft_codecs::{ChannelLayout, EncodeOptions, Format, Image, encode};
+    let chunk = |id: &[u8; 4], data: &[u8]| {
+        let mut c = id.to_vec();
+        c.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        c.extend_from_slice(data);
+        if data.len() % 2 == 1 {
+            c.push(0);
+        }
+        c
+    };
+    let u24 = |v: u32| v.to_le_bytes()[..3].to_vec();
+    let mut body = b"WEBP".to_vec();
+    body.extend(chunk(b"VP8X", &[[0x02, 0, 0, 0].as_slice(), &u24(w - 1), &u24(h - 1)].concat()));
+    body.extend(chunk(b"ANIM", &[0, 0, 0, 0, 0, 0]));
+    for &(c, ms) in frames {
+        let img = Image::from_u8(w, h, ChannelLayout::Rgb, c.repeat((w * h) as usize)).unwrap();
+        let still = encode(&img, Format::WebP, &EncodeOptions::default()).unwrap();
+        let at = still.windows(4).position(|w| w == b"VP8L").unwrap();
+        let len = u32::from_le_bytes(still[at + 4..at + 8].try_into().unwrap()) as usize;
+        let anmf = [[0; 6].as_slice(), &u24(w - 1), &u24(h - 1), &u24(ms), &[0x02], &chunk(b"VP8L", &still[at + 8..at + 8 + len])].concat();
+        body.extend(chunk(b"ANMF", &anmf));
+    }
+    let mut out = b"RIFF".to_vec();
+    out.extend_from_slice(&(body.len() as u32).to_le_bytes());
+    out.extend(body);
+    std::fs::write(path, out).unwrap();
+}
+
+#[test]
+fn an_animated_webp_becomes_a_video_layer_with_every_frame() {
+    let dir = tmpdir("webpin");
+    let path = format!("{dir}/anim.webp");
+    write_webp(&path, 16, 12, &[([255, 0, 0], 50), ([0, 255, 0], 50), ([0, 0, 255], 80)]);
+    let mut s = session();
+    let r = s.execute("layer.videoLayers.newVideoLayerFromFile", json!({"path": path})).unwrap();
+    assert_eq!(r["frames"], 3);
+    let id = LayerId(r["layer"].as_u64().unwrap());
+    assert_eq!(frame_rgb(&s, id, 0), [1.0, 0.0, 0.0]);
+    assert_eq!(frame_rgb(&s, id, 1), [0.0, 1.0, 0.0]);
+    assert_eq!(frame_rgb(&s, id, 2), [0.0, 0.0, 1.0]);
+    // The most common duration, 50 ms: 20 fps.
+    assert_eq!(s.active().unwrap().doc.timeline.as_ref().unwrap().fps, 20.0);
+    assert!(s.undo());
+    assert!(s.active().unwrap().doc.layer(id).is_none());
+}
+
+#[test]
+fn video_frames_to_layers_takes_every_webp_frame() {
+    let dir = tmpdir("webpin-ftl");
+    let path = format!("{dir}/anim.webp");
+    write_webp(&path, 8, 8, &[([255, 0, 0], 40), ([0, 255, 0], 40), ([0, 0, 255], 40)]);
+    let mut s = session();
+    let r = s.execute("file.import.videoFramesToLayers", json!({"path": path})).unwrap();
+    assert_eq!(r["layers"], 3);
+}
+
+#[test]
+fn a_still_webp_is_one_frame_at_the_default_30_fps() {
+    let dir = tmpdir("webpin-still");
+    let path = format!("{dir}/still.webp");
+    let img = photocraft_codecs::Image::from_u8(8, 8, photocraft_codecs::ChannelLayout::Rgb, [255, 0, 0].repeat(64)).unwrap();
+    std::fs::write(&path, photocraft_codecs::encode(&img, photocraft_codecs::Format::WebP, &Default::default()).unwrap()).unwrap();
+    let mut s = session();
+    let r = s.execute("layer.videoLayers.newVideoLayerFromFile", json!({"path": path})).unwrap();
+    assert_eq!(r["frames"], 1);
+    let id = LayerId(r["layer"].as_u64().unwrap());
+    assert_eq!(s.active().unwrap().doc.layer(id).unwrap().video.as_ref().unwrap().fps, 30.0);
+}
+
 #[test]
 fn a_gif_rendered_by_render_video_loads_back_frame_for_frame() {
     let src = tmpdir("gifrt-src");
@@ -578,4 +652,20 @@ fn render_video_rejects_gif_frames_too_large_to_stage() {
     s.execute("file.new", json!({"width": 9000, "height": 8000})).unwrap();
     let err = s.execute("file.export.renderVideo", json!({"dir": tmpdir("large-gif"), "format": "gif"})).unwrap_err();
     assert!(err.to_string().contains("too large"), "{err}");
+}
+
+#[test]
+fn fps_from_delays_picks_most_common_and_breaks_ties_by_first_seen() {
+    // Most common delay wins: 100 ms appears twice, 40 ms once -> 10 fps.
+    assert_eq!(fps_from_delays(&[100, 40, 100]), Some(10.0));
+    // Tie between 40 ms (25 fps) and 50 ms (20 fps): the first seen (40) wins.
+    assert_eq!(fps_from_delays(&[40, 50]), Some(25.0));
+    // Delays under 20 ms are treated as 100 ms.
+    assert_eq!(fps_from_delays(&[0, 10, 5]), Some(10.0));
+    assert_eq!(fps_from_delays(&[]), None);
+    // Many distinct delays used to be quadratic; this must stay fast and correct. Delay 20
+    // (the one appearing twice) wins at 50 fps.
+    let mut many: Vec<u32> = (20..5_020).collect();
+    many.push(20);
+    assert_eq!(fps_from_delays(&many), Some(50.0));
 }

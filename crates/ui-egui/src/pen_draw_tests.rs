@@ -1,5 +1,5 @@
 //! The Pen's modifiers while drawing, through the real canvas (#3306): ⌥/Alt breaks the handle
-//! being pulled out and grabs the last anchor's outgoing handle alone, and dragging on the first
+//! being pulled out and grabs either of the last anchor's handles alone, and dragging on the first
 //! anchor closes the path with that anchor's handles pulled out.
 
 use egui::{Key, Modifiers, PointerButton, Pos2, vec2};
@@ -120,6 +120,33 @@ fn alt_breaks_the_handle_being_dragged_and_grabs_the_last_outgoing_handle() {
     let k = &doc.work_path.as_ref().unwrap().subpaths[0].knots[1];
     assert!(!k.smooth, "the broken handle is a cusp in the work path");
     assert!(near([k.out_ctrl.x, k.out_ctrl.y], [140.0, 20.0]));
+}
+
+/// #6077: both handles of the last anchor are drawn, so ⌥/Alt grabs either one, as in Photoshop.
+/// Dragging the incoming handle turns it alone; the outgoing handle and the anchors stay put.
+#[test]
+fn alt_drag_turns_the_last_anchors_incoming_handle_alone() {
+    let mut h = harness();
+    click(&mut h, [20.0, 20.0]);
+    drag(&mut h, &[[100.0, 20.0], [120.0, 40.0]], None);
+    let k = h.state().ui.pen.clone().unwrap().knots[1];
+    assert!(near(k[1], [80.0, 0.0]) && near(k[2], [120.0, 40.0]), "smooth anchor pulled out: {k:?}");
+
+    drag(&mut h, &[[80.0, 0.0], [60.0, 30.0]], Some(0));
+    let pen = h.state().ui.pen.clone().unwrap();
+    assert_eq!(pen.knots.len(), 2, "no new anchor on the handle");
+    let k = pen.knots[1];
+    assert!(near(k[0], [100.0, 20.0]), "the anchor stayed put: {k:?}");
+    assert!(near(k[1], [60.0, 30.0]), "the incoming handle followed the pointer: {k:?}");
+    assert!(near(k[2], [120.0, 40.0]), "the outgoing handle stayed put: {k:?}");
+
+    click(&mut h, [150.0, 120.0]);
+    h.key_press(Key::Enter);
+    h.run_steps(2);
+    let doc = &h.state().session.active().unwrap().doc;
+    let k = &doc.work_path.as_ref().unwrap().subpaths[0].knots[1];
+    assert!(!k.smooth, "the broken handle is a cusp in the work path");
+    assert!(near([k.in_ctrl.x, k.in_ctrl.y], [60.0, 30.0]) && near([k.out_ctrl.x, k.out_ctrl.y], [120.0, 40.0]));
 }
 
 #[test]

@@ -12,6 +12,10 @@
 # Product and technology names (PhotoCraft, ArtCraft, OpenType, CMYK, Lab ...) stay in Latin
 # letters; the trailing "…" of dialog commands is kept.
 
+# Layer Mask Display Options (the layer mask rubylith's colour and opacity)
+	Mask Options…	Opsi Mask…
+	Layer Mask Display Options…	Opsi Tampilan Mask Layer…
+
 # Channel Options and New Spot Channel (#3761)
 	Channel Color	Warna Saluran
 	Color Indicates:	Warna Menunjukkan:
@@ -795,6 +799,23 @@
 	Split Warp Vertically	Bagi Warp Vertikal
 	Statistics…	Statistik…
 	Refine Strokes	Goresan penyempurnaan
+	Edits	Suntingan
+# Counted status and panel messages
+@plural	Exported {n} swatch to {file}|Exported {n} swatches to {file}	{n} swatch diekspor ke {file}
+@plural	Imported {n} swatch from {file}|Imported {n} swatches from {file}	{n} swatch diimpor dari {file}
+@plural	Imported {n} brush from {group}|Imported {n} brushes from {group}	{n} kuas diimpor dari {group}
+@plural	Played {n} step|Played {n} steps	{n} langkah diputar
+@plural	{n} step|{n} steps	{n} langkah
+@plural	Saved for Web: {n} file|Saved for Web: {n} files	Disimpan untuk Web: {n} file
+@plural	Updated {n} linked smart object changed on disk|Updated {n} linked smart objects changed on disk	{n} Smart Object tertaut yang berubah di disk telah diperbarui
+@plural	{n} layer recorded by this comp was deleted. Update the comp, or clear the warning.|{n} layers recorded by this comp were deleted. Update the comp, or clear the warning.	{n} layer yang direkam oleh layer comp ini telah dihapus. Perbarui layer comp, atau hapus peringatannya.
+@plural	{n} plane|{n} planes	{n} bidang
+@plural	{n} preset|{n} presets	{n} preset
+@plural	{n} sample point removed|{n} sample points removed	{n} titik sampel dihapus
+@plural	{n} slice|{n} slices	{n} slice
+@plural	{warning} (+{n} more brush preset warning)|{warning} (+{n} more brush preset warnings)	{warning} (+{n} peringatan preset kuas lainnya)
+@plural	{what} with {n} warning|{what} with {n} warnings	{what} dengan {n} peringatan
+
 @plural	{n} item|{n} items	{n} item
 	Auto	Otomatis
 	(print to the printer)	(cetak ke printer)
@@ -1074,7 +1095,7 @@
 	Done	Selesai
 	Dots	Titik
 	Drag a rectangle around the object	Seret persegi panjang di sekeliling objek
-	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click to delete.	Seret pada gambar untuk menambah batasan; Shift untuk horizontal/vertikal; klik kanan untuk menghapus.
+	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click a constraint to change or delete it.	Seret pada gambar untuk menambah batasan; Shift untuk horizontal/vertikal; klik kanan pada batasan untuk mengubah atau menghapusnya.
 	Drag to move the active shape's path or the Work Path	Seret untuk memindah path bentuk aktif atau Work Path
 	Click: select anchor · Drag: move anchor, handle or segment · {shift}-click: add · {alt}-click: whole subpath	Klik: pilih titik jangkar · Seret: pindahkan titik, gagang, atau segmen · {shift}-klik: tambah · {alt}-klik: seluruh subpath
 	Draw with the Pen tool (P) or make a work path from a selection.	Gambar dengan alat Pen (P) atau buat work path dari seleksi.
@@ -1310,6 +1331,8 @@
 	Override Pressure	Timpa Tekanan
 	Override Rotation	Timpa Rotasi
 	Override Tilt	Timpa Kemiringan
+	Override Tilt X	Timpa Kemiringan X
+	Override Tilt Y	Timpa Kemiringan Y
 	PRESET DETAILS	DETAIL PRESET
 	PSD	PSD
 	Paint Overlay	Overlay Cat
@@ -1462,6 +1485,7 @@
 	Set shape fill type	Atur jenis isian bentuk
 	Set shape stroke type	Atur jenis stroke bentuk
 	Set the text color	Atur warna teks
+	Create warped text	Buat teks warp
 	Shadows	Bayangan
 	Shape:	Bentuk:
 	Sharpening	Penajaman
@@ -1958,6 +1982,7 @@
 	Quick export format	Format ekspor cepat
 	Quick export location	Lokasi ekspor cepat
 	Recent file count	Jumlah berkas terbaru
+	LUT folder	Folder LUT
 	Recent files	Berkas terbaru
 	Recent fonts	Font terbaru
 	Recover on launch	Pulihkan saat dibuka
@@ -2112,6 +2137,11 @@
 	Apply the pen's tilt and rotation to the tip shape	Terapkan kemiringan dan rotasi pena ke bentuk ujung
 	Mixer Brush	Kuas Pencampur
 	Wet	Basah
+	Current Brush Load	Muatan Kuas Saat Ini
+	Load Brush	Muat Kuas
+	Clean Brush	Bersihkan Kuas
+	Load the brush after each stroke	Muat kuas setelah setiap goresan
+	Clean the brush after each stroke	Bersihkan kuas setelah setiap goresan
 	Mix	Campur
 	Wetness Jitter	Jitter Kebasahan
 	Mix Jitter	Jitter Campuran
@@ -2357,6 +2387,7 @@
 	Clipping Path	Clipping Path
 	New Path	Path Baru
 	Duplicate Path	Duplikat Path
+	Rename Path…	Ganti Nama Path…
 	Delete Path	Hapus Path
 	Auto-Hide	Sembunyi Otomatis
 	W	W
@@ -2422,6 +2453,8 @@
 	Keywords	Kata Kunci
 	Copyright Info URL	URL Info Hak Cipta
 	Copyright Status	Status Hak Cipta
+	Copyright Notice	Pemberitahuan Hak Cipta
+	Document Title	Judul Dokumen
 	Copyrighted	Berhak Cipta
 	Public Domain	Domain Publik
 	Unknown	Tidak Diketahui
@@ -2640,6 +2673,7 @@
 	32 bit (float)	32 bit (titik mengambang)
 	Floating point	Titik mengambang
 	Use Global Light	Gunakan Cahaya Global
+	Overprint	Cetak Tindih
 	Native file drag-and-drop is unavailable	Seret dan lepas berkas native tidak tersedia
 	Native file drag-and-drop is not supported on Wayland yet. Use File › Open, or copy the image in your file manager and paste it with {paste}.	Seret dan lepas berkas native belum didukung di Wayland. Gunakan Berkas › Buka, atau salin gambar di pengelola berkas lalu tempel dengan {paste}.
 	To drop files, start PhotoCraft under XWayland: `{command}`	Untuk menjatuhkan berkas, jalankan PhotoCraft di XWayland: `{command}`
@@ -2685,6 +2719,8 @@ cameraRaw	Blending	Pembauran
 	GPU acceleration could not continue. Your documents are unchanged.	Akselerasi GPU tidak dapat dilanjutkan. Dokumen Anda tidak berubah.
 	PhotoCraft is using the CPU image compositor. The window may still use your graphics adapter.	PhotoCraft menggunakan kompositor gambar CPU. Jendela mungkin masih menggunakan adaptor grafis Anda.
 	Retry GPU requires a restart. Save your work first.	Mencoba GPU lagi memerlukan mulai ulang. Simpan pekerjaan Anda terlebih dahulu.
+	Retry GPU tries the graphics processor again now.	Coba GPU Lagi mencoba prosesor grafis lagi sekarang.
+	GPU acceleration resumed.	Akselerasi GPU dilanjutkan.
 	Keep Using CPU	Tetap Gunakan CPU
 	Retry GPU	Coba GPU Lagi
 	GPU Backend	Backend GPU
@@ -2717,6 +2753,11 @@ cameraRaw	Blending	Pembauran
 	Content-Aware Move Tool	Alat Content-Aware Move
 	TIFF Options	Opsi TIFF
 	Targa Options	Opsi Targa
+	JPEG Options	Opsi JPEG
+	Image Options	Opsi Gambar
+	Format Options	Opsi Format
+	Baseline ("Standard")	Baseline ("Standar")
+	Baseline Optimized	Baseline Dioptimalkan
 	24 bits/pixel	24 Bit/Piksel
 	32 bits/pixel	32 Bit/Piksel
 	Including layers will increase file size.	Menyertakan layer akan memperbesar ukuran file.
@@ -3056,6 +3097,33 @@ cameraData	Lens	Lensa
 	Output To	Keluaran Ke
 	Duplicate Layer	Duplikat Layer
 	Contract	Ciutkan
+
+	Animation Options	Opsi Animasi
+	Entire Document	Seluruh Dokumen
+	Filter Options	Opsi Filter
+	Layer Bounds	Batas Lapisan
+	Layers Panel Options	Opsi Panel Lapisan
+	Lock Layers	Kunci Lapisan
+	New Artboard…	Artboard Baru…
+	New Group…	Grup Baru…
+	Prevent Auto-Nesting	Cegah Pengelompokan Otomatis
+	Show Layers	Tampilkan Lapisan
+	Thumbnail Contents	Isi Gambar Mini
+	Thumbnail Size	Ukuran Gambar Mini
+	Use Default Masks on Fill Layers	Gunakan Masker Default pada Lapisan Isian
+	Expand New Effects	Perluas Efek Baru
+	Add “copy” to Copied Layers and Groups	Tambahkan “salinan” ke Lapisan dan Grup yang Disalin
+	Preview on canvas when reordering layers	Pratinjau pada kanvas saat mengurutkan ulang lapisan
+	Show layer mask badges	Tampilkan Lencana Masker Lapisan
+
+# Smart Filter editors
+	Blending Options ({filter})	Opsi Pencampuran ({filter})
+	Hide the layer's effects and Smart Filters  ({key}-click: all layers)	Sembunyikan efek lapisan dan Filter Cerdas  (klik-{key}: semua lapisan)
+	Show the layer's effects and Smart Filters  ({key}-click: all layers)	Tampilkan efek lapisan dan Filter Cerdas  (klik-{key}: semua lapisan)
+	Wait for the current job to finish.	Tunggu hingga tugas saat ini selesai.
+	The document or Smart Filter changed. Reopen its dialog.	Dokumen atau Filter Cerdas berubah. Buka kembali dialognya.
+	Opacity must be between 0% and 100%.	Opasitas harus antara 0% dan 100%.
+	Dissolve is approximated: it blends without Photoshop's dither.	Dissolve hanya didekati: pencampuran berjalan tanpa dither Photoshop.
 	Loading fonts…	Memuat font…
 	Response curve	Kurva respons
 	Tool	Alat
@@ -3101,6 +3169,10 @@ curves	Smooth	Haluskan
 	Click to place · Alt-click or drag off-canvas to remove	Klik untuk menempatkan · Alt-klik atau seret ke luar kanvas untuk menghapus
 	No document open	Tidak ada dokumen yang terbuka
 	{n} of {max} sample points	{n} dari {max} titik sampel
+
+# History panel menu (#2966)
+	New Snapshot…	Snapshot Baru…
+	History Options…	Opsi Riwayat…
 # Print dialog (#2697)
 	Emulsion Down	Emulsi di Bawah
 	Functions	Fungsi
@@ -3120,9 +3192,16 @@ curves	Smooth	Haluskan
 	Light Gray	Abu-abu Muda
 	Object Finder	Pencari Objek
 	No object found there — drag a rectangle around it	Tidak ada objek ditemukan di sana — seret persegi panjang di sekelilingnya
+	The active layer has no pixels here — turn on Sample All Layers or select a layer with pixels	Layer aktif tidak memiliki piksel di sini — aktifkan Sampel Semua Layer atau pilih layer yang berisi piksel
 	Remove after each stroke	Hapus setelah setiap goresan
 	Apply the removal ({key})	Terapkan penghapusan ({key})
 	Strokes to remove: {n} (Enter applies, Esc cancels)	Goresan untuk dihapus: {n} (Enter menerapkan, Esc membatalkan)
+	Load Contours…	Muat kontur…
+	Replace Contours…	Ganti kontur…
+	Save Contours…	Simpan kontur…
+	Delete Contour	Hapus kontur
+	Loaded contours from {file}	Kontur dimuat dari {file}
+	Saved contours to {file}	Kontur disimpan ke {file}
 	Show home recent files	Tampilkan file terbaru di layar beranda
 	Clear Brush Controls	Hapus Kontrol Kuas
 	Reset All Locked Settings	Atur Ulang Semua Pengaturan Terkunci
@@ -3131,6 +3210,9 @@ curves	Smooth	Haluskan
 # Actions panel: Load/Save Actions (.atn) and kept Photoshop steps
 	Load Actions…	Muat Tindakan…
 	Save Actions…	Simpan Tindakan…
+	New Action…	Tindakan Baru…
+	Start Recording	Mulai Rekaman
+	Stop Recording	Hentikan Rekaman
 	{name} (Photoshop)	{name} (Photoshop)
 	{message} ({note})	{message} ({note})
 @plural	Loaded {n} action from {file}|Loaded {n} actions from {file}	{n} tindakan dimuat dari {file}
@@ -3163,6 +3245,16 @@ curves	Smooth	Haluskan
 	Sent to {printer}	Dikirim ke {printer}
 	set in Print Settings…	diatur di Pengaturan Cetak…
 	ICO is limited to 256 × 256 pixels	ICO dibatasi hingga 256 × 256 piksel
+# History panel › History Brush source (#2966)
+	Paints from the History panel's source state	Melukis dari status sumber panel Riwayat
+	Sets the source for the history brush	Menetapkan sumber untuk kuas riwayat
+# Bevel & Emboss shading controls.
+	Highlight Mode	Mode Sorotan
+	Highlight Color	Warna Sorotan
+	Highlight Opacity	Opasitas Sorotan
+	Shadow Mode	Mode Bayangan
+	Shadow Color	Warna Bayangan
+	Shadow Opacity	Opasitas Bayangan
 # Embedded Profile Mismatch: profile names beside the choices, Remember this choice
 	Use the embedded profile ({profile})	Pakai profil tertanam ({profile})
 	Convert to the working space ({profile})	Konversi ke working space ({profile})
@@ -3179,10 +3271,14 @@ curves	Smooth	Haluskan
 	Chisel Hard	Pahat Keras
 	Chisel Soft	Pahat Lembut
 	Open color-less EXR as ACEScg	Buka EXR tanpa informasi warna sebagai ACEScg
+	Do not append "copy" to filename when saving a copy	Jangan tambahkan "copy" ke nama file saat menyimpan salinan
 
 # View › Guides › right-click a guide
 	Edit Selected Guides	Edit Panduan Terpilih
 	Clear Selected Guides	Hapus Panduan Terpilih
+	Bicubic Automatic	Bicubic otomatis
+	Bicubic Smoother	Bicubic lebih halus
+	Bicubic Sharper	Bicubic lebih tajam
 	Pasting from other apps is unavailable	Menempel dari aplikasi lain tidak tersedia
 	PhotoCraft can't reach the system clipboard in this session. On Wayland, a Flatpak sandbox hides the protocol that images from other apps are read through.	PhotoCraft tidak dapat mengakses papan klip sistem dalam sesi ini. Di Wayland, sandbox Flatpak menyembunyikan protokol yang digunakan untuk membaca gambar dari aplikasi lain.
 	To paste from other apps, start PhotoCraft under XWayland: `{command}`	Untuk menempel dari aplikasi lain, jalankan PhotoCraft di bawah XWayland: `{command}`
@@ -3203,6 +3299,18 @@ curves	Smooth	Haluskan
 	{set} (modified)	{set} (diubah)
 	Random	Acak
 	Show file name in title	Tampilkan nama file di judul
+
+# Image › Mode › Bitmap (#5559)
+	50% Threshold	Threshold 50%
+	Pattern Dither	Dither Pola
+	Diffusion Dither	Dither Difusi
+	Halftone Screen	Layar Halftone
+	Custom Pattern	Pola Kustom
+	Frequency:	Frekuensi:
+	Lines/Inch	Garis/Inci
+	Lines/Centimeter	Garis/Sentimeter
+	Ellipse	Elips
+	Cross	Silang
 	Accept and Go to Conflict	Terima dan Buka Konflik
 	Changes undone.	Perubahan dibatalkan.
 	Choose a new shortcut for this command, or leave it without one.	Pilih pintasan baru untuk perintah ini, atau biarkan tanpa pintasan.
@@ -3220,9 +3328,11 @@ curves	Smooth	Haluskan
 	GPU Memory Full	Memori GPU Penuh
 	The layers need {needed} of GPU memory and may hold {budget}, so edits that redraw the whole document do it on the CPU. Click to set GPU Memory.	Layer membutuhkan {needed} memori GPU dan boleh memakai {budget}, sehingga suntingan yang menggambar ulang seluruh dokumen melakukannya di CPU. Klik untuk mengatur Memori GPU.
 	GPU memory budget: {budget}	Anggaran memori GPU: {budget}
+	Graphics memory: {size}	Memori grafis: {size}
 	This document's layers: {needed} of {budget} for layers	Layer dokumen ini: {needed} dari {budget} untuk layer
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	Layer dokumen ini membutuhkan {needed} tetapi boleh memakai {budget}: penggambaran ulang seluruh dokumen memakai CPU
 	GPU Memory (MB, 0 = Automatic)	Memori GPU (MB, 0 = Otomatis)
+	{path}: the path is not valid Unicode; save under another name.	{path}: jalur bukan Unicode yang valid; simpan dengan nama lain.
 	Replace	Ganti
 	{name} was changed by another app after it was opened or saved here.	{name} diubah oleh aplikasi lain setelah dibuka atau disimpan di sini.
 	Replace it with this document, or cancel and use File › Save As to keep both.	Ganti dengan dokumen ini, atau batalkan dan gunakan Berkas › Simpan Sebagai untuk menyimpan keduanya.
@@ -3230,6 +3340,22 @@ curves	Smooth	Haluskan
 	Increase Brush Size	Perbesar ukuran kuas
 	Decrease Brush Hardness	Kurangi kekerasan kuas
 	Increase Brush Hardness	Tambah kekerasan kuas
+	Demosaic	Demosaik
+	How the camera's colour filter mosaic is filled in. It is applied when the file opens; the preview shows the method it was opened with.	Cara mosaik filter warna kamera diisi. Diterapkan saat berkas dibuka; pratinjau menampilkan metode yang dipakai saat dibuka.
+	AHD (adaptive homogeneity)	AHD (homogenitas adaptif)
+	Malvar–He–Cutler	Malvar–He–Cutler
+	Hirakawa–Parks: the cleanest edges and the least colour fringing, the slowest.	Hirakawa–Parks: tepi paling bersih dan pinggiran warna paling sedikit, paling lambat.
+	Gradient-corrected interpolation: sharp and fast, with some colour fringing on fine detail.	Interpolasi terkoreksi gradien: tajam dan cepat, dengan sedikit pinggiran warna pada detail halus.
+	The fastest and the softest, with colour fringing on fine detail.	Paling cepat dan paling lembut, dengan pinggiran warna pada detail halus.
+	“{name}” already exists. Replace it?	“{name}” sudah ada. Ganti?
+	The name in the save dialog was “{name}”.	Nama di dialog simpan adalah “{name}”.
+	Move Up	Pindah ke atas
+	Move Down	Pindah ke bawah
+	Previous Brush	Kuas sebelumnya
+	Next Brush	Kuas berikutnya
+	First Brush	Kuas pertama
+	Last Brush	Kuas terakhir
+	Preview size	Preview size
 	Memory Usage	Penggunaan memori
 	Per-document RAM limit (MB)	Batas RAM per dokumen (MB)
 	Installed RAM: {ram} MB; this limit: {percent}%	RAM terpasang: {ram} MB; batas ini: {percent}%
@@ -3239,3 +3365,34 @@ curves	Smooth	Haluskan
 	Use	Gunakan
 	In Front	Di Depan
 	Behind	Di Belakang
+
+# DDS Options (#1327)
+	DDS Options	Opsi DDS
+	Compression	Kompresi
+	Generate Mipmaps	Buat mipmap
+
+# Color Table (.act) dialog
+	There is no color table to save.	Tidak ada tabel warna untuk disimpan.
+@plural	Saved {n} color to {file}|Saved {n} colors to {file}	{n} warna disimpan ke {file}
+
+# Graphics Adapter preference (#1885)
+	GPU adapter	Adaptor GPU
+# Actions: a step dialog holds a suspended recording (#7365)
+	Confirm or cancel the open action step dialog first	Konfirmasi atau batalkan dulu dialog langkah tindakan yang terbuka
+	Pro Medium Gray	Pro Abu-abu Sedang
+	Solarized	Solarized
+	Breeze	Breeze
+	Pro Light Gray	Pro Abu-abu Terang
+	Pro Light	Pro Terang
+	Resize Windows to Fit	Ubah ukuran jendela agar pas
+
+	EXR	EXR
+
+# Paragraph direction (TYPE-218-2)
+	Automatic paragraph direction	Arah paragraf otomatis
+	Left-to-right paragraph direction	Arah paragraf kiri ke kanan
+	Right-to-left paragraph direction	Arah paragraf kanan ke kiri
+	Not rendered: this adjustment ({key}) is kept as imported.	Tidak dirender: penyesuaian ini ({key}) disimpan seperti saat diimpor.
+
+# Print preview image (#8236)
+	Print preview image	Print preview image

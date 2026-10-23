@@ -343,6 +343,11 @@ fn shortcuts_normalise_and_detect_conflicts() {
     assert_eq!(normalize_shortcut("Cmd++").as_deref(), Some("Cmd++"));
     assert_eq!(normalize_shortcut("Cmd+Shift"), None);
     assert_eq!(normalize_shortcut("Cmd+A+B"), None);
+    // #6827: multi-word key names keep egui's spelling (Title case made `Pageup`, matching no key).
+    assert_eq!(normalize_shortcut("shift+pageup").as_deref(), Some("Shift+PageUp"));
+    assert_eq!(normalize_shortcut("Ctrl+Alt+PAGEDOWN").as_deref(), Some("Ctrl+Alt+PageDown"));
+    assert_eq!(normalize_shortcut("Cmd+openbracket").as_deref(), Some("Cmd+OpenBracket"));
+    assert_eq!(normalize_shortcut("home").as_deref(), Some("Home"));
     let c = conflicts([("a", "Cmd+J"), ("b", "cmd+j"), ("c", "Cmd+K")]);
     assert_eq!(c, vec![("Cmd+J".to_string(), vec!["a".to_string(), "b".to_string()])]);
 }
@@ -494,6 +499,32 @@ fn right_click_with_painting_tools_pref() {
 }
 
 #[test]
+fn gpu_adapter_round_trips_and_defaults_to_automatic() {
+    let mut s = session();
+    assert_eq!(s.prefs().performance.gpu_adapter, "");
+    s.execute("prefs.set", json!({"path": "performance.gpuAdapter", "value": "NVIDIA"})).unwrap();
+    assert_eq!(s.prefs().performance.gpu_adapter, "NVIDIA");
+    assert!(s.execute("prefs.set", json!({"path": "performance.gpuAdapter", "value": 3})).is_err());
+    assert_eq!(s.prefs().performance.gpu_adapter, "NVIDIA");
+    let mut t = Session::new();
+    t.load_prefs_json(&s.prefs_to_json()).unwrap();
+    assert_eq!(t.prefs().performance.gpu_adapter, "NVIDIA");
+    let mut u = Session::new();
+    u.load_prefs_json(r#"{"performance": {"useGpu": true}}"#).unwrap();
+    assert_eq!(u.prefs().performance.gpu_adapter, "");
+}
+
+#[test]
+fn gpu_adapter_names_match_by_word_ignoring_case() {
+    let arc = "Intel(R) Arc(tm) A370M Graphics (DG2)";
+    assert!(gpu_adapter_matches("NVIDIA GeForce RTX 5060 Ti", "nvidia"));
+    assert!(gpu_adapter_matches(arc, " ARC A370M "));
+    assert!(!gpu_adapter_matches(arc, "arc a380"));
+    assert!(!gpu_adapter_matches(arc, ""));
+    assert!(!gpu_adapter_matches(arc, "   "));
+}
+
+#[test]
 fn gpu_backend_round_trips_and_validates() {
     let mut s = session();
     assert_eq!(s.prefs().performance.gpu_backend, GpuBackend::Auto);
@@ -553,7 +584,9 @@ fn notification_autohide_preferences() {
 fn linux_only_preferences_show_only_on_linux() {
     assert_eq!(is_hidden("performance.linuxDisplayServer"), !cfg!(target_os = "linux"));
     assert!(!is_hidden("performance.gpuBackend"));
-    assert!(LINUX_ONLY.iter().all(|p| choices(p).is_some()), "every Linux-only preference is a real one");
+    assert!(LINUX_ONLY.contains(&"performance.gpuAdapter"));
+    let free_text = ["performance.gpuAdapter"];
+    assert!(LINUX_ONLY.iter().all(|p| free_text.contains(p) || choices(p).is_some()), "every Linux-only preference is a real one");
 }
 
 #[test]

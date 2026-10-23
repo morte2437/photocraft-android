@@ -314,9 +314,11 @@ fn create_droplet(s: &mut Session, p: &Value) -> Result<Value> {
     let path = p.get("path").and_then(Value::as_str).filter(|v| !v.is_empty()).ok_or_else(|| bad(cmd, "missing \"path\" (where to save the droplet)"))?;
     let steps_v = p.get("steps").or_else(|| p.get("action")).ok_or_else(|| bad(cmd, "missing \"steps\" (the action to run)"))?;
     let mut steps = parse_steps(steps_v, cmd)?;
-    // The droplet's output folder replaces recorded saves, and view steps don't apply, as in batch.
-    steps.retain(|(id, _)| !crate::actions_cmds::shell_save_command(id) && !crate::actions_cmds::shell_view_command(id));
-    check_known(&steps, cmd)?;
+    // As in batch, the droplet's output folder replaces recorded saves, which are kept to mark the
+    // result, and view steps don't apply.
+    steps.retain(|(id, _)| crate::file_cmds::batch_keeps_step(id));
+    let commands: Vec<_> = steps.iter().filter(|(id, _)| !crate::file_cmds::batch_save_point(id)).cloned().collect();
+    check_known(&commands, cmd)?;
     // Play Action steps need their actions when the droplet runs on its own (#2794). Not under
     // `actions`: the CLI reads that key as an action set.
     let called = crate::actions_cmds::called_actions(&s.actions.list, &mut steps);
@@ -356,7 +358,9 @@ fn write_shim(droplet: &str) -> Result<String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755));
+        // The shim only has to run as the user who created it; 0o755 would also let every other
+        // local account read and execute it.
+        let _ = std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o700));
     }
     Ok(shim)
 }
@@ -558,7 +562,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "file.automate.createDroplet",
             "Create Droplet…",
             &["File", "Automate"],
-            r##"{"path":str (.pcdroplet),"steps":[[id,params]…] (the action),"name":str?,"output":folder?,"format":"same|png|jpg|…"?,"quality":0..12?,"shim":bool=true on Unix (writes <name>.command calling `photocraft-cli droplet`)} → {path, shim} (the actions its Play Action steps call are saved in the droplet)"##,
+            r##"{"path":str (.pcdroplet),"steps":[[id,params]…] (the action),"name":str?,"output":folder?,"format":"same|png|jpg|…"?,"quality":0..12?,"shim":bool=true on Unix (writes <name>.command calling `photocraft-cli droplet`)} → {path, shim} (the actions its Play Action and Conditional steps call are saved in the droplet)"##,
             native,
             create_droplet
         ),

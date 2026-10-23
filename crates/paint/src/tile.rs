@@ -40,7 +40,7 @@ impl GrayTile {
         self.data.iter().map(|&v| f32::from(v) / 65535.0).collect()
     }
     pub fn is_valid(&self) -> bool {
-        self.width > 0 && self.height > 0 && self.data.len() == self.width as usize * self.height as usize
+        self.width > 0 && self.height > 0 && (self.width as usize).checked_mul(self.height as usize) == Some(self.data.len())
     }
 
     /// A box-filtered copy whose larger side is at most `max_side` (the whole tile when it is
@@ -157,7 +157,9 @@ impl<'de> Deserialize<'de> for GrayTile {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         use serde::de::Error;
         let t = GrayTileIn::deserialize(d)?;
-        let n = t.width as usize * t.height as usize;
+        let Some(n) = (t.width as usize).checked_mul(t.height as usize) else {
+            return Err(D::Error::custom("tile dimensions overflow the address space"));
+        };
         let data: Vec<u16> = match t.data {
             DataIn::B64(s) => {
                 let b = b64_decode(&s).ok_or_else(|| D::Error::custom("invalid base64 in tile data"))?;
@@ -232,6 +234,9 @@ pub struct Mips {
 
 impl Mips {
     pub fn new(t: &GrayTile) -> Self {
+        if !t.is_valid() {
+            return Self { levels: vec![(1, 1, vec![0.0])] };
+        }
         let mut levels = vec![(t.width as usize, t.height as usize, t.to_f32())];
         while let Some((w, h, v)) = levels.last() {
             if *w <= 1 && *h <= 1 {
@@ -335,6 +340,18 @@ mod tests {
         let f: GrayTile = serde_json::from_str(r#"{"width":2,"height":1,"data":[0.0,1.0]}"#).unwrap();
         assert_eq!(f.data, vec![0, 65535].into());
         assert!(serde_json::from_str::<GrayTile>(r#"{"width":2,"height":2,"data":[0.0,1.0]}"#).is_err());
+        assert!(serde_json::from_str::<GrayTile>(r#"{"width":4294967295,"height":4294967295,"data":[0.0]}"#).is_err());
+        let invalid = GrayTile { width: u32::MAX, height: u32::MAX, data: vec![1].into() };
+        assert!(!invalid.is_valid());
+        assert_eq!(Mips::new(&invalid).levels, vec![(1, 1, vec![0.0])]);
+    }
+
+    /// `u32::MAX * u32::MAX` only overflows `usize` on 32-bit targets (wasm); 64-bit hits the length check.
+    #[cfg(target_pointer_width = "32")]
+    #[test]
+    fn oversized_dimensions_report_address_space_overflow() {
+        let err = serde_json::from_str::<GrayTile>(r#"{"width":4294967295,"height":4294967295,"data":[0.0]}"#).unwrap_err();
+        assert!(err.to_string().contains("tile dimensions overflow the address space"));
     }
 
     #[test]

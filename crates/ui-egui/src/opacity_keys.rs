@@ -1,6 +1,6 @@
 //! Number keys set opacity (#352): 1 = 10% … 9 = 90%, 0 = 100%; two digits
 //! typed quickly set an exact value (4 then 5 = 45%, 0 then 0 = 0%). With the Brush, Pencil or
-//! Eraser they set the brush's Opacity (⇧: Flow); with the Gradient or Paint Bucket their
+//! Eraser they set the brush's Opacity (⇧: Flow; swapped while airbrush build-up is on); with the Gradient or Paint Bucket their
 //! Opacity; with tools that have no opacity of their own (Move, the selection tools, Type…) the
 //! active layer's Opacity (⇧: Fill). Tools whose number is a strength or exposure are left alone.
 
@@ -100,6 +100,11 @@ pub fn press(app: &mut PhotocraftApp, d: u8, shift: bool, now: f64) {
 
 fn apply(app: &mut PhotocraftApp, percent: f32, shift: bool) {
     let v = percent / 100.0;
+    // With airbrush build-up on, the keys swap roles, as in Photoshop: plain digits set Flow, ⇧ digits Opacity.
+    // A Pencil- or Block-mode Eraser has no build-up (its options bar disables Flow and the airbrush).
+    let tool = app.ui.tool;
+    let build_up = app.session.tools.brush.build_up && !crate::eraser_ui::pencil_mode(app, tool) && !crate::eraser_ui::block_mode(app, tool);
+    let shift = shift ^ (build_up && matches!(target(tool), Target::Brush { flow: true }));
     match (target(app.ui.tool), shift) {
         (Target::Brush { .. }, false) => {
             let _ = app.run("tools.setBrush", json!({ "brush": { "opacity": v } }));
@@ -167,6 +172,33 @@ mod tests {
         let mut p = app(Tool::Pencil);
         press(&mut p, 7, true, 0.0);
         assert_eq!(p.session.tools.brush.flow, 1.0);
+    }
+
+    #[test]
+    fn with_build_up_digits_set_flow_and_shift_digits_set_opacity() {
+        let mut a = app(Tool::Brush);
+        a.session.tools.brush.build_up = true;
+        press(&mut a, 3, false, 0.0);
+        assert!((a.session.tools.brush.flow - 0.3).abs() < 1e-6);
+        assert_eq!(a.session.tools.brush.opacity, 1.0, "opacity is untouched");
+        press(&mut a, 6, true, 5000.0);
+        assert!((a.session.tools.brush.opacity - 0.6).abs() < 1e-6);
+        assert!((a.session.tools.brush.flow - 0.3).abs() < 1e-6);
+        // The Pencil has no flow, so build-up changes nothing for it.
+        let mut p = app(Tool::Pencil);
+        p.session.tools.brush.build_up = true;
+        press(&mut p, 4, false, 0.0);
+        assert!((p.session.tools.brush.opacity - 0.4).abs() < 1e-6);
+        assert_eq!(p.session.tools.brush.flow, 1.0);
+        // The Eraser swaps too, except in Pencil mode, which has no build-up.
+        let mut e = app(Tool::Eraser);
+        e.session.tools.brush.build_up = true;
+        press(&mut e, 2, false, 0.0);
+        assert!((e.session.tools.brush.flow - 0.2).abs() < 1e-6);
+        e.ui.tool_options.eraser_mode = "pencil".into();
+        press(&mut e, 7, false, 5000.0);
+        assert!((e.session.tools.brush.opacity - 0.7).abs() < 1e-6);
+        assert!((e.session.tools.brush.flow - 0.2).abs() < 1e-6);
     }
 
     #[test]

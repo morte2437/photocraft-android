@@ -7,6 +7,10 @@
 # Licensed MIT OR Apache-2.0. See LICENSE-translations.txt and ATTRIBUTION.md.
 # Product names and technology names retain their spelling.
 
+# Layer Mask Display Options (the layer mask rubylith's colour and opacity)
+	Mask Options…	마스크 옵션…
+	Layer Mask Display Options…	레이어 마스크 표시 옵션…
+
 # Channel Options and New Spot Channel (#3761)
 	Channel Color	채널 색상
 	Color Indicates:	색상 표시 내용:
@@ -789,6 +793,23 @@
 	Split Warp Vertically	뒤틀기 세로로 분할
 	Statistics…	통계…
 	Refine Strokes	다듬기 획
+	Edits	편집
+# Counted status and panel messages
+@plural	Exported {n} swatch to {file}|Exported {n} swatches to {file}	색상 견본 {n}개를 {file}(으)로 내보냈습니다
+@plural	Imported {n} swatch from {file}|Imported {n} swatches from {file}	{file}에서 색상 견본 {n}개를 가져왔습니다
+@plural	Imported {n} brush from {group}|Imported {n} brushes from {group}	{group}에서 브러시 {n}개를 가져왔습니다
+@plural	Played {n} step|Played {n} steps	단계 {n}개를 재생했습니다
+@plural	{n} step|{n} steps	단계 {n}개
+@plural	Saved for Web: {n} file|Saved for Web: {n} files	웹용으로 저장됨: 파일 {n}개
+@plural	Updated {n} linked smart object changed on disk|Updated {n} linked smart objects changed on disk	디스크에서 변경된 연결된 스마트 오브젝트 {n}개를 업데이트했습니다
+@plural	{n} layer recorded by this comp was deleted. Update the comp, or clear the warning.|{n} layers recorded by this comp were deleted. Update the comp, or clear the warning.	이 레이어 구성 요소에 기록된 레이어 {n}개가 삭제되었습니다. 레이어 구성 요소를 업데이트하거나 경고를 지우세요.
+@plural	{n} plane|{n} planes	평면 {n}개
+@plural	{n} preset|{n} presets	사전 설정 {n}개
+@plural	{n} sample point removed|{n} sample points removed	샘플 지점 {n}개를 제거했습니다
+@plural	{n} slice|{n} slices	분할 영역 {n}개
+@plural	{warning} (+{n} more brush preset warning)|{warning} (+{n} more brush preset warnings)	{warning} (브러시 사전 설정 경고 {n}개 더 있음)
+@plural	{what} with {n} warning|{what} with {n} warnings	{what}: 경고 {n}개
+
 @plural	{n} item|{n} items	항목 {n}개
 	Auto	자동
 	(print to the printer)	(프린터로 인쇄)
@@ -970,6 +991,9 @@
 	Copper	구리
 	Copyright	저작권
 	Copyright and Contact Info	저작권 및 연락처 정보
+	Copyright Info URL	저작권 정보 URL
+	Copyright Notice	저작권 고지
+	Document Title	문서 제목
 	Corner Crop Marks	모서리 자르기 표시
 	Corner radius	모서리 반경
 	Correction	보정
@@ -1071,7 +1095,7 @@
 	Done	완료
 	Dots	점
 	Drag a rectangle around the object	오브젝트를 둘러싸는 사각형을 드래그하세요
-	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click to delete.	이미지 위에서 드래그하여 제약 조건 추가; Shift 키로 수평/수직 유지; 오른쪽 클릭하여 삭제.
+	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click a constraint to change or delete it.	이미지 위에서 드래그하여 제약 조건 추가; Shift 키로 수평/수직 유지; 제약 조건을 오른쪽 클릭하여 변경 또는 삭제.
 	Drag to move the active shape's path or the Work Path	드래그하여 활성 모양의 패스 또는 작업 패스 이동
 	Click: select anchor · Drag: move anchor, handle or segment · {shift}-click: add · {alt}-click: whole subpath	클릭: 기준점 선택 · 드래그: 기준점, 핸들 또는 세그먼트 이동 · {shift}-클릭: 추가 · {alt}-클릭: 하위 패스 전체
 	Draw with the Pen tool (P) or make a work path from a selection.	펜 도구(P)로 그리거나 선택 영역에서 작업 패스를 만드세요.
@@ -1308,6 +1332,8 @@
 	Override Pressure	필압 재정의
 	Override Rotation	회전 재정의
 	Override Tilt	기울기 재정의
+	Override Tilt X	X축 기울기 재정의
+	Override Tilt Y	Y축 기울기 재정의
 	PRESET DETAILS	사전 설정 세부 정보
 	PSD	PSD
 	Paint Overlay	오버레이 칠하기
@@ -1392,6 +1418,7 @@
 	Rename	이름 바꾸기
 	Rename Group…	그룹 이름 바꾸기…
 	Rename Layer…	레이어 이름 바꾸기…
+	Rename Path…	패스 이름 바꾸기…
 	Rename Tool Preset…	도구 사전 설정 이름 바꾸기…
 	Rename…	이름 바꾸기…
 	Resample	리샘플링
@@ -1459,6 +1486,7 @@
 	Set shape fill type	모양 채우기 유형 설정
 	Set shape stroke type	모양 획 유형 설정
 	Set the text color	텍스트 색상 설정
+	Create warped text	뒤틀린 텍스트 만들기
 	Shadows	어두운 영역
 	Shape:	모양:
 	Sharpening	선명 효과
@@ -1959,6 +1987,7 @@
 	Quick export format	빠른 내보내기 형식
 	Quick export location	빠른 내보내기 위치
 	Recent file count	최근 파일 수
+	LUT folder	LUT 폴더
 	Recent files	최근 파일
 	Recent fonts	최근 글꼴
 	Recover on launch	시작 시 복구
@@ -2114,6 +2143,11 @@
 	Apply the pen's tilt and rotation to the tip shape	펜의 기울기와 회전을 브러시 끝 모양에 적용
 	Mixer Brush	혼합 브러시
 	Wet	젖음
+	Current Brush Load	현재 브러시 물감
+	Load Brush	브러시 채우기
+	Clean Brush	브러시 세척
+	Load the brush after each stroke	획마다 브러시 채우기
+	Clean the brush after each stroke	획마다 브러시 세척
 	Mix	혼합
 	Wetness Jitter	젖음 지터
 	Mix Jitter	혼합 지터
@@ -2185,6 +2219,7 @@
 	32 bit (float)	32비트(부동 소수점)
 	Floating point	부동 소수점
 	Use Global Light	전체 조명 사용
+	Overprint	중복 인쇄
 	Native file drag-and-drop is unavailable	파일 드래그 앤 드롭을 사용할 수 없습니다
 	Native file drag-and-drop is not supported on Wayland yet. Use File › Open, or copy the image in your file manager and paste it with {paste}.	Wayland에서는 아직 파일 드래그 앤 드롭을 지원하지 않습니다. 파일 › 열기를 사용하거나, 파일 관리자에서 이미지를 복사한 뒤 {paste}(으)로 붙여넣으세요.
 	To drop files, start PhotoCraft under XWayland: `{command}`	파일을 끌어다 놓으려면 XWayland에서 PhotoCraft를 실행하세요: `{command}`
@@ -2206,6 +2241,8 @@
 	GPU acceleration could not continue. Your documents are unchanged.	GPU 가속을 계속할 수 없습니다. 문서는 변경되지 않았습니다.
 	PhotoCraft is using the CPU image compositor. The window may still use your graphics adapter.	PhotoCraft가 CPU로 이미지를 합성하고 있습니다. 창 표시에는 그래픽 어댑터를 계속 사용할 수 있습니다.
 	Retry GPU requires a restart. Save your work first.	GPU를 다시 사용하려면 다시 시작해야 합니다. 먼저 작업을 저장하세요.
+	Retry GPU tries the graphics processor again now.	GPU 다시 사용을 누르면 바로 그래픽 프로세서를 다시 시도합니다.
+	GPU acceleration resumed.	GPU 가속을 다시 사용합니다.
 	Keep Using CPU	CPU 계속 사용
 	Retry GPU	GPU 다시 사용
 	Advanced	고급
@@ -2898,6 +2935,11 @@ cameraRaw	Color	색상
 	Content-Aware Move Tool	내용 인식 이동 도구
 	TIFF Options	TIFF 옵션
 	Targa Options	Targa 옵션
+	JPEG Options	JPEG 옵션
+	Image Options	이미지 옵션
+	Format Options	포맷 옵션
+	Baseline ("Standard")	기본("표준")
+	Baseline Optimized	기본 최적화
 	24 bits/pixel	24비트/픽셀
 	32 bits/pixel	32비트/픽셀
 	Including layers will increase file size.	레이어를 포함하면 파일 크기가 커집니다.
@@ -3237,6 +3279,35 @@ cameraData	Lens	렌즈
 	Mirror	미러
 	Output Settings	출력 설정
 	Output To	출력 위치
+
+	Animation Options	애니메이션 옵션
+	Entire Document	전체 문서
+	Filter Options	필터 옵션
+	Layer Bounds	레이어 경계
+	Layers Panel Options	레이어 패널 옵션
+	New Artboard…	새 아트보드…
+	New Group	새 그룹
+	New Group…	새 그룹…
+	New Layer…	새 레이어…
+	Panel Options…	패널 옵션…
+	Prevent Auto-Nesting	자동 중첩 방지
+	Show Layers	레이어 표시
+	Thumbnail Contents	축소판 내용
+	Thumbnail Size	축소판 크기
+	Use Default Masks on Fill Layers	칠 레이어에 기본 마스크 사용
+	Expand New Effects	새 효과 펼치기
+	Add “copy” to Copied Layers and Groups	복사한 레이어 및 그룹에 “복사” 추가
+	Preview on canvas when reordering layers	레이어 순서 변경 시 캔버스에서 미리보기
+	Show layer mask badges	레이어 마스크 배지 표시
+
+# Smart Filter editors
+	Blending Options ({filter})	혼합 옵션 ({filter})
+	Hide the layer's effects and Smart Filters  ({key}-click: all layers)	레이어 효과 및 스마트 필터 숨기기  ({key}+클릭: 모든 레이어)
+	Show the layer's effects and Smart Filters  ({key}-click: all layers)	레이어 효과 및 스마트 필터 표시  ({key}+클릭: 모든 레이어)
+	Wait for the current job to finish.	현재 작업이 완료될 때까지 기다리세요.
+	The document or Smart Filter changed. Reopen its dialog.	문서 또는 스마트 필터가 변경되었습니다. 대화 상자를 다시 여세요.
+	Opacity must be between 0% and 100%.	불투명도는 0%에서 100% 사이여야 합니다.
+	Dissolve is approximated: it blends without Photoshop's dither.	디졸브는 근사치입니다. Photoshop의 디더링 없이 혼합됩니다.
 	Loading fonts…	글꼴 불러오는 중…
 	Response curve	응답 곡선
 	Simulate Pressure	압력 시뮬레이션
@@ -3286,6 +3357,13 @@ curves	Smooth	매끄럽게
 	Click to place · Alt-click or drag off-canvas to remove	클릭하여 배치 · Alt-클릭 또는 캔버스 밖으로 드래그하여 제거
 	No document open	열린 문서 없음
 	{n} of {max} sample points	{max}개 중 {n}개의 샘플 지점
+
+# History panel menu (#2966)
+	Step Forward	한 단계 앞으로
+	Step Backward	한 단계 뒤로
+	Clear History	작업 내역 지우기
+	New Snapshot…	새 스냅샷…
+	History Options…	작업 내역 옵션…
 # Print dialog (#2697)
 	Emulsion Down	감광면 아래로
 	Functions	기능
@@ -3303,11 +3381,19 @@ curves	Smooth	매끄럽게
 	Light Red	연한 빨강
 	Medium Blue	중간 파랑
 	Light Gray	연한 회색
+	Stop	정지
 	Object Finder	개체 찾기
 	No object found there — drag a rectangle around it	그곳에서 개체를 찾지 못했습니다 — 주위에 사각형을 드래그하세요
+	The active layer has no pixels here — turn on Sample All Layers or select a layer with pixels	활성 레이어의 이 위치에는 픽셀이 없습니다 — 모든 레이어 샘플링을 켜거나 픽셀이 있는 레이어를 선택하세요
 	Remove after each stroke	획마다 제거
 	Apply the removal ({key})	제거 적용 ({key})
 	Strokes to remove: {n} (Enter applies, Esc cancels)	제거할 획: {n} (Enter 적용, Esc 취소)
+	Load Contours…	윤곽선 불러오기…
+	Replace Contours…	윤곽선 바꾸기…
+	Save Contours…	윤곽선 저장…
+	Delete Contour	윤곽선 삭제
+	Loaded contours from {file}	{file}에서 윤곽선을 불러왔습니다
+	Saved contours to {file}	윤곽선을 {file}에 저장했습니다
 	Show home recent files	홈 화면에 최근 파일 표시
 	Clear Brush Controls	브러시 제어 지우기
 	Reset All Locked Settings	모든 잠긴 설정 재설정
@@ -3316,6 +3402,9 @@ curves	Smooth	매끄럽게
 # Actions panel: Load/Save Actions (.atn) and kept Photoshop steps
 	Load Actions…	액션 불러오기…
 	Save Actions…	액션 저장…
+	New Action…	새 액션…
+	Start Recording	기록 시작
+	Stop Recording	기록 중지
 	{name} (Photoshop)	{name} (Photoshop)
 	{message} ({note})	{message} ({note})
 @plural	Loaded {n} action from {file}|Loaded {n} actions from {file}	{file}에서 액션 {n}개를 불러왔습니다
@@ -3347,6 +3436,16 @@ curves	Smooth	매끄럽게
 	Sent to {printer}	{printer}(으)로 전송됨
 	set in Print Settings…	인쇄 설정에서 지정…
 	ICO is limited to 256 × 256 pixels	ICO는 256 × 256픽셀로 제한됩니다
+# History panel › History Brush source (#2966)
+	Paints from the History panel's source state	작업 내역 패널의 소스 상태에서 칠합니다
+	Sets the source for the history brush	작업 내역 브러시의 소스를 설정합니다
+# Bevel & Emboss shading controls.
+	Highlight Mode	하이라이트 모드
+	Highlight Color	하이라이트 색상
+	Highlight Opacity	하이라이트 불투명도
+	Shadow Mode	그림자 모드
+	Shadow Color	그림자 색상
+	Shadow Opacity	그림자 불투명도
 # Embedded Profile Mismatch: profile names beside the choices, Remember this choice
 	Use the embedded profile ({profile})	포함된 프로파일 사용({profile})
 	Convert to the working space ({profile})	작업 색상 공간으로 변환({profile})
@@ -3363,6 +3462,7 @@ curves	Smooth	매끄럽게
 	Chisel Hard	단단하게 조각
 	Chisel Soft	부드럽게 조각
 	Open color-less EXR as ACEScg	색 공간 정보 없는 EXR을 ACEScg로 열기
+	Do not append "copy" to filename when saving a copy	사본 저장 시 파일 이름에 "copy"를 붙이지 않음
 # Export As metadata and profile options
 	Color Profile	색상 프로필
 	EXIF	EXIF
@@ -3370,6 +3470,10 @@ curves	Smooth	매끄럽게
 # View › Guides › right-click a guide
 	Edit Selected Guides	선택한 안내선 편집
 	Clear Selected Guides	선택한 안내선 지우기
+	Make Selection	선택 영역 만들기
+	Bicubic Automatic	쌍입방 자동
+	Bicubic Smoother	쌍입방 더 부드럽게
+	Bicubic Sharper	쌍입방 더 선명하게
 	Pasting from other apps is unavailable	다른 앱에서 붙여넣기를 사용할 수 없습니다
 	PhotoCraft can't reach the system clipboard in this session. On Wayland, a Flatpak sandbox hides the protocol that images from other apps are read through.	이 세션에서는 PhotoCraft가 시스템 클립보드에 접근할 수 없습니다. Wayland에서는 Flatpak 샌드박스가 다른 앱의 이미지를 읽는 데 쓰이는 프로토콜을 숨깁니다.
 	To paste from other apps, start PhotoCraft under XWayland: `{command}`	다른 앱에서 붙여넣으려면 XWayland에서 PhotoCraft를 실행하세요: `{command}`
@@ -3389,6 +3493,17 @@ curves	Smooth	매끄럽게
 	set name	세트 이름
 	{set} (modified)	{set}(수정됨)
 	Show file name in title	제목에 파일 이름 표시
+
+# Image › Mode › Bitmap (#5559)
+	50% Threshold	50% 한계값
+	Pattern Dither	패턴 디더
+	Diffusion Dither	확산 디더
+	Halftone Screen	하프톤 스크린
+	Custom Pattern	사용자 정의 패턴
+	Frequency:	빈도:
+	Lines/Inch	선/인치
+	Lines/Centimeter	선/센티미터
+	Ellipse	타원
 	Accept and Go to Conflict	적용 후 충돌 항목으로 이동
 	Changes undone.	변경 사항을 취소했습니다.
 	Choose a new shortcut for this command, or leave it without one.	이 명령의 새 단축키를 선택하거나 단축키 없이 두세요.
@@ -3398,6 +3513,7 @@ curves	Smooth	매끄럽게
 	{shortcut} is reserved by the system and can't be assigned.	{shortcut}은(는) 시스템에서 예약되어 할당할 수 없습니다.
 	Low-Latency Drawing (vsync off, applies at next launch)	저지연 그리기(수직 동기화 끔, 다음 실행 시 적용)
 # Free Transform: a new layer while the box is open (#5859)
+	Reference point location	기준점 위치
 	Free Transform is still being applied; try again when it has finished.	자유 변형을 아직 적용하는 중입니다. 완료된 후 다시 시도하세요.
 	The transform couldn't be applied.	변형을 적용할 수 없습니다.
 # Preferences › Performance › GPU Memory; the status bar and slow-redraw notice
@@ -3406,9 +3522,11 @@ curves	Smooth	매끄럽게
 	GPU Memory Full	GPU 메모리 부족
 	The layers need {needed} of GPU memory and may hold {budget}, so edits that redraw the whole document do it on the CPU. Click to set GPU Memory.	레이어에 GPU 메모리 {needed}가 필요하지만 {budget}만 사용할 수 있어 문서 전체를 다시 그리는 편집은 CPU에서 처리됩니다. 클릭하여 GPU 메모리를 설정합니다.
 	GPU memory budget: {budget}	GPU 메모리 예산: {budget}
+	Graphics memory: {size}	그래픽 메모리: {size}
 	This document's layers: {needed} of {budget} for layers	이 문서의 레이어: 레이어용 {budget} 중 {needed}
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	이 문서의 레이어에 {needed}가 필요하지만 {budget}만 사용할 수 있습니다: 문서 전체 다시 그리기는 CPU를 사용합니다
 	GPU Memory (MB, 0 = Automatic)	GPU 메모리(MB, 0 = 자동)
+	{path}: the path is not valid Unicode; save under another name.	{path}: 경로가 올바른 유니코드가 아닙니다. 다른 이름으로 저장하세요.
 	Replace	대치
 	{name} was changed by another app after it was opened or saved here.	{name}이(가) 여기서 열거나 저장한 뒤 다른 앱에서 변경되었습니다.
 	Replace it with this document, or cancel and use File › Save As to keep both.	이 문서로 대치하거나, 취소하고 파일 › 다른 이름으로 저장을 사용해 둘 다 보관하세요.
@@ -3416,6 +3534,22 @@ curves	Smooth	매끄럽게
 	Increase Brush Size	브러시 크기 늘리기
 	Decrease Brush Hardness	브러시 경도 줄이기
 	Increase Brush Hardness	브러시 경도 늘리기
+	Demosaic	디모자이크
+	How the camera's colour filter mosaic is filled in. It is applied when the file opens; the preview shows the method it was opened with.	카메라 컬러 필터 모자이크를 채우는 방법입니다. 파일을 열 때 적용되며, 미리 보기는 파일을 연 방식으로 표시됩니다.
+	AHD (adaptive homogeneity)	AHD (적응형 균질성)
+	Malvar–He–Cutler	Malvar–He–Cutler
+	Hirakawa–Parks: the cleanest edges and the least colour fringing, the slowest.	Hirakawa–Parks: 가장 깨끗한 가장자리와 가장 적은 색 번짐, 가장 느림.
+	Gradient-corrected interpolation: sharp and fast, with some colour fringing on fine detail.	기울기 보정 보간: 선명하고 빠르지만 미세한 디테일에 약간의 색 번짐이 있음.
+	The fastest and the softest, with colour fringing on fine detail.	가장 빠르고 가장 부드러우며, 미세한 디테일에 색 번짐이 있음.
+	“{name}” already exists. Replace it?	“{name}”이(가) 이미 있습니다. 대치하시겠습니까?
+	The name in the save dialog was “{name}”.	저장 대화상자에 입력한 이름: “{name}”
+	Move Up	위로 이동
+	Move Down	아래로 이동
+	Previous Brush	이전 브러시
+	Next Brush	다음 브러시
+	First Brush	첫 번째 브러시
+	Last Brush	마지막 브러시
+	Preview size	Preview size
 	Memory Usage	메모리 사용량
 	Per-document RAM limit (MB)	문서당 RAM 한도(MB)
 	Installed RAM: {ram} MB; this limit: {percent}%	설치된 RAM: {ram} MB; 이 한도: {percent}%
@@ -3426,3 +3560,34 @@ curves	Smooth	매끄럽게
 	In Front	앞
 	Behind	뒤
 	Blend	혼합
+
+# DDS Options (#1327)
+	DDS Options	DDS 옵션
+	Compression	압축
+	Generate Mipmaps	밉맵 생성
+
+# Color Table (.act) dialog
+	There is no color table to save.	저장할 색상표가 없습니다.
+@plural	Saved {n} color to {file}|Saved {n} colors to {file}	{file}에 색상 {n}개 저장
+
+# Graphics Adapter preference (#1885)
+	GPU adapter	GPU 어댑터
+# Actions: a step dialog holds a suspended recording (#7365)
+	Confirm or cancel the open action step dialog first	먼저 열려 있는 액션 단계 대화 상자를 확인하거나 취소하세요
+	Pro Medium Gray	프로 중간 회색
+	Solarized	Solarized
+	Breeze	Breeze
+	Pro Light Gray	프로 밝은 회색
+	Pro Light	프로 밝게
+	Resize Windows to Fit	창 크기 맞추기
+
+	EXR	EXR
+
+# Paragraph direction (TYPE-218-2)
+	Automatic paragraph direction	자동 단락 방향
+	Left-to-right paragraph direction	왼쪽에서 오른쪽 단락 방향
+	Right-to-left paragraph direction	오른쪽에서 왼쪽 단락 방향
+	Not rendered: this adjustment ({key}) is kept as imported.	렌더링되지 않음: 이 조정({key})은 가져온 상태 그대로 유지됩니다.
+
+# Print preview image (#8236)
+	Print preview image	Print preview image

@@ -184,8 +184,9 @@ impl Plugin {
         let limits = StoreLimitsBuilder::new().memory_size(self.limits.max_memory_bytes).memories(1).tables(4).table_elements(100_000).instances(1).build();
         let mut store = Store::new(&self.engine, limits);
         store.limiter(|l| l);
-        // The start function (if any) runs on this fuel.
-        store.set_fuel(self.limits.fuel_base).map_err(wasm_err)?;
+        // The start function (if any) runs on this fuel. It cannot be interrupted to check the
+        // deadline the way a call can, so it gets no more than one slice, however much a call may use.
+        store.set_fuel(self.limits.fuel_base.min(FUEL_SLICE)).map_err(wasm_err)?;
         let linker = Linker::<StoreLimits>::new(&self.engine);
         let instance = linker.instantiate_and_start(&mut store, &self.module).map_err(wasm_err)?;
         let memory = instance.get_memory(&store, "memory").ok_or_else(|| Error::Abi("the module must export its linear memory as `memory`".into()))?;
