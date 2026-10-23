@@ -103,6 +103,7 @@ fn run(android: AndroidApp) -> Result<(), String> {
                 android,
                 bridge: bridge.clone(),
                 ime: String::new(),
+                ime_stale: None,
                 editing: false,
                 soft_keyboard: false,
                 keys: Default::default(),
@@ -174,6 +175,10 @@ struct Shell {
     bridge: Arc<Bridge>,
     /// The keyboard's text as last seen.
     ime: String,
+    /// The keyboard's text from before it was last cleared. Android applies the clear a frame or
+    /// two late, so the old text can show up once more; it's ignored until the keyboard reports
+    /// something else (#15: a stale "Hello" and then five Backspaces, which deleted layers).
+    ime_stale: Option<String>,
     /// A text field had focus last frame.
     editing: bool,
     /// The Shortcut Pad's keyboard key opened the on-screen keyboard (it stays open, typing
@@ -270,7 +275,10 @@ impl Shell {
     fn reset_keyboard(&mut self, flags: InputType) {
         self.android.set_ime_editor_info(InputType::TYPE_CLASS_TEXT | flags, TextInputAction::None, ImeOptions::IME_FLAG_NO_FULLSCREEN);
         self.android.set_text_input_state(TextInputState { text: String::new(), selection: TextSpan { start: 0, end: 0 }, compose_region: None });
-        self.ime.clear();
+        let old = std::mem::take(&mut self.ime);
+        if !old.is_empty() {
+            self.ime_stale = Some(old);
+        }
     }
 }
 
@@ -344,7 +352,10 @@ impl eframe::App for Shell {
         self.editing = editing;
         if editing || self.soft_keyboard {
             let now = self.android.text_input_state().text;
-            if now != self.ime {
+            if self.ime_stale.as_ref().is_some_and(|old| *old != now) {
+                self.ime_stale = None;
+            }
+            if now != self.ime && self.ime_stale.is_none() {
                 let edit = crate::ime::diff(&self.ime, &now);
                 if editing {
                     raw_input.events.extend(crate::ime::events(&edit));
