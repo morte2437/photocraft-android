@@ -10,8 +10,10 @@
 //! Differences from the desktop app:
 //! - files are opened and saved through Android's document pickers ([`bridge`]); the app works
 //!   on private copies and writes them back to the picked documents when saving;
-//! - no TCP control server, MCP, clipboard images, screen color picking, crash-recovery
-//!   autosave or Photoshop settings import;
+//! - no TCP control server, MCP, clipboard images, screen color picking or Photoshop settings
+//!   import;
+//! - crash-recovery autosave also runs a few seconds after the last change, since Android
+//!   closes apps in the background without warning (`app.rs`);
 //! - pen pressure, tilt and the eraser end come from `MotionEvent`s (`photocraft-tablet`).
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]

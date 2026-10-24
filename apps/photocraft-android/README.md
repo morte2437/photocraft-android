@@ -275,7 +275,7 @@ OpenRaster import, export settings, preferences, brush presets.
 | Barrel rotation | Android has no standard axis for it: rotation stays 0 (Wacom Art Pen rotation is not read). |
 | UI density | Tablets use the desktop (Photoshop-like) layout; on small tablets panels are dense. Phones get the [phone layout](#phone-layout), but tools and the options bar are still the desktop ones. |
 | Clipboard images, screen color picker, display ICC profiles | Not available (no Android services wired). |
-| Crash-recovery autosave | Not wired; save often. |
+| Crash-recovery autosave | Works (Preferences › File Handling). Besides the timer, unsaved work is saved for recovery a few seconds after your last change, because Android can close the app in the background without warning; it comes back the next time you open the app. |
 | TCP control server / MCP | Not available. |
 | Photoshop settings import | Not available. |
 | Names from document providers | Some providers (Downloads on some devices) report a saved document's name without its extension, or no name. The app keeps the extension it asked for, so the format is right, but the file in that folder may show without `.psd`. |

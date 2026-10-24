@@ -7,8 +7,11 @@
 use crate::bridge::{self, Answer, Bridge, Request};
 use photocraft_codecs::{ChannelLayout, EncodeOptions, Image};
 use photocraft_doc::Document;
-use photocraft_ui_egui::{FileDialogAnswer, FileDialogReply, FileDialogRequest, Services};
+use photocraft_format::RecoveryStore;
+use photocraft_ui_egui::{FileDialogAnswer, FileDialogReply, FileDialogRequest, Recoverable, Services};
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -60,6 +63,50 @@ pub fn services(bridge: Arc<Bridge>, files_dir: &Path) -> Services {
             }
         })),
         preset_store: Some(photocraft_engine::preset_store::open_dir_async(files_dir.join("presets"))),
+        ..recovery_services(files_dir.join("recovery"))
+    }
+}
+
+type SharedRecovery = Rc<RefCell<RecoveryStore>>;
+
+/// Run `f` on the recovery store. The service closures never call each other, so the store is
+/// never borrowed twice.
+fn with_store<R>(store: &SharedRecovery, f: impl FnOnce(&mut RecoveryStore) -> R) -> Result<R, String> {
+    let mut slot = store.try_borrow_mut().map_err(|_| "crash recovery is busy".to_string())?;
+    Ok(f(&mut slot))
+}
+
+/// Crash recovery (Preferences › File Handling › Automatically Save Recovery Information):
+/// background .pcraft autosaves into `dir` in the app's private storage, offered again at the
+/// next launch, as on the desktop. Android closes apps in the background whenever it likes, so
+/// the shell also autosaves as soon as the app leaves the screen (see `app.rs`).
+fn recovery_services(dir: PathBuf) -> Services {
+    let recover_dir = dir.clone();
+    let store: SharedRecovery = Rc::new(RefCell::new(RecoveryStore::new(dir)));
+    let (s1, s2, s4, s5) = (store.clone(), store.clone(), store.clone(), store.clone());
+    Services {
+        autosave: Some(Box::new(move |doc: &Arc<Document>, revision: u64, path: Option<&str>| {
+            with_store(&s1, |s| s.autosave_checked(doc, revision, path.map(str::to_string)))?
+        })),
+        autosave_results: Some(Box::new(move || with_store(&s4, |s| s.take_completed()).unwrap_or_default())),
+        flush_autosaves: Some(Box::new(move || with_store(&s5, RecoveryStore::flush).unwrap_or_default())),
+        discard_autosave: Some(Box::new(move |id: u64| {
+            let _ = with_store(&s2, |s| s.discard(id));
+        })),
+        recover: Some(Box::new(move || {
+            photocraft_format::list_recovery(&recover_dir)
+                .into_iter()
+                .map(|e| Recoverable {
+                    key: e.info.key.clone(),
+                    name: e.info.document_name.clone(),
+                    path: e.info.original_path.clone(),
+                    load: Box::new(move || photocraft_format::recover(&e).map_err(|e| e.to_string())),
+                })
+                .collect()
+        })),
+        adopt_autosave: Some(Box::new(move |id: u64, key: &str| {
+            let _ = with_store(&store, |s| s.adopt(id, key));
+        })),
         ..Default::default()
     }
 }
@@ -184,6 +231,41 @@ pub fn fallback_files_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One launch with crash recovery in `dir`, once its recovered documents have loaded.
+    /// Dropping it is Android closing the app: queued autosaves finish, nothing else runs.
+    fn launch(dir: &Path) -> photocraft_ui_egui::PhotocraftApp {
+        use photocraft_ui_egui::{PhotocraftApp, jobs_ui, prefs_ui};
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), recovery_services(dir.to_path_buf()));
+        let ctx = egui::Context::default();
+        prefs_ui::tick(&mut app, &ctx);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while app.session.has_jobs() && std::time::Instant::now() < deadline {
+            jobs_ui::tick(&mut app, &ctx);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        app
+    }
+
+    #[test]
+    fn unsaved_work_is_autosaved_and_offered_again_after_android_closes_the_app() {
+        use photocraft_ui_egui::prefs_ui;
+        let dir = std::env::temp_dir().join(format!("photocraft-recovery-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let ctx = egui::Context::default();
+        {
+            let mut app = launch(&dir);
+            app.run("file.new", serde_json::json!({"width": 4, "height": 4})).unwrap();
+            app.run("edit.fill", serde_json::json!({"color": "#ff0000"})).unwrap();
+            prefs_ui::autosave_now(&mut app);
+            prefs_ui::tick(&mut app, &ctx);
+        }
+        assert_eq!(photocraft_format::list_recovery(&dir).len(), 1, "autosaved");
+        let app = launch(&dir);
+        assert_eq!(app.session.documents().len(), 1, "recovered at the next launch");
+        assert!(app.session.documents()[0].is_dirty(), "still unsaved");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn dialog_requests_map_to_picker_requests() {

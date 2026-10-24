@@ -104,6 +104,8 @@ fn run(android: AndroidApp) -> Result<(), String> {
                 bridge: bridge.clone(),
                 ime: String::new(),
                 ime_stale: None,
+                last_change: (0, 0.0),
+                wake_at: None,
                 editing: false,
                 soft_keyboard: false,
                 keys: Default::default(),
@@ -179,6 +181,11 @@ struct Shell {
     /// two late, so the old text can show up once more; it's ignored until the keyboard reports
     /// something else (#15: a stale "Hello" and then five Backspaces, which deleted layers).
     ime_stale: Option<String>,
+    /// The documents' revisions when they last changed, and when that was (`egui` time), for
+    /// [`Shell::autosave_when_idle`].
+    last_change: (u64, f64),
+    /// Wakes the UI at a given time (see [`idle_waker`]).
+    wake_at: Option<std::sync::mpsc::Sender<std::time::Instant>>,
     /// A text field had focus last frame.
     editing: bool,
     /// The Shortcut Pad's keyboard key opened the on-screen keyboard (it stays open, typing
@@ -282,6 +289,66 @@ impl Shell {
     }
 }
 
+/// A thread that repaints `ctx` at the last time sent to it (each time replaces the one before).
+fn idle_waker(ctx: egui::Context) -> std::sync::mpsc::Sender<std::time::Instant> {
+    let (tx, rx) = std::sync::mpsc::channel::<std::time::Instant>();
+    std::thread::spawn(move || {
+        let mut at: Option<std::time::Instant> = None;
+        loop {
+            let next = match at {
+                None => rx.recv().ok(),
+                Some(t) => match rx.recv_timeout(t.saturating_duration_since(std::time::Instant::now())) {
+                    Ok(t) => Some(t),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        ctx.request_repaint();
+                        at = None;
+                        continue;
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => None,
+                },
+            };
+            match next {
+                Some(t) => at = Some(t),
+                None => return,
+            }
+        }
+    });
+    tx
+}
+
+/// Seconds without changes after which unsaved work is autosaved for recovery.
+const IDLE_AUTOSAVE_SECS: f64 = 4.0;
+
+impl Shell {
+    /// Android closes apps in the background whenever it likes, and no frame runs once the app
+    /// has left the screen, so the autosave timer (Preferences › File Handling) can't be relied
+    /// on alone: unsaved work is also autosaved a few seconds after the last change, while the
+    /// app is still on screen (#16). Only with autosave on; the save itself runs in the
+    /// background and skips documents already saved at their current revision.
+    fn autosave_when_idle(&mut self, ctx: &egui::Context) {
+        if !self.app.session.prefs().file_handling.autosave {
+            return;
+        }
+        let docs = self.app.session.documents();
+        let revisions = docs.iter().filter(|d| d.is_dirty()).fold(docs.len() as u64, |h, d| h.wrapping_mul(31).wrapping_add(d.revision ^ d.doc.id.0));
+        let now = ctx.input(|i| i.time);
+        if revisions != self.last_change.0 {
+            self.last_change = (revisions, now);
+            if docs.iter().any(|d| d.is_dirty()) {
+                // A frame when the wait is over. `request_repaint_after` doesn't wake an idle
+                // app on Android (winit never wakes for it), a repaint from another thread does.
+                let at = std::time::Instant::now() + std::time::Duration::from_secs_f64(IDLE_AUTOSAVE_SECS + 0.05);
+                let wake = self.wake_at.get_or_insert_with(|| idle_waker(ctx.clone()));
+                let _ = wake.send(at);
+            }
+        } else if self.last_change.1 > 0.0 && now - self.last_change.1 >= IDLE_AUTOSAVE_SECS {
+            // Once per change: the next one starts the wait again.
+            self.last_change.1 = 0.0;
+            photocraft_ui_egui::prefs_ui::autosave_now(&mut self.app);
+        }
+    }
+}
+
 impl eframe::App for Shell {
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         let _section = section("photocraft:logic");
@@ -294,6 +361,7 @@ impl eframe::App for Shell {
             self.app.ui.status = message;
             self.app.ui.status_error = error;
         }
+        self.autosave_when_idle(ctx);
         self.app.logic(ctx, frame);
     }
 
