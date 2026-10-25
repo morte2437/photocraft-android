@@ -100,6 +100,11 @@ pub fn pen_control_label(c: PenControl) -> &'static str {
     }
 }
 
+/// The cursor's distance above the finger when it's turned on from the menu (points).
+pub const DEFAULT_CURSOR_OFFSET: f32 = 80.0;
+/// The furthest the cursor can be from the finger (points).
+pub const MAX_CURSOR_OFFSET: f32 = 300.0;
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TouchConfig {
@@ -121,6 +126,14 @@ pub struct TouchConfig {
     pub two_finger_scroll: bool,
     /// A finger held still on a button, tab or row right-clicks it.
     pub long_press_right_click: bool,
+    /// One finger drawing on the canvas works this far (points) above where it touches, so the
+    /// fingertip doesn't hide what it's drawing on; 0 draws under the finger.
+    pub cursor_offset: f32,
+    /// Fingers paint heavier when pressed harder, judged from the size of their contact with the
+    /// screen (experimental), between a light touch's contact size and a firm press's.
+    pub finger_pressure: bool,
+    pub finger_light: f32,
+    pub finger_firm: f32,
     /// The pen's controls, by [`PenControl::index`]: lower, upper and top side buttons, eraser
     /// end.
     pub pen: [PenSetting; 4],
@@ -138,6 +151,10 @@ impl Default for TouchConfig {
             palm_rejection: true,
             two_finger_scroll: true,
             long_press_right_click: true,
+            cursor_offset: 0.0,
+            finger_pressure: false,
+            finger_light: 0.0,
+            finger_firm: 0.0,
             // As a Wacom pen's on a PC: the lower button right-clicks; both other controls erase.
             pen: [
                 PenSetting::new(PenAction::RightClick),
@@ -160,6 +177,10 @@ impl TouchConfig {
     }
 
     pub fn sanitized(mut self) -> Self {
+        self.cursor_offset = if self.cursor_offset.is_finite() { self.cursor_offset.clamp(0.0, MAX_CURSOR_OFFSET) } else { 0.0 };
+        for v in [&mut self.finger_light, &mut self.finger_firm] {
+            *v = if v.is_finite() { v.clamp(0.0, 10_000.0) } else { 0.0 };
+        }
         let [a, b, c, d] = &mut self.pen;
         for s in [&mut self.two_finger_tap, &mut self.three_finger_tap, &mut a.shortcut, &mut b.shortcut, &mut c.shortcut, &mut d.shortcut] {
             *s = s.trim().chars().take(40).collect();

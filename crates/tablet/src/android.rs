@@ -29,6 +29,59 @@ static POINTERS: Mutex<Pointers> = Mutex::new(Pointers::new());
 static PEN_SEEN: Mutex<Option<Instant>> = Mutex::new(None);
 /// The controls that erase while in use, by [`PenControl::index`] ([`set_erasing_controls`]).
 static ERASES: Mutex<[bool; 4]> = Mutex::new([false, false, false, true]);
+/// Finger pressure from the contact size (Touch Input): on, and the light and firm sizes.
+static FINGER_PRESSURE: Mutex<Option<(f32, f32)>> = Mutex::new(None);
+/// The last finger contact the screen reported, and the pressure given to the stroke (smoothed).
+static CONTACT: Mutex<Option<Contact>> = Mutex::new(None);
+
+/// What the touch screen says about a finger: Android's pressure, its size (`getSize`, 0..1)
+/// and the long axis of the contact (`getTouchMajor`, pixels). Devices fill these in very
+/// differently: some report real values, some a constant.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Contact {
+    pub pressure: f32,
+    pub size: f32,
+    pub major: f32,
+    /// The pressure a finger stroke gets from it (when finger pressure is on).
+    pub mapped: f32,
+}
+
+/// A finger contact's size for [`motion::finger_pressure`]: the long axis where the device
+/// reports one, else the normalised size (scaled to the same rough range).
+pub fn contact_size(c: &Contact) -> f32 {
+    if c.major.is_finite() && c.major > 0.0 { c.major } else { c.size * 1000.0 }
+}
+
+/// Turn finger pressure from the contact size on (`Some((light, firm))`) or off.
+pub fn set_finger_pressure(calibration: Option<(f32, f32)>) {
+    *FINGER_PRESSURE.lock().unwrap_or_else(PoisonError::into_inner) = calibration;
+}
+
+/// The last finger contact (for the Touch Input readout and calibration).
+pub fn last_contact() -> Option<Contact> {
+    *CONTACT.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// A finger's sample, with pressure from its contact size, when finger pressure is on.
+fn finger_sample(action: i32, pressure: f32, size: f32, major: f32) -> Option<Update> {
+    let calibration = *FINGER_PRESSURE.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut last = CONTACT.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut c = Contact { pressure, size, major, mapped: 1.0 };
+    let (light, firm) = calibration.unwrap_or((0.0, 0.0));
+    let target = motion::finger_pressure(contact_size(&c), light, firm);
+    // Contact sizes jump in steps and wobble: ease towards each new reading.
+    c.mapped = match (action, *last) {
+        (motion::action::MOVE, Some(prev)) => prev.mapped + (target - prev.mapped) * 0.35,
+        _ => target,
+    };
+    *last = Some(c);
+    calibration?;
+    Some(match action {
+        motion::action::DOWN | motion::action::MOVE | motion::action::POINTER_DOWN => Update::Set(Some(Sample { pressure: c.mapped, ..Sample::default() })),
+        motion::action::UP | motion::action::POINTER_UP => Update::Keep,
+        _ => Update::Set(None),
+    })
+}
 /// The controls in use in the pen's last event, and the presses since [`take_presses`].
 static HELD: Mutex<[bool; 4]> = Mutex::new([false; 4]);
 static PRESSES: Mutex<Vec<Press>> = Mutex::new(Vec::new());
@@ -217,13 +270,17 @@ pub extern "system" fn Java_ai_storyteller_photocraft_PhotoCraftActivity_nativeP
     x: f32,
     y: f32,
     age_ms: i32,
+    size: f32,
+    major: f32,
 ) {
     saw_pen(tool);
     track_age(action, tool, age_ms);
     track_controls(action, tool, buttons, x, y);
     track_path(action, tool, x, y);
     let e = RawEvent { action, tool, buttons, pressure, tilt, orientation };
-    if let Update::Set(sample) = handle_with(&e, *ERASES.lock().unwrap_or_else(PoisonError::into_inner)) {
+    let finger = (tool == motion::tool::FINGER).then(|| finger_sample(action, pressure, size, major)).flatten();
+    let update = finger.unwrap_or_else(|| handle_with(&e, *ERASES.lock().unwrap_or_else(PoisonError::into_inner)));
+    if let Update::Set(sample) = update {
         // Hovering, only a change of end (or of an erasing button) is news: a hover move every
         // few milliseconds would crowd the frame's samples.
         let hovering = matches!(action, motion::action::HOVER_ENTER | motion::action::HOVER_MOVE);

@@ -300,6 +300,10 @@ pub struct Router {
     secondary: bool,
     /// The interface finger whose touch events reach egui (for press-and-hold), as last sent.
     forwarded: Option<Event>,
+    /// The pointer of a finger drawing on the canvas sits this far from it (Touch Input › cursor
+    /// above the finger), and where the finger and the cursor are now, for the overlay.
+    offset: Option<Vec2>,
+    cursor: Option<(Pos2, Pos2)>,
 }
 
 fn pointer_down(out: &mut Vec<Routed>, pos: Pos2, button: PointerButton) {
@@ -402,9 +406,26 @@ impl Router {
         if let Some(h) = self.hold
             && env.now - h.since >= if h.list || h.strip { LONG_PRESS } else { HOLD_TIME }
         {
-            self.commit(&mut out);
+            self.commit(env, &mut out);
         }
         out
+    }
+
+    /// Where a finger drawing with the cursor above it is, and the cursor (for the overlay).
+    pub fn offset_cursor(&self) -> Option<(Pos2, Pos2)> {
+        self.cursor
+    }
+
+    /// Where the pointer goes for the primary touch at `pos`: there, or the cursor above a finger
+    /// drawing on the canvas, kept inside the canvas so it never presses the interface.
+    fn aim(&mut self, pos: Pos2, env: &Env) -> Pos2 {
+        let Some(off) = self.offset else { return pos };
+        let mut p = pos + off;
+        if let Some(r) = env.canvas {
+            p = p.clamp(r.min, r.max);
+        }
+        self.cursor = Some((pos, p));
+        p
     }
 
     /// Whether the router needs frames: a pad touch is down, a finger is waiting or the pointer
@@ -488,7 +509,10 @@ impl Router {
                         && let Some(f) = self.fingers.iter().find(|f| f.id == p && f.role == Role::Canvas).copied()
                     {
                         self.primary = None;
-                        pointer_release(out, f.pos, self.button());
+                        let p = self.aim(f.pos, env);
+                        self.offset = None;
+                        self.cursor = None;
+                        pointer_release(out, p, self.button());
                         self.gone_pending = true;
                     }
                 }
@@ -523,7 +547,7 @@ impl Router {
             let along_list = h.list && d.y.abs() > d.x.abs();
             let along_strip = h.strip && d.x.abs() > d.y.abs();
             if !(along_list || along_strip) {
-                self.commit(out);
+                self.commit(env, out);
                 return;
             }
             // A swipe along a list or strip scrolls it; nothing is grabbed.
@@ -536,7 +560,8 @@ impl Router {
             out.push(Routed::App(Event::PointerMoved(start)));
         }
         if self.primary == Some(id) {
-            out.push(Routed::App(Event::PointerMoved(pos)));
+            let p = self.aim(pos, env);
+            out.push(Routed::App(Event::PointerMoved(p)));
             return;
         }
         match role {
@@ -585,14 +610,17 @@ impl Router {
         if self.hold.is_some_and(|h| h.id == id) {
             // Lifted before it became the pointer: a quick tap (a click, or a dot of paint).
             if lifted {
-                self.commit(out);
+                self.commit(env, out);
             } else {
                 self.hold = None;
             }
         }
         if self.primary == Some(id) {
             self.primary = None;
-            pointer_release(out, pos, self.button());
+            let p = self.aim(pos, env);
+            self.offset = None;
+            self.cursor = None;
+            pointer_release(out, p, self.button());
             if lifted {
                 // Kept for a frame, so egui sees the flick's speed.
                 self.gone_pending = true;
@@ -648,8 +676,9 @@ impl Router {
         self.fingers.iter().any(|f| f.id == id && f.role == Role::Canvas)
     }
 
-    /// The held finger becomes the pointer, pressed where it went down.
-    fn commit(&mut self, out: &mut Vec<Routed>) {
+    /// The held finger becomes the pointer, pressed where it went down (or, drawing with the
+    /// cursor above the finger, where the cursor was then).
+    fn commit(&mut self, env: &Env, out: &mut Vec<Routed>) {
         let Some(h) = self.hold.take() else { return };
         if self.primary.is_some() {
             return;
@@ -657,9 +686,13 @@ impl Router {
         self.primary = Some(h.id);
         self.secondary = false;
         self.gone_pending = false;
-        pointer_down(out, h.start, self.button());
+        let d = env.config.cursor_offset;
+        self.offset = (self.is_canvas(h.id) && env.config.finger == FingerMode::Draw && d > 0.0).then(|| vec2(0.0, -d));
+        let start = self.aim(h.start, env);
+        pointer_down(out, start, self.button());
         if h.pos != h.start {
-            out.push(Routed::App(Event::PointerMoved(h.pos)));
+            let p = self.aim(h.pos, env);
+            out.push(Routed::App(Event::PointerMoved(p)));
         }
     }
 
@@ -696,7 +729,10 @@ impl Router {
             && let Some(f) = self.fingers.iter().find(|f| f.id == p && f.role != Role::Pen).copied()
         {
             self.primary = None;
-            pointer_release(out, f.pos, self.button());
+            let p = self.cursor.map_or(f.pos, |(_, c)| c);
+            self.offset = None;
+            self.cursor = None;
+            pointer_release(out, p, self.button());
             out.push(Routed::App(Event::PointerGone));
         }
         for f in &mut self.fingers {
@@ -1079,6 +1115,47 @@ mod tests {
         let ui = pos2(950.0, 900.0);
         g.send(vec![touch(2, TouchPhase::Start, ui)]);
         assert_eq!(presses(&g.send(vec![touch(2, TouchPhase::End, ui)])), [true, false]);
+    }
+
+    /// The pointer positions the app gets, in order.
+    fn pointer_positions(r: &[Routed]) -> Vec<Pos2> {
+        app_events(r)
+            .into_iter()
+            .filter_map(|e| match e {
+                Event::PointerMoved(p) | Event::PointerButton { pos: p, .. } => Some(*p),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_finger_drawing_with_the_cursor_above_it() {
+        let mut g = Rig::with(TouchConfig { cursor_offset: 80.0, ..Default::default() });
+        let a = pos2(400.0, 400.0);
+        g.send(vec![touch(1, TouchPhase::Start, a)]);
+        let out = g.wait(0.2);
+        assert_eq!(presses(&out), [true]);
+        assert!(pointer_positions(&out).iter().all(|p| *p == pos2(400.0, 320.0)), "pressed 80 pt above the finger: {out:?}");
+        let out = g.send(vec![touch(1, TouchPhase::Move, pos2(450.0, 420.0))]);
+        assert_eq!(pointer_positions(&out), [pos2(450.0, 340.0)]);
+        assert_eq!(g.r.offset_cursor(), Some((pos2(450.0, 420.0), pos2(450.0, 340.0))), "for the overlay");
+        // Near the top of the canvas the cursor stops at its edge: it never presses the interface.
+        let out = g.send(vec![touch(1, TouchPhase::Move, pos2(450.0, 100.0))]);
+        assert_eq!(pointer_positions(&out), [pos2(450.0, CANVAS.top())]);
+        let out = g.send(vec![touch(1, TouchPhase::End, pos2(450.0, 100.0))]);
+        assert_eq!(presses(&out), [false]);
+        assert_eq!(pointer_positions(&out), [pos2(450.0, CANVAS.top())]);
+        assert_eq!(g.r.offset_cursor(), None, "gone with the finger");
+        // Over the interface a finger clicks where it touches, as always.
+        g.wait(1.0);
+        let ui = pos2(950.0, 900.0);
+        g.send(vec![touch(2, TouchPhase::Start, ui)]);
+        let out = g.send(vec![touch(2, TouchPhase::End, ui)]);
+        assert!(pointer_positions(&out).iter().all(|p| *p == ui), "{out:?}");
+        // The pen draws where it touches.
+        let pen = pos2(500.0, 500.0);
+        let out = g.send(vec![touch(101, TouchPhase::Start, pen)]);
+        assert!(pointer_positions(&out).iter().all(|p| *p == pen));
     }
 
     #[test]

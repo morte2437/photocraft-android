@@ -657,6 +657,19 @@ impl Pad {
         std::mem::take(&mut self.screen_tapped)
     }
 
+    /// A finger drawing with the cursor above it (Touch Input): a line from the finger up to a
+    /// ring at the cursor, over everything, so it's clear where the stroke goes.
+    pub fn paint_offset_cursor(&self, ctx: &egui::Context) {
+        let Some((finger, cursor)) = self.router.offset_cursor() else { return };
+        let p = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("offset_cursor")));
+        let (light, dark) = (egui::Color32::from_white_alpha(230), egui::Color32::from_black_alpha(140));
+        p.line_segment([finger, cursor], Stroke::new(3.0, dark));
+        p.line_segment([finger, cursor], Stroke::new(1.5, light));
+        p.circle(finger, 7.0, light, Stroke::new(1.5, dark));
+        p.circle_stroke(cursor, 9.0, Stroke::new(3.0, dark));
+        p.circle_stroke(cursor, 9.0, Stroke::new(1.5, light));
+    }
+
     /// Whether the keyboard key was tapped since the last call.
     pub fn take_keyboard_tap(&mut self) -> bool {
         std::mem::take(&mut self.keyboard_tapped)

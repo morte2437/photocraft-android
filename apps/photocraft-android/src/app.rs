@@ -446,6 +446,7 @@ impl eframe::App for Shell {
         use crate::touch::config::{PenAction, PenControl};
         use photocraft_tablet::{android, motion};
         android::set_erasing_controls(config.erasing_controls());
+        android::set_finger_pressure(config.finger_pressure.then_some((config.finger_light, config.finger_firm)));
         let presses = android::take_presses();
         for p in &presses {
             let setting = config.pen(p.control);
@@ -652,8 +653,12 @@ impl eframe::App for Shell {
                 log::info!("{}", summary.line());
             }
         }
+        self.pad.paint_offset_cursor(ui.ctx());
         self.pad.settings(ui.ctx(), &tokens);
-        self.touch.settings(ui.ctx(), &tokens, photocraft_tablet::android::controls_held(), photocraft_tablet::android::last_buttons());
+        self.touch.settings(ui.ctx(), &tokens, photocraft_tablet::android::controls_held(), photocraft_tablet::android::last_buttons(), {
+            use photocraft_tablet::android;
+            android::last_contact().map(|k| crate::touch::Contact { pressure: k.pressure, size: k.size, major: k.major, contact: android::contact_size(&k), mapped: k.mapped })
+        });
         // Copy and Cut in a text field go to the system clipboard.
         for command in ui.ctx().output(|o| o.commands.clone()) {
             if let egui::OutputCommand::CopyText(text) = command

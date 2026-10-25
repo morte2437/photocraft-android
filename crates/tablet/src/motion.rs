@@ -170,6 +170,20 @@ pub fn handle_with(e: &RawEvent, erases: [bool; 4]) -> Update {
     }
 }
 
+/// A finger's pressure from the size of its contact with the screen: a finger pressed harder
+/// flattens and touches more glass. `light` and `firm` are the contact sizes of a light touch and
+/// a firm press (calibrated on the device); between them the pressure rises from a little to
+/// full. Without a usable calibration (or a size), full pressure, as before.
+pub fn finger_pressure(size: f32, light: f32, firm: f32) -> f32 {
+    if !(size.is_finite() && light.is_finite() && firm.is_finite()) || size <= 0.0 || firm <= light {
+        return 1.0;
+    }
+    ((size - light) / (firm - light)).clamp(MIN_FINGER_PRESSURE, 1.0)
+}
+
+/// The lightest a finger paints: a touch always leaves a mark.
+pub const MIN_FINGER_PRESSURE: f32 = 0.05;
+
 /// The sample of a pen contact.
 fn sample(e: &RawEvent) -> Sample {
     let (tilt_x, tilt_y) = tilt_xy(e.tilt, e.orientation);
@@ -193,6 +207,20 @@ pub fn tilt_xy(tilt: f32, orientation: f32) -> (f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_finger_pressed_harder_touches_more_and_paints_heavier() {
+        // Calibrated: a light touch 40 px across, a firm press 90.
+        assert_eq!(finger_pressure(90.0, 40.0, 90.0), 1.0);
+        assert!((finger_pressure(65.0, 40.0, 90.0) - 0.5).abs() < 1e-6);
+        assert_eq!(finger_pressure(30.0, 40.0, 90.0), MIN_FINGER_PRESSURE, "a touch always leaves a mark");
+        assert_eq!(finger_pressure(500.0, 40.0, 90.0), 1.0);
+        // Not calibrated, no size, or nonsense: full pressure, as without the option.
+        assert_eq!(finger_pressure(65.0, 0.0, 0.0), 1.0);
+        assert_eq!(finger_pressure(0.0, 40.0, 90.0), 1.0);
+        assert_eq!(finger_pressure(f32::NAN, 40.0, 90.0), 1.0);
+        assert_eq!(finger_pressure(65.0, 90.0, 40.0), 1.0);
+    }
 
     #[test]
     fn pointers_remember_their_tool() {

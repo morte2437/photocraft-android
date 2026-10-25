@@ -36,6 +36,7 @@ const MENU: &[&str] = &["Window", "Touch Input"];
 const PALM: &str = "android.touch.palmRejection";
 const SETTINGS: &str = "android.touch.settings";
 const FINGER: &str = "android.touch.finger.";
+const CURSOR: &str = "android.touch.cursorAboveFinger";
 
 /// The zoom range of the canvas (as the Shortcut Pad's wheel allows).
 const ZOOM_RANGE: std::ops::RangeInclusive<f32> = 0.01..=32.0;
@@ -86,6 +87,7 @@ impl TouchInput {
                 };
                 let mut rows: Vec<MenuItem> =
                     FingerMode::ALL.iter().map(|m| row(format!("{FINGER}{m:?}"), m.menu_label(), Some(s.config.finger == *m))).collect();
+                rows.push(row(CURSOR.into(), "Cursor Above Finger", Some(s.config.cursor_offset > 0.0)));
                 rows.push(row(PALM.into(), "Palm Rejection", Some(s.config.palm_rejection)));
                 rows.push(row(SETTINGS.into(), "Touch Input Settings…", None));
                 rows
@@ -94,6 +96,12 @@ impl TouchInput {
                 let mut s = write.borrow_mut();
                 if let Some(mode) = id.strip_prefix(FINGER) {
                     s.config.finger = FingerMode::ALL.into_iter().find(|m| format!("{m:?}") == mode).ok_or_else(|| format!("unknown finger mode {mode}"))?;
+                } else if id == CURSOR {
+                    s.config.cursor_offset = if s.config.cursor_offset > 0.0 { 0.0 } else { config::DEFAULT_CURSOR_OFFSET };
+                    if s.config.cursor_offset > 0.0 {
+                        // The cursor is for drawing with a finger.
+                        s.config.finger = FingerMode::Draw;
+                    }
                 } else if id == PALM {
                     s.config.palm_rejection = !s.config.palm_rejection;
                 } else if id == SETTINGS {
@@ -111,7 +119,7 @@ impl TouchInput {
     /// The settings window, when open (after the app, so it sits on top).
     /// `held`: the pen controls in use now (by [`PenControl::index`]), for their lights;
     /// `buttons`: the pen's button state as Android reports it.
-    pub fn settings(&mut self, ctx: &egui::Context, tk: &Tokens, held: [bool; 4], buttons: i32) {
+    pub fn settings(&mut self, ctx: &egui::Context, tk: &Tokens, held: [bool; 4], buttons: i32, contact: Option<Contact>) {
         let mut open = self.shared.borrow().settings_open;
         if !open {
             return;
@@ -133,6 +141,20 @@ impl TouchInput {
                     for m in FingerMode::ALL {
                         ui.radio_value(&mut c.finger, m, m.label());
                     }
+                    ui.add_enabled_ui(c.finger == FingerMode::Draw, |ui| {
+                        let mut on = c.cursor_offset > 0.0;
+                        if ui.checkbox(&mut on, "Draw with a cursor above the finger, so it doesn't hide what you draw").changed() {
+                            c.cursor_offset = if on { config::DEFAULT_CURSOR_OFFSET } else { 0.0 };
+                        }
+                        if on {
+                            ui.horizontal(|ui| {
+                                ui.label("    Distance");
+                                ui.add(egui::Slider::new(&mut c.cursor_offset, 30.0..=config::MAX_CURSOR_OFFSET).suffix(" pt"));
+                            });
+                        }
+                    });
+                    ui.separator();
+                    finger_pressure(ui, tk, &mut c, contact);
                     ui.separator();
                     ui.strong("Two fingers on the canvas");
                     ui.checkbox(&mut c.pan, "Drag to move the canvas");
@@ -186,6 +208,61 @@ impl TouchInput {
             s.config = c.sanitized();
             s.save();
         }
+    }
+}
+
+/// What the screen last reported for a finger (from the pen hook): Android's pressure, size and
+/// contact length, the size finger pressure goes by, and the pressure it gave.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Contact {
+    pub pressure: f32,
+    pub size: f32,
+    pub major: f32,
+    pub contact: f32,
+    pub mapped: f32,
+}
+
+/// Finger pressure from the contact size (experimental): the switch, what the screen reports for
+/// a finger right now, and a box to calibrate on (touch it lightly, then press firmly).
+fn finger_pressure(ui: &mut egui::Ui, tk: &Tokens, c: &mut TouchConfig, contact: Option<Contact>) {
+    ui.strong("Finger pressure (experimental)");
+    ui.checkbox(&mut c.finger_pressure, "Press harder to paint heavier, judged from how much of your finger touches the screen");
+    let reading = contact.map_or("Touch the box below to see what your screen reports.".to_string(), |k| {
+        format!("Last touch: pressure {:.2} · size {:.3} · contact {:.0} px → {:.0}%", k.pressure, k.size, k.major, k.mapped * 100.0)
+    });
+    ui.label(egui::RichText::new(reading).color(tk.text_dim).small());
+    let width = ui.available_width().min(420.0);
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, 90.0), egui::Sense::click_and_drag());
+    let pressing = resp.is_pointer_button_down_on();
+    let p = ui.painter();
+    p.rect(rect, 8.0, if pressing { tk.accent.gamma_multiply(0.25) } else { tk.field }, egui::Stroke::new(1.0, tk.separator), egui::StrokeKind::Inside);
+    let calibrated = c.finger_firm > c.finger_light;
+    let text = if calibrated {
+        format!("Light {:.0} · firm {:.0}
+Touch lightly, then press firmly, to calibrate again", c.finger_light, c.finger_firm)
+    } else {
+        "Calibrate: touch here lightly, then press firmly".to_string()
+    };
+    p.text(rect.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(13.0), tk.text);
+    // While a finger is on the box: the smallest and largest contact are the light and firm ends.
+    let id = resp.id.with("range");
+    if pressing && let Some(k) = contact {
+        let size = k.contact;
+        let (lo, hi) = ui.ctx().data(|m| m.get_temp::<(f32, f32)>(id)).unwrap_or((f32::MAX, 0.0));
+        let range = (lo.min(size), hi.max(size));
+        ui.ctx().data_mut(|m| m.insert_temp(id, range));
+        if range.1 > range.0 {
+            (c.finger_light, c.finger_firm) = range;
+        }
+        ui.ctx().request_repaint();
+    } else if resp.drag_started() || resp.clicked() {
+        ui.ctx().data_mut(|m| m.remove_temp::<(f32, f32)>(id));
+    }
+    if resp.drag_stopped() || resp.clicked() {
+        ui.ctx().data_mut(|m| m.remove_temp::<(f32, f32)>(id));
+    }
+    if contact.is_some_and(|k| k.major <= 0.0 && k.size <= 0.0) {
+        ui.colored_label(tk.danger, "This screen doesn't report how big a touch is, so finger pressure can't work here.");
     }
 }
 
