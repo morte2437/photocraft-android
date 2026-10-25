@@ -141,9 +141,13 @@ Multi-touch gestures, set up in **Window › Touch Input** (finger mode, palm re
 an arrow cursor that stays on screen like a mouse pointer, so the fingertip never covers what it
 points at. Slide to move it (speed 0.5–3× in the settings), tap to click where it is, double tap
 to double-click, hold still to right-click, tap and then touch and drag to hold the button
-(painting, dragging; the tap's click waits 0.25 s so a stroke doesn't start with a dot). Two
-fingers pan, zoom and rotate the canvas when the cursor is over it and scroll the panel under it
-otherwise. The pen draws where it touches and moves the cursor there.
+(painting, dragging). Over the canvas a tap's click waits 0.25 s so a stroke doesn't start with a
+dot; over the interface it clicks at once. Two fingers moving together pan, zoom and rotate the
+canvas when the cursor is over it and scroll the panel under it otherwise. The pen draws where it
+touches and moves the cursor there. Optional, all off by default: acceleration (quick swipes move
+the cursor up to 2.5× as far), resting one finger while another moves to hold the button, and a
+two-finger tap that right-clicks instead of running its shortcut. Ideas from how Winlator's
+touchpad behaves; no code from it.
 
 **Finger pressure** (experimental, Touch Input Settings): a finger's contact size stands in for
 pressure, between a light touch and a firm press calibrated on a box in the settings. The

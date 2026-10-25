@@ -2,13 +2,14 @@
 //! like a laptop trackpad, so the fingertip never covers what it points at (#4).
 //!
 //! - One finger sliding moves the cursor from wherever it was (times the speed setting, and
-//!   further for quick swipes with acceleration on): it stays put between touches, like a mouse
+//!   further for quick swipes with acceleration on, a setting): it stays put between touches, like a mouse
 //!   pointer.
 //! - A tap clicks at the cursor, a double tap double-clicks, and a finger held still
 //!   right-clicks. Over the interface the click is immediate; over the canvas it waits a moment
 //!   for a second touch that would drag instead, so a stroke doesn't start with a dot.
 //! - Holding the button: a tap and then a touch that drags (held still instead, it holds the
-//!   button where the cursor is), or one finger resting still while another moves the cursor.
+//!   button where the cursor is), or (a setting) one finger resting still while another moves
+//!   the cursor.
 //! - Two fingers moving together: over the canvas they pan, zoom and rotate it; over the
 //!   interface they scroll what's under the cursor. Quick two- and three-finger taps run their
 //!   shortcuts on the canvas, or a two-finger tap right-clicks (a setting).
@@ -558,6 +559,7 @@ mod tests {
     #[test]
     fn a_resting_finger_holds_the_button_while_another_moves_the_cursor() {
         let mut g = Rig::new();
+        g.config.trackpad_rest_to_drag = true;
         g.t.pen_at(pos2(400.0, 400.0));
         g.touch(1, TouchPhase::Start, pos2(200.0, 700.0)); // the thumb, resting
         g.touch(2, TouchPhase::Start, pos2(600.0, 600.0));
