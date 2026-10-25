@@ -36,7 +36,7 @@ const MENU: &[&str] = &["Window", "Touch Input"];
 const PALM: &str = "android.touch.palmRejection";
 const SETTINGS: &str = "android.touch.settings";
 const FINGER: &str = "android.touch.finger.";
-const CURSOR: &str = "android.touch.cursorAboveFinger";
+const TRACKPAD: &str = "android.touch.trackpad";
 
 /// The zoom range of the canvas (as the Shortcut Pad's wheel allows).
 const ZOOM_RANGE: std::ops::RangeInclusive<f32> = 0.01..=32.0;
@@ -87,7 +87,7 @@ impl TouchInput {
                 };
                 let mut rows: Vec<MenuItem> =
                     FingerMode::ALL.iter().map(|m| row(format!("{FINGER}{m:?}"), m.menu_label(), Some(s.config.finger == *m))).collect();
-                rows.push(row(CURSOR.into(), "Cursor Above Finger", Some(s.config.cursor_offset > 0.0)));
+                rows.push(row(TRACKPAD.into(), "Trackpad Cursor", Some(s.config.trackpad)));
                 rows.push(row(PALM.into(), "Palm Rejection", Some(s.config.palm_rejection)));
                 rows.push(row(SETTINGS.into(), "Touch Input Settings…", None));
                 rows
@@ -96,12 +96,8 @@ impl TouchInput {
                 let mut s = write.borrow_mut();
                 if let Some(mode) = id.strip_prefix(FINGER) {
                     s.config.finger = FingerMode::ALL.into_iter().find(|m| format!("{m:?}") == mode).ok_or_else(|| format!("unknown finger mode {mode}"))?;
-                } else if id == CURSOR {
-                    s.config.cursor_offset = if s.config.cursor_offset > 0.0 { 0.0 } else { config::DEFAULT_CURSOR_OFFSET };
-                    if s.config.cursor_offset > 0.0 {
-                        // The cursor is for drawing with a finger.
-                        s.config.finger = FingerMode::Draw;
-                    }
+                } else if id == TRACKPAD {
+                    s.config.trackpad = !s.config.trackpad;
                 } else if id == PALM {
                     s.config.palm_rejection = !s.config.palm_rejection;
                 } else if id == SETTINGS {
@@ -141,18 +137,22 @@ impl TouchInput {
                     for m in FingerMode::ALL {
                         ui.radio_value(&mut c.finger, m, m.label());
                     }
-                    ui.add_enabled_ui(c.finger == FingerMode::Draw, |ui| {
-                        let mut on = c.cursor_offset > 0.0;
-                        if ui.checkbox(&mut on, "Draw with a cursor above the finger, so it doesn't hide what you draw").changed() {
-                            c.cursor_offset = if on { config::DEFAULT_CURSOR_OFFSET } else { 0.0 };
-                        }
-                        if on {
-                            ui.horizontal(|ui| {
-                                ui.label("    Distance");
-                                ui.add(egui::Slider::new(&mut c.cursor_offset, 30.0..=config::MAX_CURSOR_OFFSET).suffix(" pt"));
-                            });
-                        }
-                    });
+                    ui.separator();
+                    ui.strong("Trackpad cursor");
+                    ui.checkbox(&mut c.trackpad, "Fingers move a cursor, like a laptop trackpad, so they never cover what you point at");
+                    if c.trackpad {
+                        ui.label(
+                            egui::RichText::new(
+                                "Slide to move the cursor · tap to click · hold still to right-click · tap, then touch and drag to paint or drag · two fingers zoom the canvas or scroll a panel",
+                            )
+                            .color(tk.text_dim)
+                            .small(),
+                        );
+                        ui.horizontal(|ui| {
+                            ui.label("Speed");
+                            ui.add(egui::Slider::new(&mut c.trackpad_speed, config::TRACKPAD_SPEED).fixed_decimals(1).suffix("×"));
+                        });
+                    }
                     ui.separator();
                     finger_pressure(ui, tk, &mut c, contact);
                     ui.separator();

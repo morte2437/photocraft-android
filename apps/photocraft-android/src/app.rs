@@ -494,6 +494,7 @@ impl eframe::App for Shell {
             list_item: &|p: egui::Pos2| self.drawn.list_item(p),
             secondary: &secondary,
             scroll_strip: photocraft_ui_egui::panels::options_bar_overflow(ctx),
+            screen: ctx.content_rect(),
             now: raw_input.time.unwrap_or_else(|| ctx.input(|i| i.time)),
         };
         // Every pen sample's position, not just each event's latest (see `pen_path`). Samples
@@ -653,7 +654,7 @@ impl eframe::App for Shell {
                 log::info!("{}", summary.line());
             }
         }
-        self.pad.paint_offset_cursor(ui.ctx());
+        self.pad.paint_trackpad_cursor(ui.ctx(), self.touch.config().trackpad);
         self.pad.settings(ui.ctx(), &tokens);
         self.touch.settings(ui.ctx(), &tokens, photocraft_tablet::android::controls_held(), photocraft_tablet::android::last_buttons(), {
             use photocraft_tablet::android;

@@ -23,6 +23,7 @@
 
 pub mod config;
 pub mod router;
+pub mod trackpad;
 pub mod wheel;
 
 use config::{Chord, MAX_KEYS, MIN_KEYS, PadConfig, SENSITIVITY_RANGE, Side, WHEEL_SIZE_RANGE, WheelMode};
@@ -657,17 +658,15 @@ impl Pad {
         std::mem::take(&mut self.screen_tapped)
     }
 
-    /// A finger drawing with the cursor above it (Touch Input): a line from the finger up to a
-    /// ring at the cursor, over everything, so it's clear where the stroke goes.
-    pub fn paint_offset_cursor(&self, ctx: &egui::Context) {
-        let Some((finger, cursor)) = self.router.offset_cursor() else { return };
-        let p = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("offset_cursor")));
-        let (light, dark) = (egui::Color32::from_white_alpha(230), egui::Color32::from_black_alpha(140));
-        p.line_segment([finger, cursor], Stroke::new(3.0, dark));
-        p.line_segment([finger, cursor], Stroke::new(1.5, light));
-        p.circle(finger, 7.0, light, Stroke::new(1.5, dark));
-        p.circle_stroke(cursor, 9.0, Stroke::new(3.0, dark));
-        p.circle_stroke(cursor, 9.0, Stroke::new(1.5, light));
+    /// The trackpad cursor (Touch Input), over everything: an arrow pointer where it is.
+    pub fn paint_trackpad_cursor(&self, ctx: &egui::Context, on: bool) {
+        let Some(c) = self.router.trackpad_cursor().filter(|_| on) else { return };
+        let p = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("trackpad_cursor")));
+        // The classic arrow, its tip on the point.
+        let arrow = [(0.0, 0.0), (0.0, 17.0), (4.5, 13.0), (7.5, 20.0), (10.5, 18.8), (7.6, 12.2), (13.0, 12.2)];
+        let pts: Vec<egui::Pos2> = arrow.iter().map(|(x, y)| c + egui::vec2(*x, *y)).collect();
+        p.add(egui::Shape::convex_polygon(pts.clone(), egui::Color32::WHITE, Stroke::NONE));
+        p.add(egui::Shape::closed_line(pts, Stroke::new(1.2, egui::Color32::BLACK)));
     }
 
     /// Whether the keyboard key was tapped since the last call.
@@ -808,6 +807,7 @@ mod tests {
             list_item: &|_| false,
             secondary: &|_| false,
             scroll_strip: None,
+            screen: egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1280.0, 800.0)),
             now: 0.0,
         };
         p.input(&egui::Context::default(), &mut raw, &env, |_| false);
