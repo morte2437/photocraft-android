@@ -1160,6 +1160,41 @@ pub fn fit_view(view: &mut View, doc: &Document, area: Vec2, ppp: f32, aspect: f
     view.fill_pending = false;
 }
 
+/// The camera before [`fit_above_phone_dialog`] moved it, and the one it set: (document, before,
+/// set), each as (zoom, centre).
+type PhoneDialogView = (usize, (f32, [f32; 2]), (f32, [f32; 2]));
+
+/// The phone layout puts a dialog that previews on the canvas (Layer Style, an adjustment, a
+/// filter) at the bottom of the window (`dialogs::previews_on_canvas`). While it's open the image
+/// is fitted into the part of the canvas above it; when it closes the camera goes back, unless
+/// the view was zoomed or panned meanwhile.
+fn fit_above_phone_dialog(ctx: &egui::Context, idx: usize, view: &mut View, doc: &Document, rect: Rect, ppp: f32, aspect: f32) {
+    let key = egui::Id::new("phone-dialog-view");
+    let saved: Option<PhoneDialogView> = ctx.data(|m| m.get_temp(key));
+    let top = ctx.data(|m| m.get_temp::<f32>(crate::dialogs::phone_dialog_top_id())).filter(|y| *y < rect.bottom() - 1.0 && *y > rect.top() + 80.0);
+    match (top, saved) {
+        (Some(top), None) => {
+            let before = (view.zoom, view.center);
+            let visible = Rect::from_min_max(rect.min, Pos2::new(rect.right(), top));
+            fit_view(view, doc, visible.size(), ppp, aspect);
+            // `fit_view` centres the document in the whole canvas: move it up to the visible part's
+            // centre (a screen offset, turned into document units through the camera's rotation).
+            let dy = (rect.center().y - visible.center().y) / (view.zoom / ppp);
+            let r = view.rotation.to_radians();
+            view.center[0] += dy * r.sin();
+            view.center[1] += dy * r.cos();
+            ctx.data_mut(|m| m.insert_temp::<PhoneDialogView>(key, (idx, before, (view.zoom, view.center))));
+        }
+        (None, Some((at, before, set))) => {
+            ctx.data_mut(|m| m.remove_temp::<PhoneDialogView>(key));
+            if at == idx && (view.zoom, view.center) == set {
+                (view.zoom, view.center) = before;
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Ease a transient presentation camera over 220 ms without changing the requested camera.
 fn animated_view(view: &mut View, xf: ViewXform, ppp: f32, animated_zoom: bool, time: f64) -> View {
     if !animated_zoom {
@@ -3458,6 +3493,9 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
     }
     if view.fill_pending && rect.width() > 50.0 {
         fill_view(&mut view, &doc, rect.size(), ppp, aspect);
+    }
+    if primary && app.compact_layout {
+        fit_above_phone_dialog(&ctx, idx, &mut view, &doc, rect, ppp, aspect);
     }
     // Preferences › Tools › Overscroll off: clamp before anything is drawn (scrollbars.rs).
     if !app.session.prefs().tools.overscroll && crate::scrollbars::clamp_view_with_aspect(&mut view, rect.size(), ppp, aspect) {

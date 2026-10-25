@@ -1914,6 +1914,11 @@ fn phone_dock(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         .response
         .rect;
     let Some(g) = app.phone_panel else { return };
+    // A dialog previewing on the canvas (Layer Style, an adjustment, a filter) sits at the bottom
+    // of the window; the sheet makes way so the image shows above it, and comes back after.
+    if app.ui.dialogs.iter().any(crate::dialogs::previews_on_canvas) {
+        return;
+    }
     // Put away when its group was closed or collapsed from its own tab strip, or with Esc.
     if !g.shown(&app.ui.panels) || app.ui.dock.is_collapsed(g) || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
         app.phone_panel = None;
