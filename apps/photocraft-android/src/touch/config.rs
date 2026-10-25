@@ -129,6 +129,12 @@ pub struct TouchConfig {
     pub trackpad: bool,
     /// How far the cursor moves per finger movement.
     pub trackpad_speed: f32,
+    /// Quick swipes move the cursor further (slow moves stay precise).
+    pub trackpad_acceleration: bool,
+    /// One finger resting while another moves holds the button (painting, dragging).
+    pub trackpad_rest_to_drag: bool,
+    /// A quick two-finger tap right-clicks instead of running its shortcut.
+    pub trackpad_two_finger_right_click: bool,
     /// Fingers paint heavier when pressed harder, judged from the size of their contact with the
     /// screen (experimental), between a light touch's contact size and a firm press's.
     pub finger_pressure: bool,
@@ -153,6 +159,9 @@ impl Default for TouchConfig {
             long_press_right_click: true,
             trackpad: false,
             trackpad_speed: 1.0,
+            trackpad_acceleration: true,
+            trackpad_rest_to_drag: true,
+            trackpad_two_finger_right_click: false,
             finger_pressure: false,
             finger_light: 0.0,
             finger_firm: 0.0,

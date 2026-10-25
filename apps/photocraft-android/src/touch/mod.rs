@@ -143,7 +143,7 @@ impl TouchInput {
                     if c.trackpad {
                         ui.label(
                             egui::RichText::new(
-                                "Slide to move the cursor · tap to click · hold still to right-click · tap, then touch and drag to paint or drag · two fingers zoom the canvas or scroll a panel",
+                                "Slide to move the cursor · tap to click · hold still to right-click · tap, then touch and drag, or rest one finger and move another, to paint or drag · two fingers together zoom the canvas or scroll a panel",
                             )
                             .color(tk.text_dim)
                             .small(),
@@ -152,6 +152,9 @@ impl TouchInput {
                             ui.label("Speed");
                             ui.add(egui::Slider::new(&mut c.trackpad_speed, config::TRACKPAD_SPEED).fixed_decimals(1).suffix("×"));
                         });
+                        ui.checkbox(&mut c.trackpad_acceleration, "Acceleration: quick swipes move the cursor further");
+                        ui.checkbox(&mut c.trackpad_rest_to_drag, "Rest one finger and move another to hold the button (paint, drag)");
+                        ui.checkbox(&mut c.trackpad_two_finger_right_click, "Two-finger tap right-clicks (instead of its shortcut)");
                     }
                     ui.separator();
                     finger_pressure(ui, tk, &mut c, contact);
