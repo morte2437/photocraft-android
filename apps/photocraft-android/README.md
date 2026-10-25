@@ -54,6 +54,14 @@ PhotoCraftActivity.java (extends GameActivity)       libphotocraft_android.so (t
   defaults (the emulator's SwiftShader: 16 KiB uniform buffers).
 - **The bridge** (`src/bridge.rs`) is plain files in `files/bridge`, so it needs no JNI calls
   from Rust and no `unsafe`; the protocol is documented in that module.
+- **Settings backup:** updates keep everything in the app's storage. For a reinstall or a new
+  tablet, Android's app backup (the Google account, and device-to-device transfer) keeps the
+  preferences, presets (brushes, adjustments, tools), Shortcut Pad, Touch Input and layout
+  settings, and restores them when the app is installed again (`res/xml/data_extraction_rules.xml`,
+  `backup_rules.xml`; #17). Documents, crash-recovery files and the bridge are never backed up;
+  imported fonts move with a device transfer but stay out of the cloud backup (its 25 MB limit).
+  Test with `adb shell bmgr backupnow ai.storyteller.photocraft`, `pm clear`, then
+  `bmgr restore 1 ai.storyteller.photocraft` on the local transport.
 
 `unsafe`: the workspace forbids it. Two attributes need it here: `#[unsafe(no_mangle)]` on
 `android_main` (android-activity looks it up by name, `src/app.rs`) and on the JNI pen hook

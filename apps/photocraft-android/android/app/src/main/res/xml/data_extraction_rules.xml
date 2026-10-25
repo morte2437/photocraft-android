@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 12 and later: what Android's app backup (Google account) and device-to-device transfer
+     keep, so settings come back after a reinstall or on a new tablet (#17). Only the settings
+     listed are included; everything else in the app's storage is left out: the private copies of
+     opened documents and the files passing through the bridge, crash-recovery autosaves,
+     and imported fonts (they can exceed backup's 25 MB limit, which would drop the whole backup).
+     Keep in step with backup_rules.xml (Android 11 and earlier). -->
+<data-extraction-rules>
+    <cloud-backup>
+        <include domain="file" path="prefs.json" />
+        <include domain="file" path="presets/" />
+        <include domain="file" path="shortcut-pad.json" />
+        <include domain="file" path="touch-input.json" />
+        <include domain="file" path="layout.txt" />
+        <include domain="file" path="update-check-off" />
+    </cloud-backup>
+    <device-transfer>
+        <include domain="file" path="prefs.json" />
+        <include domain="file" path="presets/" />
+        <include domain="file" path="shortcut-pad.json" />
+        <include domain="file" path="touch-input.json" />
+        <include domain="file" path="layout.txt" />
+        <include domain="file" path="update-check-off" />
+        <include domain="file" path="fonts/" />
+    </device-transfer>
+</data-extraction-rules>

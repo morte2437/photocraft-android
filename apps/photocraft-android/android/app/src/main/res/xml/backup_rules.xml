@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 11 and earlier: what Android's app backup keeps (see data_extraction_rules.xml for
+     why these and nothing else). Keep the two lists in step. -->
+<full-backup-content>
+    <include domain="file" path="prefs.json" />
+    <include domain="file" path="presets/" />
+    <include domain="file" path="shortcut-pad.json" />
+    <include domain="file" path="touch-input.json" />
+    <include domain="file" path="layout.txt" />
+    <include domain="file" path="update-check-off" />
+</full-backup-content>

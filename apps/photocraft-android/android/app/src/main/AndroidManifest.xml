@@ -17,7 +17,9 @@
         android:theme="@style/Theme.PhotoCraft"
         android:largeHeap="true"
         android:resizeableActivity="true"
-        android:allowBackup="false">
+        android:allowBackup="true"
+        android:fullBackupContent="@xml/backup_rules"
+        android:dataExtractionRules="@xml/data_extraction_rules">
 
         <activity
             android:name=".PhotoCraftActivity"
