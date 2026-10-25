@@ -137,6 +137,19 @@ Multi-touch gestures, set up in **Window › Touch Input** (finger mode, palm re
 | A finger held still on a button, tab, panel or row (about 0.8 s) | Right-clicks it (context menus, closing panels) | Off |
 | A mouse's right button | Right-clicks | |
 
+**Trackpad Cursor** (Window › Touch Input, off by default; `pad/trackpad.rs`, #4): fingers move
+an arrow cursor that stays on screen like a mouse pointer, so the fingertip never covers what it
+points at. Slide to move it (speed 0.5–3× in the settings), tap to click where it is, double tap
+to double-click, hold still to right-click, tap and then touch and drag to hold the button
+(painting, dragging; the tap's click waits 0.25 s so a stroke doesn't start with a dot). Two
+fingers pan, zoom and rotate the canvas when the cursor is over it and scroll the panel under it
+otherwise. The pen draws where it touches and moves the cursor there.
+
+**Finger pressure** (experimental, Touch Input Settings): a finger's contact size stands in for
+pressure, between a light touch and a firm press calibrated on a box in the settings. The
+settings show what the screen reports for each touch (pressure, size, contact length), which
+varies a lot between devices; some report no size at all, and then it can't work.
+
 **Pen buttons** (also in Touch Input Settings…): Pen button 1 (nearest the tip), 2 and 3 and
 the eraser end each **erase**, **right-click**, **run a shortcut** or do **nothing**. Defaults,
 as a Wacom pen on a PC: button 1 right-clicks, button 2 erases, button 3 does nothing, the
