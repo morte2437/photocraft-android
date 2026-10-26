@@ -203,6 +203,7 @@ pub fn mime_for(name: &str) -> &'static str {
         Some("pdf") => "application/pdf",
         Some("txt") => "text/plain",
         Some("json") => "application/json",
+        Some("zip") => "application/zip",
         _ => "application/octet-stream",
     }
 }

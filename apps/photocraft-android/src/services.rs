@@ -126,7 +126,7 @@ fn export_options(settings: &photocraft_ui_egui::ExportSettings) -> photocraft_i
 }
 
 /// Write atomically, then have the Activity copy the file to its document.
-fn write_and_sync(bridge: &Bridge, path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub(crate) fn write_and_sync(bridge: &Bridge, path: &Path, bytes: &[u8]) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }

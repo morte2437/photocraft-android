@@ -26,6 +26,9 @@ fn android_main(app: AndroidApp) {
 
 fn run(android: AndroidApp) -> Result<(), String> {
     let files_dir = android.internal_data_path().unwrap_or_else(crate::services::fallback_files_dir);
+    // Settings imported last session (Edit › Preferences › Import Settings…) go into place before
+    // anything reads them.
+    crate::settings::apply_pending(&files_dir);
     log::info!("PhotoCraft {} starting; data in {}", photocraft_engine::build_info::long_version(), files_dir.display());
     let bridge = Arc::new(Bridge::new(&files_dir).map_err(|e| format!("couldn't create the file bridge: {e}"))?);
 
@@ -61,8 +64,10 @@ fn run(android: AndroidApp) -> Result<(), String> {
             let font_outcome = crate::fonts::Outcome::default();
             let wake = cc.egui_ctx.clone();
             let fonts_menu = crate::fonts::menu(&files_dir, bridge.clone(), font_outcome.clone(), move || wake.request_repaint());
+            let wake = cc.egui_ctx.clone();
+            let settings_menu = crate::settings::menu(&files_dir, bridge.clone(), font_outcome.clone(), move || wake.request_repaint());
             services.platform_menu =
-                Some(crate::updates::combine(vec![layout.menu(), pad.menu(), touch.menu(), fonts_menu, crate::updates::menu(&files_dir, bridge.clone())]));
+                Some(crate::updates::combine(vec![layout.menu(), pad.menu(), touch.menu(), fonts_menu, settings_menu, crate::updates::menu(&files_dir, bridge.clone())]));
             crate::services::watch_incoming(bridge.clone(), inbox, cc.egui_ctx.clone());
             let mut app = PhotocraftApp::new(Session::new(), services);
             app.background_jobs = true;
