@@ -542,6 +542,11 @@ fn selection_specific_options(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: 
                 if icons::button(ui, "ban", 26.0, false, tl!("Cancel current crop operation  (Esc)")).clicked() {
                     crate::crop_ui::cancel(app);
                 }
+                // Resets the box to its first frame; nothing to reset until it is changed.
+                let changed = crate::crop_ui::modified(app);
+                if ui.add_enabled_ui(changed, |ui| icons::button(ui, "undo-2", 26.0, false, tl!("Reset"))).inner.clicked() {
+                    crate::crop_ui::reset(app);
+                }
             });
         }
         // Every theme gets the font, style and size controls (#1387), as with Auto-Select (#1275).
