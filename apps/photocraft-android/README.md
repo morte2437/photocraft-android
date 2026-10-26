@@ -62,6 +62,10 @@ PhotoCraftActivity.java (extends GameActivity)       libphotocraft_android.so (t
   imported fonts move with a device transfer but stay out of the cloud backup (its 25 MB limit).
   Test with `adb shell bmgr backupnow ai.storyteller.photocraft`, `pm clear`, then
   `bmgr restore 1 ai.storyteller.photocraft` on the local transport.
+  **Edit › Preferences › Export Settings… / Import Settings…** (`src/settings.rs`) do the same by
+  hand: one `.zip` saved through the file picker, with the same settings plus imported fonts.
+  An import is checked and staged in `settings-import/`, and applied at the next start, before
+  anything reads the settings (the running app would write its own back over them).
 
 `unsafe`: the workspace forbids it. Two attributes need it here: `#[unsafe(no_mangle)]` on
 `android_main` (android-activity looks it up by name, `src/app.rs`) and on the JNI pen hook
