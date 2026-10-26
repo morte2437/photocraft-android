@@ -1853,6 +1853,17 @@ fn checker_tile(ctx: &egui::Context) -> egui::TextureHandle {
 
 /// Spectrum-style checkbox (blue when checked).
 pub fn checkbox(ui: &mut Ui, on: &mut bool, label: &str) -> Response {
+    checkbox_with(ui, on, label, false)
+}
+
+/// [`checkbox`] whose label wraps when the row is narrower than it (Preferences on a phone held
+/// upright), instead of widening the dialog past the screen. Not for strips that scroll sideways
+/// (the options bar), where a label must stay on one line.
+pub fn checkbox_wrapped(ui: &mut Ui, on: &mut bool, label: &str) -> Response {
+    checkbox_with(ui, on, label, true)
+}
+
+fn checkbox_with(ui: &mut Ui, on: &mut bool, label: &str, wrap: bool) -> Response {
     let t = Tokens::get(ui.ctx());
     let (mut resp, label_resp) = ui
         .horizontal(|ui| {
@@ -1860,7 +1871,10 @@ pub fn checkbox(ui: &mut Ui, on: &mut bool, label: &str) -> Response {
             let (rect, resp) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::CLICK);
             let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
             let l = ui
-                .add(egui::Label::new(egui::RichText::new(tl!(label)).color(t.text_dim)).selectable(false).sense(Sense::click()))
+                .add({
+                    let l = egui::Label::new(egui::RichText::new(tl!(label)).color(t.text_dim)).selectable(false).sense(Sense::click());
+                    if wrap { l.wrap() } else { l }
+                })
                 .on_hover_cursor(egui::CursorIcon::PointingHand);
             // Pressing the label presses the box (#4476).
             let pressed = resp.is_pointer_button_down_on() || l.is_pointer_button_down_on();

@@ -1856,7 +1856,8 @@ fn field_rows(ui: &mut egui::Ui, section: &str, obj: &mut Map<String, Value>, ke
                         ui.label(RichText::new(tl!("Applies at next launch.")).color(t.text_dim));
                     });
                 } else {
-                    crate::widgets::checkbox(ui, &mut b, &label);
+                    // Long labels wrap on a phone rather than push the dialog off the screen.
+                    crate::widgets::checkbox_wrapped(ui, &mut b, &label);
                 }
                 obj.insert(k, json!(b));
             }
