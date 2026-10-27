@@ -32,6 +32,10 @@ fn a_perspective_ruler_saves_and_a_damaged_one_is_dropped() {
     doc.perspective_ruler = Some(vec![[-1.5, 2.0], [7.25, 2.0]]);
     let bytes = photocraft_format::save_to_bytes(&doc, &Default::default()).unwrap();
     assert_eq!(photocraft_format::load_from_bytes(&bytes).unwrap().perspective_ruler, doc.perspective_ruler);
+    // A point absurdly far from the canvas (the engine would refuse to edit it): dropped.
+    doc.perspective_ruler = Some(vec![[0.0, 0.0], [1.0e300, 2.0]]);
+    let bytes = photocraft_format::save_to_bytes(&doc, &Default::default()).unwrap();
+    assert_eq!(photocraft_format::load_from_bytes(&bytes).unwrap().perspective_ruler, None);
     // Four points isn't a ruler: the file still opens, without one.
     doc.perspective_ruler = Some(vec![[0.0, 0.0]; 4]);
     let bytes = photocraft_format::save_to_bytes(&doc, &Default::default()).unwrap();
