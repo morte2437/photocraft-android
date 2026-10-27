@@ -251,7 +251,7 @@ impl Shell {
     /// when there's no room), as a phone's text fields have. Returns its buttons' places, for
     /// the next frame's taps (see `raw_input_hook`).
     fn show_text_bar(&self, ctx: &egui::Context) -> Vec<(egui::Rect, TextAction)> {
-        let Some(field) = self.last_ime.map(|i| i.rect) else { return Vec::new() };
+        let Some(field) = self.last_ime.as_ref().map(|i| i.rect) else { return Vec::new() };
         if self.ime_hidden || !ctx.egui_wants_keyboard_input() {
             return Vec::new();
         }
@@ -264,7 +264,7 @@ impl Shell {
         let y = if field.top() - h - gap >= screen.top() + 4.0 { field.top() - h - gap } else { field.bottom() + gap };
         let t = photocraft_ui_egui::theme::Tokens::for_kind(self.app.ui.theme);
         let mut places = Vec::new();
-        egui::Area::new(egui::Id::new("android-text-bar")).order(egui::Order::Tooltip).fixed_pos(egui::pos2(x, y)).interactable(false).show(ctx, |ui| {
+        egui::Area::new(egui::Id::unique("android-text-bar")).order(egui::Order::Tooltip).fixed_pos(egui::pos2(x, y)).interactable(false).show(ctx, |ui| {
             let bar = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(total, h));
             ui.painter().rect(bar, 8.0, t.chrome, egui::Stroke::new(1.0, t.separator), egui::StrokeKind::Inside);
             for (i, (label, action)) in BUTTONS.iter().enumerate() {
@@ -556,7 +556,7 @@ impl eframe::App for Shell {
             && ime > 1.0
             && scrolled < SCROLL_LIMIT
             && let Some(id) = focus
-            && let (Some(field), Some(screen)) = (self.last_ime.map(|i| i.rect), raw_input.screen_rect)
+            && let (Some(field), Some(screen)) = (self.last_ime.as_ref().map(|i| i.rect), raw_input.screen_rect)
         {
             self.scrolled_for = Some((id, scrolled + STEP));
             let bottom = screen.max.y;
@@ -680,14 +680,14 @@ impl eframe::App for Shell {
         // keyboard close, the field come back and ask again: the keyboard flickered open and shut
         // and nothing could be typed (#14). Keep asking while a field has focus.
         let ctx = ui.ctx();
-        match ctx.output(|o| o.ime) {
+        match ctx.output(|o| o.ime.clone()) {
             Some(ime) => {
                 self.last_ime = Some(ime);
                 self.ime_hidden = false;
             }
             None if ctx.memory(|m| m.focused().is_some()) && ctx.egui_wants_keyboard_input() => {
                 self.ime_hidden = true;
-                if let Some(ime) = self.last_ime {
+                if let Some(ime) = self.last_ime.clone() {
                     ctx.output_mut(|o| o.ime = Some(ime));
                 }
             }
