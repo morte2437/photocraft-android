@@ -180,6 +180,7 @@ impl PhotocraftApp {
             stylus: Default::default(),
             control_click: Default::default(),
             background_jobs: false,
+            perspective_drag: None,
             min_frame_ms: None,
             last_frame_start_ms: 0.0,
             jobs: Default::default(),

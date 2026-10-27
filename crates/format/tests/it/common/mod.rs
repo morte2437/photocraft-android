@@ -238,6 +238,7 @@ pub fn rich_doc(mode: ColorMode, depth: SampleType) -> Document {
     d.guides =
         Guides { horizontal: vec![10.0, 20.5], vertical: vec![100.25], colors: vec![GuideColor { vertical: true, position: 100.25, rgb: [0x33, 0x66, 0xff] }] };
     d.ruler_origin = [12.5, -4.25];
+    d.perspective_ruler = Some(vec![[-40.5, 30.0], [900.25, 31.0], [450.0, 2400.0]]);
     let mut sel = Surface::new(PixelFormat::GRAY8);
     scribble(&mut sel, 14, false);
     d.selection = Some(sel);

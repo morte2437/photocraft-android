@@ -84,6 +84,36 @@ pub fn constrain(tool: Tool, axis: &mut Option<Axis>, start: [f64; 2], last: [f6
     }
 }
 
+/// The perspective ruler with Snap to Perspective: a painting stroke stays on the line through
+/// where it started towards the vanishing point (or the upright or level direction) it set off
+/// closest to. ⇧ takes over (straight 45° lines); without a ruler the point passes through.
+pub fn perspective(
+    tool: Tool,
+    axis: &mut Option<Axis>,
+    start: [f64; 2],
+    p: [f64; 2],
+    shift: bool,
+    ruler: Option<&photocraft_engine::perspective_cmds::PerspectiveRuler>,
+    zoom: f32,
+) -> [f64; 2] {
+    let Some(ruler) = ruler.filter(|r| r.snap && !shift && connects(tool)) else {
+        *axis = None;
+        return p;
+    };
+    let a = axis.get_or_insert(Axis { origin: start, dir: None });
+    if a.dir.is_none() {
+        let reach = LOCK_DISTANCE * 2.0 / f64::from(zoom.max(1e-3));
+        if (p[0] - a.origin[0]).hypot(p[1] - a.origin[1]) < reach {
+            return a.origin;
+        }
+        a.dir = ruler.direction(a.origin, p);
+    }
+    match a.dir {
+        Some(d) => project(a.origin, d, p),
+        None => p,
+    }
+}
+
 /// Where the ⇧-click line preview starts (#257): the end of the last stroke on the active
 /// document, while ⇧ is held with a painting tool and nothing is being painted.
 pub fn line_preview_start(app: &crate::PhotocraftApp, tool: Tool, shift: bool) -> Option<[f64; 2]> {

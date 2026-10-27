@@ -269,6 +269,7 @@ pub use tools::move_lock;
 pub use tools::move_mods;
 pub use tools::object_finder;
 pub use tools::perspective_crop_ui;
+pub use tools::perspective_ruler_ui;
 pub use tools::perspective_ui;
 pub use tools::puppet_ui;
 pub use tools::retouch_ui;
@@ -645,6 +646,8 @@ pub struct PhotocraftApp {
     /// `jobs_ui`). The desktop app turns it on; off (the default), everything runs inline as
     /// before, which tests and scripts rely on.
     pub background_jobs: bool,
+    /// A vanishing point of the perspective ruler being dragged: (document, point, where).
+    pub perspective_drag: Option<(usize, usize, [f64; 2])>,
     /// Shortest time between frames (ms), or `None` for no cap. A present mode that doesn't wait
     /// for the display (Low-Latency Drawing) would otherwise redraw as fast as it can while
     /// anything keeps requesting repaints (a drag hovering, autoscroll, Liquify held still).

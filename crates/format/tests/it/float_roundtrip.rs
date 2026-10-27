@@ -25,3 +25,19 @@ fn f64_coordinates_reload_bit_exact() {
     assert_eq!(back.ruler_origin.map(f64::to_bits), [x, y].map(f64::to_bits));
     assert_eq!(back, doc);
 }
+
+#[test]
+fn a_perspective_ruler_saves_and_a_damaged_one_is_dropped() {
+    let mut doc = Document::new("Ruler", Size::new(4, 4), ColorMode::Rgb, SampleType::U8);
+    doc.perspective_ruler = Some(vec![[-1.5, 2.0], [7.25, 2.0]]);
+    let bytes = photocraft_format::save_to_bytes(&doc, &Default::default()).unwrap();
+    assert_eq!(photocraft_format::load_from_bytes(&bytes).unwrap().perspective_ruler, doc.perspective_ruler);
+    // Four points isn't a ruler: the file still opens, without one.
+    doc.perspective_ruler = Some(vec![[0.0, 0.0]; 4]);
+    let bytes = photocraft_format::save_to_bytes(&doc, &Default::default()).unwrap();
+    assert_eq!(photocraft_format::load_from_bytes(&bytes).unwrap().perspective_ruler, None);
+    // Files without one open without one.
+    doc.perspective_ruler = None;
+    let bytes = photocraft_format::save_to_bytes(&doc, &Default::default()).unwrap();
+    assert_eq!(photocraft_format::load_from_bytes(&bytes).unwrap().perspective_ruler, None);
+}

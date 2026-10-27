@@ -115,6 +115,7 @@ mod params;
 pub(super) mod path_edit_cmds;
 pub mod pattern_cmds;
 pub mod pattern_fill_cmds;
+pub mod perspective_cmds;
 pub mod perspective_crop_cmds;
 pub mod photo_cmds;
 pub mod pick_cmds;
@@ -1215,6 +1216,7 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::smartselect_cmds::specs());
     v.extend(crate::cutout_cmds::specs());
     v.extend(crate::symmetry_cmds::specs());
+    v.extend(crate::perspective_cmds::specs());
     v.extend(crate::edit_cmds::specs());
     v.extend(crate::color_cmds::specs());
     v.extend(crate::brush_cmds::specs());

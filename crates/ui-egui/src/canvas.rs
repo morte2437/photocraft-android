@@ -1332,6 +1332,7 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
         crate::retouch_ui::draw_source_marker(app, &painter, &xf);
         crate::vector_ui::draw_overlay(app, &painter, &xf, &doc);
         crate::symmetry_ui::draw(app, &painter, &xf);
+        crate::perspective_ruler_ui::draw(app, &painter, &xf);
         crate::analysis_ui::draw_overlay(app, &painter, &xf);
         crate::gradient_ui::draw_overlay(app, &painter, &xf);
         crate::slice_ui::draw_overlay(app, &painter, &xf);

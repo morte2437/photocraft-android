@@ -29,6 +29,7 @@ pub mod move_lock;
 pub mod move_mods;
 pub mod object_finder;
 pub mod perspective_crop_ui;
+pub mod perspective_ruler_ui;
 pub mod perspective_ui;
 pub mod puppet_ui;
 pub mod retouch_ui;

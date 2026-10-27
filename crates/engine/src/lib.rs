@@ -118,6 +118,7 @@ pub use cmd::paint_cmds;
 use cmd::path_edit_cmds;
 pub use cmd::pattern_cmds;
 pub use cmd::pattern_fill_cmds;
+pub use cmd::perspective_cmds;
 pub use cmd::perspective_crop_cmds;
 pub use cmd::photo_cmds;
 pub use cmd::pick_cmds;

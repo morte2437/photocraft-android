@@ -16,6 +16,8 @@ pub struct Drag {
     pub clear: bool,
     /// ⇧ constraint of a painting stroke (stroke_constraint.rs).
     pub constrain: Option<crate::stroke_constraint::Axis>,
+    /// The line a stroke snapped to on the perspective ruler, once its direction is locked.
+    pub perspective: Option<crate::stroke_constraint::Axis>,
     /// Modifiers held now (updated on every pointer event of the gesture).
     pub live: egui::Modifiers,
     /// Which of the modifiers held at the press have been released since.
@@ -43,6 +45,7 @@ impl Drag {
             erase,
             clear: false,
             constrain: None,
+            perspective: None,
             live: modifiers,
             released: egui::Modifiers::NONE,
             reposition: false,

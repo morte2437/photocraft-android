@@ -221,6 +221,7 @@ fn doc_pixels_equal(a: &Document, b: &Document) -> bool {
         notes: _,
         text_styles: _,
         slices: _,
+        perspective_ruler: _,
         variables: _,
         timeline: _,
         file_encoding: _,
@@ -323,6 +324,7 @@ pub fn selection_only_change(a: &Document, b: &Document) -> bool {
         notes,
         text_styles,
         slices,
+        perspective_ruler,
         variables,
         timeline,
         file_encoding,
@@ -346,6 +348,7 @@ pub fn selection_only_change(a: &Document, b: &Document) -> bool {
         && *notes == b.notes
         && *text_styles == b.text_styles
         && *slices == b.slices
+        && *perspective_ruler == b.perspective_ruler
         && *variables == b.variables
         && *timeline == b.timeline
         && *file_encoding == b.file_encoding
