@@ -72,6 +72,21 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent) -> bool {
     }
 }
 
+/// The options bar's snap switch, shown while the document has a perspective ruler: on, strokes
+/// snap to the ruler; off, they draw freely.
+pub fn snap_button(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
+    let Some(snap) = app.session.active().and_then(|st| st.perspective.as_ref()).map(|r| r.snap) else { return };
+    let tip = if snap { tl!("Snapping to the perspective ruler (click to draw freely)") } else { tl!("Drawing freely (click to snap to the perspective ruler)") };
+    let resp = crate::icons::button_with_icon_size(ui, "ruler", 24.0, 14.0, snap, tip);
+    let resp = crate::brush_picker::named(resp, "Snap to perspective ruler");
+    if resp.clicked()
+        && let Err(e) = app.run("view.perspectiveRuler.snap", json!({}))
+    {
+        app.ui.status = e;
+        app.ui.status_error = true;
+    }
+}
+
 /// Points spread evenly around the document's edges, for the fan of lines from a vanishing point.
 fn edge_points(w: f64, h: f64, n: usize) -> Vec<[f64; 2]> {
     let perimeter = 2.0 * (w + h);
@@ -152,6 +167,29 @@ mod tests {
         let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
         app.run("file.new", json!({"width": 400, "height": 300})).unwrap();
         app
+    }
+
+    #[test]
+    fn the_options_bar_button_switches_snapping() {
+        use egui_kittest::kittest::Queryable;
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(200.0, 60.0)).build_ui_state(
+            |ui, app: &mut PhotocraftApp| {
+                ui.horizontal(|ui| snap_button(app, ui));
+            },
+            app(),
+        );
+        h.run();
+        assert!(h.query_by_label("Snap to perspective ruler").is_none(), "no ruler, no button");
+        h.state_mut().run("view.perspectiveRuler.onePoint", json!({})).unwrap();
+        h.run();
+        let snap = |h: &egui_kittest::Harness<'_, PhotocraftApp>| h.state().session.active().unwrap().perspective.as_ref().unwrap().snap;
+        assert!(snap(&h));
+        h.get_by_label("Snap to perspective ruler").click();
+        h.run();
+        assert!(!snap(&h), "off: draw freely");
+        h.get_by_label("Snap to perspective ruler").click();
+        h.run();
+        assert!(snap(&h), "back on");
     }
 
     #[test]

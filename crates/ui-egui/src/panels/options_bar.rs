@@ -681,6 +681,9 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                         if matches!(tool, Tool::Brush | Tool::Pencil | Tool::Eraser) {
                             crate::symmetry_ui::menu(app, ui);
                         }
+                        if crate::stroke_constraint::connects(tool) {
+                            crate::perspective_ruler_ui::snap_button(app, ui);
+                        }
                         crate::brush_panel::commit_gesture(app, ui.ctx(), &brush_before, &brush);
                     });
                     reveal_focused_control(ui);
