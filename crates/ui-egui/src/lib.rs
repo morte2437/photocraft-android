@@ -656,8 +656,9 @@ pub struct PhotocraftApp {
     /// is smaller ([`prefs_ui::COMPACT_AUTO_SCALE`]) and dialogs take the window's width and
     /// scroll when taller than it. Off on the desktop.
     pub compact_layout: bool,
-    /// A vanishing point of the perspective ruler being dragged: (document, point, where).
-    pub perspective_drag: Option<(usize, usize, [f64; 2])>,
+    /// A vanishing point of the perspective ruler being dragged: (the document's id, point,
+    /// where). By id, so a drag never lands on another document that took its tab's place.
+    pub perspective_drag: Option<(photocraft_doc::DocId, usize, [f64; 2])>,
     /// The phone layout's open panel group: the dock is only its icon rail there, and a rail
     /// button opens its group over the canvas (see `panels::phone_dock`).
     pub phone_panel: Option<dock::Group>,

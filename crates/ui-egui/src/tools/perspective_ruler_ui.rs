@@ -19,9 +19,10 @@ const RAYS: usize = 24;
 
 /// The ruler as drawn now: the document's, or the one being dragged.
 fn shown(app: &PhotocraftApp) -> Option<PerspectiveRuler> {
-    let mut r = app.session.active()?.perspective()?;
+    let st = app.session.active()?;
+    let mut r = st.perspective()?;
     if let Some((doc, i, p)) = app.perspective_drag
-        && Some(doc) == app.session.active_index()
+        && doc == st.doc.id
         && let Some(slot) = r.points.get_mut(i)
     {
         *slot = p;
@@ -36,7 +37,7 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent) -> bool {
     if app.active_tool() != crate::state::Tool::Ruler && app.perspective_drag.is_none() {
         return false;
     }
-    let Some(idx) = app.session.active_index() else {
+    let Some(id) = app.session.active().map(|st| st.doc.id) else {
         app.perspective_drag = None;
         return false;
     };
@@ -49,22 +50,27 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent) -> bool {
             let hit = r.points.iter().position(|p| (p[0] - x).hypot(p[1] - y) <= tol);
             match hit {
                 Some(i) => {
-                    app.perspective_drag = Some((idx, i, [x, y]));
+                    app.perspective_drag = Some((id, i, [x, y]));
                     true
                 }
                 None => false,
             }
         }
         ToolEvent::Move { x, y, .. } => match &mut app.perspective_drag {
-            Some((doc, _, p)) if *doc == idx => {
+            Some((doc, _, p)) if *doc == id => {
                 *p = [x, y];
                 true
             }
-            _ => false,
+            // The document the drag started on is no longer active: the drag is over.
+            Some(_) => {
+                app.perspective_drag = None;
+                true
+            }
+            None => false,
         },
         ToolEvent::Up { x, y } => {
             let Some((doc, i, _)) = app.perspective_drag.take() else { return false };
-            if doc == idx
+            if doc == id
                 && let Some(mut r) = app.session.active().and_then(|st| st.perspective())
                 && let Some(slot) = r.points.get_mut(i)
             {
@@ -306,6 +312,26 @@ mod tests {
         app.run("edit.redo", json!({})).unwrap();
         // Away from the points, the Ruler tool measures as usual.
         assert!(!pointer(&mut app, ToolEvent::Down { x: 200.0, y: 200.0, pressure: 1.0 }));
+    }
+
+    /// A drag whose document stops being active (another tab, a new document) ends without
+    /// changing either document's ruler.
+    #[test]
+    fn a_drag_never_lands_on_another_document() {
+        let mut app = app();
+        app.ui.tool = crate::state::Tool::Ruler;
+        app.run("view.perspectiveRuler.twoPoint", json!({})).unwrap();
+        let first = app.session.active().unwrap().doc.id;
+        assert!(pointer(&mut app, ToolEvent::Down { x: 40.0, y: 135.0, pressure: 1.0 }));
+        app.run("file.new", json!({"width": 400, "height": 300})).unwrap();
+        app.run("view.perspectiveRuler.twoPoint", json!({})).unwrap();
+        assert_ne!(app.session.active().unwrap().doc.id, first);
+        assert!(pointer(&mut app, ToolEvent::Move { x: 10.0, y: 10.0, pressure: 1.0 }), "the stale drag is taken, not painted");
+        assert_eq!(app.perspective_drag, None, "and ended");
+        assert!(!pointer(&mut app, ToolEvent::Up { x: 10.0, y: 10.0 }));
+        assert_eq!(app.session.active().unwrap().perspective().unwrap().points[0], [40.0, 135.0], "the new document's ruler is untouched");
+        assert!(app.session.set_active(0));
+        assert_eq!(app.session.active().unwrap().perspective().unwrap().points[0], [40.0, 135.0], "and so is the first one's");
     }
 
     /// With snapping off, or Shift held (which gives the usual straight 45° lines instead), strokes don't follow the ruler.
