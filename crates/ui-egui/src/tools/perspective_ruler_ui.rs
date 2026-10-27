@@ -100,10 +100,12 @@ pub fn snap_button(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
 pub fn ruler_tool_options(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let Some(r) = app.session.active().map(|st| st.perspective()) else { return };
     crate::widgets::vline(ui, 22.0);
+    let dim = crate::theme::Tokens::get(ui.ctx()).text_dim;
+    ui.add(egui::Label::new(egui::RichText::new(tl!("Perspective")).color(dim)).selectable(false));
     let mut kind = r.as_ref().map_or(0, PerspectiveRuler::kind);
     let opts = [(0, "None"), (1, "1-Point"), (2, "2-Point"), (3, "3-Point")];
     let mut run = None;
-    if crate::widgets::dropdown(ui, "perspective-ruler", tl!("Perspective"), &mut kind, &opts, 100.0) {
+    if crate::widgets::dropdown(ui, "perspective-ruler", tl!("Perspective Ruler"), &mut kind, &opts, 100.0) {
         run = Some(match kind {
             1 => "view.perspectiveRuler.onePoint",
             2 => "view.perspectiveRuler.twoPoint",
@@ -222,7 +224,7 @@ mod tests {
         h.run();
         let ruler = |h: &egui_kittest::Harness<'_, PhotocraftApp>| h.state().session.active().unwrap().perspective();
         assert!(h.query_by_label("Show").is_none(), "no switches without a ruler");
-        h.get_by_label("Perspective").click();
+        h.get_by_label("Perspective Ruler").click();
         h.run();
         h.get_by_label("2-Point").click();
         h.run();
@@ -233,7 +235,7 @@ mod tests {
         h.get_by_label("Snap").click();
         h.run();
         assert!(!ruler(&h).unwrap().snap, "drawing freely");
-        h.get_by_label("Perspective").click();
+        h.get_by_label("Perspective Ruler").click();
         h.run();
         h.get_by_label("None").click();
         h.run();
