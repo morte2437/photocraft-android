@@ -16,10 +16,6 @@
 use crate::{CommandSpec, EngineError, Result, Session};
 use serde_json::{Value, json};
 
-/// The farthest a vanishing point may be from the canvas, in canvas sizes. Points much farther
-/// away draw parallel lines anyway; this keeps the arithmetic finite.
-const MAX_DISTANCE: f64 = 1.0e6;
-
 /// The perspective ruler's switches for a document (view state).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PerspectiveView {
@@ -125,13 +121,13 @@ impl PerspectiveRuler {
             .max_by(|a, b| cos(heading, *a).abs().total_cmp(&cos(heading, *b).abs()))
     }
 
-    /// Checks the ruler has 1 to 3 vanishing points, each finite and within [`MAX_DISTANCE`] canvas sizes of a `w` × `h` canvas.
+    /// Checks the ruler has 1 to 3 vanishing points, each finite and near a `w` × `h` canvas
+    /// ([`photocraft_doc::perspective_ruler_ok`], the rule `.pcraft` loading applies too).
     fn validate(&self, w: f64, h: f64) -> std::result::Result<(), String> {
         if !(1..=3).contains(&self.points.len()) {
             return Err("a perspective ruler has 1, 2 or 3 vanishing points".into());
         }
-        let limit = MAX_DISTANCE * w.max(h).max(1.0);
-        if self.points.iter().flatten().any(|v| !v.is_finite() || v.abs() > limit) {
+        if !photocraft_doc::perspective_ruler_ok(&self.points, w, h) {
             return Err("vanishing points must be finite and near the canvas".into());
         }
         Ok(())

@@ -959,6 +959,18 @@ impl FileEncoding {
 /// Where a layer lives in the tree: indices from the root down.
 pub type LayerPath = Vec<usize>;
 
+/// The farthest a perspective ruler's vanishing point may be from the canvas, in canvas sizes.
+/// Points much farther away draw parallel lines anyway; this keeps the arithmetic finite.
+pub const PERSPECTIVE_RULER_REACH: f64 = 1.0e6;
+
+/// Whether `points` make a usable [`Document::perspective_ruler`] for a `w` × `h` canvas: 1 to 3
+/// vanishing points, each finite and within [`PERSPECTIVE_RULER_REACH`] canvas sizes. The engine
+/// checks edits with it and `.pcraft` loading drops a ruler that fails it.
+pub fn perspective_ruler_ok(points: &[[f64; 2]], w: f64, h: f64) -> bool {
+    let limit = PERSPECTIVE_RULER_REACH * w.max(h).max(1.0);
+    (1..=3).contains(&points.len()) && points.iter().flatten().all(|v| v.is_finite() && v.abs() <= limit)
+}
+
 impl Document {
     pub fn new(name: impl Into<String>, size: Size, mode: ColorMode, depth: SampleType) -> Self {
         Document {

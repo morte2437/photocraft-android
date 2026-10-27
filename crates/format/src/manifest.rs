@@ -102,9 +102,18 @@ pub struct DocM {
     /// Web slices (user and layer-based; layer ids are remapped on load).
     #[serde(default, skip_serializing_if = "photocraft_doc::Slices::is_empty")]
     pub slices: photocraft_doc::Slices,
-    /// The perspective ruler: its vanishing points (absent: no ruler).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The perspective ruler: its vanishing points (absent: no ruler). A point of the wrong shape
+    /// reads as no ruler rather than failing the whole manifest ([`ruler_or_none`]).
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "ruler_or_none")]
     pub perspective_ruler: Option<Vec<[f64; 2]>>,
+}
+
+/// Reads [`DocM::perspective_ruler`]: any point that isn't `[x, y]` (or a list that isn't one of
+/// points) makes it `None`, so a damaged ruler is dropped and the document still opens.
+fn ruler_or_none<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Vec<[f64; 2]>>, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    let Some(list) = v.as_array() else { return Ok(None) };
+    Ok(list.iter().map(|p| serde_json::from_value::<[f64; 2]>(p.clone()).ok()).collect())
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -399,6 +408,36 @@ mod channel_tests {
         assert_eq!(c.color, photocraft_doc::AlphaChannel::DEFAULT_COLOR);
         assert_eq!(c.opacity, 0.5);
         assert_eq!(c.indicates, photocraft_doc::ColorIndicates::MaskedAreas);
+    }
+}
+
+#[cfg(test)]
+mod perspective_ruler_tests {
+    use super::*;
+
+    /// Just the ruler field, read as [`DocM`] reads it.
+    #[derive(Deserialize)]
+    struct Ruler {
+        #[serde(default, deserialize_with = "ruler_or_none")]
+        perspective_ruler: Option<Vec<[f64; 2]>>,
+    }
+
+    /// The ruler `v` (a manifest fragment) reads as.
+    fn read(v: serde_json::Value) -> Option<Vec<[f64; 2]>> {
+        serde_json::from_value::<Ruler>(v).unwrap().perspective_ruler
+    }
+
+    /// A ruler of the wrong shape reads as none instead of failing the manifest.
+    #[test]
+    fn a_misshapen_ruler_reads_as_none() {
+        assert_eq!(read(serde_json::json!({"perspective_ruler": [[1.0, 2.0], [3.5, 4.0]]})), Some(vec![[1.0, 2.0], [3.5, 4.0]]));
+        assert_eq!(read(serde_json::json!({})), None, "absent");
+        assert_eq!(read(serde_json::json!({"perspective_ruler": null})), None);
+        for bad in
+            [serde_json::json!([[1, 2, 3]]), serde_json::json!([[1, "x"]]), serde_json::json!([5]), serde_json::json!("ruler"), serde_json::json!({"a": 1})]
+        {
+            assert_eq!(read(serde_json::json!({ "perspective_ruler": bad })), None, "{bad}");
+        }
     }
 }
 
