@@ -916,6 +916,9 @@ pub struct Document {
     pub text_styles: TextStyles,
     /// Web slices (Slice tool, layer-based slices; PSD resource 1050). Auto slices are derived.
     pub slices: Slices,
+    /// View › Perspective Ruler: its vanishing points (1 to 3; the first two on the eye level,
+    /// a third for upright lines). None = no ruler.
+    pub perspective_ruler: Option<Vec<[f64; 2]>>,
     /// Image › Variables and Data Sets (data-driven graphics).
     pub variables: Variables,
     /// Window › Timeline (None until a video timeline is created).
@@ -988,6 +991,7 @@ impl Document {
             notes: Vec::new(),
             text_styles: TextStyles::default(),
             slices: Slices::default(),
+            perspective_ruler: None,
             variables: Variables::default(),
             timeline: None,
             file_encoding: FileEncoding::default(),

@@ -16,7 +16,7 @@ const RAYS: usize = 24;
 
 /// The ruler as drawn now: the document's, or the one being dragged.
 fn shown(app: &PhotocraftApp) -> Option<PerspectiveRuler> {
-    let mut r = app.session.active()?.perspective.clone()?;
+    let mut r = app.session.active()?.perspective()?;
     if let Some((doc, i, p)) = app.perspective_drag
         && Some(doc) == app.session.active_index()
         && let Some(slot) = r.points.get_mut(i)
@@ -58,7 +58,7 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent) -> bool {
         ToolEvent::Up { x, y } => {
             let Some((doc, i, _)) = app.perspective_drag.take() else { return false };
             if doc == idx
-                && let Some(mut r) = app.session.active().and_then(|st| st.perspective.clone())
+                && let Some(mut r) = app.session.active().and_then(|st| st.perspective())
                 && let Some(slot) = r.points.get_mut(i)
             {
                 *slot = [x, y];
@@ -75,7 +75,7 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent) -> bool {
 /// The options bar's snap switch, shown while the document has a perspective ruler: on, strokes
 /// snap to the ruler; off, they draw freely.
 pub fn snap_button(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
-    let Some(snap) = app.session.active().and_then(|st| st.perspective.as_ref()).map(|r| r.snap) else { return };
+    let Some(snap) = app.session.active().and_then(|st| st.perspective()).map(|r| r.snap) else { return };
     let tip = if snap { tl!("Snapping to the perspective ruler (click to draw freely)") } else { tl!("Drawing freely (click to snap to the perspective ruler)") };
     let resp = crate::icons::button_with_icon_size(ui, "ruler", 24.0, 14.0, snap, tip);
     let resp = crate::brush_picker::named(resp, "Snap to perspective ruler");
@@ -182,7 +182,7 @@ mod tests {
         assert!(h.query_by_label("Snap to perspective ruler").is_none(), "no ruler, no button");
         h.state_mut().run("view.perspectiveRuler.onePoint", json!({})).unwrap();
         h.run();
-        let snap = |h: &egui_kittest::Harness<'_, PhotocraftApp>| h.state().session.active().unwrap().perspective.as_ref().unwrap().snap;
+        let snap = |h: &egui_kittest::Harness<'_, PhotocraftApp>| h.state().session.active().unwrap().perspective().unwrap().snap;
         assert!(snap(&h));
         h.get_by_label("Snap to perspective ruler").click();
         h.run();
@@ -197,7 +197,7 @@ mod tests {
         let mut app = app();
         app.ui.tool = crate::state::Tool::Brush;
         app.run("view.perspectiveRuler.twoPoint", json!({})).unwrap();
-        let r = app.session.active().unwrap().perspective.clone().unwrap();
+        let r = app.session.active().unwrap().perspective().unwrap();
         assert_eq!(r.points, vec![[40.0, 135.0], [360.0, 135.0]]);
         // A stroke heading towards the right vanishing point, wobbling: every point lands on the
         // line from its start to that point.
@@ -214,12 +214,16 @@ mod tests {
         }
         crate::canvas::tool_event(&mut app, ToolEvent::Up { x: 210.0, y: 200.0 }, mods);
         // Dragging the left vanishing point moves it, and doesn't paint.
-        let revision = app.session.active().unwrap().revision;
+        let layers = app.session.active().unwrap().doc.layers.clone();
         assert!(pointer(&mut app, ToolEvent::Down { x: 41.0, y: 136.0, pressure: 1.0 }));
         assert!(pointer(&mut app, ToolEvent::Move { x: 10.0, y: 120.0, pressure: 1.0 }));
         assert!(pointer(&mut app, ToolEvent::Up { x: 0.0, y: 110.0 }));
-        assert_eq!(app.session.active().unwrap().perspective.as_ref().unwrap().points[0], [0.0, 110.0]);
-        assert_eq!(app.session.active().unwrap().revision, revision, "no paint, no history step");
+        assert_eq!(app.session.active().unwrap().perspective().unwrap().points[0], [0.0, 110.0]);
+        assert_eq!(app.session.active().unwrap().doc.layers, layers, "no paint");
+        // The move is one undoable step.
+        app.run("edit.undo", json!({})).unwrap();
+        assert_eq!(app.session.active().unwrap().perspective().unwrap().points[0], [40.0, 135.0]);
+        app.run("edit.redo", json!({})).unwrap();
         // Away from the points, a press paints as usual.
         assert!(!pointer(&mut app, ToolEvent::Down { x: 200.0, y: 200.0, pressure: 1.0 }));
     }

@@ -124,7 +124,8 @@ pub(super) fn checked(app: &PhotocraftApp, id: &str) -> Option<bool> {
     }
     // View › Perspective Ruler's toggles, and which kind of ruler is on.
     if let Some(item) = id.strip_prefix("view.perspectiveRuler.") {
-        let r = app.session.active().and_then(|st| st.perspective.as_ref());
+        let r = app.session.active().and_then(|st| st.perspective());
+        let r = r.as_ref();
         return match item {
             "snap" => Some(r.is_some_and(|r| r.snap)),
             "show" => Some(r.is_some_and(|r| r.visible)),

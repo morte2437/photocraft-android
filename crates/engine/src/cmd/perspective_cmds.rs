@@ -9,8 +9,9 @@
 //!   which the upright edges converge on instead.
 //!
 //! A stroke decides where it goes from its first few points (whichever direction it starts
-//! closest to), then stays on that line. The ruler is per document view state (like painting
-//! symmetry): it is not part of the image and isn't saved with it.
+//! closest to), then stays on that line. The vanishing points belong to the document
+//! (`Document::perspective_ruler`): saved in `.pcraft` files, and placing, moving or clearing
+//! them is a history step, as with guides. Snap and Show are view switches, not history.
 
 use crate::{CommandSpec, EngineError, Result, Session};
 use serde_json::{Value, json};
@@ -19,7 +20,30 @@ use serde_json::{Value, json};
 /// away draw parallel lines anyway; this keeps the arithmetic finite.
 const MAX_DISTANCE: f64 = 1.0e6;
 
-/// A document's perspective ruler.
+/// View › Perspective Ruler's switches for a document (view state).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PerspectiveView {
+    /// Painting strokes snap to the ruler.
+    pub snap: bool,
+    /// The ruler's lines are drawn over the canvas.
+    pub visible: bool,
+}
+
+impl Default for PerspectiveView {
+    fn default() -> Self {
+        Self { snap: true, visible: true }
+    }
+}
+
+impl crate::DocState {
+    /// The document's perspective ruler with its view switches; None when it has none.
+    pub fn perspective(&self) -> Option<PerspectiveRuler> {
+        let points = self.doc.perspective_ruler.clone()?;
+        Some(PerspectiveRuler { points, snap: self.perspective_view.snap, visible: self.perspective_view.visible })
+    }
+}
+
+/// A document's perspective ruler: its vanishing points and view switches.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PerspectiveRuler {
     /// The vanishing points (1 to 3). The first two lie on the eye level; a third is the
@@ -130,18 +154,30 @@ fn doc_size(s: &Session) -> Result<(f64, f64)> {
     Ok((f64::from(st.doc.size.width), f64::from(st.doc.size.height)))
 }
 
+/// Puts `points` on the document as a history step (`label`).
+fn store(s: &mut Session, label: &str, points: Option<Vec<[f64; 2]>>) -> Result<()> {
+    if s.active().ok_or(EngineError::NoDocument)?.doc.perspective_ruler == points {
+        return Ok(());
+    }
+    s.edit(label, |doc, _| {
+        doc.perspective_ruler = points;
+        Ok(())
+    })
+}
+
 fn create(s: &mut Session, kind: usize) -> Result<Value> {
     let (w, h) = doc_size(s)?;
     let ruler = PerspectiveRuler::default_for(kind, w, h).ok_or_else(|| EngineError::Other("1, 2 or 3 points".into()))?;
-    let out = ruler.inspect();
-    s.active_mut().ok_or(EngineError::NoDocument)?.perspective = Some(ruler);
-    Ok(out)
+    store(s, "Perspective Ruler", Some(ruler.points.clone()))?;
+    // A new ruler starts shown and snapping.
+    s.active_mut().ok_or(EngineError::NoDocument)?.perspective_view = PerspectiveView::default();
+    Ok(ruler.inspect())
 }
 
 fn set(s: &mut Session, p: &Value) -> Result<Value> {
     let (w, h) = doc_size(s)?;
     let bad = |m: &str| EngineError::BadParams { cmd: "view.perspectiveRuler.set".into(), msg: m.into() };
-    let mut ruler = s.active().ok_or(EngineError::NoDocument)?.perspective.clone().ok_or_else(|| bad("no perspective ruler (View › Perspective Ruler)"))?;
+    let mut ruler = s.active().ok_or(EngineError::NoDocument)?.perspective().ok_or_else(|| bad("no perspective ruler (View › Perspective Ruler)"))?;
     if let Some(points) = p.get("vanishingPoints") {
         let list = points.as_array().ok_or_else(|| bad("vanishingPoints: [[x,y], …]"))?;
         ruler.points = list
@@ -162,17 +198,19 @@ fn set(s: &mut Session, p: &Value) -> Result<Value> {
         ruler.visible = v.as_bool().ok_or_else(|| bad("visible: true or false"))?;
     }
     ruler.validate(w, h).map_err(|m| bad(&m))?;
-    let out = ruler.inspect();
-    s.active_mut().ok_or(EngineError::NoDocument)?.perspective = Some(ruler);
-    Ok(out)
+    store(s, "Move Vanishing Point", Some(ruler.points.clone()))?;
+    s.active_mut().ok_or(EngineError::NoDocument)?.perspective_view = PerspectiveView { snap: ruler.snap, visible: ruler.visible };
+    Ok(ruler.inspect())
 }
 
-fn toggle(s: &mut Session, f: fn(&mut PerspectiveRuler) -> &mut bool) -> Result<Value> {
+fn toggle(s: &mut Session, f: fn(&mut PerspectiveView) -> &mut bool) -> Result<Value> {
     let st = s.active_mut().ok_or(EngineError::NoDocument)?;
-    let ruler = st.perspective.as_mut().ok_or_else(|| EngineError::Other("no perspective ruler".into()))?;
-    let b = f(ruler);
+    if st.doc.perspective_ruler.is_none() {
+        return Err(EngineError::Other("no perspective ruler".into()));
+    }
+    let b = f(&mut st.perspective_view);
     *b = !*b;
-    Ok(ruler.inspect())
+    Ok(st.perspective().map_or(Value::Null, |r| r.inspect()))
 }
 
 fn has_doc(s: &Session) -> std::result::Result<(), String> {
@@ -180,7 +218,7 @@ fn has_doc(s: &Session) -> std::result::Result<(), String> {
 }
 
 fn has_ruler(s: &Session) -> std::result::Result<(), String> {
-    s.active().filter(|st| st.perspective.is_some()).map(|_| ()).ok_or_else(|| "no perspective ruler".into())
+    s.active().filter(|st| st.doc.perspective_ruler.is_some()).map(|_| ()).ok_or_else(|| "no perspective ruler".into())
 }
 
 const MENU: &[&str] = &["View", "Perspective Ruler"];
@@ -195,7 +233,7 @@ pub fn specs() -> Vec<CommandSpec> {
             params: "{} — a ruler with one vanishing point, replacing the current one",
             enabled: has_doc,
             run: |s, _| create(s, 1),
-            journal: false,
+            journal: true,
         },
         CommandSpec {
             id: "view.perspectiveRuler.twoPoint",
@@ -205,7 +243,7 @@ pub fn specs() -> Vec<CommandSpec> {
             params: "{} — two vanishing points on the eye level",
             enabled: has_doc,
             run: |s, _| create(s, 2),
-            journal: false,
+            journal: true,
         },
         CommandSpec {
             id: "view.perspectiveRuler.threePoint",
@@ -215,7 +253,7 @@ pub fn specs() -> Vec<CommandSpec> {
             params: "{} — two on the eye level and a third for upright lines",
             enabled: has_doc,
             run: |s, _| create(s, 3),
-            journal: false,
+            journal: true,
         },
         CommandSpec {
             id: "view.perspectiveRuler.snap",
@@ -245,10 +283,10 @@ pub fn specs() -> Vec<CommandSpec> {
             params: "{}",
             enabled: has_ruler,
             run: |s, _| {
-                s.active_mut().ok_or(EngineError::NoDocument)?.perspective = None;
+                store(s, "Clear Perspective Ruler", None)?;
                 Ok(json!({}))
             },
-            journal: false,
+            journal: true,
         },
         CommandSpec {
             id: "view.perspectiveRuler.set",
@@ -258,7 +296,7 @@ pub fn specs() -> Vec<CommandSpec> {
             params: r#"{"vanishingPoints":[[x,y],…]? (1–3; first two on the eye level, third for upright lines),"snap":bool?,"visible":bool?}"#,
             enabled: has_ruler,
             run: set,
-            journal: false,
+            journal: true,
         },
         CommandSpec {
             id: "view.perspectiveRuler.info",
@@ -267,7 +305,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             params: "{} → {type, vanishingPoints, snap, visible} or null",
             enabled: has_doc,
-            run: |s, _| Ok(s.active().ok_or(EngineError::NoDocument)?.perspective.as_ref().map_or(Value::Null, PerspectiveRuler::inspect)),
+            run: |s, _| Ok(s.active().ok_or(EngineError::NoDocument)?.perspective().map_or(Value::Null, |r| r.inspect())),
             journal: false,
         },
     ]
@@ -319,19 +357,42 @@ mod tests {
         s.execute("file.new", json!({"width": 1000, "height": 800})).unwrap();
         let r = s.execute("view.perspectiveRuler.twoPoint", json!({})).unwrap();
         assert_eq!(r["type"], 2);
-        assert_eq!(s.active().unwrap().perspective.as_ref().unwrap().points, vec![[100.0, 360.0], [900.0, 360.0]]);
+        assert_eq!(s.active().unwrap().perspective().unwrap().points, vec![[100.0, 360.0], [900.0, 360.0]]);
         s.execute("view.perspectiveRuler.set", json!({"vanishingPoints": [[0, 50], [1000, 70], [500, 4000]]})).unwrap();
-        assert_eq!(s.active().unwrap().perspective.as_ref().unwrap().kind(), 3);
+        assert_eq!(s.active().unwrap().perspective().unwrap().kind(), 3);
         s.execute("view.perspectiveRuler.snap", json!({})).unwrap();
-        assert!(!s.active().unwrap().perspective.as_ref().unwrap().snap);
+        assert!(!s.active().unwrap().perspective().unwrap().snap);
         for bad in [json!({"vanishingPoints": []}), json!({"vanishingPoints": [[1, 2], [3, 4], [5, 6], [7, 8]]}), json!({"vanishingPoints": [[1e300, 0]]}), json!({"vanishingPoints": [[1]]}), json!({"snap": 3})] {
             assert!(s.execute("view.perspectiveRuler.set", bad.clone()).is_err(), "{bad}");
         }
-        assert_eq!(s.active().unwrap().perspective.as_ref().unwrap().kind(), 3, "unchanged by bad input");
+        assert_eq!(s.active().unwrap().perspective().unwrap().kind(), 3, "unchanged by bad input");
         assert_eq!(s.execute("view.perspectiveRuler.info", json!({})).unwrap()["snap"], false);
         s.execute("view.perspectiveRuler.clear", json!({})).unwrap();
-        assert!(s.active().unwrap().perspective.is_none());
+        assert!(s.active().unwrap().perspective().is_none());
         assert!(s.execute("view.perspectiveRuler.snap", json!({})).is_err());
         assert_eq!(s.execute("view.perspectiveRuler.info", json!({})).unwrap(), Value::Null);
+    }
+
+    #[test]
+    fn the_points_are_the_documents_and_undo_but_the_switches_do_not() {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 1000, "height": 800})).unwrap();
+        let revision = s.active().unwrap().revision;
+        s.execute("view.perspectiveRuler.onePoint", json!({})).unwrap();
+        assert_eq!(s.active().unwrap().doc.perspective_ruler, Some(vec![[500.0, 360.0]]));
+        assert!(s.active().unwrap().revision > revision, "placing a ruler is an edit");
+        s.execute("view.perspectiveRuler.set", json!({"vanishingPoints": [[300, 200]]})).unwrap();
+        // Snap and Show are not history: undo goes back past the move, not the switch.
+        s.execute("view.perspectiveRuler.snap", json!({})).unwrap();
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(s.active().unwrap().doc.perspective_ruler, Some(vec![[500.0, 360.0]]), "move undone");
+        assert!(!s.active().unwrap().perspective().unwrap().snap, "the switch stays");
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(s.active().unwrap().perspective(), None, "placing undone");
+        // Setting the same points again isn't a step.
+        s.execute("edit.redo", json!({})).unwrap();
+        let revision = s.active().unwrap().revision;
+        s.execute("view.perspectiveRuler.set", json!({"vanishingPoints": [[500, 360]]})).unwrap();
+        assert_eq!(s.active().unwrap().revision, revision);
     }
 }

@@ -265,6 +265,7 @@ pub(crate) fn doc_m(d: &Document, sink: &mut dyn Sink) -> DocM {
         notes: d.notes.clone(),
         text_styles: d.text_styles.clone(),
         slices: d.slices.clone(),
+        perspective_ruler: d.perspective_ruler.clone(),
     }
 }
 
@@ -666,6 +667,11 @@ impl Loader<'_> {
             notes: m.notes.clone(),
             text_styles: m.text_styles.clone(),
             slices,
+            // A hand-edited or damaged ruler is dropped rather than refusing the file.
+            perspective_ruler: m
+                .perspective_ruler
+                .clone()
+                .filter(|p| (1..=3).contains(&p.len()) && p.iter().flatten().all(|v| v.is_finite())),
         })
     }
 

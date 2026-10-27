@@ -39,8 +39,8 @@ fn tool_move(app: &mut PhotocraftApp, x: f64, y: f64, pressure: f32, mods: egui:
         let last = d.points.last().map_or(d.start, |p| [p[0], p[1]]);
         let [x, y] = crate::stroke_constraint::constrain(d.tool, &mut d.constrain, d.start, last, [x, y], mods.shift, zoom);
         // View › Perspective Ruler: strokes snap towards a vanishing point.
-        let ruler = app.session.active().and_then(|st| st.perspective.as_ref());
-        let [x, y] = crate::stroke_constraint::perspective(d.tool, &mut d.perspective, d.start, [x, y], mods.shift, ruler, zoom);
+        let ruler = app.session.active().and_then(|st| st.perspective());
+        let [x, y] = crate::stroke_constraint::perspective(d.tool, &mut d.perspective, d.start, [x, y], mods.shift, ruler.as_ref(), zoom);
         // ⇧: a selection-tool drag of the selection locks to multiples of 45° (#6231). The Move
         // tool's own drags were already locked by `move_mods::filter_event`.
         let [x, y] = crate::move_mods::selection_drag_to(d, [x, y], mods.shift && tool != Tool::Move);
@@ -521,8 +521,8 @@ pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers)
             }
             let last = d.points.last().map_or(d.start, |p| [p[0], p[1]]);
             let [x, y] = crate::stroke_constraint::constrain(d.tool, &mut d.constrain, d.start, last, [x, y], mods.shift, zoom);
-            let ruler = app.session.active().and_then(|st| st.perspective.as_ref());
-            let [x, y] = crate::stroke_constraint::perspective(d.tool, &mut d.perspective, d.start, [x, y], mods.shift, ruler, zoom);
+            let ruler = app.session.active().and_then(|st| st.perspective());
+            let [x, y] = crate::stroke_constraint::perspective(d.tool, &mut d.perspective, d.start, [x, y], mods.shift, ruler.as_ref(), zoom);
             let [x, y] = crate::move_mods::selection_drag_to(&mut d, [x, y], mods.shift && app.active_tool() != Tool::Move);
             // A Move-tool click (released where it was pressed) selects, it never moves: snapping
             // the release point would otherwise nudge the layer onto a nearby edge.
