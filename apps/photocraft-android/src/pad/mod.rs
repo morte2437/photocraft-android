@@ -667,6 +667,11 @@ impl Pad {
         let pts: Vec<egui::Pos2> = arrow.iter().map(|(x, y)| c + egui::vec2(*x, *y)).collect();
         p.add(egui::Shape::convex_polygon(pts.clone(), egui::Color32::WHITE, Stroke::NONE));
         p.add(egui::Shape::closed_line(pts, Stroke::new(1.2, egui::Color32::BLACK)));
+        // Holding the button (a drag): a ring at the tip, so a drag never comes as a surprise.
+        if self.router.trackpad_pressed() {
+            p.circle_stroke(c, 9.0, Stroke::new(3.0, egui::Color32::BLACK));
+            p.circle_stroke(c, 9.0, Stroke::new(1.8, egui::Color32::from_rgb(0x3d, 0x9b, 0xff)));
+        }
     }
 
     /// Whether the keyboard key was tapped since the last call.
@@ -805,6 +810,7 @@ mod tests {
             pen_near: false,
             config: &config,
             list_item: &|_| false,
+            draggable: &|_| false,
             secondary: &|_| false,
             scroll_strip: None,
             screen: egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1280.0, 800.0)),

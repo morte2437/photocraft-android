@@ -497,6 +497,7 @@ impl eframe::App for Shell {
             pen_near: photocraft_tablet::android::pen_seen_within(std::time::Duration::from_millis(300)),
             config: &config,
             list_item: &|p: egui::Pos2| self.drawn.list_item(p),
+            draggable: &|p: egui::Pos2| self.drawn.draggable(p),
             secondary: &secondary,
             scroll_strip: photocraft_ui_egui::panels::options_bar_overflow(ctx),
             screen: ctx.content_rect(),

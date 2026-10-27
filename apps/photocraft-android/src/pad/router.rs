@@ -181,6 +181,9 @@ pub struct Env<'a> {
     /// Whether a point is on a draggable row or slider inside a scrolling list (as laid out last
     /// frame): a swipe there scrolls rather than drags.
     pub list_item: &'a dyn Fn(Pos2) -> bool,
+    /// Whether what's under a point can be dragged rather than only clicked (as laid out last
+    /// frame): after a tap there, the trackpad cursor's next touch drags only if it can.
+    pub draggable: &'a dyn Fn(Pos2) -> bool,
     /// Whether a pen or mouse touch presses the secondary button (a mouse's right button, a pen's
     /// side button set to right-click).
     pub secondary: &'a dyn Fn(TouchId) -> bool,
@@ -433,6 +436,11 @@ impl Router {
     /// Where the trackpad cursor is (Touch Input › Trackpad Cursor), to draw it.
     pub fn trackpad_cursor(&self) -> Option<Pos2> {
         self.trackpad.cursor()
+    }
+
+    /// Whether the trackpad cursor holds the button down (dragging).
+    pub fn trackpad_pressed(&self) -> bool {
+        self.trackpad.pressed()
     }
 
     /// Whether a pad touch is down.
@@ -845,6 +853,7 @@ mod tests {
                 pen_near: self.pen_near,
                 config: &self.config,
                 list_item: &list,
+                draggable: &|_| false,
                 secondary: &|id: TouchId| id.0 >= 200,
                 scroll_strip: Some(STRIP),
                 screen: Rect::from_min_size(pos2(0.0, 0.0), vec2(1280.0, 1000.0)),

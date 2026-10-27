@@ -382,6 +382,14 @@ impl Snapshot {
         self.top(p).is_some_and(|(order, _)| *order != egui::Order::Background)
     }
 
+    /// Whether what's under `p` can be dragged (a slider, a list row, a scroll area, a panel's
+    /// edge) rather than only clicked (a button, a tool): the smallest control there, the one a
+    /// fingertip is really on, senses drags.
+    pub fn draggable(&self, p: egui::Pos2) -> bool {
+        let Some((_, widgets)) = self.top(p) else { return false };
+        widgets.iter().filter(|w| w.enabled && w.interact.contains(p) && (w.click || w.drag)).min_by(|a, b| a.interact.area().total_cmp(&b.interact.area())).is_some_and(|w| w.drag)
+    }
+
     /// Whether `p` is on a list row inside a scrolling list: a widget that can be both clicked
     /// and dragged (a Brushes or Layers row that reorders, a preset card, a slider) on top of a
     /// larger drag-only area containing it (a scroll area's content). A finger swiping up or down
@@ -525,6 +533,20 @@ mod tests {
         let s =
             Snapshot::from_layers(vec![(egui::Order::Background, vec![widget(panel, false, false), widget(group, false, false), widget(card, true, true)])]);
         assert!(!s.list_item(card.center()));
+    }
+
+    /// After a tap, the trackpad cursor drags only from something that drags: a button in a
+    /// scrolling panel is the button's, though the panel's scroll area drags.
+    #[test]
+    fn buttons_dont_drag_but_sliders_and_rows_do() {
+        let panel = Rect::from_min_max(pos2(0.0, 0.0), pos2(300.0, 800.0));
+        let tool = Rect::from_min_max(pos2(10.0, 10.0), pos2(40.0, 40.0));
+        let slider = Rect::from_min_max(pos2(10.0, 100.0), pos2(280.0, 118.0));
+        let s = Snapshot::from_layers(vec![(egui::Order::Background, vec![widget(panel, false, true), widget(tool, true, false), widget(slider, true, true)])]);
+        assert!(!s.draggable(tool.center()), "a tool button");
+        assert!(s.draggable(slider.center()));
+        assert!(s.draggable(pos2(150.0, 500.0)), "the panel's empty space scrolls");
+        assert!(!s.draggable(pos2(900.0, 500.0)), "nothing there");
     }
 
     #[test]

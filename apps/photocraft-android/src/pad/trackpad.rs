@@ -8,7 +8,8 @@
 //!   right-clicks. Over the interface the click is immediate; over the canvas it waits a moment
 //!   for a second touch that would drag instead, so a stroke doesn't start with a dot.
 //! - Holding the button: a tap and then a touch that drags (held still instead, it holds the
-//!   button where the cursor is), or (a setting) one finger resting still while another moves
+//!   button where the cursor is), over the canvas or something that drags (a slider, a list
+//!   row); after a tap on a button or a tool the next touch just moves the cursor. Or (a setting) one finger resting still while another moves
 //!   the cursor.
 //! - Two fingers moving together: over the canvas they pan, zoom and rotate it; over the
 //!   interface they scroll what's under the cursor. Quick two- and three-finger taps run their
@@ -74,8 +75,11 @@ pub struct Trackpad {
     pressed: bool,
     /// This touch came right after a tap: dragging holds the button, a lift double-clicks...
     armed: bool,
-    /// ...and that tap's click was already sent (over the interface).
+    /// ...and that tap's click was already sent (over the interface)...
     armed_clicked: bool,
+    /// ...and dragging holds the button: over the canvas, or something that drags. After a tap
+    /// on a button the next touch only moves the cursor (it used to drag from the button).
+    armed_drags: bool,
     /// A tap's click waiting for [`CLICK_WAIT`] (when the tap ended), over the canvas.
     pending_click: Option<f64>,
     /// When the last tap ended, after its click was sent at once (over the interface).
@@ -120,6 +124,11 @@ impl Trackpad {
     /// Where the cursor is, to draw it.
     pub fn cursor(&self) -> Option<Pos2> {
         self.cursor
+    }
+
+    /// Whether the button is held (a drag), to show on the cursor.
+    pub fn pressed(&self) -> bool {
+        self.pressed
     }
 
     /// The pen touched or moved here: the cursor follows it.
@@ -174,6 +183,7 @@ impl Trackpad {
                     let sent = self.last_tap.take().is_some_and(|t| env.now - t <= CLICK_WAIT);
                     self.armed = waiting || sent;
                     self.armed_clicked = sent && !waiting;
+                    self.armed_drags = waiting || (sent && (env.draggable)(cursor));
                     out.push(Routed::App(Event::PointerMoved(cursor)));
                 }
                 self.fingers.retain(|f| f.id != id);
@@ -202,7 +212,7 @@ impl Trackpad {
                 }
                 match (self.fingers.len(), self.two) {
                     (1, _) => {
-                        if self.armed && self.moved && !self.pressed {
+                        if self.armed && self.armed_drags && self.moved && !self.pressed {
                             self.pressed = true;
                             let cursor = self.cursor_or_centre(env);
                             press(out, cursor, PointerButton::Primary, true);
@@ -340,7 +350,7 @@ impl Trackpad {
         if self.fingers.len() == 1 && !self.moved && !self.held && !self.pressed && env.now - self.since >= HOLD_TIME {
             self.held = true;
             let cursor = self.cursor_or_centre(env);
-            if self.armed {
+            if self.armed && self.armed_drags {
                 // A tap, then a touch held still: hold the button where the cursor is.
                 self.pressed = true;
                 out.push(Routed::App(Event::PointerMoved(cursor)));
@@ -366,13 +376,15 @@ mod tests {
         config: TouchConfig,
         now: f64,
         covered: bool,
+        /// What's under the cursor drags (a slider), for [`Env::draggable`].
+        drags: bool,
     }
 
     impl Rig {
         fn new() -> Self {
             // Acceleration off: the moves below are exact (it has its own test).
             let config = TouchConfig { trackpad: true, trackpad_acceleration: false, ..Default::default() };
-            Self { t: Trackpad::default(), config, now: 10.0, covered: false }
+            Self { t: Trackpad::default(), config, now: 10.0, covered: false, drags: false }
         }
         fn env(&self) -> Env<'_> {
             Env {
@@ -382,6 +394,7 @@ mod tests {
                 pen_near: false,
                 config: &self.config,
                 list_item: &|_| false,
+                draggable: if self.drags { &|_| true } else { &|_| false },
                 secondary: &|_| false,
                 scroll_strip: None,
                 now: self.now,
@@ -510,7 +523,22 @@ mod tests {
         g.now += 0.05;
         let out = g.touch(2, TouchPhase::End, pos2(600.0, 600.0));
         assert_eq!(presses(&out).iter().filter(|(_, p, _)| *p).count(), 1);
-        // A tap and then a drag still drags (a slider).
+        // After a tap on a button, the next touch just moves the cursor, however soon.
+        g.wait(1.0);
+        g.touch(1, TouchPhase::Start, pos2(600.0, 600.0));
+        g.touch(1, TouchPhase::End, pos2(600.0, 600.0));
+        g.now += 0.1;
+        g.touch(2, TouchPhase::Start, pos2(600.0, 600.0));
+        let out = g.touch(2, TouchPhase::Move, pos2(640.0, 600.0));
+        assert!(presses(&out).is_empty(), "no drag from a button: {out:?}");
+        assert_eq!(moved_to(&out), Some(pos2(540.0, 400.0)), "the cursor moves");
+        assert!(presses(&g.touch(2, TouchPhase::End, pos2(640.0, 600.0))).is_empty());
+        g.now += 0.1;
+        g.touch(3, TouchPhase::Start, pos2(600.0, 600.0));
+        g.touch(3, TouchPhase::Move, pos2(560.0, 600.0));
+        g.touch(3, TouchPhase::End, pos2(560.0, 600.0));
+        // On something that drags (a slider), a tap and then a drag still drags.
+        g.drags = true;
         g.wait(1.0);
         g.touch(1, TouchPhase::Start, pos2(600.0, 600.0));
         g.touch(1, TouchPhase::End, pos2(600.0, 600.0));
