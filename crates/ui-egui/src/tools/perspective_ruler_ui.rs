@@ -83,7 +83,8 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent) -> bool {
 /// snap to the ruler; off, they draw freely.
 pub fn snap_button(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let Some(snap) = app.session.active().and_then(|st| st.perspective()).map(|r| r.snap) else { return };
-    let tip = if snap { tl!("Snapping to the perspective ruler (click to draw freely)") } else { tl!("Drawing freely (click to snap to the perspective ruler)") };
+    let tip =
+        if snap { tl!("Snapping to the perspective ruler (click to draw freely)") } else { tl!("Drawing freely (click to snap to the perspective ruler)") };
     let resp = crate::icons::button_with_icon_size(ui, "ruler", 24.0, 14.0, snap, tip);
     let resp = crate::brush_picker::named(resp, "Snap to perspective ruler");
     if resp.clicked()

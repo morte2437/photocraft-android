@@ -177,7 +177,8 @@ fn create(s: &mut Session, kind: usize) -> Result<Value> {
 fn set(s: &mut Session, p: &Value) -> Result<Value> {
     let (w, h) = doc_size(s)?;
     let bad = |m: &str| EngineError::BadParams { cmd: "view.perspectiveRuler.set".into(), msg: m.into() };
-    let mut ruler = s.active().ok_or(EngineError::NoDocument)?.perspective().ok_or_else(|| bad("no perspective ruler (the Ruler tool's Perspective option)"))?;
+    let mut ruler =
+        s.active().ok_or(EngineError::NoDocument)?.perspective().ok_or_else(|| bad("no perspective ruler (the Ruler tool's Perspective option)"))?;
     if let Some(points) = p.get("vanishingPoints") {
         let list = points.as_array().ok_or_else(|| bad("vanishingPoints: [[x,y], …]"))?;
         ruler.points = list
@@ -364,7 +365,13 @@ mod tests {
         assert_eq!(s.active().unwrap().perspective().unwrap().kind(), 3);
         s.execute("view.perspectiveRuler.snap", json!({})).unwrap();
         assert!(!s.active().unwrap().perspective().unwrap().snap);
-        for bad in [json!({"vanishingPoints": []}), json!({"vanishingPoints": [[1, 2], [3, 4], [5, 6], [7, 8]]}), json!({"vanishingPoints": [[1e300, 0]]}), json!({"vanishingPoints": [[1]]}), json!({"snap": 3})] {
+        for bad in [
+            json!({"vanishingPoints": []}),
+            json!({"vanishingPoints": [[1, 2], [3, 4], [5, 6], [7, 8]]}),
+            json!({"vanishingPoints": [[1e300, 0]]}),
+            json!({"vanishingPoints": [[1]]}),
+            json!({"snap": 3}),
+        ] {
             assert!(s.execute("view.perspectiveRuler.set", bad.clone()).is_err(), "{bad}");
         }
         assert_eq!(s.active().unwrap().perspective().unwrap().kind(), 3, "unchanged by bad input");

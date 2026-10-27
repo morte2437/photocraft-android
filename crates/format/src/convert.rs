@@ -668,10 +668,7 @@ impl Loader<'_> {
             text_styles: m.text_styles.clone(),
             slices,
             // A hand-edited or damaged ruler is dropped rather than refusing the file.
-            perspective_ruler: m
-                .perspective_ruler
-                .clone()
-                .filter(|p| (1..=3).contains(&p.len()) && p.iter().flatten().all(|v| v.is_finite())),
+            perspective_ruler: m.perspective_ruler.clone().filter(|p| (1..=3).contains(&p.len()) && p.iter().flatten().all(|v| v.is_finite())),
         })
     }
 
