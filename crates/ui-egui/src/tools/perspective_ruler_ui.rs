@@ -206,12 +206,14 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// An app with a 400 × 300 document open.
     fn app() -> PhotocraftApp {
         let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
         app.run("file.new", json!({"width": 400, "height": 300})).unwrap();
         app
     }
 
+    /// The Ruler tool's Perspective option adds a ruler, its Show and Snap boxes switch it, and None clears it.
     #[test]
     fn the_ruler_tools_perspective_option_adds_shows_and_clears_a_ruler() {
         use egui_kittest::kittest::Queryable;
@@ -242,6 +244,7 @@ mod tests {
         assert_eq!(ruler(&h), None, "cleared");
     }
 
+    /// Painting tools' snap switch appears only with a ruler and flips snapping.
     #[test]
     fn the_options_bar_button_switches_snapping() {
         use egui_kittest::kittest::Queryable;
@@ -265,6 +268,7 @@ mod tests {
         assert!(snap(&h), "back on");
     }
 
+    /// A wobbly stroke lands on its perspective line, and the Ruler tool drags a vanishing point as one undoable step without painting.
     #[test]
     fn painting_snaps_to_the_ruler_and_a_vanishing_point_drags() {
         let mut app = app();
@@ -304,8 +308,9 @@ mod tests {
         assert!(!pointer(&mut app, ToolEvent::Down { x: 200.0, y: 200.0, pressure: 1.0 }));
     }
 
+    /// With snapping off, or Shift held (which gives the usual straight 45° lines instead), strokes don't follow the ruler.
     #[test]
-    fn snapping_off_or_shift_draws_freely() {
+    fn snapping_off_or_shift_leaves_the_ruler() {
         let mut app = app();
         app.ui.tool = crate::state::Tool::Brush;
         app.run("view.perspectiveRuler.onePoint", json!({})).unwrap();
@@ -317,6 +322,7 @@ mod tests {
         assert_eq!([last[0], last[1]], [90.0, 77.0], "snap off: as drawn");
     }
 
+    /// The fan of lines starts from points spread along all four edges.
     #[test]
     fn edge_points_go_round_the_canvas() {
         let pts = edge_points(100.0, 50.0, 6);

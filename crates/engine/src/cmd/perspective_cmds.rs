@@ -30,6 +30,7 @@ pub struct PerspectiveView {
 }
 
 impl Default for PerspectiveView {
+    /// A new ruler starts shown and snapping.
     fn default() -> Self {
         Self { snap: true, visible: true }
     }
@@ -124,6 +125,7 @@ impl PerspectiveRuler {
             .max_by(|a, b| cos(heading, *a).abs().total_cmp(&cos(heading, *b).abs()))
     }
 
+    /// Checks the ruler has 1 to 3 vanishing points, each finite and within [`MAX_DISTANCE`] canvas sizes of a `w` × `h` canvas.
     fn validate(&self, w: f64, h: f64) -> std::result::Result<(), String> {
         if !(1..=3).contains(&self.points.len()) {
             return Err("a perspective ruler has 1, 2 or 3 vanishing points".into());
@@ -135,20 +137,24 @@ impl PerspectiveRuler {
         Ok(())
     }
 
+    /// The ruler as the commands report it: `{type, vanishingPoints, snap, visible}`.
     pub fn inspect(&self) -> Value {
         json!({"type": self.kind(), "vanishingPoints": self.points, "snap": self.snap, "visible": self.visible})
     }
 }
 
+/// `v` scaled to length 1; None when it is zero or not finite.
 fn unit(v: [f64; 2]) -> Option<[f64; 2]> {
     let l = v[0].hypot(v[1]);
     (l.is_finite() && l > 1e-9).then(|| [v[0] / l, v[1] / l])
 }
 
+/// The dot product of `a` and `b`: the cosine of the angle between them for unit vectors.
 fn cos(a: [f64; 2], b: [f64; 2]) -> f64 {
     a[0] * b[0] + a[1] * b[1]
 }
 
+/// The active document's width and height in pixels.
 fn doc_size(s: &Session) -> Result<(f64, f64)> {
     let st = s.active().ok_or(EngineError::NoDocument)?;
     Ok((f64::from(st.doc.size.width), f64::from(st.doc.size.height)))
@@ -165,6 +171,7 @@ fn store(s: &mut Session, label: &str, points: Option<Vec<[f64; 2]>>) -> Result<
     })
 }
 
+/// `view.perspectiveRuler.{onePoint,twoPoint,threePoint}`: replaces the ruler with the default one of `kind` points, shown and snapping.
 fn create(s: &mut Session, kind: usize) -> Result<Value> {
     let (w, h) = doc_size(s)?;
     let ruler = PerspectiveRuler::default_for(kind, w, h).ok_or_else(|| EngineError::Other("1, 2 or 3 points".into()))?;
@@ -174,6 +181,7 @@ fn create(s: &mut Session, kind: usize) -> Result<Value> {
     Ok(ruler.inspect())
 }
 
+/// `view.perspectiveRuler.set`: moves the vanishing points and sets Snap and Show, validating everything before changing anything.
 fn set(s: &mut Session, p: &Value) -> Result<Value> {
     let (w, h) = doc_size(s)?;
     let bad = |m: &str| EngineError::BadParams { cmd: "view.perspectiveRuler.set".into(), msg: m.into() };
@@ -204,6 +212,7 @@ fn set(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(ruler.inspect())
 }
 
+/// `view.perspectiveRuler.{snap,show}`: flips one of the view switches `f` picks; refused without a ruler.
 fn toggle(s: &mut Session, f: fn(&mut PerspectiveView) -> &mut bool) -> Result<Value> {
     let st = s.active_mut().ok_or(EngineError::NoDocument)?;
     if st.doc.perspective_ruler.is_none() {
@@ -214,10 +223,12 @@ fn toggle(s: &mut Session, f: fn(&mut PerspectiveView) -> &mut bool) -> Result<V
     Ok(st.perspective().map_or(Value::Null, |r| r.inspect()))
 }
 
+/// Enabled while a document is open.
 fn has_doc(s: &Session) -> std::result::Result<(), String> {
     s.active().map(|_| ()).ok_or_else(|| "no document open".into())
 }
 
+/// Enabled while the active document has a perspective ruler.
 fn has_ruler(s: &Session) -> std::result::Result<(), String> {
     s.active().filter(|st| st.doc.perspective_ruler.is_some()).map(|_| ()).ok_or_else(|| "no perspective ruler".into())
 }
@@ -226,6 +237,7 @@ fn has_ruler(s: &Session) -> std::result::Result<(), String> {
 /// show a snap switch while one is on.
 const MENU: &[&str] = &[];
 
+/// The perspective ruler commands, registered with the engine.
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         CommandSpec {
@@ -318,10 +330,12 @@ pub fn specs() -> Vec<CommandSpec> {
 mod tests {
     use super::*;
 
+    /// Whether two points are equal up to rounding.
     fn close(a: [f64; 2], b: [f64; 2]) -> bool {
         (a[0] - b[0]).abs() < 1e-9 && (a[1] - b[1]).abs() < 1e-9
     }
 
+    /// Two-point: a stroke goes toward whichever vanishing point it heads closest to, or upright.
     #[test]
     fn strokes_snap_to_the_closest_perspective_direction() {
         // Two-point: vanishing points left and right on the eye level at y = 100.
@@ -340,6 +354,7 @@ mod tests {
         assert_eq!(r.direction(o, o), None);
     }
 
+    /// One-point adds level and upright lines; three-point sends upright lines to its third point.
     #[test]
     fn one_point_keeps_level_and_upright_lines_and_three_point_converges_uprights() {
         let one = PerspectiveRuler { points: vec![[500.0, 200.0]], snap: true, visible: true };
@@ -353,6 +368,7 @@ mod tests {
         assert_eq!(three.snaps().len(), 3, "no fixed directions in three-point");
     }
 
+    /// The commands need a document, validate their params and leave the ruler unchanged on bad input.
     #[test]
     fn commands_create_edit_toggle_and_refuse_bad_input() {
         let mut s = Session::new();
@@ -382,6 +398,7 @@ mod tests {
         assert_eq!(s.execute("view.perspectiveRuler.info", json!({})).unwrap(), Value::Null);
     }
 
+    /// Placing and moving vanishing points are history steps; Snap and Show are not.
     #[test]
     fn the_points_are_the_documents_and_undo_but_the_switches_do_not() {
         let mut s = Session::new();
