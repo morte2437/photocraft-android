@@ -181,6 +181,7 @@ impl PhotocraftApp {
             control_click: Default::default(),
             background_jobs: false,
             compact_layout: false,
+            perspective_drag: None,
             phone_panel: None,
             full_screen_toolbar: false,
             min_frame_ms: None,

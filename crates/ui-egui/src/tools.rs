@@ -40,6 +40,7 @@ pub mod slice_ui;
 pub mod stroke_constraint;
 pub mod stroke_trace;
 pub mod stroke_trail;
+pub mod perspective_ruler_ui;
 pub mod symmetry_ui;
 pub(super) mod tool_reset;
 pub mod transform_fx;

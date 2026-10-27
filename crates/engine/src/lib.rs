@@ -139,6 +139,7 @@ pub use cmd::solid_fill_cmds;
 pub use cmd::stamp_cmds;
 pub use cmd::style_asl_cmds;
 pub use cmd::swatch_cmds;
+pub use cmd::perspective_cmds;
 pub use cmd::symmetry_cmds;
 use cmd::timeline_cmds;
 pub use cmd::transform_cmds;

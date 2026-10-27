@@ -34,6 +34,8 @@ pub struct DocState {
     pub isolated_layers: Vec<LayerId>,
     /// Painting symmetry preset or sampled path (tool state, not document pixels).
     pub symmetry: Option<symmetry_cmds::PaintingSymmetry>,
+    /// View › Perspective Ruler: vanishing points strokes snap to (view state, not history).
+    pub perspective: Option<crate::perspective_cmds::PerspectiveRuler>,
     /// Layers panel: layers whose effects list is collapsed under their row (the fx triangle;
     /// view state, not history). Effects lists start open.
     pub fx_collapsed: Vec<LayerId>,
@@ -99,6 +101,7 @@ impl DocState {
             channel_view: Default::default(),
             isolated_layers: Vec::new(),
             symmetry: None,
+            perspective: None,
             fx_collapsed: Vec::new(),
             show_only: None,
             floating: None,

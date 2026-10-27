@@ -122,6 +122,18 @@ pub(super) fn checked(app: &PhotocraftApp, id: &str) -> Option<bool> {
     if let Some(checked) = crate::panel_docking::checked(app, id) {
         return Some(checked);
     }
+    // View › Perspective Ruler's toggles, and which kind of ruler is on.
+    if let Some(item) = id.strip_prefix("view.perspectiveRuler.") {
+        let r = app.session.active().and_then(|st| st.perspective.as_ref());
+        return match item {
+            "snap" => Some(r.is_some_and(|r| r.snap)),
+            "show" => Some(r.is_some_and(|r| r.visible)),
+            "onePoint" => Some(r.is_some_and(|r| r.kind() == 1)),
+            "twoPoint" => Some(r.is_some_and(|r| r.kind() == 2)),
+            "threePoint" => Some(r.is_some_and(|r| r.kind() == 3)),
+            _ => None,
+        };
+    }
     use photocraft_doc::{ColorMode, SampleType};
     if let Some(name) = id.strip_prefix("window.theme.").filter(|n| *n != "toggle") {
         let auto = app.session.prefs().interface.appearance_mode == photocraft_engine::prefs::AppearanceMode::Auto;

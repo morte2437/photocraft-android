@@ -38,6 +38,9 @@ fn tool_move(app: &mut PhotocraftApp, x: f64, y: f64, pressure: f32, mods: egui:
         // ⇧: straight 0/45/90° strokes, 45° gradient angles (stroke_constraint.rs).
         let last = d.points.last().map_or(d.start, |p| [p[0], p[1]]);
         let [x, y] = crate::stroke_constraint::constrain(d.tool, &mut d.constrain, d.start, last, [x, y], mods.shift, zoom);
+        // View › Perspective Ruler: strokes snap towards a vanishing point.
+        let ruler = app.session.active().and_then(|st| st.perspective.as_ref());
+        let [x, y] = crate::stroke_constraint::perspective(d.tool, &mut d.perspective, d.start, [x, y], mods.shift, ruler, zoom);
         // ⇧: a selection-tool drag of the selection locks to multiples of 45° (#6231). The Move
         // tool's own drags were already locked by `move_mods::filter_event`.
         let [x, y] = crate::move_mods::selection_drag_to(d, [x, y], mods.shift && tool != Tool::Move);
@@ -62,6 +65,10 @@ pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers)
         crate::guide_select::clear(app);
     }
     if crate::symmetry_ui::pointer(app, ev, crate::workspace_ui::sticky_mods(app, mods)) {
+        return;
+    }
+    // View › Perspective Ruler: a press on a vanishing point drags it instead of painting.
+    if crate::perspective_ruler_ui::pointer(app, ev) {
         return;
     }
     // An Alt+right-drag armed for this press (`paint_mouse`): taken before anything else can
@@ -514,6 +521,8 @@ pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers)
             }
             let last = d.points.last().map_or(d.start, |p| [p[0], p[1]]);
             let [x, y] = crate::stroke_constraint::constrain(d.tool, &mut d.constrain, d.start, last, [x, y], mods.shift, zoom);
+            let ruler = app.session.active().and_then(|st| st.perspective.as_ref());
+            let [x, y] = crate::stroke_constraint::perspective(d.tool, &mut d.perspective, d.start, [x, y], mods.shift, ruler, zoom);
             let [x, y] = crate::move_mods::selection_drag_to(&mut d, [x, y], mods.shift && app.active_tool() != Tool::Move);
             // A Move-tool click (released where it was pressed) selects, it never moves: snapping
             // the release point would otherwise nudge the layer onto a nearby edge.

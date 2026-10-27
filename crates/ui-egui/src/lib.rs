@@ -286,6 +286,7 @@ pub use tools::slice_ui;
 pub use tools::stroke_constraint;
 pub use tools::stroke_trace;
 pub use tools::stroke_trail;
+pub use tools::perspective_ruler_ui;
 pub use tools::symmetry_ui;
 use tools::tool_reset;
 pub use tools::transform_fx;
@@ -655,6 +656,8 @@ pub struct PhotocraftApp {
     /// is smaller ([`prefs_ui::COMPACT_AUTO_SCALE`]) and dialogs take the window's width and
     /// scroll when taller than it. Off on the desktop.
     pub compact_layout: bool,
+    /// A vanishing point of the perspective ruler being dragged: (document, point, where).
+    pub perspective_drag: Option<(usize, usize, [f64; 2])>,
     /// The phone layout's open panel group: the dock is only its icon rail there, and a rail
     /// button opens its group over the canvas (see `panels::phone_dock`).
     pub phone_panel: Option<dock::Group>,
