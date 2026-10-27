@@ -102,7 +102,7 @@ pub struct DocM {
     /// Web slices (user and layer-based; layer ids are remapped on load).
     #[serde(default, skip_serializing_if = "photocraft_doc::Slices::is_empty")]
     pub slices: photocraft_doc::Slices,
-    /// View › Perspective Ruler: the vanishing points (absent: no ruler).
+    /// The perspective ruler: its vanishing points (absent: no ruler).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub perspective_ruler: Option<Vec<[f64; 2]>>,
 }

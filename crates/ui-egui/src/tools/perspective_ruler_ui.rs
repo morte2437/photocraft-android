@@ -1,7 +1,10 @@
-//! View › Perspective Ruler on the canvas: the eye level, lines fanning out from each vanishing
-//! point, and the vanishing points as handles to drag. Dragging a point previews the new
-//! perspective and sets it on release (`view.perspectiveRuler.set`); the snapping itself is in
-//! `stroke_constraint::perspective`.
+//! The perspective ruler on the canvas and in the options bars. The Ruler tool's options bar
+//! adds, shows and clears it (its Perspective option, as Clip Studio Paint makes perspective
+//! rulers with its Ruler tool), and with the Ruler tool the vanishing points drag: the new
+//! perspective previews during the drag and is set on release (`view.perspectiveRuler.set`).
+//! Painting tools show a snap switch while there is a ruler; the snapping itself is in
+//! `stroke_constraint::perspective`. On the canvas: the eye level and lines fanning out from
+//! each vanishing point.
 
 use crate::PhotocraftApp;
 use crate::canvas::{ToolEvent, ViewXform};
@@ -26,9 +29,13 @@ fn shown(app: &PhotocraftApp) -> Option<PerspectiveRuler> {
     Some(r)
 }
 
-/// A press on a vanishing point drags it; returns true while the ruler takes the pointer (so the
-/// press never paints).
+/// With the Ruler tool, a press on a vanishing point drags it; returns true while the ruler takes
+/// the pointer (so the press doesn't measure). Painting tools never grab a point, so a stroke
+/// that starts on one paints.
 pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent) -> bool {
+    if app.active_tool() != crate::state::Tool::Ruler && app.perspective_drag.is_none() {
+        return false;
+    }
     let Some(idx) = app.session.active_index() else {
         app.perspective_drag = None;
         return false;
@@ -81,6 +88,39 @@ pub fn snap_button(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let resp = crate::brush_picker::named(resp, "Snap to perspective ruler");
     if resp.clicked()
         && let Err(e) = app.run("view.perspectiveRuler.snap", json!({}))
+    {
+        app.ui.status = e;
+        app.ui.status_error = true;
+    }
+}
+
+/// The Ruler tool's Perspective option: add a 1-, 2- or 3-point ruler, or none, and show or snap
+/// to it.
+pub fn ruler_tool_options(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
+    let Some(r) = app.session.active().map(|st| st.perspective()) else { return };
+    crate::widgets::vline(ui, 22.0);
+    let mut kind = r.as_ref().map_or(0, PerspectiveRuler::kind);
+    let opts = [(0, "None"), (1, "1-Point"), (2, "2-Point"), (3, "3-Point")];
+    let mut run = None;
+    if crate::widgets::dropdown(ui, "perspective-ruler", tl!("Perspective"), &mut kind, &opts, 100.0) {
+        run = Some(match kind {
+            1 => "view.perspectiveRuler.onePoint",
+            2 => "view.perspectiveRuler.twoPoint",
+            3 => "view.perspectiveRuler.threePoint",
+            _ => "view.perspectiveRuler.clear",
+        });
+    }
+    if let Some(r) = &r {
+        let (mut show, mut snap) = (r.visible, r.snap);
+        if crate::widgets::checkbox(ui, &mut show, tl!("Show")).changed() {
+            run = Some("view.perspectiveRuler.show");
+        }
+        if crate::widgets::checkbox(ui, &mut snap, tl!("Snap")).changed() {
+            run = Some("view.perspectiveRuler.snap");
+        }
+    }
+    if let Some(id) = run
+        && let Err(e) = app.run(id, json!({}))
     {
         app.ui.status = e;
         app.ui.status_error = true;
@@ -170,6 +210,36 @@ mod tests {
     }
 
     #[test]
+    fn the_ruler_tools_perspective_option_adds_shows_and_clears_a_ruler() {
+        use egui_kittest::kittest::Queryable;
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(520.0, 300.0)).build_ui_state(
+            |ui, app: &mut PhotocraftApp| {
+                ui.horizontal(|ui| ruler_tool_options(app, ui));
+            },
+            app(),
+        );
+        h.run();
+        let ruler = |h: &egui_kittest::Harness<'_, PhotocraftApp>| h.state().session.active().unwrap().perspective();
+        assert!(h.query_by_label("Show").is_none(), "no switches without a ruler");
+        h.get_by_label("Perspective").click();
+        h.run();
+        h.get_by_label("2-Point").click();
+        h.run();
+        assert_eq!(ruler(&h).map(|r| r.kind()), Some(2));
+        h.get_by_label("Show").click();
+        h.run();
+        assert!(!ruler(&h).unwrap().visible, "hidden");
+        h.get_by_label("Snap").click();
+        h.run();
+        assert!(!ruler(&h).unwrap().snap, "drawing freely");
+        h.get_by_label("Perspective").click();
+        h.run();
+        h.get_by_label("None").click();
+        h.run();
+        assert_eq!(ruler(&h), None, "cleared");
+    }
+
+    #[test]
     fn the_options_bar_button_switches_snapping() {
         use egui_kittest::kittest::Queryable;
         let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(200.0, 60.0)).build_ui_state(
@@ -213,7 +283,10 @@ mod tests {
             assert!(cross.abs() < 1e-6, "off the perspective line: {p:?}");
         }
         crate::canvas::tool_event(&mut app, ToolEvent::Up { x: 210.0, y: 200.0 }, mods);
-        // Dragging the left vanishing point moves it, and doesn't paint.
+        // A painting tool never grabs a vanishing point: a stroke may start on one.
+        assert!(!pointer(&mut app, ToolEvent::Down { x: 41.0, y: 136.0, pressure: 1.0 }));
+        // With the Ruler tool, dragging the left vanishing point moves it, and doesn't paint.
+        app.ui.tool = crate::state::Tool::Ruler;
         let layers = app.session.active().unwrap().doc.layers.clone();
         assert!(pointer(&mut app, ToolEvent::Down { x: 41.0, y: 136.0, pressure: 1.0 }));
         assert!(pointer(&mut app, ToolEvent::Move { x: 10.0, y: 120.0, pressure: 1.0 }));
@@ -224,7 +297,7 @@ mod tests {
         app.run("edit.undo", json!({})).unwrap();
         assert_eq!(app.session.active().unwrap().perspective().unwrap().points[0], [40.0, 135.0]);
         app.run("edit.redo", json!({})).unwrap();
-        // Away from the points, a press paints as usual.
+        // Away from the points, the Ruler tool measures as usual.
         assert!(!pointer(&mut app, ToolEvent::Down { x: 200.0, y: 200.0, pressure: 1.0 }));
     }
 

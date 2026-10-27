@@ -1,5 +1,5 @@
-//! View › Perspective Ruler: one, two or three vanishing points that painting strokes snap to,
-//! for drawing rooms, streets and buildings in perspective.
+//! Perspective rulers (the Ruler tool's Perspective option): one, two or three vanishing points
+//! that painting strokes snap to, for drawing rooms, streets and buildings in perspective.
 //!
 //! - **1-point:** one vanishing point on the eye level (the horizon). Strokes snap towards it,
 //!   or run level or upright.
@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 /// away draw parallel lines anyway; this keeps the arithmetic finite.
 const MAX_DISTANCE: f64 = 1.0e6;
 
-/// View › Perspective Ruler's switches for a document (view state).
+/// The perspective ruler's switches for a document (view state).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PerspectiveView {
     /// Painting strokes snap to the ruler.
@@ -177,7 +177,7 @@ fn create(s: &mut Session, kind: usize) -> Result<Value> {
 fn set(s: &mut Session, p: &Value) -> Result<Value> {
     let (w, h) = doc_size(s)?;
     let bad = |m: &str| EngineError::BadParams { cmd: "view.perspectiveRuler.set".into(), msg: m.into() };
-    let mut ruler = s.active().ok_or(EngineError::NoDocument)?.perspective().ok_or_else(|| bad("no perspective ruler (View › Perspective Ruler)"))?;
+    let mut ruler = s.active().ok_or(EngineError::NoDocument)?.perspective().ok_or_else(|| bad("no perspective ruler (the Ruler tool's Perspective option)"))?;
     if let Some(points) = p.get("vanishingPoints") {
         let list = points.as_array().ok_or_else(|| bad("vanishingPoints: [[x,y], …]"))?;
         ruler.points = list
@@ -221,7 +221,9 @@ fn has_ruler(s: &Session) -> std::result::Result<(), String> {
     s.active().filter(|st| st.doc.perspective_ruler.is_some()).map(|_| ()).ok_or_else(|| "no perspective ruler".into())
 }
 
-const MENU: &[&str] = &["View", "Perspective Ruler"];
+/// Not a Photoshop menu item: the Ruler tool's options bar sets the ruler up, and painting tools
+/// show a snap switch while one is on.
+const MENU: &[&str] = &[];
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![

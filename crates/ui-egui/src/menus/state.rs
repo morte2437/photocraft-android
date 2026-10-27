@@ -122,7 +122,7 @@ pub(super) fn checked(app: &PhotocraftApp, id: &str) -> Option<bool> {
     if let Some(checked) = crate::panel_docking::checked(app, id) {
         return Some(checked);
     }
-    // View › Perspective Ruler's toggles, and which kind of ruler is on.
+    // The perspective ruler's toggles (the command palette), and which kind of ruler is on.
     if let Some(item) = id.strip_prefix("view.perspectiveRuler.") {
         let r = app.session.active().and_then(|st| st.perspective());
         let r = r.as_ref();

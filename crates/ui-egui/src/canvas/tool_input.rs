@@ -38,7 +38,7 @@ fn tool_move(app: &mut PhotocraftApp, x: f64, y: f64, pressure: f32, mods: egui:
         // ⇧: straight 0/45/90° strokes, 45° gradient angles (stroke_constraint.rs).
         let last = d.points.last().map_or(d.start, |p| [p[0], p[1]]);
         let [x, y] = crate::stroke_constraint::constrain(d.tool, &mut d.constrain, d.start, last, [x, y], mods.shift, zoom);
-        // View › Perspective Ruler: strokes snap towards a vanishing point.
+        // The perspective ruler: strokes snap towards a vanishing point.
         let ruler = app.session.active().and_then(|st| st.perspective());
         let [x, y] = crate::stroke_constraint::perspective(d.tool, &mut d.perspective, d.start, [x, y], mods.shift, ruler.as_ref(), zoom);
         // ⇧: a selection-tool drag of the selection locks to multiples of 45° (#6231). The Move
@@ -67,7 +67,7 @@ pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers)
     if crate::symmetry_ui::pointer(app, ev, crate::workspace_ui::sticky_mods(app, mods)) {
         return;
     }
-    // View › Perspective Ruler: a press on a vanishing point drags it instead of painting.
+    // The perspective ruler: with the Ruler tool, a press on a vanishing point drags it.
     if crate::perspective_ruler_ui::pointer(app, ev) {
         return;
     }

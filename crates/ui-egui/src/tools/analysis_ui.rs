@@ -520,6 +520,7 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
             if ui.add_enabled_ui(has, |ui| crate::widgets::secondary_button(ui, tl!("Clear"), 0.0)).inner.clicked() {
                 let _ = app.run("image.analysis.rulerTool", json!({"clear": true}));
             }
+            crate::perspective_ruler_ui::ruler_tool_options(app, ui);
             true
         }
         Tool::Count => {

@@ -84,7 +84,7 @@ pub fn constrain(tool: Tool, axis: &mut Option<Axis>, start: [f64; 2], last: [f6
     }
 }
 
-/// View › Perspective Ruler with Snap to Perspective: a painting stroke stays on the line through
+/// The perspective ruler with Snap to Perspective: a painting stroke stays on the line through
 /// where it started towards the vanishing point (or the upright or level direction) it set off
 /// closest to. ⇧ takes over (straight 45° lines); without a ruler the point passes through.
 pub fn perspective(
