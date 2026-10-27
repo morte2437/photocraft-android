@@ -126,10 +126,17 @@ pub fn read_entry(file: &mut impl std::io::Read, len: u64, max: usize, path: &st
 /// The saver checks the same bound, so every bundle it writes loads again.
 const MAX_MANIFEST_DEPTH: usize = 3 * (convert::MAX_GROUP_DEPTH + 1) + 64;
 
-/// Rejects JSON nested deeper than [`MAX_MANIFEST_DEPTH`] with a linear scan (no recursion), so
-/// parsing with serde_json's recursion limit disabled can't exhaust the stack on hostile input.
+/// Most JSON items (arrays and objects opened, plus elements and members after a comma) a
+/// manifest may hold. Parsing builds a `serde_json::Value` tree of tens of bytes per item, so
+/// `[0,0,…]` costs about 16× its size in memory; a typical manifest spends 20 bytes or more per
+/// item, so this still admits manifests of about 80 MiB.
+const MAX_MANIFEST_ITEMS: usize = 4 << 20;
+
+/// Rejects JSON nested deeper than [`MAX_MANIFEST_DEPTH`] or holding more than
+/// [`MAX_MANIFEST_ITEMS`] items with a linear scan (no recursion), so parsing with serde_json's
+/// recursion limit disabled can't exhaust the stack, nor tiny values the memory, on hostile input.
 fn check_manifest_depth(json: &[u8]) -> Result<()> {
-    let (mut depth, mut in_str, mut escaped) = (0usize, false, false);
+    let (mut depth, mut items, mut in_str, mut escaped) = (0usize, 0usize, false, false);
     for &b in json {
         if in_str {
             match b {
@@ -150,6 +157,12 @@ fn check_manifest_depth(json: &[u8]) -> Result<()> {
             }
             b']' | b'}' => depth = depth.saturating_sub(1),
             _ => {}
+        }
+        if matches!(b, b'[' | b'{' | b',') {
+            items += 1;
+            if items > MAX_MANIFEST_ITEMS {
+                return Err(FormatError::LimitExceeded(format!("manifest JSON holds more than {MAX_MANIFEST_ITEMS} values")));
+            }
         }
     }
     Ok(())
@@ -587,6 +600,50 @@ fn validate_bundle_file(root: &Path, path: &Path) -> Result<()> {
     plain_file_or_missing(path)
 }
 
+/// Flush `dir`, the folder `written` was just renamed into, as `atomic_write` does (with the
+/// full-flush fallback of `sync_file`, #1336). Windows flushes through the injected `AtomicFs`
+/// and fails on any error (#7858).
+#[cfg(not(windows))]
+fn flush_bundle_dir(dir: &Path, written: &Path) -> std::io::Result<()> {
+    use crate::atomic::AtomicFs;
+    #[cfg(test)]
+    {
+        FLUSHED.with(|f| f.borrow_mut().push(dir.to_path_buf()));
+        let named = |p: Option<&Path>, name: &str| p.and_then(Path::file_name).is_some_and(|n| n == name);
+        if FAIL_DIR_FLUSH.with(|f| {
+            let hit = f.get().is_some_and(|name| named(Some(written), name) || named(written.parent(), name));
+            if hit {
+                f.set(None);
+            }
+            hit
+        }) {
+            return Err(std::io::Error::other("injected folder flush failure"));
+        }
+    }
+    let _ = written;
+    crate::atomic::RealFs.sync_dir(dir)
+}
+
+/// [`flush_bundle_dir`], as the save's error when the flush was attempted and failed: `written`
+/// is in place, but may not survive a power loss or crash (#4968).
+#[cfg(not(windows))]
+fn confirm_flushed(dir: &Path, written: &Path) -> Result<()> {
+    crate::atomic::dir_synced(flush_bundle_dir(dir, written)).map_err(|e| {
+        FormatError::Io(std::io::Error::new(
+            e.kind(),
+            format!("{} was written, but its folder could not be flushed to disk, so the save may not survive a power loss or crash: {e}", written.display()),
+        ))
+    })
+}
+
+#[cfg(all(test, not(windows)))]
+thread_local! {
+    /// Tests: the bundle file, or folder, whose next folder flush fails, once, on this thread.
+    static FAIL_DIR_FLUSH: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
+    /// Tests: the folders flushed on this thread, in order.
+    static FLUSHED: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// Publish a validated bundle entry through a flushed temporary file and replacing rename.
 /// On Windows, propagate a failed directory barrier even though the new entry is already visible.
 fn write_bundle_file(root: &Path, path: &Path, data: &[u8], fs: &dyn crate::atomic::AtomicFs) -> Result<()> {
@@ -639,10 +696,10 @@ fn write_bundle_file(root: &Path, path: &Path, data: &[u8], fs: &dyn crate::atom
         {
             fs.sync_dir(parent).map_err(|e| crate::atomic::publication_error(e, path))?;
         }
-        #[cfg(unix)]
-        {
-            let _ = std::fs::File::open(parent).and_then(|d| d.sync_all());
-        }
+        // Elsewhere a failed flush is reported too (#4968), but a file system that can't flush a
+        // directory at all still saves, as in `atomic_write`.
+        #[cfg(not(windows))]
+        confirm_flushed(parent, path)?;
         Ok(())
     })();
     if result.is_err() && validate_bundle_file(root, &tmp).is_ok() {
@@ -994,6 +1051,13 @@ impl PcraftWriter {
                 fs.sync_dir(&dir.join(sub)).map_err(|e| crate::atomic::publication_error(e, &dir.join(sub)))?;
             }
         }
+        #[cfg(not(windows))]
+        for sub in ["tiles", "blobs"] {
+            let folder = dir.join(sub);
+            if folder.is_dir() {
+                confirm_flushed(&folder, &folder)?;
+            }
+        }
         write_bundle_file(dir, &dir.join(MANIFEST), &p.manifest, fs)?;
         // Omitted previews belong to the previous manifest until the new one commits.
         // After commit, a locked leftover is only housekeeping, just like unused objects.
@@ -1154,6 +1218,72 @@ fn gc_pinned_directory_handles_resist_subdirectory_swap() {
     assert!(!bundle.join("old-tiles").join(&filename).exists());
     assert_eq!(std::fs::read(outside.join(&filename)).unwrap(), b"outside file must survive");
     std::fs::remove_dir_all(root).unwrap();
+}
+
+/// #4968: a manifest whose folder can't be flushed fails the save, and the objects the previous
+/// manifest references stay in place; the next save that flushes removes what is unreferenced.
+#[cfg(all(test, not(windows)))]
+#[test]
+fn a_failed_manifest_flush_keeps_the_previous_objects() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let dir = std::env::temp_dir().join(format!("pcraft-flush-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = std::fs::canonicalize(dir).unwrap();
+    let mut doc = Document::new("flush", photocraft_doc::Size::new(64, 64), photocraft_color::ColorMode::Rgb, SampleType::U8);
+    let id = doc.insert_above(None, photocraft_doc::Layer::raster("paint", doc.pixel_format()));
+    let paint = |doc: &mut Document, red: f32| {
+        doc.layer_mut(id).unwrap().surface_mut().unwrap().fill_rect(photocraft_geom::Rect::new(0, 0, 64, 64), &[red, 0.5, 0.25, 1.0]);
+    };
+    paint(&mut doc, 1.0);
+    let mut w = PcraftWriter::new();
+    w.save_dir(&doc, &dir, &SaveOptions::default()).unwrap();
+    let old = list_objects(&dir).unwrap();
+    paint(&mut doc, 0.0);
+    FAIL_DIR_FLUSH.with(|f| f.set(Some(MANIFEST)));
+    let e = w.save_dir(&doc, &dir, &SaveOptions::default()).unwrap_err();
+    assert!(e.to_string().contains("could not be flushed"), "{e}");
+    let now = list_objects(&dir).unwrap();
+    assert!(old.is_subset(&now), "the previous manifest's objects are kept");
+    assert!(now.len() > old.len(), "the new objects were written");
+    let stats = w.save_dir(&doc, &dir, &SaveOptions::default()).unwrap();
+    assert!(stats.objects_removed > 0, "the next save removes the unreferenced objects");
+    assert_eq!(crate::load_path(&dir).unwrap(), doc);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// An object whose folder flush failed is reused by the retried save, which writes no new object
+/// there: that save still flushes the object folder before committing a manifest that names it.
+#[cfg(all(test, not(windows)))]
+#[test]
+fn a_retried_save_flushes_the_folder_of_a_reused_object() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let dir = std::env::temp_dir().join(format!("pcraft-retry-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = std::fs::canonicalize(dir).unwrap();
+    // One layer of one tile: the retry finds its only object already written.
+    let mut doc = Document::new("retry", photocraft_doc::Size::new(16, 16), photocraft_color::ColorMode::Rgb, SampleType::U8);
+    let id = doc.insert_above(None, photocraft_doc::Layer::raster("paint", doc.pixel_format()));
+    doc.layer_mut(id).unwrap().surface_mut().unwrap().fill_rect(photocraft_geom::Rect::new(0, 0, 16, 16), &[1.0, 0.5, 0.25, 1.0]);
+    let mut w = PcraftWriter::new();
+    FAIL_DIR_FLUSH.with(|f| f.set(Some("tiles")));
+    let e = w.save_dir(&doc, &dir, &SaveOptions::default()).unwrap_err();
+    assert!(e.to_string().contains("could not be flushed"), "{e}");
+    assert!(!dir.join(MANIFEST).exists(), "nothing committed");
+    let written = list_objects(&dir).unwrap();
+    assert_eq!(written.iter().filter(|o| o.starts_with("tiles/")).count(), 1, "{written:?}");
+    FLUSHED.with(|f| f.borrow_mut().clear());
+    let stats = w.save_dir(&doc, &dir, &SaveOptions::default()).unwrap();
+    assert_eq!(stats.tiles_written, 0, "the tile is reused");
+    let flushed = FLUSHED.with(|f| f.borrow().clone());
+    let tiles = flushed.iter().position(|d| *d == dir.join("tiles"));
+    let manifest = flushed.iter().rposition(|d| *d == dir);
+    assert!(tiles.is_some() && tiles < manifest, "tiles flushed before the manifest: {flushed:?}");
+    assert_eq!(crate::load_path(&dir).unwrap(), doc);
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 fn list_objects(dir: &Path) -> Result<HashSet<String>> {

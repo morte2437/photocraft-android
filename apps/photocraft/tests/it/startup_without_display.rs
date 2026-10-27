@@ -30,7 +30,7 @@ fn missing_display_preserves_existing_gpu_crash_evidence() {
 }
 
 fn launch_without_display(dir: &std::path::Path) -> String {
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_photocraft"))
+    let output = std::process::Command::new(crate::binary())
         .env("PHOTOCRAFT_CONFIG_DIR", dir)
         .env_remove("DISPLAY")
         .env_remove("WAYLAND_DISPLAY")

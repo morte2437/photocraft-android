@@ -2,8 +2,10 @@
 //! latency without a rebuild (#1343): `PHOTOCRAFT_PRESENT_MODE` (`fifo`, `autovsync`, or `novsync`,
 //! also spelled `immediate`, `mailbox` or `autonovsync`: no vsync, wgpu's Immediate → Mailbox → Fifo
 //! by what the driver offers) and `PHOTOCRAFT_FRAME_LATENCY` (`1` to `3`, frames the swap chain may
-//! queue). Unset, the platform default applies. A value that isn't one of these is ignored with a
-//! warning in the log, never a failed start; a mode the driver may not offer is never requested.
+//! queue). Unset, the platform default applies. A variable's value that isn't one of these is ignored
+//! with a warning in the log, never a failed start; the `--present-mode` and `--frame-latency` flags
+//! take the same values, and a bad one is a usage error (#7071). A mode the driver may not offer is
+//! never requested.
 //! The result is logged at start and shown in the stroke trace.
 
 use eframe::egui_wgpu::SurfaceConfig;
@@ -16,45 +18,54 @@ pub struct Overrides {
     pub latency: Option<u32>,
 }
 
+/// A `--present-mode` / `PHOTOCRAFT_PRESENT_MODE` value, or `None` when it isn't one.
+pub fn present_mode(v: &str) -> Option<PresentMode> {
+    match v.trim().to_ascii_lowercase().as_str() {
+        // Only modes every surface takes: wgpu crashes on an explicit Immediate, Mailbox or
+        // FifoRelaxed the driver doesn't offer (X11/NVIDIA has no Mailbox, #1343). Without
+        // vsync, wgpu picks Immediate, else Mailbox, else Fifo.
+        "fifo" | "vsync" => Some(PresentMode::Fifo),
+        "autovsync" => Some(PresentMode::AutoVsync),
+        "novsync" | "immediate" | "mailbox" | "autonovsync" => Some(PresentMode::AutoNoVsync),
+        _ => None,
+    }
+}
+
+/// A `--frame-latency` / `PHOTOCRAFT_FRAME_LATENCY` value (1 to 3), or `None` when it isn't one.
+pub fn frame_latency(v: &str) -> Option<u32> {
+    v.trim().parse().ok().filter(|n| (1..=3).contains(n))
+}
+
 /// Parse the two variables' values. Returns the overrides and a warning per rejected value.
 pub fn parse(mode: Option<&str>, latency: Option<&str>) -> (Overrides, Vec<String>) {
     let mut warnings = Vec::new();
     let mode = mode.map(str::trim).filter(|v| !v.is_empty()).and_then(|v| {
-        let m = match v.to_ascii_lowercase().as_str() {
-            // Only modes every surface takes: wgpu crashes on an explicit Immediate, Mailbox or
-            // FifoRelaxed the driver doesn't offer (X11/NVIDIA has no Mailbox, #1343). Without
-            // vsync, wgpu picks Immediate, else Mailbox, else Fifo.
-            "fifo" | "vsync" => PresentMode::Fifo,
-            "autovsync" => PresentMode::AutoVsync,
-            "novsync" | "immediate" | "mailbox" | "autonovsync" => PresentMode::AutoNoVsync,
-            _ => {
-                warnings.push(format!("PHOTOCRAFT_PRESENT_MODE={v:?} isn't fifo, autovsync or novsync (immediate, mailbox); ignored"));
-                return None;
-            }
-        };
-        Some(m)
-    });
-    let latency = latency.map(str::trim).filter(|v| !v.is_empty()).and_then(|v| match v.parse::<u32>() {
-        Ok(n @ 1..=3) => Some(n),
-        _ => {
-            warnings.push(format!("PHOTOCRAFT_FRAME_LATENCY={v:?} isn't 1, 2 or 3; ignored"));
-            None
+        let m = present_mode(v);
+        if m.is_none() {
+            warnings.push(format!("PHOTOCRAFT_PRESENT_MODE={v:?} isn't fifo, autovsync or novsync (immediate, mailbox); ignored"));
         }
+        m
+    });
+    let latency = latency.map(str::trim).filter(|v| !v.is_empty()).and_then(|v| {
+        let n = frame_latency(v);
+        if n.is_none() {
+            warnings.push(format!("PHOTOCRAFT_FRAME_LATENCY={v:?} isn't 1, 2 or 3; ignored"));
+        }
+        n
     });
     (Overrides { mode, latency }, warnings)
 }
 
 impl Overrides {
-    /// `--present-mode` / `--frame-latency` when given, else `PHOTOCRAFT_PRESENT_MODE` /
-    /// `PHOTOCRAFT_FRAME_LATENCY`; rejected values are logged.
-    pub fn from_args_or_env(mode: Option<&str>, latency: Option<&str>) -> Self {
-        let env_mode = std::env::var("PHOTOCRAFT_PRESENT_MODE").ok();
-        let env_latency = std::env::var("PHOTOCRAFT_FRAME_LATENCY").ok();
-        let (o, warnings) = parse(mode.or(env_mode.as_deref()), latency.or(env_latency.as_deref()));
+    /// `--present-mode` / `--frame-latency` when given (checked by the command line), else
+    /// `PHOTOCRAFT_PRESENT_MODE` / `PHOTOCRAFT_FRAME_LATENCY`, whose rejected values are logged.
+    pub fn from_args_or_env(mode: Option<PresentMode>, latency: Option<u32>) -> Self {
+        let env = |given: bool, name: &str| if given { None } else { std::env::var(name).ok() };
+        let (o, warnings) = parse(env(mode.is_some(), "PHOTOCRAFT_PRESENT_MODE").as_deref(), env(latency.is_some(), "PHOTOCRAFT_FRAME_LATENCY").as_deref());
         for w in warnings {
             log::warn!("{w}");
         }
-        o
+        Self { mode: mode.or(o.mode), latency: latency.or(o.latency) }
     }
 
     /// `surface` with the overrides applied.

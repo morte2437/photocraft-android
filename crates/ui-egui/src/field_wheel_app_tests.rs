@@ -30,7 +30,13 @@ fn field<'a>(h: &'a Harness<'_, PhotocraftApp>, value: &str) -> egui_kittest::No
 fn wheel(h: &mut Harness<'_, PhotocraftApp>, at: egui::Pos2, lines: f32, modifiers: egui::Modifiers) {
     h.hover_at(at);
     h.run_steps(1);
-    h.event(egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Line, delta: vec2(0.0, lines), phase: egui::TouchPhase::Move, modifiers });
+    h.event(egui::Event::MouseWheel {
+        source: egui::MouseWheelSource::Unknown,
+        unit: egui::MouseWheelUnit::Line,
+        delta: vec2(0.0, lines),
+        phase: egui::TouchPhase::Move,
+        modifiers,
+    });
     h.run_steps(6);
 }
 
@@ -84,7 +90,13 @@ fn canvas_pan(focus: bool, delta: egui::Vec2, modifiers: egui::Modifiers) -> (f3
     h.hover_at(canvas);
     h.run_steps(1);
     let before = view(&h);
-    h.event(egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Line, delta, phase: egui::TouchPhase::Move, modifiers });
+    h.event(egui::Event::MouseWheel {
+        source: egui::MouseWheelSource::Unknown,
+        unit: egui::MouseWheelUnit::Line,
+        delta,
+        phase: egui::TouchPhase::Move,
+        modifiers,
+    });
     h.run_steps(40);
     assert!(h.query_all_by_role(Role::SpinButton).any(|n| n.value().as_deref() == Some("10")), "focus {focus}: the field wasn't stepped");
     let after = view(&h);

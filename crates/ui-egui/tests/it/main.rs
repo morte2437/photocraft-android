@@ -17,6 +17,7 @@ mod custom_print_paper;
 mod display_shadows;
 mod drag_preview_canvas;
 mod export_as_scaling;
+mod eyedropper_ring;
 mod full_res_preview;
 mod gpu_device_loss;
 mod layout_perf;

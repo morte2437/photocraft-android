@@ -229,6 +229,7 @@ struct Running {
     started_ms: f64,
     coalesce: Option<String>,
     color_restrict: Option<usize>,
+    filter_mask_layer: Option<LayerId>,
     /// The document's layer selection when the job started: applying targets it, not whatever
     /// got selected meanwhile (a Type click does that without editing the document, #7366).
     layers: Option<LayerSelection>,
@@ -418,6 +419,7 @@ pub fn run<T: Send + 'static>(
         started_ms: now_ms(),
         coalesce: s.coalesce_request.clone(),
         color_restrict: s.color_restrict,
+        filter_mask_layer: s.filter_mask_layer,
         layers,
         rx,
         apply: Some(erased),
@@ -529,6 +531,19 @@ impl Session {
     /// result is `{held, name, warnings, color}` (`color` the question): take it with
     /// [`Session::take_held_open`] once answered.
     pub fn start_open(&mut self, name: &str, source: OpenSource) -> Result<Started> {
+        self.start_open_inner(name, source, false)
+    }
+
+    /// Interactive opening: hold a damaged PSD until the user answers a damage
+    /// confirmation, without changing import or subsequent save behaviour.
+    /// Headless callers keep using [`Self::start_open`].
+    pub fn start_open_for_user(&mut self, name: &str, source: OpenSource) -> Result<Started> {
+        self.start_open_inner(name, source, true)
+    }
+
+    /// Decodes a file in a job and optionally holds damaged PSD content for
+    /// interactive confirmation while leaving headless opens non-interactive.
+    fn start_open_inner(&mut self, name: &str, source: OpenSource, confirm_damage: bool) -> Result<Started> {
         let label = format!("Opening {name}");
         let name_w = name.to_string();
         let name_a = name.to_string();
@@ -546,35 +561,36 @@ impl Session {
                 };
                 ctx.check()?;
                 ctx.progress(0.02, "Decoding");
-                let imported = ctx.stage(0.02, 0.95, "Decoding", |ctl| photocraft_io::import_with_options_and_interrupt(&name_w, &bytes, &opts, ctl)).map_err(
-                    |e| match e {
+                let imported =
+                    ctx.stage(0.02, 0.95, "Decoding", |ctl| photocraft_io::import_for_open_with(&name_w, &bytes, &opts, ctl)).map_err(|e| match e {
                         photocraft_io::IoError::Cancelled => EngineError::Cancelled,
                         e => EngineError::Other(e.to_string()),
-                    },
-                )?;
+                    })?;
                 ctx.progress(0.95, "Preparing layers");
-                warm_layer_bounds(&imported.document, || ctx.check())?;
+                warm_layer_bounds(&imported.0.document, || ctx.check())?;
                 // Type layers need the shared text engine, whose first use waits for the
                 // installed-font scan started at launch (minutes on some machines). Wait here,
                 // so the shell's missing-font check after the open finds it ready instead of
                 // freezing the window (#7332).
-                if crate::type_extra_cmds::has_type_layers(&imported.document) {
+                if crate::type_extra_cmds::has_type_layers(&imported.0.document) {
                     ctx.progress(0.97, "Loading fonts");
                     let _ = photocraft_text::shared();
                     ctx.check()?;
                 }
                 Ok(imported)
             },
-            move |s, mut r: photocraft_io::ImportResult| {
+            move |s, (mut r, damaged): (photocraft_io::ImportResult, bool)| {
                 // File Handling's ACEScg option, before the colour prompt looks at the profile.
                 crate::file_cmds::tag_exr_colorspace(s, &name_a, &mut r.document);
                 crate::file_cmds::raw_defaults(s, &r.warnings, &mut r.document);
                 // Ask When Opening: held back until the prompt is answered (`take_held_open`). A
                 // developed raw has no embedded profile to ask about.
                 let raw = r.warnings.iter().any(|w| w.contains(photocraft_io::raw::DEVELOPED_NOTE));
-                if let Some(question) = s.color.open_question(&r.document).filter(|_| !raw) {
+                let damaged = confirm_damage && damaged;
+                let question = s.color.open_question(&r.document).filter(|_| !raw);
+                if damaged || question.is_some() {
                     let held = s.hold_open(r.document, r.source_read_only);
-                    return Ok(json!({"held": held, "name": name_a, "warnings": r.warnings, "color": question}));
+                    return Ok(json!({"held": held, "name": name_a, "warnings": r.warnings, "color": question, "damaged": damaged}));
                 }
                 let (index, color) = s.open_document(r.document, None);
                 // Persisted IDs can collide: report the identity the session actually admitted.
@@ -748,6 +764,9 @@ impl Session {
 
     /// Run the command `id`: inline, or (with `background`) as a job when it is one.
     pub(crate) fn dispatch(&mut self, id: &str, params: Value, background: bool) -> Result<Started> {
+        // The offer belongs to this one dispatch. Early errors drop it locally, including
+        // authorization, validation, floating-selection and admission failures.
+        let live_commit = self.live_commit.take();
         let spec = crate::commands::find(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
         // Params are named fields: anything but an object (or null, meaning none) is a caller
         // mistake, not "use every default".
@@ -804,6 +823,7 @@ impl Session {
         let expand_new_fx = crate::commands::layer_panel_option(self, "expandNewEffects", true);
         self.coalesce_request = params.get("coalesce").and_then(Value::as_str).map(str::to_string);
         self.color_restrict = crate::channel_cmds::color_restriction(self, id, &run_params);
+        self.filter_mask_layer = crate::channel_cmds::filter_mask_layer(self, id, &run_params);
         self.jobs.spawn = background;
         // Commands this one runs on its own behalf journal after this mark (#3067).
         let nested_from = self.journal.len();
@@ -816,14 +836,17 @@ impl Session {
         // Last-resort guard (AGENTS.md, Never crash): a command that panics anyway fails with an
         // error instead of taking the app down. `edit` only commits a document after its closure
         // returns, so the documents are unchanged.
+        self.live_commit = live_commit.filter(|live| live.cmd == id);
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (spec.run)(self, &run_params)))
             .unwrap_or_else(|_| Err(EngineError::Other(format!("`{id}` failed with an internal error (logged); the document is unchanged"))));
+        self.live_commit = None;
         if self.actions.recording.is_none() {
             self.actions.recording = recording;
         }
         self.jobs.spawn = false;
         self.coalesce_request = None;
         self.color_restrict = None;
+        self.filter_mask_layer = None;
         let pending = self.jobs.pending.take();
         match (r, pending) {
             (Err(e), Some(job)) => {
@@ -936,7 +959,8 @@ impl Session {
     }
 
     fn apply_job(&mut self, job: &Running, apply: Option<Apply>, payload: Payload) -> Result<Value> {
-        let Running { label, doc, snapshot, coalesce, color_restrict, layers, command, params, journal, recorded_by, pre_selected, .. } = job;
+        let Running { label, doc, snapshot, coalesce, color_restrict, filter_mask_layer, layers, command, params, journal, recorded_by, pre_selected, .. } =
+            job;
         // A recording started after the job (#7289) keeps what it has so far, and the job's step
         // goes into the journal past its start, so that recording doesn't get it.
         let foreign = self.actions.recording.is_some() && *recorded_by != Some(self.actions.take);
@@ -953,6 +977,7 @@ impl Session {
                     return Err(EngineError::Other(format!("`{label}`: the document changed while it ran; the result was discarded")));
                 }
                 self.active = Some(i);
+                self.note_active_change();
                 Some(i)
             }
             None => None,
@@ -972,6 +997,7 @@ impl Session {
         };
         self.coalesce_request = coalesce.clone();
         self.color_restrict = *color_restrict;
+        self.filter_mask_layer = *filter_mask_layer;
         // Apply-time hooks can dispatch commands too. Keep the same single-step recording
         // contract as synchronous dispatch without truncating work done while the worker ran.
         let nested_from = self.journal.len();
@@ -986,6 +1012,7 @@ impl Session {
         }
         self.coalesce_request = None;
         self.color_restrict = None;
+        self.filter_mask_layer = None;
         // Finish successful command bookkeeping on the document the job edited.
         // Restoring the viewed document first would attribute Fade and slice updates
         // to that document instead, when the user switched tabs mid-job.
@@ -1008,11 +1035,15 @@ impl Session {
         // This also restores the selection when the apply step returned an error.
         if target.is_some() && self.active == target {
             self.active = prev_active.filter(|i| *i < self.docs.len()).or(self.active);
+            self.note_active_change();
         }
         r
     }
 
     fn end_job(&mut self, job: &Running, outcome: JobOutcome) {
+        // Every terminal path invalidates a preview, including worker errors, cancellation
+        // and discarded results whose document was closed or changed.
+        self.live_commit = None;
         let (state, result, error) = match &outcome {
             JobOutcome::Done(v) => ("done", Some(v.clone()), None),
             JobOutcome::Failed(e) => ("failed", None, Some(e.clone())),
@@ -1078,5 +1109,54 @@ pub fn specs() -> Vec<crate::commands::CommandSpec> {
 }
 
 #[cfg(test)]
-#[path = "jobs_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../io/tests/support/recovery_psd.rs"]
+mod psd_open_fixture;
+
+#[cfg(test)]
+mod psd_open_confirmation_tests {
+    use super::*;
+
+    /// Collects either an inline open result or the completed background-job result.
+    fn result(s: &mut Session, started: Started) -> Value {
+        match started {
+            Started::Done(v) => v,
+            Started::Job(id) => s.wait_job(id).unwrap(),
+        }
+    }
+
+    /// Verifies headless opens return readable PSD content and warnings without a held prompt.
+    #[test]
+    fn headless_open_keeps_best_effort_psd_import() {
+        let mut s = Session::new();
+        let started = s.start_open("damaged.psd", OpenSource::Bytes(Arc::new(super::psd_open_fixture::make_psd(true)))).unwrap();
+        let v = result(&mut s, started);
+        assert!(v.get("document").is_some(), "{v}");
+        assert!(v.get("held").is_none(), "no new prompt for a headless caller");
+        assert!(!s.active().unwrap().source_read_only);
+        assert!(v["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("could not be decoded")));
+    }
+
+    /// Verifies interactive opens hold damaged PSD files but admit valid files immediately.
+    #[test]
+    fn interactive_open_holds_only_a_damaged_psd() {
+        for corrupt in [false, true] {
+            let mut s = Session::new();
+            let started = s.start_open_for_user("file.psd", OpenSource::Bytes(Arc::new(super::psd_open_fixture::make_psd(corrupt)))).unwrap();
+            let v = result(&mut s, started);
+            if corrupt {
+                assert_eq!(v["damaged"], true);
+                assert!(s.documents().is_empty());
+                let held = v["held"].as_u64().unwrap();
+                let (doc, read_only) = s.take_held_open(held).unwrap();
+                assert_eq!(doc.layers.len(), 2);
+                assert!(!read_only);
+            } else {
+                assert!(v.get("document").is_some(), "{v}");
+                assert!(!s.active().unwrap().source_read_only);
+            }
+        }
+    }
+}

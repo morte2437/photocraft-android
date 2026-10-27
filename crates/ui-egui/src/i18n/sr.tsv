@@ -629,6 +629,10 @@
 	Fit Layer(s) on Screen	Uklopi sloj(eve) u ekran
 	Fit Artboard on Screen	Uklopi radnu tablu u ekran
 	100%	100%
+	105%	105%
+	110%	110%
+	115%	115%
+	120%	120%
 	200%	200%
 	75%	75%
 	80%	80%
@@ -2153,6 +2157,10 @@
 	No path to make a selection from: draw one with the Pen tool or select one in the Paths panel.	Nema putanje od koje bi se napravila selekcija: nacrtajte je alatkom pero ili je izaberite u panelu Putanje.
 	Cancel opening	Otkaži otvaranje
 	Cancelled opening {name}	Otkazano otvaranje: {name}
+	Damaged Photoshop document	Oštećen Photoshop dokument
+	The document “{name}” may be damaged.	Dokument „{name}“ je možda oštećen.
+	Some layers, pixels or masks could not be read. Do you want to continue opening it?	Neki slojevi, pikseli ili maske nisu mogli da se pročitaju. Želite li da nastavite sa otvaranjem?
+	If you continue, saving over the original may permanently discard unreadable data. Save a copy to keep the original.	Ako nastavite, čuvanje preko originala može trajno odbaciti nečitljive podatke. Sačuvajte kopiju da biste zadržali original.
 	The document “{name}” does not have an embedded {mode} profile.	Dokument „{name}“ nema ugrađeni {mode} profil.
 	The document “{name}” has an embedded color profile that does not match the current {mode} working space.	Dokument „{name}“ ima ugrađeni profil boja koji se ne slaže sa trenutnim {mode} radnim prostorom.
 	Working: {working}	Radni prostor: {working}
@@ -2282,6 +2290,9 @@
 	Create Snapshot	Napravi snimak stanja
 	Delete Snapshot	Obriši snimak stanja
 	New Snapshot	Novi snimak stanja
+	From:	Od:
+	Full Document	Ceo dokument
+	Merged Layers	Spojeni slojevi
 	New Snapshot…	Novi snimak stanja…
 	History Options…	Opcije istorije…
 	Snapshot 1	Snimak stanja 1
@@ -3074,6 +3085,8 @@ curves	Smooth	Izgladi
 	Vanishing Point is not active	Tačka nestajanja nije aktivna
 	Apply Vanishing Point ({key})	Primeni tačku nestajanja ({key})
 	Fix the red plane first: its corners must form a convex quad	Prvo ispravite crvenu ravan: njeni uglovi moraju činiti konveksan četvorougao
+	Alt-click a plane to set the clone source	Alt-kliknite ravan da postavite izvor kloniranja
+	Too many clone strokes: apply Vanishing Point first	Previše poteza kloniranja: prvo primenite tačku nestajanja
 # Select and Mask view modes (#1754)
 	Onion Skin	Prozirni prikaz
 	Marching Ants	Pokretne crtice
@@ -4263,6 +4276,17 @@ shape	Appearance	Izgled
 	Color Indicates:	Boja označava:
 	Ink Characteristics	Karakteristike mastila
 	Solidity:	Punoća:
+	Calibration	Kalibracija
+	Red Primary	Crvena primarna
+	Green Primary	Zelena primarna
+	Blue Primary	Plava primarna
+	Write xmp sidecars	Upisuj prateće XMP datoteke
+	Set the tone sliders from the image	Postavi klizače tona prema slici
+	Settings from {name}	Podešavanja iz {name}
+	Settings from {name}; {count} not supported: {names}	Podešavanja iz {name}; {count} nije podržano: {names}
+	Could not write {name}: {error}	Nije moguće upisati {name}: {error}
+	Kept {name}: written by another application	{name} je zadržan: upisala ga je druga aplikacija
+	Shadow Tint	Nijansa senki
 	Redrawing	Ponovno iscrtavanje
 
 # Bevel & Emboss shading controls.
@@ -4311,6 +4335,7 @@ shape	Appearance	Izgled
 # View › Guides › right-click a guide
 	Edit Selected Guides	Uredi izabrane vodilje
 	Clear Selected Guides	Ukloni izabrane vodilje
+
 	Bicubic Automatic	Bikubično automatski
 	Bicubic Smoother	Bikubično glađe
 	Bicubic Sharper	Bikubično oštrije
@@ -4435,6 +4460,14 @@ shape	Appearance	Izgled
 
 # Graphics Adapter preference (#1885)
 	GPU adapter	GPU adapter
+
+# Styles panel: Import / Export Styles (.asl)
+	Import Styles…	Uvezi stilove…
+	Export Selected Styles…	Izvezi izabrane stilove…
+	Export Styles…	Izvezi stilove…
+	{file} is not a style library (.asl)	{file} nije biblioteka stilova (.asl)
+@plural	Imported {n} style from {file}|Imported {n} styles from {file}	Uvezen je {n} stil iz {file}|Uvezena su {n} stila iz {file}|Uvezeno je {n} stilova iz {file}
+@plural	Exported {n} style to {file}|Exported {n} styles to {file}	Izvezen je {n} stil u {file}|Izvezena su {n} stila u {file}|Izvezeno je {n} stilova u {file}
 # Actions: a step dialog holds a suspended recording (#7365)
 	Confirm or cancel the open action step dialog first	Prvo potvrdite ili otkažite otvoreni dijalog koraka radnje
 	Pro Medium Gray	Pro srednje siva
@@ -4443,14 +4476,51 @@ shape	Appearance	Izgled
 	Pro Light Gray	Pro svetlosiva
 	Pro Light	Pro svetla
 	Resize Windows to Fit	Prilagodi veličinu prozora
-
 	EXR	EXR
-
 # Paragraph direction (TYPE-218-2)
 	Automatic paragraph direction	Automatski smer pasusa
 	Left-to-right paragraph direction	Smer pasusa sleva nadesno
 	Right-to-left paragraph direction	Smer pasusa zdesna nalevo
 	Not rendered: this adjustment ({key}) is kept as imported.	Није приказано: ово прилагођавање ({key}) је задржано онако како је увезено.
-
 # Print preview image (#8236)
 	Print preview image	Print preview image
+# PhotoCraft release checks.
+	Check for Updates…	Proveri ažuriranja…
+	PhotoCraft Updates	Ažuriranja za PhotoCraft
+	Checking for updates…	Provera ažuriranja…
+	Open the release page to choose an installer for your system.	Otvorite stranicu izdanja da biste izabrali instalacioni program za svoj sistem.
+	Open Download Page	Otvori stranicu za preuzimanje
+	PhotoCraft is up to date.	PhotoCraft je ažuran.
+	Could not check for updates.	Nije moguće proveriti ažuriranja.
+	Updates have not been checked yet.	Ažuriranja još nisu proverena.
+	Check Again	Proveri ponovo
+	Automatically Check for Updates	Automatski proveravaj ažuriranja
+	Installed version: {version}	Instalirana verzija: {version}
+	PhotoCraft {version} is available.	Dostupan je PhotoCraft {version}.
+# Color panel menu: modes, copy commands and colour ramps (#6000)
+	Hue Cube	Kocka nijanse
+	Brightness Cube	Kocka osvetljenosti
+	Color Wheel	Točak boja
+	RGB Sliders	RGB klizači
+	HSB Sliders	HSB klizači
+	CMYK Sliders	CMYK klizači
+	Lab Sliders	Lab klizači
+	Web Color Sliders	Klizači veb boja
+	Copy Color as HTML	Kopiraj boju kao HTML
+	Copy Color's Hex Code	Kopiraj heksadecimalni kod boje
+	RGB Spectrum	RGB spektar
+	CMYK Spectrum	CMYK spektar
+	Grayscale Ramp	Skala nijansi sive
+	Current Colors	Trenutne boje
+	Make Ramp Web Safe	Učini skalu bezbednom za veb
+# Art History Brush (#213).
+	Art History Brush Tool	Alatka umetnička četkica istorije
+	Tight Short	Usko kratko
+	Tight Medium	Usko srednje
+	Tight Long	Usko dugo
+	Loose Medium	Labavo srednje
+	Loose Long	Labavo dugo
+	Dab	Mrlja
+	Tight Curl	Usko uvijeno
+	Loose Curl	Labavo uvijeno
+	Stylized dabs from a history state	Stilizovane mrlje iz stanja istorije

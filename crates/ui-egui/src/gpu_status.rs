@@ -19,10 +19,25 @@ const STARTED_MAX_FRAMES: u64 = 120;
 /// Hook run once the app has rendered its first frames (see [`PhotocraftApp::on_started`]).
 pub type StartedHook = Box<dyn FnOnce(&mut PhotocraftApp)>;
 
-/// Per-frame check: switch to the CPU canvas when the GPU faulted, and run the started hook.
+/// Out-of-memory errors after which the GPU canvas is rebuilt by itself; past them the CPU
+/// renderer stays until the user chooses Retry GPU, so a document that never fits doesn't rebuild
+/// the canvas on every frame.
+pub const OOM_AUTO_RETRIES: u32 = 3;
+
+/// Per-frame check: switch to the CPU canvas when the GPU faulted, and run the started hook. An
+/// out-of-memory error on a device that still works is not the end of the GPU for the session
+/// (#6564): the dropped canvas freed its memory, so a new one is built at once and the views
+/// redraw through it, up to [`OOM_AUTO_RETRIES`] times.
 pub fn check(app: &mut PhotocraftApp, ctx: &egui::Context) {
     if let Some(fault) = app.gpu.as_ref().and_then(|g| g.fault()) {
         fall_back(app, &fault);
+        if fault.is_out_of_memory() && app.gpu_oom_retries < OOM_AUTO_RETRIES && can_retry_now(app) {
+            app.gpu_oom_retries += 1;
+            if retry_now(app) {
+                log::warn!("{fault}; rebuilt the GPU canvas (automatic retry {} of {OOM_AUTO_RETRIES})", app.gpu_oom_retries);
+                app.ui.gpu_fallback_notice = None;
+            }
+        }
         ctx.request_repaint();
     }
     if app.started.is_some() {
@@ -248,7 +263,7 @@ pub fn show_fallback(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let t = crate::theme::Tokens::get(ctx);
     let mut choice = None;
     egui::Window::new(tl!("Switched to CPU rendering"))
-        .id(egui::Id::new("gpu-fallback-warning"))
+        .id(egui::Id::unique("gpu-fallback-warning"))
         .collapsible(false)
         .resizable(false)
         .default_width(440.0)
@@ -372,6 +387,47 @@ mod tests {
         assert_eq!(saves.get(), 2, "retry choice writes once");
     }
 
+    /// #6564: an out-of-memory error on a device that still works rebuilds the GPU canvas by itself,
+    /// with no notice and the documents untouched, a few times a session; then the CPU renderer
+    /// stays until Retry GPU. Other errors and a loss still fall back at once.
+    #[test]
+    fn out_of_memory_rebuilds_the_gpu_canvas_by_itself() {
+        let _gpu = photocraft_testkit::gpu_lock();
+        let rs = std::panic::catch_unwind(|| egui_kittest::wgpu::create_render_state(crate::gpu_canvas::wgpu_setup(), Default::default()));
+        let Ok(rs) = rs else {
+            eprintln!("skipping: no GPU adapter");
+            return;
+        };
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+        app.set_wgpu(rs);
+        app.run("file.new", json!({"width": 64, "height": 48})).unwrap();
+        let ctx = egui::Context::default();
+        let oom = || photocraft_gpu::Fault::Error("Out of Memory".into());
+        for n in 1..=OOM_AUTO_RETRIES {
+            app.gpu_health().unwrap().mark(oom());
+            check(&mut app, &ctx);
+            assert!(app.gpu_active(), "retry {n}: the GPU canvas is back");
+            assert!(app.gpu_health().unwrap().is_ok(), "retry {n}: with a fresh health flag");
+            assert_eq!(app.perf.gpu_info.canvas, "gpu");
+            assert!(app.ui.gpu_fallback_notice.is_none(), "retry {n}: no recovery dialog");
+            assert_eq!(app.session.documents().len(), 1);
+        }
+        // Past the limit the CPU renderer stays and the dialog offers Retry GPU.
+        app.gpu_health().unwrap().mark(oom());
+        check(&mut app, &ctx);
+        assert!(!app.gpu_active() && app.ui.gpu_fallback_notice.is_some());
+        assert_eq!(app.perf.gpu_info.canvas, "cpu");
+
+        // A validation error is not retried by itself.
+        let rs = egui_kittest::wgpu::create_render_state(crate::gpu_canvas::wgpu_setup(), Default::default());
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+        app.set_wgpu(rs);
+        app.run("file.new", json!({"width": 64, "height": 48})).unwrap();
+        app.gpu_health().unwrap().mark(photocraft_gpu::Fault::Error("Validation Error".into()));
+        check(&mut app, &ctx);
+        assert!(!app.gpu_active() && app.ui.gpu_fallback_notice.is_some());
+    }
+
     /// #6577: after a GPU error on a device that still works (out of memory, validation), Retry
     /// GPU builds a new GPU canvas at once, without a restart or closing documents. After a loss
     /// the device can't be used again, so the retry still waits for the next launch.
@@ -388,8 +444,9 @@ mod tests {
         app.set_wgpu(rs);
         app.run("file.new", json!({"width": 64, "height": 48})).unwrap();
         let ctx = egui::Context::default();
-        // An error on a live device: Retry GPU rebuilds the canvas now.
-        app.gpu_health().unwrap().mark(photocraft_gpu::Fault::Error("Out of Memory".into()));
+        // An error on a live device (one not retried by itself, see #6564): Retry GPU rebuilds
+        // the canvas now.
+        app.gpu_health().unwrap().mark(photocraft_gpu::Fault::Error("Validation Error".into()));
         check(&mut app, &ctx);
         assert!(!app.gpu_active() && app.ui.gpu_fallback_notice.is_some());
         assert!(can_retry_now(&app));

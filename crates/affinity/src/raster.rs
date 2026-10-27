@@ -193,6 +193,8 @@ fn plane(
     }
     .iter()
     .filter_map(|v| if let Value::Obj(Some(o)) = v { Some(*o) } else { None });
+    // The scan below runs for every occurrence of a shared bitmap, whatever it produces.
+    r.charge_slots(states.len().min(tw.saturating_mul(th)))?;
     let row = (w as usize) * bps;
     let mut out = vec![0u8; row * h as usize];
     let (bx0, bx1) = (x0 as usize * bps, (x0 + w) as usize * bps);

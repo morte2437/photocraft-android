@@ -211,6 +211,25 @@ fn png_opens_upright_for_every_orientation() {
     }
 }
 
+/// Extra samples (a TIFF's alpha and spot planes) turn with the image, so a channel stays
+/// aligned with the pixels for every orientation.
+#[test]
+fn extra_samples_turn_with_the_image() {
+    let (w, h) = (4, 7);
+    let up = exact_scene(w, h);
+    let up_extra: Vec<u8> = up.iter().map(|v| 255 - v).collect();
+    for o in 1..=8u16 {
+        let (s, sw, sh) = stored(&up, w, h, o);
+        let (s_extra, _, _) = stored(&up_extra, w, h, o);
+        let mut img = gray(sw, sh, s);
+        img.meta.extra_samples = vec![ExtraSample { kind: 0, data: s_extra }];
+        let turned = img.oriented(o).unwrap();
+        assert_eq!(turned.data(), &up[..], "o={o}");
+        assert_eq!(turned.meta.extra_samples.len(), 1, "o={o}");
+        assert_eq!(turned.meta.extra_samples[0].data, up_extra, "o={o}");
+    }
+}
+
 #[test]
 fn tiff_opens_upright_for_every_orientation() {
     let (w, h) = (4, 7);

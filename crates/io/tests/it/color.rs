@@ -234,7 +234,7 @@ fn gradient_maps_with_cmyk_lab_gray_stops_import_and_keep_their_space() {
             }
             let fmt = doc.pixel_format();
             doc.layers.push(raster("Background", fmt, doc.bounds(), 3, false));
-            doc.layers.push(Layer::new("Map", LayerContent::Adjustment(Adjustment::Unsupported { psd_key: "grdm".into(), raw: block.clone() })));
+            doc.layers.push(Layer::new("Map", LayerContent::Adjustment(Adjustment::Unsupported { psd_key: "grdm".into(), raw: block.as_slice().into() })));
             let bytes = export(&doc, "x.psd", &ExportOptions::default()).unwrap().bytes;
             let mut back = import("x.psd", &bytes).unwrap().document;
             let LayerContent::Adjustment(Adjustment::GradientMap { stops: got, .. }) = &back.layers[1].content else {

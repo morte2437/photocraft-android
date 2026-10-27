@@ -1,4 +1,5 @@
-//! JPEG: decode via `zune-jpeg` (gray, YCbCr, CMYK, YCCK), encode via
+//! JPEG: decode via `zune-jpeg` (gray, YCbCr, CMYK, YCCK; arithmetic-coded and 12-bit files
+//! via [`craft_jpeg`]), encode via
 //! `jpeg-encoder` (gray, RGB, CMYK). Metadata (APP0 JFIF density, APP1
 //! EXIF/XMP, APP2 multi-segment ICC, APP13 Photoshop resources, APP14 Adobe) is
 //! parsed by our own marker scanner so behaviour does not depend on decoder internals.
@@ -190,6 +191,47 @@ fn err(e: impl std::fmt::Display) -> CodecError {
     CodecError::malformed(F, e)
 }
 
+/// Whether `craft-jpeg` (rather than `zune-jpeg`) decodes the file: arithmetic coding
+/// (SOF9–SOF11) or a DCT frame whose precision isn't 8 bits (#4934, #5003). Lossless (SOF3) and
+/// 12-bit progressive Huffman (SOF2) go there too: craft-jpeg reports them unsupported, where
+/// zune-jpeg's failure would read as a damaged file.
+fn uses_craft_jpeg(bytes: &[u8]) -> bool {
+    match craft_jpeg::frame(bytes) {
+        Some(f) if (0xC9..=0xCB).contains(&f.marker) || f.marker == 0xC3 => true,
+        Some(f) if matches!(f.marker, 0xC0..=0xC2) => f.precision != 8,
+        _ => false,
+    }
+}
+
+fn craft_jpeg_error(e: craft_jpeg::Error) -> CodecError {
+    match e {
+        craft_jpeg::Error::Malformed(m) => err(m),
+        craft_jpeg::Error::Unsupported(m) => CodecError::unsupported(F, m),
+        craft_jpeg::Error::LimitExceeded(m) => CodecError::LimitExceeded(m),
+        e => err(e),
+    }
+}
+
+/// Decode a file [`uses_craft_jpeg`] routes away from `zune-jpeg`; `damaged` says entropy-coded
+/// data was cut short or corrupt.
+fn decode_craft_jpeg(bytes: &[u8], limits: &Limits, adobe_transform: Option<u8>) -> Result<(Image, bool), CodecError> {
+    let mut lim = craft_jpeg::Limits::default();
+    lim.max_pixels = limits.max_pixels;
+    lim.max_alloc = limits.max_alloc;
+    let d = craft_jpeg::decode(bytes, &lim, adobe_transform).map_err(craft_jpeg_error)?;
+    let layout = match d.components {
+        1 => ChannelLayout::Gray,
+        3 => ChannelLayout::Rgb,
+        4 => ChannelLayout::Cmyk,
+        n => return Err(err(format!("{n} components"))),
+    };
+    let img = match d.samples {
+        craft_jpeg::Samples::U8(px) => Image::from_raw(d.width, d.height, layout, SampleType::U8, px)?,
+        craft_jpeg::Samples::U16(px) => Image::from_u16(d.width, d.height, layout, &px)?,
+    };
+    Ok((img, d.damaged))
+}
+
 /// Most pixels one byte of truncated scan data may account for. Even a flat image costs a few
 /// bits per 8×8 block, and truncated photographs are far above this.
 const MAX_TRUNCATED_PIXELS_PER_BYTE: u64 = 2048;
@@ -202,6 +244,25 @@ pub(crate) fn decode(bytes: &[u8], limits: &Limits) -> Result<Image, CodecError>
     let meta = scan_metadata(bytes);
     if let Some((w, h, nc)) = meta.frame {
         limits.check_bytes(w, h, u64::from(nc.max(1)))?;
+    }
+    if uses_craft_jpeg(bytes) {
+        // craft-jpeg sizes its buffers from the frame header before it reads a scan.
+        if scan_bytes == 0 {
+            return Err(err("the file has no scan data"));
+        }
+        if let Some((w, h, _)) = meta.frame
+            && end == DataEnd::Truncated
+            && u64::from(w) * u64::from(h) / MAX_TRUNCATED_PIXELS_PER_BYTE > scan_bytes
+        {
+            return Err(err("the truncated scan is too short for the frame it declares"));
+        }
+        let (mut img, damaged) = decode_craft_jpeg(bytes, limits, meta.adobe_transform)?;
+        img.icc = meta.icc;
+        img.meta = Metadata { exif: meta.exif, xmp: meta.xmp, dpi: meta.dpi, photoshop_resources: meta.photoshop, ..Default::default() };
+        if end == DataEnd::Truncated || damaged {
+            img.warnings.push(DecodeWarning::Truncated { format: F });
+        }
+        return Ok(img);
     }
     let options = DecoderOptions::default().set_strict_mode(false).set_max_width(65535).set_max_height(65535);
     let mut dec = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(bytes), options);
@@ -552,5 +613,179 @@ mod tests {
 
         assert!(has_jfif_app0(&bytes));
         assert_eq!(scan_metadata(&bytes).dpi, Some((96.0, 96.0)));
+    }
+
+    // --- Arithmetic-coded and 12-bit files, decoded by craft-jpeg ---
+
+    fn segment(out: &mut Vec<u8>, marker: u8, body: &[u8]) {
+        out.extend_from_slice(&[0xFF, marker]);
+        out.extend_from_slice(&((body.len() + 2) as u16).to_be_bytes());
+        out.extend_from_slice(body);
+    }
+
+    /// One 8×8 gray block, quantizer 1, with entropy-coded scan data `data`.
+    fn gray_block(sof: u8, precision: u8, dht: Option<&[u8]>, data: &[u8]) -> Vec<u8> {
+        let mut s = vec![0xFF, 0xD8];
+        let mut dqt = vec![0u8];
+        dqt.extend([1u8; 64]);
+        segment(&mut s, 0xDB, &dqt);
+        segment(&mut s, sof, &[precision, 0, 8, 0, 8, 1, 1, 0x11, 0]);
+        if let Some(dht) = dht {
+            segment(&mut s, 0xC4, dht);
+        }
+        segment(&mut s, 0xDA, &[1, 1, 0x00, 0, 63, 0]);
+        s.extend_from_slice(data);
+        s.extend([0xFF, 0xD9]);
+        s
+    }
+
+    /// SOF9 with only a DC coefficient (from a T.81 arithmetic encoder): 8-bit DC 200 → sample
+    /// 200 / 8 + 128 = 153; 12-bit DC 1000 → 1000 / 8 + 2048 = 2173.
+    fn arithmetic_block(precision: u8) -> Vec<u8> {
+        let data: &[u8] = if precision == 8 { &[210, 217, 68, 0] } else { &[210, 234, 134, 0] };
+        gray_block(0xC9, precision, None, data)
+    }
+
+    /// A 12-bit SOF1 stream: one DC coefficient. The DC table has one code (`0`, category 13),
+    /// the AC table one (`0`, end of block). DC = 7616 → sample 7616 / 8 + 2048 = 3000.
+    fn twelve_bit_huffman_block() -> Vec<u8> {
+        let mut dht = vec![0x00, 1];
+        dht.extend([0u8; 15]);
+        dht.push(13);
+        dht.extend([0x10, 1]);
+        dht.extend([0u8; 15]);
+        dht.push(0x00);
+        // Bits: `0`, 7616 in 13 bits, `0`, one pad `1`.
+        let word: u16 = (7616 << 2) | 1;
+        gray_block(0xC1, 12, Some(&dht), &word.to_be_bytes())
+    }
+
+    fn twelve_bit(v: f32) -> u16 {
+        (v * 65535.0 / 4095.0).round() as u16
+    }
+
+    #[test]
+    fn routing() {
+        assert!(!uses_craft_jpeg(&[0xFF, 0xD8, 0xFF, 0xC0, 0, 11, 8, 0, 8, 0, 8, 1, 1, 0x11, 0]));
+        assert!(!uses_craft_jpeg(&[0xFF, 0xD8, 0xFF, 0xC1, 0, 11, 8, 0, 8, 0, 8, 1, 1, 0x11, 0]));
+        assert!(uses_craft_jpeg(&[0xFF, 0xD8, 0xFF, 0xC9, 0, 11, 8, 0, 8, 0, 8, 1, 1, 0x11, 0]));
+        assert!(uses_craft_jpeg(&[0xFF, 0xD8, 0xFF, 0xC1, 0, 11, 12, 0, 8, 0, 8, 1, 1, 0x11, 0]));
+        assert!(uses_craft_jpeg(&[0xFF, 0xD8, 0xFF, 0xC0, 0, 11, 12, 0, 8, 0, 8, 1, 1, 0x11, 0]));
+        assert!(!uses_craft_jpeg(&[0xFF, 0xD8]));
+        assert!(!uses_craft_jpeg(&[0xFF, 0xD8, 0xFF, 0xC2, 0, 11, 8, 0, 8, 0, 8, 1, 1, 0x11, 0]));
+        assert!(uses_craft_jpeg(&[0xFF, 0xD8, 0xFF, 0xC2, 0, 11, 12, 0, 8, 0, 8, 1, 1, 0x11, 0]));
+        assert!(uses_craft_jpeg(&[0xFF, 0xD8, 0xFF, 0xC3, 0, 11, 8, 0, 8, 0, 8, 1, 1, 0x11, 0]));
+    }
+
+    #[test]
+    fn lossless_and_twelve_bit_progressive_are_unsupported_not_damaged() {
+        for marker in [0xC3, 0xC2] {
+            let mut bytes = vec![0xFF, 0xD8, 0xFF, marker, 0, 11, 12, 0, 8, 0, 8, 1, 1, 0x11, 0];
+            bytes.extend_from_slice(&[0xFF, 0xDA, 0, 8, 1, 1, 0, 0, 0x3F, 0, 0x12, 0x34, 0xFF, 0xD9]);
+            let e = crate::decode(&bytes).unwrap_err();
+            assert!(matches!(e, CodecError::Unsupported { .. }), "{marker:#x}: {e:?}");
+        }
+    }
+
+    #[test]
+    fn a_twelve_bit_frame_without_scan_data_is_refused_before_decoding() {
+        let mut bytes = vec![0xFF, 0xD8, 0xFF, 0xC1, 0, 11, 12, 0x40, 0, 0x40, 0, 1, 1, 0x11, 0];
+        bytes.extend_from_slice(&[0xFF, 0xDA, 0, 8, 1, 1, 0, 0, 0x3F, 0, 0xFF, 0xD9]);
+        let e = crate::decode(&bytes).unwrap_err();
+        assert!(e.to_string().contains("no scan data"), "{e}");
+    }
+
+    #[test]
+    fn arithmetic_eight_bit_block_is_eight_bit() {
+        let img = crate::decode(&arithmetic_block(8)).unwrap();
+        assert_eq!((img.dimensions(), img.sample_type(), img.layout()), ((8, 8), SampleType::U8, ChannelLayout::Gray));
+        assert!(img.data().iter().all(|&v| v.abs_diff(153) <= 1), "{:?}", &img.data()[..4]);
+        assert!(img.warnings.is_empty());
+    }
+
+    #[test]
+    fn arithmetic_twelve_bit_block_is_sixteen_bit() {
+        let img = crate::decode(&arithmetic_block(12)).unwrap();
+        assert_eq!((img.dimensions(), img.sample_type(), img.layout()), ((8, 8), SampleType::U16, ChannelLayout::Gray));
+        let want = twelve_bit(2173.0);
+        assert!(img.to_u16_samples().unwrap().iter().all(|&v| v.abs_diff(want) <= 1));
+    }
+
+    #[test]
+    fn twelve_bit_huffman_block_decodes_to_sixteen_bit() {
+        let img = crate::decode(&twelve_bit_huffman_block()).unwrap();
+        assert_eq!((img.dimensions(), img.sample_type()), ((8, 8), SampleType::U16));
+        let want = twelve_bit(3000.0);
+        let px = img.to_u16_samples().unwrap();
+        assert!(px.iter().all(|&v| v.abs_diff(want) <= 1), "{:?} vs {want}", &px[..4]);
+        assert!(img.warnings.is_empty());
+    }
+
+    #[test]
+    fn twelve_bit_jpeg_keeps_its_photoshop_resources() {
+        // An APP13 `8BIM` block (paths, Photoshop settings) right after SOI, as on the zune-jpeg path.
+        let resources = b"8BIM\x04\x04\0\0\0\0\0\0".to_vec();
+        let mut app13 = PHOTOSHOP_HEADER.to_vec();
+        app13.extend_from_slice(&resources);
+        let stream = twelve_bit_huffman_block();
+        let mut with = stream[..2].to_vec();
+        segment(&mut with, 0xED, &app13);
+        with.extend_from_slice(&stream[2..]);
+        assert!(uses_craft_jpeg(&with));
+        let img = crate::decode(&with).unwrap();
+        assert_eq!(img.meta.photoshop_resources.as_deref(), Some(resources.as_slice()));
+    }
+
+    /// Where the entropy-coded data of the last scan starts.
+    fn last_scan_data(s: &[u8]) -> usize {
+        let sos = s.windows(2).rposition(|p| p == [0xFF, 0xDA]).unwrap();
+        sos + 2 + usize::from(u16::from_be_bytes([s[sos + 2], s[sos + 3]]))
+    }
+
+    /// A 12-bit scan whose entropy data runs out, EOI kept, is never a clean image.
+    #[test]
+    fn twelve_bit_scan_out_of_data_is_not_clean() {
+        let full = twelve_bit_huffman_block();
+        let data = last_scan_data(&full);
+        for keep in 0..2 {
+            let mut s = full[..data + keep].to_vec();
+            s.extend([0xFF, 0xD9]);
+            if let Ok(img) = crate::decode(&s) {
+                assert!(!img.warnings.is_empty(), "keep {keep}: clean decode of missing data");
+            }
+        }
+    }
+
+    /// A multi-MCU SOF1 12-bit scan cut in half, EOI kept, decodes with the Truncated warning; a
+    /// truncated scan too short for its frame is refused, as on the zune-jpeg path.
+    #[test]
+    fn damaged_or_truncated_twelve_bit_scan() {
+        let (w, h) = (64usize, 64usize);
+        let rgb: Vec<u8> = (0..w * h).flat_map(|i| [(i % w * 4) as u8, (i / w * 4) as u8, (i * 7) as u8]).collect();
+        let mut out = Vec::new();
+        jpeg_encoder::Encoder::new(&mut out, 90).encode(&rgb, w as u16, h as u16, jpeg_encoder::ColorType::Rgb).unwrap();
+        // Relabel the baseline frame as 12-bit SOF1: the Huffman data still parses, as different values.
+        let sof = out.windows(2).position(|p| p == [0xFF, 0xC0]).unwrap();
+        out[sof + 1] = 0xC1;
+        out[sof + 4] = 12;
+        let data = last_scan_data(&out);
+        let end = out.len() - 2;
+        let mut cut = out[..data + (end - data) / 2].to_vec();
+        if cut.last() == Some(&0xFF) {
+            cut.pop();
+        }
+        cut.extend([0xFF, 0xD9]);
+        let img = crate::decode(&out).unwrap();
+        assert_eq!(img.sample_type(), SampleType::U16);
+        assert!(img.warnings.is_empty(), "{:?}", img.warnings);
+        let img = crate::decode(&cut).unwrap();
+        assert_eq!(img.warnings, vec![DecodeWarning::Truncated { format: Format::Jpeg }]);
+        // Without EOI the same cut is a truncated file; under a 20000×20000 frame it is refused.
+        cut.truncate(cut.len() - 2);
+        assert_eq!(data_end(&cut).0, DataEnd::Truncated);
+        assert!(crate::decode(&cut).is_ok());
+        cut[sof + 5..sof + 9].copy_from_slice(&[0x4E, 0x20, 0x4E, 0x20]);
+        let e = crate::decode(&cut).unwrap_err();
+        assert!(e.to_string().contains("too short for the frame it declares"), "{e}");
     }
 }

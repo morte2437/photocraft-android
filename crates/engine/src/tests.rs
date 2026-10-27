@@ -1789,3 +1789,59 @@ fn restore_layer_selection_puts_back_what_still_exists() {
     assert_eq!((st.active_layer, st.selected_layers(), st.layer_anchor), (None, vec![], None), "no layer selected");
     assert!(Session::new().restore_layer_selection(None, &[], None).is_err(), "no document");
 }
+
+/// #4535: every edit snapshots the document into history. The large payloads it carries (the
+/// XMP packet, Duotone's PSD data, an unsupported adjustment's bytes) are shared between the
+/// snapshot and the document, not copied per state.
+#[test]
+fn history_states_share_large_document_payloads() {
+    use photocraft_doc::{Adjustment, Duotone, DuotoneInk, Layer, LayerContent};
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 16, "height": 16})).unwrap();
+    let raw_id = {
+        let st = s.active_mut().unwrap();
+        let doc = std::sync::Arc::make_mut(&mut st.doc);
+        doc.metadata.xmp = Some("x".repeat(1 << 20).into());
+        doc.duotone = Some(Duotone { inks: vec![DuotoneInk::new("Black", [0.0; 3])], psd_raw: Some(vec![7u8; 1 << 16].into()) });
+        let layer = Layer::new("kept", LayerContent::Adjustment(Adjustment::Unsupported { psd_key: "abcd".into(), raw: vec![9u8; 1 << 16].into() }));
+        let id = layer.id;
+        doc.layers.push(layer);
+        id
+    };
+    s.execute("layer.new.layer", json!({})).unwrap();
+    let st = s.active().unwrap();
+    let before = st.history.state(st.history.past_len() - 1).unwrap();
+    let (now, then) = (&st.doc, &before);
+    assert!(!std::sync::Arc::ptr_eq(now, then), "the edit made a new document");
+    let xmp = |d: &Document| d.metadata.xmp.clone().unwrap();
+    assert!(std::sync::Arc::ptr_eq(&xmp(now), &xmp(then)), "the XMP packet is shared");
+    let duotone = |d: &Document| d.duotone.as_ref().and_then(|d| d.psd_raw.clone()).unwrap();
+    assert!(std::sync::Arc::ptr_eq(&duotone(now), &duotone(then)), "the Duotone data is shared");
+    let raw = |d: &Document| match &d.layer(raw_id).unwrap().content {
+        LayerContent::Adjustment(Adjustment::Unsupported { raw, .. }) => raw.clone(),
+        other => panic!("{other:?}"),
+    };
+    assert!(std::sync::Arc::ptr_eq(&raw(now), &raw(then)), "the adjustment's bytes are shared");
+}
+
+#[test]
+fn the_document_activation_generation_bumps_on_switch_and_back() {
+    let mut s = session_with_doc();
+    let first = s.active().unwrap().doc.id;
+    let g1 = s.active_generation();
+    s.execute("file.new", json!({"width": 8, "height": 8})).unwrap();
+    let second = s.active().unwrap().doc.id;
+    assert_ne!(second, first);
+    let g2 = s.active_generation();
+    assert!(g2 > g1, "opening a document activates it");
+    let i = s.documents().iter().position(|d| d.doc.id == first).expect("the first document");
+    assert!(s.set_active(i));
+    let g3 = s.active_generation();
+    assert!(g3 > g2, "switching back is a new activation");
+    // Re-selecting the already-active document is not a switch; neither is an edit.
+    assert!(s.set_active(i));
+    assert_eq!(s.active_generation(), g3);
+    s.execute("layer.new.layer", json!({})).unwrap();
+    assert_eq!(s.active_generation(), g3);
+    assert_eq!(s.active().unwrap().doc.id, first);
+}

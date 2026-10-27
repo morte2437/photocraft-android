@@ -652,6 +652,10 @@
 	Fit Layer(s) on Screen	Adatta livello/i a schermo
 	Fit Artboard on Screen	Adatta tavola a schermo
 	100%	100%
+	105%	105%
+	110%	110%
+	115%	115%
+	120%	120%
 	200%	200%
 	75%	75%
 	80%	80%
@@ -1018,6 +1022,9 @@
 	Create new pattern from the selection	Crea nuovo pattern dalla selezione
 	Create new shape from the current path	Crea nuova forma dal tracciato corrente
 	Create new snapshot	Crea nuova istantanea
+	From:	Da:
+	Full Document	Documento intero
+	Merged Layers	Livelli uniti
 	Create new style (from the selected type)	Crea nuovo stile (dal testo selezionato)
 	Create new style from the selected layer	Crea nuovo stile dal livello selezionato
 	Create new tool preset	Crea nuovo predefinito strumento
@@ -2215,6 +2222,10 @@
 	No path to make a selection from: draw one with the Pen tool or select one in the Paths panel.	Nessun tracciato da cui creare selezione: disegnane uno con Penna o selezionane uno nel pannello Tracciati.
 	Cancel opening	Annulla apertura
 	Cancelled opening {name}	Apertura {name} annullata
+	Damaged Photoshop document	Documento Photoshop danneggiato
+	The document “{name}” may be damaged.	Il documento “{name}” potrebbe essere danneggiato.
+	Some layers, pixels or masks could not be read. Do you want to continue opening it?	Non è stato possibile leggere alcuni livelli, pixel o maschere. Continuare ad aprirlo?
+	If you continue, saving over the original may permanently discard unreadable data. Save a copy to keep the original.	Se continui, salvare sopra l’originale potrebbe eliminare definitivamente i dati illeggibili. Salva una copia per conservare l’originale.
 	The document “{name}” does not have an embedded {mode} profile.	Il documento “{name}” non ha un profilo {mode} incorporato.
 	The document “{name}” has an embedded color profile that does not match the current {mode} working space.	Il documento “{name}” ha un profilo colore incorporato che non corrisponde allo spazio di lavoro {mode} corrente.
 	Working: {working}	Di lavoro: {working}
@@ -2794,6 +2805,8 @@ curves	Smooth	Leviga
 	Vanishing Point is not active	Punto di fuga non è attivo
 	Apply Vanishing Point ({key})	Applica punto di fuga ({key})
 	Fix the red plane first: its corners must form a convex quad	Correggi prima il piano rosso: i suoi angoli devono formare un quadrilatero convesso
+	Alt-click a plane to set the clone source	Alt-clic su un piano per impostare l’origine della clonazione
+	Too many clone strokes: apply Vanishing Point first	Troppi tratti di clonazione: applica prima Punto di fuga
 # Select and Mask view modes (#1754)
 	Onion Skin	Velina
 	Marching Ants	Formiche in marcia
@@ -4199,6 +4212,30 @@ navigator	Zoom	Zoom
 	Sent to {printer}	Inviato a {printer}
 	set in Print Settings…	impostato nelle impostazioni di stampa…
 	ICO is limited to 256 × 256 pixels	ICO è limitato a 256 × 256 pixel
+	Calibration	Calibrazione
+	Red Primary	Primario rosso
+	Green Primary	Primario verde
+	Blue Primary	Primario blu
+	Write xmp sidecars	Scrivi file sidecar XMP
+	Set the tone sliders from the image	Imposta i cursori dei toni dall’immagine
+	Settings from {name}	Impostazioni da {name}
+	Settings from {name}; {count} not supported: {names}	Impostazioni da {name}; {count} non supportate: {names}
+	Could not write {name}: {error}	Impossibile scrivere {name}: {error}
+	Kept {name}: written by another application	{name} mantenuto: scritto da un’altra applicazione
+	Shadow Tint	Tinta ombre
+# PhotoCraft release checks.
+	Check for Updates…	Cerca aggiornamenti…
+	PhotoCraft Updates	Aggiornamenti di PhotoCraft
+	Checking for updates…	Ricerca aggiornamenti…
+	Open the release page to choose an installer for your system.	Apri la pagina della versione per scegliere un programma di installazione per il tuo sistema.
+	Open Download Page	Apri pagina di download
+	PhotoCraft is up to date.	PhotoCraft è aggiornato.
+	Could not check for updates.	Impossibile cercare aggiornamenti.
+	Updates have not been checked yet.	Gli aggiornamenti non sono ancora stati verificati.
+	Check Again	Controlla di nuovo
+	Automatically Check for Updates	Cerca automaticamente aggiornamenti
+	Installed version: {version}	Versione installata: {version}
+	PhotoCraft {version} is available.	PhotoCraft {version} è disponibile.
 # History panel › History Brush source (#2966)
 	Paints from the History panel's source state	Dipinge dallo stato di origine del pannello Cronologia
 	Sets the source for the history brush	Imposta l'origine del pennello storia
@@ -4480,6 +4517,14 @@ shape	Appearance	Aspetto
 
 # Graphics Adapter preference (#1885)
 	GPU adapter	Adattatore GPU
+
+# Styles panel: Import / Export Styles (.asl)
+	Import Styles…	Importa stili…
+	Export Selected Styles…	Esporta stili selezionati…
+	Export Styles…	Esporta stili…
+	{file} is not a style library (.asl)	{file} non è una libreria di stili (.asl)
+@plural	Imported {n} style from {file}|Imported {n} styles from {file}	{n} stile importato da {file}|{n} stili importati da {file}
+@plural	Exported {n} style to {file}|Exported {n} styles to {file}	{n} stile esportato in {file}|{n} stili esportati in {file}
 # Actions: a step dialog holds a suspended recording (#7365)
 	Confirm or cancel the open action step dialog first	Conferma o annulla prima la finestra di dialogo aperta del passo dell’azione
 	Pro Medium Gray	Pro grigio medio
@@ -4488,14 +4533,38 @@ shape	Appearance	Aspetto
 	Pro Light Gray	Pro grigio chiaro
 	Pro Light	Pro chiaro
 	Resize Windows to Fit	Ridimensiona finestre per adattare
-
 	EXR	EXR
-
 # Paragraph direction (TYPE-218-2)
 	Automatic paragraph direction	Direzione del paragrafo automatica
 	Left-to-right paragraph direction	Direzione del paragrafo da sinistra a destra
 	Right-to-left paragraph direction	Direzione del paragrafo da destra a sinistra
 	Not rendered: this adjustment ({key}) is kept as imported.	Non renderizzato: questa regolazione ({key}) viene conservata come importata.
-
 # Print preview image (#8236)
 	Print preview image	Print preview image
+# Color panel menu: modes, copy commands and colour ramps (#6000)
+	Hue Cube	Cubo tonalità
+	Brightness Cube	Cubo luminosità
+	Color Wheel	Ruota dei colori
+	RGB Sliders	Cursori RGB
+	HSB Sliders	Cursori HSB
+	CMYK Sliders	Cursori CMYK
+	Lab Sliders	Cursori Lab
+	Web Color Sliders	Cursori colori web
+	Copy Color as HTML	Copia colore come HTML
+	Copy Color's Hex Code	Copia codice esadecimale del colore
+	RGB Spectrum	Spettro RGB
+	CMYK Spectrum	Spettro CMYK
+	Grayscale Ramp	Barra scala di grigio
+	Current Colors	Colori correnti
+	Make Ramp Web Safe	Limita la barra ai colori web
+# Art History Brush (#213).
+	Art History Brush Tool	Strumento Pennello storia artistica
+	Tight Short	Corto stretto
+	Tight Medium	Medio stretto
+	Tight Long	Lungo stretto
+	Loose Medium	Medio largo
+	Loose Long	Lungo largo
+	Dab	Tocco
+	Tight Curl	Riccio stretto
+	Loose Curl	Riccio largo
+	Stylized dabs from a history state	Tocchi stilizzati da uno stato della storia

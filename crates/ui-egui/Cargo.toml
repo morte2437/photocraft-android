@@ -30,18 +30,22 @@ photocraft-format = { workspace = true }
 # Decoding the brand mark's PNG (`brand.rs`); already linked through photocraft-io.
 photocraft-codecs = { workspace = true }
 egui = { workspace = true }
-egui_extras = { version = "0.36", default-features = false, features = ["svg"] }
-eframe = { workspace = true, features = ["wgpu", "accesskit"] }
+egui_extras = { version = "0.37", default-features = false, features = ["svg"] }
+eframe = { workspace = true, features = ["wgpu", "accesskit", "clipboard"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
 # Display order of right-to-left labels (`bidi_text.rs`); already linked through usvg.
 unicode-bidi = "0.3"
-base64 = "0.22"
+base64 = "0.23"
 # Inflating the translation catalogs, stored deflated (build.rs); already linked through photocraft-io.
 flate2 = { workspace = true }
+web-time = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Floating panels open in their own OS windows on the desktop; the web keeps them in the page.
+craft-ui = { workspace = true, features = ["native-windows"] }
+craft-update = { workspace = true }
 rayon = { workspace = true }
 # Safe native UI-language APIs (Windows/macOS); no subprocess or web dependency.
 sys-locale = "=0.3.2"
@@ -54,7 +58,7 @@ winsafe = { version = "=0.0.29", default-features = false, features = ["kernel",
 [dev-dependencies]
 # egui's own default fonts in tests: the oracle for egui_fonts.rs, and contexts made with
 # `Context::default()` (no install_fonts) can lay out text.
-egui = { workspace = true, features = ["default_fonts"] }
+egui = { workspace = true, features = ["default_fonts", "monochrome_emoji_fonts"] }
 # Synthetic raw files for the open-time Camera Raw dialog tests.
 photocraft-raw = { workspace = true, features = ["testgen"] }
 egui_kittest = { workspace = true, features = ["wgpu", "snapshot", "eframe"] }
@@ -70,6 +74,6 @@ tempfile = "3"
 # Deflates the translation catalogs and egui's default fonts (build.rs); already linked at run time to inflate them.
 flate2 = { workspace = true }
 # egui's default fonts, deflated by build.rs for egui_fonts.rs (the same version egui uses).
-epaint_default_fonts = "0.36"
+epaint_default_fonts = { version = "0.37", features = ["monochrome_emoji_fonts"] }
 serde_json = { workspace = true }
 toml = "1"

@@ -77,9 +77,9 @@ pub(crate) fn krita_blend(id: &str) -> Option<(BlendMode, bool)> {
         "dodge" => (B::ColorDodge, false),
         "burn" => (B::ColorBurn, false),
         "hard_light" => (B::HardLight, false),
-        "soft_light" => (B::SoftLight, false),
-        // The W3C soft light curve, close to but not Photoshop's.
-        "soft_light_svg" => (B::SoftLight, true),
+        // Krita's own Soft Light keeps sqrt(cb) over dark backdrops; Photoshop's is the W3C curve.
+        "soft_light" => (B::SoftLight, true),
+        "soft_light_svg" => (B::SoftLight, false),
         "diff" => (B::Difference, false),
         "exclusion" => (B::Exclusion, false),
         "linear_burn" => (B::LinearBurn, false),
@@ -124,7 +124,7 @@ pub(crate) fn krita_id(mode: BlendMode) -> Option<&'static str> {
         B::LinearDodge => "linear_dodge",
         B::LighterColor => "lighter color",
         B::Overlay => "overlay",
-        B::SoftLight => "soft_light",
+        B::SoftLight => "soft_light_svg",
         B::HardLight => "hard_light",
         B::VividLight => "vivid_light",
         B::LinearLight => "linear light",
@@ -167,9 +167,6 @@ const SVG_OPS: [(&str, BlendMode); 15] = [
 /// A composite-op attribute as a blend mode; unknown names fall back to Normal with a warning.
 fn composite_op(op: &str, layer: &str, warnings: &mut Warnings) -> BlendMode {
     if let Some((_, mode)) = SVG_OPS.iter().find(|(name, _)| *name == op) {
-        if op == "svg:soft-light" {
-            warnings.note("svg:soft-light (the W3C curve) opens as Photoshop's Soft Light, which differs slightly");
-        }
         return *mode;
     }
     match op {
@@ -523,6 +520,20 @@ fn png(w: u32, h: u32, px: &[[f32; 4]], sample: CSample) -> Result<Vec<u8>> {
 
 /// `px` (row-major over `rect`) cut down to the pixels that aren't fully transparent, with
 /// transparent pixels zeroed, so masked-out or empty margins aren't written.
+/// Most bytes of straight RGBA floats one layer may take while it is written. A layer is one PNG
+/// of its content's bounding box, so a few pixels far apart make a box of mostly nothing; refuse
+/// that rather than allocate it. 1.5 × [`MAX_ENTRY`] of floats is at most 8 B/px × a third of that
+/// raw, so the PNG stays within what [`Reader::png`] will read back.
+const MAX_EXPORT_LAYER_BYTES: u64 = 3 * MAX_ENTRY as u64 / 2;
+
+fn admit_layer(rect: Rect) -> Result<()> {
+    let bytes = u64::from(rect.width()).saturating_mul(u64::from(rect.height())).saturating_mul(std::mem::size_of::<[f32; 4]>() as u64);
+    if bytes > MAX_EXPORT_LAYER_BYTES {
+        return Err(IoError::Unsupported(format!("a {}×{} layer is too large to save to OpenRaster", rect.width(), rect.height())));
+    }
+    Ok(())
+}
+
 fn crop(rect: Rect, mut px: Vec<[f32; 4]>) -> (Rect, Vec<[f32; 4]>) {
     let w = rect.width() as usize;
     if w == 0 {
@@ -612,11 +623,12 @@ impl Writer<'_> {
     }
 
     /// The layer's own pixels (straight RGBA floats) and their bounds; its pixel mask applied.
-    fn pixels(&mut self, layer: &Layer) -> (Rect, Vec<[f32; 4]>) {
+    fn pixels(&mut self, layer: &Layer) -> Result<(Rect, Vec<[f32; 4]>)> {
         let canvas = self.doc.bounds();
         let (rect, mut buf) = match &layer.content {
             LayerContent::Raster(s) => {
                 let r = s.content_bounds();
+                admit_layer(r)?;
                 (r, photocraft_compose::surface_to_buffer(s, r).px)
             }
             _ => {
@@ -630,6 +642,7 @@ impl Writer<'_> {
                 solo.mask = None;
                 solo.effects = Default::default();
                 let r = photocraft_compose::composite_bounds(&solo, canvas).unwrap_or(canvas).intersect(&canvas);
+                admit_layer(r)?;
                 (r, photocraft_compose::render_layer(&solo, r).px)
             }
         };
@@ -645,7 +658,7 @@ impl Writer<'_> {
                 p[3] *= layer.fill_opacity.clamp(0.0, 1.0);
             }
         }
-        crop(rect, buf)
+        Ok(crop(rect, buf))
     }
 
     fn layers(&mut self, layers: &[Layer], depth: usize) -> Result<()> {
@@ -674,7 +687,7 @@ impl Writer<'_> {
                     if self.dry {
                         continue;
                     }
-                    let (rect, px) = self.pixels(layer);
+                    let (rect, px) = self.pixels(layer)?;
                     let (rect, px) = if rect.is_empty() { (Rect::from_xywh(0, 0, 1, 1), vec![[0.0; 4]]) } else { (rect, px) };
                     let src = format!("data/layer{}.png", self.next);
                     self.next += 1;

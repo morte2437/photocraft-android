@@ -43,6 +43,7 @@ fn scrolling_the_paths_list_does_not_move_the_footer() {
             // Down to the end of the list and past it, then back up.
             let dir = if i < 30 { -1.0 } else { 1.0 };
             h.event(egui::Event::MouseWheel {
+                source: egui::MouseWheelSource::Unknown,
                 unit: egui::MouseWheelUnit::Line,
                 delta: vec2(0.0, dir),
                 phase: egui::TouchPhase::Move,

@@ -9,8 +9,8 @@ use photocraft_engine::{
 };
 
 pub type Batch = BTreeMap<String, Option<Arc<[u8]>>>;
-/// Three sampled images per preset (tip, dual tip, texture), plus group/index/action records.
-pub const MAX_RECORDS: usize = MAX_GROUPS + MAX_PRESETS_PER_GROUP * 3 + 2;
+/// Three sampled images per preset (tip, dual tip, texture), plus group/index/action/pattern records.
+pub const MAX_RECORDS: usize = MAX_GROUPS + MAX_PRESETS_PER_GROUP * 3 + 3;
 
 #[derive(Default)]
 struct State {
@@ -45,6 +45,7 @@ pub fn record_limit(name: &str) -> Result<u64, String> {
     match name {
         INDEX_FILE => Ok(MAX_INDEX_BYTES),
         ACTIONS_FILE => Ok(MAX_ACTIONS_BYTES),
+        PATTERNS_FILE => Ok(MAX_PATTERNS_BYTES),
         _ if name.starts_with("tips/") && leaf.ends_with(".pctip") => Ok(MAX_TIP_BYTES),
         _ if !name.contains('/') && name.ends_with(".pcbrushes") => Ok(MAX_GROUP_BYTES),
         _ => Err("unknown preset record type".into()),

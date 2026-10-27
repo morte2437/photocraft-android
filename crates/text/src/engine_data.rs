@@ -342,6 +342,9 @@ fn format_real(r: f64) -> String {
     if matches!(s.as_str(), "0." | "-0.") {
         return "0.0".into();
     }
+    if s.ends_with('.') {
+        s.push('0');
+    }
     if let Some(rest) = s.strip_prefix("0.") {
         s = format!(".{rest}");
     } else if let Some(rest) = s.strip_prefix("-0.") {
@@ -355,6 +358,18 @@ mod tests {
     use super::*;
 
     const SAMPLE: &[u8] = b"\n\n<<\n\t/EngineDict\n\t<<\n\t\t/Editor\n\t\t<<\n\t\t\t/Text (\xFE\xFF\x00H\x00i\x00\\)\x00\r)\n\t\t>>\n\t\t/Nums [ 1.0 .5 -2 0 ]\n\t\t/Flag true\n\t\t/Kind /Roman\n\t\t/Runs [\n\t\t<<\n\t\t\t/A 1\n\t\t>>\n\t\t]\n\t>>\n>>";
+
+    #[test]
+    fn format_real_never_ends_with_bare_dot() {
+        assert_eq!(format_real(5.000001), "5.0");
+        assert_eq!(format_real(12.000004), "12.0");
+        assert_eq!(format_real(-5.000001), "-5.0");
+        assert_eq!(format_real(1e20), "100000000000000000000.0");
+        assert_eq!(format_real(0.5), ".5");
+        assert_eq!(format_real(-0.25), "-.25");
+        assert_eq!(format_real(1e-9), "0.0");
+        assert_eq!(format_real(3.0), "3.0");
+    }
 
     #[test]
     fn parses_sample() {

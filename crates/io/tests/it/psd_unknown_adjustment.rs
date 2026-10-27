@@ -48,7 +48,7 @@ fn unknown_adjustment_key_opens_as_unsupported_and_saves_verbatim() {
         let (d, warnings) = open(&f);
         let k = String::from_utf8_lossy(&key).into_owned();
         assert!(
-            matches!(content(&d, "Mystery"), LayerContent::Adjustment(Adjustment::Unsupported { psd_key, raw }) if *psd_key == k && *raw == data),
+            matches!(content(&d, "Mystery"), LayerContent::Adjustment(Adjustment::Unsupported { psd_key, raw }) if *psd_key == k && **raw == data[..]),
             "{k}: {:?}",
             content(&d, "Mystery")
         );

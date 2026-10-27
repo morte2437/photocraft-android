@@ -172,7 +172,7 @@ pub fn gen_doc(mode: ColorMode, depth: SampleType, f: Features) -> Document {
                 black: Vec::new(),
                 pencil: false,
             },
-            Adjustment::Unsupported { psd_key: "selc".into(), raw: vec![0, 1, 0, 0] },
+            Adjustment::Unsupported { psd_key: "selc".into(), raw: vec![0, 1, 0, 0].into() },
         ];
         // Colour adjustments (Photoshop offers them for colour documents only: they would tint
         // a grayscale composite).

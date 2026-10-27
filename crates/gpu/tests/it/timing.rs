@@ -139,9 +139,11 @@ fn gpu_time_tracks_execution_not_submission() {
     assert_eq!(t.px, area(full), "the measurement carries the pixels of the refresh it measured");
     assert!(t.spans >= 1, "at least one command buffer was timed");
 
-    // The premise: on this adapter the refresh really is dominated by GPU execution. A machine
-    // fast enough that it isn't cannot tell the two timings apart, so say so instead of failing.
-    if wall_ms < 3.0 * submit_ms {
+    // The premise: on this adapter the refresh really is dominated by GPU execution. `wall_ms`
+    // includes `submit_ms`, so the GPU execution window is `wall_ms - submit_ms`; a machine fast
+    // enough that this window isn't well above `3.0 * submit_ms` cannot tell the two timings
+    // apart, so say so instead of failing.
+    if wall_ms - submit_ms < 3.0 * submit_ms {
         eprintln!("SKIP the comparison: this GPU finishes a 6 MP composite in {wall_ms:.1} ms against {submit_ms:.1} ms of encoding");
         return;
     }
@@ -284,4 +286,26 @@ fn a_failed_refresh_that_recorded_nothing_keeps_the_timer_alive() {
     }
     let after = after.expect("the timer still measures after a refresh that recorded nothing");
     assert_eq!(after.px, 4096, "the measurement belongs to the refresh that produced it");
+}
+
+/// A refresh whose layer pages ran out of GPU memory even after the submit-and-retry ends on the
+/// CPU (#6563), but measuring goes on: the retry waited for the GPU, so none of the dropped
+/// measurement's timestamps were still in flight.
+#[test]
+fn an_out_of_memory_refresh_does_not_stop_gpu_timing() {
+    let _lock = crate::GPU_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some((device, queue, mut comp)) = gpu() else { return };
+    let doc = document(Size::new(640, 480));
+    let full = doc.bounds();
+    // The first page texture fails twice, and twice more in the retry after the submit.
+    comp.fail_layer_allocs(4);
+    assert!(comp.render(&device, &queue, &doc, full, |_, _| {}).is_err(), "every try failed");
+    let mut timing = None;
+    for _ in 0..4 {
+        timing = measure(&device, &queue, &mut comp, &doc, full).2;
+        if timing.is_some() {
+            break;
+        }
+    }
+    assert!(timing.is_some(), "GPU timing stopped for good after one out-of-memory refresh");
 }

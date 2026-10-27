@@ -43,8 +43,9 @@ everything: the document keeps its file and its unsaved changes. Automation foll
 
 OpenRaster elements other than `stack` and `layer` (MyPaint's text, for example), missing
 layer images and unknown composite operations open with a warning instead of failing the file.
-Krita's W3C Soft Light (`svg:soft-light`, `krita:soft_light_svg`) and its own Hard Mix open as
-Photoshop's Soft Light and Hard Mix, which differ slightly, also with a warning.
+Krita's W3C Soft Light (`svg:soft-light`, `krita:soft_light_svg`) is Photoshop's Soft Light and
+opens as it. Krita's own Soft Light (`krita:soft_light`, `sqrt` over dark backdrops) and its own
+Hard Mix open as Photoshop's Soft Light and Hard Mix, which differ slightly, with a warning.
 
 ## Limits and safety
 

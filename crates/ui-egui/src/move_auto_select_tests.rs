@@ -146,7 +146,7 @@ fn every_theme_shows_the_auto_select_toggle() {
         PhotocraftApp::setup_context(&h.ctx, theme);
         h.run_steps(4);
         assert!(h.state().ui.tool_options.move_auto_select);
-        h.get_by_label("Auto-Select:").click();
+        h.get_by_role_and_label(egui::accesskit::Role::CheckBox, "Auto-Select:").click();
         h.run_steps(2);
         assert!(!h.state().ui.tool_options.move_auto_select, "{theme:?}: the toggle turns Auto-Select off");
     }

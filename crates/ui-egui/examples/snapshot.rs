@@ -11,6 +11,7 @@
 //! `--safe-gpu` draws the canvas on the CPU path, like the app's `--safe-gpu` launch.
 //! `--hardware-filtering` respects texture samplers; the default predictable renderer forces bilinear filtering.
 //! `--wayland-notice` previews the native file drag-and-drop guidance shown in Wayland sessions.
+//! `--update-notice` previews a newer release without contacting the network.
 //! `--custom-titlebar` draws the Windows/Linux title bar (caption buttons in the top bar).
 //!
 //! `--monitor 1366x768 --window-top 31` simulates the display the window is on (in points) and
@@ -38,6 +39,7 @@ fn main() {
         .unwrap_or((1440.0, 900.0));
     let scale: f32 = arg(&args, "--scale").and_then(|s| s.parse().ok()).unwrap_or(2.0);
     let wayland_notice = args.iter().any(|a| a == "--wayland-notice");
+    let update_notice = args.iter().any(|a| a == "--update-notice");
     let script: Vec<(String, Value)> =
         arg(&args, "--script").map(|s| serde_json::from_str::<Vec<(String, Value)>>(&s).expect("--script must be [[method, params], …]")).unwrap_or_default();
 
@@ -83,6 +85,14 @@ fn main() {
             services.is_wayland = wayland_notice;
             services.xwayland_command = wayland_notice.then(|| "WAYLAND_DISPLAY= photocraft".into());
             let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), services);
+            if update_notice {
+                app.session.updates.status = photocraft_engine::updates_cmds::Status::Available {
+                    release: photocraft_engine::updates_cmds::Release {
+                        version: "99.0.0".into(),
+                        url: "https://github.com/storytold/photocraft/releases/tag/v99.0.0".into(),
+                    },
+                };
+            }
             app.background_jobs = background_jobs;
             app.custom_titlebar = custom_titlebar;
             // `--safe-gpu`: the CPU canvas, as the desktop app's `--safe-gpu` launch.

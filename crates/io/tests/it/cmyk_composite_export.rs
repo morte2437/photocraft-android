@@ -1,6 +1,6 @@
 use photocraft_cms::{Builtin, Intent, Profile, Transform};
 use photocraft_codecs::{ChannelLayout, SampleType as CodecSample, decode};
-use photocraft_color::{ColorMode, PixelFormat, SampleType};
+use photocraft_color::{BlendMode, ColorMode, PixelFormat, SampleType};
 use photocraft_doc::{Document, Layer, LayerContent, LayerMask};
 use photocraft_geom::{Rect, Size};
 use photocraft_io::{ExportOptions, document_to_image, export};
@@ -223,6 +223,9 @@ fn composite_uses_distinctive_document_profile_on_every_worker() {
     let mut doc = document(SampleType::F32, 0.5);
     doc.size = Size::new(64, 64);
     doc.icc_profile = Some(profile.to_bytes());
+    // Hue mixes channels, so the stack is composited in RGB and converted back through the
+    // profile (the empty layer leaves the composite as it is): the path under test.
+    doc.layers[1].blend = BlendMode::Hue;
     let rgb = photocraft_compose::flatten(&doc);
     let transform = Transform::new(Builtin::Srgb.profile(), &profile, Intent::RelativeColorimetric, true).unwrap();
     let fallback = Transform::new(Builtin::Srgb.profile(), Builtin::CoatedCmyk.profile(), Intent::RelativeColorimetric, true).unwrap();

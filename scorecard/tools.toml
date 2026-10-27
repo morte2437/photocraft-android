@@ -52,7 +52,7 @@ id = "TOOL-213-7"
 target = "Live stroke preview for every brush-based retouch tool"
 status = "partial"
 issue = 213
-note = "Live (canvas.rs strokes_live): Brush, Pencil, Eraser, Color Replacement, Blur, Sharpen, Smudge, Dodge, Burn, Sponge, Clone Stamp, Healing Brush, History Brush (#1026, #1040), Pattern Stamp (aligned and Impressionist) and Background Eraser (#3754); the release commits the live stroke's pixels (P32) or, for the retouch tools, the same pixels the live stroke showed (tested equal at 8 and 16 bits). Spot Healing Brush shows the area it heals as a dark overlay and heals on release, as Photoshop does. Not yet live: Mixer Brush (in PR #3627)"
+note = "Live (canvas.rs strokes_live): Brush, Pencil, Mixer Brush, Eraser, Color Replacement, Blur, Sharpen, Smudge, Dodge, Burn, Sponge, Clone Stamp, Healing Brush, History Brush (#1026, #1040), Pattern Stamp (aligned and Impressionist) and Background Eraser (#3754); the release commits the live stroke's pixels (P32) or, for the retouch tools, the same pixels the live stroke showed (tested equal at 8 and 16 bits). Spot Healing Brush shows the area it heals as a dark overlay and heals on release, as Photoshop does. Mixer Brush uses its incremental transaction and commits the displayed result (#3627)"
 
 [[item]]
 id = "TOOL-213-8"
@@ -206,7 +206,7 @@ id = "TOOL-214-14"
 target = "Vanishing Point window: draw and edit planes, paste, clone in perspective"
 status = "partial"
 issue = 214
-note = "filter.vanishingPoint (vp_cmds.rs:15); on-canvas plane editor (vp_ui.rs: Create/Edit Plane, edge nodes, valid/doubtful/invalid grid colours, Grid Size, clipboard pasted onto the plane on OK); clone stamp, marquee and tear-off planes in the window still missing"
+note = "filter.vanishingPoint (vp_cmds.rs:15); on-canvas window (vp_ui.rs: Create/Edit Plane, edge nodes, Ctrl/Cmd-drag tear-off planes with depth and Alt-drag angle, valid/doubtful/invalid grid colours, Grid Size, clipboard pasted onto the plane, Stamp tool cloning in perspective with live preview, all applied on OK as one step); the window's Marquee tool and the Stamp's Heal modes are still missing"
 
 [[item]]
 id = "TOOL-214-15"
@@ -290,7 +290,7 @@ id = "TOOL-1053-1"
 target = "Shape stroke controls: solid/dashed/dotted, custom dash/gap/offset, caps, joins, alignment, miter limit and opacity"
 status = "done"
 issue = 1053
-note = "shape_stroke_ui.rs: shared staged editor, renderer samples, cached Properties canvas preview; existing shape.create/edit/info; serde tool defaults, ui.set shapeStroke; pcraft and vstk style round trips. Gradient fill UI and saved stroke libraries remain open; Line retains filled-bar geometry"
+note = "shape_stroke_ui.rs: shared staged editor, renderer samples, cached Properties canvas preview; existing shape.create/edit/info; serde tool defaults, ui.set shapeStroke; pcraft and vstk style round trips. vector_ui.rs: the Fill and Stroke swatches (options bar and Properties) have a Gradient tab (shape_gradient_ui.rs: Recent row, presets, an editable stops strip with the selected stop's colour/opacity/location, style, angle, scale, reverse, Align with layer) for the next shape and the selected one. Pattern paint UI and saved stroke libraries remain open; Line retains filled-bar geometry"
 
 [[item]]
 id = "TOOL-213-19"
@@ -312,3 +312,10 @@ target = "Color Replacement tool on the toolbar"
 status = "done"
 issue = 1045
 note = "Tool::ColorReplacement in the Brush (B) flyout after the Mixer Brush; Mode/Sampling/Limits/Tolerance/Anti-alias options drive paint.colorReplacement with the foreground colour; live preview (LiveDab with the stroke's finishing dab), one History step; color_replacement_tests.rs"
+
+[[item]]
+id = "TOOL-213-20"
+target = "Art History Brush: Y-group, styles, Area, Tolerance, paints from a history state"
+status = "partial"
+issue = 213
+note = "paint.artHistoryBrush + Tool::ArtHistoryBrush in the Y flyout; 8 of 10 styles (no Tight Curl Long / Loose Curl Long); Area scales spacing, not coverage; rotated-patch look; no Mode/Opacity on the options bar, no pen pressure"

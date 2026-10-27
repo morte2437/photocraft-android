@@ -152,6 +152,28 @@ impl Headless {
         })
     }
 
+    /// Replace a smart object's contents with a file from the read root: the capability-scoped
+    /// `layer.smartObjects.replaceContents`, which takes an ambient `path` and is refused in
+    /// automation (#8061). `params` is the command's own (`layer`).
+    pub fn replace_smart_object(&mut self, index: Option<usize>, path: &str, params: &Value) -> Result<Value, AutomationError> {
+        self.on_doc(index, |this| {
+            let mut opts = params.as_object().cloned().unwrap_or_default();
+            opts.insert("path".into(), json!(path));
+            if matches!(&this.filesystem, Filesystem::TrustedLocal) {
+                return this.command_run("layer.smartObjects.replaceContents", Value::Object(opts));
+            }
+            let bytes = match &this.filesystem {
+                Filesystem::Workspace(workspace) => workspace.read(path)?,
+                _ => {
+                    return Err(AutomationError::BadRequest("automation filesystem access is not granted: read authority is absent".into()));
+                }
+            };
+            let name = Path::new(path).file_name().and_then(|name| name.to_str()).unwrap_or(path);
+            this.sync_jobs();
+            Ok(photocraft_engine::smart_cmds::replace_contents_from_bytes(&mut this.session, &Value::Object(opts), name, bytes)?)
+        })
+    }
+
     /// Export each exported layer of a document as its own file beneath the write root: the
     /// capability-scoped `file.export.layersToFiles`, which takes an ambient `dir` and is
     /// therefore refused in automation (#3216). The bytes come from the command's own core, so
@@ -171,10 +193,16 @@ impl Headless {
                 _ => return Err(AutomationError::BadRequest("automation filesystem access is not granted: write authority is absent".into())),
             };
             let mut outputs = workspace.export_sequence(dir)?;
-            let written = file_cmds::export_layers_with(&this.session, params, |name, bytes| {
+            let report = file_cmds::export_layers_report_with(&this.session, params, |name, bytes| {
                 outputs.write(name, bytes).map_err(|e| photocraft_engine::EngineError::Other(e.to_string()))
             });
-            exported(dir, written, &mut outputs)
+            let (written, skipped) = match report {
+                Ok(report) => (Ok(report.files), report.skipped),
+                Err(error) => (Err(error), Vec::new()),
+            };
+            let mut result = exported(dir, written, &mut outputs)?;
+            result["skipped"] = json!(skipped);
+            Ok(result)
         })
     }
 

@@ -29,6 +29,24 @@ pub(crate) struct OilSpec {
 fn stroke_len(stylization: f32) -> f32 {
     1.5 + stylization.clamp(0.1, 10.0) * 2.0
 }
+
+/// `f32::round` (half away from zero) as an integer, without the `roundf` call `f32::round`
+/// makes on the baseline x86-64 target. The sum is taken in `f64`, where `v ± 0.5` is exact for
+/// every `f32` the cast does not saturate (an `f32` sum is not: `0.49999997 + 0.5` rounds up to
+/// `1.0`), so the result equals `v.round() as i32` for every `f32`, NaN (0) and the saturating
+/// ends included.
+#[inline]
+fn round_i32(v: f32) -> i32 {
+    let v = f64::from(v);
+    (v + 0.5f64.copysign(v)) as i32
+}
+
+/// [`round_i32`] clamped into `0..n`.
+#[inline]
+fn round_index(v: f32, n: usize) -> usize {
+    round_i32(v).clamp(0, n as i32 - 1) as usize
+}
+
 fn tensor_sigma(scale: f32) -> f32 {
     0.8 + scale.clamp(0.1, 10.0) * 0.6
 }
@@ -93,7 +111,7 @@ pub(crate) fn oil_paint(src: &Image, out: Rect, ctx: &Ctx, spec: &OilSpec) -> Ve
     let sample = |x: f32, y: f32, acc: &mut [f32], k: f32| {
         let x = x.clamp(0.0, (ww - 1) as f32);
         let y = y.clamp(0.0, (wh - 1) as f32);
-        let (x0, y0) = (x.floor() as usize, y.floor() as usize);
+        let (x0, y0) = (x as usize, y as usize);
         let (x1, y1) = ((x0 + 1).min(ww - 1), (y0 + 1).min(wh - 1));
         let (ax, ay) = (x - x0 as f32, y - y0 as f32);
         let w00 = (1.0 - ax) * (1.0 - ay) * k;
@@ -119,7 +137,7 @@ pub(crate) fn oil_paint(src: &Image, out: Rect, ctx: &Ctx, spec: &OilSpec) -> Ve
                 let (mut qx, mut qy) = (dx, dy);
                 let (mut px, mut py) = (0.0f32, 0.0f32);
                 for k in 1..=steps {
-                    let ti = (qy.round().clamp(0.0, (wh - 1) as f32) as usize) * ww + qx.round().clamp(0.0, (ww - 1) as f32) as usize;
+                    let ti = round_index(qy, wh) * ww + round_index(qx, ww);
                     let (mut tx, mut ty) = tangent[ti];
                     if k == 1 {
                         tx *= dir;
@@ -135,7 +153,7 @@ pub(crate) fn oil_paint(src: &Image, out: Rect, ctx: &Ctx, spec: &OilSpec) -> Ve
                     let wk = 1.0 - k as f32 / (steps + 1) as f32;
                     sample(qx, qy, &mut acc[..n], wk);
                     wsum += wk;
-                    nsum += wk * hash01(win.x0 + qx.round() as i32, win.y0 + qy.round() as i32, 71, 0);
+                    nsum += wk * hash01(win.x0 + round_i32(qx), win.y0 + round_i32(qy), 71, 0);
                 }
             }
             let o = (ry * rw + rx) * n;
@@ -196,4 +214,60 @@ pub(crate) fn oil_paint(src: &Image, out: Rect, ctx: &Ctx, spec: &OilSpec) -> Ve
         }
     }
     res
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{round_i32, round_index};
+
+    /// The LIC looks up tangents and bristle noise by rounded sample position; the replacements
+    /// for `f32::round` must agree with it over every position a tile can produce, and agree with
+    /// `f32::clamp` at the ends, including non-finite input.
+    #[test]
+    fn rounding_matches_the_standard_library() {
+        let mut v = -40.0f32;
+        while v <= 2100.0 {
+            assert_eq!(round_i32(v), v.round() as i32, "round_i32({v})");
+            for n in [1usize, 2, 33, 256, 2048] {
+                let want = (v.round().clamp(0.0, (n - 1) as f32)) as usize;
+                assert_eq!(round_index(v, n), want, "round_index({v}, {n})");
+            }
+            v += 0.25;
+        }
+        // The binade crossings where an `f32` sum `v + 0.5` rounds up (0.5 - 2^-25), the ties, and
+        // the largest non-integer `f32`.
+        let below_half = f32::from_bits(0x3eff_ffff);
+        for v in [below_half, -below_half, 0.5, -0.5, 1.5, -1.5, 2.5, -2.5, 8_388_607.5, -8_388_607.5, 8_388_608.0, 3.0e9, -3.0e9] {
+            assert_eq!(round_i32(v), v.round() as i32, "round_i32({v:e})");
+            for n in [1usize, 2, 33] {
+                let want = (v.round().clamp(0.0, (n - 1) as f32)) as usize;
+                assert_eq!(round_index(v, n), want, "round_index({v:e}, {n})");
+            }
+        }
+        assert_eq!(round_i32(f32::NAN), f32::NAN.round() as i32);
+        for n in [1usize, 8] {
+            assert_eq!(round_index(f32::NEG_INFINITY, n), (f32::NEG_INFINITY.clamp(0.0, (n - 1) as f32)) as usize);
+            assert_eq!(round_index(f32::INFINITY, n), ((n - 1) as f32) as usize);
+        }
+    }
+
+    /// Every `f32` bit pattern in [-4096, 4096] (both signs, about 2.3e9 values, split across
+    /// threads) rounds exactly like `f32::round`.
+    #[test]
+    fn rounding_matches_the_standard_library_for_every_f32_up_to_4096() {
+        use rayon::prelude::*;
+        let last = 4096.0f32.to_bits();
+        let bad = (0..=last >> 20)
+            .into_par_iter()
+            .filter_map(|hi| {
+                let lo = hi << 20;
+                let hi_end = (lo | 0xf_ffff).min(last);
+                (lo..=hi_end).find_map(|bits| {
+                    let v = f32::from_bits(bits);
+                    [v, -v].into_iter().find(|v| round_i32(*v) != v.round() as i32)
+                })
+            })
+            .min_by(|a, b| a.abs().total_cmp(&b.abs()));
+        assert_eq!(bad, None, "round_i32 differs from f32::round");
+    }
 }

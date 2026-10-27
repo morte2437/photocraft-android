@@ -577,6 +577,82 @@ fn clipping_text_vector_effects_and_floating_selections_are_reported() {
     assert!(w.contains("text layer") && w.contains("vector layer") && w.contains("floating selection"), "{w}");
 }
 
+/// #8857: GIMP's link-layer length omits one u32. Trusting it shifts the hierarchy pointer
+/// by four bytes, even though the cached pixels and every offset in the file are valid.
+#[test]
+fn linked_layers_open_cached_pixels_with_short_or_correct_property_lengths() {
+    for (precision, depth, data) in [
+        (150, SampleType::U8, vec![51, 102, 153, 255]),
+        (250, SampleType::U16, [13107u16, 26214, 39321, 65535].into_iter().flat_map(u16::to_be_bytes).collect()),
+        (600, SampleType::F32, [0.2f32, 0.4, 0.6, 1.0].into_iter().flat_map(f32::to_be_bytes).collect()),
+    ] {
+        for (path, width, height) in [("assets/étiquette.svg", 2000, 1270), ("assets/label.png", 0, 0), ("", 0, 0)] {
+            let mut payload = W { out: Vec::new(), wide: true };
+            payload.u32(1);
+            payload.string(path);
+            payload.u32(width);
+            payload.u32(height);
+            let payload = payload.out;
+            let marker = [48u32.to_be_bytes(), (payload.len() as u32).to_be_bytes()].concat();
+            let mut img = TestImage::rgb8(1, 1);
+            img.version = 25;
+            img.precision = precision;
+            let mut linked = TestLayer::rgba("Linked", 1, 1, data.clone());
+            // Later properties must still be read, including unknown ones skipped by length.
+            linked.props = vec![(48, payload.clone()), (99, vec![1, 2, 3]), (33, 0.375f32.to_be_bytes().to_vec()), (8, 0u32.to_be_bytes().to_vec())];
+            img.layers.push(linked);
+            img.layers.push(TestLayer::rgba("Bottom", 1, 1, data.clone()));
+            for short in [false, true] {
+                let mut bytes = img.write();
+                let at = bytes.windows(marker.len()).position(|w| w == marker).unwrap();
+                if short {
+                    bytes[at + 4..at + 8].copy_from_slice(&((payload.len() - 4) as u32).to_be_bytes());
+                }
+                let r = open(&bytes).unwrap_or_else(|e| panic!("precision {precision}, path {path:?}, short {short}: {e}"));
+                assert!(r.source_read_only);
+                assert_eq!(r.document.depth, depth);
+                assert_eq!(r.document.layers.len(), 2);
+                let linked = layer_at(&r.document.layers, "Linked");
+                assert_eq!(linked.opacity, 0.375);
+                assert!(!linked.visible);
+                for layer in [linked, layer_at(&r.document.layers, "Bottom")] {
+                    for (got, expected) in pixel(&layer, 0, 0).into_iter().zip([0.2, 0.4, 0.6, 1.0]) {
+                        assert!((got - expected).abs() < 1e-5, "precision {precision}: {got} != {expected}");
+                    }
+                }
+                assert!(r.warnings.iter().any(|w| w.contains("is a link layer and opens as pixels")));
+            }
+        }
+    }
+}
+
+#[test]
+fn truncated_and_oversized_link_layer_fields_are_errors() {
+    let mut payload = W { out: Vec::new(), wide: true };
+    payload.u32(1);
+    payload.string("assets/label.svg");
+    payload.u32(2000);
+    payload.u32(1270);
+    let payload = payload.out;
+    let marker = [48u32.to_be_bytes(), (payload.len() as u32).to_be_bytes()].concat();
+    let mut img = TestImage::rgb8(1, 1);
+    img.version = 25;
+    let mut linked = TestLayer::rgba("Linked", 1, 1, vec![51, 102, 153, 255]);
+    linked.props.push((48, payload.clone()));
+    img.layers.push(linked);
+    let bytes = img.write();
+    let start = bytes.windows(marker.len()).position(|w| w == marker).unwrap() + 8;
+    // Cut within the flags, string length, path and either dimension.
+    for end in start..start + payload.len() {
+        assert!(open(&bytes[..end]).is_err(), "truncated at {end}");
+    }
+    for len in [(MAX_STRING + 1) as u32, u32::MAX] {
+        let mut oversized = bytes.clone();
+        oversized[start + 4..start + 8].copy_from_slice(&len.to_be_bytes());
+        assert!(open(&oversized).is_err(), "path length {len}");
+    }
+}
+
 #[test]
 fn version_3_files_use_32_bit_pointers_and_legacy_modes() {
     let mut img = TestImage::rgb8(5, 5);

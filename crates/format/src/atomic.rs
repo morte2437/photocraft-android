@@ -106,7 +106,7 @@ impl AtomicFs for RealFs {
     fn sync_dir(&self, dir: &Path) -> io::Result<()> {
         #[cfg(unix)]
         {
-            sync_file(&std::fs::File::open(dir)?)
+            open_dir_for_sync(dir)?.map_or(Ok(()), |d| sync_file(&d))
         }
         #[cfg(windows)]
         {
@@ -254,12 +254,77 @@ pub fn atomic_write_with_progress(fs: &dyn AtomicFs, retry: RenameRetry, path: &
         let _ = fs.remove(&tmp);
         return Err(rename_error(e, path));
     }
+    // The new bytes are in place, but until the directory is flushed the rename may not survive
+    // a power loss (#4968). Windows fails the save on any failed flush (#7858). Elsewhere a file
+    // system that can't flush directories at all counts as done; any other failure is reported,
+    // so the caller keeps the document unsaved and its recovery data instead of discarding them
+    // on a save that may not last.
     #[cfg(windows)]
     fs.sync_dir(&dir).map_err(|e| publication_error(e, path))?;
-    // Keep the existing Unix policy here; #5420 separately changes its error handling.
     #[cfg(not(windows))]
-    let _ = fs.sync_dir(&dir);
+    dir_synced(fs.sync_dir(&dir)).map_err(|e| unconfirmed_error(e, path))?;
     Ok(())
+}
+
+/// `dir` opened to flush it, or `None` when it can't be opened for that because it has no read
+/// permission (a write-and-search-only folder): no flush can be attempted there, so none failed.
+/// Any other error is returned.
+#[cfg(unix)]
+fn open_dir_for_sync(dir: &Path) -> io::Result<Option<std::fs::File>> {
+    match std::fs::File::open(dir) {
+        Ok(d) => Ok(Some(d)),
+        Err(e) if e.kind() == io::ErrorKind::PermissionDenied => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// `result` of flushing a directory, with "this file system can't flush directories" counted as
+/// success: `EINVAL` (Linux file systems without directory fsync), `ENOTSUP`/`EOPNOTSUPP` and,
+/// on Apple platforms, `ENOTTY`, or [`io::ErrorKind::Unsupported`]. Waiting or retrying won't
+/// change those, and failing every save there would make saving impossible. Any other error is
+/// returned: the flush was attempted and failed.
+#[cfg(not(windows))]
+pub(crate) fn dir_synced(result: io::Result<()>) -> io::Result<()> {
+    match result {
+        Err(e) if dir_sync_unsupported(&e) => Ok(()),
+        other => other,
+    }
+}
+
+#[cfg(not(windows))]
+fn dir_sync_unsupported(e: &io::Error) -> bool {
+    if e.kind() == io::ErrorKind::Unsupported {
+        return true;
+    }
+    // errno values: EINVAL is 22 everywhere; ENOTSUP and EOPNOTSUPP are 95 on Linux and
+    // Android, 45 and 102 on Apple platforms, 45 on the BSDs; ENOTTY is 25. Elsewhere 45 means
+    // something else (illumos: EDEADLK), so only EINVAL and `Unsupported` count there.
+    const EINVAL: i32 = 22;
+    let unsupported: &[i32] = if cfg!(any(target_os = "linux", target_os = "android")) {
+        &[EINVAL, 95]
+    } else if cfg!(target_vendor = "apple") {
+        &[EINVAL, 45, 102, 25]
+    } else if cfg!(any(target_os = "freebsd", target_os = "openbsd", target_os = "netbsd", target_os = "dragonfly")) {
+        &[EINVAL, 45]
+    } else if cfg!(unix) {
+        &[EINVAL]
+    } else {
+        &[]
+    };
+    e.raw_os_error().is_some_and(|code| unsupported.contains(&code))
+}
+
+/// The error for a file that was published but whose directory flush failed: same kind, saying
+/// the file is in place but may not survive a power loss. (Windows reports `publication_error`.)
+#[cfg(not(windows))]
+fn unconfirmed_error(e: io::Error, path: &Path) -> io::Error {
+    context(
+        e,
+        format!(
+            "{} was written, but the folder could not be flushed to disk, so the save may not survive a power loss or crash; save again or to another folder",
+            path.display()
+        ),
+    )
 }
 
 /// Run `rename`, retrying with backoff while it fails with `PermissionDenied` (see

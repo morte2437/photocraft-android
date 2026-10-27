@@ -1,5 +1,8 @@
 use super::*;
 use photocraft_color::{PixelFormat, SampleType};
+mod ext;
+mod mosaic;
+mod selection_mix;
 
 fn fmt(s: SampleType) -> PixelFormat {
     PixelFormat::new(ColorMode::Rgb, s, true)

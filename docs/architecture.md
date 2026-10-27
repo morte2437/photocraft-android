@@ -1,6 +1,6 @@
 # PhotoCraft architecture
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-20 · **Change:** minor (accurate GPU matrix/TRC display conversion; original design plan retained) · **Target:** Adobe Photoshop 2026
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-20 · **Change:** minor (accurate GPU matrix/TRC display conversion; large payloads in the document model are `Arc`-shared, #4535; original design plan retained) · **Target:** Adobe Photoshop 2026
 
 ## Current state (2026-10-10)
 
@@ -53,7 +53,7 @@ This plan sets out:
 2. **Everything is a command.** Each user-visible action has a stable `CommandId` (such as `filter.blur.gaussianBlur`) with typed, serializable parameters. The menu, command palette, shortcuts, recorded actions/macros, CLI, MCP and plugins all dispatch the same commands.
 3. **Data describes the UI; toolkits draw it.** Tools produce *overlay primitives* (lines, handles, marching-ants paths) as data. Filter and adjustment dialogs are generated from *parameter schemas*. A new toolkit implements one renderer for each, not about 150 bespoke dialogs.
 4. **One algorithm, one parameter struct.** Every algorithm has a CPU reference implementation (Rust + rayon, deterministic). Some also get a GPU implementation (WGSL). Both read the same `#[repr(C)]` `bytemuck::Pod` parameter struct. We never keep hand-synced copies of an algorithm in several languages.
-5. **Immutable snapshots, copy-on-write tiles.** Pixel data is stored in `Arc`-shared 256² tiles. Taking a document snapshot is O(layers), which makes undo, background jobs, autosave and UI reads cheap and lock-free.
+5. **Immutable snapshots, copy-on-write tiles.** Pixel data is stored in `Arc`-shared 256² tiles. Taking a document snapshot is O(layers), which makes undo, background jobs, autosave and UI reads cheap and lock-free. Every other large payload in `photocraft-doc` is `Arc`-shared too (the XMP packet, EXIF, raw PSD resources and blocks, a layer's or Duotone's raw PSD data, an unsupported adjustment's bytes), so a snapshot never copies one; a new field that can hold a large payload follows the same rule (#4535).
 6. **Determinism.** The same input gives the same output across CPU and GPU (within tolerance), across thread counts, and between preview and export. Noise is hashed from document coordinates.
 7. **Pure Rust by default.** C/C++ dependencies are allowed only behind Cargo features, in I/O-edge crates (for example an optional LibRaw).
 8. **Clean-room.** We study other editors' *behaviour* only, and we must **not copy proprietary source** (Rust, WGSL, C++ or JS), even where it ships as readable source. Specs come from public format docs (Adobe PSD spec, ISO/ICC), academic papers (PatchMatch, Poisson blending, ARAP) and observed behaviour. Never paste code from another product.
@@ -467,7 +467,7 @@ psd/src/
 
 - **`automation`:** an MCP server built on `rmcp`. Its tool names use underscores (the dotted
   names such as `doc.open` belong to the JSON control protocol, `docs/control-protocol.md`). It exposes:
-  - `session_list`, `doc_open`, `doc_new`, `doc_place` (place from the read root as a Smart Object),
+  - `session_list`, `doc_open`, `doc_new`, `doc_place` (place from the read root as a Smart Object), `doc_replace_smart_object` (replace a Smart Object's contents from the read root),
     `doc_export_layers`, `doc_export_data_sets` (write beneath the write root), `doc_import_data_sets` (a CSV from the read root),
     `doc_save`, `doc_export`, `doc_inspect` (layer tree as JSON), `doc_render_preview` (PNG), `doc_select`, `doc_close`.
   - `command_list`, `command_run` and `command_batch`, generated from the registry; `jobs_list` and `jobs_cancel` for background jobs.
@@ -589,6 +589,7 @@ Each phase ends with a demoable build and green CI on all targets. Phases 8–10
 |---|---|---|
 | 2026-10-21 | minor | Removed references to the deleted `rust-framework-options.md`; dropped the UI toolkit and plug-in items from Open decisions, both recorded as decided |
 | 2026-10-20 | minor | GPU display matrix/shaper path preserves near-black ICC values; complex transforms retain the 3D LUT fallback (#7958) |
+| 2026-10-14 | minor | Principle 5: every large payload in the document model is `Arc`-shared, so snapshots never copy one (#4535) |
 | 2026-10-13 | minor | Workspace size and `#[test]` counts recounted (393k → 539k lines, 5,460 → 8,040 tests); other current-state figures unchanged |
 | 2026-10-10 | minor | Current-state summary and deviations from the plan; status line; broken link to `photoshop-parity.md` repointed to `target-app-parity.md` |
 | 2026-09-30 | major | Design plan v1 |

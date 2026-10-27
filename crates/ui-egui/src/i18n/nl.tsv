@@ -645,6 +645,10 @@
 	Fit Layer(s) on Screen	Laag/lagen passend in scherm
 	Fit Artboard on Screen	Tekengebied passend in scherm
 	100%	100%
+	105%	105%
+	110%	110%
+	115%	115%
+	120%	120%
 	200%	200%
 	Print Size	Afdrukgrootte
 	Pixel Aspect Ratio	Pixelverhouding
@@ -1000,6 +1004,9 @@
 	Create new pattern from the selection	Nieuw patroon maken van de selectie
 	Create new shape from the current path	Nieuwe vorm maken van het huidige pad
 	Create new snapshot	Nieuwe momentopname maken
+	From:	Van:
+	Full Document	Volledig document
+	Merged Layers	Samengevoegde lagen
 	Create new style (from the selected type)	Nieuwe stijl maken (van de geselecteerde tekst)
 	Create new style from the selected layer	Nieuwe stijl maken van de geselecteerde laag
 	Create new tool preset	Nieuwe gereedschapsvoorinstelling maken
@@ -2180,6 +2187,10 @@
 	No path to make a selection from: draw one with the Pen tool or select one in the Paths panel.	Geen pad om een selectie van te maken: teken er een met het pengereedschap of selecteer er een in het paneel Paden.
 	Cancel opening	Openen annuleren
 	Cancelled opening {name}	Openen van {name} geannuleerd
+	Damaged Photoshop document	Beschadigd Photoshop-document
+	The document “{name}” may be damaged.	Het document ‘{name}’ is mogelijk beschadigd.
+	Some layers, pixels or masks could not be read. Do you want to continue opening it?	Sommige lagen, pixels of maskers konden niet worden gelezen. Wilt u doorgaan met openen?
+	If you continue, saving over the original may permanently discard unreadable data. Save a copy to keep the original.	Als u doorgaat, kan opslaan over het origineel onleesbare gegevens definitief verwijderen. Sla een kopie op om het origineel te behouden.
 	The document “{name}” does not have an embedded {mode} profile.	Het document “{name}” heeft geen ingesloten {mode}-profiel.
 	The document “{name}” has an embedded color profile that does not match the current {mode} working space.	Het document “{name}” heeft een ingesloten kleurprofiel dat niet overeenkomt met de huidige {mode}-werkruimte.
 	Working: {working}	Werkruimte: {working}
@@ -3878,6 +3889,8 @@ curves	Smooth	Vloeiend maken
 	Vanishing Point is not active	Verdwijnpunt is niet actief
 	Apply Vanishing Point ({key})	Verdwijnpunt toepassen ({key})
 	Fix the red plane first: its corners must form a convex quad	Herstel eerst het rode vlak: de hoeken moeten een convexe vierhoek vormen
+	Alt-click a plane to set the clone source	Alt-klik op een vlak om de kloonbron in te stellen
+	Too many clone strokes: apply Vanishing Point first	Te veel kloonstreken: pas eerst Verdwijnpunt toe
 # Select and Mask view modes (#1754)
 	Onion Skin	Uienschil
 	Marching Ants	Mierenmars
@@ -3995,6 +4008,30 @@ curves	Smooth	Vloeiend maken
 	Sent to {printer}	Verzonden naar {printer}
 	set in Print Settings…	instellen in de afdrukinstellingen…
 	ICO is limited to 256 × 256 pixels	ICO is beperkt tot 256 × 256 pixels
+	Calibration	Kalibratie
+	Red Primary	Primair rood
+	Green Primary	Primair groen
+	Blue Primary	Primair blauw
+	Write xmp sidecars	XMP-sidecarbestanden schrijven
+	Set the tone sliders from the image	Toonschuifregelaars instellen op basis van de afbeelding
+	Settings from {name}	Instellingen uit {name}
+	Settings from {name}; {count} not supported: {names}	Instellingen uit {name}; {count} niet ondersteund: {names}
+	Could not write {name}: {error}	Kan {name} niet schrijven: {error}
+	Kept {name}: written by another application	{name} behouden: geschreven door een andere toepassing
+	Shadow Tint	Schaduwtint
+# PhotoCraft release checks.
+	Check for Updates…	Controleren op updates…
+	PhotoCraft Updates	PhotoCraft-updates
+	Checking for updates…	Controleren op updates…
+	Open the release page to choose an installer for your system.	Open de releasepagina om een installatieprogramma voor uw systeem te kiezen.
+	Open Download Page	Downloadpagina openen
+	PhotoCraft is up to date.	PhotoCraft is bijgewerkt.
+	Could not check for updates.	Kan niet controleren op updates.
+	Updates have not been checked yet.	Er is nog niet op updates gecontroleerd.
+	Check Again	Opnieuw controleren
+	Automatically Check for Updates	Automatisch op updates controleren
+	Installed version: {version}	Geïnstalleerde versie: {version}
+	PhotoCraft {version} is available.	PhotoCraft {version} is beschikbaar.
 # History panel › History Brush source (#2966)
 	Paints from the History panel's source state	Schildert vanuit de bronstatus van het deelvenster Geschiedenis
 	Sets the source for the history brush	Stelt de bron voor het historiepenseel in
@@ -4123,6 +4160,14 @@ curves	Smooth	Vloeiend maken
 
 # Graphics Adapter preference (#1885)
 	GPU adapter	GPU-adapter
+
+# Styles panel: Import / Export Styles (.asl)
+	Import Styles…	Stijlen importeren…
+	Export Selected Styles…	Geselecteerde stijlen exporteren…
+	Export Styles…	Stijlen exporteren…
+	{file} is not a style library (.asl)	{file} is geen stijlbibliotheek (.asl)
+@plural	Imported {n} style from {file}|Imported {n} styles from {file}	{n} stijl geïmporteerd uit {file}|{n} stijlen geïmporteerd uit {file}
+@plural	Exported {n} style to {file}|Exported {n} styles to {file}	{n} stijl geëxporteerd naar {file}|{n} stijlen geëxporteerd naar {file}
 # Actions: a step dialog holds a suspended recording (#7365)
 	Confirm or cancel the open action step dialog first	Bevestig of annuleer eerst het geopende dialoogvenster van de handelingsstap
 	Pro Medium Gray	Pro middelgrijs
@@ -4131,14 +4176,38 @@ curves	Smooth	Vloeiend maken
 	Pro Light Gray	Pro lichtgrijs
 	Pro Light	Pro licht
 	Resize Windows to Fit	Venstergrootte aanpassen
-
 	EXR	EXR
-
 # Paragraph direction (TYPE-218-2)
 	Automatic paragraph direction	Automatische alinearichting
 	Left-to-right paragraph direction	Alinearichting van links naar rechts
 	Right-to-left paragraph direction	Alinearichting van rechts naar links
 	Not rendered: this adjustment ({key}) is kept as imported.	Niet weergegeven: deze aanpassing ({key}) blijft behouden zoals geïmporteerd.
-
 # Print preview image (#8236)
 	Print preview image	Print preview image
+# Color panel menu: modes, copy commands and colour ramps (#6000)
+	Hue Cube	Kleurtoonkubus
+	Brightness Cube	Helderheidskubus
+	Color Wheel	Kleurenwiel
+	RGB Sliders	RGB-schuifregelaars
+	HSB Sliders	HSB-schuifregelaars
+	CMYK Sliders	CMYK-schuifregelaars
+	Lab Sliders	Lab-schuifregelaars
+	Web Color Sliders	Webkleurschuifregelaars
+	Copy Color as HTML	Kleur kopiëren als HTML
+	Copy Color's Hex Code	Hexadecimale code van kleur kopiëren
+	RGB Spectrum	RGB-spectrum
+	CMYK Spectrum	CMYK-spectrum
+	Grayscale Ramp	Grijswaardenbalk
+	Current Colors	Huidige kleuren
+	Make Ramp Web Safe	Balk beperken tot webkleuren
+# Art History Brush (#213).
+	Art History Brush Tool	Artistiek historiepenseel
+	Tight Short	Strak kort
+	Tight Medium	Strak middel
+	Tight Long	Strak lang
+	Loose Medium	Los middel
+	Loose Long	Los lang
+	Dab	Tik
+	Tight Curl	Strakke krul
+	Loose Curl	Losse krul
+	Stylized dabs from a history state	Gestileerde tikken uit een historiestatus

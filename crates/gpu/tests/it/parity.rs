@@ -57,6 +57,14 @@ fn hdr_adjustments_preserve_range_and_cpu_parity() {
             black: Vec::new(),
             pencil: false,
         },
+        // #7157: an edited curve continues past 0..1 along its end segments (Photoshop's `[[0,0],[255,128]]`).
+        Adjustment::Curves {
+            master: vec![CurvePoint { input: 0.0, output: 0.0 }, CurvePoint { input: 1.0, output: 128.0 / 255.0 }],
+            per_channel: std::array::from_fn(|_| identity.clone()),
+            space: Default::default(),
+            black: Vec::new(),
+            pencil: false,
+        },
         // 32-bit Photoshop rules: unclipped, legacy pivot 127, the mixer's 1/1024 steps and halved constant.
         Adjustment::BrightnessContrast { brightness: 25.0, contrast: 30.0, legacy: true },
         Adjustment::BrightnessContrast { brightness: -20.0, contrast: -30.0, legacy: true },
@@ -65,6 +73,7 @@ fn hdr_adjustments_preserve_range_and_cpu_parity() {
         Adjustment::PhotoFilter { color: [0.97, 0.76, 0.0], density: 0.4, preserve_luminosity: true },
         Adjustment::PhotoFilter { color: [0.2, 0.6, 0.9], density: 0.3, preserve_luminosity: false },
         Adjustment::BlackWhite { weights: [70.0, 20.0, 50.0, 10.0, 90.0, 30.0], tint: Some([0.9, 0.7, 0.5]) },
+        Adjustment::BlackWhite { weights: [40.0, 60.0, 40.0, 60.0, 20.0, 80.0], tint: None },
     ] {
         let mut d = Document::new("HDR adjustments", Size::new(3, 1), ColorMode::Rgb, SampleType::F32);
         let mut layer = Layer::raster("pixels", PixelFormat::RGBA32F);
@@ -955,7 +964,7 @@ fn hard_stop_effects_and_gradient_maps_request_cpu() {
             }
             let paint = FxPaint::Gradient(gradient.clone());
             let effects = [
-                Effect::GradientOverlay { common: FxCommon::new(BlendMode::Normal, 1.0), gradient, dither: false },
+                Effect::GradientOverlay { common: FxCommon::new(BlendMode::Normal, 1.0), gradient, dither: false, interpolation: None },
                 Effect::Stroke(StrokeFx {
                     common: FxCommon::new(BlendMode::Normal, 1.0),
                     size: 1.0,
@@ -1686,6 +1695,7 @@ fn effect_cases() -> Vec<(&'static str, Vec<Effect>)> {
                 common: FxCommon::new(BlendMode::Normal, 0.8),
                 gradient: Gradient { style: GradientStyle::Radial, ..gradient() },
                 dither: false,
+                interpolation: None,
             }],
         ),
         (
@@ -1757,7 +1767,7 @@ fn effect_cases() -> Vec<(&'static str, Vec<Effect>)> {
                     invert: false,
                 }),
                 Effect::ColorOverlay { common: FxCommon::new(BlendMode::SoftLight, 0.5), color: Color::rgb(0.9, 0.3, 0.2) },
-                Effect::GradientOverlay { common: FxCommon::new(BlendMode::Overlay, 0.4), gradient: gradient(), dither: false },
+                Effect::GradientOverlay { common: FxCommon::new(BlendMode::Overlay, 0.4), gradient: gradient(), dither: false, interpolation: None },
                 Effect::Stroke(stroke(3.0, StrokePosition::Outside, FxPaint::Color(Color::rgb(0.0, 0.0, 0.0)))),
             ],
         ),
@@ -1876,6 +1886,24 @@ fn layer_effects_opacity_fill_blend_and_off_canvas() {
         l.fill_opacity = fill;
         d.layers.push(l);
         fx_check(&mut g, &d, &format!("outside stroke at fill {fill}"));
+    }
+    // An Outside stroke has no share beneath fully opaque pixels (#5861): non-Normal layers with
+    // an Outside stroke on a soft blob and a hard square. (Blend Interior Effects as Group, where
+    // that share shows through the layer's mode, is composited on the CPU.)
+    for blend in [BlendMode::Multiply, BlendMode::Screen] {
+        let mut d = fx_doc(80, 80, SampleType::U8);
+        let mut l = blob("ring", d.pixel_format(), 40.0, 40.0, 20.0, [0.9, 0.1, 0.1]);
+        l.effects.items = vec![Effect::Stroke(stroke(4.0, StrokePosition::Outside, FxPaint::Color(Color::rgb(0.1, 0.2, 0.9))))];
+        l.blend = blend;
+        d.layers.push(l);
+        fx_check(&mut g, &d, &format!("outside stroke under a {blend:?} blob"));
+        let mut d = fx_doc(40, 40, SampleType::U8);
+        let mut l = Layer::raster("square", d.pixel_format());
+        l.surface_mut().unwrap().fill_rect(Rect::new(15, 15, 25, 25), &[1.0, 0.0, 0.0, 1.0]);
+        l.effects.items = vec![Effect::Stroke(stroke(3.0, StrokePosition::Outside, FxPaint::Color(Color::rgb(0.0, 0.0, 1.0))))];
+        l.blend = blend;
+        d.layers.push(l);
+        fx_check(&mut g, &d, &format!("outside stroke under a {blend:?} square"));
     }
     // Shapes partly off the canvas (their effects reach back in) and a masked effect layer.
     let mut d = fx_doc(90, 70, SampleType::U8);
@@ -2887,6 +2915,59 @@ fn layer_pages_are_admitted_under_a_zero_budget_and_stay_on_the_gpu() {
     check(&mut g, &d, "after zero-budget renders");
 }
 
+/// A layer page texture the device has no memory for (#6563): the compositor drops the pages
+/// this cell doesn't use and tries again, then submits, waits and runs the cell once more, and
+/// only then ends this refresh on the CPU. The device stays healthy and the next refresh is back
+/// on the GPU. The test hook makes the next `n` page textures fail as out of memory.
+#[test]
+fn a_layer_page_out_of_memory_retries_then_ends_only_that_refresh_on_the_cpu() {
+    let Some(mut g) = gpu() else { return };
+    let mut d = base_doc(600, 500);
+    d.layers.push(noise_layer("mid", PixelFormat::RGBA8, Rect::new(-20, 10, 590, 480), 71, 0.0));
+    let mut top = noise_layer("top", PixelFormat::RGBA8, Rect::new(30, -15, 620, 510), 72, 0.2);
+    top.blend = BlendMode::Multiply;
+    d.layers.push(top);
+    g.paged.set_composite_cache_budget(0);
+    let cpu = photocraft_compose::flatten(&d);
+    let encode = |g: &mut Gpu, d: &Document| {
+        let mut encoder = g.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        g.paged.encode(&g.device, &g.queue, &mut encoder, d, d.bounds(), &mut |_, _| {})
+    };
+    let render = |g: &mut Gpu, d: &Document| photocraft_gpu::render_to_vec_stats(&mut g.paged, &g.device, &g.queue, d, d.bounds());
+    let matches = |out: &[[f32; 4]], what: &str| {
+        let worst = worst_diff(&cpu.px, out);
+        assert!(worst.0 <= TOL, "{what}: max diff {:.2}/255 at {}", worst.0 * 255.0, worst.1);
+    };
+    // Every case starts with no pages, so the first page texture is the one that fails.
+    let fresh = |g: &mut Gpu, d: &Document, n: u32| {
+        g.paged.forget_doc(d.id);
+        g.paged.fail_layer_allocs(n);
+    };
+
+    // One failure: the second try right away succeeds (`encode` can't submit, so this is the
+    // only retry it has).
+    fresh(&mut g, &d, 1);
+    encode(&mut g, &d).unwrap_or_else(|e| panic!("one failed page texture is retried at once: {}", e.0));
+    // Two: both tries fail, and `encode` gives the refresh to the CPU.
+    fresh(&mut g, &d, 2);
+    let e = encode(&mut g, &d).expect_err("encode can't submit to free memory");
+    assert_eq!(e.0, photocraft_gpu::OVER_BUDGET);
+    assert!(g.paged.fault().is_none(), "out of memory for a page doesn't lose the device");
+    // `render` submits, waits and runs the cell once more, which then succeeds.
+    fresh(&mut g, &d, 2);
+    let (out, s) = render(&mut g, &d).unwrap_or_else(|e| panic!("render retries after submitting: {}", e.0));
+    assert!(s.flushes > 0, "{s:?}");
+    matches(&out, "after the submit-and-retry");
+    // Four: the retry after the submit fails as well, so this refresh goes to the CPU...
+    fresh(&mut g, &d, 4);
+    let e = render(&mut g, &d).expect_err("every try failed");
+    assert_eq!(e.0, photocraft_gpu::OVER_BUDGET);
+    assert!(g.paged.fault().is_none(), "out of memory for a page doesn't lose the device");
+    // ...and the next one is back on the GPU.
+    let (out, _) = render(&mut g, &d).unwrap_or_else(|e| panic!("the refresh after an out-of-memory one is on the GPU: {}", e.0));
+    matches(&out, "the refresh after the CPU one");
+}
+
 #[test]
 fn the_focused_view_stays_resident_after_a_full_refresh() {
     let _gamma = TEXT_GAMMA.lock().unwrap_or_else(|e| e.into_inner());
@@ -2914,6 +2995,45 @@ fn the_focused_view_stays_resident_after_a_full_refresh() {
         let cpu = photocraft_compose::render(&d, view);
         assert!(worst_diff(&cpu.px, &out).0 <= TOL);
     }
+}
+
+#[test]
+fn layer_pages_that_just_miss_borrow_the_effect_map_share() {
+    let _gamma = TEXT_GAMMA.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(g) = gpu() else { return };
+    let d = big_doc();
+    let mut comp = Compositor::try_new_with_format(&g.device, wgpu::TextureFormat::Rgba32Float).unwrap();
+    comp.set_texture_limit(PAGED_LIMIT);
+    let need = comp.working_set(&d, d.bounds());
+    // Pages get three quarters of the budget and effect maps an eighth: at 5/4 of the need the
+    // pages' own share misses by about 6 %, which the effect-map share covers (#5973, P60).
+    let budget = need / 4 * 5;
+    comp.set_memory_budget(budget);
+    let own = comp.resident_budget();
+    assert!(own < need && !comp.fits_budget(&d, d.bounds()));
+    assert_eq!(comp.fit_layers(need, true), need, "lends exactly the shortfall");
+    assert_eq!(comp.memory_budget(), budget, "the total stays");
+    comp.set_memory_budget(budget);
+    assert_eq!(comp.resident_budget(), need, "the loan holds across the budget set before every refresh");
+    assert_eq!(comp.fit_layers(need / 2, false), need, "a partial refresh doesn't shrink it");
+    photocraft_gpu::render_to_vec(&mut comp, &g.device, &g.queue, &d, d.bounds()).unwrap();
+    let (out, s) = photocraft_gpu::render_to_vec_stats(&mut comp, &g.device, &g.queue, &d, d.bounds()).unwrap();
+    // Every page stays resident; effect maps may be evicted and rebuilt, that's the loan.
+    assert_eq!(s.tiles_uploaded, 0, "{s:?}");
+    assert!(worst_diff(&photocraft_compose::render(&d, d.bounds()).px, &out).0 <= TOL);
+    // A need the effect-map share can't cover lends nothing (it would only evict maps), and a
+    // smaller need gives the loan back.
+    assert_eq!(comp.fit_layers(budget, true), own);
+    comp.fit_layers(need, true);
+    assert_eq!(comp.fit_layers(own, true), own);
+    assert_eq!(comp.memory_budget(), budget);
+    // An exact resident budget returns the loan and lends nothing until the next memory budget.
+    comp.fit_layers(need, true);
+    comp.set_resident_budget(own);
+    assert_eq!(comp.memory_budget(), budget, "the loan went back to the effect maps");
+    assert_eq!(comp.fit_layers(need, true), own, "an exact budget stays exact");
+    comp.set_memory_budget(budget);
+    assert_eq!(comp.resident_budget(), need, "the next memory budget lends again");
 }
 
 // A pass-through group holding an adjustment renders isolated when layers clip to it, on the GPU

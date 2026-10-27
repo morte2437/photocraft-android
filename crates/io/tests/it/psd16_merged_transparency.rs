@@ -43,7 +43,7 @@ fn resave_keeps_a_name_marked_merged_transparency() {
             // transparency named in the alpha channel names.
             let mut ps = ours.clone();
             ps.layer_info.as_mut().expect("layers").merged_alpha = false;
-            ps.global_blocks.retain(|b| !matches!(&b.key, b"Mtrn" | b"Mt16" | b"Mt32"));
+            ps.global_blocks.retain(|b| !b.is_merged_transparency_marker());
             assert!(!ps.merged_has_alpha(), "{case}: nothing marks it yet");
             let name: Vec<u8> = [0u8, 0, 0, 13].into_iter().chain("Transparency\0".encode_utf16().flat_map(u16::to_be_bytes)).collect();
             ps.resources.retain(|r| !matches!(r.id, 1006 | 1045));

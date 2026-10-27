@@ -5,7 +5,12 @@ use photocraft_ui_egui::{PhotocraftApp, camera_raw_ui, control, i18n, theme::The
 use serde_json::json;
 
 #[test]
-fn all_seven_languages_render_camera_raw_and_switch_without_resetting_view_or_filter() {
+fn all_registered_languages_render_camera_raw_and_switch_without_resetting_view_or_filter() {
+    // On Linux some scripts arrive through the background Fontconfig lookup. Kittest's strict
+    // missing-glyph policy must not race that scan: wait for it exactly as the i18n live tests do.
+    #[cfg(target_os = "linux")]
+    assert!(photocraft_ui_egui::cjk_fonts::wait_for_fontconfig_cjk_scan(), "Fontconfig CJK lookup did not finish within 10 seconds");
+    assert_required_camera_raw_fonts();
     let _gpu = photocraft_testkit::gpu_lock();
     for lang in i18n::Lang::all() {
         let gpu = std::env::var_os("PHOTOCRAFT_LOCALE_SNAPSHOTS").is_some();
@@ -28,27 +33,29 @@ fn all_seven_languages_render_camera_raw_and_switch_without_resetting_view_or_fi
         let tr = |s| i18n::tr_ctx(lang, "cameraRaw", s);
         let before = control::inspect(h.state(), &ctx)["cameraRaw"].clone();
         for section in ["Light", "Color", "Effects", "Curve", "Color Mixer", "Color Grading", "Detail"] {
-            assert!(h.query_by_role_and_label(Role::Button, tr(section)).is_some(), "{}: {section}", lang.code());
+            // egui 0.37 exposes a CollapsingHeader as a DisclosureTriangle, not a Button.
+            assert!(h.query_by_role_and_label(Role::DisclosureTriangle, tr(section)).is_some(), "{}: {section}", lang.code());
         }
-        assert!(h.query_by_label(tr("Blacks")).is_some());
-        h.get_by_role_and_label(Role::Button, tr("Light")).click();
+        assert!(h.query_by_role_and_label(Role::Slider, tr("Blacks")).is_some());
+        h.get_by_role_and_label(Role::DisclosureTriangle, tr("Light")).click();
         h.run_steps(12);
-        h.get_by_role_and_label(Role::Button, tr("Color")).click();
+        h.get_by_role_and_label(Role::DisclosureTriangle, tr("Color")).click();
         h.run_steps(12);
-        for label in ["White Balance: As Shot", "Temperature", "Tint", "Vibrance", "Saturation"] {
-            assert!(h.query_by_label(tr(label)).is_some(), "{}: {label}", lang.code());
+        assert!(h.query_by_role_and_label(Role::Label, tr("White Balance: As Shot")).is_some(), "{}: White Balance", lang.code());
+        for label in ["Temperature", "Tint", "Vibrance", "Saturation"] {
+            assert!(h.query_by_role_and_label(Role::Slider, tr(label)).is_some(), "{}: {label}", lang.code());
         }
-        h.get_by_role_and_label(Role::Button, tr("Color")).click();
+        h.get_by_role_and_label(Role::DisclosureTriangle, tr("Color")).click();
         h.run_steps(12);
-        h.get_by_role_and_label(Role::Button, tr("Color Mixer")).click();
+        h.get_by_role_and_label(Role::DisclosureTriangle, tr("Color Mixer")).click();
         h.run_steps(12);
         for tab in ["Hue", "Saturation", "Luminance"] {
-            assert!(h.get_by_label(tr(tab)).rect().right() <= 1426.0, "{}: mixer tabs overflow the panel", lang.code());
+            assert!(h.get_by_role_and_label(Role::Button, tr(tab)).rect().right() <= 1426.0, "{}: mixer tabs overflow the panel", lang.code());
         }
         for band in ["Red", "Orange", "Yellow", "Green", "Aqua", "Blue", "Purple", "Magenta"] {
-            assert!(h.query_by_label(tr(band)).is_some(), "{}: {band}", lang.code());
+            assert!(h.query_by_role_and_label(Role::Slider, tr(band)).is_some(), "{}: {band}", lang.code());
         }
-        h.get_by_role_and_label(Role::Button, tr("Color Mixer")).click();
+        h.get_by_role_and_label(Role::DisclosureTriangle, tr("Color Mixer")).click();
         h.run_steps(12);
         for (section, labels) in [
             ("Effects", vec!["Texture", "Clarity", "Dehaze", "Vignetting", "Grain", "Roughness"]),
@@ -56,16 +63,16 @@ fn all_seven_languages_render_camera_raw_and_switch_without_resetting_view_or_fi
             ("Color Grading", vec!["Midtones", "Global", "Hue", "Saturation", "Luminance", "Blending", "Balance"]),
             ("Detail", vec!["Sharpening", "Masking", "Noise Reduction", "Luminance Detail", "Color Detail"]),
         ] {
-            h.get_by_role_and_label(Role::Button, tr(section)).click();
+            h.get_by_role_and_label(Role::DisclosureTriangle, tr(section)).click();
             h.run_steps(12);
             for label in labels {
                 assert!(h.query_all_by_label(tr(label)).next().is_some(), "{}: {section}/{label}", lang.code());
             }
-            // Detail is also the sharpening slider label; target the section button.
-            h.get_by_role_and_label(Role::Button, tr(section)).click();
+            // Detail is also the sharpening slider label; target the section disclosure.
+            h.get_by_role_and_label(Role::DisclosureTriangle, tr(section)).click();
             h.run_steps(12);
         }
-        h.get_by_role_and_label(Role::Button, tr("Color Mixer")).click();
+        h.get_by_role_and_label(Role::DisclosureTriangle, tr("Color Mixer")).click();
         h.run_steps(12);
         let graph = h.get_by_label(tr("Tone Histogram")).rect();
         h.event(egui::Event::PointerMoved(graph.center()));
@@ -98,11 +105,29 @@ fn all_seven_languages_render_camera_raw_and_switch_without_resetting_view_or_fi
         // Changing labels must keep the same collapse IDs and open mixer, without an image edit.
         h.state_mut().session.prefs.edit(|p| p.interface.language = "en".into());
         h.run_steps(3);
-        assert!(h.query_by_label("Aqua").is_some(), "{} → en: preserve the open section", lang.code());
+        assert!(h.query_by_role_and_label(Role::Slider, "Aqua").is_some(), "{} → en: preserve the open section", lang.code());
         assert!(h.query_by_label("Exposure").is_none(), "{} → en: Light stays collapsed", lang.code());
         let after = control::inspect(h.state(), &ctx)["cameraRaw"].clone();
         assert_eq!(after["params"], before["params"]);
         assert_eq!(after["previewRevision"], before["previewRevision"]);
         assert_eq!(after["histogram"], before["histogram"]);
+    }
+}
+
+/// Check central font fixtures independently of the language-switching UI assertions.
+fn assert_required_camera_raw_fonts() {
+    // Required central-font acceptance must not pass only because the host supplies Hindi,
+    // or because a Windows runner happens to have Japanese fonts: every non-Latin script this
+    // test renders comes from a real face in the central manifest. The all-language loop then
+    // checks the actual translated labels under egui_kittest's strict missing-glyph policy.
+    if std::env::var_os("CRAFT_FONTS_REQUIRED").is_some() {
+        for (family, script) in [("BIZ UDPGothic", "Jpan"), ("Noto Sans CJK SC", "Hans"), ("NanumGothic", "Kore"), ("Noto Sans Devanagari", "Deva")] {
+            let faces: Vec<_> = photocraft_text::craft_fonts::CRAFT_FONTS
+                .iter()
+                .filter(|f| f.family == family && f.style == "Regular" && f.scripts.contains(&script))
+                .collect();
+            assert_eq!(faces.len(), 1, "the central default manifest supplies one {family} {script} Regular face");
+            assert!(!faces[0].bytes.is_empty(), "{family} {script} has an empty face");
+        }
     }
 }

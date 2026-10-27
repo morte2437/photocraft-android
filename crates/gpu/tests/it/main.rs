@@ -4,8 +4,10 @@
 /// creates a device takes this lock and holds it until the device is dropped.
 static GPU_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+mod camera_raw;
 mod device_loss;
 mod parity;
+mod pipeline_errors;
 mod timing;
 mod uniform_limits;
 mod vector_mask;

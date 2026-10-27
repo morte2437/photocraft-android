@@ -324,33 +324,114 @@ pub fn paste(scene: &Scene, i: usize, src: &Surface, src_rect: Rect, at: [f64; 2
     Ok(Some(out))
 }
 
+/// The fixed frame of one clone stroke: the source and destination planes, the source offset in
+/// plane-metric units and the brush radius, all set at the stroke's anchor (its first dab).
+struct CloneFrame {
+    hs: Homography,
+    ls: (f64, f64),
+    hd: Homography,
+    hd_inv: Homography,
+    ld: (f64, f64),
+    offset: [f64; 2],
+    r_m: f64,
+}
+
+impl CloneFrame {
+    fn new(scene: &Scene, source: [f64; 2], anchor: [f64; 2], size: f64) -> Option<CloneFrame> {
+        let (ps, pd) = (scene.plane_at(source)?, scene.plane_at(anchor)?);
+        let ((hs, lus, lvs), (hd, lud, lvd)) = (scene.frame(ps)?, scene.frame(pd)?);
+        let (hs_inv, hd_inv) = (hs.inverse()?, hd.inverse()?);
+        let ms = metric(&hs_inv, (lus, lvs), source);
+        let md0 = metric(&hd_inv, (lud, lvd), anchor);
+        // Brush radius in metric units (from the image size at the anchor).
+        let probe = metric(&hd_inv, (lud, lvd), [anchor[0] + size / 2.0, anchor[1]]);
+        let r_m = ((probe[0] - md0[0]).hypot(probe[1] - md0[1])).max(1e-9);
+        let offset = [ms[0] - md0[0], ms[1] - md0[1]];
+        (offset.iter().all(|v| v.is_finite()) && r_m.is_finite()).then_some(CloneFrame { hs, ls: (lus, lvs), hd, hd_inv, ld: (lud, lvd), offset, r_m })
+    }
+
+    /// The source point (image px) that destination `p` copies from.
+    fn source_of(&self, p: [f64; 2]) -> [f64; 2] {
+        let m = metric(&self.hd_inv, self.ld, p);
+        let (x, y) = self.hs.apply((m[0] + self.offset[0]) / self.ls.0, (m[1] + self.offset[1]) / self.ls.1);
+        [x, y]
+    }
+}
+
+/// Image point → plane-metric coordinates through the plane's inverse homography.
+fn metric(inv: &Homography, l: (f64, f64), p: [f64; 2]) -> [f64; 2] {
+    let (u, v) = inv.apply(p[0], p[1]);
+    [u * l.0, v * l.1]
+}
+
 /// Perspective clone stamp: one stroke of dabs at image points `points` on the destination
 /// plane, copying from `source` (image px) with the offset fixed in plane-metric units at the
 /// first dab. `size` is the brush diameter in px at the first dab; `hardness` 0..=1.
 pub fn clone_stroke(scene: &Scene, surf: &mut Surface, source: [f64; 2], points: &[[f64; 2]], size: f64, hardness: f64, opacity: f32) -> usize {
     let Some(first) = points.first() else { return 0 };
-    let (Some(ps), Some(pd)) = (scene.plane_at(source), scene.plane_at(*first)) else { return 0 };
-    let (Some((hs, lus, lvs)), Some((hd, lud, lvd))) = (scene.frame(ps), scene.frame(pd)) else { return 0 };
-    let (Some(hs_inv), Some(hd_inv)) = (hs.inverse(), hd.inverse()) else { return 0 };
-    let metric = |inv: &Homography, lu: f64, lv: f64, p: [f64; 2]| {
-        let (u, v) = inv.apply(p[0], p[1]);
-        [u * lu, v * lv]
-    };
-    let ms = metric(&hs_inv, lus, lvs, source);
-    let md0 = metric(&hd_inv, lud, lvd, *first);
-    let offset = [ms[0] - md0[0], ms[1] - md0[1]];
-    // Brush radius in metric units (from the image size at the first dab).
-    let probe = metric(&hd_inv, lud, lvd, [first[0] + size / 2.0, first[1]]);
-    let r_m = ((probe[0] - md0[0]).hypot(probe[1] - md0[1])).max(1e-9);
+    clone_dabs(scene, surf, source, *first, points, size, hardness, opacity, None).0
+}
+
+/// Where a clone stroke that starts at `anchor` copying from `source` samples for destination
+/// `p`: the same plane-metric offset. A live preview paints a stroke in pieces with it, and
+/// Aligned strokes keep the first stroke's offset. `None` when `source` or `anchor` is off the
+/// planes.
+pub fn clone_source(scene: &Scene, source: [f64; 2], anchor: [f64; 2], p: [f64; 2]) -> Option<[f64; 2]> {
+    let s = CloneFrame::new(scene, source, anchor, 1.0)?.source_of(p);
+    s.iter().all(|v| v.is_finite()).then_some(s)
+}
+
+/// [`clone_stroke`]'s dabs at `points` for a stroke anchored at `anchor` (its first dab, which
+/// fixes the offset and the brush's metric size). Samples a snapshot taken at this call.
+/// For incremental painting use [`clone_dabs_from`] with one snapshot per stroke.
+/// With `clip`, every dab is cut to it before any read or write (a document passes its canvas,
+/// so far off-canvas points allocate no tiles). Returns the dabs painted and the area they changed.
+#[allow(clippy::too_many_arguments)]
+pub fn clone_dabs(
+    scene: &Scene,
+    surf: &mut Surface,
+    source: [f64; 2],
+    anchor: [f64; 2],
+    points: &[[f64; 2]],
+    size: f64,
+    hardness: f64,
+    opacity: f32,
+    clip: Option<Rect>,
+) -> (usize, Rect) {
     let src_copy = surf.clone();
+    clone_dabs_from(scene, surf, &src_copy, source, anchor, points, size, hardness, opacity, clip)
+}
+
+/// Paint a batch of one stroke using the same immutable source snapshot for every batch.
+/// Source and destination must have the same pixel format; otherwise no dabs are painted.
+/// `clip` as in [`clone_dabs`].
+#[allow(clippy::too_many_arguments)]
+pub fn clone_dabs_from(
+    scene: &Scene,
+    surf: &mut Surface,
+    src_copy: &Surface,
+    source: [f64; 2],
+    anchor: [f64; 2],
+    points: &[[f64; 2]],
+    size: f64,
+    hardness: f64,
+    opacity: f32,
+    clip: Option<Rect>,
+) -> (usize, Rect) {
+    if surf.format() != src_copy.format() {
+        return (0, Rect::EMPTY);
+    }
+    let Some(f) = CloneFrame::new(scene, source, anchor, size) else { return (0, Rect::EMPTY) };
+    let CloneFrame { hs, ls: (lus, lvs), hd, hd_inv, ld: (lud, lvd), offset, r_m } = f;
     let fmt = surf.format();
     let n = fmt.channels();
     // Scratch for `sample`: the dab's source pixels, the four bilinear corners, the result.
     let mut win = Window { area: Rect::new(0, 0, 0, 0), data: Vec::new() };
     let (mut corners, mut s) = (vec![0.0f32; 4 * n], vec![0.0f32; n]);
     let mut dabs = 0;
+    let mut changed_area = Rect::EMPTY;
     for p in points {
-        let mc = metric(&hd_inv, lud, lvd, *p);
+        let mc = metric(&hd_inv, (lud, lvd), *p);
         // Image-space footprint: map a metric circle's bounding points.
         let footprint = |h: &Homography, lu: f64, lv: f64, c: [f64; 2]| {
             let mut bb = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
@@ -359,10 +440,17 @@ pub fn clone_stroke(scene: &Scene, surf: &mut Surface, source: [f64; 2], points:
                 let (x, y) = h.apply((c[0] + r_m * a.cos()) / lu, (c[1] + r_m * a.sin()) / lv);
                 bb = [bb[0].min(x), bb[1].min(y), bb[2].max(x), bb[3].max(y)];
             }
+            if bb.iter().any(|v| !v.is_finite()) {
+                return Rect::EMPTY;
+            }
             Rect::new(bb[0].floor() as i32, bb[1].floor() as i32, (bb[2].ceil() as i32).saturating_add(1), (bb[3].ceil() as i32).saturating_add(1))
         };
         let area = footprint(&hd, lud, lvd, mc);
         if area.is_empty() || area.width() > 4096 || area.height() > 4096 {
+            continue;
+        }
+        let area = clip.map_or(area, |c| area.intersect(&c));
+        if area.is_empty() {
             continue;
         }
         // The source footprint, read once; `sample` reads any pixel outside it from the surface.
@@ -385,9 +473,9 @@ pub fn clone_stroke(scene: &Scene, surf: &mut Surface, source: [f64; 2], points:
         let mut changed = false;
         for (i, px) in data.chunks_exact_mut(n).enumerate() {
             let (x, y) = (area.x0 as f64 + (i % w) as f64 + 0.5, area.y0 as f64 + (i / w) as f64 + 0.5);
-            let m = metric(&hd_inv, lud, lvd, [x, y]);
+            let m = metric(&hd_inv, (lud, lvd), [x, y]);
             let d = (m[0] - mc[0]).hypot(m[1] - mc[1]) / r_m;
-            if d >= 1.0 {
+            if d >= 1.0 || d.is_nan() {
                 continue;
             }
             let hard = hardness.clamp(0.0, 0.99);
@@ -396,7 +484,7 @@ pub fn clone_stroke(scene: &Scene, surf: &mut Surface, source: [f64; 2], points:
             // Source pixel at the same metric offset.
             let sm = [m[0] + offset[0], m[1] + offset[1]];
             let (sx, sy) = hs.apply(sm[0] / lus, sm[1] / lvs);
-            sample(&src_copy, &win, sx - 0.5, sy - 0.5, &mut corners, &mut s);
+            sample(src_copy, &win, sx - 0.5, sy - 0.5, &mut corners, &mut s);
             for c in 0..n {
                 px[c] += (s[c] - px[c]) * k;
             }
@@ -405,9 +493,10 @@ pub fn clone_stroke(scene: &Scene, surf: &mut Surface, source: [f64; 2], points:
         if changed {
             surf.write_region(area, &data);
             dabs += 1;
+            changed_area = if changed_area.is_empty() { area } else { changed_area.union(&area) };
         }
     }
-    dabs
+    (dabs, changed_area)
 }
 
 /// Pixels of `area` read from the source surface (`read_region` layout).
@@ -421,6 +510,10 @@ struct Window {
 /// read from `s`.
 fn sample(s: &Surface, win: &Window, x: f64, y: f64, corners: &mut Vec<f32>, out: &mut [f32]) {
     let n = out.len();
+    if !x.is_finite() || !y.is_finite() {
+        out.fill(0.0);
+        return;
+    }
     let (x0, y0) = (x.floor() as i32, y.floor() as i32);
     let (tx, ty) = ((x - x0 as f64) as f32, (y - y0 as f64) as f32);
     let (x1, y1) = (x0.saturating_add(1), y0.saturating_add(1));
@@ -537,6 +630,42 @@ mod tests {
         let n = clone_stroke(&sc, &mut s, [sx, sy], &[[dx, dy]], 10.0, 0.8, 1.0);
         assert_eq!(n, 1);
         assert!(s.rgba(dx as i32, dy as i32)[0] > 0.8, "{:?}", s.rgba(dx as i32, dy as i32));
+        // The stroke's anchor copies from the source itself.
+        let back = clone_source(&sc, [sx, sy], [dx, dy], [dx, dy]).unwrap();
+        assert!((back[0] - sx).abs() < 1e-6 && (back[1] - sy).abs() < 1e-6, "{back:?}");
+    }
+    #[test]
+    fn incremental_clone_uses_one_source_snapshot_per_stroke() {
+        let sc = Scene::new(VpPlane { corners: [[0.0, 0.0], [100.0, 0.0], [100.0, 100.0], [0.0, 100.0]] }, [50.0, 50.0], None, 800.0);
+        for fmt in [PixelFormat::RGBA8, PixelFormat::RGBA16, PixelFormat::RGBA32F] {
+            let mut original = Surface::new(fmt);
+            for x in 0..100 {
+                original.fill_rect(Rect::new(x, 0, x + 1, 100), &[x as f32 / 100.0, (x % 7) as f32 / 6.0, 0.3, 1.0]);
+            }
+            let points = [[40.0, 50.0], [44.0, 50.0], [48.0, 50.0], [52.0, 50.0]];
+            let mut whole = original.clone();
+            assert_eq!(clone_stroke(&sc, &mut whole, [36.0, 50.0], &points, 12.0, 0.8, 1.0), 4);
+            let mut pieces = original.clone();
+            for part in points.chunks(2) {
+                clone_dabs_from(&sc, &mut pieces, &original, [36.0, 50.0], points[0], part, 12.0, 0.8, 1.0, None);
+            }
+            assert_eq!(whole.read_region(Rect::new(0, 0, 100, 100)), pieces.read_region(Rect::new(0, 0, 100, 100)));
+        }
+    }
+
+    /// A clip cuts every dab before it reads or writes: dabs far outside it allocate no tiles.
+    #[test]
+    fn clipped_clone_allocates_no_tiles_outside_the_clip() {
+        let sc = Scene::new(VpPlane { corners: [[0.0, 0.0], [100.0, 0.0], [100.0, 100.0], [0.0, 100.0]] }, [50.0, 50.0], None, 800.0);
+        let clip = Rect::new(0, 0, 100, 100);
+        let mut s = Surface::new(PixelFormat::RGBA8);
+        s.fill_rect(clip, &[0.5, 0.5, 0.5, 1.0]);
+        let tiles = s.tiles().count();
+        let points = [[50.0, 50.0], [-40.0, 50.0], [5000.0, 5000.0], [-90_000.0, 70_000.0]];
+        let (dabs, area) = clone_dabs(&sc, &mut s, [40.0, 50.0], points[0], &points, 20.0, 0.8, 1.0, Some(clip));
+        assert_eq!(dabs, 1);
+        assert!(clip.contains_rect(&area), "{area:?}");
+        assert_eq!(s.tiles().count(), tiles);
     }
 
     #[test]

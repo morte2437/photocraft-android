@@ -49,7 +49,7 @@ let out = encode(&img, Format::Tiff, &EncodeOptions::default())?;
 | DPX | yes | yes | U8, U16 (10/12-bit code values read and written exactly through U16) | Gray, RGB, RGBA | yes | no | no | no | no | DPX header fields only (creator, project, copyright, creation time, transfer, colorimetric, frame position, frame rate, time code) | no | built in |
 | Cineon | yes | yes | U16 (10-bit code values read and written exactly through U16) | Gray, RGB | no | no | no | no | no | no | no | built in |
 | DICOM | yes | **no** | U8, U16 | Gray, RGB | no | no | no | no | no | no | n/a | built in |
-| Amiga IFF (ILBM/PBM) | yes | **no** | U8 | RGB, RGBA | yes | no | no | no | no | no | n/a | built in |
+| Amiga IFF (ILBM/PBM) | yes | yes (24-bit ILBM) | U8 | RGB, RGBA | yes (1-bit mask plane on write) | no | no | no | no | no | no | built in |
 | AVIF | **no** | only with feature `avif` | U8 | RGB, RGBA | yes | no | no | no | no | no | yes | `image` + `ravif` |
 | HEIF/HEIC | with feature `heif` | **no** | U8, U16 (10/12-bit decodes to U16) | RGB, RGBA | yes (auxiliary alpha) | yes (`colr` prof) | yes | yes | no | no | n/a | `heic-rs` |
 
@@ -106,6 +106,9 @@ embedded table (and a PNG's transparent entry) so `photocraft-io` can open them 
   give `DecodeWarning::MoreElements`; the image orientation is applied on import. Writing is
   big-endian, one unencoded element, at `EncodeOptions::dpx_bits` (8/10/12/16; by default 8 for
   U8 and 16 otherwise), packing 1 for 10 and 12 bits; gray with alpha is written as luma.
+  `FidelityWarning::BitsReduced` reports a 10- or 12-bit save (and every Cineon save) that drops
+  precision: always for float samples, for U16 ones unless they are already code values at that
+  depth.
   Other descriptors, signed or run-length-encoded data and other bit depths return
   `CodecError::Unsupported` naming the field.
 
@@ -131,12 +134,17 @@ embedded table (and a PNG's transparent entry) so `photocraft-io` can open them 
   interpretations return `Unsupported`/`Malformed`. There is no DICOM writer
   (`ASYMMETRIC_EXCEPTIONS`).
 
-* **Amiga IFF (read-only).** `FORM ... ILBM` stores interleaved 1–8 bitplanes;
+* **Amiga IFF.** `FORM ... ILBM` stores interleaved 1–8 bitplanes;
   `FORM ... PBM ` stores 8-bit chunky palette indices with even-padded rows. Both support
   stored and ByteRun1 compression, a `CMAP` palette (grey ramp when absent, black for missing
-  entries), and transparent-colour masking. ILBM also supports a separate mask plane. HAM/EHB
-  viewport modes, PBM mask planes, other bit depths and compressions return
-  `CodecError::Unsupported`. There is no IFF writer; save as PNG.
+  entries), and transparent-color masking. ILBM also supports a separate mask plane and
+  24-bitplane RGB ("deep" ILBM: 8 planes each of red, green and blue, least significant bit
+  first, no palette). HAM/EHB viewport modes, PBM mask planes, a transparent color in a
+  24-bitplane file, other bit depths and compressions return `CodecError::Unsupported`.
+  Writing produces a 24-bitplane ILBM, ByteRun1 compressed one plane row at a time, at most
+  65535 × 65535 pixels. An image with alpha gets a mask plane (masking 1): alpha of 128 or more
+  is opaque, and `AlphaBinarized` is raised when any pixel is not fully opaque. Gray is
+  expanded to RGB, and 16-bit and float images are reduced to 8 bits.
 
 * **Camera raw files** (DNG, CR2, NEF, ARW… which are TIFF-structured) are recognised and refused
   with `CodecError::Unsupported`: they are sensor data, not flat images. `photocraft-raw` decodes
@@ -216,8 +224,14 @@ embedded table (and a PNG's transparent entry) so `photocraft-io` can open them 
     planar configuration 1 or 2.
   * Supports 1, 2 and 4-bit gray, 8/16/32/64-bit integers (32 and 64-bit are reduced to U16),
     F16, F32 and F64 (converted to F32), WhiteIsZero (#691: the tones are no longer inverted),
-    palette images (opened as RGB), associated alpha (made straight) and extra samples (dropped
-    unless the first is alpha).
+    palette images (opened as RGB) and associated alpha (made straight).
+  * Extra samples: the first alpha sample (ExtraSamples 1 or 2, wherever it sits) is the image's
+    alpha. Every other extra sample, such as a spot colour or a further alpha channel
+    (ExtraSamples 0), comes back in `Metadata::extra_samples`: one plane per sample in the
+    image's sample type, with its ExtraSamples value as `kind` (a reserved value above 2 reads as
+    0). At most `MAX_EXTRA_SAMPLES` (16) are kept, and they count against `Limits::max_alloc` with
+    the image: when the image fits but its extra samples don't, it opens without them and carries
+    `DecodeWarning::ExtraSamplesDropped`.
   * Every directory is reachable: `tiff_info` lists the main IFD chain and its SubIFDs (tag 330)
     with each page's size, kind (page, reduced-resolution copy, mask) and storage, walked with a
     seen-set, a depth limit and a 10 000-directory cap; `decode_tiff_page` opens any of them.
@@ -231,7 +245,11 @@ embedded table (and a PNG's transparent entry) so `photocraft-io` can open them 
   * YCbCr, CIE Lab, signed integers and compressions that the `tiff` crate lacks (CCITT,
     JPEG-in-TIFF) return `Unsupported`.
 * **TIFF encode** writes classic TIFF, or BigTIFF when `EncodeOptions::tiff_bigtiff` is set or
-  the file could pass 4 GiB.
+  the file could pass 4 GiB. `Metadata::extra_samples` (up to 16) are written after the colour
+  and alpha samples, with their `kind` in the ExtraSamples tag (a reserved `kind` above 2 is
+  written as 0). Each plane must be exactly
+  `width × height × sample.bytes()` bytes; a plane of any other length, and more than 16 planes,
+  are encode errors rather than silently truncated or reinterpreted.
 * **EXR**
   * Multi-part files (a Maya/Arnold render writes one part per AOV) open the part that
     looks most like a colour image — RGBA beats RGB beats YA beats a single channel, so a

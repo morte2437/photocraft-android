@@ -198,6 +198,12 @@ pub fn restore(app: &mut PhotocraftApp) {
     restore_brushes(app);
 }
 
+/// The values Width and Height take under a marquee or Slice tool Style: a size in px for Fixed
+/// Size, else a ratio.
+pub(crate) fn style_range(style: &str) -> std::ops::RangeInclusive<f32> {
+    if style == "fixedSize" { 1.0..=crate::panels::FIXED_SIZE_MAX_PX as f32 } else { 0.001..=999.0 }
+}
+
 /// Bring remembered options into the ranges their options-bar fields allow, so a hand-edited or
 /// damaged file can't start a tool with a value its own controls could never set (a 1e30 px
 /// feather, a 0-sided polygon). A NaN (JSON can't hold one, but it costs nothing to rule out)
@@ -221,10 +227,20 @@ pub(crate) fn sanitize(o: &mut ToolOptions) {
     fit(&mut o.corner_radius, 0.0, 10000.0, d.corner_radius);
     fit(&mut o.line_weight, 1.0, 1000.0, d.line_weight);
     fit(&mut o.curve_fit, 0.5, 10.0, d.curve_fit);
-    // The marquee's Width and Height are a ratio or a size in px, as its Style says.
-    let (lo, hi) = if o.marquee_style == "fixedSize" { (1.0, 300_000.0) } else { (0.001, 999.0) };
+    // The marquee's and the Slice tool's Width and Height are a ratio or a size in px, as their
+    // Style says.
+    let (lo, hi) = style_range(&o.marquee_style).into_inner();
     fit(&mut o.marquee_width, lo, hi, d.marquee_width);
     fit(&mut o.marquee_height, lo, hi, d.marquee_height);
+    if !matches!(o.slice_style.as_str(), "normal" | "fixedRatio" | "fixedSize") {
+        o.slice_style = d.slice_style.clone();
+    }
+    let (lo, hi) = style_range(&o.slice_style).into_inner();
+    fit(&mut o.slice_width, lo, hi, d.slice_width);
+    fit(&mut o.slice_height, lo, hi, d.slice_height);
+    if o.slice_style == "fixedSize" {
+        (o.slice_width, o.slice_height) = (o.slice_width.round(), o.slice_height.round());
+    }
     fit(&mut o.crop_custom_ratio_width, 0.0, f32::MAX, d.crop_custom_ratio_width);
     fit(&mut o.crop_custom_ratio_height, 0.0, f32::MAX, d.crop_custom_ratio_height);
     fit(&mut o.magic_eraser_opacity, 1.0, 100.0, d.magic_eraser_opacity);

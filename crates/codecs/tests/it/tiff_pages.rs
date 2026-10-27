@@ -128,13 +128,16 @@ fn planar_strips_at_every_depth() {
     }
 }
 
+/// Extra samples that are not the alpha (ExtraSamples 0: a spot colour or an extra channel) are
+/// not part of the image: they come back in `meta.extra_samples`, one plane each.
 #[test]
-fn extra_samples_that_are_not_alpha_are_dropped() {
+fn extra_samples_that_are_not_alpha_are_kept_apart() {
     let (w, h) = (5usize, 3usize);
     let t = truth(w * h * 5, 4);
     let rgb_of = |spp: usize, keep: usize| -> Vec<u8> { t.u8s[..w * h * spp].chunks(spp).flat_map(|p| p[..keep].to_vec()).collect() };
+    let extra = |spp: usize, at: usize| vec![ExtraSample { kind: 0, data: t.u8s[..w * h * spp].chunks(spp).map(|p| p[at]).collect() }];
     for planar in [false, true] {
-        // RGB + one unspecified extra sample: RGB.
+        // RGB + one unspecified extra sample: RGB, and the sample as an extra plane.
         let px = &t.u8s[..w * h * 4];
         let chunks = if planar { planar_strips(px, w, h, 4, 1, 2) } else { px.chunks(w * 4 * 2).map(<[u8]>::to_vec).collect() };
         let mut d = Dir { entries: base(w as u32, h as u32, 8, 4, 2), chunks, tiled: false }.tag(278, LONG, &[2]).tag(338, SHORT, &[0]);
@@ -144,7 +147,8 @@ fn extra_samples_that_are_not_alpha_are_dropped() {
         let img = decode_ok(&build(true, false, &[d], &[0]).bytes);
         assert_eq!(img.layout(), ChannelLayout::Rgb);
         assert_eq!(img.data(), &rgb_of(4, 3)[..], "planar {planar}");
-        // RGB + alpha + an unspecified extra sample: RGBA.
+        assert_eq!(img.meta.extra_samples, extra(4, 3), "planar {planar}");
+        // RGB + alpha + an unspecified extra sample: RGBA and one extra plane.
         let px = &t.u8s[..w * h * 5];
         let chunks = if planar { planar_strips(px, w, h, 5, 1, 2) } else { px.chunks(w * 5 * 2).map(<[u8]>::to_vec).collect() };
         let mut d = Dir { entries: base(w as u32, h as u32, 8, 5, 2), chunks, tiled: false }.tag(278, LONG, &[2]).tag(338, SHORT, &[2, 0]);
@@ -154,18 +158,48 @@ fn extra_samples_that_are_not_alpha_are_dropped() {
         let img = decode_ok(&build(false, true, &[d], &[0]).bytes);
         assert_eq!(img.layout(), ChannelLayout::Rgba);
         assert_eq!(img.data(), &rgb_of(5, 4)[..], "planar {planar}");
+        assert_eq!(img.meta.extra_samples, extra(5, 4), "planar {planar}");
     }
-    // Gray + alpha + extra: gray and alpha; gray + an unspecified extra: gray.
+    // Gray + alpha + extra: gray and alpha; gray + an unspecified extra: gray. Each keeps the
+    // extra sample as a plane.
     let px = &t.u8s[..w * h * 3];
     let d = strips(w as u32, h as u32, 8, 3, 1, 3, px).tag(338, SHORT, &[2, 0]);
     let img = decode_ok(&build(true, false, &[d], &[0]).bytes);
     assert_eq!(img.layout(), ChannelLayout::GrayA);
     assert_eq!(img.data(), &rgb_of(3, 2)[..]);
+    assert_eq!(img.meta.extra_samples, extra(3, 2));
     let px = &t.u8s[..w * h * 2];
     let d = strips(w as u32, h as u32, 8, 2, 1, 3, px).tag(338, SHORT, &[0]);
     let img = decode_ok(&build(true, false, &[d], &[0]).bytes);
     assert_eq!(img.layout(), ChannelLayout::Gray);
     assert_eq!(img.data(), &rgb_of(2, 1)[..]);
+    assert_eq!(img.meta.extra_samples, extra(2, 1));
+}
+
+/// A file may hold more extra samples than the `MAX_EXTRA_SAMPLES` a decode keeps (up to 64
+/// samples a pixel open): the first ones open, and a warning counts those left out, so nothing
+/// is lost without notice.
+#[test]
+fn extra_samples_past_the_cap_are_reported() {
+    let (w, h) = (3usize, 2usize);
+    const EXTRAS: usize = MAX_EXTRA_SAMPLES + 4;
+    let spp = 3 + EXTRAS;
+    let px: Vec<u8> = (0..w * h * spp).map(|i| (i % spp) as u8).collect();
+    let d = strips(w as u32, h as u32, 8, spp as u16, 2, h as u32, &px).tag(338, SHORT, &[0; EXTRAS]);
+    let img = decode_ok(&build(true, false, &[d], &[0]).bytes);
+    assert_eq!(img.layout(), ChannelLayout::Rgb);
+    assert_eq!(img.meta.extra_samples.len(), MAX_EXTRA_SAMPLES);
+    assert_eq!(img.meta.extra_samples.last().map(|e| e.data[0]), Some((3 + MAX_EXTRA_SAMPLES - 1) as u8));
+    assert_eq!(img.warnings, vec![DecodeWarning::ExtraSamplesOverLimit { format: Format::Tiff, count: 4 }]);
+    let text = img.warnings[0].to_string();
+    assert!(text.contains("4 extra TIFF file channels") && text.contains("past the first 16"), "{text}");
+    // At the cap exactly, nothing is left out.
+    let spp = 3 + MAX_EXTRA_SAMPLES;
+    let px: Vec<u8> = (0..w * h * spp).map(|i| (i % spp) as u8).collect();
+    let d = strips(w as u32, h as u32, 8, spp as u16, 2, h as u32, &px).tag(338, SHORT, &[0; MAX_EXTRA_SAMPLES]);
+    let img = decode_ok(&build(true, false, &[d], &[0]).bytes);
+    assert_eq!(img.meta.extra_samples.len(), MAX_EXTRA_SAMPLES);
+    assert!(img.warnings.is_empty(), "{:?}", img.warnings);
 }
 
 #[test]

@@ -38,6 +38,12 @@ fn check_format(format: Format) {
         // TIFF writes the block's directories as its own and rebuilds a block from them on
         // reading (tests/it/tiff_exif.rs); IFD0's orientation here is the image's.
         assert!(!warnings.contains(&FidelityWarning::ExifDropped), "{format:?}");
+    } else if c.exif && format == Format::WebP {
+        // WebP's resolution lives in EXIF, so the block comes back with resolution tags added.
+        let back_exif = back.meta.exif.as_deref().unwrap_or_else(|| panic!("{format:?} lost exif"));
+        assert_eq!(photocraft_codecs::resolution::exif_resolution(back_exif).map(|(x, y)| (x.round(), y.round())), Some((300.0, 150.0)));
+        // The rest of the block survives too: the Orientation tag (0x0112, little-endian).
+        assert!(back_exif.windows(2).any(|w| w == b"\x12\x01"), "{format:?} lost Orientation");
     } else if c.exif {
         assert_eq!(back.meta.exif, img.meta.exif, "{format:?} exif");
     } else {
@@ -294,4 +300,41 @@ fn metadata_survives_depth_conversion() {
     let back = decode(&encode(&img, Format::Png, &EncodeOptions::default()).unwrap()).unwrap();
     assert_eq!(back.icc, img.icc);
     assert_eq!(back.meta.xmp, img.meta.xmp);
+}
+
+/// #2399: a WebP export keeps the resolution even when the image has no EXIF (WebP has no
+/// resolution field of its own, so a minimal EXIF block carries it), lossless and lossy alike,
+/// and no longer warns that it is dropped.
+#[test]
+fn webp_keeps_dpi_without_source_exif() {
+    let mut img = test_image(ChannelLayout::Rgb, SampleType::U8);
+    img.meta = Metadata { dpi: Some((300.0, 150.0)), ..Default::default() };
+    assert!(!fidelity_warnings(&img, Format::WebP).contains(&FidelityWarning::DpiDropped));
+    for lossless in [true, false] {
+        let opts = EncodeOptions { webp_lossless: lossless, ..Default::default() };
+        let back = decode(&encode(&img, Format::WebP, &opts).unwrap()).unwrap();
+        let (x, y) = back.meta.dpi.unwrap_or_else(|| panic!("lossless {lossless}: dpi lost"));
+        assert!((x - 300.0).abs() < 0.05 && (y - 150.0).abs() < 0.05, "lossless {lossless}: {x},{y}");
+    }
+    // EXIF that can't be parsed is written as it is, so the resolution is reported as dropped.
+    img.meta = Metadata { exif: Some(b"Exif\0\0garbage".to_vec()), dpi: Some((300.0, 150.0)), ..Default::default() };
+    assert!(fidelity_warnings(&img, Format::WebP).contains(&FidelityWarning::DpiDropped));
+    let back = decode(&encode(&img, Format::WebP, &EncodeOptions::default()).unwrap()).unwrap();
+    assert!(back.meta.exif.is_some());
+    // ...unless the XMP written beside it records the resolution, which readers look at first.
+    img.meta.xmp = Some(r#"<x:xmpmeta><rdf:Description tiff:XResolution="300/1" tiff:YResolution="150/1" tiff:ResolutionUnit="2"/></x:xmpmeta>"#.into());
+    assert!(!fidelity_warnings(&img, Format::WebP).contains(&FidelityWarning::DpiDropped));
+    let back = decode(&encode(&img, Format::WebP, &EncodeOptions::default()).unwrap()).unwrap();
+    let (x, y) = back.meta.dpi.expect("dpi from XMP");
+    assert!((x - 300.0).abs() < 0.05 && (y - 150.0).abs() < 0.05, "{x},{y}");
+    // The default 72 ppi needs no EXIF (a WebP without one opens at 72), so a plain export stays
+    // a simple-format file; nor does an image without a resolution.
+    img.meta = Metadata { dpi: Some((72.0, 72.0)), ..Default::default() };
+    assert!(!fidelity_warnings(&img, Format::WebP).contains(&FidelityWarning::DpiDropped));
+    let bytes = encode(&img, Format::WebP, &EncodeOptions { webp_lossless: false, ..Default::default() }).unwrap();
+    assert_eq!(bytes.get(12..16), Some(&b"VP8 "[..]));
+    // Without a resolution or EXIF there is still no EXIF chunk.
+    img.meta = Metadata::default();
+    let back = decode(&encode(&img, Format::WebP, &EncodeOptions::default()).unwrap()).unwrap();
+    assert!(back.meta.exif.is_none());
 }

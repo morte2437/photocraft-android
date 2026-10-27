@@ -56,6 +56,39 @@ fn snaps_to_the_most_prominent_edge() {
 }
 
 #[test]
+fn gradient_polarity_does_not_make_a_straight_edge_look_like_a_turn() {
+    // A gradient can reverse across adjacent pixels when another colour channel becomes the
+    // strongest one. The edge tangent is an axis, so its sign must not change the path cost.
+    let forward = direction_cost([1.0, 0.0], [1.0, 0.0], 1, 0, 1.0);
+    let reversed = direction_cost([1.0, 0.0], [-1.0, 0.0], 1, 0, 1.0);
+    assert!(forward < 1e-6, "aligned edge: {forward}");
+    assert!(reversed < 1e-6, "same edge with reversed gradient polarity: {reversed}");
+}
+
+#[test]
+fn traces_a_straight_edge_through_a_gradient_polarity_change() {
+    let read = Cell::new(0);
+    // The contrast stays high, but the edge changes from dark-to-light to light-to-dark halfway
+    // down. The horizontal seam intersects it; the guide stays on the vertical contour.
+    let mut f = image(
+        |x, y| {
+            let left = x < 32;
+            let top = y < 32;
+            let white = left != top;
+            grey(if white { 255 } else { 0 })
+        },
+        &read,
+    );
+    let mut t = Tracer::new(Rect::new(0, 0, 64, 64));
+    let path = t.trace(&mut f, [32.0, 5.0], [32.0, 59.0], &[[32.0, 32.0]], Settings::default());
+    assert_eq!(path.first(), Some(&[32.0, 5.0]));
+    assert_eq!(path.last(), Some(&[32.0, 59.0]));
+    for p in &path {
+        assert!((p[0] - 32.0).abs() < 1.0, "left the high-contrast edge: {p:?}; {path:?}");
+    }
+}
+
+#[test]
 fn trace_follows_a_curved_edge() {
     let read = Cell::new(0);
     // A white disc of radius 30 at (50, 50) on black.

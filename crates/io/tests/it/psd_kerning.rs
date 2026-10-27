@@ -228,7 +228,7 @@ fn add_type_layer(objects: &[(&str, &str)], kept: &[(&str, i32)], at: usize) -> 
             (l.name.clone(), index, t.char_runs().iter().flat_map(|r| r.style.features.iter().filter(|f| f.tag != "calt").map(|f| f.tag.clone())).collect())
         })
         .collect();
-    let hi = layers.iter().find(|l| l.0 == "Hi").and_then(|l| l.1).unwrap() as usize;
+    let hi = usize::try_from(layers.iter().find(|l| l.0 == "Hi").and_then(|l| l.1).unwrap()).unwrap();
     let run = txt2.path(&["1", "1"]).and_then(E::as_array).unwrap()[hi].path(&["0", "6", "0"]).and_then(E::as_array).unwrap()[0].clone();
     (layers, run)
 }

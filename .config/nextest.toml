@@ -1,3 +1,7 @@
+# Refuse to run under a nextest older than the fixed release: GHSA-vc25-qg58-w57c is fixed in
+# 0.9.150, and CI installs exactly that version (an older nextest exits 92 REQUIRED_VERSION_NOT_MET).
+nextest-version = "0.9.150"
+
 # cargo-nextest (https://nexte.st): runs every test in its own process, in parallel across test
 # binaries. CI runs it with the `ci` profile below (#6117); locally it is optional and `cargo test`
 # keeps working (#2204).

@@ -1,8 +1,8 @@
 name: CI
 
 # Quality gates for every push to main and every pull request. The Linux gate runs through the
-# suite's shared gate workflow in craft-common-actions; the Windows legs, the test variants and
-# the corpus, wasm, web and fuzz jobs are PhotoCraft's own.
+# suite's shared gate workflow in craft-common-actions (`cargo xtask ci`); the Windows legs, the
+# test variant and the corpus, web and fuzz jobs are PhotoCraft's own.
 on:
   push:
     branches: [main]
@@ -125,32 +125,16 @@ jobs:
         libgtk-3-dev
       # The tests build with the optional craft-fonts input (crates/text/build.rs), so the
       # Japanese font tests that skip without it run. Same commit as release.yml.
-      craft-fonts-ref: abb83316d96aa59c1cf64784289e378fe9fa5695
-      # The wasm32 build is its own job.
-      targets: ""
+      craft-fonts-ref: b076417b5880bd4154bd22f00695b1d28c6bea83
       # Cargo.toml's dev profile already keeps line tables only.
       dev-debug: ""
       env: |
         PHOTOCRAFT_NO_PRINT=1
         LPDEST=photocraft-no-such-printer
       timeout-minutes: 100
-      # `--features heif`: official builds open HEIC photos via the optional photocraft-heif crate.
-      # `--lib --bins --tests` leaves out the examples, which cargo test would build and link but
-      # never run (Clippy's `--all-targets` still checks they compile). nextest skips doctests, so
-      # they run last. The `ci` profile fails fast and terminates hung tests (.config/nextest.toml).
-      # docs/scorecard.md must match its sources; the check reads committed files only.
-      # panic_hunt: every command against adversarial params must return Err, never panic or hang
-      # (AGENTS.md Rule 9). It is `#[ignore]`d (slow), so the test run skips it; the same packages,
-      # features and targets keep it from rebuilding anything.
-      command: |
-        cargo fmt --all -- --check
-        cargo clippy --workspace --all-targets --locked --features heif -- -D warnings
-        cargo xtask layers
-        cargo xtask scorecard --check
-        cargo nextest run --profile ci --workspace --locked --features heif --lib --bins --tests
-        cargo nextest run --profile ci --workspace --locked --features heif --lib --bins --tests \
-          --run-ignored only -E 'binary_id(photocraft-engine::panic_hunt)'
-        cargo test --workspace --locked --features heif --doc
+      # fmt, clippy, layers, scorecard, tests, panic_hunt, doctests and the wasm32 check, with
+      # `--locked --features heif`, then the missing-translations report (xtask/src/main.rs).
+      command: cargo xtask ci
 
   # Windows tests run as two legs in parallel: the unit tests and the integration tests. As one job
   # they took ~28 min on the Windows runner; the legs take ~13 and ~15. Splitting the integration
@@ -172,9 +156,26 @@ jobs:
       # A panic still names its file and line; only backtrace frames lose theirs (Linux keeps
       # line-tables-only, so a backtrace with lines is one OS away).
       CARGO_PROFILE_DEV_DEBUG: "0"
+      # The all-language UI tests shape real Japanese, Chinese, Korean and Devanagari labels
+      # with kittest's strict `MissingGlyphPolicy::Panic`. A hosted Windows image has no
+      # guaranteed Japanese or Simplified Chinese system font, and egui 0.37 panics on a
+      # missing glyph; the app's lazy system fallback runs after layout, too late for the
+      # first headless frame. Use the same pinned central fonts as Linux and release, so every
+      # language is drawn by a real embedded face rather than skipping. Same commit as the gate
+      # above and release.yml.
+      CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
+      CRAFT_FONTS_REQUIRED: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
+
+      - name: Check out craft-fonts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: storytold/craft-fonts
+          ref: b076417b5880bd4154bd22f00695b1d28c6bea83
+          path: craft-fonts
           persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
@@ -218,7 +219,7 @@ jobs:
 
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
-          tool: cargo-nextest@0.9.149
+          tool: cargo-nextest@0.9.150
 
       # The unit leg runs `--lib --bins` and the integration leg `--test '*'` (every
       # integration-test target); the feature selection stays the same, so both legs share the
@@ -275,7 +276,7 @@ jobs:
 
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
-          tool: cargo-nextest@0.9.149
+          tool: cargo-nextest@0.9.150
 
       - name: Test without heif
         run: cargo nextest run -p photocraft-heif -p photocraft-codecs -p photocraft-io --locked --profile ci
@@ -315,26 +316,6 @@ jobs:
         run: cargo xtask corpus --all
       - name: Corpus tests
         run: cargo xtask test-corpus
-
-  wasm:
-    if: github.event.action != 'labeled' || github.event.label.name == 'full-ci'
-    timeout-minutes: 30
-    name: wasm32 check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-        with:
-          targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          key: wasm32
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          cache-on-failure: true
-      - name: Check wasm-safe crates
-        run: cargo xtask wasm
 
   web:
     timeout-minutes: 60
@@ -407,6 +388,7 @@ jobs:
           - { crate: psd, name: metadata }
           - { crate: psd, name: tagged }
           - { crate: psd, name: resources }
+          - { crate: psd, name: asl }
           - { crate: codecs, name: decode_any }
           - { crate: codecs, name: decode_png }
           - { crate: codecs, name: decode_jpeg }
@@ -420,7 +402,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@2c76c034f9e32a5d6e2c104dc4df23a22476db04 # nightly
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # nightly
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: crates/${{ matrix.target.crate }}/fuzz

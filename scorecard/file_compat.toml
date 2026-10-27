@@ -17,14 +17,14 @@ id = "FILE-215-2"
 target = "Smart Filters survive PSD save and re-open (filterFX descriptor read and written)"
 status = "partial"
 issue = 215
-note = "smart_map.rs: 41 filters plus Hue/Saturation, Perspective Warp, Filter Gallery (Chrome) and a verified Camera Raw subset mapped both ways, others kept verbatim, mask in FEid; io tests/it/smart_corpus.rs. PhotoCraft-only filters (Twirl, Liquify…) and unmapped Camera Raw settings are left out of filterFX with a warning"
+note = "smart_map.rs: 49 filters plus Hue/Saturation, Perspective Warp, Filter Gallery (Chrome) and a verified Camera Raw subset mapped both ways, others kept verbatim, mask in FEid; io tests/it/smart_corpus.rs. PhotoCraft-only filters (Twirl, Liquify…) and unmapped Camera Raw settings are left out of filterFX with a warning"
 
 [[item]]
 id = "FILE-215-3"
 target = "Filter mask can be painted directly, with undo"
-status = "missing"
+status = "done"
 issue = 215
-note = "smart_cmds.rs:382 mask only from the selection"
+note = "Clicking the filter mask thumbnail on the Smart Filters row targets it (ui.filterMaskTarget, smart_ui.rs). Painting, fills, filters and adjustments with \"target\":\"filterMask\" then edit it (a white mask starts on the first stroke) and re-render the smart object, one undo step per stroke (channel_cmds Target::FilterMask, Session::edit). ⌥-click shows it (view.layerMask \"mask\":\"filter\"), ⇧-click disables it. Kept through .pcraft and PSD FEid (smart_cmds/tests/filter_mask_paint.rs)"
 
 [[item]]
 id = "FILE-215-4"
@@ -50,9 +50,9 @@ note = "#426: SmartObject.perspective holds the projective map (transform keeps 
 [[item]]
 id = "FILE-215-7"
 target = "Layered TIFF read and write (tag 37724), honouring the ask-before-saving pref"
-status = "partial"
+status = "done"
 issue = 215
-note = "psd tiff.rs (ImageSourceData, both byte orders), io tiff_layers.rs, ui tiff_options_ui.rs (Discard Layers and Save a Copy); extra alpha channels and a Quick Mask are not written (the TIFF codec holds one transparency sample)"
+note = "psd tiff.rs (ImageSourceData, both byte orders), io tiff_layers.rs, ui tiff_options_ui.rs (Discard Layers and Save a Copy); extra alpha/spot channels and a Quick Mask are written as TIFF extra samples (at most 16) plus Photoshop resources for name, colour and solidity; Photoshop's MTrn marker is read (#7415). The TIFF Options Save Transparency choice isn't offered: channels are written as Photoshop does with it off"
 
 [[item]]
 id = "FILE-215-8"
@@ -78,9 +78,9 @@ note = "io pdf.rs: Save As / Save a Copy / CLI write one flattened RGB/Gray/CMYK
 [[item]]
 id = "FILE-215-11"
 target = "RAW: lossy DNG, highlight modes, .xmp sidecars, RAW prefs wired, per-camera corpus"
-status = "missing"
+status = "partial"
 issue = 215
-note = "raw sensor.rs:210 lossy DNG unsupported; raw_defaults unread; no xmp"
+note = "2026-10-13: lossy DNG (34892) decodes stored 8-bit samples with padded edge tiles (raw sensor.rs lossy_jpeg, #5112); a raw's sidecar IMG.xmp fills the open-time dialog and Open writes it back (camera_raw_ui.rs read_sidecar/write_sidecar, pref rawDefaults.writeXmpSidecars); every Camera Raw Defaults preference is read (colour space, bit depth, resolution, Sharpen For, Open as Smart Object, Apply auto tone: apply_raw_defaults); Calibration panel (shadow tint, primaries hue/saturation) in the dialog, the filter and the crs: keys. Still missing: highlight recovery modes, the absolute (kelvin) white balance of raw sidecars, a per-camera corpus"
 
 [[item]]
 id = "FILE-215-12"
@@ -120,9 +120,9 @@ note = "doc advanced.rs + .pcraft + PSD/layered TIFF (knko infx clbl tsly lmgm v
 [[item]]
 id = "FILE-215-17"
 target = "CMYK/RGB documents preview spot inks; spot plates export (TIFF extra samples, PDF)"
-status = "missing"
+status = "partial"
 issue = 215
-note = "compose multichannel.rs:1 spot preview for Multichannel only"
+note = "TIFF: spot channels written and read as extra samples with DisplayInfo (1077) ink colour and solidity, ink stored 0 = solid (#7415). PSD: spot planes stored and read 0 = solid as Photoshop does, identifiers in 1053; PhotoCraft 0.1.0–0.16.0 PSDs (straight planes) keep their ink. Missing: spot ink preview in RGB/CMYK documents (compose multichannel.rs:1 previews Multichannel only) and PDF Separation"
 
 [[item]]
 id = "FILE-215-18"

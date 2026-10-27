@@ -10,7 +10,7 @@ use photocraft_codecs::{ChannelLayout, DecodeOptions, EncodeOptions, Format, Ima
 use serde_json::Value;
 
 fn bin() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_photocraft-cli"))
+    Command::new(crate::binary())
 }
 
 fn tmp(name: &str) -> PathBuf {
@@ -125,7 +125,8 @@ fn orientation_6_jpeg_converts_upright_and_rotates_back() {
     let (a, b) = (d.join("a.pcraft"), d.join("b.pcraft"));
     ok(bin().arg("convert").arg(&jpg).arg(&a));
     ok(bin().arg("convert").arg(&a).arg(&b));
-    // Everything but the file's own path and saved document name must match.
+    // Everything but the file's own path and saved document name (which the first snapshot is
+    // named after) must match.
     let info = |p: &Path| {
         let mut v = serde_json::from_str::<Value>(&ok(bin().arg("info").arg(p))).unwrap();
         v.as_object_mut().unwrap().remove("file");
@@ -136,8 +137,12 @@ fn orientation_6_jpeg_converts_upright_and_rotates_back() {
     assert_eq!((ia["width"].as_u64(), ia["height"].as_u64()), (Some(16), Some(32)));
     assert_eq!(ia["name"], "a.pcraft");
     assert_eq!(ib["name"], "b.pcraft");
-    ia.as_object_mut().unwrap().remove("name");
-    ib.as_object_mut().unwrap().remove("name");
+    assert_eq!(ia["snapshots"][0]["name"], "a.pcraft");
+    assert_eq!(ib["snapshots"][0]["name"], "b.pcraft");
+    for v in [&mut ia, &mut ib] {
+        v.as_object_mut().unwrap().remove("name");
+        v["snapshots"][0].as_object_mut().unwrap().remove("name");
+    }
     assert_eq!(ia, ib);
     let (pa, pb) = (d.join("a.png"), d.join("b.png"));
     ok(bin().arg("convert").arg(&a).arg(&pa));

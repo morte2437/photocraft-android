@@ -270,10 +270,12 @@ fn interior_effects_blend_over_the_layer_mode_unless_grouped() {
 fn interior_effects_blend_with_the_backdrop_through_a_see_through_normal_layer() {
     // #6232: #04170F under a Normal layer at fill 0 with a yellow Soft Light colour overlay. The
     // overlay soft-lights the dark green it sees through the layer (Photoshop's soft light of
-    // yellow: sqrt(b) for red and green, b² for blue), not transparency, which would leave plain
-    // yellow. A half-transparent part of the layer mixes it in at half strength.
+    // yellow: the W3C D(b) for red and green, which is the cubic ((16b − 12)b + 4)b below a
+    // quarter (#8804), and b² for blue), not transparency, which would leave plain yellow. A
+    // half-transparent part of the layer mixes it in at half strength.
     let bg: [f32; 3] = [4.0 / 255.0, 23.0 / 255.0, 15.0 / 255.0];
-    let lit = [bg[0].sqrt(), bg[1].sqrt(), bg[2] * bg[2]];
+    let dark = |b: f32| ((16.0 * b - 12.0) * b + 4.0) * b;
+    let lit = [dark(bg[0]), dark(bg[1]), bg[2] * bg[2]];
     let half = |c: usize| (bg[c] + lit[c]) / 2.0;
     for depth in DEPTHS {
         let mut d = doc(depth, false);

@@ -660,6 +660,10 @@
 	Fit Layer(s) on Screen	Ebenen auf den Bildschirm einpassen
 	Fit Artboard on Screen	Zeichenbereich auf den Bildschirm einpassen
 	100%	100 %
+	105%	105 %
+	110%	110 %
+	115%	115 %
+	120%	120 %
 	200%	200 %
 	Print Size	Druckgröße
 	Pixel Aspect Ratio	Pixel-Seitenverhältnis
@@ -1014,6 +1018,10 @@
 	Create new pattern from the selection	Neues Muster aus der Auswahl erstellen
 	Create new shape from the current path	Neue Form aus dem aktuellen Pfad erstellen
 	Create new snapshot	Neuen Snapshot erstellen
+	From:	Von:
+	Full Document	Gesamtes Dokument
+	Merged Layers	Zusammengefügte Ebenen
+	New Snapshot	Neuer Snapshot
 	Create new style (from the selected type)	Neuen Stil erstellen (aus dem ausgewählten Text)
 	Create new style from the selected layer	Neuen Stil aus der ausgewählten Ebene erstellen
 	Create new tool preset	Neue Werkzeugvorgabe erstellen
@@ -2202,6 +2210,11 @@
 	No path to make a selection from: draw one with the Pen tool or select one in the Paths panel.	Kein Pfad für eine Auswahl vorhanden: zeichne einen mit dem Stift-Werkzeug oder wähle einen im Pfade-Bedienfeld.
 	Cancel opening	Öffnen abbrechen
 	Cancelled opening {name}	Öffnen von {name} abgebrochen
+	Damaged Photoshop document	Beschädigtes Photoshop-Dokument
+	The document “{name}” may be damaged.	Das Dokument „{name}“ ist möglicherweise beschädigt.
+	Some layers, pixels or masks could not be read. Do you want to continue opening it?	Einige Ebenen, Pixel oder Masken konnten nicht gelesen werden. Möchten Sie das Öffnen fortsetzen?
+	If you continue, saving over the original may permanently discard unreadable data. Save a copy to keep the original.	Wenn Sie fortfahren, kann das Speichern über das Original nicht lesbare Daten dauerhaft verwerfen. Speichern Sie eine Kopie, um das Original zu behalten.
+	Continue	Fortfahren
 	The document “{name}” does not have an embedded {mode} profile.	Das Dokument „{name}“ hat kein eingebettetes {mode}-Profil.
 	The document “{name}” has an embedded color profile that does not match the current {mode} working space.	Das Dokument „{name}“ hat ein eingebettetes Farbprofil, das nicht zum aktuellen {mode}-Arbeitsfarbraum passt.
 	Working: {working}	Arbeitsfarbraum: {working}
@@ -2770,6 +2783,8 @@ curves	Smooth	Glätten
 	Vanishing Point is not active	Fluchtpunkt ist nicht aktiv
 	Apply Vanishing Point ({key})	Fluchtpunkt anwenden ({key})
 	Fix the red plane first: its corners must form a convex quad	Korrigieren Sie zuerst die rote Ebene: Ihre Ecken müssen ein konvexes Viereck bilden
+	Alt-click a plane to set the clone source	Alt-Klick auf eine Ebene legt die Kopierquelle fest
+	Too many clone strokes: apply Vanishing Point first	Zu viele Kopierstriche: Wenden Sie zuerst Fluchtpunkt an
 # Select and Mask view modes (#1754)
 	Onion Skin	Zwiebelschicht
 	Marching Ants	Laufende Ameisen
@@ -3249,6 +3264,30 @@ curves	Smooth	Glätten
 	Sent to {printer}	An {printer} gesendet
 	set in Print Settings…	in den Druckeinstellungen festlegen…
 	ICO is limited to 256 × 256 pixels	ICO ist auf 256 × 256 Pixel begrenzt
+	Calibration	Kalibrierung
+	Red Primary	Rot-Primärfarbe
+	Green Primary	Grün-Primärfarbe
+	Blue Primary	Blau-Primärfarbe
+	Write xmp sidecars	XMP-Filialdateien schreiben
+	Set the tone sliders from the image	Tonwert-Regler aus dem Bild setzen
+	Settings from {name}	Einstellungen aus {name}
+	Settings from {name}; {count} not supported: {names}	Einstellungen aus {name}; {count} nicht unterstützt: {names}
+	Could not write {name}: {error}	{name} konnte nicht geschrieben werden: {error}
+	Kept {name}: written by another application	{name} beibehalten: von einer anderen Anwendung geschrieben
+	Shadow Tint	Schattentönung
+# PhotoCraft release checks.
+	Check for Updates…	Nach Updates suchen…
+	PhotoCraft Updates	PhotoCraft-Updates
+	Checking for updates…	Suche nach Updates…
+	Open the release page to choose an installer for your system.	Öffnen Sie die Versionsseite und wählen Sie ein Installationspaket für Ihr System.
+	Open Download Page	Downloadseite öffnen
+	PhotoCraft is up to date.	PhotoCraft ist auf dem neuesten Stand.
+	Could not check for updates.	Updates konnten nicht geprüft werden.
+	Updates have not been checked yet.	Es wurde noch nicht nach Updates gesucht.
+	Check Again	Erneut prüfen
+	Automatically Check for Updates	Automatisch nach Updates suchen
+	Installed version: {version}	Installierte Version: {version}
+	PhotoCraft {version} is available.	PhotoCraft {version} ist verfügbar.
 # History panel › History Brush source (#2966)
 	Paints from the History panel's source state	Malt aus dem Quellzustand des Protokollbedienfelds
 	Sets the source for the history brush	Legt die Quelle für den Protokollpinsel fest
@@ -3374,6 +3413,14 @@ curves	Smooth	Glätten
 
 # Graphics Adapter preference (#1885)
 	GPU adapter	GPU-Adapter
+
+# Styles panel: Import / Export Styles (.asl)
+	Import Styles…	Stile importieren…
+	Export Selected Styles…	Ausgewählte Stile exportieren…
+	Export Styles…	Stile exportieren…
+	{file} is not a style library (.asl)	{file} ist keine Stilbibliothek (.asl)
+@plural	Imported {n} style from {file}|Imported {n} styles from {file}	{n} Stil aus {file} importiert|{n} Stile aus {file} importiert
+@plural	Exported {n} style to {file}|Exported {n} styles to {file}	{n} Stil nach {file} exportiert|{n} Stile nach {file} exportiert
 # Actions: a step dialog holds a suspended recording (#7365)
 	Confirm or cancel the open action step dialog first	Bestätige oder brich zuerst den offenen Dialog des Aktionsschritts ab
 	Pro Medium Gray	Pro (Mittelgrau)
@@ -3382,14 +3429,49 @@ curves	Smooth	Glätten
 	Pro Light Gray	Pro (Hellgrau)
 	Pro Light	Pro (Hell)
 	Resize Windows to Fit	Fenstergröße anpassen
-
 	EXR	EXR
-
 # Paragraph direction (TYPE-218-2)
 	Automatic paragraph direction	Automatische Absatzrichtung
 	Left-to-right paragraph direction	Absatzrichtung von links nach rechts
 	Right-to-left paragraph direction	Absatzrichtung von rechts nach links
 	Not rendered: this adjustment ({key}) is kept as imported.	Nicht dargestellt: Diese Einstellung ({key}) wird wie importiert beibehalten.
-
 # Print preview image (#8236)
 	Print preview image	Print preview image
+# Color panel menu: modes, copy commands and colour ramps (#6000)
+	Hue Cube	Farbtonwürfel
+	Brightness Cube	Helligkeitswürfel
+	Color Wheel	Farbkreis
+	Grayscale Slider	Graustufen-Regler
+	RGB Sliders	RGB-Regler
+	HSB Sliders	HSB-Regler
+	CMYK Sliders	CMYK-Regler
+	Lab Sliders	Lab-Regler
+	Web Color Sliders	Webfarben-Regler
+	Copy Color as HTML	Farbe als HTML kopieren
+	Copy Color's Hex Code	Hex-Code der Farbe kopieren
+	RGB Spectrum	RGB-Spektrum
+	CMYK Spectrum	CMYK-Spektrum
+	Grayscale Ramp	Graustufenbalken
+	Current Colors	Aktuelle Farben
+	Make Ramp Web Safe	Farbbalken auf Webfarben beschränken
+# Art History Brush (#213).
+	Art History Brush	Künstlerischer Protokollpinsel
+	Art History Brush Tool	Künstlerischer-Protokollpinsel-Werkzeug
+	Tight Short	Eng kurz
+	Tight Medium	Eng mittel
+	Tight Long	Eng lang
+	Loose Medium	Locker mittel
+	Loose Long	Locker lang
+	Dab	Tupfer
+	Tight Curl	Eng gewellt
+	Loose Curl	Locker gewellt
+	Stylized dabs from a history state	Stilisierte Tupfer aus einem Protokollzustand
+
+# Egui 0.37 migration controls (Aspect Ratio, Category, Color Table, Gamma, Interpolation, Profile, Target, Units, Demosaic)
+	Aspect Ratio	Seitenverhältnis
+	Category	Kategorie
+	Color Table	Farbtabelle
+	Gamma	Gamma
+	Interpolation	Interpolation
+	Target	Ziel
+	Units	Einheiten

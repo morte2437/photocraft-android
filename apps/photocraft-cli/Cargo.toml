@@ -28,12 +28,18 @@ photocraft-engine = { workspace = true }
 photocraft-io = { workspace = true }
 photocraft-format = { path = "../../crates/format" }
 photocraft-codecs = { workspace = true }
+clap = { workspace = true }
 serde_json = { workspace = true }
+thiserror = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
 [dev-dependencies]
 # Synthetic camera raws (#7789).
 photocraft-raw = { workspace = true, features = ["testgen"] }
+# Shell completions and man pages (examples/man-and-completions.rs, for the packages); not in
+# the binary.
+clap_complete = { workspace = true }
+clap_mangen = { workspace = true }
 
 [build-dependencies]
 # Icon + VERSIONINFO for photocraft-cli.exe; build.rs only uses it when targeting Windows.

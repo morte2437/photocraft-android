@@ -128,9 +128,8 @@ pub(crate) fn encode(src: &Image, plan: Plan, opts: &EncodeOptions) -> Result<Ve
         enc.set_icc_profile(icc.clone());
     }
     if opts.embed_metadata {
-        if let Some(exif) = &img.meta.exif {
-            // The pixels are written as they are shown: never let a viewer rotate them again.
-            enc.set_exif_metadata(crate::resolution::export_exif(exif, img.meta.dpi).into_owned());
+        if let Some(exif) = export_exif(&img) {
+            enc.set_exif_metadata(exif);
         }
         if let Some(xmp) = &img.meta.xmp {
             enc.set_xmp_metadata(crate::resolution::export_xmp(xmp, img.meta.dpi).as_bytes().to_vec());
@@ -162,9 +161,38 @@ fn encode_lossy(img: &Image, opts: &EncodeOptions) -> Result<Vec<u8>, CodecError
         None
     };
     let icc = if opts.embed_icc { img.icc.as_deref() } else { None };
-    let exif = if opts.embed_metadata { img.meta.exif.as_deref().map(|e| crate::resolution::export_exif(e, img.meta.dpi)) } else { None };
+    let exif = if opts.embed_metadata { export_exif(img) } else { None };
     let xmp = if opts.embed_metadata { img.meta.xmp.as_deref().map(|x| crate::resolution::export_xmp(x, img.meta.dpi)) } else { None };
     Ok(riff(w, h, &frame, alpha.as_deref(), icc, exif.as_deref(), xmp.as_deref().map(str::as_bytes)))
+}
+
+/// The EXIF to write: the image's, upright (the pixels are written as they are shown, so a viewer
+/// must never rotate them again), carrying the resolution. WebP has no resolution field of its own,
+/// so the resolution goes into EXIF, added when the image has none (#2399).
+pub(crate) fn export_exif(img: &Image) -> Option<Vec<u8>> {
+    let exif = img.meta.exif.as_deref().unwrap_or_default();
+    // A WebP without EXIF already reads as 72 ppi, so the default needs no block of its own (and
+    // the extended container it would bring to every web export).
+    if exif.is_empty() && img.meta.dpi.is_none_or(is_default_ppi) {
+        return None;
+    }
+    let out = crate::resolution::export_exif_adding_missing_resolution(exif, img.meta.dpi).into_owned();
+    (!out.is_empty()).then_some(out)
+}
+
+/// Whether a WebP of `img` keeps its resolution: the EXIF written carries it. Not when the image's
+/// own EXIF can't be parsed: that block is written as it is rather than replaced, so the
+/// resolution is dropped (and reported) instead of the metadata.
+pub(crate) fn keeps_dpi(img: &Image) -> bool {
+    let bare_default = img.meta.exif.as_deref().is_none_or(<[u8]>::is_empty) && img.meta.dpi.is_none_or(is_default_ppi);
+    // The XMP written beside it carries the resolution too, and readers look there first.
+    let in_xmp = img.meta.xmp.as_deref().is_some_and(|x| crate::resolution::xmp_resolution(&crate::resolution::export_xmp(x, img.meta.dpi)).is_some());
+    bare_default || in_xmp || export_exif(img).is_some_and(|e| crate::resolution::exif_resolution(&e).is_some())
+}
+
+/// 72 ppi each way: what a file without a resolution opens as.
+fn is_default_ppi((x, y): (f32, f32)) -> bool {
+    (x - 72.0).abs() < 0.01 && (y - 72.0).abs() < 0.01
 }
 
 /// A RIFF chunk: FourCC, little-endian size, payload, padded to an even length.

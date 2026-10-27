@@ -8,9 +8,15 @@
 //! layers keep their transparency there, as after a plain crop. Each connected piece of the
 //! uncovered area (each corner, each edge strip) is filled on its own, with Photoshop's sampling
 //! window around that piece, and only pixels the image covers are sampled.
+//!
+//! Pixels an earlier crop with Delete Cropped Pixels off hid past the canvas edges are still the
+//! layer's. Under a turned frame they count as covered, so they are kept (and sampled) rather than
+//! filled over; a straight crop fills all of the area past the old canvas, them included, as
+//! Photoshop does (#8060).
 
 use photocraft_doc::{Document, LayerId};
 use photocraft_geom::Rect;
+use photocraft_raster::Surface;
 use rayon::prelude::*;
 
 use crate::{EngineError, Result};
@@ -22,7 +28,7 @@ const SEED: u64 = 1;
 const MAX_PIXELS: u64 = 400_000_000;
 
 /// Where the cropped canvas came from in the original document.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Coverage {
     /// Cropped canvas → original document: `[a, b, c, d, e, f]` with
     /// `x = a·u + b·v + e`, `y = c·u + d·v + f`.
@@ -32,12 +38,23 @@ pub(crate) struct Coverage {
     pub height: f64,
     /// Whether the map rotates (its resampled edge is antialiased against the background colour).
     pub rotated: bool,
+    /// The filled layer's pixels before a turned crop (original document px), set by
+    /// [`Coverage::holding`]: where they lie past the old canvas they are hidden image, not
+    /// uncovered area. A straight crop has none: Photoshop fills over hidden pixels there.
+    pub held: Option<Surface>,
 }
 
 impl Coverage {
     /// An unrotated crop to `r` (original document px).
     pub fn crop(r: Rect, width: u32, height: u32) -> Self {
-        Coverage { map: [1.0, 0.0, 0.0, 1.0, f64::from(r.x0), f64::from(r.y0)], width: f64::from(width), height: f64::from(height), rotated: false }
+        Coverage { map: [1.0, 0.0, 0.0, 1.0, f64::from(r.x0), f64::from(r.y0)], width: f64::from(width), height: f64::from(height), rotated: false, held: None }
+    }
+
+    /// Takes the pixels of the layer the fill will go to from `doc` before a turned crop (the
+    /// surface is shared, not copied), so hidden pixels past the old canvas count as covered.
+    pub fn holding(mut self, doc: &Document, active: Option<LayerId>) -> Self {
+        self.held = target_layer(doc, active).ok().and_then(|id| doc.layer(id)).and_then(|l| l.surface()).cloned();
+        self
     }
 
     /// Whether the cropped canvas's pixel (u, v) is the original image's: its centre maps inside
@@ -48,7 +65,27 @@ impl Coverage {
         let [a, b, c, d, e, f] = self.map;
         let (cu, cv) = (f64::from(u) + 0.5, f64::from(v) + 0.5);
         let (x, y) = (a * cu + b * cv + e, c * cu + d * cv + f);
-        x >= margin && y >= margin && x <= self.width - margin && y <= self.height - margin
+        (x >= margin && y >= margin && x <= self.width - margin && y <= self.height - margin) || self.holds(x, y)
+    }
+
+    /// Whether the layer held an image pixel at original document point (x, y) past the canvas
+    /// (#8060): mostly opaque there and one pixel around it too (the turned edge is blended with
+    /// the background colour, as at the canvas edge). Without an alpha channel
+    /// hidden pixels can't be told from empty ones: nothing is held.
+    fn holds(&self, x: f64, y: f64) -> bool {
+        let Some(surf) = &self.held else { return false };
+        let format = surf.format();
+        if !format.alpha || !(x.is_finite() && y.is_finite()) {
+            return false;
+        }
+        let a = surf.channels().saturating_sub(1);
+        let at = |x: f64, y: f64| {
+            let (fx, fy) = (x.floor(), y.floor());
+            let limit = f64::from(i32::MAX);
+            fx.abs() < limit && fy.abs() < limit && surf.sample_channel(fx as i32, fy as i32, a) > 0.5
+        };
+        const ROUND: [(f64, f64); 5] = [(0.0, 0.0), (-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)];
+        ROUND.iter().all(|&(dx, dy)| at(x + dx, y + dy))
     }
 
     fn margin(&self) -> f64 {

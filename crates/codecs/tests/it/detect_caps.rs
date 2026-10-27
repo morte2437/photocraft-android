@@ -61,6 +61,7 @@ fn default_build_formats_all_symmetric() {
         Format::Fits,
         Format::Dpx,
         Format::Cineon,
+        Format::Iff,
     ];
     for f in expected {
         assert!(caps(f).read && caps(f).write, "{f:?}");
@@ -208,10 +209,11 @@ fn detect_magic_iff() {
     assert_eq!(detect(b"FORM\0\0\0\x14PBM "), Some(Format::Iff));
     assert_eq!(from_extension("art.LBM"), Some(Format::Iff));
     assert_eq!(from_extension("art.ilbm"), Some(Format::Iff));
-    assert!(caps(Format::Iff).read && !caps(Format::Iff).write, "IFF is read-only");
+    assert!(caps(Format::Iff).read && caps(Format::Iff).write, "IFF is read and written");
     assert!(caps(Format::Iff).alpha);
     assert!(caps(Format::Iff).layouts.contains(&photocraft_codecs::ChannelLayout::Rgba));
-    assert!(ASYMMETRIC_EXCEPTIONS.iter().any(|(f, _)| *f == Format::Iff));
+    assert!(!ASYMMETRIC_EXCEPTIONS.iter().any(|(f, _)| *f == Format::Iff));
+    assert_eq!(Format::Iff.max_dimensions(), Some((65535, 65535)));
     // A bare FORM without a bitmap type is not IFF.
     assert_eq!(detect(b"FORM\0\0\0\x14AIFF"), None);
     assert!(decode_as(Format::Iff, b"FORM\0\0\0\x14ILBM").is_err());

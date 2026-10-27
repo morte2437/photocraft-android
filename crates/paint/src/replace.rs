@@ -127,6 +127,8 @@ pub fn color_replacement_effect(pre: Surface, rs: ReplaceSettings) -> impl FnMut
             return;
         }
         let (w, h) = (r.width() as usize, r.height() as usize);
+        let mut pre_px = vec![[0.0f32; 4]; w * h];
+        pre.read_rgba_into(r, &mut pre_px);
         // Per-pixel match weight.
         let mut weight = vec![0.0f32; w * h];
         for y in r.y0..r.y1 {
@@ -136,7 +138,7 @@ pub fn color_replacement_effect(pre: Surface, rs: ReplaceSettings) -> impl FnMut
                 }
                 // Match against the pre-stroke colours, so pixels recoloured by earlier dabs of
                 // this stroke still count as the sampled colour.
-                let c = pre.rgba(x, y);
+                let c = pre_px[(y - r.y0) as usize * w + (x - r.x0) as usize];
                 if c[3] <= 0.0 {
                     continue;
                 }

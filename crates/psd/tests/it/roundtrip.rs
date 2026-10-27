@@ -232,6 +232,7 @@ fn global_mask_accessors() {
     assert_eq!(gm.opacity(), Some(50));
     assert_eq!(gm.kind(), Some(128));
     assert_eq!(GlobalLayerMask::default().kind(), None);
+    assert_eq!(GlobalLayerMask::photoshop_default().data, gm.data);
 }
 
 #[test]

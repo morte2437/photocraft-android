@@ -270,3 +270,18 @@ fn lossless_jpeg_frame_larger_than_the_budget_is_refused() {
     let budget = Limits { max_alloc: 256 << 10, ..Limits::default() };
     assert!(matches!(decode(&b, &budget), Err(RawError::LimitExceeded(_))));
 }
+
+#[test]
+fn a_non_finite_black_level_develops_without_panicking() {
+    // A BlackLevel DOUBLE beyond f32 reads as inf: the planes must not turn into NaN and trip
+    // the AHD demosaic.
+    let (w, h) = (64, 48);
+    let mut sensor = decode(&DngSpec::cfa(w, h, vec![1000; w * h]).build(), &Limits::default()).unwrap();
+    for black in [f32::INFINITY, f32::NEG_INFINITY, f32::NAN] {
+        sensor.black = BlackLevels::uniform(black);
+        for demosaic in [Demosaic::Ahd, Demosaic::Bilinear, Demosaic::Mhc] {
+            let d = develop_sensor(&sensor, &DevelopOptions { demosaic, ..DevelopOptions::default() });
+            assert!(d.is_ok(), "{black} {demosaic:?}: {:?}", d.err());
+        }
+    }
+}

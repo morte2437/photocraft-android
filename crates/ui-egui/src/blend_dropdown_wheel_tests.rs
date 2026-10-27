@@ -48,6 +48,7 @@ fn wheel(h: &mut Harness<'_, PhotocraftApp>, at: Pos2, lines: f32) {
     h.hover_at(at);
     h.run_steps(1);
     h.event(egui::Event::MouseWheel {
+        source: egui::MouseWheelSource::Unknown,
         unit: egui::MouseWheelUnit::Line,
         delta: vec2(0.0, lines),
         phase: egui::TouchPhase::Move,

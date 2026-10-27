@@ -37,6 +37,16 @@ pub struct Gradient {
     pub offset: (f32, f32),
 }
 
+/// Editable colour stops behind a Gradient Overlay's baked render stops.
+/// Older documents have no interpolation record and keep their existing appearance.
+/// Writers must rebake `gradient.stops` from this record, or clear it when replacing the curve.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GradientInterpolation {
+    pub method: String,
+    pub smoothness: f32,
+    pub stops: Vec<(f32, Color)>,
+}
+
 impl Default for Gradient {
     fn default() -> Self {
         Gradient {
@@ -278,6 +288,8 @@ pub enum Effect {
         common: FxCommon,
         gradient: Gradient,
         dither: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        interpolation: Option<GradientInterpolation>,
     },
     PatternOverlay {
         common: FxCommon,
@@ -313,7 +325,12 @@ impl Effect {
             Effect::OuterGlow(g) | Effect::InnerGlow(g) => paint(&mut g.paint),
             Effect::Stroke(s) => paint(&mut s.paint),
             Effect::ColorOverlay { color, .. } => cc(color),
-            Effect::GradientOverlay { gradient, .. } => gradient.stops.iter_mut().for_each(|s| cc(&mut s.1)),
+            Effect::GradientOverlay { gradient, interpolation, .. } => {
+                gradient.stops.iter_mut().for_each(|s| cc(&mut s.1));
+                if let Some(source) = interpolation {
+                    source.stops.iter_mut().for_each(|s| cc(&mut s.1));
+                }
+            }
             Effect::Satin(s) => cc(&mut s.color),
             Effect::BevelEmboss(b) => {
                 cc(&mut b.highlight_color);

@@ -59,6 +59,7 @@ codec_rt!(dpx_rgba16, "dpx", ColorMode::Rgb, SampleType::U16, true, 0.0);
 // Cineon stores 10-bit code values: within half a 10-bit step.
 codec_rt!(cin_gray16, "cin", ColorMode::Grayscale, SampleType::U16, false, 0.5 / 1023.0);
 codec_rt!(cin_rgb16, "cin", ColorMode::Rgb, SampleType::U16, false, 0.5 / 1023.0);
+codec_rt!(iff_rgb8_opaque, "iff", ColorMode::Rgb, SampleType::U8, false, 0.0);
 
 fn indexed_bmp_8() -> Vec<u8> {
     const FILE_HEADER_SIZE: usize = 14;
@@ -1189,4 +1190,40 @@ fn a_stereo_png_keeps_its_stereo_mark_on_save() {
     // An ordinary PNG gains no mark.
     let plain = export(&single(ColorMode::Rgb, SampleType::U8, false), "png", &ExportOptions::default()).unwrap();
     assert_eq!(photocraft_codecs::png_stereo(&plain.bytes), None);
+}
+
+/// #8563: a DDS export writes the document's alpha channel as the texture's alpha, as a 32-bit
+/// Targa does: exactly in an uncompressed texture, to 4 bits in BC2, interpolated in BC3, and on
+/// or off in BC1. With several alpha channels none is written, with a warning.
+#[test]
+fn dds_writes_the_alpha_channel_as_the_texture_alpha() {
+    use photocraft_codecs::DdsCompression;
+    let d = with_alpha_channel(single(ColorMode::Rgb, SampleType::U8, false), "Alpha 1");
+    for compression in DdsCompression::ALL {
+        let mut opts = ExportOptions::default();
+        opts.encode.dds.compression = compression;
+        let r = export(&d, "a.dds", &opts).unwrap();
+        let img = photocraft_codecs::decode(&r.bytes).expect("decode dds");
+        assert_eq!(img.layout(), photocraft_codecs::ChannelLayout::Rgba, "{compression:?}");
+        let (w, _) = img.dimensions();
+        let tolerance = match compression {
+            DdsCompression::None => 1.0,
+            DdsCompression::Bc2 => 9.0,
+            _ => 18.0,
+        };
+        for (i, px) in img.data().as_chunks::<4>().0.iter().enumerate() {
+            let x = i as u32 % w;
+            let want = alpha_value(x) * 255.0;
+            if compression == DdsCompression::Bc1 && x == 4 {
+                continue; // half opacity sits on BC1's on/off threshold
+            }
+            assert!((f32::from(px[3]) - want).abs() <= tolerance, "{compression:?} pixel {i}: alpha {} want {want}", px[3]);
+        }
+    }
+    // Two alpha channels: Photoshop's rule for Targa, none of them is written.
+    let two = with_alpha_channel(d.clone(), "Alpha 2");
+    let r = export(&two, "a.dds", &ExportOptions::default()).unwrap();
+    assert!(r.warnings.iter().any(|w| w.contains("several")), "{:?}", r.warnings);
+    let img = photocraft_codecs::decode(&r.bytes).expect("decode dds");
+    assert!(!img.layout().has_alpha() || img.data().as_chunks::<4>().0.iter().all(|p| p[3] == 255));
 }

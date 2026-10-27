@@ -23,6 +23,16 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
+# Azure Trusted Signing loads this NuGet package's dlib into signtool, beside the signing secrets,
+# so the package is pinned to a reviewed version and SHA-256 and refused on any mismatch (#2936).
+# Upgrading is a deliberate change to both values: download
+# https://www.nuget.org/api/v2/package/Microsoft.Trusted.Signing.Client/<version> and record
+# (Get-FileHash -Algorithm SHA256 <file>).Hash.
+$TrustedSigningClient = @{
+  Version = '1.0.95'
+  Sha256  = '3BFCF1E0A3CB42AF1692F0A8ED45C15DE070C2DE86F28A59B2795D904D8A920F'
+}
+
 function Write-Warn([string] $Message) {
   if ($env:GITHUB_ACTIONS) { Write-Output "::warning::$Message" } else { Write-Warning $Message }
 }
@@ -74,7 +84,12 @@ try {
     # The dlib authenticates with DefaultAzureCredential, which reads AZURE_TENANT_ID,
     # AZURE_CLIENT_ID and AZURE_CLIENT_SECRET from the environment.
     $pkg = Join-Path $tmp 'trusted-signing.zip'
-    Invoke-WebRequest -Uri 'https://www.nuget.org/api/v2/package/Microsoft.Trusted.Signing.Client' -OutFile $pkg
+    $version = $TrustedSigningClient.Version
+    Invoke-WebRequest -Uri "https://www.nuget.org/api/v2/package/Microsoft.Trusted.Signing.Client/$version" -OutFile $pkg
+    $sha256 = (Get-FileHash -Algorithm SHA256 -Path $pkg).Hash
+    if ($sha256 -ne $TrustedSigningClient.Sha256) {
+      throw "Microsoft.Trusted.Signing.Client $version has SHA-256 $sha256, expected $($TrustedSigningClient.Sha256): refusing to load it"
+    }
     Expand-Archive -Path $pkg -DestinationPath (Join-Path $tmp 'client') -Force
     $dlib = Get-ChildItem -Path (Join-Path $tmp 'client') -Recurse -Filter Azure.CodeSigning.Dlib.dll |
       Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -First 1

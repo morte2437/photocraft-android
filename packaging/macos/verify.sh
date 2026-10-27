@@ -70,6 +70,17 @@ assess() {
   return 1
 }
 
+# `stapler validate` asks Apple's CloudKit service too, which sometimes drops the connection
+# (error 68) though the ticket is there.
+validate_staple() {
+  local target="$1" attempt
+  for attempt in 1 2 3 4 5; do
+    xcrun stapler validate "$target" && return 0
+    [[ "$attempt" = 5 ]] || sleep $((attempt * 20))
+  done
+  return 1
+}
+
 for f in "$DMG" "$CLI_ZIP"; do
   if [[ ! -f "$f" ]]; then
     echo "error: missing $f" >&2
@@ -126,7 +137,7 @@ fi
 echo "==> $(basename "$DMG")"
 codesign --verify --strict --verbose=2 "$DMG"
 if [[ "$STRICT" = 1 ]]; then
-  xcrun stapler validate "$DMG" || fail "no notarization ticket stapled to the DMG"
+  validate_staple "$DMG" || fail "no notarization ticket stapled to the DMG"
   assess --assess --type open --context context:primary-signature -vv "$DMG" \
     || fail "Gatekeeper rejects the DMG"
 fi

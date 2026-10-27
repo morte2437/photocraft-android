@@ -112,7 +112,7 @@ impl Reader<'_, '_> {
         if file.pixel_size != space.pixel_size() {
             return Err(invalid(format!("{name}: pixel size {} does not match its colour space", file.pixel_size)));
         }
-        let cost = file.decoded_bytes(fmt.bytes_per_pixel())?;
+        let cost = file.decoded_bytes(fmt.bytes_per_pixel(), dx, dy)?;
         self.budget = self.budget.checked_sub(cost).ok_or_else(|| invalid("decoded layers exceed the 1 GiB limit"))?;
         let mut surface = match self.default_pixel(name, space)? {
             Some(px) if px.iter().any(|v| *v != 0.0) => Surface::with_default(fmt, &space.to_format(&px, fmt)),

@@ -739,11 +739,12 @@ fn sampler_list_replacement_and_operations_cannot_silently_cancel_each_other() {
     assert_eq!(r["scope"]["samplers"], json!([[0.5, 0.5]]));
 }
 
-/// Alt-drags the slider under the only visible `label` and returns the inspected dialog.
+/// Alt-drags the only visible slider named `label` and returns the inspected dialog.
 fn alt_drag_slider(h: &mut Harness<'_, PhotocraftApp>, label: &str) -> Value {
-    // The label sits above its 18 pt slider track.
-    let text = h.get_by_label(label).rect();
-    let at = pos2(text.left() + 80.0, text.bottom() + 12.0);
+    // The row also exposes a numeric SpinButton and a caption with the same name; the slider
+    // itself is the 18 pt track underneath them.
+    let track = h.get_by_role_and_label(egui::accesskit::Role::Slider, label).rect();
+    let at = pos2(track.left() + 80.0, track.center().y);
     let alt = Modifiers { alt: true, ..Modifiers::NONE };
     press(h, at, true, alt);
     for n in 1..=3 {

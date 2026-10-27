@@ -135,6 +135,37 @@ fn shape_layer_typed_roundtrip() {
     }
 }
 
+/// #6180: Appearance fill and stroke alphas survive PSD save/load, and a redraw
+/// (move/crop) uses those values instead of snapping to opaque.
+#[test]
+fn rectangle_appearance_alphas_survive_psd_and_redraw() {
+    let mut d = doc();
+    let sh = ShapeLayer {
+        path: photocraft_vector::shapes::rect(16.0, 16.0, 128.0, 96.0),
+        fill: Some(Fill::Solid(Color::rgba(1.0, 0.0, 0.0, 0.5))),
+        stroke: Some(ShapeStroke { width: 4.0, paint: Fill::Solid(Color::rgba(0.0, 0.0, 1.0, 0.4)), opacity: 0.5, ..ShapeStroke::default() }),
+        live: Some(LiveShape::Rect { rect: [16.0, 16.0, 128.0, 96.0], radii: [0.0; 4] }),
+        ..Default::default()
+    };
+    d.layers.push(shape_layer(sh));
+    let b = roundtrip(&d);
+    let LayerContent::Shape(s) = &b.layers[1].content else { panic!("not a shape") };
+    let Fill::Solid(fill) = s.fill.as_ref().unwrap() else { panic!("solid fill") };
+    assert!((fill.alpha - 0.5).abs() < 1e-4, "fill appearance alpha {}", fill.alpha);
+    let st = s.stroke.as_ref().unwrap();
+    let Fill::Solid(stroke_c) = &st.paint else { panic!("solid stroke") };
+    assert!((stroke_c.alpha - 0.4).abs() < 1e-4, "stroke colour alpha {}", stroke_c.alpha);
+    assert!((st.opacity - 0.5).abs() < 1e-4, "stroke opacity {}", st.opacity);
+    let mut redrawn = s.clone();
+    redrawn.cache = Some(photocraft_vector::render_shape(&redrawn, photocraft_color::PixelFormat::RGBA8, Rect::new(0, 0, 256, 256)));
+    let Fill::Solid(fill2) = redrawn.fill.as_ref().unwrap() else { panic!("solid fill") };
+    assert!((fill2.alpha - 0.5).abs() < 1e-4);
+    let st2 = redrawn.stroke.as_ref().unwrap();
+    let Fill::Solid(stroke2) = &st2.paint else { panic!("solid stroke") };
+    assert!((stroke2.alpha - 0.4).abs() < 1e-4);
+    assert!((st2.opacity - 0.5).abs() < 1e-4);
+}
+
 #[test]
 fn custom_stroke_styles_roundtrip_through_psd_vstk() {
     for align in [StrokeAlign::Inside, StrokeAlign::Center, StrokeAlign::Outside] {

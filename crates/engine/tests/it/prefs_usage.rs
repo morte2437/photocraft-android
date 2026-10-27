@@ -44,15 +44,36 @@ fn has_ident(text: &str, prefix: &str, ident: &str) -> bool {
     })
 }
 
-/// Production source of a file: everything before its unit-test module.
-fn production(text: &str) -> &str {
+/// Production source of a file: the file without its inline unit-test modules
+/// (`#[cfg(test)] mod tests { … }` at the top level, closed by `}` at column 0). A declaration
+/// (`#[cfg(test)] mod tests;`) can come before the rest of the code, so it doesn't end the scan.
+fn production(text: &str) -> String {
     // Windows checkouts may use CRLF; test-only reads must stay excluded.
-    let cut = ["#[cfg(test)]\nmod ", "#[cfg(test)]\r\nmod ", "#[cfg(test)]\npub mod ", "#[cfg(test)]\r\npub mod "]
-        .into_iter()
-        .filter_map(|marker| text.find(marker))
-        .min()
-        .unwrap_or(text.len());
-    &text[..cut]
+    let marker = "#[cfg(test)]";
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.match_indices(marker).map(|(i, _)| i).find(|&i| i == 0 || rest[..i].ends_with('\n')) {
+        let after = &rest[at + marker.len()..];
+        let item = after.trim_start();
+        let item = item.strip_prefix("pub ").unwrap_or(item);
+        let body = item.strip_prefix("mod ").and_then(|m| {
+            let name_end = m.find(|c: char| !c.is_alphanumeric() && c != '_')?;
+            m[name_end..].trim_start().strip_prefix('{')
+        });
+        let Some(body) = body else {
+            out.push_str(&rest[..at + marker.len()]);
+            rest = after;
+            continue;
+        };
+        out.push_str(&rest[..at]);
+        let Some(end) = body.match_indices("\n}").map(|(i, _)| i + 2).find(|&e| matches!(body[e..].chars().next(), None | Some('\r' | '\n'))) else {
+            return out;
+        };
+        let tail = &body[end..];
+        rest = tail.strip_prefix("\r\n").or_else(|| tail.strip_prefix('\n')).unwrap_or(tail);
+    }
+    out.push_str(rest);
+    out
 }
 
 fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -96,12 +117,22 @@ fn every_preference_is_read_or_hidden() {
     let mut files = Vec::new();
     rust_sources(&root.join("crates"), &mut files);
     rust_sources(&root.join("apps"), &mut files);
-    let sources: Vec<String> = files
-        .iter()
-        .filter(|p| !p.ends_with("engine/src/prefs.rs"))
-        .filter_map(|p| std::fs::read_to_string(p).ok())
-        .map(|t| production(&t).to_string())
+    let prefs_dir = root.join("crates/engine/src/prefs");
+    let files: Vec<(PathBuf, String)> = files
+        .into_iter()
+        .filter(|p| !p.ends_with("engine/src/prefs.rs") && !p.starts_with(&prefs_dir))
+        .filter_map(|p| std::fs::read_to_string(&p).ok().map(|t| (p, production(&t))))
         .collect();
+    let mut sources: Vec<String> = files.iter().map(|(_, t)| t.clone()).collect();
+    // A module split into child files (`foo.rs` + `foo/*.rs`) counts as one file too, so a section
+    // named in the parent and a field read in a child still count as a read.
+    for (path, text) in &files {
+        let dir = path.with_extension("");
+        let children: Vec<&str> = files.iter().filter(|(p, _)| p.starts_with(&dir)).map(|(_, t)| t.as_str()).collect();
+        if !children.is_empty() {
+            sources.push([text.as_str()].into_iter().chain(children).collect::<Vec<_>>().join("\n"));
+        }
+    }
     assert!(sources.len() > 100, "found only {} source files under {}", sources.len(), root.display());
 
     // Section key → struct name, from `pub <field>: <Type>,` in `struct Preferences`.

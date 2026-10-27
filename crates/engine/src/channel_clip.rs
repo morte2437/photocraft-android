@@ -74,7 +74,7 @@ pub(crate) fn copy(s: &mut Session) -> Result<Option<Value>> {
     if bounds.is_empty() {
         return Err(EngineError::Other("Could not copy: the selected area is empty".into()));
     }
-    s.clipboard = Some(Clip { surface, bounds, layers: None, resolution: Some(doc.resolution_dpi) });
+    s.clipboard = Some(Clip { surface, bounds, layers: None, resolution: Some(doc.resolution_dpi), source: Some(doc.id) });
     Ok(Some(json!({"bounds": [bounds.x0, bounds.y0, bounds.width(), bounds.height()], "channel": k})))
 }
 
@@ -86,7 +86,7 @@ pub(crate) fn paste(s: &mut Session, p: &Value, k: usize, in_place: bool, limit:
     let d = s.active().ok_or(EngineError::NoDocument)?;
     let canvas = d.doc.bounds();
     let id = d.active_layer.ok_or_else(|| EngineError::Other("no active layer".into()))?;
-    let (dx, dy) = crate::edit_cmds::paste_offset(&clip, canvas, p, in_place);
+    let (dx, dy) = crate::edit_cmds::paste_offset(&clip, d.doc.id, canvas, p, in_place);
     let src = crate::edit_cmds::shifted(&clip.surface, dx, dy);
     let area = src.content_bounds().intersect(&canvas);
     s.edit(label, |doc, _| {

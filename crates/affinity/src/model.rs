@@ -290,6 +290,10 @@ const MAX_NODES: usize = 500_000;
 const MAX_CHILD_SLOTS: usize = 8_000_000;
 /// Bytes of layer names the model may retain across all occurrences.
 const MAX_NAME_BYTES: usize = 64 << 20;
+/// Page rectangles the model may retain across all spreads (real books have a few hundred).
+const MAX_PAGES: usize = 1 << 18;
+/// Bytes of font names the text runs may retain across the document.
+const MAX_FONT_NAME_BYTES: usize = 16 << 20;
 
 /// Read a document: archive, `doc.dat` and the model.
 pub fn read(bytes: &[u8], limits: Limits) -> Result<Document, Error> {
@@ -307,6 +311,8 @@ pub(crate) struct Reader<'s, 'a, 'b> {
     nodes: usize,
     child_slots: usize,
     name_bytes: usize,
+    pages: usize,
+    font_name_bytes: usize,
     active: HashSet<ObjId>,
     pub(crate) geometry_budget: crate::geometry::Budget,
     /// Decoded pixels still available ([`Limits::max_pixel_bytes`] less what the layers read so
@@ -324,6 +330,8 @@ impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
             nodes: 0,
             child_slots: 0,
             name_bytes: 0,
+            pages: 0,
+            font_name_bytes: 0,
             active: HashSet::new(),
             geometry_budget: crate::geometry::Budget::default(),
             pixels_left: limits.max_pixel_bytes,
@@ -365,7 +373,7 @@ impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
                 self.warn("an unknown kind of page");
                 continue;
             }
-            let pages = pages(s, spread);
+            let pages = self.pages(spread)?;
             let default_size = s.floats::<2>(doc, b"DfSz").filter(|[w, h]| *w > 0.0 && *h > 0.0).map(|[w, h]| Rect { x0: 0.0, y0: 0.0, x1: w, y1: h });
             let bounds = s.floats::<4>(spread, b"SprB").map(rect).or_else(|| pages.iter().copied().reduce(union)).or(default_size).unwrap_or(Rect {
                 x0: 0.0,
@@ -421,7 +429,7 @@ impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
     }
 
     /// Counts raw array slots (null ones included) against [`MAX_CHILD_SLOTS`].
-    fn charge_slots(&mut self, n: usize) -> Result<(), Error> {
+    pub(crate) fn charge_slots(&mut self, n: usize) -> Result<(), Error> {
         self.child_slots = self.child_slots.saturating_add(n);
         if self.child_slots > MAX_CHILD_SLOTS {
             return Err(Error::Limit("too many child slots in the layer tree"));
@@ -553,6 +561,8 @@ impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
     /// an attached mask layer is a pixel mask. Adjustments attached the same way are reported.
     fn attached_masks(&mut self, id: ObjId, world: Affine) -> Result<(Option<Path>, Option<Image>), Error> {
         let s = self.s;
+        // Every occurrence of a shared layer scans its whole attachment array, null slots included.
+        self.charge_slots(s.array_len(id, b"AdCh").unwrap_or(0))?;
         let attached = s.objs(id, b"AdCh");
         let mut mask: Option<Path> = None;
         let mut pixels: Option<Image> = None;
@@ -601,21 +611,51 @@ impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
     }
 }
 
-/// Page rectangles: `SpMd.PagR[].rctp` (Publisher 2, Affinity 3) or `SprB` split into `PagC`
-/// equal pages (Publisher 1 facing spreads).
-fn pages(s: &Stream, spread: ObjId) -> Vec<Rect> {
-    if let Some(md) = s.obj(spread, b"SpMd") {
-        let v: Vec<Rect> = s.objs(md, b"PagR").into_iter().filter_map(|p| s.floats::<4>(p, b"rctp").map(rect)).filter(|r| r.x1 > r.x0 && r.y1 > r.y0).collect();
-        if !v.is_empty() {
-            return v;
+impl Reader<'_, '_, '_> {
+    /// Page rectangles: `SpMd.PagR[].rctp` (Publisher 2, Affinity 3) or `SprB` split into `PagC`
+    /// equal pages (Publisher 1 facing spreads). A spread listed several times, or sharing one
+    /// large page array, is expanded into a new vector each time, so the slots scanned and the
+    /// rectangles retained are charged across the document.
+    fn pages(&mut self, spread: ObjId) -> Result<Vec<Rect>, Error> {
+        let s = self.s;
+        if let Some(md) = s.obj(spread, b"SpMd") {
+            self.charge_slots(s.array_len(md, b"PagR").unwrap_or(0))?;
+            let remaining = MAX_PAGES.saturating_sub(self.pages);
+            let v: Vec<Rect> = s
+                .objs(md, b"PagR")
+                .into_iter()
+                .filter_map(|p| s.floats::<4>(p, b"rctp").map(rect))
+                .filter(|r| r.x1 > r.x0 && r.y1 > r.y0)
+                .take(remaining.saturating_add(1))
+                .collect();
+            if !v.is_empty() {
+                self.charge_pages(v.len())?;
+                return Ok(v);
+            }
         }
+        Ok(match (s.floats::<4>(spread, b"SprB").map(rect), s.int(spread, b"PagC")) {
+            (Some(b), Some(n @ 2..=16)) => {
+                self.charge_pages(n as usize)?;
+                let w = (b.x1 - b.x0) / n as f64;
+                (0..n).map(|i| Rect { x0: b.x0 + w * i as f64, x1: b.x0 + w * (i + 1) as f64, ..b }).collect()
+            }
+            _ => Vec::new(),
+        })
     }
-    match (s.floats::<4>(spread, b"SprB").map(rect), s.int(spread, b"PagC")) {
-        (Some(b), Some(n @ 2..=16)) => {
-            let w = (b.x1 - b.x0) / n as f64;
-            (0..n).map(|i| Rect { x0: b.x0 + w * i as f64, x1: b.x0 + w * (i + 1) as f64, ..b }).collect()
+
+    /// Counts retained font-name bytes against [`MAX_FONT_NAME_BYTES`]; false once it is spent.
+    pub(crate) fn charge_font_name(&mut self, n: usize) -> bool {
+        self.font_name_bytes = self.font_name_bytes.saturating_add(n);
+        self.font_name_bytes <= MAX_FONT_NAME_BYTES
+    }
+
+    /// Counts retained page rectangles against [`MAX_PAGES`].
+    fn charge_pages(&mut self, n: usize) -> Result<(), Error> {
+        self.pages = self.pages.saturating_add(n);
+        if self.pages > MAX_PAGES {
+            return Err(Error::Limit("too many pages"));
         }
-        _ => Vec::new(),
+        Ok(())
     }
 }
 

@@ -578,6 +578,10 @@
 
 # Phase 3.5 — View menu
 	100%	100%
+	105%	105%
+	110%	110%
+	115%	115%
+	120%	120%
 	200%	200%
 	32-bit Preview Options…	Tùy chọn xem trước 32-bit…
 	Anamorphic 2:1 (2)	Anamorphic 2:1 (2)
@@ -981,6 +985,10 @@
 	Frame from Layers…	Frame từ các lớp…
 	Create new document from current state	Tạo tài liệu mới từ trạng thái hiện tại
 	Create new snapshot	Tạo ảnh chụp trạng thái mới
+	From:	Từ:
+	Full Document	Toàn bộ tài liệu
+	Merged Layers	Các lớp đã gộp
+	New Snapshot	Ảnh chụp trạng thái mới
 	Delete current state	Xóa trạng thái hiện tại
 	No properties	Không có thuộc tính
 	Hide Properties	Ẩn Thuộc tính
@@ -1582,6 +1590,11 @@ cameraRaw	Shadows	Vùng tối
 	Esc to cancel	Esc để hủy
 	Cancel opening	Hủy mở tệp
 	Cancelled opening {name}	Đã hủy mở {name}
+	Damaged Photoshop document	Tài liệu Photoshop bị hỏng
+	The document “{name}” may be damaged.	Tài liệu “{name}” có thể đã bị hỏng.
+	Some layers, pixels or masks could not be read. Do you want to continue opening it?	Không thể đọc một số lớp, pixel hoặc mặt nạ. Bạn có muốn tiếp tục mở không?
+	If you continue, saving over the original may permanently discard unreadable data. Save a copy to keep the original.	Nếu tiếp tục, việc lưu đè lên bản gốc có thể loại bỏ vĩnh viễn dữ liệu không đọc được. Hãy lưu một bản sao để giữ bản gốc.
+	Continue	Tiếp tục
 	The document “{name}” does not have an embedded {mode} profile.	Tài liệu “{name}” không có hồ sơ {mode} nhúng.
 	The document “{name}” has an embedded color profile that does not match the current {mode} working space.	Tài liệu “{name}” có hồ sơ màu nhúng không khớp với không gian làm việc {mode} hiện tại.
 	Working: {working}	Không gian làm việc: {working}
@@ -2449,6 +2462,8 @@ shape	Appearance	Diện mạo
 	Fill with {mode}-neutral color (black)	Tô bằng màu trung tính của {mode} (đen)
 	Fill with {mode}-neutral color (white)	Tô bằng màu trung tính của {mode} (trắng)
 	Fix the red plane first: its corners must form a convex quad	Hãy sửa mặt phẳng đỏ trước: các góc phải tạo thành tứ giác lồi
+	Alt-click a plane to set the clone source	Nhấp Alt vào một mặt phẳng để đặt nguồn sao chép
+	Too many clone strokes: apply Vanishing Point first	Quá nhiều nét sao chép: hãy áp dụng Điểm tụ trước
 	Float Panel	Thả nổi bảng
 	Functions	Hàm
 	Grid Size:	Cỡ lưới:
@@ -3697,6 +3712,29 @@ curves	Smooth	Làm mượt
 	Sent to {printer}	Đã gửi tới {printer}
 	set in Print Settings…	đặt trong thiết lập in…
 	ICO is limited to 256 × 256 pixels	ICO giới hạn ở 256 × 256 pixel
+	Calibration	Hiệu chuẩn
+	Red Primary	Màu đỏ cơ bản
+	Green Primary	Màu lục cơ bản
+	Blue Primary	Màu lam cơ bản
+	Write xmp sidecars	Ghi tệp phụ XMP
+	Set the tone sliders from the image	Đặt các thanh trượt tông từ ảnh
+	Settings from {name}	Thiết lập từ {name}
+	Settings from {name}; {count} not supported: {names}	Thiết lập từ {name}; {count} không được hỗ trợ: {names}
+	Could not write {name}: {error}	Không thể ghi {name}: {error}
+	Kept {name}: written by another application	Đã giữ {name}: do ứng dụng khác ghi
+	Shadow Tint	Sắc độ bóng tối
+	Check for Updates…	Kiểm tra bản cập nhật…
+	PhotoCraft Updates	Bản cập nhật PhotoCraft
+	Checking for updates…	Đang kiểm tra bản cập nhật…
+	Open the release page to choose an installer for your system.	Mở trang phát hành để chọn bộ cài đặt cho hệ thống của bạn.
+	Open Download Page	Mở trang tải xuống
+	PhotoCraft is up to date.	PhotoCraft đã được cập nhật.
+	Could not check for updates.	Không thể kiểm tra bản cập nhật.
+	Updates have not been checked yet.	Chưa kiểm tra bản cập nhật.
+	Check Again	Kiểm tra lại
+	Automatically Check for Updates	Tự động kiểm tra bản cập nhật
+	Installed version: {version}	Phiên bản đã cài: {version}
+	PhotoCraft {version} is available.	PhotoCraft {version} đã có sẵn.
 # History panel › History Brush source (#2966)
 	Paints from the History panel's source state	Vẽ từ trạng thái nguồn của bảng Lịch sử
 	Sets the source for the history brush	Đặt nguồn cho cọ lịch sử
@@ -3855,6 +3893,14 @@ curves	Smooth	Làm mượt
 
 # Graphics Adapter preference (#1885)
 	GPU adapter	Bộ điều hợp GPU
+
+# Styles panel: Import / Export Styles (.asl)
+	Import Styles…	Nhập kiểu…
+	Export Selected Styles…	Xuất các kiểu đã chọn…
+	Export Styles…	Xuất kiểu…
+	{file} is not a style library (.asl)	{file} không phải là thư viện kiểu (.asl)
+@plural	Imported {n} style from {file}|Imported {n} styles from {file}	Đã nhập {n} kiểu từ {file}
+@plural	Exported {n} style to {file}|Exported {n} styles to {file}	Đã xuất {n} kiểu sang {file}
 # Actions: a step dialog holds a suspended recording (#7365)
 	Confirm or cancel the open action step dialog first	Hãy xác nhận hoặc hủy hộp thoại bước hành động đang mở trước
 	Pro Medium Gray	Pro xám vừa
@@ -3863,14 +3909,43 @@ curves	Smooth	Làm mượt
 	Pro Light Gray	Pro xám nhạt
 	Pro Light	Pro sáng
 	Resize Windows to Fit	Đổi cỡ cửa sổ cho vừa ảnh
-
 	EXR	EXR
-
 # Paragraph direction (TYPE-218-2)
 	Automatic paragraph direction	Hướng đoạn văn tự động
 	Left-to-right paragraph direction	Hướng đoạn văn từ trái sang phải
 	Right-to-left paragraph direction	Hướng đoạn văn từ phải sang trái
 	Not rendered: this adjustment ({key}) is kept as imported.	Không được kết xuất: điều chỉnh này ({key}) được giữ nguyên như khi nhập.
-
 # Print preview image (#8236)
 	Print preview image	Print preview image
+# Color panel menu: modes, copy commands and colour ramps (#6000)
+	Hue Cube	Khối sắc màu
+	Brightness Cube	Khối độ sáng
+	Color Wheel	Bánh xe màu
+	Grayscale Slider	Thanh trượt thang xám
+	RGB Sliders	Thanh trượt RGB
+	HSB Sliders	Thanh trượt HSB
+	CMYK Sliders	Thanh trượt CMYK
+	Lab Sliders	Thanh trượt Lab
+	Web Color Sliders	Thanh trượt màu web
+	Copy Color as HTML	Sao chép màu dạng HTML
+	Copy Color's Hex Code	Sao chép mã hex của màu
+	RGB Spectrum	Phổ RGB
+	CMYK Spectrum	Phổ CMYK
+	Grayscale Ramp	Dải thang xám
+	Current Colors	Màu hiện tại
+	Make Ramp Web Safe	Giới hạn dải màu ở màu web
+# Art History Brush (#213).
+	Art History Brush	Cọ lịch sử nghệ thuật
+	Art History Brush Tool	Công cụ Cọ lịch sử nghệ thuật
+	Tight Short	Chặt ngắn
+	Tight Medium	Chặt vừa
+	Tight Long	Chặt dài
+	Loose Medium	Lỏng vừa
+	Loose Long	Lỏng dài
+	Dab	Chấm
+	Tight Curl	Xoắn chặt
+	Loose Curl	Xoắn lỏng
+	Stylized dabs from a history state	Các chấm cách điệu từ một trạng thái lịch sử
+
+# Egui 0.37 migration controls (Aspect Ratio, Category, Color Table, Gamma, Interpolation, Profile, Target, Units, Demosaic)
+	Aspect Ratio	Tỷ lệ khung hình

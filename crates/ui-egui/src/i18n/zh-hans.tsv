@@ -661,6 +661,10 @@
 	Fit Layer(s) on Screen	使图层适合屏幕
 	Fit Artboard on Screen	使画板适合屏幕
 	100%	100%
+	105%	105%
+	110%	110%
+	115%	115%
+	120%	120%
 	200%	200%
 	75%	75%
 	80%	80%
@@ -1045,6 +1049,10 @@
 	Create new pattern from the selection	从选区创建图案
 	Create new shape from the current path	从当前路径创建形状
 	Create new snapshot	创建快照
+	From:	自：
+	Full Document	完整文档
+	Merged Layers	合并的图层
+	New Snapshot	新建快照
 	Create new tool preset	创建工具预设
 	Crop Factor	裁切系数
 	Ctrl	Ctrl
@@ -2307,6 +2315,11 @@ cameraRaw	Blending	混合
 # Layer navigation, copy transforms and cancellable opening (labels added on main since this catalog).
 	Cancel opening	取消打开
 	Cancelled opening {name}	已取消打开 {name}
+	Damaged Photoshop document	已损坏的 Photoshop 文档
+	The document “{name}” may be damaged.	文档“{name}”可能已损坏。
+	Some layers, pixels or masks could not be read. Do you want to continue opening it?	无法读取某些图层、像素或蒙版。是否继续打开？
+	If you continue, saving over the original may permanently discard unreadable data. Save a copy to keep the original.	如果继续，覆盖保存原始文件可能会永久丢弃无法读取的数据。请保存副本以保留原始文件。
+	Continue	继续
 	The document “{name}” does not have an embedded {mode} profile.	文档“{name}”没有嵌入的 {mode} 配置文件。
 	The document “{name}” has an embedded color profile that does not match the current {mode} working space.	文档“{name}”嵌入的颜色配置文件与当前的 {mode} 工作空间不匹配。
 	Working: {working}	工作空间：{working}
@@ -2775,6 +2788,9 @@ curves	Smooth	平滑
 	Vanishing Point is not active	消失点未处于活动状态
 	Apply Vanishing Point ({key})	应用消失点（{key}）
 	Fix the red plane first: its corners must form a convex quad	请先修正红色平面：其四个角必须构成凸四边形
+	Alt-click a plane to set the clone source	按住 Alt 键单击平面以设置仿制源
+	Too many clone strokes: apply Vanishing Point first	仿制描边过多：请先应用消失点
+	Stamp	图章
 # Select and Mask view modes (#1754)
 	Onion Skin	洋葱皮
 	Marching Ants	蚂蚁线
@@ -2883,6 +2899,30 @@ curves	Smooth	平滑
 	Sent to {printer}	已发送到 {printer}
 	set in Print Settings…	在打印设置中设置…
 	ICO is limited to 256 × 256 pixels	ICO 最大为 256 × 256 像素
+	Calibration	校准
+	Red Primary	红原色
+	Green Primary	绿原色
+	Blue Primary	蓝原色
+	Write xmp sidecars	写入 XMP 附属文件
+	Set the tone sliders from the image	根据图像设置色调滑块
+	Settings from {name}	来自 {name} 的设置
+	Settings from {name}; {count} not supported: {names}	来自 {name} 的设置；{count} 项不支持：{names}
+	Could not write {name}: {error}	无法写入 {name}：{error}
+	Kept {name}: written by another application	已保留 {name}：由其他应用程序写入
+	Shadow Tint	阴影色调
+# PhotoCraft release checks.
+	Check for Updates…	检查更新…
+	PhotoCraft Updates	PhotoCraft 更新
+	Checking for updates…	正在检查更新…
+	Open the release page to choose an installer for your system.	打开发布页，选择适合您系统的安装包。
+	Open Download Page	打开下载页面
+	PhotoCraft is up to date.	PhotoCraft 已是最新版本。
+	Could not check for updates.	无法检查更新。
+	Updates have not been checked yet.	尚未检查更新。
+	Check Again	重新检查
+	Automatically Check for Updates	自动检查更新
+	Installed version: {version}	已安装版本：{version}
+	PhotoCraft {version} is available.	PhotoCraft {version} 已发布。
 # History panel › History Brush source (#2966)
 	Paints from the History panel's source state	从历史记录面板的源状态绘画
 	Sets the source for the history brush	设置历史记录画笔的源
@@ -2999,7 +3039,7 @@ curves	Smooth	平滑
 	Next Brush	下一个画笔
 	First Brush	第一个画笔
 	Last Brush	最后一个画笔
-	Preview size	Preview size
+	Preview size	预览大小
 	Memory Usage	内存使用
 	Per-document RAM limit (MB)	每个文档的 RAM 上限 (MB)
 	Installed RAM: {ram} MB; this limit: {percent}%	已安装 RAM：{ram} MB；此上限：{percent}%
@@ -3022,6 +3062,14 @@ curves	Smooth	平滑
 
 # Graphics Adapter preference (#1885)
 	GPU adapter	GPU 适配器
+
+# Styles panel: Import / Export Styles (.asl)
+	Import Styles…	导入样式…
+	Export Selected Styles…	导出所选样式…
+	Export Styles…	导出样式…
+	{file} is not a style library (.asl)	{file} 不是样式库 (.asl)
+@plural	Imported {n} style from {file}|Imported {n} styles from {file}	已从 {file} 导入 {n} 个样式
+@plural	Exported {n} style to {file}|Exported {n} styles to {file}	已将 {n} 个样式导出到 {file}
 # Actions: a step dialog holds a suspended recording (#7365)
 	Confirm or cancel the open action step dialog first	请先确认或取消打开的动作步骤对话框
 	Pro Medium Gray	专业中灰
@@ -3030,14 +3078,59 @@ curves	Smooth	平滑
 	Pro Light Gray	专业浅灰
 	Pro Light	专业浅色
 	Resize Windows to Fit	调整窗口大小以适合
-
 	EXR	EXR
-
 # Paragraph direction (TYPE-218-2)
 	Automatic paragraph direction	自动段落方向
 	Left-to-right paragraph direction	从左到右的段落方向
 	Right-to-left paragraph direction	从右到左的段落方向
 	Not rendered: this adjustment ({key}) is kept as imported.	未渲染：此调整（{key}）按导入时的原样保留。
-
 # Print preview image (#8236)
-	Print preview image	Print preview image
+	Print preview image	打印预览图像
+
+# Color panel menu: modes, copy commands and colour ramps (#6000)
+	Hue Cube	色相立方体
+	Brightness Cube	亮度立方体
+	Color Wheel	色轮
+	Grayscale Slider	灰度滑块
+	RGB Sliders	RGB 滑块
+	HSB Sliders	HSB 滑块
+	CMYK Sliders	CMYK 滑块
+	Lab Sliders	Lab 滑块
+	Web Color Sliders	Web 颜色滑块
+	Copy Color as HTML	将颜色复制为 HTML
+	Copy Color's Hex Code	复制颜色的十六进制代码
+	RGB Spectrum	RGB 色谱
+	CMYK Spectrum	CMYK 色谱
+	Grayscale Ramp	灰度色带
+	Current Colors	当前颜色
+	Make Ramp Web Safe	使色带成为 Web 安全色
+
+# File opening, export status and graphics driver information
+	Couldn't open {name}: {error}	无法打开 {name}：{error}
+	Exported {path} ({size})	已导出 {path}（{size}）
+	Exported {path}	已导出 {path}
+	Exported {n} files	已导出 {n} 个文件
+	Driver: {driver}	驱动程序：{driver}
+# Art History Brush (#213).
+	Art History Brush	艺术历史画笔
+	Art History Brush Tool	艺术历史画笔工具
+	Tight Short	紧密短
+	Tight Medium	紧密中
+	Tight Long	紧密长
+	Loose Medium	宽松中
+	Loose Long	宽松长
+	Dab	点涂
+	Tight Curl	紧密卷曲
+	Loose Curl	宽松卷曲
+	Area	区域
+	Stylized dabs from a history state	从历史状态绘制风格化点涂
+
+# Egui 0.37 migration controls (Aspect Ratio, Category, Color Table, Gamma, Interpolation, Profile, Target, Units, Demosaic)
+	Aspect Ratio	长宽比
+	Category	类别
+	Color Table	颜色表
+	Gamma	伽马
+	Interpolation	插值
+	Profile	配置文件
+	Target	目标
+	Units	单位

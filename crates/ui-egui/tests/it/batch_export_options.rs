@@ -42,16 +42,9 @@ fn evidence(h: &mut Harness, name: &str) {
 }
 
 fn open_format_choices(h: &mut Harness) {
-    let label = h.get_by_label("Format").rect();
-    // The full app also draws the workspace and layer-blend dropdowns behind this modal.
-    // Target the actual form field beside Format, like the existing numeric-field harnesses.
-    h.query_all_by_role(egui::accesskit::Role::ComboBox)
-        .find(|n| {
-            let r = n.rect();
-            r.left() >= label.right() && (r.center().y - label.center().y).abs() < 3.0
-        })
-        .expect("format dropdown beside its label")
-        .click();
+    // The caption is a separate Label node with the same text; the accessible ComboBox name
+    // identifies the actual form field without guessing from coordinates.
+    h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Format").click();
     h.run_steps(3);
 }
 
@@ -69,32 +62,20 @@ fn replace_text(h: &mut Harness, value: &str) {
 }
 
 fn edit_path(h: &mut Harness, name: &str, value: &Path) {
-    let label = h.get_by_label(name).rect();
-    h.query_all_by_role(egui::accesskit::Role::TextInput)
-        .find(|n| {
-            let r = n.rect();
-            r.left() >= label.right() && (r.center().y - label.center().y).abs() < 3.0
-        })
-        .expect("path text field beside its label")
-        .click();
+    h.get_by_role_and_label(egui::accesskit::Role::TextInput, name).click();
     h.run_steps(2);
     replace_text(h, &value.to_string_lossy());
-    h.get_by_label(name).click();
+    // Clicking the caption commits the field without Enter confirming the dialog.
+    h.get_by_role_and_label(egui::accesskit::Role::Label, name).click();
     h.run_steps(2);
 }
 
 fn edit_quality(h: &mut Harness, value: &str) {
-    let label = h.get_by_label("Quality").rect();
-    h.query_all_by_role(egui::accesskit::Role::SpinButton)
-        .find(|n| {
-            let r = n.rect();
-            r.left() >= label.right() && (r.center().y - label.center().y).abs() < 3.0
-        })
-        .expect("quality numeric field beside its label")
-        .click();
+    h.get_by_role_and_label(egui::accesskit::Role::SpinButton, "Quality").click();
     h.run_steps(2);
     replace_text(h, value);
-    h.get_by_label("Quality").click();
+    // Clicking the caption commits the field without Enter confirming the dialog.
+    h.get_by_role_and_label(egui::accesskit::Role::Label, "Quality").click();
     h.run_steps(3);
 }
 
@@ -114,7 +95,7 @@ fn batch_menu_offers_quality() {
     let mut h = harness();
     open(&mut h, "file.automate.batch");
     evidence(&mut h, "batch-quality");
-    assert!(h.query_by_label("Quality").is_some(), "Batch must expose its supported output quality");
+    assert!(h.query_by_role_and_label(egui::accesskit::Role::SpinButton, "Quality").is_some(), "Batch must expose its supported output quality");
 }
 
 #[test]
@@ -310,18 +291,11 @@ fn batch_naming_controls_export_the_requested_names_and_reset_on_cancel() {
     h.get_by_role_and_label(egui::accesskit::Role::TextInput, "File Naming").click();
     h.run_steps(2);
     replace_text(&mut h, "{serial}_{name}");
-    let label = h.get_by_label("Starting serial").rect();
-    h.query_all_by_role(egui::accesskit::Role::SpinButton)
-        .find(|n| {
-            let r = n.rect();
-            r.left() >= label.right() && r.left() < label.right() + 100.0 && (r.center().y - label.center().y).abs() < 3.0
-        })
-        .expect("starting serial number control")
-        .click();
+    h.get_by_role_and_label(egui::accesskit::Role::SpinButton, "Starting serial").click();
     h.run_steps(2);
     h.event(egui::Event::Text("7".into()));
     h.run_steps(3);
-    h.get_by_label("Starting serial").click();
+    h.get_by_role_and_label(egui::accesskit::Role::Label, "Starting serial").click();
     h.run_steps(3);
     assert_eq!(h.state().ui.dialogs.last().unwrap().fields["startingSerial"], 7, "typing changes the starting serial");
     evidence(&mut h, "batch-naming");

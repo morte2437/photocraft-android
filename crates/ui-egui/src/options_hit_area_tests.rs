@@ -1,7 +1,10 @@
 //! #5052: the actual Brush options caption and field form one scrub target.
 use crate::PhotocraftApp;
 use egui::{Modifiers, Pos2, Rect, pos2, vec2};
-use egui_kittest::{Harness, kittest::Queryable};
+use egui_kittest::{
+    Harness,
+    kittest::{NodeT, Queryable},
+};
 
 fn harness() -> Harness<'static, PhotocraftApp> {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
@@ -21,7 +24,13 @@ fn harness() -> Harness<'static, PhotocraftApp> {
 }
 
 fn geometry(h: &Harness<'_, PhotocraftApp>) -> (Rect, Rect) {
-    let label = h.get_by_label("Hardness").rect();
+    // The visible caption, not the number field it names: kittest returns the labelled control
+    // for `get_by_label`, whose rect would put the drag inside the numeric editor.
+    let label = h
+        .query_all(egui_kittest::kittest::by().label("Hardness").include_labels())
+        .find(|n| n.accesskit_node().role() == egui::accesskit::Role::Label)
+        .expect("the Hardness caption")
+        .rect();
     let field = h
         .get_all_by_role(egui::accesskit::Role::SpinButton)
         .map(|n| n.rect())
@@ -118,7 +127,7 @@ fn options_expanded_hit_click_does_not_edit_or_request_focus() {
     click(&mut h, f.center());
     let before_focus = h.ctx.memory(|m| m.focused()).expect("numeric editor focus");
     let before_journal = h.state().session.journal.len();
-    let l = h.get_by_label("Hardness").rect();
+    let (l, _) = geometry(&h);
     click(&mut h, l.center() + vec2(0.0, 10.0));
     assert_eq!(h.state().session.tools.brush.hardness, 0.5);
     println!(
@@ -196,4 +205,30 @@ fn options_tab_moves_from_hardness_to_opacity_without_a_caption_stop() {
     h.run_steps(2);
     assert_eq!(h.state().session.tools.brush.hardness, 0.5);
     assert!((h.state().session.tools.brush.opacity - 0.99).abs() < 0.0001);
+}
+
+// Regression test for #3425: the options bar drew its own 1 px top and bottom separator inside
+// the panel, on top of the panel's own border, so the borders doubled (three lines, not one).
+#[test]
+fn options_bar_has_a_single_full_width_border() {
+    for kind in [crate::theme::ThemeKind::Studio, crate::theme::ThemeKind::Pro, crate::theme::ThemeKind::Classic] {
+        let mut h = harness();
+        PhotocraftApp::setup_context(&h.ctx, kind);
+        h.run_steps(4);
+        let separator = crate::theme::Tokens::get(&h.ctx).separator;
+        let borders: Vec<_> = h
+            .output()
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::LineSegment { points, stroke }
+                    if stroke.color == separator && (points[0].y - points[1].y).abs() < 0.01 && (points[1].x - points[0].x).abs() > 400.0 =>
+                {
+                    Some(*points)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(borders.len(), 1, "{kind:?}: the options bar has exactly one border, the panel's (its own would double it): {borders:?}");
+    }
 }

@@ -426,6 +426,10 @@
 	Zoom Out	Зменшити
 	Fit on Screen	Умістити на екрані
 	100%	100%
+	105%	105%
+	110%	110%
+	115%	115%
+	120%	120%
 	200%	200%
 	75%	75%
 	80%	80%
@@ -2469,6 +2473,11 @@
 	No path to make a selection from: draw one with the Pen tool or select one in the Paths panel.	Немає контуру для створення виділення: намалюйте його пером або виберіть на панелі контурів.
 	Cancel opening	Скасувати відкриття
 	Cancelled opening {name}	Відкриття {name} скасовано
+	Damaged Photoshop document	Пошкоджений документ Photoshop
+	The document “{name}” may be damaged.	Документ «{name}», можливо, пошкоджено.
+	Some layers, pixels or masks could not be read. Do you want to continue opening it?	Не вдалося прочитати деякі шари, пікселі або маски. Продовжити відкриття?
+	If you continue, saving over the original may permanently discard unreadable data. Save a copy to keep the original.	Якщо продовжити, збереження поверх оригіналу може безповоротно видалити дані, які не вдалося прочитати. Щоб зберегти оригінал, збережіть копію.
+	Continue	Продовжити
 	The document “{name}” does not have an embedded {mode} profile.	Документ «{name}» не має вбудованого профілю {mode}.
 	The document “{name}” has an embedded color profile that does not match the current {mode} working space.	Вбудований колірний профіль документа «{name}» не відповідає поточному робочому простору {mode}.
 	Working: {working}	Робочий простір: {working}
@@ -2755,6 +2764,9 @@ fontWeight	Italic	Курсивний
 	Create new document from current state	Створити новий документ із поточного стану
 	Create new fill or adjustment layer	Створити новий шар заливки або корекції
 	Create new snapshot	Створити новий знімок стану
+	From:	З:
+	Full Document	Увесь документ
+	Merged Layers	Об'єднані шари
 	Delete Cropped Pixels	Видаляти обрізані пікселі
 	Delete current state	Видалити поточний стан
 
@@ -3810,6 +3822,8 @@ curves	Smooth	Згладити
 	Vanishing Point is not active	Точка сходження не активна
 	Apply Vanishing Point ({key})	Застосувати точку сходження ({key})
 	Fix the red plane first: its corners must form a convex quad	Спершу виправте червону площину: її кути мають утворювати опуклий чотирикутник
+	Alt-click a plane to set the clone source	Клацніть площину з Alt, щоб задати джерело клонування
+	Too many clone strokes: apply Vanishing Point first	Забагато мазків клонування: спочатку застосуйте «Точку сходження»
 # Select and Mask view modes (#1754)
 	Onion Skin	Калька
 	Marching Ants	Мурашки
@@ -3934,6 +3948,30 @@ curves	Smooth	Згладити
 	Sent to {printer}	Надіслано на {printer}
 	set in Print Settings…	задається в параметрах друку…
 	ICO is limited to 256 × 256 pixels	ICO обмежено розміром 256 × 256 пікселів
+	Calibration	Калібрування
+	Red Primary	Червоний основний
+	Green Primary	Зелений основний
+	Blue Primary	Синій основний
+	Write xmp sidecars	Записувати супутні файли XMP
+	Set the tone sliders from the image	Встановити повзунки тону за зображенням
+	Settings from {name}	Налаштування з {name}
+	Settings from {name}; {count} not supported: {names}	Налаштування з {name}; не підтримується: {count}: {names}
+	Could not write {name}: {error}	Не вдалося записати {name}: {error}
+	Kept {name}: written by another application	{name} залишено без змін: записаний іншою програмою
+	Shadow Tint	Відтінок тіней
+# PhotoCraft release checks.
+	Check for Updates…	Перевірити оновлення…
+	PhotoCraft Updates	Оновлення PhotoCraft
+	Checking for updates…	Перевірка оновлень…
+	Open the release page to choose an installer for your system.	Відкрийте сторінку випуску й виберіть інсталятор для своєї системи.
+	Open Download Page	Відкрити сторінку завантаження
+	PhotoCraft is up to date.	PhotoCraft оновлено до останньої версії.
+	Could not check for updates.	Не вдалося перевірити оновлення.
+	Updates have not been checked yet.	Оновлення ще не перевірялися.
+	Check Again	Перевірити знову
+	Automatically Check for Updates	Автоматично перевіряти оновлення
+	Installed version: {version}	Встановлена версія: {version}
+	PhotoCraft {version} is available.	Доступна версія PhotoCraft {version}.
 # History panel › History Brush source (#2966)
 	Paints from the History panel's source state	Малює з вихідного стану панелі «Історія»
 	Sets the source for the history brush	Задає джерело для пензля історії
@@ -4072,6 +4110,14 @@ curves	Smooth	Згладити
 
 # Graphics Adapter preference (#1885)
 	GPU adapter	Адаптер GPU
+
+# Styles panel: Import / Export Styles (.asl)
+	Import Styles…	Імпортувати стилі…
+	Export Selected Styles…	Експортувати вибрані стилі…
+	Export Styles…	Експортувати стилі…
+	{file} is not a style library (.asl)	{file} не є бібліотекою стилів (.asl)
+@plural	Imported {n} style from {file}|Imported {n} styles from {file}	Імпортовано {n} стиль з {file}|Імпортовано {n} стилі з {file}|Імпортовано {n} стилів з {file}
+@plural	Exported {n} style to {file}|Exported {n} styles to {file}	Експортовано {n} стиль до {file}|Експортовано {n} стилі до {file}|Експортовано {n} стилів до {file}
 # Actions: a step dialog holds a suspended recording (#7365)
 	Confirm or cancel the open action step dialog first	Спочатку підтвердьте або скасуйте відкритий діалог кроку операції
 	Pro Medium Gray	Середньосіра «Профі»
@@ -4080,14 +4126,41 @@ curves	Smooth	Згладити
 	Pro Light Gray	Світло-сіра «Профі»
 	Pro Light	Світла «Профі»
 	Resize Windows to Fit	Підганяти розмір вікон
-
 	EXR	EXR
-
 # Paragraph direction (TYPE-218-2)
 	Automatic paragraph direction	Автоматичний напрямок абзацу
 	Left-to-right paragraph direction	Напрямок абзацу зліва направо
 	Right-to-left paragraph direction	Напрямок абзацу справа наліво
 	Not rendered: this adjustment ({key}) is kept as imported.	Не відображається: це коригування ({key}) збережено як було імпортовано.
-
 # Print preview image (#8236)
 	Print preview image	Print preview image
+# Color panel menu: modes, copy commands and colour ramps (#6000)
+	Hue Cube	Куб тону
+	Brightness Cube	Куб яскравості
+	Color Wheel	Колірне коло
+	RGB Sliders	Повзунки RGB
+	HSB Sliders	Повзунки HSB
+	CMYK Sliders	Повзунки CMYK
+	Lab Sliders	Повзунки Lab
+	Web Color Sliders	Повзунки вебкольорів
+	Copy Color as HTML	Копіювати колір як HTML
+	Copy Color's Hex Code	Копіювати шістнадцятковий код кольору
+	RGB Spectrum	Спектр RGB
+	CMYK Spectrum	Спектр CMYK
+	Grayscale Ramp	Шкала градацій сірого
+	Current Colors	Поточні кольори
+	Make Ramp Web Safe	Зробити шкалу безпечною для вебу
+# Art History Brush (#213).
+	Art History Brush Tool	Інструмент «Художній пензель історії»
+	Tight Short	Щільний короткий
+	Tight Medium	Щільний середній
+	Tight Long	Щільний довгий
+	Loose Medium	Вільний середній
+	Loose Long	Вільний довгий
+	Dab	Мазок
+	Tight Curl	Щільний завиток
+	Loose Curl	Вільний завиток
+	Stylized dabs from a history state	Стилізовані мазки зі стану історії
+
+# Egui 0.37 migration controls (Aspect Ratio, Category, Color Table, Gamma, Interpolation, Profile, Target, Units, Demosaic)
+	Target	Ціль

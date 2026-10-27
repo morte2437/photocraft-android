@@ -577,6 +577,7 @@ impl eframe::App for Shell {
                     delta: egui::vec2(0.0, -need),
                     phase: egui::TouchPhase::Move,
                     modifiers: egui::Modifiers::NONE,
+                    source: egui::MouseWheelSource::Wheel,
                 });
             }
         }

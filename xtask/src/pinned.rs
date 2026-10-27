@@ -9,6 +9,7 @@
 //! `--update-manifest` rewrites the manifest from the download (after moving a pin).
 //! Local mode copies from a working clone instead of downloading (see `fetch_local`).
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -117,7 +118,7 @@ impl PinnedCorpus {
             }
             if ft.is_dir() {
                 self.collect_inner(&p, base, out, visited, dirs);
-            } else if ft.is_file() && p.extension().and_then(|e| e.to_str()).is_some_and(|e| self.exts.iter().any(|x| e.eq_ignore_ascii_case(x))) {
+            } else if ft.is_file() && p.extension().and_then(OsStr::to_str).is_some_and(|e| self.exts.iter().any(|x| e.eq_ignore_ascii_case(x))) {
                 out.push(p.strip_prefix(base).unwrap_or(&p).to_path_buf());
             }
         }

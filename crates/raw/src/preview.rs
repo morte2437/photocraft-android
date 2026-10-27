@@ -1,5 +1,7 @@
 //! Finding the camera-rendered JPEG preview embedded in a raw file.
 
+use crate::Limits;
+use crate::sensor::{JPEG_XL, JpegLayout, read_plane};
 use crate::tiff::{Tiff, tag};
 
 /// An embedded baseline-JPEG preview.
@@ -101,11 +103,60 @@ pub fn embedded_previews(bytes: &[u8]) -> Vec<Preview<'_>> {
     found
 }
 
+/// A DNG 1.7 preview compressed with JPEG XL (Compression 52546), decoded. Converters that
+/// write their raw data as JPEG XL store the larger previews that way too, leaving only a small
+/// thumbnail as a JPEG stream for [`embedded_previews`] (#8125).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DecodedPreview {
+    pub width: u32,
+    pub height: u32,
+    /// BitsPerSample: `rgb` holds `0..=2^bits - 1`.
+    pub bits: u32,
+    /// Interleaved RGB, `width * height * 3` samples.
+    pub rgb: Vec<u16>,
+    /// The DNG PreviewColorSpace (tag 50970); `None` when it's unknown or grey.
+    pub color_space: Option<PreviewColorSpace>,
+}
+
+/// DNG PreviewColorSpace (DNG Specification 1.7).
+const PREVIEW_COLOR_SPACE: u16 = 50970;
+
+/// The largest JPEG XL-compressed RGB preview of a DNG that decodes within `limits`: larger ones
+/// that don't (over the limits, or damaged) give way to the next. `None` when none decodes
+/// (always in the browser build, which has no JPEG XL decoder).
+pub fn embedded_jxl_preview(bytes: &[u8], limits: &Limits) -> Option<DecodedPreview> {
+    let t = Tiff::new(bytes)?;
+    let ifd0 = t.ifd_at(t.first_ifd, 0)?;
+    if !ifd0.has(tag::DNG_VERSION) {
+        return None;
+    }
+    let area = |i: &crate::tiff::Ifd| u64::from(t.tag_uint(i, tag::IMAGE_WIDTH).unwrap_or(0)) * u64::from(t.tag_uint(i, tag::IMAGE_LENGTH).unwrap_or(0));
+    let mut previews: Vec<_> = t
+        .all_ifds()
+        .into_iter()
+        .filter(|i| t.tag_uint(i, tag::NEW_SUBFILE_TYPE) == Some(1))
+        .filter(|i| t.tag_uint(i, tag::COMPRESSION) == Some(JPEG_XL) && t.tag_uint(i, tag::SAMPLES_PER_PIXEL) == Some(3))
+        // A rendered RGB (or YCbCr) picture, not a reduced-resolution LinearRaw or CFA image.
+        .filter(|i| matches!(t.tag_uint(i, tag::PHOTOMETRIC), Some(2 | 6)))
+        .collect();
+    previews.sort_by_key(|i| std::cmp::Reverse(area(i)));
+    let (ifd, plane) = previews.into_iter().find_map(|i| read_plane(&t, &i, limits, JpegLayout::Flat).ok().map(|p| (i, p)))?;
+    let color_space = match t.tag_uint(&ifd, PREVIEW_COLOR_SPACE).or_else(|| t.tag_uint(&ifd0, PREVIEW_COLOR_SPACE)) {
+        Some(2) => Some(PreviewColorSpace::Srgb),
+        Some(3) => Some(PreviewColorSpace::AdobeRgb),
+        Some(4) => Some(PreviewColorSpace::ProPhoto),
+        _ => None,
+    };
+    Some(DecodedPreview { width: u32::try_from(plane.width).ok()?, height: u32::try_from(plane.height).ok()?, bits: plane.bits, rgb: plane.data, color_space })
+}
+
 /// The colour space a raw file states for its embedded previews, which carry no ICC profile of their own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreviewColorSpace {
     Srgb,
     AdobeRgb,
+    /// ProPhoto RGB, which a DNG can state for its previews (PreviewColorSpace 4).
+    ProPhoto,
 }
 
 /// Nikon maker note tag ColorSpace: 1 = sRGB, 2 = Adobe RGB (4 = BT.2100, which is not a preview colour space we

@@ -56,7 +56,7 @@ Dispatch order matches `dialogs::show` in `dialogs.rs` (check earlier rows befor
 | `__resetAllTools` | `tool_reset.rs` | Reset All Tools confirmation |
 | `__cropPresetNew` / `__cropPresetDelete` | `crop_presets.rs` | New / delete crop preset |
 | `__variables` | `variables_ui.rs` | Image › Variables (Define, Data Sets, Apply) |
-| `__web` / `__print` | `file_ui.rs` | Save for Web, Print |
+| `__web` / `__print` | `file_ui.rs` | Save for Web (reopens on the preview tab chosen last, #9174), Print |
 | `__colorPicker` | `color_picker_ui.rs` | Foreground/background, nested field/command pickers (see nested keys below) |
 | `__colorRange` | `color_range_ui.rs` | Select › Color Range… |
 | `__prefsui` | `prefs_ui.rs` | Edit › Preferences… and related preset/import subdialogs |

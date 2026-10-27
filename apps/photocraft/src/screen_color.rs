@@ -1,6 +1,11 @@
 //! Desktop colour capture starts only on an explicit UI request. No snapshots are written to
 //! disk, transmitted or retained after a pick. Wayland delegates to its permission portal.
-use photocraft_ui_egui::screen_picker::{Capture, MAX_PIXELS, Pending, ScreenImage, Service};
+use photocraft_ui_egui::screen_picker::{Capture, Pending, Service};
+// Only the platform capture backends (and the tests) build images and check sizes.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", test))]
+use photocraft_ui_egui::screen_picker::MAX_PIXELS;
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+use photocraft_ui_egui::screen_picker::ScreenImage;
 
 pub fn service(cc: &eframe::CreationContext<'_>, wayland: bool) -> Option<Service> {
     if !cfg!(any(target_os = "linux", target_os = "macos", target_os = "windows")) {
@@ -34,6 +39,7 @@ pub fn service(cc: &eframe::CreationContext<'_>, wayland: bool) -> Option<Servic
     }))
 }
 #[derive(Clone, Copy)]
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos", target_os = "windows", test)), allow(dead_code))]
 struct Placement {
     index: usize,
     x: i32,
@@ -41,9 +47,11 @@ struct Placement {
     width: u32,
     height: u32,
 }
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", test))]
 fn find_monitor(placements: &[Placement], x: i32, y: i32, w: u32, h: u32) -> Option<usize> {
     placements.iter().find(|p| p.x == x && p.y == y && p.width == w && p.height == h).map(|p| p.index)
 }
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", test))]
 fn count(width: usize, height: usize) -> Result<usize, String> {
     width.checked_mul(height).filter(|&n| n > 0 && n <= MAX_PIXELS).ok_or_else(|| "Screen capture exceeds the 64 MP memory budget".into())
 }

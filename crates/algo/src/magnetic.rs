@@ -512,12 +512,11 @@ fn direction_cost(tp: [f32; 2], tq: [f32; 2], dx: i32, dy: i32, len: f32) -> f32
     if tp == [0.0; 2] || tq == [0.0; 2] {
         return NEUTRAL_DIRECTION;
     }
-    let mut l = [dx as f32 / len, dy as f32 / len];
-    if tp[0] * l[0] + tp[1] * l[1] < 0.0 {
-        l = [-l[0], -l[1]];
-    }
-    let dp = (tp[0] * l[0] + tp[1] * l[1]).clamp(-1.0, 1.0);
-    let dq = (l[0] * tq[0] + l[1] * tq[1]).clamp(-1.0, 1.0);
+    // An edge tangent is an axis, not a directed vector: reversing the strongest channel's
+    // gradient must not make an otherwise straight edge expensive to follow.
+    let l = [dx as f32 / len, dy as f32 / len];
+    let dp = (tp[0] * l[0] + tp[1] * l[1]).abs().clamp(0.0, 1.0);
+    let dq = (l[0] * tq[0] + l[1] * tq[1]).abs().clamp(0.0, 1.0);
     2.0 / (3.0 * PI) * (dp.acos() + dq.acos())
 }
 

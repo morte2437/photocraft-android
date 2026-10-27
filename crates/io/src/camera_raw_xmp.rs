@@ -3,8 +3,9 @@
 //! `x:xmpmeta/rdf:RDF/rdf:Description`, as attributes or as child elements.
 //!
 //! Loading applies only the settings the file holds, over the current ones, as Camera Raw's
-//! Load Settings does; settings PhotoCraft has no control for (lens corrections, calibration,
-//! geometry, defringe, …) are ignored and named in the report. Saving writes every supported
+//! Load Settings does; settings PhotoCraft has no control for (lens corrections, geometry,
+//! defringe, …) are ignored and named in the report. The same reader fills the dialog from a
+//! raw file's sidecar (`IMG_0001.xmp` beside `IMG_0001.CR2`), and the writer keeps it. Saving writes every supported
 //! control, so loading the file in Photoshop reproduces the dialog.
 //!
 //! White balance: a Camera Raw Filter on a rendered image uses the relative
@@ -100,6 +101,14 @@ const SCALARS: &[(&str, Field, f32, f32)] = &[
     ("PostCropVignetteRoundness", |p| &mut p.vignette_roundness, -100.0, 100.0),
     ("PostCropVignetteFeather", |p| &mut p.vignette_feather, 0.0, 100.0),
     ("PostCropVignetteHighlightContrast", |p| &mut p.vignette_highlights, 0.0, 100.0),
+    // Calibration
+    ("ShadowTint", |p| &mut p.shadow_tint, -100.0, 100.0),
+    ("RedHue", |p| &mut p.calibration_hue[0], -100.0, 100.0),
+    ("RedSaturation", |p| &mut p.calibration_sat[0], -100.0, 100.0),
+    ("GreenHue", |p| &mut p.calibration_hue[1], -100.0, 100.0),
+    ("GreenSaturation", |p| &mut p.calibration_sat[1], -100.0, 100.0),
+    ("BlueHue", |p| &mut p.calibration_hue[2], -100.0, 100.0),
+    ("BlueSaturation", |p| &mut p.calibration_sat[2], -100.0, 100.0),
 ];
 
 type Curve = fn(&mut CameraRaw) -> &mut Vec<[f32; 2]>;
@@ -265,6 +274,25 @@ fn escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
+/// The XMP toolkit [`save`] names on `x:xmpmeta`.
+const TOOLKIT: &str = "PhotoCraft";
+const META_NS: &str = "adobe:ns:meta/";
+
+/// Did [`save`] write this file? True when its `x:xmpmeta` names PhotoCraft as the toolkit
+/// (`x:xmptk`). Lightroom, Bridge and Camera Raw put their own toolkit there when they write a
+/// file, so a sidecar another application touched since reads false. Never panics.
+pub fn is_photocraft_xmp(bytes: &[u8]) -> bool {
+    if bytes.len() > MAX_XMP_BYTES {
+        return false;
+    }
+    let Ok(text) = std::str::from_utf8(bytes) else { return false };
+    let Ok(doc) = roxmltree::Document::parse(text.trim_start_matches('\u{feff}')) else { return false };
+    doc.descendants()
+        .find(|n| n.is_element() && n.tag_name().namespace() == Some(META_NS) && n.tag_name().name() == "xmpmeta")
+        .and_then(|n| n.attribute((META_NS, "xmptk")))
+        == Some(TOOLKIT)
+}
+
 /// Write `params` as a Camera Raw settings file Photoshop's Load Settings… reads.
 pub fn save(params: &CameraRaw) -> String {
     let mut p = params.clone();
@@ -357,7 +385,8 @@ mod tests {
         assert_eq!(p.point_curve_red, vec![[0.0, 0.0], [128.0, 140.0], [255.0, 255.0]]);
         assert_eq!(p.dehaze, 12.0);
         // Lens vignetting, calibration and geometry have no counterpart.
-        assert_eq!(r.ignored, vec!["VignetteAmount".to_string(), "RedHue".to_string()]);
+        assert_eq!(r.ignored, vec!["VignetteAmount".to_string()], "the Calibration panel's keys load now");
+        assert_eq!(p.calibration_hue[0], -5.0);
     }
 
     #[test]
@@ -419,5 +448,25 @@ mod tests {
         let r = load(&mut p, xmp).unwrap();
         assert_eq!(p, before);
         assert_eq!(r.ignored, vec!["Contrast2012".to_string(), "ToneCurvePV2012".to_string()]);
+    }
+
+    #[test]
+    fn is_photocraft_xmp_reads_the_toolkit_marker() {
+        let own = save(&CameraRaw { contrast: 15.0, ..CameraRaw::default() });
+        assert!(is_photocraft_xmp(own.as_bytes()));
+        let wrapped = format!("\u{feff}<?xpacket begin=\"\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n{own}<?xpacket end=\"w\"?>");
+        assert!(is_photocraft_xmp(wrapped.as_bytes()), "an xpacket wrapper and a byte order mark");
+        assert!(!is_photocraft_xmp(FIXTURE), "Camera Raw's own toolkit");
+        for other in [
+            &b""[..],
+            b"<x:xmpmeta",
+            b"<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"/>",
+            b"<x:xmpmeta xmlns:x=\"adobe:ns:meta/\" xmptk=\"PhotoCraft\"/>",
+            b"<x:xmpmeta xmlns:x=\"other:ns/\" x:xmptk=\"PhotoCraft\"/>",
+            b"<x:xmpmeta xmlns:x=\"adobe:ns:meta/\" x:xmptk=\"PhotoCraft 2\"/>",
+            b"\xff\xfe",
+        ] {
+            assert!(!is_photocraft_xmp(other), "{}", String::from_utf8_lossy(other));
+        }
     }
 }

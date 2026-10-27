@@ -903,6 +903,50 @@ fn select_subject_leaves_a_background_coloured_gap_open() {
     assert!(v > 0.9, "IoU {v}");
 }
 
+#[test]
+fn antialias_blends_edge_pixels_with_their_neighbourhood() {
+    // A lone selected pixel keeps most of its coverage and its neighbours get half of a ninth;
+    // neighbours outside the mask count as the pixel itself.
+    let mut m = vec![0, 0, 0, 0, 255, 0, 0, 0, 0];
+    antialias_u8(&mut m, 3, 3);
+    assert_eq!(m, [14, 14, 14, 14, 142, 14, 14, 14, 14]);
+}
+
+#[test]
+fn antialias_skips_only_spans_without_edge_pixels() {
+    // Every pixel through the per-pixel rule, no span skipped.
+    let every_pixel = |mask: &mut [u8], w: usize, h: usize| {
+        let src = mask.to_vec();
+        for y in 0..h {
+            for x in 0..w {
+                if let Some(v) = edge_value(&src, w, h, x, y) {
+                    mask[y * w + x] = v;
+                }
+            }
+        }
+    };
+    let mut rng = Rng::new(11);
+    // Widths around the 64-pixel span, single rows and columns, discs, noise and stripes.
+    for (w, h) in [(1usize, 1usize), (1, 9), (9, 1), (63, 4), (64, 3), (65, 5), (127, 2), (129, 70), (300, 200)] {
+        let (cx, cy, r) = (w as f32 * 0.6, h as f32 * 0.4, w.min(h) as f32 / 3.0);
+        let masks: Vec<Vec<u8>> = vec![
+            vec![255; w * h],
+            vec![0; w * h],
+            (0..w * h).map(|i| if ((i % w) as f32 - cx).hypot((i / w) as f32 - cy) < r { 255 } else { 0 }).collect(),
+            (0..w * h).map(|_| if rng.f32() < 0.02 { 255 } else { 0 }).collect(),
+            (0..w * h).map(|_| if rng.f32() < 0.5 { 255 } else { 0 }).collect(),
+            (0..w * h).map(|i| if (i % w) / 64 % 2 == 0 { 255 } else { 0 }).collect(),
+            (0..w * h).map(|i| if i % w == w - 1 || i / w == h / 2 { 255 } else { 0 }).collect(),
+        ];
+        for (k, m) in masks.into_iter().enumerate() {
+            let (mut fast, mut slow) = (m.clone(), m);
+            antialias_u8(&mut fast, w, h);
+            every_pixel(&mut slow, w, h);
+            assert!(fast == slow, "{w}×{h} mask {k}");
+        }
+    }
+}
+
 /// Timing on a 6 MP figure, for before/after numbers (`cargo test --release -- --ignored select_subject_timing --nocapture`).
 #[test]
 #[ignore = "timing only"]

@@ -39,7 +39,7 @@ blake3 = { version = "1.8", default-features = false, features = ["pure"] }
 # pdn.rs inflates Paint.NET's gzip pixel chunks.
 flate2 = { workspace = true }
 # ora.rs reads OpenRaster's stack.xml (already in the tree through usvg).
-roxmltree = "0.20"
+roxmltree = "0.21"
 # SVG import (svg.rs): usvg parses, resvg rasterises what the shape model can't hold. Both are
 # already in the tree through the UI's icon loader; text shaping needs the fonts feature set.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -56,3 +56,7 @@ photocraft-psd = { workspace = true, features = ["testgen"] }
 photocraft-raw = { workspace = true, features = ["testgen"] }
 photocraft-testkit = { workspace = true }
 proptest = { workspace = true }
+# Lossless JPEG XL encoder for the JPEG XL DNG preview test (tests only), as in photocraft-raw.
+zune-jpegxl = { version = "=0.5.2", default-features = false, features = ["std"] }
+zune-core = { workspace = true }
+tiff = { version = "0.11", default-features = false, features = ["deflate", "lzw"] }

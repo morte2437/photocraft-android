@@ -537,6 +537,26 @@ pub(crate) fn bits_for(opt: Option<DpxBits>, sample: SampleType) -> u8 {
     }
 }
 
+/// The bits `format` stores below its U16 plan: DPX at 10 or 12 bits, Cineon's 10. `None` when
+/// the stored depth is the plan's sample type.
+pub(crate) fn packed_bits(format: Format, opts: &EncodeOptions) -> Option<u8> {
+    match format {
+        Format::Dpx => opts.dpx_bits.filter(|b| matches!(b, DpxBits::Bits10 | DpxBits::Bits12)).map(DpxBits::bits),
+        Format::Cineon => Some(10),
+        _ => None,
+    }
+}
+
+/// `true` when every sample of a U16 image is already a `bits`-bit code value, so writing it at
+/// `bits` and reading it back gives the same samples (a frame opened from such a file).
+pub(crate) fn keeps_u16_samples(img: &Image, bits: u8) -> bool {
+    if img.sample_type() != SampleType::U16 || !(1..16).contains(&bits) {
+        return false;
+    }
+    let max = (1u64 << bits) - 1;
+    img.data().as_chunks::<2>().0.iter().map(|c| u16::from_ne_bytes(*c)).all(|v| widen(narrow(v, max), max) == v)
+}
+
 /// The plan's sample type for the chosen bits: U8 for 8 bits, U16 for 10, 12 and 16.
 pub(crate) fn plan_sample(opt: Option<DpxBits>, src: SampleType) -> SampleType {
     match opt {

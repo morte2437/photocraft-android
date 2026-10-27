@@ -12,6 +12,46 @@ use photocraft_raster::Rgba8Image;
 const MODES: [ColorMode; 4] = [ColorMode::Rgb, ColorMode::Grayscale, ColorMode::Cmyk, ColorMode::Lab];
 
 #[test]
+fn gradient_overlay_interpolation_roundtrips_in_native_documents() {
+    use photocraft_doc::effects::GradientInterpolation;
+    use photocraft_doc::{Color, Effect, FxCommon, Gradient};
+
+    for mode in MODES {
+        for depth in [SampleType::U8, SampleType::U16, SampleType::F32] {
+            let mut doc = rich_doc(mode, depth);
+            let source = GradientInterpolation {
+                method: "smooth".into(),
+                smoothness: 73.0,
+                stops: vec![(0.0, Color::rgb(0.123456, 0.4, 0.9)), (0.4, Color::WHITE), (1.0, Color::BLACK)],
+            };
+            let effect = Effect::GradientOverlay {
+                common: FxCommon::new(photocraft_doc::BlendMode::Normal, 1.0),
+                gradient: Gradient::default(),
+                dither: true,
+                interpolation: Some(source),
+            }
+            .in_mode(mode);
+            doc.layers.first_mut().unwrap().effects.items.push(effect);
+            let bytes = save_to_bytes(&doc, &SaveOptions::default()).unwrap();
+            assert_eq!(load_from_bytes(&bytes).unwrap(), doc);
+        }
+    }
+}
+
+#[test]
+fn old_effect_snapshots_need_no_interpolation_record() {
+    let effect = photocraft_doc::Effect::GradientOverlay {
+        common: photocraft_doc::FxCommon::new(photocraft_doc::BlendMode::Normal, 1.0),
+        gradient: photocraft_doc::Gradient::default(),
+        dither: false,
+        interpolation: None,
+    };
+    let json = serde_json::to_value(&effect).unwrap();
+    assert!(json["GradientOverlay"].get("interpolation").is_none());
+    assert_eq!(serde_json::from_value::<photocraft_doc::Effect>(json).unwrap(), effect);
+}
+
+#[test]
 fn custom_shape_stroke_roundtrip_keeps_every_style_field() {
     for mode in MODES {
         for depth in [SampleType::U8, SampleType::U16, SampleType::F32] {
@@ -597,6 +637,32 @@ fn path_text_shape_roundtrips() {
         _ => None,
     });
     assert_eq!(shape, Some(TextShape::Path { path, start: 12.5, flip: true }));
+}
+
+/// Area type (#218): the whole path, ops and fill rule included, survives .pcraft.
+#[test]
+fn area_text_shape_roundtrips() {
+    use photocraft_doc::text::TextShape;
+    use photocraft_doc::vector::{FillRule, Path, PathOp, Subpath};
+    let mut doc = rich_doc(ColorMode::Rgb, SampleType::U8);
+    let mut path = Path::new(vec![
+        Subpath::polygon(&[(0.0, 0.0), (200.0, 0.0), (200.0, 120.0), (0.0, 120.0)]),
+        Subpath::polygon(&[(80.0, 40.0), (120.0, 40.0), (120.0, 80.0)]).with_op(PathOp::Subtract),
+    ]);
+    path.fill_rule = FillRule::EvenOdd;
+    let ids: Vec<LayerId> = doc.walk().into_iter().filter(|(_, _, l)| matches!(l.content, LayerContent::Text(_))).map(|(_, _, l)| l.id).collect();
+    assert!(!ids.is_empty());
+    for id in ids {
+        if let Some(LayerContent::Text(t)) = doc.layer_mut(id).map(|l| &mut l.content) {
+            t.shape = TextShape::Area { path: path.clone() };
+        }
+    }
+    let back = load_from_bytes(&save_to_bytes(&doc, &SaveOptions::default()).unwrap()).unwrap();
+    let shape = back.walk().into_iter().find_map(|(_, _, l)| match &l.content {
+        LayerContent::Text(t) => Some(t.shape.clone()),
+        _ => None,
+    });
+    assert_eq!(shape, Some(TextShape::Area { path }));
 }
 
 #[test]

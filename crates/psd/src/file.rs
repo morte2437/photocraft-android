@@ -39,6 +39,14 @@ pub struct GlobalLayerMask {
 }
 
 impl GlobalLayerMask {
+    /// The mask Photoshop writes for a layered file that has no global mask of its own:
+    /// an RGB red overlay at 50% opacity, kind 128 (use the per-layer setting), plus the
+    /// filler byte. A zero-length `LMsk` block in a TIFF makes Photoshop give up on the
+    /// layer data (it reads this 14-byte record from the block).
+    pub fn photoshop_default() -> Self {
+        GlobalLayerMask { data: vec![0, 0, 0xff, 0xff, 0, 0, 0, 0, 0, 0, 0, 50, 128, 0] }
+    }
+
     fn be16(&self, at: usize) -> Option<u16> {
         self.data.get(at..at + 2).map(|b| u16::from_be_bytes([b[0], b[1]]))
     }
@@ -352,12 +360,12 @@ impl PsdFile {
     }
 
     /// `true` if the merged image carries a transparency channel: its first extra channel, when
-    /// the layer count was stored negative or a "Saving Merged Transparency" global block (`Mtrn`,
-    /// `Mt16`, `Mt32`) is present. Photoshop marks 32-bit documents with `Mt32` and a positive
-    /// layer count (psd-tools transparentbg.psd). Photoshop also names the merged transparency
-    /// "Transparency" and lists it first among the alpha channel names, and some of its 16-bit
-    /// PSBs carry no other mark (#4654): when the layers sit in a global `Lr16`/`Lr32` block, that
-    /// name with one name per extra channel marks it too.
+    /// the layer count was stored negative or a "Saving Merged Transparency" global block (see
+    /// [`TaggedBlock::is_merged_transparency_marker`]) is present. Photoshop marks 32-bit documents
+    /// with `Mt32` and a positive layer count (psd-tools transparentbg.psd). Photoshop also names
+    /// the merged transparency "Transparency" and lists it first among the alpha channel names,
+    /// and some of its 16-bit PSBs carry no other mark (#4654): when the layers sit in a global
+    /// `Lr16`/`Lr32` block, that name with one name per extra channel marks it too.
     pub fn merged_has_alpha(&self) -> bool {
         let Some(color) = self.header.color_mode.color_channels() else {
             return false;
@@ -365,7 +373,7 @@ impl PsdFile {
         if self.header.channels <= color {
             return false;
         }
-        let marked = self.global_blocks.iter().any(|b| matches!(&b.key, b"Mtrn" | b"Mt16" | b"Mt32"));
+        let marked = self.global_blocks.iter().any(TaggedBlock::is_merged_transparency_marker);
         match &self.layer_info {
             Some(li) => {
                 let in_block = matches!(self.layer_info_placement, LayerInfoPlacement::GlobalBlock { .. });
@@ -581,6 +589,29 @@ mod write_tests {
                 assert_eq!(parsed.layers()[0].name(), file.layers()[0].name());
                 assert!(matches!(parsed.layer_info_placement, LayerInfoPlacement::GlobalBlock { key: k, .. } if k == key));
             }
+        }
+    }
+
+    /// A positive layer count plus a merged-transparency marker still makes the first extra
+    /// channel the transparency, for the specification's keys and for the `MTrn` Photoshop
+    /// writes in a layered TIFF.
+    #[test]
+    fn merged_transparency_markers_mark_the_first_extra_channel() {
+        let mut file = testgen::small(Version::Psd, Compression::Raw);
+        if let Some(li) = &mut file.layer_info {
+            li.merged_alpha = false;
+        }
+        assert!(!file.merged_has_alpha());
+        for key in [*b"Mtrn", *b"MTrn", *b"Mt16", *b"Mt32"] {
+            let mut marked = file.clone();
+            marked.global_blocks.push(TaggedBlock::new(key, Vec::new()));
+            assert!(marked.merged_has_alpha(), "{}", String::from_utf8_lossy(&key));
+        }
+        // Other keys, and the marker's letters in another case, do not.
+        for key in [*b"MTRN", *b"mtrn", *b"Lr16"] {
+            let mut other = file.clone();
+            other.global_blocks.push(TaggedBlock::new(key, Vec::new()));
+            assert!(!other.merged_has_alpha(), "{}", String::from_utf8_lossy(&key));
         }
     }
 }

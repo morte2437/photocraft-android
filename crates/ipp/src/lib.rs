@@ -323,56 +323,31 @@ pub struct Reply {
     pub attributes: Vec<Attribute>,
 }
 
+/// The attribute range for one group delimiter in a parsed message. Ranges are half-open and
+/// include empty groups, so repeated group tags remain distinct.
+#[derive(Debug, Clone, Copy)]
+struct GroupRange {
+    tag: u8,
+    start: usize,
+    end: usize,
+}
+
+/// Parsed message details kept private so the public flat `Reply` API stays source-compatible.
+struct ParsedMessage {
+    reply: Reply,
+    end: usize,
+    groups: Vec<GroupRange>,
+}
+
 impl Reply {
     /// Parses an IPP message (RFC 8010 §3): header, then groups of attributes until the end tag.
     pub fn parse(b: &[u8]) -> Result<Reply> {
-        Self::parse_at(b).map(|(r, _)| r)
+        parse_message(b).map(|parsed| parsed.reply)
     }
 
     /// Parses a message and returns where its attributes end (document data may follow).
     fn parse_at(b: &[u8]) -> Result<(Reply, usize)> {
-        let bad = |m: &str| Error::Protocol(m.to_string());
-        if b.len() < 9 {
-            return Err(bad("reply shorter than an IPP header"));
-        }
-        let status = u16::from_be_bytes([b[2], b[3]]);
-        let request_id = u32::from_be_bytes([b[4], b[5], b[6], b[7]]);
-        let mut pos = 8;
-        let mut group = 0u8;
-        let mut attributes: Vec<Attribute> = Vec::new();
-        loop {
-            let tag = *b.get(pos).ok_or_else(|| bad("reply ends before the end-of-attributes tag"))?;
-            pos += 1;
-            if tag == TAG_END {
-                return Ok((Reply { status, request_id, attributes }, pos));
-            }
-            if tag < 0x10 {
-                group = tag;
-                continue;
-            }
-            let name_len =
-                usize::from(u16::from_be_bytes([*b.get(pos).ok_or_else(|| bad("cut attribute"))?, *b.get(pos + 1).ok_or_else(|| bad("cut attribute"))?]));
-            pos += 2;
-            let name = b.get(pos..pos + name_len).ok_or_else(|| bad("cut attribute name"))?;
-            pos += name_len;
-            let value_len =
-                usize::from(u16::from_be_bytes([*b.get(pos).ok_or_else(|| bad("cut attribute"))?, *b.get(pos + 1).ok_or_else(|| bad("cut attribute"))?]));
-            pos += 2;
-            let value = b.get(pos..pos + value_len).ok_or_else(|| bad("cut attribute value"))?.to_vec();
-            pos += value_len;
-            if name_len == 0 {
-                // An additional value of the previous attribute.
-                match attributes.last_mut() {
-                    Some(last) if last.group == group => last.values.push(value),
-                    _ => return Err(bad("an additional value with no attribute before it")),
-                }
-            } else {
-                attributes.push(Attribute { group, tag, name: String::from_utf8_lossy(name).into_owned(), values: vec![value] });
-            }
-            if attributes.len() > MAX_ATTRIBUTES {
-                return Err(bad("too many attributes"));
-            }
-        }
+        parse_message(b).map(|parsed| (parsed.reply, parsed.end))
     }
 
     /// The server's own message for an error status, or a name for the code.
@@ -394,8 +369,72 @@ impl Reply {
     }
 }
 
-/// POSTs `body` (IPP, with any document data after it) to `path` and returns the reply.
-fn post(endpoint: &Endpoint, path: &str, body: &[u8]) -> Result<Reply> {
+/// Parses one IPP message while preserving each group instance for private consumers that need
+/// object boundaries. The public reply remains a flat list of attributes.
+fn parse_message(b: &[u8]) -> Result<ParsedMessage> {
+    let bad = |m: &str| Error::Protocol(m.to_string());
+    if b.len() < 9 {
+        return Err(bad("reply shorter than an IPP header"));
+    }
+    let status = u16::from_be_bytes([b[2], b[3]]);
+    let request_id = u32::from_be_bytes([b[4], b[5], b[6], b[7]]);
+    let mut pos = 8;
+    let mut group = 0u8;
+    let mut active_group = None;
+    let mut last_attribute_group = None;
+    let mut attributes: Vec<Attribute> = Vec::new();
+    let mut groups: Vec<GroupRange> = Vec::new();
+    loop {
+        let tag = *b.get(pos).ok_or_else(|| bad("reply ends before the end-of-attributes tag"))?;
+        pos += 1;
+        if tag == TAG_END {
+            if let Some(last) = groups.last_mut() {
+                last.end = attributes.len();
+            }
+            return Ok(ParsedMessage { reply: Reply { status, request_id, attributes }, end: pos, groups });
+        }
+        if tag < 0x10 {
+            if let Some(last) = groups.last_mut() {
+                last.end = attributes.len();
+            }
+            if groups.len() >= MAX_ATTRIBUTES {
+                return Err(bad("too many attribute groups"));
+            }
+            group = tag;
+            let group_index = groups.len();
+            groups.push(GroupRange { tag, start: attributes.len(), end: attributes.len() });
+            active_group = Some(group_index);
+            continue;
+        }
+        let name_len =
+            usize::from(u16::from_be_bytes([*b.get(pos).ok_or_else(|| bad("cut attribute"))?, *b.get(pos + 1).ok_or_else(|| bad("cut attribute"))?]));
+        pos += 2;
+        let name = b.get(pos..pos + name_len).ok_or_else(|| bad("cut attribute name"))?;
+        pos += name_len;
+        let value_len =
+            usize::from(u16::from_be_bytes([*b.get(pos).ok_or_else(|| bad("cut attribute"))?, *b.get(pos + 1).ok_or_else(|| bad("cut attribute"))?]));
+        pos += 2;
+        let value = b.get(pos..pos + value_len).ok_or_else(|| bad("cut attribute value"))?.to_vec();
+        pos += value_len;
+        if name_len == 0 {
+            // Additional values can continue an attribute only within this exact group instance.
+            match attributes.last_mut() {
+                Some(last) if last_attribute_group == active_group => last.values.push(value),
+                _ => return Err(bad("an additional value with no attribute before it")),
+            }
+        } else {
+            attributes.push(Attribute { group, tag, name: String::from_utf8_lossy(name).into_owned(), values: vec![value] });
+            last_attribute_group = active_group;
+        }
+        if attributes.len() > MAX_ATTRIBUTES {
+            return Err(bad("too many attributes"));
+        }
+    }
+}
+
+/// POSTs `body` (IPP, with any document data after it) to `path` and returns the parsed reply with
+/// its private group boundaries.
+fn post(endpoint: &Endpoint, path: &str, body: &[u8]) -> Result<ParsedMessage> {
     let mut stream = endpoint.connect()?;
     let head = format!(
         "POST {path} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/ipp\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -417,9 +456,9 @@ fn post(endpoint: &Endpoint, path: &str, body: &[u8]) -> Result<Reply> {
         }));
     }
     let body = if headers.iter().any(|(k, v)| k == "transfer-encoding" && v.contains("chunked")) { dechunk(body)? } else { body.to_vec() };
-    let reply = Reply::parse(&body)?;
-    if reply.status >= 0x0400 {
-        return Err(Error::Status(reply.status, reply.status_message()));
+    let reply = parse_message(&body)?;
+    if reply.reply.status >= 0x0400 {
+        return Err(Error::Status(reply.reply.status, reply.reply.status_message()));
     }
     Ok(reply)
 }
@@ -563,41 +602,35 @@ pub fn printers(endpoint: &Endpoint) -> Result<Vec<Printer>> {
 fn queues(endpoint: &Endpoint, op: u16, is_class: bool) -> Result<Vec<Printer>> {
     let mut r = Request::new(op, 1);
     r.attr_many(TAG_KEYWORD, "requested-attributes", &["printer-name", "printer-info", "printer-state", "printer-is-accepting-jobs"]);
-    let reply = match post(endpoint, "/", &r.end()) {
+    let parsed = match post(endpoint, "/", &r.end()) {
         Ok(reply) => reply,
         // CUPS answers "not found" ("No destinations added.") when no printer is set up.
         Err(Error::Status(0x0406, _)) => return Ok(Vec::new()),
         Err(e) => return Err(e),
     };
     let mut out = Vec::new();
-    let mut current: Option<Printer> = None;
-    for a in reply.attributes.iter().filter(|a| a.group == TAG_PRINTER_GROUP) {
-        match a.name.as_str() {
-            "printer-name" => {
-                if let Some(p) = current.take() {
-                    out.push(p);
-                }
-                current = Some(Printer { name: a.text(), info: String::new(), state: 3, accepting_jobs: true, is_default: false, is_class });
+    let attributes = &parsed.reply.attributes;
+    for group in parsed.groups.iter().filter(|group| group.tag == TAG_PRINTER_GROUP) {
+        let Some(group_attributes) = attributes.get(group.start..group.end) else {
+            return Err(Error::Protocol("invalid printer attribute group range".into()));
+        };
+        let mut name = None;
+        let mut info = String::new();
+        let mut state = 3;
+        let mut accepting_jobs = true;
+        for a in group_attributes {
+            match a.name.as_str() {
+                "printer-name" if name.is_none() => name = Some(a.text()),
+                "printer-info" => info = a.text(),
+                "printer-state" => state = a.int().unwrap_or(3).clamp(0, 5) as u32,
+                "printer-is-accepting-jobs" => accepting_jobs = a.values.first().is_none_or(|v| v.first() != Some(&0)),
+                _ => {}
             }
-            "printer-info" => {
-                if let Some(p) = &mut current {
-                    p.info = a.text();
-                }
-            }
-            "printer-state" => {
-                if let Some(p) = &mut current {
-                    p.state = a.int().unwrap_or(3).clamp(0, 5) as u32;
-                }
-            }
-            "printer-is-accepting-jobs" => {
-                if let Some(p) = &mut current {
-                    p.accepting_jobs = a.values.first().is_none_or(|v| v.first() != Some(&0));
-                }
-            }
-            _ => {}
+        }
+        if let Some(name) = name.filter(|name| !name.is_empty()) {
+            out.push(Printer { name, info, state, accepting_jobs, is_default: false, is_class });
         }
     }
-    out.extend(current);
     Ok(out)
 }
 
@@ -606,7 +639,7 @@ pub fn default_printer(endpoint: &Endpoint) -> Result<Option<String>> {
     let mut r = Request::new(OP_CUPS_GET_DEFAULT, 2);
     r.attr_many(TAG_KEYWORD, "requested-attributes", &["printer-name"]);
     match post(endpoint, "/", &r.end()) {
-        Ok(reply) => Ok(reply.attributes.iter().find(|a| a.name == "printer-name").map(Attribute::text).filter(|n| !n.is_empty())),
+        Ok(reply) => Ok(reply.reply.attributes.iter().find(|a| a.name == "printer-name").map(Attribute::text).filter(|n| !n.is_empty())),
         // CUPS answers "not found" when no default is set.
         Err(Error::Status(0x0406, _)) => Ok(None),
         Err(e) => Err(e),
@@ -642,7 +675,7 @@ pub fn print_job(endpoint: &Endpoint, job: &Job<'_>) -> Result<u32> {
     }
     let mut body = r.end();
     body.extend_from_slice(job.document);
-    let reply = post(endpoint, &path, &body)?;
+    let reply = post(endpoint, &path, &body)?.reply;
     reply
         .attributes
         .iter()

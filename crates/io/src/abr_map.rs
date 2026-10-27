@@ -57,7 +57,7 @@ pub fn map_file(f: &AbrFile, group: &str) -> AbrImport {
 /// [`map_file`] that checks `ctl` before each brush.
 pub fn map_file_with(f: &AbrFile, group: &str, ctl: &photocraft_raster::Interrupt) -> Result<AbrImport, photocraft_raster::Cancelled> {
     let mut out = AbrImport { version: f.version, warnings: f.warnings.clone(), ..Default::default() };
-    let mut m = Mapper { file: f, warnings: BTreeSet::new(), unknown: BTreeSet::new() };
+    let mut m = Mapper { file: f, warnings: BTreeSet::new(), unknown: BTreeSet::new(), tips: Default::default() };
     let total = f.legacy.len().max(f.samples.len()).max(f.presets.len()).max(1) as f32;
     let step = |i: usize| -> Result<(), photocraft_raster::Cancelled> {
         ctl.check()?;
@@ -255,18 +255,26 @@ struct Mapper<'a> {
     file: &'a AbrFile,
     warnings: BTreeSet<String>,
     unknown: BTreeSet<String>,
+    /// Tips already converted, by sample: presets can name one sample thousands of times, and a
+    /// tile clones by sharing its data.
+    tips: std::collections::HashMap<*const AbrSample, (photocraft_paint::tile::GrayTile, f32)>,
 }
 
 impl Mapper<'_> {
     /// A sampled tip (downsampled to [`MAX_TIP_EDGE`]) and its size (larger side).
     fn tip(&mut self, s: &AbrSample) -> (TipShape, f32) {
+        if let Some((tile, size)) = self.tips.get(&std::ptr::from_ref(s)) {
+            return (TipShape::Sampled(tile.clone()), *size);
+        }
         let v = s.to_unit();
         let (w, h, v) = fit(s.width, s.height, v, MAX_TIP_EDGE);
         if (w, h) != (s.width, s.height) {
             self.warnings.insert(format!("tips larger than {MAX_TIP_EDGE} px were downsampled"));
         }
         let data = v.iter().map(|x| (x.clamp(0.0, 1.0) * 65535.0 + 0.5) as u16).collect();
-        (TipShape::Sampled(GrayTile { width: w, height: h, data }), s.width.max(s.height) as f32)
+        let (tile, size) = (GrayTile { width: w, height: h, data }, s.width.max(s.height) as f32);
+        self.tips.insert(std::ptr::from_ref(s), (tile.clone(), size));
+        (TipShape::Sampled(tile), size)
     }
 
     fn dynamic(&mut self, d: Option<&Descriptor>) -> Dynamic {

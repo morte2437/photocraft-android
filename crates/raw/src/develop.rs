@@ -279,8 +279,12 @@ pub fn develop_sensor(s: &Sensor, opts: &DevelopOptions) -> Result<Developed> {
                                 let x = c.x + p;
                                 let black = bl.at(x.saturating_sub(s.active.x), y.saturating_sub(s.active.y), 0, 1);
                                 let range = s.white[0] - black;
-                                let gain = if range >= 1.0 { mult[usize::from(cfa.color(x, y)).min(2)] / range } else { 0.0 };
-                                (black, gain)
+                                // A non-finite black (a BlackLevel DOUBLE beyond f32) gives 0, as
+                                // `Scale::value` does, instead of (raw - inf) * 0 = NaN.
+                                if !(range >= 1.0 && black.is_finite()) {
+                                    return (0.0, 0.0);
+                                }
+                                (black, mult[usize::from(cfa.color(x, y)).min(2)] / range)
                             })
                             .collect();
                         let src = &s.data[y * s.width + c.x..y * s.width + c.x + w];
@@ -375,9 +379,23 @@ pub fn develop_sensor(s: &Sensor, opts: &DevelopOptions) -> Result<Developed> {
         Some(l) => GammaLut::with_tone(l.tone.as_ref()),
         None => GammaLut::with_curve(&s.tone_curve),
     };
+    // The default rendering (no Dehaze, no local tone): matrix then encode, in blocks so the
+    // encode's clamp and square root run over whole slices.
+    let plain = map.is_none() && haze.is_none();
     par::chunks_mut(&mut out, band * w * 3, |b, chunk| {
         let start = b * band * w * 3;
         let src = &rgb[start..start + chunk.len()];
+        if plain {
+            let mut buf = [0.0f32; ENCODE_BLOCK];
+            for (oc, sc) in chunk.chunks_mut(ENCODE_BLOCK).zip(src.chunks(ENCODE_BLOCK)) {
+                let n = sc.len();
+                for (t, p) in buf[..n].as_chunks_mut::<3>().0.iter_mut().zip(sc.as_chunks::<3>().0) {
+                    *t = pro(p);
+                }
+                lut.encode_into(&buf[..n], oc);
+            }
+            return;
+        }
         for (i, (o, p)) in chunk.as_chunks_mut::<3>().0.iter_mut().zip(src.as_chunks::<3>().0).enumerate() {
             let mut v = linear(b * band * w + i, p);
             if let Some(m) = &map {
@@ -476,9 +494,13 @@ fn gain_row(s: &Sensor, y: usize, x0: usize, w: usize, k: usize) -> Option<Vec<f
 /// (error below 0.2 code values).
 struct GammaLut {
     table: Vec<f32>,
+    /// `[table[i], table[i + 1] - table[i]]`: the same interpolation from one load.
+    pairs: Vec<[f32; 2]>,
 }
 
 const GAMMA_STEPS: usize = 4096;
+/// Samples per block of [`GammaLut::encode_into`] (whole pixels).
+const ENCODE_BLOCK: usize = 3 * 256;
 
 impl GammaLut {
     #[cfg(test)]
@@ -494,7 +516,7 @@ impl GammaLut {
                 tone(curve, s * s).clamp(0.0, 1.0).powf(1.0 / 1.8) * 65535.0
             })
             .collect();
-        GammaLut { table }
+        Self::from_table(table)
     }
 
     /// The gamma-1.8 encoding after a fitted [`ToneCurve`] (`None`: none, plain gamma 1.8).
@@ -508,7 +530,30 @@ impl GammaLut {
                 }
             })
             .collect();
-        GammaLut { table }
+        Self::from_table(table)
+    }
+
+    fn from_table(table: Vec<f32>) -> Self {
+        let pairs = table.windows(2).map(|p| [p[0], p[1] - p[0]]).collect();
+        GammaLut { table, pairs }
+    }
+
+    /// [`Self::encode`] of every sample of `v` into `out` (at most [`ENCODE_BLOCK`] samples):
+    /// the clamp and square root first over the whole block, then the table.
+    #[inline]
+    fn encode_into(&self, v: &[f32], out: &mut [u16]) {
+        let mut xs = [0.0f32; ENCODE_BLOCK];
+        let n = v.len().min(ENCODE_BLOCK).min(out.len());
+        for (x, &v) in xs[..n].iter_mut().zip(&v[..n]) {
+            let v = if v.is_nan() { 0.0 } else { v.clamp(0.0, 1.0) };
+            *x = v.sqrt() * GAMMA_STEPS as f32;
+        }
+        for (o, &x) in out[..n].iter_mut().zip(&xs[..n]) {
+            let i = (x as usize).min(GAMMA_STEPS);
+            let f = x - i as f32;
+            let [a, step] = self.pairs[i];
+            *o = (a + step * f + 0.5) as u16;
+        }
     }
 
     #[inline]
@@ -588,6 +633,17 @@ pub(crate) fn orient(src: Vec<u16>, w: usize, h: usize, o: u16) -> (Vec<u16>, us
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn block_encode_matches_per_sample_encode() {
+        let lut = GammaLut::with_curve(&[[0.25, 0.5], [1.0, 1.0]]);
+        let v: Vec<f32> = (0..2000).map(|i| (i as f32 - 300.0) / 1500.0).chain([f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.0, 1.0]).collect();
+        for n in [0, 1, 3, 255, ENCODE_BLOCK, v.len().min(ENCODE_BLOCK)] {
+            let mut out = vec![0u16; n];
+            lut.encode_into(&v[..n], &mut out);
+            assert_eq!(out, v[..n].iter().map(|&x| lut.encode(x)).collect::<Vec<_>>(), "{n}");
+        }
+    }
 
     #[test]
     fn hundred_megapixel_bayer_fits_without_raising_default_limits() {

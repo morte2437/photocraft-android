@@ -94,7 +94,7 @@ fn identity_float_curves_match_previous_mapping_bits() {
         px: vec![[2.0, -0.0, -0.2, 1.0], [f32::from_bits(0x7fc01234), f32::INFINITY, f32::NEG_INFINITY, 0.6], [0.7, -0.0, 1.5, 0.0], [0.1; 4]],
     };
     let mut previous = input.clone();
-    adjust::apply_tone(&mut previous, ToneSpace::Rgb, &adjust::tone_luts_depth(&adj, Some(SampleType::F32)), [true; 3]);
+    adjust::apply_tone(&mut previous, ToneSpace::Rgb, &adjust::tone_luts_depth(&adj, Some(SampleType::F32)), [true; 3], false);
     let mut actual = input.clone();
     adjust::apply_depth(&adj, &mut actual, adjust::Transfer::Gamma(1.0), Some(SampleType::F32));
     assert_buffer_bits(&actual, &previous);
@@ -1099,6 +1099,19 @@ fn cmyk_ink_compositing_inlines_open_groups() {
     assert!(close4(px(&d, 3, 1), [c[0], c[1], c[2], 1.0]), "outside the group's layer");
 }
 
+/// A CMYK layer without an alpha channel is opaque everywhere, its untouched pixels blank paper
+/// (no ink): the ink compositor keeps it under an adjustment rather than skipping it as empty.
+#[test]
+fn cmyk_ink_compositing_keeps_blank_paper_without_alpha() {
+    let mut d = Document::new("paper", Size::new(4, 4), ColorMode::Cmyk, SampleType::U8);
+    d.layers.push(Layer::raster("paper", PixelFormat::new(ColorMode::Cmyk, SampleType::U8, false)));
+    d.layers.push(Layer::new("t", LayerContent::Adjustment(Adjustment::Threshold { level: 0.5 })));
+    assert!(native::render_cmyk(&d, d.bounds(), 64).is_some());
+    // Paper is white, so Threshold keeps it paper.
+    let white = photocraft_color::convert::cmyk_to_rgb([0.0; 4]);
+    assert!(close4(px(&d, 2, 2), [white[0], white[1], white[2], 1.0]), "{:?}", px(&d, 2, 2));
+}
+
 #[test]
 fn cmyk_document_renders_via_rgb() {
     let mut d = Document::new("c", Size::new(2, 2), ColorMode::Cmyk, SampleType::U8);
@@ -1499,7 +1512,12 @@ fn glow_gradient_follows_the_shape() {
 // new pixels (#4053). Effects that don't depend on the frame repaint only what changed.
 #[test]
 fn relayout_damage_covers_a_layer_whose_gradient_frame_moved() {
-    let overlay = Effect::GradientOverlay { common: FxCommon::new(photocraft_color::BlendMode::Normal, 1.0), gradient: Gradient::default(), dither: false };
+    let overlay = Effect::GradientOverlay {
+        common: FxCommon::new(photocraft_color::BlendMode::Normal, 1.0),
+        gradient: Gradient::default(),
+        dither: false,
+        interpolation: None,
+    };
     let grown = |a: &Document, rect: Rect, rgba: [f32; 4]| {
         let mut b = a.clone();
         let old = b.layers.last().unwrap().clone();
@@ -1526,13 +1544,19 @@ fn relayout_damage_covers_a_layer_whose_gradient_frame_moved() {
 #[test]
 fn gradient_overlay_follows_angle_and_reverse() {
     let g = Gradient { stops: vec![(0.0, Color::BLACK), (1.0, Color::WHITE)], angle: 0.0, ..Gradient::default() };
-    let d = fx_doc(vec![Effect::GradientOverlay { common: FxCommon::new(photocraft_color::BlendMode::Normal, 1.0), gradient: g.clone(), dither: false }]);
+    let d = fx_doc(vec![Effect::GradientOverlay {
+        common: FxCommon::new(photocraft_color::BlendMode::Normal, 1.0),
+        gradient: g.clone(),
+        dither: false,
+        interpolation: None,
+    }]);
     let (l, r) = (px(&d, 10, 20), px(&d, 29, 20));
     assert!(l[0] < 0.1 && r[0] > 0.9, "{l:?} {r:?}");
     let d = fx_doc(vec![Effect::GradientOverlay {
         common: FxCommon::new(photocraft_color::BlendMode::Normal, 1.0),
         gradient: Gradient { reverse: true, style: GradientStyle::Linear, ..g },
         dither: false,
+        interpolation: None,
     }]);
     assert!(px(&d, 10, 20)[0] > 0.9);
 }
@@ -2734,7 +2758,7 @@ fn levels_steps_match_photoshop() {
 // jump where it meets the power curve.
 #[test]
 fn levels_gamma_toe_is_monotone_for_any_gamma() {
-    for g in [1.0001, 1.05, 1.5, 3.0, 9.99, 1e6, f32::INFINITY] {
+    for g in [1.0001, 1.01, 1.0105422, 1.02, 1.05, 1.5, 3.0, 9.99, 1e6, f32::INFINITY] {
         let mut last = 0.0f32;
         for k in 0..=4096 {
             let u = k as f32 / 4096.0;
@@ -2796,6 +2820,53 @@ fn exposure_scales_32_bit_samples_as_stored() {
     for mode in [ColorMode::Rgb, ColorMode::Grayscale] {
         assert_eq!(adjust::Transfer::for_document(mode, SampleType::F32), adjust::Transfer::Gamma(1.0));
     }
+}
+
+/// #7157, measured on Photoshop 27.11: an edited Curves in a 32-bit RGB document continues past
+/// 0..1 along its end segments instead of clipping. The straight curve `[[0,0],[255,128]]` maps
+/// -0.5, 0.5 and 2 to -0.250980407, 0.250980407 and 1.003921628, through Image › Adjustments and
+/// through an adjustment layer alike. 8/16-bit documents still clip to the table.
+#[test]
+fn float_curves_extend_past_the_unit_range_like_photoshop() {
+    use photocraft_doc::adjust::CurvePoint;
+    let line = vec![CurvePoint { input: 0.0, output: 0.0 }, CurvePoint { input: 1.0, output: 128.0 / 255.0 }];
+    let ident = vec![CurvePoint { input: 0.0, output: 0.0 }, CurvePoint { input: 1.0, output: 1.0 }];
+    let adj = Adjustment::Curves { master: line, per_channel: std::array::from_fn(|_| ident.clone()), space: ToneSpace::Rgb, black: Vec::new(), pencil: false };
+    let input = Buffer { rect: Rect::new(0, 0, 3, 1), px: vec![[-0.5, -0.5, -0.5, 1.0], [0.5, 0.5, 0.5, 1.0], [2.0, 2.0, 2.0, 1.0]] };
+    // Photoshop's samples, compared in f64 so the reference keeps its printed digits.
+    let want = [-0.250980407f64, 0.250980407, 1.003921628];
+    let check = |got: &Buffer, what: &str| {
+        for (p, w) in got.px.iter().zip(want) {
+            assert!(p[..3].iter().all(|v| (f64::from(*v) - w).abs() < 2e-5), "{what}: {p:?} vs {w}");
+            assert_eq!(p[3], 1.0);
+        }
+    };
+    let mut destructive = input.clone();
+    adjust::apply_depth(&adj, &mut destructive, adjust::Transfer::Gamma(1.0), Some(SampleType::F32));
+    check(&destructive, "Image › Adjustments");
+    let doc = Document::new("hdr", Size::new(3, 1), ColorMode::Rgb, SampleType::F32);
+    let patterns = pattern::PreparedPatterns::new(&[], pattern::PREPARED_PATTERN_BYTES);
+    let cx = Ctx::for_doc(&doc, &patterns);
+    let mut layer = input.clone();
+    cx.apply_adjustment(&adj, &mut layer);
+    check(&layer, "adjustment layer");
+    // Not at 8 or 16 bits: those samples never leave 0..1, and the table's ends hold.
+    for depth in [SampleType::U8, SampleType::U16] {
+        let mut clipped = input.clone();
+        adjust::apply_depth(&adj, &mut clipped, adjust::Transfer::for_document(ColorMode::Rgb, depth), Some(depth));
+        assert!(clipped.px[2][..3].iter().all(|v| *v <= 128.0 / 255.0 + 1e-4), "{depth:?}: {:?}", clipped.px[2]);
+    }
+    // Only in RGB documents: a 32-bit grayscale document keeps the table's end.
+    let mut gray = input.clone();
+    adjust::apply_in(&adj, &mut gray, adjust::Transfer::Gamma(1.0), Some(SampleType::F32), ColorMode::Grayscale);
+    assert!(gray.px[2][..3].iter().all(|v| *v <= 128.0 / 255.0 + 1e-4), "grayscale: {:?}", gray.px[2]);
+    let mut rgb = input.clone();
+    adjust::apply_in(&adj, &mut rgb, adjust::Transfer::Gamma(1.0), Some(SampleType::F32), ColorMode::Rgb);
+    check(&rgb, "apply_in in RGB");
+    // Infinite samples don't become NaN on the way out.
+    let mut odd = Buffer { rect: Rect::new(0, 0, 1, 1), px: vec![[f32::INFINITY, f32::NEG_INFINITY, 0.5, 1.0]] };
+    adjust::apply_depth(&adj, &mut odd, adjust::Transfer::Gamma(1.0), Some(SampleType::F32));
+    assert!(odd.px[0].iter().all(|v| !v.is_nan()), "{:?}", odd.px[0]);
 }
 
 #[test]

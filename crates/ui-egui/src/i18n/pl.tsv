@@ -654,6 +654,10 @@
 	Fit Layer(s) on Screen	Dopasuj warstwy do ekranu
 	Fit Artboard on Screen	Dopasuj obszar roboczy do ekranu
 	100%	100%
+	105%	105%
+	110%	110%
+	115%	115%
+	120%	120%
 	200%	200%
 	75%	75%
 	80%	80%
@@ -1035,6 +1039,9 @@
 	Create new pattern from the selection	Utwórz nowy wzór z zaznaczenia
 	Create new shape from the current path	Utwórz nowy kształt z bieżącej ścieżki
 	Create new snapshot	Utwórz nową migawkę
+	From:	Z:
+	Full Document	Cały dokument
+	Merged Layers	Scalone warstwy
 	Create new style (from the selected type)	Utwórz nowy styl (z zaznaczonego tekstu)
 	Create new style from the selected layer	Utwórz nowy styl z zaznaczonej warstwy
 	Create new tool preset	Utwórz nowe ustawienie wstępne narzędzia
@@ -2215,6 +2222,11 @@
 	No path to make a selection from: draw one with the Pen tool or select one in the Paths panel.	Brak ścieżki, z której można utworzyć zaznaczenie: narysuj ją narzędziem Pióro lub wybierz w panelu Ścieżki.
 	Cancel opening	Anuluj otwieranie
 	Cancelled opening {name}	Anulowano otwieranie {name}
+	Damaged Photoshop document	Uszkodzony dokument programu Photoshop
+	The document “{name}” may be damaged.	Dokument „{name}” może być uszkodzony.
+	Some layers, pixels or masks could not be read. Do you want to continue opening it?	Nie udało się odczytać niektórych warstw, pikseli lub masek. Czy kontynuować otwieranie?
+	If you continue, saving over the original may permanently discard unreadable data. Save a copy to keep the original.	Jeśli będziesz kontynuować, zapisanie na oryginale może trwale usunąć nieczytelne dane. Zapisz kopię, aby zachować oryginał.
+	Continue	Kontynuuj
 	The document “{name}” does not have an embedded {mode} profile.	Dokument „{name}” nie ma osadzonego profilu {mode}.
 	The document “{name}” has an embedded color profile that does not match the current {mode} working space.	Dokument „{name}” ma osadzony profil kolorów, który nie pasuje do bieżącej przestrzeni roboczej {mode}.
 	Working: {working}	Przestrzeń robocza: {working}
@@ -3752,6 +3764,8 @@ curves	Smooth	Wygładź
 	Vanishing Point is not active	Punkt zbieżności nie jest aktywny
 	Apply Vanishing Point ({key})	Zastosuj punkt zbieżności ({key})
 	Fix the red plane first: its corners must form a convex quad	Najpierw popraw czerwoną płaszczyznę: jej narożniki muszą tworzyć czworokąt wypukły
+	Alt-click a plane to set the clone source	Kliknij płaszczyznę z Alt, aby ustawić źródło klonowania
+	Too many clone strokes: apply Vanishing Point first	Zbyt wiele pociągnięć klonowania: najpierw zastosuj Punkt zbieżności
 # Select and Mask view modes (#1754)
 	Onion Skin	Skórka cebuli
 	Marching Ants	Maszerujące mrówki
@@ -3849,6 +3863,30 @@ curves	Smooth	Wygładź
 	Sent to {printer}	Wysłano do {printer}
 	set in Print Settings…	ustawiane w ustawieniach druku…
 	ICO is limited to 256 × 256 pixels	ICO jest ograniczony do 256 × 256 pikseli
+	Calibration	Kalibracja
+	Red Primary	Czerwień podstawowa
+	Green Primary	Zieleń podstawowa
+	Blue Primary	Niebieski podstawowy
+	Write xmp sidecars	Zapisuj pliki poboczne XMP
+	Set the tone sliders from the image	Ustaw suwaki tonów na podstawie obrazu
+	Settings from {name}	Ustawienia z {name}
+	Settings from {name}; {count} not supported: {names}	Ustawienia z {name}; nieobsługiwane: {count}: {names}
+	Could not write {name}: {error}	Nie można zapisać {name}: {error}
+	Kept {name}: written by another application	Zachowano {name}: zapisany przez inną aplikację
+	Shadow Tint	Tinta cieni
+# PhotoCraft release checks.
+	Check for Updates…	Sprawdź aktualizacje…
+	PhotoCraft Updates	Aktualizacje PhotoCraft
+	Checking for updates…	Sprawdzanie aktualizacji…
+	Open the release page to choose an installer for your system.	Otwórz stronę wydania, aby wybrać instalator dla swojego systemu.
+	Open Download Page	Otwórz stronę pobierania
+	PhotoCraft is up to date.	PhotoCraft jest aktualny.
+	Could not check for updates.	Nie udało się sprawdzić aktualizacji.
+	Updates have not been checked yet.	Aktualizacje nie zostały jeszcze sprawdzone.
+	Check Again	Sprawdź ponownie
+	Automatically Check for Updates	Automatycznie sprawdzaj aktualizacje
+	Installed version: {version}	Zainstalowana wersja: {version}
+	PhotoCraft {version} is available.	PhotoCraft {version} jest dostępny.
 # History panel › History Brush source (#2966)
 	Paints from the History panel's source state	Maluje ze stanu źródłowego panelu Historia
 	Sets the source for the history brush	Ustawia źródło dla pędzla historii
@@ -3979,6 +4017,14 @@ curves	Smooth	Wygładź
 
 # Graphics Adapter preference (#1885)
 	GPU adapter	Karta GPU
+
+# Styles panel: Import / Export Styles (.asl)
+	Import Styles…	Importuj style…
+	Export Selected Styles…	Eksportuj zaznaczone style…
+	Export Styles…	Eksportuj style…
+	{file} is not a style library (.asl)	{file} nie jest biblioteką stylów (.asl)
+@plural	Imported {n} style from {file}|Imported {n} styles from {file}	Zaimportowano {n} styl z {file}|Zaimportowano {n} style z {file}|Zaimportowano {n} stylów z {file}
+@plural	Exported {n} style to {file}|Exported {n} styles to {file}	Wyeksportowano {n} styl do {file}|Wyeksportowano {n} style do {file}|Wyeksportowano {n} stylów do {file}
 # Actions: a step dialog holds a suspended recording (#7365)
 	Confirm or cancel the open action step dialog first	Najpierw zatwierdź lub anuluj otwarte okno kroku operacji
 	Pro Medium Gray	Pro (średni szary)
@@ -3987,14 +4033,41 @@ curves	Smooth	Wygładź
 	Pro Light Gray	Pro (jasnoszary)
 	Pro Light	Pro (jasny)
 	Resize Windows to Fit	Dopasuj rozmiar okien
-
 	EXR	EXR
-
 # Paragraph direction (TYPE-218-2)
 	Automatic paragraph direction	Automatyczny kierunek akapitu
 	Left-to-right paragraph direction	Kierunek akapitu od lewej do prawej
 	Right-to-left paragraph direction	Kierunek akapitu od prawej do lewej
 	Not rendered: this adjustment ({key}) is kept as imported.	Nie jest renderowana: ta korekta ({key}) jest zachowana w postaci zaimportowanej.
-
 # Print preview image (#8236)
 	Print preview image	Print preview image
+# Color panel menu: modes, copy commands and colour ramps (#6000)
+	Hue Cube	Sześcian odcienia
+	Brightness Cube	Sześcian jasności
+	Color Wheel	Koło kolorów
+	RGB Sliders	Suwaki RGB
+	HSB Sliders	Suwaki HSB
+	CMYK Sliders	Suwaki CMYK
+	Lab Sliders	Suwaki Lab
+	Web Color Sliders	Suwaki kolorów internetowych
+	Copy Color as HTML	Kopiuj kolor jako HTML
+	Copy Color's Hex Code	Kopiuj kod szesnastkowy koloru
+	RGB Spectrum	Widmo RGB
+	CMYK Spectrum	Widmo CMYK
+	Grayscale Ramp	Pasek skali szarości
+	Current Colors	Bieżące kolory
+	Make Ramp Web Safe	Ogranicz pasek do kolorów internetowych
+# Art History Brush (#213).
+	Art History Brush Tool	Narzędzie Pędzel historii artystycznej
+	Tight Short	Ścisły krótki
+	Tight Medium	Ścisły średni
+	Tight Long	Ścisły długi
+	Loose Medium	Luźny średni
+	Loose Long	Luźny długi
+	Dab	Plama
+	Tight Curl	Ścisły lok
+	Loose Curl	Luźny lok
+	Stylized dabs from a history state	Stylizowane plamy ze stanu historii
+
+# Egui 0.37 migration controls (Aspect Ratio, Category, Color Table, Gamma, Interpolation, Profile, Target, Units, Demosaic)
+	Target	Cel

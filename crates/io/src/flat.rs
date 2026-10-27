@@ -280,9 +280,10 @@ pub(crate) fn image_to_document(name: &str, img: &Image) -> Result<ImportResult,
         bg
     };
     doc.layers.push(layer);
+    warnings.extend(crate::tiff_layers::channels_from_extras(&mut doc, img));
     doc.icc_profile = img.icc.clone().map(Arc::new);
     doc.metadata.exif = img.meta.exif.clone().map(Arc::new);
-    doc.metadata.xmp = img.meta.xmp.clone();
+    doc.metadata.xmp = img.meta.xmp.as_deref().map(Arc::from);
     doc.metadata.text = img.meta.text.clone();
     if let Some((x, y)) = img.meta.dpi {
         doc.resolution_dpi = x;
@@ -415,10 +416,11 @@ fn document_to_image_for(doc: &Document, warnings: &mut Vec<String>, cmyk_target
             let count = doc.layer_count();
             warnings.push(format!("{count} layer(s) flattened; layers, masks and blend modes are not kept"));
         }
-        let cmyk = fmt.mode == ColorMode::Cmyk && cmyk_target;
-        // Only a CMYK target needs the document's profile; RGB-only targets keep the compositor's
-        // own handling (built-in coated CMYK when the embedded profile is unusable).
-        let space = if cmyk {
+        let cs = csample(fmt.sample);
+        if fmt.mode == ColorMode::Cmyk && cmyk_target {
+            // A CMYK target is written as CMYK with the document's own profile (#2220), which it
+            // therefore needs; RGB-only targets keep the compositor's own handling (built-in
+            // coated CMYK when the embedded profile is unusable).
             use photocraft_cms::{Builtin, ColorSpace, Intent, Profile, Transform};
             let profile = match doc.icc_profile.as_ref() {
                 Some(bytes) => Profile::parse(bytes).map_err(|e| IoError::Unsupported(format!("invalid CMYK composite profile: {e}")))?,
@@ -433,32 +435,24 @@ fn document_to_image_for(doc: &Document, warnings: &mut Vec<String>, cmyk_target
             if icc.is_none() {
                 icc = Some(profile.to_bytes().to_vec());
             }
-            photocraft_compose::cmyk_space(doc)
+            let (data, opaque) = cmyk_composite(doc, canvas, cs, n, warnings)?;
+            Image::from_raw(w, h, layout_for(ColorMode::Cmyk, !opaque), cs, data)?
         } else {
-            None
-        };
-        let gray = fmt.mode == ColorMode::Grayscale;
-        if (fmt.mode == ColorMode::Cmyk && !cmyk) || fmt.mode == ColorMode::Lab {
-            // RGB-only targets use the sRGB composite directly, without reseparating CMYK.
-            warnings.push(format!("{:?} composite written as sRGB RGB (colour-managed conversion)", fmt.mode));
-            icc = Some(photocraft_cms::Builtin::Srgb.profile().to_bytes().to_vec());
-        }
-        let cs = csample(fmt.sample);
-        let colors = if cmyk {
-            4
-        } else if gray {
-            1
-        } else {
-            3
-        };
-        // Rendered and quantised in bands (no full-size float composite), with alpha; the alpha
-        // is dropped afterwards, in place, when every pixel turned out opaque.
-        let mut data = try_buffer(n, (colors + 1) * cs.bytes())?;
-        let mut opaque = true;
-        let _ = photocraft_compose::render_bands(doc, canvas, 0, |band| -> Result<(), ()> {
-            opaque &= band.px.iter().all(|p| p[3] >= 1.0);
-            let parts = crate::pixels::par_map(crate::pixels::bands(band.px.len()), |range| {
-                photocraft_color::convert::with_cmyk_space(space.as_ref(), || {
+            let gray = fmt.mode == ColorMode::Grayscale;
+            if matches!(fmt.mode, ColorMode::Cmyk | ColorMode::Lab) {
+                // RGB-only targets use the sRGB composite directly, without separating CMYK; the
+                // compositor renders Lab documents in sRGB. Either way the file is tagged sRGB.
+                warnings.push(format!("{:?} composite written as sRGB RGB (colour-managed conversion)", fmt.mode));
+                icc = Some(photocraft_cms::Builtin::Srgb.profile().to_bytes().to_vec());
+            }
+            let colors = if gray { 1 } else { 3 };
+            // Rendered and quantised in bands (no full-size float composite), with alpha; the
+            // alpha is dropped afterwards, in place, when every pixel turned out opaque.
+            let mut data = try_buffer(n, (colors + 1) * cs.bytes())?;
+            let mut opaque = true;
+            let _ = photocraft_compose::render_bands(doc, canvas, 0, |band| -> Result<(), ()> {
+                opaque &= band.px.iter().all(|p| p[3] >= 1.0);
+                let parts = crate::pixels::par_map(crate::pixels::bands(band.px.len()), |range| {
                     let mut out = Vec::with_capacity(range.len() * (colors + 1) * cs.bytes());
                     let mut put = |v: f32| {
                         let v = if v.is_nan() { 0.0 } else { v };
@@ -468,15 +462,8 @@ fn document_to_image_for(doc: &Document, warnings: &mut Vec<String>, cmyk_target
                             CSample::F16 | CSample::F32 => out.extend_from_slice(&v.to_ne_bytes()),
                         }
                     };
-                    let mut converted = [0.0; 5];
                     for p in &band.px[range] {
-                        if cmyk {
-                            let channels = photocraft_raster::from_rgba_into(&fmt, *p, &mut converted);
-                            for value in converted.iter().take(channels) {
-                                put(*value);
-                            }
-                            continue;
-                        } else if gray {
+                        if gray {
                             put(photocraft_color::convert::rgb_to_gray([p[0], p[1], p[2]]));
                         } else {
                             put(p[0]);
@@ -486,6 +473,80 @@ fn document_to_image_for(doc: &Document, warnings: &mut Vec<String>, cmyk_target
                         put(p[3]);
                     }
                     out
+                });
+                for part in parts {
+                    data.extend_from_slice(&part);
+                }
+                Ok(())
+            });
+            if opaque {
+                drop_alpha(&mut data, colors * cs.bytes(), cs.bytes());
+            }
+            let layout = layout_for(if gray { ColorMode::Grayscale } else { ColorMode::Rgb }, !opaque);
+            Image::from_raw(w, h, layout, cs, data)?
+        }
+    };
+    let meta = codecs::Metadata {
+        exif: doc.metadata.exif.as_ref().map(|e| e.to_vec()),
+        xmp: doc.metadata.xmp.as_deref().map(str::to_owned),
+        text: doc.metadata.text.clone(),
+        dpi: Some((doc.resolution_dpi, doc.resolution_dpi)),
+        ..Default::default()
+    };
+    Ok(img.with_icc(icc).with_meta(meta))
+}
+
+/// A CMYK document's composite as interleaved CMYK + alpha samples (`cs`), with whether every
+/// pixel came out opaque (the caller then drops the alpha). Stacks the native CMYK compositor
+/// handles are mixed on their ink values, so opaque pixels keep their exact inks; any other
+/// document is composited in RGB and converted back through its own CMYK profile, as PSD
+/// export's merged image is. Rendered and quantised in bands on every core.
+fn cmyk_composite(doc: &Document, canvas: Rect, cs: CSample, n: usize, warnings: &mut Vec<String>) -> Result<(Vec<u8>, bool), IoError> {
+    let mut data = try_buffer(n, 5 * cs.bytes())?;
+    let mut opaque = true;
+    let put = |out: &mut Vec<u8>, v: f32| {
+        let v = if v.is_finite() { v } else { 0.0 };
+        match cs {
+            CSample::U8 => out.push((v.clamp(0.0, 1.0) * 255.0).round() as u8),
+            CSample::U16 => out.extend_from_slice(&((v.clamp(0.0, 1.0) * 65535.0).round() as u16).to_ne_bytes()),
+            CSample::F16 | CSample::F32 => out.extend_from_slice(&v.to_ne_bytes()),
+        }
+    };
+    let native = photocraft_compose::cmyk::render_cmyk_bands(doc, canvas, 0, |band| -> Result<(), ()> {
+        opaque &= band.px.iter().all(|p| p[4] >= 1.0);
+        let parts = crate::pixels::par_map(crate::pixels::bands(band.px.len()), |range| {
+            let mut out = Vec::with_capacity(range.len() * 5 * cs.bytes());
+            for p in band.px.get(range).unwrap_or_default() {
+                for v in p {
+                    put(&mut out, *v);
+                }
+            }
+            out
+        });
+        for part in parts {
+            data.extend_from_slice(&part);
+        }
+        Ok(())
+    });
+    if native.is_none() {
+        // Through RGB and back: the colour model is kept, exact ink values are not.
+        warnings.push("CMYK composite converted back through the document's CMYK profile; ink values can differ from the layers'".to_string());
+        let space = photocraft_compose::cmyk_space(doc);
+        let to = PixelFormat::new(ColorMode::Cmyk, SampleType::F32, true);
+        let _ = photocraft_compose::render_bands(doc, canvas, 0, |band| -> Result<(), ()> {
+            opaque &= band.px.iter().all(|p| p[3] >= 1.0);
+            let parts = crate::pixels::par_map(crate::pixels::bands(band.px.len()), |range| {
+                // The composite came through the document's CMYK profile: convert back through it.
+                photocraft_color::convert::with_cmyk_space(space.as_ref(), || {
+                    let mut out = Vec::with_capacity(range.len() * 5 * cs.bytes());
+                    let mut v = [0.0f32; 5];
+                    for p in band.px.get(range).unwrap_or_default() {
+                        photocraft_raster::from_rgba_into(&to, *p, &mut v);
+                        for x in v {
+                            put(&mut out, x);
+                        }
+                    }
+                    out
                 })
             });
             for part in parts {
@@ -493,29 +554,11 @@ fn document_to_image_for(doc: &Document, warnings: &mut Vec<String>, cmyk_target
             }
             Ok(())
         });
-        if opaque {
-            drop_alpha(&mut data, colors * cs.bytes(), cs.bytes());
-        }
-        let layout = layout_for(
-            if cmyk {
-                ColorMode::Cmyk
-            } else if gray {
-                ColorMode::Grayscale
-            } else {
-                ColorMode::Rgb
-            },
-            !opaque,
-        );
-        Image::from_raw(w, h, layout, cs, data)?
-    };
-    let meta = codecs::Metadata {
-        exif: doc.metadata.exif.as_ref().map(|e| e.to_vec()),
-        xmp: doc.metadata.xmp.clone(),
-        text: doc.metadata.text.clone(),
-        dpi: Some((doc.resolution_dpi, doc.resolution_dpi)),
-        ..Default::default()
-    };
-    Ok(img.with_icc(icc).with_meta(meta))
+    }
+    if opaque {
+        drop_alpha(&mut data, 4 * cs.bytes(), cs.bytes());
+    }
+    Ok((data, opaque))
 }
 
 /// An empty buffer with room for `pixels × bytes_per_pixel` bytes, or an error (not an abort)
@@ -626,6 +669,12 @@ pub(crate) fn export_flat_with(doc: &Document, format: Format, opts: &ExportOpti
     if format == Format::Tga {
         img = tga_image(doc, img, opts.tga_bits, &mut warnings)?;
     }
+    if format == Format::Dds {
+        img = dds_image(doc, img, &mut warnings)?;
+    }
+    if format == Format::Tiff {
+        warnings.extend(crate::tiff_layers::stamp_flat_channels(doc, &mut img));
+    }
     encode_image(&img, format, opts, warnings)
 }
 
@@ -664,7 +713,7 @@ fn tga_image(doc: &Document, img: Image, bits: Option<TgaBits>, warnings: &mut V
             warnings.push("transparency composited over white; a 24-bit Targa has no alpha".into());
             matte_over_white(&img)
         }
-        (TgaBits::Bits32, [channel]) => tga_with_alpha_channel(doc, img, channel, warnings),
+        (TgaBits::Bits32, [channel]) => with_alpha_channel(doc, img, channel, "Targa", warnings),
         (TgaBits::Bits32, alphas) => {
             if !alphas.is_empty() {
                 warnings.push("Targa holds one alpha channel; with several, none was written (as in Photoshop)".into());
@@ -677,11 +726,32 @@ fn tga_image(doc: &Document, img: Image, bits: Option<TgaBits>, warnings: &mut V
     }
 }
 
-/// A 32-bit Targa's image: the colours (composited over white where the layers are transparent)
-/// and `channel`'s values as the alpha.
-fn tga_with_alpha_channel(doc: &Document, img: Image, channel: &AlphaChannel, warnings: &mut Vec<String>) -> Result<Image, IoError> {
+/// The image a DDS texture holds (#8563): as with a 32-bit Targa, the document's alpha channel
+/// becomes the texture's alpha when it has exactly one (spot channels don't count), the colours
+/// composited over white where the layers are transparent; BC1 keeps it as on/off, BC2 and BC3
+/// in full. With none, the layers' transparency is the alpha as before; with several, none of
+/// them is written. Grayscale textures keep their transparency.
+fn dds_image(doc: &Document, img: Image, warnings: &mut Vec<String>) -> Result<Image, IoError> {
+    let alphas: Vec<&AlphaChannel> = doc.channels.iter().filter(|c| c.spot.is_none()).collect();
+    match alphas.as_slice() {
+        [] => Ok(img),
+        [channel] if img.layout().is_rgb() => with_alpha_channel(doc, img, channel, "texture", warnings),
+        [_] => {
+            warnings.push("a grayscale DDS keeps the layers' transparency; the alpha channel was not saved".into());
+            Ok(img)
+        }
+        _ => {
+            warnings.push("a DDS texture holds one alpha channel; with several, none was written".into());
+            Ok(img)
+        }
+    }
+}
+
+/// A 32-bit Targa's or a texture's image: the colours (composited over white where the layers are
+/// transparent) and `channel`'s values as the alpha. `what` names the file in the warning.
+fn with_alpha_channel(doc: &Document, img: Image, channel: &AlphaChannel, what: &str, warnings: &mut Vec<String>) -> Result<Image, IoError> {
     let img = if img.layout().has_alpha() {
-        warnings.push("transparency composited over white; the alpha channel is the Targa's alpha".into());
+        warnings.push(format!("transparency composited over white; the alpha channel is the {what}'s alpha"));
         matte_over_white(&img)?
     } else {
         img

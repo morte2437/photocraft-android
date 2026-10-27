@@ -172,7 +172,8 @@ Edit → Preferences → Interface → UI Scale applies immediately. Auto follow
 system's display scale, including fractional scales such as 125%, 150% and 175% (on Linux,
 Wayland's fractional scale or X11's `Xft.dpi`), and updates when the window moves between
 monitors. A 4K display the system runs at 100% stays at 100% (#1278). The fixed choices (75% to
-300%) set an absolute UI scale, for example 200% on an unscaled 4K display. Canvas zoom shortcuts
+300%) set an absolute UI scale, for example 200% on an unscaled 4K display, with 105%, 110%,
+115% and 120% for finer control between 100% and 125%. Canvas zoom shortcuts
 continue to control the document independently of UI scaling.
 
 On a Wayland session with a fractional display scale, the interface is sharp only in a native

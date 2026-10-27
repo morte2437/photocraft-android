@@ -41,8 +41,9 @@ struct Faulty {
     /// Fail the first N renames with PermissionDenied (a transient lock), then succeed.
     locked_renames: Cell<u32>,
     renames: Cell<u32>,
-    /// Failure of the durability barrier after publication (#7858).
-    fail_sync_dir: bool,
+    /// Fail the directory flush (the durability barrier after publication, #4968, #7858)
+    /// with this raw OS error, or with this kind.
+    fail_sync_dir: Option<Result<i32, io::ErrorKind>>,
     synced: Cell<u32>,
 }
 
@@ -72,10 +73,11 @@ impl AtomicFs for Faulty {
     /// Count publication barriers and optionally fail before the real directory flush.
     fn sync_dir(&self, dir: &Path) -> io::Result<()> {
         self.synced.set(self.synced.get() + 1);
-        if self.fail_sync_dir {
-            return Err(io::Error::other("injected publication flush failure"));
+        match self.fail_sync_dir {
+            Some(Ok(code)) => Err(io::Error::from_raw_os_error(code)),
+            Some(Err(kind)) => Err(io::Error::new(kind, "injected directory flush failure")),
+            None => RealFs.sync_dir(dir),
         }
-        RealFs.sync_dir(dir)
     }
     fn copy_metadata(&self, from: &Path, to: &Path) -> io::Result<()> {
         RealFs.copy_metadata(from, to)
@@ -92,7 +94,7 @@ fn a_failed_publication_flush_is_reported_and_can_be_retried() {
     let d = TempDir::new("publication-flush");
     let p = d.0.join("document.pcraft");
     std::fs::write(&p, ORIGINAL).unwrap();
-    let fs = Faulty { fail_sync_dir: true, ..Default::default() };
+    let fs = Faulty { fail_sync_dir: Some(Err(io::ErrorKind::Other)), ..Default::default() };
 
     let error = atomic_write_with(&fs, NO_RETRY, &p, b"new document").unwrap_err();
     assert_eq!(fs.synced.get(), 1, "{error}");
@@ -443,4 +445,39 @@ fn sync_file_flushes_a_local_file() {
     // Opened for writing, as the saves do: Windows can't flush a read-only handle.
     let file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path).unwrap();
     sync_file(&file).unwrap();
+}
+
+/// #4968: the rename succeeded but the directory flush failed. The new bytes are in place, and
+/// the save is reported as unconfirmed (same kind, saying so) instead of as a success, so the
+/// caller keeps the document unsaved and its recovery data.
+#[test]
+fn a_failed_directory_flush_is_reported_not_swallowed() {
+    let d = TempDir::new("syncdir");
+    let p = d.0.join("doc.pcraft");
+    std::fs::write(&p, ORIGINAL).unwrap();
+    let fs = Faulty { fail_sync_dir: Some(Err(io::ErrorKind::Other)), ..Default::default() };
+    let e = atomic_write_with(&fs, NO_RETRY, &p, b"new").unwrap_err();
+    assert_eq!(e.kind(), io::ErrorKind::Other);
+    let msg = e.to_string();
+    assert!(msg.contains("doc.pcraft") && msg.contains("may not survive"), "{msg}");
+    assert_eq!(std::fs::read(&p).unwrap(), b"new", "published: the new bytes are in place");
+    assert_no_temp(&d.0);
+}
+
+/// A file system that can't flush directories at all (Linux's EINVAL, ENOTSUP, or an
+/// `Unsupported` error) still saves: failing every save there would make saving impossible.
+/// Windows fails the save on any failed flush (#7858), so this is the Unix rule.
+#[cfg(not(windows))]
+#[test]
+fn a_directory_flush_the_file_system_cannot_do_still_saves() {
+    let d = TempDir::new("syncdir-unsupported");
+    let p = d.0.join("doc.pcraft");
+    let fs = Faulty { fail_sync_dir: Some(Err(io::ErrorKind::Unsupported)), ..Default::default() };
+    atomic_write_with(&fs, NO_RETRY, &p, b"new").unwrap();
+    assert_eq!(std::fs::read(&p).unwrap(), b"new");
+    // EINVAL (22) means "can't flush a directory" only on Unix; EIO (5) is a real failure.
+    assert_eq!(dir_synced(Err(io::Error::from_raw_os_error(22))).is_ok(), cfg!(unix));
+    assert!(dir_synced(Err(io::Error::from_raw_os_error(5))).is_err());
+    let fs = Faulty { fail_sync_dir: Some(Ok(5)), ..Default::default() };
+    assert!(atomic_write_with(&fs, NO_RETRY, &p, b"newer").is_err());
 }

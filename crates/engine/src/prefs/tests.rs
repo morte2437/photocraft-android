@@ -22,6 +22,21 @@ fn defaults_match_photoshop() {
     }
 }
 
+#[test]
+fn intermediate_ui_scale_presets_survive_restart() {
+    let mut s = Session::new();
+    assert_eq!(s.execute("prefs.get", json!({"path": "interface.uiScale"})).unwrap(), json!("auto"));
+    for scale in ["100", "105", "110", "115", "120", "125"] {
+        s.execute("prefs.set", json!({"path": "interface.uiScale", "value": scale})).unwrap();
+        let mut restored = Session::new();
+        restored.load_prefs_json(&s.prefs_to_json()).unwrap();
+        assert_eq!(restored.execute("prefs.get", json!({"path": "interface.uiScale"})).unwrap(), json!(scale));
+    }
+    // Presets remain discrete choices: arbitrary values must not silently replace a valid scale.
+    assert!(s.execute("prefs.set", json!({"path": "interface.uiScale", "value": "112"})).is_err());
+    assert_eq!(s.execute("prefs.get", json!({"path": "interface.uiScale"})).unwrap(), json!("125"));
+}
+
 /// #2264: the Studio workspace dot pattern can be hidden without changing themes.
 #[test]
 fn canvas_dot_grid_can_be_disabled_persisted_and_reset() {
@@ -859,6 +874,29 @@ fn shift_key_tool_switch_is_on_by_default_and_a_stored_false_is_kept() {
     assert!(missing.use_shift_key_for_tool_switch, "a settings file without the key gets the new default");
     let stored: Tools = serde_json::from_value(json!({"useShiftKeyForToolSwitch": false})).unwrap();
     assert!(!stored.use_shift_key_for_tool_switch);
+}
+
+/// #5647: a settings file from before version 2 stored the switch off only because that was the
+/// old default, so it loads with the new default (on); one saved since keeps an explicit off.
+#[test]
+fn old_settings_files_take_the_shift_key_tool_switch_default() {
+    for old in
+        [json!({"tools": {"useShiftKeyForToolSwitch": false}}), json!({"version": 1, "tools": {"useShiftKeyForToolSwitch": false, "showTooltips": false}})]
+    {
+        let mut s = Session::new();
+        s.load_prefs_json(&old.to_string()).unwrap();
+        assert!(s.prefs().tools.use_shift_key_for_tool_switch, "{old}");
+    }
+    let mut s = Session::new();
+    s.load_prefs_json(&json!({"version": 1, "tools": {"showTooltips": false}}).to_string()).unwrap();
+    assert!(!s.prefs().tools.show_tooltips, "other tool settings are kept");
+    // Chosen off and saved now: kept on the next start.
+    s.edit_prefs(|p| p.tools.use_shift_key_for_tool_switch = false);
+    let saved = s.prefs_to_json();
+    assert_eq!(serde_json::from_str::<Value>(&saved).unwrap()["version"], json!(PREFS_VERSION));
+    let mut restored = Session::new();
+    restored.load_prefs_json(&saved).unwrap();
+    assert!(!restored.prefs().tools.use_shift_key_for_tool_switch);
 }
 
 /// Shortcut exports are all or nothing (#5801): a rename that fails after the first file was

@@ -33,7 +33,13 @@ fn header_stays_fixed_and_resize_hover_scroll_before_do_not_rebuild_the_proxy() 
         let label = photocraft_ui_egui::i18n::tr(photocraft_ui_egui::i18n::current(), "Tone Histogram");
         let header = h.query_by_label(label).expect("histogram graph").rect();
         h.event(Event::PointerMoved(pos2(1050.0, 400.0)));
-        h.event(Event::MouseWheel { unit: MouseWheelUnit::Point, phase: egui::TouchPhase::Move, delta: vec2(0.0, -320.0), modifiers: Modifiers::NONE });
+        h.event(Event::MouseWheel {
+            source: egui::MouseWheelSource::Unknown,
+            unit: MouseWheelUnit::Point,
+            phase: egui::TouchPhase::Move,
+            delta: vec2(0.0, -320.0),
+            modifiers: Modifiers::NONE,
+        });
         h.run_steps(3);
         assert_eq!(h.query_by_label(label).expect("histogram graph").rect(), header, "{theme:?}: histogram scrolled");
         h.set_size(vec2(960.0, 600.0));
@@ -99,33 +105,36 @@ fn settings_sections_group_existing_controls_without_rendering_or_document_edits
         let tr = |s| photocraft_ui_egui::i18n::tr_ctx(lang, "cameraRaw", s);
         let mut y = 0.0;
         for label in [light, tr("Color"), tr("Effects"), tr("Curve"), tr("Color Mixer"), tr("Color Grading"), tr("Detail")] {
-            let next = h.get_by_role_and_label(Role::Button, label).rect().top();
+            // egui 0.37 exposes a CollapsingHeader as a DisclosureTriangle, not a Button.
+            let next = h.get_by_role_and_label(Role::DisclosureTriangle, label).rect().top();
             assert!(next > y, "section order: {label}");
             y = next;
         }
         assert!(h.query_by_label(tr("Basic")).is_none());
         assert!(h.query_by_label(tr("Temperature")).is_none());
         assert!(h.query_by_label(tr("Texture")).is_none());
-        assert!(h.query_by_label(tr("Exposure")).is_some());
-        h.get_by_role_and_label(Role::Button, light).click();
+        assert!(h.query_by_role_and_label(Role::Slider, tr("Exposure")).is_some());
+        h.get_by_role_and_label(Role::DisclosureTriangle, light).click();
         h.run_steps(12);
-        h.get_by_role_and_label(Role::Button, tr("Color")).click();
+        h.get_by_role_and_label(Role::DisclosureTriangle, tr("Color")).click();
         h.run_steps(12);
         // The dock also has Saturation; query only the Camera Raw settings panel.
-        let settings = std::iter::successors(Some(h.get_by_role_and_label(Role::Button, tr("Color"))), |node| node.parent())
+        let settings = std::iter::successors(Some(h.get_by_role_and_label(Role::DisclosureTriangle, tr("Color"))), |node| node.parent())
             .find(|node| node.query_by_label(tr("Tone Histogram")).is_some())
             .expect("Camera Raw settings panel");
         for label in ["Temperature", "Tint", "Vibrance", "Saturation"] {
-            assert!(settings.query_by_label(tr(label)).is_some(), "color control: {label}");
+            assert!(settings.query_by_role_and_label(Role::Slider, tr(label)).is_some(), "color control: {label}");
         }
         assert!(h.query_by_label(tr("Exposure")).is_none());
-        h.get_by_role_and_label(Role::Button, tr("Color")).click();
+        h.get_by_role_and_label(Role::DisclosureTriangle, tr("Color")).click();
         h.run_steps(12);
-        h.get_by_role_and_label(Role::Button, tr("Effects")).click();
+        h.get_by_role_and_label(Role::DisclosureTriangle, tr("Effects")).click();
         h.run_steps(12);
-        for label in ["Texture", "Clarity", "Dehaze", "Vignetting", "Grain"] {
-            assert!(h.query_by_label(tr(label)).is_some(), "effects control: {label}");
+        for label in ["Texture", "Clarity", "Dehaze"] {
+            assert!(h.query_by_role_and_label(Role::Slider, tr(label)).is_some(), "effects control: {label}");
         }
+        assert!(h.query_by_role_and_label(Role::ComboBox, tr("Vignetting")).is_some(), "effects control: Vignetting");
+        assert!(h.query_by_role_and_label(Role::Label, tr("Grain")).is_some(), "effects control: Grain");
         let after = control::inspect(h.state(), &h.ctx);
         assert_eq!(after["cameraRaw"]["params"], before["params"]);
         assert_eq!(after["cameraRaw"]["previewRevision"], before["previewRevision"]);

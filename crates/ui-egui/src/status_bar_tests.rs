@@ -11,7 +11,7 @@ use crate::theme::{ThemeKind, Tokens};
 const SIZE: egui::Vec2 = vec2(900.0, 200.0);
 
 fn bottom_id() -> egui::Id {
-    egui::Id::new("status-bar-test-bottom")
+    egui::Id::unique("status-bar-test-bottom")
 }
 
 fn harness(kind: ThemeKind) -> Harness<'static, PhotocraftApp> {

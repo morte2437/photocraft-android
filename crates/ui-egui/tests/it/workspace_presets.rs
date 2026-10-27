@@ -63,7 +63,7 @@ fn presets_select_expected_panels_and_reset_every_dock_group() {
         app.ui.panels.character = !app.ui.panels.character;
         app.ui.panels.navigator = !app.ui.panels.navigator;
         app.ui.timeline.open = !timeline;
-        app.ui.dock.move_group(Group::Layers, Some(Group::Color));
+        app.ui.dock.order = vec![Group::Layers, Group::Color];
         app.ui.dock.set_collapsed(Group::Layers, true);
         app.ui.dock.heights.insert(Group::Properties, 99.0);
         app.ui.dock_tabs.color = 2;
@@ -131,7 +131,7 @@ fn custom_workspaces_restore_timeline_visibility_and_dock_after_presets() {
     let mut app = app();
     for (name, suffix) in [("Custom still", "pixelArt"), ("Custom motion", "motion")] {
         select(&mut app, suffix);
-        app.ui.dock.move_group(Group::Navigator, Some(Group::Color));
+        app.ui.dock.order = vec![Group::Navigator, Group::Color];
         app.ui.dock_tabs.color = 1;
         app.ui.dock.set_collapsed(Group::Properties, true);
         let expected = layout(&app);

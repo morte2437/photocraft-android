@@ -645,6 +645,10 @@
 	Fit Layer(s) on Screen	Adapter le(s) calque(s) à l'écran
 	Fit Artboard on Screen	Adapter le plan de travail à l'écran
 	100%	100 %
+	105%	105 %
+	110%	110 %
+	115%	115 %
+	120%	120 %
 	200%	200 %
 	75%	75 %
 	80%	80 %
@@ -1008,6 +1012,9 @@
 	Create new pattern from the selection	Créer un nouveau motif à partir de la sélection
 	Create new shape from the current path	Créer une nouvelle forme à partir du tracé actif
 	Create new snapshot	Créer un nouvel instantané
+	From:	À partir de :
+	Full Document	Document entier
+	Merged Layers	Calques fusionnés
 	Create new tool preset	Créer un nouveau préréglage d'outil
 	Crop Factor	Facteur de recadrage
 	Ctrl	Ctrl
@@ -2178,6 +2185,11 @@
 	No path to make a selection from: draw one with the Pen tool or select one in the Paths panel.	Aucun tracé à partir duquel créer une sélection : dessinez-en un avec l'outil Plume ou sélectionnez-en un dans le panneau Tracés.
 	Cancel opening	Annuler l'ouverture
 	Cancelled opening {name}	Ouverture de {name} annulée
+	Damaged Photoshop document	Document Photoshop endommagé
+	The document “{name}” may be damaged.	Le document « {name} » est peut-être endommagé.
+	Some layers, pixels or masks could not be read. Do you want to continue opening it?	Certains calques, pixels ou masques n’ont pas pu être lus. Voulez-vous poursuivre l’ouverture ?
+	If you continue, saving over the original may permanently discard unreadable data. Save a copy to keep the original.	Si vous continuez, l’enregistrement par-dessus l’original risque de supprimer définitivement les données illisibles. Enregistrez une copie pour conserver l’original.
+	Continue	Continuer
 	The document “{name}” does not have an embedded {mode} profile.	Le document « {name} » n'a pas de profil {mode} incorporé.
 	The document “{name}” has an embedded color profile that does not match the current {mode} working space.	Le document « {name} » a un profil colorimétrique incorporé qui ne correspond pas à l'espace de travail {mode} actuel.
 	Working: {working}	Espace de travail : {working}
@@ -3144,6 +3156,8 @@ curves	Smooth	Lisser
 	Vanishing Point is not active	Point de fuite n’est pas actif
 	Apply Vanishing Point ({key})	Appliquer le point de fuite ({key})
 	Fix the red plane first: its corners must form a convex quad	Corrigez d’abord le plan rouge : ses coins doivent former un quadrilatère convexe
+	Alt-click a plane to set the clone source	Alt-clic sur un plan pour définir la source de duplication
+	Too many clone strokes: apply Vanishing Point first	Trop de traits de duplication : appliquez d’abord Point de fuite
 # Select and Mask view modes (#1754)
 	Onion Skin	Pelure d'oignon
 	Marching Ants	Fourmis en marche
@@ -3242,6 +3256,30 @@ curves	Smooth	Lisser
 	Sent to {printer}	Envoyé à {printer}
 	set in Print Settings…	défini dans les paramètres d’impression…
 	ICO is limited to 256 × 256 pixels	Le format ICO est limité à 256 × 256 pixels
+	Calibration	Étalonnage
+	Red Primary	Primaire rouge
+	Green Primary	Primaire verte
+	Blue Primary	Primaire bleue
+	Write xmp sidecars	Écrire les fichiers annexes XMP
+	Set the tone sliders from the image	Régler les curseurs de tonalité d’après l’image
+	Settings from {name}	Réglages de {name}
+	Settings from {name}; {count} not supported: {names}	Réglages de {name} ; {count} non pris en charge : {names}
+	Could not write {name}: {error}	Impossible d’écrire {name} : {error}
+	Kept {name}: written by another application	{name} conservé : écrit par une autre application
+	Shadow Tint	Teinte des ombres
+# PhotoCraft release checks.
+	Check for Updates…	Rechercher des mises à jour…
+	PhotoCraft Updates	Mises à jour de PhotoCraft
+	Checking for updates…	Recherche de mises à jour…
+	Open the release page to choose an installer for your system.	Ouvrez la page de la version pour choisir un programme d’installation pour votre système.
+	Open Download Page	Ouvrir la page de téléchargement
+	PhotoCraft is up to date.	PhotoCraft est à jour.
+	Could not check for updates.	Impossible de rechercher des mises à jour.
+	Updates have not been checked yet.	Les mises à jour n’ont pas encore été vérifiées.
+	Check Again	Vérifier à nouveau
+	Automatically Check for Updates	Rechercher automatiquement des mises à jour
+	Installed version: {version}	Version installée : {version}
+	PhotoCraft {version} is available.	PhotoCraft {version} est disponible.
 # History panel › History Brush source (#2966)
 	Paints from the History panel's source state	Peint à partir de l'état source du panneau Historique
 	Sets the source for the history brush	Définit la source du pinceau d'historique
@@ -3374,6 +3412,14 @@ curves	Smooth	Lisser
 
 # Graphics Adapter preference (#1885)
 	GPU adapter	Adaptateur GPU
+
+# Styles panel: Import / Export Styles (.asl)
+	Import Styles…	Importer des styles…
+	Export Selected Styles…	Exporter les styles sélectionnés…
+	Export Styles…	Exporter les styles…
+	{file} is not a style library (.asl)	{file} n’est pas une bibliothèque de styles (.asl)
+@plural	Imported {n} style from {file}|Imported {n} styles from {file}	{n} style importé depuis {file}|{n} styles importés depuis {file}
+@plural	Exported {n} style to {file}|Exported {n} styles to {file}	{n} style exporté vers {file}|{n} styles exportés vers {file}
 # Actions: a step dialog holds a suspended recording (#7365)
 	Confirm or cancel the open action step dialog first	Validez ou annulez d’abord la boîte de dialogue ouverte de l’étape de l’action
 	Pro Medium Gray	Pro gris moyen
@@ -3382,7 +3428,6 @@ curves	Smooth	Lisser
 	Pro Light Gray	Pro gris clair
 	Pro Light	Pro clair
 	Resize Windows to Fit	Redimensionner les fenêtres
-
 	EXR	EXR
 	(none)	(aucun)
 	32-bit Preview Options	Options d'aperçu 32 bits
@@ -3529,7 +3574,6 @@ curves	Smooth	Lisser
 	Conditional Mode Change	Changement de mode conditionnel
 	Confirm	Confirmer
 	Constraints	Contraintes
-	Continue	Continuer
 	Contrasty	Contrasté
 	Convert	Convertir
 	Convert to Alpha Channel	Convertir en canal alpha
@@ -4415,12 +4459,37 @@ layers	Fill	Remplissage
 layers	Fill:	Remplissage :
 navigator	Zoom	Zoom
 shape	Appearance	Apparence
-
 # Paragraph direction (TYPE-218-2)
 	Automatic paragraph direction	Sens du paragraphe automatique
 	Left-to-right paragraph direction	Sens du paragraphe de gauche à droite
 	Right-to-left paragraph direction	Sens du paragraphe de droite à gauche
 	Not rendered: this adjustment ({key}) is kept as imported.	Non rendu : ce réglage ({key}) est conservé tel qu'importé.
-
 # Print preview image (#8236)
 	Print preview image	Print preview image
+# Color panel menu: modes, copy commands and colour ramps (#6000)
+	Hue Cube	Cube de teinte
+	Brightness Cube	Cube de luminosité
+	Color Wheel	Roue chromatique
+	RGB Sliders	Curseurs RVB
+	HSB Sliders	Curseurs TSL
+	CMYK Sliders	Curseurs CMJN
+	Lab Sliders	Curseurs Lab
+	Web Color Sliders	Curseurs de couleurs Web
+	Copy Color as HTML	Copier la couleur en HTML
+	Copy Color's Hex Code	Copier le code hexadécimal de la couleur
+	RGB Spectrum	Spectre RVB
+	CMYK Spectrum	Spectre CMJN
+	Grayscale Ramp	Barre de niveaux de gris
+	Current Colors	Couleurs actuelles
+	Make Ramp Web Safe	Limiter la barre aux couleurs Web
+# Art History Brush (#213).
+	Art History Brush Tool	Outil Pinceau d'historique artistique
+	Tight Short	Serré court
+	Tight Medium	Serré moyen
+	Tight Long	Serré long
+	Loose Medium	Lâche moyen
+	Loose Long	Lâche long
+	Dab	Touche
+	Tight Curl	Boucle serrée
+	Loose Curl	Boucle lâche
+	Stylized dabs from a history state	Touches stylisées depuis un état d'historique

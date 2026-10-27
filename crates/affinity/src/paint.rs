@@ -232,9 +232,15 @@ pub(crate) fn descriptor(r: &mut Reader, id: ObjId, local: Affine) -> Option<Pai
                 }
             };
             let grad = s.obj(fill, b"Grad")?;
+            // A shared gradient is decoded again for every occurrence: charge the arrays scanned
+            // and copy only as many positions as there are stops to keep.
+            if r.charge_slots(s.array_len(grad, b"Cols").unwrap_or(0).saturating_add(s.array_len(grad, b"Posn").unwrap_or(0))).is_err() {
+                r.warn("gradients beyond the document work budget (left empty)");
+                return Some(Paint::None);
+            }
             let cols = s.objs(grad, b"Cols");
             let posn: Vec<Vec<f64>> = match s.field(grad, b"Posn") {
-                Some(Value::Array(a)) => a.iter().filter_map(floats).collect(),
+                Some(Value::Array(a)) => a.iter().filter_map(floats).take(MAX_STOPS).collect(),
                 _ => Vec::new(),
             };
             let mut stops = Vec::new();

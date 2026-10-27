@@ -79,6 +79,23 @@ zero. Set tool colours with `tools.setColors`. `ui.inspect` reports `toolOptions
 `toolOptions.stroke_width`, and the transient `strokeEditor`. Keyboard focus, standard number
 fields, colour pickers, and ComboBoxes remain native egui controls.
 
+## Paint
+
+The Fill and Stroke swatches (options bar and Properties) offer No Color, Solid and Gradient,
+as Photoshop's shape Fill/Stroke popover does. Gradient starts from the Gradient tool's current
+gradient (linear, 90°, 100%). Its tab (`shape_gradient_ui.rs`) has a Recent row (the gradients
+the popups last closed on, `ui.recent_gradients`) above the preset library (a pick takes the
+preset's colour and opacity stops, as a Gradient Fill layer made from it does), a stops strip
+(click below the ramp to add a colour stop, above it an opacity stop; drag a stop to move it or
+off the strip to delete it; drag a midpoint), the selected stop's colour (an inline picker),
+opacity, location and Delete, and the style, angle, scale, Reverse and Align with layer. Stop
+edits use the Gradient Editor's grammar (`gradient_fill_cmds::apply_stop`). With no
+shape selected the choice is the next shape's (`toolOptions.shape_fill_gradient` /
+`shape_stroke_gradient`; a colour replaces it, No Color keeps it); with one selected it is one
+`shape.edit`. The swatches send every gradient field (`opacityStops`, `midpoints`, `offset`,
+`dither`, `align`), so changing the angle of an imported gradient keeps the rest. Pattern paint is
+not offered yet.
+
 ## Upstream and public references
 
 - [PR #2218](https://github.com/storytold/photocraft/pull/2218) introduced these controls with
@@ -87,7 +104,8 @@ fields, colour pickers, and ComboBoxes remain native egui controls.
   parity, including selected-shape editing from the options bar and additional fill types;
   those remain separate work.
 - [Issue #1053](https://github.com/storytold/photocraft/issues/1053) documents the missing
-  stroke controls and existing engine/model support. Gradient fill UI remains separate work.
+  stroke controls and existing engine/model support. The Fill and Stroke swatches now have a
+  Gradient tab (see Paint below); a pattern paint UI remains separate work.
 - [Issue #1931](https://github.com/storytold/photocraft/issues/1931) requests sharp stroke options.
 - [PR #233](https://github.com/storytold/photocraft/pull/233),
   [#397](https://github.com/storytold/photocraft/pull/397), and

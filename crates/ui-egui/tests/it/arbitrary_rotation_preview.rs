@@ -67,7 +67,7 @@ fn blue(h: &mut Harness, name: &str) -> (usize, u32, u32) {
     h.run_steps(3);
     let rect = h.state().last_canvas_rect.shrink(3.0);
     let modals: Vec<_> =
-        h.state().ui.dialogs.iter().map(|d| h.ctx.memory(|m| m.area_rect(egui::Id::new(("dialog", d.id)))).expect("laid-out dialog").expand(4.0)).collect();
+        h.state().ui.dialogs.iter().map(|d| h.ctx.memory(|m| m.area_rect(egui::Id::unique(("dialog", d.id)))).expect("laid-out dialog").expand(4.0)).collect();
     let img = h.render().expect("render");
     if let Some(dir) = std::env::var_os("PHOTOCRAFT_ROTATION_EVIDENCE_DIR") {
         std::fs::create_dir_all(&dir).expect("evidence directory");

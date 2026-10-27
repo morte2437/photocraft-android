@@ -255,3 +255,96 @@ fn data_sets_and_footage_read_only_followed_files() {
     assert!(err.contains("is not opened: the path is on another computer"), "{err}");
     footage(&mut s, "blue.png").unwrap();
 }
+
+/// A link to a file PhotoCraft can't place (a text or settings file) is never embedded: a saved
+/// PSD would otherwise carry bytes no reader can show as the layer's contents. The layer is
+/// written as pixels; Convert to Embedded and Relink refuse.
+#[test]
+fn links_to_files_that_are_not_images_are_never_embedded() {
+    const TEXT: &[u8] = b"plain text, not an image
+photocraft-text-marker
+";
+    let d = dir("not-image");
+    std::fs::create_dir_all(d.join("notes")).unwrap();
+    std::fs::create_dir_all(d.join("Downloads")).unwrap();
+    std::fs::write(d.join("notes").join("readme"), TEXT).unwrap();
+    std::fs::write(d.join("Downloads").join(".settings"), TEXT).unwrap();
+    png(&d.join("red.png"), |_| [255, 0, 0]);
+    let (mut s, id) = document(&d, &d.join("red.png"));
+    s.active_mut().unwrap().path = Some(d.join("Downloads").join("doc.pcraft").to_string_lossy().into_owned());
+    let has_text = |bytes: &[u8]| bytes.windows(TEXT.len()).any(|w| w == TEXT);
+    for (n, path) in ["../notes/readme", ".settings"].into_iter().enumerate() {
+        relink(&mut s, id, path);
+        for ext in ["psd", "psb", "tif"] {
+            let out = d.join(format!("copy{n}.{ext}"));
+            let r = s.execute("file.saveACopy", json!({"path": out.to_string_lossy(), "tiffLayers": true})).unwrap();
+            assert!(!has_text(&std::fs::read(&out).unwrap()), "{path} embedded in the {ext}: {r}");
+            let warnings = r["warnings"].to_string();
+            assert!(warnings.contains("written as pixels"), "{path} {ext}: {warnings}");
+        }
+        assert!(s.execute("layer.smartObjects.convertToEmbedded", json!({"layer": id.0})).is_err(), "{path}");
+        let abs = d.join("notes").join("readme");
+        assert!(s.execute("layer.smartObjects.relinkToFile", json!({"layer": id.0, "path": abs.to_string_lossy()})).is_err(), "{path}");
+    }
+}
+
+/// Duplicates share their contents identity, so a linked and an embedded copy of the same bytes
+/// meet in the export's conversion cache: each keeps its own rule, whichever is written first.
+#[test]
+fn a_linked_and_an_embedded_copy_of_the_same_bytes_keep_their_own_rule() {
+    const TEXT: &[u8] = b"plain text, not an image
+photocraft-shared-marker
+";
+    let d = dir("shared-contents");
+    std::fs::write(d.join("readme"), TEXT).unwrap();
+    png(&d.join("red.png"), |_| [255, 0, 0]);
+    let (mut s, linked) = document(&d, &d.join("red.png"));
+    s.execute("layer.duplicate", json!({})).unwrap();
+    let embedded = s.active().unwrap().active_layer.unwrap();
+    assert_ne!(linked, embedded);
+    relink(&mut s, linked, "readme");
+    s.edit("Embed", |doc, _| {
+        if let Some(LayerContent::Smart(sm)) = doc.layer_mut(embedded).map(|l| &mut l.content) {
+            sm.source = SmartSource::Embedded { file_name: "readme".into(), bytes: std::sync::Arc::new(TEXT.to_vec()) };
+        }
+        Ok(())
+    })
+    .unwrap();
+    for ext in ["psd", "psb", "tif"] {
+        let out = d.join(format!("copy.{ext}"));
+        let r = s.execute("file.saveACopy", json!({"path": out.to_string_lossy(), "tiffLayers": true})).unwrap();
+        let bytes = std::fs::read(&out).unwrap();
+        let copies = bytes.windows(TEXT.len()).filter(|w| *w == TEXT).count();
+        assert_eq!(copies, 1, "{ext}: only the embedded copy is kept: {r}");
+        assert!(r["warnings"].to_string().contains("written as pixels"), "{ext}: {r}");
+    }
+}
+
+/// Package copies only linked files PhotoCraft can open: a link to a text file is listed as
+/// missing and no copy of it is written into the package's Links folder.
+#[test]
+fn package_copies_only_links_to_images() {
+    const TEXT: &[u8] = b"plain text, not an image
+photocraft-package-marker
+";
+    let d = dir("package-not-image");
+    std::fs::write(d.join("readme"), TEXT).unwrap();
+    png(&d.join("red.png"), |_| [255, 0, 0]);
+    let (mut s, id) = document(&d, &d.join("red.png"));
+    relink(&mut s, id, "readme");
+    let pkg = d.join("pkg");
+    let r = s.execute("file.package", json!({"dir": pkg.to_string_lossy()}));
+    let copies: Vec<_> = walkdir(&pkg).into_iter().filter(|f| std::fs::read(f).is_ok_and(|b| b == TEXT)).collect();
+    assert!(copies.is_empty(), "copied into the package: {copies:?} ({r:?})");
+    let r = r.unwrap();
+    assert_eq!(r["missing"], json!(["readme"]), "{r}");
+}
+
+fn walkdir(d: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(d).into_iter().flatten().flatten() {
+        let p = e.path();
+        if p.is_dir() { out.extend(walkdir(&p)) } else { out.push(p) }
+    }
+    out
+}

@@ -17,6 +17,9 @@ const DOCUMENT_KIND: &[u8; 4] = b"nsrP";
 const MAX_TABLES: usize = 4096;
 /// Distinct ids the allocation tables may name; each costs a map slot even when only deleted.
 const MAX_ENTRIES: usize = 1 << 22;
+/// Bytes of entry names the allocation tables may name. A name is retained twice (in the entry
+/// and as its map key), and tables can point many names at the same bytes.
+const MAX_NAME_BYTES: usize = 32 << 20;
 /// zstd window ceiling: real documents use a few MiB; this stops a header from reserving gigabytes.
 const MAX_ZSTD_WINDOW: u64 = 64 << 20;
 
@@ -168,6 +171,7 @@ impl<'a> Archive<'a> {
         // Newest record per id: (table date, table index, record).
         let mut latest: HashMap<u32, (u64, usize, Option<Box<Entry>>)> = HashMap::new();
         let mut names: HashMap<u32, String> = HashMap::new();
+        let mut name_bytes = 0usize;
         let mut seen = HashSet::new();
         let mut next = header.fat_offset;
         let mut tables = 0usize;
@@ -231,8 +235,16 @@ impl<'a> Archive<'a> {
                 }
                 if flag == 0 {
                     let len = usize::from(c.u16()?);
-                    let name = String::from_utf8_lossy(c.take(len)?).into_owned();
-                    names.entry(id).or_insert(name);
+                    let raw = c.take(len)?;
+                    // Only the first name per id is kept: charge and copy just that one.
+                    if let std::collections::hash_map::Entry::Vacant(slot) = names.entry(id) {
+                        let name = String::from_utf8_lossy(raw).into_owned();
+                        name_bytes = name_bytes.saturating_add(name.len());
+                        if name_bytes > MAX_NAME_BYTES {
+                            return Err(Error::Limit("archive entry names too large"));
+                        }
+                        slot.insert(name);
+                    }
                 }
                 // Equal dates: the first table in the chain (the newest) wins, as in afread.
                 let replace = latest.get(&id).is_none_or(|(d, _, _)| date > *d);
@@ -284,6 +296,9 @@ impl<'a> Archive<'a> {
         if total > self.limits.max_total {
             return Err(Error::Limit("document too large"));
         }
+        // Charge before decoding: a corrupt entry that fails its checksum has already cost the
+        // decompression, and an importer that recovers must not get it again for free.
+        self.extracted = total;
         let mut c = Cursor::new(self.bytes, offset(e.offset)?);
         if c.take(4)? != b"#Fil" {
             return Err(Error::Malformed("archive entry has no data block"));
@@ -303,7 +318,6 @@ impl<'a> Archive<'a> {
         if crc32fast::hash(&out) != e.crc {
             return Err(Error::Malformed("archive entry checksum mismatch"));
         }
-        self.extracted = total;
         Ok(out)
     }
 }

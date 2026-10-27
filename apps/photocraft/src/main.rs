@@ -1,14 +1,7 @@
 //! PhotoCraft desktop app.
 //!
-//! Usage: `photocraft [--control <port>] [--control-token <64-hex> |
-//! --control-token-file <path>] [--automation-read-root <dir>]
-//! [--automation-write-root <dir>] [--safe-gpu] [--in-window-menus] [--present-mode <mode>]
-//! [--frame-latency <n>] [--stroke-trace <stderr|file.csv>] [--new-instance] [--] [files…]`
-//! (`photocraft --help` prints [`USAGE`]; `--version` prints the version).
-//!
-//! Any other argument starting with `-` is a usage error (exit status 2, issue #6431), so a typo
-//! such as `--safegpu` doesn't open the window and then fail to open the flag as a file. A file
-//! whose name starts with `-` goes after `--`.
+//! Usage: `photocraft [options] [--] [files…]`; `photocraft --help` lists the options, which are
+//! declared, with what makes a usage error (exit status 2), in `launch_args`.
 //!
 //! On Windows and Linux a launch hands its files to the PhotoCraft that is already running (new
 //! tabs in its window) and exits; `--new-instance` starts a separate copy instead, as does any
@@ -31,7 +24,8 @@
 //! `{"id":1,"ok":true,"result":…}`. See `photocraft_ui_egui::control` for the methods.
 
 // Release builds on Windows are GUI-subsystem apps, so launching from the Start Menu or Explorer
-// doesn't open a console window. (`--version` output then only shows when redirected.)
+// doesn't open a console window. (`--help`, `--version` and usage errors then only show when
+// redirected.)
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
@@ -49,6 +43,7 @@ mod file_dialog_probe;
 mod gpu_startup;
 #[cfg(target_os = "linux")]
 mod icon_theme;
+mod launch_args;
 #[cfg(target_os = "macos")]
 mod mac_menu;
 #[cfg(target_os = "macos")]
@@ -74,6 +69,7 @@ mod single_instance;
 // Tablet support (macOS AppKit monitor, Linux X11/Wayland, Windows barrel button).
 mod tablet;
 mod ui_state;
+mod updates;
 mod window_frame;
 
 use photocraft_engine::Session;
@@ -96,6 +92,53 @@ fn custom_titlebar(prefs_file: Option<&std::path::Path>) -> bool {
     CUSTOM_TITLEBAR && !prefs.interface.system_title_bar
 }
 
+/// Preferences › Integrations, read before the window opens the way [`custom_titlebar`] is:
+/// whether agents may drive this launch at all, and the port to listen on when no `--control`
+/// was given (0 = only with `--control`). A missing or unreadable file keeps the defaults.
+///
+/// The section is read on its own, and when it doesn't read as a whole each value on its own,
+/// as the app's lenient load reads them (#6611): a wrong-typed value elsewhere in the file, or
+/// in the other field, must not turn Allow Agent Control back on while the dialog shows it off.
+fn integrations(prefs_file: Option<&std::path::Path>) -> photocraft_engine::prefs::Integrations {
+    use serde_json::Value;
+    let mut out = photocraft_engine::prefs::Preferences::default().integrations;
+    let file: Option<Value> = prefs_file.and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str(&t).ok());
+    let Some(section) = file.as_ref().and_then(|v| v.get("integrations")) else {
+        return out;
+    };
+    if let Ok(whole) = serde_json::from_value(section.clone()) {
+        return whole;
+    }
+    if let Some(allow) = section.get("allowAgentControl").and_then(Value::as_bool) {
+        out.allow_agent_control = allow;
+    }
+    if let Some(port) = section.get("controlPort").and_then(Value::as_u64).and_then(|p| u32::try_from(p).ok()) {
+        out.control_port = port;
+    }
+    out
+}
+
+/// The control port this launch listens on, and the warning to print when a request was refused.
+/// `--control` (or `PHOTOCRAFT_CONTROL_PORT`) wins over the preference; Allow Agent Control off
+/// refuses both, and says so rather than ignoring the flag silently. A preferred port outside
+/// 1..=65535 is refused the same way.
+fn control_port_for(cli: Option<u16>, prefs: &photocraft_engine::prefs::Integrations) -> (Option<u16>, Option<String>) {
+    if !prefs.allow_agent_control {
+        let warning = cli.map(|p| format!("photocraft: Preferences › Integrations › Allow Agent Control is off: not listening on port {p}\n"));
+        return (None, warning);
+    }
+    if let Some(port) = cli {
+        return (Some(port), None);
+    }
+    match prefs.control_port {
+        0 => (None, None),
+        p => match u16::try_from(p).ok().filter(|p| *p != 0) {
+            Some(port) => (Some(port), None),
+            None => (None, Some(format!("photocraft: Preferences › Integrations › Control Port {p} is not a usable port: not listening\n"))),
+        },
+    }
+}
+
 /// The main window: 1440 × 900 (shrunk to fit the monitor, and maximized on the first frame
 /// when it still doesn't fit, `work_area::fit_window`), centred on the main monitor. Without
 /// `centered`, Windows cascades each new window from the top-left corner, so it opened at a
@@ -115,6 +158,9 @@ fn native_options(custom_titlebar: bool) -> eframe::NativeOptions {
             .with_titlebar_shown(false)
             .with_title_shown(false),
         centered: true,
+        // PhotoCraft owns its fallback fonts (`cjk_fonts`, craft-fonts): eframe's system-font
+        // provider would compete with it and make glyph choice machine-dependent (#8512).
+        system_font_fallback: false,
         // eframe saves native window geometry and egui panel/window sizes on exit.
         // Keep that state beside preferences, including config overrides and portable mode.
         persistence_path: services::config_dir().map(|dir| dir.join("ui.ron")),
@@ -147,360 +193,39 @@ fn at_least_min_size(mut builder: egui::ViewportBuilder) -> egui::ViewportBuilde
     builder
 }
 
-/// Parse a `--control` / `PHOTOCRAFT_CONTROL_PORT` value. An unparseable port is an error that
-/// names the value (issue #701): silently running with no control server leaves a launcher or
-/// agent unable to tell a typo from a successful grant.
-fn parse_control_port(value: &str, source: &str) -> Result<u16, String> {
-    value.trim().parse().map_err(|_| format!("{source}: `{value}` is not a valid port (expected a number from 0 to 65535)"))
-}
-
-/// Process exit status for the collected usage errors (a bad `--control` /
-/// `PHOTOCRAFT_CONTROL_PORT`, an unknown option): `None` when there are none, else 2 (a
-/// command-line usage error), never 0.
-fn usage_exit_code(errors: &[String]) -> Option<i32> {
-    if errors.is_empty() { None } else { Some(2) }
-}
-
-/// `photocraft --help`. Keep in step with the options `main` accepts and the module docs.
-const USAGE: &str = "\
-Usage: photocraft [options] [--] [files…]
-
-Opens PhotoCraft with the given files.
-
-Options:
-  -h, --help                       Print this help and exit
-      --version                    Print the version, commit and build date and exit
-      --safe-gpu                   Start with the CPU renderer for this launch (after a graphics driver crash)
-      --in-window-menus            macOS: keep the menus inside the window instead of the menu bar
-      --new-instance               Windows and Linux: start a separate PhotoCraft instead of opening
-                                   the files in the one already running
-      --present-mode <mode>        How frames reach the display: fifo, autovsync or novsync
-      --frame-latency <n>          Frames queued for the display: 1 to 3
-      --stroke-trace <stderr|file.csv>
-                                   Time each brush stroke's frames
-      --control <port>             Start the localhost JSON-lines control server on this port
-      --control-token <64-hex>     Control server token (default: a new random one, printed)
-      --control-token-file <path>  Read the control server token from this file, or create it
-                                   with a new one
-      --automation-read-root <dir> Directory the control server may read files from
-      --automation-write-root <dir>
-                                   Directory the control server may write files to
-  --                               Treat every later argument as a file, even one starting with `-`
-
-A bad --present-mode, --frame-latency or --stroke-trace value is reported and ignored.
-Environment: PHOTOCRAFT_CONTROL_PORT, PHOTOCRAFT_CONTROL_TOKEN, PHOTOCRAFT_CONTROL_TOKEN_FILE,
-PHOTOCRAFT_AUTOMATION_READ_ROOT, PHOTOCRAFT_AUTOMATION_WRITE_ROOT, PHOTOCRAFT_PRESENT_MODE,
-PHOTOCRAFT_FRAME_LATENCY, PHOTOCRAFT_STROKE_TRACE, PHOTOCRAFT_IN_WINDOW_MENUS, PHOTOCRAFT_NEW_INSTANCE,
-PHOTOCRAFT_CONFIG_DIR.
-";
-
-/// Print to standard output for `--help` / `--version`. Unlike `println!`, never panics when
-/// stdout is closed or a pipe (`photocraft --help | head -1`).
-fn print_stdout(text: &str) {
-    use std::io::Write as _;
-    let mut out = std::io::stdout().lock();
-    let _ = out.write_all(text.as_bytes()).and_then(|()| out.flush());
-}
-
-/// Everything the desktop launcher takes from the command line, on top of the environment
-/// defaults handed in to `parse_launch_args`.
-#[derive(Debug, Default, PartialEq, Eq)]
-struct LaunchArgs {
-    control_port: Option<u16>,
-    control_token: Option<String>,
-    control_token_file: Option<std::path::PathBuf>,
-    automation_read_root: Option<std::path::PathBuf>,
-    automation_write_root: Option<std::path::PathBuf>,
-    files: Vec<String>,
-    /// Arguments that are not valid Unicode (issue #1108): a file manager can hand over a Latin-1
-    /// file name on Linux, and `std::env::args()` would panic before any window opened. Paths are
-    /// reported in a notice once the app is up; a control token is a usage error like a bad port.
-    unreadable_paths: Vec<String>,
-    safe_gpu: bool,
-    new_instance: bool,
-    /// Options that apply only to the process they're given to; a launch with any keeps its own.
-    launch_options: Vec<&'static str>,
-    present_mode_arg: Option<String>,
-    frame_latency_arg: Option<String>,
-    stroke_trace_arg: Option<String>,
-    in_window_menus: bool,
-    /// `--help` / `-h`: print [`USAGE`] and exit 0; parsing stops there.
-    help: bool,
-    /// `--version`: print the version and exit 0; parsing stops there.
-    version: bool,
-    /// Usage errors (a bad or missing control/automation value, an unknown option); a non-empty
-    /// list fails the launch with exit status 2 (issues #701, #6429, #6431).
-    errors: Vec<String>,
-}
-
-/// Parse the desktop launch arguments over the environment defaults in `out`. A control or
-/// automation flag with no value is a usage error naming the flag (issue #6429), never a silent
-/// fall back to a generated token or to no root: like `--control` with a bad port, it exits 2.
-/// So is an unknown option (#6431); a file whose name starts with `-` goes after `--`.
-fn parse_launch_args(args: impl Iterator<Item = std::ffi::OsString>, mut out: LaunchArgs) -> LaunchArgs {
-    let mut args = args;
-    // After `--`, every argument is a file, even one that starts with `-`.
-    let mut only_files = false;
-    while let Some(a) = args.next() {
-        if only_files {
-            match a.into_string() {
-                Ok(s) => out.files.push(s),
-                Err(raw) => out.unreadable_paths.push(raw.to_string_lossy().into_owned()),
-            }
-            continue;
-        }
-        match a.to_str() {
-            Some("--") => only_files = true,
-            Some("--help" | "-h") => {
-                out.help = true;
-                break;
-            }
-            Some("--control") => match args.next() {
-                Some(value) => match parse_control_port(&value.to_string_lossy(), "--control") {
-                    Ok(port) => out.control_port = Some(port),
-                    Err(error) => out.errors.push(error),
-                },
-                None => out.errors.push("--control: missing port value (expected `--control <port>`)".to_string()),
-            },
-            Some("--control-token") => match args.next().map(std::ffi::OsString::into_string) {
-                Some(Ok(token)) => out.control_token = Some(token),
-                Some(Err(raw)) => out.errors.push(format!("--control-token: value is not valid Unicode (`{}`)", raw.to_string_lossy())),
-                None => out.errors.push("--control-token: missing token value (expected `--control-token <token>`)".to_string()),
-            },
-            Some("--control-token-file") => match args.next() {
-                Some(value) => out.control_token_file = Some(std::path::PathBuf::from(value)),
-                None => out.errors.push("--control-token-file: missing file path value (expected `--control-token-file <path>`)".to_string()),
-            },
-            Some("--automation-read-root") => {
-                out.launch_options.push("--automation-read-root");
-                match args.next() {
-                    Some(value) => out.automation_read_root = Some(std::path::PathBuf::from(value)),
-                    None => out.errors.push("--automation-read-root: missing directory value (expected `--automation-read-root <dir>`)".to_string()),
-                }
-            }
-            Some("--automation-write-root") => {
-                out.launch_options.push("--automation-write-root");
-                match args.next() {
-                    Some(value) => out.automation_write_root = Some(std::path::PathBuf::from(value)),
-                    None => out.errors.push("--automation-write-root: missing directory value (expected `--automation-write-root <dir>`)".to_string()),
-                }
-            }
-            Some("--safe-gpu") => {
-                out.launch_options.push("--safe-gpu");
-                out.safe_gpu = true;
-            }
-            Some(flag @ ("--present-mode" | "--frame-latency" | "--stroke-trace")) => {
-                out.launch_options.push(match flag {
-                    "--present-mode" => "--present-mode",
-                    "--frame-latency" => "--frame-latency",
-                    _ => "--stroke-trace",
-                });
-                let flag = flag.to_string();
-                match args.next().map(std::ffi::OsString::into_string) {
-                    Some(Ok(v)) => match flag.as_str() {
-                        "--present-mode" => out.present_mode_arg = Some(v),
-                        "--frame-latency" => out.frame_latency_arg = Some(v),
-                        _ => out.stroke_trace_arg = Some(v),
-                    },
-                    // A bad value is reported and ignored; it never fails the launch.
-                    _ => eprintln!("photocraft: {flag}: missing or unreadable value; ignored"),
-                }
-            }
-            Some("--in-window-menus") => {
-                out.launch_options.push("--in-window-menus");
-                out.in_window_menus = true;
-            }
-            Some("--new-instance") => out.new_instance = true,
-            Some("--version") => {
-                out.version = true;
-                break;
-            }
-            // Old macOS passes a process serial number when launched from Finder.
-            Some(s) if s.starts_with("-psn_") => {}
-            // A typo such as `--safegpu`, or `--help` spelt another way, must not open the window
-            // and then fail to open the flag as a file (#6431).
-            Some(s) if s.starts_with('-') => out.errors.push(format!("unknown option `{s}` (put `--` before a file name that starts with `-`)")),
-            Some(s) => out.files.push(s.to_owned()),
-            None => out.unreadable_paths.push(a.to_string_lossy().into_owned()),
-        }
-    }
-    out
-}
-
-#[cfg(test)]
-mod control_port_tests {
-    use super::{parse_control_port, usage_exit_code};
-
-    #[test]
-    fn control_port_errors_exit_non_zero() {
-        assert_eq!(usage_exit_code(&[]), None);
-        let errors = vec![parse_control_port("nope", "--control").unwrap_err()];
-        assert_eq!(usage_exit_code(&errors), Some(2));
-    }
-
-    #[test]
-    fn control_port_accepts_valid_numbers() {
-        assert_eq!(parse_control_port("50494", "--control"), Ok(50494));
-        assert_eq!(parse_control_port(" 8080 ", "--control"), Ok(8080));
-        assert_eq!(parse_control_port("0", "PHOTOCRAFT_CONTROL_PORT"), Ok(0));
-    }
-
-    #[test]
-    fn control_port_rejects_unparseable_values_naming_them() {
-        // Out of range, a following flag eaten as the value, and an empty value all fail,
-        // naming the offending value in the message.
-        let err = parse_control_port("78787", "--control").unwrap_err();
-        assert!(err.contains("78787"), "{err}");
-        assert!(parse_control_port("--safe-gpu", "--control").is_err());
-        assert!(parse_control_port("", "--control").is_err());
-    }
-}
-
-#[cfg(test)]
-mod launch_args_tests {
-    use super::{LaunchArgs, parse_launch_args, usage_exit_code};
-    use std::ffi::OsString;
-
-    fn parse(values: &[&str]) -> LaunchArgs {
-        parse_launch_args(values.iter().map(OsString::from), LaunchArgs::default())
-    }
-
-    #[test]
-    fn flags_without_a_value_are_usage_errors() {
-        // Issue #6429: a missing value must fail the launch, not silently fall back to a
-        // generated token or to no root.
-        for flag in ["--control", "--control-token", "--control-token-file", "--automation-read-root", "--automation-write-root"] {
-            let parsed = parse(&[flag]);
-            assert_eq!(parsed.errors.len(), 1, "{flag}: {:?}", parsed.errors);
-            assert!(parsed.errors[0].starts_with(flag), "{}", parsed.errors[0]);
-            assert!(parsed.errors[0].contains("missing"), "{}", parsed.errors[0]);
-            assert_eq!(usage_exit_code(&parsed.errors), Some(2));
-        }
-    }
-
-    #[test]
-    fn missing_value_does_not_clear_an_environment_default() {
-        // `--automation-read-root` with no value must not drop a root set through the env var.
-        let defaults = LaunchArgs { automation_read_root: Some("/env/read".into()), automation_write_root: Some("/env/write".into()), ..Default::default() };
-        let parsed = parse_launch_args(["--automation-read-root"].iter().map(OsString::from), defaults);
-        assert_eq!(parsed.automation_read_root.as_deref(), Some(std::path::Path::new("/env/read")));
-        assert_eq!(parsed.automation_write_root.as_deref(), Some(std::path::Path::new("/env/write")));
-        assert_eq!(parsed.errors.len(), 1, "{:?}", parsed.errors);
-    }
-
-    #[test]
-    fn values_are_parsed_and_no_errors_remain() {
-        let parsed = parse(&[
-            "--control",
-            "50494",
-            "--control-token",
-            "abcd",
-            "--control-token-file",
-            "/tmp/token",
-            "--automation-read-root",
-            "/r",
-            "--automation-write-root",
-            "/w",
-            "--safe-gpu",
-            "--in-window-menus",
-            "--new-instance",
-            "--present-mode",
-            "mailbox",
-            "photo.psd",
-        ]);
-        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-        assert_eq!(parsed.control_port, Some(50494));
-        assert_eq!(parsed.control_token.as_deref(), Some("abcd"));
-        assert_eq!(parsed.control_token_file.as_deref(), Some(std::path::Path::new("/tmp/token")));
-        assert_eq!(parsed.automation_read_root.as_deref(), Some(std::path::Path::new("/r")));
-        assert_eq!(parsed.automation_write_root.as_deref(), Some(std::path::Path::new("/w")));
-        assert!(parsed.safe_gpu);
-        assert!(parsed.in_window_menus);
-        assert!(parsed.new_instance);
-        assert_eq!(parsed.present_mode_arg.as_deref(), Some("mailbox"));
-        assert_eq!(parsed.launch_options, vec!["--automation-read-root", "--automation-write-root", "--safe-gpu", "--in-window-menus", "--present-mode"]);
-        assert_eq!(parsed.files, vec!["photo.psd".to_string()]);
-    }
-
-    #[test]
-    fn version_stops_parsing() {
-        let parsed = parse(&["--version", "--control"]);
-        assert!(parsed.version);
-        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    }
-
-    #[test]
-    fn help_stops_parsing_and_double_dash_ends_options() {
-        let parsed = parse(&["-h", "--safegpu", "--control"]);
-        assert!(parsed.help);
-        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-
-        let parsed = parse(&["--safegpu", "--", "--help", "-x"]);
-        assert!(!parsed.help);
-        assert_eq!(parsed.errors.len(), 1, "{:?}", parsed.errors);
-        assert!(parsed.errors[0].contains("unknown option `--safegpu`"), "{}", parsed.errors[0]);
-        assert_eq!(parsed.files, vec!["--help".to_string(), "-x".to_string()]);
-    }
-}
-
 fn main() -> eframe::Result {
     // First, so the panic hook and every start-up warning are recorded (`logging`).
     let logger = logging::install();
     crash_guard::install_hook();
-    // The system font scan can take seconds (minutes on some Macs): run it off the UI thread.
-    photocraft_ui_egui::type_tool::warm_fonts();
-    let mut launch = LaunchArgs {
-        automation_read_root: std::env::var_os("PHOTOCRAFT_AUTOMATION_READ_ROOT").map(std::path::PathBuf::from),
-        automation_write_root: std::env::var_os("PHOTOCRAFT_AUTOMATION_WRITE_ROOT").map(std::path::PathBuf::from),
-        in_window_menus: std::env::var_os("PHOTOCRAFT_IN_WINDOW_MENUS").is_some_and(|v| !v.is_empty() && v != "0"),
-        ..Default::default()
-    };
-    if let Some(value) = std::env::var("PHOTOCRAFT_CONTROL_PORT").ok().filter(|v| !v.trim().is_empty()) {
-        match parse_control_port(&value, "PHOTOCRAFT_CONTROL_PORT") {
-            Ok(port) => launch.control_port = Some(port),
-            Err(error) => launch.errors.push(error),
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(done) = craft_update::self_update::finish(&craft_update::suite::PHOTOCRAFT, &std::env::args_os().skip(1).collect::<Vec<_>>()) {
+        if let Err(e) = done {
+            eprintln!("PhotoCraft update helper failed: {e}");
+            std::process::exit(1);
         }
-    }
-    launch = parse_launch_args(std::env::args_os().skip(1), launch);
-    if launch.help {
-        print_stdout(USAGE);
-        return Ok(());
-    }
-    if launch.version {
-        print_stdout(&format!("photocraft {}\n", photocraft_engine::build_info::long_version()));
         return Ok(());
     }
 
-    // A malformed control port must not silently drop the control server (issue #701), a control
-    // or automation flag without its value must not silently fall back to a generated token or
-    // to no root (issue #6429), and an unknown option must not open the window (#6431): name the
-    // bad argument and fail the launch, like `photocraft-cli` does for the same typos. Exit
-    // status 2 is the usual command-line usage error, so a launcher sees the failure.
-    if let Some(code) = usage_exit_code(&launch.errors) {
-        for error in &launch.errors {
-            eprintln!("photocraft: {error}");
-        }
-        eprintln!("Run `photocraft --help` for usage.");
-        std::process::exit(code);
-    }
-    let LaunchArgs {
-        control_port,
-        control_token,
-        control_token_file,
-        automation_read_root,
-        automation_write_root,
-        files,
-        unreadable_paths,
+    // The system font scan can take seconds (minutes on some Macs): run it off the UI thread.
+    photocraft_ui_egui::type_tool::warm_fonts();
+    // `--help` and `--version` print to standard output and exit 0. A usage error (an unknown
+    // option, a missing or bad value, a bad PHOTOCRAFT_CONTROL_PORT: issues #701, #6429, #6431)
+    // names the argument on standard error and exits 2, so a launcher sees the failure. Neither
+    // panics when the stream is closed or a pipe (`photocraft --help | head -1`).
+    let launch = launch_args::parse(launch_args::command(), std::env::args_os().skip(1)).unwrap_or_else(|e| e.exit());
+    let launch_args::FileNames { openable: files, unreadable: unreadable_paths } = launch.file_names();
+    let launch_args::LaunchArgs {
+        files: _,
         safe_gpu,
-        new_instance,
-        mut launch_options,
-        present_mode_arg,
-        frame_latency_arg,
-        stroke_trace_arg,
         in_window_menus,
-        help: _,
-        version: _,
-        errors: _,
+        new_instance,
+        present_mode,
+        frame_latency,
+        stroke_trace,
+        control: control_port,
+        auth,
+        automation,
+        mut launch_options,
     } = launch;
 
     // The log file lives under the settings directory; opened after the arguments, so `--version`
@@ -516,7 +241,7 @@ fn main() -> eframe::Result {
     // An adapter named in the environment is chosen at startup, which a forwarded launch never reaches.
     let rendering_mode = gpu_startup::read_rendering_prefs(services::prefs_file().as_deref()).1;
     if gpu_startup::adapter_override_is_process_specific(std::env::var("PHOTOCRAFT_GPU_ADAPTER").ok().as_deref(), rendering_mode, gpu_startup::ADAPTER_CHOICE) {
-        launch_options.push("PHOTOCRAFT_GPU_ADAPTER");
+        launch_options.push(launch_args::PerProcess::GpuAdapterEnv);
     }
     // One PhotoCraft per user (#3708): files opened from Explorer or a file manager while it runs
     // become tabs in its window. Only with the per-user settings folder (a portable copy's may be
@@ -596,8 +321,12 @@ fn main() -> eframe::Result {
         std::process::exit(1);
     }
 
+    let (control_port, control_pref_warning) = control_port_for(control_port, &integrations(services::prefs_file().as_deref()));
+    if let Some(warning) = &control_pref_warning {
+        eprint!("{warning}");
+    }
     let control = if let Some(port) = control_port {
-        let (supplied, token_file) = photocraft_automation::security::token_inputs(control_token, control_token_file);
+        let (supplied, token_file) = (auth.control_token, auth.control_token_file);
         let token = match photocraft_automation::security::server_token(supplied.as_deref(), token_file.as_deref()) {
             Ok(token) => token,
             Err(e) => {
@@ -612,7 +341,7 @@ fn main() -> eframe::Result {
         } else {
             eprintln!("photocraft: using supplied control token");
         }
-        let workspace = match photocraft_automation::AuthorizedWorkspace::new(automation_read_root.as_deref(), automation_write_root.as_deref()) {
+        let workspace = match automation.workspace() {
             Ok(workspace) => workspace,
             Err(error) => {
                 eprintln!("photocraft: cannot configure automation workspace: {error}");
@@ -701,7 +430,7 @@ fn main() -> eframe::Result {
         options.wgpu_options.surface.present_mode = eframe::wgpu::PresentMode::AutoNoVsync;
     }
     // Testers' present mode and frame latency overrides (#1343), after the preference.
-    let present = presentation::Overrides::from_args_or_env(present_mode_arg.as_deref(), frame_latency_arg.as_deref());
+    let present = presentation::Overrides::from_args_or_env(present_mode, frame_latency);
     options.wgpu_options.surface = present.apply(options.wgpu_options.surface);
     let present_desc = presentation::describe(&options.wgpu_options.surface, &present);
     // Without vsync, frames are capped at 240 fps (#4472) so repaint loops don't spin flat out.
@@ -745,6 +474,7 @@ fn main() -> eframe::Result {
             };
             #[cfg(not(target_os = "linux"))]
             let session = Session::new();
+            PhotocraftApp::install_type_reset_hooks(&cc.egui_ctx);
             let mut app = PhotocraftApp::new(session, services);
             app.min_frame_ms = uncapped.then_some(1000.0 / 240.0);
             app.integrated_titlebar = cfg!(target_os = "macos");
@@ -779,7 +509,7 @@ fn main() -> eframe::Result {
             let info = &mut app.perf.gpu_info;
             info.preference = pref.name().to_string();
             info.present = present_desc.clone();
-            if let Some(v) = &stroke_trace_arg {
+            if let Some(v) = &stroke_trace {
                 app.stroke_trace.set(v);
             }
             info.selected = if plan.env.is_some() { "env".into() } else { plan.backend.name().to_string() };
@@ -937,9 +667,10 @@ fn main() -> eframe::Result {
             s.finish();
         }
         if let Ok(exe) = std::env::current_exe() {
+            // `--safe-gpu` first: after a `--`, it would be a file name.
             let launched = std::process::Command::new(exe)
-                .args(std::env::args_os().skip(1))
                 .arg("--safe-gpu")
+                .args(std::env::args_os().skip(1))
                 .env_remove("WGPU_BACKEND")
                 .env("PHOTOCRAFT_GPU_STARTUP_FAILURE", &reason)
                 .spawn();
@@ -1001,8 +732,99 @@ mod tests {
             egui::Panel::right("dock").default_size(290.0).show(ui, |ui| ui.set_min_width(ui.available_width()));
         });
         output.textures_delta.clear();
-        let panel = egui::containers::panel::PanelState::load(&restored, egui::Id::new("dock")).unwrap();
+        let panel = egui::containers::panel::PanelState::load(&restored, photocraft_ui_egui::panels::panel_state_id(&restored, "dock")).unwrap();
         assert_eq!(panel.size().x, 410.0);
+    }
+
+    /// A 0.36 `ui.ron` saved panel widths under `Id::new("dock")`; the first 0.37 launch copies
+    /// them to the parent-scoped key, leaves the old one for a rollback, and a later resize
+    /// survives two more restarts.
+    #[test]
+    fn saved_036_panel_widths_migrate_and_survive_two_restarts() {
+        #[derive(Default)]
+        struct Storage(std::collections::BTreeMap<String, String>);
+        impl eframe::Storage for Storage {
+            fn get_string(&self, key: &str) -> Option<String> {
+                self.0.get(key).cloned()
+            }
+            fn set_string(&mut self, key: &str, value: String) {
+                self.0.insert(key.into(), value);
+            }
+            fn remove_string(&mut self, key: &str) {
+                self.0.remove(key);
+            }
+            fn flush(&mut self) {}
+        }
+        let state = |width: f32| egui::containers::panel::PanelState { outer_rect: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 600.0)) };
+        let input = || egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0))), ..Default::default() };
+        let draw = |ctx: &egui::Context| {
+            let mut output = ctx.run_ui(input(), |ui| {
+                egui::Panel::right("dock").default_size(290.0).show(ui, |ui| ui.set_min_width(ui.available_width()));
+            });
+            output.textures_delta.clear();
+        };
+        let save = |ctx: &egui::Context| {
+            let mut storage = Storage::default();
+            ctx.memory(|memory| eframe::set_value(&mut storage, "egui", memory));
+            storage
+        };
+        let restore = |storage: &Storage| {
+            let ctx = egui::Context::default();
+            ctx.memory_mut(|memory| *memory = eframe::get_value(storage, "egui").expect("the saved memory"));
+            ctx
+        };
+
+        // The real 0.14/0.15 shape: the panel state under the old key inside the egui memory.
+        let ctx = egui::Context::default();
+        ctx.data_mut(|d| d.insert_persisted(egui::Id::unique("dock"), state(410.0)));
+        let storage = save(&ctx);
+
+        let first = restore(&storage);
+        photocraft_ui_egui::panels::migrate_panel_state(&first);
+        draw(&first);
+        let key = photocraft_ui_egui::panels::panel_state_id(&first, "dock");
+        assert_eq!(egui::containers::panel::PanelState::load(&first, key).map(|p| p.size().x), Some(410.0));
+        assert!(egui::containers::panel::PanelState::load(&first, egui::Id::unique("dock")).is_some(), "the 0.36 key is kept");
+        // Resize in 0.37: the new key wins from now on.
+        first.data_mut(|d| d.insert_persisted(key, state(500.0)));
+        let storage = save(&first);
+
+        for restart in 0..2 {
+            let next = restore(&storage);
+            photocraft_ui_egui::panels::migrate_panel_state(&next);
+            draw(&next);
+            let key = photocraft_ui_egui::panels::panel_state_id(&next, "dock");
+            let width = egui::containers::panel::PanelState::load(&next, key).map(|p| p.size().x).unwrap_or_default();
+            assert!((width - 500.0).abs() < 0.5, "restart {restart}: the old 410 key must not win (got {width})");
+        }
+    }
+
+    /// Schema-probe `ui.ron` shapes *reconstructed* from the documented 0.14/0.15/0.37 layouts,
+    /// not recorded machine saves: 0.14 and 0.15 both store the flat window entry, which the
+    /// first 0.37 launch rewrites; a 0.37 file is left alone. Keeping all three probes makes a
+    /// future change to any migration rule fail here first. They do not prove eframe's real
+    /// `Memory`/`PanelState` deserialization.
+    #[test]
+    fn the_ui_ron_schema_probe_fixtures_migrate() {
+        for (name, fixture) in [("0.14", include_str!("../tests/fixtures/ui-0.14.ron")), ("0.15", include_str!("../tests/fixtures/ui-0.15.ron"))] {
+            let text = super::ui_state::migrate_for_test(fixture).unwrap_or_else(|e| panic!("{name}: {e}")).unwrap_or_else(|| panic!("{name}: not rewritten"));
+            assert!(text.contains("normal_geometry"), "{name}: the flat window entry is gone: {text}");
+            assert!(!super::ui_state::saved_position_for_test(fixture), "{name}: a flat entry is not what 0.37 restores");
+        }
+        let old = include_str!("../tests/fixtures/ui-0.14.ron");
+        assert!(super::ui_state::migrate_for_test(old).expect("migratable").expect("rewritten").contains("x:1100.0"), "the 0.14 size is preserved");
+        let current = include_str!("../tests/fixtures/ui-0.15.ron");
+        assert!(
+            super::ui_state::migrate_for_test(current).expect("migratable").expect("rewritten").contains("maximized:true"),
+            "0.15 maximized state survives"
+        );
+        // Already 0.37-shaped: no rewrite, and (with no saved position) the window centres.
+        let current = include_str!("../tests/fixtures/ui-0.37.ron");
+        assert_eq!(super::ui_state::migrate_for_test(current), Ok(None));
+        assert!(!super::ui_state::saved_position_for_test(current));
+        // And a 0.37 file with a restorable outer position is a saved position.
+        let with_position = current.replace("outer_position_pixels:None", "outer_position_pixels:Some((x:2048.0,y:1228.0))");
+        assert!(super::ui_state::saved_position_for_test(&with_position));
     }
 
     #[test]
@@ -1070,6 +892,91 @@ mod tests {
         if super::CUSTOM_TITLEBAR {
             assert_eq!(super::native_options(true).viewport.decorations, Some(false));
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn integrations_preferences_decide_the_control_port() {
+        use photocraft_engine::prefs::Integrations;
+        let off = Integrations { allow_agent_control: false, control_port: 0 };
+        let on = Integrations { allow_agent_control: true, control_port: 0 };
+        let preferred = Integrations { allow_agent_control: true, control_port: 7878 };
+
+        // Nothing asked for, nothing listening.
+        assert_eq!(super::control_port_for(None, &on), (None, None));
+        // --control wins over the preference.
+        assert_eq!(super::control_port_for(Some(9000), &preferred), (Some(9000), None));
+        // The preference opens the port when --control is absent.
+        assert_eq!(super::control_port_for(None, &preferred), (Some(7878), None));
+
+        // Allow Agent Control off refuses both, and says so when --control asked for one
+        // rather than ignoring the flag.
+        assert_eq!(super::control_port_for(None, &off), (None, None));
+        let (port, warning) = super::control_port_for(Some(9000), &off);
+        assert_eq!(port, None);
+        assert!(warning.is_some_and(|w| w.contains("Allow Agent Control") && w.contains("9000")), "the refusal names the port");
+        let off_with_port = Integrations { allow_agent_control: false, control_port: 7878 };
+        assert_eq!(super::control_port_for(None, &off_with_port), (None, None), "off beats a preferred port");
+
+        // A port a hand-edited file could hold, outside 1..=65535, is refused and named.
+        let huge = Integrations { allow_agent_control: true, control_port: 70_000 };
+        let (port, warning) = super::control_port_for(None, &huge);
+        assert_eq!(port, None);
+        assert!(warning.is_some_and(|w| w.contains("70000")), "the refusal names the value");
+    }
+
+    #[test]
+    fn integrations_fall_back_to_the_defaults_without_a_readable_file() {
+        let dir = std::env::temp_dir().join(format!("pc-integrations-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("prefs.json");
+        let default = photocraft_engine::prefs::Integrations::default();
+
+        assert_eq!(super::integrations(None), default, "no preferences file");
+        std::fs::write(&file, "not json").unwrap();
+        assert_eq!(super::integrations(Some(&file)), default, "an unreadable file");
+        std::fs::write(&file, r#"{"integrations":{"allowAgentControl":false,"controlPort":7878}}"#).unwrap();
+        let read = super::integrations(Some(&file));
+        assert!(!read.allow_agent_control);
+        assert_eq!(read.control_port, 7878);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The app loads preferences leniently (#6611): one wrong-typed value resets only itself. So
+    /// a bad value elsewhere, or in the port, must not turn Allow Agent Control back on.
+    #[test]
+    fn a_bad_value_elsewhere_keeps_agent_control_off() {
+        let dir = std::env::temp_dir().join(format!("pc-integrations-lenient-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("prefs.json");
+        // What the Preferences dialog shows for the same file.
+        let shown = |text: &str| {
+            let mut session = photocraft_engine::Session::new();
+            session.load_prefs_json(text).unwrap();
+            session.prefs().integrations.clone()
+        };
+        let read = |text: &str| {
+            std::fs::write(&file, text).unwrap();
+            let read = super::integrations(Some(&file));
+            assert_eq!(read, shown(text), "{text}");
+            read
+        };
+
+        let r = read(r#"{"interface":{"enableAnimations":"nope"},"integrations":{"allowAgentControl":false,"controlPort":7878}}"#);
+        assert!(!r.allow_agent_control, "a bad value in another section");
+        assert_eq!(r.control_port, 7878);
+        let r = read(r#"{"integrations":{"allowAgentControl":false,"controlPort":"x"}}"#);
+        assert!(!r.allow_agent_control, "a bad port");
+        assert_eq!(r.control_port, 0, "the bad port alone takes its default");
+        // A bad Allow Agent Control alone takes its default.
+        let r = read(r#"{"integrations":{"allowAgentControl":"no","controlPort":7878}}"#);
+        assert_eq!(r, photocraft_engine::prefs::Integrations { allow_agent_control: true, control_port: 7878 });
+        read(r#"{"integrations":{"allowAgentControl":false,"controlPort":-1}}"#);
+        read(r#"{"integrations":{"allowAgentControl":false,"controlPort":4294967296}}"#);
+        read(r#"{"integrations":"off"}"#);
+        // serde reads a struct from a list too; the app does.
+        assert!(!read(r#"{"integrations":[false]}"#).allow_agent_control, "a list");
+        assert_eq!(read(r#"{"integrations":[false,7878]}"#).control_port, 7878);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

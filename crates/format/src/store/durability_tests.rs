@@ -1,10 +1,14 @@
 //! Exercise the real directory save, including cached-object reuse and garbage collection.
-use super::*;
-use crate::atomic::{AtomicFs, RealFs};
-use photocraft_color::{ColorMode, SampleType};
-use photocraft_doc::{Layer, Size};
 use std::cell::{Cell, RefCell};
 use std::io;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use photocraft_color::{ColorMode, SampleType};
+use photocraft_doc::{Document, Layer, Size};
+
+use super::{MANIFEST, PcraftWriter, SaveOptions, list_objects};
+use crate::atomic::{AtomicFs, RealFs};
 
 /// The object or manifest directory barrier at which to inject one publication failure.
 #[derive(Clone, Copy, Debug)]

@@ -27,7 +27,7 @@ language manually there.
 
 - `crates/ui-egui/src/i18n/zh-hans.tsv` contains the translations, independent of
   the lookup implementation. Its UTF-8 columns are `context<TAB>source<TAB>translation`.
-- `crates/ui-egui/src/i18n/mod.rs` registers `zh-hans` with one plural form and
+- `crates/ui-egui/src/i18n.rs` registers `zh-hans` with one plural form and
   `complete_menus: true`. `cargo xtask i18n-coverage` lists any menu string,
   `tl!` literal or other source key the catalog lacks; those show in English.
 - Shortcut templates retain `{key}` so the shell supplies the correct key for

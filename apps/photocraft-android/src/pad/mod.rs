@@ -452,7 +452,7 @@ impl Pad {
             .inner;
         self.layout = Some(layout);
         if let Some(b) = self.big {
-            let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("shortcut_pad_ring")));
+            let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("shortcut_pad_ring")));
             self.paint_big(&painter, b, mode, &Self::readout(app, mode), tk);
         }
     }
@@ -661,7 +661,7 @@ impl Pad {
     /// The trackpad cursor (Touch Input), over everything: an arrow pointer where it is.
     pub fn paint_trackpad_cursor(&self, ctx: &egui::Context, on: bool) {
         let Some(c) = self.router.trackpad_cursor().filter(|_| on) else { return };
-        let p = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("trackpad_cursor")));
+        let p = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("trackpad_cursor")));
         // The classic arrow, its tip on the point.
         let arrow = [(0.0, 0.0), (0.0, 17.0), (4.5, 13.0), (7.5, 20.0), (10.5, 18.8), (7.6, 12.2), (13.0, 12.2)];
         let pts: Vec<egui::Pos2> = arrow.iter().map(|(x, y)| c + egui::vec2(*x, *y)).collect();

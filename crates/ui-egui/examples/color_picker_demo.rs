@@ -64,7 +64,7 @@ fn main() {
             if screen_picker::showing(ui.ctx()) {
                 screen_picker::show(ui.ctx());
             } else {
-                screen_picker::button(ui, egui::Id::new("demo"));
+                screen_picker::button(ui, egui::Id::unique("demo"));
             }
         },
         PhotocraftApp::new(photocraft_engine::Session::new(), services),

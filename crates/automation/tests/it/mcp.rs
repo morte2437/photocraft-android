@@ -80,6 +80,7 @@ async fn lists_expected_tools() {
         "doc_open",
         "doc_new",
         "doc_place",
+        "doc_replace_smart_object",
         "doc_export_layers",
         "doc_export_data_sets",
         "doc_import_data_sets",
@@ -272,12 +273,13 @@ async fn command_ids_in_tool_schemas_exist() {
     client.cancel().await.unwrap();
 }
 
-/// `UI_SET_FIELDS` in `crates/ui-egui/src/control.rs`, read from source. The desktop shell owns the
+/// `UI_SET_FIELDS` in `crates/ui-egui/src/control/params.rs`, read from source. The desktop shell owns the
 /// list; this crate describes it over MCP without depending on the UI crate (both are L6).
 /// Anchored on the declaration, not on the doc comment that mentions it first, and checked against
 /// the declared array length so a mis-parse fails loudly instead of testing the wrong names.
 fn ui_set_fields() -> Vec<String> {
-    let src = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui-egui/src/control.rs")).expect("ui-egui control.rs");
+    let src =
+        std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui-egui/src/control/params.rs")).expect("ui-egui control/params.rs");
     let (_, rest) = src.split_once("UI_SET_FIELDS: [&str; ").expect("UI_SET_FIELDS is declared");
     let declared: usize = rest.split_once(']').expect("declared length").0.parse().expect("declared length");
     let body = rest.split_once('[').expect("field array").1.split_once("];").expect("terminated array").0;
@@ -706,6 +708,36 @@ async fn doc_place_is_capability_scoped() {
     cleanup(&base);
 }
 
+/// #8061: Replace Contents reads from the read root through `doc_replace_smart_object`; the
+/// ambient `layer.smartObjects.replaceContents` stays refused.
+#[tokio::test(flavor = "multi_thread")]
+async fn doc_replace_smart_object_is_capability_scoped() {
+    let base = tmp("replace-so");
+    let root = base.join("workspace");
+    let outside = base.join("outside");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    let img = photocraft_codecs::Image::from_u8(8, 6, photocraft_codecs::ChannelLayout::Rgb, vec![42; 144]).unwrap();
+    let bytes = photocraft_codecs::encode(&img, photocraft_codecs::Format::Png, &Default::default()).unwrap();
+    std::fs::write(root.join("inside.png"), &bytes).unwrap();
+    std::fs::write(outside.join("outside.png"), bytes).unwrap();
+    let client = connect(headless_in(&root)).await;
+
+    json_of(&call(&client, "doc_new", json!({"width": 40, "height": 30})).await);
+    let placed = json_of(&call(&client, "doc_place", json!({"path": "inside.png"})).await);
+    let layer = placed["layer"].clone();
+    let replaced = call(&client, "doc_replace_smart_object", json!({"path": "inside.png", "layer": layer})).await;
+    assert_ne!(replaced.is_error, Some(true), "{}", text(&replaced));
+    let refused = call(&client, "doc_replace_smart_object", json!({"path": outside.join("outside.png").to_string_lossy(), "layer": layer})).await;
+    assert_eq!(refused.is_error, Some(true));
+    assert!(text(&refused).contains("must be inside the automation root"), "{}", text(&refused));
+    let ambient = call(&client, "command_run", json!({"id": "layer.smartObjects.replaceContents", "params": {"path": "inside.png", "layer": layer}})).await;
+    assert_eq!(ambient.is_error, Some(true));
+    assert!(text(&ambient).contains("ambient filesystem paths"), "{}", text(&ambient));
+    client.cancel().await.unwrap();
+    cleanup(&base);
+}
+
 /// #3216: the export half of #2810. The write root scopes both exports, the read root the CSV,
 /// and the three ambient commands keep their refusal.
 #[tokio::test(flavor = "multi_thread")]
@@ -764,6 +796,43 @@ async fn doc_exports_and_data_set_import_are_capability_scoped() {
         assert_eq!(refused.is_error, Some(true), "{command}");
         assert!(text(&refused).contains("ambient filesystem paths"), "{}", text(&refused));
     }
+    client.cancel().await.unwrap();
+    cleanup(&base);
+}
+
+/// Skipped-layer details survive the MCP tool result, including the all-skipped case.
+#[tokio::test(flavor = "multi_thread")]
+async fn doc_export_layers_reports_skipped_layers() {
+    let base = tmp("skipped-layers");
+    let client = connect(headless_in(&base)).await;
+    json_of(&call(&client, "doc_new", json!({"width": 4, "height": 4, "background": "white", "name": "card"})).await);
+    let background = json_of(&call(&client, "doc_inspect", json!({})).await)["layers"][0]["id"].clone();
+    let adjustment = json_of(&call(&client, "command_run", json!({"id": "layer.newAdjustmentLayer.levels"})).await)["layer"].clone();
+    json_of(&call(&client, "command_run", json!({"id": "layer.setProps", "params": {"name": "Levels/α"}})).await);
+    let hidden = json_of(&call(&client, "command_run", json!({"id": "layer.new.layer", "params": {"name": "Hidden"}})).await)["layer"].clone();
+    json_of(&call(&client, "command_run", json!({"id": "layer.setProps", "params": {"visible": false}})).await);
+    let result = json_of(&call(&client, "doc_export_layers", json!({"dir": "layers"})).await);
+    assert_eq!(result["count"], 1);
+    assert_eq!(result["files"], json!(["layers/card_0001_Background.png"]));
+    assert_eq!(
+        result["skipped"],
+        json!([
+            {"layer": hidden, "name": "Hidden", "reason": "hidden by visibleOnly"},
+            {"layer": adjustment, "name": "Levels/α", "reason": "adjustment layer has no pixels of its own"}
+        ])
+    );
+    let all = json_of(&call(&client, "doc_export_layers", json!({"dir": "all", "visible_only": false})).await);
+    assert_eq!(all["count"], 2);
+    assert_eq!(all["skipped"].as_array().unwrap().len(), 1);
+    assert_eq!(std::fs::read_dir(base.join("layers")).unwrap().count(), 1);
+    assert_eq!(std::fs::read_dir(base.join("all")).unwrap().count(), 2);
+    // Every top-level layer is still accounted for when none can be exported.
+    json_of(&call(&client, "command_run", json!({"id": "layer.setProps", "params": {"layer": background, "visible": false}})).await);
+    let none = json_of(&call(&client, "doc_export_layers", json!({"dir": "none"})).await);
+    assert_eq!(none["files"], json!([]));
+    assert_eq!(none["count"], 0);
+    assert_eq!(none["skipped"].as_array().unwrap().len(), 3);
+    assert_eq!(std::fs::read_dir(base.join("none")).unwrap().count(), 0);
     client.cancel().await.unwrap();
     cleanup(&base);
 }
@@ -1041,6 +1110,26 @@ async fn bridge_previews_reject_document_indices() {
     assert!(schema["properties"].get("index").is_none(), "{schema:?}");
     assert!(schema["properties"].get("max_side").is_some(), "{schema:?}");
     assert_eq!(schema.get("additionalProperties"), Some(&json!(false)));
+}
+
+/// Bridge mode runs Replace Contents on the app's active document, so an `index` is refused
+/// before anything reaches the app rather than dropped (it would replace another document's
+/// contents); without one the command is forwarded as before.
+#[tokio::test(flavor = "multi_thread")]
+async fn bridge_replace_smart_object_rejects_a_document_index() {
+    let (addr, app) = fake_app().await;
+    let client = connect(PhotocraftMcp::bridge(&addr, CONTROL_TOKEN).unwrap()).await;
+    let refused = call(&client, "doc_replace_smart_object", json!({"path": "new.png", "index": 1})).await;
+    assert_eq!(refused.is_error, Some(true), "{}", text(&refused));
+    assert!(text(&refused).contains("index"), "{}", text(&refused));
+    let forwarded = call(&client, "doc_replace_smart_object", json!({"path": "new.png", "layer": 7})).await;
+    assert_ne!(forwarded.is_error, Some(true), "{}", text(&forwarded));
+    client.cancel().await.unwrap();
+    let seen = tokio::time::timeout(std::time::Duration::from_secs(5), app).await.unwrap().unwrap();
+    let executed: Vec<&Value> = seen.iter().filter(|request| request["method"] == "engine.execute").collect();
+    assert_eq!(executed.len(), 1, "the indexed call must not reach the app: {seen:?}");
+    assert_eq!(executed[0]["params"]["command"], "layer.smartObjects.replaceContents");
+    assert_eq!(executed[0]["params"]["params"], json!({"path": "new.png", "layer": 7}));
 }
 
 #[tokio::test(flavor = "multi_thread")]

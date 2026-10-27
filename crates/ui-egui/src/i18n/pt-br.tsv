@@ -638,6 +638,10 @@
 	Fit Layer(s) on Screen	Ajustar camada(s) à tela
 	Fit Artboard on Screen	Ajustar prancheta à tela
 	100%	100%
+	105%	105%
+	110%	110%
+	115%	115%
+	120%	120%
 	200%	200%
 	75%	75%
 	80%	80%
@@ -1001,6 +1005,9 @@
 	Create new pattern from the selection	Criar novo padrão a partir da seleção
 	Create new shape from the current path	Criar nova forma a partir do demarcador atual
 	Create new snapshot	Criar novo instantâneo
+	From:	De:
+	Full Document	Documento inteiro
+	Merged Layers	Camadas mescladas
 	Create new style (from the selected type)	Criar novo estilo (a partir do texto selecionado)
 	Create new style from the selected layer	Criar novo estilo a partir da camada selecionada
 	Create new tool preset	Criar nova predefinição de ferramenta
@@ -2173,6 +2180,10 @@
 	No path to make a selection from: draw one with the Pen tool or select one in the Paths panel.	Nenhum demarcador para criar a seleção: desenhe um com a ferramenta Caneta ou selecione um no painel Demarcadores.
 	Cancel opening	Cancelar abertura
 	Cancelled opening {name}	Abertura de {name} cancelada
+	Damaged Photoshop document	Documento do Photoshop danificado
+	The document “{name}” may be damaged.	O documento “{name}” pode estar danificado.
+	Some layers, pixels or masks could not be read. Do you want to continue opening it?	Não foi possível ler algumas camadas, pixels ou máscaras. Deseja continuar abrindo?
+	If you continue, saving over the original may permanently discard unreadable data. Save a copy to keep the original.	Se continuar, salvar sobre o original pode descartar permanentemente os dados ilegíveis. Salve uma cópia para manter o original.
 	The document “{name}” does not have an embedded {mode} profile.	O documento “{name}” não tem um perfil {mode} incorporado.
 	The document “{name}” has an embedded color profile that does not match the current {mode} working space.	O documento “{name}” tem um perfil de cores incorporado que não corresponde ao espaço de trabalho {mode} atual.
 	Working: {working}	Espaço de trabalho: {working}
@@ -3147,6 +3158,8 @@ curves	Smooth	Suavizar
 	Vanishing Point is not active	Ponto de fuga não está ativo
 	Apply Vanishing Point ({key})	Aplicar ponto de fuga ({key})
 	Fix the red plane first: its corners must form a convex quad	Corrija primeiro o plano vermelho: seus cantos devem formar um quadrilátero convexo
+	Alt-click a plane to set the clone source	Clique com Alt em um plano para definir a origem da clonagem
+	Too many clone strokes: apply Vanishing Point first	Traços de clonagem demais: aplique Ponto de fuga primeiro
 # Select and Mask view modes (#1754)
 	Onion Skin	Papel vegetal
 	Marching Ants	Formigas marchando
@@ -4025,6 +4038,30 @@ layerLabel	No Color	Sem cor
 	Sent to {printer}	Enviado para {printer}
 	set in Print Settings…	definido nas configurações de impressão…
 	ICO is limited to 256 × 256 pixels	ICO é limitado a 256 × 256 pixels
+	Calibration	Calibração
+	Red Primary	Primária vermelha
+	Green Primary	Primária verde
+	Blue Primary	Primária azul
+	Write xmp sidecars	Gravar arquivos auxiliares XMP
+	Set the tone sliders from the image	Definir os controles de tom a partir da imagem
+	Settings from {name}	Configurações de {name}
+	Settings from {name}; {count} not supported: {names}	Configurações de {name}; {count} sem suporte: {names}
+	Could not write {name}: {error}	Não foi possível gravar {name}: {error}
+	Kept {name}: written by another application	{name} mantido: gravado por outro aplicativo
+	Shadow Tint	Matiz das sombras
+# PhotoCraft release checks.
+	Check for Updates…	Verificar atualizações…
+	PhotoCraft Updates	Atualizações do PhotoCraft
+	Checking for updates…	Verificando atualizações…
+	Open the release page to choose an installer for your system.	Abra a página da versão para escolher um instalador para o seu sistema.
+	Open Download Page	Abrir página de download
+	PhotoCraft is up to date.	O PhotoCraft está atualizado.
+	Could not check for updates.	Não foi possível verificar atualizações.
+	Updates have not been checked yet.	As atualizações ainda não foram verificadas.
+	Check Again	Verificar novamente
+	Automatically Check for Updates	Verificar atualizações automaticamente
+	Installed version: {version}	Versão instalada: {version}
+	PhotoCraft {version} is available.	PhotoCraft {version} está disponível.
 # History panel › History Brush source (#2966)
 	Paints from the History panel's source state	Pinta a partir do estado de origem do painel Histórico
 	Sets the source for the history brush	Define a origem do pincel do histórico
@@ -4153,9 +4190,16 @@ layerLabel	No Color	Sem cor
 
 # Graphics Adapter preference (#1885)
 	GPU adapter	Adaptador de GPU
+
+# Styles panel: Import / Export Styles (.asl)
+	Import Styles…	Importar estilos…
+	Export Selected Styles…	Exportar estilos selecionados…
+	Export Styles…	Exportar estilos…
+	{file} is not a style library (.asl)	{file} não é uma biblioteca de estilos (.asl)
+@plural	Imported {n} style from {file}|Imported {n} styles from {file}	{n} estilo importado de {file}|{n} estilos importados de {file}
+@plural	Exported {n} style to {file}|Exported {n} styles to {file}	{n} estilo exportado para {file}|{n} estilos exportados para {file}
 # Actions: a step dialog holds a suspended recording (#7365)
 	Confirm or cancel the open action step dialog first	Confirme ou cancele primeiro a caixa de diálogo aberta da etapa da ação
-
 # Channels panel menu: channel commands, spot channels, Quick Mask, Color Indicates
 	New Channel…	Novo canal…
 	Duplicate Channel	Duplicar canal
@@ -4169,7 +4213,6 @@ layerLabel	No Color	Sem cor
 	Exit Quick Mask	Sair da máscara rápida
 	Color Indicates Masked Areas	A cor indica áreas mascaradas
 	Color Indicates Selected Areas	A cor indica áreas selecionadas
-
 # Layer Style › Blending Options: advanced blending and Blend If
 	General Blending	Mesclagem geral
 	Shallow	Raso
@@ -4181,7 +4224,6 @@ layerLabel	No Color	Sem cor
 	Vector Mask Hides Effects	A máscara vetorial oculta os efeitos
 	This Layer:	Esta camada:
 	Underlying Layer:	Camada subjacente:
-
 # Canvas right-click menus: pasteboard color, paths and shapes
 	Dark Gray	Cinza-escuro
 	Medium Gray	Cinza médio
@@ -4201,19 +4243,16 @@ layerLabel	No Color	Sem cor
 	Paste Complete Stroke	Colar traçado completo
 	Make Symmetry Path	Criar demarcador de simetria
 	Disable Symmetry Path	Desativar demarcador de simetria
-
 # Color Picker titles
 	Color Picker (Foreground Color)	Seletor de cores (Cor de primeiro plano)
 	Color Picker (Background Color)	Seletor de cores (Cor de fundo)
 	Pick Color From Image	Escolher cor da imagem
-
 # Rasterize prompts
 	This layer must be rasterized before proceeding.	Esta camada precisa ser rasterizada antes de continuar.
 	This type layer must be rasterized before proceeding. Its text will no longer be editable. Rasterize the type?	Esta camada de texto precisa ser rasterizada antes de continuar. O texto não poderá mais ser editado. Rasterizar o texto?
 	This shape layer must be rasterized before proceeding. It will no longer be editable as a shape. Rasterize the shape?	Esta camada de forma precisa ser rasterizada antes de continuar. Ela não poderá mais ser editada como forma. Rasterizar a forma?
 	This Smart Object must be rasterized before proceeding. Its contents will no longer be editable. Rasterize the Smart Object?	Este objeto inteligente precisa ser rasterizado antes de continuar. O conteúdo não poderá mais ser editado. Rasterizar o objeto inteligente?
 	This fill layer must be rasterized before proceeding. Its fill content will no longer be editable. Rasterize the layer?	Esta camada de preenchimento precisa ser rasterizada antes de continuar. O conteúdo do preenchimento não poderá mais ser editado. Rasterizar a camada?
-
 # GPU and display status (status bar, System Info)
 	Graphics adapter: {adapter}	Adaptador gráfico: {adapter}
 	Backend: {backend} ({type})	Backend: {backend} ({type})
@@ -4242,7 +4281,6 @@ layerLabel	No Color	Sem cor
 	previous reading kept; the last re-read failed: {reason}	leitura anterior mantida; a última releitura falhou: {reason}
 	The canvas is shown as sRGB. Choose a monitor profile in Edit › Color Settings.	A tela de pintura é exibida como sRGB. Escolha um perfil de monitor em Editar › Configurações de cores.
 	The canvas on {display} is shown as sRGB. Choose a monitor profile in Edit › Color Settings.	A tela de pintura em {display} é exibida como sRGB. Escolha um perfil de monitor em Editar › Configurações de cores.
-
 # Status messages
 	Nothing to paste: the clipboard holds no image	Nada para colar: a área de transferência não contém imagem
 	Opened {url}	Aberto: {url}
@@ -4280,7 +4318,6 @@ layerLabel	No Color	Sem cor
 	This adjustment ({key}) is kept as imported and can't be edited yet.	Este ajuste ({key}) é mantido como foi importado e ainda não pode ser editado.
 	{shortcut} assigned.	{shortcut} atribuído.
 	{shortcut} is already in use by {commands} and will be removed from it when you click OK.	{shortcut} já está em uso por {commands} e será removido de lá quando você clicar em OK.
-
 # Panels and small controls
 	Grid view	Visualização em grade
 	List view	Visualização em lista
@@ -4294,7 +4331,6 @@ layerLabel	No Color	Sem cor
 	Apply {option}: {state}	Aplicar {option}: {state}
 	on	ativado
 	off	desativado
-
 # Liquify tools (tooltips)
 	Forward Warp	Deformação para frente
 	Twirl Clockwise	Torcer no sentido horário
@@ -4310,14 +4346,38 @@ layerLabel	No Color	Sem cor
 	Pro Light Gray	Pro cinza claro
 	Pro Light	Pro claro
 	Resize Windows to Fit	Redimensionar janelas para caber
-
 	EXR	EXR
-
 # Paragraph direction (TYPE-218-2)
 	Automatic paragraph direction	Direção automática do parágrafo
 	Left-to-right paragraph direction	Direção do parágrafo da esquerda para a direita
 	Right-to-left paragraph direction	Direção do parágrafo da direita para a esquerda
 	Not rendered: this adjustment ({key}) is kept as imported.	Não renderizado: este ajuste ({key}) é mantido como foi importado.
-
 # Print preview image (#8236)
 	Print preview image	Print preview image
+# Color panel menu: modes, copy commands and colour ramps (#6000)
+	Hue Cube	Cubo de matiz
+	Brightness Cube	Cubo de brilho
+	Color Wheel	Roda de cores
+	RGB Sliders	Controles deslizantes RGB
+	HSB Sliders	Controles deslizantes HSB
+	CMYK Sliders	Controles deslizantes CMYK
+	Lab Sliders	Controles deslizantes Lab
+	Web Color Sliders	Controles deslizantes de cores da Web
+	Copy Color as HTML	Copiar cor como HTML
+	Copy Color's Hex Code	Copiar código hexadecimal da cor
+	RGB Spectrum	Espectro RGB
+	CMYK Spectrum	Espectro CMYK
+	Grayscale Ramp	Rampa de tons de cinza
+	Current Colors	Cores atuais
+	Make Ramp Web Safe	Tornar rampa segura para a Web
+# Art History Brush (#213).
+	Art History Brush Tool	Ferramenta Pincel do histórico da arte
+	Tight Short	Curto cerrado
+	Tight Medium	Médio cerrado
+	Tight Long	Longo cerrado
+	Loose Medium	Médio solto
+	Loose Long	Longo solto
+	Dab	Toque
+	Tight Curl	Curva cerrada
+	Loose Curl	Curva solta
+	Stylized dabs from a history state	Toques estilizados a partir de um estado do histórico

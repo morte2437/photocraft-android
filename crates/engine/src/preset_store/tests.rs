@@ -703,3 +703,170 @@ fn an_actions_file_that_failed_to_load_is_not_overwritten() {
     assert_eq!(mem.files.lock().unwrap().get(ACTIONS_FILE), Some(&newer), "an actions file the store could not read was overwritten");
     assert!(!s.preset_store.as_mut().unwrap().take_warnings().is_empty());
 }
+
+/// #9317: a defined or imported pattern survives a restart, as in Photoshop; the built-in
+/// patterns are never written, and deleting the last user pattern removes the file.
+#[test]
+fn user_patterns_survive_a_restart() {
+    let dir = TempDir::new("patterns");
+    let builtin = Session::new().patterns.items.len();
+    let (mut s, w) = session(&dir);
+    assert!(w.is_empty(), "{w:?}");
+    s.execute("file.new", json!({"width": 12, "height": 10})).unwrap();
+    s.execute("edit.fill", json!({"color": "#1ea05a"})).unwrap();
+    let id = s.execute("edit.definePattern", json!({"name": "Green Tile"})).unwrap()["pattern"].as_str().unwrap().to_string();
+    s.sync_preset_store();
+    assert!(dir.files().contains(&PATTERNS_FILE.to_string()), "{:?}", dir.files());
+    // Only the user's pattern is in the file.
+    let bytes = std::fs::read(dir.0.join(PATTERNS_FILE)).unwrap();
+    let saved = photocraft_io::pattern_map::read_pat(&bytes).unwrap();
+    assert_eq!(saved.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["Green Tile"]);
+    drop(s);
+
+    let (mut t, w) = session(&dir);
+    assert!(w.is_empty(), "{w:?}");
+    assert_eq!(t.patterns.items.len(), builtin + 1);
+    let back = t.patterns.items.iter().find(|p| p.id == id).expect("the defined pattern is back after a restart");
+    assert_eq!((back.name.as_str(), back.width, back.height), ("Green Tile", 12, 10));
+    assert_eq!(back.surface, saved[0].surface, "with its pixels");
+    // Renames are kept; deleting the last user pattern removes the file.
+    t.execute("pattern.rename", json!({"pattern": id, "name": "Moss"})).unwrap();
+    t.sync_preset_store();
+    let (u, _) = session(&dir);
+    assert!(u.patterns.items.iter().any(|p| p.id == id && p.name == "Moss"));
+    t.execute("pattern.delete", json!({"pattern": id})).unwrap();
+    t.sync_preset_store();
+    assert!(!dir.files().contains(&PATTERNS_FILE.to_string()), "{:?}", dir.files());
+}
+
+#[test]
+fn a_patterns_file_that_failed_to_load_is_not_overwritten() {
+    let mem = MemBackend::default();
+    let unreadable = b"not a pattern file".to_vec();
+    mem.files.lock().unwrap().insert(PATTERNS_FILE.into(), unreadable.clone());
+    let mut s = Session::new();
+    let w = s.attach_preset_store(open(Box::new(mem.clone())));
+    assert!(w.iter().any(|w| w.contains(PATTERNS_FILE)), "{w:?}");
+    s.execute("file.new", json!({"width": 4, "height": 4})).unwrap();
+    s.execute("edit.definePattern", json!({"name": "New"})).unwrap();
+    s.sync_preset_store();
+    assert_eq!(mem.files.lock().unwrap().get(PATTERNS_FILE), Some(&unreadable), "a patterns file the store could not read was overwritten");
+    assert!(!s.preset_store.as_mut().unwrap().take_warnings().is_empty());
+}
+
+/// A `.pat` of one 4×4 pattern with id `id`, filled with `rgba`.
+fn pat_bytes(id: &str, rgba: [f32; 4]) -> String {
+    use photocraft_geom::Rect;
+    use photocraft_raster::Surface;
+    let mut surface = Surface::new(photocraft_color::PixelFormat::RGBA8);
+    surface.fill_rect(Rect::new(0, 0, 4, 4), &rgba);
+    let mut p = photocraft_doc::Pattern::new("Same", surface, 4, 4);
+    p.id = id.into();
+    photocraft_paint::tile::b64_encode(&photocraft_io::pattern_map::write_pat(&[p]).unwrap())
+}
+
+/// #9318 review: re-importing a pattern under the same id, name and size but with other pixels
+/// (an edited `.pat`) is written, so a restart doesn't bring the old pixels back.
+#[test]
+fn a_same_id_pattern_replacement_survives_a_restart() {
+    let mem = MemBackend::default();
+    let mut s = Session::new();
+    s.attach_preset_store(open(Box::new(mem.clone())));
+    let id = "6f1c2c1e-0000-4000-8000-000000009318";
+    s.execute("pattern.import", json!({"data": pat_bytes(id, [1.0, 0.0, 0.0, 1.0])})).unwrap();
+    s.sync_preset_store();
+    s.execute("pattern.import", json!({"data": pat_bytes(id, [0.0, 0.0, 1.0, 1.0])})).unwrap();
+    s.sync_preset_store();
+    let mut t = Session::new();
+    t.attach_preset_store(open(Box::new(mem.clone())));
+    let back = t.patterns.items.iter().find(|p| p.id == id).expect("the pattern is back");
+    let want = s.patterns.items.iter().find(|p| p.id == id).unwrap();
+    assert_eq!(back.surface, want.surface, "with the replacement's pixels, not the first import's");
+}
+
+/// A [`MemBackend`] whose removals fail while `fail` is set.
+#[derive(Clone, Default)]
+struct FlakyRemove {
+    mem: MemBackend,
+    fail: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl PresetBackend for FlakyRemove {
+    fn list(&self) -> Result<Vec<(String, u64)>, String> {
+        self.mem.list()
+    }
+    fn read(&self, name: &str, max: u64) -> Result<Vec<u8>, String> {
+        self.mem.read(name, max)
+    }
+    fn write(&self, name: &str, bytes: &[u8]) -> Result<(), String> {
+        self.mem.write(name, bytes)
+    }
+    fn remove(&self, name: &str) -> Result<(), String> {
+        if self.fail.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(format!("{name}: busy"));
+        }
+        self.mem.remove(name)
+    }
+}
+
+/// #9318 review: deleting the last user pattern while `patterns.pat` can't be removed is
+/// warned and retried, so the deleted pattern doesn't come back after a restart.
+#[test]
+fn a_failed_patterns_removal_is_retried() {
+    let backend = FlakyRemove::default();
+    let mut s = Session::new();
+    s.attach_preset_store(open(Box::new(backend.clone())));
+    s.execute("file.new", json!({"width": 4, "height": 4})).unwrap();
+    let id = s.execute("edit.definePattern", json!({"name": "Gone"})).unwrap()["pattern"].as_str().unwrap().to_string();
+    s.sync_preset_store();
+    assert!(backend.mem.files.lock().unwrap().contains_key(PATTERNS_FILE));
+    backend.fail.store(true, std::sync::atomic::Ordering::SeqCst);
+    s.execute("pattern.delete", json!({"pattern": id})).unwrap();
+    s.sync_preset_store();
+    assert!(!s.preset_store.as_mut().unwrap().take_warnings().is_empty(), "the failure is warned");
+    backend.fail.store(false, std::sync::atomic::Ordering::SeqCst);
+    s.execute("file.new", json!({"width": 4, "height": 4})).unwrap();
+    s.sync_preset_store();
+    assert!(!backend.mem.files.lock().unwrap().contains_key(PATTERNS_FILE), "the removal is retried");
+}
+
+/// #9318 review: an imported `.pat` that replaces a built-in pattern's pixels (same id) is saved
+/// and replaces the built-in after a restart, once; untouched built-ins are still never written.
+#[test]
+fn an_imported_builtin_replacement_survives_a_restart() {
+    let mem = MemBackend::default();
+    let mut s = Session::new();
+    s.attach_preset_store(open(Box::new(mem.clone())));
+    let builtin = s.patterns.items[0].id.clone();
+    s.execute("pattern.import", json!({"data": pat_bytes(&builtin, [0.9, 0.1, 0.4, 1.0])})).unwrap();
+    s.sync_preset_store();
+    let saved = photocraft_io::pattern_map::read_pat(mem.files.lock().unwrap().get(PATTERNS_FILE).expect("written")).unwrap();
+    assert_eq!(saved.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), [builtin.as_str()], "only the replaced built-in");
+    let mut t = Session::new();
+    t.attach_preset_store(open(Box::new(mem.clone())));
+    let back: Vec<_> = t.patterns.items.iter().filter(|p| p.id == builtin).collect();
+    assert_eq!(back.len(), 1, "once");
+    let want = s.patterns.items.iter().find(|p| p.id == builtin).unwrap();
+    assert_eq!(back[0].surface, want.surface, "with the imported pixels");
+}
+
+/// #9318 review: a pattern imported before the store finished loading, with the id, name and
+/// size of a saved one but other pixels, wins the merge and is written, so a restart keeps it.
+#[test]
+fn an_early_same_id_import_wins_and_is_saved() {
+    let mem = MemBackend::default();
+    let id = "6f1c2c1e-0000-4000-8000-00000000e4a1";
+    let mut s = Session::new();
+    s.attach_preset_store(open(Box::new(mem.clone())));
+    s.execute("pattern.import", json!({"data": pat_bytes(id, [1.0, 0.0, 0.0, 1.0])})).unwrap();
+    s.sync_preset_store();
+    // Next start: the same pattern with other pixels arrives before the store is attached.
+    let mut t = Session::new();
+    t.execute("pattern.import", json!({"data": pat_bytes(id, [0.0, 1.0, 0.0, 1.0])})).unwrap();
+    let early = t.patterns.items.iter().find(|p| p.id == id).unwrap().surface.clone();
+    t.attach_preset_store(open(Box::new(mem.clone())));
+    t.sync_preset_store();
+    let mut u = Session::new();
+    u.attach_preset_store(open(Box::new(mem.clone())));
+    assert_eq!(u.patterns.items.iter().find(|p| p.id == id).unwrap().surface, early, "the early import's pixels were saved");
+}

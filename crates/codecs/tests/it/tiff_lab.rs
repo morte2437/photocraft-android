@@ -74,3 +74,36 @@ fn lab_converts_to_rgb_for_other_formats() {
     assert_eq!(&p[4..7], &[255, 255, 255], "white");
     assert!(p[0] > 180 && p[1] < 120 && p[2] > 140, "L 50, a 50, b −30 is a magenta-ish purple: {:?}", &p[..3]);
 }
+
+#[test]
+fn lab_keeps_extra_samples() {
+    // A spot plate next to Lab: written as CIELab plus one unspecified extra sample, and read
+    // back as Lab with the spot (not as LabA).
+    for (layout, sample) in [(ChannelLayout::Lab, SampleType::U8), (ChannelLayout::LabA, SampleType::U16)] {
+        let px: Vec<f32> =
+            [lab(50.0, 50.0, -30.0), lab(100.0, 0.0, 0.0)].iter().flat_map(|p| p.iter().copied().chain(layout.has_alpha().then_some(0.5))).collect();
+        let mut img = Image::from_normalized(2, 1, layout, sample, &px).unwrap();
+        let spot: Vec<u8> = (0..2 * sample.bytes()).map(|i| (i * 37 + 5) as u8).collect();
+        img.meta.extra_samples = vec![ExtraSample { kind: 0, data: spot.clone() }];
+        let file = uncompressed(&img);
+        if layout == ChannelLayout::Lab {
+            assert!(find(&file, &[128, 50, (-30i8) as u8, spot[0], 255, 0, 0, spot[1]]).is_some(), "CIELab samples with the spot");
+        }
+        let back = decode(&file).unwrap();
+        assert_eq!((back.layout(), back.sample_type()), (layout, sample));
+        let (a, b) = (img.to_normalized(), back.to_normalized());
+        assert!(a.iter().zip(&b).all(|(x, y)| (x - y).abs() <= 1.5 / 65535.0), "{layout:?}: {a:?} {b:?}");
+        assert_eq!(back.meta.extra_samples, vec![ExtraSample { kind: 0, data: spot }], "{layout:?}");
+    }
+}
+
+#[test]
+fn float_lab_writes_its_extra_samples_with_16_bits() {
+    let px: Vec<f32> = [lab(50.0, 50.0, -30.0), lab(100.0, 0.0, 0.0)].concat();
+    let mut img = Image::from_normalized(2, 1, ChannelLayout::Lab, SampleType::F32, &px).unwrap();
+    img.meta.extra_samples = vec![ExtraSample { kind: 0, data: [0.25f32, 1.0].iter().flat_map(|v| v.to_ne_bytes()).collect() }];
+    let back = decode(&uncompressed(&img)).unwrap();
+    assert_eq!((back.layout(), back.sample_type()), (ChannelLayout::Lab, SampleType::U16));
+    let spot: Vec<u8> = [16384u16, 65535].iter().flat_map(|v| v.to_ne_bytes()).collect();
+    assert_eq!(back.meta.extra_samples, vec![ExtraSample { kind: 0, data: spot }]);
+}

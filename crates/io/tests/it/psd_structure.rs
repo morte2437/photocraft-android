@@ -290,7 +290,7 @@ fn a_colour_book_ink_shows_its_lab_equivalent_or_the_grey_plate() {
     assert_eq!(duo.inks.len(), 2);
     let [r, g, b] = duo.inks[1].color;
     assert!(r < 0.1 && g > 0.4 && b > 0.35, "{:?}", duo.inks[1].color);
-    assert_eq!(duo.psd_raw.as_ref(), Some(&f.color_mode_data), "the block is kept raw");
+    assert_eq!(duo.psd_raw.as_deref(), Some(f.color_mode_data.as_slice()), "the block is kept raw");
 }
 
 #[test]
@@ -633,9 +633,7 @@ fn adjustment_and_fill_layers_from_psd() {
     use photocraft_doc::{Adjustment, Fill};
     assert!(matches!(d.layers[n - 4].content, LayerContent::Adjustment(Adjustment::Invert)));
     assert!(matches!(d.layers[n - 3].content, LayerContent::Adjustment(Adjustment::Posterize { levels: 4 })));
-    assert!(
-        matches!(&d.layers[n - 2].content, LayerContent::Adjustment(Adjustment::Unsupported { psd_key, raw }) if psd_key == "selc" && raw == &vec![1, 2, 3])
-    );
+    assert!(matches!(&d.layers[n - 2].content, LayerContent::Adjustment(Adjustment::Unsupported { psd_key, raw }) if psd_key == "selc" && **raw == [1, 2, 3]));
     assert!(matches!(&d.layers[n - 1].content, LayerContent::Fill(Fill::Solid(c)) if c.c[0] == 1.0));
 }
 

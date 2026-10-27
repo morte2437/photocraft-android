@@ -37,8 +37,11 @@ fn main() {
 fn deflate_egui_fonts() {
     use std::io::Write as _;
     let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap_or_default()).join("egui_fonts");
+    // `egui-icons` is unconditional in 0.37 (a handful of private-use symbols, 3.5 kB); the two
+    // emoji fonts come through `monochrome_emoji_fonts` in Cargo.toml.
     let fonts = [
         ("Hack-Regular", epaint_default_fonts::HACK_REGULAR),
+        ("egui-icons", epaint_default_fonts::EGUI_ICONS),
         ("NotoEmoji-Regular", epaint_default_fonts::NOTO_EMOJI_REGULAR),
         ("Ubuntu-Light", epaint_default_fonts::UBUNTU_LIGHT),
         ("emoji-icon-font", epaint_default_fonts::EMOJI_ICON),

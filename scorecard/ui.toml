@@ -66,7 +66,7 @@ id = "UI-217-9"
 target = "UI scale presets 100/115/125/150/200 % through zoom_factor, remembered"
 status = "done"
 issue = 217
-note = "prefs::UiScale offers Auto plus 75 to 300 percent (13 presets, more than the five this row lists); prefs_ui.rs display_scale resolves it (Auto follows the system scale, fractional and unscaled 4K included, #1072/#1278) and sync_display_scale applies it with ctx.set_zoom_factor. It is a preference, so it is remembered. The zoom_factor assert in input_tests.rs is about canvas zoom not scaling the interface, not about this setting"
+note = "prefs::UiScale offers Auto plus 75 to 300 percent (17 presets: 75 to 125 in 5 % steps since #3222, then 150 to 300; more than the five this row lists); prefs_ui.rs display_scale resolves it (Auto follows the system scale, fractional and unscaled 4K included, #1072/#1278) and sync_display_scale applies it with ctx.set_zoom_factor. It is a preference, so it is remembered. The zoom_factor assert in input_tests.rs is about canvas zoom not scaling the interface, not about this setting"
 
 [[item]]
 id = "UI-217-10"
@@ -101,7 +101,7 @@ id = "UI-217-14"
 target = "Layers panel: wheel steps blend modes, drop on New/Trash duplicates/deletes, checker behind art"
 status = "done"
 issue = 217
-note = "panels.rs: the wheel steps the blend-mode dropdown (widgets::dropdown_wheel_hovered, #1747); rows dropped on New Layer/Group/Delete duplicate/group/delete them (footer_drop, #736), effect rows dropped on Delete delete that effect or the whole style (fx_trash_drop, #3102); pixel thumbnails draw widgets::checker behind the art; Shift+Plus/Minus step the layer's or the painting tool's blend mode (blend_keys.rs, #3102)"
+note = "panels.rs: the wheel steps the blend-mode dropdown (widgets::dropdown_wheel_hovered, #1747); rows dropped on New Layer/Group/Delete duplicate/group/delete them (footer_drop, #736), effect rows dropped on Delete delete that effect or the whole style (fx_trash_drop, #3102); pixel thumbnails draw widgets::checker behind the art; Shift+Plus/Minus step the layer's or the painting tool's blend mode (blend_keys.rs, #3102), and Shift+Alt+letter picks one (Photoshop's letters; every selected layer, one undo step)"
 
 [[item]]
 id = "UI-217-15"
@@ -120,9 +120,9 @@ note = "saturation_track/lightness_track (adjust_editors.rs): grey -> the hue, r
 [[item]]
 id = "UI-217-17"
 target = "Color panel: wheel plus RGB/HSB/CMYK/Lab/Gray/Web slider modes; resizes with its group"
-status = "missing"
+status = "done"
 issue = 217
-note = "panels.rs:1837 single field + hex/RGB readout"
+note = "color_panel_ui.rs: Hue/Brightness Cube, Color Wheel, Grayscale/RGB/HSB/CMYK/Lab/Web sliders, ramp; the same in every theme (#6000); color_panel_tests.rs"
 
 [[item]]
 id = "UI-217-18"

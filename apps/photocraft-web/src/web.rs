@@ -4,7 +4,7 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use photocraft_codecs::{ChannelLayout, EncodeOptions, Image};
 use photocraft_doc::Document;
@@ -17,12 +17,12 @@ use wasm_bindgen::JsCast as _;
 type Inbox = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
 
 /// Everything File › Open reads: PhotoCraft, Photoshop, OpenRaster, Krita and Affinity documents, flat images, and
-/// Photoshop brushes (.abr), gradients (.grd) and swatches (.aco, .act, .ase), which go to the preset libraries.
+/// Photoshop brushes (.abr), gradients (.grd), layer styles (.asl) and swatches (.aco, .act, .ase), which go to the preset libraries.
 const OPEN_EXTS: &[&str] = &[
     "pcraft", "pdn", "ora", "xcf", "xcfgz", "gz", "kra", "krz", "psd", "psb", "psdt", "png", "jpg", "jpeg", "tif", "tiff", "webp", "gif", "bmp", "tga", "ico",
     "qoi", "exr", "hdr", "pbm", "pgm", "ppm", "pam", "pfm", "dds", "fits", "fit", "fts", "dpx", "cin", "dcm", "dicom", "dc3", "iff", "lbm", "ilbm", "heic",
-    "heif", "hif", "dng", "cr2", "cr3", "nef", "nrw", "arw", "pef", "orf", "rw2", "raf", "abr", "grd", "svg", "svgz", "aco", "act", "ase", "af", "afdesign",
-    "afphoto", "afpub",
+    "heif", "hif", "dng", "cr2", "cr3", "nef", "nrw", "arw", "pef", "orf", "rw2", "raf", "abr", "grd", "asl", "svg", "svgz", "aco", "act", "ase", "af",
+    "afdesign", "afphoto", "afpub",
 ];
 const SVG_EXTS: &[&str] = &["svg", "svgz"];
 const CANVAS_ID: &str = "photocraft_canvas";
@@ -80,6 +80,7 @@ pub fn start() {
                 canvas,
                 options,
                 Box::new(move |cc| {
+                    PhotocraftApp::install_type_reset_hooks(&cc.egui_ctx);
                     PhotocraftApp::setup_context(&cc.egui_ctx, ThemeKind::Pro);
                     let inbox: Inbox = Arc::default();
                     let place_inbox: Inbox = Arc::default();
@@ -218,7 +219,7 @@ fn load_font_manifest(served: Served, ctx: egui::Context) {
             files.entry(f.family.clone()).or_default().push((f.file.clone(), f.integrity.clone()));
         }
         log::info!("photocraft-web: {} served font families", files.len());
-        served.lock().unwrap_or_else(|e| e.into_inner()).files = files;
+        served.lock().unwrap_or_else(PoisonError::into_inner).files = files;
         // The families for the font menus, and the script fallbacks (the manifest's `scripts`).
         served_fonts::add_fonts(&fonts);
         // Fetch now the fallbacks of the scripts the browser's languages use (an Arabic reader gets
@@ -295,7 +296,7 @@ impl WebShell {
     fn serve_fonts(&mut self, ctx: &egui::Context) {
         let requested = served_fonts::take_requests();
         let (fetch, arrived) = {
-            let mut s = self.served.lock().unwrap_or_else(|e| e.into_inner());
+            let mut s = self.served.lock().unwrap_or_else(PoisonError::into_inner);
             let mut fetch = Vec::new();
             for family in requested {
                 if let Some(files) = s.files.get(&family).cloned()
@@ -312,7 +313,7 @@ impl WebShell {
             wasm_bindgen_futures::spawn_local(async move {
                 match fetch_bytes(&file, integrity.as_deref()).await {
                     Ok(bytes) => {
-                        served.lock().unwrap_or_else(|e| e.into_inner()).arrived.push((family, bytes));
+                        served.lock().unwrap_or_else(PoisonError::into_inner).arrived.push((family, bytes));
                         ctx.request_repaint();
                     }
                     Err(e) => log::error!("couldn't fetch served font {file}: {e}"),
@@ -328,6 +329,10 @@ impl eframe::App for WebShell {
         // A tap reaches eframe as Pointer Events and Touch Events: keep one press per tap, or the
         // twin press closes the menu the first one opened (#2095).
         photocraft_ui_egui::touch_twins::drop_twins(ctx, raw_input);
+        // The browser build has no TCP control server, so `inject_synthetic` finds an empty
+        // queue, but the clipboard key mapping (`Event::PasteImage`), legacy pinch, pen-hold and
+        // titlebar normalization live in the app hook and must run here too.
+        eframe::App::raw_input_hook(&mut self.app, ctx, raw_input);
     }
 
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
@@ -347,7 +352,7 @@ impl eframe::App for WebShell {
                     match f.bytes_async().await {
                         Ok(bytes) => {
                             let queue = if place { &place_inbox } else { &inbox };
-                            queue.lock().unwrap_or_else(|e| e.into_inner()).push((name, bytes));
+                            queue.lock().unwrap_or_else(PoisonError::into_inner).push((name, bytes));
                             ctx.request_repaint();
                         }
                         Err(e) => log::error!("couldn't read dropped file {name}: {e}"),
@@ -356,8 +361,9 @@ impl eframe::App for WebShell {
             });
         }
         self.serve_fonts(ctx);
-        self.app.logic(ctx, frame);
+        self.app.logic_frame(ctx, frame);
         self.save_presets(ctx);
+        self.app.finish_type_reset_logic(ctx);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
@@ -384,8 +390,9 @@ impl eframe::App for WebShell {
                 });
             });
         }
-        self.app.ui(ui, frame);
+        self.app.ui_frame(ui, frame);
         self.save_presets(ui.ctx());
+        self.app.finish_type_reset_pass(ui.ctx());
     }
 }
 

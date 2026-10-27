@@ -278,6 +278,58 @@ fn stroke_has_no_seams() {
     }
 }
 
+#[test]
+fn hard_round_presets_have_smooth_large_stroke_outlines() {
+    // #8842: the centre can be solid while widely spaced discs scallop the outline.
+    // Measure the rendered 50% edge of a 150 px stroke, including its sub-pixel position.
+    for preset in crate::presets::builtin().into_iter().filter(|p| p.name.starts_with("Hard Round")) {
+        for fmt in [PixelFormat::RGBA8, PixelFormat::RGBA16, PixelFormat::RGBA32F] {
+            for smoothing in [0.0, 0.49] {
+                let mut b = preset.brush.clone();
+                b.size = 150.0;
+                b.smoothing.amount = smoothing;
+                let mut s = Surface::new(fmt);
+                render_stroke(&mut s, &b, &line(100.0, 800.0, 120.0), None, false, 1.0);
+                let (mut min, mut max) = (f32::INFINITY, f32::NEG_INFINITY);
+                for x in 220..680 {
+                    let edge = (0..120)
+                        .find_map(|y| {
+                            let (a, next) = (s.rgba(x, y)[3], s.rgba(x, y + 1)[3]);
+                            (a <= 0.5 && next > 0.5).then(|| y as f32 + (0.5 - a) / (next - a))
+                        })
+                        .expect("a full-pressure stroke has a half-coverage edge");
+                    min = min.min(edge);
+                    max = max.max(edge);
+                }
+                assert!(max - min < 0.25, "{} {fmt:?} smoothing {smoothing}: scalloped edge spans {} px", preset.name, max - min);
+            }
+        }
+    }
+}
+
+#[test]
+fn hard_round_presets_have_continuous_pressure_opacity_tapers() {
+    // #8842 also shows nested disc boundaries when pressure controls opacity and size.
+    // A smooth input ramp must not turn into several-percent steps between adjacent pixels.
+    let points: Vec<_> =
+        (0..=100).map(|i| StrokePoint { time: i as f64 * 8.0, ..StrokePoint::new(100.0 + i as f64 * 7.0, 120.0, 0.95 - i as f32 * 0.009) }).collect();
+    for preset in crate::presets::builtin().into_iter().filter(|p| p.name.starts_with("Hard Round")) {
+        for fmt in [PixelFormat::RGBA8, PixelFormat::RGBA16, PixelFormat::RGBA32F] {
+            for smoothing in [0.0, 0.49] {
+                let mut b = preset.brush.clone();
+                b.size = 150.0;
+                b.pressure_opacity = true;
+                b.smoothing.amount = smoothing;
+                let mut s = Surface::new(fmt);
+                render_stroke(&mut s, &b, &points, None, false, 1.0);
+                assert!(s.rgba(200, 120)[3] > 0.7 && s.rgba(699, 120)[3] < 0.3, "{}: the stroke must still taper", preset.name);
+                let max_jump = (200..699).map(|x| (s.rgba(x + 1, 120)[3] - s.rgba(x, 120)[3]).abs()).fold(0.0f32, f32::max);
+                assert!(max_jump < 0.02, "{} {fmt:?} smoothing {smoothing}: opacity jumps by {max_jump}", preset.name);
+            }
+        }
+    }
+}
+
 // ---------- dynamics ----------
 
 #[test]
@@ -1686,6 +1738,106 @@ fn an_aliased_stroke_at_partial_opacity_is_one_flat_colour() {
     for x in 3..60 {
         assert_eq!(s.rgba(x, 5), first, "pixel {x} of the Pencil line");
     }
+}
+
+/// Large tips rasterize, accumulate and composite in parallel (rows of a dab, tiles of a stroke);
+/// the pixels are the ones the serial path gives, with 8-bit dithering, a selection, Dissolve and
+/// per-dab colour included.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn large_tips_render_the_same_in_parallel_and_serially() {
+    let mut sel = Surface::new(PixelFormat::GRAY8);
+    sel.fill_rect(Rect::new(0, 0, 900, 700), &[1.0]);
+    sel.fill_rect(Rect::new(300, 0, 400, 700), &[0.0]);
+    let strokes: Vec<(BrushSettings, Vec<StrokePoint>)> = vec![
+        (BrushSettings { size: 700.0, hardness: 0.0, flow: 0.6, color: [0.9, 0.2, 0.1, 1.0], ..brush() }, line(200.0, 700.0, 350.0)),
+        (
+            BrushSettings { size: 420.0, hardness: 1.0, opacity: 0.5, mode: BlendMode::Dissolve, color: [0.1, 0.5, 0.9, 1.0], ..brush() },
+            line(150.0, 750.0, 300.0),
+        ),
+        (
+            BrushSettings {
+                size: 500.0,
+                hardness: 0.3,
+                color_dynamics: ColorDynamics { enabled: true, hue_jitter: 0.5, per_tip: true, ..Default::default() },
+                color: [0.2, 0.8, 0.3, 1.0],
+                ..brush()
+            },
+            line(100.0, 800.0, 400.0),
+        ),
+    ];
+    let render = |parallel_from: usize| -> Vec<Vec<f32>> {
+        crate::render::set_parallel_min_pixels(parallel_from);
+        strokes
+            .iter()
+            .map(|(b, pts)| {
+                let mut s = Surface::new(PixelFormat::RGBA8);
+                s.fill_rect(Rect::new(0, 0, 900, 700), &[0.5, 0.5, 0.5, 1.0]);
+                let (mut with_sel, mut plain) = (s.clone(), s);
+                render_stroke(&mut with_sel, b, pts, Some(&sel), false, 1.0);
+                render_stroke(&mut plain, b, pts, None, false, 1.0);
+                let mut px = with_sel.read_region(Rect::new(0, 0, 900, 700));
+                px.extend(plain.read_region(Rect::new(0, 0, 900, 700)));
+                px
+            })
+            .collect()
+    };
+    // The threshold is process-wide: put the default back however the test ends, a panic
+    // inside a render included.
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            crate::render::set_parallel_min_pixels(crate::render::DEFAULT_PARALLEL_MIN_PIXELS);
+        }
+    }
+    let _restore = Restore;
+    let parallel = render(0);
+    let serial = render(usize::MAX);
+    for (i, (p, s)) in parallel.iter().zip(&serial).enumerate() {
+        assert_eq!(p.len(), s.len());
+        let diff = p.iter().zip(s).filter(|(a, b)| a != b).count();
+        assert_eq!(diff, 0, "stroke {i}: {diff} pixels differ between the parallel and the serial render");
+        assert!(p.iter().any(|v| (*v - 0.5).abs() > 0.1), "stroke {i} painted something");
+    }
+}
+
+/// A CMYK document with its own profile: blend modes other than Normal convert each pixel through
+/// that profile, which is active per thread, so a stroke composited in parallel gives the pixels the
+/// serial path gives (the workers enter the caller's CMYK space too).
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_parallel_composite_converts_through_the_documents_cmyk_profile() {
+    use photocraft_cms::synth::{CmykParams, cmyk_profile};
+    use photocraft_color::convert::{CmykSpace, with_cmyk_space};
+    let profile =
+        cmyk_profile(&CmykParams { description: "Brush Test CMYK".into(), tvi: [0.26, 0.26, 0.26, 0.3], grid_a2b: 5, grid_b2a: 9, ..Default::default() });
+    let bytes = profile.to_bytes();
+    let Some(space) = CmykSpace::for_profile(Some(&bytes)) else { panic!("the synthetic profile is a CMYK space") };
+    let fmt = PixelFormat::new(ColorMode::Cmyk, SampleType::U16, true);
+    // A 40 px Multiply line over 1100 px dirties more than 16 tiles: the composite's batch is
+    // worth the threads at the default threshold, and always at threshold 0.
+    let b = BrushSettings { size: 40.0, hardness: 0.5, mode: BlendMode::Multiply, color: [0.2, 0.4, 0.9, 1.0], ..brush() };
+    let pts = line(40.0, 1140.0, 60.0);
+    let full = Rect::new(0, 0, 1200, 120);
+    let render = |parallel_from: usize| -> Vec<f32> {
+        crate::render::set_parallel_min_pixels(parallel_from);
+        let mut s = Surface::new(fmt);
+        s.fill_rect(full, &[0.1, 0.5, 0.3, 0.05, 1.0]);
+        with_cmyk_space(Some(&space), || render_stroke(&mut s, &b, &pts, None, false, 1.0));
+        s.read_region(full)
+    };
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            crate::render::set_parallel_min_pixels(crate::render::DEFAULT_PARALLEL_MIN_PIXELS);
+        }
+    }
+    let _restore = Restore;
+    let parallel = render(0);
+    let serial = render(usize::MAX);
+    let diff = parallel.iter().zip(&serial).filter(|(a, b)| a != b).count();
+    assert_eq!(diff, 0, "{diff} samples differ between the parallel and the serial composite in a profiled CMYK document");
+    assert!(serial.chunks(5).any(|p| (p[1] - 0.5).abs() > 0.05), "the stroke painted something");
 }
 
 /// Photoshop (measured): a 100 px brush with a 20 px Dual Brush tip resized to 50 / 2 / 1 px has a

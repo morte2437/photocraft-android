@@ -661,6 +661,10 @@
 	Fit Layer(s) on Screen	Přizpůsobit vrstvy obrazovce
 	Fit Artboard on Screen	Přizpůsobit kreslicí plochu obrazovce
 	100%	100 %
+	105%	105 %
+	110%	110 %
+	115%	115 %
+	120%	120 %
 	200%	200 %
 	75%	75 %
 	80%	80 %
@@ -1033,6 +1037,9 @@
 	Create new pattern from the selection	Vytvořit nový vzorek z výběru
 	Create new shape from the current path	Vytvořit nový tvar z aktuální cesty
 	Create new snapshot	Vytvořit nový snímek
+	From:	Z:
+	Full Document	Celý dokument
+	Merged Layers	Sloučené vrstvy
 	Create new tool preset	Vytvořit nové přednastavení nástroje
 	Crop Factor	Crop faktor
 	Ctrl	Ctrl
@@ -2232,6 +2239,10 @@
 	No path to make a selection from: draw one with the Pen tool or select one in the Paths panel.	Není k dispozici žádná cesta, ze které by šlo vytvořit výběr: nakreslete ji nástrojem Pero nebo ji vyberte na panelu Cesty.
 	Cancel opening	Zrušit otevírání
 	Cancelled opening {name}	Otevírání {name} zrušeno
+	Damaged Photoshop document	Poškozený dokument Photoshopu
+	The document “{name}” may be damaged.	Dokument „{name}“ může být poškozený.
+	Some layers, pixels or masks could not be read. Do you want to continue opening it?	Některé vrstvy, pixely nebo masky nebylo možné načíst. Chcete pokračovat v otevírání?
+	If you continue, saving over the original may permanently discard unreadable data. Save a copy to keep the original.	Pokud budete pokračovat, uložení přes originál může nenávratně zahodit nečitelná data. Chcete-li originál zachovat, uložte kopii.
 	The document “{name}” does not have an embedded {mode} profile.	Dokument „{name}“ nemá vložený profil {mode}.
 	The document “{name}” has an embedded color profile that does not match the current {mode} working space.	Dokument „{name}“ má vložený barevný profil, který neodpovídá aktuálnímu pracovnímu prostoru barev {mode}.
 	Working: {working}	Pracovní: {working}
@@ -3577,6 +3588,8 @@ curves	Smooth	Vyhladit
 	Vanishing Point is not active	Úběžník není aktivní
 	Apply Vanishing Point ({key})	Použít úběžník ({key})
 	Fix the red plane first: its corners must form a convex quad	Nejprve opravte červenou rovinu: její rohy musí tvořit konvexní čtyřúhelník
+	Alt-click a plane to set the clone source	Klepnutím s Alt na rovinu nastavte zdroj klonování
+	Too many clone strokes: apply Vanishing Point first	Příliš mnoho tahů klonování: nejprve použijte Úběžník
 # Select and Mask view modes (#1754)
 	Onion Skin	Cibulová slupka
 	Marching Ants	Pochodující mravenci
@@ -3847,6 +3860,30 @@ navigator	Zoom	Zvětšení
 	Sent to {printer}	Odesláno do {printer}
 	set in Print Settings…	nastavuje se v nastavení tisku…
 	ICO is limited to 256 × 256 pixels	ICO je omezen na 256 × 256 pixelů
+	Calibration	Kalibrace
+	Red Primary	Červená základní
+	Green Primary	Zelená základní
+	Blue Primary	Modrá základní
+	Write xmp sidecars	Zapisovat přidružené soubory XMP
+	Set the tone sliders from the image	Nastavit posuvníky tónů podle obrazu
+	Settings from {name}	Nastavení z {name}
+	Settings from {name}; {count} not supported: {names}	Nastavení z {name}; {count} nepodporováno: {names}
+	Could not write {name}: {error}	Nelze zapsat {name}: {error}
+	Kept {name}: written by another application	Soubor {name} ponechán: zapsala ho jiná aplikace
+	Shadow Tint	Odstín stínů
+# PhotoCraft release checks.
+	Check for Updates…	Zkontrolovat aktualizace…
+	PhotoCraft Updates	Aktualizace PhotoCraft
+	Checking for updates…	Kontrola aktualizací…
+	Open the release page to choose an installer for your system.	Otevřete stránku vydání a vyberte instalační program pro svůj systém.
+	Open Download Page	Otevřít stránku ke stažení
+	PhotoCraft is up to date.	PhotoCraft je aktuální.
+	Could not check for updates.	Aktualizace se nepodařilo zkontrolovat.
+	Updates have not been checked yet.	Aktualizace ještě nebyly zkontrolovány.
+	Check Again	Zkontrolovat znovu
+	Automatically Check for Updates	Automaticky kontrolovat aktualizace
+	Installed version: {version}	Nainstalovaná verze: {version}
+	PhotoCraft {version} is available.	PhotoCraft {version} je k dispozici.
 # History panel › History Brush source (#2966)
 	Paints from the History panel's source state	Maluje ze zdrojového stavu panelu Historie
 	Sets the source for the history brush	Nastaví zdroj pro štětec historie
@@ -4108,6 +4145,14 @@ cameraRaw	Dehaze	Odstranění oparu
 
 # Graphics Adapter preference (#1885)
 	GPU adapter	Adaptér GPU
+
+# Styles panel: Import / Export Styles (.asl)
+	Import Styles…	Importovat styly…
+	Export Selected Styles…	Exportovat vybrané styly…
+	Export Styles…	Exportovat styly…
+	{file} is not a style library (.asl)	{file} není knihovna stylů (.asl)
+@plural	Imported {n} style from {file}|Imported {n} styles from {file}	Importován {n} styl ze souboru {file}|Importovány {n} styly ze souboru {file}|Importováno {n} stylů ze souboru {file}
+@plural	Exported {n} style to {file}|Exported {n} styles to {file}	Exportován {n} styl do souboru {file}|Exportovány {n} styly do souboru {file}|Exportováno {n} stylů do souboru {file}
 # Actions: a step dialog holds a suspended recording (#7365)
 	Confirm or cancel the open action step dialog first	Nejprve potvrďte nebo zrušte otevřený dialog kroku akce
 	Pro Medium Gray	Pro (středně šedý)
@@ -4116,14 +4161,43 @@ cameraRaw	Dehaze	Odstranění oparu
 	Pro Light Gray	Pro (světle šedý)
 	Pro Light	Pro (světlý)
 	Resize Windows to Fit	Přizpůsobit velikost oken
-
 	EXR	EXR
-
 # Paragraph direction (TYPE-218-2)
 	Automatic paragraph direction	Automatický směr odstavce
 	Left-to-right paragraph direction	Směr odstavce zleva doprava
 	Right-to-left paragraph direction	Směr odstavce zprava doleva
 	Not rendered: this adjustment ({key}) is kept as imported.	Nevykresleno: tato úprava ({key}) je ponechána tak, jak byla importována.
-
 # Print preview image (#8236)
 	Print preview image	Print preview image
+# Color panel menu: modes, copy commands and colour ramps (#6000)
+	Hue Cube	Krychle odstínu
+	Brightness Cube	Krychle jasu
+	Color Wheel	Barevné kolo
+	Grayscale Slider	Jezdec stupňů šedi
+	RGB Sliders	Jezdce RGB
+	HSB Sliders	Jezdce HSB
+	CMYK Sliders	Jezdce CMYK
+	Lab Sliders	Jezdce Lab
+	Web Color Sliders	Jezdce webových barev
+	Copy Color as HTML	Kopírovat barvu jako HTML
+	Copy Color's Hex Code	Kopírovat šestnáctkový kód barvy
+	RGB Spectrum	Spektrum RGB
+	CMYK Spectrum	Spektrum CMYK
+	Grayscale Ramp	Přechod stupňů šedi
+	Current Colors	Aktuální barvy
+	Make Ramp Web Safe	Omezit pruh na webové barvy
+# Art History Brush (#213).
+	Art History Brush	Štětec umělecké historie
+	Art History Brush Tool	Nástroj štětec umělecké historie
+	Tight Short	Těsný krátký
+	Tight Medium	Těsný střední
+	Tight Long	Těsný dlouhý
+	Loose Medium	Volný střední
+	Loose Long	Volný dlouhý
+	Dab	Šmouha
+	Tight Curl	Těsná smyčka
+	Loose Curl	Volná smyčka
+	Stylized dabs from a history state	Stylizované šmouhy ze stavu historie
+
+# Egui 0.37 migration controls (Aspect Ratio, Category, Color Table, Gamma, Interpolation, Profile, Target, Units, Demosaic)
+	Aspect Ratio	Poměr stran

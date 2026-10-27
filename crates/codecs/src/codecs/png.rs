@@ -140,7 +140,7 @@ pub fn stereo(bytes: &[u8]) -> Option<PngStereo> {
         }
         let Ok(length) = usize::try_from(length) else { break };
         let Some(data) = tail.get(..length) else { break };
-        let Some((checksum, next)) = tail.get(length..).and_then(|t| t.split_first_chunk::<4>()) else { break };
+        let Some((checksum, next)) = tail.get(length..).and_then(<[u8]>::split_first_chunk::<4>) else { break };
         rest = next;
         if kind == b"IEND" {
             break;
@@ -194,7 +194,7 @@ fn read_text_metadata(bytes: &[u8], mut remaining: usize, meta: &mut Metadata) -
         }
         let Ok(length) = usize::try_from(length) else { break };
         let Some(data) = tail.get(..length) else { break };
-        let Some((checksum, next)) = tail.get(length..).and_then(|t| t.split_first_chunk::<4>()) else { break };
+        let Some((checksum, next)) = tail.get(length..).and_then(<[u8]>::split_first_chunk::<4>) else { break };
         rest = next;
         if kind == b"IEND" {
             break;

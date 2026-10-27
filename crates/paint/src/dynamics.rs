@@ -26,6 +26,9 @@ const MAX_GRID_STEPS: f64 = 1e7;
 const MIN_SPEED_STEP: f64 = 0.5;
 /// Maximum airbrush catch-up dabs for one input segment.
 const MAX_AIRBRUSH_DABS_PER_SEGMENT: usize = 512;
+/// Most steps one distance-spaced segment emits: two far-apart points at a quarter-pixel spacing
+/// would otherwise be billions of steps, all buffered before the first is drawn.
+const MAX_DISTANCE_STEPS_PER_SEGMENT: usize = 1 << 20;
 
 /// The dab centre of the pixel-grid cell holding `v` (see [`PathWalker::pixel_grid`]): the
 /// pixel's centre for `offset` 0.5, the nearest pixel corner for 0. A value within rounding
@@ -336,12 +339,17 @@ impl PathWalker {
             match self.speed.filter(|_| dt > 0.0 && dt.is_finite()) {
                 None => {
                     if !self.grid.is_some_and(|g| self.grid_steps(&a, &p, g, out)) {
-                        while self.next_at <= len + 1e-9 {
+                        let mut emitted = 0usize;
+                        while self.next_at <= len + 1e-9 && emitted < MAX_DISTANCE_STEPS_PER_SEGMENT {
                             let q = lerp_pt(&a, &p, (self.next_at / len).min(1.0));
                             self.emit(q, out);
                             self.next_at += step_len(&q).max(0.25);
+                            emitted += 1;
                         }
-                        self.next_at -= len;
+                        // Cut short: the rest of the segment is skipped, spacing restarts at its end.
+                        // Only when the cap held back a step that was still due; a segment that ends right at the cap keeps its carry-over.
+                        let cut_short = emitted == MAX_DISTANCE_STEPS_PER_SEGMENT && self.next_at <= len + 1e-9;
+                        self.next_at = if cut_short { step_len(&p).max(0.25) } else { self.next_at - len };
                     }
                 }
                 Some(iv) => {
@@ -813,5 +821,40 @@ impl DabGenerator {
                 db.build(s, dual);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod walker_budget_tests {
+    use super::*;
+
+    #[test]
+    fn one_far_segment_emits_a_bounded_number_of_steps() {
+        let steps = std::cell::Cell::new(0usize);
+        let mut count = |_: StepInput| steps.set(steps.get() + 1);
+        let mut walker = PathWalker::new(None);
+        walker.push(StrokePoint::new(0.0, 0.0, 1.0), &|_: &StrokePoint| 1.0, &mut count);
+        // At a quarter pixel, a billion-pixel segment is four billion steps.
+        walker.push(StrokePoint::new(1.0e9, 0.0, 1.0), &|_: &StrokePoint| 0.25, &mut count);
+        assert!(steps.get() <= MAX_DISTANCE_STEPS_PER_SEGMENT + 1, "{}", steps.get());
+        // Spacing carries on from the end of the cut segment.
+        let before = steps.get();
+        walker.push(StrokePoint::new(1.0e9 + 10.0, 0.0, 1.0), &|_: &StrokePoint| 1.0, &mut count);
+        assert!(steps.get() > before && steps.get() - before <= 11, "{} more steps", steps.get() - before);
+    }
+
+    #[test]
+    fn a_segment_ending_at_the_cap_keeps_its_carry_over() {
+        let steps = std::cell::Cell::new(0usize);
+        let mut count = |_: StepInput| steps.set(steps.get() + 1);
+        let mut walker = PathWalker::new(None);
+        let one = |_: &StrokePoint| 1.0;
+        walker.push(StrokePoint::new(0.0, 0.0, 1.0), &one, &mut count);
+        // Exactly the cap in steps, then 0.75 left before the next is due.
+        let end = MAX_DISTANCE_STEPS_PER_SEGMENT as f64 + 0.25;
+        walker.push(StrokePoint::new(end, 0.0, 1.0), &one, &mut count);
+        let before = steps.get();
+        walker.push(StrokePoint::new(end + 0.8, 0.0, 1.0), &one, &mut count);
+        assert_eq!(steps.get(), before + 1);
     }
 }

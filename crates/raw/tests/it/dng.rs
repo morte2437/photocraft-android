@@ -1,7 +1,7 @@
 //! Synthetic DNG files: every storage layout decodes to the exact sensor
 //! samples, and development reproduces known colours.
 
-use photocraft_raw::testgen::{DngSpec, DngStorage, Val, baseline_jpeg, mosaic, scene};
+use photocraft_raw::testgen::{self, DngSpec, DngStorage, Val, baseline_jpeg, mosaic, scene};
 use photocraft_raw::*;
 
 fn sensor(bytes: &[u8]) -> Sensor {
@@ -683,6 +683,222 @@ fn jpeg_xl_linear_raw_develops() {
     // Same pixels stored uncompressed develop identically.
     spec.storage = DngStorage::Strips { rows: h };
     assert_eq!(develop(&spec.build(), &DevelopOptions::default()).unwrap().rgb, d.rgb);
+}
+
+/// A LinearRaw JPEG XL strip of `data` (16-bit samples) whose raw IFD says the samples are
+/// floating-point (SampleFormat 3), as converters write lossy DNGs (#8125). The codestream is
+/// an integer one (the test encoder writes no floats): the decoder reads it as floats in 0..=1,
+/// the same values a float codestream of `data / 65535` holds.
+fn float_jxl_dng(data: &[u16], w: usize, h: usize, white: Option<f64>) -> DngSpec {
+    let mut spec = DngSpec::cfa(w, h, data.to_vec());
+    spec.samples = 3;
+    spec.white = 0;
+    spec.storage = DngStorage::JxlStrips { rows: h };
+    spec.jxl_segments = vec![jxl(data, w, h, 3, 16)];
+    spec.raw_extra = vec![(339, Val::Short(vec![3; 3]))];
+    if let Some(white) = white {
+        spec.raw_extra.push((50717, Val::Double(vec![white; 3])));
+    }
+    spec
+}
+
+#[test]
+fn floating_point_jpeg_xl_linear_raw_decodes() {
+    let (w, h) = (24, 16);
+    let data = noise(w * h * 3, 16);
+    // White level 1.0 (the default) becomes 65535: the samples read back as stored.
+    let s = sensor(&float_jxl_dng(&data, w, h, None).build());
+    assert_eq!((s.width, s.height, s.samples), (w, h, 3));
+    assert_eq!(s.data, data);
+    assert_eq!(s.white, [65535.0; 3]);
+    // A stated white level of 0.5 becomes 65535 too: samples double, those above it clip.
+    let s = sensor(&float_jxl_dng(&data, w, h, Some(0.5)).build());
+    assert_eq!(s.white, [65535.0; 3]);
+    assert_eq!(s.data, data.iter().map(|&v| (u32::from(v) * 2).min(65535) as u16).collect::<Vec<_>>());
+    // It develops like the same samples stored as integers.
+    let pixels: Vec<u16> = scene(w, h).iter().flat_map(|p| p.map(|v| (v * 20000.0) as u16)).collect();
+    let float = develop(&float_jxl_dng(&pixels, w, h, None).build(), &DevelopOptions::default()).unwrap();
+    let mut ints = DngSpec::cfa(w, h, pixels.clone());
+    ints.samples = 3;
+    ints.white = 65535;
+    ints.storage = DngStorage::Strips { rows: h };
+    assert_eq!(float.rgb, develop(&ints.build(), &DevelopOptions::default()).unwrap().rgb);
+}
+
+#[test]
+fn floating_point_raw_data_that_isnt_jpeg_xl_is_unsupported() {
+    let (w, h) = (8, 4);
+    let mut spec = float_jxl_dng(&noise(w * h * 3, 16), w, h, None);
+    spec.storage = DngStorage::Strips { rows: h };
+    match decode(&spec.build(), &Limits::default()) {
+        Err(RawError::Unsupported(m)) => assert!(m.contains("floating-point"), "{m}"),
+        other => panic!("expected unsupported, got {other:?}"),
+    }
+}
+
+/// WhiteLevel has one value per sample plane: the floats are scaled by the highest, so a plane
+/// with a higher white level than the first keeps its highlights.
+#[test]
+fn floating_point_white_levels_per_plane_scale_from_the_highest() {
+    let (w, h) = (24, 16);
+    let data = noise(w * h * 3, 16);
+    let mut spec = float_jxl_dng(&data, w, h, None);
+    spec.raw_extra.push((50717, Val::Double(vec![0.5, 1.0, 0.5])));
+    let s = sensor(&spec.build());
+    assert_eq!(s.data, data, "scaled by 1.0, the highest: nothing clipped");
+    assert_eq!(s.white, [32767.5, 65535.0, 32767.5]);
+}
+
+/// `Σ cᵢ · xⁱ` at `x`, both clipped to 0..1 (as MapPolynomial).
+fn poly(c: &[f64], x: f64) -> f64 {
+    let x = x.clamp(0.0, 1.0);
+    c.iter().rev().fold(0.0, |acc, c| acc * x + c).clamp(0.0, 1.0)
+}
+
+/// #8125: a lossy DNG's OpcodeList2 carries a MapPolynomial per plane, and its colours depend on
+/// it. Each plane's samples are mapped through its polynomial, on the linear reference values.
+#[test]
+fn map_polynomial_maps_each_plane_of_floating_point_data() {
+    let (w, h) = (24, 16);
+    let data = noise(w * h * 3, 16);
+    let planes = [vec![0.0, 0.5, 0.5], vec![0.0, 1.0], vec![0.1, 0.8, 0.0, 0.3]];
+    let mut spec = float_jxl_dng(&data, w, h, None);
+    spec.opcode_list2 = Some(testgen::map_polynomial_opcode_list(
+        [0, 0, h as u32, w as u32],
+        &planes.iter().enumerate().map(|(p, c)| (p as u32, c.clone())).collect::<Vec<_>>(),
+    ));
+    let bytes = spec.build();
+    let s = sensor(&bytes);
+    let want: Vec<u16> = data.iter().enumerate().map(|(i, &v)| (poly(&planes[i % 3], f64::from(v) / 65535.0) * 65535.0).round() as u16).collect();
+    assert_eq!(s.data, want);
+    assert!(s.warnings.iter().all(|w| !w.contains("MapPolynomial")), "{:?}", s.warnings);
+    let d = develop(&bytes, &DevelopOptions::default()).unwrap();
+    assert!(d.warnings.iter().all(|w| !w.contains("MapPolynomial")), "{:?}", d.warnings);
+}
+
+/// With a LinearizationTable, MapPolynomial maps the linearized values: the samples are
+/// linearized first and the table is then done with.
+#[test]
+fn map_polynomial_follows_the_linearization_table() {
+    let (w, h) = (16, 8);
+    let data = noise(w * h, 12);
+    let table: Vec<u16> = (0..4096u16).map(|i| i * 2).collect();
+    let mut spec = DngSpec::cfa(w, h, data.clone());
+    spec.bits = 12;
+    spec.white = 8190;
+    spec.linearization = Some(table.clone());
+    spec.opcode_list2 = Some(testgen::map_polynomial_opcode_list([0, 0, h as u32, w as u32], &[(0, vec![0.0, 0.0, 1.0])]));
+    let s = sensor(&spec.build());
+    assert!(s.linearization.is_none(), "applied with the polynomial");
+    let want: Vec<u16> = data.iter().map(|&v| (poly(&[0.0, 0.0, 1.0], f64::from(table[usize::from(v)]) / 8190.0) * 8190.0).round() as u16).collect();
+    assert_eq!(s.data, want);
+}
+
+/// A LinearizationTable maps integer samples: floating-point data ignores one.
+#[test]
+fn floating_point_raw_data_ignores_a_linearization_table() {
+    let (w, h) = (24, 16);
+    let data = noise(w * h * 3, 16);
+    let mut spec = float_jxl_dng(&data, w, h, None);
+    spec.linearization = Some(vec![0; 4]);
+    let s = sensor(&spec.build());
+    assert!(s.linearization.is_none());
+    assert_eq!(s.data, data);
+}
+
+/// Floating-point samples are read into four bytes each before they become 16-bit: the limits
+/// are charged for that buffer, not for the two-byte result.
+#[test]
+fn floating_point_jpeg_xl_is_charged_four_bytes_a_sample() {
+    let (w, h) = (24, 16);
+    let bytes = float_jxl_dng(&noise(w * h * 3, 16), w, h, None).build();
+    let limits = Limits { max_alloc: (w * h * 3 * 2) as u64, ..Limits::default() };
+    match decode(&bytes, &limits) {
+        Err(RawError::LimitExceeded(_)) => {}
+        other => panic!("expected the limits to refuse the f32 buffer, got {other:?}"),
+    }
+}
+
+/// When the largest JPEG XL preview doesn't decode, the next largest is used.
+#[test]
+fn a_jpeg_xl_preview_that_does_not_decode_gives_way_to_a_smaller_one() {
+    use photocraft_raw::testgen::TiffBuilder;
+    let mut t = TiffBuilder::default();
+    let preview = |t: &mut TiffBuilder, w: usize, h: usize, stream: Vec<u8>| {
+        let len = stream.len() as u32;
+        let strip = t.blob(stream);
+        t.ifd(vec![
+            (254, Val::Long(vec![1])),
+            (256, Val::Long(vec![w as u32])),
+            (257, Val::Long(vec![h as u32])),
+            (258, Val::Short(vec![8, 8, 8])),
+            (259, Val::Short(vec![52546])),
+            (262, Val::Short(vec![2])),
+            (273, Val::Blobs(vec![strip])),
+            (277, Val::Short(vec![3])),
+            (278, Val::Long(vec![h as u32])),
+            (279, Val::Long(vec![len])),
+        ])
+    };
+    let small = noise(20 * 15 * 3, 8);
+    let damaged = preview(&mut t, 40, 30, vec![0xFF, 0x0A, 0, 0, 0, 0, 0, 0]);
+    let valid = preview(&mut t, 20, 15, jxl(&small, 20, 15, 3, 8));
+    let ifd0 = t.ifd(vec![(254, Val::Long(vec![1])), (330, Val::Ifds(vec![damaged, valid])), (50706, Val::Byte(vec![1, 7, 0, 0]))]);
+    t.chain = vec![ifd0];
+    let p = embedded_jxl_preview(&t.build(), &Limits::default()).expect("the 20×15 preview");
+    assert_eq!((p.width, p.height, p.bits), (20, 15, 8));
+    assert_eq!(p.rgb, small);
+}
+
+/// Only a rendered RGB picture is a preview: a reduced-resolution LinearRaw image (NewSubFileType 1,
+/// three samples, JPEG XL) holds undeveloped sensor data, so the RGB one is used even when smaller.
+#[test]
+fn a_reduced_resolution_linear_raw_is_not_a_jpeg_xl_preview() {
+    use photocraft_raw::testgen::TiffBuilder;
+    let mut t = TiffBuilder::default();
+    let mut ifd = |w: usize, h: usize, photometric: u16, data: &[u16]| {
+        let stream = jxl(data, w, h, 3, 8);
+        let len = stream.len() as u32;
+        let strip = t.blob(stream);
+        t.ifd(vec![
+            (254, Val::Long(vec![1])),
+            (256, Val::Long(vec![w as u32])),
+            (257, Val::Long(vec![h as u32])),
+            (258, Val::Short(vec![8, 8, 8])),
+            (259, Val::Short(vec![52546])),
+            (262, Val::Short(vec![photometric])),
+            (273, Val::Blobs(vec![strip])),
+            (277, Val::Short(vec![3])),
+            (278, Val::Long(vec![h as u32])),
+            (279, Val::Long(vec![len])),
+        ])
+    };
+    let small = noise(20 * 15 * 3, 8);
+    let linear_raw = ifd(40, 30, 34892, &noise(40 * 30 * 3, 8));
+    let rgb = ifd(20, 15, 2, &small);
+    let ifd0 = t.ifd(vec![(254, Val::Long(vec![1])), (330, Val::Ifds(vec![linear_raw, rgb])), (50706, Val::Byte(vec![1, 7, 0, 0]))]);
+    t.chain = vec![ifd0];
+    let p = embedded_jxl_preview(&t.build(), &Limits::default()).expect("the 20×15 RGB preview");
+    assert_eq!((p.width, p.height), (20, 15));
+    assert_eq!(p.rgb, small);
+}
+
+/// A WhiteLevel too large for the sensor's levels (a DOUBLE past f32::MAX) is ignored, as a zero
+/// one is: the samples keep the default white instead of an infinite one that blacks them out.
+#[test]
+fn an_infinite_white_level_falls_back_to_the_default() {
+    let (w, h) = (24, 16);
+    let pixels: Vec<u16> = scene(w, h).iter().flat_map(|p| p.map(|v| (v * 20000.0) as u16)).collect();
+    let mut ints = DngSpec::cfa(w, h, pixels.clone());
+    ints.samples = 3;
+    ints.storage = DngStorage::Strips { rows: h };
+    ints.white = 0;
+    ints.raw_extra.push((50717, Val::Double(vec![1e300; 3])));
+    assert_eq!(sensor(&ints.build()).white, [65535.0; 3], "integer data");
+    let float = float_jxl_dng(&pixels, w, h, Some(1e300)).build();
+    assert_eq!(sensor(&float).white, [65535.0; 3], "floating-point data");
+    let default = develop(&float_jxl_dng(&pixels, w, h, None).build(), &DevelopOptions::default()).unwrap();
+    assert_eq!(develop(&float, &DevelopOptions::default()).unwrap().rgb, default.rgb);
 }
 
 #[test]

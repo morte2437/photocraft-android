@@ -1,5 +1,6 @@
 //! Full filter timing, including tile reads, filtering, writeback and pruning.
 //! RAYON_NUM_THREADS=16 cargo run --release -p photocraft-algo --example bench_pixelate -- facet 6000 4000 u8 3 output.bin
+//! Also: crystallize, crystallize-large, pointillize, pointillize-large.
 //! Optional final argument after output.bin: rgb (default), gray, cmyk or lab.
 //! Run the same example at the base commit and the PR commit, then compare output.bin with cmp.
 use photocraft_algo::{FilterParams, apply_in};
@@ -29,11 +30,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => return Err("depth must be u8, u16 or f32".into()),
     };
     let params = match case {
+        "crystallize" => FilterParams::Crystallize { cell_size: 10.0, seed: 37 },
+        "crystallize-large" => FilterParams::Crystallize { cell_size: 100.0, seed: 37 },
+        "pointillize" => FilterParams::Pointillize { cell_size: 5.0, seed: 37, background: [1.0; 4] },
+        "pointillize-large" => FilterParams::Pointillize { cell_size: 100.0, seed: 37, background: [1.0; 4] },
         "facet" => FilterParams::Facet,
         "halftone" => FilterParams::ColorHalftone { max_radius: 8.0, angles: [108.0, 162.0, 90.0, 45.0] },
         "halftone-small" => FilterParams::ColorHalftone { max_radius: 2.0, angles: [108.0, 162.0, 90.0, 45.0] },
         "halftone-large" => FilterParams::ColorHalftone { max_radius: 64.0, angles: [108.0, 162.0, 90.0, 45.0] },
-        _ => return Err("case must be facet, halftone, halftone-small or halftone-large".into()),
+        _ => return Err("unknown pixelate benchmark case".into()),
     };
     let mode = match args.get(6).map(String::as_str).unwrap_or("rgb") {
         "rgb" => ColorMode::Rgb,

@@ -32,6 +32,7 @@ const GATED: &[&str] = &[
     "paint.sharpen",
     "paint.smudge",
     "paint.historyBrush",
+    "paint.artHistoryBrush",
     "layer.translate",
 ];
 

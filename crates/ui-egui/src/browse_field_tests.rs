@@ -63,3 +63,21 @@ fn install_plugin_path_is_chosen_with_browse() {
     }
     assert_eq!(field(&h, "path"), Some(json!("/tmp/blur.wasm")));
 }
+
+/// #9357: Image Processor's source and destination folders are chosen with Browse…, as
+/// Photoshop's Select Folder… buttons choose them, instead of being typed.
+#[test]
+fn image_processor_folders_are_chosen_with_browse() {
+    let (mut h, asked) = harness(vec![Some(FileDialogAnswer::FolderTo("/tmp/shoot".into())), Some(FileDialogAnswer::FolderTo("/tmp/web".into()))]);
+    let ctx = h.ctx.clone();
+    crate::menus::invoke(h.state_mut(), &ctx, "file.scripts.imageProcessor", json!({})).unwrap();
+    h.run_steps(4);
+    assert_eq!(h.query_all_by_label("Browse…").count(), 2, "one Browse… for the source and one for the destination");
+    h.query_all_by_label("Browse…").next().unwrap().click();
+    h.run_steps(4);
+    assert_eq!(field(&h, "input"), Some(json!("/tmp/shoot")));
+    h.query_all_by_label("Browse…").nth(1).unwrap().click();
+    h.run_steps(4);
+    assert_eq!(field(&h, "output"), Some(json!("/tmp/web")));
+    assert!(matches!(asked.borrow().as_slice(), [FileDialogRequest::Folder { .. }, FileDialogRequest::Folder { .. }]));
+}

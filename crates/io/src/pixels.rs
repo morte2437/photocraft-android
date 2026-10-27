@@ -21,6 +21,14 @@ pub fn sample_for_depth(depth: u16) -> SampleType {
     }
 }
 
+/// Complements every native-endian sample of one plane (`max − v`, `1 − v` for float). A
+/// trailing partial sample is left unchanged.
+pub(crate) fn invert_plane(bytes: &mut [u8], s: SampleType) {
+    for c in bytes.chunks_exact_mut(s.bytes().max(1)) {
+        invert_sample(c, s);
+    }
+}
+
 fn invert_sample(bytes: &mut [u8], s: SampleType) {
     match s {
         SampleType::U8 => bytes[0] = 255 - bytes[0],
@@ -47,7 +55,7 @@ pub fn interleave(planes: &[Option<&[u8]>], fill: &[Vec<u8>], n: usize, s: Sampl
         return out;
     }
     let bs = bands(n);
-    let step = bs.first().map_or(n, |b| b.len()) * row;
+    let step = bs.first().map_or(n, ExactSizeIterator::len) * row;
     par_map(bs.into_iter().zip(out.chunks_mut(step)).collect(), |(band, part)| {
         for (c, plane) in planes.iter().enumerate() {
             let src = plane.and_then(|p| p.get(band.start * bps..)).unwrap_or_default();

@@ -48,6 +48,8 @@
 @plural	{n} step|{n} steps	{n} lépés
 @plural	{warning} (+{n} more brush preset warning)|{warning} (+{n} more brush preset warnings)	{warning} (+{n} további figyelmeztetés az ecset-előbeállításokról)
 @plural	{what} with {n} warning|{what} with {n} warnings	{what} ({n} figyelmeztetés)
+@plural	Imported {n} style from {file}|Imported {n} styles from {file}	{n} stílus importálva. Forrás: {file}
+@plural	Exported {n} style to {file}|Exported {n} styles to {file}	{n} stílus exportálva. Cél: {file}
 @id	file.close	Bezárás
 @id	layer.layerMask.apply	Alkalmazás
 @id	edit.clear	Kiürítés
@@ -421,6 +423,10 @@
 # Menus: Type, Filter, View, Window; UI and engine commands
 	(coming soon)	(hamarosan)
 	100%	100%
+	105%	105%
+	110%	110%
+	115%	115%
+	120%	120%
 	2-up Horizontal	2 nézet vízszintesen
 	2-up Vertical	2 nézet függőlegesen
 	200%	200%
@@ -2502,6 +2508,10 @@ navigator	Zoom	Nagyítás mértéke
 	Camera Raw Filter ({layer})	Camera Raw szűrő ({layer})
 	Camera Raw isn't open	A Camera Raw nincs megnyitva
 	Cancelled opening {name}	Megnyitás megszakítva: {name}
+	Damaged Photoshop document	Sérült Photoshop-dokumentum
+	The document “{name}” may be damaged.	A(z) „{name}” dokumentum sérült lehet.
+	Some layers, pixels or masks could not be read. Do you want to continue opening it?	Egyes rétegeket, képpontokat vagy maszkokat nem sikerült beolvasni. Folytatod a megnyitást?
+	If you continue, saving over the original may permanently discard unreadable data. Save a copy to keep the original.	Ha folytatod, az eredeti felülírása véglegesen elvetheti az olvashatatlan adatokat. Az eredeti megtartásához ments másolatot.
 	The document “{name}” does not have an embedded {mode} profile.	Nincs beágyazott profil ({mode}) ebben a dokumentumban: „{name}”
 	The document “{name}” has an embedded color profile that does not match the current {mode} working space.	A dokumentum beágyazott színprofilja nem egyezik az aktuális munkaszíntérrel ({mode}): „{name}”
 	Working: {working}	Munkaszíntér: {working}
@@ -3891,6 +3901,9 @@ cameraRaw	Yellow	Sárga
 	New document…     ⌘N	Új dokumentum…     ⌘N
 	New Layer from Brush	Új réteg ecsetből
 	New Path	Új útvonal
+	From:	Forrás:
+	Full Document	Teljes dokumentum
+	Merged Layers	Egyesített rétegek
 	New Snapshot	Új pillanatkép
 	New Snapshot…	Új pillanatkép…
 	History Options…	Előzménybeállítások…
@@ -4023,6 +4036,8 @@ cameraRaw	Yellow	Sárga
 	Amount:	Mérték:
 	Apply Vanishing Point ({key})	Enyészpont alkalmazása ({key})
 	Apply the removal ({key})	Eltávolítás alkalmazása ({key})
+	Alt-click a plane to set the clone source	Alt-kattintás egy síkra a klónforrás beállításához
+	Too many clone strokes: apply Vanishing Point first	Túl sok klónvonás: először alkalmazza az Enyészpontot
 	Drag to draw the curve · {key}-click draws a straight line	Húzással rajzold meg a görbét · {key}+kattintás: egyenes vonal
 	Draw to modify the curve	Rajzolj a görbe módosításához
 	Edit points to modify the curve	Szerkeszd a pontokat a görbe módosításához
@@ -4127,6 +4142,17 @@ cameraRaw	Yellow	Sárga
 	Color Indicates:	A szín jelzése:
 	Ink Characteristics	Festék jellemzői
 	Solidity:	Fedőképesség:
+	Calibration	Kalibrálás
+	Red Primary	Vörös alapszín
+	Green Primary	Zöld alapszín
+	Blue Primary	Kék alapszín
+	Write xmp sidecars	XMP kísérőfájlok írása
+	Set the tone sliders from the image	Tónuscsúszkák beállítása a kép alapján
+	Settings from {name}	Beállítások innen: {name}
+	Settings from {name}; {count} not supported: {names}	Beállítások innen: {name}; {count} nem támogatott: {names}
+	Could not write {name}: {error}	Nem sikerült írni: {name}: {error}
+	Kept {name}: written by another application	{name} megtartva: egy másik alkalmazás írta
+	Shadow Tint	Árnyék színezet
 	Redrawing	Újrarajzolás
 # Bevel & Emboss shading controls.
 	Highlight Mode	Csúcsfény módja
@@ -4135,6 +4161,18 @@ cameraRaw	Yellow	Sárga
 	Shadow Mode	Árnyék módja
 	Shadow Color	Árnyék színe
 	Shadow Opacity	Árnyék fedettsége
+	Check for Updates…	Frissítések keresése…
+	PhotoCraft Updates	PhotoCraft-frissítések
+	Checking for updates…	Frissítések keresése…
+	Open the release page to choose an installer for your system.	Nyissa meg a kiadás oldalát, és válassza ki a rendszerének megfelelő telepítőt.
+	Open Download Page	Letöltési oldal megnyitása
+	PhotoCraft is up to date.	A PhotoCraft naprakész.
+	Could not check for updates.	Nem sikerült ellenőrizni a frissítéseket.
+	Updates have not been checked yet.	A frissítések még nem lettek ellenőrizve.
+	Check Again	Újraellenőrzés
+	Automatically Check for Updates	Frissítések automatikus keresése
+	Installed version: {version}	Telepített verzió: {version}
+	PhotoCraft {version} is available.	Elérhető a PhotoCraft {version}.
 # Embedded Profile Mismatch: profile names beside the choices, Remember this choice
 	Use the embedded profile ({profile})	A beágyazott profil használata ({profile})
 	Convert to the working space ({profile})	Átalakítás a munkaszíntérbe ({profile})
@@ -4279,6 +4317,12 @@ cameraRaw	Yellow	Sárga
 
 # Graphics Adapter preference (#1885)
 	GPU adapter	GPU-adapter
+
+# Styles panel: Import / Export Styles (.asl)
+	Import Styles…	Stílusok importálása…
+	Export Selected Styles…	Kijelölt stílusok exportálása…
+	Export Styles…	Stílusok exportálása…
+	{file} is not a style library (.asl)	{file} nem stíluskönyvtár (.asl)
 # Actions: a step dialog holds a suspended recording (#7365)
 	Confirm or cancel the open action step dialog first	Előbb hagyd jóvá vagy vond vissza a művelet lépésének nyitott párbeszédablakát
 	Pro Medium Gray	Pro középszürke
@@ -4287,14 +4331,38 @@ cameraRaw	Yellow	Sárga
 	Pro Light Gray	Pro világosszürke
 	Pro Light	Pro világos
 	Resize Windows to Fit	Ablakok átméretezése a képhez
-
 	EXR	EXR
-
 # Paragraph direction (TYPE-218-2)
 	Automatic paragraph direction	Automatikus bekezdésirány
 	Left-to-right paragraph direction	Balról jobbra irányuló bekezdés
 	Right-to-left paragraph direction	Jobbról balra irányuló bekezdés
 	Not rendered: this adjustment ({key}) is kept as imported.	Nem jelenik meg: ez a korrekció ({key}) importált állapotában marad.
-
 # Print preview image (#8236)
 	Print preview image	Print preview image
+# Color panel menu: modes, copy commands and colour ramps (#6000)
+	Hue Cube	Színárnyalat-kocka
+	Brightness Cube	Fényerő-kocka
+	Color Wheel	Színkör
+	RGB Sliders	RGB-csúszkák
+	HSB Sliders	HSB-csúszkák
+	CMYK Sliders	CMYK-csúszkák
+	Lab Sliders	Lab-csúszkák
+	Web Color Sliders	Webes színek csúszkái
+	Copy Color as HTML	Szín másolása HTML-ként
+	Copy Color's Hex Code	Szín hexadecimális kódjának másolása
+	RGB Spectrum	RGB-spektrum
+	CMYK Spectrum	CMYK-spektrum
+	Grayscale Ramp	Szürkeárnyalatos sáv
+	Current Colors	Aktuális színek
+	Make Ramp Web Safe	Sáv korlátozása webes színekre
+# Art History Brush (#213).
+	Art History Brush Tool	Művészi előzményecset eszköz
+	Tight Short	Szoros, rövid
+	Tight Medium	Szoros, közepes
+	Tight Long	Szoros, hosszú
+	Loose Medium	Laza, közepes
+	Loose Long	Laza, hosszú
+	Dab	Pötty
+	Tight Curl	Szoros göndör
+	Loose Curl	Laza göndör
+	Stylized dabs from a history state	Stilizált pöttyök egy előzményállapotból

@@ -1,9 +1,6 @@
 //! #3820: edit custom paper through the real Print dialog, preview it, and print safely to PDF.
 use egui::{Event, Key, Modifiers, PointerButton, vec2};
-use egui_kittest::{
-    Harness,
-    kittest::{NodeT, Queryable},
-};
+use egui_kittest::{Harness, kittest::Queryable};
 use photocraft_ui_egui::{PhotocraftApp, file_ui::open_print};
 use serde_json::{Map, Value, json};
 
@@ -47,12 +44,13 @@ fn click(h: &mut Harness<'_, PhotocraftApp>, label: &str) {
 }
 
 fn shown(h: &Harness<'_, PhotocraftApp>, text: &str) -> bool {
-    h.query_by_label(text).is_some() || h.query_by_value(text).is_some()
+    // A form caption and its control both expose the same accessible name.
+    h.query_all_by_label(text).next().is_some() || h.query_all_by_value(text).next().is_some()
 }
 
 fn enter_length(h: &mut Harness<'_, PhotocraftApp>, label: &str, value: &str) {
-    // Use the editor's actual accessibility bounds rather than a fixed offset from its label.
-    let pos = h.get_by_label(label).parent().unwrap().get_by_role(egui::accesskit::Role::SpinButton).rect().center();
+    // The caption is a separate Label node with the same text; use the accessible SpinButton.
+    let pos = h.get_by_role_and_label(egui::accesskit::Role::SpinButton, label).rect().center();
     h.event(Event::PointerMoved(pos));
     h.event(Event::PointerButton { pos, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
     h.run_steps(1);
@@ -73,7 +71,7 @@ fn fields(h: &Harness<'_, PhotocraftApp>, id: u64) -> Map<String, Value> {
 /// so drag assertions detect visible lag in the same frame as a Center transition.
 fn painted_image(h: &Harness<'_, PhotocraftApp>) -> egui::Rect {
     let active = h.state().session.active().unwrap();
-    let key = egui::Id::new(("print-thumb", active.doc.id.0, active.revision));
+    let key = egui::Id::unique(("print-thumb", active.doc.id.0, active.revision));
     let tex = h.ctx.data(|d| d.get_temp::<std::sync::Arc<egui::TextureHandle>>(key)).unwrap();
     h.output()
         .shapes
@@ -210,8 +208,8 @@ fn remembered_custom_paper_is_shown_without_becoming_a_preset() {
     app.ui.dialog_mut(id).unwrap().fields.insert("paper".into(), json!([432.0, 576.0]));
     let h = harness(app);
     assert!(shown(&h, "Custom"), "an array paper size must not display as letter");
-    assert!(shown(&h, "Paper Width"));
-    assert!(shown(&h, "Paper Height"));
+    assert!(h.query_by_role_and_label(egui::accesskit::Role::SpinButton, "Paper Width").is_some());
+    assert!(h.query_by_role_and_label(egui::accesskit::Role::SpinButton, "Paper Height").is_some());
     assert_eq!(fields(&h, id)["paper"], json!([432.0, 576.0]));
 }
 

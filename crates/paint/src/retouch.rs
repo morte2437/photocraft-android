@@ -284,6 +284,10 @@ pub fn mix_back(target: &mut Surface, orig: &Region, work: &Region, rect: Rect, 
             let wv = work.px(x, y);
             let i = out.index(x, y) * n;
             let o = &mut out.data[i..i + n];
+            // Untouched by the dabs: keep the pixel exactly (the premultiplied mix can round it).
+            if *o == *wv {
+                continue;
+            }
             match a {
                 // Alpha changes: mix premultiplied, so colour under transparent pixels doesn't bleed in.
                 Some(a) if !lock_transparency => mix_premultiplied(o, wv, a, k),
@@ -336,8 +340,14 @@ pub struct Smudge {
 }
 
 impl Smudge {
+    /// Radius of the carried-colour buffer, including pixels outside a pressure-sized dab.
+    /// Both the first pickup and every subsequent pickup need this entire neighbourhood.
+    pub fn sampling_radius(max_brush_size: f32) -> i32 {
+        ((max_brush_size / 2.0).ceil() as i32).saturating_add(2)
+    }
+
     pub fn new(strength: f32, finger: Option<Vec<f32>>, max_brush_size: f32) -> Self {
-        Self { strength: strength.clamp(0.0, 1.0), finger, radius: (max_brush_size / 2.0).ceil() as i32 + 2, alpha: None, carry: None }
+        Self { strength: strength.clamp(0.0, 1.0), finger, radius: Self::sampling_radius(max_brush_size), alpha: None, carry: None }
     }
 
     /// Mix in premultiplied space using alpha channel `a` (the format's [`alpha_index`]).

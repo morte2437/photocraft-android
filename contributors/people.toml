@@ -79,6 +79,9 @@ sync_github_name = true
 [people.maxm11]
 sync_github_name = true
 
+[people.mweinbach]
+sync_github_name = true
+
 [people.skraus2]
 sync_github_name = true
 
@@ -251,3 +254,31 @@ sync_github_name = true
 
 [people.benandez]
 real_name = "Martin Ball"
+
+[people.ronibalthazar]
+sync_github_name = true
+
+[people.batuhangozegu]
+real_name = "Batuhan Gözegü"
+sync_github_name = false
+
+[people.drunkeninja42]
+real_name = "Kushagra Sharma"
+
+[people.WebWork-rrs]
+display_name = "Ratul Paul"
+
+[people.softwaregames1]
+sync_github_name = true
+
+[people.VoiceLessQ]
+display_name = "VoiceLessQ"
+sync_github_name = false
+
+[people.erenova]
+display_name = "Erenova"
+sync_github_name = false
+
+[people.jasallen]
+real_name = "Jason DeBoever"
+sync_github_name = true

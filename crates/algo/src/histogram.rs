@@ -28,6 +28,18 @@ impl RgbHistogram {
     /// Each visible pixel counts once, including partially transparent pixels. Non-finite
     /// pixels are rejected as a whole; transparent RGB cannot contribute phantom peaks.
     pub fn from_rgba(pixels: &[[f32; 4]]) -> Self {
+        // Camera Raw counts its whole proxy (~450k pixels) on every slider step, so the count
+        // runs in blocks across cores (#211, P36). Integer sums don't depend on the order the
+        // blocks finish in, so the result is the same as one pass over all pixels.
+        #[cfg(not(target_arch = "wasm32"))]
+        if pixels.len() >= PARALLEL_PIXELS {
+            use rayon::prelude::*;
+            return pixels.par_chunks(PARALLEL_PIXELS / 2).map(Self::count).reduce(Self::default, Self::merge);
+        }
+        Self::count(pixels)
+    }
+
+    fn count(pixels: &[[f32; 4]]) -> Self {
         let mut h = Self::default();
         for pixel in pixels {
             if !pixel[3].is_finite() {
@@ -68,7 +80,28 @@ impl RgbHistogram {
         }
         h
     }
+
+    /// Sum of two block counts. Saturating like the counters themselves.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn merge(mut self, other: Self) -> Self {
+        let add = |a: &mut [u64], b: &[u64]| a.iter_mut().zip(b).for_each(|(a, b)| *a = a.saturating_add(*b));
+        for (a, b) in self.channels.iter_mut().zip(&other.channels) {
+            add(a, b);
+        }
+        add(&mut self.underflow, &other.underflow);
+        add(&mut self.overflow, &other.overflow);
+        add(&mut self.shadows, &other.shadows);
+        add(&mut self.highlights, &other.highlights);
+        self.samples = self.samples.saturating_add(other.samples);
+        self.transparent = self.transparent.saturating_add(other.transparent);
+        self.invalid = self.invalid.saturating_add(other.invalid);
+        self
+    }
 }
+
+/// Below this many pixels one pass is faster than splitting the count across cores.
+#[cfg(not(target_arch = "wasm32"))]
+const PARALLEL_PIXELS: usize = 64 * 1024;
 
 /// Clipped channels of one visible straight RGBA pixel as bit masks (bit 0=R, 1=G, 2=B):
 /// `(shadows, highlights)` at exact endpoints ≤0 / ≥1, not rounded edge bins.
@@ -93,6 +126,30 @@ pub fn clipping(p: [f32; 4]) -> (u8, u8) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The parallel path, and its threshold, exist only off wasm32.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn matches_the_single_pass_on_every_domain_and_across_block_edges() {
+        // Every special value at every channel, plus a dense ramp through each bin's rounding
+        // edge; lengths around the parallel threshold and its block size.
+        let special = [0.0, -0.0, 1.0, -1e-7, 1.0 + 1e-7, 0.5 / 255.0, 254.5 / 255.0, -3.0, 4.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY, f32::MIN_POSITIVE];
+        let mut pool: Vec<[f32; 4]> = Vec::new();
+        for (i, &v) in special.iter().enumerate() {
+            for alpha in [1.0, 0.5, 0.0, -1.0, f32::NAN] {
+                pool.push([v, special[(i + 3) % special.len()], 0.25, alpha]);
+                pool.push([0.75, v, special[(i + 5) % special.len()], alpha]);
+            }
+        }
+        pool.extend((0..4096).map(|i| {
+            let v = i as f32 / 4095.0 * 1.2 - 0.1;
+            [v, 1.0 - v, (v * 7.0).fract(), 1.0]
+        }));
+        for len in [0, 1, PARALLEL_PIXELS / 2 + 1, PARALLEL_PIXELS - 1, PARALLEL_PIXELS, 3 * PARALLEL_PIXELS + 17] {
+            let pixels: Vec<_> = (0..len).map(|i| pool[(i * 7919) % pool.len()]).collect();
+            assert_eq!(RgbHistogram::from_rgba(&pixels), RgbHistogram::count(&pixels), "{len} pixels");
+        }
+    }
 
     #[test]
     fn exact_bins_and_channel_totals() {

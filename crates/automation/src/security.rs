@@ -2,7 +2,7 @@
 
 use std::fs::OpenOptions;
 use std::io::{BufRead, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -306,13 +306,6 @@ impl Read for AuthDeadlineStream {
         }
         self.stream.read(buf)
     }
-}
-
-/// Environment-aware token inputs shared by the desktop app and CLI.
-pub fn token_inputs(supplied: Option<String>, token_file: Option<PathBuf>) -> (Option<String>, Option<PathBuf>) {
-    let supplied = supplied.or_else(|| std::env::var("PHOTOCRAFT_CONTROL_TOKEN").ok());
-    let token_file = token_file.or_else(|| std::env::var_os("PHOTOCRAFT_CONTROL_TOKEN_FILE").map(PathBuf::from));
-    (supplied, token_file)
 }
 
 #[cfg(test)]

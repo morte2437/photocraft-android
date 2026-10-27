@@ -259,6 +259,20 @@ mod archive {
     }
 
     #[test]
+    fn a_failed_read_still_spends_the_extraction_allowance() {
+        let d = doc();
+        let file = synth::container(&[("doc.dat", &d, Method::Zstd)], None);
+        let mut broken = file.clone();
+        broken[90] ^= 0x55;
+        // Room for exactly one read: the failed attempt must use it up, so a caller that
+        // recovers from the checksum error cannot make the same entry decode again.
+        let mut a = Archive::open(&broken, Limits { max_entry: usize::MAX, max_total: d.len(), ..Limits::default() }).unwrap();
+        assert!(a.read("doc.dat").is_err());
+        assert_eq!(a.extracted(), d.len());
+        assert!(matches!(a.read("doc.dat"), Err(Error::Limit(_))));
+    }
+
+    #[test]
     fn a_declared_size_smaller_than_the_data_is_rejected_not_truncated() {
         let big = vec![7u8; 1 << 20];
         let mut file = synth::container(&[("doc.dat", &big, Method::Zlib)], None);
@@ -407,6 +421,29 @@ mod shapes {
             Kind::Shape { path, .. } => path,
             other => panic!("expected shape, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn artistic_text_reads_its_characters_runs_and_anchor() {
+        let glyphs = F::Obj(tag(b"Glyp"), vec![(tag(b"Utf8"), F::Str("Hi".into()))]);
+        let run = F::Obj(tag(b"Item"), vec![]);
+        let attributes = F::Obj(tag(b"GAtt"), vec![(tag(b"Runs"), F::Objs(tag(b"Runs"), vec![vec![(tag(b"Indx"), F::I32(2)), (tag(b"Item"), run)]]))]);
+        let block = vec![(tag(b"Glyp"), glyphs), (tag(b"GAtt"), attributes)];
+        let text = F::Def(
+            100,
+            vec![tag(b"TxtA")],
+            vec![
+                (tag(b"TxtH"), F::Obj(tag(b"ArFr"), vec![(tag(b"FrmB"), F::F64s(vec![0.0, 0.0, 100.0, 50.0]))])),
+                (tag(b"StSt"), F::Obj(tag(b"StSt"), vec![(tag(b"Blok"), F::Objs(tag(b"Blok"), vec![block]))])),
+            ],
+        );
+        let document = read(vec![text], 100);
+        let Kind::Text(t) = &document.spreads[0].nodes[0].kind else { panic!("expected text") };
+        assert_eq!(t.runs.len(), 1);
+        assert_eq!(t.runs[0].text, "Hi");
+        assert_eq!(t.align, crate::model::Align::Left);
+        assert_eq!(t.anchor, Point { x: 0.0, y: 0.0 });
+        assert!(t.frame.is_none());
     }
 
     #[test]

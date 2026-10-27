@@ -76,8 +76,8 @@ pub use crate::demosaic::Demosaic;
 pub use crate::develop::{DevelopOptions, Developed, RawInfo, WhiteBalance, develop_sensor};
 pub use crate::error::RawError;
 pub use crate::look::{CameraLook, LookRejected, PROXY_EDGE, Reference, ToneCurve, fit_look};
-pub use crate::opcodes::GainMap;
-pub use crate::preview::{Preview, PreviewColorSpace, embedded_preview, embedded_preview_color_space, embedded_previews};
+pub use crate::opcodes::{GainMap, MapPolynomial};
+pub use crate::preview::{DecodedPreview, Preview, PreviewColorSpace, embedded_jxl_preview, embedded_preview, embedded_preview_color_space, embedded_previews};
 pub use crate::sensor::{BlackLevels, Cfa, Rect, Sensor};
 pub use crate::tone::{Tone, retone};
 

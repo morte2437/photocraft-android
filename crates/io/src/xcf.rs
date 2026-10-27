@@ -205,15 +205,17 @@ impl<'a> Cursor<'a> {
 
     /// A STRING: `n+1` then `n` bytes and a NUL (0 for the empty string).
     fn string(&mut self) -> Result<String> {
+        Ok(String::from_utf8_lossy(self.string_bytes()?).into_owned())
+    }
+
+    /// The same bounded STRING read without allocating or decoding an unused field.
+    fn string_bytes(&mut self) -> Result<&'a [u8]> {
         let n = self.u32()? as usize;
-        if n == 0 {
-            return Ok(String::new());
-        }
         if n > MAX_STRING {
             return Err(invalid(format!("a string of {n} bytes exceeds the limit")));
         }
         let s = self.take(n)?;
-        Ok(String::from_utf8_lossy(s.strip_suffix(&[0]).unwrap_or(s)).into_owned())
+        Ok(s.strip_suffix(&[0]).unwrap_or(s))
     }
 
     fn skip(&mut self, n: usize) -> Result<()> {
@@ -227,8 +229,8 @@ struct Prop<'a> {
     data: &'a [u8],
 }
 
-/// Reads a property list; `fixed` gives the native payload sizes the spec says GIMP trusts over
-/// the length word. Ends at PROP_END (type 0) or at the end of the file.
+/// Reads a property list, measuring known payloads whose length words GIMP writes incorrectly.
+/// Ends at PROP_END (type 0).
 fn props<'a>(c: &mut Cursor<'a>) -> Result<Vec<Prop<'a>>> {
     let mut out = Vec::new();
     loop {
@@ -239,12 +241,14 @@ fn props<'a>(c: &mut Cursor<'a>) -> Result<Vec<Prop<'a>>> {
         }
         // PROP_COLORMAP's length word was wrong in some releases (n+4 for 3n+4 bytes); its real
         // size follows from the count. PROP_USER_UNIT's length is wrong in every release.
+        // PROP_LINK_LAYER's length can be four bytes short (#8857); read all its fields.
         let len = match kind {
             1 => {
                 let n = c.at(c.pos).u32()? as usize;
                 4usize.checked_add(n.checked_mul(3).ok_or_else(|| invalid("colormap overflow"))?).ok_or_else(|| invalid("colormap overflow"))?
             }
             24 => user_unit_len(c)?,
+            48 => link_layer_len(c)?,
             _ => len,
         };
         if len > MAX_PAYLOAD {
@@ -256,6 +260,16 @@ fn props<'a>(c: &mut Cursor<'a>) -> Result<Vec<Prop<'a>>> {
             return Err(invalid("too many properties"));
         }
     }
+}
+
+/// A PROP_LINK_LAYER payload: flags, a path STRING, then the source width and height.
+/// The dimensions are present for raster links too, where their values are unused.
+fn link_layer_len(c: &Cursor<'_>) -> Result<usize> {
+    let mut p = c.at(c.pos);
+    p.skip(4)?;
+    p.string_bytes()?;
+    p.skip(8)?;
+    Ok(p.pos - c.pos)
 }
 
 /// The real size of a PROP_USER_UNIT payload: a float, a count and three (XCF 21+) or five

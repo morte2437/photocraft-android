@@ -17,7 +17,7 @@ fn doc_with_xmp() -> Document {
     let mut s = Surface::new(d.pixel_format());
     s.fill_rect(photocraft_geom::Rect::new(0, 0, 8, 6), &[0.5, 0.4, 0.3, 1.0]);
     d.layers.push(Layer::new("flat", LayerContent::Raster(s)));
-    d.metadata.xmp = Some(XMP.to_string());
+    d.metadata.xmp = Some(XMP.into());
     d
 }
 

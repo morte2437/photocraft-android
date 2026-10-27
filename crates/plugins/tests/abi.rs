@@ -348,7 +348,11 @@ fn a_fifo_in_place_of_a_module_file_does_not_block_loading() {
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("evil.wasm");
     let _ = std::fs::remove_file(&path);
-    rustix::fs::mknodat(rustix::fs::CWD, &path, rustix::fs::FileType::Fifo, rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR, 0).unwrap();
+    // `rustix::fs::mknodat` is unavailable on Apple targets. `mkfifo` is the
+    // POSIX utility for creating this special file and keeps this regression
+    // test available on macOS as well as other Unix platforms.
+    let status = std::process::Command::new("mkfifo").arg(&path).status().unwrap();
+    assert!(status.success(), "mkfifo failed with {status}");
     let (tx, rx) = std::sync::mpsc::channel();
     let p = path.clone();
     std::thread::spawn(move || {

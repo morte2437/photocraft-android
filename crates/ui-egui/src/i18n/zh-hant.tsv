@@ -666,6 +666,10 @@
 	Fit Layer(s) on Screen	使圖層符合螢幕
 	Fit Artboard on Screen	使工作區域符合螢幕
 	100%	100%
+	105%	105%
+	110%	110%
+	115%	115%
+	120%	120%
 	200%	200%
 	75%	75%
 	80%	80%
@@ -1033,6 +1037,10 @@
 	Create new pattern from the selection	從選取範圍建立新圖樣
 	Create new shape from the current path	從目前路徑建立新形狀
 	Create new snapshot	建立新快照
+	From:	自：
+	Full Document	完整文件
+	Merged Layers	合併的圖層
+	New Snapshot	新增快照
 	Create new tool preset	建立新工具預設集
 	Crop Factor	裁切係數
 	Ctrl	Ctrl
@@ -2225,6 +2233,11 @@
 	No path to make a selection from: draw one with the Pen tool or select one in the Paths panel.	沒有可用來建立選取範圍的路徑：請使用鋼筆工具繪製，或在路徑面板中選取一個路徑。
 	Cancel opening	取消開啟
 	Cancelled opening {name}	已取消開啟 {name}
+	Damaged Photoshop document	已損毀的 Photoshop 文件
+	The document “{name}” may be damaged.	文件「{name}」可能已損毀。
+	Some layers, pixels or masks could not be read. Do you want to continue opening it?	無法讀取部分圖層、像素或遮色片。是否繼續開啟？
+	If you continue, saving over the original may permanently discard unreadable data. Save a copy to keep the original.	如果繼續，覆寫儲存原始檔案可能會永久捨棄無法讀取的資料。請儲存拷貝以保留原始檔案。
+	Continue	繼續
 	The document “{name}” does not have an embedded {mode} profile.	文件「{name}」沒有嵌入的 {mode} 描述檔。
 	The document “{name}” has an embedded color profile that does not match the current {mode} working space.	文件「{name}」嵌入的色彩描述檔與目前的 {mode} 工作空間不符。
 	Working: {working}	工作空間：{working}
@@ -2724,6 +2737,9 @@ curves	Smooth	平滑
 	Vanishing Point is not active	消失點未啟用
 	Apply Vanishing Point ({key})	套用消失點 ({key})
 	Fix the red plane first: its corners must form a convex quad	請先修正紅色平面：其四個角必須構成凸四邊形
+	Alt-click a plane to set the clone source	按住 Alt 鍵按一下平面以設定仿製來源
+	Too many clone strokes: apply Vanishing Point first	仿製筆畫過多：請先套用消失點
+	Stamp	印章
 # Select and Mask view modes (#1754)
 	Onion Skin	洋蔥皮
 	Marching Ants	螞蟻線
@@ -2847,6 +2863,30 @@ curves	Smooth	平滑
 	Sent to {printer}	已傳送至 {printer}
 	set in Print Settings…	在列印設定中設定…
 	ICO is limited to 256 × 256 pixels	ICO 最大為 256 × 256 像素
+	Calibration	校準
+	Red Primary	紅原色
+	Green Primary	綠原色
+	Blue Primary	藍原色
+	Write xmp sidecars	寫入 XMP 附屬檔案
+	Set the tone sliders from the image	根據影像設定色調滑桿
+	Settings from {name}	來自 {name} 的設定
+	Settings from {name}; {count} not supported: {names}	來自 {name} 的設定；{count} 項不支援：{names}
+	Could not write {name}: {error}	無法寫入 {name}：{error}
+	Kept {name}: written by another application	已保留 {name}：由其他應用程式寫入
+	Shadow Tint	陰影色調
+# PhotoCraft release checks.
+	Check for Updates…	檢查更新…
+	PhotoCraft Updates	PhotoCraft 更新
+	Checking for updates…	正在檢查更新…
+	Open the release page to choose an installer for your system.	開啟發佈頁，選擇適合您系統的安裝程式。
+	Open Download Page	開啟下載頁面
+	PhotoCraft is up to date.	PhotoCraft 已是最新版本。
+	Could not check for updates.	無法檢查更新。
+	Updates have not been checked yet.	尚未檢查更新。
+	Check Again	重新檢查
+	Automatically Check for Updates	自動檢查更新
+	Installed version: {version}	已安裝版本：{version}
+	PhotoCraft {version} is available.	PhotoCraft {version} 已發佈。
 # History panel › History Brush source (#2966)
 	Paints from the History panel's source state	從步驟記錄面板的來源狀態繪畫
 	Sets the source for the history brush	設定步驟記錄筆刷的來源
@@ -2986,6 +3026,14 @@ curves	Smooth	平滑
 
 # Graphics Adapter preference (#1885)
 	GPU adapter	GPU 介面卡
+
+# Styles panel: Import / Export Styles (.asl)
+	Import Styles…	匯入樣式…
+	Export Selected Styles…	匯出所選樣式…
+	Export Styles…	匯出樣式…
+	{file} is not a style library (.asl)	{file} 不是樣式庫 (.asl)
+@plural	Imported {n} style from {file}|Imported {n} styles from {file}	已從 {file} 匯入 {n} 個樣式
+@plural	Exported {n} style to {file}|Exported {n} styles to {file}	已將 {n} 個樣式匯出至 {file}
 # Actions: a step dialog holds a suspended recording (#7365)
 	Confirm or cancel the open action step dialog first	請先確認或取消開啟中的動作步驟對話框
 	Pro Medium Gray	專業中灰
@@ -2994,14 +3042,51 @@ curves	Smooth	平滑
 	Pro Light Gray	專業淺灰
 	Pro Light	專業淺色
 	Resize Windows to Fit	調整視窗大小以符合
-
 	EXR	EXR
-
 # Paragraph direction (TYPE-218-2)
 	Automatic paragraph direction	自動段落方向
 	Left-to-right paragraph direction	由左至右的段落方向
 	Right-to-left paragraph direction	由右至左的段落方向
 	Not rendered: this adjustment ({key}) is kept as imported.	未算繪：此調整（{key}）依匯入時的原樣保留。
-
 # Print preview image (#8236)
 	Print preview image	Print preview image
+# Color panel menu: modes, copy commands and colour ramps (#6000)
+	Hue Cube	色相立方體
+	Brightness Cube	亮度立方體
+	Color Wheel	色輪
+	Grayscale Slider	灰階滑桿
+	RGB Sliders	RGB 滑桿
+	HSB Sliders	HSB 滑桿
+	CMYK Sliders	CMYK 滑桿
+	Lab Sliders	Lab 滑桿
+	Web Color Sliders	網頁色彩滑桿
+	Copy Color as HTML	將色彩複製為 HTML
+	Copy Color's Hex Code	複製色彩的十六進位碼
+	RGB Spectrum	RGB 色譜
+	CMYK Spectrum	CMYK 色譜
+	Grayscale Ramp	灰階色帶
+	Current Colors	目前色彩
+	Make Ramp Web Safe	讓色帶成為網頁安全色
+# Art History Brush (#213).
+	Art History Brush	藝術歷史畫筆
+	Art History Brush Tool	藝術歷史畫筆工具
+	Tight Short	緊密短
+	Tight Medium	緊密中
+	Tight Long	緊密長
+	Loose Medium	寬鬆中
+	Loose Long	寬鬆長
+	Dab	點塗
+	Tight Curl	緊密捲曲
+	Loose Curl	寬鬆捲曲
+	Area	區域
+	Stylized dabs from a history state	從歷史狀態繪製風格化點塗
+
+# Egui 0.37 migration controls (Aspect Ratio, Category, Color Table, Gamma, Interpolation, Profile, Target, Units, Demosaic)
+	Aspect Ratio	外觀比例
+	Category	類別
+	Color Table	色彩表
+	Gamma	Gamma
+	Interpolation	內插
+	Profile	描述檔
+	Target	目標
+	Units	單位

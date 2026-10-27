@@ -655,6 +655,10 @@
 	Fit Layer(s) on Screen	レイヤーを画面サイズに合わせる
 	Fit Artboard on Screen	アートボードを画面サイズに合わせる
 	100%	100%
+	105%	105%
+	110%	110%
+	115%	115%
+	120%	120%
 	200%	200%
 	75%	75%
 	80%	80%
@@ -1021,6 +1025,9 @@
 	Create new pattern from the selection	選択範囲から新規パターンを作成
 	Create new shape from the current path	現在のパスから新規シェイプを作成
 	Create new snapshot	新規スナップショットを作成
+	From:	作成元:
+	Full Document	ドキュメント全体
+	Merged Layers	結合されたレイヤー
 	Create new tool preset	新規ツールプリセットを作成
 	Crop Factor	切り抜き係数
 	Ctrl	Ctrl
@@ -2213,6 +2220,11 @@
 	No path to make a selection from: draw one with the Pen tool or select one in the Paths panel.	選択範囲を作成するパスがありません。ペンツールで描くか、パスパネルでパスを選択してください。
 	Cancel opening	開くのをキャンセル
 	Cancelled opening {name}	{name} を開くのをキャンセルしました
+	Damaged Photoshop document	破損した Photoshop ドキュメント
+	The document “{name}” may be damaged.	ドキュメント「{name}」は破損している可能性があります。
+	Some layers, pixels or masks could not be read. Do you want to continue opening it?	一部のレイヤー、ピクセル、またはマスクを読み込めませんでした。開く処理を続行しますか？
+	If you continue, saving over the original may permanently discard unreadable data. Save a copy to keep the original.	続行した場合、元のファイルに上書き保存すると、読み込めなかったデータが完全に失われる可能性があります。元のファイルを残すには、コピーを保存してください。
+	Continue	続行
 	The document “{name}” does not have an embedded {mode} profile.	ドキュメント「{name}」には埋め込み {mode} プロファイルがありません。
 	The document “{name}” has an embedded color profile that does not match the current {mode} working space.	ドキュメント「{name}」の埋め込みカラープロファイルは、現在の {mode} 作業用スペースと一致しません。
 	Working: {working}	作業用スペース: {working}
@@ -3733,6 +3745,8 @@ curves	Smooth	スムーズ
 	Vanishing Point: click four corners to create a plane	消点: 4 つの角をクリックして面を作成します
 	Vanishing Point is not active	消点はアクティブではありません
 	Apply Vanishing Point ({key})	消点を適用({key})
+	Alt-click a plane to set the clone source	Alt キーを押しながら平面をクリックしてコピー元を設定
+	Too many clone strokes: apply Vanishing Point first	コピースタンプのストロークが多すぎます：先に消点を適用してください
 	Fix the red plane first: its corners must form a convex quad	先に赤い面を修正してください: 角が凸四角形になる必要があります
 # Select and Mask view modes (#1754)
 	Onion Skin	オニオンスキン
@@ -3913,6 +3927,30 @@ curves	Smooth	スムーズ
 	Reset All Locked Settings	ロックされた設定をすべて初期化
 	Copy Texture to Other Tools	テクスチャを他のツールにコピー
 	ICO is limited to 256 × 256 pixels	ICO は 256 × 256 ピクセルまでです
+	Calibration	キャリブレーション
+	Red Primary	レッド原色
+	Green Primary	グリーン原色
+	Blue Primary	ブルー原色
+	Write xmp sidecars	XMP サイドカーファイルを書き込む
+	Set the tone sliders from the image	画像からトーンスライダーを設定
+	Settings from {name}	{name} の設定
+	Settings from {name}; {count} not supported: {names}	{name} の設定; {count} 件は未対応: {names}
+	Could not write {name}: {error}	{name} を書き込めません: {error}
+	Kept {name}: written by another application	{name} はそのままにしました: 別のアプリケーションが書き込んだファイルです
+	Shadow Tint	シャドウの色かぶり補正
+# PhotoCraft release checks.
+	Check for Updates…	アップデートを確認…
+	PhotoCraft Updates	PhotoCraft のアップデート
+	Checking for updates…	アップデートを確認中…
+	Open the release page to choose an installer for your system.	リリースページでお使いのシステム用のインストーラーを選択してください。
+	Open Download Page	ダウンロードページを開く
+	PhotoCraft is up to date.	PhotoCraft は最新です。
+	Could not check for updates.	アップデートを確認できませんでした。
+	Updates have not been checked yet.	まだアップデートを確認していません。
+	Check Again	再確認
+	Automatically Check for Updates	アップデートを自動的に確認
+	Installed version: {version}	インストール済みのバージョン: {version}
+	PhotoCraft {version} is available.	PhotoCraft {version} が利用可能です。
 # History panel › History Brush source (#2966)
 	Paints from the History panel's source state	ヒストリーパネルのソース状態からペイントします
 	Sets the source for the history brush	ヒストリーブラシのソースを設定します
@@ -4041,6 +4079,14 @@ curves	Smooth	スムーズ
 
 # Graphics Adapter preference (#1885)
 	GPU adapter	GPU アダプター
+
+# Styles panel: Import / Export Styles (.asl)
+	Import Styles…	スタイルを読み込み…
+	Export Selected Styles…	選択したスタイルを書き出し…
+	Export Styles…	スタイルを書き出し…
+	{file} is not a style library (.asl)	{file} はスタイルライブラリ (.asl) ではありません
+@plural	Imported {n} style from {file}|Imported {n} styles from {file}	{file} からスタイル {n} 個を読み込みました
+@plural	Exported {n} style to {file}|Exported {n} styles to {file}	{file} にスタイル {n} 個を書き出しました
 # Actions: a step dialog holds a suspended recording (#7365)
 	Confirm or cancel the open action step dialog first	先に開いているアクションのステップのダイアログを確定またはキャンセルしてください
 	Pro Medium Gray	プロ(中間グレー)
@@ -4049,14 +4095,38 @@ curves	Smooth	スムーズ
 	Pro Light Gray	プロ(ライトグレー)
 	Pro Light	プロ(ライト)
 	Resize Windows to Fit	ウィンドウサイズを合わせる
-
 	EXR	EXR
-
 # Paragraph direction (TYPE-218-2)
 	Automatic paragraph direction	段落の方向を自動判別
 	Left-to-right paragraph direction	左から右への段落方向
 	Right-to-left paragraph direction	右から左への段落方向
 	Not rendered: this adjustment ({key}) is kept as imported.	レンダリングされません: この調整（{key}）はインポートされたまま保持されます。
-
 # Print preview image (#8236)
 	Print preview image	Print preview image
+# Color panel menu: modes, copy commands and colour ramps (#6000)
+	Hue Cube	色相キューブ
+	Brightness Cube	明るさキューブ
+	Color Wheel	カラーホイール
+	RGB Sliders	RGB スライダー
+	HSB Sliders	HSB スライダー
+	CMYK Sliders	CMYK スライダー
+	Lab Sliders	Lab スライダー
+	Web Color Sliders	Web カラースライダー
+	Copy Color as HTML	カラーを HTML としてコピー
+	Copy Color's Hex Code	カラーの 16 進コードをコピー
+	RGB Spectrum	RGB スペクトル
+	CMYK Spectrum	CMYK スペクトル
+	Grayscale Ramp	グレースケールランプ
+	Current Colors	現在のカラー
+	Make Ramp Web Safe	ランプを Web セーフにする
+# Art History Brush (#213).
+	Art History Brush Tool	アートヒストリーブラシツール
+	Tight Short	タイト・ショート
+	Tight Medium	タイト・ミディアム
+	Tight Long	タイト・ロング
+	Loose Medium	ルーズ・ミディアム
+	Loose Long	ルーズ・ロング
+	Dab	ダブ
+	Tight Curl	タイトカール
+	Loose Curl	ルーズカール
+	Stylized dabs from a history state	履歴状態から様式化したダブを描きます

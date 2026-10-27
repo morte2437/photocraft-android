@@ -139,9 +139,13 @@ fn hard_light(cb: f32, cs: f32) -> f32 {
     let s = 2.0 * cs - 1.0;
     return cb + s - cb * s;
 }
+// The W3C curve, as Photoshop: D(cb) is the cubic below a quarter, sqrt above it (#8804).
 fn soft_light_ps(cb: f32, cs: f32) -> f32 {
     if (cs <= 0.5) { return 2.0 * cb * cs + cb * cb * (1.0 - 2.0 * cs); }
-    return 2.0 * cb * (1.0 - cs) + sqrt(max(cb, 0.0)) * (2.0 * cs - 1.0);
+    let b = max(cb, 0.0);
+    var d = sqrt(b);
+    if (b <= 0.25) { d = ((16.0 * b - 12.0) * b + 4.0) * b; }
+    return 2.0 * cb * (1.0 - cs) + d * (2.0 * cs - 1.0);
 }
 fn vivid_light_ps(cb: f32, cs: f32) -> f32 {
     if (cs <= 0.5) {
@@ -612,8 +616,22 @@ fn levels_float(record: i32, v: f32) -> f32 {
     return lut_at(base + 3) + mapped * (lut_at(base + 4) - lut_at(base + 3));
 }
 
-fn tone_channel(row: i32, v: f32, identity: f32) -> f32 {
+fn tone_channel(row: i32, v: f32, identity: f32, extrapolate: f32) -> f32 {
     if (identity > 0.5) { return v; }
+    // Mirrors compose::adjust::lut_extended: past 0..1 along the end segments' slopes, measured
+    // over TONE_SLOPE_SPAN (16) table steps.
+    if (extrapolate > 0.5 && abs(v) <= 3.0e38) {
+        if (v < 0.0) {
+            let a = textureLoad(lut_tex, vec2(0, row), 0).r;
+            let b = textureLoad(lut_tex, vec2(16, row), 0).r;
+            return a + v * (b - a) * (4095.0 / 16.0);
+        }
+        if (v > 1.0) {
+            let a = textureLoad(lut_tex, vec2(4079, row), 0).r;
+            let b = textureLoad(lut_tex, vec2(4095, row), 0).r;
+            return b + (v - 1.0) * (b - a) * (4095.0 / 16.0);
+        }
+    }
     return lut(row, v);
 }
 
@@ -647,7 +665,7 @@ fn adjust(c: vec3<f32>) -> vec3<f32> {
             return clamp(v, vec3(0.0), vec3(1.0));
         }
         case 6: { return vec3(exposure(c.r, p0), exposure(c.g, p0), exposure(c.b, p0)); }  // Exposure
-        case 7: { return vec3(tone_channel(0, c.r, p0.x), tone_channel(1, c.g, p0.y), tone_channel(2, c.b, p0.z)); } // Levels / Curves / modern Brightness/Contrast (compose::adjust::modern_lut)
+        case 7: { return vec3(tone_channel(0, c.r, p0.x, p0.w), tone_channel(1, c.g, p0.y, p0.w), tone_channel(2, c.b, p0.z, p0.w)); } // Levels / Curves / modern Brightness/Contrast (compose::adjust::modern_lut)
         case 17: { return vec3(levels_float(0, levels_float(1, c.r)), levels_float(0, levels_float(2, c.g)), levels_float(0, levels_float(3, c.b))); }
         case 8: {                                                              // Hue/Saturation
             let hsl = rgb_to_hsl(c);
@@ -747,7 +765,8 @@ fn adjust(c: vec3<f32>) -> vec3<f32> {
             if (c.r >= c.g && c.r >= c.b) { primary = 0; } else if (c.g >= c.b) { primary = 2; }
             var secondary = 5;
             if (c.b <= c.r && c.b <= c.g) { secondary = 1; } else if (c.r <= c.g) { secondary = 3; }
-            let g = clamp(mn + (mid - mn) * w[secondary] / 100.0 + (mx - mid) * w[primary] / 100.0, 0.0, 1.0);
+            // 32-bit: superwhites stay, up to Photoshop's 16
+            let g = clamp(mn + (mid - mn) * w[secondary] / 100.0 + (mx - mid) * w[primary] / 100.0, 0.0, select(1.0, 16.0, hdr));
             if (p1.z > 0.5) {
                 if (hdr) { return set_lum(p2.rgb, g, F32_MAX); }                // 32-bit: nothing clips at 1
                 return clamp(set_lum(p2.rgb, g, 1.0), vec3(0.0), vec3(1.0));   // Color blend of the tint
@@ -1187,6 +1206,7 @@ fn fs_fxinit(in: VOut) -> @location(0) vec4<f32> {
 // beneath a layer of alpha `l` (disjoint areas).
 fn outline_share(cov: f32, l: f32) -> f32 {
     let outside = max(1.0 - clamp(cov, 0.0, 1.0), 0.0);
+    if (outside <= 1e-6) { return 0.0; }
     let rest = 1.0 - clamp(l, 0.0, 1.0);
     if (rest <= 1e-6) { return 1.0; }
     return min(outside / rest, 1.0);
@@ -1252,13 +1272,11 @@ fn fs_fxstroke(in: VOut) -> @location(0) vec4<f32> {
         k = k * outline_share(a, lay_a);
     } else if (a > INSIDE_EPS) {
         // Pixel layers: the stroke shows beneath only through the part the shape leaves
-        // (`effects.rs`): (1 - a) / (1 - layer alpha), 1 under an opaque layer.
+        // (`effects.rs`): (1 - a) / (1 - layer alpha), none beneath a fully covered pixel.
         if (vector) {
             k = 0.0;
-        } else if (lay_a >= 1.0) {
-            k = 1.0;
         } else {
-            k = clamp((1.0 - clamp(a, 0.0, 1.0)) / (1.0 - lay_a), 0.0, 1.0);
+            k = k * outline_share(a, lay_a);
         }
     }
     var cov = k * op.opacity;

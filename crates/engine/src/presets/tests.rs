@@ -477,6 +477,25 @@ fn styles_apply_to_selected_layers_and_new_from_layer() {
     assert!(px[(24 * 48 + 24) * 4 + 3] == 255);
 }
 
+/// A preset saved without blending options but with an explicit Opacity carries only that
+/// opacity: ⇧-click (`add`) sets it and leaves the layer's blend mode and Fill alone.
+#[test]
+fn an_opacity_only_style_added_sets_just_the_opacity() {
+    let mut s = session(8);
+    let a = s.execute("layer.new.layer", json!({})).unwrap()["layer"].as_u64().map(LayerId).unwrap_or_else(|| active(&s));
+    s.execute("style.presets.new", json!({"name": "Faded", "includeBlending": false, "effects": [["stroke", {"size": 2}]], "opacity": 40})).unwrap();
+    s.edit("Blending fixture", |doc, _| {
+        let l = doc.layer_mut(a).unwrap();
+        (l.blend, l.fill_opacity, l.opacity) = (photocraft_doc::BlendMode::Multiply, 0.7, 0.9);
+        Ok(())
+    })
+    .unwrap();
+    s.execute("style.presets.apply", json!({"preset": "Faded", "add": true, "layer": a.0})).unwrap();
+    let l = s.active().unwrap().doc.layer(a).unwrap().clone();
+    assert_eq!((l.blend, l.fill_opacity, l.opacity), (photocraft_doc::BlendMode::Multiply, 0.7, 0.4));
+    assert_eq!(l.effects.items.len(), 1);
+}
+
 #[test]
 fn styles_with_pattern_overlay_copy_the_pattern() {
     let mut s = session(8);
@@ -487,6 +506,7 @@ fn styles_with_pattern_overlay_copy_the_pattern() {
         effects: vec![crate::layer_style::effect_from_params("patternOverlay", &json!({"pattern": "Bricks"})).unwrap()],
         blend: None,
         fill_opacity: None,
+        opacity: None,
     });
     s.execute("style.presets.apply", json!({"preset": "Bricky", "layer": id.0})).unwrap();
     assert!(s.active().unwrap().doc.patterns.iter().any(|p| p.name == "Bricks"));

@@ -472,6 +472,14 @@ pub(crate) fn ahd_bands(h: usize) -> usize {
 
 pub(crate) const AHD_TABLE_BYTES: u64 = (LABF_STEPS as u64 + 2) * 4;
 
+/// `v` limited to `lo..=hi` like `f32::clamp`, without its panic on NaN bounds (hostile black
+/// levels can put NaN in the plane): same result for every non-NaN bound.
+#[inline(always)]
+fn clampf(v: f32, lo: f32, hi: f32) -> f32 {
+    let v = if v < lo { lo } else { v };
+    if v > hi { hi } else { v }
+}
+
 fn ahd(p: &Padded, phase: [u8; 4], to_xyz: &Mat3, out: &mut [f32], jobs: usize) {
     let (w, s) = (p.w, p.stride);
     let d = &p.data;
@@ -500,10 +508,10 @@ fn ahd(p: &Padded, phase: [u8; 4], to_xyz: &Mat3, out: &mut [f32], jobs: usize) 
                 }
                 let (l, r) = (d[i - 1], d[i + 1]);
                 let gh = (l + r) * 0.5 + (2.0 * c - d[i - 2] - d[i + 2]) * 0.25;
-                g[0][k] = gh.clamp(l.min(r), l.max(r));
+                g[0][k] = clampf(gh, l.min(r), l.max(r));
                 let (u, dn) = (d[i - s], d[i + s]);
                 let gv = (u + dn) * 0.5 + (2.0 * c - d[i - 2 * s] - d[i + 2 * s]) * 0.25;
-                g[1][k] = gv.clamp(u.min(dn), u.max(dn));
+                g[1][k] = clampf(gv, u.min(dn), u.max(dn));
             }
         }
         // 2. RGB candidates and their Lab, band rows 1..n-1, columns 3..s-3.
@@ -598,6 +606,12 @@ mod tests {
         for jobs in [2, 3, 4, 128] {
             assert_eq!(one, demosaic(&p, [0, 1, 1, 2], Demosaic::Ahd, &IDENTITY, jobs));
         }
+    }
+
+    #[test]
+    fn ahd_survives_nan_planes() {
+        let p = Padded::from_plane(&[f32::NAN; 64], 8, 8);
+        assert_eq!(demosaic(&p, [0, 1, 1, 2], Demosaic::Ahd, &IDENTITY, 1).len(), 192);
     }
 
     /// Mosaics an RGB image with the given phase.

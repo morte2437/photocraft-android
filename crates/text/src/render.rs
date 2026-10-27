@@ -337,6 +337,14 @@ fn rect_from_bounds([x0, y0, x1, y1]: [f64; 4]) -> Rect {
     Rect::new(x0 as i32, y0 as i32, x1 as i32, y1 as i32)
 }
 
+/// Text-space bounds of the drawn glyph outlines and decorations, unrounded (`[x0, y0, x1, y1]`),
+/// or `None` when nothing is drawn.
+pub fn ink_bounds(layout: &TextLayout) -> Option<[f64; 4]> {
+    let mut b = Bounds::default();
+    draw(layout, &Xform::IDENTITY, &mut b, None, None);
+    b.rect
+}
+
 /// [`ink_rect`] of warped text.
 pub fn ink_rect_warped(layout: &TextLayout, transform: &Affine, warp: Option<&Warp>) -> Rect {
     let mut b = Bounds::default();

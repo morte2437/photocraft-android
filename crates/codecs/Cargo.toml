@@ -31,6 +31,8 @@ image-webp = "0.2"
 zune-jpeg = "0.5"
 zune-core = "0.5"
 jpeg-encoder = "0.6"
+# 12-bit and arithmetic-coded JPEG, which zune-jpeg does not decode.
+craft-jpeg.workspace = true
 photocraft-heif = { path = "../heif", optional = true }
 
 # Orientation is applied a band of rows per task on native; wasm stays single-threaded.

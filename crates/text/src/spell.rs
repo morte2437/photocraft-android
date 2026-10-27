@@ -88,7 +88,7 @@ impl Dictionary {
     /// Whether `word` is spelled correctly (also accepting `user` words, compared without case).
     pub fn check(&self, word: &str, user: &HashSet<String>) -> bool {
         let w = normalize(word);
-        let w = w.strip_suffix("'s").filter(|b| !b.is_empty()).unwrap_or(&w);
+        let w = w.strip_suffix("'s").or_else(|| w.strip_suffix("'S")).filter(|b| !b.is_empty()).unwrap_or(&w);
         let w = w.trim_matches('\'');
         if w.is_empty() || w.chars().any(|c| c.is_numeric()) || !w.chars().any(char::is_alphabetic) {
             return true;
@@ -256,6 +256,15 @@ mod tests {
 
     fn none() -> HashSet<String> {
         HashSet::new()
+    }
+
+    #[test]
+    fn all_caps_possessive_is_accepted() {
+        let d = Dictionary::english();
+        for w in ["MOTHER'S", "MONDAY'S", "Mother's", "mother's", "MOTHER’S"] {
+            assert!(d.check(w, &none()), "{w}");
+        }
+        assert!(!d.check("MOTHER'SX", &none()));
     }
 
     #[test]

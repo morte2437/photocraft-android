@@ -21,10 +21,11 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 rmcp = { version = "3.5", default-features = false, features = ["server", "macros", "transport-io"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "sync", "net", "io-util", "time"] }
-base64 = "0.22"
+base64 = "0.23"
 schemars = "1"
 getrandom = { workspace = true }
 cap-std = "4"
+clap = { workspace = true }
 
 [dev-dependencies]
 # Synthetic camera raws (#7789).

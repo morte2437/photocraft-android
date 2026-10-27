@@ -75,6 +75,17 @@ requires = "crates/ui-egui/examples/layout_bench.rs"
 quick_args = []
 note = "layout PSDs with many styled layers (#125/#128)"
 
+# Photomerge (#7758): the bounded-band algorithm must remain fast and its process-level
+# resident-set high-water mark is tracked (on every desktop OS). No uncalibrated budget is
+# enforced. Full mode uses 4 x 2 MP so ordinary CI machines do not allocate multi-GB blends;
+# use the stand-alone example for the 4 x 24 MP stress test.
+[[bench]]
+name = "bench_multiband"
+package = "photocraft-algo"
+args = ["4", "2", "--reps", "5"]
+quick_args = ["2", "0.25", "--reps", "3"]
+note = "synthetic Photomerge multi-band blend; resident-set peak includes input/output buffers"
+
 # ---- #209: interactive edits on layered documents (20 MP, styled layers) ---------------------
 
 [[scenario]]
@@ -359,7 +370,9 @@ issue = 211
 bench = "perf_scenarios"
 row = "Content-Aware Scale 24 MP to 90 % width"
 budget_ms = 3000
-enforce = false  # over budget in the 2026-10-05 baseline
+enforce = false  # 954 s in the 2026-10-05 baseline, which predates the seam-search proxies. 2026-10-13: the
+# row measured 3.3 s -> 1.6 s on a 4-core VM (CPU) with the kept seam search (docs/seam-carving-performance.md).
+# Flip once a budgeted-class run shows the whole row under 3 s.
 
 [[scenario]]
 id = "P29"
@@ -560,3 +573,61 @@ title = "File > New 10 x 5 m at 200 ppi (3.1 GP) + first reduced canvas refresh"
 issue = 4017
 bench = "perf_scenarios"
 row = "new 3 GP document + first reduced canvas refresh"
+
+# ---- #211: the heavy algo filters nothing measured yet ----------------------------------------
+#
+# `bench_filters2` times the second-batch filters on a 24 MP RGBA8 layer. The example existed but was
+# never wired into this file, so nothing caught a regression in any of them. The target is the one
+# second a filter applied once to a 24 MP layer should cost; all four rows are over it today
+# (2026-10-22, 4-core laptop, default rayon pool), which is what #211's slow-algorithm ledger is for.
+
+[[bench]]
+name = "bench_filters2"
+package = "photocraft-algo"
+args = ["--reps", "3"]
+quick_args = ["--quick", "--reps", "1"]
+note = "24 MP RGBA8: Oil Paint, Relight, Reduce Noise, Smart Blur, the blur gallery, Crystallize, Color Halftone"
+
+[[scenario]]
+id = "P64"
+title = "Oil Paint on 24 MP"
+issue = 211
+bench = "bench_filters2"
+row = "Oil Paint"
+budget_ms = 1000
+enforce = false  # 8.8 s measured 2026-10-22
+
+[[scenario]]
+id = "P65"
+title = "Smart Blur r 12 on 24 MP (High quality)"
+issue = 211
+bench = "bench_filters2"
+row = "Smart Blur r12"
+budget_ms = 1000
+enforce = false  # 11.6 s measured 2026-10-22: the peak of the radius sweep, where High quality visits every pixel in the circle
+
+[[scenario]]
+id = "P66"
+title = "Relight on 24 MP"
+issue = 211
+bench = "bench_filters2"
+row = "Relight"
+budget_ms = 1000
+enforce = false  # 3.7 s measured 2026-10-22
+
+[[scenario]]
+id = "P67"
+title = "Reduce Noise on 24 MP"
+issue = 211
+bench = "bench_filters2"
+row = "Reduce Noise"
+budget_ms = 1000
+enforce = false  # 2.8 s measured 2026-10-22
+
+[[scenario]]
+id = "P68"
+title = "Photomerge multi-band blend, synthetic"
+issue = 7758
+bench = "bench_multiband"
+row = "Photomerge multiband blend"
+target = "track timing and peak RSS; no calibrated performance budget"

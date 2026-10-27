@@ -90,15 +90,9 @@ fn export_as_scales_a_narrow_image_without_editing_the_source() {
         let ctx = h.ctx.clone();
         menus::invoke(h.state_mut(), &ctx, "file.export.exportAs", json!({})).expect("open Export As");
         h.run_steps(6);
-        let label = h.get_by_label("Scale").rect();
-        let field = h
-            .query_all_by_role(egui::accesskit::Role::SpinButton)
-            .find(|n| {
-                let r = n.rect();
-                r.left() >= label.right() && r.left() < label.right() + 100.0 && (r.center().y - label.center().y).abs() < 3.0
-            })
-            .expect("Scale numeric field");
-        field.click();
+        // The caption is a separate Label node with the same text; the accessible SpinButton
+        // name identifies the actual field.
+        h.get_by_role_and_label(egui::accesskit::Role::SpinButton, "Scale").click();
         h.run_steps(2);
         // Clicking a numeric field selects its current value; type through egui's text input.
         h.event(egui::Event::Text("50".into()));
@@ -163,26 +157,12 @@ fn export_as_resample_menu_writes_nearest_neighbor_blocks() {
     menus::invoke(h.state_mut(), &ctx, "file.export.exportAs", json!({})).expect("open Export As");
     h.run_steps(6);
 
-    let label = h.get_by_label("Resample").rect();
-    h.query_all_by_role(egui::accesskit::Role::ComboBox)
-        .find(|n| {
-            let r = n.rect();
-            r.left() >= label.right() && (r.center().y - label.center().y).abs() < 3.0
-        })
-        .expect("Resample dropdown beside its label")
-        .click();
+    h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Resample").click();
     h.run_steps(3);
     h.get_by_label("Nearest Neighbor").click();
     h.run_steps(3);
 
-    let label = h.get_by_label("Scale").rect();
-    h.query_all_by_role(egui::accesskit::Role::SpinButton)
-        .find(|n| {
-            let r = n.rect();
-            r.left() >= label.right() && r.left() < label.right() + 100.0 && (r.center().y - label.center().y).abs() < 3.0
-        })
-        .expect("Scale numeric field")
-        .click();
+    h.get_by_role_and_label(egui::accesskit::Role::SpinButton, "Scale").click();
     h.run_steps(2);
     h.event(egui::Event::Text("200".into()));
     h.run_steps(3);

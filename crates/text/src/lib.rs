@@ -17,6 +17,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub mod area;
 pub mod cjk;
 pub mod craft_fonts;
 pub mod engine_data;
@@ -25,6 +26,7 @@ pub mod glyphs;
 pub mod layout;
 pub mod optical;
 pub mod psd;
+mod psd_path;
 pub mod psd_styles;
 pub mod raster;
 pub mod render;

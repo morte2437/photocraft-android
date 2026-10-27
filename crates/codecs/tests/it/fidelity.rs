@@ -99,13 +99,14 @@ fn exif_xmp_dpi_text_dropped_for_qoi() {
         assert!(w.contains(&x), "{x:?}");
     }
 }
+/// WebP keeps the resolution in EXIF (#2399); only free-form text has nowhere to go.
 #[test]
-fn webp_drops_dpi_and_text_only() {
+fn webp_drops_text_only() {
     let mut img = test_image(ChannelLayout::Rgb, SampleType::U8);
     img.meta =
         Metadata { exif: Some(sample_exif()), xmp: Some("x".into()), dpi: Some((72.0, 72.0)), text: vec![("a".into(), "b".into())], ..Default::default() };
     let w = warns(&img, Format::WebP);
-    assert_eq!(w, vec![W::DpiDropped, W::TextDropped]);
+    assert_eq!(w, vec![W::TextDropped]);
 }
 #[test]
 fn float_to_png_reduces_and_clips() {
@@ -155,6 +156,13 @@ fn gif_quantizes_and_binarizes() {
     assert!(!w.contains(&W::LossyCompression));
 }
 #[test]
+fn iff_binarizes_alpha_and_reduces_16_bit() {
+    assert_eq!(warns(&test_image(ChannelLayout::Rgba, SampleType::U8), Format::Iff), vec![W::AlphaBinarized]);
+    let w = warns(&test_image(ChannelLayout::Rgb, SampleType::U16), Format::Iff);
+    assert!(w.contains(&W::DepthReduced { from: SampleType::U16, to: SampleType::U8 }));
+    assert!(warns(&test_image(ChannelLayout::Rgb, SampleType::U8), Format::Iff).is_empty());
+}
+#[test]
 fn hdr_is_lossy() {
     assert!(warns(&test_image(ChannelLayout::Rgb, SampleType::F32), Format::Hdr).contains(&W::LossyCompression));
 }
@@ -180,6 +188,7 @@ fn every_warning_has_a_message() {
     let all = [
         W::WriteUnsupported { format: Format::Avif },
         W::DepthReduced { from: SampleType::F32, to: SampleType::F16 },
+        W::BitsReduced { from: SampleType::U16, bits: 10 },
         W::RangeClipped,
         W::AlphaDiscarded,
         W::AlphaBinarized,
@@ -209,9 +218,19 @@ fn warnings_match_actual_roundtrip_behaviour() {
                 let img = test_image(l, s);
                 let w = warns(&img, f);
                 let back = decode(&encode(&img, f, &EncodeOptions::default()).unwrap()).unwrap();
-                let depth_reduced = w.iter().any(|w| matches!(w, W::DepthReduced { .. }));
+                let depth_reduced = w.iter().any(|w| match w {
+                    W::DepthReduced { .. } => true,
+                    W::BitsReduced { from, .. } => from.is_float(),
+                    _ => false,
+                });
                 let lost_depth = back.sample_type() != s && back.sample_type() != SampleType::F32 && s != SampleType::U8;
                 assert_eq!(depth_reduced, lost_depth, "{f:?} {l:?} {s:?} {w:?} -> {:?}", back.sample_type());
+                // Cineon stores 10 bits: 16-bit samples come back changed exactly when warned.
+                if f == Format::Cineon && s == SampleType::U16 && back.sample_type() == s {
+                    let bits_reduced = w.iter().any(|w| matches!(w, W::BitsReduced { .. }));
+                    let changed = back.to_u16_samples() != img.convert(back.layout(), s).to_u16_samples();
+                    assert_eq!(bits_reduced, changed, "{f:?} {l:?} {w:?}");
+                }
                 let alpha_lost = l.has_alpha() && !back.layout().has_alpha();
                 assert_eq!(w.contains(&W::AlphaDiscarded), alpha_lost, "{f:?} {l:?} {s:?}");
                 let cmyk_lost = l.is_cmyk() && !back.layout().is_cmyk();

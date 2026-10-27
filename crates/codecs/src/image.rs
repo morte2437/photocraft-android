@@ -145,6 +145,24 @@ pub struct Metadata {
     /// Photoshop layer data (TIFF tag 37724 `ImageSourceData`): a layered TIFF's layers. Kept
     /// opaque here; `photocraft-io` reads and writes it through `photocraft-psd`.
     pub photoshop_layers: Option<Vec<u8>>,
+    /// Samples per pixel beyond the colour channels and the one alpha sample. TIFF extra
+    /// samples (spot colours, extra alpha channels) the pixel layout does not hold. Each entry
+    /// is one sample per pixel, native endian, in the image's [`SampleType`], row-major.
+    pub extra_samples: Vec<ExtraSample>,
+}
+
+/// How many extra TIFF samples an encoded file may carry. Decoders keep at most this many.
+/// Sixteen covers a UV-DTF stack (white, varnish, gloss, primer, and further spots) without
+/// approaching the PSD 56-channel limit.
+pub const MAX_EXTRA_SAMPLES: usize = 16;
+
+/// One TIFF extra sample (a spot channel or an alpha channel that is not the image alpha).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExtraSample {
+    /// TIFF ExtraSamples value: 0 unspecified, 1 associated alpha, 2 unassociated alpha.
+    pub kind: u16,
+    /// One sample per pixel, native endian, same sample type as the image.
+    pub data: Vec<u8>,
 }
 
 impl Metadata {
@@ -155,6 +173,7 @@ impl Metadata {
             && self.text.is_empty()
             && self.photoshop_resources.is_none()
             && self.photoshop_layers.is_none()
+            && self.extra_samples.is_empty()
     }
 }
 
@@ -181,6 +200,12 @@ pub enum DecodeWarning {
     /// A DPX element's transfer characteristic and colorimetric specification (SMPTE 268M codes,
     /// 255 when undefined). The code values are imported as stored, without a colour transform.
     DpxEncoding { transfer: u8, colorimetric: u8 },
+    /// The file's `count` extra samples (spot or extra alpha channels) did not fit the allocation
+    /// limit next to the image, so only the image was decoded.
+    ExtraSamplesDropped { format: Format, count: u32 },
+    /// The file has `count` extra samples past the first [`MAX_EXTRA_SAMPLES`], which are all a
+    /// decoder keeps; those past the cap were not imported.
+    ExtraSamplesOverLimit { format: Format, count: u32 },
 }
 
 /// The SMPTE 268M name of a transfer characteristic or colorimetric code.
@@ -230,6 +255,20 @@ impl fmt::Display for DecodeWarning {
                 "DPX transfer characteristic: {} ({transfer}), colorimetric: {} ({colorimetric}); the code values were imported as stored, without a colour transform",
                 dpx_code_name(*transfer),
                 dpx_code_name(*colorimetric)
+            ),
+            DecodeWarning::ExtraSamplesDropped { format, count } => write!(
+                f,
+                "{count} extra {} file channel{} (spot or alpha) did not fit in memory and {} not imported",
+                format.name(),
+                if *count == 1 { "" } else { "s" },
+                if *count == 1 { "was" } else { "were" }
+            ),
+            DecodeWarning::ExtraSamplesOverLimit { format, count } => write!(
+                f,
+                "{count} extra {} file channel{} (spot or alpha) past the first {MAX_EXTRA_SAMPLES} {} not imported",
+                format.name(),
+                if *count == 1 { "" } else { "s" },
+                if *count == 1 { "was" } else { "were" }
             ),
         }
     }
@@ -642,6 +681,17 @@ impl Image {
             let values = convert_layout(&src, self.layout, layout);
             quantize(&values, sample)
         };
+        let mut meta = self.meta.clone();
+        if sample != self.sample {
+            // Extra samples are stored in the image's sample type, so they convert with it. A
+            // plane of the wrong size is left as it is: importers drop it with a warning.
+            let plane_len = (self.width as usize).saturating_mul(self.height as usize).saturating_mul(self.sample.bytes());
+            for e in meta.extra_samples.iter_mut().filter(|e| e.data.len() == plane_len) {
+                if let Ok(plane) = Image::from_raw(self.width, self.height, ChannelLayout::Gray, self.sample, std::mem::take(&mut e.data)) {
+                    e.data = plane.convert(ChannelLayout::Gray, sample).data;
+                }
+            }
+        }
         Image {
             width: self.width,
             height: self.height,
@@ -650,7 +700,7 @@ impl Image {
             data,
             icc: if layout.same_model(self.layout) { self.icc.clone() } else { None },
             cicp: if layout.same_model(self.layout) { self.cicp } else { None },
-            meta: self.meta.clone(),
+            meta,
             warnings: self.warnings.clone(),
         }
     }

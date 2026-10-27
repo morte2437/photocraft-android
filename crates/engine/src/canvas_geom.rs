@@ -100,6 +100,7 @@ pub(crate) fn set_resolution(doc: &mut Document, dpi: f32) {
                 path.knots.iter_mut().for_each(|kn| *kn = kn.transform(&grow));
                 *start = grown(*start, k);
             }
+            photocraft_doc::text::TextShape::Area { path } => *path = path.transform(&grow),
             photocraft_doc::text::TextShape::Point => {}
         }
         retag_text(dpi, t);
@@ -135,6 +136,9 @@ pub(crate) fn transform_layer_geometry(l: &mut Layer, a: &Affine, content: bool,
         LayerContent::Shape(sh) => {
             if let Some(f) = &mut sh.fill {
                 map_fill(a, f);
+            }
+            if let Some(st) = &mut sh.stroke {
+                map_fill(a, &mut st.paint);
             }
             if content {
                 crate::vector_cmds::transform_shape(sh, a);

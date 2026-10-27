@@ -2,7 +2,7 @@
 //! compensation, soft-proofing chains, and fast lookup-table evaluation of pixel buffers.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use crate::clut::{Clut, MAX_CHANNELS};
 use crate::curve::Curve;
@@ -718,14 +718,14 @@ pub fn cached(src: &Profile, dst: &Profile, opts: TransformOptions) -> Result<Ar
     let key = (src.content_hash(), dst.content_hash(), opts);
     let (src_bytes, dst_bytes) = (src.to_bytes(), dst.to_bytes());
     let cache = CACHE.get_or_init(Default::default);
-    let hit = cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key).map(|e| (e.src == src_bytes && e.dst == dst_bytes).then(|| e.transform.clone()));
+    let hit = cache.lock().unwrap_or_else(PoisonError::into_inner).get(&key).map(|e| (e.src == src_bytes && e.dst == dst_bytes).then(|| e.transform.clone()));
     match hit {
         Some(Some(t)) => return Ok(t),
         Some(None) => return Ok(Arc::new(Transform::with_options(src, dst, opts)?)),
         None => {}
     }
     let t = Arc::new(Transform::with_options(src, dst, opts)?);
-    let mut c = cache.lock().unwrap_or_else(|e| e.into_inner());
+    let mut c = cache.lock().unwrap_or_else(PoisonError::into_inner);
     if c.len() > 64 {
         c.clear();
     }

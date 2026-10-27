@@ -9,6 +9,23 @@ This is PhotoCraft's implementation of the shared
 [release playbook](release-playbook.md). User-facing names say **PhotoCraft**. Files, binaries
 and ids stay lowercase (`photocraft-<version>-<platform>-<arch>.<ext>`, `ai.storyteller.photocraft`).
 
+## In-app update checks
+
+The native desktop app checks the public GitHub latest-release endpoint in a background
+thread once at launch, with no periodic checks or automatic retries. Preferences › General › Automatically
+Check for Updates disables the startup check; Help › Check for Updates runs one manually.
+Checks use a 15-second timeout and a 1 MiB response limit, need no GitHub token, and send
+no document or personal data. Network failures are quiet during automatic checks and visible
+in the manual check window. Concurrent requests share one check.
+HTTPS validates certificates and host names against the operating system's trust store.
+
+Tags must be semantic versions (`v0.8.0` or `0.8.0`); only published stable versions newer
+than the installed workspace version trigger a notice. The notice opens the official release
+page to choose an installer; installation remains a user action. Drafts and prereleases do
+not trigger it. Web/headless frontends and the Flatpak (no network in its sandbox; `flatpak update`
+owns updates there) have no update transport. No release-workflow changes
+are required: publishing a newer stable GitHub Release makes it discoverable.
+
 ## Cutting a release
 
 1. **Bump the version** on `main`. The only place it lives is `[workspace.package] version`
@@ -163,7 +180,9 @@ goes in `CARGO_TARGET_<TRIPLE>_RUSTFLAGS`, so host build scripts aren't affected
   1. a `.pfx` file (`WINDOWS_CERTIFICATE`, `WINDOWS_CERTIFICATE_PASSWORD`), timestamped by
      DigiCert, or
   2. Azure Trusted Signing (`AZURE_*`): the script downloads the
-     `Microsoft.Trusted.Signing.Client` dlib and timestamps with Microsoft's server.
+     `Microsoft.Trusted.Signing.Client` dlib and timestamps with Microsoft's server. The package
+     is pinned to a version and SHA-256 at the top of `sign.ps1` and refused on a mismatch, so an
+     upgrade is a deliberate change to both.
 
   The script is the single place to change when the Windows signing setup changes.
 
@@ -175,8 +194,12 @@ Locally on Windows: `dotnet tool install -g wix --version 5.0.2`,
 
 `packaging/linux/package.sh` stages one FHS tree and makes every format from it. The tree
 holds both binaries, `ai.storyteller.photocraft.desktop`, hicolor icons from 16 px to 512 px
-plus a scalable SVG, AppStream metainfo, and a shared-mime-info file for `.pcraft`, `.psb` and
-`.qoi`.
+plus a scalable SVG, AppStream metainfo, a shared-mime-info file for `.pcraft`, `.psb` and
+`.qoi`, and `photocraft-cli`'s man pages and bash, zsh and fish completions. The
+`man-and-completions` example, built with the binaries, writes those; a cross build runs it
+through `EMULATOR` and leaves them out without one. The zsh completion is in
+`/usr/share/zsh/site-functions`, which Fedora's and openSUSE's zsh read; the `.deb` also links it
+from `/usr/share/zsh/vendor-completions`, which Debian's zsh reads instead.
 
 Why these formats:
 
@@ -264,7 +287,9 @@ binaries with `CARGO_BUILD_JOBS=4` (more runs the 12 GB VM out of memory) and wr
 `x86_64` like the other artifacts. The tarball is a `/usr/local`-style tree: `bin/photocraft`,
 `bin/photocraft-cli`, and under `share/` the same desktop entry, MIME type, AppStream metainfo
 and hicolor icons as Linux, plus the licences, `NOTICE` and `ATTRIBUTION.md` in
-`share/doc/photocraft/`. Users install it with:
+`share/doc/photocraft/`, and `photocraft-cli`'s man pages (`man/man1/`) and bash, zsh and fish
+completions (`share/bash-completion`, `share/zsh/site-functions`, `share/fish`), written by the
+`man-and-completions` example built with the binaries. Users install it with:
 
 ```sh
 pkg install libxkbcommon wayland libX11 libXcursor libXrandr libXi libxcb mesa-libs vulkan-loader gtk3 fontconfig freetype2 alsa-lib

@@ -154,7 +154,7 @@ const MIXED: Source = Source { label: "io corpus", dir: "corpus/psd", group_dept
 /// 226 vs the merged image + 10 vs the thumbnail (Advanced Blending knockouts: +7).
 const PSD_TOOLS: Source = Source { label: "psd-tools corpus", dir: "corpus/psd-tools", group_depth: 0, pass_floor: 249, roundtrip_floor: 308 };
 
-/// Our Photoshop-authored oracles (256 files; https://github.com/storytold/photocraft-corpus),
+/// Our Photoshop-authored oracles (258 files; https://github.com/storytold/photocraft-corpus),
 /// grouped by feature (`smart-filters`, `effects`, `text`, `adjustments/<mode><bits>`).
 const PHOTOSHOP: Source = Source { label: "photoshop oracles", dir: "corpus/photoshop", group_depth: 2, pass_floor: 190, roundtrip_floor: 258 };
 

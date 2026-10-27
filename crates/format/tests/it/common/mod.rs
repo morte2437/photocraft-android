@@ -66,7 +66,12 @@ pub fn rich_doc(mode: ColorMode, depth: SampleType) -> Document {
     mask.linked = false;
     paint.mask = Some(mask);
     paint.effects.items.push(Effect::ColorOverlay { common: FxCommon::new(BlendMode::Normal, 0.8), color: Color::rgb(1.0, 0.2, 0.1) });
-    paint.effects.items.push(Effect::GradientOverlay { common: FxCommon::new(BlendMode::Normal, 0.8), gradient: Gradient::default(), dither: true });
+    paint.effects.items.push(Effect::GradientOverlay {
+        common: FxCommon::new(BlendMode::Normal, 0.8),
+        gradient: Gradient::default(),
+        dither: true,
+        interpolation: None,
+    });
     paint.effects.psd_raw = Some(blob(3, 64));
     paint.psd_blocks.push((*b"vmsk", blob(4, 40)));
     paint.psd_blocks.push((*b"lnsr", blob(5, 4)));
@@ -228,7 +233,7 @@ pub fn rich_doc(mode: ColorMode, depth: SampleType) -> Document {
     d.color_table = Some(photocraft_doc::ColorTable { colors: vec![[0, 0, 0], [255, 128, 0]], transparent: Some(1) });
     d.duotone = Some(photocraft_doc::Duotone {
         inks: vec![photocraft_doc::DuotoneInk::new("Black", [0.0; 3]), photocraft_doc::DuotoneInk::new("PANTONE 151 C", [1.0, 0.5, 0.0])],
-        psd_raw: Some(vec![1, 2, 3]),
+        psd_raw: Some(vec![1, 2, 3].into()),
     });
     d.guides =
         Guides { horizontal: vec![10.0, 20.5], vertical: vec![100.25], colors: vec![GuideColor { vertical: true, position: 100.25, rgb: [0x33, 0x66, 0xff] }] };

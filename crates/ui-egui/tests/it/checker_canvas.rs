@@ -20,8 +20,12 @@ fn harness() -> Option<Harness> {
 
 /// The app with the GPU canvas (`gpu`), or without it: the CPU fallback path.
 fn harness_with(gpu: bool) -> Option<Harness> {
+    harness_with_scale(gpu, 1.0)
+}
+
+fn harness_with_scale(gpu: bool, ppp: f32) -> Option<Harness> {
     let built = std::panic::catch_unwind(|| {
-        egui_kittest::Harness::builder().with_size(egui::vec2(1400.0, 800.0)).with_pixels_per_point(1.0).with_max_steps(64).wgpu().build_eframe(|cc| {
+        egui_kittest::Harness::builder().with_size(egui::vec2(1400.0, 800.0)).with_pixels_per_point(ppp).with_max_steps(64).wgpu().build_eframe(|cc| {
             PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
             let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
             if let Some(rs) = cc.wgpu_render_state.as_ref().filter(|_| gpu) {
@@ -111,13 +115,15 @@ fn render_on(h: &mut Harness, gpu: bool, zoom: f32, doc: u32, black: bool, grid:
     let rendered = h.render().expect("render");
     let (width, height) = (rendered.width(), rendered.height());
     let img = Shot { w: width, px: rendered.into_raw() };
+    if black {
+        // View geometry also works on scaled displays, independently of grid colour.
+        let origin = photocraft_ui_egui::canvas::ViewXform::active(h.state()).expect("view").to_screen(0.0, 0.0) * h.ctx.pixels_per_point();
+        return (img, origin.x.round() as u32, origin.y.round() as u32, (doc as f32 * zoom).round() as u32);
+    }
     let r = h.state().last_canvas_rect;
     let (cx, cy) = (r.center().x as u32, r.center().y as u32);
-    // Black fill is 0 (64 on a grid line), the pasteboard is 39.
-    // (Two CPU grid lines crossing blend twice: about 112.)
-    let on_doc = |p: [u8; 4]| if black { p[0] < 12 || (58..=70).contains(&p[0]) || (105..=120).contains(&p[0]) } else { is_checker_grey(p) };
-    let (x0, w) = longest_run((0..width).map(|x| on_doc(img.at(x, cy))));
-    let (y0, hgt) = longest_run((0..height).map(|y| on_doc(img.at(cx, y))));
+    let (x0, w) = longest_run((0..width).map(|x| is_checker_grey(img.at(x, cy))));
+    let (y0, hgt) = longest_run((0..height).map(|y| is_checker_grey(img.at(cx, y))));
     let doc_px = (doc as f32 * zoom).round() as i64;
     assert!((w as i64 - doc_px).abs() <= 1 && (hgt as i64 - doc_px).abs() <= 1, "zoom {zoom}: found a {w}x{hgt} document, want {doc_px}");
     (img, x0 as u32, y0 as u32, w as u32)
@@ -210,18 +216,20 @@ fn pixel_grid_is_not_drawn_over_empty_checker() {
 #[test]
 fn cpu_pixel_grid_shows_above_500_percent_over_content() {
     let _gpu = photocraft_testkit::gpu_lock();
-    let Some(mut h) = harness_with(false) else { return };
-    h.run_steps(4);
-    let (flat, x0, y0, _) = render_on(&mut h, false, 5.0, 48, true, true);
-    assert!(lit_columns(&flat, x0, y0 + 20, 100).is_empty(), "no grid at 500%");
-    for zoom in [6.0f32, 8.0, 12.0] {
-        let (img, x0, y0, _) = render_on(&mut h, false, zoom, 48, true, true);
-        let y = y0 + (zoom * 3.5) as u32;
-        let lit = lit_columns(&img, x0, y, (zoom * 10.0) as u32);
-        assert_eq!(lit.len(), 10, "zoom {zoom}: grid columns {lit:?}");
-        assert!(lit.windows(2).all(|p| p[1] - p[0] == zoom as u32), "zoom {zoom}: spacing of {lit:?}");
-        let v = img.at(x0 + lit[2], y)[0];
-        assert!((60..=68).contains(&v), "zoom {zoom}: a grid line over black is {v}, want about 64");
+    for ppp in [1.0, 2.0] {
+        let Some(mut h) = harness_with_scale(false, ppp) else { return };
+        h.run_steps(4);
+        let (flat, x0, y0, _) = render_on(&mut h, false, 5.0, 48, true, true);
+        assert!(lit_columns(&flat, x0, y0 + 20, 100).is_empty(), "no grid at 500%");
+        for zoom in [6.0f32, 8.0, 12.0] {
+            let (img, x0, y0, _) = render_on(&mut h, false, zoom, 48, true, true);
+            let y = y0 + (zoom * 3.5) as u32;
+            let lit = lit_columns(&img, x0, y, (zoom * 10.0) as u32);
+            assert_eq!(lit.len(), 10, "scale {ppp}, zoom {zoom}: one physical pixel per line, columns {lit:?}");
+            assert!(lit.windows(2).all(|p| p[1] - p[0] == zoom as u32), "zoom {zoom}: spacing of {lit:?}");
+            let v = img.at(x0 + lit[2], y)[0];
+            assert!((60..=68).contains(&v), "zoom {zoom}: a grid line over black is {v}, want about 64");
+        }
     }
 }
 
@@ -293,5 +301,49 @@ fn pixel_grid_does_not_flip_colour_across_mid_tones() {
     for grey in [0x60u8, 0xd0, 0xff] {
         let c = grid_line_contrast_over_grey(&mut h, grey);
         assert!(c >= 20, "grey {grey:#04x}: grid line differs from its pixel by only {c} levels");
+    }
+}
+
+#[test]
+fn pixel_grid_is_solid_and_visible_on_white_and_black_at_both_display_scales() {
+    let _gpu = photocraft_testkit::gpu_lock();
+    use photocraft_color::{ColorMode, PixelFormat, SampleType};
+    use photocraft_doc::{Document, Layer, LayerContent, Size};
+    use photocraft_geom::Rect;
+    use photocraft_raster::Surface;
+
+    for gpu in [true, false] {
+        for ppp in [1.0, 2.0] {
+            let Some(mut h) = harness_with_scale(gpu, ppp) else { return };
+            for depth in [SampleType::U8, SampleType::U16, SampleType::F32] {
+                for v in [0.0, 1.0] {
+                    let mut doc = Document::new("grid contrast", Size::new(32, 16), ColorMode::Rgb, depth);
+                    let mut surface = Surface::new(PixelFormat::new(ColorMode::Rgb, depth, true));
+                    surface.fill_rect(Rect::new(0, 0, 32, 16), &[v, v, v, 1.0]);
+                    doc.layers.push(Layer::new("opaque", LayerContent::Raster(surface)));
+                    let app = h.state_mut();
+                    app.session.add_document(doc, None);
+                    app.sync_views();
+                    app.ui.view.show.pixel_grid = true;
+                    for zoom in [7.119, 8.0, 22.825] {
+                        control(&mut h, "ui.set", json!({"zoom": zoom, "center": [16.0, 8.0]}));
+                        assert_eq!(h.state().perf.gpu, gpu);
+                        let img = h.render().expect("render opaque grid");
+                        let center = h.state().last_canvas_rect.center() * ppp;
+                        let x0 = center.x - 16.0 * zoom;
+                        let y = (center.y + 3.25 * zoom).floor() as u32;
+                        for x in 2..30 {
+                            let edge = (x0 + x as f32 * zoom).floor() as u32;
+                            for sy in y..y + 3 {
+                                let inside = img.get_pixel((x0 + (x as f32 + 0.5) * zoom).floor() as u32, sy)[0];
+                                assert_eq!(inside, (v * 255.0) as u8);
+                                let contrast = (edge - 1..=edge + 1).map(|sx| img.get_pixel(sx, sy)[0].abs_diff(inside)).max().expect("line");
+                                assert!(contrast >= 28, "{gpu:?}/{depth:?}, scale {ppp}, zoom {zoom}, fill {v}, ({x}, {sy}): invisible grid ({contrast})");
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

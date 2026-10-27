@@ -188,7 +188,7 @@ fn cjk_font_order_follows_the_selected_language() {
 fn korean_glyphs_remain_available_after_repeated_language_switches() {
     use photocraft_text::cjk::{self, CjkChar, CjkScript};
     #[cfg(target_os = "linux")]
-    crate::cjk_fonts::wait_for_fontconfig_cjk_scan();
+    assert!(crate::cjk_fonts::wait_for_fontconfig_cjk_scan(), "Fontconfig CJK lookup did not finish within 10 seconds");
     if !cjk::font_files(CjkScript::Korean).iter().any(|font| font.path.is_file()) {
         eprintln!("skipping: no installed Korean font");
         return;

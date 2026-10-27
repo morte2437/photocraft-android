@@ -317,3 +317,25 @@ fn with_the_layers_panel_closed_delete_leaves_the_filter() {
     h.run_steps(4);
     assert!(h.state().session.active().unwrap().doc.layer(LayerId(a)).is_none(), "Delete reached Smart A itself");
 }
+
+/// #8764: the bottom layer's filter rows sit where the empty space below the last row begins, so
+/// that space's deselect-all click (#8100) must start under them: a click on a filter of a new
+/// document's only layer, converted for Smart Filters, selects the filter.
+#[test]
+fn a_click_selects_a_filter_of_the_bottom_layer() {
+    let mut s = photocraft_engine::Session::new();
+    s.execute("file.new", json!({"width": 16, "height": 16})).unwrap();
+    let id = s.execute("filter.convertForSmartFilters", json!({})).unwrap()["layer"].as_u64().unwrap();
+    s.execute("filter.blur.gaussianBlur", json!({"radius": 1})).unwrap();
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1200.0, 900.0)).with_max_steps(64).with_step_dt(1.0 / 60.0).build_eframe(|cc| {
+        PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
+        PhotocraftApp::new(s, crate::Services::default())
+    });
+    h.run_steps(4);
+    let blur = at(&h, "Gaussian Blur");
+    click_at(&mut h, blur);
+    let st = h.state().session.active().unwrap();
+    assert_eq!(st.active_layer, Some(LayerId(id)), "the smart object stays active");
+    assert_eq!(st.selected_layers(), [LayerId(id)], "the click did not deselect the layers");
+    assert!(selected(&h, "Gaussian Blur"));
+}

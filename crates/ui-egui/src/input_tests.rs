@@ -166,7 +166,13 @@ fn clicking_outside_a_dialog_keeps_it_open_and_the_canvas_pans_and_zooms() {
 
     // Scrolling over the canvas pans it.
     let c0 = h.state().ui.views[0].center;
-    h.event(egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: vec2(0.0, -40.0), phase: egui::TouchPhase::Move, modifiers: Modifiers::NONE });
+    h.event(egui::Event::MouseWheel {
+        source: egui::MouseWheelSource::Unknown,
+        unit: egui::MouseWheelUnit::Point,
+        delta: vec2(0.0, -40.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: Modifiers::NONE,
+    });
     h.run_steps(8);
     let c1 = h.state().ui.views[0].center;
     assert!(c1[1] > c0[1], "scroll pans under a dialog: {c0:?} -> {c1:?}");
@@ -421,7 +427,16 @@ fn command_click_under_curves_adds_one_point_per_press_not_per_frame() {
 /// with ⌘/Ctrl), one history step per press; ⌘/Ctrl+←/→ moves by word; Alt+Shift+→ extends
 /// the selection by a word.
 fn wheel(h: &Harness<'static, PhotocraftApp>, dy: f32, modifiers: Modifiers) {
-    h.event_modifiers(egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Line, delta: vec2(0.0, dy), phase: egui::TouchPhase::Move, modifiers }, modifiers);
+    h.event_modifiers(
+        egui::Event::MouseWheel {
+            source: egui::MouseWheelSource::Unknown,
+            unit: egui::MouseWheelUnit::Line,
+            delta: vec2(0.0, dy),
+            phase: egui::TouchPhase::Move,
+            modifiers,
+        },
+        modifiers,
+    );
 }
 
 /// The document point under screen point `p` (no flip).
@@ -492,6 +507,8 @@ fn the_wheel_reaches_12800_percent_and_stops_dead_there() {
 #[test]
 fn alt_scroll_zooms_in_steps_around_the_pointer() {
     let mut h = harness();
+    // Animated Zoom off: a notch is one instant step (the default eases it, see the next test).
+    h.state_mut().session.edit_prefs(|p| p.general.animated_zoom = false);
     let r = h.state().last_canvas_rect;
     let p = pos2(r.center().x + 120.0, r.center().y - 70.0);
     h.hover_at(p);
@@ -533,6 +550,44 @@ fn alt_scroll_zooms_in_steps_around_the_pointer() {
     h.event(egui::Event::Zoom(1.25));
     h.run_steps(2);
     assert!((zoom(&h) / z2 - 1.25).abs() < 1e-3, "pinch zooms: {z2} -> {}", zoom(&h));
+}
+
+/// Animated Zoom on (the default): a notch eases in over several frames but is still ×1.1 in
+/// total, around the pointer.
+#[test]
+fn animated_alt_scroll_zoom_still_lands_on_one_step_around_the_pointer() {
+    let mut h = harness();
+    assert!(h.state().session.prefs().general.animated_zoom, "on by default");
+    let r = h.state().last_canvas_rect;
+    let p = pos2(r.center().x + 120.0, r.center().y - 70.0);
+    h.hover_at(p);
+    h.run_steps(2);
+    let (z0, d0) = (zoom(&h), doc_at(&h, p));
+    wheel(&h, 1.0, Modifiers::ALT);
+    h.run_steps(40);
+    let (z1, d1) = (zoom(&h), doc_at(&h, p));
+    assert!((z1 / z0 - 1.1).abs() < 1e-3, "one ⌥ notch is ×1.1: {z0} -> {z1}");
+    assert!((d1[0] - d0[0]).abs() < 0.05 && (d1[1] - d0[1]).abs() < 0.05, "centred on the pointer: {d0:?} -> {d1:?}");
+}
+
+/// Animated Zoom on: notches flicked past 12800 % stop there, and the first notch back zooms out
+/// at once by its ×1/1.1. The rest of the notches the limit swallowed must not eat it.
+#[test]
+fn the_first_animated_notch_back_from_the_limit_zooms_out() {
+    let mut h = harness();
+    {
+        let v = &mut h.state_mut().ui.views[0];
+        (v.zoom, v.fit_pending) = (crate::zoom_levels::MAX / 1.05, false);
+    }
+    let r = h.state().last_canvas_rect;
+    h.hover_at(r.center());
+    h.run_steps(2);
+    wheel(&h, 3.0, Modifiers::ALT);
+    h.step();
+    assert_eq!(zoom(&h), crate::zoom_levels::MAX, "the flick reaches the limit");
+    wheel(&h, -1.0, Modifiers::ALT);
+    h.run_steps(40);
+    assert!((zoom(&h) - crate::zoom_levels::MAX / 1.1).abs() < 1e-2, "one notch back: {}", zoom(&h));
 }
 
 #[test]

@@ -26,8 +26,9 @@ commands:
   wasm            cargo check --target wasm32-unknown-unknown for the wasm-safe crates (one call, plus
                   one per optional web feature)
   test            workspace tests (cargo nextest when installed, else cargo test), then doctests
-  ci              fmt --check, clippy -D warnings, test, doctest, layers, wasm (stops at first failure),
-                  then the i18n-coverage report
+  ci              the CI gate: fmt --check, clippy -D warnings, layers, scorecard --check, tests
+                  (nextest --profile ci), panic_hunt, doctests and wasm, with --locked --features heif
+                  (stops at first failure), then the i18n-coverage report
   corpus [--all | --pngsuite | --psd | --psd-tools | --pixls | --atn | --photoshop | --gimp] [--local] [--update-manifest]
                   show where test corpora live and their pins (xtask/src/corpus_pins.rs), or fetch
                   them into corpus/ (pinned commits, sha256-verified; --all = every corpus but pixls,
@@ -215,6 +216,32 @@ fn cmd_test() -> Result<(), String> {
     run(c, &format!("cargo {tool} {}", TEST_TARGETS.join(" ")))
 }
 
+/// What the CI gate adds to every build: `--locked`, and the optional photocraft-heif crate that
+/// official builds open HEIC photos with.
+const GATE_ARGS: [&str; 4] = ["--workspace", "--locked", "--features", "heif"];
+
+/// The gate's tests. nextest's `ci` profile stops at the first failure and terminates hung tests
+/// (.config/nextest.toml). `panic_hunt` runs only the engine's `#[ignore]`d panic hunt (AGENTS.md
+/// Rule 9) with the same packages, features and targets as the tests, so nothing rebuilds.
+fn cmd_gate_tests(panic_hunt: bool) -> Result<(), String> {
+    let mut c = cargo();
+    if nextest_available() {
+        c.args(["nextest", "run", "--profile", "ci"]).args(GATE_ARGS).args(&TEST_TARGETS[1..]);
+        if panic_hunt {
+            c.args(["--run-ignored", "only", "-E", "binary_id(photocraft-engine::panic_hunt)"]);
+        }
+    } else if panic_hunt {
+        // `-- --ignored` across the workspace would run every ignored test, not only the hunt. The
+        // engine has no `heif` feature of its own; it reaches the decoder through photocraft-io.
+        c.args(["test", "-p", "photocraft-engine", "--locked", "--features", "photocraft-io/heif", "--test", "panic_hunt", "--", "--ignored"]);
+    } else {
+        eprintln!("note: cargo-nextest is not installed, running cargo test (cargo install cargo-nextest --locked)");
+        c.arg("test").args(GATE_ARGS).args(&TEST_TARGETS[1..]);
+    }
+    let what = format!("cargo {}", c.get_args().map(|a| a.to_string_lossy()).collect::<Vec<_>>().join(" "));
+    run(c, &what)
+}
+
 /// nextest does not run doctests.
 fn cmd_doctest() -> Result<(), String> {
     let mut c = cargo();
@@ -243,13 +270,22 @@ fn cmd_ci() -> Result<(), String> {
             "clippy",
             Box::new(|| {
                 let mut c = cargo();
-                c.args(["clippy", "--workspace", "--all-targets", "--keep-going", "--", "-D", "warnings"]);
-                run(c, "cargo clippy --workspace --all-targets --keep-going -- -D warnings")
+                c.arg("clippy").args(GATE_ARGS).args(["--all-targets", "--keep-going", "--", "-D", "warnings"]);
+                run(c, "cargo clippy --workspace --locked --features heif --all-targets --keep-going -- -D warnings")
             }),
         ),
-        ("test", Box::new(cmd_test)),
-        ("doctest", Box::new(cmd_doctest)),
         ("layers", Box::new(cmd_layers)),
+        ("scorecard", Box::new(|| scorecard::run(&root(), &["--check"]))),
+        ("test", Box::new(|| cmd_gate_tests(false))),
+        ("panic_hunt", Box::new(|| cmd_gate_tests(true))),
+        (
+            "doctest",
+            Box::new(|| {
+                let mut c = cargo();
+                c.arg("test").args(GATE_ARGS).arg("--doc");
+                run(c, "cargo test --workspace --locked --features heif --doc")
+            }),
+        ),
         ("wasm", Box::new(cmd_wasm)),
         (
             "i18n",

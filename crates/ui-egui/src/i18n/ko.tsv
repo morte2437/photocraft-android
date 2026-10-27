@@ -641,6 +641,10 @@
 	Fit Layer(s) on Screen	레이어를 화면에 맞추기
 	Fit Artboard on Screen	아트보드를 화면에 맞추기
 	100%	100%
+	105%	105%
+	110%	110%
+	115%	115%
+	120%	120%
 	200%	200%
 	Print Size	인쇄 크기
 	Pixel Aspect Ratio	픽셀 종횡비
@@ -1016,6 +1020,10 @@
 	Create new pattern from the selection	선택 영역으로 새 패턴 만들기
 	Create new shape from the current path	현재 패스로 새 모양 만들기
 	Create new snapshot	새 스냅샷 만들기
+	From:	원본:
+	Full Document	전체 문서
+	Merged Layers	병합된 레이어
+	New Snapshot	새 스냅샷
 	Create new style (from the selected type)	새 스타일 만들기(선택한 문자에서)
 	Create new style from the selected layer	선택한 레이어로 새 스타일 만들기
 	Create new tool preset	새 도구 사전 설정 만들기
@@ -2194,6 +2202,11 @@
 	No path to make a selection from: draw one with the Pen tool or select one in the Paths panel.	선택 영역으로 만들 패스가 없습니다: 펜 도구로 그리거나 패스 패널에서 선택하세요.
 	Cancel opening	열기 취소
 	Cancelled opening {name}	{name} 열기를 취소했습니다
+	Damaged Photoshop document	손상된 Photoshop 문서
+	The document “{name}” may be damaged.	문서 “{name}”이(가) 손상되었을 수 있습니다.
+	Some layers, pixels or masks could not be read. Do you want to continue opening it?	일부 레이어, 픽셀 또는 마스크를 읽을 수 없습니다. 계속 여시겠습니까?
+	If you continue, saving over the original may permanently discard unreadable data. Save a copy to keep the original.	계속하면 원본에 덮어써서 저장할 때 읽을 수 없는 데이터가 영구적으로 삭제될 수 있습니다. 원본을 유지하려면 사본을 저장하십시오.
+	Continue	계속
 	The document “{name}” does not have an embedded {mode} profile.	문서 “{name}”에 포함된 {mode} 프로파일이 없습니다.
 	The document “{name}” has an embedded color profile that does not match the current {mode} working space.	문서 “{name}”에 포함된 색상 프로파일이 현재 {mode} 작업 색상 공간과 일치하지 않습니다.
 	Working: {working}	작업 색상 공간: {working}
@@ -3335,6 +3348,8 @@ curves	Smooth	매끄럽게
 	Vanishing Point is not active	소실점이 활성화되어 있지 않습니다
 	Apply Vanishing Point ({key})	소실점 적용 ({key})
 	Fix the red plane first: its corners must form a convex quad	먼저 빨간색 평면을 수정하십시오: 모서리가 볼록 사각형을 이루어야 합니다
+	Alt-click a plane to set the clone source	Alt 키를 누른 채 평면을 클릭하여 복제 소스를 설정하십시오
+	Too many clone strokes: apply Vanishing Point first	복제 획이 너무 많습니다. 먼저 소실점을 적용하십시오
 # Select and Mask view modes (#1754)
 	Onion Skin	어니언 스킨
 	Marching Ants	점선 윤곽
@@ -3436,6 +3451,30 @@ curves	Smooth	매끄럽게
 	Sent to {printer}	{printer}(으)로 전송됨
 	set in Print Settings…	인쇄 설정에서 지정…
 	ICO is limited to 256 × 256 pixels	ICO는 256 × 256픽셀로 제한됩니다
+	Calibration	보정
+	Red Primary	빨강 원색
+	Green Primary	녹색 원색
+	Blue Primary	파랑 원색
+	Write xmp sidecars	XMP 사이드카 파일 쓰기
+	Set the tone sliders from the image	이미지에서 톤 슬라이더 설정
+	Settings from {name}	{name}의 설정
+	Settings from {name}; {count} not supported: {names}	{name}의 설정; {count}개 미지원: {names}
+	Could not write {name}: {error}	{name}을(를) 쓸 수 없음: {error}
+	Kept {name}: written by another application	{name}을(를) 유지함: 다른 응용 프로그램이 작성한 파일
+	Shadow Tint	그림자 색조
+# PhotoCraft release checks.
+	Check for Updates…	업데이트 확인…
+	PhotoCraft Updates	PhotoCraft 업데이트
+	Checking for updates…	업데이트 확인 중…
+	Open the release page to choose an installer for your system.	릴리스 페이지에서 시스템에 맞는 설치 프로그램을 선택하세요.
+	Open Download Page	다운로드 페이지 열기
+	PhotoCraft is up to date.	PhotoCraft가 최신 버전입니다.
+	Could not check for updates.	업데이트를 확인할 수 없습니다.
+	Updates have not been checked yet.	아직 업데이트를 확인하지 않았습니다.
+	Check Again	다시 확인
+	Automatically Check for Updates	자동으로 업데이트 확인
+	Installed version: {version}	설치된 버전: {version}
+	PhotoCraft {version} is available.	PhotoCraft {version}을 사용할 수 있습니다.
 # History panel › History Brush source (#2966)
 	Paints from the History panel's source state	작업 내역 패널의 소스 상태에서 칠합니다
 	Sets the source for the history brush	작업 내역 브러시의 소스를 설정합니다
@@ -3572,6 +3611,14 @@ curves	Smooth	매끄럽게
 
 # Graphics Adapter preference (#1885)
 	GPU adapter	GPU 어댑터
+
+# Styles panel: Import / Export Styles (.asl)
+	Import Styles…	스타일 가져오기…
+	Export Selected Styles…	선택한 스타일 내보내기…
+	Export Styles…	스타일 내보내기…
+	{file} is not a style library (.asl)	{file}은(는) 스타일 라이브러리(.asl)가 아닙니다
+@plural	Imported {n} style from {file}|Imported {n} styles from {file}	{file}에서 스타일 {n}개를 가져왔습니다
+@plural	Exported {n} style to {file}|Exported {n} styles to {file}	스타일 {n}개를 {file}(으)로 내보냈습니다
 # Actions: a step dialog holds a suspended recording (#7365)
 	Confirm or cancel the open action step dialog first	먼저 열려 있는 액션 단계 대화 상자를 확인하거나 취소하세요
 	Pro Medium Gray	프로 중간 회색
@@ -3580,14 +3627,46 @@ curves	Smooth	매끄럽게
 	Pro Light Gray	프로 밝은 회색
 	Pro Light	프로 밝게
 	Resize Windows to Fit	창 크기 맞추기
-
 	EXR	EXR
-
 # Paragraph direction (TYPE-218-2)
 	Automatic paragraph direction	자동 단락 방향
 	Left-to-right paragraph direction	왼쪽에서 오른쪽 단락 방향
 	Right-to-left paragraph direction	오른쪽에서 왼쪽 단락 방향
 	Not rendered: this adjustment ({key}) is kept as imported.	렌더링되지 않음: 이 조정({key})은 가져온 상태 그대로 유지됩니다.
-
 # Print preview image (#8236)
 	Print preview image	Print preview image
+# Color panel menu: modes, copy commands and colour ramps (#6000)
+	Hue Cube	색조 큐브
+	Brightness Cube	밝기 큐브
+	Color Wheel	색상환
+	Grayscale Slider	회색 음영 슬라이더
+	RGB Sliders	RGB 슬라이더
+	HSB Sliders	HSB 슬라이더
+	CMYK Sliders	CMYK 슬라이더
+	Lab Sliders	Lab 슬라이더
+	Web Color Sliders	웹 색상 슬라이더
+	Copy Color as HTML	색상을 HTML로 복사
+	Copy Color's Hex Code	색상의 16진수 코드 복사
+	RGB Spectrum	RGB 스펙트럼
+	CMYK Spectrum	CMYK 스펙트럼
+	Grayscale Ramp	회색 음영 램프
+	Current Colors	현재 색상
+	Make Ramp Web Safe	램프를 웹 안전 색상으로 만들기
+# Art History Brush (#213).
+	Art History Brush	아트 히스토리 브러시
+	Art History Brush Tool	아트 히스토리 브러시 도구
+	Tight Short	타이트 숏
+	Tight Medium	타이트 미디엄
+	Tight Long	타이트 롱
+	Loose Medium	루즈 미디엄
+	Loose Long	루즈 롱
+	Dab	찍기
+	Tight Curl	타이트 컬
+	Loose Curl	루즈 컬
+	Stylized dabs from a history state	작업 내역 상태에서 양식화된 찍기
+
+# Egui 0.37 migration controls (Aspect Ratio, Category, Color Table, Gamma, Interpolation, Profile, Target, Units, Demosaic)
+	Aspect Ratio	종횡비
+	Category	카테고리
+	Target	대상
+	Units	단위

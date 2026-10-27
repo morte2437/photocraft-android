@@ -317,7 +317,7 @@ impl Trackpad {
             }
             Some(Two::Scroll) if env.config.two_finger_scroll => {
                 out.push(Routed::App(Event::PointerMoved(cursor)));
-                out.push(Routed::App(Event::MouseWheel { unit: MouseWheelUnit::Point, delta: now.0 - last.0, phase: TouchPhase::Move, modifiers: Modifiers::NONE }));
+                out.push(Routed::App(Event::MouseWheel { unit: MouseWheelUnit::Point, delta: now.0 - last.0, phase: TouchPhase::Move, modifiers: Modifiers::NONE, source: egui::MouseWheelSource::Trackpad }));
             }
             _ => {}
         }

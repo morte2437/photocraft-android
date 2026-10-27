@@ -148,7 +148,21 @@ pub(crate) fn curves(r: &mut Reader, crvs: ObjId) -> Option<Path> {
         Value::UInt(n) => usize::try_from(*n).ok()?,
         _ => return None,
     };
-    let corners = s.obj(crvs, b"CnrD").and_then(|c| corner_radii(s.positional(c).collect()));
+    let corners = match s.obj(crvs, b"CnrD") {
+        Some(c) => {
+            let fields: Vec<&Value> = s.positional(c).collect();
+            // The corner arrays are scanned for every occurrence of a shared curve, so charge
+            // them like records before they are walked.
+            if let Some(Value::Array(idx)) = fields.get(1)
+                && let Err(reason) = r.geometry_budget.records(idx.len())
+            {
+                r.warn(reason);
+                return None;
+            }
+            corner_radii(fields)
+        }
+        None => None,
+    };
     let mut path = Path::default();
     let mut seen = 0usize;
     for index in 0..count {

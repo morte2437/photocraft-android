@@ -21,6 +21,7 @@ rayon = { workspace = true }
 proptest = { workspace = true }
 criterion = { workspace = true }
 photocraft-paint = { workspace = true }
+photocraft-cms = { workspace = true }
 
 [[bench]]
 name = "compose"

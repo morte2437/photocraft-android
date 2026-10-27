@@ -97,12 +97,32 @@ notarize() {
   fi
 }
 
+# Stapling and validating both look the ticket up in Apple's CloudKit service. Right after
+# notarization that lookup can drop the connection ("The network connection was lost", error 68)
+# even though the ticket exists, so retry the pair a few times before failing the release.
+staple() {
+  local file="$1" attempt
+  for attempt in 1 2 3 4 5; do
+    if xcrun stapler staple "$file" && xcrun stapler validate "$file"; then
+      return
+    fi
+    if [[ "$attempt" = 5 ]]; then
+      echo "error: stapling $(basename "$file") failed after $attempt attempts" >&2
+      exit 1
+    fi
+    echo "stapling $(basename "$file") failed (attempt $attempt); retrying in $((attempt * 20))s" >&2
+    sleep $((attempt * 20))
+  done
+}
+
 # ---- PhotoCraft.app ----------------------------------------------------------------------------
 echo "==> assembling $APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 # Executable and icon carry the display name (CFBundleExecutable / CFBundleIconFile).
 cp "$WORK/bin/photocraft" "$APP/Contents/MacOS/PhotoCraft"
 cp "$ROOT/assets/app-icon/photocraft.icns" "$APP/Contents/Resources/PhotoCraft.icns"
+# Notices for the bundled font fallback, included before the bundle is signed.
+cp "$ROOT/NOTICE" "$ROOT/ATTRIBUTION.md" "$APP/Contents/Resources/"
 # Licences of the embedded craft-fonts fonts (only when built with CRAFT_FONTS_DIR).
 if [[ -n "${CRAFT_FONTS_DIR:-}" ]]; then
   mkdir -p "$APP/Contents/Resources/Licenses"
@@ -123,8 +143,7 @@ codesign --verify --strict --deep --verbose=2 "$APP"
 if [[ "$NOTARIZE" = 1 ]]; then
   ditto -c -k --keepParent "$APP" "$WORK/PhotoCraft-notarize.zip"
   notarize "$WORK/PhotoCraft-notarize.zip"
-  xcrun stapler staple "$APP"
-  xcrun stapler validate "$APP"
+  staple "$APP"
   spctl --assess --type execute -vvv "$APP"
 fi
 
@@ -149,8 +168,7 @@ sign "$DMG"
 codesign --verify --strict --verbose=2 "$DMG"
 if [[ "$NOTARIZE" = 1 ]]; then
   notarize "$DMG"
-  xcrun stapler staple "$DMG"
-  xcrun stapler validate "$DMG"
+  staple "$DMG"
   spctl --assess --type open --context context:primary-signature -vvv "$DMG"
 fi
 

@@ -43,9 +43,9 @@ note = "release.yml:242-283 (freebsd job) + packaging/freebsd/package.sh; layout
 [[item]]
 id = "DIST-220-1"
 target = "Help > Check for Updates plus an opt-out periodic release-feed check on all desktops"
-status = "missing"
+status = "partial"
 issue = 220
-note = "No update check in crates"
+note = "2026-10-22 (#5485): Help > Check for Updates and an opt-out check once per launch (updates_cmds + the desktop HTTPS transport; none inside Flatpak, where flatpak update owns updates). Missing: a periodic recheck while the app stays open"
 
 [[item]]
 id = "DIST-220-2"

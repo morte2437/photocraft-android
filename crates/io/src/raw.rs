@@ -280,23 +280,50 @@ pub fn import_raw_with(name: &str, bytes: &[u8], opts: &DevelopOptions) -> Resul
             let summary = format!("{DEVELOPED_NOTE} ({} demosaic, as-shot white balance)", opts.demosaic.id());
             developed_document(name, bytes, format, dev, &summary)
         }
-        Err(RawError::Unsupported(reason)) => match photocraft_raw::embedded_preview(bytes) {
-            Some(p) => {
-                let img = upright_preview(bytes, p.jpeg, &opts.limits)?;
-                let mut r = image_to_document(name, &img)?;
-                r.warnings.insert(
-                    0,
-                    format!(
-                        "{format}: {reason} is not supported yet; opened the camera's embedded {}x{} JPEG preview instead (8-bit, not the raw sensor data)",
-                        p.width, p.height
-                    ),
-                );
-                Ok(r)
-            }
-            None => Err(IoError::Raw(RawError::Unsupported(reason))),
-        },
+        Err(RawError::Unsupported(reason)) => {
+            let jpeg = photocraft_raw::embedded_preview(bytes);
+            // A DNG 1.7 converter keeps only its small thumbnail as JPEG and writes the larger
+            // previews as JPEG XL, like the raw data (#8125): open the largest of either kind.
+            let jpeg_area = jpeg.map_or(0, |p| u64::from(p.width) * u64::from(p.height));
+            let jxl = photocraft_raw::embedded_jxl_preview(bytes, &opts.limits).filter(|p| u64::from(p.width) * u64::from(p.height) > jpeg_area);
+            let (img, kind, (w, h)) = match (jxl, jpeg) {
+                (Some(p), _) => {
+                    let size = (p.width, p.height);
+                    (jxl_preview_image(bytes, p)?, "JPEG XL", size)
+                }
+                (None, Some(p)) => (upright_preview(bytes, p.jpeg, &opts.limits)?, "JPEG", (p.width, p.height)),
+                (None, None) => return Err(IoError::Raw(RawError::Unsupported(reason))),
+            };
+            let mut r = image_to_document(name, &img)?;
+            let depth = if img.sample_type() == SampleType::U8 { "8-bit" } else { "16-bit" };
+            r.warnings.insert(
+                0,
+                format!(
+                    "{format}: {reason} is not supported yet; opened the camera's embedded {w}x{h} {kind} preview instead ({depth}, not the raw sensor data)"
+                ),
+            );
+            Ok(r)
+        }
         Err(e) => Err(IoError::Raw(e)),
     }
+}
+
+/// A decoded JPEG XL preview as an image: in its stated colour space (sRGB when it states
+/// none), turned upright by the raw's orientation (DNG previews are stored as the raw is).
+fn jxl_preview_image(raw: &[u8], p: photocraft_raw::DecodedPreview) -> Result<Image, IoError> {
+    let img = if p.bits == 8 {
+        Image::from_u8(p.width, p.height, ChannelLayout::Rgb, p.rgb.iter().map(|&v| v.min(255) as u8).collect())?
+    } else {
+        let max = f64::from((1u32 << p.bits.clamp(1, 16)) - 1);
+        let rgb: Vec<u16> = p.rgb.iter().map(|&v| (f64::from(v).min(max) * 65535.0 / max).round() as u16).collect();
+        Image::from_u16(p.width, p.height, ChannelLayout::Rgb, &rgb)?
+    };
+    let icc = match p.color_space {
+        Some(PreviewColorSpace::AdobeRgb) => Some(Builtin::AdobeRgbCompat.profile().to_bytes().to_vec()),
+        Some(PreviewColorSpace::ProPhoto) => Some(Builtin::ProPhotoCompat.profile().to_bytes().to_vec()),
+        Some(PreviewColorSpace::Srgb) | None => None,
+    };
+    Ok(img.with_icc(icc).oriented(photocraft_raw::orientation(raw).unwrap_or(1))?)
 }
 
 #[cfg(test)]

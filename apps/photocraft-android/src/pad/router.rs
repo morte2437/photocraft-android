@@ -356,6 +356,7 @@ impl Router {
                     delta: g.velocity * dt,
                     phase: TouchPhase::Move,
                     modifiers: Modifiers::NONE,
+                    source: egui::MouseWheelSource::Momentum,
                 }));
             }
             let speed = g.velocity.length();
@@ -575,6 +576,7 @@ impl Router {
                             delta: c - last,
                             phase: TouchPhase::Move,
                             modifiers: Modifiers::NONE,
+                            source: egui::MouseWheelSource::Trackpad,
                         }));
                     }
                     self.scroll = Some(c);

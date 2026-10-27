@@ -89,7 +89,7 @@
 	Batch…	Toplu…
 	Create Droplet…	Damlacık Oluştur…
 	Crop and Straighten Photos	Fotoğrafları Kırp ve Düzelt
-	Contact Sheet II…	İletişim Sayfası II…
+	Contact Sheet II…	Kontak Sayfası II…
 	Conditional Mode Change…	Koşullu Mod Değişikliği…
 	Fit Image…	Görüntüyü Sığdır…
 	Lens Correction…	Mercek Düzeltme…
@@ -247,7 +247,7 @@
 	Threshold…	Eşik…
 	Gradient Map…	Degrade Eşlemesi…
 	Selective Color…	Seçici Renk…
-	Shadows/Highlights…	Gölgeler/Vurgular…
+	Shadows/Highlights…	Gölgeler/Parlak Tonlar…
 	HDR Toning…	HDR Tonlama…
 	Desaturate	Doygunluğu Azalt
 	Match Color…	Rengi Eşleştir…
@@ -410,7 +410,7 @@
 	Stamp Down	Aşağıya Damgala
 	Flatten Image	Görüntüyü Düzleştir
 	Matting	Matlama
-	Color Decontaminate…	Renkli Dekontamine…
+	Color Decontaminate…	Renkleri Arındır…
 	Remove Black Matte	Siyah Matı Kaldır
 	Remove White Matte	Beyaz Matı Kaldır
 	Defringe…	Kenar Halesini Kaldır…
@@ -438,7 +438,7 @@
 	Right Edges	Sağ Kenarlar
 	Distribute	Dağıt
 	Vertically	Dikey Olarak
-	Horizontally	Yatay olarak
+	Horizontally	Yatay Olarak
 	Layer Edges	Katman Kenarları
 	Isolate Layers	Katmanları Yalıt
 	Layer Content Options…	Katman İçerik Seçenekleri…
@@ -629,6 +629,10 @@
 	Fit Layer(s) on Screen	Katmanları Ekrana Sığdır
 	Fit Artboard on Screen	Çalışma Yüzeyini Ekrana Sığdır
 	100%	100%
+	105%	105%
+	110%	110%
+	115%	115%
+	120%	120%
 	200%	200%
 	Print Size	Baskı Boyutu
 	Pixel Aspect Ratio	Piksel En Boy Oranı
@@ -777,9 +781,9 @@
 	Other…	Diğer…
 	Remove Warp Split	Çarpıtma Bölünmesini Kaldır
 	Shape	Şekil
-	Split Warp Crosswise	Çözgüyü Çapraz Olarak Böl
-	Split Warp Horizontally	Çözgüyü Yatay Olarak Böl
-	Split Warp Vertically	Çözgüyü Dikey Olarak Böl
+	Split Warp Crosswise	Çarpıtmayı Çapraz Olarak Böl
+	Split Warp Horizontally	Çarpıtmayı Yatay Olarak Böl
+	Split Warp Vertically	Çarpıtmayı Dikey Olarak Böl
 	Statistics…	İstatistikler…
 	Refine Strokes	Fırça Vuruşlarını Hassaslaştır
 	Edits	Düzenlemeler
@@ -889,7 +893,7 @@
 	Cancel any current edits (Esc)	Geçerli düzenlemeleri iptal et (Esc)
 	Cancel current crop operation  (Esc)	Geçerli kırpma işlemini iptal et (Esc)
 	Cancel transform (Esc)	Dönüşümü iptal et (Esc)
-	Cancel warp (Esc)	Çözgüyü iptal et (Esc)
+	Cancel warp (Esc)	Çarpıtmayı İptal Et (Esc)
 	Canvas	Tuval
 	Canvas extension color:	Tuval uzatma rengi:
 	Capture	Yakala
@@ -946,7 +950,7 @@
 	Commit warp ({key})	Çarpıtmayı onayla ({key})
 	Constant	Sabit
 	Constrain proportions	Oranları koru
-	Contact Sheet II	İletişim Sayfası II
+	Contact Sheet II	Kontak Sayfası II
 	Content-Aware	İçeriğe Duyarlı
 	Contiguous	Bitişik
 	Contrast	Kontrast
@@ -1056,7 +1060,7 @@
 	Dots	Noktalar
 	Drag a rectangle around the object	Nesnenin çevresine bir dikdörtgen sürükleyin
 	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click to delete.	Kısıtlama eklemek için görüntü üzerinde sürükleyin; yatay/dikey için Shift; silmek için sağ tıklayın.
-	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click a constraint to change or delete it.	Kısıtlama eklemek için resmin üzerine sürükleyin; Yatay/dikey için kaydırma; değiştirmek veya silmek için bir kısıtlamaya sağ tıklayın.
+	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click a constraint to change or delete it.	Kısıtlama eklemek için görüntü üzerinde sürükleyin; yatay/dikey için Shift tuşunu kullanın; değiştirmek veya silmek için bir kısıtlamaya sağ tıklayın.
 	Drag to move the active shape's path or the Work Path	Etkin şeklin yolunu veya Çalışma Yolunu taşımak için sürükleyin
 	Click: select anchor · Drag: move anchor, handle or segment · {shift}-click: add · {alt}-click: whole subpath	Tıklayın: çapa noktasını seçin · Sürükleyin: çapa noktasını, tutamacı veya parçayı taşıyın · {shift}-tıklayın: ekleyin · {alt}-tıklayın: alt yolun tamamı
 	Draw with the Pen tool (P) or make a work path from a selection.	Kalem aracıyla (P) çizim yapın veya seçimden bir çalışma yolu oluşturun.
@@ -1147,7 +1151,7 @@
 	Hide Properties	Özellikleri Gizle
 	Highlight Compression	Parlak Ton Sıkıştırma
 	Highlight Priority	Parlak Ton Önceliği
-	Highlights	Öne Çıkanlar
+	Highlights	Parlak Tonlar
 	Home	Ana sayfa
 	Horizontal scale	Yatay ölçek
 	Hue	Ton
@@ -1183,7 +1187,7 @@
 	Kerning	Karakter Aralığı
 	Keyboard Shortcuts	Klavye Kısayolları
 	Keyboard Shortcuts and Menus	Klavye Kısayolları ve Menüler
-	Kind	tür
+	Kind	Tür
 	Label Size	Etiket Boyutu
 	Labels	Etiketler
 	Lanczos (sharp)	Lanczos (keskin)
@@ -1219,7 +1223,7 @@
 	Lock:	Kilit:
 	Logical Length:	Mantıksal Uzunluk:
 	Logical Units:	Mantıksal Birimler:
-	Luminance	parlaklık
+	Luminance	Lüminans
 	Luminance Detail	Lüminans Ayrıntısı
 	Magenta	Macenta
 	Magenta  ·  Green	Macenta · Yeşil
@@ -1521,7 +1525,7 @@
 	Tracking (1/1000 em)	İzleme (1/1000 em)
 	Transparency	Saydamlık
 	Transparent	Saydam
-	Trilinear	Üç çizgili
+	Trilinear	Üç Doğrusal
 	Type Styles	Metin Stilleri
 	Type:	Tür:
 	Underline	Altı çizili
@@ -1644,7 +1648,7 @@
 	ExtraBold	Ekstra Kalın
 	ExtraLight	Ekstra Hafif
 	Eyedropper Tool	Damlalık Aracı
-	Fade	Solmaya
+	Fade	Solma
 	Fill Opacity	Dolgu Opaklığı
 	Film & Video	Film ve Video
 	From	Şuradan
@@ -1657,14 +1661,14 @@
 	Hard	Sert
 	Hard Mix	Sert Karışım
 	Healing Brush Tool	Düzeltme Fırçası Aracı
-	Highlights from:	Öne çıkanlar:
+	Highlights from:	Parlak tonlar (başlangıç):
 	History Brush Tool	Geçmiş Fırçası Aracı
 	Horizontal Type Tool	Yatay Metin Aracı
 	Horizontal Type Mask Tool	Yatay Metin Maskesi Aracı
 	Vertical Type Mask Tool	Dikey Metin Maskesi Aracı
 	Image Size:	Görüntü Boyutu:
 	Inches	İnç
-	Indexed	Dizine eklendi
+	Indexed	İndekslenmiş
 	Initial Direction	Başlangıç Yönü
 	Inner Bevel	İç Eğim
 	Inner Glow	İç Işıma
@@ -1676,7 +1680,7 @@
 	Lasso	Kement
 	Lasso Tool	Kement Aracı
 	Layer Count	Katman Sayısı
-	Layer Knocks Out Drop Shadow	Katman Düşen Gölgeyi Deler
+	Layer Knocks Out Drop Shadow	Katman Alt Gölgeyi Gizler
 	Legal	Legal
 	Letter	Letter
 	Light	Hafif
@@ -2037,7 +2041,7 @@
 	Expand	Genişlet
 	Expand Panel Group	Panel Grubunu Genişlet
 	Expand group  ({key}-click: all groups)	Grubu genişlet ({key}-tıklayın: tüm gruplar)
-	Fade steps	Adımları soldur
+	Fade steps	Solma Adımı Sayısı
 	Hide the layer's effects  ({key}-click: all layers)	Katmanın efektlerini gizle ({key}-tıklama: tüm katmanlar)
 	Import Brushes… (.abr)	Fırçaları İçe Aktar… (.abr)
 	Move Group Down	Grubu Aşağı Taşı
@@ -2059,10 +2063,10 @@
 	Reset GPU Backend	GPU Arka Ucunu Sıfırla
 	Applies at next launch.	Bir sonraki açılışta geçerlidir.
 	Click to sample the foreground colour  ·  {key}-click for background	Ön plan rengini örneklemek için tıklayın · arka plan için {key}-tıklayın
-	{key}-click to set the source	{key}-kaynağı ayarlamak için tıklayın
+	{key}-click to set the source	Kaynağı ayarlamak için {key} tuşuna basarak tıklayın
 	{key} to subtract	{key} çıkarmak için
 	Clone source {n} ({key}-click with Clone Stamp to set)	Klon kaynağı {n} (ayarlamak için Klonlama Damgası ile {key}-tıklayın)
-	Source: not set ({key}-click with Clone Stamp)	Kaynak: ayarlanmadı ({key}-Klon Damgası ile tıklayın)
+	Source: not set ({key}-click with Clone Stamp)	Kaynak: ayarlanmadı (Klonlama Damgası ile {key} tuşuna basarak tıklayın)
 	Pixel Layer	Piksel Katmanı
 	Type Layer	Metin Katmanı
 	Shape Layer	Şekil Katmanı
@@ -2152,6 +2156,10 @@
 	No path to make a selection from: draw one with the Pen tool or select one in the Paths panel.	Seçim yapılabilecek yol yok: Kalem aracıyla bir yol çizin veya Yollar panelinden birini seçin.
 	Cancel opening	Açılışı iptal et
 	Cancelled opening {name}	{name} açılışı iptal edildi
+	Damaged Photoshop document	Hasarlı Photoshop belgesi
+	The document “{name}” may be damaged.	“{name}” belgesi hasarlı olabilir.
+	Some layers, pixels or masks could not be read. Do you want to continue opening it?	Bazı katmanlar, pikseller veya maskeler okunamadı. Açmaya devam etmek istiyor musunuz?
+	If you continue, saving over the original may permanently discard unreadable data. Save a copy to keep the original.	Devam ederseniz, orijinalin üzerine kaydetmek okunamayan verileri kalıcı olarak silebilir. Orijinali korumak için bir kopya kaydedin.
 	The document “{name}” does not have an embedded {mode} profile.	'{name}' belgesinde gömülü bir {mode} profili yok.
 	The document “{name}” has an embedded color profile that does not match the current {mode} working space.	“{name}” belgesinin gömülü renk profili geçerli {mode} çalışma renk uzayıyla eşleşmiyor.
 	Working: {working}	Çalışma renk uzayı: {working}
@@ -2464,7 +2472,7 @@ cameraRaw	Blue	Mavi
 cameraRaw	Purple	Mor
 cameraRaw	Magenta	Macenta
 cameraRaw	Blending	Karıştırma
-cameraRaw	Luminance	Parlaklık
+cameraRaw	Luminance	Lüminans
 cameraRaw	Temperature	Sıcaklık
 cameraRaw	Color	Renk
 	Patch Tool	Yama Aracı
@@ -2704,6 +2712,9 @@ cameraRaw	Color	Renk
 	Color indicates	Renk şunu gösterir:
 	Create Snapshot	Anlık Görüntü Oluştur
 	Delete Snapshot	Anlık Görüntüyü Sil
+	From:	Kaynak:
+	Full Document	Tam Belge
+	Merged Layers	Birleştirilmiş Katmanlar
 	New Snapshot	Yeni Anlık Görüntü
 	New Snapshot…	Yeni Anlık Görüntü…
 	History Options…	Geçmiş Seçenekleri…
@@ -2933,9 +2944,9 @@ cameraRaw	Color	Renk
 	Gray Value (Median)	Gri Değeri (Medyan)
 	Integrated Density	Entegre Yoğunluk
 	Length	Uzunluk
-	In Black	Siyah
-	In White	Beyaz
-	Out Black	Siyah
+	In Black	Giriş Siyahı
+	In White	Giriş Beyazı
+	Out Black	Çıkış Siyahı
 	Out White	Çıkış Beyazı
 	Tint Color	Ton Rengi
 	Stops	Duraklar
@@ -3276,7 +3287,7 @@ cameraRaw	Color	Renk
 	Adds grain to the soft edges of the brush tip.	Fırça ucunun yumuşak kenarlarına gren ekler.
 	Adobe PDF Presets…	Adobe PDF Ön Ayarları…
 	Advanced Blending	Gelişmiş Karıştırma
-	After (X)	(X)'ten sonra
+	After (X)	Sonra (X)
 	Airbrush: keeps painting while the pointer rests.	Airbrush: İşaretçi dururken boyamaya devam eder.
 	Alternates for Current Selection	Geçerli Seçimin Alternatifleri
 	Apply Data Set	Veri Kümesini Uygula
@@ -3310,7 +3321,7 @@ cameraRaw	Color	Renk
 	Channel4	Kanal 4
 	Clipping Path	Kırpma Yolu
 	Clone	Klon
-	Color Decontaminate	Renkli Dekontaminasyon
+	Color Decontaminate	Renkleri Arındır
 	Color Halftone	Renk Yarım Tonu
 	Color Lookup Tables	Renk Arama Tabloları
 	Color Settings	Renk Ayarları
@@ -3486,7 +3497,7 @@ cameraRaw	Color	Renk
 	Select and Mask	Seç ve Maskele
 	Semi Bold	Yarı Kalın
 	Set Measurement Scale	Ölçüm Ölçeğini Ayarla
-	Shadows/Highlights	Gölgeler/Vurgular
+	Shadows/Highlights	Gölgeler/Parlak Tonlar
 	Shape Blur	Şekil Bulanıklığı
 	Shear	Kesme
 	Show the layer's effects  (⌥-click: all layers)	Katmanın efektlerini göster (⌥ tuşuna basarak tıklayın: tüm katmanlar)
@@ -3788,8 +3799,8 @@ cameraData	Lens	Lens
 	Loading fonts…	Yazı tipleri yükleniyor…
 	Onion Skin	Soğan Kabuğu
 	Marching Ants	Yürüyen Karıncalar
-	On Black	Siyah
-	On White	Beyaz
+	On Black	Siyah Üzerinde
+	On White	Beyaz Üzerinde
 	On Layers	Katmanlarda
 	Show Edge	Kenarı Göster
 	Show Original	Orijinali Göster
@@ -3826,6 +3837,8 @@ cameraData	Lens	Lens
 	Draw to modify the curve	Eğriyi değiştirmek için çiz
 	Edit points to modify the curve	Eğriyi değiştirmek için noktaları düzenle
 	Fix the red plane first: its corners must form a convex quad	Önce kırmızı düzlemi düzeltin: köşeleri dışbükey bir dörtgen oluşturmalı
+	Alt-click a plane to set the clone source	Klon kaynağını ayarlamak için bir düzleme Alt+tıklayın
+	Too many clone strokes: apply Vanishing Point first	Çok fazla klon darbesi: önce Kaybolma Noktası'nı uygulayın
 	Grid Size:	Izgara Boyutu:
 	Light Blue	Açık Mavi
 	Light Gray	Açık Gri
@@ -3941,6 +3954,17 @@ cameraData	Lens	Lens
 	Color Indicates:	Rengin Gösterdiği:
 	Ink Characteristics	Mürekkep Özellikleri
 	Solidity:	Doluluk:
+	Calibration	Kalibrasyon
+	Red Primary	Kırmızı ana renk
+	Green Primary	Yeşil ana renk
+	Blue Primary	Mavi ana renk
+	Write xmp sidecars	XMP yan dosyalarını yaz
+	Set the tone sliders from the image	Ton kaydırıcılarını görüntüden ayarla
+	Settings from {name}	{name} ayarları
+	Settings from {name}; {count} not supported: {names}	{name} ayarları; {count} desteklenmiyor: {names}
+	Could not write {name}: {error}	{name} yazılamadı: {error}
+	Kept {name}: written by another application	{name} korundu: başka bir uygulama tarafından yazılmış
+	Shadow Tint	Gölge tonu
 	Redrawing	Yeniden çiziliyor
 # Bevel & Emboss shading controls.
 	Highlight Mode	Vurgu Modu
@@ -3949,6 +3973,18 @@ cameraData	Lens	Lens
 	Shadow Mode	Gölge Modu
 	Shadow Color	Gölge Rengi
 	Shadow Opacity	Gölge Opaklığı
+	Check for Updates…	Güncellemeleri Denetle…
+	PhotoCraft Updates	PhotoCraft Güncellemeleri
+	Checking for updates…	Güncellemeler denetleniyor…
+	Open the release page to choose an installer for your system.	Sisteminize uygun yükleyiciyi seçmek için sürüm sayfasını açın.
+	Open Download Page	İndirme Sayfasını Aç
+	PhotoCraft is up to date.	PhotoCraft güncel.
+	Could not check for updates.	Güncellemeler denetlenemedi.
+	Updates have not been checked yet.	Güncellemeler henüz denetlenmedi.
+	Check Again	Yeniden Denetle
+	Automatically Check for Updates	Güncellemeleri Otomatik Denetle
+	Installed version: {version}	Yüklü sürüm: {version}
+	PhotoCraft {version} is available.	PhotoCraft {version} kullanılabilir.
 # Embedded Profile Mismatch: profile names beside the choices, Remember this choice
 	Use the embedded profile ({profile})	Gömülü profili kullanın ({profile})
 	Convert to the working space ({profile})	Çalışma alanına dönüştürün ({profile})
@@ -4072,7 +4108,7 @@ cameraData	Lens	Lens
 	Next Brush	Sonraki fırça
 	First Brush	İlk fırça
 	Last Brush	Son fırça
-	Preview size	Preview size
+	Preview size	Önizleme Boyutu
 	Memory Usage	Bellek kullanımı
 	Per-document RAM limit (MB)	Belge başına RAM sınırı (MB)
 	Installed RAM: {ram} MB; this limit: {percent}%	Kurulu RAM: {ram} MB; bu sınır: {percent}%
@@ -4093,22 +4129,54 @@ cameraData	Lens	Lens
 
 # Graphics Adapter preference (#1885)
 	GPU adapter	GPU bağdaştırıcısı
+
+# Styles panel: Import / Export Styles (.asl)
+@plural	Imported {n} style from {file}|Imported {n} styles from {file}	{file} dosyasından {n} stil içe aktarıldı
+@plural	Exported {n} style to {file}|Exported {n} styles to {file}	{n} stil {file} dosyasına dışa aktarıldı
+	Import Styles…	Stilleri İçe Aktar…
+	Export Selected Styles…	Seçili Stilleri Dışa Aktar…
+	Export Styles…	Stilleri Dışa Aktar…
+	{file} is not a style library (.asl)	{file} bir stil kitaplığı değil (.asl)
 # Actions: a step dialog holds a suspended recording (#7365)
 	Confirm or cancel the open action step dialog first	Önce açık eylem adımı iletişim kutusunu onaylayın veya iptal edin
 	Pro Medium Gray	Pro Orta Gri
-	Solarized	Solarize
-	Breeze	Esinti
+	Solarized	Solarized
+	Breeze	Breeze
 	Pro Light Gray	Pro Açık Gri
-	Pro Light	Profesyonel Işık
+	Pro Light	Pro Açık
 	Resize Windows to Fit	Pencereleri sığacak şekilde boyutlandır
-
 	EXR	EXR
-
 # Paragraph direction (TYPE-218-2)
 	Automatic paragraph direction	Otomatik paragraf yönü
 	Left-to-right paragraph direction	Soldan sağa paragraf yönü
 	Right-to-left paragraph direction	Sağdan sola paragraf yönü
 	Not rendered: this adjustment ({key}) is kept as imported.	Görüntülenmiyor: bu ayarlama ({key}) içe aktarıldığı gibi korunuyor.
-
 # Print preview image (#8236)
-	Print preview image	Print preview image
+	Print preview image	Baskı Önizleme Görüntüsü
+# Color panel menu: modes, copy commands and colour ramps (#6000)
+	Hue Cube	Renk Tonu Küpü
+	Brightness Cube	Parlaklık Küpü
+	Color Wheel	Renk Çarkı
+	RGB Sliders	RGB Kaydırıcıları
+	HSB Sliders	HSB Kaydırıcıları
+	CMYK Sliders	CMYK Kaydırıcıları
+	Lab Sliders	Lab Kaydırıcıları
+	Web Color Sliders	Web Rengi Kaydırıcıları
+	Copy Color as HTML	Rengi HTML Olarak Kopyala
+	Copy Color's Hex Code	Rengin Onaltılık Kodunu Kopyala
+	RGB Spectrum	RGB Spektrumu
+	CMYK Spectrum	CMYK Spektrumu
+	Grayscale Ramp	Gri Tonlama Şeridi
+	Current Colors	Geçerli Renkler
+	Make Ramp Web Safe	Şeridi Web Renkleriyle Sınırla
+# Art History Brush (#213).
+	Art History Brush Tool	Sanat Tarihi Fırçası Aracı
+	Tight Short	Sıkı Kısa
+	Tight Medium	Sıkı Orta
+	Tight Long	Sıkı Uzun
+	Loose Medium	Gevşek Orta
+	Loose Long	Gevşek Uzun
+	Dab	Benek
+	Tight Curl	Sıkı Kıvrım
+	Loose Curl	Gevşek Kıvrım
+	Stylized dabs from a history state	Bir geçmiş durumundan stilize benekler

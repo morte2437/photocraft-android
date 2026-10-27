@@ -480,21 +480,21 @@ mod tests {
         assert!(out.len() < 2 << 20, "dump output was {} bytes", out.len());
         assert!(out.contains("output truncated") || out.len() < 1 << 20);
     }
-}
 
-#[test]
-fn linked_directory_values_are_read_only_as_needed() {
-    // The traversal limit is independent of the TIFF entry count: callers should
-    // never need a complete attacker-controlled offset array to visit SubIFDs.
-    let mut b = b"II*\0\x08\0\0\0".to_vec();
-    b.extend_from_slice(&1u16.to_le_bytes());
-    b.extend_from_slice(&330u16.to_le_bytes());
-    b.extend_from_slice(&4u16.to_le_bytes());
-    b.extend_from_slice(&(1_000_000u32).to_le_bytes());
-    b.extend_from_slice(&26u32.to_le_bytes());
-    b.extend_from_slice(&0u32.to_le_bytes());
-    b.extend_from_slice(&0u32.to_le_bytes());
-    b.resize(26 + 16 * 4, 0);
-    let t = Tiff::new(&b).unwrap();
-    assert!(t.all_ifds().len() <= 17);
+    #[test]
+    fn linked_directory_values_are_read_only_as_needed() {
+        // The traversal limit is independent of the TIFF entry count: callers should
+        // never need a complete attacker-controlled offset array to visit SubIFDs.
+        let mut b = b"II*\0\x08\0\0\0".to_vec();
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&330u16.to_le_bytes());
+        b.extend_from_slice(&4u16.to_le_bytes());
+        b.extend_from_slice(&(1_000_000u32).to_le_bytes());
+        b.extend_from_slice(&26u32.to_le_bytes());
+        b.extend_from_slice(&0u32.to_le_bytes());
+        b.extend_from_slice(&0u32.to_le_bytes());
+        b.resize(26 + 16 * 4, 0);
+        let t = Tiff::new(&b).unwrap();
+        assert!(t.all_ifds().len() <= 17);
+    }
 }

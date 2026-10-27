@@ -173,7 +173,8 @@ pub(super) fn export_item(f: &SmartFilter) -> Result<Descriptor, String> {
         Descriptor::new("Hst2").with("H   ", master.0).with("Strt", master.1).with("Lght", setting(p, "lightness", 0.0, -100.0, 100.0)?),
     )];
     for (i, key) in RANGES.iter().enumerate() {
-        if let Some(o) = p.get(*key) {
+        // A `null` range is an untouched one, like a missing key.
+        if let Some(o) = p.get(*key).filter(|o| !o.is_null()) {
             adjs.extend(range_entry(i, o)?);
         }
     }
@@ -303,6 +304,7 @@ mod tests {
         assert_eq!(export(json!({"hue": 12.4})), json!({"colorize": false, "hue": 12, "saturation": 0, "lightness": 0}));
         assert_eq!(export(json!({"hue": -400, "lightness": 101, "layer": 3})), json!({"colorize": false, "hue": -180, "saturation": 0, "lightness": 100}));
         assert_eq!(export(J::Null), json!({"colorize": false, "hue": 0, "saturation": 0, "lightness": 0}));
+        assert_eq!(export(json!({"reds": null})), json!({"colorize": false, "hue": 0, "saturation": 0, "lightness": 0}));
         // Colorize starts at 25 % saturation and wraps the hue into 0..360.
         assert_eq!(export(json!({"colorize": true, "hue": -30})), json!({"colorize": true, "hue": 330, "saturation": 25, "lightness": 0}));
         // The full set (`to_params`): neutral ranges at their default extent are left out, reds

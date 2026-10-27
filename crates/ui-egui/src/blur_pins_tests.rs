@@ -451,7 +451,7 @@ fn on_a_phone_the_dialog_leaves_the_image_in_view() {
     crate::filter_dialog::open(h.state_mut(), IRIS).unwrap();
     h.run_steps(6);
     let id = h.state().ui.dialogs[0].id;
-    let window = h.ctx.memory(|m| m.area_rect(egui::Id::new(("dialog", id)))).expect("the Iris Blur window");
+    let window = h.ctx.memory(|m| m.area_rect(egui::Id::unique(("dialog", id)))).expect("the Iris Blur window");
     assert!(screen.contains_rect(window), "{window:?} inside {screen:?}");
     assert!(window.top() >= screen.height() * 0.5, "at the bottom, the image above it in view: {window:?}");
 }

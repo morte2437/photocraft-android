@@ -9,7 +9,7 @@ type Fields = (f32, String);
 fn fields() -> Harness<'static, Fields> {
     let mut h = Harness::builder().with_size(egui::vec2(400.0, 180.0)).build_ui_state(
         |ui, (number, text): &mut Fields| {
-            super::value_field(ui, number, 0.01..=12800.0, "%", 90.0);
+            super::value_field(ui, number, 0.01..=12800.0, "%", 90.0).accessible_name("Test number");
             ui.add(egui::TextEdit::multiline(text).hint_text("Document text"));
         },
         (100.0, String::new()),
@@ -64,9 +64,9 @@ fn oversized_numeric_text_paste_and_ime_are_bounded_before_layout() {
         if matches!(&event, Event::Ime(_)) {
             // egui 0.36 assigns IME events to the focused widget; Enabled is deprecated and
             // ignored. Prove both live composition and commitment reach this field first.
-            h.event(Event::Ime(ImeEvent::Preedit { text: "に".into(), active_range_chars: Some(0..1) }));
+            h.event(Event::Ime(ImeEvent::Preedit { text: "é".into(), active_range_chars: Some(0..1) }));
             h.run();
-            assert_eq!(numeric_text(&h), "に", "short IME composition reaches the numeric editor");
+            assert_eq!(numeric_text(&h), "é", "short IME composition reaches the numeric editor");
             h.event(Event::Ime(ImeEvent::Commit("é".into())));
             h.run();
             assert_eq!(numeric_text(&h), "é", "IME commit replaces its composition");
@@ -179,7 +179,7 @@ fn tab_and_paste_in_one_frame_filter_only_the_receiving_numeric_field() {
     let mut h = Harness::builder().with_size(egui::vec2(400.0, 180.0)).build_ui_state(
         |ui, (number, text): &mut Fields| {
             ui.add(egui::TextEdit::multiline(text).hint_text("Document text"));
-            super::value_field(ui, number, 0.01..=12800.0, "%", 90.0);
+            super::value_field(ui, number, 0.01..=12800.0, "%", 90.0).accessible_name("Test number");
         },
         (100.0, String::new()),
     );

@@ -123,7 +123,7 @@ pub fn polygon_surface(points: &[(f32, f32)], clip: Rect) -> Option<Surface> {
     let crossings = |e: &[&Edge], y: f32, xs: &mut Vec<f32>| {
         xs.clear();
         xs.extend(e.iter().map(|&&Edge { a, b, .. }| a.0 + (y - a.1) / (b.1 - a.1) * (b.0 - a.0)));
-        xs.sort_by(|a, b| a.total_cmp(b));
+        xs.sort_by(f32::total_cmp);
     };
     let full = s.solid_tile(&[1.0]);
     let blank = s.solid_tile(&[0.0]);

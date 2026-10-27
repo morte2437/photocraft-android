@@ -182,6 +182,17 @@ pub fn color_from_desc(d: &Descriptor) -> Option<Color> {
             Color::rgb(g("Rd  ")? / 255.0, g("Grn ")? / 255.0, g("Bl  ")? / 255.0)
         }
     })
+    .map(|c| with_pc_alpha(c, d))
+}
+
+/// PSD colour descriptors have no alpha. PhotoCraft writes `pcAl` (0..1) so shape fill
+/// opacity round-trips (#6180). Photoshop ignores the key.
+fn with_pc_alpha(mut c: Color, d: &Descriptor) -> Color {
+    // A hostile file's NaN or infinity would survive the clamp: keep the colour opaque instead.
+    if let Some(a) = num(d.get("pcAl")).filter(|a| a.is_finite()) {
+        c.alpha = (a as f32).clamp(0.0, 1.0);
+    }
+    c
 }
 
 /// [`Color`] → descriptor in its own model.
@@ -202,6 +213,13 @@ pub fn color_to_desc(c: &Color) -> Descriptor {
             Descriptor::new("RGBC").with("Rd  ", d(rgb[0] * 255.0)).with("Grn ", d(rgb[1] * 255.0)).with("Bl  ", d(rgb[2] * 255.0))
         }
     }
+}
+
+/// Solid shape fills have no other alpha slot. Write `pcAl` only here so gradient stops
+/// keep using `Trns` alone (#6180).
+fn color_to_desc_with_pc_alpha(c: &Color) -> Descriptor {
+    let desc = color_to_desc(c);
+    if c.alpha.is_finite() && (c.alpha - 1.0).abs() > 1e-6 { desc.with("pcAl", Value::Double(f64::from(c.alpha.clamp(0.0, 1.0)))) } else { desc }
 }
 
 pub(crate) fn get_desc<'a>(d: &'a Descriptor, key: &str) -> Option<&'a Descriptor> {
@@ -499,7 +517,7 @@ pub fn write_fill(f: &Fill) -> ([u8; 4], Vec<u8>) {
 /// A fill as (block key, descriptor with class `null`).
 pub fn fill_to_desc(f: &Fill) -> ([u8; 4], Descriptor) {
     match f {
-        Fill::Solid(c) => (*b"SoCo", Descriptor::new("null").with("Clr ", Value::Descriptor(color_to_desc(c)))),
+        Fill::Solid(c) => (*b"SoCo", Descriptor::new("null").with("Clr ", Value::Descriptor(color_to_desc_with_pc_alpha(c)))),
         Fill::Gradient { stops, angle, scale, style, reverse, opacity_stops, midpoints, offset, dither, align } => {
             let prc = |v: f32| Value::UnitFloat { unit: *b"#Prc", value: f64::from(v * 100.0) };
             let mut d = Descriptor::new("null")
@@ -568,9 +586,10 @@ pub(crate) fn with_pattern_placement(mut d: Descriptor, angle: f32, link: bool, 
 
 /// The warp of a placed layer (`SoLd`/`SoLE` `quiltWarp` or `warp` descriptor): style, bend,
 /// distortions, axis, bounds and, for `warpCustom`, the `customEnvelopeWarp` mesh: one 4 × 4
-/// patch, or the multi-patch grid Photoshop's split warp writes as `quiltWarp`. Read-only: the
-/// raw block is what gets written back. `None` when absent or `warpNone` with no mesh. A `PlLd`
-/// record keeps its warp elsewhere: see [`parse_plld_warp`].
+/// patch, or the multi-patch grid Photoshop's split warp writes as `quiltWarp`; for
+/// `warpCylinder` its seven `warpValues`. Read-only: the raw block is what gets written back.
+/// `None` when absent or `warpNone` with no mesh. A `PlLd` record keeps its warp elsewhere: see
+/// [`parse_plld_warp`].
 pub fn parse_placed_warp(key: &[u8; 4], data: &[u8]) -> Option<photocraft_geom::warp::Warp> {
     if key != b"SoLd" && key != b"SoLE" {
         return None;
@@ -583,7 +602,8 @@ pub fn parse_placed_warp(key: &[u8; 4], data: &[u8]) -> Option<photocraft_geom::
 /// A `warp` or `quiltWarp` descriptor (the `SoLd` key, or the whole descriptor after a `PlLd`
 /// record's corners) as a warp: `Some(None)` for no warp (`warpNone`, or a warp that moves
 /// nothing), `None` when it can't be read (an unknown style, missing bounds, a mesh that is
-/// neither one 4 × 4 patch nor a consistent quilt grid).
+/// neither one 4 × 4 patch nor a consistent quilt grid, a cylinder that isn't a horizontal one
+/// without perspective, the only kind measured).
 pub(crate) fn warp_of(w: &Descriptor) -> Option<Option<photocraft_geom::warp::Warp>> {
     use photocraft_geom::warp::{BezierMesh, Warp, WarpStyle};
     let style = enum_of(w, "warpStyle").and_then(|v| WarpStyle::parse(&String::from_utf8_lossy(v)))?;
@@ -597,6 +617,17 @@ pub(crate) fn warp_of(w: &Descriptor) -> Option<Option<photocraft_geom::warp::Wa
     warp.h_distort = num(w.get("warpPerspective")).unwrap_or(0.0);
     warp.v_distort = num(w.get("warpPerspectiveOther")).unwrap_or(0.0);
     warp.vertical = enum_of(w, "warpRotate") == Some(b"Vrtc");
+    if style == WarpStyle::Cylinder {
+        if warp.vertical || warp.h_distort != 0.0 || warp.v_distort != 0.0 {
+            return None;
+        }
+        let values: Vec<f64> = match w.get("warpValues")? {
+            Value::List(l) => l.iter().map(|v| num(Some(v))).collect::<Option<_>>()?,
+            Value::UnitFloats { values, .. } => values.clone(),
+            _ => return None,
+        };
+        return Some(Some(Warp::cylinder(&values, bounds)?));
+    }
     if style == WarpStyle::Custom {
         let env = get_desc(w, "customEnvelopeWarp")?;
         let Some(Value::ObjectArray(arr)) = env.get("meshPoints") else { return None };
@@ -702,18 +733,30 @@ pub(crate) fn parse_prefix_versioned(data: &[u8]) -> Option<Descriptor> {
 }
 
 /// The source-space box Photoshop maps onto a placed layer's `Trnf` quad: the bounding box of a
-/// custom warp's control points (one patch or a split grid), which may spill past the source,
-/// else the source rect `0..w × 0..h`. Mapping the source rect instead counts the overhang twice
-/// and stretches the placement. A degenerate or non-finite box falls back to the source rect.
+/// custom warp's control points (one patch or a split grid) or of a cylinder's mesh (#4112),
+/// which may spill past the source, else the source rect `0..w × 0..h`. Mapping the source rect
+/// instead counts the overhang twice and stretches the placement. A degenerate or non-finite box
+/// falls back to the source rect.
 pub(crate) fn placed_frame(warp: Option<&photocraft_geom::warp::Warp>, w: f64, h: f64) -> [f64; 4] {
+    use photocraft_geom::warp::WarpStyle;
     let rect = [0.0, 0.0, w, h];
-    let Some(m) = warp.filter(|wp| wp.style == photocraft_geom::warp::WarpStyle::Custom).and_then(|wp| wp.mesh.as_ref()).filter(|m| m.is_valid()) else {
+    let Some(m) = warp.filter(|wp| matches!(wp.style, WarpStyle::Custom | WarpStyle::Cylinder)).and_then(|wp| wp.mesh.as_ref()).filter(|m| m.is_valid()) else {
         return rect;
     };
     let inf = f64::INFINITY;
     let b = m.points.iter().fold([inf, inf, -inf, -inf], |b, [x, y]| [b[0].min(*x), b[1].min(*y), b[2].max(*x), b[3].max(*y)]);
     let ok = b.iter().all(|v| v.is_finite()) && b[2] - b[0] > 1e-9 && b[3] - b[1] > 1e-9;
     if ok { b } else { rect }
+}
+
+/// The source-space box a projective (Distort / Perspective) placement maps onto its corners: a
+/// cylinder's control-point box, as for an affine placement (#4112), else the source rect. A
+/// custom warp keeps the source rect here: there is no Photoshop reference for that combination.
+pub(crate) fn perspective_frame(warp: Option<&photocraft_geom::warp::Warp>, w: f64, h: f64) -> [f64; 4] {
+    match warp {
+        Some(wp) if wp.style == photocraft_geom::warp::WarpStyle::Cylinder => placed_frame(warp, w, h),
+        _ => [0.0, 0.0, w, h],
+    }
 }
 
 /// Smart object identifier and transform from `SoLd`/`SoLE` (best effort). A `PlLd` block
@@ -753,17 +796,17 @@ pub fn corners_affine(p: &[f64; 8], frame: [f64; 4]) -> Option<Affine> {
 
 /// The transform and (Distort/Perspective) projective placement of a `PlLd` record's corners `p`
 /// for a source of `size` warped by `warp`: the inverse of [`crate::smart_map::plld_bytes`]'s
-/// quad. As for `SoLd`'s `Trnf` (#3677), affine corners frame a single-patch custom warp's
+/// quad. As for `SoLd`'s `Trnf` (#3677), affine corners frame a custom warp's or a cylinder's
 /// control-point box (which may spill past the source), else the source rect; projective corners
-/// frame the source rect, as `parse_smart_perspective` reads them. `PlLd` stores no source size:
-/// without the source file (`None`) the layer is taken as placed at 100 %, the edge lengths being
-/// its size (a custom warp's box needs no size); position and rotation stay right, only Replace
-/// Contents and re-renders depend on the scale. Import and export (which keeps an unedited record
-/// verbatim) both place a `PlLd` layer with this.
+/// frame [`perspective_frame`], as `parse_smart_perspective` reads them. `PlLd` stores no source
+/// size: without the source file (`None`) the layer is taken as placed at 100 %, the edge lengths
+/// being its size (a custom warp's box needs no size); position and rotation stay right, only
+/// Replace Contents and re-renders depend on the scale. Import and export (which keeps an unedited
+/// record verbatim) both place a `PlLd` layer with this.
 pub fn plld_transform(p: &[f64; 8], size: Option<(f64, f64)>, warp: Option<&photocraft_geom::warp::Warp>) -> (Affine, Option<[f64; 9]>) {
     let (w, h) = size.unwrap_or_else(|| ((p[2] - p[0]).hypot(p[3] - p[1]), (p[6] - p[0]).hypot(p[7] - p[1])));
-    let perspective = corners_perspective([[p[0], p[1]], [p[2], p[3]], [p[4], p[5]], [p[6], p[7]]], (w, h));
-    let frame = if perspective.is_some() { [0.0, 0.0, w, h] } else { placed_frame(warp, w, h) };
+    let perspective = corners_perspective_in([[p[0], p[1]], [p[2], p[3]], [p[4], p[5]], [p[6], p[7]]], perspective_frame(warp, w, h));
+    let frame = if perspective.is_some() { perspective_frame(warp, w, h) } else { placed_frame(warp, w, h) };
     (corners_affine(p, frame).unwrap_or(Affine::IDENTITY), perspective)
 }
 
@@ -838,18 +881,27 @@ pub fn parse_smart_perspective(key: &[u8; 4], data: &[u8]) -> Option<[f64; 9]> {
         (p.len() == 8 && p.iter().all(|v| v.is_finite())).then(|| [[p[0], p[1]], [p[2], p[3]], [p[4], p[5]], [p[6], p[7]]])
     };
     let q = quad("nonAffineTransform").or_else(|| quad("Trnf"))?;
-    corners_perspective(q, (w, h))
+    // The warp `parse_placed_warp` reads: a split warp's `quiltWarp` comes first.
+    let warp = get_desc(&d, "quiltWarp").or_else(|| get_desc(&d, "warp")).and_then(warp_of).flatten();
+    corners_perspective_in(q, perspective_frame(warp.as_ref(), w, h))
 }
 
 /// The projective placement of a `w` × `h` source onto corners `q` that aren't a parallelogram;
 /// `None` for affine corners (see [`corners_affine`]) or an empty size.
 pub fn corners_perspective(q: [[f64; 2]; 4], (w, h): (f64, f64)) -> Option<[f64; 9]> {
+    corners_perspective_in(q, [0.0, 0.0, w, h])
+}
+
+/// [`corners_perspective`] for the source-space box `frame` (left, top, right, bottom; see
+/// [`perspective_frame`]).
+pub(crate) fn corners_perspective_in(q: [[f64; 2]; 4], frame: [f64; 4]) -> Option<[f64; 9]> {
     // A parallelogram (top-left + bottom-right = top-right + bottom-left) is affine.
     let tol = 1e-6 * (1.0 + q.iter().flatten().fold(0.0f64, |m, v| m.max(v.abs())));
-    if (0..2).all(|i| (q[0][i] + q[2][i] - q[1][i] - q[3][i]).abs() <= tol) || w <= 0.0 || h <= 0.0 {
+    let ok = frame.iter().all(|v| v.is_finite()) && frame[2] > frame[0] && frame[3] > frame[1];
+    if (0..2).all(|i| (q[0][i] + q[2][i] - q[1][i] - q[3][i]).abs() <= tol) || !ok {
         return None;
     }
-    photocraft_algo::transform::Homography::rect_to_quad([0.0, 0.0, w, h], q).map(|m| m.0)
+    photocraft_algo::transform::Homography::rect_to_quad(frame, q).map(|m| m.0)
 }
 
 /// `masterFXSwitch` from an `lfx2` block (defaults to `true`).
@@ -864,669 +916,7 @@ pub fn effects_enabled(lfx2: &[u8]) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn noise_gradient_fill(min: [i32; 4], max: [i32; 4], add_transparency: bool) -> Descriptor {
-        let values = |v: [i32; 4]| Value::List(v.into_iter().map(Value::Integer).collect());
-        let gradient = Descriptor::new("Grdn")
-            .with("GrdF", Value::Enumerated { type_id: Id::new("GrdF"), value: Id::new("ClNs") })
-            .with("ClrS", Value::Enumerated { type_id: Id::new("ClrS"), value: Id::new("RGBC") })
-            .with("ShTr", Value::Boolean(add_transparency))
-            .with("VctC", Value::Boolean(true))
-            .with("RndS", Value::Integer(9052369))
-            .with("Smth", Value::Integer(2048))
-            .with("Mnm ", values(min))
-            .with("Mxm ", values(max));
-        Descriptor::new("null").with("Grad", Value::Descriptor(gradient))
-    }
-
-    #[test]
-    fn constant_rgb_noise_fill_uses_its_exact_colour() {
-        use photocraft_doc::Fill;
-        let fill = fill_from_desc(b"GdFl", &noise_gradient_fill([50, 25, 0, 0], [50, 25, 0, 100], false));
-        let Some(Fill::Gradient { stops, .. }) = fill else { panic!("constant noise gradient") };
-        assert_eq!(stops, vec![(0.0, Color::rgb(0.5, 0.25, 0.0)), (1.0, Color::rgb(0.5, 0.25, 0.0))]);
-    }
-
-    #[test]
-    fn variable_or_transparent_noise_stays_a_fill_with_the_placeholder_ramp() {
-        use photocraft_doc::Fill;
-        // Photoshop's default Noise gradient (min 0, max 100) and a transparent variant: no
-        // exact colour is provable, but the fill must parse — the layer keeps its type, its
-        // stored pixels (`fill_cache`) and its raw `GdFl` block. Only the uncached preview
-        // shows the placeholder ramp.
-        for descriptor in [noise_gradient_fill([0, 0, 0, 0], [100, 100, 100, 100], false), noise_gradient_fill([50, 25, 0, 0], [50, 25, 0, 100], true)] {
-            let Some(Fill::Gradient { stops, .. }) = fill_from_desc(b"GdFl", &descriptor) else { panic!("variable noise gradient must stay a fill layer") };
-            assert_eq!(stops, vec![(0.0, Color::BLACK), (1.0, Color::WHITE)]);
-        }
-    }
-
-    /// psd-tools layers-minimal/gradient-fill.psd ("Color to Transparent", no stored pixels): a
-    /// gradient fill's opacity stops reach the model (as its opacity stops; written from stop
-    /// alpha) and survive a write; the ramp's alpha follows them.
-    #[test]
-    fn gradient_fill_opacity_stops_become_alpha() {
-        use photocraft_color::Color;
-        use photocraft_doc::{Fill, GradientStyle};
-        let red = Color::rgba(1.0, 0.0, 0.0, 1.0);
-        let f = Fill::gradient(vec![(0.0, red), (1.0, Color { alpha: 0.0, ..red })], 90.0, 1.0, GradientStyle::Linear, false);
-        let (k, data) = super::write_fill(&f);
-        let back = super::parse_fill(&k, &data).unwrap();
-        let Fill::Gradient { stops, opacity_stops, .. } = &back else { panic!("gradient") };
-        assert_eq!(opacity_stops, &vec![(0.0, 1.0), (1.0, 0.0)]);
-        assert!(stops.iter().all(|s| s.1.c[0] == 1.0 && s.1.c[1] == 0.0));
-        let ramp = photocraft_compose::gradient_fill::Ramp::new(&back).unwrap();
-        assert_eq!(ramp.sample(0.0)[3], 1.0);
-        assert!(ramp.sample(1.0)[3] < 0.01);
-        // Opaque gradients come back without opacity stops.
-        let (k, data) = super::write_fill(&Fill::gradient(vec![(0.0, red), (1.0, Color::WHITE)], 0.0, 1.0, GradientStyle::Linear, false));
-        let Some(Fill::Gradient { opacity_stops, .. }) = super::parse_fill(&k, &data) else { panic!("gradient") };
-        assert!(opacity_stops.is_empty());
-    }
-
-    /// Photoshop 27.11 stores a gradient's method as the enum `gradientsInterpolationMethod`
-    /// (seen in gradient fill layers saved by scripted Photoshop): a black→white Linear gradient
-    /// is at 188 of 255 halfway (measured), where Classic gives 128. The key used to be read as
-    /// `gs99`, which Photoshop doesn't write, so every gradient opened as Classic.
-    #[test]
-    fn gradient_fill_reads_the_interpolation_method() {
-        use photocraft_color::Color;
-        use photocraft_doc::{Fill, GradientStyle};
-        use photocraft_psd::descriptor::{Id, Value};
-        let f = Fill::gradient(vec![(0.0, Color::BLACK), (1.0, Color::WHITE)], 0.0, 1.0, GradientStyle::Linear, false);
-        let (k, data) = super::write_fill(&f);
-        let d = super::parse_prefix_versioned(&data).unwrap();
-        let mid = |code: &str| {
-            let d =
-                d.clone().with("gradientsInterpolationMethod", Value::Enumerated { type_id: Id::new("gradientInterpolationMethodType"), value: Id::new(code) });
-            let back = super::fill_from_desc(&k, &d).unwrap();
-            let ramp = photocraft_compose::gradient_fill::Ramp::new(&back).unwrap();
-            (ramp.sample(0.5)[0] * 255.0).round()
-        };
-        assert_eq!(mid("Gcls"), 128.0);
-        assert!((mid("Lnr ") - 188.0).abs() <= 1.0, "Linear: {}", mid("Lnr "));
-        assert!((mid("Perc") - 99.0).abs() <= 2.0, "Perceptual: {}", mid("Perc"));
-        assert!((mid("Smoo") - 99.0).abs() <= 2.0, "Smooth: {}", mid("Smoo"));
-    }
-
-    #[test]
-    fn lab_descriptor_colours_round_trip() {
-        use photocraft_color::ColorMode;
-        use photocraft_psd::descriptor::{Descriptor, Value};
-        let d = Descriptor::new("LbCl").with("Lmnc", Value::Double(19.07)).with("A   ", Value::Double(52.29)).with("B   ", Value::Double(-85.08));
-        let c = super::color_from_desc(&d).unwrap();
-        assert_eq!(c.mode, ColorMode::Lab);
-        assert!((c.c[0] - 0.1907).abs() < 1e-5 && (c.c[1] * 255.0 - 128.0 - 52.29).abs() < 1e-3 && (c.c[2] * 255.0 - 128.0 + 85.08).abs() < 1e-3);
-        let back = super::color_from_desc(&super::color_to_desc(&c)).unwrap();
-        assert_eq!(back.mode, ColorMode::Lab);
-        for i in 0..3 {
-            assert!((back.c[i] - c.c[i]).abs() < 1e-6);
-        }
-        // Missing components are rejected, not defaulted.
-        assert!(super::color_from_desc(&Descriptor::new("LbCl").with("Lmnc", Value::Double(50.0))).is_none());
-    }
-
-    /// Colours stored as HSB (`HSBC`: `H   ` an angle in degrees, `Strt`/`Brgh` 0..100), as in
-    /// psd-tools `stroke-color-descriptors-hsb-with-rgb-mode.psd`, used to be dropped (#6774).
-    #[test]
-    fn hsb_descriptor_colours_parse() {
-        use photocraft_doc::Fill;
-        use photocraft_psd::descriptor::{Descriptor, Value};
-        let hsb = |h: f64, s: f64, b: f64| {
-            Descriptor::new("HSBC").with("H   ", Value::UnitFloat { unit: *b"#Ang", value: h }).with("Strt", Value::Double(s)).with("Brgh", Value::Double(b))
-        };
-        let close = |c: [f32; 3], e: [f32; 3]| c.iter().zip(e).all(|(a, b)| (a - b).abs() < 1e-5);
-        let green = super::color_from_desc(&hsb(120.0, 100.0, 100.0)).unwrap().to_rgb();
-        assert!(close(green, [0.0, 1.0, 0.0]), "{green:?}");
-        let white = super::color_from_desc(&hsb(0.0, 0.0, 100.0)).unwrap().to_rgb();
-        assert!(close(white, [1.0, 1.0, 1.0]), "{white:?}");
-        let half = super::color_from_desc(&hsb(240.0, 50.0, 50.0)).unwrap().to_rgb();
-        assert!(close(half, [0.25, 0.25, 0.5]), "{half:?}");
-        // A solid fill (`SoCo`) with an HSB colour is read, not lost.
-        let soco = Descriptor::new("null").with("Clr ", Value::Descriptor(hsb(0.0, 100.0, 100.0)));
-        let Some(Fill::Solid(c)) = super::fill_from_desc(b"SoCo", &soco) else { panic!("solid fill") };
-        assert!(close(c.to_rgb(), [1.0, 0.0, 0.0]), "{:?}", c.to_rgb());
-        // Missing components are rejected, not defaulted.
-        assert!(super::color_from_desc(&Descriptor::new("HSBC").with("Strt", Value::Double(50.0))).is_none());
-    }
-
-    #[test]
-    fn blending_ranges_map_to_blend_if() {
-        use photocraft_doc::{BlendIf, BlendRange};
-        use photocraft_psd::layer::BlendingRanges;
-        // Full ranges (what every layer without Blend If carries) → the default setting.
-        assert_eq!(super::blend_if_from_ranges(&BlendingRanges::full(3)), BlendIf::default());
-        assert_eq!(super::blend_if_from_ranges(&BlendingRanges::default()), BlendIf::default());
-        // Gray: This Layer black split 10/40; Blue (entry 3): Underlying white at 200.
-        let mut data = BlendingRanges::full(3).data;
-        data[..4].copy_from_slice(&[10, 40, 255, 255]);
-        data[3 * 8 + 4..3 * 8 + 8].copy_from_slice(&[0, 0, 200, 200]);
-        let b = super::blend_if_from_ranges(&BlendingRanges { data: data.clone() });
-        assert_eq!(b.get(0), [BlendRange { black: [10, 40], white: [255, 255] }, BlendRange::FULL]);
-        assert_eq!(b.get(3), [BlendRange::FULL, BlendRange { black: [0, 0], white: [200, 200] }]);
-        assert_eq!(b.ranges.len(), 4);
-        assert_eq!(super::ranges_from_blend_if(&b, 3).data, data);
-        // The default writes full ranges for gray + each channel.
-        assert_eq!(super::ranges_from_blend_if(&BlendIf::default(), 4), BlendingRanges::full(4));
-        // A trimmed setting is padded to the document's channel count.
-        let mut short = BlendIf::default();
-        short.set(0, [BlendRange { black: [5, 5], white: [255, 255] }, BlendRange::FULL]);
-        let r = super::ranges_from_blend_if(&short, 3);
-        assert_eq!(r.data.len(), 4 * 8);
-        assert_eq!(&r.data[..8], &[5, 5, 255, 255, 0, 0, 255, 255]);
-        assert_eq!(&r.data[8..], &BlendingRanges::full(2).data[..]);
-    }
-
-    #[test]
-    fn advanced_blending_blocks_round_trip() {
-        use photocraft_doc::{AdvancedBlending, Knockout};
-        let a = AdvancedBlending {
-            knockout: Knockout::Deep,
-            blend_interior: true,
-            blend_clipped: false,
-            transparency_shapes: false,
-            layer_mask_hides_effects: true,
-            vector_mask_hides_effects: true,
-        };
-        let mut raw = Vec::new();
-        super::put_advanced(&a, &mut raw);
-        assert_eq!(raw.len(), 6);
-        assert!(raw.contains(&(*b"knko", vec![2, 0, 0, 0])));
-        assert!(raw.contains(&(*b"clbl", vec![0, 0, 0, 0])));
-        let get = |k: &[u8; 4]| raw.iter().find(|(bk, _)| bk == k).map(|(_, d)| d.as_slice());
-        assert_eq!(super::advanced_from_blocks(get), a);
-        // Defaults: nothing added to a plain layer; existing blocks rewritten in place, in order.
-        let mut plain = Vec::new();
-        super::put_advanced(&AdvancedBlending::default(), &mut plain);
-        assert!(plain.is_empty());
-        let mut kept = vec![(*b"luni", vec![0; 4]), (*b"knko", vec![1, 0, 0, 0]), (*b"clbl", vec![1])];
-        super::put_advanced(&AdvancedBlending::default(), &mut kept);
-        assert_eq!(kept, vec![(*b"luni", vec![0; 4]), (*b"knko", vec![0, 0, 0, 0]), (*b"clbl", vec![1, 0, 0, 0])]);
-        // Missing and empty blocks read as Photoshop's defaults.
-        assert!(super::advanced_from_blocks(|_| None).is_default());
-        assert!(super::advanced_from_blocks(|_| Some(&[][..])).is_default());
-        assert_eq!(super::advanced_from_blocks(|k| (k == b"knko").then_some(&[1u8][..])).knockout, Knockout::Shallow);
-    }
-
-    #[test]
-    fn brst_round_trip() {
-        assert_eq!(super::parse_brst(&[0, 0, 0, 2]), 0b100);
-        assert_eq!(super::parse_brst(&[0, 0, 0, 0, 0, 0, 0, 1]), 0b11);
-        assert_eq!(super::brst_data(0b101).unwrap(), vec![0, 0, 0, 0, 0, 0, 0, 2]);
-        assert_eq!(super::brst_data(0), None);
-    }
-
-    #[test]
-    fn placed_layer_warp_is_read() {
-        use photocraft_geom::warp::WarpStyle;
-        use photocraft_psd::descriptor::ObjectArray;
-        let e = |t: &str, v: &str| Value::Enumerated { type_id: Id::new(t), value: Id::new(v) };
-        let bounds = Descriptor::new("Rctn")
-            .with("Top ", Value::UnitFloat { unit: *b"#Pxl", value: 0.0 })
-            .with("Left", Value::UnitFloat { unit: *b"#Pxl", value: 0.0 })
-            .with("Btom", Value::UnitFloat { unit: *b"#Pxl", value: 30.0 })
-            .with("Rght", Value::UnitFloat { unit: *b"#Pxl", value: 60.0 });
-        let sold = |warp: Descriptor| {
-            let mut v = b"soLD".to_vec();
-            v.extend_from_slice(&4u32.to_be_bytes());
-            v.extend(VersionedDescriptor::new(Descriptor::new("null").with("warp", Value::Descriptor(warp))).to_bytes());
-            v
-        };
-        let arc = Descriptor::new("warp")
-            .with("warpStyle", e("warpStyle", "warpArc"))
-            .with("warpValue", Value::Double(40.0))
-            .with("warpPerspective", Value::Double(0.0))
-            .with("warpPerspectiveOther", Value::Double(0.0))
-            .with("warpRotate", e("Ornt", "Hrzn"))
-            .with("bounds", Value::Descriptor(bounds.clone()));
-        let w = parse_placed_warp(b"SoLd", &sold(arc)).unwrap();
-        assert_eq!((w.style, w.bend, w.bounds), (WarpStyle::Arc, 40.0, [0.0, 0.0, 60.0, 30.0]));
-        let (mut xs, mut ys) = (Vec::new(), Vec::new());
-        for j in 0..4 {
-            for i in 0..4 {
-                xs.push(f64::from(i) * 20.0 + if i == 3 && j == 3 { 7.0 } else { 0.0 });
-                ys.push(f64::from(j) * 10.0);
-            }
-        }
-        let mesh = Descriptor::new("null")
-            .with("Hrzn", Value::UnitFloats { unit: *b"#Pxl", values: xs })
-            .with("Vrtc", Value::UnitFloats { unit: *b"#Pxl", values: ys });
-        let custom = Descriptor::new("warp").with("warpStyle", e("warpStyle", "warpCustom")).with("bounds", Value::Descriptor(bounds)).with(
-            "customEnvelopeWarp",
-            Value::Descriptor(Descriptor::new("customEnvelopeWarp").with("meshPoints", Value::ObjectArray(ObjectArray { prefix: 16, body: mesh }))),
-        );
-        let w = parse_placed_warp(b"SoLd", &sold(custom)).unwrap();
-        assert_eq!(w.style, WarpStyle::Custom);
-        assert_eq!(w.mesh.as_ref().unwrap().points[15], [67.0, 30.0]);
-        assert!(parse_placed_warp(b"PlLd", &[0; 20]).is_none());
-    }
-
-    #[test]
-    fn locks_and_labels() {
-        // Reference values round-trip byte for byte; Background layers carry 0x0D
-        // (transparency + position + the bit-3 lock reference files write).
-        for bits in [0u32, 1, 2, 4, 8, 0x0D, 0x8000_0000, 0x8000_000F] {
-            assert_eq!(lspf_from_locks(&locks_from_lspf(bits)), bits);
-        }
-        // Older PhotoCraft files wrote the artboard lock at 0x10; it reads back as artboard
-        // and is rewritten at the reference value 0x08.
-        assert!(locks_from_lspf(0x10).artboard);
-        assert_eq!(lspf_from_locks(&locks_from_lspf(0x10)), 0x08);
-        for i in 0..8 {
-            assert_eq!(label_index(label_from_index(i)), i);
-        }
-    }
-
-    #[test]
-    fn fills_roundtrip() {
-        for f in [
-            Fill::Solid(Color::rgb(1.0, 0.5, 0.0)),
-            Fill::Solid(Color { mode: ColorMode::Cmyk, c: [0.1, 0.2, 0.3, 0.4], alpha: 1.0 }),
-            Fill::Solid(Color::gray(0.25)),
-            Fill::gradient(vec![(0.0, Color::rgb(1.0, 0.0, 0.0)), (1.0, Color::rgb(0.0, 0.0, 1.0))], 45.0, 1.0, GradientStyle::Reflected, true),
-            // A live gradient (Gradient tool): canvas-aligned, offset, midpoints, opacity, dither.
-            Fill::Gradient {
-                stops: vec![(0.0, Color::rgb(1.0, 0.0, 0.0)), (0.5, Color::rgb(0.0, 1.0, 0.0)), (1.0, Color::rgb(0.0, 0.0, 1.0))],
-                angle: -33.5,
-                scale: 2.25,
-                style: GradientStyle::Radial,
-                reverse: false,
-                opacity_stops: vec![(0.0, 1.0), (0.25, 0.5), (1.0, 0.0)],
-                midpoints: vec![0.25, 0.75],
-                offset: (0.125, -0.375),
-                dither: true,
-                align: false,
-            },
-            Fill::Pattern { name: "Bubbles".into(), scale: 0.5, id: "abc".into(), angle: 30.0, link: false, phase: (3.0, -2.0) },
-        ] {
-            let (k, d) = write_fill(&f);
-            let back = parse_fill(&k, &d).unwrap();
-            match (&f, &back) {
-                (Fill::Solid(a), Fill::Solid(b)) => {
-                    assert_eq!(a.mode, b.mode);
-                    for i in 0..4 {
-                        assert!((a.c[i] - b.c[i]).abs() < 1e-5);
-                    }
-                }
-                _ => assert_eq!(back, f),
-            }
-        }
-    }
-}
+mod tests;
 
 #[cfg(test)]
-mod more_tests {
-    use super::*;
-
-    #[test]
-    fn float_rgb_colors_parse() {
-        let d = Descriptor::new("RGBC").with("redFloat", Value::Double(1.0)).with("greenFloat", Value::Double(0.5)).with("blueFloat", Value::Double(0.25));
-        let c = color_from_desc(&d).unwrap();
-        assert_eq!(c.to_rgb(), [1.0, 0.5, 0.25]);
-    }
-
-    #[test]
-    fn smart_transform_from_sold() {
-        let pts = [10.0, 20.0, 110.0, 20.0, 110.0, 70.0, 10.0, 70.0].map(Value::Double).to_vec();
-        let d = Descriptor::new("null")
-            .with("Idnt", Value::Text(UnicodeString::new_nul("uuid-1")))
-            .with("Trnf", Value::List(pts))
-            .with("Sz  ", Value::Descriptor(Descriptor::new("Pnt ").with("Wdth", Value::Double(50.0)).with("Hght", Value::Double(25.0))));
-        let mut data = b"soLD".to_vec();
-        data.extend_from_slice(&4u32.to_be_bytes());
-        data.extend(VersionedDescriptor::new(d).to_bytes());
-        data.extend_from_slice(&[0, 0]);
-        let (id, a) = parse_smart(b"SoLd", &data);
-        assert_eq!(id, "uuid-1");
-        assert_eq!(a.m, [2.0, 0.0, 0.0, 2.0, 10.0, 20.0]);
-        assert_eq!(parse_smart(b"PlLd", &data).0, "");
-        assert_eq!(parse_plld(&data), None, "soLD data is not a plcL record");
-    }
-
-    /// A `PlLd` record (as Photoshop CS2 writes it, with no `SoLd`, #2465) gives its source id and
-    /// placed corners; with the source size those are the same transform `SoLd` gives.
-    #[test]
-    fn plld_id_and_corners() {
-        use crate::smart_map::{PlacedSpec, plld_bytes};
-        let t = Affine { m: [1.5, 0.25, -0.5, 2.0, 10.0, 20.0] };
-        let spec = PlacedSpec { idnt: "uuid-cs2", placed: "", transform: t, perspective: None, size: (40.0, 30.0), dpi: 72.0, warp: None, filter_fx: None };
-        let data = plld_bytes(&spec, &mut Vec::new());
-        let (id, p) = parse_plld(&data).expect("a plcL record");
-        assert_eq!(id, "uuid-cs2");
-        assert_eq!(p, [10.0, 20.0, 70.0, 30.0, 55.0, 90.0, -5.0, 80.0]);
-        let back = corners_affine(&p, [0.0, 0.0, 40.0, 30.0]).unwrap();
-        for (a, b) in back.m.iter().zip(t.m) {
-            assert!((a - b).abs() < 1e-12, "{back:?} vs {t:?}");
-        }
-        assert_eq!(corners_perspective([[p[0], p[1]], [p[2], p[3]], [p[4], p[5]], [p[6], p[7]]], (40.0, 30.0)), None, "affine corners");
-        assert_eq!(corners_affine(&p, [0.0, 0.0, 0.0, 30.0]), None);
-        assert_eq!(corners_affine(&p, [0.0, 0.0, f64::NAN, 30.0]), None);
-        assert_eq!(corners_affine(&p, [5.0, 0.0, 5.0, 30.0]), None, "an empty frame");
-        let mut nan = p;
-        nan[3] = f64::INFINITY;
-        assert_eq!(corners_affine(&nan, [0.0, 0.0, 40.0, 30.0]), None);
-        // The placed-layer record is the one block that can be the principal one: PlLd-only
-        // layers have no smart transform from `parse_smart`.
-        assert_eq!(parse_smart(b"PlLd", &data), (String::new(), Affine::IDENTITY));
-    }
-
-    /// A `PlLd` record's corners frame the same box as `SoLd`'s `Trnf` (#3677): with a custom
-    /// warp whose control points spill past the source, the control-point box, not the source
-    /// rect. The CS2 record then places the layer exactly as the equivalent `SoLd` does, with or
-    /// without the source size (the box needs none).
-    #[test]
-    fn plld_corners_frame_a_spilled_custom_warp_like_sold() {
-        use crate::smart_map::{PlacedSpec, parse_sold, plld_bytes, sold_bytes};
-        use photocraft_geom::warp::{BezierMesh, Warp};
-        let bounds = [0.0, 0.0, 50.0, 25.0];
-        let mut mesh = BezierMesh::identity(bounds, 1, 1);
-        mesh.points[0] = [-10.0, -5.0];
-        mesh.points[15] = [60.0, 25.0];
-        let warp = Warp::custom(mesh, bounds);
-        let t = Affine { m: [2.0, 0.5, -0.25, 2.0, 120.0, 210.0] };
-        let spec = PlacedSpec { idnt: "cs2", placed: "p", transform: t, perspective: None, size: (50.0, 25.0), dpi: 72.0, warp: Some(&warp), filter_fx: None };
-        let plld = plld_bytes(&spec, &mut Vec::new());
-        let sold = sold_bytes(None, &spec, &mut Vec::new());
-        let (_, p) = parse_plld(&plld).expect("a plcL record");
-        assert_eq!(parse_plld_warp(&plld), PlldWarp::Warp(warp.clone()));
-        let from_sold = parse_smart(b"SoLd", &sold).1;
-        assert_eq!(parse_sold(&sold).map(|s| s.transform), Some(from_sold));
-        let close = |a: Affine, b: Affine| a.m.iter().zip(b.m).all(|(x, y)| (x - y).abs() < 1e-9);
-        assert!(close(from_sold, t), "{from_sold:?} vs {t:?}");
-        for size in [Some((50.0, 25.0)), None] {
-            let (got, perspective) = plld_transform(&p, size, Some(&warp));
-            assert!(close(got, from_sold), "size {size:?}: {got:?} vs SoLd {from_sold:?}");
-            assert_eq!(perspective, None);
-        }
-        // Framing the source rect instead would stretch it (the bug #3677 fixed for SoLd).
-        let rect = corners_affine(&p, [0.0, 0.0, 50.0, 25.0]).unwrap();
-        assert!(!close(rect, t), "the test needs a mesh that spills: {rect:?}");
-        // With no warp, or a preset one, the frame is the source rect, as before.
-        let plain = PlacedSpec { warp: None, ..spec };
-        let (_, q) = parse_plld(&plld_bytes(&plain, &mut Vec::new())).unwrap();
-        assert!(close(plld_transform(&q, Some((50.0, 25.0)), None).0, t));
-    }
-
-    /// Malformed `PlLd` data (wrong magic, truncated anywhere, a Pascal length past the end,
-    /// non-finite corners) reads as `None`, never a panic.
-    #[test]
-    fn plld_malformed_is_none() {
-        use crate::smart_map::{PlacedSpec, plld_bytes};
-        let spec =
-            PlacedSpec { idnt: "id", placed: "", transform: Affine::IDENTITY, perspective: None, size: (4.0, 4.0), dpi: 72.0, warp: None, filter_fx: None };
-        let data = plld_bytes(&spec, &mut Vec::new());
-        // Magic + version + Pascal "id" + 4 × u32 + 8 × f64: everything after is the warp.
-        let end = 4 + 4 + 1 + 2 + 16 + 64;
-        assert!(parse_plld(&data[..end]).is_some());
-        for n in 0..end {
-            assert_eq!(parse_plld(&data[..n]), None, "truncated to {n} bytes");
-        }
-        let mut bad = data.clone();
-        bad[..4].copy_from_slice(b"soLD");
-        assert_eq!(parse_plld(&bad), None);
-        let mut long = data.clone();
-        long[8] = 255; // a Pascal id longer than the record
-        assert_eq!(parse_plld(&long[..200.min(long.len())]), None);
-        let mut nan = data.clone();
-        nan[end - 8..end].copy_from_slice(&f64::NAN.to_be_bytes());
-        assert_eq!(parse_plld(&nan), None);
-        assert_eq!(parse_plld(&[]), None);
-    }
-
-    /// Photoshop CS2 can warp a smart object; `PlLd` keeps that warp after the corners (a u32
-    /// warp version, then the versioned `warp` descriptor). It reads back as written, and
-    /// `warpNone`, an identity warp or a record that stops at its corners mean no warp.
-    #[test]
-    fn plld_warps_round_trip() {
-        use crate::smart_map::{PlacedSpec, plld_bytes};
-        use photocraft_geom::warp::{BezierMesh, Warp, WarpStyle};
-        let bounds = [0.0, 0.0, 60.0, 30.0];
-        let mut arc = Warp::preset(WarpStyle::Arc, 40.0, bounds);
-        arc.vertical = true;
-        arc.h_distort = 10.0;
-        let mut mesh = BezierMesh::identity(bounds, 1, 1);
-        mesh.points[15] = [67.0, 30.0];
-        let custom = Warp::custom(mesh, bounds);
-        let flat = Warp::preset(WarpStyle::Flag, 0.0, bounds);
-        for (w, back) in
-            [(Some(&arc), PlldWarp::Warp(arc.clone())), (Some(&custom), PlldWarp::Warp(custom.clone())), (Some(&flat), PlldWarp::None), (None, PlldWarp::None)]
-        {
-            let t = Affine { m: [0.5, 0.0, 0.0, 0.5, 3.0, 4.0] };
-            let spec = PlacedSpec { idnt: "w", placed: "", transform: t, perspective: None, size: (60.0, 30.0), dpi: 72.0, warp: w, filter_fx: None };
-            let data = plld_bytes(&spec, &mut Vec::new());
-            assert_eq!(parse_plld_warp(&data), back, "{w:?}");
-            // The corners are unchanged by the warp that follows them.
-            assert_eq!(parse_plld(&data).map(|(_, p)| p[..2].to_vec()), Some(vec![3.0, 4.0]));
-        }
-        let spec =
-            PlacedSpec { idnt: "id", placed: "", transform: Affine::IDENTITY, perspective: None, size: (4.0, 4.0), dpi: 72.0, warp: None, filter_fx: None };
-        let end = 4 + 4 + 1 + 2 + 16 + 64;
-        let data = plld_bytes(&spec, &mut Vec::new());
-        assert_eq!(parse_plld_warp(&data[..end]), PlldWarp::None, "no warp stored");
-        assert_eq!(parse_plld_warp(&[data[..end].to_vec(), vec![0; 3]].concat()), PlldWarp::None, "padding");
-    }
-
-    /// A `PlLd` warp that is stored but can't be read (truncated, an unknown style, a missing
-    /// bounds rectangle or mesh) is `Unreadable`, so the import keeps the warped pixels.
-    #[test]
-    fn plld_unreadable_warps() {
-        use crate::smart_map::{PlacedSpec, plld_bytes};
-        use photocraft_geom::warp::{Warp, WarpStyle};
-        let arc = Warp::preset(WarpStyle::Arc, 40.0, [0.0, 0.0, 4.0, 4.0]);
-        let spec = PlacedSpec {
-            idnt: "id",
-            placed: "",
-            transform: Affine::IDENTITY,
-            perspective: None,
-            size: (4.0, 4.0),
-            dpi: 72.0,
-            warp: Some(&arc),
-            filter_fx: None,
-        };
-        let data = plld_bytes(&spec, &mut Vec::new());
-        let end = 4 + 4 + 1 + 2 + 16 + 64;
-        assert!(matches!(parse_plld_warp(&data), PlldWarp::Warp(_)));
-        for n in end + 1..data.len() - 4 {
-            if data[end..n].iter().any(|b| *b != 0) {
-                assert_eq!(parse_plld_warp(&data[..n]), PlldWarp::Unreadable, "truncated to {n} bytes");
-            }
-        }
-        let with = |d: Descriptor| [data[..end].to_vec(), vec![0; 4], VersionedDescriptor::new(d).to_bytes()].concat();
-        let style = |s: &str| Value::Enumerated { type_id: Id::new("warpStyle"), value: Id::new(s) };
-        assert_eq!(parse_plld_warp(&with(Descriptor::new("warp").with("warpStyle", style("warpSomethingNew")))), PlldWarp::Unreadable);
-        assert_eq!(parse_plld_warp(&with(Descriptor::new("warp").with("warpStyle", style("warpArc")))), PlldWarp::Unreadable, "no bounds");
-        assert_eq!(parse_plld_warp(&with(Descriptor::new("warp").with("warpStyle", style("warpNone")))), PlldWarp::None);
-        let bounds = Descriptor::new("classFloatRect")
-            .with("Top ", Value::Double(0.0))
-            .with("Left", Value::Double(0.0))
-            .with("Btom", Value::Double(4.0))
-            .with("Rght", Value::Double(4.0));
-        let custom = Descriptor::new("warp").with("warpStyle", style("warpCustom")).with("bounds", Value::Descriptor(bounds));
-        assert_eq!(parse_plld_warp(&with(custom)), PlldWarp::Unreadable, "custom with no mesh");
-        assert_eq!(parse_plld_warp(&[data[..end].to_vec(), vec![0, 0, 0, 0, 0, 0, 0, 16, 1, 2]].concat()), PlldWarp::Unreadable);
-        assert_eq!(parse_plld_warp(&data[..end - 1]), PlldWarp::Unreadable, "the record itself");
-        assert_eq!(parse_plld_warp(&[]), PlldWarp::Unreadable);
-    }
-
-    /// `SoLd` data with a 50 × 25 source, the quad `trnf` and, when given, a custom warp whose
-    /// 16 control points are `pts`.
-    fn sold_with_warp(trnf: [f64; 8], pts: Option<&[[f64; 2]]>) -> Vec<u8> {
-        use photocraft_psd::descriptor::ObjectArray;
-        let e = |t: &str, v: &str| Value::Enumerated { type_id: Id::new(t), value: Id::new(v) };
-        let mut d = Descriptor::new("null")
-            .with("Idnt", Value::Text(UnicodeString::new_nul("uuid-1")))
-            .with("Trnf", Value::List(trnf.map(Value::Double).to_vec()))
-            .with("Sz  ", Value::Descriptor(Descriptor::new("Pnt ").with("Wdth", Value::Double(50.0)).with("Hght", Value::Double(25.0))));
-        if let Some(pts) = pts {
-            let bounds = Descriptor::new("Rctn")
-                .with("Top ", Value::Double(0.0))
-                .with("Left", Value::Double(0.0))
-                .with("Btom", Value::Double(25.0))
-                .with("Rght", Value::Double(50.0));
-            let mesh = Descriptor::new("null")
-                .with("Hrzn", Value::UnitFloats { unit: *b"#Pxl", values: pts.iter().map(|p| p[0]).collect() })
-                .with("Vrtc", Value::UnitFloats { unit: *b"#Pxl", values: pts.iter().map(|p| p[1]).collect() });
-            let warp = Descriptor::new("warp").with("warpStyle", e("warpStyle", "warpCustom")).with("bounds", Value::Descriptor(bounds)).with(
-                "customEnvelopeWarp",
-                Value::Descriptor(Descriptor::new("customEnvelopeWarp").with("meshPoints", Value::ObjectArray(ObjectArray { prefix: 16, body: mesh }))),
-            );
-            d = d.with("warp", Value::Descriptor(warp));
-        }
-        let mut data = b"soLD".to_vec();
-        data.extend_from_slice(&4u32.to_be_bytes());
-        data.extend(VersionedDescriptor::new(d).to_bytes());
-        data
-    }
-
-    /// `SoLd` data with a split (quilt) custom warp, as Photoshop writes it: a `quiltWarp`
-    /// descriptor with `deformNumCols` × `deformNumRows` control points and the patch boundaries
-    /// in `quiltSliceX` / `quiltSliceY`. With `plain_warp`, a `warpNone` `warp` key sits next to it.
-    fn sold_with_quilt(trnf: [f64; 8], cols: f64, rows: f64, sx: &[f64], sy: &[f64], pts: &[[f64; 2]], plain_warp: bool) -> Vec<u8> {
-        use photocraft_psd::descriptor::ObjectArray;
-        let e = |t: &str, v: &str| Value::Enumerated { type_id: Id::new(t), value: Id::new(v) };
-        let bounds = || {
-            Descriptor::new("Rctn")
-                .with("Top ", Value::Double(0.0))
-                .with("Left", Value::Double(0.0))
-                .with("Btom", Value::Double(25.0))
-                .with("Rght", Value::Double(50.0))
-        };
-        let slices = |k: &str, v: &[f64]| {
-            let body = Descriptor::new("null").with(k, Value::UnitFloats { unit: *b"#Pxl", values: v.to_vec() });
-            Value::ObjectArray(ObjectArray { prefix: v.len() as u32, body })
-        };
-        let mesh = Descriptor::new("null")
-            .with("Hrzn", Value::UnitFloats { unit: *b"#Pxl", values: pts.iter().map(|p| p[0]).collect() })
-            .with("Vrtc", Value::UnitFloats { unit: *b"#Pxl", values: pts.iter().map(|p| p[1]).collect() });
-        let envelope = Descriptor::new("customEnvelopeWarp")
-            .with("quiltSliceX", slices("quiltSliceX", sx))
-            .with("quiltSliceY", slices("quiltSliceY", sy))
-            .with("meshPoints", Value::ObjectArray(ObjectArray { prefix: 16, body: mesh }));
-        let quilt = Descriptor::new("quiltWarp")
-            .with("warpStyle", e("warpStyle", "warpCustom"))
-            .with("bounds", Value::Descriptor(bounds()))
-            .with("deformNumRows", Value::Integer(rows as i32))
-            .with("deformNumCols", Value::Double(cols))
-            .with("customEnvelopeWarp", Value::Descriptor(envelope));
-        let mut d = Descriptor::new("null")
-            .with("Idnt", Value::Text(UnicodeString::new_nul("uuid-1")))
-            .with("Trnf", Value::List(trnf.map(Value::Double).to_vec()))
-            .with("Sz  ", Value::Descriptor(Descriptor::new("Pnt ").with("Wdth", Value::Double(50.0)).with("Hght", Value::Double(25.0))));
-        if plain_warp {
-            d = d.with(
-                "warp",
-                Value::Descriptor(Descriptor::new("warp").with("warpStyle", e("warpStyle", "warpNone")).with("bounds", Value::Descriptor(bounds()))),
-            );
-        }
-        d = d.with("quiltWarp", Value::Descriptor(quilt));
-        let mut data = b"soLD".to_vec();
-        data.extend_from_slice(&4u32.to_be_bytes());
-        data.extend(VersionedDescriptor::new(d).to_bytes());
-        data
-    }
-
-    /// A 3 × 2 patch identity grid over the 50 × 25 source with one interior control point pulled.
-    fn quilt_points() -> Vec<[f64; 2]> {
-        let mut pts = photocraft_geom::warp::BezierMesh::identity([0.0, 0.0, 50.0, 25.0], 3, 2).points;
-        if let Some(p) = pts.get_mut(10 * 3 + 4) {
-            p[1] += 3.0;
-        }
-        pts
-    }
-
-    /// Photoshop's split warp (`quiltWarp`, mockups' usual warp) reads as a multi-patch mesh: the
-    /// patch boundaries become the knots, the control points stay in order, and the quilt wins over
-    /// the `warpNone` `warp` key written next to it. Before, any mesh but 4 × 4 was dropped and the
-    /// layer re-rendered flat.
-    #[test]
-    fn quilt_warp_is_read_as_a_multi_patch_mesh() {
-        let quad = [100.0, 200.0, 240.0, 200.0, 240.0, 260.0, 100.0, 260.0];
-        let pts = quilt_points();
-        // Photoshop pads the outer boundaries a little past the grid's edges.
-        let data = sold_with_quilt(quad, 10.0, 7.0, &[-0.5, 12.5, 37.5, 50.5], &[-0.5, 12.5, 25.5], &pts, true);
-        let warp = parse_placed_warp(b"SoLd", &data).expect("a quilt warp");
-        let mesh = warp.mesh.as_ref().expect("its mesh");
-        assert_eq!(mesh.points, pts);
-        assert_eq!(mesh.us.len(), 4);
-        assert_eq!(mesh.vs.len(), 3);
-        assert_eq!((mesh.us[0], mesh.us[3], mesh.vs[0], mesh.vs[2]), (0.0, 1.0, 0.0, 1.0));
-        assert!((mesh.us[1] - 13.0 / 51.0).abs() < 1e-12 && (mesh.vs[1] - 13.0 / 26.0).abs() < 1e-12);
-        assert!(mesh.is_valid());
-    }
-
-    /// A quilt's control points frame the placed quad as a single patch's do (#3677): a grid
-    /// spilling to x = -10, y = -5 and x = 60 frames a 70 × 30 box.
-    #[test]
-    fn quilt_warp_control_box_frames_the_quad() {
-        let mut pts = quilt_points();
-        pts[0] = [-10.0, -5.0];
-        if let Some(last) = pts.last_mut() {
-            *last = [60.0, 25.0];
-        }
-        let quad = [100.0, 200.0, 240.0, 200.0, 240.0, 260.0, 100.0, 260.0];
-        let data = sold_with_quilt(quad, 10.0, 7.0, &[0.0, 12.5, 37.5, 50.0], &[0.0, 12.5, 25.0], &pts, false);
-        assert_eq!(parse_smart(b"SoLd", &data).1.m, [2.0, 0.0, 0.0, 2.0, 120.0, 210.0]);
-    }
-
-    /// An inconsistent quilt reads as no warp rather than a wrong one, and never panics.
-    #[test]
-    fn inconsistent_quilt_warps_are_not_read() {
-        let quad = [100.0, 200.0, 240.0, 200.0, 240.0, 260.0, 100.0, 260.0];
-        let pts = quilt_points();
-        let (sx, sy) = ([0.0, 12.5, 37.5, 50.0], [0.0, 12.5, 25.0]);
-        let read =
-            |cols: f64, rows: f64, sx: &[f64], sy: &[f64], pts: &[[f64; 2]]| parse_placed_warp(b"SoLd", &sold_with_quilt(quad, cols, rows, sx, sy, pts, false));
-        assert!(read(10.0, 7.0, &sx, &sy, &pts).is_some());
-        assert!(read(9.0, 7.0, &sx, &sy, &pts).is_none(), "not three points per patch side plus one");
-        assert!(read(13.0, 7.0, &sx, &sy, &pts).is_none(), "more points claimed than stored");
-        assert!(read(10.0, 7.0, &[0.0, 12.5, 50.0], &sy, &pts).is_none(), "one slice per patch boundary");
-        assert!(read(10.0, 7.0, &[0.0, 37.5, 12.5, 50.0], &sy, &pts).is_none(), "slices must increase");
-        assert!(read(10.0, 7.0, &[0.0, f64::NAN, 37.5, 50.0], &sy, &pts).is_none());
-        assert!(read(1e9, 7.0, &sx, &sy, &pts).is_none(), "an absurd grid is refused before any arithmetic");
-        assert!(read(10.0, 7.0, &sx, &sy, &pts[..pts.len() - 1]).is_none());
-        let mut nan = pts.clone();
-        nan[3] = [f64::NAN, 0.0];
-        assert!(read(10.0, 7.0, &sx, &sy, &nan).is_none());
-    }
-
-    /// Photoshop's `Trnf` is the image of the custom warp's control-point bounding box, not of the
-    /// source rect: a mesh spilling to x = -10, y = -5 and x = 60 frames a 70 × 30 box.
-    #[test]
-    fn smart_transform_maps_the_warp_control_box_onto_the_quad() {
-        let mut pts = photocraft_geom::warp::BezierMesh::identity([0.0, 0.0, 50.0, 25.0], 1, 1).points;
-        pts[0] = [-10.0, -5.0];
-        pts[15] = [60.0, 25.0];
-        let quad = [100.0, 200.0, 240.0, 200.0, 240.0, 260.0, 100.0, 260.0];
-        let (_, a) = parse_smart(b"SoLd", &sold_with_warp(quad, Some(&pts)));
-        assert_eq!(a.m, [2.0, 0.0, 0.0, 2.0, 120.0, 210.0]);
-        // Without a warp the source rect is the frame, as before.
-        assert_eq!(parse_smart(b"SoLd", &sold_with_warp(quad, None)).1.m, [2.8, 0.0, 0.0, 2.4, 100.0, 200.0]);
-    }
-
-    /// A custom mesh with no area (every control point on one spot) can't frame the quad: the
-    /// source rect does, with no division by zero.
-    #[test]
-    fn smart_transform_with_a_degenerate_warp_box_uses_the_source_rect() {
-        let quad = [100.0, 200.0, 240.0, 200.0, 240.0, 260.0, 100.0, 260.0];
-        let (_, a) = parse_smart(b"SoLd", &sold_with_warp(quad, Some(&[[7.0, 7.0]; 16])));
-        assert_eq!(a.m, [2.8, 0.0, 0.0, 2.4, 100.0, 200.0]);
-        let mut warp = photocraft_geom::warp::Warp::preset(photocraft_geom::warp::WarpStyle::Custom, 0.0, [0.0, 0.0, 50.0, 25.0]);
-        warp.mesh = Some(photocraft_geom::warp::BezierMesh { us: vec![0.0, 1.0], vs: vec![0.0, 1.0], points: vec![[f64::NAN, 1.0]; 16] });
-        assert_eq!(placed_frame(Some(&warp), 50.0, 25.0), [0.0, 0.0, 50.0, 25.0]);
-        assert_eq!(placed_frame(None, 50.0, 25.0), [0.0, 0.0, 50.0, 25.0]);
-    }
-
-    #[test]
-    fn effects_switch() {
-        let mut lfx = vec![0, 0, 0, 0];
-        lfx.extend(VersionedDescriptor::new(Descriptor::new("null").with("masterFXSwitch", Value::Boolean(false))).to_bytes());
-        assert!(!effects_enabled(&lfx));
-        assert!(effects_enabled(&[0, 0, 0, 0]));
-    }
-
-    #[test]
-    fn tysh_garbage_is_none() {
-        assert!(parse_tysh(&[0; 10]).is_none());
-    }
-}
+mod more_tests;

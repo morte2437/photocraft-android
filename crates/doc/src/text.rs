@@ -222,7 +222,8 @@ pub struct ParagraphRun {
 }
 
 /// Point text grows from its anchor (text-space origin = first baseline at the anchor);
-/// paragraph (box) text wraps inside a rectangle; path text runs along a curve.
+/// paragraph (box) text wraps inside a rectangle; path text runs along a curve; area text
+/// wraps inside a closed path.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub enum TextShape {
     #[default]
@@ -234,6 +235,10 @@ pub enum TextShape {
     /// curve. `start` is the arc-length offset (px) of the text origin along the path; `flip`
     /// puts the text on the other side of the path.
     Path { path: super::vector::Subpath, start: f32, flip: bool },
+    /// Area type: paragraph text that wraps inside the closed subpaths of `path` (text-space
+    /// pixels, before the layer transform), combined with their path operations and fill rule.
+    /// Text that doesn't fit is hidden, as in a text box.
+    Area { path: super::vector::Path },
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

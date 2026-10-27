@@ -67,7 +67,7 @@ id = "BUG-204-3"
 target = "RAW prefs and ask_before_saving_layered_tiff read, or hidden"
 status = "done"
 issue = 204
-note = "ask_before_saving_layered_tiff drives the TIFF Options prompt (ui-egui tiff_options_ui.rs); raw_defaults.open_in_camera_raw drives the Camera Raw dialog (camera_raw_ui.rs); the other raw_defaults fields are in prefs::HIDDEN_UNTIL_IMPLEMENTED"
+note = "ask_before_saving_layered_tiff drives the TIFF Options prompt (ui-egui tiff_options_ui.rs); raw_defaults.open_in_camera_raw drives the Camera Raw dialog (camera_raw_ui.rs); the other raw_defaults fields drive the raw open and Camera Raw (#5128)"
 
 [[item]]
 id = "BUG-204-4"

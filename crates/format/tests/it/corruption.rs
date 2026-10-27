@@ -128,6 +128,24 @@ fn over_deep_manifest_fails_cleanly() {
     assert!(matches!(e, FormatError::Corrupt(_)), "{e}");
 }
 
+/// A manifest of millions of tiny values (`[0,0,…]` deflates about 1000:1) is refused before
+/// it is parsed into a JSON tree, which would cost about 16 bytes of memory per input byte.
+#[test]
+fn manifest_with_too_many_values_is_refused() {
+    let n = (4 << 20) + 16;
+    let mut m = Vec::with_capacity(2 * n + 1);
+    m.push(b'[');
+    for i in 0..n {
+        m.extend_from_slice(if i == 0 { b"0" } else { b",0" });
+    }
+    m.push(b']');
+    let b = rebuild(&sample(), |name, d| Some(if name == "manifest.json" { m.clone() } else { d }));
+    let e = load_from_bytes(&b).unwrap_err();
+    assert!(matches!(e, FormatError::LimitExceeded(_)), "{e}");
+    let e = read_manifest(&b).unwrap_err();
+    assert!(matches!(e, FormatError::LimitExceeded(_)), "{e}");
+}
+
 #[test]
 fn too_new_version_rejected() {
     let b = rebuild(&sample(), |n, d| {

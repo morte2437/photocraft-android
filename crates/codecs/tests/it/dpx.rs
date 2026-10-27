@@ -323,6 +323,49 @@ fn chosen_bit_depth_sets_the_header_and_packing() {
     assert!(fidelity_warnings(&float, Format::Dpx).contains(&FidelityWarning::DepthReduced { from: SampleType::F32, to: SampleType::U16 }));
 }
 
+/// The depth warnings of `img` written as `format` with `o`.
+fn depth_warnings(img: &Image, format: Format, o: &EncodeOptions) -> Vec<FidelityWarning> {
+    fidelity_warnings_with(img, format, o)
+        .into_iter()
+        .filter(|w| matches!(w, FidelityWarning::DepthReduced { .. } | FidelityWarning::BitsReduced { .. }))
+        .collect()
+}
+
+#[test]
+fn saving_sixteen_bits_at_ten_or_twelve_warns_with_the_stored_bits() {
+    let img = Image::from_u16(5, 2, ChannelLayout::Rgb, &(0..30u16).map(|i| i * 2000 + 1).collect::<Vec<_>>()).unwrap();
+    for (choice, bits) in [(DpxBits::Bits10, 10), (DpxBits::Bits12, 12)] {
+        assert_eq!(depth_warnings(&img, Format::Dpx, &opts(Some(choice))), [FidelityWarning::BitsReduced { from: SampleType::U16, bits }]);
+        assert_eq!(FidelityWarning::BitsReduced { from: SampleType::U16, bits }.to_string(), format!("16-bit will be reduced to {bits}-bit"));
+        // Float samples name the stored bits too, not the 16-bit words they are packed in.
+        let float = img.convert(ChannelLayout::Rgb, SampleType::F32);
+        assert_eq!(depth_warnings(&float, Format::Dpx, &opts(Some(choice))), [FidelityWarning::BitsReduced { from: SampleType::F32, bits }]);
+        // 8-bit samples widen into 10 and 12 bits without loss.
+        let eight = img.convert(ChannelLayout::Rgb, SampleType::U8);
+        assert_eq!(depth_warnings(&eight, Format::Dpx, &opts(Some(choice))), []);
+    }
+    assert_eq!(depth_warnings(&img, Format::Dpx, &opts(Some(DpxBits::Bits16))), []);
+    assert_eq!(depth_warnings(&img, Format::Dpx, &opts(None)), []);
+    assert_eq!(depth_warnings(&img, Format::Dpx, &opts(Some(DpxBits::Bits8))), [FidelityWarning::DepthReduced { from: SampleType::U16, to: SampleType::U8 }]);
+    assert_eq!(depth_warnings(&img, Format::Cineon, &EncodeOptions::default()), [FidelityWarning::BitsReduced { from: SampleType::U16, bits: 10 }]);
+}
+
+#[test]
+fn a_frame_opened_at_ten_or_twelve_bits_saves_back_without_a_warning() {
+    let img = Image::from_u16(5, 2, ChannelLayout::Rgb, &(0..30u16).map(|i| i * 2000 + 1).collect::<Vec<_>>()).unwrap();
+    for (choice, bits) in [(DpxBits::Bits10, 10), (DpxBits::Bits12, 12)] {
+        let opened = decode(&encode(&img, Format::Dpx, &opts(Some(choice))).unwrap()).unwrap();
+        assert_eq!(depth_warnings(&opened, Format::Dpx, &opts(Some(choice))), [], "{bits}-bit");
+        assert_eq!(decode(&encode(&opened, Format::Dpx, &opts(Some(choice))).unwrap()).unwrap(), opened, "{bits}-bit");
+    }
+    // A 12-bit frame saved at 10 bits does lose its two low bits.
+    let twelve = decode(&encode(&img, Format::Dpx, &opts(Some(DpxBits::Bits12))).unwrap()).unwrap();
+    assert_eq!(depth_warnings(&twelve, Format::Dpx, &opts(Some(DpxBits::Bits10))), [FidelityWarning::BitsReduced { from: SampleType::U16, bits: 10 }]);
+    let cineon = decode(&cineon_bytes(3, 4, 2, &cineon_codes(24))).unwrap();
+    assert_eq!(depth_warnings(&cineon, Format::Cineon, &EncodeOptions::default()), []);
+    assert_eq!(depth_warnings(&cineon, Format::Dpx, &opts(Some(DpxBits::Bits10))), []);
+}
+
 #[test]
 fn gray_with_alpha_is_written_as_luma_with_a_warning() {
     let img = Image::from_u8(2, 1, ChannelLayout::GrayA, vec![10, 128, 200, 255]).unwrap();

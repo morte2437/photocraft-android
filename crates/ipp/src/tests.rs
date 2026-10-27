@@ -138,6 +138,161 @@ fn printers_are_listed_with_state_and_default() {
 }
 
 #[test]
+fn printer_attributes_before_name_are_preserved() {
+    let state = 5u32.to_be_bytes();
+    let base: [Attr<'_>; 4] = [
+        (TAG_TEXT, "printer-info", &[b"Studio Printer"]),
+        (TAG_ENUM, "printer-state", &[&state]),
+        (TAG_BOOLEAN, "printer-is-accepting-jobs", &[b"\0"]),
+        (TAG_NAME, "printer-name", &[b"studio"]),
+    ];
+    let body = ipp(0, &[ok_header(), (TAG_PRINTER_GROUP, &base)]);
+    for chunked in [false, true] {
+        let (ep, _) = fake(body.clone(), chunked, 200);
+        let list = printers(&ep).unwrap();
+        assert_eq!(list.len(), 1, "chunked {chunked}");
+        assert_eq!((list[0].name.as_str(), list[0].info.as_str(), list[0].state, list[0].accepting_jobs), ("studio", "Studio Printer", 5, false));
+        assert!(!list[0].is_class);
+    }
+}
+
+#[test]
+fn printer_groups_do_not_share_metadata() {
+    let state_a = 4u32.to_be_bytes();
+    let state_b = 5u32.to_be_bytes();
+    let body = ipp(
+        0,
+        &[
+            ok_header(),
+            (
+                TAG_PRINTER_GROUP,
+                &[(TAG_NAME, "printer-name", &[b"first"]), (TAG_TEXT, "printer-info", &[b"First printer"]), (TAG_ENUM, "printer-state", &[&state_a])],
+            ),
+            (
+                TAG_PRINTER_GROUP,
+                &[(TAG_TEXT, "printer-info", &[b"Second printer"]), (TAG_ENUM, "printer-state", &[&state_b]), (TAG_NAME, "printer-name", &[b"second"])],
+            ),
+        ],
+    );
+    let (ep, _) = fake(body, false, 200);
+    let list = queues(&ep, OP_CUPS_GET_PRINTERS, false).unwrap();
+    assert_eq!(list.len(), 2);
+    assert_eq!((list[0].name.as_str(), list[0].info.as_str(), list[0].state), ("first", "First printer", 4));
+    assert_eq!((list[1].name.as_str(), list[1].info.as_str(), list[1].state), ("second", "Second printer", 5));
+}
+
+#[test]
+fn printer_attribute_order_does_not_change_results() {
+    let state = 5u32.to_be_bytes();
+    let fields: [Attr<'_>; 4] = [
+        (TAG_TEXT, "printer-info", &[b"Studio Printer"]),
+        (TAG_ENUM, "printer-state", &[&state]),
+        (TAG_BOOLEAN, "printer-is-accepting-jobs", &[b"\0"]),
+        (TAG_NAME, "printer-name", &[b"studio"]),
+    ];
+    let expected = Printer { name: "studio".into(), info: "Studio Printer".into(), state: 5, accepting_jobs: false, is_default: false, is_class: false };
+    let mut permutations = 0;
+    for first in 0..4 {
+        for second in 0..4 {
+            for third in 0..4 {
+                for fourth in 0..4 {
+                    let order = [first, second, third, fourth];
+                    if order[0] == order[1]
+                        || order[0] == order[2]
+                        || order[0] == order[3]
+                        || order[1] == order[2]
+                        || order[1] == order[3]
+                        || order[2] == order[3]
+                    {
+                        continue;
+                    }
+                    permutations += 1;
+                    let ordered = order.iter().map(|index| fields[*index]).collect::<Vec<_>>();
+                    let body = ipp(0, &[ok_header(), (TAG_PRINTER_GROUP, &ordered)]);
+                    let (ep, _) = fake(body, false, 200);
+                    assert_eq!(queues(&ep, OP_CUPS_GET_PRINTERS, false).unwrap(), vec![expected.clone()], "order {order:?}");
+                }
+            }
+        }
+    }
+    assert_eq!(permutations, 24);
+}
+
+#[test]
+fn class_attributes_before_name_are_preserved() {
+    let state = 5u32.to_be_bytes();
+    let body = ipp(
+        0,
+        &[
+            ok_header(),
+            (
+                TAG_PRINTER_GROUP,
+                &[
+                    (TAG_BOOLEAN, "printer-is-accepting-jobs", &[b"\0"]),
+                    (TAG_TEXT, "printer-info", &[b"Shared studio"]),
+                    (TAG_ENUM, "printer-state", &[&state]),
+                    (TAG_NAME, "printer-name", &[b"studio-class"]),
+                ],
+            ),
+        ],
+    );
+    let (ep, rx) = fake(body, true, 200);
+    let classes = queues(&ep, OP_CUPS_GET_CLASSES, true).unwrap();
+    assert_eq!(rx.recv().unwrap().0, OP_CUPS_GET_CLASSES);
+    assert_eq!(classes.len(), 1);
+    assert_eq!(
+        (classes[0].name.as_str(), classes[0].info.as_str(), classes[0].state, classes[0].accepting_jobs, classes[0].is_class),
+        ("studio-class", "Shared studio", 5, false, true)
+    );
+}
+
+#[test]
+fn empty_or_unnamed_groups_do_not_leak_metadata() {
+    let body = ipp(
+        0,
+        &[
+            ok_header(),
+            (TAG_PRINTER_GROUP, &[(TAG_NAME, "printer-name", &[b"named"])]),
+            (TAG_PRINTER_GROUP, &[]),
+            (TAG_PRINTER_GROUP, &[(TAG_TEXT, "printer-info", &[b"orphan metadata"])]),
+            (TAG_PRINTER_GROUP, &[(TAG_NAME, "printer-name", &[b"next"]), (TAG_ENUM, "printer-state", &[&3u32.to_be_bytes()])]),
+        ],
+    );
+    let (ep, _) = fake(body, false, 200);
+    let list = queues(&ep, OP_CUPS_GET_PRINTERS, false).unwrap();
+    assert_eq!(list.len(), 2);
+    assert_eq!((list[0].name.as_str(), list[0].info.as_str()), ("named", ""));
+    assert_eq!((list[1].name.as_str(), list[1].info.as_str()), ("next", ""));
+}
+
+#[test]
+fn additional_values_do_not_cross_group_boundaries() {
+    let valid = ipp(0, &[ok_header(), (TAG_PRINTER_GROUP, &[(TAG_KEYWORD, "supported", &[b"one", b"two"])])]);
+    let reply = Reply::parse(&valid).unwrap();
+    assert_eq!(reply.attributes.iter().find(|a| a.name == "supported").map(|a| a.values.as_slice()), Some(&[b"one".to_vec(), b"two".to_vec()][..]));
+
+    let mut body = vec![2, 0, 0, 0, 0, 0, 0, 1, TAG_PRINTER_GROUP];
+    body.extend_from_slice(&[TAG_NAME, 0, 12]);
+    body.extend_from_slice(b"printer-name");
+    body.extend_from_slice(&[0, 5]);
+    body.extend_from_slice(b"first");
+    body.extend_from_slice(&[TAG_TEXT, 0, 12]);
+    body.extend_from_slice(b"printer-info");
+    body.extend_from_slice(&[0, 6]);
+    body.extend_from_slice(b"before");
+    body.push(TAG_PRINTER_GROUP);
+    body.extend_from_slice(&[TAG_TEXT, 0, 0, 0, 5]);
+    body.extend_from_slice(b"after");
+    body.extend_from_slice(&[TAG_NAME, 0, 12]);
+    body.extend_from_slice(b"printer-name");
+    body.extend_from_slice(&[0, 6]);
+    body.extend_from_slice(b"second");
+    body.push(TAG_END);
+    let (ep, _) = fake(body, true, 200);
+    assert!(matches!(queues(&ep, OP_CUPS_GET_PRINTERS, false), Err(Error::Protocol(_))));
+}
+
+#[test]
 fn default_printer_is_read_and_absence_is_not_an_error() {
     let (ep, rx) = fake(ipp(0, &[ok_header(), (TAG_PRINTER_GROUP, &[(TAG_NAME, "printer-name", &[b"Office"])])]), false, 200);
     assert_eq!(default_printer(&ep).unwrap(), Some("Office".into()));
