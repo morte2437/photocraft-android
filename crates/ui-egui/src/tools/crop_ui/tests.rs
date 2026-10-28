@@ -127,8 +127,10 @@ fn reset_frames_the_canvas_again_and_can_be_undone() {
     assert_eq!(app.session.active().unwrap().doc.size, Size::new(200, 100), "nothing is cropped");
 
     // The box's own Undo brings the drawn frame back, and Redo resets it again.
+    assert!(!shows_beyond_canvas(&app), "the reset frame is not being edited");
     assert!(intercept(&mut app, "edit.undo").is_some());
     assert_eq!(app.ui.crop_rect, Some([50.0, 20.0, 120.0, 70.0]));
+    assert!(shows_beyond_canvas(&app), "the drawn frame is being edited again: the canvas shows the pixels past it");
     assert!(intercept(&mut app, "edit.redo").is_some());
     assert_eq!(app.ui.crop_rect, Some([0.0, 0.0, 200.0, 100.0]));
 
@@ -148,6 +150,23 @@ fn reset_frames_the_canvas_again_and_can_be_undone() {
     drag(&mut app, &[[60.0, 30.0], [100.0, 60.0]], NONE);
     app.ui.tool = Tool::Brush;
     assert!(!modified(&app));
+}
+
+/// Reset frames the canvas as a new frame is: held to the ratio preset picked in the bar.
+#[test]
+fn reset_holds_the_frame_to_the_ratio_preset() {
+    let mut app = app(SampleType::U8);
+    ensure_frame(&mut app);
+    drag(&mut app, &[[50.0, 20.0], [80.0, 40.0], [120.0, 70.0]], NONE);
+    let drawn = Some([50.0, 20.0, 120.0, 70.0]);
+    assert_eq!(app.ui.crop_rect, drawn);
+    // A 1:1 preset on the 200 x 100 canvas: the first frame is the largest square, centred.
+    app.ui.tool_options.crop_ratio = "1:1".into();
+    reset(&mut app);
+    assert_eq!(app.ui.crop_rect, Some([50.0, 0.0, 150.0, 100.0]), "not the whole canvas, a 2:1 frame under a 1:1 preset");
+    assert!(!modified(&app) && app.crop.default_frame);
+    assert!(intercept(&mut app, "edit.undo").is_some());
+    assert_eq!(app.ui.crop_rect, drawn, "Undo brings the drawn frame back");
 }
 
 /// #9730: the Crop tool's options bar has a Reset button beside Cancel and Commit, live once

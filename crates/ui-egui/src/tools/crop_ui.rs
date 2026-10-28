@@ -75,6 +75,8 @@ struct CropStep {
     rect: Option<[f64; 4]>,
     angle: f64,
     default_frame: bool,
+    /// The canvas shows the pixels past the frame ([`shows_beyond_canvas`]).
+    editing: bool,
 }
 
 /// A crop gesture in progress. Rects are `[x0, y0, x1, y1]` in document coordinates.
@@ -521,6 +523,8 @@ pub fn reset(app: &mut PhotocraftApp) {
     app.crop.press_step = None;
     claim(app);
     crate::crop_straighten::reset(app);
+    // As a new default frame is: held to the ratio preset (or output size) picked in the bar.
+    fit_frame(app);
     if step_of(app) != before {
         app.crop.undo.push(before);
         app.crop.redo.clear();
@@ -538,7 +542,7 @@ pub fn clear_history(app: &mut PhotocraftApp) {
 
 /// The frame's current state, as an undo step.
 fn step_of(app: &PhotocraftApp) -> CropStep {
-    CropStep { rect: app.ui.crop_rect, angle: app.ui.crop_angle, default_frame: app.crop.default_frame }
+    CropStep { rect: app.ui.crop_rect, angle: app.ui.crop_angle, default_frame: app.crop.default_frame, editing: app.crop.editing }
 }
 
 /// Put a frame state back.
@@ -546,6 +550,7 @@ fn apply_step(app: &mut PhotocraftApp, s: CropStep) {
     app.ui.crop_rect = s.rect;
     app.ui.crop_angle = s.angle;
     app.crop.default_frame = s.default_frame;
+    app.crop.editing = s.editing;
 }
 
 /// The pending frame, its box Undo/Redo and the view's turn, kept while `image.crop` runs so a
