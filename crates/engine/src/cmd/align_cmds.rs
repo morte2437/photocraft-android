@@ -313,7 +313,7 @@ fn auto_blend(s: &mut Session, p: &Value) -> Result<Value> {
                 surf.write_region(area, px);
                 surf.prune();
             }
-            below = doc.insert_above(Some(below), l);
+            below = crate::layer_place::insert_new(doc, Some(below), l, crate::layer_place::Place::Above);
             below
         });
         let Some(px) = &blended else {
@@ -327,7 +327,7 @@ fn auto_blend(s: &mut Session, p: &Value) -> Result<Value> {
             surf.write_region(area, px);
             surf.prune();
         }
-        let nid = doc.insert_above(Some(below), l);
+        let nid = crate::layer_place::insert_new(doc, Some(below), l, crate::layer_place::Place::Above);
         *active = Some(nid);
         Ok((Some(nid), depth_id))
     })?;

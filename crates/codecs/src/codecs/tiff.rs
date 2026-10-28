@@ -27,7 +27,7 @@
 //! (see [`writes_little_endian`]), which the layer data must match.
 
 use std::borrow::Cow;
-use std::io::{self, Cursor, Read, Seek, SeekFrom};
+use std::io::{self, Read, Seek, SeekFrom};
 
 use half::f16;
 use tiff::decoder::{ChunkType, Decoder};

@@ -332,7 +332,7 @@ fn read_bounded(mut r: impl Read, size: usize) -> Result<Vec<u8>, Error> {
 }
 
 fn inflate(data: &[u8], size: usize) -> Result<Vec<u8>, Error> {
-    read_bounded(flate2::read::ZlibDecoder::new(data), size)
+    read_bounded(flate2::bufread::ZlibDecoder::new(data), size)
 }
 
 fn unzstd(data: &[u8], size: usize) -> Result<Vec<u8>, Error> {

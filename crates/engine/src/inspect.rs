@@ -21,6 +21,8 @@ pub fn session(s: &Session) -> Value {
         })).collect::<Vec<_>>(),
         "foreground": s.tools.foreground,
         "background": s.tools.background,
+        // History panel › History Options… (`history.options`).
+        "historyOptions": crate::history_options_cmds::current(s),
     })
 }
 

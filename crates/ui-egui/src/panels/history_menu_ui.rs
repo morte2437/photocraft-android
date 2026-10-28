@@ -19,8 +19,8 @@ pub const ITEMS: &[(&str, Option<&str>)] = &[
     ("Clear History", Some("history.clear")),
     ("New Document", Some("history.newDocument")),
     ("---", None),
-    // The History Options dialog is not built yet.
-    ("History Options…", None),
+    // Without params `history.options` opens the History Options dialog (#3535).
+    ("History Options…", Some("history.options")),
     ("---", None),
     ("Close", Some("window.panel.close")),
 ];
@@ -63,7 +63,9 @@ pub fn panel_menu(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let Some(cmd) = clicked else { return };
     ui.close();
     let (cmd, params) = resolve(cmd, snapshot);
-    if let Err(e) = app.run(cmd, params) {
+    // History Options… opens its dialog, as the menu bar's command does.
+    let result = crate::history_options_ui::menu(app, cmd, &params).unwrap_or_else(|| app.run(cmd, params));
+    if let Err(e) = result {
         app.ui.status = e;
         app.ui.status_error = true;
     }
@@ -109,7 +111,7 @@ mod tests {
         let mut h = harness(app());
         assert_eq!(states(&h), (4, 0));
         assert!(is_disabled(&h, "Step Forward") && !is_disabled(&h, "Step Backward"));
-        assert!(is_disabled(&h, "History Options…"), "not built yet: greyed");
+        assert!(!is_disabled(&h, "History Options…"));
         assert!(!is_disabled(&h, "New Snapshot…"));
         click(&mut h, "Step Backward");
         assert_eq!(states(&h), (3, 1));
@@ -126,6 +128,9 @@ mod tests {
         click(&mut h, "New Document");
         assert_eq!(h.state().session.documents().len(), 2);
         assert!(!h.state().ui.status_error);
+        click(&mut h, "History Options…");
+        assert_eq!(h.state().ui.dialogs.len(), 1, "History Options… opens its dialog");
+        assert!(!h.state().ui.status_error, "{}", h.state().ui.status);
     }
 
     #[test]
@@ -188,10 +193,12 @@ mod tests {
     }
 
     #[test]
-    fn without_a_document_only_close_is_enabled() {
+    fn without_a_document_only_close_and_history_options_are_enabled() {
         let h = harness(PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default()));
         for &(label, cmd) in ITEMS.iter().filter(|(l, _)| *l != "---") {
-            assert_eq!(is_disabled(&h, label), cmd != Some("window.panel.close"), "{label}");
+            // History Options are preferences, not part of a document.
+            let on = matches!(cmd, Some("window.panel.close" | "history.options"));
+            assert_eq!(is_disabled(&h, label), !on, "{label}");
         }
     }
 }

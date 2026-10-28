@@ -65,7 +65,7 @@ pub fn specs() -> Vec<CommandSpec> {
         s.active().map(|_| ()).ok_or_else(|| "no document open".into())
     }
 
-    /// Generate ▸ Image Assets needs Preferences ▸ Plug-ins ▸ Generator enabled, as in
+    /// Generate ▸ Image Assets needs Preferences ▸ Plug-ins ▸ Enable Generator, as in
     /// Photoshop (where "Enable Generator" is unchecked until turned on).
     fn generator_enabled(s: &Session) -> std::result::Result<(), String> {
         has_doc(s)?;

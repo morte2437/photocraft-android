@@ -182,6 +182,7 @@
 	Group…	Група…
 	Ungroup Layers	Розгрупувати шари
 	Group from Layers…	Група із шарів…
+	New Group from Layers…	Нова група із шарів…
 	Hide Layers	Приховати шари
 	Arrange	Упорядкувати
 	Bring to Front	На передній план
@@ -2347,7 +2348,7 @@
 	Gamut warning color	Колір попередження про колірне охоплення
 	Gamut warning opacity	Непрозорість попередження про колірне охоплення
 	General	Загальні
-	Generator enabled	Генератор увімкнено
+	Enable Generator	Увімкнути генератор
 	Gif	GIF
 	Glossy	Глянцевий
 	Grid color	Колір сітки
@@ -3862,6 +3863,9 @@ curves	Smooth	Згладити
 # History panel menu (#2966)
 	New Snapshot…	Новий знімок стану…
 	History Options…	Параметри історії…
+# History panel › History Options… (#2966)
+	Allow Non-Linear History	Дозволити нелінійну історію
+	Make Layer Visibility Changes Undoable	Дозволити скасування змін видимості шарів
 # Print dialog (#2697)
 	Emulsion Down	Емульсією донизу
 	Functions	Функції
@@ -3948,6 +3952,33 @@ curves	Smooth	Згладити
 	Sent to {printer}	Надіслано на {printer}
 	set in Print Settings…	задається в параметрах друку…
 	ICO is limited to 256 × 256 pixels	ICO обмежено розміром 256 × 256 пікселів
+	Show Favorite Fonts	Показати вибрані шрифти
+	No favorite fonts yet: click the star beside a font to add it.	Вибраних шрифтів ще немає: натисніть зірочку біля шрифту, щоб додати його.
+	Favorite fonts	Вибрані шрифти
+	Add to Favorites	Додати до вибраного
+	Remove from Favorites	Видалити з вибраного
+	Show All Fonts	Показати всі шрифти
+	All Classes	Усі класи
+	Blackletter	Готичні
+	Decorative	Декоративні
+	Font preview:	Попередній перегляд шрифту:
+	Handwritten	Рукописні
+	Hide Font Classes	Сховати класи шрифтів
+	Hide Styles	Сховати накреслення
+	Monospace	Моноширинні
+	No fonts match these filters.	Жоден шрифт не відповідає цим фільтрам.
+	No similar fonts: the current font doesn't say what it looks like.	Немає схожих шрифтів: поточний шрифт не описує свій вигляд.
+	OpenType font	Шрифт OpenType
+	Sans Serif	Без засічок
+	Script	Каліграфічні
+	Serif	Із засічками
+	Show Font Classes	Показати класи шрифтів
+	Show Similar Fonts	Показати схожі шрифти
+	Show Styles	Показати накреслення
+	Show Variable Fonts	Показати варіативні шрифти
+	Slab Serif	Із брускуватими засічками
+	TrueType font	Шрифт TrueType
+	Variable font	Варіативний шрифт
 	Calibration	Калібрування
 	Red Primary	Червоний основний
 	Green Primary	Зелений основний
@@ -4164,3 +4195,6 @@ curves	Smooth	Згладити
 
 # Egui 0.37 migration controls (Aspect Ratio, Category, Color Table, Gamma, Interpolation, Profile, Target, Units, Demosaic)
 	Target	Ціль
+	Font size presets	Набори розмірів шрифту
+	Leading presets	Набори інтерліньяжу
+	Tracking presets	Набори трекінгу

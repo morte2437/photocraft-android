@@ -2156,6 +2156,27 @@ fn remove_several_strokes_apply_as_one_job_and_one_undo_step() {
     }
 }
 
+/// A `strokes` entry may carry its own size, hardness and spacing: the Remove Tool's waiting
+/// strokes keep the brush each was drawn with, whatever the brush is when they are applied.
+#[test]
+fn remove_strokes_each_keep_their_own_brush() {
+    let entry = |pts: Value, size: f64| json!({"points": pts, "size": size, "hardness": 100, "spacing": 25});
+    let removed = |strokes: Value, size: f64| {
+        let mut s = square_session(8, "rgb");
+        let bg = rgba(&s, 10, 10);
+        s.execute("paint.remove", json!({"strokes": strokes, "size": size})).unwrap();
+        [(41, 30), (46, 30), (51, 30)].iter().all(|&(x, y)| near(rgba(&s, x, y), bg, 0.03))
+    };
+    let (a, b) = (json!([[38, 30], [45, 30]]), json!([[47, 30], [54, 30]]));
+    assert!(removed(json!([entry(a.clone(), 16.0), entry(b.clone(), 16.0)]), 2.0), "each entry's 16 px, not the 2 px of the call");
+    assert!(!removed(json!([entry(a.clone(), 2.0), entry(b.clone(), 2.0)]), 16.0), "each entry's 2 px, not the 16 px of the call");
+    assert!(removed(json!([entry(a, 16.0), b]), 16.0), "a plain point list takes the call's brush");
+    let mut s = square_session(8, "rgb");
+    for strokes in [json!([{"size": 16}]), json!([{"points": "x"}]), json!([{"points": []}]), json!([7])] {
+        assert!(s.execute("paint.remove", json!({"strokes": strokes, "size": 16})).is_err(), "{strokes}");
+    }
+}
+
 #[test]
 fn remove_to_a_new_layer_leaves_the_target_untouched() {
     let mut s = square_session(8, "rgb");

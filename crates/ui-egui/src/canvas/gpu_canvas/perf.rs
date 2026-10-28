@@ -1,7 +1,7 @@
 use super::budget::video_memory;
 use super::setup::Refresh;
 use super::texels::LayerFit;
-use super::*;
+use super::wgpu;
 
 /// Milliseconds since the process (or page) started, from a monotonic clock.
 ///
@@ -46,7 +46,8 @@ pub struct Perf {
     /// Pixels of the refresh `gpu_ms` measured, which is a frame or two behind
     /// `last_refresh_px` and may be a different size.
     pub gpu_ms_px: u64,
-    /// Why the last refresh fell back to the CPU compositor (None = GPU composited).
+    /// Why the active view is drawn on the CPU (None = GPU composited): the current
+    /// [`crate::render_path`] reason as text, written only by `render_path`.
     pub gpu_fallback: Option<String>,
     /// Adapter, backend, driver and fallback state (Help › System Info).
     pub gpu_info: GpuInfo,
@@ -224,8 +225,6 @@ impl Perf {
             // refresh's would be read as this refresh's.
             self.gpu_ms = None;
             self.gpu_ms_px = 0;
-        } else {
-            self.gpu_fallback = None;
         }
     }
 

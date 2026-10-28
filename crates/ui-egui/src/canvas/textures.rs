@@ -3,7 +3,7 @@ use super::filter_preview::filter_channel_preview;
 use super::navigator::navigator_waits_for_drag;
 use super::strokes::live_stroke;
 use super::view_xform::ViewXform;
-use super::*;
+use super::{CanvasCache, CpuTextures, DRect, DetailTexture, Document, InView, LayerContent, PhotocraftApp, TextureOptions, pos2};
 
 /// Largest texture side we upload; bigger documents are uploaded downsampled, with the part in
 /// view added at the screen's resolution when zoomed in (`detail_plan`).
@@ -519,7 +519,7 @@ pub(super) fn ensure_gpu(app: &mut PhotocraftApp, ctx: &egui::Context, idx: usiz
     if present && app.perf.gpu_layer_fit.is_none_or(|f| f.doc != id.0) {
         gpu_budget(app, &gpu, idx, false, visible);
         let fit = gpu.measure_fit(&doc).unwrap_or(crate::gpu_canvas::LayerFit { doc: id.0, needed: 0, budget: 0 });
-        app.perf.gpu_layer_fit = Some(fit);
+        crate::render_path::layer_fit(app, fit);
     }
     if present && current {
         // An adjustment preview composited where the view was: catch up where it moved to.
@@ -546,6 +546,8 @@ pub(super) fn ensure_gpu(app: &mut PhotocraftApp, ctx: &egui::Context, idx: usiz
         if app.perf.gpu_layer_fit.is_some_and(|f| f.doc == id.0) {
             app.perf.gpu_layer_fit = None;
         }
+        let (bytes, budget) = gpu.canvas_fit(&doc).unwrap_or_default();
+        crate::render_path::note(app, id.0, crate::render_path::Path::Cpu(crate::render_path::CpuReason::CanvasTooLarge { bytes, budget }));
         return false;
     }
     let partial = present && damage.is_some();
@@ -557,6 +559,9 @@ pub(super) fn ensure_gpu(app: &mut PhotocraftApp, ctx: &egui::Context, idx: usiz
         // The device is gone (`gpu_status` then drops the GPU canvas) or the canvas is over the
         // texture budget: draw this frame on the CPU path.
         crate::background_redraw::cancel(app, id);
+        if let Some(reason) = r.fallback {
+            crate::render_path::note(app, id.0, crate::render_path::Path::Cpu(reason));
+        }
         return false;
     }
     if r.kind == crate::gpu_canvas::REFRESH_DEFERRED {
@@ -569,21 +574,19 @@ pub(super) fn ensure_gpu(app: &mut PhotocraftApp, ctx: &egui::Context, idx: usiz
     } else {
         crate::background_redraw::cancel(app, id);
     }
-    if let Some(e) = &r.fallback
-        && app.perf.gpu_fallback.as_deref() != Some(e.as_str())
-    {
-        log::info!("{e}; using the CPU compositor");
+    match &r.fallback {
+        Some(reason) => crate::render_path::note(app, id.0, crate::render_path::Path::Cpu(reason.clone())),
+        None if r.kind.starts_with("gpu") => crate::render_path::note(app, id.0, crate::render_path::Path::Gpu { full: r.kind == "gpu-full" }),
+        None => {}
     }
     if r.kind != crate::gpu_canvas::REFRESH_DEFERRED {
         app.perf.record_refresh(&r);
     }
     if r.kind == "full" {
-        crate::notices::slow_cpu_refresh(app, id.0, r.composite_ms + r.upload_ms, r.fallback.as_deref());
+        crate::notices::slow_cpu_refresh(app, id.0, r.composite_ms + r.upload_ms, r.fallback.as_ref());
     }
     if r.kind.starts_with("gpu") {
         app.perf.gpu_uploads = r.uploads;
-    } else {
-        app.perf.gpu_fallback = r.fallback;
     }
     let Some(cache) = app.canvases.get_mut(&(id, GPU_OUTPUT)) else { return true };
     cache.revision = revision;
@@ -611,7 +614,7 @@ fn gpu_budget(app: &mut PhotocraftApp, gpu: &crate::gpu_canvas::GpuCanvas, idx: 
     app.perf.gpu_budget_mb = budget >> 20;
     app.perf.gpu_budget_allowance = allowance;
     if changed && let Some(fit) = gpu.measure_fit(&st.doc) {
-        app.perf.gpu_layer_fit = Some(fit);
+        crate::render_path::layer_fit(app, fit);
     }
 }
 

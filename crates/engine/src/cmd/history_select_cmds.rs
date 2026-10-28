@@ -32,6 +32,7 @@ fn select_state(s: &mut Session, p: &Value) -> Result<Value> {
     if s.active_job().is_some() {
         return Err(EngineError::Other("the history can't move while a command is still running on this document".into()));
     }
+    let keep_visibility = !s.visibility_undoable();
     let st = s.active_mut().ok_or(EngineError::NoDocument)?;
     if target == past {
         return Ok(json!({ "state": target, "changed": false }));
@@ -44,8 +45,19 @@ fn select_state(s: &mut Session, p: &Value) -> Result<Value> {
     let mut layers = None;
     let mut at = past;
     while at != target {
-        let step = if target < at { st.history.undo(doc.clone()) } else { st.history.redo(doc.clone()) };
-        let Some((d, l)) = step else { break };
+        // History Options: visibility changes that are not history states stay as they are,
+        // step by step as Undo / Redo keep them, except on the layers whose visibility the step
+        // passed over changed.
+        let undoing = target < at;
+        let mut changed = if undoing { st.history.current_visibility().to_vec() } else { Vec::new() };
+        let step = if undoing { st.history.undo(doc.clone()) } else { st.history.redo(doc.clone()) };
+        let Some((mut d, l)) = step else { break };
+        if keep_visibility {
+            if !undoing {
+                changed = st.history.current_visibility().to_vec();
+            }
+            crate::carry_visibility(&doc, &mut d, &changed);
+        }
         doc = d;
         layers = Some(l);
         at = if target < at { at - 1 } else { at + 1 };

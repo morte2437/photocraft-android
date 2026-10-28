@@ -174,6 +174,44 @@ pub(crate) fn paint(ui: &egui::Ui, family: &str, row: Rect, size: f32) {
     }
 }
 
+/// The few lines of the user's own text the font menu's preview keeps rendered: family, text,
+/// display scale, font generation, point size and width.
+type TextKey = (String, String, u32, u64, u32, u32);
+#[derive(Clone, Default)]
+struct TextCache(VecDeque<(TextKey, Option<TextureHandle>)>);
+const TEXT_CACHE_LIMIT: usize = 16;
+
+/// `text` set in `family` at `size`, from the left of `rect` and vertically centred; what doesn't
+/// fit is cut at the right. The font menu's preview of the user's own text.
+pub(crate) fn paint_text(ui: &egui::Ui, family: &str, text: &str, rect: Rect, size: f32) {
+    let ctx = ui.ctx();
+    let scale = ctx.pixels_per_point().ceil().clamp(1.0, 4.0) as u32;
+    let slot = rect.width().clamp(1.0, 4096.0);
+    let key: TextKey = (family.to_owned(), text.to_owned(), scale, photocraft_text::fonts::shared_generation(), size as u32, slot as u32);
+    let id = egui::Id::unique("font-menu-text-previews");
+    let cached = ctx.data_mut(|d| d.get_temp_mut_or_default::<TextCache>(id).0.iter().find(|(k, _)| *k == key).map(|(_, t)| t.clone()));
+    let texture = cached.unwrap_or_else(|| {
+        let mut engine = photocraft_text::shared().lock().unwrap_or_else(PoisonError::into_inner);
+        let image = engine.fonts.has_family(family).then(|| render(&mut engine, family, text, slot, scale, size)).flatten();
+        drop(engine);
+        let texture = image.map(|image| ctx.load_texture(format!("font-text-{family}"), image, TextureOptions::LINEAR));
+        ctx.data_mut(|d| {
+            let cache = d.get_temp_mut_or_default::<TextCache>(id);
+            if cache.0.len() >= TEXT_CACHE_LIMIT {
+                cache.0.pop_front();
+            }
+            cache.0.push_back((key, texture.clone()));
+        });
+        texture
+    });
+    if let Some(texture) = texture {
+        let h = scaled(HEIGHT, size);
+        let at = Rect::from_min_size(pos2(rect.left(), rect.center().y - h / 2.0), vec2(slot, h));
+        let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+        ui.painter().image(texture.id(), at, uv, crate::theme::Tokens::get(ctx).text);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

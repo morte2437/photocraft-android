@@ -1,4 +1,4 @@
-use super::*;
+use super::{PhotocraftApp, SyntheticTarget};
 
 /// Remove one contiguous run equal to `batch` from `events` (eframe's preserved synthetic
 /// input). A no-op when the run is not present.

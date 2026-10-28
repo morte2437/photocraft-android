@@ -280,10 +280,11 @@ fn text_run_baseline_roundtrips() {
 fn zip_incremental_only_new_tiles() {
     let mut doc = rich_doc(ColorMode::Rgb, SampleType::U16);
     let mut w = PcraftWriter::new();
-    let (_, s1) = w.save_zip(&doc, &SaveOptions::default()).unwrap();
+    let (first, s1) = w.save_zip(&doc, &SaveOptions::default()).unwrap();
     assert!(s1.tiles_total > 5);
     assert_eq!(s1.tiles_written, s1.tiles_total);
-    let (_, s2) = w.save_zip(&doc, &SaveOptions::default()).unwrap();
+    let (cached, s2) = w.save_zip(&doc, &SaveOptions::default()).unwrap();
+    assert_eq!(first, cached);
     assert_eq!(s2.tiles_written, 0);
     assert_eq!(s2.tiles_reused, s2.tiles_total);
     assert_eq!(s2.blobs_written, 0);
@@ -293,6 +294,7 @@ fn zip_incremental_only_new_tiles() {
     let (bytes, s3) = w.save_zip(&doc, &SaveOptions::default()).unwrap();
     assert_eq!(s3.tiles_written, 1);
     assert_eq!(load_from_bytes(&bytes).unwrap(), doc);
+    assert_eq!(bytes, PcraftWriter::new().save_zip(&doc, &SaveOptions::default()).unwrap().0);
 }
 
 #[test]
@@ -882,6 +884,25 @@ fn variables_follow_layer_id_remapping() {
     assert_eq!(defs.iter().find(|d| d.name == "badge").unwrap().layer, id_of(&back, "Inner"));
     let gone = defs.iter().find(|d| d.name == "gone").unwrap().layer;
     assert!(back.walk().into_iter().all(|(_, _, l)| l.id != gone), "dangling target must not address a live layer");
+}
+
+#[test]
+fn color_lookup_lut_file_round_trips_and_old_files_load() {
+    use photocraft_doc::Adjustment;
+    use photocraft_doc::adjust::{LutFormat, LutSource};
+    let lut = Some(std::sync::Arc::new(vec![0.5f32; 24]));
+    let source = Some(LutSource { format: LutFormat::ThreeDl, bytes: std::sync::Arc::new(b"0 1023\n0 0 0\n".to_vec()) });
+    let adj = Adjustment::ColorLookup { name: "Film.3dl".into(), lut, size: 2, tetrahedral: false, dither: false, source };
+    let mut doc = Document::new("d", photocraft_doc::Size::new(4, 4), ColorMode::Rgb, SampleType::U8);
+    doc.insert_above(None, Layer::new("lookup", LayerContent::Adjustment(adj.clone())));
+    let back = load_from_bytes(&save_to_bytes(&doc, &SaveOptions::default()).unwrap()).unwrap();
+    assert_eq!(back, doc, "the LUT file survives a .pcraft round trip (#6544)");
+    // A .pcraft written before the field existed has no `source`: it loads as None.
+    let mut v = serde_json::to_value(&adj).unwrap();
+    let removed = v.as_object_mut().and_then(|o| o.values_mut().next()).and_then(|f| f.as_object_mut()).and_then(|f| f.remove("source"));
+    assert!(removed.is_some(), "{v}");
+    let Adjustment::ColorLookup { source: None, name, .. } = serde_json::from_value(v).unwrap() else { panic!("old lookup must load") };
+    assert_eq!(name, "Film.3dl");
 }
 
 /// Removing previews is post-commit housekeeping, not part of publishing the new document.

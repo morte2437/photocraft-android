@@ -4,8 +4,8 @@ use super::descriptors::{
 };
 use super::events::pixel_target;
 use super::fields::{F, Kind, Mapped, fields_from, fields_to, step};
-use super::tables::{CHANNELS, INTERPOLATION, RADIAL_METHOD, RADIAL_QUALITY, lookup, lookup_back};
-use super::*;
+use super::tables::{CHANNELS, INTERPOLATION, RADIAL_METHOD, RADIAL_QUALITY, channel_of, lookup, lookup_back};
+use super::{D, Descriptor, Map, ReferenceItem, UnicodeString, Value, json};
 
 /// `transform`: Photoshop records a Free Transform relative to the frame (offset of its centre,
 /// width/height in percent, angle). A layer moved only becomes `layer.translate`; anything
@@ -143,7 +143,7 @@ pub(super) fn apply_image_from(d: &Descriptor) -> Mapped {
         match item {
             ReferenceItem::Enumerated { class, value, .. } if class.class_id.is("Chnl") => {
                 let v = trimmed(value);
-                let Some(channel) = lookup(SOURCE_CHANNELS, &v).or_else(|| lookup(CHANNELS, &v)) else { return unsupported };
+                let Some(channel) = lookup(SOURCE_CHANNELS, &v).or_else(|| channel_of(&v)) else { return unsupported };
                 source.insert("channel".into(), channel.into());
             }
             // A named (alpha) channel.

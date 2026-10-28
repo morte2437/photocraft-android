@@ -574,7 +574,7 @@ fn set_visible(s: &mut Session, p: &Value, visible: bool) -> Result<Value> {
         return crate::layer_multi_cmds::set_visible_selected(s, visible);
     }
     let id = layer_param(s, p)?;
-    s.edit(if visible { "Show Layer" } else { "Hide Layer" }, |doc, _| {
+    s.edit_visibility(if visible { "Show Layer" } else { "Hide Layer" }, |doc, _| {
         doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?.visible = visible;
         Ok(())
     })?;
@@ -640,7 +640,7 @@ fn show_only(s: &mut Session, p: &Value) -> Result<Value> {
         let rows = walk.iter().map(|(p, _, l)| (p.clone(), before.as_ref().is_none_or(|b| b.get(&l.id).copied().unwrap_or(l.visible)))).collect();
         ("Show Layers", rows, None)
     };
-    s.edit(label, |doc, _| {
+    s.edit_visibility(label, |doc, _| {
         for (p, visible) in &rows {
             if let Some(l) = doc.layer_at_mut(p) {
                 l.visible = *visible;

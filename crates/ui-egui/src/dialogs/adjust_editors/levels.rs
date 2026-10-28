@@ -1,5 +1,5 @@
 use super::curves::{ToneChannel, bar_color, channel_picker, gradient_bar, hist_color, tone_channels};
-use super::*;
+use super::{Color32, Edit, EditorCx, Sense, Stroke, StrokeKind, Tokens, Value, json, label, pos2, round, space_of, tone, vec2, widgets};
 
 // ---------------------------------------------------------------------------------------------
 // Levels

@@ -1,7 +1,7 @@
 use super::editing::edit_home;
 use super::ime_edit::{ime_offsets, ime_preedit_is_current};
 use super::layout::layout;
-use super::*;
+use super::{Color32, LayerId, PhotocraftApp, Point, Pos2, Stroke, ViewXform, byte_of, text_layer};
 
 /// Selection highlight, caret and text frame over the canvas.
 pub fn draw_overlay(app: &mut PhotocraftApp, painter: &egui::Painter, xf: &ViewXform) {

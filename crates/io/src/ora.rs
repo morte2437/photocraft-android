@@ -414,7 +414,7 @@ pub(crate) fn import(name: &str, bytes: &[u8], ctl: &Interrupt<'_>) -> Result<Im
     }
     let xml = zip.read_by_name("stack.xml", MAX_STACK_XML).map_err(|e| invalid(e.to_string()))?;
     let xml = std::str::from_utf8(&xml).map_err(|_| invalid("stack.xml is not UTF-8"))?;
-    let tree = roxmltree::Document::parse(xml).map_err(|e| invalid(format!("stack.xml: {e}")))?;
+    let tree = crate::xml::parse(xml, roxmltree::ParsingOptions::default()).map_err(|e| invalid(format!("stack.xml: {e}")))?;
     let image = tree.root_element();
     if image.tag_name().name() != "image" {
         return Err(invalid("stack.xml has no <image> root"));

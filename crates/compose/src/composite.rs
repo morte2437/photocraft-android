@@ -2,7 +2,7 @@ use super::content::{channel_weights, empty_in, recycle_buffer, render_content, 
 use super::ctx::Ctx;
 use super::extents::{effects_frame, mask_k, mask_vals, shapeless_stroke_bounds};
 use super::fx_cache::effect_maps;
-use super::*;
+use super::{BlendMode, Buffer, Fill, Layer, LayerContent, Rect, Surface, advanced, blend, effects, psblend, shape_split};
 
 /// Composite an isolated group's sibling list (bottom→top) onto `backdrop` (its own buffer).
 pub(crate) fn composite_stack(layers: &[Layer], backdrop: &mut Buffer, cx: &Ctx) {
@@ -364,6 +364,10 @@ pub(crate) fn composite_layer_plain(layer: &Layer, clipped: &[Layer], backdrop: 
                 };
             }
         }
+        // A Frame's stroke over the frame's content, at the group's opacity.
+        if let Some(stroke) = shape_split::frame_stroke(layer, cx.canvas, cx.depth) {
+            blend_into(backdrop, &surface_to_buffer(&stroke, rect), BlendMode::Normal, opacity);
+        }
         // Layers clipped to a pass-through group sit atop the group's
         // isolated rendering; their effect (isolated result with vs. without
         // them, each placed over the original backdrop) is added to the
@@ -443,7 +447,7 @@ pub(crate) fn composite_layer_plain(layer: &Layer, clipped: &[Layer], backdrop: 
             *p = psblend::composite(BlendMode::Normal, *p, *s, 1.0);
             p[3] *= mask_k(&mask, i);
         }
-        blend_into_fill(backdrop, &content, layer.blend, layer.opacity, layer.fill_opacity, 1.0);
+        blend_layer_into(backdrop, &content, layer, cx, 1.0);
         return;
     }
     if !matches!(layer.content, LayerContent::Group(_) | LayerContent::Fill(_) | LayerContent::Adjustment(_))
@@ -467,14 +471,17 @@ pub(crate) fn composite_layer_plain(layer: &Layer, clipped: &[Layer], backdrop: 
         }
         return;
     }
+    // The row-at-a-time fast path blends like `blend_into_fill`; Transparency Shapes Layer off
+    // with one of the special eight needs `blend_layer_into`'s per-pixel mask split.
     if clipped.is_empty()
+        && (layer.advanced.transparency_shapes || !psblend::fill_is_special(layer.blend))
         && let Some(surf) = pixel_surface(layer)
     {
         return composite_pixel_layer(layer, surf, backdrop, cx);
     }
     let Some(mut content) = render_content(layer, rect, cx) else { return };
     advanced::composite_clipped(clipped, &mut content, cx);
-    blend_into_fill(backdrop, &content, layer.blend, layer.opacity, layer.fill_opacity, text_gamma(layer));
+    blend_layer_into(backdrop, &content, layer, cx, text_gamma(layer));
     recycle_buffer(content);
 }
 
@@ -626,8 +633,32 @@ fn composite_atop_any(layer: &Layer, base: &mut Buffer, cx: &Ctx) {
 }
 
 /// Blend an isolated layer buffer into the backdrop.
-fn blend_into(backdrop: &mut Buffer, src: &Buffer, mode: BlendMode, opacity: f32) {
+pub(crate) fn blend_into(backdrop: &mut Buffer, src: &Buffer, mode: BlendMode, opacity: f32) {
     blend_into_g(backdrop, src, mode, opacity, 1.0);
+}
+
+/// `layer`'s masked content `src` blended into the backdrop with its own mode, Opacity and Fill
+/// ([`blend_into_fill`]). With Transparency Shapes Layer off, the special eight
+/// ([`psblend::fill_is_special`]) take the layer's own transparency (its content's alpha, not its
+/// masks) inside the blend, as Fill: Photoshop composites a pixel of alpha `a` at Fill `f` as
+/// an opaque one at Fill `a × f`, covering the backdrop with Opacity × masks only. Other modes
+/// look the same either way (#5692).
+fn blend_layer_into(backdrop: &mut Buffer, src: &Buffer, layer: &Layer, cx: &Ctx, gamma: f32) {
+    let (mode, opacity, fill) = (layer.blend, layer.opacity, layer.fill_opacity);
+    if layer.advanced.transparency_shapes || !psblend::fill_is_special(mode) {
+        return blend_into_fill(backdrop, src, mode, opacity, fill, gamma);
+    }
+    let mv = mask_vals(layer, backdrop.rect, cx);
+    let fill = fill.clamp(0.0, 1.0);
+    for (i, (b, s)) in backdrop.px.iter_mut().zip(&src.px).enumerate() {
+        // `src` carries alpha × masks; split them again.
+        let m = mv.as_ref().map_or(1.0, |v| v.get(i).copied().unwrap_or(1.0));
+        if s[3] <= 0.0 || m <= 0.0 {
+            continue;
+        }
+        let alpha = (s[3] / m).clamp(0.0, 1.0);
+        *b = psblend::composite_fill(mode, *b, [s[0], s[1], s[2], m], opacity, fill * alpha, gamma);
+    }
 }
 
 /// [`blend_into_g`] for a layer's own `opacity` and `fill`: Fill is part of the blend for

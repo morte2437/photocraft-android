@@ -1,4 +1,4 @@
-use super::*;
+use super::{BlendMode, Document, GlobalLight, Layer, LayerId, Pattern, Rect, Slot, Surface, Transfer};
 
 /// Pipeline (fragment entry point) of a pass.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

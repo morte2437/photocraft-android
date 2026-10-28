@@ -1,8 +1,11 @@
 use super::begin::warps_type;
 use super::commit::{commit, committing, moves_type};
-use super::drag_modes::{apply_drag, apply_mode_drag, drag_mods, mode_allows, mode_mods};
+use super::drag_modes::{apply_drag, apply_mode_drag, drag_mods, handle_indicator, mode_allows, mode_mods};
 use super::warp::{quick_split_kind, split_cursor, surface_at, warp_hit, warp_pointer};
-use super::*;
+use super::{
+    CursorIcon, HANDLE_PX, Homography, LayerContent, LayerId, PhotocraftApp, ToolEvent, TransformMode, TransformPreview, TransformSession, ViewXform,
+    WarpStyle, handle_tolerance,
+};
 
 /// Which part of the box a document point hits.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -239,9 +242,13 @@ pub(super) fn rotate_dir(t: &TransformSession, pv: Option<&TransformPreview>, p:
     {
         return None;
     }
-    let rotating = pv.is_some_and(|pv| pv.gesture.is_some_and(|g| g.hit == Hit::Outside));
-    if !rotating && !near_rotate_corner(t, p, tol) {
-        return None;
+    // During a drag the arrow shows only while it rotates: not when a handle that scales, skews
+    // or distorts strays past a corner (#5405).
+    match pv.and_then(|pv| pv.gesture) {
+        Some(g) if g.hit == Hit::Outside || (t.mode == TransformMode::Rotate && matches!(g.hit, Hit::Corner(_) | Hit::Edge(_))) => {}
+        Some(_) => return None,
+        None if !near_rotate_corner(t, p, tol) => return None,
+        None => {}
     }
     let dist = |q: [f64; 2]| (p[0] - q[0]).hypot(p[1] - q[1]);
     let i = (0..4).min_by(|&a, &b| dist(t.quad[a]).total_cmp(&dist(t.quad[b])))?;
@@ -256,9 +263,14 @@ pub(super) fn rotate_dir(t: &TransformSession, pv: Option<&TransformPreview>, p:
     (l.is_finite() && l > 1e-9).then(|| [s[0] / l, s[1] / l])
 }
 
+/// The handle a drag in progress holds, else the one under document point `p`.
+pub(super) fn handle_at(app: &PhotocraftApp, t: &TransformSession, p: [f64; 2], tol: f64) -> Hit {
+    app.transform_preview.as_ref().and_then(|pv| pv.gesture.map(|g| g.hit)).unwrap_or_else(|| hit(t, p, tol))
+}
+
 /// Cursor for hovering a document point while transforming. `xf` is the canvas's view;
-/// `quick_split` is Ctrl or Option, which arms a quick split while a warp is active.
-pub fn cursor(app: &PhotocraftApp, xf: &ViewXform, p: [f64; 2], quick_split: bool) -> Option<CursorIcon> {
+/// `mods` provides modifier keys (Command for Distort on corners / Skew on edges; Alt/Command for quick split in warp).
+pub fn cursor(app: &PhotocraftApp, xf: &ViewXform, p: [f64; 2], mods: egui::Modifiers) -> Option<CursorIcon> {
     let t = app.ui.transform.as_ref()?;
     let tol = handle_tolerance(app);
     if let Some(w) = &t.warp {
@@ -266,6 +278,7 @@ pub fn cursor(app: &PhotocraftApp, xf: &ViewXform, p: [f64; 2], quick_split: boo
             return Some(CursorIcon::Default);
         }
         let armed = app.transform_preview.as_ref().and_then(|pv| pv.split_tool);
+        let quick_split = mods.alt || mods.command;
         if armed.is_some() || quick_split {
             // One search for the grid position under the pointer, for both the kind and the arrow.
             let m = w.to_mesh(1, 1);
@@ -278,14 +291,18 @@ pub fn cursor(app: &PhotocraftApp, xf: &ViewXform, p: [f64; 2], quick_split: boo
         }
         return Some(if w.mesh.as_ref().and_then(|m| surface_at(m, p)).is_some() { CursorIcon::Grab } else { CursorIcon::Default });
     }
-    let h = hit(t, p, tol);
+    let h = handle_at(app, t, p, tol);
     if !mode_allows(t.mode, h) || (t.content_aware.is_some() && h == Hit::Outside) {
         return Some(CursorIcon::Default);
     }
+    // A ⌘-drag outside the box still rotates, so ⌘ keeps the curved arrow there.
     if rotate_cursor_dir(app, p).is_some() {
-        // The overlay draws the curved rotate arrow (`rotate_cursor_dir`), also during the drag.
+        // The canvas draws the curved rotate arrow (`rotate_cursor_dir`), also during the drag.
         return Some(CursorIcon::None);
     }
+    // The canvas draws the distort or skew pointer in place of the hidden one
+    // (`draw_handle_cursor`); not while the box is being applied, when it draws no handles.
+    let indicator = handle_indicator(app, t, h, mods).filter(|_| committing(app).is_none());
     // The box's corners run clockwise from the top-left; edge k joins corners k and k + 1.
     let corner = |k: usize| t.quad[k % 4];
     let edge_mid = |k: usize| {
@@ -295,6 +312,7 @@ pub fn cursor(app: &PhotocraftApp, xf: &ViewXform, p: [f64; 2], quick_split: boo
     // A handle resizes the box away from the opposite handle.
     let resize = |from: [f64; 2], to: [f64; 2]| crate::tool_cursor::resize([to[0] - from[0], to[1] - from[1]], xf);
     Some(match h {
+        Hit::Corner(_) | Hit::Edge(_) if indicator.is_some() => CursorIcon::None,
         Hit::Corner(i) => crate::tool_cursor::corner_resize(&t.quad, i, xf),
         Hit::Edge(i) => resize(edge_mid(i + 2), edge_mid(i)),
         Hit::Pivot => CursorIcon::Crosshair,

@@ -1,4 +1,4 @@
-use super::*;
+use super::{Color32, PhotocraftApp, Pos2, Rect, Sense, Stroke, StrokeKind, Tokens, empty, icons, pos2, vec2, widgets};
 
 pub(super) fn navigator(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());

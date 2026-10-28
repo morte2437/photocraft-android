@@ -132,7 +132,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "List Paths",
             menu: &[],
             shortcut: None,
-            params: r##"{} → {paths:[{name,knots,subpaths}],workPath,clippingPath,layerPath (active layer's shape path / vector mask)}"##,
+            params: r##"{} → {paths:[{name,knots,subpaths}],workPath,clippingPath,layerPath (active layer's shape path / vector mask),typePath (active type layer's Type Path, if it is on a path)}"##,
             enabled: has_doc,
             run: |s, _| paths_list(s),
             journal: false,

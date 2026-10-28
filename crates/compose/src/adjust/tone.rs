@@ -1,4 +1,4 @@
-use super::*;
+use super::{Adjustment, Buffer, ColorMode, CurvePoint, LevelsChannel, SampleType, ToneSpace, lab_to_srgb, srgb_to_lab};
 
 /// Float RGB curve channels with no edit must preserve samples outside the LUT domain; edited
 /// ones extend past it (see [`float_tone_extrapolates`]).

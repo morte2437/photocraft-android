@@ -386,7 +386,7 @@ can't run.
   counts/bounds without relaxing the pixel comparison.
 
 - The canvas is presented by a custom WGSL shader (`ui-egui/src/gpu_canvas.rs`): mip-mapped/nearest sampling, procedural checkerboard, pixel grid, tiling. Brush strokes upload only their damage rect.
-- **The canvas composites on the GPU** (`photocraft-gpu`, driven from `gpu_canvas.rs`), layer effects included. What the planner can't express returns `Unsupported` and the canvas falls back to the CPU compositor (`photocraft-compose`, also the reference for export and tests): Multichannel documents, and documents or effect regions over the texture limit. Pieces the GPU can't derive itself are rasterised once on the CPU and cached (`compose::masks` for vector masks, `compose::shape_split` for stroked shapes with clipped layers, effect distance fields). Timings of the interactive paths: `cargo run --release -p photocraft-ui-egui --example interactive_bench`; effects: `--example fx_bench` (`--compare files…` for GPU vs CPU); the cost of changing a chisel bevel's size (a dragged slider, GPU and CPU, ellipse and text): `--example bevel_bench`; large documents (open, refresh, thumbnails, a filter, a stroke, saves; one operation per run so `/usr/bin/time -l` gives its peak memory): `--example large_image_bench -- --size 14000x14000 --op psd`. The app requests the adapter's own texture limit (egui's default is 8192 px; see `gpu_canvas::use_adapter_limits`); beyond it the CPU fallback composites and uploads in bands (`compose::render_bands`), and exports, thumbnails and flattening stream bands too, so no full-size float composite is ever held. Rendering fidelity: `cargo run --release -p photocraft-io --example oracle_diff -- corpus/psd` (the whole PSD oracle table in seconds). `ui.inspect` → `perf.timings.gpuFallback` names the reason (`null` on the GPU path).
+- **The canvas composites on the GPU** (`photocraft-gpu`, driven from `gpu_canvas.rs`), layer effects included. What the planner can't express returns `Unsupported` and the canvas falls back to the CPU compositor (`photocraft-compose`, also the reference for export and tests): Multichannel documents, and documents or effect regions over the texture limit. Pieces the GPU can't derive itself are rasterised once on the CPU and cached (`compose::masks` for vector masks, `compose::shape_split` for stroked shapes with clipped layers, effect distance fields). Timings of the interactive paths: `cargo run --release -p photocraft-ui-egui --example interactive_bench`; effects: `--example fx_bench` (`--compare files…` for GPU vs CPU); the cost of changing a chisel bevel's size (a dragged slider, GPU and CPU, ellipse and text): `--example bevel_bench`; large documents (open, refresh, thumbnails, a filter, a stroke, saves; one operation per run so `/usr/bin/time -l` gives its peak memory): `--example large_image_bench -- --size 14000x14000 --op psd`. The app requests the adapter's own texture limit (egui's default is 8192 px; see `gpu_canvas::use_adapter_limits`); beyond it the CPU fallback composites and uploads in bands (`compose::render_bands`), and exports, thumbnails and flattening stream bands too, so no full-size float composite is ever held. Rendering fidelity: `cargo run --release -p photocraft-io --example oracle_diff -- corpus/psd` (the whole PSD oracle table in seconds). `ui.inspect` → `perf.renderPath` names the reason, typed, with the last 32 changes, and `perf.timings.gpuFallback` as text (`null` on the GPU path); the log has one `render path:` line per change, and the status bar says CPU Rendering (or GPU Memory Full) with the reason in its tooltip.
 - **Layer effects on the GPU** (`gpu/src/fx.rs`, kernels in `gpu/src/compose.wgsl`). Every enabled effect becomes a *map program* over the layer's effect region (shift, dilate, Gaussian blur, glow ramp, bevel height and shading, contour, stroke band), mirroring `compose::effects` step by step; the chunked composite then paints through the maps, clipped to that region, and copies the result back into the backdrop in place, so a small text layer costs only its own pixels. The layer's shape (`compose::layer_shape`) and its distance fields (`compose::effects::distance_field`: a transform whose tie-breaking a parallel GPU pass can't reproduce bit for bit) come from compose on the CPU: bands computed in parallel, except the Euclidean fields of precise glows and chiselled bevels (a halo as tall as the bevel size would make most of a band's work redundant), which are one window whose passes run on all threads, the CPU compositor's own way. Everything is cached per layer state: an unrelated edit, or an effect's colour or opacity, rebuilds nothing; a brush dab recomputes the touched 256² tiles grown by the effect reach; changing one effect's geometry rebuilds that effect only. Cache budget `gpu::FX_BUDGET` (1.5 GB, least recently drawn layers evicted first). `PHOTOCRAFT_FX_TRACE=1` prints the CPU time of each rebuild.
 - The canvas grows a stroke's damage rect by the effect reach of the layers around it (`canvas::effect_reach`), so effects beyond the dab refresh too (on both paths).
 - **Numbers** (7360 × 4912, 8 text layers + one painted layer with drop shadow + stroke + bevel, Hue/Saturation on top; M4 Pro; `cargo run --release -p photocraft-ui-egui --example fx_bench`), CPU fallback → GPU: full refresh with warm effect maps 5.7 s → 47 ms; Hue/Saturation tweak above the effects 4.7 s → 31 ms; brush dab on a plain layer 32 → 1.7 ms; brush dab on the effect layer (its maps rebuilt around the dab) 659 → 3.7 ms; first refresh (all maps built) 6.4 s → 0.39 s. With the CPU ~14× oversubscribed by parallel builds (min of 7 runs): 8.1 s → 0.33 s, 9.9 s → 0.28 s, 28 → 2.2 ms, 1.7 s → 89 ms; moving a text layer 7 px 336 → 13 ms. `fx_bench --compare corpus/psd/…/*.psd` reports the GPU vs CPU difference on real files (30 of the 31 corpus files with effects render on the GPU, worst 0.12/255).
@@ -406,7 +406,8 @@ cargo xtask scorecard            # regenerate docs/scorecard.md
 cargo xtask scorecard --check    # what CI runs: fails if the committed file is stale
 cargo xtask perf                 # full benchmark run (tens of minutes, release build)
 cargo xtask perf --quick         # small synthetic documents (about a minute once built)
-cargo xtask perf --update-baseline   # also write perf/baseline.json from this run
+cargo xtask perf --update-baseline   # also write perf/baseline.json from this run (refused when contended)
+cargo xtask perf --update-baseline --from a/results.json --from b/results.json ...   # baseline from saved runs
 ```
 
 **Sources.** The scorecard reads only committed files, so it is deterministic:
@@ -422,7 +423,9 @@ cargo xtask perf --update-baseline   # also write perf/baseline.json from this r
   a number.
 - `perf/baseline.json`: the numbers the scorecard shows, written only by
   `cargo xtask perf --update-baseline`, with the machine (CPU, RAM, GPU adapter, OS), its machine
-  class, commit, date and load average.
+  class, commit, date, load average, core count and how many runs it was built from. A baseline
+  recorded with `--allow-contended` carries `"contended": true`, and the scorecard labels any
+  contended baseline (one whose 1-minute load at the start was above `max_load_per_core` per core).
 - `crates/io/tests/it/corpus.rs`: the corpus floors (every `Source { .. }` constant).
 - `xtask/*-corpus.sha256`: file counts for pinned corpora, so stale counts in doc comments cannot
   change the reported denominators. No downloaded corpus is needed to generate the scorecard.
@@ -439,11 +442,27 @@ breaks, when a scenario's p50 regresses more than 15 % (`--threshold`, or `regre
 against a baseline from the same machine class and mode, or when a bench fails. Runs from
 different machine classes are never compared, and `--quick` numbers are only compared with a
 quick baseline. Machines that run other work give noisy numbers: check the load average in the
-summary before trusting a regression, and record it next to any number you quote.
+summary before trusting a regression, and record it next to any number you quote. A run whose
+1-minute load at the start (sampled before the release build, so the harness's own compile doesn't
+count) is above `settings.max_load_per_core` per core is marked **contended**
+in the summary, and `--update-baseline` refuses to record it unless `--allow-contended` is given.
+
+**Recording a baseline.** One run is noisy, especially on the shared nightly runner, so build the
+baseline from several: download the last five or more nightly `perf-results` artifacts
+(`gh run download <run id> -n perf-results -D runs/<run id>`), then run
+`cargo xtask perf --update-baseline --from runs/<id1>/results.json --from runs/<id2>/results.json ...`
+(add `--allow-contended` for the GitHub runner, which is never idle). It needs at least
+`settings.baseline_min_runs` runs of one machine class and mode, all from a clean tree. Each
+scenario gets the median p50 and the highest p50 of the runs; a regression is judged against that
+highest p50 (the runs' own noise), so only changes bigger than the runner's spread flag. It also
+prints which budgets could be enforced (within `settings.enforce_margin` of the budget in every
+run) and which enforced budgets went over in some run. Commit `perf/baseline.json` and the
+regenerated `docs/scorecard.md` in a PR.
 
 **Measuring one scenario.** A full run is tens of minutes; one row is seconds once its bench is
-built. `xtask perf`'s own flags are `--quick`, `--update-baseline`, `--threshold`, `--bench`
-(repeatable, one bench per name), `--skip-build` and `--reuse`; it has no way to pick a single
+built. `xtask perf`'s own flags are `--quick`, `--update-baseline` (with `--from` and
+`--allow-contended`), `--threshold`, `--bench` (repeatable, one bench per name), `--skip-build`
+and `--reuse`; it has no way to pick a single
 *row*. The bench binary takes those filters itself — `--only <substring>` (row names are matched
 with `contains`), `--group <name>` and `--reps N` — so to time one row run the bench directly:
 

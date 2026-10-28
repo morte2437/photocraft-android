@@ -1,7 +1,7 @@
 //! Direct Selection tool (A, #790), the Convert Point tool (#3204), the Pens' ⌘/Ctrl (Direct
 //! Selection: the Pen, Freeform Pen and Curvature Pen) and the Pen's ⌥/Alt (Convert Point)
-//! modifiers, as in Photoshop. It edits the paths the canvas shows: the targeted vector mask or
-//! the active shape layer's path, and the work path.
+//! modifiers, as in Photoshop. It edits the paths the canvas shows: the targeted vector mask, the
+//! active shape layer's path or the active type layer's Type Path, and the work path.
 //!
 //! * Click an anchor to select it (⇧ adds or removes, ⌥ selects its whole subpath), drag on empty
 //!   canvas to marquee-select anchors, click empty canvas to deselect.
@@ -39,6 +39,8 @@ pub enum PathRef {
     Work,
     /// A layer's shape path, or its vector mask.
     Layer(u64),
+    /// A type layer's Type Path (#9114), apart from a vector mask the layer may have.
+    TypePath(u64),
     /// The Pen path being drawn (`ui.pen`): edited in place, not through the engine.
     Pen,
 }
@@ -49,6 +51,7 @@ impl PathRef {
         match self {
             PathRef::Work => json!({"name": "work"}),
             PathRef::Layer(id) => json!({"name": "layer", "layer": id}),
+            PathRef::TypePath(id) => json!({"name": "layer", "layer": id, "typePath": true}),
             // Never sent: edits to the Pen path being drawn don't go through the engine.
             PathRef::Pen => json!({}),
         }
@@ -163,12 +166,16 @@ pub fn shows(app: &PhotocraftApp, mods: Modifiers) -> bool {
         || matches!(app.ui.tool, Tool::AddAnchorPoint | Tool::DeleteAnchorPoint | Tool::ConvertPoint)
 }
 
-/// The active paths, front first: the targeted vector mask or the active shape layer's path, then
-/// the work path. The Pen's Auto Add/Delete edits these (`anchor_tools::pen_auto`).
+/// The active paths, front first: the targeted vector mask, the active shape layer's path or the
+/// active type layer's Type Path (#9114), then the work path. The Pen's Auto Add/Delete edits these
+/// (`anchor_tools::pen_auto`).
 pub(crate) fn active_paths(app: &PhotocraftApp) -> Vec<(PathRef, Path)> {
-    let layer = crate::vector_ui::targeted_vector_mask(app).or_else(|| crate::vector_ui::active_shape_path(app));
-    let work = app.session.active().and_then(|st| st.doc.work_path.clone());
-    layer.map(|(id, p)| (PathRef::Layer(id), p)).into_iter().chain(work.map(|p| (PathRef::Work, p))).collect()
+    let layer = crate::vector_ui::targeted_vector_mask(app)
+        .or_else(|| crate::vector_ui::active_shape_path(app))
+        .map(|(id, p)| (PathRef::Layer(id), p))
+        .or_else(|| crate::vector_ui::active_type_path(app).map(|(id, p)| (PathRef::TypePath(id), p)));
+    let work = app.session.active().and_then(|st| st.doc.work_path.clone()).filter(|_| crate::vector_ui::work_path_shown(app));
+    layer.into_iter().chain(work.map(|p| (PathRef::Work, p))).collect()
 }
 
 /// The paths Direct Selection edits, front first: the Pen path being drawn, the active paths, then
@@ -301,7 +308,7 @@ fn press(app: &mut PhotocraftApp, p: [f64; 2], mods: Modifiers, convert: bool) -
         app.ui.direct_selection.drag = Some(Drag::Marquee { start: p, end: p, add: mods.shift });
         return true;
     };
-    if let PathRef::Layer(id) = target
+    if let PathRef::Layer(id) | PathRef::TypePath(id) = target
         && app.session.active().and_then(|st| st.active_layer).map(|l| l.0) != Some(id)
     {
         let _ = app.run("layer.select", json!({"layer": id}));

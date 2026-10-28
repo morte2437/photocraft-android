@@ -3,7 +3,9 @@ use super::ime::{
     ImeCommitted, ImeEmitted, ResetContext, bind_reset_context, ime_target, interrupt_incoming, remember_incoming, reset_route_eligible, sync_incoming,
 };
 use super::layout::layout;
-use super::*;
+use super::{
+    CommittedText, ImeObservation, LayerId, PhotocraftApp, Point, Pos2, Range, TextEdit, ViewXform, byte_of, current_text, json, text_char_count, text_layer,
+};
 
 /// UTF-8 byte offsets of the caret, anchor and pre-edit, found in one traversal.
 ///

@@ -1835,6 +1835,50 @@ fn folder_listing_recognises_gzipped_xcf_by_its_double_extension() {
     assert!(!super::openable_name("notes.txt"));
 }
 
+/// A folder batch picks up every extension that the codecs open: Cineon, DICOM, Amiga IFF, PCX,
+/// XPM, DDS, the Netpbm family, and Photoshop templates. Not the raws whose usual files open only
+/// as the embedded JPEG preview (CR3, compressed ORF and RAF, RW2 other than raw formats 3, 4 and
+/// 5): a batch would process the thumbnail without a word.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn folder_listing_takes_every_format_photocraft_opens() {
+    let codecs = ["a.cin", "a.dcm", "a.dicom", "a.dc3", "a.iff", "a.lbm", "a.ilbm", "a.pcx", "a.xpm", "a.dds", "a.pbm", "a.pam", "a.pfm", "a.psdt", "A.PCX"];
+    let raws = ["a.dng", "IMG_0001.CR2", "a.nef", "a.nrw", "a.arw", "a.pef"];
+    for name in codecs.into_iter().chain(raws) {
+        assert!(super::openable_name(name), "{name}");
+    }
+    for f in photocraft_codecs::Format::ALL.into_iter().filter(|f| f.caps().read) {
+        for ext in f.extensions() {
+            assert!(super::openable_name(&format!("a.{ext}")), "{f:?} .{ext}");
+        }
+    }
+    for name in ["a.cr3", "IMG_0001.CR3", "a.orf", "a.raf", "a.rw2", "a.srf", "a.sr2"] {
+        assert!(!super::openable_name(name), "{name}");
+    }
+    // PhotoCraft does not read AVIF.
+    assert!(!super::openable_name("a.avif"));
+}
+
+/// A batch over a folder processes PAM, PFM and DDS files instead of skipping them.
+#[test]
+fn batch_folder_processes_netpbm_and_dds_files() {
+    let dir = tmp("batch-folder-formats");
+    let src = join(&dir, "in");
+    std::fs::create_dir_all(&src).unwrap();
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 8, "height": 8, "background": "#ff0000"})).unwrap();
+    for name in ["a.pam", "b.pfm", "c.dds"] {
+        save_doc(doc(&s), &join(&src, name), None).unwrap();
+    }
+    std::fs::write(join(&src, "notes.txt"), b"not an image").unwrap();
+    let out = join(&dir, "out");
+    let r = Session::new().execute("file.automate.batch", json!({"steps": [], "input": src, "output": out, "format": "png"})).unwrap();
+    assert!(r["errors"].as_array().unwrap().is_empty(), "{r}");
+    let mut files: Vec<String> = r["files"].as_array().unwrap().iter().map(|f| file_name(f.as_str().unwrap())).collect();
+    files.sort();
+    assert_eq!(files, ["a.png", "b.png", "c.png"], "{r}");
+}
+
 /// The Compression tag (259) of a TIFF's first directory.
 fn tiff_compression_tag(b: &[u8]) -> Option<u16> {
     let le = b.get(..2)? == b"II";

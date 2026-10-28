@@ -320,6 +320,13 @@ mod tests {
 
     #[test]
     fn navigate_words_lines_edges_and_keeps_a_column() {
+        check_word_moves();
+        check_newline_moves();
+        check_vertical_column_moves();
+        check_navigation_queries_are_read_only();
+    }
+
+    fn check_word_moves() {
         let mut s = session();
         let id = create(&mut s, json!({"x": 20, "y": 60, "text": "hello big world", "size": 18}));
         assert_eq!(go(&mut s, id, 0, "wordNext", None), 5);
@@ -334,7 +341,10 @@ mod tests {
         assert_eq!(go(&mut s, id, 4, "end", None), 15);
         assert_eq!(go(&mut s, id, 4, "lineStart", None), 0);
         assert_eq!(go(&mut s, id, 4, "lineEnd", None), 15);
+    }
 
+    fn check_newline_moves() {
+        let mut s = session();
         // A newline is not part of either word; line edges agree with type.info.
         let id = create(&mut s, json!({"x": 20, "y": 120, "text": "hello\nworld", "size": 18}));
         assert_eq!(go(&mut s, id, 0, "wordNext", None), 5);
@@ -353,7 +363,10 @@ mod tests {
         assert!((l1s..=l1e).contains(&next), "lineNext {next} not on {l1s}..={l1e}");
         assert_eq!(go(&mut s, id, 0, "linePrev", None), 0);
         assert_eq!(go(&mut s, id, l1e as usize, "lineNext", None), "hello\nworld".chars().count() as u64);
+    }
 
+    fn check_vertical_column_moves() {
+        let mut s = session();
         // Repeated line moves keep the document x of the original column.
         let id = create(&mut s, json!({"x": 24, "y": 200, "text": "WWWWWW\nI", "size": 28}));
         let info = s.execute("type.info", json!({"layer": id})).unwrap();
@@ -366,7 +379,13 @@ mod tests {
         assert_eq!(go(&mut s, id, end0 as usize, "lineNext", Some(x)), start1);
         assert_eq!(go(&mut s, id, end0 as usize, "lineNext", None), end1);
         assert_eq!(go(&mut s, id, start1 as usize, "linePrev", Some(x)), lines[0]["start"].as_u64().unwrap());
+    }
 
+    fn check_navigation_queries_are_read_only() {
+        let mut s = session();
+        let id = create(&mut s, json!({"x": 24, "y": 200, "text": "WWWWWW\nI", "size": 28}));
+        let caret0 = s.execute("type.caret", json!({"layer": id, "index": 0})).unwrap();
+        let x = caret0["segment"][0][0].as_f64().unwrap();
         // Queries do not record history or a journal entry.
         let steps = s.active().unwrap().history.entries().len();
         let rev = s.active().unwrap().revision;

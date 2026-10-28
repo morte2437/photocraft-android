@@ -38,7 +38,7 @@ mod steps_make;
 mod tables;
 
 #[cfg(test)]
-use adjustments::selective_from;
+use adjustments::{levels_from, selective_from};
 pub use convert::{Imported, Skipped, Unsupported, export, function_key_name, import, parse_function_key};
 #[cfg(test)]
 use convert::{MAX_NAME_CHARS, export_item, normalise};
@@ -56,7 +56,7 @@ use files::{load, save};
 #[cfg(test)]
 use steps_doc::crop_from;
 #[cfg(test)]
-use steps_image::transform_to;
+use steps_image::{apply_image_from, transform_to};
 #[cfg(test)]
 use steps_layer::quick_mask_ref;
 #[cfg(test)]

@@ -1,4 +1,4 @@
-use super::*;
+use super::{Format, Tag};
 
 pub(super) const F: Format = Format::Tiff;
 

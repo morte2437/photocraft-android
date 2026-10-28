@@ -74,6 +74,9 @@ fn cmd_enter_while_drawing_finishes_the_path_and_loads_it() {
     assert!(app.ui.pen.is_none(), "the pen path was finished");
     assert!(app.session.active().unwrap().doc.work_path.is_some(), "into the work path");
     assert!(app.session.active().unwrap().doc.selection.is_some(), "and loaded as a selection: {}", app.ui.status);
+    // Then deselected and no longer drawn, as in Photoshop; the work path stays (#6079).
+    assert_eq!(app.ui.selected_path, None);
+    assert!(!crate::vector_ui::work_path_shown(app));
     // Plain ↩ still only finishes a path.
     let mut h = harness();
     h.state_mut().ui.tool = Tool::Pen;
@@ -82,6 +85,60 @@ fn cmd_enter_while_drawing_finishes_the_path_and_loads_it() {
     press(&mut h, Key::Enter, Modifiers::NONE);
     assert!(h.state().session.active().unwrap().doc.work_path.is_some());
     assert!(h.state().session.active().unwrap().doc.selection.is_none());
+}
+
+#[test]
+fn selecting_a_saved_path_keeps_the_hidden_work_path_hidden() {
+    // #6079 review: only selecting the Work Path in the Paths panel shows it again.
+    let mut h = harness();
+    h.state_mut().run("path.set", json!({"name": "Saved", "path": rect_path(100.0, 40.0, 60.0, 50.0)})).unwrap();
+    h.state_mut().ui.tool = Tool::Pen;
+    let p = |x: f64, y: f64| [[x, y], [x, y], [x, y]];
+    h.state_mut().ui.pen = Some(PenPath { knots: vec![p(20.0, 20.0), p(120.0, 20.0), p(120.0, 80.0)], ..Default::default() });
+    h.run_steps(2);
+    press(&mut h, Key::Enter, command());
+    assert!(!crate::vector_ui::work_path_shown(h.state()), "⌘↩ hid the work path");
+    panel(&mut h, 2);
+    let saved = h.get_by_label("Saved").rect();
+    click(&mut h, egui::pos2(saved.left() + 70.0, saved.center().y), Modifiers::NONE);
+    assert_eq!(h.state().ui.selected_path.as_deref(), Some("Saved"));
+    assert!(!crate::vector_ui::work_path_shown(h.state()), "a saved path doesn't show the Work Path");
+    // So Delete with the Pen doesn't delete the invisible work path either.
+    press(&mut h, Key::Delete, Modifiers::NONE);
+    assert!(h.state().session.active().unwrap().doc.work_path.is_some(), "the hidden work path survives Delete");
+    // Selecting the Work Path shows it; now Delete deletes it.
+    let work = h.get_by_label("Work Path").rect();
+    click(&mut h, egui::pos2(work.left() + 70.0, work.center().y), Modifiers::NONE);
+    assert_eq!(h.state().ui.selected_path.as_deref(), Some("work"));
+    assert!(crate::vector_ui::work_path_shown(h.state()), "selecting the Work Path shows it");
+    press(&mut h, Key::Delete, Modifiers::NONE);
+    assert!(h.state().session.active().unwrap().doc.work_path.is_none(), "{}", h.state().ui.status);
+}
+
+#[test]
+fn reselecting_the_hidden_work_path_ends_the_hide() {
+    // #6079 review: once the Work Path is selected again in the Paths panel, deselecting it there
+    // leaves an ordinary unselected Work Path (drawn and edited with a path tool, #6551), not the
+    // hidden one from before.
+    let mut h = harness();
+    h.state_mut().ui.tool = Tool::Pen;
+    let p = |x: f64, y: f64| [[x, y], [x, y], [x, y]];
+    h.state_mut().ui.pen = Some(PenPath { knots: vec![p(20.0, 20.0), p(120.0, 20.0), p(120.0, 80.0)], ..Default::default() });
+    h.run_steps(2);
+    press(&mut h, Key::Enter, command());
+    assert!(!crate::vector_ui::work_path_shown(h.state()), "⌘↩ hid the work path");
+    panel(&mut h, 2);
+    let work = h.get_by_label("Work Path").rect();
+    click(&mut h, egui::pos2(work.left() + 70.0, work.center().y), Modifiers::NONE);
+    assert_eq!(h.state().ui.selected_path.as_deref(), Some("work"));
+    // Clicking the panel's empty area deselects it.
+    click(&mut h, egui::pos2(work.left() + 70.0, work.bottom() + 40.0), Modifiers::NONE);
+    assert_eq!(h.state().ui.selected_path, None);
+    assert!(crate::vector_ui::work_path_shown(h.state()), "the unchanged Work Path didn't go back into hiding");
+    assert_eq!(crate::vector_ui::active_path_name(h.state()).as_deref(), Some("work"));
+    // So Delete with the Pen deletes it, like any unselected Work Path.
+    press(&mut h, Key::Delete, Modifiers::NONE);
+    assert!(h.state().session.active().unwrap().doc.work_path.is_none(), "{}", h.state().ui.status);
 }
 
 #[test]
@@ -95,11 +152,34 @@ fn cmd_enter_loads_the_path_selected_in_the_paths_panel() {
     h.run_steps(2);
     press(&mut h, Key::Enter, command());
     assert_eq!(selection(&h), Some([100, 40, 60, 50]), "{}", h.state().ui.status);
-    // A selected path that went away falls back to the work path.
+    // A selected path that went away falls back to the work path once that is selected again.
     h.state_mut().run("path.delete", json!({"name": "Path 1"})).unwrap();
     h.state_mut().run("select.deselect", json!({})).unwrap();
+    h.state_mut().ui.selected_path = Some("work".into());
     press(&mut h, Key::Enter, command());
     assert_eq!(selection(&h), Some([0, 0, 30, 30]));
+}
+
+#[test]
+fn cmd_enter_on_a_saved_path_leaves_no_target_path() {
+    // #6079: after loading a saved path nothing is the target path; the shown Work Path must not
+    // take over (a second ⌘↩ or the canvas menu's Delete Path would act on it).
+    let mut h = harness();
+    h.state_mut().run("path.set", json!({"name": "work", "path": rect_path(0.0, 0.0, 30.0, 30.0)})).unwrap();
+    h.state_mut().run("path.set", json!({"name": "Path 1", "path": rect_path(100.0, 40.0, 60.0, 50.0)})).unwrap();
+    h.state_mut().ui.tool = Tool::Pen;
+    h.state_mut().ui.selected_path = Some("Path 1".into());
+    h.run_steps(2);
+    press(&mut h, Key::Enter, command());
+    assert_eq!(selection(&h), Some([100, 40, 60, 50]), "{}", h.state().ui.status);
+    assert_eq!(h.state().ui.selected_path, None);
+    assert_eq!(crate::vector_ui::active_path_name(h.state()), None, "the Work Path didn't become the target path");
+    assert!(!crate::vector_ui::work_path_shown(h.state()), "the Work Path isn't drawn");
+    // A second ⌘↩ has no path to load.
+    h.state_mut().run("select.deselect", json!({})).unwrap();
+    press(&mut h, Key::Enter, command());
+    assert_eq!(selection(&h), None, "the unselected Work Path wasn't loaded");
+    assert!(h.state().session.active().unwrap().doc.work_path.is_some(), "the Work Path stays");
 }
 
 #[test]
@@ -366,4 +446,52 @@ fn loading_a_path_after_hiding_extras_restores_outline() {
     press(&mut h, Key::Enter, command());
     assert_eq!(selection(&h), Some([10, 10, 50, 40]));
     assert!(h.state().ui.view.shows(h.state().ui.view.show.selection_edges));
+}
+
+/// #6079 review: in an arranged view, the frame a click into another tile activates its document
+/// still draws the old active document's overlays. The Work Path Make Selection hid there must not
+/// flash up in that frame.
+#[test]
+fn a_hidden_work_path_stays_hidden_when_another_tile_is_clicked() {
+    // Path outlines (accent lines) in the right tile in the frame a click into the left tile makes.
+    let right_outlines_on_switch = |hide: bool| {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        for _ in 0..2 {
+            app.run("file.new", json!({"width": 200, "height": 150})).unwrap();
+        }
+        app.sync_views();
+        app.ui.view.arrange = "tileAllVertically".into();
+        app.ui.tool = Tool::Pen;
+        app.run("path.set", json!({"name": "work", "path": rect_path(40.0, 30.0, 100.0, 80.0)})).unwrap();
+        crate::vector_ui::path_to_selection(&mut app, json!({})).unwrap();
+        app.run("select.deselect", json!({})).unwrap();
+        assert!(!crate::vector_ui::work_path_shown(&app), "Make Selection hid the second document's Work Path");
+        if !hide {
+            app.ui.hidden_work_path = None;
+        }
+        let mut h = Harness::builder().with_size(vec2(1000.0, 600.0)).build_ui_state(
+            |ui, app: &mut PhotocraftApp| {
+                if !ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
+                    return;
+                }
+                egui::CentralPanel::default().show(ui, |ui| crate::canvas::document_area(app, ui));
+            },
+            app,
+        );
+        PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+        h.run_steps(4);
+        let area = h.state().last_canvas_rect;
+        let at = egui::pos2(area.left() + area.width() / 4.0, area.center().y);
+        h.event(Event::PointerMoved(at));
+        h.event(Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+        h.run_steps(1);
+        assert_eq!(h.state().session.active_index(), Some(0), "the click activated the left document");
+        let accent = crate::theme::Tokens::get(&h.ctx).accent;
+        let outlines = h.output().shapes.iter().filter(|s| {
+            matches!(&s.shape, egui::Shape::Path(p) if p.stroke.color == egui::epaint::ColorMode::Solid(accent) && p.visual_bounding_rect().min.x > area.center().x)
+        });
+        outlines.count()
+    };
+    assert!(right_outlines_on_switch(false) > 0, "a shown Work Path is drawn in that frame");
+    assert_eq!(right_outlines_on_switch(true), 0, "the hidden one isn't");
 }

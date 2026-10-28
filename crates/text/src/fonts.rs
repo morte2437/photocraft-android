@@ -196,6 +196,9 @@ pub struct FontDb {
     /// [`Self::fallback_stack`] (#1909). Off, only the default family shapes the text.
     missing_glyph_protection: bool,
     face_cache: HashMap<String, Vec<FaceInfo>>,
+    /// Each family's [`crate::FamilyTraits`] (font menu filters), filled lazily; `None` for a
+    /// family whose fonts can't be read.
+    traits_cache: HashMap<String, Option<crate::FamilyTraits>>,
     face_aliases: HashMap<(String, usize), String>,
     /// This is the shared engine's database: registrations also move [`shared_generation`].
     shared: bool,
@@ -218,6 +221,7 @@ impl FontDb {
             fallbacks: Vec::new(),
             missing_glyph_protection: true,
             face_cache: HashMap::new(),
+            traits_cache: HashMap::new(),
             face_aliases: HashMap::new(),
             shared: false,
         };
@@ -281,6 +285,7 @@ impl FontDb {
             }
             self.ps_cache.clear();
             self.face_cache.clear();
+            self.traits_cache.clear();
             self.refresh_generics();
         }
     }
@@ -316,6 +321,7 @@ impl FontDb {
         names.sort_by_key(|n| (is_hidden_family(n), n.to_lowercase()));
         self.ps_cache.clear();
         self.face_cache.clear();
+        self.traits_cache.clear();
         self.refresh_generics();
         GENERATION.fetch_add(1, Ordering::Relaxed);
         if self.shared {
@@ -473,6 +479,24 @@ impl FontDb {
             .collect();
         self.face_cache.insert(family.to_string(), faces.clone());
         faces
+    }
+
+    /// What the font menu filters and sorts a family by ([`crate::font_class`]), read from its
+    /// regular face (the upright face nearest weight 400). `None` when the family is unknown or
+    /// none of its fonts can be read.
+    pub fn family_traits(&mut self, family: &str) -> Option<crate::FamilyTraits> {
+        if let Some(t) = self.traits_cache.get(family) {
+            return t.clone();
+        }
+        let traits = (|| {
+            let info = self.fcx.collection.family_by_name(family)?;
+            let face = info.fonts().iter().min_by_key(|f| (!matches!(f.style(), FontStyle::Normal), (f.weight().value() - 400.0).abs() as u32))?.clone();
+            let blob = face.load(Some(&mut self.fcx.source_cache))?;
+            let font = skrifa::FontRef::from_index(blob.as_ref(), face.index()).ok()?;
+            Some(crate::font_class::traits_of(family, &font))
+        })();
+        self.traits_cache.insert(family.to_string(), traits.clone());
+        traits
     }
 
     /// Resolve a menu style to its actual metadata instead of guessing from its spelling.

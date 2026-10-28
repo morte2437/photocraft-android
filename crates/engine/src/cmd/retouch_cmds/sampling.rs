@@ -1,4 +1,4 @@
-use super::*;
+use super::{Document, Footprint, LayerId, PixelFormat, Rect, Region, Result, Surface, Value, bad, flag, from_rgba_into, string, targets_pixels};
 
 // ---------------------------------------------------------------------------------------------
 // Sampling sources

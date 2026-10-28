@@ -2613,6 +2613,53 @@ fn hyphenless_postscript_names_split_trailing_styles() {
     }
 }
 
+/// Thickening moves each outline point along its bisector; this guards that curves stay as smooth
+/// as the regular glyph's at a large size (the bend of a bold "O"'s edge between rows matches the
+/// regular one's). See also `faux_bold_keeps_square_corners_square`.
+#[test]
+fn faux_bold_curves_stay_smooth_at_large_sizes() {
+    let mut e = TextEngine::new();
+    // The largest bend of the left edge between consecutive rows, in pixels (second difference
+    // of its sub-pixel position), over the middle of the glyph's height.
+    let bumpiness = |e: &mut TextEngine, bold: bool| -> f64 {
+        let style = CharStyle { size_pt: 600.0, faux_bold: bold, ..Default::default() };
+        let (_, r) = e.render(&TextLayer { transform: Affine::translate(60.0, 640.0), ..styled("O", style) }, 72.0, PixelFormat::RGBA8);
+        let alpha = |x: i32, y: i32| alpha_sum(&r.surface, photocraft_geom::Rect::new(x, y, x + 1, y + 1));
+        let h = r.rect.height() as i32;
+        let mut edges = Vec::new();
+        for y in (r.rect.y0 + h * 15 / 100)..(r.rect.y0 + h * 85 / 100) {
+            if let Some(x) = (r.rect.x0..r.rect.x1).find(|&x| alpha(x, y) > 0.01) {
+                edges.push(f64::from(x) + 1.0 - alpha(x, y));
+            }
+        }
+        edges.windows(3).map(|w| (w[2] - 2.0 * w[1] + w[0]).abs()).fold(0.0, f64::max)
+    };
+    let plain = bumpiness(&mut e, false);
+    let bold = bumpiness(&mut e, true);
+    eprintln!("bumpiness plain {plain} bold {bold}");
+    assert!(bold < plain + 0.5, "faux bold's edge is notched: bends {bold} px vs {plain} px regular");
+}
+
+/// The notches showed most at corners and stroke ends: eight stamped copies leave a stepped bite
+/// out of a square corner. Thickened outlines keep corners square, as a bold "l" shows.
+#[test]
+fn faux_bold_keeps_square_corners_square() {
+    let mut e = TextEngine::new();
+    for bold in [false, true] {
+        let style = CharStyle { size_pt: 600.0, faux_bold: bold, ..Default::default() };
+        let (_, r) = e.render(&TextLayer { transform: Affine::translate(60.0, 640.0), ..styled("l", style) }, 72.0, PixelFormat::RGBA8);
+        let alpha = |x: i32, y: i32| alpha_sum(&r.surface, photocraft_geom::Rect::new(x, y, x + 1, y + 1));
+        // The ink's own top-left and top-right corners (the raster rect pads the ink by a pixel).
+        let top = (r.rect.y0..r.rect.y1).find(|&y| (r.rect.x0..r.rect.x1).any(|x| alpha(x, y) > 0.5)).unwrap();
+        let left = (r.rect.x0..r.rect.x1).find(|&x| (r.rect.y0..r.rect.y1).any(|y| alpha(x, y) > 0.5)).unwrap();
+        let right = (r.rect.x0..r.rect.x1).rev().find(|&x| (r.rect.y0..r.rect.y1).any(|y| alpha(x, y) > 0.5)).unwrap();
+        for (x, corner) in [(left + 1, "top-left"), (right - 1, "top-right")] {
+            let a = alpha(x, top + 1);
+            assert!(a > 0.9, "bold {bold}: the {corner} corner is cut away (alpha {a})");
+        }
+    }
+}
+
 #[test]
 fn text_rebuild_preserves_imported_font_metadata() {
     use crate::engine_data::Value as E;

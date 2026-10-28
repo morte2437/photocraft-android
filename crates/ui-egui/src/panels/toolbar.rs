@@ -1,5 +1,5 @@
 use super::options_bar::reveal_focused_control;
-use super::*;
+use super::{Align2, Color32, PhotocraftApp, Pos2, Rect, Sense, Stroke, StrokeKind, Tokens, Tool, c32, icons, json, pos2, vec2};
 
 // ----------------------------------------------------------------------------- toolbar
 

@@ -1,4 +1,4 @@
-use super::*;
+use super::{ByteOrder, LayerMask, MAX_DEPTH, PsdError, Reader, Result, TaggedBlock, Version, mask_parameter_bytes, uses_long_length};
 
 /// Converts the tagged blocks after the 37724 header string from `from` to `to`.
 pub fn transcode_blocks(data: &[u8], version: Version, from: ByteOrder, to: ByteOrder) -> Result<(Vec<u8>, Vec<String>)> {

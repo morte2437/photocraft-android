@@ -1,5 +1,5 @@
 use super::history::fix_selection;
-use super::*;
+use super::{Arc, EngineError, LayerId, Result, Session, channel_cmds, type_cmds};
 
 impl Session {
     /// Replace the active document's active layer without creating a history step.

@@ -294,6 +294,7 @@
 	Layer…	레이어…
 	Group…	그룹…
 	Group from Layers…	레이어로 그룹 만들기…
+	New Group from Layers…	레이어에서 새 그룹…
 	Artboard…	아트보드…
 	Artboard from Group…	그룹으로 아트보드 만들기…
 	Artboard from Layers…	레이어로 아트보드 만들기…
@@ -1938,7 +1939,7 @@
 	Full size tip	전체 크기 브러시 끝
 	Gamut warning color	색상 범위 경고 색상
 	Gamut warning opacity	색상 범위 경고 불투명도
-	Generator enabled	생성기 활성화
+	Enable Generator	생성기 활성화
 	Gif	GIF
 	Glossy	광택
 	Grid color	격자 색상
@@ -3379,6 +3380,9 @@ curves	Smooth	매끄럽게
 	Clear History	작업 내역 지우기
 	New Snapshot…	새 스냅샷…
 	History Options…	작업 내역 옵션…
+# History panel › History Options… (#2966)
+	Allow Non-Linear History	비선형 작업 내역 허용
+	Make Layer Visibility Changes Undoable	레이어 표시 여부 변경을 실행 취소할 수 있게 하기
 # Print dialog (#2697)
 	Emulsion Down	감광면 아래로
 	Functions	기능
@@ -3451,6 +3455,33 @@ curves	Smooth	매끄럽게
 	Sent to {printer}	{printer}(으)로 전송됨
 	set in Print Settings…	인쇄 설정에서 지정…
 	ICO is limited to 256 × 256 pixels	ICO는 256 × 256픽셀로 제한됩니다
+	Show Favorite Fonts	즐겨찾는 글꼴 표시
+	No favorite fonts yet: click the star beside a font to add it.	아직 즐겨찾는 글꼴이 없습니다. 글꼴 옆의 별을 클릭하여 추가하세요.
+	Favorite fonts	즐겨찾는 글꼴
+	Add to Favorites	즐겨찾기에 추가
+	Remove from Favorites	즐겨찾기에서 제거
+	Show All Fonts	모든 글꼴 표시
+	All Classes	모든 분류
+	Blackletter	블랙레터
+	Decorative	장식
+	Font preview:	글꼴 미리 보기:
+	Handwritten	손글씨
+	Hide Font Classes	글꼴 분류 숨기기
+	Hide Styles	스타일 숨기기
+	Monospace	고정폭
+	No fonts match these filters.	이 필터와 일치하는 글꼴이 없습니다.
+	No similar fonts: the current font doesn't say what it looks like.	비슷한 글꼴 없음: 현재 글꼴에 모양 정보가 없습니다.
+	OpenType font	OpenType 글꼴
+	Sans Serif	산세리프
+	Script	스크립트
+	Serif	세리프
+	Show Font Classes	글꼴 분류 표시
+	Show Similar Fonts	비슷한 글꼴 표시
+	Show Styles	스타일 표시
+	Show Variable Fonts	가변 글꼴 표시
+	Slab Serif	슬래브 세리프
+	TrueType font	TrueType 글꼴
+	Variable font	가변 글꼴
 	Calibration	보정
 	Red Primary	빨강 원색
 	Green Primary	녹색 원색
@@ -3670,3 +3701,6 @@ curves	Smooth	매끄럽게
 	Category	카테고리
 	Target	대상
 	Units	단위
+	Font size presets	글꼴 크기 사전 설정
+	Leading presets	행간 사전 설정
+	Tracking presets	자간 사전 설정

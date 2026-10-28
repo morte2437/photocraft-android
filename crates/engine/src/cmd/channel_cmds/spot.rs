@@ -1,8 +1,8 @@
 use super::manage::{fix_view_now, gray_document};
-use super::planes::{channel_format, edit_mode, plane_surface, read_plane};
+use super::planes::{channel_format, edit_mode, plane_surface, read_plane, tone};
 use super::refs::{ChanRef, alpha_index, bad, gray_plane, native_pixels};
 use super::view::{ChannelTarget, ChannelView, color_names};
-use super::*;
+use super::{AlphaChannel, ColorMode, DocState, Document, EngineError, Layer, Result, Session, Value, from_rgba, json};
 
 /// Merge Spot Channel: flattens the image and prints the spot ink into the colour channels.
 pub(super) fn merge_spot(s: &mut Session, p: &Value) -> Result<Value> {
@@ -66,7 +66,7 @@ pub(super) fn split(s: &mut Session, p: &Value) -> Result<Value> {
     let short = |name: &str| name.chars().next().map(|c| c.to_ascii_uppercase().to_string()).unwrap_or_default();
     let mut docs: Vec<Document> = Vec::new();
     for (c, name) in names.iter().enumerate() {
-        let plane: Vec<f32> = px.chunks_exact(n).map(|p| p[c]).collect();
+        let plane: Vec<f32> = px.chunks_exact(n).map(|p| tone(mode, p[c])).collect();
         docs.push(gray_document(&format!("{}_{}", doc.name, short(name)), &doc, &plane));
     }
     for ch in &doc.channels {
@@ -133,7 +133,7 @@ pub(super) fn merge(s: &mut Session, p: &Value) -> Result<Value> {
     let mut data = Vec::with_capacity(npx * fmt.channels());
     for i in 0..npx {
         for pl in &planes[..cc] {
-            data.push(pl[i].clamp(0.0, 1.0));
+            data.push(tone(mode, pl[i]).clamp(0.0, 1.0));
         }
         data.push(1.0);
     }

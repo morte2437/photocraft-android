@@ -1,4 +1,4 @@
-use super::*;
+use super::{LAYOUTS, PhotocraftApp, Value, json};
 
 /// View › Fit Layer(s) on Screen: zoom and centre on the selected layers' bounds.
 pub(super) fn fit_layers(app: &mut PhotocraftApp) -> Result<Value, String> {

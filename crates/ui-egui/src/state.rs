@@ -314,6 +314,11 @@ pub struct UiState {
     /// Selected row in the Paths panel ("work" or a saved path name).
     #[serde(default)]
     pub selected_path: Option<String>,
+    /// The document and Work Path deselected by making a selection from it with the Pen or Path
+    /// Selection tool (#6079): the canvas hides that path until a path is selected again or the
+    /// Work Path changes.
+    #[serde(default)]
+    pub hidden_work_path: Option<(u64, photocraft_doc::Path)>,
     /// Layers panel kind filter ("pixel", "adjustment", "type", "shape", "smart"); empty = all.
     #[serde(default)]
     pub layer_filter: Vec<String>,
@@ -540,6 +545,7 @@ impl Default for UiState {
             direct_selection: Default::default(),
             corner_radius: None,
             selected_path: None,
+            hidden_work_path: None,
             panels: Panels::default(),
             views: Vec::new(),
             dialogs: Vec::new(),
@@ -651,6 +657,11 @@ mod tests {
 
     #[test]
     fn tool_names_parse() {
+        basic_and_retouch_tool_names_parse();
+        vector_tool_names_parse();
+    }
+
+    fn basic_and_retouch_tool_names_parse() {
         assert_eq!(Tool::from_name("brush"), Some(Tool::Brush));
         assert_eq!(Tool::from_name("Rect"), Some(Tool::RectMarquee));
         assert_eq!(Tool::from_name("RectMarquee"), Some(Tool::RectMarquee));
@@ -669,6 +680,9 @@ mod tests {
         assert_eq!(Tool::from_name("patternStamp"), Some(Tool::PatternStamp));
         assert_eq!(Tool::from_name("Pattern Stamp Tool"), Some(Tool::PatternStamp));
         assert_eq!(Tool::ALL.len(), 68);
+    }
+
+    fn vector_tool_names_parse() {
         assert_eq!(Tool::from_name("Vertical Type Mask Tool"), Some(Tool::VerticalTypeMask));
         assert_eq!(Tool::from_name("addAnchorPoint"), Some(Tool::AddAnchorPoint));
         assert_eq!(Tool::from_name("Delete Anchor Point Tool"), Some(Tool::DeleteAnchorPoint));

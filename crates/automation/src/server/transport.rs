@@ -1,5 +1,5 @@
 //! Recover malformed JSON lines before passing valid messages to rmcp.
-use super::*;
+use super::{AutomationError, PhotocraftMcp, ServiceExt, Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::security::MAX_REQUEST_BYTES;

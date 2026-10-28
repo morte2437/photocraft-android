@@ -414,9 +414,31 @@ fn huge_drawings_scale_to_the_side_limit() {
     assert_eq!(w.len(), 1);
 }
 
+/// A pasted drawing is one pixel per SVG unit, and a drawing past the pixel limit is scaled
+/// down to fit it, keeping its proportions, instead of failing.
+#[test]
+fn rgba8_renders_at_its_own_size_within_the_pixel_limit() {
+    let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="20" height="20" fill="#ff0000"/></svg>"##;
+    let (w, h, px) = rasterize_rgba8(svg).unwrap();
+    assert_eq!((w, h, px.len()), (40, 20, 40 * 20 * 4));
+    assert_eq!(px[..4], [255, 0, 0, 255], "the rectangle");
+    assert_eq!(px[(10 * 40 + 30) * 4..][..4], [0, 0, 0, 0], "transparent beside it");
+    for (side_w, side_h) in [(10_000u32, 5_000u32), (20_000, 20_000), (20_000, 2_000)] {
+        let svg = format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{side_w}\" height=\"{side_h}\"/>");
+        let (w, h, px) = rasterize_rgba8(svg.as_bytes()).unwrap();
+        let pixels = u64::from(w) * u64::from(h);
+        assert!(pixels <= MAX_RASTER_PIXELS && pixels > MAX_RASTER_PIXELS / 2, "{side_w} × {side_h} became {w} × {h}");
+        assert!(w <= MAX_SIDE && h <= MAX_SIDE, "{w} × {h}");
+        let (aspect, want) = (f64::from(w) / f64::from(h), f64::from(side_w) / f64::from(side_h));
+        assert!((aspect / want - 1.0).abs() < 0.01, "{w} × {h} keeps {side_w} × {side_h}");
+        assert_eq!(px.len() as u64, pixels * 4);
+    }
+    assert!(rasterize_rgba8(b"<svg xmlns=\"http://www.w3.org/2000/svg\"><rect").is_err(), "malformed markup is an error");
+}
+
 #[test]
 fn resolve_data_rejects_oversized_and_malformed_embedded_png_and_webp() {
-    let opt = options(Arc::new(usvg::fontdb::Database::new()));
+    let opt = options(Arc::new(usvg::fontdb::Database::new()), MAX_XML_DEPTH);
     let resolve = &opt.image_href_resolver.resolve_data;
     let img = photocraft_codecs::Image::from_u8(2, 2, photocraft_codecs::ChannelLayout::Rgb, vec![255; 12]).unwrap();
     let valid_png = photocraft_codecs::encode(&img, photocraft_codecs::Format::Png, &Default::default()).unwrap();
@@ -448,7 +470,7 @@ fn jpeg_dimensions_come_from_the_frame_header_and_oversized_jpegs_are_refused() 
     assert_eq!(jpeg_dimensions(&jpeg(40_000, 30_000)), Some((30_000, 40_000)));
     assert_eq!(jpeg_dimensions(&[0xFF, 0xD8, 0xFF, 0xDA, 0, 2]), None);
     assert_eq!(jpeg_dimensions(&[0xFF, 0xD8]), None);
-    let opt = options(Arc::new(usvg::fontdb::Database::new()));
+    let opt = options(Arc::new(usvg::fontdb::Database::new()), MAX_XML_DEPTH);
     let resolve = &opt.image_href_resolver.resolve_data;
     // 1.2 billion pixels would be 4.8 GB of RGBA before resvg scaled anything down.
     assert!(resolve("image/jpeg", Arc::new(jpeg(40_000, 30_000)), &opt).is_none());
@@ -463,7 +485,7 @@ fn resolve_data_rejects_nested_gzip_and_handles_text_plain_svgz() {
         e.write_all(bytes).unwrap();
         e.finish().unwrap()
     }
-    let opt = options(Arc::new(usvg::fontdb::Database::new()));
+    let opt = options(Arc::new(usvg::fontdb::Database::new()), MAX_XML_DEPTH);
     let resolve = &opt.image_href_resolver.resolve_data;
     let svg = b"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"4\"><rect width=\"4\" height=\"4\"/></svg>";
     let once = gz(svg);

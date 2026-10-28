@@ -63,6 +63,11 @@ fn every_kind_round_trips_through_params() {
 
 #[test]
 fn params_reach_the_model() {
+    basic_params_reach_the_model();
+    color_space_params_reach_the_model();
+}
+
+fn basic_params_reach_the_model() {
     let a = from_params("colorBalance", &json!({"midtones": [50, 0, -200]}), None, ColorMode::Rgb).unwrap();
     assert_eq!(a, Adjustment::ColorBalance { shadows: [0.0; 3], midtones: [50.0, 0.0, -100.0], highlights: [0.0; 3], preserve_luminosity: true });
     let a = from_params("channelMixer", &json!({"monochrome": true}), None, ColorMode::Rgb).unwrap();
@@ -82,6 +87,9 @@ fn params_reach_the_model() {
     assert!(matches!(a, Adjustment::HueSaturation { colorize: true, saturation: 0.0, hue: 120.0, .. }), "{a:?}");
     let a = from_params("gradientMap", &json!({"stops": [[1, "#ffffff"], [0, "#000000"]], "dither": true}), None, ColorMode::Rgb).unwrap();
     assert!(matches!(&a, Adjustment::GradientMap { stops, dither: true, .. } if stops[0].0 == 0.0));
+}
+
+fn color_space_params_reach_the_model() {
     // CMYK curves: ink channels; Lab: lightness without a composite.
     let a = from_params("curves", &json!({"black": [[0, 0], [255, 200]]}), None, ColorMode::Rgb).unwrap();
     assert!(matches!(&a, Adjustment::Curves { space: ToneSpace::Cmyk, black, .. } if black.len() == 2));

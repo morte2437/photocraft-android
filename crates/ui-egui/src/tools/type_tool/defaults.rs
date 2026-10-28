@@ -1,5 +1,5 @@
 use super::editing::edit_home;
-use super::*;
+use super::{LayerId, PhotocraftApp, TextLayer, hex, json, text_layer};
 
 /// Representative for the displayed properties: the edit layer, else a selected type layer.
 pub(crate) fn target(app: &PhotocraftApp) -> Option<(u64, Option<[usize; 2]>)> {
@@ -217,20 +217,6 @@ pub(super) fn apply(app: &mut PhotocraftApp, ctx: &egui::Context, props: serde_j
         p["coalesce"] = json!(key);
     }
     let _ = app.run("type.setStyle", p);
-}
-
-/// `props` aimed at the type target: its layer, the selected characters while typing, and the
-/// typing session's undo step. `None` without a type target.
-pub(crate) fn with_target(app: &PhotocraftApp, mut props: serde_json::Value) -> Option<serde_json::Value> {
-    let (layer, range) = target(app)?;
-    props["layer"] = json!(layer);
-    if let Some(r) = range {
-        props["range"] = json!(r);
-    }
-    if let Some(key) = app.ui.text_edit.as_ref().map(|ed| ed.session.clone()) {
-        props["coalesce"] = json!(key);
-    }
-    Some(props)
 }
 
 /// Open the shared Color Picker with a snapshot of the text target. Sampling or cancelling

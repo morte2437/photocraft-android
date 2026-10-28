@@ -54,7 +54,7 @@ fn label(ui: &mut egui::Ui, text: &str) {
 }
 
 /// The `mode` param naming a blend mode ("normal", "colorBurn"…), parsed by the engine.
-fn mode_key(m: photocraft_color::BlendMode) -> String {
+pub(crate) fn mode_key(m: photocraft_color::BlendMode) -> String {
     let s = format!("{m:?}");
     let mut c = s.chars();
     c.next().map(|f| f.to_ascii_lowercase().to_string() + c.as_str()).unwrap_or_default()

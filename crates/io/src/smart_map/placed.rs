@@ -1,5 +1,5 @@
 use super::export::{set, set_before, unit};
-use super::*;
+use super::{Affine, BezierMesh, Descriptor, Id, ObjectArray, UnicodeString, Value, VersionedDescriptor, Warp, WarpStyle, get_desc, num, text_of};
 
 /// Everything needed to write the placed-layer blocks of a smart object.
 #[derive(Clone, Debug)]

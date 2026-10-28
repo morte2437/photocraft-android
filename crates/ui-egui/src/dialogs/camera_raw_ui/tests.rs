@@ -1,5 +1,19 @@
 use super::*;
 
+/// #9550: a Color Mixer Hue track runs through the neighbouring bands' hues (Reds: magenta to
+/// orange, wrapping round), not from grey; Saturation and Luminance keep grey to the colour.
+#[test]
+fn hue_tracks_run_between_the_neighbouring_bands() {
+    use super::controls::mixer_gradient;
+    let hue = |d: f32| widgets::hue_color(d);
+    assert_eq!(mixer_gradient(0, 0), vec![hue(300.0), hue(0.0), hue(30.0)], "Reds");
+    assert_eq!(mixer_gradient(0, 7), vec![hue(270.0), hue(300.0), hue(0.0)], "Magentas");
+    assert_eq!(mixer_gradient(0, 3), vec![hue(60.0), hue(120.0), hue(180.0)], "Greens");
+    for tab in [1, 2] {
+        assert_eq!(mixer_gradient(tab, 3), vec![Color32::from_gray(128), hue(120.0)]);
+    }
+}
+
 #[test]
 fn preview_texture_uses_linear_document_display_encoding() {
     let mut doc = photocraft_doc::Document::new("test", photocraft_geom::Size::new(1, 1), photocraft_doc::ColorMode::Rgb, photocraft_doc::SampleType::F32);

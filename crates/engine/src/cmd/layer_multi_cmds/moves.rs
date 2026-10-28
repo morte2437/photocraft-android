@@ -1,7 +1,7 @@
 use super::damage::note_damage;
 use super::selection::{reselect, same_named_targets, selected, top_level};
 use super::structure::check_group_depth;
-use super::*;
+use super::{Document, EngineError, Layer, LayerContent, LayerId, Result, Session, Value, bad, int_i32, json};
 
 /// A Layers-panel drag of the selected layer records its drop target by name (and which of
 /// several same-named layers it is), as [`recorded_selection`] does: the id means nothing in the

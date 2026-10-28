@@ -68,7 +68,10 @@ pub struct RawEvent {
 
 /// The mask of event types [`State::handle`] maps (`NSEventMask` bits are `1 << type`).
 pub fn event_mask() -> u64 {
-    use event_type::*;
+    use event_type::{
+        LEFT_MOUSE_DOWN, LEFT_MOUSE_DRAGGED, LEFT_MOUSE_UP, MOUSE_MOVED, OTHER_MOUSE_DOWN, OTHER_MOUSE_DRAGGED, OTHER_MOUSE_UP, RIGHT_MOUSE_DOWN,
+        RIGHT_MOUSE_DRAGGED, RIGHT_MOUSE_UP, TABLET_POINT, TABLET_PROXIMITY,
+    };
     [
         LEFT_MOUSE_DOWN,
         LEFT_MOUSE_UP,
@@ -97,7 +100,10 @@ pub struct State {
 impl State {
     /// Map one event.
     pub fn handle(&mut self, e: &RawEvent) -> Update {
-        use event_type::*;
+        use event_type::{
+            LEFT_MOUSE_DOWN, LEFT_MOUSE_DRAGGED, LEFT_MOUSE_UP, MOUSE_MOVED, OTHER_MOUSE_DOWN, OTHER_MOUSE_DRAGGED, OTHER_MOUSE_UP, RIGHT_MOUSE_DOWN,
+            RIGHT_MOUSE_DRAGGED, RIGHT_MOUSE_UP, TABLET_POINT, TABLET_PROXIMITY,
+        };
         let mouse = matches!(
             e.kind,
             LEFT_MOUSE_DOWN

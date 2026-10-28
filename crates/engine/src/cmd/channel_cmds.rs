@@ -113,6 +113,7 @@ mod view;
 use calc::{apply_image, calculations};
 use manage::{delete_channel, duplicate_channel, move_channel, new_channel, new_spot, options, rename_channel, set_visible};
 use planes::edit_mode;
+pub(crate) use planes::tone;
 pub use planes::{
     GraySurface, IsolatedCurveChannel, channel_format, color_count, filter_mask_curve_channel, isolated_curve_channel, isolated_curve_channel_for,
     next_alpha_name,
@@ -123,8 +124,9 @@ use selection::{load_selection, quick_mask, save_selection};
 use spot::{merge, merge_spot, mergeable, split};
 use targeting::{SLOT_KEY, target_cmd, target_slot};
 pub(crate) use targeting::{
-    Target, channel_surface_for_filter, clear_channel, clear_color_channel, color_restriction, edits_channel, filter_mask_layer, inject_target,
-    is_channel_target, mask_target_enabled, read_target_surface, restrict_to_color, routed, target_of, target_surface, targeted_channel, targeted_color,
+    Target, channel_surface_for_filter, clear_channel, clear_color_channel, color_restriction, edits_channel, filter_mask_layer, inject_target, invert_region,
+    is_channel_target, is_spot_target, mask_target_enabled, read_target_surface, restrict_to_color, routed, target_of, target_surface, targeted_channel,
+    targeted_color,
 };
 pub use targeting::{follows_filter_mask, follows_target};
 pub(crate) use view::fix_view;

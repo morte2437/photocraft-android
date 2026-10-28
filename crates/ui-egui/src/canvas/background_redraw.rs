@@ -110,7 +110,7 @@ pub(crate) struct Redraw {
     rx: Receiver<Piece>,
     stop: Arc<AtomicBool>,
     started_ms: f64,
-    fallback: Option<String>,
+    fallback: Option<crate::render_path::CpuReason>,
     /// The state the blocks are drawn from, and what the texels depend on besides it.
     doc: Arc<Document>,
     display: u64,
@@ -285,7 +285,7 @@ pub(crate) fn start(
     display: Option<Arc<CanvasDisplay>>,
     visible: Rect,
     region: Rect,
-    fallback: Option<String>,
+    fallback: Option<crate::render_path::CpuReason>,
 ) {
     let all = blocks(doc.bounds());
     let display_key = display.as_deref().map_or(0, |d| d.texture_key);
@@ -384,7 +384,7 @@ pub(crate) fn poll(app: &mut PhotocraftApp, gpu: &GpuCanvas, doc: DocId) {
     }
     let ms = crate::gpu_canvas::now_ms() - r.started_ms;
     app.perf.record("background", r.drawn, ms, 0.0);
-    crate::notices::slow_cpu_refresh(app, doc.0, ms, r.fallback.as_deref());
+    crate::notices::slow_cpu_refresh(app, doc.0, ms, r.fallback.as_ref());
 }
 
 /// Keep uploaded block `p` for [`Kept`], unless the composite would pass the cap.
@@ -454,7 +454,7 @@ struct Spawn {
     pending: Vec<bool>,
     /// When it started and the pixels uploaded so far.
     since: (f64, u64),
-    fallback: Option<String>,
+    fallback: Option<crate::render_path::CpuReason>,
     /// Blocks collected for [`Kept`], their bytes, and the cap.
     keep: (Vec<Option<Vec<u8>>>, u64, u64),
 }

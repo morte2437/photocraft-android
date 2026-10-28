@@ -1895,7 +1895,7 @@
 	Full size tip	Vrh pune veličine
 	Gamut warning color	Boja upozorenja o gamutu
 	Gamut warning opacity	Neprozirnost upozorenja o gamutu
-	Generator enabled	Generator je omogućen
+	Enable Generator	Omogući generator
 	Gif	GIF
 	Glossy	Sjajno
 	Grid color	Boja mreže
@@ -2238,6 +2238,7 @@
 	Create new set	Napravi novi skup
 	Technology Previews	Probne tehnologije
 	New Group	Nova grupa
+	New Group from Layers…	Nova grupa od slojeva…
 	Layer Comp	Kompozicija slojeva
 	Create new layer	Napravi novi sloj
 	Group · {n} layer	Grupa · slojeva: {n}
@@ -2304,6 +2305,8 @@
 	Automatically Create New Snapshot When Saving	Automatski napravi novi snimak stanja pri čuvanju
 	Show New Snapshot Dialog by Default	Podrazumevano prikaži dijalog za novi snimak stanja
 	Clear History	Obriši istoriju
+	Allow Non-Linear History	Dozvoli nelinearnu istoriju
+	Make Layer Visibility Changes Undoable	Omogući opozivanje promena vidljivosti slojeva
 	Panel Options…	Opcije panela…
 	View menu	Meni prikaza
 	Keep view in sync	Drži prikaz usklađenim
@@ -4288,6 +4291,33 @@ shape	Appearance	Izgled
 	Kept {name}: written by another application	{name} je zadržan: upisala ga je druga aplikacija
 	Shadow Tint	Nijansa senki
 	Redrawing	Ponovno iscrtavanje
+	Show Favorite Fonts	Прикажи омиљене фонтове
+	No favorite fonts yet: click the star beside a font to add it.	Још нема омиљених фонтова: кликните на звездицу поред фонта да бисте га додали.
+	Favorite fonts	Омиљени фонтови
+	Add to Favorites	Додај у омиљене
+	Remove from Favorites	Уклони из омиљених
+	Show All Fonts	Прикажи све фонтове
+	All Classes	Све класе
+	Blackletter	Готица
+	Decorative	Декоративни
+	Font preview:	Преглед фонта:
+	Handwritten	Рукописни
+	Hide Font Classes	Сакриј класе фонтова
+	Hide Styles	Сакриј стилове
+	Monospace	Фиксне ширине
+	No fonts match these filters.	Ниједан фонт не одговара овим филтерима.
+	No similar fonts: the current font doesn't say what it looks like.	Нема сличних фонтова: тренутни фонт не описује свој изглед.
+	OpenType font	OpenType фонт
+	Sans Serif	Без серифа
+	Script	Скрипт
+	Serif	Са серифима
+	Show Font Classes	Прикажи класе фонтова
+	Show Similar Fonts	Прикажи сличне фонтове
+	Show Styles	Прикажи стилове
+	Show Variable Fonts	Прикажи варијабилне фонтове
+	Slab Serif	Плочасти серифи
+	TrueType font	TrueType фонт
+	Variable font	Варијабилни фонт
 
 # Bevel & Emboss shading controls.
 	Highlight Mode	Режим осветљења
@@ -4524,3 +4554,6 @@ shape	Appearance	Izgled
 	Tight Curl	Usko uvijeno
 	Loose Curl	Labavo uvijeno
 	Stylized dabs from a history state	Stilizovane mrlje iz stanja istorije
+	Font size presets	Unapred podešene veličine fonta
+	Leading presets	Unapred podešeni proredi
+	Tracking presets	Unapred podešeni razmaci slova

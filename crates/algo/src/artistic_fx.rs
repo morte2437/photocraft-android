@@ -555,13 +555,20 @@ pub(crate) fn run(effects: &[GalleryEffect], src: &Image, out: Rect, ctx: &Ctx) 
     res
 }
 
-/// Applies one gallery effect to the working window in place.
+/// Applies one gallery effect to the working window in place. Each category handles its own
+/// filters and reports whether the effect was one of them.
 fn apply(e: &GalleryEffect, win: &mut Win, ctx: &Ctx) {
+    let handled =
+        apply_artistic(e, win) || apply_brush_strokes(e, win) || apply_distort(e, win) || apply_sketch(e, win, ctx) || apply_stylize_texture(e, win, ctx);
+    debug_assert!(handled, "every gallery filter belongs to a category");
+}
+
+/// Artistic filters: the painterly looks of the gallery.
+fn apply_artistic(e: &GalleryEffect, win: &mut Win) -> bool {
     let g = |k: &str| e.get(k);
     let (w, h) = (win.w, win.h);
     let (fg, bg) = (rgb(e.foreground), rgb(e.background));
     match e.filter {
-        // ---------------- Artistic ----------------
         F::ColoredPencil => {
             let pw = g("pencilWidth");
             let pressure = g("strokePressure") / 15.0;
@@ -745,7 +752,16 @@ fn apply(e: &GalleryEffect, win: &mut Win, ctx: &Ctx) {
                 win.c[i] = map(saturate(win.c[i], 1.2), |v| clamp01(v * k + n).powf(1.1 + sh * 0.6));
             }
         }
-        // ---------------- Brush Strokes ----------------
+        _ => return false,
+    }
+    true
+}
+
+/// Brush Strokes filters.
+fn apply_brush_strokes(e: &GalleryEffect, win: &mut Win) -> bool {
+    let g = |k: &str| e.get(k);
+    let (w, h) = (win.w, win.h);
+    match e.filter {
         F::AccentedEdges => {
             let mut l = win.lum();
             blur1(&mut l, w, h, 0.4 + g("smoothness") * 0.3);
@@ -859,7 +875,17 @@ fn apply(e: &GalleryEffect, win: &mut Win, ctx: &Ctx) {
                 *p = map(*p, |v| clamp01((v - 0.5) * (1.0 + con) + 0.5) * (1.0 - ink * 0.9 * (0.5 + con)));
             }
         }
-        // ---------------- Distort ----------------
+        _ => return false,
+    }
+    true
+}
+
+/// Distort filters.
+fn apply_distort(e: &GalleryEffect, win: &mut Win) -> bool {
+    let g = |k: &str| e.get(k);
+    let (w, h) = (win.w, win.h);
+    let bg = rgb(e.background);
+    match e.filter {
         F::DiffuseGlow => {
             let (gr, ga, ca) = (g("graininess") / 10.0, g("glowAmount") / 20.0, g("clearAmount") / 20.0);
             let thr = 0.2 + ca * 0.7;
@@ -903,7 +929,17 @@ fn apply(e: &GalleryEffect, win: &mut Win, ctx: &Ctx) {
                 win.c[i] = src.sample(x as f32 + 0.5 + dx, y as f32 + 0.5 + dy);
             }
         }
-        // ---------------- Sketch ----------------
+        _ => return false,
+    }
+    true
+}
+
+/// Sketch filters (foreground is ink, background is paper).
+fn apply_sketch(e: &GalleryEffect, win: &mut Win, ctx: &Ctx) -> bool {
+    let g = |k: &str| e.get(k);
+    let (w, h) = (win.w, win.h);
+    let (fg, bg) = (rgb(e.foreground), rgb(e.background));
+    match e.filter {
         F::BasRelief => {
             let mut l = win.lum();
             let orig = l.clone();
@@ -1107,7 +1143,17 @@ fn apply(e: &GalleryEffect, win: &mut Win, ctx: &Ctx) {
                 win.c[i] = map(win.c[i], |v| (v * (0.85 + 0.25 * fib) - 0.5) * (co * 1.6 + 0.2) + 0.5 + (br - 0.5) * 0.8);
             }
         }
-        // ---------------- Stylize ----------------
+        _ => return false,
+    }
+    true
+}
+
+/// Stylize and Texture filters.
+fn apply_stylize_texture(e: &GalleryEffect, win: &mut Win, ctx: &Ctx) -> bool {
+    let g = |k: &str| e.get(k);
+    let (w, h) = (win.w, win.h);
+    let (fg, bg) = (rgb(e.foreground), rgb(e.background));
+    match e.filter {
         F::GlowingEdges => {
             blur3(&mut win.c, w, h, 0.3 + g("smoothness") * 0.25);
             let mut e3 = vec![[0.0f32; 3]; win.c.len()];
@@ -1123,7 +1169,6 @@ fn apply(e: &GalleryEffect, win: &mut Win, ctx: &Ctx) {
                 *p = map(*q, |v| clamp01(v * k));
             }
         }
-        // ---------------- Texture ----------------
         F::Craquelure => {
             let (sp, dep, bri) = (g("crackSpacing"), g("crackDepth") / 10.0, g("crackBrightness") / 10.0);
             let cell = sp * 1.3 + 1.0;
@@ -1239,7 +1284,9 @@ fn apply(e: &GalleryEffect, win: &mut Win, ctx: &Ctx) {
             }
         }
         F::Texturizer => texturize(win, e.choice("texture"), g("scaling"), g("relief"), e.choice("light"), e.flag("invert")),
+        _ => return false,
     }
+    true
 }
 
 fn normalize3(v: [f32; 3]) -> [f32; 3] {

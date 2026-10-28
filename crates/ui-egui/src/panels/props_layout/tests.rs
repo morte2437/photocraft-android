@@ -174,14 +174,14 @@ fn type_controls_fill_the_panel_at_every_width_and_scale() {
                 .filter(|r| r.top() >= transform.bottom() && r.bottom() <= header.top())
                 .map(|r| r.right())
                 .fold(f32::MIN, f32::max);
-            // (Both rows have a unit suffix: compare with the size/leading row.)
-            // Variable-font axes can precede the size/leading row and have no unit suffix.
-            // Compare the intended point-valued controls, retaining the same edge tolerance.
-            let lead = ["Font size", "Leading (set to the font size × auto-leading when Auto)"]
-                .into_iter()
-                .map(|label| h.get_by_role_and_label(egui::accesskit::Role::SpinButton, label).rect().right())
-                .fold(f32::MIN, f32::max);
-            assert!((t_right - lead).abs() < 0.5, "{what}: Transform fields end at {t_right}, Character at {lead}");
+            // The size/leading row ends in the leading presets chevron at the panel's right edge,
+            // where Transform's field boxes end. The leading box ends where the chevron starts:
+            // its number stops one unit suffix ("pt", like Transform's "px") short of it.
+            let chevron = h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Leading presets").rect();
+            let lead = h.get_by_role_and_label(egui::accesskit::Role::SpinButton, "Leading (set to the font size × auto-leading when Auto)").rect();
+            assert!((chevron.right() - header.right()).abs() < 0.5, "{what}: Character controls end at {}, panel {}", chevron.right(), header.right());
+            let (t_suffix, lead_suffix) = (header.right() - t_right, chevron.left() - lead.right());
+            assert!((t_suffix - lead_suffix).abs() < 0.5, "{what}: Transform's suffix slot {t_suffix}, the leading field's {lead_suffix} (overlap or gap)");
             // Quick Actions buttons span the panel too.
             let qa = h.get_by_label("Rasterize Type").rect();
             assert!(qa.right() >= header.right() - 2.0 && qa.right() <= header.right() + 1.0, "{what}: {qa:?}");

@@ -35,6 +35,24 @@ impl fmt::Display for AllocationError {
 
 impl std::error::Error for AllocationError {}
 
+/// One shared tile per pixel value (and tile size), for [`Surface::share_uniform_tiles`].
+#[derive(Debug, Default)]
+pub struct TileInterner {
+    tiles: std::collections::HashMap<usize, std::collections::HashMap<Vec<u8>, Arc<Tile>>>,
+}
+
+impl TileInterner {
+    /// Number of distinct uniform tiles held.
+    pub fn len(&self) -> usize {
+        self.tiles.values().map(|m| m.len()).sum()
+    }
+
+    /// `true` when no tile is held.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
 /// Pixel storage for one tile: `TILE_SIZE² × bytes_per_pixel`, row-major, interleaved channels.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Tile {
@@ -463,6 +481,28 @@ impl Surface {
             }
         }
         out
+    }
+
+    /// Makes every tile that holds one pixel value throughout share the interner's tile for that
+    /// value: a white background, an opaque mask or a solid fill then costs one tile however
+    /// large it is, and across every surface that shares `interner`. Tiles are copy-on-write, so
+    /// editing one splits it off again. Returns the bytes no longer held by this surface alone.
+    pub fn share_uniform_tiles(&mut self, interner: &mut TileInterner) -> usize {
+        let bpp = self.format.bytes_per_pixel();
+        let mut saved = 0;
+        for t in self.tiles.values_mut() {
+            let mut px = t.data.chunks_exact(bpp);
+            let Some(p0) = px.next() else { continue };
+            if !px.all(|p| p == p0) {
+                continue;
+            }
+            let shared = interner.tiles.entry(t.data.len()).or_default().entry(p0.to_vec()).or_insert_with(|| t.clone());
+            if !Arc::ptr_eq(shared, t) {
+                saved += t.data.len();
+                *t = shared.clone();
+            }
+        }
+        saved
     }
 
     /// Drop tiles that are entirely the default pixel.

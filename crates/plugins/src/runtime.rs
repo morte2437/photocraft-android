@@ -115,6 +115,42 @@ fn wasm_err(e: wasmi::Error) -> Error {
     if e.as_trap_code() == Some(wasmi::TrapCode::OutOfFuel) { Error::Limit("instruction budget".into()) } else { Error::Trap(e.to_string()) }
 }
 
+/// Reads an unsigned LEB128 `u32` at the start of `bytes`: the value and its length.
+fn leb_u32(bytes: &[u8]) -> Option<(u32, usize)> {
+    let mut value = 0u32;
+    for (i, &b) in bytes.iter().take(5).enumerate() {
+        value |= u32::from(b & 0x7f).checked_shl(7 * i as u32)?;
+        if b & 0x80 == 0 {
+            return Some((value, i + 1));
+        }
+    }
+    None
+}
+
+/// Refuses a code section that declares no functions but more bytes than that count. The spec
+/// makes the count the whole section then; wasmi 2.0's strict limits divide the section size by
+/// the function count before validating it, so such a module (crafted or truncated) panicked.
+/// Every code section is checked, since a duplicate one also reaches that division before
+/// validation refuses it. Anything else, malformed or not, is left to wasmi.
+fn check_code_section(bytes: &[u8]) -> Result<()> {
+    if bytes.get(4..8) != Some(&[1, 0, 0, 0][..]) {
+        return Ok(());
+    }
+    let mut pos = 8usize;
+    while let Some(&id) = bytes.get(pos) {
+        let Some((size, len)) = bytes.get(pos + 1..).and_then(leb_u32) else { return Ok(()) };
+        let start = pos + 1 + len;
+        if id == 10
+            && let Some((0, count_len)) = bytes.get(start..).and_then(leb_u32)
+            && size as usize > count_len
+        {
+            return Err(Error::Module(format!("the code section declares no functions but {size} bytes")));
+        }
+        pos = start.saturating_add(size as usize);
+    }
+    Ok(())
+}
+
 impl Plugin {
     /// Validates and loads a module: checks the ABI version and reads the manifest.
     pub fn load(bytes: &[u8], limits: Limits) -> Result<Plugin> {
@@ -124,6 +160,7 @@ impl Plugin {
         if !bytes.starts_with(b"\0asm") {
             return Err(Error::Module("not a WebAssembly binary (missing \\0asm header)".into()));
         }
+        check_code_section(bytes)?;
         let mut config = Config::default();
         config.consume_fuel(true).enforced_limits(EnforcedLimits::strict()).set_max_recursion_depth(limits.max_recursion_depth.max(16));
         let engine = Engine::new(&config);

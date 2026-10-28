@@ -6,7 +6,7 @@ use super::descriptors::{
 use super::fields::{Mapped, none, step, steps};
 use super::steps_layer::quick_mask_ref;
 use super::tables::{LABEL_COLORS, MODES, blend_label, blend_ps, lookup, lookup_back};
-use super::*;
+use super::{D, Descriptor, Id, Map, ReferenceItem, Value, json};
 
 /// A `patternLayer` descriptor's pattern, scale, angle and link as the params of
 /// `layer.newFillLayer.pattern` / `layer.fill.pattern.set`. The pattern goes by name: ids differ
@@ -59,82 +59,92 @@ const MASK_USING: &[(&str, &str)] = &[
     ("HdSl", "layer.layerMask.hideSelection"),
 ];
 
+fn duplicate_layer_from_descriptor(d: &Descriptor) -> Option<Mapped> {
+    let r = get_ref(d, "null")?;
+    if ref_class(r).as_deref() != Some("Dcmn") || !matches!(target(r), Target::Class) {
+        return None;
+    }
+    let u = get_ref(d, "Usng")?;
+    if !matches!(ref_class(u).as_deref(), Some("Lyr") | Some("layerSection")) {
+        return None;
+    }
+    let mut params = layer_target(u)?;
+    params.insert("document".into(), "new".into());
+    if let Some(n) = get_text(d, "Nm  ") {
+        params.insert("documentName".into(), n.into());
+    }
+    if let Some(n) = get_text(d, "LyrN") {
+        params.insert("name".into(), n.into());
+    }
+    Some(step("layer.duplicate", Value::Object(params)))
+}
+
+fn mask_from_descriptor(d: &Descriptor) -> Option<Mapped> {
+    let Some(D::Class(c)) = d.get("Nw  ") else { return None };
+    if trimmed(&c.class_id) != "Chnl" {
+        return None;
+    }
+    let at_mask =
+        get_ref(d, "At  ").is_some_and(|r| r.len() == 1 && ref_class(r).as_deref() == Some("Chnl") && matches!(target(r), Target::Ordinal(o) if o == "Msk"));
+    Some(match get_enum(d, "Usng").and_then(|u| lookup(MASK_USING, &u)) {
+        Some(id) if at_mask => none(id),
+        _ => Mapped::Unsupported { harmless: false },
+    })
+}
+
+fn new_document_from_descriptor(d: &Descriptor) -> Option<Mapped> {
+    let nw = get_obj(d, "Nw  ")?;
+    if get_enum(d, "Usng").as_deref() == Some("Slct") {
+        let id = if get_bool(d, "Cpy ") == Some(true) { "layer.new.layerViaCopy" } else { "layer.new.layerViaCut" };
+        let mut mapped_steps = vec![(id, json!({}))];
+        if let Some(n) = get_text(nw, "Nm  ") {
+            mapped_steps.push(("layer.setProps", json!({"name": n})));
+        }
+        return Some(steps(mapped_steps));
+    }
+    if get_text(nw, "preset").is_some() {
+        return Some(none("file.newFromClipboard"));
+    }
+    let (Some(w), Some(h)) = (get_num(nw, "Wdth"), get_num(nw, "Hght")) else {
+        return Some(Mapped::Unsupported { harmless: false });
+    };
+    let res = get_num(nw, "Rslt").unwrap_or(72.0);
+    let to_px = |key: &str, value: f64| match nw.get(key) {
+        Some(D::UnitFloat { unit: PX, .. }) => value,
+        _ => value * res / 72.0,
+    };
+    let mut params = json!({"width": to_px("Wdth", w).round(), "height": to_px("Hght", h).round(), "resolution": res});
+    if let Some(n) = get_text(nw, "Nm  ") {
+        params["name"] = json!(n);
+    }
+    if let Some(D::Class(c)) = nw.get("Md  ")
+        && let Some(m) = lookup(MODES, &trimmed(&c.class_id))
+    {
+        params["mode"] = json!(m);
+    }
+    if let Some(depth) = get_num(nw, "Dpth") {
+        params["depth"] = json!(depth);
+    }
+    if let Some(fill) = get_enum(nw, "Fl  ") {
+        params["background"] = json!(match fill.as_str() {
+            "Wht" => "white",
+            "BckC" => "backgroundColor",
+            "Trns" => "transparent",
+            _ => "white",
+        });
+    }
+    Some(step("file.new", params))
+}
+
 pub(super) fn make_from(d: &Descriptor) -> Mapped {
-    // Duplicate layer/group into a new document: `Mk` with a document class, a layer
-    // `Usng`, an optional `Nm` (the new document's name) and an optional `LyrN`
-    // (the copy's name). A `Dplc` with a `T` document reference (duplicate into another
-    // open document) stays a kept Photoshop step: document indices mean nothing at replay.
-    if let Some(r) = get_ref(d, "null")
-        && ref_class(r).as_deref() == Some("Dcmn")
-        && matches!(target(r), Target::Class)
-        && let Some(u) = get_ref(d, "Usng")
-        && matches!(ref_class(u).as_deref(), Some("Lyr") | Some("layerSection"))
-        && let Some(mut p) = layer_target(u)
-    {
-        p.insert("document".into(), "new".into());
-        if let Some(n) = get_text(d, "Nm  ") {
-            p.insert("documentName".into(), n.into());
-        }
-        if let Some(n) = get_text(d, "LyrN") {
-            p.insert("name".into(), n.into());
-        }
-        return step("layer.duplicate", Value::Object(p));
+    if let Some(mapped) = duplicate_layer_from_descriptor(d) {
+        return mapped;
     }
-    // Add Layer Mask: a `Chnl` class made at the mask channel, `Usng` what it reveals.
-    if let Some(D::Class(c)) = d.get("Nw  ")
-        && trimmed(&c.class_id) == "Chnl"
-    {
-        // The target layer's mask only: a further item (a `Lyr` by name…) puts it on another layer.
-        let at_mask = get_ref(d, "At  ")
-            .is_some_and(|r| r.len() == 1 && ref_class(r).as_deref() == Some("Chnl") && matches!(target(r), Target::Ordinal(o) if o == "Msk"));
-        return match get_enum(d, "Usng").and_then(|u| lookup(MASK_USING, &u)) {
-            Some(id) if at_mask => none(id),
-            _ => Mapped::Unsupported { harmless: false },
-        };
+    if let Some(mapped) = mask_from_descriptor(d) {
+        return mapped;
     }
-    if let Some(nw) = get_obj(d, "Nw  ") {
-        // Layer via Copy / Cut (`Usng` = the selection), or a new document.
-        if get_enum(d, "Usng").as_deref() == Some("Slct") {
-            let id = if get_bool(d, "Cpy ") == Some(true) { "layer.new.layerViaCopy" } else { "layer.new.layerViaCut" };
-            let mut v = vec![(id, json!({}))];
-            if let Some(n) = get_text(nw, "Nm  ") {
-                v.push(("layer.setProps", json!({"name": n})));
-            }
-            return steps(v);
-        }
-        if get_text(nw, "preset").is_some() {
-            return none("file.newFromClipboard");
-        }
-        if let (Some(w), Some(h)) = (get_num(nw, "Wdth"), get_num(nw, "Hght")) {
-            let res = get_num(nw, "Rslt").unwrap_or(72.0);
-            // Dimensions are in points (`#Rlt`) unless given in pixels.
-            let to_px = |k: &str, v: f64| match nw.get(k) {
-                Some(D::UnitFloat { unit: PX, .. }) => v,
-                _ => v * res / 72.0,
-            };
-            let mut p = json!({"width": to_px("Wdth", w).round(), "height": to_px("Hght", h).round(), "resolution": res});
-            if let Some(n) = get_text(nw, "Nm  ") {
-                p["name"] = json!(n);
-            }
-            if let Some(D::Class(c)) = nw.get("Md  ")
-                && let Some(m) = lookup(MODES, &trimmed(&c.class_id))
-            {
-                p["mode"] = json!(m);
-            }
-            if let Some(depth) = get_num(nw, "Dpth") {
-                p["depth"] = json!(depth);
-            }
-            if let Some(f) = get_enum(nw, "Fl  ") {
-                p["background"] = json!(match f.as_str() {
-                    "Wht" => "white",
-                    "BckC" => "backgroundColor",
-                    "Trns" => "transparent",
-                    _ => "white",
-                });
-            }
-            return step("file.new", p);
-        }
-        return Mapped::Unsupported { harmless: false };
+    if let Some(mapped) = new_document_from_descriptor(d) {
+        return mapped;
     }
     let Some(r) = get_ref(d, "null") else { return Mapped::Unsupported { harmless: false } };
     let using = get_obj(d, "Usng");
@@ -316,84 +326,91 @@ pub(super) fn make_to(id: &str, p: &Value) -> Option<Descriptor> {
     })
 }
 
+fn selection_from(d: &Descriptor) -> Mapped {
+    let unsupported = Mapped::Unsupported { harmless: false };
+    match d.get("T   ") {
+        Some(D::Enumerated { value, .. }) => match trimmed(value).as_str() {
+            "Al" => none("select.all"),
+            "None" => none("select.deselect"),
+            "Prvs" => none("select.reselect"),
+            _ => unsupported,
+        },
+        Some(D::Reference(t)) => match (ref_class(t).as_deref(), target(t)) {
+            (Some("Chnl"), Target::Ordinal(o)) if o == "Trsp" => step("select.loadSelection", json!({"channel": "transparency"})),
+            // ⌘-click on the targeted channel (a layer mask after `select` of `Msk`).
+            (Some("Chnl"), Target::Ordinal(o)) if o == "Trgt" => step("select.loadSelection", json!({"channel": "targeted"})),
+            (Some("Chnl"), Target::Name(n)) => step("select.loadSelection", json!({"channel": n})),
+            _ => unsupported,
+        },
+        Some(D::Descriptor(t)) if t.class_id.is("Plgn") => {
+            let pts: Option<Vec<Value>> = get_list(t, "Pts ")
+                .unwrap_or(&[])
+                .iter()
+                .map(|v| match v {
+                    D::Descriptor(pt) => Some(json!([get_num(pt, "Hrzn")?, get_num(pt, "Vrtc")?])),
+                    _ => None,
+                })
+                .collect();
+            match pts {
+                Some(pts) if pts.len() >= 3 => step("select.lasso", json!({"points": pts})),
+                _ => unsupported,
+            }
+        }
+        Some(D::Descriptor(t)) if t.class_id.is("Rctn") || t.class_id.is("Elps") => {
+            let (Some(top), Some(left), Some(bottom), Some(right)) = (get_num(t, "Top "), get_num(t, "Left"), get_num(t, "Btom"), get_num(t, "Rght")) else {
+                return unsupported;
+            };
+            let mut p = json!({"x": left.round(), "y": top.round(), "width": (right - left).round().max(0.0), "height": (bottom - top).round().max(0.0)});
+            if t.class_id.is("Elps") {
+                p["ellipse"] = json!(true);
+            }
+            step("select.rect", p)
+        }
+        _ => unsupported,
+    }
+}
+
+fn background_from(d: &Descriptor) -> Mapped {
+    let unsupported = Mapped::Unsupported { harmless: false };
+    // On an image that opened as a normal layer there is no Background to convert;
+    // Photoshop stops there, but the step's purpose (an editable layer) is met.
+    // Photoshop's `set` of another layer doesn't target it: the selected layer stays.
+    let mut v = vec![("layer.new.layerFromBackground", json!({"ifPresent": true, "select": false}))];
+    let mut props = Map::new();
+    props.insert("layer".into(), "Layer 0".into());
+    if let Some(t) = get_obj(d, "T   ") {
+        if let Some(n) = get_text(t, "Nm  ") {
+            props.insert("name".into(), n.into());
+        }
+        if let Some(o) = get_num(t, "Opct").filter(|o| (o - 100.0).abs() > 1e-9) {
+            props.insert("opacity".into(), (o / 100.0).into());
+        }
+        match get_enum(t, "Md  ").as_deref() {
+            None | Some("Nrml") => {}
+            Some(m) => match blend_label(m) {
+                Some(label) => {
+                    props.insert("blend".into(), label.into());
+                }
+                None => return unsupported,
+            },
+        }
+    }
+    if props.len() > 1 {
+        v.push(("layer.setProps", Value::Object(props)));
+    }
+    steps(v)
+}
+
 pub(super) fn set_from(d: &Descriptor) -> Mapped {
     let Some(r) = get_ref(d, "null") else { return Mapped::Unsupported { harmless: false } };
     let unsupported = Mapped::Unsupported { harmless: false };
     match (ref_class(r).as_deref(), target(r)) {
-        (Some("Chnl"), Target::Property(p)) if p == "fsel" => match d.get("T   ") {
-            Some(D::Enumerated { value, .. }) => match trimmed(value).as_str() {
-                "Al" => none("select.all"),
-                "None" => none("select.deselect"),
-                "Prvs" => none("select.reselect"),
-                _ => unsupported,
-            },
-            Some(D::Reference(t)) => match (ref_class(t).as_deref(), target(t)) {
-                (Some("Chnl"), Target::Ordinal(o)) if o == "Trsp" => step("select.loadSelection", json!({"channel": "transparency"})),
-                // ⌘-click on the targeted channel (a layer mask after `select` of `Msk`).
-                (Some("Chnl"), Target::Ordinal(o)) if o == "Trgt" => step("select.loadSelection", json!({"channel": "targeted"})),
-                (Some("Chnl"), Target::Name(n)) => step("select.loadSelection", json!({"channel": n})),
-                _ => unsupported,
-            },
-            Some(D::Descriptor(t)) if t.class_id.is("Plgn") => {
-                let pts: Option<Vec<Value>> = get_list(t, "Pts ")
-                    .unwrap_or(&[])
-                    .iter()
-                    .map(|v| match v {
-                        D::Descriptor(pt) => Some(json!([get_num(pt, "Hrzn")?, get_num(pt, "Vrtc")?])),
-                        _ => None,
-                    })
-                    .collect();
-                match pts {
-                    Some(pts) if pts.len() >= 3 => step("select.lasso", json!({"points": pts})),
-                    _ => unsupported,
-                }
-            }
-            Some(D::Descriptor(t)) if t.class_id.is("Rctn") || t.class_id.is("Elps") => {
-                let (Some(top), Some(left), Some(bottom), Some(right)) = (get_num(t, "Top "), get_num(t, "Left"), get_num(t, "Btom"), get_num(t, "Rght"))
-                else {
-                    return unsupported;
-                };
-                let mut p = json!({"x": left.round(), "y": top.round(), "width": (right - left).round().max(0.0), "height": (bottom - top).round().max(0.0)});
-                if t.class_id.is("Elps") {
-                    p["ellipse"] = json!(true);
-                }
-                step("select.rect", p)
-            }
-            _ => unsupported,
-        },
+        (Some("Chnl"), Target::Property(p)) if p == "fsel" => selection_from(d),
         // Quick Mask mode on (`set` of the document's quick-mask property); `clearEvent` turns it off.
         (Some("Prpr"), Target::Property(p)) if p == "QucM" => step("select.editInQuickMaskMode", json!({"on": true})),
         // Layer › New › Layer From Background (Photoshop records the New Layer dialog's values
         // as a `set` of the Background); values other than the defaults then apply to the layer.
-        (Some("Lyr"), Target::Property(p)) if p == "Bckg" => {
-            // On an image that opened as a normal layer there is no Background to convert;
-            // Photoshop stops there, but the step's purpose (an editable layer) is met.
-            // Photoshop's `set` of another layer doesn't target it: the selected layer stays.
-            let mut v = vec![("layer.new.layerFromBackground", json!({"ifPresent": true, "select": false}))];
-            let mut props = Map::new();
-            props.insert("layer".into(), "Layer 0".into());
-            if let Some(t) = get_obj(d, "T   ") {
-                if let Some(n) = get_text(t, "Nm  ") {
-                    props.insert("name".into(), n.into());
-                }
-                if let Some(o) = get_num(t, "Opct").filter(|o| (o - 100.0).abs() > 1e-9) {
-                    props.insert("opacity".into(), (o / 100.0).into());
-                }
-                match get_enum(t, "Md  ").as_deref() {
-                    None | Some("Nrml") => {}
-                    Some(m) => match blend_label(m) {
-                        Some(label) => {
-                            props.insert("blend".into(), label.into());
-                        }
-                        None => return unsupported,
-                    },
-                }
-            }
-            if props.len() > 1 {
-                v.push(("layer.setProps", Value::Object(props)));
-            }
-            steps(v)
-        }
+        (Some("Lyr"), Target::Property(p)) if p == "Bckg" => background_from(d),
         // The toolbox colours.
         (Some("Clr"), Target::Property(p)) if p == "FrgC" || p == "BckC" => match get_obj(d, "T   ").and_then(color_hex) {
             Some(hex) => step("tools.setColors", json!({(if p == "FrgC" { "foreground" } else { "background" }): hex})),

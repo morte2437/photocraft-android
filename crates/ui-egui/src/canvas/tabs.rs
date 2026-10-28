@@ -1,6 +1,6 @@
 use super::start_screen::start_screen;
 use super::textures::retain_gpu_documents;
-use super::*;
+use super::{Color32, PhotocraftApp, Pos2, Rect, Sense, Stroke, TextureOptions, canvas_view, fmt_zoom, json, mode_label, pos2};
 
 /// Tabs + canvas for the active document, or the start screen; then drops layers dragged onto
 /// another document (`layer_transfer`).

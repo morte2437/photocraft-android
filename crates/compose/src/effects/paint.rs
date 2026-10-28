@@ -1,6 +1,9 @@
 use super::blur::{blur, dilate};
 use super::distance::{dist_inside, dist_outside};
-use super::*;
+use super::{
+    BlendMode, Buffer, Contour, Effect, FxPaint, GlobalLight, Glow, GlowSource, GlowTechnique, Gradient, GradientStyle, Map, Placement, PreparedPatterns, Rect,
+    Shadow, psblend,
+};
 
 pub(super) fn contour_lut(c: &Contour) -> Option<Vec<f32>> {
     match c {

@@ -1,6 +1,6 @@
 use super::convert::{apply_raw_conversions, open_pixels, output_sharpening, raw_conversions};
 use super::sidecar::{read_sidecar, write_sidecar};
-use super::*;
+use super::{CameraRaw, LayerId, PhotocraftApp, Rect, Value, json};
 
 /// Opens the dialog on the active layer.
 /// Where OK writes: a new filter on the layer, or an existing smart filter (by index).

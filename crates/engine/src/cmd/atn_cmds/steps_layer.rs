@@ -7,7 +7,7 @@ use super::events::pixel_target;
 use super::fields::{F, Kind, Mapped, fields_to, none, step, steps};
 use super::steps_make::is_tool_class;
 use super::tables::{FILL_CONTENTS, INTERPOLATION, MENU_ITEMS, STROKE_LOCATION, blend_label, blend_ps, lookup, lookup_back};
-use super::*;
+use super::{D, Descriptor, Id, Map, ReferenceItem, UnicodeString, Value, json};
 
 pub(super) fn select_from(d: &Descriptor) -> Mapped {
     let Some(r) = get_ref(d, "null") else { return Mapped::Unsupported { harmless: false } };

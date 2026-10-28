@@ -197,10 +197,23 @@ pub fn controls(ui: &mut egui::Ui, fields: &mut Map<String, Value>) {
         fields.insert(field.into(), json!(on));
     }
     ui.label(egui::RichText::new(tl!("F cycles the views; hold X to see the image")).color(t.text_dim).small());
+    // Photoshop's Remember Settings, off by default: the next Select and Mask starts from these
+    // settings instead of the defaults (#9423).
+    let mut remember = remembers(fields);
+    crate::widgets::checkbox(ui, &mut remember, tl!("Remember Settings"));
+    fields.insert(REMEMBER.into(), json!(remember));
     ui.add_space(4.0);
     crate::widgets::hairline(ui);
     ui.add_space(6.0);
     brush_controls(ui, fields);
+}
+
+/// The dialog field behind Remember Settings.
+pub const REMEMBER: &str = "__remember";
+
+/// Whether Remember Settings is on in `fields` (a dialog's, or the remembered ones).
+pub fn remembers(fields: &Map<String, Value>) -> bool {
+    flag(fields, REMEMBER)
 }
 
 /// The Refine Edge Brush (R): painting on the canvas sets where edge refinement happens.

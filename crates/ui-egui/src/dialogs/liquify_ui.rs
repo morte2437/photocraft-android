@@ -885,6 +885,68 @@ fn backdrop_layering<T: Copy>(backdrop: Option<T>, mode: BackdropMode, opacity: 
 }
 
 /// Draws the dialog (a full-window layer over the app).
+fn draw_tool_strip(ui: &mut egui::Ui, painter: &egui::Painter, t: &Tokens, d: &mut LiquifyDialog, body: ERect) -> ERect {
+    // Left tool strip.
+    let left = ERect::from_min_size(body.min, vec2(LEFT_W, body.height()));
+    painter.rect_filled(left, 0.0, t.dock);
+    painter.line_segment([left.right_top(), left.right_bottom()], Stroke::new(1.0, t.separator));
+    let mut strip = ui.new_child(egui::UiBuilder::new().max_rect(left.shrink2(vec2(6.0, 8.0))));
+    strip.spacing_mut().item_spacing.y = 4.0;
+    for tool in LiquifyTool::ALL {
+        let tip = match tool {
+            // The lasso works on the same freeze mask as Freeze/Thaw.
+            LiquifyTool::LassoMask => tl!("Freeze Lasso: drag to freeze an area, Alt-drag to thaw it (L)").to_string(),
+            _ => format!("{} ({})", tl!(tool.label()), shortcut(tool)),
+        };
+        if crate::icons::button(&mut strip, tool_icon(tool), 34.0, d.opts.tool == tool, &tip).clicked() {
+            d.opts.tool = tool;
+        }
+        if matches!(tool, LiquifyTool::Smooth | LiquifyTool::PushLeft | LiquifyTool::Thaw) {
+            strip.add_space(6.0);
+        }
+    }
+    left
+}
+
+/// The preview's wheel and trackpad input: zoom about the pointer, or pan.
+fn apply_preview_wheel(
+    ctx: &egui::Context,
+    d: &mut LiquifyDialog,
+    area: ERect,
+    resp: &egui::Response,
+    wheel_id: egui::Id,
+    pinch_zooms: bool,
+    animated_zoom: bool,
+) {
+    let wheel = crate::wheel_nav::read(ctx, true, pinch_zooms, animated_zoom, wheel_id, resp.hovered());
+    if let Some(hp) = resp.hover_pos() {
+        let zoom = match wheel {
+            Some(crate::wheel_nav::Wheel::Zoom(f)) => {
+                let z = d.zoom * f;
+                // At a limit, drop the rest of an eased notch, or it would swallow the first notch back.
+                if z != z.clamp(ZOOM_MIN, ZOOM_MAX) {
+                    crate::wheel_nav::settle(ctx, wheel_id);
+                }
+                Some(z.clamp(ZOOM_MIN, ZOOM_MAX))
+            }
+            Some(crate::wheel_nav::Wheel::SnapZoom(n)) => {
+                Some((0..n.unsigned_abs()).fold(d.zoom, |z, _| crate::zoom_levels::step_in_range(z, n.signum(), ZOOM_MIN, ZOOM_MAX)))
+            }
+            Some(crate::wheel_nav::Wheel::Pan(v)) => {
+                d.center = [d.center[0] - f64::from(v.x / d.zoom), d.center[1] - f64::from(v.y / d.zoom)];
+                None
+            }
+            None => None,
+        };
+        if let Some(z) = zoom {
+            let before = to_doc(d, area, hp);
+            d.zoom = z;
+            let after = to_doc(d, area, hp);
+            d.center = [d.center[0] + before[0] - after[0], d.center[1] + before[1] - after[1]];
+        }
+    }
+}
+
 pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let t = Tokens::get(ctx);
     let screen = ctx.content_rect();
@@ -924,25 +986,7 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
             t.text,
         );
         let body = ERect::from_min_max(pos2(full.left(), title.bottom()), full.max);
-        // Left tool strip.
-        let left = ERect::from_min_size(body.min, vec2(LEFT_W, body.height()));
-        painter.rect_filled(left, 0.0, t.dock);
-        painter.line_segment([left.right_top(), left.right_bottom()], Stroke::new(1.0, t.separator));
-        let mut strip = ui.new_child(egui::UiBuilder::new().max_rect(left.shrink2(vec2(6.0, 8.0))));
-        strip.spacing_mut().item_spacing.y = 4.0;
-        for tool in LiquifyTool::ALL {
-            let tip = match tool {
-                // The lasso works on the same freeze mask as Freeze/Thaw.
-                LiquifyTool::LassoMask => tl!("Freeze Lasso: drag to freeze an area, Alt-drag to thaw it (L)").to_string(),
-                _ => format!("{} ({})", tl!(tool.label()), shortcut(tool)),
-            };
-            if crate::icons::button(&mut strip, tool_icon(tool), 34.0, d.opts.tool == tool, &tip).clicked() {
-                d.opts.tool = tool;
-            }
-            if matches!(tool, LiquifyTool::Smooth | LiquifyTool::PushLeft | LiquifyTool::Thaw) {
-                strip.add_space(6.0);
-            }
-        }
+        let left = draw_tool_strip(ui, &painter, &t, d, body);
         // Right properties panel.
         let right = ERect::from_min_size(pos2(body.right() - RIGHT_W, body.top()), vec2(RIGHT_W, body.height()));
         painter.rect_filled(right, 0.0, t.dock);
@@ -1047,33 +1091,7 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         // Preferences › Enhanced Controls › Zoom with Trackpad Pinch is off); a sideways scroll
         // pans (#7210). Read every frame, as `wheel_nav` asks, so its modifier state follows.
         let wheel_id = egui::Id::unique("liquify-preview-wheel");
-        let wheel = crate::wheel_nav::read(ctx, true, pinch_zooms, animated_zoom, wheel_id, resp.hovered());
-        if let Some(hp) = resp.hover_pos() {
-            let zoom = match wheel {
-                Some(crate::wheel_nav::Wheel::Zoom(f)) => {
-                    let z = d.zoom * f;
-                    // At a limit, drop the rest of an eased notch, or it would swallow the first notch back.
-                    if z != z.clamp(ZOOM_MIN, ZOOM_MAX) {
-                        crate::wheel_nav::settle(ctx, wheel_id);
-                    }
-                    Some(z.clamp(ZOOM_MIN, ZOOM_MAX))
-                }
-                Some(crate::wheel_nav::Wheel::SnapZoom(n)) => {
-                    Some((0..n.unsigned_abs()).fold(d.zoom, |z, _| crate::zoom_levels::step_in_range(z, n.signum(), ZOOM_MIN, ZOOM_MAX)))
-                }
-                Some(crate::wheel_nav::Wheel::Pan(v)) => {
-                    d.center = [d.center[0] - f64::from(v.x / d.zoom), d.center[1] - f64::from(v.y / d.zoom)];
-                    None
-                }
-                None => None,
-            };
-            if let Some(z) = zoom {
-                let before = to_doc(d, area, hp);
-                d.zoom = z;
-                let after = to_doc(d, area, hp);
-                d.center = [d.center[0] + before[0] - after[0], d.center[1] + before[1] - after[1]];
-            }
-        }
+        apply_preview_wheel(ctx, d, area, &resp, wheel_id, pinch_zooms, animated_zoom);
         d.update_view_preview(ctx, area);
         let img = ERect::from_min_max(
             to_screen(d, area, [f64::from(d.canvas.x0), f64::from(d.canvas.y0)]),

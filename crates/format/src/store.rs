@@ -952,13 +952,20 @@ impl PcraftWriter {
         let (p, mut fresh) = prepared?;
         let previews = previews?;
         let mut stats = p.stats;
-        let mut z = ZipWriter::new();
+        let mut next = HashMap::with_capacity(p.objects.len());
+        let mut cached_bytes = 0usize;
+        // The archive is sized for every entry up front (#7689): previews, then reused and fresh
+        // objects at their compressed sizes.
+        let entries =
+            std::iter::once((MANIFEST, p.manifest.len())).chain(previews.iter().map(|(name, data)| (*name, data.len()))).chain(p.objects.keys().map(|path| {
+                let size = self.compressed.get(path).or_else(|| fresh.get(path)).map_or(0, |data| data.len());
+                (path.as_str(), size)
+            }));
+        let mut z = ZipWriter::with_entries(entries)?;
         z.add(MANIFEST, &p.manifest)?;
         for (name, data) in &previews {
             z.add(name, data)?;
         }
-        let mut next = HashMap::with_capacity(p.objects.len());
-        let mut cached_bytes = 0usize;
         for (path, obj) in &p.objects {
             let (key, data) = match self.compressed.remove_entry(path) {
                 Some((key, data)) => {

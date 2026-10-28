@@ -377,6 +377,44 @@ fn doc_place_reads_through_the_read_root_and_never_outside_it() {
     std::fs::remove_dir_all(base).unwrap();
 }
 
+/// A save or render never turns a file PhotoCraft doesn't write (source, settings, notes)
+/// into image bytes, whatever `format` says; images and new files are written as before (#9439).
+#[test]
+fn workspace_writes_refuse_to_replace_a_file_that_is_not_an_image() {
+    let root = std::env::temp_dir().join(format!("pc-no-replace-foreign-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let foreign = [("src/main.rs", "fn main() {}\n"), ("Cargo.toml", "[package]\n"), (".env", "TOKEN=x\n"), ("Makefile", "all:\n")];
+    for (name, text) in foreign {
+        std::fs::write(root.join(name), text).unwrap();
+    }
+    std::fs::write(root.join("old.png"), b"not yet a png").unwrap();
+    let mut h = Headless::with_workspace(crate::AuthorizedWorkspace::new(Some(&root), Some(&root)).unwrap());
+    h.handle("doc.new", json!({"width": 8, "height": 8, "background": "white"})).unwrap();
+    for (name, text) in foreign {
+        let saved = h.handle("doc.save", json!({"path": name, "format": "png"})).unwrap_err().to_string();
+        assert!(saved.contains("already exists"), "doc.save over {name}: {saved}");
+        let rendered = h.handle("doc.render", json!({"path": name})).unwrap_err().to_string();
+        assert!(rendered.contains("already exists"), "doc.render over {name}: {rendered}");
+        assert_eq!(std::fs::read_to_string(root.join(name)).unwrap(), text, "{name} is untouched");
+    }
+    // An existing image is replaced, and a new file of any name is created.
+    h.handle("doc.save", json!({"path": "old.png"})).unwrap();
+    assert!(std::fs::read(root.join("old.png")).unwrap().starts_with(b"\x89PNG"));
+    h.handle("doc.save", json!({"path": "fresh.txt", "format": "png"})).unwrap();
+    assert!(std::fs::read(root.join("fresh.txt")).unwrap().starts_with(b"\x89PNG"));
+    h.handle("doc.render", json!({"path": "old.png"})).unwrap();
+    std::fs::write(root.join("OLD.TIF"), b"x").unwrap();
+    h.handle("doc.save", json!({"path": "OLD.TIF"})).unwrap();
+    // An image saved under a name without an image extension is recognised by its bytes.
+    h.handle("doc.save", json!({"path": "out", "format": "png"})).unwrap();
+    h.handle("doc.save", json!({"path": "out", "format": "png"})).unwrap();
+    h.handle("doc.render", json!({"path": "fresh.txt"})).unwrap();
+    // Release directory capabilities before cleanup on Windows.
+    drop(h);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn doc_replace_smart_object_reads_through_the_read_root_and_never_outside_it() {
     let base = std::env::temp_dir().join(format!("pc-doc-replace-so-{}", std::process::id()));

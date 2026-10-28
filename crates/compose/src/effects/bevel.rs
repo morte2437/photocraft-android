@@ -1,7 +1,7 @@
 use super::blur::tent;
 use super::distance::{INSIDE_EPS, bevel_dists, par_fill, par_units};
 use super::paint::{apply_lut, bevel_contour_lut, contour_lut, lut_at, offset, satin_lut};
-use super::*;
+use super::{Bevel, BevelStyle, BevelTechnique, GlobalLight, Map, Pattern, Placement, PreparedPatterns, Rect};
 
 /// Where a bevel's maps paint: inside the shape (with the layer), outside it (onto the
 /// backdrop), or both (emboss styles: maps 0–1 inside, 2–3 outside).

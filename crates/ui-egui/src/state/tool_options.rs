@@ -1,5 +1,5 @@
 use super::tool::Tool;
-use super::*;
+use super::{Deserialize, Serialize};
 
 /// Options-bar state for tools (Photoshop keeps these per tool).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

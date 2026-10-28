@@ -6,13 +6,26 @@ use serde_json::{Map, Value, json};
 
 fn app() -> (PhotocraftApp, u64) {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), photocraft_ui_egui::Services::default());
+    // Print lists this printer and does not ask the spooler.
+    app.session.printer_source = Some(std::sync::Arc::new(|| {
+        vec![craft_print::Printer { name: "Test native printer".into(), default: true, two_sided: None, description: String::new() }]
+    }));
     app.run("file.new", json!({"width": 120, "height": 80, "name": "Custom paper"})).unwrap();
-    let id = open_print(&mut app);
+    let id = photocraft_engine::print_cmds::with_spooler(|| open_print(&mut app));
+    assert_no_system_listing();
+    let fields = &mut app.ui.dialog_mut(id).unwrap().fields;
     // Every UI path in these fixtures is safe even if an unexpected Enter confirms the dialog.
-    app.ui.dialog_mut(id).unwrap().fields.insert("dryRun".into(), json!(true));
+    fields.insert("dryRun".into(), json!(true));
+    // The driver Printer menu lists the stand-in on Windows only, where the GDI route is.
+    assert_eq!(fields.get("__printers"), cfg!(windows).then(|| json!(["Test native printer"])).as_ref());
     // Exercise PDF paper controls even when native printers are available, on every OS.
-    app.ui.dialog_mut(id).unwrap().fields.insert("__printers".into(), json!(["Test native printer"]));
+    fields.insert("__printers".into(), json!(["Test native printer"]));
     (app, id)
+}
+
+/// No test in this binary asks the system spooler for its printers.
+fn assert_no_system_listing() {
+    assert_eq!(photocraft_engine::print_cmds::system_printer_listings(), 0, "a test asked the system spooler for its printers");
 }
 
 fn show(ui: &mut egui::Ui, app: &mut PhotocraftApp) {
@@ -195,6 +208,7 @@ fn custom_paper_ui_edits_reach_preview_and_pdf_and_restore_when_reopened() {
     assert!(String::from_utf8_lossy(&pdf).contains("/MediaBox [0 0 666.00 522.00]"));
     assert_eq!(h.state().session.file_menu.last_print.as_ref().unwrap()["paper"], json!([522.0, 666.0]));
     let id = open_print(h.state_mut());
+    assert_no_system_listing();
     h.state_mut().ui.dialog_mut(id).unwrap().fields.insert("dryRun".into(), json!(true));
     h.run_steps(3);
     assert!(shown(&h, "Custom"), "reopening array-valued settings must show Custom");

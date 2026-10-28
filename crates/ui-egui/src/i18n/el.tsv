@@ -224,6 +224,7 @@
 	Tools…	Εργαλεία…
 	History Log…	Καταγραφή ιστορικού…
 	Group from Layers…	Ομαδοποίηση από επίπεδα…
+	New Group from Layers…	Νέα ομάδα από επίπεδα…
 	Artboard from Layers…	Πίνακας σχεδίασης από επίπεδα…
 	Delete Filter Mask	Διαγραφή μάσκας φίλτρου
 	Disable Filter Mask	Απενεργοποίηση μάσκας φίλτρου
@@ -1714,7 +1715,7 @@
 	Full size tip	Άκρη πλήρους μεγέθους
 	Gamut warning color	Χρώμα προειδοποίησης χρωματικής γκάμας
 	Gamut warning opacity	Αδιαφάνεια προειδοποίησης χρωματικής γκάμας
-	Generator enabled	Ενεργοποίηση γεννήτριας
+	Enable Generator	Ενεργοποίηση γεννήτριας
 	Click the first point or press ↵ to close · Esc cancels	Κάντε κλικ στο πρώτο σημείο ή πατήστε ↵ για κλείσιμο · Esc για ακύρωση
 	Click to add a point · drag off or ⌘/Ctrl-click or Delete to remove	Κλικ για προσθήκη σημείου · σύρσιμο εκτός ή ⌘/Ctrl-κλικ ή Delete για αφαίρεση
 	Click to apply, ⌥-click to clear overrides, double-click for Style Options	Κλικ για εφαρμογή, ⌥-κλικ για εκκαθάριση παρακάμψεων, διπλό κλικ για επιλογές στυλ
@@ -3860,6 +3861,9 @@ curves	Smooth	Εξομάλυνση
 # History panel menu (#2966)
 	New Snapshot…	Νέο στιγμιότυπο…
 	History Options…	Επιλογές ιστορικού…
+# History panel › History Options… (#2966)
+	Allow Non-Linear History	Να επιτρέπεται μη γραμμικό ιστορικό
+	Make Layer Visibility Changes Undoable	Οι αλλαγές ορατότητας επιπέδων να αναιρούνται
 # Print dialog (#2697)
 	Emulsion Down	Γαλάκτωμα προς τα κάτω
 	Functions	Λειτουργίες
@@ -3946,6 +3950,33 @@ curves	Smooth	Εξομάλυνση
 	Sent to {printer}	Στάλθηκε στον {printer}
 	set in Print Settings…	ορίζεται στις ρυθμίσεις εκτύπωσης…
 	ICO is limited to 256 × 256 pixels	Το ICO περιορίζεται σε 256 × 256 εικονοστοιχεία
+	Show Favorite Fonts	Εμφάνιση αγαπημένων γραμματοσειρών
+	No favorite fonts yet: click the star beside a font to add it.	Δεν υπάρχουν ακόμη αγαπημένες γραμματοσειρές: κάντε κλικ στο αστέρι δίπλα σε μια γραμματοσειρά για να την προσθέσετε.
+	Favorite fonts	Αγαπημένες γραμματοσειρές
+	Add to Favorites	Προσθήκη στα αγαπημένα
+	Remove from Favorites	Αφαίρεση από τα αγαπημένα
+	Show All Fonts	Εμφάνιση όλων των γραμματοσειρών
+	All Classes	Όλες οι κατηγορίες
+	Blackletter	Γοτθικές
+	Decorative	Διακοσμητικές
+	Font preview:	Προεπισκόπηση γραμματοσειράς:
+	Handwritten	Χειρόγραφες
+	Hide Font Classes	Απόκρυψη κατηγοριών γραμματοσειρών
+	Hide Styles	Απόκρυψη στυλ
+	Monospace	Σταθερού πλάτους
+	No fonts match these filters.	Καμία γραμματοσειρά δεν ταιριάζει με αυτά τα φίλτρα.
+	No similar fonts: the current font doesn't say what it looks like.	Καμία παρόμοια γραμματοσειρά: η τρέχουσα γραμματοσειρά δεν περιγράφει την εμφάνισή της.
+	OpenType font	Γραμματοσειρά OpenType
+	Sans Serif	Χωρίς πατούρες
+	Script	Καλλιγραφικές
+	Serif	Με πατούρες
+	Show Font Classes	Εμφάνιση κατηγοριών γραμματοσειρών
+	Show Similar Fonts	Εμφάνιση παρόμοιων γραμματοσειρών
+	Show Styles	Εμφάνιση στυλ
+	Show Variable Fonts	Εμφάνιση μεταβλητών γραμματοσειρών
+	Slab Serif	Με πλακοειδείς πατούρες
+	TrueType font	Γραμματοσειρά TrueType
+	Variable font	Μεταβλητή γραμματοσειρά
 	Calibration	Βαθμονόμηση
 	Red Primary	Κόκκινο πρωτεύον
 	Green Primary	Πράσινο πρωτεύον
@@ -4154,3 +4185,6 @@ curves	Smooth	Εξομάλυνση
 
 # Egui 0.37 migration controls (Aspect Ratio, Category, Color Table, Gamma, Interpolation, Profile, Target, Units, Demosaic)
 	Target	Στόχος
+	Font size presets	Προεπιλογές μεγέθους γραμματοσειράς
+	Leading presets	Προεπιλογές διάστιχου
+	Tracking presets	Προεπιλογές διαστήματος χαρακτήρων

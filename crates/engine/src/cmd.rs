@@ -82,6 +82,7 @@ pub mod file_cmds;
 pub mod fill_cmds;
 pub mod fill_key_cmds;
 pub mod float_cmds;
+pub mod font_library_cmds;
 pub(super) mod frame_cmds;
 pub mod fx_view_cmds;
 pub mod fx_visibility_cmds;
@@ -90,6 +91,7 @@ pub mod gradient_fill_cmds;
 pub mod group_view_cmds;
 pub mod history_cmds;
 pub mod history_menu_cmds;
+pub mod history_options_cmds;
 pub mod history_select_cmds;
 pub mod history_source_cmds;
 pub mod image_cmds;
@@ -438,26 +440,41 @@ fn build() -> Vec<CommandSpec> {
             "Layer…",
             ["Layer", "New"],
             Some("Cmd+Shift+N"),
-            r##"{"name":str?,"clipToPrevious":bool=false (Use Previous Layer to Create Clipping Mask; inside a clip group the layer joins it anyway),"color":"none|red|orange|yellow|green|seafoam|blue|indigo|magenta|fuchsia|violet|gray"="none","mode":"Normal|Multiply|…"="Normal","opacity":0..1=1,"fillNeutral":bool=false (fill with the mode's neutral color: modes without one are an error),"position":"above|below"="above" (below: the Layers panel's Cmd/Ctrl-click; never under the Background)}"##,
+            r##"{"name":str?,"clipToPrevious":bool=false (Use Previous Layer to Create Clipping Mask; inside a clip group the layer joins it anyway),"color":"none|red|orange|yellow|green|seafoam|blue|indigo|magenta|fuchsia|violet|gray"="none","mode":"Normal|Multiply|…"="Normal","opacity":0..1=1,"fillNeutral":bool=false (fill with the mode's neutral color: modes without one are an error),"position":"above|below"="above" (below: the Layers panel's Cmd/Ctrl-click; never under the Background)} (above the active layer, or the top layer inside it when it is an open group)"##,
             has_doc,
             crate::new_layer::run
         ),
-        cmd!("layer.new.group", "Group…", ["Layer", "New"], None, r##"{"name":str?}"##, has_doc, |s, p| {
-            let id = s.edit("New Group", |doc, active| {
-                let name = p.get("name").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| doc.next_layer_name("Group"));
-                let id = doc.insert_above(*active, Layer::group(name, vec![]));
-                *active = Some(id);
-                Ok(id)
-            })?;
-            crate::layer_multi_cmds::note_inert_insert(s, id);
-            Ok(json!({ "layer": id.0 }))
-        }),
+        cmd!(
+            "layer.new.group",
+            "Group…",
+            ["Layer", "New"],
+            None,
+            r##"{"name":text?,"color":"none|red|orange|yellow|green|seafoam|blue|indigo|magenta|fuchsia|violet|gray"="none","mode":str="passThrough" (blend mode),"opacity":0..100=100 (percent),"position":"above|below"="above" (below: the Layers panel's Cmd/Ctrl-click; never under the Background)} (above the active layer, or inside it when it is an open group; clipped when it lands inside a clipping mask)"##,
+            has_doc,
+            |s, p| {
+                let opts = crate::group_options::GroupOptions::parse("layer.new.group", p)?;
+                let below = crate::group_options::below("layer.new.group", p)?;
+                let place = if below { crate::layer_place::Place::Below } else { crate::layer_place::Place::Auto };
+                let id = s.edit("New Group", |doc, active| {
+                    let name = opts.name.clone().unwrap_or_else(|| doc.next_layer_name("Group"));
+                    let mut group = Layer::group(name, vec![]);
+                    opts.apply(&mut group);
+                    let bg = crate::background_cmds::background_id(doc);
+                    let id = crate::layer_place::insert_new(doc, *active, group, place);
+                    crate::background_cmds::keep_background_at_bottom(bg, doc)?;
+                    *active = Some(id);
+                    Ok(id)
+                })?;
+                crate::layer_multi_cmds::note_inert_insert(s, id);
+                Ok(json!({ "layer": id.0 }))
+            }
+        ),
         cmd!(
             "layer.groupLayers",
             "Group Layers",
             ["Layer"],
             Some("Cmd+G"),
-            r##"{"layer":id?,"name":str?} (no layer: every selected layer)"##,
+            r##"{"layer":id?,"name":text?,"color":"none|red|orange|yellow|green|seafoam|blue|indigo|magenta|fuchsia|violet|gray"="none","mode":str="passThrough" (blend mode),"opacity":0..100=100 (percent)} (no layer: every selected layer; the new group starts collapsed)"##,
             has_layer,
             crate::layer_multi_cmds::group_layers
         ),
@@ -593,7 +610,11 @@ fn build() -> Vec<CommandSpec> {
                 let before = s.active().ok_or(EngineError::NoDocument)?.doc.clone();
                 // Clipping and channel changes reach the layers around it: recomposite everything.
                 let local = p.get("clipped").is_none() && p.get("channels").is_none();
-                s.edit(label, |doc, _| {
+                // The eye: a history state only with History Options › Make Layer Visibility
+                // Changes Undoable.
+                let only_visibility = changed.as_slice() == ["visible"];
+                let record = !only_visibility || s.visibility_undoable();
+                s.edit_with(label, record, |doc, _| {
                     // The Background has no opacity, fill or blend mode: like Photoshop, setting
                     // one that changes its look turns it into a normal layer ("Layer 0") first.
                     let num = |k: &str| p.get(k).and_then(Value::as_f64).is_some_and(|v| v < 1.0);
@@ -774,7 +795,7 @@ fn build() -> Vec<CommandSpec> {
                     let fill = Fill::Solid(Color::rgba(c[0], c[1], c[2], c[3])).in_mode(doc.mode);
                     let mut l = Layer::new(doc.next_layer_name("Color Fill"), LayerContent::Fill(fill));
                     mask_new_layer(doc, &mut l, p, "layer.newFillLayer.solidColor", default_mask)?;
-                    let id = doc.insert_above(*active, l);
+                    let id = crate::layer_place::insert_new(doc, *active, l, crate::layer_place::Place::Auto);
                     *active = Some(id);
                     Ok(id)
                 })?;
@@ -806,7 +827,7 @@ fn build() -> Vec<CommandSpec> {
                     .in_mode(doc.mode);
                     let mut l = Layer::new(doc.next_layer_name("Gradient Fill"), LayerContent::Fill(fill));
                     mask_new_layer(doc, &mut l, p, "layer.newFillLayer.gradient", default_mask)?;
-                    let id = doc.insert_above(*active, l);
+                    let id = crate::layer_place::insert_new(doc, *active, l, crate::layer_place::Place::Auto);
                     *active = Some(id);
                     Ok(id)
                 })?;
@@ -898,7 +919,7 @@ fn build() -> Vec<CommandSpec> {
             "Brush Stroke",
             [],
             None,
-            r##"{"points":[[x,y,pressure?,tiltX?,tiltY?,rotation?,timeMs?,wheel?],…],"brush":{…BrushSettings}?,"preset":name?,"size":0.5..5000 px?,"hardness":0..1?,"opacity":0..1?,"flow":0..1?,"spacing":0..10?,"color":"#rrggbb"?=foreground,"mode":"normal|multiply|screen|…|clear (erases with this brush)"="normal","erase":bool?,"smoothing":0..1?,"zoom":number=1,"seed":u64?,"target":"pixels"|"mask"|"filterMask"|"quickMask"|{"channel":i}=Channels panel target}"##,
+            r##"{"points":[[x,y,pressure?,tiltX?,tiltY?,rotation?,timeMs?,wheel?],…],"brush":{…BrushSettings}?,"preset":name?,"size":0.5..5000 px?,"hardness":0..1?,"opacity":0..1?,"flow":0..1?,"fill":bool=false (fill the region the closed `points` enclose with the brush colour, its edge anti-aliased and softened by hardness, instead of stamping the outline; a closed gesture paints a filled dab, not a ring),"spacing":0..10?,"color":"#rrggbb"?=foreground,"mode":"normal|multiply|screen|…|clear (erases with this brush)"="normal","erase":bool?,"smoothing":0..1?,"zoom":number=1,"seed":u64?,"target":"pixels"|"mask"|"filterMask"|"quickMask"|{"channel":i}=Channels panel target}"##,
             has_paintable,
             crate::brush_cmds::paint_stroke
         ),
@@ -1274,7 +1295,9 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::distort_cmds::specs());
     v.extend(crate::analysis_cmds::specs());
     v.extend(crate::notes_cmds::specs());
+    v.extend(crate::font_library_cmds::specs());
     v.extend(crate::history_cmds::specs());
+    v.extend(crate::history_options_cmds::specs());
     v.extend(crate::history_menu_cmds::specs());
     v.extend(crate::history_source_cmds::specs());
     v.extend(crate::history_select_cmds::specs());

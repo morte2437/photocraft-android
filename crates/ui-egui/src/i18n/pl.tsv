@@ -305,6 +305,7 @@
 	Layer…	Warstwa…
 	Group…	Grupa…
 	Group from Layers…	Grupa z warstw…
+	New Group from Layers…	Nowa grupa z warstw…
 	Artboard…	Obszar roboczy…
 	Artboard from Group…	Obszar roboczy z grupy…
 	Artboard from Layers…	Obszar roboczy z warstw…
@@ -1960,7 +1961,7 @@
 	Full size tip	Końcówka w pełnym rozmiarze
 	Gamut warning color	Kolor ostrzeżenia o gamucie
 	Gamut warning opacity	Krycie ostrzeżenia o gamucie
-	Generator enabled	Generator włączony
+	Enable Generator	Włącz generator
 	Gif	GIF
 	Glossy	Błyszczący
 	Grid color	Kolor siatki
@@ -3792,6 +3793,9 @@ curves	Smooth	Wygładź
 # History panel menu (#2966)
 	New Snapshot…	Nowa migawka…
 	History Options…	Opcje historii…
+# History panel › History Options… (#2966)
+	Allow Non-Linear History	Zezwalaj na nieliniową historię
+	Make Layer Visibility Changes Undoable	Pozwalaj cofać zmiany widoczności warstw
 # Print dialog (#2697)
 	Emulsion Down	Emulsja w dół
 	Functions	Funkcje
@@ -3863,6 +3867,33 @@ curves	Smooth	Wygładź
 	Sent to {printer}	Wysłano do {printer}
 	set in Print Settings…	ustawiane w ustawieniach druku…
 	ICO is limited to 256 × 256 pixels	ICO jest ograniczony do 256 × 256 pikseli
+	Show Favorite Fonts	Pokaż ulubione czcionki
+	No favorite fonts yet: click the star beside a font to add it.	Brak ulubionych czcionek: kliknij gwiazdkę obok czcionki, aby ją dodać.
+	Favorite fonts	Ulubione czcionki
+	Add to Favorites	Dodaj do ulubionych
+	Remove from Favorites	Usuń z ulubionych
+	Show All Fonts	Pokaż wszystkie czcionki
+	All Classes	Wszystkie klasy
+	Blackletter	Pismo gotyckie
+	Decorative	Ozdobne
+	Font preview:	Podgląd czcionki:
+	Handwritten	Odręczne
+	Hide Font Classes	Ukryj klasy czcionek
+	Hide Styles	Ukryj style
+	Monospace	O stałej szerokości
+	No fonts match these filters.	Żadna czcionka nie pasuje do tych filtrów.
+	No similar fonts: the current font doesn't say what it looks like.	Brak podobnych czcionek: bieżąca czcionka nie opisuje swojego wyglądu.
+	OpenType font	Czcionka OpenType
+	Sans Serif	Bezszeryfowe
+	Script	Pisane
+	Serif	Szeryfowe
+	Show Font Classes	Pokaż klasy czcionek
+	Show Similar Fonts	Pokaż podobne czcionki
+	Show Styles	Pokaż style
+	Show Variable Fonts	Pokaż czcionki zmienne
+	Slab Serif	Szeryfowe prostokątne
+	TrueType font	Czcionka TrueType
+	Variable font	Czcionka zmienna
 	Calibration	Kalibracja
 	Red Primary	Czerwień podstawowa
 	Green Primary	Zieleń podstawowa
@@ -4071,3 +4102,6 @@ curves	Smooth	Wygładź
 
 # Egui 0.37 migration controls (Aspect Ratio, Category, Color Table, Gamma, Interpolation, Profile, Target, Units, Demosaic)
 	Target	Cel
+	Font size presets	Ustawienia wstępne rozmiaru czcionki
+	Leading presets	Ustawienia wstępne interlinii
+	Tracking presets	Ustawienia wstępne światła

@@ -311,6 +311,7 @@
 	Layer…	图层…
 	Group…	组…
 	Group from Layers…	从图层创建组…
+	New Group from Layers…	从图层新建组…
 	Artboard…	画板…
 	Artboard from Group…	从组创建画板…
 	Artboard from Layers…	从图层创建画板…
@@ -1992,7 +1993,7 @@
 	Full size tip	全尺寸笔尖
 	Gamut warning color	色域警告颜色
 	Gamut warning opacity	色域警告不透明度
-	Generator enabled	启用生成器
+	Enable Generator	启用生成器
 	Gif	GIF
 	Glossy	光面
 	Grid color	网格颜色
@@ -2826,6 +2827,9 @@ curves	Smooth	平滑
 	Clear History	清除历史记录
 	New Snapshot…	新建快照…
 	History Options…	历史记录选项…
+# History panel › History Options… (#2966)
+	Allow Non-Linear History	允许非线性历史记录
+	Make Layer Visibility Changes Undoable	允许撤销图层可见性更改
 # Print dialog (#2697)
 	Emulsion Down	药膜朝下
 	Functions	功能
@@ -2899,6 +2903,33 @@ curves	Smooth	平滑
 	Sent to {printer}	已发送到 {printer}
 	set in Print Settings…	在打印设置中设置…
 	ICO is limited to 256 × 256 pixels	ICO 最大为 256 × 256 像素
+	Show Favorite Fonts	显示收藏的字体
+	No favorite fonts yet: click the star beside a font to add it.	还没有收藏的字体：点击字体旁边的星标即可添加。
+	Favorite fonts	收藏的字体
+	Add to Favorites	添加到收藏
+	Remove from Favorites	从收藏中移除
+	Show All Fonts	显示所有字体
+	All Classes	所有类别
+	Blackletter	哥特体
+	Decorative	装饰体
+	Font preview:	字体预览：
+	Handwritten	手写体
+	Hide Font Classes	隐藏字体类别
+	Hide Styles	隐藏样式
+	Monospace	等宽
+	No fonts match these filters.	没有符合这些筛选条件的字体。
+	No similar fonts: the current font doesn't say what it looks like.	没有相似字体：当前字体没有描述其外观。
+	OpenType font	OpenType 字体
+	Sans Serif	无衬线
+	Script	手写花体
+	Serif	衬线
+	Show Font Classes	显示字体类别
+	Show Similar Fonts	显示相似字体
+	Show Styles	显示样式
+	Show Variable Fonts	显示可变字体
+	Slab Serif	粗衬线
+	TrueType font	TrueType 字体
+	Variable font	可变字体
 	Calibration	校准
 	Red Primary	红原色
 	Green Primary	绿原色
@@ -3134,3 +3165,6 @@ curves	Smooth	平滑
 	Profile	配置文件
 	Target	目标
 	Units	单位
+	Font size presets	字号预设
+	Leading presets	行距预设
+	Tracking presets	字距调整预设

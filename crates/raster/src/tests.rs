@@ -59,6 +59,38 @@ fn distinct_tiles(s: &Surface) -> usize {
     seen.len()
 }
 
+/// Uniform tiles written pixel by pixel end up as one shared tile per value, across
+/// surfaces, with every pixel unchanged; editing one splits it off.
+#[test]
+fn uniform_tiles_are_shared() {
+    let mut interner = TileInterner::default();
+    let r = Rect::new(0, 0, 1024, 600);
+    let mut bytes = Vec::new();
+    for y in 0..600 {
+        for x in 0..1024 {
+            // White, except a gradient in the tiles of column 3.
+            bytes.extend(if x >= 768 { [x as u8, y as u8, 0, 255] } else { [255, 255, 255, 255] });
+        }
+    }
+    let mut a = Surface::from_interleaved(PixelFormat::RGBA8, r, &bytes);
+    let mut b = Surface::from_interleaved(PixelFormat::RGBA8, r, &bytes);
+    let before = a.to_interleaved(r);
+    assert_eq!(distinct_tiles(&a), 12);
+    // Rows 512..600 cover only part of their tiles: the rest is the default pixel, so those
+    // tiles are not uniform.
+    let saved = a.share_uniform_tiles(&mut interner);
+    assert_eq!(distinct_tiles(&a), 1 + 3 + 3);
+    assert_eq!(saved, 5 * TILE_SIZE as usize * TILE_SIZE as usize * 4);
+    b.share_uniform_tiles(&mut interner);
+    assert_eq!(interner.len(), 1);
+    assert!(Arc::ptr_eq(a.tile(TileCoord { tx: 0, ty: 0 }).unwrap(), b.tile(TileCoord { tx: 2, ty: 1 }).unwrap()));
+    assert_eq!(a.to_interleaved(r), before);
+    a.write_pixel(5, 5, &[0.0, 0.0, 0.0, 1.0]);
+    assert_eq!(b.pixel(5, 5), vec![1.0, 1.0, 1.0, 1.0]);
+    assert_eq!(a.pixel(5, 5), vec![0.0, 0.0, 0.0, 1.0]);
+    assert_eq!(a.pixel(300, 5), vec![1.0, 1.0, 1.0, 1.0]);
+}
+
 /// Converting or tone-mapping a surface keeps a shared tile shared (#4531) and gives the
 /// same pixels as converting each pixel: a filled background is one tile across the grid,
 /// plus some distinct tiles.

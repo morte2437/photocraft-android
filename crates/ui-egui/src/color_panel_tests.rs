@@ -227,6 +227,38 @@ fn web_sliders_snap_and_take_hex() {
 }
 
 #[test]
+fn cube_modes_warn_when_the_colour_cannot_print() {
+    // #8672: Photoshop's Hue and Brightness Cube show the ⚠ and the nearest printable colour under
+    // the chips, as the slider modes do; a click takes that colour.
+    const GAMUT: &str = "Out of gamut for printing: click for the nearest printable colour";
+    for mode in [ColorPanelMode::HueCube, ColorPanelMode::BrightnessCube] {
+        let mut h = color_tab(ThemeKind::Classic, mode, [0.0, 1.0, 0.0, 1.0]);
+        let near = crate::color_picker_ui::out_of_gamut([0.0, 1.0, 0.0]).expect("pure green can't print");
+        let alert = h.get_by_label(GAMUT).rect().center();
+        press(&mut h, alert, Modifiers::NONE);
+        let fg = h.state().session.tools.foreground;
+        assert_eq!(bytes(fg), bytes([near[0], near[1], near[2], 1.0]), "{mode:?}");
+        h.run_steps(2);
+        assert!(h.query_by_label(GAMUT).is_none(), "{mode:?}: the printable colour still warns");
+        // A printable colour shows no alert.
+        let h = color_tab(ThemeKind::Classic, mode, [0.5, 0.5, 0.5, 1.0]);
+        assert!(h.query_by_label(GAMUT).is_none(), "{mode:?}");
+        // CodeRabbit on #9154: with the background chip active, the click sets the background.
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.session.tools.foreground = [0.5, 0.5, 0.5, 1.0];
+        app.session.tools.background = [0.0, 1.0, 0.0, 1.0];
+        app.ui.color_panel.mode = mode;
+        app.ui.color_panel.background = true;
+        let mut h = color_tab_of(ThemeKind::Classic, app);
+        let alert = h.get_by_label(GAMUT).rect().center();
+        press(&mut h, alert, Modifiers::NONE);
+        let tools = &h.state().session.tools;
+        assert_eq!(bytes(tools.background), bytes([near[0], near[1], near[2], 1.0]), "{mode:?}: background");
+        assert_eq!(bytes(tools.foreground), bytes([0.5, 0.5, 0.5, 1.0]), "{mode:?}: the foreground is left alone");
+    }
+}
+
+#[test]
 fn ramp_picks_and_shift_click_cycles_and_alt_picks_the_other_colour() {
     let mut h = color_tab(ThemeKind::BreezeDark, ColorPanelMode::RgbSliders, [0.0, 0.0, 0.0, 1.0]);
     let ramp: Rect = h.get_by_label("Color Ramp").rect();
@@ -410,6 +442,34 @@ fn color_wheel_ignores_clicks_beside_it() {
     assert!(corner.distance(center) > outer + 20.0, "the corner is beside the wheel");
     press(&mut h, corner, Modifiers::NONE);
     assert_eq!(bytes(h.state().session.tools.foreground), [0, 0, 255]);
+}
+
+/// The Color Wheel shrinks to the Color group at its default height in every theme, as the
+/// slider modes' ramp does, instead of running past the group's bottom into its scroll area.
+#[test]
+fn color_wheel_fits_the_default_color_group() {
+    for kind in ThemeKind::ALL {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.ui.color_panel.mode = ColorPanelMode::ColorWheel;
+        app.ui.theme = kind;
+        app.ui.dock_tabs.color = Group::Color.tabs(Tokens::for_kind(kind).pro).iter().position(|name| *name == "Color").unwrap();
+        let mut h = Harness::builder().with_size(vec2(1440.0, 1200.0)).build_ui_state(
+            |ui, app: &mut PhotocraftApp| {
+                if ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
+                    crate::panels::dock_area(app, ui);
+                    egui::CentralPanel::default().show(ui, |_| {});
+                }
+            },
+            app,
+        );
+        PhotocraftApp::setup_context(&h.ctx, kind);
+        h.run_steps(4);
+        let group = crate::panel_docking::probe::native_group_rect(h.state(), &h.ctx, Group::Color).unwrap();
+        assert!((group.height() - Group::Color.default_height()).abs() < 0.5, "{kind:?}: Color group {group:?}");
+        let wheel = h.query_by_label("Color Wheel").unwrap_or_else(|| panic!("{kind:?}: no Color Wheel")).rect();
+        // The group's scroll area ends at least 8 pt above its bottom edge (the card's bottom margin).
+        assert!(wheel.bottom() <= group.bottom() - 8.0, "{kind:?}: wheel {wheel:?} runs past the Color group {group:?}");
+    }
 }
 
 /// The Color tab in `mode` with a document holding one selected black rectangle, the Rectangle tool

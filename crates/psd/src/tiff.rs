@@ -217,6 +217,7 @@ impl ImageSourceData {
             global_blocks: self.global_blocks,
             layer_mask_trailing: self.trailing,
             image_data,
+            write_as_psb: false,
         }
     }
 }

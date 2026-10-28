@@ -1,6 +1,6 @@
 //! Reuse the jittered lattice in cell space. Raster work stays in the original
 //! row/candidate order, including f32 ties and boundary-cell average additions.
-use super::*;
+use super::{Ctx, Image, MAXC, Rect, cell_point, hash01, native, ncol, subtractive};
 
 #[derive(Clone, Copy)]
 struct Site {
@@ -348,74 +348,99 @@ fn pointillize_grid(src: &Image, out: Rect, ctx: &Ctx, cell: f32, background: [f
     let mut owners = vec![u32::MAX; width];
     for (row, pixels) in result.chunks_exact_mut(stride).enumerate() {
         let y = out.y0.checked_add(i32::try_from(row).ok()?)?;
-        let fy = y as f32 + 0.5;
         let cy = key(y, origin.1, cell);
         depths.fill(-0.5);
         owners.fill(u32::MAX);
         if cell >= 32.0 && out.width() <= 2048 {
-            for &(cx, x0, x1) in &base_runs {
-                let ids = grid.neighbours(cx, cy)?;
-                let start = usize::try_from(x0.checked_sub(out.x0)?).ok()?;
-                let end = usize::try_from(x1.checked_sub(out.x0)?).ok()?;
-                certified_span::<true>(grid, &ids, x0, y, owners.get_mut(start..end)?, depths.get_mut(start..end)?)?;
-            }
+            certified_row(grid, &base_runs, out, cy, y, &mut owners, &mut depths)?;
         } else {
-            for gy in cy.checked_sub(1)?..=cy.checked_add(1)? {
-                let row = usize::try_from(gy.checked_sub(grid.y0)?).ok()?.checked_mul(grid.width)?;
-                // Global gy/gx order is the original dy/dx tie order at every pixel.
-                for (column, &(x0, x1)) in columns.iter().enumerate() {
-                    if x0 >= x1 {
-                        continue;
-                    }
-                    let i = row.checked_add(column)?;
-                    let site = grid.sites.get(i)?;
-                    let dy2 = (site.point.1 - fy).powi(2);
-                    let reach = f64::from(site.radius) + 1.5;
-                    let square = reach * reach - f64::from(dy2);
-                    if square < 0.0 {
-                        continue;
-                    }
-                    // The extra pixel covers subtraction/square/sqrt rounding for
-                    // the bounded coordinates/radii above. The exact old depth
-                    // comparison still decides every candidate that survives.
-                    let reach_x = square.max(0.0).sqrt() + 1.0;
-                    let lo = ((f64::from(site.point.0) - 0.5 - reach_x).floor() as i32).max(x0);
-                    let hi = ((f64::from(site.point.0) - 0.5 + reach_x).ceil() as i32).min(x1);
-                    if lo >= hi {
-                        continue;
-                    }
-                    let start = usize::try_from(lo.checked_sub(out.x0)?).ok()?;
-                    let end = usize::try_from(hi.checked_sub(out.x0)?).ok()?;
-                    for (offset, (depth, owner)) in depths.get_mut(start..end)?.iter_mut().zip(owners.get_mut(start..end)?).enumerate() {
-                        let fx = (lo + offset as i32) as f32 + 0.5;
-                        let d = ((site.point.0 - fx).powi(2) + dy2).sqrt();
-                        let candidate = site.radius - d;
-                        if candidate > *depth {
-                            *depth = candidate;
-                            *owner = i as u32;
-                        }
-                    }
-                }
-            }
+            scan_row(grid, &columns, out, cy, y, &mut owners, &mut depths)?;
         }
-        for ((pixel, &depth), &owner) in pixels.chunks_exact_mut(n).zip(&depths).zip(&owners) {
-            let a_orig = if ctx.alpha { *pixel.get(n - 1)? } else { 1.0 };
-            let mut canvas = bg;
-            if ctx.alpha {
-                *canvas.get_mut(n - 1)? = a_orig.max(bg.get(n - 1)?.min(1.0));
-            }
-            if owner != u32::MAX {
-                let i = owner as usize;
-                let k = (depth + 0.5).clamp(0.0, 1.0);
-                let dot = grid.sites.get(i)?;
-                for (c, value) in canvas.iter_mut().enumerate().take(n) {
-                    *value += (*dot.color.get(c)? - *value) * k;
-                }
-            }
-            pixel.copy_from_slice(canvas.get(..n)?);
-        }
+        composite_row(pixels, &depths, &owners, grid, ctx, bg)?;
     }
     Some(result)
+}
+
+/// Resolve one output row's dot owners through the certified run spans.
+fn certified_row(grid: &Grid, base_runs: &[(i32, i32, i32)], out: Rect, cy: i32, y: i32, owners: &mut [u32], depths: &mut [f32]) -> Option<()> {
+    for &(cx, x0, x1) in base_runs {
+        let ids = grid.neighbours(cx, cy)?;
+        let start = usize::try_from(x0.checked_sub(out.x0)?).ok()?;
+        let end = usize::try_from(x1.checked_sub(out.x0)?).ok()?;
+        certified_span::<true>(grid, &ids, x0, y, owners.get_mut(start..end)?, depths.get_mut(start..end)?)?;
+    }
+    Some(())
+}
+
+/// Resolve one output row's dot owners by scanning the 3x3 neighbouring cells.
+fn scan_row(grid: &Grid, columns: &[(i32, i32)], out: Rect, cy: i32, y: i32, owners: &mut [u32], depths: &mut [f32]) -> Option<()> {
+    let fy = y as f32 + 0.5;
+    for gy in cy.checked_sub(1)?..=cy.checked_add(1)? {
+        let row = usize::try_from(gy.checked_sub(grid.y0)?).ok()?.checked_mul(grid.width)?;
+        // Global gy/gx order is the original dy/dx tie order at every pixel.
+        for (column, &span) in columns.iter().enumerate() {
+            if span.0 >= span.1 {
+                continue;
+            }
+            let i = row.checked_add(column)?;
+            scan_site(grid, i, fy, span, out, owners, depths)?;
+        }
+    }
+    Some(())
+}
+
+/// Let one site claim the pixels of the current row it reaches within `[x0, x1)`.
+fn scan_site(grid: &Grid, i: usize, fy: f32, (x0, x1): (i32, i32), out: Rect, owners: &mut [u32], depths: &mut [f32]) -> Option<()> {
+    let site = grid.sites.get(i)?;
+    let dy2 = (site.point.1 - fy).powi(2);
+    let reach = f64::from(site.radius) + 1.5;
+    let square = reach * reach - f64::from(dy2);
+    if square < 0.0 {
+        return Some(());
+    }
+    // The extra pixel covers subtraction/square/sqrt rounding for
+    // the bounded coordinates/radii above. The exact old depth
+    // comparison still decides every candidate that survives.
+    let reach_x = square.max(0.0).sqrt() + 1.0;
+    let lo = ((f64::from(site.point.0) - 0.5 - reach_x).floor() as i32).max(x0);
+    let hi = ((f64::from(site.point.0) - 0.5 + reach_x).ceil() as i32).min(x1);
+    if lo >= hi {
+        return Some(());
+    }
+    let start = usize::try_from(lo.checked_sub(out.x0)?).ok()?;
+    let end = usize::try_from(hi.checked_sub(out.x0)?).ok()?;
+    for (offset, (depth, owner)) in depths.get_mut(start..end)?.iter_mut().zip(owners.get_mut(start..end)?).enumerate() {
+        let fx = (lo + offset as i32) as f32 + 0.5;
+        let d = ((site.point.0 - fx).powi(2) + dy2).sqrt();
+        let candidate = site.radius - d;
+        if candidate > *depth {
+            *depth = candidate;
+            *owner = i as u32;
+        }
+    }
+    Some(())
+}
+
+/// Blend each pixel of a row with the background and its owning dot colour.
+fn composite_row(pixels: &mut [f32], depths: &[f32], owners: &[u32], grid: &Grid, ctx: &Ctx, bg: [f32; 8]) -> Option<()> {
+    let n = pixels.len() / depths.len().max(1);
+    for ((pixel, &depth), &owner) in pixels.chunks_exact_mut(n).zip(depths).zip(owners) {
+        let a_orig = if ctx.alpha { *pixel.get(n - 1)? } else { 1.0 };
+        let mut canvas = bg;
+        if ctx.alpha {
+            *canvas.get_mut(n - 1)? = a_orig.max(bg.get(n - 1)?.min(1.0));
+        }
+        if owner != u32::MAX {
+            let i = owner as usize;
+            let k = (depth + 0.5).clamp(0.0, 1.0);
+            let dot = grid.sites.get(i)?;
+            for (c, value) in canvas.iter_mut().enumerate().take(n) {
+                *value += (*dot.color.get(c)? - *value) * k;
+            }
+        }
+        pixel.copy_from_slice(canvas.get(..n)?);
+    }
+    Some(())
 }
 
 /// The filters sample cell centres, not a dense neighbourhood. On ordinary

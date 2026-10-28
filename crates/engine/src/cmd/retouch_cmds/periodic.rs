@@ -1,6 +1,6 @@
 //! Bounded reads from the repeating document tile used by Pattern Preview.
 
-use super::*;
+use super::{BlendMode, BrushSettings, Document, LayerId, Rect, Region, Result, SampleLayers, StrokePoint, Surface, alpha_index, apply_coverage, bad};
 
 /// At most four disjoint rectangles in the document tile. Projecting the dirty area separately
 /// from the stroke bounds avoids scanning the whole document when a small dab crosses a seam.

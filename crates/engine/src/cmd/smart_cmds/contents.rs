@@ -2,7 +2,10 @@ use super::filters::{smart, smart_mut};
 use super::placing::detach_psd;
 use super::rendering::{refresh, refresh_or_fail, unapplied_filters};
 use super::source::{authorized_source_bytes, source_bytes};
-use super::*;
+use super::{
+    Arc, DocId, Document, EngineError, LayerContent, LayerId, Metadata, Result, Session, SmartContentsId, SmartLink, SmartSource, Value, bad, base_name,
+    decode_source, encode_source, json, layer_param, other,
+};
 
 pub(super) fn path_param<'a>(cmd: &str, p: &'a Value) -> Result<&'a str> {
     p.get("path").and_then(Value::as_str).filter(|s| !s.is_empty()).ok_or_else(|| bad(cmd, "pass `path`"))

@@ -5,7 +5,7 @@ use super::descriptors::{
 };
 use super::fields::{Mapped, none, step, steps};
 use super::tables::{ALIGN, EXTENSION, INTENT, INTERPOLATION, MODES, PROFILES, PURGE, SAVE_FORMATS, lookup, lookup_back};
-use super::*;
+use super::{D, Descriptor, Id, Map, ReferenceItem, STOP_MESSAGE, UnicodeString, Value, json};
 
 /// `placeEvent`: File › Place Embedded / Linked, with the file and the recorded scale.
 pub(super) fn place_from(d: &Descriptor) -> Mapped {

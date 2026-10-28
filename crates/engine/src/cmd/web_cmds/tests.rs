@@ -637,7 +637,7 @@ fn image_assets_needs_the_generator_preference() {
 fn image_assets_are_generated_now_and_on_save() {
     let dir = tmp("assets");
     let mut s = session(8);
-    // Preferences ▸ Plug-ins ▸ Generator enabled: the feature is opt-in.
+    // Preferences ▸ Plug-ins ▸ Enable Generator: the feature is opt-in.
     s.execute("prefs.set", json!({"path": "plugIns.generatorEnabled", "value": true})).unwrap();
     let id = s.active().unwrap().active_layer.unwrap();
     s.execute("layer.renameLayer", json!({"layer": id.0, "name": "logo.png, 50% small/logo.gif, logo.jpg80%"})).unwrap();
@@ -661,7 +661,10 @@ fn image_assets_are_generated_now_and_on_save() {
     let s2 = session(8);
     let doc = s2.active().unwrap().doc.clone();
     let mut d = (*doc).clone();
-    d.layers.push(Layer::new("default 200% @2x", LayerContent::Group(photocraft_doc::Group { children: vec![], expanded: false, artboard: None })));
+    d.layers.push(Layer::new(
+        "default 200% @2x",
+        LayerContent::Group(photocraft_doc::Group { children: vec![], expanded: false, artboard: None, frame_stroke: None }),
+    ));
     let lid = d.layers[1].id;
     d.layer_mut(lid).unwrap().name = "icon.png".into();
     let (files, errors) = generate_assets(&d, &dir);
@@ -684,7 +687,7 @@ fn image_assets_keep_full_artboards() {
         logo.surface_mut().unwrap().fill_rect(Rect::new(12, 10, 20, 16), &photocraft_raster::from_rgba(&fmt, [1.0, 0.0, 0.0, 1.0]));
         let board =
             photocraft_doc::Artboard { rect: Rect::new(4, 6, 44, 36), background: photocraft_doc::ArtboardBackground::Transparent, preset: String::new() };
-        let group = photocraft_doc::Group { children: vec![logo], expanded: true, artboard: Some(board) };
+        let group = photocraft_doc::Group { children: vec![logo], expanded: true, artboard: Some(board), frame_stroke: None };
         doc.layers = vec![Layer::new("board.png", LayerContent::Group(group))];
         Ok(())
     })
@@ -722,8 +725,8 @@ fn image_assets_refuse_empty_artboards() {
             background: photocraft_doc::ArtboardBackground::Transparent,
             preset: String::new(),
         };
-        let empty = photocraft_doc::Group { children: vec![], expanded: true, artboard: Some(board(0)) };
-        let off = photocraft_doc::Group { children: vec![outside], expanded: true, artboard: Some(board(24)) };
+        let empty = photocraft_doc::Group { children: vec![], expanded: true, artboard: Some(board(0)), frame_stroke: None };
+        let off = photocraft_doc::Group { children: vec![outside], expanded: true, artboard: Some(board(24)), frame_stroke: None };
         doc.layers = vec![Layer::new("empty.png", LayerContent::Group(empty)), Layer::new("off.png", LayerContent::Group(off))];
         Ok(())
     })
@@ -770,8 +773,10 @@ fn image_assets_never_write_one_file_twice() {
     let dir = tmp("asset-variant-collisions");
     d.layer_mut(top).unwrap().name = "icon.png".into();
     d.layer_mut(logo).unwrap().name = "Logo".into();
-    d.layers
-        .push(Layer::new("default 50% + 200% + 200% @2x", LayerContent::Group(photocraft_doc::Group { children: vec![], expanded: false, artboard: None })));
+    d.layers.push(Layer::new(
+        "default 50% + 200% + 200% @2x",
+        LayerContent::Group(photocraft_doc::Group { children: vec![], expanded: false, artboard: None, frame_stroke: None }),
+    ));
     let (files, errors) = generate_assets(&d, &dir);
     let names: Vec<_> = files.iter().map(|p| std::path::Path::new(p).file_name().unwrap().to_string_lossy().into_owned()).collect();
     assert_eq!(names, ["icon.png", "icon@2x.png"]);
@@ -799,7 +804,7 @@ fn image_assets_reject_traversal_from_names_and_defaults() {
     d.layer_mut(id).unwrap().name = "safe.png".into();
     d.layers.push(Layer::new(
         "default ../ + /outside/ + ..\\bad/ + C:\\drive/ + 50% nested/",
-        LayerContent::Group(photocraft_doc::Group { children: vec![], expanded: false, artboard: None }),
+        LayerContent::Group(photocraft_doc::Group { children: vec![], expanded: false, artboard: None, frame_stroke: None }),
     ));
     let (files, errors) = generate_assets(&d, &dir);
     assert_eq!(

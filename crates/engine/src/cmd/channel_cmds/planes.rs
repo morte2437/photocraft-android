@@ -1,5 +1,5 @@
 use super::view::{ChannelTarget, color_names};
-use super::*;
+use super::{ColorMode, DocState, Document, PixelFormat, Rect, Surface};
 
 /// The Curves dialog's Channel popup lists only this channel when the Channels panel has a
 /// single non-composite target (a colour component, layer mask, saved channel or Quick Mask).
@@ -131,6 +131,13 @@ pub(super) fn plane_surface(vals: &[f32], r: Rect, fmt: PixelFormat) -> Surface 
 pub(super) fn materialize(s: &mut Surface, r: Rect) {
     let v = s.read_region(r);
     s.write_region(r, &v);
+}
+
+/// A colour channel sample as the Channels panel shows it: CMYK stores ink (1 = full ink) but a
+/// CMYK channel reads as its tone (white = no ink), as in Photoshop. Its own inverse, so it also
+/// turns a tone back into ink. Other modes are unchanged.
+pub(crate) fn tone(mode: ColorMode, v: f32) -> f32 {
+    if mode == ColorMode::Cmyk { 1.0 - v } else { v }
 }
 
 pub(super) fn luminosity(rgba: [f32; 4]) -> f32 {

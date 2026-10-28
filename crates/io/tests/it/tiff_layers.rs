@@ -468,7 +468,6 @@ fn dtf_like_spot_is_written_in_full() {
     use photocraft_color::{Color, PixelFormat};
     use photocraft_doc::{AlphaChannel, Layer};
     use photocraft_geom::{Rect, Size};
-    use photocraft_psd::tiff::resources_from_bytes;
     use photocraft_raster::Surface;
 
     let (w, h) = (900u32, 360u32);
@@ -501,77 +500,96 @@ fn dtf_like_spot_is_written_in_full() {
     channel.spot = Some((Color::rgb(1.0, 0.0, 0.0), 0.6));
     doc.channels.push(channel);
 
+    verify_dtf_exports(&doc, &spot_bytes, w, h);
+}
+
+fn assert_spot_resources(resources: &[u8], name: &str) {
+    use photocraft_psd::tiff::resources_from_bytes;
+    let (blocks, warnings) = resources_from_bytes(resources).unwrap();
+    assert!(warnings.is_empty(), "{name} {warnings:?}");
+    let block = |id: u16| blocks.iter().find(|b| b.id == id).unwrap_or_else(|| panic!("{name} missing {id}"));
+    // "Spot Color 1" is 12 characters: Photoshop stores 13 bytes and pads the 8BIM block, not the string.
+    assert_eq!(block(1006).data, b"\x0cSpot Color 1", "{name}");
+    assert_eq!(block(1045).data.len(), 30, "{name}");
+    let info = &block(1077).data;
+    assert_eq!(info.len(), 17, "{name}");
+    assert_eq!(u16::from_be_bytes([info[14], info[15]]), 60, "{name} solidity");
+    assert_eq!(info[16], 2, "{name} spot kind");
+    // Photoshop numbers a new document's channels from 3.
+    assert_eq!(block(1053).data, 3u32.to_be_bytes(), "{name} channel id");
+}
+
+fn verify_dtf_samples(bytes: &[u8], stored_spot: &[u8], w: u32, h: u32, name: &str) -> Vec<u8> {
+    let img = photocraft_codecs::decode(bytes).unwrap();
+    assert!(!img.layout().has_alpha(), "{name}: {:?}", img.layout());
+    assert_eq!(img.layout().color_channels(), 3, "{name}");
+    assert_eq!(img.meta.extra_samples.len(), 1, "{name}");
+    assert_eq!(img.meta.extra_samples[0].kind, 0, "{name}");
+    assert_eq!(img.meta.extra_samples[0].data, stored_spot, "{name} own decoder");
+    let (spp, bps, extra, rows, samples) = independent_samples(bytes);
+    assert_eq!(spp, 4, "{name}");
+    assert_eq!(bps, vec![8, 8, 8, 8], "{name}");
+    assert_eq!(extra, vec![0], "{name} ExtraSamples");
+    assert!(rows > 0 && rows < h, "{name} rows_per_strip {rows}");
+    assert_plane(&samples, 4, 3, stored_spot);
+    let at = (10 * w as usize + 10) * 4;
+    assert_eq!(&samples[at..at + 3], &[255, 255, 255], "{name} matted rgb");
+    samples
+}
+
+fn assert_dtf_channel(back: &Document, spot_bytes: &[u8], w: u32, h: u32, name: &str) {
+    use photocraft_geom::Rect;
+    assert_eq!(back.channels.len(), 1, "{name}");
+    assert_eq!(back.channels[0].name, "Spot Color 1");
+    let (ink, sol) = back.channels[0].spot.expect("spot");
+    assert_eq!(ink.to_rgb(), [1.0, 0.0, 0.0], "{name}");
+    assert!((sol - 0.6).abs() < 1e-4, "{name}");
+    let area = Rect::new(0, 0, w as i32, h as i32);
+    assert_eq!(back.channels[0].surface.to_interleaved(area), spot_bytes, "{name} reimport");
+}
+
+fn verify_dtf_layers(bytes: &[u8], layer_tag: Option<Vec<u8>>, back: &Document, layers: bool, name: &str) {
+    if layers {
+        let layer_tag = layer_tag.expect("layer tag");
+        let (isd, w) = ImageSourceData::from_bytes(&layer_tag).unwrap();
+        assert!(w.is_empty(), "{w:?}");
+        let info = isd.layer_info.expect("layers");
+        assert!(!info.merged_alpha, "{name}");
+        assert!(info.layers.iter().all(|l| l.flags.0 & 0x08 != 0), "{name} photoshop flag");
+        assert!(info.layers.iter().all(|l| l.blocks.iter().any(|b| &b.key == b"lnsr")), "{name} lnsr");
+        let mask = isd.global_layer_mask.expect("LMsk");
+        assert_eq!(mask.data.len(), 14, "{name}");
+        assert_eq!(mask.opacity(), Some(50));
+        assert_eq!(mask.kind(), Some(128));
+        assert_photoshop_layered_tiff(bytes, true);
+        assert_eq!(back.layers.len(), 2, "{name}");
+        let ink = back.layers.iter().find(|l| l.name == "Ink").expect("ink layer");
+        let px = ink.surface().expect("ink pixels").pixel(100, 100);
+        assert!((px[3] - 0.5).abs() < 0.02, "{name} layer alpha {px:?}");
+        let outside = ink.surface().expect("ink pixels").pixel(0, 0);
+        assert!(outside[3] < 0.02, "{name} transparent pixel {outside:?}");
+    } else {
+        assert!(layer_tag.is_none(), "{name}");
+    }
+}
+
+fn verify_dtf_exports(doc: &Document, spot_bytes: &[u8], w: u32, h: u32) {
     let mut seen = Vec::new();
     for (name, layers) in [("flat", false), ("layered", true)] {
         let opts = ExportOptions { tiff_layers: layers, ..ExportOptions::default() };
-        let r = export(&doc, "dtf.tif", &opts).unwrap();
+        let r = export(doc, "dtf.tif", &opts).unwrap();
         assert!(!r.warnings.iter().any(|w| w.contains("not written")), "{name}: {:?}", r.warnings);
-        let img = photocraft_codecs::decode(&r.bytes).unwrap();
-        assert!(!img.layout().has_alpha(), "{name}: {:?}", img.layout());
-        assert_eq!(img.layout().color_channels(), 3, "{name}");
-        assert_eq!(img.meta.extra_samples.len(), 1, "{name}");
-        assert_eq!(img.meta.extra_samples[0].kind, 0, "{name}");
         // Photoshop stores spot ink inverted: document 255 (solid) is file 0.
         let stored_spot: Vec<u8> = spot_bytes.iter().map(|b| 255 - b).collect();
-        assert_eq!(img.meta.extra_samples[0].data, stored_spot, "{name} own decoder");
 
-        let (spp, bps, extra, rows, samples) = independent_samples(&r.bytes);
-        assert_eq!(spp, 4, "{name}");
-        assert_eq!(bps, vec![8, 8, 8, 8], "{name}");
-        assert_eq!(extra, vec![0], "{name} ExtraSamples");
-        assert!(rows > 0 && rows < h, "{name} rows_per_strip {rows}");
-        assert_plane(&samples, 4, 3, &stored_spot);
+        let samples = verify_dtf_samples(&r.bytes, &stored_spot, w, h, name);
         seen.push(samples.clone());
-
-        // Outside the artwork the composite is matted to white (Save Transparency off). The
-        // spot at that pixel is not zero, so a reader that binds the name to the alpha fails.
-        let at = (10 * w as usize + 10) * 4;
-        assert_eq!(&samples[at..at + 3], &[255, 255, 255], "{name} matted rgb");
         let (resources, layer_tag) = tags(&r.bytes);
-        let resources = resources.expect("photoshop resources");
-        let (blocks, warnings) = resources_from_bytes(&resources).unwrap();
-        assert!(warnings.is_empty(), "{name} {warnings:?}");
-        let block = |id: u16| blocks.iter().find(|b| b.id == id).unwrap_or_else(|| panic!("{name} missing {id}"));
-        // "Spot Color 1" is 12 characters: Photoshop stores 13 bytes and pads the 8BIM block, not the string.
-        assert_eq!(block(1006).data, b"\x0cSpot Color 1", "{name}");
-        assert_eq!(block(1045).data.len(), 30, "{name}");
-        let info = &block(1077).data;
-        assert_eq!(info.len(), 17, "{name}");
-        assert_eq!(u16::from_be_bytes([info[14], info[15]]), 60, "{name} solidity");
-        assert_eq!(info[16], 2, "{name} spot kind");
-        // Photoshop numbers a new document's channels from 3.
-        assert_eq!(block(1053).data, 3u32.to_be_bytes(), "{name} channel id");
+        assert_spot_resources(&resources.expect("photoshop resources"), name);
 
         let back = import("dtf.tif", &r.bytes).unwrap().document;
-        assert_eq!(back.channels.len(), 1, "{name}");
-        assert_eq!(back.channels[0].name, "Spot Color 1");
-        let (ink, sol) = back.channels[0].spot.expect("spot");
-        assert_eq!(ink.to_rgb(), [1.0, 0.0, 0.0], "{name}");
-        assert!((sol - 0.6).abs() < 1e-4, "{name}");
-        let area = Rect::new(0, 0, w as i32, h as i32);
-        assert_eq!(back.channels[0].surface.to_interleaved(area), spot_bytes, "{name} reimport");
-        if layers {
-            let layer_tag = layer_tag.expect("layer tag");
-            let (isd, w) = ImageSourceData::from_bytes(&layer_tag).unwrap();
-            assert!(w.is_empty(), "{w:?}");
-            let info = isd.layer_info.expect("layers");
-            assert!(!info.merged_alpha, "{name}");
-            assert!(info.layers.iter().all(|l| l.flags.0 & 0x08 != 0), "{name} photoshop flag");
-            assert!(info.layers.iter().all(|l| l.blocks.iter().any(|b| &b.key == b"lnsr")), "{name} lnsr");
-            let mask = isd.global_layer_mask.expect("LMsk");
-            assert_eq!(mask.data.len(), 14, "{name}");
-            assert_eq!(mask.opacity(), Some(50));
-            assert_eq!(mask.kind(), Some(128));
-            assert_photoshop_layered_tiff(&r.bytes, true);
-            assert_eq!(back.layers.len(), 2, "{name}");
-            let ink = back.layers.iter().find(|l| l.name == "Ink").expect("ink layer");
-            let px = ink.surface().expect("ink pixels").pixel(100, 100);
-            assert!((px[3] - 0.5).abs() < 0.02, "{name} layer alpha {px:?}");
-            let outside = ink.surface().expect("ink pixels").pixel(0, 0);
-            assert!(outside[3] < 0.02, "{name} transparent pixel {outside:?}");
-        } else {
-            assert!(layer_tag.is_none(), "{name}");
-        }
+        assert_dtf_channel(&back, spot_bytes, w, h, name);
+        verify_dtf_layers(&r.bytes, layer_tag, &back, layers, name);
     }
     assert_eq!(seen[0], seen[1], "flat and layered IFD samples differ");
 }

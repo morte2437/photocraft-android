@@ -144,6 +144,9 @@ pub static ICONS: &[(&str, &[u8])] = &[
     ("stamp", include_bytes!("../../../assets/icons/stamp.svg")),
     ("star", include_bytes!("../../../assets/icons/star.svg")),
     ("star-filled", include_bytes!("../../../assets/icons/star-filled.svg")),
+    // PhotoCraft originals: the font menu's Show Similar Fonts and Show Variable Fonts filters.
+    ("font-similar", include_bytes!("../../../assets/icons/font-similar.svg")),
+    ("font-variable", include_bytes!("../../../assets/icons/font-variable.svg")),
     ("sun", include_bytes!("../../../assets/icons/sun.svg")),
     ("symmetry-diagonal", include_bytes!("../../../assets/icons/symmetry-diagonal.svg")),
     ("symmetry-dual", include_bytes!("../../../assets/icons/symmetry-dual.svg")),

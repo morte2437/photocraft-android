@@ -1,6 +1,6 @@
 use super::build::{MAX_TEXT_INDEX, utf16_len};
 use super::import::parse_txt2;
-use super::*;
+use super::{D, E, Id, parse_tysh, write_tysh};
 
 /// The most values a `Txt2` object may hold to serve as the template for new objects. Photoshop's
 /// own objects hold a few hundred (611 at most in the file from #7698).

@@ -611,6 +611,8 @@
 	High Pass…	Felüláteresztő…
 	Histogram	Hisztogram
 	History	Előzmények
+	Allow Non-Linear History	Nem lineáris előzmények engedélyezése
+	Make Layer Visibility Changes Undoable	A rétegláthatósági változások visszavonhatók
 	Horizontal	Vízszintes
 	HSB/HSL	HSB/HSL
 	Huge	Óriási
@@ -3278,7 +3280,7 @@ cameraRaw	Yellow	Sárga
 	Full size tip	Teljes méretű hegy
 	Fullscreen	Teljes képernyő
 	General…	Általános…
-	Generator enabled	Generátor bekapcsolva
+	Enable Generator	Generátor bekapcsolása
 	Generators	Generátorok
 	Generic	Általános
 	GitHub	GitHub
@@ -3417,6 +3419,7 @@ cameraRaw	Yellow	Sárga
 	New Document With Mask	Új dokumentum maszkkal
 	New document…	Új dokumentum…
 	New Group	Új csoport
+	New Group from Layers…	Új csoport rétegekből…
 	New Guide	Új segédvonal
 	New Layer	Új réteg
 	New Layer Comp	Új rétegkompozíció
@@ -4154,6 +4157,33 @@ cameraRaw	Yellow	Sárga
 	Kept {name}: written by another application	{name} megtartva: egy másik alkalmazás írta
 	Shadow Tint	Árnyék színezet
 	Redrawing	Újrarajzolás
+	Show Favorite Fonts	Kedvenc betűtípusok megjelenítése
+	No favorite fonts yet: click the star beside a font to add it.	Még nincsenek kedvenc betűtípusok: kattintson a betűtípus melletti csillagra a hozzáadáshoz.
+	Favorite fonts	Kedvenc betűtípusok
+	Add to Favorites	Hozzáadás a kedvencekhez
+	Remove from Favorites	Eltávolítás a kedvencek közül
+	Show All Fonts	Összes betűtípus megjelenítése
+	All Classes	Összes osztály
+	Blackletter	Gót betűs
+	Decorative	Díszítő
+	Font preview:	Betűtípus előnézete:
+	Handwritten	Kézírásos
+	Hide Font Classes	Betűtípus-osztályok elrejtése
+	Hide Styles	Stílusok elrejtése
+	Monospace	Fix szélességű
+	No fonts match these filters.	Egy betűtípus sem felel meg ezeknek a szűrőknek.
+	No similar fonts: the current font doesn't say what it looks like.	Nincsenek hasonló betűtípusok: a jelenlegi betűtípus nem írja le a megjelenését.
+	OpenType font	OpenType betűtípus
+	Sans Serif	Talpatlan
+	Script	Írott
+	Serif	Talpas
+	Show Font Classes	Betűtípus-osztályok megjelenítése
+	Show Similar Fonts	Hasonló betűtípusok megjelenítése
+	Show Styles	Stílusok megjelenítése
+	Show Variable Fonts	Változó betűtípusok megjelenítése
+	Slab Serif	Talpas (szögletes)
+	TrueType font	TrueType betűtípus
+	Variable font	Változó betűtípus
 # Bevel & Emboss shading controls.
 	Highlight Mode	Csúcsfény módja
 	Highlight Color	Csúcsfény színe
@@ -4366,3 +4396,6 @@ cameraRaw	Yellow	Sárga
 	Tight Curl	Szoros göndör
 	Loose Curl	Laza göndör
 	Stylized dabs from a history state	Stilizált pöttyök egy előzményállapotból
+	Font size presets	Betűméret-előbeállítások
+	Leading presets	Sorköz-előbeállítások
+	Tracking presets	Betűköz-előbeállítások

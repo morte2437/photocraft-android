@@ -1044,6 +1044,21 @@ impl StrokeRenderer {
         self.ctx.stroke_mask_wet(c, self.cov.depth(x, y), self.dual.as_ref().map(|d| d.get(x, y)), x, y)
     }
 
+    /// Whether any coverage tile overlaps `r`: outside them [`coverage_at`](Self::coverage_at) is
+    /// 0, so a caller scanning a big area can skip it.
+    pub fn touches(&self, r: Rect) -> bool {
+        if r.is_empty() {
+            return false;
+        }
+        let (t0x, t0y) = (r.x0.div_euclid(COV_TILE), r.y0.div_euclid(COV_TILE));
+        let (t1x, t1y) = ((r.x1 - 1).div_euclid(COV_TILE), (r.y1 - 1).div_euclid(COV_TILE));
+        let span = (i64::from(t1x) - i64::from(t0x) + 1).saturating_mul(i64::from(t1y) - i64::from(t0y) + 1);
+        if span > self.cov.tiles.len() as i64 {
+            return self.cov.tiles.keys().any(|&(tx, ty)| (t0x..=t1x).contains(&tx) && (t0y..=t1y).contains(&ty));
+        }
+        (t0y..=t1y).any(|ty| (t0x..=t1x).any(|tx| self.cov.tiles.contains_key(&(tx, ty))))
+    }
+
     /// Dense final coverage over the stroke bounds.
     pub fn dense_coverage(&self) -> (Rect, Vec<f32>) {
         let b = self.bounds();

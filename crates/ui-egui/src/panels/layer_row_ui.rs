@@ -265,9 +265,16 @@ pub fn panel_menu(app: &mut crate::PhotocraftApp, ui: &mut egui::Ui) {
         app.ui.layers_panel_dialog = Some(LayersPanelDialog::NewLayer(String::new()));
         ui.close();
     }
-    if ui.add_enabled(has_doc, egui::Button::new(tl!("New Group…"))).clicked() {
-        app.ui.layers_panel_dialog = Some(LayersPanelDialog::NewGroup(String::new()));
-        ui.close();
+    // New Group… and New Group from Layers… open the New Group dialog, like their Layer › New twins.
+    for (label, id) in [(tl!("New Group…"), crate::new_group_ui::NEW_GROUP), (tl!("New Group from Layers…"), crate::new_group_ui::FROM_LAYERS)] {
+        if ui.add_enabled(crate::menus::is_enabled(app, id), egui::Button::new(label)).clicked() {
+            let ctx = ui.ctx().clone();
+            if let Err(e) = crate::menus::invoke(app, &ctx, id, json!({})) {
+                app.ui.status = e;
+                app.ui.status_error = true;
+            }
+            ui.close();
+        }
     }
     ui.separator();
     run_menu_command(app, ui, tl!("Flatten Image"), "layer.flattenImage");

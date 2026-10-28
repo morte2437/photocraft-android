@@ -6,7 +6,8 @@
 //!
 //! Every command targets a path like `path.transform`: `"name":"work"` (default), a saved path's
 //! name, or `"layer"` with `"layer":id?` for a shape layer's path (re-rendered; it stops being a
-//! live shape) or a layer's vector mask. Knots are addressed by `subpath` and `knot` index, as
+//! live shape), a layer's vector mask, or type on a path's Type Path (`"typePath":true` when the
+//! type layer also has a vector mask). Knots are addressed by `subpath` and `knot` index, as
 //! listed by `path.info`, and the result is `{name, path}` in the compact JSON form.
 
 use photocraft_doc::{LayerContent, Path};
@@ -49,6 +50,23 @@ fn knot(cmd: &str, p: &Value) -> Result<[usize; 2]> {
 fn edit_path(s: &mut Session, cmd: &str, p: &Value, label: &str, f: impl FnOnce(&mut Path) -> std::result::Result<(), String>) -> Result<Value> {
     let name = p.get("name").and_then(Value::as_str).unwrap_or("work").to_owned();
     let layer = if name == "layer" { Some(layer_id(s, p)?) } else { None };
+    // Type on a path: its own path, the text laid along it again (#9114). A vector mask on the
+    // layer stays what `"layer"` edits, as with `path.info`, unless `"typePath": true`.
+    let type_path = p.get("typePath").and_then(Value::as_bool).unwrap_or(false);
+    let typed = layer.filter(|id| {
+        s.active().and_then(|d| d.doc.layer(*id)).is_some_and(|l| {
+            matches!(&l.content, LayerContent::Text(t) if crate::type_extra_cmds::type_path(t).is_some()) && (type_path || l.vector_mask.is_none())
+        })
+    });
+    if let Some(id) = typed {
+        let path = crate::type_extra_cmds::with_text(s, &json!({"layer": id.0}), label, |t, _| {
+            let mut path = crate::type_extra_cmds::type_path(t).ok_or_else(|| bad(cmd, "the type layer is not on a path"))?;
+            f(&mut path).map_err(|e| bad(cmd, e))?;
+            crate::type_extra_cmds::set_type_path(t, &path)?;
+            Ok(path_json(&path))
+        })?;
+        return Ok(json!({ "name": name, "path": path }));
+    }
     let shape = layer.filter(|id| s.active().and_then(|d| d.doc.layer(*id)).is_some_and(|l| matches!(l.content, LayerContent::Shape(_))));
     let path = match shape {
         Some(id) => with_shape(s, id, label, |sh, _| {
@@ -149,7 +167,7 @@ fn delete_anchor(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 pub fn specs() -> Vec<CommandSpec> {
-    const TARGET: &str = r#""name":str|"work"|"layer"="work","layer":id? (with "layer": a shape layer's path or a vector mask)"#;
+    const TARGET: &str = r#""name":str|"work"|"layer"="work","layer":id? (with "layer": a shape layer's path, a vector mask, or else type on a path's Type Path),"typePath":bool=false (with "layer": the Type Path even when the type layer has a vector mask)"#;
     let spec = |id: &'static str, label: &'static str, params: String, run: fn(&mut Session, &Value) -> Result<Value>| CommandSpec {
         id,
         label,

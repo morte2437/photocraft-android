@@ -99,6 +99,30 @@ fn tiff_keeps_true_zero_alpha_when_composited() {
 
 #[test]
 fn flat_and_layered_tiff_agree_for_mixed_cmyk_regions() {
+    compare_flat_and_layered_mixed_cmyk_regions();
+}
+
+fn assert_tiff_layout(image: &photocraft_codecs::Image, bytes: &[u8], opaque: bool, sample: CodecSample, context: &str) {
+    assert_eq!(image.dimensions(), (48, 16), "{context}");
+    assert_eq!(image.layout(), if opaque { ChannelLayout::Cmyk } else { ChannelLayout::CmykA }, "{context}");
+    assert_eq!(image.sample_type(), sample, "{context}");
+    assert_eq!(image.meta.dpi, Some((300.0, 300.0)), "{context}");
+    assert_eq!(tag(bytes, 262), Some(5), "{context}");
+    assert_eq!(tag(bytes, 277), Some(if opaque { 4 } else { 5 }), "{context}");
+    assert_eq!(tag(bytes, 338), if opaque { None } else { Some(2) }, "{context}");
+}
+
+fn assert_mixed_region_alpha(samples: &[f32], tolerance: f32, context: &str) {
+    for (i, px) in samples.as_chunks::<5>().0.iter().enumerate() {
+        match i % 48 {
+            0..16 => assert_eq!(px[4], 1.0, "{context}: opaque region"),
+            16..32 => assert!((px[4] - 0.5).abs() <= tolerance, "{context}: translucent region: {px:?}"),
+            _ => assert_eq!(px[4], 0.0, "{context}: empty region"),
+        }
+    }
+}
+
+fn compare_flat_and_layered_mixed_cmyk_regions() {
     let custom = photocraft_cms::synth::cmyk_profile(&photocraft_cms::synth::CmykParams {
         description: "Mixed regions uncoated".into(),
         tvi: [0.26, 0.26, 0.26, 0.3],
@@ -123,15 +147,8 @@ fn flat_and_layered_tiff_agree_for_mixed_cmyk_regions() {
                 assert_eq!(reference.icc.as_deref(), profile.as_deref().map(Vec::as_slice), "{context}");
                 assert!(image.meta.photoshop_layers.is_none(), "{context}");
                 assert!(reference.meta.photoshop_layers.is_some(), "{context}");
-                for (decoded, bytes) in [(&image, &flat.bytes), (&reference, &layered.bytes)] {
-                    assert_eq!(decoded.dimensions(), (48, 16), "{context}");
-                    assert_eq!(decoded.layout(), if opaque { ChannelLayout::Cmyk } else { ChannelLayout::CmykA }, "{context}");
-                    assert_eq!(decoded.sample_type(), sample, "{context}");
-                    assert_eq!(decoded.meta.dpi, Some((300.0, 300.0)), "{context}");
-                    assert_eq!(tag(bytes, 262), Some(5), "{context}");
-                    assert_eq!(tag(bytes, 277), Some(if opaque { 4 } else { 5 }), "{context}");
-                    assert_eq!(tag(bytes, 338), if opaque { None } else { Some(2) }, "{context}");
-                }
+                assert_tiff_layout(&image, &flat.bytes, opaque, sample, &context);
+                assert_tiff_layout(&reference, &layered.bytes, opaque, sample, &context);
                 // The PSD-backed layered path inverts CMYK samples twice, so allow one stored level.
                 let tolerance = match depth {
                     SampleType::U8 => 1.0 / 255.0,
@@ -144,13 +161,7 @@ fn flat_and_layered_tiff_agree_for_mixed_cmyk_regions() {
                 let difference = actual.iter().zip(&expected).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
                 assert!(difference <= tolerance + 1e-6, "{context}: maximum sample difference {difference}");
                 if !opaque {
-                    for (i, px) in actual.as_chunks::<5>().0.iter().enumerate() {
-                        match i % 48 {
-                            0..16 => assert_eq!(px[4], 1.0, "{context}: opaque region"),
-                            16..32 => assert!((px[4] - 0.5).abs() <= tolerance, "{context}: translucent region: {px:?}"),
-                            _ => assert_eq!(px[4], 0.0, "{context}: empty region"),
-                        }
-                    }
+                    assert_mixed_region_alpha(&actual, tolerance, &context);
                 }
                 let back = photocraft_io::import("regions.tiff", &flat.bytes).unwrap().document;
                 assert_eq!((back.mode, back.depth), (ColorMode::Cmyk, depth), "{context}");

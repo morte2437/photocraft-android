@@ -1,6 +1,6 @@
-use super::planes::{color_count, edit_mode, luminosity, read_plane};
+use super::planes::{color_count, edit_mode, luminosity, read_plane, tone};
 use super::view::{color_names, composite_name};
-use super::*;
+use super::{BlendMode, Document, EngineError, LayerContent, LayerId, Result, Session, Value, blend_channel, from_rgba, sel, to_rgba};
 
 // ---------------------------------------------------------------------------------------------
 // Channel references
@@ -127,11 +127,19 @@ fn ref_planes(doc: &Document, layer: Option<LayerId>, active: Option<LayerId>, r
             let (px, n) = native_pixels(doc, layer)?;
             let planes: Vec<Vec<f32>> = (0..colors).map(|c| px.chunks_exact(n).map(|p| p[c]).collect()).collect();
             match r {
-                ChanRef::Color(k) => vec![planes.get(k).cloned().ok_or_else(|| EngineError::Other(format!("no colour channel {k}")))?],
+                ChanRef::Color(k) => {
+                    let plane = planes.get(k).ok_or_else(|| EngineError::Other(format!("no colour channel {k}")))?;
+                    vec![plane.iter().map(|&v| tone(edit_mode(doc), v)).collect()]
+                }
                 _ => planes,
             }
         }
-        ChanRef::Alpha(i) => vec![read_plane(&doc.channels.get(i).ok_or_else(|| EngineError::Other(format!("no alpha channel {i}")))?.surface, area)],
+        ChanRef::Alpha(i) => {
+            let ch = doc.channels.get(i).ok_or_else(|| EngineError::Other(format!("no alpha channel {i}")))?;
+            let plane = read_plane(&ch.surface, area);
+            // A spot channel stores ink (1 = solid) but reads as its tone, as in Photoshop.
+            vec![if ch.spot.is_some() { plane.into_iter().map(|v| 1.0 - v).collect() } else { plane }]
+        }
         ChanRef::QuickMask => vec![read_plane(&doc.quick_mask.as_ref().ok_or_else(|| EngineError::Other("not in Quick Mask mode".into()))?.surface, area)],
         ChanRef::Selection => vec![sel::mask_from_surface(doc.selection.as_ref(), area)],
         ChanRef::Transparency => {

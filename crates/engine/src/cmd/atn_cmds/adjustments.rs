@@ -1,7 +1,7 @@
 use super::descriptors::{color_desc, color_hex, desc, enm, get_bool, get_enum, get_list, get_num, get_obj, jbool, jnum, jstr, long, num, pct, text};
 use super::fields::{F, Kind, Mapped, fields_from, fields_to, step};
 use super::tables::{CHANNELS, channel_key, channel_ref, lookup, lookup_back};
-use super::*;
+use super::{D, Descriptor, Map, Value, json};
 
 // ------------------------------------------------------------------ adjustments
 

@@ -1,4 +1,4 @@
-use super::*;
+use super::{Arc, DialogKind, Map, PhotocraftApp, Tokens, Value, b, check, dropdown_str, json, n, number, params, s};
 
 /// Print's Printer menu: the default printer (value ""), then every printer `file.printers`
 /// listed. A saved name the spooler no longer lists stays selectable rather than vanishing.
@@ -31,9 +31,6 @@ pub fn open_print(app: &mut PhotocraftApp) -> u64 {
     let mut f = Map::new();
     f.insert("__print".into(), json!(true));
     f.insert("__label".into(), json!("PhotoCraft Print Settings"));
-    // Asked once per opening: the Printer menu lists what the spooler knows now.
-    let printers = app.session.execute("file.printers", json!({})).unwrap_or_default();
-    f.insert("__systemPrinters".into(), printers["printers"].clone());
     // The settings of the last print, also from an earlier session (#7410).
     if let Some(Value::Object(m)) = photocraft_engine::print_cmds::last_print(&app.session) {
         f.extend(m);
@@ -63,17 +60,31 @@ pub fn open_print(app: &mut PhotocraftApp) -> u64 {
     ] {
         f.entry(k.to_string()).or_insert(v);
     }
-    // Windows: the system's printers, and the paper from the chosen printer's driver settings.
-    if let Ok(list) = craft_print::rgb::printers() {
+    refresh_printers(app, &mut f);
+    app.ui.open_dialog(DialogKind::Command, f)
+}
+
+fn refresh_printers(app: &mut PhotocraftApp, f: &mut Map<String, Value>) {
+    if photocraft_engine::print_cmds::try_with_spooler(|| take_printer_lists(app, f)).is_some() {
+        f.remove("__printerListingPending");
+    } else {
+        take_printer_lists(app, f);
+        f.insert("__printerListingPending".into(), json!(true));
+    }
+}
+
+fn take_printer_lists(app: &mut PhotocraftApp, f: &mut Map<String, Value>) {
+    let printers = photocraft_engine::print_cmds::printers_without_waiting(&mut app.session);
+    f.insert("__systemPrinters".into(), printers["printers"].clone());
+    if let Ok(list) = photocraft_engine::print_cmds::rgb_printers_without_waiting(&app.session) {
         f.insert("__printers".into(), json!(list.iter().map(|p| p.name.clone()).collect::<Vec<_>>()));
         let known = |n: &str| list.iter().any(|p| p.name == n);
-        if !known(&s(&f, "printer", "")) {
+        if !list.is_empty() && !known(&s(f, "printer", "")) {
             let fallback = list.iter().find(|p| p.default).or(list.first()).map(|p| p.name.clone()).unwrap_or_default();
             f.insert("printer".into(), json!(fallback));
             f.remove("printerSettings");
         }
     }
-    app.ui.open_dialog(DialogKind::Command, f)
 }
 
 /// Whether the driver's paper, as `driver_page` took it, is wider than tall: the Orientation
@@ -91,10 +102,13 @@ pub(super) fn turn_driver(app: &mut PhotocraftApp, f: &mut Map<String, Value>, l
     if let (Some(h), Some(o)) = (f.get("printerSettings").cloned(), q.as_object_mut()) {
         o.insert("printerSettings".into(), h);
     }
-    match app.session.execute("file.print.page", q) {
-        Ok(r) => take_turned_page(f, &r),
-        Err(e) => {
+    match photocraft_engine::print_cmds::try_with_spooler(|| app.session.execute("file.print.page", q)) {
+        Some(Ok(r)) => take_turned_page(f, &r),
+        Some(Err(e)) => {
             f.insert("__pageError".into(), json!(e.to_string()));
+        }
+        None => {
+            f.insert("__pageError".into(), json!(photocraft_engine::print_cmds::SPOOLER_BUSY));
         }
     }
 }
@@ -115,21 +129,27 @@ pub(super) fn take_turned_page(f: &mut Map<String, Value>, r: &Value) {
 }
 
 /// Takes the paper from the printer's driver settings (Windows), as Photoshop does.
-fn driver_page(f: &mut Map<String, Value>) {
+pub(super) fn driver_page(f: &mut Map<String, Value>) -> bool {
     let printer = s(f, "printer", "");
     let settings = f.get("printerSettings").and_then(Value::as_str).and_then(|h| craft_print::rgb::DevMode::from_hex(h).ok());
-    match craft_print::rgb::page(&printer, settings.as_ref()) {
-        Ok(pg) => {
+    match photocraft_engine::print_cmds::try_with_spooler(|| craft_print::rgb::page(&printer, settings.as_ref())) {
+        Some(Ok(pg)) => {
             f.insert("paper".into(), json!([pg.paper.0, pg.paper.1]));
             f.insert("printable".into(), json!([pg.printable.0, pg.printable.1, pg.printable.2, pg.printable.3]));
             f.insert("orientation".into(), json!("portrait"));
             f.remove("__pageError");
         }
-        Err(e) => {
+        Some(Err(e)) => {
             f.remove("printable");
             f.insert("__pageError".into(), json!(e.to_string()));
         }
+        None => {
+            f.insert("__pageError".into(), json!(photocraft_engine::print_cmds::SPOOLER_BUSY));
+            f.remove("__driverPageInitialized");
+            return false;
+        }
     }
+    true
 }
 
 /// Points per unit for the Position and Size fields.
@@ -280,6 +300,12 @@ pub(super) fn print_preview_image(l: photocraft_engine::print_cmds::PrintLayout,
 /// Dragging the visible image updates dialog offsets live from a fixed gesture origin;
 /// the position row stays present while centered so switching to manual cannot move the page.
 pub(super) fn print_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Value>, id: u64) {
+    if b(f, "__printerListingPending", false) {
+        refresh_printers(app, f);
+        if b(f, "__printerListingPending", false) {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+        }
+    }
     let t = Tokens::get(ui.ctx());
     let Some(doc) = app.session.active().map(|d| d.doc.clone()) else { return };
     // PDF exports and previews retain editable paper on Windows too. Only a real native
@@ -292,8 +318,11 @@ pub(super) fn print_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map
     };
     if printers.is_some() {
         if !b(f, "__driverPageInitialized", false) {
-            driver_page(f);
-            f.insert("__driverPageInitialized".into(), json!(true));
+            if driver_page(f) {
+                f.insert("__driverPageInitialized".into(), json!(true));
+            } else {
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+            }
         }
     } else {
         // PDF output and previews have no driver page: Scale to Fit Media uses the paper.
@@ -416,14 +445,17 @@ pub(super) fn print_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map
                     if ui.button(tl!("Print Settings…")).clicked() {
                         let printer = s(f, "printer", "");
                         let current = f.get("printerSettings").and_then(Value::as_str).and_then(|h| craft_print::rgb::DevMode::from_hex(h).ok());
-                        match craft_print::rgb::settings_dialog(&printer, current.as_ref(), None) {
-                            Ok(Some(dm)) => {
+                        match photocraft_engine::print_cmds::try_with_spooler(|| craft_print::rgb::settings_dialog(&printer, current.as_ref(), None)) {
+                            Some(Ok(Some(dm))) => {
                                 f.insert("printerSettings".into(), json!(dm.to_hex()));
                                 driver_page(f);
                             }
-                            Ok(None) => {}
-                            Err(e) => {
+                            Some(Ok(None)) => {}
+                            Some(Err(e)) => {
                                 f.insert("__pageError".into(), json!(e.to_string()));
+                            }
+                            None => {
+                                f.insert("__pageError".into(), json!(photocraft_engine::print_cmds::SPOOLER_BUSY));
                             }
                         }
                     }

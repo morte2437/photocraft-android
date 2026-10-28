@@ -297,6 +297,7 @@
 	Layer…	Layer…
 	Group…	Grup…
 	Group from Layers…	Grup dari Layer…
+	New Group from Layers…	Grup Baru dari Layer…
 	Artboard…	Artboard…
 	Artboard from Group…	Artboard dari Grup…
 	Artboard from Layers…	Artboard dari Layer…
@@ -1932,7 +1933,7 @@
 	Full size tip	Ujung ukuran penuh
 	Gamut warning color	Warna peringatan gamut
 	Gamut warning opacity	Opasitas peringatan gamut
-	Generator enabled	Generator aktif
+	Enable Generator	Aktifkan Generator
 	Gif	GIF
 	Glossy	Mengilap
 	Grid color	Warna grid
@@ -3187,6 +3188,9 @@ curves	Smooth	Haluskan
 # History panel menu (#2966)
 	New Snapshot…	Snapshot Baru…
 	History Options…	Opsi Riwayat…
+# History panel › History Options… (#2966)
+	Allow Non-Linear History	Izinkan Riwayat Non-Linier
+	Make Layer Visibility Changes Undoable	Perubahan Visibilitas Layer Dapat Diurungkan
 # Print dialog (#2697)
 	Emulsion Down	Emulsi di Bawah
 	Functions	Fungsi
@@ -3259,6 +3263,33 @@ curves	Smooth	Haluskan
 	Sent to {printer}	Dikirim ke {printer}
 	set in Print Settings…	diatur di Pengaturan Cetak…
 	ICO is limited to 256 × 256 pixels	ICO dibatasi hingga 256 × 256 piksel
+	Show Favorite Fonts	Tampilkan Font Favorit
+	No favorite fonts yet: click the star beside a font to add it.	Belum ada font favorit: klik bintang di samping font untuk menambahkannya.
+	Favorite fonts	Font favorit
+	Add to Favorites	Tambahkan ke Favorit
+	Remove from Favorites	Hapus dari Favorit
+	Show All Fonts	Tampilkan Semua Font
+	All Classes	Semua Kelas
+	Blackletter	Blackletter
+	Decorative	Dekoratif
+	Font preview:	Pratinjau font:
+	Handwritten	Tulisan tangan
+	Hide Font Classes	Sembunyikan Kelas Font
+	Hide Styles	Sembunyikan Gaya
+	Monospace	Monospasi
+	No fonts match these filters.	Tidak ada font yang cocok dengan filter ini.
+	No similar fonts: the current font doesn't say what it looks like.	Tidak ada font serupa: font saat ini tidak menjelaskan tampilannya.
+	OpenType font	Font OpenType
+	Sans Serif	Sans Serif
+	Script	Skrip
+	Serif	Serif
+	Show Font Classes	Tampilkan Kelas Font
+	Show Similar Fonts	Tampilkan Font Serupa
+	Show Styles	Tampilkan Gaya
+	Show Variable Fonts	Tampilkan Font Variabel
+	Slab Serif	Slab Serif
+	TrueType font	Font TrueType
+	Variable font	Font variabel
 	Calibration	Kalibrasi
 	Red Primary	Primer merah
 	Green Primary	Primer hijau
@@ -3473,3 +3504,6 @@ curves	Smooth	Haluskan
 	Gamma	Gamma
 	Profile	Profil
 	Target	Target
+	Font size presets	Preset ukuran font
+	Leading presets	Preset leading
+	Tracking presets	Preset tracking

@@ -517,3 +517,55 @@ fn a_curvature_pen_double_click_through_the_canvas_rounds_a_corner() {
     assert!(k.smooth && k.in_ctrl != k.anchor, "the double-clicked corner is smooth: {k:?}");
     assert!(h.state().ui.pen.is_none(), "and no path was started");
 }
+
+/// #9114: with type on a path selected, Direct Selection reshapes the type's own path (in front of
+/// the work path it was made from) and the type follows, in one undoable step.
+#[test]
+fn dragging_an_anchor_of_type_on_a_path_moves_the_type() {
+    let mut app = app(Tool::DirectSelection);
+    app.run("path.set", json!({"name": "work", "path": {"subpaths": [{"closed": false, "knots": [[100, 20], [100, 180]]}]}})).unwrap();
+    let id = app.run("type.create", json!({"x": 20, "y": 70, "text": "On a path", "size": 24})).unwrap()["layer"].as_u64().unwrap();
+    app.run("type.attachToPath", json!({})).unwrap();
+    let type_path = |app: &PhotocraftApp| match &app.session.active().unwrap().doc.layer(photocraft_doc::LayerId(id)).unwrap().content {
+        photocraft_doc::LayerContent::Text(t) => photocraft_engine::type_extra_cmds::type_path(t).unwrap(),
+        _ => panic!("not a type layer"),
+    };
+    let n = steps(&app);
+    drag(&mut app, [100.2, 180.2], [160.2, 180.2], Modifiers::NONE);
+    assert_eq!(app.ui.direct_selection.target, Some(PathRef::TypePath(id)), "the type path, in front of the work path");
+    let end = type_path(&app).subpaths[0].knots[1].anchor;
+    assert!((end.x - 160.0).abs() < 1e-6 && (end.y - 180.0).abs() < 1e-6, "{end:?}");
+    assert_eq!(work(&app).subpaths[0].knots[1].anchor, Point::new(100.0, 180.0), "the work path stays");
+    assert_eq!(steps(&app), n + 1);
+    assert!(app.session.undo());
+    assert_eq!(type_path(&app).subpaths[0].knots[1].anchor.x.round(), 100.0);
+}
+
+/// #9114: with a type-on-a-path layer's vector mask targeted, Direct Selection edits the mask, not
+/// the Type Path; untargeted, it edits the Type Path and the mask stays.
+#[test]
+fn a_targeted_vector_mask_on_type_on_a_path_is_edited_not_the_type_path() {
+    let mut app = app(Tool::DirectSelection);
+    app.run("path.set", json!({"name": "work", "path": {"subpaths": [{"closed": false, "knots": [[100, 20], [100, 180]]}]}})).unwrap();
+    let id = app.run("type.create", json!({"x": 20, "y": 70, "text": "On a path", "size": 24})).unwrap()["layer"].as_u64().unwrap();
+    app.run("type.attachToPath", json!({})).unwrap();
+    let rect = json!({"subpaths": [{"closed": true, "knots": [[20, 20], [180, 20], [180, 160], [20, 160]]}]});
+    app.run("layer.vectorMask.add", json!({"layer": id, "path": rect})).unwrap();
+    app.ui.vector_mask_target = true;
+    let layer = |app: &PhotocraftApp| app.session.active().unwrap().doc.layer(photocraft_doc::LayerId(id)).unwrap().clone();
+    let type_path = |app: &PhotocraftApp| match &layer(app).content {
+        photocraft_doc::LayerContent::Text(t) => photocraft_engine::type_extra_cmds::type_path(t).unwrap(),
+        _ => panic!("not a type layer"),
+    };
+    let before = type_path(&app);
+    drag(&mut app, [20.2, 20.2], [40.2, 30.2], Modifiers::NONE);
+    assert_eq!(app.ui.direct_selection.target, Some(PathRef::Layer(id)));
+    assert_eq!(layer(&app).vector_mask.unwrap().path.subpaths[0].knots[0].anchor, Point::new(40.0, 30.0), "the mask's corner moved");
+    assert_eq!(type_path(&app), before, "the Type Path stays");
+    // With the mask no longer targeted, the Type Path is in front again and the mask stays.
+    app.ui.vector_mask_target = false;
+    drag(&mut app, [100.2, 180.2], [160.2, 180.2], Modifiers::NONE);
+    assert_eq!(app.ui.direct_selection.target, Some(PathRef::TypePath(id)));
+    assert!((type_path(&app).subpaths[0].knots[1].anchor.x - 160.0).abs() < 1e-6);
+    assert_eq!(layer(&app).vector_mask.unwrap().path.subpaths[0].knots[0].anchor, Point::new(40.0, 30.0));
+}

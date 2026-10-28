@@ -2,7 +2,7 @@
 //! Drop Shadow's light (#882), Motion Blur and the other direction angles of the filter
 //! dialogs (#3152) share it, as Photoshop's dialogs do.
 
-use super::*;
+use super::{Response, Sense, Stroke, Tokens, Ui, value_field, vec2};
 
 /// `Label (dial) [field°]` for a direction in document angles: counter-clockwise from three
 /// o'clock, y up. The dial points anywhere in -180..=180; the result is clamped to `range`, and
@@ -61,6 +61,7 @@ pub fn angle_dial_row(ui: &mut Ui, label: &str, angle: &mut f32, range: std::ops
 #[cfg(test)]
 mod tests {
     use super::*;
+    use egui::Vec2;
     use egui_kittest::kittest::Queryable;
 
     fn click(h: &mut egui_kittest::Harness<'_, f32>, delta: Vec2) {

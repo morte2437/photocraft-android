@@ -33,6 +33,7 @@ pub mod notices;
 pub mod panels;
 pub mod preset_files_ui;
 pub mod proxy;
+pub mod render_path;
 pub mod screenshot;
 pub mod state;
 pub mod texel_guard;
@@ -128,16 +129,16 @@ pub use dialogs::file_ui;
 pub use dialogs::fill_ui;
 pub use dialogs::filter_dialog;
 use dialogs::filter_preview_ui;
-#[cfg(not(target_arch = "wasm32"))]
-use dialogs::filter_preview_worker;
 pub use dialogs::gallery_ui;
 pub use dialogs::guide_layout_ui;
+pub use dialogs::history_options_ui;
 pub use dialogs::jpeg_options_ui;
 pub use dialogs::layer_picker;
 pub use dialogs::layer_style;
 pub use dialogs::liquify_ui;
 pub use dialogs::mask_trash_prompt;
 pub use dialogs::new_doc_ui;
+pub use dialogs::new_group_ui;
 pub use dialogs::new_guide_ui;
 pub use dialogs::new_layer_ui;
 pub use dialogs::open_prompt;
@@ -236,6 +237,7 @@ pub use text::bidi_text;
 pub use text::cjk_fonts;
 pub use text::direction;
 pub use text::egui_fonts;
+use text::font_filters;
 use text::font_preview;
 pub use text::served_fonts;
 use tools::align_bar;
@@ -346,7 +348,9 @@ pub struct PhotocraftApp {
     trail: Option<stroke_trail::Trail>,
     /// Remove tool strokes waiting to be applied together (Remove after each stroke off), the
     /// document, layer and channel they belong to, and their tint on the canvas (`retouch_ui`).
-    pub(crate) remove_pending: Vec<Vec<[f64; 3]>>,
+    /// Each as a `paint.remove` `strokes` entry: its points and the size, hardness and spacing it
+    /// was drawn with, which its tint shows and its removal uses.
+    pub(crate) remove_pending: Vec<serde_json::Value>,
     pub(crate) remove_pending_target: Option<retouch_ui::RemoveTarget>,
     pub(crate) remove_trail: Option<stroke_trail::Trail>,
     /// The open menus' items, reused between frames (`menus::ItemCache`).
@@ -469,7 +473,7 @@ pub struct PhotocraftApp {
     pub(crate) filter_preview: Option<filter_dialog::FilterPreview>,
     pub(crate) smart_filter_targets: smart_filter_dialog::Targets,
     #[cfg(not(target_arch = "wasm32"))]
-    filter_preview_worker: filter_preview_worker::Worker,
+    filter_preview_worker: crate::dialogs::filter_preview_worker::Worker,
     /// Full CPU canvas redraws running in the background, by document (#4024).
     pub(crate) redraws: std::collections::HashMap<photocraft_doc::DocId, background_redraw::Redraw>,
     /// The last finished background redraws, for going back to a state drawn a moment ago (#6528).
@@ -613,6 +617,8 @@ pub struct PhotocraftApp {
     pub perf: gpu_canvas::Perf,
     /// Per-frame stroke timings for latency reports (`PHOTOCRAFT_STROKE_TRACE`, see `stroke_trace`).
     pub stroke_trace: stroke_trace::StrokeTrace,
+    /// Why each document's view is drawn on the CPU, and the history of changes (`render_path`).
+    pub render_path: render_path::RenderPath,
     /// Preferences, autosave and snapping runtime state (see `prefs_ui`, `snap_ui`).
     pub(crate) prefs_rt: prefs_ui::Runtime,
     pub(crate) updates_rt: updates_ui::Runtime,

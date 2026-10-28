@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    DocId, PhotocraftApp, Tool, Value, actions, canvas, delete_layer_prompt, dock, gpu_canvas, jobs_ui, json, mask_trash_prompt, notices, panel_docking, state,
+    transform_tool, type_transform, vector_ui,
+};
 
 impl PhotocraftApp {
     /// Run an engine command, reporting errors in the status bar.
@@ -115,82 +118,7 @@ impl PhotocraftApp {
             jobs_ui::run(self, id, params)
         };
         let creates_adjustment_or_fill = id.starts_with("layer.newAdjustmentLayer.") || id.starts_with("layer.newFillLayer.");
-        if r.is_ok() && ADDS_LAYER_MASK.contains(&id) {
-            // Adding an explicit mask targets it, as in Photoshop (#2166).
-            self.ui.mask_target = true;
-            self.ui.vector_mask_target = false;
-            self.ui.properties_layer = None;
-        } else if r.is_ok() && creates_adjustment_or_fill {
-            // Panel Options may suppress a fill layer's default mask. Never target a
-            // nonexistent mask; an active path creates a vector mask instead.
-            let masks = self
-                .session
-                .active()
-                .and_then(|st| st.active_layer.and_then(|id| st.doc.layer(id)))
-                .map(|layer| (layer.mask.is_some(), layer.vector_mask.is_some()))
-                .unwrap_or((false, false));
-            self.ui.mask_target = masks.0;
-            self.ui.vector_mask_target = !masks.0 && masks.1;
-            // Keep Properties on the new layer contents, as on main (#3369).
-            self.ui.properties_layer = self.session.active().and_then(|st| st.active_layer).map(|l| l.0);
-        }
-        if r.is_ok() && creates_adjustment_or_fill {
-            // Properties comes to the front, shown and expanded, so the new layer's settings can
-            // be edited at once, as in Photoshop (#4028). The layer is made whatever happens here.
-            if self.ui.docking.is_some() {
-                let _ = panel_docking::command(self, "window.panel.activate", &json!({"panel": "properties"}));
-            } else {
-                self.ui.dock_tabs.properties = 0;
-                dock::reveal(self, dock::Group::Properties);
-            }
-        }
-        // Making a new selection reveals its outline after View > Extras was hidden (#5597).
-        // These interactive selection commands complete inline; a failed command, deselection,
-        // or painting inside an existing selection must leave the user's view choice alone.
-        if r.as_ref().is_ok_and(|v| v.get("changed") != Some(&Value::Bool(false)) && v.get("pending") != Some(&Value::Bool(true)))
-            && matches!(
-                id,
-                "select.rect"
-                    | "select.lasso"
-                    | "select.magneticLasso"
-                    | "select.magicWand"
-                    | "select.quick"
-                    | "select.object"
-                    | "select.loadSelection"
-                    | "select.loadLuminosity"
-                    | "path.toSelection"
-            )
-            && self.session.active().is_some_and(|st| st.doc.selection.is_some())
-        {
-            self.ui.view.extras = true;
-        }
-        if r.is_ok() && id == "select.toWorkPath" {
-            // Make Work Path selects the new work path in the Paths panel, as in Photoshop.
-            self.ui.selected_path = Some("work".into());
-        }
-        if r.is_ok() && path_mask {
-            // The new layer's vector mask becomes the active path, as in Photoshop: the path it
-            // was made from is no longer selected, so the next fill layer isn't masked by it too.
-            self.ui.selected_path = Some("layer".into());
-        }
-        if r.is_ok() && creates_active_mask {
-            // Adding a mask selects its thumbnail: the next brush or footer Delete targets it.
-            self.ui.mask_target = true;
-            self.ui.vector_mask_target = false;
-        }
-        if r.is_ok() && creates_active_vector_mask {
-            // Likewise a new vector mask (#4728): Properties shows its Density and Feather, and a
-            // mask made from a path becomes the active path.
-            self.ui.vector_mask_target = true;
-            self.ui.mask_target = false;
-            if matches!(id, "layer.vectorMask.currentPath" | "layer.vectorMask.fromPath") {
-                self.ui.selected_path = Some("layer".into());
-            }
-        }
-        if r.is_ok() && matches!(id, "edit.copy" | "edit.cut" | "edit.copyMerged") {
-            self.clip_external = false;
-            self.export_os_clipboard();
-        }
+        self.sync_command_side_effects(id, &r, creates_active_mask, creates_active_vector_mask, creates_adjustment_or_fill, path_mask);
         self.perf.last_command = id.to_string();
         self.perf.command_ms = gpu_canvas::now_ms() - t0;
         match &r {
@@ -225,6 +153,93 @@ impl PhotocraftApp {
     /// tool, `hold_keys::cmd_moves`), else the selected tool.
     pub fn active_tool(&self) -> state::Tool {
         self.tool_override.unwrap_or(self.ui.tool)
+    }
+
+    fn sync_command_side_effects(
+        &mut self,
+        id: &str,
+        result: &Result<Value, String>,
+        creates_active_mask: bool,
+        creates_active_vector_mask: bool,
+        creates_adjustment_or_fill: bool,
+        path_mask: bool,
+    ) {
+        if result.is_ok() && ADDS_LAYER_MASK.contains(&id) {
+            // Adding an explicit mask targets it, as in Photoshop (#2166).
+            self.ui.mask_target = true;
+            self.ui.vector_mask_target = false;
+            self.ui.properties_layer = None;
+        } else if result.is_ok() && creates_adjustment_or_fill {
+            // Panel Options may suppress a fill layer's default mask. Never target a
+            // nonexistent mask; an active path creates a vector mask instead.
+            let masks = self
+                .session
+                .active()
+                .and_then(|st| st.active_layer.and_then(|id| st.doc.layer(id)))
+                .map(|layer| (layer.mask.is_some(), layer.vector_mask.is_some()))
+                .unwrap_or((false, false));
+            self.ui.mask_target = masks.0;
+            self.ui.vector_mask_target = !masks.0 && masks.1;
+            // Keep Properties on the new layer contents, as on main (#3369).
+            self.ui.properties_layer = self.session.active().and_then(|st| st.active_layer).map(|l| l.0);
+        }
+        if result.is_ok() && creates_adjustment_or_fill {
+            // Properties comes to the front, shown and expanded, so the new layer's settings can
+            // be edited at once, as in Photoshop (#4028). The layer is made whatever happens here.
+            if self.ui.docking.is_some() {
+                let _ = panel_docking::command(self, "window.panel.activate", &json!({"panel": "properties"}));
+            } else {
+                self.ui.dock_tabs.properties = 0;
+                dock::reveal(self, dock::Group::Properties);
+            }
+        }
+        // Making a new selection reveals its outline after View > Extras was hidden (#5597).
+        // These interactive selection commands complete inline; a failed command, deselection,
+        // or painting inside an existing selection must leave the user's view choice alone.
+        if result.as_ref().is_ok_and(|v| v.get("changed") != Some(&Value::Bool(false)) && v.get("pending") != Some(&Value::Bool(true)))
+            && matches!(
+                id,
+                "select.rect"
+                    | "select.lasso"
+                    | "select.magneticLasso"
+                    | "select.magicWand"
+                    | "select.quick"
+                    | "select.object"
+                    | "select.loadSelection"
+                    | "select.loadLuminosity"
+                    | "path.toSelection"
+            )
+            && self.session.active().is_some_and(|st| st.doc.selection.is_some())
+        {
+            self.ui.view.extras = true;
+        }
+        if result.is_ok() && id == "select.toWorkPath" {
+            // Make Work Path selects the new work path in the Paths panel, as in Photoshop.
+            self.ui.selected_path = Some("work".into());
+        }
+        if result.is_ok() && path_mask {
+            // The new layer's vector mask becomes the active path, as in Photoshop: the path it
+            // was made from is no longer selected, so the next fill layer isn't masked by it too.
+            self.ui.selected_path = Some("layer".into());
+        }
+        if result.is_ok() && creates_active_mask {
+            // Adding a mask selects its thumbnail: the next brush or footer Delete targets it.
+            self.ui.mask_target = true;
+            self.ui.vector_mask_target = false;
+        }
+        if result.is_ok() && creates_active_vector_mask {
+            // Likewise a new vector mask (#4728): Properties shows its Density and Feather, and a
+            // mask made from a path becomes the active path.
+            self.ui.vector_mask_target = true;
+            self.ui.mask_target = false;
+            if matches!(id, "layer.vectorMask.currentPath" | "layer.vectorMask.fromPath") {
+                self.ui.selected_path = Some("layer".into());
+            }
+        }
+        if result.is_ok() && matches!(id, "edit.copy" | "edit.cut" | "edit.copyMerged") {
+            self.clip_external = false;
+            self.export_os_clipboard();
+        }
     }
 
     pub fn sync_views(&mut self) {

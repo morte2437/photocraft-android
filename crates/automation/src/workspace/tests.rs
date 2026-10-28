@@ -122,6 +122,46 @@ fn write_replaces_atomically_and_leaves_no_temp_file() {
     assert!(temp_files(&inside).is_empty());
 }
 
+/// A directory at the target is refused before anything is opened, even under an image name.
+#[test]
+fn write_refuses_a_directory_target_before_opening_it() {
+    let (inside, _, workspace) = roots("dir-target");
+    for name in ["adir", "adir.png"] {
+        std::fs::create_dir_all(inside.join(name)).unwrap();
+        let error = workspace.write(name, b"x").unwrap_err().to_string();
+        assert!(error.contains("is not a regular file"), "{name}: {error}");
+        assert!(inside.join(name).is_dir());
+    }
+    assert!(temp_files(&inside).is_empty());
+}
+
+/// A FIFO at the target is refused at once: opening it to sniff its head or copy its
+/// attributes would block until a writer appears, stalling every other request.
+#[cfg(unix)]
+#[test]
+fn write_refuses_a_fifo_target_without_blocking() {
+    let (inside, _, workspace) = roots("fifo-target");
+    for name in ["pipe", "out.png"] {
+        let made = std::process::Command::new("mkfifo").arg(inside.join(name)).status();
+        if !made.is_ok_and(|s| s.success()) {
+            return; // no mkfifo on this system: nothing to assert
+        }
+    }
+    std::os::unix::fs::symlink("pipe", inside.join("link")).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for name in ["pipe", "out.png", "link"] {
+            let _ = tx.send((name, workspace.write(name, b"x").map_err(|e| e.to_string())));
+        }
+    });
+    for _ in 0..3 {
+        let (name, result) = rx.recv_timeout(std::time::Duration::from_secs(5)).expect("write blocked on a FIFO");
+        let error = result.unwrap_err();
+        assert!(error.contains("is not a regular file"), "{name}: {error}");
+    }
+    assert!(temp_files(&inside).is_empty());
+}
+
 /// #7095: replacing a file through the automation path keeps the old file's extended
 /// attributes, the same as a save through `atomic_write` does.
 #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
@@ -174,6 +214,32 @@ fn rejects_absolute_traversal_mixed_prefix_and_malformed_paths_without_panicking
     {
         assert!(workspace.read(path).is_err(), "read accepted {path:?}");
         assert!(workspace.write(path, b"x").is_err(), "write accepted {path:?}");
+    }
+}
+
+#[test]
+fn every_device_name_cap_std_refuses_to_open_is_refused_before_any_write() {
+    // cap-std refuses these when it opens a file on Windows, so a file written under one of
+    // them could not be read back (#9424).
+    let (inside, _, workspace) = roots("devices");
+    std::fs::create_dir(inside.join("sub")).unwrap();
+    for path in ["COM0.txt", "LPT0", "COM¹.png", "com².png", "COM³", "LPT¹.txt", "LPT².txt", "lpt³", "NUL .png", "Aux  .txt", "sub/CON .psd", "COM¹/frame.png"]
+    {
+        let error = workspace.write(path, b"x").unwrap_err().to_string();
+        assert!(error.contains("reserved device names"), "write {path:?}: {error}");
+        let error = workspace.read(path).unwrap_err().to_string();
+        assert!(error.contains("reserved device names"), "read {path:?}: {error}");
+    }
+    for dir in ["COM¹", "LPT0", "sub/PRN .x"] {
+        let error = workspace.export_sequence(dir).err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(error.contains("reserved device names"), "export {dir:?}: {error}");
+    }
+    assert_eq!(std::fs::read_dir(&inside).unwrap().count(), 1, "only `sub` may exist");
+    assert_eq!(std::fs::read_dir(inside.join("sub")).unwrap().count(), 0);
+    // Look-alikes are ordinary names.
+    for path in ["COM10.txt", "COM¹0.txt", "LPT00", "console.txt", "NULL.txt", "nul_.txt", " NUL.txt"] {
+        workspace.write(path, b"x").unwrap_or_else(|e| panic!("write {path:?}: {e}"));
+        assert_eq!(workspace.read(path).unwrap(), b"x", "{path:?}");
     }
 }
 
@@ -272,6 +338,10 @@ fn filesystem_commands_fail_closed() {
     for id in ["layer.smartObjects.editContents", "layer.smartObjects.convertToLayers"] {
         assert!(authorize_engine_command(id, &serde_json::json!({"path": "/outside/source.psb"})).is_err(), "{id}");
     }
+}
+
+#[test]
+fn filesystem_command_paths_and_profiles_fail_closed() {
     // The UI-level examples in docs/control-protocol.md.
     for id in ["view.zoomIn", "window.theme.pro", "edit.search"] {
         assert!(authorize_desktop_engine_command(id, &serde_json::json!({})).is_ok(), "{id}");

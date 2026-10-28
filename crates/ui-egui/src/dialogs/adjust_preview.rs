@@ -218,6 +218,7 @@ fn update(app: &mut PhotocraftApp, idx: usize) -> Option<&AdjustPreview> {
         if let Some(p) = app.adjust_preview.as_mut() {
             (p.hash, p.layer_path, p.shown) = (0, false, None);
         }
+        crate::render_path::adjust_preview_ok(app);
         return None;
     };
     let st = app.session.documents().get(idx)?;
@@ -236,7 +237,16 @@ fn update(app: &mut PhotocraftApp, idx: usize) -> Option<&AdjustPreview> {
     }
     if app.adjust_preview.as_ref().is_none_or(|p| (p.doc, p.session) != (doc_id, session)) {
         let doc = st.doc.clone();
-        let base = if channel_target { None } else { base_document(&doc, target).ok().filter(|b| cheap(app, b)).map(Arc::new) };
+        let base = if channel_target { None } else { base_document(&doc, target).ok() };
+        // A target the layer path can't preview (or the GPU can't draw) falls to the CPU proxy: say
+        // why (#7487), in the preview's own slot. A channel target's proxy is by design, not a
+        // fallback.
+        let gpu_refuses = app.gpu.as_ref().zip(base.as_ref()).is_some_and(|(g, b)| !g.supports(b));
+        match (!channel_target).then(|| unsupported(&doc, target)).flatten().or(gpu_refuses.then_some("the GPU can't draw the result")) {
+            Some(why) => crate::render_path::adjust_preview_cpu(app, doc_id.0, why),
+            None => crate::render_path::adjust_preview_ok(app),
+        }
+        let base = base.filter(|b| cheap(app, b)).map(Arc::new);
         let region = if base.is_some() { region(&doc, target) } else { Rect::EMPTY };
         app.adjust_preview = Some(AdjustPreview {
             doc: doc_id,

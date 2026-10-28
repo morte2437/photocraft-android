@@ -1,5 +1,8 @@
 use super::hue_saturation::spectrum_bar;
-use super::*;
+use super::{
+    Color32, Edit, EditorCx, GradientPreset, Group, PhotocraftApp, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Tokens, Value, adjust_params, color_button,
+    color32, flag, json, label, pos2, rgb_of, round, vec2, widgets,
+};
 
 // ---------------------------------------------------------------------------------------------
 // Gradient Map

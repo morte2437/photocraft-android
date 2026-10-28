@@ -290,6 +290,7 @@
 	Gradient…	Chuyển sắc…
 	Grayscale	Thang xám
 	Group from Layers…	Nhóm từ các lớp…
+	New Group from Layers…	Nhóm mới từ các lớp…
 	Group Layers	Nhóm các lớp
 	Group…	Nhóm…
 	HDR Toning…	Tông HDR…
@@ -2719,7 +2720,7 @@ shape	Appearance	Diện mạo
 	Extra large	Rất lớn
 	Fill new type layers with placeholder	Tô lớp chữ mới bằng nội dung tạm
 	Font preview	Xem trước phông chữ
-	Generator enabled	Đã bật bộ tạo
+	Enable Generator	Bật bộ tạo
 	Glossy	Bóng
 	Gutter	Lề
 	Ignore exif profile tag	Bỏ qua thẻ hồ sơ exif
@@ -3697,6 +3698,9 @@ curves	Smooth	Làm mượt
 	Clear History	Xóa lịch sử
 	History Options…	Tùy chọn lịch sử…
 	Background (Default)	Nền (mặc định)
+# History panel › History Options… (#2966)
+	Allow Non-Linear History	Cho phép lịch sử không tuyến tính
+	Make Layer Visibility Changes Undoable	Cho phép hoàn tác thay đổi hiển thị lớp
 	Presentation	Trình bày
 # Batch / Image Processor
 	Include All Subfolders	Bao gồm tất cả thư mục con
@@ -3712,6 +3716,33 @@ curves	Smooth	Làm mượt
 	Sent to {printer}	Đã gửi tới {printer}
 	set in Print Settings…	đặt trong thiết lập in…
 	ICO is limited to 256 × 256 pixels	ICO giới hạn ở 256 × 256 pixel
+	Show Favorite Fonts	Hiển thị phông chữ yêu thích
+	No favorite fonts yet: click the star beside a font to add it.	Chưa có phông chữ yêu thích: nhấp vào ngôi sao bên cạnh phông chữ để thêm.
+	Favorite fonts	Phông chữ yêu thích
+	Add to Favorites	Thêm vào mục yêu thích
+	Remove from Favorites	Xóa khỏi mục yêu thích
+	Show All Fonts	Hiển thị tất cả phông chữ
+	All Classes	Tất cả các lớp
+	Blackletter	Blackletter
+	Decorative	Trang trí
+	Font preview:	Xem trước phông chữ:
+	Handwritten	Viết tay
+	Hide Font Classes	Ẩn lớp phông chữ
+	Hide Styles	Ẩn kiểu
+	Monospace	Đơn cách
+	No fonts match these filters.	Không có phông chữ nào khớp với các bộ lọc này.
+	No similar fonts: the current font doesn't say what it looks like.	Không có phông chữ tương tự: phông chữ hiện tại không mô tả hình dáng của nó.
+	OpenType font	Phông chữ OpenType
+	Sans Serif	Không chân
+	Script	Viết tay nghệ thuật
+	Serif	Có chân
+	Show Font Classes	Hiện lớp phông chữ
+	Show Similar Fonts	Hiện phông chữ tương tự
+	Show Styles	Hiện kiểu
+	Show Variable Fonts	Hiện phông chữ biến thiên
+	Slab Serif	Chân vuông
+	TrueType font	Phông chữ TrueType
+	Variable font	Phông chữ biến thiên
 	Calibration	Hiệu chuẩn
 	Red Primary	Màu đỏ cơ bản
 	Green Primary	Màu lục cơ bản
@@ -3949,3 +3980,6 @@ curves	Smooth	Làm mượt
 
 # Egui 0.37 migration controls (Aspect Ratio, Category, Color Table, Gamma, Interpolation, Profile, Target, Units, Demosaic)
 	Aspect Ratio	Tỷ lệ khung hình
+	Font size presets	Cỡ chữ đặt sẵn
+	Leading presets	Giãn dòng đặt sẵn
+	Tracking presets	Khoảng cách chữ đặt sẵn

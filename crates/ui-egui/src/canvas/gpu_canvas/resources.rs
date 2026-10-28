@@ -2,7 +2,7 @@ use super::budget::{canvas_budget, physical_memory};
 use super::doc_textures::init_buffer;
 use super::shaders::{CANVAS_WGSL, ENCODE_WGSL, MIP_WGSL};
 use super::texels::LayerFit;
-use super::*;
+use super::{FORMAT, FORMAT_HIGH, HashMap, NonZeroU64, TILE_UNIFORM_SIZE, VIEW_FLOATS, VIEW_UNIFORM_SIZE, wgpu};
 
 pub(super) struct Resources {
     pub(super) view_bgl: wgpu::BindGroupLayout,

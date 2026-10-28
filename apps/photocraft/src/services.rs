@@ -18,10 +18,10 @@ mod recovery_tests;
 /// Photoshop brushes (.abr), gradients (.grd), layer styles (.asl), swatches (.aco, .act, .ase) and keyboard shortcut sets
 /// (.kys), which go to the preset libraries and Edit › Keyboard Shortcuts.
 const OPEN_EXTS: &[&str] = &[
-    "pcraft", "pdn", "ora", "xcf", "xcfgz", "gz", "kra", "krz", "psd", "psb", "psdt", "png", "jpg", "jpeg", "tif", "tiff", "webp", "gif", "bmp", "tga", "ico",
-    "qoi", "exr", "hdr", "pbm", "pgm", "ppm", "pam", "pfm", "pcx", "dds", "xpm", "fits", "fit", "fts", "dpx", "cin", "dcm", "dicom", "dc3", "iff", "lbm",
-    "ilbm", "heic", "heif", "hif", "dng", "cr2", "cr3", "nef", "nrw", "arw", "pef", "orf", "rw2", "raf", "abr", "grd", "asl", "svg", "svgz", "aco", "act",
-    "ase", "kys", "af", "afdesign", "afphoto", "afpub",
+    "pcraft", "pdn", "ora", "xcf", "xcfgz", "gz", "kra", "krz", "psd", "psb", "psdt", "png", "jpg", "jpeg", "tif", "tiff", "webp", "gif", "bmp", "dib", "tga",
+    "ico", "qoi", "exr", "hdr", "pbm", "pgm", "ppm", "pnm", "pam", "pfm", "pcx", "dds", "xpm", "fits", "fit", "fts", "dpx", "cin", "dcm", "dicom", "dc3",
+    "iff", "lbm", "ilbm", "heic", "heif", "hif", "dng", "cr2", "cr3", "nef", "nrw", "arw", "pef", "orf", "rw2", "raf", "abr", "grd", "asl", "svg", "svgz",
+    "aco", "act", "ase", "kys", "af", "afdesign", "afphoto", "afpub",
 ];
 const SVG_EXTS: &[&str] = &["svg", "svgz"];
 
@@ -54,14 +54,14 @@ const OPEN_FILTERS: &[(&str, &[&str])] = &[
     ("TIFF", &["tif", "tiff"]),
     ("WebP", &["webp"]),
     ("GIF", &["gif"]),
-    ("BMP", &["bmp"]),
+    ("BMP", &["bmp", "dib"]),
     ("Targa", &["tga"]),
     ("ICO", &["ico"]),
     ("QOI", &["qoi"]),
     ("PCX", &["pcx"]),
     ("DDS", &["dds"]),
     ("XPM", &["xpm"]),
-    ("Portable Bitmap", &["pbm", "pgm", "ppm", "pam", "pfm"]),
+    ("Portable Bitmap", &["pbm", "pgm", "ppm", "pnm", "pam", "pfm"]),
     ("OpenEXR", &["exr"]),
     ("Radiance HDR", &["hdr"]),
     ("FITS", &["fits", "fit", "fts"]),
@@ -91,15 +91,19 @@ const SAVE_FILTERS: &[(&str, &[&str])] = &[
     ("PhotoCraft", &["pcraft"]),
     ("OpenRaster", &["ora"]),
     ("PNG", &["png"]),
-    ("JPEG", &["jpg"]),
+    ("JPEG", &["jpg", "jpeg"]),
     ("WebP", &["webp"]),
-    ("TIFF", &["tif"]),
+    ("TIFF", &["tif", "tiff"]),
     ("Targa", &["tga"]),
     // Also in Photoshop's Save As list; ICO is PhotoCraft's own (#4357): up to 256×256, with alpha.
-    ("BMP", &["bmp"]),
+    ("BMP", &["bmp", "dib"]),
     ("GIF", &["gif"]),
     ("ICO", &["ico"]),
     ("OpenEXR", &["exr"]),
+    // The encoder picks P5, P6, P7 or PFM from the image, not from the name, so only the neutral
+    // .pnm is offered: a .pbm or .pgm name would hold pixmap data (CodeRabbit on #9775).
+    ("Netpbm", &["pnm"]),
+    ("Radiance HDR", &["hdr"]),
     ("FITS", &["fits", "fit"]),
     ("DPX", &["dpx"]),
     // Game and 3D textures; DDS Options asks for the compression and mipmaps (#1327).
@@ -112,9 +116,21 @@ const SAVE_FILTERS: &[(&str, &[&str])] = &[
 /// never swaps their extension for a document format's.
 const OTHER_SAVE_FILTERS: &[(&str, &[&str])] = &[("Color Swatches", &["aco"]), ("Color Table", &["act"]), ("Swatch Exchange", &["ase"])];
 
+/// `suggested` with a Netpbm subtype's extension (an opened .pgm) as the neutral .pnm, the name
+/// every save dialog starts from: the encoder picks P5, P6, P7 or PFM from the image, so the old
+/// suffix could name other data, and macOS and rfd keep the suggested name as it is.
+fn netpbm_as_pnm(suggested: &str) -> String {
+    let path = Path::new(suggested);
+    let subtype = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).is_some_and(|e| ["pbm", "pgm", "ppm", "pam", "pfm"].contains(&e.as_str()));
+    if subtype { path.with_extension("pnm").to_string_lossy().into_owned() } else { suggested.to_string() }
+}
+
 /// Lists the save dialog's file types with the `suggested` type first (added if unlisted), so the dialog keeps that extension instead of .psd.
 fn save_filters(suggested: &str) -> Vec<(String, Vec<String>)> {
     let ext = Path::new(suggested).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    // A Netpbm subtype's name (an opened .pgm) starts on the Netpbm type as .pnm: the encoder picks
+    // the subtype from the image, so the old name could describe other data (CodeRabbit on #9775).
+    let ext = if ["pbm", "pgm", "ppm", "pam", "pfm"].contains(&ext.as_str()) { "pnm".to_string() } else { ext };
     if let Some((name, exts)) = OTHER_SAVE_FILTERS.iter().find(|(_, exts)| exts.contains(&ext.as_str())) {
         return vec![(name.to_string(), exts.iter().map(|e| e.to_string()).collect())];
     }
@@ -216,6 +232,7 @@ fn show_file_dialog(request: FileDialogRequest, parent: Option<&eframe::Frame>, 
             Box::pin(async move { picked.await.map(|folder| answer_one(folder.path(), true, FileDialogAnswer::FolderTo)) })
         }
         FileDialogRequest::Save { suggested } => {
+            let suggested = netpbm_as_pnm(&suggested);
             let filters = save_filters(&suggested);
             let name = dialog_file_name(&suggested, cfg!(windows));
             let dir = Path::new(&suggested).parent().filter(|p| !p.as_os_str().is_empty()).map(Path::to_path_buf);
@@ -543,6 +560,61 @@ fn image_from_offers(offers: &[String], mut fetch: impl FnMut(&str) -> Option<Ve
     })
 }
 
+/// Largest SVG markup a paste reads from clipboard text (128 MiB, the size an `.svgz` may inflate
+/// to).
+const MAX_CLIPBOARD_SVG_BYTES: u64 = photocraft_io::svg::MAX_INFLATED_BYTES;
+
+/// The pixels of a drawing copied as SVG markup (on macOS and Linux, VectorCraft's Copy leaves
+/// only the markup, as text): one pixel per SVG unit, scaled down to the SVG import's pixel limit,
+/// as RGBA8. `None` for text that isn't SVG, markup longer than [`MAX_CLIPBOARD_SVG_BYTES`], and
+/// markup that doesn't parse.
+fn image_from_svg_text(text: &str) -> Option<(u32, u32, Vec<u8>)> {
+    if u64::try_from(text.len()).ok()? > MAX_CLIPBOARD_SVG_BYTES || !text.trim_start_matches('\u{feff}').trim_start().starts_with('<') {
+        return None;
+    }
+    crate::crash_guard::guard("Paste", || photocraft_io::svg::rasterize_rgba8(text.as_bytes()).map_err(|e| e.to_string())).ok()
+}
+
+/// What a paste reads from the OS clipboard, in this order: the first copied file that is an
+/// image (Finder also puts the file's icon on the clipboard as an image, which would otherwise
+/// paste instead of the file), the clipboard's image, then a drawing copied as SVG markup. Each
+/// read runs only when the ones before it found nothing. A read that fails, such as one of a busy
+/// clipboard, returns its error, and the reads after it don't run.
+fn clipboard_image<C>(
+    clipboard: &mut C,
+    files: impl FnOnce(&mut C) -> Result<Option<Vec<PathBuf>>, String>,
+    image: impl FnOnce(&mut C) -> Result<Option<(u32, u32, Vec<u8>)>, String>,
+    text: impl FnOnce(&mut C) -> Result<Option<String>, String>,
+) -> Result<Option<(u32, u32, Vec<u8>)>, String> {
+    if let Some(img) = files(clipboard)?.and_then(|paths| image_from_files(&paths)) {
+        return Ok(Some(img));
+    }
+    if let Some(img) = image(clipboard)? {
+        return Ok(Some(img));
+    }
+    Ok(text(clipboard)?.and_then(|text| image_from_svg_text(&text)))
+}
+
+/// One OS clipboard read as [`clipboard_image`] takes it: no content in the format asked for is
+/// `None`, and any other failure, such as a busy clipboard or a broken pipe on Wayland, is the
+/// read's error.
+fn clipboard_read<T>(read: Result<T, arboard::Error>) -> Result<Option<T>, String> {
+    match read {
+        Ok(value) => Ok(Some(value)),
+        Err(arboard::Error::ContentNotAvailable) => Ok(None),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// Clipboard text as [`clipboard_image`] takes it: like [`clipboard_read`], except that text that
+/// isn't UTF-8 is `None`, like other text that isn't SVG markup.
+fn clipboard_text(read: Result<String, arboard::Error>) -> Result<Option<String>, String> {
+    match read {
+        Err(arboard::Error::ConversionFailure) => Ok(None),
+        read => clipboard_read(read),
+    }
+}
+
 /// The shell command that starts this install under XWayland, where winit delivers file drops
 /// (winit 0.30 has none on Wayland, #386). A Flatpak gets the X11 socket only without the Wayland
 /// one, an AppImage relaunches by its own path, and anything else is `photocraft` on the PATH.
@@ -660,30 +732,24 @@ pub fn native(automation: Option<photocraft_automation::AuthorizedWorkspace>) ->
                         slot.insert(opened.map_err(|e| e.to_string())?)
                     }
                 };
-                // Copied files first: Finder also puts the file's icon on the clipboard as an
-                // image, which would otherwise paste instead of the file.
-                match cb.get().file_list() {
-                    Ok(paths) => {
-                        if let Some(img) = image_from_files(&paths) {
-                            return Ok(Some(img));
+                clipboard_image(
+                    cb,
+                    |cb| clipboard_read(cb.get().file_list()),
+                    |cb| match cb.get_image() {
+                        Ok(img) => Ok(Some((img.width as u32, img.height as u32, img.bytes.into_owned()))),
+                        Err(error) => {
+                            #[cfg(target_os = "linux")]
+                            if let Some(image) = wayland_clipboard_image() {
+                                return Ok(Some(image));
+                            }
+                            match error {
+                                arboard::Error::ContentNotAvailable => Ok(None),
+                                _ => Err(error.to_string()),
+                            }
                         }
-                    }
-                    Err(error @ arboard::Error::ClipboardOccupied) => return Err(error.to_string()),
-                    Err(_) => {}
-                }
-                match cb.get_image() {
-                    Ok(img) => Ok(Some((img.width as u32, img.height as u32, img.bytes.into_owned()))),
-                    Err(error) => {
-                        #[cfg(target_os = "linux")]
-                        if let Some(image) = wayland_clipboard_image() {
-                            return Ok(Some(image));
-                        }
-                        match error {
-                            arboard::Error::ContentNotAvailable => Ok(None),
-                            _ => Err(error.to_string()),
-                        }
-                    }
-                }
+                    },
+                    |cb| clipboard_text(cb.get_text()),
+                )
             })
         }),
         clipboard_unreadable: Some(Box::new(move || clip_unreadable.get())),

@@ -1,7 +1,10 @@
 use super::basic::{sliders, track_stops};
 use super::curves::gradient_bar;
 use super::levels::nearest;
-use super::*;
+use super::{
+    Color32, Edit, EditorCx, HUE_RANGES, HueRange, Rect, RichText, Sense, Stroke, StrokeKind, Tokens, Value, color32, flag, hue_color, json, num, nums, pos2,
+    vec2, widgets,
+};
 
 // ---------------------------------------------------------------------------------------------
 // Hue/Saturation

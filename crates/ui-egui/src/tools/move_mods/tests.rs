@@ -104,6 +104,22 @@ fn alt_drag_duplicates_and_moves_the_copy_in_one_step() {
     assert_eq!(bounds(&app, st.active_layer.unwrap()), photocraft_geom::Rect::new(22, 8, 38, 24));
 }
 
+/// Allow Non-Linear History: the copy's step moves the later states in front of it, and
+/// folding the copy and the move into one step must keep them.
+#[test]
+fn alt_drag_keeps_the_later_states_in_non_linear_history() {
+    let mut app = app_with_layer();
+    app.session.execute("history.options", json!({"allowNonLinearHistory": true})).unwrap();
+    let id = app.session.active().unwrap().active_layer.unwrap();
+    app.session.execute("layer.setProps", json!({"layer": id.0, "opacity": 0.5})).unwrap();
+    assert!(app.session.undo());
+    let mut expected = app.session.active().unwrap().history.entries();
+    expected.extend(app.session.active().unwrap().history.redo_labels().map(str::to_string));
+    expected.push(DUPLICATE_MOVE_LABEL.into());
+    drag(&mut app, &[[16.0, 16.0], [20.0, 16.0], [26.0, 21.0]], egui::Modifiers::ALT);
+    assert_eq!(app.session.active().unwrap().history.entries(), expected, "the later state stays");
+}
+
 #[test]
 fn alt_drag_duplicates_every_selected_layer() {
     let mut app = app_with_layer();

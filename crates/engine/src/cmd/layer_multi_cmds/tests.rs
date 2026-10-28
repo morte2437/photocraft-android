@@ -918,6 +918,31 @@ fn group_from_layers_preserves_order() {
     assert!(matches!(&doc(&s).layer(g).unwrap().content, LayerContent::Group(gr) if !gr.expanded));
 }
 
+/// Artboards are top-level groups; grouping them (now a plain click on the Layers panel's New
+/// Group button with two boards selected) is refused and leaves them as they were.
+#[test]
+fn grouping_artboards_is_refused() {
+    let mut s = session(8);
+    let a = LayerId(s.execute("layer.new.artboard", json!({"rect": [0, 0, 100, 80]})).unwrap()["layer"].as_u64().unwrap());
+    let b = LayerId(s.execute("layer.new.artboard", json!({"rect": [120, 0, 100, 80]})).unwrap()["layer"].as_u64().unwrap());
+    select_all(&mut s, &[a, b]);
+    let before = doc(&s).clone();
+    let err = s.execute("layer.groupLayers", json!({})).unwrap_err();
+    assert!(err.to_string().contains("artboards"), "{err}");
+    assert!(s.execute("layer.groupLayers", json!({"layer": a.0})).is_err(), "one board is refused too");
+    assert_eq!(doc(&s).layers.iter().map(|l| l.id).collect::<Vec<_>>(), before.layers.iter().map(|l| l.id).collect::<Vec<_>>());
+    assert_eq!(doc(&s).artboards().len(), 2);
+    // A layer inside a board still groups, inside its board. (Made with no layer selected: a
+    // new layer with a board selected goes into that board, as in Photoshop.)
+    s.execute("select.deselectLayers", json!({})).unwrap();
+    let inner = rect_layer(&mut s, Rect::new(0, 0, 5, 5));
+    select_all(&mut s, &[inner]);
+    let c = LayerId(s.execute("layer.new.artboardFromLayers", json!({})).unwrap()["layer"].as_u64().unwrap());
+    assert_eq!(doc(&s).artboard_of(inner), Some(c));
+    let g = LayerId(s.execute("layer.groupLayers", json!({"layer": inner.0})).unwrap()["layer"].as_u64().unwrap());
+    assert_eq!(doc(&s).artboard_of(g), Some(c));
+}
+
 #[test]
 fn grouping_is_capped_at_the_document_nesting_limit() {
     let mut s = session(8);

@@ -1,5 +1,5 @@
 use super::params::bad;
-use super::*;
+use super::{BlendMode, Document, EngineError, Layer, LayerId, LayerMask, Result, SampleType, Session, Value};
 
 /// The layer a command's `"layer"` param names: an id, or a name (the topmost layer of that
 /// name, as Photoshop's "select layer by name" action step finds it, so a loaded action replays

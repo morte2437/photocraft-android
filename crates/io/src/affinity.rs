@@ -149,7 +149,7 @@ impl Builder {
                 let r = self.bbox(to_doc, page);
                 let mut g = Layer::new(
                     format!("Page {}", i + 1),
-                    LayerContent::Group(Group { children: std::mem::take(&mut children), expanded: true, artboard: None }),
+                    LayerContent::Group(Group { children: std::mem::take(&mut children), expanded: true, artboard: None, frame_stroke: None }),
                 );
                 if let LayerContent::Group(gr) = &mut g.content {
                     gr.artboard = Some(Artboard { rect: r, background: ArtboardBackground::White, preset: String::new() });
@@ -244,7 +244,7 @@ impl Builder {
 
     fn group(&mut self, n: &af::Node, children: Vec<Layer>) -> Layer {
         // Pass-through and Normal (isolated) groups map one to one.
-        self.base(n, LayerContent::Group(Group { children, expanded: false, artboard: None }))
+        self.base(n, LayerContent::Group(Group { children, expanded: false, artboard: None, frame_stroke: None }))
     }
 
     /// One Affinity node and its subtree; `to_doc` maps Affinity document pixels to the canvas.

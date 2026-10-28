@@ -1,7 +1,7 @@
 use super::damage::layer_bounds;
 use super::moves::{move_layers, with_links};
 use super::selection::{selected, top_level};
-use super::*;
+use super::{Document, EngineError, LayerId, Rect, Result, Session, Value, bad, json};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Edge {

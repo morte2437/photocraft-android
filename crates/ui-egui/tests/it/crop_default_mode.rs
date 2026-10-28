@@ -126,7 +126,7 @@ fn a_ratio_dropdown_updates_the_preview_and_enter_without_touching_a_handle() {
 }
 
 #[test]
-fn the_swap_button_and_x_apply_the_same_inscribed_ratio() {
+fn the_swap_button_and_x_swap_the_ratio_about_the_centre() {
     // Windows WARP can access-violate when GPU harnesses initialize or tear down concurrently:
     // hold the GPU lock for the whole test, harness included.
     let _gpu = photocraft_testkit::gpu_lock();
@@ -148,7 +148,8 @@ fn the_swap_button_and_x_apply_the_same_inscribed_ratio() {
     h.run_steps(3);
     h.key_press(Key::X);
     h.run_steps(3);
-    assert_eq!(h.state().ui.crop_rect, Some(button));
+    // X turns the frame instead of fitting the turned ratio inside it (#7057).
+    assert_eq!(h.state().ui.crop_rect, Some([70.0, -20.0, 230.0, 220.0]));
     assert!(mid(screen_box(&h)).distance(before) < 0.01);
 }
 

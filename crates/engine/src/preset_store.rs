@@ -254,7 +254,8 @@ pub fn encode_tip(t: &GrayTile) -> Vec<u8> {
     out.push(if eight { 8 } else { 16 });
     out.extend_from_slice(&t.width.to_le_bytes());
     out.extend_from_slice(&t.height.to_le_bytes());
-    let mut z = flate2::write::ZlibEncoder::new(out, flate2::Compression::fast());
+    // Level 3: zlib-rs level 1 writes static Huffman blocks only, 13-30% bigger than miniz's level 1.
+    let mut z = flate2::write::ZlibEncoder::new(out, flate2::Compression::new(3));
     let mut buf = Vec::with_capacity(8192);
     let mut ok = true;
     for chunk in t.data.chunks(4096) {

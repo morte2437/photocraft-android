@@ -1,5 +1,5 @@
 use super::fields::{FieldOpts, value_field_in};
-use super::*;
+use super::{Response, Ui};
 
 /// A size dialog's unit key (`px`, `in`, `cm`, `mm`, `pt`, `pica`, `percent`) as a unit.
 pub fn unit_of_key(key: &str) -> photocraft_engine::prefs::Unit {

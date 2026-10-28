@@ -4,7 +4,7 @@ use super::strokes::{
     EngineStroke, commit_brush_stroke, feed_live_stroke, live_retouch_command, offer_live_retouch, paint_target, snap_aliased_tip, stroke_params,
 };
 use super::textures::shown_as_document;
-use super::*;
+use super::{PhotocraftApp, Tool, json};
 
 pub(crate) fn finish_gesture(app: &mut PhotocraftApp, d: Drag) {
     // Control can select a different tool and release before the next frame cancels the drag.

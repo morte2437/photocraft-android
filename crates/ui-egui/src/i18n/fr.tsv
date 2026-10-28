@@ -304,6 +304,7 @@
 	Layer…	Calque…
 	Group…	Groupe…
 	Group from Layers…	Groupe d'après des calques…
+	New Group from Layers…	Nouveau groupe d'après des calques…
 	Artboard…	Plan de travail…
 	Artboard from Group…	Plan de travail d'après un groupe…
 	Artboard from Layers…	Plan de travail d'après des calques…
@@ -1922,7 +1923,7 @@
 	Full size tip	Pointe en taille réelle
 	Gamut warning color	Couleur de l'alerte de gamut
 	Gamut warning opacity	Opacité de l'alerte de gamut
-	Generator enabled	Générateur activé
+	Enable Generator	Activer le générateur
 	Gif	GIF
 	Glossy	Brillant
 	Grid color	Couleur de la grille
@@ -3184,6 +3185,9 @@ curves	Smooth	Lisser
 # History panel menu (#2966)
 	New Snapshot…	Nouvel instantané…
 	History Options…	Options d'historique…
+# History panel › History Options… (#2966)
+	Allow Non-Linear History	Autoriser l'historique non linéaire
+	Make Layer Visibility Changes Undoable	Permettre d'annuler les changements de visibilité des calques
 # Print dialog (#2697)
 	Emulsion Down	Émulsion verso
 	Functions	Fonctions
@@ -3256,6 +3260,33 @@ curves	Smooth	Lisser
 	Sent to {printer}	Envoyé à {printer}
 	set in Print Settings…	défini dans les paramètres d’impression…
 	ICO is limited to 256 × 256 pixels	Le format ICO est limité à 256 × 256 pixels
+	Show Favorite Fonts	Afficher les polices favorites
+	No favorite fonts yet: click the star beside a font to add it.	Aucune police favorite pour l’instant : cliquez sur l’étoile à côté d’une police pour l’ajouter.
+	Favorite fonts	Polices favorites
+	Add to Favorites	Ajouter aux favoris
+	Remove from Favorites	Retirer des favoris
+	Show All Fonts	Afficher toutes les polices
+	All Classes	Toutes les classes
+	Blackletter	Gothique
+	Decorative	Décorative
+	Font preview:	Aperçu de la police :
+	Handwritten	Manuscrite
+	Hide Font Classes	Masquer les classes de polices
+	Hide Styles	Masquer les styles
+	Monospace	Chasse fixe
+	No fonts match these filters.	Aucune police ne correspond à ces filtres.
+	No similar fonts: the current font doesn't say what it looks like.	Aucune police similaire : la police actuelle ne décrit pas son apparence.
+	OpenType font	Police OpenType
+	Sans Serif	Sans empattement
+	Script	Scripte
+	Serif	Avec empattement
+	Show Font Classes	Afficher les classes de polices
+	Show Similar Fonts	Afficher les polices similaires
+	Show Styles	Afficher les styles
+	Show Variable Fonts	Afficher les polices variables
+	Slab Serif	Égyptienne
+	TrueType font	Police TrueType
+	Variable font	Police variable
 	Calibration	Étalonnage
 	Red Primary	Primaire rouge
 	Green Primary	Primaire verte
@@ -4493,3 +4524,6 @@ shape	Appearance	Apparence
 	Tight Curl	Boucle serrée
 	Loose Curl	Boucle lâche
 	Stylized dabs from a history state	Touches stylisées depuis un état d'historique
+	Font size presets	Tailles de police prédéfinies
+	Leading presets	Interlignages prédéfinis
+	Tracking presets	Approches prédéfinies

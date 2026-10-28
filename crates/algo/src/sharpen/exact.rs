@@ -77,58 +77,94 @@ pub(crate) fn run(src: &Image, out: Rect, ctx: &Ctx, amount: f32, radius: f32, t
     let row_len = ow.checked_mul(n)?;
     let th = oh.checked_add(2 * r)?;
     let ww = ow.checked_add(2 * r)?;
-    let (x0, x1, y0) = (out.x0.checked_sub(r as i32)?, out.x1.checked_add(r as i32)?, out.y0.checked_sub(r as i32)?);
+    let pass = Pass { src, out, ctx, kernel: &kernel, ctl, n, row_len };
     let mut row = zeros(ww.checked_mul(n)?)?;
     let mut tmp = zeros(row_len.checked_mul(th)?)?;
     let mut result = zeros(row_len.checked_mul(oh)?)?;
-    for (y, dst) in tmp.chunks_exact_mut(row_len).enumerate() {
-        if ctl.cancelled() {
-            return None;
-        }
-        read_row(src, x0, x1, y0.checked_add(y as i32)?, &mut row)?;
-        premultiply(&mut row, n, ctx.alpha);
-        // Tap-major traversal exposes contiguous independent samples to LLVM. No
-        // reduction, tap merging, symmetry or fused multiply-add changes the sums.
-        for (i, weight) in kernel.iter().enumerate() {
-            let start = i.checked_mul(n)?;
-            let samples = row.get(start..start.checked_add(row_len)?)?;
-            for (d, s) in dst.iter_mut().zip(samples) {
-                *d += s * weight;
+    pass.horizontal(&mut row, &mut tmp)?;
+    pass.vertical(&tmp, &mut row, &mut result, amount / 100.0, threshold / 255.0)?;
+    Some(result)
+}
+
+/// The shared inputs of the two separable blur passes.
+struct Pass<'a> {
+    src: &'a Image,
+    out: Rect,
+    ctx: &'a Ctx,
+    kernel: &'a [f32],
+    ctl: &'a Interrupt<'a>,
+    n: usize,
+    row_len: usize,
+}
+
+impl Pass<'_> {
+    /// Blur horizontally every source row the output (plus kernel halo) needs.
+    fn horizontal(&self, row: &mut [f32], tmp: &mut [f32]) -> Option<()> {
+        let (n, row_len) = (self.n, self.row_len);
+        let r = self.kernel.len() / 2;
+        let (x0, x1, y0) = (self.out.x0.checked_sub(r as i32)?, self.out.x1.checked_add(r as i32)?, self.out.y0.checked_sub(r as i32)?);
+        for (y, dst) in tmp.chunks_exact_mut(row_len).enumerate() {
+            if self.ctl.cancelled() {
+                return None;
+            }
+            read_row(self.src, x0, x1, y0.checked_add(y as i32)?, row)?;
+            premultiply(row, n, self.ctx.alpha);
+            // Tap-major traversal exposes contiguous independent samples to LLVM. No
+            // reduction, tap merging, symmetry or fused multiply-add changes the sums.
+            for (i, weight) in self.kernel.iter().enumerate() {
+                let start = i.checked_mul(n)?;
+                let samples = row.get(start..start.checked_add(row_len)?)?;
+                for (d, s) in dst.iter_mut().zip(samples) {
+                    *d += s * weight;
+                }
             }
         }
+        Some(())
     }
-    let (amount, threshold) = (amount / 100.0, threshold / 255.0);
-    let cc = n - usize::from(ctx.alpha);
-    for (y, dst) in result.chunks_exact_mut(row_len).enumerate() {
-        if ctl.cancelled() {
-            return None;
-        }
-        for (i, weight) in kernel.iter().enumerate() {
-            let start = y.checked_add(i)?.checked_mul(row_len)?;
-            let samples = tmp.get(start..start.checked_add(row_len)?)?;
-            for (d, s) in dst.iter_mut().zip(samples) {
-                *d += s * weight;
+
+    /// Blur vertically and blend each output row against its original pixels.
+    /// `originals` is scratch space reused for the source row being compared.
+    fn vertical(&self, tmp: &[f32], originals: &mut [f32], result: &mut [f32], amount: f32, threshold: f32) -> Option<()> {
+        let row_len = self.row_len;
+        for (y, dst) in result.chunks_exact_mut(row_len).enumerate() {
+            if self.ctl.cancelled() {
+                return None;
             }
+            for (i, weight) in self.kernel.iter().enumerate() {
+                let start = y.checked_add(i)?.checked_mul(row_len)?;
+                let samples = tmp.get(start..start.checked_add(row_len)?)?;
+                for (d, s) in dst.iter_mut().zip(samples) {
+                    *d += s * weight;
+                }
+            }
+            let originals = originals.get_mut(..row_len)?;
+            read_row(self.src, self.out.x0, self.out.x1, self.out.y0.checked_add(y as i32)?, originals)?;
+            self.sharpen_row(dst, originals, amount, threshold)?;
         }
-        let originals = row.get_mut(..row_len)?;
-        read_row(src, out.x0, out.x1, out.y0.checked_add(y as i32)?, originals)?;
-        for (blurred, original) in dst.chunks_exact_mut(n).zip(originals.chunks_exact(n)) {
-            if ctx.alpha && *original.last()? <= 0.0 {
+        Some(())
+    }
+
+    /// Replace each blurred pixel by the thresholded unsharp-mask value.
+    fn sharpen_row(&self, blurred_row: &mut [f32], originals: &[f32], amount: f32, threshold: f32) -> Option<()> {
+        let (n, alpha) = (self.n, self.ctx.alpha);
+        let cc = n - usize::from(alpha);
+        for (blurred, original) in blurred_row.chunks_exact_mut(n).zip(originals.chunks_exact(n)) {
+            if alpha && *original.last()? <= 0.0 {
                 blurred.copy_from_slice(original);
                 continue;
             }
-            let a = if ctx.alpha { *blurred.last()? } else { 1.0 };
+            let a = if alpha { *blurred.last()? } else { 1.0 };
             for (b, o) in blurred.iter_mut().zip(original).take(cc) {
                 // Keep the original unpremultiply cut-off and division, followed by
                 // the threshold epsilon and inclusive comparison, at every depth.
-                let b_value = if ctx.alpha { if a > 1e-7 { *b / a } else { 0.0 } } else { *b };
+                let b_value = if alpha { if a > 1e-7 { *b / a } else { 0.0 } } else { *b };
                 let d = o - b_value;
                 *b = if d.abs() + 1e-6 >= threshold { o + amount * d } else { *o };
             }
-            if ctx.alpha {
+            if alpha {
                 *blurred.last_mut()? = *original.last()?;
             }
         }
+        Some(())
     }
-    Some(result)
 }

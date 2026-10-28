@@ -109,7 +109,7 @@ fn draw(s: &mut Session, label: &str, p: &Value, prims: Vec<Prim>, extra: Value)
         let raster = id.and_then(|i| doc.layer(i)).is_some_and(|l| matches!(l.content, LayerContent::Raster(_)));
         let (id, created) = if want_new || !raster {
             let l = Layer::new(label.trim_end_matches('…'), LayerContent::Raster(Surface::new(doc.pixel_format())));
-            let nid = doc.insert_above(*active, l);
+            let nid = crate::layer_place::insert_new(doc, *active, l, crate::layer_place::Place::AutoEditable);
             *active = Some(nid);
             (nid, true)
         } else {

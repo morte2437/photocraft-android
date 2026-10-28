@@ -116,9 +116,10 @@ fn a_groups_layers_indent_past_the_group() {
     s.execute("file.new", json!({"width": 64, "height": 48})).unwrap();
     let child = s.execute("layer.new.layer", json!({"name": "Child"})).unwrap()["layer"].as_u64().unwrap();
     let group = s.execute("layer.groupLayers", json!({"name": "Group"})).unwrap()["layer"].as_u64().unwrap();
+    // Top goes above the closed group (an open one would take it inside, as in Photoshop).
+    let top = s.execute("layer.new.layer", json!({"name": "Top"})).unwrap()["layer"].as_u64().unwrap();
     // Group Layers creates the group collapsed; open it so the panel lists its layers.
     s.execute("layer.setExpanded", json!({"layer": group, "expanded": true})).unwrap();
-    let top = s.execute("layer.new.layer", json!({"name": "Top"})).unwrap()["layer"].as_u64().unwrap();
     let h = harness(s, 1.0, "promedium", 290.0);
     let rows = recorded(&h.ctx);
     let left = |id: u64| rows.iter().find(|r| r.layer == id).and_then(|r| r.name).map(|n| n.left()).unwrap_or_else(|| panic!("layer {id} drawn"));
@@ -246,6 +247,24 @@ fn collapse_all_groups_from_the_panel_menu_and_it_is_saved() {
         let mut s = photocraft_engine::Session::new();
         s.add_document(back, None);
         assert!(groups_open(&s).iter().all(|o| !o), "{name}: groups stay closed");
+    }
+}
+
+/// Photoshop's panel menu has New Group… and New Group from Layers… just above Collapse All
+/// Groups; both open the New Group dialog.
+#[test]
+fn new_group_items_in_the_panel_menu_open_the_dialog() {
+    for (label, command) in [("New Group…", "layer.new.group"), ("New Group from Layers…", "layer.new.groupFromLayers")] {
+        let mut h = harness(busy(), 1.0, "promedium", 290.0);
+        let group = crate::panel_docking::probe::group_rect(h.state(), &h.ctx, "layers").expect("layers group");
+        let menu = h.query_all_by_label("Panel menu").map(|n| n.rect()).find(|r| group.contains(r.center())).expect("Layers panel menu");
+        click(&mut h, menu.center());
+        let item = h.get_by_label(label).rect();
+        assert!(item.top() < h.get_by_label("Collapse All Groups").rect().top(), "{label} comes before Collapse All Groups");
+        click(&mut h, item.center());
+        let fields = h.state().ui.dialogs.last().map(|d| d.fields.clone()).expect("the New Group dialog opened");
+        assert!(crate::new_group_ui::owns(&fields));
+        assert_eq!(fields["__command"], command);
     }
 }
 

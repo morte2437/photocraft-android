@@ -305,6 +305,7 @@
 	Layer…	Livello…
 	Group…	Gruppo…
 	Group from Layers…	Gruppo da livelli…
+	New Group from Layers…	Nuovo gruppo da livelli…
 	Artboard…	Tavola da disegno…
 	Artboard from Group…	Tavola da gruppo…
 	Artboard from Layers…	Tavola da livelli…
@@ -1948,7 +1949,7 @@
 	Full size tip	Punta dimensione reale
 	Gamut warning color	Colore avviso gamma
 	Gamut warning opacity	Opacità avviso gamma
-	Generator enabled	Generatore abilitato
+	Enable Generator	Abilita generatore
 	Gif	GIF
 	Glossy	Lucido
 	Grid color	Colore griglia
@@ -2833,6 +2834,9 @@ curves	Smooth	Leviga
 # History panel menu (#2966)
 	New Snapshot…	Nuova istantanea…
 	History Options…	Opzioni cronologia…
+# History panel › History Options… (#2966)
+	Allow Non-Linear History	Consenti cronologia non lineare
+	Make Layer Visibility Changes Undoable	Rendi annullabili le modifiche di visibilità dei livelli
 # Print dialog (#2697)
 	Emulsion Down	Emulsione sotto
 	Functions	Funzioni
@@ -4212,6 +4216,33 @@ navigator	Zoom	Zoom
 	Sent to {printer}	Inviato a {printer}
 	set in Print Settings…	impostato nelle impostazioni di stampa…
 	ICO is limited to 256 × 256 pixels	ICO è limitato a 256 × 256 pixel
+	Show Favorite Fonts	Mostra font preferiti
+	No favorite fonts yet: click the star beside a font to add it.	Ancora nessun font preferito: fai clic sulla stella accanto a un font per aggiungerlo.
+	Favorite fonts	Font preferiti
+	Add to Favorites	Aggiungi ai preferiti
+	Remove from Favorites	Rimuovi dai preferiti
+	Show All Fonts	Mostra tutti i font
+	All Classes	Tutte le classi
+	Blackletter	Gotico
+	Decorative	Decorativo
+	Font preview:	Anteprima font:
+	Handwritten	Scrittura a mano
+	Hide Font Classes	Nascondi classi di font
+	Hide Styles	Nascondi stili
+	Monospace	Monospaziato
+	No fonts match these filters.	Nessun font corrisponde a questi filtri.
+	No similar fonts: the current font doesn't say what it looks like.	Nessun font simile: il font corrente non descrive il proprio aspetto.
+	OpenType font	Font OpenType
+	Sans Serif	Senza grazie
+	Script	Corsivo calligrafico
+	Serif	Con grazie
+	Show Font Classes	Mostra classi di font
+	Show Similar Fonts	Mostra font simili
+	Show Styles	Mostra stili
+	Show Variable Fonts	Mostra font variabili
+	Slab Serif	Egiziano
+	TrueType font	Font TrueType
+	Variable font	Font variabile
 	Calibration	Calibrazione
 	Red Primary	Primario rosso
 	Green Primary	Primario verde
@@ -4568,3 +4599,6 @@ shape	Appearance	Aspetto
 	Tight Curl	Riccio stretto
 	Loose Curl	Riccio largo
 	Stylized dabs from a history state	Tocchi stilizzati da uno stato della storia
+	Font size presets	Predefiniti dimensione font
+	Leading presets	Predefiniti interlinea
+	Tracking presets	Predefiniti spaziatura

@@ -56,7 +56,7 @@ pub fn parse(text: &str) -> Result<KysSet, String> {
         return Err("not a keyboard shortcut set (.kys): larger than 4 MiB".into());
     }
     let text = text.trim_start_matches('\u{feff}');
-    let doc = roxmltree::Document::parse(text).map_err(|e| format!("not a keyboard shortcut set (.kys): {e}"))?;
+    let doc = photocraft_io::xml::parse(text, roxmltree::ParsingOptions::default()).map_err(|e| format!("not a keyboard shortcut set (.kys): {e}"))?;
     let root = doc.root_element();
     if root.tag_name().name() != "photoshop-keyboard-shortcuts" {
         return Err("not a keyboard shortcut set (.kys): no <photoshop-keyboard-shortcuts> root".into());
@@ -340,6 +340,15 @@ mod tests {
         // #3665: the row's second key is kept as the command's alternate, not dropped.
         assert_eq!(p.alternate_keys.get("edit.undo"), Some(&vec!["F1".to_string()]));
         assert_eq!(p.alternate_keys.get("image.levels"), Some(&Vec::new()));
+    }
+
+    /// A set nested 20 000 deep overflowed the XML parser's recursion (an abort nothing can
+    /// catch); it is an error now. The small stack makes a regression abort instead of passing.
+    #[test]
+    fn deeply_nested_sets_are_an_error_not_a_stack_overflow() {
+        let xml = format!("<photoshop-keyboard-shortcuts>{}{}</photoshop-keyboard-shortcuts>", "<a>".repeat(20_000), "</a>".repeat(20_000));
+        let e = std::thread::Builder::new().stack_size(512 * 1024).spawn(move || parse(&xml).err()).unwrap().join().unwrap();
+        assert!(e.as_deref().is_some_and(|m| m.contains("nested")), "{e:?}");
     }
 
     #[test]

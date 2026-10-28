@@ -61,6 +61,27 @@ fn sets_reads_and_removes_as_one_undo_step_each() {
     }
 }
 
+/// A `rawData` packet nested 20 000 deep overflowed the XML parser's recursion (an abort nothing
+/// can catch, from one command param); it is a param error now. The small stack makes a
+/// regression abort instead of passing.
+#[test]
+fn deeply_nested_packets_are_refused_not_a_stack_overflow() {
+    let (s, a, _) = fixture(8);
+    let raw = format!("<x:xmpmeta xmlns:x=\"adobe:ns:meta/\">{}{}</x:xmpmeta>", "<a>".repeat(20_000), "</a>".repeat(20_000));
+    let (s, e) = std::thread::Builder::new()
+        .stack_size(1024 * 1024)
+        .spawn(move || {
+            let mut s = s;
+            let e = s.execute(ID, json!({"rawData": raw})).err();
+            (s, e)
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+    assert!(matches!(&e, Some(EngineError::BadParams { msg, .. }) if msg.contains("nested")), "{e:?}");
+    assert_eq!(xmp(&s, a), None);
+}
+
 #[test]
 fn duplicating_a_layer_copies_its_packet() {
     let (mut s, a, _) = fixture(8);

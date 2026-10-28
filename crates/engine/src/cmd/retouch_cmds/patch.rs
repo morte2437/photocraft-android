@@ -17,7 +17,10 @@
 //! (3: 32 of 42 levels, 31 of 102; 10: 35 of 42, 95 of 102). It runs as a background job, like
 //! the move.
 
-use super::*;
+use super::{
+    BlendMode, Document, EngineError, LayerId, PixelFormat, Rect, Region, Result, Session, Surface, Value, apply_coverage, bad, clamp_samples, damage_json,
+    flag, has_pixel_layer, heal_region, json, point, poisson, run_stroke, string, targets_pixels,
+};
 
 const CMD: &str = "paint.patch";
 

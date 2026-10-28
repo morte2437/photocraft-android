@@ -1,5 +1,8 @@
 use super::paths::{file_name, read_file, stem, template_name};
-use super::*;
+use super::{
+    Affine, Arc, Document, EngineError, Layer, LayerContent, Resample, Result, Session, SmartObject, SmartSource, Value, f64_param, flattened_checked, json,
+    resize_surface, str_param, translate_surface,
+};
 
 pub(crate) fn import(name: &str, bytes: &[u8]) -> Result<Document> {
     import_result(name, bytes).map(|r| r.document)
@@ -202,7 +205,7 @@ pub fn place_bytes(s: &mut Session, name: &str, bytes: Vec<u8>, linked: Option<S
         } else {
             Layer::new(layer_name, LayerContent::Raster(px))
         };
-        let id = doc.insert_above(*active, layer);
+        let id = crate::layer_place::insert_new(doc, *active, layer, crate::layer_place::Place::AutoEditable);
         *active = Some(id);
         Ok(id)
     })?;

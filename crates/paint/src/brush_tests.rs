@@ -1887,3 +1887,38 @@ fn resizing_with_bad_sizes_leaves_the_dual_tip_alone() {
     b.resize_with_dual_brush(50.0);
     assert_eq!(b.dual_brush.size, 20.0);
 }
+
+/// `touches` is true wherever `coverage_at` can be above 0, false only where it is 0 for sure.
+#[test]
+fn touches_covers_every_pixel_with_coverage() {
+    let b = BrushSettings { size: 6.0, ..brush() };
+    let mut r = StrokeRenderer::new(&b, None, 1.0);
+    r.push(&line(100.0, 300.0, 200.0));
+    r.finish();
+    for y in (0..400).step_by(3) {
+        for x in (0..500).step_by(3) {
+            if r.coverage_at(x, y) > 0.0 {
+                assert!(r.touches(Rect::new(x, y, x + 1, y + 1)), "({x}, {y})");
+            }
+        }
+    }
+    // Across the origin and tile edges (64 px): every pixel, both sides of each edge.
+    let mut o = StrokeRenderer::new(&b, None, 1.0);
+    o.push(&[StrokePoint::new(-70.0, -70.0, 1.0), StrokePoint::new(70.0, 70.0, 1.0)]);
+    o.finish();
+    for y in -140..140 {
+        for x in -140..140 {
+            if o.coverage_at(x, y) > 0.0 {
+                assert!(o.touches(Rect::new(x, y, x + 1, y + 1)), "({x}, {y})");
+            }
+        }
+    }
+    assert!(!o.touches(Rect::new(-128, 64, -64, 128)), "a tile the diagonal misses");
+    assert!(!o.touches(Rect::new(-200, -200, -128, -128)), "ends exactly at a tile edge");
+    assert!(o.touches(Rect::new(-200, -200, -127, -127)), "one pixel into the next tile");
+    assert!(r.touches(Rect::new(150, 199, 151, 201)));
+    assert!(!r.touches(Rect::new(0, 0, 50, 50)), "far from the stroke");
+    assert!(!r.touches(Rect::new(400, 400, 400, 400)), "empty");
+    assert!(r.touches(Rect::new(i32::MIN, i32::MIN, i32::MAX, i32::MAX)), "huge, without a huge scan");
+    assert!(!r.touches(Rect::new(1_000_000, 1_000_000, i32::MAX, i32::MAX)));
+}

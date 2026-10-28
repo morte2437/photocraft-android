@@ -415,6 +415,38 @@ fn attach_to_path(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"layer": id.0, "start": start, "flip": flip}))
 }
 
+/// Type on a path's own path in document space (#9114): what the Direct Selection tool shows and
+/// edits, as Photoshop's Type Path. `None` unless `t` is type on a path.
+pub fn type_path(t: &TextLayer) -> Option<Path> {
+    let TextShape::Path { path, .. } = &t.shape else { return None };
+    let map = |q: Point| t.transform.apply(q);
+    let knots = path.knots.iter().map(|k| Knot { anchor: map(k.anchor), in_ctrl: map(k.in_ctrl), out_ctrl: map(k.out_ctrl), smooth: k.smooth }).collect();
+    Some(Path::new(vec![Subpath { closed: path.closed, knots, op: path.op }]))
+}
+
+/// Puts an edited [`type_path`] back into `t` (its text space), keeping where the type starts and
+/// which side it runs on. It must still be one subpath with two or more points.
+pub(crate) fn set_type_path(t: &mut TextLayer, edited: &Path) -> Result<()> {
+    let TextShape::Path { start, flip, .. } = &t.shape else { return Err(EngineError::Other("the type layer is not on a path".into())) };
+    let (start, flip) = (*start, *flip);
+    let [sub] = edited.subpaths.as_slice() else { return Err(EngineError::Other("type on a path follows one path".into())) };
+    if sub.knots.len() < 2 {
+        return Err(EngineError::Other("type on a path needs a path of two or more points".into()));
+    }
+    if sub.knots.len() > MAX_TYPE_PATH_KNOTS {
+        return Err(EngineError::Other("the type path has too many anchor points".into()));
+    }
+    let inv = t.transform.inverse().ok_or_else(|| EngineError::Other("the type layer's transform cannot be inverted".into()))?;
+    let map = |q: Point| inv.apply(q);
+    let knots: Vec<Knot> =
+        sub.knots.iter().map(|k| Knot { anchor: map(k.anchor), in_ctrl: map(k.in_ctrl), out_ctrl: map(k.out_ctrl), smooth: k.smooth }).collect();
+    if !knots.iter().all(|k| [k.anchor, k.in_ctrl, k.out_ctrl].iter().all(|q| q.x.is_finite() && q.y.is_finite())) {
+        return Err(EngineError::Other("the path cannot be mapped into the type layer".into()));
+    }
+    t.shape = TextShape::Path { path: Subpath { closed: sub.closed, knots, op: sub.op }, start, flip };
+    Ok(())
+}
+
 fn is_path_text(s: &Session) -> std::result::Result<(), String> {
     match active_text(s)?.shape {
         TextShape::Path { .. } | TextShape::Area { .. } => Ok(()),

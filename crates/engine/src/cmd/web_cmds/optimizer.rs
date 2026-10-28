@@ -1,5 +1,5 @@
 use super::settings::{WebFormat, WebMetadata, WebSettings};
-use super::*;
+use super::{Dither, Document, EngineError, Forced, PaletteKind, Rect, Result, Session, Value, json, other, quantize};
 
 // ---------- the image ----------
 

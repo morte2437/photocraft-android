@@ -320,12 +320,35 @@ fn artboard_from_group(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"layer": id.0, "rect": [rect.x0, rect.y0, rect.width(), rect.height()]}))
 }
 
+/// The layers' union bounds, or the canvas when they have none: the board Artboard from Layers
+/// makes when no size is given.
+fn union_bounds<'a>(layers: impl IntoIterator<Item = &'a Layer>, canvas: Rect) -> Rect {
+    layers.into_iter().filter_map(crate::layer_multi_cmds::layer_bounds).reduce(|a, b| a.union(&b)).unwrap_or(canvas)
+}
+
+/// What Artboard from Layers' dialog opens with, as in the reference application: the name the
+/// board would get and the selected top-level layers' size (`None` without a document).
+pub fn from_layers_defaults(s: &Session) -> Option<(String, [i64; 2])> {
+    let d = s.active()?;
+    let ids = crate::layer_multi_cmds::top_level(&d.doc, &crate::layer_multi_cmds::selected(s));
+    let [_, _, w, h] = xywh(union_bounds(ids.iter().filter_map(|id| d.doc.layer(*id)), d.doc.bounds()));
+    Some((next_artboard_name(&d.doc), [w, h]))
+}
+
 fn artboard_from_layers(s: &mut Session, p: &Value) -> Result<Value> {
     let sel = crate::layer_multi_cmds::selected(s);
     let d = s.active().ok_or(EngineError::NoDocument)?;
     let canvas = d.doc.bounds();
-    let name = p.get("name").and_then(Value::as_str).map(str::to_string);
-    let background = background_param(p, "layer.new.artboardFromLayers")?.unwrap_or_default();
+    let name = p.get("name").and_then(Value::as_str).filter(|n| !n.is_empty()).map(str::to_string);
+    let cmd = "layer.new.artboardFromLayers";
+    let background = background_param(p, cmd)?.unwrap_or_default();
+    // `int` rounds, so a small negative (-0.4) would pass as 0, "keep the bounds".
+    if ["width", "height"].iter().any(|k| p.get(*k).and_then(Value::as_f64).is_some_and(|v| v < 0.0)) {
+        return Err(bad(cmd, "the artboard width and height must not be negative"));
+    }
+    // A size of the user's own (a post, a story…) from the layers' top left; 0 or none keeps
+    // their bounds on that axis (#9087).
+    let size = [int(p, "width").filter(|v| *v != 0), int(p, "height").filter(|v| *v != 0)];
     let (gid, rect) = s.edit("Artboard from Layers", |doc, active| {
         let ids = crate::layer_multi_cmds::top_level(doc, &sel);
         if ids.is_empty() || ids.iter().any(|id| doc.artboard_of(*id).is_some()) {
@@ -335,7 +358,8 @@ fn artboard_from_layers(s: &mut Session, p: &Value) -> Result<Value> {
         for id in &ids {
             children.push(doc.remove(*id).ok_or(EngineError::NoLayer(*id))?);
         }
-        let rect = children.iter().filter_map(crate::layer_multi_cmds::layer_bounds).reduce(|a, b| a.union(&b)).unwrap_or(canvas);
+        let [x, y, w, h] = xywh(union_bounds(&children, canvas));
+        let rect = board_rect(cmd, [x, y, size[0].unwrap_or(w), size[1].unwrap_or(h)])?;
         let mut g = Layer::group(name.unwrap_or_else(|| next_artboard_name(doc)), children);
         set_artboard(&mut g, Artboard { rect, background, preset: String::new() });
         let gid = doc.insert_above(None, g);
@@ -687,7 +711,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "layer.new.artboardFromLayers",
             "Artboard from Layers…",
             &["Layer", "New"],
-            r##"{"name":str?,"background":…?} (the selected layers) → {layer, rect}"##,
+            r##"{"name":text,"background":"white|black|transparent|custom"="white","color":color,"width":px=0,"height":px=0} (the selected layers; name: empty gives Artboard N; color: for custom; width, height: the board's size from the layers' top left, 0 keeps their bounds) → {layer, rect}"##,
             has_free_layers,
             artboard_from_layers
         ),

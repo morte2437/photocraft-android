@@ -1,5 +1,8 @@
-use super::history::fix_selection;
-use super::*;
+use super::history::{fix_selection, visibility_changes};
+use super::{
+    Arc, Document, EngineError, LayerId, Result, Session, Value, brush_cmds, channel_cmds, commands, hidden_target, jobs, layer_multi_cmds, retouch_cmds,
+    smart_cmds,
+};
 
 impl Session {
     /// Run a command by id with JSON params. Returns a JSON result.
@@ -68,6 +71,12 @@ impl Session {
         crate::filters::validate_params(id, params)?;
         if id == "layer.new.layer" {
             crate::new_layer::parse(params)?;
+        }
+        if id == "layer.new.group" {
+            crate::group_options::below(id, params)?;
+        }
+        if id == "layer.new.group" || id == "layer.new.groupFromLayers" {
+            crate::group_options::GroupOptions::parse(id, params)?;
         }
         // A command that takes `"layer"` (an id or a name, as it resolves it) fails on one the
         // document doesn't have.
@@ -163,6 +172,25 @@ impl Session {
 
     /// Apply an undoable edit to the active document.
     pub fn edit<R>(&mut self, label: &str, f: impl FnOnce(&mut Document, &mut Option<LayerId>) -> Result<R>) -> Result<R> {
+        self.edit_with(label, true, f)
+    }
+
+    /// Apply a change of layer visibility (and nothing else): a history state when History
+    /// Options › Make Layer Visibility Changes Undoable is on (the default, as in Photoshop),
+    /// otherwise the document changes without one, so the History panel and Undo skip it.
+    pub fn edit_visibility<R>(&mut self, label: &str, f: impl FnOnce(&mut Document, &mut Option<LayerId>) -> Result<R>) -> Result<R> {
+        let record = self.visibility_undoable();
+        self.edit_with(label, record, f)
+    }
+
+    /// History Options › Make Layer Visibility Changes Undoable.
+    pub fn visibility_undoable(&self) -> bool {
+        self.prefs().history_options.make_layer_visibility_changes_undoable
+    }
+
+    /// [`Self::edit`], recording a history state only when `record` is set. An unrecorded change
+    /// still marks the document modified and leaves the redo states alone.
+    pub(crate) fn edit_with<R>(&mut self, label: &str, record: bool, f: impl FnOnce(&mut Document, &mut Option<LayerId>) -> Result<R>) -> Result<R> {
         // Every mutation path (linked-file refresh, transform, place) re-renders smart objects
         // through this entry; the requesting session's authority must reach those renders.
         let _authorization = crate::jobs::render_authorization_scope(self.authorize);
@@ -223,14 +251,20 @@ impl Session {
         let key = self.coalesce_request.clone();
         let st = self.active_mut().ok_or(EngineError::NoDocument)?;
         let layers = st.layer_target();
-        if key.is_none() || st.coalesce != key || !st.history.can_undo() {
+        if !record {
+            // Nothing to coalesce with: the next recorded step starts a state of its own.
+            st.coalesce = None;
+        } else if key.is_none() || st.coalesce != key || !st.history.can_undo() {
             st.history.set_current_layers(prior);
-            st.history.record(label, before, layers);
+            st.history.record(label, before.clone(), layers);
+            st.history.add_current_visibility(&visibility_changes(&before, &st.doc));
             st.trim_history();
+            st.coalesce = key;
         } else {
             st.history.set_current_layers(layers);
+            st.history.add_current_visibility(&visibility_changes(&before, &st.doc));
+            st.coalesce = key;
         }
-        st.coalesce = key;
         st.bump_revision(keep_clean);
         st.last_damage = damage;
         self.samplers_removed += samplers_removed;

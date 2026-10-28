@@ -749,6 +749,8 @@
 	Gradients	Degradeler
 	Histogram	Histogram
 	History	Geçmiş
+	Allow Non-Linear History	Doğrusal Olmayan Geçmişe İzin Ver
+	Make Layer Visibility Changes Undoable	Katman Görünürlüğü Değişikliklerini Geri Alınabilir Yap
 	Info	Bilgi
 	Measurement Log	Ölçüm Günlüğü
 	Modifier Keys	Değiştirici Tuşlar
@@ -1894,7 +1896,7 @@
 	Full size tip	Tam boyutlu uç
 	Gamut warning color	Gamut uyarı rengi
 	Gamut warning opacity	Gamut uyarı opaklığı
-	Generator enabled	Oluşturucu etkin
+	Enable Generator	Oluşturucuyu etkinleştir
 	Gif	GIF
 	Glossy	parlak
 	Grid color	Izgara rengi
@@ -2202,6 +2204,7 @@
 	Sets the source for the history brush	Geçmiş fırçasının kaynağını ayarlar
 	Color Replacement	Renk Değiştirme
 	New Group	Yeni Grup
+	New Group from Layers…	Katmanlardan Yeni Grup…
 	Layer Comp	Katman Kompozisyonu
 	Alpha	Alfa
 	Make	Üretici
@@ -3966,6 +3969,33 @@ cameraData	Lens	Lens
 	Kept {name}: written by another application	{name} korundu: başka bir uygulama tarafından yazılmış
 	Shadow Tint	Gölge tonu
 	Redrawing	Yeniden çiziliyor
+	Show Favorite Fonts	Favori yazı tiplerini göster
+	No favorite fonts yet: click the star beside a font to add it.	Henüz favori yazı tipi yok: eklemek için bir yazı tipinin yanındaki yıldıza tıklayın.
+	Favorite fonts	Favori yazı tipleri
+	Add to Favorites	Favorilere ekle
+	Remove from Favorites	Favorilerden kaldır
+	Show All Fonts	Tüm yazı tiplerini göster
+	All Classes	Tüm sınıflar
+	Blackletter	Gotik
+	Decorative	Dekoratif
+	Font preview:	Yazı tipi önizlemesi:
+	Handwritten	El yazısı
+	Hide Font Classes	Yazı tipi sınıflarını gizle
+	Hide Styles	Stilleri gizle
+	Monospace	Eş aralıklı
+	No fonts match these filters.	Bu filtrelerle eşleşen yazı tipi yok.
+	No similar fonts: the current font doesn't say what it looks like.	Benzer yazı tipi yok: geçerli yazı tipi görünümünü tanımlamıyor.
+	OpenType font	OpenType yazı tipi
+	Sans Serif	Tırnaksız
+	Script	Kaligrafik
+	Serif	Tırnaklı
+	Show Font Classes	Yazı tipi sınıflarını göster
+	Show Similar Fonts	Benzer yazı tiplerini göster
+	Show Styles	Stilleri göster
+	Show Variable Fonts	Değişken yazı tiplerini göster
+	Slab Serif	Kalın tırnaklı
+	TrueType font	TrueType yazı tipi
+	Variable font	Değişken yazı tipi
 # Bevel & Emboss shading controls.
 	Highlight Mode	Vurgu Modu
 	Highlight Color	Vurgu Rengi
@@ -4180,3 +4210,6 @@ cameraData	Lens	Lens
 	Tight Curl	Sıkı Kıvrım
 	Loose Curl	Gevşek Kıvrım
 	Stylized dabs from a history state	Bir geçmiş durumundan stilize benekler
+	Font size presets	Yazı tipi boyutu hazır ayarları
+	Leading presets	Satır aralığı hazır ayarları
+	Tracking presets	İzleme hazır ayarları

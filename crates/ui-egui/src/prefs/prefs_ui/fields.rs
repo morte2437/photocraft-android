@@ -2,7 +2,7 @@ use super::appearance::{AppearanceRows, appearance_rows, system_theme};
 use super::dialogs::{mismatch_body, presets_body, presets_io_body, settings_height};
 use super::graphics::{gpu_memory_lines, gpu_status_rows, memory_usage_row, read_at_launch, rendering_mode_row};
 use super::shortcuts::shortcuts_body;
-use super::*;
+use super::{Color32, Map, PhotocraftApp, RichText, SECTIONS, Sense, Tokens, Value, json, prefs, vec2};
 
 // ------------------------------------------------------------------ bodies
 
@@ -62,6 +62,10 @@ pub(super) fn humanize(key: &str) -> String {
     // File Handling: Photoshop's wording (#8080).
     if key == "doNotAppendCopy" {
         return "Do not append \"copy\" to filename when saving a copy".into();
+    }
+    // Plug-ins: Photoshop's wording (#9392).
+    if key == "generatorEnabled" {
+        return "Enable Generator".into();
     }
     if key == "lowLatencyDrawing" {
         return "Low-Latency Drawing (vsync off, applies at next launch)".into();
@@ -245,8 +249,16 @@ fn prefs_body(ui: &mut egui::Ui, f: &mut Map<String, Value>, system: Option<egui
                 if search.trim().is_empty()
                     && has_visible_fields(&values, &section)
                     && crate::widgets::secondary_button(ui, tl!("Reset Section"), 110.0).clicked()
-                    && let Some(def) = prefs::Preferences::default().get(&section)
+                    && let Some(mut def) = prefs::Preferences::default().get(&section)
                 {
+                    // The favourite fonts are the user's library, not a Type setting: kept, as
+                    // `prefs.reset {"path": "type"}` keeps them.
+                    if section == "type"
+                        && let Some(favorites) = values.get(&section).and_then(|v| v.get("favoriteFonts")).cloned()
+                        && let Some(def) = def.as_object_mut()
+                    {
+                        def.insert("favoriteFonts".into(), favorites);
+                    }
                     values[&section] = def;
                 }
             });

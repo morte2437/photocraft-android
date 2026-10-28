@@ -1,8 +1,80 @@
 use super::begin::warps_type;
+use super::drag_modes::{HandleIndicator, handle_indicator};
 use super::options_bar::{quad_scale, readout};
-use super::pointer::{Hit, rotate_dir, rotation_degrees};
+use super::pointer::{Hit, handle_at, rotate_dir, rotation_degrees};
 use super::warp::{on_section_edge, quick_split_kind, single_patch};
-use super::*;
+use super::{
+    BezierMesh, Color32, DocId, HANDLE_PX, Homography, LayerId, PhotocraftApp, Pos2, SplitTool, Stroke, TransformPreview, TransformSession, ViewXform, Warp,
+    WarpDrag, WarpStyle, corners, pos2, vec2,
+};
+
+/// The distort or skew pointer at screen point `at`, where [`super::cursor`] hid the system
+/// pointer over a handle. The canvas calls it from its cursor branch, so nothing is drawn where a
+/// guide, a pan or a zoom set the cursor instead.
+pub(crate) fn draw_handle_cursor(app: &PhotocraftApp, ctx: &egui::Context, xf: &ViewXform, at: Pos2, mods: egui::Modifiers) {
+    let Some(t) = &app.ui.transform else { return };
+    let h = handle_at(app, t, xf.to_doc(at), super::handle_tolerance(app));
+    let scr = |q: [f64; 2]| xf.to_screen(q[0] as f32, q[1] as f32);
+    match (h, handle_indicator(app, t, h, mods)) {
+        (Hit::Corner(i), Some(HandleIndicator::Distort)) => {
+            if let Some(q) = t.quad.get(i) {
+                draw_distort_cursor(ctx, at, scr(*q) - scr(t.pivot));
+            }
+        }
+        (Hit::Edge(i), Some(HandleIndicator::Skew)) => {
+            if let (Some(a), Some(b)) = (t.quad.get(i), t.quad.get((i + 1) % 4)) {
+                draw_skew_cursor(ctx, at, scr(*b) - scr(*a));
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Draws the Free Distort cursor at `at`: a high-contrast vector pointer pointing toward
+/// or outward through the corner, with shadow outline for contrast on any canvas background.
+fn draw_distort_cursor(ctx: &egui::Context, at: Pos2, toward: egui::Vec2) {
+    let len = toward.length();
+    let u = if len.is_finite() && len > 1e-6 { toward / len } else { vec2(-1.0, -1.0).normalized() };
+    let perp = vec2(-u.y, u.x);
+    let tokens = crate::theme::Tokens::get(ctx);
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("transform-distort-cursor")));
+
+    // An arrowhead dart pointing along `u` with tip at `at`.
+    let tip = at;
+    const LENGTH: f32 = 16.0;
+    const HALF_WIDTH: f32 = 7.0;
+    let base = tip - u * LENGTH;
+    let left = base + perp * HALF_WIDTH;
+    let right = base - perp * HALF_WIDTH;
+    let notch = tip - u * (LENGTH * 0.65);
+
+    // Convex decomposition: two triangles meeting along [tip, notch].
+    painter.add(egui::Shape::convex_polygon(vec![tip, left, notch], tokens.accent_text, Stroke::NONE));
+    painter.add(egui::Shape::convex_polygon(vec![tip, notch, right], tokens.accent_text, Stroke::NONE));
+    painter.add(egui::Shape::closed_line(vec![tip, left, notch, right], Stroke::new(1.5, tokens.shadow)));
+}
+
+/// Draws the Skew cursor at `at`: opposing parallel arrows aligned with the edge tangent `tangent`.
+fn draw_skew_cursor(ctx: &egui::Context, at: Pos2, tangent: egui::Vec2) {
+    let len = tangent.length();
+    let u = if len.is_finite() && len > 1e-6 { tangent / len } else { vec2(1.0, 0.0) };
+    let perp = vec2(-u.y, u.x);
+    let tokens = crate::theme::Tokens::get(ctx);
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("transform-skew-cursor")));
+
+    for (offset, dir) in [(4.0f32, 1.0f32), (-4.0f32, -1.0f32)] {
+        let center = at + perp * offset;
+        let p_start = center - u * (dir * 9.0);
+        let p_end = center + u * (dir * 9.0);
+        painter.line_segment([p_start, p_end], Stroke::new(3.5, tokens.shadow));
+        painter.line_segment([p_start, p_end], Stroke::new(1.5, tokens.accent_text));
+
+        let tip = p_end + u * (dir * 3.5);
+        let wing1 = p_end - u * (dir * 2.5) + perp * 3.5;
+        let wing2 = p_end - u * (dir * 2.5) - perp * 3.5;
+        painter.add(egui::Shape::convex_polygon(vec![tip, wing1, wing2], tokens.accent_text, Stroke::new(1.0, tokens.shadow)));
+    }
+}
 
 /// For each vertex of the preview's `n` × `n` grid over the unit square (row by row), whether it
 /// maps to the front side of `h`'s horizon. A Distort dragged past the horizon sends the rest of
@@ -83,7 +155,9 @@ pub fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform
     if let Some(w) = &t.warp {
         let over_canvas = painter.ctx().input(|i| i.pointer.hover_pos()).filter(|p| xf.rect.contains(*p)).map(|p| xf.to_doc(p));
         let at = pv.split_pointer.or(over_canvas);
-        let alt = painter.ctx().input(|i| i.modifiers.alt || i.modifiers.command);
+        // The same keys as `cursor`, sticky ones included, so the guide matches the pointer.
+        let mods = crate::workspace_ui::sticky_mods(app, painter.ctx().input(|i| i.modifiers));
+        let alt = mods.alt || mods.command;
         let guide = at.filter(|_| !warps_type(app)).and_then(|p| {
             let tool = pv.split_tool.or_else(|| {
                 (alt || pv.split_quick).then(|| {
@@ -136,7 +210,7 @@ pub fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform
         }
         // Preferences › Tools › Show Transformation Values off hides it, as in Photoshop (#204).
         if let Some(r) = live_readout(app).filter(|_| app.session.prefs().tools.show_transformation_values) {
-            draw_live_readout(painter.ctx(), at, r);
+            draw_live_readout(app, painter.ctx(), at, r);
         }
     }
 }
@@ -237,8 +311,11 @@ pub(crate) fn styled_frame(app: &PhotocraftApp, zoom: f32, dragging: bool) -> Op
 pub(crate) enum Readout {
     /// Clockwise degrees in document space (`rotation_degrees`), whatever the view's turn or flip.
     Angle(f64),
-    /// Width and height in percent of the original box.
-    Scale([f64; 2]),
+    /// Width and height in percent of the original box, and the box's size in document pixels.
+    /// The size is the scaled width and height (what W and H 100 % mean in the options bar),
+    /// not the edge lengths: a skew leans the sides, which lengthens them but not the height
+    /// between the top and bottom edges.
+    Scale { percent: [f64; 2], px: [f64; 2] },
     /// Document pixels moved since the press.
     Offset([f64; 2]),
 }
@@ -253,7 +330,8 @@ pub(crate) fn live_readout(app: &PhotocraftApp) -> Option<Readout> {
         Hit::Inside => Some(Readout::Offset([t.quad[0][0] - g.quad0[0][0], t.quad[0][1] - g.quad0[0][1]])),
         Hit::Corner(_) | Hit::Edge(_) if parallelogram(&t.quad) => {
             let (w, h, _, _) = readout(t);
-            (w.is_finite() && h.is_finite()).then_some(Readout::Scale([w, h]))
+            let px = [w / 100.0 * (t.rect[2] - t.rect[0]), h / 100.0 * (t.rect[3] - t.rect[1])];
+            (w.is_finite() && h.is_finite()).then_some(Readout::Scale { percent: [w, h], px })
         }
         Hit::Corner(_) | Hit::Edge(_) | Hit::Pivot => None,
     }
@@ -267,19 +345,30 @@ fn parallelogram(q: &[[f64; 2]; 4]) -> bool {
 }
 
 /// [`live_readout`] as the rounded label beside the pointer (the marquee's and Crop's readout).
-fn draw_live_readout(ctx: &egui::Context, at: Pos2, r: Readout) {
-    // Round first so a hair below zero never reads "-0".
-    let fixed = |v: f64, places: i32| {
-        let k = 10f64.powi(places);
-        let v = (v * k).round() / k;
-        if v == 0.0 { 0.0 } else { v }
-    };
+fn draw_live_readout(app: &PhotocraftApp, ctx: &egui::Context, at: Pos2, r: Readout) {
     let id = "transform-readout";
     match r {
         Readout::Angle(a) => crate::canvas::draw_readout(ctx, id, at, ["Angle:"], [format!("{:.1}°", fixed(a, 1))]),
-        Readout::Scale([w, h]) => crate::canvas::draw_readout(ctx, id, at, ["W:", "H:"], [w, h].map(|v| format!("{:.1}%", fixed(v, 1)))),
+        Readout::Scale { percent, px } => crate::canvas::draw_readout(ctx, id, at, ["W:", "H:"], scale_values(app, percent, px)),
         Readout::Offset([dx, dy]) => crate::canvas::draw_readout(ctx, id, at, ["ΔX:", "ΔY:"], [dx, dy].map(|v| format!("{:.0} px", fixed(v, 0)))),
     }
+}
+
+/// `v` rounded to `places` decimals, so a hair below zero never reads "-0".
+fn fixed(v: f64, places: i32) -> f64 {
+    let k = 10f64.powi(places);
+    let v = (v * k).round() / k;
+    if v == 0.0 { 0.0 } else { v }
+}
+
+/// The W and H rows of the scale readout: the box's size in the Units & Rulers unit at the
+/// document's resolution, as Photoshop shows it (cm when the rulers are in centimeters, #9400);
+/// the scale of the original box when the rulers are in percent.
+pub(crate) fn scale_values(app: &PhotocraftApp, percent: [f64; 2], px: [f64; 2]) -> [String; 2] {
+    if app.session.prefs().units_and_rulers.rulers == photocraft_engine::prefs::Unit::Percent {
+        return percent.map(|v| format!("{:.1}%", fixed(v, 1)));
+    }
+    crate::canvas::size_readout(app, [0.0, 0.0, px[0], px[1]])
 }
 
 /// Width and height of the document being transformed, in document pixels.

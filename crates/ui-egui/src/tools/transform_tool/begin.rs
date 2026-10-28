@@ -1,6 +1,9 @@
 use super::commit::{commit, start_steps};
 use super::preview::{Above, preview_image};
-use super::*;
+use super::{
+    Arc, BezierMesh, CAS_ONLY_SCALES, Color32, DocId, Document, Follow, Homography, LOCKED, LayerContent, LayerId, MadeLayer, PhotocraftApp, Steps,
+    TransformPreview, TransformSession, Warp, WarpStyle, corners, json,
+};
 
 /// Start Free Transform on the active layer (or its selected pixels), or on the targeted unlinked
 /// layer mask, alpha channel or Quick Mask.
@@ -208,17 +211,18 @@ pub(super) fn take_back_made(app: &mut PhotocraftApp, document: DocId, layer: La
     let Some(index) = app.session.documents().iter().position(|st| {
         st.doc.id == document
             && st.doc.layer(layer).is_some()
-            && st.history.past_len().checked_sub(1).and_then(|i| st.history.state(i)).is_some_and(|before| before.layer(layer).is_none())
+            && st
+                .history
+                .recorded_before()
+                .or_else(|| st.history.past_len().checked_sub(1).and_then(|i| st.history.state(i)))
+                .is_some_and(|before| before.layer(layer).is_none())
     }) else {
         return;
     };
     let active = app.session.active_index();
     app.session.set_active(index);
-    if app.session.undo()
-        && let Some(st) = app.session.active_mut()
-    {
-        st.history.clear_redo();
-    }
+    // Exactly, also in non-linear history (where an undo would land on a later state).
+    app.session.rollback();
     if let Some(active) = active {
         app.session.set_active(active);
     }

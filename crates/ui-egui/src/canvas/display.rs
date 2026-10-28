@@ -1,5 +1,5 @@
 use super::strokes::live_stroke;
-use super::*;
+use super::{Color32, Document, LayerContent, PhotocraftApp, TextureOptions};
 
 pub(super) fn checker(app: &mut PhotocraftApp, ctx: &egui::Context) -> egui::TextureId {
     // Preferences › Transparency & Gamut colours (the texture is rebuilt when they change).

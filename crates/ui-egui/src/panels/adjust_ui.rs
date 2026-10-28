@@ -174,7 +174,7 @@ fn lookup_params(key: &str) -> Value {
 
 pub fn color_lookup_editor(app: &mut PhotocraftApp, ui: &mut egui::Ui, id: LayerId, adj: &Adjustment) {
     let t = Tokens::get(ui.ctx());
-    let Adjustment::ColorLookup { name, lut, size, tetrahedral, dither } = adj else {
+    let Adjustment::ColorLookup { name, lut, size, tetrahedral, dither, .. } = adj else {
         return;
     };
     let builtins = photocraft_engine::adjust_cmds::LOOKS;

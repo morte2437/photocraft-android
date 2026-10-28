@@ -1,6 +1,6 @@
 use super::enabled::check_all_unlocked;
 use super::layer_params::{layer_param, mask_at_depth};
-use super::*;
+use super::{Document, EngineError, Layer, LayerContent, LayerId, LayerMask, Result, Session, Value, json, pixels};
 
 pub(super) fn arrange(s: &mut Session, p: &Value, delta: i32) -> Result<Value> {
     let id = layer_param(s, p)?;

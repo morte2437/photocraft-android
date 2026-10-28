@@ -16,7 +16,7 @@ use super::steps_layer::{
 };
 use super::steps_make::{make_from, make_to, set_from, set_to};
 use super::tables::{NOISE, OFFSET_FILL, SMART_BLUR_MODE, SMART_BLUR_QUALITY, TRIM};
-use super::*;
+use super::{AtnEvent, D, Descriptor, STOP_MESSAGE, Value, json};
 
 /// An event: code (empty when Photoshop only has a string name), string name, the panel
 /// label, the command ids it exports (the first is the one simple events import to), and the

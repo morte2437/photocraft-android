@@ -403,7 +403,7 @@ fn paste(s: &mut Session, p: &Value, in_place: bool) -> Result<Value> {
     let id = s.edit("Paste", |doc, active| {
         let mut l = Layer::raster(doc.next_layer_name("Layer"), target);
         *crate::pixels_mut(&mut l)? = surf;
-        let id = doc.insert_above(*active, l);
+        let id = crate::layer_place::insert_new(doc, *active, l, crate::layer_place::Place::AutoEditable);
         *active = Some(id);
         doc.selection = None;
         Ok(id)
@@ -445,9 +445,13 @@ fn paste_layers(s: &mut Session, layers: &Document, dx: i32, dy: i32) -> Result<
     let id = s.edit("Paste", |doc, active| {
         doc.patterns.extend(patterns);
         doc.metadata.psd_global_blocks.extend(linked);
+        // The first pasted layer goes where a new layer would; the rest stack above it.
+        let mut place = crate::layer_place::Place::AutoEditable;
         for l in copies.layers {
-            *active = Some(doc.insert_above(*active, l));
+            *active = Some(crate::layer_place::insert_new(doc, *active, l, place));
+            place = crate::layer_place::Place::Above;
         }
+        crate::cmd::layer_multi_cmds::check_group_depth(doc, "Paste")?;
         doc.selection = None;
         active.ok_or(EngineError::Other("nothing to paste".into()))
     })?;
@@ -506,8 +510,16 @@ pub(crate) fn paste_to_target(s: &mut Session, p: &Value, in_place: bool, limit:
     let src = shifted(&clip.surface, dx, dy);
     let area = src.content_bounds().intersect(&canvas);
     s.edit(label, |doc, _| {
+        // A spot channel stores ink: the paste goes over its tone, then back to ink (#5787).
+        let spot = crate::channel_cmds::is_spot_target(doc, p);
         let (surf, _) = crate::channel_cmds::target_surface(doc, layer, p)?;
+        if spot {
+            crate::channel_cmds::invert_region(surf, area)?;
+        }
         crate::fill_cmds::composite_over(surf, &src, area, limit)?;
+        if spot {
+            crate::channel_cmds::invert_region(surf, area)?;
+        }
         surf.prune();
         doc.selection = None;
         Ok(())
@@ -579,7 +591,7 @@ fn layer_via(s: &mut Session, cut: bool) -> Result<Value> {
         }
         let mut l = Layer::raster(doc.next_layer_name("Layer"), clip.surface.format());
         *crate::pixels_mut(&mut l)? = clip.surface;
-        let nid = doc.insert_above(Some(id), l);
+        let nid = crate::layer_place::insert_new(doc, Some(id), l, crate::layer_place::Place::Above);
         *active = Some(nid);
         // Photoshop deselects: a following Free Transform moves the whole new layer (#1096).
         doc.selection = None;
@@ -761,11 +773,8 @@ fn transform_again_copy(s: &mut Session) -> Result<Value> {
         Err(e) => {
             // The copy (e.g. of a layer whose position is locked) couldn't be transformed: take
             // it back, leaving nothing to redo and no Duplicate step to record.
-            s.undo();
+            s.rollback();
             s.journal.truncate(journal);
-            if let Some(st) = s.active_mut() {
-                st.history.clear_redo();
-            }
             Err(e)
         }
     }

@@ -1,4 +1,4 @@
-use super::*;
+use super::{Color32, Document, LayerContent, LayerId, ViewXform, pos2};
 
 /// Texels of the moving pixels over `b`: full resolution unless the long side exceeds the GPU's
 /// `max_side` (#91: this used to be capped at 2048 px, so big layers previewed blurry), plus the

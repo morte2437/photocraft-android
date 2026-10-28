@@ -1,4 +1,4 @@
-use super::*;
+use super::PhotocraftApp;
 
 fn clip_signature(w: u32, h: u32, px: &[u8]) -> u64 {
     let mut sig = (w as u64) << 32 | h as u64;

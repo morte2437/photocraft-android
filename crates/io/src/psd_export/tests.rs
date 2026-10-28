@@ -337,33 +337,161 @@ fn light_adjustment_is_kept_verbatim_and_warned() {
     assert!(!crate::adjust_map::is_extended_brit(Some(&plain[1].1)));
 }
 
-#[test]
-fn size_limit_boundary_keeps_limit_and_switches_above_it() {
-    assert!(!exceeds_psd_size_limit(Some(PSD_MAX_FILE_SIZE)));
-    assert!(exceeds_psd_size_limit(Some(PSD_MAX_FILE_SIZE + 1)));
-    assert!(exceeds_psd_size_limit(None));
+/// A 1024² RGB document with one full-canvas layer: flat colour (packs to a few KB) or noise
+/// (RLE can't pack it). Its raw planes (layer RGBA + merged RGB) are 7 MiB either way.
+fn sized_document(noise: bool, depth: SampleType) -> Document {
+    const SIDE: u32 = 1024;
+    let mut doc = Document::new("size limit", photocraft_geom::Size::new(SIDE, SIDE), ColorMode::Rgb, depth);
+    let mut layer = Layer::raster("Layer 1", doc.pixel_format());
+    let rect = photocraft_geom::Rect::new(0, 0, SIDE as i32, SIDE as i32);
+    let surface = layer.surface_mut().unwrap();
+    if noise {
+        let mut state = 0x2545_f491_u32;
+        let data: Vec<f32> = (0..SIDE * SIDE * 4)
+            .map(|i| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                if i % 4 == 3 { 1.0 } else { (state >> 24) as f32 / 255.0 }
+            })
+            .collect();
+        surface.write_region(rect, &data);
+    } else {
+        surface.fill_rect(rect, &[0.2, 0.4, 0.6, 1.0]);
+    }
+    doc.layers.push(layer);
+    doc
 }
 
-#[test]
-fn encoded_size_estimator_rejects_arithmetic_overflow() {
-    assert_eq!(estimate_encoded_size(u64::MAX, 0, 0), None);
-    assert_eq!(estimate_encoded_size(0, u64::MAX, 0), None);
-    assert_eq!(estimate_encoded_size(0, 0, u64::MAX), Some(u64::MAX));
-    assert!(exceeds_psd_size_limit(estimate_psd_size(&document(u32::MAX, u32::MAX))));
+const SIZED_RAW_BYTES: u64 = 1024 * 1024 * (4 + 3);
+/// Under the raw size, so only the encoded size can keep a document PSD.
+const SIZED_LIMIT: u64 = 4 * 1024 * 1024;
+const _: () = assert!(SIZED_RAW_BYTES > SIZED_LIMIT);
+
+fn export_sized(doc: &Document, limit: u64) -> (PsdFile, Vec<String>) {
+    document_to_psd_sized(doc, &PsdExportOptions::default(), 0, &Interrupt::NONE, limit)
 }
 
+/// #5285: a document whose raw pixels are over the PSD limit but whose encoded file fits is
+/// saved as PSD (the raw-size estimate used to make it a PSB).
 #[test]
-fn large_encoded_size_selects_psb_without_changing_explicit_choice() {
-    let large = document(30_000, 30_000);
-    assert!(estimate_psd_size(&large).is_some_and(|size| size > PSD_MAX_FILE_SIZE));
-    let large_size_exceeds_limit = psd_size_exceeds_limit(&large);
-    assert_eq!(psd_version(&large, false, large_size_exceeds_limit), Version::Psb);
+fn a_file_that_fits_after_compression_stays_psd() {
+    let doc = sized_document(false, SampleType::U8);
+    let (file, warnings) = export_sized(&doc, SIZED_LIMIT);
+    assert_eq!(file.written_version(), Version::Psd);
+    assert!(warnings.iter().all(|w| !w.contains("PSB")), "{warnings:?}");
+    let bytes = file.to_bytes().unwrap();
+    assert!(bytes.len() as u64 + PSD_SAVE_HEADROOM <= SIZED_LIMIT, "{} bytes", bytes.len());
+    let (back, _) = crate::psd_to_document(&PsdFile::from_bytes(&bytes).unwrap());
+    assert_eq!(back.layers[0].surface().unwrap().pixel(700, 300), doc.layers[0].surface().unwrap().pixel(700, 300));
+}
 
+/// #5285: a document whose encoded file is over the limit becomes a PSB, byte for byte the
+/// one a forced PSB save writes, and reads back. 8 bits keep the layers in the layer section,
+/// 16 bits in a global `Lr16` block.
+#[test]
+fn a_file_over_the_limit_after_compression_is_psb() {
+    for depth in [SampleType::U8, SampleType::U16] {
+        let doc = sized_document(true, depth);
+        let (file, warnings) = export_sized(&doc, SIZED_LIMIT);
+        assert_eq!(file.written_version(), Version::Psb, "{depth:?}");
+        assert!(warnings.iter().any(|w| w == "encoded size exceeds 2 GB; written as PSB"), "{warnings:?}");
+        let bytes = file.to_bytes().unwrap();
+        assert!(bytes.len() as u64 > SIZED_LIMIT);
+        let forced = document_to_psd_with(&doc, &PsdExportOptions { force_psb: true, ..Default::default() }).0;
+        let forced = forced.to_bytes().unwrap();
+        assert!(bytes == forced, "{depth:?}: the promoted PSB differs from a PSB written directly");
+        assert_eq!(PsdFile::from_bytes(&bytes).unwrap(), PsdFile::from_bytes(&forced).unwrap(), "{depth:?}");
+        // The promoted model itself stays a consistent PSD for every reader.
+        assert_eq!(file.header.version, Version::Psd);
+        assert_eq!(crate::psd_to_document(&file).0.layers[0].surface().unwrap().pixel(511, 777), doc.layers[0].surface().unwrap().pixel(511, 777));
+        let (back, _) = crate::psd_to_document(&PsdFile::from_bytes(&bytes).unwrap());
+        for (x, y) in [(0, 0), (1023, 0), (511, 777), (1023, 1023)] {
+            assert_eq!(back.layers[0].surface().unwrap().pixel(x, y), doc.layers[0].surface().unwrap().pixel(x, y), "{depth:?} ({x}, {y})");
+        }
+    }
+}
+
+/// The limit is the exact written length plus the save's headroom: one byte less is a PSB.
+#[test]
+fn the_size_limit_is_the_exact_encoded_length() {
+    let doc = sized_document(false, SampleType::U8);
+    let len = export_sized(&doc, u64::MAX).0.to_bytes().unwrap().len() as u64;
+    assert_eq!(export_sized(&doc, len + PSD_SAVE_HEADROOM).0.written_version(), Version::Psd);
+    assert_eq!(export_sized(&doc, len + PSD_SAVE_HEADROOM - 1).0.written_version(), Version::Psb);
+    // The real limit: a small document stays PSD, a forced one is PSB.
     let small = document(1, 1);
-    let small_size_exceeds_limit = psd_size_exceeds_limit(&small);
-    assert_eq!(psd_version(&small, false, small_size_exceeds_limit), Version::Psd);
-    assert_eq!(psd_version(&small, true, small_size_exceeds_limit), Version::Psb);
+    assert_eq!(document_to_psd(&small).written_version(), Version::Psd);
+    assert_eq!(document_to_psd_with(&small, &PsdExportOptions { force_psb: true, ..Default::default() }).0.written_version(), Version::Psb);
+    assert_eq!(psd_version(&document(30_001, 1), false), Version::Psb);
 }
+
+/// A Multichannel document follows the same rule.
+#[test]
+fn a_multichannel_file_over_the_limit_is_psb() {
+    let mut doc = document(64, 64);
+    doc.mode = ColorMode::Multichannel;
+    doc.channels.push(photocraft_doc::AlphaChannel::new("Cyan", photocraft_raster::Surface::new(PixelFormat::GRAY8)));
+    let (file, _) = export_sized(&doc, u64::MAX);
+    assert_eq!(file.written_version(), Version::Psd);
+    let len = file.to_bytes().unwrap().len() as u64;
+    let (file, warnings) = export_sized(&doc, len + PSD_SAVE_HEADROOM - 1);
+    assert_eq!(file.written_version(), Version::Psb);
+    assert!(warnings.iter().any(|w| w.contains("written as PSB")), "{warnings:?}");
+    let back = PsdFile::from_bytes(&file.to_bytes().unwrap()).unwrap();
+    assert_eq!(back.header.version, Version::Psb);
+    assert_eq!(back.decode_merged().unwrap(), PsdFile::from_bytes(&export_sized(&doc, u64::MAX).0.to_bytes().unwrap()).unwrap().decode_merged().unwrap());
+}
+
+/// Indexed Color and Bitmap (written without layers, #4816), Multichannel and RGB follow the
+/// encoded-size rule, and a file turned into PSB by its size writes its global blocks with
+/// 8-byte lengths as `8B64` (#7937), whatever signature they were kept with; a file that fits
+/// stays a PSD with `8BIM` throughout.
+#[test]
+fn every_mode_promoted_by_size_signs_long_blocks_8b64() {
+    let white = photocraft_color::Color::rgba(1.0, 1.0, 1.0, 1.0);
+    let mut docs = Vec::new();
+    for (mode, psd_mode) in [(ColorMode::Indexed, PsdMode::Indexed), (ColorMode::Bitmap, PsdMode::Bitmap), (ColorMode::Rgb, PsdMode::Rgb)] {
+        let mut doc = Document::with_background("modes", photocraft_geom::Size::new(64, 64), ColorMode::Rgb, SampleType::U8, white);
+        doc.mode = mode;
+        doc.color_table = Some(photocraft_doc::ColorTable { colors: vec![[255, 255, 255], [0, 0, 0]], transparent: None });
+        docs.push((doc, psd_mode));
+    }
+    let mut multichannel = document(64, 64);
+    multichannel.mode = ColorMode::Multichannel;
+    multichannel.channels.push(photocraft_doc::AlphaChannel::new("Cyan", photocraft_raster::Surface::new(PixelFormat::GRAY8)));
+    docs.push((multichannel, PsdMode::Multichannel));
+    for (mut doc, psd_mode) in docs {
+        doc.metadata.psd_global_blocks = vec![
+            (*b"8BIM", *b"cinf", std::sync::Arc::new(vec![0, 0, 0, 16, 0, 0, 0, 0])),
+            (*b"8BIM", *b"pths", std::sync::Arc::new(vec![0, 0, 0, 16, 0, 0, 0, 0])),
+            (*b"8B64", *b"FMsk", std::sync::Arc::new(vec![0xff, 0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0, 50])),
+            (*b"8BIM", *b"Patt", std::sync::Arc::new(Vec::new())),
+        ];
+        let written = |limit| {
+            let (file, warnings) = export_sized(&doc, limit);
+            let bytes = file.to_bytes().unwrap();
+            let back = PsdFile::from_bytes(&bytes).unwrap();
+            let blocks = back.global_blocks.iter().map(|b| (b.signature, b.key)).collect::<Vec<_>>();
+            (bytes.len() as u64, back, blocks, warnings)
+        };
+        let (len, small, blocks, _) = written(u64::MAX);
+        assert_eq!((small.header.version, small.header.color_mode), (Version::Psd, psd_mode), "{psd_mode:?}");
+        assert_eq!(blocks, vec![(*b"8BIM", *b"cinf"), (*b"8BIM", *b"pths"), (*b"8BIM", *b"FMsk"), (*b"8BIM", *b"Patt")], "{psd_mode:?}: a PSD keeps 8BIM");
+        // One byte short of the encoded length: the same document is written as PSB.
+        let (_, big, blocks, warnings) = written(len + PSD_SAVE_HEADROOM - 1);
+        assert_eq!((big.header.version, big.header.color_mode), (Version::Psb, psd_mode), "{psd_mode:?}: {warnings:?}");
+        assert!(warnings.iter().any(|w| w == "encoded size exceeds 2 GB; written as PSB"), "{psd_mode:?}: {warnings:?}");
+        assert_eq!(blocks, vec![(*b"8B64", *b"cinf"), (*b"8B64", *b"pths"), (*b"8B64", *b"FMsk"), (*b"8BIM", *b"Patt")], "{psd_mode:?}: a PSB signs 8B64");
+        assert_eq!(big.decode_merged().unwrap(), small.decode_merged().unwrap(), "{psd_mode:?}");
+        // Without `size_limit_psb` no mode is promoted by its size, the layerless ones included.
+        let opts = PsdExportOptions { size_limit_psb: false, ..PsdExportOptions::default() };
+        let (kept, warnings) = document_to_psd_sized(&doc, &opts, 0, &Interrupt::NONE, len + PSD_SAVE_HEADROOM - 1);
+        assert_eq!((kept.written_version(), kept.header.color_mode), (Version::Psd, psd_mode), "{psd_mode:?}: {warnings:?}");
+        assert!(!warnings.iter().any(|w| w.contains("written as PSB")), "{psd_mode:?}: {warnings:?}");
+    }
+}
+
 #[test]
 fn kept_psb_blocks_are_written_as_8bim_in_a_psd() {
     // Photoshop 27.11 refuses a PSD holding `8B64` blocks ("not compatible with this

@@ -88,6 +88,22 @@ impl AuthorizedWorkspace {
         let relative = request_path(path, self.write.as_ref())?;
         let root = self.write.as_ref().ok_or_else(|| AutomationError::BadRequest(format!("{DENIED}: write authority is absent")))?;
         let leaf = relative.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        // The bytes are an image or document whatever the name says (`format` picks them), so
+        // only a file of a kind PhotoCraft writes is replaced: never source, settings or notes
+        // that share the root (`src/main.rs`, `.env`; #9439). A new file may have any name, and
+        // an image saved under one (`out` with `format: png`) can be saved over again.
+        let exists = root.dir.symlink_metadata(&relative).is_ok();
+        // Only a regular file is ever opened below (its head here, its attributes on Unix): a
+        // FIFO would block that open until a writer appears, and with it every other request.
+        // Links are followed for this check; a dangling one falls through to the name rule.
+        if exists && root.dir.metadata(&relative).is_ok_and(|m| !m.is_file()) {
+            return Err(AutomationError::BadRequest(format!("automation write refused: `{path}` already exists and is not a regular file")));
+        }
+        if exists && !written_kind(&leaf) && !holds_image(&root.dir, &relative) {
+            return Err(AutomationError::BadRequest(format!(
+                "automation write refused: `{path}` already exists and is not an image or document file PhotoCraft writes; save to a new name"
+            )));
+        }
         let parent = relative.parent().map(Path::to_path_buf).unwrap_or_default();
         let tmp = parent.join(photocraft_format::atomic::temp_name(&leaf));
         let mut options = OpenOptions::new();
@@ -122,6 +138,23 @@ impl AuthorizedWorkspace {
         }
         Ok(())
     }
+}
+
+/// Whether `name`'s extension is one of the formats PhotoCraft saves or exports.
+fn written_kind(name: &str) -> bool {
+    let Some((_, ext)) = name.rsplit_once('.') else { return false };
+    let ext = ext.to_ascii_lowercase();
+    ["psd", "psb", "ora", "pdf", photocraft_format::EXTENSION].contains(&ext.as_str()) || photocraft_codecs::from_extension(&ext).is_some()
+}
+
+/// Whether the file at `relative` starts like an image PhotoCraft reads (PSD/PSB or a codec's
+/// magic). Containers that also hold other things (zip, PDF) are judged by name only.
+fn holds_image(dir: &Dir, relative: &Path) -> bool {
+    let mut head = [0u8; 64];
+    let Ok(mut file) = dir.open(relative) else { return false };
+    let Ok(n) = file.read(&mut head) else { return false };
+    let head = &head[..n];
+    head.starts_with(b"8BPS") || photocraft_codecs::detect(head).is_some()
 }
 
 fn read_to_observed_length(reader: &mut impl Read, observed_length: u64) -> Result<Vec<u8>, AutomationError> {
@@ -221,11 +254,14 @@ fn relative_path(raw: &str) -> Result<PathBuf, AutomationError> {
     Ok(PathBuf::from(raw))
 }
 
+/// At least every name cap-std refuses to open on Windows (`COM0`–`COM9`, `COM¹`–`COM³`, the same
+/// for `LPT`, spaces before the extension ignored), so nothing written is unreadable (#9424).
 fn is_windows_device_name(component: &str) -> bool {
-    let stem = component.split('.').next().unwrap_or(component).to_ascii_uppercase();
+    let stem = component.split('.').next().unwrap_or(component).trim_end().to_ascii_uppercase();
+    let port = |n: &str| matches!(n, "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³");
     matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CLOCK$" | "CONIN$" | "CONOUT$")
-        || stem.strip_prefix("COM").is_some_and(|n| matches!(n, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"))
-        || stem.strip_prefix("LPT").is_some_and(|n| matches!(n, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"))
+        || stem.strip_prefix("COM").is_some_and(port)
+        || stem.strip_prefix("LPT").is_some_and(port)
 }
 
 fn path_error(path: &str, reason: &str) -> AutomationError {

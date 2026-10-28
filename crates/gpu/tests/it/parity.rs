@@ -715,7 +715,7 @@ fn lookup(n: usize, tetrahedral: bool, dither: bool) -> Adjustment {
             }
         }
     }
-    Adjustment::ColorLookup { name: "test".into(), lut: Some(std::sync::Arc::new(t)), size: n as u32, tetrahedral, dither }
+    Adjustment::ColorLookup { name: "test".into(), lut: Some(std::sync::Arc::new(t)), size: n as u32, tetrahedral, dither, source: None }
 }
 
 /// 32-bit Hue/Saturation on colours at and above HSL lightness 1 and with a negative channel,
@@ -2482,6 +2482,36 @@ fn stroked_shapes_with_clipped_layers() {
     }
 }
 
+/// A Photoshop Frame's stroke (#4381): along the group's vector mask, above its masked content,
+/// for an empty frame and one holding a layer, pass-through and isolated.
+#[test]
+fn frame_strokes() {
+    let Some(mut g) = gpu() else { return };
+    use photocraft_doc::vector::{Path, ShapeStroke, StrokeAlign, Subpath, VectorMask};
+    for depth in [SampleType::U8, SampleType::U16, SampleType::F32] {
+        for (blend, align, content) in [
+            (BlendMode::PassThrough, StrokeAlign::Inside, false),
+            (BlendMode::PassThrough, StrokeAlign::Outside, true),
+            (BlendMode::Multiply, StrokeAlign::Center, true),
+        ] {
+            let mut d = Document::new("t", Size::new(80, 64), ColorMode::Rgb, depth);
+            d.layers.push(noise_layer("bg", d.pixel_format(), Rect::from_xywh(0, 0, 80, 64), 1, 0.3));
+            let kids = if content { vec![noise_layer("c", d.pixel_format(), Rect::from_xywh(0, 0, 80, 64), 7, 0.4)] } else { vec![] };
+            let mut l = Layer::group("Frame 1", kids);
+            l.blend = blend;
+            l.opacity = 0.8;
+            l.vector_mask = Some(VectorMask::new(Path::new(vec![Subpath::polygon(&[(10.3, 8.6), (66.2, 12.1), (58.7, 54.4), (16.9, 48.2)])])));
+            if let LayerContent::Group(gr) = &mut l.content {
+                gr.frame_stroke = Some(ShapeStroke { width: 5.0, align, paint: Fill::Solid(Color::rgb(0.9, 0.1, 0.1)), ..Default::default() });
+            }
+            d.layers.push(l);
+            let st = photocraft_gpu::render_to_vec_stats(&mut g.comp, &g.device, &g.queue, &d, d.bounds());
+            assert!(st.is_ok(), "planned on the GPU");
+            check(&mut g, &d, &format!("{depth:?} frame stroke {blend:?} {align:?} content {content}"));
+        }
+    }
+}
+
 #[test]
 fn artboards() {
     let Some(mut g) = gpu() else { return };
@@ -3053,6 +3083,25 @@ fn pass_through_clipping_base_with_an_adjustment() {
     clip.clipped = true;
     d.layers.push(clip);
     check(&mut g, &d, "pass-through clipping base with an adjustment");
+}
+
+/// Transparency Shapes Layer off changes the special eight's blend (the layer's alpha blends as
+/// Fill, #5692); the GPU has no pass for it and leaves such documents to the CPU. Other modes look
+/// the same either way and stay on the GPU.
+#[test]
+fn transparency_shapes_off_special_blend_falls_back_to_the_cpu() {
+    let Some(mut g) = gpu() else { return };
+    let mut d = base_doc(64, 48);
+    let mut l = noise_layer("top", PixelFormat::RGBA8, Rect::new(4, 3, 60, 45), 2, 0.0);
+    l.blend = BlendMode::ColorDodge;
+    l.opacity = 0.53;
+    l.advanced.transparency_shapes = false;
+    d.layers.push(l);
+    assert!(render_to_vec(&mut g.comp, &g.device, &g.queue, &d, d.bounds()).is_err(), "Color Dodge with Transparency Shapes Layer off");
+    if let Some(l) = d.layers.last_mut() {
+        l.blend = BlendMode::Multiply;
+    }
+    check(&mut g, &d, "Multiply with Transparency Shapes Layer off");
 }
 
 /// #5846: a shape's Density and Feather soften its fill (its own rendered pixels), with and

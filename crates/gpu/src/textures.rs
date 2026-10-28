@@ -1,4 +1,4 @@
-use super::*;
+use super::{Arc, DocId, FieldKind, HashMap, LayerId, PixelFormat, Rect, Role, SampleType, Tile, TileCoord, fx, timing};
 
 /// A finished chunk: straight-alpha RGBA32F pixels of `rect` (document coordinates) at the
 /// texture's origin.

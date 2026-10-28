@@ -1,6 +1,6 @@
 use super::lifecycle::{apply, cancel, close, fill_edit, redo, report, reset, set_sampling, undo};
 use super::preview::{rebase, wait_preview};
-use super::*;
+use super::{CafTool, CafWorkspace, LASSO_OPS, PhotocraftApp, ToolEvent, Value, json};
 
 /// Control channel: `edit.contentAwareFill {"ui": {...}}` while the workspace is open.
 pub fn control(app: &mut PhotocraftApp, ui: &Value) -> Result<Value, String> {

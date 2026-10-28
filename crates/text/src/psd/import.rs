@@ -1,5 +1,8 @@
 use super::build::engine_antialias;
-use super::*;
+use super::{
+    Affine, AntiAlias, Caps, CharStyle, Color, ColorMode, D, Descriptor, E, FontBaseline, Kerning, Orientation, ParagraphRun, ParagraphStyle, Point, TextAlign,
+    TextLayer, TextRun, TextShape, TextWarp, TySh, dnum, ed, engine_data, enum_value, guess_from_postscript, parse_tysh,
+};
 
 /// Parses the document's `Txt2` block (Photoshop's text engine data for all type layers).
 pub fn parse_txt2(data: &[u8]) -> Option<E> {

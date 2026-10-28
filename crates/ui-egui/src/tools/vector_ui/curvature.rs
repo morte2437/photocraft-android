@@ -1,5 +1,5 @@
 use super::pen::{cancel_stale, pen_commit};
-use super::*;
+use super::{PenPath, PhotocraftApp};
 
 /// Recompute a Curvature Pen path's handles from its anchors and corner points.
 pub(super) fn curvature_refresh(pen: &mut PenPath, closed: bool) {

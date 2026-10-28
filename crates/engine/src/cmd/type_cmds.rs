@@ -244,6 +244,13 @@ fn step_char_metrics(t: &mut TextLayer, a: usize, b: usize, p: &Value) -> bool {
 
 /// Applies character-style keys from JSON. Returns true if any key was present.
 pub fn apply_char_props(s: &mut CharStyle, p: &Value) -> bool {
+    let mut any = apply_font_props(s, p);
+    any |= apply_char_values(s, p);
+    any |= apply_char_features(s, p);
+    any
+}
+
+fn apply_font_props(s: &mut CharStyle, p: &Value) -> bool {
     let mut any = false;
     let mut hit = |b: bool| any |= b;
     let font_key = ["font", "family", "fontStyle", "weight", "italic"].iter().any(|k| p.get(k).is_some());
@@ -309,6 +316,12 @@ pub fn apply_char_props(s: &mut CharStyle, p: &Value) -> bool {
     if font_key && s.postscript_name.is_none() {
         s.postscript_name = installed_postscript(&s.font_family, s.weight, s.italic);
     }
+    any
+}
+
+fn apply_char_values(s: &mut CharStyle, p: &Value) -> bool {
+    let mut any = false;
+    let mut hit = |b: bool| any |= b;
     if let Some(v) = f32p(p, "size") {
         s.size_pt = v.max(0.01);
         hit(true);
@@ -396,6 +409,12 @@ pub fn apply_char_props(s: &mut CharStyle, p: &Value) -> bool {
             hit(true);
         }
     }
+    any
+}
+
+fn apply_char_features(s: &mut CharStyle, p: &Value) -> bool {
+    let mut any = false;
+    let mut hit = |b: bool| any |= b;
     if let Some(Value::Object(m)) = p.get("features") {
         for (tag, v) in m {
             let value = v.as_u64().map(|x| x as u16).or_else(|| v.as_bool().map(u16::from)).unwrap_or(1);
@@ -906,7 +925,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 let name = p.get("name").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| layer_name(&t.text));
                 let id = s.edit("New Type Layer", |doc, active| {
                     refresh(doc, &mut t);
-                    let id = doc.insert_above(*active, Layer::new(name, LayerContent::Text(t)));
+                    let id = crate::layer_place::insert_new(doc, *active, Layer::new(name, LayerContent::Text(t)), crate::layer_place::Place::AutoEditable);
                     *active = Some(id);
                     Ok(id)
                 })?;

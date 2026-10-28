@@ -13,8 +13,11 @@ description = "Pen tablet pressure, tilt, rotation and eraser end on macOS (AppK
 unsafe_code = "deny"
 
 [lints.clippy]
-dbg_macro = "warn"
-todo = "warn"
+ cognitive_complexity = "deny"
+ too_many_arguments = "deny"
+ wildcard_imports = "deny"
+ dbg_macro = "warn"
+ todo = "warn"
 
 # Already in Cargo.lock (eframe/wgpu/fmv-macos-events and winit pull them in); pinned exactly:
 # review the diff before bumping.

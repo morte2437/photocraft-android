@@ -273,3 +273,39 @@ fn undo_in_a_resumed_draft_stops_at_the_paths_own_anchors() {
     assert!(app.ui.direct_selection.anchors.is_empty());
     assert_eq!(work_path(&app), before, "the path is as it was");
 }
+
+/// #6079 review: Make Selection hides the Work Path. A Pen press on its old endpoint then starts a
+/// new Work Path that replaces it, as Photoshop does with no path selected, instead of carrying on
+/// the hidden one. A shown Work Path and a selected saved path still carry on.
+#[test]
+fn the_pen_does_not_carry_on_a_work_path_hidden_by_make_selection() {
+    let mut app = app(Tool::Pen);
+    let anchors = |p: &Path| -> Vec<Vec<[f64; 2]>> { p.subpaths.iter().map(|s| s.knots.iter().map(|k| [k.anchor.x, k.anchor.y]).collect()).collect() };
+    click(&mut app, 20.0, 20.0);
+    click(&mut app, 80.0, 20.0);
+    crate::vector_ui::pen_commit(&mut app, false);
+    crate::vector_ui::path_to_selection(&mut app, json!({})).unwrap();
+    assert!(!crate::vector_ui::work_path_shown(&app), "Make Selection hid the Work Path");
+    click(&mut app, 80.0, 20.0);
+    click(&mut app, 80.0, 80.0);
+    crate::vector_ui::pen_commit(&mut app, false);
+    assert_eq!(anchors(&work_path(&app)), [vec![[80.0, 20.0], [80.0, 80.0]]], "a new Work Path, not the hidden one carried on");
+    // The new Work Path is shown and selected: it carries on as before.
+    click(&mut app, 80.0, 80.0);
+    click(&mut app, 140.0, 80.0);
+    crate::vector_ui::pen_commit(&mut app, false);
+    assert_eq!(anchors(&work_path(&app)), [vec![[80.0, 20.0], [80.0, 80.0], [140.0, 80.0]]]);
+    // A saved path selected in the Paths panel carries on while the Work Path is hidden.
+    let open = json!({"subpaths": [{"closed": false, "knots": [{"anchor": [150.0, 150.0]}, {"anchor": [200.0, 150.0]}]}]});
+    app.run("path.set", json!({"name": "Saved", "path": open})).unwrap();
+    crate::vector_ui::path_to_selection(&mut app, json!({})).unwrap();
+    assert!(!crate::vector_ui::work_path_shown(&app));
+    app.ui.selected_path = Some("Saved".into());
+    click(&mut app, 200.0, 150.0);
+    click(&mut app, 200.0, 190.0);
+    crate::vector_ui::pen_commit(&mut app, false);
+    let st = app.session.active().unwrap();
+    let saved = st.doc.paths.iter().find(|p| p.name == "Saved").unwrap();
+    assert_eq!(anchors(&saved.path), [vec![[150.0, 150.0], [200.0, 150.0], [200.0, 190.0]]], "the saved path carried on");
+    assert_eq!(anchors(&work_path(&app)).len(), 1, "the hidden Work Path untouched");
+}

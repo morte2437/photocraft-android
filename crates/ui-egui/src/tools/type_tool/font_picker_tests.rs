@@ -1,5 +1,7 @@
 //! The Type tool's searchable font menu (#1369): it grows back after a search and focuses its search field.
 
+use std::collections::HashMap;
+
 use super::font_picker_in;
 use egui::accesskit::Role;
 use egui::{Key, Modifiers, Rect, vec2};
@@ -31,11 +33,15 @@ fn harness_with(preview: FontPreview) -> Harness<'static, State> {
 }
 
 fn harness_with_recents(preview: FontPreview, recents: Vec<String>) -> Harness<'static, State> {
+    harness_sized(preview, recents, vec2(600.0, 900.0))
+}
+
+fn harness_sized(preview: FontPreview, recents: Vec<String>, size: egui::Vec2) -> Harness<'static, State> {
     // Enough families that the unfiltered menu hits its maximum height and scrolls.
     let mut families: Vec<String> = (0..60).map(|i| format!("Family {i:02}")).collect();
     families.push("Zeta Sans".into());
     let state = State { current: "Family 00".into(), families, button: egui::Id::NULL, popup: egui::Id::NULL, preview, recents };
-    let mut h = Harness::builder().with_size(vec2(600.0, 900.0)).with_max_steps(SETTLE_STEPS).build_ui_state(
+    let mut h = Harness::builder().with_size(size).with_max_steps(SETTLE_STEPS).build_ui_state(
         |ui, s: &mut State| {
             s.button = ui.make_persistent_id(egui::IdSalt::new("type-font"));
             s.popup = s.button.with("popup");
@@ -155,6 +161,33 @@ fn the_search_field_stays_put_while_the_list_scrolls() {
     assert!(popup.contains(after.center()), "the search field left the menu");
 }
 
+/// The wheel past the end of the list, or over the class list, leaves the preview, filters and
+/// search field in place, also in a window too short for the menu's full height: the lists stay
+/// within the room the menu leaves them, so the menu itself has nothing to scroll.
+#[test]
+fn the_wheel_past_the_end_of_the_list_leaves_the_header_in_place() {
+    // Over the font list, and over the class list beside it, which has no scroll area of its own.
+    for (size, over) in
+        [(vec2(600.0, 900.0), "Family 02"), (vec2(600.0, 900.0), "All Classes"), (vec2(600.0, 420.0), "Family 02"), (vec2(600.0, 420.0), "All Classes")]
+    {
+        let mut h = harness_sized(FontPreview::Medium, Vec::new(), size);
+        open(&mut h);
+        let search = h.get_by_role(Role::TextInput).rect();
+        h.hover_at(h.get_by_label(over).rect().center());
+        for _ in 0..40 {
+            h.event(egui::Event::MouseWheel {
+                source: egui::MouseWheelSource::Unknown,
+                unit: egui::MouseWheelUnit::Line,
+                delta: vec2(0.0, -10.0),
+                phase: egui::TouchPhase::Move,
+                modifiers: Modifiers::NONE,
+            });
+            h.run();
+        }
+        assert_eq!(search, h.get_by_role(Role::TextInput).rect(), "{size:?} over {over}: the search field moved under the wheel");
+    }
+}
+
 /// #7792: the arrow keys scroll the list to the selected family without moving the search
 /// field: they scroll the list, not the whole menu.
 #[test]
@@ -173,8 +206,9 @@ fn the_search_field_stays_put_while_the_arrows_scroll_the_list() {
     assert_eq!(search, h.get_by_role(Role::TextInput).rect(), "the search field scrolled away with the list");
 }
 
-/// A query matching no family shrinks the menu; clearing it grows the menu back to its full
-/// height (egui#5225), and the search field stays where it was throughout.
+/// A query matching no family shrinks the menu to its header and the class list beside the
+/// list; clearing it grows the menu back to its full height (egui#5225), and the search field
+/// stays where it was throughout.
 #[test]
 fn clearing_a_query_that_matches_nothing_grows_the_menu_back() {
     let mut h = harness();
@@ -185,7 +219,9 @@ fn clearing_a_query_that_matches_nothing_grows_the_menu_back() {
     h.run();
     assert!(h.query_by_label("Family 00").is_none(), "the query matches no family");
     let none = popup_rect(&h).expect("still open").height();
-    assert!(none < full / 2.0, "no matches shrink the menu: {none} vs {full}");
+    let classes = h.get_by_label("Decorative").rect();
+    let menu = popup_rect(&h).expect("still open");
+    assert!(none < full - 100.0 && menu.bottom() < classes.bottom() + 20.0, "no matches shrink the menu to the class list: {menu:?}, {classes:?}, full {full}");
     assert_eq!(search, h.get_by_role(Role::TextInput).rect(), "the search field moved when the list emptied");
     for _ in 0.."xxxx".len() {
         h.key_press(Key::Backspace);
@@ -881,7 +917,7 @@ fn open_menu_shows_the_recent_group_when_the_marked_row_fits_below_it() {
     let row = h.query_all_by_label("Family 12").find(|n| n.accesskit_node().toggled() == Some(egui::accesskit::Toggled::True)).expect("its marked row").rect();
     assert!(popup.contains_rect(row) && row.top() >= search.bottom(), "recent #3 is in view: {row:?} in {popup:?}");
     assert!(
-        popup.contains_rect(first) && (0.0..=12.0).contains(&(first.top() - search.bottom())),
+        popup.contains_rect(first) && (0.0..=16.0).contains(&(first.top() - search.bottom())),
         "the group's first row sits just below the search field: {first:?} under {search:?}"
     );
 }
@@ -1040,6 +1076,370 @@ fn wheel_family_index_clamps_to_the_ends() {
     assert_eq!(super::wheel_family_index(1, 3, 1.0), Some(0));
     assert_eq!(super::wheel_family_index(1, 3, 0.0), None);
     assert_eq!(super::wheel_family_index(0, 0, -1.0), None);
+}
+
+/// A picker over the test families with a recent/favourite library; the library is kept in the
+/// state so a test can read the star that was clicked.
+struct LibState {
+    current: String,
+    families: Vec<String>,
+    library: super::FontLibrary,
+    popup: egui::Id,
+}
+
+fn library_harness(recent: &[&str], favorites: &[&str]) -> Harness<'static, LibState> {
+    library_harness_with(recent, favorites, None, None)
+}
+
+fn library_harness_with(
+    recent: &[&str],
+    favorites: &[&str],
+    traits: Option<crate::font_filters::TraitsMap>,
+    styles: Option<HashMap<String, Vec<String>>>,
+) -> Harness<'static, LibState> {
+    let mut families: Vec<String> = (0..20).map(|i| format!("Family {i:02}")).collect();
+    families.push("Zeta Sans".into());
+    let library = super::FontLibrary {
+        recent: recent.iter().map(|s| s.to_string()).collect(),
+        favorites: favorites.iter().map(|s| s.to_string()).collect(),
+        traits: traits.map(std::sync::Arc::new),
+        styles: styles.map(std::sync::Arc::new),
+        ..Default::default()
+    };
+    let state = LibState { current: "Family 00".into(), families, library, popup: egui::Id::NULL };
+    let mut h = Harness::builder().with_size(vec2(600.0, 900.0)).build_ui_state(
+        |ui, s: &mut LibState| {
+            let fams = s.families.clone();
+            s.popup = ui.make_persistent_id(egui::IdSalt::new("type-font")).with("popup");
+            super::family_picker_in(ui, "type-font", &mut s.current, 170.0, &fams, FontPreview::Medium, &mut s.library);
+        },
+        state,
+    );
+    h.run();
+    h.query_all_by_role(Role::ComboBox).next().unwrap().click();
+    h.run();
+    h
+}
+
+/// The tops of every row labelled `label`, top to bottom.
+fn row_tops(h: &Harness<'static, LibState>, label: &str) -> Vec<f32> {
+    let mut tops: Vec<f32> = h.query_all_by_label(label).map(|n| n.rect().top()).collect();
+    tops.sort_by(f32::total_cmp);
+    tops
+}
+
+#[test]
+fn recent_fonts_come_first_and_stay_in_the_alphabetical_list() {
+    let h = library_harness(&["Zeta Sans", "Family 05", "Not Installed"], &[]);
+    let zeta = row_tops(&h, "Zeta Sans");
+    let five = row_tops(&h, "Family 05");
+    let first = row_tops(&h, "Family 00");
+    assert_eq!(zeta.len(), 2, "Zeta Sans is listed as recent and in its alphabetical place");
+    assert_eq!(five.len(), 2);
+    assert!(zeta[0] < five[0] && five[0] < first[0], "recent first, most recent on top: {zeta:?} {five:?} {first:?}");
+    assert!(h.query_by_label("Not Installed").is_none(), "a recent font that is no longer installed isn't listed");
+}
+
+#[test]
+fn a_search_hides_the_recent_section() {
+    let mut h = library_harness(&["Zeta Sans"], &[]);
+    h.get_by_role(Role::TextInput).type_text("zeta");
+    h.run();
+    assert_eq!(row_tops(&h, "Zeta Sans").len(), 1);
+}
+
+#[test]
+fn clicking_a_star_marks_the_font_without_picking_it_or_closing_the_menu() {
+    let mut h = library_harness(&[], &[]);
+    let row = h.get_by_label("Family 03").rect();
+    // The star sits left of the style expander's slot, which is left of the row's button.
+    let star = egui::pos2(row.left() - 2.0 - 16.0 - 2.0 - 11.0, row.center().y);
+    h.hover_at(star);
+    h.run();
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton { pos: star, button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
+        h.run();
+    }
+    assert_eq!(h.state().library.toggled.as_deref(), Some("Family 03"));
+    assert_eq!(h.state().current, "Family 00", "the star doesn't pick the font");
+    assert!(h.query_by_label("Family 10").is_some(), "the menu stays open");
+}
+
+#[test]
+fn the_favorites_filter_lists_only_starred_fonts() {
+    let mut h = library_harness(&["Family 01"], &["Zeta Sans", "Family 07"]);
+    assert_eq!(h.query_all_by_label("Remove from Favorites").count(), 2, "starred rows show a filled star");
+    h.get_by_label("Show Favorite Fonts").click();
+    h.run();
+    assert!(h.query_by_label("Zeta Sans").is_some() && h.query_by_label("Family 07").is_some());
+    assert!(h.query_by_label("Family 01").is_none(), "neither other fonts nor the recent section show");
+    assert!(h.query_by_label("Family 02").is_none());
+}
+
+#[test]
+fn the_favorites_filter_explains_an_empty_library() {
+    let mut h = library_harness(&[], &[]);
+    h.get_by_label("Show Favorite Fonts").click();
+    h.run();
+    assert!(h.query_by_label_contains("No favorite fonts yet").is_some());
+}
+
+#[test]
+fn a_clicked_star_is_saved_to_the_preferences_library() {
+    let mut app = crate::PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+    let mut library = super::FontLibrary::of(&app);
+    library.toggled = Some("Bebas Neue".into());
+    library.finish(&mut app);
+    assert_eq!(app.session.prefs().type_.favorite_fonts, ["Bebas Neue"]);
+    assert_eq!(super::FontLibrary::of(&app).favorites, ["Bebas Neue"]);
+    app.note_recent_font("Arial");
+    assert_eq!(super::FontLibrary::of(&app).recent, ["Arial"]);
+}
+
+fn traits(class: photocraft_text::FontClass, format: photocraft_text::FontFormat, panose: [u8; 10]) -> Option<photocraft_text::FamilyTraits> {
+    Some(photocraft_text::FamilyTraits { class: Some(class), format, panose, weight: 400 })
+}
+
+/// Family 00-02 serif, 03 a variable sans, 04 monospace, Zeta Sans a sans like 03; the rest
+/// unknown. Family 01 has three styles.
+fn filter_harness() -> Harness<'static, LibState> {
+    use photocraft_text::{FontClass, FontFormat};
+    let serif = [2, 2, 6, 3, 5, 4, 5, 2, 3, 4];
+    let sans = [2, 11, 6, 4, 2, 2, 2, 2, 2, 4];
+    let map: crate::font_filters::TraitsMap = [
+        ("Family 00", traits(FontClass::Serif, FontFormat::TrueType, serif)),
+        ("Family 01", traits(FontClass::Serif, FontFormat::OpenType, serif)),
+        ("Family 02", traits(FontClass::Serif, FontFormat::TrueType, serif)),
+        ("Family 03", traits(FontClass::SansSerif, FontFormat::Variable, sans)),
+        ("Family 04", traits(FontClass::Monospace, FontFormat::TrueType, [2, 11, 6, 9, 2, 2, 2, 2, 2, 4])),
+        ("Zeta Sans", traits(FontClass::SansSerif, FontFormat::TrueType, sans)),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v))
+    .collect();
+    let styles: HashMap<String, Vec<String>> =
+        [("Family 01".to_string(), vec!["Regular".to_string(), "Bold".to_string(), "Italic".to_string()])].into_iter().collect();
+    library_harness_with(&[], &[], Some(map), Some(styles))
+}
+
+#[test]
+fn the_class_list_narrows_the_fonts_and_all_classes_brings_them_back() {
+    let mut h = filter_harness();
+    h.get_by_label("Serif").click();
+    h.run();
+    for f in ["Family 00", "Family 01", "Family 02"] {
+        assert!(h.query_by_label(f).is_some(), "{f} is a serif");
+    }
+    assert!(h.query_by_label("Family 03").is_none() && h.query_by_label("Zeta Sans").is_none());
+    h.get_by_label("Monospace").click();
+    h.run();
+    assert!(h.query_by_label("Family 04").is_some() && h.query_by_label("Family 00").is_none());
+    h.get_by_label("All Classes").click();
+    h.run();
+    assert!(h.query_by_label("Family 10").is_some(), "unclassified fonts are back");
+}
+
+#[test]
+fn variable_and_similar_filters_and_clear_all() {
+    let mut h = filter_harness();
+    h.get_by_label("Show Variable Fonts").click();
+    h.run();
+    assert!(h.query_by_label("Family 03").is_some());
+    assert!(h.query_by_label("Family 00").is_none() && h.query_by_label("Zeta Sans").is_none());
+    h.get_by_label("Clear All").click();
+    h.run();
+    assert!(h.query_by_label("Family 10").is_some(), "Clear All turns every filter off");
+    // Similar to the current Family 00 (a serif): the serifs first, sans after, unknown never.
+    h.get_by_label("Show Similar Fonts").click();
+    h.run();
+    let top = |label: &str| h.query_by_label(label).map(|n| n.rect().top());
+    let (current, serif, sans) = (top("Family 00").unwrap(), top("Family 02").unwrap(), top("Zeta Sans").unwrap());
+    assert!(current < serif && serif < sans, "{current} {serif} {sans}");
+    assert!(h.query_by_label("Family 10").is_none(), "fonts that can't be compared aren't listed");
+}
+
+/// With Show Similar Fonts on, the arrows step down the list made for the font current when it
+/// was turned on: re-sorting around each font stepped to sent the next step back.
+#[test]
+fn the_arrows_walk_down_the_similar_fonts_list() {
+    let mut h = filter_harness();
+    h.get_by_label("Show Similar Fonts").click();
+    h.run();
+    let order: Vec<String> = {
+        let mut rows: Vec<(f32, String)> = ["Family 00", "Family 01", "Family 02", "Family 03", "Family 04", "Zeta Sans"]
+            .iter()
+            .filter_map(|f| h.query_by_label(f).map(|n| (n.rect().top(), f.to_string())))
+            .collect();
+        rows.sort_by(|a, b| a.0.total_cmp(&b.0));
+        rows.into_iter().map(|(_, f)| f).collect()
+    };
+    assert_eq!(order[0], "Family 00", "the current font first");
+    for step in 1..4 {
+        h.key_press(egui::Key::ArrowDown);
+        h.run();
+        assert_eq!(h.state().current, order[step], "step {step} through {order:?}");
+    }
+}
+
+#[test]
+fn a_style_picked_under_the_expander_picks_the_family_in_that_style() {
+    let mut h = filter_harness();
+    assert_eq!(h.query_all_by_label("Show Styles").count(), 1, "only a family with several styles expands");
+    h.get_by_label("Show Styles").click();
+    h.run();
+    h.get_by_label("Bold").click();
+    h.run();
+    assert_eq!(h.state().current, "Family 01");
+    assert_eq!(h.state().library.picked_style.as_deref(), Some("Bold"));
+    assert!(h.query_by_label("Family 10").is_none(), "picking a style closes the menu");
+}
+
+/// An expanded family's style rows stay listed while the list scrolls its own row out of view:
+/// they used to vanish then, so the rows below jumped up.
+#[test]
+fn an_expanded_familys_styles_stay_listed_when_its_row_scrolls_away() {
+    let mut h = filter_harness();
+    let top = h.get_by_label("Family 00").rect().top();
+    h.get_by_label("Show Styles").click();
+    h.run();
+    assert!(h.query_by_label("Italic").is_some(), "Family 01 lists its styles");
+    let over = h.get_by_label("Family 05").rect().center();
+    h.hover_at(over);
+    h.run();
+    let mut styles_without_family_row = false;
+    for _ in 0..40 {
+        h.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: vec2(0.0, -6.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: Modifiers::NONE,
+            source: egui::MouseWheelSource::Unknown,
+        });
+        h.run_steps(3);
+        let family_gone = h.query_by_label("Family 01").is_none_or(|n| n.rect().bottom() <= top);
+        let italic = h.query_by_label("Italic").map(|n| n.rect());
+        styles_without_family_row |= family_gone && italic.is_some_and(|r| r.bottom() > top);
+    }
+    assert!(styles_without_family_row, "the style rows show below the family row scrolled out of view");
+}
+
+#[test]
+fn the_search_field_stays_in_place_while_the_list_scrolls() {
+    let mut h = library_harness(&[], &[]);
+    let search = h.get_by_role(Role::TextInput).rect();
+    let row = h.get_by_label("Family 01").rect();
+    h.hover_at(row.center());
+    h.run();
+    h.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: vec2(0.0, -300.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: Modifiers::NONE,
+        source: egui::MouseWheelSource::Unknown,
+    });
+    h.run_steps(4);
+    assert_eq!(h.get_by_role(Role::TextInput).rect(), search, "the field doesn't scroll away");
+    assert!(h.query_by_label("Family 01").is_none_or(|n| n.rect().top() < row.top()), "the list scrolled");
+}
+
+#[test]
+fn the_preview_follows_the_font_under_the_pointer_and_the_menu_keeps_its_width() {
+    let mut h = library_harness(&[], &[]);
+    assert!(h.query_by_label("Font preview: Family 00").is_some(), "the current font first");
+    let width = popup_width(&h);
+    h.hover_at(h.get_by_label("Family 03").rect().center());
+    h.run_steps(3);
+    assert!(h.query_by_label("Font preview: Family 03").is_some());
+    // Filtering never widens the menu past its list (no empty strip).
+    h.get_by_label("Show Favorite Fonts").click();
+    h.run_steps(3);
+    assert!((popup_width(&h) - width).abs() < 1.0, "{} vs {width}", popup_width(&h));
+}
+
+fn popup_width(h: &Harness<'static, LibState>) -> f32 {
+    let preview = h.query_all_by_label_contains("Font preview:").next().unwrap().rect();
+    preview.width()
+}
+
+#[test]
+fn the_preview_sets_the_type_layers_text_or_the_selection_being_typed() {
+    let mut app = crate::PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+    assert_eq!(super::preview_text(&app), None, "no document");
+    app.run("file.new", serde_json::json!({"width": 64, "height": 64})).unwrap();
+    let id = app.run("type.create", serde_json::json!({"text": "Hello\rworld  ", "size": 24})).unwrap()["layer"].as_u64().unwrap();
+    app.run("layer.select", serde_json::json!({"id": id})).ok();
+    app.ui.text_edit = Some(crate::state::TextEdit {
+        layer: id,
+        document: None,
+        caret: 0,
+        anchor: 0,
+        session: "s".into(),
+        created: false,
+        mask: false,
+        dragging: false,
+        resize: None,
+        preedit: None,
+    });
+    assert_eq!(super::preview_text(&app).as_deref(), Some("Hello world"), "the whole text, on one line");
+    if let Some(ed) = app.ui.text_edit.as_mut() {
+        ed.anchor = 6;
+        ed.caret = 11;
+    }
+    assert_eq!(super::preview_text(&app).as_deref(), Some("world"), "only the selection while typing");
+    if let Some(ed) = app.ui.text_edit.as_mut() {
+        ed.anchor = 50;
+        ed.caret = 400;
+    }
+    assert_eq!(super::preview_text(&app), None, "an out-of-range selection is blank, not a panic");
+}
+
+/// Minimizing the window (a zero-size screen for a few frames) and restoring it must not leave
+/// the menu wider than its lists: an empty strip appeared beside the list after a minimize.
+#[test]
+fn minimizing_and_restoring_the_window_keeps_the_menu_as_wide_as_its_lists() {
+    let mut h = library_harness(&[], &[]);
+    h.set_size(vec2(1286.0, 900.0));
+    h.run_steps(3);
+    let width = |h: &Harness<'static, LibState>| h.ctx.memory(|m| m.area_rect(h.state().popup)).map(|r| r.width());
+    let before = width(&h).expect("menu open");
+    for size in [vec2(1.0, 1.0), vec2(0.0, 0.0), vec2(1286.0, 900.0)] {
+        h.set_size(size);
+        h.run_steps(3);
+    }
+    let after = width(&h).expect("menu still open");
+    assert!((after - before).abs() < 1.0, "menu width {after} after a minimize, {before} before");
+}
+
+/// The same with the font button near the right edge, as in the Character panel, where the
+/// popup is pushed left against the window's edge.
+#[test]
+fn a_menu_opened_from_the_right_edge_stays_narrow_after_a_minimize() {
+    let mut families: Vec<String> = (0..20).map(|i| format!("Family {i:02}")).collect();
+    families.push("Zeta Sans".into());
+    let state = LibState { current: "Family 00".into(), families, library: Default::default(), popup: egui::Id::NULL };
+    let mut h = Harness::builder().with_size(vec2(1286.0, 900.0)).build_ui_state(
+        |ui, s: &mut LibState| {
+            ui.horizontal(|ui| {
+                ui.add_space(940.0);
+                s.popup = ui.make_persistent_id(egui::IdSalt::new("type-font")).with("popup");
+                let fams = s.families.clone();
+                super::family_picker_in(ui, "type-font", &mut s.current, 300.0, &fams, FontPreview::Medium, &mut s.library);
+            });
+        },
+        state,
+    );
+    h.run();
+    h.query_all_by_role(Role::ComboBox).next().unwrap().click();
+    h.run_steps(4);
+    let width = |h: &Harness<'static, LibState>| h.ctx.memory(|m| m.area_rect(h.state().popup)).map(|r| r.width());
+    let before = width(&h).expect("menu open");
+    for size in [vec2(0.0, 0.0), vec2(300.0, 200.0), vec2(1286.0, 900.0)] {
+        h.set_size(size);
+        h.run_steps(4);
+    }
+    h.run_steps(4);
+    let after = width(&h).expect("menu open again");
+    assert!(after <= before + 1.0, "menu width {after} after a minimize, {before} before");
 }
 
 /// #5152: in the full app the Properties panel's Character section draws a second font picker

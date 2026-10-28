@@ -394,8 +394,9 @@ pub fn display_doc(app: &mut PhotocraftApp, idx: usize) -> Option<(Arc<Document>
     if cmd == cmds::CREATE {
         let mut l = cmds::new_layer(&app.session, &doc, &p).ok()?;
         l.id = PREVIEW_LAYER;
-        let above = app.session.active().and_then(|s| s.active_layer);
-        shown.insert_above(above, l);
+        // Where the committed layer will go, so the preview doesn't jump on release.
+        let active = app.session.active().and_then(|s| s.active_layer);
+        photocraft_engine::layer_place::insert_new(&mut shown, active, l, photocraft_engine::layer_place::Place::AutoEditable);
     } else {
         let l = doc.layer(layer)?;
         let f = edited_fill(app, l, doc.bounds(), cmd, &p)?;

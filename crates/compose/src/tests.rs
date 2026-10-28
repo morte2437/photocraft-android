@@ -1358,6 +1358,46 @@ fn group_effects_reach_past_children_effects() {
     assert!(close4(px(&d, 24, 43), [1.0; 4]), "nothing past the shadow: {:?}", px(&d, 24, 43));
 }
 
+/// An empty Photoshop Frame with an outside stroke along `points` (#4381).
+fn stroked_frame(points: &[(f64, f64)], width: f32) -> Layer {
+    use photocraft_doc::vector::{Path, ShapeStroke, StrokeAlign, Subpath, VectorMask};
+    let mut l = Layer::group("Frame 1", vec![]);
+    l.vector_mask = Some(VectorMask::new(Path::new(vec![Subpath::polygon(points)])));
+    if let LayerContent::Group(g) = &mut l.content {
+        g.frame_stroke = Some(ShapeStroke { width, align: StrokeAlign::Outside, paint: Fill::Solid(Color::rgb(0.0, 0.0, 1.0)), ..Default::default() });
+    }
+    l
+}
+
+#[test]
+fn frame_stroke_bounds_hold_its_mitered_corners() {
+    // A flat triangle's sharp corners miter far past the path (Photoshop's miter limit is 100):
+    // more than the stroke width, which is all the path's bounds grow by.
+    let canvas = Rect::new(0, 0, 64, 64);
+    let frame = stroked_frame(&[(20.0, 32.0), (44.0, 32.0), (32.0, 29.0)], 2.0);
+    let drawn = crate::bounds::content_bounds(&shape_split::frame_stroke(&frame, canvas, SampleType::U8).unwrap());
+    assert!(drawn.x0 < 20 - 2 && drawn.x1 > 44 + 2, "the miters reach past the width: {drawn:?}");
+    for b in [layer_bounds(&frame, canvas), composite_bounds(&frame, canvas).unwrap(), effect_source_bounds(&frame, canvas)] {
+        assert_eq!(b.union(&drawn), b, "{b:?} holds the stroke {drawn:?}");
+    }
+}
+
+#[test]
+fn an_empty_frames_effects_follow_its_stroke() {
+    // No children: the frame's drop shadow is shaped by its stroke alone.
+    let mut d = doc_white(48, 48);
+    let mut frame = stroked_frame(&[(14.0, 14.0), (34.0, 14.0), (34.0, 34.0), (14.0, 34.0)], 4.0);
+    frame.effects.items = vec![Effect::DropShadow(shadow(3.0, 90.0))];
+    d.layers.push(frame);
+    let canvas = d.bounds();
+    let drawn = crate::bounds::content_bounds(&shape_split::frame_stroke(&d.layers[1], canvas, SampleType::U8).unwrap());
+    let b = effect_source_bounds(&d.layers[1], canvas);
+    assert!(!drawn.is_empty() && b.union(&drawn) == b, "{b:?} holds the stroke {drawn:?}");
+    assert!(close4(px(&d, 24, 36), [0.0, 0.0, 1.0, 1.0]), "stroke below the frame: {:?}", px(&d, 24, 36));
+    assert!(close4(px(&d, 24, 39), [0.0, 0.0, 0.0, 1.0]), "shadow below the stroke: {:?}", px(&d, 24, 39));
+    assert!(close4(px(&d, 24, 24), [1.0; 4]), "the frame's inside is empty: {:?}", px(&d, 24, 24));
+}
+
 #[test]
 fn drop_shadow_uses_global_light_and_knockout() {
     let mut d = fx_doc(vec![Effect::DropShadow(Shadow { use_global_light: true, ..shadow(5.0, 0.0) })]);
@@ -3291,23 +3331,28 @@ fn effect_maps_with_nested_rayon_work_do_not_deadlock() {
     // #276: a tile building a layer's effect maps inside a once-init ran Rayon work; waiting on
     // it, its worker stole another tile of the same layer, which then blocked on the init held
     // further up its own stack. Eight threads (two rarely steal across that wait) and 64 tiles make that stealing likely; the cache is
-    // purged every round so the maps are rebuilt. A watchdog turns a hang into a failure.
+    // purged every round so the maps are rebuilt. A watchdog turns a hang into a failure: it
+    // fails when 120 s pass without a render finishing, however long all 101 renders take.
+    const ROUNDS: usize = 100;
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let Ok(pool) = rayon::ThreadPoolBuilder::new().num_threads(8).build() else { return };
         let d = nested_parallel_fx_doc();
         let first = pool.install(|| render_tiled(&d, d.bounds(), 64));
-        for _ in 0..100 {
+        let _ = tx.send(());
+        for _ in 0..ROUNDS {
             purge_effect_cache();
             let out = pool.install(|| render_tiled(&d, d.bounds(), 64));
             assert!(out.px == first.px, "renders differ between rounds");
+            let _ = tx.send(());
         }
-        let _ = tx.send(());
     });
-    match rx.recv_timeout(std::time::Duration::from_secs(120)) {
-        Ok(()) => {}
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => panic!("effect-map rendering deadlocked (#276)"),
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => panic!("render thread panicked"),
+    for _ in 0..=ROUNDS {
+        match rx.recv_timeout(std::time::Duration::from_secs(120)) {
+            Ok(()) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => panic!("effect-map rendering deadlocked (#276)"),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => panic!("render thread panicked"),
+        }
     }
 }
 

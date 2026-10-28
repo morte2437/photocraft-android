@@ -1,4 +1,4 @@
-use super::*;
+use super::{Align2, BlendMode, Color32, PhotocraftApp, Rect, Sense, Stroke, StrokeKind, Tokens, c32, icons, json, pos2, vec2, widgets};
 
 /// Photoshop's brush preset picker chip: a soft/hard round tip preview with the size underneath.
 /// Draw a round brush tip preview (hard core fading to a soft edge).

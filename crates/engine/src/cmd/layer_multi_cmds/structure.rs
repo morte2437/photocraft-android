@@ -1,5 +1,5 @@
 use super::selection::{reselect, selected, top_level};
-use super::*;
+use super::{Document, EngineError, Layer, LayerContent, LayerId, PixelFormat, Result, Session, Value, bad, json};
 
 // ---------- structural commands ----------
 
@@ -97,7 +97,7 @@ pub(crate) fn check_group_depth(doc: &Document, what: &str) -> Result<()> {
 
 /// Group Layers (⌘G) / Group from Layers: the explicit layer, or every selected layer, moves
 /// into a new, collapsed group placed where the top-most of them was. Bottom-to-top order is
-/// preserved.
+/// preserved. The New Group dialog's colour, mode and opacity are set in the same history step.
 pub fn group_layers(s: &mut Session, p: &Value) -> Result<Value> {
     let ids = match crate::commands::explicit_layer(s, p)? {
         Some(id) => vec![id],
@@ -106,11 +106,15 @@ pub fn group_layers(s: &mut Session, p: &Value) -> Result<Value> {
     if ids.is_empty() {
         return Err(EngineError::Other("no layer selected".into()));
     }
-    let name = p.get("name").and_then(Value::as_str).map(str::to_string);
+    let opts = crate::group_options::GroupOptions::parse("layer.groupLayers", p)?;
     let gid = s.edit("Group Layers", |doc, active| {
         let ids = top_level(doc, &ids);
+        // Artboards stay at the top level: inside a group they would stop being boards.
+        if ids.iter().any(|id| doc.layer(*id).is_some_and(|l| l.artboard().is_some())) {
+            return Err(EngineError::Other("artboards can't go into a group".into()));
+        }
         let top = *ids.last().ok_or(EngineError::NoLayer(LayerId(0)))?;
-        let name = name.unwrap_or_else(|| doc.next_layer_name("Group"));
+        let name = opts.name.clone().unwrap_or_else(|| doc.next_layer_name("Group"));
         // Photoshop creates the group collapsed, so the panel shows one row in place of the layers.
         let mut group = Layer::group(name, vec![]);
         if let LayerContent::Group(g) = &mut group.content {
@@ -121,7 +125,9 @@ pub fn group_layers(s: &mut Session, p: &Value) -> Result<Value> {
         for id in &ids {
             children.push(doc.remove(*id).ok_or(EngineError::NoLayer(*id))?);
         }
-        *doc.layer_mut(gid).and_then(Layer::children_mut).ok_or(EngineError::NoLayer(gid))? = children;
+        let group = doc.layer_mut(gid).ok_or(EngineError::NoLayer(gid))?;
+        *group.children_mut().ok_or(EngineError::NoLayer(gid))? = children;
+        opts.apply(group);
         check_group_depth(doc, "Group Layers")?;
         *active = Some(gid);
         Ok(gid)
@@ -278,7 +284,7 @@ pub fn duplicate_selected(s: &mut Session, in_place: bool, label: &str) -> Resul
 /// Show/hide every selected layer in one step.
 pub fn set_visible_selected(s: &mut Session, visible: bool) -> Result<Value> {
     let sel = selected(s);
-    s.edit(if visible { "Show Layers" } else { "Hide Layers" }, |doc, _| {
+    s.edit_visibility(if visible { "Show Layers" } else { "Hide Layers" }, |doc, _| {
         for id in &sel {
             doc.layer_mut(*id).ok_or(EngineError::NoLayer(*id))?.visible = visible;
         }

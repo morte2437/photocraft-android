@@ -3,7 +3,7 @@ use super::info::info_panel;
 use super::layers::{channels, layers};
 use super::navigator::navigator;
 use super::properties::{adjustments_grid, properties_body};
-use super::*;
+use super::{PhotocraftApp, Stroke, Tokens, icons, pos2};
 
 // ----------------------------------------------------------------------------- dock
 

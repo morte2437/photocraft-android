@@ -190,9 +190,10 @@
 	Background from Layer	Фон из слоя
 	Background From Layer	Фон из слоя
 	Group Layers	Сгруппировать слои
-	Group…	Группировать…
+	Group…	Группа…
 	Ungroup Layers	Разгруппировать слои
 	Group from Layers…	Группа из слоёв…
+	New Group from Layers…	Новая группа из слоёв…
 	Hide Layers	Скрыть слои
 	Arrange	Упорядочить
 	Bring to Front	На передний план
@@ -2376,7 +2377,7 @@
 	Gamut warning color	Цвет предупреждения об охвате
 	Gamut warning opacity	Непрозрачность предупреждения об охвате
 	General	Основные
-	Generator enabled	Генератор включён
+	Enable Generator	Включить генератор
 	Gif	GIF
 	Glossy	Глянцевая
 	Grid color	Цвет сетки
@@ -3115,6 +3116,9 @@ curves	Smooth	Сгладить
 # History panel menu (#2966)
 	New Snapshot…	Новый снимок…
 	History Options…	Параметры истории…
+# History panel › History Options… (#2966)
+	Allow Non-Linear History	Разрешить нелинейную историю
+	Make Layer Visibility Changes Undoable	Разрешить отмену изменений видимости слоёв
 # Print dialog (#2697)
 	Emulsion Down	Эмульсией вниз
 	Functions	Функции
@@ -3236,6 +3240,33 @@ curves	Smooth	Сгладить
 	Gray Value (Median)	Уровень серого (медиана)
 	Integrated Density	Интегральная плотность
 	Length	Длина
+	Show Favorite Fonts	Показать избранные шрифты
+	No favorite fonts yet: click the star beside a font to add it.	Избранных шрифтов пока нет: нажмите на звёздочку рядом со шрифтом, чтобы добавить его.
+	Favorite fonts	Избранные шрифты
+	Add to Favorites	Добавить в избранное
+	Remove from Favorites	Удалить из избранного
+	Show All Fonts	Показать все шрифты
+	All Classes	Все классы
+	Blackletter	Готические
+	Decorative	Декоративные
+	Font preview:	Предпросмотр шрифта:
+	Handwritten	Рукописные
+	Hide Font Classes	Скрыть классы шрифтов
+	Hide Styles	Скрыть начертания
+	Monospace	Моноширинные
+	No fonts match these filters.	Нет шрифтов, подходящих под эти фильтры.
+	No similar fonts: the current font doesn't say what it looks like.	Нет похожих шрифтов: текущий шрифт не описывает свой вид.
+	OpenType font	Шрифт OpenType
+	Sans Serif	Без засечек
+	Script	Каллиграфические
+	Serif	С засечками
+	Show Font Classes	Показать классы шрифтов
+	Show Similar Fonts	Показать похожие шрифты
+	Show Styles	Показать начертания
+	Show Variable Fonts	Показать вариативные шрифты
+	Slab Serif	С брусковыми засечками
+	TrueType font	Шрифт TrueType
+	Variable font	Вариативный шрифт
 # Bevel & Emboss shading controls.
 	Highlight Mode	Режим светлых тонов
 	Highlight Color	Цвет светлых тонов
@@ -4654,3 +4685,6 @@ shape	Appearance	Оформление
 	Tight Curl	Плотный завиток
 	Loose Curl	Свободный завиток
 	Stylized dabs from a history state	Стилизованные мазки из состояния истории
+	Font size presets	Наборы размеров шрифта
+	Leading presets	Наборы интерлиньяжа
+	Tracking presets	Наборы трекинга

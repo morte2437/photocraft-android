@@ -419,7 +419,7 @@ fn adam7_idat(data: &[u8], w: usize, h: usize, bpp: usize, level: PngCompression
     }
     let lvl = match level {
         PngCompression::None => flate2::Compression::none(),
-        PngCompression::Fast => flate2::Compression::fast(),
+        PngCompression::Fast => FAST,
         PngCompression::Default => flate2::Compression::default(),
         PngCompression::Best => flate2::Compression::best(),
     };
@@ -427,6 +427,11 @@ fn adam7_idat(data: &[u8], w: usize, h: usize, bpp: usize, level: PngCompression
     z.write_all(&raw).map_err(|e| CodecError::encode(F, e))?;
     z.finish().map_err(|e| CodecError::encode(F, e))
 }
+
+/// The deflate level of [`PngCompression::Fast`]: zlib-rs level 1 writes static Huffman blocks
+/// only (20-30% bigger on filtered photos); level 3 is the lowest that is never bigger than
+/// miniz's level 1 was, at about twice its time.
+const FAST: flate2::Compression = flate2::Compression::new(3);
 
 /// Images at least this large (bytes) are filtered and deflated on all cores.
 const PARALLEL_MIN_BYTES: usize = 4 << 20;
@@ -456,7 +461,7 @@ fn banded_idat(data: &[u8], w: usize, h: usize, bpp: usize, level: PngCompressio
     let band_rows = (BAND_BYTES / stride.saturating_add(1)).max(1);
     let bands: Vec<(usize, usize)> = (0..h).step_by(band_rows).map(|y| (y, (y + band_rows).min(h))).collect();
     let lvl = match level {
-        PngCompression::Fast => flate2::Compression::fast(),
+        PngCompression::Fast => FAST,
         PngCompression::Best => flate2::Compression::best(),
         _ => flate2::Compression::default(),
     };
@@ -494,7 +499,7 @@ fn banded_idat(data: &[u8], w: usize, h: usize, bpp: usize, level: PngCompressio
     let mut out = Vec::with_capacity(parts.iter().map(|p| p.1.len()).sum::<usize>() + 6);
     // zlib header: deflate, 32 K window; FLEVEL only advertises the effort.
     out.extend_from_slice(match level {
-        PngCompression::Fast => &[0x78, 0x01],
+        PngCompression::Fast => &[0x78, 0x5E],
         PngCompression::Best => &[0x78, 0xDA],
         _ => &[0x78, 0x9C],
     });
@@ -509,7 +514,7 @@ fn banded_idat(data: &[u8], w: usize, h: usize, bpp: usize, level: PngCompressio
 
 /// Raw deflate of one band: ends on a sync flush, or finishes the stream for the `last` band.
 /// The output buffer is sized past deflate's worst case so that one call takes the whole band
-/// and completes the flush: when a sync flush fills the buffer, miniz_oxide (flate2's Rust
+/// and completes the flush: when a sync flush fills the buffer, miniz_oxide (flate2's former Rust
 /// backend) can return before compressing the last lookahead bytes, and the next call only
 /// drains the pending output, so a resumed flush silently drops data. `None` (the caller then
 /// uses the serial encoder) if the single call did not finish.

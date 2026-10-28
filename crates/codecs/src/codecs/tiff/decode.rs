@@ -1,6 +1,9 @@
 use super::bands::{convert_ab, decode_bands, extra_sample_indices, split_extra_samples, zeroed};
 use super::tags::{F, TAG_IMAGE_SOURCE_DATA, TAG_PHOTOSHOP, TAG_XMP, TEXT_TAGS, photoshop_tags};
-use super::*;
+use super::{
+    ChannelLayout, ChunkType, CodecError, DecodeWarning, Decoder, ExifDirs, File, Ifd, Image, Limits, Metadata, Read, SampleType, Seek, SeekFrom, Tag,
+    camera_raw, err, ifd, io, map_err, tiff_exif,
+};
 
 /// Decodes the page Photoshop would open: the first full-resolution directory.
 pub(crate) fn decode(bytes: &[u8], limits: &Limits) -> Result<Image, CodecError> {
@@ -235,6 +238,112 @@ pub(super) fn is_eof(e: &tiff::TiffError) -> bool {
     matches!(e, tiff::TiffError::IoError(io) if io.kind() == io::ErrorKind::UnexpectedEof)
 }
 
+/// The sample type of a (SampleFormat, BitsPerSample) pair.
+fn sample_src(format: u64, bits: u64) -> Result<Src, CodecError> {
+    Ok(match (format, bits) {
+        (1, 1 | 2 | 4) => Src::Bits(bits as u8),
+        (1, 8) => Src::U8,
+        (1, 16) => Src::U16,
+        (1, 32) => Src::U32,
+        (1, 64) => Src::U64,
+        (3, 16) => Src::F16,
+        (3, 32) => Src::F32,
+        (3, 64) => Src::F64,
+        (2, _) => return Err(CodecError::unsupported(F, "signed integer samples")),
+        _ => return Err(CodecError::unsupported(F, format!("{bits}-bit samples (sample format {format})"))),
+    })
+}
+
+/// The ColorMap of a palette image as RGB entries.
+fn read_palette(f: &File<'_>, dir: &Ifd, spp: u64, bits: u64, src: Src) -> Result<Vec<[u16; 3]>, CodecError> {
+    if spp != 1 || !matches!(src, Src::Bits(_) | Src::U8 | Src::U16) {
+        return Err(CodecError::unsupported(F, format!("palette image with {spp} samples of {bits} bits")));
+    }
+    let n = 1u64 << bits;
+    let map = dir.get(ifd::TAG_COLOR_MAP).filter(|e| e.ty == 3 && e.count == 3 * n).ok_or_else(|| err("palette image without a valid ColorMap"))?;
+    let at = |i: u64| f.uint(map, i).and_then(|v| u16::try_from(v).ok());
+    let table: Option<Vec<[u16; 3]>> = (0..n).map(|i| Some([at(i)?, at(n + i)?, at(2 * n + i)?])).collect();
+    table.ok_or_else(|| err("palette ColorMap cut off"))
+}
+
+/// The layout of a multiband read that was asked for every sample.
+fn multiband_layout(photometric: u64, has_alpha: bool, gray_alpha: bool) -> ChannelLayout {
+    match (photometric, has_alpha) {
+        (2 | 8 | 9, true) => ChannelLayout::Rgba,
+        (2 | 8 | 9, false) => ChannelLayout::Rgb,
+        (5, true) => ChannelLayout::CmykA,
+        (5, false) => ChannelLayout::Cmyk,
+        _ if gray_alpha => ChannelLayout::GrayA,
+        _ => ChannelLayout::Gray,
+    }
+}
+
+/// The chunk tables must match the geometry. Checked in 64 bits, before the `tiff` crate does
+/// the same arithmetic in narrower types.
+fn check_chunk_tables(f: &File<'_>, dir: &Ifd, (w, h): (u32, u32), spp: u64, planar: bool, tiled: bool) -> Result<(u64, u64), CodecError> {
+    let need = |tag: u16, name: &str| f.tag_uint(dir, tag).ok_or_else(|| err(format!("missing or unreadable {name}")));
+    let (cw, ch) = if tiled {
+        let tw = need(ifd::TAG_TILE_WIDTH, "TileWidth")?;
+        let tl = need(ifd::TAG_TILE_LENGTH, "TileLength")?;
+        (tw, tl)
+    } else {
+        (u64::from(w), f.tag_uint(dir, ifd::TAG_ROWS_PER_STRIP).unwrap_or(u64::from(h)).min(u64::from(h)))
+    };
+    if cw == 0 || ch == 0 {
+        return Err(err("zero tile or strip size"));
+    }
+    // The chunk tables must match the geometry. Checked here, in 64 bits, before the `tiff`
+    // crate does the same arithmetic in narrower types.
+    let planes_in_file = if planar { spp } else { 1 };
+    let expected = u64::from(w)
+        .div_ceil(cw)
+        .checked_mul(u64::from(h).div_ceil(ch))
+        .and_then(|n| n.checked_mul(planes_in_file))
+        .filter(|&n| n <= u64::from(u32::MAX))
+        .ok_or_else(|| err("too many strips or tiles"))?;
+    let (offsets_tag, counts_tag) = if tiled { (324, 325) } else { (273, 279) };
+    let counts = (dir.get(offsets_tag).map(|e| e.count), dir.get(counts_tag).map(|e| e.count));
+    if counts != (Some(expected), Some(expected)) {
+        return Err(err(format!("{expected} strips or tiles expected, the tables list {counts:?}")));
+    }
+    Ok((cw, ch))
+}
+
+/// Byte patches the `tiff` crate reads through: the directory is seen as the last of its chain,
+/// and PhotometricInterpretation is handed over as black-is-zero (or RGB for Lab) when asked to.
+fn header_patches(
+    f: &File<'_>,
+    dir: &Ifd,
+    photometric_entry: Option<ifd::Entry>,
+    patch_photometric: bool,
+    lab_only: bool,
+) -> Result<Vec<(u64, Vec<u8>)>, CodecError> {
+    let mut patches: Vec<(u64, Vec<u8>)> = Vec::new();
+    let encode_u = |v: u64, len: usize| -> Vec<u8> {
+        let b = if f.le { v.to_le_bytes() } else { v.to_be_bytes() };
+        if f.le { b.get(..len).map(<[u8]>::to_vec).unwrap_or_default() } else { b.get(8 - len..).map(<[u8]>::to_vec).unwrap_or_default() }
+    };
+    if f.big {
+        patches.push((8, encode_u(dir.at, 8)));
+    } else {
+        let at = u32::try_from(dir.at).map_err(|_| err("directory offset out of range"))?;
+        patches.push((4, encode_u(u64::from(at), 4)));
+    }
+    // The directory is seen as the last of its chain: the chain was walked already, and a
+    // cycle through it must not fail this page.
+    patches.push((dir.next_at, vec![0; if f.big { 8 } else { 4 }]));
+    if patch_photometric {
+        let e = photometric_entry.ok_or_else(|| err("missing PhotometricInterpretation"))?;
+        let len = match e.ty {
+            3 if e.count == 1 => 2,
+            4 if e.count == 1 => 4,
+            _ => return Err(err("malformed PhotometricInterpretation")),
+        };
+        patches.push((e.value_at, encode_u(if lab_only { 2 } else { 1 }, len)));
+    }
+    Ok(patches)
+}
+
 /// Decodes the pixels of one directory.
 fn decode_ifd(f: &File<'_>, dir: &Ifd, limits: &Limits) -> Result<Image, CodecError> {
     // The values the `tiff` crate reads must exist: a count past the end of the file is
@@ -263,59 +372,13 @@ fn decode_ifd(f: &File<'_>, dir: &Ifd, limits: &Limits) -> Result<Image, CodecEr
     let planar = f.tag_uint(dir, ifd::TAG_PLANAR) == Some(2);
     let extra = f.tag_uints(dir, ifd::TAG_EXTRA_SAMPLES, 64).unwrap_or_default();
     let tiled = dir.get(ifd::TAG_TILE_OFFSETS).is_some();
-    let (cw, ch) = if tiled {
-        let tw = need(ifd::TAG_TILE_WIDTH, "TileWidth")?;
-        let tl = need(ifd::TAG_TILE_LENGTH, "TileLength")?;
-        (tw, tl)
-    } else {
-        (u64::from(w), f.tag_uint(dir, ifd::TAG_ROWS_PER_STRIP).unwrap_or(u64::from(h)).min(u64::from(h)))
-    };
-    if cw == 0 || ch == 0 {
-        return Err(err("zero tile or strip size"));
-    }
-    // The chunk tables must match the geometry. Checked here, in 64 bits, before the `tiff`
-    // crate does the same arithmetic in narrower types.
-    let planes_in_file = if planar { spp } else { 1 };
-    let expected = u64::from(w)
-        .div_ceil(cw)
-        .checked_mul(u64::from(h).div_ceil(ch))
-        .and_then(|n| n.checked_mul(planes_in_file))
-        .filter(|&n| n <= u64::from(u32::MAX))
-        .ok_or_else(|| err("too many strips or tiles"))?;
-    let (offsets_tag, counts_tag) = if tiled { (324, 325) } else { (273, 279) };
-    let counts = (dir.get(offsets_tag).map(|e| e.count), dir.get(counts_tag).map(|e| e.count));
-    if counts != (Some(expected), Some(expected)) {
-        return Err(err(format!("{expected} strips or tiles expected, the tables list {counts:?}")));
-    }
-    let src = match (format, bits) {
-        (1, 1 | 2 | 4) => Src::Bits(bits as u8),
-        (1, 8) => Src::U8,
-        (1, 16) => Src::U16,
-        (1, 32) => Src::U32,
-        (1, 64) => Src::U64,
-        (3, 16) => Src::F16,
-        (3, 32) => Src::F32,
-        (3, 64) => Src::F64,
-        (2, _) => return Err(CodecError::unsupported(F, "signed integer samples")),
-        _ => return Err(CodecError::unsupported(F, format!("{bits}-bit samples (sample format {format})"))),
-    };
-
+    let (cw, ch) = check_chunk_tables(f, dir, (w, h), spp, planar, tiled)?;
+    let src = sample_src(format, bits)?;
     // WhiteIsZero and palette images are handed to the `tiff` crate as BlackIsZero: it then
     // returns the stored samples, and the interpretation is applied here (for every depth and
     // with alpha, which the crate's own inversion does not cover).
     let invert = photometric == 0;
-    let palette = if photometric == 3 {
-        if spp != 1 || !matches!(src, Src::Bits(_) | Src::U8 | Src::U16) {
-            return Err(CodecError::unsupported(F, format!("palette image with {spp} samples of {bits} bits")));
-        }
-        let n = 1u64 << bits;
-        let map = dir.get(ifd::TAG_COLOR_MAP).filter(|e| e.ty == 3 && e.count == 3 * n).ok_or_else(|| err("palette image without a valid ColorMap"))?;
-        let at = |i: u64| f.uint(map, i).and_then(|v| u16::try_from(v).ok());
-        let table: Option<Vec<[u16; 3]>> = (0..n).map(|i| Some([at(i)?, at(n + i)?, at(2 * n + i)?])).collect();
-        Some(table.ok_or_else(|| err("palette ColorMap cut off"))?)
-    } else {
-        None
-    };
+    let palette = if photometric == 3 { Some(read_palette(f, dir, spp, bits, src)?) } else { None };
     // CIE L*a*b*: CIELab (8; a* and b* signed) and ICCLab (9; a* and b* offset) are handed to the
     // `tiff` crate as RGB, then labelled Lab with a* and b* in PhotoCraft's encoding
     // (`convert_ab`).
@@ -337,29 +400,7 @@ fn decode_ifd(f: &File<'_>, dir: &Ifd, limits: &Limits) -> Result<Image, CodecEr
     // asked (photometric patched to black-is-zero below); gray already comes back as multiband.
     let unused = !extra.is_empty() && (spp as usize) > color.saturating_add(usize::from(alpha_at.is_some()));
     let all_samples = palette.is_none() && matches!(photometric, 2 | 5 | 8 | 9) && (alpha_at.is_some_and(|a| a > 0) || (!planar && unused));
-    let mut patches: Vec<(u64, Vec<u8>)> = Vec::new();
-    let encode_u = |v: u64, len: usize| -> Vec<u8> {
-        let b = if f.le { v.to_le_bytes() } else { v.to_be_bytes() };
-        if f.le { b.get(..len).map(<[u8]>::to_vec).unwrap_or_default() } else { b.get(8 - len..).map(<[u8]>::to_vec).unwrap_or_default() }
-    };
-    if f.big {
-        patches.push((8, encode_u(dir.at, 8)));
-    } else {
-        let at = u32::try_from(dir.at).map_err(|_| err("directory offset out of range"))?;
-        patches.push((4, encode_u(u64::from(at), 4)));
-    }
-    // The directory is seen as the last of its chain: the chain was walked already, and a
-    // cycle through it must not fail this page.
-    patches.push((dir.next_at, vec![0; if f.big { 8 } else { 4 }]));
-    if invert || palette.is_some() || all_samples || lab {
-        let e = photometric_entry.ok_or_else(|| err("missing PhotometricInterpretation"))?;
-        let len = match e.ty {
-            3 if e.count == 1 => 2,
-            4 if e.count == 1 => 4,
-            _ => return Err(err("malformed PhotometricInterpretation")),
-        };
-        patches.push((e.value_at, encode_u(if lab && !all_samples { 2 } else { 1 }, len)));
-    }
+    let patches = header_patches(f, dir, photometric_entry, invert || palette.is_some() || all_samples || lab, lab && !all_samples)?;
 
     let tl = {
         let mut l = tiff::decoder::Limits::default();
@@ -380,29 +421,7 @@ fn decode_ifd(f: &File<'_>, dir: &Ifd, limits: &Limits) -> Result<Image, CodecEr
         tiff::ColorType::Gray(_) => (ChannelLayout::Gray, 1),
         tiff::ColorType::Multiband { num_samples, .. } if all_samples => {
             // Lab reads as RGB here and is relabelled below.
-            let layout = match photometric {
-                2 | 8 | 9 => {
-                    if alpha_at.is_some() {
-                        ChannelLayout::Rgba
-                    } else {
-                        ChannelLayout::Rgb
-                    }
-                }
-                5 => {
-                    if alpha_at.is_some() {
-                        ChannelLayout::CmykA
-                    } else {
-                        ChannelLayout::Cmyk
-                    }
-                }
-                _ => {
-                    if gray_alpha {
-                        ChannelLayout::GrayA
-                    } else {
-                        ChannelLayout::Gray
-                    }
-                }
-            };
+            let layout = multiband_layout(photometric, alpha_at.is_some(), gray_alpha);
             (layout, usize::from(num_samples))
         }
         tiff::ColorType::Multiband { num_samples, .. } if photometric <= 1 => {

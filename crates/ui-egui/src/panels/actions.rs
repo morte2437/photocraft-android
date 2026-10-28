@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 use photocraft_engine::actions_cmds::{self, Action};
 
 use crate::PhotocraftApp;
+use crate::icons;
 use crate::theme::Tokens;
 
 /// Which row is selected and which rows are expanded. The action list itself is
@@ -821,6 +822,87 @@ fn display_order(rows: &[Row]) -> Vec<usize> {
     order
 }
 
+struct SetHeaderResult {
+    toggled: bool,
+    save: bool,
+}
+
+fn draw_set_header(ui: &mut egui::Ui, set: &str, count: u64, collapsed: bool, tokens: &Tokens) -> SetHeaderResult {
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::click());
+    response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, !collapsed, set));
+    if response.hovered() {
+        ui.painter().rect_filled(rect, 0.0, tokens.hover.gamma_multiply(0.5));
+    }
+    let triangle = Rect::from_center_size(pos2(rect.left() + 12.0, rect.center().y), vec2(8.0, 8.0));
+    let points = if collapsed {
+        vec![triangle.left_top(), triangle.right_center(), triangle.left_bottom()]
+    } else {
+        vec![triangle.left_top(), triangle.right_top(), triangle.center_bottom()]
+    };
+    ui.painter().add(egui::Shape::convex_polygon(points, tokens.text_dim, Stroke::NONE));
+    icons::paint(
+        ui,
+        Rect::from_center_size(pos2(rect.left() + 30.0, rect.center().y), vec2(16.0, 16.0)),
+        if collapsed { "folder" } else { "folder-open" },
+        12.0,
+        tokens.icon,
+    );
+    ui.painter().text(pos2(rect.left() + 44.0, rect.center().y), Align2::LEFT_CENTER, set, egui::FontId::proportional(12.0), tokens.text);
+    let summary = crate::i18n::trn(crate::i18n::current(), count, "{n} action", "{n} actions");
+    ui.painter().text(pos2(rect.right() - 8.0, rect.center().y), Align2::RIGHT_CENTER, summary, egui::FontId::proportional(11.0), tokens.text_faint);
+    let toggled = response.clicked();
+    let mut save = false;
+    response.context_menu(|ui| {
+        if ui.button(tl!("Save Set…")).clicked() {
+            save = true;
+            ui.close();
+        }
+    });
+    SetHeaderResult { toggled, save }
+}
+
+fn action_context_menu(app: &mut PhotocraftApp, response: &egui::Response, index: usize, name: &str, swatch: &str) {
+    egui::Popup::context_menu(response).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+        ui.label(tl!("Keyboard Shortcuts"));
+        let current = app.session.prefs().shortcuts.get(&shortcut_id(name)).cloned().unwrap_or_default();
+        // Photoshop's Action Options: a function key, with Shift and Command (#7646).
+        let (key, mut shift, mut command) = photocraft_engine::atn_cmds::parse_function_key(&current).unwrap_or((0, false, false));
+        for number in std::iter::once(0).chain(1..=12) {
+            let label = if number == 0 { tl!("None").to_string() } else { format!("F{number}") };
+            if ui.selectable_label(key == number, label).clicked() {
+                let chosen = if number == 0 { String::new() } else { photocraft_engine::atn_cmds::function_key_name(number, shift, command) };
+                let _ = assign_shortcut(app, name, &chosen);
+                ui.close();
+            }
+        }
+        ui.add_enabled_ui(key > 0, |ui| {
+            let command_label = if cfg!(target_os = "macos") { tl!("Command") } else { tl!("Ctrl") };
+            let toggled = ui.checkbox(&mut shift, tl!("Shift")).changed() | ui.checkbox(&mut command, command_label).changed();
+            if toggled {
+                let _ = assign_shortcut(app, name, &photocraft_engine::atn_cmds::function_key_name(key, shift, command));
+            }
+        });
+        ui.separator();
+        ui.menu_button(tl!("Color"), |ui| {
+            for (id, label) in [
+                ("", tl!("None")),
+                ("red", tl!("Red")),
+                ("orange", tl!("Orange")),
+                ("yellow", tl!("Yellow")),
+                ("green", tl!("Green")),
+                ("blue", tl!("Blue")),
+                ("violet", tl!("Violet")),
+                ("gray", tl!("Gray")),
+            ] {
+                if ui.selectable_label(swatch == id, label).clicked() {
+                    let _ = app.run("actions.setColor", json!({"action": index, "color": id}));
+                    ui.close();
+                }
+            }
+        });
+    });
+}
+
 pub fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let recording = app.session.actions.recording;
@@ -875,22 +957,7 @@ pub fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         if rows.is_empty() {
             ui.label(egui::RichText::new(tl!("Record ● a sequence of edits, then play ▶ it on any document.")).color(t.text_faint).size(11.5));
         }
-        if egui::DragAndDrop::has_payload_of_type::<DragRow>(ui.ctx()) {
-            let clip = ui.clip_rect();
-            if let Some(p) = ui.input(|i| i.pointer.hover_pos()).filter(|p| clip.contains(*p)) {
-                let delta = if p.y < clip.top() + 22.0 {
-                    8.0
-                } else if p.y > clip.bottom() - 22.0 {
-                    -8.0
-                } else {
-                    0.0
-                };
-                if delta != 0.0 {
-                    ui.scroll_with_delta(vec2(0.0, delta));
-                    ui.ctx().request_repaint();
-                }
-            }
-        }
+        scroll_actions_during_drag(ui);
         let mut shown_set: Option<&str> = None;
         for i in display_order(&rows) {
             let Row { name, steps, disabled, dialogs, set, color: swatch } = &rows[i];
@@ -900,38 +967,14 @@ pub fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             {
                 shown_set = Some(set);
                 let collapsed = app.ui.actions.collapsed_sets.iter().any(|c| c == set);
-                let (hr, hresp) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::click());
-                hresp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, !collapsed, set));
-                if hresp.hovered() {
-                    ui.painter().rect_filled(hr, 0.0, t.hover.gamma_multiply(0.5));
-                }
-                let tri = Rect::from_center_size(pos2(hr.left() + 12.0, hr.center().y), vec2(8.0, 8.0));
-                let pts = if collapsed {
-                    vec![tri.left_top(), tri.right_center(), tri.left_bottom()]
-                } else {
-                    vec![tri.left_top(), tri.right_top(), tri.center_bottom()]
-                };
-                ui.painter().add(egui::Shape::convex_polygon(pts, t.text_dim, Stroke::NONE));
-                crate::icons::paint(
-                    ui,
-                    Rect::from_center_size(pos2(hr.left() + 30.0, hr.center().y), vec2(16.0, 16.0)),
-                    if collapsed { "folder" } else { "folder-open" },
-                    12.0,
-                    t.icon,
-                );
-                ui.painter().text(pos2(hr.left() + 44.0, hr.center().y), Align2::LEFT_CENTER, set, egui::FontId::proportional(12.0), t.text);
                 let count = rows.iter().filter(|r| r.set.as_deref() == Some(set)).count() as u64;
-                let summary = crate::i18n::trn(crate::i18n::current(), count, "{n} action", "{n} actions");
-                ui.painter().text(pos2(hr.right() - 8.0, hr.center().y), Align2::RIGHT_CENTER, summary, egui::FontId::proportional(11.0), t.text_faint);
-                if hresp.clicked() {
+                let result = draw_set_header(ui, set, count, collapsed, &t);
+                if result.toggled {
                     set_toggled = Some(set.to_string());
                 }
-                hresp.context_menu(|ui| {
-                    if ui.button(tl!("Save Set…")).clicked() {
-                        save_set = Some(set.to_string());
-                        ui.close();
-                    }
-                });
+                if result.save {
+                    save_set = Some(set.to_string());
+                }
             }
             if set.as_deref().is_some_and(|set| app.ui.actions.collapsed_sets.iter().any(|c| c == set)) {
                 continue;
@@ -1012,45 +1055,7 @@ pub fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             }
             // Clicks inside stay open, so Shift and Command can both be ticked; every item that
             // finishes closes the menu itself.
-            egui::Popup::context_menu(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
-                ui.label(tl!("Keyboard Shortcuts"));
-                let current = app.session.prefs().shortcuts.get(&shortcut_id(name)).cloned().unwrap_or_default();
-                // Photoshop's Action Options: a function key, with Shift and Command (#7646).
-                let (key, mut shift, mut command) = photocraft_engine::atn_cmds::parse_function_key(&current).unwrap_or((0, false, false));
-                for n in std::iter::once(0).chain(1..=12) {
-                    let label = if n == 0 { tl!("None").to_string() } else { format!("F{n}") };
-                    if ui.selectable_label(key == n, label).clicked() {
-                        let chosen = if n == 0 { String::new() } else { photocraft_engine::atn_cmds::function_key_name(n, shift, command) };
-                        let _ = assign_shortcut(app, name, &chosen);
-                        ui.close();
-                    }
-                }
-                ui.add_enabled_ui(key > 0, |ui| {
-                    let command_label = if cfg!(target_os = "macos") { tl!("Command") } else { tl!("Ctrl") };
-                    let toggled = ui.checkbox(&mut shift, tl!("Shift")).changed() | ui.checkbox(&mut command, command_label).changed();
-                    if toggled {
-                        let _ = assign_shortcut(app, name, &photocraft_engine::atn_cmds::function_key_name(key, shift, command));
-                    }
-                });
-                ui.separator();
-                ui.menu_button(tl!("Color"), |ui| {
-                    for (id, label) in [
-                        ("", tl!("None")),
-                        ("red", tl!("Red")),
-                        ("orange", tl!("Orange")),
-                        ("yellow", tl!("Yellow")),
-                        ("green", tl!("Green")),
-                        ("blue", tl!("Blue")),
-                        ("violet", tl!("Violet")),
-                        ("gray", tl!("Gray")),
-                    ] {
-                        if ui.selectable_label(swatch == id, label).clicked() {
-                            let _ = app.run("actions.setColor", json!({"action": i, "color": id}));
-                            ui.close();
-                        }
-                    }
-                });
-            });
+            action_context_menu(app, &resp, i, name, swatch);
             if resp.double_clicked() && !button_mode {
                 // Photoshop renames in place when the name itself is double-clicked.
                 if resp.interact_pointer_pos().is_some_and(|p| name_rect.expand2(vec2(4.0, 13.0)).contains(p)) {
@@ -1060,56 +1065,11 @@ pub fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 }
             }
             if expanded {
-                for (step, (id, params)) in steps.iter().enumerate() {
-                    let (r, response) = ui.allocate_exact_size(vec2(ui.available_width(), 20.0), Sense::click_and_drag());
-                    if reveal == Some((i, step + 1)) {
-                        ui.scroll_to_rect(r, Some(egui::Align::BOTTOM));
-                    }
-                    let label = step_label(id, params);
-                    let selected = app.ui.actions.selected == Some(i) && app.ui.actions.selected_step == Some(step);
-                    response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, &label));
-                    if selected {
-                        ui.painter().rect_filled(r, 0.0, t.row_selected);
-                    } else if response.hovered() {
-                        ui.painter().rect_filled(r, 0.0, t.hover.gamma_multiply(0.5));
-                    }
-                    if let Some(change) = drag_row(ui, &response, DragRow { action: i, step: Some(step) }, &t) {
-                        moved = Some(change);
-                    }
-                    let on = !disabled.contains(&step);
-                    let color = if on { t.text_dim } else { t.text_faint };
-                    ui.painter().text(pos2(x0 + 62.0, r.center().y), Align2::LEFT_CENTER, &label, egui::FontId::proportional(11.5), color);
-                    // Photoshop's check column: unchecked steps are skipped by playback, Batch and droplets.
-                    let check = ui.interact(
-                        Rect::from_center_size(pos2(x0 + 30.0, r.center().y), vec2(16.0, 16.0)),
-                        ui.scope_id().with(("action-step-check", i, step)),
-                        Sense::click(),
-                    );
-                    check.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, true, on, format!("{}: {label}", tl!("Include in playback"))));
-                    paint_check(ui, check.rect, on, &t);
-                    // Photoshop's dialog column: playback shows the step's dialog, seeded with its
-                    // recorded values, and continues when it is confirmed.
-                    let with_dialog = dialogs.contains(&step);
-                    let dialog = ui.interact(
-                        Rect::from_center_size(pos2(x0 + 46.0, r.center().y), vec2(16.0, 16.0)),
-                        ui.scope_id().with(("action-step-dialog", i, step)),
-                        Sense::click(),
-                    );
-                    // A toggle button, not a check box, so the check column stays the only CheckBox role.
-                    dialog.widget_info(|| {
-                        egui::WidgetInfo::selected(egui::Role::Button, true, with_dialog, format!("{}: {label}", tl!("Show dialog during playback")))
-                    });
-                    crate::icons::paint(ui, dialog.rect, "message-square", 11.0, if with_dialog { t.icon } else { t.text_faint.gamma_multiply(0.45) });
-                    let dialog = dialog.on_hover_text(tl!("Show dialog during playback"));
-                    if check.on_hover_text(tl!("Include in playback")).clicked() {
-                        toggled = Some((i, step));
-                    } else if dialog.clicked() {
-                        dialog_toggled = Some((i, step));
-                    } else if response.clicked() {
-                        app.ui.actions.selected = Some(i);
-                        app.ui.actions.selected_step = Some(step);
-                    }
-                }
+                let context = StepRowsContext { action: i, x0, steps, disabled, dialogs, reveal, tokens: &t };
+                let events = draw_step_rows(app, ui, &context);
+                moved = moved.or(events.moved);
+                toggled = toggled.or(events.toggled);
+                dialog_toggled = dialog_toggled.or(events.dialog_toggled);
             }
         }
     });
@@ -1188,6 +1148,104 @@ pub fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             }
         }
     }
+}
+
+fn scroll_actions_during_drag(ui: &mut egui::Ui) {
+    if !egui::DragAndDrop::has_payload_of_type::<DragRow>(ui.ctx()) {
+        return;
+    }
+    let clip = ui.clip_rect();
+    let Some(pointer) = ui.input(|input| input.pointer.hover_pos()).filter(|p| clip.contains(*p)) else { return };
+    let delta = if pointer.y < clip.top() + 22.0 {
+        8.0
+    } else if pointer.y > clip.bottom() - 22.0 {
+        -8.0
+    } else {
+        0.0
+    };
+    if delta == 0.0 {
+        return;
+    }
+    ui.scroll_with_delta(vec2(0.0, delta));
+    ui.ctx().request_repaint();
+}
+
+struct StepRowsContext<'a> {
+    action: usize,
+    x0: f32,
+    steps: &'a [(String, Value)],
+    disabled: &'a std::collections::BTreeSet<usize>,
+    dialogs: &'a std::collections::BTreeSet<usize>,
+    reveal: Option<(usize, usize)>,
+    tokens: &'a Tokens,
+}
+
+#[derive(Default)]
+struct StepRowEvents {
+    moved: Option<(DragRow, usize)>,
+    toggled: Option<(usize, usize)>,
+    dialog_toggled: Option<(usize, usize)>,
+}
+
+fn draw_step_rows(app: &mut PhotocraftApp, ui: &mut egui::Ui, context: &StepRowsContext<'_>) -> StepRowEvents {
+    let mut events = StepRowEvents::default();
+    for (step, (id, params)) in context.steps.iter().enumerate() {
+        let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 20.0), Sense::click_and_drag());
+        if context.reveal == Some((context.action, step + 1)) {
+            ui.scroll_to_rect(rect, Some(egui::Align::BOTTOM));
+        }
+        let label = step_label(id, params);
+        draw_step_label(app, ui, rect, &response, step, &label, context);
+        events.moved = drag_row(ui, &response, DragRow { action: context.action, step: Some(step) }, context.tokens).or(events.moved);
+        let (check, dialog) = draw_step_controls(ui, rect, step, &label, context);
+        if check.clicked() {
+            events.toggled = Some((context.action, step));
+        } else if dialog.clicked() {
+            events.dialog_toggled = Some((context.action, step));
+        } else if response.clicked() {
+            app.ui.actions.selected = Some(context.action);
+            app.ui.actions.selected_step = Some(step);
+        }
+    }
+    events
+}
+
+fn draw_step_label(app: &PhotocraftApp, ui: &egui::Ui, rect: Rect, response: &egui::Response, step: usize, label: &str, context: &StepRowsContext<'_>) {
+    let selected = app.ui.actions.selected == Some(context.action) && app.ui.actions.selected_step == Some(step);
+    response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, label));
+    if selected {
+        ui.painter().rect_filled(rect, 0.0, context.tokens.row_selected);
+    } else if response.hovered() {
+        ui.painter().rect_filled(response.rect, 0.0, context.tokens.hover.gamma_multiply(0.5));
+    }
+    let color = if context.disabled.contains(&step) { context.tokens.text_faint } else { context.tokens.text_dim };
+    ui.painter().text(pos2(context.x0 + 62.0, rect.center().y), Align2::LEFT_CENTER, label, egui::FontId::proportional(11.5), color);
+}
+
+fn draw_step_controls(ui: &mut egui::Ui, rect: Rect, step: usize, label: &str, context: &StepRowsContext<'_>) -> (egui::Response, egui::Response) {
+    let on = !context.disabled.contains(&step);
+    let check = ui.interact(
+        Rect::from_center_size(pos2(context.x0 + 30.0, rect.center().y), vec2(16.0, 16.0)),
+        ui.scope_id().with(("action-step-check", context.action, step)),
+        Sense::click(),
+    );
+    check.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, true, on, format!("{}: {label}", tl!("Include in playback"))));
+    paint_check(ui, check.rect, on, context.tokens);
+    let with_dialog = context.dialogs.contains(&step);
+    let dialog = ui.interact(
+        Rect::from_center_size(pos2(context.x0 + 46.0, rect.center().y), vec2(16.0, 16.0)),
+        ui.scope_id().with(("action-step-dialog", context.action, step)),
+        Sense::click(),
+    );
+    dialog.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, with_dialog, format!("{}: {label}", tl!("Show dialog during playback"))));
+    crate::icons::paint(
+        ui,
+        dialog.rect,
+        "message-square",
+        11.0,
+        if with_dialog { context.tokens.icon } else { context.tokens.text_faint.gamma_multiply(0.45) },
+    );
+    (check.on_hover_text(tl!("Include in playback")), dialog.on_hover_text(tl!("Show dialog during playback")))
 }
 
 #[cfg(test)]

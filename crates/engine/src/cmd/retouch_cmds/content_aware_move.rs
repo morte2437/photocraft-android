@@ -34,7 +34,10 @@ use photocraft_algo::content_aware::{FillOptions, color_amount, color_level, fil
 use photocraft_algo::transform::{Homography, Interp};
 
 use super::patch::{coverage, offset, selection_area, target_layer};
-use super::*;
+use super::{
+    Document, EngineError, LayerContent, LayerId, Rect, Region, Result, SampleLayers, Session, Surface, Value, alpha_index, bad, clamp_samples,
+    composite_region, damage_json, flag, has_pixel_layer, json, string, targets_pixels,
+};
 
 const CMD: &str = "paint.contentAwareMove";
 

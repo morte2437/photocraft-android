@@ -1,5 +1,5 @@
 use super::panel::surface;
-use super::*;
+use super::{Response, Sense, Stroke, StrokeKind, Tokens, Ui, Vec2, theme, vec2};
 
 /// The most characters a [`text_field`] holds unless its caller sets a limit: far beyond any
 /// search, name or hex value, yet a pasted multi-gigabyte string is cut at the field instead of

@@ -285,6 +285,19 @@ fn an_unselected_work_path_is_not_drawn_over_the_canvas() {
     }
 }
 
+/// #9114: the active type layer's Type Path shows with the Pen, whose Auto Add/Delete edits it.
+#[test]
+fn the_type_path_of_type_on_a_path_is_drawn_with_the_pen() {
+    let ctx = egui::Context::default();
+    let mut app = app();
+    app.run("path.set", json!({"name": "work", "path": {"subpaths": [{"closed": false, "knots": [[100, 20], [100, 180]]}]}})).unwrap();
+    app.run("type.create", json!({"x": 20, "y": 70, "text": "On a path", "size": 24})).unwrap();
+    app.run("type.attachToPath", json!({})).unwrap();
+    app.run("path.delete", json!({"name": "work"})).unwrap();
+    app.ui.tool = Tool::Pen;
+    assert!(overlay_shapes(&app, &ctx) > 0, "the Type Path is drawn");
+}
+
 #[test]
 fn show_target_path_and_extras_hide_the_path_outlines() {
     // #1119: View › Show › Target Path only flipped its checkmark; the canvas kept drawing the
@@ -319,6 +332,61 @@ fn show_target_path_and_extras_hide_the_path_outlines() {
     app.ui.pen = Some(PenPath { knots: vec![[[20.0, 20.0]; 3], [[60.0, 40.0]; 3]], ..Default::default() });
     toggle(&mut app, "view.show.targetPath");
     assert!(overlay_shapes(&app, &ctx) > 0, "the pen path in progress is still drawn");
+}
+
+#[test]
+fn making_a_selection_from_the_pen_path_deselects_and_hides_it() {
+    // #6079: after ⌘↩ the work path's outline stayed on the canvas; Photoshop deselects it.
+    let ctx = egui::Context::default();
+    let mut app = app();
+    app.ui.tool = Tool::Pen;
+    app.ui.pen = Some(PenPath { knots: vec![[[20.0, 20.0]; 3], [[120.0, 20.0]; 3], [[120.0, 80.0]; 3]], ..Default::default() });
+    path_to_selection(&mut app, json!({})).unwrap();
+    let st = app.session.active().unwrap();
+    assert!(st.doc.selection.is_some(), "the selection is made");
+    assert!(st.doc.work_path.is_some(), "the work path is kept");
+    assert_eq!(app.ui.selected_path, None, "and deselected in the Paths panel");
+    assert_eq!(overlay_shapes(&app, &ctx), 0, "so the canvas no longer draws it");
+    assert!(target_path(&app).is_none() && !delete_key_deletes_work_path(&app), "nor edits or deletes it");
+    // Undo removes the selection; the path stays.
+    app.run("edit.undo", json!({})).unwrap();
+    assert!(app.session.active().unwrap().doc.work_path.is_some());
+    assert!(app.session.active().unwrap().doc.selection.is_none());
+    assert_eq!(overlay_shapes(&app, &ctx), 0, "still hidden");
+    // Selecting a saved path in the Paths panel doesn't show it; only the Work Path does.
+    let saved = json!({"subpaths": [{"closed": true, "knots": [{"anchor": [60, 60]}, {"anchor": [90, 60]}, {"anchor": [90, 90]}]}]});
+    app.run("path.set", json!({"name": "Saved", "path": saved})).unwrap();
+    app.ui.selected_path = Some("Saved".into());
+    // The selected saved path is drawn (#6550), the hidden Work Path isn't.
+    let saved_only = overlay_shapes(&app, &ctx);
+    assert!(!work_path_shown(&app) && saved_only > 0, "a saved path keeps the Work Path hidden");
+    let hidden = app.ui.hidden_work_path.take();
+    assert!(overlay_shapes(&app, &ctx) > saved_only, "the Work Path adds its own outline when shown");
+    app.ui.hidden_work_path = hidden;
+    app.ui.selected_path = None;
+    // Another Work Path made any other way (Make Work Path, `path.set` over the control
+    // channel…) is a different path: it shows without being selected.
+    let other = json!({"subpaths": [{"closed": true, "knots": [{"anchor": [5, 5]}, {"anchor": [50, 5]}, {"anchor": [50, 50]}]}]});
+    app.run("path.set", json!({"name": "work", "path": other})).unwrap();
+    assert_eq!(app.ui.selected_path, None);
+    assert!(work_path_shown(&app) && overlay_shapes(&app, &ctx) > 0, "a changed Work Path is shown");
+    // Selecting it in the Paths panel shows it again.
+    app.ui.selected_path = Some("work".into());
+    assert!(overlay_shapes(&app, &ctx) > 0);
+    // A new path drawn after the deselect replaces the work path and is shown.
+    path_to_selection(&mut app, json!({})).unwrap();
+    assert_eq!(overlay_shapes(&app, &ctx), 0);
+    app.ui.pen = Some(PenPath { knots: vec![[[10.0, 10.0]; 3], [[40.0, 10.0]; 3]], ..Default::default() });
+    pen_commit(&mut app, false);
+    assert_eq!(app.ui.selected_path.as_deref(), Some("work"));
+    assert_eq!(app.session.active().unwrap().doc.work_path.as_ref().unwrap().subpaths.len(), 1, "replaced, not combined");
+    assert!(overlay_shapes(&app, &ctx) > 0);
+    // A shape layer's path stays the active path: layer targeting is unchanged.
+    app.ui.tool_options.vector_mode = "shape".into();
+    app.ui.pen = Some(PenPath { knots: vec![[[20.0, 20.0]; 3], [[120.0, 20.0]; 3], [[120.0, 80.0]; 3]], ..Default::default() });
+    path_to_selection(&mut app, json!({})).unwrap();
+    assert_eq!(app.ui.selected_path.as_deref(), Some("layer"));
+    assert!(active_shape_path(&app).is_some());
 }
 
 #[test]

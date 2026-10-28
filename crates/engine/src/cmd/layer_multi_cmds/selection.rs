@@ -1,5 +1,5 @@
 use super::moves::{link_groups, recorded_move};
-use super::*;
+use super::{DocState, Document, EngineError, Layer, LayerContent, LayerId, Rect, Result, Session, Value, bad, json};
 
 // ---------- selection state ----------
 

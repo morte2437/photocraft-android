@@ -87,6 +87,7 @@ pub(crate) use layer_drag::{dropped_on, layer_drag_edge_scroll};
 pub(crate) use layer_row::thumb_load_badge;
 #[cfg(test)]
 use layer_row::{layer_thumb_fit, paint_clipping_indicator};
+pub(crate) use layers::blend_options;
 #[cfg(test)]
 use layers::{layers, opacity_row_layout, simple_lock_toggle};
 #[cfg(test)]
@@ -859,6 +860,49 @@ mod snapshot_row_tests {
         let st = h.state().session.active().unwrap();
         assert_eq!(st.history.entries().len(), 1, "the dragged state and the ones after it are deleted");
         assert_eq!(st.snapshots.len(), 2, "the snapshot is kept");
+    }
+
+    /// With Allow Non-Linear History and only the oldest state current, a click on the trash has
+    /// nothing to delete (the oldest state stays, as in Photoshop), so the trash is disabled; a
+    /// later (dimmed) state dragged onto it is still deleted, and once a past state exists again
+    /// the click works.
+    #[test]
+    fn non_linear_trash_click_never_targets_the_oldest_state() {
+        let mut h = pro_history();
+        h.state_mut().run("history.options", json!({"allowNonLinearHistory": true})).unwrap();
+        for _ in 0..3 {
+            h.state_mut().run("edit.undo", json!({})).unwrap();
+        }
+        h.run_steps(3);
+        let history = |h: &Harness<'static, PhotocraftApp>| {
+            let st = h.state().session.active().unwrap();
+            (st.history.past_len(), st.history.redo_labels().count())
+        };
+        assert_eq!(history(&h), (0, 3), "Open current, New Layer, Fill, Fill dimmed");
+        assert!(h.state().session.is_enabled("history.deleteState"), "the engine still offers a later state to delete");
+        let enabled = |h: &Harness<'static, PhotocraftApp>| {
+            let p = trash(h);
+            h.ctx.viewport(|v| {
+                v.prev_pass.widgets.layers().flat_map(|(_, w)| w.iter()).find(|w| w.rect.size() == vec2(26.0, 26.0) && w.rect.center() == p).map(|w| w.enabled)
+            })
+        };
+        assert_eq!(enabled(&h), Some(false), "a click would only target the oldest state");
+        let p = trash(&h);
+        click(&mut h, p);
+        assert_eq!(history(&h), (0, 3), "the click deletes nothing");
+        assert!(!h.state().ui.status_error, "and reports no error: {}", h.state().ui.status);
+
+        // The last dimmed Fill dragged onto the trash: only it goes.
+        let row = h.get_all_by_label("Fill").last().expect("the dimmed Fill row").rect().center();
+        drag(&mut h, row, p);
+        assert_eq!(history(&h), (0, 2), "the dragged later state is deleted");
+
+        // A past state again: the click deletes the current one.
+        h.state_mut().run("edit.redo", json!({})).unwrap();
+        h.run_steps(3);
+        assert_eq!(enabled(&h), Some(true));
+        click(&mut h, p);
+        assert_eq!(history(&h).0, 0, "the click deleted the current state");
     }
 
     /// Snapshot rows scroll with the states: many snapshots in a short dock leave the footer and

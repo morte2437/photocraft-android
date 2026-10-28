@@ -4,7 +4,7 @@ use super::layer_drag::{
 };
 use super::layer_row::{RowSel, layer_row};
 use super::options_bar::{LAYER_PCT_W, body_text_width, pct_action, scrub_pct_label};
-use super::*;
+use super::{BlendMode, Layer, LayerId, MaskKind, PhotocraftApp, Rect, Sense, Tokens, Value, empty, icons, json, label, pos2, theme, vec2, widgets};
 
 // ----------------------------------------------------------------------------- layers
 
@@ -28,7 +28,7 @@ pub(super) fn simple_lock_toggle(background: bool, l: &Layer, targets: &Value) -
 
 /// The Layers panel's blend modes: Photoshop's, plus the layer's own Paint.NET mode when it has one
 /// (an imported `.pdn`), so the menu matches Photoshop's for every other layer.
-fn blend_options(groups: bool, current: BlendMode) -> Vec<(BlendMode, &'static str)> {
+pub(crate) fn blend_options(groups: bool, current: BlendMode) -> Vec<(BlendMode, &'static str)> {
     let own = Some(current).filter(|m| !m.has_psd_equivalent());
     std::iter::once(BlendMode::PassThrough).filter(|_| groups).chain(BlendMode::LAYER_MODES).chain(own).map(|m| (m, m.label())).collect()
 }
@@ -425,10 +425,23 @@ pub(super) fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         actions.extend(footer_drop(ui, &new_layer, footer_drag, "layer.duplicate"));
         let group = icons::button(ui, "folder", 26.0, false, tl!("Create a new group"));
         if group.clicked() {
-            // Multiple selected layers share one group. Shift also groups a single selection.
-            let shift = ui.input(|i| i.modifiers.shift);
-            let cmd = if (shift || selection.len() > 1) && active_layer.is_some() { "layer.groupLayers" } else { "layer.new.group" };
-            actions.push((cmd.into(), json!({})));
+            // Like Photoshop CC 2014 and later, a click with two or more layers selected puts them
+            // in the new group (Layer › Group Layers); with one layer or none it adds an empty
+            // group above the active layer. Shift-click, the older way, groups the selection too
+            // (#2561). ⌥-click asks first in the New Group dialog, ⌘-click adds an empty group
+            // below the active layer.
+            let m = ui.input(|i| i.modifiers);
+            let groups = (m.shift || selection.len() > 1) && active_layer.is_some();
+            if m.alt {
+                // Null params go through the menu path, which opens the dialog.
+                let cmd = if groups { crate::new_group_ui::FROM_LAYERS } else { crate::new_group_ui::NEW_GROUP };
+                actions.push((cmd.into(), Value::Null));
+            } else if m.command {
+                actions.push(("layer.new.group".into(), json!({"position": "below"})));
+            } else {
+                let cmd = if groups { "layer.groupLayers" } else { "layer.new.group" };
+                actions.push((cmd.into(), json!({})));
+            }
         }
         actions.extend(footer_drop(ui, &group, footer_drag, "layer.groupLayers"));
         let adj = footer_menu_button(ui, "adjustment-layer", 26.0, tl!("Create new fill or adjustment layer"));

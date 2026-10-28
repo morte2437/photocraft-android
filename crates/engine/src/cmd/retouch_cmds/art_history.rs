@@ -7,7 +7,7 @@ use photocraft_paint::MAX_BRUSH_SIZE;
 use photocraft_paint::retouch::{Region, alpha_index};
 use serde_json::{Value, json};
 
-use super::*;
+use super::{EngineError, Result, Session, bad, blend_param, damage_json, parse_brush, run_stroke};
 
 const CMD: &str = "paint.artHistoryBrush";
 const MAX_POINTS: usize = 4096;

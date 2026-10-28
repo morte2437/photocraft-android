@@ -54,6 +54,11 @@ fn picker_lists_english_first_then_names_alphabetically() {
 
 #[test]
 fn tags_map_to_languages() {
+    western_and_legacy_tags_resolve();
+    chinese_tags_resolve_by_region_and_script();
+}
+
+fn western_and_legacy_tags_resolve() {
     assert_eq!(lang_from_tag("ja_JP.UTF-8"), Some(JA()));
     assert_eq!(lang_from_tag("ja-JP"), Some(JA()));
     assert_eq!(lang_from_tag("en_US.UTF-8"), Some(Lang::EN));
@@ -73,6 +78,9 @@ fn tags_map_to_languages() {
     assert_eq!(lang_from_tag("tr_TR.UTF-8"), Lang::from_code("tr"));
     assert_eq!(lang_from_tag("tr-TR"), Lang::from_code("tr"));
     assert_eq!(lang_from_tag("tr"), Lang::from_code("tr"));
+}
+
+fn chinese_tags_resolve_by_region_and_script() {
     // Traditional Chinese: by region, by script, and with a region after the script.
     assert_eq!(lang_from_tag("zh_TW.UTF-8"), Some(ZH()));
     assert_eq!(lang_from_tag("zh-TW"), Some(ZH()));

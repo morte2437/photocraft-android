@@ -1,5 +1,5 @@
 //! Save for Web navigation and indexed palette UI. Draft state is serialized in dialog fields.
-use super::*;
+use super::{Arc, Map, Optimized, PhotocraftApp, Tokens, Value, WebSettings, json, n, params, s, web_cmds};
 
 /// Export dimensions, using the same percent/width/height precedence as web_document.
 pub fn dimensions(doc: &photocraft_doc::Document, p: &Value) -> Result<(f64, f64), String> {

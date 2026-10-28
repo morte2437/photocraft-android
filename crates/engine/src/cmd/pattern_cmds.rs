@@ -348,7 +348,7 @@ pub(crate) fn insert_fill_layer(
     let fill = Fill::Pattern { name: pat.name.clone(), scale, id: pat.id.clone(), angle, link, phase };
     let mut l = Layer::new(doc.next_layer_name("Pattern Fill"), LayerContent::Fill(fill));
     crate::commands::mask_new_layer(doc, &mut l, p, "layer.newFillLayer.pattern", default_mask)?;
-    let id = doc.insert_above(*active, l);
+    let id = crate::layer_place::insert_new(doc, *active, l, crate::layer_place::Place::Auto);
     *active = Some(id);
     Ok(id)
 }

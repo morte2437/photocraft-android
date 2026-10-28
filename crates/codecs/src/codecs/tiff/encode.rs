@@ -1,6 +1,11 @@
 use super::bands::convert_ab;
 use super::tags::{F, TAG_IMAGE_SOURCE_DATA, TAG_PHOTOSHOP, TAG_XMP, TEXT_TAGS};
-use super::*;
+use super::{
+    ChannelLayout, CmykA16, CmykA32F, CodecError, Cow, EncodeOptions, ExifDirs, GrayA8, GrayA16, GrayA32F, Image, Lab8, Lab16, LabA8, LabA16,
+    PhotometricInterpretation, Plan, Rational, ResolutionUnit, SampleFormat, SampleType, Tag, TiffColorType, TiffCompression, TiffEncoder, TiffKind,
+    TiffKindBig, TiffKindStandard, TiffValue, Type, colortype, io, tiff_exif,
+};
+use std::io::Cursor;
 
 // ---------------------------------------------------------------------------
 // Encoding

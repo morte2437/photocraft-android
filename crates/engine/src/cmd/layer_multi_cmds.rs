@@ -141,7 +141,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Group from Layers…",
             &["Layer", "New"],
             None,
-            r##"{"layer":id?,"name":str?} (no layer: every selected layer)"##,
+            r##"{"layer":id?,"name":text?,"color":"none|red|orange|yellow|green|seafoam|blue|indigo|magenta|fuchsia|violet|gray"="none","mode":str="passThrough" (blend mode),"opacity":0..100=100 (percent)} (no layer: every selected layer; the new group starts collapsed)"##,
             has_layer,
             group_layers
         ),

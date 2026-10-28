@@ -219,7 +219,9 @@ fn roundtrips() {
     rt(Adjustment::ChannelMixer { matrix: [[0.5, 0.3, 0.2, 0.0], [0.1, 0.8, 0.1, 0.05], [0.0, 0.2, 0.9, -0.05]], monochrome: false });
     rt(Adjustment::ChannelMixer { matrix: [[0.4, 0.4, 0.2, 0.1], [0.0, 1.0, 0.0, 0.0], [-2.0, 0.0, 2.0, 0.0]], monochrome: true });
     let id = photocraft_cms::lutfile::LutFile::identity(5);
-    rt(Adjustment::ColorLookup { name: "Look.cube".into(), lut: Some(std::sync::Arc::new(id.data)), size: 5, tetrahedral: false, dither: true });
+    let cube = photocraft_cms::lutfile::write_cube(&id).into_bytes();
+    let source = Some(LutSource { format: LutFormat::Cube, bytes: std::sync::Arc::new(cube) });
+    rt(Adjustment::ColorLookup { name: "Look.cube".into(), lut: Some(std::sync::Arc::new(id.data)), size: 5, tetrahedral: false, dither: true, source });
 }
 
 #[test]
@@ -244,6 +246,105 @@ fn selective_color_synthetic_block() {
     assert_eq!(adjustments[8], [0.0, 0.0, 0.0, 25.0]);
     // Written back byte-exact.
     assert_eq!(write(&a)[0].1, d);
+}
+
+/// A 2³ Lustre `.3dl` (12-bit, blue fastest) that inverts every colour.
+fn inverting_3dl() -> Vec<u8> {
+    let mut text = String::from("# made by hand\n0 1023\n");
+    for r in 0..2 {
+        for g in 0..2 {
+            for b in 0..2 {
+                text.push_str(&format!("{} {} {}\n", (1 - r) * 4095, (1 - g) * 4095, (1 - b) * 4095));
+            }
+        }
+    }
+    text.into_bytes()
+}
+
+/// A 2³ SpeedGrade `.look` holding the identity.
+fn identity_look() -> Vec<u8> {
+    let hex: String = photocraft_cms::lutfile::LutFile::identity(2).data.iter().flat_map(|v| v.to_le_bytes()).map(|b| format!("{b:02X}")).collect();
+    format!("<?xml version=\"1.0\"?>\n<look><LUT><size>\"2\"</size><data>\"{hex}\"</data></LUT></look>\n").into_bytes()
+}
+
+/// A `clrL` block as Photoshop writes one for a loaded LUT file.
+fn clrl_block(format: &str, bytes: &[u8], name: &str) -> Vec<u8> {
+    let en = |t: &str, val: &str| Value::Enumerated { type_id: photocraft_psd::descriptor::Id::new(t), value: photocraft_psd::descriptor::Id::new(val) };
+    let text = |t: &str| Value::Text(photocraft_psd::descriptor::UnicodeString::new_nul(t));
+    let desc = Descriptor::new("null")
+        .with("lookupType", en("colorLookupType", "3DLUT"))
+        .with("NM  ", text(name))
+        .with("LUTFormat", en("LUTFormatType", format))
+        .with("LUT3DFileData", Value::RawData(bytes.to_vec()))
+        .with("LUT3DFileName", text(name));
+    let mut d = vec![0, 1];
+    d.extend(VersionedDescriptor::new(desc).to_bytes());
+    d
+}
+
+/// The descriptor of the `clrL` block `a` is written as.
+fn written_clrl(a: &Adjustment) -> Descriptor {
+    let b = write(a);
+    assert_eq!(&b[0].0, b"clrL");
+    VersionedDescriptor::parse_prefix(&b[0].1[2..]).unwrap().0.descriptor
+}
+
+fn raw<'a>(d: &'a Descriptor, key: &str) -> &'a [u8] {
+    let Some(Value::RawData(b)) = d.get(key) else { panic!("{key} missing") };
+    b
+}
+
+#[test]
+fn color_lookup_keeps_a_3dl_or_look_file_as_loaded() {
+    // #6544: Photoshop embeds the LUT file as loaded and tags its format; it never converts it.
+    for (format, kind, bytes, name) in
+        [("LUTFormat3DL", LutFormat::ThreeDl, inverting_3dl(), "Invert.3DL"), ("LUTFormatLOOK", LutFormat::Look, identity_look(), "Grade.look")]
+    {
+        let a = parse(b"clrL", &clrl_block(format, &bytes, name), None, Channels::Rgb);
+        let Adjustment::ColorLookup { name: n, lut: Some(_), size: 2, source: Some(src), .. } = &a else { panic!("{a:?}") };
+        assert_eq!((n.as_str(), src.format, src.bytes.as_slice()), (name, kind, bytes.as_slice()));
+        let d = written_clrl(&a);
+        assert_eq!(desc_enum(&d, "LUTFormat"), Some(format.as_bytes()), "{name}");
+        assert_eq!(raw(&d, "LUT3DFileData"), bytes.as_slice(), "{name}: the file's bytes, unchanged");
+        assert_eq!(desc_text(&d, "LUT3DFileName").as_deref(), Some(name));
+        assert_eq!(desc_text(&d, "NM  ").as_deref(), Some(name));
+        // And it reads back as the same layer.
+        let b = write(&a);
+        assert_eq!(parse(&b[0].0, &b[0].1, None, Channels::Rgb), a);
+    }
+}
+
+#[test]
+fn color_lookup_table_without_matching_file_is_saved_as_cube_named_to_match() {
+    let a = parse(b"clrL", &clrl_block("LUTFormat3DL", &inverting_3dl(), "Invert.3DL"), None, Channels::Rgb);
+    let Adjustment::ColorLookup { name, size, tetrahedral, dither, source, .. } = a else { panic!("{a:?}") };
+    // The table no longer matches the stored file (changed in PhotoCraft): the bytes are stale.
+    let id = photocraft_cms::lutfile::LutFile::identity(2).data;
+    let edited = Adjustment::ColorLookup { name, lut: Some(std::sync::Arc::new(id.clone())), size, tetrahedral, dither, source };
+    let d = written_clrl(&edited);
+    assert_eq!(desc_enum(&d, "LUTFormat"), Some(&b"LUTFormatCUBE"[..]));
+    assert_eq!(desc_text(&d, "LUT3DFileName").as_deref(), Some("Invert.cube"));
+    assert_eq!(photocraft_cms::lutfile::parse("x.cube", raw(&d, "LUT3DFileData")).unwrap().data, id);
+    // A table made in PhotoCraft (no file) named like another format is also renamed.
+    let made =
+        Adjustment::ColorLookup { name: "Grade.look".into(), lut: Some(std::sync::Arc::new(id)), size: 2, tetrahedral: false, dither: false, source: None };
+    let d = written_clrl(&made);
+    assert_eq!(desc_enum(&d, "LUTFormat"), Some(&b"LUTFormatCUBE"[..]));
+    assert_eq!(desc_text(&d, "LUT3DFileName").as_deref(), Some("Grade.cube"));
+    assert_eq!(desc_text(&d, "NM  ").as_deref(), Some("Grade.cube"));
+    // An unreadable stored file falls back the same way instead of failing the save.
+    let junk = Adjustment::ColorLookup {
+        name: "Junk.3dl".into(),
+        lut: Some(std::sync::Arc::new(photocraft_cms::lutfile::LutFile::identity(2).data)),
+        size: 2,
+        tetrahedral: false,
+        dither: false,
+        source: Some(LutSource { format: LutFormat::ThreeDl, bytes: std::sync::Arc::new(b"\xFF not a lut".to_vec()) }),
+    };
+    assert_eq!(desc_text(&written_clrl(&junk), "LUT3DFileName").as_deref(), Some("Junk.cube"));
+    assert_eq!(cube_file_name("a.b.3dl"), "a.b.cube");
+    assert_eq!(cube_file_name("Day for Night"), "Day for Night");
+    assert_eq!(cube_file_name("x.cube"), "x.cube");
 }
 
 #[test]
@@ -324,25 +425,43 @@ fn color_lookup_default_domains_stay_supported() {
 
 #[test]
 fn malformed_falls_back_to_unsupported() {
-    assert!(matches!(parse(b"levl", &[0, 2, 1], None, Channels::Rgb), Adjustment::Unsupported { .. }));
-    assert!(matches!(parse(b"curv", &[0, 0, 9], None, Channels::Rgb), Adjustment::Unsupported { .. }));
-    assert!(matches!(parse(b"thrs", &[], None, Channels::Rgb), Adjustment::Unsupported { .. }));
-    assert!(matches!(parse(b"blnc", &[0; 18], None, Channels::Rgb), Adjustment::Unsupported { .. }));
-    assert!(matches!(parse(b"vibA", &[0, 0, 0, 15, 0], None, Channels::Rgb), Adjustment::Unsupported { .. }));
-    assert!(matches!(parse(b"blwh", &[], None, Channels::Rgb), Adjustment::Unsupported { .. }));
-    assert!(matches!(parse(b"mixr", &[0, 2, 0, 0], None, Channels::Rgb), Adjustment::Unsupported { .. }));
-    // A CMYK mixer (black source used) stays raw in CMYK documents; our own RGB layout maps.
+    malformed_adjustments_are_unsupported();
+    malformed_channel_mixers_are_unsupported();
+    malformed_photo_filters_are_unsupported();
+    arbitrary_adjustment_bytes_do_not_panic();
+}
+
+fn malformed_adjustments_are_unsupported() {
+    for (key, bytes) in [
+        (&b"levl"[..], &[0, 2, 1][..]),
+        (&b"curv"[..], &[0, 0, 9][..]),
+        (&b"thrs"[..], &[][..]),
+        (&b"blnc"[..], &[0; 18][..]),
+        (&b"vibA"[..], &[0, 0, 0, 15, 0][..]),
+        (&b"blwh"[..], &[][..]),
+        (&b"mixr"[..], &[0, 2, 0, 0][..]),
+    ] {
+        let key: &[u8; 4] = key.try_into().unwrap_or(b"????");
+        assert!(matches!(parse(key, bytes, None, Channels::Rgb), Adjustment::Unsupported { .. }), "{key:?}");
+    }
+}
+
+fn malformed_channel_mixers_are_unsupported() {
     let mut cmyk = i16s(&[1, 0]);
     for r in 0..4 {
         cmyk.extend(i16s(&std::array::from_fn::<i16, 5, _>(|k| if k == r { 100 } else { 0 })));
     }
-    assert!(matches!(parse(b"mixr", &cmyk, None, Channels::Cmyk), Adjustment::Unsupported { .. }));
-    assert!(matches!(parse(b"mixr", &cmyk, None, Channels::Other), Adjustment::Unsupported { .. }));
+    for channels in [Channels::Cmyk, Channels::Other] {
+        assert!(matches!(parse(b"mixr", &cmyk, None, channels), Adjustment::Unsupported { .. }));
+    }
     let ours = write(&Adjustment::ChannelMixer { matrix: [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]], monochrome: false });
-    assert!(matches!(parse(b"mixr", &ours[0].1, None, Channels::Cmyk), Adjustment::ChannelMixer { .. }));
-    assert!(matches!(parse(b"mixr", &ours[0].1, None, Channels::Other), Adjustment::ChannelMixer { .. }));
+    for channels in [Channels::Cmyk, Channels::Other] {
+        assert!(matches!(parse(b"mixr", &ours[0].1, None, channels), Adjustment::ChannelMixer { .. }));
+    }
     assert!(matches!(parse(b"mixr", &[0, 1, 0, 0, 0, 100], None, Channels::Rgb), Adjustment::Unsupported { .. }));
-    // Photo Filter: unknown version, HSB colour space, out-of-range version-3 XYZ, truncated.
+}
+
+fn malformed_photo_filters_are_unsupported() {
     assert!(matches!(parse(b"phfl", &[0, 4, 0, 0], None, Channels::Rgb), Adjustment::Unsupported { .. }));
     assert!(matches!(parse(b"phfl", &[0, 2, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 25, 1], None, Channels::Rgb), Adjustment::Unsupported { .. }));
     for bad in [[200_000u32, 0, 0], [0, u32::MAX, 0]] {
@@ -354,12 +473,14 @@ fn malformed_falls_back_to_unsupported() {
         assert!(matches!(parse(b"phfl", &xyz, None, Channels::Rgb), Adjustment::Unsupported { .. }));
     }
     assert!(matches!(parse(b"phfl", &[0, 2, 0, 0, 0, 0], None, Channels::Rgb), Adjustment::Unsupported { .. }));
-    // Arbitrary bytes never panic, whatever the key.
+}
+
+fn arbitrary_adjustment_bytes_do_not_panic() {
     for key in ADJUSTMENT_KEYS {
         for len in 0..64usize {
-            let d: Vec<u8> = (0..len).map(|i| (i * 37 + len) as u8).collect();
-            let _ = parse(key, &d, Some(&d), Channels::Rgb);
-            let _ = parse(key, &d, None, Channels::Other);
+            let data: Vec<u8> = (0..len).map(|i| (i * 37 + len) as u8).collect();
+            let _ = parse(key, &data, Some(&data), Channels::Rgb);
+            let _ = parse(key, &data, None, Channels::Other);
         }
     }
 }
@@ -547,7 +668,7 @@ fn degenerate_adjustments_still_get_an_encoding() {
     }
     // A colour lookup without a (usable) table becomes an identity cube, without dither.
     for lut in [None, Some(std::sync::Arc::new(vec![0.5; 7]))] {
-        let b = write(&Adjustment::ColorLookup { name: "L".into(), lut, size: 3, tetrahedral: false, dither: true });
+        let b = write(&Adjustment::ColorLookup { name: "L".into(), lut, size: 3, tetrahedral: false, dither: true, source: None });
         let back = parse(&b[0].0, &b[0].1, None, Channels::Rgb);
         let Adjustment::ColorLookup { lut: Some(t), size: 2, dither: false, name, .. } = back else { panic!("{back:?}") };
         assert_eq!(name, "L");

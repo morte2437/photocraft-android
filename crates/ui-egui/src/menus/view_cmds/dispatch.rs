@@ -1,7 +1,7 @@
 use super::arrange::{arrange, fit_layers};
 use super::dialogs::front;
 use super::options::{panel_state, panel_tab, pixel_aspect_ratio, screen_mode_commands, show_slot, snap_slot, was_maximized_id};
-use super::*;
+use super::{FONT_PREVIEW, LANGUAGE, LAYOUTS, PIXEL_ASPECTS, PhotocraftApp, SCREEN_MODES, Show, SnapTo, Value, json};
 
 /// Ids handled here (live menu items).
 pub fn handles(id: &str) -> bool {

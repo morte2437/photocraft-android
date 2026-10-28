@@ -1,5 +1,5 @@
 use super::optimizer::to8;
-use super::*;
+use super::{Dither, PaletteKind, Result, Value, bad, json};
 
 // ---------- settings ----------
 

@@ -308,6 +308,7 @@
 	Layer…	Capa…
 	Group…	Grupo…
 	Group from Layers…	Grupo a partir de capas…
+	New Group from Layers…	Nuevo grupo a partir de capas…
 	Artboard…	Mesa de trabajo…
 	Artboard from Group…	Mesa de trabajo a partir de grupo…
 	Artboard from Layers…	Mesa de trabajo a partir de capas…
@@ -1954,7 +1955,7 @@
 	Full size tip	Punta a tamaño real
 	Gamut warning color	Color de advertencia de gama
 	Gamut warning opacity	Opacidad de advertencia de gama
-	Generator enabled	Generador activado
+	Enable Generator	Activar generador
 	Gif	GIF
 	Glossy	Brillante
 	Grid color	Color de la cuadrícula
@@ -2848,6 +2849,9 @@ curves	Smooth	Suavizar
 # History panel menu (#2966)
 	New Snapshot…	Nueva instantánea…
 	History Options…	Opciones de historial…
+# History panel › History Options… (#2966)
+	Allow Non-Linear History	Permitir historia no lineal
+	Make Layer Visibility Changes Undoable	Permitir deshacer los cambios de visibilidad de capas
 # Print dialog (#2697)
 	Emulsion Down	Emulsión hacia abajo
 	Functions	Funciones
@@ -4209,6 +4213,33 @@ navigator	Zoom	Zoom
 	Sent to {printer}	Enviado a {printer}
 	set in Print Settings…	se establece en Ajustes de impresión…
 	ICO is limited to 256 × 256 pixels	ICO está limitado a 256 × 256 píxeles
+	Show Favorite Fonts	Mostrar fuentes favoritas
+	No favorite fonts yet: click the star beside a font to add it.	Aún no hay fuentes favoritas: haz clic en la estrella junto a una fuente para añadirla.
+	Favorite fonts	Fuentes favoritas
+	Add to Favorites	Añadir a favoritos
+	Remove from Favorites	Quitar de favoritos
+	Show All Fonts	Mostrar todas las fuentes
+	All Classes	Todas las clases
+	Blackletter	Gótica
+	Decorative	Decorativa
+	Font preview:	Vista previa de fuente:
+	Handwritten	Manuscrita
+	Hide Font Classes	Ocultar clases de fuente
+	Hide Styles	Ocultar estilos
+	Monospace	Monoespaciada
+	No fonts match these filters.	Ninguna fuente coincide con estos filtros.
+	No similar fonts: the current font doesn't say what it looks like.	No hay fuentes similares: la fuente actual no describe su aspecto.
+	OpenType font	Fuente OpenType
+	Sans Serif	Sans serif
+	Script	Caligráfica
+	Serif	Serif
+	Show Font Classes	Mostrar clases de fuente
+	Show Similar Fonts	Mostrar fuentes similares
+	Show Styles	Mostrar estilos
+	Show Variable Fonts	Mostrar fuentes variables
+	Slab Serif	Serif egipcia
+	TrueType font	Fuente TrueType
+	Variable font	Fuente variable
 	Calibration	Calibración
 	Red Primary	Primario rojo
 	Green Primary	Primario verde
@@ -4413,3 +4444,6 @@ navigator	Zoom	Zoom
 	Tight Curl	Rizo apretado
 	Loose Curl	Rizo suelto
 	Stylized dabs from a history state	Toques estilizados desde un estado del historial
+	Font size presets	Valores predefinidos de tamaño de fuente
+	Leading presets	Valores predefinidos de interlineado
+	Tracking presets	Valores predefinidos de tracking

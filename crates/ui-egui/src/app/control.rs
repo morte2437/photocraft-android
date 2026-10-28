@@ -1,4 +1,4 @@
-use super::*;
+use super::{ControlRequest, PhotocraftApp, Receiver};
 
 impl PhotocraftApp {
     /// Attach a control channel (requests arrive from a transport thread: TCP, stdin, tests).

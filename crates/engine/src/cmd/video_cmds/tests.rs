@@ -83,6 +83,21 @@ fn new_video_layer_from_image_sequence() {
     assert!(s.active().unwrap().doc.timeline.as_ref().unwrap().duration >= 3);
 }
 
+/// CodeRabbit on #9775: footage that isn't on the active artboard stays out of it, as a placed
+/// image does; the board would clip it. Before, the layer was placed while still empty.
+#[test]
+fn footage_off_the_active_artboard_stays_out_of_it() {
+    let dir = tmpdir("board");
+    write_png(&format!("{dir}/f01.png"), 16, 12, "#ff0000");
+    write_png(&format!("{dir}/f02.png"), 16, 12, "#00ff00");
+    let mut s = session();
+    let board = s.execute("layer.new.artboard", json!({"rect": [0, 0, 4, 4]})).unwrap();
+    assert!(board["layer"].as_u64().is_some(), "{board}");
+    let r = s.execute("layer.videoLayers.newVideoLayerFromFile", json!({"path": dir})).unwrap();
+    let id = LayerId(r["layer"].as_u64().unwrap());
+    assert_eq!(s.active().unwrap().doc.artboard_of(id), None, "the footage is centred off the board");
+}
+
 #[test]
 fn frames_to_layers_and_render_video() {
     let dir = tmpdir("ftl");

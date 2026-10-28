@@ -12,8 +12,9 @@
 //! OS config directory; the web shell: browser storage) and restore it with
 //! [`Session::load_prefs_json`].
 //!
-//! Engine-side values are applied by [`Session::apply_prefs`]: the history state limit (every
-//! open document), the effect-cache memory budget, and units for commands that report lengths.
+//! Engine-side values are applied by [`Session::apply_prefs`]: the history state limit and
+//! History Options › Allow Non-Linear History (every open document), the effect-cache memory
+//! budget, and units for commands that report lengths.
 //! Colour settings (`colorSettings`) are stored with the colour state
 //! ([`crate::color_cmds::ColorSettings`]) and persisted in the same document.
 
@@ -869,6 +870,9 @@ pub struct TypePrefs {
     pub font_preview: FontPreview,
     pub fill_new_type_layers_with_placeholder: bool,
     pub recent_fonts: u32,
+    /// Favourite font families, starred in the font menu (`type.font.favorite`), in the order
+    /// they were added.
+    pub favorite_fonts: Vec<String>,
 }
 
 impl Default for TypePrefs {
@@ -882,6 +886,7 @@ impl Default for TypePrefs {
             font_preview: FontPreview::Medium,
             fill_new_type_layers_with_placeholder: true,
             recent_fonts: 10,
+            favorite_fonts: Vec::new(),
         }
     }
 }
@@ -998,6 +1003,24 @@ impl Default for Integrations {
     }
 }
 
+/// The History panel's History Options… (not part of Edit › Preferences in Photoshop either).
+/// Photoshop's snapshot options come with #3634.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct HistoryOptions {
+    /// Allow Non-Linear History: editing after selecting an earlier state keeps the later
+    /// states (the new step is appended at the end), and deleting a state deletes only it.
+    pub allow_non_linear_history: bool,
+    /// Make Layer Visibility Changes Undoable: showing or hiding a layer is a history state.
+    pub make_layer_visibility_changes_undoable: bool,
+}
+
+impl Default for HistoryOptions {
+    fn default() -> Self {
+        Self { allow_non_linear_history: false, make_layer_visibility_changes_undoable: true }
+    }
+}
+
 /// Edit › Menus: hidden items and item colours, by command id.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -1083,6 +1106,8 @@ pub struct Preferences {
     pub enhanced_controls: EnhancedControls,
     pub raw_defaults: RawDefaults,
     pub integrations: Integrations,
+    /// History panel › History Options… (`history.options`).
+    pub history_options: HistoryOptions,
     /// Edit › Keyboard Shortcuts: command id → shortcut (`Cmd+Shift+N` notation); an empty
     /// string removes the default shortcut.
     pub shortcuts: BTreeMap<String, String>,
@@ -1221,9 +1246,15 @@ impl Preferences {
             self.shortcuts.clear();
             return Ok(());
         }
+        // The favourite fonts are the user's library, not a Type setting: resetting the Type
+        // section keeps them (only `type.favoriteFonts` itself, or Reset All, clears them).
+        let favorites = (path == "type").then(|| self.type_.favorite_fonts.clone());
         let mut root = self.to_json();
         set_path(&mut root, path, def)?;
         *self = serde_json::from_value(root).map_err(|e| e.to_string())?;
+        if let Some(favorites) = favorites {
+            self.type_.favorite_fonts = favorites;
+        }
         Ok(())
     }
 
@@ -1268,15 +1299,18 @@ impl Session {
         r
     }
 
-    /// Push engine-relevant preferences into live state: every document's history limit, the
-    /// transform and layer-effect cache budgets and the text engine's missing-glyph protection.
+    /// Push engine-relevant preferences into live state: every document's history limit and
+    /// linearity, the transform and layer-effect cache budgets and the text engine's
+    /// missing-glyph protection.
     pub fn apply_prefs(&mut self) {
         let n = self.prefs().performance.history_states.max(1) as usize;
         let bytes = self.prefs().performance.history_budget_bytes();
         let budget = self.prefs().performance.effect_cache_mb as usize;
+        let non_linear = self.prefs().history_options.allow_non_linear_history;
         for st in &mut self.docs {
             st.history.max_states = n;
             st.history.max_bytes = bytes;
+            st.history.non_linear = non_linear;
             st.trim_history();
         }
         photocraft_compose::set_effect_cache_budget(budget << 20);

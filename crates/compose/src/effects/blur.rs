@@ -1,5 +1,5 @@
 use super::distance::{Metric, dist_outside_by};
-use super::*;
+use super::{MAX_REACH, Map};
 
 /// The soft falloff of an effect of `size` pixels: two box passes of width `size` (a tent),
 /// as Photoshop does. Fitted on psd-tools layer_effects.psd against the earlier Gaussian

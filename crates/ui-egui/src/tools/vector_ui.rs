@@ -2,7 +2,9 @@
 //! Direct Selection (A) lives in `direct_select`.
 //! All edits go through the engine's `shape.*` / `path.*` commands.
 
-use egui::{Color32, Pos2, Rect, Sense, Stroke, pos2, vec2};
+#[cfg(test)]
+use egui::Pos2;
+use egui::{Color32, Rect, Sense, Stroke, pos2, vec2};
 use photocraft_doc::vector::Path;
 use photocraft_doc::{Document, LayerContent};
 use photocraft_geom::Affine;
@@ -36,8 +38,12 @@ use overlay::{MAX_CURVE_PIECES, bezier};
 #[cfg(test)]
 pub(crate) use overlay::{curve_points, path_lines, selected_saved_path, shows_anchors};
 pub(crate) use overlay::{draw_anchor, draw_handle, draw_outline};
+#[cfg(test)]
+use path_ops::target_path;
 pub use path_ops::{active_path_name, path_selection_finish, path_to_selection, pick_shape_at, selected_document_path, takes_path_mask, with_active_path};
-pub(crate) use path_ops::{active_shape_path, delete_key_deletes_work_path, free_transform_path, targeted_vector_mask};
+pub(crate) use path_ops::{
+    active_shape_path, active_type_path, delete_key_deletes_work_path, deselect_loaded_path, free_transform_path, targeted_vector_mask, work_path_shown,
+};
 #[cfg(test)]
 use paths_panel::path_context_actions;
 pub use paths_panel::{PathEntry, PathRow, path_rows, paths_footer, paths_panel};

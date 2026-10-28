@@ -1,5 +1,9 @@
 use super::sampling::{AllLayers, sample_all_layers};
-use super::*;
+use super::{
+    BrushSettings, Document, EngineError, Footprint, IndexedParallelIterator, LayerId, ParallelIterator, ParallelSliceMut, PixelFormat, Rect, Region, Result,
+    Session, Smudge, Stroke, StrokePoint, Surface, ToneRange, Value, alpha_index, apply_dab_stroke, bad, damage_json, dodge_burn, flag, from_rgba_into,
+    has_pixel_layer, json, local_blur, local_sharpen, num, parse_brush, run_stroke, sponge, string, to_rgba,
+};
 
 // ---------------------------------------------------------------------------------------------
 // Toning (Dodge / Burn / Sponge) and focus (Blur / Sharpen), Smudge

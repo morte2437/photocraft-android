@@ -808,6 +808,8 @@ fn printing_keeps_drawing_and_reports_only_the_final_spooler_result() {
             assert!(h.state().ui.status_error);
         }
     }
+    // The job and its status do not ask the system spooler for its printers.
+    assert_eq!(photocraft_engine::print_cmds::system_printer_listings(), 0, "a test asked the system spooler for its printers");
 }
 
 fn layer_count(app: &PhotocraftApp) -> usize {

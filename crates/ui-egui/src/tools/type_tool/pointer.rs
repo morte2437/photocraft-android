@@ -1,7 +1,7 @@
 use super::defaults::default_style_params;
 use super::editing::{begin_edit, commit_with};
 use super::layout::{hit_layer, hit_offset, layout, to_text};
-use super::*;
+use super::{BoxResize, LayerId, PLACEHOLDER, PhotocraftApp, Point, TextEdit, TextLayout, active_doc_id, byte_of, current_text, json, session_key, text_layer};
 
 /// Smallest paragraph box a handle drag leaves, in text-space px.
 pub(super) const MIN_BOX: f32 = 4.0;
