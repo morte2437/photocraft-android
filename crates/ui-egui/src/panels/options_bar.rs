@@ -126,6 +126,11 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                             || crate::frame_tool::options_bar(app, ui, tool)
                             || crate::artboard_tool::options_bar(app, ui, tool)
                         {
+                            // The Background Eraser and retouch tools draw their own bars, and
+                            // their strokes snap too: the switch goes at the end of theirs.
+                            if crate::stroke_constraint::connects(tool) {
+                                crate::perspective_ruler_ui::snap_button(app, ui);
+                            }
                             return;
                         }
                         let brush_before = app.session.tools.brush.clone();

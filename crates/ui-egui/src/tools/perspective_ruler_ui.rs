@@ -348,6 +348,36 @@ mod tests {
         assert_eq!([last[0], last[1]], [90.0, 77.0], "snap off: as drawn");
     }
 
+    /// Letting go of ⇧ mid-stroke carries on from where the stroke is, on a line it picks
+    /// there, never back on the line it started on.
+    #[test]
+    fn letting_go_of_shift_carries_on_from_the_stroke_end() {
+        use crate::stroke_constraint::{Axis, perspective};
+        let ruler = PerspectiveRuler { points: vec![[200.0, 100.0]], snap: true, visible: true };
+        let tool = crate::state::Tool::Brush;
+        let mut axis: Option<Axis> = None;
+        // Level from (100, 200), then ⇧ (free of the ruler) up to (150, 120).
+        assert_eq!(perspective(tool, &mut axis, [100.0, 200.0], [140.0, 201.0], false, Some(&ruler), 1.0, false), [140.0, 200.0]);
+        assert_eq!(perspective(tool, &mut axis, [140.0, 200.0], [150.0, 120.0], true, Some(&ruler), 1.0, false), [150.0, 120.0]);
+        assert_eq!(axis, None);
+        // ⇧ let go: the next line starts at (150, 120), here upright, not back on y = 200.
+        let p = perspective(tool, &mut axis, [150.0, 120.0], [151.0, 60.0], false, Some(&ruler), 1.0, false);
+        assert_eq!(p, [150.0, 60.0]);
+    }
+
+    /// A stroke released before it travelled far enough to pick its line picks it on release,
+    /// rather than ending as a dot where it started.
+    #[test]
+    fn a_short_stroke_picks_its_line_on_release() {
+        use crate::stroke_constraint::{Axis, perspective};
+        let ruler = PerspectiveRuler { points: vec![[500.0, 100.0]], snap: true, visible: true };
+        let tool = crate::state::Tool::Brush;
+        let mut axis: Option<Axis> = None;
+        assert_eq!(perspective(tool, &mut axis, [100.0, 300.0], [103.0, 300.5], false, Some(&ruler), 1.0, false), [100.0, 300.0], "deciding");
+        let end = perspective(tool, &mut axis, [100.0, 300.0], [104.0, 300.5], false, Some(&ruler), 1.0, true);
+        assert!((end[0] - 104.0).abs() < 0.1 && (end[1] - 300.0).abs() < 1e-9, "level, not a dot: {end:?}");
+    }
+
     /// The fan of lines starts from points spread along all four edges.
     #[test]
     fn edge_points_go_round_the_canvas() {

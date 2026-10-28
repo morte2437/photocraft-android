@@ -85,25 +85,32 @@ pub fn constrain(tool: Tool, axis: &mut Option<Axis>, start: [f64; 2], last: [f6
 }
 
 /// The perspective ruler with Snap to Perspective: a painting stroke stays on the line through
-/// where it started towards the vanishing point (or the upright or level direction) it set off
+/// where it set off towards the vanishing point (or the upright or level direction) it set off
 /// closest to. ⇧ takes over (straight 45° lines); without a ruler the point passes through.
+///
+/// `last` is the stroke's latest point (its start at first): a line that isn't locked yet starts
+/// there, so after ⇧ is let go the stroke carries on from where it is rather than jumping back
+/// to where it began. On `release` a stroke too short to have picked its line picks it then,
+/// so a short flick isn't a dot.
+#[allow(clippy::too_many_arguments)]
 pub fn perspective(
     tool: Tool,
     axis: &mut Option<Axis>,
-    start: [f64; 2],
+    last: [f64; 2],
     p: [f64; 2],
     shift: bool,
     ruler: Option<&photocraft_engine::perspective_cmds::PerspectiveRuler>,
     zoom: f32,
+    release: bool,
 ) -> [f64; 2] {
     let Some(ruler) = ruler.filter(|r| r.snap && !shift && connects(tool)) else {
         *axis = None;
         return p;
     };
-    let a = axis.get_or_insert(Axis { origin: start, dir: None });
+    let a = axis.get_or_insert(Axis { origin: last, dir: None });
     if a.dir.is_none() {
         let reach = LOCK_DISTANCE * 2.0 / f64::from(zoom.max(1e-3));
-        if (p[0] - a.origin[0]).hypot(p[1] - a.origin[1]) < reach {
+        if !release && (p[0] - a.origin[0]).hypot(p[1] - a.origin[1]) < reach {
             return a.origin;
         }
         a.dir = ruler.direction(a.origin, p);
