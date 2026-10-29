@@ -691,6 +691,8 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                         }
                         crate::brush_panel::commit_gesture(app, ui.ctx(), &brush_before, &brush);
                     });
+                    // Closes the last control's width for a camera cutout (see `cutout`).
+                    crate::cutout::end(ui);
                     reveal_focused_control(ui);
                 });
             });
@@ -754,6 +756,7 @@ pub(super) fn body_text_width(ui: &egui::Ui, s: &str) -> f32 {
 /// Options-bar label: Photoshop writes "Size:" with a colon.
 /// An options-bar label; one right before a value field scrubs it when dragged (Photoshop).
 pub(crate) fn opt_label(ui: &mut egui::Ui, s: &str) {
+    crate::cutout::step(ui);
     let t = Tokens::get(ui.ctx());
     let text = if t.pro && !s.ends_with(':') { format!("{s}:") } else { s.to_string() };
     let label = ui.add(egui::Label::new(RichText::new(tl!(&text)).color(t.text_dim)).selectable(false));

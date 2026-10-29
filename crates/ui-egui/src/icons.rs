@@ -178,6 +178,7 @@ pub fn button(ui: &mut egui::Ui, name: &str, box_size: f32, selected: bool, tool
 
 /// Square icon button with an explicit glyph size, independent of its hit area.
 pub fn button_with_icon_size(ui: &mut egui::Ui, name: &str, box_size: f32, icon_size: f32, selected: bool, tooltip: &str) -> Response {
+    crate::cutout::step(ui);
     button_with_icon_size_tip(ui, name, box_size, icon_size, selected, tooltip, true)
 }
 

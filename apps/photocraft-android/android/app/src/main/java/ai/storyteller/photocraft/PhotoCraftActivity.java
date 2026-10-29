@@ -79,6 +79,10 @@ public class PhotoCraftActivity extends GameActivity {
     /** The on-screen keyboard's height in pixels (0: hidden), for photocraft-tablet's android.rs. */
     private static native void nativeImeHeight(int px);
 
+    /** Where the front camera's cutouts are (up to two, window pixels; n says how many), so the
+     * menu and options bars split around them (photocraft-tablet's android.rs). */
+    private static native void nativeCutout(int n, int l0, int t0, int r0, int b0, int l1, int t1, int r1, int b1);
+
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private File bridge;
@@ -118,12 +122,34 @@ public class PhotoCraftActivity extends GameActivity {
             pendingName = state.getString("pendingName", "");
         }
         hideSystemBars();
+        // Draw under a front camera's cutout on every Android version, as Android 15 does for
+        // apps targeting it; the menu and options bars split around the camera instead (#21).
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+            android.view.WindowManager.LayoutParams lp = getWindow().getAttributes();
+            lp.layoutInDisplayCutoutMode = android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R
+                    ? android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                    : android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+            getWindow().setAttributes(lp);
+        }
         handleSentDocument(getIntent());
         // The on-screen keyboard's height, so the app lays out above it instead of under it.
         android.view.View decor = getWindow().getDecorView();
         decor.getViewTreeObserver().addOnGlobalLayoutListener(() -> {
             WindowInsetsCompat insets = ViewCompat.getRootWindowInsets(decor);
             int ime = insets == null ? 0 : insets.getInsets(WindowInsetsCompat.Type.ime()).bottom;
+            // A front camera's cutout (a punch hole or notch): the bars split around it.
+            androidx.core.view.DisplayCutoutCompat dc = insets == null ? null : insets.getDisplayCutout();
+            List<android.graphics.Rect> cut = dc == null ? new ArrayList<>() : dc.getBoundingRects();
+            if (!cut.equals(lastCutout)) {
+                lastCutout = cut;
+                android.graphics.Rect a = cut.size() > 0 ? cut.get(0) : new android.graphics.Rect();
+                android.graphics.Rect b = cut.size() > 1 ? cut.get(1) : new android.graphics.Rect();
+                try {
+                    nativeCutout(Math.min(cut.size(), 2), a.left, a.top, a.right, a.bottom, b.left, b.top, b.right, b.bottom);
+                } catch (UnsatisfiedLinkError err) {
+                    lastCutout = null;
+                }
+            }
             if (ime != lastImeHeight) {
                 lastImeHeight = ime;
                 try {
@@ -137,6 +163,7 @@ public class PhotoCraftActivity extends GameActivity {
     }
 
     private int lastImeHeight = -1;
+    private List<android.graphics.Rect> lastCutout = null;
 
     @Override
     protected void onResume() {

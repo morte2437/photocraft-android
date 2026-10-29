@@ -137,6 +137,7 @@ pub fn hairline(ui: &mut Ui) {
 
 /// Vertical hairline for horizontal layouts.
 pub fn vline(ui: &mut Ui, height: f32) {
+    crate::cutout::step(ui);
     let t = Tokens::get(ui.ctx());
     let (r, _) = ui.allocate_exact_size(vec2(9.0, height), Sense::hover());
     ui.painter().line_segment([r.center_top(), r.center_bottom()], Stroke::new(1.0, t.separator));

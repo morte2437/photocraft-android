@@ -4,6 +4,9 @@ use super::render::{alt_click, render_level, render_level_rows};
 use super::search::help_search;
 use super::*;
 
+/// The menu titles' horizontal padding (points).
+const MENU_PAD_X: f32 = 6.0;
+
 /// Draws the menu bar; returns the inner edge of the menu titles, facing the rest of the title bar
 /// (the right edge of the last title, or its left edge in a right-to-left UI, where File is at the
 /// right). The bar itself fills the row.
@@ -39,7 +42,19 @@ pub fn menu_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> f32 {
             // egui lays the bar out left to right; a right-to-left UI starts it at the right.
             let mut mirrored = rtl.then(|| ui.new_child(egui::UiBuilder::new().layout(crate::direction::row())));
             let ui = mirrored.as_mut().unwrap_or(ui);
-            ui.spacing_mut().button_padding = egui::vec2(6.0, 3.0);
+            // Split around a phone's camera, the titles give up padding to stay on screen (the
+            // bar doesn't scroll): just enough, from how far they ran past it at full padding.
+            let squeeze_id = egui::Id::unique("menu-bar-squeeze");
+            // Kept per bar width (a rotation starts over), and only ever raised, so the titles
+            // settle instead of flickering between two paddings as they slide past the camera.
+            let width = ui.max_rect().width().round();
+            let excess = if crate::cutout::active(ui.ctx()) {
+                ui.ctx().data(|d| d.get_temp::<(f32, f32)>(squeeze_id)).filter(|(w, _)| *w == width).map_or(0.0, |(_, e)| e)
+            } else {
+                0.0
+            };
+            let pad_x = (MENU_PAD_X - excess / (2.0 * TOP_MENUS.len() as f32)).clamp(1.0, MENU_PAD_X);
+            ui.spacing_mut().button_padding = egui::vec2(pad_x, 3.0);
             nav.bar_bottom = Some(ui.max_rect().bottom());
             let mut buttons = Vec::with_capacity(TOP_MENUS.len());
             for (k, top) in TOP_MENUS.iter().enumerate() {
@@ -56,6 +71,8 @@ pub fn menu_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> f32 {
                 if focused {
                     button = button.fill(ui.visuals().widgets.hovered.weak_bg_fill);
                 }
+                // A phone's front camera can sit over the bar: the titles split around it.
+                crate::cutout::step(ui);
                 let title = ui.add(button);
                 // The bar's close behaviour and style, as a menu (not bar) config so submenus inside
                 // render as submenus.
@@ -106,6 +123,14 @@ pub fn menu_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> f32 {
                         }
                     });
                 buttons.push(title);
+            }
+            crate::cutout::end(ui);
+            if crate::cutout::active(ui.ctx()) && !rtl {
+                let full = ui.min_rect().right() + (MENU_PAD_X - pad_x) * 2.0 * TOP_MENUS.len() as f32;
+                // Against the screen's edge: the bar's own row can run past it.
+                let edge = ui.max_rect().right().min(ui.ctx().content_rect().right());
+                let now = (full - edge).max(excess);
+                ui.ctx().data_mut(|d| d.insert_temp(squeeze_id, (width, now)));
             }
             edge = if rtl { buttons.iter().map(|b| b.rect.left()).fold(edge, f32::min) } else { buttons.iter().map(|b| b.rect.right()).fold(edge, f32::max) };
             switch_on_hover(ui.ctx(), &buttons);

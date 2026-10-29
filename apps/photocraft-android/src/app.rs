@@ -652,6 +652,10 @@ impl eframe::App for Shell {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let _section = section("photocraft:ui");
         let tokens = photocraft_ui_egui::theme::Tokens::for_kind(self.app.ui.theme);
+        // A front camera's cutout (punch hole or notch): the bars split around it (#21).
+        let ppp = ui.ctx().pixels_per_point();
+        let holes = photocraft_tablet::android::cutouts_px().into_iter().map(|[l, t, r, b]| egui::Rect::from_min_max(egui::pos2(l, t) / ppp, egui::pos2(r, b) / ppp)).collect();
+        photocraft_ui_egui::cutout::set(ui.ctx(), holes);
         // The pad first, so the app lays out beside it.
         self.pad.show(ui, &tokens, &self.app);
         let section = section("photocraft:app");

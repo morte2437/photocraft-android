@@ -224,6 +224,7 @@ pub fn checkbox_wrapped(ui: &mut Ui, on: &mut bool, label: &str) -> Response {
 }
 
 fn checkbox_with(ui: &mut Ui, on: &mut bool, label: &str, wrap: bool) -> Response {
+    crate::cutout::step(ui);
     let t = Tokens::get(ui.ctx());
     let (mut resp, label_resp) = ui
         .horizontal(|ui| {

@@ -126,6 +126,39 @@ pub extern "system" fn Java_ai_storyteller_photocraft_PhotoCraftActivity_nativeI
     IME_HEIGHT.store(px, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// The camera cutouts' rects (left, top, right, bottom, window pixels): up to two.
+static CUTOUTS: std::sync::Mutex<Vec<[f32; 4]>> = std::sync::Mutex::new(Vec::new());
+
+/// Where a front camera's cutouts (a punch hole or notch) are on screen, as `[left, top, right,
+/// bottom]` in window pixels: none on most tablets (the Activity reports them on layout changes,
+/// `PhotoCraftActivity.nativeCutout`).
+pub fn cutouts_px() -> Vec<[f32; 4]> {
+    CUTOUTS.lock().unwrap_or_else(PoisonError::into_inner).clone()
+}
+
+/// The cutouts changed (or were first measured), from `PhotoCraftActivity.nativeCutout` (Java):
+/// `n` of the two rects are real.
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub extern "system" fn Java_ai_storyteller_photocraft_PhotoCraftActivity_nativeCutout(
+    _env: *mut c_void,
+    _this: *mut c_void,
+    n: i32,
+    l0: i32,
+    t0: i32,
+    r0: i32,
+    b0: i32,
+    l1: i32,
+    t1: i32,
+    r1: i32,
+    b1: i32,
+) {
+    let rects = [[l0, t0, r0, b0], [l1, t1, r1, b1]];
+    let n = usize::try_from(n).unwrap_or(0).min(rects.len());
+    let rects: Vec<[f32; 4]> = rects.iter().take(n).filter(|r| r[2] > r[0] && r[3] > r[1]).map(|r| r.map(|v| v as f32)).collect();
+    *CUTOUTS.lock().unwrap_or_else(PoisonError::into_inner) = rects;
+}
+
 /// The tool of touch `id` (`MotionEvent.getToolType()`), if it was reported.
 pub fn pointer_tool(id: u64) -> Option<i32> {
     POINTERS.lock().unwrap_or_else(PoisonError::into_inner).tool(id)

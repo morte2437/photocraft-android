@@ -15,6 +15,7 @@ macro_rules! tl {
 }
 pub mod canvas;
 pub mod control;
+pub mod cutout;
 pub mod dialogs;
 pub mod dock;
 pub mod file_dialog;
