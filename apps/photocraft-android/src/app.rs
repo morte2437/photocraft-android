@@ -490,9 +490,11 @@ impl eframe::App for Shell {
                 None => false,
             }
         };
+        // While Liquify is open its preview is the canvas: two fingers pan and zoom it (#20).
+        let liquify = photocraft_ui_egui::liquify_ui::preview_rect(&self.app);
         let env = crate::pad::router::Env {
             // Gestures move the canvas only while a document is open.
-            canvas: self.app.session.active_index().map(|_| self.app.last_canvas_rect),
+            canvas: liquify.or_else(|| self.app.session.active_index().map(|_| self.app.last_canvas_rect)),
             is_finger: &|id: egui::TouchId| photocraft_tablet::android::is_finger(id.0),
             pen_near: photocraft_tablet::android::pen_seen_within(std::time::Duration::from_millis(300)),
             config: &config,
@@ -541,7 +543,7 @@ impl eframe::App for Shell {
             }
         });
         let drawn = &self.drawn;
-        self.pad.input(ctx, raw_input, &env, |p| drawn.covered(p));
+        self.pad.input(ctx, raw_input, &env, |p| !liquify.is_some_and(|r| r.contains(p)) && drawn.covered(p));
         // A focused field the keyboard now covers: scroll its list until the field shows again, as
         // a finger would (a wheel over an empty part of the same list, never over a control, which
         // the wheel would change), a step a frame and no further than SCROLL_LIMIT. Its place is

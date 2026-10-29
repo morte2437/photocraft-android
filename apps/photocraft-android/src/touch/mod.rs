@@ -437,9 +437,16 @@ pub fn moved_view(xf: &ViewXform, zoom: f32, m: &ViewMove) -> (f32, f32, [f32; 2
     (new_zoom, rotation, center)
 }
 
-/// Apply gesture moves to the active document's view.
+/// Apply gesture moves to the active document's view, or to the Liquify preview while it's
+/// open (it pans and zooms; it doesn't rotate).
 pub fn apply(app: &mut PhotocraftApp, moves: &[ViewMove]) {
     if moves.is_empty() {
+        return;
+    }
+    if photocraft_ui_egui::liquify_ui::preview_rect(app).is_some() {
+        for m in moves {
+            photocraft_ui_egui::liquify_ui::move_preview(app, m.from, m.to, m.scale);
+        }
         return;
     }
     app.sync_views();
@@ -498,6 +505,32 @@ mod tests {
         assert_eq!((zoom, rotation), (1.0, 0.0));
         let m = ViewMove { scale: 1e9, ..m };
         assert_eq!(moved_view(&xf(0.0, false), 1.0, &m).0, 32.0);
+    }
+
+    /// #20: while Liquify is open, two fingers move its preview, not the canvas behind it.
+    #[test]
+    fn gestures_move_the_liquify_preview_while_it_is_open() {
+        use photocraft_ui_egui::liquify_ui;
+        let ctx = egui::Context::default();
+        PhotocraftApp::setup_context(&ctx, Default::default());
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+        app.run("file.new", serde_json::json!({"width": 120, "height": 80})).unwrap();
+        app.run("layer.new.layer", serde_json::json!({})).unwrap();
+        app.sync_views();
+        let canvas = app.ui.views.first().map(|v| (v.zoom, v.center));
+        liquify_ui::open(&mut app, &ctx).unwrap();
+        let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1000.0, 700.0))), ..Default::default() };
+        let mut out = ctx.run_ui(raw, |ui| liquify_ui::show(&mut app, ui.ctx()));
+        out.textures_delta.clear();
+        let area = liquify_ui::preview_rect(&app).expect("the preview was drawn");
+        let zoom = |app: &PhotocraftApp| liquify_ui::describe(app).and_then(|d| d["zoom"].as_f64()).unwrap_or_default();
+        let before = zoom(&app);
+        let at = area.center();
+        apply(&mut app, &[ViewMove { from: at, to: at + vec2(30.0, 10.0), scale: 2.0, rotate: 15.0 }]);
+        assert!((zoom(&app) - before * 2.0).abs() < 1e-4, "{before} → {}", zoom(&app));
+        assert_eq!(app.ui.views.first().map(|v| (v.zoom, v.center)), canvas, "the canvas behind keeps its view");
+        liquify_ui::cancel(&mut app);
+        assert!(liquify_ui::preview_rect(&app).is_none());
     }
 
     fn widget(rect: Rect, click: bool, drag: bool) -> Widget {

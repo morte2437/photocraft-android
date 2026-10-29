@@ -186,6 +186,8 @@ pub struct LiquifyDialog {
     /// Screen px per document px (0 = fit on next frame) and the view centre (document px).
     zoom: f32,
     center: [f64; 2],
+    /// Where the preview was drawn last frame (screen points), for touch gestures.
+    preview: Option<ERect>,
     hover: Option<[f64; 2]>,
     /// Alt+right-drag (or Control+Alt-drag) resizing the brush: screen anchor, starting size, starting density.
     brush_resize: Option<(Pos2, f32, f32)>,
@@ -233,6 +235,7 @@ impl LiquifyDialog {
             "dabMs": self.dab_ms,
             "fullResolutionPreview": self.view_bounds.is_some(),
             "previewMs": self.preview_ms,
+            "zoom": self.zoom,
             "smartFilter": self.smart_filter,
         })
     }
@@ -558,6 +561,7 @@ fn open_on(
         opts: LiquifyOpts::default(),
         zoom: 0.0,
         center,
+        preview: None,
         hover: None,
         brush_resize: None,
         last_dab: 0.0,
@@ -1036,6 +1040,7 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         }
         // Preview.
         let area = ERect::from_min_max(pos2(left.right(), body.top()), pos2(right.left(), body.bottom()));
+        d.preview = Some(area);
         painter.rect_filled(area, 0.0, t.canvas);
         let (cw, ch) = (d.canvas.width() as f32, d.canvas.height() as f32);
         if d.zoom <= 0.0 {
@@ -1216,6 +1221,34 @@ const ZOOM_MAX: f32 = 32.0;
 
 fn to_screen(d: &LiquifyDialog, area: ERect, p: [f64; 2]) -> Pos2 {
     area.center() + vec2(((p[0] - d.center[0]) as f32) * d.zoom, ((p[1] - d.center[1]) as f32) * d.zoom)
+}
+
+/// The open Liquify dialog's state ([`LiquifyDialog::describe`]), if it's open.
+pub fn describe(app: &PhotocraftApp) -> Option<Value> {
+    app.distort.liquify.as_ref().map(LiquifyDialog::describe)
+}
+
+/// The open Liquify preview's place on screen, as last drawn: touch gestures there move the
+/// preview instead of the canvas behind it.
+pub fn preview_rect(app: &PhotocraftApp) -> Option<ERect> {
+    app.distort.liquify.as_ref().and_then(|d| d.preview)
+}
+
+/// Pan and zoom the Liquify preview by a two-finger gesture: the image point under `from` ends
+/// under `to`, zoomed by `scale` (Liquify's preview doesn't rotate). Returns false when Liquify
+/// isn't open or hasn't been drawn yet.
+pub fn move_preview(app: &mut PhotocraftApp, from: Pos2, to: Pos2, scale: f32) -> bool {
+    let Some(d) = app.distort.liquify.as_mut() else { return false };
+    let Some(area) = d.preview else { return false };
+    if d.zoom <= 0.0 || !(from.x.is_finite() && from.y.is_finite() && to.x.is_finite() && to.y.is_finite()) {
+        return false;
+    }
+    let doc = to_doc(d, area, from);
+    let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+    d.zoom = (d.zoom * scale).clamp(ZOOM_MIN, ZOOM_MAX);
+    let off = to_doc(d, area, to);
+    d.center = [d.center[0] + doc[0] - off[0], d.center[1] + doc[1] - off[1]];
+    true
 }
 
 fn to_doc(d: &LiquifyDialog, area: ERect, p: Pos2) -> [f64; 2] {

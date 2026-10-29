@@ -837,3 +837,39 @@ fn liquify_that_cannot_be_applied_reports_the_error() {
     assert_eq!(app.session.active().unwrap().history.past_len(), steps);
     assert_eq!(r, Err(app.ui.status.clone()));
 }
+
+/// Android #20: two fingers pan and pinch-zoom the preview. The image point under the fingers'
+/// starting centre ends under their new centre; the canvas behind keeps its view.
+#[test]
+fn a_two_finger_gesture_pans_and_zooms_the_preview() {
+    let ctx = egui::Context::default();
+    PhotocraftApp::setup_context(&ctx, crate::theme::ThemeKind::ALL[0]);
+    let mut app = app_with_layer();
+    open(&mut app, &ctx).unwrap();
+    assert!(!move_preview(&mut app, pos2(1.0, 1.0), pos2(2.0, 2.0), 1.0), "nothing to move before the first frame");
+    let center = frame(&mut app, &ctx, Vec::new());
+    let area = preview_rect(&app).expect("drawn");
+    assert!(area.contains(center));
+    let canvas_view = app.ui.views.first().map(|v| (v.zoom, v.center));
+    let (z0, under) = {
+        let d = app.distort.liquify.as_ref().unwrap();
+        (d.zoom, to_doc(d, area, center))
+    };
+    let to = center + vec2(40.0, -25.0);
+    assert!(move_preview(&mut app, center, to, 1.5));
+    let d = app.distort.liquify.as_ref().unwrap();
+    assert!((d.zoom - z0 * 1.5).abs() < 1e-4);
+    let moved = to_doc(d, area, to);
+    assert!((moved[0] - under[0]).abs() < 1e-3 && (moved[1] - under[1]).abs() < 1e-3, "{under:?} → {moved:?}");
+    assert_eq!(app.ui.views.first().map(|v| (v.zoom, v.center)), canvas_view);
+    // A bad gesture changes nothing.
+    let before = (d.zoom, d.center);
+    move_preview(&mut app, center, to, f32::NAN);
+    move_preview(&mut app, pos2(f32::NAN, 0.0), to, 2.0);
+    let d = app.distort.liquify.as_ref().unwrap();
+    assert!(d.zoom.is_finite() && d.center.iter().all(|c| c.is_finite()));
+    assert_eq!(d.zoom, before.0, "a NaN scale is no zoom");
+    // Closed: nothing to move.
+    cancel(&mut app);
+    assert!(preview_rect(&app).is_none() && !move_preview(&mut app, center, to, 2.0));
+}
