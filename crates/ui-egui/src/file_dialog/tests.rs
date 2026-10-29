@@ -1109,6 +1109,24 @@ fn same_folder_quick_export_asks_before_replacing_the_documents_own_file() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Android #18: Quick Export to a picked file goes through the app's writer, which is what copies
+/// it to the document the user chose; written only by the engine, that document stayed empty.
+#[test]
+fn quick_export_to_a_picked_file_goes_through_the_writer() {
+    let dir = std::env::temp_dir().join(format!("photocraft-quick-writer-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let out = dir.join("out.png").to_string_lossy().into_owned();
+    let (mut app, open, written) = app();
+    let ctx = egui::Context::default();
+    menus::invoke(&mut app, &ctx, "file.export.quickExportAsPng", Value::Null).unwrap();
+    app.poll_file_dialog(&ctx, None);
+    answer(&open, Some(FileDialogAnswer::SaveTo(out.clone())));
+    app.poll_file_dialog(&ctx, None);
+    assert_eq!(*written.borrow(), std::slice::from_ref(&out), "{}", app.ui.status);
+    assert!(std::fs::read(&out).unwrap().starts_with(b"\x89PNG"));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// #6597: once Save As or Save a Copy writes over the file another open document is bound to,
 /// that document no longer has the file and reads as unsaved (so closing it asks, and its Save
 /// asks for a name), and a notice says so. Documents bound to other files are left alone.

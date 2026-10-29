@@ -1076,3 +1076,33 @@ fn options_bar_hover_previews_with_the_character_picker_also_shown() {
     h.run();
     assert_eq!(font(&mut h), "Inter", "leaving the row restores the committed font");
 }
+
+/// Android #22: a PSD's type layer set in a font this device doesn't have keeps that font when
+/// its text is edited, as in Photoshop (which edits with a substitute and keeps the name).
+#[test]
+fn editing_text_in_a_missing_font_keeps_the_font() {
+    use crate::{PhotocraftApp, Services};
+    use serde_json::json;
+
+    let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).with_max_steps(64).build_eframe(move |cc| {
+        PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Services::default());
+        app.run("file.new", json!({"width": 200, "height": 100})).unwrap();
+        app.run("type.create", json!({"text": "Sample", "font": "Ruposhi Bangla", "postscriptName": "RuposhiBangla", "size": 18})).unwrap();
+        app.ui.tool = crate::state::Tool::Type;
+        app.sync_views();
+        app
+    });
+    h.run_steps(8);
+    super::edit_active(h.state_mut()).unwrap();
+    h.run_steps(8);
+    h.event(egui::Event::Text("X".into()));
+    h.run_steps(8);
+    assert!(h.query_all_by_role(Role::ComboBox).any(|n| n.value().as_deref() == Some("Ruposhi Bangla")), "the options bar names the missing font");
+    super::commit(h.state_mut());
+    h.run_steps(4);
+    let info = h.state_mut().run("type.info", json!({})).unwrap();
+    assert_eq!(info["text"], "X");
+    assert_eq!(info["runs"][0]["style"]["font_family"], "Ruposhi Bangla");
+    assert_eq!(info["runs"][0]["style"]["postscript_name"], "RuposhiBangla");
+}

@@ -1100,7 +1100,9 @@ pub fn quick_export_png(app: &mut PhotocraftApp) -> Result<Value, String> {
         let (suggested, doc) = (format!("{stem}.{fmt}"), st.doc.id);
         return app.pick_save(&suggested, move |app, path| {
             app.refocus(doc)?;
-            quick_export(app, json!({"path": path}))
+            let r = quick_export(app, json!({"path": path}))?;
+            hand_to_writer(app, r["path"].as_str().unwrap_or(&path))?;
+            Ok(r)
         });
     }
     let mut f = Map::new();
@@ -1108,6 +1110,15 @@ pub fn quick_export_png(app: &mut PhotocraftApp) -> Result<Value, String> {
     f.insert("transparency".into(), json!(true));
     f.insert("scale".into(), json!(100));
     confirm(app, &f)
+}
+
+/// Passes a file the engine wrote at a picked path through the app's writer, as Export As does.
+/// On Android the picked path is a stand-in for the document the user chose (a gallery or Drive
+/// file), and only the writer copies it there: without this the chosen file stays empty (#18).
+fn hand_to_writer(app: &mut PhotocraftApp, path: &str) -> Result<(), String> {
+    let Some(write) = app.services.write.as_mut() else { return Ok(()) };
+    let bytes = std::fs::read(path).map_err(|e| format!("couldn't read back {path}: {e}"))?;
+    write(path, &bytes)
 }
 
 /// Runs Quick Export with `p` (an explicit `path`, or none for the document's folder).
