@@ -437,12 +437,48 @@ impl Texture {
 
 /// The built-in preset set, in display order (grouped by [`GROUPS`]).
 pub fn builtin() -> Vec<BrushPreset> {
+    // The Android app is drawn on with a pen: its brushes follow the pen out of the box.
+    if cfg!(target_os = "android") { for_pen(desktop()) } else { desktop() }
+}
+
+/// The built-in brushes as the desktop has them (Photoshop's set).
+fn desktop() -> Vec<BrushPreset> {
     let base = BrushSettings { pressure_size: false, spacing: 0.25, ..Default::default() };
     let mut v = general(&base);
     v.extend(dry_media(&base));
     v.extend(wet_media(&base));
     v.extend(special_effects(&base));
     v
+}
+
+/// Brushes that stamp or scatter fixed shapes: their size stays put under pressure.
+const FIXED_SIZE: [&str; 9] = ["Spatter", "Stipple", "Confetti", "Sparkle", "Foliage", "Halftone Dots", "Sponge Texture", "Canvas Texture", "Dual Grain"];
+
+/// Drawing tools whose tip leans with the pen (Brush Projection), like a real pencil, crayon or
+/// nib: tilt it to shade with the side.
+const LEANING: [&str; 10] =
+    ["Calligraphy Flat", "Hard Pencil", "Soft Pencil", "Chalk", "Charcoal", "Pastel", "Wax Crayon", "Dry Bristle", "Rake", "Oil Bristle"];
+
+/// The built-in brushes set up for a pen (the Android app's): pressure sets the size of every
+/// brush but those that stamp fixed shapes, and the drawing tools' tips lean with the pen. A
+/// brush whose size already follows the pen keeps its own minimum.
+pub fn for_pen(mut presets: Vec<BrushPreset>) -> Vec<BrushPreset> {
+    for p in &mut presets {
+        let sd = &mut p.brush.shape_dynamics;
+        if !FIXED_SIZE.contains(&p.name.as_str()) && !p.brush.pressure_size && !(sd.enabled && sd.size.control == Control::PenPressure) {
+            if !sd.enabled {
+                // Shape Dynamics off: only its size is turned on, nothing else it holds.
+                *sd = ShapeDynamics::default();
+                sd.enabled = true;
+            }
+            sd.size.control = Control::PenPressure;
+        }
+        if LEANING.contains(&p.name.as_str()) {
+            sd.enabled = true;
+            sd.brush_projection = true;
+        }
+    }
+    presets
 }
 
 /// Find a preset by name (case-insensitive).
@@ -453,6 +489,40 @@ pub fn find<'a>(presets: &'a [BrushPreset], name: &str) -> Option<&'a BrushPrese
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Set up for a pen: size follows pressure on all but the stamp-like brushes, the drawing
+    /// tools lean with the pen, and nothing else about any brush changes.
+    #[test]
+    fn brushes_for_a_pen_follow_pressure_and_tilt() {
+        let plain = desktop();
+        let pen = for_pen(plain.clone());
+        assert_eq!(pen.len(), plain.len());
+        let sizes = |b: &BrushSettings| b.pressure_size || (b.shape_dynamics.enabled && b.shape_dynamics.size.control == Control::PenPressure);
+        for (before, after) in plain.iter().zip(&pen) {
+            let name = before.name.as_str();
+            if FIXED_SIZE.contains(&name) {
+                assert_eq!(sizes(&after.brush), sizes(&before.brush), "{name} keeps its size");
+            } else {
+                assert!(sizes(&after.brush), "{name}: pressure sets the size");
+            }
+            assert_eq!(after.brush.shape_dynamics.brush_projection, LEANING.contains(&name), "{name}");
+            if sizes(&before.brush) {
+                // Already followed the pen: its own minimum stays.
+                assert_eq!(after.brush.shape_dynamics.size.minimum, before.brush.shape_dynamics.size.minimum, "{name}");
+            }
+            if before.brush.shape_dynamics.enabled {
+                assert_eq!(after.brush.shape_dynamics.angle, before.brush.shape_dynamics.angle, "{name}: its angle dynamics stay");
+            }
+            assert_eq!(
+                (after.brush.size, after.brush.hardness, after.brush.tip.clone()),
+                (before.brush.size, before.brush.hardness, before.brush.tip.clone()),
+                "{name}"
+            );
+        }
+        for name in FIXED_SIZE.iter().chain(&LEANING) {
+            assert!(plain.iter().any(|p| p.name == *name), "{name} is a built-in brush");
+        }
+    }
 
     #[test]
     fn builtins_are_grouped_and_unique() {

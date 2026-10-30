@@ -360,6 +360,30 @@ fn track_age(action: i32, tool_type: i32, age_ms: i32) {
     }
 }
 
+/// Where the pen hovers since the last call (window pixels): `Some(None)` when it left.
+static HOVER_AT: Mutex<Option<Option<(f32, f32)>>> = Mutex::new(None);
+
+fn track_hover(action: i32, tool_type: i32, x: f32, y: f32) {
+    if tool_type != tool::STYLUS && tool_type != tool::ERASER {
+        return;
+    }
+    let at = match action {
+        motion::action::HOVER_ENTER | motion::action::HOVER_MOVE if x.is_finite() && y.is_finite() => Some((x, y)),
+        motion::action::HOVER_EXIT => None,
+        _ => return,
+    };
+    *HOVER_AT.lock().unwrap_or_else(PoisonError::into_inner) = Some(at);
+    // The app is idle while the pen only hovers: a frame to move the brush cursor.
+    layout_changed();
+}
+
+/// Where the pen hovered since the last call (window pixels), `Some(None)` when it left, or
+/// `None` when nothing changed: the pointer follows a hovering pen, so the brush cursor shows
+/// where it would paint.
+pub fn take_hover() -> Option<Option<(f32, f32)>> {
+    HOVER_AT.lock().unwrap_or_else(PoisonError::into_inner).take()
+}
+
 /// The presses since the last call, oldest first.
 pub fn take_presses() -> Vec<Press> {
     std::mem::take(&mut *PRESSES.lock().unwrap_or_else(PoisonError::into_inner))
@@ -452,6 +476,7 @@ pub extern "system" fn Java_ai_storyteller_photocraft_PhotoCraftActivity_nativeP
     track_age(action, tool, age_ms);
     track_controls(action, tool, buttons, x, y);
     track_path(action, tool, x, y);
+    track_hover(action, tool, x, y);
     let e = RawEvent { action, tool, buttons, pressure, tilt, orientation };
     let finger = (tool == motion::tool::FINGER).then(|| finger_sample(action, pressure, size, major)).flatten();
     let update = finger.unwrap_or_else(|| handle_with(&e, *ERASES.lock().unwrap_or_else(PoisonError::into_inner)));

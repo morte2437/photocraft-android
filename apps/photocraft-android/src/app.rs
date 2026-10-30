@@ -584,6 +584,19 @@ impl eframe::App for Shell {
         });
         let drawn = &self.drawn;
         self.pad.input(ctx, raw_input, &env, |p| !liquify.is_some_and(|r| r.contains(p)) && drawn.covered(p));
+        // The pen hovering: the pointer follows it, so the brush cursor shows where it would
+        // paint (winit doesn't pass hover moves on). After the router, which replaces pointer
+        // events with its own.
+        if let Some(hover) = android::take_hover() {
+            let e = match hover {
+                Some((x, y)) => egui::Event::PointerMoved(egui::pos2(x, y) / ctx.pixels_per_point()),
+                None => egui::Event::PointerGone,
+            };
+            // After the router's own "pointer gone" once a touch ends, or the cursor would vanish;
+            // but before a press the same frame, which belongs where the pen came down.
+            let pressing = raw_input.events.iter().any(|e| matches!(e, egui::Event::PointerButton { .. } | egui::Event::Touch { .. }));
+            if pressing { raw_input.events.insert(0, e) } else { raw_input.events.push(e) }
+        }
         // A focused field the keyboard now covers: scroll its list until the field shows again, as
         // a finger would (a wheel over an empty part of the same list, never over a control, which
         // the wheel would change), a step a frame and no further than SCROLL_LIMIT. Its place is

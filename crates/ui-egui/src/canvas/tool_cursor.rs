@@ -137,7 +137,8 @@ pub(crate) fn path_type(painter: &Painter, at: Pos2) -> CursorIcon {
 /// its centre sat 0.2 × its half-width right of and below the pointer, which is where the brush
 /// painted. Nothing tells the app which compositor does what, so the outline is painted instead.
 fn native(ctx: &egui::Context) -> bool {
-    cfg!(not(target_arch = "wasm32")) && ctx.viewport_id() == egui::ViewportId::ROOT && !scaled_wayland(ctx)
+    // Android shows no cursor image for a hovering pen: the shape is painted there too.
+    cfg!(not(any(target_arch = "wasm32", target_os = "android"))) && ctx.viewport_id() == egui::ViewportId::ROOT && !scaled_wayland(ctx)
 }
 
 /// Whether the pointer this viewport last saw has moved on to another of the app's windows,
