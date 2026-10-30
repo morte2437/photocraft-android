@@ -7,6 +7,11 @@ impl PhotocraftApp {
         self.session.active_index().and_then(|i| self.ui.views.get(i)).map_or(1.0, |v| v.zoom)
     }
 
+    /// Whether a drag on the canvas (a brush stroke, a selection) is in progress.
+    pub fn canvas_dragging(&self) -> bool {
+        self.drag.is_some()
+    }
+
     /// Screen (device) pixels per egui point of the canvas (`ctx.pixels_per_point`), as of the
     /// last canvas frame. `1.0` before the first frame.
     pub fn canvas_ppp(&self) -> f32 {

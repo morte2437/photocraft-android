@@ -143,6 +143,9 @@ pub struct TouchConfig {
     /// The pen's controls, by [`PenControl::index`]: lower, upper and top side buttons, eraser
     /// end.
     pub pen: [PenSetting; 4],
+    /// The line being drawn appears under the pen at once, drawn by Android ahead of the app's
+    /// frame and replaced by the real stroke when it's done (experimental).
+    pub low_latency_ink: bool,
 }
 
 impl Default for TouchConfig {
@@ -172,6 +175,7 @@ impl Default for TouchConfig {
                 PenSetting::new(PenAction::Nothing),
                 PenSetting::new(PenAction::Eraser),
             ],
+            low_latency_ink: false,
         }
     }
 }

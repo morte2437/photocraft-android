@@ -126,6 +126,99 @@ fn layout_changed() {
     }
 }
 
+// ---- Low-latency ink -------------------------------------------------------------------------
+//
+// While a stroke is drawn the Activity draws it at once on a front-buffered layer over the
+// canvas (`PhotoCraftActivity.inkEvent`), ahead of the app's own frame, and clears it once the
+// app has drawn the stroke itself. The app says each frame what to draw with ([`set_ink`]).
+
+/// What the Activity draws a stroke with, in window pixels: the brush's colour (ARGB), its
+/// width at full pressure and the smallest it gets with a light touch (a fraction), the canvas
+/// it may draw in and what covers the canvas there (menus, windows).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Ink {
+    pub color: u32,
+    pub width: f32,
+    pub minimum: f32,
+    pub pressure: bool,
+    /// Fingers draw too (not just the pen).
+    pub fingers: bool,
+    pub canvas: [f32; 4],
+    pub covered: Vec<[f32; 4]>,
+}
+
+static INK: Mutex<Option<Ink>> = Mutex::new(None);
+/// The style of the stroke being drawn, taken when it started.
+static INK_STROKE: Mutex<Option<Ink>> = Mutex::new(None);
+/// Frames the app drew with no stroke in progress: once it has drawn one after a stroke ends,
+/// the stroke is on the canvas and the Activity clears its own.
+static INK_IDLE: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+/// Frames still wanted after a stroke ended (the app may otherwise stop drawing).
+static INK_WANTS: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+/// What the Activity draws strokes with from now on (`None`: it doesn't), and whether a stroke
+/// is in progress in the frame just drawn. Returns whether the app should draw another frame
+/// (the Activity is waiting to clear a stroke).
+pub fn set_ink(ink: Option<Ink>, stroking: bool) -> bool {
+    *INK.lock().unwrap_or_else(PoisonError::into_inner) = ink;
+    if stroking {
+        return false;
+    }
+    INK_IDLE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    INK_WANTS.try_update(std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed, |n| (n > 0).then(|| n - 1)).is_ok()
+}
+
+fn inside(r: &[f32; 4], x: f32, y: f32) -> bool {
+    x >= r[0] && x < r[2] && y >= r[1] && y < r[3]
+}
+
+/// A touch went down at (x, y): the colour to draw its stroke in (ARGB, never 0), or 0 when no
+/// ink is drawn for it (off, not a painting tool, off the canvas or on a menu over it, a finger
+/// when fingers don't draw).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_photocraft_PhotoCraftActivity_nativeInkStart(_env: *mut c_void, _this: *mut c_void, x: f32, y: f32, finger: u8) -> i32 {
+    let ink = INK.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    let ink = ink.filter(|i| (finger == 0 || i.fingers) && inside(&i.canvas, x, y) && !i.covered.iter().any(|r| inside(r, x, y)));
+    let color = ink.as_ref().map_or(0, |i| (i.color | 0xff00_0000) as i32);
+    *INK_STROKE.lock().unwrap_or_else(PoisonError::into_inner) = ink;
+    color
+}
+
+/// The stroke's width (window pixels) at `pressure` (0..1).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_photocraft_PhotoCraftActivity_nativeInkWidth(_env: *mut c_void, _this: *mut c_void, pressure: f32) -> f32 {
+    let ink = INK_STROKE.lock().unwrap_or_else(PoisonError::into_inner);
+    let Some(i) = ink.as_ref() else { return 0.0 };
+    if !i.pressure {
+        return i.width;
+    }
+    let p = if pressure.is_finite() { pressure.clamp(0.0, 1.0) } else { 1.0 };
+    i.width * (i.minimum + (1.0 - i.minimum) * p)
+}
+
+/// One side of the canvas the stroke is drawn in (0 left, 1 top, 2 right, 3 bottom).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_photocraft_PhotoCraftActivity_nativeInkCanvas(_env: *mut c_void, _this: *mut c_void, side: i32) -> f32 {
+    let ink = INK_STROKE.lock().unwrap_or_else(PoisonError::into_inner);
+    ink.as_ref().and_then(|i| i.canvas.get(usize::try_from(side).ok()?).copied()).unwrap_or(0.0)
+}
+
+/// The stroke ended: the frames the app has drawn with no stroke in progress so far (the
+/// Activity clears its stroke once that grows), and the app is woken to draw it.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_photocraft_PhotoCraftActivity_nativeInkEnd(_env: *mut c_void, _this: *mut c_void) -> i64 {
+    INK_WANTS.store(3, std::sync::atomic::Ordering::Relaxed);
+    let idle = INK_IDLE.load(std::sync::atomic::Ordering::Relaxed);
+    layout_changed();
+    idle
+}
+
+/// Frames the app has drawn with no stroke in progress (see [`set_ink`]).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_photocraft_PhotoCraftActivity_nativeInkIdle(_env: *mut c_void, _this: *mut c_void) -> i64 {
+    INK_IDLE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// The on-screen keyboard's height in window pixels (0 when it's hidden).
 static IME_HEIGHT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 

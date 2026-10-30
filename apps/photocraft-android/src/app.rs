@@ -358,6 +358,41 @@ impl Shell {
     }
 }
 
+impl Shell {
+    /// What the Activity draws a stroke with while it's drawn (Touch Input › Low latency ink):
+    /// a plain line in the brush's colour and on-screen width, over the canvas. None while it's
+    /// off or the stroke wouldn't simply paint (another tool, the eraser, a modifier held).
+    fn ink_style(&self, ctx: &egui::Context) -> Option<photocraft_tablet::android::Ink> {
+        use photocraft_engine::paint::Control;
+        use photocraft_ui_egui::Tool;
+        let config = self.touch.config();
+        if !config.low_latency_ink || !matches!(self.app.ui.tool, Tool::Brush | Tool::Pencil) || !ctx.input(|i| i.modifiers.is_none()) {
+            return None;
+        }
+        let tools = &self.app.session.tools;
+        let brush = &tools.brush;
+        if brush.erase {
+            return None;
+        }
+        let xf = photocraft_ui_egui::canvas::ViewXform::active(&self.app)?;
+        let ppp = ctx.pixels_per_point();
+        let px = |r: egui::Rect| [r.min.x * ppp, r.min.y * ppp, r.max.x * ppp, r.max.y * ppp];
+        let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u32;
+        let [r, g, b, _] = tools.foreground;
+        let size_dynamic = brush.shape_dynamics.enabled && brush.shape_dynamics.size.control == Control::PenPressure;
+        let pen_near = photocraft_tablet::android::pen_seen_within(std::time::Duration::from_millis(300));
+        Some(photocraft_tablet::android::Ink {
+            color: (byte(r) << 16) | (byte(g) << 8) | byte(b),
+            width: (brush.size * xf.zoom * ppp).max(1.0),
+            minimum: if size_dynamic { brush.shape_dynamics.size.minimum.clamp(0.0, 1.0) } else { 0.0 },
+            pressure: brush.pressure_size || size_dynamic,
+            fingers: config.finger == crate::touch::config::FingerMode::Draw && !(config.palm_rejection && pen_near),
+            canvas: px(xf.rect),
+            covered: self.drawn.covering().into_iter().map(px).collect(),
+        })
+    }
+}
+
 impl eframe::App for Shell {
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         let _section = section("photocraft:logic");
@@ -719,5 +754,9 @@ impl eframe::App for Shell {
         }
         // What was drawn where, for the next frame's touches (see `touch::Snapshot`).
         self.drawn = crate::touch::Snapshot::take(ui.ctx());
+        // Low-latency ink: what the Activity draws the next stroke with, ahead of this frame.
+        if photocraft_tablet::android::set_ink(self.ink_style(ui.ctx()), self.app.canvas_dragging()) {
+            ui.ctx().request_repaint();
+        }
     }
 }

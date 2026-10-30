@@ -174,6 +174,13 @@ impl TouchInput {
                     ui.checkbox(&mut c.two_finger_scroll, "Two fingers scroll menus, panels and lists");
                     ui.checkbox(&mut c.long_press_right_click, "Hold a finger still to right-click (context menus, closing panels)");
                     ui.separator();
+                    ui.strong("Pen");
+                    ui.checkbox(&mut c.low_latency_ink, "Low latency ink (experimental): the line appears under the pen sooner");
+                    ui.label(
+                        egui::RichText::new("While you draw with the Brush or Pencil, a plain line in the brush's colour is drawn straight to the screen, then the real stroke replaces it.")
+                            .color(tk.text_dim),
+                    );
+                    ui.separator();
                     ui.strong("Pen buttons");
                     ui.label(
                         egui::RichText::new("Button 1 is nearest the tip. Press a button or turn the pen over: its light turns green.").color(tk.text_dim),
@@ -378,6 +385,12 @@ impl Snapshot {
 
     /// Whether a window, menu or popup was drawn over `p`: touches there belong to it, not to the
     /// canvas or the Shortcut Pad.
+    /// What's drawn over the app's own layer (menus, windows, popups): touches there aren't on
+    /// the canvas.
+    pub fn covering(&self) -> Vec<egui::Rect> {
+        self.layers.iter().filter(|(order, _)| *order != egui::Order::Background).flat_map(|(_, w)| w.iter().map(|w| w.rect)).collect()
+    }
+
     pub fn covered(&self, p: egui::Pos2) -> bool {
         self.top(p).is_some_and(|(order, _)| *order != egui::Order::Background)
     }

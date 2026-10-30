@@ -299,8 +299,149 @@ public class PhotoCraftActivity extends GameActivity {
                 // The library isn't loaded: every pointer counts as a finger.
             }
         }
+        inkEvent(e);
         forwardPen(e);
         return super.dispatchTouchEvent(e);
+    }
+
+    // ---- Low-latency ink ----------------------------------------------------------------------
+    //
+    // Touch Input › Low latency ink: the stroke being drawn is drawn here at once, from each touch
+    // sample, on a front-buffered layer over the canvas (Android draws it straight to the screen,
+    // without waiting for the app's next frame). The app draws the real stroke underneath as
+    // usual; once it has drawn the finished stroke, this one is cleared. The app says what to draw
+    // with when the touch goes down (nativeInkStart); colour 0 means no ink for this touch.
+
+    private static native int nativeInkStart(float x, float y, boolean finger);
+    private static native float nativeInkWidth(float pressure);
+    private static native float nativeInkCanvas(int side);
+    private static native long nativeInkEnd();
+    private static native long nativeInkIdle();
+
+    /** A segment of the stroke: from (x0, y0) to (x1, y1), this wide. */
+    private static final class InkSegment {
+        final float x0, y0, x1, y1, width;
+        InkSegment(float x0, float y0, float x1, float y1, float width) {
+            this.x0 = x0; this.y0 = y0; this.x1 = x1; this.y1 = y1; this.width = width;
+        }
+    }
+
+    private androidx.graphics.lowlatency.CanvasFrontBufferedRenderer<InkSegment> ink;
+    private final android.graphics.Paint inkPaint = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+    private final android.graphics.RectF inkClip = new android.graphics.RectF();
+    /** The pointer drawing the stroke, or -1. */
+    private int inkPointer = -1;
+    private float inkX, inkY;
+    /** Bumped for every stroke, so a pending clear doesn't clear the next one. */
+    private int inkStroke = 0;
+
+    private void inkEvent(MotionEvent e) {
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.Q) {
+            return;
+        }
+        int action = e.getActionMasked();
+        if (action == MotionEvent.ACTION_DOWN) {
+            int color;
+            try {
+                color = nativeInkStart(e.getX(), e.getY(), !isPen(e.getToolType(0)));
+            } catch (UnsatisfiedLinkError err) {
+                color = 0;
+            }
+            if (color == 0 || !inkReady()) {
+                inkPointer = -1;
+                return;
+            }
+            inkStroke++;
+            inkPaint.setColor(color);
+            inkPaint.setStyle(android.graphics.Paint.Style.STROKE);
+            inkPaint.setStrokeCap(android.graphics.Paint.Cap.ROUND);
+            inkClip.set(nativeInkCanvas(0), nativeInkCanvas(1), nativeInkCanvas(2), nativeInkCanvas(3));
+            inkPointer = e.getPointerId(0);
+            inkX = e.getX();
+            inkY = e.getY();
+            inkTo(e.getX(), e.getY(), e.getPressure());
+        } else if (inkPointer < 0) {
+            return;
+        } else if (action == MotionEvent.ACTION_MOVE) {
+            int i = e.findPointerIndex(inkPointer);
+            if (i < 0) {
+                return;
+            }
+            for (int h = 0; h < e.getHistorySize(); h++) {
+                inkTo(e.getHistoricalX(i, h), e.getHistoricalY(i, h), e.getHistoricalPressure(i, h));
+            }
+            inkTo(e.getX(i), e.getY(i), e.getPressure(i));
+        } else if (action == MotionEvent.ACTION_UP) {
+            inkPointer = -1;
+            long idle;
+            try {
+                idle = nativeInkEnd();
+            } catch (UnsatisfiedLinkError err) {
+                idle = Long.MAX_VALUE - 2;
+            }
+            // Cleared once the app has drawn a frame or two with the stroke finished.
+            inkClearAfter(inkStroke, idle + 2, SystemClock.uptimeMillis() + 500);
+        } else if (action == MotionEvent.ACTION_CANCEL || action == MotionEvent.ACTION_POINTER_DOWN) {
+            // Cancelled, or a second finger: a gesture, not a stroke.
+            inkPointer = -1;
+            ink.clear();
+        }
+    }
+
+    private boolean inkReady() {
+        if (ink == null) {
+            try {
+                ink = new androidx.graphics.lowlatency.CanvasFrontBufferedRenderer<>(mSurfaceView, new androidx.graphics.lowlatency.CanvasFrontBufferedRenderer.Callback<InkSegment>() {
+                    @Override
+                    public void onDrawFrontBufferedLayer(android.graphics.Canvas canvas, int width, int height, InkSegment s) {
+                        canvas.save();
+                        canvas.clipRect(inkClip);
+                        inkPaint.setStrokeWidth(s.width);
+                        canvas.drawLine(s.x0, s.y0, s.x1, s.y1, inkPaint);
+                        canvas.restore();
+                    }
+
+                    @Override
+                    public void onDrawMultiBufferedLayer(android.graphics.Canvas canvas, int width, int height, java.util.Collection<? extends InkSegment> segments) {
+                        // Never committed: the app draws the real stroke.
+                        canvas.drawColor(android.graphics.Color.TRANSPARENT, android.graphics.PorterDuff.Mode.CLEAR);
+                    }
+                });
+            } catch (RuntimeException | LinkageError err) {
+                Log.w(TAG, "low latency ink unavailable", err);
+                return false;
+            }
+        }
+        return ink.isValid();
+    }
+
+    private void inkTo(float x, float y, float pressure) {
+        float width = nativeInkWidth(pressure);
+        if (width > 0f) {
+            ink.renderFrontBufferedLayer(new InkSegment(inkX, inkY, x, y, width));
+        }
+        inkX = x;
+        inkY = y;
+    }
+
+    private void inkClearAfter(int stroke, long idle, long deadline) {
+        android.view.Choreographer.getInstance().postFrameCallback(t -> {
+            if (stroke != inkStroke || inkPointer >= 0) {
+                // A new stroke started: it clears itself when it's done.
+                return;
+            }
+            long now;
+            try {
+                now = nativeInkIdle();
+            } catch (UnsatisfiedLinkError err) {
+                now = idle;
+            }
+            if (now >= idle || SystemClock.uptimeMillis() >= deadline) {
+                ink.clear();
+            } else {
+                inkClearAfter(stroke, idle, deadline);
+            }
+        });
     }
 
     @Override

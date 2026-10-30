@@ -77,4 +77,6 @@ dependencies {
     // The Java half of GameActivity; android-activity (Rust) provides the native glue, so no
     // prefab. The version must match android-activity's (see its README).
     implementation 'androidx.games:games-activity:4.4.0'
+    // Low-latency ink (Touch Input): the stroke being drawn goes to a front-buffered layer.
+    implementation 'androidx.graphics:graphics-core:1.0.2'
 }
