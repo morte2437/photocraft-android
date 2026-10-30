@@ -220,6 +220,12 @@ impl PhotocraftApp {
         if ((chrome || self.full_screen_toolbar) && self.ui.panels.options_bar) || tabbed_in {
             panels::options_bar(self, ui);
         }
+        // The shell's strip along a side edge (the Shortcut Pad): below the top bars, so they
+        // run the full width of the window.
+        self.edge_strip_rect = self.edge_strip.map(|(right, width)| {
+            let panel = if right { egui::Panel::right("edge_strip") } else { egui::Panel::left("edge_strip") };
+            panel.exact_size(width).resizable(false).frame(egui::Frame::NONE).show(ui, |ui| ui.max_rect()).response.rect
+        });
         if chrome && self.ui.panels.status_bar {
             panels::status_bar(self, ui);
         }

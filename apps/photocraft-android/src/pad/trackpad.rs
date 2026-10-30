@@ -396,7 +396,7 @@ mod tests {
                 list_item: &|_| false,
                 draggable: if self.drags { &|_| true } else { &|_| false },
                 secondary: &|_| false,
-                scroll_strip: None,
+                scroll_strips: &[],
                 now: self.now,
             }
         }

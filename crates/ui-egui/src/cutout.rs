@@ -19,6 +19,9 @@ use std::collections::HashMap;
 /// Space kept between a cutout and the controls either side of it (points).
 const PAD: f32 = 2.0;
 
+/// How much of a rounded corner's reach controls keep clear of.
+const CORNER_SHARE: f32 = 0.5;
+
 /// One of the screen's rounded corners (points): its curve's centre and radius, and which screen
 /// corner it rounds.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -43,7 +46,11 @@ impl Corner {
         // Past the curve's end (at the very edge) the screen starts where the curve does.
         let d = d.min(self.radius);
         let half = (self.radius * self.radius - d * d).sqrt();
-        Some(if near { along - half } else { along + half })
+        // Half the curve's reach: the curve only clips a control's outer corner there, and
+        // keeping fully clear of it crowds the bars.
+        let reach = (self.radius - half) * CORNER_SHARE;
+        let edge = if near { along - self.radius } else { along + self.radius };
+        Some(if near { edge + reach } else { edge - reach })
     }
 }
 
@@ -382,7 +389,7 @@ mod tests {
         // A bar along the top edge: its first button moves out of the curve, the rest follow,
         // and its far end stops short of the other corner's curve.
         let (top, end_at) = corner_row(&ctx, Rect::from_min_size(pos2(0.0, 0.0), vec2(400.0, 30.0)));
-        let curve = 30.0 - (30.0f32 * 30.0 - 21.0 * 21.0).sqrt();
+        let curve = (30.0 - (30.0f32 * 30.0 - 21.0 * 21.0).sqrt()) * CORNER_SHARE;
         assert!((top[0].left() - (curve + PAD)).abs() < 0.1, "{top:?}");
         assert_eq!(top[1].left(), top[0].right());
         let end_at = end_at.expect("the far corner reaches into the bar");
@@ -402,7 +409,7 @@ mod tests {
         out.textures_delta.clear();
         // A 60-point strip on the left edge: the curves reach into its outer side.
         let strip = column_span(&ctx, Rangef::new(0.0, 60.0));
-        let curve = 30.0 - (30.0f32 * 30.0 - 12.0 * 12.0).sqrt();
+        let curve = (30.0 - (30.0f32 * 30.0 - 12.0 * 12.0).sqrt()) * CORNER_SHARE;
         assert!((strip.min - (curve + PAD)).abs() < 0.01, "{strip:?}");
         assert!((strip.max - (300.0 - curve - PAD)).abs() < 0.01, "{strip:?}");
         // A column in the middle of the screen: nothing.

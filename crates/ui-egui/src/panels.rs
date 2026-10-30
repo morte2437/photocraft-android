@@ -95,7 +95,7 @@ use navigator::{NAV_ROW_H, navigator, navigator_zoom_drag_id, navigator_zoom_to}
 pub(crate) use navigator::{last_navigator_controls, last_navigator_preview};
 #[cfg(test)]
 use options_bar::LAYER_PCT_W;
-pub use options_bar::{options_bar, options_bar_overflow, scroll_options_bar};
+pub use options_bar::options_bar;
 #[cfg(test)]
 use options_bar::options_bar_height;
 pub(crate) use options_bar::{FIXED_SIZE_MAX_PX, opt_label};

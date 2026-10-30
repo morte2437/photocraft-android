@@ -38,41 +38,9 @@ pub(super) fn options_bar_height(pro: bool, narrow: bool) -> f32 {
     }
 }
 
-/// Where a swipe (`scroll_options_bar`) asks the options bar to scroll to, next frame.
-fn options_bar_scroll_to_id() -> egui::Id {
-    egui::Id::unique("options-bar-scroll-to")
-}
-
-fn options_bar_overflow_id() -> egui::Id {
-    egui::Id::unique("options-bar-overflow")
-}
-
-/// The options bar's scrolling strip as laid out last frame, when its controls run past the
-/// window's width: its rect, its scroll area's id and how far it scrolls.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct Overflow {
-    rect: egui::Rect,
-    id: egui::Id,
-    max: f32,
-}
-
-/// The options bar's scrolling strip, when its controls run past the window's width (as laid
-/// out last frame): a touch screen scrolls it with a sideways swipe ([`scroll_options_bar`]).
-pub fn options_bar_overflow(ctx: &egui::Context) -> Option<egui::Rect> {
-    ctx.data(|d| d.get_temp::<Option<Overflow>>(options_bar_overflow_id())).flatten().map(|o| o.rect)
-}
-
-/// Scroll the options bar by `dx` points (positive: the content follows a finger moving right).
-/// Set on the bar's scroll area itself rather than sent as the wheel, which the dropdown under
-/// the finger would take (stepping the blend mode).
-pub fn scroll_options_bar(ctx: &egui::Context, dx: f32) {
-    let Some(o) = ctx.data(|d| d.get_temp::<Option<Overflow>>(options_bar_overflow_id())).flatten() else { return };
-    let now = egui::scroll_area::State::load(ctx, o.id).map_or(0.0, |s| s.clamped_offset().x);
-    let pending = ctx.data(|d| d.get_temp::<f32>(options_bar_scroll_to_id())).unwrap_or(now);
-    let to = (pending - dx).clamp(0.0, o.max.max(0.0));
-    // Applied by the bar's scroll area when it next draws (egui's state can't be set directly).
-    ctx.data_mut(|d| d.insert_temp(options_bar_scroll_to_id(), to));
-    ctx.request_repaint();
+/// The options bar as a sideways-scrolling strip (see `scroll_strip`).
+fn options_strip() -> egui::Id {
+    egui::Id::unique("options-bar-strip")
 }
 
 pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
@@ -83,10 +51,7 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         .frame(egui::Frame::NONE.fill(t.chrome).inner_margin(egui::Margin::symmetric(10, 0)))
         .show(ui, |ui| {
             ui.style_mut().spacing.scroll = egui::style::ScrollStyle { bar_width: 4.0, ..egui::style::ScrollStyle::floating() };
-            let mut area = egui::ScrollArea::horizontal().id_salt("tool-options").auto_shrink([false, false]);
-            if let Some(x) = ui.ctx().data_mut(|d| d.remove_temp::<f32>(options_bar_scroll_to_id())) {
-                area = area.horizontal_scroll_offset(x);
-            }
+            let area = crate::scroll_strip::begin(ui.ctx(), options_strip(), egui::ScrollArea::horizontal().id_salt("tool-options").auto_shrink([false, false]));
             let scrolled = area.show(ui, |ui| {
                 // Font ink can extend beyond its advance width at fractional positions.
                 // Include its gutter in the container layout, including right-aligned actions.
@@ -700,9 +665,7 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 });
             });
             // Where a sideways swipe should scroll the bar (Android's touch router): only when it overflows.
-            let max = scrolled.content_size.x - scrolled.inner_rect.width();
-            let overflow = (max > 1.0).then_some(Overflow { rect: scrolled.inner_rect, id: scrolled.id, max });
-            ui.ctx().data_mut(|d| d.insert_temp(options_bar_overflow_id(), overflow));
+            crate::scroll_strip::record(ui.ctx(), options_strip(), &scrolled);
         });
 }
 

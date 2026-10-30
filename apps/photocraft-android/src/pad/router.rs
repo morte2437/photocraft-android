@@ -165,8 +165,9 @@ pub enum Routed {
     View(ViewMove),
     /// A quick tap with this many fingers on the canvas.
     Tap(usize),
-    /// A sideways swipe moved the scrolling strip (the options bar) this far, in points.
-    StripScroll(f32),
+    /// A sideways swipe moved a scrolling strip (the options bar, a phone's menu bar), the one
+    /// laid out at this rect, this far, in points.
+    StripScroll(Rect, f32),
 }
 
 /// What the router needs to know besides the events.
@@ -187,9 +188,9 @@ pub struct Env<'a> {
     /// Whether a pen or mouse touch presses the secondary button (a mouse's right button, a pen's
     /// side button set to right-click).
     pub secondary: &'a dyn Fn(TouchId) -> bool,
-    /// A strip that scrolls sideways (the options bar running past the window's width), as laid
-    /// out last frame: a sideways swipe there scrolls it.
-    pub scroll_strip: Option<Rect>,
+    /// Strips that scroll sideways (the options bar or a phone's menu bar running past the
+    /// window's width), as laid out last frame: a sideways swipe there scrolls it.
+    pub scroll_strips: &'a [Rect],
     /// The window (the trackpad cursor stays inside it).
     pub screen: Rect,
     /// The frame's time, in seconds.
@@ -245,17 +246,17 @@ struct Hold {
     since: f64,
     /// On a list row: a vertical swipe scrolls, and grabbing needs [`LONG_PRESS`].
     list: bool,
-    /// On a sideways-scrolling strip: a sideways swipe scrolls, and grabbing needs
+    /// On a sideways-scrolling strip (this one): a sideways swipe scrolls, and grabbing needs
     /// [`LONG_PRESS`].
-    strip: bool,
+    strip: Option<Rect>,
 }
 
 /// A scroll gliding on after the fingers lifted (under the pointer, left where they lifted).
 #[derive(Clone, Copy, Debug)]
 struct Glide {
     velocity: Vec2,
-    /// Glides the strip rather than wheeling what's under the pointer.
-    strip: bool,
+    /// Glides this strip rather than wheeling what's under the pointer.
+    strip: Option<Rect>,
 }
 
 /// The canvas fingers from the first one down to the last one up (for taps).
@@ -290,6 +291,8 @@ pub struct Router {
     scroll: Option<Pos2>,
     /// The axes the scroll moves (a strip scrolls only sideways).
     scroll_axes: Vec2,
+    /// The strip being scrolled, when it's a strip.
+    strip: Option<Rect>,
     trail: Vec<(f64, Pos2)>,
     glide: Option<Glide>,
     /// The previous frame's time (the glide's step).
@@ -351,8 +354,8 @@ impl Router {
             self.glide = None;
         }
         if let Some(g) = &mut self.glide {
-            if g.strip {
-                out.push(Routed::StripScroll(g.velocity.x * dt));
+            if let Some(strip) = g.strip {
+                out.push(Routed::StripScroll(strip, g.velocity.x * dt));
             } else {
                 out.push(Routed::App(Event::MouseWheel {
                     unit: MouseWheelUnit::Point,
@@ -420,7 +423,7 @@ impl Router {
         }
         // A finger held long enough without a second one becomes the pointer.
         if let Some(h) = self.hold
-            && env.now - h.since >= if h.list || h.strip { LONG_PRESS } else { HOLD_TIME }
+            && env.now - h.since >= if h.list || h.strip.is_some() { LONG_PRESS } else { HOLD_TIME }
         {
             self.commit(&mut out);
         }
@@ -482,8 +485,8 @@ impl Router {
             Role::Ui => {
                 let others: Vec<TouchId> = self.fingers.iter().filter(|f| f.role == Role::Ui && f.id != id).map(|f| f.id).collect();
                 if others.is_empty() && self.primary.is_none() && self.hold.is_none() {
-                    let strip = env.scroll_strip.is_some_and(|r| r.contains(pos));
-                    self.hold = Some(Hold { id, start: pos, pos, since: env.now, list: !strip && (env.list_item)(pos), strip });
+                    let strip = env.scroll_strips.iter().copied().find(|r| r.contains(pos));
+                    self.hold = Some(Hold { id, start: pos, pos, since: env.now, list: strip.is_none() && (env.list_item)(pos), strip });
                     if env.config.long_press_right_click {
                         let t = unforced(e, TouchPhase::Start);
                         out.push(Routed::App(t.clone()));
@@ -506,7 +509,7 @@ impl Router {
                     self.sequence = Some(Sequence { since: env.now, most: 1, moved: false, gestured: false });
                     self.locked = false;
                     if env.config.finger == FingerMode::Draw && self.primary.is_none() && self.hold.is_none() {
-                        self.hold = Some(Hold { id, start: pos, pos, since: env.now, list: false, strip: false });
+                        self.hold = Some(Hold { id, start: pos, pos, since: env.now, list: false, strip: None });
                     }
                 } else {
                     // A second finger: a gesture, not a stroke. A finger that had already become
@@ -551,13 +554,14 @@ impl Router {
             }
             let d = pos - h.start;
             let along_list = h.list && d.y.abs() > d.x.abs();
-            let along_strip = h.strip && d.x.abs() > d.y.abs();
+            let along_strip = h.strip.is_some() && d.x.abs() > d.y.abs();
             if !(along_list || along_strip) {
                 self.commit(out);
                 return;
             }
             // A swipe along a list or strip scrolls it; nothing is grabbed.
             self.scroll_axes = if along_strip { vec2(1.0, 0.0) } else { vec2(1.0, 1.0) };
+            self.strip = h.strip.filter(|_| along_strip);
             let start = h.start;
             self.hold = None;
             self.unforward(out);
@@ -573,10 +577,10 @@ impl Router {
             Role::Ui => {
                 if let Some(last) = self.scroll {
                     let c = self.center(Role::Ui);
-                    if self.scroll_axes.y == 0.0 {
+                    if let Some(strip) = self.strip.filter(|_| self.scroll_axes.y == 0.0) {
                         // The strip scrolls itself: as the wheel, the dropdown under the finger
                         // would step through its options instead.
-                        out.push(Routed::StripScroll(c.x - last.x));
+                        out.push(Routed::StripScroll(strip, c.x - last.x));
                     } else {
                         out.push(Routed::App(Event::PointerMoved(c)));
                         out.push(Routed::App(Event::MouseWheel {
@@ -642,7 +646,7 @@ impl Router {
                     };
                     self.trail.clear();
                     if lifted && velocity.length() >= GLIDE_MIN {
-                        self.glide = Some(Glide { velocity, strip: self.scroll_axes.y == 0.0 });
+                        self.glide = Some(Glide { velocity, strip: self.strip.filter(|_| self.scroll_axes.y == 0.0) });
                     } else {
                         self.gone_pending = true;
                     }
@@ -855,7 +859,7 @@ mod tests {
                 list_item: &list,
                 draggable: &|_| false,
                 secondary: &|id: TouchId| id.0 >= 200,
-                scroll_strip: Some(STRIP),
+                scroll_strips: &[STRIP],
                 screen: Rect::from_min_size(pos2(0.0, 0.0), vec2(1280.0, 1000.0)),
                 now: self.now,
             };
@@ -1316,7 +1320,7 @@ mod tests {
         assert!(presses(&g.wait(HOLD_TIME + 0.01)).is_empty(), "a strip waits as long as a list row");
         let out = g.send(vec![touch(1, TouchPhase::Move, p + vec2(-60.0, 4.0))]);
         assert!(presses(&out).is_empty(), "nothing pressed");
-        let dx: f32 = out.iter().filter_map(|r| if let Routed::StripScroll(d) = r { Some(*d) } else { None }).sum();
+        let dx: f32 = out.iter().filter_map(|r| if let Routed::StripScroll(s, d) = r { assert_eq!(*s, STRIP); Some(*d) } else { None }).sum();
         assert!(dx < -40.0 && wheel(&out) == Vec2::ZERO, "the strip itself, not the wheel: {dx} {out:?}");
         g.send(vec![touch(1, TouchPhase::End, p + vec2(-60.0, 4.0))]);
         // Held still first, a drag works the control under the finger.

@@ -38,25 +38,11 @@ pub fn menu_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> f32 {
         v.widgets.inactive.bg_stroke = egui::Stroke::NONE;
         v.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, t.text_dim);
         v.widgets.hovered.bg_stroke = egui::Stroke::NONE;
-        egui::MenuBar::new().ui(ui, |ui| {
+        let mut bar = |ui: &mut egui::Ui| egui::MenuBar::new().ui(ui, |ui| {
             // egui lays the bar out left to right; a right-to-left UI starts it at the right.
             let mut mirrored = rtl.then(|| ui.new_child(egui::UiBuilder::new().layout(crate::direction::row())));
             let ui = mirrored.as_mut().unwrap_or(ui);
-            // Split around a phone's camera or kept clear of a rounded corner, the titles give up
-            // padding to stay on screen (the bar doesn't scroll): just enough, from how far they
-            // ran past it at full padding.
-            let squeeze_id = egui::Id::unique("menu-bar-squeeze");
-            // Kept per bar place and width (a rotation, or the Shortcut Pad switching sides or
-            // hiding, starts over), and only ever raised, so the titles settle instead of
-            // flickering between two paddings as they slide past the camera.
-            let place = (ui.max_rect().left().round(), ui.max_rect().width().round());
-            let excess = if crate::cutout::active(ui.ctx()) {
-                ui.ctx().data(|d| d.get_temp::<((f32, f32), f32)>(squeeze_id)).filter(|(p, _)| *p == place).map_or(0.0, |(_, e)| e)
-            } else {
-                0.0
-            };
-            let pad_x = (MENU_PAD_X - excess / (2.0 * TOP_MENUS.len() as f32)).clamp(1.0, MENU_PAD_X);
-            ui.spacing_mut().button_padding = egui::vec2(pad_x, 3.0);
+            ui.spacing_mut().button_padding = egui::vec2(MENU_PAD_X, 3.0);
             nav.bar_bottom = Some(ui.max_rect().bottom());
             let mut buttons = Vec::with_capacity(TOP_MENUS.len());
             for (k, top) in TOP_MENUS.iter().enumerate() {
@@ -127,13 +113,9 @@ pub fn menu_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> f32 {
                 buttons.push(title);
             }
             crate::cutout::end(ui);
-            if crate::cutout::active(ui.ctx()) && !rtl {
-                let full = ui.min_rect().right() + (MENU_PAD_X - pad_x) * 2.0 * TOP_MENUS.len() as f32;
-                // Against the screen's edge (the bar's own row can run past it), or a rounded
-                // corner's curve.
-                let edge = ui.max_rect().right().min(ui.ctx().content_rect().right()).min(crate::cutout::row_end(ui).unwrap_or(f32::INFINITY));
-                let now = (full - edge).max(excess);
-                ui.ctx().data_mut(|d| d.insert_temp(squeeze_id, (place, now)));
+            // Under a rounded screen corner, room to scroll the last title out of its curve.
+            if let Some(end) = crate::cutout::row_end(ui) {
+                ui.add_space((ui.clip_rect().right() - end).max(0.0));
             }
             edge = if rtl { buttons.iter().map(|b| b.rect.left()).fold(edge, f32::min) } else { buttons.iter().map(|b| b.rect.right()).fold(edge, f32::max) };
             switch_on_hover(ui.ctx(), &buttons);
@@ -149,6 +131,16 @@ pub fn menu_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> f32 {
             }
             keys.keys(ui.ctx(), &tops, &mnemonics, &mut nav, &mut clicked);
         });
+        // On a phone the titles don't fit beside the camera at full spacing: the bar scrolls
+        // sideways instead (a swipe on it, see `scroll_strip`).
+        if app_ref.compact_layout && !rtl {
+            let strip = egui::Id::unique("menu-bar-strip");
+            let area = egui::ScrollArea::horizontal().id_salt("menu-bar").auto_shrink([false, true]).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden);
+            let out = crate::scroll_strip::begin(ui.ctx(), strip, area).show(ui, |ui| bar(ui));
+            crate::scroll_strip::record(ui.ctx(), strip, &out);
+        } else {
+            bar(ui);
+        }
     });
     keys.store(ui.ctx());
     nav.store(ui.ctx());

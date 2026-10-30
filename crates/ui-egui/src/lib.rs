@@ -16,6 +16,7 @@ macro_rules! tl {
 pub mod canvas;
 pub mod control;
 pub mod cutout;
+pub mod scroll_strip;
 pub mod dialogs;
 pub mod dock;
 pub mod file_dialog;
@@ -657,6 +658,11 @@ pub struct PhotocraftApp {
     /// is smaller ([`prefs_ui::COMPACT_AUTO_SCALE`]) and dialogs take the window's width and
     /// scroll when taller than it. Off on the desktop.
     pub compact_layout: bool,
+    /// A strip the shell keeps along a side edge below the top bars (the Android Shortcut Pad):
+    /// which side (`true`: right) and how wide. The app lays out beside it and leaves it empty.
+    pub edge_strip: Option<(bool, f32)>,
+    /// Where [`Self::edge_strip`] went this frame, for the shell to draw in.
+    pub edge_strip_rect: Option<egui::Rect>,
     /// A vanishing point of the perspective ruler being dragged: (the document's id, point,
     /// where). By id, so a drag never lands on another document that took its tab's place.
     pub perspective_drag: Option<(photocraft_doc::DocId, usize, [f64; 2])>,

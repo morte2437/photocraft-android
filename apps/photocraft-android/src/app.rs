@@ -496,6 +496,7 @@ impl eframe::App for Shell {
         };
         // While Liquify is open its preview is the canvas: two fingers pan and zoom it (#20).
         let liquify = photocraft_ui_egui::liquify_ui::preview_rect(&self.app);
+        let strips = photocraft_ui_egui::scroll_strip::strips(ctx);
         let env = crate::pad::router::Env {
             // Gestures move the canvas only while a document is open.
             canvas: liquify.or_else(|| self.app.session.active_index().map(|_| self.app.last_canvas_rect)),
@@ -505,7 +506,7 @@ impl eframe::App for Shell {
             list_item: &|p: egui::Pos2| self.drawn.list_item(p),
             draggable: &|p: egui::Pos2| self.drawn.draggable(p),
             secondary: &secondary,
-            scroll_strip: photocraft_ui_egui::panels::options_bar_overflow(ctx),
+            scroll_strips: &strips,
             screen: ctx.content_rect(),
             now: raw_input.time.unwrap_or_else(|| ctx.input(|i| i.time)),
         };
@@ -668,11 +669,12 @@ impl eframe::App for Shell {
             .map(|([r, x, y], (left, top))| photocraft_ui_egui::cutout::Corner { centre: egui::pos2(x, y) / ppp, radius: r / ppp, left, top })
             .collect();
         photocraft_ui_egui::cutout::set_corners(ui.ctx(), corners);
-        // The pad first, so the app lays out beside it.
-        self.pad.show(ui, &tokens, &self.app);
+        // The app keeps a strip for the pad below its top bars, and the pad draws in it after.
+        self.pad.reserve(&mut self.app);
         let section = section("photocraft:app");
         self.app.ui(ui, frame);
         drop(section);
+        self.pad.show(ui.ctx(), &tokens, &self.app);
         if self.app.stroke_trace.enabled() && self.app.stroke_trace.last != self.trace_logged {
             self.trace_logged = self.app.stroke_trace.last.clone();
             if let Some(summary) = &self.trace_logged {

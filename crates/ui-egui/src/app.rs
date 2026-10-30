@@ -181,6 +181,8 @@ impl PhotocraftApp {
             control_click: Default::default(),
             background_jobs: false,
             compact_layout: false,
+            edge_strip: None,
+            edge_strip_rect: None,
             perspective_drag: None,
             phone_panel: None,
             full_screen_toolbar: false,
@@ -266,3 +268,5 @@ impl eframe::App for PhotocraftApp {
 
 #[cfg(test)]
 mod clipboard_tests;
+#[cfg(test)]
+mod edge_strip_tests;

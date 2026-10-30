@@ -223,7 +223,7 @@ impl Pad {
                 Routed::App(e) => out.push(e),
                 Routed::Pad(t) => self.touch(t, &mut out),
                 Routed::View(m) => self.views.push(m),
-                Routed::StripScroll(dx) => photocraft_ui_egui::panels::scroll_options_bar(ctx, dx),
+                Routed::StripScroll(strip, dx) => photocraft_ui_egui::scroll_strip::scroll(ctx, strip, dx),
                 Routed::Tap(fingers) => {
                     let shortcut = match fingers {
                         2 => &env.config.two_finger_tap,
@@ -425,39 +425,35 @@ impl Pad {
         p.text(c + egui::vec2(0.0, 12.0), Align2::CENTER_CENTER, readout, FontId::proportional(18.0), tk.text);
     }
 
-    /// Draw the pad (before the app, which then lays out in the rest of the window).
-    pub fn show(&mut self, ui: &mut egui::Ui, tk: &Tokens, app: &PhotocraftApp) {
-        self.screen = ui.ctx().content_rect();
+    /// Before the app lays out: asks it for the pad's strip along its side edge, below the top
+    /// bars (none while the pad is off).
+    pub fn reserve(&mut self, app: &mut PhotocraftApp) {
+        let config = self.shared.borrow().config.clone();
+        app.edge_strip = config.enabled.then(|| (config.side == Side::Right, if self.compact { router::COMPACT_WIDTH } else { router::WIDTH }));
+    }
+
+    /// Draw the pad in the strip the app kept for it (after the app's layout).
+    pub fn show(&mut self, ctx: &egui::Context, tk: &Tokens, app: &PhotocraftApp) {
+        self.screen = ctx.content_rect();
         self.screen_step = ScreenStep::of(app);
         let config = self.shared.borrow().config.clone();
-        if !config.enabled {
+        let Some(strip) = app.edge_strip_rect.filter(|_| config.enabled) else {
             self.layout = None;
             return;
-        }
-        let panel = match config.side {
-            Side::Left => egui::Panel::left("shortcut_pad"),
-            Side::Right => egui::Panel::right("shortcut_pad"),
         };
-        let frame = egui::Frame::new().fill(tk.chrome).stroke(Stroke::new(1.0, tk.separator));
         let mode = self.mode();
-        let layout = panel
-            .exact_size(if self.compact { router::COMPACT_WIDTH } else { router::WIDTH })
-            .resizable(false)
-            .frame(frame)
-            .show(ui, |ui| {
-                // The screen's rounded corners: the keys at the strip's ends move clear of them.
-                let full = ui.max_rect();
-                let span = photocraft_ui_egui::cutout::column_span(ui.ctx(), full.x_range());
-                let top = full.top().max(span.min);
-                let full = egui::Rect::from_x_y_ranges(full.x_range(), top..=full.bottom().min(span.max).max(top));
-                let l = Layout::new(full, config.keys.len());
-                self.paint(ui.painter(), &l, &config, mode, tk);
-                l
-            })
-            .inner;
+        // On the app's own layer, over its empty strip: windows and menus still open above it.
+        let painter = egui::Painter::new(ctx.clone(), egui::LayerId::background(), strip);
+        painter.rect(strip, 0.0, tk.chrome, Stroke::new(1.0, tk.separator), egui::StrokeKind::Inside);
+        // The screen's rounded corners: the keys at the strip's ends move clear of them.
+        let span = photocraft_ui_egui::cutout::column_span(ctx, strip.x_range());
+        let top = strip.top().max(span.min);
+        let full = egui::Rect::from_x_y_ranges(strip.x_range(), top..=strip.bottom().min(span.max).max(top));
+        let layout = Layout::new(full, config.keys.len());
+        self.paint(&painter, &layout, &config, mode, tk);
         self.layout = Some(layout);
         if let Some(b) = self.big {
-            let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("shortcut_pad_ring")));
+            let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("shortcut_pad_ring")));
             self.paint_big(&painter, b, mode, &Self::readout(app, mode), tk);
         }
     }
@@ -873,7 +869,7 @@ mod tests {
             list_item: &|_| false,
             draggable: &|_| false,
             secondary: &|_| false,
-            scroll_strip: None,
+            scroll_strips: &[],
             screen: egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1280.0, 800.0)),
             now: 0.0,
         };
