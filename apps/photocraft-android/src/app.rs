@@ -403,7 +403,9 @@ impl eframe::App for Shell {
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         let _section = section("photocraft:logic");
         // Phone or tablet, decided again every frame (rotation, a foldable opening, split screen).
-        let phone = self.layout.is_phone(ctx);
+        // The screen as it is without the keyboard: opening it doesn't turn a tablet into a phone.
+        let keyboard = if self.layout.keyboard_covers() { 0.0 } else { photocraft_tablet::android::ime_height_px() / ctx.pixels_per_point() };
+        let phone = self.layout.is_phone(ctx, keyboard);
         self.app.compact_layout = phone;
         self.pad.compact = phone;
         self.pad.run_pending(&mut self.app, ctx);

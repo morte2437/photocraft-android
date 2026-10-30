@@ -93,9 +93,11 @@ impl Layout {
 
     /// Whether this frame gets the phone layout. egui points times the zoom factor are dp (the
     /// interface scale doesn't change the answer).
-    pub fn is_phone(&self, ctx: &egui::Context) -> bool {
+    /// `keyboard`: the height (points) the on-screen keyboard took off the bottom of the window,
+    /// which a tablet keeps being a tablet through.
+    pub fn is_phone(&self, ctx: &egui::Context, keyboard: f32) -> bool {
         let r = ctx.content_rect();
-        self.shared.borrow().mode.is_phone(r.width().min(r.height()) * ctx.zoom_factor())
+        self.shared.borrow().mode.is_phone(r.width().min(r.height() + keyboard.max(0.0)) * ctx.zoom_factor())
     }
 
     /// The Window › Layout rows.
