@@ -311,6 +311,10 @@ async fn errors_are_tool_errors_not_crashes() {
     let r = call(&client, "command_run", json!({"id": "no.such.command"})).await;
     assert_eq!(r.is_error, Some(true));
     assert!(text(&r).contains("unknown command"));
+    // #3674: the error names the nearest registered id.
+    let r = call(&client, "command_run", json!({"id": "engine.commands"})).await;
+    assert_eq!(r.is_error, Some(true));
+    assert!(text(&r).contains("did you mean `command.list`"), "{}", text(&r));
     let r = call(&client, "doc_inspect", json!({"index": 0})).await;
     assert_eq!(r.is_error, Some(true));
     let r = call(&client, "doc_open", json!({"path": "/definitely/missing.png"})).await;

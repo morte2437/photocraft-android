@@ -5,6 +5,30 @@ fn pixel(s: &Session, layer: usize, x: i32, y: i32) -> Vec<f32> {
     s.active().unwrap().doc.layers[layer].surface().unwrap().pixel(x, y)
 }
 
+/// CopyCat's shape: Edit Contents, change the contents, Save. The Save step has no file to
+/// write: it updates the smart object, headless too.
+#[test]
+fn save_in_edit_contents_updates_the_smart_object() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 8, "height": 8})).unwrap();
+    s.execute("layer.new.layer", json!({})).unwrap();
+    s.execute("edit.fill", json!({"contents": "color", "color": "#ff0000"})).unwrap();
+    s.execute("layer.smartObjects.convertToSmartObject", json!({})).unwrap();
+    s.execute("layer.smartObjects.editContents", json!({})).unwrap();
+    let steps = vec![("edit.fill".to_string(), json!({"contents": "color", "color": "#0000ff"})), ("file.save".to_string(), json!({}))];
+    s.actions.list.push(Action::new("Edit and save", steps));
+    let played = s.execute("actions.play", json!({"action": "Edit and save"})).unwrap();
+    assert!(played.get("failed").is_none(), "{played}");
+    s.set_active(0);
+    let doc = &s.active().unwrap().doc;
+    let flat = crate::file_cmds::flattened(doc, doc.pixel_format());
+    let p = flat.pixel(2, 2);
+    assert!(p[0] < 0.01 && p[2] > 0.99, "the smart object shows the saved contents: {p:?}");
+    // With no Edit Contents document, Save stays the shell's (it needs the document's file).
+    s.actions.list.push(Action::new("Save", vec![("file.save".to_string(), json!({}))]));
+    assert!(s.execute("actions.play", json!({"action": "Save"})).unwrap().get("failed").is_some());
+}
+
 #[test]
 fn deselect_with_nothing_selected_is_a_noop_in_playback() {
     // #6744: imported actions often start with Deselect; with no selection Photoshop plays on.
@@ -67,6 +91,27 @@ fn unchecked_steps_are_skipped_and_follow_move_and_delete() {
         assert!(s.execute("actions.toggle", bad.clone()).is_err(), "{bad}");
     }
     assert_eq!(s.actions.list[0].disabled.iter().copied().collect::<Vec<_>>(), [1], "rejected toggles change nothing");
+}
+
+#[test]
+fn recorded_eye_visibility_replays_on_another_document_and_duplicate_names() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 8, "height": 8})).unwrap();
+    s.execute("layer.new.layer", json!({"name": "Same"})).unwrap();
+    let hidden = s.execute("layer.new.layer", json!({"name": "Same"})).unwrap()["layer"].as_u64().unwrap();
+    s.execute("actions.record", json!({"name": "Hide"})).unwrap();
+    s.execute("layer.setProps", json!({"layer": hidden, "visible": false, "coalesce": "eye-sweep"})).unwrap();
+    s.execute("actions.stop", json!({})).unwrap();
+    s.execute("file.new", json!({"width": 8, "height": 8})).unwrap();
+    let keep = s.execute("layer.new.layer", json!({"name": "Same"})).unwrap()["layer"].as_u64().unwrap();
+    let target = s.execute("layer.new.layer", json!({"name": "Same"})).unwrap()["layer"].as_u64().unwrap();
+    s.execute("select.deselectLayers", json!({})).unwrap();
+    let result = s.execute("actions.play", json!({"action": "Hide"})).unwrap();
+    assert!(result.get("failed").is_none(), "{result}");
+    assert!(s.active().unwrap().doc.layer(photocraft_doc::LayerId(keep)).unwrap().visible);
+    assert!(!s.active().unwrap().doc.layer(photocraft_doc::LayerId(target)).unwrap().visible);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(s.active().unwrap().doc.layer(photocraft_doc::LayerId(target)).unwrap().visible);
 }
 
 #[test]
@@ -292,6 +337,43 @@ fn record_explicit_transform_keeps_one_replayable_step() {
     assert_eq!(s.active().unwrap().history.past_len(), before + 1);
     assert_eq!(pixel(&s, 0, 8, 2), vec![1.0, 0.0, 0.0, 1.0]);
     assert_eq!(pixel(&s, 0, 12, 2), vec![0.0; 4]);
+}
+
+#[test]
+fn recorded_single_layer_transform_replays_after_layer_ids_shift() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 20, "height": 8, "background": "transparent"})).unwrap();
+    let source = s.execute("layer.new.layer", json!({"name": "Target"})).unwrap()["layer"].as_u64().unwrap();
+    s.edit("source pixel", |doc, _| {
+        doc.layer_mut(photocraft_doc::LayerId(source)).unwrap().surface_mut().unwrap().fill_rect(photocraft_geom::Rect::new(0, 2, 2, 4), &[1.0, 0.0, 0.0, 1.0]);
+        Ok(())
+    })
+    .unwrap();
+
+    s.execute("actions.record", json!({"name": "Move target"})).unwrap();
+    s.execute("edit.transform", json!({"layer": source, "dx": 4, "interpolation": "nearest"})).unwrap();
+    s.execute("actions.stop", json!({})).unwrap();
+    let recorded = s.execute("actions.get", json!({"action": "Move target"})).unwrap();
+    assert_eq!(recorded["steps"][0][1], json!({"dx": 4, "interpolation": "nearest"}));
+
+    // Add a layer before the target, shifting its id; playback must resolve the current
+    // selection rather than keep the source document's numeric layer id.
+    s.execute("file.new", json!({"width": 20, "height": 8, "background": "transparent"})).unwrap();
+    s.execute("layer.new.layer", json!({"name": "Inserted"})).unwrap();
+    let target = s.execute("layer.new.layer", json!({"name": "Target"})).unwrap()["layer"].as_u64().unwrap();
+    assert_ne!(source, target);
+    s.edit("target pixel", |doc, _| {
+        doc.layer_mut(photocraft_doc::LayerId(target)).unwrap().surface_mut().unwrap().fill_rect(photocraft_geom::Rect::new(0, 2, 2, 4), &[1.0, 0.0, 0.0, 1.0]);
+        Ok(())
+    })
+    .unwrap();
+    let target_index = s.active().unwrap().doc.layers.iter().position(|layer| layer.id.0 == target).unwrap();
+    let before = s.active().unwrap().history.past_len();
+    let played = s.execute("actions.play", json!({"action": "Move target"})).unwrap();
+    assert!(played.get("failed").is_none(), "{played}");
+    assert_eq!(s.active().unwrap().history.past_len(), before + 1);
+    assert_eq!(pixel(&s, target_index, 4, 2), vec![1.0, 0.0, 0.0, 1.0]);
+    assert_eq!(pixel(&s, target_index, 0, 2), vec![0.0; 4]);
 }
 
 /// A Background with a red bar and a slanted ruler line, ready for Straighten.
@@ -1039,4 +1121,58 @@ fn button_color_is_one_of_the_photoshop_swatches() {
         assert!(s.execute("actions.setColor", bad).is_err());
     }
     assert!(s.actions.list[0].color.is_empty(), "rejected colours change nothing");
+}
+
+#[test]
+fn arrange_that_cannot_move_is_a_noop_in_playback() {
+    // #8453: imported actions make an adjustment layer, then Bring it to Front, where it already is.
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 8, "height": 8})).unwrap();
+    let steps = vec![
+        ("layer.newAdjustmentLayer.curves".to_string(), json!({})),
+        ("layer.arrange.bringToFront".to_string(), json!({})),
+        ("layer.new.layer".to_string(), json!({"name": "After"})),
+    ];
+    s.actions.list.push(Action::new("Repro", steps));
+    let before = s.active().unwrap().history.past_len();
+    let played = s.execute("actions.play", json!({"action": 0})).unwrap();
+    assert_eq!(played["ran"], 3, "{played}");
+    assert!(played.get("failed").is_none(), "{played}");
+    assert_eq!(s.active().unwrap().history.past_len(), before + 2, "the no-op adds no history step");
+
+    // The predicate identifies no movement for every layer: top level, above the Background,
+    // and inside a group.
+    let a = s.execute("layer.new.layer", json!({"name": "A"})).unwrap()["layer"].clone();
+    s.execute("layer.select", json!({"layer": a})).unwrap();
+    s.execute("layer.groupLayers", json!({})).unwrap();
+    s.execute("layer.new.layer", json!({"name": "B"})).unwrap();
+    let cmds = [("layer.arrange.bringForward", 1), ("layer.arrange.bringToFront", 1), ("layer.arrange.sendBackward", -1), ("layer.arrange.sendToBack", -1)];
+    let ids: Vec<_> = s.active().unwrap().doc.walk().into_iter().map(|(_, _, l)| l.id).collect();
+    let bg = crate::background_cmds::background_id(&s.active().unwrap().doc);
+    for id in ids.into_iter().filter(|id| Some(*id) != bg) {
+        for (cmd, dir) in cmds {
+            let at_end = super::super::ops::arrange_at_end(&s.active().unwrap().doc, id, dir);
+            let history = s.active().unwrap().history.past_len();
+            let ran = s.execute(cmd, json!({"layer": id.0}));
+            if at_end {
+                if matches!(cmd, "layer.arrange.bringToFront" | "layer.arrange.sendToBack") {
+                    assert_eq!(ran.unwrap(), json!({"moved": false}), "{cmd} on {id:?}");
+                } else {
+                    assert!(ran.is_err(), "{cmd} on {id:?}: {ran:?}");
+                }
+                assert_eq!(s.active().unwrap().history.past_len(), history, "a no-op must not add history");
+            } else {
+                ran.unwrap();
+                assert_eq!(s.active().unwrap().history.past_len(), history + 1);
+                s.execute("edit.undo", json!({})).unwrap();
+            }
+        }
+    }
+
+    // Arranging the Background still stops playback: Photoshop refuses it too.
+    let bg = bg.unwrap();
+    s.actions.list.push(Action::new("Bg", vec![("layer.arrange.bringToFront".to_string(), json!({"layer": bg.0}))]));
+    let played = s.execute("actions.play", json!({"action": 1})).unwrap();
+    assert_eq!(played["ran"], 0, "{played}");
+    assert!(played["failed"].is_object(), "{played}");
 }

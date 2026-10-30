@@ -1,5 +1,8 @@
 use super::hue_saturation::RANGE_LABELS;
-use super::*;
+use super::{
+    Color32, Edit, EditorCx, HUE_RANGES, PHOTO_FILTERS, RichText, Sense, Stroke, StrokeKind, Tokens, Value, adjust_params, color_button, flag, json, label,
+    num, nums, pos2, rgb_of, round, tone, vec2, widgets,
+};
 
 /// Labelled slider rows over top-level keys: (key, label, min, max, default, unit).
 /// A row of [`sliders`]: params key, label, range, default, unit, and its decimal places (None:

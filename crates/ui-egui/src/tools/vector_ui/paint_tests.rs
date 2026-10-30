@@ -383,7 +383,7 @@ fn transparent_and_absent_paints_remain_distinct_and_open_pen_keeps_foreground()
     let foreground = [0.836521, 0.125468, 0.745632, 0.438271];
     app.run("tools.setColors", json!({"foreground": foreground, "background": [0.0, 1.0, 0.0, 1.0]})).unwrap();
     app.ui.tool_options.vector_mode = "shape".into();
-    app.ui.pen = Some(PenPath { knots: vec![[[20.0, 20.0]; 3], [[80.0, 60.0]; 3]], ..Default::default() });
+    app.ui.pen = Some(PenPath { knots: vec![[[20.0, 20.0]; 3], [[80.0, 60.0]; 3]], owner: super::capture_pen_owner(&app), ..Default::default() });
     pen_commit(&mut app, false);
     assert!(shape(&app).fill.is_none());
     assert!(!shape(&app).path.subpaths[0].closed);

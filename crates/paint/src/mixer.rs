@@ -39,6 +39,18 @@ impl Default for MixerSettings {
     }
 }
 
+impl MixerSettings {
+    /// Effective per-dab wetness, including Transfer's Wetness control.
+    pub fn effective_wet(&self, dab: &crate::Dab) -> f32 {
+        self.wet.clamp(0.0, 1.0) * dab.wet.clamp(0.0, 1.0)
+    }
+
+    /// Whether this dab can update the pickup well from the canvas.
+    pub fn samples_canvas(&self, dab: &crate::Dab) -> bool {
+        self.effective_wet(dab) > 0.0
+    }
+}
+
 /// Paint carried between strokes (session tool state).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -49,6 +61,9 @@ pub struct MixerState {
     pub amount: f32,
     /// Colour picked up from the canvas (straight RGBA), None = clean.
     pub pickup: Option<[f32; 4]>,
+    /// The foreground colour in effect when the reservoir was loaded from the canvas
+    /// (`load_sampled`), None when it holds the foreground itself.
+    pub sampled_over: Option<[f32; 4]>,
     /// A bounded 64 x 64 spatial load in tip-local coordinates. Empty cells carry no paint.
     pub spatial: Option<Vec<[f32; 4]>>,
     /// The color recorded by the last stroke (its color) or the last Load Brush or Clean Brush
@@ -62,6 +77,15 @@ impl MixerState {
         self.spatial = None;
         self.reservoir = Some(color);
         self.amount = 1.0;
+        self.sampled_over = None;
+    }
+
+    /// Load the reservoir with a colour sampled from the canvas (⌥-click) while `foreground` is
+    /// the foreground colour; `holds_sample` stays true until the foreground changes.
+    pub fn load_sampled(&mut self, color: [f32; 4], foreground: [f32; 4]) {
+        self.load(color);
+        self.sampled_over = Some(foreground);
+        self.color = Some(foreground);
     }
     /// Clean Brush: empty the reservoir and the pickup well.
     pub fn clean(&mut self) {
@@ -69,6 +93,12 @@ impl MixerState {
         self.reservoir = None;
         self.amount = 0.0;
         self.pickup = None;
+        self.sampled_over = None;
+    }
+
+    /// Whether the reservoir holds a canvas sample taken while `foreground` was the foreground.
+    pub fn holds_sample(&self, foreground: [f32; 4]) -> bool {
+        self.reservoir.is_some() && self.sampled_over == Some(foreground)
     }
     /// Before a stroke in `color`: choosing a color other than [`MixerState::color`] loads the
     /// reservoir with it.
@@ -83,14 +113,16 @@ impl MixerState {
     pub fn end_stroke(&mut self, color: [f32; 4], clean: bool, load: bool) {
         // Automatic Load replenishes a sampled tip as well as a solid-color load.
         // Move its bounded buffer through Clean instead of allocating a copy.
+        let sampled = self.holds_sample(color).then_some(color);
         let spatial = if load { self.spatial.take() } else { None };
-        let paint = if spatial.is_some() { self.reservoir.unwrap_or(color) } else { color };
+        let paint = if spatial.is_some() || sampled.is_some() { self.reservoir.unwrap_or(color) } else { color };
         if clean {
             self.clean();
         }
         if load {
             self.load(paint);
             self.spatial = spatial;
+            self.sampled_over = sampled;
         }
         self.color = Some(color);
     }
@@ -158,7 +190,7 @@ pub fn apply_mixer_dab(
     state: &mut MixerState,
     lock_transparency: bool,
 ) {
-    let sample = sample.map(|surface| {
+    let sample = sample.filter(|_| m.samples_canvas(&fp.dab)).map(|surface| {
         let source = crate::retouch::Region::read(surface, work.rect);
         if surface.format().mode == fmt.mode && surface.format().alpha == fmt.alpha {
             source
@@ -198,37 +230,38 @@ pub fn apply_mixer_dab_region(
     let res = state.reservoir.map(native);
     let mut amount = if res.is_some() { state.amount.clamp(0.0, 1.0) } else { 0.0 };
     let mut pickup: Option<Vec<f32>> = state.pickup.map(native);
-    let (wet, mix, flow, load) = (m.wet.clamp(0.0, 1.0), m.mix.clamp(0.0, 1.0), m.flow.clamp(0.0, 1.0), m.load.clamp(0.0, 1.0));
-    let mut acc = vec![0.0f32; n];
+    let (mix, flow, load) = (m.mix.clamp(0.0, 1.0), m.flow.clamp(0.0, 1.0), m.load.clamp(0.0, 1.0));
     let mut paint = vec![0.0f32; n];
     // Transfer › Wetness / Mix Jitter scale the settings per dab.
-    let (wet, mix) = (wet * fp.dab.wet.clamp(0.0, 1.0), mix * fp.dab.mix.clamp(0.0, 1.0));
+    let (wet, mix) = (m.effective_wet(&fp.dab), mix * fp.dab.mix.clamp(0.0, 1.0));
     // Sample the canvas under the dab.
-    acc.iter_mut().for_each(|v| *v = 0.0);
-    let (mut wsum, mut asum) = (0.0f32, 0.0f32);
     let r = fp.rect.intersect(&work.rect);
-    for y in r.y0..r.y1 {
-        for x in r.x0..r.x1 {
-            let w = fp.at(x, y);
-            if w <= 0.0 {
-                continue;
+    if wet > 0.0 {
+        let mut acc = vec![0.0f32; n];
+        let (mut wsum, mut asum) = (0.0f32, 0.0f32);
+        for y in r.y0..r.y1 {
+            for x in r.x0..r.x1 {
+                let w = fp.at(x, y);
+                if w <= 0.0 {
+                    continue;
+                }
+                let px = sample.unwrap_or(work).px(x, y);
+                let al = a.map_or(1.0, |ai| px[ai]);
+                for c in 0..nc {
+                    acc[c] += px[c] * w * al;
+                }
+                wsum += w;
+                asum += w * al;
             }
-            let px = sample.unwrap_or(work).px(x, y);
-            let al = a.map_or(1.0, |ai| px[ai]);
-            for c in 0..nc {
-                acc[c] += px[c] * w * al;
-            }
-            wsum += w;
-            asum += w * al;
         }
-    }
-    if asum > 1e-6 && wet > 0.0 {
-        let ca = asum / wsum.max(1e-6);
-        let canvas: Vec<f32> = (0..n).map(|c| if c < nc { acc[c] / asum } else { 1.0 }).collect();
-        pickup = Some(match pickup.take() {
-            None => canvas,
-            Some(p) => p.iter().zip(&canvas).map(|(p, c)| p + (c - p) * PICKUP_RATE * wet * ca).collect(),
-        });
+        if asum > 1e-6 {
+            let ca = asum / wsum.max(1e-6);
+            let canvas: Vec<f32> = (0..n).map(|c| if c < nc { acc[c] / asum } else { 1.0 }).collect();
+            pickup = Some(match pickup.take() {
+                None => canvas,
+                Some(p) => p.iter().zip(&canvas).map(|(p, c)| p + (c - p) * PICKUP_RATE * wet * ca).collect(),
+            });
+        }
     }
     let wr = if res.is_some() { amount * (1.0 - mix * wet) } else { 0.0 };
     let wp = if pickup.is_some() { mix * wet } else { 0.0 };

@@ -1,5 +1,5 @@
 use super::layer_drag::dropped_on;
-use super::*;
+use super::{Align2, Color32, HistorySource, PhotocraftApp, Rect, Sense, Stroke, StrokeKind, Tokens, Tool, Value, empty, icons, json, pos2, vec2, widgets};
 
 pub(super) fn history(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
@@ -10,6 +10,7 @@ pub(super) fn history(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let entries = st.history.entries();
     let current = entries.len() - 1;
     let redo: Vec<String> = st.history.redo_labels().map(str::to_string).collect();
+    let non_linear = st.history.non_linear;
     let doc_id = st.doc.id;
     let source = photocraft_engine::history_source_cmds::source(st);
     let selected_snap = selected_snapshot(ui.ctx(), st);
@@ -45,8 +46,9 @@ pub(super) fn history(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         for (i, (e, is_redo)) in all.enumerate() {
             // The current state shows selected unless a snapshot is (Photoshop highlights one row).
             let selected = i == current && selected_snap.is_none();
-            // Past states can be dragged onto the trash; the oldest one can't be deleted.
-            let sense = if is_redo || i == 0 { Sense::click() } else { Sense::click_and_drag() };
+            // Past states can be dragged onto the trash; the oldest one can't be deleted. With
+            // Allow Non-Linear History a later (dimmed) state can be deleted too.
+            let sense = if (is_redo && !non_linear) || i == 0 { Sense::click() } else { Sense::click_and_drag() };
             let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), sense);
             resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, &e));
             if resp.drag_started() {
@@ -105,15 +107,24 @@ pub(super) fn history(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     {
         let label = match drag {
             HistoryDrag::Snapshot(id) => app.session.active().and_then(|st| st.snapshots.iter().find(|s| s.id == id)).map(|s| s.name.clone()),
-            HistoryDrag::State(i) => entries.get(i).cloned(),
+            // Rows number the past states, then the later (dimmed) ones a non-linear drag can lift.
+            HistoryDrag::State(i) => entries.get(i).or_else(|| i.checked_sub(entries.len()).and_then(|j| redo.get(j))).cloned(),
         };
         crate::layer_transfer::ghost(&ctx, p, &label.unwrap_or_default());
     }
     let mut footer_cmd: Option<(&str, Value)> = None;
     let mut snapshot_dialog = false;
     if t.pro {
-        // With a snapshot selected the trash deletes it, as in Photoshop (#5324).
-        let can_delete = selected_snap.is_some() || app.session.is_enabled("history.deleteState");
+        // With a snapshot selected the trash deletes it, as in Photoshop (#5324). A click deletes
+        // the current state, never the oldest; a drop can delete a later (dimmed) one, which
+        // Allow Non-Linear History offers even while the oldest state is current.
+        let can_click = selected_snap.is_some() || app.session.active().is_some_and(|st| st.history.past_len() > 0);
+        let can_drop = match drag {
+            Some(HistoryDrag::Snapshot(_)) => true,
+            Some(HistoryDrag::State(_)) => app.session.is_enabled("history.deleteState"),
+            None => false,
+        };
+        let can_delete = can_click || can_drop;
         let can_new = app.session.is_enabled("history.newDocument");
         widgets::panel_footer(ui, |ui| {
             let trash = ui.add_enabled_ui(can_delete, |ui| icons::button(ui, "trash", 26.0, false, tl!("Delete current state"))).inner;

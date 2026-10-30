@@ -469,6 +469,74 @@ fn displace_psd_filter_renders_with_its_embedded_map() {
     }
 }
 
+/// #9162: a Photoshop Displace smart filter that names its map file (`DspF`, a `Pth `) without
+/// embedding it was skipped as "not supported" on Replace Contents. Opened from PSD, it now reads
+/// that file and the replaced contents come out displaced.
+#[test]
+fn displace_psd_filter_with_only_a_map_path_renders_after_replace_contents() {
+    use photocraft_psd::descriptor::{Descriptor, Id, UnicodeString, Value};
+    let dir = std::env::temp_dir().join(format!("pcraft-9162-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let png = |name: &str, size: (u32, u32), c: [f32; 4]| {
+        let d = Document::with_background(
+            "m",
+            photocraft_geom::Size::new(size.0, size.1),
+            photocraft_color::ColorMode::Rgb,
+            photocraft_color::SampleType::U8,
+            photocraft_color::Color::rgba(c[0], c[1], c[2], c[3]),
+        );
+        let path = dir.join(name);
+        std::fs::write(&path, photocraft_io::export(&d, "png", &Default::default()).unwrap().bytes).unwrap();
+        path.to_str().unwrap().to_string()
+    };
+    // Red is the horizontal map (full right), green the vertical one (about neutral), as in the
+    // issue's map.
+    let map = png("map.png", (12, 8), [1.0, 0.5, 0.5, 1.0]);
+    let design = png("design.png", (72, 52), [1.0, 0.0, 0.0, 1.0]);
+    // `DspF` as Photoshop writes a path: `txtu`, sizes (LE), UTF-16LE with a trailing NUL.
+    let units: Vec<u16> = map.encode_utf16().chain([0]).collect();
+    let mut pth = b"txtu".to_vec();
+    pth.extend((12 + 2 * units.len() as u32).to_le_bytes());
+    pth.extend((units.len() as u32).to_le_bytes());
+    pth.extend(units.iter().flat_map(|u| u.to_le_bytes()));
+    let e = |t: &str, v: &str| Value::Enumerated { type_id: Id::new(t), value: Id::new(v) };
+    let fltr = Descriptor::new("Dspl")
+        .with("HrzS", Value::Integer(10))
+        .with("VrtS", Value::Integer(10))
+        .with("DspM", e("DspM", "StrF"))
+        .with("UndA", e("UndA", "RptE"))
+        .with("DspF", Value::Path(pth));
+    let item = Descriptor::new("filterFX")
+        .with("Nm  ", Value::Text(UnicodeString::new_nul("Displace...")))
+        .with("enab", Value::Boolean(true))
+        .with("hasoptions", Value::Boolean(true))
+        .with("Fltr", Value::Descriptor(fltr))
+        .with("filterID", Value::Integer(1148416108));
+    for depth in [8, 16, 32] {
+        let mut s = session(depth);
+        s.execute("layer.smartObjects.convertToSmartObject", json!({})).unwrap();
+        let id = photocraft_doc::LayerId(s.active().unwrap().active_layer.unwrap().0);
+        s.edit("displace", |doc, _| {
+            let LayerContent::Smart(sm) = &mut doc.layer_mut(id).unwrap().content else { panic!("smart") };
+            sm.smart_filters.push(photocraft_io::smart_map::filter_from_item(&item));
+            Ok(())
+        })
+        .unwrap();
+        let psd = photocraft_io::export(&s.active().unwrap().doc, "psd", &Default::default()).unwrap().bytes;
+        // The issue's flow: open the PSD, Replace Contents of the smart object.
+        let mut s2 = Session::new();
+        s2.add_document(photocraft_io::import("pc-displace-repro.psd", &psd).unwrap().document, None);
+        let (sid, _) = smart(&s2.active().unwrap().doc);
+        let out = s2.execute("layer.smartObjects.replaceContents", json!({"layer": sid, "path": design})).unwrap();
+        assert_eq!(out["warnings"], json!([]), "depth {depth}");
+        let cache = smart(&s2.active().unwrap().doc).1.cache.unwrap();
+        // 10 % of 128 px at full map contrast: the design (x 8..80) moves 12.8 px left.
+        let alpha = |x: i32| cache.pixel(x, 30)[3];
+        assert!(alpha(2) > 0.99 && alpha(75) < 0.01, "depth {depth}: {} {}", alpha(2), alpha(75));
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// A Perspective Warp smart filter as Photoshop writes it (`perspectiveWarpTransform`: vertices,
 /// warped vertices and quads of vertex indices, document pixels) opens as
 /// `layer.smartObjects.perspectiveWarp` and re-renders warped instead of flat (#6268), and keeps

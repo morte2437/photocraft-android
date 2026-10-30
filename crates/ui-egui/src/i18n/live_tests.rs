@@ -230,7 +230,19 @@ fn harness_with_services(services: Services) -> egui_kittest::Harness<'static, P
 
 #[test]
 fn first_launch_renders_the_system_language_without_overwriting_auto() {
-    for (tag, code) in [("en-US", "en"), ("zh-CN", "zh-hans"), ("ja-JP", "ja"), ("ko-KR", "ko"), ("ru-RU", "ru"), ("uk-UA", "uk"), ("fr-CA", "fr")] {
+    for (tag, code) in [
+        ("en-US", "en"),
+        ("zh-CN", "zh-hans"),
+        ("ja-JP", "ja"),
+        ("ko-KR", "ko"),
+        ("ru-RU", "ru"),
+        ("uk-UA", "uk"),
+        ("fr-CA", "fr"),
+        ("sv-SE", "sv"),
+        ("fi-FI", "fi"),
+        ("da-DK", "da"),
+        ("nb-NO", "nb"),
+    ] {
         system::with_system_tags(&[tag], || {
             with_language(Lang::EN, || {
                 let h = harness();
@@ -244,7 +256,7 @@ fn first_launch_renders_the_system_language_without_overwriting_auto() {
 
 #[test]
 fn missing_or_unsupported_system_languages_render_english() {
-    for tags in [vec![], vec!["sv-SE", "ar-SA"]] {
+    for tags in [vec![], vec!["sw-KE", "is-IS"]] {
         system::with_system_tags(&tags, || {
             with_language(Lang::EN, || {
                 let h = harness();
@@ -447,5 +459,46 @@ fn czech_shortcut_conflicts_keep_warning_state_and_shortcut_codes() {
             assert!(message.contains(piece), "{message:?} lacks {piece:?}");
         }
         assert_eq!(fields["overrides"]["file.new"], json!("Cmd+O"));
+    });
+}
+
+/// The catalog stays in logical order: egui puts a right-to-left label into display order itself,
+/// so the first word of an Arabic label lands to the right of its last, and a Latin brand name at
+/// the end of the sentence lands at the left.
+#[test]
+fn arabic_labels_are_laid_out_right_to_left() {
+    with_language(Lang::EN, || {
+        let mut h = harness();
+        h.state_mut().run("prefs.set", json!({"path": "interface.language", "value": "ar"})).unwrap();
+        h.run_steps(4);
+        let x_of = |text: &str, c: char| {
+            let galley = h.ctx.fonts_mut(|f| f.layout_no_wrap(text.to_string(), egui::FontId::proportional(13.0), egui::Color32::WHITE));
+            galley.rows.iter().flat_map(|r| r.glyphs.iter()).find(|g| g.chr == c).map(|g| g.pos.x).expect("glyph")
+        };
+        let label = tr(lang("ar"), "No properties");
+        assert_eq!(label, "لا توجد خصائص");
+        assert!(x_of(label, 'ل') > x_of(label, 'ص'), "{label}: first word at the right");
+        let join = tr(lang("ar"), "Join us on Discord");
+        assert!(x_of(join, 'D') < x_of(join, 'ن'), "{join}: Discord at the left");
+    });
+}
+
+/// #5159 on egui 0.37: user names are handed to egui as typed, and egui orders the words. An
+/// Arabic layer name reads from the right; the title line keeps "— PhotoCraft" at the right of a
+/// right-to-left document name.
+#[test]
+fn arabic_names_are_laid_out_right_to_left() {
+    with_language(Lang::EN, || {
+        let h = harness();
+        let font = egui::FontId::proportional(13.0);
+        let x_in = |galley: &egui::Galley, c: char| galley.rows.iter().flat_map(|r| r.glyphs.iter()).find(|g| g.chr == c).map(|g| g.pos.x).expect("glyph");
+        let name = "لاشي مكتوب هنا";
+        let galley = h.ctx.fonts_mut(|f| f.layout_no_wrap(name.to_string(), font.clone(), egui::Color32::WHITE));
+        assert!(x_in(&galley, 'ل') > x_in(&galley, 'ه'), "{name}: first word at the right");
+        let title = "لاشي مكتوب.png — PhotoCraft";
+        let job = crate::panels::title_bar::title_job(title, font, egui::Color32::WHITE);
+        let galley = h.ctx.fonts_mut(|f| f.layout_job(job));
+        assert!(x_in(&galley, 'ل') > x_in(&galley, 'م'), "{title}: the name's first word right of its second");
+        assert!(x_in(&galley, 'P') > x_in(&galley, 'ل'), "{title}: PhotoCraft stays at the right");
     });
 }

@@ -127,14 +127,14 @@ pub fn truncated(painter: &Painter, text: &str, font: FontId, color: egui::Color
         }
         painter.layout_job(job)
     };
-    // A right-to-left name (Arabic, Hebrew) too long for the row is cut at its logical end and
-    // then put in display order, so its start stays and "…" is at the left (`bidi_text::elide`).
+    // A right-to-left name (Arabic, Hebrew) too long for the row is cut at its logical end, so its
+    // start stays and "…" is at the left (`bidi_text::elide`).
     if let Some(shown) = crate::bidi_text::elide(text, |s| layout(s, false).size().x <= max_width) {
         return Some(layout(&shown, false));
     }
-    // Right-to-left names in display order: egui lays words out left to right. Left-to-right
-    // names are cut at their right end by egui.
-    Some(layout(&crate::bidi_text::visual(text), true))
+    // egui puts a right-to-left name into display order itself; left-to-right names are cut at
+    // their right end by egui.
+    Some(layout(text, true))
 }
 
 /// Paint `l`'s right-hand indicators in `row` and handle the effects triangle. Returns the
@@ -265,9 +265,16 @@ pub fn panel_menu(app: &mut crate::PhotocraftApp, ui: &mut egui::Ui) {
         app.ui.layers_panel_dialog = Some(LayersPanelDialog::NewLayer(String::new()));
         ui.close();
     }
-    if ui.add_enabled(has_doc, egui::Button::new(tl!("New Group…"))).clicked() {
-        app.ui.layers_panel_dialog = Some(LayersPanelDialog::NewGroup(String::new()));
-        ui.close();
+    // New Group… and New Group from Layers… open the New Group dialog, like their Layer › New twins.
+    for (label, id) in [(tl!("New Group…"), crate::new_group_ui::NEW_GROUP), (tl!("New Group from Layers…"), crate::new_group_ui::FROM_LAYERS)] {
+        if ui.add_enabled(crate::menus::is_enabled(app, id), egui::Button::new(label)).clicked() {
+            let ctx = ui.ctx().clone();
+            if let Err(e) = crate::menus::invoke(app, &ctx, id, json!({})) {
+                app.ui.status = e;
+                app.ui.status_error = true;
+            }
+            ui.close();
+        }
     }
     ui.separator();
     run_menu_command(app, ui, tl!("Flatten Image"), "layer.flattenImage");

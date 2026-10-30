@@ -1,4 +1,4 @@
-use super::*;
+use super::{Document, Layer, LayerContent, SmartContentsId, Surface};
 
 /// An embedded smart-object source as written to `lnk2`.
 #[derive(Clone, Debug)]

@@ -67,10 +67,8 @@ fn pixels_locked(doc: &Document, l: &Layer) -> Option<EngineError> {
 }
 
 fn damage(s: &mut Session, dmg: Rect, erased: bool) -> Value {
-    if let Some(st) = s.active_mut()
-        && !dmg.is_empty()
-    {
-        st.last_damage = Some(dmg);
+    if !dmg.is_empty() {
+        s.hint_damage(dmg);
     }
     json!({ "erased": erased, "damage": [dmg.x0, dmg.y0, dmg.width(), dmg.height()] })
 }

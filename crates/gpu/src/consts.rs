@@ -33,6 +33,9 @@ pub const RESIDENT_BUDGET: u64 = 4 << 30;
 /// GPU memory pattern textures may hold before the least recently painted are dropped (those the
 /// current frame paints with always stay).
 pub const PATTERN_BUDGET: u64 = 256 << 20;
+/// The most a single pattern's RGBA32F texture may take. A pattern over it paints on the CPU, which
+/// holds a large 8-bit pattern at 4 bytes a pixel instead of 16 (`Pattern::working_bytes`).
+pub(crate) const MAX_PATTERN_TEXTURE_BYTES: u64 = 256 << 20;
 
 /// A pattern texture no frame has painted with for this many frames is dropped.
 pub const PATTERN_IDLE_FRAMES: u64 = 240;

@@ -1,7 +1,7 @@
 use super::cmds::bad;
 use super::files::{file_target, read_text_file, rename_path, writable, write_files_atomically};
 use super::shortcuts::{BindKind, alternate_keys, bindable, bindable_items, conflicts, default_alternates, is_tool, normalize_shortcut, reserved_shortcut};
-use super::*;
+use super::{MenuCustomization, Preferences, Result, Session, Value, json};
 
 /// Edit › Keyboard Shortcuts (engine part): list, change and reset application shortcuts.
 pub(super) fn keyboard_shortcuts(s: &mut Session, p: &Value) -> Result<Value> {
@@ -108,65 +108,7 @@ pub(super) fn keyboard_shortcuts(s: &mut Session, p: &Value) -> Result<Value> {
         None | Some(Value::Null) => &empty,
         Some(v) => v.as_object().ok_or_else(|| bad(cmd, "`alternates` maps command ids to lists of shortcuts"))?,
     };
-    if !set.is_empty() || !alts.is_empty() {
-        let allow_unknown = p.get("allowUnknown").and_then(Value::as_bool).unwrap_or(false);
-        changed = true;
-        // Reserved system keys can't be bound, by hand or from a file.
-        let reserved = |v: &Value| -> Option<String> {
-            let keys = match v {
-                Value::String(s) => vec![s.clone()],
-                other => alternate_keys(other).unwrap_or_default(),
-            };
-            keys.into_iter().find(|k| reserved_shortcut(k))
-        };
-        if let Some((id, k)) = set.iter().chain(alts.iter()).find_map(|(id, v)| reserved(v).map(|k| (id, k))) {
-            return Err(bad(cmd, format!("`{k}` (for `{id}`) is reserved by the system and can't be assigned")));
-        }
-        for (id, v) in set {
-            if !bindable().any(|(b, _)| b == id) && !allow_unknown {
-                return Err(bad(cmd, format!("unknown command `{id}`")));
-            }
-            next.set(&format!("shortcuts.{id}"), v.clone()).map_err(|e| bad(cmd, e))?;
-        }
-        for (id, v) in alts {
-            if !bindable().any(|(b, _)| b == id) && default_alternates(id).next().is_none() && !allow_unknown {
-                return Err(bad(cmd, format!("unknown command `{id}`")));
-            }
-            next.set(&format!("alternateShortcuts.{id}"), v.clone()).map_err(|e| bad(cmd, e))?;
-        }
-        // Like Photoshop, a shortcut moved to a new command is taken away from the old one,
-        // whether the old one held it as its main key or as an alternate (#3665).
-        if p.get("removeConflicts").and_then(Value::as_bool).unwrap_or(true) {
-            let assigned: Vec<(&str, String)> = set
-                .iter()
-                .filter_map(|(id, v)| Some((id.as_str(), v.as_str().and_then(normalize_shortcut)?)))
-                .chain(alts.iter().flat_map(|(id, v)| alternate_keys(v).unwrap_or_default().into_iter().map(move |k| (id.as_str(), k))))
-                .collect();
-            for (id, sc) in assigned {
-                for (c, def) in bindable() {
-                    // Tools may share a key: they cycle with Shift, as Photoshop's groups do.
-                    if is_tool(id) && is_tool(c) {
-                        continue;
-                    }
-                    // Never strip a command that this same call is assigning:
-                    // two entries for one key are a clash inside the call, which
-                    // the returned conflicts list reports (#719). Stripping
-                    // each other here unbound both silently.
-                    if c == id || set.contains_key(c) || alts.contains_key(c) {
-                        continue;
-                    }
-                    let main = next.shortcut(c, def).map(str::to_string);
-                    if main.as_deref().and_then(normalize_shortcut).as_deref() == Some(sc.as_str()) {
-                        next.shortcuts.insert(c.to_string(), String::new());
-                    }
-                    let held = next.alternates(c, main.as_deref());
-                    if held.contains(&sc) {
-                        next.alternate_shortcuts.insert(c.to_string(), held.into_iter().filter(|k| *k != sc).collect());
-                    }
-                }
-            }
-        }
-    }
+    changed |= apply_shortcut_changes(&mut next, p, set, alts, cmd)?;
     // Then the sets are saved, deleted or switched, from the bindings as they now stand.
     changed |= crate::shortcut_sets::store(&mut next, p).map_err(|e| bad(cmd, e))?;
     // The reply and the exports read the bindings as they will be; they are committed only once
@@ -260,6 +202,75 @@ pub(super) fn keyboard_shortcuts(s: &mut Session, p: &Value) -> Result<Value> {
         out["import"] = import;
     }
     Ok(out)
+}
+
+fn apply_shortcut_changes(
+    next: &mut Preferences,
+    p: &Value,
+    set: &serde_json::Map<String, Value>,
+    alts: &serde_json::Map<String, Value>,
+    cmd: &str,
+) -> Result<bool> {
+    if set.is_empty() && alts.is_empty() {
+        return Ok(false);
+    }
+    let allow_unknown = p.get("allowUnknown").and_then(Value::as_bool).unwrap_or(false);
+    // Reserved system keys can't be bound, by hand or from a file.
+    let reserved = |v: &Value| -> Option<String> {
+        let keys = match v {
+            Value::String(s) => vec![s.clone()],
+            other => alternate_keys(other).unwrap_or_default(),
+        };
+        keys.into_iter().find(|k| reserved_shortcut(k))
+    };
+    if let Some((id, k)) = set.iter().chain(alts.iter()).find_map(|(id, v)| reserved(v).map(|k| (id, k))) {
+        return Err(bad(cmd, format!("`{k}` (for `{id}`) is reserved by the system and can't be assigned")));
+    }
+    for (id, v) in set {
+        if !bindable().any(|(b, _)| b == id) && !allow_unknown {
+            return Err(bad(cmd, format!("unknown command `{id}`")));
+        }
+        next.set(&format!("shortcuts.{id}"), v.clone()).map_err(|e| bad(cmd, e))?;
+    }
+    for (id, v) in alts {
+        if !bindable().any(|(b, _)| b == id) && default_alternates(id).next().is_none() && !allow_unknown {
+            return Err(bad(cmd, format!("unknown command `{id}`")));
+        }
+        next.set(&format!("alternateShortcuts.{id}"), v.clone()).map_err(|e| bad(cmd, e))?;
+    }
+    // Like Photoshop, a shortcut moved to a new command is taken away from the old one,
+    // whether the old one held it as its main key or as an alternate (#3665).
+    if p.get("removeConflicts").and_then(Value::as_bool).unwrap_or(true) {
+        let assigned: Vec<(&str, String)> = set
+            .iter()
+            .filter_map(|(id, v)| Some((id.as_str(), v.as_str().and_then(normalize_shortcut)?)))
+            .chain(alts.iter().flat_map(|(id, v)| alternate_keys(v).unwrap_or_default().into_iter().map(move |k| (id.as_str(), k))))
+            .collect();
+        for (id, sc) in assigned {
+            for (c, def) in bindable() {
+                // Tools may share a key: they cycle with Shift, as Photoshop's groups do.
+                if is_tool(id) && is_tool(c) {
+                    continue;
+                }
+                // Never strip a command that this same call is assigning:
+                // two entries for one key are a clash inside the call, which
+                // the returned conflicts list reports (#719). Stripping
+                // each other here unbound both silently.
+                if c == id || set.contains_key(c) || alts.contains_key(c) {
+                    continue;
+                }
+                let main = next.shortcut(c, def).map(str::to_string);
+                if main.as_deref().and_then(normalize_shortcut).as_deref() == Some(sc.as_str()) {
+                    next.shortcuts.insert(c.to_string(), String::new());
+                }
+                let held = next.alternates(c, main.as_deref());
+                if held.contains(&sc) {
+                    next.alternate_shortcuts.insert(c.to_string(), held.into_iter().filter(|k| *k != sc).collect());
+                }
+            }
+        }
+    }
+    Ok(true)
 }
 
 /// Edit › Menus: hide/show items and give them colours.

@@ -4,7 +4,10 @@
 //!
 //! `--json` writes the report `cargo xtask perf` reads: `{"rows": [{"name", "samples_ms"}]}`.
 //! `--quick` runs the list on a 1500×1000 layer instead, for `cargo xtask perf --quick`.
-use photocraft_algo::*;
+use photocraft_algo::{
+    BlurPath, BlurQuality, BlurShape, DepthSource, Distribution, FieldPin, FilterParams, IrisPin, Light, SmartBlurMode, SpinPin, TextureChannel, apply,
+    output_area,
+};
 use photocraft_color::PixelFormat;
 use photocraft_geom::Rect;
 use photocraft_raster::Surface;

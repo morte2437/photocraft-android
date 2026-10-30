@@ -1,5 +1,13 @@
 use super::services::{ExportSettings, FormatChoices, SAVE_OPTIONS_OPEN, SaveKind, Services, plain_raster, saved_revision_after_write};
-use super::*;
+use super::{
+    ControlRequest, DocId, Document, HashMap, PhotocraftApp, Receiver, Session, SyntheticTarget, Tool, UiState, Value, actions, analysis_ui, brush_panel,
+    brush_picker, camera_raw_ui, canvas, dds_options_ui, delete_layer_prompt, dialogs, discard_ui, distort_ui, dock, field_wheel, file_open, gpu_canvas,
+    gpu_status, gradient_ui, histogram_panel, i18n, jobs_ui, jpeg_options_ui, json, kys_import, last_brush, layers_panel_ui, mask_thumbs_ui, mask_trash_prompt,
+    monitor_status, native_menu, notices, open_prompt, paint_mouse, palette, panel_docking, panels, prefs_ui, preset_files_ui, preset_panels, rasterize_prompt,
+    screen_picker, shape_stroke_ui, shortcuts, single_line_drag, state, stroke_trace, stylus, targa_options_ui, text_field_menu, theme, tiff_options_ui,
+    timeline_ui, titlebar, tool_cursor, tool_memory, transform_tool, type_panels_ui, type_tool, type_transform, updates_ui, vector_ui, view_cmds, wheel_nav,
+    wide_angle_ui, widgets, work_area, workspace_ui,
+};
 
 mod clipboard;
 mod commands;
@@ -39,6 +47,7 @@ impl PhotocraftApp {
             monitors: Default::default(),
             checker: None,
             drag: None,
+            cancelled_vector_drag: false,
             move_blocked: false,
             tool_override: None,
             live_stroke: None,
@@ -90,6 +99,7 @@ impl PhotocraftApp {
             tab_strip: None,
             drop_places: Default::default(),
             view_docs: Vec::new(),
+            path_document: None,
             fps: 0.0,
             last_frame_time: 0.0,
             thumbs: HashMap::new(),
@@ -114,6 +124,7 @@ impl PhotocraftApp {
             synthetic_reinject: false,
             synthetic_snapshot: None,
             automation_input: false,
+            run_depth: 0,
             paused_playbacks: Default::default(),
             channel_thumbs: None,
             channel_views: HashMap::new(),
@@ -165,6 +176,8 @@ impl PhotocraftApp {
             started: None,
             perf: Default::default(),
             stroke_trace: stroke_trace::StrokeTrace::from_env(),
+            render_path: Default::default(),
+            slow_frames: Default::default(),
             prefs_rt: Default::default(),
             updates_rt: Default::default(),
             discard: None,
@@ -253,11 +266,9 @@ impl eframe::App for PhotocraftApp {
         if self.custom_titlebar {
             titlebar::release_after_os_resize(ctx, raw_input);
         }
-        if self.stroke_trace.enabled() {
-            // The OS's moves and the control channel's (injected just above).
-            let moves = raw_input.events.iter().filter(|e| matches!(e, egui::Event::PointerMoved(_))).count();
-            self.stroke_trace.begin_frame(frame_start, moves);
-        }
+        // The OS's moves and the control channel's (injected just above).
+        let moves = raw_input.events.iter().filter(|e| matches!(e, egui::Event::PointerMoved(_))).count();
+        self.perf.stage.start(frame_start, moves);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {

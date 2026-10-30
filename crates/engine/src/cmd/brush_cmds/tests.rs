@@ -32,6 +32,93 @@ fn stroke_backwards_compatible() {
 }
 
 #[test]
+fn fill_fills_the_enclosed_region_not_the_outline() {
+    // #3659: a closed gesture with `fill` paints the interior, not a ring.
+    let mut s = session(60, 60);
+    s.execute(
+        "paint.stroke",
+        json!({"points": [[10, 10], [50, 10], [50, 50], [10, 50]], "fill": true, "size": 4, "color": "#ff0000", "brush": {"hardness": 1.0}}),
+    )
+    .unwrap();
+    assert!(rgba(&s, 30, 30)[0] > 0.9 && rgba(&s, 30, 30)[3] > 0.9, "interior filled: {:?}", rgba(&s, 30, 30));
+    assert_eq!(rgba(&s, 5, 30)[3], 0.0, "outside untouched");
+    assert_eq!(rgba(&s, 30, 5)[3], 0.0, "outside untouched");
+    // A soft brush feathers the edge outside the polygon; a hard one keeps a crisp edge.
+    let mut soft = session(60, 60);
+    soft.execute(
+        "paint.stroke",
+        json!({"points": [[10, 10], [50, 10], [50, 50], [10, 50]], "fill": true, "size": 40, "color": "#ff0000", "brush": {"hardness": 0.0}}),
+    )
+    .unwrap();
+    assert!(rgba(&soft, 8, 30)[3] > 0.0, "a soft edge paints outside the polygon: {:?}", rgba(&soft, 8, 30));
+    // Graceful failures: fewer than three points, and the Eraser.
+    assert!(s.execute("paint.stroke", json!({"points": [[10, 10], [50, 10]], "fill": true})).is_err());
+    assert!(s.execute("paint.stroke", json!({"points": [[10, 10], [50, 10], [50, 50]], "fill": true, "erase": true})).is_err());
+    // One history step, like a normal stroke.
+    let before = s.active().unwrap().history.past_len();
+    s.execute("paint.stroke", json!({"points": [[12, 12], [48, 12], [48, 48], [12, 48]], "fill": true, "color": "#0000ff"})).unwrap();
+    assert_eq!(s.active().unwrap().history.past_len(), before + 1, "fill is one history step");
+}
+
+#[test]
+fn fill_is_rejected_with_clear_mode() {
+    // #3659 review: `"mode":"clear"` maps onto the eraser, so a clear fill would erase the region
+    // the outline encloses. Reject it; a selection + delete does that deliberately.
+    let mut s = session(60, 60);
+    let poly = json!([[10, 10], [50, 10], [50, 50], [10, 50]]);
+    assert!(s.execute("paint.stroke", json!({"points": poly.clone(), "fill": true, "mode": "clear"})).is_err());
+    // `clear` without `fill` still erases along the outline (main's behaviour), unchanged.
+    s.execute("paint.stroke", json!({"points": poly, "fill": true, "size": 4, "color": "#ff0000"})).unwrap();
+    assert!(rgba(&s, 30, 30)[3] > 0.9, "the region is filled first");
+    s.execute("paint.stroke", json!({"points": [[30, 2], [30, 58]], "size": 10, "mode": "clear"})).unwrap();
+    assert!(rgba(&s, 30, 30)[3] < 0.01, "a clear stroke erased what it crossed");
+    assert!(rgba(&s, 12, 30)[3] > 0.9, "pixels the clear stroke missed remain");
+}
+
+#[test]
+fn fill_soft_edge_has_no_step() {
+    // #3779: the feather (σ = 20 here) reaches 3σ = 60 px past the square; the fill's working
+    // bounds must reach as far, or the soft edge ends in a hard step where they clip it.
+    let mut s = session(200, 200);
+    s.execute(
+        "paint.stroke",
+        json!({"points": [[80, 80], [120, 80], [120, 120], [80, 120]], "fill": true, "size": 40, "color": "#ff0000", "brush": {"hardness": 0.0}}),
+    )
+    .unwrap();
+    assert!(rgba(&s, 57, 100)[3] > 0.0, "the fade continues past 1σ: {:?}", rgba(&s, 57, 100));
+    for x in 0..199 {
+        let (a, b) = (rgba(&s, x, 100)[3], rgba(&s, x + 1, 100)[3]);
+        assert!((a - b).abs() < 0.03, "step between x={x} ({a}) and x={} ({b})", x + 1);
+    }
+}
+
+#[test]
+fn fill_paints_a_cmyk_pick_with_the_picked_inks() {
+    // #3779: like a plain stroke (#4344), a fill paints a colour picked as CMYK as its inks.
+    let cyan = [1.0f32, 0.0, 0.0, 0.0];
+    let mut s = session(16, 16);
+    s.execute("image.mode.cmyk", json!({})).unwrap();
+    let rgb = photocraft_color::convert::cmyk_to_rgb(cyan).map(|c| c.clamp(0.0, 1.0));
+    s.execute("tools.setColors", json!({"foreground": rgb, "foregroundCmyk": cyan})).unwrap();
+    s.execute("paint.stroke", json!({"points": [[2, 2], [14, 2], [14, 14], [2, 14]], "fill": true, "hardness": 1.0})).unwrap();
+    let st = s.active().unwrap();
+    let surf = st.doc.layer(st.active_layer.unwrap()).unwrap().surface().unwrap();
+    let got: Vec<f32> = surf.read_region(Rect::new(8, 8, 9, 9)).into_iter().take(4).collect();
+    assert!(got.iter().zip(cyan).all(|(a, b)| (a - b).abs() < 0.02), "{got:?}");
+}
+
+#[test]
+fn fill_works_on_cmyk_and_16_and_32_bit() {
+    for (mode, depth) in [("cmyk", 8), ("rgb", 16), ("grayscale", 32)] {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 60, "height": 30, "mode": mode, "depth": depth})).unwrap();
+        s.execute("paint.stroke", json!({"points": [[10, 5], [50, 5], [50, 25], [10, 25]], "fill": true, "color": "#000000", "hardness": 1.0})).unwrap();
+        assert!(rgba(&s, 30, 15)[0] < 0.2, "{mode}/{depth}: {:?}", rgba(&s, 30, 15));
+        assert!(rgba(&s, 5, 15)[0] > 0.8, "{mode}/{depth} outside: {:?}", rgba(&s, 5, 15));
+    }
+}
+
+#[test]
 fn stroke_accepts_full_points_brush_and_preset() {
     let mut s = session(200, 100);
     // 7-tuples plus a brush object with tilt-driven angle on a flat tip.
@@ -491,6 +578,23 @@ fn define_brush_from_selection() {
     s.execute("select.deselect", json!({})).unwrap();
     s.execute("paint.stroke", json!({"points": [[30, 32]], "color": "#ff0000"})).unwrap();
     assert!(rgba(&s, 30, 32)[3] > 0.9);
+}
+
+#[test]
+fn fill_survives_allocation_failure() {
+    // CodeRabbit on #9775: a fill's buffers span the region, up to the whole canvas. Their peak is
+    // reserved through the fallible allocator before any of them is built, so running out of
+    // memory is the fill's own error, leaving the pixels and history alone, never an abort.
+    let mut s = session(60, 60);
+    let pixels_before = surface(&s);
+    let history_before = s.active().unwrap().history.past_len();
+    crate::allocation::fail_next_for_test();
+    let result = s.execute("paint.stroke", json!({"points": [[10, 10], [50, 10], [50, 50], [10, 50]], "fill": true, "color": "#ff0000"}));
+    let _ = crate::allocation::capacity::<u8>(0, "reset failpoint");
+    let err = result.expect_err("an allocation failure must be reported, not panic").to_string();
+    assert!(err.contains("filling a painted region"), "the fill reserves its buffers first: {err}");
+    assert_eq!(surface(&s), pixels_before, "no pixels changed");
+    assert_eq!(s.active().unwrap().history.past_len(), history_before, "no history step was recorded");
 }
 
 #[test]
@@ -1303,6 +1407,23 @@ fn clear_mode_erases_with_the_brush_or_pencil() {
     }
 }
 
+#[test]
+fn behind_brush_and_pencil_preserve_foreground_and_round_trip_history() {
+    for cmd in ["paint.stroke", "paint.pencil"] {
+        let mut s = session(40, 20);
+        s.execute(cmd, json!({"points": [[10, 10]], "size": 6, "color": "#ff0000", "hardness": 1.0})).unwrap();
+        let before = surface(&s);
+        s.execute(cmd, json!({"points": [[2, 10], [38, 10]], "size": 6, "color": "#0000ff", "mode": "behind", "hardness": 1.0})).unwrap();
+        assert_eq!(rgba(&s, 10, 10), [1.0, 0.0, 0.0, 1.0], "{cmd}: existing opaque paint");
+        assert_eq!(rgba(&s, 25, 10), [0.0, 0.0, 1.0, 1.0], "{cmd}: transparent pixels");
+        let painted = surface(&s);
+        s.execute("edit.undo", json!({})).unwrap();
+        assert!(same_pixels(&surface(&s), &before, Rect::new(0, 0, 40, 20)));
+        s.execute("edit.redo", json!({})).unwrap();
+        assert!(same_pixels(&surface(&s), &painted, Rect::new(0, 0, 40, 20)));
+    }
+}
+
 /// #4344: a foreground picked as CMYK 100/0/0/0 is painted into a CMYK document as those inks by
 /// the Brush and the Pencil, not as whatever its sRGB stand-in converts back to (100/28/0/17).
 #[test]
@@ -1319,4 +1440,37 @@ fn brush_and_pencil_paint_a_cmyk_pick_with_the_picked_inks() {
         let got: Vec<f32> = surf.read_region(Rect::new(8, 8, 9, 9)).into_iter().take(4).collect();
         assert!(got.iter().zip(cyan).all(|(a, b)| (a - b).abs() < 0.02), "{cmd}: {got:?}");
     }
+}
+
+#[test]
+fn mixer_load_fills_the_reservoir_from_the_canvas_and_keeps_the_foreground() {
+    let mut s = session(80, 40);
+    s.execute("paint.stroke", json!({"points": [[4, 20], [60, 20]], "size": 6, "color": "#0000ff"})).unwrap();
+    s.execute("tools.setColors", json!({"foreground": "#ff0000"})).unwrap();
+    // Over transparency nothing is loaded.
+    let r = s.execute("paint.mixerLoad", json!({"x": 30, "y": 5})).unwrap();
+    assert_eq!(r["loaded"], json!(false));
+    assert!(s.tools.mixer.reservoir.is_none());
+    // On the blue stroke the reservoir takes its colour; the foreground stays red.
+    let r = s.execute("paint.mixerLoad", json!({"x": 30, "y": 20})).unwrap();
+    assert_eq!(r["loaded"], json!(true));
+    assert_eq!(s.tools.mixer.reservoir, Some([0.0, 0.0, 1.0, 1.0]));
+    assert_eq!(s.tools.foreground, [1.0, 0.0, 0.0, 1.0]);
+    // The next dry stroke paints the sampled blue, not the foreground.
+    let brush = json!({"pressureSize": false, "spacing": 0.25});
+    let dry = |y: i32, size: u32| json!({"points": [[5, y], [40, y]], "size": size, "wet": 0, "load": 100, "mix": 0, "brush": brush});
+    s.execute("paint.mixerBrush", dry(30, 8)).unwrap();
+    assert_eq!(rgba(&s, 20, 30), [0.0, 0.0, 1.0, 1.0]);
+    // A new foreground colour takes the reservoir back.
+    s.execute("tools.setColors", json!({"foreground": "#00ff00"})).unwrap();
+    s.execute("paint.mixerBrush", dry(36, 4)).unwrap();
+    assert_eq!(rgba(&s, 20, 36), [0.0, 1.0, 0.0, 1.0]);
+    // Bad coordinates are an error, not a panic, and leave the reservoir, the foreground and the
+    // document untouched.
+    let (mixer, foreground) = (s.tools.mixer.clone(), s.tools.foreground);
+    let revision = s.active().unwrap().revision;
+    assert!(s.execute("paint.mixerLoad", json!({"x": "a", "y": 1})).is_err());
+    assert_eq!(s.tools.mixer, mixer);
+    assert_eq!(s.tools.foreground, foreground);
+    assert_eq!(s.active().unwrap().revision, revision);
 }

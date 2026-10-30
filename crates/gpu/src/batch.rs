@@ -1,6 +1,6 @@
 use super::convert::{W, words};
 use super::textures::Resident;
-use super::*;
+use super::{DeviceHealth, F, I, Kernel, Plan, Rect, TILE_SIZE, TileCoord, U, plan, timing};
 
 /// The uniform record of a pass.
 pub(crate) fn op_words(p: &plan::Pass<'_>, tex: Option<[i32; 4]>, mask: Option<[i32; 4]>, map: Option<Rect>) -> Vec<u8> {

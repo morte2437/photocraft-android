@@ -433,7 +433,7 @@ fn two_face_ttc(first: &[u8], second: &[u8]) -> Vec<u8> {
 
 /// A minimal TrueType font mapping the `ranges` (inclusive) to box glyphs, so tests have a
 /// font for a script without committing font files.
-fn synthetic_font(ranges: &[(u32, u32)]) -> Vec<u8> {
+pub(crate) fn synthetic_font(ranges: &[(u32, u32)]) -> Vec<u8> {
     let be16 = |v: &mut Vec<u8>, x: i32| v.extend((x as u16).to_be_bytes());
     let be32 = |v: &mut Vec<u8>, x: u32| v.extend(x.to_be_bytes());
     let chars: u32 = ranges.iter().map(|(a, b)| b - a + 1).sum();

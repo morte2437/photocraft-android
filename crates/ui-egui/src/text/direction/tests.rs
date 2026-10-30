@@ -1,6 +1,6 @@
 //! Right-to-left shell layout: the direction rules, and where the mirrored chrome lands in a
-//! running shell. No right-to-left catalog is registered yet, so the shell tests force the
-//! direction with `direction_scope`.
+//! running shell. The shell tests force the direction with `direction_scope`, so they don't
+//! depend on a right-to-left language being selected.
 
 use super::*;
 use crate::PhotocraftApp;
@@ -17,9 +17,10 @@ fn right_to_left_scripts_by_language_code() {
     for code in ["en", "ja", "zh-hans", "pt-br", "ku", "arn", ""] {
         assert_eq!(i18n::dir_for_code(code), Dir::Ltr, "{code}");
     }
-    // No right-to-left catalog is registered yet, so the shell stays as it was.
+    // Arabic is the one right-to-left catalog; every other registered language stays left to right.
     for lang in Lang::all() {
-        assert_eq!(lang.dir(), Dir::Ltr, "{}", lang.code());
+        let want = if lang.code() == "ar" { Dir::Rtl } else { Dir::Ltr };
+        assert_eq!(lang.dir(), want, "{}", lang.code());
     }
 }
 

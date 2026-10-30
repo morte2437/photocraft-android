@@ -13,6 +13,7 @@ A standalone reader and writer for Adobe Photoshop **PSD** (version 1) and **PSB
 | `PsdFile::from_bytes(b)?.to_bytes()? == b` for unmodified files | Channel data keeps its original encoding. Unknown blocks and resources are stored raw. Exact padding is recorded wherever it can vary: tagged blocks, layer info, section trailers. |
 | `from_bytes(to_bytes(f)) == f` for any model `f` | Canonical defaults: `padding: None` means "zero-pad to even", and the parser yields `None` whenever the file used that default. |
 | Lazy decoding | The parser only copies encoded bytes. Channels are decoded when asked (`ChannelData::decode`, `ImageData::decode`). |
+| Lazy reading | `PsdFile::from_source` reads only the structure. Channel data and the merged image stay in the source as `Stored` ranges and are read when decoded, so opening a 2 GB file doesn't need 2 GB for the file itself. The model equals what `from_bytes` builds, and it writes back the same bytes. |
 | No compositing | `PsdBuilder` takes the merged image from the caller. Without one, it writes a white placeholder and sets `has_real_merged_data = false` in resource 1057. |
 
 ## Public API (overview)
@@ -22,6 +23,8 @@ A standalone reader and writer for Adobe Photoshop **PSD** (version 1) and **PSB
 PsdFile::from_bytes(&[u8]) -> Result<PsdFile>
 PsdFile::from_bytes_and_merged(&[u8], want) -> Result<(PsdFile, Option<Result<Vec<u8>>>)>
                                             // + decode_merged() when want(&file): ZIP inflated once
+PsdFile::from_source(Source) -> Result<PsdFile>   // channel data and merged image left in the source
+PsdFile::from_source_and_merged_recovering(Source, want, recover)
 PsdFile::to_bytes(&self) -> Result<Vec<u8>>
 PsdFile::open(path) / save(path)            // native only
 PsdFile { header, color_mode_data, resources, layer_info, layer_info_placement,
@@ -36,6 +39,11 @@ PsdFile::composite_rgba8() -> Result<RgbaImage>
 PsdFile::resource(id), global_block(key), icc_profile(), resolution(),
         has_real_merged_data(), merged_has_alpha(), validate()
 
+// Sources (lazy reading)
+trait ReadAt { len(), read_at(offset, buf) }   // [u8], Vec<u8>, Arc<T>, FileSource (pread / seek_read)
+Source::new(impl ReadAt) / read_vec(offset, len)   // shared handle; equal when the same source
+Stored { source, offset, len }::read() / read_part(at, len)
+
 // Header
 Header { version: Version::{Psd,Psb}, channels, width, height, depth, color_mode, reserved }
 ColorMode::{Bitmap, Grayscale, Indexed, Rgb, Cmyk, Multichannel, Duotone, Lab, Unknown(u16)}
@@ -47,7 +55,8 @@ LayerRecord { rect, channels: Vec<ChannelData>, blend_mode, opacity, clipping, f
 LayerRecord::name()            // prefers `luni`
 LayerRecord::section_divider(), section_type(), layer_id(), fill_opacity(), is_visible(),
              block(key), block_mut(key), channel(id), channel_rect(id), decode_channel(id, depth, version)
-ChannelData { id, compression: Option<Compression>, data }   // encoded bytes kept verbatim
+ChannelData { id, compression: Option<Compression>, data, stored: Option<Stored> }   // encoded bytes kept verbatim
+ChannelData::new(id, compression, data); encoded() -> Cow<[u8]>; encoded_len(); load()
 ChannelData::encode(id, compression, decoded, w, h, depth, version)
 ChannelData::decode(w, h, depth, version); set_decoded(...)
 MaskData::{None, Mask(LayerMask), Raw(Vec<u8>)}

@@ -363,7 +363,9 @@ impl Tokens {
                 radius_lg: 12.0,
                 bevel: false,
                 pro: false,
-                round_chips: true,
+                // Studio Dark uses the compact overlapping square foreground/background
+                // chips rather than the large stacked circles (#3494).
+                round_chips: false,
                 tab_strip: Color32::TRANSPARENT,
                 row_selected: Color32::TRANSPARENT,
                 histogram_bg: Color32::from_rgb(14, 14, 15),
@@ -878,6 +880,13 @@ pub fn install_fonts_with(ctx: &egui::Context, cjk: crate::cjk_fonts::Sources) {
     // family stack ahead of the Japanese or Korean face, and a locale without a Traditional Chinese
     // craft face leaves Han to the system font. (A single linear per-family chain still decides a
     // glyph once a broad face is discovered; see `cjk_fonts`.)
+    // Served script fallbacks the web build has received (Arabic, Japanese…), after everything else.
+    for (name, data) in crate::served_fonts::ui_faces() {
+        fonts.font_data.insert(name.clone(), data);
+        for family in [FontFamily::Proportional, FontFamily::Monospace] {
+            fonts.families.entry(family).or_default().push(name.clone());
+        }
+    }
     // Named weights fall back to the default stack for missing glyphs.
     let fallback: Vec<String> = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
     for (fam, primary) in [("medium", medium), ("semibold", semibold)] {
@@ -1180,50 +1189,195 @@ pub mod live {
         let mut unknown = Vec::new();
         let Some(obj) = v.as_object() else { return unknown };
         for (k, val) in obj {
-            macro_rules! c {
-                ($($f:ident),*) => {
-                    match k.as_str() {
-                        $(stringify!($f) => { if let Some(c) = color(val) { t.$f = c; } })*
-                        "radius_sm" => { if let Some(x) = val.as_f64() { t.radius_sm = x as f32; } }
-                        "radius" => { if let Some(x) = val.as_f64() { t.radius = x as f32; } }
-                        "radius_lg" => { if let Some(x) = val.as_f64() { t.radius_lg = x as f32; } }
-                        _ => unknown.push(k.clone()),
-                    }
-                };
+            if override_chrome_color(t, k, val) || override_text_color(t, k, val) || override_accent_color(t, k, val) {
+                continue;
             }
-            c!(
-                caption_close,
-                caption_close_text,
-                chrome,
-                canvas,
-                canvas_dot,
-                dock,
-                card,
-                card_border,
-                field,
-                field_border,
-                hover,
-                pressed,
-                text,
-                text_dim,
-                text_faint,
-                icon,
-                accent,
-                accent_soft,
-                accent_border,
-                accent_text,
-                separator,
-                shadow,
-                primary_bg,
-                primary_text,
-                danger,
-                warning,
-                tab_strip,
-                row_selected,
-                scrim
-            );
+            match k.as_str() {
+                "radius_sm" => {
+                    if let Some(x) = val.as_f64() {
+                        t.radius_sm = x as f32;
+                    }
+                }
+                "radius" => {
+                    if let Some(x) = val.as_f64() {
+                        t.radius = x as f32;
+                    }
+                }
+                "radius_lg" => {
+                    if let Some(x) = val.as_f64() {
+                        t.radius_lg = x as f32;
+                    }
+                }
+                _ => unknown.push(k.clone()),
+            }
         }
         unknown
+    }
+
+    fn override_chrome_color(t: &mut Tokens, key: &str, value: &serde_json::Value) -> bool {
+        match key {
+            "caption_close" => {
+                if let Some(c) = color(value) {
+                    t.caption_close = c;
+                }
+            }
+            "caption_close_text" => {
+                if let Some(c) = color(value) {
+                    t.caption_close_text = c;
+                }
+            }
+            "chrome" => {
+                if let Some(c) = color(value) {
+                    t.chrome = c;
+                }
+            }
+            "canvas" => {
+                if let Some(c) = color(value) {
+                    t.canvas = c;
+                }
+            }
+            "canvas_dot" => {
+                if let Some(c) = color(value) {
+                    t.canvas_dot = c;
+                }
+            }
+            "dock" => {
+                if let Some(c) = color(value) {
+                    t.dock = c;
+                }
+            }
+            "card" => {
+                if let Some(c) = color(value) {
+                    t.card = c;
+                }
+            }
+            "card_border" => {
+                if let Some(c) = color(value) {
+                    t.card_border = c;
+                }
+            }
+            "field" => {
+                if let Some(c) = color(value) {
+                    t.field = c;
+                }
+            }
+            "field_border" => {
+                if let Some(c) = color(value) {
+                    t.field_border = c;
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    fn override_text_color(t: &mut Tokens, key: &str, value: &serde_json::Value) -> bool {
+        match key {
+            "hover" => {
+                if let Some(c) = color(value) {
+                    t.hover = c;
+                }
+            }
+            "pressed" => {
+                if let Some(c) = color(value) {
+                    t.pressed = c;
+                }
+            }
+            "text" => {
+                if let Some(c) = color(value) {
+                    t.text = c;
+                }
+            }
+            "text_dim" => {
+                if let Some(c) = color(value) {
+                    t.text_dim = c;
+                }
+            }
+            "text_faint" => {
+                if let Some(c) = color(value) {
+                    t.text_faint = c;
+                }
+            }
+            "icon" => {
+                if let Some(c) = color(value) {
+                    t.icon = c;
+                }
+            }
+            "separator" => {
+                if let Some(c) = color(value) {
+                    t.separator = c;
+                }
+            }
+            "shadow" => {
+                if let Some(c) = color(value) {
+                    t.shadow = c;
+                }
+            }
+            "primary_bg" => {
+                if let Some(c) = color(value) {
+                    t.primary_bg = c;
+                }
+            }
+            "primary_text" => {
+                if let Some(c) = color(value) {
+                    t.primary_text = c;
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    fn override_accent_color(t: &mut Tokens, key: &str, value: &serde_json::Value) -> bool {
+        match key {
+            "accent" => {
+                if let Some(c) = color(value) {
+                    t.accent = c;
+                }
+            }
+            "accent_soft" => {
+                if let Some(c) = color(value) {
+                    t.accent_soft = c;
+                }
+            }
+            "accent_border" => {
+                if let Some(c) = color(value) {
+                    t.accent_border = c;
+                }
+            }
+            "accent_text" => {
+                if let Some(c) = color(value) {
+                    t.accent_text = c;
+                }
+            }
+            "danger" => {
+                if let Some(c) = color(value) {
+                    t.danger = c;
+                }
+            }
+            "warning" => {
+                if let Some(c) = color(value) {
+                    t.warning = c;
+                }
+            }
+            "tab_strip" => {
+                if let Some(c) = color(value) {
+                    t.tab_strip = c;
+                }
+            }
+            "row_selected" => {
+                if let Some(c) = color(value) {
+                    t.row_selected = c;
+                }
+            }
+            "scrim" => {
+                if let Some(c) = color(value) {
+                    t.scrim = c;
+                }
+            }
+            _ => return false,
+        }
+        true
     }
 
     #[cfg(test)]

@@ -289,6 +289,65 @@ fn grabcut_trimap_on_disc() {
 }
 
 #[test]
+fn grabcut_small_disc_mask_is_pinned() {
+    // The mask GrabCut produced with the push/relabel solver, before the switch to BK. Min-cut
+    // ties may break differently between solvers, so any drift here is a visible change.
+    let (img, _) = disc_scene(32, 24, 16.0, 12.0, 8.0, 3);
+    let mut tri = vec![grabcut::BG; img.w * img.h];
+    for y in 2..22 {
+        for x in 6..26 {
+            tri[y * img.w + x] = grabcut::PR_FG;
+        }
+    }
+    grabcut::grabcut(&img, &mut tri, 8).unwrap();
+    let got: Vec<String> = tri.chunks(img.w).map(|r| r.iter().map(|t| if *t == grabcut::PR_FG || *t == grabcut::FG { '#' } else { '.' }).collect()).collect();
+    let want = [
+        "................................",
+        "................................",
+        "................................",
+        "................................",
+        ".............######.............",
+        "...........##########...........",
+        "..........############..........",
+        ".........##############.........",
+        ".........##############.........",
+        "........################........",
+        "........################........",
+        "........################........",
+        "........################........",
+        "........################........",
+        "........################........",
+        ".........##############.........",
+        ".........##############.........",
+        "..........############..........",
+        "...........##########...........",
+        ".............######.............",
+        "................................",
+        "................................",
+        "................................",
+        "................................",
+    ];
+    assert_eq!(got, want);
+}
+
+#[test]
+fn grabcut_large_disc_mask_is_pinned() {
+    // 5168 free nodes with terminal links both ways, so the pre-BK solver was push/relabel here.
+    // The count and FNV-1a hash are of the mask that push/relabel produced at the merge base.
+    let (img, _) = disc_scene(96, 80, 48.0, 40.0, 26.0, 3);
+    let mut tri = vec![grabcut::BG; img.w * img.h];
+    for y in 6..74 {
+        for x in 10..86 {
+            tri[y * img.w + x] = grabcut::PR_FG;
+        }
+    }
+    grabcut::grabcut(&img, &mut tri, 8).unwrap();
+    let fg: Vec<bool> = tri.iter().map(|t| *t == grabcut::PR_FG || *t == grabcut::FG).collect();
+    let hash = fg.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3));
+    assert_eq!((fg.iter().filter(|b| **b).count(), hash), (2128, 0x62fd_c64a_0ee4_4e75));
+}
+
+#[test]
 fn object_select_disc_full_resolution() {
     let (img, truth) = disc_scene(200, 160, 100.0, 80.0, 50.0, 2);
     let s = ImageSampler { img: &img, origin: (0, 0) };
@@ -1067,4 +1126,88 @@ fn hole_fill_without_specks_fills_object_coloured_holes_only() {
     let out = fill_holes_by_model(&mask, &img, &fg, &bg, 0.0, 0.05);
     assert!(out[25 * w + 25], "a speck of the object's colour fills");
     assert!(!out[10 * w + 10], "a speck of the background's colour stays open");
+}
+
+/// Energy of a labelling: data costs plus the contrast weights of separated 8-neighbours.
+fn grid_energy(img: &RgbImage, cf: &[f32], cb: &[f32], cut: &[bool], weight: impl Fn(f32) -> f32) -> f64 {
+    let (w, h) = (img.w as i32, img.h as i32);
+    let mut e = 0.0f64;
+    for y in 0..h {
+        for x in 0..w {
+            let i = (y * w + x) as usize;
+            e += f64::from(if cut[i] { cf[i] } else { cb[i] });
+            for (dx, dy, len) in NB {
+                let (nx, ny) = (x + dx, y + dy);
+                if nx >= 0 && nx < w && ny < h {
+                    let j = (ny * w + nx) as usize;
+                    if cut[i] != cut[j] {
+                        e += f64::from(weight(d2(img.px[i], img.px[j])) / len);
+                    }
+                }
+            }
+        }
+    }
+    e
+}
+
+#[test]
+fn bk_and_default_grid_cut_tie_reaches_the_same_energy() {
+    // Hard background down the left edge, hard foreground down the right, uniform pixels and equal
+    // data costs: a vertical cut at any column separates the borders at the same energy, so only
+    // the solvers' tie-breaking decides the labelling.
+    let (w, h) = (120usize, 100usize);
+    let img = RgbImage::from_fn(w, h, |_, _| [0.5, 0.5, 0.5]);
+    let (cf, cb) = (vec![1.0f32; w * h], vec![1.0f32; w * h]);
+    let fixed: Vec<u8> = (0..w * h)
+        .map(|i| match i % w {
+            0 => HARD_BG,
+            x if x == w - 1 => HARD_FG,
+            _ => FREE,
+        })
+        .collect();
+    let weight = |_: f32| 2.0;
+    // Two distinct candidate labellings (vertical cuts at different columns) tie at the minimum.
+    let split = |col: usize| -> Vec<bool> { (0..w * h).map(|i| i % w >= col).collect() };
+    let (e30, e90) = (grid_energy(&img, &cf, &cb, &split(30), weight), grid_energy(&img, &cf, &cb, &split(90), weight));
+    assert!((e30 - e90).abs() <= 1e-6 * e30.abs().max(1.0), "candidates must tie: {e30} vs {e90}");
+    assert_ne!(split(30), split(90));
+    let a = grid_cut_cancellable(&img, &cf, &cb, &fixed, weight, &|| false).expect("default cut");
+    let b = grid_cut_bk_cancellable(&img, &cf, &cb, &fixed, weight, &|| false).expect("bk cut");
+    let (ea, eb) = (grid_energy(&img, &cf, &cb, &a, weight), grid_energy(&img, &cf, &cb, &b, weight));
+    assert!((ea - e30).abs() <= 1e-3 * e30.abs().max(1.0), "default {ea} is not the tied minimum {e30}");
+    assert!((eb - e30).abs() <= 1e-3 * e30.abs().max(1.0), "bk {eb} is not the tied minimum {e30}");
+    // The solvers may pick different minimum cuts here; only the energy is guaranteed.
+    assert!(a.iter().any(|&l| l) && b.iter().any(|&l| l), "both label the foreground border");
+}
+
+#[test]
+fn bk_and_default_grid_cut_reach_the_same_minimum_energy() {
+    // Large enough (>= 4096 free nodes, both terminals) that the default solver is push/relabel.
+    let (w, h) = (120usize, 100usize);
+    let mut rng = Rng::new(7);
+    let img = RgbImage::from_fn(w, h, |x, y| {
+        let inside = (x as f32 - 60.0).powi(2) + (y as f32 - 50.0).powi(2) < 1600.0;
+        let base = if inside { [0.8, 0.3, 0.2] } else { [0.2, 0.4, 0.7] };
+        base.map(|v| v + 0.08 * rng.normal())
+    });
+    let cf: Vec<f32> = img.px.iter().map(|p| 4.0 * d2(*p, [0.8, 0.3, 0.2])).collect();
+    let cb: Vec<f32> = img.px.iter().map(|p| 4.0 * d2(*p, [0.2, 0.4, 0.7])).collect();
+    let fixed: Vec<u8> = (0..w * h)
+        .map(|i| {
+            if i % w == 0 {
+                HARD_BG
+            } else if i == (50 * w + 60) {
+                HARD_FG
+            } else {
+                FREE
+            }
+        })
+        .collect();
+    let weight = |d: f32| 50.0 * (-8.0 * d).exp();
+    let a = grid_cut_cancellable(&img, &cf, &cb, &fixed, weight, &|| false).expect("default cut");
+    let b = grid_cut_bk_cancellable(&img, &cf, &cb, &fixed, weight, &|| false).expect("bk cut");
+    let (ea, eb) = (grid_energy(&img, &cf, &cb, &a, weight), grid_energy(&img, &cf, &cb, &b, weight));
+    assert!((ea - eb).abs() <= 1e-3 * ea.abs().max(1.0), "default {ea} vs bk {eb}");
+    assert_eq!(a, b, "same labelling, not just the same energy");
+    assert!(grid_cut_bk_cancellable(&img, &cf, &cb, &fixed, weight, &|| true).is_none(), "BK honours cancel");
 }

@@ -91,7 +91,8 @@ fn density_shows_the_fill_beyond_the_path() {
 /// mask break differently: 127 and 128, both what Photoshop's "127/128" allows.)
 #[test]
 fn soft_shape_matches_an_equal_vector_mask() {
-    for (density, feather) in [(1.0, 10.0), (0.45, 0.0), (0.3, 6.5), (0.0, 0.0), (1.0, 0.0), (0.5, 3.0)] {
+    // 40 px reaches past the canvas edge: both feather it the same way there (#9475).
+    for (density, feather) in [(1.0, 10.0), (0.45, 0.0), (0.3, 6.5), (0.0, 0.0), (1.0, 0.0), (0.5, 3.0), (1.0, 40.0)] {
         for depth in [SampleType::U8, SampleType::U16] {
             let (s, f) = (shape_doc(depth, density, feather, None), fill_doc(depth, density, feather));
             for y in [0, 45, 50, 100, 151, 199] {

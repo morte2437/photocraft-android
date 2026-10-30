@@ -8,13 +8,25 @@ fn small_sensor() -> Sensor {
 
 #[test]
 fn checks_peak_live_buffers_instead_of_summing_disjoint_phases() {
-    let sensor = decode(&DngSpec::cfa(128, 96, vec![1000; 128 * 96]).build(), &Limits::default()).unwrap();
+    let (w, h) = (128u64, 96u64);
+    let sensor = decode(&DngSpec::cfa(w as usize, h as usize, vec![1000; (w * h) as usize]).build(), &Limits::default()).unwrap();
+    let table = (4096 + 2) * 4;
+    // Exactly `max_alloc` must work and one byte less must fail.
+    let check = |opts: &mut DevelopOptions, max_alloc: u64| {
+        let expected = develop_sensor(&sensor, opts).unwrap();
+        opts.limits.max_alloc = max_alloc;
+        assert_eq!(develop_sensor(&sensor, opts).unwrap().rgb, expected.rgb);
+        opts.limits.max_alloc -= 1;
+        assert!(matches!(develop_sensor(&sensor, opts), Err(RawError::LimitExceeded(_))));
+    };
+    // A tone slider needs the f32 RGB frame next to the output (18 bytes a pixel) ...
+    let mut opts = DevelopOptions { demosaic: Demosaic::Mhc, tone: Tone { shadows: 20.0, ..Tone::NEUTRAL }, ..Default::default() };
+    check(&mut opts, w * h * 18 + table);
+    // ... the default rendering the u16 output and, per worker, one band (32 rows) of f32 RGB with
+    // the 12 rows more of padded CFA it reads, but no whole plane.
     let mut opts = DevelopOptions { demosaic: Demosaic::Mhc, ..Default::default() };
-    opts.limits.max_alloc = 128 * 96 * 18 + (4096 + 2) * 4;
-    let expected = develop_sensor(&sensor, &DevelopOptions { demosaic: Demosaic::Mhc, ..Default::default() }).unwrap();
-    assert_eq!(develop_sensor(&sensor, &opts).unwrap().rgb, expected.rgb);
-    opts.limits.max_alloc -= 1;
-    assert!(matches!(develop_sensor(&sensor, &opts), Err(RawError::LimitExceeded(_))));
+    let band = 32 * w * 12 + (32 + 12) * (w + 12) * 4;
+    rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap().install(|| check(&mut opts, w * h * 6 + table + band));
 }
 
 #[test]

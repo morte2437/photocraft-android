@@ -225,6 +225,28 @@ pub fn decode_planes(compression: Compression, data: &[u8], layout: &PlaneLayout
     }
 }
 
+/// Bytes a PSD RLE stream (two-byte row counts) of `rows` rows grows by when written as PSB
+/// (four-byte row counts); an error when `data` is too short to hold the count table.
+pub(crate) fn rle_widening(data: &[u8], rows: usize) -> Result<u64> {
+    let table = rows.checked_mul(2).ok_or(PsdError::LimitExceeded("row count overflow"))?;
+    if data.len() < table {
+        return Err(PsdError::UnexpectedEof { offset: data.len(), needed: table - data.len() });
+    }
+    Ok(table as u64)
+}
+
+/// Writes a PSD RLE stream (two-byte row counts) as the PSB one (four-byte row counts): the packed
+/// rows are the same in both versions, only the count table widens.
+pub(crate) fn put_widened_rle(out: &mut Vec<u8>, data: &[u8], rows: usize) -> Result<()> {
+    let table_len = usize::try_from(rle_widening(data, rows)?).map_err(|_| PsdError::LimitExceeded("row count overflow"))?;
+    let (table, packed) = data.split_at_checked(table_len).ok_or_else(|| PsdError::invalid("RLE row-count table out of range"))?;
+    for count in table.as_chunks::<2>().0 {
+        out.extend_from_slice(&[0, 0, count[0], count[1]]);
+    }
+    out.extend_from_slice(packed);
+    Ok(())
+}
+
 /// Encodes planar data (excluding the 2-byte compression field).
 pub fn encode_planes(compression: Compression, decoded: &[u8], layout: &PlaneLayout) -> Result<Vec<u8>> {
     let total = layout.decoded_len()?;

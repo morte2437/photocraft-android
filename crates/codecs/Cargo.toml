@@ -33,6 +33,8 @@ zune-core = "0.5"
 jpeg-encoder = "0.6"
 # 12-bit and arithmetic-coded JPEG, which zune-jpeg does not decode.
 craft-jpeg.workspace = true
+# Pure-Rust modular JPEG XL lossless encoder.
+zune-jpegxl = { version = "=0.5.2", default-features = false, features = ["std"] }
 photocraft-heif = { path = "../heif", optional = true }
 
 # Orientation is applied a band of rows per task on native; wasm stays single-threaded.
@@ -45,6 +47,10 @@ exr = { version = "1.73", default-features = false, features = ["rayon"] }
 proptest.workspace = true
 # Oracle decoders for cross-checking in tests only.
 image = { workspace = true, features = ["png", "jpeg", "tiff"] }
+
+# Independent JPEG XL decoder oracle; not linked into the application.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+jxl-oxide = { version = "=0.12.6", default-features = false, features = ["rayon"] }
 
 [lints]
 workspace = true

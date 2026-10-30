@@ -243,3 +243,14 @@ fn preview_options_validates_without_mutating_source() {
     assert_ne!(shown.text_styles, before);
     assert_eq!(doc.text_styles, before);
 }
+
+#[test]
+fn style_options_take_a_family_with_the_style_picked_under_it() {
+    // The font menu's ">" picks a family in one of its styles: Style Options sends both.
+    let (mut s, _) = session("Hello");
+    let cs = s.execute("type.characterStyle.new", json!({"attrs": {"size": 20}, "fromSelection": false})).unwrap()["id"].as_u64().unwrap();
+    s.execute("type.characterStyle.set", json!({"id": cs, "attrs": {"font": "Arial", "fontStyle": "Bold Italic"}})).unwrap();
+    let attrs = s.execute("type.characterStyle.list", json!({})).unwrap()["styles"][1]["attrs"].clone();
+    assert_eq!(attrs["font_family"], "Arial", "{attrs}");
+    assert_eq!(attrs["font_style"], "Bold Italic", "{attrs}");
+}

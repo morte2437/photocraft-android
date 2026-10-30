@@ -1,6 +1,6 @@
 use super::content::{render_content, surface_to_buffer};
 use super::ctx::Ctx;
-use super::*;
+use super::{BlendMode, Document, Layer, LayerContent, Rect, advanced, bounds, effects, masks, shape_split};
 
 /// Bounds of a layer's own pixels (union over group children; the canvas
 /// for fill layers; an artboard's board).
@@ -11,7 +11,7 @@ pub fn layer_bounds(layer: &Layer, canvas: Rect) -> Rect {
     }
     match &layer.content {
         LayerContent::Group(g) if g.artboard.is_some() => g.artboard.as_ref().map_or(Rect::EMPTY, |a| a.rect),
-        LayerContent::Group(g) => g.children.iter().filter(|c| c.visible).fold(Rect::EMPTY, |acc, c| {
+        LayerContent::Group(g) => g.children.iter().filter(|c| c.visible).fold(frame_stroke_bounds(layer, canvas), |acc, c| {
             let b = layer_bounds(c, canvas);
             if b.is_empty() {
                 acc
@@ -47,23 +47,36 @@ pub fn layer_bounds(layer: &Layer, canvas: Rect) -> Rect {
     }
 }
 
+/// Where a Photoshop Frame's stroke ([`shape_split::frame_shape`]) draws, within `canvas`; empty
+/// for other layers. Taken from the compiled stroke the renderer draws, not the path grown by the
+/// stroke width: a mitered corner reaches up to `miter_limit` widths past the path, and a frame
+/// has no pixels of its own that would cover it.
+fn frame_stroke_bounds(layer: &Layer, canvas: Rect) -> Rect {
+    shape_split::frame_shape(layer)
+        .and_then(|sh| photocraft_vector::CompiledShape::new(&sh, photocraft_vector::DEFAULT_TOLERANCE, canvas).bounds())
+        .map_or(Rect::EMPTY, |r| r.intersect(&canvas))
+}
+
 /// Where a layer's effects take their shape from: [`layer_bounds`], except that a group's
 /// children count with their own effects (a child's outside stroke shapes the group's drop
 /// shadow and must not be cut off at the child's pixels, #3274).
 pub fn effect_source_bounds(layer: &Layer, canvas: Rect) -> Rect {
     match &layer.content {
-        LayerContent::Group(g) if g.artboard.is_none() && !advanced::shapeless(layer) => g.children.iter().filter(|c| c.visible).fold(Rect::EMPTY, |acc, c| {
-            let m = if effects::has_effects(c) { effects::margin(c) } else { 0 };
-            let b = effect_source_bounds(c, canvas);
-            let b = if b.is_empty() { b } else { b.inflate(m) };
-            if b.is_empty() {
-                acc
-            } else if acc.is_empty() {
-                b
-            } else {
-                acc.union(&b)
-            }
-        }),
+        // A Frame's stroke is part of the group's content its effects are built from.
+        LayerContent::Group(g) if g.artboard.is_none() && !advanced::shapeless(layer) => {
+            g.children.iter().filter(|c| c.visible).fold(frame_stroke_bounds(layer, canvas), |acc, c| {
+                let m = if effects::has_effects(c) { effects::margin(c) } else { 0 };
+                let b = effect_source_bounds(c, canvas);
+                let b = if b.is_empty() { b } else { b.inflate(m) };
+                if b.is_empty() {
+                    acc
+                } else if acc.is_empty() {
+                    b
+                } else {
+                    acc.union(&b)
+                }
+            })
+        }
         _ => layer_bounds(layer, canvas),
     }
 }
@@ -343,7 +356,7 @@ pub fn composite_bounds(layer: &Layer, canvas: Rect) -> Option<Rect> {
     }
     let own = match &layer.content {
         LayerContent::Group(g) if g.artboard.is_none() => {
-            let mut acc = Rect::EMPTY;
+            let mut acc = frame_stroke_bounds(layer, canvas);
             for c in g.children.iter().filter(|c| c.visible) {
                 let b = composite_bounds(c, canvas)?;
                 if !b.is_empty() {

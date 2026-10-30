@@ -89,7 +89,7 @@ fn modes_imported_flattened_do_not_recover_from_unusable_layer_records() {
     for mode in [photocraft_psd::ColorMode::Indexed, photocraft_psd::ColorMode::Multichannel, photocraft_psd::ColorMode::Duotone] {
         let mut file = layered(SampleType::U8, "x.psd");
         file.header.color_mode = mode;
-        file.image_data = photocraft_psd::ImageData { compression: Compression::Raw, data: Vec::new() };
+        file.image_data = photocraft_psd::ImageData::new(Compression::Raw, Vec::new());
         assert!(import("flat-mode.psd", &file.to_bytes().unwrap()).is_err(), "{mode:?}");
     }
 }
@@ -98,7 +98,7 @@ fn modes_imported_flattened_do_not_recover_from_unusable_layer_records() {
 fn lost_extra_channels_are_reported_while_layers_remain_usable() {
     let mut file = layered(SampleType::U8, "x.psd");
     file.header.channels = 5;
-    file.image_data = photocraft_psd::ImageData { compression: Compression::Raw, data: Vec::new() };
+    file.image_data = photocraft_psd::ImageData::new(Compression::Raw, Vec::new());
     let result = import("extra-channel.psd", &file.to_bytes().unwrap()).unwrap();
     assert_eq!(result.document.layer_count(), 1);
     assert!(result.document.channels.is_empty());

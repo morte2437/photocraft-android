@@ -1,5 +1,5 @@
 use super::common::{Adapt, Bounds, PAR_MIN_PATCHES, Px, Rng};
-use super::*;
+use super::par;
 
 /// Most channels whose moments the colour adaptation fits (the rest are copied as they are).
 const MOM_CH: usize = 8;

@@ -1,5 +1,6 @@
+use super::begin::moves_kind;
 use super::pointer::{Gesture, Hit, carry_pivot};
-use super::*;
+use super::{Homography, LayerContent, PhotocraftApp, TransformMode, TransformSession};
 
 /// The same effective modifiers drive the geometry and decide whether Ctrl is a distortion
 /// gesture rather than the ordinary snap override. Keep type and Content-Aware Scale refusals.
@@ -21,14 +22,38 @@ pub(crate) fn corner_distorts(app: &PhotocraftApp, index: usize, mods: egui::Mod
     mods.command && !(mods.alt && mods.shift)
 }
 
+/// The pointer a handle shows for a drag that distorts or skews the box rather than scaling or
+/// rotating it (#5405).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum HandleIndicator {
+    Distort,
+    Skew,
+}
+
+/// What dragging handle `h` with `mods` does, worked out by the same rules as the drag itself
+/// ([`drag_mods`], [`mode_mods`], [`apply_mode_drag`]): ⌘ on a corner distorts (⌘⌥⇧ adds
+/// perspective) and on an edge skews, Distort and Perspective modes distort from the corners,
+/// Skew mode skews from the edges. Rotate mode turns the box whatever the keys, a Skew-mode corner
+/// slides along an edge, editable type refuses Distort and Content-Aware Scale only scales: `None`.
+pub(super) fn handle_indicator(app: &PhotocraftApp, t: &TransformSession, h: Hit, mods: egui::Modifiers) -> Option<HandleIndicator> {
+    if t.warp.is_some() || t.content_aware.is_some() || !mode_allows(t.mode, h) {
+        return None;
+    }
+    let (mode, mods) = drag_mods(app, t, h, mods);
+    match (mode, h) {
+        (TransformMode::Rotate, _) | (TransformMode::Skew, Hit::Corner(_)) => None,
+        (TransformMode::Skew, Hit::Edge(_)) => Some(HandleIndicator::Skew),
+        (_, Hit::Corner(_)) if mode_mods(mode, h, mods).command => Some(HandleIndicator::Distort),
+        (_, Hit::Edge(_)) if mods.command => Some(HandleIndicator::Skew),
+        _ => None,
+    }
+}
+
 /// Editable type can be scaled, rotated and skewed but not distorted (#2630): the rule that greys
 /// Distort and Perspective in `enable_rules::disabled`, for the box's own layer. A box on a path,
 /// on the selection outline or on a lone mask or channel moves no type.
 fn distort_refused(app: &PhotocraftApp, t: &TransformSession) -> bool {
-    t.path.is_none()
-        && !t.selection
-        && t.target.is_none()
-        && app.session.active().and_then(|st| st.doc.layer(LayerId(t.layer))).is_some_and(|l| matches!(l.content, LayerContent::Text(_)))
+    t.path.is_none() && !t.selection && t.target.is_none() && moves_kind(app, t, |c| matches!(c, LayerContent::Text(_)))
 }
 
 /// Where Distort and Perspective are refused ([`distort_refused`]), ⌘-drag and ⌘⌥⇧-drag of a

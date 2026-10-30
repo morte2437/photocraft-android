@@ -1,7 +1,7 @@
 //! Capability-based filesystem policy for untrusted automation paths.
 
 use std::io::{Read, Write};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Components, Path, PathBuf, Prefix};
 use std::sync::Arc;
 
 use cap_std::ambient_authority;
@@ -16,16 +16,18 @@ const DENIED: &str = "automation filesystem access is not granted";
 #[derive(Clone)]
 struct RootCapability {
     dir: Arc<Dir>,
-    /// The root as an absolute path (trusted launch configuration), to recognise absolute request
+    /// The canonical root path (trusted launch configuration), to recognise absolute request
     /// paths that name a file beneath it.
     path: PathBuf,
+    /// The trusted launch spelling also names the same held capability, even through a link.
+    configured_path: PathBuf,
 }
 
 /// Separate directory capabilities for automation reads and writes.
 ///
 /// Root paths are trusted launch-time configuration. Request paths are always
 /// untrusted, forward-slash relative paths resolved by `cap-std` beneath the
-/// held directory handle, or absolute paths whose text lies beneath the root
+/// held directory handle, or absolute paths beneath the canonical or configured root spelling
 /// (translated to relative ones, see [`request_path`]). Parent traversal,
 /// alternate separators, Windows prefixes and empty components are rejected
 /// before I/O.
@@ -88,6 +90,22 @@ impl AuthorizedWorkspace {
         let relative = request_path(path, self.write.as_ref())?;
         let root = self.write.as_ref().ok_or_else(|| AutomationError::BadRequest(format!("{DENIED}: write authority is absent")))?;
         let leaf = relative.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        // The bytes are an image or document whatever the name says (`format` picks them), so
+        // only a file of a kind PhotoCraft writes is replaced: never source, settings or notes
+        // that share the root (`src/main.rs`, `.env`; #9439). A new file may have any name, and
+        // an image saved under one (`out` with `format: png`) can be saved over again.
+        let exists = root.dir.symlink_metadata(&relative).is_ok();
+        // Only a regular file is ever opened below (its head here, its attributes on Unix): a
+        // FIFO would block that open until a writer appears, and with it every other request.
+        // Links are followed for this check; a dangling one falls through to the name rule.
+        if exists && root.dir.metadata(&relative).is_ok_and(|m| !m.is_file()) {
+            return Err(AutomationError::BadRequest(format!("automation write refused: `{path}` already exists and is not a regular file")));
+        }
+        if exists && !written_kind(&leaf) && !holds_image(&root.dir, &relative) {
+            return Err(AutomationError::BadRequest(format!(
+                "automation write refused: `{path}` already exists and is not an image or document file PhotoCraft writes; save to a new name"
+            )));
+        }
         let parent = relative.parent().map(Path::to_path_buf).unwrap_or_default();
         let tmp = parent.join(photocraft_format::atomic::temp_name(&leaf));
         let mut options = OpenOptions::new();
@@ -101,7 +119,10 @@ impl AuthorizedWorkspace {
                 // Best effort, and only when there is a file being replaced: a save still
                 // succeeds for a document whose Finder tag could not come along.
                 if let Ok(old) = root.dir.open(&relative) {
+                    let old = old.into_std();
                     let _ = photocraft_format::atomic::meta::copy_xattrs(old.as_fd(), file.as_fd());
+                    // The creation time too (#9388), through the same handles.
+                    let _ = photocraft_format::atomic::meta::copy_created_file(&old, &file);
                 }
             }
             // Falls back to a plain fsync on shares that refuse a full flush (#1336).
@@ -122,6 +143,23 @@ impl AuthorizedWorkspace {
         }
         Ok(())
     }
+}
+
+/// Whether `name`'s extension is one of the formats PhotoCraft saves or exports.
+fn written_kind(name: &str) -> bool {
+    let Some((_, ext)) = name.rsplit_once('.') else { return false };
+    let ext = ext.to_ascii_lowercase();
+    ["psd", "psb", "ora", "pdf", photocraft_format::EXTENSION].contains(&ext.as_str()) || photocraft_codecs::from_extension(&ext).is_some()
+}
+
+/// Whether the file at `relative` starts like an image PhotoCraft reads (PSD/PSB or a codec's
+/// magic). Containers that also hold other things (zip, PDF) are judged by name only.
+fn holds_image(dir: &Dir, relative: &Path) -> bool {
+    let mut head = [0u8; 64];
+    let Ok(mut file) = dir.open(relative) else { return false };
+    let Ok(n) = file.read(&mut head) else { return false };
+    let head = &head[..n];
+    head.starts_with(b"8BPS") || photocraft_codecs::detect(head).is_some()
 }
 
 fn read_to_observed_length(reader: &mut impl Read, observed_length: u64) -> Result<Vec<u8>, AutomationError> {
@@ -157,35 +195,60 @@ fn open_root(path: Option<&Path>, authority: &str) -> Result<Option<RootCapabili
     if path.as_os_str().is_empty() {
         return Err(AutomationError::BadRequest(format!("automation {authority} root is empty")));
     }
-    let dir = Dir::open_ambient_dir(path, ambient_authority())
-        .map_err(|e| AutomationError::Io(format!("cannot open automation {authority} root `{}`: {e}", path.display())))?;
-    // Textual (no link resolution), like the request paths it is compared with.
+    // Windows absolute() removes parent components. Keep an absolute launch spelling intact:
+    // only that trusted prefix is exempt from request traversal checks, never its suffix.
+    let configured_path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::path::absolute(path).map_err(|e| AutomationError::Io(format!("cannot resolve automation {authority} root `{}`: {e}", path.display())))?
+    };
+    // Resolve trusted configuration once, before opening that exact directory as a capability.
     let absolute =
-        std::path::absolute(path).map_err(|e| AutomationError::Io(format!("cannot resolve automation {authority} root `{}`: {e}", path.display())))?;
-    Ok(Some(RootCapability { dir: Arc::new(dir), path: absolute }))
+        std::fs::canonicalize(path).map_err(|e| AutomationError::Io(format!("cannot resolve automation {authority} root `{}`: {e}", path.display())))?;
+    let dir = Dir::open_ambient_dir(&absolute, ambient_authority())
+        .map_err(|e| AutomationError::Io(format!("cannot open automation {authority} root `{}`: {e}", path.display())))?;
+    Ok(Some(RootCapability { dir: Arc::new(dir), path: absolute, configured_path }))
 }
 
-/// A request path as the relative path the root's capability resolves. An absolute path is
-/// accepted only when its text names a file beneath `root`: the root's components are
-/// stripped (the drive letter compared without case) and the rest must pass
-/// [`relative_path`], so `..`, prefixes and device names are refused as before. Nothing is
-/// resolved on the filesystem; the held directory handle still does all the opening, so
-/// links cannot escape the root.
+/// Both root spellings refer to the capability opened at startup. Do not resolve an untrusted
+/// absolute request using ambient filesystem access: strip a known root first and let cap-std
+/// resolve the remaining name. New targets and nested export directories need not exist yet.
 fn request_path(raw: &str, root: Option<&RootCapability>) -> Result<PathBuf, AutomationError> {
-    let Some(root) = root.filter(|_| Path::new(raw).is_absolute()) else { return relative_path(raw) };
-    let mut request = Path::new(raw).components();
-    for want in root.path.components() {
-        let same = match (request.next(), want) {
-            (Some(Component::Prefix(a)), Component::Prefix(b)) => a.as_os_str().eq_ignore_ascii_case(b.as_os_str()),
-            (Some(got), want) => got == want,
-            (None, _) => false,
+    let path = Path::new(raw);
+    let Some(root) = root.filter(|_| path.is_absolute()) else { return relative_path(raw) };
+    // Prefer the trusted launch spelling: it can itself contain `..`. Only that
+    // exact granted prefix is exempt; traversal in the remaining request still fails below.
+    let request = path_beneath_root(path, &root.configured_path)
+        .or_else(|| path_beneath_root(path, &root.path))
+        .ok_or_else(|| path_error(raw, "absolute paths must be inside the automation root"))?;
+    let rest = request.map(|c| c.as_os_str().to_str().ok_or_else(|| path_error(raw, "path is not UTF-8"))).collect::<Result<Vec<_>, _>>()?;
+    relative_path(&rest.join("/"))
+}
+
+/// Strip a granted root prefix without resolving the client path with ambient authority.
+/// Windows ASCII case variants name the same grant; the unstripped suffix keeps its case.
+fn path_beneath_root<'a>(path: &'a Path, root: &Path) -> Option<Components<'a>> {
+    let mut request = path.components();
+    for want in root.components() {
+        let same = match (request.next()?, want) {
+            (Component::Prefix(a), Component::Prefix(b)) => match (a.kind(), b.kind()) {
+                // std::fs::canonicalize uses verbatim paths on Windows. Accept their ordinary
+                // drive/UNC spelling too, without treating a device prefix as a disk prefix.
+                (Prefix::Disk(a) | Prefix::VerbatimDisk(a), Prefix::Disk(b) | Prefix::VerbatimDisk(b)) => a.eq_ignore_ascii_case(&b),
+                (Prefix::UNC(a, b) | Prefix::VerbatimUNC(a, b), Prefix::UNC(c, d) | Prefix::VerbatimUNC(c, d)) => {
+                    a.eq_ignore_ascii_case(c) && b.eq_ignore_ascii_case(d)
+                }
+                _ => a.as_os_str().eq_ignore_ascii_case(b.as_os_str()),
+            },
+            #[cfg(windows)]
+            (Component::Normal(a), Component::Normal(b)) => a.eq_ignore_ascii_case(b),
+            (got, want) => got == want,
         };
         if !same {
-            return Err(path_error(raw, "absolute paths must be inside the automation root"));
+            return None;
         }
     }
-    let rest: Vec<&str> = request.map(|c| c.as_os_str().to_str().unwrap_or("\u{FFFD}")).collect();
-    relative_path(&rest.join("/"))
+    Some(request)
 }
 
 fn relative_path(raw: &str) -> Result<PathBuf, AutomationError> {
@@ -221,11 +284,14 @@ fn relative_path(raw: &str) -> Result<PathBuf, AutomationError> {
     Ok(PathBuf::from(raw))
 }
 
+/// At least every name cap-std refuses to open on Windows (`COM0`–`COM9`, `COM¹`–`COM³`, the same
+/// for `LPT`, spaces before the extension ignored), so nothing written is unreadable (#9424).
 fn is_windows_device_name(component: &str) -> bool {
-    let stem = component.split('.').next().unwrap_or(component).to_ascii_uppercase();
+    let stem = component.split('.').next().unwrap_or(component).trim_end().to_ascii_uppercase();
+    let port = |n: &str| matches!(n, "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³");
     matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CLOCK$" | "CONIN$" | "CONOUT$")
-        || stem.strip_prefix("COM").is_some_and(|n| matches!(n, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"))
-        || stem.strip_prefix("LPT").is_some_and(|n| matches!(n, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"))
+        || stem.strip_prefix("COM").is_some_and(port)
+        || stem.strip_prefix("LPT").is_some_and(port)
 }
 
 fn path_error(path: &str, reason: &str) -> AutomationError {

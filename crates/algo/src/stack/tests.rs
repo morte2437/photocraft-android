@@ -60,6 +60,86 @@ fn median_removes_outlier() {
     assert_eq!(combine(&layers, Stat::Median)[0][0], 0.5);
 }
 
+fn sorted_median(v: &mut [f32]) -> f32 {
+    v.sort_unstable_by(f32::total_cmp);
+    let k = v.len();
+    if k == 0 {
+        0.0
+    } else if k % 2 == 1 {
+        v[k / 2]
+    } else {
+        (v[k / 2 - 1] + v[k / 2]) / 2.0
+    }
+}
+
+fn assert_median_matches_sort(mut values: Vec<f32>) {
+    let expected = sorted_median(&mut values.clone());
+    let actual = stat(&mut values, Stat::Median, &mut EntropyScratch::new());
+    if expected.is_nan() {
+        // IEEE arithmetic does not specify which NaN payload an even median propagates.
+        assert!(actual.is_nan());
+    } else {
+        assert_eq!(actual.to_bits(), expected.to_bits(), "{values:?}");
+    }
+}
+
+#[test]
+fn median_selection_matches_sort_for_varied_stack_sizes_and_orders() {
+    for len in 0..=257 {
+        let ascending: Vec<f32> = (0..len).map(|i| i as f32 / 16.0 - 8.0).collect();
+        assert_median_matches_sort(ascending.clone());
+        assert_median_matches_sort(ascending.into_iter().rev().collect());
+        assert_median_matches_sort(vec![0.25; len]);
+        assert_median_matches_sort((0..len).map(|i| ((i * 31) % 7) as f32 - 3.0).collect());
+        // Deterministic shuffled samples, including float bit patterns outside 0..=1.
+        let mut seed = 0x9e37_79b9u32;
+        assert_median_matches_sort(
+            (0..len)
+                .map(|_| {
+                    seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    f32::from_bits(seed)
+                })
+                .collect(),
+        );
+    }
+}
+
+#[test]
+fn median_selection_preserves_total_float_order() {
+    let special = [f32::from_bits(0xffc0_0001), f32::NEG_INFINITY, -f32::MAX, -1.0, -0.0, 0.0, 1.0, f32::MAX, f32::INFINITY, f32::from_bits(0x7fc0_0001)];
+    for &a in &special {
+        // An odd median returns the selected NaN's bits without doing arithmetic.
+        assert_eq!(stat(&mut [a], Stat::Median, &mut EntropyScratch::new()).to_bits(), a.to_bits());
+        for &b in &special {
+            assert_median_matches_sort(vec![a, b]);
+            for &c in &special {
+                let mut values = [a, b, c];
+                let expected = sorted_median(&mut values.clone());
+                assert_eq!(stat(&mut values, Stat::Median, &mut EntropyScratch::new()).to_bits(), expected.to_bits());
+            }
+        }
+    }
+}
+
+#[test]
+fn deep_median_stack_uses_only_visible_samples_per_channel() {
+    for count in [32, 33, 128, 129] {
+        let layers: Vec<Vec<[f32; 4]>> = (0..count)
+            .map(|i| {
+                let pixel = [((i * 31) % 137) as f32, -(i as f32), (i % 5) as f32, if i % 3 == 0 { 0.0 } else { 0.5 }];
+                if i % 7 == 0 { vec![pixel] } else { vec![pixel, [0.0; 4]] }
+            })
+            .collect();
+        let actual = combine(&layers, Stat::Median);
+        for channel in 0..3 {
+            let mut samples: Vec<f32> = layers.iter().filter(|l| l[0][3] > 0.0).map(|l| l[0][channel]).collect();
+            assert_eq!(actual[0][channel].to_bits(), sorted_median(&mut samples).to_bits());
+        }
+        assert_eq!(actual[0][3], 0.5);
+        assert_eq!(actual[1], [0.0; 4]);
+    }
+}
+
 /// Five layers over six pixels (the last layer is short). Covers opaque, partly transparent,
 /// fully transparent, HDR / negative, single-sample and tied-value pixels.
 fn fixture() -> Vec<Vec<[f32; 4]>> {
@@ -240,6 +320,102 @@ fn entropy_is_deterministic() {
     let first = bits(&combine(&layers, Stat::Entropy));
     for _ in 0..8 {
         assert_eq!(bits(&combine(&layers, Stat::Entropy)), first);
+    }
+}
+
+/// The pre-lookup calculation, summing the 8-bit bins in ascending order. This deliberately
+/// does not call `entropy` or use its lookup/scratch, so it catches changes in rounding too.
+fn entropy_reference(v: &[f32]) -> f32 {
+    if v.len() < 2 {
+        return 0.0;
+    }
+    let mut counts = [0u32; 256];
+    for x in v {
+        counts[(x.clamp(0.0, 1.0) * 255.0).round() as usize] += 1;
+    }
+    let n = v.len() as f32;
+    let h: f32 = counts
+        .iter()
+        .filter(|&&count| count > 0)
+        .map(|&count| {
+            let p = count as f32 / n;
+            -p * p.log2()
+        })
+        .sum();
+    h / n.log2()
+}
+
+#[test]
+fn entropy_terms_preserve_each_operation_and_bound_storage() {
+    let terms = EntropyTerms::new(usize::MAX, usize::MAX);
+    let max = EntropyTerms::MAX_SAMPLES;
+    assert_eq!(terms.values.len(), (max + 1) * (max + 2) / 2);
+    assert!(terms.values.len() * size_of::<f32>() < 130 * 1024);
+    for samples in 2..=max {
+        let row = terms.row(samples).unwrap();
+        let n = samples as f32;
+        assert_eq!(row[0].to_bits(), n.log2().to_bits());
+        for (count, &term) in row.iter().enumerate().skip(1) {
+            let p = count as f32 / n;
+            assert_eq!(term.to_bits(), (-p * p.log2()).to_bits(), "{count}/{samples}");
+        }
+    }
+    for samples in [0, 1, max + 1, usize::MAX] {
+        assert!(terms.row(samples).is_none());
+    }
+    assert!(EntropyTerms::new(1, usize::MAX).values.is_empty());
+    assert!(EntropyTerms::new(usize::MAX, 255).values.is_empty());
+    assert!(EntropyTerms { values: Vec::new() }.row(2).is_none());
+}
+
+#[test]
+fn entropy_lookup_and_fallback_match_reference_bits() {
+    let terms = EntropyTerms::new(EntropyTerms::MAX_SAMPLES, CHUNK);
+    let mut scratch = EntropyScratch::new();
+    let special = [f32::NAN, f32::NEG_INFINITY, f32::INFINITY, -3.0, -0.0, 0.0, 0.5 / 255.0, 0.5, 1.0, 4.0];
+    // Move repeatedly between counts and distributions to exercise scratch reset, duplicate
+    // bins, every cached denominator and the uncached side of the table boundary.
+    for samples in (2..=EntropyTerms::MAX_SAMPLES + 2).chain([513, 3, 256, 2]) {
+        for pattern in 0..4 {
+            let v: Vec<f32> = (0..samples)
+                .map(|i| match pattern {
+                    0 => 0.5,
+                    1 => (i % 256) as f32 / 255.0,
+                    2 => ((i * 137 + samples * 29) % 65536) as f32 / 65535.0,
+                    _ => special[i % special.len()],
+                })
+                .collect();
+            let expected = entropy_reference(&v).to_bits();
+            assert_eq!(entropy(&v, &mut scratch, terms.row(samples)).to_bits(), expected, "cached: n={samples}, pattern={pattern}");
+            assert_eq!(entropy(&v, &mut scratch, None).to_bits(), expected, "fallback: n={samples}, pattern={pattern}");
+        }
+    }
+}
+
+#[test]
+fn entropy_combine_matches_reference_with_changing_contributor_counts() {
+    for (count, len) in [(19, 2 * CHUNK + 17), (EntropyTerms::MAX_SAMPLES + 1, 513)] {
+        let layers: Vec<Vec<[f32; 4]>> = (0..count)
+            .map(|k| {
+                (0..len.saturating_sub(k % 13))
+                    .map(|i| {
+                        [
+                            ((i * 31 + k * 7) % 256) as f32 / 255.0,
+                            ((i * 17 + k) % 65536) as f32 / 65535.0,
+                            if (i + k).is_multiple_of(23) { f32::NAN } else { (i % 7) as f32 - 2.0 },
+                            if k > i % (count + 1) { 0.0 } else { 0.5 },
+                        ]
+                    })
+                    .collect()
+            })
+            .collect();
+        let expected = bits(&combine_with(&layers, |v, _| entropy_reference(v)));
+        assert_eq!(bits(&combine(&layers, Stat::Entropy)), expected);
+        #[cfg(not(target_arch = "wasm32"))]
+        for threads in [1, 3] {
+            let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+            assert_eq!(pool.install(|| bits(&combine(&layers, Stat::Entropy))), expected, "{threads} threads");
+        }
     }
 }
 

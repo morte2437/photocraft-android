@@ -37,6 +37,10 @@ use serde_json::{Map, Value as J, json};
 
 use crate::blocks::{enum_of, get_desc, num};
 
+#[cfg(test)]
+#[path = "smart_map/halftone_tests.rs"]
+mod halftone_tests;
+
 #[path = "camera_raw_map.rs"]
 mod camera_raw;
 #[path = "displace_map.rs"]

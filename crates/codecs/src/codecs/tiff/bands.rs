@@ -1,5 +1,5 @@
 use super::decode::{Layout, Patched, Src, is_eof};
-use super::*;
+use super::{CodecError, Decoder, SampleType, err, f16, map_err};
 
 /// The a* and b* samples (1 and 2 of every pixel) of a Lab image between the file's encoding and
 /// PhotoCraft's (8 bits: `a + 128`; 16 bits: `(a + 128) · 257`). In the file, CIELab holds them

@@ -286,7 +286,7 @@ fn sort_along(b: &mut Vec<([f32; 3], u32)>, axis: usize) {
 }
 
 /// Median cut over `pts` (feature vectors + weights) into at most `n` boxes; returns box means.
-fn median_cut(pts: &[([f32; 3], u32)], n: usize) -> Vec<[f32; 3]> {
+pub(crate) fn median_cut(pts: &[([f32; 3], u32)], n: usize) -> Vec<[f32; 3]> {
     if pts.is_empty() || n == 0 {
         return Vec::new();
     }
@@ -334,7 +334,7 @@ fn median_cut(pts: &[([f32; 3], u32)], n: usize) -> Vec<[f32; 3]> {
 }
 
 /// Lloyd refinement of `centers` over weighted points.
-fn kmeans(pts: &[([f32; 3], u32)], centers: &mut [[f32; 3]], iters: usize) {
+pub(crate) fn kmeans(pts: &[([f32; 3], u32)], centers: &mut [[f32; 3]], iters: usize) {
     if centers.is_empty() {
         // No room left (the forced colours fill the palette): nothing to refine.
         return;
@@ -639,53 +639,162 @@ fn spot(shape: HalftoneShape, u: f32, v: f32) -> f32 {
 
 /// Converts gray values (0..=1, row-major `w` wide) to 0/1 in place.
 pub fn to_bitmap(gray: &mut [f32], w: usize, method: BitmapMethod) {
-    let h = gray.len().checked_div(w).unwrap_or(0);
-    match method {
-        BitmapMethod::Threshold => gray.iter_mut().for_each(|v| *v = if *v >= 0.5 { 1.0 } else { 0.0 }),
-        BitmapMethod::Pattern => {
-            for (i, v) in gray.iter_mut().enumerate() {
-                *v = if *v > bayer8(i % w, i / w) + 0.5 { 1.0 } else { 0.0 };
+    BitmapStrips::new(w, method).convert(gray);
+}
+
+/// Image › Mode › Bitmap fed in strips of whole rows, top to bottom, so a huge image never needs a
+/// full-size gray plane (#8477): [`BitmapStrips::convert`] turns each strip to 0/1 in place,
+/// carrying error diffusion's error into the next strip. The result is the same however the image
+/// is cut into strips.
+pub struct BitmapStrips<'a> {
+    w: usize,
+    kind: StripKind<'a>,
+    /// Image row of the next strip's first row.
+    y: usize,
+}
+
+enum StripKind<'a> {
+    Threshold,
+    Pattern,
+    /// Floyd–Steinberg: the error each pixel of the last converted row passes down.
+    Diffusion {
+        errs: Vec<f32>,
+    },
+    /// The spot function's values over a cell, sorted (its CDF ranks coverage by tone).
+    Halftone {
+        cell: f32,
+        sin: f32,
+        cos: f32,
+        shape: HalftoneShape,
+        table: Vec<f32>,
+    },
+    /// Custom Pattern's threshold map, `mw` x `mh`, tiled from the top-left corner.
+    Custom {
+        map: &'a [f32],
+        mw: usize,
+        mh: usize,
+    },
+}
+
+impl<'a> BitmapStrips<'a> {
+    pub fn new(w: usize, method: BitmapMethod) -> Self {
+        let kind = match method {
+            BitmapMethod::Threshold => StripKind::Threshold,
+            BitmapMethod::Pattern => StripKind::Pattern,
+            BitmapMethod::Diffusion => StripKind::Diffusion { errs: Vec::new() },
+            BitmapMethod::Halftone { cell, angle, shape } => {
+                let (sin, cos) = angle.to_radians().sin_cos();
+                // Rank the spot function over the cell so coverage is proportional to the tone.
+                let mut table: Vec<f32> =
+                    (0..32 * 32).map(|k| spot(shape, ((k % 32) as f32 + 0.5) / 16.0 - 1.0, ((k / 32) as f32 + 0.5) / 16.0 - 1.0)).collect();
+                table.sort_by(f32::total_cmp);
+                StripKind::Halftone { cell: cell.max(2.0), sin, cos, shape, table }
             }
+        };
+        Self { w, kind, y: 0 }
+    }
+
+    /// Bitmap's Custom Pattern: each gray value turns white where it reaches the threshold `map`
+    /// (`mw` x `mh`, from [`custom_pattern_thresholds`]) tiled from the image's top-left corner,
+    /// black elsewhere. A map that doesn't fit `mw` x `mh` thresholds at 50%.
+    pub fn custom(w: usize, map: &'a [f32], mw: usize, mh: usize) -> Self {
+        let fits = mw > 0 && mh > 0 && mw.checked_mul(mh) == Some(map.len());
+        let kind = if fits { StripKind::Custom { map, mw, mh } } else { StripKind::Threshold };
+        Self { w, kind, y: 0 }
+    }
+
+    /// Converts the next rows (gray 0..=1, `w` wide; a short last row is allowed) to 0/1 in place.
+    pub fn convert(&mut self, gray: &mut [f32]) {
+        let (w, y0) = (self.w, self.y);
+        if w == 0 {
+            // No rows to lay a pattern or diffuse along: a 50% threshold.
+            gray.iter_mut().for_each(|v| *v = if *v >= 0.5 { 1.0 } else { 0.0 });
+            return;
         }
-        BitmapMethod::Diffusion => {
-            let mut buf: Vec<f32> = gray.to_vec();
-            for y in 0..h {
-                for x in 0..w {
-                    let i = y * w + x;
-                    let old = buf[i];
-                    let new = if old >= 0.5 { 1.0 } else { 0.0 };
-                    let e = old - new;
-                    gray[i] = new;
-                    if x + 1 < w {
-                        buf[i + 1] += e * 7.0 / 16.0;
-                    }
-                    if y + 1 < h {
-                        if x > 0 {
-                            buf[i + w - 1] += e * 3.0 / 16.0;
-                        }
-                        buf[i + w] += e * 5.0 / 16.0;
-                        if x + 1 < w {
-                            buf[i + w + 1] += e / 16.0;
-                        }
-                    }
+        self.y = y0.saturating_add(gray.len().div_ceil(w));
+        // Every method but diffusion is pointwise: rows convert in parallel.
+        let par = gray.len() >= 1 << 16;
+        match &mut self.kind {
+            StripKind::Threshold => crate::par::chunks_mut(gray, w, par, |_, row| {
+                row.iter_mut().for_each(|v| *v = if *v >= 0.5 { 1.0 } else { 0.0 });
+            }),
+            StripKind::Pattern => crate::par::chunks_mut(gray, w, par, |r, row| {
+                for (x, v) in row.iter_mut().enumerate() {
+                    *v = if *v > bayer8(x, y0 + r) + 0.5 { 1.0 } else { 0.0 };
+                }
+            }),
+            StripKind::Diffusion { errs } => {
+                // The previous strip's last row passes its error down to this strip's first.
+                let first = w.min(gray.len());
+                pass_down(errs, gray.get_mut(..first).unwrap_or_default());
+                let mut rest = gray;
+                while !rest.is_empty() {
+                    let n = w.min(rest.len());
+                    let (row, tail) = std::mem::take(&mut rest).split_at_mut(n);
+                    diffuse_row(row, errs);
+                    let below = w.min(tail.len());
+                    pass_down(errs, tail.get_mut(..below).unwrap_or_default());
+                    rest = tail;
                 }
             }
-        }
-        BitmapMethod::Halftone { cell, angle, shape } => {
-            let cell = cell.max(2.0);
-            let (s, c) = angle.to_radians().sin_cos();
-            // Rank the spot function over the cell so coverage is proportional to the tone.
-            let mut table: Vec<f32> = (0..32 * 32).map(|k| spot(shape, ((k % 32) as f32 + 0.5) / 16.0 - 1.0, ((k / 32) as f32 + 0.5) / 16.0 - 1.0)).collect();
-            table.sort_by(f32::total_cmp);
-            let cdf = |x: f32| table.partition_point(|t| *t < x) as f32 / table.len() as f32;
-            for (i, v) in gray.iter_mut().enumerate() {
-                let (x, y) = ((i % w) as f32 + 0.5, (i / w) as f32 + 0.5);
-                let (rx, ry) = (x * c + y * s, -x * s + y * c);
-                let u = (rx / cell).rem_euclid(1.0) * 2.0 - 1.0;
-                let vv = (ry / cell).rem_euclid(1.0) * 2.0 - 1.0;
-                // Ink (black) covers where the spot function exceeds the gray level.
-                *v = if cdf(spot(shape, u, vv)) >= *v { 0.0 } else { 1.0 };
+            StripKind::Halftone { cell, sin, cos, shape, table } => {
+                let (cell, s, c, shape, table) = (*cell, *sin, *cos, *shape, &*table);
+                let cdf = |x: f32| table.partition_point(|t| *t < x) as f32 / table.len() as f32;
+                crate::par::chunks_mut(gray, w, par, |r, row| {
+                    let y = (y0 + r) as f32 + 0.5;
+                    for (x, v) in row.iter_mut().enumerate() {
+                        let x = x as f32 + 0.5;
+                        let (rx, ry) = (x * c + y * s, -x * s + y * c);
+                        let u = (rx / cell).rem_euclid(1.0) * 2.0 - 1.0;
+                        let vv = (ry / cell).rem_euclid(1.0) * 2.0 - 1.0;
+                        // Ink (black) covers where the spot function exceeds the gray level.
+                        *v = if cdf(spot(shape, u, vv)) >= *v { 0.0 } else { 1.0 };
+                    }
+                });
             }
+            StripKind::Custom { map, mw, mh } => {
+                let (map, mw, mh) = (&**map, *mw, *mh);
+                crate::par::chunks_mut(gray, w, par, |r, row| {
+                    let base = (y0 + r) % mh * mw;
+                    for (x, v) in row.iter_mut().enumerate() {
+                        let t = map.get(base + x % mw).copied().unwrap_or(0.5);
+                        *v = if *v >= t { 1.0 } else { 0.0 };
+                    }
+                });
+            }
+        }
+    }
+}
+
+/// One Floyd–Steinberg row, in place: each pixel takes its error from the left (7/16), and
+/// `errs` gets the error it passes down to the next row ([`pass_down`]).
+fn diffuse_row(row: &mut [f32], errs: &mut Vec<f32>) {
+    errs.clear();
+    for x in 0..row.len() {
+        let old = row[x];
+        let new = if old >= 0.5 { 1.0 } else { 0.0 };
+        let e = old - new;
+        row[x] = new;
+        if let Some(next) = row.get_mut(x + 1) {
+            *next += e * 7.0 / 16.0;
+        }
+        errs.push(e);
+    }
+}
+
+/// Adds the error `errs` of a row to the row below: 1/16 from the pixel up-left, 5/16 from the
+/// one above, 3/16 from the one up-right, in that order (the order the row's pixels were
+/// converted in), so the result is the same whether or not the rows are in the same strip.
+fn pass_down(errs: &[f32], below: &mut [f32]) {
+    for (t, v) in below.iter_mut().enumerate() {
+        if let Some(e) = t.checked_sub(1).and_then(|l| errs.get(l)) {
+            *v += e / 16.0;
+        }
+        if let Some(e) = errs.get(t) {
+            *v += e * 5.0 / 16.0;
+        }
+        if let Some(e) = errs.get(t + 1) {
+            *v += e * 3.0 / 16.0;
         }
     }
 }
@@ -719,15 +828,10 @@ pub fn custom_pattern_thresholds(lightness: &[f32]) -> Vec<f32> {
     out
 }
 
-/// Bitmap's Custom Pattern: each gray value (0..=1, row-major `w` wide) turns white where it
-/// reaches the threshold `map` (`mw` x `mh`, from [`custom_pattern_thresholds`]) tiled from the
-/// image's top-left corner, black elsewhere. A map that doesn't fit `mw` x `mh` thresholds at 50%.
+/// Bitmap's Custom Pattern over a whole image (gray 0..=1, row-major `w` wide), see
+/// [`BitmapStrips::custom`]. An image `w` of 0 thresholds at 50%.
 pub fn to_bitmap_custom(gray: &mut [f32], w: usize, map: &[f32], mw: usize, mh: usize) {
-    let fits = w > 0 && mw > 0 && mh > 0 && mw.checked_mul(mh) == Some(map.len());
-    for (i, v) in gray.iter_mut().enumerate() {
-        let t = if fits { map.get((i / w) % mh * mw + (i % w) % mw).copied().unwrap_or(0.5) } else { 0.5 };
-        *v = if *v >= t { 1.0 } else { 0.0 };
-    }
+    BitmapStrips::custom(w, map, mw, mh).convert(gray);
 }
 
 #[cfg(test)]

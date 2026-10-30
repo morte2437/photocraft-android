@@ -195,6 +195,16 @@ fn archive(stack: &str, images: &[(&str, Vec<u8>)]) -> Vec<u8> {
     z.finish().unwrap()
 }
 
+/// A stack.xml nested 20 000 deep overflowed the XML parser's recursion (an abort nothing can
+/// catch); it is an error now. The small stack makes a regression abort instead of passing.
+#[test]
+fn deeply_nested_stack_xml_is_an_error_not_a_stack_overflow() {
+    let stack = format!("<image w=\"4\" h=\"4\">{}{}</image>", "<stack>".repeat(20_000), "</stack>".repeat(20_000));
+    let bytes = archive(&stack, &[]);
+    let e = std::thread::Builder::new().stack_size(512 * 1024).spawn(move || crate::import("deep.ora", &bytes).err()).unwrap().join().unwrap();
+    assert!(matches!(&e, Some(IoError::Ora(m)) if m.contains("nested")), "{e:?}");
+}
+
 fn solid_png(w: u32, h: u32, rgba: [u8; 4]) -> Vec<u8> {
     let data = rgba.iter().copied().cycle().take((w * h * 4) as usize).collect();
     codecs::encode(&Image::from_raw(w, h, ChannelLayout::Rgba, CSample::U8, data).unwrap(), Format::Png, &Default::default()).unwrap()

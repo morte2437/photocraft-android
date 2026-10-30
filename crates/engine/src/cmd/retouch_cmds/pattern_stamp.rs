@@ -21,7 +21,7 @@ const STREAM_PHASE_Y: u64 = 102;
 
 pub(super) fn enabled(s: &Session) -> std::result::Result<(), String> {
     has_pixel_layer(s)?;
-    if crate::pattern_cmds::resolve(s, "").is_none() { Err("no pattern selected".into()) } else { Ok(()) }
+    if crate::pattern_cmds::resolve_id(s, "").is_none() { Err("no pattern selected".into()) } else { Ok(()) }
 }
 
 /// A parsed `paint.patternStamp`: shared by the command and its live preview, so both paint the
@@ -96,9 +96,7 @@ pub(super) fn run(s: &mut Session, p: &Value) -> Result<Value> {
             paint_aligned(surf, &st.stroke, sel, lock, &st.tile, st.placement(), st.mode, CMD)
         }
     })?;
-    if let Some(state) = s.active_mut() {
-        state.last_damage = Some(dmg);
-    }
+    s.hint_damage(dmg);
     Ok(json!({
         "damage": damage_json(dmg),
         "phase": [st.phase.0, st.phase.1],

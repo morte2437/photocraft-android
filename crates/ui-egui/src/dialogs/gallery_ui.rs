@@ -582,7 +582,7 @@ fn poll_job(d: &mut GalleryDialog, ctx: &egui::Context) {
 #[cfg(not(target_arch = "wasm32"))]
 fn start_job(d: &mut GalleryDialog, ctx: &egui::Context, key: u64, vis: Rect, k: u32, params: &Value, now: f64) {
     if let Some(job) = &d.job {
-        let settled = d.latest.is_some_and(|(k0, t)| k0 == key && now - t >= crate::filter_preview_worker::SETTLE_MS);
+        let settled = d.latest.is_some_and(|(k0, t)| k0 == key && now - t >= crate::dialogs::filter_preview_worker::SETTLE_MS);
         if job.key != key && settled {
             job.ctl.cancel();
         }

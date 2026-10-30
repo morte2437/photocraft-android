@@ -1,7 +1,7 @@
 use super::panel::chevron_icon;
 use super::scrub::take_label_scrub_name;
 use super::slider::wheel_notches_of;
-use super::*;
+use super::{Pos2, Rect, Response, Ui, Vec2, type_ahead};
 
 /// A compact labelled dropdown in the studio style.
 pub fn dropdown<T: PartialEq + Clone>(ui: &mut Ui, id: &str, name: &str, current: &mut T, options: &[(T, &str)], width: f32) -> bool {
@@ -65,7 +65,7 @@ fn dropdown_with<T: PartialEq + Clone>(
     let (press, close) = crate::press_menu::PressCombo::before(ui, id);
     let texts: Vec<String> = options.iter().map(|(_, l)| shown(l)).collect();
     let response =
-        egui::ComboBox::from_id_salt(id).selected_text(label).width(width).height(420.0).icon(chevron_icon).close_behavior(close).show_ui(ui, |ui| {
+        craft_ui::ComboBox::from_id_salt(id).selected_text(label).width(width).height(420.0).icon(chevron_icon).close_behavior(close).show_ui(ui, |ui| {
             fit_widest_option(ui, texts.iter().map(|l| l.as_str()));
             // A typed letter jumps to the next option starting with it, ↩ closes the list (#1481).
             let labels: Vec<&str> = texts.iter().map(|l| l.as_str()).collect();
@@ -124,7 +124,7 @@ fn dropdown_with<T: PartialEq + Clone>(
     if wheel && !over_list {
         let stepped = wheel_steps(ui, wheel_id, response.hovered(), current, options);
         wheeled = !stepped.is_empty();
-        if wheeled && egui::ComboBox::is_open(ui.ctx(), response.id) {
+        if wheeled && craft_ui::ComboBox::is_open(ui.ctx(), response.id) {
             ui.data_mut(|d| d.insert_temp(reveal_id, true));
         }
         chosen.extend(stepped);
@@ -185,7 +185,7 @@ fn wheel_steps<T: PartialEq + Clone>(ui: &mut Ui, id: egui::Id, hovered: bool, c
 }
 
 /// Give a dropdown keyboard focus when it opens, then use the arrow keys to move through its
-/// choices. `egui::ComboBox` opens a popup but leaves focus on the canvas by default, which makes
+/// choices. `craft_ui::ComboBox` opens a popup but leaves focus on the canvas by default, which makes
 /// controls such as the Layers panel's Blend Mode dropdown unreachable from the keyboard.
 fn combo_box_arrow_keys<T: PartialEq + Clone>(ui: &mut Ui, response: &Response, current: &mut T, options: &[(T, &str)]) -> bool {
     if response.clicked() {
@@ -193,7 +193,7 @@ fn combo_box_arrow_keys<T: PartialEq + Clone>(ui: &mut Ui, response: &Response, 
     }
     // The popup, rather than its button, becomes the focused egui layer after it opens. While it
     // is open it owns its navigation keys, even though `response.has_focus()` is then false.
-    if !egui::ComboBox::is_open(ui.ctx(), response.id) || options.is_empty() {
+    if !craft_ui::ComboBox::is_open(ui.ctx(), response.id) || options.is_empty() {
         return false;
     }
     let step = if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)) {
@@ -269,7 +269,7 @@ pub fn dropdown_with_tooltips<T: PartialEq + Clone>(ui: &mut Ui, id: &str, name:
     let mut changed = false;
     let (press, close) = crate::press_menu::PressCombo::before(ui, id);
     let response =
-        egui::ComboBox::from_id_salt(id).selected_text(label).width(width).height(420.0).icon(chevron_icon).close_behavior(close).show_ui(ui, |ui| {
+        craft_ui::ComboBox::from_id_salt(id).selected_text(label).width(width).height(420.0).icon(chevron_icon).close_behavior(close).show_ui(ui, |ui| {
             fit_widest_option(ui, options.iter().map(|(_, l, _)| tl!(l)));
             let labels: Vec<&str> = options.iter().map(|(_, l, _)| tl!(l)).collect();
             let shown = options.iter().position(|(v, _, _)| v == current);

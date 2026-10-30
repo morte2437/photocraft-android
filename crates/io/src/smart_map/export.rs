@@ -5,7 +5,10 @@ use super::import::{
     colour_rgbc, enum_param, from_hex, gallery_item, known_by_command, pf_range, pi_range, seed_param,
 };
 use super::placed::enumv;
-use super::*;
+use super::{
+    Class, Descriptor, FilterStack, Id, J, ReferenceItem, SmartFilter, UNSUPPORTED_FILTER, UnicodeString, Value, camera_raw, displace, hue_sat,
+    perspective_warp,
+};
 
 // ---------- writing ----------
 
@@ -37,7 +40,7 @@ pub(super) fn pi(p: &J, key: &str, default: f64) -> Value {
 
 /// A whole-number setting as a long, clamped to `range` like the engine clamps it; a fraction
 /// has no PSD equivalent (Photoshop stores these as integers).
-fn whole(v: f64, (lo, hi): (i32, i32), what: &str) -> Result<Value, String> {
+pub(super) fn whole(v: f64, (lo, hi): (i32, i32), what: &str) -> Result<Value, String> {
     if v.fract() != 0.0 {
         return Err(format!("{what} ({v}) is not a whole number"));
     }
@@ -111,7 +114,8 @@ fn enum_out(p: &J, key: &str, default: &str, type_id: &str, table: &[(&str, &str
     Ok(enumv(type_id, psd))
 }
 
-/// `key` rounded to a `long` in `lo..=hi`.
+/// `key` rounded to a `long` in `lo..=hi` (clamped, and a non-number is the default, as the
+/// engine reads Extrude, Tiles, Trace Contour, Crystallize and Pointillize).
 fn pi_in(p: &J, key: &str, default: f64, lo: i32, hi: i32) -> Value {
     Value::Integer(pf(p, key, default).round().clamp(f64::from(lo), f64::from(hi)) as i32)
 }

@@ -360,6 +360,29 @@ fn rasterize_from_the_menu_converts_every_selected_layer() {
     assert_eq!(h.state().session.active().unwrap().selected_layers().len(), 2, "the selection survives");
 }
 
+/// Group from Layers is offered for a multi-layer selection too (it used to be dropped from
+/// the menu then). As in Photoshop it asks in the New Group from Layers dialog first; OK puts
+/// every selected layer in one new group, leaving the rest alone.
+#[test]
+fn group_from_layers_groups_every_selected_layer() {
+    use egui_kittest::kittest::Queryable;
+    use photocraft_doc::LayerId;
+    let (mut h, [text, shape, other]) = open_multi_selection_menu();
+    let at = h.get_by_label("Group from Layers…").rect().center();
+    click(&mut h, at, egui::PointerButton::Primary);
+    let dialog = h.state().ui.dialogs.last().map(|d| (d.id, d.fields.clone())).expect("the New Group dialog opened");
+    assert!(crate::new_group_ui::owns(&dialog.1));
+    assert_eq!(dialog.1["__command"], "layer.new.groupFromLayers");
+    crate::dialogs::confirm(h.state_mut(), dialog.0).unwrap();
+    h.run_steps(2);
+    let doc = &h.state().session.active().unwrap().doc;
+    let groups: Vec<_> = doc.walk().into_iter().map(|(_, _, l)| l).filter(|l| l.is_group()).collect();
+    assert_eq!(groups.len(), 1);
+    let children: Vec<LayerId> = groups[0].children().unwrap().iter().map(|l| l.id).collect();
+    assert_eq!(children, vec![LayerId(text), LayerId(shape)], "both selected layers, in order");
+    assert!(doc.layers.iter().any(|l| l.id == LayerId(other)), "an unselected layer stays at the top level");
+}
+
 /// Items with no single target are greyed for a multi-layer selection (they used to run on
 /// whichever layer happened to be active, not the one right-clicked); the ones that act on the
 /// whole selection, including adding a mask, stay available.
@@ -376,6 +399,7 @@ fn multi_selection_menu_greys_what_acts_on_one_layer() {
         "Add Layer Mask",
         "Duplicate Layers…",
         "Delete Layers",
+        "Group from Layers…",
         "Convert to Smart Object",
         "Rasterize Layers",
         "Link Layers",
@@ -407,6 +431,7 @@ fn single_layer_only_covers_the_per_layer_commands() {
         "layer.exportAs",
         "layer.duplicate",
         "layer.delete",
+        "layer.new.groupFromLayers",
         "layer.rasterize.layer",
         "layer.smartObjects.convertToSmartObject",
         "layer.createClippingMask",

@@ -1,6 +1,6 @@
 use super::enabled::{check_all_unlocked, is_mask_target, paint_surface};
 use super::layer_params::{layer_param, mask_new_layer};
-use super::*;
+use super::{Adjustment, ColorMode, EngineError, Layer, LayerContent, Map, Result, Session, Value, json, pixels};
 
 /// Add an adjustment layer above the active one; it takes the mask `mask_new_layer` builds from `p` (a path, the selection, or the default white mask).
 pub(super) fn new_adjustment(s: &mut Session, adj: Adjustment, p: &Value, cmd: &str) -> Result<Value> {
@@ -9,7 +9,7 @@ pub(super) fn new_adjustment(s: &mut Session, adj: Adjustment, p: &Value, cmd: &
     let id = s.edit(&label, |doc, active| {
         let mut l = Layer::new(doc.next_layer_name(&name), LayerContent::Adjustment(adj));
         mask_new_layer(doc, &mut l, p, cmd, true)?;
-        let id = doc.insert_above(*active, l);
+        let id = crate::layer_place::insert_new(doc, *active, l, crate::layer_place::Place::Auto);
         *active = Some(id);
         Ok(id)
     })?;

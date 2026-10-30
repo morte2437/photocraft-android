@@ -221,6 +221,11 @@ pub fn title_for(name: &str) -> String {
     crate::i18n::fmt(tl!("Color Picker ({name})"), &[("name", name)])
 }
 
+/// Prefer a complete catalogued title; some locales only provide the named-colour template.
+pub(crate) fn fixed_title(label: &str, name: &str) -> String {
+    if crate::i18n::has(crate::i18n::current(), label) { tl!(label).to_string() } else { title_for(tl!(name)) }
+}
+
 /// The `"#rrggbb"` at `field` of `f` (a key or a JSON pointer).
 fn field_value<'a>(f: &'a Map<String, Value>, field: &str) -> Option<&'a str> {
     match field.strip_prefix('/') {
@@ -321,6 +326,13 @@ where
     (hex(to_rgb(v)) == hex(rgb)).then_some(v)
 }
 
+/// The CMYK values typed into the picker, while they still match its colour: the inks a command
+/// should keep in a CMYK document (#4196, #8568).
+pub(crate) fn picked_cmyk(f: &Map<String, Value>) -> Option<[f32; 4]> {
+    let rgb = f.get("color").and_then(Value::as_str).and_then(parse_hex)?;
+    kept::<4>(f, "__cmyk", rgb, photocraft_color::convert::cmyk_to_rgb)
+}
+
 /// Current colour, keeping the stored HSB, Lab or CMYK values while they still match `color`.
 pub fn current(f: &Map<String, Value>) -> Components {
     let rgb = f.get("color").and_then(Value::as_str).and_then(parse_hex).unwrap_or([0.0; 3]);
@@ -405,6 +417,13 @@ fn flat_grid_mesh(rect: Rect, n: usize, color: impl Fn(f32, f32) -> [f32; 3]) ->
 /// Room for both component columns, including units, without overflowing the title's width; with
 /// the frame and title the window fits Photoshop's (about 534 x 376 points).
 pub(crate) const CONTENT_WIDTH: f32 = 488.0;
+/// Translated action labels can be substantially wider than their English equivalents.
+pub(crate) fn content_width(ui: &egui::Ui) -> f32 {
+    let labels = ["OK", "Cancel", "Add to Swatches"];
+    let english = crate::i18n::with_language(crate::i18n::Lang::EN, || widgets::button_width(ui, &labels));
+    let translated = widgets::button_width(ui, &labels.map(crate::i18n::t));
+    CONTENT_WIDTH + (translated - english).max(0.0)
+}
 /// Side of the colour field (Photoshop's is about 256 points).
 const FIELD: f32 = 200.0;
 /// Width of the component fields.
@@ -412,7 +431,7 @@ const VALUE_W: f32 = 42.0;
 
 /// Draw the picker and its top-right actions. `Some(true)` confirms, `Some(false)` cancels.
 pub fn body(ui: &mut egui::Ui, f: &mut Map<String, Value>) -> Option<bool> {
-    ui.set_width(CONTENT_WIDTH);
+    ui.set_width(content_width(ui));
     ui.spacing_mut().item_spacing.y = 4.0;
     let mut outcome = None;
     ui.horizontal_top(|ui| {
@@ -480,7 +499,8 @@ fn color_field(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
     ui.painter().add(mesh(field, &|x, y| field_color(&mode, fz, x, y)));
     ui.painter().rect_stroke(field, 0.0, Stroke::new(1.0, t.field_border), StrokeKind::Outside);
     let marker = pos2(field.left() + fx * field.width(), field.top() + fy * field.height());
-    ui.painter().circle_stroke(marker, 5.0, Stroke::new(1.5, if hsv[2] > 0.6 && hsv[1] < 0.4 { Color32::BLACK } else { Color32::WHITE }));
+    // Clipped to the field: at the extremes the marker sits on the edge (#8968).
+    ui.painter().with_clip_rect(field).circle_stroke(marker, 5.0, Stroke::new(1.5, if hsv[2] > 0.6 && hsv[1] < 0.4 { Color32::BLACK } else { Color32::WHITE }));
     // Photoshop updates the colour on the press itself, not only when the button is released
     // (#6937): `is_pointer_button_down_on` is true from the press frame onwards (it covers
     // dragging too), while `clicked` fires on release and `dragged` only after a move.

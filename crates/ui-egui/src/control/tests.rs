@@ -8,6 +8,107 @@ fn call(app: &mut PhotocraftApp, ctx: &egui::Context, method: &str, params: Valu
     }
 }
 
+/// #3674: a guessed name gets a pointer to the right one, in both directions; and every
+/// method listed for those hints is served.
+#[test]
+fn unknown_names_suggest_the_right_method_or_command() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    let ctx = egui::Context::default();
+    let mut error = |method: &str, params: Value| {
+        let reply = call(&mut app, &ctx, method, params);
+        assert_eq!(reply["ok"], false, "{reply}");
+        reply["error"].as_str().unwrap_or_default().to_owned()
+    };
+    let e = error("engine.execute", json!({"command": "engine.commands"}));
+    assert!(e.contains("did you mean `command.list`") && e.contains("protocol method"), "{e}");
+    let e = error("engine.execute", json!({"command": "ui.inspect"}));
+    assert!(e.contains("`ui.inspect` is a protocol method"), "{e}");
+    let e = error("engine.execute", json!({"command": "edit.undoo"}));
+    assert!(e.contains("did you mean `edit.undo`"), "{e}");
+    let e = error("ui.inspct", json!({}));
+    assert!(e.contains("did you mean `ui.inspect`"), "{e}");
+    let e = error("edit.undo", json!({}));
+    assert!(e.contains("engine.execute {\"command\": \"edit.undo\"}"), "{e}");
+    for m in METHODS {
+        let (req, _rx) = ControlRequest::new(*m, json!({}));
+        if let Outcome::Done(v) = handle(&mut app, &ctx, &req) {
+            assert!(!v.to_string().contains("unknown method"), "{m} is listed but not served: {v}");
+        }
+    }
+}
+
+#[test]
+fn shift_right_brush_does_not_open_presets_or_paint() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 64, "height": 64})).unwrap();
+    app.ui.tool = crate::state::Tool::Brush;
+    let ctx = egui::Context::default();
+    let before = app.session.journal.len();
+    call(
+        &mut app,
+        &ctx,
+        "ui.pointer",
+        json!({"button": "right", "shift": true,
+        "events": [{"kind": "down", "x": 20, "y": 20}, {"kind": "up", "x": 20, "y": 20}]}),
+    );
+    assert!(app.ui.brush_picker.is_none(), "Shift+right opens Mode, not Brush Presets");
+    assert!(app.drag.is_none());
+    assert_eq!(app.session.journal.len(), before, "opening a menu does not paint or journal");
+}
+
+#[test]
+fn brush_mode_control_routes_modifiers_and_reports_choices_without_history() {
+    let ctx = egui::Context::default();
+    for (tool, modifiers, expected) in [
+        ("brush", json!({"shift": true}), "mode"),
+        ("brush", json!({}), "erase"),
+        ("brush", json!({"alt": true}), "resize"),
+        ("brush", json!({"shift": true, "alt": true}), "erase"),
+        ("brush", json!({"shift": true, "ctrl": true}), if cfg!(target_os = "macos") { "erase" } else { "layer" }),
+        ("brush", json!({"shift": true, "command": true}), "layer"),
+        ("pencil", json!({"shift": true}), "preset"),
+    ] {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"width": 64, "height": 64, "background": "white"})).unwrap();
+        app.run("prefs.set", json!({"path": "tools.rightClickWithPaintingTools", "value": "erase"})).unwrap();
+        let history = app.session.active().unwrap().history.past_len();
+        call(
+            &mut app,
+            &ctx,
+            "ui.pointer",
+            json!({"tool": tool, "button": "right", "modifiers": modifiers,
+            "events": [{"kind": "down", "x": 20, "y": 20}]}),
+        );
+        assert_eq!(app.ui.brush_mode_menu.is_some(), expected == "mode", "{tool}: {modifiers}");
+        match expected {
+            "mode" => {
+                assert!(app.drag.is_none() && !app.secondary_erase);
+                assert_eq!(app.session.active().unwrap().history.past_len(), history);
+                let inspect = inspect(&app, &ctx);
+                assert_eq!(inspect["brushModeMenu"]["choices"], json!(crate::brush_mode_menu::choices().iter().map(|(_, label)| *label).collect::<Vec<_>>()));
+                let journal = app.session.journal.len();
+                call(
+                    &mut app,
+                    &ctx,
+                    "ui.pointer",
+                    json!({"events": [
+                    {"kind": "down", "x": 10, "y": 10}, {"kind": "move", "x": 30, "y": 30}, {"kind": "up", "x": 30, "y": 30}]}),
+                );
+                assert!(app.ui.brush_mode_menu.is_none() && app.drag.is_none());
+                assert_eq!(app.session.journal.len(), journal, "control dismissal cannot paint");
+            }
+            "preset" => assert!(app.ui.brush_picker.is_some()),
+            "layer" => assert!(app.ui.layer_menu.is_some()),
+            "resize" => assert!(app.brush_resize.is_some()),
+            "erase" => {
+                assert!(app.drag.as_ref().is_some_and(|d| d.erase));
+                assert!(app.brush_resize.is_none(), "Shift+Alt is not the resize gesture");
+            }
+            _ => panic!("unknown fixture route: {expected}"),
+        }
+    }
+}
+
 #[test]
 fn ui_set_turns_the_stroke_trace_on_and_off_at_runtime() {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
@@ -26,6 +127,39 @@ fn ui_set_turns_the_stroke_trace_on_and_off_at_runtime() {
     assert_eq!(bad["ok"], false);
     assert!(!path.exists());
     assert!(!app.stroke_trace.enabled() && app.ui.tool != crate::state::Tool::Pencil, "a rejected call applies nothing");
+}
+
+#[test]
+fn perf_output_includes_slow_frames() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    let ctx = egui::Context::default();
+    assert_eq!(call(&mut app, &ctx, "ui.inspect", json!({}))["result"]["perf"]["slowFrames"], json!([]));
+    app.slow_frames.set_threshold_ms(0.0);
+    app.run("file.new", json!({"width": 64, "height": 32})).unwrap();
+    app.finish_frame(1.0);
+    let frames = call(&mut app, &ctx, "ui.inspect", json!({}))["result"]["perf"]["slowFrames"].clone();
+    let last = frames.as_array().and_then(|f| f.last()).expect("a slow frame").clone();
+    assert_eq!(last["command"], "file.new", "{last}");
+    for key in ["t", "frameMs", "inputMs", "commandMs", "damageMs", "compositeMs", "uploadMs", "gpuMs", "presentMs", "refresh", "refreshPx", "path"] {
+        assert!(last.get(key).is_some(), "{key} in {last}");
+    }
+    // A nested run (`actions.play` → its view steps through `App::run`) is inside the outer
+    // call's time: the frame counts the outer command once, not the steps again.
+    app.session.actions.list.push(photocraft_engine::actions_cmds::Action {
+        name: "Zoom".into(),
+        steps: vec![("view.zoomIn".into(), json!({})), ("view.zoomOut".into(), json!({}))],
+        disabled: Default::default(),
+        ..Default::default()
+    });
+    let played = app.run("actions.play", json!({"action": "Zoom"})).unwrap();
+    assert_eq!(played["ran"], 2, "{played}");
+    let outer_ms = app.perf.command_ms;
+    app.finish_frame(1.0);
+    let frames = call(&mut app, &ctx, "ui.inspect", json!({}))["result"]["perf"]["slowFrames"].clone();
+    let last = frames.as_array().and_then(|f| f.last()).expect("a slow frame").clone();
+    assert_eq!(last["command"], "actions.play", "{last}");
+    let command_ms = last["commandMs"].as_f64().unwrap();
+    assert!((command_ms - outer_ms).abs() < 1e-9, "the outer run's {outer_ms} ms, once: {last}");
 }
 
 #[test]
@@ -134,7 +268,7 @@ fn full_window_workspaces_are_modal_for_menu_invocations() {
     app.run("layer.new.layer", json!({})).unwrap();
     app.run("edit.fill", json!({"color":"#808080"})).unwrap();
     app.run("select.rect", json!({"x":8,"y":8,"width":8,"height":8})).unwrap();
-    for workspace in ["filter.liquify", "edit.contentAwareFill", "filter.filterGallery", "filter.adaptiveWideAngle"] {
+    for workspace in ["filter.liquify", "edit.contentAwareFill", "filter.filterGallery", "filter.adaptiveWideAngle", "select.selectAndMask"] {
         let opened = call(&mut app, &ctx, "ui.menu.invoke", json!({"id":workspace}));
         assert_eq!(opened["ok"], true, "{workspace}: {opened}");
         assert_eq!(crate::distort_ui::modal_workspace(&app), Some(workspace));
@@ -144,6 +278,7 @@ fn full_window_workspaces_are_modal_for_menu_invocations() {
             json!({"id":"select.all"}),
             json!({"id":"view.zoomIn"}),
             json!({"id":"filter.cameraRaw"}),
+            json!({"id":"filter.liquify"}),
             json!({"id":workspace,"params":{"ui":null}}),
         ] {
             let blocked = call(&mut app, &ctx, "ui.menu.invoke", request.clone());
@@ -170,10 +305,16 @@ fn full_window_workspaces_are_modal_for_menu_invocations() {
             "{workspace}: listed as enabled again"
         );
     }
-    // engine.execute stays programmatic: it is not a menu click.
+    // Programmatic edits cannot bypass the active workspace ownership gate.
     assert_eq!(call(&mut app, &ctx, "ui.menu.invoke", json!({"id":"filter.liquify"}))["ok"], true);
+    let before = app.session.active().unwrap().doc.clone();
+    let history = app.session.active().unwrap().history.past_len();
     let executed = call(&mut app, &ctx, "engine.execute", json!({"command":"select.all"}));
-    assert_eq!(executed["ok"], true, "{executed}");
+    assert_eq!(executed["ok"], false, "{executed}");
+    assert!(std::sync::Arc::ptr_eq(&before, &app.session.active().unwrap().doc));
+    assert_eq!(app.session.active().unwrap().history.past_len(), history);
+    assert_eq!(call(&mut app, &ctx, "ui.menu.invoke", json!({"id":"filter.liquify","params":{"ui":{"cancel":true}}}))["ok"], true);
+    assert_eq!(call(&mut app, &ctx, "engine.execute", json!({"command":"select.all"}))["ok"], true);
 }
 
 #[test]
@@ -184,8 +325,9 @@ fn layer_style_picker_control_binds_previews_confirms_and_cancels() {
     let parent = call(&mut app, &ctx, "ui.dialog.open", json!({"kind":"layerStyle","effect":"gradientOverlay"}))["result"]["dialog"].as_u64();
     let parent = parent.unwrap();
     let before = app.ui.dialogs[0].fields.clone();
-    for field in ["from", "to"] {
-        let reply = call(&mut app, &ctx, "ui.dialog.open", json!({"kind":"colorPicker","parent":parent,"effect":"fx1","field":field}));
+    // The Gradient Overlay's colours are its stops (#5177): `stop` picks one.
+    for stop in [0, 1] {
+        let reply = call(&mut app, &ctx, "ui.dialog.open", json!({"kind":"colorPicker","parent":parent,"effect":"fx1","field":"stops","stop":stop}));
         assert_eq!(reply["ok"], true, "{reply}");
         let picker = app.ui.dialogs.last().unwrap().id;
         let inspected = call(&mut app, &ctx, "ui.inspect", json!({}));
@@ -193,10 +335,14 @@ fn layer_style_picker_control_binds_previews_confirms_and_cancels() {
         assert_eq!(call(&mut app, &ctx, "ui.dialog.confirm", json!({"dialog":parent}))["ok"], false);
         assert_eq!(call(&mut app, &ctx, "ui.dialog.set", json!({"dialog":picker,"field":"color","value":"#123456"}))["ok"], true);
         assert_eq!(call(&mut app, &ctx, "ui.dialog.confirm", json!({"dialog":picker}))["ok"], true);
-        assert_eq!(app.ui.dialogs[0].fields["effects"][0]["params"][field], "#123456");
+        assert_eq!(app.ui.dialogs[0].fields["effects"][0]["params"]["stops"][stop][1], "#123456");
     }
     assert_ne!(app.ui.dialogs[0].fields, before);
-    call(&mut app, &ctx, "ui.dialog.open", json!({"kind":"colorPicker","parent":parent,"effect":"fx1","field":"to"}));
+    let bad = call(&mut app, &ctx, "ui.dialog.open", json!({"kind":"colorPicker","parent":parent,"effect":"fx1","field":"stops","stop":"x"}));
+    assert_eq!(bad["ok"], false, "{bad}");
+    let bad = call(&mut app, &ctx, "ui.dialog.open", json!({"kind":"colorPicker","parent":parent,"effect":"fx1","field":"stops","stop":9}));
+    assert_eq!(bad["ok"], false, "{bad}");
+    call(&mut app, &ctx, "ui.dialog.open", json!({"kind":"colorPicker","parent":parent,"effect":"fx1","field":"stops","stop":1}));
     assert_eq!(call(&mut app, &ctx, "ui.dialog.cancel", json!({"dialog":parent}))["ok"], true);
     assert!(app.ui.dialogs.is_empty());
 }
@@ -670,6 +816,31 @@ fn menu_invoke_cannot_edit_document_behind_an_open_dialog() {
 }
 
 #[test]
+fn engine_execute_cannot_change_document_behind_adjustment_dialog() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    let ctx = egui::Context::default();
+    app.run("file.new", json!({"width": 60, "height": 40, "background": "#3366cc"})).unwrap();
+    let opened = call(&mut app, &ctx, "ui.menu.invoke", json!({"id": "image.adjustments.hueSaturation"}));
+    assert_eq!(opened["ok"], true, "{opened}");
+    let dialog = opened["result"]["dialog"].as_u64().unwrap();
+    let revision = app.session.active().unwrap().revision;
+    let fields = call(&mut app, &ctx, "ui.inspect", json!({}))["result"]["dialogs"][0]["fields"].clone();
+
+    for method in ["engine.execute", "ui.menu.invoke"] {
+        let blocked = call(&mut app, &ctx, method, json!({"command": "image.adjustments.invert"}));
+        assert_eq!(blocked["ok"], false, "{method}: {blocked}");
+        assert_eq!(app.session.active().unwrap().revision, revision, "{method} changed the document");
+        let snapshot = call(&mut app, &ctx, "ui.inspect", json!({}));
+        assert_eq!(snapshot["result"]["dialogs"][0]["id"], dialog);
+        assert_eq!(snapshot["result"]["dialogs"][0]["fields"], fields);
+    }
+
+    assert_eq!(call(&mut app, &ctx, "ui.dialog.cancel", json!({"dialog": dialog}))["ok"], true);
+    assert_eq!(call(&mut app, &ctx, "engine.execute", json!({"command": "image.adjustments.invert"}))["ok"], true);
+    assert!(app.session.active().unwrap().revision > revision);
+}
+
+#[test]
 fn ui_set_rejects_unknown_fields_before_changing_anything() {
     use crate::theme::ThemeKind;
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
@@ -810,6 +981,20 @@ fn ui_set_drives_the_crop_fill() {
     }
     assert_eq!(call(&mut app, &ctx, "ui.set", json!({"cropFill": "background"}))["ok"], true);
     assert!(!app.ui.tool_options.crop_content_aware);
+}
+
+/// #1397: the Pen's mode and Path Operation over the control channel, reported by `ui.inspect`.
+#[test]
+fn ui_set_drives_the_pen_path_operation() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    let ctx = egui::Context::default();
+    assert_eq!(call(&mut app, &ctx, "ui.set", json!({"tool": "pen", "penMode": "shape", "penPathOp": "subtract"}))["ok"], true);
+    let o = &call(&mut app, &ctx, "ui.inspect", json!({}))["result"]["toolOptions"];
+    assert_eq!((o["vector_mode"].clone(), o["pen_path_op"].clone()), (json!("shape"), json!("subtract")));
+    for bad in [json!({"penPathOp": "melt"}), json!({"penPathOp": 1}), json!({"penMode": "pixels"}), json!({"penMode": "path", "penPathOp": "xor"})] {
+        assert_eq!(call(&mut app, &ctx, "ui.set", bad.clone())["ok"], false, "{bad}");
+        assert_eq!((app.ui.tool_options.vector_mode.as_str(), app.ui.tool_options.pen_path_op.as_str()), ("shape", "subtract"), "{bad}: unchanged");
+    }
 }
 
 /// #1919: the Crop tool's overlay menu over the control channel, reported by `ui.inspect`.

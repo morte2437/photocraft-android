@@ -38,7 +38,7 @@ fn block_on<F: std::future::Future>(f: F) -> F::Output {
 /// A real GPU with timestamp queries, or `None` with the reason printed.
 fn gpu() -> Option<(wgpu::Device, wgpu::Queue, Compositor)> {
     let options = wgpu::RequestAdapterOptions { power_preference: wgpu::PowerPreference::HighPerformance, ..Default::default() };
-    let Ok(adapter) = block_on(wgpu::Instance::default().request_adapter(&options)) else {
+    let Ok(adapter) = block_on(wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()).request_adapter(&options)) else {
         eprintln!("SKIP gpu timing: no adapter");
         return None;
     };

@@ -201,7 +201,7 @@ fn estimates_every_format_at_every_depth() {
     for depth in [8, 16, 32] {
         let mut s = session(depth);
         let mut sizes = Vec::new();
-        for f in ["gif", "png8", "png24", "jpeg", "wbmp"] {
+        for f in ["gif", "png8", "png24", "jpeg", "wbmp", "webp"] {
             let r = s.execute("file.export.saveForWebLegacy", json!({"format": f, "colors": 16})).unwrap();
             assert_eq!((r["width"].as_u64(), r["height"].as_u64()), (Some(64), Some(48)), "{f}");
             assert!(r["bytes"].as_u64().unwrap() > 20, "{f}");
@@ -297,6 +297,107 @@ fn jpeg_quality_progressive_and_metadata() {
     assert!(xmp.contains("Example"), "copyright kept");
     assert!(!xmp.contains("secret"), "description dropped");
     assert!(decode(&lo).meta.xmp.is_none());
+}
+
+/// WebP (#2415, #6391): lossy at the chosen quality or lossless, keeping translucency unless
+/// transparency is off, with the chosen metadata and an optional colour profile.
+#[test]
+fn webp_lossy_lossless_transparency_and_metadata() {
+    let dir = tmp("webp");
+    let mut s = session(16);
+    s.execute("file.fileInfo", json!({"copyright": "© Example", "description": "secret notes"})).unwrap();
+    s.execute("edit.assignProfile", json!({"profile": "srgb"})).unwrap();
+    let path = |name: &str| format!("{dir}/{name}");
+    let mut export = |name: &str, p: Value| {
+        let mut p = p;
+        p["format"] = json!("webp");
+        p["path"] = json!(path(name));
+        s.execute("file.export.saveForWebLegacy", p).unwrap();
+        std::fs::read(path(name)).unwrap()
+    };
+    let lo = export("lo.webp", json!({"quality": 5}));
+    let hi = export("hi.webp", json!({"quality": 95, "embedIcc": true}));
+    let lossless = export("lossless.webp", json!({"lossless": true, "metadata": "none"}));
+    let opaque = export("opaque.webp", json!({"transparency": false, "matte": "#00ff00"}));
+    for bytes in [&lo, &hi, &lossless, &opaque] {
+        assert_eq!((&bytes[0..4], &bytes[8..12]), (&b"RIFF"[..], &b"WEBP"[..]));
+    }
+    assert!(lo.len() < hi.len(), "quality drives the size: {} vs {}", lo.len(), hi.len());
+    let has = |b: &[u8], fourcc: &[u8]| b.windows(4).any(|w| w == fourcc);
+    assert!(has(&hi, b"VP8 ") && has(&hi, b"ALPH"), "lossy keeps translucency in an alpha chunk");
+    assert!(has(&lossless, b"VP8L") && !has(&lossless, b"VP8 "));
+    assert!(!has(&opaque, b"ALPH"), "transparency off composites over the matte");
+
+    // Lossless is the PNG-24 export's pixels exactly.
+    s.execute("file.export.saveForWebLegacy", json!({"format": "png24", "path": path("same.png")})).unwrap();
+    let (a, b) = (decode(&path("lossless.webp")), decode(&path("same.png")));
+    let rgba = |i: &photocraft_codecs::Image| i.convert(photocraft_codecs::ChannelLayout::Rgba, photocraft_codecs::SampleType::U8).data().to_vec();
+    assert_eq!(rgba(&a), rgba(&b));
+    // The transparent corner stays transparent; with transparency off it is the matte.
+    assert_eq!(rgba(&a)[3], 0);
+    let o = rgba(&decode(&path("opaque.webp")));
+    assert!(o[3] == 255 && o[1] > 200 && o[0] < 60, "{:?}", &o[..4]);
+
+    let meta = decode(&path("hi.webp"));
+    let xmp = meta.meta.xmp.unwrap_or_default();
+    assert!(xmp.contains("Example") && !xmp.contains("secret"), "copyright only");
+    assert!(meta.icc.is_some(), "Embed Color Profile");
+    assert!(decode(&path("lo.webp")).icc.is_none());
+    assert!(a.meta.xmp.is_none(), "metadata none");
+}
+
+/// Sizes WebP cannot hold are an error, not a crash.
+#[test]
+fn webp_too_large_is_an_error() {
+    let mut s = session(8);
+    for lossless in [false, true] {
+        let r = s.execute("file.export.saveForWebLegacy", json!({"format": "webp", "lossless": lossless, "width": 20000, "height": 2}));
+        assert!(r.is_err(), "lossless {lossless}: {r:?}");
+    }
+}
+
+#[test]
+fn platform_writer_checks_settings_before_dropping_floating_pixels() {
+    let mut s = session(8);
+    s.execute("select.rect", json!({"x": 8, "y": 8, "width": 4, "height": 4})).unwrap();
+    s.execute("select.float", json!({"dx": 32})).unwrap();
+    let rev = s.active().unwrap().revision;
+    let params = json!({"format": "webp", "path": "moved.webp", "lossless": "yes"});
+    let mut output = Vec::new();
+    let refused = save_for_web_with_writer(&mut s, &params, &mut |_, bytes| {
+        output.extend_from_slice(bytes);
+        Ok(())
+    });
+    assert!(refused.unwrap_err().to_string().contains("lossless"));
+    assert!(output.is_empty());
+    assert!(s.file_menu.last_web.is_none());
+    assert_eq!(s.active().unwrap().revision, rev, "the document is untouched");
+    assert!(crate::float_cmds::floating(s.active().unwrap()).is_some(), "a refused export must not commit a floating move");
+}
+
+/// An on/off option that isn't true or false is refused (`"lossless": "true"` would otherwise
+/// write lossy WebP), and the refused export writes and remembers nothing.
+#[test]
+fn non_boolean_flags_are_refused_without_changing_anything() {
+    let dir = tmp("flags");
+    let mut s = session(8);
+    let out = format!("{dir}/out.webp");
+    let flags = ["transparency", "interlaced", "progressive", "lossless", "optimized", "embedIcc", "convertToSrgb"];
+    for k in flags {
+        for v in [json!("true"), json!(1), json!([true])] {
+            let rev = s.active().unwrap().revision;
+            let mut p = json!({"format": "webp", "path": out});
+            p[k] = v.clone();
+            let err = s.execute("file.export.saveForWebLegacy", p).unwrap_err().to_string();
+            assert!(err.contains(k), "{k}: {v}: {err}");
+            assert_eq!(s.active().unwrap().revision, rev, "{k}: the document is untouched");
+            assert!(!std::path::Path::new(&out).exists(), "{k}: nothing written");
+            assert!(s.file_menu.last_web.is_none(), "{k}: nothing remembered");
+        }
+    }
+    // null is the same as leaving it out.
+    s.execute("file.export.saveForWebLegacy", json!({"format": "webp", "path": out, "lossless": null})).unwrap();
+    assert!(std::path::Path::new(&out).exists());
 }
 
 #[test]
@@ -637,7 +738,7 @@ fn image_assets_needs_the_generator_preference() {
 fn image_assets_are_generated_now_and_on_save() {
     let dir = tmp("assets");
     let mut s = session(8);
-    // Preferences ▸ Plug-ins ▸ Generator enabled: the feature is opt-in.
+    // Preferences ▸ Plug-ins ▸ Enable Generator: the feature is opt-in.
     s.execute("prefs.set", json!({"path": "plugIns.generatorEnabled", "value": true})).unwrap();
     let id = s.active().unwrap().active_layer.unwrap();
     s.execute("layer.renameLayer", json!({"layer": id.0, "name": "logo.png, 50% small/logo.gif, logo.jpg80%"})).unwrap();
@@ -661,7 +762,10 @@ fn image_assets_are_generated_now_and_on_save() {
     let s2 = session(8);
     let doc = s2.active().unwrap().doc.clone();
     let mut d = (*doc).clone();
-    d.layers.push(Layer::new("default 200% @2x", LayerContent::Group(photocraft_doc::Group { children: vec![], expanded: false, artboard: None })));
+    d.layers.push(Layer::new(
+        "default 200% @2x",
+        LayerContent::Group(photocraft_doc::Group { children: vec![], expanded: false, artboard: None, frame_stroke: None }),
+    ));
     let lid = d.layers[1].id;
     d.layer_mut(lid).unwrap().name = "icon.png".into();
     let (files, errors) = generate_assets(&d, &dir);
@@ -684,7 +788,7 @@ fn image_assets_keep_full_artboards() {
         logo.surface_mut().unwrap().fill_rect(Rect::new(12, 10, 20, 16), &photocraft_raster::from_rgba(&fmt, [1.0, 0.0, 0.0, 1.0]));
         let board =
             photocraft_doc::Artboard { rect: Rect::new(4, 6, 44, 36), background: photocraft_doc::ArtboardBackground::Transparent, preset: String::new() };
-        let group = photocraft_doc::Group { children: vec![logo], expanded: true, artboard: Some(board) };
+        let group = photocraft_doc::Group { children: vec![logo], expanded: true, artboard: Some(board), frame_stroke: None };
         doc.layers = vec![Layer::new("board.png", LayerContent::Group(group))];
         Ok(())
     })
@@ -722,8 +826,8 @@ fn image_assets_refuse_empty_artboards() {
             background: photocraft_doc::ArtboardBackground::Transparent,
             preset: String::new(),
         };
-        let empty = photocraft_doc::Group { children: vec![], expanded: true, artboard: Some(board(0)) };
-        let off = photocraft_doc::Group { children: vec![outside], expanded: true, artboard: Some(board(24)) };
+        let empty = photocraft_doc::Group { children: vec![], expanded: true, artboard: Some(board(0)), frame_stroke: None };
+        let off = photocraft_doc::Group { children: vec![outside], expanded: true, artboard: Some(board(24)), frame_stroke: None };
         doc.layers = vec![Layer::new("empty.png", LayerContent::Group(empty)), Layer::new("off.png", LayerContent::Group(off))];
         Ok(())
     })
@@ -770,8 +874,10 @@ fn image_assets_never_write_one_file_twice() {
     let dir = tmp("asset-variant-collisions");
     d.layer_mut(top).unwrap().name = "icon.png".into();
     d.layer_mut(logo).unwrap().name = "Logo".into();
-    d.layers
-        .push(Layer::new("default 50% + 200% + 200% @2x", LayerContent::Group(photocraft_doc::Group { children: vec![], expanded: false, artboard: None })));
+    d.layers.push(Layer::new(
+        "default 50% + 200% + 200% @2x",
+        LayerContent::Group(photocraft_doc::Group { children: vec![], expanded: false, artboard: None, frame_stroke: None }),
+    ));
     let (files, errors) = generate_assets(&d, &dir);
     let names: Vec<_> = files.iter().map(|p| std::path::Path::new(p).file_name().unwrap().to_string_lossy().into_owned()).collect();
     assert_eq!(names, ["icon.png", "icon@2x.png"]);
@@ -799,7 +905,7 @@ fn image_assets_reject_traversal_from_names_and_defaults() {
     d.layer_mut(id).unwrap().name = "safe.png".into();
     d.layers.push(Layer::new(
         "default ../ + /outside/ + ..\\bad/ + C:\\drive/ + 50% nested/",
-        LayerContent::Group(photocraft_doc::Group { children: vec![], expanded: false, artboard: None }),
+        LayerContent::Group(photocraft_doc::Group { children: vec![], expanded: false, artboard: None, frame_stroke: None }),
     ));
     let (files, errors) = generate_assets(&d, &dir);
     assert_eq!(
@@ -854,6 +960,9 @@ fn web_settings_from_params() {
     assert!((st.web_snap - 0.5).abs() < 1e-6);
     assert!(WebSettings::from_params(&json!({"preset": "Nope"}), "x").is_err());
     assert!(WebSettings::from_params(&json!({"palette": "weird"}), "x").is_err());
+    let webp = WebSettings::from_params(&json!({"format": "webp", "lossless": true, "quality": 70}), "x").unwrap();
+    assert_eq!((webp.format, webp.lossless, webp.quality), (WebFormat::Webp, true, 70));
+    assert_eq!(WebSettings::from_params(&webp.to_params(), "x").unwrap(), webp);
     for p in PRESETS {
         let st = preset_settings(p).unwrap();
         assert_eq!(WebSettings::from_params(&st.to_params(), "x").unwrap(), st, "{p} round-trips through params");
@@ -866,7 +975,7 @@ fn previews_show_the_optimised_pixels() {
     let doc = s.active().unwrap().doc.clone();
     let (wd, _, _) = web_document(&doc, &json!({}), &WebSettings::default()).unwrap();
     let buf = photocraft_compose::flatten(&wd);
-    for f in ["jpeg", "gif", "png8", "png24", "wbmp"] {
+    for f in ["jpeg", "gif", "png8", "png24", "wbmp", "webp"] {
         let st = WebSettings::from_params(&json!({"format": f, "quality": 90, "transparency": false}), "x").unwrap();
         let o = optimize(&buf.px, 64, wd.bounds(), &st, None, None, None, 72.0, true).unwrap();
         assert_eq!(o.preview.len(), 64 * 48 * 4, "{f}");
@@ -1087,6 +1196,33 @@ fn save_for_web_all_writes_the_photos_exif() {
     assert_eq!(WebSettings::from_params(&json!({"metadata": "allExceptCameraInfo"}), "x").unwrap().to_params()["metadata"], "allExceptCameraInfo");
 }
 
+/// WebP holds EXIF in both modes: "All" keeps an EXIF-only photo's camera data (no XMP needed to
+/// trigger the metadata), every other choice leaves it out.
+#[test]
+fn save_for_web_webp_all_keeps_an_exif_only_photos_exif() {
+    let dir = tmp("webp_exif");
+    let mut s = session(8);
+    s.edit("exif", |doc, _| {
+        doc.metadata.exif = Some(std::sync::Arc::new(camera_exif()));
+        Ok(())
+    })
+    .unwrap();
+    for lossless in [false, true] {
+        for metadata in ["all", "none", "copyright", "allExceptCameraInfo"] {
+            let path = format!("{dir}/{metadata}-{lossless}.webp");
+            s.execute("file.export.saveForWebLegacy", json!({"format": "webp", "lossless": lossless, "metadata": metadata, "path": path})).unwrap();
+            let meta = decode(&path).meta;
+            if metadata == "all" {
+                let exif = meta.exif.unwrap_or_else(|| panic!("EXIF kept (lossless {lossless})"));
+                assert_eq!(photocraft_algo::exif::read(&exif).make.as_deref(), Some("TestMake"), "lossless {lossless}");
+                assert!(meta.xmp.is_none(), "the photo had no XMP");
+            } else {
+                assert!(meta.exif.is_none(), "{metadata} leaves the camera data out (lossless {lossless})");
+            }
+        }
+    }
+}
+
 #[test]
 fn quick_export_all_writes_the_photos_exif() {
     let dir = tmp("quick_exif");
@@ -1162,4 +1298,22 @@ fn quick_export_exr_preserves_linear_hdr_and_alpha() {
     assert_eq!(std::fs::read(&own).unwrap(), before);
     s.execute("file.export.quickExport", json!({"path": format!("{dir}/explicit.exr")})).unwrap();
     assert_eq!(decode(&format!("{dir}/explicit.exr")).dimensions(), (2, 1));
+}
+
+/// #9325: an untagged document is treated as sRGB, and with Embed Color Profile on the file
+/// says so, as Photoshop's Save for Web does; off, it still carries none.
+#[test]
+fn embed_color_profile_tags_an_untagged_document_srgb() {
+    let mut s = session(8);
+    assert!(s.active().unwrap().doc.icc_profile.is_none(), "a new document is untagged");
+    let dir = tmp("assumed-icc");
+    let profile = |path: &str| decode(path).icc.map(|b| photocraft_cms::Profile::parse(&b).unwrap().description);
+    for (format, ext) in [("jpeg", "jpg"), ("png24", "png")] {
+        let on = format!("{dir}/on.{ext}");
+        s.execute("file.export.saveForWebLegacy", json!({"format": format, "embedIcc": true, "path": on})).unwrap();
+        assert_eq!(profile(&on).as_deref(), Some(photocraft_cms::Builtin::Srgb.description()), "{format}");
+        let off = format!("{dir}/off.{ext}");
+        s.execute("file.export.saveForWebLegacy", json!({"format": format, "embedIcc": false, "path": off})).unwrap();
+        assert_eq!(profile(&off), None, "{format}");
+    }
 }

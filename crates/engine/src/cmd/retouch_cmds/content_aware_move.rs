@@ -34,7 +34,10 @@ use photocraft_algo::content_aware::{FillOptions, color_amount, color_level, fil
 use photocraft_algo::transform::{Homography, Interp};
 
 use super::patch::{coverage, offset, selection_area, target_layer};
-use super::*;
+use super::{
+    Document, EngineError, LayerContent, LayerId, Rect, Region, Result, SampleLayers, Session, Surface, Value, alpha_index, bad, clamp_samples,
+    composite_region, damage_json, flag, has_pixel_layer, json, string, targets_pixels,
+};
 
 const CMD: &str = "paint.contentAwareMove";
 
@@ -526,9 +529,7 @@ pub(super) fn content_aware_move(s: &mut Session, p: &Value) -> Result<Value> {
                 }
                 Ok(())
             })?;
-            if let Some(st) = s.active_mut() {
-                st.last_damage = Some(damage);
-            }
+            s.hint_damage(damage);
             let mode = if plan.mode == Mode::Move { "move" } else { "extend" };
             let mut out = json!({ "damage": damage_json(damage), "offset": [dx, dy], "mode": mode });
             if plan.map.is_some() {
@@ -767,10 +768,12 @@ mod tests {
         // An 8-bit selection of scattered 1/255 pixels: scaled down in 8 bits it averaged to 0
         // everywhere, so the coarse preview failed with "the selection is empty" while the
         // command itself moves it.
-        let mut s = textured(1200, 800);
+        // Just over four times the preview budget still averages each isolated 1/255
+        // sample below half an 8-bit level, reproducing the loss without a 0.77 MP solve.
+        let mut s = textured(600, 600);
         s.edit("faint selection", |doc, _| {
             let mut sel = Surface::new(photocraft_color::PixelFormat::GRAY8);
-            let r = Rect::new(20, 20, 1120, 720);
+            let r = Rect::new(20, 20, 536, 536);
             let data: Vec<f32> = (r.y0..r.y1).flat_map(|y| (r.x0..r.x1).map(move |x| if x % 4 == 0 && y % 4 == 0 { 1.0 / 255.0 } else { 0.0 })).collect();
             sel.write_region(r, &data);
             doc.selection = Some(sel);
@@ -780,6 +783,7 @@ mod tests {
         let p = json!({"offset": [40, 40]});
         let job = preview(&s, &p).unwrap();
         assert!(job.is_coarse());
+        assert!(job.scale < 0.51, "the sparse mask must actually be averaged down");
         let (got, damage) = job.run(&JobCtx::new()).unwrap();
         assert!(!damage.is_empty());
         let b = got.bounds();

@@ -542,13 +542,9 @@ impl CosKernel {
     }
 }
 
-/// Select › Modify › Feather: Gaussian blur of the mask with `σ = radius`, the kernel truncated
-/// at `⌈3σ⌉` and normalized, zero beyond the canvas. Photoshop's feather radius is the Gaussian's
-/// σ (measured on Photoshop 27.11; the same mapping the mask feather uses, fitted on the
-/// psd-tools corpus in `photocraft_compose::masks::feather_sigma`). It was `radius / 2`: half
-/// as wide as Photoshop's.
-pub(crate) fn feather(m: &[f32], w: usize, h: usize, radius: f32) -> Vec<f32> {
-    let n = w.saturating_mul(h);
+/// The feather's Gaussian σ for `radius`, capped at [`MAX_SIGMA`]. Below 0.1 the feather leaves
+/// the mask as it is.
+fn feather_sigma(radius: f32) -> f32 {
     let sigma = if radius.is_finite() {
         radius.max(0.0)
     } else if radius > 0.0 {
@@ -556,11 +552,28 @@ pub(crate) fn feather(m: &[f32], w: usize, h: usize, radius: f32) -> Vec<f32> {
     } else {
         0.0
     };
+    sigma.min(MAX_SIGMA)
+}
+
+/// How far [`feather`] spreads, in pixels: its kernel's truncation radius `⌈3σ⌉`, or 0 when it
+/// leaves the mask as it is. Samples farther than this from every nonzero sample stay 0.
+pub(crate) fn feather_reach(radius: f32) -> usize {
+    let sigma = feather_sigma(radius);
+    if sigma < 0.1 { 0 } else { (sigma * 3.0).ceil() as usize }
+}
+
+/// Select › Modify › Feather: Gaussian blur of the mask with `σ = radius`, the kernel truncated
+/// at `⌈3σ⌉` and normalized, zero beyond the canvas. Photoshop's feather radius is the Gaussian's
+/// σ (measured on Photoshop 27.11; the same mapping the mask feather uses, fitted on the
+/// psd-tools corpus in `photocraft_compose::masks::feather_sigma`). It was `radius / 2`: half
+/// as wide as Photoshop's.
+pub(crate) fn feather(m: &[f32], w: usize, h: usize, radius: f32) -> Vec<f32> {
+    let n = w.saturating_mul(h);
+    let sigma = feather_sigma(radius);
     if sigma < 0.1 || m.len() != n || n == 0 {
         return m.to_vec();
     }
-    let sigma = sigma.min(MAX_SIGMA);
-    let r = (sigma * 3.0).ceil() as usize;
+    let r = feather_reach(radius);
     let Some(b) = nonzero_bounds(m, w, h) else {
         return m.to_vec();
     };

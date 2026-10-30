@@ -1,4 +1,4 @@
-use super::*;
+use super::{PhotocraftApp, RichText, Tokens, label, vec2, widgets};
 
 // ----------------------------------------------------------------------------- status bar
 
@@ -23,7 +23,7 @@ pub fn status_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                     ui.with_layout(crate::direction::trailing(), |ui| {
                         crate::jobs_ui::status_progress(app, ui);
                         crate::background_redraw::status(app, ui);
-                        crate::chrome_ui::gpu_memory_status(app, ui);
+                        crate::chrome_ui::render_path_status(app, ui);
                     });
                     return;
                 }
@@ -67,7 +67,7 @@ pub fn status_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                         crate::jobs_ui::status_progress(app, ui);
                     }
                     crate::background_redraw::status(app, ui);
-                    crate::chrome_ui::gpu_memory_status(app, ui);
+                    crate::chrome_ui::render_path_status(app, ui);
                 });
             });
         });

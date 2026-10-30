@@ -658,7 +658,7 @@ fn fill_layer_keeps_photoshop_pixels() {
         VersionedDescriptor::new(Descriptor::new("null").with("Clr ", Value::Descriptor(c))).to_bytes()
     };
     // Photoshop-rendered pixels deliberately differ from the parametric fill.
-    let plane = |v: u8| ChannelData { id: 0, compression: Some(Compression::Raw), data: vec![v; 4] };
+    let plane = |v: u8| ChannelData::new(0, Some(Compression::Raw), vec![v; 4]);
     let mut chans = vec![plane(255), plane(10), plane(20), plane(30)];
     for (i, c) in chans.iter_mut().enumerate() {
         c.id = i as i16 - 1;
@@ -762,7 +762,7 @@ fn merged_composite_unmattes_photoshop_white() {
     let mut f = testgen::merged_only(Version::Psd, ColorMode::Rgb, 8, Compression::Raw, 1, 1);
     f.header.channels = 4;
     // straight red at alpha 0.5, matted: r = 1, g = b = 0.5
-    f.image_data = photocraft_psd::ImageData { compression: Compression::Raw, data: vec![255, 128, 128, 128] };
+    f.image_data = photocraft_psd::ImageData::new(Compression::Raw, vec![255, 128, 128, 128]);
     let m = merged_composite(&f).unwrap();
     assert!((m[0][0] - 1.0).abs() < 0.01 && m[0][1] < 0.01 && m[0][2] < 0.01, "{:?}", m[0]);
     let (d, _) = psd_to_document(&f);
@@ -772,8 +772,7 @@ fn merged_composite_unmattes_photoshop_white() {
     // HDR and negative straight samples must survive the actual F32 PSD import boundary.
     let mut hdr = testgen::merged_only(Version::Psd, ColorMode::Rgb, 32, Compression::Raw, 1, 1);
     hdr.header.channels = 4;
-    hdr.image_data =
-        photocraft_psd::ImageData { compression: Compression::Raw, data: [1.5_f32, 0.25, 0.5, 0.5].into_iter().flat_map(f32::to_be_bytes).collect() };
+    hdr.image_data = photocraft_psd::ImageData::new(Compression::Raw, [1.5_f32, 0.25, 0.5, 0.5].into_iter().flat_map(f32::to_be_bytes).collect());
     assert_eq!(merged_composite(&hdr).unwrap(), vec![[2.0, -0.5, 0.0, 0.5]]);
     let mut deep = testgen::merged_only(Version::Psd, ColorMode::Rgb, 16, Compression::Raw, 1, 1);
     deep.header.channels = 4;
@@ -793,7 +792,7 @@ fn vector_rendered_mask_not_doubled_on_shapes() {
     f.layers_mut().push(LayerRecord {
         name: b"shape".to_vec(),
         mask: photocraft_psd::MaskData::Mask(mask),
-        channels: vec![photocraft_psd::ChannelData { id: -2, compression: Some(Compression::Raw), data: vec![] }],
+        channels: vec![photocraft_psd::ChannelData::new(-2, Some(Compression::Raw), vec![])],
         blocks: vec![TaggedBlock::unicode_name("shape"), TaggedBlock::new(*b"SoCo", vec![]), TaggedBlock::new(*b"vmsk", vec![0; 8])],
         ..Default::default()
     });
@@ -805,7 +804,7 @@ fn vector_rendered_mask_not_doubled_on_shapes() {
     let record = f.layers_mut().last_mut().unwrap();
     let photocraft_psd::MaskData::Mask(mask) = &mut record.mask else { panic!("fixture has a mask") };
     mask.real = Some(photocraft_psd::RealMask { flags: 0, background: 255, rect: photocraft_psd::Rect { top: 0, left: 0, bottom: 1, right: 1 } });
-    record.channels.push(photocraft_psd::ChannelData { id: -3, compression: Some(Compression::Raw), data: vec![64] });
+    record.channels.push(photocraft_psd::ChannelData::new(-3, Some(Compression::Raw), vec![64]));
     let (imported, _) = psd_to_document(&f);
     assert_eq!(imported.layers.last().unwrap().content.kind_name(), "Shape");
     let mask = imported.layers.last().unwrap().mask.as_ref().expect("selected real mask must survive synthetic cleanup");

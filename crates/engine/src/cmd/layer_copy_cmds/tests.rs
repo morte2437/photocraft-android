@@ -369,3 +369,26 @@ fn a_copied_group_cannot_nest_the_destination_past_the_group_depth_limit() {
     assert!(e.to_string().contains("deeper than"), "{e}");
     assert_eq!(*doc(&s, 1), before, "nothing was copied");
 }
+
+/// #9560: a type layer copied between documents of different resolutions keeps its size in
+/// pixels, also after its next text edit (it used to re-lay out at the destination's resolution:
+/// a 24 pt line from 72 ppi grew about 4.2 times in a 300 ppi document). Photoshop adapts the
+/// point size instead (24 pt at 72 ppi is 5.76 pt at 300 ppi); the pixels are the same.
+#[test]
+fn copied_type_keeps_its_pixel_size_across_resolutions_after_an_edit() {
+    for (from, to) in [(72, 300), (300, 72)] {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 400, "height": 200, "resolution": from})).unwrap();
+        let t = LayerId(s.execute("type.create", json!({"text": "H", "size": 24, "x": 128, "y": 100})).unwrap()["layer"].as_u64().unwrap());
+        let original = bounds(&s, 0, t);
+        s.execute("file.new", json!({"width": 400, "height": 200, "resolution": to})).unwrap();
+        s.set_active(0);
+        s.execute("layer.select", json!({"layer": t.0})).unwrap();
+        let id = copied(&s.execute("layer.copyToDocument", json!({"document": 1})).unwrap());
+        assert_eq!(bounds(&s, 1, id).size(), original.size(), "{from}→{to}: the copy");
+        s.execute("type.edit", json!({"layer": id.0, "text": "M"})).unwrap();
+        s.execute("type.edit", json!({"layer": id.0, "text": "H"})).unwrap();
+        let after = bounds(&s, 1, id);
+        assert_eq!(after.size(), original.size(), "{from}→{to}: after an edit, {after:?} vs {original:?}");
+    }
+}

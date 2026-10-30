@@ -194,7 +194,7 @@ impl TouchInput {
                                 ui.label(config::pen_control_label(control));
                             });
                             let salt = format!("touch_pen_{control:?}");
-                            egui::ComboBox::from_id_salt(&salt).selected_text(setting.action.label()).width(150.0).show_ui(ui, |ui| {
+                            craft_ui::ComboBox::from_id_salt(&salt).selected_text(setting.action.label()).width(150.0).show_ui(ui, |ui| {
                                 for a in PenAction::ALL {
                                     ui.selectable_value(&mut setting.action, a, a.label());
                                 }
@@ -292,7 +292,7 @@ fn tap_row(ui: &mut egui::Ui, tk: &Tokens, name: &str, salt: &str, shortcut: &mu
     ui.label(name);
     let current =
         PRESETS.iter().find(|(_, _, s)| s.eq_ignore_ascii_case(shortcut)).map_or(if shortcut.is_empty() { "Nothing" } else { "Custom" }, |(n, _, _)| *n);
-    egui::ComboBox::from_id_salt(salt).selected_text(current).width(150.0).show_ui(ui, |ui| {
+    craft_ui::ComboBox::from_id_salt(salt).selected_text(current).width(150.0).show_ui(ui, |ui| {
         if ui.selectable_label(shortcut.is_empty(), "Nothing").clicked() {
             shortcut.clear();
         }

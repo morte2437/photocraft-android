@@ -147,14 +147,22 @@ fn type_controls_fill_the_panel_at_every_width_and_scale() {
             let hs = headers(&h);
             let header = hs.iter().find(|(n, _)| n == "Character").unwrap().1;
             let what = format!("{ppp}x @ {dw}");
-            // Font family and style dropdowns span the section.
+            // The editable family field and the style dropdown span the section.
+            let name = h
+                .query_all_by_role(egui::accesskit::Role::TextInput)
+                .map(|n| n.rect())
+                .find(|r| r.top() >= header.bottom() && r.left() >= header.left() - 1.0)
+                .expect("editable family field");
+            let mut family = name.expand2(egui::vec2(6.0, 2.0));
+            family.max.x += crate::widgets::POPUP_ARROW_W;
+            assert!((family.left() - header.left()).abs() <= 2.0 && (family.right() - header.right()).abs() <= 2.0, "{what}: {family:?} vs {header:?}");
             let combos: Vec<Rect> = h
                 .query_all_by_role(egui::accesskit::Role::ComboBox)
                 .map(|n| n.rect())
                 .filter(|r| r.top() >= header.bottom() && r.left() >= header.left() - 1.0)
                 .collect();
-            assert!(combos.len() >= 2, "{what}: {combos:?}");
-            for r in &combos[..2] {
+            assert!(!combos.is_empty(), "{what}: {combos:?}");
+            for r in &combos[..1] {
                 assert!((r.left() - header.left()).abs() <= 2.0 && (r.right() - header.right()).abs() <= 2.0, "{what}: {r:?} vs {header:?}");
             }
             // Number fields end at the section's right edge (the second column), never past it.
@@ -174,14 +182,14 @@ fn type_controls_fill_the_panel_at_every_width_and_scale() {
                 .filter(|r| r.top() >= transform.bottom() && r.bottom() <= header.top())
                 .map(|r| r.right())
                 .fold(f32::MIN, f32::max);
-            // (Both rows have a unit suffix: compare with the size/leading row.)
-            // Variable-font axes can precede the size/leading row and have no unit suffix.
-            // Compare the intended point-valued controls, retaining the same edge tolerance.
-            let lead = ["Font size", "Leading (set to the font size × auto-leading when Auto)"]
-                .into_iter()
-                .map(|label| h.get_by_role_and_label(egui::accesskit::Role::SpinButton, label).rect().right())
-                .fold(f32::MIN, f32::max);
-            assert!((t_right - lead).abs() < 0.5, "{what}: Transform fields end at {t_right}, Character at {lead}");
+            // The size/leading row ends in the leading presets chevron at the panel's right edge,
+            // where Transform's field boxes end. The leading box ends where the chevron starts:
+            // its number stops one unit suffix ("pt", like Transform's "px") short of it.
+            let chevron = h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Leading presets").rect();
+            let lead = h.get_by_role_and_label(egui::accesskit::Role::SpinButton, "Leading (set to the font size × auto-leading when Auto)").rect();
+            assert!((chevron.right() - header.right()).abs() < 0.5, "{what}: Character controls end at {}, panel {}", chevron.right(), header.right());
+            let (t_suffix, lead_suffix) = (header.right() - t_right, chevron.left() - lead.right());
+            assert!((t_suffix - lead_suffix).abs() < 0.5, "{what}: Transform's suffix slot {t_suffix}, the leading field's {lead_suffix} (overlap or gap)");
             // Quick Actions buttons span the panel too.
             let qa = h.get_by_label("Rasterize Type").rect();
             assert!(qa.right() >= header.right() - 2.0 && qa.right() <= header.right() + 1.0, "{what}: {qa:?}");

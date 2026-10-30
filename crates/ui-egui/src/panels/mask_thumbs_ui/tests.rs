@@ -611,7 +611,9 @@ fn clicking_the_vector_mask_targets_it_for_the_path_tools() {
     let k = layer(&h, masked).vector_mask.unwrap().path.subpaths[0].knots[0].anchor;
     assert_eq!((k.x, k.y), (25.0, 12.0));
     // The Pen adds a subpath to it.
-    h.state_mut().ui.pen = Some(crate::vector_ui::PenPath { knots: vec![[[150.0, 10.0]; 3], [[190.0, 10.0]; 3], [[190.0, 40.0]; 3]], ..Default::default() });
+    let owner = crate::vector_ui::capture_pen_owner(h.state());
+    h.state_mut().ui.pen =
+        Some(crate::vector_ui::PenPath { knots: vec![[[150.0, 10.0]; 3], [[190.0, 10.0]; 3], [[190.0, 40.0]; 3]], owner, ..Default::default() });
     crate::vector_ui::pen_commit(h.state_mut(), true);
     assert_eq!(layer(&h, masked).vector_mask.unwrap().path.subpaths.len(), 2);
     assert!(h.state().session.active().unwrap().doc.work_path.is_none(), "not a work path");
@@ -804,7 +806,8 @@ fn a_new_adjustment_or_fill_layer_shows_its_settings_until_the_mask_thumbnail_is
         // Clicking the row (not a thumbnail) keeps the settings.
         let row = h.get_by_label(&layer(&h, id).name).rect().center();
         click_with(&mut h, row, Modifiers::NONE);
-        assert!(h.state().ui.mask_target);
+        assert_eq!(h.state().ui.mask_target, command.starts_with("layer.newFillLayer."));
+        assert!(!h.state().ui.vector_mask_target);
         assert!(h.query_all_by_label("Density").next().is_none(), "{command}: a row click keeps the settings");
         // The mask thumbnail switches Properties to the mask.
         let r = mask_rect(&h, id, MaskKind::Pixel);
@@ -835,4 +838,42 @@ fn a_new_adjustment_layer_brings_properties_to_the_front() {
     assert_eq!(h.state().ui.dock_tabs.properties, 0, "Properties is the group's tab");
     assert!(!h.state().ui.dock.is_collapsed(crate::dock::Group::Properties), "the group is expanded");
     assert!(h.query_all_by_label("Reset to defaults").next().is_some(), "the Curves settings show");
+}
+
+#[test]
+fn adjustment_names_target_contents_instead_of_masks() {
+    for command in ["layer.newAdjustmentLayer.hueSaturation", "layer.newAdjustmentLayer.curves"] {
+        for ppp in [1.0, 2.0] {
+            let (mut s, _, other) = session();
+            s.execute(command, json!({})).unwrap();
+            let id = s.active().unwrap().active_layer.unwrap().0;
+            let path = json!({"subpaths": [{"knots": [[20, 10], [120, 10], [120, 90], [20, 90]]}]});
+            s.execute("layer.vectorMask.add", json!({"layer": id, "path": path})).unwrap();
+            let mut h = harness(s, 0, ppp, 360.0);
+            for kind in [MaskKind::Pixel, MaskKind::Vector] {
+                let at = mask_rect(&h, id, kind).center();
+                click_with(&mut h, at, Modifiers::NONE);
+                assert_eq!(h.state().ui.mask_target, kind == MaskKind::Pixel);
+                assert_eq!(h.state().ui.vector_mask_target, kind == MaskKind::Vector);
+                let name = crate::layer_row_ui::recorded(&h.ctx).into_iter().find(|r| r.layer == id).unwrap().name.unwrap().center();
+                click_with(&mut h, name, Modifiers::NONE);
+                assert!(!h.state().ui.mask_target && !h.state().ui.vector_mask_target, "{command} @{ppp}x after {kind:?}");
+                let thumb = crate::layer_row_ui::recorded(&h.ctx).into_iter().find(|r| r.layer == id).unwrap().thumbnail.unwrap();
+                assert!(near(super::brackets(&h.ctx).unwrap(), thumb.expand(3.0)), "the content thumbnail is selected");
+                assert_eq!(h.state().session.active().unwrap().active_layer.unwrap().0, id);
+            }
+            let name = crate::layer_row_ui::recorded(&h.ctx).into_iter().find(|r| r.layer == other).unwrap().name.unwrap().center();
+            click_with(&mut h, name, Modifiers::NONE);
+            let name = crate::layer_row_ui::recorded(&h.ctx).into_iter().find(|r| r.layer == id).unwrap().name.unwrap().center();
+            click_with(&mut h, name, Modifiers::NONE);
+            assert_eq!(h.state().session.active().unwrap().active_layer.unwrap().0, id);
+            assert!(!h.state().ui.mask_target && !h.state().ui.vector_mask_target, "{command} @{ppp}x from another layer");
+            assert_eq!(crate::canvas::paint_target(h.state()), json!("mask"));
+            let content = layer(&h, id).content;
+            h.state_mut().run("edit.fill", json!({"contents": "black"})).unwrap();
+            assert_eq!(layer(&h, id).content, content, "filling must preserve the adjustment or fill content");
+            assert_eq!(layer(&h, id).mask.unwrap().surface.sample_channel(50, 50, 0), 0.0, "Fill edits the mask");
+            assert!(!h.state().ui.mask_target && !h.state().ui.vector_mask_target, "painting leaves the content thumbnail selected");
+        }
+    }
 }

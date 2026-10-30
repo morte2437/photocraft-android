@@ -30,7 +30,10 @@ struct Entry {
 static STAGES: Mutex<Vec<Entry>> = Mutex::new(Vec::new());
 const ENTRIES: usize = 64;
 /// Accounted tile bytes; a stage larger than this on its own isn't kept.
+#[cfg(not(target_arch = "wasm32"))]
 pub const BUDGET: usize = 768 << 20;
+#[cfg(target_arch = "wasm32")]
+pub const BUDGET: usize = 256 << 20;
 
 /// The first stage: what placing `bytes` (the source contents) through the smart object's
 /// transform, warp or perspective gives at pixel format `fmt` on `canvas`.
@@ -88,7 +91,8 @@ pub fn purge() -> usize {
     freed
 }
 
-fn surface_bytes(s: &Surface) -> usize {
+/// Bytes a surface holds: its default pixel and every tile.
+pub(super) fn surface_bytes(s: &Surface) -> usize {
     // Tiles shared with the document (or another stage) are charged anyway: the cache is what
     // keeps them alive once the document moves on.
     s.tiles().fold(s.default_bytes().len(), |n, (_, t)| n.saturating_add(t.bytes().len()))

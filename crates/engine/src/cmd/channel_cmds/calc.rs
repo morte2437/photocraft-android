@@ -1,8 +1,8 @@
 use super::manage::gray_document;
-use super::planes::{channel_format, next_alpha_name, plane_surface, read_plane};
-use super::refs::{Blending, bad, mask_plane, source, source_spec};
-use super::targeting::{Target, is_channel_target, target_of, target_surface};
-use super::*;
+use super::planes::{channel_format, edit_mode, next_alpha_name, plane_surface, read_plane, tone};
+use super::refs::{Blending, bad, doc_index, mask_plane, source, source_spec};
+use super::targeting::{Target, is_channel_target, is_spot_target, target_of, target_surface};
+use super::{AlphaChannel, ColorMode, EngineError, Result, SelectionMode, Session, Value, json, sel};
 
 // ---------------------------------------------------------------------------------------------
 // Apply Image / Calculations
@@ -13,7 +13,11 @@ pub(super) fn apply_image(s: &mut Session, p: &Value) -> Result<Value> {
     let opacity = p.get("opacity").and_then(Value::as_f64).unwrap_or(100.0).clamp(0.0, 100.0) as f32 / 100.0;
     let preserve = p.get("preserveTransparency").and_then(Value::as_bool).unwrap_or(false);
     let src_spec = source_spec(p, "source", "source").unwrap_or_else(|| json!({}));
-    let src = source(s, &src_spec, cmd, false)?;
+    // A composite's planes are in its own document's mode, which may not be the target's.
+    let src_mode = s.documents().get(doc_index(s, &src_spec, "document")?).map(|d| edit_mode(&d.doc)).ok_or(EngineError::NoDocument)?;
+    // A CMYK composite reaches a channel or a layer mask as its luminosity, as Calculations reads
+    // it: its planes are ink, and an average of their tones would leave Black alone light gray.
+    let src = source(s, &src_spec, cmd, src_mode == ColorMode::Cmyk && (is_channel_target(p) || target_of(p) == Target::Mask))?;
     let mask = mask_plane(s, p, cmd)?;
     let layer = s.active().and_then(|d| d.active_layer);
     s.edit("Apply Image", |doc, _| {
@@ -22,12 +26,22 @@ pub(super) fn apply_image(s: &mut Session, p: &Value) -> Result<Value> {
         let weight = |i: usize| opacity * mask.as_ref().map_or(1.0, |m| m[i]) * selection.as_ref().map_or(1.0, |m| m[i]);
         let mask_target = target_of(p) == Target::Mask;
         if is_channel_target(p) || mask_target {
-            // A grayscale target gets the luminosity of a colour source (one plane).
+            // A grayscale target gets one plane: a CMYK composite's luminosity (above), the average of
+            // another composite's planes.
             let srcp =
                 if src.len() == 1 { src[0].clone() } else { (0..src[0].len()).map(|i| src.iter().map(|pl| pl[i]).sum::<f32>() / src.len() as f32).collect() };
+            let spot = is_spot_target(doc, p);
+            let ink = |v: f32| if spot { 1.0 - v } else { v };
             let (surf, _) = target_surface(doc, layer, p)?;
             let base = read_plane(surf, area);
-            let out: Vec<f32> = base.iter().enumerate().map(|(i, &b)| b + (blending.apply(b, srcp[i]) - b) * weight(i)).collect();
+            let out: Vec<f32> = base
+                .iter()
+                .enumerate()
+                .map(|(i, &b)| {
+                    let b = ink(b);
+                    ink(b + (blending.apply(b, srcp[i]) - b) * weight(i))
+                })
+                .collect();
             if mask_target {
                 // A layer mask keeps its default (reveal or hide) outside the canvas.
                 if surf.channels() != 1 {
@@ -64,9 +78,15 @@ pub(super) fn apply_image(s: &mut Session, p: &Value) -> Result<Value> {
             // source-over, so applying to an empty layer copies the source in any mode.
             let out_a = if preserve { base_a } else { w + base_a * (1.0 - w) };
             for (c, b) in px[..colors].iter_mut().enumerate() {
-                let top = src.get(c).unwrap_or(&src[0])[i];
-                let blended = top + (blending.apply(*b, top) - top) * base_a;
-                *b = if preserve { *b + (blended - *b) * w } else { (w * blended + base_a * (1.0 - w) * *b) / out_a };
+                // Blended as tone, as Photoshop does: a CMYK layer's ink turns into tone and back
+                // (Multiply darkens, so it adds ink). One plane (a channel, a mask) is a tone already.
+                // A CMYK composite onto another mode darkens each tone by its Black, so Black
+                // alone stays black.
+                let k = if src_mode == ColorMode::Cmyk && sf.mode != ColorMode::Cmyk { src.get(3).map_or(1.0, |pl| tone(src_mode, pl[i])) } else { 1.0 };
+                let top = if src.len() > 1 { tone(src_mode, src.get(c).unwrap_or(&src[0])[i]) * k } else { src[0][i] };
+                let base = tone(sf.mode, *b);
+                let blended = top + (blending.apply(base, top) - top) * base_a;
+                *b = tone(sf.mode, if preserve { base + (blended - base) * w } else { (w * blended + base_a * (1.0 - w) * base) / out_a });
             }
             if sf.alpha {
                 px[colors] = out_a;

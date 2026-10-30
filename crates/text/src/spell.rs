@@ -216,6 +216,13 @@ struct Rows {
     cur: Vec<usize>,
 }
 
+/// Damerau–Levenshtein (optimal string alignment) distance between `a` and `b` in chars, or None
+/// when above `max`. Exposed for "did you mean" hints elsewhere (engine command ids, #3674).
+pub fn edit_distance(a: &str, b: &str, max: usize) -> Option<usize> {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    distance(&a, &b, max, &mut Rows::default())
+}
+
 /// Damerau–Levenshtein (optimal string alignment) distance, or None when above `max`.
 fn distance(a: &[char], b: &[char], max: usize, rows: &mut Rows) -> Option<usize> {
     let (n, m) = (a.len(), b.len());
@@ -327,5 +334,7 @@ mod tests {
         assert_eq!(distance(&c("teh"), &c("the"), 2, &mut r), Some(1));
         assert_eq!(distance(&c("teh"), &c("toe"), 2, &mut r), Some(2));
         assert_eq!(distance(&c("teh"), &c("banana"), 2, &mut r), None);
+        assert_eq!(edit_distance("edit.undoo", "edit.undo", 2), Some(1));
+        assert_eq!(edit_distance("teh", "banana", 2), None);
     }
 }

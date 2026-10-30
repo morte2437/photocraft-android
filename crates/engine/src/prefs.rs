@@ -12,8 +12,9 @@
 //! OS config directory; the web shell: browser storage) and restore it with
 //! [`Session::load_prefs_json`].
 //!
-//! Engine-side values are applied by [`Session::apply_prefs`]: the history state limit (every
-//! open document), the effect-cache memory budget, and units for commands that report lengths.
+//! Engine-side values are applied by [`Session::apply_prefs`]: the history state limit and
+//! History Options › Allow Non-Linear History (every open document), the effect-cache memory
+//! budget, and units for commands that report lengths.
 //! Colour settings (`colorSettings`) are stored with the colour state
 //! ([`crate::color_cmds::ColorSettings`]) and persisted in the same document.
 
@@ -561,6 +562,16 @@ impl Default for Export {
 /// [`Performance::memory_usage_mb`]'s default.
 pub const DEFAULT_MEMORY_USAGE_MB: u32 = 8192;
 
+/// The most Memory Usage the web build honours, in MB: a wasm module's linear memory tops out at
+/// 4 GiB, so a larger allowance (the desktop default is 8 GiB) would never trim anything.
+const WASM_MEMORY_USAGE_CAP_MB: u32 = 1536;
+
+/// The Memory Usage a build honours for a `stored` preference: capped on the web build (`web`).
+/// Separate from the target check so native tests exercise both.
+fn honoured_memory_usage_mb(stored: u32, web: bool) -> u32 {
+    if web { stored.min(WASM_MEMORY_USAGE_CAP_MB) } else { stored }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Performance {
@@ -616,10 +627,16 @@ impl Performance {
         self.rendering_mode.unwrap_or_else(|| if !self.use_gpu || self.gpu_backend == GpuBackend::Cpu { RenderingMode::Cpu } else { RenderingMode::Auto })
     }
 
+    /// [`Performance::memory_usage_mb`] as the build can honour it: capped on the web, where the
+    /// stored preference (a saved 8192 still loads) is larger than the module's address space.
+    pub fn effective_memory_usage_mb(&self) -> u32 {
+        honoured_memory_usage_mb(self.memory_usage_mb, cfg!(target_arch = "wasm32"))
+    }
+
     /// Pixel memory a document and its History may hold (Memory Usage), in bytes: beyond it
     /// the oldest history states are dropped.
     pub fn history_budget_bytes(&self) -> usize {
-        (self.memory_usage_mb as usize).saturating_mul(1 << 20)
+        (self.effective_memory_usage_mb() as usize).saturating_mul(1 << 20)
     }
 }
 
@@ -869,6 +886,9 @@ pub struct TypePrefs {
     pub font_preview: FontPreview,
     pub fill_new_type_layers_with_placeholder: bool,
     pub recent_fonts: u32,
+    /// Favourite font families, starred in the font menu (`type.font.favorite`), in the order
+    /// they were added.
+    pub favorite_fonts: Vec<String>,
 }
 
 impl Default for TypePrefs {
@@ -882,6 +902,7 @@ impl Default for TypePrefs {
             font_preview: FontPreview::Medium,
             fill_new_type_layers_with_placeholder: true,
             recent_fonts: 10,
+            favorite_fonts: Vec::new(),
         }
     }
 }
@@ -998,6 +1019,24 @@ impl Default for Integrations {
     }
 }
 
+/// The History panel's History Options… (not part of Edit › Preferences in Photoshop either).
+/// Photoshop's snapshot options come with #3634.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct HistoryOptions {
+    /// Allow Non-Linear History: editing after selecting an earlier state keeps the later
+    /// states (the new step is appended at the end), and deleting a state deletes only it.
+    pub allow_non_linear_history: bool,
+    /// Make Layer Visibility Changes Undoable: showing or hiding a layer is a history state.
+    pub make_layer_visibility_changes_undoable: bool,
+}
+
+impl Default for HistoryOptions {
+    fn default() -> Self {
+        Self { allow_non_linear_history: false, make_layer_visibility_changes_undoable: true }
+    }
+}
+
 /// Edit › Menus: hidden items and item colours, by command id.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -1083,6 +1122,8 @@ pub struct Preferences {
     pub enhanced_controls: EnhancedControls,
     pub raw_defaults: RawDefaults,
     pub integrations: Integrations,
+    /// History panel › History Options… (`history.options`).
+    pub history_options: HistoryOptions,
     /// Edit › Keyboard Shortcuts: command id → shortcut (`Cmd+Shift+N` notation); an empty
     /// string removes the default shortcut.
     pub shortcuts: BTreeMap<String, String>,
@@ -1107,6 +1148,9 @@ pub struct Preferences {
     /// as the user changes it and restored at launch when Workspace › Remember Workspace
     /// Changes is on. JSON owned by the shell.
     pub panel_layout: Value,
+    /// The Color panel's options (what it shows, its ramp, Web colors, which chip it edits),
+    /// kept across restarts as Photoshop keeps them. JSON owned by the shell.
+    pub color_panel: Value,
     /// The last choices of dialogs that remember them across restarts, by command id (Edit ›
     /// Fill…: `"edit.fill"` → its params). JSON owned by the shell.
     pub dialogs: BTreeMap<String, Value>,
@@ -1221,9 +1265,15 @@ impl Preferences {
             self.shortcuts.clear();
             return Ok(());
         }
+        // The favourite fonts are the user's library, not a Type setting: resetting the Type
+        // section keeps them (only `type.favoriteFonts` itself, or Reset All, clears them).
+        let favorites = (path == "type").then(|| self.type_.favorite_fonts.clone());
         let mut root = self.to_json();
         set_path(&mut root, path, def)?;
         *self = serde_json::from_value(root).map_err(|e| e.to_string())?;
+        if let Some(favorites) = favorites {
+            self.type_.favorite_fonts = favorites;
+        }
         Ok(())
     }
 
@@ -1268,19 +1318,22 @@ impl Session {
         r
     }
 
-    /// Push engine-relevant preferences into live state: every document's history limit, the
-    /// transform and layer-effect cache budgets and the text engine's missing-glyph protection.
+    /// Push engine-relevant preferences into live state: every document's history limit and
+    /// linearity, the transform and layer-effect cache budgets and the text engine's
+    /// missing-glyph protection.
     pub fn apply_prefs(&mut self) {
         let n = self.prefs().performance.history_states.max(1) as usize;
         let bytes = self.prefs().performance.history_budget_bytes();
         let budget = self.prefs().performance.effect_cache_mb as usize;
+        let non_linear = self.prefs().history_options.allow_non_linear_history;
         for st in &mut self.docs {
             st.history.max_states = n;
             st.history.max_bytes = bytes;
+            st.history.non_linear = non_linear;
             st.trim_history();
         }
         photocraft_compose::set_effect_cache_budget(budget << 20);
-        crate::transform_cmds::set_budget(u64::from(self.prefs().performance.memory_usage_mb) << 20);
+        crate::transform_cmds::set_budget(u64::from(self.prefs().performance.effective_memory_usage_mb()) << 20);
         // Without waiting for the system font scan: this runs on the UI thread at launch.
         photocraft_text::set_shared_missing_glyph_protection(self.prefs().type_.missing_glyph_protection());
         crate::plugin_cmds::sync_prefs(self);

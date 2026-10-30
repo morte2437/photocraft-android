@@ -108,7 +108,8 @@ fn outer_glow_plan_knocks_out_see_through_fill() {
 #[test]
 fn color_lookup_with_an_overflowing_stored_size_uploads_no_table() {
     for size in [1 << 22, u32::MAX] {
-        let a = Adjustment::ColorLookup { name: "x".into(), lut: Some(std::sync::Arc::new(vec![0.5; 24])), size, tetrahedral: false, dither: false };
+        let a =
+            Adjustment::ColorLookup { name: "x".into(), lut: Some(std::sync::Arc::new(vec![0.5; 24])), size, tetrahedral: false, dither: false, source: None };
         let (kind, _, rows) = adjustment_program(&a, Transfer::Srgb, SampleType::U8, photocraft_color::ColorMode::Rgb);
         assert_eq!((kind, rows.is_none()), (0, true), "size {size}");
     }

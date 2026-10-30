@@ -641,7 +641,8 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
     let reverse = p.get("reverse").and_then(Value::as_bool).unwrap_or(false);
     let id = s.edit("New Gradient Fill Layer", |doc, active| {
         let fill = Fill::gradient(stops, angle, scale, style, reverse).in_mode(doc.mode);
-        let id = doc.insert_above(*active, Layer::new(doc.next_layer_name("Gradient Fill"), LayerContent::Fill(fill)));
+        let layer = Layer::new(doc.next_layer_name("Gradient Fill"), LayerContent::Fill(fill));
+        let id = crate::layer_place::insert_new(doc, *active, layer, crate::layer_place::Place::Auto);
         *active = Some(id);
         Ok(id)
     })?;

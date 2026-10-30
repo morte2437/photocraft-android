@@ -137,6 +137,36 @@ fn parallel_feathered_pixel_mask_returns_the_same_tiles() {
     assert!(outputs.iter().all(|surface| Arc::ptr_eq(surface.tiles().next().unwrap().1, outputs[0].tiles().next().unwrap().1)));
 }
 
+/// A feather reaching the canvas edge sees the mask continue past it with its edge values, as
+/// in Photoshop (#9475): a rectangle near the edge feathers the same on a taller canvas holding
+/// the same mask (clamping each blur pass at the edge brightened it by up to 12 levels at
+/// 32 px), and a mask white up to the edge stays white along it.
+#[test]
+fn feather_at_the_canvas_edge_continues_the_mask_past_it() {
+    let mut layer = Layer::raster("edge", PixelFormat::RGBA8);
+    let mut mask = photocraft_doc::LayerMask::hide_all();
+    mask.surface.fill_rect(Rect::new(40, 20, 120, 60), &[1.0]);
+    mask.feather = 32.0;
+    layer.mask = Some(mask);
+    let canvas = Rect::new(0, 0, 160, 80);
+    let tight = combined_mask(&layer, canvas).unwrap().read_region(canvas);
+    let tall = combined_mask(&layer, Rect::new(0, -200, 160, 280)).unwrap().read_region(canvas);
+    let worst = tight.iter().zip(&tall).map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
+    assert!(worst < 1e-4, "the canvas edge changed the feather by {worst}");
+
+    let mut half = photocraft_doc::LayerMask::hide_all();
+    half.surface.fill_rect(Rect::new(0, 0, 80, 80), &[1.0]);
+    half.feather = 32.0;
+    layer.mask = Some(half);
+    let m = combined_mask(&layer, canvas).unwrap().read_region(canvas);
+    // Photoshop: every row the same, no darkening towards the top or bottom edge.
+    let middle = &m[40 * 160..41 * 160];
+    for (y, row) in m.as_chunks::<160>().0.iter().enumerate() {
+        assert!(row.iter().zip(middle).all(|(a, b)| (a - b).abs() < 1e-5), "row {y} differs from row 40");
+    }
+    assert!(middle[0] > 0.99, "the left edge stays white: {}", middle[0]);
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn vector_mask_build_inside_a_small_rayon_pool_completes() {

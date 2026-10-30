@@ -1,5 +1,164 @@
 use super::*;
 
+#[test]
+fn busy_driver_page_requests_a_retry_without_input() {
+    let (mut app, ctx) = app();
+    let mut fields = json!({"printer": "Test printer", "__printers": ["Test printer"], "paper": "letter"}).as_object().unwrap().clone();
+    let (held_tx, held) = std::sync::mpsc::channel();
+    let (release, released_rx) = std::sync::mpsc::channel::<()>();
+    let holder = std::thread::spawn(move || {
+        photocraft_engine::print_cmds::with_spooler(|| {
+            held_tx.send(()).unwrap();
+            let _ = released_rx.recv_timeout(std::time::Duration::from_secs(5));
+        });
+    });
+    held.recv().unwrap();
+    let mut delay = std::time::Duration::MAX;
+    for _ in 0..6 {
+        let mut output = ctx.run_ui(Default::default(), |ui| print_body(&mut app, ui, &mut fields, 1));
+        delay = output.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+        output.textures_delta.clear();
+    }
+    let busy = fields.get("__pageError").cloned();
+    let initialized = fields.get("__driverPageInitialized").cloned();
+    let _ = release.send(());
+    holder.join().unwrap();
+    assert_eq!(busy, Some(json!(photocraft_engine::print_cmds::SPOOLER_BUSY)));
+    assert_ne!(initialized, Some(json!(true)));
+    assert!(delay <= std::time::Duration::from_millis(100), "busy driver repaint delay: {delay:?}");
+    photocraft_engine::print_cmds::with_spooler(|| {
+        ctx.run_ui(Default::default(), |ui| print_body(&mut app, ui, &mut fields, 1)).textures_delta.clear();
+        assert_eq!(fields.get("__driverPageInitialized"), Some(&json!(true)));
+        assert_ne!(fields.get("__pageError"), Some(&json!(photocraft_engine::print_cmds::SPOOLER_BUSY)));
+    });
+}
+
+#[cfg(windows)]
+#[test]
+fn print_dialog_keeps_saved_settings_when_the_cached_printer_list_is_empty() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let (mut app, ctx) = app();
+    let available = Arc::new(AtomicBool::new(false));
+    let listed = Arc::clone(&available);
+    app.session.printer_source = Some(Arc::new(move || {
+        if listed.load(Ordering::SeqCst) {
+            vec![craft_print::Printer { name: "Saved printer".into(), default: true, two_sided: None, description: String::new() }]
+        } else {
+            Vec::new()
+        }
+    }));
+    app.session.prefs.edit(|p| {
+        p.dialogs.insert(photocraft_engine::print_cmds::REMEMBERED.into(), json!({"printer": "Saved printer", "printerSettings": "0011"}));
+    });
+    let mut lister = photocraft_engine::Session::new();
+    lister.printer_source = app.session.printer_source.clone();
+    let (held_tx, held) = std::sync::mpsc::channel();
+    let (release, released_rx) = std::sync::mpsc::channel::<()>();
+    let holder = std::thread::spawn(move || {
+        photocraft_engine::print_cmds::with_spooler(|| {
+            assert!(photocraft_engine::print_cmds::rgb_printers(&lister).unwrap().is_empty());
+            available.store(true, Ordering::SeqCst);
+            held_tx.send(()).unwrap();
+            let _ = released_rx.recv_timeout(std::time::Duration::from_secs(5));
+        });
+    });
+    held.recv().unwrap();
+    let id = open_print(&mut app);
+    let mut fields = app.ui.dialog_mut(id).unwrap().fields.clone();
+    let before_retry = (fields.get("printer").cloned(), fields.get("printerSettings").cloned());
+    let pending = fields.get("__printerListingPending").cloned();
+    let _ = release.send(());
+    holder.join().unwrap();
+    assert_eq!(pending, Some(json!(true)));
+    assert_eq!(before_retry, (Some(json!("Saved printer")), Some(json!("0011"))));
+    fields.insert("dryRun".into(), json!(true));
+    photocraft_engine::print_cmds::with_spooler(|| {
+        ctx.run_ui(Default::default(), |ui| print_body(&mut app, ui, &mut fields, id)).textures_delta.clear();
+        assert_eq!(fields["printer"], "Saved printer");
+        assert_eq!(fields["printerSettings"], "0011");
+        assert!(!fields.contains_key("__printerListingPending"));
+    });
+}
+
+#[test]
+fn print_dialog_retries_an_uncached_printer_list_after_the_spooler_is_released() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    let (mut app, ctx) = app();
+    let asked = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&asked);
+    app.session.printer_source = Some(Arc::new(move || {
+        counted.fetch_add(1, Ordering::SeqCst);
+        vec![craft_print::Printer { name: "Retry printer".into(), default: true, two_sided: None, description: String::new() }]
+    }));
+    let (held_tx, held) = std::sync::mpsc::channel();
+    let (release, released_rx) = std::sync::mpsc::channel::<()>();
+    let released = Arc::new(AtomicBool::new(false));
+    let done = Arc::clone(&released);
+    let holder = std::thread::spawn(move || {
+        photocraft_engine::print_cmds::with_spooler(|| {
+            held_tx.send(()).unwrap();
+            let _ = released_rx.recv_timeout(std::time::Duration::from_secs(5));
+            done.store(true, Ordering::SeqCst);
+        });
+    });
+    held.recv().unwrap();
+    let id = open_print(&mut app);
+    let mut fields = app.ui.dialog_mut(id).unwrap().fields.clone();
+    fields.insert("dryRun".into(), json!(true));
+    ctx.run_ui(Default::default(), |ui| print_body(&mut app, ui, &mut fields, id)).textures_delta.clear();
+    let waited = released.load(Ordering::SeqCst);
+    let calls_while_busy = asked.load(Ordering::SeqCst);
+    let _ = release.send(());
+    holder.join().unwrap();
+    assert!(!waited, "opening or drawing Print waited for the spooler");
+    assert_eq!(calls_while_busy, 0);
+    assert_eq!(fields["__systemPrinters"], json!([]));
+    photocraft_engine::print_cmds::with_spooler(|| {
+        ctx.run_ui(Default::default(), |ui| print_body(&mut app, ui, &mut fields, id)).textures_delta.clear();
+        assert_eq!(fields["__systemPrinters"], json!([{"name": "Retry printer", "default": true}]));
+        assert_eq!(fields.get("__printers"), cfg!(windows).then(|| json!(["Retry printer"])).as_ref());
+        assert!(!fields.contains_key("__printerListingPending"));
+        assert!(asked.load(Ordering::SeqCst) > 0);
+    });
+}
+
+#[test]
+fn driver_calls_do_not_wait_while_the_spooler_is_busy() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let (mut app, _) = app();
+    let (held_tx, held) = std::sync::mpsc::channel();
+    let (release, released_rx) = std::sync::mpsc::channel::<()>();
+    let released = Arc::new(AtomicBool::new(false));
+    let holder = {
+        let released = Arc::clone(&released);
+        std::thread::spawn(move || {
+            photocraft_engine::print_cmds::with_spooler(|| {
+                held_tx.send(()).unwrap();
+                let _ = released_rx.recv_timeout(std::time::Duration::from_secs(5));
+                released.store(true, Ordering::SeqCst);
+            });
+        })
+    };
+    held.recv().unwrap();
+    let mut page = Map::new();
+    page.insert("printer".into(), json!("Test printer"));
+    page.insert("__driverPageInitialized".into(), json!(true));
+    let answered = print::driver_page(&mut page);
+    let mut turn = Map::new();
+    turn.insert("printer".into(), json!("Test printer"));
+    turn.insert("paper".into(), json!([595.28, 841.89]));
+    turn_driver(&mut app, &mut turn, true);
+    let waited = released.load(Ordering::SeqCst);
+    let _ = release.send(());
+    holder.join().unwrap();
+    assert!(!waited, "a driver call waited for the spooler");
+    assert!(!answered);
+    assert!(page.get("__driverPageInitialized").is_none());
+    assert_eq!(page["__pageError"], photocraft_engine::print_cmds::SPOOLER_BUSY);
+    assert_eq!(turn["__pageError"], photocraft_engine::print_cmds::SPOOLER_BUSY);
+    assert_eq!((turn.get("paper"), turn.get("printerSettings")), (Some(&json!([595.28, 841.89])), None));
+}
+
 /// Checks no-jump centering and nonaccumulating screen displacement against shared layout
 /// across fit, percentage scaling, orientation and mirroring combinations.
 #[test]
@@ -59,6 +218,8 @@ fn print_drag_rejects_nonfinite_input_and_bounds_offsets() {
 
 fn app() -> (PhotocraftApp, egui::Context) {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.session.printer_source =
+        Some(Arc::new(|| vec![craft_print::Printer { name: "Test printer".into(), default: true, two_sided: None, description: String::new() }]));
     app.run("file.new", json!({"width": 120, "height": 80, "name": "web"})).unwrap();
     (app, egui::Context::default())
 }
@@ -95,6 +256,16 @@ fn save_for_web_dialog_runs_the_command() {
     let d = app.ui.dialog_mut(r["dialog"].as_u64().unwrap()).unwrap();
     assert_eq!(d.fields["format"], "gif");
     assert!(!d.fields.contains_key("path"));
+    // WebP, with the dialog's own defaults (lossy at quality 60).
+    let id = r["dialog"].as_u64().unwrap();
+    let d = app.ui.dialog_mut(id).unwrap();
+    let path = dir.join("web.webp").to_string_lossy().into_owned();
+    d.fields.insert("format".into(), json!("webp"));
+    d.fields.insert("path".into(), json!(path));
+    crate::dialogs::confirm(&mut app, id).unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+    assert_eq!(&bytes[8..12], b"WEBP");
+    assert!(bytes.windows(4).any(|w| w == b"VP8 "), "lossy by default");
 }
 
 /// A fresh session's dialog seeds from the preferences: the last export before a restart is
@@ -432,11 +603,16 @@ fn printer_menu_lists_the_spooler_printers_after_the_default() {
     assert_eq!(printer_options(None, "").len(), 1);
     // The dialog asks the engine, and the list never reaches file.print's params.
     let (mut app, ctx) = app();
-    let id = crate::menus::invoke(&mut app, &ctx, "file.print", json!({})).unwrap()["dialog"].as_u64().unwrap();
+    let id = photocraft_engine::print_cmds::with_spooler(|| crate::menus::invoke(&mut app, &ctx, "file.print", json!({})).unwrap()["dialog"].as_u64().unwrap());
     let f = &app.ui.dialog_mut(id).unwrap().fields;
-    assert!(f.get("__systemPrinters").is_some_and(Value::is_array));
+    assert_eq!(f["__systemPrinters"], json!([{"name": "Test printer", "default": true}]));
+    assert_eq!(f.get("__printers"), cfg!(windows).then(|| json!(["Test printer"])).as_ref());
+    if cfg!(windows) {
+        assert_eq!(f["printer"], "Test printer");
+    }
     assert!(params(f).get("__systemPrinters").is_none());
     assert!(params(f).get("__printers").is_none());
+    assert_eq!(photocraft_engine::print_cmds::system_printer_listings(), 0, "a test asked the system spooler for its printers");
 }
 
 /// An output path or a preview typed and confirmed in one frame doesn't take the driver's area.
@@ -478,7 +654,10 @@ fn save_as_pdf_browse_fills_the_output_from_a_save_dialog() {
     let (show, asked) = crate::file_dialog::fake(vec![Some(FileDialogAnswer::SaveTo(out.clone()))]);
     let mut h = Harness::builder().with_size(egui::vec2(1440.0, 900.0)).with_max_steps(64).build_eframe(move |cc| {
         PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
-        PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services { file_dialog: Some(show), ..Default::default() })
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services { file_dialog: Some(show), ..Default::default() });
+        app.session.printer_source =
+            Some(Arc::new(|| vec![craft_print::Printer { name: "Test printer".into(), default: true, two_sided: None, description: String::new() }]));
+        app
     });
     h.state_mut().run("file.new", json!({"width": 120, "height": 80, "name": "poster"})).unwrap();
     let id = open_print(h.state_mut());

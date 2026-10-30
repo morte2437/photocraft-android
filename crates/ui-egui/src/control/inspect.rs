@@ -41,6 +41,11 @@ pub fn inspect(app: &PhotocraftApp, ctx: &egui::Context) -> Value {
         "camTransform": app.ui.cam_transform,
         "layerMenu": app.ui.layer_menu,
         "layerPicker": app.ui.layer_picker,
+        "brushModeMenu": app.ui.brush_mode_menu.map(|pos| json!({
+            "pos": pos,
+            "mode": if app.ui.tool_options.brush_clear { "Clear" } else { app.session.tools.brush.mode.label() },
+            "choices": crate::brush_mode_menu::choices().iter().map(|(_, label)| *label).collect::<Vec<_>>(),
+        })),
         "brushPicker": app.ui.brush_picker.map(|pos| json!({
             "pos": pos,
             // The picker's content size once its corner grip was dragged (null: the default).
@@ -88,7 +93,13 @@ pub fn inspect(app: &PhotocraftApp, ctx: &egui::Context) -> Value {
         "frame": app.frame,
         "session": photocraft_engine::inspect::session(&app.session),
         "document": app.session.active().map(photocraft_engine::inspect::document),
-        "perf": {"fps": app.fps, "timings": app.perf, "strokeTrace": app.stroke_trace.last},
+        "perf": {
+            "fps": app.fps,
+            "timings": app.perf,
+            "strokeTrace": app.stroke_trace.last,
+            "renderPath": crate::render_path::inspect(app),
+            "slowFrames": app.slow_frames,
+        },
         "brush": {"size": app.session.tools.brush.size, "hardness": app.session.tools.brush.hardness, "opacity": app.session.tools.brush.opacity},
         "distort": app.distort.describe(),
         "jobs": crate::jobs_ui::inspect(app),

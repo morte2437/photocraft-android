@@ -403,7 +403,7 @@ fn paste(s: &mut Session, p: &Value, in_place: bool) -> Result<Value> {
     let id = s.edit("Paste", |doc, active| {
         let mut l = Layer::raster(doc.next_layer_name("Layer"), target);
         *crate::pixels_mut(&mut l)? = surf;
-        let id = doc.insert_above(*active, l);
+        let id = crate::layer_place::insert_new(doc, *active, l, crate::layer_place::Place::AutoEditable);
         *active = Some(id);
         doc.selection = None;
         Ok(id)
@@ -445,9 +445,13 @@ fn paste_layers(s: &mut Session, layers: &Document, dx: i32, dy: i32) -> Result<
     let id = s.edit("Paste", |doc, active| {
         doc.patterns.extend(patterns);
         doc.metadata.psd_global_blocks.extend(linked);
+        // The first pasted layer goes where a new layer would; the rest stack above it.
+        let mut place = crate::layer_place::Place::AutoEditable;
         for l in copies.layers {
-            *active = Some(doc.insert_above(*active, l));
+            *active = Some(crate::layer_place::insert_new(doc, *active, l, place));
+            place = crate::layer_place::Place::Above;
         }
+        crate::cmd::layer_multi_cmds::check_group_depth(doc, "Paste")?;
         doc.selection = None;
         active.ok_or(EngineError::Other("nothing to paste".into()))
     })?;
@@ -506,8 +510,16 @@ pub(crate) fn paste_to_target(s: &mut Session, p: &Value, in_place: bool, limit:
     let src = shifted(&clip.surface, dx, dy);
     let area = src.content_bounds().intersect(&canvas);
     s.edit(label, |doc, _| {
+        // A spot channel stores ink: the paste goes over its tone, then back to ink (#5787).
+        let spot = crate::channel_cmds::is_spot_target(doc, p);
         let (surf, _) = crate::channel_cmds::target_surface(doc, layer, p)?;
+        if spot {
+            crate::channel_cmds::invert_region(surf, area)?;
+        }
         crate::fill_cmds::composite_over(surf, &src, area, limit)?;
+        if spot {
+            crate::channel_cmds::invert_region(surf, area)?;
+        }
         surf.prune();
         doc.selection = None;
         Ok(())
@@ -579,7 +591,7 @@ fn layer_via(s: &mut Session, cut: bool) -> Result<Value> {
         }
         let mut l = Layer::raster(doc.next_layer_name("Layer"), clip.surface.format());
         *crate::pixels_mut(&mut l)? = clip.surface;
-        let nid = doc.insert_above(Some(id), l);
+        let nid = crate::layer_place::insert_new(doc, Some(id), l, crate::layer_place::Place::Above);
         *active = Some(nid);
         // Photoshop deselects: a following Free Transform moves the whole new layer (#1096).
         doc.selection = None;
@@ -734,9 +746,10 @@ fn toggle_last_state(s: &mut Session) -> Result<Value> {
     Ok(json!(if redo { s.redo() } else { s.undo() }))
 }
 
-/// Edit › Transform › Again: replay the last `edit.transform` on the active layer.
+/// Edit › Transform › Again: replay the last `edit.transform` on the selected layers (#6501).
 fn transform_again(s: &mut Session) -> Result<Value> {
-    let p = transform_again_params(s)?;
+    let ids = s.active().map(crate::transform_cmds::selection_targets).unwrap_or_default();
+    let p = transform_again_params(s, &ids)?;
     s.execute("edit.transform", p)
 }
 
@@ -744,8 +757,8 @@ fn transform_again(s: &mut Session) -> Result<Value> {
 /// last transform on the copy, as one history step, so pressing it again steps and repeats
 /// (#352). The transform is worked out before anything changes, so a refusal leaves no copy.
 fn transform_again_copy(s: &mut Session) -> Result<Value> {
-    let p = transform_again_params(s)?;
     let id = active_id(s)?;
+    let p = transform_again_params(s, &[id])?;
     let journal = s.journal.len();
     // The steps are recorded (Again on a Copy is not replayable itself): with one layer selected,
     // "duplicate the current layer" plays back on any document, a layer id only on this one.
@@ -761,18 +774,16 @@ fn transform_again_copy(s: &mut Session) -> Result<Value> {
         Err(e) => {
             // The copy (e.g. of a layer whose position is locked) couldn't be transformed: take
             // it back, leaving nothing to redo and no Duplicate step to record.
-            s.undo();
+            s.rollback();
             s.journal.truncate(journal);
-            if let Some(st) = s.active_mut() {
-                st.history.clear_redo();
-            }
             Err(e)
         }
     }
 }
 
-/// The `edit.transform` params that repeat the last transform on the active layer.
-fn transform_again_params(s: &Session) -> Result<Value> {
+/// The `edit.transform` params that repeat the last transform on the layers `ids` (their frame
+/// together is the box it starts from).
+fn transform_again_params(s: &Session, ids: &[LayerId]) -> Result<Value> {
     let (_, last) =
         s.journal.iter().rev().find(|(id, _)| id == "edit.transform").cloned().ok_or(EngineError::Other("there is no transform to repeat".into()))?;
     let (rect, quad) = (last.get("rect").cloned(), last.get("quad").cloned());
@@ -791,8 +802,8 @@ fn transform_again_params(s: &Session) -> Result<Value> {
             )
             .ok_or(EngineError::Other("the last transform can't be repeated".into()))?;
             let d = s.active().ok_or(EngineError::NoDocument)?;
-            let l = d.doc.layer(active_id(s)?).ok_or(EngineError::Other("no active layer".into()))?;
-            let b = crate::transform_cmds::transform_bounds(&d.doc, l);
+            d.doc.layer(active_id(s)?).ok_or(EngineError::Other("no active layer".into()))?;
+            let b = crate::transform_cmds::transform_bounds_of(&d.doc, ids);
             if b.is_empty() {
                 return Err(EngineError::Other("nothing to transform".into()));
             }
@@ -905,7 +916,18 @@ fn edit_guide(s: &mut Session, p: &Value) -> Result<Value> {
 /// View › New Guide / guide moves (undoable, like Photoshop's "New Guide"/"Move Guide" states).
 fn guide_cmd(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
     let vertical = p.get("orientation").and_then(Value::as_str).unwrap_or("horizontal") == "vertical";
-    let pos = guide_position(s, p, vertical)?;
+    // Move Guide can turn the guide (⌥ while dragging it, as in Photoshop): `toOrientation`.
+    let to_vertical = match p.get("toOrientation").map(|v| v.as_str()) {
+        None => vertical,
+        Some(Some("vertical")) => true,
+        Some(Some("horizontal")) => false,
+        Some(_) => return Err(EngineError::Other("`toOrientation` must be \"horizontal\" or \"vertical\"".into())),
+    };
+    if to_vertical != vertical && op != "move" {
+        return Err(EngineError::Other("`toOrientation` applies to view.moveGuide only".into()));
+    }
+    // A % position is of the axis the guide ends up on.
+    let pos = guide_position(s, p, to_vertical)?;
     let color = if op == "new" { guide_color(p)? } else { None };
     let index = p.get("index").and_then(Value::as_u64).map(|v| v as usize);
     let label = match op {
@@ -928,10 +950,20 @@ fn guide_cmd(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
             "move" => {
                 let i = index.filter(|i| *i < g.len()).ok_or(EngineError::Other("no such guide".into()))?;
                 let to = pos.ok_or(EngineError::Other("missing `position`".into()))?;
-                let from = std::mem::replace(&mut g[i], to);
+                let from = if to_vertical == vertical {
+                    std::mem::replace(&mut g[i], to)
+                } else {
+                    let from = g.remove(i);
+                    if to_vertical {
+                        guides.vertical.push(to)
+                    } else {
+                        guides.horizontal.push(to)
+                    }
+                    from
+                };
                 // The guide takes its colour along; another guide left at the old position keeps it.
                 if let Some(rgb) = guides.color(vertical, from) {
-                    guides.set_color(vertical, to, Some(rgb));
+                    guides.set_color(to_vertical, to, Some(rgb));
                 }
                 guides.prune_colors();
             }
@@ -1077,7 +1109,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Move Guide",
             &[],
             None,
-            r##"{"orientation":"horizontal|vertical","index":n,"position":px or "<number><unit>"} (units as for view.newGuide)"##,
+            r##"{"orientation":"horizontal|vertical","index":n,"position":px or "<number><unit>","toOrientation":"horizontal|vertical"?} (units as for view.newGuide; toOrientation turns the guide, its position then on the new axis)"##,
             has_doc,
             |s, p| guide_cmd(s, p, "move")
         ),

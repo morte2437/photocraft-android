@@ -69,9 +69,15 @@ const BLEND_LONG_NAMES: [(BlendMode, &str); 17] = [
     (BlendMode::Luminosity, "luminosity"),
 ];
 
-/// A blend-mode enum from either its four-character code or its long string ID.
+/// A blend-mode enum from its four-character code, its long string ID, or the layer record's key:
+/// Photoshop 2026 writes `vLit`, `lddg`, `lbrn`… as an effect's `Md  ` for some modes (#8567).
 pub(crate) fn blend_from_id(v: &[u8]) -> Option<BlendMode> {
-    BLEND_NAMES.iter().chain(&BLEND_LONG_NAMES).find(|(_, n)| n.as_bytes() == v).map(|(m, _)| *m)
+    BLEND_NAMES
+        .iter()
+        .chain(&BLEND_LONG_NAMES)
+        .find(|(_, n)| n.as_bytes() == v)
+        .map(|(m, _)| *m)
+        .or_else(|| <[u8; 4]>::try_from(v).ok().and_then(BlendMode::from_psd_key))
 }
 
 fn blend_of(d: &Descriptor, key: &str, default: BlendMode) -> BlendMode {
@@ -122,14 +128,48 @@ fn contour(d: &Descriptor, key: &str) -> Contour {
     let linear = points.len() == 2 && points[0].input == 0.0 && points[0].output == 0.0 && points[1].input == 1.0 && points[1].output == 1.0;
     if points.is_empty() || (linear && (name.is_empty() || name == "Linear")) { Contour::Linear } else { Contour::Custom { name, points, corners } }
 }
+
+/// Indices of the contour points a PSD keeps, in order: all of them up to [`PSD_CONTOUR_POINTS`],
+/// else both ends and then, one at a time, the point farthest (in output) from the line between
+/// the kept points around it, so peaks and valleys (Ring - Double's two rings) survive.
+fn psd_contour_points(points: &[CurvePoint]) -> Vec<usize> {
+    if points.len() <= PSD_CONTOUR_POINTS {
+        return (0..points.len()).collect();
+    }
+    let mut kept = vec![0, points.len() - 1];
+    while kept.len() < PSD_CONTOUR_POINTS {
+        let mut farthest: Option<(f32, usize)> = None;
+        for pair in kept.windows(2) {
+            let &[a, b] = pair else { continue };
+            let (Some(pa), Some(pb)) = (points.get(a), points.get(b)) else { continue };
+            let span = pb.input - pa.input;
+            for (i, p) in points.iter().enumerate().take(b).skip(a + 1) {
+                // Only equal inputs (a vertical step) have no span: inputs a few ulps apart still do.
+                let t = if span != 0.0 && span.is_finite() { (p.input - pa.input) / span } else { 0.0 };
+                let off = (p.output - (pa.output + t * (pb.output - pa.output))).abs();
+                if off.is_finite() && farthest.is_none_or(|(f, _)| off > f) {
+                    farthest = Some((off, i));
+                }
+            }
+        }
+        let Some((_, i)) = farthest else { break };
+        kept.insert(kept.partition_point(|&k| k < i), i);
+    }
+    kept
+}
+
+/// The most points Photoshop reads in an effect's contour (`ShpC` › `Crv `): a layer whose effects
+/// carry a longer one fails to load ("A problem was encountered reading layer … program error"),
+/// and Photoshop then drops all of its effects; 16 loads (#9556).
+const PSD_CONTOUR_POINTS: usize = 16;
 fn contour_value(c: &Contour) -> Value {
     let (name, points) = match c {
         Contour::Linear => ("Linear".to_string(), vec![CurvePoint { input: 0.0, output: 0.0 }, CurvePoint { input: 1.0, output: 1.0 }]),
         Contour::Custom { name, points, .. } => (name.clone(), points.clone()),
     };
-    let pts = points
-        .iter()
-        .enumerate()
+    let pts = psd_contour_points(&points)
+        .into_iter()
+        .filter_map(|i| points.get(i).map(|p| (i, p)))
         .map(|(i, p)| {
             let d = Descriptor::new("CrPt").with("Hrzn", Value::Double(f64::from(p.input * 255.0))).with("Vrtc", Value::Double(f64::from(p.output * 255.0)));
             // Photoshop writes no `Cnty` (continuity) on smooth points; a corner carries `Cnty` false.

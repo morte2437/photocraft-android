@@ -1,5 +1,5 @@
 use super::panel::surface;
-use super::*;
+use super::{Rect, Response, Sense, Stroke, StrokeKind, Tokens, Ui, Vec2, theme, vec2};
 
 /// The most characters a [`text_field`] holds unless its caller sets a limit: far beyond any
 /// search, name or hex value, yet a pasted multi-gigabyte string is cut at the field instead of
@@ -56,6 +56,24 @@ pub fn text_field(ui: &mut Ui, id: egui::Id, text: &mut String, hint: &str, widt
 /// [`text_field`] limited to `char_limit` characters (a hex field's six digits, say), or to
 /// [`TEXT_FIELD_LIMIT`] without one.
 pub fn text_field_ex(ui: &mut Ui, id: egui::Id, text: &mut String, hint: &str, width: f32, mono: bool, char_limit: Option<usize>) -> Response {
+    text_field_in(ui, id, text, hint, [width, 0.0], mono, char_limit).0
+}
+
+/// A plain text field reserving space at its right for an embedded popup arrow.
+/// Returns the editor and the full field rectangle; the arrow gets its own interaction id.
+pub fn text_field_with_trailing(ui: &mut Ui, id: egui::Id, text: &mut String, hint: &str, width: f32, trailing: f32) -> (Response, Rect) {
+    text_field_in(ui, id, text, hint, [width, trailing], false, None)
+}
+
+fn text_field_in(
+    ui: &mut Ui,
+    id: egui::Id,
+    text: &mut String,
+    hint: &str,
+    [width, trailing]: [f32; 2],
+    mono: bool,
+    char_limit: Option<usize>,
+) -> (Response, Rect) {
     let t = Tokens::get(ui.ctx());
     let (rect, _) = ui.allocate_exact_size(vec2(width.max(16.0), TEXT_FIELD_H), Sense::hover());
     surface(ui, rect, t.field, false);
@@ -63,7 +81,8 @@ pub fn text_field_ex(ui: &mut Ui, id: egui::Id, text: &mut String, hint: &str, w
         ui.painter().rect_stroke(rect, t.radius_sm, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
     }
     let font = if mono { theme::mono(12.0) } else { egui::FontId::proportional(12.5) };
-    let inner = rect.shrink2(TEXT_FIELD_PAD);
+    let mut inner = rect.shrink2(TEXT_FIELD_PAD);
+    inner.max.x = (inner.max.x - trailing).max(inner.min.x + 1.0);
     let limit = char_limit.unwrap_or(TEXT_FIELD_LIMIT);
     // A value already past the limit (restored from a state file, set by automation) is shown and
     // edited as its first `limit` characters, so it is never laid out whole; the caller's string
@@ -96,7 +115,7 @@ pub fn text_field_ex(ui: &mut Ui, id: egui::Id, text: &mut String, hint: &str, w
     {
         *text = b;
     }
-    response
+    (response, rect)
 }
 
 pub(super) fn first_field_id() -> egui::Id {

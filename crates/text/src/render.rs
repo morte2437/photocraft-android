@@ -17,24 +17,25 @@ use rayon::prelude::*;
 
 /// Faux-italic slant in degrees (Photoshop-like).
 pub const FAUX_ITALIC_DEG: f32 = 12.0;
-/// Faux-bold ring radius as a fraction of the font size (tuned so stem weight stays close to the old summed-coverage look).
+/// How far faux bold grows the outline on every side, as a fraction of the font size
+/// ([`crate::embolden`]): stems get twice this heavier, close to the weight of the earlier
+/// faux bold, which stamped the glyph at offsets of this radius.
 pub const FAUX_BOLD_RADIUS: f32 = 0.036;
 /// Largest raster we produce (pixels), as a guard against absurd sizes.
 const MAX_PIXELS: u64 = 256 * 1024 * 1024;
-/// Cumulative coverage-pixel work budget across all colour and faux-bold passes of one render.
+/// Cumulative coverage-pixel work budget across the colour passes of one render.
 const MAX_PASS_PIXELS: u64 = MAX_PIXELS * 4;
 /// Peak working bytes one rasterization may keep live. [`MAX_PIXELS`] does not bound them: the
-/// accumulator and the output surface are both `stride` deep, and a faux-bold pass keeps one more
-/// coverage buffer live, so a CMYK bold render reserves several times what a plain grey one does
-/// for the same pixels.
+/// accumulator and the output surface are both `stride` deep, so a CMYK render reserves several
+/// times what a plain grey one does for the same pixels.
 const MAX_RASTER_BYTES: u64 = if cfg!(target_pointer_width = "64") { 4 << 30 } else { 1 << 30 };
 
 /// Whether a `w` x `h` render's peak working bytes fit `max_bytes`: the f32 accumulator and the
-/// output surface (both `stride` deep), plus the coverage buffers live at the peak. A plain pass
-/// peaks inside `Coverage::finish`, which holds its accumulator and the vector it builds beside
-/// it; a faux-bold pass peaks one buffer higher, since the resolved plain coverage is kept while
-/// the bold pass resolves into it. `false` when the arithmetic overflows, so an absurd size is
-/// refused rather than wrapping.
+/// output surface (both `stride` deep), plus the coverage buffers live at the peak. A pass peaks
+/// inside `Coverage::finish`, which holds its accumulator and the vector it builds beside it.
+/// Faux bold draws its thickened outlines in that same pass; a `bold` render is still budgeted
+/// one buffer higher, as when it was stamped into a buffer of its own, which leaves it headroom.
+/// `false` when the arithmetic overflows, so an absurd size is refused rather than wrapping.
 fn fits_raster_budget(w: usize, h: usize, stride: usize, sample: SampleType, bold: bool, max_bytes: u64) -> bool {
     let f32s = size_of::<f32>() as u64;
     let peak = (w as u64).checked_mul(h as u64).and_then(|px| {
@@ -110,28 +111,6 @@ impl<S: LineSink> LineSink for WarpSink<'_, S> {
     }
 }
 
-/// Draws every glyph and decoration of `layout` whose style colour is `color` (or all of them
-/// when `color` is `None`) into `sink`, through `transform` (text space → sink space), bending
-/// the outlines with `warp` first (in text space).
-fn draw(layout: &TextLayout, transform: &Xform, sink: &mut impl LineSink, only_color: Option<&Color>, warp: Option<&Warp>) {
-    draw_pass(layout, transform, sink, only_color, warp, Pass::All);
-}
-
-/// Which part of the layout [`draw_pass`] emits. Faux bold draws each glyph at several offsets;
-/// summing those into one coverage buffer saturates the antialiased edge pixels (hard, pixelated
-/// stems), so the rasteriser draws every offset into its own buffer and merges them with `max`.
-#[derive(Clone, Copy, PartialEq)]
-enum Pass {
-    /// Everything, all offsets (bounds, outlines).
-    All,
-    /// Non-bold glyphs and decorations.
-    Plain,
-    /// Bold glyphs at one offset (index into [`BOLD_OFFSETS`]).
-    Bold(usize),
-}
-
-const BOLD_OFFSETS: [(f64, f64); 8] = [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0), (0.7, 0.7), (-0.7, -0.7), (0.7, -0.7), (-0.7, 0.7)];
-
 fn is_bold(layout: &TextLayout, g: &PlacedGlyph) -> bool {
     let face_bold = layout.faces.get(g.face as usize).is_some_and(|f| f.embolden);
     layout.styles.get(g.style as usize).is_some_and(|s| s.faux_bold) || face_bold
@@ -185,7 +164,11 @@ fn visible_color_passes(layout: &TextLayout, warp: Option<&Warp>) -> Vec<(Color,
     colors
 }
 
-fn draw_pass(layout: &TextLayout, transform: &Xform, sink: &mut impl LineSink, only_color: Option<&Color>, warp: Option<&Warp>, pass: Pass) {
+/// Draws every glyph and decoration of `layout` whose style colour is `color` (or all of them
+/// when `color` is `None`) into `sink`, through `transform` (text space → sink space), bending
+/// the outlines with `warp` first (in text space). Faux bold glyphs are drawn from their outline
+/// thickened by [`FAUX_BOLD_RADIUS`] ([`crate::embolden`]).
+fn draw(layout: &TextLayout, transform: &Xform, sink: &mut impl LineSink, only_color: Option<&Color>, warp: Option<&Warp>) {
     for g in &layout.glyphs {
         let st = &layout.styles[g.style as usize];
         if only_color.is_some_and(|c| c != &st.color) {
@@ -212,41 +195,27 @@ fn draw_pass(layout: &TextLayout, transform: &Xform, sink: &mut impl LineSink, o
                 }
             }
         }
-        let bold = st.faux_bold || face.embolden;
-        let r = (face.size_px * FAUX_BOLD_RADIUS) as f64;
-        let single = [(0.0, 0.0)];
-        let offsets: &[(f64, f64)] = match (pass, bold) {
-            (Pass::Plain, true) => continue,
-            (Pass::Bold(_), false) => continue,
-            (Pass::Bold(k), true) => match BOLD_OFFSETS.get(k..=k) {
-                Some(o) => o,
-                None => continue,
-            },
-            (Pass::All, true) => &BOLD_OFFSETS,
-            (_, false) => &single,
-        };
-        for &(ox, oy) in offsets {
-            let local = glyph.mul(&Xform([1.0, 0.0, 0.0, 1.0, ox * r, oy * r]));
-            let settings = DrawSettings::unhinted(Size::new(face.size_px), LocationRef::new(&coords));
-            match bend {
-                Some(w) => {
-                    let mut ws = WarpSink { inner: &mut *sink, warp: w, post: *transform };
-                    let mut pen = Pen::new(&mut ws, local);
-                    if outline.draw(settings, &mut pen).is_ok() {
-                        skrifa::outline::OutlinePen::close(&mut pen);
-                    }
-                }
-                None => {
-                    let mut pen = Pen::new(&mut *sink, transform.mul(&local));
-                    if outline.draw(settings, &mut pen).is_ok() {
-                        skrifa::outline::OutlinePen::close(&mut pen);
-                    }
-                }
+        let settings = || DrawSettings::unhinted(Size::new(face.size_px), LocationRef::new(&coords));
+        // Faux bold thickens the outline in font units, before faux italic and scaling, so the
+        // slant and proportions apply to the bold shape as they do to a real bold face. Other
+        // glyphs draw straight into the pen.
+        let mut bold = None;
+        if st.faux_bold || face.embolden {
+            let mut shape = crate::embolden::Outline::default();
+            if outline.draw(settings(), &mut shape).is_err() {
+                continue;
             }
+            shape.embolden(f64::from(face.size_px * FAUX_BOLD_RADIUS));
+            bold = Some(shape);
         }
-    }
-    if matches!(pass, Pass::Bold(_)) {
-        return;
+        let settings = settings();
+        match bend {
+            Some(w) => {
+                let mut ws = WarpSink { inner: &mut *sink, warp: w, post: *transform };
+                draw_glyph(&outline, settings, bold.as_ref(), &mut Pen::new(&mut ws, glyph));
+            }
+            None => draw_glyph(&outline, settings, bold.as_ref(), &mut Pen::new(&mut *sink, transform.mul(&glyph))),
+        }
     }
     for d in &layout.decorations {
         let st = &layout.styles[d.style as usize];
@@ -259,6 +228,23 @@ fn draw_pass(layout: &TextLayout, transform: &Xform, sink: &mut impl LineSink, o
                 rect_to(&mut ws, &Xform::IDENTITY, d.x0 as f64, d.y0 as f64, d.x1 as f64, d.y1 as f64);
             }
             None => rect_to(sink, transform, d.x0 as f64, d.y0 as f64, d.x1 as f64, d.y1 as f64),
+        }
+    }
+}
+
+/// One glyph into `pen`: its thickened `bold` outline when there is one, else the font's own.
+fn draw_glyph(
+    outline: &skrifa::outline::OutlineGlyph,
+    settings: DrawSettings,
+    bold: Option<&crate::embolden::Outline>,
+    pen: &mut impl skrifa::outline::OutlinePen,
+) {
+    match bold {
+        Some(shape) => shape.replay(pen),
+        None => {
+            if outline.draw(settings, &mut *pen).is_ok() {
+                pen.close();
+            }
         }
     }
 }
@@ -295,7 +281,8 @@ fn glyph_center(layout: &TextLayout, g: &PlacedGlyph, font: &skrifa::FontRef, si
 /// The deformation of a type layer: the path it runs along, or its Warp Text settings (None
 /// when neither applies).
 pub fn layout_deform(layout: &TextLayout, layer: &photocraft_doc::TextLayer) -> Option<Warp> {
-    Warp::on_path(&layer.shape).or_else(|| layout_warp(layout, layer.warp.as_ref()))
+    let text_start = layout.bounds().map_or(0.0, |bounds| f64::from(bounds[0]));
+    Warp::on_path_with_text_start(&layer.shape, text_start).or_else(|| layout_warp(layout, layer.warp.as_ref()))
 }
 
 /// The warp to apply to `layout` (None when `warp` is absent, `warpNone` or flat).
@@ -397,13 +384,13 @@ pub(crate) fn rasterize_passes(
     let xf = Xform([1.0, 0.0, 0.0, 1.0, -rect.x0 as f64, -rect.y0 as f64]).mul(&Xform(transform.m));
     let whole = Rect::new(0, 0, w as i32, h as i32);
     let mut pass_pixels = 0u64;
-    for &(c, color_bold) in &colors {
-        // Rasterise each colour only over its own glyphs (every offset of faux bold included):
+    for &(c, _) in &colors {
+        // Rasterise each colour only over its own glyphs (faux bold's thickened outlines included):
         // a full-size pass per colour made text with many coloured runs cost colours x area
         // (#8602). Outside its ink a colour's coverage is zero, so the result is the same.
         let sub = if per_colour {
             let mut b = Bounds::default();
-            draw_pass(layout, &xf, &mut b, Some(&c), warp, Pass::All);
+            draw(layout, &xf, &mut b, Some(&c), warp);
             b.rect.map(rect_from_bounds).unwrap_or(Rect::EMPTY).intersect(&whole)
         } else {
             whole
@@ -412,8 +399,8 @@ pub(crate) fn rasterize_passes(
             continue;
         }
         let (sw, sh) = (sub.width() as usize, sub.height() as usize);
-        let passes = 1 + if color_bold { BOLD_OFFSETS.len() } else { 0 };
-        let Some(cost) = (sw as u64).checked_mul(sh as u64).and_then(|px| px.checked_mul(passes as u64)) else {
+        // One pass per colour: faux bold draws thickened outlines in it (`draw`).
+        let Some(cost) = (sw as u64).checked_mul(sh as u64) else {
             return nothing(format);
         };
         let Some(total) = pass_pixels.checked_add(cost).filter(|&t| t <= MAX_PASS_PIXELS) else {
@@ -424,24 +411,10 @@ pub(crate) fn rasterize_passes(
         let Some(mut cov) = Coverage::try_new(sw, sh) else {
             return nothing(format);
         };
-        draw_pass(layout, &xf, &mut cov, Some(&c), warp, Pass::Plain);
-        let Some(mut cov) = cov.finish() else {
+        draw(layout, &xf, &mut cov, Some(&c), warp);
+        let Some(cov) = cov.finish() else {
             return nothing(format);
         };
-        if color_bold {
-            for k in 0..BOLD_OFFSETS.len() {
-                let Some(mut bc) = Coverage::try_new(sw, sh) else {
-                    return nothing(format);
-                };
-                draw_pass(layout, &xf, &mut bc, Some(&c), warp, Pass::Bold(k));
-                let Some(bold_cov) = bc.finish() else {
-                    return nothing(format);
-                };
-                for (a, b) in cov.iter_mut().zip(bold_cov) {
-                    *a = a.max(b);
-                }
-            }
-        }
         let comps = color_in(&format, &c);
         let a = c.alpha.clamp(0.0, 1.0);
         composite(&mut acc, w, sub, &cov, stride, &comps, a, antialias);

@@ -37,6 +37,9 @@ pub enum PsdError {
     /// A compressed stream could not be decoded.
     #[error("decompression failed: {0}")]
     Decompress(String),
+    /// Reading from a [`crate::source::ReadAt`] source failed.
+    #[error("read failed: {0}")]
+    Read(String),
     /// An operation is not supported for this data (e.g. unknown compression).
     #[error("unsupported: {0}")]
     Unsupported(String),

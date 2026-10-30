@@ -1,5 +1,5 @@
 use super::moves::{link_groups, recorded_move};
-use super::*;
+use super::{DocState, Document, EngineError, Layer, LayerContent, LayerId, Rect, Result, Session, Value, bad, json};
 
 // ---------- selection state ----------
 
@@ -139,6 +139,14 @@ pub(crate) fn recorded_step(s: &Session, id: &str, p: Value, pre_selected: Optio
     if id == "layer.moveTo" {
         return recorded_move(s, p, pre_selected);
     }
+    if id == "edit.transform" {
+        // Multi-layer transforms carry the set of ids separately. A single-layer transform
+        // uses the ordinary `layer` target, which should follow the sole selected layer when
+        // the action is replayed in a document with different ids.
+        if p.get("layers").is_some_and(Value::is_array) {
+            return recorded_transform(s, p, pre_selected);
+        }
+    }
     let Some(layer_id) = p.get("layer").and_then(Value::as_u64).map(LayerId) else { return p };
     let is_sole_selected = match pre_selected {
         Some(sel) => sel == [layer_id],
@@ -150,6 +158,27 @@ pub(crate) fn recorded_step(s: &Session, id: &str, p: Value, pre_selected: Optio
             fields.remove("layer");
         }
         return p;
+    }
+    p
+}
+
+/// A Free Transform of several layers lists their ids (the box's session keeps them while it is
+/// open). When they are the layers the selection gave it, the step drops `layers`, so it replays on
+/// the layers selected then, in any document, rather than on these ids (#6501).
+fn recorded_transform(s: &Session, mut p: Value, pre_selected: Option<&[LayerId]>) -> Value {
+    let Some(st) = s.active() else { return p };
+    let Some(listed) = p.get("layers").and_then(Value::as_array) else { return p };
+    let Some(listed) = listed.iter().map(|v| v.as_u64().map(LayerId)).collect::<Option<Vec<_>>>() else { return p };
+    let selected = pre_selected.map_or_else(|| st.selected_layers(), <[LayerId]>::to_vec);
+    let mut moved = top_level(&st.doc, &listed);
+    let mut targets = crate::transform_cmds::targets_of(&st.doc, &selected, st.active_layer);
+    moved.sort_unstable();
+    moved.dedup();
+    targets.sort_unstable();
+    if moved == targets
+        && let Some(fields) = p.as_object_mut()
+    {
+        fields.remove("layers");
     }
     p
 }

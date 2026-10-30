@@ -1,7 +1,7 @@
-use super::fields::{FieldOpts, value_field_in};
+use super::fields::{FieldOpts, VALUE_FIELD_H, value_field_in};
 use super::panel::surface;
 use super::scrub::scrub_label_within;
-use super::*;
+use super::{Color32, Pos2, Rect, Response, Sense, Stroke, Tokens, Ui, Vec2, pos2, vec2};
 
 /// Thin-track slider with a round knob. `gradient` paints the track (e.g. hue spectrum).
 pub fn slider(ui: &mut Ui, value: &mut f32, range: std::ops::RangeInclusive<f32>, gradient: Option<&[Color32]>) -> Response {
@@ -285,5 +285,48 @@ pub fn slider_row_prec(
         r.flags |= v.flags & (Flags::DRAG_STARTED | Flags::DRAGGED | Flags::DRAG_STOPPED);
     }
     ui.add_space(4.0);
+    r
+}
+
+/// A dialog row's label, right-aligned in a column `width` wide, so the controls after it line up
+/// (Photoshop's label column in Layer Style). A label too long for it, as some translations are,
+/// is cut short and shows in full on hover.
+pub fn row_label(ui: &mut Ui, label: &str, width: f32) -> Response {
+    let t = Tokens::get(ui.ctx());
+    ui.allocate_ui_with_layout(vec2(width, VALUE_FIELD_H), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.set_min_width(width);
+        ui.add(egui::Label::new(egui::RichText::new(tl!(label)).color(t.text_dim)).truncate())
+    })
+    .inner
+}
+
+/// [`slider_row`] on one line, as Photoshop lays out Layer Style: the label in a `label_w` column
+/// ([`row_label`]), the slider, then the value field. The label still scrubs the field.
+pub fn slider_line(ui: &mut Ui, label: &str, label_w: f32, value: &mut f32, range: std::ops::RangeInclusive<f32>, suffix: &str) -> Response {
+    const FIELD_W: f32 = 64.0;
+    let mut field = None;
+    let s = ui
+        .horizontal(|ui| {
+            let l = row_label(ui, label, label_w);
+            scrub_label_within(ui, &l, f32::INFINITY);
+            let w = (ui.available_width() - FIELD_W - ui.spacing().item_spacing.x).max(60.0);
+            let s = ui
+                .allocate_ui_with_layout(vec2(w, VALUE_FIELD_H), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    slider_with(ui, value, range.clone(), None, RowGestures::default())
+                })
+                .inner;
+            field = Some(value_field_in(ui, value, range.clone(), suffix, FIELD_W, 0.0, FieldOpts::default(), Some(label)).0);
+            s
+        })
+        .inner;
+    let mut r = s.clone();
+    if let Some(v) = field {
+        if v.changed() {
+            r.mark_changed();
+        }
+        // A scrub of the field or its label is one drag, like the slider's, for history.
+        use egui::response::Flags;
+        r.flags |= v.flags & (Flags::DRAG_STARTED | Flags::DRAGGED | Flags::DRAG_STOPPED);
+    }
     r
 }

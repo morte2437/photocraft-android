@@ -1,5 +1,5 @@
 use super::descriptors::{Target, class, code, get_ref, target};
-use super::*;
+use super::{D, Descriptor, ReferenceItem};
 
 /// Photoshop's `BlnM` enumeration ↔ PhotoCraft's blend mode labels.
 const BLEND_MODES: &[(&str, &str)] = &[
@@ -78,17 +78,24 @@ pub(super) const CHANNELS: &[(&str, &str)] = &[
     ("Mgnt", "magenta"),
     ("Yllw", "yellow"),
     ("Blck", "black"),
-    ("Lmnc", "lightness"),
+    // Lab Lightness: Photoshop rejects `Lmnc` ("luminance") on a Lab document (#9384).
+    ("Lght", "lightness"),
     ("A", "a"),
     ("B", "b"),
 ];
+
+/// The channel key of a `Chnl` enumeration. `Lmnc` is what PhotoCraft wrote for Lightness before
+/// #9384; reading it keeps those actions loading.
+pub(super) fn channel_of(code: &str) -> Option<&'static str> {
+    lookup(CHANNELS, code).or_else(|| (code.trim_end() == "Lmnc").then_some("lightness"))
+}
 
 /// The channel an adjustment entry's `Chnl` reference names: `None` = the composite.
 pub(super) fn channel_key(d: &Descriptor) -> Option<Option<&'static str>> {
     let r = get_ref(d, "Chnl")?;
     Some(match target(r) {
         Target::Ordinal(o) if o == "Trgt" || o == "Cmps" => None,
-        Target::Ordinal(o) => Some(lookup(CHANNELS, &o)?),
+        Target::Ordinal(o) => Some(channel_of(&o)?),
         _ => return None,
     })
 }

@@ -70,6 +70,29 @@ fn mixer_live_empty_layer_exact_commit_undo_source_preservation_and_chunking() {
     }
 }
 
+/// A dry live stroke commits exactly its preview for either sampling setting and supports undo.
+#[test]
+fn dry_mixer_live_matches_commit_with_and_without_all_layer_sampling() {
+    for fmt in [PixelFormat::RGBA8, PixelFormat::RGBA16, PixelFormat::RGBA32F] {
+        for sample_all in [false, true] {
+            let mut s = fixture(fmt);
+            let before = target(&s);
+            let p =
+                json!({"points":[[40,48],[80,48],[120,48]],"size":24,"wet":0,"sampleAllLayers":sample_all,"cleanAfterStroke":false,"loadAfterStroke":false});
+            let live = LiveMixer::begin(&s, &p).unwrap();
+            let id = s.active().unwrap().active_layer.unwrap();
+            let bounds = s.active().unwrap().doc.bounds();
+            let preview = live.doc.layer(id).unwrap().surface().unwrap().read_region(bounds);
+            s.execute("paint.mixerBrush", p).unwrap();
+            assert_eq!(preview, target(&s).read_region(bounds));
+            s.execute("edit.undo", json!({})).unwrap();
+            assert_eq!(before.read_region(bounds), target(&s).read_region(bounds));
+            s.execute("edit.redo", json!({})).unwrap();
+            assert_eq!(preview, target(&s).read_region(bounds));
+        }
+    }
+}
+
 /// Current-layer mixing matches the frozen kernel; dropping a preview and cleaning the load paint nothing.
 #[test]
 fn mixer_live_current_layer_matches_reference_and_cancels() {

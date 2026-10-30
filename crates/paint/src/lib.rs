@@ -166,6 +166,45 @@ pub fn tip_shape(radius: f32, hardness: f32) -> (f32, f32) {
     ((r0 * radius).min(radius - edge).max(0.0), (s * radius).max(edge).max(1e-3))
 }
 
+/// Dab-invariant round-tip geometry, shared by all pixels and subpixel samples.
+#[derive(Clone, Copy)]
+pub(crate) struct TipProfile {
+    core: f32,
+    shoulder: f32,
+    reach: f32,
+}
+
+impl TipProfile {
+    #[inline]
+    pub(crate) fn new(radius: f32, hardness: f32) -> Self {
+        let (core, shoulder) = tip_shape(radius, hardness);
+        Self { core, shoulder, reach: core + 2.6 * shoulder }
+    }
+
+    #[inline]
+    pub(crate) fn reach(self) -> f32 {
+        self.reach
+    }
+
+    #[inline]
+    pub(crate) fn falloff(self, d: f32) -> f32 {
+        if d <= self.core {
+            return 1.0;
+        }
+        // Keep division: multiplying by a cached reciprocal changes coverage bits.
+        let x = (d - self.core) / self.shoulder;
+        soft_exp(x * x)
+    }
+
+    #[inline]
+    pub(crate) fn coverage(self, d: f32) -> f32 {
+        if d.is_nan() || d >= self.reach + 0.5 {
+            return 0.0;
+        }
+        self.falloff(d)
+    }
+}
+
 /// `exp(-u)` as `(1 − u/64)⁶⁴` by six squarings: within 1/255 of `exp` where it matters, exact
 /// arithmetic (the same on every platform) and exactly 0 from `u = 64`.
 #[inline]
@@ -180,12 +219,7 @@ fn soft_exp(u: f32) -> f32 {
 /// Opacity of a round tip at distance `d` from its centre, edge included (see [`tip_shape`]).
 #[inline]
 pub fn tip_falloff(d: f32, radius: f32, hardness: f32) -> f32 {
-    let (r0, s) = tip_shape(radius, hardness);
-    if d <= r0 {
-        return 1.0;
-    }
-    let x = (d - r0) / s;
-    soft_exp(x * x)
+    TipProfile::new(radius, hardness).falloff(d)
 }
 
 /// How far from its centre a round tip still paints (where [`tip_falloff`] drops below ~0.1 %).
@@ -207,11 +241,7 @@ pub fn half_coverage_radius(radius: f32, hardness: f32) -> f32 {
 /// Coverage of a round dab at distance `d` from its centre.
 #[inline]
 pub fn dab_coverage(d: f32, radius: f32, hardness: f32) -> f32 {
-    // NaN distances paint nothing.
-    if d.is_nan() || d >= tip_reach(radius, hardness) + 0.5 {
-        return 0.0;
-    }
-    tip_falloff(d, radius, hardness)
+    TipProfile::new(radius, hardness).coverage(d)
 }
 
 /// Rasterize a stroke onto `target`, optionally limited by a selection (grayscale coverage surface).

@@ -1,7 +1,10 @@
 use super::bevel::{BevelPaint, TextureCtx, bevel_geom, bevel_maps, satin_map};
 use super::distance::{INSIDE_EPS, Metric, dist_inside_by, dist_outside_by, local_coverage, stroke_outside_exact};
 use super::paint::{dissolves_in, glow_map, paint_color, paint_fx, paint_glow, paint_pattern, rgb, shadow_map};
-use super::*;
+use super::{
+    BlendMode, Buffer, Effect, FxMaps, FxPaint, GlobalLight, Layer, MAX_REACH, Map, PREPARED_PATTERN_BYTES, Pattern, Placement, PreparedPatterns, Rect,
+    StrokePosition, psblend,
+};
 
 /// Build every effect map for `layer` from its alpha `shape` over `rect`.
 pub fn build_maps(layer: &Layer, shape: Vec<f32>, rect: Rect, light: &GlobalLight, tex: &TextureCtx) -> FxMaps {
@@ -176,230 +179,355 @@ pub(crate) fn composite_with_effects_prepared(
     patterns: &PreparedPatterns<'_>,
     vstroke: Option<VectorStroke<'_>>,
 ) {
-    let big = content.rect;
-    let (w, h) = (big.width() as usize, big.height() as usize);
-    // The effect shape: the content's alpha (with a split-off vector stroke, `content` is the
-    // unmasked fill and the mask applies to fill ∪ stroke), joined with a filled shape's outline.
-    let kmask = |i: usize| vstroke.as_ref().and_then(|v| v.mask).and_then(|m| m.get(i)).copied().unwrap_or(1.0);
-    let union = |i: usize, a: f32| vstroke.as_ref().and_then(|v| v.stroke.px.get(i)).map_or(a, |s| kmask(i) * (a + s[3] * (1.0 - a)));
-    // Transparency Shapes Layer off: the shape is the whole layer (its masks, as the maps were
-    // built), and the content's own transparency acts like fill opacity within it.
-    let shapeless = !layer.advanced.transparency_shapes;
-    let shape = if shapeless {
-        maps.crop(&maps.shape, big, 0.0)
-    } else if maps.outline {
-        let o = maps.crop(&maps.shape, big, 0.0);
-        Map { w, h, v: o.v.iter().zip(&content.px).enumerate().map(|(i, (o, p))| o.max(union(i, p[3]))).collect() }
-    } else {
-        Map { w, h, v: content.px.iter().enumerate().map(|(i, p)| union(i, p[3])).collect() }
-    };
-    let relative = shapeless || maps.outline || vstroke.is_some();
-    let fx = |i: usize, k: usize| maps.crop(&maps.per[i][k], big, 0.0);
-    // Layer bounds (gradients aligned with the layer use the whole layer,
-    // independent of the render rect).
-    let sb = layer_bounds;
-    // Linked patterns tile from the effects reference point (else the layer's top-left).
-    let anchor = layer.effects.reference.unwrap_or((f64::from(sb.x0), f64::from(sb.y0)));
+    let pass = EffectPass::new(layer, maps, content.rect, layer_bounds, patterns, vstroke.as_ref());
+    let big = pass.big;
+    let shape = pass.effect_shape(content);
     let rect = backdrop.rect;
     let before = backdrop.clone();
     // Exterior effects are painted on a backdrop copy extended to `big`.
     let mut work = Buffer::transparent(big);
     for y in rect.y0.max(big.y0)..rect.y1.min(big.y1) {
         for x in rect.x0.max(big.x0)..rect.x1.min(big.x1) {
-            work.px[((y - big.y0) as usize) * w + (x - big.x0) as usize] = before.get(x, y);
+            work.px[((y - big.y0) as usize) * pass.w + (x - big.x0) as usize] = before.get(x, y);
         }
     }
-    let items: Vec<&Effect> = layer.effects.items.iter().filter(|e| e.enabled()).collect();
-    let vector_shape = matches!(layer.content, photocraft_doc::LayerContent::Shape(_));
-    // Multiple instances: the first listed is on top, so paint in reverse.
-    let rev = || items.iter().copied().enumerate().rev();
-
-    for (i, e) in rev() {
-        if let Effect::DropShadow(s) = e {
-            let mut m = fx(i, 0);
-            if s.knocks_out {
-                // The layer hides the shadow beneath it where its fill is see-through (at 100 %
-                // fill in a normal mode it covers it anyway; at 0 % the shape shows the bare
-                // backdrop), and wholly in a mode that blends with it ([`shadow_see_through`]).
-                knock_out_exterior(&mut m, &shape, 1.0 - shadow_see_through(layer));
-            }
-            paint_color(&mut work, &m, rgb(&s.color), s.common.blend, s.common.opacity);
-        }
-    }
-    for (i, e) in rev() {
-        if let Effect::OuterGlow(g) = e {
-            let mut m = fx(i, 0);
-            // The glow is behind the shape, not painted across its interior when Fill is 0 %.
-            // Preserve the existing anti-aliased edge when the fill is fully opaque.
-            knock_out_exterior(&mut m, &shape, layer.fill_opacity);
-            paint_glow(&mut work, &m, g, sb, anchor, big, patterns);
-        }
-    }
+    pass.paint_exterior(&mut work, &shape);
 
     // The layer: content at fill opacity, then interior effects. Interior effects are painted
     // relative to the layer's shape (alpha = coverage within the shape), then the shape's alpha
     // applies: a colour overlay at 100 % replaces the colour of a half-transparent edge pixel and
     // keeps its alpha, as in Photoshop.
-    let fill = layer.fill_opacity;
-    // Blend Interior Effects as Group: the interior effects (overlays, satin, inner glow) are
-    // combined with the content first, and fill opacity applies to the combination.
-    let interior_group = layer.advanced.blend_interior && fill < 1.0;
-    let content_fill = if interior_group { 1.0 } else { fill };
-    let inside = |a: f32| a > INSIDE_EPS;
-    // Within an outline (or a split-off vector stroke) the content's own transparency (a fading
-    // gradient fill) acts like fill opacity: the effects still cover the whole shape.
-    let lay_alpha = |i: usize, p: &[f32; 4], a: f32| {
-        if !inside(a) {
-            0.0
-        } else if relative {
-            content_fill * (kmask(i) * p[3] / a).min(1.0)
-        } else {
-            content_fill
-        }
-    };
-    let mut lay = Buffer { rect: big, px: content.px.iter().zip(&shape.v).enumerate().map(|(i, (p, a))| [p[0], p[1], p[2], lay_alpha(i, p, *a)]).collect() };
     let gamma = crate::text_gamma(layer);
     let premerge = premerges_layer(layer);
+    let mut lay = pass.layer_pixels(content, &shape);
     if premerge {
         for (lp, wp) in lay.px.iter_mut().zip(&work.px) {
             *lp = psblend::composite_gamma(layer.blend, *wp, *lp, 1.0, gamma);
         }
     }
-    let rel = |m: Map| -> Map {
-        let v = m.v.iter().zip(&shape.v).map(|(m, a)| if inside(*a) { (m / a).min(1.0) } else { 0.0 }).collect();
-        Map { w: m.w, h: m.h, v }
-    };
-    let full = Map { w, h, v: shape.v.iter().map(|a| if inside(*a) { 1.0 } else { 0.0 }).collect() };
-    for (_, e) in rev() {
-        if let Effect::PatternOverlay { common, name, id, scale, angle, link, phase } = e {
-            paint_pattern(&mut lay, &full, patterns, name, id, Placement::anchored(anchor, *link, *phase, *scale, *angle), big, common.blend, common.opacity);
-        }
-    }
-    for (_, e) in rev() {
-        if let Effect::GradientOverlay { common, gradient, .. } = e {
-            paint_fx(&mut lay, &full, &FxPaint::Gradient(gradient.clone()), sb, anchor, big, common.blend, common.opacity, patterns)
-        }
-    }
-    for (_, e) in rev() {
-        if let Effect::ColorOverlay { common, color } = e {
-            paint_color(&mut lay, &full, rgb(color), common.blend, common.opacity);
-        }
-    }
-    for (i, e) in rev() {
-        if let Effect::Satin(s) = e {
-            let m = rel(fx(i, 0));
-            paint_color(&mut lay, &m, rgb(&s.color), s.common.blend, s.common.opacity);
-        }
-    }
-    for (i, e) in rev() {
-        if let Effect::InnerGlow(g) = e {
-            paint_glow(&mut lay, &rel(fx(i, 0)), g, sb, anchor, big, patterns);
-        }
-    }
-    if interior_group {
-        for p in &mut lay.px {
-            p[3] *= fill.max(0.0);
-        }
-    }
-    for (i, e) in rev() {
-        if let Effect::InnerShadow(s) = e {
-            let m = rel(fx(i, 0));
-            paint_color(&mut lay, &m, rgb(&s.color), s.common.blend, s.common.opacity);
-        }
-    }
-    // A stroked shape's vector stroke: Photoshop draws it above the fill's clipped layers and
-    // interior effects, below the stroke effect (psd-tools stroke-composite).
-    if let Some(vs) = &vstroke {
-        for (i, ((p, s), a)) in lay.px.iter_mut().zip(&vs.stroke.px).zip(&shape.v).enumerate() {
-            if s[3] > 0.0 && inside(*a) {
-                *p = psblend::composite(BlendMode::Normal, *p, [s[0], s[1], s[2], fill * (kmask(i) * s[3] / a).min(1.0)], 1.0);
-            }
-        }
-    }
-    // Strokes. Inside parts are painted over the layer (bottom instance first); outside parts
-    // are slid beneath it, so the first listed (top) instance is processed first.
-    let strokes: Vec<&photocraft_doc::StrokeFx> = items.iter().filter_map(|e| if let Effect::Stroke(s) = e { Some(s) } else { None }).collect();
-    let ready = !strokes.is_empty();
-    let din = if ready { maps.din.as_ref().map(|a| maps.crop_vec(a, big, 0.0)).unwrap_or_default() } else { Vec::new() };
-    // A stroke's outer edge picks the chamfer or the exact field by its width
-    // ([`stroke_outside_exact`]); both are cropped here, and only the ones a stroke needs exist.
-    let crop_out = |v: &Option<Vec<f32>>| v.as_ref().map(|b| maps.crop_vec(b, big, FAR));
-    let (dout, dout_exact, vdout, vdout_exact) =
-        if ready { (crop_out(&maps.dout), crop_out(&maps.dout_exact), crop_out(&maps.vdout), crop_out(&maps.vdout_exact)) } else { (None, None, None, None) };
-    let widths = stroke_widths;
-    // A gradient stroke aligned with the layer spans the stroke's own extent.
-    let frame = |st: &photocraft_doc::StrokeFx| maps.stroke_frame(st).unwrap_or(sb);
-    for st in strokes.iter().rev().copied() {
-        let (in_w, _) = widths(st);
-        if in_w <= 0.0 {
-            continue;
-        }
-        let mut m = Map::new(w, h, 0.0);
-        for ((mv, a), dv) in m.v.iter_mut().zip(&shape.v).zip(&din) {
-            *mv = if inside(*a) { (in_w + 0.5 - dv).clamp(0.0, 1.0) } else { 0.0 };
-        }
-        paint_fx(&mut lay, &m, &st.paint, frame(st), anchor, big, st.common.blend, st.common.opacity, patterns);
-    }
-    for (i, e) in rev() {
-        if let Effect::BevelEmboss(b) = e
-            && maps.bevel_paint[i] == BevelPaint::Inner
-        {
-            let (hi, sh) = (rel(fx(i, 0)), rel(fx(i, 1)));
-            paint_color(&mut lay, &hi, rgb(&b.highlight_color), b.highlight.blend, b.highlight.opacity);
-            paint_color(&mut lay, &sh, rgb(&b.shadow_color), b.shadow.blend, b.shadow.opacity);
-        }
-    }
+    let strokes: Vec<&photocraft_doc::StrokeFx> = pass.items.iter().filter_map(|e| if let Effect::Stroke(s) = e { Some(s) } else { None }).collect();
+    let fields = pass.stroke_fields(!strokes.is_empty());
+    pass.paint_interior(&mut lay, &shape);
+    pass.paint_vector_stroke(&mut lay, &shape);
+    pass.paint_inside_strokes(&mut lay, &shape, &strokes, &fields);
+    pass.paint_bevel(&mut lay, BevelPaint::Inner, Some(&shape));
     // The shape's own alpha.
     for (p, a) in lay.px.iter_mut().zip(&shape.v) {
         p[3] *= a.min(1.0);
     }
-    // Shape layers without a filled outline stroke their vector outline, estimated from local
-    // coverage; every other layer strokes its shape. The width then picks the field.
-    let vector_outline = vector_shape && !maps.outline;
-    // Outside parts lie beneath the layer and blend onto the backdrop with their own mode. A
-    // higher stroke covers the ones below it (Photoshop: a Multiply stroke listed above a wider
-    // Normal stroke multiplies the backdrop, not the lower stroke). Each stroke's share is its
-    // coverage × opacity not yet taken by strokes above; for Normal strokes this equals stacking
-    // them top over bottom.
-    if strokes.iter().any(|st| widths(st).1 > 0.0) {
+    pass.paint_outside_strokes(&mut work, &lay, &shape, &strokes, &fields);
+    pass.paint_bevel(&mut work, BevelPaint::Outer, None);
+
+    // Layer (with interior effects) onto the exterior result, in the layer's mode.
+    let mode = if premerge || layer.blend == BlendMode::PassThrough { BlendMode::Normal } else { layer.blend };
+    for (wp, lp) in work.px.iter_mut().zip(&lay.px) {
+        if lp[3] > 0.0 {
+            *wp = psblend::composite_gamma(mode, *wp, *lp, 1.0, gamma);
+        }
+    }
+    // Emboss styles shade the composited layer (their maps cover inside and outside). Painting
+    // them into the layer before its (text-gamma) composite left a type layer's lit top edges up
+    // to 6/255 dark (psd-tools layer_effects Emboss: 7.8 → 5.7/255).
+    pass.paint_bevel(&mut work, BevelPaint::Both, None);
+    pass.write_back(backdrop, &before, &work);
+}
+
+/// `true` where the effect shape covers a pixel enough for interior effects to paint.
+fn inside(a: f32) -> bool {
+    a > INSIDE_EPS
+}
+
+/// An effect map as a fraction of the shape's own coverage.
+fn relative_to_shape(m: Map, shape: &Map) -> Map {
+    let v = m.v.iter().zip(&shape.v).map(|(m, a)| if inside(*a) { (m / a).min(1.0) } else { 0.0 }).collect();
+    Map { w: m.w, h: m.h, v }
+}
+
+/// A stroke's distance fields, cropped to the render region; only the ones a stroke needs exist.
+#[derive(Default)]
+struct StrokeFields {
+    /// Distance inside the shape.
+    din: Vec<f32>,
+    dout: Option<Vec<f32>>,
+    dout_exact: Option<Vec<f32>>,
+    vdout: Option<Vec<f32>>,
+    vdout_exact: Option<Vec<f32>>,
+}
+
+/// What compositing one layer's effects shares between its stages.
+struct EffectPass<'a> {
+    layer: &'a Layer,
+    maps: &'a FxMaps,
+    patterns: &'a PreparedPatterns<'a>,
+    vstroke: Option<&'a VectorStroke<'a>>,
+    /// The region effects are painted over: the content's rect.
+    big: Rect,
+    w: usize,
+    h: usize,
+    /// Layer bounds (gradients aligned with the layer use the whole layer, independent of the
+    /// render rect).
+    sb: Rect,
+    /// Linked patterns tile from the effects reference point (else the layer's top-left).
+    anchor: (f64, f64),
+    /// The enabled effects. Multiple instances: the first listed is on top, so paint in reverse.
+    items: Vec<&'a Effect>,
+}
+
+impl<'a> EffectPass<'a> {
+    fn new(
+        layer: &'a Layer,
+        maps: &'a FxMaps,
+        big: Rect,
+        layer_bounds: Rect,
+        patterns: &'a PreparedPatterns<'a>,
+        vstroke: Option<&'a VectorStroke<'a>>,
+    ) -> Self {
+        let sb = layer_bounds;
+        Self {
+            layer,
+            maps,
+            patterns,
+            vstroke,
+            big,
+            w: big.width() as usize,
+            h: big.height() as usize,
+            sb,
+            anchor: layer.effects.reference.unwrap_or((f64::from(sb.x0), f64::from(sb.y0))),
+            items: layer.effects.items.iter().filter(|e| e.enabled()).collect(),
+        }
+    }
+
+    /// The enabled effects with their indexes, last listed first.
+    fn rev(&self) -> impl Iterator<Item = (usize, &'a Effect)> + '_ {
+        self.items.iter().copied().enumerate().rev()
+    }
+
+    /// Effect `i`'s map `k`, cropped to the region.
+    fn fx(&self, i: usize, k: usize) -> Map {
+        self.maps.crop(&self.maps.per[i][k], self.big, 0.0)
+    }
+
+    /// The vector stroke's layer-mask value at pixel `i` (1 with no mask).
+    fn kmask(&self, i: usize) -> f32 {
+        self.vstroke.and_then(|v| v.mask).and_then(|m| m.get(i)).copied().unwrap_or(1.0)
+    }
+
+    /// Alpha `a` of pixel `i` joined with the vector stroke's.
+    fn union(&self, i: usize, a: f32) -> f32 {
+        self.vstroke.and_then(|v| v.stroke.px.get(i)).map_or(a, |s| self.kmask(i) * (a + s[3] * (1.0 - a)))
+    }
+
+    /// Within an outline (or a split-off vector stroke), or without Transparency Shapes Layer,
+    /// the content's own transparency acts like fill opacity: the effects still cover the whole
+    /// shape.
+    fn relative(&self) -> bool {
+        !self.layer.advanced.transparency_shapes || self.maps.outline || self.vstroke.is_some()
+    }
+
+    /// The effect shape: the content's alpha (with a split-off vector stroke, `content` is the
+    /// unmasked fill and the mask applies to fill ∪ stroke), joined with a filled shape's outline.
+    fn effect_shape(&self, content: &Buffer) -> Map {
+        let (w, h, big) = (self.w, self.h, self.big);
+        // Transparency Shapes Layer off: the shape is the whole layer (its masks, as the maps were
+        // built), and the content's own transparency acts like fill opacity within it.
+        if !self.layer.advanced.transparency_shapes {
+            self.maps.crop(&self.maps.shape, big, 0.0)
+        } else if self.maps.outline {
+            let o = self.maps.crop(&self.maps.shape, big, 0.0);
+            Map { w, h, v: o.v.iter().zip(&content.px).enumerate().map(|(i, (o, p))| o.max(self.union(i, p[3]))).collect() }
+        } else {
+            Map { w, h, v: content.px.iter().enumerate().map(|(i, p)| self.union(i, p[3])).collect() }
+        }
+    }
+
+    /// Paints the effects behind the layer: drop shadows, then outer glows.
+    fn paint_exterior(&self, work: &mut Buffer, shape: &Map) {
+        for (i, e) in self.rev() {
+            if let Effect::DropShadow(s) = e {
+                let mut m = self.fx(i, 0);
+                if s.knocks_out {
+                    // The layer hides the shadow beneath it where its fill is see-through (at 100 %
+                    // fill in a normal mode it covers it anyway; at 0 % the shape shows the bare
+                    // backdrop), and wholly in a mode that blends with it ([`shadow_see_through`]).
+                    knock_out_exterior(&mut m, shape, 1.0 - shadow_see_through(self.layer));
+                }
+                paint_color(work, &m, rgb(&s.color), s.common.blend, s.common.opacity);
+            }
+        }
+        for (i, e) in self.rev() {
+            if let Effect::OuterGlow(g) = e {
+                let mut m = self.fx(i, 0);
+                // The glow is behind the shape, not painted across its interior when Fill is 0 %.
+                // Preserve the existing anti-aliased edge when the fill is fully opaque.
+                knock_out_exterior(&mut m, shape, self.layer.fill_opacity);
+                paint_glow(work, &m, g, self.sb, self.anchor, self.big, self.patterns);
+            }
+        }
+    }
+
+    /// Blend Interior Effects as Group: the interior effects (overlays, satin, inner glow) are
+    /// combined with the content first, and fill opacity applies to the combination.
+    fn interior_group(&self) -> bool {
+        self.layer.advanced.blend_interior && self.layer.fill_opacity < 1.0
+    }
+
+    /// The layer's own pixels at fill opacity, with their alpha made relative to `shape`.
+    fn layer_pixels(&self, content: &Buffer, shape: &Map) -> Buffer {
+        let content_fill = if self.interior_group() { 1.0 } else { self.layer.fill_opacity };
+        let relative = self.relative();
+        let lay_alpha = |i: usize, p: &[f32; 4], a: f32| {
+            if !inside(a) {
+                0.0
+            } else if relative {
+                content_fill * (self.kmask(i) * p[3] / a).min(1.0)
+            } else {
+                content_fill
+            }
+        };
+        Buffer { rect: self.big, px: content.px.iter().zip(&shape.v).enumerate().map(|(i, (p, a))| [p[0], p[1], p[2], lay_alpha(i, p, *a)]).collect() }
+    }
+
+    /// Paints the interior effects other than strokes and bevels: overlays, satin, inner glow
+    /// and inner shadow.
+    fn paint_interior(&self, lay: &mut Buffer, shape: &Map) {
+        let (w, h, big, sb, anchor, patterns) = (self.w, self.h, self.big, self.sb, self.anchor, self.patterns);
+        let full = Map { w, h, v: shape.v.iter().map(|a| if inside(*a) { 1.0 } else { 0.0 }).collect() };
+        for (_, e) in self.rev() {
+            if let Effect::PatternOverlay { common, name, id, scale, angle, link, phase } = e {
+                paint_pattern(lay, &full, patterns, name, id, Placement::anchored(anchor, *link, *phase, *scale, *angle), big, common.blend, common.opacity);
+            }
+        }
+        for (_, e) in self.rev() {
+            if let Effect::GradientOverlay { common, gradient, .. } = e {
+                paint_fx(lay, &full, &FxPaint::Gradient(gradient.clone()), sb, anchor, big, common.blend, common.opacity, patterns)
+            }
+        }
+        for (_, e) in self.rev() {
+            if let Effect::ColorOverlay { common, color } = e {
+                paint_color(lay, &full, rgb(color), common.blend, common.opacity);
+            }
+        }
+        for (i, e) in self.rev() {
+            if let Effect::Satin(s) = e {
+                let m = relative_to_shape(self.fx(i, 0), shape);
+                paint_color(lay, &m, rgb(&s.color), s.common.blend, s.common.opacity);
+            }
+        }
+        for (i, e) in self.rev() {
+            if let Effect::InnerGlow(g) = e {
+                paint_glow(lay, &relative_to_shape(self.fx(i, 0), shape), g, sb, anchor, big, patterns);
+            }
+        }
+        if self.interior_group() {
+            for p in &mut lay.px {
+                p[3] *= self.layer.fill_opacity.max(0.0);
+            }
+        }
+        for (i, e) in self.rev() {
+            if let Effect::InnerShadow(s) = e {
+                let m = relative_to_shape(self.fx(i, 0), shape);
+                paint_color(lay, &m, rgb(&s.color), s.common.blend, s.common.opacity);
+            }
+        }
+    }
+
+    /// A stroked shape's vector stroke: Photoshop draws it above the fill's clipped layers and
+    /// interior effects, below the stroke effect (psd-tools stroke-composite).
+    fn paint_vector_stroke(&self, lay: &mut Buffer, shape: &Map) {
+        let Some(vs) = self.vstroke else {
+            return;
+        };
+        let fill = self.layer.fill_opacity;
+        for (i, ((p, s), a)) in lay.px.iter_mut().zip(&vs.stroke.px).zip(&shape.v).enumerate() {
+            if s[3] > 0.0 && inside(*a) {
+                *p = psblend::composite(BlendMode::Normal, *p, [s[0], s[1], s[2], fill * (self.kmask(i) * s[3] / a).min(1.0)], 1.0);
+            }
+        }
+    }
+
+    /// The distance fields the strokes need, cropped to the region; empty unless `ready` (the
+    /// layer has a stroke).
+    ///
+    /// A stroke's outer edge picks the chamfer or the exact field by its width
+    /// ([`stroke_outside_exact`]); both are cropped here, and only the ones a stroke needs exist.
+    fn stroke_fields(&self, ready: bool) -> StrokeFields {
+        if !ready {
+            return StrokeFields::default();
+        }
+        let (maps, big) = (self.maps, self.big);
+        let crop_out = |v: &Option<Vec<f32>>| v.as_ref().map(|b| maps.crop_vec(b, big, FAR));
+        StrokeFields {
+            din: maps.din.as_ref().map(|a| maps.crop_vec(a, big, 0.0)).unwrap_or_default(),
+            dout: crop_out(&maps.dout),
+            dout_exact: crop_out(&maps.dout_exact),
+            vdout: crop_out(&maps.vdout),
+            vdout_exact: crop_out(&maps.vdout_exact),
+        }
+    }
+
+    /// A gradient stroke aligned with the layer spans the stroke's own extent.
+    fn stroke_frame(&self, st: &photocraft_doc::StrokeFx) -> Rect {
+        self.maps.stroke_frame(st).unwrap_or(self.sb)
+    }
+
+    /// Strokes. Inside parts are painted over the layer (bottom instance first); outside parts
+    /// are slid beneath it, so the first listed (top) instance is processed first.
+    fn paint_inside_strokes(&self, lay: &mut Buffer, shape: &Map, strokes: &[&photocraft_doc::StrokeFx], fields: &StrokeFields) {
+        for st in strokes.iter().rev().copied() {
+            let (in_w, _) = stroke_widths(st);
+            if in_w <= 0.0 {
+                continue;
+            }
+            let mut m = Map::new(self.w, self.h, 0.0);
+            for ((mv, a), dv) in m.v.iter_mut().zip(&shape.v).zip(&fields.din) {
+                *mv = if inside(*a) { (in_w + 0.5 - dv).clamp(0.0, 1.0) } else { 0.0 };
+            }
+            paint_fx(lay, &m, &st.paint, self.stroke_frame(st), self.anchor, self.big, st.common.blend, st.common.opacity, self.patterns);
+        }
+    }
+
+    /// Bevel and emboss effects whose paint is `kind`. Inner ones paint into the layer relative
+    /// to its `shape`; the others paint the maps as they are.
+    fn paint_bevel(&self, target: &mut Buffer, kind: BevelPaint, shape: Option<&Map>) {
+        for (i, e) in self.rev() {
+            if let Effect::BevelEmboss(b) = e
+                && self.maps.bevel_paint[i] == kind
+            {
+                let map = |k: usize| match shape {
+                    Some(shape) => relative_to_shape(self.fx(i, k), shape),
+                    None => self.fx(i, k),
+                };
+                paint_color(target, &map(0), rgb(&b.highlight_color), b.highlight.blend, b.highlight.opacity);
+                paint_color(target, &map(1), rgb(&b.shadow_color), b.shadow.blend, b.shadow.opacity);
+            }
+        }
+    }
+
+    /// The outside parts of the strokes, blended onto the backdrop beneath the layer with their
+    /// own mode. A higher stroke covers the ones below it (Photoshop: a Multiply stroke listed
+    /// above a wider Normal stroke multiplies the backdrop, not the lower stroke). Each stroke's
+    /// share is its coverage × opacity not yet taken by strokes above; for Normal strokes this
+    /// equals stacking them top over bottom.
+    fn paint_outside_strokes(&self, work: &mut Buffer, lay: &Buffer, shape: &Map, strokes: &[&photocraft_doc::StrokeFx], fields: &StrokeFields) {
+        if !strokes.iter().any(|st| stroke_widths(st).1 > 0.0) {
+            return;
+        }
+        let (w, h) = (self.w, self.h);
         let base = work.clone();
         let mut acc = vec![[0.0f32; 4]; w * h]; // premultiplied Σ share·blended
         let mut cover = vec![0.0f32; w * h];
         for st in strokes.iter().copied() {
-            let (_, out_w) = widths(st);
+            let (_, out_w) = stroke_widths(st);
             if out_w <= 0.0 {
                 continue;
             }
-            // Shape layers: Photoshop strokes the vector outline (estimated from local coverage
-            // for unfilled shapes); the stroke never shows through the shape's pixels. Along a
-            // filled shape's outline it covers the part of each edge pixel outside the path.
-            let exact = stroke_outside_exact(out_w);
-            let d: &[f32] = if vector_outline {
-                (if exact { vdout_exact.as_deref() } else { vdout.as_deref() }).unwrap_or_default()
-            } else if exact {
-                dout_exact.as_deref().unwrap_or_default()
-            } else {
-                dout.as_deref().unwrap_or_default()
-            };
-            let mut share = vec![0.0f32; w * h];
-            for (i, sh) in share.iter_mut().enumerate() {
-                let band = (out_w + 0.5 - d[i]).clamp(0.0, 1.0);
-                let k =
-                    if inside(shape.v[i]) { if vector_shape && !maps.outline { 0.0 } else { band * outline_share(shape.v[i], lay.px[i][3]) } } else { band };
-                let mut k = k * st.common.opacity;
-                if st.common.blend == BlendMode::Dissolve {
-                    let (x, y) = (i64::from(big.x0) + (i % w) as i64, i64::from(big.y0) + (i / w) as i64);
-                    k = if k > 0.0 && dissolves_in(x, y, k) { 1.0 } else { 0.0 };
-                }
-                *sh = k * (1.0 - cover[i]);
-                cover[i] += *sh;
-            }
+            let share = self.outside_share(st, out_w, shape, lay, fields, &mut cover);
             // The stroke blended over the backdrop at full coverage.
             let mut blended = base.clone();
             let ones = Map { w, h, v: share.iter().map(|&s| if s > 0.0 { 1.0 } else { 0.0 }).collect() };
             // The share already carries the Dissolve choice, so the paint itself composites as Normal.
             let paint_blend = if st.common.blend == BlendMode::Dissolve { BlendMode::Normal } else { st.common.blend };
-            paint_fx(&mut blended, &ones, &st.paint, frame(st), anchor, big, paint_blend, 1.0, patterns);
+            paint_fx(&mut blended, &ones, &st.paint, self.stroke_frame(st), self.anchor, self.big, paint_blend, 1.0, self.patterns);
             for ((a, b), s) in acc.iter_mut().zip(&blended.px).zip(&share) {
                 if *s > 0.0 {
                     for c in 0..3 {
@@ -420,48 +548,59 @@ pub(crate) fn composite_with_effects_prepared(
             }
         }
     }
-    for (i, e) in rev() {
-        if let Effect::BevelEmboss(b) = e
-            && maps.bevel_paint[i] == BevelPaint::Outer
-        {
-            let (hi, sh) = (fx(i, 0), fx(i, 1));
-            paint_color(&mut work, &hi, rgb(&b.highlight_color), b.highlight.blend, b.highlight.opacity);
-            paint_color(&mut work, &sh, rgb(&b.shadow_color), b.shadow.blend, b.shadow.opacity);
+
+    /// The share of each pixel an outside stroke `st` (outside width `out_w`) takes: its coverage
+    /// × opacity not yet taken by the strokes above, which `cover` accumulates.
+    fn outside_share(&self, st: &photocraft_doc::StrokeFx, out_w: f32, shape: &Map, lay: &Buffer, fields: &StrokeFields, cover: &mut [f32]) -> Vec<f32> {
+        let (w, big) = (self.w, self.big);
+        // Shape layers without a filled outline stroke their vector outline, estimated from local
+        // coverage; every other layer strokes its shape. The width then picks the field.
+        let vector_shape = matches!(self.layer.content, photocraft_doc::LayerContent::Shape(_));
+        let vector_outline = vector_shape && !self.maps.outline;
+        // Shape layers: Photoshop strokes the vector outline (estimated from local coverage
+        // for unfilled shapes); the stroke never shows through the shape's pixels. Along a
+        // filled shape's outline it covers the part of each edge pixel outside the path.
+        let exact = stroke_outside_exact(out_w);
+        let d: &[f32] = match (vector_outline, exact) {
+            (true, true) => fields.vdout_exact.as_deref(),
+            (true, false) => fields.vdout.as_deref(),
+            (false, true) => fields.dout_exact.as_deref(),
+            (false, false) => fields.dout.as_deref(),
         }
+        .unwrap_or_default();
+        let mut share = vec![0.0f32; w * self.h];
+        for (i, sh) in share.iter_mut().enumerate() {
+            let band = (out_w + 0.5 - d[i]).clamp(0.0, 1.0);
+            let k = if inside(shape.v[i]) { if vector_outline { 0.0 } else { band * outline_share(shape.v[i], lay.px[i][3]) } } else { band };
+            let mut k = k * st.common.opacity;
+            if st.common.blend == BlendMode::Dissolve {
+                let (x, y) = (i64::from(big.x0) + (i % w) as i64, i64::from(big.y0) + (i / w) as i64);
+                k = if k > 0.0 && dissolves_in(x, y, k) { 1.0 } else { 0.0 };
+            }
+            *sh = k * (1.0 - cover[i]);
+            cover[i] += *sh;
+        }
+        share
     }
 
-    // Layer (with interior effects) onto the exterior result, in the layer's mode.
-    let mode = if premerge || layer.blend == BlendMode::PassThrough { BlendMode::Normal } else { layer.blend };
-    for (wp, lp) in work.px.iter_mut().zip(&lay.px) {
-        if lp[3] > 0.0 {
-            *wp = psblend::composite_gamma(mode, *wp, *lp, 1.0, gamma);
-        }
-    }
-    // Emboss styles shade the composited layer (their maps cover inside and outside). Painting
-    // them into the layer before its (text-gamma) composite left a type layer's lit top edges up
-    // to 6/255 dark (psd-tools layer_effects Emboss: 7.8 → 5.7/255).
-    for (i, e) in rev() {
-        if let Effect::BevelEmboss(b) = e
-            && maps.bevel_paint[i] == BevelPaint::Both
-        {
-            paint_color(&mut work, &fx(i, 0), rgb(&b.highlight_color), b.highlight.blend, b.highlight.opacity);
-            paint_color(&mut work, &fx(i, 1), rgb(&b.shadow_color), b.shadow.blend, b.shadow.opacity);
-        }
-    }
-    // Layer opacity applies to the whole stack.
-    let op = layer.opacity;
-    for y in rect.y0..rect.y1 {
-        for x in rect.x0..rect.x1 {
-            let i = ((y - rect.y0) as usize) * rect.width() as usize + (x - rect.x0) as usize;
-            let a = before.px[i];
-            let b = if x >= big.x0 && x < big.x1 && y >= big.y0 && y < big.y1 { work.px[((y - big.y0) as usize) * w + (x - big.x0) as usize] } else { a };
-            backdrop.px[i] = if layer.blend == BlendMode::Dissolve {
-                // Dissolve applies layer opacity to the completed interior/exterior effect
-                // stack as pixel coverage, not continuous gray interpolation (#3051).
-                if crate::dissolve_noise(x, y) < op { b } else { a }
-            } else {
-                mix_premul(a, b, op)
-            };
+    /// Writes the finished stack `work` into `backdrop` (over `before`) at layer opacity.
+    fn write_back(&self, backdrop: &mut Buffer, before: &Buffer, work: &Buffer) {
+        let (big, w) = (self.big, self.w);
+        let rect = backdrop.rect;
+        let op = self.layer.opacity;
+        for y in rect.y0..rect.y1 {
+            for x in rect.x0..rect.x1 {
+                let i = ((y - rect.y0) as usize) * rect.width() as usize + (x - rect.x0) as usize;
+                let a = before.px[i];
+                let b = if x >= big.x0 && x < big.x1 && y >= big.y0 && y < big.y1 { work.px[((y - big.y0) as usize) * w + (x - big.x0) as usize] } else { a };
+                backdrop.px[i] = if self.layer.blend == BlendMode::Dissolve {
+                    // Dissolve applies layer opacity to the completed interior/exterior effect
+                    // stack as pixel coverage, not continuous gray interpolation (#3051).
+                    if crate::dissolve_noise(x, y) < op { b } else { a }
+                } else {
+                    mix_premul(a, b, op)
+                };
+            }
         }
     }
 }

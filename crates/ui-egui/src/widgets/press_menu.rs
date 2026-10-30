@@ -98,12 +98,17 @@ pub fn above_parent_ui(parent: egui::LayerId, popup_ui: &egui::Ui) {
 /// Shows `button`'s menu (an `egui::Popup::menu`) with press-drag-release; `content` chooses its
 /// items with [`PressMenu::item`].
 pub fn show<R>(button: &Response, content: impl FnOnce(&mut Ui, &PressMenu) -> R) -> Option<R> {
+    show_with_close_behavior(button, PopupCloseBehavior::CloseOnClick, content)
+}
+
+/// A press menu whose content owns its close behavior (e.g. a scrollable font list).
+pub fn show_with_close_behavior<R>(button: &Response, close_behavior: PopupCloseBehavior, content: impl FnOnce(&mut Ui, &PressMenu) -> R) -> Option<R> {
     let ctx = button.ctx.clone();
     let menu = PressMenu { popup: Popup::default_response_id(button) };
     let open = open_command(button, menu.popup);
     // The release ending the press that opened the menu is a click outside the popup: it must not
     // close it again.
-    let close = if button.clicked() && menu.owns_gesture(&ctx) { PopupCloseBehavior::IgnoreClicks } else { PopupCloseBehavior::CloseOnClick };
+    let close = if button.clicked() && menu.owns_gesture(&ctx) { PopupCloseBehavior::IgnoreClicks } else { close_behavior };
     let shown = Popup::menu(button).open_memory(open).close_behavior(close).show(|ui| content(ui, &menu)).map(|r| r.inner);
     if shown.is_some() || Popup::is_id_open(&ctx, menu.popup) {
         above_parent(&ctx, button.layer_id, egui::LayerId::new(egui::Order::Foreground, menu.popup));
@@ -115,7 +120,7 @@ pub fn show<R>(button: &Response, content: impl FnOnce(&mut Ui, &PressMenu) -> R
     shown
 }
 
-/// The same press-drag-release for an `egui::ComboBox` (#2735): the list opens on the press, so one
+/// The same press-drag-release for a `craft_ui::ComboBox` (#2735): the list opens on the press, so one
 /// gesture can press the box, drag onto an option and release to choose it, and a plain click
 /// still opens the list for a second click. egui's combo box shows its own list and toggles it on
 /// a whole click, so this works around it: [`PressCombo::before`] runs before the box (and gives
@@ -348,7 +353,7 @@ mod tests {
         assert!(!rig.frame(Vec::new()).open, "and closed the menu");
     }
 
-    /// A bare context with one `egui::ComboBox` of three options, driven with [`PressCombo`].
+    /// A bare context with one `craft_ui::ComboBox` of three options, driven with [`PressCombo`].
     struct ComboRig {
         ctx: egui::Context,
         value: usize,
@@ -374,7 +379,7 @@ mod tests {
             let mut output = self.ctx.run_ui(egui::RawInput { screen_rect: Some(rect), events, ..Default::default() }, |ui| {
                 ui.add_space(20.0);
                 let (combo, close) = PressCombo::before(ui, "channel");
-                let shown = egui::ComboBox::from_id_salt("channel").selected_text(OPTIONS[value]).close_behavior(close).show_ui(ui, |ui| {
+                let shown = craft_ui::ComboBox::from_id_salt("channel").selected_text(OPTIONS[value]).close_behavior(close).show_ui(ui, |ui| {
                     out.open = true;
                     for (i, label) in OPTIONS.into_iter().enumerate() {
                         let item = ui.selectable_label(value == i, label);

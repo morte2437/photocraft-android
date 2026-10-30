@@ -41,6 +41,7 @@ build. Limits (`photocraft_plugins::Limits`, defaults):
 | Host imports | none: no WASI, file system, network, clock or randomness | module rejected at install |
 | Module size | 32 MiB | rejected |
 | Linear memory | 512 MiB per instance | `memory.grow` returns -1; oversized initial memory fails |
+| Linear memory per run | 2 GiB across parallel bands (4 instances at the 512 MiB cap) | fewer bands run at once |
 | Instructions (fuel) | 50 M per call + 4,000 per sample for `pc_filter` | `Limit("instruction budget")` |
 | Wall clock | 60 s per run (native; checked every 20 M instructions) | `Limit("time budget")` |
 | Call depth | 1,024 frames | trap |

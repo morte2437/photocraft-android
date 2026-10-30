@@ -29,18 +29,20 @@ const DISTRIBUTE: [(&str, &str, &str); 8] = [
 ];
 
 /// The six align icons followed by a menu holding both groups with icons and names.
+/// Each icon uses 20 pt artwork inside a 28 pt hit target for high-DPI legibility
+/// without changing enabled-state or command dispatch (#8849).
 pub fn options(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     ui.spacing_mut().item_spacing.x = 0.0;
     for (cmd, icon, label) in ALIGN {
         let tip = format!("{}: {}", tl!("Align"), tl!(label));
         let on = app.session.is_enabled(cmd);
-        if ui.add_enabled_ui(on, |ui| icons::button(ui, icon, 24.0, false, &tip)).inner.clicked() {
+        if ui.add_enabled_ui(on, |ui| icons::button_with_icon_size(ui, icon, 28.0, 20.0, false, &tip)).inner.clicked() {
             let _ = app.run(cmd, json!({}));
         }
     }
     ui.add_space(6.0);
-    let more = icons::button(ui, "ellipsis", 24.0, false, tl!("Align and distribute"));
+    let more = icons::button_with_icon_size(ui, "ellipsis", 28.0, 20.0, false, tl!("Align and distribute"));
     egui::Popup::menu(&more).show(|ui| {
         ui.set_min_width(200.0);
         let mut section = |ui: &mut egui::Ui, title: &str, items: &[(&str, &str, &str)]| {

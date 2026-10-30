@@ -153,8 +153,8 @@ pub(crate) fn curves(r: &mut Reader, crvs: ObjId) -> Option<Path> {
             let fields: Vec<&Value> = s.positional(c).collect();
             // The corner arrays are scanned for every occurrence of a shared curve, so charge
             // them like records before they are walked.
-            if let Some(Value::Array(idx)) = fields.get(1)
-                && let Err(reason) = r.geometry_budget.records(idx.len())
+            if let Some(len) = fields.get(1).and_then(|v| v.array_len())
+                && let Err(reason) = r.geometry_budget.records(len)
             {
                 r.warn(reason);
                 return None;
@@ -170,17 +170,23 @@ pub(crate) fn curves(r: &mut Reader, crvs: ObjId) -> Option<Path> {
             Value::Bool(b) => *b,
             _ => return None,
         };
-        let Value::Array(records) = fields.next()? else { return None };
-        seen = seen.checked_add(records.len())?;
+        let records = fields.next()?;
+        let len = records.array_len()?;
+        seen = seen.checked_add(len)?;
         if seen > MAX_NODES {
             r.warn("curves with more than four million nodes");
             return None;
         }
-        if let Err(reason) = r.geometry_budget.records(records.len()) {
+        if let Err(reason) = r.geometry_budget.records(len) {
             r.warn(reason);
             return None;
         }
-        let anchors = anchors(records)?;
+        let anchors = match records {
+            Value::Array(a) => anchors(a.iter().map(record)),
+            Value::Records { size: 18, data } => anchors(data.as_chunks::<18>().0.iter().map(record18)),
+            // Records of another width are no curve nodes.
+            _ => anchors(std::iter::repeat_n(None, len)),
+        }?;
         let radii = if index == 0 { corners.as_ref() } else { None };
         if let Some(sp) = subpath(&anchors, closed, radii) {
             path.subpaths.push(sp);
@@ -202,22 +208,24 @@ struct Anchor {
 
 fn record(v: &Value) -> Option<(Point, u8)> {
     let Value::Bytes(b) = v else { return None };
-    if b.len() != 18 {
-        return None;
-    }
-    let x = f64::from_le_bytes(b.get(0..8)?.try_into().ok()?);
-    let y = f64::from_le_bytes(b.get(8..16)?.try_into().ok()?);
+    record18(b.as_slice().try_into().ok()?)
+}
+
+/// One 18-byte curve node: f64 x, f64 y, u8 kind, u8 role.
+fn record18(b: &[u8; 18]) -> Option<(Point, u8)> {
+    let x = f64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]);
+    let y = f64::from_le_bytes([b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]]);
     if !x.is_finite() || !y.is_finite() {
         return None;
     }
-    Some((Point { x, y }, *b.get(17)?))
+    Some((Point { x, y }, b[17]))
 }
 
-fn anchors(records: &[Value]) -> Option<Vec<Anchor>> {
+fn anchors(records: impl ExactSizeIterator<Item = Option<(Point, u8)>>) -> Option<Vec<Anchor>> {
     let mut out: Vec<Anchor> = Vec::with_capacity(records.len() / 3 + 1);
     let mut pending_in = None;
-    for (i, v) in records.iter().enumerate() {
-        let (p, role) = record(v)?;
+    for (i, v) in records.enumerate() {
+        let (p, role) = v?;
         match role {
             0 => {
                 out.push(Anchor { p, inh: pending_in.take(), out: None, record: i });

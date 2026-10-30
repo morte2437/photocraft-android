@@ -112,6 +112,47 @@ fn sample_effects() -> Vec<Effect> {
     ]
 }
 
+/// #9556: Photoshop drops every effect of a layer whose contour has more than 16 points. A
+/// 29-point contour with two rings is written as 16 points that keep both ends and both peaks;
+/// up to 16 points are written as they are.
+#[test]
+fn psd_contours_keep_at_most_16_points_and_their_peaks() {
+    let points: Vec<CurvePoint> = (0..29)
+        .map(|i| {
+            let x = i as f32 / 28.0;
+            // Rings at x = 0.25 and 0.75, small wiggles between.
+            let y = (1.0 - ((x - 0.25).abs() * 8.0)).max(0.0).max(1.0 - (x - 0.75).abs() * 8.0) + if i % 2 == 0 { 0.0 } else { 0.01 };
+            CurvePoint { input: x, output: y.clamp(0.0, 1.0) }
+        })
+        .collect();
+    let c = Contour::Custom { name: "Two rings".into(), points: points.clone(), corners: vec![false; 29] };
+    let out = crv(&contour_value(&c));
+    assert_eq!(out.len(), 16);
+    assert_eq!(out.first().copied(), Some((0.0, f64::from(points[0].output) * 255.0)));
+    assert_eq!(out.last().map(|p| p.0), Some(255.0));
+    let peak = |x: f32| out.iter().any(|p| ((p.0 / 255.0) as f32 - x).abs() < 0.03 && p.1 > 240.0);
+    assert!(peak(0.25) && peak(0.75), "both rings kept: {out:?}");
+    assert!(out.windows(2).all(|w| w[0].0 < w[1].0), "in order: {out:?}");
+
+    let short = Contour::Custom { name: "Short".into(), points: points[..16].to_vec(), corners: vec![false; 16] };
+    assert_eq!(crv(&contour_value(&short)).len(), 16);
+}
+
+fn crv(v: &Value) -> Vec<(f64, f64)> {
+    let Value::Descriptor(d) = v else { panic!("ShpC") };
+    let Some(Value::List(pts)) = d.get("Crv ") else { panic!("Crv ") };
+    pts.iter()
+        .map(|p| {
+            let Value::Descriptor(p) = p else { panic!("CrPt") };
+            let n = |k: &str| match p.get(k) {
+                Some(Value::Double(x)) => *x,
+                _ => panic!("{k}"),
+            };
+            (n("Hrzn"), n("Vrtc"))
+        })
+        .collect()
+}
+
 fn approx(a: &[Effect], b: &[Effect]) {
     // Colours go through 0..255 doubles; compare via re-serialization.
     assert_eq!(a.len(), b.len());
@@ -196,6 +237,35 @@ fn blend_names_are_unique() {
     for (_, n) in BLEND_NAMES {
         assert!(s.insert(n));
     }
+}
+
+#[test]
+fn layer_record_blend_keys_parse() {
+    for (key, mode) in [
+        (b"vLit", BlendMode::VividLight),
+        (b"lLit", BlendMode::LinearLight),
+        (b"pLit", BlendMode::PinLight),
+        (b"hMix", BlendMode::HardMix),
+        (b"lbrn", BlendMode::LinearBurn),
+        (b"lddg", BlendMode::LinearDodge),
+        (b"dkCl", BlendMode::DarkerColor),
+        (b"lgCl", BlendMode::LighterColor),
+        (b"fsub", BlendMode::Subtract),
+        (b"fdiv", BlendMode::Divide),
+    ] {
+        assert_eq!(blend_from_id(key), Some(mode), "{}", String::from_utf8_lossy(key));
+    }
+    assert_eq!(blend_from_id(b"zzzz"), None);
+    // The issue's Color Overlay: Vivid Light stored as `vLit`, not left as Normal.
+    let key = |v: &str| Value::Enumerated { type_id: Id::new("BlnM"), value: Id::new(v) };
+    let d = Descriptor::new("null")
+        .with("masterFXSwitch", Value::Boolean(true))
+        .with("SoFi", Value::Descriptor(Descriptor::new("SoFi").with("enab", Value::Boolean(true)).with("Md  ", key("vLit"))));
+    let mut data = 0u32.to_be_bytes().to_vec();
+    data.extend(VersionedDescriptor { version: 16, descriptor: d }.to_bytes());
+    let (_, fx) = parse_lfx2(&data).unwrap();
+    let modes: Vec<BlendMode> = fx.iter().filter_map(|e| if let Effect::ColorOverlay { common, .. } = e { Some(common.blend) } else { None }).collect();
+    assert_eq!(modes, vec![BlendMode::VividLight]);
 }
 
 #[test]
@@ -338,4 +408,23 @@ fn lrfx_drop_shadow() {
         }
         other => panic!("{other:?}"),
     }
+}
+
+/// CodeRabbit on #9590: inputs closer than `f32::EPSILON` but distinct are still a span. A point
+/// on the straight line between two such inputs isn't mistaken for a bend and kept in place of a
+/// genuine one.
+#[test]
+fn a_point_on_a_tiny_straight_span_is_not_a_bend() {
+    let p = |input: f32, output: f32| CurvePoint { input, output };
+    // Three distinct inputs a few ulps apart near 0.5, on a straight rise from 0 to 1.
+    let (a, b) = (0.5_f32, f32::from_bits(0.5_f32.to_bits() + 2));
+    let mid = f32::from_bits(0.5_f32.to_bits() + 1);
+    let mut points = vec![p(0.0, 0.0), p(0.2, 0.0)];
+    points.extend([p(a, 0.0), p(mid, 0.5), p(b, 1.0)]);
+    // Fourteen gentle bends after it, each one a real (if small) peak.
+    points.extend((0..14).map(|k| p(0.55 + k as f32 * 0.03, if k % 2 == 0 { 1.0 } else { 0.9 })));
+    points.push(p(1.0, 1.0));
+    let kept = psd_contour_points(&points);
+    assert_eq!(kept.len(), 16);
+    assert!(!kept.contains(&3), "the point on the tiny straight span was kept over a real bend: {kept:?}");
 }

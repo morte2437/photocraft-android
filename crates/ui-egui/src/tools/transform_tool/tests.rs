@@ -16,6 +16,7 @@ fn session() -> TransformSession {
         mode: Default::default(),
         content_aware: None,
         skew_v: 0.0,
+        layers: Vec::new(),
     }
 }
 
@@ -127,6 +128,47 @@ fn transform_bar_pins_warp_cancel_and_commit() {
     h.get_by_label("Cancel transform").click();
     h.run_steps(2);
     assert!(h.state().ui.transform.is_none());
+}
+
+#[test]
+fn interpolation_selection_is_reused_for_the_next_transform() {
+    use egui::accesskit::Role;
+    use egui_kittest::{Harness, kittest::Queryable};
+
+    let app = app_with_square(64, photocraft_geom::Rect::new(8, 8, 24, 24));
+    let mut h = Harness::builder().with_size(vec2(2400.0, 360.0)).build_ui_state(
+        |ui, app: &mut PhotocraftApp| {
+            if ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
+                ui.horizontal_centered(|ui| options_bar(app, ui));
+            }
+        },
+        app,
+    );
+    PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::Studio);
+    let ctx = h.ctx.clone();
+    begin(h.state_mut(), &ctx).unwrap();
+    h.run_steps(6);
+    assert!(h.state().ui.transform.is_some(), "transform stays open while the bar renders");
+
+    h.get_by_role(Role::ComboBox).click();
+    h.run();
+    assert!(h.state().ui.transform.is_some(), "opening interpolation dropdown keeps the transform open");
+    h.key_press(egui::Key::ArrowDown);
+    h.run();
+    assert!(h.state().ui.transform.is_some(), "first interpolation step keeps the transform open");
+    h.key_press(egui::Key::ArrowDown);
+    h.run();
+    assert!(h.state().ui.transform.is_some(), "second interpolation step keeps the transform open");
+    assert_eq!(h.state().ui.transform.as_ref().unwrap().interpolation, "nearest");
+    assert_eq!(h.state().ui.tool_options.transform_interpolation, Some(photocraft_engine::prefs::Interpolation::Nearest));
+    assert_eq!(h.state().session.prefs().general.image_interpolation, photocraft_engine::prefs::Interpolation::BicubicAutomatic);
+
+    let transform = h.state_mut().ui.transform.as_mut().unwrap();
+    transform.quad = transform.quad.map(|[x, y]| [x + 1.0, y]);
+    commit(h.state_mut());
+    assert!(h.state().ui.transform.is_none());
+    begin(h.state_mut(), &ctx).unwrap();
+    assert_eq!(h.state().ui.transform.as_ref().unwrap().interpolation, "nearest");
 }
 
 #[test]
@@ -1571,10 +1613,10 @@ fn hovering_just_outside_a_corner_asks_for_the_rotate_cursor() {
     let h = std::f64::consts::FRAC_1_SQRT_2;
     let (tl, br) = ([32.0 - tol * 1.5, 32.0 - tol * 1.5], [160.0 + tol * 1.5, 160.0 + tol * 1.5]);
     let xf = ViewXform::active(&app).unwrap();
-    assert_eq!(cursor(&app, &xf, tl, false), Some(CursorIcon::None), "the arrow is drawn instead");
+    assert_eq!(cursor(&app, &xf, tl, egui::Modifiers::NONE), Some(CursorIcon::None), "the arrow is drawn instead");
     assert!(near2(rotate_cursor_dir(&app, tl), [h, h]), "{:?}", rotate_cursor_dir(&app, tl));
     assert!(near2(rotate_cursor_dir(&app, br), [-h, -h]), "bends round the bottom-right corner");
-    assert_eq!(cursor(&app, &xf, [60.0, 60.0], false), Some(CursorIcon::Move));
+    assert_eq!(cursor(&app, &xf, [60.0, 60.0], egui::Modifiers::NONE), Some(CursorIcon::Move));
     assert_eq!(rotate_cursor_dir(&app, [60.0, 60.0]), None, "inside moves");
     assert_eq!(rotate_cursor_dir(&app, [32.0, 32.0]), None, "the corner handle scales");
     assert_eq!(rotate_cursor_dir(&app, [f64::NAN, 32.0]), None);
@@ -1657,7 +1699,10 @@ fn resize_cursors_turn_with_the_box_and_the_view() {
         let t = app.ui.transform.clone().unwrap();
         let xf = ViewXform::active(&app).unwrap();
         let mid = |i: usize| [(t.quad[i][0] + t.quad[(i + 1) % 4][0]) / 2.0, (t.quad[i][1] + t.quad[(i + 1) % 4][1]) / 2.0];
-        let got: Vec<_> = (0..4).map(|i| cursor(&app, &xf, t.quad[i], false)).chain((0..4).map(|i| cursor(&app, &xf, mid(i), false))).collect();
+        let got: Vec<_> = (0..4)
+            .map(|i| cursor(&app, &xf, t.quad[i], egui::Modifiers::NONE))
+            .chain((0..4).map(|i| cursor(&app, &xf, mid(i), egui::Modifiers::NONE)))
+            .collect();
         let want = [want[0], want[1], want[0], want[1], want[2], want[3], want[2], want[3]].map(Some);
         assert_eq!(got, want, "box {deg}°, view {view}°, flip {flip}");
     }
@@ -1673,7 +1718,7 @@ fn corner_cursors_stay_diagonal_on_a_long_box() {
         crate::menus::invoke(&mut app, &egui::Context::default(), "edit.freeTransform", json!({})).unwrap();
         let t = app.ui.transform.clone().unwrap();
         let xf = ViewXform::active(&app).unwrap();
-        let got: Vec<_> = (0..4).map(|i| cursor(&app, &xf, t.quad[i], false)).collect();
+        let got: Vec<_> = (0..4).map(|i| cursor(&app, &xf, t.quad[i], egui::Modifiers::NONE)).collect();
         assert_eq!(got, [NwSe, NeSw, NwSe, NeSw].map(Some), "{rect:?}");
     }
 }
@@ -1724,8 +1769,39 @@ fn the_live_readout_follows_the_drag() {
     // The right edge doubles the width (proportional by default: the height too).
     ev(&mut app, ToolEvent::Down { x: 165.0, y: 93.0, pressure: 1.0 });
     ev(&mut app, ToolEvent::Move { x: 293.0, y: 93.0, pressure: 1.0 });
-    let Some(Readout::Scale([w, h])) = live_readout(&app) else { panic!("{:?}", live_readout(&app)) };
+    let Some(Readout::Scale { percent: [w, h], px }) = live_readout(&app) else { panic!("{:?}", live_readout(&app)) };
     assert!((w - 200.0).abs() < 1e-6 && (h - 200.0).abs() < 1e-6, "{w} {h}");
+    assert!((px[0] - 256.0).abs() < 1e-6 && (px[1] - 256.0).abs() < 1e-6, "{px:?}");
+}
+
+/// #9400: the W/H readout shows the box's size in the ruler unit, as Photoshop does, and
+/// the scale of the original box when the rulers are in percent.
+#[test]
+fn the_scale_readout_follows_the_ruler_unit() {
+    use photocraft_engine::prefs::Unit;
+    let mut app = app_with_square(256, photocraft_geom::Rect::new(32, 32, 160, 160));
+    app.ui.extras.snap = false;
+    crate::menus::invoke(&mut app, &egui::Context::default(), "edit.freeTransform", json!({})).unwrap();
+    let ev = |app: &mut PhotocraftApp, e| crate::canvas::tool_event(app, e, egui::Modifiers::NONE);
+    // The right edge from 160 to 288: the 128 px box doubles (proportionally).
+    ev(&mut app, ToolEvent::Down { x: 160.0, y: 96.0, pressure: 1.0 });
+    ev(&mut app, ToolEvent::Move { x: 288.0, y: 96.0, pressure: 1.0 });
+    let Some(Readout::Scale { percent, px }) = live_readout(&app) else { panic!("{:?}", live_readout(&app)) };
+    let shown = |app: &mut PhotocraftApp, unit: Unit| {
+        app.session.prefs.edit(|p| p.units_and_rulers.rulers = unit);
+        scale_values(app, percent, px)
+    };
+    let dpi = app.session.active().unwrap().doc.resolution_dpi;
+    assert_eq!(dpi, 72.0, "the expected values below are at 72 ppi");
+    assert_eq!(shown(&mut app, Unit::Pixels), ["256 px".to_string(), "256 px".to_string()]);
+    assert_eq!(shown(&mut app, Unit::Inches), ["3.556 in".to_string(), "3.556 in".to_string()]);
+    assert_eq!(shown(&mut app, Unit::Centimeters), ["9.03 cm".to_string(), "9.03 cm".to_string()]);
+    assert_eq!(shown(&mut app, Unit::Millimeters), ["90.31 mm".to_string(), "90.31 mm".to_string()]);
+    assert_eq!(shown(&mut app, Unit::Percent), ["200.0%".to_string(), "200.0%".to_string()]);
+    // A flipped box reads as a negative width, as in the options bar.
+    assert_eq!(scale_values(&app, [-50.0, 50.0], [-64.0, 64.0]), ["-50.0%".to_string(), "50.0%".to_string()]);
+    app.session.prefs.edit(|p| p.units_and_rulers.rulers = Unit::Pixels);
+    assert_eq!(scale_values(&app, [-50.0, 50.0], [-64.0, 64.0]), ["-64 px".to_string(), "64 px".to_string()]);
 }
 
 #[test]
@@ -2107,6 +2183,28 @@ fn nested_group_preview_detaches_every_clipped_ancestor() {
 
     let (image, _) = preview_image(&st.doc, target_id, None, photocraft_geom::Rect::new(8, 8, 24, 24), 4096, false);
     assert_eq!(image.pixels[8 * image.size[0] + 8], Color32::from_rgb(255, 0, 0), "hidden clipping bases must not make a nested target disappear");
+}
+
+#[test]
+fn several_preview_detaches_clipped_ancestors() {
+    use photocraft_color::PixelFormat;
+    use photocraft_doc::Layer;
+    let mut app = app_with_square(64, photocraft_geom::Rect::new(8, 8, 24, 24));
+    let st = app.session.active_mut().unwrap();
+    let doc = Arc::make_mut(&mut st.doc);
+    let first = doc.layers.pop().unwrap();
+    let first_id = first.id;
+    let mut second = Layer::raster("second", PixelFormat::RGBA8);
+    second.surface_mut().unwrap().fill_rect(photocraft_geom::Rect::new(32, 8, 48, 24), &[0., 1., 0., 1.]);
+    let second_id = second.id;
+    let mut group = Layer::group("clipped", vec![first, second]);
+    group.clipped = true;
+    doc.layers.push(Layer::raster("hidden base", PixelFormat::RGBA8));
+    doc.layers.push(group);
+    let shown = Several::shown(doc, &[first_id, second_id], &[]);
+    let (image, _) = composite_image(&shown, photocraft_geom::Rect::new(0, 0, 64, 64), 4096);
+    assert_eq!(image.pixels[16 * image.size[0] + 16], Color32::from_rgb(255, 0, 0));
+    assert_eq!(image.pixels[16 * image.size[0] + 40], Color32::from_rgb(0, 255, 0));
 }
 
 #[test]
@@ -2987,4 +3085,198 @@ fn anchor_grid_point_on_quad_and_carry_pivot() {
     }
     assert_eq!(matching_anchor(quad, [12.3, 45.6]), None);
     assert_eq!(matching_anchor(quad, [50.0, 30.0]), None);
+}
+
+#[test]
+fn hovering_corner_with_ctrl_shows_distort_cursor() {
+    let mut app = app_with_square(256, photocraft_geom::Rect::new(32, 32, 160, 160));
+    crate::menus::invoke(&mut app, &egui::Context::default(), "edit.freeTransform", json!({})).unwrap();
+    let tol = handle_tolerance(&app);
+    let corner = [32.0, 32.0];
+    let mut command = egui::Modifiers::NONE;
+    command.command = true;
+    let xf = ViewXform::active(&app).unwrap();
+
+    // Without Ctrl: corner handle gives standard diagonal scale cursor.
+    assert_eq!(cursor(&app, &xf, corner, egui::Modifiers::NONE), Some(CursorIcon::ResizeNwSe));
+
+    // With Ctrl: corner handle arms free distort, hiding OS cursor so custom pointer is drawn.
+    assert_eq!(cursor(&app, &xf, corner, command), Some(CursorIcon::None));
+
+    // A Cmd-drag just outside a corner still rotates, so the curved arrow stays.
+    let near_corner = [32.0 - tol * 1.5, 32.0 - tol * 1.5];
+    assert_eq!(cursor(&app, &xf, near_corner, command), Some(CursorIcon::None));
+    assert!(rotate_cursor_dir(&app, near_corner).is_some());
+    assert_eq!(cursor(&app, &xf, near_corner, egui::Modifiers::NONE), Some(CursorIcon::None));
+}
+
+#[test]
+fn hovering_edge_with_ctrl_shows_skew_cursor() {
+    let mut app = app_with_square(256, photocraft_geom::Rect::new(32, 32, 160, 160));
+    crate::menus::invoke(&mut app, &egui::Context::default(), "edit.freeTransform", json!({})).unwrap();
+    let edge = [96.0, 32.0]; // top edge midpoint
+    let mut command = egui::Modifiers::NONE;
+    command.command = true;
+    let xf = ViewXform::active(&app).unwrap();
+
+    // Without Ctrl: edge handle gives axis resize cursor.
+    assert_eq!(cursor(&app, &xf, edge, egui::Modifiers::NONE), Some(CursorIcon::ResizeVertical));
+
+    // With Ctrl: edge handle arms skew, hiding OS cursor so custom skew indicator is drawn.
+    assert_eq!(cursor(&app, &xf, edge, command), Some(CursorIcon::None));
+}
+
+#[test]
+fn hovering_corner_on_text_layer_with_ctrl_retains_resize_cursor() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.session.execute("file.new", json!({"width": 200, "height": 100})).unwrap();
+    app.sync_views();
+    app.run("type.create", json!({"x": 10, "y": 60, "text": "Hello"})).unwrap();
+    let ctx = egui::Context::default();
+    crate::menus::invoke(&mut app, &ctx, "edit.freeTransform", json!({})).unwrap();
+
+    let t = app.ui.transform.as_ref().unwrap();
+    let corner = t.quad[0];
+    let mut command = egui::Modifiers::NONE;
+    command.command = true;
+    let xf = ViewXform::active(&app).unwrap();
+
+    // Editable type refuses distort, so holding Ctrl retains standard resize cursor on corners.
+    let without_ctrl = cursor(&app, &xf, corner, egui::Modifiers::NONE);
+    let with_ctrl = cursor(&app, &xf, corner, command);
+    assert_ne!(with_ctrl, Some(CursorIcon::None));
+    assert_eq!(with_ctrl, without_ctrl, "text layer must retain resize cursor");
+}
+
+#[test]
+fn cursor_during_drag_stays_stable() {
+    let mut app = app_with_square(256, photocraft_geom::Rect::new(32, 32, 160, 160));
+    app.ui.extras.snap = false;
+    crate::menus::invoke(&mut app, &egui::Context::default(), "edit.freeTransform", json!({})).unwrap();
+    let mut command = egui::Modifiers::NONE;
+    command.command = true;
+    let xf = ViewXform::active(&app).unwrap();
+
+    // Start dragging corner [32.0, 32.0] with Command held.
+    crate::canvas::tool_event(&mut app, ToolEvent::Down { x: 32.0, y: 32.0, pressure: 1.0 }, command);
+    crate::canvas::tool_event(&mut app, ToolEvent::Move { x: 50.0, y: 60.0, pressure: 1.0 }, command);
+
+    // While dragging, cursor anywhere stays CursorIcon::None (distort custom cursor).
+    assert_eq!(cursor(&app, &xf, [50.0, 60.0], command), Some(CursorIcon::None));
+    assert_eq!(cursor(&app, &xf, [200.0, 200.0], command), Some(CursorIcon::None));
+
+    // Release drag
+    crate::canvas::tool_event(&mut app, ToolEvent::Up { x: 50.0, y: 60.0 }, command);
+
+    // Once released, dragging has ended: far outside returns the commit-on-click cursor,
+    // and hovering the corner without Command restores normal resize cursor.
+    assert_eq!(cursor(&app, &xf, [200.0, 200.0], command), Some(CursorIcon::Alias));
+    assert_ne!(cursor(&app, &xf, [50.0, 60.0], egui::Modifiers::NONE), Some(CursorIcon::None));
+}
+
+fn cmd() -> egui::Modifiers {
+    egui::Modifiers { command: true, ..Default::default() }
+}
+
+/// The indicator each handle shows in `mode` with `mods`: corner 0 and edge 0 (top) of a square.
+fn indicators(mode: &str, mods: egui::Modifiers) -> (Option<HandleIndicator>, Option<HandleIndicator>) {
+    let mut app = app_with_square(256, photocraft_geom::Rect::new(32, 32, 160, 160));
+    crate::menus::invoke(&mut app, &egui::Context::default(), mode, json!({})).unwrap();
+    let t = app.ui.transform.clone().unwrap();
+    (handle_indicator(&app, &t, Hit::Corner(0), mods), handle_indicator(&app, &t, Hit::Edge(0), mods))
+}
+
+#[test]
+fn handle_pointers_follow_what_the_drag_does() {
+    use HandleIndicator::{Distort, Skew};
+    let none = egui::Modifiers::NONE;
+    let persp = egui::Modifiers { command: true, alt: true, shift: true, ..Default::default() };
+    assert_eq!(indicators("edit.freeTransform", none), (None, None), "plain drags scale");
+    assert_eq!(indicators("edit.freeTransform", cmd()), (Some(Distort), Some(Skew)));
+    assert_eq!(indicators("edit.freeTransform", persp), (Some(Distort), Some(Skew)));
+    // Rotate mode turns the box from every handle, whatever the keys.
+    assert_eq!(indicators("edit.transform.rotate", cmd()), (None, None));
+    // A Skew-mode corner slides along one edge, with or without Cmd; its edges skew.
+    assert_eq!(indicators("edit.transform.skew", cmd()), (None, Some(Skew)));
+    assert_eq!(indicators("edit.transform.skew", none), (None, Some(Skew)));
+    // Distort mode leaves the edges alone, Cmd or not.
+    assert_eq!(indicators("edit.transform.distort", none), (Some(Distort), None));
+    assert_eq!(indicators("edit.transform.distort", cmd()), (Some(Distort), None));
+    // Perspective mode: corners move in pairs; Cmd on an edge skews (`apply_drag`).
+    assert_eq!(indicators("edit.transform.perspective", none), (Some(Distort), None));
+    assert_eq!(indicators("edit.transform.perspective", cmd()), (Some(Distort), Some(Skew)));
+    assert_eq!(indicators("edit.transform.scale", cmd()), (Some(Distort), Some(Skew)));
+}
+
+#[test]
+fn ctrl_in_rotate_mode_keeps_the_rotate_pointer() {
+    let mut app = app_with_square(256, photocraft_geom::Rect::new(32, 32, 160, 160));
+    crate::menus::invoke(&mut app, &egui::Context::default(), "edit.transform.rotate", json!({})).unwrap();
+    let xf = ViewXform::active(&app).unwrap();
+    let corner = [32.0, 32.0];
+    assert_eq!(cursor(&app, &xf, corner, cmd()), Some(CursorIcon::None));
+    assert!(rotate_cursor_dir(&app, corner).is_some(), "a Rotate-mode corner drag rotates: the turn arrow stays");
+    // An edge drag rotates too: Cmd draws no skew pointer there.
+    let edge = [96.0, 32.0];
+    assert_eq!(cursor(&app, &xf, edge, cmd()), cursor(&app, &xf, edge, egui::Modifiers::NONE));
+}
+
+#[test]
+fn rotate_mode_handle_drag_keeps_the_arrow_away_from_the_corners() {
+    let mut app = app_with_square(256, photocraft_geom::Rect::new(32, 32, 160, 160));
+    app.ui.extras.snap = false;
+    crate::menus::invoke(&mut app, &egui::Context::default(), "edit.transform.rotate", json!({})).unwrap();
+    let xf = ViewXform::active(&app).unwrap();
+    let none = egui::Modifiers::NONE;
+    crate::canvas::tool_event(&mut app, ToolEvent::Down { x: 32.0, y: 32.0, pressure: 1.0 }, none);
+    // Far from every corner of the turned box, past the hover zone.
+    crate::canvas::tool_event(&mut app, ToolEvent::Move { x: 250.0, y: 96.0, pressure: 1.0 }, none);
+    let t = app.ui.transform.clone().unwrap();
+    let tol = handle_tolerance(&app);
+    assert!(t.quad.iter().all(|q| (250.0 - q[0]).hypot(96.0 - q[1]) > tol * 4.0), "{:?}", t.quad);
+    assert!(rotate_cursor_dir(&app, [250.0, 96.0]).is_some(), "the corner drag rotates");
+    assert_eq!(cursor(&app, &xf, [250.0, 96.0], none), Some(CursorIcon::None));
+}
+
+#[test]
+fn scale_drag_past_a_corner_shows_no_rotate_arrow() {
+    let mut app = app_with_square(256, photocraft_geom::Rect::new(32, 32, 160, 160));
+    app.ui.extras.snap = false;
+    crate::menus::invoke(&mut app, &egui::Context::default(), "edit.freeTransform", json!({})).unwrap();
+    let none = egui::Modifiers::NONE;
+    crate::canvas::tool_event(&mut app, ToolEvent::Down { x: 160.0, y: 160.0, pressure: 1.0 }, none);
+    crate::canvas::tool_event(&mut app, ToolEvent::Move { x: 150.0, y: 150.0, pressure: 1.0 }, none);
+    let t = app.ui.transform.clone().unwrap();
+    let tol = handle_tolerance(&app);
+    // Just outside another corner, where a hover would show the turn arrow.
+    let past = [t.quad[0][0] - tol * 1.5, t.quad[0][1] - tol * 1.5];
+    assert_eq!(rotate_cursor_dir(&app, past), None, "the drag scales");
+}
+
+#[test]
+fn applying_the_box_hides_no_pointer() {
+    let mut app = app_with_square(256, photocraft_geom::Rect::new(32, 32, 160, 160));
+    crate::menus::invoke(&mut app, &egui::Context::default(), "edit.freeTransform", json!({})).unwrap();
+    let xf = ViewXform::active(&app).unwrap();
+    app.transform_preview.as_mut().unwrap().committing = Some(JobId(1));
+    // The overlay draws no handles while the box is applied, so no drawn pointer either.
+    assert_eq!(cursor(&app, &xf, [32.0, 32.0], cmd()), Some(CursorIcon::ResizeNwSe));
+    assert_eq!(cursor(&app, &xf, [96.0, 32.0], cmd()), Some(CursorIcon::ResizeVertical));
+}
+
+#[test]
+fn several_layers_reuse_the_transform_interpolation_preference() {
+    let mut app = app_with_square(64, photocraft_geom::Rect::new(8, 8, 24, 24));
+    let st = app.session.active_mut().unwrap();
+    let first = st.active_layer.unwrap();
+    let mut second = photocraft_doc::Layer::raster("second", photocraft_color::PixelFormat::RGBA8);
+    second.surface_mut().unwrap().fill_rect(photocraft_geom::Rect::new(32, 8, 48, 24), &[0., 1., 0., 1.]);
+    let second_id = second.id;
+    Arc::make_mut(&mut st.doc).layers.push(second);
+    st.selected_layers = vec![first, second_id];
+    app.ui.tool_options.transform_interpolation = Some(photocraft_engine::prefs::Interpolation::Nearest);
+    begin(&mut app, &egui::Context::default()).unwrap();
+    let transform = app.ui.transform.as_ref().unwrap();
+    assert_eq!(transform.layers.len(), 2);
+    assert_eq!(transform.interpolation, "nearest");
 }

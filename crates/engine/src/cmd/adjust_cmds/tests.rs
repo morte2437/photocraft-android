@@ -170,7 +170,7 @@ fn color_lookup_builtin_data_and_errors() {
     // Switching interpolation keeps the table.
     s.execute("layer.setAdjustment", json!({"layer": id.0, "interpolation": "tetrahedral", "dither": true})).unwrap();
     match &doc(&s).layer(id).unwrap().content {
-        LayerContent::Adjustment(Adjustment::ColorLookup { lut: Some(_), size: 33, tetrahedral: true, dither: true, name }) => {
+        LayerContent::Adjustment(Adjustment::ColorLookup { lut: Some(_), size: 33, tetrahedral: true, dither: true, name, .. }) => {
             assert_eq!(name, "Day for Night")
         }
         other => panic!("{other:?}"),
@@ -219,7 +219,79 @@ LUT_3D_SIZE 2
     assert_eq!(looks.as_array().unwrap().len(), photocraft_cms::lutfile::BUILTIN.len());
 }
 
+#[test]
+fn color_lookup_mesh_3dl_honours_the_header() {
+    // #9078 / #9073: a Lustre .3dl whose `Mesh <inBits> <outBits>` line declares the cube edge
+    // (2^inBits + 1) and the output range (up to 2^outBits - 1). The three-value shaper row used
+    // to be counted as a 28th node ("28 rows is not a cube"), and 10-bit codes under a 12-bit
+    // declaration divided by the inferred 1023 instead of the declared 4095.
+    let mut lut = String::from("3DMESH\nMesh 1 12\n0 512 1023\n");
+    for r in 0..3 {
+        for g in 0..3 {
+            for b in 0..3 {
+                let v = [r, g, b].map(|c| (4095.0 - 4095.0 * c as f64 / 2.0).round() as i32);
+                lut.push_str(&format!("{} {} {}\n", v[0], v[1], v[2]));
+            }
+        }
+    }
+    let mut s = session(8, "rgb");
+    paint(&mut s, |_, _| [64.0 / 255.0, 128.0 / 255.0, 192.0 / 255.0, 1.0]);
+    s.execute("image.adjustments.colorLookup", json!({"data": lut, "fileName": "inverse.3dl", "dither": false})).unwrap();
+    // Photoshop 27.11 renders (64,128,192) as (191,127,63) through this file.
+    let after = rgba(&s, 5, 5);
+    for (c, want) in [(0, 191.0), (1, 127.0), (2, 63.0)] {
+        assert!((after[c] * 255.0 - want).abs() <= 1.0, "channel {c}: {after:?}");
+    }
+}
+
 /// The kind's parameters, read back from the model (Color Lookup with its table name and size).
+#[test]
+fn color_lookup_file_round_trips_psd_in_its_own_format() {
+    use photocraft_doc::adjust::{LutFormat, LutSource};
+    // #6544: a .3dl / .look file is kept as loaded and embedded unchanged in a PSD.
+    let mut threedl = String::from("0 1023\n");
+    for r in 0..2 {
+        for g in 0..2 {
+            for b in 0..2 {
+                threedl.push_str(&format!("{} {} {}\n", (1 - r) * 4095, (1 - g) * 4095, (1 - b) * 4095));
+            }
+        }
+    }
+    let hex: String = photocraft_cms::lutfile::LutFile::identity(2).data.iter().flat_map(|v| v.to_le_bytes()).map(|b| format!("{b:02X}")).collect();
+    let look = format!("<look><LUT><size>2</size><data>{hex}</data></LUT></look>");
+    for (text, file_name, format, psd_format) in
+        [(threedl.as_str(), "Invert.3dl", LutFormat::ThreeDl, "LUTFormat3DL"), (look.as_str(), "Grade.look", LutFormat::Look, "LUTFormatLOOK")]
+    {
+        let mut s = session(8, "rgb");
+        let r = s.execute("layer.newAdjustmentLayer.colorLookup", json!({"data": text, "fileName": file_name})).unwrap();
+        let id = photocraft_doc::LayerId(r["layer"].as_u64().unwrap());
+        let want = LutSource { format, bytes: std::sync::Arc::new(text.as_bytes().to_vec()) };
+        let source_of = |s: &Session| match adjustment_of(s, id) {
+            Adjustment::ColorLookup { source, .. } => source,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(source_of(&s), Some(want.clone()), "{file_name}");
+        // Settings that don't touch the table keep the file.
+        s.execute("layer.setAdjustment", json!({"layer": id.0, "interpolation": "tetrahedral", "dither": true})).unwrap();
+        assert_eq!(source_of(&s), Some(want.clone()), "{file_name}");
+        // Saved as PSD and reopened: same format tag, same bytes, same name.
+        let psd = photocraft_io::export(doc(&s), "psd", &photocraft_io::ExportOptions::default()).unwrap().bytes;
+        let back = photocraft_io::import("x.psd", &psd).unwrap().document;
+        let layer = back.walk().into_iter().map(|(_, _, l)| l).find(|l| matches!(l.content, LayerContent::Adjustment(Adjustment::ColorLookup { .. }))).unwrap();
+        let LayerContent::Adjustment(Adjustment::ColorLookup { name, source, .. }) = &layer.content else { panic!("not a Color Lookup") };
+        assert_eq!((name.as_str(), source.as_ref()), (file_name, Some(&want)), "{psd_format}");
+        // Choosing a built-in look replaces the table, so the file goes too.
+        s.execute("layer.setAdjustment", json!({"layer": id.0, "lut": "dayForNight"})).unwrap();
+        assert_eq!(source_of(&s), None);
+    }
+    // "none" drops it as well.
+    let mut s = session(8, "rgb");
+    let r = s.execute("layer.newAdjustmentLayer.colorLookup", json!({"data": threedl, "fileName": "Invert.3dl"})).unwrap();
+    let id = photocraft_doc::LayerId(r["layer"].as_u64().unwrap());
+    s.execute("layer.setAdjustment", json!({"layer": id.0, "lut": "none"})).unwrap();
+    assert!(matches!(adjustment_of(&s, id), Adjustment::ColorLookup { source: None, lut: None, .. }));
+}
+
 fn adjustment_of(s: &Session, id: photocraft_doc::LayerId) -> Adjustment {
     match &doc(s).layer(id).unwrap().content {
         LayerContent::Adjustment(a) => a.clone(),

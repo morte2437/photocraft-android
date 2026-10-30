@@ -344,6 +344,45 @@ fn a_rotated_view_keeps_horizontal_for_size_and_vertical_for_hardness() {
     assert_eq!(drag_in_view(90.0, true, 0.0, 30.0), (100.0, 0.2), "rotated and flipped: screen right grows");
 }
 
+/// The tip's mesh, painted at the origin: (distance from the centre, alpha) per vertex.
+fn tip_mesh(radius: f32, zoom: f32, hardness: f32) -> Vec<(f32, u8)> {
+    let ctx = egui::Context::default();
+    let color = Color32::from_rgba_unmultiplied(255, 0, 0, 200);
+    let mut out = ctx.run_ui(Default::default(), |ui| {
+        let painter = ui.painter().with_clip_rect(egui::Rect::from_center_size(Pos2::ZERO, vec2(4000.0, 4000.0)));
+        tip_preview(&painter, Pos2::ZERO, radius, zoom, hardness, color);
+    });
+    out.textures_delta.clear();
+    let mesh = out
+        .shapes
+        .iter()
+        .find_map(|c| match &c.shape {
+            egui::Shape::Mesh(m) => Some(m.clone()),
+            _ => None,
+        })
+        .expect("the tip is drawn");
+    mesh.vertices.iter().map(|v| (v.pos.to_vec2().length(), v.color.a())).collect()
+}
+
+/// The disc follows the engine's round tip: a hard one is solid to its rim, a soft one fades
+/// as the engine's falloff does and reaches past the radius as its dabs do.
+#[test]
+fn the_tip_preview_follows_the_brush_falloff() {
+    for zoom in [1.0, 2.5] {
+        let hard = tip_mesh(50.0, zoom, 1.0);
+        assert!(hard.iter().filter(|(d, _)| *d < 48.0 * zoom).all(|(_, a)| *a == 200), "zoom {zoom}: a hard tip is solid inside");
+        assert!(hard.iter().all(|(d, a)| *d <= 52.0 * zoom || *a == 0), "zoom {zoom}: and ends at its rim");
+        let soft = tip_mesh(50.0, zoom, 0.0);
+        for (d, a) in &soft {
+            let want = 200.0 * photocraft_paint::tip_falloff(d / zoom, 50.0, 0.0);
+            assert!((f32::from(*a) - want).abs() <= 3.0 || *a == 0, "zoom {zoom}: at {d}: {a}, the engine {want}");
+        }
+        let reach = photocraft_paint::tip_reach(50.0, 0.0);
+        assert!(soft.iter().any(|(d, a)| *d > 60.0 * zoom && *a > 0), "zoom {zoom}: a soft tip shows past its radius");
+        assert!(soft.iter().all(|(d, _)| *d <= reach * zoom + 0.5), "zoom {zoom}: and no further than it reaches");
+    }
+}
+
 /// Preferences ▸ Cursors ▸ Brush Preview colour tints the HUD's tip preview (red by default).
 #[test]
 fn the_tip_preview_uses_the_brush_preview_colour() {
@@ -382,4 +421,27 @@ fn stylus_barrel_button_resizes_with_alt_and_never_samples_color() {
     button(&mut h, p, PointerButton::Primary, false, Modifiers::ALT);
     h.run_steps(2);
     assert!(h.state().brush_resize.is_none());
+}
+
+/// Liquify density keeps its radius-bounded preview; the paint engine's soft-brush reach is
+/// deliberately used only by the paint HUD.
+#[test]
+fn liquify_density_preview_stays_inside_its_radius() {
+    let ctx = egui::Context::default();
+    let radius = 50.0;
+    let mut output = ctx.run_ui(Default::default(), |ui| {
+        let painter = ui.painter().with_clip_rect(egui::Rect::from_center_size(Pos2::ZERO, vec2(400.0, 400.0)));
+        liquify_tip_preview(&painter, Pos2::ZERO, radius, 0.0, Color32::RED);
+    });
+    output.textures_delta.clear();
+    let mesh = output
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Mesh(mesh) => Some(mesh),
+            _ => None,
+        })
+        .expect("the Liquify preview is drawn");
+    assert!(mesh.vertices.iter().all(|v| v.pos.to_vec2().length() <= radius + 0.01));
+    assert!(mesh.vertices.iter().any(|v| v.pos.to_vec2().length() >= radius - 0.01));
 }

@@ -1,6 +1,6 @@
 use super::consts::STRIDE;
 use super::textures::Cell;
-use super::*;
+use super::{DeviceHealth, FieldKind, HashMap, Rect, Unsupported, fx};
 
 /// Document pixels of page cell `c`.
 pub(crate) fn cell_rect(c: Cell, page: u32) -> Rect {

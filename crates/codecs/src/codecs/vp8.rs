@@ -19,7 +19,11 @@ mod transform;
 
 use bool_encoder::BoolEncoder;
 use predict::{Plane, SubEdges, predict_block, predict_sub};
-use tables::*;
+use tables::{
+    AC_QLOOKUP, B_DC_PRED, B_HE_PRED, B_PRED, B_TM_PRED, B_VE_PRED, BMODE_TREE, CAT_BASE, COEFF_BANDS, COEFF_TREE, COEFF_UPDATE_PROBS, DC_PRED, DC_QLOOKUP,
+    DCT_0, DCT_1, DCT_2, DCT_3, DCT_4, DCT_CAT1, DCT_CAT2, DCT_CAT3, DCT_CAT4, DCT_CAT5, DCT_CAT6, DCT_EOB, DEFAULT_COEFF_PROBS, H_PRED, KF_BMODE_PROBS,
+    KF_UV_MODE_PROB, KF_YMODE_PROB, KF_YMODE_TREE, PCAT, TM_PRED, UV_MODE_TREE, V_PRED, ZIGZAG,
+};
 use transform::{fdct, fwht, idct, iwht};
 
 /// The largest dimension a VP8 frame header can hold (14 bits).
@@ -353,6 +357,65 @@ impl<'a> Encoder<'a> {
             .sum()
     }
 
+    /// Chroma of one macroblock: one mode for both planes; returns it with the U and V blocks.
+    fn encode_chroma(&mut self, mbx: usize, mby: usize) -> (u8, Vec<Block>, Vec<Block>) {
+        let (cx0, cy0) = (mbx * 8, mby * 8);
+        let mut src_u = [0i32; 64];
+        let mut src_v = [0i32; 64];
+        for r in 0..8 {
+            for c in 0..8 {
+                src_u[r * 8 + c] = self.src_c(&self.src.u, cx0 + c, cy0 + r);
+                src_v[r * 8 + c] = self.src_c(&self.src.v, cx0 + c, cy0 + r);
+            }
+        }
+        let mut uv_mode = DC_PRED;
+        let mut uv_best = u64::MAX;
+        let mut pred_u = [0u8; 64];
+        let mut pred_v = [0u8; 64];
+        let mut pu = [0u8; 64];
+        let mut pv = [0u8; 64];
+        for mode in [DC_PRED, V_PRED, H_PRED, TM_PRED] {
+            predict_block(&self.rec_u, cx0, cy0, 8, mode, &mut pu);
+            predict_block(&self.rec_v, cx0, cy0, 8, mode, &mut pv);
+            let e = Self::sse(&pu, &src_u) + Self::sse(&pv, &src_v);
+            if e < uv_best {
+                uv_best = e;
+                uv_mode = mode;
+                pred_u = pu;
+                pred_v = pv;
+            }
+        }
+        let mut u_blocks = Vec::with_capacity(4);
+        let mut v_blocks = Vec::with_capacity(4);
+        for (plane_src, pred, blocks, is_u) in [(&src_u, &pred_u, &mut u_blocks, true), (&src_v, &pred_v, &mut v_blocks, false)] {
+            for b in 0..4 {
+                let mut residual = [0i32; 16];
+                for r in 0..4 {
+                    for c in 0..4 {
+                        let i = ((b >> 1) * 4 + r) * 8 + (b & 1) * 4 + c;
+                        residual[r * 4 + c] = plane_src[i] - i32::from(pred[i]);
+                    }
+                }
+                let (quantized, dequantized) = Self::code_block(&residual, self.q.uv_dc, self.q.uv_ac, true);
+                let recon = idct(&dequantized);
+                let (bx, by) = (cx0 + (b & 1) * 4, cy0 + (b >> 1) * 4);
+                for r in 0..4 {
+                    for c in 0..4 {
+                        let i = ((b >> 1) * 4 + r) * 8 + (b & 1) * 4 + c;
+                        let value = (i32::from(pred[i]) + recon[r * 4 + c]).clamp(0, 255) as u8;
+                        if is_u {
+                            self.rec_u.set(bx + c, by + r, value);
+                        } else {
+                            self.rec_v.set(bx + c, by + r, value);
+                        }
+                    }
+                }
+                blocks.push(Block::from_raster(&quantized, 0));
+            }
+        }
+        (uv_mode, u_blocks, v_blocks)
+    }
+
     // Sub-block indices address several arrays by geometry; ranges read better than iterators here.
     #[allow(clippy::needless_range_loop)]
     fn encode_macroblock(&mut self, mbx: usize, mby: usize) {
@@ -476,61 +539,7 @@ impl<'a> Encoder<'a> {
             (best_mode, Some(Block::from_raster(&y2_q, 0)), blocks)
         };
 
-        // Chroma: one mode for both planes.
-        let (cx0, cy0) = (mbx * 8, mby * 8);
-        let mut src_u = [0i32; 64];
-        let mut src_v = [0i32; 64];
-        for r in 0..8 {
-            for c in 0..8 {
-                src_u[r * 8 + c] = self.src_c(&self.src.u, cx0 + c, cy0 + r);
-                src_v[r * 8 + c] = self.src_c(&self.src.v, cx0 + c, cy0 + r);
-            }
-        }
-        let mut uv_mode = DC_PRED;
-        let mut uv_best = u64::MAX;
-        let mut pred_u = [0u8; 64];
-        let mut pred_v = [0u8; 64];
-        let mut pu = [0u8; 64];
-        let mut pv = [0u8; 64];
-        for mode in [DC_PRED, V_PRED, H_PRED, TM_PRED] {
-            predict_block(&self.rec_u, cx0, cy0, 8, mode, &mut pu);
-            predict_block(&self.rec_v, cx0, cy0, 8, mode, &mut pv);
-            let e = Self::sse(&pu, &src_u) + Self::sse(&pv, &src_v);
-            if e < uv_best {
-                uv_best = e;
-                uv_mode = mode;
-                pred_u = pu;
-                pred_v = pv;
-            }
-        }
-        let mut u_blocks = Vec::with_capacity(4);
-        let mut v_blocks = Vec::with_capacity(4);
-        for (plane_src, pred, blocks, is_u) in [(&src_u, &pred_u, &mut u_blocks, true), (&src_v, &pred_v, &mut v_blocks, false)] {
-            for b in 0..4 {
-                let mut residual = [0i32; 16];
-                for r in 0..4 {
-                    for c in 0..4 {
-                        let i = ((b >> 1) * 4 + r) * 8 + (b & 1) * 4 + c;
-                        residual[r * 4 + c] = plane_src[i] - i32::from(pred[i]);
-                    }
-                }
-                let (quantized, dequantized) = Self::code_block(&residual, self.q.uv_dc, self.q.uv_ac, true);
-                let recon = idct(&dequantized);
-                let (bx, by) = (cx0 + (b & 1) * 4, cy0 + (b >> 1) * 4);
-                for r in 0..4 {
-                    for c in 0..4 {
-                        let i = ((b >> 1) * 4 + r) * 8 + (b & 1) * 4 + c;
-                        let value = (i32::from(pred[i]) + recon[r * 4 + c]).clamp(0, 255) as u8;
-                        if is_u {
-                            self.rec_u.set(bx + c, by + r, value);
-                        } else {
-                            self.rec_v.set(bx + c, by + r, value);
-                        }
-                    }
-                }
-                blocks.push(Block::from_raster(&quantized, 0));
-            }
-        }
+        let (uv_mode, u_blocks, v_blocks) = self.encode_chroma(mbx, mby);
 
         let skip = y2.as_ref().is_none_or(|b| !b.has_coeffs())
             && y_blocks.iter().all(|b| !b.has_coeffs())

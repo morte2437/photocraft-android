@@ -654,6 +654,7 @@ fn every_mapped_command_exports_and_imports_back() {
         ("edit.undo", json!({})),
         ("edit.redo", json!({})),
         ("layer.select", json!({"layer": "YELLOW", "mode": "remove"})),
+        ("layer.select", json!({"layer": "Or paste photocopy texture here", "mode": "range"})),
         ("layer.translate", json!({"dx": 0.36, "dy": -1.08, "units": "pt"})),
         ("select.loadSelection", json!({"channel": "targeted"})),
         ("layer.newFillLayer.pattern", json!({"pattern": "Debaser-Distressed-Dark", "scale": 50, "angle": 0, "link": true})),
@@ -661,6 +662,15 @@ fn every_mapped_command_exports_and_imports_back() {
         ("image.mode.bitmap", json!({"method": "threshold"})),
         ("image.imageSize", json!({"resolution": 1200, "resample": "preserveDetails", "keepPrintSize": true})),
         ("layer.new.layerFromBackground", json!({"ifPresent": true, "select": false})),
+        // COPYCAT, AJ_Actions2023 and the Line and Color tutorial set.
+        ("layer.smartFilter.deleteFilterMask", json!({"ifPresent": true})),
+        ("layer.smartFilter.blendingOptions", json!({"index": 1, "opacity": 0.5, "blend": "Darken"})),
+        ("layer.layerStyle.blendingOptions", json!({"blendClippedLayersAsGroup": false, "transparencyShapesLayer": false})),
+        ("layer.createClippingMask", json!({})),
+        ("layer.lockLayers", json!({"transparency": true})),
+        ("filter.stylize.diffuse", json!({"mode": "normal", "seed": 321654})),
+        ("history.clear", json!({})),
+        ("history.newSnapshot", json!({"name": "CopyCat - action result", "from": "fullDocument", "replaceExisting": true})),
         ("layerComp.apply", json!({"comp": "Comp 1"})),
     ];
     for (id, params) in &cases {
@@ -2642,6 +2652,44 @@ fn levels_and_curves_name_the_composite_channel_as_photoshop_records_it() {
     assert_eq!(channels(&levels), vec![composite.clone(), red.clone()]);
     let curves = exported("image.adjustments.curves", json!({"points": [[0, 0], [128, 140], [255, 255]], "red": [[0, 10], [255, 245]]}));
     assert_eq!(channels(&curves), vec![composite, red]);
+}
+
+/// A Lab document's Lightness channel is `Chnl.Lght` (#9384): Photoshop plays a Levels or Apply
+/// Image step naming it and rejects `Chnl.Lmnc` ("luminance"), which PhotoCraft wrote before.
+/// Steps PhotoCraft saved with `Lmnc` still load.
+#[test]
+fn lab_lightness_channel_is_written_and_read_as_photoshop_names_it() {
+    let exported = |id: &str, p: Value| export_item(id, &p, "S").and_then(|i| i.descriptor).unwrap_or_else(|| panic!("{id} does not export"));
+    let entry_codes = |d: &Descriptor| -> Vec<String> {
+        get_list(d, "Adjs")
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|e| match e {
+                D::Descriptor(e) => match get_ref(e, "Chnl")?.first()? {
+                    ReferenceItem::Enumerated { value, .. } => Some(trimmed(value)),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect()
+    };
+    let levels = exported("image.adjustments.levels", json!({"lightness": {"gamma": 1.5}, "a": {"inBlack": 3}}));
+    assert_eq!(entry_codes(&levels), ["Cmps", "Lght", "A"]);
+    let curves = exported("image.adjustments.curves", json!({"lightness": [[0, 10], [255, 245]]}));
+    assert_eq!(entry_codes(&curves), ["Lght"]);
+    let apply = exported("image.applyImage", json!({"sourceLayer": "merged", "sourceChannel": "Lightness"}));
+    let source = get_ref(get_obj(&apply, "With").unwrap(), "T   ").unwrap();
+    assert!(matches!(&source[0], ReferenceItem::Enumerated { value, .. } if trimmed(value) == "Lght"), "{source:?}");
+
+    // What Photoshop records, and what PhotoCraft wrote before, both read as Lightness.
+    let chnl = |c: &str| D::Reference(vec![ReferenceItem::Enumerated { class: class("Chnl"), type_id: code("Chnl"), value: code(c) }]);
+    for c in ["Lght", "Lmnc"] {
+        let lvls = desc("Lvls").with("Adjs", D::List(vec![D::Descriptor(desc("LvlA").with("Chnl", chnl(c)).with("Gmm ", D::Double(1.5)))]));
+        assert_eq!(levels_from(&lvls), Some(json!({"lightness": {"gamma": 1.5}})), "{c}");
+        let with = desc("Clcl").with("T   ", chnl(c));
+        let Mapped::Steps(steps) = apply_image_from(&desc("null").with("With", D::Descriptor(with))) else { panic!("{c}: Apply Image does not import") };
+        assert_eq!(steps[0].1["source"]["channel"], "lightness", "{c}");
+    }
 }
 
 /// Photoshop sets one colour per step: a step that sets both doesn't export rather than drop one.

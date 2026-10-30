@@ -31,3 +31,5 @@ jobs:
     with:
       app-name: photocraft
       app-dir: PhotoCraft
+      install-relative-path: Programs/ArtCraft/PhotoCraft
+      install-scope: perUser

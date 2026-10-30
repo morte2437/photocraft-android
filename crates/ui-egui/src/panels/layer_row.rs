@@ -1,6 +1,8 @@
 use super::layer_drag::{MaskDrag, fx_drop, layer_drag_and_drop, mask_drag_key, start_fx_drag, starts_mask_drag};
 use super::layers::simple_lock_toggle;
-use super::*;
+use super::{
+    Color32, CornerRadius, Layer, LayerContent, PhotocraftApp, Pos2, Rect, Sense, Stroke, StrokeKind, Tokens, Value, icons, json, pos2, theme, vec2, widgets,
+};
 
 /// How a Layers panel row is selected: in the (multi-)selection, the primary/active layer, and
 /// whether several layers are selected.
@@ -55,28 +57,51 @@ fn eye_sweep(ctx: &egui::Context, l: &Layer, row: Rect, eye: &egui::Response, ac
     let set =
         |visible: bool, key: u64| ("layer.setProps".to_string(), json!({"layer": l.id.0, "visible": visible, "coalesce": format!("layer-eye-sweep:{key}")}));
     if eye.drag_started() {
-        let sweep = EyeSweep { visible: !l.visible, key: ctx.cumulative_pass_nr(), swept: vec![l.id.0] };
+        start_eye_sweep(ctx, l, id, actions, &set);
+    } else {
+        continue_eye_sweep(ctx, l, row, id, actions, &set);
+    }
+}
+
+fn start_eye_sweep(ctx: &egui::Context, layer: &Layer, id: egui::Id, actions: &mut Vec<(String, Value)>, set: &impl Fn(bool, u64) -> (String, Value)) {
+    let sweep = EyeSweep { visible: !layer.visible, key: ctx.cumulative_pass_nr(), swept: vec![layer.id.0] };
+    actions.push(set(sweep.visible, sweep.key));
+    ctx.data_mut(|data| data.insert_temp(id, sweep));
+}
+
+fn continue_eye_sweep(
+    ctx: &egui::Context,
+    layer: &Layer,
+    row: Rect,
+    id: egui::Id,
+    actions: &mut Vec<(String, Value)>,
+    set: &impl Fn(bool, u64) -> (String, Value),
+) {
+    let Some(mut sweep) = ctx.data(|data| data.get_temp::<EyeSweep>(id)) else { return };
+    if !sweep_pointer_down(ctx) {
+        ctx.data_mut(|data| data.remove::<EyeSweep>(id));
+        return;
+    }
+    let Some((y0, y1)) = swept_pointer_range(ctx) else { return };
+    if y1 < row.top() || y0 >= row.bottom() || sweep.swept.contains(&layer.id.0) {
+        return;
+    }
+    if layer.visible != sweep.visible {
         actions.push(set(sweep.visible, sweep.key));
-        ctx.data_mut(|d| d.insert_temp(id, sweep));
-        return;
     }
-    let Some(mut sweep) = ctx.data(|d| d.get_temp::<EyeSweep>(id)) else { return };
-    let (down, pos, delta) = ctx.input(|i| (i.pointer.primary_down(), i.pointer.interact_pos(), i.pointer.delta()));
-    if !down {
-        ctx.data_mut(|d| d.remove::<EyeSweep>(id));
-        return;
-    }
-    // Everything the pointer passed since the last frame, so a fast drag skips no row.
-    let Some(p) = pos else { return };
-    let (y0, y1) = ((p.y - delta.y).min(p.y), (p.y - delta.y).max(p.y));
-    if y1 < row.top() || y0 >= row.bottom() || sweep.swept.contains(&l.id.0) {
-        return;
-    }
-    if l.visible != sweep.visible {
-        actions.push(set(sweep.visible, sweep.key));
-    }
-    sweep.swept.push(l.id.0);
-    ctx.data_mut(|d| d.insert_temp(id, sweep));
+    sweep.swept.push(layer.id.0);
+    ctx.data_mut(|data| data.insert_temp(id, sweep));
+}
+
+fn sweep_pointer_down(ctx: &egui::Context) -> bool {
+    ctx.input(|input| input.pointer.primary_down())
+}
+
+/// The pointer segment between frames catches rows even when a fast drag skips them visually.
+fn swept_pointer_range(ctx: &egui::Context) -> Option<(f32, f32)> {
+    let (position, delta) = ctx.input(|input| (input.pointer.interact_pos(), input.pointer.delta()));
+    let p = position?;
+    Some(((p.y - delta.y).min(p.y), (p.y - delta.y).max(p.y)))
 }
 
 /// Marker in the clipped row's existing 12-point slot, beside its thumbnail.
@@ -134,51 +159,9 @@ pub(super) fn layer_row(
     if resp.hovered() {
         app.hover_layer = Some(l.id);
     }
-    if t.pro {
-        if selected {
-            painter.rect_filled(rect, 0.0, t.row_selected);
-        } else if is_hovered {
-            painter.rect_filled(rect, 0.0, t.hover.gamma_multiply(0.5));
-            painter.rect_filled(rect, 0.0, t.accent.gamma_multiply(0.12));
-        }
-    } else if selected {
-        painter.rect_filled(rect, t.radius, t.hover);
-        painter.rect_stroke(rect, t.radius, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
-    } else if is_hovered {
-        painter.rect_filled(rect, t.radius, t.hover.gamma_multiply(0.5));
-        painter.rect_filled(rect, t.radius, t.accent.gamma_multiply(0.12));
-    }
-    let eye_cell = Rect::from_min_max(rect.left_top(), pos2((rect.left() + 30.0).min(rect.right()), rect.bottom()));
-    if let Some((_, background)) = t.layer_label_colors(l.label) {
-        painter.rect_filled(eye_cell, 0.0, background);
-    }
-    if t.pro {
-        // Paint dividers over the label so the eye column stays distinct.
-        painter.line_segment([pos2(rect.left() + 30.0, rect.top()), pos2(rect.left() + 30.0, rect.bottom())], Stroke::new(1.0, t.separator));
-        painter.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(1.0, t.separator));
-    }
+    paint_row_background(&painter, &t, l, rect, selected, is_hovered);
     let mut x = rect.left() + 6.0;
-    // The whole eye column takes drags too (so a drag starting on it never reorders the row): dragging down
-    // the eyes gives every row swept over the visibility the first eye toggled to (#8467).
-    let eye_resp = ui.interact(eye_cell, ui.scope_id().with(("eye", l.id.0)), Sense::click_and_drag());
-    // A hidden layer's eye box is left empty (still clickable; the whole column takes the click, #8467).
-    if l.visible {
-        // Centre the drawing in the column while preserving the visibility hit area.
-        icons::paint(ui, eye_cell, "eye", 15.0, t.layer_label_icon(l.label));
-    }
-    eye_sweep(ctx, l, rect, &eye_resp, actions);
-    if eye_resp.clicked() {
-        // ⌥-click shows only this layer; ⌥-click it again to restore the others.
-        if ui.input(|i| i.modifiers.alt) {
-            actions.push(("layer.showOnly".into(), json!({"layer": l.id.0})));
-        } else {
-            actions.push(("layer.setProps".into(), json!({"layer": l.id.0, "visible": !l.visible})));
-        }
-    }
-    eye_resp.context_menu(|ui| {
-        crate::widgets::style_spectrum_popup_menu(ui);
-        crate::layer_menu_ui::color_choices(app, ui, l, row.multi && selected, actions);
-    });
+    let eye_resp = eye_column(app, ui, l, row, rect, actions);
     // Everything but the thumbnails, the indentation and the name, so a narrow panel squeezes
     // the indentation first, then the thumbnails (a layer with two masks has three).
     let others = 6.0
@@ -205,25 +188,8 @@ pub(super) fn layer_row(
     }
     // With thumbnails disabled the labels and disclosure controls remain interactive.
     let masks = if ts > 0.0 { crate::mask_thumbs_ui::paint(app, ctx, ui, &painter, doc, l, &mut x, rect.center().y, ts, actions) } else { Default::default() };
-    let mask_rect = masks.thumb(crate::mask_thumbs_ui::MaskKind::Pixel);
-    let vector_rect = masks.thumb(crate::mask_thumbs_ui::MaskKind::Vector);
-    // Photoshop frames the targeted thumbnail (pixels, mask or vector mask) of the active layer
-    // with corner brackets.
-    if row.primary && ts > 0.0 {
-        let target = if app.ui.filter_mask_target == Some(l.id.0) && app.filter_mask_targeted() {
-            // The Smart Filters row's filter mask thumbnail carries the brackets.
-            None
-        } else if app.ui.vector_mask_target && vector_rect.is_some() {
-            vector_rect
-        } else if app.ui.mask_target {
-            mask_rect.or(Some(thumb))
-        } else {
-            Some(thumb)
-        };
-        if let Some(r) = target {
-            crate::mask_thumbs_ui::paint_brackets(&painter, r, t.text);
-        }
-    }
+    let rc = RowCtx { l, doc, row, rect, ts, thumb, resp: &resp, masks: &masks };
+    paint_target_brackets(app, &painter, &t, &rc);
     // Right-hand indicators first; the name gets what is left and ends in "…" (#144).
     let fx_open = app.session.active().is_none_or(|d| !d.fx_collapsed.contains(&l.id));
     let (name_right, indicators, fx_toggled) = crate::layer_row_ui::indicators(ui, &painter, rect, x, l, fx_open, actions);
@@ -241,26 +207,7 @@ pub(super) fn layer_row(
     {
         actions.push(simple_lock_toggle(doc.is_background(l.id), l, &json!({"layer": l.id.0})));
     }
-    let name_color = if l.visible { t.text } else { t.text_faint };
-    let font = if selected && !t.pro { theme::medium(13.0) } else { egui::FontId::proportional(if t.pro { 12.0 } else { 13.0 }) };
-    // Photoshop before 2026 set the Background layer's name in italics; 2026 sets it upright.
-    let italic = !t.pro && doc.is_background(l.id);
-    // Photoshop rows show only the name; the kind sub-label is a Studio-theme addition.
-    let is_pixel = t.pro || ts == 0.0 || matches!(l.content, LayerContent::Raster(_));
-    let name_rect = crate::layer_row_ui::truncated(&painter, &l.name, font, name_color, italic, name_right - x).map(|galley| {
-        let text_pos = pos2(x, rect.center().y - galley.size().y / 2.0 - if is_pixel { 0.0 } else { 7.0 });
-        let r = Rect::from_min_size(text_pos, galley.size());
-        painter.galley(text_pos, galley, name_color);
-        r
-    });
-    if !is_pixel {
-        let sub = match &l.content {
-            LayerContent::Adjustment(a) => tl!(a.label()).to_string(),
-            LayerContent::Group(g) => crate::i18n::trn(crate::i18n::current(), g.children.len() as u64, "Group · {n} layer", "Group · {n} layers"),
-            other => tl!(other.kind_name()).to_string(),
-        };
-        crate::layer_row_ui::label(&painter, x, rect.center().y + 8.0, name_right, &sub, egui::FontId::proportional(11.0), t.text_faint);
-    }
+    let name_rect = paint_row_name(&painter, &t, &rc, x, name_right);
     crate::layer_row_ui::record(
         ctx,
         crate::layer_row_ui::RowRects { layer: l.id.0, row: rect, thumbnail: (ts > 0.0).then_some(thumb), name: name_rect, indicators },
@@ -296,43 +243,7 @@ pub(super) fn layer_row(
     } else if let Some(cmd) = mask_toggle {
         actions.push(cmd);
     } else if resp.clicked() && !eye_resp.clicked() && !toggled && !fx_toggled && !masks.clicked {
-        let m = ui.input(|i| i.modifiers);
-        let pos = resp.interact_pointer_pos();
-        let on_thumb = ts > 0.0 && pos.is_some_and(|p| thumb.expand(2.0).contains(p));
-        // ⌘-click on the Background thumbnail stands in for the plain click (there is no
-        // transparency to load): it selects the Background alone, not toggled into the set.
-        let mode = if m.command && on_thumb && doc.is_background(l.id) { "replace" } else { select_mode(m) };
-        actions.push(("layer.select".into(), json!({"layer": l.id.0, "mode": mode})));
-        crate::smart_ui::deselect(ctx, doc.id);
-        // A thumbnail explicitly selects content or a mask. Selecting an adjustment/fill row
-        // defaults to its mask, but clicking its content thumbnail must leave the mask target.
-        let on_mask = mask_rect.zip(pos).is_some_and(|(r, p)| r.expand(2.0).contains(p));
-        let on_vector = pos.and_then(|p| masks.hit(p)) == Some(crate::mask_thumbs_ui::MaskKind::Vector);
-        // Clicking the layer thumbnail leaves mask view (#196).
-        let viewing = app.session.active().and_then(photocraft_engine::mask_view_cmds::current).filter(|v| v.layer == l.id);
-        if let Some(v) = viewing.filter(|_| on_thumb) {
-            let mask = if v.filter { "filter" } else { "layer" };
-            actions.push((photocraft_engine::mask_view_cmds::ID.into(), json!({"layer": l.id.0, "mode": "off", "mask": mask})));
-        }
-        let content_less = matches!(l.content, LayerContent::Adjustment(_) | LayerContent::Fill(_));
-        if on_vector {
-            // The vector mask thumbnail targets the vector mask: the path tools edit it and the
-            // Paths panel selects the layer's path.
-            app.ui.selected_path = Some("layer".into());
-            actions.push(("ui.vectorMaskTarget".into(), json!(true)));
-        } else if on_mask || (content_less && l.mask.is_some() && !on_thumb) {
-            if on_mask {
-                // The mask thumbnail also switches Properties to the mask (#3369).
-                app.ui.properties_layer = None;
-            }
-            actions.push(("ui.maskTarget".into(), json!(true)));
-        } else if on_thumb || !row.primary {
-            actions.push(("ui.maskTarget".into(), json!(false)));
-        }
-        // ⌥-click the layer thumbnail: fit the layer on screen, as Photoshop does.
-        if on_thumb && m.alt && !m.shift && !m.command {
-            actions.push(("view.fitLayersOnScreen".into(), Value::Null));
-        }
+        select_row_on_click(app, ui, &rc, actions);
     }
     // Double-click: the name renames in place (over the row's full height, not just the glyphs:
     // #651); the Background, which can't be renamed while it's locked, becomes a normal layer; an
@@ -340,6 +251,185 @@ pub(super) fn layer_row(
     // #2812) and a Smart Object thumbnail its contents, and a type thumbnail edits its text;
     // anywhere else on the row opens Layer Style (#350, #537).
     // The first click already made this the active layer.
+    handle_row_double_click(app, ui.ctx(), &rc, name_rect, actions);
+    let edit_rect = Rect::from_min_max(pos2(x - 3.0, rect.center().y - 11.0), pos2(name_right.max(x + 40.0), rect.center().y + 11.0));
+    if let Some(done) = crate::layer_row_ui::rename_field(ui, l.id.0, edit_rect) {
+        actions.push(done);
+    }
+    row_context_menu(app, ui, &rc, &eye_resp, actions);
+    rect
+}
+
+/// What the row helpers share once the row's thumbnails are laid out.
+struct RowCtx<'a> {
+    l: &'a Layer,
+    doc: &'a photocraft_doc::Document,
+    row: RowSel,
+    rect: Rect,
+    ts: f32,
+    thumb: Rect,
+    resp: &'a egui::Response,
+    masks: &'a crate::mask_thumbs_ui::MaskRects,
+}
+
+fn eye_cell(rect: Rect) -> Rect {
+    Rect::from_min_max(rect.left_top(), pos2((rect.left() + 30.0).min(rect.right()), rect.bottom()))
+}
+
+/// The row's fill (selection / hover), the label colour behind the eye column and the pro dividers.
+fn paint_row_background(painter: &egui::Painter, t: &Tokens, l: &Layer, rect: Rect, selected: bool, is_hovered: bool) {
+    if t.pro {
+        if selected {
+            painter.rect_filled(rect, 0.0, t.row_selected);
+        } else if is_hovered {
+            painter.rect_filled(rect, 0.0, t.hover.gamma_multiply(0.5));
+            painter.rect_filled(rect, 0.0, t.accent.gamma_multiply(0.12));
+        }
+    } else if selected {
+        painter.rect_filled(rect, t.radius, t.hover);
+        painter.rect_stroke(rect, t.radius, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
+    } else if is_hovered {
+        painter.rect_filled(rect, t.radius, t.hover.gamma_multiply(0.5));
+        painter.rect_filled(rect, t.radius, t.accent.gamma_multiply(0.12));
+    }
+    let eye_cell = eye_cell(rect);
+    if let Some((_, background)) = t.layer_label_colors(l.label) {
+        painter.rect_filled(eye_cell, 0.0, background);
+    }
+    if t.pro {
+        // Paint dividers over the label so the eye column stays distinct.
+        painter.line_segment([pos2(rect.left() + 30.0, rect.top()), pos2(rect.left() + 30.0, rect.bottom())], Stroke::new(1.0, t.separator));
+        painter.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(1.0, t.separator));
+    }
+}
+
+/// The eye column: visibility toggle (⌥ shows only this layer), sweep-drag and its colour menu.
+fn eye_column(app: &mut PhotocraftApp, ui: &mut egui::Ui, l: &Layer, row: RowSel, rect: Rect, actions: &mut Vec<(String, Value)>) -> egui::Response {
+    let ctx = &ui.ctx().clone();
+    let t = Tokens::get(ctx);
+    let selected = row.selected;
+    let eye_cell = eye_cell(rect);
+    // The whole eye column takes drags too (so a drag starting on it never reorders the row): dragging down
+    // the eyes gives every row swept over the visibility the first eye toggled to (#8467).
+    let eye_resp = ui.interact(eye_cell, ui.scope_id().with(("eye", l.id.0)), Sense::click_and_drag());
+    // A hidden layer's eye box is left empty (still clickable; the whole column takes the click, #8467).
+    if l.visible {
+        // Centre the drawing in the column while preserving the visibility hit area.
+        icons::paint(ui, eye_cell, "eye", 15.0, t.layer_label_icon(l.label));
+    }
+    eye_sweep(ctx, l, rect, &eye_resp, actions);
+    if eye_resp.clicked() {
+        // ⌥-click shows only this layer; ⌥-click it again to restore the others.
+        if ui.input(|i| i.modifiers.alt) {
+            actions.push(("layer.showOnly".into(), json!({"layer": l.id.0})));
+        } else {
+            actions.push(("layer.setProps".into(), json!({"layer": l.id.0, "visible": !l.visible})));
+        }
+    }
+    eye_resp.context_menu(|ui| {
+        crate::widgets::style_spectrum_popup_menu(ui);
+        crate::layer_menu_ui::color_choices(app, ui, l, row.multi && selected, actions);
+    });
+    eye_resp
+}
+
+fn paint_target_brackets(app: &PhotocraftApp, painter: &egui::Painter, t: &Tokens, rc: &RowCtx<'_>) {
+    let (l, thumb) = (rc.l, rc.thumb);
+    let mask_rect = rc.masks.thumb(crate::mask_thumbs_ui::MaskKind::Pixel);
+    let vector_rect = rc.masks.thumb(crate::mask_thumbs_ui::MaskKind::Vector);
+    // Photoshop frames the targeted thumbnail (pixels, mask or vector mask) of the active layer
+    // with corner brackets.
+    if rc.row.primary && rc.ts > 0.0 {
+        let target = if app.ui.filter_mask_target == Some(l.id.0) && app.filter_mask_targeted() {
+            // The Smart Filters row's filter mask thumbnail carries the brackets.
+            None
+        } else if app.ui.vector_mask_target && vector_rect.is_some() {
+            vector_rect
+        } else if app.ui.mask_target {
+            mask_rect.or(Some(thumb))
+        } else {
+            Some(thumb)
+        };
+        if let Some(r) = target {
+            crate::mask_thumbs_ui::paint_brackets(painter, r, t.text);
+        }
+    }
+}
+
+/// The layer name (and the kind sub-label of non-pixel rows); returns the name's rect.
+fn paint_row_name(painter: &egui::Painter, t: &Tokens, rc: &RowCtx<'_>, x: f32, name_right: f32) -> Option<Rect> {
+    let (l, doc, rect, ts, selected) = (rc.l, rc.doc, rc.rect, rc.ts, rc.row.selected);
+    let name_color = if l.visible { t.text } else { t.text_faint };
+    let font = if selected && !t.pro { theme::medium(13.0) } else { egui::FontId::proportional(if t.pro { 12.0 } else { 13.0 }) };
+    // Photoshop before 2026 set the Background layer's name in italics; 2026 sets it upright.
+    let italic = !t.pro && doc.is_background(l.id);
+    // Photoshop rows show only the name; the kind sub-label is a Studio-theme addition.
+    let is_pixel = t.pro || ts == 0.0 || matches!(l.content, LayerContent::Raster(_));
+    let name_rect = crate::layer_row_ui::truncated(painter, &l.name, font, name_color, italic, name_right - x).map(|galley| {
+        let text_pos = pos2(x, rect.center().y - galley.size().y / 2.0 - if is_pixel { 0.0 } else { 7.0 });
+        let r = Rect::from_min_size(text_pos, galley.size());
+        painter.galley(text_pos, galley, name_color);
+        r
+    });
+    if !is_pixel {
+        let sub = match &l.content {
+            LayerContent::Adjustment(a) => tl!(a.label()).to_string(),
+            LayerContent::Group(g) => crate::i18n::trn(crate::i18n::current(), g.children.len() as u64, "Group · {n} layer", "Group · {n} layers"),
+            other => tl!(other.kind_name()).to_string(),
+        };
+        crate::layer_row_ui::label(painter, x, rect.center().y + 8.0, name_right, &sub, egui::FontId::proportional(11.0), t.text_faint);
+    }
+    name_rect
+}
+
+/// A plain click on the row: select the layer and retarget pixels / mask / vector mask.
+fn select_row_on_click(app: &mut PhotocraftApp, ui: &egui::Ui, rc: &RowCtx<'_>, actions: &mut Vec<(String, Value)>) {
+    let (l, doc, resp, masks, row, ts, thumb) = (rc.l, rc.doc, rc.resp, rc.masks, rc.row, rc.ts, rc.thumb);
+    let ctx = ui.ctx();
+    let mask_rect = masks.thumb(crate::mask_thumbs_ui::MaskKind::Pixel);
+    let m = ui.input(|i| i.modifiers);
+    let pos = resp.interact_pointer_pos();
+    let on_thumb = ts > 0.0 && pos.is_some_and(|p| thumb.expand(2.0).contains(p));
+    // ⌘-click on the Background thumbnail stands in for the plain click (there is no
+    // transparency to load): it selects the Background alone, not toggled into the set.
+    let mode = if m.command && on_thumb && doc.is_background(l.id) { "replace" } else { select_mode(m) };
+    actions.push(("layer.select".into(), json!({"layer": l.id.0, "mode": mode})));
+    crate::smart_ui::deselect(ctx, doc.id);
+    // A thumbnail explicitly selects content or a mask. Selecting an adjustment/fill row
+    // defaults to its mask, but clicking its content thumbnail must leave the mask target.
+    let on_mask = mask_rect.zip(pos).is_some_and(|(r, p)| r.expand(2.0).contains(p));
+    let on_vector = pos.and_then(|p| masks.hit(p)) == Some(crate::mask_thumbs_ui::MaskKind::Vector);
+    // Clicking the layer thumbnail leaves mask view (#196).
+    let viewing = app.session.active().and_then(photocraft_engine::mask_view_cmds::current).filter(|v| v.layer == l.id);
+    if let Some(v) = viewing.filter(|_| on_thumb) {
+        let mask = if v.filter { "filter" } else { "layer" };
+        actions.push((photocraft_engine::mask_view_cmds::ID.into(), json!({"layer": l.id.0, "mode": "off", "mask": mask})));
+    }
+    let adjustment = matches!(l.content, LayerContent::Adjustment(_));
+    let fill_mask = matches!(l.content, LayerContent::Fill(_)) && l.mask.is_some();
+    if on_vector {
+        // The vector mask thumbnail targets the vector mask: the path tools edit it and the
+        // Paths panel selects the layer's path.
+        app.ui.selected_path = Some("layer".into());
+        actions.push(("ui.vectorMaskTarget".into(), json!(true)));
+    } else if on_mask || (fill_mask && !on_thumb) {
+        if on_mask {
+            // The mask thumbnail also switches Properties to the mask (#3369).
+            app.ui.properties_layer = None;
+        }
+        actions.push(("ui.maskTarget".into(), json!(true)));
+    } else if on_thumb || adjustment || !row.primary {
+        actions.push(("ui.maskTarget".into(), json!(false)));
+    }
+    // ⌥-click the layer thumbnail: fit the layer on screen, as Photoshop does.
+    if on_thumb && m.alt && !m.shift && !m.command {
+        actions.push(("view.fitLayersOnScreen".into(), Value::Null));
+    }
+}
+
+/// Double-click: rename, un-background, open the thumbnail's settings or the row's Layer Style.
+fn handle_row_double_click(app: &mut PhotocraftApp, ctx: &egui::Context, rc: &RowCtx<'_>, name_rect: Option<Rect>, actions: &mut Vec<(String, Value)>) {
+    let (l, doc, resp, masks, ts, thumb, rect) = (rc.l, rc.doc, rc.resp, rc.masks, rc.ts, rc.thumb, rc.rect);
     if resp.double_clicked() {
         let pos = resp.interact_pointer_pos();
         let on = |r: Rect| pos.is_some_and(|p| r.expand(2.0).contains(p));
@@ -375,10 +465,12 @@ pub(super) fn layer_row(
             }
         }
     }
-    let edit_rect = Rect::from_min_max(pos2(x - 3.0, rect.center().y - 11.0), pos2(name_right.max(x + 40.0), rect.center().y + 11.0));
-    if let Some(done) = crate::layer_row_ui::rename_field(ui, l.id.0, edit_rect) {
-        actions.push(done);
-    }
+}
+
+/// The visibility icon has its own color menu, and the layer-mask thumbnail its mask menu (#4575).
+fn row_context_menu(app: &mut PhotocraftApp, ui: &mut egui::Ui, rc: &RowCtx<'_>, eye_resp: &egui::Response, actions: &mut Vec<(String, Value)>) {
+    let (l, resp, masks, row) = (rc.l, rc.resp, rc.masks, rc.row);
+    let (ctx, selected) = (&ui.ctx().clone(), row.selected);
     // The visibility icon has its own color menu, and the layer-mask thumbnail its mask menu
     // (#4575); elsewhere use the full layer menu.
     let on_mask_id = ui.scope_id().with(("mask-menu", l.id.0));
@@ -402,7 +494,6 @@ pub(super) fn layer_row(
             }
         });
     }
-    rect
 }
 
 /// Screen rect and UVs for a layer thumbnail: the document-shaped part of the square cell and of

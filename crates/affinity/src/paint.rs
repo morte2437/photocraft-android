@@ -129,9 +129,14 @@ const MAX_STOPS: usize = 1024;
 fn floats(v: &Value) -> Option<Vec<f64>> {
     match v {
         Value::Floats(f) => Some(f.clone()),
-        Value::Bytes(b) if b.len() % 4 == 0 => Some(b.as_chunks::<4>().0.iter().map(|c| f64::from(f32::from_le_bytes(*c))).collect()),
+        Value::Bytes(b) if b.len() % 4 == 0 => Some(f32_samples(b)),
         _ => None,
     }
+}
+
+/// Little-endian `f32` samples widened to `f64`.
+fn f32_samples(b: &[u8]) -> Vec<f64> {
+    b.as_chunks::<4>().0.iter().map(|c| f64::from(f32::from_le_bytes(*c))).collect()
 }
 
 /// Spot colours defined through spot colours. A spot colour (`Pant`) is read through its RGB
@@ -241,6 +246,9 @@ pub(crate) fn descriptor(r: &mut Reader, id: ObjId, local: Affine) -> Option<Pai
             let cols = s.objs(grad, b"Cols");
             let posn: Vec<Vec<f64>> = match s.field(grad, b"Posn") {
                 Some(Value::Array(a)) => a.iter().filter_map(floats).take(MAX_STOPS).collect(),
+                Some(Value::Records { size, data }) if *size % 4 == 0 && *size > 0 => {
+                    data.chunks_exact(usize::from(*size)).map(f32_samples).take(MAX_STOPS).collect()
+                }
                 _ => Vec::new(),
             };
             let mut stops = Vec::new();

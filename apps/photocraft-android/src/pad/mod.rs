@@ -600,7 +600,7 @@ impl Pad {
                             ui.label(format!("Key {}", i + 1)).on_hover_text(if i < above { "Above the wheel" } else { "Below the wheel" });
                             ui.add_sized([84.0, 24.0], egui::TextEdit::singleline(&mut key.label).char_limit(8));
                             color_choice(ui, tk, i, &mut key.color);
-                            egui::ComboBox::from_id_salt(("pad_preset", i)).selected_text("Choose…").width(110.0).show_ui(ui, |ui| {
+                            craft_ui::ComboBox::from_id_salt(("pad_preset", i)).selected_text("Choose…").width(110.0).show_ui(ui, |ui| {
                                 for (name, label, shortcut) in config::PRESETS {
                                     if ui.selectable_label(key.shortcut == *shortcut, format!("{name}  ({shortcut})")).clicked() {
                                         key.label = (*label).into();
@@ -781,7 +781,7 @@ fn color_choice(ui: &mut egui::Ui, tk: &Tokens, i: usize, color: &mut Option<[u8
             None => "Default",
             Some(c) => config::KEY_COLORS.iter().find(|(_, k)| k == c).map_or("Custom", |(n, _)| *n),
         };
-        egui::ComboBox::from_id_salt(("pad_color", i)).selected_text(name).width(84.0).show_ui(ui, |ui| {
+        craft_ui::ComboBox::from_id_salt(("pad_color", i)).selected_text(name).width(84.0).show_ui(ui, |ui| {
             let mut row = |ui: &mut egui::Ui, label: &str, value: Option<[u8; 3]>| {
                 let r = ui.horizontal(|ui| {
                     swatch(ui, tk, value);

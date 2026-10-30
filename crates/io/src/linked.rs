@@ -118,7 +118,30 @@ pub fn find_in_blocks<'a>(blocks: impl IntoIterator<Item = (&'a [u8; 4], &'a [u8
     if uuid.is_empty() {
         return None;
     }
-    blocks.into_iter().filter(|(k, _)| matches!(*k, b"lnk2" | b"lnk3" | b"lnkD")).flat_map(|(_, d)| parse_linked_files(d)).find(|f| f.uuid == uuid)
+    let (uuid, file_name, bytes) = find_slice_in_blocks(blocks, uuid)?;
+    Some(LinkedFile { uuid, file_name, bytes: bytes.to_vec() })
+}
+
+/// [`find_in_blocks`] without copying: the uuid, file name and bytes of the embedded file, as a
+/// slice of the block. Only the matching item's header is parsed beyond the uuid, and no other
+/// embedded file is copied (a `lnk2` block can hold gigabytes of them).
+fn find_slice_in_blocks<'a>(blocks: impl IntoIterator<Item = (&'a [u8; 4], &'a [u8])>, uuid: &str) -> Option<(String, String, &'a [u8])> {
+    if uuid.is_empty() {
+        return None;
+    }
+    blocks.into_iter().filter(|(k, _)| matches!(*k, b"lnk2" | b"lnk3" | b"lnkD")).find_map(|(_, d)| {
+        let mut r = Rd { d, p: 0 };
+        while let Some(len) = r.u64() {
+            let Ok(len) = usize::try_from(len) else { return None };
+            let item = r.take(len)?;
+            let found = item_header(item).filter(|h| h.0 == uuid).and_then(|(id, name, start, n)| Some((id, name, item.get(start..start.checked_add(n)?)?)));
+            if found.is_some() {
+                return found;
+            }
+            r.p = r.p.next_multiple_of(4);
+        }
+        None
+    })
 }
 
 /// The size of embedded file `uuid` among PSD global blocks given as (key, data), when it is there
@@ -128,11 +151,11 @@ pub(crate) fn source_size_in_blocks<'a>(
     uuid: &str,
     ctl: &photocraft_raster::Interrupt,
 ) -> Option<(f64, f64)> {
-    let f = find_in_blocks(blocks, uuid)?;
+    let (_, _, bytes) = find_slice_in_blocks(blocks, uuid)?;
     if ctl.cancelled() {
         return None;
     }
-    source_size_probe(&f.bytes).filter(|(w, h)| *w > 0.0 && *h > 0.0)
+    source_size_probe(bytes).filter(|(w, h)| *w > 0.0 && *h > 0.0)
 }
 
 /// Pixel size of an embedded source file from its header: PSD/PSB, TIFF (the default page's

@@ -127,6 +127,28 @@ mod panel_defaults {
         h
     }
 
+    /// Without a type target the preset chevrons set the next layer's defaults, with no
+    /// document edit.
+    #[test]
+    fn presets_without_a_type_layer_set_the_defaults() {
+        let app = new_app();
+        let steps = app.session.active().unwrap().history.entries().len();
+        let mut h = panels(app);
+        h.get_by_role_and_label(Role::ComboBox, "Font size presets").click();
+        h.run();
+        h.get_by_label("72 pt").scroll_to_me();
+        h.run();
+        h.get_by_label("72 pt").click();
+        h.run();
+        assert_eq!(h.state().ui.tool_options.type_size, 72.0);
+        h.get_by_role_and_label(Role::ComboBox, "Leading presets").click();
+        h.run();
+        h.get_by_label("Auto").click();
+        h.run();
+        assert_eq!(h.state().ui.tool_options.type_style_defaults.get("leading"), Some(&json!("auto")));
+        assert_eq!(h.state().session.active().unwrap().history.entries().len(), steps, "defaults are not a document edit");
+    }
+
     fn number(h: &mut Harness<'static, PhotocraftApp>, label: &str, value: &str) {
         h.get_by_role_and_label(Role::SpinButton, label).click();
         h.run();
@@ -1952,6 +1974,44 @@ mod multi_layer_formatting {
         h.run();
     }
 
+    fn preset(h: &mut Harness<'static, PhotocraftApp>, label: &str) {
+        // Presets near the end of the popup can be below its scroll viewport.
+        h.get_by_label(label).scroll_to_me();
+        h.run();
+        h.get_by_label(label).click();
+        h.run();
+    }
+
+    /// Opens a preset chevron by its accessible name and picks `label`.
+    fn pick(h: &mut Harness<'static, PhotocraftApp>, menu: &str, label: &str) {
+        h.get_by_role_and_label(Role::ComboBox, menu).click();
+        h.run();
+        preset(h, label);
+    }
+
+    /// The open preset popup's item labels, top to bottom, with "|" where a separator splits
+    /// them (a gap clearly larger than the row pitch). `any` is one item's label.
+    fn menu_items(h: &Harness<'static, PhotocraftApp>, any: &str) -> Vec<String> {
+        use egui_kittest::kittest::NodeT;
+        let role = h.get_by_label(any).accesskit_node().role();
+        let left = h.get_by_label(any).rect().left();
+        let mut items: Vec<(f32, String)> = h
+            .query_all_by_role(role)
+            .filter(|n| (n.rect().left() - left).abs() < 1.0)
+            .filter_map(|n| Some((n.rect().top(), n.accesskit_node().label()?)))
+            .collect();
+        items.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let pitch = items.windows(2).map(|w| w[1].0 - w[0].0).fold(f32::MAX, f32::min);
+        let mut out = Vec::new();
+        for (i, (top, label)) in items.iter().enumerate() {
+            if i > 0 && top - items[i - 1].0 > pitch + 2.0 {
+                out.push("|".to_owned());
+            }
+            out.push(label.clone());
+        }
+        out
+    }
+
     fn editing(app: &mut PhotocraftApp, id: LayerId) {
         app.ui.text_edit = Some(crate::state::TextEdit {
             layer: id.0,
@@ -2023,12 +2083,103 @@ mod multi_layer_formatting {
         assert_eq!(text(h.state(), id).paragraph_runs()[0].style.direction, TextDirection::Rtl, "new type starts right to left");
     }
 
+    /// The size, leading and tracking chevrons offer the reference application's lists: Leading
+    /// starts with Auto, Tracking splits tightening, 0 and loosening with separators.
+    #[test]
+    fn character_panel_preset_menus_list_the_reference_values() {
+        let (app, _) = fixture();
+        let mut h = controls(app, true);
+        let sizes = [
+            "6 pt", "8 pt", "9 pt", "10 pt", "11 pt", "12 pt", "14 pt", "16 pt", "18 pt", "24 pt", "30 pt", "36 pt", "48 pt", "60 pt", "72 pt", "150 pt",
+            "300 pt",
+        ];
+        h.get_by_role_and_label(Role::ComboBox, "Font size presets").click();
+        h.run();
+        assert_eq!(menu_items(&h, "72 pt"), sizes);
+        h.key_press(egui::Key::Escape);
+        h.run();
+        h.get_by_role_and_label(Role::ComboBox, "Leading presets").click();
+        h.run();
+        let leading: Vec<&str> = std::iter::once("Auto").chain(sizes).collect();
+        assert_eq!(menu_items(&h, "72 pt"), leading);
+        h.key_press(egui::Key::Escape);
+        h.run();
+        h.get_by_role_and_label(Role::ComboBox, "Tracking presets").click();
+        h.run();
+        let tracking = ["-100", "-75", "-50", "-25", "-10", "-5", "|", "0", "|", "5", "10", "25", "50", "75", "100", "200"];
+        assert_eq!(menu_items(&h, "200"), tracking);
+    }
+
+    #[test]
+    fn character_panel_preset_menus_edit_size_leading_and_tracking() {
+        let (app, ids) = fixture();
+        let untouched = style(&app, ids[2], 0);
+        let steps = app.session.active().unwrap().history.entries().len();
+        let mut h = controls(app, true);
+
+        // The chevrons use the same setStyle path as the editable fields beside them.
+        pick(&mut h, "Font size presets", "72 pt");
+        pick(&mut h, "Leading presets", "Auto");
+        pick(&mut h, "Tracking presets", "-5");
+
+        for id in &ids[..2] {
+            let c = style(h.state(), *id, 0);
+            assert_eq!(c.size_pt, 72.0);
+            assert_eq!(c.leading_pt, None, "Auto restores font-relative line spacing");
+            assert_eq!(c.tracking, -5.0);
+        }
+        assert_eq!(style(h.state(), ids[2], 0), untouched, "unselected type layers are unchanged");
+        assert_eq!(h.state().session.active().unwrap().history.entries().len(), steps + 3, "one step per pick");
+
+        // The numeric spin boxes must remain usable beside their preset chevrons.
+        number(&mut h, "Font size", "40");
+        assert_eq!(style(h.state(), ids[0], 0).size_pt, 40.0);
+        assert_eq!(style(h.state(), ids[1], 0).size_pt, 40.0);
+    }
+
+    /// While typing, a preset changes only the selected characters, like a typed value.
+    #[test]
+    fn character_panel_presets_edit_only_the_selected_span() {
+        let (app, ids) = fixture();
+        let mut h = controls(app, true);
+        let peer = text(h.state(), ids[1]).char_runs();
+        editing(h.state_mut(), ids[0]);
+        h.run();
+        pick(&mut h, "Font size presets", "150 pt");
+        assert_eq!((size_at(h.state(), ids[0], 0), size_at(h.state(), ids[0], 1), size_at(h.state(), ids[0], 3)), (12.0, 150.0, 12.0));
+        assert_eq!(text(h.state(), ids[1]).char_runs(), peer);
+    }
+
+    /// Type units in millimetres: the lists show converted values with at most two decimals,
+    /// and a picked preset stores its exact point value (not 12.000001 from a unit round trip).
+    #[test]
+    fn character_panel_presets_in_millimetres_round_labels_and_store_exact_points() {
+        let mut app = new_app();
+        app.run("prefs.set", json!({"path": "unitsAndRulers.typeUnits", "value": "mm"})).unwrap();
+        let id = LayerId(app.run("type.create", json!({"text": "AéBCD", "font": "Inter", "size": 30, "color": "#000000"})).unwrap()["layer"].as_u64().unwrap());
+        selected(&mut app, &[id]);
+        let mut h = controls(app, true);
+        h.get_by_role_and_label(Role::ComboBox, "Font size presets").click();
+        h.run();
+        let items = menu_items(&h, "25.4 mm");
+        assert_eq!(items.len(), 17, "{items:?}");
+        for item in &items {
+            let n = item.strip_suffix(" mm").unwrap_or_else(|| panic!("{item}"));
+            assert!(n.split('.').nth(1).is_none_or(|d| d.len() <= 2 && !d.ends_with('0')), "{item}");
+        }
+        assert_eq!(items[0], "2.12 mm", "6 pt");
+        preset(&mut h, "4.23 mm");
+        assert_eq!(style(h.state(), id, 0).size_pt, 12.0, "12 pt exactly");
+        pick(&mut h, "Leading presets", "105.83 mm");
+        assert_eq!(style(h.state(), id, 0).leading_pt, Some(300.0));
+    }
+
     #[test]
     fn options_font_family_preserves_peer_faces_and_batches_layer_flags() {
         let (app, ids) = fixture();
         let before = ids.map(|id| style(&app, id, 0));
         let mut h = controls(app, false);
-        h.get_all_by_role(Role::ComboBox).next().unwrap().click();
+        h.get_all_by_role(Role::TextInput).next().unwrap().click();
         h.run();
         h.get_by_role(Role::TextInput).type_text("JetBrains");
         h.key_press(egui::Key::ArrowDown);
@@ -2051,7 +2202,7 @@ mod multi_layer_formatting {
             assert_eq!(style(h.state(), ids[i], 0), expected, "family changes preserve each peer's face and metrics");
         }
         assert_eq!(style(h.state(), ids[2], 0), before[2]);
-        h.get_all_by_role(Role::ComboBox).nth(2).unwrap().click();
+        h.get_all_by_role(Role::ComboBox).find(|n| n.value().as_deref() == Some("Smooth")).unwrap().click();
         h.run();
         h.get_by_label("Sharp").click();
         h.run();
@@ -2064,6 +2215,57 @@ mod multi_layer_formatting {
         }
         assert_eq!(text(h.state(), ids[2]).orientation, Orientation::Horizontal);
         assert_ne!(text(h.state(), ids[2]).antialias, AntiAlias::Sharp);
+    }
+
+    /// The family field and the style menu describe the selected run, not the layer's first run
+    /// (#9024), whichever way the selection was made; without a selection the first run shows, and
+    /// without a type target the tool defaults. Showing them never adds history. "Mé Regular" has
+    /// a two-byte `é`, so a byte offset taken for a character offset picks the wrong run.
+    #[test]
+    fn options_bar_font_and_style_follow_the_selected_run() {
+        let mut app = new_app();
+        let id = LayerId(
+            app.run("type.create", json!({"text": "Mé Regular", "font": "Inter", "fontStyle": "Medium", "size": 20, "x": 300, "y": 420})).unwrap()["layer"]
+                .as_u64()
+                .unwrap(),
+        );
+        app.run("type.setStyle", json!({"layer": id.0, "range": [3, 10], "font": "JetBrains Mono", "fontStyle": "Regular"})).unwrap();
+        assert_eq!((style(&app, id, 0).font_family.as_str(), style(&app, id, 5).font_family.as_str()), ("Inter", "JetBrains Mono"));
+        let edit = |anchor: usize, caret: usize| crate::state::TextEdit {
+            layer: id.0,
+            document: None,
+            caret,
+            anchor,
+            session: "s".into(),
+            created: false,
+            mask: false,
+            dragging: false,
+            resize: None,
+            preedit: None,
+        };
+        let mut h = controls(app, false);
+        let shown = |h: &Harness<'static, PhotocraftApp>| {
+            (h.get_all_by_role(Role::TextInput).next().and_then(|n| n.value()).unwrap_or_default(), h.get_by_role_and_label(Role::ComboBox, "Style").value())
+        };
+        let steps = super::history_len(&h);
+        let (inter, mono) = (("Inter".to_string(), Some("Medium".to_string())), ("JetBrains Mono".to_string(), Some("Regular".to_string())));
+        for (anchor, caret, want) in [(3, 10, &mono), (10, 3, &mono), (0, 2, &inter), (2, 0, &inter)] {
+            h.state_mut().ui.text_edit = Some(edit(anchor, caret));
+            h.run_steps(4);
+            assert_eq!(&shown(&h), want, "selection {anchor}..{caret}");
+        }
+        // Ending the edit keeps the whole-layer rule: the layer is still selected, its style is the
+        // first run's (Medium) and, the runs using two families, the family field is blank.
+        h.state_mut().ui.text_edit = None;
+        h.run_steps(4);
+        assert_eq!(shown(&h), (String::new(), inter.1.clone()), "no edit: first run's style, mixed family blank");
+        assert_eq!(super::history_len(&h), steps, "displaying the controls adds no history");
+        // Control: no type target shows the tool defaults.
+        h.state_mut().run("layer.new.layer", json!({})).unwrap();
+        h.state_mut().ui.tool_options.type_font = "JetBrains Mono".into();
+        h.state_mut().ui.tool_options.type_style = "Regular".into();
+        h.run_steps(4);
+        assert_eq!(shown(&h), mono, "no type target: the tool defaults");
     }
 
     /// Other engines registering fonts and the served catalog growing (tests running in parallel)
@@ -2088,10 +2290,33 @@ mod multi_layer_formatting {
         );
         PhotocraftApp::setup_context(&h.ctx, Default::default());
         h.run_steps(4);
-        h.get_all_by_role(Role::ComboBox).next().unwrap().click();
+        h.get_all_by_role(Role::TextInput).next().unwrap().click();
         // The font menu's search caret repaints every pass; step a bounded number of times.
         h.run_steps(2);
         h.run_steps(2);
+    }
+
+    /// A style picked under a family's ">" in the Character section's font menu, with type
+    /// layers selected, sets them and is kept for new type, as the options bar's menu does.
+    #[test]
+    fn a_style_picked_in_the_character_sections_font_menu_is_kept_for_new_type() {
+        let (app, ids) = fixture();
+        // The first style row under the family (so it is in view), other than the defaults'.
+        let pick = super::super::styles("Inter").into_iter().find(|s| s != "Regular" && s != "Bold Italic").expect("Inter has several styles");
+        assert_ne!(app.ui.tool_options.type_style, pick);
+        let mut h = controls(app, true);
+        h.get_all_by_role(Role::TextInput).next().unwrap().click();
+        h.run();
+        h.get_all_by_role(Role::TextInput).find(|n| n.is_focused()).expect("the family field has the focus").type_text("Inter");
+        h.run();
+        h.get_all_by_label("Show Styles").next().unwrap().click();
+        h.run();
+        h.get_by_label(&super::super::style_label(&pick)).click();
+        h.run();
+        assert_eq!(h.state().ui.tool_options.type_style, pick, "new type takes the picked style");
+        for id in &ids[..2] {
+            assert_eq!(style(h.state(), *id, 0).font_style, pick, "the selected layers are set in it");
+        }
     }
 
     #[test]
@@ -2163,6 +2388,11 @@ mod multi_layer_formatting {
         let c = style(h.state(), ids[0], 0);
         assert_eq!((c.size_pt, c.leading_pt, c.baseline_shift_pt), (30.0, Some(42.0), 5.0));
         assert_eq!(text(h.state(), ids[0]).paragraph_runs()[0].style.start_indent_pt, 4.5);
+
+        pick(&mut h, "Font size presets", "144 px");
+        pick(&mut h, "Leading presets", "300 px");
+        let c = style(h.state(), ids[0], 0);
+        assert_eq!((c.size_pt, c.leading_pt), (72.0, Some(150.0)), "presets preserve point values in pixel display units");
     }
 
     /// #5717: a layer scaled so its shown size or leading is past a field's range (2400 pt, or

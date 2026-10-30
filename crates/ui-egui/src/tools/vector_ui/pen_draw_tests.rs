@@ -97,6 +97,34 @@ fn near(a: [f64; 2], b: [f64; 2]) -> bool {
 }
 
 #[test]
+fn space_repositions_a_pen_anchor_and_keeps_its_handles() {
+    let mut h = harness();
+    h.state_mut().ui.extras.snap = false;
+    click(&mut h, [20.0, 20.0]);
+    let center = h.state().ui.views[0].center;
+    let p = screen(&h, [80.0, 50.0]);
+    h.event(egui::Event::PointerMoved(p));
+    button(&mut h, p, true, Modifiers::NONE);
+    move_to(&mut h, [80.0, 50.0], [100.0, 60.0]);
+    h.event(egui::Event::Key { key: Key::Space, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE });
+    h.run_steps(1);
+    move_to(&mut h, [100.0, 60.0], [120.0, 90.0]);
+    let k = h.state().ui.pen.as_ref().unwrap().knots[1];
+    assert!(near(k[0], [100.0, 80.0]) && near(k[1], [80.0, 70.0]) && near(k[2], [120.0, 90.0]), "anchor and handles moved together: {k:?}");
+    assert_eq!(h.state().ui.views[0].center, center, "the canvas never pans");
+    h.event(egui::Event::Key { key: Key::Space, physical_key: None, pressed: false, repeat: false, modifiers: Modifiers::NONE });
+    h.run_steps(1);
+    move_to(&mut h, [120.0, 90.0], [130.0, 80.0]);
+    let p = screen(&h, [130.0, 80.0]);
+    button(&mut h, p, false, Modifiers::NONE);
+    let k = h.state().ui.pen.as_ref().unwrap().knots[1];
+    assert!(near(k[0], [100.0, 80.0]) && near(k[1], [70.0, 80.0]) && near(k[2], [130.0, 80.0]), "releasing Space resumes handle shaping: {k:?}");
+    h.key_press(Key::Enter);
+    h.run_steps(2);
+    assert!(h.state().session.active().unwrap().doc.work_path.is_some());
+}
+
+#[test]
 fn alt_breaks_the_handle_being_dragged_and_grabs_the_last_outgoing_handle() {
     let mut h = harness();
     click(&mut h, [20.0, 20.0]);

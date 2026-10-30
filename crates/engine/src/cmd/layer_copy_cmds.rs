@@ -118,6 +118,10 @@ pub(crate) fn adapt_copies(s: &Session, copies: &mut Document, dest: &Document) 
             *surf = surf.convert(f);
         });
     }
+    // Type keeps its size in pixels at the destination's resolution, as an Image Size resolution
+    // change keeps it (Photoshop adapts the point size: 24 pt at 72 ppi is 5.76 pt at 300 ppi).
+    // Left at the source's, a copy re-laid out at the destination's on its next edit (#9560).
+    crate::canvas_geom::set_resolution(copies, dest.resolution_dpi);
     let new_canvas = copies.bounds() != dest.bounds();
     prepare_shapes(&mut copies.layers, dest, new_canvas);
     Ok(())
@@ -216,8 +220,11 @@ fn copy_to_document(s: &mut Session, p: &Value) -> Result<Value> {
         doc.patterns.extend(patterns);
         let mut above = *active;
         let mut new = Vec::with_capacity(copies.layers.len());
+        // The first copy goes where a new layer would; the rest stack above it.
+        let mut place = crate::layer_place::Place::AutoEditable;
         for l in copies.layers {
-            let id = doc.insert_above(above, l);
+            let id = crate::layer_place::insert_new(doc, above, l, place);
+            place = crate::layer_place::Place::Above;
             above = Some(id);
             new.push(id);
         }

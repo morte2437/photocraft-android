@@ -1,5 +1,5 @@
 use super::history::fix_selection;
-use super::*;
+use super::{DocState, Document, Session, channel_cmds, smart_cmds};
 
 /// Move item `i` of `v` to position `to`, clamped to the end. Returns where it went; `None` when
 /// `i` is out of range.
@@ -109,6 +109,7 @@ impl Session {
         let mut st = DocState::new(doc, path);
         st.history.max_states = self.prefs.get().performance.history_states.max(1) as usize;
         st.history.max_bytes = self.prefs.get().performance.history_budget_bytes();
+        st.history.non_linear = self.prefs.get().history_options.allow_non_linear_history;
         self.docs.push(st);
         let i = self.docs.len() - 1;
         self.active = Some(i);

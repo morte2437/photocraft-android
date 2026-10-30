@@ -286,6 +286,11 @@ pub fn request_for_languages<'a>(languages: impl IntoIterator<Item = &'a str>) {
     }
 }
 
+/// The served fallback family for the script `language` (a BCP 47 tag) is written in, if any.
+pub fn fallback_for_language(language: &str) -> Option<String> {
+    fallback_for(&state().fallbacks, language_script(language)?)
+}
+
 /// Families the host can serve, installed or not (for font menus).
 pub fn families() -> Vec<String> {
     state().families.clone()

@@ -1,6 +1,6 @@
 //! Add Anchor Point and Delete Anchor Point tools (P group with the Pen, #1044), as in Photoshop.
-//! They edit the paths Direct Selection edits, front first: the targeted vector mask or the active
-//! shape layer's path, then the work path.
+//! They edit the paths Direct Selection edits, front first: the work or saved path selected in the
+//! Paths panel, the targeted vector mask or the active shape layer's path, then the work path.
 //!
 //! * Add Anchor Point: hovering a segment highlights it and shows where the anchor would go; a
 //!   click inserts it there (`path.addAnchor`). A curve is split without changing its shape.
@@ -38,9 +38,7 @@ pub fn effective(tool: Tool, mods: Modifiers) -> Option<Tool> {
 /// segment (Add) or anchor (Delete) hit on it. An anchor hit with Add, or a segment with Delete,
 /// edits nothing.
 fn target(app: &PhotocraftApp, tool: Tool, p: [f64; 2]) -> Option<(PathRef, Path, Hit)> {
-    let tol = 6.0 / f64::from(app.point_zoom().max(0.01));
-    let (r, path, hit) =
-        crate::direct_select::candidates(app).into_iter().find_map(|(r, path)| edit::hit(&path, Point::new(p[0], p[1]), tol, &[]).map(|h| (r, path, h)))?;
+    let (r, path, hit) = crate::direct_select::hit_target(app, p, false)?;
     match (tool, hit) {
         (Tool::AddAnchorPoint, Hit::Segment(..)) | (Tool::DeleteAnchorPoint, Hit::Anchor(_)) => Some((r, path, hit)),
         _ => None,
@@ -135,12 +133,12 @@ fn apply(app: &mut PhotocraftApp, r: PathRef, hit: Hit) {
         Hit::Handle(..) => return,
     };
     // A hit right at a segment's end is an anchor (anchors win the hit test), so `t` is inside.
-    if let (Some(o), Some(t)) = (params.as_object_mut(), r.params().as_object()) {
+    if let (Some(o), Some(t)) = (params.as_object_mut(), r.params(app).as_object()) {
         o.extend(t.clone());
     }
     match app.run(id, params) {
         // The anchors shift: a Direct Selection on this path would point at the wrong ones.
-        Ok(_) if app.ui.direct_selection.target == Some(r) => app.ui.direct_selection = DirectSelection { target: Some(r), ..Default::default() },
+        Ok(_) if app.ui.direct_selection.target.as_ref() == Some(&r) => app.ui.direct_selection = DirectSelection { target: Some(r), ..Default::default() },
         Ok(_) => {}
         Err(e) => {
             app.ui.status = e;

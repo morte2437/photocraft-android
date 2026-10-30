@@ -4,7 +4,10 @@
 //! Special Effects. Every preset is plain [`BrushSettings`] data, so it serialises, journals and
 //! can be edited like any user preset.
 
-use crate::brush::*;
+use crate::brush::{
+    BrushPreset, BrushSettings, ColorDynamics, Control, DualBrush, Dynamic, MaskMode, Pattern, PatternStyle, Scattering, ShapeDynamics, Smoothing, Texture,
+    TipShape, Transfer,
+};
 use crate::procedural::{bristle_tip, chalk_tip, charcoal_tip, grass_tip, leaf_tip, rake_tip, spatter_tip, sponge_tip, star_tip};
 
 /// Preset groups, in panel order.

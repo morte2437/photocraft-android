@@ -161,7 +161,7 @@ fn unpacked(so: &Layer, mut layers: Vec<Layer>) -> Layer {
     g.id = LayerId::fresh();
     g.psd_id = None;
     g.blend = blend;
-    g.content = LayerContent::Group(Group { children: layers, expanded: true, artboard: None });
+    g.content = LayerContent::Group(Group { children: layers, expanded: true, artboard: None, frame_stroke: None });
     detach_psd(&mut g);
     g
 }

@@ -1,7 +1,14 @@
 use super::curvature::curvature_refresh;
-use super::path_ops::targeted_vector_mask;
+use super::path_ops::{active_type_path, targeted_vector_mask, work_path_shown_in};
 use super::pen::{closing, over_first_anchor, shift_45};
-use super::*;
+use egui::{Color32, Pos2, Rect, Stroke, pos2, vec2};
+use photocraft_doc::vector::Path;
+use photocraft_doc::{Document, LayerContent};
+
+use crate::PhotocraftApp;
+use crate::canvas::ViewXform;
+use crate::state::Tool;
+use crate::theme::Tokens;
 
 // ---------------------------------------------------------------------------------------------
 // Drawing
@@ -113,6 +120,13 @@ pub(crate) fn selected_saved_path(app: &PhotocraftApp) -> Option<&Path> {
     app.session.active()?.doc.paths.iter().find(|p| p.name == sel).map(|p| &p.path)
 }
 
+/// [`selected_saved_path`] with its index in the document's `paths`: the saved path Path
+/// Selection and Direct Selection edit (#8478).
+pub(crate) fn selected_saved_path_index(app: &PhotocraftApp) -> Option<(usize, Path)> {
+    let sel = app.ui.selected_path.as_deref().filter(|s| !matches!(*s, "work" | "layer"))?;
+    app.session.active()?.doc.paths.iter().enumerate().find(|(_, p)| p.name == sel).map(|(i, p)| (i, p.path.clone()))
+}
+
 /// Work path / active shape path / selected saved path outlines, anchors, and the pen path in
 /// progress.
 pub fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform, doc: &Document) {
@@ -134,10 +148,6 @@ pub fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform
         // Direct Selection (or the Pen with ⌘/Ctrl held) draws the paths it edits (#790).
         crate::direct_select::draw_overlay(app, painter, &to_scr, accent, paths);
         if paths {
-            // The selected saved path shows too, though Direct Selection doesn't edit it yet.
-            if let Some(p) = selected_saved_path(app) {
-                draw_path(p, true);
-            }
             crate::anchor_tools::draw_hover(app, painter, &to_scr, accent, painter.ctx().input(|i| i.modifiers));
         }
     } else if paths {
@@ -147,7 +157,7 @@ pub fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform
         // a path tool is active, as in Photoshop: a Work Path left unselected (one a PSD arrived
         // with, or after Ctrl-click Load as Selection) would otherwise cover the marching ants (#6551).
         let anchors = shows_anchors(tool);
-        if let Some(wp) = &doc.work_path
+        if let Some(wp) = doc.work_path.as_ref().filter(|_| work_path_shown_in(app, doc))
             && (anchors || app.ui.selected_path.as_deref() == Some("work"))
         {
             draw_path(wp, anchors);
@@ -165,6 +175,19 @@ pub fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform
         // A targeted vector mask shows its path with any tool (#196).
         if let Some((_, p)) = targeted_vector_mask(app) {
             draw_path(&p, anchors);
+        }
+        // So does type on a path's Type Path, which the Pen's Auto Add/Delete edits (#9114).
+        if let Some((_, p)) = active_type_path(app) {
+            draw_path(&p, anchors);
+        }
+        // Path Selection's selected components show solid anchors, as in Photoshop.
+        if tool == Tool::PathSelection
+            && st.is_some_and(|s| s.doc.id == doc.id)
+            && let Some((_, path, _)) = crate::path_components::selected(app)
+        {
+            for k in app.ui.direct_selection.anchors.iter().filter_map(|[s, k]| path.subpaths.get(*s).and_then(|sp| sp.knots.get(*k))) {
+                draw_anchor(painter, to_scr([k.anchor.x, k.anchor.y]), true, accent);
+            }
         }
         crate::corner_radius::draw(app, painter, &to_scr, accent);
     }

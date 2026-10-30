@@ -118,8 +118,10 @@ mod tests {
         s.execute("layer.select", json!({"layer": c.0, "mode": "add"})).unwrap();
         s.execute("layer.groupLayers", json!({})).unwrap();
         let group = s.active().unwrap().doc.layers.iter().find(|l| l.is_group()).unwrap().id;
-        s.execute("layer.setExpanded", json!({"layer": group.0, "expanded": true})).unwrap();
+        // D goes above the closed group (an open one would take it inside, as in Photoshop).
         let d = id(&mut s, "layer.new.layer", json!({"name": "D"}));
+        // Group Layers makes a collapsed group; open it so the panel shows B and C.
+        s.execute("layer.setExpanded", json!({"layer": group.0, "expanded": true})).unwrap();
         (s, [bg, a, group, b, c, d])
     }
 

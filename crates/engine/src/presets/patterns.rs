@@ -162,7 +162,7 @@ fn edit(s: &mut Session, p: &Value) -> Result<Value> {
         }
         "move" => {
             let key = req_str(p, "preset", CMD)?;
-            let id = crate::pattern_cmds::resolve(s, key).map(|q| q.id).ok_or_else(|| bad(CMD, format!("no pattern \"{key}\"")))?;
+            let id = crate::pattern_cmds::resolve_id(s, key).ok_or_else(|| bad(CMD, format!("no pattern \"{key}\"")))?;
             let mut q = p.clone();
             q["preset"] = json!(id);
             edit_groups(&mut s.presets.pattern_groups, "move", &q, CMD)?

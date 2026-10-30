@@ -101,6 +101,11 @@ impl Padded {
         Padded { data: vec![0.0; stride * (h + 2 * PAD)], w, h, stride }
     }
 
+    /// Whether the plane is non-empty and holds all its rows.
+    fn fits(&self) -> bool {
+        self.w != 0 && self.h != 0 && self.data.len() >= self.stride * (self.h + 2 * PAD)
+    }
+
     /// From an unpadded plane (tests and small inputs).
     #[cfg(test)]
     pub fn from_plane(plane: &[f32], w: usize, h: usize) -> Self {
@@ -190,51 +195,174 @@ fn kernels(phase: [u8; 4], method: Demosaic, stride: usize) -> [[Vec<(isize, f32
 pub(crate) fn demosaic(p: &Padded, phase: [u8; 4], method: Demosaic, to_xyz: &Mat3, ahd_jobs: usize) -> Vec<f32> {
     let (w, h, s) = (p.w, p.h, p.stride);
     let mut out = vec![0.0f32; w * h * 3];
-    if w == 0 || h == 0 || p.data.len() < s * (h + 2 * PAD) {
+    if !p.fits() {
         return out;
     }
     if method == Demosaic::Ahd {
-        ahd(p, phase, to_xyz, &mut out, ahd_jobs);
+        let (d, m, labf) = (&p.data, ahd_matrix(to_xyz), LabF::new());
+        for_bands_grouped(
+            &mut out,
+            AHD_BAND * w * 3,
+            ahd_bands(h),
+            ahd_jobs,
+            1,
+            || AhdScratch::for_image(h, s),
+            |band, chunk, sc| {
+                ahd_band(d, w, s, phase, &m, &labf, band, chunk, sc);
+            },
+        );
         return out;
     }
     let ks = kernels(phase, method, s);
     let rows = par::band_rows(w);
-    let d = &p.data;
-    par::chunks_mut(&mut out, rows * w * 3, |band, chunk| {
-        let y0 = band * rows;
-        for (r, row) in chunk.chunks_exact_mut(w * 3).enumerate() {
-            let y = y0 + r;
-            let base = (y + PAD) * s + PAD;
-            for (x, o) in row.as_chunks_mut::<3>().0.iter_mut().enumerate() {
-                let pos = (y & 1) * 2 + (x & 1);
-                let i = base + x;
-                if method == Demosaic::Bilinear {
-                    // Direct Bayer bilinear (the kernels' result without the tap loops).
-                    let own = usize::from(phase[pos]).min(2);
-                    let (n, so, e, wv) = (d[i - s], d[i + s], d[i + 1], d[i - 1]);
-                    if own == 1 {
-                        let hc = usize::from(phase[(y & 1) * 2 + ((x + 1) & 1)]).min(2);
-                        o[1] = d[i];
-                        o[hc] = (e + wv) * 0.5;
-                        o[2 - hc] = (n + so) * 0.5;
-                    } else {
-                        o[own] = d[i];
-                        o[1] = (n + so + e + wv) * 0.25;
-                        o[2 - own] = (d[i - s - 1] + d[i - s + 1] + d[i + s - 1] + d[i + s + 1]) * 0.25;
-                    }
-                    continue;
-                }
-                for (c, k) in ks[pos].iter().enumerate() {
-                    let mut v = 0.0f32;
-                    for &(off, wt) in k {
-                        v += wt * d[(i as isize + off) as usize];
-                    }
-                    o[c] = v.clamp(0.0, 1.0);
-                }
+    par::chunks_mut(&mut out, rows * w * 3, |band, chunk| linear_band(&p.data, w, s, phase, method, &ks, band * rows, 0, chunk));
+    out
+}
+
+/// [`demosaic`] without the full RGB frame and without the padded plane: every band loads the
+/// rows it reads (`fill(y, row)` writes the normalized CFA row `y` of the image, `w` samples;
+/// the mirrored borders are added here), demosaics into a band buffer, and `emit(rgb, out)`
+/// turns it into the band's `out` samples (the same rows, `w * 3` per row). Each pixel depends
+/// only on the plane around it, never on how rows are split or ordered, so the result is that
+/// of `emit` over [`demosaic`] of the filled plane.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn demosaic_fused(
+    w: usize,
+    h: usize,
+    phase: [u8; 4],
+    method: Demosaic,
+    to_xyz: &Mat3,
+    jobs: usize,
+    fill: &(impl Fn(usize, &mut [f32]) + Sync),
+    out: &mut [u16],
+    emit: &(impl Fn(&[f32], &mut [u16]) + Sync),
+) {
+    if w == 0 || h == 0 || out.len() < w * h * 3 {
+        return;
+    }
+    let s = w + 2 * PAD;
+    let out = &mut out[..w * h * 3];
+    // Padded rows of the output rows `y0..y0 + rows` (`rows + 2 * PAD` of them, row `PAD` is `y0`)
+    // with the mirror reflection `Padded::fill_borders` applies.
+    let load = |win: &mut [f32], y0: usize, rows: usize| {
+        for (j, prow) in win.chunks_exact_mut(s).take(rows + 2 * PAD).enumerate() {
+            fill(reflect((y0 + j) as isize - PAD as isize, h), &mut prow[PAD..PAD + w]);
+            for px in (0..PAD).chain(PAD + w..s) {
+                prow[px] = prow[PAD + reflect(px as isize - PAD as isize, w)];
             }
         }
+    };
+    if method == Demosaic::Ahd {
+        let (m, labf) = (ahd_matrix(to_xyz), LabF::new());
+        // The rows of the tallest band, as `develop`'s memory check counts them.
+        let rows = h.min(AHD_BAND);
+        let init = || (AhdScratch::for_image(h, s), vec![0.0f32; rows * w * 3], vec![0.0f32; (rows + 2 * PAD) * s]);
+        for_bands_grouped(out, AHD_BAND * w * 3, ahd_bands(h), jobs, 1, init, |band, chunk, (sc, buf, win)| {
+            load(win, band * AHD_BAND, chunk.len() / (w * 3));
+            let buf = &mut buf[..chunk.len()];
+            // The window starts at a multiple of AHD_BAND (even), so it is band 0 of its own rows.
+            ahd_band(win, w, s, phase, &m, &labf, 0, buf, sc);
+            emit(buf, chunk);
+        });
+        return;
+    }
+    let ks = kernels(phase, method, s);
+    let rows = h.min(FUSED_ROWS);
+    let init = || (vec![0.0f32; rows * w * 3], vec![0.0f32; (rows + 2 * PAD) * s]);
+    for_bands(out, FUSED_ROWS * w * 3, h.div_ceil(FUSED_ROWS), jobs, init, |band, chunk, (buf, win)| {
+        load(win, band * FUSED_ROWS, chunk.len() / (w * 3));
+        let buf = &mut buf[..chunk.len()];
+        linear_band(win, w, s, phase, method, &ks, band * FUSED_ROWS, band * FUSED_ROWS, buf);
+        emit(buf, chunk);
     });
-    out
+}
+
+/// Output rows per band of the fused bilinear / MHC path (the window adds `2 * PAD` rows).
+pub(crate) const FUSED_ROWS: usize = 32;
+
+/// Rows `y0..` of bilinear or MHC output (`chunk.len() / (w * 3)` of them); `d` is the padded
+/// plane from image row `dy` on (`dy` 0: all of it).
+#[allow(clippy::too_many_arguments)]
+fn linear_band(d: &[f32], w: usize, s: usize, phase: [u8; 4], method: Demosaic, ks: &[[Vec<(isize, f32)>; 3]; 4], y0: usize, dy: usize, chunk: &mut [f32]) {
+    for (r, row) in chunk.chunks_exact_mut(w * 3).enumerate() {
+        let y = y0 + r;
+        let base = (y - dy + PAD) * s + PAD;
+        for (x, o) in row.as_chunks_mut::<3>().0.iter_mut().enumerate() {
+            let pos = (y & 1) * 2 + (x & 1);
+            let i = base + x;
+            if method == Demosaic::Bilinear {
+                // Direct Bayer bilinear (the kernels' result without the tap loops).
+                let own = usize::from(phase[pos]).min(2);
+                let (n, so, e, wv) = (d[i - s], d[i + s], d[i + 1], d[i - 1]);
+                if own == 1 {
+                    let hc = usize::from(phase[(y & 1) * 2 + ((x + 1) & 1)]).min(2);
+                    o[1] = d[i];
+                    o[hc] = (e + wv) * 0.5;
+                    o[2 - hc] = (n + so) * 0.5;
+                } else {
+                    o[own] = d[i];
+                    o[1] = (n + so + e + wv) * 0.25;
+                    o[2 - own] = (d[i - s - 1] + d[i - s + 1] + d[i + s - 1] + d[i + s + 1]) * 0.25;
+                }
+                continue;
+            }
+            for (c, k) in ks[pos].iter().enumerate() {
+                let mut v = 0.0f32;
+                for &(off, wt) in k {
+                    v += wt * d[(i as isize + off) as usize];
+                }
+                o[c] = v.clamp(0.0, 1.0);
+            }
+        }
+    }
+}
+
+/// Runs `f(band, chunk, scratch)` over the `unit`-sized chunks of `out` (`bands` of them), with
+/// at most `jobs` scratch values alive. When every worker may hold one, each band is its own
+/// rayon task and borrows a scratch from a pool (one per worker at most); otherwise a few groups
+/// of consecutive bands per job run, `jobs` at a time, each building its scratch once.
+pub(crate) fn for_bands<T: Send, S: Send>(
+    out: &mut [T],
+    unit: usize,
+    bands: usize,
+    jobs: usize,
+    init: impl Fn() -> S + Sync + Send,
+    f: impl Fn(usize, &mut [T], &mut S) + Sync + Send,
+) {
+    for_bands_grouped(out, unit, bands, jobs, 4, init, f);
+}
+
+/// Bands per group when `bands` are split into `per_worker` groups for each worker (at most `jobs`).
+fn bands_per_group(bands: usize, jobs: usize, per_worker: usize) -> usize {
+    let groups = (par::workers().min(jobs.max(1)) * per_worker).clamp(1, bands.max(1));
+    bands.div_ceil(groups).max(1)
+}
+
+/// [`for_bands`] with `per_worker` groups of consecutive bands for each of the `jobs` workers when
+/// fewer than all may hold a scratch. A large scratch (AHD: 16 planes) wants one group per job:
+/// with more groups each would build and zero its own scratch for a band or two.
+fn for_bands_grouped<T: Send, S: Send>(
+    out: &mut [T],
+    unit: usize,
+    bands: usize,
+    jobs: usize,
+    per_worker: usize,
+    init: impl Fn() -> S + Sync + Send,
+    f: impl Fn(usize, &mut [T], &mut S) + Sync + Send,
+) {
+    // One task per band keeps rayon's stealing, so a busy or slow worker doesn't hold up a
+    // static share of the bands (as `par::chunks_mut_limited` does for the same reason).
+    if jobs >= par::workers() {
+        par::chunks_mut_pooled(out, unit, init, |sc, band, chunk| f(band, chunk, sc));
+        return;
+    }
+    let per_group = bands_per_group(bands, jobs, per_worker);
+    par::chunks_mut_limited(out, per_group * unit, jobs, |group, gchunk| {
+        let mut sc = init();
+        for (j, chunk) in gchunk.chunks_mut(unit).enumerate() {
+            f(group * per_group + j, chunk, &mut sc);
+        }
+    });
 }
 
 /// A CFA repeat as seen from the plane's origin: colour of plane pixel
@@ -318,10 +446,36 @@ fn phase_taps(pat: &Pattern, px: isize, py: isize) -> Taps {
 /// without the edge-directed weights it is no faster and leaves zipper
 /// artefacts along every edge of an X-Trans image.
 pub(crate) fn demosaic_cfa(p: &Padded, pat: &Pattern) -> Vec<f32> {
-    let (w, h, s) = (p.w, p.h, p.stride);
+    let (w, h) = (p.w, p.h);
     let mut out = vec![0.0f32; w * h * 3];
-    if w == 0 || h == 0 || pat.w == 0 || pat.h == 0 || pat.colors.len() < pat.w * pat.h || p.data.len() < s * (h + 2 * PAD) {
-        return out;
+    let band = par::band_rows(w);
+    cfa_with(p, pat, |rows| par::chunks_mut(&mut out, band * w * 3, |b, chunk| rows(b * band, chunk)));
+    out
+}
+
+/// [`demosaic_cfa`] without the full RGB frame (the green plane stays): see [`demosaic_fused`].
+pub(crate) fn demosaic_cfa_fused(p: &Padded, pat: &Pattern, jobs: usize, out: &mut [u16], emit: &(impl Fn(&[f32], &mut [u16]) + Sync)) {
+    let (w, h) = (p.w, p.h);
+    if out.len() < w * h * 3 {
+        return;
+    }
+    let band = par::band_rows(w);
+    let init = || vec![0.0f32; band.min(h) * w * 3];
+    cfa_with(p, pat, |rows| {
+        for_bands(&mut out[..w * h * 3], band * w * 3, h.div_ceil(band), jobs, init, |b, chunk, buf| {
+            let buf = &mut buf[..chunk.len()];
+            rows(b * band, buf);
+            emit(buf, chunk);
+        });
+    });
+}
+
+/// The generic demosaic's green plane, then `run` with a function that fills the RGB rows
+/// `y0..` of a chunk (`chunk.len() / (w * 3)` of them). Not called for an unusable plane or pattern.
+fn cfa_with(p: &Padded, pat: &Pattern, run: impl FnOnce(&(dyn Fn(usize, &mut [f32]) + Sync))) {
+    let (w, h, s) = (p.w, p.h, p.stride);
+    if !p.fits() || pat.w == 0 || pat.h == 0 || pat.colors.len() < pat.w * pat.h {
+        return;
     }
     let taps: Vec<Taps> = (0..pat.w * pat.h).map(|i| phase_taps(pat, (i % pat.w) as isize, (i / pat.w) as isize)).collect();
     let tap_at = |x: usize, y: usize| &taps[(y % pat.h) * pat.w + x % pat.w];
@@ -389,9 +543,9 @@ pub(crate) fn demosaic_cfa(p: &Padded, pat: &Pattern) -> Vec<f32> {
     // 2. Red and blue from colour differences.
     let gref = &green;
     let gat = |x: usize, y: usize, o: Off| get(gref, w, 0, x, y, o);
-    par::chunks_mut(&mut out, band * w * 3, |b, chunk| {
+    run(&|y0: usize, chunk: &mut [f32]| {
         for (r, row) in chunk.chunks_exact_mut(w * 3).enumerate() {
-            let y = b * band + r;
+            let y = y0 + r;
             for (x, o) in row.as_chunks_mut::<3>().0.iter_mut().enumerate() {
                 let t = tap_at(x, y);
                 let g = gref.get(y * w + x).copied().unwrap_or(0.0);
@@ -418,7 +572,6 @@ pub(crate) fn demosaic_cfa(p: &Padded, pat: &Pattern) -> Vec<f32> {
             }
         }
     });
-    out
 }
 
 /// Regularizes the inverse-gradient weights (normalized units, about 1/256 of full scale).
@@ -426,9 +579,10 @@ const GRAD_EPS: f32 = 1.0 / 256.0;
 /// Regularizes the green-similarity weights of the colour differences.
 const DIFF_EPS: f32 = 1.0 / 64.0;
 
-/// CIE f(t) for L*a*b*, tabulated on 0..2 with linear interpolation.
+/// CIE f(t) for L*a*b*, tabulated on 0..2 with linear interpolation. Each entry holds the
+/// sample and the step to the next one (one load per lookup; the same `a + (b - a) * f`).
 struct LabF {
-    table: Vec<f32>,
+    pairs: Vec<[f32; 2]>,
 }
 
 const LABF_STEPS: usize = 1 << 14;
@@ -436,7 +590,8 @@ const LABF_RANGE: f32 = 2.0;
 
 impl LabF {
     fn new() -> Self {
-        LabF { table: (0..=LABF_STEPS + 1).map(|i| Self::exact(i as f32 * LABF_RANGE / LABF_STEPS as f32)).collect() }
+        let table: Vec<f32> = (0..=LABF_STEPS + 1).map(|i| Self::exact(i as f32 * LABF_RANGE / LABF_STEPS as f32)).collect();
+        LabF { pairs: table.windows(2).map(|p| [p[0], p[1] - p[0]]).collect() }
     }
 
     fn exact(t: f32) -> f32 {
@@ -450,27 +605,36 @@ impl LabF {
         }
         let x = t * (LABF_STEPS as f32 / LABF_RANGE);
         let i = (x as usize).min(LABF_STEPS);
-        let a = self.table[i];
-        a + (self.table[i + 1] - a) * (x - i as f32)
+        let [a, step] = self.pairs[i];
+        a + step * (x - i as f32)
     }
 }
 
 /// Output rows per AHD band.
-const AHD_BAND: usize = 32;
+pub(crate) const AHD_BAND: usize = 32;
 /// Extra band rows above and below the output rows.
 const M: usize = 3;
 
-/// Maximum scratch allocation of one AHD band: two green, RGB and Lab float
-/// planes and two byte homogeneity planes, including their border rows.
+/// Scratch rows one AHD worker allocates: the output rows of the tallest band
+/// this image has, plus their border rows.
+fn ahd_scratch_rows(h: usize) -> usize {
+    h.min(AHD_BAND) + 2 * M
+}
+
+/// Scratch allocation of one AHD worker ([`AhdScratch::for_image`]): two green,
+/// RGB and Lab float planes and two byte homogeneity planes over
+/// [`ahd_scratch_rows`], plus the two `u32` rows of vertical sums.
 pub(crate) fn ahd_scratch(w: u64, h: u64) -> u64 {
-    w.saturating_add(2 * PAD as u64).saturating_mul(h.min(AHD_BAND as u64).saturating_add(2 * M as u64)).saturating_mul(58)
+    let s = w.saturating_add(2 * PAD as u64);
+    let rows = h.min(AHD_BAND as u64).saturating_add(2 * M as u64);
+    s.saturating_mul(rows.saturating_mul(58).saturating_add(8))
 }
 
 pub(crate) fn ahd_bands(h: usize) -> usize {
     h.div_ceil(AHD_BAND)
 }
 
-pub(crate) const AHD_TABLE_BYTES: u64 = (LABF_STEPS as u64 + 2) * 4;
+pub(crate) const AHD_TABLE_BYTES: u64 = (LABF_STEPS as u64 + 1) * 8;
 
 /// `v` limited to `lo..=hi` like `f32::clamp`, without its panic on NaN bounds (hostile black
 /// levels can put NaN in the plane): same result for every non-NaN bound.
@@ -480,7 +644,198 @@ fn clampf(v: f32, lo: f32, hi: f32) -> f32 {
     if v > hi { hi } else { v }
 }
 
-fn ahd(p: &Padded, phase: [u8; 4], to_xyz: &Mat3, out: &mut [f32], jobs: usize) {
+/// One AHD band's working planes, reused for every band a worker runs (sized for the tallest band).
+struct AhdScratch {
+    /// Green interpolated horizontally (0) and vertically (1).
+    g: [Vec<f32>; 2],
+    /// Per direction, the RGB candidate (planar).
+    rgb: [[Vec<f32>; 3]; 2],
+    /// Per direction, its CIELAB (planar).
+    lab: [[Vec<f32>; 3]; 2],
+    hom: [Vec<u8>; 2],
+    /// Vertical 3-row sums of `hom`, one output row.
+    vs: [Vec<u32>; 2],
+}
+
+impl AhdScratch {
+    fn new(len: usize, s: usize) -> Self {
+        let f = || vec![0.0f32; len];
+        AhdScratch {
+            g: [f(), f()],
+            rgb: [[f(), f(), f()], [f(), f(), f()]],
+            lab: [[f(), f(), f()], [f(), f(), f()]],
+            hom: [vec![0u8; len], vec![0u8; len]],
+            vs: [vec![0u32; s], vec![0u32; s]],
+        }
+    }
+
+    /// The scratch for an image `h` rows tall with stride `s`: the size [`ahd_scratch`] budgets.
+    fn for_image(h: usize, s: usize) -> Self {
+        AhdScratch::new(ahd_scratch_rows(h) * s, s)
+    }
+}
+
+/// The camera → XYZ matrix with the rows divided by the white point.
+fn ahd_matrix(to_xyz: &Mat3) -> [[f32; 3]; 3] {
+    let white = [0.9642f32, 1.0, 0.8249];
+    std::array::from_fn(|i| std::array::from_fn(|j| to_xyz[i][j] as f32 / white[i]))
+}
+
+/// One AHD band (see [`ahd_ref`] for the plain statement): the same arithmetic in the same
+/// order, per row on slices, planar scratch reused across a worker's bands. Every scratch cell
+/// a stage reads was written earlier in the same band, so the planes are never cleared between
+/// bands.
+#[allow(clippy::too_many_arguments)]
+fn ahd_band(d: &[f32], w: usize, s: usize, phase: [u8; 4], m: &[[f32; 3]; 3], labf: &LabF, band: usize, chunk: &mut [f32], sc: &mut AhdScratch) {
+    let rows = chunk.len() / (w * 3);
+    let n = rows + 2 * M;
+    let py = |b: usize| band * AHD_BAND + PAD - M + b;
+    let drow = |y: usize| &d[y * s..(y + 1) * s];
+    // 1. Green interpolated horizontally (0) and vertically (1), columns 2..s-2.
+    {
+        let [g0, g1] = &mut sc.g;
+        for b in 0..n {
+            let y = py(b);
+            let (rm2, rm1, r0, rp1, rp2) = (drow(y - 2), drow(y - 1), drow(y), drow(y + 1), drow(y + 2));
+            let gh_row = &mut g0[b * s..(b + 1) * s];
+            let gv_row = &mut g1[b * s..(b + 1) * s];
+            let green = [phase[(y & 1) * 2] == 1, phase[(y & 1) * 2 + 1] == 1];
+            for x in 2..s - 2 {
+                let c = r0[x];
+                if green[x & 1] {
+                    gh_row[x] = c;
+                    gv_row[x] = c;
+                    continue;
+                }
+                let (l, r) = (r0[x - 1], r0[x + 1]);
+                let gh = (l + r) * 0.5 + (2.0 * c - r0[x - 2] - r0[x + 2]) * 0.25;
+                gh_row[x] = clampf(gh, l.min(r), l.max(r));
+                let (u, dn) = (rm1[x], rp1[x]);
+                let gv = (u + dn) * 0.5 + (2.0 * c - rm2[x] - rp2[x]) * 0.25;
+                gv_row[x] = clampf(gv, u.min(dn), u.max(dn));
+            }
+        }
+    }
+    // 2. RGB candidates and their Lab, band rows 1..n-1, columns 3..s-3.
+    for dir in 0..2 {
+        let gd = &sc.g[dir];
+        let [cr, cg, cb] = &mut sc.rgb[dir];
+        let [ll, la, lb] = &mut sc.lab[dir];
+        for b in 1..n - 1 {
+            let y = py(b);
+            let (dm1, d0, dp1) = (drow(y - 1), drow(y), drow(y + 1));
+            let (gm1, g0, gp1) = (&gd[(b - 1) * s..b * s], &gd[b * s..(b + 1) * s], &gd[(b + 1) * s..(b + 2) * s]);
+            let at = b * s;
+            let (orr, org, orb) = (&mut cr[at..at + s], &mut cg[at..at + s], &mut cb[at..at + s]);
+            let (ol, oa, ob) = (&mut ll[at..at + s], &mut la[at..at + s], &mut lb[at..at + s]);
+            let pr = (y & 1) * 2;
+            for x in 3..s - 3 {
+                let own = phase[pr + (x & 1)];
+                let gv = g0[x];
+                // `va` goes to channel `ch`, `vb` to `2 - ch` (as `px[ch] = va; px[2 - ch] = vb`,
+                // built from values: an indexed store into `px` stalls store forwarding).
+                let (ch, va, vb) = if own == 1 {
+                    (
+                        phase[pr + ((x + 1) & 1)].min(2),
+                        gv + 0.5 * ((d0[x - 1] - g0[x - 1]) + (d0[x + 1] - g0[x + 1])),
+                        gv + 0.5 * ((dm1[x] - gm1[x]) + (dp1[x] - gp1[x])),
+                    )
+                } else {
+                    (
+                        own.min(2),
+                        d0[x],
+                        gv + 0.25 * ((dm1[x - 1] - gm1[x - 1]) + (dm1[x + 1] - gm1[x + 1]) + (dp1[x - 1] - gp1[x - 1]) + (dp1[x + 1] - gp1[x + 1])),
+                    )
+                };
+                let px = match ch {
+                    0 => [va, gv, vb],
+                    2 => [vb, gv, va],
+                    _ => [gv, vb, gv],
+                };
+                let px = px.map(|v| v.clamp(0.0, 1.0));
+                orr[x] = px[0];
+                org[x] = px[1];
+                orb[x] = px[2];
+                let xyz: [f32; 3] = std::array::from_fn(|k| m[k][0] * px[0] + m[k][1] * px[1] + m[k][2] * px[2]);
+                let (fx, fy, fz) = (labf.f(xyz[0]), labf.f(xyz[1]), labf.f(xyz[2]));
+                ol[x] = 116.0 * fy - 16.0;
+                oa[x] = 500.0 * (fx - fy);
+                ob[x] = 200.0 * (fy - fz);
+            }
+        }
+    }
+    // 3. Homogeneity maps, band rows 2..n-2, columns 4..s-4.
+    {
+        let [l0, a0, b0] = &sc.lab[0];
+        let [l1, a1, b1] = &sc.lab[1];
+        let [h0, h1] = &mut sc.hom;
+        for b in 2..n - 2 {
+            fn row(pl: &[f32], bb: usize, s: usize) -> &[f32] {
+                &pl[bb * s..(bb + 1) * s]
+            }
+            let (l0u, l0c, l0d) = (row(l0, b - 1, s), row(l0, b, s), row(l0, b + 1, s));
+            let (a0u, a0c, a0d) = (row(a0, b - 1, s), row(a0, b, s), row(a0, b + 1, s));
+            let (b0u, b0c, b0d) = (row(b0, b - 1, s), row(b0, b, s), row(b0, b + 1, s));
+            let (l1u, l1c, l1d) = (row(l1, b - 1, s), row(l1, b, s), row(l1, b + 1, s));
+            let (a1u, a1c, a1d) = (row(a1, b - 1, s), row(a1, b, s), row(a1, b + 1, s));
+            let (b1u, b1c, b1d) = (row(b1, b - 1, s), row(b1, b, s), row(b1, b + 1, s));
+            let (h0r, h1r) = (&mut h0[b * s..(b + 1) * s], &mut h1[b * s..(b + 1) * s]);
+            for x in 4..s - 4 {
+                // Neighbours left, right, up, down; (|ΔL|, Δa² + Δb²) from the centre.
+                let dist = |lc: f32, ac: f32, bc: f32, ln: f32, an: f32, bn: f32| ((lc - ln).abs(), (ac - an) * (ac - an) + (bc - bn) * (bc - bn));
+                let (lc, ac, bc) = (l0c[x], a0c[x], b0c[x]);
+                let dh = [
+                    dist(lc, ac, bc, l0c[x - 1], a0c[x - 1], b0c[x - 1]),
+                    dist(lc, ac, bc, l0c[x + 1], a0c[x + 1], b0c[x + 1]),
+                    dist(lc, ac, bc, l0u[x], a0u[x], b0u[x]),
+                    dist(lc, ac, bc, l0d[x], a0d[x], b0d[x]),
+                ];
+                let (lc, ac, bc) = (l1c[x], a1c[x], b1c[x]);
+                let dv = [
+                    dist(lc, ac, bc, l1c[x - 1], a1c[x - 1], b1c[x - 1]),
+                    dist(lc, ac, bc, l1c[x + 1], a1c[x + 1], b1c[x + 1]),
+                    dist(lc, ac, bc, l1u[x], a1u[x], b1u[x]),
+                    dist(lc, ac, bc, l1d[x], a1d[x], b1d[x]),
+                ];
+                let eps_l = dh[0].0.max(dh[1].0).min(dv[2].0.max(dv[3].0));
+                let eps_c = dh[0].1.max(dh[1].1).min(dv[2].1.max(dv[3].1));
+                let count = |v: &[(f32, f32); 4]| v.iter().map(|(l, c)| u8::from(*l <= eps_l && *c <= eps_c)).sum::<u8>();
+                h0r[x] = count(&dh);
+                h1r[x] = count(&dv);
+            }
+        }
+    }
+    // 4. Per pixel, the candidate with the larger 3×3 homogeneity sum.
+    let [vs0, vs1] = &mut sc.vs;
+    for r in 0..rows {
+        let b = r + M;
+        for (hm, vs) in [(&sc.hom[0], &mut *vs0), (&sc.hom[1], &mut *vs1)] {
+            let (u, c, dn) = (&hm[(b - 1) * s..b * s], &hm[b * s..(b + 1) * s], &hm[(b + 1) * s..(b + 2) * s]);
+            for x in PAD - 1..PAD + w + 1 {
+                vs[x] = u32::from(u[x]) + u32::from(c[x]) + u32::from(dn[x]);
+            }
+        }
+        let at = b * s;
+        let (r0, g0, b0) = (&sc.rgb[0][0][at..at + s], &sc.rgb[0][1][at..at + s], &sc.rgb[0][2][at..at + s]);
+        let (r1, g1, b1) = (&sc.rgb[1][0][at..at + s], &sc.rgb[1][1][at..at + s], &sc.rgb[1][2][at..at + s]);
+        let orow = &mut chunk[r * w * 3..(r + 1) * w * 3];
+        for (x, o) in orow.as_chunks_mut::<3>().0.iter_mut().enumerate() {
+            let px = x + PAD;
+            let sh = vs0[px - 1] + vs0[px] + vs0[px + 1];
+            let sv = vs1[px - 1] + vs1[px] + vs1[px + 1];
+            let (c0, c1) = ([r0[px], g0[px], b0[px]], [r1[px], g1[px], b1[px]]);
+            *o = match sh.cmp(&sv) {
+                std::cmp::Ordering::Greater => c0,
+                std::cmp::Ordering::Less => c1,
+                std::cmp::Ordering::Equal => [0.5 * (c0[0] + c1[0]), 0.5 * (c0[1] + c1[1]), 0.5 * (c0[2] + c1[2])],
+            };
+        }
+    }
+}
+
+/// The plain AHD statement the optimized [`ahd`] must match bit for bit.
+#[cfg(test)]
+fn ahd_ref(p: &Padded, phase: [u8; 4], to_xyz: &Mat3, out: &mut [f32], jobs: usize) {
     let (w, s) = (p.w, p.stride);
     let d = &p.data;
     // Colour at padded coordinates (PAD is even, so the phase is unchanged).
@@ -596,6 +951,8 @@ fn ahd(p: &Padded, phase: [u8; 4], to_xyz: &Mat3, out: &mut [f32], jobs: usize) 
 mod tests {
     use super::*;
     use crate::color::IDENTITY;
+    use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+    use std::time::{Duration, Instant};
 
     #[test]
     fn ahd_band_concurrency_does_not_change_pixels() {
@@ -612,6 +969,213 @@ mod tests {
     fn ahd_survives_nan_planes() {
         let p = Padded::from_plane(&[f32::NAN; 64], 8, 8);
         assert_eq!(demosaic(&p, [0, 1, 1, 2], Demosaic::Ahd, &IDENTITY, 1).len(), 192);
+    }
+
+    #[test]
+    fn ahd_matches_reference_bit_for_bit() {
+        let m = [[0.41, 0.36, 0.18], [0.21, 0.72, 0.07], [0.02, 0.12, 0.95]];
+        for (w, h) in [(1, 1), (2, 3), (7, 5), (53, 103), (64, 70), (33, 31)] {
+            let cfa: Vec<f32> = (0..w * h).map(|i| ((i * 7919 + i / w * 104729) % 1013) as f32 / 1000.0 - 0.006).collect();
+            let p = Padded::from_plane(&cfa, w, h);
+            for phase in [[0, 1, 1, 2], [2, 1, 1, 0], [1, 0, 2, 1], [1, 2, 0, 1]] {
+                for jobs in [1, 3, 64] {
+                    let mut want = vec![0.0f32; w * h * 3];
+                    ahd_ref(&p, phase, &m, &mut want, jobs);
+                    let got = demosaic(&p, phase, Demosaic::Ahd, &m, jobs);
+                    assert_eq!(
+                        want.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                        got.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                        "{w}x{h} {phase:?} {jobs}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fused_demosaic_matches_the_full_frame_demosaic() {
+        let m = [[0.41, 0.36, 0.18], [0.21, 0.72, 0.07], [0.02, 0.12, 0.95]];
+        // Sizes around the bands (AHD 32 rows, bilinear / MHC 32 rows) and the padding.
+        for (w, h) in [(1, 1), (2, 3), (7, 5), (53, 103), (64, 64), (33, 31), (5, 70), (31, 65)] {
+            let cfa: Vec<f32> = (0..w * h).map(|i| ((i * 7919 + i / w * 104729) % 1013) as f32 / 1000.0 - 0.006).collect();
+            let p = Padded::from_plane(&cfa, w, h);
+            let fill = |y: usize, row: &mut [f32]| row.copy_from_slice(&cfa[y * w..(y + 1) * w]);
+            // Any per-sample map stands in for the encode.
+            let emit = |rgb: &[f32], out: &mut [u16]| {
+                for (o, v) in out.iter_mut().zip(rgb) {
+                    *o = (v.clamp(0.0, 1.0) * 65535.0 + 0.5) as u16;
+                }
+            };
+            for method in [Demosaic::Bilinear, Demosaic::Mhc, Demosaic::Ahd] {
+                for phase in [[0, 1, 1, 2], [2, 1, 1, 0], [1, 0, 2, 1], [1, 2, 0, 1]] {
+                    for jobs in [1, 3, 64] {
+                        let full = demosaic(&p, phase, method, &m, jobs);
+                        let mut want = vec![0u16; w * h * 3];
+                        emit(&full, &mut want);
+                        let mut got = vec![0u16; w * h * 3];
+                        demosaic_fused(w, h, phase, method, &m, jobs, &fill, &mut got, &emit);
+                        assert_eq!(want, got, "{w}x{h} {method:?} {phase:?} {jobs}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Bytes the scratch planes actually hold.
+    fn scratch_bytes(sc: &AhdScratch) -> u64 {
+        let f = sc.g.iter().chain(sc.rgb.iter().flatten()).chain(sc.lab.iter().flatten()).map(|v| v.capacity() * 4).sum::<usize>();
+        let b = sc.hom.iter().map(Vec::capacity).sum::<usize>();
+        let u = sc.vs.iter().map(|v| v.capacity() * 4).sum::<usize>();
+        (f + b + u) as u64
+    }
+
+    /// The memory check in `develop` admits a file on [`ahd_scratch`] per worker; the scratch
+    /// `ahd` allocates must not exceed it. A short wide strip used to allocate the 38 rows of a
+    /// full band against a budget of `h + 6` rows (5.4x at `h = 1`).
+    #[test]
+    fn ahd_scratch_fits_its_budget() {
+        for w in [1usize, 2, 33, 4000] {
+            for h in [1usize, 2, 7, 31, 32, 33, 100, 5000] {
+                let s = w + 2 * PAD;
+                let sc = AhdScratch::for_image(h, s);
+                let budget = ahd_scratch(w as u64, h as u64);
+                assert_eq!(scratch_bytes(&sc), budget, "{w}x{h}: allocated vs budgeted bytes");
+                // The tallest band `ahd` hands out (at most 32 rows, plus 3 above and below) fits.
+                assert!(sc.g[0].len() >= (h.min(32) + 6) * s, "{w}x{h}");
+            }
+        }
+    }
+
+    /// One scratch serves many bands (1100 rows are 35 bands, the last one short, over one scratch
+    /// with jobs 1 and two with jobs 2 on a bigger pool), so a stage reading a cell left over from
+    /// an earlier band would show.
+    #[test]
+    fn ahd_matches_reference_with_reused_scratch() {
+        let m = [[0.41, 0.36, 0.18], [0.21, 0.72, 0.07], [0.02, 0.12, 0.95]];
+        let (w, h) = (37, 1100);
+        let cfa: Vec<f32> = (0..w * h).map(|i| ((i * 7919 + i / w * 104729) % 1013) as f32 / 1000.0 - 0.006).collect();
+        let p = Padded::from_plane(&cfa, w, h);
+        for jobs in [1, 2] {
+            assert!(bands_per_group(ahd_bands(h), jobs, 1) >= 2, "jobs {jobs}: each scratch must serve several bands");
+            for phase in [[0, 1, 1, 2], [2, 1, 1, 0], [1, 0, 2, 1], [1, 2, 0, 1]] {
+                let mut want = vec![0.0f32; w * h * 3];
+                ahd_ref(&p, phase, &m, &mut want, jobs);
+                let got = demosaic(&p, phase, Demosaic::Ahd, &m, jobs);
+                assert_eq!(want.len(), got.len());
+                assert!(want.iter().zip(&got).all(|(a, b)| a.to_bits() == b.to_bits()), "{w}x{h} {phase:?} jobs {jobs}");
+            }
+        }
+    }
+
+    /// On a 4-worker pool with room for 3 scratches, 35 bands go in groups of 12 (the last of 11),
+    /// so groups after the first start at band `group * 12` and every scratch is reused for several
+    /// bands; with room for 4, every band is its own task and most borrow a used scratch. A wrong band
+    /// index or a stale scratch cell would change pixels. The split does not depend on the machine.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn ahd_groups_of_several_bands_match_reference() {
+        let m = [[0.41, 0.36, 0.18], [0.21, 0.72, 0.07], [0.02, 0.12, 0.95]];
+        let (w, h) = (37, 1100);
+        let cfa: Vec<f32> = (0..w * h).map(|i| ((i * 7919 + i / w * 104729) % 1013) as f32 / 1000.0 - 0.006).collect();
+        let p = Padded::from_plane(&cfa, w, h);
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+        pool.install(|| {
+            assert_eq!(par::workers(), 4);
+            assert_eq!(bands_per_group(ahd_bands(h), 3, 1), 12);
+            // One group per job, never more groups than jobs, however many bands there are.
+            assert_eq!(bands_per_group(126, 3, 1), 42);
+            for jobs in [3, 4] {
+                for phase in [[0, 1, 1, 2], [1, 2, 0, 1]] {
+                    let mut want = vec![0.0f32; w * h * 3];
+                    ahd_ref(&p, phase, &m, &mut want, jobs);
+                    let got = demosaic(&p, phase, Demosaic::Ahd, &m, jobs);
+                    assert!(want.iter().zip(&got).all(|(a, b)| a.to_bits() == b.to_bits()), "{phase:?} jobs {jobs}");
+                }
+            }
+        });
+    }
+
+    /// A scratch that counts how many are alive at once.
+    struct Live<'a>(&'a AtomicUsize);
+
+    impl<'a> Live<'a> {
+        fn new(now: &'a AtomicUsize, peak: &AtomicUsize) -> Self {
+            peak.fetch_max(now.fetch_add(1, SeqCst) + 1, SeqCst);
+            Live(now)
+        }
+    }
+
+    impl Drop for Live<'_> {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, SeqCst);
+        }
+    }
+
+    /// Every band runs once with its own index, and no more than `jobs` scratches (what `develop`'s
+    /// memory check admits) or one per worker are alive at once, on either side of `jobs == workers`.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn for_bands_keeps_at_most_jobs_scratches_alive() {
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(8).build().unwrap();
+        pool.install(|| {
+            for jobs in [1, 2, 3, 7, 8, 9, usize::MAX] {
+                for per_worker in [1, 4] {
+                    let (now, peak) = (AtomicUsize::new(0), AtomicUsize::new(0));
+                    let mut out = vec![0usize; 37 * 10 - 4];
+                    for_bands_grouped(
+                        &mut out,
+                        10,
+                        37,
+                        jobs,
+                        per_worker,
+                        || Live::new(&now, &peak),
+                        |band, chunk, _| {
+                            std::thread::sleep(Duration::from_millis(1));
+                            chunk.iter_mut().for_each(|v| *v += band + 1);
+                        },
+                    );
+                    assert!(out.iter().enumerate().all(|(i, &v)| v == i / 10 + 1), "jobs {jobs}");
+                    let peak = peak.load(SeqCst);
+                    assert!((1..=jobs.min(8)).contains(&peak), "jobs {jobs} per_worker {per_worker}: {peak} scratches alive");
+                    assert_eq!(now.load(SeqCst), 0);
+                }
+            }
+        });
+    }
+
+    /// With room for a scratch on every worker, the bands are separate rayon tasks: a worker held up
+    /// on band 0 (by other work on the shared pool, or a slow core) leaves the bands after it to
+    /// the others. With a fixed share of 9 bands per worker, 8 of them would wait for band 0, so at
+    /// most 26 of the other 34 could finish meanwhile.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_slow_band_does_not_hold_up_the_bands_after_it() {
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+        pool.install(|| {
+            let (done, seen) = (AtomicUsize::new(0), AtomicUsize::new(0));
+            let mut out = vec![0u8; 35];
+            for_bands_grouped(
+                &mut out,
+                1,
+                35,
+                4,
+                1,
+                || (),
+                |band, _, _| {
+                    if band > 0 {
+                        done.fetch_add(1, SeqCst);
+                        return;
+                    }
+                    let start = Instant::now();
+                    while done.load(SeqCst) <= 26 && start.elapsed() < Duration::from_secs(10) {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    seen.store(done.load(SeqCst), SeqCst);
+                },
+            );
+            assert_eq!(done.load(SeqCst), 34);
+            assert!(seen.load(SeqCst) > 26, "only {} bands ran while band 0 was held up", seen.load(SeqCst));
+        });
     }
 
     /// Mosaics an RGB image with the given phase.

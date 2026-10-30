@@ -704,6 +704,129 @@ fn an_actions_file_that_failed_to_load_is_not_overwritten() {
     assert!(!s.preset_store.as_mut().unwrap().take_warnings().is_empty());
 }
 
+/// A large pattern opens as a small preview (texture libraries run to gigabytes) and is read at
+/// full size when it is used; its preview file goes with it on delete.
+#[test]
+fn large_patterns_load_on_use() {
+    let dir = TempDir::new("patterns-large");
+    let (mut s, _) = session(&dir);
+    s.execute("file.new", json!({"width": 300, "height": 200})).unwrap();
+    s.execute("edit.fill", json!({"color": "#ffffff"})).unwrap();
+    s.execute("select.rect", json!({"x": 250, "y": 150, "width": 50, "height": 50})).unwrap();
+    s.execute("edit.fill", json!({"color": "#ff0000"})).unwrap();
+    s.execute("select.deselect", json!({})).unwrap();
+    s.execute("edit.definePattern", json!({"name": "Big"})).unwrap();
+    assert_eq!(dir.files().iter().filter(|f| f.ends_with(".preview.pat")).count(), 1);
+
+    let (mut t, w) = session(&dir);
+    assert!(w.is_empty(), "{w:?}");
+    let held = t.patterns.items.iter().find(|p| p.name == "Big").unwrap();
+    assert!(held.width <= PATTERN_PREVIEW_SIDE && held.height <= PATTERN_PREVIEW_SIDE, "held as a preview: {}x{}", held.width, held.height);
+    let listed = t.execute("pattern.list", json!({})).unwrap();
+    let big = listed.as_array().unwrap().iter().find(|p| p["name"] == "Big").unwrap();
+    assert_eq!((big["width"].as_u64(), big["height"].as_u64()), (Some(300), Some(200)), "the list reports the full size");
+    // Checks that only need the pattern's id (Pattern Stamp's enabled state) don't read its file.
+    let id = t.patterns.items.iter().find(|p| p.name == "Big").unwrap().id.clone();
+    let file = dir.0.join(patterns::file_name_for_test(&id));
+    let moved = file.with_extension("moved");
+    std::fs::rename(&file, &moved).unwrap();
+    assert_eq!(crate::pattern_cmds::resolve_id(&t, "Big"), Some(id.clone()));
+    assert!(crate::pattern_cmds::resolve(&t, "Big").is_none(), "the full pixels come from the file");
+    std::fs::rename(&moved, &file).unwrap();
+    let full = crate::pattern_cmds::resolve(&t, "Big").unwrap();
+    assert_eq!((full.width, full.height), (300, 200));
+    assert!(full.surface.pixel(280, 180)[1] < 0.01 && full.surface.pixel(10, 10)[1] > 0.99, "full pixels");
+    // Once read, it is kept: using it again doesn't read the file.
+    std::fs::rename(&file, &moved).unwrap();
+    assert_eq!(crate::pattern_cmds::resolve(&t, "Big").map(|p| p.width), Some(300));
+    std::fs::rename(&moved, &file).unwrap();
+    // A Pattern Fill layer gets the full pattern into the document.
+    t.execute("file.new", json!({"width": 40, "height": 40})).unwrap();
+    t.execute("layer.newFillLayer.pattern", json!({"pattern": "Big"})).unwrap();
+    let doc_pat = &t.active().unwrap().doc.patterns[0];
+    assert_eq!((doc_pat.width, doc_pat.height), (300, 200));
+    // Exporting the library writes full pixels too.
+    let out = dir.0.join("export.pat");
+    t.execute("pattern.export", json!({"path": out.to_string_lossy()})).unwrap();
+    let back = photocraft_io::pattern_map::read_pat(&std::fs::read(&out).unwrap()).unwrap();
+    assert!(back.iter().any(|p| p.name == "Big" && p.width == 300));
+    std::fs::remove_file(&out).unwrap();
+
+    t.execute("pattern.delete", json!({"pattern": "Big"})).unwrap();
+    assert!(!dir.files().iter().any(|f| f.starts_with("pattern-")), "{:?}", dir.files());
+}
+
+/// A corrupt pattern file is skipped with a warning and left on disk; the others load, and later
+/// saves never delete or overwrite it. A corrupt index is never overwritten.
+#[test]
+fn corrupt_pattern_files_are_skipped_and_kept() {
+    let dir = TempDir::new("patterns-corrupt");
+    let (mut s, _) = session(&dir);
+    define_pattern(&mut s, "Grit", "#202020", 8);
+    define_pattern(&mut s, "Paper", "#f0e0c0", 12);
+    let grit = s.patterns.items.iter().find(|p| p.name == "Grit").unwrap().id.clone();
+    let file = dir.0.join(patterns::file_name_for_test(&grit));
+    std::fs::write(&file, b"not a pattern").unwrap();
+
+    let (mut t, w) = session(&dir);
+    assert!(w.iter().any(|w| w.contains("Grit")), "{w:?}");
+    assert_eq!(user_patterns(&t), [("Paper".to_string(), 12)]);
+    define_pattern(&mut t, "Ink", "#000000", 4);
+    assert_eq!(std::fs::read(&file).unwrap(), b"not a pattern", "the unreadable file is left alone");
+    let index = std::fs::read_to_string(dir.0.join(PATTERNS_FILE)).unwrap();
+    assert!(index.contains("Grit") && index.contains("Ink"), "{index}");
+
+    std::fs::write(dir.0.join(PATTERNS_FILE), b"{").unwrap();
+    let (mut u, w) = session(&dir);
+    assert!(w.iter().any(|w| w.contains(PATTERNS_FILE)), "{w:?}");
+    assert!(user_patterns(&u).is_empty());
+    define_pattern(&mut u, "Late", "#808080", 4);
+    assert_eq!(std::fs::read(dir.0.join(PATTERNS_FILE)).unwrap(), b"{", "an unreadable index is never overwritten");
+}
+
+/// Imported and defined patterns survive a restart: one file each, written once, plus the index;
+/// a rename rewrites only the index, a delete removes the file.
+#[test]
+fn patterns_survive_a_restart() {
+    let dir = TempDir::new("patterns");
+    let (mut s, w) = session(&dir);
+    assert!(w.is_empty(), "{w:?}");
+    define_pattern(&mut s, "Grit", "#202020", 8);
+    define_pattern(&mut s, "Paper", "#f0e0c0", 12);
+    let pattern_files = |d: &TempDir| d.files().into_iter().filter(|f| f.starts_with("pattern-")).collect::<Vec<_>>();
+    assert_eq!(pattern_files(&dir).len(), 2);
+    assert!(dir.files().contains(&PATTERNS_FILE.to_string()));
+    assert!(!dir.files().iter().any(|f| f.contains("Checkerboard")), "built-ins are never written");
+
+    let (mut t, w) = session(&dir);
+    assert!(w.is_empty(), "{w:?}");
+    assert_eq!(user_patterns(&t), [("Grit".to_string(), 8), ("Paper".to_string(), 12)]);
+    // The pixels come back too.
+    let paper = t.patterns.items.iter().find(|p| p.name == "Paper").unwrap();
+    let px = paper.surface.pixel(3, 3);
+    assert!((px[0] - 240.0 / 255.0).abs() < 0.01, "{px:?}");
+
+    let before = std::fs::metadata(dir.0.join(&pattern_files(&dir)[0])).unwrap().modified().unwrap();
+    t.execute("pattern.rename", json!({"pattern": "Grit", "name": "Toner"})).unwrap();
+    assert_eq!(std::fs::metadata(dir.0.join(&pattern_files(&dir)[0])).unwrap().modified().unwrap(), before, "a rename rewrites only the index");
+    t.execute("pattern.delete", json!({"pattern": "Paper"})).unwrap();
+    assert_eq!(pattern_files(&dir).len(), 1, "the deleted pattern's file is gone");
+
+    let (u, _) = session(&dir);
+    assert_eq!(user_patterns(&u), [("Toner".to_string(), 8)]);
+}
+
+fn define_pattern(s: &mut Session, name: &str, color: &str, width: u32) {
+    s.execute("file.new", json!({"width": width, "height": 6})).unwrap();
+    s.execute("edit.fill", json!({"color": color})).unwrap();
+    s.execute("edit.definePattern", json!({"name": name})).unwrap();
+}
+
+fn user_patterns(s: &Session) -> Vec<(String, u32)> {
+    let builtins: Vec<String> = crate::pattern_cmds::builtin().into_iter().map(|p| p.id).collect();
+    s.patterns.items.iter().filter(|p| !builtins.contains(&p.id)).map(|p| (p.name.clone(), p.width)).collect()
+}
+
 /// #9317: a defined or imported pattern survives a restart, as in Photoshop; the built-in
 /// patterns are never written, and deleting the last user pattern removes the file.
 #[test]
@@ -719,7 +842,13 @@ fn user_patterns_survive_a_restart() {
     assert!(dir.files().contains(&PATTERNS_FILE.to_string()), "{:?}", dir.files());
     // Only the user's pattern is in the file.
     let bytes = std::fs::read(dir.0.join(PATTERNS_FILE)).unwrap();
-    let saved = photocraft_io::pattern_map::read_pat(&bytes).unwrap();
+    let index: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let saved: Vec<photocraft_doc::Pattern> = index["patterns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| photocraft_io::pattern_map::read_pat(&std::fs::read(dir.0.join(e["file"].as_str().unwrap())).unwrap()).unwrap().remove(0))
+        .collect();
     assert_eq!(saved.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["Green Tile"]);
     drop(s);
 
@@ -736,7 +865,10 @@ fn user_patterns_survive_a_restart() {
     assert!(u.patterns.items.iter().any(|p| p.id == id && p.name == "Moss"));
     t.execute("pattern.delete", json!({"pattern": id})).unwrap();
     t.sync_preset_store();
-    assert!(!dir.files().contains(&PATTERNS_FILE.to_string()), "{:?}", dir.files());
+    assert!(
+        serde_json::from_slice::<serde_json::Value>(&std::fs::read(dir.0.join(PATTERNS_FILE)).unwrap()).unwrap()["patterns"].as_array().unwrap().is_empty(),
+        "empty authoritative index prevents resurrection"
+    );
 }
 
 #[test]
@@ -827,7 +959,13 @@ fn a_failed_patterns_removal_is_retried() {
     backend.fail.store(false, std::sync::atomic::Ordering::SeqCst);
     s.execute("file.new", json!({"width": 4, "height": 4})).unwrap();
     s.sync_preset_store();
-    assert!(!backend.mem.files.lock().unwrap().contains_key(PATTERNS_FILE), "the removal is retried");
+    assert!(!backend.mem.files.lock().unwrap().keys().any(|f| f.starts_with("pattern-")), "owned asset removal is retried");
+    assert!(
+        serde_json::from_slice::<serde_json::Value>(backend.mem.files.lock().unwrap().get(PATTERNS_FILE).unwrap()).unwrap()["patterns"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 /// #9318 review: an imported `.pat` that replaces a built-in pattern's pixels (same id) is saved
@@ -840,7 +978,13 @@ fn an_imported_builtin_replacement_survives_a_restart() {
     let builtin = s.patterns.items[0].id.clone();
     s.execute("pattern.import", json!({"data": pat_bytes(&builtin, [0.9, 0.1, 0.4, 1.0])})).unwrap();
     s.sync_preset_store();
-    let saved = photocraft_io::pattern_map::read_pat(mem.files.lock().unwrap().get(PATTERNS_FILE).expect("written")).unwrap();
+    let index: serde_json::Value = serde_json::from_slice(mem.files.lock().unwrap().get(PATTERNS_FILE).expect("written")).unwrap();
+    let saved: Vec<photocraft_doc::Pattern> = index["patterns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| photocraft_io::pattern_map::read_pat(mem.files.lock().unwrap().get(e["file"].as_str().unwrap()).unwrap()).unwrap().remove(0))
+        .collect();
     assert_eq!(saved.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), [builtin.as_str()], "only the replaced built-in");
     let mut t = Session::new();
     t.attach_preset_store(open(Box::new(mem.clone())));
@@ -869,4 +1013,115 @@ fn an_early_same_id_import_wins_and_is_saved() {
     let mut u = Session::new();
     u.attach_preset_store(open(Box::new(mem.clone())));
     assert_eq!(u.patterns.items.iter().find(|p| p.id == id).unwrap().surface, early, "the early import's pixels were saved");
+}
+#[derive(Clone)]
+struct MigrationFail {
+    mem: MemBackend,
+    fail_name: String,
+}
+impl PresetBackend for MigrationFail {
+    fn list(&self) -> Result<Vec<(String, u64)>, String> {
+        self.mem.list()
+    }
+    fn read(&self, n: &str, m: u64) -> Result<Vec<u8>, String> {
+        self.mem.read(n, m)
+    }
+    fn write(&self, n: &str, b: &[u8]) -> Result<(), String> {
+        if n == self.fail_name { Err("injected migration write failure".into()) } else { self.mem.write(n, b) }
+    }
+    fn remove(&self, n: &str) -> Result<(), String> {
+        self.mem.remove(n)
+    }
+}
+fn legacy_store() -> (MemBackend, Vec<u8>, String) {
+    let mem = MemBackend::default();
+    let id = "6f1c2c1e-0000-4000-8000-000000005176".to_string();
+    let bytes = photocraft_paint::tile::b64_decode(&pat_bytes(&id, [0.2, 0.6, 0.8, 1.0])).unwrap();
+    mem.write(LEGACY_PATTERNS_FILE, &bytes).unwrap();
+    (mem, bytes, id)
+}
+#[test]
+fn legacy_migration_commits_last_and_never_resurrects_renames_or_deletions() {
+    let (mem, old, id) = legacy_store();
+    let mut s = Session::new();
+    assert!(s.attach_preset_store(open(Box::new(mem.clone()))).is_empty());
+    assert!(mem.read(PATTERNS_FILE, 1 << 20).is_ok());
+    assert_eq!(mem.read(LEGACY_PATTERNS_FILE, MAX_PATTERNS_BYTES).unwrap(), old);
+    s.execute("pattern.rename", json!({"pattern":id,"name":"Migrated"})).unwrap();
+    s.sync_preset_store();
+    let mut t = Session::new();
+    t.attach_preset_store(open(Box::new(mem.clone())));
+    assert_eq!(t.patterns.items.iter().find(|p| p.id == id).unwrap().name, "Migrated");
+    t.execute("pattern.delete", json!({"pattern":id})).unwrap();
+    t.sync_preset_store();
+    for _ in 0..2 {
+        let mut u = Session::new();
+        u.attach_preset_store(open(Box::new(mem.clone())));
+        assert!(!u.patterns.items.iter().any(|p| p.id == id));
+    }
+    assert_eq!(mem.read(LEGACY_PATTERNS_FILE, MAX_PATTERNS_BYTES).unwrap(), old);
+}
+#[test]
+fn interrupted_migration_preserves_legacy_and_reuses_only_identical_orphans() {
+    for fail_index in [false, true] {
+        let (mem, old, id) = legacy_store();
+        let file = patterns::file_name_for_test(&id);
+        let fail_name = if fail_index { PATTERNS_FILE.to_string() } else { file.clone() };
+        let opened = open(Box::new(MigrationFail { mem: mem.clone(), fail_name }));
+        assert!(!opened.warnings.is_empty());
+        assert!(opened.patterns.iter().any(|p| p.pattern.id == id), "legacy remains usable");
+        assert!(mem.read(PATTERNS_FILE, 1 << 20).is_err(), "no commit marker on failure");
+        assert_eq!(mem.read(LEGACY_PATTERNS_FILE, MAX_PATTERNS_BYTES).unwrap(), old);
+        let retry = open(Box::new(mem.clone()));
+        assert!(retry.warnings.is_empty(), "{:?}", retry.warnings);
+        assert!(retry.patterns.iter().any(|p| p.pattern.id == id));
+    }
+    let (mem, old, id) = legacy_store();
+    let file = patterns::file_name_for_test(&id);
+    mem.write(&file, b"unknown content").unwrap();
+    let opened = open(Box::new(mem.clone()));
+    assert!(!opened.warnings.is_empty());
+    assert_eq!(mem.read(&file, 100).unwrap(), b"unknown content");
+    assert!(mem.read(PATTERNS_FILE, 1 << 20).is_err());
+    assert_eq!(mem.read(LEGACY_PATTERNS_FILE, MAX_PATTERNS_BYTES).unwrap(), old);
+}
+#[test]
+fn malformed_authoritative_index_never_falls_back_to_stale_legacy() {
+    let (mem, _, id) = legacy_store();
+    drop(open(Box::new(mem.clone())));
+    for bytes in [b"{".as_slice(), b"{\"version\":1,\"patterns\":[{\"id\":\"x\",\"name\":\"bad\",\"file\":\"../secret\"}]}".as_slice()] {
+        mem.write(PATTERNS_FILE, bytes).unwrap();
+        let opened = open(Box::new(mem.clone()));
+        assert!(!opened.warnings.is_empty());
+        assert!(opened.patterns.is_empty());
+        assert_eq!(mem.read(PATTERNS_FILE, 1 << 20).unwrap(), bytes);
+        assert!(!opened.patterns.iter().any(|p| p.pattern.id == id));
+    }
+    let mem = MemBackend::default();
+    mem.write(LEGACY_PATTERNS_FILE, b"broken PAT").unwrap();
+    let opened = open(Box::new(mem.clone()));
+    assert!(!opened.warnings.is_empty());
+    assert!(mem.read(PATTERNS_FILE, 1 << 20).is_err());
+    assert_eq!(mem.read(LEGACY_PATTERNS_FILE, 20).unwrap(), b"broken PAT");
+}
+#[test]
+fn migration_preserves_duplicate_names_but_refuses_duplicate_ids() {
+    let (mem, _, id) = legacy_store();
+    let bytes = mem.read(LEGACY_PATTERNS_FILE, MAX_PATTERNS_BYTES).unwrap();
+    let mut pats = photocraft_io::pattern_map::read_pat(&bytes).unwrap();
+    let mut other = pats[0].clone();
+    other.id = "6f1c2c1e-0000-4000-8000-000000005177".into();
+    pats.push(other);
+    mem.write(LEGACY_PATTERNS_FILE, &photocraft_io::pattern_map::write_pat(&pats).unwrap()).unwrap();
+    let opened = open(Box::new(mem.clone()));
+    assert!(opened.warnings.is_empty());
+    assert_eq!(opened.patterns.len(), 2);
+    let mem = MemBackend::default();
+    pats[1].id = id;
+    let old = photocraft_io::pattern_map::write_pat(&pats).unwrap();
+    mem.write(LEGACY_PATTERNS_FILE, &old).unwrap();
+    let opened = open(Box::new(mem.clone()));
+    assert!(!opened.warnings.is_empty());
+    assert!(mem.read(PATTERNS_FILE, 1 << 20).is_err());
+    assert_eq!(mem.read(LEGACY_PATTERNS_FILE, MAX_PATTERNS_BYTES).unwrap(), old);
 }

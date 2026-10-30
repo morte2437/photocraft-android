@@ -1,4 +1,4 @@
-use super::*;
+use super::{Adjustment, Buffer, ColorMode, CurvePoint, LevelsChannel, SampleType, ToneSpace, lab_to_srgb, srgb_to_lab};
 
 /// Float RGB curve channels with no edit must preserve samples outside the LUT domain; edited
 /// ones extend past it (see [`float_tone_extrapolates`]).
@@ -402,11 +402,19 @@ pub fn curve_map_lut(points: &[CurvePoint]) -> Vec<f32> {
 /// overshoot between points, as Photoshop's does), constant outside the
 /// first/last point, clamped to 0..=1, sampled into a LUT.
 pub fn curve_lut(points: &[CurvePoint]) -> Vec<f32> {
+    curve_samples::<LUT_SIZE>(points)
+}
+
+/// The same natural spline as [`curve_lut`], sampled directly at `N` evenly spaced inputs
+/// including both endpoints. UI graphs use a smaller table without building the rendering LUT.
+/// Zero samples returns an empty table; one sample evaluates at input zero.
+pub fn curve_samples<const N: usize>(points: &[CurvePoint]) -> Vec<f32> {
+    let last = N.saturating_sub(1).max(1) as f32;
     let mut pts: Vec<(f32, f32)> = points.iter().map(|p| (p.input, p.output)).collect();
     pts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     pts.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-6);
     if pts.len() < 2 {
-        return (0..LUT_SIZE).map(|i| i as f32 / (LUT_SIZE - 1) as f32).collect();
+        return (0..N).map(|i| i as f32 / last).collect();
     }
     let n = pts.len();
     // Second derivatives of the natural spline (tridiagonal solve).
@@ -430,9 +438,9 @@ pub fn curve_lut(points: &[CurvePoint]) -> Vec<f32> {
             m2[i] = d[i] - c[i] * m2[i + 1];
         }
     }
-    (0..LUT_SIZE)
+    (0..N)
         .map(|k| {
-            let xv = k as f32 / (LUT_SIZE - 1) as f32;
+            let xv = k as f32 / last;
             if xv <= pts[0].0 {
                 return pts[0].1.clamp(0.0, 1.0);
             }

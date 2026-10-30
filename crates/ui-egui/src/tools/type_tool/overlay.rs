@@ -1,7 +1,7 @@
 use super::editing::edit_home;
 use super::ime_edit::{ime_offsets, ime_preedit_is_current};
 use super::layout::layout;
-use super::*;
+use super::{Color32, LayerId, PhotocraftApp, Point, Pos2, Stroke, ViewXform, byte_of, text_layer};
 
 /// Selection highlight, caret and text frame over the canvas.
 pub fn draw_overlay(app: &mut PhotocraftApp, painter: &egui::Painter, xf: &ViewXform) {
@@ -26,7 +26,8 @@ pub fn draw_overlay(app: &mut PhotocraftApp, painter: &egui::Painter, xf: &ViewX
     };
     let shape = app.session.active().and_then(|s| text_layer(&s.doc, id).map(|t| t.shape.clone()));
     // Type on a path: the caret, selection and underline follow the curve the glyphs sit on.
-    let bend = shape.as_ref().and_then(photocraft_text::warp::Warp::on_path);
+    let text_start = l.bounds().map_or(0.0, |bounds| f64::from(bounds[0]));
+    let bend = shape.as_ref().and_then(|shape| photocraft_text::warp::Warp::on_path_with_text_start(shape, text_start));
     // Line space (lines, clusters, carets) → screen: vertical type turns it 90° clockwise.
     let scr = |x: f32, y: f32| -> Pos2 {
         let (x, y) = l.to_text(x, y);

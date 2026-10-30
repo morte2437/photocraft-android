@@ -4,7 +4,7 @@ use super::convert::lut_texture;
 use super::kit::FrameRes;
 use super::paging::{OVER_BUDGET, cell_rect, first_error, grid_rect_count, grid_rects, lru_victims, scoped_work, uniform_buffer_len};
 use super::textures::{ChunkOut, FxKey, ResKey, Resident, Stats};
-use super::*;
+use super::{Compositor, Document, LayerId, Plan, Rect, Surface, Unsupported, plan, timing};
 
 impl Compositor {
     /// Composite `region` of `doc`. Each finished chunk is passed to `sink` while its encoder is

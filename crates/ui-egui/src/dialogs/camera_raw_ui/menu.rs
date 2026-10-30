@@ -1,7 +1,7 @@
 use super::controls::{commit, redo_edit, remember_edit, undo_edit};
 use super::open::{cancel, open, open_smart_filter};
 use super::sidecar::{load_settings, save_settings};
-use super::*;
+use super::{CameraRaw, LayerId, PhotocraftApp, Value, json};
 
 /// Menu / control-channel entry point. `None` when the call isn't for this dialog.
 pub fn menu(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: &Value) -> Option<Result<Value, String>> {

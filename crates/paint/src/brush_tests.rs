@@ -246,6 +246,43 @@ fn pencil_1px_line_is_the_same_whichever_way_and_however_smoothed() {
     assert_eq!(sampled, pixels((1.5, 1.5), (20.5, 9.5), 0.0));
 }
 
+#[test]
+fn pencil_1px_freehand_line_never_breaks_where_it_turns() {
+    // #8040: each segment of a freehand stroke samples its own line, so where the stroke turned
+    // the last pixel of one segment and the first of the next could sit two pixels apart.
+    let b = BrushSettings { aliased: true, hardness: 1.0, size: 1.0, ..brush() };
+    let mut seed = 0x2545_f491_4f6c_dd1du64;
+    let mut rnd = || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed >> 11) as f64 / (1u64 << 53) as f64
+    };
+    for _ in 0..300 {
+        let mut pts = vec![StrokePoint::new(20.0 + rnd() * 8.0, 20.0 + rnd() * 8.0, 1.0)];
+        for _ in 0..6 {
+            let l = *pts.last().unwrap();
+            let (dx, dy) = ((rnd() - 0.5) * 6.0, (rnd() - 0.5) * 6.0);
+            pts.push(StrokePoint::new((l.x + dx).clamp(1.0, 46.0), (l.y + dy).clamp(1.0, 46.0), 1.0));
+        }
+        let s = paint(&b, &pts, 48, 48);
+        let painted: Vec<(i32, i32)> = (0..48).flat_map(|y| (0..48).map(move |x| (x, y))).filter(|&(x, y)| s.rgba(x, y)[3] > 0.0).collect();
+        // Every painted pixel is reachable from the first through 8-connected neighbours.
+        let mut reached = vec![painted[0]];
+        let mut i = 0;
+        while i < reached.len() {
+            let (x, y) = reached[i];
+            for &q in &painted {
+                if (q.0 - x).abs() <= 1 && (q.1 - y).abs() <= 1 && !reached.contains(&q) {
+                    reached.push(q);
+                }
+            }
+            i += 1;
+        }
+        let path: Vec<(f64, f64)> = pts.iter().map(|p| (p.x, p.y)).collect();
+        assert_eq!(reached.len(), painted.len(), "the line breaks along {path:?}");
+    }
+}
 // ---------- spacing ----------
 
 #[test]
@@ -1205,6 +1242,41 @@ fn blend_mode_and_dissolve() {
 }
 
 #[test]
+fn behind_preserves_native_channels_and_respects_alpha_selection_and_locks() {
+    for mode in [ColorMode::Rgb, ColorMode::Grayscale, ColorMode::Cmyk, ColorMode::Lab] {
+        for sample in [SampleType::U8, SampleType::U16, SampleType::F32] {
+            let fmt = PixelFormat::new(mode, sample, true);
+            let b = BrushSettings { size: 12.0, behind: true, opacity: 0.5, color: [0.1, 0.3, 0.8, 1.0], ..brush() };
+            let mut s = Surface::new(fmt);
+            let native = photocraft_raster::from_rgba(&fmt, [0.8, 0.2, 0.1, 0.5]);
+            s.fill_rect(Rect::new(0, 0, 12, 12), &native);
+            let before = s.pixel(6, 6);
+            let mut selection = Surface::new(PixelFormat::new(ColorMode::Grayscale, SampleType::F32, false));
+            selection.fill_rect(Rect::new(0, 0, 8, 12), &[0.5]);
+            render_stroke(&mut s, &b, &[StrokePoint::new(6.0, 6.0, 1.0)], Some(&selection), false, 1.0);
+            let source = photocraft_raster::from_rgba(&fmt, b.color);
+            let a = fmt.channels() - 1;
+            let under = 0.25 * (1.0 - before[a]);
+            let alpha = before[a] + under;
+            let got = s.pixel(6, 6);
+            assert!((got[a] - alpha).abs() < 0.005, "{fmt:?}: {got:?}");
+            for c in 0..a {
+                let expected = (before[c] * before[a] + source[c] * under) / alpha;
+                assert!((got[c] - expected).abs() < 0.005, "{fmt:?} channel {c}: {got:?}, expected {expected}");
+            }
+            assert_eq!(s.pixel(9, 6), before, "outside selection");
+            let locked = s.clone();
+            render_stroke(&mut s, &b, &[StrokePoint::new(6.0, 6.0, 1.0)], None, true, 1.0);
+            assert_eq!(s.read_region(Rect::new(0, 0, 12, 12)), locked.read_region(Rect::new(0, 0, 12, 12)), "locked transparency");
+            s.fill_rect(Rect::new(0, 0, 12, 12), &photocraft_raster::from_rgba(&fmt, [0.8, 0.2, 0.1, 1.0]));
+            let opaque = s.pixel(6, 6);
+            render_stroke(&mut s, &b, &[StrokePoint::new(6.0, 6.0, 1.0)], None, false, 1.0);
+            assert_eq!(s.pixel(6, 6), opaque, "opaque pixels");
+        }
+    }
+}
+
+#[test]
 fn presets_render_and_round_trip() {
     let presets = crate::presets::builtin();
     assert!(presets.len() >= 12);
@@ -1279,6 +1351,7 @@ fn live_union_of_passes_matches_merging_the_finished_passes_after_every_chunk() 
     brushes.push(b);
     brushes.push(BrushSettings { wet_edges: true, ..base.clone() });
     brushes.push(BrushSettings { mode: BlendMode::Dissolve, ..base.clone() });
+    brushes.push(BrushSettings { behind: true, ..base.clone() });
     brushes.push(BrushSettings { erase: true, ..base.clone() });
     let mut b = base.clone();
     b.texture.enabled = true;
@@ -1886,4 +1959,39 @@ fn resizing_with_bad_sizes_leaves_the_dual_tip_alone() {
     b.size = 100.0;
     b.resize_with_dual_brush(50.0);
     assert_eq!(b.dual_brush.size, 20.0);
+}
+
+/// `touches` is true wherever `coverage_at` can be above 0, false only where it is 0 for sure.
+#[test]
+fn touches_covers_every_pixel_with_coverage() {
+    let b = BrushSettings { size: 6.0, ..brush() };
+    let mut r = StrokeRenderer::new(&b, None, 1.0);
+    r.push(&line(100.0, 300.0, 200.0));
+    r.finish();
+    for y in (0..400).step_by(3) {
+        for x in (0..500).step_by(3) {
+            if r.coverage_at(x, y) > 0.0 {
+                assert!(r.touches(Rect::new(x, y, x + 1, y + 1)), "({x}, {y})");
+            }
+        }
+    }
+    // Across the origin and tile edges (64 px): every pixel, both sides of each edge.
+    let mut o = StrokeRenderer::new(&b, None, 1.0);
+    o.push(&[StrokePoint::new(-70.0, -70.0, 1.0), StrokePoint::new(70.0, 70.0, 1.0)]);
+    o.finish();
+    for y in -140..140 {
+        for x in -140..140 {
+            if o.coverage_at(x, y) > 0.0 {
+                assert!(o.touches(Rect::new(x, y, x + 1, y + 1)), "({x}, {y})");
+            }
+        }
+    }
+    assert!(!o.touches(Rect::new(-128, 64, -64, 128)), "a tile the diagonal misses");
+    assert!(!o.touches(Rect::new(-200, -200, -128, -128)), "ends exactly at a tile edge");
+    assert!(o.touches(Rect::new(-200, -200, -127, -127)), "one pixel into the next tile");
+    assert!(r.touches(Rect::new(150, 199, 151, 201)));
+    assert!(!r.touches(Rect::new(0, 0, 50, 50)), "far from the stroke");
+    assert!(!r.touches(Rect::new(400, 400, 400, 400)), "empty");
+    assert!(r.touches(Rect::new(i32::MIN, i32::MIN, i32::MAX, i32::MAX)), "huge, without a huge scan");
+    assert!(!r.touches(Rect::new(1_000_000, 1_000_000, i32::MAX, i32::MAX)));
 }

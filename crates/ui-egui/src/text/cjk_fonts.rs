@@ -1014,4 +1014,4 @@ pub(crate) fn set_craft_font_scale(ctx: &egui::Context, scale: f32) {
 }
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
-mod tests;
+pub(crate) mod tests;

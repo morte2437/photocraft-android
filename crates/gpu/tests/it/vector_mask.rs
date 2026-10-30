@@ -6,7 +6,7 @@ use photocraft_doc::{Adjustment, Document, Effect, Layer, LayerContent, LayerMas
 use photocraft_geom::Rect;
 
 fn gpu() -> Option<(wgpu::Device, wgpu::Queue, photocraft_gpu::Compositor)> {
-    let instance = wgpu::Instance::default();
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
     // Exact comparison needs 32-bit float targets (see parity.rs); skip on adapters without them.

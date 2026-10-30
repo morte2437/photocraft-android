@@ -17,7 +17,8 @@ fn render(comp: &mut Compositor, device: &wgpu::Device, queue: &wgpu::Queue, doc
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let quick = std::env::args().any(|a| a == "--quick");
     let size = if quick { Size::new(1024, 768) } else { Size::new(6000, 4000) };
-    let adapter = pollster::block_on(wgpu::Instance::default().request_adapter(&Default::default()))?;
+    let adapter =
+        pollster::block_on(wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()).request_adapter(&Default::default()))?;
     let (device, queue) = pollster::block_on(adapter.request_device(&Default::default()))?;
     let format = Compositor::preferred_acc_format(&adapter);
     println!("adapter={:?}, accumulation={format:?}, size={}x{}", adapter.get_info(), size.width, size.height);

@@ -10,7 +10,7 @@ use photocraft_geom::Rect;
 use photocraft_raster::{Cancelled, Interrupt};
 
 use super::gmm::{DEFAULT_REG, Gmm};
-use super::{FREE, HARD_BG, HARD_FG, Region, RgbImage, Sampler, contrast_beta, data_costs, grid_cut_cancellable, subsample};
+use super::{FREE, HARD_BG, HARD_FG, Region, RgbImage, Sampler, contrast_beta, data_costs, grid_cut_bk_cancellable, subsample};
 
 /// Definite background.
 pub const BG: u8 = 0;
@@ -67,7 +67,7 @@ pub fn grabcut_with(img: &RgbImage, trimap: &mut [u8], iters: usize, ctl: &Inter
         };
         let (cf, cb) = data_costs(img, &fg, &bg);
         // `grid_cut`'s weight, with the cut stopping on cancel.
-        let cut = grid_cut_cancellable(img, &cf, &cb, &fixed, |d2| GAMMA * (-beta * d2).exp(), &cancel).ok_or(Cancelled)?;
+        let cut = grid_cut_bk_cancellable(img, &cf, &cb, &fixed, |d2| GAMMA * (-beta * d2).exp(), &cancel).ok_or(Cancelled)?;
         let mut changed = 0usize;
         for (t, fgnd) in trimap.iter_mut().zip(&cut) {
             if *t == PR_BG || *t == PR_FG {

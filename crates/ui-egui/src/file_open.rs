@@ -155,6 +155,9 @@ impl PhotocraftApp {
     /// open in name order ([`natural_cmp`]: `File_2` before `File_10`), and their tabs keep that
     /// order however long each takes to open in the background (#3248). Returns how many opened.
     pub fn open_paths(&mut self, paths: &[String]) -> usize {
+        // The command line's files open before the first frame, which otherwise applies the
+        // interface language: their status lines and notices would come out in English.
+        crate::i18n::set_current(crate::i18n::Lang::from_pref(&self.session.prefs().interface.language));
         let mut paths: Vec<String> = paths.iter().map(|p| absolute(p)).collect();
         paths.sort_by(|a, b| natural_cmp(a, b));
         let batch = crate::jobs_ui::begin_batch(self);

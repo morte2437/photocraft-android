@@ -859,6 +859,56 @@ fn glows_match_photoshop() {
 }
 
 #[test]
+fn softer_outer_glow_keeps_a_fading_tail_past_its_size() {
+    let mut shape = Map::new(220, 220, 0.0);
+    for y in 0..shape.h {
+        for x in 20..100 {
+            shape.v[y * shape.w + x] = 1.0;
+        }
+    }
+    let glow = Glow {
+        common: photocraft_doc::FxCommon::new(BlendMode::Screen, 1.0),
+        paint: FxPaint::Color(photocraft_color::Color::WHITE),
+        technique: GlowTechnique::Softer,
+        spread: 0.0,
+        size: 60.0,
+        contour: Contour::Linear,
+        anti_alias: false,
+        range: 0.5,
+        jitter: 0.0,
+        noise: 0.0,
+        source: GlowSource::Edge,
+    };
+    let m = glow_map(&shape, &glow, false, (0, 0));
+    let row = shape.h / 2;
+    let at = |distance: usize| m.v[row * m.w + 100 + distance];
+    assert!(at(50) > 0.024, "the softer shoulder should stay visible: {}", at(50));
+    assert!(at(60) > 1.0 / 255.0, "the glow must retain a visible tail at its Size: {}", at(60));
+    assert!(at(62) > 0.5 / 255.0, "the glow must extend beyond its Size: {}", at(62));
+    assert!(at(66) < 1e-6, "the added tail should fade to zero: {}", at(66));
+}
+
+#[test]
+fn softer_outer_glow_margin_includes_its_tail_support() {
+    let glow = Glow {
+        common: photocraft_doc::FxCommon::new(BlendMode::Screen, 1.0),
+        paint: FxPaint::Color(photocraft_color::Color::WHITE),
+        technique: GlowTechnique::Softer,
+        spread: 0.0,
+        size: 60.0,
+        contour: Contour::Linear,
+        anti_alias: false,
+        range: 0.5,
+        jitter: 0.0,
+        noise: 0.0,
+        source: GlowSource::Edge,
+    };
+    let mut layer = Layer::raster("glow", photocraft_color::PixelFormat::RGBA8);
+    layer.effects.items.push(Effect::OuterGlow(glow));
+    assert_eq!(margin(&layer), 68);
+}
+
+#[test]
 fn offsets_follow_light() {
     let (dx, dy) = offset(120.0, 10.0);
     assert_eq!((dx, dy), (5.0, 9.0));

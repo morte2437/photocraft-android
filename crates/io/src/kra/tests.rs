@@ -200,6 +200,23 @@ fn export_is_refused() {
     }
 }
 
+/// maindoc.xml nested 20 000 deep, directly or through an internal-subset entity the depth check
+/// can't see, overflowed the XML parser's recursion (an abort nothing can catch). Both are errors
+/// now; the small stack makes a regression abort instead of passing.
+#[test]
+fn deeply_nested_maindoc_is_an_error_not_a_stack_overflow() {
+    let (open, close) = ("<layers>".repeat(20_000), "</layers>".repeat(20_000));
+    let direct = maindoc("RGBA", &format!("{open}{close}"));
+    let entity = format!("<!DOCTYPE DOC [<!ENTITY e \"{open}{close}\">]><DOC><IMAGE width=\"4\" height=\"4\">&e;</IMAGE></DOC>");
+    // A quoted `?>` in the XML declaration must not hide the DOCTYPE behind it.
+    let declared = format!("<?xml version=\"?>\"?>{entity}");
+    for (xml, why) in [(direct, "nested"), (entity, "internal DTD"), (declared, "internal DTD")] {
+        let bytes = archive(&xml, &[]);
+        let e = std::thread::Builder::new().stack_size(512 * 1024).spawn(move || crate::import("deep.kra", &bytes).err()).unwrap().join().unwrap();
+        assert!(matches!(&e, Some(IoError::Kra(m)) if m.contains(why)), "{why}: {e:?}");
+    }
+}
+
 #[test]
 fn lzf_decodes_literals_and_overlapping_references() {
     // "abc" then a 6-byte back-reference 3 back: abcabcabc.

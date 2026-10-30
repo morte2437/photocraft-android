@@ -1,4 +1,4 @@
-use super::*;
+use super::{Color32, PhotocraftApp, Rect, RichText, Sense, Stroke, StrokeKind, Tokens, c32, pos2, theme, vec2, widgets};
 
 /// The Color panel's foreground and background chips. A click picks the colour the field edits,
 /// framed; a double-click opens the Color Picker on it.
@@ -91,6 +91,12 @@ pub(crate) fn color_field(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         ui.spacing_mut().item_spacing.x = 8.0;
         let (chips, _) = ui.allocate_exact_size(vec2(38.0, h), Sense::hover());
         field_chips(app, ui, chips);
+        // Photoshop's ⚠ under the chips when the colour can't print, as in the slider modes
+        // (#8672); a compact field too short to hold it below the chips leaves it out.
+        if chips.height() >= 38.0 + 15.0 {
+            let rgb = crate::color_panel_ui::active(app);
+            crate::color_panel_ui::alerts(app, ui, chips, rgb, false);
+        }
         // Hue Cube: saturation across and brightness up, hue on the strip. Brightness Cube (the
         // Color Picker's B mode): hue across and saturation up, brightness on the strip.
         let brightness = app.ui.color_panel.mode == crate::state::ColorPanelMode::BrightnessCube;
@@ -115,8 +121,10 @@ pub(crate) fn color_field(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         }
         let (kx, ky) = if brightness { (hsva.h, 1.0 - hsva.s) } else { (hsva.s, 1.0 - hsva.v) };
         let knob = pos2(field.left() + kx * field.width(), field.top() + ky * field.height());
-        ui.painter().circle_stroke(knob, 5.0, Stroke::new(1.5, Color32::WHITE));
-        ui.painter().circle_stroke(knob, 6.5, Stroke::new(1.0, Color32::from_black_alpha(160)));
+        // At the extremes the knob sits on the edge: clip it to the field (#8968).
+        let painter = ui.painter().with_clip_rect(field);
+        painter.circle_stroke(knob, 5.0, Stroke::new(1.5, Color32::WHITE));
+        painter.circle_stroke(knob, 6.5, Stroke::new(1.0, Color32::from_black_alpha(160)));
         // The strip: hue (red at both ends, as Photoshop's) or brightness (the colour down to black).
         let (strip, sresp) = ui.allocate_exact_size(vec2(strip_w, h), Sense::click_and_drag());
         let strip_at = |f: f32| {

@@ -1,7 +1,7 @@
 //! Tile references owned by history snapshots. The snapshots keep these addresses alive;
 //! COW edits cannot change a retained tile in place. Count occurrences (including aliases
 //! within one document), so removing a state releases a tile only after its last reference.
-use photocraft_doc::{Document, LayerContent, Surface};
+use photocraft_doc::{Document, LayerContent, SmartSource, Surface};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -47,29 +47,42 @@ pub(crate) fn surfaces(doc: &Document, mut visit: impl FnMut(&Surface)) {
     }
 }
 
+/// Every shared allocation `doc` holds that history can retain, as `visit(address, length)`:
+/// the tiles of [`surfaces`] and the embedded contents of smart objects (an `Arc` that undo
+/// states and duplicated layers share, replaced by Replace Contents).
+pub(crate) fn blocks(doc: &Document, mut visit: impl FnMut(usize, usize)) {
+    surfaces(doc, |surface| {
+        for (_, tile) in surface.tiles() {
+            visit(Arc::as_ptr(tile) as usize, tile.bytes().len());
+        }
+    });
+    for (_, _, layer) in doc.walk() {
+        if let LayerContent::Smart(smart) = &layer.content
+            && let SmartSource::Embedded { bytes, .. } = &smart.source
+        {
+            visit(Arc::as_ptr(bytes) as usize, bytes.len());
+        }
+    }
+}
+
 impl Tiles {
     pub(crate) fn add(&mut self, doc: &Document) {
-        surfaces(doc, |surface| {
-            for (_, tile) in surface.tiles() {
-                let count = self.refs.entry(Arc::as_ptr(tile) as usize).or_insert_with(|| {
-                    self.bytes += tile.bytes().len() as u128;
-                    (0, tile.bytes().len())
-                });
-                count.0 += 1;
-            }
+        blocks(doc, |ptr, len| {
+            let count = self.refs.entry(ptr).or_insert_with(|| {
+                self.bytes += len as u128;
+                (0, len)
+            });
+            count.0 += 1;
         });
     }
 
     pub(crate) fn remove(&mut self, doc: &Document) {
-        surfaces(doc, |surface| {
-            for (_, tile) in surface.tiles() {
-                let key = Arc::as_ptr(tile) as usize;
-                if let Some(count) = self.refs.get_mut(&key) {
-                    count.0 -= 1;
-                    if count.0 == 0 {
-                        self.bytes -= count.1 as u128;
-                        self.refs.remove(&key);
-                    }
+        blocks(doc, |ptr, _| {
+            if let Some(count) = self.refs.get_mut(&ptr) {
+                count.0 -= 1;
+                if count.0 == 0 {
+                    self.bytes -= count.1 as u128;
+                    self.refs.remove(&ptr);
                 }
             }
         });
@@ -85,12 +98,9 @@ impl Tiles {
     pub(crate) fn bytes_with(&self, current: &Document) -> u128 {
         let mut total = self.bytes;
         let mut seen = HashSet::new();
-        surfaces(current, |surface| {
-            for (_, tile) in surface.tiles() {
-                let key = Arc::as_ptr(tile) as usize;
-                if !self.refs.contains_key(&key) && seen.insert(key) {
-                    total += tile.bytes().len() as u128;
-                }
+        blocks(current, |ptr, len| {
+            if !self.refs.contains_key(&ptr) && seen.insert(ptr) {
+                total += len as u128;
             }
         });
         total

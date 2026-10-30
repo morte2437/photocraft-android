@@ -243,9 +243,7 @@ fn layer_id(s: &Session, p: &Value) -> Result<photocraft_doc::LayerId> {
 }
 
 fn damage_json(s: &mut Session, dmg: Rect) -> Value {
-    if let Some(st) = s.active_mut() {
-        st.last_damage = Some(dmg);
-    }
+    s.hint_damage(dmg);
     json!({ "damage": [dmg.x0, dmg.y0, dmg.width(), dmg.height()] })
 }
 
@@ -293,12 +291,16 @@ fn stroke_with(s: &mut Session, cmd: &str, p: &Value, label: &str, brush: BrushS
                 return Ok(l.bounds);
             }
             let sel = doc.selection.clone();
+            let table = crate::mode_cmds::paint_color_table(doc, p);
             let (surf, lock) = crate::channel_cmds::target_surface(doc, id, p)?;
             let mut brush = brush;
             erase_locked(&mut brush, lock, bg);
             if auto_erase {
+                // A stroke in the table's colour starts on what the foreground painted as.
+                let fg = table.as_ref().map_or(fg, |t| crate::mode_cmds::table_color(t, fg));
                 apply_auto_erase(&mut brush, surf, pts.first(), fg, bg);
             }
+            let unpainted = table.as_ref().map(|_| surf.clone());
             let damage = if let Some(axis) = &symmetry {
                 let reflected = axis.reflected_passes(&pts);
                 let copies: Vec<_> = reflected
@@ -323,6 +325,9 @@ fn stroke_with(s: &mut Session, cmd: &str, p: &Value, label: &str, brush: BrushS
             } else {
                 render_stroke(surf, &brush, &pts, sel.as_ref(), lock, zoom)
             };
+            if let (Some(table), Some(pre)) = (&table, &unpainted) {
+                crate::mode_cmds::keep_in_color_table(table, pre, surf, damage);
+            }
             Ok(damage)
         })
     })?;
@@ -405,14 +410,19 @@ fn clear_mode(p: &Value) -> bool {
 }
 
 /// Applies the options-bar blend `mode` to a brush. `"mode"` accepts any blend-mode name
-/// (normal|multiply|screen|…), or `clear` to erase with the brush. The Eraser has no blend mode in
+/// (normal|multiply|screen|…), or `behind` to paint beneath existing pixels, or `clear` to erase with the brush. The Eraser has no blend mode in
 /// Photoshop, so it is forced to Normal.
 fn with_blend_mode(mut b: BrushSettings, p: &Value) -> BrushSettings {
     b.erase |= clear_mode(p);
     if b.erase {
         b.mode = photocraft_color::BlendMode::Normal;
+        b.behind = false;
+    } else if p.get("mode").and_then(Value::as_str).is_some_and(|m| m.eq_ignore_ascii_case("behind")) {
+        b.mode = photocraft_color::BlendMode::Normal;
+        b.behind = true;
     } else if let Some(m) = p.get("mode").and_then(Value::as_str).and_then(crate::commands::blend_from_str) {
         b.mode = m;
+        b.behind = false;
     }
     b
 }
@@ -422,7 +432,91 @@ pub fn paint_stroke(s: &mut Session, p: &Value) -> Result<Value> {
     let pts = parse_points(p, "paint.stroke")?;
     let brush = with_blend_mode(resolve_brush(s, p, "paint.stroke")?, p);
     let label = if brush.erase && !clear_mode(p) { "Eraser" } else { "Brush Tool" };
+    if flag(p, "fill", false) {
+        return fill_region(s, p, label, brush, pts);
+    }
     stroke_with(s, "paint.stroke", p, label, brush, pts, false)
+}
+
+/// `paint.stroke {fill: true}`: fill the region enclosed by `points` (their polygon) with the
+/// brush's colour and opacity, its edge anti-aliased and softened by the brush hardness, instead of
+/// stamping the outline. A closed gesture then paints a filled dab, not a ring (#3659).
+fn fill_region(s: &mut Session, p: &Value, label: &str, brush: BrushSettings, pts: Vec<StrokePoint>) -> Result<Value> {
+    if clear_mode(p) {
+        // `clear` maps onto the eraser; a clear fill would erase the region the outline encloses,
+        // which a selection + delete does deliberately (#3659). Reject before the eraser check so
+        // the message names the real conflict.
+        return Err(bad("paint.stroke", "\"fill\" cannot be combined with \"mode\":\"clear\"; select the enclosed region and delete it instead"));
+    }
+    if brush.erase {
+        return Err(bad("paint.stroke", "\"fill\" does not support the Eraser"));
+    }
+    if pts.len() < 3 {
+        return Err(bad("paint.stroke", "\"fill\" needs at least three points (a closed region)"));
+    }
+    let (id, brush, _zoom) = stroke_target(s, p, brush)?;
+    // A hard brush (hardness 1) keeps the anti-aliased polygon edge; a soft one feathers it by half
+    // the brush width, the way its tip fades.
+    let feather_px = ((1.0 - brush.hardness.clamp(0.0, 1.0)) * brush.size * 0.5).max(0.0);
+    let (color, opacity, mode) = (brush.color, brush.opacity.clamp(0.0, 1.0), brush.mode);
+    // A colour picked as CMYK fills with its inks in a CMYK target where it covers fully, as
+    // Edit › Fill does (blend_color_mask blends partial coverage through the colour's RGB).
+    let picked = brush.color_cmyk.filter(|(rgb, _)| *rgb == [color[0], color[1], color[2]]).map(|(_, inks)| inks);
+    let cmyk = doc_cmyk_space(s);
+    let dmg = photocraft_color::convert::with_cmyk_space(cmyk.as_ref(), || {
+        s.edit(label, |doc, _| {
+            let sel = doc.selection.clone();
+            let canvas = doc.bounds();
+            let (surf, lock) = crate::channel_cmds::target_surface(doc, id, p)?;
+            // The polygon's whole-pixel bounds, grown by the feather's reach (3σ) so a soft edge
+            // fades out instead of being clipped.
+            let (mut bx0, mut by0, mut bx1, mut by1) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+            for sp in &pts {
+                if !(sp.x.is_finite() && sp.y.is_finite()) {
+                    return Err(bad("paint.stroke", "non-finite point in a fill"));
+                }
+                bx0 = bx0.min(sp.x);
+                by0 = by0.min(sp.y);
+                bx1 = bx1.max(sp.x);
+                by1 = by1.max(sp.y);
+            }
+            let ix = |v: f64| v.clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32;
+            let reach = photocraft_algo::selection::feather_reach(feather_px);
+            let pad = i32::try_from(reach).unwrap_or(i32::MAX).saturating_add(2);
+            let bounds = Rect::new(
+                ix(bx0.floor()).saturating_sub(pad),
+                ix(by0.floor()).saturating_sub(pad),
+                ix(bx1.ceil()).saturating_add(pad),
+                ix(by1.ceil()).saturating_add(pad),
+            )
+            .intersect(&canvas);
+            if bounds.is_empty() {
+                return Ok(Rect::new(0, 0, 0, 0));
+            }
+            let (w, h) = (bounds.width() as usize, bounds.height() as usize);
+            // The coverage, its feathered copy (and the blur's scratch), the selection read and
+            // the mask are each a buffer over the whole region, which can be the whole canvas:
+            // reserve that peak first, so a region too big for memory is an error, not an abort.
+            const FILL: &str = "filling a painted region";
+            let peak = w.checked_mul(h).and_then(|n| n.checked_mul(5)).ok_or_else(|| crate::allocation::error(FILL, "requested size overflowed"))?;
+            drop(crate::allocation::capacity::<f32>(peak, FILL)?);
+            let xy: Vec<(f32, f32)> = pts.iter().map(|sp| (sp.x as f32, sp.y as f32)).collect();
+            let mut cov = photocraft_algo::selection::polygon(&xy, bounds, true);
+            if feather_px > 0.01 {
+                cov = photocraft_algo::selection::feather(&cov, w, h, feather_px);
+            }
+            if let Some(sel) = sel.as_ref() {
+                let sv = crate::allocation::read_region(sel, bounds, FILL)?;
+                for (c, s) in cov.iter_mut().zip(&sv) {
+                    *c *= s.clamp(0.0, 1.0);
+                }
+            }
+            let coverage = photocraft_algo::selection::mask_to_surface(&cov, bounds);
+            crate::fill_cmds::blend_color_mask(surf, bounds, color, picked, &coverage, mode, opacity, lock)?;
+            Ok(bounds)
+        })
+    })?;
+    Ok(damage_json(s, dmg))
 }
 
 /// A `paint.stroke` rendered while it is drawn, onto a copy of the active document, so the canvas
@@ -518,9 +612,11 @@ impl LiveStroke {
         let base = (st.doc.id, st.revision);
         let mut doc = (*st.doc).clone();
         let sel = doc.selection.clone();
+        let table = crate::mode_cmds::paint_color_table(&doc, p);
         let (surf, lock) = crate::channel_cmds::target_surface(&mut doc, layer, p)?;
         erase_locked(&mut brush, lock, s.tools.background);
         if pencil && flag(p, "autoErase", false) {
+            let fg = table.as_ref().map_or(fg, |t| crate::mode_cmds::table_color(t, fg));
             apply_auto_erase(&mut brush, surf, pts.first(), fg, s.tools.background);
         }
         let renderer = StrokeRenderer::new(&brush, Some(surf.format()), zoom);
@@ -594,7 +690,7 @@ impl LiveStroke {
         check_coords(pts, &self.cmd)?;
         self.points.extend_from_slice(pts);
         let cmyk = self.cmyk.clone();
-        photocraft_color::convert::with_cmyk_space(cmyk.as_ref(), || {
+        let dmg = photocraft_color::convert::with_cmyk_space(cmyk.as_ref(), || -> Result<Rect> {
             self.renderer.push(pts);
             if let Some(symmetry) = &self.symmetry {
                 for ((mirror, distinct), reflected) in self.mirrors.iter_mut().zip(&mut self.mirror_distinct).zip(symmetry.reflected_passes(pts)) {
@@ -640,7 +736,13 @@ impl LiveStroke {
                 dmg = dmg.union(&self.tail);
             }
             Ok(dmg)
-        })
+        })?;
+        // The preview shows the pixels the commit keeps (see `stroke_with`).
+        if let Some(table) = crate::mode_cmds::paint_color_table(&self.doc, &self.params) {
+            let (surf, _) = crate::channel_cmds::target_surface(std::sync::Arc::make_mut(&mut self.doc), self.layer, &self.params)?;
+            crate::mode_cmds::keep_in_color_table(&table, &self.pre, surf, dmg);
+        }
+        Ok(dmg)
     }
 }
 
@@ -690,6 +792,32 @@ fn mixer_clean(s: &mut Session, _: &Value) -> Result<Value> {
     s.tools.mixer.clean();
     s.tools.mixer.color = Some(s.tools.foreground);
     Ok(serde_json::to_value(&s.tools.mixer).unwrap_or_default())
+}
+
+/// `paint.mixerLoad`: ⌥-click with the Mixer Brush loads the reservoir from the canvas colour at
+/// (`x`, `y`) (Photoshop's Current Brush Load), from the layers Sample All Layers names. The
+/// foreground colour is left alone. Over transparency or off the canvas nothing is loaded.
+fn mixer_load_pixel(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "paint.mixerLoad";
+    let coord = |k: &str| {
+        let v = p.get(k).and_then(Value::as_f64).filter(|v| v.is_finite());
+        v.ok_or_else(|| bad(cmd, format!("`{k}` must be a finite number (document pixels)")))
+    };
+    let (x, y) = (coord("x")?, coord("y")?);
+    let size = crate::sample_cmds::size_param(cmd, p)?;
+    let which = if flag(p, "sampleAllLayers", s.tools.brush.mixer.sample_all_layers) {
+        crate::sample_cmds::SampleLayers::All
+    } else {
+        crate::sample_cmds::SampleLayers::Current
+    };
+    let d = s.active().ok_or(EngineError::NoDocument)?;
+    let [r, g, b, a] = crate::sample_cmds::sample_color(&d.doc, d.active_layer, x, y, size, which);
+    if a.is_nan() || a <= 0.0 {
+        return Ok(json!({"loaded": false}));
+    }
+    let foreground = s.tools.foreground;
+    s.tools.mixer.load_sampled([r, g, b, 1.0], foreground);
+    Ok(json!({"loaded": true, "color": [r, g, b, 1.0]}))
 }
 
 /// `paint.colorReplacement`'s stroke and settings. The replacement colour is the brush colour
@@ -1174,7 +1302,7 @@ pub fn specs() -> Vec<CommandSpec> {
         spec!(
             "paint.pencil",
             "Pencil",
-            r##"{"points":[[x,y,pressure?,tiltX?,tiltY?,rotation?,timeMs?,wheel?],…],"brush":{…}?,"preset":name?,"size":0.5..5000 px?,"opacity":0..1?,"color":"#rrggbb"?=foreground,"mode":"normal|multiply|screen|…|clear (erases with this brush)"="normal","erase":bool?,"block":bool=false (a hard 16×16 screen-px square, 16/zoom doc px; size, opacity, flow, hardness and dynamics ignored: the Eraser's Block mode),"zoom":view zoom=1,"autoErase":bool=false,"seed":u64?,"target":"pixels"|"mask"|"filterMask"|"quickMask"|{"channel":i}=Channels panel target}"##,
+            r##"{"points":[[x,y,pressure?,tiltX?,tiltY?,rotation?,timeMs?,wheel?],…],"brush":{…}?,"preset":name?,"size":0.5..5000 px?,"opacity":0..1?,"color":"#rrggbb"?=foreground,"mode":"normal|multiply|screen|…|behind (paints beneath existing pixels)|clear (erases with this brush)"="normal","erase":bool?,"block":bool=false (a hard 16×16 screen-px square, 16/zoom doc px; size, opacity, flow, hardness and dynamics ignored: the Eraser's Block mode),"zoom":view zoom=1,"autoErase":bool=false,"seed":u64?,"target":"pixels"|"mask"|"filterMask"|"quickMask"|{"channel":i}=Channels panel target}"##,
             has_paintable,
             pencil,
             true
@@ -1189,6 +1317,14 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         spec!("brush.mixer.load", "Load Mixer Brush", r##"{"color":"#rrggbb"|[r,g,b,a?] 0..1?=foreground}"##, always, mixer_load, true),
         spec!("brush.mixer.clean", "Clean Mixer Brush", "{}", always, mixer_clean, true),
+        spec!(
+            "paint.mixerLoad",
+            "Load Mixer Brush",
+            r##"{"x":px,"y":px,"size":"point"|1|3|5|11|31|51|101=1,"sampleAllLayers":bool=brush.mixer.sampleAllLayers} → {"loaded":bool,"color"?:[r,g,b,a]} (loads the Mixer Brush reservoir from the canvas colour there, as ⌥-click does; the foreground colour is unchanged; the next strokes keep that load while the foreground stays as it is)"##,
+            has_paintable,
+            mixer_load_pixel,
+            true
+        ),
         spec!(
             "paint.colorReplacement",
             "Color Replacement",

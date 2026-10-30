@@ -286,32 +286,40 @@ fn font_resolver() -> usvg::FontResolver<'static> {
 /// Parse options for an untrusted drawing. `<image href>` resolves only `data:` URLs: a file path
 /// or relative href is never read, so opening an SVG cannot pull local files (`/etc/...`,
 /// `~/.ssh/...`) into the document. Embedded SVG images get no `<image>` resolution at all
-/// (`usvg` already blanks it for sub-SVGs).
-fn options(fontdb: Arc<usvg::fontdb::Database>) -> usvg::Options<'static> {
+/// (`usvg` already blanks it for sub-SVGs). An embedded SVG may nest `depth_left` levels: it is
+/// parsed on top of the drawing's own recursion, so the two depths share [`MAX_XML_DEPTH`].
+fn options(fontdb: Arc<usvg::fontdb::Database>, depth_left: usize) -> usvg::Options<'static> {
     let default_resolver = usvg::ImageHrefResolver::default_data_resolver();
     let resolve_data: usvg::ImageHrefDataResolverFn<'static> = Box::new(move |mime, data, opts| {
         // Reject embedded images whose decoded RGBA storage would exceed the budget before
         // resvg (which allocates the full intrinsic image before any destination scaling) ever
         // sees them. Formats without a cheap header probe fall through unchanged; their decode
         // path is bounded elsewhere or accepted as-is, matching the previous behavior.
-        if let Some(probed) = embedded_image_dimensions(mime, &data) {
+        let probed = embedded_image_dimensions(mime, &data);
+        if let Some(probed) = probed {
             let (w, h) = probed?;
             let decoded = u64::from(w).saturating_mul(u64::from(h)).saturating_mul(4);
             if decoded > MAX_EMBEDDED_IMAGE_BYTES {
                 return None;
             }
         }
-        // An embedded `image/svg+xml` value can itself be gzip-compressed (SVGZ-in-data-URL).
-        // The default resolver's sub-SVG loader checks for the gzip magic and decompresses
-        // again with no byte limit of its own. Apply our bounded inflate first: if the data is
-        // gzip-compressed, hand the default resolver the already-decompressed (and
-        // size-checked) bytes, which no longer start with the gzip magic, so it parses them
-        // directly instead of decompressing a second time.
-        if (mime == "image/svg+xml" || mime == "text/plain") && data.starts_with(&[0x1f, 0x8b]) {
-            return match inflate(&data) {
-                Ok(xml) if !xml.starts_with(&[0x1f, 0x8b]) => default_resolver("image/svg+xml", std::sync::Arc::new(xml.into_owned()), opts),
-                _ => None,
+        // An embedded SVG (`image/svg+xml`, or `text/plain` that isn't one of the raster
+        // formats probed above) is parsed by the default resolver with none of `parse_with`'s
+        // checks, so they run here. It can itself be gzip-compressed (SVGZ-in-data-URL), and the
+        // default resolver's sub-SVG loader would decompress again with no byte limit of its
+        // own: hand it our bounded inflate's output instead, which no longer starts with the
+        // gzip magic. Nesting deeper than `depth_left` drops the image rather than overflowing
+        // the parser's stack.
+        if mime == "image/svg+xml" || (mime == "text/plain" && probed.is_none()) {
+            let (mime, xml) = match inflate(&data) {
+                Ok(std::borrow::Cow::Borrowed(_)) => (mime, Arc::clone(&data)),
+                Ok(std::borrow::Cow::Owned(xml)) if !xml.starts_with(&[0x1f, 0x8b]) => ("image/svg+xml", Arc::new(xml)),
+                _ => return None,
             };
+            if nesting_depth(&xml, depth_left) > depth_left {
+                return None;
+            }
+            return default_resolver(mime, xml, opts);
         }
         default_resolver(mime, data, opts)
     });
@@ -344,13 +352,14 @@ fn parse(bytes: &[u8]) -> Result<Parsed, IoError> {
 /// [`parse`] with the font database `fonts` supplies (the tests hand in an empty one).
 fn parse_with(bytes: &[u8], fonts: fn() -> Arc<usvg::fontdb::Database>) -> Result<Parsed, IoError> {
     let xml = inflate(bytes)?;
-    if nesting_depth(&xml, MAX_XML_DEPTH) > MAX_XML_DEPTH {
+    let depth = nesting_depth(&xml, MAX_XML_DEPTH);
+    if depth > MAX_XML_DEPTH {
         return Err(IoError::Svg(format!("elements are nested more than {MAX_XML_DEPTH} levels deep")));
     }
     let has_text = xml.windows(4).any(|w| w == b"text");
     let fontdb = if has_text { fonts() } else { Arc::new(usvg::fontdb::Database::new()) };
     let fontless_text = has_text && fontdb.faces().next().is_none();
-    let opt = options(fontdb);
+    let opt = options(fontdb, MAX_XML_DEPTH.saturating_sub(depth));
     // Parse the already-bounded-and-decoded text with from_str, not from_data: from_data
     // re-checks the gzip magic and would decompress a second time without our size limit if
     // the inflated content happened to start with a nested gzip stream.
@@ -367,7 +376,7 @@ fn inflate(bytes: &[u8]) -> Result<std::borrow::Cow<'_, [u8]>, IoError> {
         return Ok(std::borrow::Cow::Borrowed(bytes));
     }
     let mut out = Vec::new();
-    let mut reader = flate2::read::MultiGzDecoder::new(bytes).take(MAX_INFLATED_BYTES.saturating_add(1));
+    let mut reader = flate2::bufread::MultiGzDecoder::new(bytes).take(MAX_INFLATED_BYTES.saturating_add(1));
     reader.read_to_end(&mut out).map_err(|e| IoError::Svg(format!("the compressed SVG couldn't be inflated: {e}")))?;
     if u64::try_from(out.len()).unwrap_or(u64::MAX) > MAX_INFLATED_BYTES {
         return Err(IoError::Svg(format!("the compressed SVG inflates past {} MB", MAX_INFLATED_BYTES >> 20)));
@@ -379,7 +388,7 @@ fn inflate(bytes: &[u8]) -> Result<std::borrow::Cow<'_, [u8]>, IoError> {
 /// then `limit + 1`). Comments, CDATA sections, processing instructions and the DOCTYPE add
 /// nothing; quoted attribute values may hold `>` or `/>`. Malformed markup is only counted
 /// loosely: the parser rejects it afterwards.
-fn nesting_depth(xml: &[u8], limit: usize) -> usize {
+pub(crate) fn nesting_depth(xml: &[u8], limit: usize) -> usize {
     let after = |from: usize, pat: &[u8]| -> usize {
         xml.get(from..).and_then(|s| s.windows(pat.len()).position(|w| w == pat)).map_or(xml.len(), |p| from.saturating_add(p).saturating_add(pat.len()))
     };
@@ -498,14 +507,47 @@ fn import_parsed_with_budget(name: &str, parsed: Parsed, max_group_depth: usize,
 pub fn rasterize(bytes: &[u8], scale: f32) -> Result<photocraft_compose::Buffer, IoError> {
     let tree = parse(bytes)?.tree;
     let cv = canvas(&tree, &mut Vec::new());
-    let k = cv.scale * scale.clamp(1.0 / 64.0, 64.0);
+    let pixmap = render(&tree, cv.scale * scale.clamp(1.0 / 64.0, 64.0))?;
+    let rect = Rect::new(0, 0, pixmap.width() as i32, pixmap.height() as i32);
+    let px = pixmap.pixels().iter().map(|p| rgba(p.demultiply())).collect();
+    Ok(photocraft_compose::Buffer { rect, px })
+}
+
+/// The whole drawing at one pixel per SVG unit, scaled down to fit [`MAX_SIDE`] a side and
+/// [`MAX_RASTER_PIXELS`] in all: its width, height and straight-alpha RGBA8 pixels. Paste uses it
+/// for a drawing copied as SVG markup.
+pub fn rasterize_rgba8(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), IoError> {
+    let tree = parse(bytes)?.tree;
+    let cv = canvas(&tree, &mut Vec::new());
+    let (w, h) = (f64::from(tree.size().width() * cv.scale), f64::from(tree.size().height() * cv.scale));
+    // The largest k ≤ 1 with (w·k + 2)(h·k + 2) ≤ the limit: `render` rounds each side up, and
+    // f32 rounding can add one more pixel.
+    let max = MAX_RASTER_PIXELS as f64;
+    let fit = if (w + 2.0) * (h + 2.0) <= max {
+        1.0
+    } else {
+        let (a, b) = (w * h, 2.0 * (w + h));
+        (-b + (b * b - 4.0 * a * (4.0 - max)).sqrt()) / (2.0 * a)
+    };
+    let pixmap = render(&tree, cv.scale * fit as f32)?;
+    let px = pixmap
+        .pixels()
+        .iter()
+        .flat_map(|p| {
+            let c = p.demultiply();
+            [c.red(), c.green(), c.blue(), c.alpha()]
+        })
+        .collect();
+    Ok((pixmap.width(), pixmap.height(), px))
+}
+
+/// `tree` drawn at `k` pixels per SVG unit on a transparent pixmap whose sides round up.
+fn render(tree: &usvg::Tree, k: f32) -> Result<tiny_skia::Pixmap, IoError> {
     let side = |v: f32| ((v * k).ceil() as u32).max(1);
     let (w, h) = (side(tree.size().width()), side(tree.size().height()));
     let mut pixmap = pixmap(w, h).ok_or_else(|| IoError::Svg(format!("{w} × {h} px is too large to rasterise")))?;
-    resvg::render(&tree, tiny_skia::Transform::from_scale(k, k), &mut pixmap.as_mut());
-    let rect = Rect::new(0, 0, w as i32, h as i32);
-    let px = pixmap.pixels().iter().map(|p| rgba(p.demultiply())).collect();
-    Ok(photocraft_compose::Buffer { rect, px })
+    resvg::render(tree, tiny_skia::Transform::from_scale(k, k), &mut pixmap.as_mut());
+    Ok(pixmap)
 }
 
 /// A transparent pixmap, or `None` past [`MAX_RASTER_PIXELS`].
@@ -672,7 +714,7 @@ impl Conv {
                     }
                     return;
                 }
-                let mut l = Layer::new(self.name(g.id(), 1), LayerContent::Group(Group { children, expanded: false, artboard: None }));
+                let mut l = Layer::new(self.name(g.id(), 1), LayerContent::Group(Group { children, expanded: false, artboard: None, frame_stroke: None }));
                 l.opacity = g.opacity().get();
                 l.blend = blend(g.blend_mode());
                 l.vector_mask = clip;
@@ -699,7 +741,7 @@ impl Conv {
                 } else {
                     t.id().to_string()
                 };
-                out.push(Layer::new(name, LayerContent::Group(Group { children, expanded: false, artboard: None })));
+                out.push(Layer::new(name, LayerContent::Group(Group { children, expanded: false, artboard: None, frame_stroke: None })));
             }
         }
     }

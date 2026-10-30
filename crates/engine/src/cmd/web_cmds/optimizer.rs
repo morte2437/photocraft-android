@@ -1,5 +1,5 @@
 use super::settings::{WebFormat, WebMetadata, WebSettings};
-use super::*;
+use super::{Dither, Document, EngineError, Forced, PaletteKind, Rect, Result, Session, Value, json, other, quantize};
 
 // ---------- the image ----------
 
@@ -128,21 +128,34 @@ pub fn optimize(
     let mut color_table = Vec::new();
     let mut transparent_index = None;
     let mut indices = Vec::new();
+    // True colour (PNG-24, WebP): straight RGBA when transparency is on and a pixel is
+    // translucent, else RGB over the matte.
+    let true_color = || {
+        let alpha = st.transparency && region().any(|p| p[3] < 1.0);
+        let k = if alpha { 4 } else { 3 };
+        let mut data = Vec::with_capacity(w * h * k);
+        for p in region() {
+            let q = if alpha { *p } else { over(p) };
+            data.extend_from_slice(&[to8(q[0]), to8(q[1]), to8(q[2]), to8(q[3])][..k]);
+        }
+        let layout = if alpha { photocraft_codecs::ChannelLayout::Rgba } else { photocraft_codecs::ChannelLayout::Rgb };
+        (data, layout)
+    };
+    let rgba = |data: &[u8], layout: photocraft_codecs::ChannelLayout| -> Vec<u8> {
+        if layout == photocraft_codecs::ChannelLayout::Rgba {
+            data.to_vec()
+        } else {
+            data.as_chunks::<3>().0.iter().flat_map(|c| [c[0], c[1], c[2], 255]).collect()
+        }
+    };
+    let meta = || photocraft_codecs::Metadata { dpi: Some((dpi, dpi)), xmp: xmp.map(str::to_string), ..Default::default() };
     let (bytes, colors) = match st.format {
         WebFormat::Png24 => {
-            let alpha = st.transparency && region().any(|p| p[3] < 1.0);
-            let k = if alpha { 4 } else { 3 };
-            let mut data = Vec::with_capacity(w * h * k);
-            for p in region() {
-                let q = if alpha { *p } else { over(p) };
-                data.extend_from_slice(&[to8(q[0]), to8(q[1]), to8(q[2]), to8(q[3])][..k]);
-            }
+            let (data, layout) = true_color();
             if preview {
-                look = if alpha { data.clone() } else { data.as_chunks::<3>().0.iter().flat_map(|c| [c[0], c[1], c[2], 255]).collect() };
+                look = rgba(&data, layout);
             }
-            let layout = if alpha { photocraft_codecs::ChannelLayout::Rgba } else { photocraft_codecs::ChannelLayout::Rgb };
-            let meta = photocraft_codecs::Metadata { dpi: Some((dpi, dpi)), xmp: xmp.map(str::to_string), ..Default::default() };
-            let img = photocraft_codecs::Image::from_u8(ww, hh, layout, data).map_err(e)?.with_icc(icc.map(<[u8]>::to_vec)).with_meta(meta);
+            let img = photocraft_codecs::Image::from_u8(ww, hh, layout, data).map_err(e)?.with_icc(icc.map(<[u8]>::to_vec)).with_meta(meta());
             let opts = photocraft_codecs::EncodeOptions {
                 png_interlaced: st.interlaced,
                 embed_icc: icc.is_some(),
@@ -150,6 +163,29 @@ pub fn optimize(
                 ..Default::default()
             };
             (photocraft_codecs::encode(&img, photocraft_codecs::Format::Png, &opts).map_err(e)?, None)
+        }
+        WebFormat::Webp => {
+            let (data, layout) = true_color();
+            let icc = icc.filter(|_| st.embed_icc);
+            // WebP holds EXIF (the metadata choice's "All" passes it in), so it rides along with the XMP.
+            let webp_meta = photocraft_codecs::Metadata { exif: exif.map(<[u8]>::to_vec), ..meta() };
+            let img = photocraft_codecs::Image::from_u8(ww, hh, layout, data).map_err(e)?.with_icc(icc.map(<[u8]>::to_vec)).with_meta(webp_meta);
+            let opts = photocraft_codecs::EncodeOptions {
+                webp_lossless: st.lossless,
+                webp_quality: st.quality.min(100),
+                embed_icc: icc.is_some(),
+                embed_metadata: exif.is_some() || xmp.is_some(),
+                ..Default::default()
+            };
+            let bytes = photocraft_codecs::encode(&img, photocraft_codecs::Format::WebP, &opts).map_err(e)?;
+            if preview {
+                // Lossless shows the source; lossy shows the compression artefacts.
+                look = match (!st.lossless).then(|| photocraft_codecs::decode(&bytes).ok()).flatten() {
+                    Some(img) => img.convert(photocraft_codecs::ChannelLayout::Rgba, photocraft_codecs::SampleType::U8).data().to_vec(),
+                    None => rgba(img.data(), layout),
+                };
+            }
+            (bytes, None)
         }
         WebFormat::Jpeg => {
             let mut rgb = Vec::with_capacity(w * h * 3);

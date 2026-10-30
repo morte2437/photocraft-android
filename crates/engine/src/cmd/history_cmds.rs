@@ -39,26 +39,40 @@ fn bad(cmd: &str, msg: impl Into<String>) -> EngineError {
 /// The `state` param as an index into the active document's history entries, defaulting to the
 /// current state.
 fn state_index(s: &Session, cmd: &str, p: &Value) -> Result<(usize, usize)> {
+    state_index_upto(s, cmd, p, false)
+}
+
+/// [`state_index`], also accepting the later (dimmed, redo) states with `later`.
+fn state_index_upto(s: &Session, cmd: &str, p: &Value, later: bool) -> Result<(usize, usize)> {
     let st = s.active().ok_or(EngineError::NoDocument)?;
     let current = st.history.past_len();
+    let last = if later { current.saturating_add(st.history.redo_labels().count()) } else { current };
     let i = match p.get("state") {
         None | Some(Value::Null) => current,
         Some(_) => {
             let v = int(p, "state").ok_or_else(|| bad(cmd, "`state` must be a number"))?;
-            usize::try_from(v).ok().filter(|i| *i <= current).ok_or_else(|| bad(cmd, format!("`state` = {v} is not a state (0..={current})")))?
+            usize::try_from(v).ok().filter(|i| *i <= last).ok_or_else(|| bad(cmd, format!("`state` = {v} is not a state (0..={last})")))?
         }
     };
     Ok((i, current))
 }
 
 /// History panel › Delete: drop the state and every state after it, as Photoshop does in linear
-/// history. The document returns to the state before it, and the deleted steps can't be redone.
-/// The oldest state (the document as opened) can't be deleted.
+/// history (in non-linear history only that state, also a later one:
+/// `history_options_cmds::delete_state`). The document returns to the state before it, and the
+/// deleted steps can't be redone. The oldest state (the document as opened) can't be deleted.
 fn delete_state(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "history.deleteState";
-    let (i, current) = state_index(s, CMD, p)?;
+    // History Options › Allow Non-Linear History: only that state goes, a later (dimmed) one too.
+    let non_linear = s.active().is_some_and(|st| st.history.non_linear);
+    let (i, current) = state_index_upto(s, CMD, p, non_linear)?;
     if i == 0 {
         return Err(bad(CMD, "the oldest state can't be deleted"));
+    }
+    if non_linear {
+        crate::history_options_cmds::delete_state(s, i, current)?;
+        let entries = s.active().ok_or(EngineError::NoDocument)?.history.entries();
+        return Ok(json!({ "states": entries.len(), "current": entries.last() }));
     }
     // Step back to the state before `i`; the steps from `i` on are then redo states.
     for _ in i..=current {
@@ -149,6 +163,10 @@ fn new_snapshot(s: &mut Session, p: &Value) -> Result<Value> {
     let name = name.unwrap_or_else(|| next_snapshot_name(st));
     let id = st.next_snapshot;
     st.next_snapshot = id.saturating_add(1);
+    // An action's New Snapshot with "replace existing": a snapshot of that name gives way.
+    if p.get("replaceExisting").and_then(Value::as_bool) == Some(true) {
+        st.snapshots.retain(|snap| snap.name != name);
+    }
     st.snapshots.push(Snapshot { id, name: name.clone(), doc, layers });
     Ok(json!({ "snapshot": id, "name": name }))
 }
@@ -199,8 +217,13 @@ fn delete_snapshot(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({ "snapshot": snap.id, "snapshots": st.snapshots.len() }))
 }
 
+/// A state other than the oldest exists to delete: a past or the current one, and with Allow
+/// Non-Linear History a later (dimmed) one too, also while the oldest state is current.
 fn can_delete(s: &Session) -> std::result::Result<(), String> {
-    s.active().filter(|d| d.history.past_len() > 0).map(|_| ()).ok_or_else(|| "the oldest state can't be deleted".into())
+    s.active()
+        .filter(|d| d.history.past_len() > 0 || (d.history.non_linear && d.history.can_redo()))
+        .map(|_| ())
+        .ok_or_else(|| "the oldest state can't be deleted".into())
 }
 
 fn has_doc(s: &Session) -> std::result::Result<(), String> {
@@ -245,7 +268,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Delete State",
             menu: &[],
             shortcut: None,
-            params: r##"{"state":index?} (History entry, 0 = oldest; default the current state) → {states,current}: removes the state and every later one"##,
+            params: r##"{"state":index?} (History entry, 0 = oldest; default the current state) → {states,current}: removes the state and every later one (with Allow Non-Linear History only that state, a later dimmed one too)"##,
             enabled: can_delete,
             run: delete_state,
             journal: true,
@@ -265,7 +288,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "New Snapshot",
             menu: &[],
             shortcut: None,
-            params: r##"{"name":str?="Snapshot N","from":"fullDocument"|"mergedLayers"|"currentLayer"="fullDocument"} → {snapshot,name}: a named copy of the document for the session (not a history state)"##,
+            params: r##"{"name":str?="Snapshot N","from":"fullDocument"|"mergedLayers"|"currentLayer"="fullDocument","replaceExisting":bool=false (drop snapshots of the same name first)} → {snapshot,name}: a named copy of the document for the session (not a history state)"##,
             enabled: has_doc,
             run: new_snapshot,
             journal: true,
@@ -421,6 +444,31 @@ mod tests {
         assert_eq!(r, json!({"snapshot": 2, "name": "Before green"}));
         let first = json!({"id": 0, "name": s.active().unwrap().doc.name});
         assert_eq!(snapshots(&s), json!([first, {"id": 1, "name": "Snapshot 1"}, {"id": 2, "name": "Before green"}]));
+    }
+
+    #[test]
+    fn replace_existing_snapshot_and_clear_history() {
+        let mut s = session();
+        s.execute("history.newSnapshot", json!({"name": "Result"})).unwrap();
+        s.execute("history.newSnapshot", json!({"name": "Other"})).unwrap();
+        s.execute("history.newSnapshot", json!({"name": "Result", "replaceExisting": true})).unwrap();
+        let opening = json!({"id": 0, "name": s.active().unwrap().doc.name});
+        assert_eq!(snapshots(&s), json!([opening, {"id": 2, "name": "Other"}, {"id": 3, "name": "Result"}]));
+        let kept_snapshots = snapshots(&s);
+        let history_before = entries(&s);
+        let pixel = top_pixel(&s);
+        s.execute("history.clear", json!({})).unwrap();
+        assert_eq!(entries(&s).len(), 1, "only the current state is left");
+        assert!(s.active().unwrap().history.can_undo(), "the current Clear History remains undoable");
+        assert_eq!(top_pixel(&s), pixel, "the document is unchanged");
+        assert_eq!(snapshots(&s), kept_snapshots, "opening and named snapshots stay unchanged");
+        // Current History menu semantics refuse a second clear; snapshots remain independent.
+        assert!(s.execute("history.clear", json!({})).is_err());
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(entries(&s), history_before, "Undo restores the cleared states");
+        assert_eq!(snapshots(&s), kept_snapshots, "Undo also preserves every snapshot");
+        assert_eq!(top_pixel(&s), pixel);
+        assert!(Session::new().execute("history.clear", json!({})).is_err(), "no document");
     }
 
     #[test]

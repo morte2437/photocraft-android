@@ -1,8 +1,13 @@
-use super::estimate::{MERGED_RENDERED, MERGED_WEIGHT, block_signature, psd_size_exceeds_limit, psd_version};
+use super::PSD_MAX_FILE_SIZE;
+use super::estimate::{MERGED_RENDERED, MERGED_WEIGHT, fit_psd_size, psd_version, sign_global_blocks};
 use super::merged::{cmyk_of, merged_planes, placeholder_planes};
 use super::resources::{global_block, guides_resource, keep_imported_resource, legacy_name, pascal_names_resource, path_resources, unicode_names_resource};
 use super::smart::{SmartOut, link_group_resource};
-use super::*;
+use super::{
+    ColorMode, Compression, Document, Ex, GlobalLayerMask, Header, ImageData, ImageResource, Interrupt, LayerContent, LayerInfo, LayerInfoPlacement,
+    MaskParameters, PixelFormat, PsdExportOptions, PsdFile, PsdMode, ResolutionInfo, SampleType, TaggedBlock, deinterleave, ids, psd_background, psd_depth,
+    psd_mode, q255, version_info_resource,
+};
 
 /// Converts a document to a PSD file model (see [`document_to_psd_with`]).
 pub fn document_to_psd(doc: &Document) -> PsdFile {
@@ -13,25 +18,42 @@ pub fn document_to_psd(doc: &Document) -> PsdFile {
 /// anything that could not be represented. The merged composite is rendered
 /// with `photocraft_compose::flatten`.
 pub fn document_to_psd_with(doc: &Document, opts: &PsdExportOptions) -> (PsdFile, Vec<String>) {
-    document_to_psd_nested(doc, opts, 0, &Interrupt::NONE)
+    document_to_psd_sized(doc, opts, 0, &Interrupt::NONE, PSD_MAX_FILE_SIZE)
 }
 
 /// [`document_to_psd_with`] for a background save (#3389): reports progress through `ctl` after
 /// each layer record and each band of the merged composite. Once `ctl` is cancelled it stops
 /// early and returns an **incomplete** model: callers check `ctl` and discard it.
 pub(crate) fn document_to_psd_interruptible(doc: &Document, opts: &PsdExportOptions, ctl: &Interrupt) -> (PsdFile, Vec<String>) {
-    document_to_psd_nested(doc, opts, 0, ctl)
+    document_to_psd_sized(doc, opts, 0, ctl, PSD_MAX_FILE_SIZE)
 }
 
 /// [`document_to_psd_with`] for a document embedded `depth` smart objects deep.
 pub(super) fn document_to_psd_nested(doc: &Document, opts: &PsdExportOptions, depth: u32, ctl: &Interrupt) -> (PsdFile, Vec<String>) {
+    document_to_psd_sized(doc, opts, depth, ctl, PSD_MAX_FILE_SIZE)
+}
+
+/// Export with a caller-selected PSD size limit; the test suite lowers it to exercise promotion.
+pub(super) fn document_to_psd_sized(doc: &Document, opts: &PsdExportOptions, depth: u32, ctl: &Interrupt, size_limit: u64) -> (PsdFile, Vec<String>) {
+    let layerless_limit = opts.size_limit_psb.then_some(size_limit);
     if doc.mode == ColorMode::Multichannel {
-        return crate::multichannel_map::document_to_psd(doc, opts.force_psb);
+        return crate::multichannel_map::document_to_psd(doc, opts.force_psb, layerless_limit);
     }
-    if let Some(file) = crate::palette_map::document_to_psd(doc, opts.force_psb) {
+    if let Some(file) = crate::palette_map::document_to_psd(doc, opts.force_psb, layerless_limit) {
         return file;
     }
     let fmt = doc.pixel_format();
+    export_supported_document(doc, opts, depth, ctl, fmt, size_limit)
+}
+
+fn export_supported_document(
+    doc: &Document,
+    opts: &PsdExportOptions,
+    depth: u32,
+    ctl: &Interrupt,
+    fmt: PixelFormat,
+    size_limit: u64,
+) -> (PsdFile, Vec<String>) {
     // A Duotone is written over its grey plate with its inks: the block it was imported with,
     // verbatim, while the inks are unedited, else one made from them (`duotone_map`). Photoshop
     // has only 8-bit Duotone: it refuses to open a 16-bit one.
@@ -43,8 +65,7 @@ pub(super) fn document_to_psd_nested(doc: &Document, opts: &PsdExportOptions, de
     let sample = fmt.sample;
     let cc = fmt.mode.color_channels();
     let big = doc.size.width > 30_000 || doc.size.height > 30_000;
-    let size_exceeds_limit = opts.size_limit_psb && !opts.force_psb && !big && psd_size_exceeds_limit(doc);
-    let version = psd_version(doc, opts.force_psb, size_exceeds_limit);
+    let version = psd_version(doc, opts.force_psb);
     let mut ex = Ex {
         fmt,
         dpi: doc.resolution_dpi,
@@ -68,72 +89,8 @@ pub(super) fn document_to_psd_nested(doc: &Document, opts: &PsdExportOptions, de
         patterns: doc.patterns.clone(),
         background: psd_background(doc),
     };
-    if big && !opts.force_psb {
-        ex.warnings.push("document exceeds 30000 px; written as PSB".into());
-    } else if size_exceeds_limit && !opts.force_psb {
-        ex.warnings.push("estimated encoded size exceeds 2 GB; written as PSB".into());
-    }
-    if fmt.mode != doc.mode && duotone_inks.is_none() {
-        ex.warnings.push(format!("{:?} document written as {:?}", doc.mode, fmt.mode));
-    }
-    // Assign layer ids up front (stable across round trips): keep unique
-    // `psd_id`s, number the rest after them; dividers come after all.
-    {
-        let walk = doc.walk();
-        let mut used = std::collections::HashSet::new();
-        for (_, _, l) in &walk {
-            if let Some(id) = l.psd_id
-                && used.insert(id)
-            {
-                ex.layer_ids.insert(l.id, id);
-            }
-        }
-        let mut next = 1u32;
-        for (_, _, l) in &walk {
-            if let std::collections::hash_map::Entry::Vacant(e) = ex.layer_ids.entry(l.id) {
-                while used.contains(&next) {
-                    next += 1;
-                }
-                used.insert(next);
-                e.insert(next);
-            }
-        }
-        ex.next_id = used.iter().copied().max().unwrap_or(0);
-        ex.used_ids = used;
-        // Text objects' number in the generated `Txt2` (#1348): a preserved `TySh` keeps the
-        // number it already names — its `Txt2` object must sit at that slot for `apply_txt2` —
-        // and new layers get numbers past every kept one and every object in the file's `Txt2`.
-        // Kept numbers are claimed first: a layer added below others must not take a number a
-        // layer above it keeps, or each of those would be renumbered onto its neighbour's object
-        // and take its style (#7773); nor may it land on a deleted layer's object.
-        let mut used_txt = std::collections::HashSet::new();
-        ex.text_index = Default::default();
-        let mut fresh = Vec::new();
-        for (_, _, l) in &walk {
-            let LayerContent::Text(t) = &l.content else {
-                continue;
-            };
-            match t.psd_raw.as_deref().and_then(|d| photocraft_text::psd::text_index(d)) {
-                Some(i) if used_txt.insert(i) => {
-                    ex.text_index.insert(l.id, i);
-                }
-                _ => fresh.push(l.id),
-            }
-        }
-        let objects =
-            doc.metadata.psd_global_blocks.iter().find(|(_, key, _)| key == b"Txt2").map_or(0, |(_, _, d)| photocraft_text::psd::txt2_object_count(d));
-        let mut next_txt = used_txt.iter().max().map_or(0, |m| m + 1).max(i32::try_from(objects).unwrap_or(i32::MAX));
-        if next_txt.saturating_add(fresh.len() as i32) > photocraft_text::psd::MAX_TEXT_INDEX + 1 {
-            next_txt = 0;
-        }
-        for id in fresh {
-            while used_txt.contains(&next_txt) {
-                next_txt += 1;
-            }
-            used_txt.insert(next_txt);
-            ex.text_index.insert(id, next_txt);
-        }
-    }
+    add_format_warnings(doc, opts, fmt, big, duotone_inks.is_some(), &mut ex.warnings);
+    index_layer_ids_and_text(doc, &mut ex);
     // Progress: one unit per layer record, then the merged composite (#3389).
     let records = doc.walk().len() as f32;
     let units = records + MERGED_WEIGHT;
@@ -146,66 +103,11 @@ pub(super) fn document_to_psd_nested(doc: &Document, opts: &PsdExportOptions, de
     };
     let space = photocraft_compose::cmyk_space(doc);
     photocraft_color::convert::with_cmyk_space(space.as_ref(), || ex.emit(&doc.layers, &mut tick));
+    drop(tick);
+    ctl.progress(layers_share);
 
-    // Without Maximize Compatibility the merged image is a white placeholder and the composite
-    // isn't rendered at all. A document without layer records keeps the real image: its pixels
-    // live nowhere else. So does a Duotone: it opens flattened from that image (its layer records
-    // are not read back).
-    let real_merged = opts.maximize_compatibility || ex.records.is_empty() || duotone_inks.is_some();
-    let (mut planes, has_alpha) = if real_merged {
-        // Merged composite, rendered and encoded in bands (no full-size float composite). Matting
-        // against white only changes pixels with alpha < 1; if some are slightly translucent but
-        // all round to opaque (so no alpha channel is written), encode once more without the matte.
-        let merged_end = layers_share + (1.0 - layers_share) * MERGED_RENDERED;
-        let (mut planes, has_alpha, translucent) =
-            crate::with_span(ctl, layers_share, merged_end, |ctl| merged_planes(doc, &fmt, cmyk_of(&fmt), opts.merged_matte, ctl));
-        if !has_alpha && translucent && opts.merged_matte {
-            planes = merged_planes(doc, &fmt, cmyk_of(&fmt), false, &Interrupt::cancel_only(&|| ctl.cancelled())).0;
-        }
-        (planes, has_alpha)
-    } else {
-        (placeholder_planes(doc, &fmt), false)
-    };
-    let n = doc.size.area() as usize;
-    if !has_alpha {
-        planes.truncate(cc * n * sample.bytes());
-    }
-    let canvas = doc.bounds();
-    let max_extra = 56 - cc - usize::from(has_alpha);
-    if doc.channels.len() > max_extra {
-        ex.warnings.push(format!("only {max_extra} alpha channels fit in PSD; the rest were dropped"));
-    }
-    let mut extra: Vec<_> = doc.channels.iter().take(max_extra).collect();
-    // Saved in Quick Mask mode: the mask is written as the last extra channel and flagged by
-    // resource 1022 (quick mask info: channel id, initially-empty flag), as Photoshop does.
-    let quick_mask_id = match &doc.quick_mask {
-        Some(q) if extra.len() < max_extra => {
-            extra.push(q);
-            Some((cc + usize::from(has_alpha) + extra.len() - 1) as u16)
-        }
-        Some(_) => {
-            ex.warnings.push("Quick Mask was dropped because the PSD channel limit was reached".into());
-            None
-        }
-        None => None,
-    };
-    for a in &extra {
-        let s = if a.surface.format() != ex.mask_fmt { a.surface.convert(ex.mask_fmt) } else { a.surface.clone() };
-        let mut bytes = s.to_interleaved(canvas);
-        // Spot ink as Photoshop stores it (0 = solid); an alpha channel stays straight.
-        if a.spot.is_some() {
-            crate::channel_map::photoshop_spot_plane(&mut bytes, sample);
-        }
-        planes.extend(deinterleave(&bytes, 1, sample, &[false]).remove(0));
-    }
-    let channels = (cc + usize::from(has_alpha) + extra.len()) as u16;
-    let mode = if duotone_inks.is_some() { PsdMode::Duotone } else { psd_mode(fmt.mode) };
-    let header = Header::new(version, doc.size.width, doc.size.height, channels, psd_depth(sample), mode);
-    let mcomp = if sample == SampleType::F32 { Compression::Raw } else { opts.merged_compression };
-    let image_data = ImageData::encode(mcomp, &planes, &header)
-        .or_else(|_| ImageData::encode(Compression::Raw, &planes, &header))
-        .unwrap_or(ImageData { compression: Compression::Raw, data: planes });
-    ctl.progress(1.0);
+    let merged = prepare_merged_planes(doc, &mut ex, opts, ctl, fmt, duotone_inks.is_some(), layers_share);
+    let MergedExport { header, image_data, extra, has_alpha, quick_mask_id, real_merged } = merged;
 
     // Resources.
     let mut resources = vec![
@@ -272,7 +174,9 @@ pub(super) fn document_to_psd_nested(doc: &Document, opts: &PsdExportOptions, de
     let txt2 = (previous.is_some() || photocraft_text::psd::needs_txt2(&text_layers))
         .then(|| photocraft_text::psd::build_txt2_at(&text_layers, previous.as_deref(), ex.dpi));
     for (sig, key, data) in preserved {
-        if txt2.is_some() && key == *b"Txt2" {
+        // With no type layers left the opened file's `Txt2` describes text that is gone (fonts and
+        // layout caches, often most of the file): Photoshop drops it, and so does the save (#9563).
+        if key == *b"Txt2" && (txt2.is_some() || text_layers.is_empty()) {
             continue;
         }
         // A kept layer block (one the import could not read, #2700) describes layers the
@@ -281,7 +185,7 @@ pub(super) fn document_to_psd_nested(doc: &Document, opts: &PsdExportOptions, de
         if !ex.records.is_empty() && matches!(&key, b"Lr16" | b"Lr32" | b"Layr") {
             continue;
         }
-        let block = global_block(block_signature(sig, key, version), key, &data);
+        let block = global_block(sig, key, &data);
         // A kept merged-transparency marker describes the opened file's composite. Over an opaque
         // one it would make the first alpha channel read back as the transparency, and vanish.
         if !has_alpha && block.is_merged_transparency_marker() {
@@ -362,7 +266,7 @@ pub(super) fn document_to_psd_nested(doc: &Document, opts: &PsdExportOptions, de
         Some(raw) => raw,
         None => photocraft_psd::hdr::color_mode_data_for_depth(header.depth),
     };
-    let file = PsdFile {
+    let mut file = PsdFile {
         header,
         color_mode_data,
         resources,
@@ -372,8 +276,176 @@ pub(super) fn document_to_psd_nested(doc: &Document, opts: &PsdExportOptions, de
         global_blocks,
         layer_mask_trailing: Vec::new(),
         image_data,
+        write_as_psb: false,
     };
+    if opts.size_limit_psb
+        && let Some(warning) = fit_psd_size(&mut file, size_limit)
+    {
+        ex.warnings.push(warning);
+    }
+    sign_global_blocks(&mut file);
     (file, ex.warnings)
+}
+
+fn add_format_warnings(doc: &Document, opts: &PsdExportOptions, fmt: PixelFormat, big: bool, has_duotone: bool, warnings: &mut Vec<String>) {
+    if big && !opts.force_psb {
+        warnings.push("document exceeds 30000 px; written as PSB".into());
+    }
+    if fmt.mode != doc.mode && !has_duotone {
+        warnings.push(format!("{:?} document written as {:?}", doc.mode, fmt.mode));
+    }
+}
+
+struct MergedExport<'a> {
+    header: Header,
+    image_data: ImageData,
+    extra: Vec<&'a photocraft_doc::AlphaChannel>,
+    has_alpha: bool,
+    quick_mask_id: Option<u16>,
+    real_merged: bool,
+}
+
+fn prepare_merged_planes<'a>(
+    doc: &'a Document,
+    ex: &mut Ex,
+    opts: &PsdExportOptions,
+    ctl: &Interrupt,
+    fmt: PixelFormat,
+    duotone: bool,
+    layers_share: f32,
+) -> MergedExport<'a> {
+    let sample = fmt.sample;
+    let cc = fmt.mode.color_channels();
+    let real_merged = opts.maximize_compatibility || ex.records.is_empty() || duotone;
+    let (mut planes, has_alpha) = merged_image(doc, opts, ctl, &fmt, real_merged, layers_share);
+    if !has_alpha {
+        planes.truncate(cc * doc.size.area() as usize * sample.bytes());
+    }
+    let (extra, quick_mask_id) = append_extra_channels(doc, ex, &mut planes, has_alpha, sample);
+    let channels = (cc + usize::from(has_alpha) + extra.len()) as u16;
+    let mode = if duotone { PsdMode::Duotone } else { psd_mode(fmt.mode) };
+    let header = Header::new(ex.version, doc.size.width, doc.size.height, channels, psd_depth(sample), mode);
+    let compression = if sample == SampleType::F32 { Compression::Raw } else { opts.merged_compression };
+    let image_data = ImageData::encode(compression, &planes, &header).or_else(|_| ImageData::encode(Compression::Raw, &planes, &header)).unwrap_or(ImageData {
+        compression: Compression::Raw,
+        data: planes,
+        stored: None,
+    });
+    ctl.progress(1.0);
+    MergedExport { header, image_data, extra, has_alpha, quick_mask_id, real_merged }
+}
+
+fn append_extra_channels<'a>(
+    doc: &'a Document,
+    ex: &mut Ex,
+    planes: &mut Vec<u8>,
+    has_alpha: bool,
+    sample: SampleType,
+) -> (Vec<&'a photocraft_doc::AlphaChannel>, Option<u16>) {
+    let cc = ex.cc;
+    let max_extra = 56 - cc - usize::from(has_alpha);
+    if doc.channels.len() > max_extra {
+        ex.warnings.push(format!("only {max_extra} alpha channels fit in PSD; the rest were dropped"));
+    }
+    let mut extra: Vec<_> = doc.channels.iter().take(max_extra).collect();
+    let quick_mask_id = match &doc.quick_mask {
+        Some(q) if extra.len() < max_extra => {
+            extra.push(q);
+            Some((cc + usize::from(has_alpha) + extra.len() - 1) as u16)
+        }
+        Some(_) => {
+            ex.warnings.push("Quick Mask was dropped because the PSD channel limit was reached".into());
+            None
+        }
+        None => None,
+    };
+    let canvas = doc.bounds();
+    for channel in &extra {
+        let surface = if channel.surface.format() != ex.mask_fmt { channel.surface.convert(ex.mask_fmt) } else { channel.surface.clone() };
+        let mut bytes = surface.to_interleaved(canvas);
+        if channel.spot.is_some() {
+            crate::channel_map::photoshop_spot_plane(&mut bytes, sample);
+        }
+        planes.extend(deinterleave(&bytes, 1, sample, &[false]).remove(0));
+    }
+    (extra, quick_mask_id)
+}
+
+fn merged_image(doc: &Document, opts: &PsdExportOptions, ctl: &Interrupt, fmt: &PixelFormat, real_merged: bool, layers_share: f32) -> (Vec<u8>, bool) {
+    if !real_merged {
+        return (placeholder_planes(doc, fmt), false);
+    }
+    // Merged composite, rendered and encoded in bands (no full-size float composite). Matting
+    // against white only changes pixels with alpha < 1; if some are slightly translucent but
+    // all round to opaque (so no alpha channel is written), encode once more without the matte.
+    let merged_end = layers_share + (1.0 - layers_share) * MERGED_RENDERED;
+    let (mut planes, has_alpha, translucent) =
+        crate::with_span(ctl, layers_share, merged_end, |ctl| merged_planes(doc, fmt, cmyk_of(fmt), opts.merged_matte, ctl));
+    if !has_alpha && translucent && opts.merged_matte {
+        planes = merged_planes(doc, fmt, cmyk_of(fmt), false, &Interrupt::cancel_only(&|| ctl.cancelled())).0;
+    }
+    (planes, has_alpha)
+}
+
+fn index_layer_ids_and_text(doc: &Document, ex: &mut Ex) {
+    // Assign layer ids up front (stable across round trips): keep unique
+    // `psd_id`s, number the rest after them; dividers come after all.
+    {
+        let walk = doc.walk();
+        let mut used = std::collections::HashSet::new();
+        for (_, _, l) in &walk {
+            if let Some(id) = l.psd_id
+                && used.insert(id)
+            {
+                ex.layer_ids.insert(l.id, id);
+            }
+        }
+        let mut next = 1u32;
+        for (_, _, l) in &walk {
+            if let std::collections::hash_map::Entry::Vacant(e) = ex.layer_ids.entry(l.id) {
+                while used.contains(&next) {
+                    next += 1;
+                }
+                used.insert(next);
+                e.insert(next);
+            }
+        }
+        ex.next_id = used.iter().copied().max().unwrap_or(0);
+        ex.used_ids = used;
+        // Text objects' number in the generated `Txt2` (#1348): a preserved `TySh` keeps the
+        // number it already names — its `Txt2` object must sit at that slot for `apply_txt2` —
+        // and new layers get numbers past every kept one and every object in the file's `Txt2`.
+        // Kept numbers are claimed first: a layer added below others must not take a number a
+        // layer above it keeps, or each of those would be renumbered onto its neighbour's object
+        // and take its style (#7773); nor may it land on a deleted layer's object.
+        let mut used_txt = std::collections::HashSet::new();
+        ex.text_index = Default::default();
+        let mut fresh = Vec::new();
+        for (_, _, l) in &walk {
+            let LayerContent::Text(t) = &l.content else {
+                continue;
+            };
+            match t.psd_raw.as_deref().and_then(|d| photocraft_text::psd::text_index(d)) {
+                Some(i) if used_txt.insert(i) => {
+                    ex.text_index.insert(l.id, i);
+                }
+                _ => fresh.push(l.id),
+            }
+        }
+        let objects =
+            doc.metadata.psd_global_blocks.iter().find(|(_, key, _)| key == b"Txt2").map_or(0, |(_, _, d)| photocraft_text::psd::txt2_object_count(d));
+        let mut next_txt = used_txt.iter().max().map_or(0, |m| m + 1).max(i32::try_from(objects).unwrap_or(i32::MAX));
+        if next_txt.saturating_add(fresh.len() as i32) > photocraft_text::psd::MAX_TEXT_INDEX + 1 {
+            next_txt = 0;
+        }
+        for id in fresh {
+            while used_txt.contains(&next_txt) {
+                next_txt += 1;
+            }
+            used_txt.insert(next_txt);
+            ex.text_index.insert(id, next_txt);
+        }
+    }
 }
 
 /// PSD mask parameters for a user mask's and a vector mask's (density, feather); `None` when

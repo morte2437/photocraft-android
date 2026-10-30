@@ -11,6 +11,13 @@
 //! - **libvulkan** with the NVIDIA and lavapipe drivers both installed: `wgpu::Instance::new` on
 //!   several threads segfaults.
 //!
+//! Separately, the **Intel Vulkan driver** on Windows (`igvk64.dll`) crashes a process that so
+//! much as creates a wgpu instance with Vulkan in it (#4), even on one thread. The app leaves
+//! Vulkan out on Intel; tests use wgpu's defaults, so on such a machine run them with
+//! `WGPU_BACKEND=dx12`. Tests that build their own instance read it through
+//! `InstanceDescriptor::new_without_display_handle_from_env`; `wgpu::Instance::default()`
+//! ignores it.
+//!
 //! So every test that builds a GPU harness (or its own wgpu device) holds [`gpu_lock`] for its
 //! whole run, harness included. Under nextest each test is its own process and the lock costs
 //! nothing; `.config/nextest.toml` caps how many of those run at once instead.

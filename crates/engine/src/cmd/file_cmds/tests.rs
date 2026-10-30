@@ -1160,6 +1160,61 @@ fn layers_to_files_writes_each_visible_layer() {
 }
 
 #[test]
+fn layers_to_files_can_trim_transparent_margins_without_changing_the_document() {
+    let dir = tmp("layers-trim");
+    for depth in [8, 16, 32] {
+        let mut s = session(12, 11, depth);
+        s.execute("layer.new.layer", json!({"name": "Ink"})).unwrap();
+        s.execute("select.rect", json!({"x": 3, "y": 2, "width": 4, "height": 5})).unwrap();
+        s.execute("edit.fill", json!({"color": "#ff0000"})).unwrap();
+        s.execute("select.deselect", json!({})).unwrap();
+
+        let before = doc(&s).clone();
+        let regular = s.execute("file.export.layersToFiles", json!({"dir": dir, "prefix": format!("full-{depth}"), "format": "png"})).unwrap();
+        let full = std::fs::read(regular["files"][0].as_str().unwrap()).unwrap();
+        let full = photocraft_io::import("full.png", &full).unwrap().document;
+        assert_eq!((full.size.width, full.size.height), (12, 11), "default is unchanged");
+
+        let trimmed = s.execute("file.export.layersToFiles", json!({"dir": dir, "prefix": format!("trim-{depth}"), "format": "png", "trim": true})).unwrap();
+        let image = std::fs::read(trimmed["files"][0].as_str().unwrap()).unwrap();
+        let cropped = photocraft_io::import("trim.png", &image).unwrap().document;
+        assert_eq!((cropped.size.width, cropped.size.height), (4, 5), "depth {depth}");
+        let px = photocraft_compose::render(&cropped, Rect::new(0, 0, 1, 1)).px[0];
+        assert!(px[0] > 0.95 && px[1] < 0.05 && px[2] < 0.05, "depth {depth}: {px:?}");
+        assert_eq!(*doc(&s), before, "export must not crop the original document");
+    }
+}
+
+#[test]
+fn streamed_layer_export_respects_trim() {
+    let mut s = session(12, 11, 8);
+    s.execute("layer.new.layer", json!({"name": "Ink"})).unwrap();
+    s.execute("select.rect", json!({"x": 3, "y": 2, "width": 4, "height": 5})).unwrap();
+    s.execute("edit.fill", json!({"color": "#ff0000"})).unwrap();
+    s.execute("select.deselect", json!({})).unwrap();
+    let mut encoded = Vec::new();
+    let names = super::export_layers_with(&s, &json!({"trim": true, "format": "png"}), |name, bytes| {
+        encoded.push((name.to_string(), bytes.to_vec()));
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(names.len(), encoded.len());
+    let cropped = photocraft_io::import(&encoded[0].0, &encoded[0].1).unwrap().document;
+    assert_eq!((cropped.size.width, cropped.size.height), (4, 5));
+}
+
+#[test]
+fn trimming_an_empty_layer_keeps_a_valid_nonzero_canvas() {
+    let dir = tmp("layers-trim-empty");
+    let mut s = session(6, 7, 8);
+    s.execute("layer.new.layer", json!({"name": "Empty"})).unwrap();
+    let result = s.execute("file.export.layersToFiles", json!({"dir": dir, "format": "png", "trim": true})).unwrap();
+    let bytes = std::fs::read(result["files"][0].as_str().unwrap()).unwrap();
+    let back = photocraft_io::import("empty.png", &bytes).unwrap().document;
+    assert_eq!((back.size.width, back.size.height), (6, 7));
+}
+
+#[test]
 fn load_files_into_stack_and_image_processor_and_batch() {
     let dir = tmp("batch");
     let input = join(&dir, "in");
@@ -1833,6 +1888,50 @@ fn folder_listing_recognises_gzipped_xcf_by_its_double_extension() {
     assert!(super::openable_name("page.PNG"));
     assert!(!super::openable_name("archive.tar.gz"));
     assert!(!super::openable_name("notes.txt"));
+}
+
+/// A folder batch picks up every extension that the codecs open: Cineon, DICOM, Amiga IFF, PCX,
+/// XPM, DDS, the Netpbm family, and Photoshop templates. Not the raws whose usual files open only
+/// as the embedded JPEG preview (CR3, compressed ORF and RAF, RW2 other than raw formats 3, 4 and
+/// 5): a batch would process the thumbnail without a word.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn folder_listing_takes_every_format_photocraft_opens() {
+    let codecs = ["a.cin", "a.dcm", "a.dicom", "a.dc3", "a.iff", "a.lbm", "a.ilbm", "a.pcx", "a.xpm", "a.dds", "a.pbm", "a.pam", "a.pfm", "a.psdt", "A.PCX"];
+    let raws = ["a.dng", "IMG_0001.CR2", "a.nef", "a.nrw", "a.arw", "a.pef"];
+    for name in codecs.into_iter().chain(raws) {
+        assert!(super::openable_name(name), "{name}");
+    }
+    for f in photocraft_codecs::Format::ALL.into_iter().filter(|f| f.caps().read) {
+        for ext in f.extensions() {
+            assert!(super::openable_name(&format!("a.{ext}")), "{f:?} .{ext}");
+        }
+    }
+    for name in ["a.cr3", "IMG_0001.CR3", "a.orf", "a.raf", "a.rw2", "a.srf", "a.sr2"] {
+        assert!(!super::openable_name(name), "{name}");
+    }
+    // PhotoCraft does not read AVIF.
+    assert!(!super::openable_name("a.avif"));
+}
+
+/// A batch over a folder processes PAM, PFM and DDS files instead of skipping them.
+#[test]
+fn batch_folder_processes_netpbm_and_dds_files() {
+    let dir = tmp("batch-folder-formats");
+    let src = join(&dir, "in");
+    std::fs::create_dir_all(&src).unwrap();
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 8, "height": 8, "background": "#ff0000"})).unwrap();
+    for name in ["a.pam", "b.pfm", "c.dds"] {
+        save_doc(doc(&s), &join(&src, name), None).unwrap();
+    }
+    std::fs::write(join(&src, "notes.txt"), b"not an image").unwrap();
+    let out = join(&dir, "out");
+    let r = Session::new().execute("file.automate.batch", json!({"steps": [], "input": src, "output": out, "format": "png"})).unwrap();
+    assert!(r["errors"].as_array().unwrap().is_empty(), "{r}");
+    let mut files: Vec<String> = r["files"].as_array().unwrap().iter().map(|f| file_name(f.as_str().unwrap())).collect();
+    files.sort();
+    assert_eq!(files, ["a.png", "b.png", "c.png"], "{r}");
 }
 
 /// The Compression tag (259) of a TIFF's first directory.

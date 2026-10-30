@@ -1,5 +1,5 @@
 use super::doc_textures::mip_count;
-use super::*;
+use super::wgpu;
 
 /// Floor of the compositor's memory budget: enough for a viewport's pages of a dozen layers.
 pub const MIN_GPU_BUDGET: u64 = 512 << 20;
@@ -120,11 +120,11 @@ fn detect_physical_memory() -> Option<u64> {
 }
 
 /// The memory of `adapter` itself, in bytes, when it is a discrete GPU and the platform reports
-/// it: DXGI's dedicated video memory on Windows, amdgpu's VRAM size on Linux. `None` for
-/// integrated and software adapters, whose textures live in system memory (the RAM-based
-/// budgets already cover them), and where nothing reports it. `PHOTOCRAFT_VRAM_MB` overrides it
-/// for any adapter, simulating a discrete card of that size: on an integrated GPU the budget then
-/// stops charging the document's pixels too, as for a real card (a development switch).
+/// it: DXGI's dedicated video memory on Windows, amdgpu's VRAM size or `nvidia-smi`'s report on
+/// Linux. `None` for integrated and software adapters, whose textures live in system memory (the
+/// RAM-based budgets already cover them), and where nothing reports it. `PHOTOCRAFT_VRAM_MB`
+/// overrides it for any adapter, simulating a discrete card of that size: on an integrated GPU the
+/// budget then stops charging the document's pixels too, as for a real card (a development switch).
 pub fn video_memory(adapter: &wgpu::AdapterInfo) -> Option<u64> {
     if let Some(mb) = std::env::var("PHOTOCRAFT_VRAM_MB").ok().and_then(|v| v.trim().parse::<u64>().ok()) {
         return mb.checked_mul(1 << 20).filter(|b| *b > 0);
@@ -161,7 +161,103 @@ pub(super) fn detect_video_memory(vendor: u32, device: u32) -> Option<u64> {
 
 #[cfg(target_os = "linux")]
 fn detect_video_memory(vendor: u32, device: u32) -> Option<u64> {
-    drm_video_memory(std::path::Path::new("/sys/class/drm"), vendor, device)
+    drm_video_memory(std::path::Path::new("/sys/class/drm"), vendor, device).or_else(|| nvidia_video_memory(vendor, device))
+}
+
+/// PCI vendor id of NVIDIA, whose proprietary Linux driver writes none of amdgpu's
+/// `mem_info_vram_total` sysfs files (a card of its own still reads as [`None`] above): without
+/// this, a discrete NVIDIA card was charged for the document's pixels like an integrated one,
+/// `memory_budget` shrank to Memory Usage minus them, and a many-layer document whose pages then
+/// missed that budget redrew whole-document edits on the CPU every time (P60/P61 on an NVIDIA
+/// Linux box: 1.5 s where the fix's own benchmark measures tens of milliseconds elsewhere).
+#[cfg(any(target_os = "linux", test))]
+pub(super) const NVIDIA_VENDOR: u32 = 0x10de;
+
+/// How long `nvidia-smi` gets to answer: it runs on the UI thread while the window opens, and a
+/// driver that hangs the query must not keep PhotoCraft from starting.
+#[cfg(target_os = "linux")]
+const NVIDIA_SMI_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// NVIDIA's own memory size on Linux, from `nvidia-smi` (installed with the driver that put this
+/// adapter there in the first place): absent, slower than [`NVIDIA_SMI_DEADLINE`] or odd output
+/// all read as `None`, never a hang or a panic.
+#[cfg(target_os = "linux")]
+pub(super) fn nvidia_video_memory(vendor: u32, device: u32) -> Option<u64> {
+    if vendor != NVIDIA_VENDOR {
+        return None;
+    }
+    let mut cmd = std::process::Command::new("nvidia-smi");
+    cmd.args(["--query-gpu=pci.device_id,memory.total", "--format=csv,noheader,nounits"]);
+    let out = bounded_output(cmd, NVIDIA_SMI_DEADLINE)?;
+    parse_nvidia_smi(&String::from_utf8_lossy(&out), vendor, device)
+}
+
+/// The first 64 KiB of `cmd`'s stdout when it exits successfully within `deadline`; `None` when
+/// it can't start, fails or is still running by then. A late one is killed and reaped on a thread
+/// of its own (a process stuck in the driver may not die at once), so the caller waits about
+/// `deadline` at most.
+#[cfg(any(target_os = "linux", test))]
+pub(super) fn bounded_output(mut cmd: std::process::Command, deadline: std::time::Duration) -> Option<Vec<u8>> {
+    use std::io::Read;
+    use std::process::{Child, Stdio};
+    use std::time::{Duration, Instant};
+    fn abandon(mut child: Child) {
+        let _ = child.kill();
+        let _ = std::thread::Builder::new().name("reap".into()).spawn(move || child.wait());
+    }
+    let end = Instant::now().checked_add(deadline)?;
+    let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+    let Some(stdout) = child.stdout.take() else {
+        abandon(child);
+        return None;
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    let reader = std::thread::Builder::new().name("child-stdout".into()).spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stdout.take(64 << 10).read_to_end(&mut buf);
+        let _ = tx.send(buf);
+    });
+    if reader.is_err() {
+        abandon(child);
+        return None;
+    }
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < end => std::thread::sleep(Duration::from_millis(10)),
+            _ => {
+                abandon(child);
+                return None;
+            }
+        }
+    };
+    if !status.success() {
+        return None;
+    }
+    // The child has exited, so its stdout is at EOF unless it handed the pipe on to a process of
+    // its own: bounded too, rather than joining the reader.
+    rx.recv_timeout(end.saturating_duration_since(Instant::now()).max(Duration::from_millis(50))).ok()
+}
+
+/// `nvidia-smi --query-gpu=pci.device_id,memory.total --format=csv,noheader,nounits`'s own
+/// format: one `0xDDDDVVVV, size-in-MiB` line per card (device id the high half, vendor id the
+/// low, as `lspci -n` and wgpu's own ids read them). The matching line's size, in bytes, and the
+/// smallest when several cards share those ids (the ids can't tell which one wgpu picked, so the
+/// budget assumes the smaller); `None` when no line names this `vendor`/`device`, or the output
+/// isn't shaped like that at all.
+#[cfg(any(target_os = "linux", test))]
+pub(super) fn parse_nvidia_smi(output: &str, vendor: u32, device: u32) -> Option<u64> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let (id, mb) = line.split_once(',')?;
+            let id = u32::from_str_radix(id.trim().trim_start_matches("0x").trim_start_matches("0X"), 16).ok()?;
+            if id & 0xffff != vendor || id >> 16 != device {
+                return None;
+            }
+            mb.trim().parse::<u64>().ok()?.checked_mul(1 << 20).filter(|b| *b > 0)
+        })
+        .min()
 }
 
 /// amdgpu's VRAM size (`<card>/device/mem_info_vram_total`, bytes) of the card under `drm` (the

@@ -293,21 +293,22 @@ fn refine_invert_inverts_the_mask_and_leaves_the_layer_alone() {
 }
 
 #[test]
-fn refine_row_opens_the_select_and_mask_and_color_range_dialogs() {
-    for (label, open) in [("Select and Mask…", "select.refineEdge"), ("Color Range…", crate::color_range_ui::COMMAND)] {
-        let mut h = harness(false, crate::theme::ThemeKind::Pro);
-        assert!(h.state().ui.dialogs.is_empty());
-        h.get_by_label(label).click();
-        h.run_steps(3);
-        let dialogs = &h.state().ui.dialogs;
-        assert_eq!(dialogs.len(), 1, "{label} opens one dialog");
-        let fields = &dialogs[0].fields;
-        let opened = fields.get("__command").and_then(Value::as_str).unwrap_or(crate::color_range_ui::COMMAND);
-        assert_eq!(opened, open, "{label} opened {opened}");
-        if open == crate::color_range_ui::COMMAND {
-            assert!(crate::color_range_ui::owns(fields), "the Color Range dialog, not the generic one");
-        }
-    }
+fn refine_row_opens_the_select_and_mask_workspace_and_color_range_dialog() {
+    // Select and Mask… opens Photoshop's workspace on the targeted mask.
+    let mut h = harness(false, crate::theme::ThemeKind::Pro);
+    h.get_by_label("Select and Mask…").click();
+    h.run_steps(3);
+    assert!(h.state().ui.dialogs.is_empty(), "a workspace, not a dialog");
+    let w = h.state().distort.describe()["selectAndMask"].clone();
+    assert_eq!(w["settings"]["output"].as_str(), Some("layerMask"), "it refines the mask: {w}");
+    // Color Range… opens its own dialog.
+    let mut h = harness(false, crate::theme::ThemeKind::Pro);
+    assert!(h.state().ui.dialogs.is_empty());
+    h.get_by_label("Color Range…").click();
+    h.run_steps(3);
+    let dialogs = &h.state().ui.dialogs;
+    assert_eq!(dialogs.len(), 1, "Color Range… opens one dialog");
+    assert!(crate::color_range_ui::owns(&dialogs[0].fields), "the Color Range dialog, not the generic one");
 }
 
 /// A Studio-layout theme's floating Properties card, with no mask targeted.

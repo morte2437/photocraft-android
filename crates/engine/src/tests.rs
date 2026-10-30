@@ -265,8 +265,9 @@ fn new_adjustment_and_fill_layers_are_masked_by_the_selection() {
             assert_eq!(mask.value(10, 10), 1.0, "{id} at {depth}-bit: the mask hides the selected area");
             assert_eq!(mask.value(2, 2), 0.0, "{id} at {depth}-bit: the mask reveals outside the selection");
             assert!(mask.linked && mask.enabled, "{id}");
-            // The selection stays, as after Layer › Layer Mask › Reveal Selection.
-            assert!(d.doc.selection.is_some(), "{id} dropped the selection");
+            // The selection went into the mask, so Photoshop drops it, as Layer › Layer Mask ›
+            // Reveal Selection does (#5251, #8801).
+            assert!(d.doc.selection.is_none(), "{id} at {depth}-bit kept the selection");
             // The white canvas is untouched outside the selection.
             assert_eq!(px(&mut s, 2, 2), vec![1.0, 1.0, 1.0, 1.0], "{id} at {depth}-bit changed pixels outside the selection");
             if blackens {
@@ -274,6 +275,29 @@ fn new_adjustment_and_fill_layers_are_masked_by_the_selection() {
             }
             s.execute("edit.undo", json!({})).unwrap();
             assert!(s.active().unwrap().doc.layer(layer).is_none(), "{id}: undo keeps the layer");
+            let sel = s.active().unwrap().doc.selection.as_ref().unwrap_or_else(|| panic!("{id}: undo does not bring the selection back"));
+            assert_eq!(sel.content_bounds(), photocraft_geom::Rect::new(8, 8, 24, 24), "{id}: undo restores the same selection");
+        }
+    }
+}
+
+#[test]
+fn an_edit_after_a_new_fill_layer_on_a_selection_reaches_the_whole_layer() {
+    // #8801: the selection that masked a new fill or adjustment layer is gone, so the next
+    // pixel edit on another layer is not limited to it.
+    for (id, params) in [("layer.newFillLayer.solidColor", json!({"color": "#000000"})), ("layer.newAdjustmentLayer.invert", json!({}))] {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 40, "height": 20})).unwrap();
+        s.execute("edit.fill", json!({"contents": "color", "color": "#3366cc"})).unwrap();
+        s.execute("select.rect", json!({"x": 0, "y": 0, "width": 20, "height": 20})).unwrap();
+        s.execute(id, params).unwrap();
+        s.execute("layer.setProps", json!({"visible": false})).unwrap();
+        s.execute("layer.selectBottom", json!({})).unwrap();
+        s.execute("layer.duplicate", json!({})).unwrap();
+        s.execute("image.adjustments.desaturate", json!({})).unwrap();
+        for x in [5, 35] {
+            let p = px(&mut s, x, 10);
+            assert!((p[0] - p[1]).abs() < 1e-3 && (p[1] - p[2]).abs() < 1e-3, "{id}: ({x}, 10) is not grey: {p:?}");
         }
     }
 }
@@ -351,6 +375,7 @@ fn new_fill_and_adjustment_layers_take_the_active_path_as_their_vector_mask() {
                 let want = if path_name == "work" { d.doc.work_path.clone().unwrap() } else { d.doc.paths[0].path.clone() };
                 assert_eq!(vm.path, want, "{id}: the vector mask is the path");
                 assert!(l.mask.is_none(), "{id}: the path wins over the selection");
+                assert!(d.doc.selection.is_some(), "{id}: an unused selection stays");
                 for (x, y) in [(2, 2), (42, 32), (30, 30)] {
                     assert_eq!(px(&mut s, x, y), vec![1.0, 1.0, 1.0, 1.0], "{id} ({path_name}) at {depth}-bit changed pixels outside the path at ({x}, {y})");
                 }
@@ -434,6 +459,34 @@ fn marquee_dragged_past_the_canvas_stops_at_its_edge() {
 }
 
 #[test]
+fn subtract_clears_selection_when_only_disjoint_off_canvas_pixels_remain() {
+    use photocraft_geom::Rect;
+    use photocraft_raster::Surface;
+    let mut s = session_with_doc(); // 64 × 48
+    let mut selection = Surface::new(photocraft_color::PixelFormat::GRAY8);
+    // Simulate a moved sparse selection: one remnant on either side of the canvas and one
+    // in-canvas region that the subtract marquee will remove. The off-canvas bounds straddle
+    // the canvas, so testing only their bounding-box intersection would incorrectly keep it.
+    selection.fill_rect(Rect::new(-4, 10, 0, 14), &[1.0]);
+    selection.fill_rect(Rect::new(20, 10, 24, 14), &[1.0]);
+    selection.fill_rect(Rect::new(64, 10, 68, 14), &[1.0]);
+    Arc::make_mut(&mut s.active_mut().unwrap().doc).selection = Some(selection);
+
+    s.execute("select.rect", json!({"x": 0, "y": 0, "width": 64, "height": 48, "mode": "subtract"})).unwrap();
+
+    assert!(s.active().unwrap().doc.selection.is_none());
+}
+
+#[test]
+fn subtract_clears_selection_with_nonzero_default_when_canvas_is_empty() {
+    use photocraft_raster::Surface;
+    let mut s = session_with_doc();
+    Arc::make_mut(&mut s.active_mut().unwrap().doc).selection = Some(Surface::with_default(photocraft_color::PixelFormat::GRAY8, &[1.0]));
+    s.execute("select.rect", json!({"x": 0, "y": 0, "width": 64, "height": 48, "mode": "subtract"})).unwrap();
+    assert!(s.active().unwrap().doc.selection.is_none());
+}
+
+#[test]
 fn marquee_steps_are_named_after_their_tool() {
     // #513: the elliptical marquee shares `select.rect` but records its own step name.
     let mut s = session_with_doc();
@@ -504,6 +557,41 @@ fn undo_and_redo_restore_the_targeted_layers() {
     assert!(s.undo());
     assert!(s.redo());
     assert_eq!(target(&s), copies);
+}
+
+#[test]
+fn selection_inverse_preserves_coverage_history_and_empty_selection() {
+    for depth in [8, 16, 32] {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 530, "height": 270, "depth": depth})).unwrap();
+        s.execute("select.rect", json!({"x": 250, "y": 10, "width": 30, "height": 30, "ellipse": true})).unwrap();
+        let before = s.active().unwrap().doc.clone();
+        let area = before.bounds();
+        let original = before.selection.as_ref().unwrap().to_interleaved(area);
+        s.execute("select.inverse", json!({})).unwrap();
+        let after = s.active().unwrap();
+        let inverted = after.doc.selection.as_ref().unwrap();
+        assert_eq!(inverted.to_interleaved(area), original.iter().map(|b| 255 - b).collect::<Vec<_>>());
+        assert_eq!(inverted.sample_channel(530, 269, 0), 0.0);
+        assert_eq!(inverted.sample_channel(529, 270, 0), 0.0);
+        assert_eq!(after.last_damage, Some(photocraft_geom::Rect::EMPTY));
+        assert_eq!(before.selection.as_ref().unwrap().to_interleaved(area), original);
+        assert!(s.undo());
+        assert_eq!(s.active().unwrap().doc.selection.as_ref().unwrap().to_interleaved(area), original);
+        assert!(s.redo());
+        s.execute("select.inverse", json!({})).unwrap();
+        assert_eq!(s.active().unwrap().doc.selection.as_ref().unwrap().to_interleaved(area), original);
+
+        s.execute("select.all", json!({})).unwrap();
+        s.execute("select.inverse", json!({})).unwrap();
+        let empty = s.active().unwrap().doc.selection.as_ref().unwrap();
+        assert_eq!(empty.tile_count(), 0);
+        // Keep Some(empty), as before: the next Inverse selects the whole canvas again.
+        s.execute("select.inverse", json!({})).unwrap();
+        assert_eq!(s.active().unwrap().doc.selection.as_ref().unwrap().content_bounds(), area);
+    }
+    let mut s = Session::new();
+    assert!(s.execute("select.inverse", json!({})).is_err());
 }
 
 #[test]
@@ -593,6 +681,10 @@ fn arrange_and_group() {
     let names: Vec<String> = s.active().unwrap().doc.layers.iter().map(|l| l.name.clone()).collect();
     assert_eq!(names, ["Background", "B", "A"]);
     assert!(s.execute("layer.arrange.bringForward", json!({})).is_err());
+    // Bring to Front of the front layer does nothing: no error (an action plays it), no step.
+    let steps = s.active().unwrap().history.past_len();
+    assert_eq!(s.execute("layer.arrange.bringToFront", json!({})).unwrap(), json!({"moved": false}));
+    assert_eq!(s.active().unwrap().history.past_len(), steps);
     s.execute("layer.groupLayers", json!({})).unwrap();
     let doc = s.execute("document.inspect", json!({})).unwrap();
     assert_eq!(doc["layers"][0]["kind"], "Group");
@@ -1160,7 +1252,8 @@ fn move_selected_layers_keeps_selected_group_children_and_supports_above_below()
     let b = s.execute("layer.new.layer", json!({"name": "B"})).unwrap()["layer"].as_u64().unwrap();
     let c = s.execute("layer.new.layer", json!({"name": "C"})).unwrap()["layer"].as_u64().unwrap();
     let group = s.execute("layer.new.group", json!({"name": "G"})).unwrap()["layer"].as_u64().unwrap();
-    // Made before B moves into G: a new group goes above the active layer, which would then be inside G.
+    // Made from C, not from G: like Photoshop a new group goes inside an open active group.
+    s.execute("layer.select", json!({"layer": c})).unwrap();
     let target = s.execute("layer.new.group", json!({"name": "Target"})).unwrap()["layer"].as_u64().unwrap();
     s.execute("layer.moveTo", json!({"layer": b, "target": group, "position": "into"})).unwrap();
 

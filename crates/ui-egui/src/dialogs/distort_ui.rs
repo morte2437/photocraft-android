@@ -24,6 +24,8 @@ pub struct Distort {
     pub liquify: Option<crate::liquify_ui::LiquifyDialog>,
     /// Edit › Content-Aware Fill… (caf_ui).
     pub caf: Option<crate::caf_ui::CafWorkspace>,
+    /// Select › Select and Mask… (select_mask_ui).
+    pub select_mask: Option<crate::select_mask_ui::SelectMaskWorkspace>,
     pub puppet: Option<crate::puppet_ui::PuppetSession>,
     pub perspective: Option<crate::perspective_ui::PerspSession>,
     pub vanishing: Option<crate::vp_ui::VpSession>,
@@ -35,7 +37,12 @@ pub struct Distort {
 
 impl Distort {
     pub fn active(&self) -> bool {
-        self.liquify.is_some() || self.caf.is_some() || self.puppet.is_some() || self.perspective.is_some() || self.vanishing.is_some()
+        self.liquify.is_some()
+            || self.caf.is_some()
+            || self.select_mask.is_some()
+            || self.puppet.is_some()
+            || self.perspective.is_some()
+            || self.vanishing.is_some()
     }
 
     /// Short description for `ui.inspect`.
@@ -43,6 +50,7 @@ impl Distort {
         json!({
             "liquify": self.liquify.as_ref().map(|d| d.describe()),
             "contentAwareFill": self.caf.as_ref().map(|d| d.describe()),
+            "selectAndMask": self.select_mask.as_ref().map(|d| d.describe()),
             "puppet": self.puppet.as_ref().map(|p| p.describe()),
             "perspective": self.perspective.as_ref().map(|p| p.describe()),
             "vanishingPoint": self.vanishing.as_ref().map(|v| v.describe()),
@@ -95,7 +103,9 @@ pub(crate) fn surface_image(surf: &Surface, r: Rect, max_side: usize) -> ColorIm
 /// Adaptive Wide Angle). These are modal: other menu commands wait for OK or Cancel
 /// (`menus::modal_allows`).
 pub(crate) fn modal_workspace(app: &PhotocraftApp) -> Option<&'static str> {
-    if app.distort.liquify.is_some() {
+    if app.distort.select_mask.is_some() {
+        Some("select.selectAndMask")
+    } else if app.distort.liquify.is_some() {
         Some("filter.liquify")
     } else if app.distort.caf.is_some() {
         Some("edit.contentAwareFill")
@@ -116,7 +126,7 @@ fn on_doc(app: &PhotocraftApp, document: DocId) -> bool {
     active_doc(app) == Some(document)
 }
 
-/// Drops Liquify / Puppet / Perspective Warp / Vanishing Point / Filter Gallery when the
+/// Drops Liquify / Select and Mask / Puppet / Perspective Warp / Vanishing Point / Filter Gallery when the
 /// document they were opened on is no longer active, so they cannot steal undo, block layer
 /// delete, or draw another document's pixels (#5115).
 pub fn cancel_stale(app: &mut PhotocraftApp) {
@@ -135,6 +145,10 @@ pub fn cancel_stale(app: &mut PhotocraftApp) {
     }
     if app.distort.gallery.as_ref().is_some_and(|g| Some(g.document) != active) {
         app.distort.gallery = None;
+    }
+    // Its document, or the layer it refines, is no longer the active one (#8896 review).
+    if crate::select_mask_ui::stale(app).is_some() {
+        crate::select_mask_ui::cancel(app);
     }
 }
 
@@ -171,6 +185,9 @@ pub fn menu(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: &Val
         "edit.contentAwareFill" if ui.is_some() && app.distort.caf.is_some() => Some(crate::caf_ui::control(app, ui.unwrap_or(&Value::Null))),
         // `ui` addresses the workspace: closed, that is an error, not a fill with the defaults.
         "edit.contentAwareFill" if ui.is_some() => Some(Err("Content-Aware Fill is not open".into())),
+        "select.selectAndMask" if ui.is_some() && app.distort.select_mask.is_some() => Some(crate::select_mask_ui::control(app, ui.unwrap_or(&Value::Null))),
+        "select.selectAndMask" if ui.is_some() => Some(Err("Select and Mask is not open".into())),
+        "select.selectAndMask" => Some(crate::select_mask_ui::open(app).map(|_| json!({"selectAndMask": app.distort.describe()["selectAndMask"]}))),
         "edit.puppetWarp" | "layer.smartObjects.puppetWarp" if empty => {
             Some(crate::puppet_ui::begin(app, ctx, id).map(|_| json!({"puppet": app.distort.describe()["puppet"]})))
         }
@@ -194,6 +211,10 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) ->
     cancel_stale(app);
     if app.distort.caf.is_some() {
         crate::caf_ui::pointer(app, ev, mods);
+        return true;
+    }
+    if app.distort.select_mask.as_ref().is_some_and(|w| on_doc(app, w.document)) {
+        crate::select_mask_ui::pointer(app, ev, mods);
         return true;
     }
     if app.distort.liquify.as_ref().is_some_and(|d| on_doc(app, d.document)) {
@@ -235,6 +256,15 @@ pub fn keys(app: &mut PhotocraftApp, ctx: &egui::Context) -> bool {
             crate::caf_ui::commit(app);
         } else if esc(ctx) {
             crate::caf_ui::cancel(app);
+        }
+        return true;
+    }
+    if app.distort.select_mask.is_some() {
+        // Enter closes a Polygonal Lasso polygon, else OK; Esc drops one, else Cancel.
+        if enter(ctx) {
+            crate::select_mask_ui::enter(app);
+        } else if esc(ctx) {
+            crate::select_mask_ui::escape(app);
         }
         return true;
     }
@@ -348,6 +378,7 @@ pub fn drop_foreign(app: &mut PhotocraftApp) {
         app.distort.liquify = None;
         // Stops its background preview too; what Apply wrote stays, as with Cancel.
         crate::caf_ui::cancel(app);
+        crate::select_mask_ui::cancel(app);
         app.distort.puppet = None;
         app.distort.perspective = None;
         app.distort.vanishing = None;
@@ -362,6 +393,9 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
     drop_foreign(app);
     if app.distort.caf.is_some() {
         crate::caf_ui::show(app, ctx);
+    }
+    if app.distort.select_mask.is_some() {
+        crate::select_mask_ui::show(app, ctx);
     }
     if app.distort.gallery.is_some() {
         crate::gallery_ui::show(app, ctx);

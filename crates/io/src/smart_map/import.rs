@@ -1,6 +1,9 @@
-use super::export::{CELL_SIZE, blend_options, is_meta, pi, rgbc};
+use super::export::{CELL_SIZE, blend_options, is_meta, pi, rgbc, whole};
 use super::placed::enumv;
-use super::*;
+use super::{
+    BlendMode, Descriptor, Id, J, Map, ReferenceItem, SmartFilter, UNSUPPORTED_FILTER, UnicodeString, Value, bool_or, camera_raw, displace, enum_of, get_desc,
+    hue_sat, json, num, perspective_warp, text_of,
+};
 
 // ---------- the filters we model ----------
 
@@ -464,12 +467,20 @@ const WAVE_KEYS: [&str; 10] = ["Wvtp", "NmbG", "WLMn", "WLMx", "AmMn", "AmMx", "
 /// Tiles its colours).
 pub(super) fn known_params(class: &str, f: Option<&Descriptor>, item: &Descriptor) -> Option<(&'static str, J)> {
     let k = KNOWN.iter().find(|k| k.class == class)?;
-    let params = match (class, f) {
-        ("adaptCorrect" | "Invr", None) => json!({}),
-        (c, None) if NO_OPTIONS.contains(&c) => json!({}),
-        (_, None) => return None,
-        // Exactly the settings Photoshop writes (and we write back); an extra or repeated one keeps
-        // the filter verbatim rather than lose it on save.
+    let params = match f {
+        None if class == "adaptCorrect" || class == "Invr" || NO_OPTIONS.contains(&class) => json!({}),
+        None => return None,
+        Some(f) => distort_filter_params(class, f)
+            .or_else(|| blur_filter_params(class, f))
+            .or_else(|| pixel_filter_params(class, f, item))
+            .or_else(|| stylize_filter_params(class, f, item))
+            .or_else(|| other_filter_params(class, f))?,
+    };
+    Some((k.command, params))
+}
+
+fn distort_filter_params(class: &str, f: &Descriptor) -> Option<J> {
+    Some(match (class, Some(f)) {
         ("Pnch", Some(f)) if exact_keys(f, &["Amnt"]) => json!({"amount": int(f, "Amnt")?}),
         ("Twrl", Some(f)) if exact_keys(f, &["Angl"]) => json!({"angle": int(f, "Angl")?}),
         ("Rple", Some(f)) if exact_keys(f, &["Amnt", "RplS"]) => json!({"amount": int(f, "Amnt")?, "size": enum_name(f, "RplS", "RplS", &RIPPLE_SIZE)?}),
@@ -499,6 +510,12 @@ pub(super) fn known_params(class: &str, f: Option<&Descriptor>, item: &Descripto
                 "seed": (int(f, "RndS")? as u32),
             })
         }
+        _ => return None,
+    })
+}
+
+fn blur_filter_params(class: &str, f: &Descriptor) -> Option<J> {
+    Some(match (class, Some(f)) {
         ("GsnB" | "boxblur" | "Mdn " | "HghP" | "Mxm " | "Mnm ", Some(f)) => json!({"radius": px(f, "Rds ")?}),
         ("MtnB", Some(f)) => json!({"angle": int(f, "Angl")?, "distance": px(f, "Dstn")?}),
         ("UnsM", Some(f)) => json!({"amount": px(f, "Amnt")?, "radius": px(f, "Rds ")?, "threshold": int(f, "Thsh")?}),
@@ -529,6 +546,12 @@ pub(super) fn known_params(class: &str, f: Option<&Descriptor>, item: &Descripto
             "method": enum_name(f, "BlrM", "BlrM", &RADIAL_METHOD)?,
             "quality": enum_name(f, "BlrQ", "BlrQ", &RADIAL_QUALITY)?,
         }),
+        _ => return None,
+    })
+}
+
+fn pixel_filter_params(class: &str, f: &Descriptor, item: &Descriptor) -> Option<J> {
+    Some(match (class, Some(f)) {
         ("Msc ", Some(f)) => json!({"cellSize": px(f, "ClSz")?}),
         ("Mztn", Some(f)) if only_keys(f, &["MztT"]) => json!({"type": enum_name(f, "MztT", "MztT", &MEZZOTINT_TYPES)?}),
         ("ClrH", Some(f)) => color_halftone_params(f)?,
@@ -551,6 +574,12 @@ pub(super) fn known_params(class: &str, f: Option<&Descriptor>, item: &Descripto
             }
             p
         }
+        _ => return None,
+    })
+}
+
+fn stylize_filter_params(class: &str, f: &Descriptor, item: &Descriptor) -> Option<J> {
+    Some(match (class, Some(f)) {
         ("Wnd ", Some(f)) => json!({
             "method": enum_from(f, "WndM", "WndM", &WIND_METHODS)?,
             "direction": enum_from(f, "Drct", "Drct", &WIND_DIRECTIONS)?,
@@ -564,6 +593,12 @@ pub(super) fn known_params(class: &str, f: Option<&Descriptor>, item: &Descripto
             "maskIncompleteBlocks": bool_at(f, "ExtM")?,
         }),
         ("Tls ", Some(f)) => tiles_params(f, item)?,
+        _ => return None,
+    })
+}
+
+fn other_filter_params(class: &str, f: &Descriptor) -> Option<J> {
+    Some(match (class, Some(f)) {
         ("Ofst", Some(f)) if only_keys(f, &["Hrzn", "Vrtc", "Fl  "]) => {
             json!({"horizontal": int(f, "Hrzn")?, "vertical": int(f, "Vrtc")?, "undefinedAreas": enum_from(f, "Fl  ", "FlMd", &OFFSET_FILL)?})
         }
@@ -578,10 +613,8 @@ pub(super) fn known_params(class: &str, f: Option<&Descriptor>, item: &Descripto
         ("Lvls", Some(f)) => levels_params(f)?,
         ("Crvs", Some(f)) => curves_params(f)?,
         _ => return None,
-    };
-    Some((k.command, params))
+    })
 }
-
 // ---------- Filter Gallery ----------
 //
 // Filter › Filter Gallery stores its effect stack in a `GEfc` filter (filterID `GEfc`). Photoshop
@@ -596,7 +629,7 @@ pub(super) fn known_params(class: &str, f: Option<&Descriptor>, item: &Descripto
 // `FrgC`/`BckC` are the colours the Sketch effects read. Only effects whose settings we know are
 // mapped; a stack with any other effect (or setting) stays an [`UNSUPPORTED_FILTER`].
 
-const GALLERY_CLASS: &str = "GEfc";
+pub(super) const GALLERY_CLASS: &str = "GEfc";
 
 pub(super) const GALLERY_COMMAND: &str = "filter.filterGallery";
 
@@ -609,7 +642,13 @@ pub(super) struct GalleryCode {
     pub(super) settings: &'static [(&'static str, &'static str)],
 }
 
-pub(super) const GALLERY_EFFECTS: [GalleryCode; 1] = [GalleryCode { key: "chrome", code: "Chrm", settings: &[("Dtl ", "detail"), ("Smth", "smoothness")] }];
+pub(super) const GALLERY_EFFECTS: [GalleryCode; 2] = [
+    GalleryCode { key: "chrome", code: "Chrm", settings: &[("Dtl ", "detail"), ("Smth", "smoothness")] },
+    GalleryCode { key: "halftonePattern", code: "HlfS", settings: &[("HlSz", "size"), ("Cntr", "contrast")] },
+];
+
+// Halftone Pattern's shape is a `ScrT` enum (Filter Gallery terminology: Dot, Circle, Line).
+const HALFTONE_PATTERNS: [(&[u8; 4], &str); 3] = [(b"ScrD", "dot"), (b"ScrC", "circle"), (b"ScrL", "line")];
 
 /// An `RGBC` descriptor (0–255 channels) as straight `[r, g, b, a]`, 0–1.
 fn rgbc_colour(d: &Descriptor) -> Option<J> {
@@ -669,8 +708,26 @@ fn gallery_params(item: &Descriptor, f: &Descriptor) -> Option<J> {
         let code = enum_of(e, "GEfk")?;
         let g = GALLERY_EFFECTS.iter().find(|g| g.code.as_bytes() == code)?;
         let mut params = Map::new();
+        if g.key == "halftonePattern" {
+            // Do not turn an unfamiliar shape or malformed setting into the engine's defaults:
+            // keeping the whole item opaque preserves it through a subsequent save. That covers
+            // the stack's own descriptor too: a key beside `GEfs` would not be written back.
+            if f.get("GEfs").is_some() && !(f.class_id.is(GALLERY_CLASS) && only_keys(f, &["GEfs"])) {
+                return None;
+            }
+            if !e.class_id.is(GALLERY_CLASS)
+                || !only_keys(e, &["GEfk", "HlSz", "Cntr", "ScrT", "GELv"])
+                || !matches!(e.get("GEfk"), Some(Value::Enumerated { type_id, .. }) if type_id.is("GEft"))
+                || e.get("GELv").is_some_and(|v| !matches!(v, Value::Boolean(_)))
+            {
+                return None;
+            }
+            int_in(e, "HlSz", 1, 12)?;
+            int_in(e, "Cntr", 0, 50)?;
+            params.insert("patternType".into(), json!(enum_name(e, "ScrT", "ScrT", &HALFTONE_PATTERNS)?));
+        }
         for (k, v) in &e.items {
-            if k.is("GEfk") || k.is("GELv") {
+            if k.is("GEfk") || k.is("GELv") || g.key == "halftonePattern" && k.is("ScrT") {
                 continue;
             }
             let (_, ours) = g.settings.iter().find(|(psd, _)| k.is(psd))?;
@@ -723,13 +780,25 @@ pub(super) fn gallery_item(f: &SmartFilter) -> Result<Descriptor, String> {
         let g = GALLERY_EFFECTS.iter().find(|g| g.key == key).ok_or_else(|| format!("gallery effect `{key}` has no PSD equivalent"))?;
         let params = e.get("params").filter(|v| v.is_object()).unwrap_or(e);
         if let Some(k) = params.as_object().and_then(|o| {
-            o.keys().find(|k| !is_meta(k) && !["filter", "params", "visible"].contains(&k.as_str()) && !g.settings.iter().any(|(_, ours)| ours == k))
+            o.keys().find(|k| {
+                !is_meta(k)
+                    && !["filter", "params", "visible"].contains(&k.as_str())
+                    && !g.settings.iter().any(|(_, ours)| ours == k)
+                    && !(key == "halftonePattern" && *k == "patternType")
+            })
         }) {
             return Err(format!("gallery setting `{key}.{k}` has no PSD equivalent"));
         }
         let defaults = photocraft_algo::GalleryFilter::from_key(key).map(photocraft_algo::GalleryEffect::new);
-        let settings: Vec<(&str, Value)> =
-            g.settings.iter().map(|(psd, ours)| (*psd, pi(params, ours, defaults.as_ref().map_or(0.0, |x| f64::from(x.get(ours)))))).collect();
+        let settings: Vec<(&str, Value)> = if key == "halftonePattern" {
+            vec![
+                ("HlSz", whole(pf_range(params, "size", 1.0, 1.0, 12.0)?, (1, 12), "size")?),
+                ("Cntr", whole(pf_range(params, "contrast", 5.0, 0.0, 50.0)?, (0, 50), "contrast")?),
+                ("ScrT", enum_param(params, "patternType", "dot", "ScrT", &HALFTONE_PATTERNS)?),
+            ]
+        } else {
+            g.settings.iter().map(|(psd, ours)| (*psd, pi(params, ours, defaults.as_ref().map_or(0.0, |x| f64::from(x.get(ours)))))).collect()
+        };
         out.push((g.code, settings, e.get("visible").and_then(J::as_bool).unwrap_or(true)));
     }
     let gallery = || {

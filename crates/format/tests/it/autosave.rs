@@ -34,19 +34,26 @@ fn background_save_outcomes_report_failure_then_recovery() {
     let root = temp_dir("retry-failed-write");
     let blocked = root.join("recovery");
     std::fs::write(&blocked, b"not a directory").unwrap();
-    let saver = Autosaver::new(&blocked, "doc");
+    // Not dropped on a failure: dropping joins the worker, which waits for a write in progress,
+    // so a stuck write would hold the test past its own bound until nextest kills it.
+    let saver = std::mem::ManuallyDrop::new(Autosaver::new(&blocked, "doc"));
     let doc = Arc::new(rich_doc(ColorMode::Rgb, SampleType::U8));
     saver.request_checked(doc.clone(), 7, None, SaveOptions::default()).unwrap();
 
+    // The bound only turns a worker that never reports into a failure instead of a hang. A real
+    // write flushes every tile to disk and took over 30 s on a busy Windows CI runner (normally
+    // 2-3 s), so it is generous, and still under the 10 minutes after which nextest's `ci`
+    // profile kills a test.
+    const PATIENCE: std::time::Duration = std::time::Duration::from_secs(5 * 60);
     let receive = |saver: &Autosaver| {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let deadline = std::time::Instant::now() + PATIENCE;
         while std::time::Instant::now() < deadline {
             if let Some(outcome) = saver.take_completed().into_iter().next() {
                 return outcome;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        panic!("autosave worker did not report its completed write within 30 seconds");
+        panic!("autosave worker did not report its completed write within {PATIENCE:?}");
     };
     let (revision, result) = receive(&saver);
     assert_eq!(revision, 7);
@@ -60,7 +67,7 @@ fn background_save_outcomes_report_failure_then_recovery() {
     result.unwrap();
     assert_eq!(list_recovery(&blocked).len(), 1);
     assert_eq!(recover(&list_recovery(&blocked)[0]).unwrap(), *doc);
-    drop(saver);
+    drop(std::mem::ManuallyDrop::into_inner(saver));
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -303,4 +310,55 @@ fn failed_cleanup_after_commit_does_not_fail_the_save() {
     assert_eq!(stats.objects_removed, 0, "nothing was actually removed");
     assert_eq!(load_path(&dir).unwrap(), doc);
     std::fs::remove_dir_all(dir.parent().unwrap()).unwrap();
+}
+
+/// #9034: while a document's autosave replaces its entry, a listing (another launch's recovery
+/// prompt, or the launch's own check after closing a second document) sees that entry exactly
+/// once. On Windows the sidecar used to be replaced through `ReplaceFileW`, which moves the old
+/// sidecar to a backup name before moving the new one in: a listing in between found the bundle
+/// without a sidecar and listed it a second time (or, the other way round, not at all).
+#[test]
+fn a_listing_during_an_autosave_sees_the_entry_exactly_once() {
+    let dir = temp_dir("listing-during-autosave");
+    let doc = Document::new("Busy", photocraft_doc::Size { width: 4, height: 4 }, ColorMode::Rgb, SampleType::U8);
+    save_once(&dir, "busy", doc.clone());
+    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let writer = {
+        let (dir, done) = (dir.clone(), done.clone());
+        std::thread::spawn(move || {
+            // Sets `done` however the thread ends, so a failing writer stops the listing loop
+            // and `join` reports its panic instead of the test hanging.
+            struct SetOnDrop(Arc<std::sync::atomic::AtomicBool>);
+            impl Drop for SetOnDrop {
+                fn drop(&mut self) {
+                    self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+            let _done = SetOnDrop(done);
+            let saver = Autosaver::new(&dir, "busy");
+            for revision in 2..=200 {
+                saver.request(Arc::new(doc.clone()), revision, None, SaveOptions::default());
+                // Wait for this write, so every revision replaces the sidecar once.
+                let completed = loop {
+                    let completed = saver.take_completed();
+                    if !completed.is_empty() {
+                        break completed;
+                    }
+                    std::thread::yield_now();
+                };
+                assert!(completed.iter().all(|(_, result)| result.is_ok()), "revision {revision}: {completed:?}");
+            }
+            saver.flush()
+        })
+    };
+    let mut listings = 0u32;
+    while !done.load(std::sync::atomic::Ordering::SeqCst) {
+        let entries = list_recovery(&dir);
+        let keys: Vec<&str> = entries.iter().map(|e| e.info.key.as_str()).collect();
+        assert_eq!(keys, ["busy"], "listing {listings} during an autosave: {entries:?}");
+        listings += 1;
+    }
+    assert!(writer.join().unwrap().is_some_and(|r| r.is_ok()));
+    assert!(listings > 0);
+    std::fs::remove_dir_all(dir).unwrap();
 }

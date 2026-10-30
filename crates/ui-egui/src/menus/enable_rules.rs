@@ -126,6 +126,23 @@ pub fn disabled(app: &crate::PhotocraftApp, id: &str) -> bool {
     if transform && (target.is_object() || target == "quickMask") {
         return false;
     }
+    // Several layers selected: one box moves them all, the Background left out (#6501). It doesn't
+    // warp, and doesn't distort while editable type is among them.
+    if transform {
+        let targets = photocraft_engine::transform_cmds::selection_targets(st);
+        if targets.len() > 1 || targets.first() != st.active_layer.as_ref() {
+            let text = targets.iter().any(|t| st.doc.layer(*t).is_some_and(|l| matches!(l.content, LayerContent::Text(_))));
+            return match id {
+                "edit.transform.warp"
+                | "edit.transform.splitWarpCrosswise"
+                | "edit.transform.splitWarpHorizontally"
+                | "edit.transform.splitWarpVertically"
+                | "edit.transform.removeWarpSplit" => true,
+                "edit.transform.distort" | "edit.transform.perspective" => text,
+                _ => false,
+            };
+        }
+    }
     // Editable type can be scaled, rotated and skewed but not distorted (#2630): Photoshop greys
     // Distort and Perspective until the type is rasterized, and the split warps (Warp on type
     // offers only the warp styles, #3004). A targeted unlinked mask or channel of the type layer

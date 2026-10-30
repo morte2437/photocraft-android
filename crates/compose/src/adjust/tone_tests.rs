@@ -198,7 +198,8 @@ fn color_lookup_with_an_overflowing_stored_size_is_the_identity() {
     // A stored document's size is untrusted: (2²²)³ × 3 overflows, which once wrapped past
     // the table-length guard and indexed out of bounds.
     for size in [1 << 22, u32::MAX] {
-        let a = Adjustment::ColorLookup { name: "x".into(), lut: Some(std::sync::Arc::new(vec![0.5; 24])), size, tetrahedral: false, dither: false };
+        let a =
+            Adjustment::ColorLookup { name: "x".into(), lut: Some(std::sync::Arc::new(vec![0.5; 24])), size, tetrahedral: false, dither: false, source: None };
         let mut b = ramp();
         apply(&a, &mut b);
         assert_eq!(b.px, ramp().px, "size {size}");

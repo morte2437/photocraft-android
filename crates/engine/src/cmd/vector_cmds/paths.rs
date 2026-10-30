@@ -1,6 +1,9 @@
 use super::params::{color, f64p, layer_id, op_from, parse_path, path_json};
 use super::shape::{map_path, map_shape, transform_shape, with_shape};
-use super::*;
+use super::{
+    Affine, BlendMode, ClippingPath, Color, Document, EngineError, LayerContent, LayerId, NamedPath, Path, Rect, Result, SelectionMode, Session, Value, bad,
+    blend_from_str, json, sel, vector,
+};
 
 // ---------------------------------------------------------------------------
 // Document paths
@@ -49,7 +52,8 @@ pub(super) fn paths_list(s: &Session) -> Result<Value> {
     let d = s.active().ok_or(EngineError::NoDocument)?;
     let doc = &d.doc;
     let knots = |p: &Path| p.subpaths.iter().map(|s| s.knots.len()).sum::<usize>();
-    let layer = d.active_layer.and_then(|id| doc.layer(id)).and_then(|l| match &l.content {
+    let active = d.active_layer.and_then(|id| doc.layer(id));
+    let layer = active.and_then(|l| match &l.content {
         LayerContent::Shape(sh) => Some(json!({ "kind": "shape", "layer": l.id.0, "name": format!("{} Shape Path", l.name), "knots": knots(&sh.path) })),
         _ => {
             l.vector_mask.as_ref().map(|v| json!({ "kind": "vectorMask", "layer": l.id.0, "name": format!("{} Vector Mask", l.name), "knots": knots(&v.path) }))
@@ -60,6 +64,12 @@ pub(super) fn paths_list(s: &Session) -> Result<Value> {
         "workPath": doc.work_path.as_ref().map(|p| json!({ "knots": knots(p), "subpaths": p.subpaths.len() })),
         "clippingPath": doc.clipping_path.as_ref().map(|c| json!({ "name": c.name, "flatness": c.flatness })),
         "layerPath": layer,
+        // Type on a path: Photoshop's Type Path, which Direct Selection edits (#9114).
+        "typePath": active.and_then(|l| match &l.content {
+            LayerContent::Text(t) => crate::type_extra_cmds::type_path(t)
+                .map(|p| json!({ "kind": "typePath", "layer": l.id.0, "name": format!("{} Type Path", l.name), "knots": knots(&p) })),
+            _ => None,
+        }),
     }))
 }
 
@@ -69,26 +79,32 @@ pub(super) fn path_set(s: &mut Session, p: &Value) -> Result<Value> {
     let name = p.get("name").and_then(Value::as_str).map(str::to_string);
     let append = p.get("op").and_then(Value::as_str).map(|o| op_from(o).ok_or_else(|| bad(CMD, format!("unknown op `{o}`")))).transpose()?;
     s.edit(if is_work(name.as_deref()) { "Work Path" } else { "Save Path" }, |doc, _| {
-        let merge = |old: Option<&Path>, new: Path| match (old, append) {
-            (Some(o), Some(op)) => {
-                let mut o = o.clone();
-                o.subpaths.extend(new.subpaths.into_iter().map(|mut sp| {
-                    sp.op = op;
-                    sp
-                }));
-                o
-            }
-            _ => new,
+        let merge = |old: Option<&Path>, new: Path| -> Result<Path> {
+            let merged = match (old, append) {
+                (Some(o), Some(op)) => {
+                    let mut o = o.clone();
+                    o.subpaths.extend(new.subpaths.into_iter().map(|mut sp| {
+                        sp.op = op;
+                        sp
+                    }));
+                    o
+                }
+                _ => new,
+            };
+            // Appending small Pen components must not bypass the complete path's bounds and
+            // tessellation budget. Validate before changing the document or its history.
+            vector::flatten::validate_path(&merged).map_err(|e| bad(CMD, e))?;
+            Ok(merged)
         };
         if is_work(name.as_deref()) {
-            doc.work_path = Some(merge(doc.work_path.as_ref(), path));
+            doc.work_path = Some(merge(doc.work_path.as_ref(), path)?);
         } else {
             let n = name.clone().unwrap_or_default();
             match doc.paths.iter_mut().find(|q| q.name == n) {
                 Some(q) => {
-                    q.path = merge(Some(&q.path), path);
+                    q.path = merge(Some(&q.path), path)?;
                 }
-                None => doc.paths.push(NamedPath { name: n, path, psd_raw: None }),
+                None => doc.paths.push(NamedPath { name: n, path: merge(None, path)?, psd_raw: None }),
             }
         }
         Ok(())

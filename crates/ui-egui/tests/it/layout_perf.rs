@@ -232,7 +232,9 @@ fn layout_document_composites_on_the_gpu_like_the_cpu() {
             std::thread::yield_now();
         }
     }
-    let Ok(adapter) = block_on(wgpu::Instance::default().request_adapter(&wgpu::RequestAdapterOptions::default())) else {
+    let Ok(adapter) =
+        block_on(wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()).request_adapter(&wgpu::RequestAdapterOptions::default()))
+    else {
         eprintln!("skipping: no GPU adapter");
         return;
     };

@@ -345,7 +345,6 @@ fn cached_gradient_fill() -> Session {
     let mut s = session();
     s.execute("select.rect", json!({"x": 10, "y": 10, "width": 30, "height": 30})).unwrap();
     s.execute("layer.newFillLayer.gradient", json!({"from": "#ff0000", "to": "#0000ff", "angle": 0})).unwrap();
-    s.execute("select.deselect", json!({})).unwrap();
     s.edit("cache", |doc, active| {
         let (fmt, canvas) = (doc.pixel_format(), doc.bounds());
         let l = doc.layer_mut(active.unwrap()).unwrap();

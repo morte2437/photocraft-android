@@ -56,11 +56,14 @@ fn the_wheel_over_the_brush_mode_dropdown_steps_the_painting_mode() {
     wheel(&mut h, at, -1.0);
     assert_eq!(brush_mode(&h), BlendMode::Dissolve);
     wheel(&mut h, at, -1.0);
-    assert!(h.state().ui.tool_options.brush_clear, "Clear follows Dissolve, as in Photoshop");
+    assert!(h.state().session.tools.brush.behind, "Behind follows Dissolve");
+    wheel(&mut h, at, -1.0);
+    assert!(h.state().ui.tool_options.brush_clear, "Clear follows Behind");
+    assert!(!h.state().session.tools.brush.behind);
     wheel(&mut h, at, -1.0);
     assert!(!h.state().ui.tool_options.brush_clear);
     assert_eq!(brush_mode(&h), BlendMode::Darken);
-    wheel(&mut h, at, 3.0);
+    wheel(&mut h, at, 4.0);
     assert_eq!(brush_mode(&h), BlendMode::Normal, "up steps back and stops at the first mode");
 }
 

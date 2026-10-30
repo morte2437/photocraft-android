@@ -74,7 +74,7 @@ fn stamp_visible(s: &mut Session, p: &Value) -> Result<Value> {
             return Ok(empty);
         }
         let layer = stamp_layer(doc, doc.next_layer_name("Layer"))?;
-        let id = doc.insert_above(*active, layer);
+        let id = crate::layer_place::insert_new(doc, *active, layer, crate::layer_place::Place::Above);
         *active = Some(id);
         Ok(id)
     })?;
@@ -156,7 +156,7 @@ fn stamp_selected(s: &mut Session, sel: &[LayerId]) -> Result<Value> {
         }
         let name = format!("{} (merged)", doc.layer(top).map_or("Layer", |l| l.name.as_str()));
         let layer = stamp_layer(&solo, name)?;
-        let id = doc.insert_above(Some(top), layer);
+        let id = crate::layer_place::insert_new(doc, Some(top), layer, crate::layer_place::Place::Above);
         *active = Some(id);
         Ok(id)
     })?;

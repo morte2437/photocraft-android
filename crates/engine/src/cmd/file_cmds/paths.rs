@@ -1,4 +1,4 @@
-use super::*;
+use super::{EngineError, Result, Session};
 
 // ---------- file system (native only) ----------
 
@@ -55,20 +55,26 @@ pub fn list_images(dir: &str) -> Result<Vec<String>> {
     Err(EngineError::Other(format!("cannot list {dir}: no file system on the web")))
 }
 
-/// Whether a folder entry is one the batch commands open: an `OPENABLE` extension, or GIMP's
-/// gzipped `.xcf.gz`, whose last extension alone says nothing.
+/// Whether a folder entry is one the batch commands open: an `OPENABLE` extension, an extension
+/// of a format `photocraft-codecs` reads in this build, or GIMP's gzipped `.xcf.gz`, whose last
+/// extension alone says nothing.
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) fn openable_name(path: &str) -> bool {
     let lower = file_name(path).to_ascii_lowercase();
-    lower.ends_with(".xcf.gz") || lower.rsplit_once('.').is_some_and(|(_, ext)| OPENABLE.contains(&ext))
+    lower.ends_with(".xcf.gz")
+        || lower.rsplit_once('.').is_some_and(|(_, ext)| OPENABLE.contains(&ext) || photocraft_codecs::from_extension(ext).is_some_and(|f| f.caps().read))
 }
 
-/// Extensions the batch commands pick up from a folder.
+/// Extensions the batch commands pick up from a folder besides the codec formats: the document
+/// and vector formats `photocraft_io::import` reads outside `photocraft-codecs`, and the camera
+/// raws whose usual files `photocraft_raw::decode` develops. Not CR3, ORF, RAF, RW2, SRF or SR2:
+/// CR3, compressed ORF and RAF and RW2 raw formats other than 3, 4 and 5 aren't decoded yet, and
+/// import falls back to the embedded JPEG preview with only a warning, which a batch must not
+/// process silently.
 #[cfg(not(target_arch = "wasm32"))]
 const OPENABLE: &[&str] = &[
-    "pdn", "ora", "xcf", "xcfgz", "kra", "krz", "psd", "psb", "pcraft", "png", "jpg", "jpeg", "tif", "tiff", "webp", "gif", "bmp", "tga", "exr", "hdr", "qoi",
-    "ico", "pnm", "ppm", "pgm", "fits", "fit", "fts", "dpx", "heic", "heif", "hif", "dng", "cr2", "nef", "nrw", "arw", "pef", "svg", "svgz", "af", "afdesign",
-    "afphoto", "afpub",
+    "pdn", "ora", "xcf", "xcfgz", "kra", "krz", "psd", "psb", "psdt", "pcraft", "svg", "svgz", "af", "afdesign", "afphoto", "afpub", "dng", "cr2", "nef",
+    "nrw", "arw", "pef",
 ];
 
 pub(crate) fn file_name(path: &str) -> String {

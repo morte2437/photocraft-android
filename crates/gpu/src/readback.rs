@@ -1,5 +1,5 @@
 use super::textures::Stats;
-use super::*;
+use super::{Compositor, Document, Rect, Unsupported};
 
 /// Blocking readback of a composite (native tests and tools).
 #[cfg(not(target_arch = "wasm32"))]

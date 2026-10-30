@@ -20,8 +20,10 @@ mod selection;
 mod structure;
 
 use align::{align, distribute};
-pub use damage::{layer_bounds, layers_damage, same_pixels, selection_only_change, step_damage};
-pub(crate) use damage::{note_damage, note_inert_insert, note_insert};
+#[cfg(any(test, debug_assertions))]
+pub(crate) use damage::hint_misses;
+pub(crate) use damage::note_insert;
+pub use damage::{layer_bounds, same_pixels, selection_only_change, step_damage};
 use moves::link_groups;
 pub(crate) use moves::shift_surface;
 #[cfg(test)]
@@ -141,7 +143,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Group from Layers…",
             &["Layer", "New"],
             None,
-            r##"{"layer":id?,"name":str?} (no layer: every selected layer)"##,
+            r##"{"layer":id?,"name":text?,"color":"none|red|orange|yellow|green|seafoam|blue|indigo|magenta|fuchsia|violet|gray"="none","mode":str="passThrough" (blend mode),"opacity":0..100=100 (percent)} (no layer: every selected layer; the new group starts collapsed)"##,
             has_layer,
             group_layers
         ),
@@ -164,3 +166,6 @@ mod tests;
 
 #[cfg(test)]
 mod layers_panel_parity_tests;
+
+#[cfg(test)]
+mod tile_damage_tests;

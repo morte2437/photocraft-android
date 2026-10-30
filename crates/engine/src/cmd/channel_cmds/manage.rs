@@ -3,7 +3,9 @@ use super::refs::{ChanRef, alpha_index, bad, doc_index, gray_plane, parse_ref};
 use super::selection::{uniform, unselected_surface};
 use super::targeting::target;
 use super::view::{ChannelTarget, QuickMaskOptions, color_names, composite_name, fix_view, touch};
-use super::*;
+use super::{
+    AlphaChannel, Color, ColorIndicates, ColorMode, DocState, Document, EngineError, Layer, PixelFormat, Result, Session, Surface, Value, json, list, sel,
+};
 
 // ---------------------------------------------------------------------------------------------
 // Channel management

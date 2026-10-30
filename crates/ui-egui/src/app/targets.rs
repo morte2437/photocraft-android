@@ -1,4 +1,4 @@
-use super::*;
+use super::{PhotocraftApp, Value, mask_thumbs_ui};
 
 /// The active layer is an adjustment layer. It has no pixels, so painting and filling it edit its
 /// mask even when its icon thumbnail, not the mask, is the Layers panel's target, as in

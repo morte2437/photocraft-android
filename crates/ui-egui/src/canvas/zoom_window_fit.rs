@@ -273,7 +273,7 @@ mod tests {
         let viewport = ViewportId::from_hash_of(("docwin", 3_u64));
         let rect = Rect::from_min_size(egui::Pos2::ZERO, vec2(800.0, 600.0));
         let at = |zoom| view([400, 300], zoom);
-        let window = DocWindow { id: 3, document: 0, view: at(1.0), open: true, position: None };
+        let window = DocWindow { id: 3, document: 0, view: at(1.0), open: true, position: None, floating: false, focused: false };
         let frame = |app: &PhotocraftApp, class, after: &View| follow(app, &ctx, class, viewport, &window, &mut after.clone(), rect);
         // Off by default, as in Photoshop.
         assert!(!app.session.prefs().general.zoom_resizes_windows);
@@ -359,7 +359,7 @@ mod tests {
         let ctx = Context::default();
         let viewport = ViewportId::from_hash_of(("docwin", 4_u64));
         let rect = Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0));
-        let window = DocWindow { id: 4, document: 0, view: view([400, 300], 1.0), open: true, position: None };
+        let window = DocWindow { id: 4, document: 0, view: view([400, 300], 1.0), open: true, position: None, floating: false, focused: false };
         let mut first = view([400, 300], 1.0);
         assert_eq!(follow(&app, &ctx, ViewportClass::Immediate, viewport, &window, &mut first, rect), None);
         // A Zoom tool click near the top-left corner doubles the zoom about that spot.
@@ -377,7 +377,7 @@ mod tests {
         app.sync_views();
         app.run("prefs.set", json!({"path": "general.zoomResizesWindows", "value": true})).unwrap();
         let rect = Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0));
-        let window = DocWindow { id: 5, document: 0, view: view([400, 300], 1.0), open: true, position: None };
+        let window = DocWindow { id: 5, document: 0, view: view([400, 300], 1.0), open: true, position: None, floating: false, focused: false };
         for (maximized, fullscreen) in [(true, false), (false, true)] {
             let ctx = Context::default();
             let mut raw = egui::RawInput::default();

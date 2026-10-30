@@ -180,38 +180,52 @@ fn worker(rx: Receiver<Job>, bundle: PathBuf, sidecar: PathBuf, last: Arc<Mutex<
     }
 }
 
+/// Publish a recovery sidecar atomically: a flushed temporary file renamed over the old one.
+///
+/// The replacing step is a plain rename on every platform, never `ReplaceFileW` (what
+/// [`crate::atomic::RealFs`] uses on Windows to keep a user file's ACL and named streams). That
+/// call first moves the old file to a backup name and only then moves the new one in, so for a
+/// moment `<key>.json` does not exist: a listing in between took the entry for a sidecar-less
+/// bundle and listed it twice, or not at all (#9034). A rename swaps the name in one step, and
+/// recovery data is private to the app, so there is no metadata to keep.
 fn write_sidecar(path: &Path, bytes: &[u8]) -> Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        struct PrivateFs;
-        impl crate::atomic::AtomicFs for PrivateFs {
-            fn write_new(&self, tmp: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    struct SidecarFs;
+    impl crate::atomic::AtomicFs for SidecarFs {
+        // As before: Windows refuses a read-only sidecar up front, Unix replaces it.
+        #[cfg(not(unix))]
+        fn is_readonly(&self, path: &Path) -> bool {
+            crate::atomic::RealFs.is_readonly(path)
+        }
+        fn write_new(&self, tmp: &Path, bytes: &[u8]) -> std::io::Result<()> {
+            #[cfg(unix)]
+            {
                 use std::io::Write;
+                use std::os::unix::fs::OpenOptionsExt;
                 let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(tmp)?;
                 f.write_all(bytes)?;
                 crate::atomic::sync_file(&f)
             }
-            fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
-                crate::atomic::RealFs.rename(from, to)
-            }
-            fn remove(&self, path: &Path) -> std::io::Result<()> {
-                crate::atomic::RealFs.remove(path)
-            }
-            fn sync_dir(&self, dir: &Path) -> std::io::Result<()> {
-                crate::atomic::RealFs.sync_dir(dir)
-            }
-            fn copy_metadata(&self, from: &Path, to: &Path) -> std::io::Result<()> {
-                crate::atomic::RealFs.copy_metadata(from, to)
+            #[cfg(not(unix))]
+            {
+                crate::atomic::RealFs.write_new(tmp, bytes)
             }
         }
-        crate::atomic::atomic_write_with(&PrivateFs, crate::atomic::RenameRetry::platform(), path, bytes)?;
-        Ok(())
+        fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+            crate::atomic::RealFs.rename(from, to)
+        }
+        // `replace_existing` keeps the trait's default: this same one-step rename.
+        fn remove(&self, path: &Path) -> std::io::Result<()> {
+            crate::atomic::RealFs.remove(path)
+        }
+        fn sync_dir(&self, dir: &Path) -> std::io::Result<()> {
+            crate::atomic::RealFs.sync_dir(dir)
+        }
+        fn copy_metadata(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+            crate::atomic::RealFs.copy_metadata(from, to)
+        }
     }
-    #[cfg(not(unix))]
-    {
-        crate::store::write_atomic(path, bytes)
-    }
+    crate::atomic::atomic_write_with(&SidecarFs, crate::atomic::RenameRetry::platform(), path, bytes)?;
+    Ok(())
 }
 
 fn read_sidecar_bounded(path: &Path, max: usize) -> Option<Vec<u8>> {

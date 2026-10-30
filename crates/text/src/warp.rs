@@ -85,6 +85,45 @@ impl Warp {
         PathFrame::new(path, *start, *flip).map(|f| Warp(Kind::Path(f)))
     }
 
+    /// Path text with its logical left edge after paragraph alignment. A closed path has
+    /// one lap of capacity from this edge, including centred and right-aligned text whose
+    /// coordinates start below zero. Open paths keep their existing endpoint clipping.
+    pub fn on_path_with_text_start(shape: &TextShape, text_start: f64) -> Option<Warp> {
+        if !text_start.is_finite() {
+            return None;
+        }
+        let mut warp = Self::on_path(shape)?;
+        if let Kind::Path(frame) = &mut warp.0 {
+            frame.text_start = text_start;
+        }
+        Some(warp)
+    }
+
+    /// Text-space x nearest a point on a type path, using the same seam and one-lap
+    /// interval as glyph placement. Used when clicking to place the caret after the seam.
+    pub fn path_text_x(&self, x: f64, y: f64) -> Option<f64> {
+        let Kind::Path(frame) = &self.0 else { return None };
+        if !x.is_finite() || !y.is_finite() {
+            return None;
+        }
+        let offset = frame.project(x, y) - frame.start;
+        Some(if frame.closed { (offset - frame.text_start).rem_euclid(frame.length()) + frame.text_start } else { offset })
+    }
+
+    /// Caret hit testing in the occupied text interval. In a closed path's unused gap,
+    /// choose the nearer endpoint along the path instead of always choosing the last caret.
+    pub fn path_text_x_near_text(&self, x: f64, y: f64, text_end: f64) -> Option<f64> {
+        let offset = self.path_text_x(x, y)?;
+        let Kind::Path(frame) = &self.0 else { return None };
+        if frame.closed && text_end.is_finite() && offset > text_end {
+            let previous = offset - frame.length();
+            if frame.text_start - previous < offset - text_end {
+                return Some(previous);
+            }
+        }
+        Some(offset)
+    }
+
     /// Longest segment (text-space px) worth sending through [`Warp::apply`] unsplit.
     pub fn max_segment(&self) -> f64 {
         match &self.0 {
@@ -128,6 +167,8 @@ struct PathFrame {
     /// Arc length at each point.
     cum: Vec<f64>,
     start: f64,
+    closed: bool,
+    text_start: f64,
 }
 
 impl PathFrame {
@@ -163,7 +204,14 @@ impl PathFrame {
             }
             cum.push(acc);
         }
-        (pts.len() >= 2 && acc.is_finite() && acc > 1e-6 && start.is_finite()).then(|| PathFrame { pts, cum, start: f64::from(start) })
+        (pts.len() >= 2 && acc.is_finite() && acc > 1e-6 && start.is_finite()).then(|| PathFrame {
+            pts,
+            cum,
+            // A click at the seam may project to either 0 or length (then round as f32).
+            start: if path.closed { f64::from(start).rem_euclid(acc) } else { f64::from(start) },
+            closed: path.closed,
+            text_start: 0.0,
+        })
     }
 
     fn length(&self) -> f64 {
@@ -186,8 +234,9 @@ impl PathFrame {
         best.1
     }
 
-    /// Point and unit tangent at arc length `s`; past either end the end tangent continues straight.
+    /// Point and unit tangent: closed paths wrap; open paths extend their end tangents.
     fn at(&self, s: f64) -> ((f64, f64), (f64, f64)) {
+        let s = if self.closed { s.rem_euclid(self.length()) } else { s };
         let last = self.pts.len() - 1;
         let i = self.cum.partition_point(|&c| c < s).clamp(1, last);
         let (a, b) = (self.pts[i - 1], self.pts[i]);
@@ -205,7 +254,15 @@ impl PathFrame {
     /// The rigid map for a glyph centred at text-space `cx`; `None` outside the path.
     fn frame(&self, cx: f64) -> Option<[f64; 6]> {
         let s = self.start + cx;
-        if !(0.0..=self.length()).contains(&s) {
+        if !cx.is_finite()
+            || if self.closed {
+                // Stop after one lap of text, not at the arbitrary first knot. A half-open
+                // interval excludes the first duplicate location at the next revolution.
+                !(self.text_start..self.text_start + self.length()).contains(&cx)
+            } else {
+                !(0.0..=self.length()).contains(&s)
+            }
+        {
             return None;
         }
         let (p, t) = self.at(s);
@@ -298,3 +355,7 @@ mod tests {
         assert!(s.apply(100.0, -40.0).1 < -40.0);
     }
 }
+
+#[cfg(test)]
+#[path = "closed_path_tests.rs"]
+mod closed_path_tests;

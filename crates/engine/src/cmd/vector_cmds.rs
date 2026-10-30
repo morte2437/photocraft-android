@@ -69,7 +69,7 @@ mod paths;
 mod shape;
 mod vector_mask;
 
-pub(crate) use params::{layer_id, nums, pt};
+pub(crate) use params::{layer_id, nums, op_from, pt};
 pub use params::{parse_path, parse_stroke, path_json};
 pub use paths::STROKE_PATH_TOOLS;
 use paths::{
@@ -77,11 +77,11 @@ use paths::{
     resolve_path, select_to_work_path,
 };
 pub(crate) use paths::{is_work, path_mut};
+pub(crate) use shape::{bake_path, map_path, map_shape, shift_shape, with_shape};
 use shape::{
     can_paste_shape_fill, can_paste_shape_stroke, combine_shapes, copy_shape_fill, copy_shape_stroke, has_shape_fill, has_shape_stroke, merge_components,
     paste_shape_fill, paste_shape_stroke, selection_to_shape, shape_create, shape_edit, shape_info, shape_rasterize,
 };
-pub(crate) use shape::{map_path, map_shape, shift_shape, with_shape};
 pub use shape::{preview_shape_stroke, refresh_shape, shape_path, transform_shape, translate_vectors};
 use vector_mask::{toggle_vector_mask, vector_mask_add, vector_mask_delete, vector_mask_edit, vector_mask_info, vector_mask_rasterize, with};
 
@@ -132,7 +132,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "List Paths",
             menu: &[],
             shortcut: None,
-            params: r##"{} → {paths:[{name,knots,subpaths}],workPath,clippingPath,layerPath (active layer's shape path / vector mask)}"##,
+            params: r##"{} → {paths:[{name,knots,subpaths}],workPath,clippingPath,layerPath (active layer's shape path / vector mask),typePath (active type layer's Type Path, if it is on a path)}"##,
             enabled: has_doc,
             run: |s, _| paths_list(s),
             journal: false,

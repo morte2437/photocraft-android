@@ -1,4 +1,4 @@
-use super::*;
+use super::TextLayout;
 
 /// Byte offset of character `index` (the text length when `index` is past the end).
 pub fn byte_index(text: &str, index: usize) -> usize {

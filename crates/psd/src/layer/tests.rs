@@ -54,7 +54,7 @@ fn record_roundtrip_psd_psb() {
 #[test]
 fn psb_channel_lengths_are_8_bytes() {
     let mut rec = LayerRecord::default();
-    rec.channels.push(ChannelData { id: 0, compression: Some(Compression::Raw), data: vec![] });
+    rec.channels.push(ChannelData::new(0, Some(Compression::Raw), vec![]));
     let info = LayerInfo { layers: vec![rec], ..Default::default() };
     let psd = rt(&info, Version::Psd);
     let psb = rt(&info, Version::Psb);
@@ -294,7 +294,7 @@ fn too_many_layers_rejected() {
 #[test]
 fn zero_length_channel() {
     let mut rec = LayerRecord::default();
-    rec.channels.push(ChannelData { id: 0, compression: None, data: vec![] });
+    rec.channels.push(ChannelData::new(0, None, vec![]));
     let info = LayerInfo { layers: vec![rec], ..Default::default() };
     rt(&info, Version::Psd);
     assert_eq!(info.layers[0].decode_channel(0, 8, Version::Psd).unwrap(), Vec::<u8>::new());

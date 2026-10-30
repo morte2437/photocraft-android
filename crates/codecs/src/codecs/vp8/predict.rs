@@ -2,7 +2,9 @@
 //! sub-block modes. Predictions read the frame's *unfiltered* reconstruction, which is what the
 //! decoder predicts from too (the loop filter runs on the finished frame).
 
-use super::tables::*;
+#[cfg(test)]
+use super::tables::{B_DC_PRED, DC_PRED};
+use super::tables::{B_HD_PRED, B_HE_PRED, B_HU_PRED, B_LD_PRED, B_RD_PRED, B_TM_PRED, B_VE_PRED, B_VL_PRED, B_VR_PRED, H_PRED, TM_PRED, V_PRED};
 
 /// A plane of the reconstruction with the virtual border VP8 defines: the row above the frame
 /// reads as 127, the column left of it as 129, and the pixel above-left of the frame as 127.

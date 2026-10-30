@@ -258,15 +258,48 @@ fn native_rgb_route_preserves_pdf_only_color_and_page_content() {
     assert!(native_rgb_compatible(&page_of(1, vec![0; 2], false), "noColorManagement"));
 }
 
+/// Two printers, the second the default, in place of the system spooler's.
+fn test_printers() -> PrinterSource {
+    std::sync::Arc::new(|| {
+        vec![
+            craft_print::Printer { name: "Studio".into(), default: false, two_sided: None, description: String::new() },
+            craft_print::Printer { name: "Office".into(), default: true, two_sided: Some(true), description: String::new() },
+        ]
+    })
+}
+
 #[test]
 fn printer_commands_answer_without_a_document_and_reject_bad_settings() {
     let mut s = Session::new();
+    s.printer_source = Some(test_printers());
     let r = s.execute("file.print.printers", json!({})).unwrap();
     assert_eq!(r["supported"], cfg!(windows));
-    assert!(r["printers"].is_array());
+    let listed = if cfg!(windows) { json!([{"name": "Studio", "default": false}, {"name": "Office", "default": true}]) } else { json!([]) };
+    assert_eq!(r["printers"], listed);
     assert!(s.execute("file.print.page", json!({"printer": "Anything", "printerSettings": "zz"})).is_err());
     let mut s = session("rgb", 8);
     assert!(s.execute("file.print", json!({"printer": "Anything", "printerSettings": "0102", "send": true})).is_err());
+}
+
+/// The GDI route lists a stand-in's printers only on Windows. Elsewhere it answers `Unsupported`
+/// as the real route does, so the Print dialog shows the system's printers and paper controls.
+#[test]
+fn stand_in_printers_reach_the_gdi_route_on_windows_only() {
+    let source = test_printers();
+    assert_eq!(stand_in_rgb_printers(&source, false), Err(craft_print::rgb::PrintError::Unsupported));
+    let listed = stand_in_rgb_printers(&source, true).unwrap();
+    assert_eq!(listed.iter().map(|p| (p.name.as_str(), p.default)).collect::<Vec<_>>(), [("Studio", false), ("Office", true)]);
+}
+
+/// `file.printers` lists a stand-in's printers everywhere but the browser. In the browser it lists
+/// none, as the real command does there.
+#[test]
+fn stand_in_printers_reach_file_printers_outside_the_browser_only() {
+    let source = test_printers();
+    assert!(stand_in_printers(Some(&source), true).is_none());
+    let listed = stand_in_printers(Some(&source), false).map(|source| source());
+    assert_eq!(listed.unwrap_or_default().iter().map(|p| (p.name.as_str(), p.default)).collect::<Vec<_>>(), [("Studio", false), ("Office", true)]);
+    assert!(stand_in_printers(None, false).is_none());
 }
 
 /// Synthetic driver settings: a DEVMODEW of `size` bytes plus `extra` private driver bytes, every
@@ -645,6 +678,14 @@ fn spool_transport_streams_pdf_and_propagates_refusal() {
         b"#!/bin/sh\nif [ \"$2\" = Refuse ]; then echo 'queue refused' >&2; exit 1; fi\nprintf '%s\\n' \"$@\" > \"$PHOTOCRAFT_TEST_PRINT_TRANSPORT/args\"\n/bin/cat > \"$PHOTOCRAFT_TEST_PRINT_TRANSPORT/received.pdf\"\necho 'request id is Office-42 (0 file(s))'\n",
     ).unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    // `lp` takes a job only when CUPS lists a printer (`lp_route`), so the fake CUPS lists its queues.
+    let lpstat = dir.path().join("lpstat");
+    std::fs::write(
+        &lpstat,
+        b"#!/bin/sh\nif [ \"$1\" = -e ]; then printf 'Office\\nRefuse\\n'; else printf 'printer Office is idle.\\nprinter Refuse is idle.\\n'; fi\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&lpstat, std::fs::Permissions::from_mode(0o700)).unwrap();
     let result = std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "cmd::print_cmds::tests::spool_transport_streams_pdf_and_propagates_refusal", "--nocapture"])
         .env(CHILD, dir.path())
@@ -676,13 +717,189 @@ fn disabled_printing_never_spools() {
 #[test]
 fn printers_lists_the_spooler_destinations_without_a_document() {
     let mut s = Session::new();
+    s.printer_source = Some(test_printers());
     let r = s.execute("file.printers", json!({})).unwrap();
-    let list = r["printers"].as_array().unwrap();
-    assert!(list.iter().all(|p| p["name"].is_string() && p["default"].is_boolean()));
-    match r["default"].as_str() {
-        Some(d) => assert!(list.iter().any(|p| p["name"] == d && p["default"] == true)),
-        None => assert!(list.iter().all(|p| p["default"] == false)),
+    assert_eq!(r["printers"], json!([{"name": "Studio", "default": false}, {"name": "Office", "default": true}]));
+    assert_eq!(r["default"], "Office");
+    s.printer_source = Some(std::sync::Arc::new(Vec::new));
+    let r = s.execute("file.printers", json!({})).unwrap();
+    assert_eq!((r["printers"].clone(), r["default"].clone()), (json!([]), Value::Null));
+}
+
+/// Threads that list printers at the same time enter the spooler one at a time: the stand-in
+/// printer list records how many threads were inside it at once.
+#[test]
+fn printer_listings_enter_the_spooler_one_thread_at_a_time() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Barrier};
+    const THREADS: usize = 8;
+    let inside = Arc::new(AtomicUsize::new(0));
+    let most = Arc::new(AtomicUsize::new(0));
+    let start = Arc::new(Barrier::new(THREADS));
+    let threads: Vec<_> = (0..THREADS)
+        .map(|i| {
+            let (inside, most, start) = (Arc::clone(&inside), Arc::clone(&most), Arc::clone(&start));
+            std::thread::spawn(move || {
+                let mut s = Session::new();
+                s.printer_source = Some(Arc::new(move || {
+                    let now = inside.fetch_add(1, Ordering::SeqCst) + 1;
+                    most.fetch_max(now, Ordering::SeqCst);
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    inside.fetch_sub(1, Ordering::SeqCst);
+                    vec![craft_print::Printer { name: "Office".into(), default: true, two_sided: None, description: String::new() }]
+                }));
+                start.wait();
+                for _ in 0..3 {
+                    // `file.print.printers` lists the stand-in on Windows only.
+                    let id = if i % 2 == 0 || !cfg!(windows) { "file.printers" } else { "file.print.printers" };
+                    assert_eq!(s.execute(id, json!({})).unwrap()["printers"][0]["name"], "Office");
+                }
+            })
+        })
+        .collect();
+    for t in threads {
+        t.join().unwrap();
     }
+    assert_eq!(most.load(Ordering::SeqCst), 1, "two threads were in the printer listing at once");
+}
+
+/// A caller that panics inside the spooler leaves it usable for later callers.
+#[test]
+fn a_panic_inside_the_spooler_does_not_block_later_callers() {
+    let panicked = std::thread::spawn(|| with_spooler::<()>(|| panic!("a driver call panicked"))).join();
+    assert!(panicked.is_err());
+    assert_eq!(with_spooler(|| 7), 7);
+    let mut s = Session::new();
+    s.printer_source = Some(test_printers());
+    assert_eq!(s.execute("file.printers", json!({})).unwrap()["default"], "Office");
+}
+
+/// A driver call made while this thread already holds the spooler (a command run from the Print
+/// dialog's `try_with_spooler`) runs at once.
+#[test]
+fn a_thread_holding_the_spooler_does_not_wait_for_itself() {
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut s = Session::new();
+        s.printer_source = Some(test_printers());
+        // Inside one outer hold, so no other test takes the lock between the calls.
+        let answers = with_spooler(|| {
+            let nested = with_spooler(|| with_spooler(|| 7));
+            let tried = try_with_spooler(|| with_spooler(|| try_with_spooler(|| 8)));
+            let listed = try_with_spooler(|| s.execute("file.printers", json!({})).unwrap()["default"].clone());
+            (nested, tried, listed)
+        });
+        done.send(answers).unwrap();
+    });
+    // Bounded, so a thread that waits for itself fails the test rather than hanging it.
+    let answers = finished.recv_timeout(std::time::Duration::from_secs(30)).expect("a thread holding the spooler waited for itself");
+    assert_eq!(answers, (7, Some(Some(8)), Some(json!("Office"))));
+}
+
+/// While another thread is in the spooler (a print job being handed over, Print Settings…), the
+/// Print dialog's listings return at once with the last lists this process got.
+#[test]
+fn listings_without_waiting_return_the_last_lists_while_the_spooler_is_busy() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Arc, mpsc};
+    let asked = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&asked);
+    let mut s = Session::new();
+    s.printer_source = Some(Arc::new(move || {
+        counted.fetch_add(1, Ordering::SeqCst);
+        vec![craft_print::Printer { name: "Office".into(), default: true, two_sided: None, description: String::new() }]
+    }));
+    let (held_tx, held) = mpsc::channel();
+    let (release, released_rx) = mpsc::channel::<()>();
+    let released = Arc::new(AtomicBool::new(false));
+    let holder = {
+        let released = Arc::clone(&released);
+        let mut lister = Session::new();
+        lister.printer_source = s.printer_source.clone();
+        std::thread::spawn(move || {
+            with_spooler(|| {
+                // Lists this stand-in's printers once with the lock held, so another test's listing
+                // cannot replace the last lists before the listings below.
+                held_tx.send((list_system_printers(&lister), list_rgb_printers(&lister))).unwrap();
+                // Bounded, so a listing that waits fails the test rather than hanging it.
+                let _ = released_rx.recv_timeout(std::time::Duration::from_secs(5));
+                released.store(true, Ordering::SeqCst);
+            });
+        })
+    };
+    let (kept, kept_rgb) = held.recv().unwrap();
+    let before = asked.load(Ordering::SeqCst);
+    let listed = printers_without_waiting(&mut s);
+    let listed_rgb = rgb_printers_without_waiting(&s);
+    assert!(!released.load(Ordering::SeqCst), "the listing waited for the spooler");
+    release.send(()).unwrap();
+    holder.join().unwrap();
+    assert_eq!(asked.load(Ordering::SeqCst), before, "a printer list was asked for while the spooler was busy");
+    assert_eq!(listed, printers_answer(kept));
+    assert_eq!(listed_rgb, kept_rgb);
+}
+
+#[test]
+fn listings_without_waiting_skip_the_lists_of_another_stand_in() {
+    uncached_listings_do_not_wait(true);
+}
+
+#[test]
+fn listings_without_waiting_return_empty_when_no_list_was_cached() {
+    uncached_listings_do_not_wait(false);
+}
+
+fn uncached_listings_do_not_wait(cache_other: bool) {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Arc, mpsc};
+    let asked = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&asked);
+    let mut s = Session::new();
+    s.printer_source = Some(Arc::new(move || {
+        counted.fetch_add(1, Ordering::SeqCst);
+        vec![craft_print::Printer { name: "Proofing".into(), default: true, two_sided: None, description: String::new() }]
+    }));
+    let (held_tx, held) = mpsc::channel();
+    let (release, released_rx) = mpsc::channel();
+    let released = Arc::new(AtomicBool::new(false));
+    let done = Arc::clone(&released);
+    let holder = std::thread::spawn(move || {
+        with_spooler(|| {
+            if cache_other {
+                let mut other = Session::new();
+                other.printer_source = Some(test_printers());
+                list_system_printers(&other);
+                let _ = list_rgb_printers(&other);
+            } else {
+                *LAST_PRINTERS.lock().unwrap() = None;
+                *LAST_RGB_PRINTERS.lock().unwrap() = None;
+            }
+            held_tx.send(()).unwrap();
+            let _ = released_rx.recv_timeout(std::time::Duration::from_secs(5));
+            done.store(true, Ordering::SeqCst);
+        });
+    });
+    held.recv().unwrap();
+    let listed = printers_without_waiting(&mut s);
+    let listed_rgb = rgb_printers_without_waiting(&s);
+    let waited = released.load(Ordering::SeqCst);
+    let _ = release.send(());
+    holder.join().unwrap();
+    assert!(!waited, "an uncached listing waited for the spooler");
+    assert_eq!(asked.load(Ordering::SeqCst), 0);
+    assert_eq!(listed, printers_answer(Vec::new()));
+    assert_eq!(listed_rgb, Err(craft_print::rgb::PrintError::Unsupported));
+    with_spooler(|| {
+        let listed = printers_without_waiting(&mut s);
+        let listed_rgb = rgb_printers_without_waiting(&s);
+        assert_eq!(listed["printers"], json!([{"name": "Proofing", "default": true}]));
+        let names = listed_rgb.map(|list| list.into_iter().map(|p| p.name).collect::<Vec<_>>());
+        if cfg!(windows) {
+            assert_eq!(names, Ok(vec!["Proofing".to_string()]));
+        } else {
+            assert_eq!(names, Err(craft_print::rgb::PrintError::Unsupported));
+        }
+    });
 }
 
 /// Spooling tests run in a child process: `disable_printing` is process-wide and a test above
@@ -761,6 +978,50 @@ fn a_preferred_app_spooler_takes_the_job() {
     let r = s.execute("file.print", json!({"output": out})).unwrap();
     assert_eq!((r["sent"].as_bool(), r["pdf"].as_str()), (Some(false), Some(out.as_str())));
     assert!(std::path::Path::new(&out).exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_printer_listing_past_its_deadline_is_killed_and_reaped() {
+    let soon = || std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut echo = std::process::Command::new("sh");
+    echo.args(["-c", "echo printer Office is idle."]);
+    assert_eq!(output_by(echo, soon()), Some((true, "printer Office is idle.\n".to_string())));
+    let mut failed = std::process::Command::new("sh");
+    failed.args(["-c", "exit 1"]);
+    assert_eq!(output_by(failed, soon()), Some((false, String::new())), "a failed listing is told apart from an empty one");
+    let mut flood = std::process::Command::new("sh");
+    flood.args(["-c", "head -c 2000000 /dev/zero"]);
+    assert_eq!(output_by(flood, soon()), None, "an oversized listing is no answer");
+    // A hung lpstat: given up at the deadline, and killed, so nothing is left waiting on it.
+    let dir = tempfile::tempdir().unwrap();
+    let pid_file = dir.path().join("pid");
+    let mut hung = std::process::Command::new("sh");
+    hung.arg("-c").arg(format!("echo $$ > '{}'; exec sleep 30", pid_file.display()));
+    let started = std::time::Instant::now();
+    assert_eq!(output_by(hung, started + std::time::Duration::from_millis(300)), None);
+    assert!(started.elapsed() < std::time::Duration::from_secs(5), "the deadline must cut the wait short");
+    let pid = std::fs::read_to_string(&pid_file).unwrap();
+    // `kill -0` fails for a process that no longer exists, on every Unix.
+    let alive = std::process::Command::new("kill").args(["-0", pid.trim()]).stderr(std::process::Stdio::null()).status().unwrap().success();
+    assert!(!alive, "the hung process must be killed and reaped");
+    assert_eq!(output_by(std::process::Command::new("/nonexistent/lpstat"), soon()), None);
+}
+
+#[test]
+fn lp_takes_the_job_only_when_cups_lists_a_printer_and_picks_the_only_one() {
+    let p = |name: &str, default: bool| craft_print::Printer { name: name.into(), default, two_sided: None, description: String::new() };
+    let job = craft_print::Job::default();
+    // No printers: no lp route, so the portal still gets the job.
+    assert!(lp_route(&job, &[]).is_none());
+    assert_eq!(lp_route(&job, &[p("Office", false)]).and_then(|j| j.printer), Some("Office".into()));
+    assert_eq!(lp_route(&job, &[p("Office", false), p("Lab", true)]).and_then(|j| j.printer), None, "lp picks the default itself");
+    assert_eq!(lp_route(&job, &[p("Office", false), p("Lab", false)]).and_then(|j| j.printer), None);
+    let asked = craft_print::Job { printer: Some("Lab".into()), ..Default::default() };
+    assert_eq!(lp_route(&asked, &[p("Office", false)]).and_then(|j| j.printer), Some("Lab".into()));
+    // A named printer goes to lp even when CUPS lists none: listing can be forbidden while
+    // printing is not, and the portal can't honour a name.
+    assert_eq!(lp_route(&asked, &[]).and_then(|j| j.printer), Some("Lab".into()));
 }
 
 #[cfg(not(target_os = "windows"))]

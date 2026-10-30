@@ -1,4 +1,4 @@
-use super::*;
+use super::{JobEvent, JobOutcome, PhotocraftApp, Started, Value, json, prefs};
 
 /// View › Rulers follows `unitsAndRulers.showRulers` when the preference changes (at launch, from
 /// `prefs.set` or a reset), so documents open with the rulers as last set.
@@ -41,6 +41,7 @@ pub fn load(app: &mut PhotocraftApp) {
         }
     }
     crate::dock::restore(app);
+    crate::color_panel_ui::restore(app);
     crate::brush_picker::restore(app);
     crate::last_brush::restore(app);
     sync_rulers(app);

@@ -109,6 +109,11 @@ pub(crate) fn display_doc(app: &mut PhotocraftApp, idx: usize) -> Option<(Arc<Do
 }
 
 pub(crate) fn set(app: &mut PhotocraftApp, family: String) {
+    // A caret's font formats subsequent typing, not the existing layer's pixels.
+    if app.ui.text_edit.as_ref().is_some_and(|ed| ed.caret == ed.anchor) {
+        clear(app);
+        return;
+    }
     let Some((layer, range)) = crate::type_tool::target(app) else {
         clear(app);
         return;

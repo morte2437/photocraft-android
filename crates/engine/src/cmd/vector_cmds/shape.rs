@@ -2,7 +2,10 @@ use super::params::{
     f64p, fill_json, layer_id, live_from_params, live_json, nums, op_from, parse_fill, parse_path, parse_stroke, path_json, radii, stroke_json,
 };
 use super::vector_mask::with;
-use super::*;
+use super::{
+    Affine, Color, Document, EngineError, Fill, FillRule, Layer, LayerContent, LayerId, LiveShape, Path, PathOp, Point, Result, SHAPE_BLOCKS, Session,
+    ShapeLayer, Value, bad, json, sel, vector,
+};
 
 fn active_shape(s: &Session) -> std::result::Result<&ShapeLayer, String> {
     let d = s.active().ok_or("no document open")?;
@@ -338,7 +341,7 @@ pub(super) fn shape_create(s: &mut Session, p: &Value) -> Result<Value> {
     let id = s.edit("New Shape Layer", |doc, active| {
         refresh_shape(doc, &mut sh);
         let name = name.unwrap_or_else(|| doc.next_layer_name(default_name(kind)));
-        let id = doc.insert_above(*active, Layer::new(name, LayerContent::Shape(sh)));
+        let id = crate::layer_place::insert_new(doc, *active, Layer::new(name, LayerContent::Shape(sh)), crate::layer_place::Place::AutoEditable);
         *active = Some(id);
         Ok(id)
     })?;
@@ -440,13 +443,27 @@ pub(super) fn merge_components(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// Bakes `sh`'s path operations into plain combined outlines, traced from the exact coverage.
 fn bake_components(sh: &mut ShapeLayer, tol: f64) -> Result<()> {
+    sh.path = bake_path(&sh.path, tol)?;
+    sh.live = None;
+    sh.psd_raw = None;
+    Ok(())
+}
+
+/// `path` with its path operations baked into plain combined outlines, traced from the exact
+/// coverage within `tol` px (Merge Shape Components). An empty area gives an empty path; an
+/// inverted path (a vector mask's) stays inverted around the merged area. An open subpath is
+/// refused: tracing its fill would close it, or drop a straight one or a lone anchor (a dot under
+/// a round or square cap), losing the stroked geometry.
+pub(crate) fn bake_path(path: &Path, tol: f64) -> Result<Path> {
+    if path.subpaths.iter().any(|sp| !sp.closed && !sp.knots.is_empty()) {
+        return Err(EngineError::Other("Merge Shape Components needs closed paths: close or delete the open subpaths first".into()));
+    }
     // Trace at 4× resolution so the fitted outline follows the anti-aliased edge closely.
     const K: f64 = 4.0;
-    let up = sh.path.transform(&Affine::scale(K));
+    let up = Path { inverted: false, ..path.transform(&Affine::scale(K)) };
     let r = vector::fill_rasterizer(&up, vector::DEFAULT_TOLERANCE);
     let Some(b) = r.pixel_bounds() else {
-        sh.path.subpaths.clear();
-        return Ok(());
+        return Ok(Path { subpaths: Vec::new(), ..path.clone() });
     };
     let b = b.inflate(2);
     if u64::from(b.width()) * u64::from(b.height()) > 400_000_000 {
@@ -454,10 +471,7 @@ fn bake_components(sh: &mut ShapeLayer, tol: f64) -> Result<()> {
     }
     let cov = r.render(b);
     let traced = vector::trace::trace_mask(&cov, b, 0.0, tol * K);
-    sh.path = traced.transform(&Affine::scale(1.0 / K));
-    sh.live = None;
-    sh.psd_raw = None;
-    Ok(())
+    Ok(Path { inverted: path.inverted, ..traced.transform(&Affine::scale(1.0 / K)) })
 }
 
 /// The shape layers Layer › Combine Shapes merges into one: with none of the `narrow` params

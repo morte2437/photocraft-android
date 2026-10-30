@@ -163,6 +163,109 @@ fn click_creates_placeholder_selected_and_typing_replaces_it() {
     assert!(app.ui.text_edit.is_none());
 }
 
+// Independent perimeter oracle for the rectangle used by the endpoint hit tests.
+fn closed_path_endpoint_test_point(s: f64) -> (f64, f64) {
+    if s < 200.0 {
+        (20.0 + s, 20.0)
+    } else if s < 300.0 {
+        (220.0, 20.0 + s - 200.0)
+    } else if s < 500.0 {
+        (220.0 - (s - 300.0), 120.0)
+    } else {
+        (20.0, 120.0 - (s - 500.0))
+    }
+}
+
+#[test]
+fn closed_path_forward_hit_after_last_caret() {
+    for align in ["left", "center", "right"] {
+        let mut app = app();
+        app.ui.tool_options.type_align = align.into();
+        let path = photocraft_vector::shapes::rect(20.0, 20.0, 200.0, 100.0);
+        app.run("path.set", json!({"path": photocraft_engine::vector_cmds::path_json(&path)})).unwrap();
+        pointer_up(&mut app, [20.0, 45.0], [20.0, 45.0]);
+        insert(&mut app, "ssssssssssss");
+        let id = LayerId(app.ui.text_edit.as_ref().unwrap().layer);
+        let (l, _, _) = layout(&mut app, id).unwrap();
+        let (last, _, _) = l.caret(12);
+        let s = (575.0 + f64::from(last) + 2.0).rem_euclid(600.0);
+        let (x, y) = closed_path_endpoint_test_point(s);
+        assert_eq!(offset_at(&mut app, id, x, y), 12, "{align}");
+    }
+}
+
+#[test]
+fn open_path_hits_keep_endpoint_clamping() {
+    let mut app = app();
+    let path = photocraft_doc::vector::Path::new(vec![photocraft_doc::vector::Subpath::polyline(&[(20.0, 100.0), (380.0, 100.0)])]);
+    app.run("path.set", json!({"path": photocraft_engine::vector_cmds::path_json(&path)})).unwrap();
+    pointer_up(&mut app, [200.0, 100.0], [200.0, 100.0]);
+    insert(&mut app, "ssss");
+    let id = LayerId(app.ui.text_edit.as_ref().unwrap().layer);
+    assert_eq!(offset_at(&mut app, id, 198.0, 100.0), 0);
+    assert_eq!(offset_at(&mut app, id, 20.0, 100.0), 0);
+    assert_eq!(offset_at(&mut app, id, 380.0, 100.0), 4);
+}
+
+#[test]
+fn closed_path_backward_hit_before_first_caret() {
+    for align in ["left", "center", "right"] {
+        let mut app = app();
+        app.ui.tool_options.type_align = align.into();
+        let path = photocraft_vector::shapes::rect(20.0, 20.0, 200.0, 100.0);
+        app.run("path.set", json!({"path": photocraft_engine::vector_cmds::path_json(&path)})).unwrap();
+        pointer_up(&mut app, [20.0, 45.0], [20.0, 45.0]);
+        insert(&mut app, "ssssssssssss");
+        let id = LayerId(app.ui.text_edit.as_ref().unwrap().layer);
+        let (l, _, _) = layout(&mut app, id).unwrap();
+        // The rectangle runs clockwise; the text origin is perimeter distance 575.
+        // Project 2 px backward from the first caret, using an independent oracle.
+        let (first, _, _) = l.caret(0);
+        let s = (575.0 + f64::from(first) - 2.0).rem_euclid(600.0);
+        let (x, y) = closed_path_endpoint_test_point(s);
+        assert_eq!(offset_at(&mut app, id, x, y), 0, "{align}");
+    }
+}
+
+#[test]
+fn closed_path_upstream_caret_rectangle_left_edge_roundtrip() {
+    let mut app = app();
+    let path = photocraft_vector::shapes::rect(20.0, 20.0, 200.0, 100.0);
+    app.run("path.set", json!({"path": photocraft_engine::vector_cmds::path_json(&path)})).unwrap();
+    pointer_up(&mut app, [20.0, 45.0], [20.0, 45.0]);
+    insert(&mut app, "ssssssssssss");
+    let id = LayerId(app.ui.text_edit.as_ref().unwrap().layer);
+    let (layout, _, _) = layout(&mut app, id).unwrap();
+    let shape = text_layer(&app.session.active().unwrap().doc, id).unwrap().shape.clone();
+    let photocraft_doc::text::TextShape::Path { start, .. } = shape else {
+        assert!(matches!(shape, photocraft_doc::text::TextShape::Path { .. }), "outline click must attach path text");
+        return;
+    };
+    // Independent rectangle perimeter oracle: never use the warp under test to
+    // generate expected caret coordinates. Start is 25 px before the top-left seam.
+    assert!((f64::from(start) - 575.0).abs() < 0.5);
+    let mut tested_after_seam = false;
+    for index in [1, 4, 7, 10] {
+        let (x, _, _) = layout.caret(index);
+        let distance = f64::from(start) + f64::from(x);
+        tested_after_seam |= distance > 600.0;
+        let s = distance.rem_euclid(600.0);
+        let point = if s < 200.0 {
+            Point::new(20.0 + s, 20.0)
+        } else if s < 300.0 {
+            Point::new(220.0, 20.0 + s - 200.0)
+        } else if s < 500.0 {
+            Point::new(220.0 - (s - 300.0), 120.0)
+        } else {
+            Point::new(20.0, 120.0 - (s - 500.0))
+        };
+        // The rectangle oracle already returns document coordinates.
+        let doc = point;
+        assert_eq!(offset_at(&mut app, id, doc.x, doc.y), index, "caret round trip at {index}");
+    }
+    assert!(tested_after_seam, "fixture must cross the seam");
+}
+
 /// TYPE-218-1: a Type tool click on the work path starts type on the path from the point
 /// clicked, in one history step with the placeholder selected; a click off it is point text.
 #[test]
@@ -449,4 +552,36 @@ fn double_click_from_move_tool_restores_move_tool_on_commit_and_cancel() {
     assert_eq!(app.ui.text_edit_return_tool, None);
     commit(&mut app);
     assert_eq!(app.ui.tool, crate::state::Tool::Type, "Layers-thumbnail edit stays on Type tool");
+}
+
+#[test]
+fn closed_path_aligned_selection_highlights_every_visible_cluster() {
+    for align in ["center", "right"] {
+        let mut app = app();
+        app.ui.tool_options.type_align = align.into();
+        let path = photocraft_vector::shapes::rect(20.0, 20.0, 200.0, 100.0);
+        app.run("path.set", json!({"path":photocraft_engine::vector_cmds::path_json(&path)})).unwrap();
+        pointer_up(&mut app, [20.0, 45.0], [20.0, 45.0]);
+        insert(&mut app, "ssssssssssss");
+        let id = LayerId(app.ui.text_edit.as_ref().unwrap().layer);
+        let (l, _, _) = layout(&mut app, id).unwrap();
+        assert!(l.bounds().unwrap()[0] < 0.0, "{align} must exercise negative text coordinates");
+        let text_layer = text_layer(&app.session.active().unwrap().doc, id).unwrap();
+        let rendered = photocraft_text::render::layout_deform(&l, text_layer).unwrap();
+        let visible = l.clusters.iter().filter(|c| rendered.place_glyph(f64::from(c.x + c.advance / 2.0)) != photocraft_text::warp::Placement::Hidden).count();
+        assert_eq!(visible, l.clusters.len());
+        let ed = app.ui.text_edit.as_mut().unwrap();
+        ed.anchor = 0;
+        ed.caret = 12;
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(Default::default(), |ui| {
+            let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 400.0));
+            let painter = ui.ctx().layer_painter(egui::LayerId::background()).with_clip_rect(rect);
+            let xf = ViewXform { rect, zoom: 1.0, center: [120.0, 70.0], flip: false, rotation: 0.0, aspect: 1.0 };
+            draw_overlay(&mut app, &painter, &xf);
+        });
+        output.textures_delta.clear();
+        let highlights = output.shapes.iter().filter(|s| matches!(&s.shape, egui::Shape::Path(p) if p.closed && p.fill.a() == 110)).count();
+        assert_eq!(highlights, visible, "{align}: every visible selected cluster needs its highlight");
+    }
 }

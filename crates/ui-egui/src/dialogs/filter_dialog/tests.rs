@@ -533,6 +533,45 @@ fn every_filter_command_spec_parses() {
     assert!(!has_dialog("filter.stylize.findEdges"));
 }
 
+/// #9423: Select and Mask starts from its defaults each time, as in Photoshop, unless Remember
+/// Settings was on when it was last OKed; turning it off forgets the settings again.
+#[test]
+fn select_and_mask_remembers_settings_only_when_asked() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 64, "height": 64})).unwrap();
+    app.run("select.all", json!({})).unwrap();
+    let cmd = crate::select_mask_view::COMMAND;
+    let fields = |app: &PhotocraftApp, id: u64| app.ui.dialogs.iter().find(|d| d.id == id).unwrap().fields.clone();
+    let opened = |app: &mut PhotocraftApp| {
+        let id = open(app, cmd).unwrap();
+        let f = fields(app, id);
+        app.ui.dialogs.retain(|d| d.id != id);
+        f
+    };
+    let first = opened(&mut app);
+    assert_eq!(first["smooth"], json!(0.0));
+    assert_eq!(first.get(crate::select_mask_view::REMEMBER), None, "off by default");
+    // OK with Smooth 10 and Remember Settings off: the next one starts from the defaults.
+    let mut f = first.clone();
+    f.insert("smooth".into(), json!(10.0));
+    f.insert(crate::select_mask_view::REMEMBER.into(), json!(false));
+    remember(&mut app, cmd, &f);
+    let next = opened(&mut app);
+    assert_eq!(next["smooth"], json!(0.0), "not remembered");
+    assert_eq!(next[crate::select_mask_view::REMEMBER], json!(false));
+    // With Remember Settings on, the next one starts from them.
+    f.insert(crate::select_mask_view::REMEMBER.into(), json!(true));
+    remember(&mut app, cmd, &f);
+    let next = opened(&mut app);
+    assert_eq!(next["smooth"], json!(10.0), "remembered");
+    assert_eq!(next[crate::select_mask_view::REMEMBER], json!(true));
+    // Turning it off again forgets them.
+    let mut off = next.clone();
+    off.insert(crate::select_mask_view::REMEMBER.into(), json!(false));
+    remember(&mut app, cmd, &off);
+    assert_eq!(opened(&mut app)["smooth"], json!(0.0));
+}
+
 /// Select and Mask's Output To lists all six output targets.
 #[test]
 fn select_and_mask_output_lists_all_six_targets() {
@@ -1366,6 +1405,30 @@ fn assign_profile_offers_only_profiles_of_the_documents_colour_mode() {
     assert!(rgb.iter().any(|o| o == "srgb") && !rgb.iter().any(|o| o == "coated-cmyk"), "an RGB document gets RGB profiles");
     let (cmyk, _) = assign_profile_offers(Some("image.mode.cmyk"));
     assert!(cmyk.iter().any(|o| o == "coated-cmyk") && !cmyk.iter().any(|o| o == "srgb"), "a CMYK document gets CMYK profiles");
+}
+
+/// #9087: Artboard from Layers opens at the selected layers' size and the next Artboard N, as
+/// in the reference application, never at a size remembered from other layers.
+#[test]
+fn artboard_from_layers_opens_at_the_selected_layers_size() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+    app.run("file.new", json!({"width": 100, "height": 80})).unwrap();
+    app.run("layer.new.layer", json!({})).unwrap();
+    app.run("select.rect", json!({"x": 10, "y": 5, "width": 20, "height": 30})).unwrap();
+    app.run("edit.fill", json!({"color": "#ff0000"})).unwrap();
+    app.run("select.deselect", json!({})).unwrap();
+    app.session.prefs.edit(|prefs| {
+        prefs.dialogs.insert("layer.new.artboardFromLayers".into(), json!({"width": 1080, "height": 1350}));
+    });
+    let id = open(&mut app, "layer.new.artboardFromLayers").unwrap();
+    let fields = &app.ui.dialog_mut(id).unwrap().fields;
+    assert_eq!((&fields["width"], &fields["height"]), (&json!(20), &json!(30)), "not the remembered 1080 x 1350");
+    assert_eq!(fields["name"], json!("Artboard 1"));
+    crate::dialogs::confirm(&mut app, id).unwrap();
+    let doc = &app.session.active().unwrap().doc;
+    let boards = doc.artboards();
+    assert_eq!(boards.len(), 1);
+    assert_eq!((boards[0].1, boards[0].2.rect), ("Artboard 1", photocraft_geom::Rect::new(10, 5, 30, 35)));
 }
 
 /// #4951: a profile remembered from a document of another colour mode isn't preselected.

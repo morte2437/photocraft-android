@@ -1,6 +1,6 @@
 use super::controls::remember_edit;
 use super::open::RawOpen;
-use super::*;
+use super::{CameraRaw, PhotocraftApp, Value, json};
 
 /// The sidecar beside a raw file: `IMG_0001.xmp` for `IMG_0001.CR2`, as Camera Raw names it.
 pub fn sidecar_path(path: &str) -> String {

@@ -64,6 +64,7 @@ mod rw2;
 mod saturation;
 mod sensor;
 mod sony;
+mod sony_metadata;
 mod tiff;
 mod tiffep;
 mod tone;

@@ -73,7 +73,9 @@ pub(crate) fn import(file: &PsdFile, all: &[u8], doc: &mut Document, names: &[St
 }
 
 /// Writes a Multichannel document as a mode-7 PSD (no layer section; every channel a plane).
-pub(crate) fn document_to_psd(doc: &Document, force_psb: bool) -> (PsdFile, Vec<String>) {
+/// A file past `size_limit` bytes is written as PSB (see `psd_export::fit_psd_size`); `None` keeps
+/// the version whatever the size.
+pub(crate) fn document_to_psd(doc: &Document, force_psb: bool, size_limit: Option<u64>) -> (PsdFile, Vec<String>) {
     let mut warnings = Vec::new();
     // Photoshop's Multichannel mode is 8 or 16 bits per channel.
     let sample = match doc.depth {
@@ -106,17 +108,14 @@ pub(crate) fn document_to_psd(doc: &Document, force_psb: bool) -> (PsdFile, Vec<
         }
     }
     let big = doc.size.width > 30_000 || doc.size.height > 30_000;
-    let size_exceeds_limit = !force_psb && !big && crate::psd_export::psd_size_exceeds_limit(doc);
-    let version = crate::psd_export::psd_version(doc, force_psb, size_exceeds_limit);
+    let version = crate::psd_export::psd_version(doc, force_psb);
     if big && !force_psb {
         warnings.push("document exceeds 30000 px; written as PSB".into());
-    } else if size_exceeds_limit && !force_psb {
-        warnings.push("estimated encoded size exceeds 2 GB; written as PSB".into());
     }
     let header = Header::new(version, doc.size.width, doc.size.height, channels.len().max(1) as u16, psd_depth(sample), PsdMode::Multichannel);
     let image_data = ImageData::encode(Compression::Rle, &planes, &header)
         .or_else(|_| ImageData::encode(Compression::Raw, &planes, &header))
-        .unwrap_or(ImageData { compression: Compression::Raw, data: planes });
+        .unwrap_or(ImageData::new(Compression::Raw, planes));
     let mut resources = vec![
         ImageResource::new(ids::RESOLUTION_INFO, ResolutionInfo::from_dpi(f64::from(doc.resolution_dpi)).to_bytes()),
         ImageResource::new(ids::GLOBAL_ANGLE, (doc.global_light.angle.round() as i32).to_be_bytes().to_vec()),
@@ -133,14 +132,16 @@ pub(crate) fn document_to_psd(doc: &Document, force_psb: bool) -> (PsdFile, Vec<
     // Alpha identifiers: one u32 per channel, only while they still match the channels.
     let keep = |id: u16, data: &[u8]| id != ALPHA_IDENTIFIERS || data.len() == channels.len().saturating_mul(4);
     let color_mode_data = photocraft_psd::hdr::color_mode_data_for_depth(header.depth);
-    let file = layerless_file(doc, header, image_data, color_mode_data, resources, keep, &mut warnings);
+    let file = layerless_file(doc, header, image_data, color_mode_data, resources, keep, size_limit, &mut warnings);
     (file, warnings)
 }
 
 /// A PSD without layers around `image_data`: `resources` (the mode's own) plus the paths, XMP,
 /// EXIF and every other imported resource `keep` accepts (except the ones that only describe
 /// layers and any already in `resources`), and the document-level tagged blocks. Shared by the
-/// modes that have no layers in Photoshop: Multichannel, Indexed Color and Bitmap.
+/// modes that have no layers in Photoshop: Multichannel, Indexed Color and Bitmap. A file past
+/// `size_limit` bytes is written as PSB (see `psd_export::fit_psd_size`); `None` keeps the version.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn layerless_file(
     doc: &Document,
     header: Header,
@@ -148,6 +149,7 @@ pub(crate) fn layerless_file(
     color_mode_data: Vec<u8>,
     mut resources: Vec<ImageResource>,
     keep: impl Fn(u16, &[u8]) -> bool,
+    size_limit: Option<u64>,
     warnings: &mut Vec<String>,
 ) -> PsdFile {
     resources.extend(crate::psd_export::path_resources(doc, warnings));
@@ -175,13 +177,14 @@ pub(crate) fn layerless_file(
     }
     resources.push(version_info_resource(true));
     // Document-level tagged blocks (patterns, notes, ...) are valid without a layer section; a
-    // kept layer block would describe layers the document doesn't have.
+    // kept layer block would describe layers the document doesn't have. Their signatures follow
+    // the version the file is written as, known once its size is.
     let global_blocks: Vec<TaggedBlock> = crate::annotations_map::export_blocks(doc, crate::pattern_map::export_global_blocks(doc))
         .into_iter()
         .filter(|(_, key, _)| !matches!(key, b"Layr" | b"Lr16" | b"Lr32"))
-        .map(|(sig, key, data)| crate::psd_export::global_block(crate::psd_export::block_signature(sig, key, header.version), key, &data))
+        .map(|(sig, key, data)| crate::psd_export::global_block(sig, key, &data))
         .collect();
-    PsdFile {
+    let mut file = PsdFile {
         header,
         color_mode_data,
         resources,
@@ -191,5 +194,13 @@ pub(crate) fn layerless_file(
         global_blocks,
         layer_mask_trailing: Vec::new(),
         image_data,
+        write_as_psb: false,
+    };
+    if let Some(limit) = size_limit
+        && let Some(warning) = crate::psd_export::fit_psd_size(&mut file, limit)
+    {
+        warnings.push(warning);
     }
+    crate::psd_export::sign_global_blocks(&mut file);
+    file
 }

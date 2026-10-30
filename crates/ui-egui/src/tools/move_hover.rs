@@ -185,7 +185,7 @@ mod tests {
         assert_eq!(active_outline(&mut app, None, false, false), Some(a));
 
         // When a drag or transform is in progress, no outline:
-        app.guide_drag = Some(crate::rulers::GuideDrag { vertical: false, index: None, pos: 10.0, press: 10.0, over_ruler: false });
+        app.guide_drag = Some(crate::rulers::GuideDrag { vertical: false, index: None, pos: 10.0, press: 10.0, over_ruler: false, flipped: false });
         assert_eq!(active_outline(&mut app, None, false, false), None);
         app.guide_drag = None;
 

@@ -2,6 +2,10 @@
 
 Click the color swatch in the Type options bar or Character panel to open the full Color Picker. It offers the color field, component strip, HSB/RGB/Lab/CMYK and hex fields, and current/new swatches. Selecting characters targets that range; with no character selection, the active text layer is targeted. **OK** applies through `type.setStyle`; **Cancel** leaves the text and history unchanged. The foreground color is independent of this dialog.
 
+## HUD Color Picker
+
+With a painting tool, **Shift+Alt+right-click** on the canvas opens Photoshop's HUD Color Picker under the pointer: a hue strip and a saturation/value square. While the right button stays down, moving the pointer over the HUD sets the foreground color live; releasing the button keeps it. **Esc** restores the color the gesture started from. The whole gesture is one coalesced `tools.setColors` history step. The agents' equivalent is `ui.pointer` with `"button": "right"`, `"shift": true, "alt": true` (the down opens the HUD, the up closes it).
+
 The existing canvas eyedropper continues to sample the document while the Color Picker is open, including canvas zoom and pan. This works without operating-system screen-capture permission.
 
 ## Pick a color outside PhotoCraft

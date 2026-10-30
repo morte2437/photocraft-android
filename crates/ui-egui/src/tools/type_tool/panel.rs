@@ -1,9 +1,10 @@
 use super::defaults::{apply, apply_defaults, default_styles, formatting_params, open_color_picker, shown_scale, target, type_unit};
 use super::fonts::{axis_sliders, font_picker, fonts_ready, selected_style, style_label, styles};
 use super::options_bar::{
-    align_glyph, apply_kerning, direction_glyph, direction_items, icon_label, kerning_at, kerning_field, kerning_label, num_field, styles_at, toggle_cell,
+    align_glyph, apply_kerning, direction_glyph, direction_items, icon_label, kerning_at, kerning_field, kerning_label, num_field, shown_family, styles_at,
+    toggle_cell,
 };
-use super::*;
+use super::{Color32, LayerId, PhotocraftApp, Stroke, json, text_layer};
 
 /// The Character panel's OpenType buttons, in Photoshop's order: (feature tag, command id,
 /// tooltip). The tooltips are the Type › OpenType menu labels.
@@ -117,6 +118,86 @@ fn cell_width(avail: f32, n: usize) -> f32 {
     ((avail - (n - 1.0) * 2.0) / n).floor().max(20.0)
 }
 
+/// The reference application's Character panel size list (points); Leading offers Auto, then
+/// the same values. The reference app's options bar offers the same size list.
+pub(crate) const SIZE_PRESETS: [f32; 17] = [6.0, 8.0, 9.0, 10.0, 11.0, 12.0, 14.0, 16.0, 18.0, 24.0, 30.0, 36.0, 48.0, 60.0, 72.0, 150.0, 300.0];
+/// Tracking presets (1/1000 em), in groups split by separators: tightening, none, loosening.
+const TRACKING_PRESETS: [&[f32]; 3] = [&[-100.0, -75.0, -50.0, -25.0, -10.0, -5.0], &[0.0], &[5.0, 10.0, 25.0, 50.0, 75.0, 100.0, 200.0]];
+
+/// What a [`metric_field`] produced: a typed value in the display unit, a preset in the model's
+/// unit (points; converting it through the display unit and back would store 12.000001), or Auto.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum MetricChoice {
+    Typed(f32),
+    Preset(f32),
+    Auto,
+}
+
+/// A preset as the list shows it: the value in the display unit, at most two decimals.
+fn preset_label(v: f32, unit: &str) -> String {
+    let n = format!("{v:.2}");
+    let n = n.trim_end_matches('0').trim_end_matches('.');
+    let n = if n == "-0" { "0" } else { n };
+    if unit.is_empty() { n.to_owned() } else { format!("{n} {unit}") }
+}
+
+/// A Character panel [`num_field`] with a preset chevron in the same cell, which still ends at
+/// the column's right edge. The value stays editable: presets are shortcuts, not limits.
+/// `presets` are groups of model values (split by separators), shown multiplied by `u`; `auto`
+/// adds an Auto item first (`Some(true)` when Auto is current).
+#[allow(clippy::too_many_arguments)]
+fn metric_field(
+    ui: &mut egui::Ui,
+    (label, tip, menu): (&str, &str, &str),
+    value: f32,
+    range: std::ops::RangeInclusive<f32>,
+    (u, unit): (f32, &str),
+    width: f32,
+    presets: &[&[f32]],
+    auto: Option<bool>,
+) -> Option<MetricChoice> {
+    let sp = ui.spacing().clone();
+    let pad = sp.button_padding.x;
+    let combo_w = (sp.icon_spacing + sp.icon_width).max(16.0 - 2.0 * pad) + 2.0 * pad;
+    let mut chosen = None;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        if let Some(v) = num_field(ui, label, tip, value, range, unit, (width - combo_w).max(24.0)) {
+            chosen = Some(MetricChoice::Typed(v));
+        }
+        let near = |p: f32| (p * u - value).abs() <= 1e-4 * value.abs().max(1.0);
+        let (press, close) = crate::press_menu::PressCombo::before(ui, menu);
+        let combo = craft_ui::ComboBox::from_id_salt(menu)
+            .selected_text("")
+            .width(combo_w)
+            .height(420.0)
+            .icon(crate::widgets::chevron_icon)
+            .close_behavior(close)
+            .show_ui(ui, |ui| {
+                if let Some(on) = auto {
+                    let item = ui.selectable_label(on, tl!("Auto"));
+                    if press.chosen(ui, &item) {
+                        chosen = Some(MetricChoice::Auto);
+                    }
+                }
+                for (i, group) in presets.iter().enumerate() {
+                    if i > 0 {
+                        ui.separator();
+                    }
+                    for &p in *group {
+                        let item = ui.selectable_label(auto != Some(true) && near(p), preset_label(p * u, unit));
+                        if press.chosen(ui, &item) {
+                            chosen = Some(MetricChoice::Preset(p));
+                        }
+                    }
+                }
+            });
+        press.after(&combo.response);
+        combo.response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, ui.is_enabled(), tl!(menu)));
+    });
+    chosen
+}
+
 /// Properties panel sections for a type layer: Character, Paragraph and Type Options (#155).
 pub fn type_properties(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     type_sections(app, ui, true, true, false);
@@ -149,14 +230,20 @@ fn type_sections(app: &mut PhotocraftApp, ui: &mut egui::Ui, character: bool, pa
     if character && section(ui, "character", tl!("Character")) {
         let full = ui.available_width();
         let w = field_width(full, 2, LABEL_W);
-        let mut fam = c.font_family.clone();
+        let mut fam = shown_family(app, &c);
         let mut ready = true;
         row(ui, &mut |ui| {
             ready = fonts_ready(ui, full);
-            if ready && font_picker(ui, &mut fam, full, app.session.prefs().type_.font_preview, &app.ui.recent_fonts) {
-                app.note_recent_font(&fam);
+            if ready && let Some(picked) = font_picker(app, ui, &mut fam, full) {
                 app.ui.tool_options.type_font = fam.clone();
-                apply(app, ui.ctx(), json!({"font": fam}));
+                match picked {
+                    Some(style) => {
+                        // New type takes the style too, as from the options bar's menu.
+                        app.ui.tool_options.type_style = style.clone();
+                        apply(app, ui.ctx(), json!({"font": fam, "fontStyle": style}));
+                    }
+                    None => apply(app, ui.ctx(), json!({"font": fam})),
+                }
             }
         });
         row(ui, &mut |ui| {
@@ -164,7 +251,8 @@ fn type_sections(app: &mut PhotocraftApp, ui: &mut egui::Ui, character: bool, pa
                 return;
             }
             let mut style = selected_style(&c);
-            let opts: Vec<(String, String)> = styles(&fam).into_iter().map(|s| (s.clone(), style_label(&s))).collect();
+            let opts: Vec<(String, String)> =
+                styles(if fam.is_empty() { &c.font_family } else { &fam }).into_iter().map(|s| (s.clone(), style_label(&s))).collect();
             let opts_ref: Vec<(String, &str)> = opts.iter().map(|(a, b)| (a.clone(), b.as_str())).collect();
             if crate::widgets::dropdown(ui, "props-type-style", tl!("Style"), &mut style, &opts_ref, full) {
                 apply(app, ui.ctx(), json!({"fontStyle": style}));
@@ -175,13 +263,24 @@ fn type_sections(app: &mut PhotocraftApp, ui: &mut egui::Ui, character: bool, pa
             let k = shown_scale(app);
             // Hover tips stay English until wired through `tl!` in a multi-locale change
             // (`every_tl_literal_is_translated` requires every complete catalog).
-            if let Some(v) = num_field(ui, "tT", "Font size", c.size_pt * k * u, 0.1 * u..=1296.0 * u, unit, w) {
-                app.ui.tool_options.type_size = v / u;
-                apply(app, ui.ctx(), json!({"size": v / u, "metricsAsShown": true}));
+            let size =
+                metric_field(ui, ("tT", "Font size", "Font size presets"), c.size_pt * k * u, 0.1 * u..=1296.0 * u, (u, unit), w, &[&SIZE_PRESETS], None);
+            if let Some(pt) = match size {
+                Some(MetricChoice::Typed(v)) => Some(v / u),
+                Some(MetricChoice::Preset(pt)) => Some(pt),
+                _ => None,
+            } {
+                app.ui.tool_options.type_size = pt;
+                apply(app, ui.ctx(), json!({"size": pt, "metricsAsShown": true}));
             }
             let lead = c.leading_pt.unwrap_or(c.size_pt * para.auto_leading.max(0.01)) * k;
-            if let Some(v) = num_field(ui, "A↕", "Leading (set to the font size × auto-leading when Auto)", lead * u, 0.1 * u..=5000.0 * u, unit, w) {
-                apply(app, ui.ctx(), json!({"leading": v / u, "metricsAsShown": true}));
+            let tip = "Leading (set to the font size × auto-leading when Auto)";
+            match metric_field(ui, ("A↕", tip, "Leading presets"), lead * u, 0.1 * u..=5000.0 * u, (u, unit), w, &[&SIZE_PRESETS], Some(c.leading_pt.is_none()))
+            {
+                Some(MetricChoice::Typed(v)) => apply(app, ui.ctx(), json!({"leading": v / u, "metricsAsShown": true})),
+                Some(MetricChoice::Preset(pt)) => apply(app, ui.ctx(), json!({"leading": pt, "metricsAsShown": true})),
+                Some(MetricChoice::Auto) => apply(app, ui.ctx(), json!({"leading": "auto"})),
+                None => {}
             }
         });
         row(ui, &mut |ui| {
@@ -193,7 +292,9 @@ fn type_sections(app: &mut PhotocraftApp, ui: &mut egui::Ui, character: bool, pa
                     apply_kerning(app, ui.ctx(), v);
                 }
             });
-            if let Some(v) = num_field(ui, "VA", "Tracking (1/1000 em)", c.tracking, -1000.0..=10000.0, "", w) {
+            if let Some(MetricChoice::Typed(v) | MetricChoice::Preset(v)) =
+                metric_field(ui, ("VA", "Tracking (1/1000 em)", "Tracking presets"), c.tracking, -1000.0..=10000.0, (1.0, ""), w, &TRACKING_PRESETS, None)
+            {
                 apply(app, ui.ctx(), json!({"tracking": v}));
             }
         });

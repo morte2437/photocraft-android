@@ -1,6 +1,10 @@
 use super::heal::history_source;
 use super::sampling::{SampleLayers, sample, sample_layers};
-use super::*;
+use super::{
+    BlendMode, BrushSettings, Document, EngineError, LayerId, PixelFormat, Rect, Region, Result, SampleType, Session, Stroke, StrokePoint, Surface, Value,
+    alpha_index, apply_coverage, bad, blend_from_str, coverage, damage_json, flag, has_pixel_layer, json, parse_brush, pattern_stamp, periodic, point,
+    reject_huge_stroke, run_stroke, to_rgba,
+};
 
 /// Where a clone stroke samples: `offset` / `source` params, else the active Clone Source slot,
 /// with the slot's (or the call's) scale, rotation and flips (see `presets::clone_source`).

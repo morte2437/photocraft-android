@@ -93,11 +93,30 @@ pub fn deinterleave(bytes: &[u8], ch: usize, s: SampleType, invert: &[bool]) -> 
     let bps = s.bytes();
     let n = bytes.len() / (ch * bps).max(1);
     if s == SampleType::U8 {
-        // Fast path: one plane per thread, no per-sample copies.
-        return par_map((0..ch).collect(), |c| {
-            let it = bytes.iter().skip(c).step_by(ch).take(n);
-            if invert[c] { it.map(|v| 255 - v).collect() } else { it.copied().collect() }
+        // Fast path: one band of pixels per core, written straight into every plane.
+        let mut planes = vec![vec![0u8; n]; ch];
+        let bs = bands(n);
+        let mut slots: Vec<Vec<&mut [u8]>> = bs.iter().map(|_| Vec::with_capacity(ch)).collect();
+        for plane in &mut planes {
+            let mut rest = plane.as_mut_slice();
+            for (slot, band) in slots.iter_mut().zip(&bs) {
+                let Some((part, tail)) = rest.split_at_mut_checked(band.len()) else { break };
+                slot.push(part);
+                rest = tail;
+            }
+        }
+        par_map(bs.into_iter().zip(slots).collect(), |(band, mut outs)| {
+            let src = bytes.get(band.start * ch..band.end * ch).unwrap_or(&[]);
+            for (c, out) in outs.iter_mut().enumerate() {
+                let px = src.chunks_exact(ch).filter_map(|p| p.get(c).copied());
+                if invert.get(c).copied().unwrap_or(false) {
+                    out.iter_mut().zip(px).for_each(|(o, v)| *o = 255 - v);
+                } else {
+                    out.iter_mut().zip(px).for_each(|(o, v)| *o = v);
+                }
+            }
         });
+        return planes;
     }
     // One band of rows per core, appended in band order into pre-grown planes.
     let row = ch * bps;

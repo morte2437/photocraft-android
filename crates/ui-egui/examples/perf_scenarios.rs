@@ -102,6 +102,10 @@ struct Bench {
     errors: Vec<(String, String)>,
     /// The row being timed, so a panic inside it is reported against that row.
     current: Option<String>,
+    /// Pixels the last `refresh` redrew (`Refresh.px`; the rect's area on the CPU).
+    last_px: std::cell::Cell<u64>,
+    /// Refreshed pixels per sample, for rows that report them (#9329); `record` prints the p50.
+    px: std::cell::RefCell<Vec<u64>>,
 }
 
 impl Bench {
@@ -138,11 +142,12 @@ impl Bench {
         let t = Instant::now();
         match &self.gpu {
             Some((g, rs)) => {
-                g.refresh(doc.id.0, doc, damage, None);
+                self.last_px.set(g.refresh(doc.id.0, doc, damage, None).px);
                 let _ = rs.device.poll(eframe::wgpu::PollType::Wait { submission_index: None, timeout: None });
             }
             None => {
                 let r = damage.unwrap_or(doc.bounds()).intersect(&doc.bounds());
+                self.last_px.set(if r.is_empty() { 0 } else { r.size().area() });
                 if !r.is_empty() {
                     std::hint::black_box(photocraft_compose::render(doc, r));
                 }
@@ -190,10 +195,13 @@ impl Bench {
         }
         self.current = Some(name.to_string());
         self.sampler.reset();
+        self.px.borrow_mut().clear();
         let mut samples = Vec::new();
         let mut run = || -> Res<()> {
             if warm {
                 f(self, s, 0)?;
+                // `refresh px` describes only the timed runs.
+                self.px.borrow_mut().clear();
             }
             for i in 0..reps.max(1) {
                 samples.push(f(self, s, i + 1)?);
@@ -216,6 +224,11 @@ impl Bench {
                     samples.len(),
                     r["peak_rss_bytes"].as_u64().unwrap_or(0) >> 20,
                 );
+                let mut px = std::mem::take(&mut *self.px.borrow_mut());
+                if !px.is_empty() {
+                    px.sort_unstable();
+                    println!("{name:<52} refresh px {}", px[px.len() / 2]);
+                }
                 self.rows.push(r);
             }
             Err(e) => {
@@ -256,6 +269,9 @@ struct Sizes {
     a4: (u32, u32),
     /// A new 10 × 5 m document at 200 ppi (3.1 GP, #4017).
     huge_new: (u32, u32),
+    /// A huge document with one painted layer, refreshed zoomed out (#1015, #9330). The row name
+    /// leaves out the size because `--quick` uses a smaller one.
+    huge_doc: (u32, u32),
 }
 
 const FULL: Sizes = Sizes {
@@ -269,6 +285,7 @@ const FULL: Sizes = Sizes {
     big_photo: (6000, 4000),
     a4: (2480, 3508),
     huge_new: (78_740, 39_370),
+    huge_doc: (30_000, 30_000),
 };
 
 const QUICK: Sizes = Sizes {
@@ -282,6 +299,7 @@ const QUICK: Sizes = Sizes {
     big_photo: (1600, 1066),
     a4: (1240, 1754),
     huge_new: (20_000, 10_000),
+    huge_doc: (8_000, 8_000),
 };
 
 /// The layered document of #209: a background, six pixel layers with a drop shadow and a stroke,
@@ -339,6 +357,11 @@ fn many_layers_doc(w: u32, h: u32, n: usize) -> Res<(Session, u64)> {
     Ok((s, mid))
 }
 
+/// The first top-level layer of the active document, other than `except`, that `want` accepts.
+fn find_layer(s: &Session, except: u64, want: impl Fn(&photocraft_doc::Layer) -> bool) -> Option<u64> {
+    s.active()?.doc.layers.iter().find(|l| l.id.0 != except && want(l)).map(|l| l.id.0)
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let quick = args.iter().any(|a| a == "--quick");
@@ -358,6 +381,8 @@ fn main() {
         rows: Vec::new(),
         errors: Vec::new(),
         current: None,
+        last_px: std::cell::Cell::new(0),
+        px: std::cell::RefCell::new(Vec::new()),
     };
     println!("perf_scenarios: {} mode, {} reps, {}", if quick { "quick" } else { "full" }, reps, adapter.as_deref().unwrap_or("CPU canvas"));
     let t_all = Instant::now();
@@ -365,13 +390,15 @@ fn main() {
     // A panic in one group (a crash the scenario found) is reported against the row that was
     // running, and the other groups still run.
     type Group = fn(&mut Bench, &Sizes);
-    let groups: [(&str, Group); 6] = [
+    let groups: [(&str, Group); 8] = [
         ("layered", layered_scenarios),
         ("many layers", many_layer_scenarios),
         ("full-canvas layers", full_canvas_layer_scenarios),
         ("bit depths", depth_scenarios),
         ("long operations", job_scenarios),
         ("algorithms", algorithm_scenarios),
+        ("huge document", huge_document_scenarios),
+        ("redraw area", redraw_area_scenarios),
     ];
     let use_gpu = b.gpu.is_some();
     if let Some(wanted) = arg(&args, "--group")
@@ -477,6 +504,37 @@ fn layered_scenarios(b: &mut Bench, sz: &Sizes) {
         Ok(ms(t) + b.refresh(s, false)?)
     });
 
+    // Advanced Blending on one layer sends the whole document to the CPU compositor (#6689):
+    // opacity edits on another layer, then the knockout is cleared again.
+    let other = find_layer(&s, target, |l| matches!(l.content, photocraft_doc::LayerContent::Raster(_)) && photocraft_compose::effects::has_effects(l));
+    let adjustment = find_layer(&s, target, |l| matches!(l.content, photocraft_doc::LayerContent::Adjustment(_)));
+    match other {
+        Some(other) if exec(&mut s, "layer.layerStyle.blendingOptions", json!({"layer": other, "knockout": "shallow"})).is_ok() => {
+            let _ = b.refresh(&s, true);
+            b.time("set opacity on a layer with Advanced Blending + refresh", &mut s, reps, true, |b, s, i| {
+                let t = Instant::now();
+                exec(s, "layer.setProps", json!({"layer": target, "opacity": if i % 2 == 0 { 0.6 } else { 0.9 }}))?;
+                Ok(ms(t) + b.refresh(s, false)?)
+            });
+            let _ = exec(&mut s, "layer.layerStyle.blendingOptions", json!({"layer": other, "knockout": "none"}));
+            let _ = b.refresh(&s, true);
+        }
+        _ => b.errors.push(("set opacity on a layer with Advanced Blending + refresh".into(), "no second styled layer to knock out".into())),
+    }
+    // Hiding the Levels adjustment changes every pixel below it (#6535).
+    match adjustment {
+        Some(adj) => {
+            b.time("toggle adjustment layer visibility + refresh", &mut s, reps, true, |b, s, i| {
+                let t = Instant::now();
+                exec(s, "layer.setProps", json!({"layer": adj, "visible": i % 2 == 1}))?;
+                Ok(ms(t) + b.refresh(s, false)?)
+            });
+            let _ = exec(&mut s, "layer.setProps", json!({"layer": adj, "visible": true}));
+            let _ = exec(&mut s, "layer.select", json!({"layer": target}));
+        }
+        None => b.errors.push(("toggle adjustment layer visibility + refresh".into(), "no adjustment layer".into())),
+    }
+
     // A layer filling the canvas, with a drop shadow (#761) and without (#128): dragged, it
     // overhangs the canvas edge.
     let full = (|| -> Res<u64> {
@@ -554,7 +612,8 @@ fn layered_scenarios(b: &mut Bench, sz: &Sizes) {
 fn full_canvas_layer_scenarios(b: &mut Bench, sz: &Sizes) {
     let opacity = "opacity of a layer among many full-canvas layers + refresh";
     let hide = "hide a layer among many full-canvas layers + refresh";
-    if !b.wanted(opacity) && !b.wanted(hide) {
+    let adjust = "hide the top adjustment layer among many full-canvas layers, over the GPU budget + refresh";
+    if !b.wanted(opacity) && !b.wanted(hide) && !b.wanted(adjust) {
         return;
     }
     b.current = Some(opacity.to_string());
@@ -582,17 +641,14 @@ fn full_canvas_layer_scenarios(b: &mut Bench, sz: &Sizes) {
             return;
         }
     };
+    let mut app_budget = None;
     if let (Some((g, _)), Some(st)) = (&b.gpu, s.active()) {
         // As the app counts it (`canvas::gpu_budget`).
         let pixels = st.memory_bytes() as u64;
         let allowance = u64::from(photocraft_engine::prefs::Performance::default().memory_usage_mb) << 20;
-        g.set_memory_budget(photocraft_ui_egui::gpu_canvas::memory_budget(
-            allowance,
-            pixels,
-            photocraft_ui_egui::gpu_canvas::physical_memory(),
-            g.video_memory(),
-            0,
-        ));
+        let budget = photocraft_ui_egui::gpu_canvas::memory_budget(allowance, pixels, photocraft_ui_egui::gpu_canvas::physical_memory(), g.video_memory(), 0);
+        g.set_memory_budget(budget);
+        app_budget = Some(budget);
     }
     let _ = b.refresh(&s, true);
     let reps = b.reps;
@@ -605,6 +661,71 @@ fn full_canvas_layer_scenarios(b: &mut Bench, sz: &Sizes) {
         let t = Instant::now();
         exec(s, "layer.setProps", json!({"layer": mid, "visible": i % 2 == 1}))?;
         Ok(ms(t) + b.refresh(s, false)?)
+    });
+    // #6533: an adjustment among them, added after the rows above so their document is unchanged.
+    // It lands on top (above the active `full n-1`), #6533's "hide the top adjustment layer" case.
+    let _ = exec(&mut s, "layer.setProps", json!({"layer": mid, "visible": true}));
+    b.current = Some(adjust.to_string());
+    let adj = exec(&mut s, "layer.newAdjustmentLayer.levels", json!({"inBlack": 8, "inWhite": 245, "gamma": 1.05})).and_then(|_| active_layer(&s));
+    match adj {
+        Ok(adj) => {
+            // As #6533's repro (`performance.gpuMemoryMb = 512`): the ~3.6 GB working set no longer
+            // fits, so a full refresh takes the from-scratch CPU path on every machine.
+            if let Some((g, _)) = &b.gpu {
+                g.set_memory_budget(photocraft_ui_egui::gpu_canvas::MIN_GPU_BUDGET);
+            }
+            let _ = b.refresh(&s, true);
+            // Each run is a from-scratch CPU composite of 150 full-canvas layers. Every timed run
+            // is a hide: the layer is shown again, untimed, before each one.
+            b.time(adjust, &mut s, reps.min(5), true, |b, s, _| {
+                exec(s, "layer.setProps", json!({"layer": adj, "visible": true}))?;
+                b.refresh(s, false)?;
+                let t = Instant::now();
+                exec(s, "layer.setProps", json!({"layer": adj, "visible": false}))?;
+                Ok(ms(t) + b.refresh(s, false)?)
+            });
+        }
+        Err(e) => b.errors.push((adjust.to_string(), e)),
+    }
+    // `b.gpu` is shared with the later groups: give them back the budget they see on main.
+    if let (Some((g, _)), Some(budget)) = (&b.gpu, app_budget) {
+        g.set_memory_budget(budget);
+    }
+}
+
+/// #1015, #9330: a huge document with one painted layer, zoomed out: times only the reduced CPU
+/// composite `canvas::ensure_texture` draws when the document is too large for GPU textures.
+fn huge_document_scenarios(b: &mut Bench, sz: &Sizes) {
+    let name = "zoomed-out reduced composite of the huge document with one painted layer";
+    if !b.wanted(name) {
+        return;
+    }
+    b.current = Some(name.to_string());
+    let (w, h) = sz.huge_doc;
+    let mut s = Session::new();
+    let built = (|| -> Res<()> {
+        exec(&mut s, "file.new", json!({"width": w, "height": h, "background": "white"}))?;
+        exec(&mut s, "layer.new.layer", json!({"name": "paint"}))?;
+        exec(&mut s, "select.rect", json!({"x": w / 4, "y": h / 4, "width": w / 2, "height": h / 2}))?;
+        exec(&mut s, "edit.fill", json!({"color": "#c03020"}))?;
+        exec(&mut s, "select.deselect", json!({}))?;
+        Ok(())
+    })();
+    if let Err(e) = built {
+        b.errors.push((name.into(), e));
+        return;
+    }
+    // One run: each is a from-scratch reduced composite of the whole document.
+    b.time(name, &mut s, 1, false, |_, s, _| {
+        let doc = &s.active().ok_or("no document")?.doc;
+        let factor = w.max(h).div_ceil(photocraft_ui_egui::canvas::MAX_TEXTURE).max(1);
+        let t = Instant::now();
+        let reduced = photocraft_compose::render_reduced(doc, w / factor, h / factor);
+        let v = ms(t);
+        if reduced.px.is_empty() {
+            return Err("the reduced canvas is empty".into());
+        }
+        Ok(v)
     });
 }
 
@@ -847,6 +968,70 @@ fn background_job_scenarios(b: &mut Bench, sz: &Sizes) {
     if b.wanted(frame) {
         frame_scenario(b, frame, w, h);
     }
+    let full = "app frame: full CPU refresh of a 24 MP document";
+    if b.wanted(full) {
+        full_refresh_frame_scenario(b, full, w, h);
+    }
+}
+
+/// #9328: the whole app (kittest harness, CPU canvas) with a 24 MP document; each sample toggles
+/// a layer's visibility and steps one frame, and every frame recomposites all 24 MP on the CPU.
+/// Always 10 samples, whatever `--reps` says.
+///
+/// The stack is the photo plus three full-canvas copies in blend modes, and the top copy toggles.
+/// Toggling the photo's only layer (the first version) measured 3.4 ms: with it hidden no layer
+/// is visible, so the reduced composite's one-colour shortcut (`compose::uniform`) draws the whole
+/// canvas as one pixel. Here the photo stays visible in every frame, its noisy tiles are never one
+/// colour, and the toggled layer's damage is the whole canvas. Each frame checks that the canvas
+/// refresh it recorded was a CPU one covering the whole document (within the reduction's rounding).
+fn full_refresh_frame_scenario(b: &mut Bench, name: &str, w: u32, h: u32) {
+    let mut s = match open_photo(w, h) {
+        Ok(s) => s,
+        Err(e) => return b.errors.push((name.into(), e)),
+    };
+    let built = (|| -> Res<u64> {
+        let photo = active_layer(&s)?;
+        for (blend, opacity) in [("Multiply", 0.7), ("Screen", 0.5), ("Overlay", 0.6)] {
+            exec(&mut s, "layer.duplicate", json!({"layer": photo}))?;
+            let copy = active_layer(&s)?;
+            if copy == photo {
+                return Err("layer.duplicate did not select the copy".into());
+            }
+            exec(&mut s, "layer.setProps", json!({"layer": copy, "blend": blend, "opacity": opacity}))?;
+        }
+        active_layer(&s)
+    })();
+    let top = match built {
+        Ok(l) => l,
+        Err(e) => return b.errors.push((name.into(), e)),
+    };
+    let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).with_max_steps(4).build_eframe(move |cc| {
+        photocraft_ui_egui::PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
+        photocraft_ui_egui::PhotocraftApp::new(s, photocraft_ui_egui::Services::default())
+    });
+    harness.run_steps(6);
+    b.current = Some(name.to_string());
+    b.sampler.reset();
+    let mut samples = Vec::new();
+    let pixels = u64::from(w) * u64::from(h);
+    let run = (|| -> Res<()> {
+        for i in 0..10 {
+            harness.state_mut().run("layer.setProps", json!({"layer": top, "visible": i % 2 == 1}))?;
+            harness.state_mut().perf.last_refresh_px = 0;
+            let t = Instant::now();
+            harness.step();
+            samples.push(ms(t));
+            // A damage refresh counts its reduced texels times the factor squared, which can fall
+            // a few rows and columns short of the document when the factor doesn't divide it.
+            let perf = &harness.state().perf;
+            if !matches!(perf.last_refresh, "full" | "rect") || perf.last_refresh_px.saturating_mul(100) < pixels.saturating_mul(95) {
+                return Err(format!("frame {i} refreshed {} px ({}), not the whole {pixels} px on the CPU", perf.last_refresh_px, perf.last_refresh));
+            }
+        }
+        Ok(())
+    })();
+    let st = std::mem::take(&mut harness.state_mut().session);
+    b.record(name, &st, &samples, run);
 }
 
 /// The whole app (kittest harness, CPU canvas) with a 24 MP document: frame times while a
@@ -1093,4 +1278,100 @@ fn liquify_preview_scenario(b: &mut Bench) {
         println!("  existing 1600 px proxy update p50 {median:.2} ms (lower-resolution output)");
     }
     b.record(name, &Session::new(), &samples, Ok(()));
+}
+
+/// The share of the canvas `r` covers.
+fn coverage(doc: &photocraft_doc::Document, r: Rect) -> f64 {
+    r.intersect(&doc.bounds()).size().area() as f64 / doc.bounds().size().area().max(1) as f64
+}
+
+/// The content bounds of `layer`'s pixels.
+fn layer_bounds(s: &Session, layer: u64) -> Res<Rect> {
+    let doc = &s.active().ok_or("no document")?.doc;
+    doc.layer(photocraft_doc::LayerId(layer)).and_then(|l| l.surface()).map(|p| p.content_bounds()).ok_or_else(|| "layer has no pixels".to_string())
+}
+
+/// A document with one painted layer covering the whole canvas; returns it and the layer.
+fn full_layer_doc(w: u32, h: u32, depth: u32) -> Res<(Session, u64)> {
+    let mut s = Session::new();
+    exec(&mut s, "file.new", json!({"width": w, "height": h, "depth": depth, "background": "white"}))?;
+    exec(&mut s, "layer.new.layer", json!({"name": "full"}))?;
+    exec(&mut s, "edit.fill", json!({"color": "#6080a0"}))?;
+    let layer = active_layer(&s)?;
+    let doc = s.active().ok_or("no document")?.doc.clone();
+    let cover = coverage(&doc, layer_bounds(&s, layer)?);
+    if cover < 0.95 {
+        return Err(format!("path check: the painted layer covers {:.1} % of the canvas, not >= 95 %", cover * 100.0));
+    }
+    Ok((s, layer))
+}
+
+/// #9329 PR A: the redraw area of edits on a full-canvas layer, where redrawing the whole
+/// document is the expensive cliff. Each row checks it hits that path and prints `refresh px`.
+fn redraw_area_scenarios(b: &mut Bench, sz: &Sizes) {
+    let undo = "undo a brush dab on a full-canvas 16-bit 15000x10000 layer + refresh";
+    if b.wanted(undo) {
+        b.current = Some(undo.to_string());
+        let (w, h) = sz.huge16;
+        match full_layer_doc(w, h, 16) {
+            Err(e) => b.errors.push((undo.to_string(), e)),
+            Ok((mut s, _)) => {
+                let _ = b.refresh(&s, true);
+                // Two 1.2 GB layers and, before the fix, a 150 MP refresh per sample.
+                let reps = b.reps.min(5);
+                b.time(undo, &mut s, reps, true, |b, s, i| {
+                    let (x, y) = (200 + (i as u32 * 97) % (w - 400), 200 + (i as u32 * 61) % (h - 400));
+                    exec(s, "paint.stroke", json!({"points": [[x, y]], "size": 60, "hardness": 0.8, "color": "#c03020"}))?;
+                    b.refresh(s, false)?;
+                    let before = s.active().ok_or("no document")?.doc.clone();
+                    let t = Instant::now();
+                    exec(s, "edit.undo", json!({}))?;
+                    let took = ms(t) + b.refresh(s, false)?;
+                    b.px.borrow_mut().push(b.last_px.get());
+                    let after = s.active().ok_or("no document")?.doc.clone();
+                    if photocraft_engine::layer_multi_cmds::step_damage(&before, &after).is_some_and(|r| r.is_empty()) {
+                        return Err("path check: the undo changed no pixels".into());
+                    }
+                    Ok(took)
+                });
+            }
+        }
+    }
+
+    let fill = "fill a 2 % selection on a full-canvas 24 MP layer + refresh";
+    if b.wanted(fill) {
+        b.current = Some(fill.to_string());
+        let (w, h) = sz.big_photo;
+        let built = full_layer_doc(w, h, 8).and_then(|(mut s, layer)| {
+            exec(&mut s, "select.rect", json!({"x": w / 3, "y": h / 3, "width": w / 8, "height": h / 8}))?;
+            let doc = s.active().ok_or("no document")?.doc.clone();
+            let sel = doc.selection.as_ref().map(|m| m.content_bounds()).ok_or("no selection")?;
+            let share = coverage(&doc, sel);
+            if share > 0.02 {
+                return Err(format!("path check: the selection covers {:.2} % of the canvas, not <= 2 %", share * 100.0));
+            }
+            Ok((s, layer))
+        });
+        match built {
+            Err(e) => b.errors.push((fill.to_string(), e)),
+            Ok((mut s, _)) => {
+                let _ = b.refresh(&s, true);
+                let reps = b.reps;
+                b.time(fill, &mut s, reps, true, |b, s, i| {
+                    // The colour alternates, so every sample changes pixels.
+                    let color = if i % 2 == 0 { "#20c040" } else { "#c02040" };
+                    let before = s.active().ok_or("no document")?.doc.clone();
+                    let t = Instant::now();
+                    exec(s, "edit.fill", json!({"color": color}))?;
+                    let took = ms(t) + b.refresh(s, false)?;
+                    b.px.borrow_mut().push(b.last_px.get());
+                    let after = s.active().ok_or("no document")?.doc.clone();
+                    if photocraft_engine::layer_multi_cmds::step_damage(&before, &after).is_some_and(|r| r.is_empty()) {
+                        return Err("path check: the fill changed no pixels".into());
+                    }
+                    Ok(took)
+                });
+            }
+        }
+    }
 }

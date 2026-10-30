@@ -28,6 +28,8 @@ fn all_registered_languages_render_camera_raw_and_switch_without_resetting_view_
         h.run_steps(3);
         let ctx = h.ctx.clone();
         h.state_mut().set_theme(&ctx, ThemeKind::Pro);
+        // Labels and retained state are under test, not the collapse animation.
+        h.state_mut().session.prefs.edit(|p| p.interface.enable_animations = false);
         h.state_mut().session.prefs.edit(|p| p.interface.language = lang.code().into());
         h.run_steps(4);
         let tr = |s| i18n::tr_ctx(lang, "cameraRaw", s);
@@ -38,17 +40,17 @@ fn all_registered_languages_render_camera_raw_and_switch_without_resetting_view_
         }
         assert!(h.query_by_role_and_label(Role::Slider, tr("Blacks")).is_some());
         h.get_by_role_and_label(Role::DisclosureTriangle, tr("Light")).click();
-        h.run_steps(12);
+        h.run_steps(2);
         h.get_by_role_and_label(Role::DisclosureTriangle, tr("Color")).click();
-        h.run_steps(12);
+        h.run_steps(2);
         assert!(h.query_by_role_and_label(Role::Label, tr("White Balance: As Shot")).is_some(), "{}: White Balance", lang.code());
         for label in ["Temperature", "Tint", "Vibrance", "Saturation"] {
             assert!(h.query_by_role_and_label(Role::Slider, tr(label)).is_some(), "{}: {label}", lang.code());
         }
         h.get_by_role_and_label(Role::DisclosureTriangle, tr("Color")).click();
-        h.run_steps(12);
+        h.run_steps(2);
         h.get_by_role_and_label(Role::DisclosureTriangle, tr("Color Mixer")).click();
-        h.run_steps(12);
+        h.run_steps(2);
         for tab in ["Hue", "Saturation", "Luminance"] {
             assert!(h.get_by_role_and_label(Role::Button, tr(tab)).rect().right() <= 1426.0, "{}: mixer tabs overflow the panel", lang.code());
         }
@@ -56,7 +58,7 @@ fn all_registered_languages_render_camera_raw_and_switch_without_resetting_view_
             assert!(h.query_by_role_and_label(Role::Slider, tr(band)).is_some(), "{}: {band}", lang.code());
         }
         h.get_by_role_and_label(Role::DisclosureTriangle, tr("Color Mixer")).click();
-        h.run_steps(12);
+        h.run_steps(2);
         for (section, labels) in [
             ("Effects", vec!["Texture", "Clarity", "Dehaze", "Vignetting", "Grain", "Roughness"]),
             ("Curve", vec!["Highlights", "Lights", "Darks", "Shadows"]),
@@ -64,16 +66,16 @@ fn all_registered_languages_render_camera_raw_and_switch_without_resetting_view_
             ("Detail", vec!["Sharpening", "Masking", "Noise Reduction", "Luminance Detail", "Color Detail"]),
         ] {
             h.get_by_role_and_label(Role::DisclosureTriangle, tr(section)).click();
-            h.run_steps(12);
+            h.run_steps(2);
             for label in labels {
                 assert!(h.query_all_by_label(tr(label)).next().is_some(), "{}: {section}/{label}", lang.code());
             }
             // Detail is also the sharpening slider label; target the section disclosure.
             h.get_by_role_and_label(Role::DisclosureTriangle, tr(section)).click();
-            h.run_steps(12);
+            h.run_steps(2);
         }
         h.get_by_role_and_label(Role::DisclosureTriangle, tr("Color Mixer")).click();
-        h.run_steps(12);
+        h.run_steps(2);
         let graph = h.get_by_label(tr("Tone Histogram")).rect();
         h.event(egui::Event::PointerMoved(graph.center()));
         for pressed in [true, false] {

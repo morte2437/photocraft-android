@@ -1,5 +1,5 @@
 use super::tool_input::selection_drag_kind;
-use super::*;
+use super::{PhotocraftApp, Tool, json};
 
 /// Photoshop's cursor over a selection: what a press (or the drag under way) would do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

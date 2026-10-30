@@ -1,5 +1,5 @@
 use super::preview::{Base, Preview, cancel_preview, compute_base, plan_params, points_limit, rebase, refresh};
-use super::*;
+use super::{CMD, CafOpts, CafTool, CafWorkspace, MAX_CAF_EDITS, MAX_CAF_POINTS, PROXY_SIDE, PhotocraftApp, REMEMBERED, Rect, Step, Value};
 
 /// Opens the workspace on the active layer and its selection.
 pub fn open(app: &mut PhotocraftApp) -> Result<(), String> {

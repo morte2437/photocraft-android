@@ -283,10 +283,10 @@ pub(crate) fn import(name: &str, bytes: &[u8], ctl: &Interrupt<'_>) -> Result<Im
     }
     let xml = zip.read_by_name("maindoc.xml", MAX_MAINDOC).map_err(|e| invalid(e.to_string()))?;
     let xml = std::str::from_utf8(&xml).map_err(|_| invalid("maindoc.xml is not UTF-8"))?;
-    // maindoc.xml declares Krita's DTD by public id; roxmltree only reads internal subsets and
-    // guards entity expansion.
+    // maindoc.xml declares Krita's DTD by public id; Krita writes no internal subset, which
+    // `xml::parse` refuses (its entities could hide nesting from the depth check).
     let opts = roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() };
-    let tree = roxmltree::Document::parse_with_options(xml, opts).map_err(|e| invalid(format!("maindoc.xml: {e}")))?;
+    let tree = crate::xml::parse(xml, opts).map_err(|e| invalid(format!("maindoc.xml: {e}")))?;
     let image = tree.root_element().children().find(|n| n.has_tag_name("IMAGE")).ok_or_else(|| invalid("maindoc.xml has no IMAGE"))?;
     let side = |a: &str| -> Result<u32> {
         let v = number(image, a, 0.0)?;

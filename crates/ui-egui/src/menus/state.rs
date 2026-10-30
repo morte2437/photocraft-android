@@ -1,8 +1,11 @@
 use super::invoke::{panel_alias, proof_preset, workspace_name};
 use super::items::MenuItem;
-use super::*;
+use super::{DOCUMENT_ITEM, PhotocraftApp, Value};
 
 pub fn is_enabled(app: &PhotocraftApp, id: &str) -> bool {
+    if id == "layer.selectUnderCursor" {
+        return app.session.active().is_some() && app.drag.is_none() && app.brush_resize.is_none();
+    }
     if crate::tool_shortcuts::tool(id).is_some() {
         return true;
     }

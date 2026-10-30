@@ -1236,255 +1236,319 @@ fn star(out: &mut Vec<Prim>, c: (f32, f32), r: f32, points: usize, col: [f32; 4]
     }
 }
 
-/// Builds picture-frame primitives inside `canvas`.
-pub fn picture_frame(spec: &FrameSpec, canvas: Rect) -> Vec<Prim> {
-    let mut out = Vec::new();
-    let short = (canvas.width().min(canvas.height()) as f32).max(8.0);
-    let margin = short * spec.margin.clamp(0.0, 30.0) / 100.0;
-    let unit = short * (0.008 + spec.size.clamp(1.0, 100.0) / 100.0 * 0.05);
-    let thick = (unit * 0.04 + short * 0.00012 * spec.thickness.clamp(1.0, 100.0)).max(0.6);
-    let spacing = unit * (4.0 - 3.2 * spec.arrangement.clamp(1.0, 100.0) / 100.0);
-    let inset = margin + unit;
-    let b = Border {
-        x0: canvas.x0 as f32 + inset,
-        y0: canvas.y0 as f32 + inset,
-        w: (canvas.width() as f32 - 2.0 * inset).max(1.0),
-        h: (canvas.height() as f32 - 2.0 * inset).max(1.0),
-    };
-    let total = b.len();
-    let count = (total / spacing).round().max(4.0) as usize;
-    let step = total / count as f32;
-    let mut rng = Rng::new(spec.seed, 0xF8A3E + spec.frame as u64);
-    let (vine, fl, lf) = (spec.vine_color, spec.flower_color, spec.leaf_color);
-    let style = FRAME_STYLES[(spec.frame.clamp(1, FRAME_STYLES.len() as u32) - 1) as usize];
-    let lines = spec.lines.clamp(1, 5) as usize;
-    let white = [1.0, 1.0, 1.0, 1.0];
-    let yellow = [0.98, 0.82, 0.2, 1.0];
-    // A wavy vine along the border.
-    let vine_path = |out: &mut Vec<Prim>, amp: f32, wl: f32, col: [f32; 4], r: f32| {
-        let n = (total / 3.0).ceil().max(8.0) as usize;
+/// Resolved geometry and palette shared by every picture-frame style.
+struct FrameLayout {
+    b: Border,
+    unit: f32,
+    thick: f32,
+    spacing: f32,
+    total: f32,
+    count: usize,
+    step: f32,
+    lines: usize,
+    vine: [f32; 4],
+    fl: [f32; 4],
+    lf: [f32; 4],
+    style: &'static str,
+}
+
+const FRAME_WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
+const FRAME_YELLOW: [f32; 4] = [0.98, 0.82, 0.2, 1.0];
+
+fn wave_off(s: f32, amp: f32, wl: f32) -> f32 {
+    amp * (s / wl * std::f32::consts::TAU).sin()
+}
+
+impl FrameLayout {
+    fn new(spec: &FrameSpec, canvas: Rect) -> Self {
+        let short = (canvas.width().min(canvas.height()) as f32).max(8.0);
+        let margin = short * spec.margin.clamp(0.0, 30.0) / 100.0;
+        let unit = short * (0.008 + spec.size.clamp(1.0, 100.0) / 100.0 * 0.05);
+        let thick = (unit * 0.04 + short * 0.00012 * spec.thickness.clamp(1.0, 100.0)).max(0.6);
+        let spacing = unit * (4.0 - 3.2 * spec.arrangement.clamp(1.0, 100.0) / 100.0);
+        let inset = margin + unit;
+        let b = Border {
+            x0: canvas.x0 as f32 + inset,
+            y0: canvas.y0 as f32 + inset,
+            w: (canvas.width() as f32 - 2.0 * inset).max(1.0),
+            h: (canvas.height() as f32 - 2.0 * inset).max(1.0),
+        };
+        let total = b.len();
+        let count = (total / spacing).round().max(4.0) as usize;
+        Self {
+            b,
+            unit,
+            thick,
+            spacing,
+            total,
+            count,
+            step: total / count as f32,
+            lines: spec.lines.clamp(1, 5) as usize,
+            vine: spec.vine_color,
+            fl: spec.flower_color,
+            lf: spec.leaf_color,
+            style: FRAME_STYLES[(spec.frame.clamp(1, FRAME_STYLES.len() as u32) - 1) as usize],
+        }
+    }
+
+    /// A wavy vine along the border.
+    fn vine_path(&self, out: &mut Vec<Prim>, amp: f32, wl: f32, col: [f32; 4], r: f32) {
+        let n = (self.total / 3.0).ceil().max(8.0) as usize;
         let mut prev: Option<(f32, f32)> = None;
         for k in 0..=n {
-            let s = k as f32 / n as f32 * total;
-            let (p, _, nn) = b.at(s);
-            let o = amp * (s / wl * std::f32::consts::TAU).sin();
+            let s = k as f32 / n as f32 * self.total;
+            let (p, _, nn) = self.b.at(s);
+            let o = wave_off(s, amp, wl);
             let q = (p.0 + nn.0 * o, p.1 + nn.1 * o);
             if let Some(pp) = prev {
                 out.push(Prim::capsule(pp, q, r, r, col, col));
             }
             prev = Some(q);
         }
-    };
-    let wave_off = |s: f32, amp: f32, wl: f32| amp * (s / wl * std::f32::consts::TAU).sin();
-    match style {
-        "vineWithFlowers" | "vineWithLeaves" | "ivy" | "roses" | "daisies" | "berries" => {
-            let amp = unit * 0.5;
-            let wl = step * 2.0;
-            vine_path(&mut out, amp, wl, vine, thick);
-            for k in 0..count {
-                let s = k as f32 * step + step * 0.5;
-                let (p, t, nn) = b.at(s);
-                let o = wave_off(s, amp, wl);
-                let q = (p.0 + nn.0 * o, p.1 + nn.1 * o);
-                let side = if k % 2 == 0 { 1.0 } else { -1.0 };
-                let ta = t.1.atan2(t.0);
-                let la = ta + side * 0.9 + rng.sym() * 0.3;
-                let ll = unit * rng.range(0.9, 1.2);
-                match style {
-                    "vineWithFlowers" => {
-                        leaf(&mut out, q, la, ll, lf);
-                        if k % 2 == 0 {
-                            let c = (q.0 + nn.0 * unit * 0.7 * side, q.1 + nn.1 * unit * 0.7 * side);
-                            flower(&mut out, c, unit * 0.65, 5, fl, yellow, rng.f() * 6.3);
-                        }
-                    }
-                    "vineWithLeaves" => {
-                        leaf(&mut out, q, la, ll, lf);
-                        leaf(&mut out, q, ta - side * 0.9, ll * 0.8, lf);
-                    }
-                    "ivy" => {
-                        for j in 0..3 {
-                            let a = la + (j as f32 - 1.0) * 0.7;
-                            leaf(&mut out, q, a, ll * 0.75, shade([lf[0], lf[1], lf[2]], 0.75 + 0.15 * j as f32));
-                        }
-                    }
-                    "roses" => {
-                        leaf(&mut out, q, la, ll, lf);
-                        if k % 3 == 0 {
-                            let r = unit * 0.7;
-                            for (j, f) in [1.0f32, 0.75, 0.5, 0.28].iter().enumerate() {
-                                let c = shade([fl[0], fl[1], fl[2]], 0.75 + 0.1 * j as f32);
-                                out.push(Prim::ellipse(q, r * f, r * f * 0.9, rng.f() * 3.0, c, shade([fl[0], fl[1], fl[2]], 0.55)));
-                            }
-                        }
-                    }
-                    "daisies" => {
-                        leaf(&mut out, q, la, ll * 0.8, lf);
-                        if k % 2 == 1 {
-                            flower(&mut out, q, unit * 0.6, 12, white, yellow, rng.f());
-                        }
-                    }
-                    _ => {
-                        leaf(&mut out, q, la, ll, lf);
-                        for _ in 0..3 {
-                            let c = (q.0 + rng.sym() * unit * 0.4, q.1 + rng.sym() * unit * 0.4);
-                            out.push(Prim::ellipse(c, unit * 0.2, unit * 0.2, 0.0, shade([fl[0], fl[1], fl[2]], 1.2), shade([fl[0], fl[1], fl[2]], 0.6)));
-                        }
-                    }
-                }
-            }
-        }
-        "bamboo" => {
-            for edge in 0..4 {
-                let (s0, l) = match edge {
-                    0 => (0.0, b.w),
-                    1 => (b.w, b.h),
-                    2 => (b.w + b.h, b.w),
-                    _ => (2.0 * b.w + b.h, b.h),
-                };
-                let (a, _, _) = b.at(s0 + 0.01);
-                let (z, _, _) = b.at(s0 + l - 0.01);
-                let joints = (l / (spacing * 2.0)).round().max(1.0) as usize;
-                for j in 0..joints {
-                    let f0 = j as f32 / joints as f32;
-                    let f1 = (j + 1) as f32 / joints as f32;
-                    let p0 = (a.0 + (z.0 - a.0) * f0, a.1 + (z.1 - a.1) * f0);
-                    let p1 = (a.0 + (z.0 - a.0) * f1, a.1 + (z.1 - a.1) * f1);
-                    out.push(Prim::capsule(p0, p1, unit * 0.35, unit * 0.35, vine, shade([vine[0], vine[1], vine[2]], 0.8)));
-                    out.push(Prim::disc(p1, unit * 0.4, shade([vine[0], vine[1], vine[2]], 0.7)));
-                }
-                // A few leaves per edge.
-                for _ in 0..(joints / 2).max(1) {
-                    let f = rng.f();
-                    let p = (a.0 + (z.0 - a.0) * f, a.1 + (z.1 - a.1) * f);
-                    leaf(&mut out, p, rng.f() * 6.3, unit * 1.4, lf);
-                }
-            }
-        }
-        "waves" | "zigzag" | "doubleLine" | "rope" => {
-            for li in 0..lines {
-                let off = (li as f32 - (lines - 1) as f32 / 2.0) * thick * 4.0;
-                let n = (total / 2.0).ceil().max(8.0) as usize;
-                let mut prev: Option<(f32, f32)> = None;
-                for k in 0..=n {
-                    let s = k as f32 / n as f32 * total;
-                    let (p, _, nn) = b.at(s);
-                    let o = off
-                        + match style {
-                            "waves" => wave_off(s + li as f32 * step * 0.25, unit * 0.4, step),
-                            "zigzag" => {
-                                let ph = (s / step).fract();
-                                unit * 0.4 * (4.0 * (ph - 0.5).abs() - 1.0)
-                            }
-                            _ => 0.0,
-                        };
-                    let q = (p.0 + nn.0 * o, p.1 + nn.1 * o);
-                    if style == "rope" {
-                        if k % 2 == 0 {
-                            let (_, t, _) = b.at(s);
-                            out.push(Prim::ellipse(
-                                q,
-                                unit * 0.45,
-                                unit * 0.2,
-                                t.1.atan2(t.0) + 0.7,
-                                shade([vine[0], vine[1], vine[2]], 1.1),
-                                shade([vine[0], vine[1], vine[2]], 0.65),
-                            ));
-                        }
-                    } else if let Some(pp) = prev {
-                        out.push(Prim::capsule(pp, q, thick, thick, vine, vine));
-                    }
-                    prev = Some(q);
-                }
-                if style == "doubleLine" {
-                    // A second rule inside each line and corner squares.
-                    let inner = Border {
-                        x0: b.x0 + unit * 0.6 + off,
-                        y0: b.y0 + unit * 0.6 + off,
-                        w: b.w - 2.0 * (unit * 0.6 + off),
-                        h: b.h - 2.0 * (unit * 0.6 + off),
-                    };
-                    for e in 0..4 {
-                        let (p, _, _) = inner.at([0.0, inner.w, inner.w + inner.h, 2.0 * inner.w + inner.h][e]);
-                        let (q, _, _) = inner.at([inner.w, inner.w + inner.h, 2.0 * inner.w + inner.h, inner.len() - 0.001][e]);
-                        out.push(Prim::capsule(p, q, thick * 0.6, thick * 0.6, vine, vine));
-                    }
-                }
-            }
-            if style == "doubleLine" {
-                for e in 0..4 {
-                    let (p, _, _) = b.at([0.0, b.w, b.w + b.h, 2.0 * b.w + b.h][e]);
-                    out.push(Prim::ellipse(p, unit * 0.45, unit * 0.45, std::f32::consts::FRAC_PI_4, fl, fl));
-                }
-            }
-        }
-        "dots" | "scallops" | "snowflakes" | "stars" | "hearts" => {
-            for k in 0..count {
-                let s = k as f32 * step;
-                let (p, t, nn) = b.at(s);
-                let ta = t.1.atan2(t.0);
-                match style {
-                    "dots" => {
-                        let r = unit * if k % 2 == 0 { 0.4 } else { 0.22 };
-                        out.push(Prim::ellipse(p, r, r, 0.0, shade([fl[0], fl[1], fl[2]], 1.15), shade([fl[0], fl[1], fl[2]], 0.75)));
-                    }
-                    "scallops" => {
-                        let (c0, _, _) = b.at(s - step * 0.5);
-                        let mid = ((c0.0 + p.0) / 2.0, (c0.1 + p.1) / 2.0);
-                        let n = 8;
-                        for j in 0..n {
-                            let a0 = std::f32::consts::PI * j as f32 / n as f32;
-                            let a1 = std::f32::consts::PI * (j + 1) as f32 / n as f32;
-                            let r = step * 0.5;
-                            let pt = |a: f32| (mid.0 - t.0 * r * a.cos() - nn.0 * r * a.sin(), mid.1 - t.1 * r * a.cos() - nn.1 * r * a.sin());
-                            out.push(Prim::capsule(pt(a0), pt(a1), thick, thick, vine, vine));
-                        }
-                    }
-                    "snowflakes" => {
-                        let r = unit * 0.6;
-                        let c = [0.85, 0.92, 1.0, 1.0];
-                        for j in 0..6 {
-                            let a = ta + j as f32 * std::f32::consts::FRAC_PI_3;
-                            let e = (p.0 + a.cos() * r, p.1 + a.sin() * r);
-                            out.push(Prim::capsule(p, e, (thick * 0.6).max(0.6), (thick * 0.4).max(0.5), c, c));
-                            let m = (p.0 + a.cos() * r * 0.6, p.1 + a.sin() * r * 0.6);
-                            for sd in [-0.7f32, 0.7] {
-                                let b2 = (m.0 + (a + sd).cos() * r * 0.3, m.1 + (a + sd).sin() * r * 0.3);
-                                out.push(Prim::capsule(m, b2, (thick * 0.4).max(0.5), 0.4, c, c));
-                            }
-                        }
-                    }
-                    "stars" => star(&mut out, p, unit * 0.55, 5, if k % 2 == 0 { yellow } else { fl }, ta - std::f32::consts::FRAC_PI_2),
-                    _ => {
-                        // Heart: two lobes and a point towards the inside.
-                        let r = unit * 0.3;
-                        let (tx, ty) = t;
-                        let l = (p.0 - tx * r * 0.8 - nn.0 * r * 0.3, p.1 - ty * r * 0.8 - nn.1 * r * 0.3);
-                        let rr = (p.0 + tx * r * 0.8 - nn.0 * r * 0.3, p.1 + ty * r * 0.8 - nn.1 * r * 0.3);
-                        let tip = (p.0 + nn.0 * r * 1.6, p.1 + nn.1 * r * 1.6);
-                        out.push(Prim::capsule(l, tip, r, 0.6, fl, fl));
-                        out.push(Prim::capsule(rr, tip, r, 0.6, fl, fl));
-                    }
-                }
-            }
-        }
-        _ => {}
     }
-    // Fade: lower the opacity of ornaments that reach further inside.
-    let fade = spec.fade.clamp(0.0, 100.0) / 100.0;
-    if fade > 0.0 {
+
+    /// Vine styles: a wavy stem with a leaf cluster or bloom at each step.
+    fn vine_styles(&self, out: &mut Vec<Prim>, rng: &mut Rng) {
+        let (unit, step, fl, lf) = (self.unit, self.step, self.fl, self.lf);
+        let amp = unit * 0.5;
+        let wl = step * 2.0;
+        self.vine_path(out, amp, wl, self.vine, self.thick);
+        for k in 0..self.count {
+            let s = k as f32 * step + step * 0.5;
+            let (p, t, nn) = self.b.at(s);
+            let o = wave_off(s, amp, wl);
+            let q = (p.0 + nn.0 * o, p.1 + nn.1 * o);
+            let side = if k % 2 == 0 { 1.0 } else { -1.0 };
+            let ta = t.1.atan2(t.0);
+            let la = ta + side * 0.9 + rng.sym() * 0.3;
+            let ll = unit * rng.range(0.9, 1.2);
+            match self.style {
+                "vineWithFlowers" => {
+                    leaf(out, q, la, ll, lf);
+                    if k % 2 == 0 {
+                        let c = (q.0 + nn.0 * unit * 0.7 * side, q.1 + nn.1 * unit * 0.7 * side);
+                        flower(out, c, unit * 0.65, 5, fl, FRAME_YELLOW, rng.f() * 6.3);
+                    }
+                }
+                "vineWithLeaves" => {
+                    leaf(out, q, la, ll, lf);
+                    leaf(out, q, ta - side * 0.9, ll * 0.8, lf);
+                }
+                "ivy" => {
+                    for j in 0..3 {
+                        let a = la + (j as f32 - 1.0) * 0.7;
+                        leaf(out, q, a, ll * 0.75, shade([lf[0], lf[1], lf[2]], 0.75 + 0.15 * j as f32));
+                    }
+                }
+                "roses" => {
+                    leaf(out, q, la, ll, lf);
+                    if k % 3 == 0 {
+                        let r = unit * 0.7;
+                        for (j, f) in [1.0f32, 0.75, 0.5, 0.28].iter().enumerate() {
+                            let c = shade([fl[0], fl[1], fl[2]], 0.75 + 0.1 * j as f32);
+                            out.push(Prim::ellipse(q, r * f, r * f * 0.9, rng.f() * 3.0, c, shade([fl[0], fl[1], fl[2]], 0.55)));
+                        }
+                    }
+                }
+                "daisies" => {
+                    leaf(out, q, la, ll * 0.8, lf);
+                    if k % 2 == 1 {
+                        flower(out, q, unit * 0.6, 12, FRAME_WHITE, FRAME_YELLOW, rng.f());
+                    }
+                }
+                _ => {
+                    leaf(out, q, la, ll, lf);
+                    for _ in 0..3 {
+                        let c = (q.0 + rng.sym() * unit * 0.4, q.1 + rng.sym() * unit * 0.4);
+                        out.push(Prim::ellipse(c, unit * 0.2, unit * 0.2, 0.0, shade([fl[0], fl[1], fl[2]], 1.2), shade([fl[0], fl[1], fl[2]], 0.6)));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Bamboo: jointed canes along each edge with a few leaves.
+    fn bamboo(&self, out: &mut Vec<Prim>, rng: &mut Rng) {
+        let (b, unit, vine) = (&self.b, self.unit, self.vine);
+        for edge in 0..4 {
+            let (s0, l) = match edge {
+                0 => (0.0, b.w),
+                1 => (b.w, b.h),
+                2 => (b.w + b.h, b.w),
+                _ => (2.0 * b.w + b.h, b.h),
+            };
+            let (a, _, _) = b.at(s0 + 0.01);
+            let (z, _, _) = b.at(s0 + l - 0.01);
+            let joints = (l / (self.spacing * 2.0)).round().max(1.0) as usize;
+            for j in 0..joints {
+                let f0 = j as f32 / joints as f32;
+                let f1 = (j + 1) as f32 / joints as f32;
+                let p0 = (a.0 + (z.0 - a.0) * f0, a.1 + (z.1 - a.1) * f0);
+                let p1 = (a.0 + (z.0 - a.0) * f1, a.1 + (z.1 - a.1) * f1);
+                out.push(Prim::capsule(p0, p1, unit * 0.35, unit * 0.35, vine, shade([vine[0], vine[1], vine[2]], 0.8)));
+                out.push(Prim::disc(p1, unit * 0.4, shade([vine[0], vine[1], vine[2]], 0.7)));
+            }
+            // A few leaves per edge.
+            for _ in 0..(joints / 2).max(1) {
+                let f = rng.f();
+                let p = (a.0 + (z.0 - a.0) * f, a.1 + (z.1 - a.1) * f);
+                leaf(out, p, rng.f() * 6.3, unit * 1.4, self.lf);
+            }
+        }
+    }
+
+    /// Continuous rule styles: waves, zigzag, double line and rope.
+    fn rule_styles(&self, out: &mut Vec<Prim>) {
+        let (b, unit, thick, step, vine) = (&self.b, self.unit, self.thick, self.step, self.vine);
+        for li in 0..self.lines {
+            let off = (li as f32 - (self.lines - 1) as f32 / 2.0) * thick * 4.0;
+            let n = (self.total / 2.0).ceil().max(8.0) as usize;
+            let mut prev: Option<(f32, f32)> = None;
+            for k in 0..=n {
+                let s = k as f32 / n as f32 * self.total;
+                let (p, _, nn) = b.at(s);
+                let o = off
+                    + match self.style {
+                        "waves" => wave_off(s + li as f32 * step * 0.25, unit * 0.4, step),
+                        "zigzag" => {
+                            let ph = (s / step).fract();
+                            unit * 0.4 * (4.0 * (ph - 0.5).abs() - 1.0)
+                        }
+                        _ => 0.0,
+                    };
+                let q = (p.0 + nn.0 * o, p.1 + nn.1 * o);
+                if self.style == "rope" {
+                    if k % 2 == 0 {
+                        let (_, t, _) = b.at(s);
+                        out.push(Prim::ellipse(
+                            q,
+                            unit * 0.45,
+                            unit * 0.2,
+                            t.1.atan2(t.0) + 0.7,
+                            shade([vine[0], vine[1], vine[2]], 1.1),
+                            shade([vine[0], vine[1], vine[2]], 0.65),
+                        ));
+                    }
+                } else if let Some(pp) = prev {
+                    out.push(Prim::capsule(pp, q, thick, thick, vine, vine));
+                }
+                prev = Some(q);
+            }
+            if self.style == "doubleLine" {
+                self.inner_rule(out, off);
+            }
+        }
+        if self.style == "doubleLine" {
+            for e in 0..4 {
+                let (p, _, _) = b.at([0.0, b.w, b.w + b.h, 2.0 * b.w + b.h][e]);
+                out.push(Prim::ellipse(p, unit * 0.45, unit * 0.45, std::f32::consts::FRAC_PI_4, self.fl, self.fl));
+            }
+        }
+    }
+
+    /// A second rule inside each double line.
+    fn inner_rule(&self, out: &mut Vec<Prim>, off: f32) {
+        let (b, unit) = (&self.b, self.unit);
+        let inner = Border { x0: b.x0 + unit * 0.6 + off, y0: b.y0 + unit * 0.6 + off, w: b.w - 2.0 * (unit * 0.6 + off), h: b.h - 2.0 * (unit * 0.6 + off) };
+        for e in 0..4 {
+            let (p, _, _) = inner.at([0.0, inner.w, inner.w + inner.h, 2.0 * inner.w + inner.h][e]);
+            let (q, _, _) = inner.at([inner.w, inner.w + inner.h, 2.0 * inner.w + inner.h, inner.len() - 0.001][e]);
+            out.push(Prim::capsule(p, q, self.thick * 0.6, self.thick * 0.6, self.vine, self.vine));
+        }
+    }
+
+    /// Evenly spaced motif styles: dots, scallops, snowflakes, stars and hearts.
+    fn motif_styles(&self, out: &mut Vec<Prim>) {
+        let (unit, fl) = (self.unit, self.fl);
+        for k in 0..self.count {
+            let s = k as f32 * self.step;
+            let (p, t, nn) = self.b.at(s);
+            let ta = t.1.atan2(t.0);
+            match self.style {
+                "dots" => {
+                    let r = unit * if k % 2 == 0 { 0.4 } else { 0.22 };
+                    out.push(Prim::ellipse(p, r, r, 0.0, shade([fl[0], fl[1], fl[2]], 1.15), shade([fl[0], fl[1], fl[2]], 0.75)));
+                }
+                "scallops" => self.scallop(out, s, p, t, nn),
+                "snowflakes" => self.snowflake(out, p, ta),
+                "stars" => star(out, p, unit * 0.55, 5, if k % 2 == 0 { FRAME_YELLOW } else { fl }, ta - std::f32::consts::FRAC_PI_2),
+                _ => self.heart(out, p, t, nn),
+            }
+        }
+    }
+
+    fn scallop(&self, out: &mut Vec<Prim>, s: f32, p: (f32, f32), t: (f32, f32), nn: (f32, f32)) {
+        let (c0, _, _) = self.b.at(s - self.step * 0.5);
+        let mid = ((c0.0 + p.0) / 2.0, (c0.1 + p.1) / 2.0);
+        let n = 8;
+        for j in 0..n {
+            let a0 = std::f32::consts::PI * j as f32 / n as f32;
+            let a1 = std::f32::consts::PI * (j + 1) as f32 / n as f32;
+            let r = self.step * 0.5;
+            let pt = |a: f32| (mid.0 - t.0 * r * a.cos() - nn.0 * r * a.sin(), mid.1 - t.1 * r * a.cos() - nn.1 * r * a.sin());
+            out.push(Prim::capsule(pt(a0), pt(a1), self.thick, self.thick, self.vine, self.vine));
+        }
+    }
+
+    fn snowflake(&self, out: &mut Vec<Prim>, p: (f32, f32), ta: f32) {
+        let thick = self.thick;
+        let r = self.unit * 0.6;
+        let c = [0.85, 0.92, 1.0, 1.0];
+        for j in 0..6 {
+            let a = ta + j as f32 * std::f32::consts::FRAC_PI_3;
+            let e = (p.0 + a.cos() * r, p.1 + a.sin() * r);
+            out.push(Prim::capsule(p, e, (thick * 0.6).max(0.6), (thick * 0.4).max(0.5), c, c));
+            let m = (p.0 + a.cos() * r * 0.6, p.1 + a.sin() * r * 0.6);
+            for sd in [-0.7f32, 0.7] {
+                let b2 = (m.0 + (a + sd).cos() * r * 0.3, m.1 + (a + sd).sin() * r * 0.3);
+                out.push(Prim::capsule(m, b2, (thick * 0.4).max(0.5), 0.4, c, c));
+            }
+        }
+    }
+
+    /// Heart: two lobes and a point towards the inside.
+    fn heart(&self, out: &mut Vec<Prim>, p: (f32, f32), t: (f32, f32), nn: (f32, f32)) {
+        let r = self.unit * 0.3;
+        let (tx, ty) = t;
+        let l = (p.0 - tx * r * 0.8 - nn.0 * r * 0.3, p.1 - ty * r * 0.8 - nn.1 * r * 0.3);
+        let rr = (p.0 + tx * r * 0.8 - nn.0 * r * 0.3, p.1 + ty * r * 0.8 - nn.1 * r * 0.3);
+        let tip = (p.0 + nn.0 * r * 1.6, p.1 + nn.1 * r * 1.6);
+        out.push(Prim::capsule(l, tip, r, 0.6, self.fl, self.fl));
+        out.push(Prim::capsule(rr, tip, r, 0.6, self.fl, self.fl));
+    }
+
+    /// Fade: lower the opacity of ornaments that reach further inside.
+    fn apply_fade(&self, out: &mut [Prim], fade: f32, canvas: Rect) {
         let cx = canvas.x0 as f32 + canvas.width() as f32 / 2.0;
         let cy = canvas.y0 as f32 + canvas.height() as f32 / 2.0;
-        for p in &mut out {
+        for p in out {
             let c = match p.shape {
                 Shape::Capsule { a, .. } => a,
                 Shape::Ellipse { c, .. } => c,
             };
-            let edge = ((c.0 - cx).abs() / (b.w / 2.0)).max((c.1 - cy).abs() / (b.h / 2.0)).clamp(0.0, 1.0);
+            let edge = ((c.0 - cx).abs() / (self.b.w / 2.0)).max((c.1 - cy).abs() / (self.b.h / 2.0)).clamp(0.0, 1.0);
             let k = 1.0 - fade * (1.0 - edge) * 8.0;
             p.c0[3] *= k.clamp(0.0, 1.0);
             p.c1[3] *= k.clamp(0.0, 1.0);
         }
+    }
+}
+
+/// Builds picture-frame primitives inside `canvas`.
+pub fn picture_frame(spec: &FrameSpec, canvas: Rect) -> Vec<Prim> {
+    let mut out = Vec::new();
+    let layout = FrameLayout::new(spec, canvas);
+    let mut rng = Rng::new(spec.seed, 0xF8A3E + spec.frame as u64);
+    match layout.style {
+        "vineWithFlowers" | "vineWithLeaves" | "ivy" | "roses" | "daisies" | "berries" => layout.vine_styles(&mut out, &mut rng),
+        "bamboo" => layout.bamboo(&mut out, &mut rng),
+        "waves" | "zigzag" | "doubleLine" | "rope" => layout.rule_styles(&mut out),
+        "dots" | "scallops" | "snowflakes" | "stars" | "hearts" => layout.motif_styles(&mut out),
+        _ => {}
+    }
+    let fade = spec.fade.clamp(0.0, 100.0) / 100.0;
+    if fade > 0.0 {
+        layout.apply_fade(&mut out, fade, canvas);
     }
     out
 }

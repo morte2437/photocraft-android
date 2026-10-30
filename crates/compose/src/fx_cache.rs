@@ -1,7 +1,7 @@
 use super::composite::texture_ctx;
 use super::ctx::{Ctx, PREPARE_DEPTH};
 use super::extents::{effect_shape, effect_source_bounds};
-use super::*;
+use super::{Layer, LayerContent, Rect, Surface, advanced, effects};
 
 // ---------------------------------------------------------------------------------------------
 // Layer-effect map cache
@@ -44,7 +44,7 @@ pub(crate) fn layer_identity(layer: &Layer, h: &mut std::collections::hash_map::
                 format!("{:?}", c.blend).hash(h);
                 layer_identity(c, h, pin);
             }
-            format!("{:?}", g.artboard).hash(h);
+            format!("{:?}{:?}", g.artboard, g.frame_stroke).hash(h);
         }
         LayerContent::Fill(f) => {
             format!("{f:?}").hash(h);

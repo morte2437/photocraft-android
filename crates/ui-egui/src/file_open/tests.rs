@@ -713,8 +713,17 @@ fn views_and_windows_stay_with_their_documents() {
     for (i, v) in app.ui.views.iter_mut().enumerate() {
         v.zoom = i as f32 + 1.0;
     }
-    app.ui.windows =
-        (0..4).map(|document| crate::state::DocWindow { id: document as u64, document, view: Default::default(), open: true, position: None }).collect();
+    app.ui.windows = (0..4)
+        .map(|document| crate::state::DocWindow {
+            id: document as u64,
+            document,
+            view: Default::default(),
+            open: true,
+            floating: false,
+            focused: false,
+            position: None,
+        })
+        .collect();
     let zooms = |app: &PhotocraftApp| app.ui.views.iter().map(|v| v.zoom).collect::<Vec<_>>();
     let windows = |app: &PhotocraftApp| app.ui.windows.iter().map(|w| (w.id, w.document)).collect::<Vec<_>>();
     assert_eq!(app.run("document.move", json!({"document": 0, "to": 3})).unwrap(), json!({"document": 3}));
@@ -816,6 +825,31 @@ fn natural_order_counts_numbers_by_value() {
     let mut names = vec!["File_10.psd", "File_9.psd", "file_1.psd", "File_100.psd", "b.psd", "A.psd", "File_03.psd"];
     names.sort_by(|a, b| natural_cmp(a, b));
     assert_eq!(names, ["A.psd", "b.psd", "file_1.psd", "File_03.psd", "File_9.psd", "File_10.psd", "File_100.psd"]);
+}
+
+/// Files on the command line open before the first frame applies the interface language: their
+/// status line follows the preference, not the English default.
+#[test]
+fn open_paths_reports_in_the_interface_language_before_the_first_frame() {
+    let pattern = |i: u8| {
+        let mut surface = photocraft_raster::Surface::new(photocraft_color::PixelFormat::RGBA8);
+        surface.fill_rect(photocraft_geom::Rect::new(0, 0, 4, 4), &[f32::from(i) / 3.0, 0.5, 0.2, 1.0]);
+        let mut p = photocraft_doc::Pattern::new("Launch", surface, 4, 4);
+        p.id = format!("6f1c2c1e-0000-4000-8000-00000000000{i}");
+        p
+    };
+    let bytes = photocraft_io::pattern_map::write_pat(&[pattern(1), pattern(2), pattern(3)]).unwrap();
+    let (dir, paths) = files("launch-language", &["launch.pat"], &bytes);
+    let (mut app, _) = app_with(Vec::new());
+    app.session.edit_prefs(|p| p.interface.language = "ar".into());
+    crate::i18n::set_current(crate::i18n::Lang::EN);
+    assert_eq!(app.open_paths(&paths), 1);
+    let ar = crate::i18n::Lang::from_code("ar").unwrap();
+    let want =
+        crate::i18n::fmt(&crate::i18n::trn(ar, 3, "Imported {n} pattern from {file}", "Imported {n} patterns from {file}"), &[("n", "3"), ("file", "launch")]);
+    assert_eq!(app.ui.status, want);
+    crate::i18n::set_current(crate::i18n::Lang::EN);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// #3248: several files opened at once (File › Open, the command line, Finder) open in name order.

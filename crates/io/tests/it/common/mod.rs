@@ -236,6 +236,12 @@ fn color_close(a: &Color, b: &Color, ctx: &str) {
 
 pub fn assert_layers_eq(a: &Layer, b: &Layer, path: &str) {
     let ctx = format!("{path}/{}", a.name);
+    assert_layer_properties(a, b, &ctx);
+    assert_layer_mask_eq(a, b, &ctx);
+    assert_layer_content_eq(a, b, &ctx);
+}
+
+fn assert_layer_properties(a: &Layer, b: &Layer, ctx: &str) {
     assert_eq!(a.name, b.name, "{ctx}: name");
     assert_eq!(a.visible, b.visible, "{ctx}: visible");
     assert_eq!(a.locks, b.locks, "{ctx}: locks");
@@ -259,6 +265,9 @@ pub fn assert_layers_eq(a: &Layer, b: &Layer, path: &str) {
         let other = b.fill_cache.as_ref().expect("fill cache kept");
         surface_eq(&fc.surface, &other.surface, &format!("{ctx}: fill cache"));
     }
+}
+
+fn assert_layer_mask_eq(a: &Layer, b: &Layer, ctx: &str) {
     match (&a.mask, &b.mask) {
         (None, None) => {}
         (Some(x), Some(y)) => {
@@ -270,28 +279,27 @@ pub fn assert_layers_eq(a: &Layer, b: &Layer, path: &str) {
         }
         _ => panic!("{ctx}: mask presence differs"),
     }
+}
+
+fn assert_layer_content_eq(a: &Layer, b: &Layer, ctx: &str) {
     match (&a.content, &b.content) {
-        (LayerContent::Raster(x), LayerContent::Raster(y)) => surface_eq(x, y, &ctx),
+        (LayerContent::Raster(x), LayerContent::Raster(y)) => surface_eq(x, y, ctx),
         (LayerContent::Group(x), LayerContent::Group(y)) => {
             assert_eq!(x.expanded, y.expanded, "{ctx}: expanded");
             assert_eq!(x.children.len(), y.children.len(), "{ctx}: child count");
             for (p, q) in x.children.iter().zip(&y.children) {
-                assert_layers_eq(p, q, &ctx);
+                assert_layers_eq(p, q, ctx);
             }
         }
         (LayerContent::Adjustment(x), LayerContent::Adjustment(y)) => assert_eq!(x, y, "{ctx}: adjustment"),
-        (LayerContent::Fill(Fill::Solid(x)), LayerContent::Fill(Fill::Solid(y))) => color_close(x, y, &ctx),
+        (LayerContent::Fill(Fill::Solid(x)), LayerContent::Fill(Fill::Solid(y))) => color_close(x, y, ctx),
         (LayerContent::Fill(x), LayerContent::Fill(y)) => assert_eq!(x, y, "{ctx}: fill"),
         (LayerContent::Text(x), LayerContent::Text(y)) => {
             assert_eq!(x.text, y.text, "{ctx}: text");
-            surface_eq(x.cache.as_ref().unwrap(), y.cache.as_ref().unwrap(), &ctx);
+            surface_eq(x.cache.as_ref().unwrap(), y.cache.as_ref().unwrap(), ctx);
         }
-        (LayerContent::Shape(x), LayerContent::Shape(y)) => {
-            surface_eq(x.cache.as_ref().unwrap(), y.cache.as_ref().unwrap(), &ctx);
-        }
-        (LayerContent::Smart(x), LayerContent::Smart(y)) => {
-            surface_eq(x.cache.as_ref().unwrap(), y.cache.as_ref().unwrap(), &ctx);
-        }
+        (LayerContent::Shape(x), LayerContent::Shape(y)) => surface_eq(x.cache.as_ref().unwrap(), y.cache.as_ref().unwrap(), ctx),
+        (LayerContent::Smart(x), LayerContent::Smart(y)) => surface_eq(x.cache.as_ref().unwrap(), y.cache.as_ref().unwrap(), ctx),
         (x, y) => panic!("{ctx}: kind {} vs {}", x.kind_name(), y.kind_name()),
     }
 }

@@ -325,6 +325,7 @@ pub fn has_dialog(command: &str) -> bool {
                 | "image.mode.colorTable"
                 | "edit.definePattern"
                 | "select.convertToShape"
+                | "layer.new.artboardFromLayers"
         ))
         && photocraft_engine::commands::find(command).is_some_and(|c| !parse_spec(c.params).is_empty())
 }
@@ -343,6 +344,15 @@ fn rememberable(kind: &Kind, value: &Value) -> bool {
 
 fn restore_remembered(app: &PhotocraftApp, command: &str, spec: &str, fields: &mut Map<String, Value>) {
     let Some(Value::Object(saved)) = app.session.prefs().dialogs.get(command) else { return };
+    // Select and Mask starts from its defaults unless Remember Settings was on, as in Photoshop
+    // (#9423).
+    if command == crate::select_mask_view::COMMAND {
+        let remember = crate::select_mask_view::remembers(saved);
+        fields.insert(crate::select_mask_view::REMEMBER.into(), json!(remember));
+        if !remember {
+            return;
+        }
+    }
     for p in parse_spec(spec) {
         if let Some(v) = saved.get(&p.key).filter(|v| rememberable(&p.kind, v)) {
             fields.insert(p.key, v.clone());
@@ -356,8 +366,17 @@ pub(crate) fn remember(app: &mut PhotocraftApp, command: &str, fields: &Map<Stri
         return;
     }
     let Some(spec) = photocraft_engine::commands::find(command) else { return };
-    let saved: Map<String, Value> =
+    let mut saved: Map<String, Value> =
         parse_spec(spec.params).into_iter().filter_map(|p| fields.get(&p.key).filter(|v| rememberable(&p.kind, v)).map(|v| (p.key, v.clone()))).collect();
+    // Select and Mask with Remember Settings off keeps only that choice, so the next one starts
+    // from the defaults (#9423).
+    if command == crate::select_mask_view::COMMAND {
+        let remember = crate::select_mask_view::remembers(fields);
+        if !remember {
+            saved.clear();
+        }
+        saved.insert(crate::select_mask_view::REMEMBER.into(), json!(remember));
+    }
     if !saved.is_empty() {
         app.session.prefs.edit(|prefs| prefs.dialogs.insert(command.into(), Value::Object(saved)));
     }
@@ -403,6 +422,17 @@ fn apply_command_defaults(app: &PhotocraftApp, command: &str, fields: &mut Map<S
     // Photoshop's Pattern Name dialog starts from the name the pattern would get anyway.
     if command == "edit.definePattern" {
         fields.insert("name".into(), json!(photocraft_engine::pattern_cmds::default_name(&app.session)));
+    }
+    // The reference application's Artboard from Layers opens at the next Artboard N and the
+    // selected layers' size every time, never a remembered size; past the field's 30000 px
+    // range, 0 keeps the bounds.
+    if command == "layer.new.artboardFromLayers"
+        && let Some((name, [w, h])) = photocraft_engine::artboard_cmds::from_layers_defaults(&app.session)
+    {
+        let fits = w <= 30_000 && h <= 30_000;
+        fields.insert("name".into(), json!(name));
+        fields.insert("width".into(), json!(if fits { w } else { 0 }));
+        fields.insert("height".into(), json!(if fits { h } else { 0 }));
     }
     if command == "layer.layerStyle.globalLight" {
         global_light_defaults(app, fields);

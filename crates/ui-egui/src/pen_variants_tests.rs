@@ -211,7 +211,8 @@ fn the_pen_carries_on_an_open_path_from_either_end() {
 }
 
 /// #6593 review: carrying on a subpath keeps its path operation, and a draft whose subpath changed
-/// meanwhile is added as a new subpath instead of overwriting another one.
+/// meanwhile refuses without overwriting newer work. The historical test name is retained
+/// for reviewed-head provenance; captured-revision validation supersedes its stale fallback.
 #[test]
 fn a_resumed_subpath_keeps_its_operation_and_a_stale_draft_adds_a_new_one() {
     let mut app = app(Tool::Pen);
@@ -223,21 +224,28 @@ fn a_resumed_subpath_keeps_its_operation_and_a_stale_draft_adds_a_new_one() {
     let work = work_path(&app);
     assert_eq!((work.subpaths.len(), work.subpaths[0].knots.len()), (1, 3));
     assert_eq!(work.subpaths[0].op, photocraft_doc::vector::PathOp::Subtract, "the operation is kept");
-    // The work path is replaced while the draft is open: the draft becomes a new subpath.
+    // Replacing the source invalidates the draft; neither explicit commit nor a frame retries it.
     click(&mut app, 20.0, 20.0);
     click(&mut app, 20.0, 80.0);
     app.run("path.set", json!({"name": "work", "path": {"subpaths": [open(120.0, 180.0, "combine")]}})).unwrap();
+    let newer = work_path(&app);
+    let steps = app.session.active().unwrap().history.past_len();
     crate::vector_ui::pen_commit(&mut app, false);
     let work = work_path(&app);
-    assert_eq!(work.subpaths.len(), 2, "a new subpath, the replaced one untouched");
+    assert_eq!(work, newer, "the replaced source is unchanged by a stale draft");
+    assert_eq!(work.subpaths.len(), 1);
+    assert!(app.ui.pen.is_none() && app.ui.status_error);
+    assert_eq!(app.session.active().unwrap().history.past_len(), steps);
     assert_eq!(work.subpaths[0].knots.iter().map(|k| k.anchor.x).collect::<Vec<_>>(), [120.0, 180.0]);
-    // The same with nothing selected in the Paths panel: still added to the Work Path it came from.
+    // Deselecting the path does not allow a stale draft to replace the newer source.
     click(&mut app, 180.0, 20.0);
     click(&mut app, 180.0, 90.0);
     app.ui.selected_path = None;
     app.run("path.set", json!({"name": "work", "path": {"subpaths": [open(120.0, 160.0, "combine")]}})).unwrap();
     crate::vector_ui::pen_commit(&mut app, false);
-    assert_eq!(work_path(&app).subpaths.len(), 2, "added, not replacing the Work Path");
+    assert_eq!(work_path(&app).subpaths.len(), 1, "no stale component is appended");
+    assert_eq!(work_path(&app).subpaths[0].knots.iter().map(|k| k.anchor.x).collect::<Vec<_>>(), [120.0, 160.0]);
+    assert!(app.ui.pen.is_none() && app.ui.status_error);
     // And with another path selected: the draft still goes back to the path it came from.
     app.run("path.set", json!({"name": "Other", "path": {"subpaths": [open(10.0, 30.0, "combine")]}})).unwrap();
     click(&mut app, 160.0, 20.0);
@@ -245,7 +253,9 @@ fn a_resumed_subpath_keeps_its_operation_and_a_stale_draft_adds_a_new_one() {
     app.ui.selected_path = Some("Other".into());
     app.run("path.set", json!({"name": "work", "path": {"subpaths": [open(120.0, 150.0, "combine")]}})).unwrap();
     crate::vector_ui::pen_commit(&mut app, false);
-    assert_eq!(work_path(&app).subpaths.len(), 2, "joined the Work Path it came from");
+    assert_eq!(work_path(&app).subpaths.len(), 1, "neither selected path accepts stale geometry");
+    assert_eq!(work_path(&app).subpaths[0].knots.iter().map(|k| k.anchor.x).collect::<Vec<_>>(), [120.0, 150.0]);
+    assert!(app.ui.pen.is_none() && app.ui.status_error);
     let st = app.session.active().unwrap();
     let other = st.doc.paths.iter().find(|p| p.name == "Other").unwrap();
     assert_eq!(other.path.subpaths.len(), 1, "the selected path is untouched");
@@ -272,4 +282,40 @@ fn undo_in_a_resumed_draft_stops_at_the_paths_own_anchors() {
     assert_eq!(app.ui.direct_selection.target, None, "the selection on the dropped draft goes with it");
     assert!(app.ui.direct_selection.anchors.is_empty());
     assert_eq!(work_path(&app), before, "the path is as it was");
+}
+
+/// #6079 review: Make Selection hides the Work Path. A Pen press on its old endpoint then starts a
+/// new Work Path that replaces it, as Photoshop does with no path selected, instead of carrying on
+/// the hidden one. A shown Work Path and a selected saved path still carry on.
+#[test]
+fn the_pen_does_not_carry_on_a_work_path_hidden_by_make_selection() {
+    let mut app = app(Tool::Pen);
+    let anchors = |p: &Path| -> Vec<Vec<[f64; 2]>> { p.subpaths.iter().map(|s| s.knots.iter().map(|k| [k.anchor.x, k.anchor.y]).collect()).collect() };
+    click(&mut app, 20.0, 20.0);
+    click(&mut app, 80.0, 20.0);
+    crate::vector_ui::pen_commit(&mut app, false);
+    crate::vector_ui::path_to_selection(&mut app, json!({})).unwrap();
+    assert!(!crate::vector_ui::work_path_shown(&app), "Make Selection hid the Work Path");
+    click(&mut app, 80.0, 20.0);
+    click(&mut app, 80.0, 80.0);
+    crate::vector_ui::pen_commit(&mut app, false);
+    assert_eq!(anchors(&work_path(&app)), [vec![[80.0, 20.0], [80.0, 80.0]]], "a new Work Path, not the hidden one carried on");
+    // The new Work Path is shown and selected: it carries on as before.
+    click(&mut app, 80.0, 80.0);
+    click(&mut app, 140.0, 80.0);
+    crate::vector_ui::pen_commit(&mut app, false);
+    assert_eq!(anchors(&work_path(&app)), [vec![[80.0, 20.0], [80.0, 80.0], [140.0, 80.0]]]);
+    // A saved path selected in the Paths panel carries on while the Work Path is hidden.
+    let open = json!({"subpaths": [{"closed": false, "knots": [{"anchor": [150.0, 150.0]}, {"anchor": [200.0, 150.0]}]}]});
+    app.run("path.set", json!({"name": "Saved", "path": open})).unwrap();
+    crate::vector_ui::path_to_selection(&mut app, json!({})).unwrap();
+    assert!(!crate::vector_ui::work_path_shown(&app));
+    app.ui.selected_path = Some("Saved".into());
+    click(&mut app, 200.0, 150.0);
+    click(&mut app, 200.0, 190.0);
+    crate::vector_ui::pen_commit(&mut app, false);
+    let st = app.session.active().unwrap();
+    let saved = st.doc.paths.iter().find(|p| p.name == "Saved").unwrap();
+    assert_eq!(anchors(&saved.path), [vec![[150.0, 150.0], [200.0, 150.0], [200.0, 190.0]]], "the saved path carried on");
+    assert_eq!(anchors(&work_path(&app)).len(), 1, "the hidden Work Path untouched");
 }

@@ -109,7 +109,7 @@ impl Model {
 }
 
 /// The colour the panel edits.
-fn active(app: &PhotocraftApp) -> [f32; 3] {
+pub(crate) fn active(app: &PhotocraftApp) -> [f32; 3] {
     let c = if app.ui.color_panel.background { app.session.tools.background } else { app.session.tools.foreground };
     [c[0], c[1], c[2]].map(|x| x.clamp(0.0, 1.0))
 }
@@ -347,7 +347,7 @@ fn sliders(app: &mut PhotocraftApp, ui: &mut egui::Ui, mode: ColorPanelMode) {
 
 /// Photoshop's alerts under the chips: ⚠ when the colour can't print (click: the nearest CMYK
 /// colour) and, for Web Color sliders, the cube when it isn't a web colour (click: the nearest).
-fn alerts(app: &mut PhotocraftApp, ui: &mut egui::Ui, col: Rect, rgb: [f32; 3], web: bool) {
+pub(crate) fn alerts(app: &mut PhotocraftApp, ui: &mut egui::Ui, col: Rect, rgb: [f32; 3], web: bool) {
     let t = Tokens::get(ui.ctx());
     let background = app.ui.color_panel.background;
     let mut y = col.top() + CHIPS_W + 2.0;
@@ -537,6 +537,7 @@ fn rgb3(c: [f32; 4]) -> [f32; 3] {
 /// other corners; the add-to-swatches button sits under it.
 fn wheel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
+    let top = ui.cursor().top();
     let background = app.ui.color_panel.background;
     let rgb = active(app);
     let v = current_values(ui, Model::Hsb, background, rgb);
@@ -556,9 +557,12 @@ fn wheel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let mut changed = edited.is_some();
     ui.add_space(6.0);
     let fill = ui.data(|d| d.get_temp::<f32>(color_field_fill_id()));
-    let gaps = 2.0 * ui.spacing().item_spacing.y + 6.0;
     let w = ui.available_width();
-    let side = fill.filter(|f| f.is_finite()).map_or(w.min(220.0), |f| (f - top_h - gaps).min(w)).max(80.0);
+    // The wheel takes what the dock group has left under the sliders as drawn (they stand taller
+    // than `ROW_H`), down to 28 pt as the slider modes' ramp: an estimate and an 80 pt floor ran
+    // it past the bottom of the Color group at its default height.
+    let used = ui.cursor().top() - top;
+    let side = fill.filter(|f| f.is_finite()).map_or(w.min(220.0), |f| (f - used).min(w)).max(28.0);
     let (area, resp) = ui.allocate_exact_size(vec2(w, side), Sense::click_and_drag());
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Unknown, ui.is_enabled(), "Color Wheel"));
     let (center, inner, outer) = wheel_geometry(area);
@@ -763,4 +767,27 @@ pub(crate) fn panel_menu(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     }
     ui.separator();
     ramp_menu(app, ui);
+}
+
+/// Remember the Color panel's options in the preferences when they change, so they survive a
+/// restart (#9592). Cheap: a small JSON compare per frame.
+pub fn persist(app: &mut PhotocraftApp) {
+    let stored = app.session.prefs().color_panel.clone();
+    // Changed outside the panel since the last sync (`prefs.set`, a reset): the panel takes it.
+    if app.ui.color_panel_synced.as_ref().is_some_and(|synced| *synced != stored) {
+        restore(app);
+        app.ui.color_panel_synced = Some(stored);
+        return;
+    }
+    let Ok(now) = serde_json::to_value(app.ui.color_panel) else { return };
+    if stored != now {
+        app.session.prefs.edit(|p| p.color_panel = now.clone());
+    }
+    app.ui.color_panel_synced = Some(now);
+}
+
+/// Restore the remembered Color panel options (at launch, or after a preference change made
+/// outside the panel); none stored (a reset) or unreadable ones are the defaults.
+pub fn restore(app: &mut PhotocraftApp) {
+    app.ui.color_panel = serde_json::from_value(app.session.prefs().color_panel.clone()).unwrap_or_default();
 }

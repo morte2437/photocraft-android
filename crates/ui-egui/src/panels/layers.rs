@@ -4,7 +4,7 @@ use super::layer_drag::{
 };
 use super::layer_row::{RowSel, layer_row};
 use super::options_bar::{LAYER_PCT_W, body_text_width, pct_action, scrub_pct_label};
-use super::*;
+use super::{BlendMode, Layer, LayerId, MaskKind, PhotocraftApp, Rect, Sense, Tokens, Value, empty, icons, json, label, pos2, theme, vec2, widgets};
 
 // ----------------------------------------------------------------------------- layers
 
@@ -28,7 +28,7 @@ pub(super) fn simple_lock_toggle(background: bool, l: &Layer, targets: &Value) -
 
 /// The Layers panel's blend modes: Photoshop's, plus the layer's own Paint.NET mode when it has one
 /// (an imported `.pdn`), so the menu matches Photoshop's for every other layer.
-fn blend_options(groups: bool, current: BlendMode) -> Vec<(BlendMode, &'static str)> {
+pub(crate) fn blend_options(groups: bool, current: BlendMode) -> Vec<(BlendMode, &'static str)> {
     let own = Some(current).filter(|m| !m.has_psd_equivalent());
     std::iter::once(BlendMode::PassThrough).filter(|_| groups).chain(BlendMode::LAYER_MODES).chain(own).map(|m| (m, m.label())).collect()
 }
@@ -49,56 +49,59 @@ pub(super) fn opacity_row_layout(available: f32, label_width: f32, gap: f32) -> 
 /// greyed out at Normal, 100% and unlocked, instead of removing them (#8880). Same layout as the
 /// active layer's rows in `layers`.
 fn inactive_blend_rows(ui: &mut egui::Ui, pro: bool) {
-    ui.add_enabled_ui(false, |ui| {
-        ui.horizontal(|ui| {
-            let opacity_label = if pro { tl!("Opacity:") } else { tl!("Opacity") };
-            let (blend_width, show_opacity_label) = opacity_row_layout(ui.available_width(), body_text_width(ui, opacity_label), ui.spacing().item_spacing.x);
-            let mut m = BlendMode::Normal;
-            let options = blend_options(false, m);
-            widgets::dropdown_wheel_hovered(ui, "blend", tl!("Blend Mode"), &mut m, &options, blend_width);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let mut o = 100.0;
-                widgets::popup_value_field(ui, opacity_label, &mut o, 0.0..=100.0, "%", LAYER_PCT_W);
-                if show_opacity_label {
-                    scrub_pct_label(ui, opacity_label, &mut o, ui.available_width());
+    // Each row is disabled on its own and laid out as the active layer's rows are: a disabled
+    // wrapper around both added an item gap under the Fill row, which pushed the layer list down
+    // in the themes whose docks keep item spacing (#9546).
+    ui.horizontal(|ui| {
+        ui.disable();
+        let opacity_label = if pro { tl!("Opacity:") } else { tl!("Opacity") };
+        let (blend_width, show_opacity_label) = opacity_row_layout(ui.available_width(), body_text_width(ui, opacity_label), ui.spacing().item_spacing.x);
+        let mut m = BlendMode::Normal;
+        let options = blend_options(false, m);
+        widgets::dropdown_wheel_hovered(ui, "blend", tl!("Blend Mode"), &mut m, &options, blend_width);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let mut o = 100.0;
+            widgets::popup_value_field(ui, opacity_label, &mut o, 0.0..=100.0, "%", LAYER_PCT_W);
+            if show_opacity_label {
+                scrub_pct_label(ui, opacity_label, &mut o, ui.available_width());
+            }
+        });
+    });
+    ui.add_space((theme::ROW_GAP - ui.spacing().item_spacing.y).max(0.0));
+    ui.horizontal(|ui| {
+        ui.disable();
+        let lock_label = if pro { tl!("Lock:") } else { tl!("Lock") };
+        let lang = crate::i18n::current();
+        let fill_label = if pro { crate::i18n::tr_ctx(lang, "layers", "Fill:") } else { crate::i18n::tr_ctx(lang, "layers", "Fill") };
+        let gap = ui.spacing().item_spacing.x;
+        let icons_w = if pro { 5.0 * 20.0 + gap } else { 22.0 + gap };
+        let fits = body_text_width(ui, lock_label) + icons_w + body_text_width(ui, fill_label) + LAYER_PCT_W + 2.0 * gap <= ui.available_width();
+        if fits {
+            label(ui, lock_label);
+        }
+        if pro {
+            ui.scope(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                for (icon, tip) in [
+                    ("grid-3x3", tl!("Lock transparent pixels")),
+                    ("brush", tl!("Lock image pixels")),
+                    ("move", tl!("Lock position")),
+                    ("scan", tl!("Prevent auto-nesting in and out of Artboards and Frames")),
+                    ("lock", tl!("Lock all")),
+                ] {
+                    icons::button(ui, icon, 20.0, false, tip);
                 }
             });
+        } else {
+            icons::button(ui, "lock-open", 22.0, false, tl!("Lock layer"));
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let mut f = 100.0;
+            widgets::popup_value_field(ui, fill_label, &mut f, 0.0..=100.0, "%", LAYER_PCT_W);
+            scrub_pct_label(ui, fill_label, &mut f, ui.available_width());
         });
-        ui.add_space((theme::ROW_GAP - ui.spacing().item_spacing.y).max(0.0));
-        ui.horizontal(|ui| {
-            let lock_label = if pro { tl!("Lock:") } else { tl!("Lock") };
-            let lang = crate::i18n::current();
-            let fill_label = if pro { crate::i18n::tr_ctx(lang, "layers", "Fill:") } else { crate::i18n::tr_ctx(lang, "layers", "Fill") };
-            let gap = ui.spacing().item_spacing.x;
-            let icons_w = if pro { 5.0 * 20.0 + gap } else { 22.0 + gap };
-            let fits = body_text_width(ui, lock_label) + icons_w + body_text_width(ui, fill_label) + LAYER_PCT_W + 2.0 * gap <= ui.available_width();
-            if fits {
-                label(ui, lock_label);
-            }
-            if pro {
-                ui.scope(|ui| {
-                    ui.spacing_mut().item_spacing.x = 0.0;
-                    for (icon, tip) in [
-                        ("grid-3x3", tl!("Lock transparent pixels")),
-                        ("brush", tl!("Lock image pixels")),
-                        ("move", tl!("Lock position")),
-                        ("scan", tl!("Prevent auto-nesting in and out of Artboards and Frames")),
-                        ("lock", tl!("Lock all")),
-                    ] {
-                        icons::button(ui, icon, 20.0, false, tip);
-                    }
-                });
-            } else {
-                icons::button(ui, "lock-open", 22.0, false, tl!("Lock layer"));
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let mut f = 100.0;
-                widgets::popup_value_field(ui, fill_label, &mut f, 0.0..=100.0, "%", LAYER_PCT_W);
-                scrub_pct_label(ui, fill_label, &mut f, ui.available_width());
-            });
-        });
-        ui.add_space(2.0);
     });
+    ui.add_space(2.0);
 }
 
 pub(super) fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
@@ -425,10 +428,23 @@ pub(super) fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         actions.extend(footer_drop(ui, &new_layer, footer_drag, "layer.duplicate"));
         let group = icons::button(ui, "folder", 26.0, false, tl!("Create a new group"));
         if group.clicked() {
-            // Multiple selected layers share one group. Shift also groups a single selection.
-            let shift = ui.input(|i| i.modifiers.shift);
-            let cmd = if (shift || selection.len() > 1) && active_layer.is_some() { "layer.groupLayers" } else { "layer.new.group" };
-            actions.push((cmd.into(), json!({})));
+            // Like Photoshop CC 2014 and later, a click with two or more layers selected puts them
+            // in the new group (Layer › Group Layers); with one layer or none it adds an empty
+            // group above the active layer. Shift-click, the older way, groups the selection too
+            // (#2561). ⌥-click asks first in the New Group dialog, ⌘-click adds an empty group
+            // below the active layer.
+            let m = ui.input(|i| i.modifiers);
+            let groups = (m.shift || selection.len() > 1) && active_layer.is_some();
+            if m.alt {
+                // Null params go through the menu path, which opens the dialog.
+                let cmd = if groups { crate::new_group_ui::FROM_LAYERS } else { crate::new_group_ui::NEW_GROUP };
+                actions.push((cmd.into(), Value::Null));
+            } else if m.command {
+                actions.push(("layer.new.group".into(), json!({"position": "below"})));
+            } else {
+                let cmd = if groups { "layer.groupLayers" } else { "layer.new.group" };
+                actions.push((cmd.into(), json!({})));
+            }
         }
         actions.extend(footer_drop(ui, &group, footer_drag, "layer.groupLayers"));
         let adj = footer_menu_button(ui, "adjustment-layer", 26.0, tl!("Create new fill or adjustment layer"));
@@ -560,7 +576,7 @@ fn footer_menu_button(ui: &mut egui::Ui, icon: &str, size: f32, tip: &str) -> eg
 }
 
 /// Photoshop's italic "fx" footer button (no icon-font equivalent).
-fn fx_button(ui: &mut egui::Ui, size: f32, tip: &str) -> egui::Response {
+pub(crate) fn fx_button(ui: &mut egui::Ui, size: f32, tip: &str) -> egui::Response {
     let t = Tokens::get(ui.ctx());
     let (r, resp) = ui.allocate_exact_size(vec2(size, size), Sense::click());
     if resp.hovered() {

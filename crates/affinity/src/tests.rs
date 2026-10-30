@@ -757,3 +757,42 @@ mod spot_colours {
         assert!(warned(&doc, "spot colours nested deeper than 4 levels"), "{:?}", doc.warnings);
     }
 }
+
+/// Object lookup and record arrays against the structures they replaced.
+mod stream_storage {
+    use crate::stream::{self, Kind, Object, Tag, Value};
+    use crate::synth::{self, F, tag};
+
+    /// The per-object map `Object::get` used before: first occurrence of each real tag.
+    fn reference(fields: &[(Tag, Value)], t: Tag) -> Option<&Value> {
+        let mut index = std::collections::HashMap::new();
+        for (i, (ft, _)) in fields.iter().enumerate() {
+            if ft.0 != 0 {
+                index.entry(*ft).or_insert(i);
+            }
+        }
+        index.get(&t).map(|&i| &fields[i].1)
+    }
+
+    #[test]
+    fn lookup_keeps_first_match_for_every_object_size() {
+        for n in 0..60u32 {
+            // Tags repeat (n % 7 distinct tags) and every fifth field is positional (tag 0).
+            let fields: Vec<(Tag, Value)> = (0..n).map(|i| (if i % 5 == 0 { Tag(0) } else { Tag(100 + i % 7) }, Value::UInt(u64::from(i)))).collect();
+            let object = Object::new(Tag(1), Kind::Inline, vec![Tag(1)], fields.clone());
+            for t in 0..120 {
+                assert_eq!(object.get(Tag(t)), reference(&fields, Tag(t)), "{n} fields, tag {t}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_fixed_size_array_is_one_buffer_and_one_value_per_record() {
+        let records: Vec<u8> = (0..18 * 5).map(|i| i as u8).collect();
+        let bytes = synth::stream(&[(tag(b"Nods"), F::Records(18, records.chunks(18).map(<[u8]>::to_vec).collect()))]);
+        let s = stream::parse(&bytes).unwrap();
+        let root = s.object(s.root).unwrap();
+        assert_eq!(root.get(Tag::of(b"Nods")), Some(&Value::Records { size: 18, data: records }));
+        assert_eq!(root.get(Tag::of(b"Nods")).and_then(Value::array_len), Some(5));
+    }
+}

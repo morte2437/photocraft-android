@@ -111,6 +111,7 @@ fn perturbed_char() -> CharStyle {
         features: vec![FontFeature { tag: "\u{1}".into(), value: 9 }],
         variations: vec![FontVariation { axis: "\u{1}".into(), value: -1.0 }],
         language: Some("\u{1}".into()),
+        rotate_roman: true,
         style_sheet: None,
     }
 }

@@ -1080,6 +1080,17 @@ fn x_swaps_the_frame_orientation_not_the_colours() {
     app.ui.tool_options.crop_ratio = String::new();
     assert!(swap_orientation(&mut app));
     assert_eq!(app.ui.tool_options.crop_ratio, "", "no ratio stays none");
+    // With a ratio preset X turns the frame too, keeping its size, and X again brings it back.
+    let near = |a: Option<[f64; 4]>, b: [f64; 4]| a.is_some_and(|a| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-9));
+    app.ui.tool_options.crop_ratio = "16:9".into();
+    app.ui.crop_rect = Some([60.0, 27.5, 140.0, 72.5]);
+    key(&mut app, Key::X, NONE);
+    assert_eq!(app.ui.tool_options.crop_ratio, "9:16");
+    assert!(near(app.ui.crop_rect, [77.5, 10.0, 122.5, 90.0]), "45 x 80, not shrunk: {:?}", app.ui.crop_rect);
+    key(&mut app, Key::X, NONE);
+    assert_eq!(app.ui.tool_options.crop_ratio, "16:9");
+    assert!(near(app.ui.crop_rect, [60.0, 27.5, 140.0, 72.5]), "and back: {:?}", app.ui.crop_rect);
+    app.ui.tool_options.crop_ratio = String::new();
     assert_eq!(swapped_ratio("1.414:1", 1.0, 1.0).as_deref(), Some("1:1.414"), "decimals survive the swap (#6487)");
     assert_eq!(swapped_ratio("0:5", 1.0, 1.0), None);
     assert_eq!(swapped_ratio("nonsense", 1.0, 1.0), None);

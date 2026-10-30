@@ -268,7 +268,8 @@ fn doc_save_rejects_a_bad_quality_instead_of_ignoring_or_clamping_it() {
     }
     h.handle("doc.save", json!({"path": path.to_string_lossy(), "quality": 85})).unwrap();
     let bytes = std::fs::read(&path).unwrap();
-    assert_eq!(bytes.get(12..16), Some(&b"VP8 "[..]), "a WebP saved with a quality is lossy");
+    // The lossy chunk; an extended WebP (one carrying a colour profile) puts `VP8X` first.
+    assert!(bytes.windows(4).any(|c| c == b"VP8 ") && !bytes.windows(4).any(|c| c == b"VP8L"), "a WebP saved with a quality is lossy");
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -375,6 +376,44 @@ fn doc_place_reads_through_the_read_root_and_never_outside_it() {
     drop(t);
     drop(h);
     std::fs::remove_dir_all(base).unwrap();
+}
+
+/// A save or render never turns a file PhotoCraft doesn't write (source, settings, notes)
+/// into image bytes, whatever `format` says; images and new files are written as before (#9439).
+#[test]
+fn workspace_writes_refuse_to_replace_a_file_that_is_not_an_image() {
+    let root = std::env::temp_dir().join(format!("pc-no-replace-foreign-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let foreign = [("src/main.rs", "fn main() {}\n"), ("Cargo.toml", "[package]\n"), (".env", "TOKEN=x\n"), ("Makefile", "all:\n")];
+    for (name, text) in foreign {
+        std::fs::write(root.join(name), text).unwrap();
+    }
+    std::fs::write(root.join("old.png"), b"not yet a png").unwrap();
+    let mut h = Headless::with_workspace(crate::AuthorizedWorkspace::new(Some(&root), Some(&root)).unwrap());
+    h.handle("doc.new", json!({"width": 8, "height": 8, "background": "white"})).unwrap();
+    for (name, text) in foreign {
+        let saved = h.handle("doc.save", json!({"path": name, "format": "png"})).unwrap_err().to_string();
+        assert!(saved.contains("already exists"), "doc.save over {name}: {saved}");
+        let rendered = h.handle("doc.render", json!({"path": name})).unwrap_err().to_string();
+        assert!(rendered.contains("already exists"), "doc.render over {name}: {rendered}");
+        assert_eq!(std::fs::read_to_string(root.join(name)).unwrap(), text, "{name} is untouched");
+    }
+    // An existing image is replaced, and a new file of any name is created.
+    h.handle("doc.save", json!({"path": "old.png"})).unwrap();
+    assert!(std::fs::read(root.join("old.png")).unwrap().starts_with(b"\x89PNG"));
+    h.handle("doc.save", json!({"path": "fresh.txt", "format": "png"})).unwrap();
+    assert!(std::fs::read(root.join("fresh.txt")).unwrap().starts_with(b"\x89PNG"));
+    h.handle("doc.render", json!({"path": "old.png"})).unwrap();
+    std::fs::write(root.join("OLD.TIF"), b"x").unwrap();
+    h.handle("doc.save", json!({"path": "OLD.TIF"})).unwrap();
+    // An image saved under a name without an image extension is recognised by its bytes.
+    h.handle("doc.save", json!({"path": "out", "format": "png"})).unwrap();
+    h.handle("doc.save", json!({"path": "out", "format": "png"})).unwrap();
+    h.handle("doc.render", json!({"path": "fresh.txt"})).unwrap();
+    // Release directory capabilities before cleanup on Windows.
+    drop(h);
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -777,6 +816,23 @@ fn methods_lists_the_job_methods_and_every_listed_name_is_served() {
         }
     }
     assert!(h.handle("jobs.nope", Value::Null).unwrap_err().to_string().contains("unknown method"));
+}
+
+/// #3674: a guessed name gets a pointer to the right one, in both directions.
+#[test]
+fn unknown_names_suggest_the_right_method_or_command() {
+    let mut h = Headless::new();
+    let err = |h: &mut Headless, m: &str, p: Value| h.handle(m, p).unwrap_err().to_string();
+    let e = err(&mut h, "engine.execute", json!({"command": "engine.commands"}));
+    assert!(e.contains("did you mean `command.list`") && e.contains("protocol method"), "{e}");
+    let e = err(&mut h, "engine.execute", json!({"command": "doc.inspect"}));
+    assert!(e.contains("`doc.inspect` is a protocol method"), "{e}");
+    let e = err(&mut h, "engine.execute", json!({"command": "edit.undoo"}));
+    assert!(e.contains("did you mean `edit.undo`"), "{e}");
+    let e = err(&mut h, "doc.inspct", Value::Null);
+    assert!(e.contains("did you mean `doc.inspect`") && e.contains("(try `methods`)"), "{e}");
+    let e = err(&mut h, "edit.undo", Value::Null);
+    assert!(e.contains("engine.execute {\"command\": \"edit.undo\"}"), "{e}");
 }
 
 #[test]

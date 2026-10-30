@@ -23,10 +23,7 @@ impl Stream {
     /// The raw slot count of an object's array field (including null slots), for charging
     /// traversal work before nulls are filtered out. `None` when the field is not an array.
     pub fn array_len(&self, id: ObjId, tag: &[u8; 4]) -> Option<usize> {
-        match self.field(id, tag)? {
-            Value::Array(a) => Some(a.len()),
-            _ => None,
-        }
+        self.field(id, tag)?.array_len()
     }
 
     /// A child object (shared, linked or inline); `None` for null or missing.

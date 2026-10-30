@@ -118,7 +118,7 @@ pub(crate) fn import_layered(name: &str, img: &Image, layers: &[u8]) -> Result<I
     }
     let channels = u16::try_from(img.layout().channels().saturating_add(added)).map_err(|_| IoError::Unsupported("too many channels".into()))?;
     let header = Header::new(isd.version, w, h, channels, depth, mode);
-    let image_data = ImageData { compression: Compression::Raw, data };
+    let image_data = ImageData::new(Compression::Raw, data);
     let mut file = isd.into_psd(header, resources, image_data);
     // Empty `Patt` and the default filter mask are written so Photoshop's block list matches
     // a file it saved. They carry nothing the document stores, so they are not kept: a
@@ -233,10 +233,9 @@ pub(crate) fn export_layered(doc: &Document, opts: &ExportOptions, ctl: &photocr
     // TIFF already round-trips as.
     // Layer data is written PSD-style ("Adobe Photoshop Document Data Block", 4-byte lengths), as
     // Photoshop writes it: Photoshop does not read the PSB-style header ("... Data V0002") in a
-    // TIFF and opens only the composite, as one locked Background. The exporter's size estimate
-    // counts layer planes uncompressed, so a document with many canvas-sized layers passes 2 GB
-    // while its real layer data is a small fraction of that; it is not used here. PSB-style data
-    // is written only past 30000 px, when asked for, or when a length really overflows 32 bits.
+    // TIFF and opens only the composite, as one locked Background. The exporter's switch to PSB
+    // on the encoded file size is not used here: PSB-style data is written only past 30000 px,
+    // when asked for, or when a length really overflows 32 bits.
     let user_channels = !doc.channels.is_empty() || doc.quick_mask.is_some();
     let force_psb = opts.force_psb || big;
     let psd_opts = PsdExportOptions {
@@ -970,11 +969,11 @@ mod tests {
 
     use crate::{ExportOptions, export};
 
-    /// Hidden solid fills on a 2048² canvas: the PSD size estimate counts each one as a
-    /// canvas-sized plane (16 MiB at 8 bits), so 140 of them pass 2 GB, while their real pixels
-    /// (the cached rendering, pruned to nothing) take almost no space. A layered TIFF of such a
-    /// document must still carry PSD-style layer data: Photoshop does not read the PSB-style
-    /// header in a TIFF and opens only the composite, as one locked Background.
+    /// Hidden solid fills on a 2048² canvas: counted as canvas-sized planes (16 MiB each at 8
+    /// bits), 140 of them pass 2 GB, while their real pixels (the cached rendering, pruned to
+    /// nothing) take almost no space. A layered TIFF of such a document must still carry
+    /// PSD-style layer data: Photoshop does not read the PSB-style header in a TIFF and opens only
+    /// the composite, as one locked Background.
     fn many_cheap_fills() -> Document {
         let mut doc = Document::new("many fills", photocraft_geom::Size::new(2048, 2048), photocraft_color::ColorMode::Rgb, photocraft_color::SampleType::U8);
         for i in 0..140 {
@@ -990,7 +989,6 @@ mod tests {
     #[test]
     fn layered_tiff_ignores_the_uncompressed_size_estimate() {
         let doc = many_cheap_fills();
-        assert!(crate::psd_export::psd_size_exceeds_limit(&doc), "the fixture must pass the 2 GB estimate");
 
         let r = export(&doc, "x.tif", &ExportOptions { tiff_layers: true, ..Default::default() }).unwrap();
         let (_, layers) = photocraft_codecs::tiff_photoshop_tags(&r.bytes);
@@ -1000,9 +998,9 @@ mod tests {
         let back = crate::import("x.tif", &r.bytes).unwrap().document;
         assert_eq!(back.layers.len(), doc.layers.len());
 
-        // A .psd save still switches to PSB on the estimate, as before.
+        // A .psd save switches to PSB on the encoded size, which is small here: it stays PSD.
         let psd = export(&doc, "x.psd", &ExportOptions::default()).unwrap();
-        assert_eq!(psd.bytes.get(4..6), Some(&[0u8, 2][..]), "PSD saves keep the size-estimate switch");
+        assert_eq!(psd.bytes.get(4..6), Some(&[0u8, 1][..]), "PSD saves switch on the encoded size");
     }
 
     #[test]

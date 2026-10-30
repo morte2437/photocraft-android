@@ -69,6 +69,82 @@ fn tmpdir(name: &str) -> String {
     d.to_string_lossy().into_owned()
 }
 
+/// A classic little-endian TIFF with one 8-bit gray page per `(w, h, level, NewSubfileType)`,
+/// chained in order (NewSubfileType 1 marks a reduced-resolution copy, such as a thumbnail).
+fn write_tiff(path: &str, pages: &[(u32, u32, u8, u32)]) {
+    let mut f = b"II".to_vec();
+    f.extend_from_slice(&42u16.to_le_bytes());
+    f.extend_from_slice(&0u32.to_le_bytes());
+    let mut next_field = 4;
+    for &(w, h, level, kind) in pages {
+        let pixels_at = f.len() as u32;
+        f.extend(std::iter::repeat_n(level, (w * h) as usize));
+        if f.len() % 2 == 1 {
+            f.push(0);
+        }
+        let ifd_at = f.len() as u32;
+        f[next_field..next_field + 4].copy_from_slice(&ifd_at.to_le_bytes());
+        let entries: [(u16, u16, u32); 10] =
+            [(254, 4, kind), (256, 4, w), (257, 4, h), (258, 3, 8), (259, 3, 1), (262, 3, 1), (273, 4, pixels_at), (277, 3, 1), (278, 4, h), (279, 4, w * h)];
+        f.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+        for (tag, ty, v) in entries {
+            f.extend_from_slice(&tag.to_le_bytes());
+            f.extend_from_slice(&ty.to_le_bytes());
+            f.extend_from_slice(&1u32.to_le_bytes());
+            f.extend_from_slice(&v.to_le_bytes());
+        }
+        next_field = f.len();
+        f.extend_from_slice(&0u32.to_le_bytes());
+    }
+    std::fs::write(path, f).unwrap();
+}
+
+/// #6379: Video Frames to Layers takes every page of a multi-page TIFF, one layer each, in
+/// order, as it takes a GIF's frames; a thumbnail is not a page. A single-page TIFF is one frame.
+#[test]
+fn video_frames_to_layers_takes_every_tiff_page() {
+    let dir = tmpdir("tiff-pages");
+    let path = format!("{dir}/pages.tif");
+    write_tiff(&path, &[(2, 2, 9, 1), (6, 4, 51, 0), (3, 5, 204, 0)]);
+    let mut s = session();
+    let r = s.execute("file.import.videoFramesToLayers", json!({"path": path})).unwrap();
+    assert_eq!(r["layers"], 2, "two pages, the thumbnail left out");
+    let doc = &s.active().unwrap().doc;
+    for (name, (w, h), level) in [("Frame 1", (6, 4), 51.0), ("Frame 2", (3, 5), 204.0)] {
+        let l = doc.layers.iter().find(|l| l.name == name).unwrap_or_else(|| panic!("{name}"));
+        let surf = l.surface().unwrap();
+        let b = surf.content_bounds();
+        assert_eq!((b.width(), b.height()), (w, h), "{name}");
+        let px = surf.read_region(photocraft_geom::Rect::new(b.x0, b.y0, b.x0 + 1, b.y0 + 1));
+        assert!((px[0] * 255.0 - level).abs() < 0.6 && px[3] == 1.0, "{name}: {px:?}");
+    }
+    let single = format!("{dir}/single.tif");
+    write_tiff(&single, &[(4, 4, 120, 0)]);
+    let mut s = session();
+    assert_eq!(s.execute("file.import.videoFramesToLayers", json!({"path": single})).unwrap()["layers"], 1);
+}
+
+/// #6379 review: a TIFF whose page chain loops back (or is cut short, or runs past the directory
+/// limit) lists only its first pages. The import is refused, and the document is left as it was,
+/// instead of reporting part of the file as all of it.
+#[test]
+fn video_frames_to_layers_refuses_a_tiff_with_an_incomplete_page_list() {
+    let dir = tmpdir("tiff-loop");
+    let path = format!("{dir}/loop.tif");
+    write_tiff(&path, &[(2, 2, 51, 0), (2, 2, 204, 0)]);
+    // The last directory's next-IFD offset points back to the first directory.
+    let mut f = std::fs::read(&path).unwrap();
+    let first: [u8; 4] = f[4..8].try_into().unwrap();
+    let end = f.len();
+    f[end - 4..].copy_from_slice(&first);
+    std::fs::write(&path, f).unwrap();
+    let mut s = session();
+    let before = s.active().unwrap().doc.layers.len();
+    let err = s.execute("file.import.videoFramesToLayers", json!({"path": path})).unwrap_err().to_string();
+    assert!(err.contains("only the first 2 pages"), "{err}");
+    assert_eq!(s.active().unwrap().doc.layers.len(), before, "nothing imported");
+}
+
 #[test]
 fn new_video_layer_from_image_sequence() {
     let dir = tmpdir("seq");
@@ -81,6 +157,21 @@ fn new_video_layer_from_image_sequence() {
     let id = LayerId(r["layer"].as_u64().unwrap());
     assert_eq!(frames(&s, id), 3);
     assert!(s.active().unwrap().doc.timeline.as_ref().unwrap().duration >= 3);
+}
+
+/// CodeRabbit on #9775: footage that isn't on the active artboard stays out of it, as a placed
+/// image does; the board would clip it. Before, the layer was placed while still empty.
+#[test]
+fn footage_off_the_active_artboard_stays_out_of_it() {
+    let dir = tmpdir("board");
+    write_png(&format!("{dir}/f01.png"), 16, 12, "#ff0000");
+    write_png(&format!("{dir}/f02.png"), 16, 12, "#00ff00");
+    let mut s = session();
+    let board = s.execute("layer.new.artboard", json!({"rect": [0, 0, 4, 4]})).unwrap();
+    assert!(board["layer"].as_u64().is_some(), "{board}");
+    let r = s.execute("layer.videoLayers.newVideoLayerFromFile", json!({"path": dir})).unwrap();
+    let id = LayerId(r["layer"].as_u64().unwrap());
+    assert_eq!(s.active().unwrap().doc.artboard_of(id), None, "the footage is centred off the board");
 }
 
 #[test]

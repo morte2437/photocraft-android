@@ -1,7 +1,7 @@
 use super::descriptors::{desc, get_obj, jstr};
 use super::events::{event_and_descriptor, event_for};
 use super::fields::Mapped;
-use super::*;
+use super::{Action, AtnAction, AtnEvent, AtnFile, AtnItem, D, DEFAULT_SET, Descriptor, PHOTOSHOP_STEP, UnicodeString, Value, atn, json};
 
 // ------------------------------------------------------------------ import
 

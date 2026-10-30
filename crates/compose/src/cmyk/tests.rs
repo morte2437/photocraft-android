@@ -105,8 +105,10 @@ fn over_text(b: Cmyka, s: Cmyka, opacity: f32) -> Cmyka {
     let dec = |v: f32| 1.0 - photocraft_color::convert::linear_to_srgb(v.max(0.0).powf(gamma));
     let mut o = [0.0; 5];
     for i in 0..4 {
-        // Mixing an ink with itself (or with nothing) leaves it exactly as it is.
-        o[i] = if b[4] <= 0.0 || b[i] == s[i] { s[i] } else { dec((1.0 - sa) * b[4] / a * enc(b[i]) + sa / a * enc(s[i])) };
+        // Mixing an ink with itself, with nothing, or over a backdrop it covers fully leaves it
+        // exactly as it is (the round trip through the gamma space can move it by a rounding
+        // step, which a mode that jumps at no ink or full ink turns into a whole ink).
+        o[i] = if b[4] <= 0.0 || sa >= 1.0 || b[i] == s[i] { s[i] } else { dec((1.0 - sa) * b[4] / a * enc(b[i]) + sa / a * enc(s[i])) };
     }
     o[4] = a;
     o
@@ -392,6 +394,64 @@ fn isolated_groups_keep_the_special_fill_rule() {
         assert_matches_reference(&d);
         assert_routes_agree(&d);
     }
+}
+
+/// White type clipped onto an isolated Vivid Light group over full magenta (#9688): the glyph
+/// covers its pixel, so the group shows exactly no ink there, and Vivid Light with no ink (full
+/// brightness) gives no ink whatever the backdrop. Mixing the covered pixel through the type
+/// gamma would leave a rounding step of ink, which Vivid Light turns into full magenta.
+#[test]
+fn type_clipped_to_a_vivid_light_group_covers_exactly() {
+    let mut inner = Layer::new("f", LayerContent::Fill(photocraft_doc::Fill::Solid(cmyk_color([0.0, 1.0, 0.0, 0.0], 1.0))));
+    inner.blend = BlendMode::Normal;
+    let mut vivid = Layer::group("vivid", vec![inner]);
+    vivid.blend = BlendMode::VividLight;
+    let mut glyph = text_layer(&[(Rect::new(0, 0, 1, 1), [0.0, 0.0, 0.0, 0.0, 1.0])]);
+    glyph.clipped = true;
+    let outer = Layer::group("outer", vec![layer(&[(Rect::new(0, 0, 5, 3), [0.0, 1.0, 0.0, 0.0, 1.0])]), vivid, glyph]);
+    let mut d = doc(6, 4);
+    d.layers.push(outer);
+    assert!(supports(&d));
+    let got = render_cmyk(&d, d.bounds()).unwrap_or_else(|| panic!("supported"));
+    assert_eq!(got.px[0], [0.0, 0.0, 0.0, 0.0, 1.0], "white glyph in Vivid Light");
+    // Magenta in Vivid Light onto magenta stays magenta.
+    assert_eq!(got.px[1], [0.0, 1.0, 0.0, 0.0, 1.0], "beside the glyph");
+    assert_matches_reference(&d);
+}
+
+/// The same structure in the neighbouring modes, with type or pixels clipped (fully covering and
+/// at a partly covered edge), onto inks that sit at the jumps of the modes that have them.
+#[test]
+fn layers_clipped_to_isolated_groups_match_the_reference_in_every_mode() {
+    use BlendMode as B;
+    for mode in [B::VividLight, B::LinearLight, B::PinLight, B::HardMix, B::ColorDodge, B::ColorBurn, B::Normal, B::Multiply, B::Screen] {
+        for text in [false, true] {
+            for (backdrop, ink) in [([0.0, 1.0, 0.0, 0.0], [0.0; 4]), ([1.0, 0.0, 1.0, 1.0], [1.0; 4]), ([0.0, 1.0, 0.0, 0.0], [0.0, 0.3, 1.0, 0.0])] {
+                let mut inner = Layer::new("f", LayerContent::Fill(photocraft_doc::Fill::Solid(cmyk_color(backdrop, 1.0))));
+                inner.blend = BlendMode::Normal;
+                let mut group = Layer::group("g", vec![inner]);
+                group.blend = mode;
+                let [c, m, y, k] = ink;
+                let rects = [(Rect::new(0, 0, 2, 2), [c, m, y, k, 1.0]), (Rect::new(2, 0, 3, 2), [c, m, y, k, 0.5])];
+                let mut clip = if text { text_layer(&rects) } else { layer(&rects) };
+                clip.clipped = true;
+                let [bc, bm, by, bk] = backdrop;
+                let outer = Layer::group("outer", vec![layer(&[(Rect::new(0, 0, 4, 2), [bc, bm, by, bk, 1.0])]), group, clip]);
+                let mut d = doc(4, 3);
+                d.layers.push(outer);
+                assert!(supports(&d), "{mode:?}");
+                assert_matches_reference(&d);
+            }
+        }
+    }
+    // Onto a pass-through group, clipped layers take the RGB compositor's isolated rendering.
+    let mut pass = Layer::group("pass", vec![layer(&[(Rect::new(0, 0, 2, 2), [0.0, 1.0, 0.0, 0.0, 1.0])])]);
+    pass.blend = BlendMode::PassThrough;
+    let mut clip = text_layer(&[(Rect::new(0, 0, 1, 1), [0.0; 5])]);
+    clip.clipped = true;
+    let mut d = doc(2, 2);
+    d.layers.extend([pass, clip]);
+    assert!(!supports(&d));
 }
 
 #[test]

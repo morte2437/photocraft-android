@@ -1,6 +1,6 @@
-use super::*;
+use super::{Arc, DialogKind, Map, PhotocraftApp, Tokens, Value, WebSettings, b, check, dropdown_str, json, n, number, params, s, web_cmds, web_preview};
 
-const WEB_FORMATS: [(&str, &str); 5] = [("gif", "GIF"), ("png8", "PNG-8"), ("png24", "PNG-24"), ("jpeg", "JPEG"), ("wbmp", "WBMP")];
+const WEB_FORMATS: [(&str, &str); 6] = [("gif", "GIF"), ("png8", "PNG-8"), ("png24", "PNG-24"), ("jpeg", "JPEG"), ("webp", "WebP"), ("wbmp", "WBMP")];
 
 pub(super) const WEB_COMMAND: &str = "file.export.saveForWebLegacy";
 
@@ -35,6 +35,7 @@ pub fn open_web(app: &mut PhotocraftApp) -> u64 {
     for (k, v) in [
         ("format", json!("jpeg")),
         ("quality", json!(60)),
+        ("lossless", json!(false)),
         ("palette", json!("selective")),
         ("colors", json!(128)),
         ("dither", json!("diffusion")),
@@ -57,7 +58,7 @@ pub fn open_web(app: &mut PhotocraftApp) -> u64 {
 }
 
 /// Settings variants shown in 4-Up (current, then two smaller alternatives).
-fn variants(p: &Value) -> Vec<Value> {
+pub(super) fn variants(p: &Value) -> Vec<Value> {
     let mut out = vec![p.clone()];
     let fmt = p["format"].as_str().unwrap_or("jpeg");
     for k in [2.0, 4.0] {
@@ -66,7 +67,7 @@ fn variants(p: &Value) -> Vec<Value> {
             m.remove("colorTable");
             m.remove("colorTableEdits");
         }
-        if fmt == "jpeg" {
+        if fmt == "jpeg" || (fmt == "webp" && !p["lossless"].as_bool().unwrap_or(false)) {
             v["quality"] = json!((p["quality"].as_f64().unwrap_or(60.0) / k).round().max(1.0));
         } else if fmt == "gif" || fmt == "png8" {
             v["colors"] = json!((p["colors"].as_f64().unwrap_or(128.0) / k).round().max(2.0));
@@ -138,10 +139,9 @@ fn web_pane(app: &PhotocraftApp, ui: &mut egui::Ui, size: egui::Vec2, p: Option<
                 None => (px.iter().flat_map(|q| q.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)).collect::<Vec<u8>>(), None),
                 Some(p) => match web_preview::optimized(ui, key, &format!("{}|{rev}|{frame:?}|{size_sig}", doc.id.0), p, &px, w, h) {
                     Ok((preview, bytes, colors, ext)) => (preview, Some(((bytes as f64 * ratio) as usize, colors, ext))),
-                    Err(error) => {
-                        ui.label(error);
-                        (vec![0; (w * h * 4) as usize], None)
-                    }
+                    // The error shows on the row above the panes; a label here sat beside the pane
+                    // and widened the dialog (#8830).
+                    Err(_) => (vec![0; (w * h * 4) as usize], None),
                 },
             };
             let img = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba);
@@ -350,6 +350,14 @@ pub(super) fn web_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<S
                         check(ui, f, "optimized", tl!("Optimized"), true);
                         check(ui, f, "embedIcc", tl!("Embed Color Profile"), false);
                     }
+                    "webp" => {
+                        check(ui, f, "lossless", tl!("Lossless"), false);
+                        if !b(f, "lossless", false) {
+                            number(ui, f, "quality", tl!("Quality"), 0.0..=100.0, "", 60.0);
+                        }
+                        check(ui, f, "transparency", tl!("Transparency"), true);
+                        check(ui, f, "embedIcc", tl!("Embed Color Profile"), false);
+                    }
                     "wbmp" => {
                         dropdown_str(
                             ui,
@@ -366,7 +374,7 @@ pub(super) fn web_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<S
                         check(ui, f, "interlaced", tl!("Interlaced"), false);
                     }
                 }
-                if fmt != "png24" || !b(f, "transparency", true) {
+                if !matches!(fmt.as_str(), "png24" | "webp") || !b(f, "transparency", true) {
                     ui.horizontal(|ui| {
                         let matte_label = ui.label(egui::RichText::new(tl!("Matte")).color(t.text_dim));
                         let mut m = s(f, "matte", "#ffffff");

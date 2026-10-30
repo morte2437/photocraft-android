@@ -156,7 +156,7 @@ pub fn option_keys(tool: Tool) -> &'static [&'static str] {
         }};
     }
     match tool {
-        Tool::Move => reset!(move_auto_select, move_target, move_show_transform),
+        Tool::Move => reset!(move_auto_select, move_target, move_show_transform, transform_interpolation),
         Tool::RectMarquee | Tool::EllipseMarquee => reset!(feather, anti_alias, marquee_style, marquee_width, marquee_height, marquee_unit),
         // The single-pixel marquees are never anti-aliased: Feather is their only option.
         Tool::SingleRowMarquee | Tool::SingleColumnMarquee => reset!(feather),
@@ -208,9 +208,9 @@ pub fn option_keys(tool: Tool) -> &'static [&'static str] {
         Tool::Dodge | Tool::Burn => reset!(tone_range, exposure, protect_tones),
         Tool::Sponge => reset!(sponge_mode, vibrance),
         Tool::Slice => reset!(slice_style, slice_width, slice_height),
-        Tool::Pen => reset!(vector_mode, pen_auto_add_delete),
-        Tool::CurvaturePen => reset!(vector_mode),
-        Tool::FreeformPen => reset!(vector_mode, curve_fit),
+        Tool::Pen => reset!(vector_mode, pen_path_op, pen_auto_add_delete),
+        Tool::CurvaturePen => reset!(vector_mode, pen_path_op),
+        Tool::FreeformPen => reset!(vector_mode, pen_path_op, curve_fit),
         Tool::Rectangle | Tool::EllipseShape | Tool::Triangle | Tool::Polygon | Tool::Line | Tool::CustomShape => {
             reset!(vector_mode, shape_fill, stroke_width, shape_stroke, shape_fill_gradient, shape_stroke_gradient, corner_radius, polygon_sides, line_weight)
         }

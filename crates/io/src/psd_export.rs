@@ -22,13 +22,11 @@ mod resources;
 mod smart;
 
 pub(crate) use document::document_to_psd_interruptible;
+#[cfg(test)]
+use document::document_to_psd_sized;
 pub use document::{document_to_psd, document_to_psd_with};
 use document::{document_to_psd_nested, mask_parameters};
-#[cfg(test)]
-pub(crate) use estimate::estimate_psd_size;
-pub(crate) use estimate::{block_signature, psd_size_exceeds_limit, psd_version};
-#[cfg(test)]
-use estimate::{estimate_encoded_size, exceeds_psd_size_limit};
+pub(crate) use estimate::{fit_psd_size, psd_version, sign_global_blocks};
 pub(crate) use resources::{global_block, guides_resource, keep_imported_resource, legacy_name, pascal_names_resource, path_resources, unicode_names_resource};
 use smart::{LINK_KEYS, SmartOut, Source, contents_uuid, effects_unchanged, masked, size_from_layer, smart_keys, upsert};
 
@@ -37,24 +35,25 @@ use smart::{LINK_KEYS, SmartOut, Source, contents_uuid, effects_unchanged, maske
 /// A raster layer never writes them, nor adjustment blocks.
 const RASTER_STALE_KEYS: [&[u8; 4]; 8] = [b"SoCo", b"GdFl", b"PtFl", b"SoLd", b"PlLd", b"SoLE", b"TySh", b"vscg"];
 
+/// The largest file written as PSD: past it, the document is saved as PSB (Large Document Format),
+/// as Photoshop does.
 const PSD_MAX_FILE_SIZE: u64 = 2 * 1024 * 1024 * 1024;
+/// Room kept under [`PSD_MAX_FILE_SIZE`] for what the save adds after the conversion (the image
+/// preview resource, a few KB).
+const PSD_SAVE_HEADROOM: u64 = 1024 * 1024;
 /// Most bytes of one layer's interleaved samples the exporter gathers. The interleaved bytes and
 /// the channel planes made from them (or the band parts and the joined buffer) are alive together,
 /// so the peak is about twice this; it is also what fits in a file of at most [`PSD_MAX_FILE_SIZE`].
 const MAX_LAYER_GATHER_BYTES: u64 = if cfg!(target_pointer_width = "64") { 1 << 30 } else { 256 << 20 };
-const PSD_ESTIMATE_FIXED_OVERHEAD: u64 = 1024 * 1024;
-const PSD_ESTIMATE_LAYER_OVERHEAD: u64 = 64 * 1024;
 
 /// Options for [`document_to_psd_with`].
 #[derive(Debug, Clone)]
 pub struct PsdExportOptions {
     /// Write PSB even when the document fits PSD limits.
     pub force_psb: bool,
-    /// Switch to PSB when the estimated encoded size exceeds PSD's 2 GB limit. The estimate
-    /// counts every layer plane uncompressed, so a document with many canvas-sized layers can
-    /// pass it while its real file is far smaller. A writer that can measure the real size
-    /// instead turns this off: the layered TIFF writes PSD-style layer data and falls back to
-    /// PSB only when a length really overflows 32 bits.
+    /// Switch to PSB when the encoded file exceeds PSD's 2 GB limit (`fit_psd_size`). A writer
+    /// that embeds the layer data elsewhere turns this off: the layered TIFF writes PSD-style
+    /// layer data and falls back to PSB only when a length really overflows 32 bits.
     pub size_limit_psb: bool,
     /// Matte the merged image against white where it is translucent, as Photoshop does
     /// (`false` keeps straight colour under the alpha: for containers that store the composite
@@ -189,7 +188,7 @@ impl Ex {
         let compression = if w == 0 || h == 0 { Compression::Raw } else { self.compression() };
         ChannelData::encode(id, compression, plane, w, h, depth, self.version)
             .or_else(|_| ChannelData::encode(id, Compression::Raw, plane, w, h, depth, self.version))
-            .unwrap_or(ChannelData { id, compression: Some(Compression::Raw), data: plane.to_vec() })
+            .unwrap_or(ChannelData::new(id, Some(Compression::Raw), plane.to_vec()))
     }
 
     fn empty_channels(&self) -> Vec<ChannelData> {
@@ -543,7 +542,23 @@ impl Ex {
                 let masked = l.vector_mask.is_some();
                 raw.retain(|(k, _)| !(RASTER_STALE_KEYS.contains(&k) || adjust_map::ADJUSTMENT_KEYS.contains(&k) || k == b"CgEd" || (k == b"vstk" && masked)));
             }
-            LayerContent::Group(_) => {}
+            // A Frame's stroke (`vstk`), kept byte-identical while it still decodes to the model.
+            LayerContent::Group(g) => {
+                let pos = raw.iter().position(|(k, _)| k == b"vstk");
+                let old = pos.and_then(|i| raw.get(i)).and_then(|(_, d)| crate::vector_map::parse_vstk(d, self.dpi));
+                // One we can't decode stays as it was unless the model has a stroke to write.
+                let stale = match &old {
+                    Some(v) => v.stroke != g.frame_stroke,
+                    None => g.frame_stroke.is_some(),
+                };
+                if stale {
+                    let data = crate::vector_map::vstk_bytes(g.frame_stroke.as_ref(), old.is_none_or(|v| v.fill_enabled), self.dpi);
+                    match pos.and_then(|i| raw.get_mut(i)) {
+                        Some(e) => e.1 = data,
+                        None => raw.push((*b"vstk", data)),
+                    }
+                }
+            }
         }
         // Effects reference point: written from the field (in place, keeping block order).
         match l.effects.reference {
@@ -825,7 +840,9 @@ impl Ex {
                         return Err(format!("the linked file {path} is not read for this export"));
                     }
                     let file = crate::doc_path::resolve(path, self.document.as_deref()).map_err(|e| format!("the linked file {path} is not opened: {e}"))?;
-                    let bytes = std::fs::read(file).map_err(|e| format!("the linked file {path} can't be read: {e}"))?;
+                    // Regular files only, in bounded reads: a link to a FIFO would block the save
+                    // and one to a device such as `/dev/zero` would never end (#8601).
+                    let bytes = photocraft_format::read_file(&file).map_err(|e| format!("the linked file {path} can't be read: {e}"))?;
                     let name = path.rsplit(['/', '\\']).next().unwrap_or(path).to_string();
                     let source = self.embed(sm.contents_id, &name, &bytes, true)?;
                     self.warnings.push(format!("the linked smart object {name} was embedded (PSD export keeps no external links)"));

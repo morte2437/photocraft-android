@@ -1,5 +1,5 @@
 use super::common::{Bounds, Level, PAR_MIN, Px};
-use super::*;
+use super::{Cow, par};
 
 /// Half-size level: a cell is a hole if any of its pixels is; else it averages its non-void
 /// pixels, and may be copied from only if all of them may.

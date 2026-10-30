@@ -71,6 +71,176 @@ pub struct Spooler {
     pub run: SpoolFn,
 }
 
+/// A stand-in for the system's printers, installed on `Session::printer_source` (tests):
+/// `file.printers`, `file.print.printers` and the Print dialog list these and do not ask the spooler.
+/// `file.print.printers` and the dialog's driver Printer menu list them on Windows only, where the
+/// GDI route is; elsewhere they answer as that route does there. In the browser `file.printers`
+/// lists none of them, as it lists no printers there without a stand-in.
+pub type PrinterSource = std::sync::Arc<dyn Fn() -> Vec<craft_print::Printer> + Send + Sync>;
+
+/// Held while a thread of this process lists printers or calls into a printer driver.
+static SPOOLER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Runs `f`, which lists printers or calls into a printer driver, while no other thread of this
+/// process does either. On Windows, two threads that open printers' PrintTicket providers for the
+/// first time at once can crash the process inside the spooler client (`winspool.drv`). A panic in
+/// an earlier caller does not block later ones. A call made inside `f` on the same thread runs at
+/// once.
+pub fn with_spooler<T>(f: impl FnOnce() -> T) -> T {
+    if HOLDING.get() {
+        return f();
+    }
+    let _held = SPOOLER.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    holding(f)
+}
+
+thread_local! {
+    /// Whether this thread holds `SPOOLER`.
+    static HOLDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Runs `f` with `HOLDING` set; called with `SPOOLER` held.
+fn holding<T>(f: impl FnOnce() -> T) -> T {
+    struct Release;
+    impl Drop for Release {
+        fn drop(&mut self) {
+            HOLDING.set(false);
+        }
+    }
+    HOLDING.set(true);
+    let _release = Release;
+    f()
+}
+
+/// Counts the times this process asked the system for its printers.
+static SYSTEM_LISTINGS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// How many times this process has asked the system for its printers. A session with a
+/// `printer_source` does not ask.
+pub fn system_printer_listings() -> usize {
+    SYSTEM_LISTINGS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Runs `f` as `with_spooler` does, or returns `None` at once while another thread of this
+/// process holds the lock (the UI thread, which must not wait for a print job or a driver).
+pub fn try_with_spooler<T>(f: impl FnOnce() -> T) -> Option<T> {
+    if HOLDING.get() {
+        return Some(f());
+    }
+    let _held = match SPOOLER.try_lock() {
+        Ok(held) => held,
+        Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => return None,
+    };
+    Some(holding(f))
+}
+
+/// What the Print dialog shows when `try_with_spooler` finds the lock held.
+pub const SPOOLER_BUSY: &str = "the printer driver is busy with another print; try again when it finishes";
+
+/// The GDI route's printers, or why they could not be listed.
+pub type RgbPrinters = std::result::Result<Vec<craft_print::rgb::Printer>, craft_print::rgb::PrintError>;
+
+/// A list kept with the session's `printer_source` it came from (`None` for the system's printers).
+type Kept<T> = std::sync::Mutex<Option<(Option<PrinterSource>, T)>>;
+
+/// The last answers `system_printer_list` and `rgb_printers` got in this process.
+static LAST_PRINTERS: Kept<Vec<craft_print::Printer>> = std::sync::Mutex::new(None);
+static LAST_RGB_PRINTERS: Kept<RgbPrinters> = std::sync::Mutex::new(None);
+
+/// The kept list when it came from `source`; a list from other printers is not returned.
+fn last<T: Clone>(kept: &Kept<T>, source: Option<&PrinterSource>) -> Option<T> {
+    let kept = kept.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (from, list) = kept.as_ref()?;
+    let same = match (from, source) {
+        (None, None) => true,
+        (Some(from), Some(source)) => std::sync::Arc::ptr_eq(from, source),
+        _ => false,
+    };
+    same.then(|| list.clone())
+}
+
+fn keep<T>(kept: &Kept<T>, source: Option<&PrinterSource>, value: T) {
+    *kept.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((source.cloned(), value));
+}
+
+/// Lists the printers; called with the spooler lock held.
+fn list_system_printers(s: &Session) -> Vec<craft_print::Printer> {
+    let list = match stand_in_printers(s.printer_source.as_ref(), cfg!(target_arch = "wasm32")) {
+        Some(source) => source(),
+        None => {
+            SYSTEM_LISTINGS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            craft_print::printers()
+        }
+    };
+    keep(&LAST_PRINTERS, s.printer_source.as_ref(), list.clone());
+    list
+}
+
+/// `file.printers`' stand-in: the session's outside the browser, and `None` in the browser, where
+/// `file.printers` lists no printers.
+fn stand_in_printers(source: Option<&PrinterSource>, browser: bool) -> Option<&PrinterSource> {
+    source.filter(|_| !browser)
+}
+
+/// Lists the GDI route's printers; called with the spooler lock held.
+fn list_rgb_printers(s: &Session) -> RgbPrinters {
+    let list = match &s.printer_source {
+        Some(source) => stand_in_rgb_printers(source, cfg!(windows)),
+        None => {
+            SYSTEM_LISTINGS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            craft_print::rgb::printers()
+        }
+    };
+    keep(&LAST_RGB_PRINTERS, s.printer_source.as_ref(), list.clone());
+    list
+}
+
+/// The GDI route's answer from a stand-in: its printers on Windows, and `Unsupported` elsewhere,
+/// as `craft_print::rgb::printers` answers there.
+fn stand_in_rgb_printers(source: &PrinterSource, windows: bool) -> RgbPrinters {
+    if !windows {
+        return Err(craft_print::rgb::PrintError::Unsupported);
+    }
+    Ok(source().into_iter().map(|p| craft_print::rgb::Printer { name: p.name, default: p.default }).collect())
+}
+
+/// The printers `craft-print` spools to, or the session's stand-in for them.
+fn system_printer_list(s: &Session) -> Vec<craft_print::Printer> {
+    with_spooler(|| list_system_printers(s))
+}
+
+/// The printers the GDI route prints to (`craft_print::rgb`), or on Windows the session's stand-in
+/// for them.
+pub fn rgb_printers(s: &Session) -> RgbPrinters {
+    with_spooler(|| list_rgb_printers(s))
+}
+
+/// Lists printers when the spooler is available. While it is busy, returns the cached list for
+/// the same source, or `Unsupported` if that source has no cached list.
+pub fn rgb_printers_without_waiting(s: &Session) -> RgbPrinters {
+    try_with_spooler(|| list_rgb_printers(s))
+        .or_else(|| last(&LAST_RGB_PRINTERS, s.printer_source.as_ref()))
+        .unwrap_or(Err(craft_print::rgb::PrintError::Unsupported))
+}
+
+/// Lists printers for the Print dialog. While the system spooler is busy, returns the cached
+/// list for the same source, or an empty list if that source has no cached list.
+pub fn printers_without_waiting(s: &mut Session) -> Value {
+    if stand_in_printers(s.printer_source.as_ref(), cfg!(target_arch = "wasm32")).is_none() && system_spooler().is_none() {
+        return system_printers(s, &json!({})).unwrap_or_default();
+    }
+    let list = try_with_spooler(|| list_system_printers(s)).or_else(|| last(&LAST_PRINTERS, s.printer_source.as_ref())).unwrap_or_default();
+    printers_answer(list)
+}
+
+/// `file.printers`' answer for a list from `craft-print`.
+fn printers_answer(list: Vec<craft_print::Printer>) -> Value {
+    let default = list.iter().find(|p| p.default).map(|p| p.name.clone());
+    let printers: Vec<Value> = list.into_iter().map(|p| json!({"name": p.name, "default": p.default})).collect();
+    json!({"server": Value::Null, "default": default, "printers": printers})
+}
+
 /// Why the IPP route could not spool: no route at all (the app's spooler may have one), or a
 /// failure on a route that exists (a wrong printer name, a rejected job).
 enum SpoolError {
@@ -80,8 +250,8 @@ enum SpoolError {
 
 /// Sends the job and says where it went and through what. A named print server takes the IPP
 /// route. Otherwise: the app's spooler when it is preferred; else `craft-print` (`lp`, or the
-/// Windows spooler) when it is there; else CUPS over IPP; and the app's spooler when that had
-/// no route either. A route that exists but fails (an unknown printer, a refused job) is an
+/// Windows spooler) when it is there, or the app's spooler when CUPS lists no printer for `lp`;
+/// else CUPS over IPP; and the app's spooler when that had no route either. A route that exists but fails (an unknown printer, a refused job) is an
 /// error, never a fall-through.
 fn spool_job(spooler: Option<&Spooler>, job: &PrintJob, lp: &craft_print::Job) -> Result<(String, String)> {
     let app = |sp: &Spooler| (sp.run)(job).map(|m| (m, sp.name.to_string())).map_err(other);
@@ -91,7 +261,19 @@ fn spool_job(spooler: Option<&Spooler>, job: &PrintJob, lp: &craft_print::Job) -
         }
         if let Some(name) = system_spooler() {
             require_windows_pdf()?;
-            return craft_print::submit(&job.pdf, lp).map(|m| (m, name.to_string())).map_err(other);
+            // lpstat is CUPS, not a Windows driver, so it runs outside SPOOLER. A listing that
+            // can't finish in time can't tell, so lp gets the job as it did before the check.
+            let route = match name {
+                "lp" => lp_printers(LP_LISTING_TIMEOUT).map_or_else(|| Some(lp.clone()), |list| lp_route(lp, &list)),
+                _ => Some(lp.clone()),
+            };
+            return match (route, spooler) {
+                (Some(lp), _) => with_spooler(|| craft_print::submit(&job.pdf, &lp)).map(|m| (m, name.to_string())).map_err(other),
+                // CUPS lists no printer. IPP would ask the same CUPS, or (it ignores client.conf)
+                // another server whose printer the user never chose, so only the portal is left.
+                (None, Some(sp)) => app(sp),
+                (None, None) => Err(other("no printers found; set one up in the system's printer settings, or print to PDF")),
+            };
         }
     }
     match cups_spool(job) {
@@ -102,6 +284,78 @@ fn spool_job(spooler: Option<&Spooler>, job: &PrintJob, lp: &craft_print::Job) -
         },
         Err(SpoolError::Failed(why)) => Err(other(why)),
     }
+}
+
+/// How long a print job waits for CUPS' printer list (`lpstat`, whose `-e` browses the network).
+const LP_LISTING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The most a printer listing may print; a longer one counts as no answer.
+const LP_LISTING_CAP: u64 = 1 << 20;
+
+/// CUPS' printers as `craft_print::printers` lists them, or `None` when that can't be told: an
+/// `lpstat` can't start, outlasts `timeout`, prints more than `LP_LISTING_CAP`, or `lpstat -e`
+/// fails (CUPS unreachable, or listing forbidden by policy). `lpstat -p -d`'s own status is not
+/// a failure: it exits 1 whenever there are no queues, as on a host with only driverless
+/// printers. Each `lpstat` is killed and reaped at the deadline, so a hung one never outlives
+/// the job.
+fn lp_printers(timeout: std::time::Duration) -> Option<Vec<craft_print::Printer>> {
+    let deadline = std::time::Instant::now() + timeout;
+    let (_, queues) = output_by(craft_print::lpstat_command(), deadline)?;
+    // `lpstat -e`, as craft-print runs it (its builder is private): the driverless printers.
+    let mut driverless = std::process::Command::new("lpstat");
+    driverless.arg("-e").env("LC_ALL", "C").env("LANG", "C").env("SOFTWARE", "Craft");
+    let (listed, available) = output_by(driverless, deadline)?;
+    listed.then(|| craft_print::printers_parsed(&queues, Some(&available)))
+}
+
+/// Whether `command` succeeded, and its standard output; `None` when it can't start, prints more
+/// than `LP_LISTING_CAP`, or is still running at `deadline`, when it is killed and reaped. The
+/// output is read on its own thread, so a full pipe can't stall the wait, and that thread ends
+/// when the process does.
+fn output_by(mut command: std::process::Command, deadline: std::time::Instant) -> Option<(bool, String)> {
+    use std::io::Read as _;
+    use std::process::Stdio;
+    let mut child = command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+    let mut stdout = child.stdout.take()?;
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let reader = std::thread::Builder::new().name("print-listing".into()).spawn(move || {
+        let mut out = Vec::new();
+        // One byte over the cap tells an oversized listing apart; stopping closes the pipe.
+        let _ = sender.send((&mut stdout).take(LP_LISTING_CAP + 1).read_to_end(&mut out).map(|_| out));
+    });
+    let status = reader.ok().and_then(|_| {
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break Some(status),
+                Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(20)),
+                _ => break None,
+            }
+        }
+    });
+    let Some(status) = status else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return None;
+    };
+    let out = receiver.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())).ok()?.ok()?;
+    let fits = u64::try_from(out.len()).is_ok_and(|n| n <= LP_LISTING_CAP);
+    fits.then(|| (status.success(), String::from_utf8_lossy(&out).into_owned()))
+}
+
+/// The job for `lp`, or `None` when no printer was asked for and CUPS lists none: `lp` has
+/// nowhere to send it, and the portal still may (a Flatpak bundles `lp`). A printer asked for by
+/// name always goes to `lp`, which knows it even where CUPS won't list it, and the portal could
+/// not honour the name. With no printer asked for, no default and one printer, that printer, as
+/// `resolve_printer` picks for IPP.
+fn lp_route(lp: &craft_print::Job, printers: &[craft_print::Printer]) -> Option<craft_print::Job> {
+    let mut lp = lp.clone();
+    if lp.printer.is_none()
+        && !printers.iter().any(|p| p.default)
+        && let [only] = printers
+    {
+        lp.printer = Some(only.name.clone());
+    }
+    (lp.printer.is_some() || !printers.is_empty()).then_some(lp)
 }
 
 /// The spooler `craft-print` can talk to, as the job's `backend` name: `lp` when CUPS' command
@@ -190,13 +444,10 @@ fn cups_spool(job: &PrintJob) -> std::result::Result<String, SpoolError> {
 /// `file.printers`: the printers the system's (or `printServer`'s) print server knows, with the default. From
 /// `craft-print` (`lpstat`, the Windows spooler) where that is the route; over IPP for a named
 /// server and where there is no `lp` (a sandbox).
-fn system_printers(_s: &mut Session, p: &Value) -> Result<Value> {
+fn system_printers(s: &mut Session, p: &Value) -> Result<Value> {
     let named = p.get("printServer").and_then(Value::as_str).filter(|v| !v.is_empty());
-    if named.is_none() && system_spooler().is_some() {
-        let list = craft_print::printers();
-        let default = list.iter().find(|p| p.default).map(|p| p.name.clone());
-        let printers: Vec<Value> = list.into_iter().map(|p| json!({"name": p.name, "default": p.default})).collect();
-        return Ok(json!({"server": Value::Null, "default": default, "printers": printers}));
+    if named.is_none() && (stand_in_printers(s.printer_source.as_ref(), cfg!(target_arch = "wasm32")).is_some() || system_spooler().is_some()) {
+        return Ok(printers_answer(system_printer_list(s)));
     }
     #[cfg(all(not(target_arch = "wasm32"), not(target_os = "windows")))]
     {
@@ -341,8 +592,10 @@ fn pdf_string(s: &str) -> String {
 }
 
 fn deflate(data: &[u8]) -> Vec<u8> {
-    // Fast: print PDFs are transient and large; level 1 is ~4× quicker than the default.
-    let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+    // Fast: print PDFs are transient and large. Level 3, not 1: zlib-rs level 1 writes static
+    // Huffman blocks only (13-30% bigger on photos); level 3 is the lowest that is never bigger
+    // than miniz's level 1 was, at about twice its time.
+    let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::new(3));
     let _ = e.write_all(data);
     e.finish().unwrap_or_default()
 }
@@ -736,7 +989,8 @@ fn with_driver_printable(p: &Value) -> Value {
 
 fn driver_printable(p: &Value) -> Option<Value> {
     let printer = printer_name(p).ok()?;
-    let pg = craft_print::rgb::page(&printer, printer_settings(p).ok()?.as_ref()).ok()?;
+    let settings = printer_settings(p).ok()?;
+    let pg = with_spooler(|| craft_print::rgb::page(&printer, settings.as_ref())).ok()?;
     // Only for the paper the driver is set to: a print laid out on another paper keeps the
     // fixed margin (and `print_windows` refuses it), as before.
     let (pw, ph) = paper(p, "file.print").ok()?;
@@ -905,7 +1159,7 @@ fn printer_name(p: &Value) -> Result<String> {
     if let Some(name) = p.get("printer").and_then(Value::as_str).filter(|v| !v.trim().is_empty()) {
         return Ok(name.to_string());
     }
-    craft_print::rgb::default_printer().map_err(other)?.ok_or_else(|| other("no printer chosen and no default printer is set"))
+    with_spooler(craft_print::rgb::default_printer).map_err(other)?.ok_or_else(|| other("no printer chosen and no default printer is set"))
 }
 
 /// The driver settings chosen with Print Settings… (`printerSettings`, hex), when any.
@@ -958,16 +1212,16 @@ fn settings_for_layout(
     settings: Option<craft_print::rgb::DevMode>,
     paper: (f64, f64),
 ) -> Result<(Option<craft_print::rgb::DevMode>, craft_print::rgb::Page)> {
-    let page = craft_print::rgb::page(printer, settings.as_ref()).map_err(other)?;
+    let page = with_spooler(|| craft_print::rgb::page(printer, settings.as_ref())).map_err(other)?;
     if !turned_paper(page.paper, paper) {
         return Ok((settings, page));
     }
     let base = match settings {
         Some(s) => s,
-        None => craft_print::rgb::default_settings(printer).map_err(other)?,
+        None => with_spooler(|| craft_print::rgb::default_settings(printer)).map_err(other)?,
     };
     let turned = turned_settings(&base, paper.0 > paper.1)?;
-    let page = craft_print::rgb::page(printer, Some(&turned)).map_err(other)?;
+    let page = with_spooler(|| craft_print::rgb::page(printer, Some(&turned))).map_err(other)?;
     Ok((Some(turned), page))
 }
 
@@ -1027,14 +1281,14 @@ fn print_windows(page: &PrintPage, p: &Value, title: &str, copies: u32) -> Resul
         color_policy,
         primitives: &primitives,
     };
-    let done = craft_print::rgb::print(&job, &image, rect).map_err(other)?;
+    let done = with_spooler(|| craft_print::rgb::print(&job, &image, rect)).map_err(other)?;
     Ok(
         json!({"printer": printer, "dpi": [done.dpi.0, done.dpi.1], "deviceRect": [done.device_rect.0, done.device_rect.1, done.device_rect.2, done.device_rect.3]}),
     )
 }
 
-fn printers(_: &mut Session, _: &Value) -> Result<Value> {
-    match craft_print::rgb::printers() {
+fn printers(s: &mut Session, _: &Value) -> Result<Value> {
+    match rgb_printers(s) {
         Ok(list) => Ok(json!({"supported": true, "printers": list.iter().map(|p| json!({"name": p.name, "default": p.default})).collect::<Vec<_>>()})),
         Err(craft_print::rgb::PrintError::Unsupported) => Ok(json!({"supported": false, "printers": []})),
         Err(e) => Err(other(e)),
@@ -1056,11 +1310,11 @@ fn printer_page(_: &mut Session, p: &Value) -> Result<Value> {
     if let Some(landscape) = landscape {
         let base = match settings {
             Some(s) => s,
-            None => craft_print::rgb::default_settings(&printer).map_err(other)?,
+            None => with_spooler(|| craft_print::rgb::default_settings(&printer)).map_err(other)?,
         };
         settings = Some(turned_settings(&base, landscape)?);
     }
-    let pg = craft_print::rgb::page(&printer, settings.as_ref()).map_err(other)?;
+    let pg = with_spooler(|| craft_print::rgb::page(&printer, settings.as_ref())).map_err(other)?;
     let mut out = json!({"printer": printer, "paper": [pg.paper.0, pg.paper.1], "printable": [pg.printable.0, pg.printable.1, pg.printable.2, pg.printable.3], "dpi": [pg.dpi.0, pg.dpi.1]});
     // The turned settings, to pass on as `printerSettings` (the Print dialog's Orientation does).
     if let (Some(_), Some(s), Some(o)) = (landscape, settings, out.as_object_mut()) {

@@ -15,10 +15,13 @@ fn alt_right_drag_resizes_the_liquify_brush_and_does_not_paint() {
     assert!(brush_resize_gesture(egui::Modifiers::CTRL | egui::Modifiers::ALT, false));
     assert!(!brush_resize_gesture(egui::Modifiers::ALT, false), "Alt+left stays the tool's opposite");
     assert!(!brush_resize_gesture(egui::Modifiers::NONE, true));
-    let (size, density) = resized_brush(40.0, 50.0, 25.0, crate::brush_resize::HARDNESS_TRAVEL);
-    assert_eq!((size, density), (65.0, 100.0));
-    let (size, density) = resized_brush(40.0, 50.0, -100.0, 0.0);
+    let (size, density) = resized_brush(40.0, 50.0, 25.0, crate::brush_resize::HARDNESS_TRAVEL, 1.0);
+    assert_eq!((size, density), (90.0, 100.0), "native brush movement grows the radius by screen pixels");
+    let (size, density) = resized_brush(40.0, 50.0, -100.0, 0.0, 1.0);
     assert_eq!((size, density), (1.0, 50.0));
+    // Screen travel changes density identically at different preview zoom levels.
+    assert_eq!(resized_brush(40.0, 50.0, 25.0, 100.0, 2.0).1, 100.0);
+    assert_eq!(resized_brush(40.0, 50.0, 0.0, -100.0, 1.0).1, 0.0);
 }
 
 fn app_with_layer() -> PhotocraftApp {
@@ -153,6 +156,19 @@ fn brush_settings_are_remembered_between_uses() {
 
 /// Follow-up to #1494 / #1484: Alt is captured at stroke-down and stays recorded
 /// through undo, redo and deterministic Liquify field reconstruction.
+/// #9547: Twirl Counterclockwise draws Twirl Clockwise's arrow mirrored, not the Undo arrow,
+/// and every Liquify tool's icon exists.
+#[test]
+fn twirl_counterclockwise_has_its_own_mirrored_icon() {
+    assert_eq!(tool_icon(LiquifyTool::TwirlCcw), "rotate-ccw");
+    let svg = |name: &str| crate::icon_data::ICONS.iter().find(|(n, _)| *n == name).map(|(_, b)| String::from_utf8_lossy(b).into_owned());
+    let (cw, ccw) = (svg("rotate-cw").unwrap(), svg("rotate-ccw").expect("the rotate-ccw icon"));
+    assert!(ccw.contains("M3 12a9 9 0 1 0 9-9") && cw.contains("M21 12a9 9 0 1 1-9-9"), "mirror images");
+    for t in [LiquifyTool::ForwardWarp, LiquifyTool::TwirlCw, LiquifyTool::TwirlCcw, LiquifyTool::Pucker, LiquifyTool::Bloat] {
+        assert!(svg(tool_icon(t)).is_some(), "{t:?}: {}", tool_icon(t));
+    }
+}
+
 #[test]
 fn alt_reversed_twirl_survives_replay_undo_and_redo() {
     let ctx = egui::Context::default();

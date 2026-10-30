@@ -1,4 +1,4 @@
-use super::*;
+use super::{DRect, Document, PhotocraftApp, Pos2, Rect, Vec2, View, pos2, vec2};
 
 /// Document ↔ screen mapping for a canvas rect and a view.
 #[derive(Clone, Copy, Debug)]

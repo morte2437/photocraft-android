@@ -36,7 +36,7 @@ fn method_picker_is_pending_until_confirm_and_survives_reopening() {
     );
     PhotocraftApp::setup_context(&harness.ctx, crate::theme::ThemeKind::ALL[0]);
     harness.run_steps(3);
-    harness.get_by_value("Custom").click();
+    harness.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Method").click();
     harness.run_steps(2);
     harness.get_by_label("Smooth").click();
     harness.run_steps(2);
@@ -51,7 +51,7 @@ fn method_picker_is_pending_until_confirm_and_survives_reopening() {
     assert_eq!(effect(app), &saved);
     let reopened = fields(app);
     assert_eq!(reopened["effects"][0]["params"]["method"], "smooth");
-    assert_eq!(reopened["effects"][0]["params"]["from"], "#ff0000");
+    assert_eq!(reopened["effects"][0]["params"]["stops"][0][1], "#ff0000");
     confirm(app, &reopened).unwrap();
     assert_eq!(effect(app), &saved, "OK without edits leaves the rendered curve exact");
 }

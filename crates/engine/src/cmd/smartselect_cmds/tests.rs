@@ -251,6 +251,23 @@ fn select_subject_centred_object() {
     assert!(s.active().unwrap().doc.selection.is_none());
 }
 
+/// Select Subject looks at the selected layer only; with no layer selected it looks at the
+/// whole image.
+#[test]
+fn select_subject_samples_the_selected_layer_else_the_composite() {
+    let (mut s, inside) = disc(8);
+    // A layer above holding only a small square in the corner: the disc is not on it.
+    s.execute("layer.new.layer", json!({})).unwrap();
+    s.execute("paint.pencil", json!({"points": [[10, 10], [30, 10]], "size": 3, "color": "#000000"})).unwrap();
+    s.execute("select.subject", json!({})).unwrap();
+    assert!(cov(&s, 100, 80) < 0.5, "the disc on the layer below was selected");
+    s.execute("select.deselect", json!({})).unwrap();
+    // No layer selected: the whole image, so the disc is found.
+    s.execute("select.deselectLayers", json!({})).unwrap();
+    s.execute("select.subject", json!({})).unwrap();
+    assert!(sel_iou(&s, 200, 160, &inside) > 0.9);
+}
+
 /// #2865: a repeat on unchanged pixels reuses the last mask (an identical selection, even
 /// after Deselect); sampling something else or a pixel edit computes it again.
 #[test]
@@ -268,8 +285,8 @@ fn select_subject_repeat_reuses_the_mask_until_pixels_change() {
     s.execute("select.subject", json!({})).unwrap();
     assert!(std::sync::Arc::ptr_eq(&mask, &cached(&s)), "the repeat recomputed the mask");
     assert_eq!(sel(&s), first);
-    // Another sampled target (the layer rather than the composite) is a miss.
-    s.execute("select.subject", json!({"sampleAllLayers": false})).unwrap();
+    // Another sampled target (the composite rather than the layer) is a miss.
+    s.execute("select.subject", json!({"sampleAllLayers": true})).unwrap();
     assert!(!std::sync::Arc::ptr_eq(&mask, &cached(&s)));
     // A pixel edit drops the entry; the next run recomputes it.
     s.edit("paint", |doc, _| {
@@ -434,8 +451,9 @@ fn refine_edge_outputs_to_a_new_document() {
 #[test]
 fn refine_edge_shift_and_contrast() {
     let mut s = blurred_edge_selected();
+    // A hard selection moves 1 px at 100%: no band of several pixels.
     s.execute("select.refineEdge", json!({"shiftEdge": 100})).unwrap();
-    assert!(cov(&s, 42, 20) > 0.99);
+    assert!(cov(&s, 40, 20) > 0.99 && cov(&s, 41, 20) < 0.01);
     s.execute("edit.undo", json!({})).unwrap();
     s.execute("select.refineEdge", json!({"feather": 8, "contrast": 100})).unwrap();
     assert!(cov(&s, 38, 20) == 1.0 && cov(&s, 42, 20) == 0.0);
@@ -644,7 +662,7 @@ fn refine_edge_edits_match_the_tools_and_reach_the_outputs() {
     let mut s = two_regions(8);
     s.execute("select.rect", json!({"x": 0, "y": 0, "width": 20, "height": 20})).unwrap();
     s.execute("select.refineEdge", json!({"shiftEdge": -100, "edits": [{"tool": "brush", "points": [[30, 80], [100, 80]], "size": 20}]})).unwrap();
-    assert!(cov(&s, 60, 80) >= 0.5 && cov(&s, 60, 88) < 0.5 && cov(&s, 60, 72) < 0.5, "the 20 px bar shrank");
+    assert!(cov(&s, 60, 80) >= 0.5 && cov(&s, 60, 89) < 0.5 && cov(&s, 60, 70) < 0.5, "the hard 20 px bar shrank by one pixel at -100% Shift Edge");
     // Layer mask and new-layer outputs take the edited selection.
     let mut s = blurred_edge_selected();
     let r = s.execute("select.refineEdge", json!({"output": "layerMask", "edits": [{"tool": "invert"}]})).unwrap();

@@ -178,3 +178,23 @@ fn opacity_and_fill_stay_visible_but_disabled_with_no_layer_selected() {
         assert!(node.accesskit_node().is_disabled(), "{name}: should be greyed out");
     }
 }
+
+/// #9546: the layer list starts at the same place with or without a selected layer. With none,
+/// the greyed-out Blend/Opacity and Lock/Fill rows sat in one disabled wrapper, which added an
+/// item gap under them: in the themes whose docks keep item spacing (Studio, Classic) the first
+/// row moved down 6 points.
+#[test]
+fn layer_rows_do_not_move_when_no_layer_is_selected() {
+    for theme in [crate::theme::ThemeKind::Studio, crate::theme::ThemeKind::Classic, crate::theme::ThemeKind::ProMedium] {
+        let mut h = harness();
+        PhotocraftApp::setup_context(&h.ctx, theme);
+        h.run_steps(4);
+        let row_top = |h: &Harness<'_, PhotocraftApp>| by_role(h, "Paint", Role::Button).map(|r| r.top());
+        let selected = row_top(&h);
+        h.state_mut().session.execute("select.deselectLayers", json!({})).unwrap();
+        h.run_steps(4);
+        let none = row_top(&h);
+        assert!(selected.is_some(), "{theme:?}: the layer row");
+        assert_eq!(none, selected, "{theme:?}: the row moved with no layer selected");
+    }
+}

@@ -1675,7 +1675,10 @@ mod settings_tests {
     fn exif_srgb_jpeg_round_trip() {
         let mut s = Session::new();
         s.execute("edit.colorSettings", json!({"workingRgb": "display-p3"})).unwrap();
-        let r = photocraft_io::export(&untagged_camera_file(Some(1)), "x.jpg", &photocraft_io::ExportOptions::default()).unwrap();
+        // Embed Color Profile off: an untagged document is otherwise tagged sRGB on export (#9325).
+        let mut opts = photocraft_io::ExportOptions::default();
+        opts.encode.embed_icc = false;
+        let r = photocraft_io::export(&untagged_camera_file(Some(1)), "x.jpg", &opts).unwrap();
         let back = photocraft_io::import("x.jpg", &r.bytes).unwrap().document;
         assert!(back.icc_profile.is_none(), "no ICC profile in the file");
         let (_, r) = s.open_document(back, None);

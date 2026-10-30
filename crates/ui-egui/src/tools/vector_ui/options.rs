@@ -1,6 +1,7 @@
 use super::path_ops::active_path_name;
+use super::pen::path_operations_menu;
 use super::shapes::is_shape_tool;
-use super::*;
+use super::{GradientChoices, LayerContent, PaintChange, PhotocraftApp, Tokens, Tool, Value, json, paint_param, swatch};
 
 // ---------------------------------------------------------------------------------------------
 // Options bars
@@ -21,10 +22,14 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
         // The caption scrubs and names the control drawn right after it.
         crate::widgets::scrub_option_label(ui, &label);
     };
-    let o = &mut app.ui.tool_options;
     let target = selected_shape(&app.session);
+    if tool == Tool::PathSelection && !crate::direct_select::active_paths(app).is_empty() {
+        path_operations_menu(app, ui);
+        crate::widgets::vline(ui, 22.0);
+    }
+    let o = &mut app.ui.tool_options;
     if tool == Tool::PathSelection && target.is_none() {
-        lbl(ui, if app.ui.vector_mask_target { "Drag to move the targeted vector mask" } else { tl!("Drag to move the active shape's path or the Work Path") });
+        lbl(ui, if app.ui.vector_mask_target { "Drag to move the targeted vector mask" } else { tl!("Drag to move the selected path") });
         return true;
     }
     if tool == Tool::DirectSelection && target.is_none() {
@@ -60,6 +65,9 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
                 o.stroke_width = enabled_stroke_width(o.stroke_width);
             }
         }
+        crate::widgets::vline(ui, 22.0);
+        path_operations_menu(app, ui);
+        let o = &mut app.ui.tool_options;
         if tool == Tool::Pen {
             crate::widgets::vline(ui, 22.0);
             crate::widgets::checkbox(ui, &mut o.pen_auto_add_delete, tl!("Auto Add/Delete"));
@@ -110,7 +118,7 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
 }
 
 /// Whether the active layer supplies the selected-shape options.
-fn selected_shape(session: &photocraft_engine::Session) -> Option<photocraft_doc::LayerId> {
+pub(super) fn selected_shape(session: &photocraft_engine::Session) -> Option<photocraft_doc::LayerId> {
     let st = session.active()?;
     let layer = st.active_layer?;
     matches!(st.doc.layer(layer)?.content, LayerContent::Shape(_)).then_some(layer)

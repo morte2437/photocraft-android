@@ -1470,7 +1470,8 @@ fn stylize_and_pixelate_filters_open_from_photoshop_shapes() {
         fltr("filter.stylize.diffuse", json!({"mode": "normal", "seed": 7})),
         Some(Value::Descriptor(Descriptor::new("Dfs ").with("Md  ", enumv("DfsM", "Nrml"))))
     );
-    // Defaults and out-of-range values are written in Photoshop's ranges.
+    // Defaults and out-of-range values are written as the engine renders them: clamped to
+    // Photoshop's ranges, and a non-number as the default.
     assert_eq!(
         fltr("filter.stylize.traceContour", json!({})),
         Some(Value::Descriptor(Descriptor::new("TrcC").with("Lvl ", Value::Integer(128)).with("Edg ", enumv("CntE", "Lwr "))))
@@ -1478,17 +1479,28 @@ fn stylize_and_pixelate_filters_open_from_photoshop_shapes() {
     assert_eq!(fltr("filter.pixelate.crystallize", json!({})), Some(Value::Descriptor(Descriptor::new("Crst").with("ClSz", Value::Integer(10)))));
     assert_eq!(fltr("filter.pixelate.pointillize", json!({})), Some(Value::Descriptor(Descriptor::new("Pntl").with("ClSz", Value::Integer(5)))));
     assert_eq!(
-        fltr("filter.pixelate.crystallize", json!({"cellSize": 1e9})),
+        fltr("filter.pixelate.crystallize", json!({"cellSize": 300})),
         Some(Value::Descriptor(Descriptor::new("Crst").with("ClSz", Value::Integer(300))))
     );
+    assert_eq!(fltr("filter.pixelate.pointillize", json!({"cellSize": 2.6})), Some(Value::Descriptor(Descriptor::new("Pntl").with("ClSz", Value::Integer(3)))));
     assert_eq!(
-        fltr("filter.pixelate.pointillize", json!({"cellSize": "big"})),
-        Some(Value::Descriptor(Descriptor::new("Pntl").with("ClSz", Value::Integer(5))))
-    );
-    assert_eq!(
-        fltr("filter.stylize.traceContour", json!({"level": -40, "edge": "upper"})),
+        fltr("filter.stylize.traceContour", json!({"level": 0, "edge": "upper"})),
         Some(Value::Descriptor(Descriptor::new("TrcC").with("Lvl ", Value::Integer(0)).with("Edg ", enumv("CntE", "Upr "))))
     );
+    assert_eq!(
+        fltr("filter.stylize.traceContour", json!({"level": 255.4})),
+        Some(Value::Descriptor(Descriptor::new("TrcC").with("Lvl ", Value::Integer(255)).with("Edg ", enumv("CntE", "Lwr "))))
+    );
+    let crst = |v: i32| Some(Value::Descriptor(Descriptor::new("Crst").with("ClSz", Value::Integer(v))));
+    let pntl = |v: i32| Some(Value::Descriptor(Descriptor::new("Pntl").with("ClSz", Value::Integer(v))));
+    let trcc = |v: i32, e: &str| Some(Value::Descriptor(Descriptor::new("TrcC").with("Lvl ", Value::Integer(v)).with("Edg ", enumv("CntE", e))));
+    assert_eq!(fltr("filter.pixelate.crystallize", json!({"cellSize": 1e9})), crst(300));
+    assert_eq!(fltr("filter.pixelate.crystallize", json!({"cellSize": 2.4})), crst(3));
+    assert_eq!(fltr("filter.pixelate.pointillize", json!({"cellSize": "big"})), pntl(5));
+    assert_eq!(fltr("filter.pixelate.pointillize", json!({"cellSize": null})), pntl(5));
+    assert_eq!(fltr("filter.stylize.traceContour", json!({"level": -40, "edge": "upper"})), trcc(0, "Upr "));
+    assert_eq!(fltr("filter.stylize.traceContour", json!({"level": 255.5})), trcc(255, "Lwr "));
+    assert_eq!(fltr("filter.stylize.traceContour", json!({"level": [128]})), trcc(128, "Lwr "));
 }
 
 #[test]

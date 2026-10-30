@@ -334,10 +334,23 @@ fn bad(cmd: &str, msg: impl Into<String>) -> EngineError {
 /// The flattened document, or an error when the canvas is over the compositor's render cap
 /// ([`photocraft_compose::MAX_RENDER_PIXELS`]; `flatten` returns an empty buffer then).
 fn flatten_whole(doc: &Document, cmd: &str) -> Result<photocraft_compose::Buffer> {
-    let buf = photocraft_compose::flatten(doc);
     let (w, h) = (doc.size.width, doc.size.height);
-    if buf.px.len() as u64 != u64::from(w) * u64::from(h) {
-        return Err(bad(cmd, format!("the document ({w} x {h} px) is too large to flatten (limit {} pixels)", photocraft_compose::MAX_RENDER_PIXELS)));
+    let count = u64::from(w) * u64::from(h);
+    let operation = if cmd == "image.trim" {
+        "trim"
+    } else if cmd == "image.duplicate" {
+        "duplicate merged"
+    } else {
+        "flatten"
+    };
+    let too_large =
+        || bad(cmd, format!("the document ({w} x {h} px) is too large to {operation} (flatten limit {} pixels)", photocraft_compose::MAX_RENDER_PIXELS));
+    if count > photocraft_compose::MAX_RENDER_PIXELS {
+        return Err(too_large());
+    }
+    let buf = photocraft_compose::flatten(doc);
+    if buf.px.len() as u64 != count {
+        return Err(too_large());
     }
     Ok(buf)
 }
@@ -398,7 +411,7 @@ fn delete_cropped_pixels(layers: &mut [Layer], r: Rect) {
 /// Crops the document to `r` (in current document coordinates).
 /// A frame that extends past the canvas fills the Background's new area with `extension` (the
 /// background colour, as Photoshop's Crop tool does); other layers get transparent pixels there.
-fn crop_doc(doc: &mut Document, cmd: &str, r: Rect, delete_pixels: bool, extension: [f32; 4]) -> Result<()> {
+pub(crate) fn crop_doc(doc: &mut Document, cmd: &str, r: Rect, delete_pixels: bool, extension: [f32; 4]) -> Result<()> {
     // The origin moves to (0, 0); `-i32::MIN` has no i32 value (#959).
     let (Some(dx), Some(dy)) = (r.x0.checked_neg(), r.y0.checked_neg()) else {
         return Err(bad(cmd, format!("the crop origin ({}, {}) can't be moved to (0, 0) within the 32-bit coordinate range", r.x0, r.y0)));

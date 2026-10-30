@@ -1,3 +1,4 @@
+const DIFFUSE_MODE: &[(&str, &str)] = &[("Nrml", "normal"), ("DrkO", "darkenOnly"), ("LghO", "lightenOnly"), ("Anst", "anisotropic")];
 use super::adjustments::{adjustment_by_class, adjustment_steps, levels_from, levels_to, shadows_highlights_from, shadows_highlights_to};
 use super::descriptors::{desc, get_bool, get_ref, jbool, layer_ref, layer_target, ref_class};
 use super::fields::{F, Kind, Mapped, fields_from, fields_to, none, step};
@@ -14,9 +15,9 @@ use super::steps_layer::{
     STROKE, apply_comp_from, apply_comp_to, clear_from, clear_to, delete_from, delete_to, duplicate_from, duplicate_to, fill_from, fill_to, flip_from, flip_to,
     move_from, move_to, play_from, play_to, rotate_from, rotate_to, select_from, select_to, stroke_to, visibility_from, visibility_to,
 };
-use super::steps_make::{make_from, make_to, set_from, set_to};
+use super::steps_make::{locking_from, locking_to, make_from, make_to, set_from, set_to};
 use super::tables::{NOISE, OFFSET_FILL, SMART_BLUR_MODE, SMART_BLUR_QUALITY, TRIM};
-use super::*;
+use super::{AtnEvent, D, Descriptor, STOP_MESSAGE, Value, json};
 
 /// An event: code (empty when Photoshop only has a string name), string name, the panel
 /// label, the command ids it exports (the first is the one simple events import to), and the
@@ -248,6 +249,7 @@ pub(super) const EVENTS: &[Event] = &[
     ),
     ev!("Rple", "ripple", "Ripple", "filter.distort.ripple", &[F("Amnt", "amount", Kind::ExactLong), F("RplS", "size", Kind::Enum("RplS", RIPPLE_SIZE))]),
     ev!("Crst", "crystallize", "Crystallize", "filter.pixelate.crystallize", &[F("ClSz", "cellSize", Kind::ExactLong)]),
+    ev!("Dfs ", "diffuse", "Diffuse", "filter.stylize.diffuse", &[F("Md  ", "mode", Kind::Enum("DfsM", DIFFUSE_MODE)), F("FlRs", "seed", Kind::Long)]),
     Event { code: "GEfc", name: "filterGallery", label: "Filter Gallery", ids: GALLERY_IDS, from: gallery_from, to: gallery_to },
     // Adjustments (Image › Adjustments).
     Event {
@@ -385,6 +387,7 @@ pub(super) const EVENTS: &[Event] = &[
             "layer.layerMask.hideSelection",
             "file.new",
             "file.newFromClipboard",
+            "history.newSnapshot",
         ],
         from: make_from,
         to: make_to,
@@ -408,6 +411,8 @@ pub(super) const EVENTS: &[Event] = &[
             "layer.setAdjustment",
             "layer.fill.pattern.set",
             "layer.new.layerFromBackground",
+            "layer.layerStyle.blendingOptions",
+            "layer.smartFilter.blendingOptions",
         ],
         from: set_from,
         to: set_to,
@@ -436,8 +441,25 @@ pub(super) const EVENTS: &[Event] = &[
         from: select_from,
         to: select_to,
     },
-    Event { code: "Dlt ", name: "delete", label: "Delete", ids: &["layer.delete", "edit.clear", "layer.layerMask.delete"], from: delete_from, to: delete_to },
-    Event { code: "", name: "clearEvent", label: "Clear", ids: &["select.editInQuickMaskMode"], from: clear_from, to: clear_to },
+    Event {
+        code: "Dlt ",
+        name: "delete",
+        label: "Delete",
+        ids: &["layer.delete", "edit.clear", "layer.layerMask.delete", "layer.smartFilter.deleteFilterMask"],
+        from: delete_from,
+        to: delete_to,
+    },
+    Event { code: "", name: "applyLocking", label: "Apply Locking", ids: &["layer.lockLayers"], from: locking_from, to: locking_to },
+    // Timeline › Make Frames from Layers: no frame animation in PhotoCraft, no document change.
+    Event {
+        code: "",
+        name: "animationFramesFromLayers",
+        label: "Make Frames from Layers",
+        ids: &[],
+        from: |_| Mapped::Unsupported { harmless: true },
+        to: |_, _| None,
+    },
+    Event { code: "", name: "clearEvent", label: "Clear", ids: &["select.editInQuickMaskMode", "history.clear"], from: clear_from, to: clear_to },
     Event {
         code: "Trnf",
         name: "transform",

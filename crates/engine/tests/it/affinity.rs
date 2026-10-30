@@ -12,7 +12,10 @@ use serde_json::json;
 fn fixture() -> Vec<u8> {
     let mut src = Session::new();
     src.execute("file.new", json!({"width": 2, "height": 1, "background": "#dc283c"})).unwrap();
-    let png = photocraft_io::export(&src.active().unwrap().doc, "preview.png", &Default::default()).unwrap().bytes;
+    // Affinity's previews carry no colour profile.
+    let mut opts = photocraft_io::ExportOptions::default();
+    opts.encode.embed_icc = false;
+    let png = photocraft_io::export(&src.active().unwrap().doc, "preview.png", &opts).unwrap().bytes;
     // Observed v12 preview envelope, without a native object graph.
     let mut bytes = vec![0; 72];
     bytes[..4].copy_from_slice(b"\x00\xffKA");

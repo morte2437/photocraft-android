@@ -46,6 +46,243 @@ pub fn load_operation(m: egui::Modifiers) -> &'static str {
     }
 }
 
+struct RowPresentationContext<'a> {
+    doc: &'a photocraft_doc::Document,
+    view: &'a photocraft_engine::channel_cmds::ChannelView,
+    mode: photocraft_doc::ColorMode,
+    colors: usize,
+    gray_view: bool,
+    quick: bool,
+    mask_targeted: bool,
+    masked: Option<&'a photocraft_doc::Layer>,
+    shown_colors: usize,
+}
+
+struct RowPresentation {
+    name: String,
+    thumb_idx: usize,
+    slot: Option<usize>,
+    visible: bool,
+    selected: bool,
+}
+
+struct RowInteractions<'a> {
+    row: Row,
+    name: &'a str,
+    cell: Rect,
+    rect: Rect,
+    text_pos: egui::Pos2,
+    response: &'a egui::Response,
+    eye_response: &'a egui::Response,
+    ctx: &'a egui::Context,
+    doc: &'a photocraft_doc::Document,
+    masked: Option<&'a photocraft_doc::Layer>,
+    actions: &'a mut Vec<(String, Value)>,
+    mask_click: &'a mut Option<bool>,
+}
+
+fn handle_row_interactions(ui: &mut egui::Ui, mut row: RowInteractions<'_>) {
+    let rename_id = egui::Id::unique(("chan-rename", row.doc.id.0, format!("{:?}", row.row.reference())));
+    handle_channel_row_click(ui, &mut row);
+    handle_channel_row_double_click(ui, &mut row, rename_id);
+    row.response.context_menu(|ui| draw_row_menu(ui, row.row, row.doc, row.masked, row.actions));
+}
+
+fn handle_channel_row_click(ui: &egui::Ui, row: &mut RowInteractions<'_>) {
+    if !row.response.clicked() || row.eye_response.clicked() {
+        return;
+    }
+    let modifiers = ui.input(|input| input.modifiers);
+    if modifiers.command {
+        let channel = if row.row == Row::LayerMask { json!("mask") } else { row.row.reference() };
+        let layer = row.masked.map(|layer| layer.id.0);
+        let operation = load_operation(modifiers);
+        let params = if row.row == Row::LayerMask {
+            json!({ "channel": channel, "layer": layer, "operation": operation })
+        } else {
+            json!({ "channel": channel, "operation": operation })
+        };
+        row.actions.push(("select.loadSelection".into(), params));
+        return;
+    }
+    if row.row == Row::LayerMask {
+        *row.mask_click = Some(true);
+        row.actions.push(("channel.target".into(), json!({ "channel": "mask" })));
+        return;
+    }
+    if matches!(row.row, Row::Composite | Row::Color(_)) {
+        *row.mask_click = Some(false);
+    }
+    let target = if row.row == Row::QuickMask { json!("composite") } else { row.row.reference() };
+    row.actions.push(("channel.target".into(), json!({ "channel": target })));
+}
+
+fn handle_channel_row_double_click(ui: &mut egui::Ui, row: &mut RowInteractions<'_>, rename_id: egui::Id) {
+    // Like Photoshop: double-clicking the thumbnail opens Channel Options (where an alpha
+    // channel becomes a spot channel, #3761), double-clicking the name renames it.
+    let on_thumb = row.response.interact_pointer_pos().is_some_and(|p| p.x < row.cell.right() + 4.0);
+    match row.row {
+        Row::QuickMask if row.response.double_clicked() => row.actions.push(("ui.channelOptions".into(), json!("quickMask"))),
+        Row::LayerMask if row.response.double_clicked() => row.actions.push(("ui.channelOptions".into(), json!("mask"))),
+        Row::Alpha(index) => {
+            handle_alpha_double_click(ui, row, index, on_thumb, rename_id);
+        }
+        _ => {}
+    }
+}
+
+fn handle_alpha_double_click(ui: &mut egui::Ui, row: &mut RowInteractions<'_>, index: usize, on_thumb: bool, rename_id: egui::Id) {
+    if row.response.double_clicked() {
+        if on_thumb {
+            row.actions.push(("ui.channelOptions".into(), json!(index)));
+        } else {
+            row.ctx.data_mut(|data| data.insert_temp(rename_id, row.name.to_owned()));
+        }
+    }
+    let Some(mut text) = row.ctx.data(|data| data.get_temp::<String>(rename_id)) else { return };
+    let edit_rect = Rect::from_min_max(pos2(row.text_pos.x - 3.0, row.rect.center().y - 11.0), pos2(row.rect.right() - 36.0, row.rect.center().y + 11.0));
+    let edit = ui.put(edit_rect, egui::TextEdit::singleline(&mut text).font(egui::FontId::proportional(12.5))).accessible_name(tl!("Name"));
+    if !edit.has_focus() && !edit.lost_focus() {
+        edit.request_focus();
+    }
+    let (enter, escape) = ui.input(|input| (input.key_pressed(egui::Key::Enter), input.key_pressed(egui::Key::Escape)));
+    if escape || enter || edit.lost_focus() {
+        row.ctx.data_mut(|data| data.remove::<String>(rename_id));
+        if !escape && !text.trim().is_empty() && text != row.name {
+            row.actions.push(("channel.rename".into(), json!({ "channel": index, "name": text.trim() })));
+        }
+    } else {
+        row.ctx.data_mut(|data| data.insert_temp(rename_id, text));
+    }
+}
+
+fn draw_row_menu(ui: &mut egui::Ui, row: Row, doc: &photocraft_doc::Document, masked: Option<&photocraft_doc::Layer>, actions: &mut Vec<(String, Value)>) {
+    crate::widgets::menu_scroll(ui, |ui| {
+        ui.set_min_width(210.0);
+        match row {
+            Row::Alpha(index) => draw_alpha_menu(ui, index, &doc.channels[index], actions),
+            Row::QuickMask => draw_quick_mask_menu(ui, doc, actions),
+            Row::Composite | Row::Color(_) => item(ui, actions, "Duplicate Channel", "channel.duplicate", json!({ "channel": row.reference() })),
+            Row::LayerMask => draw_mask_menu(ui, masked, actions),
+        }
+        ui.separator();
+        item(ui, actions, "New Channel…", "channel.new", json!({}));
+        item(ui, actions, "New Spot Channel…", "ui.newSpotChannel", json!({}));
+        ui.separator();
+        item(ui, actions, "Split Channels", "channel.split", json!({}));
+        item(ui, actions, "Merge Channels…", "channel.merge", json!({}));
+    });
+}
+
+fn draw_alpha_menu(ui: &mut egui::Ui, index: usize, channel: &photocraft_doc::AlphaChannel, actions: &mut Vec<(String, Value)>) {
+    item(ui, actions, "Duplicate Channel", "channel.duplicate", json!({ "channel": index }));
+    item(ui, actions, "Delete Channel", "channel.delete", json!({ "channel": index }));
+    item(ui, actions, "Rename Channel…", "ui.renameChannel", json!(index));
+    item(ui, actions, "Channel Options…", "ui.channelOptions", json!(index));
+    ui.separator();
+    if channel.spot.is_some() {
+        item(ui, actions, "Merge Spot Channel", "channel.mergeSpot", json!({ "channel": index }));
+        item(ui, actions, "Convert to Alpha Channel", "channel.options", json!({ "channel": index, "indicates": "masked" }));
+    } else {
+        indicates_items(ui, actions, json!(index), channel.indicates);
+        overlay_colors(ui, actions, json!(index));
+    }
+}
+
+fn draw_quick_mask_menu(ui: &mut egui::Ui, doc: &photocraft_doc::Document, actions: &mut Vec<(String, Value)>) {
+    item(ui, actions, "Exit Quick Mask", "select.editInQuickMaskMode", json!({ "on": false }));
+    item(ui, actions, "Quick Mask Options…", "ui.channelOptions", json!("quickMask"));
+    indicates_items(ui, actions, json!("quickMask"), doc.quick_mask.as_ref().map(|mask| mask.indicates).unwrap_or_default());
+    overlay_colors(ui, actions, json!("quickMask"));
+}
+
+fn draw_mask_menu(ui: &mut egui::Ui, masked: Option<&photocraft_doc::Layer>, actions: &mut Vec<(String, Value)>) {
+    let enabled = masked.and_then(|layer| layer.mask.as_ref()).is_none_or(|mask| mask.enabled);
+    item(ui, actions, crate::layer_menu_ui::mask_toggle_label(enabled), "layer.layerMask.enabled", json!({}));
+    item(ui, actions, "Delete Layer Mask", "layer.layerMask.delete", json!({}));
+    item(ui, actions, "Layer Mask Display Options…", "ui.channelOptions", json!("mask"));
+}
+
+/// The slot a channel dragged over `row` would take (0 = first alpha) and where its line goes.
+fn drop_insertion(row: Row, pointer_y: f32, rect: Rect, alpha_count: usize) -> (usize, f32) {
+    match row {
+        Row::Alpha(j) if pointer_y < rect.center().y => (j, rect.top()),
+        Row::Alpha(j) => (j + 1, rect.bottom()),
+        Row::QuickMask => (alpha_count, rect.top()),
+        // Above the alpha channels: Photoshop puts it first among them.
+        Row::Composite | Row::Color(_) | Row::LayerMask => (0, f32::NAN),
+    }
+}
+
+/// What clicking `row`'s eye asks for.
+fn eye_action(row: Row, visible: bool, gray_view: bool, layer_id: Option<u64>) -> (String, Value) {
+    let view_cmd = photocraft_engine::mask_view_cmds::ID.to_string();
+    match row {
+        // The mask's eye: the overlay on, or the mask view off.
+        Row::LayerMask => (view_cmd, json!({ "layer": layer_id, "mode": if visible { "off" } else { "overlay" } })),
+        // Showing the composite again over a gray mask view keeps the mask as an overlay.
+        Row::Composite if gray_view => (view_cmd, json!({ "layer": layer_id, "mode": "overlay" })),
+        _ => ("channel.setVisible".into(), json!({ "channel": row.reference(), "visible": !visible })),
+    }
+}
+
+fn paint_row_background(painter: &egui::Painter, t: &Tokens, rect: Rect, selected: bool, hovered: bool) {
+    let radius = if t.pro { 0.0 } else { t.radius };
+    if selected {
+        painter.rect_filled(rect, radius, if t.pro { t.row_selected } else { t.hover });
+    } else if hovered {
+        painter.rect_filled(rect, radius, t.hover.gamma_multiply(0.5));
+    }
+    if t.pro {
+        painter.line_segment([pos2(rect.left() + 30.0, rect.top()), pos2(rect.left() + 30.0, rect.bottom())], Stroke::new(1.0, t.separator));
+        painter.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(1.0, t.separator));
+    }
+}
+
+/// Spot channels: a swatch of the ink on the thumbnail corner.
+fn paint_spot_swatch(painter: &egui::Painter, thumb: Rect, spot: Option<(photocraft_doc::Color, f32)>) {
+    let Some((ink, _)) = spot else { return };
+    let c = ink.to_rgb().map(|v| (v.clamp(0.0, 1.0) * 255.0) as u8);
+    painter.rect_filled(Rect::from_min_size(thumb.right_bottom() - vec2(9.0, 9.0), vec2(9.0, 9.0)), 0.0, Color32::from_rgb(c[0], c[1], c[2]));
+}
+
+fn row_presentation(row: Row, context: &RowPresentationContext<'_>, mask_visible: bool) -> RowPresentation {
+    let (name, thumb_idx, slot, visible, selected) = match row {
+        Row::Composite => (
+            channel_cmds::composite_name(context.mode).to_string(),
+            0,
+            Some(2),
+            context.view.visible_colors(context.colors) == context.colors && !context.gray_view,
+            context.view.target == ChannelTarget::Composite && !context.quick && !context.mask_targeted,
+        ),
+        Row::Color(k) => (
+            channel_cmds::color_names(context.mode)[k].to_string(),
+            1 + k,
+            Some(3 + k),
+            context.view.color_visible(k) && !context.gray_view,
+            (context.view.target == ChannelTarget::Composite && !context.quick && !context.mask_targeted) || context.view.target == ChannelTarget::Color(k),
+        ),
+        Row::Alpha(i) => (
+            context.doc.channels[i].name.clone(),
+            1 + context.shown_colors + i,
+            Some(3 + context.shown_colors + i).filter(|s| *s <= 9),
+            context.view.alpha_shown(i),
+            context.view.target == ChannelTarget::Alpha(i),
+        ),
+        Row::QuickMask => (
+            "Quick Mask".to_string(),
+            1 + context.shown_colors + context.doc.channels.len(),
+            None,
+            !context.view.quick_mask_hidden,
+            context.view.target == ChannelTarget::Composite,
+        ),
+        Row::LayerMask => {
+            (context.masked.map_or_else(String::new, |layer| format!("{} Mask", layer.name)), usize::MAX, None, mask_visible, context.mask_targeted)
+        }
+    };
+    RowPresentation { name, thumb_idx, slot, visible, selected }
+}
+
 pub fn show(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let Some(st) = app.session.active() else {
@@ -101,40 +338,13 @@ pub fn show(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let pointer = ctx.input(|i| i.pointer.interact_pos());
     let released = ctx.input(|i| i.pointer.any_released());
     let alpha_count = doc.channels.len();
+    let row_context = RowPresentationContext { doc: &doc, view: &view, mode, colors, gray_view, quick, mask_targeted, masked, shown_colors };
     // The slot the dragged channel would take (0 = first alpha) and where its line goes.
     let mut insertion: Option<(usize, f32)> = None;
     let mut alphas_top: Option<f32> = None;
     egui::ScrollArea::vertical().max_height(rows_h).min_scrolled_height(if fill { rows_h } else { 0.0 }).auto_shrink([false, !fill]).show(ui, |ui| {
         for row in rows {
-            let (name, thumb_idx, slot, visible, selected) = match row {
-                Row::Composite => (
-                    channel_cmds::composite_name(mode).to_string(),
-                    0,
-                    Some(2),
-                    view.visible_colors(colors) == colors && !gray_view,
-                    view.target == ChannelTarget::Composite && !quick && !mask_targeted,
-                ),
-                Row::Color(k) => (
-                    channel_cmds::color_names(mode)[k].to_string(),
-                    1 + k,
-                    Some(3 + k),
-                    view.color_visible(k) && !gray_view,
-                    (view.target == ChannelTarget::Composite && !quick && !mask_targeted) || view.target == ChannelTarget::Color(k),
-                ),
-                Row::Alpha(i) => (
-                    doc.channels[i].name.clone(),
-                    1 + shown_colors + i,
-                    Some(3 + shown_colors + i).filter(|s| *s <= 9),
-                    view.alpha_shown(i),
-                    view.target == ChannelTarget::Alpha(i),
-                ),
-                Row::QuickMask => {
-                    ("Quick Mask".to_string(), 1 + shown_colors + doc.channels.len(), None, !view.quick_mask_hidden, view.target == ChannelTarget::Composite)
-                }
-                Row::LayerMask => {
-                    (masked.as_ref().map(|l| format!("{} Mask", l.name)).unwrap_or_default(), usize::MAX, None, mask_view.is_some(), mask_targeted)
-                }
-            };
+            let RowPresentation { name, thumb_idx, slot, visible, selected } = row_presentation(row, &row_context, mask_view.is_some());
             let row_h = if t.pro { 36.0 } else { 40.0 };
             let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::click_and_drag());
             if let Row::Alpha(0) = row {
@@ -143,27 +353,13 @@ pub fn show(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             if dragged_alpha.is_some()
                 && let Some(p) = pointer.filter(|p| rect.contains(*p))
             {
-                insertion = match row {
-                    Row::Alpha(j) if p.y < rect.center().y => Some((j, rect.top())),
-                    Row::Alpha(j) => Some((j + 1, rect.bottom())),
-                    Row::QuickMask => Some((alpha_count, rect.top())),
-                    // Above the alpha channels: Photoshop puts it first among them.
-                    Row::Composite | Row::Color(_) | Row::LayerMask => Some((0, f32::NAN)),
-                };
+                insertion = Some(drop_insertion(row, p.y, rect, alpha_count));
             }
             if resp.drag_started() {
                 ctx.data_mut(|d| d.insert_temp(drag_id(), (row, name.clone())));
             }
             let painter = ui.painter_at(rect.expand(1.0));
-            if selected {
-                painter.rect_filled(rect, if t.pro { 0.0 } else { t.radius }, if t.pro { t.row_selected } else { t.hover });
-            } else if resp.hovered() {
-                painter.rect_filled(rect, if t.pro { 0.0 } else { t.radius }, t.hover.gamma_multiply(0.5));
-            }
-            if t.pro {
-                painter.line_segment([pos2(rect.left() + 30.0, rect.top()), pos2(rect.left() + 30.0, rect.bottom())], Stroke::new(1.0, t.separator));
-                painter.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(1.0, t.separator));
-            }
+            paint_row_background(&painter, &t, rect, selected, resp.hovered());
             let eye = Rect::from_min_size(pos2(rect.left() + 6.0, rect.center().y - 11.0), vec2(22.0, 22.0));
             let eye_resp = ui.interact(eye, ui.scope_id().with(("chan-eye", format!("{:?}", row.reference()))), Sense::click());
             // Like Photoshop, the temporary mask row's eye is empty until the mask is shown.
@@ -174,14 +370,7 @@ pub fn show(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             eye_resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Visibility {name}")));
             let layer_id = masked.as_ref().map(|l| l.id.0);
             if eye_resp.clicked() {
-                let view_cmd = photocraft_engine::mask_view_cmds::ID.to_string();
-                match row {
-                    // The mask's eye: the overlay on, or the mask view off.
-                    Row::LayerMask => actions.push((view_cmd, json!({ "layer": layer_id, "mode": if visible { "off" } else { "overlay" } }))),
-                    // Showing the composite again over a gray mask view keeps the mask as an overlay.
-                    Row::Composite if gray_view => actions.push((view_cmd, json!({ "layer": layer_id, "mode": "overlay" }))),
-                    _ => actions.push(("channel.setVisible".into(), json!({ "channel": row.reference(), "visible": !visible }))),
-                }
+                actions.push(eye_action(row, visible, gray_view, layer_id));
             }
             let ts = if t.pro { 28.0 } else { 30.0 };
             let cell = Rect::from_min_size(pos2(rect.left() + 36.0, rect.center().y - ts / 2.0), vec2(ts, ts));
@@ -195,11 +384,8 @@ pub fn show(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             // Rows are painted: name them for screen readers and UI tests.
             resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, &name));
             // Spot channels: a swatch of the ink on the thumbnail corner.
-            if let Row::Alpha(i) = row
-                && let Some((ink, _)) = doc.channels[i].spot
-            {
-                let c = ink.to_rgb().map(|v| (v.clamp(0.0, 1.0) * 255.0) as u8);
-                painter.rect_filled(Rect::from_min_size(thumb.right_bottom() - vec2(9.0, 9.0), vec2(9.0, 9.0)), 0.0, Color32::from_rgb(c[0], c[1], c[2]));
+            if let Row::Alpha(i) = row {
+                paint_spot_swatch(&painter, thumb, doc.channels[i].spot);
             }
             painter.rect_stroke(thumb, 0.0, Stroke::new(1.0, if t.pro { Color32::from_gray(20) } else { t.field_border }), StrokeKind::Outside);
             let italic = matches!(row, Row::QuickMask | Row::LayerMask) || matches!(row, Row::Alpha(i) if doc.channels[i].spot.is_some());
@@ -223,105 +409,23 @@ pub fn show(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                     t.text_faint,
                 );
             }
-            let rename_id = egui::Id::unique(("chan-rename", doc.id.0, format!("{:?}", row.reference())));
-            if resp.clicked() && !eye_resp.clicked() {
-                let m = ui.input(|i| i.modifiers);
-                if m.command && row == Row::LayerMask {
-                    let layer = masked.as_ref().map(|l| l.id.0);
-                    actions.push(("select.loadSelection".into(), json!({ "channel": "mask", "layer": layer, "operation": load_operation(m) })));
-                } else if m.command {
-                    actions.push(("select.loadSelection".into(), json!({ "channel": row.reference(), "operation": load_operation(m) })));
-                } else if row == Row::LayerMask {
-                    // Targets the mask, as clicking its thumbnail in the Layers panel does.
-                    mask_click = Some(true);
-                    actions.push(("channel.target".into(), json!({ "channel": "mask" })));
-                } else {
-                    if matches!(row, Row::Composite | Row::Color(_)) {
-                        mask_click = Some(false);
-                    }
-                    let target = if row == Row::QuickMask { json!("composite") } else { row.reference() };
-                    actions.push(("channel.target".into(), json!({ "channel": target })));
-                }
-            }
-            // Like Photoshop: double-clicking the thumbnail opens Channel Options (where an alpha
-            // channel becomes a spot channel, #3761), double-clicking the name renames it.
-            let on_thumb = resp.interact_pointer_pos().is_some_and(|p| p.x < cell.right() + 4.0);
-            if row == Row::QuickMask && resp.double_clicked() {
-                actions.push(("ui.channelOptions".into(), json!("quickMask")));
-            }
-            // The layer mask's row: Layer Mask Display Options (the rubylith's colour, opacity).
-            if row == Row::LayerMask && resp.double_clicked() {
-                actions.push(("ui.channelOptions".into(), json!("mask")));
-            }
-            if let Row::Alpha(i) = row {
-                if resp.double_clicked() && on_thumb {
-                    actions.push(("ui.channelOptions".into(), json!(i)));
-                } else if resp.double_clicked() {
-                    ctx.data_mut(|d| d.insert_temp(rename_id, name.clone()));
-                }
-                if let Some(mut text) = ctx.data(|d| d.get_temp::<String>(rename_id)) {
-                    let edit_rect = Rect::from_min_max(pos2(text_pos.x - 3.0, rect.center().y - 11.0), pos2(rect.right() - 36.0, rect.center().y + 11.0));
-                    let te = ui.put(edit_rect, egui::TextEdit::singleline(&mut text).font(egui::FontId::proportional(12.5))).accessible_name(tl!("Name"));
-                    if !te.has_focus() && !te.lost_focus() {
-                        te.request_focus();
-                    }
-                    let (enter, esc) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
-                    if esc {
-                        ctx.data_mut(|d| d.remove::<String>(rename_id));
-                    } else if enter || te.lost_focus() {
-                        ctx.data_mut(|d| d.remove::<String>(rename_id));
-                        if !text.trim().is_empty() && text != name {
-                            actions.push(("channel.rename".into(), json!({ "channel": i, "name": text.trim() })));
-                        }
-                    } else {
-                        ctx.data_mut(|d| d.insert_temp(rename_id, text));
-                    }
-                }
-            }
-            resp.context_menu(|ui| {
-                crate::widgets::menu_scroll(ui, |ui| {
-                    ui.set_min_width(210.0);
-                    let a = &mut actions;
-                    match row {
-                        Row::Alpha(i) => {
-                            let ch = &doc.channels[i];
-                            item(ui, a, "Duplicate Channel", "channel.duplicate", json!({ "channel": i }));
-                            item(ui, a, "Delete Channel", "channel.delete", json!({ "channel": i }));
-                            item(ui, a, "Rename Channel…", "ui.renameChannel", json!(i));
-                            item(ui, a, "Channel Options…", "ui.channelOptions", json!(i));
-                            ui.separator();
-                            if ch.spot.is_some() {
-                                item(ui, a, "Merge Spot Channel", "channel.mergeSpot", json!({ "channel": i }));
-                                item(ui, a, "Convert to Alpha Channel", "channel.options", json!({ "channel": i, "indicates": "masked" }));
-                            } else {
-                                indicates_items(ui, a, json!(i), ch.indicates);
-                                overlay_colors(ui, a, json!(i));
-                            }
-                        }
-                        Row::QuickMask => {
-                            item(ui, a, "Exit Quick Mask", "select.editInQuickMaskMode", json!({ "on": false }));
-                            item(ui, a, "Quick Mask Options…", "ui.channelOptions", json!("quickMask"));
-                            indicates_items(ui, a, json!("quickMask"), doc.quick_mask.as_ref().map(|q| q.indicates).unwrap_or_default());
-                            overlay_colors(ui, a, json!("quickMask"));
-                        }
-                        Row::Composite | Row::Color(_) => {
-                            item(ui, a, "Duplicate Channel", "channel.duplicate", json!({ "channel": row.reference() }));
-                        }
-                        Row::LayerMask => {
-                            let enabled = masked.as_ref().and_then(|l| l.mask.as_ref()).is_none_or(|m| m.enabled);
-                            item(ui, a, crate::layer_menu_ui::mask_toggle_label(enabled), "layer.layerMask.enabled", json!({}));
-                            item(ui, a, "Delete Layer Mask", "layer.layerMask.delete", json!({}));
-                            item(ui, a, "Layer Mask Display Options…", "ui.channelOptions", json!("mask"));
-                        }
-                    }
-                    ui.separator();
-                    item(ui, a, "New Channel…", "channel.new", json!({}));
-                    item(ui, a, "New Spot Channel…", "ui.newSpotChannel", json!({}));
-                    ui.separator();
-                    item(ui, a, "Split Channels", "channel.split", json!({}));
-                    item(ui, a, "Merge Channels…", "channel.merge", json!({}));
-                });
-            });
+            handle_row_interactions(
+                ui,
+                RowInteractions {
+                    row,
+                    name: &name,
+                    cell,
+                    rect,
+                    text_pos,
+                    response: &resp,
+                    eye_response: &eye_resp,
+                    ctx: &ctx,
+                    doc: &doc,
+                    masked,
+                    actions: &mut actions,
+                    mask_click: &mut mask_click,
+                },
+            );
         }
         if let (Some(from), Some((slot, y))) = (dragged_alpha, insertion) {
             let y = if y.is_nan() { alphas_top.unwrap_or(y) } else { y };

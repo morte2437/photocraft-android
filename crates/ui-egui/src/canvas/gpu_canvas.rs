@@ -32,6 +32,8 @@ use std::sync::atomic::Ordering;
 use eframe::egui_wgpu::{self, CallbackResources, CallbackTrait, RenderState, ScreenDescriptor};
 use eframe::wgpu;
 
+use crate::render_path::CpuReason;
+
 pub use photocraft_gpu::{DeviceHealth, Fault};
 
 mod budget;
@@ -43,12 +45,14 @@ mod setup;
 mod shaders;
 mod texels;
 
-#[cfg(test)]
-use budget::drm_video_memory;
+#[cfg(all(test, target_os = "linux"))]
+use budget::nvidia_video_memory;
 pub use budget::{
     DEFER_PX, MIN_GPU_BUDGET, OVER_BUDGET, OVER_CANVAS_BUDGET, REFRESH_DEFERRED, REFRESH_OVER_BUDGET, canvas_budget, canvas_texture_bytes, memory_budget,
     physical_memory, video_memory, vram_share,
 };
+#[cfg(test)]
+use budget::{NVIDIA_VENDOR, bounded_output, drm_video_memory, parse_nvidia_smi};
 #[cfg(all(test, windows))]
 use budget::{detect_physical_memory, detect_video_memory};
 use callback::CanvasCallback;
@@ -351,10 +355,53 @@ impl GpuCanvas {
     /// Whether `doc`'s display textures fit [`canvas_budget`]; when they don't, nothing is
     /// created for it and it is drawn on the CPU canvas.
     pub fn fits_canvas(&self, doc: &photocraft_doc::Document) -> bool {
+        self.canvas_fit(doc).is_some_and(|(bytes, budget)| bytes <= budget)
+    }
+
+    /// The bytes `doc`'s display textures would take and [`canvas_budget`] (`None` without a GPU
+    /// canvas): the numbers of a [`CpuReason::CanvasTooLarge`].
+    pub fn canvas_fit(&self, doc: &photocraft_doc::Document) -> Option<(u64, u64)> {
         let size = [doc.size.width, doc.size.height];
         let bytes = canvas_texture_bytes(size, self.tile, texel_bytes(self.format_for(doc.depth, size)));
         let r = self.rs.renderer.read();
-        r.callback_resources.get::<Resources>().is_some_and(|res| bytes <= res.canvas_budget.load(Ordering::Relaxed))
+        r.callback_resources.get::<Resources>().map(|res| (bytes, res.canvas_budget.load(Ordering::Relaxed)))
+    }
+
+    /// Act as if the driver couldn't build the compositor's pipelines (the DX12 FXC X3507 case,
+    /// #8733): every later refresh goes to the CPU compositor with `msg` as the reason.
+    #[cfg(test)]
+    pub(crate) fn fail_compositor(&self, msg: &str) {
+        let mut r = self.rs.renderer.write();
+        if let Some(res) = r.callback_resources.get_mut::<Resources>() {
+            res.compositor = None;
+            res.compositor_failed = Some(photocraft_gpu::Unsupported(msg.into()));
+        }
+    }
+
+    /// Why the compositor couldn't be built, once it couldn't (see [`GpuCanvas::composite`]).
+    fn compositor_failed(&self) -> Option<String> {
+        let r = self.rs.renderer.read();
+        r.callback_resources.get::<Resources>()?.compositor_failed.as_ref().map(|e| e.0.clone())
+    }
+
+    /// A [`photocraft_gpu::Unsupported`] from [`GpuCanvas::composite`] as a typed reason, with
+    /// the numbers of the budget it names.
+    fn reason(&self, doc: &photocraft_doc::Document, e: photocraft_gpu::Unsupported) -> CpuReason {
+        if let Some(f) = self.fault() {
+            return CpuReason::from_fault(&f);
+        }
+        if e.0 == OVER_BUDGET {
+            let fit = self.layer_fit();
+            return CpuReason::OverBudget { needed: fit.map_or(0, |f| f.needed), budget: fit.map_or(0, |f| f.budget) };
+        }
+        if e.0 == OVER_CANVAS_BUDGET {
+            let (bytes, budget) = self.canvas_fit(doc).unwrap_or_default();
+            return CpuReason::CanvasTooLarge { bytes, budget };
+        }
+        if self.compositor_failed().is_some_and(|f| f == e.0) {
+            return CpuReason::CompositorBuild(e.0);
+        }
+        CpuReason::Unsupported(e.0)
     }
 
     /// Cap lower-stack composite reuse; zero disables it for profiling the uncached path.
@@ -557,7 +604,7 @@ impl GpuCanvas {
             None => match photocraft_gpu::Compositor::try_new_with_format(device, photocraft_gpu::Compositor::preferred_acc_format(&self.rs.adapter)) {
                 Ok(c) => c,
                 Err(e) => {
-                    log::warn!("{e}; using the CPU compositor");
+                    // `render_path::note` logs it, once, as this document's reason.
                     res.compositor_failed = Some(e.clone());
                     return Err(e);
                 }
@@ -703,7 +750,7 @@ impl GpuCanvas {
     ) -> Refresh {
         if let Some(f) = self.fault() {
             // Nothing reaches the GPU any more; the app switches to the CPU canvas.
-            return Refresh { kind: "lost", fallback: Some(f.to_string()), ..Default::default() };
+            return Refresh { kind: "lost", fallback: Some(CpuReason::from_fault(&f)), ..Default::default() };
         }
         if !self.fits_canvas(doc) {
             // Neither compositor can fill textures that are never created: the CPU canvas draws
@@ -711,7 +758,8 @@ impl GpuCanvas {
             if let Some(res) = self.rs.renderer.write().callback_resources.get_mut::<Resources>() {
                 res.docs.remove(&key);
             }
-            return Refresh { kind: REFRESH_OVER_BUDGET, fallback: Some(OVER_CANVAS_BUDGET.into()), ..Default::default() };
+            let (bytes, budget) = self.canvas_fit(doc).unwrap_or_default();
+            return Refresh { kind: REFRESH_OVER_BUDGET, fallback: Some(CpuReason::CanvasTooLarge { bytes, budget }), ..Default::default() };
         }
         let bounds = doc.bounds();
         let size = [doc.size.width, doc.size.height];
@@ -737,7 +785,7 @@ impl GpuCanvas {
                 out.gpu = stats.gpu_time;
                 return out;
             }
-            Err(e) => out.fallback = Some(e.0),
+            Err(e) => out.fallback = Some(self.reason(doc, e)),
         }
         let px = region.width() as u64 * region.height() as u64;
         if defer && px >= DEFER_PX && self.prepare_texture(key, doc).is_some() {

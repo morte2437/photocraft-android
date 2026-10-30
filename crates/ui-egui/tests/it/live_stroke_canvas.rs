@@ -118,8 +118,7 @@ fn max_diff(a: &[[u8; 4]], b: &[[u8; 4]]) -> u8 {
     a.iter().zip(b).flat_map(|(p, q)| (0..3).map(move |i| p[i].abs_diff(q[i]))).max().unwrap_or(0)
 }
 
-#[test]
-fn the_canvas_shows_the_committed_stroke_while_it_is_drawn() {
+fn the_canvas_shows_the_committed_stroke_part(part: usize) {
     let _gpu = photocraft_testkit::gpu_lock();
     let Some(mut h) = harness() else { return };
     h.run_steps(4);
@@ -135,7 +134,7 @@ fn the_canvas_shows_the_committed_stroke_while_it_is_drawn() {
     cases.push(Case { zoom: 4.0, smoothing: 0.1, hardness: 0.0, depth: 8, pressure: false, flip: true });
     cases.push(Case { zoom: 12.0, smoothing: 0.5, hardness: 0.0, depth: 16, pressure: true, flip: true });
     let mut gpu_seen = false;
-    for c in cases {
+    for c in cases.into_iter().skip(part).step_by(4) {
         let (before, drawing, done, gpu) = frames(&mut h, c);
         gpu_seen |= gpu;
         // The stroke is on screen while drawing (not a blank canvas compared with a blank one)…
@@ -147,4 +146,24 @@ fn the_canvas_shows_the_committed_stroke_while_it_is_drawn() {
     if !gpu_seen {
         eprintln!("note: the GPU compositor fell back to the CPU for every case");
     }
+}
+
+#[test]
+fn the_canvas_shows_the_committed_stroke_part_0() {
+    the_canvas_shows_the_committed_stroke_part(0);
+}
+
+#[test]
+fn the_canvas_shows_the_committed_stroke_part_1() {
+    the_canvas_shows_the_committed_stroke_part(1);
+}
+
+#[test]
+fn the_canvas_shows_the_committed_stroke_part_2() {
+    the_canvas_shows_the_committed_stroke_part(2);
+}
+
+#[test]
+fn the_canvas_shows_the_committed_stroke_part_3() {
+    the_canvas_shows_the_committed_stroke_part(3);
 }

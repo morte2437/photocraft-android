@@ -252,7 +252,7 @@ fn vanishing_point(s: &mut Session, p: &Value) -> Result<Value> {
         let on = layer.or(*active);
         let id = if new_layer {
             let l = Layer::raster(doc.next_layer_name("Vanishing Point"), doc.pixel_format());
-            let nid = doc.insert_above(on, l);
+            let nid = crate::layer_place::insert_new(doc, on, l, crate::layer_place::Place::AutoEditable);
             *active = Some(nid);
             nid
         } else {

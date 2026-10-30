@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    Color32, CurveUi, Edit, EditorCx, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Tokens, ToneSpace, Value, adjust_params, curve_edit, json, label, pos2,
+    space_of, tone, vec2, widgets,
+};
 
 // ---------------------------------------------------------------------------------------------
 // Channels of Levels / Curves
@@ -102,6 +105,47 @@ pub(super) fn gradient_bar(p: &egui::Painter, r: Rect, from: Color32, to: Color3
 pub(super) const CURVE_HANDLE_SIZE: f32 = 7.0;
 
 const CURVE_GRAPH_PADDING: f32 = 5.0;
+
+const CURVE_SAMPLES: usize = 256;
+
+/// One entry per editor/channel, independent of selection, tint and stroke width.
+#[derive(Clone, Default)]
+struct CurvePolyline {
+    points: Vec<[f32; 2]>,
+    graph: Option<Rect>,
+    line: Vec<Pos2>,
+}
+
+impl CurvePolyline {
+    /// Returns whether the screen geometry changed. Moving the graph also invalidates screen
+    /// coordinates (for example when scrolling the Properties panel or moving the dialog).
+    fn update(&mut self, points: &[[f32; 2]], graph: Rect) -> bool {
+        if self.points == points && self.graph == Some(graph) {
+            return false;
+        }
+        let cp: Vec<photocraft_doc::adjust::CurvePoint> =
+            points.iter().map(|q| photocraft_doc::adjust::CurvePoint { input: q[0] / 255.0, output: q[1] / 255.0 }).collect();
+        self.line = photocraft_compose::adjust::curve_samples::<CURVE_SAMPLES>(&cp)
+            .into_iter()
+            .enumerate()
+            .map(|(i, y)| pos2(graph.left() + i as f32 / (CURVE_SAMPLES - 1) as f32 * graph.width(), graph.bottom() - y * graph.height()))
+            .collect();
+        self.points.clear();
+        self.points.extend_from_slice(points);
+        self.graph = Some(graph);
+        true
+    }
+}
+
+fn cached_curve_line(ctx: &egui::Context, id: egui::Id, points: &[[f32; 2]], graph: Rect) -> Vec<Pos2> {
+    ctx.data_mut(|d| {
+        let cache = d.get_temp_mut_or_default::<CurvePolyline>(id);
+        cache.update(points, graph);
+        // egui owns the submitted path. Only this small copy is needed on a cache hit;
+        // normalization, spline solving, sampling and screen mapping are all skipped.
+        cache.line.clone()
+    })
+}
 
 /// The room left on screen for the Curves dialog's other rows (title, channel and mode, Input and
 /// Output, eyedroppers, buttons) when its graph is as tall as it can be.
@@ -287,13 +331,8 @@ pub(super) fn curves(ui: &mut egui::Ui, v: &mut Value, cx: &EditorCx) -> Edit {
     let vbar = Rect::from_min_max(pos2(full.left(), graph.top()), pos2(full.left() + 8.0, graph.bottom()));
     gradient_bar(&p, hbar, Color32::BLACK, bar_color(&chan, &t), false);
     gradient_bar(&p, vbar, Color32::BLACK, bar_color(&chan, &t), true);
-    let draw_curve = |pts: &[[f32; 2]], color: Color32, width: f32| {
-        let cp: Vec<photocraft_doc::adjust::CurvePoint> =
-            pts.iter().map(|q| photocraft_doc::adjust::CurvePoint { input: q[0] / 255.0, output: q[1] / 255.0 }).collect();
-        let lut = photocraft_compose::adjust::curve_lut(&cp);
-        let n = lut.len().max(2);
-        let line: Vec<Pos2> =
-            (0..n).step_by((n / 256).max(1)).map(|i| to_scr([i as f32 / (n - 1) as f32 * 255.0, lut.get(i).copied().unwrap_or(0.0) * 255.0])).collect();
+    let draw_curve = |key: &str, pts: &[[f32; 2]], color: Color32, width: f32| {
+        let line = cached_curve_line(ui.ctx(), cx.mem.with(("curves-polyline", key)), pts, graph);
         p.add(egui::Shape::line(line, Stroke::new(width, color)));
     };
     let draw_map = |map: &[f32], color: Color32, width: f32| {
@@ -313,7 +352,7 @@ pub(super) fn curves(ui: &mut egui::Ui, v: &mut Value, cx: &EditorCx) -> Edit {
             }
             let cp = read_curve(v, c.key);
             if cp.len() > 2 || cp.first().is_some_and(|q| q[1] != 0.0) || cp.last().is_some_and(|q| q[1] != 255.0) {
-                draw_curve(&cp, bar_color(c, &t).gamma_multiply(0.8), 1.0);
+                draw_curve(c.key, &cp, bar_color(c, &t).gamma_multiply(0.8), 1.0);
             }
         }
     }
@@ -321,7 +360,7 @@ pub(super) fn curves(ui: &mut egui::Ui, v: &mut Value, cx: &EditorCx) -> Edit {
     if pencil {
         draw_map(&map, color, 1.5);
     } else {
-        draw_curve(&pts, color, 1.5);
+        draw_curve(key, &pts, color, 1.5);
     }
     for (i, q) in pts.iter().enumerate().filter(|_| !pencil) {
         let r = Rect::from_center_size(to_scr(*q), vec2(CURVE_HANDLE_SIZE, CURVE_HANDLE_SIZE));
@@ -382,4 +421,100 @@ pub(super) fn curves(ui: &mut egui::Ui, v: &mut Value, cx: &EditorCx) -> Edit {
         e.changed = true;
     }
     e
+}
+
+#[cfg(test)]
+mod polyline_tests {
+    use super::*;
+
+    #[test]
+    fn curve_polyline_reuses_static_geometry_and_refreshes_edits_and_rect() {
+        let mut cache = CurvePolyline::default();
+        let mut points = [[0.0, 0.0], [128.0, 180.0], [255.0, 255.0]];
+        let graph = Rect::from_min_size(pos2(20.0, 30.0), vec2(256.0, 256.0));
+        assert!(cache.update(&points, graph));
+        assert_eq!(cache.line.len(), CURVE_SAMPLES);
+        assert_eq!(cache.line.first(), Some(&graph.left_bottom()));
+        assert_eq!(cache.line.last(), Some(&graph.right_top()));
+        let line = cache.line.clone();
+        assert!(!cache.update(&points, graph));
+        assert_eq!(cache.line, line);
+
+        points[1][1] = 80.0;
+        assert!(cache.update(&points, graph));
+        assert_ne!(cache.line, line);
+        points[1][1] = 180.0; // Undo/preset restore must also invalidate.
+        assert!(cache.update(&points, graph));
+        assert_eq!(cache.line, line);
+
+        let moved = graph.translate(vec2(13.0, 25.0));
+        assert!(cache.update(&points, moved));
+        for (before, after) in line.iter().zip(&cache.line) {
+            assert!((*after - (*before + vec2(13.0, 25.0))).length() < 1e-4);
+        }
+        let resized = Rect::from_min_size(moved.min, vec2(128.0, 180.0));
+        assert!(cache.update(&points, resized));
+        assert_eq!(cache.line.last(), Some(&resized.right_top()));
+        assert!(!cache.update(&points, resized));
+    }
+
+    #[test]
+    fn curve_polyline_memory_is_separate_per_editor_and_channel() {
+        let ctx = egui::Context::default();
+        let graph = Rect::from_min_size(Pos2::ZERO, vec2(256.0, 256.0));
+        let identity = [[0.0, 0.0], [255.0, 255.0]];
+        let inverted = [[0.0, 255.0], [255.0, 0.0]];
+        let editor = egui::Id::unique("dialog");
+        let master = editor.with(("curves-polyline", "points"));
+        let red = editor.with(("curves-polyline", "red"));
+        let other_editor = egui::Id::unique("properties").with(("curves-polyline", "points"));
+        let line = cached_curve_line(&ctx, master, &identity, graph);
+        assert_ne!(cached_curve_line(&ctx, red, &inverted, graph), line);
+        assert_ne!(cached_curve_line(&ctx, other_editor, &inverted, graph), line);
+        assert_eq!(cached_curve_line(&ctx, master, &identity, graph), line);
+        ctx.data_mut(|d| {
+            assert!(!d.get_temp_mut_or_default::<CurvePolyline>(master).update(&identity, graph));
+            assert!(!d.get_temp_mut_or_default::<CurvePolyline>(red).update(&inverted, graph));
+            assert!(!d.get_temp_mut_or_default::<CurvePolyline>(other_editor).update(&inverted, graph));
+        });
+        assert_ne!(cached_curve_line(&ctx, master, &inverted, graph), line);
+    }
+
+    #[test]
+    #[ignore = "release timing probe; run on GitHub Actions with --release --ignored --nocapture"]
+    fn curve_polyline_release_comparison() {
+        use std::{hint::black_box, time::Instant};
+        let graph = Rect::from_min_size(pos2(20.0, 30.0), vec2(300.0, 300.0));
+        let points = [[0.0, 0.0], [64.0, 48.0], [192.0, 208.0], [255.0, 255.0]];
+        let iterations = 10_000;
+        let start = Instant::now();
+        for _ in 0..iterations {
+            let cp: Vec<_> = black_box(&points).iter().map(|q| photocraft_doc::adjust::CurvePoint { input: q[0] / 255.0, output: q[1] / 255.0 }).collect();
+            let lut = photocraft_compose::adjust::curve_lut(&cp);
+            let line: Vec<_> = lut
+                .iter()
+                .enumerate()
+                .step_by(16)
+                .map(|(i, y)| pos2(graph.left() + i as f32 / 4095.0 * graph.width(), graph.bottom() - y * graph.height()))
+                .collect();
+            black_box(line);
+        }
+        let old = start.elapsed();
+        let start = Instant::now();
+        for _ in 0..iterations {
+            let mut cache = CurvePolyline::default();
+            cache.update(black_box(&points), graph);
+            black_box(cache.line.clone());
+        }
+        let miss = start.elapsed();
+        let ctx = egui::Context::default();
+        let id = egui::Id::unique("curve-perf");
+        cached_curve_line(&ctx, id, &points, graph);
+        let start = Instant::now();
+        for _ in 0..iterations {
+            black_box(cached_curve_line(&ctx, id, black_box(&points), graph));
+        }
+        let hit = start.elapsed();
+        println!("{iterations} polylines: old 4096 samples {old:?}; direct 256 samples {miss:?}; cached screen line {hit:?}");
+    }
 }

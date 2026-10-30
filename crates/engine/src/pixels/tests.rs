@@ -292,7 +292,7 @@ fn mixing_through_a_selection_matches_sampling_it_per_pixel() {
             let mut expected = Vec::new();
             for (i, (a, o)) in edited.iter().zip(&orig).enumerate() {
                 let k = sel.sample_channel(r.x0 + (i % w) as i32, r.y0 + (i / w) as i32, 0);
-                let mixed: [f32; 4] = std::array::from_fn(|c| o[c] + (a[c] - o[c]) * k);
+                let mixed: [f32; 4] = std::array::from_fn(|c| o[c] * (1.0 - k) + a[c] * k);
                 let mut enc = [0.0f32; 8];
                 let m = photocraft_raster::from_rgba_into(&fmt, mixed, &mut enc);
                 expected.extend_from_slice(&enc[..m]);
@@ -452,4 +452,15 @@ fn a_selection_with_a_nonzero_default_over_distant_blocks_is_refused() {
     let mut m = Surface::with_default(PixelFormat::GRAY8, &[0.5]);
     let sel = distant_blocks(PixelFormat::GRAY8, 1.0);
     assert!(adjust_mask(&mut m, &Adjustment::Invert, Some(&sel)).is_err());
+}
+
+/// #9483: a destructive edit with full coverage writes its result exactly, even over huge 32-bit
+/// values (`o + (a − o)·k` gave 0 for a 0.5 result over 1e8, and 0.125 for 0.1 over 1e6).
+#[test]
+fn full_coverage_keeps_the_edit_over_huge_hdr_values() {
+    let fmt = PixelFormat::RGBA32F;
+    for (o, a) in [(1.0e8_f32, 0.5_f32), (1.0e6, 0.1), (-1.0e6, 0.9)] {
+        let out = mix_through_selection(&fmt, Rect::new(0, 0, 1, 1), &[[o, o, o, 1.0]], &[[a, a, a, 1.0]], None);
+        assert_eq!(out[..3], [a, a, a], "{a} over {o}");
+    }
 }

@@ -210,6 +210,86 @@ fn drm_video_memory_reads_the_matching_cards_vram() {
     std::fs::remove_dir_all(&drm).unwrap();
 }
 
+/// #P60/P61: amdgpu's sysfs files have no NVIDIA equivalent, so a discrete NVIDIA card's own
+/// memory comes from `nvidia-smi`'s CSV instead (real output: `0x2C0510DE, 16303`, device id
+/// the high half of the hex, vendor the low). A second card, an upper-case `0X` prefix, extra
+/// spaces, a non-matching id, a missing comma, a non-numeric size, empty output and a size
+/// that would overflow all give nothing rather than the wrong (or a panicking) answer.
+#[test]
+fn parses_nvidia_smis_own_report_of_the_cards_memory() {
+    let two = "0x2C0510DE, 16303\n0x061C10DE, 24576\n";
+    assert_eq!(parse_nvidia_smi(two, NVIDIA_VENDOR, 0x2c05), Some(16303 << 20));
+    assert_eq!(parse_nvidia_smi(two, NVIDIA_VENDOR, 0x061c), Some(24576 << 20));
+    assert_eq!(parse_nvidia_smi("0X2C0510DE,   16303  \n", NVIDIA_VENDOR, 0x2c05), Some(16303 << 20), "upper-case prefix, loose spacing");
+    assert_eq!(parse_nvidia_smi(two, NVIDIA_VENDOR, 0xdead), None, "no such device id");
+    assert_eq!(parse_nvidia_smi(two, 0x1002, 0x2c05), None, "no such vendor id");
+    assert_eq!(parse_nvidia_smi("not csv at all", NVIDIA_VENDOR, 0x2c05), None);
+    assert_eq!(parse_nvidia_smi("0x2C0510DE 16303\n", NVIDIA_VENDOR, 0x2c05), None, "no comma");
+    assert_eq!(parse_nvidia_smi("0x2C0510DE, lots\n", NVIDIA_VENDOR, 0x2c05), None, "not a number");
+    assert_eq!(parse_nvidia_smi("", NVIDIA_VENDOR, 0x2c05), None, "empty output");
+    assert_eq!(parse_nvidia_smi(&format!("0x2C0510DE, {}\n", u64::MAX), NVIDIA_VENDOR, 0x2c05), None, "would overflow");
+}
+
+/// Two cards of one model (same vendor and device id) with different memory: wgpu's ids can't
+/// tell which one it picked, so the budget assumes the smaller rather than whichever came first.
+#[test]
+fn nvidia_smi_cards_sharing_an_id_report_the_smaller_memory() {
+    assert_eq!(parse_nvidia_smi("0x2C0510DE, 16303\n0x2C0510DE, 8192\n", NVIDIA_VENDOR, 0x2c05), Some(8192 << 20));
+    assert_eq!(parse_nvidia_smi("0x2C0510DE, 8192\n0x2C0510DE, 16303\n", NVIDIA_VENDOR, 0x2c05), Some(8192 << 20));
+    assert_eq!(parse_nvidia_smi("0x2C0510DE, lots\n0x2C0510DE, 16303\n", NVIDIA_VENDOR, 0x2c05), Some(16303 << 20), "a bad line is skipped");
+    assert_eq!(parse_nvidia_smi("0x2C0510DE, 0\n0x2C0510DE, 16303\n", NVIDIA_VENDOR, 0x2c05), Some(16303 << 20), "a zero size is no answer");
+}
+
+/// `nvidia-smi` runs on the UI thread at startup, so a query the driver never answers must
+/// give up at the deadline instead of keeping the window from opening.
+#[cfg(any(unix, windows))]
+#[test]
+fn a_child_that_never_answers_gives_up_at_the_deadline() {
+    let slow = if cfg!(windows) {
+        let mut c = std::process::Command::new("ping");
+        c.args(["-n", "11", "127.0.0.1"]);
+        c
+    } else {
+        let mut c = std::process::Command::new("sleep");
+        c.arg("10");
+        c
+    };
+    let start = std::time::Instant::now();
+    assert_eq!(bounded_output(slow, std::time::Duration::from_millis(200)), None);
+    assert!(start.elapsed() < std::time::Duration::from_secs(2), "took {:?}", start.elapsed());
+
+    let quick = if cfg!(windows) {
+        let mut c = std::process::Command::new("cmd");
+        c.args(["/C", "echo 0x2C0510DE, 16303"]);
+        c
+    } else {
+        let mut c = std::process::Command::new("printf");
+        c.arg("0x2C0510DE, 16303\n");
+        c
+    };
+    let out = bounded_output(quick, std::time::Duration::from_secs(10)).expect("a quick command answers");
+    assert_eq!(parse_nvidia_smi(&String::from_utf8_lossy(&out), NVIDIA_VENDOR, 0x2c05), Some(16303 << 20));
+
+    let failing = if cfg!(windows) {
+        let mut c = std::process::Command::new("cmd");
+        c.args(["/C", "exit 3"]);
+        c
+    } else {
+        std::process::Command::new("false")
+    };
+    assert_eq!(bounded_output(failing, std::time::Duration::from_secs(10)), None, "a failed run");
+    assert_eq!(bounded_output(std::process::Command::new("photocraft-no-such-tool"), std::time::Duration::from_secs(1)), None, "not installed");
+}
+
+/// Only a discrete NVIDIA adapter asks `nvidia-smi`: nothing else spawns a process whose
+/// answer it would then ignore anyway (`nvidia_video_memory` gates on the vendor id first).
+#[cfg(target_os = "linux")]
+#[test]
+fn nvidia_video_memory_only_asks_for_an_nvidia_vendor_id() {
+    assert_eq!(nvidia_video_memory(0x1002, 0x73bf), None, "an AMD id never runs nvidia-smi");
+    assert_eq!(nvidia_video_memory(0x8086, 0x9a49), None, "an Intel id never runs nvidia-smi");
+}
+
 /// Windows used to report no RAM at all, so the budget assumed 16 GB on every machine.
 #[cfg(windows)]
 #[test]

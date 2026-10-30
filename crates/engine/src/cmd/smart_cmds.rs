@@ -102,6 +102,10 @@ fn has_doc(s: &Session) -> std::result::Result<(), String> {
 fn has_smart_filters(s: &Session) -> std::result::Result<(), String> {
     if active_smart(s)?.smart_filters.is_empty() { Err("the smart object has no smart filters".into()) } else { Ok(()) }
 }
+/// Delete Filter Mask with `ifPresent` needs only a smart object.
+pub(crate) fn smart_layer_active(s: &Session) -> std::result::Result<(), String> {
+    active_smart(s).map(|_| ())
+}
 fn has_filter_mask(s: &Session) -> std::result::Result<(), String> {
     active_smart(s)?.filter_mask.as_ref().map(|_| ()).ok_or_else(|| "the smart object has no filter mask".into())
 }
@@ -149,7 +153,7 @@ pub(crate) use rendering::source_box;
 pub use rendering::{apply_smart_filters, purge_stack_cache, refresh, refresh_layer, render, render_below_filter, stack_cache_bytes, stack_image};
 #[cfg(test)]
 use rendering::{blend_surfaces, place, render_in};
-pub use source::{SourceImage, source_bytes, source_decode_count, source_image, svg_source_image};
+pub use source::{SourceImage, purge_source_cache, source_bytes, source_cache_bytes, source_decode_count, source_image, svg_source_image};
 use source::{authorize_source, authorized_source_bytes};
 pub(crate) use source::{restore_unrendered, take_caches};
 
@@ -265,12 +269,25 @@ pub fn specs() -> Vec<CommandSpec> {
                 })
             }
         ),
-        spec!("layer.smartFilter.deleteFilterMask", "Delete Filter Mask", SF, r##"{"layer":id?}"##, has_filter_mask, |s, p| {
-            edit_filters(s, p, "Delete Filter Mask", |sm| {
-                sm.filter_mask = None;
-                Ok(())
-            })
-        }),
+        spec!(
+            "layer.smartFilter.deleteFilterMask",
+            "Delete Filter Mask",
+            SF,
+            r##"{"layer":id?,"ifPresent":bool=false (true: a smart object without a filter mask is left as it is, as a Photoshop action's step needs where Photoshop added the mask by default)}"##,
+            has_filter_mask,
+            |s, p| {
+                if p.get("ifPresent").and_then(Value::as_bool) == Some(true) {
+                    let id = layer_param(s, p)?;
+                    if smart(&s.active().ok_or(EngineError::NoDocument)?.doc, id)?.filter_mask.is_none() {
+                        return Ok(Value::Null);
+                    }
+                }
+                edit_filters(s, p, "Delete Filter Mask", |sm| {
+                    sm.filter_mask = None;
+                    Ok(())
+                })
+            }
+        ),
         spec!(
             "layer.smartFilter.disableFilterMask",
             "Disable Filter Mask",

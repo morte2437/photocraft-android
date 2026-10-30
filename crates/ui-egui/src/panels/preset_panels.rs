@@ -369,6 +369,50 @@ pub(crate) struct Place<'a> {
 const GRID_GAP: f32 = 4.0;
 const GRID_INSET: f32 = 8.0;
 
+struct GroupHeaderContext<'a> {
+    panel: &'a str,
+    open: bool,
+    state: &'a mut PresetUi,
+    tokens: &'a Tokens,
+    events: &'a mut Vec<Ev>,
+}
+
+fn draw_group_header(ui: &mut egui::Ui, group: &GroupView, context: GroupHeaderContext<'_>) -> (Rect, Option<Pos2>, Option<Pos2>) {
+    let GroupHeaderContext { panel, open, state, tokens, events } = context;
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click_and_drag());
+    if response.hovered() || response.dragged() {
+        ui.painter().rect_filled(rect, 2.0, tokens.hover.gamma_multiply(0.5));
+    }
+    response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), open, &group.name));
+    let triangle = Rect::from_center_size(pos2(rect.left() + 9.0, rect.center().y), vec2(12.0, 12.0));
+    crate::icons::paint(ui, triangle, if open { "chevron-down" } else { "chevron-right" }, 10.0, tokens.text_dim);
+    let folder = Rect::from_center_size(pos2(rect.left() + 25.0, rect.center().y), vec2(14.0, 14.0));
+    crate::icons::paint(ui, folder, if open { "folder-open" } else { "folder" }, 12.0, tokens.icon);
+    ui.painter().text(pos2(rect.left() + 37.0, rect.center().y), Align2::LEFT_CENTER, &group.name, FontId::proportional(11.5), tokens.text);
+    if response.clicked() {
+        let key = format!("{panel}/{}", group.name);
+        if !state.toggled.remove(&key) {
+            state.toggled.insert(key);
+        }
+    }
+    response.context_menu(|ui| {
+        if ui.button(tl!("Rename Group…")).clicked() {
+            state.renaming = Some((panel.to_string(), format!("group:{}", group.name), group.name.clone()));
+            ui.close();
+        }
+        if ui.button(tl!("Delete Group")).clicked() {
+            events.push(Ev::DeleteGroup(group.name.clone()));
+            ui.close();
+        }
+    });
+    let drag = if response.dragged() { ui.ctx().pointer_interact_pos() } else { None };
+    if drag.is_some() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+    }
+    let released = if response.drag_stopped() { ui.ctx().pointer_interact_pos() } else { None };
+    (rect, drag, released)
+}
+
 pub(crate) fn browser(
     ui: &mut egui::Ui,
     st: &mut PresetUi,
@@ -427,41 +471,12 @@ pub(crate) fn browser(
             for &gi in &display {
                 let Some(g) = groups.get(gi) else { continue };
                 let open = group_open(st, panel, gi, &g.name);
-                let (hr, hresp) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click_and_drag());
-                if hresp.hovered() || hresp.dragged() {
-                    ui.painter().rect_filled(hr, 2.0, t.hover.gamma_multiply(0.5));
+                let (hr, header_drag, header_release) = draw_group_header(ui, g, GroupHeaderContext { panel, open, state: st, tokens: &t, events: &mut ev });
+                if let Some(position) = header_drag {
+                    drag = Some((gi, position));
                 }
-                let tri = Rect::from_center_size(pos2(hr.left() + 9.0, hr.center().y), vec2(12.0, 12.0));
-                crate::icons::paint(ui, tri, if open { "chevron-down" } else { "chevron-right" }, 10.0, t.text_dim);
-                let fold = Rect::from_center_size(pos2(hr.left() + 25.0, hr.center().y), vec2(14.0, 14.0));
-                crate::icons::paint(ui, fold, if open { "folder-open" } else { "folder" }, 12.0, t.icon);
-                ui.painter().text(pos2(hr.left() + 37.0, hr.center().y), Align2::LEFT_CENTER, &g.name, FontId::proportional(11.5), t.text);
-                if hresp.clicked() {
-                    let k = format!("{panel}/{}", g.name);
-                    if !st.toggled.remove(&k) {
-                        st.toggled.insert(k);
-                    }
-                }
-                hresp.context_menu(|ui| {
-                    if ui.button(tl!("Rename Group…")).clicked() {
-                        st.renaming = Some((panel.to_string(), format!("group:{}", g.name), g.name.clone()));
-                        ui.close();
-                    }
-                    if ui.button(tl!("Delete Group")).clicked() {
-                        ev.push(Ev::DeleteGroup(g.name.clone()));
-                        ui.close();
-                    }
-                });
-                if hresp.dragged()
-                    && let Some(p) = ui.ctx().pointer_interact_pos()
-                {
-                    drag = Some((gi, p));
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-                }
-                if hresp.drag_stopped()
-                    && let Some(p) = ui.ctx().pointer_interact_pos()
-                {
-                    released = Some((gi, p));
+                if let Some(position) = header_release {
+                    released = Some((gi, position));
                 }
                 headers.push((gi, hr, g.name.clone()));
                 if !open {

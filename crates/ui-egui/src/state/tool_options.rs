@@ -1,5 +1,5 @@
 use super::tool::Tool;
-use super::*;
+use super::{Deserialize, Serialize};
 
 /// Options-bar state for tools (Photoshop keeps these per tool).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -91,6 +91,11 @@ pub struct ToolOptions {
     pub enhance_edge: bool,
     /// Pen: "path" (work path) or "shape" (shape layer).
     pub vector_mode: String,
+    /// Pen, Freeform Pen and Curvature Pen › Path Operations (#1397): how a new path combines with
+    /// the path or shape it is drawn into: "newLayer" (Shape mode: a new shape layer; Path mode
+    /// draws it as "combine"), "combine", "subtract", "intersect" or "exclude".
+    #[serde(default = "default_pen_path_op")]
+    pub pen_path_op: String,
     /// Shape tools: fill with the foreground colour, stroke width (0 = none), rectangle corner
     /// radius, polygon sides, line weight.
     pub shape_fill: bool,
@@ -139,6 +144,9 @@ pub struct ToolOptions {
     pub move_target: String,
     #[serde(default)]
     pub move_show_transform: bool,
+    /// Last interpolation selected in the Transform options bar; unset follows General's default.
+    #[serde(default)]
+    pub transform_interpolation: Option<photocraft_engine::prefs::Interpolation>,
     /// Crop options bar: aspect ratio ("" = Ratio/unconstrained, "w:h", or "original") and
     /// Delete Cropped Pixels.
     #[serde(default)]
@@ -260,6 +268,10 @@ fn default_crop_resolution_unit() -> String {
 
 fn default_move_target() -> String {
     "group".into()
+}
+
+fn default_pen_path_op() -> String {
+    "newLayer".into()
 }
 
 fn default_curve_fit() -> f32 {
@@ -402,6 +414,7 @@ impl Default for ToolOptions {
             finger_painting: false,
             enhance_edge: false,
             vector_mode: "path".into(),
+            pen_path_op: default_pen_path_op(),
             shape_fill: true,
             stroke_width: 0.0,
             shape_stroke: Default::default(),
@@ -422,6 +435,7 @@ impl Default for ToolOptions {
             move_auto_select: true,
             move_target: default_move_target(),
             move_show_transform: false,
+            transform_interpolation: None,
             crop_ratio: String::new(),
             crop_custom_ratio_width: 0.0,
             crop_custom_ratio_height: 0.0,

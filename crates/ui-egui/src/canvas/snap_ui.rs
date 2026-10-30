@@ -216,15 +216,17 @@ fn begin(app: &mut PhotocraftApp, p: [f64; 2], mods: egui::Modifiers) {
     let crop_tol = crate::crop_ui::tolerance(app);
     let gesture = if let Some(t) = &app.ui.transform {
         let corner = match crate::transform_tool::hit(t, p, crate::transform_tool::handle_tolerance(app)) {
-            crate::transform_tool::Hit::Corner(index) => t.quad.get(index).map(|&point| (Gesture::TransformCorner { index, point }, vec![LayerId(t.layer)])),
+            crate::transform_tool::Hit::Corner(index) => {
+                t.quad.get(index).map(|&point| (Gesture::TransformCorner { index, point }, crate::transform_tool::moving_layers(t)))
+            }
             _ => None,
         };
         if t.mode == crate::state::TransformMode::Distort {
             corner
         } else if near_handle(&t.quad, p, crate::transform_tool::handle_tolerance(app)) {
-            corner.or_else(|| Some((Gesture::Point, vec![LayerId(t.layer)])))
+            corner.or_else(|| Some((Gesture::Point, crate::transform_tool::moving_layers(t))))
         } else if in_quad(&t.quad, p) {
-            Some((Gesture::TransformMove { rect: quad_rect(&t.quad) }, vec![LayerId(t.layer)]))
+            Some((Gesture::TransformMove { rect: quad_rect(&t.quad) }, crate::transform_tool::moving_layers(t)))
         } else {
             None
         }

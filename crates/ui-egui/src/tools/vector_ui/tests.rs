@@ -78,12 +78,50 @@ fn all_shape_tools_and_open_pen_use_the_complete_stroke_defaults() {
         a.run("edit.redo", json!({})).unwrap();
         assert_eq!(a.run("shape.info", json!({})).unwrap(), info);
         a.ui.tool_options.vector_mode = "shape".into();
-        a.ui.pen = Some(PenPath { knots: vec![[[30.0, 40.0]; 3], [[80.0, 40.0]; 3]], ..Default::default() });
+        a.ui.pen = Some(PenPath { knots: vec![[[30.0, 40.0]; 3], [[80.0, 40.0]; 3]], owner: capture_pen_owner(&a), ..Default::default() });
         pen_commit(&mut a, false);
         let open = a.run("shape.info", json!({})).unwrap();
         assert_eq!(open["stroke"]["dashes"], info["stroke"]["dashes"]);
         assert_eq!(open["path"]["subpaths"][0]["closed"], false);
     }
+}
+
+#[test]
+fn freeform_straight_segments_keep_the_captured_saved_path_and_reject_a_foreign_document() {
+    let mut app = app();
+    app.ui.tool = Tool::FreeformPen;
+    let seed = json!({"subpaths":[{"knots":[[20,20],[120,20]]}]});
+    for name in ["work", "Saved drawing"] {
+        app.run("path.set", json!({"name": name, "path": seed})).unwrap();
+    }
+    app.ui.selected_path = Some("Saved drawing".into());
+    let owner = capture_pen_owner(&app).unwrap();
+    let original = app.session.active().unwrap().doc.clone();
+    let n = app.session.active().unwrap().history.past_len();
+    let points = [[20.0, 60.0, 1.0], [60.0, 60.0, 1.0], [100.0, 80.0, 1.0], [140.0, 80.0, 1.0]];
+    app.ui.selected_path = Some("work".into());
+    app.ui.tool_options.vector_mode = "shape".into();
+    freeform_finish_owned(&mut app, &points, &[1, 3], owner);
+    let st = app.session.active().unwrap();
+    assert_eq!(st.doc.work_path, original.work_path);
+    let saved = &st.doc.paths.iter().find(|p| p.name == "Saved drawing").unwrap().path;
+    assert_eq!(saved.subpaths[0], original.paths[0].path.subpaths[0]);
+    assert_eq!(saved.subpaths.len(), 2);
+    let knots = &saved.subpaths[1].knots;
+    assert_eq!(knots.len(), 4);
+    for (a, b) in [(0, 1), (2, 3)] {
+        assert_eq!(knots[a].out_ctrl, knots[a].anchor, "straight segment starts at its anchor");
+        assert_eq!(knots[b].in_ctrl, knots[b].anchor, "straight segment ends at its anchor");
+    }
+    assert_eq!(st.history.past_len(), n + 1);
+    assert!(app.ui.pen.is_none());
+    app.ui.tool_options.vector_mode = "path".into();
+    let owner = capture_pen_owner(&app).unwrap();
+    app.run("file.new", json!({"width": 200, "height": 200})).unwrap();
+    let (source, n) = (app.session.active().unwrap().doc.clone(), app.session.active().unwrap().history.past_len());
+    freeform_finish_owned(&mut app, &points, &[1, 3], owner);
+    assert!(Arc::ptr_eq(&source, &app.session.active().unwrap().doc));
+    assert_eq!(app.session.active().unwrap().history.past_len(), n);
 }
 
 fn app() -> PhotocraftApp {
@@ -119,6 +157,24 @@ fn paths_context_menu_uses_the_clicked_row_and_dispatches_commands() {
     let first = path_rows(doc, None).into_iter().find(|r| r.name == "First").unwrap();
     let (_, _, duplicate) = path_context_actions(&first, doc, None).into_iter().find(|(_, id, _)| *id == "path.set").unwrap();
     assert_eq!(duplicate["name"], "First copy 2", "duplicate must not overwrite an existing path");
+}
+
+#[test]
+fn failed_freeform_straight_segment_commit_keeps_its_owned_fitted_draft() {
+    let mut app = app();
+    app.ui.tool = Tool::FreeformPen;
+    let owner = capture_pen_owner(&app).unwrap();
+    let (source, n) = (app.session.active().unwrap().doc.clone(), app.session.active().unwrap().history.past_len());
+    let points = [[20.0, 60.0, 1.0], [1e40, 60.0, 1.0], [140.0, 80.0, 1.0]];
+    freeform_finish_owned(&mut app, &points, &[1, 2], owner.clone());
+    let pen = app.ui.pen.as_ref().expect("invalid fitted geometry must remain available after its failed commit");
+    assert!(pen.commit_failed);
+    assert_eq!(pen.owner.as_ref(), Some(&owner));
+    assert!(owner.valid(&app));
+    assert_eq!(pen.knots.len(), 3);
+    assert_eq!(pen.knots[1], [[1e40, 60.0]; 3]);
+    assert!(Arc::ptr_eq(&source, &app.session.active().unwrap().doc));
+    assert_eq!(app.session.active().unwrap().history.past_len(), n);
 }
 
 #[test]
@@ -232,7 +288,7 @@ fn pen_keeps_anchors_of_a_finished_path() {
     let mut app = app();
     app.ui.tool = Tool::Pen;
     let knots = vec![[[10.0, 10.0]; 3], [[80.0, 10.0]; 3], [[80.0, 80.0]; 3]];
-    app.ui.pen = Some(PenPath { knots, ..Default::default() });
+    app.ui.pen = Some(PenPath { knots, owner: capture_pen_owner(&app), ..Default::default() });
     pen_commit(&mut app, true);
     assert!(app.ui.pen.is_none());
     assert!(app.session.active().unwrap().doc.work_path.is_some());
@@ -285,6 +341,19 @@ fn an_unselected_work_path_is_not_drawn_over_the_canvas() {
     }
 }
 
+/// #9114: the active type layer's Type Path shows with the Pen, whose Auto Add/Delete edits it.
+#[test]
+fn the_type_path_of_type_on_a_path_is_drawn_with_the_pen() {
+    let ctx = egui::Context::default();
+    let mut app = app();
+    app.run("path.set", json!({"name": "work", "path": {"subpaths": [{"closed": false, "knots": [[100, 20], [100, 180]]}]}})).unwrap();
+    app.run("type.create", json!({"x": 20, "y": 70, "text": "On a path", "size": 24})).unwrap();
+    app.run("type.attachToPath", json!({})).unwrap();
+    app.run("path.delete", json!({"name": "work"})).unwrap();
+    app.ui.tool = Tool::Pen;
+    assert!(overlay_shapes(&app, &ctx) > 0, "the Type Path is drawn");
+}
+
 #[test]
 fn show_target_path_and_extras_hide_the_path_outlines() {
     // #1119: View › Show › Target Path only flipped its checkmark; the canvas kept drawing the
@@ -316,9 +385,64 @@ fn show_target_path_and_extras_hide_the_path_outlines() {
     }
     // The Pen's path in progress is a gesture, not the target path: it stays visible.
     app.ui.tool = Tool::Pen;
-    app.ui.pen = Some(PenPath { knots: vec![[[20.0, 20.0]; 3], [[60.0, 40.0]; 3]], ..Default::default() });
+    app.ui.pen = Some(PenPath { knots: vec![[[20.0, 20.0]; 3], [[60.0, 40.0]; 3]], owner: capture_pen_owner(&app), ..Default::default() });
     toggle(&mut app, "view.show.targetPath");
     assert!(overlay_shapes(&app, &ctx) > 0, "the pen path in progress is still drawn");
+}
+
+#[test]
+fn making_a_selection_from_the_pen_path_deselects_and_hides_it() {
+    // #6079: after ⌘↩ the work path's outline stayed on the canvas; Photoshop deselects it.
+    let ctx = egui::Context::default();
+    let mut app = app();
+    app.ui.tool = Tool::Pen;
+    app.ui.pen = Some(PenPath { knots: vec![[[20.0, 20.0]; 3], [[120.0, 20.0]; 3], [[120.0, 80.0]; 3]], owner: capture_pen_owner(&app), ..Default::default() });
+    path_to_selection(&mut app, json!({})).unwrap();
+    let st = app.session.active().unwrap();
+    assert!(st.doc.selection.is_some(), "the selection is made");
+    assert!(st.doc.work_path.is_some(), "the work path is kept");
+    assert_eq!(app.ui.selected_path, None, "and deselected in the Paths panel");
+    assert_eq!(overlay_shapes(&app, &ctx), 0, "so the canvas no longer draws it");
+    assert!(target_path(&app).is_none() && !delete_key_deletes_work_path(&app), "nor edits or deletes it");
+    // Undo removes the selection; the path stays.
+    app.run("edit.undo", json!({})).unwrap();
+    assert!(app.session.active().unwrap().doc.work_path.is_some());
+    assert!(app.session.active().unwrap().doc.selection.is_none());
+    assert_eq!(overlay_shapes(&app, &ctx), 0, "still hidden");
+    // Selecting a saved path in the Paths panel doesn't show it; only the Work Path does.
+    let saved = json!({"subpaths": [{"closed": true, "knots": [{"anchor": [60, 60]}, {"anchor": [90, 60]}, {"anchor": [90, 90]}]}]});
+    app.run("path.set", json!({"name": "Saved", "path": saved})).unwrap();
+    app.ui.selected_path = Some("Saved".into());
+    // The selected saved path is drawn (#6550), the hidden Work Path isn't.
+    let saved_only = overlay_shapes(&app, &ctx);
+    assert!(!work_path_shown(&app) && saved_only > 0, "a saved path keeps the Work Path hidden");
+    let hidden = app.ui.hidden_work_path.take();
+    assert!(overlay_shapes(&app, &ctx) > saved_only, "the Work Path adds its own outline when shown");
+    app.ui.hidden_work_path = hidden;
+    app.ui.selected_path = None;
+    // Another Work Path made any other way (Make Work Path, `path.set` over the control
+    // channel…) is a different path: it shows without being selected.
+    let other = json!({"subpaths": [{"closed": true, "knots": [{"anchor": [5, 5]}, {"anchor": [50, 5]}, {"anchor": [50, 50]}]}]});
+    app.run("path.set", json!({"name": "work", "path": other})).unwrap();
+    assert_eq!(app.ui.selected_path, None);
+    assert!(work_path_shown(&app) && overlay_shapes(&app, &ctx) > 0, "a changed Work Path is shown");
+    // Selecting it in the Paths panel shows it again.
+    app.ui.selected_path = Some("work".into());
+    assert!(overlay_shapes(&app, &ctx) > 0);
+    // A new path drawn after the deselect replaces the work path and is shown.
+    path_to_selection(&mut app, json!({})).unwrap();
+    assert_eq!(overlay_shapes(&app, &ctx), 0);
+    app.ui.pen = Some(PenPath { knots: vec![[[10.0, 10.0]; 3], [[40.0, 10.0]; 3]], owner: capture_pen_owner(&app), ..Default::default() });
+    pen_commit(&mut app, false);
+    assert_eq!(app.ui.selected_path.as_deref(), Some("work"));
+    assert_eq!(app.session.active().unwrap().doc.work_path.as_ref().unwrap().subpaths.len(), 1, "replaced, not combined");
+    assert!(overlay_shapes(&app, &ctx) > 0);
+    // A shape layer's path stays the active path: layer targeting is unchanged.
+    app.ui.tool_options.vector_mode = "shape".into();
+    app.ui.pen = Some(PenPath { knots: vec![[[20.0, 20.0]; 3], [[120.0, 20.0]; 3], [[120.0, 80.0]; 3]], owner: capture_pen_owner(&app), ..Default::default() });
+    path_to_selection(&mut app, json!({})).unwrap();
+    assert_eq!(app.ui.selected_path.as_deref(), Some("layer"));
+    assert!(active_shape_path(&app).is_some());
 }
 
 #[test]
@@ -666,12 +790,14 @@ fn failed_stale_pen_commit_preserves_the_draft_until_retry() {
         let mut app = app();
         app.run("path.set", json!({"name": "work", "path": {"subpaths": [{"closed": false, "knots": [[5, 5], [10, 10]]}]}})).unwrap();
         let original = app.session.active().unwrap().doc.work_path.clone().unwrap();
+        app.ui.selected_path = Some("work".into());
         app.ui.tool = Tool::Pen;
         for (x, y) in [(20.0, 20.0), (80.0, 60.0)] {
             pen_down(&mut app, x, y, false);
             pen_up(&mut app);
         }
-        let draft = app.ui.pen.clone();
+        let mut draft = app.ui.pen.clone();
+        draft.as_mut().unwrap().commit_failed = true;
         let owner = app.ui.pen_doc;
         app.session.execute("file.new", json!({"width": 200, "height": 200})).unwrap();
         app.ui.tool_options.vector_mode = "shape".into();
@@ -681,7 +807,9 @@ fn failed_stale_pen_commit_preserves_the_draft_until_retry() {
             "pen" => pen_down(&mut app, 150.0, 150.0, false),
             "curvature" => curvature_down(&mut app, 150.0, 150.0),
             "undo" => assert!(!pen_undo_last_point(&mut app)),
-            "commit" => pen_commit(&mut app, true),
+            "commit" => {
+                pen_commit(&mut app, true);
+            }
             _ => {
                 assert!(app.run("file.close", json!({})).is_err());
             }
@@ -695,6 +823,9 @@ fn failed_stale_pen_commit_preserves_the_draft_until_retry() {
         assert!(!crate::direct_select::candidates(&app).iter().any(|(target, _)| *target == crate::direct_select::PathRef::Pen));
         app.session.authorize = None;
         app.sync_views();
+        assert_eq!(app.ui.pen, draft, "passive frames do not retry a refused commit");
+        assert_eq!(app.session.documents()[0].doc.work_path.as_ref(), Some(&original));
+        assert!(pen_commit(&mut app, false), "the user explicitly retries the valid captured target");
         assert!(app.ui.pen.is_none());
         assert_eq!(app.session.active_index(), Some(1));
         assert_eq!(app.ui.selected_path.as_deref(), Some("foreign named path"));
@@ -716,7 +847,8 @@ fn new_document_reports_a_failed_work_path_save_and_retains_the_draft() {
     pen_up(&mut app);
     pen_down(&mut app, 80.0, 60.0, false);
     pen_up(&mut app);
-    let draft = app.ui.pen.clone();
+    let mut draft = app.ui.pen.clone();
+    draft.as_mut().unwrap().commit_failed = true;
     app.session.authorize = Some(|id, _| if id == "path.set" { Err(photocraft_engine::EngineError::Other("test rejection".into())) } else { Ok(()) });
     app.run("file.new", json!({"width": 200, "height": 200})).unwrap();
     assert!(app.ui.status_error);
@@ -726,6 +858,9 @@ fn new_document_reports_a_failed_work_path_save_and_retains_the_draft() {
     assert!(app.session.documents().iter().all(|d| d.doc.work_path.is_none()));
     app.session.authorize = None;
     app.sync_views();
+    assert_eq!(app.ui.pen, draft, "passive frames retain the refused draft");
+    assert!(app.session.documents().iter().all(|d| d.doc.work_path.is_none()));
+    assert!(pen_commit(&mut app, false), "explicit retry commits to the captured source");
     assert!(app.ui.pen.is_none());
     assert!(app.session.documents()[0].doc.work_path.is_some());
     assert!(app.session.documents()[1].doc.work_path.is_none());
@@ -785,7 +920,9 @@ fn stale_pen_commits_to_its_owner_across_document_changes() {
                 "pen" => pen_down(&mut app, 150.0, 150.0, false),
                 "curvature" => curvature_down(&mut app, 150.0, 150.0),
                 "undo" => assert!(!pen_undo_last_point(&mut app)),
-                "commit" => pen_commit(&mut app, true),
+                "commit" => {
+                    pen_commit(&mut app, true);
+                }
                 _ => app.sync_views(),
             }
             let source = app.session.documents().iter().find(|d| d.doc.id == owner).unwrap();
@@ -971,11 +1108,14 @@ fn new_fill_layer_takes_the_selected_path_as_its_vector_mask() {
     // Deselected (or a stale name): the selection is the layer mask, no vector mask.
     for sel in [None, Some("Gone".to_string())] {
         app.ui.selected_path = sel;
+        // The selection goes into the new layer's mask, so each fill layer needs its own (#8801).
+        app.run("select.rect", json!({"x": 150, "y": 150, "width": 20, "height": 20})).unwrap();
         let r = app.run("layer.newFillLayer.solidColor", json!({}));
         let l = layer(&app, r);
-        assert!(l.vector_mask.is_none() && l.mask.is_some());
+        assert!(l.vector_mask.is_none() && l.mask.as_ref().is_some_and(|m| m.value(160, 160) == 1.0 && m.value(5, 5) == 0.0));
     }
     // Make Work Path selects the new work path.
+    app.run("select.rect", json!({"x": 150, "y": 150, "width": 20, "height": 20})).unwrap();
     app.run("select.toWorkPath", json!({"tolerance": 2.0})).unwrap();
     assert_eq!(app.ui.selected_path.as_deref(), Some("work"));
 }
@@ -1046,7 +1186,8 @@ fn pen_last_anchor_hit_tolerance_tracks_zoom_and_draft_round_trips() {
         assert_eq!(pen.knots[1][2], pen.knots[1][0]);
         let saved = serde_json::to_value(pen).unwrap();
         let restored: PenPath = serde_json::from_value(saved).unwrap();
-        assert_eq!(restored, *pen);
+        // The runtime owner isn't saved: a restored draft belongs to no document.
+        assert_eq!(restored, PenPath { owner: None, ..pen.clone() });
         assert_eq!(pen_to_json(&restored, false)["subpaths"][0]["knots"][1]["smooth"], false);
         pen_down(&mut app, 100.0 + 7.0 / f64::from(zoom), 100.0, false);
         assert_eq!(app.ui.pen.as_ref().unwrap().knots.len(), 3);

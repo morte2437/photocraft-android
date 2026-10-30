@@ -37,8 +37,54 @@ impl EntropyScratch {
     }
 }
 
+/// One shared table per combine, never per pixel or worker. Rows cover the contributing sample
+/// count, which can change at every pixel because of transparency or unequal layer lengths.
+/// The triangular layout stores log2(n) followed by -p*log2(p) for counts 1..=n. Keeping the
+/// division after the sum (rather than normalising each term) preserves the old output bits.
+struct EntropyTerms {
+    values: Vec<f32>,
+}
+
+impl EntropyTerms {
+    // At most 130 KiB, independent of image size and total layer count. Deeper stacks retain
+    // the original calculation; pixels with fewer contributors can still use a cached row.
+    const MAX_SAMPLES: usize = 256;
+
+    fn new(samples: usize, pixels: usize) -> Self {
+        let mut values = Vec::new();
+        // Tiny images do not amortise preparation, especially with hundreds of layers.
+        if samples < 2 || pixels < 256 {
+            return Self { values };
+        }
+        let max = samples.min(Self::MAX_SAMPLES);
+        // max is capped at 256 before any size arithmetic or allocation.
+        let len = (max + 1) * (max + 2) / 2;
+        if values.try_reserve_exact(len).is_err() {
+            return Self { values };
+        }
+        values.extend_from_slice(&[0.0; 3]); // Unused rows for zero and one sample.
+        for samples in 2..=max {
+            let n = samples as f32;
+            values.push(n.log2());
+            for count in 1..=samples {
+                let p = count as f32 / n;
+                values.push(-p * p.log2());
+            }
+        }
+        Self { values }
+    }
+
+    fn row(&self, samples: usize) -> Option<&[f32]> {
+        if !(2..=Self::MAX_SAMPLES).contains(&samples) {
+            return None;
+        }
+        let start = samples * (samples + 1) / 2;
+        self.values.get(start..start + samples + 1)
+    }
+}
+
 /// Shannon entropy (bits) of the 8-bit values in `v`, over log2(N). `v.len() >= 2`.
-fn entropy(v: &[f32], scratch: &mut EntropyScratch) -> f32 {
+fn entropy(v: &[f32], scratch: &mut EntropyScratch, terms: Option<&[f32]>) -> f32 {
     let n = v.len() as f32;
     for x in v {
         let bin = (x.clamp(0.0, 1.0) * 255.0).round() as u8;
@@ -57,8 +103,11 @@ fn entropy(v: &[f32], scratch: &mut EntropyScratch) -> f32 {
         .touched
         .iter()
         .map(|&bin| {
-            let p = scratch.counts[usize::from(bin)] as f32 / n;
-            -p * p.log2()
+            let count = scratch.counts[usize::from(bin)];
+            terms.and_then(|row| row.get(count as usize)).copied().unwrap_or_else(|| {
+                let p = count as f32 / n;
+                -p * p.log2()
+            })
         })
         .sum();
     // Reset only the bins used, so the 256-entry array is never cleared wholesale.
@@ -66,7 +115,7 @@ fn entropy(v: &[f32], scratch: &mut EntropyScratch) -> f32 {
         scratch.counts[usize::from(bin)] = 0;
     }
     scratch.touched.clear();
-    h / n.log2()
+    h / terms.and_then(|row| row.first()).copied().unwrap_or_else(|| n.log2())
 }
 
 /// `x` to the power `k` by repeated squaring. Every step is one IEEE 754 multiplication, so the
@@ -99,17 +148,23 @@ fn stat(v: &mut [f32], s: Stat, scratch: &mut EntropyScratch) -> f32 {
         Stat::Maximum => return v.iter().copied().fold(f32::MIN, f32::max),
         Stat::Range => return v.iter().copied().fold(f32::MIN, f32::max) - v.iter().copied().fold(f32::MAX, f32::min),
         Stat::Median => {
-            // `total_cmp` is a total order whose ties are bit-identical values, so an unstable
-            // sort gives exactly the stable sort's result.
-            v.sort_unstable_by(f32::total_cmp);
             let k = v.len();
-            return if k % 2 == 1 { v[k / 2] } else { (v[k / 2 - 1] + v[k / 2]) / 2.0 };
+            // Nonempty above, so k / 2 is in bounds. Selection puts the upper middle value in
+            // place in O(k); the lower partition need not be sorted. Use the same total order
+            // for its maximum to preserve signed zeros, infinities and NaNs.
+            let (lower, middle, _) = v.select_nth_unstable_by(k / 2, f32::total_cmp);
+            return if k % 2 == 1 {
+                *middle
+            } else {
+                // For even k >= 2 the lower partition contains the other middle value.
+                lower.iter().max_by(|a, b| a.total_cmp(b)).map_or(*middle, |lo| (*lo + *middle) / 2.0)
+            };
         }
         Stat::Entropy => {
             if v.len() < 2 {
                 return 0.0;
             }
-            return entropy(v, scratch);
+            return entropy(v, scratch, None);
         }
         _ => {}
     }
@@ -147,7 +202,11 @@ pub fn combine(layers: &[Vec<[f32; 4]>], s: Stat) -> Vec<[f32; 4]> {
     // serial loop (Mean, Variance, StdDev, Skewness, Kurtosis); this alone cuts Mean's
     // instructions by a fifth.
     match s {
-        Stat::Entropy => combine_with(layers, |v, sc| stat(v, Stat::Entropy, sc)),
+        Stat::Entropy => {
+            let pixels = layers.iter().map(Vec::len).max().unwrap_or(0);
+            let terms = EntropyTerms::new(layers.len(), pixels);
+            combine_with(layers, |v, sc| if v.len() < 2 { 0.0 } else { entropy(v, sc, terms.row(v.len())) })
+        }
         Stat::Kurtosis => combine_with(layers, |v, sc| stat(v, Stat::Kurtosis, sc)),
         Stat::Maximum => combine_with(layers, |v, sc| stat(v, Stat::Maximum, sc)),
         Stat::Mean => combine_with(layers, |v, sc| stat(v, Stat::Mean, sc)),

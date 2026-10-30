@@ -1,4 +1,4 @@
-use super::*;
+use super::{Normal, Placement, par_map, par_rows};
 
 // ---------- photometric ----------
 

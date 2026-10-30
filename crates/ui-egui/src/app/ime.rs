@@ -1,4 +1,4 @@
-use super::*;
+use super::{PhotocraftApp, type_tool};
 
 impl PhotocraftApp {
     /// Install the callback-mode markers in an app creator, before the first `run_ui` on this

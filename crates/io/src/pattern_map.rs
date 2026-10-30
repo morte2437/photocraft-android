@@ -110,6 +110,12 @@ pub fn to_psd(p: &Pattern) -> PsdPattern {
     }
 }
 
+/// A warning for each of `patterns` too large to paint: such a pattern fills with transparency,
+/// so the file says so on opening.
+pub fn unpaintable_warnings(patterns: &[Pattern]) -> Vec<String> {
+    patterns.iter().filter_map(|p| Some(format!("pattern \"{}\" would paint nothing: {}", p.display_name(), p.paint_problem()?))).collect()
+}
+
 /// Patterns decoded from the document's raw pattern blocks (malformed blocks are skipped). All
 /// blocks share one memory budget, so repeating a block can't multiply it.
 pub fn from_global_blocks(doc: &Document) -> Vec<Pattern> {
@@ -276,5 +282,28 @@ mod tests {
         assert_eq!(from_global_blocks(&back), d.patterns);
         // Saving again keeps every block as it is.
         assert_eq!(export_global_blocks(&back), back.metadata.psd_global_blocks);
+    }
+}
+
+#[cfg(test)]
+mod unpaintable_tests {
+    use super::*;
+    use photocraft_doc::PixelFormat;
+    use photocraft_raster::Surface;
+
+    #[test]
+    fn a_pattern_too_large_to_paint_is_named_on_opening() {
+        let sparse = |name: &str, format: PixelFormat, side: u32| Pattern {
+            id: name.into(),
+            name: name.into(),
+            width: side,
+            height: side,
+            surface: Surface::new(format),
+        };
+        let patterns =
+            [sparse("Small", PixelFormat::RGBA8, 64), sparse("Huge float", PixelFormat::RGBA32F, 5000), sparse("Largest 8-bit", PixelFormat::RGBA8, 8000)];
+        let warnings = unpaintable_warnings(&patterns);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("Huge float") && warnings[0].contains("would paint nothing") && warnings[0].contains("32 bits"), "{warnings:?}");
     }
 }

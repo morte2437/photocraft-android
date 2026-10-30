@@ -387,11 +387,10 @@ fn the_stroke_trace_times_each_frame_of_a_stroke_and_ends_on_release() {
             }
             let t0 = crate::gpu_canvas::now_ms();
             let moves = ctx.input(|i| i.raw.events.iter().filter(|e| matches!(e, egui::Event::PointerMoved(_))).count());
-            app.stroke_trace.begin_frame(t0, moves);
-            app.stroke_trace.cpu_prev(Some(0.004));
+            app.perf.stage.start(t0, moves);
+            app.perf.stage.ui_start(t0, Some(0.004));
             egui::CentralPanel::default().show(ui, |ui| crate::canvas::document_area(app, ui));
-            let stroking = app.live_stroke.is_some();
-            app.stroke_trace.end_frame(crate::gpu_canvas::now_ms() - t0, stroking, || "test".into());
+            app.finish_frame(crate::gpu_canvas::now_ms() - t0);
         },
         app,
     );
@@ -409,7 +408,7 @@ fn the_stroke_trace_times_each_frame_of_a_stroke_and_ends_on_release() {
     assert!(s.frames >= 6, "{s:?}");
     assert!(s.stroke[1] > 0.0 && s.ui[0] >= s.stroke[0], "{s:?}");
     assert_eq!(s.moves[1], 1.0, "one move per test frame: {s:?}");
-    assert_eq!(s.backend, "test");
+    assert_eq!(s.backend, "", "the app's adapter (none in a test)");
 }
 
 /// A Clone Stamp stroke through the canvas renders the points its commit gets (position and

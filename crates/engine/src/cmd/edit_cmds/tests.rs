@@ -1138,6 +1138,31 @@ fn transform_again_on_a_copy_steps_and_repeats() {
     assert!(!s.active().unwrap().history.can_redo(), "nothing to redo");
 }
 
+/// History Options › Allow Non-Linear History: the Duplicate step of a refused Transform
+/// Again on a copy moved the later states in front of it; taking it back must restore the
+/// document before the command and the History list as it was, not land on a later state.
+#[test]
+fn a_refused_transform_again_on_a_copy_rolls_back_exactly_in_non_linear_history() {
+    let mut s = session();
+    s.execute("history.options", json!({"allowNonLinearHistory": true})).unwrap();
+    s.execute("edit.transform", json!({"matrix": [1, 0, 0, 1, 10, 0]})).unwrap();
+    let id = s.active().unwrap().active_layer.unwrap();
+    s.execute("layer.setProps", json!({"layer": id.0, "locks": {"position": true}})).unwrap();
+    s.execute("layer.setProps", json!({"layer": id.0, "opacity": 0.5})).unwrap();
+    s.execute("layer.setProps", json!({"layer": id.0, "opacity": 0.25})).unwrap();
+    s.undo();
+    s.undo();
+    let st = s.active().unwrap();
+    let (doc, entries) = (st.doc.clone(), st.history.entries());
+    let redo: Vec<String> = st.history.redo_labels().map(str::to_string).collect();
+    assert_eq!(redo.len(), 2);
+    assert!(s.execute("edit.transform.againCopy", json!({})).unwrap_err().to_string().contains("locked"));
+    let st = s.active().unwrap();
+    assert!(std::sync::Arc::ptr_eq(&st.doc, &doc), "the document before the command");
+    assert_eq!(st.history.entries(), entries);
+    assert_eq!(st.history.redo_labels().map(str::to_string).collect::<Vec<_>>(), redo);
+}
+
 #[test]
 fn toggle_last_state_and_transform_again() {
     let mut s = session();
@@ -1164,6 +1189,35 @@ fn guides_are_undoable() {
     s.execute("view.clearGuides", json!({})).unwrap();
     assert!(s.active().unwrap().doc.guides.vertical.is_empty());
     assert!(s.execute("view.moveGuide", json!({"orientation": "vertical", "index": 3, "position": 1})).is_err());
+}
+
+/// #5034: Move Guide turns a guide with `toOrientation` (⌥ while dragging it), in one undo
+/// step, taking its colour along; a % position is of the new axis.
+#[test]
+fn move_guide_turns_a_guide() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 200, "height": 100})).unwrap();
+    s.execute("view.newGuide", json!({"orientation": "horizontal", "position": 30, "color": "magenta"})).unwrap();
+    s.execute("view.newGuide", json!({"orientation": "horizontal", "position": 70})).unwrap();
+    s.execute("view.moveGuide", json!({"orientation": "horizontal", "index": 0, "position": "50%", "toOrientation": "vertical"})).unwrap();
+    let g = &s.active().unwrap().doc.guides;
+    assert_eq!((g.horizontal.clone(), g.vertical.clone()), (vec![70.0], vec![100.0]), "50% of the width");
+    assert_eq!(g.color(true, 100.0), Some([255, 0, 255]), "the colour moves with the guide");
+    assert_eq!(g.color(false, 30.0), None);
+    // The same orientation is a plain move.
+    s.execute("view.moveGuide", json!({"orientation": "vertical", "index": 0, "position": 20, "toOrientation": "vertical"})).unwrap();
+    assert_eq!(s.active().unwrap().doc.guides.vertical, vec![20.0]);
+    s.undo();
+    s.undo();
+    let g = &s.active().unwrap().doc.guides;
+    assert_eq!((g.horizontal.clone(), g.vertical.clone()), (vec![30.0, 70.0], vec![]), "one undo step per move");
+    // Bad params are refused and leave the guides alone.
+    assert!(s.execute("view.moveGuide", json!({"orientation": "horizontal", "index": 0, "position": 5, "toOrientation": "diagonal"})).is_err());
+    assert!(s.execute("view.moveGuide", json!({"orientation": "horizontal", "index": 0, "position": 5, "toOrientation": 1})).is_err());
+    assert!(s.execute("view.newGuide", json!({"orientation": "horizontal", "position": 5, "toOrientation": "vertical"})).is_err());
+    assert!(s.execute("view.moveGuide", json!({"orientation": "horizontal", "index": 9, "position": 5, "toOrientation": "vertical"})).is_err());
+    let g = &s.active().unwrap().doc.guides;
+    assert_eq!((g.horizontal.clone(), g.vertical.clone()), (vec![30.0, 70.0], vec![]));
 }
 
 /// #2955: the rulers' zero point is set and reset by command, undoable, and bad params are

@@ -103,7 +103,7 @@ pub fn start() {
                     }
                     let unsaved = Arc::new(AtomicBool::new(false));
                     guard_unload(unsaved.clone());
-                    Ok(Box::new(WebShell { app, inbox, place_inbox, unsaved, served, database, presets }))
+                    Ok(Box::new(WebShell { app, inbox, place_inbox, unsaved, served, database, presets, ui_language: "" }))
                 }),
             )
             .await;
@@ -224,7 +224,10 @@ fn load_font_manifest(served: Served, ctx: egui::Context) {
         served_fonts::add_fonts(&fonts);
         // Fetch now the fallbacks of the scripts the browser's languages use (an Arabic reader gets
         // the Arabic font before typing); the rest is fetched when text or a font menu needs it.
-        served_fonts::request_for_languages(browser_languages().iter().map(String::as_str));
+        // Also the interface language's: `serve_fonts` asked for it once already, maybe before
+        // this manifest arrived, when no fallback was registered yet.
+        let ui_language = photocraft_ui_egui::i18n::current().code();
+        served_fonts::request_for_languages(browser_languages().iter().map(String::as_str).chain([ui_language]));
         ctx.request_repaint();
     });
 }
@@ -270,6 +273,8 @@ struct WebShell {
     served: Served,
     database: Option<web_sys::IdbDatabase>,
     presets: crate::preset_bridge::Bridge,
+    /// The interface language whose served script font was last asked for.
+    ui_language: &'static str,
 }
 
 impl WebShell {
@@ -294,6 +299,12 @@ impl WebShell {
     /// Fetches the served families asked for (picked in a font menu, or needed by a layout) and
     /// installs the files that arrived.
     fn serve_fonts(&mut self, ctx: &egui::Context) {
+        // The interface language's script font draws its labels (Arabic, Japanese…).
+        let ui_language = photocraft_ui_egui::i18n::current().code();
+        if ui_language != self.ui_language {
+            self.ui_language = ui_language;
+            served_fonts::request_for_languages([ui_language]);
+        }
         let requested = served_fonts::take_requests();
         let (fetch, arrived) = {
             let mut s = self.served.lock().unwrap_or_else(PoisonError::into_inner);
@@ -320,7 +331,7 @@ impl WebShell {
                 }
             });
         }
-        served_fonts::install(&mut self.app, arrived);
+        served_fonts::install(&mut self.app, ctx, arrived);
     }
 }
 

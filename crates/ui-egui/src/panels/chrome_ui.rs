@@ -5,6 +5,7 @@ use egui::{RichText, Sense, Stroke, vec2};
 use photocraft_doc::{Document, LayerContent};
 use serde::{Deserialize, Serialize};
 
+use crate::render_path::CpuReason;
 use crate::theme::Tokens;
 use crate::{PhotocraftApp, icons, widgets};
 
@@ -188,21 +189,44 @@ pub fn status_bar_pro(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     status_message(app, ui, &t);
 }
 
-/// The active document's layers don't fit the GPU memory budget (`perf.gpuLayerFit`): edits that
-/// redraw the whole document do it on the CPU, so say so in the status bar until they fit again.
-/// Clicking it opens Preferences › Performance, where GPU Memory raises the budget.
-pub fn gpu_memory_status(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
-    let Some(doc) = app.session.active().map(|st| st.doc.id.0) else { return };
-    let Some(fit) = app.perf.gpu_layer_fit.filter(|f| f.doc == doc && !f.fits()) else { return };
+/// What the status bar says about the active document's render path: its label, tooltip and
+/// the command a click runs, or None on the GPU.
+pub(crate) fn render_path_label(app: &PhotocraftApp) -> Option<(&'static str, String, &'static str)> {
+    let doc = app.session.active().map(|st| st.doc.id.0)?;
+    let reason = app.render_path.current(doc);
+    // The measured fit (also on a switch to a document whose canvas is current) or the reason
+    // of the last full refresh: edits that redraw the whole document do it on the CPU, so say
+    // so until they fit again; GPU Memory in Preferences › Performance raises the budget.
+    let fit = app.perf.gpu_layer_fit.filter(|f| f.doc == doc && !f.fits()).map(|f| (f.needed, f.budget));
+    // Another reason (a flipped view, Advanced Blending…) is the cause: show it, not the fit.
+    let over = match reason {
+        Some(&CpuReason::OverBudget { needed, budget }) => fit.or(Some((needed, budget))),
+        Some(_) => None,
+        None => fit,
+    };
+    if let Some((needed, budget)) = over {
+        let tip = crate::i18n::fmt(
+            tl!(
+                "The layers need {needed} of GPU memory and may hold {budget}, so edits that redraw the whole document do it on the CPU. Click to set GPU Memory."
+            ),
+            &[("needed", &fmt_bytes(needed)), ("budget", &fmt_bytes(budget))],
+        );
+        return Some((tl!("GPU Memory Full"), tip, "edit.preferences.performance"));
+    }
+    let reason = reason?;
+    let tip = crate::i18n::fmt(tl!("Drawn on the CPU: {reason}. Click for System Info."), &[("reason", &reason.to_string())]);
+    Some((tl!("CPU Rendering"), tip, "help.systemInfo"))
+}
+
+/// The active document is drawn on the CPU (`render_path`): say so in the status bar, with the
+/// reason in the tooltip. "GPU Memory Full" opens Preferences › Performance; any other reason,
+/// "CPU Rendering", opens Help › System Info.
+pub fn render_path_status(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
+    let Some((label, tip, command)) = render_path_label(app) else { return };
     let t = Tokens::get(ui.ctx());
-    let resp = ui
-        .add(egui::Label::new(RichText::new(tl!("GPU Memory Full")).color(t.warning).size(12.0)).sense(Sense::click()))
-        .on_hover_text(crate::i18n::fmt(
-            tl!("The layers need {needed} of GPU memory and may hold {budget}, so edits that redraw the whole document do it on the CPU. Click to set GPU Memory."),
-            &[("needed", &fmt_bytes(fit.needed)), ("budget", &fmt_bytes(fit.budget))],
-        ));
+    let resp = ui.add(egui::Label::new(RichText::new(label).color(t.warning).size(12.0)).sense(Sense::click())).on_hover_text(tip);
     if resp.clicked() {
-        crate::shortcut_dispatch::dispatch(app, ui.ctx(), "edit.preferences.performance");
+        crate::shortcut_dispatch::dispatch(app, ui.ctx(), command);
     }
 }
 
@@ -347,6 +371,56 @@ mod tests {
             let open = h.state().ui.dialogs.iter().any(|d| d.fields.get("section") == Some(&json!("performance")));
             assert!(open, "{theme:?}: Preferences › Performance opens");
         }
+    }
+
+    /// A reason other than the memory budget is what the status bar shows, even while the
+    /// measured layer fit is over the budget.
+    #[test]
+    fn status_bar_shows_another_cpu_reason_before_gpu_memory_full() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        let mut h = Harness::builder().with_size(vec2(1200.0, 700.0)).with_max_steps(64).build_eframe(|cc| {
+            PhotocraftApp::setup_context(&cc.egui_ctx, crate::theme::ThemeKind::Pro);
+            PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default())
+        });
+        h.state_mut().run("file.new", json!({"width": 800, "height": 600})).unwrap();
+        h.state_mut().sync_views();
+        h.run_steps(4);
+        let doc = h.state().session.active().unwrap().doc.id.0;
+        h.state_mut().perf.gpu_layer_fit = Some(crate::gpu_canvas::LayerFit { doc, needed: 3 << 30, budget: 2 << 30 });
+        let reason = CpuReason::Unsupported("Advanced Blending on `Layer 1`".into());
+        crate::render_path::note(h.state_mut(), doc, crate::render_path::Path::Cpu(reason));
+        h.run_steps(2);
+        assert!(h.query_by_label("GPU Memory Full").is_none());
+        assert!(h.query_by_label("CPU Rendering").is_some());
+        let tip = render_path_label(h.state()).map(|l| l.1).unwrap_or_default();
+        assert!(tip.contains("Advanced Blending"), "{tip}");
+    }
+
+    /// GPU Memory raised in Preferences: once the layers are measured to fit, GPU Memory Full
+    /// clears at once, not at the next full refresh.
+    #[test]
+    fn gpu_memory_full_clears_when_the_budget_is_raised() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        let mut h = Harness::builder().with_size(vec2(1200.0, 700.0)).with_max_steps(64).build_eframe(|cc| {
+            PhotocraftApp::setup_context(&cc.egui_ctx, crate::theme::ThemeKind::Pro);
+            PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default())
+        });
+        h.state_mut().run("file.new", json!({"width": 800, "height": 600})).unwrap();
+        h.state_mut().sync_views();
+        h.run_steps(4);
+        let doc = h.state().session.active().unwrap().doc.id.0;
+        let over = crate::gpu_canvas::LayerFit { doc, needed: 3 << 30, budget: 2 << 30 };
+        h.state_mut().perf.gpu_layer_fit = Some(over);
+        let reason = CpuReason::OverBudget { needed: over.needed, budget: over.budget };
+        crate::render_path::note(h.state_mut(), doc, crate::render_path::Path::Cpu(reason));
+        h.run_steps(2);
+        assert!(h.query_by_label("GPU Memory Full").is_some());
+        // What `gpu_budget` measures after the change of GPU Memory.
+        crate::render_path::layer_fit(h.state_mut(), crate::gpu_canvas::LayerFit { budget: 4 << 30, ..over });
+        h.run_steps(2);
+        assert!(h.query_by_label("GPU Memory Full").is_none());
+        assert!(h.query_by_label("CPU Rendering").is_none());
+        assert!(h.state().perf.gpu_fallback.is_none());
     }
 
     #[test]

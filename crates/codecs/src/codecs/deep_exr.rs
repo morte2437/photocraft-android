@@ -187,7 +187,7 @@ fn decompress(compression: Compression, packed: &[u8], expected: usize, what: &s
             // `read_to_end`, whose doubling reserves past `expected`. Once `expected` bytes are
             // in, a one-byte read checks that the stream ends there.
             let malformed = || err(format!("{what}: zlib data is malformed"));
-            let mut zlib = flate2::read::ZlibDecoder::new(packed);
+            let mut zlib = flate2::bufread::ZlibDecoder::new(packed);
             let mut out = Vec::new();
             let mut filled = 0;
             while filled < expected {
@@ -756,6 +756,7 @@ mod tests {
             let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
             z.write_all(&p).expect("write to a Vec");
             let zips = z.finish().expect("finish a Vec");
+            assert!(decompress(Compression::ZIP1, &zips[..zips.len() - 1], n, "the table").is_err());
             // RLE: the first byte as a literal, then runs of up to 128 copies of the next.
             let mut rle = vec![0xFF, p[0]];
             for run in p[1..].chunks(128) {

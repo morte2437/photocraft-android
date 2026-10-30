@@ -200,6 +200,27 @@ fn shift_is_recorded_when_modifier_key_events_carry_no_bits() {
     assert_eq!(field(&h, id, "capture"), json!(false));
 }
 
+/// ⌘Z can be bound like any other key (#9487): while a field waits for keys it is the shortcut
+/// to record, not the dialog's own Undo (#4697), which used to undo the click that started the
+/// capture. Once recorded, ⌘Z steps the dialog back again.
+#[test]
+fn cmd_z_is_recorded_while_capturing_and_undoes_otherwise() {
+    let (mut h, id) = dialog(1.0, "edit.search", "search…");
+    capture(&mut h, &crate::shortcuts::pretty("Cmd+F"), Key::ControlLeft, Modifiers::COMMAND, Key::Z);
+    assert_eq!(field(&h, id, "overrides")["edit.search"], json!("Cmd+Z"));
+    assert_eq!(field(&h, id, "capture"), json!(false));
+    key(&mut h, Key::Z, true, Modifiers::COMMAND);
+    h.run_steps(2);
+    assert_ne!(field(&h, id, "overrides")["edit.search"], json!("Cmd+Z"), "⌘Z outside a capture undoes the change");
+    assert_eq!(field(&h, id, "capture"), json!(false), "and doesn't wait for keys again");
+    // CodeRabbit on #9504: clearing the restored capture isn't a new edit, so Redo still works.
+    h.run_steps(2);
+    key(&mut h, Key::Z, true, Modifiers::COMMAND | Modifiers::SHIFT);
+    h.run_steps(2);
+    assert_eq!(field(&h, id, "overrides")["edit.search"], json!("Cmd+Z"), "⇧⌘Z redoes the recorded shortcut");
+    assert_eq!(field(&h, id, "capture"), json!(false));
+}
+
 #[test]
 fn ctrl_k_is_recorded_as_ctrl_k_not_the_control_key() {
     for ppp in [1.0, 2.0] {

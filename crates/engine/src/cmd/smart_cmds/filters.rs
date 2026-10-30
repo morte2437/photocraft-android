@@ -1,6 +1,9 @@
 use super::rendering::{refresh_or_fail, refresh_or_fail_in};
 use super::source::source_bytes;
-use super::*;
+use super::{
+    BlendMode, Document, EngineError, Layer, LayerContent, LayerId, LayerMask, Result, Session, SmartObject, Surface, Value, bad, blend_from_str, json,
+    layer_param, other,
+};
 
 pub(super) fn smart(doc: &Document, id: LayerId) -> Result<&SmartObject> {
     match &doc.layer(id).ok_or(EngineError::NoLayer(id))?.content {

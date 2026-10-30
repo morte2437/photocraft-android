@@ -66,7 +66,7 @@ fn injected_loss_stops_gpu_work_without_panicking() {
     // Every entry point is a no-op or an error now.
     let r = g.refresh(key, &d, None, None);
     assert_eq!(r.kind, "lost");
-    assert!(r.fallback.as_deref().unwrap_or("").contains("GPU device lost"));
+    assert!(r.fallback.as_ref().is_some_and(|f| f.to_string().contains("GPU device lost")));
     assert!(g.composite(&d, d.bounds(), false).is_err());
     assert!(!g.upload_rect(key, [0, 0], [1, 1], &[0; 4]));
     g.upload_full(key, [1, 1], &[0; 4]);

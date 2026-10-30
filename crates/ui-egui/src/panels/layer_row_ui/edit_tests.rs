@@ -153,8 +153,8 @@ fn mask_double_click_launches_select_and_mask_with_preference() {
     let at = masks.iter().find(|(kind, _)| *kind == crate::mask_thumbs_ui::MaskKind::Pixel).unwrap().1.center();
     double_click(&mut h, at);
     assert!(h.state().ui.mask_target);
-    let dialog = h.state().ui.dialogs.last().expect("select and mask dialog should be opened");
-    assert_eq!(dialog.fields.get("__command").and_then(|v| v.as_str()), Some("select.refineEdge"));
+    let w = h.state().distort.describe()["selectAndMask"].clone();
+    assert_eq!(w["settings"]["output"].as_str(), Some("layerMask"), "the Select and Mask workspace opens on the mask: {w}");
 }
 
 #[test]

@@ -2,7 +2,7 @@ use super::manage::fix_view_now;
 use super::planes::{color_count, materialize};
 use super::refs::{ChanRef, bad, parse_ref};
 use super::view::ChannelTarget;
-use super::*;
+use super::{ColorMode, Document, EngineError, Layer, LayerId, Rect, Result, Session, Surface, TileCoord, Value, from_rgba, json, list};
 
 // ---------------------------------------------------------------------------------------------
 // Targets for pixel commands
@@ -35,6 +35,19 @@ pub(crate) fn target_of(p: &Value) -> Target {
 /// The target is an alpha channel or the Quick Mask (no layer involved).
 pub(crate) fn is_channel_target(p: &Value) -> bool {
     matches!(target_of(p), Target::Alpha(_) | Target::QuickMask)
+}
+
+/// The target is a spot channel: it stores ink but takes tone, as it reads.
+pub(crate) fn is_spot_target(doc: &Document, p: &Value) -> bool {
+    matches!(target_of(p), Target::Alpha(i) if doc.channels.get(i).is_some_and(|c| c.spot.is_some()))
+}
+
+/// Inverts `r` of a channel surface (ink to tone and back).
+pub(crate) fn invert_region(s: &mut Surface, r: Rect) -> Result<()> {
+    let mut v = crate::allocation::read_region(s, r, "inverting a channel")?;
+    v.iter_mut().for_each(|x| *x = 1.0 - *x);
+    s.try_write_region(r, &v)?;
+    Ok(())
 }
 
 /// The surface a pixel command writes to and whether the layer's transparency is locked.

@@ -243,9 +243,7 @@ fn red_eye(s: &mut Session, p: &Value) -> Result<Value> {
         }
         Ok((damage, total))
     })?;
-    if let Some(st) = s.active_mut() {
-        st.last_damage = Some(damage);
-    }
+    s.hint_damage(damage);
     Ok(json!({ "damage": [damage.x0, damage.y0, damage.width(), damage.height()], "pixels": total }))
 }
 

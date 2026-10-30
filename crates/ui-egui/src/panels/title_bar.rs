@@ -1,4 +1,4 @@
-use super::*;
+use super::{PhotocraftApp, Sense, Tokens, icons, theme, vec2, widgets};
 
 // ----------------------------------------------------------------------------- title bar
 
@@ -132,18 +132,15 @@ pub fn title_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             if system {
                 return;
             }
-            // A right-to-left document name in display order (the OS title keeps the logical text),
-            // in a left-to-right line: "— PhotoCraft" stays after the name, at the right.
-            let title = crate::bidi_text::visual_ltr(&title).into_owned();
             let font = theme::medium(13.0);
-            let galley = ui.painter().layout_no_wrap(title.clone(), font.clone(), t.text_dim);
+            let galley = ui.painter().layout_job(title_job(&title, font.clone(), t.text_dim));
             if let Some(x) = title_x(full.center().x, free.0, free.1, galley.size().x) {
                 ui.painter().galley(egui::pos2(x, full.center().y - galley.size().y / 2.0), galley, t.text_dim);
             } else if free.1 - free.0 > 80.0 {
                 // Too narrow for the whole name: show the start of it, elided, in the free gap
                 // next to the menus.
                 let avail = free.1 - free.0 - 2.0 * TITLE_GAP;
-                let mut job = egui::text::LayoutJob::simple_singleline(title, font, t.text_dim);
+                let mut job = title_job(&title, font, t.text_dim);
                 job.wrap = egui::text::TextWrapping::truncate_at_width(avail);
                 let g = ui.painter().layout_job(job);
                 let x = if rtl { free.1 - TITLE_GAP - g.size().x } else { free.0 + TITLE_GAP };
@@ -183,6 +180,14 @@ pub fn sync_window_title(app: &mut PhotocraftApp, ctx: &egui::Context) {
         app.last_window_title = want.clone();
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(want));
     }
+}
+
+/// The in-app title line. It reads left to right as a whole, so a right-to-left document name keeps
+/// "— PhotoCraft" after it, at the right; egui orders the name's own words.
+pub(crate) fn title_job(title: &str, font: egui::FontId, color: egui::Color32) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::simple_singleline(title.to_owned(), font, color);
+    job.direction = egui::epaint::text::TextDirection::LeftToRight;
+    job
 }
 
 /// Minimum space kept between the window title and the menus or controls beside it.
