@@ -132,6 +132,41 @@ fn half_roundtrip() {
     }
 }
 
+/// #9173: no two pipeline build jobs share a shader, so no FXC blob is shared across threads.
+#[test]
+fn build_jobs_share_no_shader() {
+    use super::consts::{MAP16, MAP32};
+    use super::kit::{build_jobs, vertex_entry, vertex_shader};
+    let jobs = build_jobs(wgpu::TextureFormat::Rgba32Float);
+    let mut seen = std::collections::HashSet::new();
+    for (job, keys) in jobs.iter().enumerate() {
+        let fragments: std::collections::HashSet<_> = keys.iter().filter_map(|k| k.0.entry()).collect();
+        for f in fragments {
+            assert!(seen.insert(f.to_string()), "fragment shader {f} is built by two jobs");
+        }
+        assert!(seen.insert(vertex_entry(job)), "vertex entry of job {job} is shared");
+    }
+    // Every drawn pipeline is still built, in the same formats.
+    let keys: Vec<_> = jobs.concat();
+    let plain = Kernel::DRAWN.iter().filter(|k| !k.is_map()).count();
+    assert_eq!(keys.len(), plain + 2 * (Kernel::DRAWN.len() - plain));
+    for k in Kernel::DRAWN {
+        let formats: Vec<_> = keys.iter().filter(|key| key.0 == k).map(|key| key.1).collect();
+        let want = if k.is_map() { vec![MAP32, MAP16] } else { vec![wgpu::TextureFormat::Rgba32Float] };
+        assert_eq!(formats, want, "{k:?}");
+    }
+    // The vertex module validates and has every job's entry point.
+    let src = vertex_shader(jobs.len());
+    let module = wgpu::naga::front::wgsl::parse_str(&src).unwrap_or_else(|e| panic!("{}", e.emit_to_string(&src)));
+    wgpu::naga::valid::Validator::new(wgpu::naga::valid::ValidationFlags::all(), wgpu::naga::valid::Capabilities::empty())
+        .validate(&module)
+        .unwrap_or_else(|e| panic!("{e:?}"));
+    for job in 0..jobs.len() {
+        let e = vertex_entry(job);
+        assert!(module.entry_points.iter().any(|ep| ep.name == e && ep.stage == wgpu::naga::ShaderStage::Vertex), "missing {e}");
+    }
+}
+
 #[test]
 fn shader_validates() {
     let module = wgpu::naga::front::wgsl::parse_str(SHADER).unwrap_or_else(|e| panic!("{}", e.emit_to_string(SHADER)));
