@@ -219,7 +219,10 @@ pub fn controls(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
             nav.zoom = Some((nav.zoom.unwrap_or(effective) * 1.25).min(32.0));
         }
         let mut percent = nav.zoom.unwrap_or(effective) * 100.0;
-        if ui.add(egui::DragValue::new(&mut percent).range(0.01..=3200.0).suffix("%").speed(10.0)).accessible_name(tl!("Zoom")).changed() {
+        if crate::widgets::number_fields::drag_value(ui, egui::DragValue::new(&mut percent).range(0.01..=3200.0).suffix("%").speed(10.0))
+            .accessible_name(tl!("Zoom"))
+            .changed()
+        {
             nav.zoom = Some(percent / 100.0);
         }
         if ui.small_button(tl!("100%")).clicked() {

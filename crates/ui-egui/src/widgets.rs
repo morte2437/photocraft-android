@@ -18,6 +18,7 @@ mod dropdown;
 pub mod field_tab;
 pub mod field_wheel;
 mod fields;
+pub mod number_fields;
 pub(super) mod numeric_expression;
 mod panel;
 pub mod point_curve;
@@ -32,8 +33,8 @@ pub mod tone;
 mod units;
 
 pub use buttons::{
-    ButtonRole, DialogButton, button_height, button_width, check_box, check_box_fill, checkbox, checkbox_wrapped, compact_button, dialog_buttons, primary_button,
-    secondary_button, toggle,
+    ButtonRole, DialogButton, button_height, button_width, check_box, check_box_fill, checkbox, checkbox_wrapped, compact_button, dialog_buttons,
+    primary_button, secondary_button, toggle,
 };
 pub(crate) use color::color_swatch;
 pub use color::{

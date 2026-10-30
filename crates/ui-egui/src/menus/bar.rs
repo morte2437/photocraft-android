@@ -38,104 +38,110 @@ pub fn menu_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> f32 {
         v.widgets.inactive.bg_stroke = egui::Stroke::NONE;
         v.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, t.text_dim);
         v.widgets.hovered.bg_stroke = egui::Stroke::NONE;
-        let mut bar = |ui: &mut egui::Ui| egui::MenuBar::new().ui(ui, |ui| {
-            // egui lays the bar out left to right; a right-to-left UI starts it at the right.
-            let mut mirrored = rtl.then(|| ui.new_child(egui::UiBuilder::new().layout(crate::direction::row())));
-            let ui = mirrored.as_mut().unwrap_or(ui);
-            ui.spacing_mut().button_padding = egui::vec2(MENU_PAD_X, 3.0);
-            nav.bar_bottom = Some(ui.max_rect().bottom());
-            let mut buttons = Vec::with_capacity(TOP_MENUS.len());
-            for (k, top) in TOP_MENUS.iter().enumerate() {
-                // egui's menu_button toggles on release; these titles open on the press (one
-                // gesture can press, drag to an item and release), so each drives its popup.
-                // The title the keyboard is on (Alt / F10) is lit like a hovered one.
-                let focused = keys.focus == Some(if rtl { TOP_MENUS.len() - 1 - k } else { k });
-                let label = if nav.underline {
-                    crate::menu_keys::mnemonic_text(ui, "", &top_labels[k], top_mnemonics[k], Some(t.text_dim))
-                } else {
-                    egui::RichText::new(top_labels[k].as_str()).color(t.text_dim).into()
-                };
-                let mut button = egui::Button::new(label);
-                if focused {
-                    button = button.fill(ui.visuals().widgets.hovered.weak_bg_fill);
+        let mut bar = |ui: &mut egui::Ui| {
+            egui::MenuBar::new().ui(ui, |ui| {
+                // egui lays the bar out left to right; a right-to-left UI starts it at the right.
+                let mut mirrored = rtl.then(|| ui.new_child(egui::UiBuilder::new().layout(crate::direction::row())));
+                let ui = mirrored.as_mut().unwrap_or(ui);
+                ui.spacing_mut().button_padding = egui::vec2(MENU_PAD_X, 3.0);
+                nav.bar_bottom = Some(ui.max_rect().bottom());
+                let mut buttons = Vec::with_capacity(TOP_MENUS.len());
+                for (k, top) in TOP_MENUS.iter().enumerate() {
+                    // egui's menu_button toggles on release; these titles open on the press (one
+                    // gesture can press, drag to an item and release), so each drives its popup.
+                    // The title the keyboard is on (Alt / F10) is lit like a hovered one.
+                    let focused = keys.focus == Some(if rtl { TOP_MENUS.len() - 1 - k } else { k });
+                    let label = if nav.underline {
+                        crate::menu_keys::mnemonic_text(ui, "", &top_labels[k], top_mnemonics[k], Some(t.text_dim))
+                    } else {
+                        egui::RichText::new(top_labels[k].as_str()).color(t.text_dim).into()
+                    };
+                    let mut button = egui::Button::new(label);
+                    if focused {
+                        button = button.fill(ui.visuals().widgets.hovered.weak_bg_fill);
+                    }
+                    // A phone's front camera can sit over the bar: the titles split around it.
+                    crate::cutout::step(ui);
+                    let title = ui.add(button);
+                    // The bar's close behaviour and style, as a menu (not bar) config so submenus inside
+                    // render as submenus.
+                    let bar = egui::containers::menu::MenuConfig::find(ui);
+                    let config = egui::containers::menu::MenuConfig::new().close_behavior(bar.close_behavior).style(bar.style.clone());
+                    let open = title_press(ui.ctx(), &title);
+                    // The release ending the press that opened this menu is a click "outside" the
+                    // popup: it must not close it again.
+                    let opening = title.clicked() && ui.ctx().data(|d| d.get_temp::<bool>(press_gesture_id())).unwrap_or(false);
+                    let close = if opening || crate::menu_nav::on_scroll_arrow(ui.ctx()) {
+                        // Tapping a long menu's scroll arrow scrolls it; it isn't a click to close.
+                        egui::PopupCloseBehavior::IgnoreClicks
+                    } else if *top == "Help" {
+                        // Menus close on any click, inside them too; a click in Help's search field
+                        // must keep it open. Its items close it themselves when chosen.
+                        egui::PopupCloseBehavior::CloseOnClickOutside
+                    } else {
+                        config.close_behavior
+                    };
+                    egui::Popup::menu(&title)
+                        .align(crate::direction::below())
+                        .open_memory(open)
+                        .close_behavior(close)
+                        .style(config.style.clone())
+                        .info(egui::UiStackInfo::new(egui::UiKind::Menu).with_tag_value(egui::containers::menu::MenuConfig::MENU_CONFIG_TAG, config))
+                        .show(|ui| {
+                            let items = &built
+                                .get_or_init(|| {
+                                    let state = crate::native_menu::state_hash(app_ref, None);
+                                    let input = crate::native_menu::had_input(ui.ctx());
+                                    let items = kept.take().and_then(|c| c.reuse(state, input)).unwrap_or_else(|| menu_items(app_ref));
+                                    ItemCache { state, items }
+                                })
+                                .items;
+                            let mine: Vec<&MenuItem> = items.iter().filter(|i| i.path.first().map(String::as_str) == Some(*top)).collect();
+                            ui.set_min_width(220.0);
+                            if mine.is_empty() {
+                                ui.weak(crate::i18n::tr(lang, "(coming soon)"));
+                            }
+                            if *top == "Help" {
+                                // The search field scrolls with the rows, as part of the menu's content.
+                                crate::menu_nav::level(ui, 1, &mut nav, |ui, nav| {
+                                    help_search(ui, items, opening, &mut clicked, nav);
+                                    render_level_rows(ui, &mine, 1, &mut clicked, nav);
+                                });
+                            } else {
+                                render_level(ui, &mine, 1, &mut clicked, &mut nav);
+                            }
+                        });
+                    buttons.push(title);
                 }
-                // A phone's front camera can sit over the bar: the titles split around it.
-                crate::cutout::step(ui);
-                let title = ui.add(button);
-                // The bar's close behaviour and style, as a menu (not bar) config so submenus inside
-                // render as submenus.
-                let bar = egui::containers::menu::MenuConfig::find(ui);
-                let config = egui::containers::menu::MenuConfig::new().close_behavior(bar.close_behavior).style(bar.style.clone());
-                let open = title_press(ui.ctx(), &title);
-                // The release ending the press that opened this menu is a click "outside" the
-                // popup: it must not close it again.
-                let opening = title.clicked() && ui.ctx().data(|d| d.get_temp::<bool>(press_gesture_id())).unwrap_or(false);
-                let close = if opening || crate::menu_nav::on_scroll_arrow(ui.ctx()) {
-                    // Tapping a long menu's scroll arrow scrolls it; it isn't a click to close.
-                    egui::PopupCloseBehavior::IgnoreClicks
-                } else if *top == "Help" {
-                    // Menus close on any click, inside them too; a click in Help's search field
-                    // must keep it open. Its items close it themselves when chosen.
-                    egui::PopupCloseBehavior::CloseOnClickOutside
-                } else {
-                    config.close_behavior
-                };
-                egui::Popup::menu(&title)
-                    .align(crate::direction::below())
-                    .open_memory(open)
-                    .close_behavior(close)
-                    .style(config.style.clone())
-                    .info(egui::UiStackInfo::new(egui::UiKind::Menu).with_tag_value(egui::containers::menu::MenuConfig::MENU_CONFIG_TAG, config))
-                    .show(|ui| {
-                        let items = &built
-                            .get_or_init(|| {
-                                let state = crate::native_menu::state_hash(app_ref, None);
-                                let input = crate::native_menu::had_input(ui.ctx());
-                                let items = kept.take().and_then(|c| c.reuse(state, input)).unwrap_or_else(|| menu_items(app_ref));
-                                ItemCache { state, items }
-                            })
-                            .items;
-                        let mine: Vec<&MenuItem> = items.iter().filter(|i| i.path.first().map(String::as_str) == Some(*top)).collect();
-                        ui.set_min_width(220.0);
-                        if mine.is_empty() {
-                            ui.weak(crate::i18n::tr(lang, "(coming soon)"));
-                        }
-                        if *top == "Help" {
-                            // The search field scrolls with the rows, as part of the menu's content.
-                            crate::menu_nav::level(ui, 1, &mut nav, |ui, nav| {
-                                help_search(ui, items, opening, &mut clicked, nav);
-                                render_level_rows(ui, &mine, 1, &mut clicked, nav);
-                            });
-                        } else {
-                            render_level(ui, &mine, 1, &mut clicked, &mut nav);
-                        }
-                    });
-                buttons.push(title);
-            }
-            crate::cutout::end(ui);
-            // Under a rounded screen corner, room to scroll the last title out of its curve.
-            if let Some(end) = crate::cutout::row_end(ui) {
-                ui.add_space((ui.clip_rect().right() - end).max(0.0));
-            }
-            edge = if rtl { buttons.iter().map(|b| b.rect.left()).fold(edge, f32::min) } else { buttons.iter().map(|b| b.rect.right()).fold(edge, f32::max) };
-            switch_on_hover(ui.ctx(), &buttons);
-            // ← and → step to the menu on that side, so in screen order.
-            let mut tops: Vec<egui::Id> = buttons.iter().map(egui::Popup::default_response_id).collect();
-            if rtl {
-                tops.reverse();
-            }
-            nav.keys(ui.ctx(), &tops, &mut clicked);
-            let mut mnemonics = top_mnemonics.clone();
-            if rtl {
-                mnemonics.reverse();
-            }
-            keys.keys(ui.ctx(), &tops, &mnemonics, &mut nav, &mut clicked);
-        });
+                crate::cutout::end(ui);
+                // Under a rounded screen corner, room to scroll the last title out of its curve.
+                if let Some(end) = crate::cutout::row_end(ui) {
+                    ui.add_space((ui.clip_rect().right() - end).max(0.0));
+                }
+                edge =
+                    if rtl { buttons.iter().map(|b| b.rect.left()).fold(edge, f32::min) } else { buttons.iter().map(|b| b.rect.right()).fold(edge, f32::max) };
+                switch_on_hover(ui.ctx(), &buttons);
+                // ← and → step to the menu on that side, so in screen order.
+                let mut tops: Vec<egui::Id> = buttons.iter().map(egui::Popup::default_response_id).collect();
+                if rtl {
+                    tops.reverse();
+                }
+                nav.keys(ui.ctx(), &tops, &mut clicked);
+                let mut mnemonics = top_mnemonics.clone();
+                if rtl {
+                    mnemonics.reverse();
+                }
+                keys.keys(ui.ctx(), &tops, &mnemonics, &mut nav, &mut clicked);
+            })
+        };
         // On a phone the titles don't fit beside the camera at full spacing: the bar scrolls
         // sideways instead (a swipe on it, see `scroll_strip`).
         if app_ref.compact_layout && !rtl {
             let strip = egui::Id::unique("menu-bar-strip");
-            let area = egui::ScrollArea::horizontal().id_salt("menu-bar").auto_shrink([false, true]).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden);
+            let area = egui::ScrollArea::horizontal()
+                .id_salt("menu-bar")
+                .auto_shrink([false, true])
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden);
             let out = crate::scroll_strip::begin(ui.ctx(), strip, area).show(ui, |ui| bar(ui));
             crate::scroll_strip::record(ui.ctx(), strip, &out);
         } else {

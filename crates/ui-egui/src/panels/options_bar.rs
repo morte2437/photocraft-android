@@ -51,7 +51,8 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         .frame(egui::Frame::NONE.fill(t.chrome).inner_margin(egui::Margin::symmetric(10, 0)))
         .show(ui, |ui| {
             ui.style_mut().spacing.scroll = egui::style::ScrollStyle { bar_width: 4.0, ..egui::style::ScrollStyle::floating() };
-            let area = crate::scroll_strip::begin(ui.ctx(), options_strip(), egui::ScrollArea::horizontal().id_salt("tool-options").auto_shrink([false, false]));
+            let area =
+                crate::scroll_strip::begin(ui.ctx(), options_strip(), egui::ScrollArea::horizontal().id_salt("tool-options").auto_shrink([false, false]));
             let scrolled = area.show(ui, |ui| {
                 // Font ink can extend beyond its advance width at fractional positions.
                 // Include its gutter in the container layout, including right-aligned actions.

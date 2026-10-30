@@ -248,8 +248,11 @@ fn finger_pressure(ui: &mut egui::Ui, tk: &Tokens, c: &mut TouchConfig, contact:
     p.rect(rect, 8.0, if pressing { tk.accent.gamma_multiply(0.25) } else { tk.field }, egui::Stroke::new(1.0, tk.separator), egui::StrokeKind::Inside);
     let calibrated = c.finger_firm > c.finger_light;
     let text = if calibrated {
-        format!("Light {:.0} · firm {:.0}
-Touch lightly, then press firmly, to calibrate again", c.finger_light, c.finger_firm)
+        format!(
+            "Light {:.0} · firm {:.0}
+Touch lightly, then press firmly, to calibrate again",
+            c.finger_light, c.finger_firm
+        )
     } else {
         "Calibrate: touch here lightly, then press firmly".to_string()
     };
@@ -400,7 +403,11 @@ impl Snapshot {
     /// fingertip is really on, senses drags.
     pub fn draggable(&self, p: egui::Pos2) -> bool {
         let Some((_, widgets)) = self.top(p) else { return false };
-        widgets.iter().filter(|w| w.enabled && w.interact.contains(p) && (w.click || w.drag)).min_by(|a, b| a.interact.area().total_cmp(&b.interact.area())).is_some_and(|w| w.drag)
+        widgets
+            .iter()
+            .filter(|w| w.enabled && w.interact.contains(p) && (w.click || w.drag))
+            .min_by(|a, b| a.interact.area().total_cmp(&b.interact.area()))
+            .is_some_and(|w| w.drag)
     }
 
     /// Whether `p` is on a list row inside a scrolling list: a widget that can be both clicked

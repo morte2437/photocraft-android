@@ -500,7 +500,11 @@ fn field_rows(ui: &mut egui::Ui, section: &str, obj: &mut Map<String, Value>, ke
                 let (lo, hi) = prefs::range(&path).unwrap_or((-1e9, 1e9));
                 if n.is_u64() || n.is_i64() {
                     let mut x = n.as_i64().unwrap_or(0);
-                    ui.add(egui::DragValue::new(&mut x).range(lo as i64..=hi as i64).custom_parser(crate::widgets::parse_num)).labelled_by(value_label.id);
+                    crate::widgets::number_fields::drag_value(
+                        ui,
+                        egui::DragValue::new(&mut x).range(lo as i64..=hi as i64).custom_parser(crate::widgets::parse_num),
+                    )
+                    .labelled_by(value_label.id);
                     obj.insert(k, json!(x));
                     // A row of its own, so the label stays level with its field.
                     if read_at_launch(&path) {
@@ -510,8 +514,11 @@ fn field_rows(ui: &mut egui::Ui, section: &str, obj: &mut Map<String, Value>, ke
                     }
                 } else {
                     let mut x = n.as_f64().unwrap_or(0.0);
-                    ui.add(egui::DragValue::new(&mut x).range(lo..=hi).speed(0.1).max_decimals(3).custom_parser(crate::widgets::parse_num))
-                        .labelled_by(value_label.id);
+                    crate::widgets::number_fields::drag_value(
+                        ui,
+                        egui::DragValue::new(&mut x).range(lo..=hi).speed(0.1).max_decimals(3).custom_parser(crate::widgets::parse_num),
+                    )
+                    .labelled_by(value_label.id);
                     obj.insert(k, json!(x));
                 }
             }

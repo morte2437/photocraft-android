@@ -416,7 +416,8 @@ mod tests {
         let middle = column_span(&ctx, Rangef::new(150.0, 200.0));
         assert!(middle.min.is_infinite() && middle.max.is_infinite());
         // Square corners (or a bad report): nothing.
-        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| set_corners(ui.ctx(), vec![Corner { centre: pos2(f32::NAN, 0.0), radius: 30.0, left: true, top: true }]));
+        let mut out = ctx
+            .run_ui(egui::RawInput::default(), |ui| set_corners(ui.ctx(), vec![Corner { centre: pos2(f32::NAN, 0.0), radius: 30.0, left: true, top: true }]));
         out.textures_delta.clear();
         assert!(!active(&ctx));
     }

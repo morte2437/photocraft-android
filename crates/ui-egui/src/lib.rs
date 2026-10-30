@@ -16,7 +16,6 @@ macro_rules! tl {
 pub mod canvas;
 pub mod control;
 pub mod cutout;
-pub mod scroll_strip;
 pub mod dialogs;
 pub mod dock;
 pub mod file_dialog;
@@ -37,6 +36,7 @@ pub mod platform_menu;
 pub mod preset_files_ui;
 pub mod proxy;
 pub mod screenshot;
+pub mod scroll_strip;
 pub mod state;
 pub mod texel_guard;
 pub mod theme;

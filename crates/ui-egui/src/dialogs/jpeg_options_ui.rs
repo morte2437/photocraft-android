@@ -205,7 +205,7 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         crate::widgets::section_label(ui, tl!("Image Options"));
         ui.horizontal(|ui| {
             let quality_caption = ui.label(tl!("Quality"));
-            ui.add(egui::DragValue::new(&mut quality).range(0..=MAX_QUALITY).speed(0.1)).labelled_by(quality_caption.id);
+            crate::widgets::number_fields::drag_value(ui, egui::DragValue::new(&mut quality).range(0..=MAX_QUALITY).speed(0.1)).labelled_by(quality_caption.id);
             // Photoshop's presets: picking one sets the quality it starts at.
             let preset = egui::ComboBox::from_id_salt("jpeg-quality-preset").selected_text(quality_label(quality)).show_ui(ui, |ui| {
                 for q in [3, 5, 8, 10] {

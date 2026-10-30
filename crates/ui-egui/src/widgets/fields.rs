@@ -443,6 +443,8 @@ fn number_edit(
                 v
             }),
     );
+    // A number: dragged or scrubbed, no on-screen keyboard (see `number_fields`).
+    super::number_fields::mark(ui.ctx(), resp.id);
     if wrap_drag {
         crate::scrub_wrap::update(ui, &resp, value, before, range.clone(), speed, wrapping);
     }

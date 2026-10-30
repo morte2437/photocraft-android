@@ -1320,7 +1320,17 @@ mod tests {
         assert!(presses(&g.wait(HOLD_TIME + 0.01)).is_empty(), "a strip waits as long as a list row");
         let out = g.send(vec![touch(1, TouchPhase::Move, p + vec2(-60.0, 4.0))]);
         assert!(presses(&out).is_empty(), "nothing pressed");
-        let dx: f32 = out.iter().filter_map(|r| if let Routed::StripScroll(s, d) = r { assert_eq!(*s, STRIP); Some(*d) } else { None }).sum();
+        let dx: f32 = out
+            .iter()
+            .filter_map(|r| {
+                if let Routed::StripScroll(s, d) = r {
+                    assert_eq!(*s, STRIP);
+                    Some(*d)
+                } else {
+                    None
+                }
+            })
+            .sum();
         assert!(dx < -40.0 && wheel(&out) == Vec2::ZERO, "the strip itself, not the wheel: {dx} {out:?}");
         g.send(vec![touch(1, TouchPhase::End, p + vec2(-60.0, 4.0))]);
         // Held still first, a drag works the control under the finger.

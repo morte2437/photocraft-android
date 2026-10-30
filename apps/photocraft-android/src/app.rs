@@ -70,8 +70,14 @@ fn run(android: AndroidApp) -> Result<(), String> {
             let fonts_menu = crate::fonts::menu(&files_dir, bridge.clone(), font_outcome.clone(), move || wake.request_repaint());
             let wake = cc.egui_ctx.clone();
             let settings_menu = crate::settings::menu(&files_dir, bridge.clone(), font_outcome.clone(), move || wake.request_repaint());
-            services.platform_menu =
-                Some(crate::updates::combine(vec![layout.menu(), pad.menu(), touch.menu(), fonts_menu, settings_menu, crate::updates::menu(&files_dir, bridge.clone())]));
+            services.platform_menu = Some(crate::updates::combine(vec![
+                layout.menu(),
+                pad.menu(),
+                touch.menu(),
+                fonts_menu,
+                settings_menu,
+                crate::updates::menu(&files_dir, bridge.clone()),
+            ]));
             crate::services::watch_incoming(bridge.clone(), inbox, cc.egui_ctx.clone());
             let mut app = PhotocraftApp::new(Session::new(), services);
             app.background_jobs = true;
@@ -414,6 +420,7 @@ impl eframe::App for Shell {
         // above it (panels, menus and dialogs alike), as apps that resize for the keyboard do.
         let ime = photocraft_tablet::android::ime_height_px() / ctx.pixels_per_point();
         if ime > 1.0
+            && !self.layout.keyboard_covers()
             && let Some(r) = &mut raw_input.screen_rect
         {
             r.max.y = (r.max.y - ime).max(r.min.y + r.height() * 0.3);
@@ -440,7 +447,10 @@ impl eframe::App for Shell {
         // A text field, or the Type tool editing text on the canvas (no egui field has focus
         // then, but its typing comes the same way: text and Backspace/Enter events).
         let canvas_text = self.app.ui.text_edit.is_some();
-        let editing = ctx.egui_wants_keyboard_input() || canvas_text;
+        // A number field isn't typing: it's dragged or scrubbed, so the keyboard stays shut
+        // (and closes when focus moves to one from a text field).
+        let number = photocraft_ui_egui::widgets::number_fields::number_focused(ctx);
+        let editing = (ctx.egui_wants_keyboard_input() && !number) || canvas_text;
         if editing && !self.editing {
             // A field just gained focus. Multi-line, so the keyboard's Enter key types a newline
             // into the text state (an editor action would be dropped by winit), which
@@ -707,7 +717,10 @@ impl eframe::App for Shell {
         let tokens = photocraft_ui_egui::theme::Tokens::for_kind(self.app.ui.theme);
         // A front camera's cutout (punch hole or notch): the bars split around it (#21).
         let ppp = ui.ctx().pixels_per_point();
-        let holes = photocraft_tablet::android::cutouts_px().into_iter().map(|[l, t, r, b]| egui::Rect::from_min_max(egui::pos2(l, t) / ppp, egui::pos2(r, b) / ppp)).collect();
+        let holes = photocraft_tablet::android::cutouts_px()
+            .into_iter()
+            .map(|[l, t, r, b]| egui::Rect::from_min_max(egui::pos2(l, t) / ppp, egui::pos2(r, b) / ppp))
+            .collect();
         photocraft_ui_egui::cutout::set(ui.ctx(), holes);
         // The screen's rounded corners: controls in their curves move clear of them.
         let corners = photocraft_tablet::android::corners_px()
@@ -733,7 +746,13 @@ impl eframe::App for Shell {
         self.pad.settings(ui.ctx(), &tokens);
         self.touch.settings(ui.ctx(), &tokens, photocraft_tablet::android::controls_held(), photocraft_tablet::android::last_buttons(), {
             use photocraft_tablet::android;
-            android::last_contact().map(|k| crate::touch::Contact { pressure: k.pressure, size: k.size, major: k.major, contact: android::contact_size(&k), mapped: k.mapped })
+            android::last_contact().map(|k| crate::touch::Contact {
+                pressure: k.pressure,
+                size: k.size,
+                major: k.major,
+                contact: android::contact_size(&k),
+                mapped: k.mapped,
+            })
         });
         // Copy and Cut in a text field go to the system clipboard.
         for command in ui.ctx().output(|o| o.commands.clone()) {
@@ -764,6 +783,12 @@ impl eframe::App for Shell {
                 self.last_ime = None;
                 self.ime_hidden = false;
             }
+        }
+        // A number field asks for no keyboard (unless the Shortcut Pad's keyboard key is on).
+        if !self.soft_keyboard && photocraft_ui_egui::widgets::number_fields::number_focused(ctx) {
+            ctx.output_mut(|o| o.ime = None);
+            self.last_ime = None;
+            self.ime_hidden = false;
         }
         // What was drawn where, for the next frame's touches (see `touch::Snapshot`).
         self.drawn = crate::touch::Snapshot::take(ui.ctx());

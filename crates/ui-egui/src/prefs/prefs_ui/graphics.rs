@@ -113,7 +113,7 @@ pub(super) fn memory_usage_row(ui: &mut egui::Ui, obj: &mut Map<String, Value>) 
         let mut mb = obj.get("memoryUsageMb").and_then(Value::as_u64).unwrap_or(8192);
         ui.horizontal(|ui| {
             let limit_label = ui.label(tl!("Per-document RAM limit (MB)"));
-            if ui.add(egui::DragValue::new(&mut mb).range(256..=1_048_576).suffix(" MB")).labelled_by(limit_label.id).changed() {
+            if crate::widgets::number_fields::drag_value(ui, egui::DragValue::new(&mut mb).range(256..=1_048_576).suffix(" MB")).labelled_by(limit_label.id).changed() {
                 obj.insert("memoryUsageMb".into(), json!(mb));
             }
         });

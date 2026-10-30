@@ -199,11 +199,13 @@ pub fn form_body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
                 Value::Number(n) => {
                     ui.label(label(&k));
                     if let Some(mut i) = n.as_i64() {
-                        ui.add(egui::DragValue::new(&mut i).custom_parser(crate::widgets::parse_num)).accessible_name(label(&k));
+                        crate::widgets::number_fields::drag_value(ui, egui::DragValue::new(&mut i).custom_parser(crate::widgets::parse_num))
+                            .accessible_name(label(&k));
                         json!(i)
                     } else {
                         let mut x = n.as_f64().unwrap_or(0.0);
-                        ui.add(egui::DragValue::new(&mut x).speed(0.5).custom_parser(crate::widgets::parse_num)).accessible_name(label(&k));
+                        crate::widgets::number_fields::drag_value(ui, egui::DragValue::new(&mut x).speed(0.5).custom_parser(crate::widgets::parse_num))
+                            .accessible_name(label(&k));
                         json!(x)
                     }
                 }
