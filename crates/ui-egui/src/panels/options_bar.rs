@@ -90,7 +90,10 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             let scrolled = area.show(ui, |ui| {
                 // Font ink can extend beyond its advance width at fractional positions.
                 // Include its gutter in the container layout, including right-aligned actions.
-                egui::Frame::NONE.inner_margin(egui::Margin { right: 2, ..Default::default() }).show(ui, |ui| {
+                // Under a rounded screen corner, room to scroll the last control out of its curve.
+                let corner = crate::cutout::row_end(ui).map_or(0.0, |end| (ui.clip_rect().right() - end).max(0.0));
+                let right = (2.0 + corner).ceil().min(i8::MAX as f32) as i8;
+                egui::Frame::NONE.inner_margin(egui::Margin { right, ..Default::default() }).show(ui, |ui| {
                     crate::direction::horizontal_centered(ui, |ui| {
                         if t.pro {
                             crate::chrome_ui::home_button(app, ui);

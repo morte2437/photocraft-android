@@ -42,14 +42,16 @@ pub fn menu_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> f32 {
             // egui lays the bar out left to right; a right-to-left UI starts it at the right.
             let mut mirrored = rtl.then(|| ui.new_child(egui::UiBuilder::new().layout(crate::direction::row())));
             let ui = mirrored.as_mut().unwrap_or(ui);
-            // Split around a phone's camera, the titles give up padding to stay on screen (the
-            // bar doesn't scroll): just enough, from how far they ran past it at full padding.
+            // Split around a phone's camera or kept clear of a rounded corner, the titles give up
+            // padding to stay on screen (the bar doesn't scroll): just enough, from how far they
+            // ran past it at full padding.
             let squeeze_id = egui::Id::unique("menu-bar-squeeze");
-            // Kept per bar width (a rotation starts over), and only ever raised, so the titles
-            // settle instead of flickering between two paddings as they slide past the camera.
-            let width = ui.max_rect().width().round();
+            // Kept per bar place and width (a rotation, or the Shortcut Pad switching sides or
+            // hiding, starts over), and only ever raised, so the titles settle instead of
+            // flickering between two paddings as they slide past the camera.
+            let place = (ui.max_rect().left().round(), ui.max_rect().width().round());
             let excess = if crate::cutout::active(ui.ctx()) {
-                ui.ctx().data(|d| d.get_temp::<(f32, f32)>(squeeze_id)).filter(|(w, _)| *w == width).map_or(0.0, |(_, e)| e)
+                ui.ctx().data(|d| d.get_temp::<((f32, f32), f32)>(squeeze_id)).filter(|(p, _)| *p == place).map_or(0.0, |(_, e)| e)
             } else {
                 0.0
             };
@@ -127,10 +129,11 @@ pub fn menu_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> f32 {
             crate::cutout::end(ui);
             if crate::cutout::active(ui.ctx()) && !rtl {
                 let full = ui.min_rect().right() + (MENU_PAD_X - pad_x) * 2.0 * TOP_MENUS.len() as f32;
-                // Against the screen's edge: the bar's own row can run past it.
-                let edge = ui.max_rect().right().min(ui.ctx().content_rect().right());
+                // Against the screen's edge (the bar's own row can run past it), or a rounded
+                // corner's curve.
+                let edge = ui.max_rect().right().min(ui.ctx().content_rect().right()).min(crate::cutout::row_end(ui).unwrap_or(f32::INFINITY));
                 let now = (full - edge).max(excess);
-                ui.ctx().data_mut(|d| d.insert_temp(squeeze_id, (width, now)));
+                ui.ctx().data_mut(|d| d.insert_temp(squeeze_id, (place, now)));
             }
             edge = if rtl { buttons.iter().map(|b| b.rect.left()).fold(edge, f32::min) } else { buttons.iter().map(|b| b.rect.right()).fold(edge, f32::max) };
             switch_on_hover(ui.ctx(), &buttons);

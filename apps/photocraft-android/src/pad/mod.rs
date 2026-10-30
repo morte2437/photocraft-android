@@ -445,7 +445,12 @@ impl Pad {
             .resizable(false)
             .frame(frame)
             .show(ui, |ui| {
-                let l = Layout::new(ui.max_rect(), config.keys.len());
+                // The screen's rounded corners: the keys at the strip's ends move clear of them.
+                let full = ui.max_rect();
+                let span = photocraft_ui_egui::cutout::column_span(ui.ctx(), full.x_range());
+                let top = full.top().max(span.min);
+                let full = egui::Rect::from_x_y_ranges(full.x_range(), top..=full.bottom().min(span.max).max(top));
+                let l = Layout::new(full, config.keys.len());
                 self.paint(ui.painter(), &l, &config, mode, tk);
                 l
             })
@@ -662,11 +667,16 @@ impl Pad {
     pub fn paint_trackpad_cursor(&self, ctx: &egui::Context, on: bool) {
         let Some(c) = self.router.trackpad_cursor().filter(|_| on) else { return };
         let p = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("trackpad_cursor")));
-        // The classic arrow, its tip on the point.
-        let arrow = [(0.0, 0.0), (0.0, 17.0), (4.5, 13.0), (7.5, 20.0), (10.5, 18.8), (7.6, 12.2), (13.0, 12.2)];
-        let pts: Vec<egui::Pos2> = arrow.iter().map(|(x, y)| c + egui::vec2(*x, *y)).collect();
-        p.add(egui::Shape::convex_polygon(pts.clone(), egui::Color32::WHITE, Stroke::NONE));
-        p.add(egui::Shape::closed_line(pts, Stroke::new(1.2, egui::Color32::BLACK)));
+        // A rounded arrow, its tip on the point: white with a dark outline and a soft shadow.
+        let outline = arrow_outline();
+        let at = |off: egui::Vec2| outline.iter().map(|q| c + q.to_vec2() + off).collect::<Vec<_>>();
+        let shadow = egui::vec2(1.0, 1.6);
+        for (width, alpha) in [(5.0, 18), (3.0, 30)] {
+            p.add(egui::Shape::closed_line(at(shadow), Stroke::new(width, egui::Color32::from_black_alpha(alpha))));
+        }
+        p.add(arrow_fill(&at(shadow), c + shadow, egui::Color32::from_black_alpha(60)));
+        p.add(arrow_fill(&at(egui::Vec2::ZERO), c, egui::Color32::WHITE));
+        p.add(egui::Shape::closed_line(at(egui::Vec2::ZERO), Stroke::new(2.0, egui::Color32::from_gray(0x38))));
         // Holding the button (a drag): a ring at the tip, so a drag never comes as a surprise.
         if self.router.trackpad_pressed() {
             p.circle_stroke(c, 9.0, Stroke::new(3.0, egui::Color32::BLACK));
@@ -683,6 +693,44 @@ impl Pad {
     pub fn active(&self) -> bool {
         self.router.pad_active()
     }
+}
+
+/// The trackpad cursor's corners (points from its tip) and how round each one is.
+const ARROW: [(f32, f32, f32); 4] = [(0.0, 0.0, 1.6), (0.0, 20.5, 1.6), (7.6, 14.2, 2.4), (16.0, 14.2, 1.4)];
+/// A point every edge of the arrow can be seen from, to fill it as a fan (it isn't convex).
+const ARROW_CENTRE: egui::Pos2 = egui::pos2(3.0, 12.0);
+
+/// The trackpad cursor's outline, its corners rounded, relative to its tip.
+fn arrow_outline() -> Vec<egui::Pos2> {
+    let n = ARROW.len();
+    let corner = |i: usize| egui::pos2(ARROW[i % n].0, ARROW[i % n].1);
+    let mut out = Vec::new();
+    for (i, &(_, _, r)) in ARROW.iter().enumerate() {
+        let (prev, here, next) = (corner(i + n - 1), corner(i), corner(i + 1));
+        let a = here + (prev - here).normalized() * r;
+        let b = here + (next - here).normalized() * r;
+        for s in 0..=5 {
+            let t = s as f32 / 5.0;
+            // A quadratic curve from a to b, bending towards the corner.
+            let q = a.to_vec2() * (1.0 - t) * (1.0 - t) + here.to_vec2() * 2.0 * t * (1.0 - t) + b.to_vec2() * t * t;
+            out.push(q.to_pos2());
+        }
+    }
+    out
+}
+
+/// `outline` (the arrow with its tip at `tip`) filled with `color`.
+fn arrow_fill(outline: &[egui::Pos2], tip: egui::Pos2, color: egui::Color32) -> egui::Shape {
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(tip + ARROW_CENTRE.to_vec2(), color);
+    for &q in outline {
+        mesh.colored_vertex(q, color);
+    }
+    let n = outline.len() as u32;
+    for i in 0..n {
+        mesh.add_triangle(0, 1 + i, 1 + (i + 1) % n);
+    }
+    egui::Shape::mesh(mesh)
 }
 
 fn key_event(key: Key, pressed: bool) -> Event {
@@ -782,6 +830,19 @@ pub fn release(c: Chord) -> Vec<Event> {
 mod tests {
     use super::*;
     use egui::{Rect, TouchDeviceId, TouchId, TouchPhase, pos2, vec2};
+
+    /// The arrow fills as a fan from its centre: every triangle must turn the same way, or the
+    /// fill would spill outside the notch.
+    #[test]
+    fn the_trackpad_cursor_fills_inside_its_outline() {
+        let outline = arrow_outline();
+        assert!(outline.iter().all(|q| q.x >= 0.0 && q.y >= 0.0 && q.x <= 16.0 && q.y <= 20.5));
+        let o = ARROW_CENTRE;
+        for (a, b) in outline.iter().zip(outline.iter().cycle().skip(1)) {
+            let cross = (*a - o).x * (*b - o).y - (*a - o).y * (*b - o).x;
+            assert!(cross <= 1e-4, "{a:?} → {b:?} turns the wrong way ({cross})");
+        }
+    }
 
     fn pad() -> (Pad, PathBuf) {
         let dir = std::env::temp_dir().join(format!("photocraft-padmod-{}-{}", std::process::id(), rand()));

@@ -111,6 +111,21 @@ pub fn pointer_buttons(id: u64) -> i32 {
     POINTERS.lock().unwrap_or_else(PoisonError::into_inner).buttons(id)
 }
 
+/// Called when the window's layout changes (the keyboard, a camera cutout, rounded corners), to
+/// draw a frame: the app is idle, and nothing else wakes it for these.
+static ON_LAYOUT: Mutex<Option<Box<dyn Fn() + Send>>> = Mutex::new(None);
+
+/// Runs `wake` (from the Activity's thread) whenever the keyboard, cutouts or corners change.
+pub fn on_layout_change(wake: impl Fn() + Send + 'static) {
+    *ON_LAYOUT.lock().unwrap_or_else(PoisonError::into_inner) = Some(Box::new(wake));
+}
+
+fn layout_changed() {
+    if let Some(wake) = ON_LAYOUT.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
+        wake();
+    }
+}
+
 /// The on-screen keyboard's height in window pixels (0 when it's hidden).
 static IME_HEIGHT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 
@@ -124,10 +139,12 @@ pub fn ime_height_px() -> f32 {
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_ai_storyteller_photocraft_PhotoCraftActivity_nativeImeHeight(_env: *mut c_void, _this: *mut c_void, px: i32) {
     IME_HEIGHT.store(px, std::sync::atomic::Ordering::Relaxed);
+    layout_changed();
 }
 
 /// The camera cutouts' rects (left, top, right, bottom, window pixels): up to two.
 static CUTOUTS: std::sync::Mutex<Vec<[f32; 4]>> = std::sync::Mutex::new(Vec::new());
+static CORNERS: std::sync::Mutex<[[f32; 3]; 4]> = std::sync::Mutex::new([[0.0; 3]; 4]);
 
 /// Where a front camera's cutouts (a punch hole or notch) are on screen, as `[left, top, right,
 /// bottom]` in window pixels: none on most tablets (the Activity reports them on layout changes,
@@ -157,6 +174,38 @@ pub extern "system" fn Java_ai_storyteller_photocraft_PhotoCraftActivity_nativeC
     let n = usize::try_from(n).unwrap_or(0).min(rects.len());
     let rects: Vec<[f32; 4]> = rects.iter().take(n).filter(|r| r[2] > r[0] && r[3] > r[1]).map(|r| r.map(|v| v as f32)).collect();
     *CUTOUTS.lock().unwrap_or_else(PoisonError::into_inner) = rects;
+    layout_changed();
+}
+
+/// The screen's rounded corners as `[radius, centre x, centre y]` in window pixels, top-left,
+/// top-right, bottom-right and bottom-left; a radius of 0 is a square corner (Android 12+ reports
+/// them, `PhotoCraftActivity.nativeCorners`).
+pub fn corners_px() -> [[f32; 3]; 4] {
+    *CORNERS.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The rounded corners changed (or were first measured), from `PhotoCraftActivity.nativeCorners`.
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub extern "system" fn Java_ai_storyteller_photocraft_PhotoCraftActivity_nativeCorners(
+    _env: *mut c_void,
+    _this: *mut c_void,
+    r0: i32,
+    x0: i32,
+    y0: i32,
+    r1: i32,
+    x1: i32,
+    y1: i32,
+    r2: i32,
+    x2: i32,
+    y2: i32,
+    r3: i32,
+    x3: i32,
+    y3: i32,
+) {
+    let c = [[r0, x0, y0], [r1, x1, y1], [r2, x2, y2], [r3, x3, y3]];
+    *CORNERS.lock().unwrap_or_else(PoisonError::into_inner) = c.map(|c| if c[0] > 0 { c.map(|v| v as f32) } else { [0.0; 3] });
+    layout_changed();
 }
 
 /// The tool of touch `id` (`MotionEvent.getToolType()`), if it was reported.

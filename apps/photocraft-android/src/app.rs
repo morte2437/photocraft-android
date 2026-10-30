@@ -62,6 +62,10 @@ fn run(android: AndroidApp) -> Result<(), String> {
             let touch = crate::touch::TouchInput::new(&files_dir);
             let layout = crate::layout::Layout::new(&files_dir);
             let font_outcome = crate::fonts::Outcome::default();
+            // The keyboard opening or closing (and a cutout or corner change) lays the app out
+            // again right away, not on the next touch.
+            let wake = cc.egui_ctx.clone();
+            photocraft_tablet::android::on_layout_change(move || wake.request_repaint());
             let wake = cc.egui_ctx.clone();
             let fonts_menu = crate::fonts::menu(&files_dir, bridge.clone(), font_outcome.clone(), move || wake.request_repaint());
             let wake = cc.egui_ctx.clone();
@@ -656,6 +660,14 @@ impl eframe::App for Shell {
         let ppp = ui.ctx().pixels_per_point();
         let holes = photocraft_tablet::android::cutouts_px().into_iter().map(|[l, t, r, b]| egui::Rect::from_min_max(egui::pos2(l, t) / ppp, egui::pos2(r, b) / ppp)).collect();
         photocraft_ui_egui::cutout::set(ui.ctx(), holes);
+        // The screen's rounded corners: controls in their curves move clear of them.
+        let corners = photocraft_tablet::android::corners_px()
+            .into_iter()
+            .zip([(true, true), (false, true), (false, false), (true, false)])
+            .filter(|([r, ..], _)| *r > 0.0)
+            .map(|([r, x, y], (left, top))| photocraft_ui_egui::cutout::Corner { centre: egui::pos2(x, y) / ppp, radius: r / ppp, left, top })
+            .collect();
+        photocraft_ui_egui::cutout::set_corners(ui.ctx(), corners);
         // The pad first, so the app lays out beside it.
         self.pad.show(ui, &tokens, &self.app);
         let section = section("photocraft:app");

@@ -82,6 +82,8 @@ public class PhotoCraftActivity extends GameActivity {
     /** Where the front camera's cutouts are (up to two, window pixels; n says how many), so the
      * menu and options bars split around them (photocraft-tablet's android.rs). */
     private static native void nativeCutout(int n, int l0, int t0, int r0, int b0, int l1, int t1, int r1, int b1);
+    /** The screen's rounded corners: radius and centre of the top-left, top-right, bottom-right and bottom-left (0 radius: square). */
+    private static native void nativeCorners(int r0, int x0, int y0, int r1, int x1, int y1, int r2, int x2, int y2, int r3, int x3, int y3);
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService io = Executors.newSingleThreadExecutor();
@@ -150,6 +152,29 @@ public class PhotoCraftActivity extends GameActivity {
                     lastCutout = null;
                 }
             }
+            // The screen's rounded corners (Android 12+): controls in them move clear of the curve.
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                android.view.WindowInsets raw = decor.getRootWindowInsets();
+                int[] c = new int[12];
+                int[] pos = {android.view.RoundedCorner.POSITION_TOP_LEFT, android.view.RoundedCorner.POSITION_TOP_RIGHT,
+                        android.view.RoundedCorner.POSITION_BOTTOM_RIGHT, android.view.RoundedCorner.POSITION_BOTTOM_LEFT};
+                for (int i = 0; raw != null && i < 4; i++) {
+                    android.view.RoundedCorner rc = raw.getRoundedCorner(pos[i]);
+                    if (rc != null) {
+                        c[3 * i] = rc.getRadius();
+                        c[3 * i + 1] = rc.getCenter().x;
+                        c[3 * i + 2] = rc.getCenter().y;
+                    }
+                }
+                if (!java.util.Arrays.equals(c, lastCorners)) {
+                    lastCorners = c;
+                    try {
+                        nativeCorners(c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8], c[9], c[10], c[11]);
+                    } catch (UnsatisfiedLinkError err) {
+                        lastCorners = null;
+                    }
+                }
+            }
             if (ime != lastImeHeight) {
                 lastImeHeight = ime;
                 try {
@@ -164,6 +189,7 @@ public class PhotoCraftActivity extends GameActivity {
 
     private int lastImeHeight = -1;
     private List<android.graphics.Rect> lastCutout = null;
+    private int[] lastCorners = null;
 
     @Override
     protected void onResume() {
