@@ -60,8 +60,8 @@ PhotoCraftActivity.java (extends GameActivity)       libphotocraft_android.so (t
   settings, and restores them when the app is installed again (`res/xml/data_extraction_rules.xml`,
   `backup_rules.xml`; #17). Documents, crash-recovery files and the bridge are never backed up;
   imported fonts move with a device transfer but stay out of the cloud backup (its 25 MB limit).
-  Test with `adb shell bmgr backupnow ai.storyteller.photocraft`, `pm clear`, then
-  `bmgr restore 1 ai.storyteller.photocraft` on the local transport.
+  Test with `adb shell bmgr backupnow io.github.muletody.pctouch`, `pm clear`, then
+  `bmgr restore 1 io.github.muletody.pctouch` on the local transport.
   **Edit › Preferences › Export Settings… / Import Settings…** (`src/settings.rs`) do the same by
   hand: one `.zip` saved through the file picker, with the same settings plus imported fonts.
   An import is checked and staged in `settings-import/`, and applied at the next start, before
