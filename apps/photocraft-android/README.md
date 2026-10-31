@@ -60,8 +60,8 @@ PhotoCraftActivity.java (extends GameActivity)       libphotocraft_android.so (t
   settings, and restores them when the app is installed again (`res/xml/data_extraction_rules.xml`,
   `backup_rules.xml`; #17). Documents, crash-recovery files and the bridge are never backed up;
   imported fonts move with a device transfer but stay out of the cloud backup (its 25 MB limit).
-  Test with `adb shell bmgr backupnow ai.storyteller.photocraft`, `pm clear`, then
-  `bmgr restore 1 ai.storyteller.photocraft` on the local transport.
+  Test with `adb shell bmgr backupnow io.github.muletody.pctouch`, `pm clear`, then
+  `bmgr restore 1 io.github.muletody.pctouch` on the local transport.
   **Edit › Preferences › Export Settings… / Import Settings…** (`src/settings.rs`) do the same by
   hand: one `.zip` saved through the file picker, with the same settings plus imported fonts.
   An import is checked and staged in `settings-import/`, and applied at the next start, before
@@ -179,10 +179,12 @@ taps press their shortcut like a pad key, and two fingers over the interface bec
 
 ## Phone layout
 
-**Window › Layout** picks **Automatic** (the default), **Phone** or **Tablet**. Automatic uses the
-phone layout when the screen's smallest side is under 600 dp, Android's own phone/tablet line,
-so a phone stays a phone on its side; it is checked every frame, so rotating, a foldable opening
-or split screen switches at once. The phone layout:
+**Window › Layout** picks **Automatic** (the default), **Phone**, **Tablet** or **Touch**.
+Automatic uses the phone layout when the screen's smallest side is under 600 dp, Android's own
+phone/tablet line, so a phone stays a phone on its side; it is checked every frame, so rotating,
+a foldable opening or split screen switches at once. **Touch** (this fork) is the phone layout
+plus a `touch_layout` flag for a finger-sized interface (in progress: for now it looks like
+Phone); Automatic never picks it. The phone layout:
 
 - **Panels:** the right-hand dock is only its icon rail (Properties, Navigator, Color &
   Swatches, Layers, History, Brushes, with finger-sized buttons). A rail button opens its group

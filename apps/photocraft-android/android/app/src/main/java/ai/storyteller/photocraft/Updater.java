@@ -52,7 +52,7 @@ import java.util.regex.Pattern;
 final class Updater {
     private static final String TAG = "PhotoCraft";
     /** The repository whose releases are the updates. */
-    static final String REPO = "morte2437/photocraft-android";
+    static final String REPO = "muletody/pctouch";
     private static final String API = "https://api.github.com/repos/" + REPO + "/releases?per_page=20";
     private static final Pattern TAG_VERSION = Pattern.compile("^android-v(\\d+)\\.(\\d+)\\.(\\d+)(?:-(\\d+))?$");
     private static final Pattern NAME_VERSION = Pattern.compile("^(\\d+)\\.(\\d+)\\.(\\d+)(?:-(\\d+))?");
