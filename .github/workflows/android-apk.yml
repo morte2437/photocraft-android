@@ -75,7 +75,7 @@ jobs:
         env:
           PROFILE: ${{ inputs.profile || 'release' }}
           RELEASE_BUILD: ${{ github.run_number }}
-        run: apps/photocraft-android/build.sh
+        run: bash apps/photocraft-android/build.sh
 
       - name: Keep the APK
         uses: actions/upload-artifact@v4
