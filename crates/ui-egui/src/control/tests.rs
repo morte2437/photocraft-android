@@ -907,6 +907,10 @@ fn ui_set_drives_the_layers_panel_filter() {
         assert_eq!(r["ok"], false, "{bad} → {r}");
         assert_eq!(app.ui.layer_filter_by, FilterBy::Mode, "{bad} changed nothing");
     }
+    // #5898: the Color filter through the same path.
+    let ok = call(&mut app, &ctx, "ui.set", json!({"layerFilter": {"by": "color", "color": "red"}}));
+    assert_eq!(ok["ok"], true, "{ok}");
+    assert_eq!((app.ui.layer_filter_by, app.ui.layer_filter_color), (FilterBy::Color, photocraft_doc::LabelColor::Red));
 }
 
 #[test]
