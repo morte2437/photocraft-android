@@ -136,3 +136,26 @@ fn the_dropdown_switches_the_panel_between_filter_types() {
     h.run_steps(4);
     assert_eq!(drawn(&h), ["ink notes"]);
 }
+
+/// #5898: Photoshop's Color filter lists the layers with one colour label; it filters at once,
+/// by no colour (None) at first, like Mode. Agents set it with `layerFilter.color`.
+#[test]
+fn the_color_filter_lists_one_label() {
+    let mut s = session();
+    let ink = layer(&s.active().unwrap().doc, "Ink");
+    let sheets = layer(&s.active().unwrap().doc, "Sheets");
+    // A group's colour goes to its layers too (Photoshop), so the group first, then Ink inside it.
+    s.execute("layer.setLabelColor", json!({"layer": sheets, "color": "seafoam"})).unwrap();
+    s.execute("layer.setLabelColor", json!({"layer": ink, "color": "red"})).unwrap();
+    let doc = &s.active().unwrap().doc;
+    let by_color = |c: photocraft_doc::LabelColor| Filter::of(&UiState { layer_filter_by: FilterBy::Color, layer_filter_color: c, ..UiState::default() });
+    assert!(by_color(photocraft_doc::LabelColor::None).active(), "Color filters at once, as in Photoshop");
+    assert_eq!(listed(doc, &by_color(photocraft_doc::LabelColor::Red)), ["Ink"]);
+    assert_eq!(listed(doc, &by_color(photocraft_doc::LabelColor::Seafoam)), ["Sheets", "Paper"]);
+    assert_eq!(listed(doc, &by_color(photocraft_doc::LabelColor::None)), ["ink notes", "Background"]);
+    // Over the control channel.
+    let f = super::patched(&UiState::default(), &json!({"by": "color", "color": "red"})).unwrap();
+    assert_eq!((f.by, f.color), (FilterBy::Color, photocraft_doc::LabelColor::Red));
+    assert!(super::patched(&UiState::default(), &json!({"color": "crimson"})).unwrap_err().contains("crimson"));
+    assert!(super::patched(&UiState::default(), &json!({"color": 2})).is_err());
+}
