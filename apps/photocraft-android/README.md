@@ -179,10 +179,12 @@ taps press their shortcut like a pad key, and two fingers over the interface bec
 
 ## Phone layout
 
-**Window › Layout** picks **Automatic** (the default), **Phone** or **Tablet**. Automatic uses the
-phone layout when the screen's smallest side is under 600 dp, Android's own phone/tablet line,
-so a phone stays a phone on its side; it is checked every frame, so rotating, a foldable opening
-or split screen switches at once. The phone layout:
+**Window › Layout** picks **Automatic** (the default), **Phone**, **Tablet** or **Touch**.
+Automatic uses the phone layout when the screen's smallest side is under 600 dp, Android's own
+phone/tablet line, so a phone stays a phone on its side; it is checked every frame, so rotating,
+a foldable opening or split screen switches at once. **Touch** (this fork) is the phone layout
+plus a `touch_layout` flag for a finger-sized interface (in progress: for now it looks like
+Phone); Automatic never picks it. The phone layout:
 
 - **Panels:** the right-hand dock is only its icon rail (Properties, Navigator, Color &
   Swatches, Layers, History, Brushes, with finger-sized buttons). A rail button opens its group

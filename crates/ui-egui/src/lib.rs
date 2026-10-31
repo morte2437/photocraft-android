@@ -691,6 +691,11 @@ pub struct PhotocraftApp {
     /// is smaller ([`prefs_ui::COMPACT_AUTO_SCALE`]) and dialogs take the window's width and
     /// scroll when taller than it. Off on the desktop.
     pub compact_layout: bool,
+    /// The touch layout (the Android app's Window › Layout › Touch): finger-sized controls laid
+    /// out for a phone held sideways. It always comes with [`Self::compact_layout`]; the
+    /// interface of its own is built up step by step, so until then it looks like the phone
+    /// layout. Off on the desktop.
+    pub touch_layout: bool,
     /// A strip the shell keeps along a side edge below the top bars (the Android Shortcut Pad):
     /// which side (`true`: right) and how wide. The app lays out beside it and leaves it empty.
     pub edge_strip: Option<(bool, f32)>,
