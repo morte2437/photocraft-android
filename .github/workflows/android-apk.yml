@@ -71,11 +71,16 @@ jobs:
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked
 
+      - name: Make the build scripts executable
+        # The checked-out build.sh and gradlew lack the executable bit (git mode 100644), not
+        # this workflow's doing: chmod rather than chase it through every script they call.
+        run: chmod +x apps/photocraft-android/build.sh apps/photocraft-android/android/gradlew
+
       - name: Build the APK
         env:
           PROFILE: ${{ inputs.profile || 'release' }}
           RELEASE_BUILD: ${{ github.run_number }}
-        run: bash apps/photocraft-android/build.sh
+        run: apps/photocraft-android/build.sh
 
       - name: Keep the APK
         uses: actions/upload-artifact@v4
