@@ -593,15 +593,12 @@ public class PhotoCraftActivity extends GameActivity {
                 answerCancelled(id);
                 return;
             }
-            // The app picks the format from the extension it asked for. Some providers report
-            // a name without it, or no name at all (Downloads on some devices: an id such as
-            // "msf:1234"), and "Untitled-1" can't be saved as anything: keep the requested
-            // name unless the provider's only differs in its base (say "Untitled-1 (1).psd").
             String provided = displayName(uri, pendingName);
-            String name = extensionOf(provided).equals(extensionOf(pendingName)) ? provided : pendingName;
-            if (!name.equals(provided)) {
-                Log.i(TAG, "save: the provider named the document \"" + provided + "\"; writing \"" + name + "\"");
-            }
+            String name = savedName(provided, pendingName);
+            Log.i(TAG, "save: asked for \"" + pendingName + "\", the provider named it \"" + provided + "\"; writing \"" + name + "\"");
+            // Keep write access past this run, so File > Save can still write back to the
+            // document after the app restarts or is updated (as an opened document keeps it).
+            keepAccess(uri, Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
             File dest = new File(bridge, "out/" + id + "/" + safeName(name));
             //noinspection ResultOfMethodCallIgnored
             dest.getParentFile().mkdirs();
@@ -878,6 +875,27 @@ public class PhotoCraftActivity extends GameActivity {
         }
         Log.i(TAG, "open: \"" + name + "\" has no extension; type " + type + " -> " + ext);
         return ext == null ? name : name + "." + ext;
+    }
+
+    /**
+     * The name a saved document gets, from the one its provider reports and the one the app
+     * asked for. The app picks the format from the extension, so the name typed in the picker
+     * wins and keeps the extension it was given ("Sunset.png"); a typed name without one gets the
+     * requested extension ("Sunset" -> "Sunset.psd"). Only a provider that reports no real name
+     * (nothing, or an id such as "58" or "msf:1234" in Downloads on some devices) keeps the
+     * requested name.
+     */
+    static String savedName(String provided, String requested) {
+        String p = provided == null ? "" : provided.trim();
+        boolean id = p.isEmpty() || p.matches("\\d+") || p.matches("[A-Za-z]+:\\d+");
+        if (id) {
+            return requested;
+        }
+        if (!extensionOf(p).isEmpty()) {
+            return p;
+        }
+        String ext = extensionOf(requested);
+        return ext.isEmpty() ? p : p + "." + ext;
     }
 
     /** The extension of a file name, lower case; "" for none. */
