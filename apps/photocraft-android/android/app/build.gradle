@@ -28,7 +28,9 @@ android {
     compileSdk 35
 
     defaultConfig {
-        applicationId 'ai.storyteller.photocraft'
+        // This fork's own app id, so it installs next to the original app. The Java package
+        // (namespace above) stays as it is: the native code finds its JNI methods by that name.
+        applicationId 'io.github.muletody.pctouch'
         minSdk 26
         targetSdk 35
         versionCode appVersionCode

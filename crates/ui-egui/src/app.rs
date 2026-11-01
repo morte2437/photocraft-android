@@ -194,6 +194,7 @@ impl PhotocraftApp {
             control_click: Default::default(),
             background_jobs: false,
             compact_layout: false,
+            touch_layout: false,
             edge_strip: None,
             edge_strip_rect: None,
             perspective_drag: None,

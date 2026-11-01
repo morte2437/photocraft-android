@@ -1,0 +1,91 @@
+# Builds PCTouch's Android APK in GitHub's cloud and attaches it to the run as a download.
+#
+# Two ways to start it:
+#   * Actions tab > "Android APK" > Run workflow (the file must be on the default branch), or
+#   * any push to the branch `apk-ci` (so the file can live there, away from your feature branches).
+# Either way it builds `touch-layout` unless you type another branch, tag or commit in "ref".
+#
+# The APK is signed with the runner's own debug key, which is new on every run: Android refuses
+# to install it over a copy built by an earlier run. Uninstall the old one first (its settings go
+# with it), or add a fixed keystore later.
+name: Android APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag or commit to build
+        default: touch-layout
+        type: string
+      profile:
+        description: "release (optimised, slow to build) or dev (faster to build, slower app)"
+        default: release
+        type: choice
+        options:
+          - release
+          - dev
+  push:
+    branches: [apk-ci]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      NDK_VERSION: 27.3.13750724
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY/CodeQL"
+          df -h /
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || 'touch-layout' }}
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install the Android platform, build tools and NDK
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0" "ndk;$NDK_VERSION"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Make the build scripts executable
+        # The checked-out build.sh and gradlew lack the executable bit (git mode 100644), not
+        # this workflow's doing: chmod rather than chase it through every script they call.
+        run: chmod +x apps/photocraft-android/build.sh apps/photocraft-android/android/gradlew
+
+      - name: Build the APK
+        env:
+          PROFILE: ${{ inputs.profile || 'release' }}
+          RELEASE_BUILD: ${{ github.run_number }}
+        run: apps/photocraft-android/build.sh
+
+      - name: Keep the APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: pctouch-apk
+          path: target/android/*.apk
+          if-no-files-found: error
+          retention-days: 14

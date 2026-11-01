@@ -5,6 +5,9 @@
 //! The phone layout ([`photocraft_ui_egui::PhotocraftApp::compact_layout`]) makes Auto interface
 //! scale smaller, dialogs as wide as the window (scrolling when taller), and the Shortcut Pad
 //! slimmer.
+//!
+//! **Touch** is the phone layout plus [`photocraft_ui_egui::PhotocraftApp::touch_layout`], the
+//! flag the finger-sized interface keys off. Automatic never picks it: it is chosen by hand.
 
 use photocraft_ui_egui::menus::MenuItem;
 use photocraft_ui_egui::platform_menu::PlatformMenu;
@@ -29,16 +32,18 @@ pub enum LayoutMode {
     Auto,
     Phone,
     Tablet,
+    Touch,
 }
 
 impl LayoutMode {
-    pub const ALL: [LayoutMode; 3] = [LayoutMode::Auto, LayoutMode::Phone, LayoutMode::Tablet];
+    pub const ALL: [LayoutMode; 4] = [LayoutMode::Auto, LayoutMode::Phone, LayoutMode::Tablet, LayoutMode::Touch];
 
     fn key(self) -> &'static str {
         match self {
             LayoutMode::Auto => "auto",
             LayoutMode::Phone => "phone",
             LayoutMode::Tablet => "tablet",
+            LayoutMode::Touch => "touch",
         }
     }
 
@@ -47,6 +52,7 @@ impl LayoutMode {
             LayoutMode::Auto => "Automatic (Phone or Tablet)",
             LayoutMode::Phone => "Phone",
             LayoutMode::Tablet => "Tablet",
+            LayoutMode::Touch => "Touch",
         }
     }
 
@@ -58,9 +64,14 @@ impl LayoutMode {
     pub fn is_phone(self, smallest_dp: f32) -> bool {
         match self {
             LayoutMode::Auto => smallest_dp > 0.0 && smallest_dp < PHONE_MAX_DP,
-            LayoutMode::Phone => true,
+            LayoutMode::Phone | LayoutMode::Touch => true,
             LayoutMode::Tablet => false,
         }
+    }
+
+    /// Whether this choice is the touch layout, whatever the screen size.
+    pub fn is_touch(self) -> bool {
+        self == LayoutMode::Touch
     }
 }
 
@@ -98,6 +109,12 @@ impl Layout {
     pub fn is_phone(&self, ctx: &egui::Context, keyboard: f32) -> bool {
         let r = ctx.content_rect();
         self.shared.borrow().mode.is_phone(r.width().min(r.height() + keyboard.max(0.0)) * ctx.zoom_factor())
+    }
+
+    /// Whether the touch layout was chosen (Window › Layout › Touch). It comes with the phone
+    /// layout: [`Self::is_phone`] is true whenever this is.
+    pub fn is_touch(&self) -> bool {
+        self.shared.borrow().mode.is_touch()
     }
 
     /// The Window › Layout rows.
@@ -158,6 +175,17 @@ mod tests {
     }
 
     #[test]
+    fn touch_is_a_phone_layout_that_is_only_chosen_by_hand() {
+        for dp in [0.0, 300.0, 411.0, 800.0, 1200.0] {
+            assert!(LayoutMode::Touch.is_phone(dp), "touch comes with the phone layout at {dp} dp");
+            assert!(!LayoutMode::Auto.is_touch() && !LayoutMode::Phone.is_touch() && !LayoutMode::Tablet.is_touch());
+        }
+        assert!(LayoutMode::Touch.is_touch());
+        assert_eq!(LayoutMode::from_key("touch"), Some(LayoutMode::Touch));
+        assert_eq!(LayoutMode::from_key(" touch\n"), Some(LayoutMode::Touch), "a saved choice is trimmed");
+    }
+
+    #[test]
     fn the_choice_is_saved() {
         let dir = std::env::temp_dir().join(format!("pc-layout-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -165,6 +193,11 @@ mod tests {
         assert_eq!(l.shared.borrow().mode, LayoutMode::Auto);
         (l.menu().run)("android.layout.phone").unwrap();
         assert_eq!(Layout::new(&dir).shared.borrow().mode, LayoutMode::Phone);
+        assert!(!l.is_touch());
+        (l.menu().run)("android.layout.touch").unwrap();
+        assert!(l.is_touch() && Layout::new(&dir).is_touch(), "touch is saved too");
+        (l.menu().run)("android.layout.phone").unwrap();
+        assert!(!l.is_touch());
         assert!((l.menu().run)("android.layout.huge").is_err());
         // The keyboard: shrinking the screen until told to cover it, and kept.
         assert!(!l.keyboard_covers());

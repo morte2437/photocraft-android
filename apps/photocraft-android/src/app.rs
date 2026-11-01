@@ -407,6 +407,7 @@ impl eframe::App for Shell {
         let keyboard = if self.layout.keyboard_covers() { 0.0 } else { photocraft_tablet::android::ime_height_px() / ctx.pixels_per_point() };
         let phone = self.layout.is_phone(ctx, keyboard);
         self.app.compact_layout = phone;
+        self.app.touch_layout = self.layout.is_touch();
         self.pad.compact = phone;
         self.pad.run_pending(&mut self.app, ctx);
         if let Some((message, error)) = self.font_outcome.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
