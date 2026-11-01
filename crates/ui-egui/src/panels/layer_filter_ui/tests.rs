@@ -153,6 +153,7 @@ fn the_color_filter_lists_one_label() {
     assert_eq!(listed(doc, &by_color(photocraft_doc::LabelColor::Red)), ["Ink"]);
     assert_eq!(listed(doc, &by_color(photocraft_doc::LabelColor::Seafoam)), ["Sheets", "Paper"]);
     assert_eq!(listed(doc, &by_color(photocraft_doc::LabelColor::None)), ["ink notes", "Background"]);
+    assert!(listed(doc, &by_color(photocraft_doc::LabelColor::Blue)).is_empty(), "a colour no layer has lists nothing");
     // Over the control channel.
     let f = super::patched(&UiState::default(), &json!({"by": "color", "color": "red"})).unwrap();
     assert_eq!((f.by, f.color), (FilterBy::Color, photocraft_doc::LabelColor::Red));

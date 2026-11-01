@@ -900,6 +900,7 @@ fn ui_set_drives_the_layers_panel_filter() {
         json!({"layerFilter": {"kinds": "pixel"}}),
         json!({"layerFilter": {"name": 3}}),
         json!({"layerFilter": {"mode": "Nonsense"}}),
+        json!({"layerFilter": {"color": "crimson"}}),
         json!({"layerFilter": {"by": "kind", "extra": true}}),
         json!({"layerFilter": {"by": "kind"}, "tileGrid": "yes"}),
     ] {
