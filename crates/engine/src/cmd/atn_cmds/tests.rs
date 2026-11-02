@@ -69,6 +69,19 @@ fn b64(bytes: &[u8]) -> String {
     photocraft_paint::tile::b64_encode(bytes)
 }
 
+fn color_lookup_case() -> Value {
+    let bytes = b"LUT_3D_SIZE 2\n0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n";
+    let d = desc("null")
+        .with("lookupType", enm("colorLookupType", "3DLUT"))
+        .with("Nm  ", text("identity.cube"))
+        .with("Dthr", D::Boolean(false))
+        .with("profile", D::RawData(Vec::new()))
+        .with("LUTFormat", enm("LUTFormatType", "LUTFormatCUBE"))
+        .with("LUT3DFileData", D::RawData(Vec::new()))
+        .with("LUT3DFileName", text("identity.cube"));
+    json!({"data":b64(bytes),"dataEncoding":"base64","lutFormat":"cube","fileName":"identity.cube","dither":false,"__atnColorLookup":b64(&d.to_bytes())})
+}
+
 /// A set with a mapped filter, an adjustment layer, selection steps, a layer by name, a Stop,
 /// a Play, a tool selection (no document effect) and an event PhotoCraft has no command for.
 fn sample() -> AtnFile {
@@ -490,6 +503,8 @@ fn every_mapped_command_exports_and_imports_back() {
         ("filter.noise.median", json!({"radius": 2})),
         ("filter.stylize.emboss", json!({"angle": 135, "height": 3, "amount": 100})),
         ("image.calculations", json!({"source1":{"channel":{"color":"red"}},"source2":{"channel":{"color":"green"}},"blending":"add","scale":1,"offset":0})),
+        ("image.adjustments.colorLookup", color_lookup_case()),
+        ("filter.blur.shapeBlur", json!({"radius":5,"shapeName":"Recorded Square","shapeId":"original-fixture-square","shapeOriginType":9})),
         ("filter.blur.motionBlur", json!({"angle": 45, "distance": 20})),
         ("filter.blur.smartBlur", json!({"radius": 2.5, "threshold": 40, "quality": "medium", "mode": "overlayEdge"})),
         ("filter.other.offset", json!({"horizontal": 10, "vertical": -5, "undefinedAreas": "wrap"})),

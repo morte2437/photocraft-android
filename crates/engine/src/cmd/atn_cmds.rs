@@ -36,7 +36,9 @@ mod steps_calculations;
 mod steps_doc;
 mod steps_image;
 mod steps_layer;
+mod steps_lookup;
 mod steps_make;
+mod steps_shape_blur;
 mod tables;
 
 #[cfg(test)]

@@ -18,7 +18,7 @@ layers and documents, newer and older events and files, and a measured reference
 map yet, with everything needed to implement them without
 the reference application.
 
-## Supported events (117)
+## Supported events (119)
 
 | Code | String ID | Label | PhotoCraft command(s) |
 |---|---|---|---|
@@ -42,6 +42,8 @@ the reference application.
 | (string ID only) | collapseAllGroupsEvent | Collapse All Groups | `layer.setExpanded` |
 | `ClrB` | colorBalance | Color Balance | `image.adjustments.colorBalance` |
 | `ClrR` | colorRange | Color Range | `select.colorRange` |
+| (string ID only) | colorLookup | Color Lookup (embedded 3D LUT forms) | `image.adjustments.colorLookup` |
+| (string ID only) | shapeBlur | Shape Blur (custom shape by installed ID) | `filter.blur.shapeBlur` |
 | `Cntc` | contract | Contract | `select.modify.contract` |
 | `CnvM` | convertMode | Convert Mode | `image.mode.rgb`, `image.mode.grayscale`, `image.mode.cmyk`, `image.mode.lab`, `image.mode.multichannel`, `image.mode.bits8`, `image.mode.bits16`, `image.mode.bits32`, `image.mode.bitmap` |
 | (string ID only) | convertToProfile | Convert to Profile | `edit.convertToProfile` |
@@ -159,6 +161,51 @@ unrepresented reference forms remain whole preserved steps. Composite, multiple
 colour and mask targets fail before mutation when a supported step requests the
 current channel. These limits remain open under #10705; fresh Photoshop pixel
 parity has not been measured.
+
+### Color Lookup with an embedded LUT
+
+Recorded `colorLookup` steps with a `3DLUT` lookup type, a declared CUBE/3DL/LOOK
+format, embedded file bytes, a file name and an explicit dither flag map to
+`image.adjustments.colorLookup`. The existing LUT parsers read the original bytes,
+including UTF-16 LOOK files. The recorded path is metadata; playback uses the
+embedded file and does not read that path. The native command also accepts
+`dataEncoding:"base64"` and `lutFormat:"cube|3dl|look"` for embedded files whose
+names do not identify their format. Existing text input remains supported.
+
+Save retains the original key order, types, names and file bytes. The recorded
+metadata template excludes the file data, so the action does not store a second
+copy of a large LUT. Unrepresented native option changes refuse export. Abstract
+and device-link profiles, nonempty ICC processing data, unknown formats and
+unknown settings remain complete preserved steps; these parts of #10705 remain
+unfinished. The native command continues to refuse non-default input domains.
+The existing 3DL input-shaper defect is tracked by #8982 and its active fix #9170;
+support for nonlinear shapers depends on that fix. PSD-specific LUT Data Order
+and Table Order handling is separately tracked by #9126 and #9218.
+
+### Shape Blur with a recorded custom shape
+
+The measured `shapeBlur` form contains a pixel radius, a `customShape` object
+with `Nm  ` and `Idnt` text, and optionally the recorded `keyOriginType` value 9.
+The nested object class is corroborated by
+[ag-psd's public descriptor definitions](https://github.com/Agamnentzar/ag-psd/blob/master/src/descriptor.ts).
+The ID selects the installed shape even after a rename. If that asset is absent,
+playback fails without applying a blur; it never substitutes a shape with
+the same name. The existing CSH-import contribution #5493 is the prerequisite
+for loading external shape libraries and must preserve their original IDs.
+
+The native command rasterizes the selected vector shape as a normalized coverage
+kernel, retaining its aspect ratio and orientation. This follows the
+[documented use of custom shape presets as blur kernels](https://helpx.adobe.com/ee/photoshop/using/filter-effects-reference.html).
+It also accepts `shapeName` or portable `shapePath` geometry. Smart Filters keep
+the vector geometry so native saves can render without the preset library.
+The built-in shape choices keep their existing kernel path. Fresh Photoshop
+pixel parity has not been measured.
+
+Unknown fields, other origin values and unrepresented descriptor forms remain
+whole preserved steps. Export refuses native-only geometry and target changes
+that the recorded form cannot carry. Radius-only recordings still require the
+separate existing event integration; they are not claimed by this custom-shape
+converter.
 
 ## Known gaps in mapped events
 

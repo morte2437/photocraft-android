@@ -202,9 +202,13 @@ const PARAMS: &[(&str, Build)] = &[
     // Blur
     ("filter.blur.smartBlur", smart_blur),
     ("filter.blur.lensBlur", lens_blur),
-    ("filter.blur.shapeBlur", |p| FilterParams::ShapeBlur {
-        radius: f(p, "radius", 10.0).clamp(5.0, 1000.0),
-        shape: choice(p, "shape", "circle", BLUR_SHAPES, BlurShape::Circle),
+    ("filter.blur.shapeBlur", |p| {
+        let radius = f(p, "radius", 10.0).clamp(5.0, 1000.0);
+        if ["shapeId", "shapeName", "shapePath"].iter().any(|key| p.get(key).is_some_and(|v| !v.is_null())) {
+            FilterParams::CustomShapeBlur { radius, kernel: None }
+        } else {
+            FilterParams::ShapeBlur { radius, shape: choice(p, "shape", "circle", BLUR_SHAPES, BlurShape::Circle) }
+        }
     }),
     // Blur Gallery
     ("filter.blurGallery.tiltShift", tilt_shift),
@@ -480,6 +484,14 @@ fn uses_colours(id: &str) -> bool {
 /// recorded params (journal, smart filters) reproduce the result.
 pub(crate) fn prepare(s: &Session, id: &str, p: &Value) -> Value {
     let mut out = if p.is_object() { p.clone() } else { json!({}) };
+    if id == "filter.blur.shapeBlur"
+        && out.get("shapePath").is_none()
+        && ["shapeId", "shapeName"].iter().any(|key| out.get(key).is_some_and(|v| !v.is_null()))
+        && let Ok(path) = crate::presets::shapes::filter_path(s, &out)
+    {
+        // Smart filters keep geometry, so reopening doesn't depend on the preset library.
+        out["shapePath"] = crate::vector_cmds::path_json(&path);
+    }
     if uses_colours(id)
         && let Value::Object(m) = &mut out
     {
@@ -505,6 +517,14 @@ fn map_from_document(doc: &Document, layer: Option<u64>) -> Option<algo::Image> 
 /// `mapDocument` index with optional `mapLayer` id), and the alpha channel Lens Blur reads its
 /// depth from (`depthChannel`, an index or a name).
 pub(crate) fn resolve(s: &Session, fp: &mut FilterParams, p: &Value) -> Result<()> {
+    if matches!(fp, FilterParams::CustomShapeBlur { .. }) {
+        if p.get("shapePath").is_none() {
+            let mut resolved = p.clone();
+            resolved["shapePath"] = crate::vector_cmds::path_json(&crate::presets::shapes::filter_path(s, p)?);
+            return resolve_shape_kernel(fp, &resolved);
+        }
+        return resolve_shape_kernel(fp, p);
+    }
     if let FilterParams::LensBlur { depth: DepthSource::Channel, depth_map, .. } = fp {
         let doc = &s.active().ok_or(EngineError::NoDocument)?.doc;
         let channel = p
@@ -566,6 +586,7 @@ fn map_from_path(path: &str, layer: Option<u64>) -> Result<Option<algo::Image>> 
 /// through. The path is stored in the document, so it is followed only as
 /// [`crate::doc_path::resolve`] allows. `mapDocument` needs the session and is left unresolved.
 pub(crate) fn resolve_map_path(fp: &mut FilterParams, p: &Value) -> Result<()> {
+    resolve_shape_kernel(fp, p)?;
     if let FilterParams::Displace { map, .. } = fp
         && map.is_none()
         && let Some(path) = map_path(p)
@@ -573,6 +594,39 @@ pub(crate) fn resolve_map_path(fp: &mut FilterParams, p: &Value) -> Result<()> {
         let file = crate::doc_path::resolve(path).map_err(|why| crate::doc_path::refusal("the displacement map", path, why))?;
         *map = map_from_path(&file.to_string_lossy(), p.get("mapLayer").and_then(Value::as_u64))?.map(Arc::new);
     }
+    Ok(())
+}
+
+/// Rebuild a custom kernel from portable vector data for direct and Smart Filter rendering.
+fn resolve_shape_kernel(fp: &mut FilterParams, p: &Value) -> Result<()> {
+    let FilterParams::CustomShapeBlur { radius, kernel } = fp else { return Ok(()) };
+    // Preserve Shape Blur's existing radius ceiling before rasterizing an O(r²) kernel.
+    if !radius.is_finite() || !(0.0..=1000.0).contains(radius) {
+        return Err(EngineError::Other("Shape Blur radius must be finite and at most 1000".into()));
+    }
+    let value = p.get("shapePath").ok_or_else(|| EngineError::Other("Shape Blur needs an installed shape or shapePath".into()))?;
+    let path = crate::vector_cmds::parse_path(value).map_err(|why| EngineError::Other(format!("Shape Blur: {why}")))?;
+    if path.is_empty() || path.control_bounds().is_none() {
+        return Err(EngineError::Other("Shape Blur needs a nonempty shape".into()));
+    }
+    let ri = radius.ceil() as i32;
+    let size = ri.saturating_mul(2).saturating_add(1);
+    let fitted = crate::presets::shapes::fit(&path, [0.0, 0.0, f64::from(size), f64::from(size)], true);
+    if fitted
+        .subpaths
+        .iter()
+        .flat_map(|sub| &sub.knots)
+        .flat_map(|knot| [knot.anchor, knot.in_ctrl, knot.out_ctrl])
+        .any(|p| !p.x.is_finite() || !p.y.is_finite())
+    {
+        return Err(EngineError::Other("Shape Blur's selected shape has nonfinite geometry".into()));
+    }
+    let rect = Rect::new(0, 0, size, size);
+    let data = photocraft_vector::path_coverage(&fitted, rect);
+    if data.len() != (size as usize).saturating_mul(size as usize) || !data.iter().any(|v| *v > 0.0) {
+        return Err(EngineError::Other("Shape Blur's selected shape has no coverage".into()));
+    }
+    *kernel = Some(Arc::new(algo::Image { rect, ch: 1, data }));
     Ok(())
 }
 
@@ -767,7 +821,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "filter.blur.shapeBlur",
             "Shape Blur…",
             ["Filter", "Blur"],
-            r##"{"radius":5..1000=10,"shape":"circle|ring|square|diamond|triangle|hexagon|star|heart|cross"}"##
+            r##"{"radius":5..1000=10,"shape":"circle|ring|square|diamond|triangle|hexagon|star|heart|cross","shapeId":str?,"shapeName":str?,"shapePath":json?,"shapeOriginType":9? (recorded ATN metadata)} (custom shape: exact installed id, name, or portable path; ids never fall back to names)"##
         ),
         // Blur Gallery
         cmd!(

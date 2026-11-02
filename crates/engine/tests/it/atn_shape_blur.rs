@@ -1,0 +1,170 @@
+use photocraft_doc::LayerContent;
+use photocraft_engine::{Session, atn_cmds};
+use photocraft_psd::atn::{self, AtnAction, AtnEvent, AtnFile, AtnItem};
+use photocraft_psd::descriptor::{Descriptor, Id, UnicodeString, Value as D};
+use serde_json::json;
+
+const SHAPE_ID: &str = "original-fixture-square";
+
+fn descriptor() -> Descriptor {
+    Descriptor::new("null")
+        .with("Rds ", D::UnitFloat { unit: *b"#Pxl", value: 5.0 })
+        .with(
+            "customShape",
+            D::Descriptor(
+                Descriptor::new("customShape")
+                    .with("Nm  ", D::Text(UnicodeString::new_nul("Triangle")))
+                    .with("Idnt", D::Text(UnicodeString::new_nul(SHAPE_ID))),
+            ),
+        )
+        .with("keyOriginType", D::Integer(9))
+}
+
+fn encoded(d: Descriptor) -> Vec<u8> {
+    atn::write(&AtnFile {
+        actions: vec![AtnAction {
+            name: UnicodeString::new_nul("Shape"),
+            items: vec![AtnItem { event: AtnEvent::name("shapeBlur"), descriptor: Some(d), ..Default::default() }],
+            ..Default::default()
+        }],
+        ..Default::default()
+    })
+    .unwrap()
+}
+
+fn fixture(depth: u32) -> Session {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width":25,"height":25,"depth":depth,"background":"#000000"})).unwrap();
+    s.execute("paint.stroke", json!({"points":[[8,9],[16,13]],"size":3,"hardness":1,"color":"#ffffff"})).unwrap();
+    s
+}
+
+fn install_square(s: &mut Session) {
+    s.execute("shape.presets.new", json!({"name":"Original Square","id":SHAPE_ID,"path":"M 0 0 L 10 0 L 10 10 L 0 10 Z"})).unwrap();
+    s.execute("shape.presets.edit", json!({"action":"rename","preset":"Original Square","name":"Renamed Square"})).unwrap();
+}
+
+fn pixels(s: &Session) -> Vec<[f32; 4]> {
+    photocraft_compose::flatten(&s.active().unwrap().doc).px
+}
+fn saved(s: &Session) -> Vec<u8> {
+    photocraft_format::save_to_bytes(&s.active().unwrap().doc, &Default::default()).unwrap()
+}
+
+#[test]
+fn custom_shape_uses_installed_id_despite_name_collision_and_undoes() {
+    let original = descriptor();
+    let imported = atn_cmds::import(&encoded(original.clone())).unwrap();
+    assert!(imported.unsupported.is_empty());
+    let (out, skipped) = atn_cmds::export("Shapes", &[&imported.actions[0]], &[], false).unwrap();
+    assert!(skipped.is_empty());
+    assert_eq!(atn::parse(&out).unwrap().actions[0].items[0].descriptor, Some(original));
+    for depth in [8, 16, 32] {
+        let mut builtin = fixture(depth);
+        builtin.execute("filter.blur.shapeBlur", json!({"radius":5,"shape":"square"})).unwrap();
+        let expected = pixels(&builtin);
+        let mut s = fixture(depth);
+        install_square(&mut s);
+        let before = saved(&s);
+        s.actions.list = imported.actions.clone();
+        assert_eq!(s.execute("actions.play", json!({"action":"Shape"})).unwrap()["ran"], 1);
+        assert_eq!(pixels(&s), expected, "{depth}-bit square custom kernel");
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(saved(&s), before);
+    }
+}
+
+#[test]
+fn custom_shape_smart_filter_keeps_geometry_across_save_without_preset_library() {
+    let mut s = fixture(16);
+    install_square(&mut s);
+    s.execute("filter.convertForSmartFilters", json!({})).unwrap();
+    s.execute("filter.blur.shapeBlur", json!({"radius":5,"shapeId":SHAPE_ID})).unwrap();
+    let expected = pixels(&s);
+    let doc = photocraft_format::load_from_bytes(&saved(&s)).unwrap();
+    let filter = doc
+        .walk()
+        .into_iter()
+        .find_map(|(_, _, l)| match &l.content {
+            LayerContent::Smart(sm) => sm.smart_filters.first(),
+            _ => None,
+        })
+        .unwrap();
+    assert!(filter.params["shapePath"].is_object());
+    let mut reopened = Session::new();
+    assert!(!reopened.presets.shapes.iter().flat_map(|g| &g.items).any(|shape| shape.id.as_deref() == Some(SHAPE_ID)));
+    reopened.add_document(doc, None);
+    reopened.execute("layer.smartFilter.setVisible", json!({"index":0,"visible":false})).unwrap();
+    assert_ne!(pixels(&reopened), expected);
+    reopened.execute("layer.smartFilter.setVisible", json!({"index":0,"visible":true})).unwrap();
+    assert_eq!(pixels(&reopened), expected);
+}
+
+#[test]
+fn missing_or_invalid_custom_shapes_refuse_before_document_or_history_changes() {
+    let mut s = fixture(8);
+    let before = saved(&s);
+    let history = s.active().unwrap().history.past_len();
+    for p in [
+        json!({"radius":5,"shapeId":"missing","shapeName":"Triangle"}),
+        json!({"radius":5,"shapeId":""}),
+        json!({"radius":5,"shapeName":false}),
+        json!({"radius":5,"shapePath":{"subpaths":[]}}),
+        json!({"radius":5,"shapePath":{"subpaths":[{"closed":true,"knots":[[0,0],[1,0],[2,0]]}]}}),
+        json!({"radius":5,"shapePath":{"subpaths":[{"knots":[[-1.7e308,0],[1.7e308,0],[0,1.7e308]]}]}}),
+        json!({"radius":5,"shapeOriginType":8}),
+    ] {
+        assert!(s.execute("filter.blur.shapeBlur", p.clone()).is_err(), "{p}");
+        assert_eq!(saved(&s), before);
+        assert_eq!(s.active().unwrap().history.past_len(), history);
+    }
+    let imported = atn_cmds::import(&encoded(descriptor())).unwrap();
+    s.actions.list = imported.actions;
+    assert!(s.execute("actions.play", json!({"action":"Shape"})).is_err(), "an unavailable asset must not use the recorded name as fallback");
+    assert_eq!(saved(&s), before);
+}
+
+#[test]
+fn shape_ids_persist_and_old_preferences_without_ids_still_load() {
+    let mut s = Session::new();
+    install_square(&mut s);
+    let prefs = s.prefs_to_json();
+    let mut reopened = Session::new();
+    reopened.load_prefs_json(&prefs).unwrap();
+    assert!(reopened.presets.shapes.iter().flat_map(|g| &g.items).any(|shape| shape.id.as_deref() == Some(SHAPE_ID) && shape.name == "Renamed Square"));
+    let before = reopened.prefs_to_json();
+    assert!(reopened.execute("shape.presets.new", json!({"id":SHAPE_ID,"path":"M 0 0 L 10 0 L 5 10 Z"})).is_err());
+    assert_eq!(reopened.prefs_to_json(), before);
+    let mut old: serde_json::Value = serde_json::from_str(&prefs).unwrap();
+    for group in old["presets"]["shapes"].as_array_mut().unwrap() {
+        for shape in group["items"].as_array_mut().unwrap() {
+            shape.as_object_mut().unwrap().remove("id");
+        }
+    }
+    reopened.load_prefs_json(&old.to_string()).unwrap();
+    assert!(reopened.presets.shapes.iter().flat_map(|g| &g.items).all(|shape| shape.id.is_none()));
+}
+
+#[test]
+fn unrepresented_shape_fields_stay_whole_and_native_geometry_refuses_atn_export() {
+    for (key, value) in [
+        ("keyOriginType", D::Integer(8)),
+        ("Rds ", D::Double(5.0)),
+        ("customShape", D::Descriptor(Descriptor::new("other").with("Idnt", D::Text(UnicodeString::new_nul(SHAPE_ID))))),
+        ("extra", D::Boolean(true)),
+    ] {
+        let mut d = descriptor();
+        d.items.retain(|(k, _)| !k.is(key));
+        d.items.push((Id::new(key), value));
+        let imported = atn_cmds::import(&encoded(d.clone())).unwrap();
+        assert_eq!(imported.actions[0].steps[0].0, atn_cmds::PHOTOSHOP_STEP);
+        let (out, _) = atn_cmds::export("Shapes", &[&imported.actions[0]], &[], false).unwrap();
+        assert_eq!(atn::parse(&out).unwrap().actions[0].items[0].descriptor, Some(d));
+    }
+    let imported = atn_cmds::import(&encoded(descriptor())).unwrap();
+    for (key, value) in [("shapePath", json!({"subpaths":[]})), ("shape", json!("star")), ("target", json!("mask")), ("shapeId", json!(""))] {
+        let mut a = imported.actions[0].clone();
+        a.steps[0].1[key] = value;
+        assert!(atn_cmds::export("Shapes", &[&a], &[], false).is_err());
+    }
+}

@@ -234,6 +234,14 @@ pub(super) const EVENTS: &[Event] = &[
     Event { code: "RdlB", name: "radialBlur", label: "Radial Blur", ids: &["filter.blur.radialBlur"], from: radial_blur_from, to: radial_blur_to },
     ev!("Blr ", "blur", "Blur", "filter.blur.blur", &[]),
     ev!("BlrM", "blurMore", "Blur More", "filter.blur.blurMore", &[]),
+    Event {
+        code: "",
+        name: "shapeBlur",
+        label: "Shape Blur",
+        ids: &["filter.blur.shapeBlur"],
+        from: super::steps_shape_blur::from,
+        to: super::steps_shape_blur::to,
+    },
     ev!("Shrp", "sharpen", "Sharpen", "filter.sharpen.sharpen", &[]),
     ev!("ShrM", "sharpenMore", "Sharpen More", "filter.sharpen.sharpenMore", &[]),
     ev!("ShrE", "sharpenEdges", "Sharpen Edges", "filter.sharpen.sharpenEdges", &[]),
@@ -255,6 +263,14 @@ pub(super) const EVENTS: &[Event] = &[
     // unverified, so only an imported step saves back, as its recorded descriptor while unedited.
     Event { code: "", name: "Adobe Camera Raw Filter", label: "Camera Raw Filter", ids: &[crate::lens_cmds::RAW], from: camera_raw_from, to: camera_raw_to },
     // Adjustments (Image › Adjustments).
+    Event {
+        code: "",
+        name: "colorLookup",
+        label: "Color Lookup",
+        ids: &["image.adjustments.colorLookup"],
+        from: super::steps_lookup::from,
+        to: super::steps_lookup::to,
+    },
     Event {
         code: "",
         name: "adaptCorrect",
