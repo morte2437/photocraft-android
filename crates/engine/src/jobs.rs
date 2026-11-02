@@ -693,10 +693,17 @@ impl Session {
         }
     }
 
-    /// Cancel job `id`: it stops at its next check, its result is discarded and the document
-    /// stays unchanged. The document is unlocked at once. False if no such job is running.
+    /// Cancel job `id`: ordinary jobs stop at their next check and discard their result.
+    /// A batch finishes the current input and reports outputs already written. False if no
+    /// such job is running.
     pub fn cancel_job(&mut self, id: JobId) -> bool {
         let Some(i) = self.jobs.running.iter().position(|r| r.id == id) else { return false };
+        // Earlier batch outputs are already on disk. Let the worker stop after its current
+        // input and return the completed and skipped lists.
+        if self.jobs.running[i].command == "file.automate.batch" {
+            self.jobs.running[i].ctx.cancel();
+            return true;
+        }
         // A print worker can already have handed the job to the OS. Discarding its result
         // would falsely report cancellation; removal belongs to the system print queue.
         if matches!(self.jobs.running[i].command.as_str(), "file.print" | "file.printOneCopy") {
@@ -977,7 +984,7 @@ impl Session {
         let outcome = match r {
             Err(EngineError::Cancelled) => JobOutcome::Cancelled,
             Err(e) => JobOutcome::Failed(e.to_string()),
-            Ok(_) if job.ctx.cancelled() => JobOutcome::Cancelled,
+            Ok(_) if job.ctx.cancelled() && job.command != "file.automate.batch" => JobOutcome::Cancelled,
             Ok(payload) => match self.apply_job(&job, apply, payload) {
                 Ok(v) => JobOutcome::Done(v),
                 Err(EngineError::Cancelled) => JobOutcome::Cancelled,

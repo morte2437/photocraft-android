@@ -21,7 +21,9 @@ keeps its order. Failed inputs consume their position, so later filenames do not
 Braces in an input filename are literal text, not additional tokens. Subfolder inputs keep their
 relative folders under the output folder. **Stop On Error** leaves later inputs unprocessed;
 **Error Log** records failures and their reasons. Folder batches report progress per file and
-can be cancelled after the current file.
+can be cancelled after the current file. A cancelled batch returns `cancelled: true`, its
+completed `files`, and `skipped` inputs. If writing the error log fails, the batch still
+returns its per-file results with `errorLogError` instead of `errorLog`.
 
 Unknown tokens, unmatched braces, invalid parameter types, path separators, reserved filename
 characters, excessive filename length (255 UTF-8 bytes), and serial overflow are rejected before

@@ -40,8 +40,9 @@ pub(crate) fn write_file(path: &str, _bytes: &[u8]) -> Result<()> {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn list_images(dir: &str) -> Result<Vec<String>> {
     let rd = std::fs::read_dir(dir).map_err(|e| EngineError::Other(format!("{dir}: {e}")))?;
-    let mut out: Vec<String> = rd
-        .filter_map(|e| e.ok())
+    let entries = rd.collect::<std::io::Result<Vec<_>>>().map_err(|e| EngineError::Other(format!("{dir}: {e}")))?;
+    let mut out: Vec<String> = entries
+        .into_iter()
         .map(|e| e.path())
         .filter(|p| p.is_file() && openable_name(&p.to_string_lossy()))
         .map(|p| p.to_string_lossy().into_owned())
@@ -181,6 +182,34 @@ pub fn same_file(a: impl AsRef<std::path::Path>, b: impl AsRef<std::path::Path>)
     false
 }
 
+/// Resolve a future output path component by component. Existing symlinks are followed before
+/// applying a later `..`, while components not created yet are kept so a new `x/../file` still
+/// resolves to the file it would reach after `x` is created.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn destination_identity(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    use std::path::{Component, PathBuf};
+    let absolute = if path.is_absolute() { path.to_path_buf() } else { std::env::current_dir().ok()?.join(path) };
+    let mut resolved = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                resolved.pop();
+            }
+            Component::Normal(_) => {
+                resolved.push(component.as_os_str());
+                match std::fs::symlink_metadata(&resolved) {
+                    Ok(_) => resolved = std::fs::canonicalize(&resolved).ok()?,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(_) => return None,
+                }
+            }
+            Component::Prefix(_) | Component::RootDir => resolved.push(component.as_os_str()),
+        }
+    }
+    Some(resolved)
+}
+
 /// Whether two paths would name the same destination even before the file exists. This is used
 /// when a batch error log must not be allowed to replace a result that will be written later.
 pub fn same_destination(a: impl AsRef<std::path::Path>, b: impl AsRef<std::path::Path>) -> bool {
@@ -190,36 +219,20 @@ pub fn same_destination(a: impl AsRef<std::path::Path>, b: impl AsRef<std::path:
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        use std::path::{Component, Path, PathBuf};
-        let normalize = |path: &Path| -> Option<PathBuf> {
-            let absolute = if path.is_absolute() { path.to_path_buf() } else { std::env::current_dir().ok()?.join(path) };
-            let mut clean = PathBuf::new();
-            for component in absolute.components() {
-                match component {
-                    Component::CurDir => {}
-                    Component::ParentDir => {
-                        clean.pop();
+        match (destination_identity(a), destination_identity(b)) {
+            (Some(a), Some(b)) => {
+                #[cfg(any(target_os = "windows", target_os = "macos"))]
+                {
+                    match (a.to_str(), b.to_str()) {
+                        (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
+                        _ => a == b,
                     }
-                    other => clean.push(other.as_os_str()),
+                }
+                #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+                {
+                    a == b
                 }
             }
-            let mut existing = clean.as_path();
-            let mut suffix = Vec::new();
-            while !existing.exists() {
-                suffix.push(existing.file_name()?.to_os_string());
-                existing = existing.parent()?;
-            }
-            let mut resolved = std::fs::canonicalize(existing).ok()?;
-            for component in suffix.into_iter().rev() {
-                resolved.push(component);
-            }
-            Some(resolved)
-        };
-        match (normalize(a), normalize(b)) {
-            (Some(a), Some(b)) => match (a.to_str(), b.to_str()) {
-                (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
-                _ => a == b,
-            },
             _ => false,
         }
     }

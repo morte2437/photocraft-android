@@ -543,6 +543,32 @@ fn open_runs_as_a_job_and_cancel_adds_nothing() {
     assert!(matches!(wait_event(&mut s, id).outcome, JobOutcome::Failed(_)));
 }
 
+#[test]
+fn cancelled_batch_job_returns_its_partial_result() {
+    let mut s = Session::new();
+    let id = job(s
+        .start_job(
+            "file.automate.batch",
+            json!({}),
+            "Batch",
+            false,
+            |ctx| {
+                while !ctx.cancelled() {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                Ok(json!({"files": ["done.png"], "skipped": ["later.png"], "cancelled": true}))
+            },
+            |_, result| Ok(result),
+        )
+        .unwrap());
+    assert!(s.cancel_job(id));
+    let event = wait_event(&mut s, id);
+    let JobOutcome::Done(result) = &event.outcome else { panic!("batch result was discarded: {:?}", event.outcome) };
+    assert_eq!(result["files"], json!(["done.png"]));
+    assert_eq!(result["skipped"], json!(["later.png"]));
+    assert_eq!(result["cancelled"], true);
+}
+
 /// Ask When Opening: a file whose profile doesn't match is decoded but not added; the shell takes
 /// it once the prompt is answered. Without Ask it opens as usual.
 #[test]

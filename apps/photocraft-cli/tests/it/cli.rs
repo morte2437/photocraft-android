@@ -847,6 +847,33 @@ fn batch_refuses_to_write_over_its_inputs() {
     assert!(after.iter().zip(&before).all(|(a, b)| a.0 == b.0 && a.1 != b.1), "both inputs replaced");
 }
 
+#[test]
+fn batch_naming_rejects_unread_input_alias_through_a_missing_directory() {
+    let d = tmp("batch-missing-directory-alias");
+    let input = d.join("in");
+    std::fs::create_dir_all(&input).unwrap();
+    write_png(&input.join("a.png"), 8, 4, 3);
+    write_png(&input.join("b.png"), 8, 4, 7);
+    let original = std::fs::read(input.join("b.png")).unwrap();
+    let actions = d.join("actions.json");
+    std::fs::write(&actions, r#"[{"command":"image.adjustments.invert"}]"#).unwrap();
+    let output = bin()
+        .arg("batch")
+        .arg("--actions")
+        .arg(&actions)
+        .arg("--in")
+        .arg(&input)
+        .arg("--out")
+        .arg(input.join("missing/.."))
+        .args(["--in-place", "--naming", "b.{ext}"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "{}", String::from_utf8_lossy(&output.stdout));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("replace an input"));
+    assert_eq!(std::fs::read(input.join("b.png")).unwrap(), original);
+    assert!(!input.join("missing").exists());
+}
+
 /// #7437: `convert` to its own input file, however the output is spelt, is refused before
 /// anything is read or written, unless `--in-place` asks for it (as `batch` does, #492).
 #[test]

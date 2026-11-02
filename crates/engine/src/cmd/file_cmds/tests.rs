@@ -65,6 +65,45 @@ fn batch_error_log_cannot_replace_an_input_or_result() {
 }
 
 #[test]
+fn batch_naming_rejects_an_input_alias_through_a_missing_parent() {
+    let dir = tmp("batch-missing-parent-alias");
+    let first = png(&dir, "a.png", 8, 6, "#ff0000");
+    let second = png(&dir, "b.png", 8, 6, "#00ff00");
+    let original = std::fs::read(&second).unwrap();
+    let output = join(&dir, "missing/..");
+    let error =
+        Session::new().execute("file.automate.batch", json!({"steps": [], "input": [first, second], "output": output, "naming": "b.{ext}"})).unwrap_err();
+    assert!(error.to_string().contains("replace an input"), "{error}");
+    assert_eq!(std::fs::read(&second).unwrap(), original);
+    assert!(!std::path::Path::new(&join(&dir, "missing")).exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn batch_error_log_rejects_a_symlink_parent_alias() {
+    use std::os::unix::fs::symlink;
+    let dir = tmp("batch-symlink-parent-alias");
+    let source_dir = join(&dir, "in");
+    std::fs::create_dir_all(&source_dir).unwrap();
+    let input = png(&source_dir, "result.png", 8, 6, "#ff0000");
+    let other = join(&dir, "other");
+    std::fs::create_dir_all(join(&other, "child")).unwrap();
+    symlink(join(&other, "child"), join(&dir, "link")).unwrap();
+    let output = other;
+    let log = join(&dir, "link/../result.png");
+    let error = Session::new().execute("file.automate.batch", json!({"steps": [], "input": [input], "output": output, "errorLog": log})).unwrap_err();
+    assert!(error.to_string().contains("errorLog"), "{error}");
+    assert!(!std::path::Path::new(&join(&output, "result.png")).exists());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_distinct_case_destinations_are_not_the_same_file() {
+    let dir = tmp("batch-case-sensitive-destinations");
+    assert!(!same_destination(join(&dir, "Image.png"), join(&dir, "image.png")));
+}
+
+#[test]
 fn batch_open_source_edits_each_live_document_and_restores_the_active_one() {
     let dir = tmp("batch-open-documents");
     let mut session = Session::new();
@@ -85,6 +124,62 @@ fn batch_open_source_edits_each_live_document_and_restores_the_active_one() {
     assert_eq!((session.documents()[1].doc.size.width, session.documents()[1].doc.size.height), (5, 12));
     assert!(std::path::Path::new(&join(&dir, "01_FIRST.PNG")).is_file());
     assert!(std::path::Path::new(&join(&dir, "02_SECOND.PNG")).is_file());
+}
+
+#[test]
+fn batch_open_source_exports_the_document_at_the_save_point() {
+    let dir = tmp("batch-open-save-point");
+    let mut session = Session::new();
+    session.execute("file.new", json!({"name": "First", "width": 8, "height": 6})).unwrap();
+    session.execute("file.new", json!({"name": "Second", "width": 12, "height": 5})).unwrap();
+    let result = session
+        .execute(
+            "file.automate.batch",
+            json!({
+                "source": "open", "steps": [["document.activate", {"document": 1}], ["file.save", {}]],
+                "output": dir, "format": "png", "naming": "{name}.{ext}"
+            }),
+        )
+        .unwrap();
+    assert!(result["errors"].as_array().unwrap().is_empty(), "{result}");
+    let mut opened = Session::new();
+    opened.execute("file.openAs", json!({"path": join(&dir, "First.png"), "as": "png"})).unwrap();
+    assert_eq!(doc(&opened).size.width, 12, "the save point selected the second document");
+}
+
+#[test]
+fn batch_reports_file_failures_even_if_error_log_cannot_be_written() {
+    let dir = tmp("batch-error-log-write-fails");
+    let mut session = session(8, 6, 8);
+    let result = session
+        .execute(
+            "file.automate.batch",
+            json!({
+                "source": "open", "steps": [["layer.select", {"layer": "does not exist"}]],
+                "output": dir, "format": "png", "errorLog": dir
+            }),
+        )
+        .unwrap();
+    assert_eq!(result["files"], json!([]));
+    assert_eq!(result["errors"].as_array().map(Vec::len), Some(1), "{result}");
+    assert!(result["errorLogError"].as_str().is_some(), "{result}");
+}
+
+#[cfg(unix)]
+#[test]
+fn recursive_batch_reports_an_unreadable_subfolder() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tmp("batch-unreadable-subfolder");
+    let sub = join(&dir, "locked");
+    std::fs::create_dir_all(&sub).unwrap();
+    png(&sub, "image.png", 8, 6, "#ff0000");
+    std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let inaccessible = std::fs::read_dir(&sub).is_err();
+    let result = list_images_tree(&dir, "", "file.automate.batch");
+    std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o700)).unwrap();
+    if inaccessible {
+        assert!(result.is_err(), "an inaccessible input folder must not be omitted");
+    }
 }
 
 #[test]

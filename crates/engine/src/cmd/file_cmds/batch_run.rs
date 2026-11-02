@@ -49,7 +49,7 @@ pub(crate) fn batch_inputs_tree(p: &Value, cmd: &str, output: &str) -> Result<Ve
 /// The images under `dir` and its subfolders: each folder's files sorted by name, then its
 /// subfolders in name order (depth first). Bounded by [`MAX_SUBFOLDER_DEPTH`] and
 /// [`MAX_SUBFOLDER_FILES`]; a folder reached twice (a symlink loop) is walked once, and `skip`
-/// (the output folder) is left out.
+/// (the output folder) is left out. An unreadable reached folder is an error.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn list_images_tree(dir: &str, skip: &str, cmd: &str) -> Result<Vec<BatchInput>> {
     use std::path::{Path, PathBuf};
@@ -64,12 +64,8 @@ pub fn list_images_tree(dir: &str, skip: &str, cmd: &str) -> Result<Vec<BatchInp
     let mut stack: Vec<(PathBuf, String, usize)> = vec![(root.to_path_buf(), String::new(), 0)];
     while let Some((folder, rel, depth)) = stack.pop() {
         let shown = folder.to_string_lossy().into_owned();
-        // The top folder must be readable; a subfolder that isn't is skipped.
-        let files = match list_images(&shown) {
-            Ok(f) => f,
-            Err(e) if depth == 0 => return Err(e),
-            Err(_) => continue,
-        };
+        // Fail before writing any output if a reached input folder cannot be read.
+        let files = list_images(&shown)?;
         if out.len().saturating_add(files.len()) > MAX_SUBFOLDER_FILES {
             return Err(EngineError::BadParams { cmd: cmd.into(), msg: format!("{dir} holds more than {MAX_SUBFOLDER_FILES} images with its subfolders") });
         }
@@ -77,17 +73,14 @@ pub fn list_images_tree(dir: &str, skip: &str, cmd: &str) -> Result<Vec<BatchInp
         if depth >= MAX_SUBFOLDER_DEPTH {
             continue;
         }
-        let Ok(rd) = std::fs::read_dir(&folder) else { continue };
-        let mut subs: Vec<(String, PathBuf)> = rd
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.is_dir())
-            .filter_map(|p| Some((p.file_name()?.to_string_lossy().into_owned(), p)))
-            .collect();
+        let rd = std::fs::read_dir(&folder).map_err(|e| EngineError::Other(format!("{shown}: {e}")))?;
+        let entries = rd.collect::<std::io::Result<Vec<_>>>().map_err(|e| EngineError::Other(format!("{shown}: {e}")))?;
+        let mut subs: Vec<(String, PathBuf)> =
+            entries.into_iter().map(|e| e.path()).filter(|p| p.is_dir()).filter_map(|p| Some((p.file_name()?.to_string_lossy().into_owned(), p))).collect();
         subs.sort();
         // Pushed in reverse so the stack pops them in name order.
         for (name, sub) in subs.into_iter().rev() {
-            let Some(c) = canon(&sub) else { continue };
+            let c = canon(&sub).ok_or_else(|| EngineError::Other(format!("{}: cannot resolve the subfolder", sub.display())))?;
             if skip.as_ref() == Some(&c) || !seen.insert(c) {
                 continue;
             }
@@ -249,6 +242,10 @@ fn write_error_log(path: &str, errors: &[Value]) -> Result<()> {
     super::paths::write_file(path, body.as_bytes()).map_err(|error| EngineError::Other(format!("error log: {error}")))
 }
 
+fn error_log_failure(path: Option<&str>, errors: &[Value]) -> Option<String> {
+    path.filter(|_| !errors.is_empty()).and_then(|path| write_error_log(path, errors).err().map(|error| error.to_string()))
+}
+
 fn batch_outcome(files: Vec<String>, errors: Vec<Value>, stopped: Option<(String, Vec<String>)>, error_log: Option<&str>) -> Value {
     let logged = !errors.is_empty();
     let mut result = json!({"files": files, "errors": errors});
@@ -306,17 +303,21 @@ fn process_batch_outputs(
             }
         }
     }
-    if let Some(path) = &policy.error_log
-        && !errors.is_empty()
-    {
-        write_error_log(path, &errors)?;
+    let log_failure = error_log_failure(policy.error_log.as_deref(), &errors);
+    let cancelled = ctx.cancelled();
+    if !cancelled {
+        ctx.progress(1.0, "");
     }
-    if ctx.cancelled() {
-        return Err(EngineError::Cancelled);
-    }
-    ctx.progress(1.0, "");
     let skipped = outputs.iter().skip(done).map(|(path, _)| path.clone()).collect();
-    Ok(batch_outcome(files, errors, stopped.map(|at| (at, skipped)), policy.error_log.as_deref()))
+    let mut result = batch_outcome(files, errors, stopped.map(|at| (at, skipped)), policy.error_log.as_deref().filter(|_| log_failure.is_none()));
+    if cancelled {
+        result["cancelled"] = json!(true);
+        result["skipped"] = json!(outputs.iter().skip(done).map(|(path, _)| path).collect::<Vec<_>>());
+    }
+    if let Some(error) = log_failure {
+        result["errorLogError"] = json!(error);
+    }
+    Ok(result)
 }
 
 /// The output paths a batch run has written, so a later input whose output name matches an
@@ -554,8 +555,8 @@ fn batch_open_documents(
             let out = paths.get(index).ok_or_else(|| EngineError::Other("batch output plan is incomplete".into()))?;
             claims.check(out).map_err(EngineError::Other)?;
             let doc = match saved {
-                Some(saved) if s.active().is_none_or(|active| active.doc.id != saved.id) => saved,
-                _ => s.documents().iter().find(|state| state.doc.id.0 == *id).ok_or(EngineError::NoDocument)?.doc.clone(),
+                Some(saved) => saved,
+                None => s.documents().iter().find(|state| state.doc.id.0 == *id).ok_or(EngineError::NoDocument)?.doc.clone(),
             };
             save_doc(&doc, out, save)?;
             claims.record(out, name);
@@ -576,13 +577,12 @@ fn batch_open_documents(
     {
         s.set_active(position);
     }
-    if let Some(path) = &policy.error_log
-        && !errors.is_empty()
-    {
-        write_error_log(path, &errors)?;
-    }
+    let log_failure = error_log_failure(policy.error_log.as_deref(), &errors);
     let skipped = originals.iter().skip(done).map(|(_, name, _)| name.clone()).collect();
-    let mut result = batch_outcome(files, errors, stopped.map(|at| (at, skipped)), policy.error_log.as_deref());
+    let mut result = batch_outcome(files, errors, stopped.map(|at| (at, skipped)), policy.error_log.as_deref().filter(|_| log_failure.is_none()));
+    if let Some(error) = log_failure {
+        result["errorLogError"] = json!(error);
+    }
     result["documents"] = json!(originals.len());
     Ok(result)
 }

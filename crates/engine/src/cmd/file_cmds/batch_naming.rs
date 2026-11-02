@@ -183,7 +183,9 @@ pub fn plan(inputs: &[BatchInput], output: &str, format: &str, params: &Value) -
     {
         let sources: std::collections::HashSet<_> = inputs.iter().filter_map(|i| std::fs::canonicalize(&i.path).ok()).collect();
         for output in &outputs {
-            if std::fs::canonicalize(output).ok().is_some_and(|p| sources.contains(&p)) {
+            let identity = super::paths::destination_identity(std::path::Path::new(output))
+                .ok_or_else(|| bad(format!("naming output path cannot be resolved safely: {output}")))?;
+            if sources.contains(&identity) {
                 return Err(bad(format!("naming would replace an input file: {output}; choose a different destination or template")));
             }
         }

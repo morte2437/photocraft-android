@@ -66,8 +66,10 @@ pub(crate) fn batch(a: &BatchArgs, out: &mut dyn Write, err: &mut dyn Write) -> 
     } else {
         std::fs::read_dir(in_dir)
             .map_err(|source| CliError::ReadDir { path: in_dir.to_path_buf(), source })?
-            .flatten()
-            .map(|entry| entry.path())
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<std::io::Result<Vec<_>>>()
+            .map_err(|source| CliError::ReadDir { path: in_dir.to_path_buf(), source })?
+            .into_iter()
             .filter(|path| is_input(path))
             .map(|path| photocraft_engine::file_cmds::BatchInput { path: path.to_string_lossy().into_owned(), rel_dir: String::new() })
             .collect()
