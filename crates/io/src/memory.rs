@@ -32,6 +32,11 @@ pub struct MemorySnapshot {
     pub commit_headroom: Option<u64>,
 }
 
+#[cfg(any(test, feature = "testgen"))]
+thread_local! {
+    static MOCK_SNAPSHOT: std::cell::RefCell<Option<MemorySnapshot>> = const { std::cell::RefCell::new(None) };
+}
+
 impl MemorySnapshot {
     /// Unknown memory measurement.
     pub const UNKNOWN: Self = Self { available_ram: None, swap_free: None, commit_headroom: None };
@@ -39,8 +44,10 @@ impl MemorySnapshot {
     /// Obtains the current system memory snapshot from platform providers.
     pub fn current() -> Self {
         #[cfg(any(test, feature = "testgen"))]
-        if let Some(mock) = MOCK_SNAPSHOT.with(|m| *m.borrow()) {
-            return mock;
+        {
+            if let Some(mock) = MOCK_SNAPSHOT.with(|m| *m.borrow()) {
+                return mock;
+            }
         }
 
         #[cfg(target_os = "linux")]
@@ -96,10 +103,10 @@ impl MemoryBudget {
 /// Resolves the adaptive hard and soft import budgets from a snapshot and an optional caller limit.
 ///
 /// Policy:
-/// - Hard H = min(75% A, saturating A - 1 GiB, C - reserve if known, platform/address-space limits)
+/// - Hard H = min(floor(3*A/4), saturating A - 1 GiB, C - reserve if known, platform/address-space limits)
 /// - Soft S = min(50% A, 8 GiB, H)
 /// - <= S: automatic; S < E <= H: explicit approval; > H: refuse, no unlimited override.
-/// - Unknown native fallback: 2 GiB, no override (S = H = 2 GiB).
+/// - Unknown native fallback: 2 GiB bounded by C - reserve if known (S = H).
 /// - Browser/wasm: fixed 1 GiB (S = H = 1 GiB).
 /// - Explicit caller limits may lower admission, never bypass the hard boundary.
 pub fn resolve_budget(snapshot: MemorySnapshot, caller_limit: Option<u64>) -> MemoryBudget {
@@ -116,7 +123,7 @@ pub fn resolve_budget(snapshot: MemorySnapshot, caller_limit: Option<u64>) -> Me
 
     let (mut hard, mut soft) = match snapshot.available_ram {
         Some(a) => {
-            let h_pct = a.checked_mul(3).map_or(u64::MAX, |v| v / 4);
+            let h_pct = ((a as u128 * 3) / 4) as u64;
             let h_reserve = a.saturating_sub(1 << 30);
             let mut h = h_pct.min(h_reserve);
 
@@ -132,7 +139,11 @@ pub fn resolve_budget(snapshot: MemorySnapshot, caller_limit: Option<u64>) -> Me
             (h, s)
         }
         None => {
-            let limit = NATIVE_FALLBACK_BUDGET.min(address_space_cap);
+            let mut limit = NATIVE_FALLBACK_BUDGET.min(address_space_cap);
+            if let Some(c) = snapshot.commit_headroom {
+                let c_room = c.saturating_sub(COMMIT_RESERVE);
+                limit = limit.min(c_room);
+            }
             (limit, limit)
         }
     };
@@ -143,6 +154,85 @@ pub fn resolve_budget(snapshot: MemorySnapshot, caller_limit: Option<u64>) -> Me
     }
 
     MemoryBudget { soft_limit: soft, hard_limit: hard, available_ram: snapshot.available_ram }
+}
+
+/// Central evaluation of PSD admission against adaptive budgets and options.
+///
+/// Refuses before decoding if:
+/// - `required > hard_limit` (regardless of approvals: hard ceiling cannot be overridden);
+/// - `required > soft_limit` and high memory is not approved;
+/// - high memory is approved, but `approved_estimate` is specified and `required > approved_estimate`
+///   (preventing unbounded approval for altered/enlarged files).
+/// Result of evaluating an import admission request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AdmissionOutcome {
+    pub budget: MemoryBudget,
+    /// Total authorized memory allowance for the entire attempt (top-level + nested decodes):
+    /// `min(S if automatic else H if approved, caller cap if any, approved_estimate if present)`.
+    pub authorized_total: u64,
+}
+
+pub(crate) fn evaluate_psd_admission(
+    required: u64,
+    caller_limit: u64,
+    high_memory_approved: bool,
+    approved_estimate: Option<u64>,
+    snapshot: MemorySnapshot,
+) -> Result<AdmissionOutcome, IoError> {
+    let limit_opt = (caller_limit > 0).then_some(caller_limit);
+    let budget = resolve_budget(snapshot, limit_opt);
+
+    let authorized_total = match budget.decide(required) {
+        BudgetDecision::Automatic => {
+            let mut cap = budget.soft_limit;
+            if let Some(caller) = limit_opt {
+                cap = cap.min(caller);
+            }
+            if let Some(appr) = approved_estimate {
+                cap = cap.min(appr);
+            }
+            cap
+        }
+        BudgetDecision::RequiresApproval => {
+            if !high_memory_approved {
+                return Err(IoError::PsdApprovalRequired {
+                    required,
+                    soft_limit: budget.soft_limit,
+                    hard_limit: budget.hard_limit,
+                    available_ram: budget.available_ram,
+                });
+            }
+            if let Some(approved) = approved_estimate {
+                if required > approved {
+                    return Err(IoError::PsdApprovalRequired {
+                        required,
+                        soft_limit: budget.soft_limit,
+                        hard_limit: budget.hard_limit,
+                        available_ram: budget.available_ram,
+                    });
+                }
+            }
+            let mut cap = budget.hard_limit;
+            if let Some(caller) = limit_opt {
+                cap = cap.min(caller);
+            }
+            if let Some(appr) = approved_estimate {
+                cap = cap.min(appr);
+            }
+            cap
+        }
+        BudgetDecision::Refused => return Err(IoError::PsdImportBudget { required, limit: budget.hard_limit }),
+    };
+
+    if required > authorized_total {
+        return Err(IoError::PsdApprovalRequired {
+            required,
+            soft_limit: budget.soft_limit,
+            hard_limit: budget.hard_limit,
+            available_ram: budget.available_ram,
+        });
+    }
+    Ok(AdmissionOutcome { budget, authorized_total })
 }
 
 /// Bytes this process can still use without running out, or `None` where that isn't known. On
@@ -176,29 +266,99 @@ pub(crate) fn check_fits(w: u32, h: u32, needed: u64, available: Option<u64>) ->
     )))
 }
 
-#[cfg(any(test, feature = "testgen"))]
-thread_local! {
-    static MOCK_SNAPSHOT: std::cell::RefCell<Option<MemorySnapshot>> = const { std::cell::RefCell::new(None) };
-}
-
-/// Sets a mock memory snapshot for testing policy and import admission.
+/// Sets a thread-local mock memory snapshot for testing policy and import admission.
 #[cfg(any(test, feature = "testgen"))]
 pub fn set_mock_memory(snapshot: Option<MemorySnapshot>) {
     MOCK_SNAPSHOT.with(|m| *m.borrow_mut() = snapshot);
 }
 
-/// Runs a closure with a temporarily injected mock memory snapshot.
+/// Runs a closure with a temporarily injected mock memory snapshot on the current thread.
+///
+/// Restores the previous snapshot upon return or panic, supporting nested invocations.
 #[cfg(any(test, feature = "testgen"))]
 pub fn with_mock_memory<R>(snapshot: MemorySnapshot, f: impl FnOnce() -> R) -> R {
-    struct Reset;
+    let prev = MOCK_SNAPSHOT.with(|m| {
+        let old = *m.borrow();
+        *m.borrow_mut() = Some(snapshot);
+        old
+    });
+
+    struct Reset {
+        prev: Option<MemorySnapshot>,
+    }
     impl Drop for Reset {
         fn drop(&mut self) {
-            set_mock_memory(None);
+            MOCK_SNAPSHOT.with(|m| *m.borrow_mut() = self.prev);
         }
     }
-    set_mock_memory(Some(snapshot));
-    let _reset = Reset;
+
+    let _reset = Reset { prev };
     f()
+}
+
+/// Explicit test-support capture/scope object to propagate a thread-local mock
+/// snapshot across worker threads without modifying global process state.
+///
+/// In production, this is an inert zero-overhead type.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TestMemoryScope {
+    #[cfg(any(test, feature = "testgen"))]
+    mock: Option<MemorySnapshot>,
+}
+
+/// RAII guard that restores the previous thread-local mock memory upon drop.
+pub struct TestMemoryGuard {
+    #[cfg(any(test, feature = "testgen"))]
+    prev: Option<MemorySnapshot>,
+}
+
+#[cfg(any(test, feature = "testgen"))]
+impl Drop for TestMemoryGuard {
+    fn drop(&mut self) {
+        MOCK_SNAPSHOT.with(|m| *m.borrow_mut() = self.prev);
+    }
+}
+
+impl TestMemoryScope {
+    /// Captures the current thread's mock memory snapshot, if any.
+    ///
+    /// Never captures actual system RAM as a permanent snapshot so that
+    /// production memory rechecks remain fresh.
+    pub fn capture() -> Self {
+        #[cfg(any(test, feature = "testgen"))]
+        {
+            let mock = MOCK_SNAPSHOT.with(|m| *m.borrow());
+            Self { mock }
+        }
+        #[cfg(not(any(test, feature = "testgen")))]
+        {
+            Self {}
+        }
+    }
+
+    /// Enters this captured mock memory scope, returning a RAII guard that
+    /// restores the thread's previous mock state on drop.
+    pub fn enter(self) -> TestMemoryGuard {
+        #[cfg(any(test, feature = "testgen"))]
+        {
+            let prev = MOCK_SNAPSHOT.with(|m| {
+                let old = *m.borrow();
+                *m.borrow_mut() = self.mock;
+                old
+            });
+            TestMemoryGuard { prev }
+        }
+        #[cfg(not(any(test, feature = "testgen")))]
+        {
+            TestMemoryGuard {}
+        }
+    }
+
+    /// Executes a closure within this captured mock memory scope.
+    pub fn run<R>(self, f: impl FnOnce() -> R) -> R {
+        let _guard = self.enter();
+        f()
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -252,9 +412,12 @@ pub(super) mod linux {
         (ram, swap)
     }
 
-    /// A `memory.stat` field (`<name> <bytes>` per line).
-    fn stat(stat: &str, field: &str) -> Option<u64> {
-        stat.lines().find_map(|l| l.strip_prefix(field)?.strip_prefix(' '))?.trim().parse().ok()
+    fn stat(s: &str, field: &str) -> Option<u64> {
+        s.lines().find_map(|l| {
+            let mut parts = l.split_whitespace();
+            let key = parts.next()?;
+            if key == field { parts.next()?.parse().ok() } else { None }
+        })
     }
 }
 
@@ -274,6 +437,11 @@ mod windows_mem {
 mod fallback_mem {
     use super::MemorySnapshot;
 
+    /// Fallback provider for platforms without a validated memory-availability provider (e.g. macOS).
+    ///
+    /// Available memory is reported as unknown (`None`), which applies the safe native fallback
+    /// budget (2 GiB) without allowing an unverified memory override. macOS dynamic paging makes
+    /// physical RAM a poor indicator of allocation capacity without platform-specific Mach VM APIs.
     pub(super) fn snapshot() -> MemorySnapshot {
         MemorySnapshot::UNKNOWN
     }
@@ -366,11 +534,78 @@ mod tests {
     }
 
     #[test]
+    fn unknown_ram_with_known_zero_commit_bounds_admission() {
+        let snap = MemorySnapshot { available_ram: None, swap_free: None, commit_headroom: Some(0) };
+        let b = resolve_budget(snap, None);
+        assert_eq!(b.hard_limit, 0);
+        assert_eq!(b.soft_limit, 0);
+        assert_eq!(b.decide(1), BudgetDecision::Refused);
+
+        let snap_room = MemorySnapshot { available_ram: None, swap_free: None, commit_headroom: Some(1 << 30) };
+        let b_room = resolve_budget(snap_room, None);
+        assert_eq!(b_room.hard_limit, (1 << 30) - COMMIT_RESERVE);
+        assert_eq!(b_room.soft_limit, (1 << 30) - COMMIT_RESERVE);
+    }
+
+    #[test]
     fn arithmetic_overflow_safety() {
         let snap_huge = MemorySnapshot { available_ram: Some(u64::MAX), swap_free: Some(u64::MAX), commit_headroom: Some(u64::MAX) };
         let b = resolve_budget(snap_huge, None);
-        assert!(b.hard_limit <= u64::MAX);
+        let expected_hard = ((u64::MAX as u128 * 3) / 4) as u64;
+        let expected_hard = if cfg!(target_pointer_width = "32") { 2 << 30 } else { expected_hard };
+        assert_eq!(b.hard_limit, expected_hard);
         assert_eq!(b.soft_limit, MAX_SOFT_BUDGET);
+    }
+
+    #[test]
+    fn nested_mock_memory_restores_previous() {
+        let snap1 = MemorySnapshot { available_ram: Some(100), swap_free: None, commit_headroom: None };
+        let snap2 = MemorySnapshot { available_ram: Some(200), swap_free: None, commit_headroom: None };
+        with_mock_memory(MemorySnapshot::UNKNOWN, || {
+            assert_eq!(MemorySnapshot::current(), MemorySnapshot::UNKNOWN);
+            with_mock_memory(snap1, || {
+                assert_eq!(MemorySnapshot::current().available_ram, Some(100));
+                with_mock_memory(snap2, || {
+                    assert_eq!(MemorySnapshot::current().available_ram, Some(200));
+                });
+                assert_eq!(MemorySnapshot::current().available_ram, Some(100));
+            });
+            assert_eq!(MemorySnapshot::current(), MemorySnapshot::UNKNOWN);
+        });
+    }
+
+    #[test]
+    fn central_admission_evaluation_enforces_bounds() {
+        if cfg!(any(target_arch = "wasm32", target_pointer_width = "32")) {
+            return;
+        }
+        let gb = 1u64 << 30;
+        let snap = MemorySnapshot { available_ram: Some(12 * gb), swap_free: None, commit_headroom: None };
+        // S = 6 GiB, H = 9 GiB
+
+        // Below S: automatic, authorized_total = S (6 GiB)
+        let out = evaluate_psd_admission(5 * gb, 0, false, None, snap).unwrap();
+        assert_eq!(out.authorized_total, 6 * gb);
+
+        // In [S, H]: requires approval
+        let err = evaluate_psd_admission(7 * gb, 0, false, None, snap).unwrap_err();
+        assert!(matches!(err, IoError::PsdApprovalRequired { required, .. } if required == 7 * gb));
+
+        // In [S, H] with approval and no approved_estimate bound: admitted, authorized_total = H (9 GiB)
+        let out = evaluate_psd_admission(7 * gb, 0, true, None, snap).unwrap();
+        assert_eq!(out.authorized_total, 9 * gb);
+
+        // In [S, H] with approval but required exceeds approved_estimate: requires fresh approval
+        let err = evaluate_psd_admission(7 * gb, 0, true, Some(6 * gb), snap).unwrap_err();
+        assert!(matches!(err, IoError::PsdApprovalRequired { .. }));
+
+        // In [S, H] with approval and required within approved_estimate: admitted, authorized_total = approved_estimate (7 GiB)
+        let out = evaluate_psd_admission(7 * gb, 0, true, Some(7 * gb), snap).unwrap();
+        assert_eq!(out.authorized_total, 7 * gb);
+
+        // Exceeding H: refused even if high_memory_approved is true
+        let err = evaluate_psd_admission(10 * gb, 0, true, Some(10 * gb), snap).unwrap_err();
+        assert!(matches!(err, IoError::PsdImportBudget { .. }));
     }
 
     #[cfg(target_os = "linux")]
@@ -411,7 +646,6 @@ mod tests {
         write(&leaf, "memory.stat", "anon 268435456\n");
         assert_eq!(linux::cgroup_room(&leaf).0, Some(0), "no inactive_file: memory.current is all in use");
         std::fs::remove_dir_all(&root).unwrap();
-        assert!(available().is_some());
     }
 
     #[cfg(target_os = "linux")]

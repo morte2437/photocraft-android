@@ -531,43 +531,52 @@ pub fn import_options(prefs: &crate::prefs::Preferences) -> photocraft_io::Impor
 /// Fingerprint verifying that a source has not changed between preflight and approval.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SourceFingerprint {
-    Bytes { len: usize, hash: [u8; 32] },
-    Path { path: String, len: u64, modified_nanos: u128 },
+    Bytes {
+        len: usize,
+        identity: usize,
+    },
+    Path {
+        path: String,
+        len: u64,
+        modified: std::time::SystemTime,
+        #[cfg(unix)]
+        dev: u64,
+        #[cfg(unix)]
+        ino: u64,
+    },
 }
 
 impl SourceFingerprint {
     pub fn of(source: &OpenSource) -> Result<Self> {
         match source {
-            OpenSource::Bytes(b) => {
-                let hash = *blake3::hash(b).as_bytes();
-                Ok(SourceFingerprint::Bytes { len: b.len(), hash })
-            }
+            OpenSource::Bytes(b) => Ok(SourceFingerprint::Bytes { len: b.len(), identity: Arc::as_ptr(b) as usize }),
             OpenSource::Path(p) => {
                 let meta = std::fs::metadata(p).map_err(|e| EngineError::Other(format!("{p}: {e}")))?;
                 let len = meta.len();
-                let modified_nanos = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos());
-                Ok(SourceFingerprint::Path { path: p.clone(), len, modified_nanos })
+                let modified = meta.modified().map_err(|e| EngineError::Other(format!("{p}: failed to read modification time: {e}")))?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::MetadataExt;
+                    let dev = meta.dev();
+                    let ino = meta.ino();
+                    Ok(SourceFingerprint::Path { path: p.clone(), len, modified, dev, ino })
+                }
+                #[cfg(not(unix))]
+                {
+                    Ok(SourceFingerprint::Path { path: p.clone(), len, modified })
+                }
             }
         }
     }
 
-    pub fn matches(&self, source: &OpenSource) -> bool {
-        match (self, source) {
-            (SourceFingerprint::Bytes { len, hash }, OpenSource::Bytes(b)) => b.len() == *len && blake3::hash(b).as_bytes() == hash,
-            (SourceFingerprint::Path { path, len, modified_nanos }, OpenSource::Path(p)) => {
-                if path != p {
-                    return false;
-                }
-                match std::fs::metadata(p) {
-                    Ok(meta) => {
-                        let cur_len = meta.len();
-                        let cur_mod = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos());
-                        cur_len == *len && cur_mod == *modified_nanos
-                    }
-                    Err(_) => false,
-                }
-            }
-            _ => false,
+    pub fn matches(&self, other: &Self) -> bool {
+        self == other
+    }
+
+    pub fn matches_source(&self, source: &OpenSource) -> bool {
+        match Self::of(source) {
+            Ok(cur) => self.matches(&cur),
+            Err(_) => false,
         }
     }
 }
@@ -611,11 +620,21 @@ impl Session {
     /// result is `{held, name, warnings, color}` (`color` the question): take it with
     /// [`Session::take_held_open`] once answered.
 
-    pub fn store_pending_preflight(&mut self, mut preflight: PendingPsdPreflight) -> u64 {
-        self.next_pending_preflight = self.next_pending_preflight.wrapping_add(1);
+    pub const MAX_PENDING_PREFLIGHTS: usize = 32;
+
+    pub fn store_pending_preflight(&mut self, mut preflight: PendingPsdPreflight) -> Result<u64> {
+        if self.pending_preflights.len() >= Self::MAX_PENDING_PREFLIGHTS {
+            return Err(EngineError::Other("too many pending high-memory preflights waiting for confirmation".into()));
+        }
+        loop {
+            self.next_pending_preflight = self.next_pending_preflight.checked_add(1).unwrap_or(1);
+            if self.next_pending_preflight != 0 && !self.pending_preflights.iter().any(|p| p.id == self.next_pending_preflight) {
+                break;
+            }
+        }
         preflight.id = self.next_pending_preflight;
         self.pending_preflights.push(preflight);
-        self.next_pending_preflight
+        Ok(self.next_pending_preflight)
     }
 
     pub fn take_pending_preflight(&mut self, id: u64) -> Option<PendingPsdPreflight> {
@@ -631,46 +650,91 @@ impl Session {
         self.pending_preflights.clear();
     }
 
-    pub fn start_open_approved(&mut self, name: &str, source: OpenSource, confirm_damage: bool) -> Result<Started> {
-        self.start_open_inner(name, source, confirm_damage, true)
+    pub fn start_open_approved(
+        &mut self,
+        name: &str,
+        source: OpenSource,
+        confirm_damage: bool,
+        approved_estimate: Option<u64>,
+        expected_fingerprint: Option<SourceFingerprint>,
+    ) -> Result<Started> {
+        self.start_open_approved_with_background(name, source, confirm_damage, approved_estimate, expected_fingerprint, true)
+    }
+
+    pub fn start_open_approved_with_background(
+        &mut self,
+        name: &str,
+        source: OpenSource,
+        confirm_damage: bool,
+        approved_estimate: Option<u64>,
+        expected_fingerprint: Option<SourceFingerprint>,
+        background: bool,
+    ) -> Result<Started> {
+        self.start_open_inner(name, source, confirm_damage, true, approved_estimate, expected_fingerprint, background)
     }
 
     pub fn start_open(&mut self, name: &str, source: OpenSource) -> Result<Started> {
-        self.start_open_inner(name, source, false, false)
+        self.start_open_inner(name, source, false, false, None, None, true)
     }
 
     /// Interactive opening: hold a damaged PSD until the user answers a damage
     /// confirmation, without changing import or subsequent save behaviour.
     /// Headless callers keep using [`Self::start_open`].
     pub fn start_open_for_user(&mut self, name: &str, source: OpenSource) -> Result<Started> {
-        self.start_open_inner(name, source, true, false)
+        self.start_open_for_user_with_background(name, source, true)
+    }
+
+    pub fn start_open_for_user_with_background(&mut self, name: &str, source: OpenSource, background: bool) -> Result<Started> {
+        self.start_open_inner(name, source, true, false, None, None, background)
     }
 
     /// Decodes a file in a job and optionally holds damaged PSD content for
     /// interactive confirmation while leaving headless opens non-interactive.
-    fn start_open_inner(&mut self, name: &str, source: OpenSource, confirm_damage: bool, approve_high_memory: bool) -> Result<Started> {
+    // Keep the worker and apply closures together with their execution options.
+    #[allow(clippy::too_many_arguments)]
+    fn start_open_inner(
+        &mut self,
+        name: &str,
+        source: OpenSource,
+        confirm_damage: bool,
+        approve_high_memory: bool,
+        approved_estimate: Option<u64>,
+        expected_fingerprint: Option<SourceFingerprint>,
+        background: bool,
+    ) -> Result<Started> {
         let label = format!("Opening {name}");
         let name_w = name.to_string();
         let name_a = name.to_string();
         let mut opts = import_options(self.prefs());
         opts.psd_high_memory_approved = approve_high_memory;
-        self.start_job(
+        opts.psd_approved_estimate = approved_estimate;
+        let test_memory_scope = photocraft_io::memory::TestMemoryScope::capture();
+        enum WorkResult {
+            Decoded((photocraft_io::ImportResult, bool)),
+            PreflightNeeded { required: u64, soft_limit: u64, hard_limit: u64, available_ram: Option<u64>, source: OpenSource, fingerprint: SourceFingerprint },
+        }
+        self.start_job_with_spawn(
             OPEN_JOB,
             json!({"name": name}),
             &label,
             false,
+            background,
             move |ctx| {
+                let _test_memory = test_memory_scope.enter();
                 ctx.progress(0.0, "Reading");
-                enum WorkResult {
-                    Decoded((photocraft_io::ImportResult, bool)),
-                    PreflightNeeded {
-                        required: u64,
-                        soft_limit: u64,
-                        hard_limit: u64,
-                        available_ram: Option<u64>,
-                        source: OpenSource,
-                        fingerprint: SourceFingerprint,
-                    },
+
+                // Identity lookup is best-effort for ordinary opens, but mandatory if a
+                // file is held for confirmation. Valid non-PSD files do not require timestamps.
+                let initial_fingerprint = (confirm_damage || expected_fingerprint.is_some()).then(|| SourceFingerprint::of(&source)).transpose();
+                if let Some(expected) = &expected_fingerprint {
+                    let cur = initial_fingerprint
+                        .as_ref()
+                        .map_err(|e| EngineError::Other(e.to_string()))?
+                        .as_ref()
+                        .ok_or_else(|| EngineError::Other("missing source identity".into()))?;
+                    if !expected.matches(cur) {
+                        return Err(EngineError::Other("the file has changed since it was checked; please try opening it again".into()));
+                    }
                 }
 
                 let outcome = match source {
@@ -683,7 +747,18 @@ impl Session {
                             Err(photocraft_io::IoError::PsdApprovalRequired { required, soft_limit, hard_limit, available_ram }) if confirm_damage => {
                                 let src = OpenSource::Bytes(bytes);
                                 let fingerprint = SourceFingerprint::of(&src)?;
+                                let initial = initial_fingerprint
+                                    .as_ref()
+                                    .map_err(|e| EngineError::Other(e.to_string()))?
+                                    .as_ref()
+                                    .ok_or_else(|| EngineError::Other("missing source identity".into()))?;
+                                if !initial.matches(&fingerprint) {
+                                    return Err(EngineError::Other("the file changed while checking its memory requirements; please open it again".into()));
+                                }
                                 WorkResult::PreflightNeeded { required, soft_limit, hard_limit, available_ram, source: src, fingerprint }
+                            }
+                            Err(photocraft_io::IoError::PsdApprovalRequired { required, soft_limit, hard_limit, available_ram }) => {
+                                return Err(EngineError::PsdApprovalRequired { name: name_w.clone(), required, soft_limit, hard_limit, available_ram });
                             }
                             Err(photocraft_io::IoError::Cancelled) => return Err(EngineError::Cancelled),
                             Err(e) => return Err(EngineError::Other(e.to_string())),
@@ -696,7 +771,18 @@ impl Session {
                             Err(photocraft_io::IoError::PsdApprovalRequired { required, soft_limit, hard_limit, available_ram }) if confirm_damage => {
                                 let src = OpenSource::Path(p);
                                 let fingerprint = SourceFingerprint::of(&src)?;
+                                let initial = initial_fingerprint
+                                    .as_ref()
+                                    .map_err(|e| EngineError::Other(e.to_string()))?
+                                    .as_ref()
+                                    .ok_or_else(|| EngineError::Other("missing source identity".into()))?;
+                                if !initial.matches(&fingerprint) {
+                                    return Err(EngineError::Other("the file changed while checking its memory requirements; please open it again".into()));
+                                }
                                 WorkResult::PreflightNeeded { required, soft_limit, hard_limit, available_ram, source: src, fingerprint }
+                            }
+                            Err(photocraft_io::IoError::PsdApprovalRequired { required, soft_limit, hard_limit, available_ram }) => {
+                                return Err(EngineError::PsdApprovalRequired { name: name_w.clone(), required, soft_limit, hard_limit, available_ram });
                             }
                             Err(photocraft_io::IoError::Cancelled) => return Err(EngineError::Cancelled),
                             Err(e) => return Err(EngineError::Other(e.to_string())),
@@ -730,7 +816,7 @@ impl Session {
                         hard_limit,
                         available_ram,
                         confirm_damage,
-                    });
+                    })?;
                     Ok(json!({
                         "pendingPreflight": id,
                         "name": name_a,
@@ -775,9 +861,25 @@ impl Session {
         work: impl FnOnce(&JobCtx) -> Result<T> + Send + 'static,
         apply: impl FnOnce(&mut Session, T) -> Result<Value> + Send + 'static,
     ) -> Result<Started> {
-        self.jobs.spawn = true;
+        self.start_job_with_spawn(command, params, label, lock_document, true, work, apply)
+    }
+
+    // Keep the worker and apply closures together with their execution options.
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_job_with_spawn<T: Send + 'static>(
+        &mut self,
+        command: &str,
+        params: Value,
+        label: &str,
+        lock_document: bool,
+        spawn: bool,
+        work: impl FnOnce(&JobCtx) -> Result<T> + Send + 'static,
+        apply: impl FnOnce(&mut Session, T) -> Result<Value> + Send + 'static,
+    ) -> Result<Started> {
+        let prev_spawn = self.jobs.spawn;
+        self.jobs.spawn = spawn && !cfg!(target_arch = "wasm32");
         let r = run(self, label, lock_document, work, apply);
-        self.jobs.spawn = false;
+        self.jobs.spawn = prev_spawn;
         let pending = self.jobs.pending.take();
         match (r, pending) {
             (Err(e), Some(job)) => {

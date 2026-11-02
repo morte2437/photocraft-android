@@ -18,6 +18,9 @@ pub enum EngineError {
     /// ids are not positions (#5058).
     #[error("no such layer {}; {known}", id.0)]
     UnknownLayer { id: LayerId, known: String },
+    /// Opening a PSD/PSB file requires explicit high-memory confirmation.
+    #[error("opening “{name}” requires explicit memory approval: {required} bytes required (soft limit {soft_limit}, hard limit {hard_limit})")]
+    PsdApprovalRequired { name: String, required: u64, soft_limit: u64, hard_limit: u64, available_ram: Option<u64> },
     #[error("{0}")]
     Other(String),
     /// A background job was cancelled (see [`jobs`]); nothing changed.

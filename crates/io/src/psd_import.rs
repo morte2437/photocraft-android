@@ -1238,10 +1238,85 @@ fn psd_to_document_global(
     // Legacy conversion APIs return warnings rather than Result. Reject before metadata or
     // pixels are decoded, and retain the fatal error for the ordinary import path. An import
     // that checked the file against its own limit first (`preflighted`) does not estimate twice.
-    if !preflighted && let Err(error) = crate::psd_budget::check(file, crate::DEFAULT_PSD_IMPORT_PIXEL_BYTES) {
-        let message = error.to_string();
-        let doc = Document::new("Untitled", Size::new(1, 1), ColorMode::Rgb, SampleType::U8);
-        return Some((doc, vec![message], true, Some(error)));
+    let _guard;
+    if !preflighted {
+        let est = match crate::psd_budget::estimate(file) {
+            Ok(e) => e,
+            Err(error) => {
+                let message = error.to_string();
+                let doc = Document::new("Untitled", Size::new(1, 1), ColorMode::Rgb, SampleType::U8);
+                return Some((doc, vec![message], true, Some(error)));
+            }
+        };
+
+        if crate::psd_gate::is_holding_admission() {
+            // Nested conversion: consume from enclosing attempt allowance without fresh budget or deadlocks
+            if let Err(error) = crate::psd_gate::consume_attempt_allowance(est.total_bytes) {
+                let message = error.to_string();
+                let doc = Document::new("Untitled", Size::new(1, 1), ColorMode::Rgb, SampleType::U8);
+                return Some((doc, vec![message], true, Some(error)));
+            }
+            match crate::psd_gate::acquire_decode_admission(ctl) {
+                Ok(g) => _guard = Some(g),
+                Err(error) => {
+                    let message = error.to_string();
+                    let doc = Document::new("Untitled", Size::new(1, 1), ColorMode::Rgb, SampleType::U8);
+                    return Some((doc, vec![message], true, Some(error)));
+                }
+            }
+        } else {
+            // Standalone legacy conversion: acquire admission gate and check adaptive budget
+            match crate::psd_gate::acquire_decode_admission(ctl) {
+                Ok(g) => _guard = Some(g),
+                Err(error) => {
+                    let message = error.to_string();
+                    let doc = Document::new("Untitled", Size::new(1, 1), ColorMode::Rgb, SampleType::U8);
+                    return Some((doc, vec![message], true, Some(error)));
+                }
+            }
+            let snapshot = crate::memory::MemorySnapshot::current();
+            // Legacy standalone is unconfirmed: cannot silently auto allow > S.
+            match crate::memory::evaluate_psd_admission(est.total_bytes, 0, false, None, snapshot) {
+                Ok(outcome) => {
+                    crate::psd_gate::set_active_attempt_budget(outcome.authorized_total.saturating_sub(est.total_bytes));
+                }
+                Err(error) => {
+                    let message = error.to_string();
+                    let doc = Document::new("Untitled", Size::new(1, 1), ColorMode::Rgb, SampleType::U8);
+                    return Some((doc, vec![message], true, Some(error)));
+                }
+            }
+        }
+    } else if !crate::psd_gate::is_holding_admission() {
+        // Fallback for callers passing preflighted=true without holding admission:
+        // acquire admission gate and initialize allowance safely.
+        match crate::psd_gate::acquire_decode_admission(ctl) {
+            Ok(g) => _guard = Some(g),
+            Err(error) => {
+                let message = error.to_string();
+                let doc = Document::new("Untitled", Size::new(1, 1), ColorMode::Rgb, SampleType::U8);
+                return Some((doc, vec![message], true, Some(error)));
+            }
+        }
+        let est = match crate::psd_budget::estimate(file) {
+            Ok(e) => e,
+            Err(error) => {
+                let message = error.to_string();
+                let doc = Document::new("Untitled", Size::new(1, 1), ColorMode::Rgb, SampleType::U8);
+                return Some((doc, vec![message], true, Some(error)));
+            }
+        };
+        let snapshot = crate::memory::MemorySnapshot::current();
+        match crate::memory::evaluate_psd_admission(est.total_bytes, 0, false, None, snapshot) {
+            Ok(outcome) => {
+                crate::psd_gate::set_active_attempt_budget(outcome.authorized_total.saturating_sub(est.total_bytes));
+            }
+            Err(error) => {
+                let message = error.to_string();
+                let doc = Document::new("Untitled", Size::new(1, 1), ColorMode::Rgb, SampleType::U8);
+                return Some((doc, vec![message], true, Some(error)));
+            }
+        }
     }
     let (mode, layered, multichannel, depth) = import_format(file);
     let h = &file.header;

@@ -44,7 +44,15 @@ pub struct Held {
 /// Dialog field for the high-memory confirmation prompt.
 pub const MEMORY_FIELD: &str = "__psdMemoryOpen";
 
+/// Item kind in the arrival-ordered open prompt queue.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PromptKind {
+    Memory,
+    Open,
+}
+
 /// An un-decoded PSD file whose preflight estimate requires user approval.
+#[derive(Clone)]
 pub struct MemoryPrompt {
     pub id: u64,
     pub name: String,
@@ -63,27 +71,55 @@ pub fn waiting(app: &PhotocraftApp) -> bool {
 /// Opens `held` now, or queues it behind the file whose prompt is up.
 pub fn arrive(app: &mut PhotocraftApp, held: Held) {
     app.held_opens.push_back(held);
+    app.prompt_order.push_back(PromptKind::Open);
     advance(app);
 }
 
+pub fn has_open_dialog(app: &PhotocraftApp) -> bool {
+    app.ui.dialogs.iter().any(|d| owns(&d.fields) || owns_damage(&d.fields) || owns_memory(&d.fields))
+}
+
 /// Opens queued files in order until one needs its prompt, which is shown if it isn't yet.
-fn advance(app: &mut PhotocraftApp) {
-    while let Some(front) = app.held_opens.front() {
-        if front.damage_pending {
-            if !app.ui.dialogs.iter().any(|d| owns_damage(&d.fields)) {
-                show_damage(app);
+pub fn advance(app: &mut PhotocraftApp) {
+    // Reconcile legacy callers that populated held queues directly.
+    if app.prompt_order.is_empty() {
+        app.prompt_order.extend(std::iter::repeat_n(PromptKind::Open, app.held_opens.len()));
+        app.prompt_order.extend(std::iter::repeat_n(PromptKind::Memory, app.held_memory_prompts.len()));
+    }
+    if has_open_dialog(app) {
+        return;
+    }
+    loop {
+        match app.prompt_order.front() {
+            None => return,
+            Some(PromptKind::Memory) => {
+                if let Some(front) = app.held_memory_prompts.front().cloned() {
+                    show_memory(app, &front);
+                    return;
+                } else {
+                    app.prompt_order.pop_front();
+                }
             }
-            return;
-        }
-        if front.question.is_some() {
-            if !app.ui.dialogs.iter().any(|d| d.fields.contains_key(FIELD)) {
-                show(app);
+            Some(PromptKind::Open) => {
+                let Some(front) = app.held_opens.front() else {
+                    app.prompt_order.pop_front();
+                    continue;
+                };
+                if front.damage_pending {
+                    show_damage(app);
+                    return;
+                }
+                if front.question.is_some() {
+                    show(app);
+                    return;
+                }
+                let held = app.held_opens.pop_front().unwrap();
+                app.prompt_order.pop_front();
+                let _ = open(app, held, None);
+                if has_open_dialog(app) {
+                    return;
+                }
             }
-            return;
-        }
-        if let Some(held) = app.held_opens.pop_front() {
-            // A failure is shown to the user (`open_failed`); the next file still opens.
-            let _ = open(app, held, None);
         }
     }
 }
@@ -143,17 +179,28 @@ pub fn answer(app: &mut PhotocraftApp, action: Option<&str>) -> Result<Value, St
         return Err("answer the damaged PSD confirmation first".into());
     }
     let Some(action) = action else {
-        let dropped = app.held_opens.len();
-        let name = app.held_opens.front().map(|h| h.name.clone()).unwrap_or_default();
+        let dropped = app.held_opens.len() + app.held_memory_prompts.len();
+        let name = app.held_opens.front().map(|h| h.name.clone()).or_else(|| app.held_memory_prompts.front().map(|m| m.name.clone())).unwrap_or_default();
+        for m in app.held_memory_prompts.drain(..) {
+            app.session.cancel_pending_preflight(m.id);
+        }
+        app.session.clear_pending_preflights();
         app.held_opens.clear();
+        app.prompt_order.clear();
         for job in app.jobs.opens.iter().map(|o| o.job).collect::<Vec<_>>() {
             app.session.cancel_job(job);
         }
+        app.jobs.opens.clear();
+        app.jobs.batches.clear();
+        app.ui.dialogs.retain(|d| !owns(&d.fields) && !owns_damage(&d.fields) && !owns_memory(&d.fields));
         app.ui.status = crate::i18n::fmt(tl!("Cancelled opening {name}"), &[("name", &name)]);
         app.ui.status_error = false;
         return Ok(json!({"cancelled": dropped}));
     };
     let Some(held) = app.held_opens.pop_front() else { return Err("no file is waiting to open".into()) };
+    if let Some(pos) = app.prompt_order.iter().position(|p| *p == PromptKind::Open) {
+        app.prompt_order.remove(pos);
+    }
     let r = open(app, held, Some(action));
     advance(app);
     r
@@ -178,9 +225,13 @@ pub fn answer_remembering(app: &mut PhotocraftApp, action: &str) -> Result<Value
         !h.damage_pending && policy_key(h.doc.mode) == Some(key) && h.question.as_ref().is_some_and(|q| q.get("missing").and_then(Value::as_bool) != Some(true))
     };
     let Some(held) = app.held_opens.pop_front() else { return Err("no file is waiting to open".into()) };
+    if let Some(pos) = app.prompt_order.iter().position(|p| *p == PromptKind::Open) {
+        app.prompt_order.remove(pos);
+    }
     let r = open(app, held, Some(action));
-    while app.held_opens.front().is_some_and(same) {
+    while app.prompt_order.front() == Some(&PromptKind::Open) && app.held_opens.front().is_some_and(same) {
         if let Some(held) = app.held_opens.pop_front() {
+            app.prompt_order.pop_front();
             // A failure is shown to the user (`open_failed`); the next file still opens.
             let _ = open(app, held, Some(action));
         }
@@ -239,6 +290,9 @@ pub(crate) fn answer_damage(app: &mut PhotocraftApp, accept: bool) -> Result<Val
         front.damage_pending = false;
     } else {
         app.held_opens.pop_front();
+        if let Some(pos) = app.prompt_order.iter().position(|p| *p == PromptKind::Open) {
+            app.prompt_order.remove(pos);
+        }
         app.ui.status = crate::i18n::fmt(tl!("Cancelled opening {name}"), &[("name", &name)]);
         app.ui.status_error = false;
     }
@@ -282,6 +336,7 @@ fn open(app: &mut PhotocraftApp, held: Held, action: Option<&str>) -> Result<Val
     Ok(json!({"document": index, "action": action}))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn arrive_memory(
     app: &mut PhotocraftApp,
     id: u64,
@@ -293,6 +348,7 @@ pub fn arrive_memory(
     available: Option<u64>,
 ) {
     app.held_memory_prompts.push_back(MemoryPrompt { id, name, path, slot, order, estimated, available });
+    app.prompt_order.push_back(PromptKind::Memory);
     advance_memory(app);
 }
 
@@ -305,22 +361,19 @@ pub(crate) fn memory_body(ui: &mut egui::Ui, fields: &serde_json::Map<String, Va
 }
 
 pub fn advance_memory(app: &mut PhotocraftApp) {
-    let Some(front) = app.held_memory_prompts.front() else { return };
-    if !app.ui.dialogs.iter().any(|d| owns_memory(&d.fields)) {
-        show_memory(app, front);
-    }
+    advance(app);
 }
 
 fn show_memory(app: &mut PhotocraftApp, prompt: &MemoryPrompt) {
     let est_gb = prompt.estimated as f64 / (1u64 << 30) as f64;
     let avail_str = match prompt.available {
-        Some(a) => format!("{:.1} GB", a as f64 / (1u64 << 30) as f64),
+        Some(a) => format!("{:.1} GiB", a as f64 / (1u64 << 30) as f64),
         None => "unknown".to_string(),
     };
     let message = format!(
         "{}\n\n{}",
         crate::i18n::fmt(
-            tl!("Opening “{name}” requires an estimated {est:.1} GB of memory ({avail} available)."),
+            tl!("Opening “{name}” requires an estimated {est} GiB of memory ({avail} available)."),
             &[("name", &prompt.name), ("est", &format!("{est_gb:.1}")), ("avail", &avail_str)],
         ),
         tl!("Opening this document uses more memory and may slow down your computer or other running applications."),
@@ -343,30 +396,50 @@ fn show_memory(app: &mut PhotocraftApp, prompt: &MemoryPrompt) {
 
 pub(crate) fn answer_memory(app: &mut PhotocraftApp, accept: bool) -> Result<Value, String> {
     let Some(front) = app.held_memory_prompts.pop_front() else {
+        advance(app);
         return Err("no high-memory PSD is waiting for confirmation".into());
     };
+    if let Some(pos) = app.prompt_order.iter().position(|p| *p == PromptKind::Memory) {
+        app.prompt_order.remove(pos);
+    }
     let id = front.id;
     let name = front.name.clone();
-    let r = app.run("file.approveMemory", json!({"id": id, "approve": accept})).map_err(|e| format!("{}: {e}", name))?;
+    let path = front.path.clone();
+    let slot = front.slot;
+    let order = front.order;
 
-    if accept {
-        if let Some(job) = r.get("job").and_then(Value::as_u64) {
-            app.jobs.opens.push(crate::jobs_ui::OpenTab {
-                job: photocraft_engine::jobs::JobId(job),
-                name: name.clone(),
-                path: front.path,
-                slot: front.slot,
-                order: front.order,
-            });
-            app.jobs.focus = Some(photocraft_engine::jobs::JobId(job));
-            app.ui.chrome.home = None;
-            app.ui.status = crate::i18n::fmt(tl!("Opening {name}…"), &[("name", &name)]);
-            app.ui.status_error = false;
+    let res = app.run("file.approveMemory", json!({"id": id, "approve": accept, "background": app.background_jobs})).map_err(|e| format!("{}: {e}", name));
+
+    match res {
+        Ok(r) => {
+            if accept {
+                if let Some(job) = r.get("job").and_then(Value::as_u64) {
+                    app.jobs.opens.push(crate::jobs_ui::OpenTab { job: photocraft_engine::jobs::JobId(job), name: name.clone(), path, slot, order });
+                    app.jobs.focus = Some(photocraft_engine::jobs::JobId(job));
+                    app.ui.chrome.home = None;
+                    app.ui.status = crate::i18n::fmt(tl!("Opening {name}…"), &[("name", &name)]);
+                    app.ui.status_error = false;
+                } else if let Some(result) = r.get("result") {
+                    let tab = crate::jobs_ui::OpenTab { job: photocraft_engine::jobs::JobId(0), name: name.clone(), path: path.clone(), slot, order };
+                    if let Err(e) = crate::jobs_ui::finish_open_tab(app, &tab, result) {
+                        app.ui.status = e;
+                        app.ui.status_error = true;
+                    }
+                }
+            } else {
+                app.ui.status = crate::i18n::fmt(tl!("Cancelled opening {name}"), &[("name", &name)]);
+                app.ui.status_error = false;
+                crate::jobs_ui::end_batch(&mut app.jobs, &app.held_memory_prompts);
+            }
+            advance(app);
+            Ok(r)
         }
-    } else {
-        app.ui.status = crate::i18n::fmt(tl!("Cancelled opening {name}"), &[("name", &name)]);
-        app.ui.status_error = false;
+        Err(err) => {
+            app.ui.status = err.clone();
+            app.ui.status_error = true;
+            crate::jobs_ui::end_batch(&mut app.jobs, &app.held_memory_prompts);
+            advance(app);
+            Err(err)
+        }
     }
-    advance_memory(app);
-    Ok(r)
 }

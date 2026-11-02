@@ -73,7 +73,14 @@ impl PhotocraftApp {
         let (mut doc, warnings, damaged) = if photocraft_io::is_psd(bytes) {
             // Read PSD damage as structured information in the same decode, not by
             // retrying an error or matching the text of a compatibility warning.
-            let (r, damaged) = photocraft_io::import_for_open(name, bytes, &opts).map_err(|e| e.to_string())?;
+            let (r, damaged) = match photocraft_io::import_for_open(name, bytes, &opts) {
+                Ok(result) => result,
+                Err(photocraft_io::IoError::PsdApprovalRequired { .. }) => {
+                    jobs_ui::start_open(self, name, path.map(str::to_string), jobs_ui::bytes(bytes))?;
+                    return Ok(Vec::new());
+                }
+                Err(error) => return Err(error.to_string()),
+            };
             (r.document, r.warnings, damaged)
         } else {
             let (doc, warnings) = import(name, bytes, &opts)?;
@@ -112,13 +119,17 @@ impl PhotocraftApp {
     /// Returns the import warnings (also shown to the user). Brush and gradient
     /// files go to the preset libraries, as for interactive opens.
     pub fn open_automation_bytes(&mut self, name: &str, bytes: &[u8]) -> Result<Vec<String>, String> {
+        self.open_automation_bytes_with_approval(name, bytes, false)
+    }
+
+    pub fn open_automation_bytes_with_approval(&mut self, name: &str, bytes: &[u8], approved: bool) -> Result<Vec<String>, String> {
         let events_enabled = self.session.prefs().script_events.enabled;
         if events_enabled {
             self.session.edit_prefs(|prefs| prefs.script_events.enabled = false);
         }
         let result = match preset_files_ui::open(self, name, bytes) {
             Some(r) => r.map(|()| Vec::new()),
-            None => self.import_automation_document(name, bytes),
+            None => self.import_automation_document(name, bytes, approved),
         };
         if events_enabled {
             self.session.edit_prefs(|prefs| prefs.script_events.enabled = true);
@@ -128,9 +139,10 @@ impl PhotocraftApp {
 
     /// The document half of [`open_automation_bytes`](Self::open_automation_bytes): no script
     /// events and no Color Settings policy (which may read user-configured profile paths).
-    fn import_automation_document(&mut self, name: &str, bytes: &[u8]) -> Result<Vec<String>, String> {
+    fn import_automation_document(&mut self, name: &str, bytes: &[u8], approved: bool) -> Result<Vec<String>, String> {
         let import = self.services.import.as_ref().ok_or("no importer configured")?;
-        let opts = photocraft_engine::jobs::import_options(self.session.prefs());
+        let mut opts = photocraft_engine::jobs::import_options(self.session.prefs());
+        opts.psd_high_memory_approved = approved;
         let (mut doc, warnings) = import(name, bytes, &opts)?;
         photocraft_engine::file_cmds::raw_defaults(&self.session, &warnings, &mut doc);
         // The caller records the path it read from.

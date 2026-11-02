@@ -55,9 +55,11 @@ fn large_off_canvas_layer_is_rejected_without_decoding_its_tiny_data() {
     // section. No enormous decoded plane is ever constructed by this test.
     let mut bytes = file.to_bytes().unwrap();
     bytes.truncate(bytes.len() - file.image_data.data.len() - 2);
-    assert!(matches!(crate::import("huge.psd", &bytes), Err(IoError::PsdImportBudget { .. })));
-    let source = photocraft_psd::Source::new(bytes);
-    assert!(matches!(crate::import_source_for_open_with("huge.psd", source, &photocraft_raster::Interrupt::NONE), Err(IoError::PsdImportBudget { .. })));
+    crate::memory::with_mock_memory(crate::memory::MemorySnapshot::UNKNOWN, || {
+        assert!(matches!(crate::import("huge.psd", &bytes), Err(IoError::PsdImportBudget { .. })));
+        let source = photocraft_psd::Source::new(bytes);
+        assert!(matches!(crate::import_source_for_open_with("huge.psd", source, &photocraft_raster::Interrupt::NONE), Err(IoError::PsdImportBudget { .. })));
+    });
 }
 
 #[test]
@@ -119,9 +121,12 @@ fn accepted_off_canvas_pixels_and_depths_are_preserved() {
 fn legacy_conversion_reports_a_rejected_import_instead_of_decoding_it() {
     let mut file = testgen::small(Version::Psd, Compression::Zip);
     file.layers_mut()[0].rect = Rect::from_xywh(0, 0, 20000, 20000);
-    let (doc, warnings) = crate::psd_to_document(&file);
-    assert!(doc.layers.is_empty());
-    assert!(warnings.iter().any(|warning| warning.contains("pixel memory")));
+    // Use fallback snapshot to ensure test does not depend on host available RAM
+    crate::memory::with_mock_memory(crate::memory::MemorySnapshot::UNKNOWN, || {
+        let (doc, warnings) = crate::psd_to_document(&file);
+        assert!(doc.layers.is_empty());
+        assert!(warnings.iter().any(|warning| warning.contains("pixel memory")));
+    });
 }
 
 fn pattern_block(mode: u32, depth: u16, width: u32, height: u32) -> photocraft_psd::TaggedBlock {
@@ -270,4 +275,133 @@ fn zero_available_ram_refuses_admission() {
         let res = crate::import_with_options("small.psd", &bytes, &opts);
         assert!(matches!(res, Err(IoError::PsdImportBudget { .. })));
     });
+}
+
+#[test]
+fn preflight_rejection_and_approval_files_release_gate() {
+    if cfg!(any(target_arch = "wasm32", target_pointer_width = "32")) {
+        return;
+    }
+    let mut file = testgen::small(Version::Psd, Compression::Zip);
+    file.header.width = 1;
+    file.header.height = 1;
+    file.layers_mut()[0].rect = Rect::from_xywh(0, 0, 30_000, 30_000);
+    let bytes = file.to_bytes().unwrap();
+
+    let gb = 1u64 << 30;
+    // Set RAM such that this large layer exceeds hard limit
+    let snap = crate::memory::MemorySnapshot { available_ram: Some(4 * gb), swap_free: None, commit_headroom: None };
+    crate::memory::with_mock_memory(snap, || {
+        assert!(!crate::psd_gate::is_holding_admission());
+        let res = crate::import_with_options("huge.psd", &bytes, &crate::ImportOptions::default());
+        assert!(matches!(res, Err(IoError::PsdImportBudget { .. })));
+        // Gate must not be held after rejection
+        assert!(!crate::psd_gate::is_holding_admission());
+    });
+
+    // Set RAM such that file falls in confirmation range
+    let est = estimate(&file);
+    let snap_mid = crate::memory::MemorySnapshot { available_ram: Some(est * 2), swap_free: None, commit_headroom: None };
+    crate::memory::with_mock_memory(snap_mid, || {
+        assert!(!crate::psd_gate::is_holding_admission());
+        let res = crate::import_with_options("mid.psd", &bytes, &crate::ImportOptions::default());
+        assert!(matches!(res, Err(IoError::PsdApprovalRequired { .. })));
+        // Gate must not be held when requiring approval
+        assert!(!crate::psd_gate::is_holding_admission());
+    });
+}
+
+#[test]
+fn retry_estimate_cap_rejects_altered_or_enlarged_file() {
+    if cfg!(any(target_arch = "wasm32", target_pointer_width = "32")) {
+        return;
+    }
+    let gb = 1u64 << 30;
+    let snap = crate::memory::MemorySnapshot { available_ram: Some(12 * gb), swap_free: None, commit_headroom: None };
+    // S = 6 GiB, H = 9 GiB
+
+    // 1. Within approved_estimate: passes
+    let res = crate::memory::evaluate_psd_admission(7 * gb, 0, true, Some(7 * gb), snap);
+    assert!(res.is_ok());
+
+    // 2. Fresh requirement exceeds approved_estimate: requires fresh approval
+    let res = crate::memory::evaluate_psd_admission(8 * gb, 0, true, Some(7 * gb), snap);
+    assert!(matches!(res, Err(IoError::PsdApprovalRequired { required, .. }) if required == 8 * gb));
+
+    // 3. Exceeds hard limit: refused completely regardless of approval
+    let res = crate::memory::evaluate_psd_admission(10 * gb, 0, true, Some(10 * gb), snap);
+    assert!(matches!(res, Err(IoError::PsdImportBudget { required, limit }) if required == 10 * gb && limit == 9 * gb));
+}
+
+#[test]
+fn caller_zero_and_lower_caps_cannot_bypass_hard_boundary() {
+    if cfg!(any(target_arch = "wasm32", target_pointer_width = "32")) {
+        return;
+    }
+    let gb = 1u64 << 30;
+    let snap = crate::memory::MemorySnapshot { available_ram: Some(8 * gb), swap_free: None, commit_headroom: None };
+    // S = 4 GiB, H = 6 GiB
+
+    // 0 uses adaptive budget
+    let b_zero = crate::memory::resolve_budget(snap, Some(0));
+    assert_eq!(b_zero.hard_limit, 6 * gb);
+    assert_eq!(b_zero.soft_limit, 4 * gb);
+
+    // Lower cap lowers both hard and soft
+    let b_lower = crate::memory::resolve_budget(snap, Some(3 * gb));
+    assert_eq!(b_lower.hard_limit, 3 * gb);
+    assert_eq!(b_lower.soft_limit, 3 * gb);
+
+    // Higher cap cannot raise above hard limit
+    let b_higher = crate::memory::resolve_budget(snap, Some(20 * gb));
+    assert_eq!(b_higher.hard_limit, 6 * gb);
+    assert_eq!(b_higher.soft_limit, 4 * gb);
+}
+
+#[test]
+fn test_memory_scope_propagates_to_worker_thread() {
+    let gb = 1u64 << 30;
+    let mock = crate::memory::MemorySnapshot { available_ram: Some(4 * gb), swap_free: None, commit_headroom: None };
+    crate::memory::with_mock_memory(mock, || {
+        let scope = crate::memory::TestMemoryScope::capture();
+        let handle = std::thread::spawn(move || {
+            scope.run(|| {
+                assert_eq!(crate::memory::MemorySnapshot::current().available_ram, Some(4 * gb));
+            });
+        });
+        handle.join().unwrap();
+    });
+}
+
+#[test]
+fn nested_imports_consume_from_shared_allowance_and_do_not_reset_parent() {
+    let gb = 1u64 << 30;
+    let ctl = photocraft_raster::Interrupt::NONE;
+    let _guard = crate::psd_gate::acquire_decode_admission(&ctl).unwrap();
+    // Simulate top-level attempt authorized total of 5 GB with 2 GB remaining allowance
+    crate::psd_gate::set_active_attempt_budget(2 * gb);
+
+    // First nested consume fits within 2 GB
+    assert!(crate::psd_gate::consume_attempt_allowance(1 * gb).is_ok());
+
+    // Second nested consume exceeds remaining 1 GB
+    let err = crate::psd_gate::consume_attempt_allowance(2 * gb).unwrap_err();
+    assert!(matches!(err, IoError::PsdImportBudget { required, limit } if required == 2 * gb && limit == 1 * gb));
+
+    // Allowance is still 1 GB (failed attempt does not reset or corrupt parent)
+    assert!(crate::psd_gate::consume_attempt_allowance(1 * gb).is_ok());
+    assert!(crate::psd_gate::consume_attempt_allowance(1).is_err());
+}
+
+#[test]
+fn nested_tiff_layer_import_consumes_composite_and_estimate_without_resetting_parent() {
+    let gb = 1u64 << 30;
+    let ctl = photocraft_raster::Interrupt::NONE;
+    let _guard = crate::psd_gate::acquire_decode_admission(&ctl).unwrap();
+    crate::psd_gate::set_active_attempt_budget(3 * gb);
+
+    assert!(crate::psd_gate::is_holding_admission());
+    assert!(crate::psd_gate::consume_attempt_allowance(1 * gb).is_ok());
+    assert!(crate::psd_gate::consume_attempt_allowance(2 * gb).is_ok());
+    assert!(crate::psd_gate::consume_attempt_allowance(1).is_err());
 }

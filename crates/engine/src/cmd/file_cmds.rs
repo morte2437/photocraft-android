@@ -68,6 +68,10 @@ pub(crate) fn native(_: &Session) -> std::result::Result<(), String> {
     if cfg!(target_arch = "wasm32") { Err("not available on the web (no file system)".into()) } else { Ok(()) }
 }
 
+fn always(_: &Session) -> std::result::Result<(), String> {
+    Ok(())
+}
+
 pub(crate) fn native_doc(s: &Session) -> std::result::Result<(), String> {
     native(s)?;
     has_doc(s)
@@ -261,13 +265,21 @@ pub fn specs() -> Vec<CommandSpec> {
             native,
             open_as
         ),
-        spec!("file.approveMemory", "Approve High Memory PSD Import", &[], None, r##"{"id":u64,"approve":bool=true}"##, native, approve_memory),
+        spec!(
+            "file.approveMemory",
+            "Approve High Memory PSD Import",
+            &[],
+            None,
+            r##"{"id":u64,"approve":bool=true,"background":bool=true}"##,
+            always,
+            approve_memory
+        ),
         spec!(
             "file.placeEmbedded",
             "Place Embedded…",
             &["File"],
             None,
-            r##"{"path":str,"scale":%? (default: fit when larger than the canvas),"fit":bool? (default: Preferences > General > Resize Image During Place),"smartObject":bool? (default: Preferences > General > Always Create Smart Objects When Placing),"center":[x,y]?}"##,
+            r##"{"path":str,"scale":%? (default: fit when larger than the canvas),"fit":bool? (default: Preferences > General > Resize Image During Place),"smartObject":bool? (default: Preferences > General > Always Create Smart Objects When Placing),"center":[x,y]?,"approveHighMemory":bool=false (explicitly approve high memory usage)}"##,
             native_doc,
             |s, p| place(s, p, false)
         ),
@@ -276,7 +288,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Place Linked…",
             &["File"],
             None,
-            r##"{"path":str,"scale":%?,"fit":bool? (default: Preferences > General > Resize Image During Place),"center":[x,y]?}"##,
+            r##"{"path":str,"scale":%?,"fit":bool? (default: Preferences > General > Resize Image During Place),"center":[x,y]?,"approveHighMemory":bool=false (explicitly approve high memory usage)}"##,
             native_doc,
             |s, p| place(s, p, true)
         ),

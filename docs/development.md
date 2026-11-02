@@ -670,11 +670,18 @@ physical RAM (excluding swap) and system commit headroom:
 - **Hard budget (H)**: $\min(75\% 	ext{ RAM}, 	ext{RAM} - 1	ext{ GiB}, 	ext{commit headroom} - 512	ext{ MiB}, 	ext{address-space limits})$.
 - **Soft budget (S)**: $\min(50\% 	ext{ RAM}, 8	ext{ GiB}, H)$.
 - Files requiring $\le S$ are admitted automatically.
-- Files requiring $S < E \le H$ prompt for explicit one-shot user confirmation ("Open anyway") in the UI or require `approveHighMemory: true` for headless callers.
+- Files requiring $S < E \le H$ prompt for explicit one-shot user confirmation ("Open anyway") in the UI. Headless callers default to no interactive dialog and require explicit per-invocation opt-in:
+  - Engine commands: `file.openAs` and `file.placeEmbedded` take `approveHighMemory: bool` (default `false`); `file.approveMemory` takes `{"id": u64, "approve": bool = true}`.
+  - Headless RPC / control protocol: `doc.open` and `doc.place` take `approveHighMemory: bool`.
+  - MCP: `doc_open` takes `approve_high_memory: bool`.
+  - CLI: `convert`, `info`, `run`, and `batch` take `--approve-high-memory`.
+  - Explicit approval authorizes imports within $(S, H]$ but never bypasses the hard memory budget $H$.
 - Files requiring $> H$ are refused and cannot be overridden.
-- Fallback allowance when usable memory is unknown is 2 GiB with no confirmation override; WebAssembly uses a fixed 1 GiB limit.
+- Fallback allowance when usable memory is unknown is 2 GiB with no confirmation override; this currently applies on macOS. Adaptive memory detection is available on Linux and Windows. WebAssembly uses a fixed 1 GiB limit.
 - Applications can lower the admission threshold with `ImportOptions::psd_max_pixel_bytes`; explicit caller limits may lower admission, never bypass the hard boundary.
 - Concurrent PSD decodes are serialized using a process-wide, cancellation-aware admission gate, with nested decodes sharing the enclosing allowance.
+
+Headless RPC and MCP report structured memory errors with byte counts (`required`, `softLimit`, `hardLimit`, and `availableRam` when known). GUI automation imports currently cross a service boundary that returns string errors.
 
 An import exceeding the hard budget returns `IoError::PsdImportBudget` with the estimated
 and allowed byte counts; imports requiring confirmation return `IoError::PsdApprovalRequired`

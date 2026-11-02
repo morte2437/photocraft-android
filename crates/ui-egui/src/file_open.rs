@@ -182,7 +182,7 @@ impl PhotocraftApp {
                 Err(e) => self.open_failed(&display_name(abs), &e),
             }
         }
-        crate::jobs_ui::end_batch(&mut self.jobs);
+        crate::jobs_ui::end_batch(&mut self.jobs, &self.held_memory_prompts);
         opened
     }
 

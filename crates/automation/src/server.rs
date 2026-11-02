@@ -50,6 +50,9 @@ pub struct DocIndex {
 pub struct OpenParams {
     /// Path beneath the configured automation read root: relative (forward slashes) or absolute.
     pub path: String,
+    /// Explicitly approve high-memory PSD/PSB imports that fit within the hard memory budget.
+    #[serde(default)]
+    pub approve_high_memory: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -483,7 +486,31 @@ fn png_result(png: &[u8], note: String) -> CallToolResult {
 fn to_result(r: Result<Value, AutomationError>) -> Result<CallToolResult, McpError> {
     Ok(match r {
         Ok(v) => ok_json(&v),
-        Err(e) => fail(e),
+        Err(e) => {
+            let mut obj = json!({"error": e.to_string()});
+            match &e {
+                AutomationError::Import(photocraft_io::IoError::PsdApprovalRequired { required, soft_limit, hard_limit, available_ram })
+                | AutomationError::Engine(photocraft_engine::EngineError::PsdApprovalRequired { required, soft_limit, hard_limit, available_ram, .. }) => {
+                    obj["required"] = json!(required);
+                    obj["soft"] = json!(soft_limit);
+                    obj["softLimit"] = json!(soft_limit);
+                    obj["hard"] = json!(hard_limit);
+                    obj["hardLimit"] = json!(hard_limit);
+                    if let Some(avail) = available_ram {
+                        obj["available"] = json!(avail);
+                        obj["availableRam"] = json!(avail);
+                    }
+                }
+                AutomationError::Import(photocraft_io::IoError::PsdImportBudget { required, limit }) => {
+                    obj["required"] = json!(required);
+                    obj["hard"] = json!(limit);
+                    obj["hardLimit"] = json!(limit);
+                }
+                _ => {}
+            }
+            let text = serde_json::to_string(&obj).unwrap_or_else(|_| e.to_string());
+            CallToolResult::error(vec![Content::text(text)])
+        }
     })
 }
 
@@ -631,13 +658,18 @@ impl PhotocraftMcp {
     #[tool(description = "Open an image or document file and make it active. Returns index, size and import warnings.")]
     async fn doc_open(&self, Parameters(p): Parameters<OpenParams>) -> Result<CallToolResult, McpError> {
         let path = PathBuf::from(&p.path);
-        if let Some(r) = self.headless_op(move |h| h.open(&path)).await {
+        let approve = p.approve_high_memory.unwrap_or(false);
+        if let Some(r) = self.headless_op(move |h| h.open_with_approval(&path, approve)).await {
             return to_result(r);
         }
         let Some(b) = self.bridge_client() else {
             return Ok(no_backend());
         };
-        to_result(b.call("app.open", json!({"path": p.path})).await)
+        let mut params = json!({"path": p.path});
+        if approve {
+            params["approveHighMemory"] = json!(true);
+        }
+        to_result(b.call("app.open", params).await)
     }
 
     #[tool(
@@ -939,7 +971,36 @@ impl PhotocraftMcp {
             let was_error = response.is_err();
             let result = match response {
                 Ok(value) => json!({"ok": true, "result": value}),
-                Err(error) => json!({"ok": false, "error": error.to_string()}),
+                Err(error) => {
+                    let mut obj = json!({"ok": false, "error": error.to_string()});
+                    match &error {
+                        AutomationError::Import(photocraft_io::IoError::PsdApprovalRequired { required, soft_limit, hard_limit, available_ram })
+                        | AutomationError::Engine(photocraft_engine::EngineError::PsdApprovalRequired {
+                            required,
+                            soft_limit,
+                            hard_limit,
+                            available_ram,
+                            ..
+                        }) => {
+                            obj["required"] = json!(required);
+                            obj["soft"] = json!(soft_limit);
+                            obj["softLimit"] = json!(soft_limit);
+                            obj["hard"] = json!(hard_limit);
+                            obj["hardLimit"] = json!(hard_limit);
+                            if let Some(avail) = available_ram {
+                                obj["available"] = json!(avail);
+                                obj["availableRam"] = json!(avail);
+                            }
+                        }
+                        AutomationError::Import(photocraft_io::IoError::PsdImportBudget { required, limit }) => {
+                            obj["required"] = json!(required);
+                            obj["hard"] = json!(limit);
+                            obj["hardLimit"] = json!(limit);
+                        }
+                        _ => {}
+                    }
+                    obj
+                }
             };
             if let Err(error) = reply_budget.charge(&result) {
                 failed += 1;
@@ -1253,6 +1314,27 @@ mod tests {
         assert_eq!(reply["failed"], 1);
         let docs = mcp.headless_op(|h| Ok(h.session.documents().len())).await.unwrap().unwrap();
         assert_eq!(docs, 0, "the step after the budget ran out did not run");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mcp_doc_open_schema_and_structured_error() {
+        let schema = &PhotocraftMcp::tool_router().map["doc_open"].attr.input_schema;
+        assert_eq!(schema["properties"]["approve_high_memory"]["type"], "boolean");
+
+        let err = AutomationError::Import(photocraft_io::IoError::PsdApprovalRequired {
+            required: 6000,
+            soft_limit: 3000,
+            hard_limit: 9000,
+            available_ram: Some(12000),
+        });
+        let res = to_result(Err(err)).unwrap();
+        assert_eq!(res.is_error, Some(true));
+        let text = &res.content.first().and_then(|c| c.as_text()).unwrap().text;
+        let v: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(v["required"], 6000);
+        assert_eq!(v["soft"], 3000);
+        assert_eq!(v["hard"], 9000);
+        assert_eq!(v["available"], 12000);
     }
 
     /// The MCP server applies finished jobs before every tool call too (#503).

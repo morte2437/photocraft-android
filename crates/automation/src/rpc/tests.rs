@@ -1028,3 +1028,33 @@ fn invalid_document_index_is_rejected_not_the_active_document() {
     assert_eq!(reply["ok"], true, "{reply}");
     assert_eq!(count(&h), 1);
 }
+
+#[test]
+fn approve_high_memory_rejects_invalid_types_and_formats_structured_error() {
+    let h = session();
+    // Non-boolean approveHighMemory is rejected strictly
+    let reply = respond(&h, r#"{"method":"doc.open","params":{"path":"test.psd","approveHighMemory":"yes"}}"#);
+    assert_eq!(reply["ok"], false);
+    assert!(reply["error"].as_str().unwrap().contains("must be a boolean"));
+
+    let reply_place = respond(&h, r#"{"method":"doc.place","params":{"path":"test.psd","approveHighMemory":123}}"#);
+    assert_eq!(reply_place["ok"], false);
+    assert!(reply_place["error"].as_str().unwrap().contains("must be a boolean"));
+
+    // Verify attach_memory_error_details adds machine-readable fields
+    let mut err_obj = json!({"id": 1, "ok": false, "error": "test"});
+    let auto_err = crate::AutomationError::Import(photocraft_io::IoError::PsdApprovalRequired {
+        required: 5000,
+        soft_limit: 2000,
+        hard_limit: 8000,
+        available_ram: Some(10000),
+    });
+    super::attach_memory_error_details(&mut err_obj, &auto_err);
+    assert_eq!(err_obj["required"], 5000);
+    assert_eq!(err_obj["soft"], 2000);
+    assert_eq!(err_obj["softLimit"], 2000);
+    assert_eq!(err_obj["hard"], 8000);
+    assert_eq!(err_obj["hardLimit"], 8000);
+    assert_eq!(err_obj["available"], 10000);
+    assert_eq!(err_obj["availableRam"], 10000);
+}

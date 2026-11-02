@@ -200,7 +200,7 @@ pub fn run(app: &mut PhotocraftApp, id: &str, params: Value) -> Result<Value, St
 /// replaces it when decoded. `path` is remembered for File › Save and Open Recent.
 pub fn start_open(app: &mut PhotocraftApp, name: &str, path: Option<String>, source: OpenSource) -> Result<(), String> {
     let name = &app.open_name(name);
-    match app.session.start_open_for_user(name, source).map_err(|e| e.to_string())? {
+    match app.session.start_open_for_user_with_background(name, source, app.background_jobs).map_err(|e| e.to_string())? {
         // Inline (wasm): finish now, like a background open that ended at once.
         Started::Done(v) => finish_open(app, name, path.as_deref(), &v, None),
         Started::Job(job) => {
@@ -233,9 +233,11 @@ pub(crate) fn opened_in_order(jobs: &mut JobsUi, order: OpenOrder) {
 }
 
 /// Every member of the set has been started: forget it unless some are still opening.
-pub(crate) fn end_batch(jobs: &mut JobsUi) {
+pub(crate) fn end_batch(jobs: &mut JobsUi, held_memory_prompts: &std::collections::VecDeque<crate::open_prompt::MemoryPrompt>) {
     let opens = &jobs.opens;
-    jobs.batches.retain(|b| opens.iter().any(|o| o.order.is_some_and(|x| x.batch == b.id)));
+    jobs.batches.retain(|b| {
+        opens.iter().any(|o| o.order.is_some_and(|x| x.batch == b.id)) || held_memory_prompts.iter().any(|m| m.order.is_some_and(|x| x.batch == b.id))
+    });
 }
 
 /// The tab position for a member of a set that just opened: after the members before it that
@@ -258,7 +260,7 @@ pub(crate) fn finish_open_tab(app: &mut PhotocraftApp, tab: &OpenTab, v: &Value)
     }
     let slot = tab.slot.or_else(|| tab.order.and_then(|o| batch_slot(&mut app.jobs, o)));
     let r = finish_open(app, &tab.name, tab.path.as_deref(), v, slot);
-    end_batch(&mut app.jobs);
+    end_batch(&mut app.jobs, &app.held_memory_prompts);
     r
 }
 
@@ -513,7 +515,7 @@ fn on_event(app: &mut PhotocraftApp, ctx: &egui::Context, e: JobEvent) {
                 app.ui.status_error = false;
             }
         }
-        end_batch(&mut app.jobs);
+        end_batch(&mut app.jobs, &app.held_memory_prompts);
         return;
     }
     match e.outcome {

@@ -124,7 +124,18 @@ pub(crate) fn import_layered(name: &str, img: &Image, layers: &[u8], pixel_limit
     if composite > pixel_limit {
         return Err(photocraft_psd::PsdError::LimitExceeded("the TIFF composite exceeds the import allowance").into());
     }
-    crate::psd_budget::check(&file, pixel_limit - composite)?;
+    let remaining_limit = pixel_limit - composite;
+    let est = crate::psd_budget::check(&file, remaining_limit)?;
+    let nested = crate::psd_gate::is_holding_admission();
+    if nested {
+        crate::psd_gate::consume_attempt_allowance(
+            est.total_bytes.checked_add(composite).ok_or_else(|| IoError::Unsupported("TIFF import estimate overflow".into()))?,
+        )?;
+    }
+    let _guard = crate::psd_gate::acquire_decode_admission(&photocraft_raster::Interrupt::NONE)?;
+    if !nested {
+        crate::psd_gate::set_active_attempt_budget(remaining_limit.saturating_sub(est.total_bytes));
+    }
     let img = if img.sample_type() == CSample::F16 {
         warnings.push("16-bit float samples are stored as 32-bit float".to_string());
         std::borrow::Cow::Owned(img.convert(img.layout(), CSample::F32))
