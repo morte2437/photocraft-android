@@ -512,6 +512,15 @@ pub fn restore_recording(s: &mut Session, idx: usize, action: &str, from: usize)
 /// Nested playback returns a structured failure even though the command itself succeeded.
 /// Promote it to the caller's failed step so no later parent steps run after a child fails.
 pub fn nested_failure(id: &str, value: &Value) -> Option<String> {
+    // Batch keeps per-file results for direct callers, but a failed recorded Batch step stops its parent.
+    if id == "file.automate.batch" {
+        let failure = value.get("errors")?.as_array()?.first()?;
+        return Some(format!(
+            "Batch failed for {}: {}",
+            failure.get("file").and_then(Value::as_str).unwrap_or("an input"),
+            failure.get("error").and_then(Value::as_str).unwrap_or("unknown error")
+        ));
+    }
     (id == "actions.play" || id == "actions.conditional").then(|| value.get("failed")).flatten().map(|failure| {
         format!(
             "action `{}` step {} failed: {}",

@@ -138,14 +138,17 @@ fn run_steps(s: &mut Session, steps: &[(String, Value)]) -> Vec<Value> {
             break;
         }
         match s.execute(id, params.clone()) {
-            // A called action reports a failed step inside an `Ok`; it stops the script too.
-            Ok(r) => match crate::actions_cmds::nested_failure(id, &r).or_else(|| nested_script_failure(id, &r)) {
-                Some(error) => {
-                    results.push(json!({"command": id, "result": r, "error": error}));
-                    break;
+            Ok(r) => {
+                // Direct Batch calls report file errors successfully to scripts. Called actions still fail the script.
+                let action_failure = if id == "file.automate.batch" { None } else { crate::actions_cmds::nested_failure(id, &r) };
+                match action_failure.or_else(|| nested_script_failure(id, &r)) {
+                    Some(error) => {
+                        results.push(json!({"command": id, "result": r, "error": error}));
+                        break;
+                    }
+                    None => results.push(json!({"command": id, "result": r})),
                 }
-                None => results.push(json!({"command": id, "result": r})),
-            },
+            }
             Err(e) => {
                 results.push(json!({"command": id, "error": e.to_string()}));
                 break;

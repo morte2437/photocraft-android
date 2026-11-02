@@ -109,15 +109,25 @@ fn batch_recorded_stop_for_errors_retains_earlier_outputs_and_stops_before_later
     let p = json!({"input":dir,"output":output,"action":"Child","set":"S","stopOnError":true,
         "includeSubfolders":false,"overrideSaveAs":false,"flatOutput":true,
         "namingComponents":[{"component":"name"},{"component":"extension"}]});
-    let driver = crate::actions_cmds::Action::new("Driver", vec![("file.automate.batch".into(), p)]);
+    let sentinel = json!({"width":7,"height":9});
+    let driver = crate::actions_cmds::Action::new("Driver", vec![("file.automate.batch".into(), p.clone()), ("file.new".into(), sentinel.clone())]);
     let (bytes, skipped) = crate::atn_cmds::export("S", &[&driver], &[], false).unwrap();
     assert!(skipped.is_empty());
-    s.actions.list.extend(crate::atn_cmds::import(&bytes).unwrap().actions);
+    let imported = crate::atn_cmds::import(&bytes).unwrap();
+    assert_eq!(imported.actions[0].steps[1].0, "file.new", "the after-Batch sentinel must be replayable");
+    s.actions.list.extend(imported.actions);
     let result = s.execute("actions.play", json!({"action":"Driver"})).unwrap();
-    assert_eq!(result["ran"], 1, "{result}");
-    assert!(result.get("failed").is_none(), "{result}");
+    assert_eq!(result["ran"], 0, "{result}");
+    assert_eq!(result["failed"]["id"], "file.automate.batch");
+    assert!(result["failed"]["error"].as_str().unwrap().contains("b.png"), "{result}");
+    assert!(s.documents().is_empty(), "the command after the failed Batch must not run");
     assert!(std::path::Path::new(&join(&output, "a.png")).is_file());
     assert!(!std::path::Path::new(&join(&output, "c.png")).exists());
+    // The measured scripting API reports success for the same stopped Batch and continues the script.
+    let result = s.execute("file.scripts.browse", json!({"steps":[["file.automate.batch",p],["file.new",sentinel]]})).unwrap();
+    assert_eq!(result["ok"], true, "{result}");
+    assert_eq!(result["results"][0]["result"]["errors"].as_array().unwrap().len(), 1);
+    assert_eq!(s.documents().len(), 1, "the direct script caller still runs its next command");
     let invalid_output = join(&dir, "invalid");
     let err = s.execute("file.automate.batch", json!({"input":[first],"output":invalid_output,"steps":[],"stopOnError":"true"})).unwrap_err();
     assert!(err.to_string().contains("stopOnError"), "{err}");

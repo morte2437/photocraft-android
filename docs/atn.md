@@ -258,6 +258,9 @@ Recorded folder steps without an error log set `stopOnError`: the first failed
 input is reported, earlier outputs stay saved and later inputs are not processed.
 The native command still continues by default. That continuing mode cannot be
 exported as a no-log Batch step, which would change its error policy.
+Any reported file error fails a recorded Batch step, so its parent action does
+not run later steps. A direct scripting call still returns the collected file
+results successfully, as measured in the reference application.
 
 This maps supported text-path folder forms. Alias bytes, open-document sources,
 Save and Close, error logs and enabled Open/dialog overrides remain preserved
