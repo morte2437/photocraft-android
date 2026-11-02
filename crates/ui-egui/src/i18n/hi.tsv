@@ -589,3 +589,11 @@ cameraRaw	Yellow	पीला
 # Egui 0.37 migration controls (Aspect Ratio, Category, Color Table, Gamma, Interpolation, Profile, Target, Units, Demosaic)
 	Invalid numeric entry. An integer between {min}% and {max}% is required. Previous value was inserted.	अमान्य संख्यात्मक प्रविष्टि। {min}% और {max}% के बीच एक पूर्णांक आवश्यक है। पिछला मान डाला गया।
 	Edit Brush…	ब्रश संपादित करें…
+
+# Actions panel: loading several action files at once
+	{message} ({note})	{message} ({note})
+@plural	{n} action|{n} actions	{n} एक्शन|{n} एक्शन
+@plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} चरण का अभी PhotoCraft में कोई समकक्ष नहीं है|{n} चरणों का अभी PhotoCraft में कोई समकक्ष नहीं है
+@plural	{n} action file loaded|{n} action files loaded	{n} एक्शन फ़ाइल लोड हुई|{n} एक्शन फ़ाइलें लोड हुईं
+	{set} from {file} replaced the one from {earlier}	{file} के सेट {set} ने {earlier} वाले सेट की जगह ले ली
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	{n} फ़ाइल लोड नहीं हो सकी: {errors}|{n} फ़ाइलें लोड नहीं हो सकीं: {errors}

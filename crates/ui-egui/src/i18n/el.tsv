@@ -3967,6 +3967,9 @@ curves	Smooth	Εξομάλυνση
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} βήμα δεν έχει ακόμη αντίστοιχο στο PhotoCraft|{n} βήματα δεν έχουν ακόμη αντίστοιχο στο PhotoCraft
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	Αποθηκεύτηκε {n} ενέργεια στο {file}|Αποθηκεύτηκαν {n} ενέργειες στο {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	Παραλείφθηκε {n} βήμα χωρίς αντίστοιχο στο Photoshop|Παραλείφθηκαν {n} βήματα χωρίς αντίστοιχο στο Photoshop
+@plural	{n} action file loaded|{n} action files loaded	Φορτώθηκε {n} αρχείο ενεργειών|Φορτώθηκαν {n} αρχεία ενεργειών
+	{set} from {file} replaced the one from {earlier}	Το σύνολο {set} από το {file} αντικατέστησε εκείνο από το {earlier}
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	Δεν ήταν δυνατή η φόρτωση {n} αρχείου: {errors}|Δεν ήταν δυνατή η φόρτωση {n} αρχείων: {errors}
 	File Naming	Ονομασία αρχείων
 	Starting serial	Αρχικός αριθμός σειράς
 	Insert Stop…	Εισαγωγή διακοπής…

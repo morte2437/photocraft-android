@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 use photocraft_engine::actions_cmds::{self, Action};
 
 use crate::PhotocraftApp;
+use crate::file_dialog::{FileDialogAnswer, FileDialogRequest};
 use crate::icons;
 use crate::theme::Tokens;
 
@@ -254,6 +255,9 @@ fn play_owned(app: &mut PhotocraftApp, params: &Value, suspended: Option<Value>)
         } else if actions_cmds::shell_view_command(id) {
             app.sync_views();
             app.run(id, p.clone())
+        } else if id == "edit.paste" && p.get("as").is_some() {
+            // An explicit vector paste needs the original OS source, not just an old pixel copy.
+            app.run(id, p.clone())
         } else {
             app.session.execute(id, p.clone()).map_err(|e| e.to_string())
         };
@@ -465,7 +469,12 @@ fn source(name: &str, bytes: &[u8]) -> Value {
 
 /// Load a `.atn` file's bytes into the Actions panel (the panel menu's Load Actions…).
 pub fn load_bytes(app: &mut PhotocraftApp, name: &str, bytes: &[u8]) -> Result<Value, String> {
-    let r = app.run("actions.load", source(name, bytes))?;
+    load_source(app, name, source(name, bytes))
+}
+
+/// Import one set and reveal its first action, for both native paths and browser contents.
+fn load_source(app: &mut PhotocraftApp, name: &str, params: Value) -> Result<Value, String> {
+    let r = app.run("actions.load", params)?;
     let n = r["actions"].as_array().map_or(0, Vec::len) as u64;
     let unsupported = r["unsupported"].as_array().map_or(0, Vec::len);
     let shown = crate::file_open::display_name(name);
@@ -499,8 +508,82 @@ pub fn load_bytes(app: &mut PhotocraftApp, name: &str, bytes: &[u8]) -> Result<V
     Ok(r)
 }
 
+/// Load every chosen action file in order, retaining failures and unsupported-step warnings.
 fn load_dialog(app: &mut PhotocraftApp) -> Result<Value, String> {
-    app.pick_file_bytes_filtered(&["atn"], |app, name, bytes| load_bytes(app, &name, &bytes))
+    let initial_dir = crate::file_dialog::last_used_dir(&app.ui.recent_files);
+    app.ask_file(FileDialogRequest::Open { multiple: true, initial_dir, extensions: Some(vec!["atn".into()]) }, |app, answer| {
+        let files: Vec<_> = match answer {
+            FileDialogAnswer::Paths(paths) => paths.into_iter().map(|name| (name, None)).collect(),
+            FileDialogAnswer::Contents(name, bytes) => vec![(name, Some(bytes))],
+            FileDialogAnswer::ContentsMany(files) => files.into_iter().map(|(name, bytes)| (name, Some(bytes))).collect(),
+            _ => return Err("the file dialog gave an unexpected answer".into()),
+        };
+        let count = files.len();
+        if count == 0 {
+            return Err(crate::file_dialog::CANCELLED.into());
+        }
+        let mut loaded = 0usize;
+        // What the panel holds afterwards, per set name: `actions.load` replaces a set of the same
+        // name, so a later file's set takes the earlier one's place (and its counts).
+        let mut sets: Vec<(String, String, usize, usize)> = Vec::new(); // set, file, actions, unsupported
+        let mut replaced = Vec::new();
+        let mut errors = Vec::new();
+        let mut last = Value::Null;
+        for (name, bytes) in files {
+            // Native paths go through the engine's size check before reading the file.
+            let params = match bytes {
+                Some(bytes) => source(&name, &bytes),
+                None => json!({"path": name}),
+            };
+            match load_source(app, &name, params) {
+                Ok(r) => {
+                    loaded += 1;
+                    let shown = crate::file_open::display_name(&name);
+                    let set = r["set"].as_str().unwrap_or_default().to_string();
+                    let n = r["actions"].as_array().map_or(0, Vec::len);
+                    let unsupported = r["unsupported"].as_array().map_or(0, Vec::len);
+                    if let Some(entry) = sets.iter_mut().find(|e| e.0 == set) {
+                        replaced.push(crate::i18n::fmt(
+                            tl!("{set} from {file} replaced the one from {earlier}"),
+                            &[("file", &shown), ("earlier", &entry.1), ("set", &set)],
+                        ));
+                        *entry = (set, shown, n, unsupported);
+                    } else {
+                        sets.push((set, shown, n, unsupported));
+                    }
+                    last = r;
+                }
+                Err(e) => errors.push(format!("{}: {e}", crate::file_open::display_name(&name))),
+            }
+        }
+        if count == 1 {
+            return match errors.pop() {
+                Some(e) => Err(e),
+                None => Ok(last),
+            };
+        }
+        let actions = sets.iter().fold(0usize, |sum, e| sum.saturating_add(e.2));
+        let unsupported = sets.iter().fold(0usize, |sum, e| sum.saturating_add(e.3));
+        let lang = crate::i18n::current();
+        let files = crate::i18n::trn(lang, loaded as u64, "{n} action file loaded", "{n} action files loaded");
+        let mut notes = vec![crate::i18n::trn(lang, actions as u64, "{n} action", "{n} actions")];
+        if unsupported > 0 {
+            notes.push(crate::i18n::trn(lang, unsupported as u64, "{n} step has no PhotoCraft equivalent yet", "{n} steps have no PhotoCraft equivalent yet"));
+        }
+        notes.extend(replaced);
+        if !errors.is_empty() {
+            let failed = crate::i18n::trn(lang, errors.len() as u64, "{n} file could not be loaded: {errors}", "{n} files could not be loaded: {errors}");
+            notes.push(crate::i18n::fmt(&failed, &[("errors", &errors.join("; "))]));
+        }
+        let template = "{message} ({note})";
+        let summary = crate::i18n::fmt(tl!(template), &[("message", &files), ("note", &notes.join("; "))]);
+        if !errors.is_empty() {
+            return Err(summary);
+        }
+        app.ui.status = summary;
+        app.ui.status_error = false;
+        Ok(json!({"files": loaded, "actions": actions, "unsupported": unsupported}))
+    })
 }
 
 /// Save Actions…: the selected action's set (every action of it), else the selected set folder,

@@ -127,7 +127,7 @@ fn selection_actions_keep_the_active_layer_as_their_source() {
     s.execute("select.loadSelection", json!({"channel": "transparency", "layer": raster})).unwrap();
     s.execute("actions.stop", json!({})).unwrap();
     let steps = s.execute("actions.get", json!({"action": "Load pixels"})).unwrap()["steps"].clone();
-    assert_eq!(steps[0][1]["layer"], "Pixels", "missing layer loads merged pixels instead");
+    assert_eq!(steps[0][1]["layer"], json!({"name": "Pixels"}), "missing layer loads merged pixels instead");
     s.execute("file.new", json!({"width": 32, "height": 32, "background": "white"})).unwrap();
     new_layer(&mut s, "Pixels");
     let played = s.execute("actions.play", json!({"action": "Load pixels"})).unwrap();

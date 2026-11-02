@@ -100,7 +100,7 @@ futures-lite = "=2.6.1"
 async-io = "=2.6.0"
 # Open the window through Xwayland for a pen on Wayland (`tablet.rs`, #639): eframe doesn't
 # re-export winit's `EventLoopBuilderExtX11`. Already in Cargo.lock (eframe); pinned exactly.
-winit = { version = "=0.30.13", default-features = false, features = ["x11"] }
+winit = { version = "=0.30.13", default-features = false, features = ["wayland-csd-adwaita-notitle", "x11"] }
 
 # Safe Win32 wrappers on Windows: the pointer position for file drops (`cursor.rs`,
 # GetCursorPos) and the window frame for the custom title bar (`window_frame.rs`, window styles),

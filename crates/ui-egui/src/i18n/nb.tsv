@@ -3182,6 +3182,9 @@ curves	Smooth	Jevn ut
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} trinn har ingen PhotoCraft-ekvivalent ennå|{n} trinn har ingen PhotoCraft-ekvivalent ennå
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	Lagret {n} handling til {file}|Lagret {n} handlinger til {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	{n} trinn uten Photoshop-ekvivalent ble utelatt|{n} trinn uten Photoshop-ekvivalent ble utelatt
+@plural	{n} action file loaded|{n} action files loaded	{n} handlingsfil lastet inn|{n} handlingsfiler lastet inn
+	{set} from {file} replaced the one from {earlier}	Settet {set} fra {file} erstattet det fra {earlier}
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	{n} fil kunne ikke lastes inn: {errors}|{n} filer kunne ikke lastes inn: {errors}
 
 	File Naming	Filnavngiving
 	Starting serial	Startserienummer

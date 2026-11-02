@@ -114,6 +114,48 @@ fn recorded_eye_visibility_replays_on_another_document_and_duplicate_names() {
     assert!(s.active().unwrap().doc.layer(photocraft_doc::LayerId(target)).unwrap().visible);
 }
 
+/// ⌘-clicking a layer's thumbnail that is not the selected layer records the layer by name (the
+/// Background as the Background), so the step saves in strict Save Actions and replays on the
+/// same-named layer of another document.
+#[test]
+fn recorded_thumbnail_click_on_another_layer_saves_and_replays_by_name() {
+    use photocraft_geom::Rect;
+    let fixture = |s: &mut Session| {
+        s.execute("file.new", json!({"width": 4, "height": 1})).unwrap();
+        let source = s.execute("layer.new.layer", json!({"name": "Source"})).unwrap()["layer"].as_u64().unwrap();
+        s.edit("Pixels", |doc, _| {
+            doc.layer_mut(photocraft_doc::LayerId(source)).unwrap().surface_mut().unwrap().fill_rect(Rect::new(0, 0, 1, 1), &[1.0, 0.0, 0.0, 1.0]);
+            Ok(())
+        })
+        .unwrap();
+        s.execute("layer.new.layer", json!({"name": "Active"})).unwrap();
+        source
+    };
+    let mut s = Session::new();
+    let source = fixture(&mut s);
+    let background = s.active().unwrap().doc.background().unwrap().id.0;
+    s.execute("actions.record", json!({"name": "Load"})).unwrap();
+    s.execute("select.loadSelection", json!({"channel": "transparency", "layer": source, "operation": "new"})).unwrap();
+    s.execute("select.loadSelection", json!({"channel": "transparency", "layer": background, "operation": "new"})).unwrap();
+    s.execute("actions.stop", json!({})).unwrap();
+    let action = s.actions.list.iter().find(|a| a.name == "Load").unwrap().clone();
+    assert_eq!(
+        action.steps,
+        vec![
+            ("select.loadSelection".into(), json!({"channel": "transparency", "layer": {"name": "Source"}, "operation": "new"})),
+            ("select.loadSelection".into(), json!({"channel": "transparency", "layer": {"background": true}, "operation": "new"})),
+        ]
+    );
+    crate::atn_cmds::export("Set", &[&action], &[], false).unwrap();
+    // Replayed in another document, the first step loads its Source layer.
+    let mut other = Session::new();
+    fixture(&mut other);
+    let (id, params) = &action.steps[0];
+    other.execute(id, params.clone()).unwrap();
+    let doc = &other.active().unwrap().doc;
+    assert_eq!(doc.selection.as_ref().unwrap().read_region(Rect::new(0, 0, 4, 1)), vec![1.0, 0.0, 0.0, 0.0]);
+}
+
 #[test]
 fn rename_keeps_calls_and_function_key_and_rejects_bad_names() {
     let mut s = Session::new();
