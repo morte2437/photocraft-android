@@ -103,6 +103,13 @@ fn linux_distinct_case_destinations_are_not_the_same_file() {
     assert!(!same_destination(join(&dir, "Image.png"), join(&dir, "image.png")));
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[test]
+fn unicode_case_variants_cannot_name_a_batch_output_and_its_error_log() {
+    let dir = tmp("batch-unicode-case-destinations");
+    assert!(same_destination(join(&dir, "Ä.png"), join(&dir, "ä.png")));
+}
+
 #[test]
 fn batch_open_source_edits_each_live_document_and_restores_the_active_one() {
     let dir = tmp("batch-open-documents");
@@ -179,6 +186,9 @@ fn recursive_batch_reports_an_unreadable_subfolder() {
     std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o700)).unwrap();
     if inaccessible {
         assert!(result.is_err(), "an inaccessible input folder must not be omitted");
+    } else {
+        eprintln!("permission regression skipped: this user can read a mode-000 folder");
+        assert!(result.is_ok(), "a privileged reader should still process the folder");
     }
 }
 

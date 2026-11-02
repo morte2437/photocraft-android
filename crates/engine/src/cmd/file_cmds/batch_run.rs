@@ -74,9 +74,15 @@ pub fn list_images_tree(dir: &str, skip: &str, cmd: &str) -> Result<Vec<BatchInp
             continue;
         }
         let rd = std::fs::read_dir(&folder).map_err(|e| EngineError::Other(format!("{shown}: {e}")))?;
-        let entries = rd.collect::<std::io::Result<Vec<_>>>().map_err(|e| EngineError::Other(format!("{shown}: {e}")))?;
-        let mut subs: Vec<(String, PathBuf)> =
-            entries.into_iter().map(|e| e.path()).filter(|p| p.is_dir()).filter_map(|p| Some((p.file_name()?.to_string_lossy().into_owned(), p))).collect();
+        let mut subs: Vec<(String, PathBuf)> = Vec::new();
+        for entry in rd {
+            let path = entry.map_err(|e| EngineError::Other(format!("{shown}: {e}")))?.path();
+            if path.is_dir()
+                && let Some(name) = path.file_name()
+            {
+                subs.push((name.to_string_lossy().into_owned(), path.clone()));
+            }
+        }
         subs.sort();
         // Pushed in reverse so the stack pops them in name order.
         for (name, sub) in subs.into_iter().rev() {

@@ -64,15 +64,15 @@ pub(crate) fn batch(a: &BatchArgs, out: &mut dyn Write, err: &mut dyn Write) -> 
             .filter(|input| is_input(Path::new(&input.path)))
             .collect()
     } else {
-        std::fs::read_dir(in_dir)
-            .map_err(|source| CliError::ReadDir { path: in_dir.to_path_buf(), source })?
-            .map(|entry| entry.map(|entry| entry.path()))
-            .collect::<std::io::Result<Vec<_>>>()
-            .map_err(|source| CliError::ReadDir { path: in_dir.to_path_buf(), source })?
-            .into_iter()
-            .filter(|path| is_input(path))
-            .map(|path| photocraft_engine::file_cmds::BatchInput { path: path.to_string_lossy().into_owned(), rel_dir: String::new() })
-            .collect()
+        let mut images = Vec::new();
+        let entries = std::fs::read_dir(in_dir).map_err(|source| CliError::ReadDir { path: in_dir.to_path_buf(), source })?;
+        for entry in entries {
+            let path = entry.map_err(|source| CliError::ReadDir { path: in_dir.to_path_buf(), source })?.path();
+            if is_input(&path) {
+                images.push(photocraft_engine::file_cmds::BatchInput { path: path.to_string_lossy().into_owned(), rel_dir: String::new() });
+            }
+        }
+        images
     };
     inputs.sort_by(|a, b| a.path.cmp(&b.path));
     let (mut ok, mut failed) = (0, 0);

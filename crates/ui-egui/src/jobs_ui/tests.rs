@@ -749,6 +749,31 @@ fn a_finished_job_beeps_when_the_preference_is_on() {
 }
 
 #[test]
+fn cancelled_batch_with_partial_results_reports_cancellation_without_beeping() {
+    static BEEPS: AtomicUsize = AtomicUsize::new(0);
+    fn count_beep() {
+        BEEPS.fetch_add(1, Ordering::Relaxed);
+    }
+    BEEPS.store(0, Ordering::Relaxed);
+    let mut h = app_harness_with(crate::Services { beep: Some(count_beep), ..Default::default() });
+    h.state_mut().run("prefs.set", json!({"path": "general.beepWhenDone", "value": true})).unwrap();
+    let ctx = h.ctx.clone();
+    crate::jobs_ui::on_event(
+        h.state_mut(),
+        &ctx,
+        photocraft_engine::jobs::JobEvent {
+            id: JobId(9999),
+            command: "file.automate.batch".into(),
+            label: "Batch".into(),
+            document: None,
+            outcome: photocraft_engine::jobs::JobOutcome::Done(json!({"files": ["done.png"], "cancelled": true})),
+        },
+    );
+    assert!(h.state().ui.status.contains("Cancelled"), "{}", h.state().ui.status);
+    assert_eq!(BEEPS.load(Ordering::Relaxed), 0);
+}
+
+#[test]
 fn printing_keeps_drawing_and_reports_only_the_final_spooler_result() {
     for success in [true, false] {
         let mut h = app_harness();

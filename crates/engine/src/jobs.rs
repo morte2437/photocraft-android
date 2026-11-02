@@ -701,6 +701,9 @@ impl Session {
         // Earlier batch outputs are already on disk. Let the worker stop after its current
         // input and return the completed and skipped lists.
         if self.jobs.running[i].command == "file.automate.batch" {
+            if self.jobs.running[i].ctx.cancelled() {
+                return false;
+            }
             self.jobs.running[i].ctx.cancel();
             return true;
         }
@@ -1124,9 +1127,9 @@ pub fn specs() -> Vec<crate::commands::CommandSpec> {
             enabled: |_| Ok(()),
             run: |s, p| match p.get("job") {
                 None | Some(Value::Null) => {
-                    let n = s.jobs.running.len();
-                    s.cancel_all_jobs();
-                    Ok(json!({"cancelled": n.saturating_sub(s.jobs.running.len())}))
+                    let ids: Vec<JobId> = s.jobs.running.iter().map(|job| job.id).collect();
+                    let accepted = ids.into_iter().filter(|id| s.cancel_job(*id)).count();
+                    Ok(json!({"cancelled": accepted}))
                 }
                 Some(v) => {
                     let id = v.as_u64().ok_or_else(|| EngineError::BadParams { cmd: "jobs.cancel".into(), msg: "`job` must be a job id".into() })?;

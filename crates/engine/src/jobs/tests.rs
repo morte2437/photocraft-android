@@ -569,6 +569,29 @@ fn cancelled_batch_job_returns_its_partial_result() {
     assert_eq!(result["cancelled"], true);
 }
 
+#[test]
+fn cancel_all_counts_an_accepted_batch_cancellation() {
+    let mut s = Session::new();
+    let id = job(s
+        .start_job(
+            "file.automate.batch",
+            json!({}),
+            "Batch",
+            false,
+            |ctx| {
+                while !ctx.cancelled() {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                Ok(json!({"files": [], "cancelled": true}))
+            },
+            |_, result| Ok(result),
+        )
+        .unwrap());
+    assert_eq!(s.execute("jobs.cancel", json!({})).unwrap()["cancelled"], 1);
+    assert_eq!(s.execute("jobs.cancel", json!({})).unwrap()["cancelled"], 0, "a repeated request is not a new cancellation");
+    assert!(matches!(wait_event(&mut s, id).outcome, JobOutcome::Done(_)));
+}
+
 /// Ask When Opening: a file whose profile doesn't match is decoded but not added; the shell takes
 /// it once the prompt is answered. Without Ask it opens as usual.
 #[test]

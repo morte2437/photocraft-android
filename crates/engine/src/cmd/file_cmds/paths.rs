@@ -40,13 +40,13 @@ pub(crate) fn write_file(path: &str, _bytes: &[u8]) -> Result<()> {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn list_images(dir: &str) -> Result<Vec<String>> {
     let rd = std::fs::read_dir(dir).map_err(|e| EngineError::Other(format!("{dir}: {e}")))?;
-    let entries = rd.collect::<std::io::Result<Vec<_>>>().map_err(|e| EngineError::Other(format!("{dir}: {e}")))?;
-    let mut out: Vec<String> = entries
-        .into_iter()
-        .map(|e| e.path())
-        .filter(|p| p.is_file() && openable_name(&p.to_string_lossy()))
-        .map(|p| p.to_string_lossy().into_owned())
-        .collect();
+    let mut out = Vec::new();
+    for entry in rd {
+        let path = entry.map_err(|e| EngineError::Other(format!("{dir}: {e}")))?.path();
+        if path.is_file() && openable_name(&path.to_string_lossy()) {
+            out.push(path.to_string_lossy().into_owned());
+        }
+    }
     out.sort();
     Ok(out)
 }
@@ -224,7 +224,7 @@ pub fn same_destination(a: impl AsRef<std::path::Path>, b: impl AsRef<std::path:
                 #[cfg(any(target_os = "windows", target_os = "macos"))]
                 {
                     match (a.to_str(), b.to_str()) {
-                        (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
+                        (Some(a), Some(b)) => a.to_lowercase() == b.to_lowercase(),
                         _ => a == b,
                     }
                 }
