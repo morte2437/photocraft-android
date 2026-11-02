@@ -232,12 +232,12 @@ pub(super) fn case_sensitive_destination(path: &std::path::Path) -> Option<bool>
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-fn resolved_paths_match(a: &std::path::Path, b: &std::path::Path, case_sensitive: Option<bool>) -> bool {
+fn resolved_paths_match(a: &std::path::Path, b: &std::path::Path, case_sensitive: impl FnOnce() -> Option<bool>) -> bool {
     if a == b {
         return true;
     }
     match (a.to_str(), b.to_str()) {
-        (Some(a_text), Some(b_text)) if a_text.to_lowercase() == b_text.to_lowercase() => !case_sensitive.unwrap_or(false),
+        (Some(a_text), Some(b_text)) if a_text.to_lowercase() == b_text.to_lowercase() => !case_sensitive().unwrap_or(false),
         _ => false,
     }
 }
@@ -246,7 +246,8 @@ fn resolved_paths_match(a: &std::path::Path, b: &std::path::Path, case_sensitive
 #[test]
 fn identical_resolved_paths_conflict_on_a_case_sensitive_volume() {
     let path = std::path::Path::new("/future/result.png");
-    assert!(resolved_paths_match(path, path, Some(true)));
+    assert!(resolved_paths_match(path, path, || Some(true)));
+    assert!(!resolved_paths_match(path, std::path::Path::new("/future/other.png"), || panic!("unrelated names must not probe the volume")));
 }
 
 /// Whether two paths would name the same destination even before the file exists. This is used
@@ -262,7 +263,7 @@ pub fn same_destination(a: impl AsRef<std::path::Path>, b: impl AsRef<std::path:
             (Some(a), Some(b)) => {
                 #[cfg(any(target_os = "windows", target_os = "macos"))]
                 {
-                    if a == b { true } else { resolved_paths_match(&a, &b, case_sensitive_destination(&a)) }
+                    resolved_paths_match(&a, &b, || case_sensitive_destination(&a))
                 }
                 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
                 {
