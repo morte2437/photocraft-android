@@ -151,6 +151,38 @@ fn atn_calculations_named_layer_is_not_the_merged_sentinel() {
 }
 
 #[test]
+fn atn_calculations_explicit_merged_transparency_reads_composite_alpha() {
+    let mut source = channel("Chnl", "Trsp");
+    source.push(ReferenceItem::Enumerated { class: class("Lyr "), type_id: Id::new("Ordn"), value: Id::new("Mrgd") });
+    let mut d = make(source, channel("Chnl", "Rd  "));
+    let D::Descriptor(using) = &mut d.items[1].1 else { panic!() };
+    using.items[1].1 = D::Enumerated { type_id: Id::new("Clcn"), value: Id::new("Nrml") };
+    let action = roundtrip(d);
+    let mut s = fixture(32);
+    for (index, alphas) in [[0.5, 0.0, 0.25], [0.25, 0.5, 0.0]].into_iter().enumerate() {
+        if index == 1 {
+            s.execute("layer.new.layer", json!({"name":"top"})).unwrap();
+        }
+        s.edit("alpha pattern", |doc, active| {
+            let area = doc.bounds();
+            let surface = doc.layer_mut(active.unwrap()).unwrap().surface_mut().unwrap();
+            let format = surface.format();
+            let pixels: Vec<_> = alphas.into_iter().flat_map(|a| photocraft_raster::from_rgba(&format, [0.5, 0.25, 0.125, a])).collect();
+            surface.write_region(area, &pixels);
+            Ok(())
+        })
+        .unwrap();
+    }
+    let before = saved(&s);
+    assert_eq!(play(&mut s, action)["ran"], 1);
+    assert_eq!(alpha(&s, 0), vec![0.625, 0.5, 0.25], "top alpha plus base alpha times one minus top alpha");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(saved(&s), before);
+    s.execute("image.calculations", json!({"source1":{"channel":"transparency"},"source2":{"channel":{"color":"red"}},"blending":"normal"})).unwrap();
+    assert_eq!(alpha(&s, 0), vec![0.25, 0.5, 0.0], "omitting the layer still reads the active layer's alpha");
+}
+
+#[test]
 fn atn_calculations_unsupported_targets_and_missing_sources_leave_history_unchanged() {
     let p = json!({"source1":{"channel":{"targeted":true}},"source2":{"channel":{"color":"green"}},"blending":"add"});
     let mut s = fixture(32);

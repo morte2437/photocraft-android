@@ -16,6 +16,8 @@ fn source_from(items: &[ReferenceItem]) -> Option<Value> {
         ReferenceItem::Enumerated { class, type_id, value } if class.class_id.is("Chnl") => {
             if type_id.is("Ordn") && value.is("Trgt") {
                 json!({"targeted": true})
+            } else if type_id.is("Chnl") && value.is("Trsp") {
+                json!("transparency")
             } else if type_id.is("Chnl") {
                 json!({"color": channel_of(&trimmed(value))?})
             } else {
@@ -44,6 +46,8 @@ fn source_to(source: &Value) -> Option<D> {
     let channel = source.get("channel")?;
     let item = if channel == &json!({"targeted": true}) {
         ReferenceItem::Enumerated { class: class("Chnl"), type_id: code("Ordn"), value: code("Trgt") }
+    } else if channel == "transparency" && source.get("layer").is_some_and(|v| v == "merged") {
+        ReferenceItem::Enumerated { class: class("Chnl"), type_id: code("Chnl"), value: code("Trsp") }
     } else if only(channel, &["color"]) {
         let value = lookup_back(CHANNELS, channel.get("color")?.as_str()?)?;
         ReferenceItem::Enumerated { class: class("Chnl"), type_id: code("Chnl"), value: code(value) }

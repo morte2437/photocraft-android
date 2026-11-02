@@ -147,14 +147,14 @@ The recorded `Nw  ` class `Chnl` with an `Usng` object of class `Clcl` maps to
 supported object writes `T   `, explicit `Clcl` (`Clcn`), optional `Scl ` (double
 1..2), optional `Ofst` (integer -255..255), then `Src2` in recorded order.
 Colour-channel enumerations, literal alpha-channel names, single targeted colour
-or alpha channels, and optional merged or named layers retain their identities.
+or alpha channels, explicit merged transparency, and optional merged or named layers retain their identities.
 An omitted layer uses the native source document's existing merged-image semantics.
 
 The nested types are corroborated by firsthand ScriptListener output for
 [Add with target and Green](https://community.adobe.com/questions-712/combining-channels-1103103).
 The later [transparency recording](https://community.adobe.com/questions-712/generating-an-alpha-channel-for-document-1102257)
 corroborates the Make/Clcl structure but omits the blend key. Omitted blends,
-transparency/mask sources, other-document references, unknown settings and
+other transparency and mask sources, other-document references, unknown settings and
 unrepresented reference forms remain whole preserved steps. Composite, multiple
 colour and mask targets fail before mutation when a supported step requests the
 current channel. These limits remain open under #10705; fresh Photoshop pixel

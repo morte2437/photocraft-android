@@ -244,7 +244,15 @@ pub(super) fn source(s: &Session, p: &Value, cmd: &str, gray: bool) -> Result<Ve
         p.get("channel").map_or(Some(ChanRef::Composite), |v| parse_ref(v, &st.doc)).ok_or_else(|| bad(cmd, "unknown `channel`"))?
     };
     let layer = source_layer(&st.doc, p, cmd)?;
-    let mut planes = if gray { vec![gray_plane(&st.doc, layer, st.active_layer, r)?] } else { ref_planes(&st.doc, layer, st.active_layer, r)? };
+    let mut planes = if r == ChanRef::Transparency && p.get("layer").is_some_and(|v| v == "merged") {
+        // An explicit merged transparency source reads all visible layers. An omitted layer
+        // retains the existing active-layer transparency behavior.
+        vec![photocraft_compose::render(&st.doc, st.doc.bounds()).px.iter().map(|p| p[3]).collect()]
+    } else if gray {
+        vec![gray_plane(&st.doc, layer, st.active_layer, r)?]
+    } else {
+        ref_planes(&st.doc, layer, st.active_layer, r)?
+    };
     // Guard every caller (`.remove(0)` / `src[0]`) against an empty source.
     if planes.is_empty() {
         return Err(bad(cmd, "the source has no channels"));
