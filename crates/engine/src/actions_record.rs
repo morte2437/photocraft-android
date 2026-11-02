@@ -42,7 +42,7 @@ impl Before {
 
 /// Commands whose explicit `layer` names source content rather than a default target.
 pub(crate) fn needs_source_layer(id: &str) -> bool {
-    matches!(id, "layer.new.frame" | "select.loadSelection" | "type.createSelection")
+    matches!(id, "layer.new.frame" | "select.loadSelection" | "type.createSelection" | "edit.checkSpelling")
 }
 
 /// `params` with its `layer` id made portable (see the module doc).
