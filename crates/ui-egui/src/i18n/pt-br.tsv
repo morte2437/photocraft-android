@@ -4066,6 +4066,9 @@ layerLabel	No Color	Sem cor
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} etapa ainda não tem equivalente no PhotoCraft|{n} etapas ainda não têm equivalente no PhotoCraft
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	{n} ação salva em {file}|{n} ações salvas em {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	{n} etapa sem equivalente no Photoshop foi omitida|{n} etapas sem equivalente no Photoshop foram omitidas
+@plural	{n} action file loaded|{n} action files loaded	{n} arquivo de ações carregado|{n} arquivos de ações carregados
+	{set} from {file} replaced the one from {earlier}	O conjunto {set} de {file} substituiu o de {earlier}
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	Não foi possível carregar {n} arquivo: {errors}|Não foi possível carregar {n} arquivos: {errors}
 	File Naming	Nomenclatura de arquivos
 	Starting serial	Número de série inicial
 	Insert Stop…	Inserir parada…

@@ -4144,6 +4144,9 @@ cameraRaw	Yellow	Sárga
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} lépésnek még nincs megfelelője a PhotoCraftban
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	{n} művelet mentve. Cél: {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	{n} Photoshop-megfelelő nélküli lépés kihagyva
+@plural	{n} action file loaded|{n} action files loaded	{n} műveletfájl betöltve
+	{set} from {file} replaced the one from {earlier}	A(z) {file} {set} készlete lecserélte a(z) {earlier} készletét
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	{n} fájlt nem sikerült betölteni: {errors}
 	Starting serial	Kezdő sorszám
 	Insert Stop…	Leállítás beszúrása…
 	Save Set…	Készlet mentése…

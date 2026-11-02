@@ -3885,6 +3885,9 @@ curves	Smooth	スムーズ
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} 個のステップにはまだ PhotoCraft の対応機能がありません
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	{file} にアクション {n} 個を保存しました
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	Photoshop に対応するもののない {n} 個のステップを省きました
+@plural	{n} action file loaded|{n} action files loaded	アクションファイル {n} 個を読み込みました
+	{set} from {file} replaced the one from {earlier}	{file} のセット {set} が {earlier} のセットを置き換えました
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	{n} 個のファイルを読み込めませんでした: {errors}
 	File Naming	ファイル名の付け方
 	Starting serial	開始番号
 	Insert Stop…	ストップを挿入…

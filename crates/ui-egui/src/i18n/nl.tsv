@@ -4026,6 +4026,9 @@ curves	Smooth	Vloeiend maken
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} stap heeft nog geen equivalent in PhotoCraft|{n} stappen hebben nog geen equivalent in PhotoCraft
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	{n} handeling opgeslagen in {file}|{n} handelingen opgeslagen in {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	{n} stap zonder Photoshop-equivalent weggelaten|{n} stappen zonder Photoshop-equivalent weggelaten
+@plural	{n} action file loaded|{n} action files loaded	{n} handelingenbestand geladen|{n} handelingenbestanden geladen
+	{set} from {file} replaced the one from {earlier}	Set {set} uit {file} heeft die uit {earlier} vervangen
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	{n} bestand kon niet worden geladen: {errors}|{n} bestanden konden niet worden geladen: {errors}
 	File Naming	Bestandsnamen
 	Starting serial	Beginnummer
 	Insert Stop…	Stop invoegen…

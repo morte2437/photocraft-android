@@ -143,6 +143,16 @@ impl Session {
         if self.names_existing_layer(spec.id, params) {
             return Ok(());
         }
+        // A recorded invalid comp index succeeds without an edit, even with no comps.
+        // Ordinary Apply and references by id/name retain the command's usual precondition.
+        if spec.id == "layerComp.apply"
+            && params
+                .get("comp")
+                .and_then(Value::as_object)
+                .is_some_and(|fields| fields.len() == 1 && fields.get("index").is_some_and(|index| index.as_u64().is_some() || index.as_i64().is_some()))
+        {
+            return self.active().map(|_| ()).ok_or_else(|| "no document open".into());
+        }
         // `ifPresent`: with no Background there is nothing to do, which isn't an error.
         if spec.id == "layer.new.layerFromBackground" && params.get("ifPresent").and_then(Value::as_bool) == Some(true) {
             return self.active().map(|_| ()).ok_or_else(|| "no document open".into());
@@ -171,11 +181,21 @@ impl Session {
         if !spec.params.contains("\"layer\":id") {
             return None;
         }
-        let target = LayerId(params.get("layer")?.as_u64()?);
+        let layer = params.get("layer")?;
+        if !(layer.is_number() || layer.is_object()) {
+            return None;
+        }
+        let target = commands::explicit_layer(self, params).ok()??;
         let d = self.active_mut()?;
         d.doc.layer(target)?;
         let active = d.active_layer.replace(target);
-        let r = self.precondition(spec, params);
+        // The checks see the resolved id: a relative ordinal (`Frwr`, `Bckw`) would otherwise
+        // resolve again from the swapped-in active layer and land one layer further.
+        let mut resolved = params.clone();
+        if let Some(fields) = resolved.as_object_mut() {
+            fields.insert("layer".into(), Value::from(target.0));
+        }
+        let r = self.precondition(spec, &resolved);
         if let Some(d) = self.active_mut() {
             d.active_layer = active;
         }

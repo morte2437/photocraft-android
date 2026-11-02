@@ -3473,6 +3473,9 @@ curves	Smooth	매끄럽게
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n}개 단계에는 아직 PhotoCraft에 해당하는 기능이 없습니다
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	{file}에 액션 {n}개를 저장했습니다
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	Photoshop에 해당하는 기능이 없는 {n}개 단계를 제외했습니다
+@plural	{n} action file loaded|{n} action files loaded	액션 파일 {n}개를 불러왔습니다
+	{set} from {file} replaced the one from {earlier}	{file}의 세트 {set}이(가) {earlier}의 세트를 대체했습니다
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	파일 {n}개를 불러오지 못했습니다: {errors}
 	File Naming	파일 이름 지정
 	Starting serial	시작 일련번호
 	Insert Stop…	정지 삽입…

@@ -3883,6 +3883,9 @@ curves	Smooth	Wygładź
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} krok nie ma jeszcze odpowiednika w PhotoCraft|{n} kroki nie mają jeszcze odpowiednika w PhotoCraft|{n} kroków nie ma jeszcze odpowiednika w PhotoCraft
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	Zapisano {n} operację do {file}|Zapisano {n} operacje do {file}|Zapisano {n} operacji do {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	Pominięto {n} krok bez odpowiednika w Photoshopie|Pominięto {n} kroki bez odpowiednika w Photoshopie|Pominięto {n} kroków bez odpowiednika w Photoshopie
+@plural	{n} action file loaded|{n} action files loaded	Wczytano {n} plik operacji|Wczytano {n} pliki operacji|Wczytano {n} plików operacji
+	{set} from {file} replaced the one from {earlier}	Zestaw {set} z {file} zastąpił zestaw z {earlier}
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	Nie udało się wczytać {n} pliku: {errors}|Nie udało się wczytać {n} plików: {errors}|Nie udało się wczytać {n} plików: {errors}
 	File Naming	Nazewnictwo plików
 	Starting serial	Początkowy numer seryjny
 	Insert Stop…	Wstaw zatrzymanie…

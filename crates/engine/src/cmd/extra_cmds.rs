@@ -912,13 +912,31 @@ pub fn specs() -> Vec<CommandSpec> {
             "Paste Layer Style",
             &["Layer", "Layer Style"],
             None,
-            r##"{"layer":id?} (no layer: every selected layer but the Background)"##,
+            r##"{"layer":id?,"allowGroups":bool=true} (no layer: every selected layer but the Background; false skips groups, refusing if none remain)"##,
             |s| {
                 has_layer(s)?;
                 s.style_clipboard.as_ref().map(|_| ()).ok_or_else(|| "no layer style has been copied".into())
             },
             |s, p| {
-                let ids = style_targets(s, p, |_| true)?;
+                let allow_groups = match p.get("allowGroups") {
+                    None | Some(Value::Null) => true,
+                    Some(Value::Bool(value)) => *value,
+                    Some(_) => {
+                        return Err(EngineError::BadParams {
+                            cmd: "layer.layerStyle.pasteLayerStyle".into(),
+                            msg: "`allowGroups` must be true or false".into(),
+                        });
+                    }
+                };
+                let mut ids = style_targets(s, p, |_| true)?;
+                if !allow_groups {
+                    // Apply this after resolution: the shared helper keeps single targets verbatim.
+                    let doc = &s.active().ok_or(EngineError::NoDocument)?.doc;
+                    ids.retain(|id| doc.layer(*id).is_some_and(|layer| !layer.is_group()));
+                    if ids.is_empty() {
+                        return Err(EngineError::Other("none of the selected layers can take this layer style change".into()));
+                    }
+                }
                 let style = s.style_clipboard.clone().ok_or(EngineError::Other("no layer style has been copied".into()))?;
                 let mut fx = style.effects;
                 s.edit("Paste Layer Style", |doc, _| {

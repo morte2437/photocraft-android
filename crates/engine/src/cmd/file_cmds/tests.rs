@@ -1828,6 +1828,28 @@ fn batch_saves_at_the_recorded_save_so_a_close_after_it_keeps_the_result() {
     assert!(r["errors"][0]["error"].as_str().unwrap().contains("no active document"), "{r}");
 }
 
+/// "…; Save As; Close" with the Close recorded on a clean document (no `Svng`, `"save":"ask"`):
+/// Batch performs the Save As, so the document is saved when the Close asks, and every file is
+/// written. The Close used to refuse the still-changed scratch document and fail each file.
+#[test]
+fn batch_save_as_then_close_that_asks_processes_every_file() {
+    let dir = tmp("batch-save-close-ask");
+    let input = vec![png(&dir, "red.png", 8, 8, "#ff0000"), png(&dir, "blue.png", 8, 8, "#0000ff")];
+    let out = join(&dir, "out");
+    let steps = json!([["image.adjustments.invert", {}], ["file.saveAs", {}], ["file.close", {"save": "ask"}]]);
+    let r = Session::new().execute("file.automate.batch", json!({"input": input, "output": out, "format": "png", "steps": steps})).unwrap();
+    assert_eq!(r["errors"], json!([]), "{r}");
+    assert_eq!(r["files"].as_array().unwrap().len(), 2, "{r}");
+    let red = photocraft_io::import("red.png", &std::fs::read(join(&out, "red.png")).unwrap()).unwrap().document;
+    assert_eq!(photocraft_compose::render(&red, Rect::new(1, 1, 2, 2)).px[0], [0.0, 1.0, 1.0, 1.0], "the inverted red");
+    // A Save a Copy doesn't save the document itself: the Close that asks still refuses it.
+    let out = join(&dir, "copy");
+    let steps = json!([["image.adjustments.invert", {}], ["file.saveACopy", {}], ["file.close", {"save": "ask"}]]);
+    let r = Session::new().execute("file.automate.batch", json!({"input": input, "output": out, "format": "png", "steps": steps})).unwrap();
+    assert_eq!(r["files"], json!([]), "{r}");
+    assert_eq!(r["errors"].as_array().unwrap().len(), 2, "{r}");
+}
+
 /// The document a recorded save marked is the result, not the one left active after it closed.
 /// Here the action saves and closes a second document it made, then inverts the input; the output
 /// used to be the inverted input, written in place of the result without an error.

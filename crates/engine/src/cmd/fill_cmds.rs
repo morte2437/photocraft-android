@@ -5,6 +5,7 @@
 //! transparency. The selection (or the whole canvas) is filled, as one history step ("Fill").
 //! Every parameter is validated: a bad one is an error, never a panic.
 
+use photocraft_algo::content_aware::FillOptions;
 use photocraft_color::BlendMode;
 use photocraft_geom::{Rect, TILE_SIZE};
 use photocraft_raster::{Surface, from_rgba_into, to_rgba};
@@ -132,10 +133,16 @@ pub fn fill(s: &mut Session, p: &Value) -> Result<Value> {
                 return Err(EngineError::Other("Content-Aware fill works on layer pixels only".into()));
             }
             let adapt = flag(p, "colorAdaptation", true)?;
+            let scale = flag(p, "scaleAdaptation", false)?;
+            let mirror = flag(p, "mirror", false)?;
+            let rotate = flag(p, "rotationAdaptation", false)?;
             let lid = id.ok_or_else(|| EngineError::Other("no active layer".into()))?;
             let surf = st.doc.layer(lid).and_then(|l| l.surface()).ok_or_else(|| EngineError::Other("Content-Aware fill needs a pixel layer".into()))?;
             let seed = p.get("seed").and_then(Value::as_u64).unwrap_or(1);
-            content_aware(surf, sel, doc_bounds, adapt, seed)?
+            // The native Boolean enables quarter-turn candidates, within the existing mosaic cap.
+            let rotations = if rotate { photocraft_algo::content_aware::rotation_level("full") } else { Vec::new() };
+            let options = FillOptions { rotations, scale, mirror, ..content_aware_options(adapt, seed) };
+            content_aware(surf, sel, doc_bounds, &options)?
         }
         _ => return Err(bad(format!("unknown contents `{contents}`"))),
     };
@@ -225,13 +232,13 @@ pub(crate) fn blend_color_mask(
 
 /// The selection filled from its surroundings (`photocraft_algo::content_aware`), as straight
 /// RGBA over the sampling window. Only the selected pixels are used.
-fn content_aware(surf: &Surface, sel: &Surface, canvas: Rect, color_adaptation: bool, seed: u64) -> Result<Source> {
+fn content_aware(surf: &Surface, sel: &Surface, canvas: Rect, options: &FillOptions) -> Result<Source> {
     let hole_bounds = sel.content_bounds().intersect(&canvas);
     if hole_bounds.is_empty() {
         return Err(EngineError::Other("the selection is outside the canvas".into()));
     }
     let is_hole = |x: i32, y: i32| sel.sample_channel(x, y, 0) > 0.0;
-    let (window, filled) = content_aware_native(surf, hole_bounds, canvas, color_adaptation, seed, is_hole, |_, _| true)?;
+    let (window, filled) = content_aware_native_with_options(surf, hole_bounds, canvas, options, is_hole, |_, _| true)?;
     let fmt = surf.format();
     let px = filled.chunks_exact(fmt.channels().max(1)).map(|c| to_rgba(&fmt, c)).collect();
     Ok(Source::Pixels(window, px))
@@ -251,7 +258,24 @@ pub(crate) fn content_aware_native(
     is_hole: impl Fn(i32, i32) -> bool,
     usable: impl Fn(i32, i32) -> bool,
 ) -> Result<(Rect, Vec<f32>)> {
-    use photocraft_algo::content_aware::{FillOptions, color_level, fill, rotation_level};
+    content_aware_native_with_options(surf, hole_bounds, canvas, &content_aware_options(color_adaptation, seed), is_hole, usable)
+}
+
+/// The adaptation defaults shared by Fill and Content-Aware Crop.
+fn content_aware_options(color_adaptation: bool, seed: u64) -> FillOptions {
+    FillOptions { color_adaptation: photocraft_algo::content_aware::color_level(if color_adaptation { "default" } else { "none" }), seed, ..Default::default() }
+}
+
+/// Fill the bounded sampling window with native channel values and the requested adaptations.
+fn content_aware_native_with_options(
+    surf: &Surface,
+    hole_bounds: Rect,
+    canvas: Rect,
+    options: &FillOptions,
+    is_hole: impl Fn(i32, i32) -> bool,
+    usable: impl Fn(i32, i32) -> bool,
+) -> Result<(Rect, Vec<f32>)> {
+    use photocraft_algo::content_aware::fill;
     let window = sampling_window(hole_bounds, canvas);
     let n = surf.format().channels();
     let (w, h) = window_size(window)?;
@@ -267,17 +291,10 @@ pub(crate) fn content_aware_native(
     if !source.iter().any(|s| *s) {
         return Err(EngineError::Other("Content-Aware fill needs pixels outside the area to fill to sample from".into()));
     }
-    let opts = FillOptions {
-        color_adaptation: color_level(if color_adaptation { "default" } else { "none" }),
-        rotations: rotation_level("none"),
-        scale: false,
-        mirror: false,
-        seed,
-    };
     if img.len() != len * n {
         return Err(EngineError::Other("could not read the layer pixels".into()));
     }
-    Ok((window, fill(w, h, n, &img, &hole, &source, &opts)))
+    Ok((window, fill(w, h, n, &img, &hole, &source, options)))
 }
 
 /// Photoshop's Content-Aware sampling window around the selection bounds `hole`

@@ -1667,8 +1667,7 @@ fn document_inspect_and_activate_invalid_index() {
 }
 
 /// #7103: Photoshop's Select Document by offset (previous is -1, next +1) walks opening order
-/// from the active document. PhotoCraft refuses offsets past either end instead of wrapping
-/// onto another document, and bad params leave the active document as it was.
+/// from the active document, wrapping at both ends. Bad params preserve the active document.
 #[test]
 fn document_activate_by_offset_walks_opening_order() {
     let mut s = Session::new();
@@ -1688,17 +1687,17 @@ fn document_activate_by_offset_walks_opening_order() {
     s.execute("document.activate", json!({"document": null, "offset": -1})).unwrap();
     assert_eq!(active(&s), "b");
 
-    let err = s.execute("document.activate", json!({"offset": 2})).unwrap_err().to_string();
-    assert_eq!(err, "no document 2 after the active one, which is 2 of 3");
-    let err = s.execute("document.activate", json!({"offset": -2})).unwrap_err().to_string();
-    assert_eq!(err, "no document 2 before the active one, which is 2 of 3");
+    for (offset, name) in [(2, "a"), (-2, "c"), (i64::MAX, "c"), (i64::MIN, "c")] {
+        s.execute("document.activate", json!({"document":1})).unwrap();
+        s.execute("document.activate", json!({"offset":offset})).unwrap();
+        assert_eq!(active(&s), name, "{offset}");
+    }
+    s.execute("document.activate", json!({"document":1})).unwrap();
     for bad in [
         json!({}),
         json!({"offset": null}),
         json!({"offset": 1.5}),
         json!({"offset": "1"}),
-        json!({"offset": i64::MAX}),
-        json!({"offset": i64::MIN}),
         json!({"offset": u64::MAX}),
         json!({"document": 0, "offset": 1}),
         json!({"document": -1}),
@@ -1709,9 +1708,9 @@ fn document_activate_by_offset_walks_opening_order() {
     // Dragging "c" first changes tab indices, not the opening order a, b, c.
     s.execute("document.move", json!({"document": 2, "to": 0})).unwrap();
     assert_eq!(active(&s), "b");
-    let err = s.execute("document.activate", json!({"offset": -2})).unwrap_err().to_string();
-    assert_eq!(err, "no document 2 before the active one, which is 2 of 3", "the error reports opening order, not tab position");
-    assert_eq!(active(&s), "b", "a failed offset must not activate the visually first tab");
+    assert_eq!(s.execute("document.activate", json!({"offset":-2})).unwrap(), json!({"document":0}));
+    assert_eq!(active(&s), "c", "wrapping follows opening order, not tab position");
+    s.execute("document.activate", json!({"document":2})).unwrap();
     assert_eq!(s.execute("document.activate", json!({"offset": -1})).unwrap(), json!({"document": 1}));
     assert_eq!(active(&s), "a");
     assert_eq!(s.execute("document.activate", json!({"offset": 2})).unwrap(), json!({"document": 0}));
@@ -1757,8 +1756,8 @@ fn document_activate_opening_order_survives_close_and_reopen_with_persisted_ids(
     }
     s.execute("file.new", json!({"width": 2, "height": 2, "name": "fresh"})).unwrap();
     assert_eq!(s.execute("document.activate", json!({"offset": 0})).unwrap(), json!({"document": 0}));
-    assert!(s.execute("document.activate", json!({"offset": -1})).is_err());
-    assert!(s.execute("document.activate", json!({"offset": 1})).is_err());
+    assert_eq!(s.execute("document.activate", json!({"offset": -1})).unwrap(), json!({"document": 0}));
+    assert_eq!(s.execute("document.activate", json!({"offset": 1})).unwrap(), json!({"document": 0}));
     assert_eq!(s.active().unwrap().doc.name, "fresh");
 }
 

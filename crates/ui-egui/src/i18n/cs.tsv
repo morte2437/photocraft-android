@@ -3884,6 +3884,9 @@ navigator	Zoom	Zvětšení
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} krok zatím nemá v PhotoCraftu obdobu|{n} kroky zatím nemají v PhotoCraftu obdobu|{n} kroků zatím nemá v PhotoCraftu obdobu
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	Uložena {n} akce do souboru {file}|Uloženy {n} akce do souboru {file}|Uloženo {n} akcí do souboru {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	Vynechán {n} krok bez obdoby v Photoshopu|Vynechány {n} kroky bez obdoby v Photoshopu|Vynecháno {n} kroků bez obdoby v Photoshopu
+@plural	{n} action file loaded|{n} action files loaded	Načten {n} soubor akcí|Načteny {n} soubory akcí|Načteno {n} souborů akcí
+	{set} from {file} replaced the one from {earlier}	Sada {set} ze souboru {file} nahradila sadu ze souboru {earlier}
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	{n} soubor nelze načíst: {errors}|{n} soubory nelze načíst: {errors}|{n} souborů nelze načíst: {errors}
 	File Naming	Pojmenování souborů
 	Starting serial	Počáteční pořadové číslo
 	Insert Stop…	Vložit zastavení…

@@ -143,6 +143,7 @@ impl PhotocraftApp {
             clone_preview: None,
             info_sample: None,
             os_clip_sig: None,
+            os_clip_svg: None,
             clip_unmirrored: true,
             clip_external: false,
             clip_read_for_paste: false,
