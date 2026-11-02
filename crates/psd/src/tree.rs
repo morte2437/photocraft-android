@@ -68,10 +68,28 @@ impl PsdFile {
 
     /// [`layer_tree`](Self::layer_tree) with at most `max_depth` levels of
     /// groups: a group nested `max_depth` or more groups deep (a root node is
-    /// at depth 0) keeps its node but not its children. Built iteratively, so
+    /// at depth 0) keeps its node but not its children. Layers under a divider
+    /// that is never closed sit at the enclosing level, as in `layer_tree`. Built iteratively, so
     /// no file can make it recurse, and the result is no deeper than
     /// `max_depth + 1` levels, so walking or dropping it recursively is bounded.
     pub fn layer_tree_max_depth(&self, max_depth: usize) -> Vec<LayerNode> {
+        let layers = self.layers();
+        // First pass: find the dividers a folder closes. A divider that is never closed opens no
+        // group; its layers belong to the enclosing level, so it opens no frame and every
+        // frame's depth is the final depth of its nodes (#5758).
+        let mut closed = vec![false; layers.len()];
+        let mut open: Vec<usize> = Vec::new();
+        for (i, rec) in layers.iter().enumerate() {
+            match rec.section_type() {
+                SectionType::BoundingDivider => open.push(i),
+                SectionType::OpenFolder | SectionType::ClosedFolder => {
+                    if let Some(slot) = open.pop().and_then(|d| closed.get_mut(d)) {
+                        *slot = true;
+                    }
+                }
+                _ => {}
+            }
+        }
         // Stack of (divider index, children); frame `k` holds the nodes at depth `k`. Frames
         // past `max_depth` are tracked (to match dividers to folders) but collect nothing.
         let mut stack: Vec<(Option<usize>, Vec<LayerNode>)> = vec![(None, Vec::new())];
@@ -82,9 +100,13 @@ impl PsdFile {
                 top.1.push(node);
             }
         };
-        for (i, rec) in self.layers().iter().enumerate() {
+        for (i, rec) in layers.iter().enumerate() {
             match rec.section_type() {
-                SectionType::BoundingDivider => stack.push((Some(i), Vec::new())),
+                SectionType::BoundingDivider => {
+                    if closed.get(i).copied().unwrap_or(false) {
+                        stack.push((Some(i), Vec::new()));
+                    }
+                }
                 SectionType::OpenFolder | SectionType::ClosedFolder => {
                     let (divider, children) = if stack.len() > 1 { stack.pop().unwrap_or_default() } else { (None, Vec::new()) };
                     push(&mut stack, LayerNode::Group { index: i, divider, children });
@@ -92,6 +114,7 @@ impl PsdFile {
                 _ => push(&mut stack, LayerNode::Layer { index: i }),
             }
         }
+        // Only closed dividers open frames, so none is left here; this just guards the invariant.
         while stack.len() > 1 {
             let (_, children) = stack.pop().unwrap_or_default();
             if let Some(top) = stack.last_mut() {

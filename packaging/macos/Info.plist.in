@@ -31,6 +31,10 @@
     <string>hu</string>
     <string>tr</string>
     <string>vi</string>
+    <string>sv</string>
+    <string>fi</string>
+    <string>da</string>
+    <string>nb</string>
   </array>
   <key>CFBundleDisplayName</key>
   <string>PhotoCraft</string>
@@ -71,7 +75,7 @@
   <key>NSHumanReadableCopyright</key>
   <string>Copyright © the PhotoCraft authors. MIT OR Apache-2.0.</string>
 
-  <!-- Photocraft's own format. -->
+  <!-- PhotoCraft's own format. -->
   <key>UTExportedTypeDeclarations</key>
   <array>
     <dict>

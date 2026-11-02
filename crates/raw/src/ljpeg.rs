@@ -249,7 +249,7 @@ impl<'a> Bits<'a> {
     }
 
     /// A difference value: Huffman-coded category SSSS then SSSS extra bits (T.81 H.1.2.2).
-    #[inline]
+    #[inline(always)]
     fn diff(&mut self, h: &Huffman) -> Result<i32> {
         if self.n < 32 {
             self.refill();
@@ -284,8 +284,11 @@ pub(crate) fn frame(data: &[u8]) -> Result<Frame> {
 
 struct Parsed<'a> {
     frame: Frame,
-    /// Per component of the scan (in frame order): its Huffman table.
+    /// The scan's distinct Huffman tables...
     tables: Vec<Huffman>,
+    /// ...and per component of the scan (in frame order) the index of its table: components
+    /// sharing a table share one copy (one 48 KiB lookup pair in cache instead of several).
+    comp_table: Vec<usize>,
     predictor: u8,
     point_transform: u8,
     restart: usize,
@@ -299,6 +302,11 @@ fn parse(data: &[u8]) -> Result<Parsed<'_>> {
     let mut pos = 2;
     let mut frame: Option<Frame> = None;
     let mut comp_ids: Vec<u8> = Vec::new();
+    // A lossless JPEG uses at most a handful of Huffman tables. Each Huffman::new allocates a
+    // ~48 KiB lookup pair and fills it, so a stream that repeats DHT definitions could rebuild
+    // tables thousands of times. Cap the cumulative builds to bound that header-processing work.
+    const MAX_HUFFMAN_BUILDS: usize = 64;
+    let mut huffman_builds = 0usize;
     let mut huff: [Option<Huffman>; 4] = [None, None, None, None];
     let mut restart = 0usize;
     loop {
@@ -355,6 +363,10 @@ fn parse(data: &[u8]) -> Result<Parsed<'_>> {
                     let total: usize = counts.iter().map(|&c| usize::from(c)).sum();
                     let vals = seg.get(p + 17..p + 17 + total).ok_or_else(|| RawError::malformed("short DHT"))?;
                     if id < 4 {
+                        huffman_builds += 1;
+                        if huffman_builds > MAX_HUFFMAN_BUILDS {
+                            return Err(RawError::malformed("lossless JPEG defines too many Huffman tables"));
+                        }
                         huff[id] = Some(Huffman::new(&counts, vals)?);
                     }
                     p += 17 + total;
@@ -369,7 +381,9 @@ fn parse(data: &[u8]) -> Result<Parsed<'_>> {
                 if ns != f.components || seg.len() < 1 + 2 * ns + 3 {
                     return Err(RawError::unsupported("lossless JPEG with non-interleaved scans"));
                 }
-                let mut tables = Vec::with_capacity(ns);
+                let mut tables: Vec<Huffman> = Vec::with_capacity(ns);
+                let mut ids: Vec<usize> = Vec::with_capacity(ns);
+                let mut comp_table = Vec::with_capacity(ns);
                 for c in 0..ns {
                     let id = seg[1 + 2 * c];
                     if comp_ids.get(c) != Some(&id) {
@@ -377,7 +391,14 @@ fn parse(data: &[u8]) -> Result<Parsed<'_>> {
                     }
                     let td = usize::from(seg[2 + 2 * c] >> 4);
                     let h = huff.get(td).and_then(Option::as_ref).ok_or_else(|| RawError::malformed("missing Huffman table"))?;
-                    tables.push(h.clone());
+                    match ids.iter().position(|&i| i == td) {
+                        Some(k) => comp_table.push(k),
+                        None => {
+                            ids.push(td);
+                            comp_table.push(tables.len());
+                            tables.push(h.clone());
+                        }
+                    }
                 }
                 let predictor = seg[1 + 2 * ns];
                 let point_transform = seg[3 + 2 * ns] & 0x0F;
@@ -388,7 +409,7 @@ fn parse(data: &[u8]) -> Result<Parsed<'_>> {
                     return Err(RawError::malformed("lossless JPEG point transform"));
                 }
                 let entropy = data.get(pos + len..).unwrap_or(&[]);
-                return Ok(Parsed { frame: f, tables, predictor, point_transform, restart, entropy });
+                return Ok(Parsed { frame: f, tables, comp_table, predictor, point_transform, restart, entropy });
             }
             _ => {} // APPn, COM, DQT, DNL… ignored
         }
@@ -418,6 +439,7 @@ pub(crate) fn decode(data: &[u8], max_samples: usize) -> Result<(Frame, Vec<u16>
     let mut out = vec![0u16; total];
     let mut bits = Bits::new(p.entropy);
     let nc = f.components;
+    let tables: Vec<&Huffman> = p.comp_table.iter().map(|&k| &p.tables[k]).collect();
     let initial = 1i32 << (f.precision - p.point_transform - 1);
     let pred = p.predictor;
     let mut interval_row = 0usize;
@@ -438,17 +460,28 @@ pub(crate) fn decode(data: &[u8], max_samples: usize) -> Result<(Frame, Vec<u16>
             // Predictor 1 (or the first line of an interval): Ra after the first column.
             for c in 0..nc {
                 let px = if first_line { initial } else { i32::from(prev[c]) };
-                cur[c] = (px + bits.diff(&p.tables[c])?) as u16;
+                cur[c] = (px + bits.diff(tables[c])?) as u16;
             }
+            // Ra: the previous pixel's sample of the same component, carried in registers.
             if nc == 1 {
-                let t = &p.tables[0];
-                for i in 1..row_len {
-                    cur[i] = (i32::from(cur[i - 1]) + bits.diff(t)?) as u16;
+                let t = tables[0];
+                let mut ra = cur[0];
+                for v in &mut cur[1..] {
+                    ra = (i32::from(ra) + bits.diff(t)?) as u16;
+                    *v = ra;
+                }
+            } else if nc == 2 {
+                let (t0, t1) = (tables[0], tables[1]);
+                let mut ra = [cur[0], cur[1]];
+                for px in cur[2..].as_chunks_mut::<2>().0 {
+                    ra[0] = (i32::from(ra[0]) + bits.diff(t0)?) as u16;
+                    ra[1] = (i32::from(ra[1]) + bits.diff(t1)?) as u16;
+                    *px = ra;
                 }
             } else {
                 for i in (nc..row_len).step_by(nc) {
                     for c in 0..nc {
-                        cur[i + c] = (i32::from(cur[i + c - nc]) + bits.diff(&p.tables[c])?) as u16;
+                        cur[i + c] = (i32::from(cur[i + c - nc]) + bits.diff(tables[c])?) as u16;
                     }
                 }
             }
@@ -459,7 +492,7 @@ pub(crate) fn decode(data: &[u8], max_samples: usize) -> Result<(Frame, Vec<u16>
             continue;
         }
         for x in 0..f.width {
-            for c in 0..nc {
+            for (c, &table) in tables.iter().enumerate() {
                 let i = x * nc + c;
                 let px = if x == 0 {
                     if first_line { initial } else { i32::from(prev[i]) }
@@ -481,7 +514,7 @@ pub(crate) fn decode(data: &[u8], max_samples: usize) -> Result<(Frame, Vec<u16>
                         }
                     }
                 };
-                let d = bits.diff(&p.tables[c])?;
+                let d = bits.diff(table)?;
                 cur[i] = (px + d) as u16;
             }
         }
@@ -501,7 +534,7 @@ pub(crate) fn decode(data: &[u8], max_samples: usize) -> Result<(Frame, Vec<u16>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testgen::lj92_encode;
+    use crate::testgen::{lj92_encode, lj92_encode_tables};
 
     /// Deterministic pseudo-random samples with some structure (smooth + noise).
     fn samples(n: usize, precision: u8, seed: u64) -> Vec<u16> {
@@ -545,6 +578,41 @@ mod tests {
         }
     }
 
+    /// Real CR2 frames declare one DHT per component. Each case gives the components
+    /// different tables (or a mixed sharing), so decoding with the wrong table for a
+    /// component, or one table for all, corrupts the output.
+    #[test]
+    fn roundtrip_with_one_huffman_table_per_component() {
+        let (w, h) = (13, 7);
+        for table_of in [&[0u8, 1][..], &[1, 0], &[0, 1, 2, 3], &[0, 1, 0, 1], &[0, 0, 1, 1], &[3, 2, 1, 0]] {
+            let comps = table_of.len();
+            for predictor in [1u8, 4, 7] {
+                for restart_rows in [None, Some(2)] {
+                    let v = samples(w * h * comps, 14, u64::from(predictor) * 7 + comps as u64);
+                    let j = lj92_encode_tables(&v, w, h, table_of, 14, predictor, restart_rows);
+                    let (f, out) = decode(&j, usize::MAX).unwrap();
+                    assert_eq!(f, Frame { precision: 14, width: w, height: h, components: comps });
+                    assert_eq!(out, v, "tables={table_of:?} pred={predictor} restart={restart_rows:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn roundtrip_per_component_tables_with_16_bit_extremes() {
+        let (w, h) = (16, 9);
+        for table_of in [&[0u8, 1][..], &[0, 1, 0, 1]] {
+            let comps = table_of.len();
+            // Alternating 0 / 65535 forces the 16-bit and 32768 difference categories.
+            let v: Vec<u16> = (0..w * h * comps).map(|i| if (i / 3) % 2 == 0 { 0 } else { 65535 }).collect();
+            for (predictor, restart_rows) in [(1u8, Some(1)), (1, Some(4)), (6, Some(2)), (6, None)] {
+                let j = lj92_encode_tables(&v, w, h, table_of, 16, predictor, restart_rows);
+                let (_, out) = decode(&j, usize::MAX).unwrap();
+                assert_eq!(out, v, "tables={table_of:?} pred={predictor} restart={restart_rows:?}");
+            }
+        }
+    }
+
     #[test]
     fn hostile_streams_error_without_panicking() {
         let v = samples(32 * 8, 14, 7);
@@ -572,5 +640,27 @@ mod tests {
         // Lossy JPEG markers are reported as unsupported.
         let lossy = [0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x0B, 8, 0, 1, 0, 1, 1, 1, 0x11, 0];
         assert!(matches!(decode(&lossy, usize::MAX), Err(RawError::Unsupported(_))));
+    }
+
+    #[test]
+    fn too_many_huffman_tables_are_rejected() {
+        // A valid stream still decodes; the same stream with thousands of repeated DHT
+        // definitions injected after the SOI is rejected before rebuilding tables endlessly.
+        let (w, h) = (8, 8);
+        let v = samples(w * h, 12, 5);
+        let j = lj92_encode(&v, w, h, 1, 12, 1, None);
+        assert!(decode(&j, usize::MAX).is_ok());
+
+        // Minimal DHT for id 0 (one length-1 code, value 0): FF C4, len=0x0014, then
+        // tc_th, 16 count bytes, one value.
+        let mut dht = vec![0xFF, 0xC4, 0x00, 0x14, 0x00];
+        dht.extend_from_slice(&[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]); // counts
+        dht.push(0x00); // one value
+        let mut flooded = j[..2].to_vec(); // SOI
+        for _ in 0..5000 {
+            flooded.extend_from_slice(&dht);
+        }
+        flooded.extend_from_slice(&j[2..]); // the rest of the valid stream
+        assert!(matches!(decode(&flooded, usize::MAX), Err(RawError::Malformed(_))));
     }
 }

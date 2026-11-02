@@ -1,11 +1,14 @@
 //! Layer records, layer masks, blending ranges and per-layer channel data.
 
+use std::borrow::Cow;
+
 use crate::blend::BlendMode;
-use crate::compression::{Compression, PlaneLayout, decode_planes, encode_planes};
+use crate::compression::{Compression, PlaneLayout, decode_planes, encode_planes, put_widened_rle, rle_widening};
 use crate::error::{PsdError, Result};
 use crate::header::{MAX_DIMENSION, Version};
 use crate::io::{Reader, WriteExt, decode_legacy_name, read_pascal, write_pascal};
-use crate::tagged::{BlockData, SectionDivider, SectionType, TaggedBlock, read_blocks, write_blocks};
+use crate::source::Stored;
+use crate::tagged::{BlockData, SectionDivider, SectionType, TaggedBlock, read_blocks, uses_long_length, write_blocks};
 
 /// Channel id of the transparency mask.
 pub const CHANNEL_TRANSPARENCY: i16 = -1;
@@ -272,6 +275,18 @@ impl LayerMask {
         Ok(LayerMask { rect, default_color, flags, parameters, real, trailing: r.peek_rest().to_vec(), real_first })
     }
 
+    /// Bytes [`Self::write`] produces.
+    fn encoded_len(&self) -> u64 {
+        let real = if self.real.is_some() { 18 } else { 0 };
+        let parameters = self.parameters.as_ref().map_or(0, |p| {
+            1 + u64::from(p.user_density.is_some())
+                + 8 * u64::from(p.user_feather.is_some())
+                + u64::from(p.vector_density.is_some())
+                + 8 * u64::from(p.vector_feather.is_some())
+        });
+        18 + real + parameters + self.trailing.len() as u64
+    }
+
     fn write(&self, out: &mut Vec<u8>) {
         self.rect.write(out);
         out.put_u8(self.default_color);
@@ -356,7 +371,12 @@ impl BlendingRanges {
 }
 
 /// Encoded image data for one layer channel.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// The encoded bytes are in `data`, or, for a file parsed by
+/// [`PsdFile::from_source`](crate::PsdFile::from_source), still in the source at `stored` (and
+/// `data` is empty). Every method here reads them from wherever they are; two channels are equal
+/// when their bytes are, wherever each one keeps them.
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ChannelData {
     /// Channel id: 0.. color channels, -1 transparency, -2 user mask,
@@ -365,22 +385,65 @@ pub struct ChannelData {
     /// Compression; `None` when the stored length was 0 (no compression
     /// field at all).
     pub compression: Option<Compression>,
-    /// Encoded bytes following the compression field, kept verbatim.
+    /// Encoded bytes following the compression field, kept verbatim (empty while `stored`).
     pub data: Vec<u8>,
+    /// Where the encoded bytes are when they were left in the source: see [`Self::load`].
+    /// (Not serialized: load the channel first.)
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub stored: Option<Stored>,
 }
+
+impl PartialEq for ChannelData {
+    fn eq(&self, other: &Self) -> bool {
+        if self.id != other.id || self.compression != other.compression || self.encoded_len() != other.encoded_len() {
+            return false;
+        }
+        match (self.encoded(), other.encoded()) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for ChannelData {}
 
 impl ChannelData {
     /// Encodes planar samples (`height × row_bytes`).
     pub fn encode(id: i16, compression: Compression, decoded: &[u8], width: usize, height: usize, depth: u16, version: Version) -> Result<Self> {
         let layout = PlaneLayout { planes: 1, width, height, depth, version };
-        Ok(ChannelData { id, compression: Some(compression), data: encode_planes(compression, decoded, &layout)? })
+        Ok(ChannelData::new(id, Some(compression), encode_planes(compression, decoded, &layout)?))
+    }
+
+    /// A channel whose encoded bytes are in memory.
+    pub fn new(id: i16, compression: Option<Compression>, data: Vec<u8>) -> Self {
+        ChannelData { id, compression, data, stored: None }
+    }
+
+    /// The encoded bytes (after the compression field): borrowed from `data`, or read from the
+    /// source when they were left there.
+    pub fn encoded(&self) -> Result<Cow<'_, [u8]>> {
+        crate::source::encoded(&self.data, self.stored.as_ref())
+    }
+
+    /// Number of encoded bytes, wherever they are.
+    pub fn encoded_len(&self) -> u64 {
+        self.stored.as_ref().map_or(self.data.len() as u64, |s| s.len)
+    }
+
+    /// Reads bytes left in the source into `data`, so the channel no longer needs its source.
+    pub fn load(&mut self) -> Result<()> {
+        if let Some(s) = &self.stored {
+            self.data = s.read()?;
+            self.stored = None;
+        }
+        Ok(())
     }
 
     /// Decodes into planar big-endian samples.
     pub fn decode(&self, width: usize, height: usize, depth: u16, version: Version) -> Result<Vec<u8>> {
         let layout = PlaneLayout { planes: 1, width, height, depth, version };
         match self.compression {
-            Some(c) => decode_planes(c, &self.data, &layout),
+            Some(c) => decode_planes(c, &self.encoded()?, &layout),
             None => {
                 if layout.decoded_len()? == 0 {
                     Ok(Vec::new())
@@ -400,7 +463,7 @@ impl ChannelData {
 
     fn stored_len(&self) -> u64 {
         match self.compression {
-            Some(_) => 2 + self.data.len() as u64,
+            Some(_) => 2 + self.encoded_len(),
             None => 0,
         }
     }
@@ -544,7 +607,7 @@ impl LayerRecord {
         ch.decode(w, h, depth, version)
     }
 
-    fn read(r: &mut Reader<'_>, version: Version) -> Result<(Self, Vec<u64>)> {
+    pub(crate) fn read(r: &mut Reader<'_>, version: Version) -> Result<(Self, Vec<u64>)> {
         let rect = Rect::read(r)?;
         let nch = r.u16()?;
         if nch > MAX_LAYER_CHANNELS {
@@ -555,7 +618,7 @@ impl LayerRecord {
         for _ in 0..nch {
             let id = r.i16()?;
             let len = r.len_field(version.is_psb())?;
-            channels.push(ChannelData { id, compression: None, data: Vec::new() });
+            channels.push(ChannelData::new(id, None, Vec::new()));
             lens.push(len);
         }
         let sig = r.array::<4>()?;
@@ -586,13 +649,51 @@ impl LayerRecord {
         Ok((LayerRecord { rect, channels, blend_mode, opacity, clipping, flags, filler, mask, blending_ranges, name, blocks, extra_trailing }, lens))
     }
 
-    fn write(&self, out: &mut Vec<u8>, version: Version) -> Result<()> {
+    /// Rows of a channel's RLE count table that grow when a PSD model is written as PSB
+    /// (`widen`, see [`crate::PsdFile::promote_to_psb`]); 0 for other channels.
+    pub(crate) fn widened_rows(&self, c: &ChannelData, widen: bool) -> Result<usize> {
+        if widen && c.compression == Some(Compression::Rle) { Ok(self.channel_rect(c.id).size()?.1) } else { Ok(0) }
+    }
+
+    /// Bytes [`Self::write`] produces, computed without serializing. Errors where `write` would.
+    fn encoded_len(&self, version: Version) -> Result<u64> {
+        let too_big = || PsdError::LimitExceeded("section too large for 32-bit length (use PSB)");
+        u16::try_from(self.channels.len()).map_err(|_| PsdError::LimitExceeded("too many channels"))?;
+        let channel_len: u64 = if version.is_psb() { 8 } else { 4 };
+        if !version.is_psb() && self.channels.iter().any(|c| u32::try_from(c.stored_len()).is_err()) {
+            return Err(too_big());
+        }
+        let mask = match &self.mask {
+            MaskData::None => 0,
+            MaskData::Mask(mask) => mask.encoded_len(),
+            MaskData::Raw(b) => b.len() as u64,
+        };
+        u32::try_from(mask).map_err(|_| too_big())?;
+        let ranges = self.blending_ranges.data.len() as u64;
+        u32::try_from(ranges).map_err(|_| too_big())?;
+        let name = 1 + self.name.len().min(255) as u64;
+        let name = name.next_multiple_of(4);
+        let mut extra = (4 + mask).saturating_add(4 + ranges).saturating_add(name).saturating_add(self.extra_trailing.len() as u64);
+        for b in &self.blocks {
+            if !uses_long_length(version, &b.key) && u32::try_from(b.data.len()).is_err() {
+                return Err(too_big());
+            }
+            extra = extra.saturating_add(b.encoded_len(version) as u64);
+        }
+        u32::try_from(extra).map_err(|_| too_big())?;
+        // rect, channel count, channel entries, signature + blend key, four flag bytes, extra length.
+        Ok((16 + 2 + self.channels.len() as u64 * (2 + channel_len) + 8 + 4 + 4).saturating_add(extra))
+    }
+
+    fn write(&self, out: &mut Vec<u8>, version: Version, widen: bool) -> Result<()> {
         self.rect.write(out);
         let nch = u16::try_from(self.channels.len()).map_err(|_| PsdError::LimitExceeded("too many channels"))?;
         out.put_u16(nch);
         for c in &self.channels {
             out.put_i16(c.id);
-            out.put_len(c.stored_len(), version.is_psb())?;
+            let rows = self.widened_rows(c, widen)?;
+            let grown = if rows == 0 { 0 } else { rle_widening(&c.encoded()?, rows)? };
+            out.put_len(c.stored_len().saturating_add(grown), version.is_psb())?;
         }
         out.put(b"8BIM");
         out.put(&self.blend_mode.key());
@@ -667,14 +768,24 @@ impl LayerInfo {
     /// Length of the body (layer count, records and channel data) without
     /// its trailing padding.
     pub fn unpadded_len(&self, version: Version) -> Result<u64> {
-        let mut records = Vec::new();
-        records.put_i16(0);
+        self.unpadded_len_as(version, false)
+    }
+
+    /// [`Self::unpadded_len`] of the body written with its RLE count tables widened (`widen`).
+    pub(crate) fn unpadded_len_as(&self, version: Version, widen: bool) -> Result<u64> {
+        // Computed from the field sizes: serializing the records just to measure them would copy
+        // every tagged block. Widening changes channel data only: the record's length fields keep
+        // their width.
+        let mut n = 2u64;
         for l in &self.layers {
-            l.write(&mut records, version)?;
+            n = n.saturating_add(l.encoded_len(version)?);
         }
-        let mut n = records.len() as u64;
-        for c in self.layers.iter().flat_map(|l| &l.channels).filter(|c| c.compression.is_some()) {
-            n = n.saturating_add(2).saturating_add(c.data.len() as u64);
+        for l in &self.layers {
+            for c in l.channels.iter().filter(|c| c.compression.is_some()) {
+                let rows = l.widened_rows(c, widen)?;
+                let grown = if rows == 0 { 0 } else { rle_widening(&c.encoded()?, rows)? };
+                n = n.saturating_add(2).saturating_add(c.encoded_len()).saturating_add(grown);
+            }
         }
         Ok(n)
     }
@@ -690,29 +801,47 @@ impl LayerInfo {
 
     /// Number of zero bytes [`Self::pad_to`] would set, without touching `self`.
     pub(crate) fn pad_len(&self, version: Version, align: u64) -> Result<usize> {
+        self.pad_len_as(version, false, align)
+    }
+
+    /// [`Self::pad_len`] for the body written with its RLE count tables widened (`widen`).
+    pub(crate) fn pad_len_as(&self, version: Version, widen: bool, align: u64) -> Result<usize> {
         let align = align.max(1);
-        let len = self.unpadded_len(version)?;
+        let len = self.unpadded_len_as(version, widen)?;
         Ok(((align - len % align) % align) as usize)
     }
 
     /// Bytes of channel data and their compression fields: the part of the body worth reserving up
     /// front (the records are small next to the pixels). Saturates instead of overflowing.
     pub(crate) fn channel_data_len(&self) -> usize {
-        self.layers.iter().flat_map(|l| &l.channels).filter(|c| c.compression.is_some()).fold(0usize, |n, c| n.saturating_add(2).saturating_add(c.data.len()))
+        self.layers
+            .iter()
+            .flat_map(|l| &l.channels)
+            .filter(|c| c.compression.is_some())
+            .fold(0usize, |n, c| n.saturating_add(2).saturating_add(usize::try_from(c.encoded_len()).unwrap_or(usize::MAX)))
     }
 
     /// Serializes the body without any trailing padding (the padding field is ignored).
     pub(crate) fn write_unpadded(&self, out: &mut Vec<u8>, version: Version) -> Result<()> {
+        self.write_unpadded_as(out, version, false)
+    }
+
+    /// [`Self::write_unpadded`], widening the RLE count tables of a PSD model written as PSB
+    /// (`widen`) on the way out.
+    fn write_unpadded_as(&self, out: &mut Vec<u8>, version: Version, widen: bool) -> Result<()> {
         let n = i16::try_from(self.layers.len()).map_err(|_| PsdError::LimitExceeded("more than 32767 layers"))?;
         out.put_i16(if self.merged_alpha { -n } else { n });
         for l in &self.layers {
-            l.write(out, version)?;
+            l.write(out, version, widen)?;
         }
         for l in &self.layers {
             for c in &l.channels {
                 if let Some(comp) = c.compression {
                     out.put_u16(comp.as_u16());
-                    out.put(&c.data);
+                    match l.widened_rows(c, widen)? {
+                        0 => out.put(&c.encoded()?),
+                        rows => put_widened_rle(out, &c.encoded()?, rows)?,
+                    }
                 }
             }
         }
@@ -720,9 +849,15 @@ impl LayerInfo {
     }
 
     /// Serializes the body (without a length field).
+    #[cfg(test)]
     pub(crate) fn write_body(&self, out: &mut Vec<u8>, version: Version) -> Result<()> {
+        self.write_body_as(out, version, false)
+    }
+
+    /// [`Self::write_body`], widening RLE count tables when `widen` (see [`Self::write_unpadded_as`]).
+    pub(crate) fn write_body_as(&self, out: &mut Vec<u8>, version: Version, widen: bool) -> Result<()> {
         let start = out.len();
-        self.write_unpadded(out, version)?;
+        self.write_unpadded_as(out, version, widen)?;
         match &self.padding {
             Some(p) => out.put(p),
             None => {
@@ -736,350 +871,4 @@ impl LayerInfo {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn sample_record(version: Version) -> LayerRecord {
-        let rect = Rect::from_xywh(-3, 2, 5, 4);
-        let px: Vec<u8> = (0..20).collect();
-        let mut channels = Vec::new();
-        for (id, comp) in [(-1, Compression::Rle), (0, Compression::Raw), (1, Compression::Zip), (2, Compression::ZipPrediction)] {
-            channels.push(ChannelData::encode(id, comp, &px, 5, 4, 8, version).unwrap());
-        }
-        let mask = LayerMask::new(Rect::from_xywh(0, 0, 2, 2), 255, LayerMask::FLAG_RELATIVE);
-        channels.push(ChannelData::encode(-2, Compression::Rle, &[1, 2, 3, 4], 2, 2, 8, version).unwrap());
-        LayerRecord {
-            rect,
-            channels,
-            blend_mode: BlendMode::Screen,
-            opacity: 200,
-            clipping: 1,
-            flags: LayerFlags(LayerFlags::HIDDEN),
-            mask: MaskData::Mask(mask),
-            blending_ranges: BlendingRanges::full(3),
-            name: b"abc".to_vec(),
-            blocks: vec![TaggedBlock::unicode_name("\u{e4}bc"), TaggedBlock::layer_id(5)],
-            ..Default::default()
-        }
-    }
-
-    fn rt(info: &LayerInfo, version: Version) -> Vec<u8> {
-        let mut out = Vec::new();
-        info.write_body(&mut out, version).unwrap();
-        let back = LayerInfo::read_body(&out, version).unwrap();
-        assert_eq!(&back, info);
-        let mut again = Vec::new();
-        back.write_body(&mut again, version).unwrap();
-        assert_eq!(again, out);
-        out
-    }
-
-    #[test]
-    fn empty_layer_info() {
-        let out = rt(&LayerInfo::default(), Version::Psd);
-        assert_eq!(out, vec![0, 0]);
-    }
-
-    #[test]
-    fn record_roundtrip_psd_psb() {
-        for v in [Version::Psd, Version::Psb] {
-            let info = LayerInfo { merged_alpha: true, layers: vec![sample_record(v), LayerRecord::default()], padding: None };
-            let out = rt(&info, v);
-            assert_eq!(out.len() % 2, 0);
-            assert_eq!(&out[..2], &(-2i16).to_be_bytes());
-        }
-    }
-
-    #[test]
-    fn psb_channel_lengths_are_8_bytes() {
-        let mut rec = LayerRecord::default();
-        rec.channels.push(ChannelData { id: 0, compression: Some(Compression::Raw), data: vec![] });
-        let info = LayerInfo { layers: vec![rec], ..Default::default() };
-        let psd = rt(&info, Version::Psd);
-        let psb = rt(&info, Version::Psb);
-        assert_eq!(psb.len(), psd.len() + 4);
-    }
-
-    #[test]
-    fn channel_decode_via_record() {
-        let rec = sample_record(Version::Psd);
-        let px: Vec<u8> = (0..20).collect();
-        for id in [-1, 0, 1, 2] {
-            assert_eq!(rec.decode_channel(id, 8, Version::Psd).unwrap(), px);
-        }
-        assert_eq!(rec.decode_channel(-2, 8, Version::Psd).unwrap(), vec![1, 2, 3, 4]);
-        assert!(rec.decode_channel(7, 8, Version::Psd).is_err());
-    }
-
-    #[test]
-    fn record_accessors() {
-        let rec = sample_record(Version::Psd);
-        assert_eq!(rec.name(), "\u{e4}bc");
-        assert!(!rec.is_visible());
-        assert_eq!(rec.layer_id(), Some(5));
-        assert_eq!(rec.fill_opacity(), 255);
-        assert_eq!(rec.section_type(), SectionType::Other);
-        assert!(rec.layer_mask().is_some());
-        assert_eq!(rec.channel_rect(-2), Rect::from_xywh(0, 0, 2, 2));
-        assert_eq!(rec.channel_rect(0), rec.rect);
-        let mut plain = LayerRecord { name: b"legacy".to_vec(), ..Default::default() };
-        assert_eq!(plain.name(), "legacy");
-        plain.blocks.push(TaggedBlock::fill_opacity(10));
-        assert_eq!(plain.fill_opacity(), 10);
-        plain.block_mut(b"iOpa").unwrap().data[0] = 11;
-        assert_eq!(plain.fill_opacity(), 11);
-    }
-
-    #[test]
-    fn mask_variants_roundtrip() {
-        let base = LayerMask::new(Rect::from_xywh(1, 2, 3, 4), 0, 0);
-        let with_real = LayerMask { real: Some(RealMask { flags: 1, background: 255, rect: Rect::from_xywh(0, 0, 9, 9) }), trailing: vec![], ..base.clone() };
-        let with_params = LayerMask {
-            flags: LayerMask::FLAG_PARAMETERS,
-            parameters: Some(MaskParameters {
-                flags: 0b1111,
-                user_density: Some(128),
-                user_feather: Some(2.5),
-                vector_density: Some(64),
-                vector_feather: Some(0.5),
-            }),
-            real: Some(RealMask::default()),
-            trailing: vec![0, 0],
-            ..base.clone()
-        };
-        let partial_params = LayerMask {
-            flags: LayerMask::FLAG_PARAMETERS,
-            parameters: Some(MaskParameters { flags: 0b0010, user_feather: Some(1.0), ..Default::default() }),
-            trailing: vec![],
-            ..base.clone()
-        };
-        for m in [base, with_real, with_params, partial_params] {
-            let mut out = Vec::new();
-            m.write(&mut out);
-            assert_eq!(LayerMask::parse(&out).unwrap(), m);
-        }
-    }
-
-    /// Photoshop stores the real-mask fields before the mask parameters (psd-tools
-    /// mask-density-layervectormask.psd): user + vector mask with both densities set.
-    #[test]
-    fn real_mask_before_parameters_photoshop_layout() {
-        let mut d = Vec::new();
-        Rect::from_xywh(15, -1, 18, 10).write(&mut d);
-        d.extend([0, LayerMask::FLAG_PARAMETERS | 8]);
-        d.extend([0, 255]);
-        Rect::from_xywh(0, 0, 32, 8).write(&mut d);
-        d.extend([0b0101, 64, 64, 0]);
-        let m = LayerMask::parse(&d).unwrap();
-        assert_eq!(m.real.map(|r| r.rect), Some(Rect::from_xywh(0, 0, 32, 8)));
-        assert_eq!(m.real.map(|r| r.background), Some(255));
-        let p = m.parameters.unwrap();
-        assert_eq!((p.user_density, p.vector_density), (Some(64), Some(64)));
-        assert_eq!(m.trailing, vec![0]);
-        assert!(m.real_first);
-        let mut out = Vec::new();
-        m.write(&mut out);
-        assert_eq!(out, d);
-    }
-
-    /// A density-only record in the spec's order (#949): the parameter flags byte at 18 says one
-    /// value byte, so the spec's reading excludes the 38-byte length only if the real mask is
-    /// ignored, while byte 36 (inside the real rectangle's `right`) is 0 and makes Photoshop's
-    /// reading fit too. Photoshop's reading puts the density (64) where a 0-or-255 background
-    /// belongs, so the spec's order wins and the density survives.
-    #[test]
-    fn density_only_spec_layout_is_not_read_as_photoshop_order() {
-        for (density, right) in [(64u8, 1u32), (200, 1), (64, 300), (1, 7)] {
-            let mut d = Vec::new();
-            Rect::from_xywh(0, 0, 1, 1).write(&mut d);
-            d.extend([255, LayerMask::FLAG_PARAMETERS]);
-            d.extend([0b0001, density]);
-            d.extend([0, 0]);
-            Rect::from_xywh(0, 0, right, 1).write(&mut d);
-            let m = LayerMask::parse(&d).unwrap();
-            assert!(!m.real_first, "density {density}, right {right}: {m:?}");
-            assert_eq!(m.parameters.unwrap().user_density, Some(density));
-            assert_eq!(m.real, Some(RealMask { flags: 0, background: 0, rect: Rect::from_xywh(0, 0, right, 1) }));
-            assert!(m.trailing.is_empty());
-            let mut out = Vec::new();
-            m.write(&mut out);
-            assert_eq!(out, d);
-        }
-        // Photoshop's order with the same lengths still reads as Photoshop's order.
-        let mut d = Vec::new();
-        Rect::from_xywh(0, 0, 1, 1).write(&mut d);
-        d.extend([255, LayerMask::FLAG_PARAMETERS]);
-        d.extend([0, 255]);
-        Rect::from_xywh(0, 0, 1, 1).write(&mut d);
-        d.extend([0b0001, 64]);
-        let m = LayerMask::parse(&d).unwrap();
-        assert!(m.real_first, "{m:?}");
-        assert_eq!(m.parameters.unwrap().user_density, Some(64));
-        assert_eq!(m.real.map(|r| r.background), Some(255));
-        let mut out = Vec::new();
-        m.write(&mut out);
-        assert_eq!(out, d);
-    }
-
-    /// The spec's order (parameters, then real fields) still parses and stays byte-stable.
-    #[test]
-    fn real_mask_after_parameters_spec_layout() {
-        let mut d = Vec::new();
-        Rect::from_xywh(1, 2, 3, 4).write(&mut d);
-        d.extend([255, LayerMask::FLAG_PARAMETERS]);
-        d.extend([0b0011, 200]);
-        d.extend(1.5f64.to_be_bytes());
-        d.extend([0, 255]);
-        Rect::from_xywh(0, 0, 3, 3).write(&mut d);
-        let m = LayerMask::parse(&d).unwrap();
-        assert!(!m.real_first);
-        assert_eq!(m.real.map(|r| r.rect), Some(Rect::from_xywh(0, 0, 3, 3)));
-        assert_eq!(m.parameters.unwrap().user_feather, Some(1.5));
-        let mut out = Vec::new();
-        m.write(&mut out);
-        assert_eq!(out, d);
-        // Parameters alone (no real mask) keep reading in the spec's order.
-        let mut d = Vec::new();
-        Rect::from_xywh(1, 2, 3, 4).write(&mut d);
-        d.extend([255, LayerMask::FLAG_PARAMETERS, 0b1010]);
-        d.extend(1.0f64.to_be_bytes());
-        d.extend(2.0f64.to_be_bytes());
-        d.extend([0, 0]);
-        let m = LayerMask::parse(&d).unwrap();
-        assert_eq!(m.real, None);
-        assert_eq!(m.parameters.map(|p| (p.user_feather, p.vector_feather)), Some((Some(1.0), Some(2.0))));
-    }
-
-    #[test]
-    fn mask_sizes() {
-        let mut out = Vec::new();
-        LayerMask::new(Rect::default(), 0, 0).write(&mut out);
-        assert_eq!(out.len(), 20);
-        let m = LayerMask { real: Some(RealMask::default()), trailing: vec![], ..LayerMask::new(Rect::default(), 0, 0) };
-        let mut out = Vec::new();
-        m.write(&mut out);
-        assert_eq!(out.len(), 36);
-    }
-
-    #[test]
-    fn short_mask_kept_raw() {
-        let mut rec = LayerRecord { mask: MaskData::Raw(vec![1, 2, 3]), ..Default::default() };
-        rec.channels.clear();
-        let info = LayerInfo { layers: vec![rec], ..Default::default() };
-        rt(&info, Version::Psd);
-    }
-
-    #[test]
-    fn flags_helpers() {
-        let mut f = LayerFlags::default();
-        f.set_hidden(true);
-        f.set_transparency_protected(true);
-        assert!(f.hidden() && f.transparency_protected());
-        f.set_pixel_data_irrelevant(true);
-        assert!(f.bit4_useful() && f.pixel_data_irrelevant());
-        f.set_hidden(false);
-        assert!(!f.hidden());
-    }
-
-    #[test]
-    fn blending_ranges_parse() {
-        let br = BlendingRanges::full(3);
-        assert_eq!(br.data.len(), 32);
-        let r = br.ranges();
-        assert_eq!(r.len(), 4);
-        assert_eq!(r[0].source, [0, 0, 255, 255]);
-    }
-
-    #[test]
-    fn rect_helpers() {
-        let r = Rect::from_xywh(-5, -6, 10, 3);
-        assert_eq!((r.width(), r.height()), (10, 3));
-        assert_eq!(r.size().unwrap(), (10, 3));
-        assert!(!r.is_empty());
-        let bad = Rect { top: 5, left: 0, bottom: 0, right: 1 };
-        assert!(bad.size().is_err());
-        assert!(bad.is_empty());
-        let huge = Rect { top: 0, left: i32::MIN, bottom: 1, right: i32::MAX };
-        assert!(huge.size().is_err());
-    }
-
-    #[test]
-    fn truncation_errors() {
-        let info = LayerInfo { layers: vec![sample_record(Version::Psd)], ..Default::default() };
-        let mut out = Vec::new();
-        info.write_body(&mut out, Version::Psd).unwrap();
-        // The final byte may be the (optional) even padding; stop before it.
-        for cut in 0..out.len() - 1 {
-            assert!(LayerInfo::read_body(&out[..cut], Version::Psd).is_err(), "cut {cut}");
-        }
-    }
-
-    #[test]
-    fn bad_blend_signature() {
-        let info = LayerInfo { layers: vec![LayerRecord::default()], ..Default::default() };
-        let mut out = Vec::new();
-        info.write_body(&mut out, Version::Psd).unwrap();
-        // count(2) + rect(16) + nch(2) = 20 → signature
-        out[20] = b'X';
-        assert!(matches!(LayerInfo::read_body(&out, Version::Psd), Err(PsdError::InvalidSignature { .. })));
-    }
-
-    #[test]
-    fn too_many_layers_rejected() {
-        let out = 1000i16.to_be_bytes();
-        assert!(LayerInfo::read_body(&out, Version::Psd).is_err());
-    }
-
-    #[test]
-    fn zero_length_channel() {
-        let mut rec = LayerRecord::default();
-        rec.channels.push(ChannelData { id: 0, compression: None, data: vec![] });
-        let info = LayerInfo { layers: vec![rec], ..Default::default() };
-        rt(&info, Version::Psd);
-        assert_eq!(info.layers[0].decode_channel(0, 8, Version::Psd).unwrap(), Vec::<u8>::new());
-    }
-
-    /// Padding without cloning the layers writes the same bytes as `pad_to` on a clone, and the
-    /// channel data length hint is exact.
-    #[test]
-    fn unpadded_write_matches_pad_to_on_a_clone() {
-        use crate::{ColorMode, Compression, testgen};
-        for version in [Version::Psd, Version::Psb] {
-            for depth in [8u16, 16, 32] {
-                for compression in [Compression::Raw, Compression::Rle] {
-                    let file = testgen::layered(version, ColorMode::Rgb, depth, compression);
-                    let mut info = file.layer_info.clone().unwrap();
-                    for align in [1u64, 2, 4, 8] {
-                        let mut cloned = info.clone();
-                        cloned.pad_to(version, align).unwrap();
-                        let mut want = Vec::new();
-                        cloned.write_body(&mut want, version).unwrap();
-                        let pad = info.pad_len(version, align).unwrap();
-                        let mut got = Vec::new();
-                        info.write_unpadded(&mut got, version).unwrap();
-                        assert!(got.len() >= info.channel_data_len());
-                        got.resize(got.len() + pad, 0);
-                        assert_eq!(got, want, "{version:?} {depth} {compression:?} align {align}");
-                    }
-                    info.padding = Some(vec![7, 7]);
-                    let mut with_padding = Vec::new();
-                    info.write_body(&mut with_padding, version).unwrap();
-                    assert!(with_padding.ends_with(&[7, 7]));
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn nondefault_padding_kept() {
-        let info = LayerInfo { padding: Some(vec![0, 0]), ..Default::default() };
-        let out = rt(&info, Version::Psd);
-        assert_eq!(out.len(), 4);
-    }
-
-    #[test]
-    fn unknown_blend_and_blocks_passthrough() {
-        let rec = LayerRecord { blend_mode: BlendMode::Unknown(*b"wxyz"), blocks: vec![TaggedBlock::new(*b"Zzzz", vec![1, 2, 3, 4, 5])], ..Default::default() };
-        rt(&LayerInfo { layers: vec![rec], ..Default::default() }, Version::Psd);
-    }
-}
+mod tests;

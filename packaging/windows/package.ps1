@@ -4,8 +4,9 @@
 
 .DESCRIPTION
   Produces, in $env:DIST (default: dist/release):
-    photocraft-<version>-windows-<arch>.msi            per-machine installer (WiX v5)
+    photocraft-<version>-windows-<arch>.msi            installer (WiX v5, per-user by default, per-machine optional)
     photocraft-<version>-windows-<arch>-portable.zip   photocraft.exe + photocraft-cli.exe + portable.txt
+    photocraft-<version>-windows-<arch>-symbols.zip    photocraft.pdb + photocraft_cli.pdb (optional, for profilers)
 
   The binaries link the C runtime statically (+crt-static), so neither the MSI nor the portable
   zip needs the Visual C++ redistributable. Signing is delegated to sign.ps1 (skipped with a
@@ -91,6 +92,21 @@ Copy-Item (Join-Path $Bin 'photocraft.exe'), (Join-Path $Bin 'photocraft-cli.exe
 
 & (Join-Path $PSScriptRoot 'sign.ps1') (Join-Path $Stage 'photocraft.exe') (Join-Path $Stage 'photocraft-cli.exe')
 
+# ---- font notices for the MSI ------------------------------------------------------------------
+# The portable ZIP already carries these notices; stage the complete files before MSI creation too.
+$Docs = Join-Path $Stage 'font-licences'
+New-Item -ItemType Directory -Force -Path $Docs | Out-Null
+# The existing MSI document group also carries notices for bundled egui font inputs.
+Copy-Item -LiteralPath (Join-Path $Root 'NOTICE'), (Join-Path $Root 'ATTRIBUTION.md') -Destination $Docs
+$HasCraftFontLicences = 1
+if ($env:CRAFT_FONTS_DIR) {
+  foreach ($ofl in Get-ChildItem -Path (Join-Path $env:CRAFT_FONTS_DIR 'fonts\*\OFL.txt') -File -ErrorAction SilentlyContinue) {
+    Copy-Item -LiteralPath $ofl.FullName -Destination (Join-Path $Docs "OFL-$($ofl.Directory.Name).txt")
+    $HasCraftFontLicences = 1
+  }
+}
+# ---- end font notices for the MSI --------------------------------------------------------------
+
 # ---- MSI ---------------------------------------------------------------------------------------
 # The setup wizard's art, drawn here from the app icon so the MSI shows PhotoCraft rather than
 # WiX's stock bitmaps: a 493x58 banner across the top of the inner pages (the page title is drawn
@@ -137,11 +153,15 @@ Invoke-Native 'wix build' {
     -culture en-US -loc (Join-Path $PSScriptRoot 'photocraft.en-us.wxl') `
     -d "Version=$MsiVersion" -d "DisplayVersion=$Version" -d "BinDir=$Stage" -d "IconPath=$(Join-Path $Root 'assets\app-icon\photocraft.ico')" `
     -d "BannerBmp=$Banner" -d "DialogBmp=$Dialog" `
+    -d "DocsDir=$Docs" -d "HasCraftFontLicences=$HasCraftFontLicences" `
     -o $Msi
 }
 Invoke-Native 'MSI shortcut icon validation (ICE50)' {
   wix msi validate $Msi -ice ICE50 -intermediateFolder (Join-Path $Stage 'msi-validation')
 }
+# Inspect the compiled tables and evaluate the duplicate guards with Windows Installer.
+# ICE validation alone cannot catch a well-formed condition with its meaning reversed.
+& (Join-Path $PSScriptRoot 'check-install-policy.ps1') -MsiPath $Msi
 # wix writes its debug symbols (.wixpdb) next to the MSI; keep them out of the release assets.
 Remove-Item -Force -ErrorAction SilentlyContinue ([IO.Path]::ChangeExtension($Msi, '.wixpdb'))
 & (Join-Path $PSScriptRoot 'sign.ps1') $Msi
@@ -151,7 +171,7 @@ $Portable = Join-Path $TargetDir "windows-package\photocraft-$Version-windows-$A
 Remove-Item -Recurse -Force $Portable -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $Portable | Out-Null
 Copy-Item (Join-Path $Stage '*.exe') $Portable
-foreach ($f in 'README.md', 'LICENSE', 'LICENSE-MIT', 'LICENSE-APACHE') {
+foreach ($f in 'README.md', 'LICENSE', 'LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE', 'ATTRIBUTION.md') {
   $p = Join-Path $Root $f
   if (Test-Path $p) { Copy-Item $p $Portable }
 }
@@ -168,7 +188,37 @@ if ($env:CRAFT_FONTS_DIR) {
 Copy-Item (Join-Path $PSScriptRoot 'portable.txt') $Portable
 $Zip = Join-Path $Dist "photocraft-$Version-windows-$Arch-portable.zip"
 Remove-Item -Force $Zip -ErrorAction SilentlyContinue
-Compress-Archive -Path $Portable -DestinationPath $Zip
+# The archive holds the files themselves. `-Path <folder>` puts the folder *in* the archive, so
+# photocraft.exe came out one level down and portable mode needs portable.txt beside the exe
+# wherever it is extracted (#7699); `<folder>\*` archives the contents, as windows7.ps1 does in
+# VectorCraft. Checked below, since nothing else reads the layout back.
+Compress-Archive -Path (Join-Path $Portable '*') -DestinationPath $Zip
+$Check = Join-Path $TargetDir 'windows-package\portable-zip-check'
+Remove-Item -Recurse -Force $Check -ErrorAction SilentlyContinue
+Expand-Archive -Path $Zip -DestinationPath $Check -Force
+foreach ($f in 'photocraft.exe', 'photocraft-cli.exe', 'portable.txt') {
+  if (-not (Test-Path (Join-Path $Check $f))) { throw "the portable zip has no $f at its root: $Zip" }
+}
+Remove-Item -Recurse -Force $Check -ErrorAction SilentlyContinue
+
+# ---- debug symbols -----------------------------------------------------------------------------
+# The linker writes a PDB beside each exe, and the exe names it without a path (photocraft.pdb,
+# photocraft_cli.pdb). They ship as a separate, optional download so profilers (Windows Performance
+# Analyzer, Superluminal, Visual Studio) show PhotoCraft's function names for the released
+# binaries (#688). Signing doesn't change the PDB signature an exe records, so they match the
+# signed exes; a rebuild of the same commit writes a PDB that doesn't.
+$Symbols = Join-Path $TargetDir "windows-package\photocraft-$Version-windows-$Arch-symbols"
+Remove-Item -Recurse -Force $Symbols -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force -Path $Symbols | Out-Null
+foreach ($pdb in 'photocraft.pdb', 'photocraft_cli.pdb') {
+  $p = Join-Path $Bin $pdb
+  if (-not (Test-Path $p)) { throw "$pdb is missing from $($Bin), where the release build writes it" }
+  Copy-Item $p $Symbols
+}
+Copy-Item (Join-Path $PSScriptRoot 'symbols.txt') $Symbols
+$SymbolsZip = Join-Path $Dist "photocraft-$Version-windows-$Arch-symbols.zip"
+Remove-Item -Force $SymbolsZip -ErrorAction SilentlyContinue
+Compress-Archive -Path $Symbols -DestinationPath $SymbolsZip
 
 # Smoke-test the CLI when this machine can run it. An ARM64 build made on an x64 runner can't run
 # here; .github/workflows/windows-arm64.yml installs and runs it on ARM64 instead.
@@ -178,4 +228,4 @@ if ($Arch -ne 'arm64' -or $HostArch -eq 'arm64') {
 } else {
   Write-Output "skipping photocraft-cli --version: an $Arch build doesn't run on this $HostArch machine"
 }
-Get-Item $Msi, $Zip | Format-Table Name, Length
+Get-Item $Msi, $Zip, $SymbolsZip | Format-Table Name, Length

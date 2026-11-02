@@ -102,6 +102,50 @@ fn shift_click_draws_a_pencil_line() {
 }
 
 #[test]
+fn shift_clicked_one_pixel_line_uses_the_clicked_pixels_not_subpixel_positions() {
+    let fractions = [("TL", (0.05, 0.05)), ("TR", (0.95, 0.05)), ("BL", (0.05, 0.95)), ("BR", (0.95, 0.95)), ("C", (0.5, 0.5))];
+    let starts = [&fractions[0], &fractions[1], &fractions[2], &fractions[3]];
+
+    for (start_name, start_fraction) in starts {
+        for (end_name, end_fraction) in fractions {
+            let paint = |raw: bool| {
+                let mut app = app();
+                app.run("tools.setBrush", json!({"brush": {"size": 1.0, "hardness": 1.0}})).unwrap();
+                let at = |origin: f64, fraction: f64| origin + if raw { fraction } else { 0.5 };
+                let start = (at(10.0, start_fraction.0), at(10.0, start_fraction.1));
+                let end = (at(60.0, end_fraction.0), at(45.0, end_fraction.1));
+                for (point, mods) in [(start, Modifiers::NONE), (end, Modifiers::SHIFT)] {
+                    tool_event(&mut app, ToolEvent::Down { x: point.0, y: point.1, pressure: 1.0 }, mods);
+                    tool_event(&mut app, ToolEvent::Up { x: point.0, y: point.1 }, mods);
+                }
+                (0..80).flat_map(|y| (0..120).map(move |x| (x, y))).filter(|&(x, y)| rgba(&app, x, y)[3] > 0.0).collect::<Vec<_>>()
+            };
+
+            assert_eq!(paint(true), paint(false), "{start_name}->{end_name}");
+        }
+    }
+}
+
+#[test]
+fn shift_clicked_pencil_does_not_split_a_click_near_a_pixel_boundary() {
+    let mut app = app();
+    app.run("tools.setBrush", json!({"brush": {"size": 1.0, "hardness": 1.0}})).unwrap();
+    let click = |app: &mut PhotocraftApp, x: f64, y: f64, modifiers| {
+        tool_event(app, ToolEvent::Down { x, y, pressure: 1.0 }, modifiers);
+        tool_event(app, ToolEvent::Up { x, y }, modifiers);
+    };
+
+    click(&mut app, 30.5, 30.5, Modifiers::NONE);
+    // The pointer is just below the grid corner; numerical rounding must not make the Pencil
+    // snap to one pixel and the line walker rasterize the neighbouring one.
+    let just_below_corner = 30.0 - 5e-8;
+    click(&mut app, just_below_corner, just_below_corner, Modifiers::SHIFT);
+
+    assert_eq!(rgba(&app, 29, 29)[3], 0.0, "the click should remain in the pixel chosen by the line walker");
+    assert_eq!(rgba(&app, 30, 30)[3], 1.0);
+}
+
+#[test]
 fn ctrl_alt_drag_resizes_the_pencil_without_painting() {
     let mut app = app();
     let ctrl_alt = Modifiers { alt: true, ctrl: true, ..Default::default() };

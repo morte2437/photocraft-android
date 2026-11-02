@@ -19,6 +19,28 @@ fn session() -> Session {
     s
 }
 
+/// Recorded Lens Flare centers can be beyond the canvas, without clipping to its edge.
+#[test]
+fn lens_flare_keeps_off_canvas_centers_and_native_defaults() {
+    let Some(FilterParams::LensFlare { center_x, center_y, .. }) = params_for("filter.render.lensFlare", &json!({"centerX": 5.0, "centerY": -5.0})) else {
+        panic!("Lens Flare")
+    };
+    assert_eq!((center_x, center_y), (5.0, -5.0));
+    let Some(FilterParams::LensFlare { center_x, center_y, .. }) = params_for("filter.render.lensFlare", &json!({})) else { panic!("Lens Flare") };
+    assert_eq!((center_x, center_y), (0.5, 0.5));
+}
+
+/// Extreme centers and malformed inputs remain bounded command executions with finite pixels.
+#[test]
+fn lens_flare_extreme_centers_do_not_panic_or_corrupt_pixels() {
+    for p in [json!({"centerX": 1e300, "centerY": -1e300}), json!({"centerX": null, "centerY": []}), json!({"centerX": 5, "centerY": -5, "brightness": -100})] {
+        let mut s = session();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| s.execute("filter.render.lensFlare", p)));
+        assert!(result.is_ok());
+        assert!(pixels(&s).iter().all(|v| v.is_finite()));
+    }
+}
+
 fn pixels(s: &Session) -> Vec<f32> {
     let d = s.active().unwrap();
     d.doc.layer(d.active_layer.unwrap()).unwrap().surface().unwrap().read_region(Rect::new(0, 0, 48, 32))
@@ -165,6 +187,27 @@ fn colour_filters_use_and_record_tool_colours() {
 }
 
 #[test]
+fn fibers_fill_an_empty_layer() {
+    // #5241: Fibers renders from the colours, not the layer's pixels, so an empty layer fills
+    // like in Photoshop (and can be transformed afterwards).
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 48, "height": 32})).unwrap();
+    s.execute("layer.new.layer", json!({})).unwrap();
+    s.execute("filter.render.fibers", json!({"seed": 3})).unwrap();
+    let px = pixels(&s);
+    assert!(px.as_chunks::<4>().0.iter().all(|p| p[3] == 1.0), "every pixel is rendered opaque");
+    s.execute("edit.transform.flipHorizontal", json!({})).unwrap();
+
+    // With a selection only the selection fills.
+    s.execute("layer.new.layer", json!({})).unwrap();
+    s.execute("select.rect", json!({"x": 4, "y": 4, "width": 10, "height": 6})).unwrap();
+    s.execute("filter.render.fibers", json!({"seed": 3})).unwrap();
+    let d = s.active().unwrap();
+    let surf = d.doc.layer(d.active_layer.unwrap()).unwrap().surface().unwrap();
+    assert_eq!(surf.content_bounds(), Rect::new(4, 4, 14, 10));
+}
+
+#[test]
 fn displace_reads_another_document() {
     let mut s = session();
     // Map document: a flat colour that shifts 3 px right at 25 % (see the algo test).
@@ -197,6 +240,51 @@ fn lens_blur_uses_the_layer_mask_as_depth() {
     assert_eq!(pixels(&s), before);
     s.execute("filter.blur.lensBlur", json!({"radius": 6, "depthMap": "layerMask", "focalDistance": 0})).unwrap();
     assert_ne!(pixels(&s), before);
+}
+
+/// #7400: an alpha channel is a Lens Blur depth source, by name or index, as Photoshop lists
+/// the document's channels in Depth Map › Source. A missing channel is an error that changes
+/// nothing, and on a Smart Object (whose smart filters re-render without the channels) it is
+/// refused instead of silently blurring without depth.
+#[test]
+fn lens_blur_reads_an_alpha_channel_as_depth() {
+    let mut s = session();
+    // A white channel: depth 1 everywhere. Creating it targets it; the filter is for the layer.
+    s.execute("channel.new", json!({"name": "Depth Map", "fill": "white"})).unwrap();
+    s.execute("channel.target", json!({"channel": "composite"})).unwrap();
+    let before = pixels(&s);
+    for channel in [json!("Depth Map"), json!(0)] {
+        let p = |focal: f64| json!({"radius": 6, "depthMap": "channel", "depthChannel": channel, "focalDistance": focal});
+        // Focal distance 255 puts depth 1 in focus: nothing blurs.
+        s.execute("filter.blur.lensBlur", p(255.0)).unwrap();
+        assert_eq!(pixels(&s), before, "{channel}: in focus");
+        s.execute("filter.blur.lensBlur", p(0.0)).unwrap();
+        assert_ne!(pixels(&s), before, "{channel}: out of focus blurs");
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(pixels(&s), before);
+    }
+    for bad in [
+        json!({"radius": 6, "depthMap": "channel"}),
+        json!({"radius": 6, "depthMap": "channel", "depthChannel": "Nope"}),
+        json!({"radius": 6, "depthMap": "channel", "depthChannel": 7}),
+    ] {
+        let doc = s.active().unwrap().doc.clone();
+        let past = s.active().unwrap().history.past_len();
+        let e = s.execute("filter.blur.lensBlur", bad.clone()).unwrap_err().to_string();
+        assert!(e.contains("Lens Blur"), "{bad}: {e}");
+        assert_eq!(pixels(&s), before, "{bad}: nothing changed");
+        let st = s.active().unwrap();
+        assert!(std::sync::Arc::ptr_eq(&doc, &st.doc), "{bad}: the document was replaced");
+        assert_eq!(st.history.past_len(), past, "{bad}: a history step was recorded");
+    }
+    s.execute("layer.smartObjects.convertToSmartObject", json!({})).unwrap();
+    let doc = s.active().unwrap().doc.clone();
+    let past = s.active().unwrap().history.past_len();
+    let e = s.execute("filter.blur.lensBlur", json!({"radius": 6, "depthMap": "channel", "depthChannel": "Depth Map"})).unwrap_err().to_string();
+    assert!(e.contains("Smart Object"), "{e}");
+    let st = s.active().unwrap();
+    assert!(std::sync::Arc::ptr_eq(&doc, &st.doc), "no smart filter was added");
+    assert_eq!(st.history.past_len(), past, "no history step");
 }
 
 #[test]

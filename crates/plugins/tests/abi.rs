@@ -220,6 +220,25 @@ fn malformed_and_oversized_modules_are_refused() {
 }
 
 #[test]
+fn a_code_section_claiming_no_functions_but_many_bytes_is_refused() {
+    // Header, then a code section (id 10) declaring 2000 bytes whose function count is 0, cut off
+    // after the count (a truncated download) or padded to its full size. The spec makes the
+    // count's own byte the whole section; wasmi's strict limits divided the size by the count.
+    let truncated = b"\0asm\x01\0\0\0\x0a\xd0\x0f\x00".to_vec();
+    let mut padded = truncated.clone();
+    padded.resize(padded.len() + 1999, 0);
+    // The same section after a valid empty one: a duplicate reaches the division before validation.
+    let mut second = b"\0asm\x01\0\0\0\x0a\x01\x00".to_vec();
+    second.extend_from_slice(&padded[8..]);
+    for (name, bytes) in [("truncated", truncated), ("padded", padded), ("second", second)] {
+        assert!(matches!(Plugin::load(&bytes, Limits::default()), Err(Error::Module(_))), "{name}");
+    }
+    // An empty code section (count 0, nothing after it) is valid; it fails only for the missing ABI exports.
+    let empty = b"\0asm\x01\0\0\0\x0a\x01\x00";
+    assert!(matches!(Plugin::load(empty, Limits::default()), Err(Error::Abi(_))));
+}
+
+#[test]
 fn budgets_stop_runaway_plugins() {
     let spin = ok_module("(loop $l (br $l)) (i32.const 0)");
     // Instruction budget.
@@ -316,4 +335,82 @@ fn folder_loading_skips_bad_files() {
     assert!(photocraft_plugins::registry::load_folder(&dir.join("missing")).is_err());
     assert!(photocraft_plugins::registry::load_file(&dir, Limits::default()).is_err(), "a directory is not a module");
     std::fs::remove_dir_all(&dir).ok();
+}
+
+/// #8603: a run whose memory budget holds a single instance still covers every band on a
+/// many-worker pool, one band at a time, with the same pixels as a run of parallel bands.
+#[test]
+fn one_band_at_a_time_matches_parallel_bands() {
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(8).build().unwrap();
+    let s = surface(PixelFormat::RGBA8, 600, 300);
+    let canvas = Rect::new(0, 0, 600, 300);
+    let run = |limits: Limits| {
+        let p = Plugin::load(INVERT, limits).unwrap();
+        pool.install(|| p.apply(&s, canvas, None, &json!({}))).unwrap()
+    };
+    let parallel = run(Limits { band_bytes: 1, ..Limits::default() });
+    let serial = run(Limits { band_bytes: 1, max_total_memory_bytes: 512 << 20, ..Limits::default() });
+    assert_eq!(serial, parallel);
+    assert_ne!(serial, s, "the filter ran");
+}
+
+/// #8603: one run on 16 workers must not hold 16 instances at the 512 MiB cap (8 GiB). With the
+/// default limits it holds at most four (2 GiB); a smaller per-instance cap lets every worker
+/// run, and a budget under one cap still runs one band at a time rather than none.
+#[test]
+fn parallel_bands_fit_the_total_memory_budget() {
+    let d = Limits::default();
+    assert_eq!(d.parallel_bands(16), 4);
+    assert!(d.parallel_bands(64) * d.max_memory_bytes <= d.max_total_memory_bytes);
+    assert_eq!(d.parallel_bands(2), 2, "fewer workers than the budget allows");
+    let small = Limits { max_memory_bytes: 64 << 20, ..Limits::default() };
+    assert_eq!(small.parallel_bands(16), 16, "small instances keep every worker busy");
+    let tight = Limits { max_total_memory_bytes: 1 << 20, ..Limits::default() };
+    assert_eq!(tight.parallel_bands(16), 1, "at least one band runs");
+    assert_eq!(d.parallel_bands(0), 1);
+}
+
+#[test]
+fn a_start_function_that_spins_is_cut_off_at_one_slice() {
+    // `fuel_base` is what a call may use; the start function cannot be interrupted to check the
+    // clock, so it gets one slice of it at most.
+    let spin = "(func $spin (loop $l (br $l))) (start $spin)";
+    let limits = Limits { fuel_base: u64::MAX / 4, ..Limits::default() };
+    let (error, took) = run_err(&module(MANIFEST, 1, "(i32.const 0)", spin), limits);
+    assert!(matches!(error, Error::Trap(_) | Error::Limit(_)), "{error:?}");
+    assert!(took < Duration::from_secs(30), "{took:?}");
+}
+
+#[test]
+fn content_spread_over_millions_of_bands_is_refused_before_planning_them() {
+    let p = Plugin::load(INVERT, Limits::default()).unwrap();
+    let mut s = Surface::new(PixelFormat::RGBA8);
+    s.write_pixel(0, 0, &[0.1, 0.2, 0.3, 1.0]);
+    s.write_pixel(4_000_000, 4_000_000, &[0.1, 0.2, 0.3, 1.0]);
+    let t = Instant::now();
+    let e = p.apply(&s, Rect::new(0, 0, 8, 8), None, &json!({})).expect_err("a 15600 × 15600 tile grid is not one run");
+    assert!(matches!(e, Error::Limit(_)), "{e:?}");
+    assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_fifo_in_place_of_a_module_file_does_not_block_loading() {
+    let dir = std::env::temp_dir().join(format!("photocraft-plugin-fifo-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("evil.wasm");
+    let _ = std::fs::remove_file(&path);
+    // `rustix::fs::mknodat` is unavailable on Apple targets. `mkfifo` is the
+    // POSIX utility for creating this special file and keeps this regression
+    // test available on macOS as well as other Unix platforms.
+    let status = std::process::Command::new("mkfifo").arg(&path).status().unwrap();
+    assert!(status.success(), "mkfifo failed with {status}");
+    let (tx, rx) = std::sync::mpsc::channel();
+    let p = path.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(photocraft_plugins::registry::load_file(&p, Limits::default()).map(|_| ()));
+    });
+    let r = rx.recv_timeout(Duration::from_secs(10)).expect("loading a FIFO must not block");
+    assert!(matches!(r, Err(Error::Io(_))), "{r:?}");
+    let _ = std::fs::remove_dir_all(&dir);
 }

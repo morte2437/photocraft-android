@@ -33,6 +33,15 @@ pub enum DropTarget {
     Elsewhere,
 }
 
+/// A file dropped on the canvas, waiting its turn to be placed.
+pub(crate) enum DropPlace {
+    /// Dropped onto the window (desktop): read from its path, or through egui.
+    File(egui::DroppedFileHandle),
+    /// Read by the shell itself (the browser reads dropped files asynchronously): its name and
+    /// contents, delivered through [`Services::place_inbox`](crate::Services::place_inbox).
+    Bytes(String, Vec<u8>),
+}
+
 /// `warnings` from an import, plus one for each font family the active document's type uses that
 /// isn't installed (#4559): Photoshop warns about missing fonts as a file opens, and the CLI and
 /// automation already report them; the type would otherwise silently render in a fallback face.
@@ -57,6 +66,21 @@ pub(crate) fn with_missing_fonts_of(doc: &photocraft_doc::Document, mut warnings
 /// A dropped file's name ("dropped" when it has none).
 fn dropped_name(f: &egui::DroppedFileHandle) -> String {
     f.path().file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "dropped".into())
+}
+
+/// `path` as the `String` file paths are carried in, or what to tell the user when its name isn't
+/// valid Unicode (#6601): non-UTF-8 bytes on Linux, an unpaired surrogate on Windows. A lossy copy
+/// would name another file, so Open would fail with "No such file" and Save would write a second,
+/// renamed file beside the original. `saving`: the path is to be written to.
+pub fn path_text(path: &std::path::Path, saving: bool) -> Result<String, String> {
+    path.to_str().map(str::to_owned).ok_or_else(|| {
+        let line = if saving {
+            tl!("{path}: the path is not valid Unicode; save under another name.")
+        } else {
+            tl!("{path}: the path is not valid Unicode; rename the file and open it again.")
+        };
+        crate::i18n::fmt(line, &[("path", &path.to_string_lossy())])
+    })
 }
 
 /// The file name of `path` (the document's display name), or `path` itself when it has none.
@@ -89,6 +113,8 @@ impl PhotocraftApp {
             && !st.source_read_only
         {
             st.path = Some(path.to_string());
+            let doc = st.doc.id;
+            self.remember_stamp(doc, path);
         }
         self.push_recent(path);
     }
@@ -105,6 +131,9 @@ impl PhotocraftApp {
     /// Read and open the file at `path` (see [`open_file`](Self::open_file)).
     #[cfg(not(target_arch = "wasm32"))]
     pub fn open_path(&mut self, path: &str) -> Result<Vec<String>, String> {
+        if self.show_if_open(path) {
+            return Ok(Vec::new());
+        }
         // Documents opening in the background are read on the worker too (a 2 GB PSB read
         // would block the window). Preset files (brushes, gradients) go the usual way.
         let ext = std::path::Path::new(path).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
@@ -126,11 +155,18 @@ impl PhotocraftApp {
     /// open in name order ([`natural_cmp`]: `File_2` before `File_10`), and their tabs keep that
     /// order however long each takes to open in the background (#3248). Returns how many opened.
     pub fn open_paths(&mut self, paths: &[String]) -> usize {
+        // The command line's files open before the first frame, which otherwise applies the
+        // interface language: their status lines and notices would come out in English.
+        crate::i18n::set_current(crate::i18n::Lang::from_pref(&self.session.prefs().interface.language));
         let mut paths: Vec<String> = paths.iter().map(|p| absolute(p)).collect();
         paths.sort_by(|a, b| natural_cmp(a, b));
         let batch = crate::jobs_ui::begin_batch(self);
         let mut opened = 0;
         for (seq, abs) in paths.iter().enumerate() {
+            // Not a member of the set: its tab is already in place.
+            if self.show_if_open(abs) {
+                continue;
+            }
             let order = crate::jobs_ui::OpenOrder { batch, seq };
             let pending = self.jobs.opens.len();
             match self.open_path(abs) {
@@ -148,6 +184,26 @@ impl PhotocraftApp {
         }
         crate::jobs_ui::end_batch(&mut self.jobs);
         opened
+    }
+
+    /// Show the document already open from the file at `path`, or its tab while it is still
+    /// opening in the background, as Photoshop does, rather than open a second copy bound to the
+    /// same file (#6598). True when there was one.
+    pub(crate) fn show_if_open(&mut self, path: &str) -> bool {
+        let canon = canonical(path);
+        let same = |p: &str| same_file(p, path, canon.as_deref());
+        if let Some(i) = self.session.documents().iter().position(|d| d.path.as_deref().is_some_and(same)) {
+            self.session.set_active(i);
+            self.jobs.focus = None;
+        } else if let Some(o) = self.jobs.opens.iter().find(|o| o.path.as_deref().is_some_and(|p| !is_template(p) && same(p))) {
+            // A template still loading opens as another Untitled, as it does once loaded.
+            self.jobs.focus = Some(o.job);
+        } else {
+            return false;
+        }
+        // The document count didn't change, so the Home screen wouldn't give way by itself.
+        self.ui.chrome.home = None;
+        true
     }
 
     /// Show "Couldn't open <name>: <error>" as an error (status bar + notice).
@@ -182,7 +238,7 @@ impl PhotocraftApp {
         for f in files {
             let name = dropped_name(&f);
             if target == DropTarget::Canvas && !crate::preset_files_ui::is_preset_file(&name) {
-                self.drop_places.push_back(f);
+                self.drop_places.push_back(DropPlace::File(f));
                 continue;
             }
             match self.open_dropped_file(&f, &name, slot) {
@@ -191,6 +247,24 @@ impl PhotocraftApp {
                 Err(e) => self.open_failed(&name, &e),
             }
         }
+    }
+
+    /// Which of the files called `names`, dropped onto the window just now, are placed on the
+    /// active document's canvas rather than opened, for a shell that reads dropped files itself
+    /// (the browser reads them asynchronously, so the web shell can't hand them to
+    /// [`open_dropped`](Self::open_dropped)). It delivers those through
+    /// [`Services::place_inbox`](crate::Services::place_inbox) and the rest through
+    /// [`Services::inbox`](crate::Services::inbox). The pointer comes from
+    /// [`Services::cursor_pos`](crate::Services::cursor_pos). As with a desktop canvas drop, a Free
+    /// Transform still open is applied first (#4833).
+    pub fn dropped_on_canvas(&mut self, ctx: &egui::Context, names: &[String]) -> Vec<bool> {
+        let at = self.services.cursor_pos.as_mut().and_then(|f| f(ctx));
+        let canvas = self.drop_target(ctx, at) == DropTarget::Canvas;
+        let places: Vec<bool> = names.iter().map(|n| canvas && !crate::preset_files_ui::is_preset_file(n)).collect();
+        if places.contains(&true) && self.ui.transform.is_some() {
+            crate::transform_tool::commit(self);
+        }
+        places
     }
 
     /// Where a drop at `at` lands. Over a window or dialog it's neither the canvas nor the tabs.
@@ -214,7 +288,7 @@ impl PhotocraftApp {
         // Opens append: a background open's tab, or a document.
         let (docs, opens) = (self.session.documents().len(), self.jobs.opens.len());
         if f.path().is_absolute() {
-            self.open_path(&f.path().to_string_lossy())?;
+            self.open_path(&path_text(f.path(), false)?)?;
         } else {
             self.open_bytes(name, &crate::read_dropped(&**f)?)?;
         }
@@ -230,11 +304,20 @@ impl PhotocraftApp {
     /// transform is in progress (so several files are placed and transformed one after another).
     pub(crate) fn place_next_dropped(&mut self, ctx: &egui::Context) {
         while self.ui.transform.is_none() {
-            let Some(f) = self.drop_places.pop_front() else { return };
-            let placed = if f.path().is_absolute() {
-                self.run("file.placeEmbedded", serde_json::json!({"path": f.path().to_string_lossy()}))
-            } else {
-                crate::read_dropped(&*f).and_then(|bytes| self.place_bytes(&dropped_name(&f), bytes, None))
+            let Some(next) = self.drop_places.pop_front() else { return };
+            let (name, placed) = match next {
+                DropPlace::File(f) if f.path().is_absolute() => {
+                    (dropped_name(&f), path_text(f.path(), false).and_then(|path| self.run("file.placeEmbedded", serde_json::json!({"path": path}))))
+                }
+                DropPlace::File(f) => {
+                    let name = dropped_name(&f);
+                    let placed = crate::read_dropped(&*f).and_then(|bytes| self.place_bytes(&name, bytes, None));
+                    (name, placed)
+                }
+                DropPlace::Bytes(name, bytes) => {
+                    let placed = self.place_bytes(&name, bytes, None);
+                    (name, placed)
+                }
             };
             match placed {
                 Ok(_) => {
@@ -242,7 +325,7 @@ impl PhotocraftApp {
                         self.ui.status = e;
                     }
                 }
-                Err(e) => self.failed(crate::i18n::fmt(tl!("Couldn't place {name}: {error}"), &[("name", &dropped_name(&f)), ("error", &e)])),
+                Err(e) => self.failed(crate::i18n::fmt(tl!("Couldn't place {name}: {error}"), &[("name", &name), ("error", &e)])),
             }
         }
     }
@@ -262,8 +345,21 @@ impl PhotocraftApp {
             match e {
                 OsEvent::Open(paths) => {
                     self.open_paths(&paths);
-                    // Bring the window forward when another app (Finder, the Dock) asked us to open.
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    // Bring the window forward when another app (Finder, the Dock, Explorer via a
+                    // second launch) asked us to open; restore it first if it was minimized.
+                    if ctx.input(|i| i.viewport().minimized) == Some(true) {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                    }
+                    // Native Wayland lets a window come forward only with the launcher's activation
+                    // token, which winit can't apply to an existing window (its focus is a no-op
+                    // there): mark the window as wanting attention instead, so the taskbar
+                    // highlights it rather than the file opening out of sight.
+                    let raise = if self.services.is_wayland {
+                        egui::ViewportCommand::RequestUserAttention(egui::UserAttentionType::Informational)
+                    } else {
+                        egui::ViewportCommand::Focus
+                    };
+                    ctx.send_viewport_cmd(raise);
                     ctx.request_repaint();
                 }
                 OsEvent::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
@@ -321,6 +417,26 @@ fn absolute(p: &str) -> String {
 #[cfg(target_arch = "wasm32")]
 fn absolute(p: &str) -> String {
     p.to_string()
+}
+
+/// `path` with symlinks, `.` and `..` and (on case-insensitive volumes) letter case resolved;
+/// `None` when it can't be (a missing file).
+#[cfg(not(target_arch = "wasm32"))]
+fn canonical(path: &str) -> Option<std::path::PathBuf> {
+    std::fs::canonicalize(path).ok()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn canonical(_path: &str) -> Option<std::path::PathBuf> {
+    None
+}
+
+/// Whether an open document's path `p` names the file at `path` (`canon`: its [`canonical`]
+/// form). The cheap comparisons come first: `p` is resolved on disk only when they fail, so an
+/// open of a file that isn't open costs one resolution per document. A file moved or deleted
+/// since it was opened only matches its old path as written.
+fn same_file(p: &str, path: &str, canon: Option<&std::path::Path>) -> bool {
+    p == path || canon.is_some_and(|c| std::path::Path::new(p) == c || canonical(p).is_some_and(|q| q == c))
 }
 
 #[cfg(test)]

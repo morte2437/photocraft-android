@@ -112,7 +112,7 @@ impl Reader<'_, '_> {
         if file.pixel_size != space.pixel_size() {
             return Err(invalid(format!("{name}: pixel size {} does not match its colour space", file.pixel_size)));
         }
-        let cost = file.decoded_bytes(fmt.bytes_per_pixel())?;
+        let cost = file.decoded_bytes(fmt.bytes_per_pixel(), dx, dy)?;
         self.budget = self.budget.checked_sub(cost).ok_or_else(|| invalid("decoded layers exceed the 1 GiB limit"))?;
         let mut surface = match self.default_pixel(name, space)? {
             Some(px) if px.iter().any(|v| *v != 0.0) => Surface::with_default(fmt, &space.to_format(&px, fmt)),
@@ -283,10 +283,10 @@ pub(crate) fn import(name: &str, bytes: &[u8], ctl: &Interrupt<'_>) -> Result<Im
     }
     let xml = zip.read_by_name("maindoc.xml", MAX_MAINDOC).map_err(|e| invalid(e.to_string()))?;
     let xml = std::str::from_utf8(&xml).map_err(|_| invalid("maindoc.xml is not UTF-8"))?;
-    // maindoc.xml declares Krita's DTD by public id; roxmltree only reads internal subsets and
-    // guards entity expansion.
+    // maindoc.xml declares Krita's DTD by public id; Krita writes no internal subset, which
+    // `xml::parse` refuses (its entities could hide nesting from the depth check).
     let opts = roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() };
-    let tree = roxmltree::Document::parse_with_options(xml, opts).map_err(|e| invalid(format!("maindoc.xml: {e}")))?;
+    let tree = crate::xml::parse(xml, opts).map_err(|e| invalid(format!("maindoc.xml: {e}")))?;
     let image = tree.root_element().children().find(|n| n.has_tag_name("IMAGE")).ok_or_else(|| invalid("maindoc.xml has no IMAGE"))?;
     let side = |a: &str| -> Result<u32> {
         let v = number(image, a, 0.0)?;

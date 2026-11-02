@@ -12,8 +12,10 @@
 //! - macOS: Metal → CPU
 //!
 //! The choice that worked is remembered in `performance.gpuBackend` (Preferences › Performance,
-//! where it can be reset). With `auto`, Intel adapters on Windows use DX12. `WGPU_BACKEND` still
-//! overrides everything, and `--safe-gpu` forces the CPU path for one launch.
+//! where it can be reset). With `auto`, Intel and Qualcomm (Windows on ARM) adapters on Windows
+//! use DX12, and when DXGI lists an Intel adapter the instance leaves Vulkan out, so the first
+//! start doesn't load the Intel Vulkan driver either. `WGPU_BACKEND` still overrides everything,
+//! and `--safe-gpu` forces the CPU path for one launch.
 //!
 //! "CPU" composites on the CPU and draws the window with a software adapter where the platform
 //! has one (WARP on Windows, llvmpipe over GL elsewhere). On Linux a GL adapter that can't present
@@ -33,6 +35,10 @@ use serde_json::{Value, json};
 pub const MARKER_FILE: &str = "gpu-starting.json";
 /// PCI vendor id of Intel.
 pub const INTEL: u32 = 0x8086;
+/// Qualcomm's vendor id as its Vulkan driver reports it.
+pub const QUALCOMM: u32 = 0x5143;
+/// Qualcomm's vendor id as DXGI (DX12) reports it: "QCOM".
+pub const QUALCOMM_DXGI: u32 = 0x4D4F_4351;
 /// Largest marker read (a marker is a few hundred bytes).
 const MARKER_MAX: u64 = 64 << 10;
 
@@ -204,6 +210,28 @@ pub fn backends(plan: &Plan, os: Os) -> Option<wgpu::Backends> {
     })
 }
 
+/// Instance backends for `auto` on Windows (no `WGPU_BACKEND`) when `dx12_vendors`, the PCI vendor
+/// ids of the DX12 adapters, includes Intel: DX12, with GL as the last resort (see [`rank`]). An
+/// instance with Vulkan loads the Intel Vulkan driver before the adapter selector runs, and #4's
+/// crash is in that driver. `dx12_vendors` is called only for that plan; `None` keeps [`backends`]'
+/// choice.
+pub fn windows_auto_backends(plan: &Plan, os: Os, dx12_vendors: impl FnOnce() -> Vec<u32>) -> Option<wgpu::Backends> {
+    let auto = plan.env.is_none() && plan.backend == GpuBackend::Auto && os == Os::Windows;
+    (auto && dx12_vendors().contains(&INTEL)).then_some(wgpu::Backends::DX12 | wgpu::Backends::GL)
+}
+
+/// The PCI vendor ids of the DX12 adapters, from a DX12-only instance (DXGI, no Vulkan driver)
+/// with `desc`'s flags and backend options (the shader compiler from [`dx12_compiler`]).
+fn dx12_vendors(desc: &wgpu::InstanceDescriptor) -> Vec<u32> {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::DX12,
+        flags: desc.flags,
+        backend_options: desc.backend_options.clone(),
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
+    });
+    crate::services::block_on(instance.enumerate_adapters(wgpu::Backends::DX12)).iter().map(|a| a.get_info().vendor).collect()
+}
+
 /// The DX12 shader compiler (#712). wgpu's default loads `dxcompiler.dll` by name, and the
 /// Windows DLL search falls through to the current directory and `PATH`, so another program's DXC
 /// build (a browser's, an SDK's) got loaded and failed device creation or crashed the first shader
@@ -220,6 +248,18 @@ pub fn dx12_compiler(env: Option<&str>, exe_dir: Option<&Path>) -> wgpu::Dx12Com
     }
 }
 
+/// The GPU makers whose Windows Vulkan driver `auto` avoids, so DX12 comes first: Intel's
+/// (`igvk64.dll` crashed while the device was created, #4) and Qualcomm's Adreno driver on
+/// Windows on ARM (it lost the device mid-session and the window went with it; DX12 on the same
+/// machine didn't, #7537). The name is for System Info.
+fn dx12_first_on_windows(vendor: u32) -> Option<&'static str> {
+    match vendor {
+        INTEL => Some("Intel"),
+        QUALCOMM | QUALCOMM_DXGI => Some("Qualcomm"),
+        _ => None,
+    }
+}
+
 /// What adapter selection needs to know about an adapter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Candidate {
@@ -228,14 +268,18 @@ pub struct Candidate {
     pub backend: wgpu::Backend,
     /// Can present to the window.
     pub surface_ok: bool,
+    /// Its name matches the adapter the user asked for ([`adapter_matches`]).
+    pub wanted: bool,
 }
 
 /// Rank of an adapter (lower is better): high-performance device types first (egui's power
 /// preference) or software adapters first for `cpu`; then backends, with DX12 before Vulkan for
-/// Intel on Windows. For `cpu`, any GL adapter comes before Vulkan, which is only the fallback
-/// for presenting the window (see [`backends`]).
+/// Intel and Qualcomm on Windows ([`dx12_first_on_windows`]). For `cpu`, any GL adapter comes
+/// before Vulkan, which is only the fallback for presenting the window (see [`backends`]). On
+/// Windows GL comes after every other adapter, WARP included: GL there (VMware's SVGA3D, GL-only
+/// old GPUs) drew a black window (#5191, #1788).
 fn rank(a: &Candidate, backend: GpuBackend, os: Os) -> (u8, u8, u8) {
-    let fallback = u8::from(backend == GpuBackend::Cpu && a.backend == wgpu::Backend::Vulkan);
+    let fallback = u8::from((backend == GpuBackend::Cpu && a.backend == wgpu::Backend::Vulkan) || (os == Os::Windows && a.backend == wgpu::Backend::Gl));
     let ty = match a.device_type {
         wgpu::DeviceType::DiscreteGpu => 0,
         wgpu::DeviceType::IntegratedGpu => 1,
@@ -249,7 +293,7 @@ fn rank(a: &Candidate, backend: GpuBackend, os: Os) -> (u8, u8, u8) {
         _ => ty,
     };
     let be = match a.backend {
-        wgpu::Backend::Dx12 if os == Os::Windows && a.vendor == INTEL => 0,
+        wgpu::Backend::Dx12 if os == Os::Windows && dx12_first_on_windows(a.vendor).is_some() => 0,
         wgpu::Backend::Vulkan | wgpu::Backend::Metal => 1,
         wgpu::Backend::Dx12 => 2,
         wgpu::Backend::Gl => 3,
@@ -258,19 +302,62 @@ fn rank(a: &Candidate, backend: GpuBackend, os: Os) -> (u8, u8, u8) {
     (fallback, ty, be)
 }
 
-/// The adapter to use among `adapters` (`None` when there is none).
+/// The adapter to use among `adapters` (`None` when there is none). Adapters the user asked for
+/// win over the rest when any of them can present; otherwise the ranking decides (see
+/// [`wanted_missed`]).
 pub fn pick(adapters: &[Candidate], backend: GpuBackend, os: Os) -> Option<usize> {
-    adapters.iter().enumerate().filter(|(_, a)| a.surface_ok).min_by_key(|(i, a)| (rank(a, backend, os), *i)).map(|(i, _)| i)
+    let usable = |a: &&Candidate| a.surface_ok;
+    let any_wanted = adapters.iter().filter(usable).any(|a| a.wanted);
+    adapters.iter().enumerate().filter(|(_, a)| a.surface_ok && (a.wanted || !any_wanted)).min_by_key(|(i, a)| (rank(a, backend, os), *i)).map(|(i, _)| i)
 }
 
-/// Whether picking `chosen` applied the Intel-on-Windows DX12 default (a Vulkan adapter of the
-/// same vendor was available).
-pub fn intel_dx12_applied(adapters: &[Candidate], chosen: usize, os: Os) -> bool {
-    let Some(c) = adapters.get(chosen) else { return false };
-    os == Os::Windows
-        && c.vendor == INTEL
-        && c.backend == wgpu::Backend::Dx12
-        && adapters.iter().any(|a| a.vendor == INTEL && a.backend == wgpu::Backend::Vulkan)
+/// Whether an adapter called `name` is the one the user asked for: `wanted` is a case-insensitive
+/// piece of its name ("nvidia"), or several words that each appear in it ("arc a370m" finds
+/// "Intel(R) Arc(tm) A370M Graphics"). An empty `wanted` matches nothing.
+pub fn adapter_matches(name: &str, wanted: &str) -> bool {
+    photocraft_engine::prefs::gpu_adapter_matches(name, wanted)
+}
+
+/// The user asked for an adapter and none of `adapters` that can present is it.
+pub fn wanted_missed(adapters: &[Candidate], wanted: Option<&str>) -> bool {
+    wanted.is_some() && !adapters.iter().any(|a| a.surface_ok && a.wanted)
+}
+
+/// Choosing an adapter is Linux-only for now: Windows has its own Intel/DX12 selection and macOS a
+/// single Metal path, and neither is tested with a requested adapter.
+pub const ADAPTER_CHOICE: bool = cfg!(target_os = "linux");
+
+/// The adapter request that applies to this launch: none off Linux (`linux`), and none in CPU mode,
+/// which wants a software adapter whatever the preference says.
+pub fn applicable_adapter(wanted: Option<String>, backend: GpuBackend, linux: bool) -> Option<String> {
+    wanted.filter(|_| linux && backend != GpuBackend::Cpu)
+}
+
+/// Whether `PHOTOCRAFT_GPU_ADAPTER` makes this launch its own process: only when startup will act
+/// on it (a non-empty value, on Linux, outside CPU mode). Otherwise it changes nothing, and the
+/// launch may still be forwarded to the running window.
+pub fn adapter_override_is_process_specific(env: Option<&str>, mode: RenderingMode, linux: bool) -> bool {
+    env.is_some_and(|v| !v.trim().is_empty()) && linux && mode != RenderingMode::Cpu
+}
+
+/// The adapter to ask for: `PHOTOCRAFT_GPU_ADAPTER` when set (for one launch), else
+/// `performance.gpuAdapter`; `None` is automatic.
+pub fn wanted_adapter(env: Option<&str>, pref: &str) -> Option<String> {
+    [env.unwrap_or(""), pref].iter().map(|s| s.trim()).find(|s| !s.is_empty()).map(|s| s.chars().take(256).collect())
+}
+
+/// The maker's name when picking `chosen` applied the Windows DX12 default of
+/// [`dx12_first_on_windows`]: a Vulkan adapter of the same maker was available, or, for Intel,
+/// `vulkan_left_out` ([`windows_auto_backends`] left Vulkan out of the instance).
+pub fn dx12_default_applied(adapters: &[Candidate], chosen: usize, os: Os, vulkan_left_out: bool) -> Option<&'static str> {
+    let c = adapters.get(chosen)?;
+    if os != Os::Windows || c.backend != wgpu::Backend::Dx12 {
+        return None;
+    }
+    let maker = dx12_first_on_windows(c.vendor)?;
+    let applied =
+        (vulkan_left_out && c.vendor == INTEL) || adapters.iter().any(|a| a.backend == wgpu::Backend::Vulkan && dx12_first_on_windows(a.vendor) == Some(maker));
+    applied.then_some(maker)
 }
 
 /// wgpu compiles indirect-call validation shaders inside `request_device`; Metal's compiler
@@ -282,9 +369,9 @@ fn skips_indirect_validation(os: Os, intel: bool) -> bool {
 }
 
 /// Configure eframe's wgpu setup for `plan`: instance backends, the DX12 shader compiler, adapter
-/// selection (Intel on Windows, software adapters for `cpu`) and the marker update once the
-/// adapter is chosen. `note` receives a remark for System Info (e.g. the Intel default).
-pub fn configure(setup: &mut egui_wgpu::WgpuSetup, plan: &Plan, os: Os, sentinel: SharedSentinel, note: Arc<Mutex<Option<String>>>) {
+/// selection (Intel and Qualcomm on Windows, software adapters for `cpu`) and the marker update
+/// once the adapter is chosen. `note` receives a remark for System Info (e.g. the DX12 default).
+pub fn configure(setup: &mut egui_wgpu::WgpuSetup, plan: &Plan, os: Os, wanted: Option<String>, sentinel: SharedSentinel, note: Arc<Mutex<Option<String>>>) {
     if let egui_wgpu::WgpuSetup::CreateNew(create) = setup {
         if let Some(b) = backends(plan, os) {
             create.instance_descriptor.backends = b;
@@ -297,7 +384,13 @@ pub fn configure(setup: &mut egui_wgpu::WgpuSetup, plan: &Plan, os: Os, sentinel
             let env = std::env::var("WGPU_DX12_COMPILER").ok();
             create.instance_descriptor.backend_options.dx12.shader_compiler = dx12_compiler(env.as_deref(), exe.as_deref().and_then(Path::parent));
         }
-        let select = plan.env.is_none() && (plan.backend == GpuBackend::Cpu || (plan.backend == GpuBackend::Auto && os == Os::Windows));
+        let without_vulkan = windows_auto_backends(plan, os, || dx12_vendors(&create.instance_descriptor));
+        if let Some(b) = without_vulkan {
+            create.instance_descriptor.backends = b;
+        }
+        let vulkan_left_out = without_vulkan.is_some();
+        let wanted = applicable_adapter(wanted, plan.backend, ADAPTER_CHOICE);
+        let select = wanted.is_some() || (plan.env.is_none() && (plan.backend == GpuBackend::Cpu || (plan.backend == GpuBackend::Auto && os == Os::Windows)));
         if select {
             let backend = plan.backend;
             create.native_adapter_selector = Some(Arc::new(move |adapters: &[wgpu::Adapter], surface: Option<&wgpu::Surface<'_>>| {
@@ -310,17 +403,24 @@ pub fn configure(setup: &mut egui_wgpu::WgpuSetup, plan: &Plan, os: Os, sentinel
                             device_type: i.device_type,
                             backend: i.backend,
                             surface_ok: surface.is_none_or(|s| a.is_surface_supported(s)),
+                            wanted: wanted.as_deref().is_some_and(|w| adapter_matches(&i.name, w)),
                         }
                     })
                     .collect();
                 let i = pick(&cands, backend, os).ok_or_else(|| "no graphics adapter found".to_string())?;
+                if let Some(w) = wanted.as_deref().filter(|_| wanted_missed(&cands, wanted.as_deref())) {
+                    *note.lock().unwrap_or_else(PoisonError::into_inner) =
+                        Some(format!("No graphics adapter named \"{w}\" can draw the window; using the automatic choice"));
+                }
                 if backend == GpuBackend::Cpu && cands.get(i).is_some_and(|c| c.device_type != wgpu::DeviceType::Cpu) {
                     *note.lock().unwrap_or_else(PoisonError::into_inner) =
                         Some("CPU image rendering; no software graphics adapter is available, so the window uses hardware graphics".into());
                 }
-                if backend == GpuBackend::Auto && intel_dx12_applied(&cands, i, os) {
+                if backend == GpuBackend::Auto
+                    && let Some(maker) = dx12_default_applied(&cands, i, os, vulkan_left_out)
+                {
                     *note.lock().unwrap_or_else(PoisonError::into_inner) =
-                        Some("Intel graphics on Windows: using DirectX 12 (the Intel Vulkan driver is known to crash)".into());
+                        Some(format!("{maker} graphics on Windows: using DirectX 12 (the {maker} Vulkan driver is known to crash)"));
                 }
                 adapters.get(i).cloned().ok_or_else(|| "no graphics adapter found".to_string())
             }));
@@ -435,11 +535,28 @@ impl Sentinel {
 /// file, read before the window opens; `Auto` when the file or value is missing or unknown.
 #[cfg(any(target_os = "linux", test))]
 pub fn read_display_server(path: Option<&Path>) -> photocraft_engine::prefs::LinuxDisplayServer {
+    read_performance(path).map(|performance| performance.linux_display_server).unwrap_or_default()
+}
+
+/// The preferences file's Performance section, read as the app reads it: a value of the wrong
+/// type keeps its default without resetting the others. `None` without a file or section.
+fn read_performance(path: Option<&Path>) -> Option<photocraft_engine::prefs::Performance> {
     let v: Value = path.and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null);
-    v.get("performance")
-        .and_then(|p| serde_json::from_value::<photocraft_engine::prefs::Performance>(p.clone()).ok())
-        .map(|performance| performance.linux_display_server)
-        .unwrap_or_default()
+    v.get("performance").cloned().map(photocraft_engine::prefs::read_section)
+}
+
+/// Preferences › Performance › Graphics Adapter (`performance.gpuAdapter`), read before the window
+/// opens; empty (automatic) when the file or value is missing or not text.
+pub fn read_gpu_adapter(path: Option<&Path>) -> String {
+    read_performance(path).map(|performance| performance.gpu_adapter.chars().take(256).collect()).unwrap_or_default()
+}
+
+/// Preferences › Performance › Low-Latency Drawing (`performance.lowLatencyDrawing`, off unless
+/// turned on), read before the window opens: it picks the surface's present mode.
+pub fn read_low_latency(path: Option<&Path>) -> bool {
+    let v: Value = path.and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null);
+    let default = photocraft_engine::prefs::Preferences::default().performance.low_latency_drawing;
+    v.get("performance").and_then(|p| p.get("lowLatencyDrawing")).and_then(Value::as_bool).unwrap_or(default)
 }
 
 /// Read the policy leniently at startup, including old settings without renderingMode.
@@ -454,439 +571,4 @@ pub fn read_rendering_prefs(path: Option<&Path>) -> (GpuBackend, RenderingMode) 
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use GpuBackend::*;
-
-    fn crashed(backend: &str, adapter_backend: &str) -> Marker {
-        Marker { backend: backend.into(), adapter: "Intel(R) UHD Graphics".into(), adapter_backend: adapter_backend.into(), ..Default::default() }
-    }
-
-    #[test]
-    fn display_server_preference_is_read_before_the_window_opens() {
-        use photocraft_engine::prefs::LinuxDisplayServer;
-        let dir = std::env::temp_dir().join(format!("photocraft-display-server-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("preferences.json");
-        let read = |json: &str| {
-            std::fs::write(&file, json).unwrap();
-            read_display_server(Some(&file))
-        };
-        assert_eq!(read(r#"{"performance":{"linuxDisplayServer":"x11"}}"#), LinuxDisplayServer::X11);
-        assert_eq!(read(r#"{"performance":{"linuxDisplayServer":"auto","gpuBackend":"vulkan"}}"#), LinuxDisplayServer::Auto);
-        // Unknown values, other types, broken JSON and a missing file all start as Auto.
-        assert_eq!(read(r#"{"performance":{"linuxDisplayServer":"wayland"}}"#), LinuxDisplayServer::Auto);
-        assert_eq!(read(r#"{"performance":{"linuxDisplayServer":11}}"#), LinuxDisplayServer::Auto);
-        assert_eq!(read("{not json"), LinuxDisplayServer::Auto);
-        assert_eq!(read_display_server(Some(&dir.join("missing.json"))), LinuxDisplayServer::Auto);
-        assert_eq!(read_display_server(None), LinuxDisplayServer::Auto);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn cpu_policy_ignores_hardware_backend_override() {
-        let p = plan_with_mode(Vulkan, RenderingMode::Cpu, None, Some("vulkan"), false, Os::Windows);
-        assert_eq!(p.backend, Cpu);
-        assert!(p.env.is_none());
-        assert_eq!(plan_with_mode(Vulkan, RenderingMode::Cpu, Some(&crashed("vulkan", "vulkan")), None, false, Os::Windows).backend, Cpu);
-        let p = plan_with_mode(Auto, RenderingMode::Gpu, None, Some("vulkan"), true, Os::Windows);
-        assert_eq!(p.backend, Cpu);
-        assert!(p.env.is_none());
-    }
-
-    #[test]
-    fn no_marker_uses_the_preference() {
-        for os in [Os::Windows, Os::Mac, Os::Other] {
-            let p = plan(Auto, None, None, false, os);
-            assert_eq!(p, Plan { backend: Auto, env: None, reason: None, remember: false });
-        }
-        assert_eq!(plan(Dx12, None, None, false, Os::Windows).backend, Dx12);
-        assert_eq!(plan(Gl, None, None, false, Os::Other).backend, Gl);
-        // A backend the platform lacks is `auto`.
-        assert_eq!(plan(Metal, None, None, false, Os::Windows).backend, Auto);
-        assert_eq!(plan(Dx12, None, None, false, Os::Mac).backend, Auto);
-        assert_eq!(plan(Dx12, None, None, false, Os::Other).backend, Auto);
-    }
-
-    #[test]
-    fn a_crash_moves_down_each_chain_and_is_remembered() {
-        // Windows: Vulkan → DX12 → CPU.
-        let p = plan(Auto, Some(&crashed("auto", "vulkan")), None, false, Os::Windows);
-        assert_eq!((p.backend, p.remember), (Dx12, true));
-        assert!(p.reason.as_deref().unwrap_or("").contains("vulkan (Intel(R) UHD Graphics)"), "{p:?}");
-        assert_eq!(plan(Dx12, Some(&crashed("dx12", "dx12")), None, false, Os::Windows).backend, Cpu);
-        // Crashed before the adapter was chosen (enumeration): from `auto`.
-        assert_eq!(plan(Auto, Some(&crashed("auto", "")), None, false, Os::Windows).backend, Dx12);
-        // `auto` that had already picked DX12 (the Intel default) goes to the CPU.
-        assert_eq!(plan(Auto, Some(&crashed("auto", "dx12")), None, false, Os::Windows).backend, Cpu);
-        // Linux: Vulkan → GL → CPU.
-        assert_eq!(plan(Auto, Some(&crashed("auto", "vulkan")), None, false, Os::Other).backend, Gl);
-        assert_eq!(plan(Gl, Some(&crashed("gl", "gl")), None, false, Os::Other).backend, Cpu);
-        // macOS: Metal → CPU.
-        assert_eq!(plan(Auto, Some(&crashed("auto", "metal")), None, false, Os::Mac).backend, Cpu);
-        // The CPU path stays there, and isn't "remembered" again.
-        let p = plan(Cpu, Some(&crashed("cpu", "dx12")), None, false, Os::Windows);
-        assert_eq!((p.backend, p.remember), (Cpu, false));
-        // An unreadable marker still counts as a crash.
-        assert_eq!(plan(Auto, Some(&Marker::parse("{garbage")), None, false, Os::Windows).backend, Dx12);
-    }
-
-    #[test]
-    fn env_override_beats_everything() {
-        let p = plan(Cpu, Some(&crashed("auto", "vulkan")), Some("vulkan"), false, Os::Windows);
-        assert_eq!(p.env.as_deref(), Some("vulkan"));
-        assert_eq!(p.backend, Auto);
-        assert!(!p.remember);
-        assert_eq!(backends(&p, Os::Windows), None, "egui reads WGPU_BACKEND itself");
-        // A crash under the override doesn't count against `auto` later.
-        let p = plan(Auto, Some(&Marker { backend: "env:vulkan".into(), ..Default::default() }), None, false, Os::Windows);
-        assert_eq!(p.backend, Auto);
-        // Empty means unset.
-        assert_eq!(plan(Auto, None, Some("  "), false, Os::Windows).env, None);
-        // --safe-gpu with the override: CPU canvas, the override's backends.
-        assert_eq!(plan(Auto, None, Some("dx12"), true, Os::Windows).backend, Cpu);
-    }
-
-    /// #3483: A temporary CPU recovery must not change the next launch.
-    #[test]
-    fn cpu_recovery_requires_explicit_confirmation_to_persist() {
-        let gl_crash = crashed("gl", "gl");
-        let cpu = plan_with_mode(Auto, RenderingMode::Auto, Some(&gl_crash), None, false, Os::Other);
-        assert_eq!((cpu.backend, cpu.remember), (Cpu, true));
-        assert_eq!(backend_to_remember(&cpu), None);
-
-        let safe = plan_with_mode(Auto, RenderingMode::Auto, None, None, true, Os::Other);
-        assert_eq!(safe.backend, Cpu);
-        assert_eq!(backend_to_remember(&safe), None);
-        // An unconfirmed fallback leaves the original automatic selection intact.
-        assert_eq!(plan_with_mode(Auto, RenderingMode::Auto, None, None, false, Os::Other).backend, Auto);
-        // A working hardware fallback can still be remembered.
-        let vk_crash = crashed("auto", "vulkan");
-        let gl = plan_with_mode(Auto, RenderingMode::Auto, Some(&vk_crash), None, false, Os::Other);
-        assert_eq!(backend_to_remember(&gl), Some(Gl));
-        // CPU explicitly selected in preferences still works.
-        assert_eq!(plan_with_mode(Auto, RenderingMode::Cpu, None, None, false, Os::Other).backend, Cpu);
-    }
-
-    #[test]
-    fn safe_gpu_forces_the_cpu_for_one_launch() {
-        let p = plan(Vulkan, Some(&crashed("vulkan", "vulkan")), None, true, Os::Other);
-        assert_eq!((p.backend, p.remember), (Cpu, false));
-        assert_eq!(backends(&p, Os::Windows), Some(wgpu::Backends::DX12));
-        assert_eq!(backends(&p, Os::Other), Some(wgpu::Backends::GL | wgpu::Backends::VULKAN));
-        assert_eq!(backends(&p, Os::Mac), Some(wgpu::Backends::METAL));
-    }
-
-    fn cand(vendor: u32, device_type: wgpu::DeviceType, backend: wgpu::Backend) -> Candidate {
-        Candidate { vendor, device_type, backend, surface_ok: true }
-    }
-
-    #[test]
-    fn intel_on_windows_defaults_to_dx12() {
-        use wgpu::{Backend as B, DeviceType as T};
-        let intel = [cand(INTEL, T::IntegratedGpu, B::Vulkan), cand(INTEL, T::IntegratedGpu, B::Dx12), cand(INTEL, T::IntegratedGpu, B::Gl)];
-        let i = pick(&intel, Auto, Os::Windows).unwrap();
-        assert_eq!(intel[i].backend, B::Dx12);
-        assert!(intel_dx12_applied(&intel, i, Os::Windows));
-        // Elsewhere (and for other vendors) Vulkan stays first.
-        assert_eq!(intel[pick(&intel, Auto, Os::Other).unwrap()].backend, B::Vulkan);
-        let nv = [cand(0x10de, T::DiscreteGpu, B::Dx12), cand(0x10de, T::DiscreteGpu, B::Vulkan)];
-        let i = pick(&nv, Auto, Os::Windows).unwrap();
-        assert_eq!(nv[i].backend, B::Vulkan);
-        assert!(!intel_dx12_applied(&nv, i, Os::Windows));
-        // Intel iGPU + discrete GPU: the discrete one wins (high performance), on Vulkan.
-        let hybrid = [intel[0], intel[1], nv[1]];
-        assert_eq!(pick(&hybrid, Auto, Os::Windows), Some(2));
-        // Adapters that can't present lose to ones that can.
-        let mut only = [cand(0x10de, T::DiscreteGpu, B::Vulkan), intel[1]];
-        only[0].surface_ok = false;
-        assert_eq!(pick(&only, Auto, Os::Windows), Some(1));
-        assert_eq!(pick(&[], Auto, Os::Windows), None);
-    }
-
-    #[test]
-    fn cpu_prefers_software_adapters() {
-        use wgpu::{Backend as B, DeviceType as T};
-        let a = [cand(INTEL, T::IntegratedGpu, B::Dx12), cand(0x1414, T::Cpu, B::Dx12)];
-        assert_eq!(pick(&a, Cpu, Os::Windows), Some(1));
-        // No software adapter: still something.
-        assert_eq!(pick(&a[..1], Cpu, Os::Windows), Some(0));
-    }
-
-    /// #1337: on Linux with NVIDIA, the only GL adapter (NVIDIA's EGL) can't present, so CPU mode
-    /// found no adapter and never started. GL still wins whenever it can present.
-    #[test]
-    fn cpu_on_linux_falls_back_to_vulkan_only_when_gl_cannot_present() {
-        use wgpu::{Backend as B, DeviceType as T};
-        const NVIDIA: u32 = 0x10de;
-        let llvmpipe = cand(0x10005, T::Cpu, B::Gl);
-        let nvidia_gl = cand(NVIDIA, T::DiscreteGpu, B::Gl);
-        let nvidia_vk = cand(NVIDIA, T::DiscreteGpu, B::Vulkan);
-        let lavapipe = cand(0x10005, T::Cpu, B::Vulkan);
-        // GL presents: same choice as GL-only, software first, then hardware GL over any Vulkan.
-        assert_eq!(pick(&[nvidia_vk, lavapipe, llvmpipe], Cpu, Os::Other), Some(2));
-        assert_eq!(pick(&[nvidia_vk, lavapipe, nvidia_gl], Cpu, Os::Other), Some(2));
-        // GL can't present: Vulkan for the window, software first.
-        let mut gl = nvidia_gl;
-        gl.surface_ok = false;
-        assert_eq!(pick(&[gl, nvidia_vk, lavapipe], Cpu, Os::Other), Some(2));
-        assert_eq!(pick(&[gl, nvidia_vk], Cpu, Os::Other), Some(1));
-        // Other backends rank as before.
-        assert_eq!(pick(&[nvidia_gl, nvidia_vk], Auto, Os::Other), Some(1));
-    }
-
-    #[test]
-    fn adapters_must_present_even_when_none_support_the_surface() {
-        let mut a = cand(INTEL, wgpu::DeviceType::IntegratedGpu, wgpu::Backend::Dx12);
-        a.surface_ok = false;
-        assert_eq!(pick(&[a], Auto, Os::Windows), None);
-        assert_eq!(pick(&[a], Cpu, Os::Windows), None);
-    }
-
-    #[test]
-    fn explicit_policy_overrides_legacy_cpu_backend() {
-        assert_eq!(plan_with_mode(Cpu, RenderingMode::Gpu, None, None, false, Os::Mac).backend, Auto);
-        assert_eq!(plan_with_mode(Metal, RenderingMode::Cpu, None, None, false, Os::Mac).backend, Cpu);
-        assert_eq!(plan_with_mode(Auto, RenderingMode::Gpu, None, None, true, Os::Mac).backend, Cpu);
-    }
-
-    #[test]
-    fn marker_round_trip_and_lenient_parse() {
-        let m = Marker {
-            backend: "auto".into(),
-            adapter: "A \"quoted\" GPU".into(),
-            adapter_backend: "vulkan".into(),
-            driver: "1.2".into(),
-            version: "0.1".into(),
-        };
-        assert_eq!(Marker::parse(&m.to_json()), m);
-        assert_eq!(Marker::parse(""), Marker::default());
-        assert_eq!(Marker::parse("[1,2]").tried(), Some(Auto));
-        assert_eq!(Marker::parse(r#"{"backend": 7}"#).tried(), Some(Auto));
-        assert_eq!(Marker::parse(r#"{"backend": "env:dx12"}"#).tried(), None);
-        let long = format!(r#"{{"adapter": "{}"}}"#, "x".repeat(10_000));
-        assert_eq!(Marker::parse(&long).adapter.len(), 256);
-    }
-
-    #[test]
-    fn a_failed_start_keeps_its_marker_only_when_a_safer_backend_exists() {
-        // GPU backends move down the chain on the next start.
-        assert!(keep_marker_after_error(&plan(Auto, None, None, false, Os::Other), Os::Other));
-        assert!(keep_marker_after_error(&plan(Gl, None, None, false, Os::Other), Os::Other));
-        assert!(keep_marker_after_error(&plan(Dx12, None, None, false, Os::Windows), Os::Windows));
-        assert!(keep_marker_after_error(&plan(Auto, None, None, false, Os::Mac), Os::Mac));
-        // The CPU path is the end of every chain, including the `--safe-gpu` retry.
-        for os in [Os::Windows, Os::Mac, Os::Other] {
-            assert!(!keep_marker_after_error(&plan(Cpu, None, None, false, os), os));
-            assert!(!keep_marker_after_error(&plan(Auto, None, None, true, os), os));
-        }
-        // `WGPU_BACKEND` is the user's choice; no plan reads its marker.
-        assert!(!keep_marker_after_error(&plan(Auto, None, Some("vulkan"), false, Os::Other), Os::Other));
-    }
-
-    /// A failed CPU start (no usable GL adapter under XWayland) left a `cpu` marker, so every
-    /// later start was planned on CPU and failed the same way until the marker was deleted by hand.
-    #[test]
-    fn a_failed_cpu_start_does_not_pin_later_starts() {
-        let dir = temp_dir("cpu-error");
-        let (_, s) = Sentinel::begin(&dir);
-        let mut s = s.expect("sentinel");
-        let failed = plan(Auto, None, None, true, Os::Other);
-        s.write(Marker { backend: failed.backend.name().into(), ..Default::default() }).unwrap();
-        // eframe returned an error: what `main` does with the marker.
-        if keep_marker_after_error(&failed, Os::Other) {
-            drop(s);
-        } else {
-            s.finish();
-        }
-        let (prev, _s) = begin_when_unlocked(&dir);
-        assert_eq!(prev, Previous::Clean);
-        assert_eq!(plan(Auto, prev.crashed(), None, false, Os::Other).backend, Auto);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    fn temp_dir(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("photocraft-gpu-startup-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        d
-    }
-
-    /// `Sentinel::begin`, called again up to 50 times, 10 ms apart, while it returns
-    /// `Previous::Busy`. Other tests in this binary spawn processes: between fork and exec a child
-    /// briefly shares the marker's flock, so `begin` can see the lock as busy just after a test
-    /// drops its sentinel.
-    fn begin_when_unlocked(dir: &Path) -> (Previous, Option<Sentinel>) {
-        let (mut prev, mut s) = Sentinel::begin(dir);
-        for _ in 0..50 {
-            if prev != Previous::Busy {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-            (prev, s) = Sentinel::begin(dir);
-        }
-        (prev, s)
-    }
-
-    #[test]
-    fn sentinel_detects_a_crash_and_clears_on_success() {
-        let dir = temp_dir("cycle");
-        // First launch: nothing left behind.
-        let (prev, s) = Sentinel::begin(&dir);
-        assert_eq!(prev, Previous::Clean);
-        let mut s = s.expect("sentinel");
-        s.write(Marker { backend: "auto".into(), ..Default::default() }).unwrap();
-        s.write(Marker { backend: "auto".into(), adapter: "GPU".into(), adapter_backend: "vulkan".into(), ..Default::default() }).unwrap();
-        // While it is starting, a second instance sees it busy, not crashed.
-        let (busy, none) = Sentinel::begin(&dir);
-        assert_eq!(busy, Previous::Busy);
-        assert!(none.is_none());
-        // The process dies in the driver: the lock goes, the marker stays.
-        drop(s);
-        let (prev, s) = begin_when_unlocked(&dir);
-        let m = prev.crashed().cloned().expect("crash detected");
-        assert_eq!((m.adapter.as_str(), m.tried()), ("GPU", Some(Vulkan)));
-        // This start succeeds: the next one finds nothing.
-        let mut s = s.expect("sentinel");
-        s.write(Marker { backend: "dx12".into(), ..Default::default() }).unwrap();
-        s.finish();
-        assert!(!dir.join(MARKER_FILE).exists());
-        let (prev, _s) = Sentinel::begin(&dir);
-        assert_eq!(prev, Previous::Clean);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn begin_when_unlocked_waits_for_a_briefly_held_lock() {
-        let dir = temp_dir("shared-lock");
-        let (_, s) = Sentinel::begin(&dir);
-        let mut s = s.expect("sentinel");
-        s.write(Marker { backend: "vulkan".into(), ..Default::default() }).unwrap();
-        // After the start dies, a second handle on the marker holds the lock for 50 ms, as a
-        // spawned child's copy of the descriptor does until the child calls exec.
-        let held = File::open(dir.join(MARKER_FILE)).unwrap();
-        drop(s);
-        held.lock().unwrap();
-        assert_eq!(Sentinel::begin(&dir).0, Previous::Busy);
-        let release = std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            held.unlock().unwrap();
-        });
-        let (prev, s) = begin_when_unlocked(&dir);
-        release.join().unwrap();
-        assert_eq!(prev.crashed().map(|m| m.backend.as_str()), Some("vulkan"));
-        s.expect("sentinel").finish();
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn returned_non_graphics_errors_do_not_trigger_backend_recovery() {
-        let cases = [
-            ("success", Ok(()), false),
-            ("app-error", Err(eframe::Error::AppCreation(Box::new(std::io::Error::other("app setup failed")))), false),
-            ("gpu-error", Err(eframe::Error::Wgpu(egui_wgpu::WgpuError::CustomNativeAdapterSelectionError("no adapter".into()))), true),
-        ];
-        for (name, result, keep) in cases {
-            let dir = temp_dir(name);
-            let (_, s) = Sentinel::begin(&dir);
-            let mut s = s.expect("sentinel");
-            s.write(Marker { backend: "vulkan".into(), ..Default::default() }).unwrap();
-            if keep_marker_after_run(&result) {
-                drop(s);
-            } else {
-                s.finish();
-            }
-            let (previous, s) = begin_when_unlocked(&dir);
-            assert_eq!(previous.crashed().is_some(), keep, "{name}: {result:?}");
-            if !keep {
-                assert_eq!(plan(Vulkan, previous.crashed(), None, false, Os::Other).backend, Vulkan);
-            }
-            s.expect("sentinel").finish();
-            let _ = std::fs::remove_dir_all(&dir);
-        }
-    }
-
-    #[test]
-    fn unwritable_config_dir_is_not_fatal() {
-        let dir = temp_dir("file");
-        std::fs::create_dir_all(dir.parent().unwrap()).unwrap();
-        std::fs::write(&dir, b"not a directory").unwrap();
-        let (prev, s) = Sentinel::begin(&dir.join("sub"));
-        assert_eq!(prev, Previous::Clean);
-        assert!(s.is_none());
-        let _ = std::fs::remove_file(&dir);
-    }
-
-    #[test]
-    fn prefs_are_read_leniently() {
-        let dir = temp_dir("prefs");
-        std::fs::create_dir_all(&dir).unwrap();
-        let p = dir.join("preferences.json");
-        assert_eq!(read_rendering_prefs(None), (Auto, RenderingMode::Auto));
-        assert_eq!(read_rendering_prefs(Some(&p)), (Auto, RenderingMode::Auto));
-        std::fs::write(&p, r#"{"performance": {"gpuBackend": "dx12", "useGpu": false}, "interface": {}}"#).unwrap();
-        assert_eq!(read_rendering_prefs(Some(&p)), (Dx12, RenderingMode::Cpu));
-        std::fs::write(&p, r#"{"performance": {"gpuBackend": "quantum"}}"#).unwrap();
-        assert_eq!(read_rendering_prefs(Some(&p)), (Auto, RenderingMode::Auto));
-        std::fs::write(&p, r#"{"performance": {"useGpu": false, "renderingMode": "gpu"}}"#).unwrap();
-        assert_eq!(read_rendering_prefs(Some(&p)), (Auto, RenderingMode::Gpu));
-        std::fs::write(&p, "{not json").unwrap();
-        assert_eq!(read_rendering_prefs(Some(&p)), (Auto, RenderingMode::Auto));
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// #712: never a `dxcompiler.dll` found through the DLL search path (current directory, PATH).
-    #[test]
-    fn dx12_compiler_is_fxc_or_dxc_beside_the_exe() {
-        use wgpu::Dx12Compiler as C;
-        let dir = temp_dir("dxc");
-        std::fs::create_dir_all(&dir).unwrap();
-        assert!(matches!(dx12_compiler(None, None), C::Fxc));
-        assert!(matches!(dx12_compiler(None, Some(&dir)), C::Fxc));
-        std::fs::write(dir.join("dxcompiler.dll"), b"MZ").unwrap();
-        let expected = dir.join("dxcompiler.dll");
-        assert!(matches!(dx12_compiler(None, Some(&dir)), C::DynamicDxc { dxc_path } if Path::new(&dxc_path) == expected));
-        // An explicit WGPU_DX12_COMPILER wins; an unknown value is ignored.
-        assert!(matches!(dx12_compiler(Some(" FXC "), Some(&dir)), C::Fxc));
-        assert!(matches!(dx12_compiler(Some("dxc"), None), C::DynamicDxc { dxc_path } if dxc_path == "dxcompiler.dll"));
-        assert!(matches!(dx12_compiler(Some("quantum"), None), C::Fxc));
-        let _ = std::fs::remove_dir_all(&dir);
-
-        // The app's setup replaces wgpu's default (`Auto`: DXC by name from the search path).
-        let mut setup = egui_wgpu::WgpuSetup::without_display_handle();
-        let plan = plan(Auto, None, None, false, Os::Windows);
-        configure(&mut setup, &plan, Os::Windows, Arc::new(Mutex::new(None)), Arc::default());
-        let egui_wgpu::WgpuSetup::CreateNew(create) = &setup else { panic!("a new instance") };
-        if std::env::var_os("WGPU_DX12_COMPILER").is_none() {
-            let safe = match &create.instance_descriptor.backend_options.dx12.shader_compiler {
-                C::Fxc => true,
-                C::DynamicDxc { dxc_path } => Path::new(dxc_path).is_absolute(),
-                C::StaticDxc | C::Auto => false,
-            };
-            assert!(safe, "{:?}", create.instance_descriptor.backend_options.dx12.shader_compiler);
-        }
-    }
-
-    #[test]
-    fn intel_macs_skip_the_indirect_validation_shaders() {
-        // Metal's compiler crashed on them on Intel Iris Pro, losing the device in every mode (#3107).
-        assert!(skips_indirect_validation(Os::Mac, true));
-        // Apple silicon, Windows and Linux keep wgpu's validation.
-        for (os, intel) in [(Os::Mac, false), (Os::Windows, true), (Os::Other, true), (Os::Other, false)] {
-            assert!(!skips_indirect_validation(os, intel), "{os:?} intel={intel}");
-        }
-        for (os, safe_gpu) in [(Os::Windows, false), (Os::Other, true), (Os::Other, false)] {
-            let mut setup = egui_wgpu::WgpuSetup::without_display_handle();
-            let egui_wgpu::WgpuSetup::CreateNew(before) = &setup else { panic!("a new instance") };
-            let before = before.instance_descriptor.flags;
-            configure(&mut setup, &plan(Auto, None, None, safe_gpu, os), os, Arc::new(Mutex::new(None)), Arc::default());
-            let egui_wgpu::WgpuSetup::CreateNew(create) = &setup else { panic!("a new instance") };
-            assert_eq!(create.instance_descriptor.flags, before, "{os:?}: flags untouched");
-        }
-        if cfg!(target_arch = "x86_64") && std::env::var_os("WGPU_VALIDATION_INDIRECT_CALL").is_none() {
-            let mut setup = egui_wgpu::WgpuSetup::without_display_handle();
-            configure(&mut setup, &plan(Auto, None, None, false, Os::Mac), Os::Mac, Arc::new(Mutex::new(None)), Arc::default());
-            let egui_wgpu::WgpuSetup::CreateNew(create) = &setup else { panic!("a new instance") };
-            assert!(!create.instance_descriptor.flags.contains(wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL));
-        }
-    }
-}
+mod tests;

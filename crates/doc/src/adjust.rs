@@ -17,6 +17,24 @@ pub fn is_identity_curve(points: &[CurvePoint]) -> bool {
     }
 }
 
+/// A 3D LUT file format (Photoshop's `LUTFormat`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LutFormat {
+    #[serde(rename = "cube")]
+    Cube,
+    #[serde(rename = "3dl")]
+    ThreeDl,
+    #[serde(rename = "look")]
+    Look,
+}
+
+/// A Color Lookup's LUT file as loaded: its format and bytes.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LutSource {
+    pub format: LutFormat,
+    pub bytes: Arc<Vec<u8>>,
+}
+
 /// Entries in a pencil-drawn Curves map (one per 8-bit level, as in PSD `curv` maps).
 pub const CURVE_MAP_LEN: usize = 256;
 
@@ -260,6 +278,11 @@ pub enum Adjustment {
         /// Ordered dither of ±½ an 8-bit step to hide banding (Photoshop's "Dither").
         #[serde(default)]
         dither: bool,
+        /// The LUT file `lut` was read from, embedded unchanged on PSD save as Photoshop does.
+        /// None for a table made in PhotoCraft (a built-in look); a save also ignores it when
+        /// it no longer parses to `lut`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<LutSource>,
     },
     Invert,
     Posterize {
@@ -281,10 +304,11 @@ pub enum Adjustment {
         relative: bool,
         adjustments: [[f32; 4]; 9],
     },
-    /// A PSD adjustment we can't evaluate yet; preserved raw for round-trip.
+    /// A PSD adjustment we can't evaluate yet; preserved raw for round-trip, shared between
+    /// document snapshots (#4535).
     Unsupported {
         psd_key: String,
-        raw: Vec<u8>,
+        raw: std::sync::Arc<[u8]>,
     },
 }
 

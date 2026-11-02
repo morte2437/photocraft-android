@@ -28,7 +28,8 @@ fn tile_file(pixel_size: usize, tiles: &[(i32, i32, Vec<u8>)]) -> Vec<u8> {
                 planar[k * n + p] = px[p * pixel_size + k];
             }
         }
-        let body: Vec<u8> = if i % 2 == 1 { [vec![1], lzf_literal(&planar)].concat() } else { [vec![0], planar].concat() };
+        // Krita splits only LZF tiles into byte planes; raw tiles stay interleaved.
+        let body: Vec<u8> = if i % 2 == 1 { [vec![1], lzf_literal(&planar)].concat() } else { [&[0][..], px].concat() };
         out.extend(format!("{x},{y},LZF,{}\n", body.len()).into_bytes());
         out.extend(body);
     }
@@ -160,6 +161,22 @@ fn a_nonzero_default_pixel_fills_untouched_areas() {
     assert_eq!(s.to_interleaved(Rect::from_xywh(100, 100, 1, 1)), [0, 0, 255, 255]);
 }
 
+#[test]
+fn raw_tiles_hold_interleaved_pixels() {
+    // Krita writes a tile uncompressed (flag 0) when LZF can't shrink it, and then the pixels
+    // stay interleaved: only LZF tiles are split into byte planes.
+    let mut body = vec![0u8];
+    body.extend((0..T * T).flat_map(|_| [10u8, 20, 30, 255]));
+    let mut file = format!("VERSION 2\nTILEWIDTH {T}\nTILEHEIGHT {T}\nPIXELSIZE 4\nDATA 1\n0,0,LZF,{}\n", body.len()).into_bytes();
+    file.extend(body);
+    let doc = maindoc("RGBA", r#"<layer nodetype="paintlayer" name="L" colorspacename="RGBA" filename="l"/>"#);
+    let r = crate::import("a.kra", &archive(&doc, &[("img/layers/l", file)])).unwrap();
+    let s = layer(&r.document, "L").surface().unwrap();
+    for (x, y) in [(0, 0), (1, 0), (3, 3)] {
+        assert_eq!(s.to_interleaved(Rect::from_xywh(x, y, 1, 1)), [30, 20, 10, 255], "pixel {x},{y}");
+    }
+}
+
 fn merged_png() -> Vec<u8> {
     let img = Image::from_raw(12, 8, ChannelLayout::Rgba, CSample::U8, vec![90; 12 * 8 * 4]).unwrap();
     photocraft_codecs::encode(&img, Format::Png, &Default::default()).unwrap()
@@ -180,6 +197,23 @@ fn export_is_refused() {
     let d = Document::new("x", Size::new(2, 2), ColorMode::Rgb, SampleType::U8);
     for name in ["x.kra", "x.KRZ"] {
         assert!(matches!(crate::export(&d, name, &Default::default()), Err(IoError::Unsupported(_))), "{name}");
+    }
+}
+
+/// maindoc.xml nested 20 000 deep, directly or through an internal-subset entity the depth check
+/// can't see, overflowed the XML parser's recursion (an abort nothing can catch). Both are errors
+/// now; the small stack makes a regression abort instead of passing.
+#[test]
+fn deeply_nested_maindoc_is_an_error_not_a_stack_overflow() {
+    let (open, close) = ("<layers>".repeat(20_000), "</layers>".repeat(20_000));
+    let direct = maindoc("RGBA", &format!("{open}{close}"));
+    let entity = format!("<!DOCTYPE DOC [<!ENTITY e \"{open}{close}\">]><DOC><IMAGE width=\"4\" height=\"4\">&e;</IMAGE></DOC>");
+    // A quoted `?>` in the XML declaration must not hide the DOCTYPE behind it.
+    let declared = format!("<?xml version=\"?>\"?>{entity}");
+    for (xml, why) in [(direct, "nested"), (entity, "internal DTD"), (declared, "internal DTD")] {
+        let bytes = archive(&xml, &[]);
+        let e = std::thread::Builder::new().stack_size(512 * 1024).spawn(move || crate::import("deep.kra", &bytes).err()).unwrap().join().unwrap();
+        assert!(matches!(&e, Some(IoError::Kra(m)) if m.contains(why)), "{why}: {e:?}");
     }
 }
 

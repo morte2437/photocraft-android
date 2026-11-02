@@ -1,4 +1,4 @@
-//! Geometry primitives shared by every Photocraft crate.
+//! Geometry primitives shared by every PhotoCraft crate.
 //!
 //! Document space is integer pixels with the origin at the canvas top-left.
 //! Layers may extend beyond the canvas (negative coordinates are valid).
@@ -46,7 +46,12 @@ impl Rect {
         Self { x0, y0, x1, y1 }
     }
     pub fn from_xywh(x: i32, y: i32, w: u32, h: u32) -> Self {
-        Self::new(x, y, x.saturating_add(w as i32), y.saturating_add(h as i32))
+        // Widen before adding: `w as i32` wraps negative for widths above `i32::MAX`, which
+        // would turn the far edge backwards (an empty, inverted rect) instead of clamping it
+        // to `i32::MAX` the way `saturating_add` alone would suggest.
+        let x1 = (i64::from(x) + i64::from(w)).min(i64::from(i32::MAX)) as i32;
+        let y1 = (i64::from(y) + i64::from(h)).min(i64::from(i32::MAX)) as i32;
+        Self::new(x, y, x1, y1)
     }
     pub fn from_size(size: Size) -> Self {
         Self::from_xywh(0, 0, size.width, size.height)
@@ -91,6 +96,14 @@ impl Rect {
     pub fn inflate(&self, d: i32) -> Rect {
         Rect::new(self.x0.saturating_sub(d), self.y0.saturating_sub(d), self.x1.saturating_add(d), self.y1.saturating_add(d))
     }
+    /// How many tiles overlap this rect, without visiting them (a rect can span billions).
+    pub fn tile_count(&self) -> u64 {
+        if self.is_empty() {
+            return 0;
+        }
+        let (a, b) = (TileCoord::containing(self.x0, self.y0), TileCoord::containing(self.x1 - 1, self.y1 - 1));
+        ((i64::from(b.tx) - i64::from(a.tx) + 1) as u64) * ((i64::from(b.ty) - i64::from(a.ty) + 1) as u64)
+    }
     /// All tiles overlapping this rect.
     pub fn tiles(&self) -> impl Iterator<Item = TileCoord> + use<> {
         let (a, b) = if self.is_empty() {
@@ -117,7 +130,9 @@ impl TileCoord {
         Self::new(x.div_euclid(TILE_SIZE), y.div_euclid(TILE_SIZE))
     }
     pub fn rect(&self) -> Rect {
-        Rect::from_xywh(self.tx * TILE_SIZE, self.ty * TILE_SIZE, TILE_SIZE as u32, TILE_SIZE as u32)
+        // `tx`/`ty` can come from a file (this type is deserialized), so saturate instead of
+        // overflowing (a debug-build panic / release-build wrap) on extreme coordinates.
+        Rect::from_xywh(self.tx.saturating_mul(TILE_SIZE), self.ty.saturating_mul(TILE_SIZE), TILE_SIZE as u32, TILE_SIZE as u32)
     }
 }
 
@@ -174,14 +189,16 @@ impl Affine {
     pub fn determinant(&self) -> f64 {
         self.m[0] * self.m[3] - self.m[1] * self.m[2]
     }
+    /// Returns `None` for a near-singular matrix or non-finite determinant/inverse coefficients.
     pub fn inverse(&self) -> Option<Affine> {
         let det = self.determinant();
-        if det.abs() < 1e-12 {
+        if !det.is_finite() || det.abs() < 1e-12 {
             return None;
         }
         let [a, b, c, d, e, f] = self.m;
         let inv = 1.0 / det;
-        Some(Affine { m: [d * inv, -b * inv, -c * inv, a * inv, (c * f - d * e) * inv, (b * e - a * f) * inv] })
+        let inverse = Affine { m: [d * inv, -b * inv, -c * inv, a * inv, (c * f - d * e) * inv, (b * e - a * f) * inv] };
+        inverse.m.iter().all(|v| v.is_finite()).then_some(inverse)
     }
 }
 
@@ -239,6 +256,34 @@ mod tests {
     }
 
     #[test]
+    fn affine_inverse_rejects_non_finite_coefficients() {
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            for index in 0..6 {
+                let mut transform = Affine::IDENTITY;
+                transform.m[index] = value;
+                assert!(transform.inverse().is_none(), "coefficient {index}: {value}");
+            }
+        }
+    }
+
+    #[test]
+    fn affine_inverse_rejects_determinant_overflow() {
+        assert!(Affine::scale(f64::MAX).inverse().is_none());
+    }
+
+    #[test]
+    fn affine_inverse_rejects_translation_overflow() {
+        let transform = Affine { m: [1.0, 0.0, 1.0, 1.0, -f64::MAX, f64::MAX] };
+        assert_eq!(transform.determinant(), 1.0);
+        assert!(transform.inverse().is_none());
+    }
+
+    #[test]
+    fn affine_inverse_keeps_large_finite_translations() {
+        assert_eq!(Affine::translate(f64::MAX, -f64::MAX).inverse(), Some(Affine::translate(-f64::MAX, f64::MAX)));
+    }
+
+    #[test]
     fn affine_then_order() {
         let t = Affine::translate(10.0, 0.0).then(&Affine::scale(2.0));
         // translate first, then scale
@@ -256,6 +301,25 @@ mod tests {
         let grown = Rect::new(i32::MAX - 5, i32::MIN + 5, i32::MAX - 1, i32::MIN + 10).inflate(10);
         assert_eq!(grown.x1, i32::MAX);
         assert_eq!(grown.y0, i32::MIN);
+    }
+
+    #[test]
+    fn from_xywh_clamps_huge_sizes_instead_of_wrapping() {
+        // Widths above `i32::MAX` used to wrap negative through `w as i32`, producing an
+        // empty inverted rect instead of clamping the far edge to `i32::MAX`.
+        assert_eq!(Rect::from_xywh(0, 0, u32::MAX, 10), Rect::new(0, 0, i32::MAX, 10));
+        assert_eq!(Rect::from_xywh(-100, 5, u32::MAX, u32::MAX), Rect::new(-100, 5, i32::MAX, i32::MAX));
+        assert_eq!(Rect::from_xywh(10, 20, i32::MAX as u32 + 1, 40).width(), i32::MAX as u32 - 10);
+        // Ordinary sizes are unchanged.
+        assert_eq!(Rect::from_xywh(10, 20, 30, 40), Rect::new(10, 20, 40, 60));
+    }
+
+    #[test]
+    fn tile_rect_saturates_on_extreme_coords() {
+        // Tile coords are deserialized from files; `tx * TILE_SIZE` used to overflow.
+        let r = TileCoord::new(i32::MAX, i32::MIN).rect();
+        assert_eq!((r.x0, r.y0), (i32::MAX, i32::MIN));
+        assert_eq!(TileCoord::new(2, -3).rect(), Rect::new(512, -768, 768, -512));
     }
 
     #[test]

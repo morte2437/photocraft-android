@@ -9,20 +9,25 @@ type Harness = egui_kittest::Harness<'static, PhotocraftApp>;
 
 fn harness() -> Option<Harness> {
     let built = std::panic::catch_unwind(|| {
-        egui_kittest::Harness::builder().with_size(egui::vec2(1400.0, 900.0)).with_pixels_per_point(1.0).with_max_steps(64).wgpu().build_eframe(|cc| {
-            PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
-            let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
-            if let Some(rs) = cc.wgpu_render_state.as_ref() {
-                app.set_wgpu(rs.clone());
-            }
-            app.ui.panels.navigator = true;
-            app.run("file.new", json!({"width": 400, "height": 300, "background": "white"})).unwrap();
-            app.run("select.rect", json!({"x": 0, "y": 0, "width": 200, "height": 300})).unwrap();
-            app.run("edit.fill", json!({"color": "#ff0000"})).unwrap();
-            app.run("select.deselect", json!({})).unwrap();
-            app.sync_views();
-            app
-        })
+        egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1400.0, 900.0))
+            .with_pixels_per_point(1.0)
+            .with_max_steps(64)
+            .wgpu_setup(crate::gpu_canvas::wgpu_setup())
+            .build_eframe(|cc| {
+                PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
+                let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+                if let Some(rs) = cc.wgpu_render_state.as_ref() {
+                    app.set_wgpu(rs.clone());
+                }
+                app.ui.panels.navigator = true;
+                app.run("file.new", json!({"width": 400, "height": 300, "background": "white"})).unwrap();
+                app.run("select.rect", json!({"x": 0, "y": 0, "width": 200, "height": 300})).unwrap();
+                app.run("edit.fill", json!({"color": "#ff0000"})).unwrap();
+                app.run("select.deselect", json!({})).unwrap();
+                app.sync_views();
+                app
+            })
     });
     match built {
         Ok(h) => Some(h),
@@ -47,6 +52,7 @@ fn near(a: [u8; 4], b: [u8; 3]) -> bool {
 
 #[test]
 fn navigator_draws_the_gpu_canvas_texture_and_follows_edits() {
+    let _gpu = photocraft_testkit::gpu_lock();
     let Some(mut h) = harness() else { return };
     h.run_steps(8);
     if !h.state().perf.gpu {
@@ -65,6 +71,20 @@ fn navigator_draws_the_gpu_canvas_texture_and_follows_edits() {
     h.run_steps(6);
     assert!(near(preview_px(&mut h, 0.75, 0.5), [0, 0, 255]), "right half now blue");
     assert!(!h.state().navigator_textures.contains_key(&id));
+
+    // Dragging the selected pixels with the Move tool keeps the Navigator on the GPU texture
+    // without falling back to a full-document CPU thumbnail composite on the UI thread.
+    h.state_mut().ui.tool = crate::state::Tool::Move;
+    crate::canvas::tool_event(h.state_mut(), crate::canvas::ToolEvent::Down { x: 250.0, y: 150.0, pressure: 1.0 }, egui::Modifiers::NONE);
+    crate::canvas::tool_event(h.state_mut(), crate::canvas::ToolEvent::Move { x: 150.0, y: 150.0, pressure: 1.0 }, egui::Modifiers::NONE);
+    h.run_steps(4);
+    assert!(h.state().navigator_gpu.contains_key(&id), "Navigator stays on GPU canvas during Move drag");
+    assert!(!h.state().navigator_textures.contains_key(&id), "no CPU thumbnail built during Move drag");
+    crate::canvas::tool_event(h.state_mut(), crate::canvas::ToolEvent::Up { x: 150.0, y: 150.0 }, egui::Modifiers::NONE);
+    h.state_mut().run("select.drop", json!({})).unwrap();
+    h.state_mut().run("edit.undo", json!({})).unwrap();
+    h.state_mut().run("select.deselect", json!({})).unwrap();
+    h.run_steps(4);
 
     // A flipped view draws on the CPU: the Navigator goes back to its CPU thumbnail.
     h.state_mut().ui.view.flip_horizontal = true;

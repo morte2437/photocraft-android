@@ -97,6 +97,7 @@ fn text(name: &str, r: Rect) -> Layer {
             size: 4.0,
             position: StrokePosition::Outside,
             paint: FxPaint::Color(Color::rgb(1.0, 1.0, 1.0)),
+            overprint: false,
         }),
     ];
     l
@@ -144,6 +145,7 @@ fn build(w: u32, h: u32) -> Document {
             size: 3.0,
             position: StrokePosition::Outside,
             paint: FxPaint::Color(Color::rgb(0.1, 0.1, 0.1)),
+            overprint: false,
         }),
     ];
     d.layers.push(band);
@@ -173,7 +175,7 @@ fn refresh(g: &GpuCanvas, rs: &RenderState, doc: &Document, damage: Option<Rect>
     let r = g.refresh(doc.id.0, doc, damage, None);
     let _ = rs.device.poll(eframe::wgpu::PollType::Wait { submission_index: None, timeout: None });
     let kind = if r.kind.starts_with("gpu") { format!("{}, {} tiles up", r.kind, r.uploads) } else { r.kind.to_string() };
-    (kind, r.fallback)
+    (kind, r.fallback.map(|f| f.to_string()))
 }
 
 fn main() {
@@ -200,9 +202,17 @@ fn main() {
         .map(|s| s.tiles().map(|(_, t)| t.bytes().len() as u64).sum::<u64>())
         .sum();
     let ram = photocraft_ui_egui::gpu_canvas::physical_memory();
-    let budget = photocraft_ui_egui::gpu_canvas::memory_budget(allowance, pixels, ram);
+    let vram = g.video_memory();
+    let budget = photocraft_ui_egui::gpu_canvas::memory_budget(allowance, pixels, ram, vram, 0);
     g.set_memory_budget(budget);
-    println!("RAM {} MB, document pixels {} MB, Memory Usage {} MB -> GPU budget {} MB", ram.unwrap_or(0) >> 20, pixels >> 20, allowance >> 20, budget >> 20);
+    println!(
+        "RAM {} MB, VRAM {} MB, document pixels {} MB, Memory Usage {} MB -> GPU budget {} MB",
+        ram.unwrap_or(0) >> 20,
+        vram.unwrap_or(0) >> 20,
+        pixels >> 20,
+        allowance >> 20,
+        budget >> 20
+    );
     let first_view = Rect::from_xywh((w as f32 * 0.1) as i32, (h as f32 * 0.1) as i32, 2560, 1440);
     g.set_focus(Some(if op == "view" { first_view } else { doc.bounds() }));
 

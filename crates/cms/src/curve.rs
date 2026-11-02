@@ -99,6 +99,20 @@ impl Curve {
         (0..n).map(|i| self.eval64(i as f64 / (n - 1) as f64) as f32).collect()
     }
 
+    /// Inverse of the curve at each `y` in `ys`. For sampled-table curves the flat-run edge
+    /// indices are computed once for the whole batch instead of rescanning the table on every
+    /// call, so inverting a long constant table many times stays linear.
+    pub fn inverse_table(&self, ys: impl Iterator<Item = f64>) -> Vec<f32> {
+        match self {
+            Curve::Table(t) if t.len() >= 2 => {
+                let increasing = t[t.len() - 1] >= t[0];
+                let (edge_start, edge_end) = (edge_index(t, true), edge_index(t, false));
+                ys.map(|y| table_inverse_with(t, y as f32, increasing, edge_start, edge_end)).collect()
+            }
+            _ => ys.map(|y| self.eval_inverse64(y) as f32).collect(),
+        }
+    }
+
     /// `true` when the curve never decreases over `[0, 1]`.
     pub fn is_monotonic(&self) -> bool {
         let s = self.sample(1024);
@@ -244,13 +258,24 @@ fn table_inverse(t: &[f32], y: f32) -> f32 {
         return y;
     }
     let increasing = t[n - 1] >= t[0];
+    table_inverse_with(t, y, increasing, edge_index(t, true), edge_index(t, false))
+}
+
+/// [`table_inverse`] with the flat-run edge indices supplied. Computing those edges scans the
+/// whole table, and transform construction inverts the same table thousands of times, so the
+/// edges are computed once and reused across a batch (see [`Curve::inverse_table`]).
+fn table_inverse_with(t: &[f32], y: f32, increasing: bool, edge_start: f32, edge_end: f32) -> f32 {
+    let n = t.len();
+    if n < 2 {
+        return y;
+    }
     let (lo_v, hi_v) = if increasing { (t[0], t[n - 1]) } else { (t[n - 1], t[0]) };
     if y <= lo_v {
         // Flat start: choose the last index still at the lowest value.
-        return if increasing { edge_index(t, true) } else { edge_index(t, false) };
+        return if increasing { edge_start } else { edge_end };
     }
     if y >= hi_v {
-        return if increasing { edge_index(t, false) } else { edge_index(t, true) };
+        return if increasing { edge_end } else { edge_start };
     }
     let (mut lo, mut hi) = (0usize, n - 1);
     while hi - lo > 1 {
@@ -268,15 +293,22 @@ fn table_inverse(t: &[f32], y: f32) -> f32 {
 
 /// For a flat run at the table start (`start = true`) the last index of the run, or for a flat
 /// run at the end the first index of it, as a normalised input.
+///
+/// A table that is inverted is monotonic, so the run is found by bisection, not by a scan: a long
+/// constant table is inverted once per pixel, and scanning it each time made the cost the curve's
+/// length times the image's.
 fn edge_index(t: &[f32], start: bool) -> f32 {
     let n = t.len();
     if start {
         let v = t[0];
-        let i = t.iter().position(|x| (*x - v).abs() > 1e-7).map_or(n - 1, |i| i - 1);
+        // The first value that differs, given they do so from there on.
+        let first_other = t.partition_point(|x| (*x - v).abs() <= 1e-7);
+        let i = if first_other >= n { n - 1 } else { first_other.saturating_sub(1) };
         i as f32 / (n - 1) as f32
     } else {
         let v = t[n - 1];
-        let i = t.iter().rposition(|x| (*x - v).abs() > 1e-7).map_or(0, |i| i + 1);
+        // The start of the trailing run equal to the last value.
+        let i = t.partition_point(|x| (*x - v).abs() > 1e-7);
         i as f32 / (n - 1) as f32
     }
 }
@@ -335,5 +367,40 @@ mod tests {
         assert!((c.eval_inverse64(c.eval64(2.0)) - 2.0).abs() < 1e-9);
         let g = Curve::Gamma(2.2);
         assert!((g.eval64(-0.5) + 0.5f64.powf(2.2)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn inverting_a_long_flat_table_does_not_rescan_it_for_every_pixel() {
+        // Four million zeros and a one: a scan per call would be 8·10¹¹ steps for these calls.
+        let mut t = vec![0.0f32; 4_000_000];
+        t.push(1.0);
+        let c = Curve::Table(t);
+        let started = std::time::Instant::now();
+        let mut last = 0.0;
+        for _ in 0..200_000 {
+            last = c.eval_inverse(0.0);
+        }
+        assert!(last > 0.99, "the flat start ends at the last zero: {last}");
+        assert!(started.elapsed().as_secs() < 10, "{:?}", started.elapsed());
+    }
+
+    #[test]
+    fn inverse_table_matches_per_call_including_flat_runs() {
+        // Batch inverse must equal calling eval_inverse64 per point. Include a table with flat
+        // runs at both ends (the case that used to rescan the table on every call).
+        let tables = [
+            Curve::Table(vec![0.0, 0.0, 0.0, 0.25, 0.5, 1.0, 1.0, 1.0]),
+            Curve::Table(vec![0.0, 0.2, 0.4, 0.6, 0.8, 1.0]),
+            Curve::Table(vec![1.0, 0.5, 0.0]),
+            Curve::Gamma(2.2),
+        ];
+        let ys: Vec<f64> = (0..=40).map(|i| i as f64 / 40.0).collect();
+        for c in &tables {
+            let batch = c.inverse_table(ys.iter().copied());
+            for (i, &y) in ys.iter().enumerate() {
+                let one = c.eval_inverse64(y) as f32;
+                assert!((batch[i] - one).abs() < 1e-6, "y={y}: batch {} vs per-call {one}", batch[i]);
+            }
+        }
     }
 }

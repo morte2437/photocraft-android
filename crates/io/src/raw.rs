@@ -14,8 +14,9 @@ use std::sync::Arc;
 
 use photocraft_cms::{Builtin, Intent, Profile, Transform};
 use photocraft_codecs::{self as codecs, ChannelLayout, Format, Image, SampleType};
+pub use photocraft_raw::Demosaic;
 use photocraft_raw::{CameraLook, DevelopOptions, Limits, PreviewColorSpace, RawError, Reference, Sensor, WhiteBalance};
-pub use photocraft_raw::{Tone, retone};
+pub use photocraft_raw::{EXTENSIONS, Tone, retone};
 
 use crate::flat::image_to_document;
 use crate::{ImportResult, IoError};
@@ -34,9 +35,14 @@ fn limits() -> Limits {
 /// A raw file's embedded JPEG preview, turned upright. Its own EXIF orientation wins when it
 /// has one; otherwise the raw's IFD0 orientation applies (TIFF-based raws record it there, and
 /// their previews are usually stored as the sensor reads out). Developed raws are oriented by
-/// `photocraft-raw` and carry no EXIF, so nothing is turned twice.
-fn upright_preview(raw: &[u8], jpeg: &[u8]) -> Result<Image, IoError> {
-    let img = codecs::decode_as_with(Format::Jpeg, jpeg, &codecs::DecodeOptions { keep_orientation: true, ..Default::default() })?;
+/// `photocraft-raw` and their EXIF carries no orientation, so nothing is turned twice.
+fn upright_preview(raw: &[u8], jpeg: &[u8], limits: &photocraft_raw::Limits) -> Result<Image, IoError> {
+    // Decode the embedded preview under the caller's limits, not the codec defaults: an
+    // embedded JPEG can declare far more decoded pixels than the raw development the caller
+    // authorized, so the preview fallback must honor the same policy.
+    let codec_limits =
+        codecs::Limits { max_width: limits.max_width, max_height: limits.max_height, max_pixels: limits.max_pixels, max_alloc: limits.max_alloc };
+    let img = codecs::decode_as_with(Format::Jpeg, jpeg, &codecs::DecodeOptions { keep_orientation: true, limits: codec_limits })?;
     let own = img.meta.exif.as_deref().map_or(1, codecs::exif_orientation);
     let o = if own != 1 { own } else { photocraft_raw::orientation(raw).unwrap_or_else(|| codecs::exif_orientation(raw)) };
     Ok(img.oriented(o)?)
@@ -44,7 +50,7 @@ fn upright_preview(raw: &[u8], jpeg: &[u8]) -> Result<Image, IoError> {
 
 /// Camera Raw's Temperature, Tint, Exposure, Shadows, Highlights, Clarity, Texture and Dehaze,
 /// applied while developing the sensor data (the open-time Camera Raw dialog) instead of to the
-/// developed RGB pixels.
+/// developed RGB pixels, and the demosaic method.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct RawTuning {
     /// −100…100, as `photocraft_algo::camera_raw::CameraRaw::temperature`.
@@ -53,6 +59,7 @@ pub struct RawTuning {
     pub tint: f32,
     /// EV, as `CameraRaw::exposure`.
     pub exposure: f32,
+    pub demosaic: Demosaic,
     /// −100…100, as `CameraRaw::shadows`: in linear light before the tone curve, as Camera Raw
     /// does for raw files ([`photocraft_raw::Tone`]).
     pub shadows: f32,
@@ -90,7 +97,7 @@ pub fn import_raw_tuned(name: &str, bytes: &[u8], tuning: &RawTuning) -> Result<
     // The colour rendering the default open used (a look fitted to the camera's JPEG for files
     // without colour calibration), so re-developing changes only what the sliders change.
     let camera_look = default_look(bytes, &sensor);
-    let mut opts = DevelopOptions { limits: limits(), exposure, tone, camera_look, ..Default::default() };
+    let mut opts = DevelopOptions { limits: limits(), exposure, demosaic: tuning.demosaic, tone, camera_look, ..Default::default() };
     let wb_applied = match sensor.camera_wb {
         Some(m) => {
             let g = wb_gains(tuning.temperature, tuning.tint);
@@ -110,8 +117,8 @@ pub fn import_raw_tuned(name: &str, bytes: &[u8], tuning: &RawTuning) -> Result<
         .filter(|(_, v)| *v != 0.0)
         .map(|(k, v)| format!(", {k} {v:+.0}"))
         .collect::<String>();
-    let summary = format!("developed in Camera Raw (exposure {:+.2} EV{tone}, {wb})", tuning.exposure);
-    Ok((developed_document(name, format, dev, &summary)?, wb_applied))
+    let summary = format!("developed in Camera Raw (exposure {:+.2} EV{tone}, {wb}, {} demosaic)", tuning.exposure, tuning.demosaic.id());
+    Ok((developed_document(name, bytes, format, dev, &summary)?, wb_applied))
 }
 
 /// The tone curve `bytes` develop with by default: the fitted look's for a file without colour
@@ -164,8 +171,11 @@ fn wb_gains(temperature: f32, tint: f32) -> [f64; 3] {
 }
 
 /// A developed raw as a 16-bit ProPhoto document, with a note saying how it was developed.
-fn developed_document(name: &str, format: &str, dev: photocraft_raw::Developed, summary: &str) -> Result<ImportResult, IoError> {
-    let img = Image::from_u16(dev.width, dev.height, ChannelLayout::Rgb, &dev.rgb)?;
+fn developed_document(name: &str, bytes: &[u8], format: &str, dev: photocraft_raw::Developed, summary: &str) -> Result<ImportResult, IoError> {
+    let mut img = Image::from_u16(dev.width, dev.height, ChannelLayout::Rgb, &dev.rgb)?;
+    // The raw's own EXIF (camera, lens, exposure, date), for File Info's Camera Data. It carries
+    // no orientation: the developed image is already upright.
+    img.meta.exif = codecs::raw_exif(bytes);
     let mut r = image_to_document(name, &img)?;
     r.document.icc_profile = Some(Arc::new(photocraft_cms::Builtin::ProPhotoCompat.profile().to_bytes().to_vec()));
     let camera = camera_name(dev.info.make.as_deref(), dev.info.model.as_deref());
@@ -180,7 +190,12 @@ fn developed_document(name: &str, format: &str, dev: photocraft_raw::Developed, 
 
 /// Develops a raw file with the default settings.
 pub fn import_raw(name: &str, bytes: &[u8]) -> Result<ImportResult, IoError> {
-    import_raw_with(name, bytes, &DevelopOptions { limits: limits(), ..Default::default() })
+    import_raw_demosaic(name, bytes, Demosaic::default())
+}
+
+/// Develops a raw file with the default settings and the `demosaic` method.
+pub fn import_raw_demosaic(name: &str, bytes: &[u8], demosaic: Demosaic) -> Result<ImportResult, IoError> {
+    import_raw_with(name, bytes, &DevelopOptions { limits: limits(), demosaic, ..Default::default() })
 }
 
 /// Smallest preview long edge preferred for the colour fit (a smaller preview decodes faster;
@@ -213,7 +228,7 @@ pub fn fit_preview_look(raw: &[u8], sensor: &Sensor, opts: &DevelopOptions) -> R
         .min_by_key(|p| long(p))
         .or_else(|| previews.iter().max_by_key(|p| long(p)))
         .ok_or("no embedded JPEG preview")?;
-    let img = upright_preview(raw, pick.jpeg).map_err(|e| format!("the embedded preview does not decode: {e}"))?;
+    let img = upright_preview(raw, pick.jpeg, &opts.limits).map_err(|e| format!("the embedded preview does not decode: {e}"))?;
     if img.layout() != ChannelLayout::Rgb || img.sample_type() != SampleType::U8 {
         return Err("the embedded preview is not 8-bit RGB".into());
     }
@@ -246,6 +261,16 @@ fn develop_fitted(bytes: &[u8], opts: &DevelopOptions) -> Result<photocraft_raw:
 /// a preview fallback): what the open-time Camera Raw dialog looks for.
 pub const DEVELOPED_NOTE: &str = "developed with default settings";
 
+/// The demosaic method a default open developed with, read back from its [`DEVELOPED_NOTE`]
+/// warning: the open-time dialog starts from it, whatever the preference says by the time the
+/// (background) open lands.
+pub fn developed_demosaic(warnings: &[String]) -> Option<Demosaic> {
+    let note = warnings.iter().find(|w| w.contains(DEVELOPED_NOTE))?;
+    let after = &note[note.find(DEVELOPED_NOTE)? + DEVELOPED_NOTE.len()..];
+    let id = after.trim_start().strip_prefix('(')?.split(" demosaic").next()?;
+    Demosaic::from_id(id)
+}
+
 /// Develops a raw file with explicit settings. Without `opts.camera_look`, a file without
 /// colour calibration gets one fitted to its embedded JPEG when that clearly helps.
 pub fn import_raw_with(name: &str, bytes: &[u8], opts: &DevelopOptions) -> Result<ImportResult, IoError> {
@@ -253,30 +278,65 @@ pub fn import_raw_with(name: &str, bytes: &[u8], opts: &DevelopOptions) -> Resul
     match develop_fitted(bytes, opts) {
         Ok(dev) => {
             let summary = format!("{DEVELOPED_NOTE} ({} demosaic, as-shot white balance)", opts.demosaic.id());
-            developed_document(name, format, dev, &summary)
+            developed_document(name, bytes, format, dev, &summary)
         }
-        Err(RawError::Unsupported(reason)) => match photocraft_raw::embedded_preview(bytes) {
-            Some(p) => {
-                let img = upright_preview(bytes, p.jpeg)?;
-                let mut r = image_to_document(name, &img)?;
-                r.warnings.insert(
-                    0,
-                    format!(
-                        "{format}: {reason} is not supported yet; opened the camera's embedded {}x{} JPEG preview instead (8-bit, not the raw sensor data)",
-                        p.width, p.height
-                    ),
-                );
-                Ok(r)
-            }
-            None => Err(IoError::Raw(RawError::Unsupported(reason))),
-        },
+        Err(RawError::Unsupported(reason)) => {
+            let jpeg = photocraft_raw::embedded_preview(bytes);
+            // A DNG 1.7 converter keeps only its small thumbnail as JPEG and writes the larger
+            // previews as JPEG XL, like the raw data (#8125): open the largest of either kind.
+            let jpeg_area = jpeg.map_or(0, |p| u64::from(p.width) * u64::from(p.height));
+            let jxl = photocraft_raw::embedded_jxl_preview(bytes, &opts.limits).filter(|p| u64::from(p.width) * u64::from(p.height) > jpeg_area);
+            let (img, kind, (w, h)) = match (jxl, jpeg) {
+                (Some(p), _) => {
+                    let size = (p.width, p.height);
+                    (jxl_preview_image(bytes, p)?, "JPEG XL", size)
+                }
+                (None, Some(p)) => (upright_preview(bytes, p.jpeg, &opts.limits)?, "JPEG", (p.width, p.height)),
+                (None, None) => return Err(IoError::Raw(RawError::Unsupported(reason))),
+            };
+            let mut r = image_to_document(name, &img)?;
+            let depth = if img.sample_type() == SampleType::U8 { "8-bit" } else { "16-bit" };
+            r.warnings.insert(
+                0,
+                format!(
+                    "{format}: {reason} is not supported yet; opened the camera's embedded {w}x{h} {kind} preview instead ({depth}, not the raw sensor data)"
+                ),
+            );
+            Ok(r)
+        }
         Err(e) => Err(IoError::Raw(e)),
     }
+}
+
+/// A decoded JPEG XL preview as an image: in its stated colour space (sRGB when it states
+/// none), turned upright by the raw's orientation (DNG previews are stored as the raw is).
+fn jxl_preview_image(raw: &[u8], p: photocraft_raw::DecodedPreview) -> Result<Image, IoError> {
+    let img = if p.bits == 8 {
+        Image::from_u8(p.width, p.height, ChannelLayout::Rgb, p.rgb.iter().map(|&v| v.min(255) as u8).collect())?
+    } else {
+        let max = f64::from((1u32 << p.bits.clamp(1, 16)) - 1);
+        let rgb: Vec<u16> = p.rgb.iter().map(|&v| (f64::from(v).min(max) * 65535.0 / max).round() as u16).collect();
+        Image::from_u16(p.width, p.height, ChannelLayout::Rgb, &rgb)?
+    };
+    let icc = match p.color_space {
+        Some(PreviewColorSpace::AdobeRgb) => Some(Builtin::AdobeRgbCompat.profile().to_bytes().to_vec()),
+        Some(PreviewColorSpace::ProPhoto) => Some(Builtin::ProPhotoCompat.profile().to_bytes().to_vec()),
+        Some(PreviewColorSpace::Srgb) | None => None,
+    };
+    Ok(img.with_icc(icc).oriented(photocraft_raw::orientation(raw).unwrap_or(1))?)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_developed_note_says_which_demosaic_method_was_used() {
+        let note = format!("NEF: {DEVELOPED_NOTE} (mhc demosaic, as-shot white balance) into 16-bit ProPhoto RGB");
+        assert_eq!(developed_demosaic(&["unrelated".to_string(), note]), Some(Demosaic::Mhc));
+        assert_eq!(developed_demosaic(&[format!("{DEVELOPED_NOTE} (amaze demosaic)")]), None);
+        assert_eq!(developed_demosaic(&["opened the embedded preview".to_string()]), None);
+    }
 
     #[test]
     fn camera_names_drop_a_repeated_make() {

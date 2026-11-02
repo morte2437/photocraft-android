@@ -42,6 +42,11 @@ fn group_of(doc: &Document, id: LayerId) -> Vec<LayerId> {
     if group.len() > 1 { group } else { Vec::new() }
 }
 
+/// The base `id` clips to (itself when it is a base), when it is in a clip group.
+pub(crate) fn base_of(doc: &Document, id: LayerId) -> Option<LayerId> {
+    group_of(doc, id).first().copied()
+}
+
 /// The layers clipped to `id`: the clipped run directly above it. Empty when `id` is itself
 /// clipped (it is not a base) or nothing is clipped to it.
 fn clipped_to(doc: &Document, id: LayerId) -> Vec<LayerId> {
@@ -49,6 +54,14 @@ fn clipped_to(doc: &Document, id: LayerId) -> Vec<LayerId> {
         Some((&base, rest)) if base == id => rest.to_vec(),
         _ => Vec::new(),
     }
+}
+
+/// The clipped layers directly above `id` among its siblings (Release Clipping Mask releases them
+/// with it).
+pub(crate) fn clipped_above(doc: &Document, id: LayerId) -> Vec<LayerId> {
+    let Some(path) = doc.path_of(id) else { return Vec::new() };
+    let Some((list, idx)) = siblings(doc, &path) else { return Vec::new() };
+    list.iter().skip(idx.saturating_add(1)).take_while(|l| l.clipped).map(|l| l.id).collect()
 }
 
 /// The clip groups of layers about to move or be deleted, read before they leave their slots.
