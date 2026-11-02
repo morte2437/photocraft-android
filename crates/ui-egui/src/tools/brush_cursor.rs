@@ -134,43 +134,6 @@ pub(crate) fn rings(ctx: &egui::Context, brush: &BrushSettings, full: bool) -> O
     traced
 }
 
-/// Which texels of the document-pixel `rect` (`x0, y0, x1, y1`, row-major) lie inside the tip
-/// `rings` (radius units, even-odd so holes stay clear) when the tip is centred on `at` with
-/// `radius` document pixels. The Clone Source overlay uses it to clip to a shaped tip.
-pub(crate) fn tip_mask(rings: &[Vec<[f32; 2]>], at: [f64; 2], radius: f64, rect: [i32; 4]) -> Vec<bool> {
-    let [x0, y0, x1, y1] = rect;
-    let (w, h) = (usize::try_from(x1 - x0).unwrap_or(0), usize::try_from(y1 - y0).unwrap_or(0));
-    let mut mask = vec![false; w.saturating_mul(h)];
-    let mut hits: Vec<f64> = Vec::new();
-    for row in 0..h {
-        let y = f64::from(y0) + row as f64 + 0.5;
-        hits.clear();
-        for ring in rings {
-            for (i, a) in ring.iter().enumerate() {
-                let Some(b) = ring.get((i + 1) % ring.len()) else { continue };
-                let (ax, ay) = (at[0] + f64::from(a[0]) * radius, at[1] + f64::from(a[1]) * radius);
-                let (bx, by) = (at[0] + f64::from(b[0]) * radius, at[1] + f64::from(b[1]) * radius);
-                if (ay <= y) != (by <= y) {
-                    hits.push(ax + (y - ay) / (by - ay) * (bx - ax));
-                }
-            }
-        }
-        hits.sort_by(f64::total_cmp);
-        for pair in hits.chunks(2) {
-            let [a, b] = pair else { continue };
-            let (from, to) = (a - f64::from(x0) - 0.5, b - f64::from(x0) - 0.5);
-            let start = from.ceil().max(0.0) as usize;
-            let end = ((to.floor() + 1.0).max(0.0) as usize).min(w);
-            for x in start..end {
-                if let Some(m) = mask.get_mut(row * w + x) {
-                    *m = true;
-                }
-            }
-        }
-    }
-    mask
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -294,20 +257,5 @@ mod tests {
             let [ex, ey] = tip_axes(&view(30.0, true, 1.0), size);
             assert!(ex.x.is_finite() && ex.y.is_finite() && ey.x.is_finite() && ey.y.is_finite(), "size {size}");
         }
-    }
-
-    /// The overlay clip follows the tip: a square ring covers its own texels, a hole stays clear,
-    /// and a rotated flat tip leaves the corners of the brush square outside.
-    #[test]
-    fn tip_mask_follows_the_ring_shape() {
-        let square = vec![[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]];
-        let hole = vec![[-0.1, -0.1], [0.1, -0.1], [0.1, 0.1], [-0.1, 0.1]];
-        let mask = tip_mask(&[square.clone(), hole], [10.0, 10.0], 10.0, [0, 0, 20, 20]);
-        let at = |x: usize, y: usize| mask[y * 20 + x];
-        assert!(at(6, 10) && at(14, 10) && at(10, 6) && at(10, 14), "inside the square");
-        assert!(!at(3, 10) && !at(10, 16) && !at(0, 0), "outside the square");
-        assert!(!at(10, 10) && at(8, 10), "the hole is clear");
-        assert_eq!(mask.iter().filter(|m| **m).count(), 10 * 10 - 2 * 2, "10x10 square minus the 2x2 hole");
-        assert!(tip_mask(&[square], [10.0, 10.0], 10.0, [5, 5, 5, 9]).is_empty(), "an empty rect is harmless");
     }
 }

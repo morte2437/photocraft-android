@@ -1,4 +1,4 @@
-use super::adjustments::{HUE_RANGES, adjustment_by_class, adjustment_by_suffix, adjustment_steps};
+use super::adjustments::{HUE_RANGES, adjustment_by_class, adjustment_by_suffix, adjustment_steps, levels_complete};
 use super::descriptors::{
     PX, Target, ang, class, class_ref, code, color_desc, color_hex, desc, enm, get_bool, get_enum, get_list, get_num, get_obj, get_ref, get_text, jbool, jnum,
     jstr, layer_ref, layer_target, long, name_ref, pct, px, ref_class, target, target_ref, text, trimmed,
@@ -9,14 +9,23 @@ use super::tables::{LABEL_COLORS, MODES, blend_label, blend_ps, lookup, lookup_b
 use super::{D, Descriptor, Id, Map, ReferenceItem, Value, json};
 
 /// A `patternLayer` descriptor's pattern, scale, angle and link as the params of
-/// `layer.newFillLayer.pattern` / `layer.fill.pattern.set`. The pattern goes by name: ids differ
-/// between Photoshop's library and one rebuilt from the same `.pat` file. None for a pattern
-/// recorded without a name or id.
+/// `layer.newFillLayer.pattern` / `layer.fill.pattern.set`. A pattern recorded with both an id
+/// and a name goes by the id with the name as `patternName`: ids differ between Photoshop's
+/// library and one rebuilt from the same `.pat` file, while names may collide. None for a
+/// pattern recorded without a name or id.
 fn pattern_params(t: &Descriptor) -> Option<Map<String, Value>> {
     let mut p = Map::new();
     if let Some(ptrn) = get_obj(t, "Ptrn") {
-        let key = get_text(ptrn, "Nm  ").filter(|n| !n.is_empty()).or_else(|| get_text(ptrn, "Idnt").filter(|i| !i.is_empty()))?;
-        p.insert("pattern".into(), key.into());
+        let name = get_text(ptrn, "Nm  ").filter(|n| !n.is_empty());
+        match (get_text(ptrn, "Idnt").filter(|i| !i.is_empty()), name) {
+            (Some(id), Some(name)) => {
+                p.insert("pattern".into(), id.into());
+                p.insert("patternName".into(), name.into());
+            }
+            (key, name) => {
+                p.insert("pattern".into(), key.or(name)?.into());
+            }
+        }
     }
     if let Some(s) = get_num(t, "Scl ") {
         p.insert("scale".into(), s.into());
@@ -33,8 +42,10 @@ fn pattern_params(t: &Descriptor) -> Option<Map<String, Value>> {
 /// The `patternLayer` descriptor for [`pattern_params`]' params.
 fn pattern_desc(p: &Value) -> Option<Descriptor> {
     let mut t = desc("patternLayer");
-    if let Some(n) = jstr(p, "pattern") {
-        t = t.with("Ptrn", D::Descriptor(desc("Ptrn").with("Nm  ", text(n))));
+    match (jstr(p, "pattern"), jstr(p, "patternName")) {
+        (Some(id), Some(n)) => t = t.with("Ptrn", D::Descriptor(desc("Ptrn").with("Nm  ", text(n)).with("Idnt", text(id)))),
+        (Some(n), None) | (None, Some(n)) => t = t.with("Ptrn", D::Descriptor(desc("Ptrn").with("Nm  ", text(n)))),
+        (None, None) => {}
     }
     if let Some(s) = jnum(p, "scale") {
         t = t.with("Scl ", pct(s));
@@ -136,6 +147,9 @@ fn new_document_from_descriptor(d: &Descriptor) -> Option<Mapped> {
     Some(step("file.new", params))
 }
 
+/// New Snapshot's From: the full document, the layers merged, or the current layer.
+const SNAPSHOT_FROM: &[(&str, &str)] = &[("FllD", "fullDocument"), ("MrgL", "mergedLayers"), ("CrnL", "currentLayer")];
+
 pub(super) fn make_from(d: &Descriptor) -> Mapped {
     if let Some(mapped) = duplicate_layer_from_descriptor(d) {
         return mapped;
@@ -197,6 +211,24 @@ pub(super) fn make_from(d: &Descriptor) -> Mapped {
                 }
                 None => step("layer.new.group", Value::Object(p)),
             }
+        }
+        // History panel › New Snapshot (of the current state).
+        Some("SnpS") => {
+            let mut p = Map::new();
+            if let Some(n) = get_text(d, "Nm  ") {
+                p.insert("name".into(), n.into());
+            }
+            match get_enum(d, "Usng").as_deref().map(|u| lookup(SNAPSHOT_FROM, u)) {
+                None => {}
+                Some(Some(f)) => {
+                    p.insert("from".into(), f.into());
+                }
+                Some(None) => return Mapped::Unsupported { harmless: false },
+            }
+            if get_bool(d, "replaceExisting") == Some(true) {
+                p.insert("replaceExisting".into(), true.into());
+            }
+            step("history.newSnapshot", Value::Object(p))
         }
         _ => Mapped::Unsupported { harmless: false },
     }
@@ -286,6 +318,18 @@ pub(super) fn make_to(id: &str, p: &Value) -> Option<Descriptor> {
             desc("null").with("Nw  ", D::Class(class("Chnl"))).with("At  ", at).with("Usng", enm("UsrM", lookup_back(MASK_USING, id)?))
         }
         "file.newFromClipboard" => desc("null").with("Nw  ", D::Descriptor(desc("Dcmn").with("preset", text("Clipboard")))),
+        "history.newSnapshot" => {
+            let current = D::Reference(vec![ReferenceItem::Property { class: class("HstS"), key: code("CrnH") }]);
+            let mut d = desc("null").with("null", class_ref("SnpS")).with("From", current);
+            if let Some(n) = jstr(p, "name") {
+                d = d.with("Nm  ", text(n));
+            }
+            d = d.with("Usng", enm("HstS", lookup_back(SNAPSHOT_FROM, jstr(p, "from").unwrap_or("fullDocument"))?));
+            if jbool(p, "replaceExisting") == Some(true) {
+                d = d.with("replaceExisting", D::Boolean(true));
+            }
+            d
+        }
         "file.new" => {
             let mut n = desc("Dcmn");
             if let Some(name) = jstr(p, "name") {
@@ -401,6 +445,121 @@ fn background_from(d: &Descriptor) -> Mapped {
     steps(v)
 }
 
+/// The Layers panel lock buttons (`layerLocking`) ↔ `layer.lockLayers` params.
+const LOCKS: &[(&str, &str)] = &[
+    ("protectTransparency", "transparency"),
+    ("protectComposite", "pixels"),
+    ("protectPosition", "position"),
+    ("protectArtboardAutonest", "artboard"),
+    ("protectAll", "all"),
+];
+
+/// Blending Options' Advanced checkboxes ↔ `layer.layerStyle.blendingOptions` params.
+const ADVANCED_BLENDING: &[(&str, &str)] = &[("blendClipped", "blendClippedLayersAsGroup"), ("transparencyShapesLayer", "transparencyShapesLayer")];
+
+fn lock_params(locks: &Descriptor) -> Option<Map<String, Value>> {
+    let mut m = Map::new();
+    // "Unlock all" clears every lock.
+    if get_bool(locks, "protectNone") == Some(true) {
+        for (_, param) in LOCKS {
+            m.insert((*param).into(), false.into());
+        }
+    }
+    for (key, param) in LOCKS {
+        if let Some(b) = get_bool(locks, key) {
+            m.insert((*param).into(), b.into());
+        }
+    }
+    (!m.is_empty()).then_some(m)
+}
+
+/// `applyLocking`: a lock button in the Layers panel, on the target layer.
+pub(super) fn locking_from(d: &Descriptor) -> Mapped {
+    let on_target = get_ref(d, "null").is_none_or(|r| ref_class(r).as_deref() == Some("Lyr") && matches!(target(r), Target::Ordinal(o) if o == "Trgt"));
+    match get_obj(d, "layerLocking").and_then(lock_params) {
+        Some(l) if on_target => step("layer.lockLayers", Value::Object(l)),
+        _ => Mapped::Unsupported { harmless: false },
+    }
+}
+
+pub(super) fn locking_to(_: &str, p: &Value) -> Option<Descriptor> {
+    let mut locks = desc("layerLocking");
+    for (key, param) in LOCKS {
+        if let Some(b) = jbool(p, param) {
+            locks = locks.with(key, D::Boolean(b));
+        }
+    }
+    if locks.items.is_empty() {
+        return None;
+    }
+    Some(desc("null").with("null", target_ref("Lyr ")).with("layerLocking", D::Descriptor(locks)))
+}
+
+fn layer_set_from(d: &Descriptor, r: &[ReferenceItem]) -> Mapped {
+    let unsupported = Mapped::Unsupported { harmless: false };
+    let Some(mut p) = layer_target(r) else { return unsupported };
+    let Some(t) = get_obj(d, "T   ") else { return unsupported };
+    let mut v = Vec::new();
+    if let Some(c) = get_enum(t, "Clr ").and_then(|c| lookup(LABEL_COLORS, &c)) {
+        let mut lp = p.clone();
+        lp.insert("color".into(), c.into());
+        v.push(("layer.setLabelColor", Value::Object(lp)));
+    }
+    if let Some(n) = get_text(t, "Nm  ") {
+        p.insert("name".into(), n.into());
+    }
+    if let Some(o) = get_num(t, "Opct") {
+        p.insert("opacity".into(), (o / 100.0).into());
+    }
+    if let Some(f) = get_num(t, "fillOpacity") {
+        p.insert("fill".into(), (f / 100.0).into());
+    }
+    if let Some(m) = get_enum(t, "Md  ") {
+        let Some(label) = blend_label(&m) else { return unsupported };
+        p.insert("blend".into(), label.into());
+    }
+    if let Some(vis) = get_bool(t, "Vsbl") {
+        p.insert("visible".into(), vis.into());
+    }
+    // Lock buttons and Blending Options' Advanced checkboxes act on the target layer.
+    let targeted = !p.contains_key("layer");
+    if let Some(locks) = get_obj(t, "layerLocking") {
+        match lock_params(locks) {
+            Some(l) if targeted => v.push(("layer.lockLayers", Value::Object(l))),
+            _ => return unsupported,
+        }
+    }
+    let mut advanced = Map::new();
+    for (key, param) in ADVANCED_BLENDING {
+        if let Some(b) = get_bool(t, key) {
+            advanced.insert((*param).into(), b.into());
+        }
+    }
+    if !advanced.is_empty() {
+        if !targeted {
+            return unsupported;
+        }
+        v.push(("layer.layerStyle.blendingOptions", Value::Object(advanced)));
+    }
+    if p.keys().any(|k| k != "layer") {
+        v.push(("layer.setProps", Value::Object(p)));
+    }
+    // The Layer Style dialog's OK on a layer without effects records only the effects'
+    // scale (`Lefx` = {Scl}); an empty `T` is an OK that changed nothing. Neither changes
+    // the document.
+    let no_effect = t.items.iter().all(|(k, val)| match val {
+        D::Descriptor(fx) if k.is("Lefx") => fx.items.iter().all(|(fk, _)| fk.is("Scl ")),
+        _ => false,
+    });
+    if !v.is_empty() {
+        steps(v)
+    } else if no_effect {
+        Mapped::Unsupported { harmless: true }
+    } else {
+        unsupported
+    }
+}
+
 pub(super) fn set_from(d: &Descriptor) -> Mapped {
     let Some(r) = get_ref(d, "null") else { return Mapped::Unsupported { harmless: false } };
     let unsupported = Mapped::Unsupported { harmless: false };
@@ -416,35 +575,28 @@ pub(super) fn set_from(d: &Descriptor) -> Mapped {
             Some(hex) => step("tools.setColors", json!({(if p == "FrgC" { "foreground" } else { "background" }): hex})),
             None => unsupported,
         },
-        (Some("Lyr"), _) => {
-            let Some(mut p) = layer_target(r) else { return unsupported };
-            let Some(t) = get_obj(d, "T   ") else { return unsupported };
-            let mut v = Vec::new();
-            if let Some(c) = get_enum(t, "Clr ").and_then(|c| lookup(LABEL_COLORS, &c)) {
-                let mut lp = p.clone();
-                lp.insert("color".into(), c.into());
-                v.push(("layer.setLabelColor", Value::Object(lp)));
+        (Some("Lyr"), _) => layer_set_from(d, r),
+        // Layer › Smart Filter › Blending Options (`indx` counts the filters from 1, bottom first).
+        (Some("filterFX"), _) => {
+            let index = match r.first() {
+                Some(ReferenceItem::Index { index, .. }) if *index >= 1 => index - 1,
+                _ => return unsupported,
+            };
+            let on_target =
+                matches!(r.get(1..), Some(rest) if ref_class(rest).as_deref() == Some("Lyr") && matches!(target(rest), Target::Ordinal(o) if o == "Trgt"));
+            if !on_target {
+                return unsupported;
             }
-            if let Some(n) = get_text(t, "Nm  ") {
-                p.insert("name".into(), n.into());
+            let Some(opts) = get_obj(d, "filterFX").and_then(|f| get_obj(f, "blendOptions")) else { return unsupported };
+            let mut p = json!({"index": index});
+            if let Some(o) = get_num(opts, "Opct") {
+                p["opacity"] = json!(o / 100.0);
             }
-            if let Some(o) = get_num(t, "Opct") {
-                p.insert("opacity".into(), (o / 100.0).into());
-            }
-            if let Some(f) = get_num(t, "fillOpacity") {
-                p.insert("fill".into(), (f / 100.0).into());
-            }
-            if let Some(m) = get_enum(t, "Md  ") {
+            if let Some(m) = get_enum(opts, "Md  ") {
                 let Some(label) = blend_label(&m) else { return unsupported };
-                p.insert("blend".into(), label.into());
+                p["blend"] = json!(label);
             }
-            if let Some(vis) = get_bool(t, "Vsbl") {
-                p.insert("visible".into(), vis.into());
-            }
-            if p.keys().any(|k| k != "layer") {
-                v.push(("layer.setProps", Value::Object(p)));
-            }
-            if v.is_empty() { unsupported } else { steps(v) }
+            step("layer.smartFilter.blendingOptions", p)
         }
         // A Pattern Fill layer's pattern (double-click its thumbnail).
         (Some("contentLayer"), Target::Ordinal(o)) if o == "Trgt" => match get_obj(d, "T   ") {
@@ -473,6 +625,38 @@ pub(super) fn set_from(d: &Descriptor) -> Mapped {
         }
         _ => unsupported,
     }
+}
+
+fn layer_set_to(p: &Value) -> Option<Descriptor> {
+    // Only these keys map onto the `Lyr ` descriptor; locks, clipping, Advanced Blending
+    // channels or an explicit `layers` list would be dropped (#7196, #7246).
+    const MAPPED: [&str; 7] = ["layer", "name", "opacity", "fill", "blend", "visible", "color"];
+    if p.as_object().is_some_and(|m| m.iter().any(|(k, v)| !v.is_null() && !MAPPED.contains(&k.as_str()))) {
+        return None;
+    }
+    let mut t = desc("Lyr ");
+    if let Some(n) = jstr(p, "name") {
+        t = t.with("Nm  ", text(n));
+    }
+    if let Some(o) = jnum(p, "opacity") {
+        t = t.with("Opct", pct(o * 100.0));
+    }
+    if let Some(f) = jnum(p, "fill") {
+        t = t.with("fillOpacity", pct(f * 100.0));
+    }
+    if let Some(m) = jstr(p, "blend") {
+        t = t.with("Md  ", enm("BlnM", blend_ps(m)?));
+    }
+    if let Some(v) = jbool(p, "visible") {
+        t = t.with("Vsbl", D::Boolean(v));
+    }
+    if let Some(c) = jstr(p, "color") {
+        t = t.with("Clr ", enm("Clr ", lookup_back(LABEL_COLORS, c)?));
+    }
+    if t.items.is_empty() {
+        return None;
+    }
+    Some(desc("null").with("null", layer_ref(p)?).with("T   ", D::Descriptor(t)))
 }
 
 pub(super) fn set_to(id: &str, p: &Value) -> Option<Descriptor> {
@@ -538,35 +722,7 @@ pub(super) fn set_to(id: &str, p: &Value) -> Option<Descriptor> {
             sel(D::Descriptor(desc(cls).with("Top ", px(y)).with("Left", px(x)).with("Btom", px(y + h)).with("Rght", px(x + w))))
         }
         "layer.setProps" | "layer.renameLayer" | "layer.setLabelColor" => {
-            // Only these keys map onto the `Lyr ` descriptor; locks, clipping, Advanced Blending
-            // channels or an explicit `layers` list would be dropped (#7196, #7246).
-            const MAPPED: [&str; 7] = ["layer", "name", "opacity", "fill", "blend", "visible", "color"];
-            if p.as_object().is_some_and(|m| m.iter().any(|(k, v)| !v.is_null() && !MAPPED.contains(&k.as_str()))) {
-                return None;
-            }
-            let mut t = desc("Lyr ");
-            if let Some(n) = jstr(p, "name") {
-                t = t.with("Nm  ", text(n));
-            }
-            if let Some(o) = jnum(p, "opacity") {
-                t = t.with("Opct", pct(o * 100.0));
-            }
-            if let Some(f) = jnum(p, "fill") {
-                t = t.with("fillOpacity", pct(f * 100.0));
-            }
-            if let Some(m) = jstr(p, "blend") {
-                t = t.with("Md  ", enm("BlnM", blend_ps(m)?));
-            }
-            if let Some(v) = jbool(p, "visible") {
-                t = t.with("Vsbl", D::Boolean(v));
-            }
-            if let Some(c) = jstr(p, "color") {
-                t = t.with("Clr ", enm("Clr ", lookup_back(LABEL_COLORS, c)?));
-            }
-            if t.items.is_empty() {
-                return None;
-            }
-            desc("null").with("null", layer_ref(p)?).with("T   ", D::Descriptor(t))
+            return layer_set_to(p);
         }
         "layer.new.layerFromBackground" => {
             let bckg = D::Reference(vec![ReferenceItem::Property { class: class("Lyr "), key: Id::new("Bckg") }]);
@@ -578,13 +734,53 @@ pub(super) fn set_to(id: &str, p: &Value) -> Option<Descriptor> {
             }
             desc("null").with("null", target_ref("contentLayer")).with("T   ", D::Descriptor(pattern_desc(p)?))
         }
+        "layer.layerStyle.blendingOptions" => {
+            let o = p.as_object()?;
+            let mut t = desc("Lyr ");
+            for (key, param) in ADVANCED_BLENDING {
+                if let Some(b) = jbool(p, param) {
+                    t = t.with(key, D::Boolean(b));
+                }
+            }
+            // Only the Advanced checkboxes export: Photoshop records the dialog's other options
+            // differently.
+            if t.items.is_empty() || t.items.len() != o.len() {
+                return None;
+            }
+            desc("null").with("null", target_ref("Lyr ")).with("T   ", D::Descriptor(t))
+        }
+        "layer.smartFilter.blendingOptions" => {
+            if p.get("layer").is_some() {
+                return None;
+            }
+            let index = u32::try_from(p.get("index")?.as_u64()?).ok()?.checked_add(1)?;
+            let mut opts = desc("blendOptions");
+            if let Some(o) = jnum(p, "opacity") {
+                opts = opts.with("Opct", pct(o * 100.0));
+            }
+            if let Some(m) = jstr(p, "blend") {
+                opts = opts.with("Md  ", enm("BlnM", blend_ps(m)?));
+            }
+            let r = D::Reference(vec![
+                ReferenceItem::Index { class: class("filterFX"), index },
+                ReferenceItem::Enumerated { class: class("Lyr "), type_id: code("Ordn"), value: code("Trgt") },
+            ]);
+            desc("null").with("null", r).with("filterFX", D::Descriptor(desc("filterFX").with("blendOptions", D::Descriptor(opts))))
+        }
         "layer.setAdjustment" => {
+            // The event edits the current adjustment layer: a step that names its layer or
+            // document would play back on whichever one is active instead (#8532). A null
+            // `layer` or `document` is the target one, as the command reads it.
+            if ["layer", "document"].iter().any(|k| p.get(*k).is_some_and(|v| !v.is_null())) {
+                return None;
+            }
             // The adjustment kind isn't in the params: Photoshop needs it, so only steps that
             // name one (`kind`) export.
             let kind = jstr(p, "kind")?;
             // `layer.setAdjustment` changes only the settings it names. Color Balance and
             // Hue/Saturation descriptors carry every setting, filling absent ones with defaults,
-            // so a partial edit would replay as one that also resets the rest (#8531).
+            // so a partial edit would replay as one that also resets the rest (#8531). Levels writes
+            // each range whole, so one end alone resets the other (#8530).
             // Present and of the shape the writer reads: anything else it would write as 0.
             let number = |p: &Value, k: &str| p.get(k).and_then(Value::as_f64).is_some_and(f64::is_finite);
             let numbers = |p: &Value, keys: &[&str]| keys.iter().all(|k| number(p, k));
@@ -606,6 +802,8 @@ pub(super) fn set_to(id: &str, p: &Value) -> Option<Descriptor> {
                             r.is_object() && numbers(r, &["hue", "saturation", "lightness"]) && bounds
                         })
                 }
+                // Both ends of each range it names (#8530).
+                "levels" => levels_complete(p),
                 _ => true,
             };
             if !complete {

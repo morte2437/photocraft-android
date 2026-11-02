@@ -114,7 +114,7 @@ fn handle_channel_row_click(ui: &egui::Ui, row: &mut RowInteractions<'_>) {
         *row.mask_click = Some(false);
     }
     let target = if row.row == Row::QuickMask { json!("composite") } else { row.row.reference() };
-    row.actions.push(("channel.target".into(), json!({ "channel": target })));
+    row.actions.push(("channel.target".into(), json!({ "channel": target, "extend": modifiers.shift && matches!(row.row, Row::Color(_)) })));
 }
 
 fn handle_channel_row_double_click(ui: &mut egui::Ui, row: &mut RowInteractions<'_>, rename_id: egui::Id) {
@@ -260,7 +260,8 @@ fn row_presentation(row: Row, context: &RowPresentationContext<'_>, mask_visible
             1 + k,
             Some(3 + k),
             context.view.color_visible(k) && !context.gray_view,
-            (context.view.target == ChannelTarget::Composite && !context.quick && !context.mask_targeted) || context.view.target == ChannelTarget::Color(k),
+            (context.view.target == ChannelTarget::Composite && !context.quick && !context.mask_targeted)
+                || context.view.color_selection(context.colors).is_some_and(|c| c.contains(k)),
         ),
         Row::Alpha(i) => (
             context.doc.channels[i].name.clone(),

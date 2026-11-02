@@ -236,7 +236,7 @@ fn proxy_mask(app: &PhotocraftApp, proxy: &Document, k: u32, params: &Value) -> 
                 surf.read_rgba_into(area, &mut px);
                 px
             }
-            _ => photocraft_compose::render(proxy, area).px,
+            _ => photocraft_compose::render(proxy, area).into_px(),
         };
         let invert = params.get("invert").and_then(Value::as_bool).unwrap_or(false);
         let mut mask: Vec<f32> = query

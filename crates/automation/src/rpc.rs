@@ -86,6 +86,9 @@ impl Headless {
         match method {
             "engine.execute" => {
                 let id = str_of(&p, "command").ok_or_else(|| bad("engine.execute needs `command`"))?;
+                if METHODS.contains(&id) && photocraft_engine::commands::find(id).is_none() {
+                    return Err(bad(photocraft_engine::command_hints::protocol_method_as_command(id)));
+                }
                 let wait = p.get("wait").and_then(Value::as_bool).unwrap_or(true);
                 self.command_start(id, p.get("params").cloned().unwrap_or(Value::Null), wait)
             }
@@ -186,7 +189,7 @@ impl Headless {
             "doc.close" => self.close(index_of(&p)?),
             "batch" => self.batch(&p),
             "methods" => Ok(json!(METHODS)),
-            other => Err(bad(format!("unknown method `{other}` (try `methods`)"))),
+            other => Err(bad(format!("{} (try `methods`)", photocraft_engine::command_hints::unknown_method(other, METHODS)))),
         }
     }
 

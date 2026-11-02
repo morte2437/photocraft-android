@@ -172,16 +172,20 @@ fn save_for_web_impl(s: &mut Session, p: &Value, write: &mut dyn FnMut(&str, &[u
     if let Some(authorize) = s.authorize {
         authorize(cmd, p)?;
     }
+    // Settings are checked first, so a refused export leaves a floating selection where it is.
+    let st = WebSettings::from_params(p, cmd)?;
     // Direct platform calls must export the moved selection as it appears on the canvas,
     // just as Session::execute does before dispatching the native command.
     crate::float_cmds::before_command(s, cmd)?;
-    let st = WebSettings::from_params(p, cmd)?;
     let d = s.active().ok_or(EngineError::NoDocument)?;
     let doc = d.doc.clone();
     let (wdoc, sx, sy) = web_document(&doc, p, &st)?;
     let buf = photocraft_compose::flatten(&wdoc);
     let bw = wdoc.size.width as usize;
-    let icc = wdoc.icc_profile.as_deref().map(|v| v.as_slice());
+    // An untagged document is treated as sRGB (see [`web_document`]); with Embed Color Profile
+    // on, the file says so, as Photoshop's does (#9325).
+    let srgb = (st.embed_icc && wdoc.icc_profile.is_none()).then(|| photocraft_cms::Builtin::Srgb.profile().to_bytes().to_vec());
+    let icc = wdoc.icc_profile.as_deref().map(|v| v.as_slice()).or(srgb.as_deref());
     let xmp = web_xmp(&doc, st.metadata);
     let exif = web_exif(&doc, st.metadata);
     let dpi = wdoc.resolution_dpi;

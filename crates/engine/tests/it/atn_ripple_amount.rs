@@ -24,7 +24,7 @@ fn fixture(depth: u32) -> Session {
 
 /// Flatten the active document to compare direct, native and ATN playback pixels.
 fn pixels(s: &Session) -> Vec<[f32; 4]> {
-    photocraft_compose::flatten(&s.active().unwrap().doc).px
+    photocraft_compose::flatten(&s.active().unwrap().doc).into_px()
 }
 
 /// Fractions are valid native edits, but the existing integer event cannot carry them.

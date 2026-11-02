@@ -75,6 +75,16 @@ where
     }
 }
 
+/// One section of a preferences file (`performance`, …) read as [`Session::load_prefs_json`]
+/// reads it: a value of the wrong type keeps its default and the rest still loads (#6611).
+/// Startup reads the graphics settings with it before a session exists.
+pub fn read_section<T>(v: Value) -> T
+where
+    T: Default + Serialize + for<'de> Deserialize<'de>,
+{
+    read_lenient(v, &[], &mut Vec::new())
+}
+
 /// [`read_lenient`]'s walk: lay `file` over the object at `at` inside `root`, key by key, so that
 /// `root` always reads (`fits`).
 fn lay_over(

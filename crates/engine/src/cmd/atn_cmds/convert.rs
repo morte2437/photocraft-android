@@ -23,15 +23,18 @@ pub struct Imported {
     pub function_keys: Vec<(String, String)>,
     pub unsupported: Vec<Unsupported>,
     pub warnings: Vec<String>,
+    /// The encoding the file's 8-bit step names were read in (`"GBK"`, `"Shift_JIS"`,
+    /// `"macintosh"`…); `None` when none needed one.
+    pub encoding: Option<String>,
 }
 
-fn photoshop_step(item: &AtnItem) -> (String, Value) {
+fn photoshop_step(item: &AtnItem, label: String) -> (String, Value) {
     let descriptor = item.descriptor.as_ref().map(|d| photocraft_paint::tile::b64_encode(&d.to_bytes()));
     let event_kind = match &item.event {
         AtnEvent::Code(_) => "code",
         AtnEvent::Name(_) => "name",
     };
-    (PHOTOSHOP_STEP.into(), json!({"event": item.event.id(), "eventKind": event_kind, "name": item.label(), "descriptor": descriptor}))
+    (PHOTOSHOP_STEP.into(), json!({"event": item.event.id(), "eventKind": event_kind, "name": label, "descriptor": descriptor}))
 }
 
 /// Integral floats become integers (`2.0` → `2`), as the commands' own docs and recordings
@@ -61,7 +64,7 @@ pub(super) fn clip_name(s: &str) -> String {
     s.chars().take(MAX_NAME_CHARS).collect()
 }
 
-fn convert_action(a: &AtnAction, set: &str, unsupported: &mut Vec<Unsupported>) -> Action {
+fn convert_action(file: &AtnFile, a: &AtnAction, set: &str, unsupported: &mut Vec<Unsupported>) -> Action {
     let name = clip_name(&a.name.to_string_lossy());
     let mut action = Action::new(name.clone(), Vec::new());
     action.set = Some(clip_name(set));
@@ -74,8 +77,9 @@ fn convert_action(a: &AtnAction, set: &str, unsupported: &mut Vec<Unsupported>) 
         let (new_steps, enabled) = match mapped {
             Mapped::Steps(s) => (s, item.enabled),
             Mapped::Unsupported { harmless } => {
-                unsupported.push(Unsupported { action: name.clone(), step: i, event: item.event.id(), name: item.label() });
-                (vec![photoshop_step(item)], item.enabled && !harmless)
+                let label = file.item_label(item);
+                unsupported.push(Unsupported { action: name.clone(), step: i, event: item.event.id(), name: label.clone() });
+                (vec![photoshop_step(item, label)], item.enabled && !harmless)
             }
         };
         for mut s in new_steps {
@@ -96,12 +100,18 @@ fn convert_action(a: &AtnAction, set: &str, unsupported: &mut Vec<Unsupported>) 
 /// Convert a `.atn` file. Fails only when the file is unreadable: every step imports, as a
 /// command or as a kept Photoshop step.
 pub fn import(bytes: &[u8]) -> std::result::Result<Imported, String> {
-    let file = atn::parse(bytes).map_err(|e| e.to_string())?;
+    import_with_encoding(bytes, None)
+}
+
+/// [`import`], reading 8-bit step names in `encoding` (a label such as `"shift_jis"` or
+/// `"gbk"`) instead of working it out. An unknown label fails.
+pub fn import_with_encoding(bytes: &[u8], encoding: Option<&str>) -> std::result::Result<Imported, String> {
+    let file = atn::parse_with_encoding(bytes, encoding).map_err(|e| e.to_string())?;
     let set = file.name.to_string_lossy();
     let set = if set.trim().is_empty() { DEFAULT_SET.to_string() } else { clip_name(&set) };
-    let mut out = Imported { set: set.clone(), warnings: file.warnings.clone(), ..Default::default() };
+    let mut out = Imported { set: set.clone(), warnings: file.warnings.clone(), encoding: file.encoding.clone(), ..Default::default() };
     for a in &file.actions {
-        let action = convert_action(a, &set, &mut out.unsupported);
+        let action = convert_action(&file, a, &set, &mut out.unsupported);
         if a.function_key > 0 {
             out.function_keys.push((action.name.clone(), function_key_name(a.function_key, a.shift, a.command)));
         }
@@ -205,7 +215,7 @@ pub fn export(
     skip_unsupported: bool,
 ) -> std::result::Result<(Vec<u8>, Vec<Skipped>), String> {
     let mut skipped = Vec::new();
-    let mut file = AtnFile { name: UnicodeString::new_nul(set), expanded: true, actions: Vec::new(), warnings: Vec::new() };
+    let mut file = AtnFile { name: UnicodeString::new_nul(set), expanded: true, actions: Vec::new(), warnings: Vec::new(), ..Default::default() };
     for a in actions {
         let mut out = AtnAction { name: UnicodeString::new_nul(&a.name), expanded: false, ..Default::default() };
         if let Some((n, shift, command)) = function_keys.iter().find(|(n, _)| n == &a.name).and_then(|(_, key)| parse_function_key(key)) {

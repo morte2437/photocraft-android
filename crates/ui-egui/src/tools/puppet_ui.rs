@@ -188,6 +188,9 @@ fn dist(a: [f64; 2], b: [f64; 2]) -> f64 {
 
 /// Starts Puppet Warp on the active layer.
 pub fn begin(app: &mut PhotocraftApp, ctx: &egui::Context, command: &str) -> Result<(), String> {
+    if let Some(why) = app.session.disabled_reason(command) {
+        return Err(why);
+    }
     if app.ui.transform.is_some() {
         return Err("finish Free Transform first".into());
     }

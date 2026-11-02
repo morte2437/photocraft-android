@@ -40,12 +40,6 @@ pub(super) fn transform_controls_layers(app: &PhotocraftApp) -> Vec<&photocraft_
     st.selected_layers().into_iter().filter_map(|id| st.doc.layer(id)).filter(|l| !crate::doc_props_ui::is_background(&st.doc, l)).collect()
 }
 
-/// Several layers are selected: Show Transform Controls frames them all, as Photoshop does, but
-/// Free Transform works on one layer, so the frame has no handles to scale or rotate them.
-pub(super) fn transform_controls_several(app: &PhotocraftApp) -> bool {
-    transform_controls_layers(app).len() > 1
-}
-
 /// Move tool › Show Transform Controls: the boxes Free Transform would open on the selected
 /// layers, joined into one.
 pub(super) fn transform_controls_rect(app: &PhotocraftApp, xf: &ViewXform) -> Option<Rect> {
@@ -110,11 +104,9 @@ pub(super) fn transform_controls_hit(r: Rect, p: Pos2) -> bool {
     transform_controls_cursor(r, p).is_some()
 }
 
-/// Enter the existing Free Transform session when a Move-tool transform control is pressed.
+/// Enter the existing Free Transform session when a Move-tool transform control is pressed: on
+/// every selected layer, as the frame shows them (#6501).
 pub(super) fn begin_transform_controls_at(app: &mut PhotocraftApp, ctx: &egui::Context, xf: &ViewXform, p: Pos2) -> bool {
-    if transform_controls_several(app) {
-        return false;
-    }
     let Some(r) = transform_controls_rect(app, xf) else { return false };
     if !transform_controls_hit(r, p) {
         return false;
@@ -128,8 +120,8 @@ pub(super) fn begin_transform_controls_at(app: &mut PhotocraftApp, ctx: &egui::C
     }
 }
 
-/// Move tool › Show Transform Controls: the selected layers' bounding box, with its eight handles
-/// for one layer, and the outline of every selected shape layer, as in Photoshop.
+/// Move tool › Show Transform Controls: the selected layers' bounding box, with its eight handles,
+/// and the outline of every selected shape layer, as in Photoshop.
 pub(super) fn draw_transform_controls(app: &mut PhotocraftApp, painter: &egui::Painter, xf: &ViewXform) {
     let Some(r) = transform_controls_rect(app, xf) else { return };
     let accent = crate::theme::Tokens::get(painter.ctx()).accent;
@@ -140,9 +132,6 @@ pub(super) fn draw_transform_controls(app: &mut PhotocraftApp, painter: &egui::P
         }
     }
     painter.rect_stroke(r, 0.0, Stroke::new(1.0, accent), egui::StrokeKind::Middle);
-    if transform_controls_several(app) {
-        return;
-    }
     for p in [r.left_top(), r.center_top(), r.right_top(), r.right_center(), r.right_bottom(), r.center_bottom(), r.left_bottom(), r.left_center()] {
         let h = Rect::from_center_size(p, vec2(7.0, 7.0));
         painter.rect_filled(h, 0.0, Color32::WHITE);

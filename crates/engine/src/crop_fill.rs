@@ -75,7 +75,7 @@ impl Coverage {
     fn holds(&self, x: f64, y: f64) -> bool {
         let Some(surf) = &self.held else { return false };
         let format = surf.format();
-        if !format.alpha || !(x.is_finite() && y.is_finite()) {
+        if !(format.alpha && x.is_finite() && y.is_finite()) {
             return false;
         }
         let a = surf.channels().saturating_sub(1);

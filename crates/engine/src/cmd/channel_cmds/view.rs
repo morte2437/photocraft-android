@@ -26,6 +26,8 @@ pub enum ChannelTarget {
 #[serde(rename_all = "camelCase")]
 pub struct ChannelView {
     pub target: ChannelTarget,
+    /// Selected native colour components; empty retains the legacy single target.
+    pub selected_colors: Vec<usize>,
     /// Hidden colour channels (missing entries are visible).
     pub color_hidden: Vec<bool>,
     /// Visible alpha channels (missing entries are hidden).
@@ -36,6 +38,9 @@ pub struct ChannelView {
 }
 
 impl ChannelView {
+    pub fn color_selection(&self, count: usize) -> Option<crate::color_channels::ColorChannels> {
+        crate::color_channels::from_view(self, count)
+    }
     pub fn color_visible(&self, k: usize) -> bool {
         !self.color_hidden.get(k).copied().unwrap_or(false)
     }
@@ -97,6 +102,7 @@ pub(crate) fn fix_view(st: &mut DocState) {
         let v = &mut st.channel_view;
         v.alpha_visible.truncate(n);
         v.color_hidden.truncate(colors);
+        v.selected_colors.retain(|k| *k < colors);
         match v.target {
             ChannelTarget::Alpha(i) if i >= n => v.target = ChannelTarget::Composite,
             ChannelTarget::Color(k) if k >= colors || colors < 2 => v.target = ChannelTarget::Composite,
@@ -107,6 +113,12 @@ pub(crate) fn fix_view(st: &mut DocState) {
                 v.target = ChannelTarget::Composite;
             }
             _ => {}
+        }
+        if v.color_selection(colors).is_some_and(|selected| selected.len() == colors) {
+            v.target = ChannelTarget::Composite;
+        }
+        if !matches!(v.target, ChannelTarget::Color(_)) {
+            v.selected_colors.clear();
         }
     }
     crate::mask_view_cmds::fix(st);

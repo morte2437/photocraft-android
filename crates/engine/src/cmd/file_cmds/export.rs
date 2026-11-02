@@ -44,6 +44,7 @@ pub struct LayerExportReport {
 pub fn export_layers_report_with(s: &Session, p: &Value, mut write: impl FnMut(&str, &[u8]) -> Result<()>) -> Result<LayerExportReport> {
     let cmd = "file.export.layersToFiles";
     let format = p.get("format").and_then(Value::as_str).unwrap_or("png").trim_start_matches('.').to_ascii_lowercase();
+    let trim = p.get("trim").and_then(Value::as_bool).unwrap_or(false);
     let visible_only = p.get("visibleOnly").and_then(Value::as_bool).unwrap_or(true);
     // Callers outside `Session::execute` (headless workspace exports) carry the session's gate
     // into `encode`, so a PSD embeds no file a linked smart object names.
@@ -72,6 +73,24 @@ pub fn export_layers_report_with(s: &Session, p: &Value, mut write: impl FnMut(&
         only.visible = true;
         only.clipped = false;
         one.layers = vec![only];
+        if trim {
+            let mut bounds = Rect::EMPTY;
+            let _ = photocraft_compose::render_bands(&one, one.bounds(), 0, |band| -> std::result::Result<(), ()> {
+                let width = band.rect.width() as usize;
+                for (i, rgba) in band.px.iter().enumerate() {
+                    if rgba[3] > 0.0 && width > 0 {
+                        let x = band.rect.x0 + (i % width) as i32;
+                        let y = band.rect.y0 + (i / width) as i32;
+                        bounds = bounds.union(&Rect::new(x, y, x + 1, y + 1));
+                    }
+                }
+                Ok(())
+            });
+            if !bounds.is_empty() && bounds != one.bounds() {
+                crate::image_cmds::crop_doc(&mut one, cmd, bounds, true, [0.0; 4])?;
+            }
+        }
+
         let name = format!("{}_{:04}_{}.{format}", sanitize(&prefix), index, sanitize(&l.name));
         let (bytes, _warnings) = encode(&one, &name, save)?;
         write(&name, &bytes)?;

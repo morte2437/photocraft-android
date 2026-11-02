@@ -363,6 +363,7 @@ fn smart_object_records_smart_filter() {
                 smart_filters: vec![],
                 cache: Some(cache),
                 psd_raw: None,
+                vector_preview: None,
                 filters_enabled: true,
                 filter_mask: None,
                 warp: None,

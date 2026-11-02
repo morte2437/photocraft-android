@@ -92,7 +92,7 @@ mod tests {
         h.key_press(egui::Key::Q);
         h.event(egui::Event::Text("q".into()));
         h.run_steps(2);
-        assert_eq!(h.state().ui.tool, Tool::Brush);
+        assert_eq!(h.state().ui.tool, Tool::Move);
         assert_eq!(h.state().ui.status, "q");
     }
 }

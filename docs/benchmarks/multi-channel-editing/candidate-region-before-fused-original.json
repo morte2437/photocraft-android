@@ -1,0 +1,243 @@
+{
+  "clipboard_pixel": false,
+  "depth": 16,
+  "repeats": 6,
+  "rows": [
+    {
+      "case": 0,
+      "command": "image.adjustments.invert",
+      "p50_ms": 77.201194,
+      "p95_ms": 82.453574,
+      "samples_ms": [
+        82.453574,
+        77.201194,
+        74.372303,
+        78.28338699999999,
+        74.074202,
+        74.235352
+      ],
+      "target": "composite"
+    },
+    {
+      "case": 0,
+      "command": "image.adjustments.invert",
+      "p50_ms": 1.067503,
+      "p95_ms": 1.159604,
+      "samples_ms": [
+        0.974773,
+        1.067503,
+        1.0415139999999998,
+        0.987094,
+        1.159604,
+        1.129815
+      ],
+      "target": "single"
+    },
+    {
+      "case": 0,
+      "command": "image.adjustments.invert",
+      "p50_ms": 1.245524,
+      "p95_ms": 1.378636,
+      "samples_ms": [
+        1.243065,
+        1.245524,
+        1.176115,
+        1.288165,
+        1.378636,
+        1.200104
+      ],
+      "target": "subset"
+    },
+    {
+      "case": 1,
+      "command": "image.adjustments.threshold",
+      "p50_ms": 95.854955,
+      "p95_ms": 97.876743,
+      "samples_ms": [
+        95.854955,
+        97.876743,
+        93.10746400000001,
+        97.22975000000001,
+        93.045934,
+        94.002798
+      ],
+      "target": "composite"
+    },
+    {
+      "case": 1,
+      "command": "image.adjustments.threshold",
+      "p50_ms": 1.064084,
+      "p95_ms": 1.187494,
+      "samples_ms": [
+        0.829623,
+        1.173594,
+        1.187494,
+        0.799923,
+        1.064084,
+        1.060904
+      ],
+      "target": "single"
+    },
+    {
+      "case": 1,
+      "command": "image.adjustments.threshold",
+      "p50_ms": 1.246965,
+      "p95_ms": 1.402196,
+      "samples_ms": [
+        1.310696,
+        1.402196,
+        1.085405,
+        1.226375,
+        1.246965,
+        1.161794
+      ],
+      "target": "subset"
+    },
+    {
+      "case": 2,
+      "command": "image.adjustments.levels",
+      "p50_ms": 103.756235,
+      "p95_ms": 111.544604,
+      "samples_ms": [
+        101.495116,
+        103.756235,
+        111.544604,
+        105.803453,
+        102.95610199999999,
+        101.978809
+      ],
+      "target": "composite"
+    },
+    {
+      "case": 2,
+      "command": "image.adjustments.levels",
+      "p50_ms": 1.426045,
+      "p95_ms": 1.610526,
+      "samples_ms": [
+        1.228124,
+        1.4493150000000001,
+        1.400706,
+        1.610526,
+        1.3924759999999998,
+        1.426045
+      ],
+      "target": "single"
+    },
+    {
+      "case": 2,
+      "command": "image.adjustments.levels",
+      "p50_ms": 1.838737,
+      "p95_ms": 1.9343780000000002,
+      "samples_ms": [
+        1.838737,
+        1.8892570000000002,
+        1.825287,
+        1.8031970000000002,
+        1.9343780000000002,
+        1.823447
+      ],
+      "target": "subset"
+    },
+    {
+      "case": 3,
+      "command": "image.adjustments.curves",
+      "p50_ms": 93.317075,
+      "p95_ms": 99.043097,
+      "samples_ms": [
+        91.604459,
+        92.460962,
+        99.043097,
+        93.254725,
+        93.317075,
+        93.950557
+      ],
+      "target": "composite"
+    },
+    {
+      "case": 3,
+      "command": "image.adjustments.curves",
+      "p50_ms": 1.171014,
+      "p95_ms": 1.285904,
+      "samples_ms": [
+        1.100934,
+        1.184594,
+        1.285904,
+        1.0143039999999999,
+        1.171014,
+        1.164024
+      ],
+      "target": "single"
+    },
+    {
+      "case": 3,
+      "command": "image.adjustments.curves",
+      "p50_ms": 1.4515559999999998,
+      "p95_ms": 1.8267870000000002,
+      "samples_ms": [
+        1.193784,
+        1.438136,
+        1.453886,
+        1.246384,
+        1.4515559999999998,
+        1.8267870000000002
+      ],
+      "target": "subset"
+    },
+    {
+      "case": 4,
+      "command": "filter.blur.gaussianBlur",
+      "p50_ms": 0.597332,
+      "p95_ms": 0.7034619999999999,
+      "samples_ms": [
+        0.7034619999999999,
+        0.676912,
+        0.553232,
+        0.597332,
+        0.548492,
+        0.5534319999999999
+      ],
+      "target": "composite"
+    },
+    {
+      "case": 4,
+      "command": "filter.blur.gaussianBlur",
+      "p50_ms": 0.977864,
+      "p95_ms": 1.189995,
+      "samples_ms": [
+        0.943864,
+        0.977864,
+        0.906234,
+        1.189995,
+        0.928453,
+        1.1691049999999998
+      ],
+      "target": "single"
+    },
+    {
+      "case": 4,
+      "command": "filter.blur.gaussianBlur",
+      "p50_ms": 0.9821439999999999,
+      "p95_ms": 1.1049440000000001,
+      "samples_ms": [
+        0.892043,
+        1.1049440000000001,
+        0.8708929999999999,
+        0.9821439999999999,
+        0.8869140000000001,
+        1.032884
+      ],
+      "target": "subset"
+    }
+  ],
+  "selection": [
+    2000,
+    1500,
+    16,
+    16
+  ],
+  "size": [
+    6000,
+    4000
+  ],
+  "warmups": 1
+}

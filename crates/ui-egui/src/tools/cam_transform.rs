@@ -51,7 +51,7 @@ pub(crate) fn begin(app: &mut PhotocraftApp, offset: [i32; 2]) -> bool {
         rect: r,
         quad: [[r[0], r[1]], [r[2], r[1]], [r[2], r[3]], [r[0], r[3]]],
         pivot: [(r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0],
-        interpolation: "bilinear".into(),
+        interpolation: crate::transform_tool::default_interpolation(app).into(),
         warp: None,
         selection: false,
         target: None,
@@ -60,6 +60,7 @@ pub(crate) fn begin(app: &mut PhotocraftApp, offset: [i32; 2]) -> bool {
         mode: Default::default(),
         content_aware: None,
         skew_v: 0.0,
+        layers: Vec::new(),
     };
     app.ui.cam_transform = Some(CamTransform { document, revision, offset, frame, gesture: None });
     app.ui.status = crate::i18n::fmt(tl!("Scale or rotate the moved area, then press {key}"), &[("key", &crate::shortcuts::pretty("Enter"))]);

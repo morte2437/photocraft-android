@@ -8,9 +8,51 @@
 # stay as they are; the trailing "…" of dialog commands is kept.
 #
 # Custom paper dimensions in Print Settings.
+
+
+
+# Edit › Content-Aware Fill workspace
+
+# Actions panel: Load/Save Actions (.atn) and kept Photoshop steps
+
+# Actions panel: set folders, dialog toggle, Insert Stop
+
+# Native Windows printing qualification
+
+# Layer Mask Display Options (the layer mask rubylith's colour and opacity)
+
+# Channel Options and New Spot Channel (#3761)
+# Bevel & Emboss shading controls.
+# Embedded Profile Mismatch: profile names beside the choices, Remember this choice
+
+# Darken / Lighten Interface (⇧⌘F1 / ⇧⌘F2)
+# Bevel & Emboss Technique.
+
+# View › Guides › right-click a guide
+
+# Image › Mode › Bitmap (#5559)
+
+# Layers panel options and Smart Filter editors
+
+# Free Transform: a new layer while the box is open (#5859)
+# Preferences › Performance › GPU Memory; the status bar and slow-redraw notice
+
+# DDS Options (#1327)
+
+# Color Table (.act) dialog
+
+# Graphics Adapter preference (#1885)
+
+# Styles panel: Import / Export Styles (.asl)
+# Actions: a step dialog holds a suspended recording (#7365)
+# Paragraph direction (TYPE-218-2)
+# Print preview image (#8236)
+# Color panel menu: modes, copy commands and colour ramps (#6000)
+
+# Pen draft after a refused commit (#7648)
+# Art History Brush (#213).
 	Paper Width	Kağıt Genişliği
 	Paper Height	Kağıt Yüksekliği
-
 	Rows	Satırlar
 	Number	Sayı
 	Top:	Üst:
@@ -429,6 +471,7 @@
 	Intersect Shape Areas	Şekil Alanlarını Kesiştir
 	Exclude Overlapping Shapes	Çakışan Şekilleri Hariç Tut
 	Merge Shape Components	Şekil Bileşenlerini Birleştir
+	Path operations	Yol işlemleri
 	Align	Hizala
 	Top Edges	Üst Kenarlar
 	Vertical Centers	Dikey Merkezler
@@ -957,7 +1000,6 @@
 	Contiguous	Bitişik
 	Contrast	Kontrast
 	Control:	Kontrol:
-
 	Convert to sRGB	sRGB'ye dönüştür
 	Copies	Kopyalar
 	Copper	Bakır
@@ -1537,7 +1579,6 @@
 	Use Default	Varsayılanı Kullan
 	Use Legacy	Eskiyi Kullan
 	Use Measurement Scale	Ölçüm Ölçeğini Kullan
-
 	Variables bind a layer's visibility, text or pixels to a named data slot.	Değişkenler bir katmanın görünürlüğünü, metnini veya piksellerini adlandırılmış bir veri yuvasına bağlar.
 	Vertical scale	Dikey ölçek
 	Vibrance	Canlılık
@@ -3879,7 +3920,6 @@ cameraData	Lens	Lens
 	Delete Contour	Konturu sil
 	Loaded contours from {file}	Konturlar {file} dosyasından yüklendi
 	Saved contours to {file}	Konturlar {file} dosyasına kaydedildi
-# Edit › Content-Aware Fill workspace
 	Excluded Area	Hariç Tutulan Alan
 	Fill Settings	Dolgu Ayarları
 	Full	Tam
@@ -3900,8 +3940,6 @@ cameraData	Lens	Lens
 	Clear Brush Controls	Fırça Denetimlerini Temizle
 	Reset All Locked Settings	Tüm Kilitli Ayarları Sıfırla
 	Copy Texture to Other Tools	Dokuyu Diğer Araçlara Kopyala
-
-# Actions panel: Load/Save Actions (.atn) and kept Photoshop steps
 	Load Actions…	Eylemleri Yükle…
 	Save Actions…	Eylemleri Kaydet…
 	New Action…	Yeni Eylem…
@@ -3913,9 +3951,7 @@ cameraData	Lens	Lens
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} adımın PhotoCraft’ta henüz karşılığı yok
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	{n} eylem {file} dosyasına kaydedildi
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	Photoshop karşılığı olmayan {n} adım atlandı
-
 	Starting serial	Başlangıç sıra numarası
-# Actions panel: set folders, dialog toggle, Insert Stop
 	Insert Stop…	Durdurma Ekle…
 	Save Set…	Seti Kaydet…
 	Message:	İleti:
@@ -3939,20 +3975,14 @@ cameraData	Lens	Lens
 	Loaded Camera Raw settings from {file}	Camera Raw ayarları {file} dosyasından yüklendi
 	Loaded Camera Raw settings from {file} ({n} not supported)	Camera Raw ayarları {file} dosyasından yüklendi ({n} desteklenmiyor)
 	Auto Add/Delete	Otomatik Ekle/Sil
-
-# Native Windows printing qualification
 	Don't also tick Mirror Image in Print Settings…: the two flips cancel out.	Yazdırma Ayarlarında ayrıca Ayna Görüntüsünü açmayın: iki yansıtma birbirini iptal eder.
 	Print Settings…	Yazdırma Ayarları…
 	Remember to turn off the printer's own colour management in Print Settings…	Yazdırma Ayarlarında yazıcının kendi renk yönetimini kapatmayı unutmayın…
 	Sent to {printer}	{printer} yazıcısına gönderildi
 	set in Print Settings…	Yazdırma Ayarlarında belirlenir…
 	ICO is limited to 256 × 256 pixels	ICO 256 × 256 piksel ile sınırlıdır
-
-# Layer Mask Display Options (the layer mask rubylith's colour and opacity)
 	Mask Options…	Maske Seçenekleri…
 	Layer Mask Display Options…	Katman Maskesi Görüntüleme Seçenekleri…
-
-# Channel Options and New Spot Channel (#3761)
 	Channel Color	Kanal Rengi
 	Color Indicates:	Rengin Gösterdiği:
 	Ink Characteristics	Mürekkep Özellikleri
@@ -3996,7 +4026,6 @@ cameraData	Lens	Lens
 	Slab Serif	Kalın tırnaklı
 	TrueType font	TrueType yazı tipi
 	Variable font	Değişken yazı tipi
-# Bevel & Emboss shading controls.
 	Highlight Mode	Vurgu Modu
 	Highlight Color	Vurgu Rengi
 	Highlight Opacity	Vurgu Opaklığı
@@ -4004,36 +4033,21 @@ cameraData	Lens	Lens
 	Shadow Color	Gölge Rengi
 	Shadow Opacity	Gölge Opaklığı
 	Check for Updates…	Güncellemeleri Denetle…
-	PhotoCraft Updates	PhotoCraft Güncellemeleri
-	Checking for updates…	Güncellemeler denetleniyor…
 	Open the release page to choose an installer for your system.	Sisteminize uygun yükleyiciyi seçmek için sürüm sayfasını açın.
-	Open Download Page	İndirme Sayfasını Aç
-	PhotoCraft is up to date.	PhotoCraft güncel.
-	Could not check for updates.	Güncellemeler denetlenemedi.
-	Updates have not been checked yet.	Güncellemeler henüz denetlenmedi.
-	Check Again	Yeniden Denetle
 	Automatically Check for Updates	Güncellemeleri Otomatik Denetle
-	Installed version: {version}	Yüklü sürüm: {version}
-	PhotoCraft {version} is available.	PhotoCraft {version} kullanılabilir.
-# Embedded Profile Mismatch: profile names beside the choices, Remember this choice
 	Use the embedded profile ({profile})	Gömülü profili kullanın ({profile})
 	Convert to the working space ({profile})	Çalışma alanına dönüştürün ({profile})
 	Remember this choice for future images	Bu seçimi sonraki görüntüler için hatırla
 	Turn the prompt back on with Ask On Mismatch in Edit › Color Settings.	Soruyu Düzen › Renk Ayarları'ndaki Ask On Mismatch ile yeniden açabilirsiniz.
 	Button Mode	Düğme modu
 	Button Mode On	Düğme modu açık
-
-# Darken / Lighten Interface (⇧⌘F1 / ⇧⌘F2)
 	Darken Interface	Arayüzü koyulaştır
 	Lighten Interface	Arayüzü açıklaştır
-# Bevel & Emboss Technique.
 	Technique	Teknik
 	Chisel Hard	Sert Keski
 	Chisel Soft	Yumuşak Keski
 	Open color-less EXR as ACEScg	Renk bilgisi olmayan EXR'yi ACEScg olarak aç
 	Do not append "copy" to filename when saving a copy	Kopya kaydederken dosya adına "copy" ekleme
-
-# View › Guides › right-click a guide
 	Edit Selected Guides	Seçili Kılavuzları Düzenle
 	Clear Selected Guides	Seçili Kılavuzları Temizle
 	Bicubic Automatic	Bikübik Otomatik
@@ -4058,8 +4072,6 @@ cameraData	Lens	Lens
 	set name	küme adı
 	{set} (modified)	{set} (değiştirildi)
 	Show file name in title	Başlıkta dosya adını göster
-
-# Image › Mode › Bitmap (#5559)
 	50% Threshold	%50 Eşik
 	Pattern Dither	Desen Titreklik
 	Diffusion Dither	Difüzyon Titreklik
@@ -4069,8 +4081,6 @@ cameraData	Lens	Lens
 	Lines/Inch	Çizgi/İnç
 	Lines/Centimeter	Çizgi/Santimetre
 	Ellipse	Elips
-
-# Layers panel options and Smart Filter editors
 	Add “copy” to Copied Layers and Groups	Kopyalanan Katman ve Gruplara “kopya” Ekle
 	Animation Options	Animasyon Seçenekleri
 	Entire Document	Tüm Belge
@@ -4087,7 +4097,6 @@ cameraData	Lens	Lens
 	Thumbnail Contents	Küçük Resim İçeriği
 	Thumbnail Size	Küçük Resim Boyutu
 	Use Default Masks on Fill Layers	Dolgu Katmanlarında Varsayılan Maskeleri Kullan
-
 	Blending Options ({filter})	Karışım Seçenekleri ({filter})
 	Hide the layer's effects and Smart Filters  ({key}-click: all layers)	Katmanın efektlerini ve Akıllı Filtrelerini gizle  ({key}-tık: tüm katmanlar)
 	Opacity must be between 0% and 100%.	Opaklık %0 ile %100 arasında olmalıdır.
@@ -4103,10 +4112,8 @@ cameraData	Lens	Lens
 	Undo Changes	Değişiklikleri Geri Al
 	{shortcut} is reserved by the system and can't be assigned.	{shortcut} sistem tarafından ayrılmıştır ve atanamaz.
 	Low-Latency Drawing (vsync off, applies at next launch)	Düşük gecikmeli çizim (dikey eşitleme kapalı, sonraki açılışta geçerli)
-# Free Transform: a new layer while the box is open (#5859)
 	Free Transform is still being applied; try again when it has finished.	Serbest Dönüştürme hâlâ uygulanıyor; bittiğinde yeniden deneyin.
 	The transform couldn't be applied.	Dönüştürme uygulanamadı.
-# Preferences › Performance › GPU Memory; the status bar and slow-redraw notice
 	Its layers need {needed} of GPU memory; the budget leaves them {budget}.	Katmanlarının {needed} GPU belleğine ihtiyacı var; bütçe onlara {budget} bırakıyor.
 	Set GPU Memory in Preferences › Performance to what your graphics card can hold, at most 3/8 of its memory. Automatic follows Memory Usage, within a quarter of this computer's memory and 3/8 of the card's, and doesn't count the document against a card whose memory is known. The status bar shows GPU Memory Full while they don't fit.	Tercihler › Performans içindeki GPU Belleği'ni ekran kartınızın kaldırabileceği miktara, en fazla belleğinin 3/8'ine ayarlayın. Otomatik, Bellek kullanımını izler; bu bilgisayarın belleğinin dörtte biri ve kartın belleğinin 3/8'i içinde kalır, belleği bilinen bir kartta belgeyi hesaba katmaz. Sığmadıkları sürece durum çubuğu GPU Belleği Dolu gösterir.
 	GPU Memory Full	GPU Belleği Dolu
@@ -4132,8 +4139,6 @@ cameraData	Lens	Lens
 	The fastest and the softest, with colour fringing on fine detail.	En hızlı ve en yumuşak, ince ayrıntılarda renk saçağı.
 	“{name}” already exists. Replace it?	'{name}' zaten var. Değiştirilsin mi?
 	The name in the save dialog was “{name}”.	Kaydetme penceresindeki ad '{name}' idi.
-	Move Up	Yukarı taşı
-	Move Down	Aşağı taşı
 	Previous Brush	Önceki fırça
 	Next Brush	Sonraki fırça
 	First Brush	İlk fırça
@@ -4148,17 +4153,21 @@ cameraData	Lens	Lens
 	Use	Kullan
 	In Front	Önde
 	Behind	Arkada
-
-# DDS Options (#1327)
 	DDS Options	DDS Seçenekleri
 	Generate Mipmaps	Mipmap oluştur
-
-# Color Table (.act) dialog
 	There is no color table to save.	Kaydedilecek renk tablosu yok.
 @plural	Saved {n} color to {file}|Saved {n} colors to {file}	{n} renk {file} konumuna kaydedildi
-
-# Graphics Adapter preference (#1885)
 	GPU adapter	GPU bağdaştırıcısı
+smartSvg	Choose executable…	Çalıştırılabilir dosya seç…
+smartSvg	Choose the application used to edit this SVG:	Bu SVG'yi düzenlemek için kullanılacak uygulamayı seçin:
+smartSvg	Edit SVG Smart Object	SVG Akıllı Nesnesini Düzenle
+smartSvg	Other application	Diğer uygulama
+smartSvg	PhotoCraft (internal editor)	PhotoCraft (dahili düzenleyici)
+smartSvg	SVG editor opened. Save the SVG to update this Smart Object.	SVG düzenleyicisi açıldı. Bu Akıllı Nesneyi güncellemek için SVG'yi kaydedin.
+smartSvg	Save to the opened SVG file. Each saved change becomes one undo step in PhotoCraft.	Açılan SVG dosyasına kaydedin. Kaydedilen her değişiklik PhotoCraft'ta bir geri alma adımı olur.
+smartSvg	Stop syncing this Smart Object	Bu Akıllı Nesnenin eşitlemesini durdur
+smartSvg	Updates wait while another document or an editing dialog is active.	Başka bir belge veya düzenleme iletişim kutusu etkin olduğunda güncellemeler bekler.
+smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded source; format-specific features may change.	AI/PDF/EPS içeriği SVG olarak düzenlenecek. Kaydetmek gömülü kaynağı değiştirir; biçime özgü özellikler değişebilir.
 
 # Styles panel: Import / Export Styles (.asl)
 @plural	Imported {n} style from {file}|Imported {n} styles from {file}	{file} dosyasından {n} stil içe aktarıldı
@@ -4167,7 +4176,6 @@ cameraData	Lens	Lens
 	Export Selected Styles…	Seçili Stilleri Dışa Aktar…
 	Export Styles…	Stilleri Dışa Aktar…
 	{file} is not a style library (.asl)	{file} bir stil kitaplığı değil (.asl)
-# Actions: a step dialog holds a suspended recording (#7365)
 	Confirm or cancel the open action step dialog first	Önce açık eylem adımı iletişim kutusunu onaylayın veya iptal edin
 	Pro Medium Gray	Pro Orta Gri
 	Solarized	Solarized
@@ -4176,14 +4184,11 @@ cameraData	Lens	Lens
 	Pro Light	Pro Açık
 	Resize Windows to Fit	Pencereleri sığacak şekilde boyutlandır
 	EXR	EXR
-# Paragraph direction (TYPE-218-2)
 	Automatic paragraph direction	Otomatik paragraf yönü
 	Left-to-right paragraph direction	Soldan sağa paragraf yönü
 	Right-to-left paragraph direction	Sağdan sola paragraf yönü
 	Not rendered: this adjustment ({key}) is kept as imported.	Görüntülenmiyor: bu ayarlama ({key}) içe aktarıldığı gibi korunuyor.
-# Print preview image (#8236)
 	Print preview image	Baskı Önizleme Görüntüsü
-# Color panel menu: modes, copy commands and colour ramps (#6000)
 	Hue Cube	Renk Tonu Küpü
 	Brightness Cube	Parlaklık Küpü
 	Color Wheel	Renk Çarkı
@@ -4199,7 +4204,8 @@ cameraData	Lens	Lens
 	Grayscale Ramp	Gri Tonlama Şeridi
 	Current Colors	Geçerli Renkler
 	Make Ramp Web Safe	Şeridi Web Renkleriyle Sınırla
-# Art History Brush (#213).
+	The path was kept as the Work Path	Yol, Çalışma Yolu olarak korundu
+	The path was discarded	Yol atıldı
 	Art History Brush Tool	Sanat Tarihi Fırçası Aracı
 	Tight Short	Sıkı Kısa
 	Tight Medium	Sıkı Orta
@@ -4213,3 +4219,32 @@ cameraData	Lens	Lens
 	Font size presets	Yazı tipi boyutu hazır ayarları
 	Leading presets	Satır aralığı hazır ayarları
 	Tracking presets	İzleme hazır ayarları
+	Invalid numeric entry. An integer between {min}% and {max}% is required. Previous value was inserted.	Geçersiz sayısal giriş. {min}% ile {max}% arasında bir tam sayı gerekiyor. Önceki değer eklendi.
+	Color Aware	Renge Duyarlı
+	Decontaminate Colors	Renkleri Arındır
+	Edge Detection	Kenar Algılama
+	Global Refinements	Genel Hassaslaştırmalar
+	High Quality Preview	Yüksek Kaliteli Önizleme
+	Object Aware	Nesneye Duyarlı
+	Real-Time Refinement	Gerçek Zamanlı Hassaslaştırma
+	Refine Edge Brush Tool	Kenarı Hassaslaştırma Fırçası Aracı
+	Refine Hair	Saçı Hassaslaştır
+	Refine Mode	Hassaslaştırma Modu
+	Remember Settings	Ayarları Hatırla
+	View Mode	Görünüm Modu
+	Object Aware needs a segmentation model, which isn't available yet	Nesneye Duyarlı mod henüz kullanılamayan bir bölütleme modeli gerektirir
+	Refine Hair needs hair detection, which isn't available yet	Saçı Hassaslaştır henüz kullanılamayan saç algılama gerektirir
+	Select and Mask was closed: its document is no longer the active one	Seç ve Maskele kapatıldı: belgesi artık etkin değil
+	Select and Mask was closed: another layer was selected	Seç ve Maskele kapatıldı: başka bir katman seçildi
+	Move effect up	Efekti yukarı taşı
+	Move effect down	Efekti aşağı taşı
+	Delete effect	Efekti sil
+	Current Layer:	Geçerli Katman:
+	Underlying Layer:	Alttaki Katman:
+	Drag to move the selected path	Seçili yolu taşımak için sürükleyin
+
+# Shape Fill/Stroke popover and colour swatches opening the Color Picker
+	Recently Used Colors	Son Kullanılan Renkler
+	Stop Color	Durak Rengi
+	Shapes can't use patterns yet	Şekiller henüz desen kullanamaz
+	Edit Brush…	Fırçayı Düzenle…

@@ -389,6 +389,13 @@ pub(crate) fn damage_since(app: &PhotocraftApp, idx: usize, seen: (u64, u64), no
     {
         return Some(if r.is_empty() { r } else { r.inflate(effect_reach(&st.doc.layers)) });
     }
+    // Between colours under a text or stop Color Picker (and the document): the target layers' bounds.
+    if seen.0 == now.0
+        && let Some(st) = app.session.documents().get(idx)
+        && let Some(r) = crate::color_picker_preview::damage(app, st.doc.id, now.0, seen.1 ^ display_key, now.1)
+    {
+        return Some(if r.is_empty() { r } else { r.inflate(effect_reach(&st.doc.layers)) });
+    }
     // Between hovered fonts (and the document): the text layer's old/new ink bounds.
     if seen.0 == now.0
         && let Some(st) = app.session.documents().get(idx)
@@ -625,7 +632,7 @@ fn gpu_budget(app: &mut PhotocraftApp, gpu: &crate::gpu_canvas::GpuCanvas, idx: 
 /// Memory Usage and GPU Memory (Preferences › Performance), in bytes.
 fn budget_allowance(app: &PhotocraftApp) -> (u64, u64) {
     let performance = &app.session.prefs().performance;
-    (u64::from(performance.memory_usage_mb).saturating_mul(1 << 20), u64::from(performance.gpu_memory_mb).saturating_mul(1 << 20))
+    (u64::from(performance.effective_memory_usage_mb()).saturating_mul(1 << 20), u64::from(performance.gpu_memory_mb).saturating_mul(1 << 20))
 }
 
 /// The document pixels a view shows, with a margin for filtering. Uses all four canvas corners

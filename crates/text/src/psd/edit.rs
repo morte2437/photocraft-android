@@ -36,7 +36,7 @@ fn fits_budget(v: &E, nodes: &mut usize, bytes: &mut usize) -> bool {
             fits_budget(x, nodes, bytes)
         }),
         E::Array(items) => items.iter().all(|x| fits_budget(x, nodes, bytes)),
-        E::String(s) | E::Name(s) => {
+        E::String(s) | E::RawString(s) | E::Name(s) => {
             let Some(rem) = bytes.checked_sub(s.len()) else { return false };
             *bytes = rem;
             true
@@ -150,7 +150,7 @@ pub(super) fn td_edited_object(object: &E, text: &str) -> Option<E> {
     let E::Dict(entries) = model else { return None };
     // The text must be there to replace: refitted runs over a text the model doesn't hold would
     // be a half-edited object.
-    if !entries.iter().any(|(k, v)| k == "Text" && matches!(v, E::String(_))) {
+    if !entries.iter().any(|(k, v)| k == "Text" && matches!(v, E::String(_) | E::RawString(_))) {
         return None;
     }
     let total = utf16_len(text) as usize;

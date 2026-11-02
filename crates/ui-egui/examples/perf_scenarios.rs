@@ -943,7 +943,7 @@ fn background_job_scenarios(b: &mut Bench, sz: &Sizes) {
                     // The UI thread's work: starting the job, then each frame's poll (the last one
                     // applies the 500 presets).
                     let t = Instant::now();
-                    let job = start_job(s, "brush.presets.importAbr", json!({"data": data, "group": "Bench"}))?;
+                    let job = start_job(s, "brush.presets.importAbr", json!({"data": data, "group": "Bench", "replace": true}))?;
                     let mut worst = ms(t);
                     let t0 = Instant::now();
                     loop {

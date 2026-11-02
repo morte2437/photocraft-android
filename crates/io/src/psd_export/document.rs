@@ -174,7 +174,9 @@ fn export_supported_document(
     let txt2 = (previous.is_some() || photocraft_text::psd::needs_txt2(&text_layers))
         .then(|| photocraft_text::psd::build_txt2_at(&text_layers, previous.as_deref(), ex.dpi));
     for (sig, key, data) in preserved {
-        if txt2.is_some() && key == *b"Txt2" {
+        // With no type layers left the opened file's `Txt2` describes text that is gone (fonts and
+        // layout caches, often most of the file): Photoshop drops it, and so does the save (#9563).
+        if key == *b"Txt2" && (txt2.is_some() || text_layers.is_empty()) {
             continue;
         }
         // A kept layer block (one the import could not read, #2700) describes layers the

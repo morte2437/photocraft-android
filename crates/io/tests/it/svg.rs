@@ -507,6 +507,11 @@ fn filters_too_costly_to_render_are_refused_not_run() {
         let e = import("x.svg", svg.as_bytes()).err().unwrap_or_else(|| panic!("opened: {head}"));
         assert!(matches!(&e, IoError::Svg(m) if m.contains("filter")), "{e}");
         assert!(svg::rasterize(svg.as_bytes(), 1.0).is_err(), "rendered: {head}");
+        // The budgeted paths (smart-object contents and their renders) refuse it too.
+        let e = svg::import_svg_bounded_images("x.svg", svg.as_bytes(), 1 << 24).err().unwrap_or_else(|| panic!("opened bounded: {head}"));
+        assert!(matches!(&e, IoError::Svg(m) if m.contains("filter")), "{e}");
+        let e = svg::rasterize_bounded(svg.as_bytes(), 1.0, 1 << 24).err().unwrap_or_else(|| panic!("rendered bounded: {head}"));
+        assert!(matches!(&e, IoError::Svg(m) if m.contains("filter")), "{e}");
     }
     // Ordinary filters still open and render.
     let ordinary = drawing(500, "<feGaussianBlur stdDeviation=\"8\"/><feMorphology radius=\"3\"/><feTurbulence baseFrequency=\"0.05\" numOctaves=\"4\"/>");

@@ -1,13 +1,10 @@
-# Contributor names for the About window (craftrules standards/contributors.md).
+# Contributor names for the About window.
 #
 # Everyone who contributes is credited by GitHub username automatically. Anything more is up to
 # you: add YOUR OWN entry below, in your own PR (commit it yourself). Never add someone else; a
 # maintainer may add a person only when that person asked, recording where in consent_source.
 #
-# Easiest: python3 ../../craftrules/scripts/contributors.py --add-me . \
-#            [--real-name "Ada Lovelace"] [--display-name "Ada"] [--sync-github-name]
-#
-# Or copy this block, replacing your-github-username (every field is optional):
+# Copy this block, replacing your-github-username (every field is optional):
 #
 #   [people.your-github-username]
 #   real_name = "Your Name"        # shown when the viewer picks "Real name"
@@ -205,6 +202,9 @@ sync_github_name = true
 [people.fjamesprice]
 sync_github_name = true
 
+[people.mockydevs]
+real_name = "Don Omondi"
+
 [people.ha1des]
 sync_github_name = true
 
@@ -265,6 +265,11 @@ sync_github_name = false
 [people.drunkeninja42]
 real_name = "Kushagra Sharma"
 
+[people.hidoba]
+real_name = "Vlad Grankovsky"
+display_name = "Vlad Grankovsky"
+sync_github_name = false
+
 [people.WebWork-rrs]
 display_name = "Ratul Paul"
 
@@ -282,3 +287,18 @@ sync_github_name = false
 [people.jasallen]
 real_name = "Jason DeBoever"
 sync_github_name = true
+
+[people.dylanmtaylor]
+sync_github_name = true
+
+[people.sn-o-w]
+real_name = "Cristian Silaghi"
+sync_github_name = false
+
+[people.regexer]
+sync_github_name = true
+
+[people.SimoneRecchia]
+real_name = "Simone Recchia"
+display_name = "Simone Recchia"
+sync_github_name = false

@@ -107,6 +107,46 @@ pub(crate) fn set_resolution(doc: &mut Document, dpi: f32) {
     });
 }
 
+/// Moves the type of `doc` (scratch copies on their way to another document) to `dpi` keeping its
+/// pixels, as the reference application does when a type layer is copied between documents of
+/// different resolutions: every size in points is rewritten by old / new (24 pt at 72 ppi is
+/// 5.76 pt at 300 ppi), so `pt x dpi / 72` pixels stay the same and the layer gets no
+/// compensating transform. Box, path and transform are in pixels and stay; tracking and kerning
+/// (1/1000 em) and auto leading (a multiple of the size) follow the size.
+pub(crate) fn retarget_type_resolution(doc: &mut Document, dpi: f32) {
+    // The text engine lays out a resolution that isn't a positive number at 72 ppi.
+    let effective = |d: f32| if d.is_finite() && d > 0.0 { f64::from(d) } else { 72.0 };
+    let old = std::mem::replace(&mut doc.resolution_dpi, dpi);
+    let k = effective(old) / effective(dpi);
+    if !(k.is_finite() && k > 0.0) || k == 1.0 {
+        return;
+    }
+    crate::image_cmds::for_each_layer(&mut doc.layers, &mut |l| {
+        let LayerContent::Text(t) = &mut l.content else { return };
+        t.size_pt = point_size(t.size_pt, k);
+        for r in &mut t.runs {
+            let st = &mut r.style;
+            st.size_pt = point_size(st.size_pt, k);
+            st.leading_pt = st.leading_pt.map(|v| point_size(v, k));
+            st.baseline_shift_pt = grown(st.baseline_shift_pt, k);
+        }
+        for p in &mut t.paragraphs {
+            let st = &mut p.style;
+            for v in [&mut st.first_line_indent_pt, &mut st.start_indent_pt, &mut st.end_indent_pt, &mut st.space_before_pt, &mut st.space_after_pt] {
+                *v = grown(*v, k);
+            }
+        }
+        retag_text(dpi, t);
+    });
+}
+
+/// A positive size in points times `k`, kept finite and above zero (a tiny ratio must not make
+/// the text vanish).
+fn point_size(v: f32, k: f64) -> f32 {
+    let out = grown(v, k);
+    if v > 0.0 && out <= 0.0 { f32::MIN_POSITIVE } else { out }
+}
+
 /// `v x k` kept finite (a huge box from a file must not become infinite).
 fn grown(v: f32, k: f64) -> f32 {
     (f64::from(v) * k).clamp(-f64::from(f32::MAX), f64::from(f32::MAX)) as f32

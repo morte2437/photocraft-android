@@ -37,6 +37,7 @@ mod guide_layout_limit;
 mod guide_layout_preview;
 mod hdr_gamma_direction;
 mod huge_doc_flatten;
+mod integration_batch;
 mod jpeg_exif_resolution;
 mod keyboard_shortcut_bulk;
 mod kra;

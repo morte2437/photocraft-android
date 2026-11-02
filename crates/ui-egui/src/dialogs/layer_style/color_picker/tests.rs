@@ -34,7 +34,7 @@ fn every_exposed_color_field_uses_the_shared_picker_and_only_updates_its_target(
             let tools = app.session.tools.clone();
             let doc = app.session.active().unwrap().doc.clone();
             let history = app.session.active().unwrap().history.past_len();
-            let picker = open(&mut app, parent, &effect, field).unwrap();
+            let picker = open(&mut app, parent, &effect, field, None).unwrap();
             assert!(color_picker_ui::owns(&fields(&app, picker)));
             assert_eq!(fields(&app, picker)["__label"], "Color Picker (Layer Style Color)");
             set_color(&mut app, picker, "#23a567");
@@ -63,7 +63,7 @@ fn preview_cancel_ok_parent_cancel_and_apply_are_transactional_at_every_depth() 
         let original = fields(&app, parent);
         let st = app.session.active().unwrap();
         let (doc, history, revision, dirty) = (st.doc.clone(), st.history.past_len(), st.revision, st.is_dirty());
-        let picker = open(&mut app, parent, &effect, "color").unwrap();
+        let picker = open(&mut app, parent, &effect, "color", None).unwrap();
         set_color(&mut app, picker, "#00ff00");
         let (shown, key) = canvas::display_doc(&mut app, 0);
         assert!(!Arc::ptr_eq(&shown, &doc));
@@ -78,7 +78,7 @@ fn preview_cancel_ok_parent_cancel_and_apply_are_transactional_at_every_depth() 
         dialogs::cancel(&mut app, picker).unwrap();
         assert_eq!(fields(&app, parent), original);
         assert_ne!(canvas::display_doc(&mut app, 0).1, key);
-        let picker = open(&mut app, parent, &effect, "color").unwrap();
+        let picker = open(&mut app, parent, &effect, "color", None).unwrap();
         set_color(&mut app, picker, "#00ff00");
         dialogs::confirm(&mut app, picker).unwrap();
         assert_eq!(app.session.active().unwrap().history.past_len(), history);
@@ -86,7 +86,7 @@ fn preview_cancel_ok_parent_cancel_and_apply_are_transactional_at_every_depth() 
         assert!(Arc::ptr_eq(&canvas::display_doc(&mut app, 0).0, &doc));
         let parent = layer_style::open(&mut app, Some("colorOverlay")).unwrap();
         let effect = selected(&app, parent);
-        let picker = open(&mut app, parent, &effect, "color").unwrap();
+        let picker = open(&mut app, parent, &effect, "color", None).unwrap();
         set_color(&mut app, picker, "#00ff00");
         dialogs::confirm(&mut app, picker).unwrap();
         dialogs::confirm(&mut app, parent).unwrap();
@@ -108,11 +108,11 @@ fn unchanged_ok_preserves_missing_parameters_and_imported_effect_snapshot() {
     let parent = layer_style::open(&mut app, Some("stroke")).unwrap();
     let original = fields(&app, parent);
     for effect in ["fx1", "fx2"] {
-        let picker = open(&mut app, parent, effect, "color").unwrap();
+        let picker = open(&mut app, parent, effect, "color", None).unwrap();
         dialogs::confirm(&mut app, picker).unwrap();
         assert_eq!(fields(&app, parent), original);
     }
-    let picker = open(&mut app, parent, "fx2", "color").unwrap();
+    let picker = open(&mut app, parent, "fx2", "color", None).unwrap();
     set_color(&mut app, picker, "#223344");
     dialogs::confirm(&mut app, picker).unwrap();
     let current = fields(&app, parent);
@@ -121,9 +121,9 @@ fn unchanged_ok_preserves_missing_parameters_and_imported_effect_snapshot() {
     dialogs::cancel(&mut app, parent).unwrap();
     let parent = layer_style::open(&mut app, Some("gradientOverlay")).unwrap();
     let effect = selected(&app, parent);
-    app.ui.dialog_mut(parent).unwrap().fields.get_mut("effects").unwrap().as_array_mut().unwrap()[0]["params"].as_object_mut().unwrap().remove("from");
+    app.ui.dialog_mut(parent).unwrap().fields.get_mut("effects").unwrap().as_array_mut().unwrap()[0]["params"].as_object_mut().unwrap().remove("stops");
     let original = fields(&app, parent);
-    let picker = open(&mut app, parent, &effect, "from").unwrap();
+    let picker = open(&mut app, parent, &effect, "stops", Some(0)).unwrap();
     dialogs::confirm(&mut app, picker).unwrap();
     assert_eq!(fields(&app, parent), original);
 }
@@ -134,7 +134,7 @@ fn stale_targets_and_invalid_colors_never_apply_or_leave_preview() {
         let mut app = app(8);
         let parent = layer_style::open(&mut app, Some("colorOverlay")).unwrap();
         let effect = selected(&app, parent);
-        let picker = open(&mut app, parent, &effect, "color").unwrap();
+        let picker = open(&mut app, parent, &effect, "color", None).unwrap();
         set_color(&mut app, picker, "#00ff00");
         match change {
             "document" => {
@@ -174,11 +174,11 @@ fn stale_targets_and_invalid_colors_never_apply_or_leave_preview() {
     let parent = layer_style::open(&mut app, Some("colorOverlay")).unwrap();
     let effect = selected(&app, parent);
     let original = fields(&app, parent);
-    let picker = open(&mut app, parent, &effect, "color").unwrap();
+    let picker = open(&mut app, parent, &effect, "color", None).unwrap();
     set_color(&mut app, picker, "bad");
     assert!(dialogs::confirm(&mut app, picker).is_err());
     assert_eq!(fields(&app, parent), original);
-    let picker = open(&mut app, parent, &effect, "color").unwrap();
+    let picker = open(&mut app, parent, &effect, "color", None).unwrap();
     app.run("file.new", json!({"width":3,"height":3})).unwrap();
     prune(&mut app);
     assert!(!app.ui.dialogs.iter().any(|d| d.id == picker));
@@ -192,7 +192,7 @@ fn preview_off_and_parent_confirmation_and_cancellation_keep_their_contract() {
     let effect = selected(&app, parent);
     let original = fields(&app, parent);
     let doc = app.session.active().unwrap().doc.clone();
-    let picker = open(&mut app, parent, &effect, "color").unwrap();
+    let picker = open(&mut app, parent, &effect, "color", None).unwrap();
     set_color(&mut app, picker, "#00ff00");
     assert!(Arc::ptr_eq(&canvas::display_doc(&mut app, 0).0, &doc));
     assert!(dialogs::confirm(&mut app, parent).is_err());
@@ -249,7 +249,7 @@ fn eyedropper_edits_only_the_picker_and_invalid_samples_leave_it_unchanged() {
     let original = fields(&app, parent);
     let doc = app.session.active().unwrap().doc.clone();
     let tools = app.session.tools.clone();
-    let picker = open(&mut app, parent, &effect, "color").unwrap();
+    let picker = open(&mut app, parent, &effect, "color", None).unwrap();
     color_picker_ui::sample_at(&mut app, 4.0, 4.0);
     assert_eq!(fields(&app, picker)["color"], "#406080");
     color_picker_ui::sample_at(&mut app, -100.0, -100.0);
@@ -258,4 +258,26 @@ fn eyedropper_edits_only_the_picker_and_invalid_samples_leave_it_unchanged() {
     assert!(Arc::ptr_eq(&app.session.active().unwrap().doc, &doc));
     assert_eq!(app.session.tools.foreground, tools.foreground);
     dialogs::cancel(&mut app, picker).unwrap();
+}
+
+/// A Gradient Overlay's stop (#5177): the picker edits one colour of `stops`, previewing it,
+/// and leaves the other stops alone; a stop that doesn't exist is refused.
+#[test]
+fn gradient_stop_colors_go_through_the_picker() {
+    let mut app = app(8);
+    let parent = layer_style::open(&mut app, Some("gradientOverlay")).unwrap();
+    let effect = selected(&app, parent);
+    let three = json!([[0.0, "#ff0000"], [0.5, "#00ff00"], [1.0, "#0000ff"]]);
+    super::super::set_param(&mut app.ui.dialog_mut(parent).unwrap().fields, &effect, "stops", three);
+    assert!(open(&mut app, parent, &effect, "stops", Some(3)).is_err(), "no fourth stop");
+    assert!(open(&mut app, parent, &effect, "stops", None).is_err(), "stops is not a plain colour");
+    let picker = open(&mut app, parent, &effect, "stops", Some(1)).unwrap();
+    set_color(&mut app, picker, "#123456");
+    let current = fields(&app, parent);
+    let shown = preview_fields(&app, parent, &current);
+    assert_eq!(super::super::entry(&shown, &effect).unwrap()["params"]["stops"][1][1], "#123456", "previewed");
+    assert_eq!(super::super::entry(&fields(&app, parent), &effect).unwrap()["params"]["stops"][1][1], "#00ff00", "not stored yet");
+    dialogs::confirm(&mut app, picker).unwrap();
+    let stops = super::super::entry(&fields(&app, parent), &effect).unwrap()["params"]["stops"].clone();
+    assert_eq!(stops, json!([[0.0, "#ff0000"], [0.5, "#123456"], [1.0, "#0000ff"]]));
 }

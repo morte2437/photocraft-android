@@ -323,6 +323,102 @@ fn entropy_is_deterministic() {
     }
 }
 
+/// The pre-lookup calculation, summing the 8-bit bins in ascending order. This deliberately
+/// does not call `entropy` or use its lookup/scratch, so it catches changes in rounding too.
+fn entropy_reference(v: &[f32]) -> f32 {
+    if v.len() < 2 {
+        return 0.0;
+    }
+    let mut counts = [0u32; 256];
+    for x in v {
+        counts[(x.clamp(0.0, 1.0) * 255.0).round() as usize] += 1;
+    }
+    let n = v.len() as f32;
+    let h: f32 = counts
+        .iter()
+        .filter(|&&count| count > 0)
+        .map(|&count| {
+            let p = count as f32 / n;
+            -p * p.log2()
+        })
+        .sum();
+    h / n.log2()
+}
+
+#[test]
+fn entropy_terms_preserve_each_operation_and_bound_storage() {
+    let terms = EntropyTerms::new(usize::MAX, usize::MAX);
+    let max = EntropyTerms::MAX_SAMPLES;
+    assert_eq!(terms.values.len(), (max + 1) * (max + 2) / 2);
+    assert!(terms.values.len() * size_of::<f32>() < 130 * 1024);
+    for samples in 2..=max {
+        let row = terms.row(samples).unwrap();
+        let n = samples as f32;
+        assert_eq!(row[0].to_bits(), n.log2().to_bits());
+        for (count, &term) in row.iter().enumerate().skip(1) {
+            let p = count as f32 / n;
+            assert_eq!(term.to_bits(), (-p * p.log2()).to_bits(), "{count}/{samples}");
+        }
+    }
+    for samples in [0, 1, max + 1, usize::MAX] {
+        assert!(terms.row(samples).is_none());
+    }
+    assert!(EntropyTerms::new(1, usize::MAX).values.is_empty());
+    assert!(EntropyTerms::new(usize::MAX, 255).values.is_empty());
+    assert!(EntropyTerms { values: Vec::new() }.row(2).is_none());
+}
+
+#[test]
+fn entropy_lookup_and_fallback_match_reference_bits() {
+    let terms = EntropyTerms::new(EntropyTerms::MAX_SAMPLES, CHUNK);
+    let mut scratch = EntropyScratch::new();
+    let special = [f32::NAN, f32::NEG_INFINITY, f32::INFINITY, -3.0, -0.0, 0.0, 0.5 / 255.0, 0.5, 1.0, 4.0];
+    // Move repeatedly between counts and distributions to exercise scratch reset, duplicate
+    // bins, every cached denominator and the uncached side of the table boundary.
+    for samples in (2..=EntropyTerms::MAX_SAMPLES + 2).chain([513, 3, 256, 2]) {
+        for pattern in 0..4 {
+            let v: Vec<f32> = (0..samples)
+                .map(|i| match pattern {
+                    0 => 0.5,
+                    1 => (i % 256) as f32 / 255.0,
+                    2 => ((i * 137 + samples * 29) % 65536) as f32 / 65535.0,
+                    _ => special[i % special.len()],
+                })
+                .collect();
+            let expected = entropy_reference(&v).to_bits();
+            assert_eq!(entropy(&v, &mut scratch, terms.row(samples)).to_bits(), expected, "cached: n={samples}, pattern={pattern}");
+            assert_eq!(entropy(&v, &mut scratch, None).to_bits(), expected, "fallback: n={samples}, pattern={pattern}");
+        }
+    }
+}
+
+#[test]
+fn entropy_combine_matches_reference_with_changing_contributor_counts() {
+    for (count, len) in [(19, 2 * CHUNK + 17), (EntropyTerms::MAX_SAMPLES + 1, 513)] {
+        let layers: Vec<Vec<[f32; 4]>> = (0..count)
+            .map(|k| {
+                (0..len.saturating_sub(k % 13))
+                    .map(|i| {
+                        [
+                            ((i * 31 + k * 7) % 256) as f32 / 255.0,
+                            ((i * 17 + k) % 65536) as f32 / 65535.0,
+                            if (i + k).is_multiple_of(23) { f32::NAN } else { (i % 7) as f32 - 2.0 },
+                            if k > i % (count + 1) { 0.0 } else { 0.5 },
+                        ]
+                    })
+                    .collect()
+            })
+            .collect();
+        let expected = bits(&combine_with(&layers, |v, _| entropy_reference(v)));
+        assert_eq!(bits(&combine(&layers, Stat::Entropy)), expected);
+        #[cfg(not(target_arch = "wasm32"))]
+        for threads in [1, 3] {
+            let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+            assert_eq!(pool.install(|| bits(&combine(&layers, Stat::Entropy))), expected, "{threads} threads");
+        }
+    }
+}
+
 /// Chunking is invisible: a multi-chunk image (with a ragged last chunk and layers of unequal
 /// length) gives, pixel by pixel, what combining that pixel on its own gives.
 #[test]

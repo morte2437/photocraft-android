@@ -18,9 +18,73 @@
 
 # Plural messages and command id overrides
 # Custom paper dimensions in Print Settings.
+
+
+# Menus: File, Edit, Image
+
+# Menus: Layer, Select
+
+# Menus: Type, Filter, View, Window; UI and engine commands
+
+# Tools, brushes and the options bar
+
+# Layers, masks, layer styles and blend modes
+
+# Panels
+
+# Adjustments and filters
+
+# Camera Raw and camera data
+
+# Dialogs, preferences and file formats
+
+# Status bar, messages and other labels
+
+# Labels kept for parity with the other catalogs
+# Edit › Content-Aware Fill workspace
+
+# Actions panel: Load/Save Actions (.atn) and kept Photoshop steps
+
+# Actions panel: set folders, dialog toggle, Insert Stop
+
+# Native Windows printing qualification
+
+# Layer Mask Display Options (the layer mask rubylith's colour and opacity)
+
+# Channel Options and New Spot Channel (#3761)
+# Bevel & Emboss shading controls.
+# Embedded Profile Mismatch: profile names beside the choices, Remember this choice
+
+# Darken / Lighten Interface (⇧⌘F1 / ⇧⌘F2)
+# Bevel & Emboss Technique.
+
+# View › Guides › right-click a guide
+
+# Image › Mode › Bitmap (#5559)
+
+# Layers panel options and Smart Filter editors
+
+# Free Transform: a new layer while the box is open (#5859)
+# Preferences › Performance › GPU Memory; the status bar and slow-redraw notice
+
+# DDS Options (#1327)
+
+# Color Table (.act) dialog
+
+# Graphics Adapter preference (#1885)
+
+# Styles panel: Import / Export Styles (.asl)
+# Actions: a step dialog holds a suspended recording (#7365)
+# Paragraph direction (TYPE-218-2)
+# Print preview image (#8236)
+# Color panel menu: modes, copy commands and colour ramps (#6000)
+
+# Pen draft after a refused commit (#7648)
+# Art History Brush (#213).
+# Smart Filter row actions.
+
 	Paper Width	Papír szélessége
 	Paper Height	Papír magassága
-
 @id	edit.purge.undo	Visszavonási adatok
 @id	edit.stroke	Körvonalazás…
 @id	edit.transform.scale	Méretezés
@@ -53,8 +117,6 @@
 @id	file.close	Bezárás
 @id	layer.layerMask.apply	Alkalmazás
 @id	edit.clear	Kiürítés
-
-# Menus: File, Edit, Image
 	16 Bits/Channel	16 bit/csatorna
 	180°	180°
 	32 Bits/Channel	32 bit/csatorna
@@ -259,8 +321,6 @@
 	Warp	Hajlítás
 	WIA Support…	WIA-támogatás…
 	Workspace…	Munkaterület…
-
-# Menus: Layer, Select
 	Align	Igazítás
 	Apply	Alkalmaz
 	Arrange	Elrendezés
@@ -357,6 +417,7 @@
 	Median	Medián
 	Merge Layers	Rétegek egyesítése
 	Merge Shape Components	Alakzatösszetevők egyesítése
+	Path operations	Útvonalműveletek
 	Merge Visible	Láthatók egyesítése
 	Modify	Módosítás
 	New Adjustment Layer	Új korrekciós réteg
@@ -419,8 +480,6 @@
 	Vertical Centers	Függőleges középvonalak
 	Video	Videó
 	Video Layers	Videorétegek
-
-# Menus: Type, Filter, View, Window; UI and engine commands
 	(coming soon)	(hamarosan)
 	100%	100%
 	105%	105%
@@ -869,8 +928,6 @@
 	ZigZag…	Cikcakk…
 	Zoom In	Nagyítás
 	Zoom Out	Kicsinyítés
-
-# Tools, brushes and the options bar
 	101 by 101 Average	101 x 101 átlag
 	11 by 11 Average	11 x 11 átlag
 	3 by 3 Average	3 x 3 átlag
@@ -1443,8 +1500,6 @@ fontWeight	Medium	Közepes
 fontWeight	Regular	Normál
 fontWeight	SemiBold	Középkövér
 fontWeight	Thin	Hajszálvékony
-
-# Layers, masks, layer styles and blend modes
 	30 fps	30 fps
 	Add Layer Above to Selection	Felette lévő réteg hozzáadása a kijelöléshez
 	Add Layer Below to Selection	Alatta lévő réteg hozzáadása a kijelöléshez
@@ -1691,7 +1746,7 @@ fontWeight	Thin	Hajszálvékony
 	Subtract	Kivonás
 	The document is closed	A dokumentum be van zárva
 	The document or selected layers changed. Please request deletion again.	A dokumentum vagy a kijelölt rétegek megváltoztak. Kérd újra a törlést.
-	This Layer:	Ez a réteg:
+	Current Layer:	Jelenlegi réteg:
 	To	Végszín
 	Toggle visibility	Láthatóság váltása
 	Transparency Shapes Layer	Az átlátszóság alakítja a réteget
@@ -1718,8 +1773,6 @@ layerLabel	Magenta	Bíbor
 	Fill with {mode}-neutral color (black)	Kitöltés {mode} módhoz semleges színnel (fekete)
 	Fill with {mode}-neutral color (50% gray)	Kitöltés {mode} módhoz semleges színnel (50%-os szürke)
 	(No neutral color exists for {mode} mode.)	({mode} módhoz nincs semleges szín.)
-
-# Panels
 	(none)	(nincs)
 	+ Add variable	+ Változó hozzáadása
 	30 frames @ 30 fps	30 képkocka, 30 fps
@@ -1728,6 +1781,9 @@ layerLabel	Magenta	Bíbor
 	80%	80%
 	A save to {name} is still running; try again when it finishes	Még tart egy mentés ide: {name}; próbáld újra, ha befejeződött
 	Add a layer style	Rétegstílus hozzáadása
+	Move effect up	Effektus feljebb mozgatása
+	Move effect down	Effektus lejjebb mozgatása
+	Delete effect	Effektus törlése
 	Add a mask  (from the selection; {key} inverts)	Maszk hozzáadása  (a kijelölésből; {key}: invertálás)
 	Add an adjustment	Korrekció hozzáadása
 	Add to selection  ({key})	Hozzáadás a kijelöléshez  ({key})
@@ -1946,8 +2002,6 @@ layerLabel	Magenta	Bíbor
 	{name} Properties	Tulajdonságok: {name}
 	↑↓ navigate   {key} run   esc close	↑↓ navigálás   {key} futtatás   esc bezárás
 navigator	Zoom	Nagyítás mértéke
-
-# Adjustments and filters
 	3D LUT File	3D LUT-fájl
 	90%	90%
 	Absolute	Abszolút
@@ -2497,8 +2551,6 @@ navigator	Zoom	Nagyítás mértéke
 	{added}, {removed} subtracted	{added}, {removed} kivonva
 	{index} of {total}	{index} / {total}
 	{n} of {max} sample points	{n} / {max} mintavételi pont
-
-# Camera Raw and camera data
 	After	Utána
 	Aqua	Türkiz
 	Balance	Egyensúly
@@ -2625,8 +2677,6 @@ cameraRaw	Tint	Színezet
 cameraRaw	Vibrance	Élénkség
 cameraRaw	Whites	Fehérek
 cameraRaw	Yellow	Sárga
-
-# Dialogs, preferences and file formats
 	% of all commits	Commitok aránya (%)
 	(print to the printer)	(nyomtatás a nyomtatón)
 	0 turns this threshold off; SVG groups nested deeper than 100 levels are always rasterized.	A 0 kikapcsolja ezt a küszöböt; a 100 szintnél mélyebben egymásba ágyazott SVG-csoportok mindig raszterizálódnak.
@@ -3056,8 +3106,6 @@ cameraRaw	Yellow	Sárga
 	{n} commands are not in PhotoCraft.	{n} parancs nem érhető el a PhotoCraftban.
 	{shortcut} assigned.	Billentyűparancs hozzárendelve: {shortcut}
 	{shortcut} is already in use by {commands} and will be removed from it when you click OK.	A billentyűparancs már foglalt: {shortcut}. Jelenlegi parancs: {commands}. Az OK gombra kattintva onnan törlődik.
-
-# Status bar, messages and other labels
 	Action playback failed: {error}	A műveletsor lejátszása sikertelen: {error}
 	Adaptive Wide Angle	Adaptív nagy látószög
 	Add Anchor Point Tool	Horgonypont hozzáadása
@@ -3689,8 +3737,6 @@ cameraRaw	Yellow	Sárga
 	{w} px x {h} px ({ppi} ppi)	{w} px x {h} px ({ppi} ppi)
 	{w} {unit} x {h} {unit} ({ppi} ppi)	{w} {unit} x {h} {unit} ({ppi} ppi)
 	…and {n} more	…és még {n}
-
-# Labels kept for parity with the other catalogs
 	10 fps	10 fps
 	15 fps	15 fps
 	24 fps	24 fps
@@ -4066,7 +4112,6 @@ cameraRaw	Yellow	Sárga
 	Delete Contour	Kontúr törlése
 	Loaded contours from {file}	Kontúrok betöltve: {file}
 	Saved contours to {file}	Kontúrok mentve: {file}
-# Edit › Content-Aware Fill workspace
 	Excluded Area	Kizárt terület
 	Fill Settings	Kitöltési beállítások
 	Full	Teljes
@@ -4088,8 +4133,6 @@ cameraRaw	Yellow	Sárga
 	Clear Brush Controls	Ecsetvezérlők törlése
 	Reset All Locked Settings	Összes zárolt beállítás visszaállítása
 	Copy Texture to Other Tools	Textúra másolása más eszközökre
-
-# Actions panel: Load/Save Actions (.atn) and kept Photoshop steps
 	Load Actions…	Műveletek betöltése…
 	Save Actions…	Műveletek mentése…
 	New Action…	Új művelet…
@@ -4101,9 +4144,7 @@ cameraRaw	Yellow	Sárga
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} lépésnek még nincs megfelelője a PhotoCraftban
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	{n} művelet mentve. Cél: {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	{n} Photoshop-megfelelő nélküli lépés kihagyva
-
 	Starting serial	Kezdő sorszám
-# Actions panel: set folders, dialog toggle, Insert Stop
 	Insert Stop…	Leállítás beszúrása…
 	Save Set…	Készlet mentése…
 	Message:	Üzenet:
@@ -4127,20 +4168,14 @@ cameraRaw	Yellow	Sárga
 	Loaded Camera Raw settings from {file}	Camera Raw-beállítások betöltve innen: {file}
 	Loaded Camera Raw settings from {file} ({n} not supported)	Camera Raw-beállítások betöltve innen: {file} ({n} nem támogatott)
 	Auto Add/Delete	Automatikus hozzáadás/törlés
-
-# Native Windows printing qualification
 	Don't also tick Mirror Image in Print Settings…: the two flips cancel out.	A nyomtatási beállításokban ne jelöld be a tükrözést is: a két tükrözés kioltja egymást.
 	Print Settings…	Nyomtatási beállítások…
 	Remember to turn off the printer's own colour management in Print Settings…	Ne felejtsd el kikapcsolni a nyomtató saját színkezelését a nyomtatási beállításokban…
 	Sent to {printer}	Elküldve ide: {printer}
 	set in Print Settings…	a nyomtatási beállításokban adható meg…
 	ICO is limited to 256 × 256 pixels	Az ICO legfeljebb 256 × 256 képpont lehet
-
-# Layer Mask Display Options (the layer mask rubylith's colour and opacity)
 	Mask Options…	Maszkbeállítások…
 	Layer Mask Display Options…	Rétegmaszk megjelenítési beállításai…
-
-# Channel Options and New Spot Channel (#3761)
 	Channel Color	Csatorna színe
 	Color Indicates:	A szín jelzése:
 	Ink Characteristics	Festék jellemzői
@@ -4184,7 +4219,6 @@ cameraRaw	Yellow	Sárga
 	Slab Serif	Talpas (szögletes)
 	TrueType font	TrueType betűtípus
 	Variable font	Változó betűtípus
-# Bevel & Emboss shading controls.
 	Highlight Mode	Csúcsfény módja
 	Highlight Color	Csúcsfény színe
 	Highlight Opacity	Csúcsfény fedettsége
@@ -4192,36 +4226,21 @@ cameraRaw	Yellow	Sárga
 	Shadow Color	Árnyék színe
 	Shadow Opacity	Árnyék fedettsége
 	Check for Updates…	Frissítések keresése…
-	PhotoCraft Updates	PhotoCraft-frissítések
-	Checking for updates…	Frissítések keresése…
 	Open the release page to choose an installer for your system.	Nyissa meg a kiadás oldalát, és válassza ki a rendszerének megfelelő telepítőt.
-	Open Download Page	Letöltési oldal megnyitása
-	PhotoCraft is up to date.	A PhotoCraft naprakész.
-	Could not check for updates.	Nem sikerült ellenőrizni a frissítéseket.
-	Updates have not been checked yet.	A frissítések még nem lettek ellenőrizve.
-	Check Again	Újraellenőrzés
 	Automatically Check for Updates	Frissítések automatikus keresése
-	Installed version: {version}	Telepített verzió: {version}
-	PhotoCraft {version} is available.	Elérhető a PhotoCraft {version}.
-# Embedded Profile Mismatch: profile names beside the choices, Remember this choice
 	Use the embedded profile ({profile})	A beágyazott profil használata ({profile})
 	Convert to the working space ({profile})	Átalakítás a munkaszíntérbe ({profile})
 	Remember this choice for future images	A választás megjegyzése a későbbi képekhez
 	Turn the prompt back on with Ask On Mismatch in Edit › Color Settings.	A kérdést a Szerkesztés › Színbeállítások „Profileltérés: rákérdezés megnyitáskor” beállításával kapcsolhatod vissza.
 	Button Mode	Gomb mód
 	Button Mode On	Gomb mód be
-
-# Darken / Lighten Interface (⇧⌘F1 / ⇧⌘F2)
 	Darken Interface	Felület sötétítése
 	Lighten Interface	Felület világosítása
-# Bevel & Emboss Technique.
 	Technique	Technika
 	Chisel Hard	Kemény vésés
 	Chisel Soft	Lágy vésés
 	Open color-less EXR as ACEScg	Színinformáció nélküli EXR megnyitása ACEScg-ként
 	Do not append "copy" to filename when saving a copy	Ne fűzze a „copy” szót a fájlnévhez másolat mentésekor
-
-# View › Guides › right-click a guide
 	Edit Selected Guides	Kijelölt segédvonalak szerkesztése
 	Clear Selected Guides	Kijelölt segédvonalak törlése
 	Bicubic Automatic	Automatikus bikubikus
@@ -4246,8 +4265,6 @@ cameraRaw	Yellow	Sárga
 	set name	készlet neve
 	{set} (modified)	{set} (módosítva)
 	Show file name in title	Fájlnév megjelenítése a címben
-
-# Image › Mode › Bitmap (#5559)
 	50% Threshold	50%-os küszöb
 	Pattern Dither	Mintázatos keverés
 	Diffusion Dither	Diffúziós keverés
@@ -4257,8 +4274,6 @@ cameraRaw	Yellow	Sárga
 	Lines/Inch	Vonal/hüvelyk
 	Lines/Centimeter	Vonal/centiméter
 	Ellipse	Ellipszis
-
-# Layers panel options and Smart Filter editors
 	Add “copy” to Copied Layers and Groups	„másolat” hozzáadása a másolt rétegekhez és csoportokhoz
 	Animation Options	Animációs beállítások
 	Entire Document	Teljes dokumentum
@@ -4275,7 +4290,6 @@ cameraRaw	Yellow	Sárga
 	Thumbnail Contents	Bélyegkép tartalma
 	Thumbnail Size	Bélyegképméret
 	Use Default Masks on Fill Layers	Alapértelmezett maszkok kitöltőrétegeken
-
 	Blending Options ({filter})	Keverési beállítások ({filter})
 	Hide the layer's effects and Smart Filters  ({key}-click: all layers)	A réteg effektusainak és intelligens szűrőinek elrejtése  ({key}+kattintás: minden réteg)
 	Opacity must be between 0% and 100%.	Az átlátszatlanságnak 0% és 100% között kell lennie.
@@ -4291,10 +4305,8 @@ cameraRaw	Yellow	Sárga
 	Undo Changes	Változások visszavonása
 	{shortcut} is reserved by the system and can't be assigned.	A(z) {shortcut} a rendszer számára fenntartott, nem rendelhető hozzá.
 	Low-Latency Drawing (vsync off, applies at next launch)	Kis késleltetésű rajzolás (vsync nélkül, a következő indításkor lép életbe)
-# Free Transform: a new layer while the box is open (#5859)
 	Free Transform is still being applied; try again when it has finished.	A szabad alakítás alkalmazása még folyamatban van; próbáld újra, ha befejeződött.
 	The transform couldn't be applied.	Az átalakítás nem alkalmazható.
-# Preferences › Performance › GPU Memory; the status bar and slow-redraw notice
 	Its layers need {needed} of GPU memory; the budget leaves them {budget}.	A rétegeknek {needed} GPU-memória kell; a keret {budget} hagy nekik.
 	Set GPU Memory in Preferences › Performance to what your graphics card can hold, at most 3/8 of its memory. Automatic follows Memory Usage, within a quarter of this computer's memory and 3/8 of the card's, and doesn't count the document against a card whose memory is known. The status bar shows GPU Memory Full while they don't fit.	A Beállítások › Teljesítmény alatt állítsd a GPU-memóriát arra, amennyit a videokártyád elbír, legfeljebb a memóriája 3/8-ára. Az Automatikus a memóriahasználatot követi, a számítógép memóriájának negyedén és a kártya 3/8-án belül, és ismert memóriájú kártyánál nem számítja bele a dokumentumot. Amíg nem férnek el, az állapotsor a GPU-memória megtelt üzenetet mutatja.
 	GPU Memory Full	GPU-memória megtelt
@@ -4320,8 +4332,6 @@ cameraRaw	Yellow	Sárga
 	The fastest and the softest, with colour fringing on fine detail.	A leggyorsabb és a leglágyabb, apró részleteken színes szegéllyel.
 	“{name}” already exists. Replace it?	„{name}” már létezik. Lecseréli?
 	The name in the save dialog was “{name}”.	A mentési párbeszédpanelen megadott név: „{name}”.
-	Move Up	Mozgatás felfelé
-	Move Down	Mozgatás lefelé
 	Previous Brush	Előző ecset
 	Next Brush	Következő ecset
 	First Brush	Első ecset
@@ -4336,24 +4346,27 @@ cameraRaw	Yellow	Sárga
 	Use	Használat
 	In Front	Elöl
 	Behind	Mögött
-
-# DDS Options (#1327)
 	DDS Options	DDS-beállítások
 	Generate Mipmaps	Mipmapek létrehozása
-
-# Color Table (.act) dialog
 	There is no color table to save.	Nincs menthető színtábla.
 @plural	Saved {n} color to {file}|Saved {n} colors to {file}	{n} szín mentve ide: {file}
-
-# Graphics Adapter preference (#1885)
 	GPU adapter	GPU-adapter
+smartSvg	Choose executable…	Futtatható fájl kiválasztása…
+smartSvg	Choose the application used to edit this SVG:	Válassza ki az SVG szerkesztésére használt alkalmazást:
+smartSvg	Edit SVG Smart Object	SVG intelligens objektum szerkesztése
+smartSvg	Other application	Másik alkalmazás
+smartSvg	PhotoCraft (internal editor)	PhotoCraft (belső szerkesztő)
+smartSvg	SVG editor opened. Save the SVG to update this Smart Object.	Az SVG-szerkesztő megnyílt. Mentse az SVG-t az intelligens objektum frissítéséhez.
+smartSvg	Save to the opened SVG file. Each saved change becomes one undo step in PhotoCraft.	Mentse a megnyitott SVG-fájlba. Minden mentett módosítás külön visszavonási lépés lesz a PhotoCraftban.
+smartSvg	Stop syncing this Smart Object	Az intelligens objektum szinkronizálásának leállítása
+smartSvg	Updates wait while another document or an editing dialog is active.	A frissítések várakoznak, amíg másik dokumentum vagy szerkesztési párbeszédablak aktív.
+smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded source; format-specific features may change.	Az AI/PDF/EPS tartalom SVG-ként szerkeszthető. A mentés lecseréli a beágyazott forrást; a formátumspecifikus tulajdonságok megváltozhatnak.
 
 # Styles panel: Import / Export Styles (.asl)
 	Import Styles…	Stílusok importálása…
 	Export Selected Styles…	Kijelölt stílusok exportálása…
 	Export Styles…	Stílusok exportálása…
 	{file} is not a style library (.asl)	{file} nem stíluskönyvtár (.asl)
-# Actions: a step dialog holds a suspended recording (#7365)
 	Confirm or cancel the open action step dialog first	Előbb hagyd jóvá vagy vond vissza a művelet lépésének nyitott párbeszédablakát
 	Pro Medium Gray	Pro középszürke
 	Solarized	Solarized
@@ -4362,14 +4375,11 @@ cameraRaw	Yellow	Sárga
 	Pro Light	Pro világos
 	Resize Windows to Fit	Ablakok átméretezése a képhez
 	EXR	EXR
-# Paragraph direction (TYPE-218-2)
 	Automatic paragraph direction	Automatikus bekezdésirány
 	Left-to-right paragraph direction	Balról jobbra irányuló bekezdés
 	Right-to-left paragraph direction	Jobbról balra irányuló bekezdés
 	Not rendered: this adjustment ({key}) is kept as imported.	Nem jelenik meg: ez a korrekció ({key}) importált állapotában marad.
-# Print preview image (#8236)
 	Print preview image	Print preview image
-# Color panel menu: modes, copy commands and colour ramps (#6000)
 	Hue Cube	Színárnyalat-kocka
 	Brightness Cube	Fényerő-kocka
 	Color Wheel	Színkör
@@ -4385,7 +4395,8 @@ cameraRaw	Yellow	Sárga
 	Grayscale Ramp	Szürkeárnyalatos sáv
 	Current Colors	Aktuális színek
 	Make Ramp Web Safe	Sáv korlátozása webes színekre
-# Art History Brush (#213).
+	The path was kept as the Work Path	Az útvonal munkaútvonalként megmaradt
+	The path was discarded	Az útvonal el lett vetve
 	Art History Brush Tool	Művészi előzményecset eszköz
 	Tight Short	Szoros, rövid
 	Tight Medium	Szoros, közepes
@@ -4399,3 +4410,27 @@ cameraRaw	Yellow	Sárga
 	Font size presets	Betűméret-előbeállítások
 	Leading presets	Sorköz-előbeállítások
 	Tracking presets	Betűköz-előbeállítások
+	Invalid numeric entry. An integer between {min}% and {max}% is required. Previous value was inserted.	Érvénytelen számbevitel. {min}% és {max}% közötti egész szám szükséges. Az előző érték lett beillesztve.
+	Color Aware	Színalapú
+	Decontaminate Colors	Színek fertőtlenítése
+	Edge Detection	Élészlelés
+	Global Refinements	Globális finomítások
+	High Quality Preview	Kiváló minőségű előnézet
+	Object Aware	Objektumalapú
+	Real-Time Refinement	Valós idejű finomítás
+	Refine Edge Brush Tool	Élfinomító ecset eszköz
+	Refine Hair	Haj finomítása
+	Refine Mode	Finomítási mód
+	Remember Settings	Beállítások megjegyzése
+	View Mode	Nézetmód
+	Object Aware needs a segmentation model, which isn't available yet	Az Objektumalapú módhoz szegmentálási modell kell, amely még nem érhető el
+	Refine Hair needs hair detection, which isn't available yet	A Haj finomításához hajfelismerés kell, amely még nem érhető el
+	Select and Mask was closed: its document is no longer the active one	A Kijelölés és maszk bezárult: a dokumentuma már nem az aktív
+	Select and Mask was closed: another layer was selected	A Kijelölés és maszk bezárult: másik réteg lett kijelölve
+	Drag to move the selected path	Húzza a kijelölt útvonal mozgatásához
+
+# Shape Fill/Stroke popover and colour swatches opening the Color Picker
+	Recently Used Colors	Legutóbb használt színek
+	Stop Color	Színpont színe
+	Shapes can't use patterns yet	Az alakzatok még nem használhatnak mintákat
+	Edit Brush…	Ecset szerkesztése…

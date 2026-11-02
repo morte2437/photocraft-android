@@ -32,8 +32,9 @@ pub fn curvature_down(app: &mut PhotocraftApp, x: f64, y: f64) {
     if !cancel_stale(app) {
         return;
     }
-    if app.ui.pen.as_ref().is_some_and(|p| !p.curvature) {
-        pen_commit(app, false);
+    // A Pen draft whose commit is refused stays as it is: no Curvature anchor is added to it.
+    if app.ui.pen.as_ref().is_some_and(|p| !p.curvature) && !pen_commit(app, false) {
+        return;
     }
     let hit = curvature_hit(app, x, y);
     if hit == Some(0) && app.ui.pen.as_ref().is_some_and(|p| p.knots.len() >= 3) {
@@ -43,7 +44,12 @@ pub fn curvature_down(app: &mut PhotocraftApp, x: f64, y: f64) {
     if app.ui.pen.is_none() {
         app.ui.pen_doc = app.session.active().map(|st| st.doc.id);
     }
+    let Some(owner) = capture_pen_owner(app) else { return };
     let pen = app.ui.pen.get_or_insert_with(|| PenPath { curvature: true, ..Default::default() });
+    if pen.owner.is_none() {
+        pen.owner = Some(owner);
+    }
+    pen.commit_failed = false;
     if hit.is_none() {
         pen.knots.push([[x, y]; 3]);
     }
@@ -52,6 +58,7 @@ pub fn curvature_down(app: &mut PhotocraftApp, x: f64, y: f64) {
 }
 
 pub fn curvature_move(app: &mut PhotocraftApp, x: f64, y: f64) {
+    cancel_stale_pen(app);
     if let Some(pen) = app.ui.pen.as_mut().filter(|p| p.curvature)
         && let Some(k) = pen.moving.and_then(|i| pen.knots.get_mut(i))
     {
@@ -61,6 +68,7 @@ pub fn curvature_move(app: &mut PhotocraftApp, x: f64, y: f64) {
 }
 
 pub fn curvature_up(app: &mut PhotocraftApp) {
+    cancel_stale_pen(app);
     if let Some(pen) = app.ui.pen.as_mut() {
         pen.moving = None;
     }
@@ -75,6 +83,7 @@ pub fn curvature_toggle(app: &mut PhotocraftApp, x: f64, y: f64) {
         crate::direct_select::curvature_toggle_active(app, [x, y]);
         return;
     }
+    cancel_stale_pen(app);
     let Some(i) = curvature_hit(app, x, y) else { return };
     let Some(pen) = app.ui.pen.as_mut() else { return };
     if let Some(at) = pen.unlinked.iter().position(|&c| c == i) {
@@ -84,3 +93,5 @@ pub fn curvature_toggle(app: &mut PhotocraftApp, x: f64, y: f64) {
     }
     curvature_refresh(pen, false);
 }
+
+use super::{cancel_stale_pen, capture_pen_owner};

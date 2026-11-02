@@ -419,6 +419,56 @@ fn contour_presets_match_photoshop() {
     assert!((at(&lut("Cove - Deep"), 0.0) - 0.26).abs() < 0.02, "Cove - Deep starts above zero");
 }
 
+/// #5177: a Gradient Overlay (and a gradient stroke) takes any number of colour stops and
+/// transparency stops, replacing From/To; bad lists are refused, not silently dropped.
+#[test]
+fn gradient_overlay_takes_explicit_stops() {
+    let mut s = session();
+    let stops = json!([[0.0, "#ff0000"], [0.5, "#00ff00"], [1.0, "#0000ff"]]);
+    s.execute("layer.layerStyle.gradientOverlay", json!({"stops": stops, "opacityStops": [[0, 100], [1, 50]]})).unwrap();
+    let Effect::GradientOverlay { gradient, .. } = &effects(&s)[0] else { panic!() };
+    assert_eq!(gradient.stops.len(), 3);
+    assert_eq!(gradient.stops[1], (0.5, photocraft_color::Color::rgb(0.0, 1.0, 0.0)));
+    assert_eq!(gradient.opacity_stops, vec![(0.0, 1.0), (1.0, 0.5)]);
+    // Editing the same overlay: new stops replace the list (sorted), unsorted input is sorted,
+    // and a geometry-only edit keeps the three stops.
+    s.execute("layer.layerStyle.gradientOverlay", json!({"stops": [[1.0, "#ffffff"], [0.25, [0.0, 0.0, 0.0]]], "opacityStops": []})).unwrap();
+    let Effect::GradientOverlay { gradient, .. } = &effects(&s)[0] else { panic!() };
+    assert_eq!(gradient.stops.iter().map(|s| s.0).collect::<Vec<_>>(), vec![0.25, 1.0]);
+    assert!(gradient.opacity_stops.is_empty(), "[] means opaque");
+    s.execute("layer.layerStyle.gradientOverlay", json!({"stops": stops})).unwrap();
+    // The dialog's path: the snapshot plus a geometry edit keeps the three stops.
+    let fx = serde_json::to_value(&effects(&s)[0]).unwrap();
+    s.execute("layer.layerStyle.replace", json!({"effects": [{"kind": "gradientOverlay", "fx": fx, "params": {"angle": 45}}]})).unwrap();
+    let Effect::GradientOverlay { gradient, .. } = &effects(&s)[0] else { panic!() };
+    assert_eq!((gradient.stops.len(), gradient.angle), (3, 45.0));
+    let e = s.execute("layer.layerStyle.replace", json!({"effects": [{"kind": "gradientOverlay", "params": {"stops": [[0, "#ff0000"]]}}]})).unwrap_err();
+    assert!(matches!(e, EngineError::BadParams { .. }), "{e}");
+    // A gradient stroke takes stops too.
+    s.execute("layer.layerStyle.stroke", json!({"size": 4, "stops": [[0, "#ff0000"], [0.5, "#00ff00"], [1, "#0000ff"]]})).unwrap();
+    assert!(effects(&s).iter().any(|e| matches!(e, Effect::Stroke(st) if matches!(&st.paint, FxPaint::Gradient(g) if g.stops.len() == 3))));
+    // Malformed lists are errors and change nothing.
+    for bad in [
+        json!({"stops": "red"}),
+        json!({"stops": [[0, "#ff0000"]]}),
+        json!({"stops": [[0, "#ff0000"], ["x", "#0000ff"]]}),
+        json!({"stops": [[0, "#ff0000"], [1, 7]]}),
+        json!({"stops": [[0, "#ff0000"], [f64::NAN, "#0000ff"]]}),
+        json!({"stops": vec![json!([0, "#ff0000"]); 257]}),
+        json!({"opacityStops": [[0, 100]]}),
+        json!({"opacityStops": [[0, "x"], [1, 1]]}),
+    ] {
+        let e = s.execute("layer.layerStyle.gradientOverlay", bad.clone()).unwrap_err();
+        assert!(matches!(e, EngineError::BadParams { .. }), "{bad}: {e}");
+    }
+    let Effect::GradientOverlay { gradient, .. } = &effects(&s)[0] else { panic!() };
+    assert_eq!(gradient.stops.len(), 3, "a refused edit keeps the gradient");
+    // Positions outside 0..1 are clamped.
+    s.execute("layer.layerStyle.gradientOverlay", json!({"stops": [[-1, "#000000"], [2, "#ffffff"]]})).unwrap();
+    let Effect::GradientOverlay { gradient, .. } = &effects(&s)[0] else { panic!() };
+    assert_eq!(gradient.stops.iter().map(|s| s.0).collect::<Vec<_>>(), vec![0.0, 1.0]);
+}
+
 #[test]
 fn gradient_overlay_method_matches_photoshop() {
     // Photoshop 27.11, Classic Gradient Overlay #000000 → #ffffff (Smoothness 100 %): 0.037 at
@@ -573,4 +623,19 @@ fn double_stroke_bands_render_and_survive_an_edit() {
     let entries: Vec<Value> = items.iter().map(|fx| json!({"kind": "stroke", "fx": serde_json::to_value(fx).unwrap(), "params": {}})).collect();
     s.execute("layer.layerStyle.replace", json!({"layer": id.0, "effects": entries})).unwrap();
     assert_eq!(px(&mut s, 24, 14), before, "both strokes render identically after the round trip");
+}
+
+#[test]
+fn unchanged_dense_imported_stops_roundtrip_without_edit_limit_regression() {
+    let mut s = session();
+    let gradient = Gradient { stops: (0..300).map(|i| (i as f32 / 299.0, Color::rgb(i as f32 / 777.0, 0.123456, 0.9))).collect(), ..Gradient::default() };
+    let fx = Effect::GradientOverlay { common: FxCommon::new(BlendMode::Normal, 1.0), gradient: gradient.clone(), dither: false, interpolation: None };
+    let stops: Vec<_> = gradient.stops.iter().map(|(t, c)| json!([t, c])).collect();
+    s.execute("layer.layerStyle.replace", json!({"effects":[{"kind":"gradientOverlay","fx":fx,"params":{"stops":stops}}]})).unwrap();
+    let doc = s.active().unwrap();
+    let saved = &doc.doc.layer(doc.active_layer.unwrap()).unwrap().effects.items[0];
+    assert_eq!(saved, &fx);
+    let mut edited = stops;
+    edited[1] = json!([0.01, "#ffffff"]);
+    assert!(s.execute("layer.layerStyle.replace", json!({"effects":[{"kind":"gradientOverlay","fx":fx,"params":{"stops":edited}}]})).is_err());
 }

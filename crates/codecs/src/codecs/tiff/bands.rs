@@ -1,4 +1,4 @@
-use super::decode::{Layout, Patched, Src, is_eof};
+use super::decode::{Layout, Patched, Prepared, Src, is_eof};
 use super::{CodecError, Decoder, SampleType, err, f16, map_err};
 
 /// The a* and b* samples (1 and 2 of every pixel) of a Lab image between the file's encoding and
@@ -96,6 +96,23 @@ pub(super) fn zeroed(len: usize) -> Result<Vec<u8>, CodecError> {
     Ok(v)
 }
 
+/// `v` refilled with `len` zero bytes, reusing its allocation when it is large enough.
+pub(super) fn refill_zeroed(mut v: Vec<u8>, len: usize) -> Result<Vec<u8>, CodecError> {
+    if v.capacity() < len {
+        drop(v);
+        return zeroed(len);
+    }
+    v.clear();
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use rayon::prelude::*;
+        v.par_extend(rayon::iter::repeat_n(0u8, len));
+    }
+    #[cfg(target_arch = "wasm32")]
+    v.resize(len, 0);
+    Ok(v)
+}
+
 /// Chunks decoded and chunks whose data ended early.
 #[derive(Default, Clone, Copy)]
 pub(super) struct Tally {
@@ -110,32 +127,29 @@ impl std::ops::Add for Tally {
     }
 }
 
-/// Decodes every band into `data`, in parallel on native targets (one decoder and scratch
-/// buffer per worker). `extra` receives samples that are not part of the colour image, one
-/// band of rows at a time, when it is non-empty.
+/// Decodes the bands from `first` on into `data` (`band_bytes` each), in parallel on native
+/// targets (one decoder and scratch buffer per worker). `extra` receives samples that are not
+/// part of the colour image, `extra_band` bytes per band, when it is non-empty.
 #[cfg(not(target_arch = "wasm32"))]
-pub(super) fn decode_bands<'a, O>(
-    lay: &Layout,
+pub(super) fn decode_bands(
+    p: &Prepared,
+    b: &[u8],
     data: &mut [u8],
     band_bytes: usize,
+    first: usize,
     extra: &mut [u8],
     extra_band: usize,
-    _first: &mut Decoder<Patched<'a>>,
-    open: &O,
-) -> Result<Tally, CodecError>
-where
-    O: Fn() -> Result<Decoder<Patched<'a>>, CodecError> + Sync,
-{
+) -> Result<Tally, CodecError> {
     use rayon::prelude::*;
     if extra.is_empty() {
         return data
             .par_chunks_mut(band_bytes.max(1))
             .enumerate()
             .map_init(
-                || open().map(|d| (d, Vec::new())).map_err(|e| e.to_string()),
-                |worker, (b, band)| {
+                || p.open(b).map(|d| (d, Vec::new())).map_err(|e| e.to_string()),
+                |worker, (i, band)| {
                     let (dec, scratch) = worker.as_mut().map_err(|e| err(e.clone()))?;
-                    decode_band(lay, dec, scratch, b, band, None)
+                    decode_band(&p.lay, dec, scratch, first + i, band, None)
                 },
             )
             .try_reduce(Tally::default, |a, b| Ok(a + b));
@@ -144,39 +158,37 @@ where
         .zip(extra.par_chunks_mut(extra_band.max(1)))
         .enumerate()
         .map_init(
-            || open().map(|d| (d, Vec::new())).map_err(|e| e.to_string()),
-            |worker, (b, (band, extra_band))| {
+            || p.open(b).map(|d| (d, Vec::new())).map_err(|e| e.to_string()),
+            |worker, (i, (band, extra_band))| {
                 let (dec, scratch) = worker.as_mut().map_err(|e| err(e.clone()))?;
-                decode_band(lay, dec, scratch, b, band, Some(extra_band))
+                decode_band(&p.lay, dec, scratch, first + i, band, Some(extra_band))
             },
         )
         .try_reduce(Tally::default, |a, b| Ok(a + b))
 }
 
-/// Decodes every band into `data`, one after the other.
+/// Decodes the bands from `first` on into `data` (`band_bytes` each), one after the other.
 #[cfg(target_arch = "wasm32")]
-pub(super) fn decode_bands<'a, O>(
-    lay: &Layout,
+pub(super) fn decode_bands(
+    p: &Prepared,
+    b: &[u8],
     data: &mut [u8],
     band_bytes: usize,
+    first: usize,
     extra: &mut [u8],
     extra_band: usize,
-    first: &mut Decoder<Patched<'a>>,
-    _open: &O,
-) -> Result<Tally, CodecError>
-where
-    O: Fn() -> Result<Decoder<Patched<'a>>, CodecError> + Sync,
-{
+) -> Result<Tally, CodecError> {
+    let mut dec = p.open(b)?;
     let mut scratch = Vec::new();
     let mut tally = Tally::default();
     if extra.is_empty() {
-        for (b, band) in data.chunks_mut(band_bytes.max(1)).enumerate() {
-            tally = tally + decode_band(lay, first, &mut scratch, b, band, None)?;
+        for (i, band) in data.chunks_mut(band_bytes.max(1)).enumerate() {
+            tally = tally + decode_band(&p.lay, &mut dec, &mut scratch, first + i, band, None)?;
         }
         return Ok(tally);
     }
-    for (b, (band, extra_band)) in data.chunks_mut(band_bytes.max(1)).zip(extra.chunks_mut(extra_band.max(1))).enumerate() {
-        tally = tally + decode_band(lay, first, &mut scratch, b, band, Some(extra_band))?;
+    for (i, (band, extra_band)) in data.chunks_mut(band_bytes.max(1)).zip(extra.chunks_mut(extra_band.max(1))).enumerate() {
+        tally = tally + decode_band(&p.lay, &mut dec, &mut scratch, first + i, band, Some(extra_band))?;
     }
     Ok(tally)
 }
@@ -209,7 +221,11 @@ fn decode_band(
             if lay.direct() && pref.len == band.len() && stride == out_row {
                 match dec.read_chunk_bytes(chunk, band) {
                     Ok(()) => tally.decoded += 1,
-                    Err(e) if is_eof(&e) => tally.missing += 1,
+                    // Rows read before the end would survive: a missing strip is zeros.
+                    Err(e) if is_eof(&e) => {
+                        band.fill(0);
+                        tally.missing += 1;
+                    }
                     Err(e) => return Err(map_err(e)),
                 }
                 continue;
@@ -218,6 +234,9 @@ fn decode_band(
                 return Err(CodecError::LimitExceeded(format!("a {} byte strip or tile", pref.len)));
             }
             if scratch.len() < pref.len {
+                scratch
+                    .try_reserve_exact(pref.len - scratch.len())
+                    .map_err(|_| CodecError::LimitExceeded(format!("cannot allocate {} bytes for a strip or tile", pref.len)))?;
                 scratch.resize(pref.len, 0);
             }
             let buf = scratch.get_mut(..pref.len).ok_or_else(|| err("scratch buffer"))?;
@@ -295,6 +314,9 @@ fn read_planar_extras(
                 return Err(CodecError::LimitExceeded(format!("a {} byte strip or tile", pref.len)));
             }
             if scratch.len() < pref.len {
+                scratch
+                    .try_reserve_exact(pref.len - scratch.len())
+                    .map_err(|_| CodecError::LimitExceeded(format!("cannot allocate {} bytes for a strip or tile", pref.len)))?;
                 scratch.resize(pref.len, 0);
             }
             let buf = scratch.get_mut(..pref.len).ok_or_else(|| err("scratch buffer"))?;

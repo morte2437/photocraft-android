@@ -16,6 +16,18 @@ pub(super) fn contents_uuid(contents_id: SmartContentsId, bytes: &[u8]) -> Strin
     crate::smart_map::uuid_from(identity.finalize().as_bytes())
 }
 
+type OwnedSourceHash = (std::sync::Arc<Vec<u8>>, [u8; 32]);
+
+#[cfg(test)]
+thread_local! { pub(crate) static EMBED_HASHED_SOURCE_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+/// The actual payload digest used by the source-conversion cache, separate from preview checks.
+pub(super) fn embed_source_hash(bytes: &[u8]) -> [u8; 32] {
+    #[cfg(test)]
+    EMBED_HASHED_SOURCE_BYTES.with(|count| count.set(count.get().saturating_add(bytes.len())));
+    *blake3::hash(bytes).as_bytes()
+}
+
 /// Smart-object state collected while emitting layers, written into the global blocks at the end.
 #[derive(Default)]
 pub(super) struct SmartOut {
@@ -34,6 +46,8 @@ pub(super) struct SmartOut {
     /// Sources converted so far, by contents identity, bytes and whether they were read from a
     /// link (`Err` = can't be embedded).
     pub(super) converted: std::collections::HashMap<(SmartContentsId, [u8; 32], bool), Result<Source, String>>,
+    /// Only immutable embedded owners are memoized for this export; pinning prevents address reuse.
+    pub(super) embedded_hashes: std::collections::HashMap<usize, OwnedSourceHash>,
     /// Each placed layer has its own id, even when it duplicates an imported layer.
     pub(super) placed_used: std::collections::HashSet<String>,
     /// Original instances reserve their imported placement regardless of layer order.
@@ -57,6 +71,8 @@ pub(super) struct SmartOut {
     /// The unfiltered pixels of each smart object whose filter mask shows: its layer record holds
     /// the filtered pixels without the mask, as Photoshop's do (`compose::filter_mask`).
     pub(super) unfiltered: std::collections::HashMap<photocraft_doc::LayerId, Surface>,
+    /// Source-bound previews shared by private blocks and smart-filter source documents.
+    pub(super) vector_previews: crate::vector_preview::ExportCache,
 }
 
 /// Whether a smart object's filter mask shows: enabled over at least one visible, enabled filter.
@@ -107,6 +123,20 @@ impl SmartOut {
             }
         }
         SmartOut { depth, globals, known, prune_ok: true, old_fx, linked_contents, placed_owners, unplaced_owners, ..Default::default() }
+    }
+
+    /// The validated native preview of `sm`, checked against its embedded bytes or the preserved
+    /// embedded file it links to (never a disk path).
+    pub(super) fn vector_preview(&mut self, sm: &photocraft_doc::SmartObject) -> Option<std::sync::Arc<crate::vector_preview::Exported>> {
+        let preview = sm.vector_preview.as_ref()?;
+        let (owner, source) = match &sm.source {
+            photocraft_doc::SmartSource::Embedded { bytes, .. } => (bytes, bytes.as_slice()),
+            photocraft_doc::SmartSource::Linked { path } => self
+                .globals
+                .iter()
+                .find_map(|(_, key, data)| crate::linked::embedded_payload_in_blocks([(key, data.as_slice())], path).map(|(_, bytes)| (data, bytes)))?,
+        };
+        self.vector_previews.get(preview, owner, source)
     }
 
     /// The document's global blocks with the linked-layer files and filter caches brought up to

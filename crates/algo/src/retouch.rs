@@ -210,34 +210,80 @@ pub fn local_sharpen(
     protect_detail: bool,
 ) -> Vec<f32> {
     let (x0, y0, x1, y1) = win;
-    let ow = x1 - x0;
+    let (ow, oh) = (x1 - x0, y1 - y0);
+    if ow == 0 || oh == 0 || ch == 0 {
+        return Vec::new();
+    }
     let blur = local_blur(data, w, h, ch, alpha, win, 1.0);
     let mut out = vec![0.0f32; blur.len()];
-    for y in y0..y1 {
-        for x in x0..x1 {
-            let o = ((y - y0) * ow + (x - x0)) * ch;
+    let stride = ow * ch;
+
+    // Rows are independent, so process them in parallel with rayon (#5426).
+    let process_row = |(oy, dst): (usize, &mut [f32])| {
+        let y = y0 + oy;
+        let blur_row = &blur[oy * stride..(oy + 1) * stride];
+        for ox in 0..ow {
+            let x = x0 + ox;
+            let o = ox * ch;
             let i = (y * w + x) * ch;
+
+            // Precompute 3×3 neighbourhood offsets once per pixel if protecting detail.
+            let offsets: [usize; 8] = if protect_detail {
+                if x > 0 && x + 1 < w && y > 0 && y + 1 < h {
+                    let w_ch = w * ch;
+                    [i - w_ch - ch, i - w_ch, i - w_ch + ch, i - ch, i + ch, i + w_ch - ch, i + w_ch, i + w_ch + ch]
+                } else {
+                    let get_n_idx = |dx: i32, dy: i32| -> usize {
+                        let nx = (x as i32 + dx).clamp(0, w as i32 - 1) as usize;
+                        let ny = (y as i32 + dy).clamp(0, h as i32 - 1) as usize;
+                        (ny * w + nx) * ch
+                    };
+                    [
+                        get_n_idx(-1, -1),
+                        get_n_idx(0, -1),
+                        get_n_idx(1, -1),
+                        get_n_idx(-1, 0),
+                        get_n_idx(1, 0),
+                        get_n_idx(-1, 1),
+                        get_n_idx(0, 1),
+                        get_n_idx(1, 1),
+                    ]
+                }
+            } else {
+                [0; 8]
+            };
+
             for c in 0..ch {
                 let v = data[i + c];
                 if Some(c) == alpha {
-                    out[o + c] = v;
+                    dst[o + c] = v;
                     continue;
                 }
-                let mut s = v + amount * (v - blur[o + c]);
+                let mut s = v + amount * (v - blur_row[o + c]);
                 if protect_detail {
                     let (mut lo, mut hi) = (v, v);
-                    for (dx, dy) in [(-1i32, -1i32), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)] {
-                        let (nx, ny) = ((x as i32 + dx).clamp(0, w as i32 - 1) as usize, (y as i32 + dy).clamp(0, h as i32 - 1) as usize);
-                        let nv = data[(ny * w + nx) * ch + c];
+                    for &n_idx in &offsets {
+                        let nv = data[n_idx + c];
                         lo = lo.min(nv);
                         hi = hi.max(nv);
                     }
                     s = s.clamp(lo, hi);
                 }
-                out[o + c] = s;
+                dst[o + c] = s;
             }
         }
+    };
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use rayon::prelude::*;
+        out.par_chunks_mut(stride).enumerate().for_each(process_row);
     }
+    #[cfg(target_arch = "wasm32")]
+    {
+        out.chunks_mut(stride).enumerate().for_each(process_row);
+    }
+
     out
 }
 

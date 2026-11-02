@@ -17,7 +17,7 @@ fn new_clipboard_document_rejects_an_unrepresentable_origin() {
     let mut s = Session::new();
     let mut surface = Surface::new(PixelFormat::RGBA8);
     surface.write_pixel(i32::MIN, 0, &[1.0, 0.0, 0.0, 1.0]);
-    s.clipboard = Some(Clip { surface, bounds: Rect::from_xywh(i32::MIN, 0, 1, 1), layers: None, resolution: None, source: None });
+    s.clipboard = Some(Clip { components: None, surface, bounds: Rect::from_xywh(i32::MIN, 0, 1, 1), layers: None, resolution: None, source: None });
     let result = new_from_clipboard(&mut s);
     assert!(result.unwrap_err().to_string().contains("clipboard origin"));
     assert!(s.execute("file.newFromClipboard", json!({})).is_err());
@@ -50,8 +50,14 @@ fn paste_centres_pixels_from_another_document() {
 #[test]
 fn paste_centers_clipboard_bounds_near_coordinate_limits() {
     for origin in [i32::MAX - 512, i32::MIN + 512] {
-        let clip =
-            Clip { surface: Surface::new(PixelFormat::RGBA8), bounds: Rect::from_xywh(origin, origin, 2, 2), layers: None, resolution: None, source: None };
+        let clip = Clip {
+            components: None,
+            surface: Surface::new(PixelFormat::RGBA8),
+            bounds: Rect::from_xywh(origin, origin, 2, 2),
+            layers: None,
+            resolution: None,
+            source: None,
+        };
         let (dx, dy) = paste_offset(&clip, DocId(1), Rect::new(0, 0, 20, 20), &json!({}), false);
         assert_eq!(i64::from(origin) + i64::from(dx), 9);
         assert_eq!(i64::from(origin) + i64::from(dy), 9);
@@ -233,7 +239,7 @@ fn external_clip_session(w: i32, h: i32, cw: i32, ch: i32) -> Session {
     s.execute("file.new", json!({"width": w, "height": h})).unwrap();
     let mut surface = Surface::new(PixelFormat::RGBA8);
     surface.fill_rect(Rect::new(0, 0, cw, ch), &[1.0, 0.0, 0.0, 1.0]);
-    s.clipboard = Some(Clip { surface, bounds: Rect::new(0, 0, cw, ch), layers: None, resolution: None, source: None });
+    s.clipboard = Some(Clip { components: None, surface, bounds: Rect::new(0, 0, cw, ch), layers: None, resolution: None, source: None });
     s
 }
 
@@ -290,6 +296,7 @@ fn paste_offset_clamp_survives_extreme_coordinates() {
     assert_eq!(clamp_shift(f64::NEG_INFINITY, i32::MIN, i32::MAX, 0, 1), i32::MAX);
     assert_eq!(clamp_shift(1e30, i32::MIN, i32::MIN + 1, i32::MAX - 1, i32::MAX), i32::MAX);
     let clip = Clip {
+        components: None,
         surface: Surface::new(PixelFormat::RGBA8),
         bounds: Rect::new(i32::MAX - 2, i32::MAX - 2, i32::MAX, i32::MAX),
         layers: None,
@@ -1191,6 +1198,35 @@ fn guides_are_undoable() {
     assert!(s.execute("view.moveGuide", json!({"orientation": "vertical", "index": 3, "position": 1})).is_err());
 }
 
+/// #5034: Move Guide turns a guide with `toOrientation` (⌥ while dragging it), in one undo
+/// step, taking its colour along; a % position is of the new axis.
+#[test]
+fn move_guide_turns_a_guide() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 200, "height": 100})).unwrap();
+    s.execute("view.newGuide", json!({"orientation": "horizontal", "position": 30, "color": "magenta"})).unwrap();
+    s.execute("view.newGuide", json!({"orientation": "horizontal", "position": 70})).unwrap();
+    s.execute("view.moveGuide", json!({"orientation": "horizontal", "index": 0, "position": "50%", "toOrientation": "vertical"})).unwrap();
+    let g = &s.active().unwrap().doc.guides;
+    assert_eq!((g.horizontal.clone(), g.vertical.clone()), (vec![70.0], vec![100.0]), "50% of the width");
+    assert_eq!(g.color(true, 100.0), Some([255, 0, 255]), "the colour moves with the guide");
+    assert_eq!(g.color(false, 30.0), None);
+    // The same orientation is a plain move.
+    s.execute("view.moveGuide", json!({"orientation": "vertical", "index": 0, "position": 20, "toOrientation": "vertical"})).unwrap();
+    assert_eq!(s.active().unwrap().doc.guides.vertical, vec![20.0]);
+    s.undo();
+    s.undo();
+    let g = &s.active().unwrap().doc.guides;
+    assert_eq!((g.horizontal.clone(), g.vertical.clone()), (vec![30.0, 70.0], vec![]), "one undo step per move");
+    // Bad params are refused and leave the guides alone.
+    assert!(s.execute("view.moveGuide", json!({"orientation": "horizontal", "index": 0, "position": 5, "toOrientation": "diagonal"})).is_err());
+    assert!(s.execute("view.moveGuide", json!({"orientation": "horizontal", "index": 0, "position": 5, "toOrientation": 1})).is_err());
+    assert!(s.execute("view.newGuide", json!({"orientation": "horizontal", "position": 5, "toOrientation": "vertical"})).is_err());
+    assert!(s.execute("view.moveGuide", json!({"orientation": "horizontal", "index": 9, "position": 5, "toOrientation": "vertical"})).is_err());
+    let g = &s.active().unwrap().doc.guides;
+    assert_eq!((g.horizontal.clone(), g.vertical.clone()), (vec![30.0, 70.0], vec![]));
+}
+
 /// #2955: the rulers' zero point is set and reset by command, undoable, and bad params are
 /// refused without touching the document.
 #[test]
@@ -1415,13 +1451,13 @@ fn lift_reference(src: &Surface, sel: Option<&Surface>, canvas: Rect) -> Clip {
     };
     let mut out = Surface::new(with_alpha);
     if area.is_empty() {
-        return Clip { surface: out, bounds: Rect::EMPTY, layers: None, resolution: None, source: None };
+        return Clip { components: None, surface: out, bounds: Rect::EMPTY, layers: None, resolution: None, source: None };
     }
     let px = lift_region(src, sel, area, with_alpha.channels()).unwrap();
     out.try_write_region(area, &px).unwrap();
     out.prune();
     let bounds = out.content_bounds();
-    Clip { surface: out, bounds, layers: None, resolution: None, source: None }
+    Clip { components: None, surface: out, bounds, layers: None, resolution: None, source: None }
 }
 
 fn noise(fmt: PixelFormat, r: Rect, seed: u32) -> Surface {

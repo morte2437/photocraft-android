@@ -60,6 +60,7 @@ impl Compositor {
                 e.region = region;
                 rebuild = false;
             }
+            photocraft_raster::scratch::give(v);
         }
         if rebuild {
             let shape = Tex::map(device, "pc_fx_shape", region, MAP32);
@@ -108,6 +109,7 @@ impl Compositor {
             fx::paste(&mut e.shape_cpu, region, damage, &v);
             e.shape.write_r32(queue, region, damage, &v);
             staged += v.len() as u64 * 4;
+            photocraft_raster::scratch::give(v);
         }
 
         // Programs, and the distance fields they read (max reach per field).

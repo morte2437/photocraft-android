@@ -710,7 +710,11 @@ fn gallery_params(item: &Descriptor, f: &Descriptor) -> Option<J> {
         let mut params = Map::new();
         if g.key == "halftonePattern" {
             // Do not turn an unfamiliar shape or malformed setting into the engine's defaults:
-            // keeping the whole item opaque preserves it through a subsequent save.
+            // keeping the whole item opaque preserves it through a subsequent save. That covers
+            // the stack's own descriptor too: a key beside `GEfs` would not be written back.
+            if f.get("GEfs").is_some() && !(f.class_id.is(GALLERY_CLASS) && only_keys(f, &["GEfs"])) {
+                return None;
+            }
             if !e.class_id.is(GALLERY_CLASS)
                 || !only_keys(e, &["GEfk", "HlSz", "Cntr", "ScrT", "GELv"])
                 || !matches!(e.get("GEfk"), Some(Value::Enumerated { type_id, .. }) if type_id.is("GEft"))

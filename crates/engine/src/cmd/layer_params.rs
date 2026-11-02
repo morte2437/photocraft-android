@@ -63,7 +63,7 @@ pub fn blend_from_str(s: &str) -> Option<BlendMode> {
 
 /// The active selection as the mask of a layer being created, or None without a selection.
 /// Photoshop masks a new adjustment or fill layer with the selection, so the adjustment acts on
-/// the selected area only (#1250); the selection itself stays, as Reveal Selection leaves it.
+/// the selected area only (#1250). [`mask_new_layer`] then drops the selection (#8801).
 pub(crate) fn selection_mask(doc: &Document) -> Result<Option<LayerMask>> {
     doc.selection.as_ref().map(|sel| mask_at_depth(LayerMask { surface: sel.clone(), ..LayerMask::reveal_all() }, doc.depth)).transpose()
 }
@@ -88,9 +88,10 @@ pub(crate) fn layer_panel_option(s: &Session, key: &str, fallback: bool) -> bool
 /// Mask a fill or adjustment layer being created, as Photoshop does: the path selected in the
 /// Paths panel (`"path"`: `"work"`, a saved path's name or a path object) becomes its vector
 /// mask, which makes a Solid Color fill a shape (#1419); without one, the selection becomes its
-/// layer mask ([`selection_mask`]); without either, a white mask reveals the whole layer (#1768).
-/// A path that isn't there is an error.
-pub(crate) fn mask_new_layer(doc: &Document, l: &mut Layer, p: &Value, cmd: &str, default_mask: bool) -> Result<()> {
+/// layer mask ([`selection_mask`]) and is dropped, as Reveal Selection drops it (#5251, #8801);
+/// without either, a white mask reveals the whole layer (#1768). A path that isn't there is an
+/// error.
+pub(crate) fn mask_new_layer(doc: &mut Document, l: &mut Layer, p: &Value, cmd: &str, default_mask: bool) -> Result<()> {
     let path = match p.get("path") {
         None | Some(Value::Null) => None,
         Some(Value::String(n)) if crate::vector_cmds::is_work(Some(n)) => Some(doc.work_path.clone().ok_or_else(|| bad(cmd, "no work path"))?),
@@ -101,9 +102,13 @@ pub(crate) fn mask_new_layer(doc: &Document, l: &mut Layer, p: &Value, cmd: &str
     };
     match path {
         Some(path) => l.vector_mask = Some(photocraft_doc::VectorMask::new(path)),
-        None => {
-            l.mask = selection_mask(doc)?.or_else(|| default_mask.then(LayerMask::reveal_all)).map(|mask| mask_at_depth(mask, doc.depth)).transpose()?;
-        }
+        None => match selection_mask(doc)? {
+            Some(mask) => {
+                l.mask = Some(mask);
+                doc.selection = None;
+            }
+            None => l.mask = default_mask.then(LayerMask::reveal_all).map(|mask| mask_at_depth(mask, doc.depth)).transpose()?,
+        },
     }
     Ok(())
 }

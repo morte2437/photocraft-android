@@ -77,6 +77,11 @@ pub struct LiveGradient {
     preview: Option<(u64, Arc<Document>)>,
 }
 
+/// Whether an uncommitted gradient gesture must finish before applying a saved vector.
+pub(crate) fn editing(app: &PhotocraftApp) -> bool {
+    app.gradient.drag.is_some() || app.gradient.panel.is_some() || app.gradient.preset_stop.is_some()
+}
+
 /// Whether the Gradient tool is in its live (Gradient Fill layer) mode.
 /// Painting into a layer mask, an alpha channel or the Quick Mask stays classic (pixels), except
 /// that a selected gradient fill layer is always edited live (selecting it targets its mask).
@@ -845,7 +850,9 @@ fn stops_editor_for(app: &mut PhotocraftApp, ui: &mut egui::Ui, sink: Sink, f: F
         },
         None => {}
     }
-    properties_panel::stop_fields(app, ui, sink);
+    // A preset invalidates an in-progress numeric draft from the old stop list.
+    let generation = ui.data(|d| d.get_temp::<u64>(selection_key.with("generation"))).unwrap_or_default();
+    ui.push_id((selection_key, generation), |ui| properties_panel::stop_fields(app, ui, sink));
 }
 
 /// A shared stop strip keeps previews local; its caller chooses the command or paint target.

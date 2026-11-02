@@ -23,7 +23,9 @@
 mod catalog;
 mod system;
 
-pub use system::system_lang;
+#[cfg(test)]
+pub(crate) use system::with_decimal_separator;
+pub use system::{decimal_separator, system_lang};
 
 use std::cell::Cell;
 use std::sync::OnceLock;
@@ -199,7 +201,7 @@ fn expand(packed: &str, keys: &[&str]) -> Result<String, String> {
 }
 
 /// The registry. English first: it is the fallback and the source language.
-pub static LANGUAGES: [LangInfo; 23] = [
+pub static LANGUAGES: [LangInfo; 27] = [
     LangInfo { code: "en", name: "English", source: b"", plural: plural_one_other, complete_menus: false, catalog: OnceLock::new() },
     LangInfo { code: "ja", name: "日本語", source: catalog!("ja"), plural: plural_none, complete_menus: true, catalog: OnceLock::new() },
     LangInfo { code: "zh-hans", name: "简体中文", source: catalog!("zh-hans"), plural: plural_none, complete_menus: true, catalog: OnceLock::new() },
@@ -237,6 +239,16 @@ pub static LANGUAGES: [LangInfo; 23] = [
     // Arabic (Modern Standard); `ar-SA`, `ar-EG` and the other regional locales resolve here. The
     // chrome mirrors right to left (`dir_for_code`), and egui lays each label out right to left.
     LangInfo { code: "ar", name: "العربية", source: catalog!("ar"), plural: plural_arabic, complete_menus: true, catalog: OnceLock::new() },
+    // Swedish; `sv-SE` and `sv-FI` locales resolve here.
+    LangInfo { code: "sv", name: "Svenska", source: catalog!("sv"), plural: plural_one_other, complete_menus: true, catalog: OnceLock::new() },
+    // Finnish; `fi-FI` resolves here (Swedish in Finland, `sv-FI`, stays Swedish). One/other: the
+    // partitive singular follows any number but 1 ("1 taso", "2 tasoa").
+    LangInfo { code: "fi", name: "Suomi", source: catalog!("fi"), plural: plural_one_other, complete_menus: true, catalog: OnceLock::new() },
+    // Danish; `da-DK` and the other `da-*` locales resolve here.
+    LangInfo { code: "da", name: "Dansk", source: catalog!("da"), plural: plural_one_other, complete_menus: true, catalog: OnceLock::new() },
+    // Norwegian Bokmål; `nb-NO`, and the macrolanguage `no` and Nynorsk `nn` from POSIX locales,
+    // resolve here (see `candidates`).
+    LangInfo { code: "nb", name: "Norsk bokmål", source: catalog!("nb"), plural: plural_one_other, complete_menus: true, catalog: OnceLock::new() },
 ];
 
 impl LangInfo {
@@ -365,6 +377,11 @@ fn candidates(tag: &str) -> Vec<String> {
     if primary == "pt" && !out.iter().any(|c| c == "pt-br") {
         // The only Portuguese catalog is Brazilian; other regions use it rather than English.
         out.insert(out.len() - 1, "pt-br".to_string());
+    }
+    if matches!(primary, "no" | "nn") && !out.iter().any(|c| c == "nb") {
+        // The only Norwegian catalog is Bokmål; the macrolanguage code and Nynorsk use it rather
+        // than English.
+        out.insert(out.len() - 1, "nb".to_string());
     }
     out
 }

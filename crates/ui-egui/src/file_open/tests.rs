@@ -713,8 +713,17 @@ fn views_and_windows_stay_with_their_documents() {
     for (i, v) in app.ui.views.iter_mut().enumerate() {
         v.zoom = i as f32 + 1.0;
     }
-    app.ui.windows =
-        (0..4).map(|document| crate::state::DocWindow { id: document as u64, document, view: Default::default(), open: true, position: None }).collect();
+    app.ui.windows = (0..4)
+        .map(|document| crate::state::DocWindow {
+            id: document as u64,
+            document,
+            view: Default::default(),
+            open: true,
+            floating: false,
+            focused: false,
+            position: None,
+        })
+        .collect();
     let zooms = |app: &PhotocraftApp| app.ui.views.iter().map(|v| v.zoom).collect::<Vec<_>>();
     let windows = |app: &PhotocraftApp| app.ui.windows.iter().map(|w| (w.id, w.document)).collect::<Vec<_>>();
     assert_eq!(app.run("document.move", json!({"document": 0, "to": 3})).unwrap(), json!({"document": 3}));
@@ -835,7 +844,10 @@ fn open_paths_reports_in_the_interface_language_before_the_first_frame() {
     app.session.edit_prefs(|p| p.interface.language = "ar".into());
     crate::i18n::set_current(crate::i18n::Lang::EN);
     assert_eq!(app.open_paths(&paths), 1);
-    assert_eq!(app.ui.status, "تم استيراد 3 نقشات من launch");
+    let ar = crate::i18n::Lang::from_code("ar").unwrap();
+    let want =
+        crate::i18n::fmt(&crate::i18n::trn(ar, 3, "Imported {n} pattern from {file}", "Imported {n} patterns from {file}"), &[("n", "3"), ("file", "launch")]);
+    assert_eq!(app.ui.status, want);
     crate::i18n::set_current(crate::i18n::Lang::EN);
     let _ = std::fs::remove_dir_all(&dir);
 }

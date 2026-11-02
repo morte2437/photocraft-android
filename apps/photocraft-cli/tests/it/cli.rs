@@ -1421,3 +1421,78 @@ fn control_token_env_vars_are_the_flags_fallbacks() {
     let err = serve_tcp_stderr(bin().args(["serve", "--port"]).arg(free_port().to_string()).env("PHOTOCRAFT_CONTROL_TOKEN", ""));
     assert!(err.contains("photocraft-cli serving on") && err.contains("photocraft-cli control token: "), "{err}");
 }
+
+/// #8802: Deselect with nothing selected is skipped in a `run`, as action playback does (#6744),
+/// so a script that deselects after Reveal Selection still finishes and saves.
+#[test]
+fn run_skips_deselect_with_nothing_selected() {
+    let folder = tmp("deselect-run");
+    let native = folder.join("out.pcraft").to_string_lossy().to_string();
+    let Invoke { code, stdout, stderr } = invoke(&[
+        "run",
+        "--new",
+        r#"{"width":16,"height":16}"#,
+        "--cmd",
+        "select.rect",
+        "--params",
+        r#"{"x":0,"y":0,"width":8,"height":16}"#,
+        "--cmd",
+        "layer.new.layer",
+        "--cmd",
+        "layer.layerMask.revealSelection",
+        "--cmd",
+        "select.deselect",
+        "--cmd",
+        "layer.new.layer",
+        "--params",
+        r#"{"name":"after"}"#,
+        "--out",
+        &native,
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let results: Vec<Value> = stdout.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    assert_eq!(results.len(), 5, "every command reports a result: {stdout}");
+    assert_eq!(results[3], json!({"command": "select.deselect", "result": null}));
+    let Invoke { code, stdout, stderr } = invoke(&["info", &native, "--compact"]);
+    assert_eq!(code, 0, "{stderr}");
+    let info: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(info["layers"][0]["name"], "after", "the steps after Deselect ran: {info}");
+
+    // Deselect with a selection still deselects: Inverse afterwards finds nothing to invert.
+    let Invoke { code, stderr, .. } = invoke(&[
+        "run",
+        "--new",
+        r#"{"width":16,"height":16}"#,
+        "--cmd",
+        "select.all",
+        "--cmd",
+        "select.deselect",
+        "--cmd",
+        "select.inverse",
+        "--out",
+        &native,
+    ]);
+    assert_eq!(code, 1, "{stderr}");
+    assert!(stderr.contains("select.inverse") && stderr.contains("no selection"), "{stderr}");
+    let _ = std::fs::remove_dir_all(&folder);
+}
+
+/// #8802: a batched action that starts with Deselect plays on files with nothing selected, as the
+/// same action does in the Actions panel (#6744).
+#[test]
+fn batch_skips_deselect_with_nothing_selected() {
+    let dir = tmp("deselect-batch");
+    let path = |name: &str| dir.join(name).to_string_lossy().to_string();
+    std::fs::create_dir_all(dir.join("in")).unwrap();
+    let Invoke { code, stderr, .. } = invoke(&["run", "--new", r#"{"width":8,"height":6}"#, "--out", &path("in/a.png")]);
+    assert_eq!(code, 0, "{stderr}");
+    std::fs::write(dir.join("steps.json"), json!([["select.deselect", {}], ["image.imageRotation.90cw", {}]]).to_string()).unwrap();
+    let Invoke { code, stdout, stderr } = invoke(&["batch", "--actions", &path("steps.json"), "--in", &path("in"), "--out", &path("out")]);
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    assert!(stdout.contains("1 succeeded, 0 failed"), "{stdout}");
+    let Invoke { code, stdout, stderr } = invoke(&["info", &path("out/a.png"), "--compact"]);
+    assert_eq!(code, 0, "{stderr}");
+    let info: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!((info["width"].as_u64(), info["height"].as_u64()), (Some(6), Some(8)), "the step after Deselect ran: {info}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

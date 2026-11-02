@@ -74,9 +74,17 @@ pub(crate) fn after_command(s: &mut Session, id: &str, params: &Value) {
     }
     let Some(st) = s.active() else { return };
     let label = st.history.undo_label().unwrap_or(id).to_string();
+    let prev = st.history.state(st.history.past_len().wrapping_sub(1));
+    let prev = prev.as_deref();
+    let surf_eq = |a: Option<&Surface>, b: Option<&Surface>| match (a, b) {
+        (Some(a), Some(b)) => a.format() == b.format() && a.default_pixel() == b.default_pixel() && crate_fingerprint(a) == crate_fingerprint(b),
+        (None, None) => true,
+        _ => false,
+    };
     // An alpha channel or the Quick Mask took the edit instead of the layer when the command ran
     // on it (#7382): its explicit `target`, or the one the Channels panel gave it. Only commands
-    // routed to channels edit them; the others edit the layer whatever `target` says.
+    // routed to channels edit them, and some routed ones (Edit › Stroke, the Magic and Background
+    // Erasers) still edit the layer whatever `target` says, so the channel must have changed.
     let run = crate::channel_cmds::inject_target(s, id, params.clone());
     let channel = match crate::channel_cmds::target_of(&run) {
         _ if !crate::channel_cmds::routed(id) => None,
@@ -84,21 +92,23 @@ pub(crate) fn after_command(s: &mut Session, id: &str, params: &Value) {
         Target::QuickMask if st.doc.quick_mask.is_some() => Some(FadeTarget::QuickMask),
         _ => None,
     };
+    fn channel_surface<'a>(doc: &'a Document, target: &FadeTarget) -> Option<&'a Surface> {
+        match target {
+            FadeTarget::Channel(i) => doc.channels.get(*i).map(|c| &c.surface),
+            _ => doc.quick_mask.as_ref().map(|c| &c.surface),
+        }
+    }
+    let channel = channel.filter(|target| prev.is_none_or(|prev| !surf_eq(channel_surface(&st.doc, target), channel_surface(prev, target))));
     if let Some(target) = channel {
         s.edit_state.fade = Some(FadeSource { doc: st.doc.id, revision: st.revision, target, label });
         return;
     }
     let Some(layer) = st.active_layer else { return };
     let mask = st.doc.layer(layer).is_some_and(|l| l.mask.is_some())
-        && st.history.state(st.history.past_len().wrapping_sub(1)).is_some_and(|prev| {
+        && prev.is_some_and(|prev| {
             // The mask changed and the pixels didn't: the command painted the mask.
             let now = st.doc.layer(layer);
             let was = prev.layer(layer);
-            let surf_eq = |a: Option<&Surface>, b: Option<&Surface>| match (a, b) {
-                (Some(a), Some(b)) => a.format() == b.format() && a.default_pixel() == b.default_pixel() && crate_fingerprint(a) == crate_fingerprint(b),
-                (None, None) => true,
-                _ => false,
-            };
             surf_eq(now.and_then(|l| l.surface()), was.and_then(|l| l.surface()))
                 && !surf_eq(now.and_then(|l| l.mask.as_ref().map(|m| &m.surface)), was.and_then(|l| l.mask.as_ref().map(|m| &m.surface)))
         });

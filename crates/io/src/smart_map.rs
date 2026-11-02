@@ -173,6 +173,7 @@ pub fn mask_from_item(item: &FilterEffectsItem, sample: SampleType, stack: &Filt
     let n = w.checked_mul(h).ok_or("the smart filter mask is too large")?;
     let bytes = crate::pixels::interleave(&[Some(&plane)], &[crate::pixels::zero_sample(sample)], n, sample, &[false]);
     surface.write_interleaved(GeomRect::new(rect.left, rect.top, rect.right, rect.bottom), &bytes);
+    photocraft_raster::scratch::give(bytes);
     surface.prune();
     if surface.content_bounds().is_empty() {
         return Ok(None);
@@ -215,6 +216,7 @@ pub fn unfiltered_from_item(item: &FilterEffectsItem, fmt: PixelFormat) -> Optio
     }
     let mut surface = Surface::new(fmt);
     surface.write_interleaved(GeomRect::new(item.rect.left, item.rect.top, item.rect.right, item.rect.bottom), &bytes);
+    photocraft_raster::scratch::give(bytes);
     surface.prune();
     Some(surface)
 }

@@ -138,7 +138,7 @@ fn core_filter_choices_booleans_seeds_and_shared_fields_are_validated() {
         let result = s.execute(id, json!({"seed":u32::MAX})).unwrap();
         assert_eq!(result["filter"]["seed"], json!(u32::MAX));
     }
-    for (key, value) in [("layer", json!("2")), ("target", json!("typo")), ("target", json!({"channel":-1})), ("coalesce", json!(false))] {
+    for (key, value) in [("layer", json!(false)), ("target", json!("typo")), ("target", json!({"channel":-1})), ("coalesce", json!(false))] {
         rejected(&mut s, "filter.blur.gaussianBlur", key, value);
     }
 }
@@ -209,7 +209,7 @@ fn strict_extended_filters_reject_bad_fields_without_editing() {
             }
         }
         for id in STRICT_EXTENDED {
-            for (key, value) in [("radus", json!(3)), ("layer", json!("2")), ("target", json!("typo")), ("coalesce", json!(false))] {
+            for (key, value) in [("radus", json!(3)), ("layer", json!(false)), ("target", json!("typo")), ("coalesce", json!(false))] {
                 rejected(&mut s, id, key, value);
             }
             for value in [json!([]), json!(false), json!(3), json!("params")] {

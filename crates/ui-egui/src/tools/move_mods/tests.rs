@@ -499,3 +499,27 @@ fn free_transform_nudges_bundle_into_one_undo_step() {
     app.run("edit.undo", json!({})).unwrap();
     assert_eq!(quad(&app), moved(2.0, 0.0));
 }
+
+/// Arrow keys while editing text must not nudge layers, leaving the keys to the type tool (#5355).
+#[test]
+fn arrow_keys_ignored_during_text_edit() {
+    let mut app = app_with_layer();
+    let id = app.session.active().unwrap().active_layer.unwrap();
+    let b0 = bounds(&app, id);
+    app.ui.text_edit = Some(crate::state::TextEdit {
+        layer: id.0,
+        document: None,
+        caret: 0,
+        anchor: 0,
+        session: "test".into(),
+        created: false,
+        mask: false,
+        dragging: false,
+        resize: None,
+        preedit: None,
+    });
+    assert!(!press(&mut app, egui::Key::ArrowRight, egui::Modifiers::NONE));
+    assert!(!press(&mut app, egui::Key::ArrowDown, egui::Modifiers::SHIFT));
+    assert!(!press(&mut app, egui::Key::ArrowLeft, egui::Modifiers::ALT));
+    assert_eq!(bounds(&app, id), b0, "arrow keys do not nudge while editing text");
+}

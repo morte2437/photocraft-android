@@ -66,6 +66,20 @@ fn levels_entry(chan: Option<&str>, p: &Value) -> Descriptor {
     e
 }
 
+/// Whether the Levels settings in `p` (the master curve and every channel object) name both ends
+/// of each range they touch, or neither. `levels_entry` writes a whole `Inpt` or `Otpt` pair and
+/// fills the end a partial edit left out with 0 or 255, so replaying `inBlack: 31` alone would
+/// also reset a retained Input White (#8530). A value given in a shape the writer can't read (a
+/// text endpoint, a channel that isn't an object) would be left out, so it isn't complete either.
+pub(super) fn levels_complete(p: &Value) -> bool {
+    let shaped =
+        |v: &Value| ["inBlack", "inWhite", "gamma", "outBlack", "outWhite"].iter().all(|k| v.get(*k).is_none_or(|x| x.is_null() || jnum(v, k).is_some()));
+    let pairs_whole =
+        |v: &Value| [("inBlack", "inWhite"), ("outBlack", "outWhite")].iter().all(|(low, high)| jnum(v, low).is_some() == jnum(v, high).is_some());
+    let whole = |v: &Value| shaped(v) && pairs_whole(v);
+    whole(p) && CHANNELS.iter().filter_map(|(_, k)| p.get(*k).filter(|v| !v.is_null())).all(|v| v.is_object() && whole(v))
+}
+
 pub(super) fn levels_to(p: &Value) -> Option<Descriptor> {
     let mut entries = vec![D::Descriptor(levels_entry(None, p))];
     for (_, k) in CHANNELS {
@@ -395,6 +409,18 @@ macro_rules! adj_fields {
     };
 }
 
+const VIBRANCE: &[F] = &[F("vibrance", "vibrance", Kind::Long), F("Strt", "saturation", Kind::Long)];
+
+/// Vibrance. Photoshop's recording also carries `temperature` and `tint`, which our Vibrance has
+/// no params for: with either one non-zero the step stays a kept Photoshop step (saved back
+/// unchanged) instead of playing and saving without them.
+fn vibrance_from(d: &Descriptor) -> Option<Value> {
+    if ["temperature", "tint"].iter().any(|k| get_num(d, k).is_some_and(|v| v != 0.0)) {
+        return None;
+    }
+    fields_from(d, VIBRANCE).map(Value::Object)
+}
+
 const ADJUSTMENTS: &[Adjustment] = &[
     Adjustment { class: "Lvls", suffix: "levels", from: levels_from, to: levels_to },
     Adjustment { class: "Crvs", suffix: "curves", from: curves_from, to: curves_to },
@@ -404,7 +430,7 @@ const ADJUSTMENTS: &[Adjustment] = &[
     adj_fields!("Pstr", "posterize", &[F("Lvls", "levels", Kind::Long)]),
     adj_fields!("Invr", "invert", &[]),
     Adjustment { class: "ClrB", suffix: "colorBalance", from: color_balance_from, to: color_balance_to },
-    adj_fields!("Vbrn", "vibrance", &[F("vibrance", "vibrance", Kind::Long), F("Strt", "saturation", Kind::Long)]),
+    Adjustment { class: "vibrance", suffix: "vibrance", from: vibrance_from, to: |p| fields_to(p, VIBRANCE, desc("vibrance")) },
     adj_fields!("Exps", "exposure", &[F("Exps", "exposure", Kind::Dbl), F("Ofst", "offset", Kind::Dbl), F("gammaCorrection", "gamma", Kind::Dbl)]),
     Adjustment { class: "PhtF", suffix: "photoFilter", from: |d| fields_from(d, PHOTO_FILTER_FIELDS).map(Value::Object), to: photo_filter_to },
     adj_fields!("BanW", "blackWhite", BW),
@@ -417,7 +443,9 @@ const ADJUSTMENTS: &[Adjustment] = &[
 /// Photoshop (#8481): a Make whose Black & White type is `BlnW` fails ("the command Make is not
 /// currently available"), `BanW` runs. Import keeps accepting them so actions saved before still
 /// load; export never writes them.
-const LEGACY_CLASSES: &[(&str, &str)] = &[("BlnW", "BanW")];
+/// `Vbrn` is a code PhotoCraft invented for Vibrance: Photoshop records the class by its string id
+/// `vibrance` (#8534), and refuses the `Vbrn` code (#8383).
+const LEGACY_CLASSES: &[(&str, &str)] = &[("BlnW", "BanW"), ("Vbrn", "vibrance")];
 
 /// The adjustment with Photoshop class `c`, or the one an old PhotoCraft class stands for.
 pub(super) fn adjustment_by_class(c: &str) -> Option<&'static Adjustment> {

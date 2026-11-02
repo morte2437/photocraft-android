@@ -59,7 +59,7 @@ pub(crate) fn shift_smart(sm: &mut SmartObject, dx: i32, dy: i32) {
 
 /// Forget PSD placed-layer data that no longer describes the smart object (its source changed):
 /// PSD export then writes fresh placed-layer blocks and embeds the new source.
-pub(super) fn detach_psd(l: &mut Layer) {
+pub(crate) fn detach_psd(l: &mut Layer) {
     if let LayerContent::Smart(sm) = &mut l.content {
         sm.psd_raw = None;
     }
