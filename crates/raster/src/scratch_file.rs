@@ -384,9 +384,12 @@ mod tests {
         // Windows: delete-on-close. Unix: unlinked right after opening. Neither needs Drop.
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "no scratch file outlives an exit without destructors");
         let next = ScratchFile::create(&dir).unwrap();
-        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "a live scratch file has no directory entry either");
+        // Unix unlinks the open file; Windows keeps the entry until the delete-on-close handle closes.
+        let live_entries = if cfg!(unix) { 0 } else { 1 };
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), live_entries, "a live scratch file is unlinked on Unix only");
         next.write(b"still usable").unwrap();
         drop(next);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "closing the last scratch file leaves the directory empty");
         std::fs::remove_dir(dir).unwrap();
     }
 
