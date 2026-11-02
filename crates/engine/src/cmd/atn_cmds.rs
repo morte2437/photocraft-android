@@ -41,7 +41,7 @@ mod tables;
 
 #[cfg(test)]
 use adjustments::{levels_from, selective_from};
-pub use convert::{Imported, Skipped, Unsupported, export, function_key_name, import, parse_function_key};
+pub use convert::{Imported, Skipped, Unsupported, export, function_key_name, import, import_with_encoding, parse_function_key};
 #[cfg(test)]
 use convert::{MAX_NAME_CHARS, export_item, normalise};
 #[cfg(test)]
@@ -103,7 +103,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Load Actions…",
             menu: &[],
             shortcut: None,
-            params: r##"{"path":".atn file"?,"data":base64 bytes?,"set":name? (override the file's set name),"replace":bool=true (replace the actions of a set of the same name)} → {set, actions:[names], steps, unsupported:[{action, step, event, name}], functionKeys:[{action, key}], warnings}. Photoshop steps PhotoCraft cannot play become actions.photoshopStep steps (kept for Save Actions; they fail at playback with the step's name); tool selections and other steps with no document effect are imported switched off. Layer references by name replay in any document."##,
+            params: r##"{"path":".atn file"?,"data":base64 bytes?,"set":name? (override the file's set name),"replace":bool=true (replace the actions of a set of the same name),"encoding":"auto"|label="auto" (the encoding of 8-bit step names: shift_jis, gbk, big5, euc-kr, windows-1252, macintosh…; auto works it out)} → {set, actions:[names], steps, unsupported:[{action, step, event, name}], functionKeys:[{action, key}], warnings, encoding}. Photoshop steps PhotoCraft cannot play become actions.photoshopStep steps (kept for Save Actions; they fail at playback with the step's name); tool selections and other steps with no document effect are imported switched off. Layer references by name replay in any document."##,
             enabled: always,
             run: load,
             journal: false,
@@ -113,7 +113,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Save Actions…",
             menu: &[],
             shortcut: None,
-            params: r##"{"path":".atn file"? (else the bytes come back as base64 `data`),"set":name? (that set's actions; default: every action, as the set "PhotoCraft Actions"),"action":name|index? (one action),"skipUnsupported":bool=false (leave out steps with no Photoshop equivalent instead of failing)} → {set, actions:[names], steps, bytes, skipped:[{action, step, id}], path|data}"##,
+            params: r##"{"path":".atn file"? (else the bytes come back as base64 `data`),"set":name? (that set's actions, none for an empty New Set set; default: every action, as the set "PhotoCraft Actions"),"action":name|index? (one action),"skipUnsupported":bool=false (leave out steps with no Photoshop equivalent instead of failing)} → {set, actions:[names], steps, bytes, skipped:[{action, step, id}], path|data}"##,
             enabled: always,
             run: save,
             journal: false,

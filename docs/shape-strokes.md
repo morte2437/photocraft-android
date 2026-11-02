@@ -128,3 +128,16 @@ not offered yet.
   [cap/join reference](https://helpx.adobe.com/ca/illustrator/desktop/paint-and-fill/apply-and-edit-strokes/change-the-caps-or-joins-of-a-line.html)
   defines endpoint and corner behavior and the 1–500 miter range. Dash units reuse
   PhotoCraft's existing documented `ShapeStroke`/`vstk` convention.
+
+## Editable arrows and older PhotoCraft versions
+
+Native `.pcraft` documents store arrow geometry in the regular shape path and
+the editable arrow parameters separately in the optional `arrow_live` field.
+
+PhotoCraft versions that do not support editable arrows can open these documents
+and display the saved arrow geometry as a regular vector shape. They cannot edit
+the arrowhead parameters.
+
+Re-saving the document in an older version may discard the `arrow_live`
+metadata, permanently removing parametric arrow editability from that copy.
+Keep the original file when working across versions.

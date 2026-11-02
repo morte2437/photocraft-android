@@ -159,7 +159,16 @@ fn layer_m(l: &Layer, sink: &mut dyn Sink) -> LayerM {
             psd_raw: opt_blob(&s.psd_raw, sink),
             path: s.path.clone(),
             stroke: s.stroke.clone(),
-            live: s.live.clone(),
+            // Older PhotoCraft versions cannot deserialize ArrowLine.
+            // The saved path preserves the arrow's visual appearance.
+            live: match &s.live {
+                Some(photocraft_doc::LiveShape::ArrowLine { .. }) => None,
+                other => other.clone(),
+            },
+            arrow_live: match &s.live {
+                Some(arrow @ photocraft_doc::LiveShape::ArrowLine { .. }) => Some(arrow.clone()),
+                _ => None,
+            },
             density: s.density,
             feather: s.feather,
         },
@@ -480,11 +489,11 @@ impl Loader<'_> {
                     warp: warp.clone(),
                 })
             }
-            ContentM::Shape { fill, cache, psd_raw, path, stroke, live, density, feather } => LayerContent::Shape(ShapeLayer {
+            ContentM::Shape { fill, cache, psd_raw, path, stroke, live, arrow_live, density, feather } => LayerContent::Shape(ShapeLayer {
                 path: path.clone(),
                 fill: fill.clone(),
                 stroke: stroke.clone(),
-                live: live.clone(),
+                live: arrow_live.as_ref().filter(|shape| matches!(shape, photocraft_doc::LiveShape::ArrowLine { .. })).cloned().or_else(|| live.clone()),
                 cache: self.opt_surface(cache)?,
                 psd_raw: self.opt_blob(psd_raw)?,
                 density: *density,

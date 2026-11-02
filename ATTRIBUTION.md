@@ -120,7 +120,8 @@ Artwork shown in the screenshots (all public domain, via Wikimedia Commons; deta
 
 ## Test data (not committed, not shipped)
 
-`corpus/` is gitignored and no test fixtures are committed to the repository.
+`corpus/` is gitignored and no test fixtures are committed to the repository, except the small
+synthetic parser fixtures listed under *Synthetic parser test fixtures* below.
 `cargo xtask corpus --all` fetches every corpus at the pinned commits in `xtask/src/corpus_pins.rs`
 and verifies each file against the sha256 lists in `xtask/*.sha256`, with the upstream licence
 next to the files:
@@ -139,6 +140,12 @@ next to the files:
 | `corpus/pixls/` (11 files) | Real camera raws, one per decode path: Canon PowerShot SX50 HS (CR2 and its DNG conversion), Nikon D3 uncompressed NEF and Z6 paired 12/14-bit lossy and packed NEFs, Sony DSC-RX0 cRAW ARW, Panasonic DC-G9 high-res RW2, Olympus E-1 GRBG ORF, plus the E-5 packed ORF as the documented known-unsupported case. Per file (each CC0, per its database entry): [IMG_4059.CR2](https://raw.pixls.us/data/Canon/PowerShot%20SX50%20HS/IMG_4059.CR2), [CRW_4061.DNG](https://raw.pixls.us/data/Canon/PowerShot%20SX50%20HS/CRW_4061.DNG), [JD1_8203.NEF](https://raw.pixls.us/data/Nikon/D3/JD1_8203.NEF), [DSC00009.ARW](https://raw.pixls.us/data/Sony/DSC-RX0/DSC00009.ARW), [P1000475.RW2](https://raw.pixls.us/data/Panasonic/DC-G9/P1000475.RW2), [E_1__C106743_gredos.ORF](https://raw.pixls.us/data/Olympus/E-1/E_1__C106743_gredos.ORF), [_7061961_copy.ORF](https://raw.pixls.us/data/Olympus/E-5/_7061961_copy.ORF), [DSC_0750.NEF](https://raw.pixls.us/data/Nikon/Z%206/DSC_0750.NEF), [DSC_0751.NEF](https://raw.pixls.us/data/Nikon/Z%206/DSC_0751.NEF), [DSC_0753.NEF](https://raw.pixls.us/data/Nikon/Z%206/DSC_0753.NEF), [DSC_0754.NEF](https://raw.pixls.us/data/Nikon/Z%206/DSC_0754.NEF) | The photographers of the pixls.us raw samples database | [raw.pixls.us](https://raw.pixls.us) `data/`, fetched per [xtask/src/corpus_pins.rs](xtask/src/corpus_pins.rs) | CC0 / public domain, per file as linked |
 
 Files copied into `corpus/` by hand (tiff, exr, raw) must be MIT, BSD or CC0.
+
+## Synthetic parser test fixtures
+
+| Path | Title | Author | Source | License |
+|---|---|---|---|---|
+| `crates/psd/tests/fixtures/atn/*.atn` | Independently encoded ATN version-16 parser fixtures | PhotoCraft contributors | Original synthetic test data; wire layout documented in `crates/psd/src/atn.rs`; provenance in the adjacent README | MIT OR Apache-2.0 |
 
 ## Embedded-vector editor source
 

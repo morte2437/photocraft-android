@@ -1,6 +1,6 @@
 use super::descriptors::{
-    PX, Target, ang, class, code, desc, enm, get_bool, get_enum, get_num, get_obj, get_ref, jbool, jnum, jstr, layer_ref, layer_target, long, pct, px,
-    ref_class, target, trimmed,
+    PX, Target, ang, class, code, desc, enm, get_bool, get_enum, get_list, get_num, get_obj, get_ref, jbool, jnum, jstr, layer_ref, layer_target, long, num,
+    pct, px, ref_class, target, trimmed,
 };
 use super::events::pixel_target;
 use super::fields::{F, Kind, Mapped, fields_from, fields_to, step};
@@ -248,6 +248,193 @@ pub(super) fn apply_image_to(_: &str, p: &Value) -> Option<Descriptor> {
 }
 
 pub(super) const RIPPLE_SIZE: &[(&str, &str)] = &[("Sml", "small"), ("Mdm", "medium"), ("Lrg", "large")];
+
+/// Camera Raw Filter's scalar sliders. Every one is an integer in recorded steps except `Ex12`
+/// and `ShpR` (doubles); the layout is from 62 recorded steps in 14 sets (#6745) and matches the
+/// verified PSD Smart Filter mapping (`photocraft-io`'s `camera_raw_map.rs`).
+const CAMERA_RAW: &[F] = &[
+    F("Temp", "temperature", Kind::Long),
+    F("Tint", "tint", Kind::Long),
+    F("Ex12", "exposure", Kind::Dbl),
+    F("Cr12", "contrast", Kind::Long),
+    F("Hi12", "highlights", Kind::Long),
+    F("Sh12", "shadows", Kind::Long),
+    F("Wh12", "whites", Kind::Long),
+    F("Bk12", "blacks", Kind::Long),
+    F("CrTx", "texture", Kind::Long),
+    F("Cl12", "clarity", Kind::Long),
+    F("Dhze", "dehaze", Kind::Long),
+    F("Vibr", "vibrance", Kind::Long),
+    F("Strt", "saturation", Kind::Long),
+    F("PC_H", "curveHighlights", Kind::Long),
+    F("PC_L", "curveLights", Kind::Long),
+    F("PC_D", "curveDarks", Kind::Long),
+    F("PC_S", "curveShadows", Kind::Long),
+    F("CgBl", "gradeBlending", Kind::Long),
+    F("STB ", "gradeBalance", Kind::Long),
+    F("Shrp", "sharpenAmount", Kind::Long),
+    F("ShpR", "sharpenRadius", Kind::Dbl),
+    F("ShpD", "sharpenDetail", Kind::Long),
+    F("ShpM", "sharpenMasking", Kind::Long),
+    F("LNR ", "noiseLuminance", Kind::Long),
+    F("LNRD", "noiseLuminanceDetail", Kind::Long),
+    F("CNR ", "noiseColor", Kind::Long),
+    F("CNRD", "noiseColorDetail", Kind::Long),
+    F("GRNA", "grainAmount", Kind::Long),
+    F("GRNS", "grainSize", Kind::Long),
+    F("GRNF", "grainRoughness", Kind::Long),
+    F("PCVA", "vignetteAmount", Kind::Long),
+    F("PCVM", "vignetteMidpoint", Kind::Long),
+    F("PCVR", "vignetteRoundness", Kind::Long),
+    F("PCVF", "vignetteFeather", Kind::Long),
+    F("PCVH", "vignetteHighlights", Kind::Long),
+];
+
+/// The range a Camera Raw Filter descriptor key's value can take, as `filter.cameraRaw` and the
+/// PSD Smart Filter mapping (`photocraft-io`'s `camera_raw_map.rs`) accept it.
+fn camera_raw_range(key: &str) -> std::ops::RangeInclusive<f64> {
+    match key {
+        "Ex12" => -5.0..=5.0,
+        "ShpR" => 0.5..=3.0,
+        "Shrp" => 0.0..=150.0,
+        "STSH" | "STHH" | "CgMH" | "CgGH" => 0.0..=360.0,
+        "PC_1" | "PC_2" | "PC_3" | "ShpD" | "ShpM" | "LNR " | "LNRD" | "CNR " | "CNRD" | "STSS" | "STHS" | "CgMS" | "CgGS" | "CgBl" | "GRNA" | "GRNS"
+        | "GRNF" | "PCVM" | "PCVF" | "PCVH" => 0.0..=100.0,
+        _ => -100.0..=100.0,
+    }
+}
+
+/// The hidden param an imported Camera Raw Filter step keeps its recorded descriptor in, so
+/// Save Actions writes the step back unchanged while its settings are the ones it imported with.
+const CAMERA_RAW_DESCRIPTOR: &str = "__atnDescriptor";
+
+/// The colour grading wheels' keys, the tone curve splits and the vignette style.
+const CAMERA_RAW_GRADES: &[&str] =
+    &["STSH", "STSS", "CgSL", "CgMH", "CgMS", "CgML", "STHH", "STHS", "CgHL", "CgGH", "CgGS", "CgGL", "PC_1", "PC_2", "PC_3", "PCVS"];
+
+/// A recorded Camera Raw Filter step (`Adobe Camera Raw Filter`) as `filter.cameraRaw` (#6745).
+/// Settings the command has no counterpart for refuse the step rather than replaying a different
+/// look: the Calibration panel, a white balance other than Custom, the controls the PSD mapping
+/// keeps only at their neutral values, and any key outside this table (lens, geometry, profile,
+/// masks…), as the PSD mapping's `known_key` does, and a process version the PSD mapping hasn't
+/// verified (Camera Raw renders each version differently).
+pub(super) fn camera_raw_from(d: &Descriptor) -> Mapped {
+    const CALIBRATION: &[&str] = &["RHue", "RSat", "GHue", "GSat", "BHue", "BSat", "BlkB"];
+    const NEUTRAL_ONLY: &[(&str, f64)] =
+        &[("LNRC", 0.0), ("CNRS", 50.0), ("MDis", 0.0), ("VigA", 0.0), ("VigM", 50.0), ("crfs", 100.0), ("TMMs", 0.0), ("PGTM", 0.0), ("RGBt", 0.0)];
+    const OTHER: &[&str] = &["CrVe", "PrVe", "PrVN", "WBal", "Crv ", "CrvR", "CrvG", "CrvB"];
+    let known = |k: &str| {
+        (k.len() == 4 && ["HA_", "SA_", "LA_"].iter().any(|p| k.starts_with(p)) && ["R", "O", "Y", "G", "A", "B", "P", "M"].iter().any(|c| k.ends_with(c)))
+            || CAMERA_RAW.iter().any(|F(f, ..)| *f == k)
+            || CAMERA_RAW_GRADES.contains(&k)
+            || OTHER.contains(&k)
+            || CALIBRATION.contains(&k)
+            || NEUTRAL_ONLY.iter().any(|(n, _)| *n == k)
+    };
+    // An empty step (no descriptor) would play as a no-op, and a key the table doesn't know may
+    // be active processing (lens, geometry, profile, masks) that playback would leave out.
+    if d.items.is_empty() || d.items.iter().any(|(k, _)| !std::str::from_utf8(k.as_bytes()).is_ok_and(known)) {
+        return Mapped::Unsupported { harmless: false };
+    }
+    let version = (get_num(d, "PrVN"), get_num(d, "PrVe"));
+    let verified = [(5.0, 184_549_376.0), (6.0, 251_920_384.0)].iter().any(|(n, v)| version == (Some(*n), Some(*v)));
+    if !verified || !matches!(d.get("CrVe"), Some(D::Text(_))) {
+        return Mapped::Unsupported { harmless: false };
+    }
+    let active = |k: &str, neutral: f64| d.get(k).is_some() && get_num(d, k) != Some(neutral);
+    let custom_wb = d.get("WBal").is_none() || get_enum(d, "WBal").as_deref() == Some("Cst");
+    if !custom_wb || CALIBRATION.iter().any(|k| active(k, 0.0)) || NEUTRAL_ONLY.iter().any(|(k, n)| active(k, *n)) {
+        return Mapped::Unsupported { harmless: false };
+    }
+    // A value that is recorded but isn't a number, or lies outside the slider's range, can't
+    // replay: `fields_from` and `nums` would drop it (or read it as 0), and playback would clamp
+    // it, so the step would play a different look. The ranges are the PSD mapping's.
+    let unreadable = |k: &str| match (d.get(k), get_num(d, k)) {
+        (None, _) => false,
+        (Some(_), None) => true,
+        (Some(_), Some(v)) => k != "PCVS" && !(v.is_finite() && camera_raw_range(k).contains(&v)),
+    };
+    let grouped = ["HA_", "SA_", "LA_"].iter().flat_map(|p| ["R", "O", "Y", "G", "A", "B", "P", "M"].map(|c| format!("{p}{c}")));
+    if CAMERA_RAW.iter().any(|F(k, ..)| unreadable(k)) || grouped.into_iter().any(|k| unreadable(&k)) || CAMERA_RAW_GRADES.iter().any(|k| unreadable(k)) {
+        return Mapped::Unsupported { harmless: false };
+    }
+    let Some(mut m) = fields_from(d, CAMERA_RAW) else { return Mapped::Unsupported { harmless: false } };
+    let nums = |keys: &[&str]| -> Option<Vec<Value>> {
+        let v: Vec<Option<f64>> = keys.iter().map(|k| get_num(d, k)).collect();
+        // Absent members keep the command's defaults only when the whole group is absent.
+        if v.iter().all(Option::is_none) { None } else { Some(v.into_iter().map(|n| Value::from(n.unwrap_or(0.0))).collect()) }
+    };
+    // The splits are one setting: all three, or none (the defaults); a partial set can't replay,
+    // nor can splits outside 0..=100 or out of order, which would build a different curve.
+    match (get_num(d, "PC_1"), get_num(d, "PC_2"), get_num(d, "PC_3")) {
+        (Some(a), Some(b), Some(c)) if (0.0..=100.0).contains(&a) && a < b && b < c && c <= 100.0 => {
+            m.insert("curveSplits".into(), json!([a, b, c]));
+        }
+        (Some(_), Some(_), Some(_)) => return Mapped::Unsupported { harmless: false },
+        _ if ["PC_1", "PC_2", "PC_3"].iter().any(|k| d.get(k).is_some()) => return Mapped::Unsupported { harmless: false },
+        _ => {}
+    }
+    for (prefix, param) in [("HA_", "hslHue"), ("SA_", "hslSat"), ("LA_", "hslLum")] {
+        let keys: Vec<String> = ["R", "O", "Y", "G", "A", "B", "P", "M"].iter().map(|c| format!("{prefix}{c}")).collect();
+        if let Some(v) = nums(&keys.iter().map(String::as_str).collect::<Vec<_>>()) {
+            m.insert(param.into(), Value::Array(v));
+        }
+    }
+    for (keys, param) in [
+        (["STSH", "STSS", "CgSL"], "gradeShadows"),
+        (["CgMH", "CgMS", "CgML"], "gradeMidtones"),
+        (["STHH", "STHS", "CgHL"], "gradeHighlights"),
+        (["CgGH", "CgGS", "CgGL"], "gradeGlobal"),
+    ] {
+        if let Some(v) = nums(&keys) {
+            m.insert(param.into(), json!({"hue": v[0], "sat": v[1], "lum": v[2]}));
+        }
+    }
+    match get_num(d, "PCVS") {
+        None => {}
+        Some(n) => match [(1.0, "highlightPriority"), (2.0, "colorPriority"), (3.0, "paintOverlay")].iter().find(|(k, _)| *k == n) {
+            Some((_, style)) => {
+                m.insert("vignetteStyle".into(), json!(style));
+            }
+            None => return Mapped::Unsupported { harmless: false },
+        },
+    }
+    // Point curves: flat `[in0, out0, in1, out1, …]` lists on 0..255, as the command's pairs.
+    for (key, param) in [("Crv ", "pointCurve"), ("CrvR", "pointCurveRed"), ("CrvG", "pointCurveGreen"), ("CrvB", "pointCurveBlue")] {
+        if d.get(key).is_none() {
+            continue;
+        }
+        let Some(list) = get_list(d, key) else { return Mapped::Unsupported { harmless: false } };
+        let Some(flat) = list.iter().map(num).collect::<Option<Vec<f64>>>() else { return Mapped::Unsupported { harmless: false } };
+        // Odd lengths, and curves `filter.cameraRaw` refuses (one point, out of range, inputs not
+        // increasing), stay Photoshop steps rather than failing on playback.
+        let points: Vec<[f32; 2]> = flat.as_chunks::<2>().0.iter().map(|[a, b]| [*a as f32, *b as f32]).collect();
+        if flat.len() % 2 != 0 || photocraft_algo::camera_raw::validate_curve(&points).is_err() {
+            return Mapped::Unsupported { harmless: false };
+        }
+        let identity = flat == [0.0, 0.0, 255.0, 255.0];
+        if !identity {
+            m.insert(param.into(), Value::Array(flat.as_chunks::<2>().0.iter().map(|[a, b]| json!([a, b])).collect()));
+        }
+    }
+    m.insert(CAMERA_RAW_DESCRIPTOR.into(), json!(photocraft_paint::tile::b64_encode(&d.to_bytes())));
+    step(crate::lens_cmds::RAW, Value::Object(m))
+}
+
+/// An imported Camera Raw Filter step back as its recorded descriptor, unchanged. Only while the
+/// params are still what that descriptor imports as: an edited step, or one PhotoCraft recorded,
+/// has no verified Photoshop form and Save Actions refuses it.
+pub(super) fn camera_raw_to(_: &str, p: &Value) -> Option<Descriptor> {
+    let d = Descriptor::from_bytes(&photocraft_paint::tile::b64_decode(jstr(p, CAMERA_RAW_DESCRIPTOR)?)?).ok()?;
+    let Mapped::Steps(steps) = camera_raw_from(&d) else { return None };
+    let [(_, imported)] = steps.as_slice() else { return None };
+    let (mut a, mut b) = (imported.clone(), p.clone());
+    for v in [&mut a, &mut b] {
+        super::convert::normalise(v);
+        v.as_object_mut()?.remove(CAMERA_RAW_DESCRIPTOR);
+    }
+    (a == b).then_some(d)
+}
 
 /// Whether a Select and Mask step carries Refine Edge Brush strokes or the workspace's tool
 /// edits (Quick Selection, Brush, Lasso…), which no descriptor holds.

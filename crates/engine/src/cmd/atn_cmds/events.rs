@@ -8,8 +8,8 @@ use super::steps_doc::{
     place_from, place_to, profile_from, profile_to, purge_from, purge_to, reset_from, reset_to, save_from, save_to, stop_from, stop_to,
 };
 use super::steps_image::{
-    GALLERY_IDS, REFINE_EDGE, RIPPLE_SIZE, SMART_BRUSH, apply_image_from, apply_image_to, color_range_from, color_range_to, gallery_from, gallery_to,
-    has_refine_strokes, radial_blur_from, radial_blur_to, refine_edge_to, transform_from, transform_to,
+    GALLERY_IDS, REFINE_EDGE, RIPPLE_SIZE, SMART_BRUSH, apply_image_from, apply_image_to, camera_raw_from, camera_raw_to, color_range_from, color_range_to,
+    gallery_from, gallery_to, has_refine_strokes, radial_blur_from, radial_blur_to, refine_edge_to, transform_from, transform_to,
 };
 use super::steps_layer::{
     STROKE, apply_comp_from, apply_comp_to, clear_from, clear_to, delete_from, delete_to, duplicate_from, duplicate_to, fill_from, fill_to, flip_from, flip_to,
@@ -251,6 +251,9 @@ pub(super) const EVENTS: &[Event] = &[
     ev!("Crst", "crystallize", "Crystallize", "filter.pixelate.crystallize", &[F("ClSz", "cellSize", Kind::ExactLong)]),
     ev!("Dfs ", "diffuse", "Diffuse", "filter.stylize.diffuse", &[F("Md  ", "mode", Kind::Enum("DfsM", DIFFUSE_MODE)), F("FlRs", "seed", Kind::Long)]),
     Event { code: "GEfc", name: "filterGallery", label: "Filter Gallery", ids: GALLERY_IDS, from: gallery_from, to: gallery_to },
+    // What Photoshop needs in a written step (process version, the full settings set) is
+    // unverified, so only an imported step saves back, as its recorded descriptor while unedited.
+    Event { code: "", name: "Adobe Camera Raw Filter", label: "Camera Raw Filter", ids: &[crate::lens_cmds::RAW], from: camera_raw_from, to: camera_raw_to },
     // Adjustments (Image › Adjustments).
     Event {
         code: "",
@@ -275,7 +278,7 @@ pub(super) const EVENTS: &[Event] = &[
     adjustment_event!("Pstr", "Pstr", "posterize", "Posterize"),
     adjustment_event!("Invr", "Invr", "invert", "Invert"),
     adjustment_event!("ClrB", "ClrB", "colorBalance", "Color Balance"),
-    adjustment_event!("Vbrn", "Vbrn", "vibrance", "Vibrance"),
+    adjustment_event!("Vbrn", "vibrance", "vibrance", "Vibrance"),
     adjustment_event!("Exps", "Exps", "exposure", "Exposure"),
     // Photoshop runs Photo Filter by name only: `PhtF` is the class, not an event (#8301).
     adjustment_event!("", "PhtF", "photoFilter", "Photo Filter"),

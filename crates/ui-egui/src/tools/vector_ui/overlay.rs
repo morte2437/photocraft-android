@@ -170,7 +170,12 @@ pub fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform
         if let Some(l) = st.and_then(|s| s.active_layer.and_then(|id| s.doc.layer(id)))
             && let LayerContent::Shape(sh) = &l.content
         {
-            draw_path(&sh.path, anchors);
+            // Hide the stale shape path while its transform preview is active.
+            let transforming_this_shape =
+                app.ui.transform.as_ref().is_some_and(|t| t.layer == l.id.0 && !t.selection && t.target.is_none() && t.path.is_none());
+            if !transforming_this_shape {
+                draw_path(&sh.path, anchors);
+            }
         }
         // A targeted vector mask shows its path with any tool (#196).
         if let Some((_, p)) = targeted_vector_mask(app) {

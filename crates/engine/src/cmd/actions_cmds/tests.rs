@@ -1176,3 +1176,35 @@ fn arrange_that_cannot_move_is_a_noop_in_playback() {
     assert_eq!(played["ran"], 0, "{played}");
     assert!(played["failed"].is_object(), "{played}");
 }
+
+/// #10459 review: recording into an existing set keeps that set's exact name, even one with
+/// surrounding spaces (from an older actions.json); a new set name is trimmed.
+#[test]
+fn record_keeps_an_existing_sets_exact_name() {
+    let mut s = Session::new();
+    s.actions.list.push(Action { set: Some(" Web ".into()), ..Action::new("Old", Vec::new()) });
+    s.execute("actions.record", json!({"name": "New", "set": " Web "})).unwrap();
+    s.execute("actions.stop", json!({})).unwrap();
+    let set_of = |s: &Session, n: &str| s.actions.list.iter().find(|a| a.name == n).and_then(|a| a.set.clone());
+    assert_eq!(set_of(&s, "New").as_deref(), Some(" Web "), "the existing set");
+    s.execute("actions.record", json!({"name": "Fresh", "set": "  Print  "})).unwrap();
+    s.execute("actions.stop", json!({})).unwrap();
+    assert_eq!(set_of(&s, "Fresh").as_deref(), Some("Print"), "a new set is trimmed");
+}
+
+/// CodeRabbit review on #10459: an empty set loaded from a `.atn` (or made by New Set) keeps its
+/// exact name too, so the first action recorded into it lands in that folder and saves with it.
+#[test]
+fn record_keeps_an_empty_loaded_sets_exact_name() {
+    let mut src = Session::new();
+    src.actions.sets.push(" Web ".into());
+    let saved = src.execute("actions.save", json!({"set": " Web "})).unwrap();
+    let mut s = Session::new();
+    assert_eq!(s.execute("actions.load", json!({"data": saved["data"]})).unwrap()["set"], " Web ");
+    s.execute("actions.record", json!({"name": "First", "set": " Web "})).unwrap();
+    s.execute("actions.stop", json!({})).unwrap();
+    let set = s.actions.list.iter().find(|a| a.name == "First").and_then(|a| a.set.clone());
+    assert_eq!(set.as_deref(), Some(" Web "));
+    assert_eq!(crate::actions_edit_cmds::set_names(&s), [" Web "], "one folder, not a trimmed second one");
+    assert_eq!(s.execute("actions.save", json!({"set": " Web "})).unwrap()["actions"], json!(["First"]));
+}

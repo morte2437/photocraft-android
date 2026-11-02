@@ -1,4 +1,4 @@
-use super::adjustments::{HUE_RANGES, adjustment_by_class, adjustment_by_suffix, adjustment_steps};
+use super::adjustments::{HUE_RANGES, adjustment_by_class, adjustment_by_suffix, adjustment_steps, levels_complete};
 use super::descriptors::{
     PX, Target, ang, class, class_ref, code, color_desc, color_hex, desc, enm, get_bool, get_enum, get_list, get_num, get_obj, get_ref, get_text, jbool, jnum,
     jstr, layer_ref, layer_target, long, name_ref, pct, px, ref_class, target, target_ref, text, trimmed,
@@ -9,14 +9,23 @@ use super::tables::{LABEL_COLORS, MODES, blend_label, blend_ps, lookup, lookup_b
 use super::{D, Descriptor, Id, Map, ReferenceItem, Value, json};
 
 /// A `patternLayer` descriptor's pattern, scale, angle and link as the params of
-/// `layer.newFillLayer.pattern` / `layer.fill.pattern.set`. The pattern goes by name: ids differ
-/// between Photoshop's library and one rebuilt from the same `.pat` file. None for a pattern
-/// recorded without a name or id.
+/// `layer.newFillLayer.pattern` / `layer.fill.pattern.set`. A pattern recorded with both an id
+/// and a name goes by the id with the name as `patternName`: ids differ between Photoshop's
+/// library and one rebuilt from the same `.pat` file, while names may collide. None for a
+/// pattern recorded without a name or id.
 fn pattern_params(t: &Descriptor) -> Option<Map<String, Value>> {
     let mut p = Map::new();
     if let Some(ptrn) = get_obj(t, "Ptrn") {
-        let key = get_text(ptrn, "Nm  ").filter(|n| !n.is_empty()).or_else(|| get_text(ptrn, "Idnt").filter(|i| !i.is_empty()))?;
-        p.insert("pattern".into(), key.into());
+        let name = get_text(ptrn, "Nm  ").filter(|n| !n.is_empty());
+        match (get_text(ptrn, "Idnt").filter(|i| !i.is_empty()), name) {
+            (Some(id), Some(name)) => {
+                p.insert("pattern".into(), id.into());
+                p.insert("patternName".into(), name.into());
+            }
+            (key, name) => {
+                p.insert("pattern".into(), key.or(name)?.into());
+            }
+        }
     }
     if let Some(s) = get_num(t, "Scl ") {
         p.insert("scale".into(), s.into());
@@ -33,8 +42,10 @@ fn pattern_params(t: &Descriptor) -> Option<Map<String, Value>> {
 /// The `patternLayer` descriptor for [`pattern_params`]' params.
 fn pattern_desc(p: &Value) -> Option<Descriptor> {
     let mut t = desc("patternLayer");
-    if let Some(n) = jstr(p, "pattern") {
-        t = t.with("Ptrn", D::Descriptor(desc("Ptrn").with("Nm  ", text(n))));
+    match (jstr(p, "pattern"), jstr(p, "patternName")) {
+        (Some(id), Some(n)) => t = t.with("Ptrn", D::Descriptor(desc("Ptrn").with("Nm  ", text(n)).with("Idnt", text(id)))),
+        (Some(n), None) | (None, Some(n)) => t = t.with("Ptrn", D::Descriptor(desc("Ptrn").with("Nm  ", text(n)))),
+        (None, None) => {}
     }
     if let Some(s) = jnum(p, "scale") {
         t = t.with("Scl ", pct(s));
@@ -763,12 +774,19 @@ pub(super) fn set_to(id: &str, p: &Value) -> Option<Descriptor> {
             desc("null").with("null", r).with("filterFX", D::Descriptor(desc("filterFX").with("blendOptions", D::Descriptor(opts))))
         }
         "layer.setAdjustment" => {
+            // The event edits the current adjustment layer: a step that names its layer or
+            // document would play back on whichever one is active instead (#8532). A null
+            // `layer` or `document` is the target one, as the command reads it.
+            if ["layer", "document"].iter().any(|k| p.get(*k).is_some_and(|v| !v.is_null())) {
+                return None;
+            }
             // The adjustment kind isn't in the params: Photoshop needs it, so only steps that
             // name one (`kind`) export.
             let kind = jstr(p, "kind")?;
             // `layer.setAdjustment` changes only the settings it names. Color Balance and
             // Hue/Saturation descriptors carry every setting, filling absent ones with defaults,
-            // so a partial edit would replay as one that also resets the rest (#8531).
+            // so a partial edit would replay as one that also resets the rest (#8531). Levels writes
+            // each range whole, so one end alone resets the other (#8530).
             // Present and of the shape the writer reads: anything else it would write as 0.
             let number = |p: &Value, k: &str| p.get(k).and_then(Value::as_f64).is_some_and(f64::is_finite);
             let numbers = |p: &Value, keys: &[&str]| keys.iter().all(|k| number(p, k));
@@ -790,6 +808,8 @@ pub(super) fn set_to(id: &str, p: &Value) -> Option<Descriptor> {
                             r.is_object() && numbers(r, &["hue", "saturation", "lightness"]) && bounds
                         })
                 }
+                // Both ends of each range it names (#8530).
+                "levels" => levels_complete(p),
                 _ => true,
             };
             if !complete {

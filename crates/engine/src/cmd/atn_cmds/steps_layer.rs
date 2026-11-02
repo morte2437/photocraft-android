@@ -499,6 +499,11 @@ pub(super) fn stroke_to(_: &str, p: &Value) -> Option<Descriptor> {
     }
     let mut params = if p.is_null() { Map::new() } else { p.as_object()?.clone() };
     params.insert("width".into(), Value::from(crate::extra_cmds::stroke_width(p)));
+    // Photoshop opens the Stroke dialog for a descriptor that leaves out a setting, even with
+    // dialogs off (#8303), so the command's defaults for the ones left out are written too.
+    for (key, default) in [("location", json!("center")), ("opacity", json!(100)), ("mode", json!("Normal")), ("preserveTransparency", json!(false))] {
+        params.entry(key).or_insert(default);
+    }
     fields_to(&Value::Object(params), STROKE, desc("null"))
 }
 

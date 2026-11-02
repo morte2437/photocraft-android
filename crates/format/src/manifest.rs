@@ -300,6 +300,10 @@ pub enum ContentM {
         stroke: Option<ShapeStroke>,
         #[serde(default)]
         live: Option<LiveShape>,
+        /// Arrow parameters stored separately for backward compatibility.
+        /// Older PhotoCraft versions ignore this optional field.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        arrow_live: Option<LiveShape>,
         /// The path's density as the fill's mask; older files have none (100 %).
         #[serde(default = "full_density")]
         density: f32,

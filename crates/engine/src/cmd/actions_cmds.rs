@@ -106,6 +106,12 @@ pub struct ActionState {
     /// Steps run by the current top-level script and everything it calls.
     #[serde(skip)]
     pub script_steps: u64,
+    /// Sets made with New Set (`actions.newSet`), or loaded from an `.atn` with no actions, that
+    /// hold no action yet: the Actions panel shows them as empty folders. Save Actions… writes one
+    /// to an `.atn` as Photoshop does, but the preset store keeps sets through their actions, so
+    /// an empty one isn't remembered past the session.
+    #[serde(skip)]
+    pub sets: Vec<String>,
     /// Bumped whenever `list` changes, so the preset store can skip unchanged writes.
     #[serde(skip)]
     pub rev: u64,
@@ -333,7 +339,7 @@ fn from_step(p: &Value, len: usize) -> Result<usize> {
 fn list(s: &mut Session, _p: &Value) -> Result<Value> {
     let actions: Vec<Value> = s.actions.list.iter().map(|a| json!({"name": a.name, "steps": a.steps.len(), "set": a.set})).collect();
     let recording = s.actions.recording.and_then(|(_, i)| s.actions.list.get(i).map(|a| a.name.clone()));
-    Ok(json!({"actions": actions, "recording": recording}))
+    Ok(json!({"actions": actions, "sets": crate::actions_edit_cmds::set_names(s), "recording": recording}))
 }
 
 fn get(s: &mut Session, p: &Value) -> Result<Value> {
@@ -366,7 +372,15 @@ fn record(s: &mut Session, p: &Value) -> Result<Value> {
         if s.actions.list.iter().any(|action| action.name == name) {
             return Err(bad("actions.record", "an action with this name already exists"));
         }
-        s.actions.list.push(Action::new(name, Vec::new()));
+        let set = match p.get("set") {
+            None | Some(Value::Null) => None,
+            // An existing set, empty ones included, keeps its exact name (an older actions.json or
+            // a `.atn` may pad it); a new one is trimmed.
+            Some(Value::String(n)) if crate::actions_edit_cmds::set_names(s).contains(n) => Some(n.clone()),
+            Some(Value::String(n)) if !n.trim().is_empty() => Some(n.trim().to_string()),
+            Some(_) => return Err(bad("actions.record", "\"set\" must be a set name or null")),
+        };
+        s.actions.list.push(Action { set, ..Action::new(name, Vec::new()) });
         s.actions.touch();
         s.actions.list.len() - 1
     };
@@ -746,7 +760,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "List Actions",
             menu: &[],
             shortcut: None,
-            params: "{} → {actions:[{name, steps:count, set:name|null}], recording:name|null}",
+            params: "{} → {actions:[{name, steps:count, set:name|null}], sets:[name…] (every set in panel order, empty ones too), recording:name|null}",
             enabled: always,
             run: list,
             journal: false,
@@ -766,7 +780,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Record Action",
             menu: &[],
             shortcut: None,
-            params: r##"{"name":str? (new action, default "Action N")} or {"action":name|index} (append) → {action, index}"##,
+            params: r##"{"name":str? (new action, default "Action N"),"set":name? (the set it goes in, as New Action records into the selected set)} or {"action":name|index} (append) → {action, index}"##,
             enabled: always,
             run: record,
             journal: false,
