@@ -1,6 +1,7 @@
 use super::batch::write_tile;
 use super::textures::{Resident, TexKind};
 use super::{Arc, F, HashMap, I, PixelFormat, Rect, SampleType, Surface, TILE_SIZE, Tile, TileCoord, U, fx};
+use photocraft_raster::scratch;
 
 /// Distinct tiles converted per parallel batch: bounds the converted bytes held at once (64 tiles
 /// of a 16-bit page are 32 MiB).
@@ -141,6 +142,8 @@ pub(crate) fn convert_tiles(
                 _ => put(t, cs, &bytes.concat()),
             }
         }
+        // The texels are on their way to the GPU: the buffers serve the next batch.
+        parts.into_iter().for_each(scratch::give);
     }
     groups.len()
 }
@@ -157,7 +160,9 @@ pub(crate) fn colour_managed(fmt: &PixelFormat, kind: TexKind) -> bool {
 /// Tile pixels in the texture's format. `tile = None` gives the default pixel everywhere.
 pub(crate) fn convert_tile(surface: &Surface, tile: Option<&Arc<Tile>>, kind: TexKind, c: TileCoord) -> Vec<u8> {
     if let (Some(t), TexKind::Rgba8Direct | TexKind::R8Direct) = (tile, kind) {
-        return t.bytes().to_vec();
+        let mut out = scratch::take_cap(t.bytes().len());
+        out.extend_from_slice(t.bytes());
+        return out;
     }
     let fmt = surface.format();
     if let (Some(t), TexKind::Rgba16F) = (tile, kind)
@@ -179,7 +184,7 @@ fn convert_rows(surface: &Surface, tile: Option<&Arc<Tile>>, kind: TexKind, rect
         Some(_) => surface.read_region(rect),
         None => surface.default_pixel().repeat(n),
     };
-    let mut out = Vec::with_capacity(n * kind.bytes_per_pixel());
+    let mut out = scratch::take_cap(n * kind.bytes_per_pixel());
     // The previous pixel and its colour.
     let mut last: Option<(usize, [f32; 4])> = None;
     for (i, px) in raw.chunks_exact(ch).enumerate() {
@@ -209,6 +214,7 @@ fn convert_rows(surface: &Surface, tile: Option<&Arc<Tile>>, kind: TexKind, rect
             TexKind::R32F => out.extend(px[0].to_le_bytes()),
         }
     }
+    scratch::give(raw);
     out
 }
 
@@ -229,7 +235,7 @@ pub(crate) fn rgb_gray16_to_f16(fmt: &PixelFormat, bytes: &[u8]) -> Option<Vec<u
     let half = HALF.get_or_init(|| (0..=u16::MAX).map(|v| f32_to_f16(v as f32 / 65535.0)).collect());
     let one = f32_to_f16(1.0).to_le_bytes();
     let ch = fmt.channels();
-    let mut out = Vec::with_capacity((TILE_SIZE * TILE_SIZE) as usize * 8);
+    let mut out = scratch::take_cap((TILE_SIZE * TILE_SIZE) as usize * 8);
     for px in bytes.chunks_exact(ch * 2) {
         let h = |i: usize| -> [u8; 2] {
             let v = px.get(i * 2..i * 2 + 2).map_or(0, |b| u16::from_ne_bytes([b[0], b[1]]));
@@ -261,7 +267,7 @@ pub(crate) fn rgb_gray32_to_f16(fmt: &PixelFormat, bytes: &[u8]) -> Option<Vec<u
     };
     let one = f32_to_f16(1.0).to_le_bytes();
     let ch = fmt.channels();
-    let mut out = Vec::with_capacity((TILE_SIZE * TILE_SIZE) as usize * 8);
+    let mut out = scratch::take_cap((TILE_SIZE * TILE_SIZE) as usize * 8);
     for px in bytes.chunks_exact(ch * 4) {
         let h = |i: usize| -> [u8; 2] {
             let v = px.get(i * 4..i * 4 + 4).map_or(0.0, |b| f32::from_ne_bytes([b[0], b[1], b[2], b[3]]));

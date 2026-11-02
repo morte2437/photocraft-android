@@ -814,7 +814,7 @@ fn fill_layer_pixel_rewrites_refresh_the_effect_maps() {
     .unwrap();
     let render = |s: &Session| {
         let d = &s.active().unwrap().doc;
-        photocraft_compose::render(d, d.bounds()).px
+        photocraft_compose::render(d, d.bounds()).into_px()
     };
     // Give the layer the cached-pixels state a PSD import produces (the cache is what Image
     // › Transform & friends rewrite in place, without touching the Fill spec).
@@ -901,7 +901,7 @@ fn group_effect_maps_follow_child_visibility_and_opacity() {
     .unwrap();
     let render = |s: &Session| {
         let d = &s.active().unwrap().doc;
-        photocraft_compose::render(d, d.bounds()).px
+        photocraft_compose::render(d, d.bounds()).into_px()
     };
     let mut prev = render(&s); // populate the effect-map cache
     type Edit = (&'static str, fn(&mut photocraft_doc::Layer));

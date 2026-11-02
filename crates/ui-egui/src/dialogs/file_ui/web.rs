@@ -119,7 +119,7 @@ fn web_pane(app: &PhotocraftApp, ui: &mut egui::Ui, size: egui::Vec2, p: Option<
             };
             let buf = photocraft_compose::flatten(&wd);
             let v = (
-                Arc::new(buf.px),
+                Arc::new(buf.into_px()),
                 wd.size.width,
                 wd.size.height,
                 (fw * fh) / (f64::from(wd.size.width) * f64::from(wd.size.height)).max(1.0),

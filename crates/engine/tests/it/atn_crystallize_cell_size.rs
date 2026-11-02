@@ -24,7 +24,7 @@ fn fixture(depth: u32) -> Session {
 
 /// Compare the actual flattened document rather than just the imported parameters.
 fn pixels(s: &Session) -> Vec<[f32; 4]> {
-    photocraft_compose::flatten(&s.active().unwrap().doc).px
+    photocraft_compose::flatten(&s.active().unwrap().doc).into_px()
 }
 
 /// Fractions remain valid native edits; strict integer ATN conversion must refuse them.

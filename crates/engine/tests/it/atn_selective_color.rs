@@ -37,7 +37,7 @@ fn doc_bounds() -> photocraft_doc::Rect {
 }
 
 fn pixels(s: &Session) -> Vec<[f32; 4]> {
-    photocraft_compose::flatten(&s.active().unwrap().doc).px
+    photocraft_compose::flatten(&s.active().unwrap().doc).into_px()
 }
 
 fn check_cases(id: &str, cases: &[Value], require_effect: bool) {

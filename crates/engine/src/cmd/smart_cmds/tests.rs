@@ -110,7 +110,7 @@ fn paint(s: &mut Session) {
 }
 
 fn flat(s: &Session) -> Vec<[f32; 4]> {
-    photocraft_compose::flatten(&s.active().unwrap().doc).px
+    photocraft_compose::flatten(&s.active().unwrap().doc).into_px()
 }
 
 fn max_diff(a: &[[f32; 4]], b: &[[f32; 4]]) -> f32 {

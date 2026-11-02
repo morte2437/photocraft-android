@@ -36,7 +36,7 @@ pub fn faces_in(doc: &Document, active: Option<LayerId>, all_layers: bool, min_s
             surf.read_rgba_into(area, &mut px);
             px
         }
-        None => photocraft_compose::render(doc, area).px,
+        None => photocraft_compose::render(doc, area).into_px(),
     };
     let found = detect(&px, w, h, min_score)?;
     let (x0, y0) = (area.x0 as f32, area.y0 as f32);

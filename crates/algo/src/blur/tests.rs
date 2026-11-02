@@ -204,7 +204,7 @@ fn direct_boxes(img: &Image, out: Rect, boxes: &[usize], alpha: bool) -> Vec<f32
         let rect = out.inflate(left);
         cur = Image { rect, ch: img.ch, data: conv_sep(&cur, rect, &k, &k, alpha) };
     }
-    cur.data
+    cur.into_data()
 }
 
 /// Noisy pixels over `r` (alpha varying, some fully transparent).
@@ -481,7 +481,8 @@ fn line_passes_stop_between_passes_when_cancelled() {
     let reach: usize = radii.iter().sum();
     let line: Vec<f32> = (0..(len + 2 * reach) * w).map(|i| (i % 7) as f32 + 1.0).collect();
     let run = |ctl: &Interrupt| {
-        let mut s = Scratch { line: line.clone(), ..Scratch::default() };
+        let mut s = Scratch::new(0, 0);
+        s.line.extend_from_slice(&line);
         let mut dst = vec![0.0f32; len * w];
         line_passes(&mut dst, w, &radii, &mut s, ctl);
         dst

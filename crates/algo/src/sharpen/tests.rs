@@ -267,7 +267,12 @@ fn malformed_inputs_and_allocations_stop_gracefully() {
         assert!(crate::apply_in_with(&s, &p, rect, rect, None, rect, &Interrupt::NONE).is_none());
         assert_eq!(crate::apply_in(&s, &p, rect, rect, None, rect), s);
     }
-    for bad in [Image { ch: 0, ..src.clone() }, Image { data: vec![0.0], ..src.clone() }, Image { rect: Rect::new(5, 0, 0, 2), ..src.clone() }] {
+    let with = |edit: &dyn Fn(&mut Image)| {
+        let mut bad = src.clone();
+        edit(&mut bad);
+        bad
+    };
+    for bad in [with(&|i| i.ch = 0), with(&|i| i.data = vec![0.0]), with(&|i| i.rect = Rect::new(5, 0, 0, 2))] {
         assert!(exact::run(&bad, rect, &ctx, 100.0, 1.0, 0.0, &Interrupt::NONE).is_none());
     }
     for rect in [Rect::new(i32::MIN, 0, i32::MAX, 2), Rect::new(0, 0, 300_000, 300_000), Rect::new(2, 0, 0, 2)] {
