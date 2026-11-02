@@ -160,6 +160,12 @@ impl Session {
         if spec.id == "layer.smartFilter.deleteFilterMask" && params.get("ifPresent").and_then(Value::as_bool) == Some(true) {
             return smart_cmds::smart_layer_active(self);
         }
+        // Recorded Unlink can be repeated on a single, already-unlinked layer.
+        // Keep the menu toggle's two-layer requirement when no state is supplied.
+        if spec.id == "layer.linkLayers" && params.get("linked").and_then(Value::as_bool) == Some(false) {
+            let d = self.active().ok_or_else(|| "no document open".to_string())?;
+            return if d.selected_layers().is_empty() { Err("no layer selected".into()) } else { Ok(()) };
+        }
         channel_cmds::mask_target_enabled(self, spec.id, params).unwrap_or_else(|| (spec.enabled)(self))
     }
 

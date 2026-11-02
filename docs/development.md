@@ -643,6 +643,12 @@ the document profile, retains alpha and untouched native pixels, and uses one un
 A zero tone shift validates its inputs without changing pixels. The existing RGB option keeps
 its previous behavior. Explicit Lab bounds require a composite pixel-layer target.
 
+Artboard from Group action settings follow [the measured guide/background behavior](atn.md#newer-events-string-id-only):
+guide IDs are ignored session metadata, 1 or absent `changeBackground` applies the
+background, and other integer flags give white. The group's bounds are retained.
+Background-only `editArtboardEvent` uses the existing Artboard edit command; its
+recorded rectangle/preset are retained for saving, without resizing the target.
+
 `crates/psd/tests/it/atn_contract.rs` checks the parser's public API against small, independently
 encoded version-16 fixtures (the version-12 ones are read by `atn_v12::`) in `crates/psd/tests/fixtures/atn/` (provenance and checksums in
 its README): `cargo test -p photocraft-psd --test it atn_contract::`.

@@ -151,6 +151,7 @@ The original reference entry retains its source date and historical totals; curr
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-01 | minor | `.atn`: 23 newer measured forms mapped, including explicit Link/Unlink, Smart Object file operations, Make Type to Shape, radius-only Shape Blur, Artboard from Group and the Crop Photos parent; supported in batch 13; Link Layers keeps the measured toggle. Artboard forms with unmeasured settings and generated Crop helper steps remain kept. |
 | 2026-11-01 | minor | Recorded direct Gradient Map and Lab-range Replace Color load, play and retain their measured settings on save; unsupported forms remain preserved (part of #10607). |
 | 2026-11-01 | minor | `.atn`: event reference [atn.md](atn.md): the 117 supported events, and measured keys, defaults, ranges and enum values for 101 events not mapped yet |
 | 2026-10-31 | minor | `.atn` Group B: four Render events load, play and save; 120 supported and 97 unmapped. Supported-table columns corrected against the event registry; the original 117/101 reference entry remains historical. |

@@ -617,8 +617,33 @@ fn every_mapped_command_exports_and_imports_back() {
         ("layer.duplicate", json!({"layer": "Shadow", "document": "new", "documentName": "Doc"})),
         ("image.duplicate", json!({"mergedOnly": true})),
         ("layer.new.layer", json!({"name": "Ink", "opacity": 0.5, "mode": "Multiply"})),
+        ("type.convertToShape", json!({})),
+        ("filter.blur.shapeBlur", json!({})),
+        ("filter.blur.shapeBlur", json!({"radius": 10})),
         ("layer.new.group", json!({"name": "G"})),
         ("layer.groupLayers", json!({})),
+        ("layer.linkLayers", json!({"linked": true})),
+        ("layer.linkLayers", json!({"linked": false})),
+        ("layer.linkLayers", json!({"linked": true, "_atnNoTarget": true})),
+        ("layer.linkLayers", json!({"linked": false, "_atnNoTarget": true})),
+        ("layer.arrange.reverse", json!({})),
+        ("layer.arrange.reverse", json!({"_atnNoTarget": true})),
+        ("layer.selectLinkedLayers", json!({})),
+        ("layer.layerStyle.clear", json!({})),
+        ("layer.rasterize.allLayers", json!({})),
+        ("layer.videoLayers.newBlankVideoLayer", json!({})),
+        ("select.isolateLayers", json!({})),
+        ("type.loadDefaultTypeStyles", json!({})),
+        ("type.saveDefaultTypeStyles", json!({})),
+        ("image.analysis.recordMeasurements", json!({})),
+        ("file.automate.cropAndStraightenPhotos", json!({})),
+        ("file.automate.cropAndStraightenPhotos", json!({"_atnNoTarget": true})),
+        ("layer.new.artboardFromGroup", json!({})),
+        ("layer.new.artboardFromGroup", json!({"background":"white","color":[1,1,1],"preset":"","guideIDs":[],"changeBackground":1})),
+        (
+            "layer.artboard.set",
+            json!({"background":"custom","color":[0.25,0.5,0.75],"recordedPreset":"","guideIDs":[],"recordedRect":[2,2,6,6],"changeSizes":8,"changeBackground":1}),
+        ),
         ("layer.new.layerViaCopy", json!({})),
         ("layer.newFillLayer.solidColor", json!({"color": "#336699"})),
         ("layer.newAdjustmentLayer.hueSaturation", json!({})),
@@ -707,6 +732,14 @@ fn every_mapped_command_exports_and_imports_back() {
         ("layer.smartObjects.convertToSmartObject", json!({})),
         ("layer.smartObjects.editContents", json!({})),
         ("layer.smartObjects.updateModifiedContent", json!({})),
+        ("layer.smartObjects.newSmartObjectViaCopy", json!({})),
+        ("layer.smartObjects.convertToLayers", json!({})),
+        ("layer.smartObjects.convertToEmbedded", json!({})),
+        ("layer.smartObjects.updateAllModifiedContent", json!({})),
+        ("layer.smartObjects.exportContents", json!({"path": "/tmp/contents.png"})),
+        ("layer.smartObjects.convertToLinked", json!({"path": "/tmp/linked.png"})),
+        ("layer.smartObjects.relinkToFile", json!({"path": "/tmp/relinked.png"})),
+        ("layer.smartObjects.replaceContents", json!({"path": "/tmp/replacement.png"})),
         ("paint.bucket", json!({"x": 10, "y": 20, "tolerance": 32, "antiAlias": true, "contiguous": false, "opacity": 100})),
         ("image.imageSize", json!({"percent": 200, "resample": "bicubicAutomatic", "scaleStyles": true})),
         ("file.placeEmbedded", json!({"path": "/tmp/logo.png", "scale": 50})),
@@ -859,6 +892,13 @@ fn every_mapped_command_exports_and_imports_back() {
             }
             Mapped::Unsupported { .. } => panic!("{id} does not import back"),
         }
+    }
+    // Partial native backgrounds need no recorded preset, guide IDs or last-used color.
+    for (background, imported_background) in [("white", "white"), ("black", "black"), ("transparent", "transparent"), ("custom", "white")] {
+        let item = export_item("layer.new.artboardFromGroup", &json!({"background":background}), "S").unwrap();
+        let Mapped::Steps(steps) = (event_for(&item.event).unwrap().from)(item.descriptor.as_ref().unwrap()) else { panic!("Artboard did not import") };
+        assert_eq!(steps, [("layer.new.artboardFromGroup".into(), json!({"background":imported_background,"color":[1.0,1.0,1.0],"preset":"","guideIDs":[]}))]);
+        assert_eq!(export_item(&steps[0].0, &steps[0].1, "S").unwrap().descriptor, item.descriptor);
     }
     // Every command the table claims to export has a case above.
     let covered: std::collections::BTreeSet<&str> = cases.iter().map(|(id, _)| *id).collect();

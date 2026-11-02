@@ -18,7 +18,7 @@ layers and documents, newer and older events and files, and a measured reference
 map yet, with everything needed to implement them without
 the reference application.
 
-## Supported events (146)
+## Supported events (168)
 
 | Code | String ID | Label | PhotoCraft command(s) |
 |---|---|---|---|
@@ -99,7 +99,7 @@ the reference application.
 | `CtTL` | cutToLayer | Layer Via Cut | `layer.new.layerViaCut` |
 | `LnsF` | lensFlare | Lens Flare | `filter.render.lensFlare` |
 | `Lvls` | levels | Levels | `image.adjustments.levels`, `image.autoTone`, `image.autoContrast` |
-| `Mk  ` | make | Make | `layer.new.layer`, `layer.new.group`, `layer.groupLayers`, `layer.duplicate`, `layer.new.layerViaCopy`, `layer.new.layerViaCut`, `layer.newFillLayer.solidColor`, `layer.newFillLayer.pattern`, `layer.newAdjustmentLayer.levels`, `layer.newAdjustmentLayer.curves`, `layer.newAdjustmentLayer.hueSaturation`, `layer.newAdjustmentLayer.brightnessContrast`, `layer.newAdjustmentLayer.threshold`, `layer.newAdjustmentLayer.posterize`, `layer.newAdjustmentLayer.invert`, `layer.newAdjustmentLayer.colorBalance`, `layer.newAdjustmentLayer.vibrance`, `layer.newAdjustmentLayer.exposure`, `layer.newAdjustmentLayer.photoFilter`, `layer.newAdjustmentLayer.blackWhite`, `layer.newAdjustmentLayer.channelMixer`, `layer.newAdjustmentLayer.selectiveColor`, `layer.newAdjustmentLayer.gradientMap`, `layer.layerMask.revealAll`, `layer.layerMask.hideAll`, `layer.layerMask.revealSelection`, `layer.layerMask.hideSelection`, `file.new`, `file.newFromClipboard`, `history.newSnapshot` |
+| `Mk  ` | make | Make | `layer.new.layer`, `layer.new.group`, `layer.groupLayers`, `layer.duplicate`, `layer.new.layerViaCopy`, `layer.new.layerViaCut`, `layer.newFillLayer.solidColor`, `layer.newFillLayer.pattern`, `layer.newAdjustmentLayer.levels`, `layer.newAdjustmentLayer.curves`, `layer.newAdjustmentLayer.hueSaturation`, `layer.newAdjustmentLayer.brightnessContrast`, `layer.newAdjustmentLayer.threshold`, `layer.newAdjustmentLayer.posterize`, `layer.newAdjustmentLayer.invert`, `layer.newAdjustmentLayer.colorBalance`, `layer.newAdjustmentLayer.vibrance`, `layer.newAdjustmentLayer.exposure`, `layer.newAdjustmentLayer.photoFilter`, `layer.newAdjustmentLayer.blackWhite`, `layer.newAdjustmentLayer.channelMixer`, `layer.newAdjustmentLayer.selectiveColor`, `layer.newAdjustmentLayer.gradientMap`, `layer.layerMask.revealAll`, `layer.layerMask.hideAll`, `layer.layerMask.revealSelection`, `layer.layerMask.hideSelection`, `file.new`, `file.newFromClipboard`, `history.newSnapshot`, `type.convertToShape` |
 | (string ID only) | animationFramesFromLayers | Make Frames from Layers |  |
 | (string ID only) | matchColor | Match Color | `image.adjustments.matchColor` |
 | `Mxm ` | maximum | Maximum | `filter.other.maximum` |
@@ -168,6 +168,83 @@ the reference application.
 | (string ID only) | vibrance | Vibrance | `image.adjustments.vibrance` |
 | `Wave` | wave | Wave | `filter.distort.wave` |
 | `ZgZg` | zigZag | ZigZag | `filter.distort.zigZag` |
+| (string ID only) | reverse | Reverse | `layer.arrange.reverse` |
+| (string ID only) | linkSelectedLayers | Link Layers (toggles, as measured) | `layer.linkLayers` |
+| (string ID only) | unlinkSelectedLayers | Unlink Layers | `layer.linkLayers {"linked":false}` |
+| (string ID only) | selectLinkedLayers | Select Linked Layers | `layer.selectLinkedLayers` |
+| (string ID only) | disableLayerStyle | Clear Layer Style | `layer.layerStyle.clear` |
+| (string ID only) | placedLayerMakeCopy | New Smart Object via Copy | `layer.smartObjects.newSmartObjectViaCopy` |
+| (string ID only) | placedLayerConvertToLayers | Convert to Layers | `layer.smartObjects.convertToLayers` |
+| (string ID only) | placedLayerConvertToEmbedded | Embed Linked | `layer.smartObjects.convertToEmbedded` |
+| (string ID only) | placedLayerUpdateAllModified | Update All Modified Content | `layer.smartObjects.updateAllModifiedContent` |
+| (string ID only) | rasterizeAll | Rasterize All Layers | `layer.rasterize.allLayers` |
+| (string ID only) | addBlankVideoLayer | New Blank Video Layer | `layer.videoLayers.newBlankVideoLayer` |
+| (string ID only) | isolateLayers | Isolate Layers | `select.isolateLayers` |
+| (string ID only) | textLoadDefaultTypeStyles | Load Default Type Styles | `type.loadDefaultTypeStyles` |
+| (string ID only) | textSaveDefaultTypeStyles | Save Default Type Styles | `type.saveDefaultTypeStyles` |
+| (string ID only) | recordMeasurements | Record Measurements | `image.analysis.recordMeasurements` |
+| (string ID only) | CropPhotosAuto0001 | Crop and Straighten Photos | `file.automate.cropAndStraightenPhotos` |
+| (string ID only) | placedLayerExportContents | Export Contents | `layer.smartObjects.exportContents` |
+| (string ID only) | placedLayerConvertToLinked | Convert to Linked | `layer.smartObjects.convertToLinked` |
+| (string ID only) | placedLayerRelinkToFile | Relink to File | `layer.smartObjects.relinkToFile` |
+| (string ID only) | placedLayerReplaceContents | Replace Contents | `layer.smartObjects.replaceContents` |
+| (string ID only) | shapeBlur | Shape Blur (radius-only form) | `filter.blur.shapeBlur` |
+| (string ID only) | artboardFromLayerGroupEvent | Artboard from Group | `layer.new.artboardFromGroup` |
+| (string ID only) | editArtboardEvent | Artboard background color (flags 8/1) | `layer.artboard.set` |
+
+### Newer event mapping boundaries
+
+The 23 requested forms in the two **Measured** tables under
+[Newer events](#newer-events-string-id-only) are mapped. Artboard from Group
+retains the current-layer target, preset tag, fractional RGB, background type
+and integer `changeBackground`, including absence. A flag of 1 or absence applies
+the background; other integers give white. An omitted type defaults to white.
+Recorded guide IDs are preserved on save and ignored on playback, as measured
+in [the guide/background reference below](#newer-events-string-id-only).
+Existing document guides remain unchanged. The preset does not resize the group.
+
+The additional `editArtboardEvent` maps background-only changes with `changeSizes`
+8 and `changeBackground` 1. Its rectangle and preset remain recording metadata:
+they do not move or resize the target artboard. Colors remain in the saved step
+even for white, black or transparent backgrounds. Other flags, extra settings,
+unknown targets and forms that cannot reconstruct exactly remain whole kept
+steps. Native geometry edits without a matching wire form refuse export.
+
+The sixteen target-only events accept an empty descriptor or the current-layer
+`null` reference (`Lyr `/`Ordn.Trgt`). Save retains which form was imported.
+Unknown targets or extra keys stay complete kept steps. Unrepresented native
+options are refused on export. Playback uses the native command's preconditions
+and current state. Isolate Layers toggles the panel view; type defaults remain
+session settings; Record Measurements uses the current measurement configuration.
+
+Link Layers plays as the toggle the reference application performs (played twice on the same
+layers it links, then unlinks them; see the measurements below). Unlink is explicit and
+idempotent: it keeps an already unlinked selection unlinked and clears singleton link groups.
+Undo restores an edit. Explicit native layer lists cannot be exported as these targeted events.
+
+The four Smart Object file events use Open/Place's `Pth `/`txtu` path encoding.
+Export Contents uses `null` for its path; Convert to Linked uses the current-layer
+`null` reference and `Usng` for its path; Relink and Replace use `null` for the path.
+A positive integer `LyrI` is a recording-session hint, never a PhotoCraft layer
+identity, and is omitted on save under the normalization rule below. Undecodable
+paths or extra keys keep the entire step. File access happens at playback; a
+missing or unusable file reports the native command's error.
+
+Convert Type to Shape retains Make's `contentLayer` class reference and `Usng`
+target `textLayer` reference; it does not export a separate `convertToShape`
+event. Other Make mappings, including Solid Color and Pattern fills, are unchanged.
+Shape Blur maps only the measured radius form (`Rds ` pixels, 5–1000; omitted
+radius uses the native factory value 10). Later dialog forms carrying
+`customShape` or `keyOriginType` remain kept. Native explicit shape choices cannot
+be saved as radius-only descriptors; no custom asset lookup or new kernel is added.
+
+Crop and Straighten Photos executes the native scan operation once, creating one
+document per photo found inside the selection and leaving the source unchanged.
+It requires a selected, visible layer with no pixel or full lock, including
+inherited group state, and remains unavailable for Indexed Color documents.
+The separate `CropPhotos0001` helper remains a complete kept Photoshop step.
+Playback stops at that enabled helper before subsequent duplicate/crop steps can
+run. This covers the parent event, not complete recordings with generated helpers.
 
 ### Settings retained by mapped events
 
@@ -314,7 +391,7 @@ Nested values as recorded (example values):
 
 ## Known gaps in mapped events
 
-A mapped event can still lose a setting. Every mapped event was checked on 2026-11-01: the 5 296 steps of
+A mapped event can still lose a setting. The original 117-event mapping was checked on 2026-11-01: the 5 296 steps of
 the `.atn` corpus (sets the reference application recorded) and factory descriptors measured in the
 reference application went through `actions.load` and `actions.save`, and each saved descriptor was compared
 with the original. Then every step PhotoCraft saves for the cases in
@@ -400,12 +477,15 @@ name form today; the index, ID and ordinal forms load as kept steps.
 
 ## Newer events (string ID only)
 
-The events the reference application records for the menu items PhotoCraft has that are neither mapped
-nor in the reference below: 63 candidates from PhotoCraft's menu catalogue, each run in the reference
+The original survey covered menu events that were neither mapped nor in the reference below:
+63 candidates from PhotoCraft's menu catalogue, each run in the reference
 application without a dialog on a document prepared for it (layers, a selection, a smart object, a type
 layer, a layer style or a group) on 2026-11-01. 27 more menu items record no event of their own (puppet
 warp and warp splits, combine shapes, scripts such as Load Files into Stack and Statistics, artboard and
 video export, missing-font commands): they cannot be recorded or play as a script step.
+
+The two Measured tables remain the recording reference. The mappings and remaining
+limits added since that survey are listed under [Newer event mapping boundaries](#newer-event-mapping-boundaries).
 
 **Measured: no settings beyond the target.** A step with these events carries at most `null` (the target
 layer reference, `Ordn.Trgt`); mapping them needs only the event name.
@@ -509,6 +589,11 @@ commands record).
 - **Split Channels** splits a document with a single layer, Background or not (a lone layer gives one more document); a document
   with more than one layer is refused.
 - **Load Actions** with a set whose name is already in the panel adds a second set of that name; nothing is replaced.
+
+- PhotoCraft preserves fractional recorded RGB values exactly. Native actions with partial settings export an empty preset and guide list when absent.
+  An absent native color exports as white: it matches the native custom-color fallback and is visually ignored for white, black and transparent backgrounds.
+  A custom background without a color uses the White variant (type 1); an explicit custom white color keeps type 4.
+  This is canonical export metadata, not a claim about the reference application's remembered color. Imported steps retain their recorded color instead.
 
 ## Measured through dialogs and recordings
 
@@ -746,6 +831,7 @@ and string ID, the PhotoCraft command it maps to (or should map to), and every k
 order it is recorded, with type, unit, factory default and allowed values. The Supported events table says
 which of them PhotoCraft maps today; for the others an entry has everything needed to implement them. When
 an event is implemented, add it to that table in the same change.
+Current support and limits of the newer events are described under [Newer event mapping boundaries](#newer-event-mapping-boundaries).
 
 ### How these values were measured
 
