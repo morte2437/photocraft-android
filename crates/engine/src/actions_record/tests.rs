@@ -168,6 +168,16 @@ fn named_nonactive_smart_layer_passes_admission_and_converts_to_layers() {
 }
 
 #[test]
+fn named_filter_mask_target_uses_the_recorded_smart_layer() {
+    let mut s = session();
+    s.execute("type.create", json!({"x": 2, "y": 20, "text": "I", "size": 12})).unwrap();
+    let smart = s.execute("layer.smartObjects.convertToSmartObject", json!({})).unwrap()["layer"].as_u64().unwrap();
+    let name = s.active().unwrap().doc.layer(LayerId(smart)).unwrap().name.clone();
+    new_layer(&mut s, "Top");
+    assert_eq!(crate::channel_cmds::filter_mask_layer(&s, "edit.fill", &json!({"target": "filterMask", "layer": name})), Some(LayerId(smart)));
+}
+
+#[test]
 fn named_nonactive_layer_is_the_one_converted_to_smart() {
     let mut s = session();
     let target = s.execute("type.create", json!({"x": 2, "y": 20, "text": "I", "size": 12})).unwrap()["layer"].as_u64().unwrap();
