@@ -569,8 +569,12 @@ pub const DEFAULT_MEMORY_USAGE_MB: u32 = 8192;
 
 /// The most Memory Usage the web build honours, in MB: a wasm module's linear memory tops out at
 /// 4 GiB, so a larger allowance (the desktop default is 8 GiB) would never trim anything. The
-/// effect cache budget is capped the same way, or the cache could grow until allocation fails.
+/// effect cache is capped at it on every 32-bit build ([`SMALL_ADDRESS_SPACE`]).
 const WASM_MEMORY_USAGE_CAP_MB: u32 = 1536;
+
+/// A 32-bit address space (wasm32, 32-bit Windows): an effect cache budget beyond
+/// [`WASM_MEMORY_USAGE_CAP_MB`] would never evict before allocation fails.
+const SMALL_ADDRESS_SPACE: bool = cfg!(target_pointer_width = "32");
 
 /// The Memory Usage a build honours for a `stored` preference: capped on the web build (`web`).
 /// Separate from the target check so native tests exercise both.
@@ -578,16 +582,16 @@ fn honoured_memory_usage_mb(stored: u32, web: bool) -> u32 {
     if web { stored.min(WASM_MEMORY_USAGE_CAP_MB) } else { stored }
 }
 
-/// The largest Effect Cache the Preferences dialog and `prefs.set` accept, in MB: the web build's
-/// cap there, so the field shows the budget the cache really gets.
-fn effect_cache_max_mb(web: bool) -> u32 {
-    if web { WASM_MEMORY_USAGE_CAP_MB } else { 65536 }
+/// The largest Effect Cache the Preferences dialog and `prefs.set` accept, in MB: on a build with
+/// a 32-bit address space (`small`) the cap there, so the field shows the budget the cache gets.
+fn effect_cache_max_mb(small: bool) -> u32 {
+    if small { WASM_MEMORY_USAGE_CAP_MB } else { 65536 }
 }
 
-/// The layer-effect cache budget a build honours for a `stored` preference, in bytes: capped on
-/// the web build (`web`), and saturating rather than wrapping a 32-bit `usize`.
-fn effect_cache_budget_bytes_for(stored: u32, web: bool) -> usize {
-    (honoured_memory_usage_mb(stored, web) as usize).saturating_mul(1 << 20)
+/// The layer-effect cache budget a build honours for a `stored` preference, in bytes: at most
+/// [`effect_cache_max_mb`]. Separate from the target check so native tests exercise both.
+fn effect_cache_budget_bytes_for(stored: u32, small: bool) -> u64 {
+    u64::from(stored.min(effect_cache_max_mb(small))) << 20
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -680,9 +684,9 @@ impl Performance {
     }
 
     /// The layer-effect cache budget the build honours, in bytes: [`Performance::effect_cache_mb`],
-    /// capped on the web like Memory Usage.
+    /// capped at 1536 MB on 32-bit builds (the web and 32-bit Windows).
     pub fn effect_cache_budget_bytes(&self) -> usize {
-        effect_cache_budget_bytes_for(self.effect_cache_mb, cfg!(target_arch = "wasm32"))
+        usize::try_from(effect_cache_budget_bytes_for(self.effect_cache_mb, SMALL_ADDRESS_SPACE)).unwrap_or(usize::MAX)
     }
 }
 

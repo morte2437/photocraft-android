@@ -1082,40 +1082,38 @@ fn the_web_build_caps_memory_usage() {
     }
 }
 
-/// The effect cache budget is the stored MB in bytes, capped on the web like Memory Usage, and
-/// never wraps: on wasm32 an uncapped 4096 MB shifted into `usize` was 0. Both builds are checked
-/// on every target.
+/// The effect cache budget is the stored MB in bytes, at most 1536 MB on a 32-bit address space
+/// (the web, 32-bit Windows) and 65536 MB elsewhere, and never wraps: on wasm32 an uncapped
+/// 4096 MB shifted into `usize` was 0. Both kinds of build are checked on every target, in `u64`
+/// so the expectations themselves can't overflow a 32-bit `usize`.
 #[test]
-fn the_effect_cache_budget_is_capped_on_the_web_and_never_wraps() {
-    const MB: usize = 1 << 20;
-    for (stored, web_mb) in [
-        (16, 16),
-        (768, 768),
-        (WASM_MEMORY_USAGE_CAP_MB, WASM_MEMORY_USAGE_CAP_MB),
-        (WASM_MEMORY_USAGE_CAP_MB + 1, WASM_MEMORY_USAGE_CAP_MB),
-        (4096, WASM_MEMORY_USAGE_CAP_MB),
-        (u32::MAX, WASM_MEMORY_USAGE_CAP_MB),
-    ] {
-        assert_eq!(effect_cache_budget_bytes_for(stored, true), web_mb as usize * MB, "web, {stored} MB");
-        assert_eq!(effect_cache_budget_bytes_for(stored, false), (stored as usize).saturating_mul(MB), "desktop, {stored} MB");
+fn the_effect_cache_budget_is_capped_on_32_bit_builds_and_never_wraps() {
+    const MB: u64 = 1 << 20;
+    let cap = WASM_MEMORY_USAGE_CAP_MB;
+    for (stored, small_mb, large_mb) in
+        [(16, 16, 16), (768, 768, 768), (cap, cap, cap), (cap + 1, cap, cap + 1), (4096, cap, 4096), (65536, cap, 65536), (u32::MAX, cap, 65536)]
+    {
+        assert_eq!(effect_cache_budget_bytes_for(stored, true), u64::from(small_mb) * MB, "32-bit, {stored} MB");
+        assert_eq!(effect_cache_budget_bytes_for(stored, false), u64::from(large_mb) * MB, "64-bit, {stored} MB");
     }
     let p = Performance { effect_cache_mb: 4096, ..Performance::default() };
-    assert_eq!(p.effect_cache_budget_bytes(), effect_cache_budget_bytes_for(4096, cfg!(target_arch = "wasm32")));
+    let expected = effect_cache_budget_bytes_for(4096, cfg!(target_pointer_width = "32"));
+    assert_eq!(u64::try_from(p.effect_cache_budget_bytes()).ok(), Some(expected), "fits this target's usize");
 }
 
-/// The Effect Cache field accepts only what the build honours: up to the web cap on the web, so
-/// the dialog never shows a value the cache doesn't get.
+/// The Effect Cache field accepts only what the build honours, so the dialog never shows a value
+/// the cache doesn't get.
 #[test]
 fn the_effect_cache_range_matches_the_honoured_budget() {
     assert_eq!(effect_cache_max_mb(true), WASM_MEMORY_USAGE_CAP_MB);
     assert_eq!(effect_cache_max_mb(false), 65536);
-    for web in [true, false] {
-        let max = effect_cache_max_mb(web);
-        assert_eq!(effect_cache_budget_bytes_for(max, web), max as usize * (1 << 20), "web = {web}: the largest accepted value is honoured in full");
+    for small in [true, false] {
+        let max = effect_cache_max_mb(small);
+        assert_eq!(effect_cache_budget_bytes_for(max, small), u64::from(max) << 20, "small = {small}: the largest accepted value is honoured");
     }
-    let web = cfg!(target_arch = "wasm32");
-    assert_eq!(range("performance.effectCacheMb"), Some((16.0, f64::from(effect_cache_max_mb(web)))));
-    assert!(check_value("performance.effectCacheMb", &json!(effect_cache_max_mb(web))).is_ok());
-    assert!(check_value("performance.effectCacheMb", &json!(effect_cache_max_mb(web) + 1)).is_err());
-    assert!(u64::from(Performance::default().effect_cache_mb) <= u64::from(effect_cache_max_mb(true)), "the default fits the web cap");
+    let small = cfg!(target_pointer_width = "32");
+    assert_eq!(range("performance.effectCacheMb"), Some((16.0, f64::from(effect_cache_max_mb(small)))));
+    assert!(check_value("performance.effectCacheMb", &json!(effect_cache_max_mb(small))).is_ok());
+    assert!(check_value("performance.effectCacheMb", &json!(effect_cache_max_mb(small) + 1)).is_err());
+    assert!(Performance::default().effect_cache_mb <= effect_cache_max_mb(true), "the default fits the 32-bit cap");
 }
