@@ -31,12 +31,7 @@ pub struct Filter {
 }
 
 impl Filter {
-    /// A hidden filter row filters nothing: the criteria stay for when it's shown again, but no
-    /// layer may go missing from the panel without the row that says why.
     pub fn of(ui: &UiState) -> Self {
-        if !ui.layers_panel_options.show_filters {
-            return Self { by: FilterBy::Kind, kinds: Vec::new(), name: String::new(), mode: ui.layer_filter_mode };
-        }
         Self { by: ui.layer_filter_by, kinds: ui.layer_filter.clone(), name: ui.layer_filter_name.clone(), mode: ui.layer_filter_mode }
     }
 

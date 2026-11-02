@@ -157,30 +157,3 @@ fn every_theme_shows_the_filter_row() {
         assert_eq!(drawn(&h), ["ink notes"], "{theme:?} filters by kind");
     }
 }
-
-/// A filter set while the row was shown stops filtering once the row is hidden, so no layer goes
-/// missing without the row that says why; showing the row again brings the filter back.
-#[test]
-fn a_hidden_filter_row_filters_nothing() {
-    let mut h = harness_in(ThemeKind::Studio);
-    h.state_mut().ui.layer_filter = vec!["type".into()];
-    h.run_steps(4);
-    assert_eq!(drawn(&h), ["ink notes"]);
-    h.state_mut().ui.layers_panel_options.show_filters = false;
-    h.run_steps(4);
-    assert!(h.query_by_value("Kind").is_none(), "the row is hidden");
-    assert_eq!(drawn(&h), ["ink notes", "Sheets", "Ink", "Paper", "Background"]);
-    assert_eq!(h.state().ui.layer_filter, ["type"], "the criteria are kept");
-    h.state_mut().ui.layers_panel_options.show_filters = true;
-    h.run_steps(4);
-    assert_eq!(drawn(&h), ["ink notes"]);
-}
-
-#[test]
-fn a_hidden_filter_row_makes_the_filter_inactive() {
-    let mut ui = UiState { layer_filter_by: FilterBy::Mode, layer_filter_name: "ink".into(), ..UiState::default() };
-    ui.layer_filter = vec!["pixel".into()];
-    assert!(Filter::of(&ui).active());
-    ui.layers_panel_options.show_filters = false;
-    assert!(!Filter::of(&ui).active());
-}
