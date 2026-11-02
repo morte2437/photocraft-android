@@ -558,10 +558,24 @@ fn batch_quiet_raw_applies_prior_settings_and_workflow_without_touching_inputs()
 }
 
 fn tmp(name: &str) -> String {
-    let d = std::env::temp_dir().join(format!("photocraft-file-cmds-{}-{name}", std::process::id()));
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let d = std::env::temp_dir().join(format!("photocraft-file-cmds-{}-{name}-{id}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     d.to_string_lossy().into_owned()
+}
+
+/// Concurrent tests may reuse a descriptive label without deleting another fixture's files.
+#[test]
+fn temporary_directories_with_the_same_label_are_isolated() {
+    let first = tmp("same-label");
+    let marker = join(&first, "source.png");
+    std::fs::write(&marker, b"original source").unwrap();
+    let second = tmp("same-label");
+    assert_ne!(first, second);
+    assert_eq!(std::fs::read(marker).unwrap(), b"original source");
+    assert!(std::path::Path::new(&second).is_dir());
 }
 
 fn session(w: u32, h: u32, depth: u32) -> Session {
