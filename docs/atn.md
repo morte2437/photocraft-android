@@ -191,8 +191,12 @@ The nested object class is corroborated by
 [ag-psd's public descriptor definitions](https://github.com/Agamnentzar/ag-psd/blob/master/src/descriptor.ts).
 The ID selects the installed shape even after a rename. If that asset is absent,
 playback fails without applying a blur; it never substitutes a shape with
-the same name. The existing CSH-import contribution #5493 is the prerequisite
-for loading external shape libraries and must preserve their original IDs.
+the same name. CSH libraries use the backend of
+[@jonathanwxh-cell's #5493](https://github.com/storytold/photocraft/pull/5493),
+ported from revision `43920ab7804cd386b91b319b33a2a8d0832d4d91` with its bounded
+reader and import tests. Imported IDs retain their exact text. Empty IDs become
+anonymous presets usable by name; repeated IDs resolve only when all matching
+presets have identical geometry. Conflicting geometry fails ID lookup.
 
 The native command rasterizes the selected vector shape as a normalized coverage
 kernel, retaining its aspect ratio and orientation. This follows the

@@ -16,6 +16,8 @@ use crate::commands::CommandSpec;
 use crate::vector_cmds::path_json;
 use crate::{EngineError, Result, Session};
 
+mod csh;
+
 /// Group listing Edit › Define Custom Shape results (`EditState::custom_shapes`).
 pub const CUSTOM_GROUP: &str = "Custom Shapes";
 
@@ -300,8 +302,10 @@ pub(crate) fn filter_path(s: &Session, p: &Value) -> Result<Path> {
         let id = value.as_str().filter(|id| !id.is_empty()).ok_or_else(|| bad(CMD, "shapeId must be a nonempty string"))?;
         let mut matches = s.presets.shapes.iter().flat_map(|g| &g.items).filter(|shape| shape.id.as_deref() == Some(id));
         let found = matches.next().ok_or_else(|| bad(CMD, format!("no installed shape with id \"{id}\"")))?;
-        if matches.next().is_some() {
-            return Err(bad(CMD, format!("more than one installed shape has id \"{id}\"")));
+        // Reimporting an unchanged library adds another display name for the same asset.
+        // Different geometry under one ID is ambiguous and must not pick the first match.
+        if matches.any(|shape| shape.path != found.path) {
+            return Err(bad(CMD, format!("different installed shapes have id \"{id}\"")));
         }
         return Ok(found.path.clone());
     }
@@ -465,6 +469,7 @@ fn reset(s: &mut Session, p: &Value) -> Result<Value> {
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
+        csh::spec(),
         CommandSpec {
             id: "shape.presets.list",
             label: "Shape Presets",

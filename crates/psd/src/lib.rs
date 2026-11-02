@@ -50,6 +50,7 @@ pub mod blend;
 pub mod builder;
 mod codepage;
 pub mod compression;
+pub mod csh;
 pub mod descriptor;
 pub mod error;
 pub mod file;

@@ -4,6 +4,9 @@ use photocraft_psd::atn::{self, AtnAction, AtnEvent, AtnFile, AtnItem};
 use photocraft_psd::descriptor::{Descriptor, Id, UnicodeString, Value as D};
 use serde_json::json;
 
+#[path = "../../../psd/tests/common/csh_fixture.rs"]
+mod csh_fixture;
+
 const SHAPE_ID: &str = "original-fixture-square";
 
 fn descriptor() -> Descriptor {
@@ -98,6 +101,45 @@ fn custom_shape_smart_filter_keeps_geometry_across_save_without_preset_library()
     assert_ne!(pixels(&reopened), expected);
     reopened.execute("layer.smartFilter.setVisible", json!({"index":0,"visible":true})).unwrap();
     assert_eq!(pixels(&reopened), expected);
+}
+
+#[test]
+fn imported_csh_id_resolves_in_an_action_after_reimport_and_preference_reload() {
+    let mut s = fixture(16);
+    let bytes = csh_fixture::triangle_csh();
+    let id = photocraft_psd::csh::parse(&bytes).unwrap()[0].id.clone();
+    let p = json!({"data":photocraft_paint::tile::b64_encode(&bytes)});
+    s.execute("shape.presets.importCsh", p.clone()).unwrap();
+    s.execute("shape.presets.importCsh", p).unwrap();
+    let matches: Vec<_> = s.presets.shapes.iter().flat_map(|g| &g.items).filter(|shape| shape.id.as_deref() == Some(id.as_str())).collect();
+    assert_eq!(matches.len(), 2, "both imports retain the source's opaque ID");
+    let path = photocraft_engine::vector_cmds::path_json(&matches[0].path);
+    let mut expected = fixture(16);
+    expected.execute("filter.blur.shapeBlur", json!({"radius":5,"shapePath":path})).unwrap();
+    let prefs = s.presets.to_json(&s);
+    let mut s = fixture(16);
+    s.load_presets_json(prefs);
+    let shape =
+        Descriptor::new("customShape").with("Nm  ", D::Text(UnicodeString::new_nul("Old shape name"))).with("Idnt", D::Text(UnicodeString::new_nul(&id)));
+    let d = Descriptor::new("null")
+        .with("Rds ", D::UnitFloat { unit: *b"#Pxl", value: 5.0 })
+        .with("customShape", D::Descriptor(shape))
+        .with("keyOriginType", D::Integer(9));
+    let imported = atn_cmds::import(&encoded(d)).unwrap();
+    assert!(imported.unsupported.is_empty());
+    s.actions.list = imported.actions;
+    let before = saved(&s);
+    assert_eq!(s.execute("actions.play", json!({"action":"Shape"})).unwrap()["ran"], 1);
+    assert_eq!(pixels(&s), pixels(&expected));
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(saved(&s), before);
+    // This original fixture has the same ID but a different path. Keep both presets
+    // available by their unique names, while refusing ambiguous action playback.
+    let other = csh_fixture::polygon_csh(&[&[(0.25, 0.25), (0.75, 0.25), (0.75, 0.75), (0.25, 0.75)]]);
+    assert_eq!(photocraft_psd::csh::parse(&other).unwrap()[0].id, id);
+    s.execute("shape.presets.importCsh", json!({"data":photocraft_paint::tile::b64_encode(&other)})).unwrap();
+    assert!(s.execute("actions.play", json!({"action":"Shape"})).is_err());
+    assert_eq!(saved(&s), before);
 }
 
 #[test]

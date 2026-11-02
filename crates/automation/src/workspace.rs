@@ -468,6 +468,7 @@ fn command_uses_ambient_path(id: &str, params: &Value) -> bool {
         | "brush.presets.importAbr"
         | "brush.presets.importImage"
         | "gradient.presets.importGrd"
+        | "shape.presets.importCsh"
         | "plugin.install"
         | "swatches.import"
         | "style.presets.importAsl"

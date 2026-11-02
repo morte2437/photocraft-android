@@ -1006,3 +1006,21 @@ fn absolute_paths_are_checked_against_the_authority_s_own_root() {
     let none = AuthorizedWorkspace::default();
     assert!(none.read(&target.to_string_lossy()).is_err());
 }
+
+#[test]
+fn csh_import_requires_inline_data_in_automation() {
+    let id = "shape.presets.importCsh";
+    for path in ["/outside/set.csh", "set.csh", "../set.csh", ""] {
+        let params = serde_json::json!({"path": path});
+        assert!(authorize_engine_command(id, &params).is_err(), "{path}");
+        assert!(authorize_desktop_engine_command(id, &params).is_err(), "{path}");
+    }
+    // The importer gives inline data precedence, even when a path is also supplied.
+    for params in [serde_json::json!({"data": "QUJD"}), serde_json::json!({"data": "QUJD", "path": "/outside/set.csh"})] {
+        assert!(authorize_engine_command(id, &params).is_ok());
+        assert!(authorize_desktop_engine_command(id, &params).is_ok());
+    }
+    let mut headless = crate::headless::Headless::new();
+    let error = headless.command_run(id, serde_json::json!({"path": "/outside/set.csh"})).unwrap_err();
+    assert!(error.to_string().contains("uses ambient filesystem paths and is disabled"), "{error}");
+}
