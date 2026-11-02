@@ -589,6 +589,7 @@ fn cancel_all_counts_an_accepted_batch_cancellation() {
         .unwrap());
     assert_eq!(s.execute("jobs.cancel", json!({})).unwrap()["cancelled"], 1);
     assert_eq!(s.execute("jobs.cancel", json!({})).unwrap()["cancelled"], 0, "a repeated request is not a new cancellation");
+    assert_eq!(s.execute("jobs.cancel", json!({"job": id.0})).unwrap()["cancelled"], 0, "a repeated batch request is not a print error");
     assert!(matches!(wait_event(&mut s, id).outcome, JobOutcome::Done(_)));
 }
 

@@ -105,9 +105,12 @@ fn linux_distinct_case_destinations_are_not_the_same_file() {
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 #[test]
-fn unicode_case_variants_cannot_name_a_batch_output_and_its_error_log() {
+fn unicode_case_variants_follow_destination_volume() {
     let dir = tmp("batch-unicode-case-destinations");
-    assert!(same_destination(join(&dir, "Ä.png"), join(&dir, "ä.png")));
+    let existing = join(&dir, "Ä-probe");
+    std::fs::write(&existing, b"probe").unwrap();
+    let volume_aliases_case = same_file(&existing, join(&dir, "ä-probe"));
+    assert_eq!(same_destination(join(&dir, "Ä.png"), join(&dir, "ä.png")), volume_aliases_case);
 }
 
 #[test]

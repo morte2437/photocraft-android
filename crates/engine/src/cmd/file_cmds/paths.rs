@@ -216,6 +216,24 @@ pub fn destination_identity(path: &std::path::Path) -> Option<std::path::PathBuf
     Some(resolved)
 }
 
+/// Probe the actual destination directory. macOS volumes and Windows directories may use either
+/// case behavior; the OS name alone cannot tell whether two future names will alias.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn case_sensitive_destination(path: &std::path::Path) -> Option<bool> {
+    let parent = path.parent()?;
+    if !std::fs::metadata(parent).ok()?.is_dir() {
+        return None;
+    }
+    let probe = tempfile::Builder::new().prefix(".PhotoCraftCaseProbe-").tempfile_in(parent).ok()?;
+    let name = probe.path().file_name()?.to_str()?;
+    let alternate = parent.join(name.replacen("PhotoCraft", "photocraft", 1));
+    match std::fs::metadata(&alternate) {
+        Ok(_) => Some(!same_file(probe.path(), &alternate)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(true),
+        Err(_) => None,
+    }
+}
+
 /// Whether two paths would name the same destination even before the file exists. This is used
 /// when a batch error log must not be allowed to replace a result that will be written later.
 pub fn same_destination(a: impl AsRef<std::path::Path>, b: impl AsRef<std::path::Path>) -> bool {
@@ -230,7 +248,7 @@ pub fn same_destination(a: impl AsRef<std::path::Path>, b: impl AsRef<std::path:
                 #[cfg(any(target_os = "windows", target_os = "macos"))]
                 {
                     match (a.to_str(), b.to_str()) {
-                        (Some(a), Some(b)) => a.to_lowercase() == b.to_lowercase(),
+                        (Some(a_text), Some(b_text)) if a_text.to_lowercase() == b_text.to_lowercase() => !case_sensitive_destination(&a).unwrap_or(false),
                         _ => a == b,
                     }
                 }

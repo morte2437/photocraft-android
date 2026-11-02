@@ -1149,6 +1149,8 @@ pub fn specs() -> Vec<crate::commands::CommandSpec> {
                     let id = v.as_u64().ok_or_else(|| EngineError::BadParams { cmd: "jobs.cancel".into(), msg: "`job` must be a job id".into() })?;
                     if s.cancel_job(JobId(id)) {
                         Ok(json!({"cancelled": 1}))
+                    } else if s.job(JobId(id)).is_some_and(|job| job.command == "file.automate.batch") {
+                        Ok(json!({"cancelled": 0}))
                     } else if s.job(JobId(id)).is_some() {
                         Err(EngineError::Other("printing cannot be cancelled here; use the system print queue".into()))
                     } else {
