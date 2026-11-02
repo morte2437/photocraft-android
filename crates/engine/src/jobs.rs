@@ -964,6 +964,7 @@ impl Session {
                 _ if self.actions.recording.is_none() => params,
                 "layer.duplicate" => crate::artboard_cmds::recorded_duplicate(self, crate::layer_multi_cmds::recorded_step(self, id, params, pre_selected)),
                 "layerComp.apply" => crate::comps_cmds::recorded_apply(self, params),
+                "edit.checkSpelling" if crate::type_spell_cmds::records(&params) => crate::type_spell_cmds::recorded_step(&params),
                 _ => crate::layer_multi_cmds::recorded_step(self, id, params, pre_selected),
             };
             let params = crate::actions_cmds::recorded_params(self, id, params);

@@ -390,10 +390,19 @@ fn record(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"action": name, "index": idx}))
 }
 
+/// Whether a journal entry is recorded as an action step: a replayable command, except Check
+/// Spelling's corrections and lookups.
+fn recorded(id: &str, p: &Value) -> bool {
+    replayable(id) && (id != "edit.checkSpelling" || crate::type_spell_cmds::records(p))
+}
+
+/// Commands recorded with their step's dialog on: Check Spelling.
+const RECORDED_WITH_DIALOG: &[&str] = &["edit.checkSpelling"];
+
 /// Replayable journal entries not yet committed to this action while recording.
 pub fn pending_steps(s: &Session, action: usize) -> impl Iterator<Item = &(String, Value)> {
     let from = s.actions.recording.filter(|(_, i)| *i == action).map_or(s.journal.len(), |(from, _)| from);
-    s.journal.iter().skip(from).filter(|(id, _)| replayable(id))
+    s.journal.iter().skip(from).filter(|(id, p)| recorded(id, p))
 }
 
 pub(crate) fn flush_recording(s: &mut Session) -> Result<()> {
@@ -404,7 +413,10 @@ pub(crate) fn flush_recording(s: &mut Session) -> Result<()> {
     let steps: Vec<_> = pending_steps(s, idx).cloned().collect();
     s.actions.recording = Some((s.journal.len(), idx));
     if !steps.is_empty() {
-        s.actions.list[idx].steps.extend(steps);
+        let action = &mut s.actions.list[idx];
+        let first = action.steps.len();
+        action.dialogs.extend(steps.iter().enumerate().filter(|(_, (id, _))| RECORDED_WITH_DIALOG.contains(&id.as_str())).map(|(i, _)| first + i));
+        action.steps.extend(steps);
         s.actions.touch();
     }
     Ok(())

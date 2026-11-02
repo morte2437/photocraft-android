@@ -1378,6 +1378,42 @@ fn dialog_worker_failure_stops_action_before_following_steps() {
 }
 
 #[test]
+fn a_check_spelling_step_with_its_dialog_opens_it_and_done_continues() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 300, "height": 100})).unwrap();
+    app.run("type.create", json!({"x": 10, "y": 50, "text": "Teh cat"})).unwrap();
+    let mut a = Action::new("Spell", vec![("edit.checkSpelling".into(), json!({"allLayers": false})), ("layer.new.layer".into(), json!({"name": "after"}))]);
+    a.dialogs.insert(0);
+    app.session.actions.list.push(a);
+    let v = play(&mut app, &json!({"action": "Spell"})).unwrap();
+    assert_eq!((v["ran"].as_u64(), v["paused"]["step"].as_u64()), (Some(0), Some(0)), "{v}");
+    assert_eq!(v["paused"]["dialog"], crate::type_panels_ui::SPELLING);
+    let d = app.ui.type_panels.spell.clone().expect("Check Spelling is open");
+    assert!(!d.all_layers, "the dialog opens with Check All Layers as recorded");
+    assert_eq!(d.items.len(), 1);
+    assert!(!layer_names(&app).contains(&"after".to_string()), "nothing after the dialog ran yet");
+    crate::type_panels_ui::close_spelling(&mut app);
+    assert!(layer_names(&app).contains(&"after".to_string()), "Done played the rest");
+    assert!(app.ui.status.starts_with("Played"), "{}", app.ui.status);
+    // With its dialog off, the step checks without opening anything and changes nothing.
+    app.session.actions.list[0].dialogs.clear();
+    let v = play(&mut app, &json!({"action": "Spell"})).unwrap();
+    assert_eq!(v["ran"], 2, "{v}");
+    assert!(app.ui.type_panels.spell.is_none());
+    let st = app.session.active().unwrap();
+    let texts: Vec<String> = st
+        .doc
+        .walk()
+        .into_iter()
+        .filter_map(|(_, _, l)| match &l.content {
+            photocraft_doc::LayerContent::Text(t) => Some(t.text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(texts, ["Teh cat"]);
+}
+
+#[test]
 fn a_dialog_toggled_step_pauses_playback_and_resumes_on_ok() {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({"width": 16, "height": 16})).unwrap();
