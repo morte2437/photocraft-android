@@ -219,11 +219,8 @@ pub fn destination_identity(path: &std::path::Path) -> Option<std::path::PathBuf
 /// Probe the actual destination directory. macOS volumes and Windows directories may use either
 /// case behavior; the OS name alone cannot tell whether two future names will alias.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-fn case_sensitive_destination(path: &std::path::Path) -> Option<bool> {
-    let parent = path.parent()?;
-    if !std::fs::metadata(parent).ok()?.is_dir() {
-        return None;
-    }
+pub(super) fn case_sensitive_destination(path: &std::path::Path) -> Option<bool> {
+    let parent = path.ancestors().skip(1).find(|ancestor| ancestor.is_dir())?;
     let probe = tempfile::Builder::new().prefix(".PhotoCraftCaseProbe-").tempfile_in(parent).ok()?;
     let name = probe.path().file_name()?.to_str()?;
     let alternate = parent.join(name.replacen("PhotoCraft", "photocraft", 1));
@@ -232,6 +229,24 @@ fn case_sensitive_destination(path: &std::path::Path) -> Option<bool> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(true),
         Err(_) => None,
     }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn resolved_paths_match(a: &std::path::Path, b: &std::path::Path, case_sensitive: Option<bool>) -> bool {
+    if a == b {
+        return true;
+    }
+    match (a.to_str(), b.to_str()) {
+        (Some(a_text), Some(b_text)) if a_text.to_lowercase() == b_text.to_lowercase() => !case_sensitive.unwrap_or(false),
+        _ => false,
+    }
+}
+
+#[cfg(all(test, any(target_os = "macos", target_os = "windows")))]
+#[test]
+fn identical_resolved_paths_conflict_on_a_case_sensitive_volume() {
+    let path = std::path::Path::new("/future/result.png");
+    assert!(resolved_paths_match(path, path, Some(true)));
 }
 
 /// Whether two paths would name the same destination even before the file exists. This is used
@@ -247,10 +262,7 @@ pub fn same_destination(a: impl AsRef<std::path::Path>, b: impl AsRef<std::path:
             (Some(a), Some(b)) => {
                 #[cfg(any(target_os = "windows", target_os = "macos"))]
                 {
-                    match (a.to_str(), b.to_str()) {
-                        (Some(a_text), Some(b_text)) if a_text.to_lowercase() == b_text.to_lowercase() => !case_sensitive_destination(&a).unwrap_or(false),
-                        _ => a == b,
-                    }
+                    if a == b { true } else { resolved_paths_match(&a, &b, case_sensitive_destination(&a)) }
                 }
                 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
                 {

@@ -147,6 +147,19 @@ fn batch_error_log_rejects_a_symlink_parent_alias() {
     assert!(!std::path::Path::new(&join(&output, "result.png")).exists());
 }
 
+#[test]
+fn batch_error_log_rejects_an_uncreated_output_alias() {
+    let dir = tmp("batch-error-log-future-alias");
+    let input = png(&dir, "source.png", 8, 6, "#ff0000");
+    let output = join(&dir, "new-output");
+    std::fs::create_dir_all(join(&output, "alias")).unwrap();
+    let log = join(&output, "alias/../source.png");
+    assert!(same_destination(&log, join(&output, "source.png")));
+    let error = Session::new().execute("file.automate.batch", json!({"steps": [], "input": [input], "output": output, "errorLog": log})).unwrap_err();
+    assert!(error.to_string().contains("errorLog"), "{error}");
+    assert!(!std::path::Path::new(&join(&dir, "new-output/source.png")).exists());
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn linux_distinct_case_destinations_are_not_the_same_file() {
@@ -162,6 +175,20 @@ fn unicode_case_variants_follow_destination_volume() {
     std::fs::write(&existing, b"probe").unwrap();
     let volume_aliases_case = same_file(&existing, join(&dir, "ä-probe"));
     assert_eq!(same_destination(join(&dir, "Ä.png"), join(&dir, "ä.png")), volume_aliases_case);
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[test]
+fn future_folder_case_variants_follow_the_nearest_existing_ancestor() {
+    let dir = tmp("batch-future-folder-case");
+    let existing = join(&dir, "Ä-probe");
+    std::fs::write(&existing, b"probe").unwrap();
+    let volume_aliases_case = same_file(&existing, join(&dir, "ä-probe"));
+    let first = join(&dir, "new/nested/Image.png");
+    let second = join(&dir, "new/nested/image.png");
+    assert_eq!(super::paths::case_sensitive_destination(std::path::Path::new(&first)), Some(!volume_aliases_case));
+    assert_eq!(same_destination(first, second), volume_aliases_case);
+    assert!(!std::path::Path::new(&join(&dir, "new")).exists());
 }
 
 #[test]
