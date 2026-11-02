@@ -664,6 +664,7 @@ fn svg_update_keeps_inline_and_builtin_smart_filters_working() {
     }
 }
 
+/// Distinguish filesystem parameters from descriptions of inline vector paths.
 fn documents_filesystem_path_params(id: &str, params: &str) -> bool {
     // These commands return settings or installed-profile paths; they do not accept a host
     // filesystem path as an automation input.
