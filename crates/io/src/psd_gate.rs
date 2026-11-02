@@ -4,6 +4,10 @@
 //! using cancellation-aware waiting outside the UI thread. Reentrant/nested decodes on
 //! the same thread are admitted without deadlocking and share the enclosing attempt's
 //! budget. Approval prompts never hold this lock.
+//!
+//! Nested callers check cancellation and take the reentrant guard before calling
+//! `consume_attempt_allowance`, so a cancelled or refused nested import never spends its
+//! parent's remaining allowance; a failed charge deducts nothing.
 
 use std::cell::Cell;
 use std::marker::PhantomData;
@@ -66,10 +70,14 @@ pub(crate) fn set_active_attempt_budget(allowance: u64) {
 
 /// Consumes `bytes` from the enclosing attempt's remaining allowance, or returns
 /// [`IoError::PsdImportBudget`] if the required amount exceeds what remains.
+///
+/// `u64::MAX` is a format estimate's saturated overflow sentinel, not a requirement: it is
+/// refused even when the remaining allowance is also `u64::MAX` (the native unknown-memory
+/// attempt cap), and a refusal never spends the parent's allowance.
 pub(crate) fn consume_attempt_allowance(bytes: u64) -> Result<(), IoError> {
     ATTEMPT_ALLOWANCE.with(|a| match a.get() {
         Some(remaining) => {
-            if bytes > remaining {
+            if bytes == u64::MAX || bytes > remaining {
                 return Err(IoError::PsdImportBudget { required: bytes, limit: remaining });
             }
             a.set(Some(remaining - bytes));
@@ -80,6 +88,13 @@ pub(crate) fn consume_attempt_allowance(bytes: u64) -> Result<(), IoError> {
             Err(IoError::PsdImportBudget { required: bytes, limit: 0 })
         }
     })
+}
+
+/// The enclosing attempt's remaining allowance, for tests that assert a nested import was
+/// charged instead of resetting the parent attempt's budget.
+#[cfg(test)]
+pub(crate) fn active_attempt_remaining() -> Option<u64> {
+    ATTEMPT_ALLOWANCE.with(|a| a.get())
 }
 
 /// Acquires process-wide admission to decode PSD pixels, or awaits completion of an active decode.
@@ -166,6 +181,23 @@ mod tests {
         assert!(consume_attempt_allowance(3001).is_err());
         assert!(consume_attempt_allowance(1000).is_ok());
         assert_eq!(ATTEMPT_ALLOWANCE.with(|a| a.get()), Some(2000));
+    }
+
+    /// A saturated estimate is not a charge, even when the parent's allowance is the same
+    /// saturated value: it is refused and spends nothing.
+    #[test]
+    fn a_saturated_nested_charge_is_refused_and_spends_nothing() {
+        let ctl = photocraft_raster::Interrupt::NONE;
+        let _guard = acquire_decode_admission(&ctl).unwrap();
+        set_active_attempt_budget(u64::MAX);
+
+        let err = consume_attempt_allowance(u64::MAX).expect_err("the overflow sentinel is never a charge");
+        assert!(matches!(err, IoError::PsdImportBudget { required, limit } if required == u64::MAX && limit == u64::MAX));
+        assert_eq!(active_attempt_remaining(), Some(u64::MAX), "a refused sentinel charge leaves the parent's allowance untouched");
+
+        // One byte below the sentinel is an ordinary, enormous charge.
+        assert!(consume_attempt_allowance(u64::MAX - 1).is_ok());
+        assert_eq!(active_attempt_remaining(), Some(1));
     }
 
     #[test]

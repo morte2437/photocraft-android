@@ -600,3 +600,30 @@ fn only_allocation_failures_are_fatal_to_a_layer_channel() {
         other => panic!("{other:?}"),
     }
 }
+
+/// A standalone legacy conversion that is over budget is refused *before* it waits for the
+/// decode gate, so an ineligible file never blocks behind an active decode. The legacy API keeps
+/// its warning (the ordinary import path still receives the fatal error).
+#[test]
+fn legacy_conversion_refuses_before_waiting_for_the_decode_gate() {
+    let mut file = testgen::small(Version::Psd, Compression::Zip);
+    // 30,000² tiles are several GiB: far past the hard budget of the 4 GiB machine below.
+    file.layers_mut()[0].rect = photocraft_psd::Rect::from_xywh(0, 0, 30_000, 30_000);
+    let snapshot = crate::memory::MemorySnapshot { available_ram: Some(4 << 30), swap_free: None, commit_headroom: None };
+    let ctl = photocraft_raster::Interrupt::NONE;
+    let _guard = crate::psd_gate::acquire_decode_admission(&ctl).expect("active decode");
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let handle = std::thread::spawn(move || {
+        let (doc, warnings) = crate::memory::with_mock_memory(snapshot, || crate::psd_to_document(&file));
+        tx.send((doc.layers.len(), warnings)).ok();
+    });
+
+    // The refusal arrives while this thread still holds the gate: the legacy call never waited.
+    let (layers, warnings) = rx.recv_timeout(std::time::Duration::from_secs(10)).expect("a refused legacy conversion must not wait for the decode gate");
+    assert_eq!(layers, 0, "a refused conversion returns an empty document");
+    assert!(warnings.iter().any(|w| w.contains("pixel memory")), "{warnings:?}");
+
+    drop(_guard);
+    handle.join().expect("worker thread");
+}

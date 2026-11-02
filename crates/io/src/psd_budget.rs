@@ -33,6 +33,62 @@ struct ImportBudget {
     workspace: u64,
 }
 
+#[cfg(any(test, feature = "testgen"))]
+thread_local! {
+    /// Extra bytes added to every estimate on this thread by [`with_test_estimate_charge`].
+    static TEST_ESTIMATE_CHARGE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Adds `bytes` to every PSD memory estimate made on this thread while `f` runs.
+///
+/// A test seam: an admission-threshold test can use a tiny fixture, so nothing near a gigabyte
+/// is ever allocated, while still exercising the real import path with its approval flags and
+/// gate ordering. Scoped to the thread and restored on return or panic.
+///
+/// The charge lives on the calling thread. A real import that runs on another thread (or a
+/// worker the engine starts for it) does not see it unless the caller propagates an explicitly
+/// captured scope: [`crate::memory::TestMemoryScope`] captures this charge together with the
+/// fixed mock snapshot, so an engine worker that enters that scope makes the same estimates as
+/// the test thread. This is the seam engine and UI dev-dependency tests use through the
+/// `testgen` feature; it is never process-global.
+#[cfg(any(test, feature = "testgen"))]
+pub fn with_test_estimate_charge<R>(bytes: u64, f: impl FnOnce() -> R) -> R {
+    struct Reset(u64);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_ESTIMATE_CHARGE.with(|c| c.set(self.0));
+        }
+    }
+    let prev = TEST_ESTIMATE_CHARGE.with(|c| c.replace(bytes));
+    let _reset = Reset(prev);
+    f()
+}
+
+/// The calling thread's current estimate charge, for an explicit scope to capture.
+#[cfg(any(test, feature = "testgen"))]
+pub(crate) fn test_estimate_charge() -> u64 {
+    TEST_ESTIMATE_CHARGE.with(|c| c.get())
+}
+
+/// Enters a captured estimate charge (an explicit [`crate::memory::TestMemoryScope`] worker) and
+/// returns the charge it replaced, to restore after the scope ends.
+#[cfg(any(test, feature = "testgen"))]
+pub(crate) fn enter_test_estimate_charge(bytes: u64) -> u64 {
+    TEST_ESTIMATE_CHARGE.with(|c| c.replace(bytes))
+}
+
+/// The test seam's extra charge; zero in every other build.
+fn test_estimate_charge_value() -> u64 {
+    #[cfg(any(test, feature = "testgen"))]
+    {
+        test_estimate_charge()
+    }
+    #[cfg(not(any(test, feature = "testgen")))]
+    {
+        0
+    }
+}
+
 fn overflow() -> IoError {
     IoError::Unsupported("PSD import pixel memory estimate overflow".into())
 }
@@ -149,6 +205,7 @@ pub fn estimate(file: &PsdFile) -> Result<PsdMemoryEstimate, IoError> {
             budget.scratch(converted.checked_add(p.decoded_bytes).ok_or_else(overflow)?);
         }
     }
+    budget.retain(test_estimate_charge_value())?;
     let total_bytes = budget.required()?;
     Ok(PsdMemoryEstimate { retained_bytes: budget.retained, workspace_bytes: budget.workspace, total_bytes })
 }

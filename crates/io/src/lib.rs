@@ -89,8 +89,8 @@ use photocraft_psd::{PsdError, PsdFile};
 
 pub use adjust_map::ADJUSTMENT_KEYS;
 pub use flat::{
-    DEFAULT_LOSSY_WEBP_QUALITY, apply_file_encoding, document_to_image, file_encoding, import_gif_frames, import_tiff_page, import_webp_frames,
-    tga_alpha_channel_to_transparency, tga_default_bits,
+    DEFAULT_LOSSY_WEBP_QUALITY, apply_file_encoding, document_to_image, file_encoding, import_gif_frames, import_tiff_page, import_tiff_page_with_options,
+    import_webp_frames, tga_alpha_channel_to_transparency, tga_default_bits,
 };
 pub use psd_export::{PsdExportOptions, document_to_psd, document_to_psd_with};
 pub use psd_import::{psd_to_document, psd_to_document_with};
@@ -122,6 +122,10 @@ pub enum IoError {
         "PSD import needs an estimated {required} bytes of pixel memory (soft limit {soft_limit} bytes, hard limit {hard_limit} bytes); explicit approval required"
     )]
     PsdApprovalRequired { required: u64, soft_limit: u64, hard_limit: u64, available_ram: Option<u64> },
+    /// The file behind the opened handle is not the one whose memory estimate was approved: it
+    /// was replaced, rewritten or resized since it was checked. Nothing was decoded.
+    #[error("the file changed since it was checked; approve it again to open the new file")]
+    SourceChanged,
     /// A pixel buffer could not be allocated while reading a file: the file may be fine, but
     /// this machine has no memory for it.
     #[error("not enough memory: {0}")]
@@ -164,6 +168,68 @@ pub struct ImportResult {
     /// Only a stand-in picture of the file (an Affinity document whose native data couldn't be
     /// read): Open shows it with its warning; Place and other auxiliary imports refuse it.
     pub preview_only: bool,
+}
+
+/// Identity of the file behind an opened handle, read from that handle.
+///
+/// A one-shot high-memory approval is bound to a file, not to a path: the importer opens the
+/// path once, takes this identity from the handle and refuses to decode unless it is the file the
+/// estimate was approved for (`import_file_for_open_verified`). The Unix form includes the
+/// device, inode, modification time and change time with nanoseconds, so a same-size rewrite
+/// cannot hide behind a restored modification timestamp. The identity fails closed when any of
+/// these cannot be read (see [`Self::of_handle`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileIdentity {
+    /// File length in bytes.
+    pub len: u64,
+    /// Last modification time.
+    pub modified: std::time::SystemTime,
+    /// Device holding the file (Unix).
+    #[cfg(unix)]
+    pub dev: u64,
+    /// Inode of the file (Unix).
+    #[cfg(unix)]
+    pub ino: u64,
+    /// Inode change time, seconds since the Unix epoch (Unix).
+    #[cfg(unix)]
+    pub ctime_secs: i64,
+    /// Nanosecond part of [`Self::ctime_secs`] (Unix).
+    #[cfg(unix)]
+    pub ctime_nanos: i64,
+}
+
+impl FileIdentity {
+    /// Identity of an open file handle.
+    ///
+    /// Reads the handle's own metadata, never the path, so replacing the path cannot change what
+    /// this describes. A metadata field that cannot be read is an error: callers must fail closed
+    /// rather than decode under an approval they cannot verify.
+    pub fn of_handle(file: &std::fs::File) -> std::io::Result<Self> {
+        Self::of_metadata(&file.metadata()?)
+    }
+
+    /// Identity of the file currently at `path`.
+    ///
+    /// For discovery only (a fingerprint kept while an estimate is made). The decode path must
+    /// open the file and compare the identity of that handle, since the path can change between
+    /// this call and the open.
+    pub fn of_path(path: &std::path::Path) -> std::io::Result<Self> {
+        Self::of_metadata(&std::fs::metadata(path)?)
+    }
+
+    fn of_metadata(metadata: &std::fs::Metadata) -> std::io::Result<Self> {
+        let len = metadata.len();
+        let modified = metadata.modified()?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            Ok(Self { len, modified, dev: metadata.dev(), ino: metadata.ino(), ctime_secs: metadata.ctime(), ctime_nanos: metadata.ctime_nsec() })
+        }
+        #[cfg(not(unix))]
+        {
+            Ok(Self { len, modified })
+        }
+    }
 }
 
 /// The import note for a file whose horizontal and vertical resolutions (`x`, `y`, in pixels per
@@ -355,8 +421,10 @@ pub struct ImportOptions {
     pub max_group_depth: usize,
     /// The demosaic method camera raws are developed with.
     pub demosaic: raw::Demosaic,
-    /// PSD layer/mask/merged pixel allowance, including conversion workspace. May lower the
-    /// default cap; 0 uses the adaptive budget. Does not cover metadata or smart-filter caches.
+    /// PSD layer/mask/merged pixel allowance, including conversion workspace, and the
+    /// equivalent allowance for a layered TIFF's composite and retained decoded image. May
+    /// lower the default cap; 0 uses the adaptive budget. Does not cover metadata or
+    /// smart-filter caches.
     pub psd_max_pixel_bytes: u64,
     /// Explicit one-shot authorization for imports that exceed the soft budget but fit within the hard budget.
     pub psd_high_memory_approved: bool,
@@ -433,9 +501,16 @@ fn import_psd(
                 let est = psd_budget::estimate(file)?;
 
                 if psd_gate::is_holding_admission() {
-                    // Nested import: count against shared remaining allowance, never reset parent on nested import
-                    psd_gate::consume_attempt_allowance(est.total_bytes)?;
+                    // Nested import: it spends the enclosing attempt's remaining allowance and
+                    // never resets or re-charges the parent. Cancellation is checked before the
+                    // charge, and admission is reentrant here, so a cancelled or refused nested
+                    // import leaves the parent's allowance untouched. The caller's explicit
+                    // bounds (a lower allowance and a one-shot estimate) still apply before the
+                    // parent is charged.
+                    ctl.check().map_err(|_| IoError::Cancelled)?;
+                    memory::nested_import_local_bound(est.total_bytes, opts.psd_max_pixel_bytes, opts.psd_approved_estimate)?;
                     let guard = psd_gate::acquire_decode_admission(ctl)?;
+                    psd_gate::consume_attempt_allowance(est.total_bytes)?;
                     *admission_guard.borrow_mut() = Some(guard);
                     return Ok(psd_import::merged_needed(file));
                 }
@@ -519,17 +594,71 @@ pub fn import_file_for_open_with(
     opts: &ImportOptions,
     ctl: &photocraft_raster::Interrupt,
 ) -> Result<(ImportResult, bool), IoError> {
+    let mut identity = None;
+    import_file_for_open_verified(name, path, None, opts, ctl, &mut identity)
+}
+
+/// [`import_file_for_open_with`] bound to the identity of the file handle it decodes.
+///
+/// The path is opened exactly once. `identity_out` is set from that handle before any pixel is
+/// read; a PSD/PSB is then streamed from the same handle (not read whole), anything else is read
+/// from it within `photocraft_format::MAX_OPEN_BYTES`. When `expected` is given, the import
+/// refuses with [`IoError::SourceChanged`] unless the opened file is that one. When the parse
+/// stops for a high-memory approval, the identity is read again from a duplicate of the same
+/// handle: a file rewritten in place while its estimate was checked is refused, so the approval
+/// always refers to the bytes that will be decoded.
+///
+/// A missing or unreadable metadata field fails the open instead of decoding under an identity
+/// that cannot be verified.
+#[cfg(any(unix, windows))]
+pub fn import_file_for_open_verified(
+    name: &str,
+    path: &std::path::Path,
+    expected: Option<&FileIdentity>,
+    opts: &ImportOptions,
+    ctl: &photocraft_raster::Interrupt,
+    identity_out: &mut Option<FileIdentity>,
+) -> Result<(ImportResult, bool), IoError> {
     let read_failed = |e: std::io::Error| IoError::Read(format!("{}: {e}", path.display()));
     ctl.check().map_err(|_| IoError::Cancelled)?;
     let source = photocraft_psd::FileSource::open(path).map_err(read_failed)?;
+    let metadata = source.file().metadata().map_err(read_failed)?;
+    if !metadata.is_file() {
+        return Err(IoError::Read(format!("{}: not a regular file", path.display())));
+    }
+    let identity = FileIdentity::of_metadata(&metadata).map_err(read_failed)?;
+    *identity_out = Some(identity.clone());
+    if expected.is_some_and(|expected| expected != &identity) {
+        return Err(IoError::SourceChanged);
+    }
+    // A duplicate of the same open file (not a fresh path lookup): the approval pause re-reads
+    // the identity from it after parsing, and never from a path that may point elsewhere now.
+    let watch = source.file().try_clone().map_err(read_failed)?;
     let mut magic = [0u8; 4];
     let psd = !has_extension(name, photocraft_format::EXTENSION) && photocraft_psd::ReadAt::read_at(&source, 0, &mut magic).is_ok() && is_psd(&magic);
-    if !psd {
-        drop(source);
-        let bytes = photocraft_format::read_file(path).map_err(read_failed)?;
-        return import_for_open_with(name, &bytes, opts, ctl);
+    let result = if psd {
+        import_source_with_options(name, photocraft_psd::Source::new(source), ctl, opts)
+    } else {
+        // Read from the handle that was just identified, not by opening the path again.
+        let bytes = {
+            let mut file = source.file();
+            // Windows seek_read advances this handle during the format probe.
+            // Rewind the same verified handle before reading a non-PSD file.
+            std::io::Seek::rewind(&mut file).map_err(read_failed)?;
+            photocraft_format::read::read_all(&mut file, photocraft_psd::ReadAt::len(&source)).map_err(read_failed)?
+        };
+        import_for_open_with(name, &bytes, opts, ctl)
+    };
+    // An approval pause must describe a file that still has the identity it was estimated with;
+    // an approved resume must have decoded that file, not a rewrite that raced the decode.
+    if expected.is_some() || matches!(&result, Err(IoError::PsdApprovalRequired { .. })) {
+        let after = FileIdentity::of_handle(&watch).map_err(read_failed)?;
+        if after != identity {
+            return Err(IoError::SourceChanged);
+        }
+        *identity_out = Some(after);
     }
-    import_source_with_options(name, photocraft_psd::Source::new(source), ctl, opts)
+    result
 }
 
 /// [`import_file_for_open_with`] for a PSD/PSB in any [`photocraft_psd::ReadAt`] source.
@@ -615,7 +744,7 @@ fn import_stages(name: &str, bytes: &[u8], ctl: &photocraft_raster::Interrupt, o
     if is_psd_input(name, bytes) {
         return import_psd(name, ctl, damaged, opts, |want, recover| PsdFile::from_bytes_and_merged_preflight(bytes, want, recover));
     }
-    flat::import_flat_with_limit(name, bytes, opts.psd_max_pixel_bytes)
+    flat::import_flat_with_options(name, bytes, opts, ctl)
 }
 
 /// Extension names can be wrong (for example, an image downloaded as WebP and renamed `.svg`).
@@ -884,6 +1013,53 @@ mod tests {
         assert!(!result.source_read_only);
     }
 
+    /// A nested PSD import still enforces the caller's explicit bounds before it spends the
+    /// parent's allowance, and one within those bounds is charged exactly once.
+    #[cfg(not(any(target_arch = "wasm32", target_pointer_width = "32")))]
+    #[test]
+    fn nested_psd_import_enforces_the_callers_local_bounds_before_charging_the_parent() {
+        let gb = 1u64 << 30;
+        let bytes = testgen::small(Version::Psd, Compression::Raw).to_bytes().unwrap();
+        let ctl = photocraft_raster::Interrupt::NONE;
+        let ample = 16 * gb;
+        let _parent = super::psd_gate::acquire_decode_admission(&ctl).expect("parent admission");
+
+        // The tiny fixture plus a thread-local charge lands in the approval band; nothing near a
+        // gigabyte is allocated.
+        super::psd_budget::with_test_estimate_charge(5 * gb, || {
+            // What the real nested import is charged, learned from one admitted run.
+            super::psd_gate::set_active_attempt_budget(ample);
+            super::import_with_options_and_interrupt("nested.psd", &bytes, &ImportOptions::default(), &ctl).expect("an admitted nested import");
+            let required = ample - super::psd_gate::active_attempt_remaining().expect("the parent attempt keeps an allowance");
+            assert!(required > 5 * gb, "the test charge is part of the estimate: {required}");
+
+            let cases = [
+                (ImportOptions { psd_max_pixel_bytes: required - 1, ..Default::default() }, "the caller's lower allowance"),
+                (
+                    ImportOptions { psd_high_memory_approved: true, psd_approved_estimate: Some(required - 1), ..Default::default() },
+                    "the one-shot approved estimate",
+                ),
+            ];
+            for (opts, what) in cases {
+                super::psd_gate::set_active_attempt_budget(ample);
+                match super::import_with_options_and_interrupt("nested.psd", &bytes, &opts, &ctl) {
+                    Err(super::IoError::PsdImportBudget { required: r, limit }) => {
+                        assert_eq!((r, limit), (required, required - 1), "{what} must refuse with its exact fields")
+                    }
+                    other => panic!("expected {what} to refuse, got {:?}", other.map(|_| ())),
+                }
+                assert_eq!(super::psd_gate::active_attempt_remaining(), Some(ample), "{what} must not spend the parent's allowance");
+            }
+
+            super::psd_gate::set_active_attempt_budget(ample);
+            let bounded =
+                ImportOptions { psd_max_pixel_bytes: required, psd_high_memory_approved: true, psd_approved_estimate: Some(required), ..Default::default() };
+            let opened = super::import_with_options_and_interrupt("nested.psd", &bytes, &bounded, &ctl).expect("within the caller's bounds");
+            assert!(opened.document.size.area() > 0, "the bounded nested import really opened a document");
+            assert_eq!(super::psd_gate::active_attempt_remaining(), Some(ample - required), "the nested import is charged once");
+        });
+    }
+
     #[test]
     fn svg_extension_does_not_override_another_format_signature() {
         let webp_header = b"RIFF\x04\0\0\0WEBP";
@@ -907,6 +1083,68 @@ mod tests {
         assert!(!msg.contains("unrecognized image format"), "{msg}");
         // A renamed Affinity file keeps the Affinity loader (magic before the .psd suffix).
         assert!(!super::is_psd(b"\0\xffKA"));
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn verified_path_import_reads_a_flat_file_from_its_start() {
+        let dir = std::env::temp_dir().join(format!("photocraft-verified-png-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("verified.png");
+        let image = photocraft_codecs::Image::from_u8(2, 3, photocraft_codecs::ChannelLayout::Rgb, vec![64; 18]).unwrap();
+        let bytes = photocraft_codecs::encode(&image, photocraft_codecs::Format::Png, &Default::default()).unwrap();
+        std::fs::write(&path, bytes).unwrap();
+        let mut identity = None;
+        let (opened, damaged) =
+            super::import_file_for_open_verified("verified.png", &path, None, &ImportOptions::default(), &photocraft_raster::Interrupt::NONE, &mut identity)
+                .unwrap();
+        assert_eq!((opened.document.size.width, opened.document.size.height), (2, 3));
+        assert!(!damaged);
+        assert_eq!(identity, Some(super::FileIdentity::of_path(&path).unwrap()));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// The identity a verified open returns is the opened handle's, and a different inode with
+    /// identical content is refused with the dedicated reason before any pixel is decoded.
+    #[cfg(unix)]
+    #[test]
+    fn verified_import_binds_the_decoded_handle_identity() {
+        let dir = std::env::temp_dir().join(format!("photocraft-io-verified-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("source.psd");
+        let bytes = testgen::small(Version::Psd, Compression::Raw).to_bytes().unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        let expected = super::FileIdentity::of_path(&path).unwrap();
+        let mut opened = None;
+        let (result, _) = super::import_file_for_open_verified(
+            "source.psd",
+            &path,
+            Some(&expected),
+            &ImportOptions::default(),
+            &photocraft_raster::Interrupt::NONE,
+            &mut opened,
+        )
+        .unwrap();
+        assert!(!result.document.layers.is_empty());
+        assert_eq!(opened.as_ref(), Some(&expected), "the identity comes from the decoded handle");
+        // Replacement with identical bytes but a different inode: not the approved file.
+        let replacement = dir.join("replacement.psd");
+        std::fs::write(&replacement, &bytes).unwrap();
+        std::fs::rename(&replacement, &path).unwrap();
+        let mut opened = None;
+        let err = super::import_file_for_open_verified(
+            "source.psd",
+            &path,
+            Some(&expected),
+            &ImportOptions::default(),
+            &photocraft_raster::Interrupt::NONE,
+            &mut opened,
+        )
+        .expect_err("the path now names another file");
+        assert!(matches!(&err, super::IoError::SourceChanged), "got {err:?}");
+        assert!(opened.is_some(), "the refused handle's identity is still reported");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A common mislabeled download: PNG/JPEG bytes named `.psd` open from the signature,

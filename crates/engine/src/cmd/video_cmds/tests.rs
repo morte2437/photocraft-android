@@ -382,8 +382,13 @@ fn tga_sequence_frames_keep_their_transparency() {
     let dir = tmpdir("tga");
     write_tga(&format!("{dir}/f01.tga"));
     write_tga(&format!("{dir}/f02.tga"));
-    let frames =
-        load_frames(&dir, photocraft_color::PixelFormat::new(photocraft_color::ColorMode::Rgb, photocraft_color::SampleType::U8, true)).unwrap().frames;
+    let frames = load_frames(
+        &dir,
+        photocraft_color::PixelFormat::new(photocraft_color::ColorMode::Rgb, photocraft_color::SampleType::U8, true),
+        &photocraft_io::ImportOptions::default(),
+    )
+    .unwrap()
+    .frames;
     assert_eq!(frames.len(), 2);
     for f in &frames {
         assert_eq!(f.pixel(2, 6), vec![1.0, 0.0, 0.0, 1.0]);

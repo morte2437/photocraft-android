@@ -265,15 +265,20 @@ pub fn specs() -> Vec<CommandSpec> {
             native,
             open_as
         ),
-        spec!(
-            "file.approveMemory",
-            "Approve High Memory PSD Import",
-            &[],
-            None,
-            r##"{"id":u64,"approve":bool=true,"background":bool=true}"##,
-            always,
-            approve_memory
-        ),
+        // One-shot permission for one file, not something to replay later: never journaled or
+        // recorded in an action, since replaying it in another session/on another file would
+        // grant memory use nobody approved (#10897). It also releases the queued source on both
+        // answers, so it must not be replayed as a step that expects a missing preflight.
+        CommandSpec {
+            id: "file.approveMemory",
+            label: "Approve High Memory PSD Import",
+            menu: &[],
+            shortcut: None,
+            params: r##"{"id":u64,"approve":bool=true,"background":bool=true}"##,
+            enabled: always,
+            run: approve_memory,
+            journal: false,
+        },
         spec!(
             "file.placeEmbedded",
             "Place Embedded…",

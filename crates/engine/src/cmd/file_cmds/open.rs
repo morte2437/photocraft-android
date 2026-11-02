@@ -24,7 +24,7 @@ pub(super) fn import_at_raw_ppi(raw_ppi: f64, name: &str, bytes: &[u8]) -> Resul
 
 fn import_result(name: &str, bytes: &[u8]) -> Result<photocraft_io::ImportResult> {
     crate::allocation::checkpoint("importing document")?;
-    let r = photocraft_io::import(name, bytes).map_err(|e| EngineError::Other(format!("{name}: {e}")))?;
+    let r = photocraft_io::import(name, bytes).map_err(|e| crate::error::io_open_error(name, e))?;
     // Auxiliary imports return only a document and cannot surface the preview's fidelity warning.
     // Open has its own warning-preserving path; never silently place or process a thumbnail.
     if r.preview_only {
@@ -128,12 +128,7 @@ pub fn open_bytes_as_with_options(
     let mut opts = crate::jobs::import_options(s.prefs());
     opts.psd_high_memory_approved = approve_high_memory;
     opts.psd_approved_estimate = None;
-    let r = photocraft_io::import_with_options(&decode_name, bytes, &opts).map_err(|e| match e {
-        photocraft_io::IoError::PsdApprovalRequired { required, soft_limit, hard_limit, available_ram } => {
-            EngineError::PsdApprovalRequired { name: decode_name.clone(), required, soft_limit, hard_limit, available_ram }
-        }
-        e => EngineError::Other(format!("{decode_name}: {e}")),
-    })?;
+    let r = photocraft_io::import_with_options(&decode_name, bytes, &opts).map_err(|e| crate::error::io_open_error(&decode_name, e))?;
     let mut doc = r.document;
     tag_exr_colorspace(s, &decode_name, &mut doc);
     raw_defaults(s, &r.warnings, &mut doc);
@@ -191,35 +186,30 @@ pub(super) fn approve_memory(s: &mut Session, p: &Value) -> Result<Value> {
             .ok_or_else(|| EngineError::BadParams { cmd: "file.approveMemory".into(), msg: format!("no pending high-memory preflight for id {id}") })?;
         return Ok(json!({"id": id, "approved": false, "cancelled": true}));
     }
-    #[cfg(target_arch = "wasm32")]
-    {
-        return Err(EngineError::Other("high-memory approval is not available on the web (WebAssembly limit is 1 GiB)".into()));
+    // Taking the preflight releases the source bytes it held: approval, refusal and a later
+    // failure all end the wait. The one-shot authorization is bound to this source and estimate;
+    // the import re-checks both against the handle it actually decodes.
+    let preflight = s
+        .take_pending_preflight(id)
+        .ok_or_else(|| EngineError::BadParams { cmd: "file.approveMemory".into(), msg: format!("no pending high-memory preflight for id {id}") })?;
+    // The resolved policy is the platform's: desktop uses its measured adaptive budget, the web
+    // its 1 GiB automatic / 2 GiB hard product cap. Explicit consent is available on both; the
+    // hard ceiling is never raised by an approval.
+    let budget = photocraft_io::memory::resolve_budget(photocraft_io::memory::MemorySnapshot::current(), None);
+    if preflight.required > budget.hard_limit {
+        return Err(EngineError::PsdHardBudget { name: preflight.name, required: preflight.required, limit: budget.hard_limit });
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let preflight = s
-            .take_pending_preflight(id)
-            .ok_or_else(|| EngineError::BadParams { cmd: "file.approveMemory".into(), msg: format!("no pending high-memory preflight for id {id}") })?;
-        let snapshot = photocraft_io::memory::MemorySnapshot::current();
-        let budget = photocraft_io::memory::resolve_budget(snapshot, None);
-        if preflight.required > budget.hard_limit {
-            return Err(EngineError::Other(format!(
-                "available memory has decreased; opening this file needs {} bytes, exceeding current hard limit {} bytes",
-                preflight.required, budget.hard_limit
-            )));
-        }
-        let started = s.start_open_approved_with_background(
-            &preflight.name,
-            preflight.source,
-            preflight.confirm_damage,
-            Some(preflight.required),
-            Some(preflight.fingerprint),
-            _background,
-        )?;
-        match started {
-            crate::jobs::Started::Done(v) => Ok(json!({"id": id, "approved": true, "result": v})),
-            crate::jobs::Started::Job(job_id) => Ok(json!({"id": id, "approved": true, "job": job_id.0})),
-        }
+    let started = s.start_open_approved_with_background(
+        &preflight.name,
+        preflight.source,
+        preflight.confirm_damage,
+        Some(preflight.required),
+        Some(preflight.fingerprint),
+        _background,
+    )?;
+    match started {
+        crate::jobs::Started::Done(v) => Ok(json!({"id": id, "approved": true, "result": v})),
+        crate::jobs::Started::Job(job_id) => Ok(json!({"id": id, "approved": true, "job": job_id.0})),
     }
 }
 
@@ -248,12 +238,7 @@ pub fn place_bytes(s: &mut Session, name: &str, bytes: Vec<u8>, linked: Option<S
     let mut opts = crate::jobs::import_options(s.prefs());
     opts.psd_high_memory_approved = approve;
     opts.psd_approved_estimate = None;
-    let imported = photocraft_io::import_with_options(name, &bytes, &opts).map_err(|e| match e {
-        photocraft_io::IoError::PsdApprovalRequired { required, soft_limit, hard_limit, available_ram } => {
-            EngineError::PsdApprovalRequired { name: name.to_string(), required, soft_limit, hard_limit, available_ram }
-        }
-        e => EngineError::Other(format!("{name}: {e}")),
-    })?;
+    let imported = photocraft_io::import_with_options(name, &bytes, &opts).map_err(|e| crate::error::io_open_error(name, e))?;
     if imported.preview_only {
         return Err(EngineError::Other(format!(
             "{name}: only this Affinity file's embedded preview could be read; open it with File › Open to see the warning, or export PSD or PNG from Affinity before using it here"

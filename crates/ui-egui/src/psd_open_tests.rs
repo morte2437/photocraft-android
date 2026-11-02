@@ -218,7 +218,7 @@ fn memory_confirmation_dialog_and_cancel_lifecycle() {
         })
         .unwrap();
 
-    crate::open_prompt::arrive_memory(&mut app, preflight_id, "high_mem.psd".into(), None, None, None, 7 * gb, Some(10 * gb));
+    crate::open_prompt::arrive_memory(&mut app, preflight_id, "high_mem.psd".into(), None, None, None, 7 * gb, Some(10 * gb), false, false);
     assert_eq!(app.ui.dialogs.len(), 1);
     assert!(crate::open_prompt::owns_memory(&app.ui.dialogs[0].fields));
     let dlg_id = app.ui.dialogs[0].id;
@@ -230,118 +230,105 @@ fn memory_confirmation_dialog_and_cancel_lifecycle() {
     assert!(app.prompt_order.is_empty());
 }
 
+/// #10897: the inline path (the browser shell and any desktop open with background jobs off)
+/// routes the memory prompt's answer through `file.approveMemory`, and the retry only opens the
+/// file when it carries the one-shot approval. A tiny fixture under a scoped estimate charge
+/// reaches the real approval window, so dropping the approval flag or the bound estimate in the
+/// retry leaves the prompt (and no document) instead of passing silently.
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn memory_confirmation_resume_inline_success() {
+    if cfg!(target_pointer_width = "32") {
+        return; // the 3 GiB charge would exceed a 32-bit process cap
+    }
+    let gb = 1u64 << 30;
     let mut app = app();
     app.background_jobs = false;
     let psd = recovery_psd::make_psd(false);
-    let (file, _) = photocraft_psd::PsdFile::from_bytes_and_merged(&psd, |_| false).unwrap();
-    let est = photocraft_io::psd_budget::estimate(&file).unwrap().total_bytes;
-    let bytes = std::sync::Arc::new(psd);
-    let fp = photocraft_engine::jobs::SourceFingerprint::of(&photocraft_engine::jobs::OpenSource::Bytes(std::sync::Arc::clone(&bytes))).unwrap();
+    // Known 5 GiB: S = 2.5 GiB, H = 3.75 GiB. The 3 GiB charge lands in (S, H] on this thread.
+    let snap = photocraft_io::memory::MemorySnapshot { available_ram: Some(5 * gb), swap_free: None, commit_headroom: None };
+    photocraft_io::psd_budget::with_test_estimate_charge(3 * gb, || {
+        photocraft_io::memory::with_mock_memory(snap, || {
+            // The real inline import raises the preflight: no fabricated prompt or preflight.
+            app.open_bytes_from("/test/inline_resume.psd", &psd, Some("/test/inline_resume.psd")).unwrap();
+            assert!(app.session.documents().is_empty(), "the file waits for approval");
+            assert_eq!(app.held_memory_prompts.len(), 1);
+            assert_eq!(app.ui.dialogs.len(), 1);
+            let fields = &app.ui.dialogs[0].fields;
+            assert!(crate::open_prompt::owns_memory(fields));
+            assert!(fields["estimated"].as_u64().unwrap() > 3 * gb, "the charged estimate is shown: {fields:?}");
+            assert_eq!(fields["available"], json!(5 * gb));
+            assert_eq!(fields["capacityUnknown"], json!(false));
+            assert_eq!(fields["uncertainCapacityWarning"], json!(false));
+            let dlg_id = app.ui.dialogs[0].id;
 
-    let snap = photocraft_io::memory::MemorySnapshot { available_ram: Some((4 * est).max(4 << 30)), swap_free: None, commit_headroom: None };
-    photocraft_io::memory::with_mock_memory(snap, || {
-        let budget = photocraft_io::memory::resolve_budget(snap, None);
-        let preflight_id = app
-            .session
-            .store_pending_preflight(photocraft_engine::jobs::PendingPsdPreflight {
-                id: 0,
-                name: "inline_resume.psd".into(),
-                source: photocraft_engine::jobs::OpenSource::Bytes(bytes),
-                fingerprint: fp,
-                required: est,
-                soft_limit: budget.soft_limit,
-                hard_limit: budget.hard_limit,
-                available_ram: budget.available_ram,
-                confirm_damage: true,
-            })
-            .unwrap();
-
-        crate::open_prompt::arrive_memory(
-            &mut app,
-            preflight_id,
-            "inline_resume.psd".into(),
-            Some("/test/inline_resume.psd".into()),
-            None,
-            None,
-            est,
-            budget.available_ram,
-        );
-        assert_eq!(app.ui.dialogs.len(), 1);
-        let dlg_id = app.ui.dialogs[0].id;
-
-        let res = call(&mut app, "ui.dialog.confirm", json!({"dialog": dlg_id}));
-        assert_eq!(res["ok"], true);
-        assert!(app.ui.dialogs.is_empty(), "dialog dismissed after inline resume");
-        assert_eq!(app.session.documents().len(), 1, "document opened via inline resume");
-        assert_eq!(app.session.documents()[0].doc.name, "inline_resume.psd");
-        assert_eq!(app.session.documents()[0].path.as_deref(), Some("/test/inline_resume.psd"));
-        assert!(app.held_memory_prompts.is_empty());
-        assert!(app.held_opens.is_empty());
-        assert!(app.prompt_order.is_empty());
-        assert!(app.jobs.opens.is_empty());
+            let res = call(&mut app, "ui.dialog.confirm", json!({"dialog": dlg_id}));
+            assert_eq!(res["ok"], true, "{res}");
+            assert!(app.ui.dialogs.is_empty(), "dialog dismissed after inline resume");
+            assert_eq!(app.session.documents().len(), 1, "document opened via inline resume");
+            assert_eq!(app.session.documents()[0].doc.name, "inline_resume.psd");
+            assert_eq!(app.session.documents()[0].path.as_deref(), Some("/test/inline_resume.psd"));
+            assert!(app.held_memory_prompts.is_empty());
+            assert!(app.held_opens.is_empty());
+            assert!(app.prompt_order.is_empty());
+            assert!(app.jobs.opens.is_empty());
+            assert_eq!(app.session.pending_preflight_bytes().unwrap(), 0, "the approval consumed and released the preflight");
+        });
     });
 }
 
+/// #10897: a background open carries the same scoped estimate into its worker through the
+/// explicitly captured test scope (never a global mock), so the real job raises the approval
+/// prompt; the retry then opens the file only with the one-shot approval.
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn memory_confirmation_resume_background_success() {
+    if cfg!(target_pointer_width = "32") {
+        return; // the 3 GiB charge would exceed a 32-bit process cap
+    }
+    let gb = 1u64 << 30;
     let mut app = app();
     app.background_jobs = true;
     let psd = recovery_psd::make_psd(false);
-    let (file, _) = photocraft_psd::PsdFile::from_bytes_and_merged(&psd, |_| false).unwrap();
-    let est = photocraft_io::psd_budget::estimate(&file).unwrap().total_bytes;
-    let bytes = std::sync::Arc::new(psd);
-    let fp = photocraft_engine::jobs::SourceFingerprint::of(&photocraft_engine::jobs::OpenSource::Bytes(std::sync::Arc::clone(&bytes))).unwrap();
+    let snap = photocraft_io::memory::MemorySnapshot { available_ram: Some(5 * gb), swap_free: None, commit_headroom: None };
+    photocraft_io::psd_budget::with_test_estimate_charge(3 * gb, || {
+        photocraft_io::memory::with_mock_memory(snap, || {
+            app.open_bytes_from("/test/bg_resume.psd", &psd, Some("/test/bg_resume.psd")).unwrap();
+            assert_eq!(app.jobs.opens.len(), 1, "a background open tab appears at once");
+            let jobs: Vec<_> = app.session.jobs().iter().map(|j| j.id).collect();
+            for id in jobs {
+                app.session.wait_job(id).unwrap();
+            }
+            crate::jobs_ui::tick(&mut app, &egui::Context::default());
+            assert!(app.session.documents().is_empty(), "the file waits for approval");
+            assert_eq!(app.held_memory_prompts.len(), 1);
+            assert_eq!(app.ui.dialogs.len(), 1);
+            let fields = &app.ui.dialogs[0].fields;
+            assert!(crate::open_prompt::owns_memory(fields));
+            assert!(fields["estimated"].as_u64().unwrap() > 3 * gb, "the worker made the charged estimate: {fields:?}");
+            assert_eq!(fields["available"], json!(5 * gb));
+            assert_eq!(fields["capacityUnknown"], json!(false));
+            let dlg_id = app.ui.dialogs[0].id;
 
-    let snap = photocraft_io::memory::MemorySnapshot { available_ram: Some((4 * est).max(4 << 30)), swap_free: None, commit_headroom: None };
-    photocraft_io::memory::with_mock_memory(snap, || {
-        let budget = photocraft_io::memory::resolve_budget(snap, None);
-        let preflight_id = app
-            .session
-            .store_pending_preflight(photocraft_engine::jobs::PendingPsdPreflight {
-                id: 0,
-                name: "bg_resume.psd".into(),
-                source: photocraft_engine::jobs::OpenSource::Bytes(bytes),
-                fingerprint: fp,
-                required: est,
-                soft_limit: budget.soft_limit,
-                hard_limit: budget.hard_limit,
-                available_ram: budget.available_ram,
-                confirm_damage: true,
-            })
-            .unwrap();
+            let res = call(&mut app, "ui.dialog.confirm", json!({"dialog": dlg_id}));
+            assert_eq!(res["ok"], true, "{res}");
+            assert_eq!(app.jobs.opens.len(), 1, "background retry job registered in jobs.opens");
 
-        crate::open_prompt::arrive_memory(
-            &mut app,
-            preflight_id,
-            "bg_resume.psd".into(),
-            Some("/test/bg_resume.psd".into()),
-            None,
-            None,
-            est,
-            budget.available_ram,
-        );
-        assert_eq!(app.ui.dialogs.len(), 1);
-        let dlg_id = app.ui.dialogs[0].id;
-
-        let res = call(&mut app, "ui.dialog.confirm", json!({"dialog": dlg_id}));
-        assert_eq!(res["ok"], true);
-        assert_eq!(app.jobs.opens.len(), 1, "background open job registered in jobs.opens");
-
-        let jobs: Vec<_> = app.session.jobs().iter().map(|j| j.id).collect();
-        for id in jobs {
-            app.session.wait_job(id).unwrap();
-        }
-        crate::jobs_ui::tick(&mut app, &egui::Context::default());
-        assert_eq!(app.session.documents().len(), 1, "document opened via background resume");
-        assert_eq!(app.session.documents()[0].doc.name, "bg_resume.psd");
-        assert_eq!(app.session.documents()[0].path.as_deref(), Some("/test/bg_resume.psd"));
-        assert!(app.ui.dialogs.is_empty());
-        assert!(app.held_memory_prompts.is_empty());
-        assert!(app.held_opens.is_empty());
-        assert!(app.prompt_order.is_empty());
-        assert!(app.jobs.opens.is_empty());
+            let jobs: Vec<_> = app.session.jobs().iter().map(|j| j.id).collect();
+            for id in jobs {
+                app.session.wait_job(id).unwrap();
+            }
+            crate::jobs_ui::tick(&mut app, &egui::Context::default());
+            assert_eq!(app.session.documents().len(), 1, "document opened via background resume");
+            assert_eq!(app.session.documents()[0].doc.name, "bg_resume.psd");
+            assert_eq!(app.session.documents()[0].path.as_deref(), Some("/test/bg_resume.psd"));
+            assert!(app.ui.dialogs.is_empty());
+            assert!(app.held_memory_prompts.is_empty());
+            assert!(app.held_opens.is_empty());
+            assert!(app.prompt_order.is_empty());
+            assert!(app.jobs.opens.is_empty());
+            assert_eq!(app.session.pending_preflight_bytes().unwrap(), 0);
+        });
     });
 }
 
@@ -371,7 +358,18 @@ fn memory_confirmation_refuses_when_source_changed_inline() {
         })
         .unwrap();
 
-    crate::open_prompt::arrive_memory(&mut app, preflight_id, "changed.psd".into(), Some(path.to_string_lossy().to_string()), None, None, 1000, Some(100_000));
+    crate::open_prompt::arrive_memory(
+        &mut app,
+        preflight_id,
+        "changed.psd".into(),
+        Some(path.to_string_lossy().to_string()),
+        None,
+        None,
+        1000,
+        Some(100_000),
+        false,
+        false,
+    );
     assert_eq!(app.ui.dialogs.len(), 1);
     let dlg_id = app.ui.dialogs[0].id;
 
@@ -380,6 +378,8 @@ fn memory_confirmation_refuses_when_source_changed_inline() {
 
     let res = call(&mut app, "ui.dialog.confirm", json!({"dialog": dlg_id}));
     assert_eq!(res["ok"], false, "confirming changed file inline must fail");
+    let error = res["error"].as_str().unwrap_or_default();
+    assert!(error.contains("changed since it was checked"), "the refusal names the changed identity, not a parser failure: {res}");
     assert!(app.session.documents().is_empty());
     assert!(app.held_memory_prompts.is_empty());
 }
@@ -419,6 +419,8 @@ fn memory_confirmation_refuses_when_source_changed_async() {
         None,
         1000,
         Some(100_000),
+        false,
+        false,
     );
     assert_eq!(app.ui.dialogs.len(), 1);
     let dlg_id = app.ui.dialogs[0].id;
@@ -440,6 +442,7 @@ fn memory_confirmation_refuses_when_source_changed_async() {
     assert!(app.session.documents().is_empty(), "no document opened on changed file failure");
     assert!(app.jobs.opens.is_empty(), "opens cleared on job failure");
     assert!(app.ui.status_error, "error recorded in UI status");
+    assert!(app.ui.status.contains("changed since it was checked"), "the background refusal names the changed identity: {}", app.ui.status);
 }
 
 #[test]
@@ -463,7 +466,7 @@ fn memory_decline_advances_queue_and_cleans_batch() {
         })
         .unwrap();
 
-    crate::open_prompt::arrive_memory(&mut app, preflight_id, "declined.psd".into(), None, None, Some(order), 1000, Some(4000));
+    crate::open_prompt::arrive_memory(&mut app, preflight_id, "declined.psd".into(), None, None, Some(order), 1000, Some(4000), false, false);
     assert_eq!(app.ui.dialogs.len(), 1);
     let dlg_id = app.ui.dialogs[0].id;
 
@@ -512,8 +515,8 @@ fn batch_single_file_cancel_preserves_other_held_memory_orders() {
         })
         .unwrap();
 
-    crate::open_prompt::arrive_memory(&mut app, p0, "first.psd".into(), None, None, Some(order0), 1000, Some(4000));
-    crate::open_prompt::arrive_memory(&mut app, p1, "second.psd".into(), None, None, Some(order1), 1000, Some(4000));
+    crate::open_prompt::arrive_memory(&mut app, p0, "first.psd".into(), None, None, Some(order0), 1000, Some(4000), false, false);
+    crate::open_prompt::arrive_memory(&mut app, p1, "second.psd".into(), None, None, Some(order1), 1000, Some(4000), false, false);
 
     // Cancel first file:
     let dlg0 = app.ui.dialogs[0].id;
@@ -550,7 +553,7 @@ fn profile_cancel_cancels_whole_queue_including_memory_prompts() {
         })
         .unwrap();
 
-    crate::open_prompt::arrive_memory(&mut app, preflight_id, "high_mem.psd".into(), None, None, None, 7 * gb, Some(10 * gb));
+    crate::open_prompt::arrive_memory(&mut app, preflight_id, "high_mem.psd".into(), None, None, None, 7 * gb, Some(10 * gb), false, false);
 
     crate::open_prompt::arrive(
         &mut app,
@@ -563,6 +566,7 @@ fn profile_cancel_cancels_whole_queue_including_memory_prompts() {
             warnings: vec![],
             bytes: None,
             slot: None,
+            order: None,
             question: Some(json!({"missing": false, "working": "sRGB", "embedded": "Adobe RGB"})),
             policy_applied: false,
         },
@@ -593,6 +597,7 @@ fn mixed_prompts_follow_arrival_order_fifo() {
             warnings: vec!["damaged data".into()],
             bytes: None,
             slot: None,
+            order: None,
             question: None,
             policy_applied: false,
         },
@@ -613,7 +618,7 @@ fn mixed_prompts_follow_arrival_order_fifo() {
             confirm_damage: true,
         })
         .unwrap();
-    crate::open_prompt::arrive_memory(&mut app, preflight_id, "second_mem.psd".into(), None, None, None, 7 * gb, Some(10 * gb));
+    crate::open_prompt::arrive_memory(&mut app, preflight_id, "second_mem.psd".into(), None, None, None, 7 * gb, Some(10 * gb), false, false);
 
     // First prompt shown must be damage (since it arrived first)!
     assert_eq!(app.ui.dialogs.len(), 1);
@@ -629,4 +634,320 @@ fn mixed_prompts_follow_arrival_order_fifo() {
     let dlg_mem = app.ui.dialogs[0].id;
     assert_eq!(call(&mut app, "ui.dialog.cancel", json!({"dialog": dlg_mem}))["ok"], true);
     assert!(app.ui.dialogs.is_empty());
+}
+
+/// A stored preflight for the prompt tests, with a tiny in-memory source so nothing large is
+/// ever held.
+fn store_preflight(app: &mut PhotocraftApp, name: &str, required: u64, available: Option<u64>) -> u64 {
+    let bytes = std::sync::Arc::new(vec![0u8; 16]);
+    let source = photocraft_engine::jobs::OpenSource::Bytes(std::sync::Arc::clone(&bytes));
+    let fingerprint = photocraft_engine::jobs::SourceFingerprint::of(&source).unwrap();
+    app.session
+        .store_pending_preflight(photocraft_engine::jobs::PendingPsdPreflight {
+            id: 0,
+            name: name.into(),
+            source,
+            fingerprint,
+            required,
+            soft_limit: required / 2,
+            hard_limit: required.saturating_mul(2),
+            available_ram: available,
+            confirm_damage: true,
+        })
+        .unwrap()
+}
+
+/// #10897: the browser and desktop share one consent route. The web shell runs every open inline
+/// (`background_jobs == false`), answers the same `MemoryPrompt`, and dispatches the same
+/// `file.approveMemory` command: it is not menu-only, journaled or gated off wasm. The web's own
+/// allowance and 2 GiB product cap stay in `photocraft-io`'s policy, so approval never raises
+/// them. This checks the routing half on the host; the web policy half is covered by
+/// `photocraft_io::memory`'s web-policy tests.
+#[test]
+fn memory_approval_routes_through_the_file_approve_memory_command() {
+    let app = app();
+    assert!(!app.background_jobs, "the browser shell is always inline");
+    assert!(app.session.is_enabled("file.approveMemory"), "the one-shot approval command is available on every target");
+    let spec = photocraft_engine::commands::find("file.approveMemory").expect("registered");
+    assert!(spec.menu.is_empty(), "it is not a menu item");
+    assert!(!spec.journal, "a one-shot permission is never journaled or replayed");
+}
+
+/// #10897: on the web the same prompt offers consent, and `file.approveMemory` may authorize an
+/// estimate above the 1 GiB automatic allowance only within the 2 GiB product cap: a 1.5 GiB
+/// estimate is approved and opens, a 3 GiB estimate is refused before decoding. The fixed mock
+/// snapshot is ignored on wasm (the web policy does not read one), so the charge alone sets the
+/// window. This target is compile-checked, not executed, by the current CI (`cargo xtask wasm`
+/// checks the crates without test targets); the same web policy is exercised on native by
+/// `photocraft_io::memory`'s web-policy tests.
+#[cfg(target_arch = "wasm32")]
+#[test]
+fn web_memory_prompt_offers_consent_within_the_two_gib_product_cap() {
+    let gb = 1u64 << 30;
+    let psd = recovery_psd::make_psd(false);
+    let mut approved = app();
+    photocraft_io::psd_budget::with_test_estimate_charge(3 * gb / 2, || {
+        approved.open_bytes_from("web.psd", &psd, Some("web.psd")).unwrap();
+        assert_eq!(approved.held_memory_prompts.len(), 1, "1.5 GiB is above the web's 1 GiB automatic allowance");
+        let fields = &approved.ui.dialogs[0].fields;
+        assert_eq!(fields["available"], json!(null));
+        assert_eq!(fields["capacityUnknown"], json!(true), "the browser cannot measure the tab's capacity");
+        let dlg = approved.ui.dialogs[0].id;
+        assert_eq!(call(&mut approved, "ui.dialog.confirm", json!({"dialog": dlg}))["ok"], true);
+        assert_eq!(approved.session.documents().len(), 1, "consent opens an estimate within the product cap");
+    });
+    let mut refused = app();
+    photocraft_io::psd_budget::with_test_estimate_charge(3 * gb, || {
+        assert!(refused.open_bytes_from("too-big.psd", &psd, Some("too-big.psd")).is_err(), "consent cannot raise the 2 GiB product cap");
+        assert!(refused.ui.dialogs.is_empty());
+        assert!(refused.session.documents().is_empty());
+    });
+}
+
+/// #10897: the prompt shows an unmeasured capacity honestly (no invented number) and adds the
+/// above-8-GiB warning, both from the engine's typed flags, so the browser and desktop consent
+/// text matches what was actually measured.
+#[test]
+fn memory_prompt_states_unknown_capacity_and_the_eight_gib_warning() {
+    let gb = 1u64 << 30;
+    let mut app = app();
+    let id = store_preflight(&mut app, "unknown.psd", 9 * gb, None);
+    let tab = crate::jobs_ui::OpenTab {
+        job: photocraft_engine::jobs::JobId(1),
+        name: "unknown.psd".into(),
+        path: Some("/pics/unknown.psd".into()),
+        slot: None,
+        order: None,
+    };
+    crate::jobs_ui::finish_open_tab(
+        &mut app,
+        &tab,
+        &json!({"pendingPreflight": id, "estimated": 9 * gb, "availableRam": null, "capacityUnknown": true, "uncertainCapacityWarning": true}),
+    )
+    .unwrap();
+    assert_eq!(app.ui.dialogs.len(), 1);
+    let fields = &app.ui.dialogs[0].fields;
+    assert!(crate::open_prompt::owns_memory(fields));
+    assert_eq!(fields["available"], json!(null), "no number is invented for an unmeasured capacity");
+    assert_eq!(fields["capacityUnknown"], json!(true));
+    assert_eq!(fields["uncertainCapacityWarning"], json!(true));
+    let message = fields["message"].as_str().unwrap();
+    assert!(message.contains("could not be measured"), "{message}");
+    assert!(message.contains("8 GiB") && message.contains("may run out of memory"), "{message}");
+    assert!(!message.contains("available)"), "the unknown-capacity message claims no available figure: {message}");
+    assert_eq!(call(&mut app, "ui.dialog.cancel", json!({"dialog": app.ui.dialogs[0].id}))["ok"], true);
+
+    // A measured capacity shows the number and drops the uncertainty warning.
+    let id = store_preflight(&mut app, "known.psd", 3 * gb, Some(5 * gb));
+    let tab = crate::jobs_ui::OpenTab { job: photocraft_engine::jobs::JobId(2), name: "known.psd".into(), path: None, slot: None, order: None };
+    crate::jobs_ui::finish_open_tab(
+        &mut app,
+        &tab,
+        &json!({"pendingPreflight": id, "estimated": 3 * gb, "availableRam": 5 * gb, "capacityUnknown": false, "uncertainCapacityWarning": false}),
+    )
+    .unwrap();
+    let fields = &app.ui.dialogs[0].fields;
+    assert_eq!(fields["available"], json!(5 * gb));
+    assert_eq!(fields["capacityUnknown"], json!(false));
+    let message = fields["message"].as_str().unwrap();
+    assert!(message.contains("5.0 GiB available"), "{message}");
+    assert!(!message.contains("could not be measured") && !message.contains("may run out of memory"), "{message}");
+    assert_eq!(call(&mut app, "ui.dialog.cancel", json!({"dialog": app.ui.dialogs[0].id}))["ok"], true);
+    assert!(app.ui.dialogs.is_empty());
+}
+
+/// #10897: reopening an ordinary file whose high-memory prompt is already waiting shows that
+/// prompt instead of queueing a second one and a second open; a template still opens again as
+/// another Untitled, like one that is still loading.
+#[test]
+fn reopening_a_file_whose_memory_prompt_waits_does_not_queue_a_duplicate() {
+    let gb = 1u64 << 30;
+    let mut app = app();
+    let id = store_preflight(&mut app, "slow.psd", 3 * gb, Some(5 * gb));
+    crate::open_prompt::arrive_memory(&mut app, id, "slow.psd".into(), Some("/pics/slow.psd".into()), None, None, 3 * gb, Some(5 * gb), false, false);
+    assert_eq!(app.held_memory_prompts.len(), 1);
+    assert_eq!(app.ui.dialogs.len(), 1);
+    assert!(app.show_if_open("/pics/slow.psd"), "the waiting prompt is shown");
+    assert_eq!(app.held_memory_prompts.len(), 1, "no second prompt for the same file");
+    assert_eq!(app.ui.dialogs.len(), 1);
+
+    // The template exception: a repeat open still creates another Untitled.
+    let id = store_preflight(&mut app, "card.psdt", 3 * gb, Some(5 * gb));
+    crate::open_prompt::arrive_memory(&mut app, id, "card.psdt".into(), Some("/pics/card.psdt".into()), None, None, 3 * gb, Some(5 * gb), false, false);
+    assert_eq!(app.held_memory_prompts.len(), 2);
+    assert!(!app.show_if_open("/pics/card.psdt"), "a template reopens instead of reusing the waiting prompt");
+    assert_eq!(app.held_memory_prompts.len(), 2);
+}
+
+/// A tiny PNG so a set can hold one PSD that needs approval and one flat file that opens at once.
+#[cfg(not(target_arch = "wasm32"))]
+fn png_file() -> Vec<u8> {
+    let img = photocraft_codecs::Image::from_u8(2, 2, photocraft_codecs::ChannelLayout::Rgb, vec![10; 2 * 2 * 3]).unwrap();
+    photocraft_codecs::encode(&img, photocraft_codecs::Format::Png, &Default::default()).unwrap()
+}
+
+/// #10897: a set opened inline keeps the charged PSD's place in the set through its memory
+/// prompt: the prompt carries the batch order and the answered file lands before the later member.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn inline_set_keeps_the_memory_prompted_file_in_batch_order() {
+    if cfg!(target_pointer_width = "32") {
+        return; // the 3 GiB charge would exceed a 32-bit process cap
+    }
+    let gb = 1u64 << 30;
+    let dir = tempfile::tempdir().unwrap();
+    let psd = dir.path().join("a_high.psd");
+    let png = dir.path().join("b_flat.png");
+    std::fs::write(&psd, recovery_psd::make_psd(false)).unwrap();
+    std::fs::write(&png, png_file()).unwrap();
+    let paths = vec![psd.to_string_lossy().into_owned(), png.to_string_lossy().into_owned()];
+    let mut app = app();
+    let snap = photocraft_io::memory::MemorySnapshot { available_ram: Some(5 * gb), swap_free: None, commit_headroom: None };
+    photocraft_io::psd_budget::with_test_estimate_charge(3 * gb, || {
+        photocraft_io::memory::with_mock_memory(snap, || {
+            assert_eq!(app.open_paths(&paths), 2);
+            assert_eq!(app.held_memory_prompts.len(), 1, "the charged PSD waits for approval");
+            assert_eq!(app.held_memory_prompts.front().unwrap().order.map(|o| o.seq), Some(0), "the set order travels with the prompt");
+            // The flat file waits behind the prompt, keeping its own place in the set.
+            assert_eq!(app.held_opens.len(), 1);
+            assert_eq!(app.held_opens.front().unwrap().order.map(|o| o.seq), Some(1));
+            let dlg = app.ui.dialogs[0].id;
+            assert_eq!(call(&mut app, "ui.dialog.confirm", json!({"dialog": dlg}))["ok"], true);
+            let names: Vec<_> = app.session.documents().iter().map(|d| d.doc.name.clone()).collect();
+            assert_eq!(names, ["a_high.psd", "b_flat.png"]);
+            assert!(app.held_memory_prompts.is_empty() && app.held_opens.is_empty());
+            assert!(app.jobs.batches.is_empty(), "the set is forgotten once every member opened");
+            assert!(app.prompt_order.is_empty());
+        });
+    });
+}
+
+/// A real tiny layered TIFF: a small two-layer RGB document exported with Photoshop layer data.
+/// The fixture is the actual file the UI opens, not a fabricated preflight.
+#[cfg(not(target_arch = "wasm32"))]
+fn exported_layered_tiff(w: u32, h: u32) -> Vec<u8> {
+    use photocraft_doc::{Document, Layer, LayerContent};
+    use photocraft_raster::Surface;
+
+    let mut doc = Document::new("layers.tif", photocraft_geom::Size::new(w, h), photocraft_color::ColorMode::Rgb, photocraft_color::SampleType::U8);
+    let fmt = doc.pixel_format();
+    let bytes = (w as usize * h as usize * fmt.bytes_per_pixel()).max(1);
+    for name in ["bottom", "top"] {
+        let mut s = Surface::new(fmt);
+        s.write_interleaved(photocraft_geom::Rect::new(0, 0, w as i32, h as i32), &vec![96u8; bytes]);
+        doc.layers.push(Layer::new(name, LayerContent::Raster(s)));
+    }
+    photocraft_io::export(&doc, "layers.tif", &photocraft_io::ExportOptions { tiff_layers: true, ..Default::default() }).expect("export a layered TIFF").bytes
+}
+
+/// #10897: a layered TIFF opened inline reaches the same high-memory prompt a PSD does. Only the
+/// typed IO path carries `PsdApprovalRequired`; the shell's plain import service turns it into a
+/// terminal string, so without that routing this open fails instead of prompting. The real
+/// two-layer fixture plus the scoped estimate charge land in the confirmation band under a fixed
+/// 5 GiB, and the prompt arrives before any composite pixel is decoded.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn inline_layered_tiff_prompts_before_decoding_and_opens_or_declines() {
+    if cfg!(target_pointer_width = "32") {
+        return; // the 3 GiB charge would exceed a 32-bit process cap
+    }
+    let gb = 1u64 << 30;
+    let bytes = exported_layered_tiff(8, 6);
+    let path = "/pics/layered.tif";
+    let mut app = app();
+    assert!(!app.background_jobs, "the inline path the web shell uses");
+    let snap = photocraft_io::memory::MemorySnapshot { available_ram: Some(5 * gb), swap_free: None, commit_headroom: None };
+    photocraft_io::psd_budget::with_test_estimate_charge(3 * gb, || {
+        photocraft_io::memory::with_mock_memory(snap, || {
+            let order = crate::jobs_ui::OpenOrder { batch: crate::jobs_ui::begin_batch(&mut app), seq: 0 };
+            app.open_bytes_placed("layered.tif", &bytes, Some(path), None, Some(order)).unwrap();
+            // The prompt comes first: nothing is decoded, no tab is opened, and the engine holds
+            // the source for the approval. The set order travels with the prompt.
+            assert!(app.session.documents().is_empty(), "the layered TIFF waits for approval instead of opening");
+            assert!(app.jobs.opens.is_empty(), "inline: no background tab");
+            assert_eq!(app.held_memory_prompts.len(), 1);
+            assert_eq!(app.held_memory_prompts.front().unwrap().order, Some(order));
+            assert_eq!(app.ui.dialogs.len(), 1);
+            let fields = &app.ui.dialogs[0].fields;
+            assert!(crate::open_prompt::owns_memory(fields));
+            assert!(fields["estimated"].as_u64().unwrap() > 3 * gb, "the charged estimate is shown: {fields:?}");
+            assert_eq!(fields["available"], json!(5 * gb));
+            assert!(app.session.pending_preflight_bytes().unwrap() > 0, "the engine preflight holds the source");
+
+            // Accepting runs the typed TIFF import with the one-shot approval: both layers, in
+            // their order, keep the document's path, and the preflight is released.
+            let dlg = app.ui.dialogs[0].id;
+            let res = call(&mut app, "ui.dialog.confirm", json!({"dialog": dlg}));
+            assert_eq!(res["ok"], true, "{res}");
+            assert_eq!(app.session.documents().len(), 1, "the approved TIFF opens");
+            let st = app.session.active().unwrap();
+            assert_eq!(st.doc.name, "layered.tif");
+            assert_eq!(st.path.as_deref(), Some(path), "the approved open keeps its path");
+            let names: Vec<_> = st.doc.layers.iter().map(|l| l.name.clone()).collect();
+            assert_eq!(names, ["bottom", "top"], "both layers open in their order");
+            assert!(app.ui.dialogs.is_empty(), "a TIFF has no damage prompt");
+            assert!(app.held_memory_prompts.is_empty());
+            assert!(app.jobs.batches.is_empty(), "the set is forgotten once its prompted file opened");
+            assert_eq!(app.session.pending_preflight_bytes().unwrap(), 0, "accepting clears the engine preflight");
+
+            // Declining opens nothing and releases the engine preflight too.
+            app.open_bytes_from("declined.tif", &bytes, Some("/pics/declined.tif")).unwrap();
+            assert_eq!(app.held_memory_prompts.len(), 1);
+            assert!(app.session.pending_preflight_bytes().unwrap() > 0);
+            let dlg = app.ui.dialogs[0].id;
+            assert_eq!(call(&mut app, "ui.dialog.cancel", json!({"dialog": dlg}))["ok"], true);
+            assert!(app.held_memory_prompts.is_empty() && app.ui.dialogs.is_empty());
+            assert_eq!(app.session.documents().len(), 1, "declining opens nothing");
+            assert_eq!(app.session.pending_preflight_bytes().unwrap(), 0, "declining clears the engine preflight");
+        });
+    });
+}
+
+/// A TIFF whose Photoshop layer tag cannot be read still opens flattened through the typed path,
+/// with its warning: routing TIFF magic to typed IO must not turn a malformed tag into a refusal.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn inline_tiff_with_a_malformed_layer_tag_opens_flattened() {
+    use photocraft_codecs::{ChannelLayout, EncodeOptions, Format, Image, SampleType};
+
+    let mut img = Image::from_raw(4, 3, ChannelLayout::Rgb, SampleType::U8, vec![40; 4 * 3 * 3]).unwrap();
+    img.meta.photoshop_layers = Some(b"not Photoshop image source data".to_vec());
+    let bytes = photocraft_codecs::encode(&img, Format::Tiff, &EncodeOptions::default()).unwrap();
+    let mut app = app();
+    let snap = photocraft_io::memory::MemorySnapshot { available_ram: Some(16 << 30), swap_free: None, commit_headroom: None };
+    photocraft_io::memory::with_mock_memory(snap, || {
+        let warnings = app.open_bytes("bogus.tif", &bytes).unwrap();
+        assert_eq!(app.session.documents().len(), 1, "the composite still opens");
+        assert_eq!(app.session.active().unwrap().doc.layers.len(), 1, "a malformed tag opens one flat layer");
+        assert!(warnings.iter().any(|w| w.contains("opened flattened")), "{warnings:?}");
+        assert!(app.ui.dialogs.is_empty());
+    });
+}
+
+/// #10897: a file dropped on a tab slot keeps that slot through an inline memory prompt, even
+/// though the open completes later (before, it appended to the end of the tab strip).
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn inline_drop_slot_survives_the_memory_prompt() {
+    if cfg!(target_pointer_width = "32") {
+        return; // the 3 GiB charge would exceed a 32-bit process cap
+    }
+    let gb = 1u64 << 30;
+    let mut app = app();
+    for name in ["first.psd", "second.psd"] {
+        app.open_bytes(name, &recovery_psd::make_psd(false)).unwrap();
+    }
+    assert_eq!(app.session.documents().len(), 2);
+    let snap = photocraft_io::memory::MemorySnapshot { available_ram: Some(5 * gb), swap_free: None, commit_headroom: None };
+    photocraft_io::psd_budget::with_test_estimate_charge(3 * gb, || {
+        photocraft_io::memory::with_mock_memory(snap, || {
+            app.open_bytes_placed("dropped.psd", &recovery_psd::make_psd(false), None, Some(0), None).unwrap();
+            assert_eq!(app.held_memory_prompts.len(), 1);
+            assert_eq!(app.held_memory_prompts.front().unwrap().slot, Some(0), "the drop slot travels with the prompt");
+            let dlg = app.ui.dialogs[0].id;
+            assert_eq!(call(&mut app, "ui.dialog.confirm", json!({"dialog": dlg}))["ok"], true);
+            let names: Vec<_> = app.session.documents().iter().map(|d| d.doc.name.clone()).collect();
+            assert_eq!(names, ["dropped.psd", "first.psd", "second.psd"], "the approved drop keeps its tab slot");
+        });
+    });
 }

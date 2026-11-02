@@ -140,7 +140,8 @@ impl Headless {
     /// Place a file into a document as a Smart Object layer: the capability-scoped counterpart
     /// of `file.placeEmbedded`, which reads an ambient path and is therefore refused in
     /// automation (#2810). `path` resolves beneath the read root the way `open` resolves one,
-    /// and `params` carries the command's own options (`scale`, `fit`, `center`).
+    /// and `params` carries the command's own options (`scale`, `fit`, `center`,
+    /// `approveHighMemory`).
     pub fn place(&mut self, index: Option<usize>, path: &str, params: &Value) -> Result<Value, AutomationError> {
         self.on_doc(index, |this| {
             let mut opts = params.as_object().cloned().unwrap_or_default();

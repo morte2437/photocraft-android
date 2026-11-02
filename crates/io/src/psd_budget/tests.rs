@@ -55,9 +55,14 @@ fn large_off_canvas_layer_is_rejected_without_decoding_its_tiny_data() {
     let mut bytes = file.to_bytes().unwrap();
     bytes.truncate(bytes.len() - file.image_data.data.len() - 2);
     crate::memory::with_mock_memory(crate::memory::MemorySnapshot::UNKNOWN, || {
-        assert!(matches!(crate::import("huge.psd", &bytes), Err(IoError::PsdImportBudget { .. })));
+        // Unknown memory keeps a conservative automatic allowance, so this file is refused
+        // pending approval (or by the hard platform limit on 32-bit) before any pixel decode.
+        assert!(matches!(crate::import("huge.psd", &bytes), Err(IoError::PsdApprovalRequired { .. } | IoError::PsdImportBudget { .. })));
         let source = photocraft_psd::Source::new(bytes);
-        assert!(matches!(crate::import_source_for_open_with("huge.psd", source, &photocraft_raster::Interrupt::NONE), Err(IoError::PsdImportBudget { .. })));
+        assert!(matches!(
+            crate::import_source_for_open_with("huge.psd", source, &photocraft_raster::Interrupt::NONE),
+            Err(IoError::PsdApprovalRequired { .. } | IoError::PsdImportBudget { .. })
+        ));
     });
 }
 
@@ -238,6 +243,9 @@ fn adaptive_budget_requires_explicit_approval_in_confirmation_range() {
 
 #[test]
 fn explicit_approval_allows_confirmation_range_but_never_bypasses_hard_boundary() {
+    if cfg!(any(target_arch = "wasm32", target_pointer_width = "32")) {
+        return; // the 6 GiB hard limit is above the 32-bit aggregate cap
+    }
     let gb = 1u64 << 30;
 
     // Scale RAM so that est falls between S and H:
@@ -262,6 +270,9 @@ fn explicit_approval_allows_confirmation_range_but_never_bypasses_hard_boundary(
 
 #[test]
 fn zero_available_ram_refuses_admission() {
+    if cfg!(target_arch = "wasm32") {
+        return; // the web policy ignores a host snapshot; it has its own tests
+    }
     let file = testgen::small(Version::Psd, Compression::Zip);
     let bytes = file.to_bytes().unwrap();
 
@@ -370,6 +381,26 @@ fn test_memory_scope_propagates_to_worker_thread() {
 }
 
 #[test]
+fn test_memory_scope_propagates_the_estimate_charge_to_a_worker() {
+    let gb = 1u64 << 30;
+    let file = std::sync::Arc::new(testgen::small(Version::Psd, Compression::Zip));
+    let bare = estimate(&file);
+    with_test_estimate_charge(2 * gb, || {
+        assert_eq!(estimate(&file), bare + 2 * gb, "the charge is part of the estimate on this thread");
+        let scope = crate::memory::TestMemoryScope::capture();
+        let worker_file = std::sync::Arc::clone(&file);
+        std::thread::spawn(move || {
+            scope.run(|| assert_eq!(estimate(&worker_file), bare + 2 * gb, "a captured scope carries the charge to its worker"));
+        })
+        .join()
+        .unwrap();
+    });
+    assert_eq!(estimate(&file), bare, "the charge is restored on this thread");
+    let detached = std::sync::Arc::clone(&file);
+    assert_eq!(std::thread::spawn(move || estimate(&detached)).join().unwrap(), bare, "a worker outside the scope never sees it");
+}
+
+#[test]
 fn nested_imports_consume_from_shared_allowance_and_do_not_reset_parent() {
     let gb = 1u64 << 30;
     let ctl = photocraft_raster::Interrupt::NONE;
@@ -400,4 +431,104 @@ fn nested_tiff_layer_import_consumes_composite_and_estimate_without_resetting_pa
     assert!(crate::psd_gate::consume_attempt_allowance(gb).is_ok());
     assert!(crate::psd_gate::consume_attempt_allowance(2 * gb).is_ok());
     assert!(crate::psd_gate::consume_attempt_allowance(1).is_err());
+}
+
+/// A real import carries the approval flag and its estimate bound into admission: the fixture is
+/// tiny, and a thread-local test charge puts it in the confirmation band without allocating
+/// gigabytes.
+#[test]
+fn real_import_propagates_high_memory_approval_and_its_estimate_bound() {
+    if cfg!(any(target_arch = "wasm32", target_pointer_width = "32")) {
+        return;
+    }
+    let gb = 1u64 << 30;
+    let file = testgen::small(Version::Psd, Compression::Zip);
+    let bytes = file.to_bytes().unwrap();
+    let snapshot = crate::memory::MemorySnapshot { available_ram: Some(12 * gb), swap_free: None, commit_headroom: None };
+    crate::memory::with_mock_memory(snapshot, || {
+        let automatic_layers =
+            crate::import_with_options("approval.psd", &bytes, &crate::ImportOptions::default()).expect("small file is automatic").document.layers.len();
+        with_test_estimate_charge(7 * gb, || {
+            let required = match crate::import_with_options("approval.psd", &bytes, &crate::ImportOptions::default()) {
+                Err(IoError::PsdApprovalRequired { required, soft_limit, hard_limit, available_ram }) => {
+                    assert_eq!((soft_limit, hard_limit), (6 * gb, 9 * gb));
+                    assert_eq!(available_ram, Some(12 * gb));
+                    required
+                }
+                other => panic!("expected an approval request, got {other:?}"),
+            };
+            assert!((7 * gb..=9 * gb).contains(&required), "the charge lands in the approval band: {required}");
+
+            let approved = crate::ImportOptions { psd_high_memory_approved: true, ..Default::default() };
+            assert_eq!(
+                crate::import_with_options("approval.psd", &bytes, &approved).expect("approved").document.layers.len(),
+                automatic_layers,
+                "an approved import decodes the same document as an automatic one"
+            );
+            let bounded = crate::ImportOptions { psd_high_memory_approved: true, psd_approved_estimate: Some(required), ..Default::default() };
+            assert!(crate::import_with_options("approval.psd", &bytes, &bounded).is_ok());
+            let stale = crate::ImportOptions { psd_high_memory_approved: true, psd_approved_estimate: Some(required - 1), ..Default::default() };
+            assert!(matches!(crate::import_with_options("approval.psd", &bytes, &stale), Err(IoError::PsdApprovalRequired { .. })));
+            let lowered = crate::ImportOptions { psd_high_memory_approved: true, psd_max_pixel_bytes: required - 1, ..Default::default() };
+            assert!(matches!(
+                crate::import_with_options("approval.psd", &bytes, &lowered),
+                Err(IoError::PsdImportBudget { required: r, limit: l }) if r == required && l == required - 1
+            ));
+        });
+    });
+}
+
+/// Available memory can drop while an import waits for the decode gate. The post-gate recheck
+/// must then refuse before anything is decoded. A per-attempt provider, shared with this test
+/// only, changes the measurement while the worker is blocked; nothing near a gigabyte is
+/// allocated, and the real document is never opened.
+#[test]
+fn memory_drop_while_waiting_for_the_gate_refuses_before_decoding() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::time::{Duration, Instant};
+
+    if cfg!(any(target_arch = "wasm32", target_pointer_width = "32")) {
+        return;
+    }
+    let gb = 1u64 << 30;
+    let file = testgen::small(Version::Psd, Compression::Zip);
+    let bytes = file.to_bytes().unwrap();
+
+    // Hold the gate so the worker stops after its first admission check.
+    let _guard = crate::psd_gate::acquire_decode_admission(&photocraft_raster::Interrupt::NONE).expect("active decode");
+
+    let available = Arc::new(AtomicU64::new(32 * gb));
+    let prechecked = Arc::new(AtomicBool::new(false));
+    let (tx, rx) = std::sync::mpsc::channel();
+    let handle = {
+        let available = Arc::clone(&available);
+        let prechecked = Arc::clone(&prechecked);
+        std::thread::spawn(move || {
+            let provider = std::rc::Rc::new(move || {
+                prechecked.store(true, Ordering::SeqCst);
+                crate::memory::MemorySnapshot { available_ram: Some(available.load(Ordering::SeqCst)), swap_free: None, commit_headroom: None }
+            });
+            let result =
+                crate::memory::with_mock_memory_provider(provider, || crate::import_with_options("drop.psd", &bytes, &crate::ImportOptions::default()));
+            tx.send(result.map(|r| r.document.layers.len())).ok();
+        })
+    };
+
+    // The provider's first call is the pre-gate admission check.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !prechecked.load(Ordering::SeqCst) {
+        assert!(Instant::now() < deadline, "the import never reached its admission check");
+        std::thread::yield_now();
+    }
+    // The precheck admitted it; now the machine has nothing left. Release the gate afterwards.
+    available.store(0, Ordering::SeqCst);
+    drop(_guard);
+
+    let result = rx.recv_timeout(Duration::from_secs(10)).expect("the post-gate recheck must refuse instead of decoding");
+    match result {
+        Err(IoError::PsdImportBudget { required, limit: 0 }) => assert!(required > 0),
+        other => panic!("expected the post-gate recheck to refuse with a zero budget, got {other:?}"),
+    }
+    handle.join().expect("worker thread");
 }

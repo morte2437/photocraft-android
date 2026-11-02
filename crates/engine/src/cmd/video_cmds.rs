@@ -266,7 +266,7 @@ const MAX_FOOTAGE_BYTES: u64 = 2 << 30;
 /// Load frames from `path`: a single image (1 frame, or every frame of an animated GIF or WebP), or a
 /// directory of images (sorted = an image sequence). Each becomes a full raster frame in the
 /// document's format.
-fn load_frames(path: &str, fmt: photocraft_color::PixelFormat) -> Result<Footage> {
+fn load_frames(path: &str, fmt: photocraft_color::PixelFormat, opts: &photocraft_io::ImportOptions) -> Result<Footage> {
     let p = std::path::Path::new(path);
     let is_img = |f: &std::path::Path| {
         matches!(
@@ -345,7 +345,9 @@ fn load_frames(path: &str, fmt: photocraft_color::PixelFormat) -> Result<Footage
                     )));
                 }
                 for page in pages {
-                    let doc = photocraft_io::import_tiff_page(&name, &bytes, Some(page))
+                    // Same admission policy, caller limit and import settings as any other TIFF
+                    // page import: a multi-page TIFF is not a way around the memory budget.
+                    let doc = photocraft_io::import_tiff_page_with_options(&name, &bytes, Some(page), opts, &photocraft_raster::Interrupt::NONE)
                         .map_err(|e| EngineError::Other(format!("`{}` page {}: {e}", f.display(), page + 1)))?
                         .document;
                     frames.push(crate::file_cmds::flattened(&doc, fmt));
@@ -373,7 +375,7 @@ fn new_from_file(s: &mut Session, p: &Value) -> Result<Value> {
         .ok_or_else(|| EngineError::BadParams { cmd: "layer.videoLayers.newVideoLayerFromFile".into(), msg: "need `path`".into() })?
         .to_string();
     let fmt = s.active().ok_or(EngineError::NoDocument)?.doc.pixel_format();
-    let Footage { frames, fps: footage_fps } = load_frames(&path, fmt)?;
+    let Footage { frames, fps: footage_fps } = load_frames(&path, fmt, &crate::jobs::import_options(s.prefs()))?;
     // An explicit `fps` wins, then the rate the footage implies, then 30.
     let fps = crate::timeline_cmds::fps_param("layer.videoLayers.newVideoLayerFromFile", p)?.or(footage_fps).unwrap_or(30.0);
     let n = frames.len();
@@ -410,7 +412,7 @@ fn replace_footage(s: &mut Session, p: &Value) -> Result<Value> {
         .ok_or_else(|| EngineError::BadParams { cmd: "layer.videoLayers.replaceFootage".into(), msg: "need `path`".into() })?
         .to_string();
     let fmt = s.active().ok_or(EngineError::NoDocument)?.doc.pixel_format();
-    let frames = load_frames(&path, fmt)?.frames;
+    let frames = load_frames(&path, fmt, &crate::jobs::import_options(s.prefs()))?.frames;
     edit_video(s, "Replace Footage", move |v, _| {
         v.original_frames = Some(frames.clone());
         v.frames = frames;
@@ -446,7 +448,7 @@ fn reload_frame(s: &mut Session, _p: &Value) -> Result<Value> {
     };
     // The footage path is stored in the document.
     let file = crate::doc_path::resolve(&path).map_err(|why| crate::doc_path::refusal("the footage", &path, why))?;
-    let frames = load_frames(&file.to_string_lossy(), fmt)?.frames;
+    let frames = load_frames(&file.to_string_lossy(), fmt, &crate::jobs::import_options(s.prefs()))?.frames;
     edit_video(s, "Reload Frame", move |v, _| {
         v.original_frames = Some(frames.clone());
         v.frames = frames;
@@ -471,7 +473,7 @@ fn frames_to_layers(s: &mut Session, p: &Value) -> Result<Value> {
         .ok_or_else(|| EngineError::BadParams { cmd: "file.import.videoFramesToLayers".into(), msg: "need `path`".into() })?
         .to_string();
     let fmt = s.active().ok_or(EngineError::NoDocument)?.doc.pixel_format();
-    let frames = load_frames(&path, fmt)?.frames;
+    let frames = load_frames(&path, fmt, &crate::jobs::import_options(s.prefs()))?.frames;
     let n = frames.len();
     s.edit("Video Frames to Layers", |doc, active| {
         let mut above = *active;

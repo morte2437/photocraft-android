@@ -52,12 +52,25 @@ impl PhotocraftApp {
     /// shown to the user). Files from disk go through [`open_file`](Self::open_file), which also
     /// remembers the path. Brush and gradient files go to the preset libraries instead.
     pub fn open_bytes(&mut self, name: &str, bytes: &[u8]) -> Result<Vec<String>, String> {
-        self.open_bytes_from(name, bytes, None)
+        self.open_bytes_placed(name, bytes, None, None, None)
     }
 
     /// [`Self::open_bytes`] for a file read from `path` (File › Save writes back there; it goes
     /// to Open Recent), when known.
     pub(crate) fn open_bytes_from(&mut self, name: &str, bytes: &[u8], path: Option<&str>) -> Result<Vec<String>, String> {
+        self.open_bytes_placed(name, bytes, path, None, None)
+    }
+
+    /// [`Self::open_bytes_from`] for a file dropped on a tab slot (`slot`) or opened as one of a
+    /// set (`order`): both survive the inline decode, a memory prompt and the final placement.
+    pub(crate) fn open_bytes_placed(
+        &mut self,
+        name: &str,
+        bytes: &[u8],
+        path: Option<&str>,
+        slot: Option<usize>,
+        order: Option<crate::jobs_ui::OpenOrder>,
+    ) -> Result<Vec<String>, String> {
         if let Some(r) = preset_files_ui::open(self, name, bytes) {
             return r.map(|()| Vec::new());
         }
@@ -65,18 +78,24 @@ impl PhotocraftApp {
         // Decoded on a worker: a tab with progress appears now, the document when it's ready
         // (warnings are shown then).
         if self.background_jobs {
-            jobs_ui::start_open(self, name, path.map(str::to_string), jobs_ui::bytes(bytes))?;
+            jobs_ui::start_open(self, name, path.map(str::to_string), jobs_ui::bytes(bytes), slot, order)?;
             return Ok(Vec::new());
         }
         let import = self.services.import.as_ref().ok_or("no importer configured")?;
         let opts = photocraft_engine::jobs::import_options(self.session.prefs());
-        let (mut doc, warnings, damaged) = if photocraft_io::is_psd(bytes) {
+        // A PSD and a magic-detected TIFF both go through the typed IO path: only it carries
+        // `PsdApprovalRequired` (and, for a PSD, the structured damaged flag), so a layered
+        // TIFF's high-memory decision can raise its prompt instead of becoming a terminal
+        // string. Every other format keeps the shell's import service.
+        let typed_open = photocraft_io::is_psd(bytes) || photocraft_codecs::detect(bytes) == Some(photocraft_codecs::Format::Tiff);
+        let (mut doc, warnings, damaged) = if typed_open {
             // Read PSD damage as structured information in the same decode, not by
-            // retrying an error or matching the text of a compatibility warning.
+            // retrying an error or matching the text of a compatibility warning. A TIFF never
+            // sets it: its layered import has no damaged-content confirmation.
             let (r, damaged) = match photocraft_io::import_for_open(name, bytes, &opts) {
                 Ok(result) => result,
                 Err(photocraft_io::IoError::PsdApprovalRequired { .. }) => {
-                    jobs_ui::start_open(self, name, path.map(str::to_string), jobs_ui::bytes(bytes))?;
+                    jobs_ui::start_open(self, name, path.map(str::to_string), jobs_ui::bytes(bytes), slot, order)?;
                     return Ok(Vec::new());
                 }
                 Err(error) => return Err(error.to_string()),
@@ -106,7 +125,8 @@ impl PhotocraftApp {
                 path: path.map(str::to_string),
                 warnings: warnings.clone(),
                 bytes: (wants_raw && path.is_none()).then(|| std::sync::Arc::new(bytes.to_vec())),
-                slot: None,
+                slot,
+                order,
                 question,
                 policy_applied: false,
             },

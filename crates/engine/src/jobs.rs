@@ -170,6 +170,11 @@ pub struct JobEvent {
     pub label: String,
     pub document: Option<DocId>,
     pub outcome: JobOutcome,
+    /// The typed failure behind a failed `outcome`: a hard-budget refusal keeps its
+    /// name/required/limit, an approval request keeps its limits, a changed source keeps its
+    /// kind. `None` for done, cancelled and panics without a typed error. Not serialized;
+    /// `JobInfo::error` remains the display string on the wire.
+    pub error: Option<EngineError>,
 }
 
 /// A job's state for the UI, the control channel and MCP (`jobs.list`).
@@ -192,6 +197,10 @@ pub struct JobInfo {
     pub result: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// The typed failure behind `error`, for callers in this process (not serialized: the wire
+    /// form is the message, as before).
+    #[serde(skip)]
+    pub error_kind: Option<EngineError>,
 }
 
 type Payload = Box<dyn Any + Send>;
@@ -273,6 +282,7 @@ impl Running {
             elapsed_ms: now_ms() - self.started_ms,
             result: None,
             error: None,
+            error_kind: None,
         }
     }
 }
@@ -340,16 +350,29 @@ fn independent_of_document(id: &str) -> bool {
     PREFIXES.iter().any(|p| id.starts_with(p)) || IDS.contains(&id)
 }
 
+/// Imports the file at `path`, taking its identity from the very handle it decodes.
+///
+/// `expected` is the identity approved for this file, if any. It is checked against the opened
+/// handle before decoding and again when the memory preflight pauses for approval, so the
+/// document opened is the approved file even if the path is replaced meanwhile. `opened` receives
+/// the handle's identity as soon as it is known, including when the import stops for approval.
 #[cfg(not(target_arch = "wasm32"))]
 fn import_path(
     name: &str,
     path: &str,
     opts: &photocraft_io::ImportOptions,
+    expected: Option<&SourceFingerprint>,
     ctl: &photocraft_raster::Interrupt,
+    opened: &mut Option<photocraft_io::FileIdentity>,
 ) -> std::result::Result<(photocraft_io::ImportResult, bool), photocraft_io::IoError> {
+    let expected = match expected {
+        None => None,
+        Some(SourceFingerprint::Path { identity, .. }) => Some(identity),
+        Some(SourceFingerprint::Bytes { .. }) => return Err(photocraft_io::IoError::SourceChanged),
+    };
     // Bounded reads, and a clear error for a file larger than memory (#375); a PSD/PSB is
-    // parsed from the open file instead of being read whole.
-    photocraft_io::import_file_for_open_with(name, std::path::Path::new(path), opts, ctl)
+    // streamed from the open file instead of being read whole.
+    photocraft_io::import_file_for_open_verified(name, std::path::Path::new(path), expected, opts, ctl, opened)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -357,7 +380,9 @@ fn import_path(
     _: &str,
     path: &str,
     _: &photocraft_io::ImportOptions,
+    _: Option<&SourceFingerprint>,
     _: &photocraft_raster::Interrupt,
+    _: &mut Option<photocraft_io::FileIdentity>,
 ) -> std::result::Result<(photocraft_io::ImportResult, bool), photocraft_io::IoError> {
     Err(photocraft_io::IoError::Read(format!("cannot open paths on the web: {path}")))
 }
@@ -529,43 +554,44 @@ pub fn import_options(prefs: &crate::prefs::Preferences) -> photocraft_io::Impor
 }
 
 /// Fingerprint verifying that a source has not changed between preflight and approval.
+///
+/// A path's fingerprint is the [`photocraft_io::FileIdentity`] of an opened handle, never a path
+/// stat made before a separate open: the importer takes it from the very handle it decodes
+/// (`photocraft_io::import_file_for_open_verified`), so a path replaced or rewritten between
+/// the estimate and the approval is refused with [`EngineError::SourceChanged`]. The Unix
+/// identity includes the inode change time and nanoseconds, so restoring a modification time
+/// cannot hide a same-size rewrite.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SourceFingerprint {
-    Bytes {
-        len: usize,
-        identity: usize,
-    },
-    Path {
-        path: String,
-        len: u64,
-        modified: std::time::SystemTime,
-        #[cfg(unix)]
-        dev: u64,
-        #[cfg(unix)]
-        ino: u64,
-    },
+    Bytes { len: usize, identity: usize },
+    Path { path: String, identity: photocraft_io::FileIdentity },
 }
 
 impl SourceFingerprint {
+    /// Fingerprint of `source`.
+    ///
+    /// An in-memory source's identity is its shared buffer. A path is inspected here for
+    /// discovery only; the decode path re-reads its identity from the handle it opens. Fails
+    /// closed when the identity data cannot be read.
     pub fn of(source: &OpenSource) -> Result<Self> {
         match source {
             OpenSource::Bytes(b) => Ok(SourceFingerprint::Bytes { len: b.len(), identity: Arc::as_ptr(b) as usize }),
             OpenSource::Path(p) => {
-                let meta = std::fs::metadata(p).map_err(|e| EngineError::Other(format!("{p}: {e}")))?;
-                let len = meta.len();
-                let modified = meta.modified().map_err(|e| EngineError::Other(format!("{p}: failed to read modification time: {e}")))?;
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::MetadataExt;
-                    let dev = meta.dev();
-                    let ino = meta.ino();
-                    Ok(SourceFingerprint::Path { path: p.clone(), len, modified, dev, ino })
-                }
-                #[cfg(not(unix))]
-                {
-                    Ok(SourceFingerprint::Path { path: p.clone(), len, modified })
-                }
+                Self::path(p.clone(), photocraft_io::FileIdentity::of_path(std::path::Path::new(p)).map_err(|e| EngineError::Other(format!("{p}: {e}")))?)
             }
+        }
+    }
+
+    /// Fingerprint of the file identity read from an opened handle for `path`.
+    pub fn path(path: String, identity: photocraft_io::FileIdentity) -> Self {
+        SourceFingerprint::Path { path, identity }
+    }
+
+    /// The handle identity a path fingerprint compares against, if this is one.
+    pub fn file_identity(&self) -> Option<&photocraft_io::FileIdentity> {
+        match self {
+            SourceFingerprint::Path { identity, .. } => Some(identity),
+            SourceFingerprint::Bytes { .. } => None,
         }
     }
 
@@ -612,9 +638,38 @@ impl Session {
 
     pub const MAX_PENDING_PREFLIGHTS: usize = 32;
 
-    pub fn store_pending_preflight(&mut self, mut preflight: PendingPsdPreflight) -> Result<u64> {
+    /// Most bytes of file data pending approvals may keep alive together.
+    ///
+    /// This is a retention bound for the *sources* of files waiting for an answer, not a pixel
+    /// budget and not an admission limit: only an [`OpenSource::Bytes`] source holds data (a path
+    /// streams from its file once opened), the allocation's capacity is charged rather than its
+    /// contents, and one shared buffer counts once however many preflights refer to it. 1 GiB is
+    /// chosen conservatively: it is below the 2 GiB web hard
+    /// product cap, so even a web session that queues several large dropped files cannot spend
+    /// the whole hard budget on data it has not decoded, and a native session keeps a comparable
+    /// amount out of the adaptive allowance. A file that would exceed the cap cannot become
+    /// pending: it is refused with an error instead of being decoded, and the caller can answer
+    /// or cancel queued prompts and try again, rather than holding an unbounded amount of memory
+    /// for unanswered prompts. The record count
+    /// ([`Self::MAX_PENDING_PREFLIGHTS`]) stays as a separate bound, so many small files are
+    /// bounded too.
+    pub const MAX_PENDING_PREFLIGHT_BYTES: u64 = 1 << 30;
+
+    pub fn store_pending_preflight(&mut self, preflight: PendingPsdPreflight) -> Result<u64> {
+        self.store_pending_preflight_with_limit(preflight, Self::MAX_PENDING_PREFLIGHT_BYTES)
+    }
+
+    /// [`Self::store_pending_preflight`] with an explicit retention cap (tests use a tiny one so
+    /// the boundary is exercised without holding a gigabyte).
+    pub(crate) fn store_pending_preflight_with_limit(&mut self, mut preflight: PendingPsdPreflight, byte_limit: u64) -> Result<u64> {
         if self.pending_preflights.len() >= Self::MAX_PENDING_PREFLIGHTS {
             return Err(EngineError::Other("too many pending high-memory preflights waiting for confirmation".into()));
+        }
+        let held = self.pending_preflight_bytes_with(&preflight.source)?;
+        if held > byte_limit {
+            return Err(EngineError::Other(format!(
+                "too much memory is already held by files waiting for a memory approval ({held} bytes, limit {byte_limit}); answer or cancel one of them and try again"
+            )));
         }
         loop {
             self.next_pending_preflight = self.next_pending_preflight.checked_add(1).unwrap_or(1);
@@ -625,6 +680,42 @@ impl Session {
         preflight.id = self.next_pending_preflight;
         self.pending_preflights.push(preflight);
         Ok(self.next_pending_preflight)
+    }
+
+    /// Bytes held alive by the queued preflights, counting an `Arc<Vec<u8>>` shared by several of
+    /// them once. Computed from the queue, so approving, cancelling, refusing or clearing always
+    /// releases the charge; a rejected preflight never adds one.
+    pub fn pending_preflight_bytes(&self) -> Result<u64> {
+        Self::retained_source_bytes(self.pending_preflights.iter().map(|p| &p.source))
+    }
+
+    /// [`Self::pending_preflight_bytes`] as if `incoming` were queued too, so accepting it can be
+    /// checked before the list is changed.
+    fn pending_preflight_bytes_with(&self, incoming: &OpenSource) -> Result<u64> {
+        let mut sources: Vec<&OpenSource> = self.pending_preflights.iter().map(|p| &p.source).collect();
+        sources.push(incoming);
+        Self::retained_source_bytes(sources)
+    }
+
+    fn retained_source_bytes<'a>(sources: impl IntoIterator<Item = &'a OpenSource>) -> Result<u64> {
+        let mut seen: Vec<usize> = Vec::new();
+        let mut total: u64 = 0;
+        for source in sources {
+            let OpenSource::Bytes(bytes) = source else { continue };
+            let identity = Arc::as_ptr(bytes) as usize;
+            // Distinct live allocations cannot share an address, so identity dedupes clones of
+            // one buffer without under-counting two different files with equal contents.
+            if seen.contains(&identity) {
+                continue;
+            }
+            seen.push(identity);
+            // The allocation is what stays resident, not its contents: a `Vec` that once held a
+            // large file keeps that capacity after being truncated, so charging `len()` would
+            // under-count the memory a pending prompt holds. Overflow is an error, never a wrap.
+            let held = u64::try_from(bytes.capacity()).unwrap_or(u64::MAX);
+            total = total.checked_add(held).ok_or_else(|| EngineError::Other("held file size overflow while counting pending memory approvals".into()))?;
+        }
+        Ok(total)
     }
 
     pub fn take_pending_preflight(&mut self, id: u64) -> Option<PendingPsdPreflight> {
@@ -722,18 +813,19 @@ impl Session {
                 let _test_memory = test_memory_scope.enter();
                 ctx.progress(0.0, "Reading");
 
-                // Identity lookup is best-effort for ordinary opens, but mandatory if a
-                // file is held for confirmation. Valid non-PSD files do not require timestamps.
-                let initial_fingerprint = (confirm_damage || expected_fingerprint.is_some()).then(|| SourceFingerprint::of(&source)).transpose();
-                if let Some(expected) = &expected_fingerprint {
-                    let cur = initial_fingerprint
-                        .as_ref()
-                        .map_err(|e| EngineError::Other(e.to_string()))?
-                        .as_ref()
-                        .ok_or_else(|| EngineError::Other("missing source identity".into()))?;
-                    if !expected.matches(cur) {
-                        return Err(EngineError::Other("the file has changed since it was checked; please try opening it again".into()));
-                    }
+                // An in-memory source's identity is its shared buffer, known before decoding. A
+                // path's identity can only come from the handle the verified import opens, so
+                // that import compares it against `expected_fingerprint` itself, before reading
+                // any pixel and again after its memory preflight.
+                let initial_fingerprint = match &source {
+                    OpenSource::Bytes(_) => Some(SourceFingerprint::of(&source)?),
+                    OpenSource::Path(_) => None,
+                };
+                if let Some(expected) = &expected_fingerprint
+                    && let Some(current) = &initial_fingerprint
+                    && !expected.matches(current)
+                {
+                    return Err(EngineError::SourceChanged { name: name_w.clone() });
                 }
 
                 let outcome = match source {
@@ -744,47 +836,36 @@ impl Session {
                         match res {
                             Ok(imported) => WorkResult::Decoded(Box::new(imported)),
                             Err(photocraft_io::IoError::PsdApprovalRequired { required, soft_limit, hard_limit, available_ram }) if confirm_damage => {
-                                let src = OpenSource::Bytes(bytes);
-                                let fingerprint = SourceFingerprint::of(&src)?;
-                                let initial = initial_fingerprint
-                                    .as_ref()
-                                    .map_err(|e| EngineError::Other(e.to_string()))?
-                                    .as_ref()
-                                    .ok_or_else(|| EngineError::Other("missing source identity".into()))?;
-                                if !initial.matches(&fingerprint) {
-                                    return Err(EngineError::Other("the file changed while checking its memory requirements; please open it again".into()));
-                                }
-                                WorkResult::PreflightNeeded { required, soft_limit, hard_limit, available_ram, source: src, fingerprint }
+                                // The buffer cannot change while it is decoded, so the identity
+                                // captured before reading is still exact.
+                                let fingerprint = initial_fingerprint.clone().ok_or_else(|| EngineError::Other("missing source identity".into()))?;
+                                WorkResult::PreflightNeeded { required, soft_limit, hard_limit, available_ram, source: OpenSource::Bytes(bytes), fingerprint }
                             }
                             Err(photocraft_io::IoError::PsdApprovalRequired { required, soft_limit, hard_limit, available_ram }) => {
                                 return Err(EngineError::PsdApprovalRequired { name: name_w.clone(), required, soft_limit, hard_limit, available_ram });
                             }
                             Err(photocraft_io::IoError::Cancelled) => return Err(EngineError::Cancelled),
-                            Err(e) => return Err(EngineError::Other(e.to_string())),
+                            Err(e) => return Err(crate::error::io_open_error(&name_w, e)),
                         }
                     }
                     OpenSource::Path(p) => {
-                        let res = ctx.stage(0.0, 0.95, "Decoding", |ctl| import_path(&name_w, &p, &opts, ctl));
+                        let mut opened = None;
+                        let res = ctx.stage(0.0, 0.95, "Decoding", |ctl| import_path(&name_w, &p, &opts, expected_fingerprint.as_ref(), ctl, &mut opened));
                         match res {
                             Ok(imported) => WorkResult::Decoded(Box::new(imported)),
                             Err(photocraft_io::IoError::PsdApprovalRequired { required, soft_limit, hard_limit, available_ram }) if confirm_damage => {
-                                let src = OpenSource::Path(p);
-                                let fingerprint = SourceFingerprint::of(&src)?;
-                                let initial = initial_fingerprint
-                                    .as_ref()
-                                    .map_err(|e| EngineError::Other(e.to_string()))?
-                                    .as_ref()
-                                    .ok_or_else(|| EngineError::Other("missing source identity".into()))?;
-                                if !initial.matches(&fingerprint) {
-                                    return Err(EngineError::Other("the file changed while checking its memory requirements; please open it again".into()));
-                                }
-                                WorkResult::PreflightNeeded { required, soft_limit, hard_limit, available_ram, source: src, fingerprint }
+                                // This identity is the one read from the handle that was
+                                // estimated, and the verified import refused a handle that is
+                                // not the approved file or changed while preflighting.
+                                let identity = opened.ok_or_else(|| EngineError::Other(format!("{p}: the file's identity could not be read")))?;
+                                let fingerprint = SourceFingerprint::path(p.clone(), identity);
+                                WorkResult::PreflightNeeded { required, soft_limit, hard_limit, available_ram, source: OpenSource::Path(p), fingerprint }
                             }
                             Err(photocraft_io::IoError::PsdApprovalRequired { required, soft_limit, hard_limit, available_ram }) => {
                                 return Err(EngineError::PsdApprovalRequired { name: name_w.clone(), required, soft_limit, hard_limit, available_ram });
                             }
                             Err(photocraft_io::IoError::Cancelled) => return Err(EngineError::Cancelled),
-                            Err(e) => return Err(EngineError::Other(e.to_string())),
+                            Err(e) => return Err(crate::error::io_open_error(&name_w, e)),
                         }
                     }
                 };
@@ -805,6 +886,11 @@ impl Session {
             },
             move |s, outcome| match outcome {
                 WorkResult::PreflightNeeded { required, soft_limit, hard_limit, available_ram, source, fingerprint } => {
+                    // The warning follows the capacity measured for this estimate: an unknown
+                    // capacity carries no fabricated number, and above the threshold it also
+                    // says the process or tab may run out of memory. The UI shows both.
+                    let capacity_unknown = available_ram.is_none();
+                    let uncertain_capacity = photocraft_io::memory::uncertain_capacity_warning(required, available_ram);
                     let id = s.store_pending_preflight(PendingPsdPreflight {
                         id: 0,
                         name: name_a.clone(),
@@ -823,6 +909,8 @@ impl Session {
                         "softLimit": soft_limit,
                         "hardLimit": hard_limit,
                         "availableRam": available_ram,
+                        "capacityUnknown": capacity_unknown,
+                        "uncertainCapacityWarning": uncertain_capacity,
                     }))
                 }
                 WorkResult::Decoded(imported) => {
@@ -944,7 +1032,9 @@ impl Session {
         match self.jobs.recent.iter().rev().find(|j| j.id == id) {
             Some(j) if j.state == "done" => Ok(j.result.clone().unwrap_or(Value::Null)),
             Some(j) if j.state == "cancelled" => Err(EngineError::Cancelled),
-            Some(j) => Err(EngineError::Other(j.error.clone().unwrap_or_else(|| "the job failed".into()))),
+            // A typed failure keeps its fields for a caller that answers or explains it; the
+            // display string stays available through `jobs.list`.
+            Some(j) => Err(j.error_kind.clone().unwrap_or_else(|| EngineError::Other(j.error.clone().unwrap_or_else(|| "the job failed".into())))),
             None => Err(EngineError::Other(format!("no job {}", id.0))),
         }
     }
@@ -1251,17 +1341,19 @@ impl Session {
     /// Apply (or report the failure of) a job whose worker has delivered `r`.
     fn finish_job(&mut self, mut job: Running, r: Result<Payload>) {
         let apply = job.apply.take();
-        let outcome = match r {
-            Err(EngineError::Cancelled) => JobOutcome::Cancelled,
-            Err(e) => JobOutcome::Failed(e.to_string()),
-            Ok(_) if job.ctx.cancelled() => JobOutcome::Cancelled,
+        // Keep the typed error beside its display text, so `wait_job` and `JobEvent` can still
+        // report a hard budget's required/limit or an approval request's limits.
+        let (outcome, error) = match r {
+            Err(EngineError::Cancelled) => (JobOutcome::Cancelled, None),
+            Err(e) => (JobOutcome::Failed(e.to_string()), Some(e)),
+            Ok(_) if job.ctx.cancelled() => (JobOutcome::Cancelled, None),
             Ok(payload) => match self.apply_job(&job, apply, payload) {
-                Ok(v) => JobOutcome::Done(v),
-                Err(EngineError::Cancelled) => JobOutcome::Cancelled,
-                Err(e) => JobOutcome::Failed(e.to_string()),
+                Ok(v) => (JobOutcome::Done(v), None),
+                Err(EngineError::Cancelled) => (JobOutcome::Cancelled, None),
+                Err(e) => (JobOutcome::Failed(e.to_string()), Some(e)),
             },
         };
-        self.end_job(&job, outcome);
+        self.end_job_with_error(&job, outcome, error);
     }
 
     fn apply_job(&mut self, job: &Running, apply: Option<Apply>, payload: Payload) -> Result<Value> {
@@ -1347,6 +1439,10 @@ impl Session {
     }
 
     fn end_job(&mut self, job: &Running, outcome: JobOutcome) {
+        self.end_job_with_error(job, outcome, None);
+    }
+
+    fn end_job_with_error(&mut self, job: &Running, outcome: JobOutcome, error_kind: Option<EngineError>) {
         // Every terminal path invalidates a preview, including worker errors, cancellation
         // and discarded results whose document was closed or changed.
         self.live_commit = None;
@@ -1359,6 +1455,7 @@ impl Session {
         info.state = state;
         info.result = result;
         info.error = error;
+        info.error_kind = error_kind.clone();
         if state == "done" {
             info.progress = 1.0;
         }
@@ -1367,7 +1464,7 @@ impl Session {
             let extra = self.jobs.recent.len() - RECENT;
             self.jobs.recent.drain(..extra);
         }
-        self.jobs.events.push(JobEvent { id: job.id, command: job.command.clone(), label: job.label.clone(), document: job.doc, outcome });
+        self.jobs.events.push(JobEvent { id: job.id, command: job.command.clone(), label: job.label.clone(), document: job.doc, outcome, error: error_kind });
     }
 }
 

@@ -33,6 +33,10 @@ pub struct Held {
     pub bytes: Option<Arc<Vec<u8>>>,
     /// The tab position a reopened file keeps.
     pub slot: Option<usize>,
+    /// The file's place in a set opened together, when it is one of several
+    /// ([`crate::jobs_ui::OpenOrder`]): kept while this file waits, so its tab still lands in the
+    /// set's order.
+    pub order: Option<crate::jobs_ui::OpenOrder>,
     /// The profile question ([`photocraft_engine::color_cmds::ColorState::open_question`]), or
     /// `None` to open without asking.
     pub question: Option<Value>,
@@ -60,7 +64,13 @@ pub struct MemoryPrompt {
     pub slot: Option<usize>,
     pub order: Option<crate::jobs_ui::OpenOrder>,
     pub estimated: u64,
+    /// The capacity measured when the estimate was made; `None` when it could not be measured.
     pub available: Option<u64>,
+    /// The engine could not measure available memory for this estimate. No number is shown.
+    pub capacity_unknown: bool,
+    /// The estimate is above the unknown-capacity warning threshold (8 GiB), so the prompt also
+    /// says the process or tab may run out of memory. Approval stays possible.
+    pub uncertain_capacity_warning: bool,
 }
 
 /// Whether a file that just finished reading has to wait: one earlier in the queue does.
@@ -206,6 +216,7 @@ pub fn answer(app: &mut PhotocraftApp, action: Option<&str>) -> Result<Value, St
     }
     let r = open(app, held, Some(action));
     advance(app);
+    crate::jobs_ui::end_batch(app);
     r
 }
 
@@ -240,6 +251,7 @@ pub fn answer_remembering(app: &mut PhotocraftApp, action: &str) -> Result<Value
         }
     }
     advance(app);
+    crate::jobs_ui::end_batch(app);
     r
 }
 
@@ -300,6 +312,7 @@ pub(crate) fn answer_damage(app: &mut PhotocraftApp, accept: bool) -> Result<Val
         app.ui.status_error = false;
     }
     advance(app);
+    crate::jobs_ui::end_batch(app);
     Ok(json!({"name": name, "continued": accept}))
 }
 
@@ -309,7 +322,7 @@ fn open(app: &mut PhotocraftApp, held: Held, action: Option<&str>) -> Result<Val
     if held.damage_pending {
         return Err("damaged PSD cannot be opened before confirmation".into());
     }
-    let Held { mut doc, read_only, damage_pending: _, name, path, warnings, bytes, slot, question, policy_applied } = held;
+    let Held { mut doc, read_only, damage_pending: _, name, path, warnings, bytes, slot, order, question, policy_applied } = held;
     let index = if question.is_some() || policy_applied {
         if let Some(action) = action
             && let Err(e) = app.session.color.resolve_open(&mut doc, action)
@@ -326,6 +339,7 @@ fn open(app: &mut PhotocraftApp, held: Held, action: Option<&str>) -> Result<Val
     if let Some(st) = app.session.active_mut() {
         st.source_read_only = read_only;
     }
+    let slot = crate::jobs_ui::tab_slot(app, slot, order);
     let index = match slot {
         Some(slot) => app
             .run("document.move", json!({"document": index, "to": slot}))
@@ -349,8 +363,10 @@ pub fn arrive_memory(
     order: Option<crate::jobs_ui::OpenOrder>,
     estimated: u64,
     available: Option<u64>,
+    capacity_unknown: bool,
+    uncertain_capacity_warning: bool,
 ) {
-    app.held_memory_prompts.push_back(MemoryPrompt { id, name, path, slot, order, estimated, available });
+    app.held_memory_prompts.push_back(MemoryPrompt { id, name, path, slot, order, estimated, available, capacity_unknown, uncertain_capacity_warning });
     app.prompt_order.push_back(PromptKind::Memory);
     advance_memory(app);
 }
@@ -369,18 +385,27 @@ pub fn advance_memory(app: &mut PhotocraftApp) {
 
 fn show_memory(app: &mut PhotocraftApp, prompt: &MemoryPrompt) {
     let est_gb = prompt.estimated as f64 / (1u64 << 30) as f64;
-    let avail_str = match prompt.available {
-        Some(a) => format!("{:.1} GiB", a as f64 / (1u64 << 30) as f64),
-        None => "unknown".to_string(),
-    };
-    let message = format!(
-        "{}\n\n{}",
-        crate::i18n::fmt(
-            tl!("Opening “{name}” requires an estimated {est} GiB of memory ({avail} available)."),
-            &[("name", &prompt.name), ("est", &format!("{est_gb:.1}")), ("avail", &avail_str)],
+    // An unmeasured capacity is never printed as a number, even if a stale measurement is
+    // attached: the engine's `capacityUnknown` wins.
+    let available = prompt.available.filter(|_| !prompt.capacity_unknown);
+    let mut message = match available {
+        Some(a) => crate::i18n::fmt(
+            tl!("Opening “{name}” requires an estimated {est} GiB of memory ({avail} GiB available)."),
+            &[("name", &prompt.name), ("est", &format!("{est_gb:.1}")), ("avail", &format!("{:.1}", a as f64 / (1u64 << 30) as f64))],
         ),
-        tl!("Opening this document uses more memory and may slow down your computer or other running applications."),
-    );
+        None => crate::i18n::fmt(
+            tl!("Opening “{name}” requires an estimated {est} GiB of memory. The available memory could not be measured."),
+            &[("name", &prompt.name), ("est", &format!("{est_gb:.1}"))],
+        ),
+    };
+    message.push_str("\n\n");
+    message.push_str(tl!("Opening this document uses more memory and may slow down your computer or other running applications."));
+    if prompt.uncertain_capacity_warning {
+        message.push_str("\n\n");
+        message.push_str(tl!(
+            "The estimate is above 8 GiB and the available memory is unknown, so this process or browser tab may run out of memory. You can still try to open it."
+        ));
+    }
 
     let fields = [
         (MEMORY_FIELD.into(), json!(true)),
@@ -389,7 +414,9 @@ fn show_memory(app: &mut PhotocraftApp, prompt: &MemoryPrompt) {
         ("id".into(), json!(prompt.id)),
         ("message".into(), json!(message)),
         ("estimated".into(), json!(prompt.estimated)),
-        ("available".into(), json!(prompt.available)),
+        ("available".into(), json!(available)),
+        ("capacityUnknown".into(), json!(prompt.capacity_unknown)),
+        ("uncertainCapacityWarning".into(), json!(prompt.uncertain_capacity_warning)),
     ]
     .into_iter()
     .collect();
@@ -432,16 +459,18 @@ pub(crate) fn answer_memory(app: &mut PhotocraftApp, accept: bool) -> Result<Val
             } else {
                 app.ui.status = crate::i18n::fmt(tl!("Cancelled opening {name}"), &[("name", &name)]);
                 app.ui.status_error = false;
-                crate::jobs_ui::end_batch(&mut app.jobs, &app.held_memory_prompts);
+                crate::jobs_ui::end_batch(app);
             }
             advance(app);
+            crate::jobs_ui::end_batch(app);
             Ok(r)
         }
         Err(err) => {
             app.ui.status = err.clone();
             app.ui.status_error = true;
-            crate::jobs_ui::end_batch(&mut app.jobs, &app.held_memory_prompts);
+            crate::jobs_ui::end_batch(app);
             advance(app);
+            crate::jobs_ui::end_batch(app);
             Err(err)
         }
     }

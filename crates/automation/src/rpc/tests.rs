@@ -1057,4 +1057,59 @@ fn approve_high_memory_rejects_invalid_types_and_formats_structured_error() {
     assert_eq!(err_obj["hardLimit"], 8000);
     assert_eq!(err_obj["available"], 10000);
     assert_eq!(err_obj["availableRam"], 10000);
+
+    // An engine-command hard refusal (Open As / Place go through `EngineError`) keeps its typed
+    // fields, and only the fields an approval request has: no soft limit and no capacity, since
+    // no approval can raise the ceiling.
+    let mut hard_obj = json!({"id": 2, "ok": false, "error": "test"});
+    let hard = crate::AutomationError::Engine(photocraft_engine::EngineError::PsdHardBudget { name: "big.psd".into(), required: 9000, limit: 8000 });
+    super::attach_memory_error_details(&mut hard_obj, &hard);
+    assert_eq!(hard_obj["required"], 9000);
+    assert_eq!(hard_obj["hard"], 8000);
+    assert_eq!(hard_obj["hardLimit"], 8000);
+    for absent in ["soft", "softLimit", "available", "availableRam"] {
+        assert!(hard_obj.get(absent).is_none(), "a hard refusal has no {absent}: {hard_obj}");
+    }
+}
+
+/// #10897: `doc.place` forwards the strict one-shot high-memory approval on both routes: the
+/// read-root route (the bytes are imported in-process) and trusted local (the ambient
+/// `file.placeEmbedded` command reads the path). A tiny PSD plus the scoped estimate charge
+/// reaches the real approval window without allocating anything close to a gigabyte.
+#[test]
+fn doc_place_forwards_high_memory_approval() {
+    if cfg!(target_pointer_width = "32") {
+        return; // the 3 GiB charge would exceed a 32-bit process cap
+    }
+    let gb = 1u64 << 30;
+    let root = std::env::temp_dir().join(format!("pc-doc-place-approval-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let psd = photocraft_psd::testgen::small(photocraft_psd::Version::Psd, photocraft_psd::Compression::Zip).to_bytes().unwrap();
+    std::fs::write(root.join("high.psd"), &psd).unwrap();
+    // Known 5 GiB RAM: S = 2.5 GiB, H = 3.75 GiB. A 3 GiB estimate charge lands in (S, H].
+    let snap = photocraft_io::memory::MemorySnapshot { available_ram: Some(5 * gb), swap_free: None, commit_headroom: None };
+    let trial = |h: &mut Headless, path: &str| {
+        photocraft_io::psd_budget::with_test_estimate_charge(3 * gb, || {
+            photocraft_io::memory::with_mock_memory(snap, || {
+                let refused = h.handle("doc.place", json!({"path": path})).unwrap_err();
+                assert!(
+                    matches!(refused, crate::AutomationError::Engine(photocraft_engine::EngineError::PsdApprovalRequired { .. })),
+                    "an unapproved high-memory place must ask for approval: {refused}"
+                );
+                let placed = h.handle("doc.place", json!({"path": path, "approveHighMemory": true})).unwrap();
+                assert!(placed["layer"].as_u64().is_some(), "the approval lets the same place proceed: {placed}");
+            });
+        });
+    };
+    let mut h = Headless::with_workspace(crate::AuthorizedWorkspace::new(Some(&root), Some(&root)).unwrap());
+    h.handle("doc.new", json!({"width": 40, "height": 30})).unwrap();
+    trial(&mut h, "high.psd");
+    // Release directory capabilities before cleanup on Windows.
+    drop(h);
+    let mut t = Headless::trusted_local();
+    t.handle("doc.new", json!({"width": 40, "height": 30})).unwrap();
+    let absolute = root.join("high.psd").to_string_lossy().into_owned();
+    trial(&mut t, &absolute);
+    drop(t);
+    std::fs::remove_dir_all(root).unwrap();
 }
