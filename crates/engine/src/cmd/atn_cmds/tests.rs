@@ -504,6 +504,8 @@ fn every_mapped_command_exports_and_imports_back() {
         ("filter.stylize.emboss", json!({"angle": 135, "height": 3, "amount": 100})),
         ("image.calculations", json!({"source1":{"channel":{"color":"red"}},"source2":{"channel":{"color":"green"}},"blending":"add","scale":1,"offset":0})),
         ("image.adjustments.colorLookup", color_lookup_case()),
+        ("filter.other.custom", json!({"kernel":[0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0],"scale":1,"offset":0})),
+        ("filter.render.fibers", json!({"variance":64,"strength":1,"seed":-1})),
         ("filter.blur.shapeBlur", json!({"radius":5,"shapeName":"Recorded Square","shapeId":"original-fixture-square","shapeOriginType":9})),
         ("filter.blur.motionBlur", json!({"angle": 45, "distance": 20})),
         ("filter.blur.smartBlur", json!({"radius": 2.5, "threshold": 40, "quality": "medium", "mode": "overlayEdge"})),

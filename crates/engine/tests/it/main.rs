@@ -5,6 +5,7 @@ mod artboard_export_names;
 mod atn_calculations;
 mod atn_color_lookup;
 mod atn_crystallize_cell_size;
+mod atn_dialog_filters;
 mod atn_ripple_amount;
 mod atn_selective_color;
 mod atn_shape_blur;

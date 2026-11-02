@@ -18,7 +18,7 @@ layers and documents, newer and older events and files, and a measured reference
 map yet, with everything needed to implement them without
 the reference application.
 
-## Supported events (119)
+## Supported events (121)
 
 | Code | String ID | Label | PhotoCraft command(s) |
 |---|---|---|---|
@@ -43,6 +43,8 @@ the reference application.
 | `ClrB` | colorBalance | Color Balance | `image.adjustments.colorBalance` |
 | `ClrR` | colorRange | Color Range | `select.colorRange` |
 | (string ID only) | colorLookup | Color Lookup (embedded 3D LUT forms) | `image.adjustments.colorLookup` |
+| `Cstm` | custom | Custom | `filter.other.custom` |
+| `Fbrs` | (code only) | Fibers | `filter.render.fibers` |
 | (string ID only) | shapeBlur | Shape Blur (custom shape by installed ID) | `filter.blur.shapeBlur` |
 | `Cntc` | contract | Contract | `select.modify.contract` |
 | `CnvM` | convertMode | Convert Mode | `image.mode.rgb`, `image.mode.grayscale`, `image.mode.cmyk`, `image.mode.lab`, `image.mode.multichannel`, `image.mode.bits8`, `image.mode.bits16`, `image.mode.bits32`, `image.mode.bitmap` |
@@ -161,6 +163,18 @@ unrepresented reference forms remain whole preserved steps. Composite, multiple
 colour and mask targets fail before mutation when a supported step requests the
 current channel. These limits remain open under #10705; fresh Photoshop pixel
 parity has not been measured.
+
+### Custom and Fibers dialog filters
+
+Custom uses the mapping from [#10631 by @hectorviov](https://github.com/storytold/photocraft/pull/10631),
+revision `4ed3f5b5911e2dc50655fc68cd44da68dab7c219`. It retains the 25 integer
+kernel cells, scale 1..9999 and offset -9999..9999. Fibers uses the corresponding
+part of [#10620](https://github.com/storytold/photocraft/pull/10620), revision
+`33ee38b43165610b295e91f8b99841c591cf97b8`, with the now-measured variance and
+strength limits 1..64. Its seed retains all 32 bits. Both native commands already
+support these ranges. Unrepresented types, settings, omitted fields or values
+that would clamp stay complete preserved steps; export refuses native settings
+that the recorded form cannot retain.
 
 ### Color Lookup with an embedded LUT
 
