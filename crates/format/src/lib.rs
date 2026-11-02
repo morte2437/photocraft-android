@@ -50,7 +50,7 @@ pub use read::read_file;
 pub use store::{ByteSource, DEFAULT_REVERIFY_BUDGET, PcraftWriter, SaveStats, read_entry};
 
 /// File extension of the native format.
-pub const EXTENSION: &str = "pcraft";
+pub use craft_pcraft_format::EXTENSION;
 
 #[derive(Debug, thiserror::Error)]
 pub enum FormatError {
@@ -73,6 +73,20 @@ pub enum FormatError {
 impl FormatError {
     pub(crate) fn corrupt(msg: impl Into<String>) -> Self {
         FormatError::Corrupt(msg.into())
+    }
+}
+
+impl From<craft_pcraft_format::Error> for FormatError {
+    fn from(e: craft_pcraft_format::Error) -> Self {
+        use craft_pcraft_format::Error;
+        match e {
+            Error::Corrupt(m) => FormatError::Corrupt(m),
+            Error::Unsupported(m) => FormatError::Unsupported(m),
+            Error::TooNew { found, supported, .. } => FormatError::TooNew { found, supported },
+            Error::LimitExceeded(m) => FormatError::LimitExceeded(m),
+            Error::Json(e) => FormatError::Json(e),
+            other => FormatError::Corrupt(other.to_string()),
+        }
     }
 }
 
@@ -119,10 +133,11 @@ pub const MAX_CANVAS_PIXELS: u64 = MAX_CANVAS_SIDE as u64 * MAX_CANVAS_SIDE as u
 
 impl Default for LoadOptions {
     fn default() -> Self {
+        let limits = craft_pcraft_format::Limits::default();
         LoadOptions {
-            max_manifest_bytes: 256 << 20,
-            max_blob_bytes: 1 << 30,
-            max_total_bytes: 16 << 30,
+            max_manifest_bytes: limits.max_manifest_bytes,
+            max_blob_bytes: limits.max_blob_bytes,
+            max_total_bytes: limits.max_total_bytes,
             preserve_ids: true,
             max_canvas_side: MAX_CANVAS_SIDE,
             max_canvas_pixels: MAX_CANVAS_PIXELS,

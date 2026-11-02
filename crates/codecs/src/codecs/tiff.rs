@@ -168,6 +168,7 @@ mod bands;
 mod decode;
 mod encode;
 mod tags;
+mod ycbcr;
 
 pub use decode::TiffBands;
 pub(crate) use decode::{decode, decode_page, orientation};
