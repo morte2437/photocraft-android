@@ -133,7 +133,7 @@ pub(crate) fn process_tree(
         let ext = if format == "same" { same_format(path) } else { format.trim_start_matches('.').to_ascii_lowercase() };
         (path.as_str(), join(&join(output, rel_dir), &format!("{}{suffix}.{ext}", stem(path))))
     });
-    process_outputs(s, outputs, save, f)
+    process_outputs(s, outputs, save, None, f)
 }
 
 /// The extension a batch output takes with Format "Same": the input's own, except for formats
@@ -180,6 +180,7 @@ fn process_outputs<'a>(
     s: &Session,
     outputs: impl IntoIterator<Item = (&'a str, String)>,
     save: SaveOpts,
+    content_format: Option<&str>,
     f: &dyn Fn(&mut Session, &str) -> Result<bool>,
 ) -> Value {
     // The scratch sessions have default preferences; a raw opens at the user's Raw Defaults.
@@ -196,7 +197,8 @@ fn process_outputs<'a>(
             scratch.add_document(doc, Some(path.to_string()));
             if !f(&mut scratch, &out)? {
                 let d = scratch.active().ok_or(EngineError::NoDocument)?;
-                save_doc(&d.doc, &out, save)?;
+                let ext = content_format.map(|format| if format == "same" { same_format(path) } else { format.trim_start_matches('.').to_ascii_lowercase() });
+                save_output(&d.doc, &out, save, ext.as_deref())?;
             }
             Ok(())
         })();
@@ -209,6 +211,16 @@ fn process_outputs<'a>(
         }
     }
     json!({"files": files, "errors": errors})
+}
+
+/// Structured naming determines the filename, not the encoded image format.
+fn save_output(doc: &Document, path: &str, save: SaveOpts, format: Option<&str>) -> Result<()> {
+    if let Some(format) = format {
+        let (bytes, _) = super::save::encode(doc, &format!("batch.{format}"), save)?;
+        super::paths::write_file(path, &bytes)
+    } else {
+        save_doc(doc, path, save).map(|_| ())
+    }
 }
 
 /// The output paths a batch run has written, so a later input whose output name matches an
@@ -290,6 +302,20 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     };
     // Preserve the current Save snapshots and view-step policy while adding named actions.
     steps.retain(|(id, _)| batch_keeps_step(id) && id != "file.export.quickExport");
+    if let Some(value) = p.get("overrideSaveAs").filter(|v| !v.is_null()) {
+        let override_save = value.as_bool().ok_or_else(|| EngineError::BadParams { cmd: cmd.into(), msg: "overrideSaveAs must be a boolean".into() })?;
+        let has_save = steps.iter().any(|(id, _)| batch_save_point(id));
+        if override_save != has_save {
+            return Err(EngineError::BadParams {
+                cmd: cmd.into(),
+                msg: if override_save {
+                    "this recorded Batch requires a Save step in its action".into()
+                } else {
+                    "Batch cannot follow action Save destinations without Override Save As".into()
+                },
+            });
+        }
+    }
     if let Some((id, _)) = steps.iter().find(|(id, _)| !batch_save_point(id) && crate::commands::find(id).is_none()) {
         return Err(EngineError::BadParams { cmd: cmd.into(), msg: format!("unknown command `{id}` in the action") });
     }
@@ -318,7 +344,16 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     // one input to the next (failed or not) and back to this session, not restarted per input.
     let carried = std::cell::Cell::new(playback_steps);
     let carried = &carried;
+    let structured = p.get("namingComponents").is_some_and(|v| !v.is_null());
+    let run_format = structured.then(|| format.clone());
     let run = move |scratch: &mut Session, out: &str| {
+        let content_ext = run_format.as_deref().map(|format| {
+            if format == "same" {
+                same_format(scratch.active().and_then(|d| d.path.as_deref()).unwrap_or("input.png"))
+            } else {
+                format.trim_start_matches('.').to_ascii_lowercase()
+            }
+        });
         scratch.authorize = authorize;
         scratch.actions = actions.clone();
         scratch.actions.playback_steps = carried.get();
@@ -342,7 +377,7 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
             // document left active, it is written as the save found it.
             match saved {
                 Some(doc) if scratch.active().is_none_or(|d| d.doc.id != doc.id) => {
-                    save_doc(&doc, out, save)?;
+                    save_output(&doc, out, save, content_ext.as_deref())?;
                     Ok(true)
                 }
                 _ => Ok(false),
@@ -352,7 +387,7 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
         result
     };
     let r = match names {
-        Some(names) => process_outputs(s, inputs.iter().map(|i| i.path.as_str()).zip(names), save, &run),
+        Some(names) => process_outputs(s, inputs.iter().map(|i| i.path.as_str()).zip(names), save, structured.then_some(format.as_str()), &run),
         None => process_tree(s, &inputs, &output, &format, save, "", &run),
     };
     if s.actions.playing > 0 {

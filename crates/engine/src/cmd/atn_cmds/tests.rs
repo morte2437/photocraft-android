@@ -82,6 +82,72 @@ fn color_lookup_case() -> Value {
     json!({"data":b64(bytes),"dataEncoding":"base64","lutFormat":"cube","fileName":"identity.cube","dither":false,"__atnColorLookup":b64(&d.to_bytes())})
 }
 
+fn batch_descriptor(component: &str) -> Descriptor {
+    let rules = desc("fileNamingRules")
+        .with("fileNamingComponents", D::List(vec![D::Descriptor(desc("fileNamingComponent").with("component", enm("fileNamingComponent", component)))]))
+        .with("Strt", D::Integer(7))
+        .with("Mcnt", D::Boolean(true))
+        .with("Win ", D::Boolean(false))
+        .with("unix", D::Boolean(true));
+    desc("Btch")
+        .with("null", path_value("/input"))
+        .with("Fldr", D::Boolean(false))
+        .with(
+            "Usng",
+            D::Reference(vec![
+                ReferenceItem::Name { class: class("Actn"), name: UnicodeString::new_nul("Child") },
+                ReferenceItem::Name { class: class("ASet"), name: UnicodeString::new_nul("S") },
+            ]),
+        )
+        .with("T   ", path_value("/output"))
+        .with("Ovrd", D::Boolean(false))
+        .with("fileNamingRules", D::Descriptor(rules))
+}
+
+fn batch_case() -> Value {
+    json!({"input":"/input","output":"/output","action":"Child","set":"S","flatOutput":true,"includeSubfolders":false,"overrideSaveAs":false,
+        "namingComponents":[{"component":"serial3"}],"startingSerial":7,"compatibility":{"macintosh":true,"windows":false,"unix":true},
+        "__atnBatch":b64(&batch_descriptor("threeDigit").to_bytes())})
+}
+
+#[test]
+fn batch_all_documented_components_and_compatibility_flags_round_trip() {
+    for &(wire, native) in crate::file_cmds::BATCH_NAMING_COMPONENTS {
+        let d = batch_descriptor(wire);
+        let bytes = photocraft_paint::tile::b64_decode(&set_of("S", vec![("Driver", vec![item("Btch", "Batch", Some(d.clone()))])])).unwrap();
+        let imported = import(&bytes).unwrap();
+        assert!(imported.unsupported.is_empty(), "{wire}");
+        let p = &imported.actions[0].steps[0].1;
+        assert_eq!(p["namingComponents"], json!([{"component":native}]));
+        assert_eq!(p["startingSerial"], 7);
+        assert_eq!(p["compatibility"], json!({"macintosh":true,"windows":false,"unix":true}));
+        let (out, skipped) = export("S", &[&imported.actions[0]], &[], false).unwrap();
+        assert!(skipped.is_empty());
+        assert_eq!(atn::parse(&out).unwrap().actions[0].items[0].descriptor, Some(d));
+    }
+}
+
+#[test]
+fn batch_unknown_components_wrong_start_placement_and_unsupported_modes_stay_whole() {
+    let mut cases = vec![batch_descriptor("unknownComponent")];
+    for (key, value) in [("Strt", D::Integer(3)), ("OvrO", D::Boolean(true)), ("SvAn", D::Boolean(true)), ("Log ", path_value("/log"))] {
+        cases.push(batch_descriptor("Nm  ").with(key, value));
+    }
+    let mut odd = batch_descriptor("Nm  ");
+    odd.items.push((Id::new("Fldr"), D::Boolean(true))); // Duplicate keys cannot disappear on save.
+    cases.push(odd);
+    for d in cases {
+        let bytes = photocraft_paint::tile::b64_decode(&set_of("S", vec![("Driver", vec![item("Btch", "Batch", Some(d.clone()))])])).unwrap();
+        let imported = import(&bytes).unwrap();
+        assert_eq!(imported.actions[0].steps[0].0, PHOTOSHOP_STEP);
+        let (out, _) = export("S", &[&imported.actions[0]], &[], false).unwrap();
+        assert_eq!(atn::parse(&out).unwrap().actions[0].items[0].descriptor, Some(d));
+    }
+    let mut p = batch_case();
+    p["target"] = json!("mask");
+    assert!(super::steps_batch::batch_to("file.automate.batch", &p).is_none());
+}
+
 /// A set with a mapped filter, an adjustment layer, selection steps, a layer by name, a Stop,
 /// a Play, a tool selection (no document effect) and an event PhotoCraft has no command for.
 fn sample() -> AtnFile {
@@ -504,6 +570,7 @@ fn every_mapped_command_exports_and_imports_back() {
         ("filter.stylize.emboss", json!({"angle": 135, "height": 3, "amount": 100})),
         ("image.calculations", json!({"source1":{"channel":{"color":"red"}},"source2":{"channel":{"color":"green"}},"blending":"add","scale":1,"offset":0})),
         ("image.adjustments.colorLookup", color_lookup_case()),
+        ("file.automate.batch", batch_case()),
         ("filter.other.custom", json!({"kernel":[0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0],"scale":1,"offset":0})),
         ("filter.render.fibers", json!({"variance":64,"strength":1,"seed":-1})),
         ("filter.blur.shapeBlur", json!({"radius":5,"shapeName":"Recorded Square","shapeId":"original-fixture-square","shapeOriginType":9})),

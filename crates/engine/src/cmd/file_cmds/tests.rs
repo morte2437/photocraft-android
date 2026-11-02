@@ -24,6 +24,60 @@ fn batch_resolves_action_by_name_and_detects_recursion() {
     assert!(err.to_string().contains("recursive action call"), "{err}");
 }
 
+#[test]
+fn batch_structured_names_keep_image_format_and_refuse_unsupported_save_routing() {
+    let dir = tmp("batch-component-format");
+    let input = png(&dir, "a.png", 3, 2, "#ff0000");
+    let output = join(&dir, "out");
+    std::fs::create_dir_all(&output).unwrap();
+    let mut s = Session::new();
+    let components = json!([{"component":"name"},{"text":".jpg"}]);
+    let result = s
+        .execute(
+            "file.automate.batch",
+            json!({"steps":[],"input":[input.clone()],"output":output,
+        "namingComponents":components,"overrideSaveAs":false}),
+        )
+        .unwrap();
+    assert!(result["errors"].as_array().unwrap().is_empty(), "{result}");
+    let path = result["files"][0].as_str().unwrap();
+    assert!(path.ends_with("a.jpg"));
+    assert!(std::fs::read(path).unwrap().starts_with(b"\x89PNG\r\n\x1a\n"), "typed extension must not change the encoded image format");
+    for (steps, override_save) in [(json!([]), true), (json!([["file.saveAs", {}]]), false)] {
+        assert!(
+            s.execute(
+                "file.automate.batch",
+                json!({"steps":steps,"input":[input.clone()],"output":output,
+            "namingComponents":[{"component":"name"}],"overrideSaveAs":override_save})
+            )
+            .is_err()
+        );
+    }
+    let saved = s
+        .execute(
+            "file.automate.batch",
+            json!({"steps":[["file.saveAs",{}],["file.close",{}]],"input":[input],"output":output,
+        "namingComponents":[{"text":"no-extension"}],"overrideSaveAs":true}),
+        )
+        .unwrap();
+    assert!(saved["errors"].as_array().unwrap().is_empty(), "{saved}");
+    assert!(std::fs::read(saved["files"][0].as_str().unwrap()).unwrap().starts_with(b"\x89PNG\r\n\x1a\n"));
+    // One composition witness: Save Actions -> Load Actions -> named Batch -> actual PNG bytes.
+    let mut child = crate::actions_cmds::Action::new("Child".into(), vec![]);
+    child.set = Some("S".into());
+    s.actions.list.push(child);
+    let params = json!({"input":dir,"output":output,"action":"Child","set":"S","includeSubfolders":false,"flatOutput":true,
+        "overrideSaveAs":false,"namingComponents":[{"text":"from-atn"}]});
+    let driver = crate::actions_cmds::Action::new("Driver".into(), vec![("file.automate.batch".into(), params)]);
+    let (bytes, skipped) = crate::atn_cmds::export("S", &[&driver], &[], false).unwrap();
+    assert!(skipped.is_empty());
+    let imported = crate::atn_cmds::import(&bytes).unwrap();
+    assert!(imported.unsupported.is_empty());
+    s.actions.list.extend(imported.actions);
+    s.execute("actions.play", json!({"action":"Driver"})).unwrap();
+    assert!(std::fs::read(join(&output, "from-atn")).unwrap().starts_with(b"\x89PNG\r\n\x1a\n"));
+}
+
 fn tmp(name: &str) -> String {
     let d = std::env::temp_dir().join(format!("photocraft-file-cmds-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);

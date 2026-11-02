@@ -18,7 +18,7 @@ layers and documents, newer and older events and files, and a measured reference
 map yet, with everything needed to implement them without
 the reference application.
 
-## Supported events (121)
+## Supported events (122)
 
 | Code | String ID | Label | PhotoCraft command(s) |
 |---|---|---|---|
@@ -45,6 +45,7 @@ the reference application.
 | (string ID only) | colorLookup | Color Lookup (embedded 3D LUT forms) | `image.adjustments.colorLookup` |
 | `Cstm` | custom | Custom | `filter.other.custom` |
 | `Fbrs` | (code only) | Fibers | `filter.render.fibers` |
+| `Btch` | batch | Batch (supported folder and naming forms) | `file.automate.batch` |
 | (string ID only) | shapeBlur | Shape Blur (custom shape by installed ID) | `filter.blur.shapeBlur` |
 | `Cntc` | contract | Contract | `select.modify.contract` |
 | `CnvM` | convertMode | Convert Mode | `image.mode.rgb`, `image.mode.grayscale`, `image.mode.cmyk`, `image.mode.lab`, `image.mode.multichannel`, `image.mode.bits8`, `image.mode.bits16`, `image.mode.bits32`, `image.mode.bitmap` |
@@ -225,6 +226,41 @@ whole preserved steps. Export refuses native-only geometry and target changes
 that the recorded form cannot carry. Radius-only recordings still require the
 separate existing event integration; they are not claimed by this custom-shape
 converter.
+
+### Batch naming and the existing Batch command
+
+The Batch mapping builds on [#7170 by @HirthikBalaji](https://github.com/storytold/photocraft/pull/7170),
+with original revision `ee4966260b08506336b2d8aac64488a754ca5171` retained in the
+commit history. It is adapted to the current command modules and Batch runner,
+including named actions, set-qualified references, recursion limits and output
+protection. The serial-letter conversion alone comes from
+[#4579 by @FabioLissi](https://github.com/storytold/photocraft/pull/4579), revision
+`720a1e4b9c6fac398d2b892bdfe7a3ffc849f4ea`; its broader CLI and UI changes are
+not included.
+
+Structured `namingComponents` represent every component in the measured Batch
+table, plus literal text. `Strt` is inside `fileNamingRules`. The three compatibility
+flags are retained and checked before output is written. Unknown components,
+types and settings keep the entire step. The original descriptor also retains
+its field order and metadata when unedited.
+
+The component sequence determines the complete filename, including an extension
+only when a component supplies it. The encoded image format is independent of
+that name: a literal `.jpg` on a PNG input still writes PNG data. Dates use chrono
+and the native Batch command's existing UTC date.
+Serial letters count from the first input independently of the numeric starting
+serial, as [Adobe documents](https://helpx.adobe.com/photoshop/desktop/automate-tasks/process-a-batch-of-files/batch-and-droplet-processing-options.html).
+The original native template format and subfolder layout remain the defaults;
+recorded folder steps use flat structured output. Duplicate output protection
+remains in place rather than silently overwriting an earlier result.
+
+This maps supported text-path folder forms. Alias bytes, open-document sources,
+Save and Close, error logs and enabled Open/dialog overrides remain preserved
+steps. For an admitted recorded Save As configuration, native preflight refuses
+unrepresented save routing: override requires a directly represented Save step,
+and an action with Save steps cannot follow their original destinations without
+override. Unsupported filename rewrites are refused, not guessed. These limits
+remain open under #10705; this is not full Batch parity.
 
 ## Known gaps in mapped events
 

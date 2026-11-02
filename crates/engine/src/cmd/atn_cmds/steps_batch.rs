@@ -1,123 +1,204 @@
-//! Batch mapping based on #7170 by @HirthikBalaji, adapted to the current modules.
+//! Batch mapping based on #7170 by @HirthikBalaji, extended with the measured naming rules.
 
-use super::descriptors::{class, desc, enm, get_enum, get_list, get_num, get_obj, get_ref, get_text, jnum, jstr, long, path_text, path_value, text, trimmed};
+use super::descriptors::{class, desc, enm, jstr, path_text, path_value, text};
 use super::fields::{Mapped, step};
 use super::{D, Descriptor, ReferenceItem, UnicodeString, Value, json};
 
-fn naming_from(rules: &Descriptor) -> Option<String> {
-    let comps = get_list(rules, "fileNamingComponents")?;
-    let mut naming = String::new();
-    for item in comps {
-        let (D::Descriptor(c) | D::GlobalObject(c)) = item else { continue };
-        if let Some(txt) = get_text(c, "Txt ").or_else(|| get_text(c, "Txt")) {
-            naming.push_str(&txt);
-        } else if let Some(comp) = get_enum(c, "component").or_else(|| get_text(c, "component")).or_else(|| match c.get("component") {
-            Some(D::Class(cl)) => Some(trimmed(&cl.class_id)),
-            _ => None,
-        }) {
-            let comp_clean = comp.trim();
-            if comp_clean == "Nm" || comp_clean == "documentName" {
-                naming.push_str("{name}");
-            } else if comp_clean.contains("Serial") || comp_clean.starts_with("Srl") || comp_clean == "serialNumber" {
-                naming.push_str("{serial}");
-            } else if comp_clean.contains("Date")
-                || comp_clean == "mmddyy"
-                || comp_clean == "mmddyyyy"
-                || comp_clean == "yymmdd"
-                || comp_clean == "yyyymmdd"
-                || comp_clean == "ddmmyy"
-                || comp_clean == "ddmmyyyy"
-            {
-                naming.push_str("{date}");
-            }
-        }
-    }
-    (!naming.is_empty()).then_some(naming)
+const ORIGINAL: &str = "__atnBatch";
+
+fn keys(d: &Descriptor, allowed: &[&str]) -> bool {
+    d.items.iter().all(|(k, _)| allowed.iter().any(|s| k.is(s))) && allowed.iter().all(|s| d.items.iter().filter(|(k, _)| k.is(s)).count() <= 1)
 }
 
-fn naming_to(template: &str) -> Descriptor {
-    let mut comps = Vec::new();
-    let mut rest = template;
-    while let Some(at) = rest.find(['{', '}']) {
-        let literal = &rest[..at];
-        if !literal.is_empty() {
-            comps.push(D::Descriptor(desc("fileNamingComponent").with("Txt ", text(literal))));
+fn naming_from(rules: &Descriptor) -> Option<Value> {
+    if !rules.class_id.is("fileNamingRules") || !keys(rules, &["fileNamingComponents", "Strt", "Mcnt", "Win ", "unix"]) {
+        return None;
+    }
+    let D::List(items) = rules.get("fileNamingComponents")? else { return None };
+    if !(1..=6).contains(&items.len()) {
+        return None;
+    }
+    let mut components = Vec::new();
+    for item in items {
+        let D::Descriptor(c) = item else { return None };
+        if !c.class_id.is("fileNamingComponent") || c.items.len() != 1 {
+            return None;
         }
-        rest = &rest[at..];
-        if rest.starts_with('}') {
-            break;
-        }
-        if let Some(end) = rest.find('}') {
-            match &rest[1..end] {
-                "name" => comps.push(D::Descriptor(desc("fileNamingComponent").with("component", enm("fileNamingComponent", "Nm")))),
-                "serial" => comps.push(D::Descriptor(desc("fileNamingComponent").with("component", enm("fileNamingComponent", "3DigitSerial")))),
-                "date" => comps.push(D::Descriptor(desc("fileNamingComponent").with("component", enm("fileNamingComponent", "yyyymmdd")))),
-                _ => {}
+        if let Some(D::Text(t)) = c.get("Txt ") {
+            let text = t.to_string_lossy();
+            if text.len() > 255 {
+                return None;
             }
-            rest = &rest[end + 1..];
+            components.push(json!({"text":text}));
         } else {
-            break;
+            let D::Enumerated { type_id, value } = c.get("component")? else { return None };
+            if !type_id.is("fileNamingComponent") {
+                return None;
+            }
+            let (_, native) = crate::file_cmds::BATCH_NAMING_COMPONENTS.iter().find(|(wire, _)| value.is(wire))?;
+            components.push(json!({"component":native}));
         }
     }
-    if !rest.is_empty() {
-        comps.push(D::Descriptor(desc("fileNamingComponent").with("Txt ", text(rest))));
+    let mut p = json!({"namingComponents":components});
+    if let Some(start) = rules.get("Strt") {
+        let D::Integer(start) = start else { return None };
+        if *start < 1 {
+            return None;
+        }
+        p["startingSerial"] = json!(start);
     }
-    comps.push(D::Descriptor(desc("fileNamingComponent").with("component", enm("fileNamingComponent", "lowerCaseExtension"))));
-    desc("fileNamingRules").with("fileNamingComponents", D::List(comps))
+    let mut flags = json!({});
+    for (wire, native) in [("Mcnt", "macintosh"), ("Win ", "windows"), ("unix", "unix")] {
+        if let Some(v) = rules.get(wire) {
+            let D::Boolean(v) = v else { return None };
+            flags[native] = json!(v);
+        }
+    }
+    if !flags.as_object()?.is_empty() {
+        p["compatibility"] = flags;
+    }
+    Some(p)
+}
+
+fn naming_to(p: &Value) -> Option<Descriptor> {
+    let components = p.get("namingComponents")?.as_array()?;
+    if !(1..=6).contains(&components.len()) {
+        return None;
+    }
+    let mut items = Vec::new();
+    for c in components {
+        if c.as_object()?.len() != 1 {
+            return None;
+        }
+        let d = if let Some(t) = c.get("text") {
+            let t = t.as_str()?;
+            if t.len() > 255 {
+                return None;
+            }
+            desc("fileNamingComponent").with("Txt ", text(t))
+        } else {
+            let kind = c.get("component")?.as_str()?;
+            let (wire, _) = crate::file_cmds::BATCH_NAMING_COMPONENTS.iter().find(|(_, native)| kind == *native)?;
+            desc("fileNamingComponent").with("component", enm("fileNamingComponent", wire))
+        };
+        items.push(D::Descriptor(d));
+    }
+    let mut d = desc("fileNamingRules").with("fileNamingComponents", D::List(items));
+    if let Some(start) = p.get("startingSerial") {
+        let start = i32::try_from(start.as_u64()?).ok()?;
+        if start < 1 {
+            return None;
+        }
+        d = d.with("Strt", D::Integer(start));
+    }
+    if let Some(flags) = p.get("compatibility") {
+        if flags.as_object()?.keys().any(|k| !["macintosh", "windows", "unix"].contains(&k.as_str())) {
+            return None;
+        }
+        for (wire, native) in [("Mcnt", "macintosh"), ("Win ", "windows"), ("unix", "unix")] {
+            if let Some(v) = flags.get(native) {
+                d = d.with(wire, D::Boolean(v.as_bool()?));
+            }
+        }
+    }
+    Some(d)
+}
+
+fn read(d: &Descriptor) -> Option<Value> {
+    if !keys(d, &["null", "OvrO", "Fldr", "suppressWarnings", "suppressOpenOptions", "Usng", "T   ", "Ovrd", "fileNamingRules"]) {
+        return None;
+    }
+    // Enabled overrides and Alias payloads stay whole until their behavior is represented.
+    for key in ["OvrO", "suppressWarnings", "suppressOpenOptions"] {
+        if d.get(key).is_some_and(|v| v != &D::Boolean(false)) {
+            return None;
+        }
+    }
+    let mut p = json!({"input":path_text(d.get("null")?)?,"output":path_text(d.get("T   ")?)?,"flatOutput":true});
+    let D::Reference(items) = d.get("Usng")? else { return None };
+    match items.as_slice() {
+        [ReferenceItem::Name { class: action, name }, ReferenceItem::Name { class: set, name: set_name }]
+            if action.class_id.is("Actn") && set.class_id.is("ASet") =>
+        {
+            p["action"] = json!(name.to_string_lossy());
+            p["set"] = json!(set_name.to_string_lossy());
+        }
+        [ReferenceItem::Name { class: action, name }] if action.class_id.is("Actn") => p["action"] = json!(name.to_string_lossy()),
+        _ => return None,
+    }
+    for (wire, native) in [("Fldr", "includeSubfolders"), ("Ovrd", "overrideSaveAs")] {
+        let value = match d.get(wire) {
+            None => false,
+            Some(D::Boolean(v)) => *v,
+            _ => return None,
+        };
+        p[native] = json!(value);
+    }
+    match d.get("fileNamingRules") {
+        Some(D::Descriptor(rules)) => p.as_object_mut()?.extend(naming_from(rules)?.as_object()?.clone()),
+        None => p["namingComponents"] = json!([{"component":"name"},{"component":"extension"}]),
+        _ => return None,
+    }
+    Some(p)
 }
 
 pub(super) fn batch_from(d: &Descriptor) -> Mapped {
-    let unsupported = Mapped::Unsupported { harmless: false };
-    let Some(input) = d.get("null").and_then(path_text) else { return unsupported };
-    let Some(output) = d.get("T   ").or_else(|| d.get("T")).and_then(path_text) else { return unsupported };
-    let Some(r) = get_ref(d, "Usng") else { return unsupported };
-    let mut action_name = None;
-    let mut set_name = None;
-    for item in r {
-        if let ReferenceItem::Name { class, name } = item {
-            match trimmed(&class.class_id).as_str() {
-                "Actn" => action_name = Some(name.to_string_lossy()),
-                "ASet" => set_name = Some(name.to_string_lossy()),
-                _ => {}
-            }
-        }
-    }
-    let Some(action) = action_name else { return unsupported };
-    let mut p = json!({
-        "input": input,
-        "output": output,
-        "action": action,
+    let p = read(d).map(|mut p| {
+        p[ORIGINAL] = json!(photocraft_paint::tile::b64_encode(&d.to_bytes()));
+        p
     });
-    if let Some(set) = set_name {
-        p["set"] = json!(set);
-    }
-    if let Some(rules) = get_obj(d, "fileNamingRules") {
-        if let Some(naming) = naming_from(rules) {
-            p["naming"] = json!(naming);
-        }
-    }
-    if let Some(start) = get_num(d, "Strt") {
-        if let Some(s) = u32::try_from(start.round() as i64).ok().filter(|&n| n > 0) {
-            p["startingSerial"] = json!(s);
-        }
-    }
-    step("file.automate.batch", p)
+    p.map_or(Mapped::Unsupported { harmless: false }, |p| step("file.automate.batch", p))
 }
 
 pub(super) fn batch_to(_: &str, p: &Value) -> Option<Descriptor> {
-    let input = jstr(p, "input").or_else(|| jstr(p, "folder"))?;
-    let output = jstr(p, "output")?;
-    let action = jstr(p, "action")?;
-    let mut items = vec![ReferenceItem::Name { class: class("Actn"), name: UnicodeString::new_nul(action) }];
-    if let Some(set) = jstr(p, "set") {
-        items.push(ReferenceItem::Name { class: class("ASet"), name: UnicodeString::new_nul(set) });
+    if p.as_object()?.keys().any(|k| {
+        ![
+            "input",
+            "output",
+            "action",
+            "set",
+            "flatOutput",
+            "includeSubfolders",
+            "overrideSaveAs",
+            "namingComponents",
+            "startingSerial",
+            "compatibility",
+            ORIGINAL,
+        ]
+        .contains(&k.as_str())
+    }) {
+        return None;
     }
-    let mut d = desc("Btch").with("null", path_value(input)).with("Usng", D::Reference(items)).with("T   ", path_value(output)).with("Ovrd", D::Boolean(true));
-    if let Some(naming) = jstr(p, "naming") {
-        d = d.with("fileNamingRules", D::Descriptor(naming_to(naming)));
+    if let Some(original) = p.get(ORIGINAL) {
+        let d = Descriptor::from_bytes(&photocraft_paint::tile::b64_decode(original.as_str()?)?).ok()?;
+        let expected = read(&d)?;
+        let mut core = p.clone();
+        core.as_object_mut()?.remove(ORIGINAL);
+        if core == expected {
+            return Some(d);
+        }
     }
-    if let Some(serial) = jnum(p, "startingSerial") {
-        d = d.with("Strt", long(serial));
+    let subfolders = p.get("includeSubfolders").map(Value::as_bool).unwrap_or(Some(false))?;
+    if subfolders && p.get("flatOutput") != Some(&Value::Bool(true)) {
+        return None;
     }
-    Some(d)
+    if p.get("flatOutput").is_some_and(|v| v != &Value::Bool(true)) {
+        return None;
+    }
+    let input = jstr(p, "input").filter(|s| !s.is_empty())?;
+    let output = jstr(p, "output").filter(|s| !s.is_empty())?;
+    let action = jstr(p, "action").filter(|s| !s.is_empty())?;
+    let mut reference = vec![ReferenceItem::Name { class: class("Actn"), name: UnicodeString::new_nul(action) }];
+    if let Some(set) = p.get("set") {
+        reference.push(ReferenceItem::Name { class: class("ASet"), name: UnicodeString::new_nul(set.as_str()?) });
+    }
+    Some(
+        desc("Btch")
+            .with("null", path_value(input))
+            .with("Fldr", D::Boolean(subfolders))
+            .with("Usng", D::Reference(reference))
+            .with("T   ", path_value(output))
+            .with("Ovrd", D::Boolean(p.get("overrideSaveAs")?.as_bool()?))
+            .with("fileNamingRules", D::Descriptor(naming_to(p)?)),
+    )
 }
