@@ -103,10 +103,12 @@ impl PhotocraftApp {
                     Err(error) if mode == "pixels" => (false, Some(error)),
                     Err(error) => return Err(error),
                 };
-                if mode == "pixels" && !imported && !clip_read {
-                    if let Err(error) = self.import_os_clipboard() {
-                        return Err(svg_error.unwrap_or(error));
-                    }
+                if mode == "pixels"
+                    && !imported
+                    && !clip_read
+                    && let Err(error) = self.import_os_clipboard()
+                {
+                    return Err(svg_error.unwrap_or(error));
                 }
                 if let Some(error) = svg_error {
                     if self.session.clipboard.is_none() {
