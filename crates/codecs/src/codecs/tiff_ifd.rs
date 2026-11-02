@@ -236,18 +236,33 @@ impl<'a> File<'a> {
 
     /// The first value of a numeric tag as a float: RATIONAL, FLOAT, DOUBLE or an integer.
     pub fn tag_f64(&self, ifd: &Ifd, tag: u16) -> Option<f64> {
+        self.float(ifd.get(tag)?, 0)
+    }
+
+    /// The values of a numeric tag as floats, when it holds exactly `n` (`None` for any other
+    /// count or an unreadable value).
+    pub fn tag_f64s(&self, ifd: &Ifd, tag: u16, n: u64) -> Option<Vec<f64>> {
         let e = ifd.get(tag)?;
-        if e.count == 0 {
+        if e.count != n {
             return None;
         }
+        (0..n).map(|i| self.float(e, i)).collect()
+    }
+
+    /// Value `i` of a numeric entry as a float: RATIONAL, FLOAT, DOUBLE or an integer.
+    fn float(&self, e: &Entry, i: u64) -> Option<f64> {
+        if i >= e.count {
+            return None;
+        }
+        let at = e.value_at.checked_add(i.checked_mul(type_size(e.ty)?)?)?;
         match e.ty {
             5 => {
-                let (n, d) = (self.u32_at(e.value_at)?, self.u32_at(e.value_at.checked_add(4)?)?);
+                let (n, d) = (self.u32_at(at)?, self.u32_at(at.checked_add(4)?)?);
                 (d != 0).then(|| f64::from(n) / f64::from(d))
             }
-            11 => Some(f64::from(f32::from_bits(self.u32_at(e.value_at)?))),
-            12 => Some(f64::from_bits(self.u64_at(e.value_at)?)),
-            _ => self.uint(e, 0).map(|v| v as f64),
+            11 => Some(f64::from(f32::from_bits(self.u32_at(at)?))),
+            12 => Some(f64::from_bits(self.u64_at(at)?)),
+            _ => self.uint(e, i).map(|v| v as f64),
         }
     }
 
