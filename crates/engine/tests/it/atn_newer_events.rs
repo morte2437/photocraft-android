@@ -173,7 +173,8 @@ fn invalid_link_state_fails_without_editing() {
 
 #[test]
 fn atn_link_events_keep_descriptors_and_replay_the_requested_operation() {
-    for (event, linked) in [("linkSelectedLayers", true), ("unlinkSelectedLayers", false)] {
+    // Link Layers keeps the measured toggle (main's Group F mapping); Unlink is explicit.
+    for (event, linked) in [("unlinkSelectedLayers", false)] {
         for initial in [vec![None, None, None, Some(93), Some(93)], vec![Some(77), Some(77), Some(77), Some(93), Some(93)]] {
             let descriptor = Descriptor::new("null").with("null", target());
             let mut s = fixture(&initial, &[0, 1]);
@@ -224,7 +225,8 @@ fn unsupported_link_descriptors_are_kept_and_ambiguous_exports_are_refused() {
             assert_eq!(parsed.actions[0].items[0].descriptor, Some(descriptor));
         }
     }
-    for params in [json!({}), json!({"linked": null}), json!({"linked": true, "layer": "Layer 0"}), json!({"linked": false, "layers": [1, 2]})] {
+    // `{}` is the measured Link Layers toggle and exports (main's Group F mapping).
+    for params in [json!({"linked": null}), json!({"linked": true, "layer": "Layer 0"}), json!({"linked": false, "layers": [1, 2]})] {
         let action = Action::new("A", vec![("layer.linkLayers".into(), params)]);
         assert!(atn_cmds::export("Links", &[&action], &[], false).is_err());
     }
@@ -284,7 +286,8 @@ fn target_events_keep_empty_and_explicit_target_descriptors_distinct() {
 
 #[test]
 fn bare_link_events_keep_their_operation_and_empty_keys() {
-    for (event, linked) in [("linkSelectedLayers", true), ("unlinkSelectedLayers", false)] {
+    // Link Layers keeps the measured toggle (main's Group F mapping); Unlink is explicit.
+    for (event, linked) in [("unlinkSelectedLayers", false)] {
         let initial = if linked { None } else { Some(77) };
         let mut s = fixture(&[initial, initial], &[0, 1]);
         assert_eq!(load(&mut s, &file(event, Descriptor::new(event)))["unsupported"], json!([]));
@@ -792,7 +795,7 @@ fn smart_target_events_copy_unpack_embed_and_refresh_real_contents() {
             let path = dir.path().join("linked.png");
             let mut s = smart_target_scene(event, &original, &replacement, path.to_str().unwrap());
             let before = s.active().unwrap().doc.clone();
-            let pixels = photocraft_compose::flatten(&before).px;
+            let pixels = photocraft_compose::flatten(&before).into_px();
             let contents_id = active_smart(&s).contents_id;
             load_targeted(&mut s, event, id, explicit);
             play(&mut s);
@@ -813,7 +816,7 @@ fn rasterize_all_event_visits_nested_and_top_level_smart_layers() {
         let nested = doc.remove(first).unwrap();
         doc.layers.push(Layer::group("Nested", vec![nested]));
         let before = s.active().unwrap().doc.clone();
-        let pixels = photocraft_compose::flatten(&before).px;
+        let pixels = photocraft_compose::flatten(&before).into_px();
         load_targeted(&mut s, "rasterizeAll", "layer.rasterize.allLayers", explicit);
         play(&mut s);
         assert!(s.active().unwrap().doc.walk().iter().all(|(_, _, layer)| !matches!(layer.content, LayerContent::Smart(_))));
@@ -980,9 +983,9 @@ fn radius_only_shape_blur_roundtrips_and_changes_pixels_including_default() {
         assert_eq!(saved.descriptor, Some(canonical.clone()));
         assert_eq!(load(&mut s, &file("shapeBlur", canonical))["unsupported"], json!([]));
         let before = s.active().unwrap().doc.clone();
-        let pixels = photocraft_compose::flatten(&before).px;
+        let pixels = photocraft_compose::flatten(&before).into_px();
         play(&mut s);
-        let blurred = photocraft_compose::flatten(&s.active().unwrap().doc).px;
+        let blurred = photocraft_compose::flatten(&s.active().unwrap().doc).into_px();
         assert_ne!(blurred, pixels);
         let mut direct = impulse_fixture();
         direct.execute("filter.blur.shapeBlur", json!({"radius": radius.unwrap_or(10.0)})).unwrap();
