@@ -582,16 +582,20 @@ fn honoured_memory_usage_mb(stored: u32, web: bool) -> u32 {
     if web { stored.min(WASM_MEMORY_USAGE_CAP_MB) } else { stored }
 }
 
+/// The smallest Effect Cache the Preferences dialog and `prefs.set` accept, in MB.
+const EFFECT_CACHE_MIN_MB: u32 = 16;
+
 /// The largest Effect Cache the Preferences dialog and `prefs.set` accept, in MB: on a build with
 /// a 32-bit address space (`small`) the cap there, so the field shows the budget the cache gets.
 fn effect_cache_max_mb(small: bool) -> u32 {
     if small { WASM_MEMORY_USAGE_CAP_MB } else { 65536 }
 }
 
-/// The layer-effect cache budget a build honours for a `stored` preference, in bytes: at most
-/// [`effect_cache_max_mb`]. Separate from the target check so native tests exercise both.
+/// The layer-effect cache budget a build honours for a `stored` preference, in bytes: within the
+/// range the field accepts, so a hand-edited 0 reports 16 MB, not 0. Separate from the target
+/// check so native tests exercise both.
 fn effect_cache_budget_bytes_for(stored: u32, small: bool) -> u64 {
-    u64::from(stored.min(effect_cache_max_mb(small))) << 20
+    u64::from(stored.clamp(EFFECT_CACHE_MIN_MB, effect_cache_max_mb(small))) << 20
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

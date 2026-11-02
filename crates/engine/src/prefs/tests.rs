@@ -1082,17 +1082,26 @@ fn the_web_build_caps_memory_usage() {
     }
 }
 
-/// The effect cache budget is the stored MB in bytes, at most 1536 MB on a 32-bit address space
-/// (the web, 32-bit Windows) and 65536 MB elsewhere, and never wraps: on wasm32 an uncapped
-/// 4096 MB shifted into `usize` was 0. Both kinds of build are checked on every target, in `u64`
-/// so the expectations themselves can't overflow a 32-bit `usize`.
+/// The effect cache budget is the stored MB in bytes, at least 16 MB (a hand-edited 0 included),
+/// at most 1536 MB on a 32-bit address space (the web, 32-bit Windows) and 65536 MB elsewhere,
+/// and never wraps: on wasm32 an uncapped 4096 MB shifted into `usize` was 0. Both kinds of
+/// build are checked on every target, in `u64` so the expectations themselves can't overflow a
+/// 32-bit `usize`.
 #[test]
 fn the_effect_cache_budget_is_capped_on_32_bit_builds_and_never_wraps() {
     const MB: u64 = 1 << 20;
     let cap = WASM_MEMORY_USAGE_CAP_MB;
-    for (stored, small_mb, large_mb) in
-        [(16, 16, 16), (768, 768, 768), (cap, cap, cap), (cap + 1, cap, cap + 1), (4096, cap, 4096), (65536, cap, 65536), (u32::MAX, cap, 65536)]
-    {
+    for (stored, small_mb, large_mb) in [
+        (0, 16, 16),
+        (15, 16, 16),
+        (16, 16, 16),
+        (768, 768, 768),
+        (cap, cap, cap),
+        (cap + 1, cap, cap + 1),
+        (4096, cap, 4096),
+        (65536, cap, 65536),
+        (u32::MAX, cap, 65536),
+    ] {
         assert_eq!(effect_cache_budget_bytes_for(stored, true), u64::from(small_mb) * MB, "32-bit, {stored} MB");
         assert_eq!(effect_cache_budget_bytes_for(stored, false), u64::from(large_mb) * MB, "64-bit, {stored} MB");
     }
@@ -1111,8 +1120,9 @@ fn the_effect_cache_range_matches_the_honoured_budget() {
         let max = effect_cache_max_mb(small);
         assert_eq!(effect_cache_budget_bytes_for(max, small), u64::from(max) << 20, "small = {small}: the largest accepted value is honoured");
     }
+    assert_eq!(effect_cache_budget_bytes_for(EFFECT_CACHE_MIN_MB, false), u64::from(EFFECT_CACHE_MIN_MB) << 20, "the smallest accepted value is honoured");
     let small = cfg!(target_pointer_width = "32");
-    assert_eq!(range("performance.effectCacheMb"), Some((16.0, f64::from(effect_cache_max_mb(small)))));
+    assert_eq!(range("performance.effectCacheMb"), Some((f64::from(EFFECT_CACHE_MIN_MB), f64::from(effect_cache_max_mb(small)))));
     assert!(check_value("performance.effectCacheMb", &json!(effect_cache_max_mb(small))).is_ok());
     assert!(check_value("performance.effectCacheMb", &json!(effect_cache_max_mb(small) + 1)).is_err());
     assert!(Performance::default().effect_cache_mb <= effect_cache_max_mb(true), "the default fits the 32-bit cap");
