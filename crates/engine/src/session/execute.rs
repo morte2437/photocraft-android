@@ -181,6 +181,15 @@ impl Session {
         if !spec.params.contains("\"layer\":id") {
             return Ok(None);
         }
+        // An ATN group-end index is a valid no-op only for Select. Let that command validate
+        // its other parameters and preserve the current selection.
+        if spec.id == "layer.select"
+            && let Some(selector @ Value::Object(fields)) = params.get("layer")
+            && (fields.contains_key("index") || fields.contains_key("ordinal"))
+            && commands::recorded_layer(self, selector)?.is_none()
+        {
+            return Ok(None);
+        }
         let target = match commands::explicit_layer(self, params) {
             Ok(Some(target)) => target,
             Ok(None) => return Ok(None),
