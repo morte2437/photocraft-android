@@ -84,12 +84,7 @@ fn enormous_global_filter_is_refused_before_allocating_and_preserves_document() 
     let mut s = Session::new();
     // A sparse document exercises admission without allocating a giant background first.
     s.add_document(
-        photocraft_doc::Document::new(
-            "large",
-            photocraft_doc::Size::new(300000, 300000),
-            photocraft_color::ColorMode::Rgb,
-            photocraft_color::SampleType::U8,
-        ),
+        photocraft_doc::Document::new("large", photocraft_doc::Size::new(300000, 300000), photocraft_color::ColorMode::Rgb, photocraft_color::SampleType::U8),
         None,
     );
     s.execute("layer.new.layer", json!({})).unwrap();

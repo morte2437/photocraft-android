@@ -223,8 +223,6 @@ impl DerefMut for TileBytesMut<'_> {
     fn deref_mut(&mut self) -> &mut [u8] {
         self.0.as_deref_mut().unwrap_or(&mut self.1)
     }
-
-
 }
 
 /// Bytes compared at once while looking for a difference in a tile row.
@@ -291,11 +289,13 @@ impl UniformTiles {
         }
         let bytes = t.try_bytes().ok()?;
         let mut px = bytes.chunks_exact(bpp);
-        let k = px.next().filter(|p0| px.all(|p| p == *p0)).map(|p0| match self.canonical.iter().position(|c| c.try_bytes().is_ok_and(|bytes| bytes.get(..bpp) == Some(p0))) {
-            Some(k) => k,
-            None => {
-                self.canonical.push(t.clone());
-                self.canonical.len() - 1
+        let k = px.next().filter(|p0| px.all(|p| p == *p0)).map(|p0| {
+            match self.canonical.iter().position(|c| c.try_bytes().is_ok_and(|bytes| bytes.get(..bpp) == Some(p0))) {
+                Some(k) => k,
+                None => {
+                    self.canonical.push(t.clone());
+                    self.canonical.len() - 1
+                }
             }
         });
         self.of.insert(key, k);

@@ -175,7 +175,8 @@ fn restrict_surface_impl(before: &Surface, after: &mut Surface, colors: ColorCha
                         continue;
                     }
                     let offset = i.saturating_mul(warped.bytes_per_pixel());
-                    let input = source_bytes.as_deref().and_then(|t| t.get(offset..offset.saturating_add(warped.bytes_per_pixel()))).unwrap_or(after.default_bytes());
+                    let input =
+                        source_bytes.as_deref().and_then(|t| t.get(offset..offset.saturating_add(warped.bytes_per_pixel()))).unwrap_or(after.default_bytes());
                     for channel in colors.indices() {
                         let offset = channel.saturating_mul(bytes);
                         let range = offset..offset.saturating_add(bytes);

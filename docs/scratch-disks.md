@@ -18,12 +18,16 @@ directories creates a new scratch file; old disk-backed tiles keep their old fil
 The development override `PHOTOCRAFT_TILE_BUDGET_MB` fixes the tile allowance for stress tests.
 
 Scratch extents are LZ4 compressed, CRC-checked and reused after a tile is released. Closing
-the last tile truncates its file. Windows opens files with delete-on-close so process exit,
-including exit without Rust destructors, removes them. Unix creates files with mode `0600`
-and sweeps `photocraft-<pid>-<nonce>.scratch` when configuring the directory. It preserves
+the last tile truncates its file. No scratch file outlives the process, including a crash or
+an exit without Rust destructors: Windows opens it with delete-on-close, and Unix creates it
+with mode `0600` and unlinks it immediately after opening, reading and writing through the
+one open handle with positioned I/O (`pread`/`pwrite`). The space is returned when the last
+handle closes. Configuring a directory also sweeps `photocraft-<pid>-<nonce>.scratch` files of
+dead processes (older builds, or a crash between creating and unlinking). It preserves
 live-process files, other users' files, symlinks and unrelated names; unavailable process
 enumeration leaves files untouched. PID reuse conservatively retains a stale file, and a
-unique launch nonce avoids a collision. Normal Unix drops remove the file immediately.
+unique launch nonce avoids a collision. A filesystem that refuses the unlink keeps the name
+until the file is dropped or the next sweep.
 
 The engine owns a shared, stoppable residency supervisor and joins it when its last session
 is dropped. `photocraft-raster` only exposes synchronous measurement and bounded eviction
