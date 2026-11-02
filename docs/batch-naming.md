@@ -28,7 +28,9 @@ It starts with `Batch Start`, records a `File` / `Error` pair per failure, and e
 `Batch End`. The wording is English because PhotoCraft does not have Photoshop's numeric error
 codes or German message catalog. Folder batches report progress per file and
 can be cancelled after the current file. A cancelled batch returns `cancelled: true`, its
-completed `files`, and `skipped` inputs. If writing the error log fails, the batch still
+completed `files`, and `skipped` inputs. Background job status is `cancelled` and retains
+the partial result; a waiting control request replies with `ok: false`, `error: "cancelled"`,
+and that result. If writing the error log fails, the batch still
 returns its per-file results with `errorLogError` instead of `errorLog`.
 
 Unknown tokens, unmatched braces, invalid parameter types, path separators, reserved filename

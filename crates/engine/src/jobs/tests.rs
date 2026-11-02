@@ -567,6 +567,41 @@ fn cancelled_batch_job_returns_its_partial_result() {
     assert_eq!(result["files"], json!(["done.png"]));
     assert_eq!(result["skipped"], json!(["later.png"]));
     assert_eq!(result["cancelled"], true);
+    let info = s.jobs_with_recent().into_iter().find(|info| info.id == id).unwrap();
+    assert_eq!(info.state, "cancelled");
+    assert_eq!(info.result.unwrap()["files"], json!(["done.png"]));
+    assert!(matches!(s.wait_job(id), Err(EngineError::Cancelled)));
+}
+
+#[test]
+fn accepted_batch_cancellation_after_result_snapshot_is_reported() {
+    let mut s = Session::new();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+    let id = job(s
+        .start_job(
+            "file.automate.batch",
+            json!({}),
+            "Batch",
+            false,
+            move |ctx| {
+                let cancelled = ctx.cancelled();
+                ready_tx.send(()).unwrap();
+                resume_rx.recv().unwrap();
+                Ok(json!({"files": ["done.png"], "cancelled": cancelled}))
+            },
+            |_, result| Ok(result),
+        )
+        .unwrap());
+    ready_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert!(s.cancel_job(id));
+    resume_tx.send(()).unwrap();
+    let event = wait_event(&mut s, id);
+    let JobOutcome::Done(result) = event.outcome else { panic!("batch result was discarded") };
+    assert_eq!(result["cancelled"], true);
+    assert_eq!(result["files"], json!(["done.png"]));
+    let info = s.jobs_with_recent().into_iter().find(|info| info.id == id).unwrap();
+    assert_eq!(info.state, "cancelled");
 }
 
 #[test]

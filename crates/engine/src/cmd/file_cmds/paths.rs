@@ -270,7 +270,7 @@ pub fn same_destination(a: impl AsRef<std::path::Path>, b: impl AsRef<std::path:
                     a == b
                 }
             }
-            _ => false,
+            _ => true,
         }
     }
     #[cfg(target_arch = "wasm32")]

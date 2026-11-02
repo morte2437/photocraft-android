@@ -215,7 +215,7 @@ fn batch_open_source_edits_each_live_document_and_restores_the_active_one() {
 }
 
 #[test]
-fn batch_open_source_exports_the_document_at_the_save_point() {
+fn batch_open_source_exports_later_edits_if_saved_document_stays_active() {
     let dir = tmp("batch-open-save-point");
     let mut session = Session::new();
     session.execute("file.new", json!({"name": "First", "width": 8, "height": 6})).unwrap();
@@ -224,7 +224,7 @@ fn batch_open_source_exports_the_document_at_the_save_point() {
         .execute(
             "file.automate.batch",
             json!({
-                "source": "open", "steps": [["document.activate", {"document": 1}], ["file.save", {}]],
+                "source": "open", "steps": [["document.activate", {"document": 1}], ["file.save", {}], ["image.imageRotation.90cw", {}]],
                 "output": dir, "format": "png", "naming": "{name}.{ext}"
             }),
         )
@@ -232,7 +232,22 @@ fn batch_open_source_exports_the_document_at_the_save_point() {
     assert!(result["errors"].as_array().unwrap().is_empty(), "{result}");
     let mut opened = Session::new();
     opened.execute("file.openAs", json!({"path": join(&dir, "First.png"), "as": "png"})).unwrap();
-    assert_eq!(doc(&opened).size.width, 12, "the save point selected the second document");
+    assert_eq!((doc(&opened).size.width, doc(&opened).size.height), (5, 12), "the still-active saved document includes later edits");
+}
+
+#[cfg(unix)]
+#[test]
+fn batch_error_log_rejects_a_dangling_link_to_a_planned_output() {
+    use std::os::unix::fs::symlink;
+    let dir = tmp("batch-dangling-error-log-alias");
+    let input = png(&dir, "source.png", 8, 6, "#ff0000");
+    let output = join(&dir, "out");
+    let result = join(&output, "source.png");
+    let log = join(&dir, "errors.txt");
+    symlink(&result, &log).unwrap();
+    let error = Session::new().execute("file.automate.batch", json!({"steps": [], "input": [input], "output": output, "errorLog": log})).unwrap_err();
+    assert!(error.to_string().contains("errorLog"), "{error}");
+    assert!(!std::path::Path::new(&result).exists(), "the batch must not write before rejecting the alias");
 }
 
 #[test]

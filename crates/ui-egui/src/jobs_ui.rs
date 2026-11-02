@@ -461,6 +461,7 @@ fn on_event(app: &mut PhotocraftApp, ctx: &egui::Context, e: JobEvent) {
     }
     // Control requests waiting on this job.
     let reply = match &e.outcome {
+        JobOutcome::Done(v) if cancelled_batch => json!({"ok": false, "error": "cancelled", "result": v}),
         JobOutcome::Done(v) => json!({"ok": true, "result": v}),
         JobOutcome::Failed(err) => json!({"ok": false, "error": err}),
         JobOutcome::Cancelled => json!({"ok": false, "error": "cancelled"}),

@@ -204,7 +204,7 @@ pub struct JobInfo {
     pub progress: f32,
     pub message: String,
     pub elapsed_ms: f64,
-    /// The command's result (done) or the error (failed).
+    /// The command's result (done), including partial outputs from a cancelled batch.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1044,7 +1044,17 @@ impl Session {
             Err(e) => JobOutcome::Failed(e.to_string()),
             Ok(_) if job.ctx.cancelled() && job.command != "file.automate.batch" => JobOutcome::Cancelled,
             Ok(payload) => match self.apply_job(&job, apply, payload) {
-                Ok(v) => JobOutcome::Done(v),
+                Ok(mut v) => {
+                    // A batch may take its final cancellation snapshot before the worker
+                    // finishes. A cancellation accepted during that interval still counts.
+                    if job.command == "file.automate.batch"
+                        && job.ctx.cancelled()
+                        && let Some(result) = v.as_object_mut()
+                    {
+                        result.insert("cancelled".into(), Value::Bool(true));
+                    }
+                    JobOutcome::Done(v)
+                }
                 Err(EngineError::Cancelled) => JobOutcome::Cancelled,
                 Err(e) => JobOutcome::Failed(e.to_string()),
             },
@@ -1139,6 +1149,9 @@ impl Session {
         // and discarded results whose document was closed or changed.
         self.live_commit = None;
         let (state, result, error) = match &outcome {
+            JobOutcome::Done(v) if job.command == "file.automate.batch" && v.get("cancelled").and_then(Value::as_bool) == Some(true) => {
+                ("cancelled", Some(v.clone()), None)
+            }
             JobOutcome::Done(v) => ("done", Some(v.clone()), None),
             JobOutcome::Failed(e) => ("failed", None, Some(e.clone())),
             JobOutcome::Cancelled => ("cancelled", None, None),
