@@ -239,6 +239,7 @@ struct Running {
     /// later must not pick up an edit made before it.
     recorded_by: Option<u64>,
     pre_selected: Option<Vec<LayerId>>,
+    before: crate::actions_record::Before,
     doc: Option<DocId>,
     /// The document as the job saw it: applying fails if it was edited meanwhile.
     snapshot: Option<Weak<Document>>,
@@ -452,6 +453,7 @@ pub fn run<T: Send + 'static>(
         journal: true,
         recorded_by: None,
         pre_selected: None,
+        before: crate::actions_record::Before::capture(s),
         doc,
         snapshot,
         ctx,
@@ -908,6 +910,7 @@ impl Session {
         // Commands this one runs on its own behalf journal after this mark (#3067).
         let nested_from = self.journal.len();
         let pre_selected = if self.actions.recording.is_some() { self.active().map(|st| st.selected_layers()) } else { None };
+        let mut record_before = crate::actions_record::Before::capture(self);
         // A replayable command is recorded as one step, so recording pauses while it runs: an
         // action it plays (a script step) must not flush the steps it ran so far into the action
         // being recorded, nor move the recording mark past the entries it is about to replace.
@@ -945,6 +948,7 @@ impl Session {
                 job.journal = spec.journal;
                 job.recorded_by = self.actions.recording.map(|_| self.actions.take);
                 job.pre_selected = pre_selected.clone();
+                job.before = std::mem::take(&mut record_before);
                 let jid = job.id;
                 self.jobs.running.push(job);
                 Ok(Started::Job(jid))
@@ -964,15 +968,16 @@ impl Session {
                         st.fx_collapsed.push(layer_id);
                     }
                 }
-                self.after_command(id, params, spec.journal, Some(nested_from), pre_selected.as_deref());
+                self.after_command(id, params, spec.journal, Some(nested_from), pre_selected.as_deref(), &record_before);
                 Ok(Started::Done(v))
             }
         };
-        // A closed document's freed buffers went to the scratch pool (`before` kept the active
-        // one alive until here): hand them back to the OS (#10479). Compared by id, since Split
-        // and Merge Channels close documents while opening others.
+        // A closed document's freed buffers went to the scratch pool (`before` and the action
+        // recording snapshot kept it alive until here). Drop both before handing the pool back
+        // to the OS (#10479). Compare ids since Split/Merge Channels open replacement documents.
         if docs_before.iter().any(|id| !self.docs.iter().any(|st| st.doc.id == *id)) {
             drop(before);
+            drop(record_before);
             photocraft_raster::scratch::release();
         }
         out
@@ -1010,7 +1015,15 @@ impl Session {
     /// dropped, so a recorded action replays the command once, not its steps as well (#3067).
     /// Edit › Transform › Again (and Again on a Copy) is not replayable and keeps the concrete
     /// steps it ran instead.
-    fn after_command(&mut self, id: &str, params: Value, journal: bool, nested_from: Option<usize>, pre_selected: Option<&[LayerId]>) {
+    fn after_command(
+        &mut self,
+        id: &str,
+        params: Value,
+        journal: bool,
+        nested_from: Option<usize>,
+        pre_selected: Option<&[LayerId]>,
+        before: &crate::actions_record::Before,
+    ) {
         // A layer-mask view ends when another layer becomes active (#196).
         if let Some(st) = self.active_mut() {
             crate::mask_view_cmds::fix(st);
@@ -1024,17 +1037,25 @@ impl Session {
         if let Some(from) = nested_from.filter(|_| crate::actions_cmds::replayable(id)) {
             self.journal.truncate(from);
         }
-        if !crate::brush_cmds::coalesce_journal(self, id, &params) {
-            let params = match id {
-                _ if self.actions.recording.is_none() => params,
-                "layer.duplicate" => crate::artboard_cmds::recorded_duplicate(self, crate::layer_multi_cmds::recorded_step(self, id, params, pre_selected)),
-                "layerComp.apply" => crate::comps_cmds::recorded_apply(self, params),
-                "edit.checkSpelling" if crate::type_spell_cmds::records(&params) => crate::type_spell_cmds::recorded_step(&params),
-                _ => crate::layer_multi_cmds::recorded_step(self, id, params, pre_selected),
-            };
-            let params = crate::actions_cmds::recorded_params(self, id, params);
-            self.journal.push((id.to_string(), params));
+        let typed = crate::actions_record::typed_layer(self, id, &params);
+        let params = match id {
+            _ if self.actions.recording.is_none() => params,
+            "layer.duplicate" => crate::artboard_cmds::recorded_duplicate(self, crate::layer_multi_cmds::recorded_step(self, id, params, pre_selected)),
+            "layerComp.apply" => crate::comps_cmds::recorded_apply(self, params),
+            "edit.checkSpelling" if crate::type_spell_cmds::records(&params) => crate::type_spell_cmds::recorded_step(&params),
+            _ => crate::layer_multi_cmds::recorded_step(self, id, params, pre_selected),
+        };
+        let params = crate::actions_cmds::recorded_params(self, id, params);
+        let params = crate::actions_record::portable(self, id, params, before);
+        match crate::actions_record::fold_keystroke(self, id, &params, self.typed_layer) {
+            crate::actions_record::Keystroke::Folded => {}
+            crate::actions_record::Keystroke::None => {
+                if !crate::brush_cmds::coalesce_journal(self, id, &params) {
+                    self.journal.push((id.to_string(), params));
+                }
+            }
         }
+        self.typed_layer = typed;
     }
 
     /// Apply (or report the failure of) a job whose worker has delivered `r`.
@@ -1064,8 +1085,22 @@ impl Session {
     }
 
     fn apply_job(&mut self, job: &Running, apply: Option<Apply>, payload: Payload) -> Result<Value> {
-        let Running { label, doc, snapshot, coalesce, color_restrict, filter_mask_layer, layers, command, params, journal, recorded_by, pre_selected, .. } =
-            job;
+        let Running {
+            label,
+            doc,
+            snapshot,
+            coalesce,
+            color_restrict,
+            filter_mask_layer,
+            layers,
+            command,
+            params,
+            journal,
+            recorded_by,
+            pre_selected,
+            before,
+            ..
+        } = job;
         // A recording started after the job (#7289) keeps what it has so far, and the job's step
         // goes into the journal past its start, so that recording doesn't get it.
         let foreign = self.actions.recording.is_some() && *recorded_by != Some(self.actions.take);
@@ -1122,7 +1157,7 @@ impl Session {
         // Restoring the viewed document first would attribute Fade and slice updates
         // to that document instead, when the user switched tabs mid-job.
         if r.is_ok() {
-            self.after_command(command, params.clone(), *journal, Some(nested_from), pre_selected.as_deref());
+            self.after_command(command, params.clone(), *journal, Some(nested_from), pre_selected.as_deref(), before);
             if foreign && let Some((start, _)) = self.actions.recording.as_mut() {
                 *start = self.journal.len();
             }
