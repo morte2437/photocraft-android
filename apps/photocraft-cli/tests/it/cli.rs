@@ -434,9 +434,25 @@ fn batch_applies_actions_to_directory() {
     write_png(&inp.join("two.png"), 9, 9, 2);
     std::fs::write(inp.join("notes.txt"), "ignored").unwrap();
     let actions = d.join("actions.json");
+    let log = d.join("errors.txt");
     std::fs::write(&actions, json!([{"command": "layer.new.layer", "params": {"name": "Batch"}}]).to_string()).unwrap();
-    let out = ok(bin().args(["batch", "--actions"]).arg(&actions).arg("--in").arg(&inp).arg("--out").arg(&outp).args(["--format", "pcraft"])).stdout;
+    let out = ok(bin()
+        .args(["batch", "--actions"])
+        .arg(&actions)
+        .arg("--in")
+        .arg(&inp)
+        .arg("--out")
+        .arg(&outp)
+        .args(["--format", "pcraft", "--error-log"])
+        .arg(&log))
+    .stdout;
     assert!(out.contains("2 succeeded, 0 failed"), "{out}");
+    let clean_log = std::fs::read(&log).unwrap();
+    assert!(clean_log.starts_with(&[0xff, 0xfe]));
+    let (pairs, remainder) = clean_log[2..].as_chunks::<2>();
+    assert!(remainder.is_empty());
+    let body = String::from_utf16(&pairs.iter().map(|pair| u16::from_le_bytes(*pair)).collect::<Vec<_>>()).unwrap();
+    assert_eq!(body, "Batch Start\r\n\r\nBatch End\r\n");
     for n in ["one", "two"] {
         let info = ok(bin().arg("info").arg(outp.join(format!("{n}.pcraft")))).stdout;
         let v: Value = serde_json::from_str(&info).unwrap();
@@ -448,6 +464,53 @@ fn batch_applies_actions_to_directory() {
     assert_eq!(o.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&o.stderr).contains("FAIL"));
     std::fs::remove_dir_all(d).unwrap();
+}
+
+#[test]
+fn batch_recursive_naming_stop_and_error_log() {
+    let root = tmp("batch-recursive-options");
+    let input = root.join("in");
+    std::fs::create_dir_all(input.join("sub")).unwrap();
+    for file in ["a.png", "sub/a.png", "sub/c.png"] {
+        write_png(&input.join(file), 8, 6, 3);
+    }
+    std::fs::write(input.join("sub/b.png"), b"not a png").unwrap();
+    let actions = root.join("actions.json");
+    std::fs::write(&actions, r#"[["image.imageRotation.90cw", {}]]"#).unwrap();
+    let output = root.join("out");
+    let log = root.join("errors.txt");
+    let run = |out: &Path, extra: &[&str]| {
+        bin().args(["batch", "--actions"]).arg(&actions).arg("--in").arg(&input).arg("--out").arg(out).args(extra).output().unwrap()
+    };
+    let result = run(&output, &["--recursive", "--naming", "{name}-{serial:2}.{ext}", "--start-serial", "5", "--error-log", &log.to_string_lossy()]);
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    assert!(!result.status.success(), "{stdout}");
+    assert!(stdout.contains("3 succeeded, 1 failed"), "{stdout}");
+    for file in ["a-05.png", "a-06.png", "c-08.png"] {
+        assert!(output.join(file).is_file(), "{file}: {stdout}");
+    }
+    let bytes = std::fs::read(log).unwrap();
+    assert!(bytes.starts_with(&[0xff, 0xfe]));
+    let (pairs, remainder) = bytes[2..].as_chunks::<2>();
+    assert!(remainder.is_empty());
+    let errors = String::from_utf16(&pairs.iter().map(|pair| u16::from_le_bytes(*pair)).collect::<Vec<_>>()).unwrap();
+    assert!(errors.contains("Batch Start\r\n") && errors.contains("b.png") && errors.ends_with("Batch End\r\n"), "{errors}");
+
+    let stopped = root.join("stopped");
+    let result = run(&stopped, &["--recursive", "--stop-on-error"]);
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(!result.status.success(), "{stdout}");
+    assert!(stdout.contains("2 succeeded, 1 failed, 1 skipped"), "{stdout}");
+    assert!(stderr.contains("--stop-on-error"), "{stderr}");
+    assert!(!stopped.join("c.png").exists());
+
+    let collision = root.join("collision");
+    let alias = collision.join("../collision/a.png");
+    let result = run(&collision, &["--recursive", "--error-log", &alias.to_string_lossy()]);
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("--error-log"));
+    assert!(!collision.join("a.png").exists());
 }
 
 #[test]
@@ -804,6 +867,33 @@ fn batch_refuses_to_write_over_its_inputs() {
     assert!(after.iter().zip(&before).all(|(a, b)| a.0 == b.0 && a.1 != b.1), "both inputs replaced");
 }
 
+#[test]
+fn batch_naming_rejects_unread_input_alias_through_a_missing_directory() {
+    let d = tmp("batch-missing-directory-alias");
+    let input = d.join("in");
+    std::fs::create_dir_all(&input).unwrap();
+    write_png(&input.join("a.png"), 8, 4, 3);
+    write_png(&input.join("b.png"), 8, 4, 7);
+    let original = std::fs::read(input.join("b.png")).unwrap();
+    let actions = d.join("actions.json");
+    std::fs::write(&actions, r#"[{"command":"image.adjustments.invert"}]"#).unwrap();
+    let output = bin()
+        .arg("batch")
+        .arg("--actions")
+        .arg(&actions)
+        .arg("--in")
+        .arg(&input)
+        .arg("--out")
+        .arg(input.join("missing/.."))
+        .args(["--in-place", "--naming", "b.{ext}"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "{}", String::from_utf8_lossy(&output.stdout));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("replace an input"));
+    assert_eq!(std::fs::read(input.join("b.png")).unwrap(), original);
+    assert!(!input.join("missing").exists());
+}
+
 /// #7437: `convert` to its own input file, however the output is spelt, is refused before
 /// anything is read or written, unless `--in-place` asks for it (as `batch` does, #492).
 #[test]
@@ -944,9 +1034,9 @@ fn mcp_bridge_takes_a_port_or_an_address() {
     let _ = child.wait();
 }
 
-/// `--format` mapping two inputs to one name fails the second instead of overwriting the first (#420).
+/// Photoshop Batch processes every input in order, replacing earlier flat results with the same name.
 #[test]
-fn batch_fails_inputs_that_share_an_output_name() {
+fn batch_later_input_replaces_a_same_named_output() {
     let d = tmp("batch-collide");
     let input = d.join("in");
     std::fs::create_dir_all(&input).unwrap();
@@ -961,15 +1051,10 @@ fn batch_fails_inputs_that_share_an_output_name() {
     let out_dir = d.join("out");
     let o = bin().args(["batch", "--actions"]).arg(&actions).arg("--in").arg(&input).arg("--out").arg(&out_dir).args(["--format", "png"]).output().unwrap();
     let (out, err) = (String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
-    assert!(
-        !o.status.success(),
-        "a lost result must fail the run
-{out}
-{err}"
-    );
-    assert!(out.contains("1 succeeded, 2 failed"), "{out}");
-    assert_eq!(err.matches("not written").count(), 2, "{err}");
-    assert_eq!(std::fs::read_dir(&out_dir).unwrap().count(), 1);
+    assert!(o.status.success(), "{out}{err}");
+    assert!(out.contains("3 succeeded, 0 failed"), "{out}");
+    assert!(out_dir.join("a.png").is_file());
+    assert!(std::fs::read_dir(&out_dir).unwrap().count() <= 2);
     // Keeping each file's format, every input gets its own output.
     let out_dir = d.join("same");
     let out = ok(bin().args(["batch", "--actions"]).arg(&actions).arg("--in").arg(&input).arg("--out").arg(&out_dir)).stdout;

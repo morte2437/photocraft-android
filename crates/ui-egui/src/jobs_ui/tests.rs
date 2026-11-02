@@ -749,6 +749,56 @@ fn a_finished_job_beeps_when_the_preference_is_on() {
 }
 
 #[test]
+fn cancelled_batch_with_partial_results_reports_cancellation_without_beeping() {
+    static BEEPS: AtomicUsize = AtomicUsize::new(0);
+    fn count_beep() {
+        BEEPS.fetch_add(1, Ordering::Relaxed);
+    }
+    BEEPS.store(0, Ordering::Relaxed);
+    let mut h = app_harness_with(crate::Services { beep: Some(count_beep), ..Default::default() });
+    h.state_mut().run("prefs.set", json!({"path": "general.beepWhenDone", "value": true})).unwrap();
+    let Started::Job(id) = h
+        .state_mut()
+        .session
+        .start_job(
+            "file.automate.batch",
+            json!({}),
+            "Batch",
+            false,
+            |ctx| {
+                while !ctx.cancelled() {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Ok(json!({"files": ["done.png"], "cancelled": true}))
+            },
+            |_, result| Ok(result),
+        )
+        .unwrap()
+    else {
+        panic!("batch did not start as a job")
+    };
+    assert!(h.state_mut().session.cancel_job(id));
+    let started = Instant::now();
+    let event = loop {
+        if let Some(event) = h.state_mut().session.poll_jobs().into_iter().find(|event| event.id == id) {
+            break event;
+        }
+        assert!(started.elapsed() < Duration::from_secs(10), "batch did not finish");
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    let ctx = h.ctx.clone();
+    let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+    h.state_mut().jobs.waiters.push((id, reply_tx));
+    crate::jobs_ui::on_event(h.state_mut(), &ctx, event);
+    assert!(h.state().ui.status.contains("Cancelled"), "{}", h.state().ui.status);
+    assert_eq!(BEEPS.load(Ordering::Relaxed), 0);
+    let reply = reply_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert_eq!(reply["ok"], false);
+    assert_eq!(reply["error"], "cancelled");
+    assert_eq!(reply["result"]["files"], json!(["done.png"]));
+}
+
+#[test]
 fn printing_keeps_drawing_and_reports_only_the_final_spooler_result() {
     for success in [true, false] {
         let mut h = app_harness();

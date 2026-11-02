@@ -19,7 +19,7 @@
 //!   message naming the job (queries and document-independent commands still run).
 
 use std::any::Any;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use photocraft_doc::{DocId, Document, LayerId};
@@ -84,12 +84,15 @@ pub struct JobCtx {
 
 #[derive(Default)]
 struct Shared {
-    cancel: AtomicBool,
+    state: AtomicU8,
     /// `f32` bits of the progress fraction. Non-negative floats order like their bits, so
     /// `fetch_max` keeps progress monotonic even with several reporting threads.
     progress: AtomicU32,
     message: Mutex<String>,
 }
+
+const CANCEL_REQUESTED: u8 = 1;
+const WORK_FINISHED: u8 = 2;
 
 impl std::fmt::Debug for JobCtx {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -118,12 +121,26 @@ impl JobCtx {
 
     /// Has the job been cancelled? Long loops check this and stop early.
     pub fn cancelled(&self) -> bool {
-        self.shared.cancel.load(Ordering::Relaxed)
+        self.shared.state.load(Ordering::Acquire) & CANCEL_REQUESTED != 0
     }
 
     /// Ask the job to stop (idempotent).
     pub fn cancel(&self) {
-        self.shared.cancel.store(true, Ordering::Relaxed);
+        self.shared.state.fetch_or(CANCEL_REQUESTED, Ordering::AcqRel);
+    }
+
+    /// Accept a cancellation only while the worker has not finished its result. One atomic state
+    /// orders a late cancel against completion, including the interval before the UI polls.
+    fn cancel_if_running(&self) -> bool {
+        self.shared
+            .state
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |state| (state & (CANCEL_REQUESTED | WORK_FINISHED) == 0).then_some(state | CANCEL_REQUESTED))
+            .is_ok()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn finish_work(&self) {
+        self.shared.state.fetch_or(WORK_FINISHED, Ordering::Release);
     }
 
     /// `Err(Cancelled)` once cancelled, for `?` between stages.
@@ -187,7 +204,7 @@ pub struct JobInfo {
     pub progress: f32,
     pub message: String,
     pub elapsed_ms: f64,
-    /// The command's result (done) or the error (failed).
+    /// The command's result (done), including partial outputs from a cancelled batch.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -416,6 +433,7 @@ pub fn run<T: Send + 'static>(
             let _document = crate::doc_path::scope(document.as_deref());
             let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(&wctx).map(|t| Box::new(t) as Payload)))
                 .unwrap_or_else(|_| Err(EngineError::Other(format!("`{label_w}` failed with an internal error (logged); the document is unchanged"))));
+            wctx.finish_work();
             // The receiver is gone when the job was cancelled: nothing to report.
             let _ = tx.send(r);
         });
@@ -713,10 +731,16 @@ impl Session {
         }
     }
 
-    /// Cancel job `id`: it stops at its next check, its result is discarded and the document
-    /// stays unchanged. The document is unlocked at once. False if no such job is running.
+    /// Cancel job `id`: ordinary jobs stop at their next check and discard their result.
+    /// A batch finishes the current input and reports outputs already written. False if no
+    /// such job is running.
     pub fn cancel_job(&mut self, id: JobId) -> bool {
         let Some(i) = self.jobs.running.iter().position(|r| r.id == id) else { return false };
+        // Earlier batch outputs are already on disk. Let the worker stop after its current
+        // input and return the completed and skipped lists.
+        if self.jobs.running[i].command == "file.automate.batch" {
+            return self.jobs.running[i].ctx.cancel_if_running();
+        }
         // A print worker can already have handed the job to the OS. Discarding its result
         // would falsely report cancellation; removal belongs to the system print queue.
         if matches!(self.jobs.running[i].command.as_str(), "file.print" | "file.printOneCopy") {
@@ -1019,9 +1043,19 @@ impl Session {
         let outcome = match r {
             Err(EngineError::Cancelled) => JobOutcome::Cancelled,
             Err(e) => JobOutcome::Failed(e.to_string()),
-            Ok(_) if job.ctx.cancelled() => JobOutcome::Cancelled,
+            Ok(_) if job.ctx.cancelled() && job.command != "file.automate.batch" => JobOutcome::Cancelled,
             Ok(payload) => match self.apply_job(&job, apply, payload) {
-                Ok(v) => JobOutcome::Done(v),
+                Ok(mut v) => {
+                    // A batch may take its final cancellation snapshot before the worker
+                    // finishes. A cancellation accepted during that interval still counts.
+                    if job.command == "file.automate.batch"
+                        && job.ctx.cancelled()
+                        && let Some(result) = v.as_object_mut()
+                    {
+                        result.insert("cancelled".into(), Value::Bool(true));
+                    }
+                    JobOutcome::Done(v)
+                }
                 Err(EngineError::Cancelled) => JobOutcome::Cancelled,
                 Err(e) => JobOutcome::Failed(e.to_string()),
             },
@@ -1116,6 +1150,9 @@ impl Session {
         // and discarded results whose document was closed or changed.
         self.live_commit = None;
         let (state, result, error) = match &outcome {
+            JobOutcome::Done(v) if job.command == "file.automate.batch" && v.get("cancelled").and_then(Value::as_bool) == Some(true) => {
+                ("cancelled", Some(v.clone()), None)
+            }
             JobOutcome::Done(v) => ("done", Some(v.clone()), None),
             JobOutcome::Failed(e) => ("failed", None, Some(e.clone())),
             JobOutcome::Cancelled => ("cancelled", None, None),
@@ -1159,14 +1196,16 @@ pub fn specs() -> Vec<crate::commands::CommandSpec> {
             enabled: |_| Ok(()),
             run: |s, p| match p.get("job") {
                 None | Some(Value::Null) => {
-                    let n = s.jobs.running.len();
-                    s.cancel_all_jobs();
-                    Ok(json!({"cancelled": n.saturating_sub(s.jobs.running.len())}))
+                    let ids: Vec<JobId> = s.jobs.running.iter().map(|job| job.id).collect();
+                    let accepted = ids.into_iter().filter(|id| s.cancel_job(*id)).count();
+                    Ok(json!({"cancelled": accepted}))
                 }
                 Some(v) => {
                     let id = v.as_u64().ok_or_else(|| EngineError::BadParams { cmd: "jobs.cancel".into(), msg: "`job` must be a job id".into() })?;
                     if s.cancel_job(JobId(id)) {
                         Ok(json!({"cancelled": 1}))
+                    } else if s.job(JobId(id)).is_some_and(|job| job.command == "file.automate.batch") {
+                        Ok(json!({"cancelled": 0}))
                     } else if s.job(JobId(id)).is_some() {
                         Err(EngineError::Other("printing cannot be cancelled here; use the system print queue".into()))
                     } else {

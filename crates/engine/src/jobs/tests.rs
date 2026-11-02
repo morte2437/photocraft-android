@@ -543,6 +543,109 @@ fn open_runs_as_a_job_and_cancel_adds_nothing() {
     assert!(matches!(wait_event(&mut s, id).outcome, JobOutcome::Failed(_)));
 }
 
+#[test]
+fn cancelled_batch_job_returns_its_partial_result() {
+    let mut s = Session::new();
+    let id = job(s
+        .start_job(
+            "file.automate.batch",
+            json!({}),
+            "Batch",
+            false,
+            |ctx| {
+                while !ctx.cancelled() {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                Ok(json!({"files": ["done.png"], "skipped": ["later.png"], "cancelled": true}))
+            },
+            |_, result| Ok(result),
+        )
+        .unwrap());
+    assert!(s.cancel_job(id));
+    let event = wait_event(&mut s, id);
+    let JobOutcome::Done(result) = &event.outcome else { panic!("batch result was discarded: {:?}", event.outcome) };
+    assert_eq!(result["files"], json!(["done.png"]));
+    assert_eq!(result["skipped"], json!(["later.png"]));
+    assert_eq!(result["cancelled"], true);
+    let info = s.jobs_with_recent().into_iter().find(|info| info.id == id).unwrap();
+    assert_eq!(info.state, "cancelled");
+    assert_eq!(info.result.unwrap()["files"], json!(["done.png"]));
+    assert!(matches!(s.wait_job(id), Err(EngineError::Cancelled)));
+}
+
+#[test]
+fn accepted_batch_cancellation_after_result_snapshot_is_reported() {
+    let mut s = Session::new();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+    let id = job(s
+        .start_job(
+            "file.automate.batch",
+            json!({}),
+            "Batch",
+            false,
+            move |ctx| {
+                let cancelled = ctx.cancelled();
+                ready_tx.send(()).unwrap();
+                resume_rx.recv().unwrap();
+                Ok(json!({"files": ["done.png"], "cancelled": cancelled}))
+            },
+            |_, result| Ok(result),
+        )
+        .unwrap());
+    ready_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert!(s.cancel_job(id));
+    resume_tx.send(()).unwrap();
+    let event = wait_event(&mut s, id);
+    let JobOutcome::Done(result) = event.outcome else { panic!("batch result was discarded") };
+    assert_eq!(result["cancelled"], true);
+    assert_eq!(result["files"], json!(["done.png"]));
+    let info = s.jobs_with_recent().into_iter().find(|info| info.id == id).unwrap();
+    assert_eq!(info.state, "cancelled");
+}
+
+#[test]
+fn cancel_all_counts_an_accepted_batch_cancellation() {
+    let mut s = Session::new();
+    let id = job(s
+        .start_job(
+            "file.automate.batch",
+            json!({}),
+            "Batch",
+            false,
+            |ctx| {
+                while !ctx.cancelled() {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                Ok(json!({"files": [], "cancelled": true}))
+            },
+            |_, result| Ok(result),
+        )
+        .unwrap());
+    assert_eq!(s.execute("jobs.cancel", json!({})).unwrap()["cancelled"], 1);
+    assert_eq!(s.execute("jobs.cancel", json!({})).unwrap()["cancelled"], 0, "a repeated request is not a new cancellation");
+    assert_eq!(s.execute("jobs.cancel", json!({"job": id.0})).unwrap()["cancelled"], 0, "a repeated batch request is not a print error");
+    assert!(matches!(wait_event(&mut s, id).outcome, JobOutcome::Done(_)));
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_finished_batch_worker_rejects_late_cancellation() {
+    let mut s = Session::new();
+    let id = job(s
+        .start_job("file.automate.batch", json!({}), "Batch", false, |_| Ok(json!({"files": ["done.png"], "cancelled": false})), |_, result| Ok(result))
+        .unwrap());
+    let started = Instant::now();
+    while !s.jobs.running.iter().any(|running| running.id == id && running.handle.as_ref().is_some_and(|handle| handle.is_finished())) {
+        assert!(started.elapsed() < Duration::from_secs(10), "batch worker did not finish");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(!s.cancel_job(id), "a result already sent cannot be cancelled");
+    let JobOutcome::Done(result) = wait_event(&mut s, id).outcome else { panic!("completed batch result was lost") };
+    assert_eq!(result["files"], json!(["done.png"]));
+    assert_eq!(result["cancelled"], false);
+}
+
 /// Ask When Opening: a file whose profile doesn't match is decoded but not added; the shell takes
 /// it once the prompt is answered. Without Ask it opens as usual.
 #[test]

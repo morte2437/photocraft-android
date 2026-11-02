@@ -490,8 +490,15 @@ pub(super) fn front(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, para
             let name = action.name.clone();
             dialog(
                 app,
-                json!({"action": name, "steps": steps, "input": dir, "includeSubfolders": false, "__labels": subfolders_label(), "output": format!("{dir}/batch"), "format": "same", "quality": null, "__batchQuality": 8, "naming": "", "startingSerial": 1}),
-                json!({"format": ["same", "png", "jpg", "psd", "tiff", "webp"]}),
+                json!({
+                    "action": name, "steps": steps, "source": "folder", "input": dir,
+                    "includeSubfolders": false, "__labels": subfolders_label(),
+                    "output": format!("{dir}/batch"), "format": "same", "quality": null,
+                    "__batchQuality": 8, "naming": "", "startingSerial": 1,
+                    "stopOnError": false, "errorLog": "",
+                    "__order": ["action", "source", "input", "includeSubfolders", "output", "format", "naming", "startingSerial", "quality", "stopOnError", "errorLog"]
+                }),
+                json!({"format": ["same", "png", "jpg", "psd", "tiff", "webp"], "source": ["folder", "open"]}),
             )
         }
         // Channel workflow dialogs (see channels_panel.rs for the channel references).
