@@ -14,10 +14,11 @@
 //!    letters, each page's punctuation, and the degree sign). The highest share wins. Two
 //!    single-byte readings don't count: the letters windows-1252 alone has at 0x80–0x9F (Š š Ž
 //!    ž Ÿ ƒ ˆ), where Mac Roman keeps its accented lowercase (Mac "Opacité" is 1252
-//!    "OpacitŽ"), unless a capital one starts a word ("Škoda"); and a windows-1251 Cyrillic
-//!    letter glued into an ASCII word (Mac "Höhe" is 1251 "Hшhe"), unless the name's letters
-//!    are mostly Cyrillic ("CMYKканал", "Копiя") or the letter is in a Cyrillic word of its own
-//!    ("Layer Слой").
+//!    "OpacitŽ"), unless a capital one starts a word ("Škoda") in a file whose own Unicode text
+//!    doesn't write the Mac Roman letter on that byte instead (a French "état", a German "über");
+//!    and a windows-1251 Cyrillic letter glued into an ASCII word (Mac "Höhe" is 1251 "Hшhe"),
+//!    unless the name's letters are mostly Cyrillic ("CMYKканал", "Копiя") or the letter is in a
+//!    Cyrillic word of its own ("Layer Слой", "Слой1").
 //! 3. A tie is broken by the script of a hint (text the file stores as UTF-16, so it decodes
 //!    fine): kana → Shift_JIS; Hangul → EUC-KR; Cyrillic → windows-1251; Han → GBK, then
 //!    Big5, then Shift_JIS; Latin letters → windows-1252, then Mac Roman.
@@ -78,6 +79,8 @@ pub(crate) fn guess(legacy: &[&[u8]], hint: &str) -> Guess {
     if sample.is_empty() {
         return Guess { encoding: UTF_8, uncertain: false };
     }
+    // The accented letters the file's own Unicode text uses: what its writer's language writes.
+    let hint_letters: std::collections::BTreeSet<char> = hint.chars().filter(|c| !c.is_ascii() && c.is_alphabetic()).flat_map(char::to_lowercase).collect();
     let mut best: Vec<&'static Encoding> = Vec::new();
     let mut best_score = (0u64, 1u64);
     for enc in candidates() {
@@ -85,7 +88,7 @@ pub(crate) fn guess(legacy: &[&[u8]], hint: &str) -> Guess {
             continue;
         }
         let score = sample.iter().fold((0u64, 0u64), |(c, h), (name, _)| {
-            let (nc, nh) = score(enc, name);
+            let (nc, nh) = score(enc, name, &hint_letters);
             (c.saturating_add(nc), h.saturating_add(nh))
         });
         let score = if score.1 == 0 { (0, 1) } else { score };
@@ -143,7 +146,7 @@ pub(crate) fn reads_as_common(name: &[u8], enc: &'static Encoding) -> bool {
     if ![SHIFT_JIS, GBK, BIG5, EUC_KR].contains(&enc) {
         return false;
     }
-    let (common, high) = score(enc, name);
+    let (common, high) = score(enc, name, &std::collections::BTreeSet::new());
     high > 0 && common == high && decodes_cleanly(enc, name, false)
 }
 
@@ -199,13 +202,15 @@ fn decodes_cleanly(enc: &'static Encoding, bytes: &[u8], truncated: bool) -> boo
 }
 
 /// `(common, high)`: how many of a name's non-ASCII bytes `enc` reads as common text, and how
-/// many non-ASCII bytes it has.
-fn score(enc: &'static Encoding, name: &[u8]) -> (u64, u64) {
+/// many non-ASCII bytes it has. `hint_letters` are the accented letters the file's own Unicode
+/// text writes (lowercase), which settle a word-initial capital of windows-1252's 0x80–0x9F.
+fn score(enc: &'static Encoding, name: &[u8], hint_letters: &std::collections::BTreeSet<char>) -> (u64, u64) {
     if enc == WINDOWS_1252 || enc == WINDOWS_1251 || enc == MACINTOSH {
         // Letters, typographic punctuation and the degree sign ("Rotation 90°") are common, as
         // the double-byte pages' punctuation rows are, with two readings held back: the letters
         // windows-1252 alone has at 0x80–0x9F, where Mac Roman keeps its accented lowercase (Mac
-        // "Opacité" is 1252 "OpacitŽ"), unless a capital one starts a word ("Škoda"); and a
+        // "Opacité" is 1252 "OpacitŽ"), unless a capital one starts a word ("Škoda") and the
+        // file's own text doesn't write the Mac Roman letter instead (a French "état"); and a
         // windows-1251 Cyrillic letter glued into an ASCII word (Mac "Höhe" is 1251 "Hшhe"),
         // unless the name's letters are mostly Cyrillic ("CMYKканал", Ukrainian "Копiя") or the
         // letter is in a Cyrillic word of its own ("Layer Слой").
@@ -219,7 +224,12 @@ fn score(enc: &'static Encoding, name: &[u8]) -> (u64, u64) {
             high += 1;
             let counts = if enc == WINDOWS_1252 && RARE_1252_LETTERS.contains(&ch) {
                 let after_ascii = i.checked_sub(1).and_then(|k| chars.get(k)).is_some_and(|c| c.is_ascii_alphanumeric());
-                ch.is_uppercase() && !after_ascii && chars.get(i + 1).is_some_and(|c| c.is_ascii_lowercase())
+                let word_initial = ch.is_uppercase() && !after_ascii && chars.get(i + 1).is_some_and(|c| c.is_ascii_lowercase());
+                // The same byte as Mac Roman reads it: a letter the file's text writes, where it
+                // never writes this one, says the writer meant that ("état", not "Žtat").
+                let written = |c: char| c.to_lowercase().all(|l| hint_letters.contains(&l));
+                let mac = name.get(i..=i).map(|b| decode(b, MACINTOSH)).and_then(|s| s.chars().next());
+                word_initial && !(mac.is_some_and(|m| m.is_alphabetic() && written(m)) && !written(ch))
             } else if enc == WINDOWS_1251 && is_cyrillic(ch) {
                 cyrillic_name || cyrillic_word(&chars, i)
             } else {
@@ -289,7 +299,8 @@ fn is_cyrillic(ch: char) -> bool {
 }
 
 /// Whether the Cyrillic letter at `i` is in a Cyrillic word of its own: a run of two or more,
-/// not glued to an ASCII letter or digit ("Слой" beside "Layer"; not "OpacitЋ" or "90Ў").
+/// not glued to an ASCII letter ("Слой" beside "Layer", "Слой1"; not "OpacitЋ"; a lone letter
+/// after a digit, "90Ў", is no word).
 fn cyrillic_word(chars: &[char], i: usize) -> bool {
     let mut start = i;
     while start > 0 && chars.get(start - 1).is_some_and(|c| is_cyrillic(*c)) {
@@ -299,7 +310,7 @@ fn cyrillic_word(chars: &[char], i: usize) -> bool {
     while chars.get(end).is_some_and(|c| is_cyrillic(*c)) {
         end += 1;
     }
-    let glued = |k: Option<usize>| k.and_then(|k| chars.get(k)).is_some_and(|c| c.is_ascii_alphanumeric());
+    let glued = |k: Option<usize>| k.and_then(|k| chars.get(k)).is_some_and(|c| c.is_ascii_alphabetic());
     end - start >= 2 && !glued(start.checked_sub(1)) && !glued(Some(end))
 }
 
@@ -523,6 +534,7 @@ mod tests {
         // a Latin one counts as Cyrillic, and the hint settles the tie with windows-1252's letters.
         assert_eq!(guess_words(WINDOWS_1251, &["Ёлка"], "Définir"), Guess { encoding: WINDOWS_1251, uncertain: false });
         assert_eq!(guess_words(WINDOWS_1251, &["Layer Слой"], "Набор 1"), Guess { encoding: WINDOWS_1251, uncertain: false });
+        assert_eq!(guess_words(WINDOWS_1251, &["Layer Слой1"], "Набор 1"), Guess { encoding: WINDOWS_1251, uncertain: false }, "a digit after the word");
         assert_eq!(guess_words(WINDOWS_1251, &["Layer Слой", "Ёлка"], "Set 1"), Guess { encoding: WINDOWS_1251, uncertain: false });
         // Alone and without a hint, "Layer Слой" is as ambiguous as before (every letter is one in
         // windows-1252 too): the flagged fallback.
@@ -534,9 +546,22 @@ mod tests {
         // windows-1252 Š Ž Ÿ (0x8A 0x8E 0x9F) are Mac Roman ä é ü: a capital one starting a word
         // ("Škoda") counts, an accent inside a word (Mac "Opacité" as "OpacitŽ") does not.
         for words in [&["Škoda"][..], &["Žaba"], &["Šibenik", "Žaba"]] {
-            assert_eq!(guess_words(WINDOWS_1252, words, "Größe ändern"), Guess { encoding: WINDOWS_1252, uncertain: false }, "{words:?}");
+            assert_eq!(guess_words(WINDOWS_1252, words, "Nastavení"), Guess { encoding: WINDOWS_1252, uncertain: false }, "{words:?}");
             assert_eq!(guess_words(WINDOWS_1252, words, "Set 1").encoding, WINDOWS_1252, "{words:?}");
         }
+        // In a file whose own text writes ä and never Š (a German Photoshop), the byte reads as
+        // the Mac Roman ä it would be there: the file's alphabet decides what the bytes can't.
+        assert_eq!(guess_words(WINDOWS_1252, &["Škoda"], "Größe ändern").encoding, MACINTOSH);
+    }
+
+    #[test]
+    fn word_initial_mac_roman_accents_read_as_mac_roman_when_the_file_writes_them() {
+        // Mac é (0x8E) and ü (0x9F) are windows-1252 Ž and Ÿ, capitals that could start a word:
+        // in a file whose own text has é or ü and no Ž or Ÿ, they are the Mac Roman letters.
+        assert_eq!(guess_words(MACINTOSH, &["état"], "Définir"), Guess { encoding: MACINTOSH, uncertain: false });
+        assert_eq!(guess_words(MACINTOSH, &["über Ebene", "Höhe"], "Größe ändern"), Guess { encoding: MACINTOSH, uncertain: false });
+        // Without such text the capital reading stands, as before: the bytes alone can't tell.
+        assert_eq!(guess_words(MACINTOSH, &["éclair"], "Set 1").encoding, WINDOWS_1252);
     }
 
     #[test]
