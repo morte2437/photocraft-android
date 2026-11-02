@@ -1992,7 +1992,7 @@ fn sanitize_keeps_windows_device_names_off_the_disk() {
 
 #[test]
 fn approve_memory_validates_parameters_and_unknown_ids() {
-    let mut s = Session::new();
+    let mut s = session(4, 4, 8);
     assert!(matches!(s.execute("file.approveMemory", json!({})), Err(EngineError::BadParams { .. })));
     assert!(matches!(s.execute("file.approveMemory", json!({"id": "not_a_number"})), Err(EngineError::BadParams { .. })));
     assert!(matches!(s.execute("file.approveMemory", json!({"id": 12345})), Err(EngineError::BadParams { .. })));
@@ -2074,7 +2074,7 @@ fn approve_memory_refuses_when_source_changes_before_confirmation() {
     // Modify file on disk
     std::fs::write(&path, b"changed content longer").unwrap();
 
-    let res = s.execute("file.approveMemory", json!({"id": id, "approve": true}));
+    let res = s.execute("file.approveMemory", json!({"id": id, "approve": true, "background": false}));
     assert!(res.is_err(), "changed file must be refused");
 }
 

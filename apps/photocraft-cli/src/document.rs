@@ -30,8 +30,7 @@ pub(crate) fn convert(a: &ConvertArgs, _out: &mut dyn Write, err: &mut dyn Write
     let (input, output) = (&a.input, &a.output);
     let opts = ExportOptions::from(&a.export);
     refuse_overwriting_input(a.in_place, input, output)?;
-    let mut import_opts = photocraft_io::ImportOptions::default();
-    import_opts.psd_high_memory_approved = a.approve_high_memory;
+    let import_opts = photocraft_io::ImportOptions { psd_high_memory_approved: a.approve_high_memory, ..Default::default() };
     let mut o = files::open_with_options(input, &import_opts)?;
     // Preferences › Raw Defaults › Resolution at its default, as `run` and `info` open a raw.
     photocraft_engine::file_cmds::raw_defaults(&photocraft_engine::Session::new(), &o.warnings, &mut o.document);

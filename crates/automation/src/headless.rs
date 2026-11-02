@@ -95,8 +95,7 @@ impl Headless {
 
     /// Open a file with optional high-memory approval and make it the active document.
     pub fn open_with_approval(&mut self, path: &Path, approve_high_memory: bool) -> Result<Value, AutomationError> {
-        let mut opts = photocraft_io::ImportOptions::default();
-        opts.psd_high_memory_approved = approve_high_memory;
+        let opts = photocraft_io::ImportOptions { psd_high_memory_approved: approve_high_memory, ..Default::default() };
         self.open_with_options(path, &opts)
     }
 

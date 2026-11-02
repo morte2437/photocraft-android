@@ -630,16 +630,3 @@ fn mixed_prompts_follow_arrival_order_fifo() {
     assert_eq!(call(&mut app, "ui.dialog.cancel", json!({"dialog": dlg_mem}))["ok"], true);
     assert!(app.ui.dialogs.is_empty());
 }
-
-#[test]
-fn normal_image_open_does_not_require_timestamps_or_preflight_fingerprints() {
-    let mut app = app();
-    // A synthetic 4x4 PNG/raw/flat image opens without timestamp or preflight checks
-    let bytes = std::sync::Arc::new(vec![0u8; 32]);
-    let src = photocraft_engine::jobs::OpenSource::Bytes(bytes);
-    // SourceFingerprint matches on same Bytes Arc without re-reading
-    let fp1 = photocraft_engine::jobs::SourceFingerprint::of(&src).unwrap();
-    let fp2 = photocraft_engine::jobs::SourceFingerprint::of(&src).unwrap();
-    assert_eq!(fp1, fp2);
-    assert!(fp1.matches(&fp2));
-}

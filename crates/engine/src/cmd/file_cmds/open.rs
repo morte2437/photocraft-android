@@ -158,7 +158,6 @@ pub fn open_bytes_as_with_options(
 
 pub(super) fn open_as(s: &mut Session, p: &Value) -> Result<Value> {
     let path = str_param(p, "path", "file.openAs")?.to_string();
-    let bytes = read_file(&path)?;
     let as_ext = p.get("as").or_else(|| p.get("format")).and_then(Value::as_str);
     let approve_high_memory = match p.get("approveHighMemory") {
         None | Some(Value::Null) => false,
@@ -167,6 +166,7 @@ pub(super) fn open_as(s: &mut Session, p: &Value) -> Result<Value> {
             return Err(EngineError::BadParams { cmd: "file.openAs".into(), msg: "expected boolean for \"approveHighMemory\"".into() });
         }
     };
+    let bytes = read_file(&path)?;
     open_bytes_as_with_options(s, &path, &bytes, as_ext, Some(path.clone()), approve_high_memory)
 }
 
@@ -307,6 +307,9 @@ pub fn place_bytes(s: &mut Session, name: &str, bytes: Vec<u8>, linked: Option<S
 
 pub(super) fn place(s: &mut Session, p: &Value, linked: bool) -> Result<Value> {
     let cmd = if linked { "file.placeLinked" } else { "file.placeEmbedded" };
+    if p.get("approveHighMemory").is_some_and(|v| !v.is_null() && !v.is_boolean()) {
+        return Err(EngineError::BadParams { cmd: cmd.into(), msg: "expected boolean for approveHighMemory".into() });
+    }
     let path = str_param(p, "path", cmd)?.to_string();
     let bytes = read_file(&path)?;
     // The link is stored absolute: a relative one would later be taken from the document's

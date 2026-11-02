@@ -113,7 +113,10 @@ pub fn advance(app: &mut PhotocraftApp) {
                     show(app);
                     return;
                 }
-                let held = app.held_opens.pop_front().unwrap();
+                let Some(held) = app.held_opens.pop_front() else {
+                    app.prompt_order.pop_front();
+                    continue;
+                };
                 app.prompt_order.pop_front();
                 let _ = open(app, held, None);
                 if has_open_dialog(app) {

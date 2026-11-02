@@ -143,10 +143,8 @@ impl Headless {
             }
             "doc.place" => {
                 let path = str_of(&p, "path").ok_or_else(|| bad("doc.place needs `path`"))?;
-                if let Some(v) = p.get("approveHighMemory") {
-                    if !v.is_boolean() {
-                        return Err(bad("`approveHighMemory` must be a boolean"));
-                    }
+                if p.get("approveHighMemory").is_some_and(|v| !v.is_boolean()) {
+                    return Err(bad("`approveHighMemory` must be a boolean"));
                 }
                 let mut opts = p.as_object().cloned().unwrap_or_default();
                 opts.remove("path");
