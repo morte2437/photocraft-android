@@ -142,7 +142,10 @@ fn imported_csh_id_resolves_in_an_action_after_reimport_and_preference_reload() 
     let other = csh_fixture::polygon_csh(&[&[(0.25, 0.25), (0.75, 0.25), (0.75, 0.75), (0.25, 0.75)]]);
     assert_eq!(photocraft_psd::csh::parse(&other).unwrap()[0].id, id);
     s.execute("shape.presets.importCsh", json!({"data":photocraft_paint::tile::b64_encode(&other)})).unwrap();
-    assert!(s.execute("actions.play", json!({"action":"Shape"})).is_err());
+    let result = s.execute("actions.play", json!({"action":"Shape"})).unwrap();
+    assert_eq!(result["ran"], 0);
+    assert_eq!(result["failed"]["id"], "filter.blur.shapeBlur");
+    assert!(result["failed"]["error"].as_str().unwrap().contains("different installed shapes"), "{result}");
     assert_eq!(saved(&s), before);
 }
 
@@ -167,8 +170,13 @@ fn missing_or_invalid_custom_shapes_refuse_before_document_or_history_changes() 
     }
     let imported = atn_cmds::import(&encoded(descriptor())).unwrap();
     s.actions.list = imported.actions;
-    assert!(s.execute("actions.play", json!({"action":"Shape"})).is_err(), "an unavailable asset must not use the recorded name as fallback");
+    // Playback reports a failed step in its successful response; native command errors are not outer errors.
+    let result = s.execute("actions.play", json!({"action":"Shape"})).unwrap();
+    assert_eq!(result["ran"], 0);
+    assert_eq!(result["failed"]["id"], "filter.blur.shapeBlur");
+    assert!(result["failed"]["error"].as_str().unwrap().contains("no installed shape"), "{result}");
     assert_eq!(saved(&s), before);
+    assert_eq!(s.active().unwrap().history.past_len(), history);
 }
 
 /// New IDs survive preferences serialization without requiring them in older stored presets.
