@@ -197,3 +197,32 @@ fn background_damage_only_open_does_not_create_a_spurious_profile_question() {
     assert_eq!(app.session.documents().len(), 1);
     assert!(app.ui.dialogs.is_empty(), "color:null is not a profile question");
 }
+
+#[test]
+fn memory_confirmation_dialog_and_cancel_lifecycle() {
+    let mut app = app();
+    let gb = 1u64 << 30;
+
+    // Simulate memory prompt arrival:
+    let preflight_id = app.session.store_pending_preflight(photocraft_engine::jobs::PendingPsdPreflight {
+        id: 0,
+        name: "high_mem.psd".into(),
+        source: photocraft_engine::jobs::OpenSource::Bytes(std::sync::Arc::new(vec![0; 16])),
+        fingerprint: photocraft_engine::jobs::SourceFingerprint::of(&photocraft_engine::jobs::OpenSource::Bytes(std::sync::Arc::new(vec![0; 16]))).unwrap(),
+        required: 7 * gb,
+        soft_limit: 4 * gb,
+        hard_limit: 8 * gb,
+        available_ram: Some(10 * gb),
+        confirm_damage: true,
+    });
+
+    crate::open_prompt::arrive_memory(&mut app, preflight_id, "high_mem.psd".into(), None, None, None, 7 * gb, Some(10 * gb));
+    assert_eq!(app.ui.dialogs.len(), 1);
+    assert!(crate::open_prompt::owns_memory(&app.ui.dialogs[0].fields));
+    let dlg_id = app.ui.dialogs[0].id;
+
+    // Cancel via dialog cancel:
+    assert_eq!(call(&mut app, "ui.dialog.cancel", json!({"dialog": dlg_id}))["ok"], true);
+    assert!(app.ui.dialogs.is_empty());
+    assert!(app.session.take_pending_preflight(preflight_id).is_none(), "pending preflight dropped on cancel");
+}

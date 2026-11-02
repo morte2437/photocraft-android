@@ -528,6 +528,64 @@ pub fn import_options(prefs: &crate::prefs::Preferences) -> photocraft_io::Impor
     }
 }
 
+/// Fingerprint verifying that a source has not changed between preflight and approval.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SourceFingerprint {
+    Bytes { len: usize, hash: [u8; 32] },
+    Path { path: String, len: u64, modified_nanos: u128 },
+}
+
+impl SourceFingerprint {
+    pub fn of(source: &OpenSource) -> Result<Self> {
+        match source {
+            OpenSource::Bytes(b) => {
+                let hash = *blake3::hash(b).as_bytes();
+                Ok(SourceFingerprint::Bytes { len: b.len(), hash })
+            }
+            OpenSource::Path(p) => {
+                let meta = std::fs::metadata(p).map_err(|e| EngineError::Other(format!("{p}: {e}")))?;
+                let len = meta.len();
+                let modified_nanos = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos());
+                Ok(SourceFingerprint::Path { path: p.clone(), len, modified_nanos })
+            }
+        }
+    }
+
+    pub fn matches(&self, source: &OpenSource) -> bool {
+        match (self, source) {
+            (SourceFingerprint::Bytes { len, hash }, OpenSource::Bytes(b)) => b.len() == *len && blake3::hash(b).as_bytes() == hash,
+            (SourceFingerprint::Path { path, len, modified_nanos }, OpenSource::Path(p)) => {
+                if path != p {
+                    return false;
+                }
+                match std::fs::metadata(p) {
+                    Ok(meta) => {
+                        let cur_len = meta.len();
+                        let cur_mod = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos());
+                        cur_len == *len && cur_mod == *modified_nanos
+                    }
+                    Err(_) => false,
+                }
+            }
+            _ => false,
+        }
+    }
+}
+
+/// A pending high-memory PSD preflight request waiting for user confirmation before pixel decoding.
+#[derive(Clone, Debug)]
+pub struct PendingPsdPreflight {
+    pub id: u64,
+    pub name: String,
+    pub source: OpenSource,
+    pub fingerprint: SourceFingerprint,
+    pub required: u64,
+    pub soft_limit: u64,
+    pub hard_limit: u64,
+    pub available_ram: Option<u64>,
+    pub confirm_damage: bool,
+}
+
 impl Session {
     /// Run the heavy part of inline (not background) job commands under `ctx`, so another thread
     /// can cancel them: a live preview whose parameters changed stops its stale computation
@@ -552,24 +610,50 @@ impl Session {
     /// Color Settings ask about the file's profile, the document is held back instead and the
     /// result is `{held, name, warnings, color}` (`color` the question): take it with
     /// [`Session::take_held_open`] once answered.
+
+    pub fn store_pending_preflight(&mut self, mut preflight: PendingPsdPreflight) -> u64 {
+        self.next_pending_preflight = self.next_pending_preflight.wrapping_add(1);
+        preflight.id = self.next_pending_preflight;
+        self.pending_preflights.push(preflight);
+        self.next_pending_preflight
+    }
+
+    pub fn take_pending_preflight(&mut self, id: u64) -> Option<PendingPsdPreflight> {
+        let i = self.pending_preflights.iter().position(|p| p.id == id)?;
+        Some(self.pending_preflights.remove(i))
+    }
+
+    pub fn cancel_pending_preflight(&mut self, id: u64) -> Option<PendingPsdPreflight> {
+        self.take_pending_preflight(id)
+    }
+
+    pub fn clear_pending_preflights(&mut self) {
+        self.pending_preflights.clear();
+    }
+
+    pub fn start_open_approved(&mut self, name: &str, source: OpenSource, confirm_damage: bool) -> Result<Started> {
+        self.start_open_inner(name, source, confirm_damage, true)
+    }
+
     pub fn start_open(&mut self, name: &str, source: OpenSource) -> Result<Started> {
-        self.start_open_inner(name, source, false)
+        self.start_open_inner(name, source, false, false)
     }
 
     /// Interactive opening: hold a damaged PSD until the user answers a damage
     /// confirmation, without changing import or subsequent save behaviour.
     /// Headless callers keep using [`Self::start_open`].
     pub fn start_open_for_user(&mut self, name: &str, source: OpenSource) -> Result<Started> {
-        self.start_open_inner(name, source, true)
+        self.start_open_inner(name, source, true, false)
     }
 
     /// Decodes a file in a job and optionally holds damaged PSD content for
     /// interactive confirmation while leaving headless opens non-interactive.
-    fn start_open_inner(&mut self, name: &str, source: OpenSource, confirm_damage: bool) -> Result<Started> {
+    fn start_open_inner(&mut self, name: &str, source: OpenSource, confirm_damage: bool, approve_high_memory: bool) -> Result<Started> {
         let label = format!("Opening {name}");
         let name_w = name.to_string();
         let name_a = name.to_string();
-        let opts = import_options(self.prefs());
+        let mut opts = import_options(self.prefs());
+        opts.psd_high_memory_approved = approve_high_memory;
         self.start_job(
             OPEN_JOB,
             json!({"name": name}),
@@ -577,52 +661,102 @@ impl Session {
             false,
             move |ctx| {
                 ctx.progress(0.0, "Reading");
-                let imported = match source {
+                enum WorkResult {
+                    Decoded((photocraft_io::ImportResult, bool)),
+                    PreflightNeeded {
+                        required: u64,
+                        soft_limit: u64,
+                        hard_limit: u64,
+                        available_ram: Option<u64>,
+                        source: OpenSource,
+                        fingerprint: SourceFingerprint,
+                    },
+                }
+
+                let outcome = match source {
                     OpenSource::Bytes(bytes) => {
                         ctx.check()?;
                         ctx.progress(0.02, "Decoding");
-                        ctx.stage(0.02, 0.95, "Decoding", |ctl| photocraft_io::import_for_open_with(&name_w, &bytes, &opts, ctl))
+                        let res = ctx.stage(0.02, 0.95, "Decoding", |ctl| photocraft_io::import_for_open_with(&name_w, &bytes, &opts, ctl));
+                        match res {
+                            Ok(imported) => WorkResult::Decoded(imported),
+                            Err(photocraft_io::IoError::PsdApprovalRequired { required, soft_limit, hard_limit, available_ram }) if confirm_damage => {
+                                let src = OpenSource::Bytes(bytes);
+                                let fingerprint = SourceFingerprint::of(&src)?;
+                                WorkResult::PreflightNeeded { required, soft_limit, hard_limit, available_ram, source: src, fingerprint }
+                            }
+                            Err(photocraft_io::IoError::Cancelled) => return Err(EngineError::Cancelled),
+                            Err(e) => return Err(EngineError::Other(e.to_string())),
+                        }
                     }
-                    // A PSD/PSB is decoded straight from the file, which is never read whole.
-                    OpenSource::Path(p) => ctx.stage(0.0, 0.95, "Decoding", |ctl| import_path(&name_w, &p, &opts, ctl)),
+                    OpenSource::Path(p) => {
+                        let res = ctx.stage(0.0, 0.95, "Decoding", |ctl| import_path(&name_w, &p, &opts, ctl));
+                        match res {
+                            Ok(imported) => WorkResult::Decoded(imported),
+                            Err(photocraft_io::IoError::PsdApprovalRequired { required, soft_limit, hard_limit, available_ram }) if confirm_damage => {
+                                let src = OpenSource::Path(p);
+                                let fingerprint = SourceFingerprint::of(&src)?;
+                                WorkResult::PreflightNeeded { required, soft_limit, hard_limit, available_ram, source: src, fingerprint }
+                            }
+                            Err(photocraft_io::IoError::Cancelled) => return Err(EngineError::Cancelled),
+                            Err(e) => return Err(EngineError::Other(e.to_string())),
+                        }
+                    }
+                };
+
+                match &outcome {
+                    WorkResult::PreflightNeeded { .. } => Ok(outcome),
+                    WorkResult::Decoded(imported) => {
+                        ctx.progress(0.95, "Preparing layers");
+                        warm_layer_bounds(&imported.0.document, || ctx.check())?;
+                        if crate::type_extra_cmds::has_type_layers(&imported.0.document) {
+                            ctx.progress(0.97, "Loading fonts");
+                            let _ = photocraft_text::shared();
+                            ctx.check()?;
+                        }
+                        Ok(outcome)
+                    }
                 }
-                .map_err(|e| match e {
-                    photocraft_io::IoError::Cancelled => EngineError::Cancelled,
-                    e => EngineError::Other(e.to_string()),
-                })?;
-                ctx.progress(0.95, "Preparing layers");
-                warm_layer_bounds(&imported.0.document, || ctx.check())?;
-                // Type layers need the shared text engine, whose first use waits for the
-                // installed-font scan started at launch (minutes on some machines). Wait here,
-                // so the shell's missing-font check after the open finds it ready instead of
-                // freezing the window (#7332).
-                if crate::type_extra_cmds::has_type_layers(&imported.0.document) {
-                    ctx.progress(0.97, "Loading fonts");
-                    let _ = photocraft_text::shared();
-                    ctx.check()?;
-                }
-                Ok(imported)
             },
-            move |s, (mut r, damaged): (photocraft_io::ImportResult, bool)| {
-                // File Handling's ACEScg option, before the colour prompt looks at the profile.
-                crate::file_cmds::tag_exr_colorspace(s, &name_a, &mut r.document);
-                crate::file_cmds::raw_defaults(s, &r.warnings, &mut r.document);
-                // Ask When Opening: held back until the prompt is answered (`take_held_open`). A
-                // developed raw has no embedded profile to ask about.
-                let raw = r.warnings.iter().any(|w| w.contains(photocraft_io::raw::DEVELOPED_NOTE));
-                let damaged = confirm_damage && damaged;
-                let question = s.color.open_question(&r.document).filter(|_| !raw);
-                if damaged || question.is_some() {
-                    let held = s.hold_open(r.document, r.source_read_only);
-                    return Ok(json!({"held": held, "name": name_a, "warnings": r.warnings, "color": question, "damaged": damaged}));
+            move |s, outcome| match outcome {
+                WorkResult::PreflightNeeded { required, soft_limit, hard_limit, available_ram, source, fingerprint } => {
+                    let id = s.store_pending_preflight(PendingPsdPreflight {
+                        id: 0,
+                        name: name_a.clone(),
+                        source,
+                        fingerprint,
+                        required,
+                        soft_limit,
+                        hard_limit,
+                        available_ram,
+                        confirm_damage,
+                    });
+                    Ok(json!({
+                        "pendingPreflight": id,
+                        "name": name_a,
+                        "estimated": required,
+                        "softLimit": soft_limit,
+                        "hardLimit": hard_limit,
+                        "availableRam": available_ram,
+                    }))
                 }
-                let (index, color) = s.open_document(r.document, None);
-                // Persisted IDs can collide: report the identity the session actually admitted.
-                let id = s.documents().get(index).ok_or(EngineError::NoDocument)?.doc.id;
-                if let Some(st) = s.active_mut() {
-                    st.source_read_only = r.source_read_only;
+                WorkResult::Decoded((mut r, damaged)) => {
+                    crate::file_cmds::tag_exr_colorspace(s, &name_a, &mut r.document);
+                    crate::file_cmds::raw_defaults(s, &r.warnings, &mut r.document);
+                    let raw = r.warnings.iter().any(|w| w.contains(photocraft_io::raw::DEVELOPED_NOTE));
+                    let damaged = confirm_damage && damaged;
+                    let question = s.color.open_question(&r.document).filter(|_| !raw);
+                    if damaged || question.is_some() {
+                        let held = s.hold_open(r.document, r.source_read_only);
+                        return Ok(json!({"held": held, "name": name_a, "warnings": r.warnings, "color": question, "damaged": damaged}));
+                    }
+                    let (index, color) = s.open_document(r.document, None);
+                    let id = s.documents().get(index).ok_or(EngineError::NoDocument)?.doc.id;
+                    if let Some(st) = s.active_mut() {
+                        st.source_read_only = r.source_read_only;
+                    }
+                    Ok(json!({"document": index, "docId": id.0, "name": name_a, "warnings": r.warnings, "color": color}))
                 }
-                Ok(json!({"document": index, "docId": id.0, "name": name_a, "warnings": r.warnings, "color": color}))
             },
         )
     }

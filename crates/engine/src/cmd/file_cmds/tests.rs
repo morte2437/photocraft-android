@@ -1989,3 +1989,85 @@ fn sanitize_keeps_windows_device_names_off_the_disk() {
         assert_eq!(sanitize(name), name);
     }
 }
+
+#[test]
+fn approve_memory_validates_parameters_and_unknown_ids() {
+    let mut s = Session::new();
+    assert!(matches!(s.execute("file.approveMemory", json!({})), Err(EngineError::BadParams { .. })));
+    assert!(matches!(s.execute("file.approveMemory", json!({"id": "not_a_number"})), Err(EngineError::BadParams { .. })));
+    assert!(matches!(s.execute("file.approveMemory", json!({"id": 12345})), Err(EngineError::BadParams { .. })));
+}
+
+#[test]
+fn approve_memory_cancels_and_removes_pending_preflight() {
+    let mut s = Session::new();
+    let id = s.store_pending_preflight(crate::jobs::PendingPsdPreflight {
+        id: 0,
+        name: "test.psd".into(),
+        source: crate::jobs::OpenSource::Bytes(std::sync::Arc::new(vec![1, 2, 3])),
+        fingerprint: crate::jobs::SourceFingerprint::of(&crate::jobs::OpenSource::Bytes(std::sync::Arc::new(vec![1, 2, 3]))).unwrap(),
+        required: 1000,
+        soft_limit: 500,
+        hard_limit: 2000,
+        available_ram: Some(4000),
+        confirm_damage: true,
+    });
+    let res = s.execute("file.approveMemory", json!({"id": id, "approve": false})).unwrap();
+    assert_eq!(res["approved"], false);
+    assert_eq!(res["cancelled"], true);
+    assert!(s.take_pending_preflight(id).is_none(), "preflight removed on cancel");
+}
+
+#[test]
+fn approve_memory_refuses_when_source_changes_before_confirmation() {
+    let dir = tmp("fingerprint_test");
+    let path = join(&dir, "change.psd");
+    std::fs::write(&path, b"initial content").unwrap();
+
+    let mut s = Session::new();
+    let src = crate::jobs::OpenSource::Path(path.clone());
+    let fp = crate::jobs::SourceFingerprint::of(&src).unwrap();
+    let id = s.store_pending_preflight(crate::jobs::PendingPsdPreflight {
+        id: 0,
+        name: "change.psd".into(),
+        source: src,
+        fingerprint: fp,
+        required: 1000,
+        soft_limit: 500,
+        hard_limit: 2000,
+        available_ram: Some(4000),
+        confirm_damage: true,
+    });
+
+    // Modify file on disk
+    std::fs::write(&path, b"changed content longer").unwrap();
+
+    let res = s.execute("file.approveMemory", json!({"id": id, "approve": true}));
+    assert!(res.is_err(), "changed file must be refused");
+}
+
+#[test]
+fn approve_memory_refuses_when_available_ram_decreases() {
+    let gb = 1u64 << 30;
+    let mut s = Session::new();
+    let src = crate::jobs::OpenSource::Bytes(std::sync::Arc::new(vec![0; 16]));
+    let fp = crate::jobs::SourceFingerprint::of(&src).unwrap();
+    let id = s.store_pending_preflight(crate::jobs::PendingPsdPreflight {
+        id: 0,
+        name: "ram_drop.psd".into(),
+        source: src,
+        fingerprint: fp,
+        required: 8 * gb,
+        soft_limit: 6 * gb,
+        hard_limit: 9 * gb,
+        available_ram: Some(12 * gb),
+        confirm_damage: true,
+    });
+
+    // Memory drops: only 6 GiB available -> H = 4.5 GiB < 8 GiB
+    let snap_low = photocraft_io::memory::MemorySnapshot { available_ram: Some(6 * gb), swap_free: None, commit_headroom: None };
+    photocraft_io::memory::with_mock_memory(snap_low, || {
+        let res = s.execute("file.approveMemory", json!({"id": id, "approve": true}));
+        assert!(res.is_err(), "decreased memory must refuse");
+    });
+}

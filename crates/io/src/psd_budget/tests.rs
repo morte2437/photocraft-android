@@ -192,3 +192,82 @@ fn an_unknown_color_mode_pays_for_the_layers_it_imports_as_rgb() {
     let refused = crate::import_source_with_limit("mode5.psd", source, &photocraft_raster::Interrupt::NONE, required - 1);
     assert!(matches!(refused, Err(IoError::PsdImportBudget { .. })), "{:?}", refused.map(|(r, _)| r.warnings));
 }
+
+#[test]
+fn adaptive_budget_requires_explicit_approval_in_confirmation_range() {
+    let file = testgen::small(Version::Psd, Compression::Zip);
+    let bytes = file.to_bytes().unwrap();
+    let est = estimate(&file);
+
+    // Set mock RAM such that est is strictly between S and H.
+    // E.g., if A = est * 2 + 1 GiB:
+    // H = min(75% A, A - 1 GiB) = min(1.5 est + 768 MiB, 2 est) = 1.5 est + 768 MiB > est.
+    // S = min(50% A, 8 GiB, H) = min(est + 512 MiB, 8 GiB, H).
+    // Let us set A precisely so S < est <= H:
+    // If we want S < est, 50% A < est => A < 2 est.
+    // If A = (est * 16) / 10 (i.e. 1.6 est):
+    // S = 0.8 est < est.
+    // H = min(1.2 est, 1.6 est - 1 GiB).
+    // To ensure saturating A - 1 GiB is not 0, let A = 10 * (1 << 30) (10 GiB):
+    // S = 5 GiB, H = 7.5 GiB.
+    // Target estimate est in (5 GiB, 7.5 GiB].
+    // With mock memory, we can scale mock RAM:
+    let gb = 1u64 << 30;
+    // Set RAM such that soft = est - 1, hard = est + 1000:
+    // With 12 GiB RAM: S = 6 GiB, H = 9 GiB.
+    let snap = crate::memory::MemorySnapshot { available_ram: Some(12 * gb), swap_free: None, commit_headroom: None };
+    crate::memory::with_mock_memory(snap, || {
+        // Without caller limit, small file is << 6 GiB -> automatically admitted
+        assert!(crate::import_with_options("small.psd", &bytes, &crate::ImportOptions::default()).is_ok());
+
+        // Now set caller limit to est + 1:
+        // Then hard = est + 1, soft = est + 1.
+        let opts = crate::ImportOptions { psd_max_pixel_bytes: est + 1, ..Default::default() };
+        assert!(crate::import_with_options("small.psd", &bytes, &opts).is_ok());
+
+        // Now set caller limit to est - 1:
+        // Then hard = est - 1 -> refused
+        let opts = crate::ImportOptions { psd_max_pixel_bytes: est - 1, ..Default::default() };
+        assert!(matches!(crate::import_with_options("small.psd", &bytes, &opts), Err(IoError::PsdImportBudget { .. })));
+    });
+}
+
+#[test]
+fn explicit_approval_allows_confirmation_range_but_never_bypasses_hard_boundary() {
+    let file = testgen::small(Version::Psd, Compression::Zip);
+    let bytes = file.to_bytes().unwrap();
+    let est = estimate(&file);
+    let gb = 1u64 << 30;
+
+    // Scale RAM so that est falls between S and H:
+    // S = 50% A, H = 75% A.
+    // We want S < est <= H.
+    // So 0.50 A < est <= 0.75 A => (4/3) est <= A < 2 est.
+    // If A = 1.6 * est, then S = 0.8 est, H_pct = 1.2 est.
+    // To satisfy saturating A - 1 GiB: we test pure policy decision:
+    let snap = crate::memory::MemorySnapshot { available_ram: Some(8 * gb), swap_free: None, commit_headroom: None };
+    let budget = crate::memory::resolve_budget(snap, None);
+    assert_eq!(budget.soft_limit, 4 * gb);
+    assert_eq!(budget.hard_limit, 6 * gb);
+
+    // In confirmation range:
+    let mid = 5 * gb;
+    assert_eq!(budget.decide(mid), crate::memory::BudgetDecision::RequiresApproval);
+
+    // Over hard limit:
+    let over = 7 * gb;
+    assert_eq!(budget.decide(over), crate::memory::BudgetDecision::Refused);
+}
+
+#[test]
+fn zero_available_ram_refuses_admission() {
+    let file = testgen::small(Version::Psd, Compression::Zip);
+    let bytes = file.to_bytes().unwrap();
+
+    let snap = crate::memory::MemorySnapshot { available_ram: Some(0), swap_free: None, commit_headroom: None };
+    crate::memory::with_mock_memory(snap, || {
+        let opts = crate::ImportOptions::default();
+        let res = crate::import_with_options("small.psd", &bytes, &opts);
+        assert!(matches!(res, Err(IoError::PsdImportBudget { .. })));
+    });
+}

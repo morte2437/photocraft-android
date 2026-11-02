@@ -250,6 +250,12 @@ fn batch_slot(jobs: &mut JobsUi, order: OpenOrder) -> Option<usize> {
 /// A background open's result (`{document, warnings, color}`) for `tab`, already taken out of
 /// [`JobsUi::opens`]: the document goes to the tab's slot, or to its place in its set.
 pub(crate) fn finish_open_tab(app: &mut PhotocraftApp, tab: &OpenTab, v: &Value) -> Result<(), String> {
+    if let Some(preflight_id) = v.get("pendingPreflight").and_then(Value::as_u64) {
+        let estimated = v.get("estimated").and_then(Value::as_u64).unwrap_or(0);
+        let available = v.get("availableRam").and_then(Value::as_u64);
+        crate::open_prompt::arrive_memory(app, preflight_id, tab.name.clone(), tab.path.clone(), tab.slot, tab.order, estimated, available);
+        return Ok(());
+    }
     let slot = tab.slot.or_else(|| tab.order.and_then(|o| batch_slot(&mut app.jobs, o)));
     let r = finish_open(app, &tab.name, tab.path.as_deref(), v, slot);
     end_batch(&mut app.jobs);
@@ -548,6 +554,12 @@ fn on_event(app: &mut PhotocraftApp, ctx: &egui::Context, e: JobEvent) {
 /// What [`crate::PhotocraftApp::open_bytes`] does after decoding, for a background open's result
 /// (`{document, docId, warnings, color}` or `{held, …}`).
 fn finish_open(app: &mut PhotocraftApp, name: &str, path: Option<&str>, v: &Value, slot: Option<usize>) -> Result<(), String> {
+    if let Some(preflight_id) = v.get("pendingPreflight").and_then(Value::as_u64) {
+        let estimated = v.get("estimated").and_then(Value::as_u64).unwrap_or(0);
+        let available = v.get("availableRam").and_then(Value::as_u64);
+        crate::open_prompt::arrive_memory(app, preflight_id, name.to_string(), path.map(str::to_string), slot, None, estimated, available);
+        return Ok(());
+    }
     let warnings: Vec<String> =
         v.get("warnings").and_then(Value::as_array).map(|a| a.iter().filter_map(|w| w.as_str().map(str::to_string)).collect()).unwrap_or_default();
     let held = |doc, read_only, question, policy_applied| crate::open_prompt::Held {

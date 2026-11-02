@@ -16,7 +16,7 @@ const BAND_BYTES: usize = 32 << 20;
 /// Decodes a flat image into a single-layer document; a TIFF with Photoshop layer data opens
 /// layered (see [`crate::tiff_layers`]).
 pub fn import_flat(name: &str, bytes: &[u8]) -> Result<ImportResult, IoError> {
-    import_flat_with_limit(name, bytes, crate::DEFAULT_PSD_IMPORT_PIXEL_BYTES)
+    import_flat_with_limit(name, bytes, 0)
 }
 
 /// [`import_flat`] with the caller's PSD pixel allowance, which a layered TIFF is held to.
@@ -24,7 +24,8 @@ pub(crate) fn import_flat_with_limit(name: &str, bytes: &[u8], pixel_limit: u64)
     // Detected once; every step below branches on it.
     let format = codecs::detect(bytes);
     if format == Some(Format::Tiff) {
-        return import_tiff_page_with_limit(name, bytes, None, pixel_limit);
+        let limit = if pixel_limit > 0 { pixel_limit } else { crate::memory::resolve_budget(crate::memory::MemorySnapshot::current(), None).hard_limit };
+        return import_tiff_page_with_limit(name, bytes, None, limit);
     }
     let img = codecs::decode_as(format.ok_or(codecs::CodecError::UnknownFormat)?, bytes)?;
     // A palette BMP, PNG or GIF opens in Indexed Color mode with its colour table, as in

@@ -64,10 +64,11 @@ pub mod pdf;
 mod pdn;
 pub use pcraft_cache::PcraftExportCache;
 pub mod pixels;
-mod psd_budget;
+pub mod psd_budget;
 mod psd_export;
+pub mod psd_gate;
 mod psd_import;
-pub use psd_budget::DEFAULT_PSD_IMPORT_PIXEL_BYTES;
+pub use psd_budget::{DEFAULT_PSD_IMPORT_PIXEL_BYTES, PsdMemoryEstimate, estimate as estimate_psd_memory};
 pub mod psd_thumbnail;
 pub mod raw;
 pub mod slices_map;
@@ -115,6 +116,12 @@ pub enum IoError {
     /// The conservative PSD pixel-storage and workspace estimate exceeded its allowance.
     #[error("PSD import needs an estimated {required} bytes of pixel memory; limit is {limit} bytes")]
     PsdImportBudget { required: u64, limit: u64 },
+    /// PSD pixel-storage estimate exceeds the automatic soft limit, but is within the hard limit.
+    /// Explicit approval is required to proceed.
+    #[error(
+        "PSD import needs an estimated {required} bytes of pixel memory (soft limit {soft_limit} bytes, hard limit {hard_limit} bytes); explicit approval required"
+    )]
+    PsdApprovalRequired { required: u64, soft_limit: u64, hard_limit: u64, available_ram: Option<u64> },
     /// A pixel buffer could not be allocated while reading a file: the file may be fine, but
     /// this machine has no memory for it.
     #[error("not enough memory: {0}")]
@@ -349,8 +356,10 @@ pub struct ImportOptions {
     /// The demosaic method camera raws are developed with.
     pub demosaic: raw::Demosaic,
     /// PSD layer/mask/merged pixel allowance, including conversion workspace. May lower the
-    /// default cap; does not cover metadata or smart-filter caches.
+    /// default cap; 0 uses the adaptive budget. Does not cover metadata or smart-filter caches.
     pub psd_max_pixel_bytes: u64,
+    /// Explicit one-shot authorization for imports that exceed the soft budget but fit within the hard budget.
+    pub psd_high_memory_approved: bool,
 }
 
 impl Default for ImportOptions {
@@ -358,7 +367,8 @@ impl Default for ImportOptions {
         ImportOptions {
             max_group_depth: photocraft_doc::MAX_GROUP_DEPTH,
             demosaic: raw::Demosaic::default(),
-            psd_max_pixel_bytes: DEFAULT_PSD_IMPORT_PIXEL_BYTES,
+            psd_max_pixel_bytes: 0,
+            psd_high_memory_approved: false,
         }
     }
 }
@@ -401,7 +411,8 @@ fn import_psd(
     name: &str,
     ctl: &photocraft_raster::Interrupt,
     damaged: &mut bool,
-    pixel_limit: u64,
+    caller_limit: u64,
+    high_memory_approved: bool,
     parse: impl FnOnce(
         &dyn Fn(&PsdFile) -> photocraft_psd::Result<bool>,
         &dyn Fn(&PsdFile) -> bool,
@@ -415,7 +426,23 @@ fn import_psd(
         &|file| {
             // Only an import that keeps the layer tree is bound by the group nesting cap.
             let depth = if psd_import::can_recover_layers(file) { psd_import::check_group_depth(file) } else { Ok(()) };
-            let checked = depth.and_then(|()| psd_budget::check(file, pixel_limit));
+            let checked = depth.and_then(|()| {
+                let est = psd_budget::estimate(file)?;
+                let snapshot = memory::MemorySnapshot::current();
+                let limit_opt = (caller_limit > 0).then_some(caller_limit);
+                let budget = memory::resolve_budget(snapshot, limit_opt);
+                match budget.decide(est.total_bytes) {
+                    memory::BudgetDecision::Automatic => Ok(()),
+                    memory::BudgetDecision::RequiresApproval if high_memory_approved => Ok(()),
+                    memory::BudgetDecision::RequiresApproval => Err(IoError::PsdApprovalRequired {
+                        required: est.total_bytes,
+                        soft_limit: budget.soft_limit,
+                        hard_limit: budget.hard_limit,
+                        available_ram: budget.available_ram,
+                    }),
+                    memory::BudgetDecision::Refused => Err(IoError::PsdImportBudget { required: est.total_bytes, limit: budget.hard_limit }),
+                }
+            });
             if let Err(error) = checked {
                 *preflight_error.borrow_mut() = Some(error);
                 return Err(PsdError::LimitExceeded("PSD import preflight refused the file"));
@@ -434,6 +461,31 @@ fn import_psd(
     })?;
     ctl.check().map_err(|_| IoError::Cancelled)?;
     ctl.progress(0.05);
+
+    // Acquire process-wide admission gate to prevent concurrent decodes spending the same headroom
+    let _admission = psd_gate::acquire_decode_admission(ctl)?;
+
+    // Recheck memory availability immediately before decoding
+    let snapshot_recheck = memory::MemorySnapshot::current();
+    let limit_opt = (caller_limit > 0).then_some(caller_limit);
+    let budget_recheck = memory::resolve_budget(snapshot_recheck, limit_opt);
+    let est = psd_budget::estimate(&file)?;
+    match budget_recheck.decide(est.total_bytes) {
+        memory::BudgetDecision::Automatic => {}
+        memory::BudgetDecision::RequiresApproval if high_memory_approved => {}
+        memory::BudgetDecision::RequiresApproval => {
+            return Err(IoError::PsdApprovalRequired {
+                required: est.total_bytes,
+                soft_limit: budget_recheck.soft_limit,
+                hard_limit: budget_recheck.hard_limit,
+                available_ram: budget_recheck.available_ram,
+            });
+        }
+        memory::BudgetDecision::Refused => {
+            return Err(IoError::PsdImportBudget { required: est.total_bytes, limit: budget_recheck.hard_limit });
+        }
+    }
+
     // Read before the conversion, which moves the global blocks into the document.
     let txt2 = file.global_blocks.iter().find(|b| &b.key == b"Txt2").and_then(|b| photocraft_text::psd::parse_txt2(&b.data));
     let (mut document, warnings, psd_damaged, fatal_error) = psd_import::psd_to_document_owned(file, ctl, merged).ok_or(IoError::Cancelled)?;
@@ -469,12 +521,12 @@ pub fn import_file_for_open_with(
         let bytes = photocraft_format::read_file(path).map_err(read_failed)?;
         return import_for_open_with(name, &bytes, opts, ctl);
     }
-    import_source_with_limit(name, photocraft_psd::Source::new(source), ctl, opts.psd_max_pixel_bytes.min(DEFAULT_PSD_IMPORT_PIXEL_BYTES))
+    import_source_with_limit(name, photocraft_psd::Source::new(source), ctl, opts.psd_max_pixel_bytes, opts.psd_high_memory_approved)
 }
 
 /// [`import_file_for_open_with`] for a PSD/PSB in any [`photocraft_psd::ReadAt`] source.
 pub fn import_source_for_open_with(name: &str, source: photocraft_psd::Source, ctl: &photocraft_raster::Interrupt) -> Result<(ImportResult, bool), IoError> {
-    import_source_with_limit(name, source, ctl, DEFAULT_PSD_IMPORT_PIXEL_BYTES)
+    import_source_with_limit(name, source, ctl, 0, false)
 }
 
 fn import_source_with_limit(
@@ -482,10 +534,13 @@ fn import_source_with_limit(
     source: photocraft_psd::Source,
     ctl: &photocraft_raster::Interrupt,
     pixel_limit: u64,
+    high_memory_approved: bool,
 ) -> Result<(ImportResult, bool), IoError> {
     ctl.check().map_err(|_| IoError::Cancelled)?;
     let mut damaged = false;
-    let r = import_psd(name, ctl, &mut damaged, pixel_limit, |want, recover| PsdFile::from_source_and_merged_preflight(source, want, recover))?;
+    let r = import_psd(name, ctl, &mut damaged, pixel_limit, high_memory_approved, |want, recover| {
+        PsdFile::from_source_and_merged_preflight(source, want, recover)
+    })?;
     ctl.check().map_err(|_| IoError::Cancelled)?;
     ctl.progress(1.0);
     Ok((r, damaged))
@@ -508,7 +563,7 @@ fn import_stages(name: &str, bytes: &[u8], ctl: &photocraft_raster::Interrupt, o
     // Magic first: an Affinity file renamed .psd is still Affinity (#5258 corpus
     // preview_never_saves_back_to_its_native_or_renamed_source).
     if is_psd(bytes) {
-        return import_psd(name, ctl, damaged, opts.psd_max_pixel_bytes.min(DEFAULT_PSD_IMPORT_PIXEL_BYTES), |want, recover| {
+        return import_psd(name, ctl, damaged, opts.psd_max_pixel_bytes, opts.psd_high_memory_approved, |want, recover| {
             PsdFile::from_bytes_and_merged_preflight(bytes, want, recover)
         });
     }
@@ -543,11 +598,11 @@ fn import_stages(name: &str, bytes: &[u8], ctl: &photocraft_raster::Interrupt, o
     // A `.psd`/`.psb`/`.psdt` with no raster signature keeps the PSD error instead of
     // `codec: unrecognized image format` (#5258). Magic already returned above.
     if is_psd_input(name, bytes) {
-        return import_psd(name, ctl, damaged, opts.psd_max_pixel_bytes.min(DEFAULT_PSD_IMPORT_PIXEL_BYTES), |want, recover| {
+        return import_psd(name, ctl, damaged, opts.psd_max_pixel_bytes, opts.psd_high_memory_approved, |want, recover| {
             PsdFile::from_bytes_and_merged_preflight(bytes, want, recover)
         });
     }
-    flat::import_flat_with_limit(name, bytes, opts.psd_max_pixel_bytes.min(DEFAULT_PSD_IMPORT_PIXEL_BYTES))
+    flat::import_flat_with_limit(name, bytes, opts.psd_max_pixel_bytes)
 }
 
 /// Extension names can be wrong (for example, an image downloaded as WebP and renamed `.svg`).

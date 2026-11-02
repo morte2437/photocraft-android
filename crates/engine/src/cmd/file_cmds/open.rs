@@ -109,12 +109,25 @@ fn raw_resolution(ppi: f64, warnings: &[String], doc: &mut Document) {
 }
 
 pub fn open_bytes_as(s: &mut Session, name: &str, bytes: &[u8], as_ext: Option<&str>, path: Option<String>) -> Result<Value> {
+    open_bytes_as_with_options(s, name, bytes, as_ext, path, false)
+}
+
+pub fn open_bytes_as_with_options(
+    s: &mut Session,
+    name: &str,
+    bytes: &[u8],
+    as_ext: Option<&str>,
+    path: Option<String>,
+    approve_high_memory: bool,
+) -> Result<Value> {
     crate::allocation::checkpoint("importing document")?;
     let decode_name = match as_ext {
         Some(ext) => format!("{}.{}", stem(name), ext.trim_start_matches('.')),
         None => name.to_string(),
     };
-    let r = photocraft_io::import(&decode_name, bytes).map_err(|e| EngineError::Other(format!("{decode_name}: {e}")))?;
+    let mut opts = crate::jobs::import_options(s.prefs());
+    opts.psd_high_memory_approved = approve_high_memory;
+    let r = photocraft_io::import_with_options(&decode_name, bytes, &opts).map_err(|e| EngineError::Other(format!("{decode_name}: {e}")))?;
     let mut doc = r.document;
     tag_exr_colorspace(s, &decode_name, &mut doc);
     raw_defaults(s, &r.warnings, &mut doc);
@@ -141,7 +154,36 @@ pub(super) fn open_as(s: &mut Session, p: &Value) -> Result<Value> {
     let path = str_param(p, "path", "file.openAs")?.to_string();
     let bytes = read_file(&path)?;
     let as_ext = p.get("as").or_else(|| p.get("format")).and_then(Value::as_str);
-    open_bytes_as(s, &path, &bytes, as_ext, Some(path.clone()))
+    let approve_high_memory = p.get("approveHighMemory").and_then(Value::as_bool).unwrap_or(false);
+    open_bytes_as_with_options(s, &path, &bytes, as_ext, Some(path.clone()), approve_high_memory)
+}
+
+pub(super) fn approve_memory(s: &mut Session, p: &Value) -> Result<Value> {
+    let id = crate::file_cmds::u64_param(p, "id", "file.approveMemory")?;
+    let approve = p.get("approve").and_then(Value::as_bool).unwrap_or(true);
+    if !approve {
+        s.cancel_pending_preflight(id);
+        return Ok(json!({"id": id, "approved": false, "cancelled": true}));
+    }
+    let preflight = s
+        .take_pending_preflight(id)
+        .ok_or_else(|| EngineError::BadParams { cmd: "file.approveMemory".into(), msg: format!("no pending high-memory preflight for id {id}") })?;
+    if !preflight.fingerprint.matches(&preflight.source) {
+        return Err(EngineError::Other("the file has changed since it was checked; please try opening it again".into()));
+    }
+    let snapshot = photocraft_io::memory::MemorySnapshot::current();
+    let budget = photocraft_io::memory::resolve_budget(snapshot, None);
+    if preflight.required > budget.hard_limit {
+        return Err(EngineError::Other(format!(
+            "available memory has decreased; opening this file needs {} bytes, exceeding current hard limit {} bytes",
+            preflight.required, budget.hard_limit
+        )));
+    }
+    let started = s.start_open_approved(&preflight.name, preflight.source, preflight.confirm_damage)?;
+    match started {
+        crate::jobs::Started::Done(v) => Ok(json!({"id": id, "approved": true, "result": v})),
+        crate::jobs::Started::Job(job_id) => Ok(json!({"id": id, "approved": true, "job": job_id.0})),
+    }
 }
 
 // ---------- place ----------
@@ -159,7 +201,9 @@ pub fn place_bytes(s: &mut Session, name: &str, bytes: Vec<u8>, linked: Option<S
     let (cw, ch) = (d.doc.size.width as f64, d.doc.size.height as f64);
     let fmt = d.doc.pixel_format();
     let vector = photocraft_io::svg::is_svg(&bytes);
-    let opts = crate::jobs::import_options(s.prefs());
+    let approve = p.get("approveHighMemory").and_then(Value::as_bool).unwrap_or(false);
+    let mut opts = crate::jobs::import_options(s.prefs());
+    opts.psd_high_memory_approved = approve;
     let imported = photocraft_io::import_with_options(name, &bytes, &opts).map_err(|e| EngineError::Other(format!("{name}: {e}")))?;
     if imported.preview_only {
         return Err(EngineError::Other(format!(

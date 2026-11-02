@@ -39,8 +39,8 @@ use info::file_info;
 pub use info::{CAMERA_FIELDS, camera_data, read_file_info, write_file_info};
 #[cfg(test)]
 use info::{exposure_text, find_element};
-pub use open::{PLACE_EMBEDDED, open_bytes_as, place_bytes, raw_defaults};
-use open::{close_all, close_others, open_as, place, revert};
+pub use open::{PLACE_EMBEDDED, open_bytes_as, open_bytes_as_with_options, place_bytes, raw_defaults};
+use open::{approve_memory, close_all, close_others, open_as, place, revert};
 pub(crate) use open::{import, tag_exr_colorspace};
 use paths::is_file;
 #[cfg(test)]
@@ -115,6 +115,10 @@ impl crate::DocState {
 
 pub(crate) fn str_param<'a>(p: &'a Value, key: &str, cmd: &str) -> Result<&'a str> {
     p.get(key).and_then(Value::as_str).filter(|v| !v.is_empty()).ok_or_else(|| EngineError::BadParams { cmd: cmd.into(), msg: format!("missing \"{key}\"") })
+}
+
+pub(crate) fn u64_param(p: &Value, key: &str, cmd: &str) -> Result<u64> {
+    p.get(key).and_then(Value::as_u64).ok_or_else(|| EngineError::BadParams { cmd: cmd.into(), msg: format!("missing or invalid \"{key}\"") })
 }
 
 pub(crate) fn f64_param(p: &Value, key: &str) -> Option<f64> {
@@ -253,10 +257,11 @@ pub fn specs() -> Vec<CommandSpec> {
             "Open As…",
             &["File"],
             Some("Cmd+Alt+Shift+O"),
-            r##"{"path":str,"as":"psd|png|jpg|tiff|…"? (decode as this format)}"##,
+            r##"{"path":str,"as":"psd|png|jpg|tiff|…"? (decode as this format),"approveHighMemory":bool=false (explicitly approve high memory usage)}"##,
             native,
             open_as
         ),
+        spec!("file.approveMemory", "Approve High Memory PSD Import", &[], None, r##"{"id":u64,"approve":bool=true}"##, native, approve_memory),
         spec!(
             "file.placeEmbedded",
             "Place Embedded…",

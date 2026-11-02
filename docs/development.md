@@ -663,12 +663,22 @@ before merged-image validation or decoding. The conservative estimate sums retai
 storage (including padding and negative offsets) and the largest decode/conversion workspace.
 It does not credit uniform-tile sharing or pruning, so some files that could fit after decoding
 are refused. Valid off-canvas pixels are preserved; oversized layers are rejected rather than
-clipped. Defaults are 2 GiB on native targets and 1 GiB on wasm. Applications can lower the
-allowance with `ImportOptions::psd_max_pixel_bytes`; values above the default are capped.
-The source-only convenience API uses the default; `import_file_for_open_with` honours options.
+clipped.
 
-An over-budget ordinary or interactive import returns `IoError::PsdImportBudget` with the
-estimated and allowed byte counts; damaged-file recovery never bypasses that error. The legacy
+Native desktop platforms use an adaptive memory policy evaluated against currently available
+physical RAM (excluding swap) and system commit headroom:
+- **Hard budget (H)**: $\min(75\% 	ext{ RAM}, 	ext{RAM} - 1	ext{ GiB}, 	ext{commit headroom} - 512	ext{ MiB}, 	ext{address-space limits})$.
+- **Soft budget (S)**: $\min(50\% 	ext{ RAM}, 8	ext{ GiB}, H)$.
+- Files requiring $\le S$ are admitted automatically.
+- Files requiring $S < E \le H$ prompt for explicit one-shot user confirmation ("Open anyway") in the UI or require `approveHighMemory: true` for headless callers.
+- Files requiring $> H$ are refused and cannot be overridden.
+- Fallback allowance when usable memory is unknown is 2 GiB with no confirmation override; WebAssembly uses a fixed 1 GiB limit.
+- Applications can lower the admission threshold with `ImportOptions::psd_max_pixel_bytes`; explicit caller limits may lower admission, never bypass the hard boundary.
+- Concurrent PSD decodes are serialized using a process-wide, cancellation-aware admission gate, with nested decodes sharing the enclosing allowance.
+
+An import exceeding the hard budget returns `IoError::PsdImportBudget` with the estimated
+and allowed byte counts; imports requiring confirmation return `IoError::PsdApprovalRequired`
+when unapproved. Damaged-file recovery never bypasses these memory guards. The legacy
 `psd_to_document` conversion APIs cannot return an error, so they return an empty document and
 an explicit warning on preflight refusal. Layer and mask pixel allocation failures also fail
 ordinary imports instead of opening partial content.

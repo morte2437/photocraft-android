@@ -16,6 +16,17 @@ use crate::IoError;
 /// workspace and tile padding. Other format/parser limits still apply. Callers may lower it.
 pub const DEFAULT_PSD_IMPORT_PIXEL_BYTES: u64 = if cfg!(target_arch = "wasm32") { 1 << 30 } else { 2 << 30 };
 
+/// Structured memory estimate for a PSD/PSB import.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PsdMemoryEstimate {
+    /// Bytes required for all possible retained layer, mask, and merged surfaces.
+    pub retained_bytes: u64,
+    /// Largest scratch/conversion workspace required during decoding.
+    pub workspace_bytes: u64,
+    /// Total peak requirement (retained + workspace).
+    pub total_bytes: u64,
+}
+
 #[derive(Default)]
 struct ImportBudget {
     retained: u64,
@@ -49,14 +60,6 @@ impl ImportBudget {
         self.retained.checked_add(self.workspace).ok_or_else(overflow)
     }
 
-    fn check(&self, limit: u64) -> Result<(), IoError> {
-        let required = self.required()?;
-        if required > limit {
-            return Err(IoError::PsdImportBudget { required, limit });
-        }
-        Ok(())
-    }
-
     fn surface(&mut self, rect: Rect, channels: u64, sample: u64) -> Result<(), IoError> {
         if rect.is_empty() {
             return Ok(());
@@ -70,11 +73,12 @@ impl ImportBudget {
     }
 }
 
+/// Computes the conservative preflight pixel memory and workspace estimate for `file`.
+///
 /// No decoding here: even a compact ZIP stream must be refused before inflation. The sum
 /// deliberately counts full decoded planes for every compression method, plus their row
-/// buffers, interleave output and float conversion workspace. This is an upper estimate,
-/// rather than a promise that an allocator or OS can satisfy an accepted import.
-pub(crate) fn check(file: &PsdFile, limit: u64) -> Result<(), IoError> {
+/// buffers, interleave output and float conversion workspace.
+pub fn estimate(file: &PsdFile) -> Result<PsdMemoryEstimate, IoError> {
     let mut budget = ImportBudget::default();
     let h = &file.header;
     h.validate()?;
@@ -145,7 +149,17 @@ pub(crate) fn check(file: &PsdFile, limit: u64) -> Result<(), IoError> {
             budget.scratch(converted.checked_add(p.decoded_bytes).ok_or_else(overflow)?);
         }
     }
-    budget.check(limit)
+    let total_bytes = budget.required()?;
+    Ok(PsdMemoryEstimate { retained_bytes: budget.retained, workspace_bytes: budget.workspace, total_bytes })
+}
+
+/// Checks that `file`'s estimate does not exceed `limit`.
+pub fn check(file: &PsdFile, limit: u64) -> Result<PsdMemoryEstimate, IoError> {
+    let est = estimate(file)?;
+    if est.total_bytes > limit {
+        return Err(IoError::PsdImportBudget { required: est.total_bytes, limit });
+    }
+    Ok(est)
 }
 
 #[cfg(test)]

@@ -41,9 +41,23 @@ pub struct Held {
     pub policy_applied: bool,
 }
 
+/// Dialog field for the high-memory confirmation prompt.
+pub const MEMORY_FIELD: &str = "__psdMemoryOpen";
+
+/// An un-decoded PSD file whose preflight estimate requires user approval.
+pub struct MemoryPrompt {
+    pub id: u64,
+    pub name: String,
+    pub path: Option<String>,
+    pub slot: Option<usize>,
+    pub order: Option<crate::jobs_ui::OpenOrder>,
+    pub estimated: u64,
+    pub available: Option<u64>,
+}
+
 /// Whether a file that just finished reading has to wait: one earlier in the queue does.
 pub fn waiting(app: &PhotocraftApp) -> bool {
-    !app.held_opens.is_empty()
+    !app.held_opens.is_empty() || !app.held_memory_prompts.is_empty()
 }
 
 /// Opens `held` now, or queues it behind the file whose prompt is up.
@@ -266,4 +280,93 @@ fn open(app: &mut PhotocraftApp, held: Held, action: Option<&str>) -> Result<Val
     app.session.set_active(index);
     crate::jobs_ui::after_open(app, document, &name, path.as_deref(), &warnings, bytes.as_deref().map(Vec::as_slice))?;
     Ok(json!({"document": index, "action": action}))
+}
+
+pub fn arrive_memory(
+    app: &mut PhotocraftApp,
+    id: u64,
+    name: String,
+    path: Option<String>,
+    slot: Option<usize>,
+    order: Option<crate::jobs_ui::OpenOrder>,
+    estimated: u64,
+    available: Option<u64>,
+) {
+    app.held_memory_prompts.push_back(MemoryPrompt { id, name, path, slot, order, estimated, available });
+    advance_memory(app);
+}
+
+pub fn owns_memory(fields: &serde_json::Map<String, Value>) -> bool {
+    fields.contains_key(MEMORY_FIELD)
+}
+
+pub(crate) fn memory_body(ui: &mut egui::Ui, fields: &serde_json::Map<String, Value>) {
+    ui.label(fields.get("message").and_then(Value::as_str).unwrap_or_default());
+}
+
+pub fn advance_memory(app: &mut PhotocraftApp) {
+    let Some(front) = app.held_memory_prompts.front() else { return };
+    if !app.ui.dialogs.iter().any(|d| owns_memory(&d.fields)) {
+        show_memory(app, front);
+    }
+}
+
+fn show_memory(app: &mut PhotocraftApp, prompt: &MemoryPrompt) {
+    let est_gb = prompt.estimated as f64 / (1u64 << 30) as f64;
+    let avail_str = match prompt.available {
+        Some(a) => format!("{:.1} GB", a as f64 / (1u64 << 30) as f64),
+        None => "unknown".to_string(),
+    };
+    let message = format!(
+        "{}\n\n{}",
+        crate::i18n::fmt(
+            tl!("Opening “{name}” requires an estimated {est:.1} GB of memory ({avail} available)."),
+            &[("name", &prompt.name), ("est", &format!("{est_gb:.1}")), ("avail", &avail_str)],
+        ),
+        tl!("Opening this document uses more memory and may slow down your computer or other running applications."),
+    );
+
+    let fields = [
+        (MEMORY_FIELD.into(), json!(true)),
+        ("__label".into(), json!(tl!("High Memory Photoshop Document"))),
+        ("name".into(), json!(prompt.name)),
+        ("id".into(), json!(prompt.id)),
+        ("message".into(), json!(message)),
+        ("estimated".into(), json!(prompt.estimated)),
+        ("available".into(), json!(prompt.available)),
+    ]
+    .into_iter()
+    .collect();
+
+    app.ui.open_dialog(crate::state::DialogKind::Command, fields);
+}
+
+pub(crate) fn answer_memory(app: &mut PhotocraftApp, accept: bool) -> Result<Value, String> {
+    let Some(front) = app.held_memory_prompts.pop_front() else {
+        return Err("no high-memory PSD is waiting for confirmation".into());
+    };
+    let id = front.id;
+    let name = front.name.clone();
+    let r = app.run("file.approveMemory", json!({"id": id, "approve": accept})).map_err(|e| format!("{}: {e}", name))?;
+
+    if accept {
+        if let Some(job) = r.get("job").and_then(Value::as_u64) {
+            app.jobs.opens.push(crate::jobs_ui::OpenTab {
+                job: photocraft_engine::jobs::JobId(job),
+                name: name.clone(),
+                path: front.path,
+                slot: front.slot,
+                order: front.order,
+            });
+            app.jobs.focus = Some(photocraft_engine::jobs::JobId(job));
+            app.ui.chrome.home = None;
+            app.ui.status = crate::i18n::fmt(tl!("Opening {name}…"), &[("name", &name)]);
+            app.ui.status_error = false;
+        }
+    } else {
+        app.ui.status = crate::i18n::fmt(tl!("Cancelled opening {name}"), &[("name", &name)]);
+        app.ui.status_error = false;
+    }
+    advance_memory(app);
+    Ok(r)
 }
