@@ -3230,6 +3230,9 @@ curves	Smooth	Сгладить
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} шаг пока не имеет эквивалента в PhotoCraft|{n} шага пока не имеют эквивалента в PhotoCraft|{n} шагов пока не имеют эквивалента в PhotoCraft
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	Сохранена {n} операция в {file}|Сохранены {n} операции в {file}|Сохранено {n} операций в {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	Пропущен {n} шаг без эквивалента в Photoshop|Пропущены {n} шага без эквивалента в Photoshop|Пропущено {n} шагов без эквивалента в Photoshop
+@plural	{n} action file loaded|{n} action files loaded	Загружен {n} файл операций|Загружены {n} файла операций|Загружено {n} файлов операций
+	{set} from {file} replaced the one from {earlier}	Набор {set} из {file} заменил набор из {earlier}
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	Не удалось загрузить {n} файл: {errors}|Не удалось загрузить {n} файла: {errors}|Не удалось загрузить {n} файлов: {errors}
 	File Naming	Именование файлов
 	Starting serial	Начальный порядковый номер
 	Insert Stop…	Вставить остановку…

@@ -34,13 +34,13 @@ fn expanded_properties_keep_flags_and_original_skip_indices() {
         vec![
             ("layer.setProps".into(), json!({"name": "Renamed", "opacity": 0.37, "blend": "Multiply"})),
             ("filter.blur.gaussianBlur".into(), json!({"radius": 2})),
-            ("filter.render.clouds".into(), json!({})),
+            ("unsupported.forTest".into(), json!({})),
         ],
     );
     action.disabled.insert(0);
     action.dialogs.insert(0);
     let (bytes, skipped) = export("Set", &[&action], &[], true).unwrap();
-    assert_eq!(skipped, [Skipped { action: "Flags".into(), step: 2, id: "filter.render.clouds".into() }]);
+    assert_eq!(skipped, [Skipped { action: "Flags".into(), step: 2, id: "unsupported.forTest".into() }]);
     let file = atn::parse(&bytes).unwrap();
     let items = &file.actions[0].items;
     assert_eq!(items.len(), 4);

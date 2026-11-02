@@ -1,5 +1,133 @@
 use super::*;
 
+/// A small valid Photoshop set, generated without external action files.
+fn action_set_bytes(set: &str, action: &str) -> Vec<u8> {
+    use photocraft_psd::atn::{AtnAction, AtnEvent, AtnFile, AtnItem};
+    use photocraft_psd::descriptor::UnicodeString;
+    photocraft_psd::atn::write(&AtnFile {
+        name: UnicodeString::new_nul(set),
+        actions: vec![AtnAction {
+            name: UnicodeString::new_nul(action),
+            items: vec![AtnItem { event: AtnEvent::Code(*b"Invr"), dictionary: "Invert".into(), ..Default::default() }],
+            ..Default::default()
+        }],
+        ..Default::default()
+    })
+    .unwrap()
+}
+
+#[test]
+/// Browser multi-selection must not be truncated to the first file.
+fn bulk_load_imports_every_chosen_action_file() {
+    use crate::file_dialog::{FileDialogAnswer, FileDialogRequest};
+    let files = vec![("first.atn".into(), action_set_bytes("First set", "First")), ("second.atn".into(), action_set_bytes("Second set", "Second"))];
+    let (show, asked) = crate::file_dialog::fake(vec![Some(FileDialogAnswer::ContentsMany(files))]);
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services { file_dialog: Some(show), ..Default::default() });
+    load_dialog(&mut app).unwrap();
+    app.poll_file_dialog(&egui::Context::default(), None);
+    assert_eq!(app.session.actions.list.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["First", "Second"]);
+    assert!(matches!(asked.borrow().as_slice(), [FileDialogRequest::Open { multiple: true, extensions: Some(ext), .. }] if ext == &["atn"]));
+    assert!(!app.file_dialog_open());
+    assert!(!app.ui.status_error, "{}", app.ui.status);
+}
+
+#[test]
+/// A corrupt middle file cannot hide warnings or prevent a later set replacement.
+fn bulk_load_keeps_selection_order_and_earlier_warnings_and_errors() {
+    use crate::file_dialog::FileDialogAnswer;
+    let dir = tempfile::tempdir().unwrap();
+    let first = dir.path().join("z-first.atn");
+    let broken = dir.path().join("broken.atn");
+    let last = dir.path().join("a-last.atn");
+    let mut unsupported = photocraft_psd::atn::parse(&action_set_bytes("Same set", "Old")).unwrap();
+    unsupported.actions[0].items[0].event = photocraft_psd::atn::AtnEvent::Code(*b"Xxxx");
+    std::fs::write(&first, photocraft_psd::atn::write(&unsupported).unwrap()).unwrap();
+    std::fs::write(&broken, b"not an action file").unwrap();
+    std::fs::write(&last, action_set_bytes("Same set", "Replacement")).unwrap();
+    let paths = [first, broken, last].map(|p| p.to_string_lossy().into_owned()).to_vec();
+    let mut app = disk_app(vec![Some(FileDialogAnswer::Paths(paths))]);
+    load_dialog(&mut app).unwrap();
+    app.poll_file_dialog(&egui::Context::default(), None);
+    assert_eq!(app.session.actions.list.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["Replacement"]);
+    assert_eq!(app.ui.actions.selected, Some(0));
+    assert!(app.ui.status_error, "a later success must not hide an earlier failure");
+    // The replaced set's unsupported step is gone, so it is not counted.
+    for part in ["2 action files loaded", "1 action;", "Same set from a-last.atn replaced the one from z-first.atn", "1 file could not be loaded", "broken.atn"]
+    {
+        assert!(app.ui.status.contains(part), "{part}: {}", app.ui.status);
+    }
+    assert!(!app.ui.status.contains("PhotoCraft equivalent"), "{}", app.ui.status);
+}
+
+/// Load `files` (name, bytes) in one Load Actions… selection and return the status bar text.
+fn bulk_load_status(app: &mut PhotocraftApp, files: Vec<(String, Vec<u8>)>) -> String {
+    use crate::file_dialog::FileDialogAnswer;
+    let (show, _) = crate::file_dialog::fake(vec![Some(FileDialogAnswer::ContentsMany(files))]);
+    app.services.file_dialog = Some(show);
+    load_dialog(app).unwrap();
+    app.poll_file_dialog(&egui::Context::default(), None);
+    app.ui.status.clone()
+}
+
+#[test]
+/// Two files whose sets share a name: the later replaces the earlier, and the summary counts only
+/// what the panel holds afterwards and says which set was replaced.
+fn bulk_load_summary_counts_a_replaced_set_once() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    let mut a = photocraft_psd::atn::parse(&action_set_bytes("Set 1", "A")).unwrap();
+    a.actions[0].items[0].event = photocraft_psd::atn::AtnEvent::Code(*b"Xxxx");
+    let files = vec![("a.atn".into(), photocraft_psd::atn::write(&a).unwrap()), ("b.atn".into(), action_set_bytes("Set 1", "B"))];
+    let status = bulk_load_status(&mut app, files);
+    assert_eq!(app.session.actions.list.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["B"]);
+    assert!(!app.ui.status_error, "{status}");
+    assert_eq!(status, "2 action files loaded (1 action; Set 1 from b.atn replaced the one from a.atn)");
+}
+
+#[test]
+/// Distinct set names: every set counts, nothing is reported as replaced, and the file count reads
+/// right for one loaded file as well as several.
+fn bulk_load_summary_counts_distinct_sets_and_pluralises_files() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    let files = vec![("a.atn".into(), action_set_bytes("Set A", "A")), ("b.atn".into(), action_set_bytes("Set B", "B"))];
+    assert_eq!(bulk_load_status(&mut app, files), "2 action files loaded (2 actions)");
+    let files = vec![("c.atn".into(), action_set_bytes("Set C", "C")), ("bad.atn".into(), b"not an action file".to_vec())];
+    let status = bulk_load_status(&mut app, files);
+    assert!(app.ui.status_error);
+    assert!(status.starts_with("1 action file loaded (1 action; 1 file could not be loaded: bad.atn: "), "{status}");
+}
+
+#[test]
+/// The multi-file summary is translated like the rest of the Actions panel.
+fn bulk_load_summary_is_translated() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    let files = vec![("a.atn".into(), action_set_bytes("Set 1", "A")), ("b.atn".into(), action_set_bytes("Set 1", "B"))];
+    let status = crate::i18n::with_language(crate::i18n::Lang::from_code("de").unwrap(), || bulk_load_status(&mut app, files));
+    assert_eq!(status, "2 Aktionsdateien geladen (1 Aktion; Satz Set 1 aus b.atn hat den aus a.atn ersetzt)");
+}
+
+#[test]
+/// Dismissing the picker is inert; one selected file keeps its existing status message.
+fn bulk_load_keeps_cancel_empty_and_single_file_behavior() {
+    use crate::file_dialog::FileDialogAnswer;
+    for answer in [None, Some(FileDialogAnswer::Paths(Vec::new())), Some(FileDialogAnswer::ContentsMany(Vec::new()))] {
+        let mut app = disk_app(vec![answer]);
+        app.session.actions.list.push(Action::new("Existing", vec![]));
+        app.ui.actions.selected = Some(0);
+        app.ui.status = "Unchanged".into();
+        load_dialog(&mut app).unwrap();
+        app.poll_file_dialog(&egui::Context::default(), None);
+        assert_eq!(app.session.actions.list[0].name, "Existing");
+        assert_eq!(app.ui.actions.selected, Some(0));
+        assert_eq!(app.ui.status, "Unchanged");
+    }
+    let mut app = disk_app(vec![Some(FileDialogAnswer::Contents("single.atn".into(), action_set_bytes("Single", "One")))]);
+    load_dialog(&mut app).unwrap();
+    app.poll_file_dialog(&egui::Context::default(), None);
+    assert_eq!(app.session.actions.list[0].name, "One");
+    assert!(app.ui.status.contains("single.atn"));
+    assert!(!app.ui.status_error);
+}
+
 #[test]
 fn panel_menu_lists_load_save_and_existing_action_commands() {
     use egui_kittest::{Harness, kittest::Queryable};
@@ -1827,4 +1955,21 @@ fn save_hook_closing_the_target_stops_an_imported_close_with_save() {
         assert_eq!(app.session.actions.playing, 0);
         assert!(app.session.actions.playback_stack.is_empty());
     }
+}
+
+#[test]
+/// An unsupported step in a set that stays loaded is counted in the multi-file summary, unlike
+/// one in a set a later file replaced (CodeRabbit on #10776).
+fn bulk_load_summary_counts_unsupported_steps_of_surviving_sets() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    let mut a = photocraft_psd::atn::parse(&action_set_bytes("Set A", "A")).unwrap();
+    a.actions[0].items[0].event = photocraft_psd::atn::AtnEvent::Code(*b"Xxxx");
+    let files = vec![("a.atn".into(), photocraft_psd::atn::write(&a).unwrap()), ("b.atn".into(), action_set_bytes("Set B", "B"))];
+    let status = bulk_load_status(&mut app, files);
+    assert!(status.contains("1 step has no PhotoCraft equivalent yet"), "{status}");
+    assert!(!app.ui.status_error, "{status}");
+    // Both sets stay loaded: the unsupported step is counted for one that is in the panel.
+    let names: Vec<&str> = app.session.actions.list.iter().map(|a| a.name.as_str()).collect();
+    assert_eq!(names, ["A", "B"]);
+    assert!(app.session.actions.list[0].steps.iter().any(|(id, _)| id == "actions.photoshopStep"));
 }

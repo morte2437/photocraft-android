@@ -3278,6 +3278,9 @@ curves	Smooth	Haluskan
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} langkah belum memiliki padanan di PhotoCraft
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	{n} tindakan disimpan ke {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	{n} langkah tanpa padanan Photoshop dilewati
+@plural	{n} action file loaded|{n} action files loaded	{n} file tindakan dimuat
+	{set} from {file} replaced the one from {earlier}	Set {set} dari {file} menggantikan set dari {earlier}
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	{n} file tidak dapat dimuat: {errors}
 	File Naming	Penamaan Berkas
 	Starting serial	Nomor urut awal
 	Insert Stop…	Sisipkan Berhenti…

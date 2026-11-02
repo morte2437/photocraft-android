@@ -3273,6 +3273,9 @@ curves	Smooth	Lisser
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} étape n’a pas encore d’équivalent dans PhotoCraft|{n} étapes n’ont pas encore d’équivalent dans PhotoCraft
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	{n} action enregistrée dans {file}|{n} actions enregistrées dans {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	{n} étape sans équivalent Photoshop omise|{n} étapes sans équivalent Photoshop omises
+@plural	{n} action file loaded|{n} action files loaded	{n} fichier d'actions chargé|{n} fichiers d'actions chargés
+	{set} from {file} replaced the one from {earlier}	Le jeu {set} de {file} a remplacé celui de {earlier}
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	{n} fichier n'a pas pu être chargé : {errors}|{n} fichiers n'ont pas pu être chargés : {errors}
 	File Naming	Dénomination des fichiers
 	Starting serial	Numéro de série initial
 	Insert Stop…	Insérer un arrêt…

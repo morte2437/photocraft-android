@@ -4230,6 +4230,9 @@ navigator	Zoom	Zoom
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} passaggio non ha ancora un equivalente in PhotoCraft|{n} passaggi non hanno ancora un equivalente in PhotoCraft
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	Salvata {n} azione in {file}|Salvate {n} azioni in {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	Omesso {n} passaggio senza equivalente in Photoshop|Omessi {n} passaggi senza equivalente in Photoshop
+@plural	{n} action file loaded|{n} action files loaded	Caricato {n} file di azioni|Caricati {n} file di azioni
+	{set} from {file} replaced the one from {earlier}	Il set {set} di {file} ha sostituito quello di {earlier}
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	Impossibile caricare {n} file: {errors}|Impossibile caricare {n} file: {errors}
 	File Naming	Denominazione file
 	Starting serial	Numero di serie iniziale
 	Insert Stop…	Inserisci interruzione…
