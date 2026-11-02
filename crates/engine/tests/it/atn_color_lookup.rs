@@ -113,6 +113,49 @@ fn encoded_lookup_keeps_its_bytes_in_a_saved_adjustment() {
 }
 
 #[test]
+fn embedded_three_dl_retains_its_nonlinear_shaper_through_action_playback() {
+    // A two-node identity table with a four-knot shaper. Ignoring the first row
+    // would leave the original pixels untouched; #9170 retains these midtones.
+    let mut table = String::from("0 0 512 1023\n");
+    for r in 0..2 {
+        for g in 0..2 {
+            for b in 0..2 {
+                table.push_str(&format!("{} {} {}\n", r * 4095, g * 4095, b * 4095));
+            }
+        }
+    }
+    let d = descriptor("LUTFormat3DL", table.as_bytes());
+    let imported = atn_cmds::import(&encoded(d.clone())).unwrap();
+    assert!(imported.unsupported.is_empty());
+    assert_eq!(imported.actions[0].steps[0].0, "image.adjustments.colorLookup");
+    let (out, skipped) = atn_cmds::export("Lookup", &[&imported.actions[0]], &[], false).unwrap();
+    assert!(skipped.is_empty());
+    assert_eq!(atn::parse(&out).unwrap().actions[0].items[0].descriptor, Some(d));
+    for depth in [8, 16, 32] {
+        let mut s = fixture(depth);
+        let original = pixels(&s);
+        s.actions.list = imported.actions.clone();
+        assert_eq!(s.execute("actions.play", json!({"action":"Lookup"})).unwrap()["ran"], 1);
+        for (got, old) in pixels(&s).iter().zip(&original) {
+            for c in 0..3 {
+                let x = old[c].clamp(0.0, 1.0) * 3.0;
+                let knot = (x.floor() as usize).min(2);
+                let knots = [0.0, 0.0, 512.0 / 1023.0, 1.0];
+                let expected = knots[knot] + (knots[knot + 1] - knots[knot]) * (x - knot as f32);
+                assert!((got[c] - expected).abs() < 2.0 / 255.0, "{depth}-bit channel {c}: {got:?} from {old:?}");
+            }
+        }
+    }
+    // A shaper the parser refuses remains a complete step, rather than applying
+    // just its identity table and reporting a successful Color Lookup.
+    let bad = descriptor("LUTFormat3DL", table.replacen("0 0 512 1023", "0 NaN 512 1023", 1).as_bytes());
+    let imported = atn_cmds::import(&encoded(bad.clone())).unwrap();
+    assert_eq!(imported.actions[0].steps[0].0, atn_cmds::PHOTOSHOP_STEP);
+    let (out, _) = atn_cmds::export("Lookup", &[&imported.actions[0]], &[], false).unwrap();
+    assert_eq!(atn::parse(&out).unwrap().actions[0].items[0].descriptor, Some(bad));
+}
+
+#[test]
 fn unknown_lookup_forms_stay_whole_and_changed_native_steps_refuse_export() {
     let d = descriptor("LUTFormatCUBE", CUBE);
     let imported = atn_cmds::import(&encoded(d.clone())).unwrap();

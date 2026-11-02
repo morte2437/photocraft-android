@@ -178,9 +178,10 @@ copy of a large LUT. Unrepresented native option changes refuse export. Abstract
 and device-link profiles, nonempty ICC processing data, unknown formats and
 unknown settings remain complete preserved steps; these parts of #10705 remain
 unfinished. The native command continues to refuse non-default input domains.
-The existing 3DL input-shaper defect is tracked by #8982 and its active fix #9170;
-support for nonlinear shapers depends on that fix. PSD-specific LUT Data Order
-and Table Order handling is separately tracked by #9126 and #9218.
+Nonlinear 3DL input shapers use Hector Villarreal's existing #9170 implementation
+for #8982. Shapers the parser cannot retain stay complete preserved steps.
+PSD-specific LUT Data Order and Table Order handling is separately tracked by
+#9126 and #9218.
 
 ### Shape Blur with a recorded custom shape
 
