@@ -32,9 +32,17 @@ until the file is dropped or the next sweep.
 The engine owns a shared, stoppable residency supervisor and joins it when its last session
 is dropped. `photocraft-raster` only exposes synchronous measurement and bounded eviction
 operations; standalone callers work without a background thread. `sysinfo` is native-only
-with its default features disabled and only the `system` feature enabled.
+with its default features disabled and only the `system` (RAM) and `disk` (free space)
+features enabled.
 
-An unavailable or full scratch disk retains resident pixels and reports the failure.
+An unavailable or full scratch disk never loses pixels or turns spilling off for the session.
+A failed scratch write or file creation, or a volume about to run low (free space is checked
+when configuring, every 64 MB of scratch growth and on each retry; spilling stops while less
+than max(1 GiB, 5% of the volume) would stay free), pauses spilling: tiles stay in memory,
+the status bar shows the reason, and History's Memory Usage byte limit applies again from the
+next command, as without a scratch disk. The pause is retried after 1 s, doubling up to 60 s;
+spilling resumes on its own once the directory is usable and has room, and changing
+preferences retries at once. `spill::set_size_cap` adds an explicit scratch size limit.
 A failed read retains its backing extent and blocks editing, saving and exporting of the
 document that holds the tile until it is readable again; other open documents keep working.
 Each commit checks the health of its own document (before and after an edit, the document a

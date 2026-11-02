@@ -128,7 +128,8 @@ pub(crate) fn configure(prefs: &Preferences) {
             .iter()
             .find(|d| d.enabled && !d.path.trim().is_empty())
             .map(|d| if d.path.trim() == "(system temp)" { std::env::temp_dir() } else { std::path::PathBuf::from(d.path.trim()) });
-        // An unusable directory disables eviction without dropping resident pixels.
+        // An unusable or full directory pauses eviction without dropping resident pixels and
+        // is retried with backoff; History's byte limit applies meanwhile (sync_scratch_state).
         // The reason is exposed in ui.inspect and the application's status bar.
         let tiles = if std::env::var_os("PHOTOCRAFT_TILE_BUDGET_MB").is_some() {
             prefs.performance.tile_budget_bytes()

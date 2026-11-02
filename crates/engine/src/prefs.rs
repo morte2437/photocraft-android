@@ -1351,6 +1351,7 @@ impl Session {
     pub fn apply_prefs(&mut self) {
         self.scratch_runtime.get_or_insert_with(crate::scratch::Runtime::default);
         crate::scratch::configure(self.prefs());
+        self.scratch_epoch = photocraft_raster::spill::epoch();
         let n = self.prefs().performance.history_states.max(1) as usize;
         let bytes = self.prefs().performance.history_cap_bytes();
         let budget = self.prefs().performance.effect_cache_mb as usize;
@@ -1366,6 +1367,25 @@ impl Session {
         // Without waiting for the system font scan: this runs on the UI thread at launch.
         photocraft_text::set_shared_missing_glyph_protection(self.prefs().type_.missing_glyph_protection());
         crate::plugin_cmds::sync_prefs(self);
+    }
+
+    /// Re-apply History's byte limit after the scratch disk paused (a write, create or
+    /// free-space failure) or resumed since it was last applied: while spilling is paused,
+    /// History again bounds the pixel memory it holds, as with no scratch disk. Runs before
+    /// every command; a single atomic load when nothing changed.
+    pub(crate) fn sync_scratch_state(&mut self) {
+        let epoch = photocraft_raster::spill::epoch();
+        if self.scratch_epoch == epoch {
+            return;
+        }
+        self.scratch_epoch = epoch;
+        let bytes = self.prefs().performance.history_cap_bytes();
+        for st in &mut self.docs {
+            if st.history.max_bytes != bytes {
+                st.history.max_bytes = bytes;
+                st.trim_history();
+            }
+        }
     }
 
     /// Everything persisted as one JSON document: the preferences plus `colorSettings`.
