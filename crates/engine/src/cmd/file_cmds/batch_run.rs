@@ -517,7 +517,13 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
                     let mut saved: Option<Arc<Document>> = None;
                     for (id, params) in &steps {
                         if batch_save_point(id) {
-                            saved = Some(scratch.active().ok_or(EngineError::NoDocument)?.doc.clone());
+                            let state = scratch.active_mut().ok_or(EngineError::NoDocument)?;
+                            saved = Some(state.doc.clone());
+                            // The destination save is performed by Batch; subsequent recorded
+                            // Close steps see Save / Save As as saved, but Save a Copy as changed.
+                            if id != "file.saveACopy" {
+                                state.saved_revision = state.revision;
+                            }
                             continue;
                         }
                         let result = scratch.execute(id, params.clone())?;
@@ -601,7 +607,11 @@ fn batch_open_documents(
             let mut saved: Option<Arc<Document>> = None;
             for (command, params) in steps {
                 if batch_save_point(command) {
-                    saved = Some(s.active().ok_or(EngineError::NoDocument)?.doc.clone());
+                    let state = s.active_mut().ok_or(EngineError::NoDocument)?;
+                    saved = Some(state.doc.clone());
+                    if command != "file.saveACopy" {
+                        state.saved_revision = state.revision;
+                    }
                     continue;
                 }
                 let response = s.execute(command, params.clone())?;

@@ -709,6 +709,33 @@ fn from_text(text: &str) -> Option<(u32, u32, Vec<u8>)> {
     clipboard_image(&mut (), |_| Ok(None), |_| Ok(None), |_| Ok(Some(text.to_string()))).expect("no read fails")
 }
 
+#[test]
+fn svg_clipboard_source_preserves_markup_and_bounds_its_size() {
+    let bytes = svg_clipboard_source(Some(HALF_RED.into())).unwrap().unwrap();
+    assert_eq!(bytes, HALF_RED.as_bytes());
+    for text in [None, Some("plain text".into()), Some("<p>text</p>".into())] {
+        assert_eq!(svg_clipboard_source(text), Ok(None));
+    }
+    let mut oversized = HALF_RED.to_string();
+    oversized.extend(std::iter::repeat_n(' ', (16 << 20) + 1));
+    assert!(svg_clipboard_source(Some(oversized)).is_err());
+}
+
+#[test]
+fn a_panicking_svg_clipboard_read_is_reported_and_can_be_retried() {
+    let panics = Rc::new(Cell::new(true));
+    let fail = panics.clone();
+    let mut get = guarded_clipboard_svg(move || {
+        if fail.get() {
+            panic!("SVG clipboard reader bug");
+        }
+        Ok(Some(HALF_RED.as_bytes().to_vec()))
+    });
+    assert!(get().unwrap_err().contains("Paste failed"));
+    panics.set(false);
+    assert_eq!(get().unwrap().unwrap(), HALF_RED.as_bytes());
+}
+
 fn pixel(img: &(u32, u32, Vec<u8>), x: u32, y: u32) -> [u8; 4] {
     let at = ((y * img.0 + x) * 4) as usize;
     img.2[at..at + 4].try_into().unwrap()

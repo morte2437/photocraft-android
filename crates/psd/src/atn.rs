@@ -6,7 +6,7 @@
 //! code-unit count + UTF-16BE, usually NUL-terminated) unless noted.
 //!
 //! ```text
-//! file   := version u32 (16), set name UnicodeString, expanded u8, count u32, count × action
+//! file   := version u32 (12 or 16), set name UnicodeString, expanded u8, count u32, count × action
 //! action := function key u16 (0 = none, n = Fn), shift u8, command u8, colour u16,
 //!           name UnicodeString, expanded u8, count u32, count × item
 //! item   := expanded u8, enabled u8, with dialog u8, dialog options u8,
@@ -20,7 +20,7 @@
 //! carry them. The event name and the panel name are byte strings (ASCII, or the platform's
 //! legacy encoding for a localised panel name: Mac Roman "Définir"), kept verbatim;
 //! [`AtnItem::label`] gives a readable name. Photoshop 5-era files (version 12) use a
-//! different, undocumented layout and are rejected as unsupported.
+//! legacy descriptor layout: bare four-byte identifiers and no top-level class or name.
 //!
 //! Which legacy encoding is not recorded: Windows Photoshop uses the system code page (GBK in
 //! Chinese, Shift_JIS in Japanese…), Mac Photoshop the Mac one. [`parse`] works it out once per
@@ -30,16 +30,18 @@
 //! they are.
 //!
 //! [`parse`] never panics: every count is bounds-checked against the bytes left, descriptor
-//! nesting is bounded, and allocations are capped. [`write`] produces the same layout, so
-//! `parse(write(f)) == f` for files [`parse`] read, and `write(parse(b)) == b` for files Photoshop
-//! wrote.
+//! nesting is bounded, and allocations are capped. [`write`] always produces version 16, so
+//! `parse(write(f)) == f` for files [`parse`] read, and `write(parse(b)) == b` for version 16 files
+//! Photoshop wrote; a version 12 file's legacy descriptors keep their meaning, not their layout.
 
 use crate::codepage;
 use crate::descriptor::{Descriptor, UnicodeString};
 use crate::error::{PsdError, Result};
 use crate::io::{Reader, WriteExt, decode_legacy_name};
 
-/// The only version this module reads and writes (Photoshop 6 and every later release).
+mod legacy;
+
+/// The version written by this module (Photoshop 6 and every later release).
 pub const VERSION: u32 = 16;
 /// Most actions read from one set (Photoshop's own sets hold a few dozen).
 pub const MAX_ACTIONS: usize = 10_000;
@@ -214,7 +216,8 @@ fn write_ascii(out: &mut Vec<u8>, s: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn read_item(r: &mut Reader<'_>) -> Result<AtnItem> {
+/// Read one step with the descriptor dialect selected by the file version.
+fn read_item(r: &mut Reader<'_>, legacy: bool) -> Result<AtnItem> {
     let expanded = r.u8()? != 0;
     let enabled = r.u8()? != 0;
     let with_dialog = r.u8()? != 0;
@@ -227,13 +230,14 @@ fn read_item(r: &mut Reader<'_>) -> Result<AtnItem> {
     let dictionary = read_ascii(r)?;
     let descriptor = match r.i32()? {
         0 => None,
-        -1 => Some(Descriptor::read(r)?),
+        -1 => Some(if legacy { legacy::read(r)? } else { Descriptor::read(r)? }),
         n => return Err(PsdError::invalid(format!("bad descriptor flag {n}"))),
     };
     Ok(AtnItem { expanded, enabled, with_dialog, dialog_options, event, dictionary, descriptor })
 }
 
-fn read_action(r: &mut Reader<'_>) -> Result<AtnAction> {
+/// Read an action and its steps using the file's descriptor dialect.
+fn read_action(r: &mut Reader<'_>, legacy: bool) -> Result<AtnAction> {
     let function_key = r.u16()?;
     let shift = r.u8()? != 0;
     let command = r.u8()? != 0;
@@ -248,12 +252,13 @@ fn read_action(r: &mut Reader<'_>) -> Result<AtnAction> {
     }
     let mut items = Vec::with_capacity((n as usize).min(1024));
     for _ in 0..n {
-        items.push(read_item(r)?);
+        items.push(read_item(r, legacy)?);
     }
     Ok(AtnAction { function_key, shift, command, color, name, expanded, items })
 }
 
-/// Parses an `.atn` file, working out the encoding of its 8-bit names (see the module docs).
+/// Parses a version 12 or 16 `.atn` file, working out the encoding of its 8-bit names (see the
+/// module docs).
 pub fn parse(data: &[u8]) -> Result<AtnFile> {
     parse_with_encoding(data, None)
 }
@@ -274,8 +279,8 @@ pub fn parse_with_encoding(data: &[u8], encoding: Option<&str>) -> Result<AtnFil
 fn parse_layout(data: &[u8]) -> Result<AtnFile> {
     let mut r = Reader::new(data);
     let version = r.u32()?;
-    if version != VERSION {
-        return Err(PsdError::Unsupported(format!("actions file version {version} (only version 16, Photoshop 6 and later, is supported)")));
+    if !matches!(version, 12 | VERSION) {
+        return Err(PsdError::Unsupported(format!("actions file version {version} (supported versions: 12 and 16)")));
     }
     let name = UnicodeString::read(&mut r)?;
     let expanded = r.u8()? != 0;
@@ -287,7 +292,7 @@ fn parse_layout(data: &[u8]) -> Result<AtnFile> {
     }
     let mut actions = Vec::with_capacity((n as usize).min(256));
     for _ in 0..n {
-        actions.push(read_action(&mut r)?);
+        actions.push(read_action(&mut r, version == 12)?);
     }
     let mut warnings = Vec::new();
     if !r.is_empty() {
@@ -544,7 +549,7 @@ mod tests {
     #[test]
     fn rejects_other_versions_and_bad_structure() {
         let mut bytes = write(&set()).unwrap();
-        bytes[3] = 12;
+        bytes[3] = 7;
         assert!(matches!(parse(&bytes), Err(PsdError::Unsupported(_))));
         // A count far beyond the data must fail before allocating.
         let mut huge = vec![0, 0, 0, 16, 0, 0, 0, 0, 0];

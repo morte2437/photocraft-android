@@ -17,7 +17,7 @@ fn new_clipboard_document_rejects_an_unrepresentable_origin() {
     let mut s = Session::new();
     let mut surface = Surface::new(PixelFormat::RGBA8);
     surface.write_pixel(i32::MIN, 0, &[1.0, 0.0, 0.0, 1.0]);
-    s.clipboard = Some(Clip { components: None, surface, bounds: Rect::from_xywh(i32::MIN, 0, 1, 1), layers: None, resolution: None, source: None });
+    s.clipboard = Some(Clip { svg: None, components: None, surface, bounds: Rect::from_xywh(i32::MIN, 0, 1, 1), layers: None, resolution: None, source: None });
     let result = new_from_clipboard(&mut s);
     assert!(result.unwrap_err().to_string().contains("clipboard origin"));
     assert!(s.execute("file.newFromClipboard", json!({})).is_err());
@@ -51,6 +51,7 @@ fn paste_centres_pixels_from_another_document() {
 fn paste_centers_clipboard_bounds_near_coordinate_limits() {
     for origin in [i32::MAX - 512, i32::MIN + 512] {
         let clip = Clip {
+            svg: None,
             components: None,
             surface: Surface::new(PixelFormat::RGBA8),
             bounds: Rect::from_xywh(origin, origin, 2, 2),
@@ -239,7 +240,7 @@ fn external_clip_session(w: i32, h: i32, cw: i32, ch: i32) -> Session {
     s.execute("file.new", json!({"width": w, "height": h})).unwrap();
     let mut surface = Surface::new(PixelFormat::RGBA8);
     surface.fill_rect(Rect::new(0, 0, cw, ch), &[1.0, 0.0, 0.0, 1.0]);
-    s.clipboard = Some(Clip { components: None, surface, bounds: Rect::new(0, 0, cw, ch), layers: None, resolution: None, source: None });
+    s.clipboard = Some(Clip { svg: None, components: None, surface, bounds: Rect::new(0, 0, cw, ch), layers: None, resolution: None, source: None });
     s
 }
 
@@ -296,6 +297,7 @@ fn paste_offset_clamp_survives_extreme_coordinates() {
     assert_eq!(clamp_shift(f64::NEG_INFINITY, i32::MIN, i32::MAX, 0, 1), i32::MAX);
     assert_eq!(clamp_shift(1e30, i32::MIN, i32::MIN + 1, i32::MAX - 1, i32::MAX), i32::MAX);
     let clip = Clip {
+        svg: None,
         components: None,
         surface: Surface::new(PixelFormat::RGBA8),
         bounds: Rect::new(i32::MAX - 2, i32::MAX - 2, i32::MAX, i32::MAX),
@@ -1451,13 +1453,13 @@ fn lift_reference(src: &Surface, sel: Option<&Surface>, canvas: Rect) -> Clip {
     };
     let mut out = Surface::new(with_alpha);
     if area.is_empty() {
-        return Clip { components: None, surface: out, bounds: Rect::EMPTY, layers: None, resolution: None, source: None };
+        return Clip { svg: None, components: None, surface: out, bounds: Rect::EMPTY, layers: None, resolution: None, source: None };
     }
     let px = lift_region(src, sel, area, with_alpha.channels()).unwrap();
     out.try_write_region(area, &px).unwrap();
     out.prune();
     let bounds = out.content_bounds();
-    Clip { components: None, surface: out, bounds, layers: None, resolution: None, source: None }
+    Clip { svg: None, components: None, surface: out, bounds, layers: None, resolution: None, source: None }
 }
 
 fn noise(fmt: PixelFormat, r: Rect, seed: u32) -> Surface {

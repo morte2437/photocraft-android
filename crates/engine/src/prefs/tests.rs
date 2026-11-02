@@ -1,5 +1,21 @@
 use super::*;
 
+#[test]
+fn system_title_bar_defaults_to_integrated_and_preserves_saved_choices() {
+    let default = false;
+    assert_eq!(Interface::default().system_title_bar, default);
+    for saved in [json!({}), json!({"interface": {}})] {
+        let prefs: Preferences = serde_json::from_value(saved).unwrap();
+        assert_eq!(prefs.interface.system_title_bar, default);
+    }
+    for saved in [false, true] {
+        let prefs: Preferences = serde_json::from_value(json!({"interface": {"systemTitleBar": saved}})).unwrap();
+        assert_eq!(prefs.interface.system_title_bar, saved);
+        let restored: Preferences = serde_json::from_value(prefs.to_json()).unwrap();
+        assert_eq!(restored.interface.system_title_bar, saved);
+    }
+}
+
 fn session() -> Session {
     let mut s = Session::new();
     s.execute("file.new", json!({"width": 32, "height": 32})).unwrap();
