@@ -1,6 +1,10 @@
 //! Opt-in 8-bit profile quantization. The ordinary CMS buffer paths stay unchanged.
 
+use std::sync::Arc;
+
 use photocraft_geom::{Rect, TILE_SIZE, TileCoord};
+use photocraft_raster::Tile;
+use rayon::prelude::*;
 
 use super::{
     ColorMode, Document, EngineError, Intent, PixelFormat, Profile, Result, SampleType, Surface, Transform, cms_err, convert_color, convert_document,
@@ -50,12 +54,29 @@ fn tile_origin(c: TileCoord) -> Result<(i32, i32)> {
     Ok((x as i32, y as i32))
 }
 
+/// A transparent default stays transparent: its converted default already stands for the absent
+/// tiles, and dither noise under alpha 0 is invisible, so only stored tiles are dithered.
+fn sparse(s: &Surface) -> bool {
+    let sf = s.format();
+    sf.alpha && s.default_pixel().get(sf.mode.color_channels()).is_some_and(|a| *a == 0.0)
+}
+
+/// The tiles the dithered output stores: every in-canvas tile (unless the surface is sparse)
+/// plus every stored tile.
+fn dither_tiles(s: &Surface, bounds: Rect) -> Vec<TileCoord> {
+    if sparse(s) {
+        return s.tiles().map(|(c, _)| *c).collect();
+    }
+    let outside = s.tiles().map(|(c, _)| *c).filter(|c| !in_canvas_tiles(*c, bounds));
+    bounds.tiles().chain(outside).collect()
+}
+
 /// Price every additional output tile before allocating any; distant tiles add no bounding box.
 fn output_bytes(s: &Surface, to: PixelFormat, bounds: Rect) -> Result<u128> {
-    let mut count = u128::from(bounds.tile_count());
+    let mut count = if sparse(s) { 0 } else { u128::from(bounds.tile_count()) };
     for (c, _) in s.tiles() {
         tile_origin(*c)?;
-        if !in_canvas_tiles(*c, bounds) {
+        if sparse(s) || !in_canvas_tiles(*c, bounds) {
             count = count.checked_add(1).ok_or_else(|| bad("dither output size overflowed"))?;
         }
     }
@@ -78,46 +99,53 @@ fn quantize(value: f32, threshold: f64) -> u8 {
 }
 
 /// Stream the finite canvas and stored deviations, retaining the undithered infinite default.
+/// Tiles are independent (the noise depends on pixel coordinates only) and run in parallel.
 fn surface(s: &Surface, to: PixelFormat, t: &Transform, bounds: Rect) -> Result<Surface> {
-    let (ss, ds) = (s.channels(), to.channels());
-    let (ni, no) = (t.inputs(), t.outputs());
+    let ds = to.channels();
     let mut converted_default = [0.0; 16];
-    t.convert_f32(&s.default_pixel(), ss, &mut converted_default[..ds], ds, true);
+    t.convert_f32(&s.default_pixel(), s.channels(), &mut converted_default[..ds], ds, true);
     let mut out = Surface::with_default(to, &converted_default[..ds]);
+    let tiles = dither_tiles(s, bounds).par_iter().map(|c| dither_tile(s, &out, t, bounds, *c).map(|tile| (*c, Arc::new(tile)))).collect::<Result<Vec<_>>>()?;
+    out.put_tiles(tiles);
+    out.prune();
+    Ok(out)
+}
+
+/// One output tile of [`surface`], starting from the converted default of `out`.
+fn dither_tile(s: &Surface, out: &Surface, t: &Transform, bounds: Rect, c: TileCoord) -> Result<Tile> {
+    let (ss, ds) = (s.channels(), out.channels());
+    let (ni, no) = (t.inputs(), t.outputs());
     let default = s.default_bytes();
-    let outside = s.tiles().map(|(c, _)| *c).filter(|c| !in_canvas_tiles(*c, bounds));
-    for c in bounds.tiles().chain(outside) {
-        let (x0, y0) = tile_origin(c)?;
-        let source = s.tile(c).map(|tile| tile.bytes());
-        let dest = out.try_tile_mut(c).map_err(|e| EngineError::Other(format!("could not allocate dither output: {e}")))?;
-        for (index, dp) in dest.bytes_mut().chunks_exact_mut(ds).enumerate() {
-            let x = x0 + (index % TILE_SIZE as usize) as i32;
-            let y = y0 + (index / TILE_SIZE as usize) as i32;
-            let sp = match source {
-                Some(bytes) => bytes.get(index * ss..index * ss + ss).ok_or_else(|| bad("a stored tile has invalid sample storage"))?,
-                None => default,
-            };
-            // A redundant default tile outside the canvas must match the implicit plane.
-            if !bounds.contains(x, y) && sp == default {
-                continue;
-            }
-            let mut input = [0.0; 16];
-            let mut output = [0.0; 16];
-            for (d, s) in input.iter_mut().zip(sp).take(ni) {
-                *d = f32::from(*s) / 255.0;
-            }
-            t.eval_fast(&input[..ni], &mut output[..no]);
-            // The hash can return 1.0; recenter its 65536 bins strictly inside (0, 1).
-            let threshold = (f64::from(photocraft_color::dither_noise(x, y)) * 65535.0 + 0.5) / 65536.0;
-            for (d, value) in dp.iter_mut().zip(output).take(no) {
-                *d = quantize(value, threshold);
-            }
-            for (d, s) in dp.iter_mut().skip(no).zip(sp.iter().skip(ni)) {
-                *d = *s;
-            }
+    let (x0, y0) = tile_origin(c)?;
+    let source = s.tile(c).map(|tile| tile.bytes());
+    let mut dest = out.try_default_tile().map_err(|e| EngineError::Other(format!("could not allocate dither output: {e}")))?;
+    for (index, dp) in dest.bytes_mut().chunks_exact_mut(ds).enumerate() {
+        let x = x0 + (index % TILE_SIZE as usize) as i32;
+        let y = y0 + (index / TILE_SIZE as usize) as i32;
+        let sp = match source {
+            Some(bytes) => bytes.get(index * ss..index * ss + ss).ok_or_else(|| bad("a stored tile has invalid sample storage"))?,
+            None => default,
+        };
+        // A redundant default tile outside the canvas must match the implicit plane.
+        if !bounds.contains(x, y) && sp == default {
+            continue;
+        }
+        let mut input = [0.0; 16];
+        let mut output = [0.0; 16];
+        for (d, s) in input.iter_mut().zip(sp).take(ni) {
+            *d = f32::from(*s) / 255.0;
+        }
+        t.eval_fast(&input[..ni], &mut output[..no]);
+        // The hash can return 1.0; recenter its 65536 bins strictly inside (0, 1).
+        let threshold = (f64::from(photocraft_color::dither_noise(x, y)) * 65535.0 + 0.5) / 65536.0;
+        for (d, value) in dp.iter_mut().zip(output).take(no) {
+            *d = quantize(value, threshold);
+        }
+        for (d, s) in dp.iter_mut().skip(no).zip(sp.iter().skip(ni)) {
+            *d = *s;
         }
     }
-    Ok(out)
+    Ok(dest)
 }
 
 /// Preserve ordinary conversion outside opt-in U8, admitting the whole dither edit first.

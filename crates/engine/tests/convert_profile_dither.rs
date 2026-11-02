@@ -209,3 +209,21 @@ fn refusals_are_early_and_atomic() {
         assert!(state.history.can_redo());
     }
 }
+
+/// Absent tiles of a transparent layer stay absent: only the stored tile is dithered.
+#[test]
+fn transparent_layers_stay_sparse() {
+    let p = json!({"profile": "display-p3", "dither": true});
+    let stored = |size: Size| {
+        let mut surface = Surface::with_default(PixelFormat::RGBA8, &[0.0; 4]);
+        let tile = surface.solid_tile(&GRAY);
+        surface.put_tiles([(TileCoord::new(1, 1), tile)]);
+        document(size, surface, SampleType::U8)
+    };
+    let large = converted(stored(Size::new(1024, 1024)), p.clone());
+    assert_eq!(pixels(&large).tile_count(), 1, "a transparent layer must not become dense");
+    let small = converted(stored(Size::new(512, 512)), p);
+    let tile = |doc: &Document| pixels(doc).tile(TileCoord::new(1, 1)).unwrap().bytes().to_vec();
+    assert_eq!(tile(&large), tile(&small), "the stored tile is dithered as before");
+    assert_eq!(pixels(&large).pixel(700, 700)[3], 0.0);
+}

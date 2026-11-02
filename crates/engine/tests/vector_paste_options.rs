@@ -279,10 +279,14 @@ fn atn_classes_roundtrip_and_play_real_modes() {
     for (class_id, mode) in [("Pxel", "pixels"), ("Path", "path"), ("shapeClass", "shape")] {
         let mut s = scene(8);
         assert_eq!(load(&mut s, &recorded(descriptor(class_id)))["unsupported"], json!([]));
-        assert_eq!(s.actions.list[0].steps, vec![("edit.paste".into(), json!({"as":mode}))]);
+        // `As Pxel` is what an ordinary Paste records: it keeps the ordinary route.
+        let params = if mode == "pixels" { json!({}) } else { json!({"as":mode}) };
+        assert_eq!(s.actions.list[0].steps, vec![("edit.paste".into(), params)]);
         let saved = save(&mut s);
         let file = atn::parse(&saved).unwrap();
-        assert_eq!(file.actions[0].items[0].descriptor.as_ref().unwrap().get("As  "), descriptor(class_id).get("As  "));
+        if mode != "pixels" {
+            assert_eq!(file.actions[0].items[0].descriptor.as_ref().unwrap().get("As  "), descriptor(class_id).get("As  "));
+        }
         let imported = atn_cmds::import(&saved).unwrap();
         assert_eq!(imported.actions[0].steps, s.actions.list[0].steps);
         s.actions.list = imported.actions;
@@ -332,4 +336,36 @@ fn atn_unknown_forms_are_kept_and_legacy_omission_stays_legacy() {
         let action = Action::new("Bad", vec![("edit.paste".into(), p)]);
         assert!(atn_cmds::export("Vector", &[&action], &[], false).is_err());
     }
+}
+
+fn recorded_pixels_paste(in_place: bool) -> Descriptor {
+    let d = Descriptor::new("null").with("AntA", D::Enumerated { type_id: Id::new("Annt"), value: Id::new("Anno") });
+    let d = if in_place { d.with("inPlace", D::Boolean(true)) } else { d };
+    d.with("As  ", descriptor("Pxel").get("As  ").unwrap().clone())
+}
+
+/// A recorded ordinary Paste (`AntA Anno`, `As Pxel`) keeps whole-layer recreation of a copied layer.
+#[test]
+fn recorded_pixels_paste_keeps_the_ordinary_route() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 20, "height": 16, "background": "transparent"})).unwrap();
+    s.clipboard = Some(Clip::from_svg(SVG).unwrap());
+    s.execute("edit.paste", json!({"as":"shape"})).unwrap();
+    s.execute("edit.copy", json!({})).unwrap();
+    assert_eq!(load(&mut s, &recorded(recorded_pixels_paste(false)))["unsupported"], json!([]));
+    assert_eq!(s.actions.list[0].steps, vec![("edit.paste".into(), json!({}))]);
+    let layers = s.active().unwrap().doc.layers.len();
+    let result = s.execute("actions.play", json!({"action":"Paste"})).unwrap();
+    assert_eq!(result["ran"], 1);
+    assert!(result.get("failed").is_none(), "{result}");
+    assert!(s.active().unwrap().doc.layers.len() > layers);
+    assert!(matches!(output(&s).content, LayerContent::Shape(_)), "a copied shape layer pastes as a shape layer");
+}
+
+/// A recorded Paste in Place (`inPlace true`, `AntA Anno`, `As Pxel`) plays as Paste in Place.
+#[test]
+fn recorded_pixels_paste_in_place_maps() {
+    let mut s = Session::new();
+    assert_eq!(load(&mut s, &recorded(recorded_pixels_paste(true)))["unsupported"], json!([]));
+    assert_eq!(s.actions.list[0].steps, vec![("edit.pasteSpecial.pasteInPlace".into(), json!({}))]);
 }

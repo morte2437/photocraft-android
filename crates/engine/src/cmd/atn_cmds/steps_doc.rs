@@ -427,7 +427,12 @@ pub(super) fn image_size_to(_: &str, p: &Value) -> Option<Descriptor> {
     if let Some(i) = jstr(p, "resample").filter(|r| *r != "none") {
         d = d.with("Intr", enm("Intp", lookup_back(INTERPOLATION, i)?));
     }
-    Some(d.with("scaleStyles", D::Boolean(jbool(p, "scaleStyles").unwrap_or(true))))
+    // A recorded step without the key keeps style sizes, so only scaling needs the key: an
+    // Image Size step recorded without it saves back unchanged.
+    if jbool(p, "scaleStyles").unwrap_or(true) {
+        d = d.with("scaleStyles", D::Boolean(true));
+    }
+    Some(d)
 }
 
 pub(super) fn crop_from(d: &Descriptor) -> Mapped {
@@ -486,19 +491,28 @@ pub(super) fn stop_to(_: &str, p: &Value) -> Option<Descriptor> {
 pub(super) fn paste_from(d: &Descriptor) -> Mapped {
     // As is a class, not text or an enum; unknown forms must not fall back to raster paste.
     if let Some(value) = d.get("As  ") {
+        // `Pxel` is what an ordinary Paste and Paste in Place record; it keeps the ordinary route
+        // (layer recreation, mask and channel targets, in place). Only a vector form is explicit.
         let mode = match value {
-            D::Class(value) if value.class_id.is("Pxel") => "pixels",
-            D::Class(value) if value.class_id.is("Path") => "path",
-            D::Class(value) if value.class_id.is("shapeClass") => "shape",
+            D::Class(value) if value.class_id.is("Pxel") => None,
+            D::Class(value) if value.class_id.is("Path") => Some("path"),
+            D::Class(value) if value.class_id.is("shapeClass") => Some("shape"),
             _ => return Mapped::Unsupported { harmless: false },
         };
-        if !matches!(d.get("inPlace"), None | Some(D::Boolean(false))) || d.get("null").is_some() {
+        let in_place = match d.get("inPlace") {
+            None => false,
+            Some(D::Boolean(value)) => *value,
+            Some(_) => return Mapped::Unsupported { harmless: false },
+        };
+        if (in_place && mode.is_some()) || d.get("null").is_some() {
             return Mapped::Unsupported { harmless: false };
         }
         if d.get("AntA").is_some_and(|v| !matches!(v, D::Enumerated { type_id, value } if type_id.is("Annt") && value.is("Anno"))) {
             return Mapped::Unsupported { harmless: false };
         }
-        return step("edit.paste", json!({"as": mode}));
+        if let Some(mode) = mode {
+            return step("edit.paste", json!({"as": mode}));
+        }
     }
     none(if get_bool(d, "inPlace") == Some(true) { "edit.pasteSpecial.pasteInPlace" } else { "edit.paste" })
 }
@@ -574,8 +588,9 @@ pub(super) fn profile_from(d: &Descriptor, id: &str) -> Mapped {
     let Some(profile) = name.as_deref().and_then(|n| lookup(PROFILES, n)) else { return Mapped::Unsupported { harmless: false } };
     let mut p = json!({"profile": profile});
     if id == "edit.convertToProfile" {
-        // All mapped PROFILES are RGB. Other radio values need their own target mapping.
-        if !matches!(d.get("sdwM"), None | Some(D::Integer(2))) {
+        // All mapped PROFILES are RGB; the reference application records -1 for these RGB
+        // targets. Other values need their own target mapping.
+        if !matches!(d.get("sdwM"), None | Some(D::Integer(-1))) {
             return Mapped::Unsupported { harmless: false };
         }
         for (key, param) in [("Dthr", "dither"), ("Fltt", "flatten"), ("rasterizePlaced", "rasterizePlaced")] {
@@ -597,7 +612,7 @@ pub(super) fn profile_from(d: &Descriptor, id: &str) -> Mapped {
     step(id, p)
 }
 
-/// Export effective native flags explicitly, deriving the RGB radio value from the mapped target.
+/// Export effective native flags explicitly, with the `sdwM` value recorded for RGB targets.
 pub(super) fn profile_to(id: &str, p: &Value) -> Option<Descriptor> {
     let name = lookup_back(PROFILES, jstr(p, "profile")?)?;
     let mut d = desc("null").with("null", target_ref("Dcmn"));
@@ -609,7 +624,7 @@ pub(super) fn profile_to(id: &str, p: &Value) -> Option<Descriptor> {
             .with("T   ", text(name))
             .with("Inte", enm("Inte", lookup_back(INTENT, jstr(p, "intent").unwrap_or("relative"))?))
             .with("MpBl", D::Boolean(jbool(p, "bpc").unwrap_or(true)))
-            .with("sdwM", D::Integer(2));
+            .with("sdwM", D::Integer(-1));
         for (key, param) in [("Dthr", "dither"), ("Fltt", "flatten"), ("rasterizePlaced", "rasterizePlaced")] {
             let value = match p.get(param) {
                 None | Some(Value::Null) => false,

@@ -145,14 +145,15 @@ the reference application.
 - Image Size preserves `scaleStyles`. Native calls default to true; an absent ATN flag means
   false. Crop and resolution-only resizing retain their existing behavior.
 - Convert to Profile preserves `Dthr`, `Fltt` and `rasterizePlaced`, defaulting to false.
-  Supported RGB destinations use `sdwM: 2`; other model codes and malformed flags remain kept
-  steps. Absolute intent writes `AClr`, with `AbsC` still accepted on import.
+  `sdwM` is written as the reference application records it (-1); other values and malformed
+  flags remain kept steps. Absolute intent writes `AClr`, with `AbsC` still accepted on import.
 - Content-Aware Fill preserves colour, quarter-turn rotation, scale and mirror adaptation.
   Existing native defaults remain unchanged.
 - Paste Layer Style preserves `allowPasteFXOnLayerSet`. False skips selected groups without
   applying their styles to children; a selection with no eligible targets fails without editing.
-- Paste preserves `As ` as pixels, path or shape using the original bounded SVG source.
-  Unsupported geometry fails instead of silently rasterizing. Omission retains ordinary Paste.
+- Paste preserves `As ` path or shape using the original bounded SVG source. Unsupported
+  geometry fails instead of silently rasterizing. `As Pxel` plays as an ordinary Paste (or Paste
+  in Place), as does omission.
 
 Generated fixtures verify these native options and their load/save/playback behavior. Matching
 Photoshop conversion-order, SVG rasterization and placement comparisons were not available.

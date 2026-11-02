@@ -119,7 +119,7 @@ fn rendered(s: &Session) -> Vec<[f32; 4]> {
 #[test]
 fn recorded_rgb_flags_survive_save_reimport_and_public_playback() {
     for values in [[true, true, true], [true, false, true], [true, false, false], [false, false, false]] {
-        let mut d = descriptor().with("sdwM", D::Integer(2));
+        let mut d = descriptor().with("sdwM", D::Integer(-1));
         let mut params = json!({"profile": "srgb", "intent": "relative", "bpc": false});
         for ((key, param), value) in FLAGS.into_iter().zip(values) {
             d = d.with(key, D::Boolean(value));
@@ -149,7 +149,7 @@ fn recorded_rgb_flags_survive_save_reimport_and_public_playback() {
         let saved = save(&mut replay);
         let parsed = atn::parse(&saved).unwrap();
         let saved_d = parsed.actions[0].items[0].descriptor.as_ref().unwrap();
-        assert_eq!(saved_d.get("sdwM"), Some(&D::Integer(2)));
+        assert_eq!(saved_d.get("sdwM"), Some(&D::Integer(-1)));
         for ((key, _), value) in FLAGS.into_iter().zip(values) {
             assert_eq!(saved_d.get(key), Some(&D::Boolean(value)));
         }
@@ -205,7 +205,7 @@ fn defaults_are_explicit_false_and_assign_profile_is_unchanged() {
         for (key, _) in FLAGS {
             assert_eq!(d.get(key), Some(&D::Boolean(false)));
         }
-        assert_eq!(d.get("sdwM"), Some(&D::Integer(2)));
+        assert_eq!(d.get("sdwM"), Some(&D::Integer(-1)));
     }
     let assign = Action::new("Assign", vec![("edit.assignProfile".into(), json!({"profile": "srgb"}))]);
     let (bytes, skipped) = atn_cmds::export("Profile", &[&assign], &[], false).unwrap();
@@ -222,12 +222,12 @@ fn defaults_are_explicit_false_and_assign_profile_is_unchanged() {
 #[test]
 fn unsupported_values_are_preserved_and_invalid_native_values_refuse_export() {
     let mut descriptors = Vec::new();
-    for value in [D::Integer(3), D::Integer(4), D::Integer(-1), D::Integer(999), D::Boolean(true), D::Double(2.0)] {
+    for value in [D::Integer(3), D::Integer(4), D::Integer(2), D::Integer(999), D::Boolean(true), D::Double(2.0)] {
         descriptors.push(descriptor().with("sdwM", value));
     }
     for (key, _) in FLAGS {
         for value in [D::Integer(1), D::Text(UnicodeString::new_nul("true"))] {
-            descriptors.push(descriptor().with("sdwM", D::Integer(2)).with(key, value));
+            descriptors.push(descriptor().with("sdwM", D::Integer(-1)).with(key, value));
         }
     }
     for d in descriptors {
@@ -250,4 +250,37 @@ fn unsupported_values_are_preserved_and_invalid_native_values_refuse_export() {
     }
     let action = Action::new("Invalid radio null", vec![("edit.convertToProfile".into(), json!({"profile": "srgb", "sdwM": null}))]);
     assert!(atn_cmds::export("Profile", &[&action], &[], false).is_err());
+}
+
+/// A step recorded by the reference application (`sdwM` -1, dither on) maps and saves back as recorded.
+#[test]
+fn reference_recorded_convert_to_profile_maps() {
+    let d = Descriptor::new("null")
+        .with(
+            "null",
+            D::Reference(vec![photocraft_psd::descriptor::ReferenceItem::Enumerated {
+                class: photocraft_psd::descriptor::Class { name: UnicodeString::new_nul(""), class_id: Id::new("Dcmn") },
+                type_id: Id::new("Ordn"),
+                value: Id::new("Trgt"),
+            }]),
+        )
+        .with("T   ", D::Text(UnicodeString::new_nul("ProPhoto RGB")))
+        .with("Inte", D::Enumerated { type_id: Id::new("Inte"), value: Id::new("AClr") })
+        .with("Dthr", D::Boolean(true))
+        .with("Fltt", D::Boolean(false))
+        .with("rasterizePlaced", D::Boolean(false))
+        .with("sdwM", D::Integer(-1));
+    let mut s = fixture();
+    assert_eq!(load(&mut s, &recorded(d))["unsupported"], json!([]));
+    assert_eq!(
+        s.actions.list[0].steps,
+        vec![(
+            "edit.convertToProfile".into(),
+            json!({"profile": "prophoto-compat", "intent": "absolute", "dither": true, "flatten": false, "rasterizePlaced": false})
+        )]
+    );
+    let saved = atn::parse(&save(&mut s)).unwrap();
+    let saved = saved.actions[0].items[0].descriptor.as_ref().unwrap();
+    assert_eq!(saved.get("sdwM"), Some(&D::Integer(-1)));
+    assert_eq!(saved.get("Dthr"), Some(&D::Boolean(true)));
 }
