@@ -1,0 +1,2 @@
+# Replay the CI counterexample for adjustment-layer Difference Fill.
+cc 4725294ab4d39cca4de4f892e5746664cba17b57c513a042cba08a0d592f03ea

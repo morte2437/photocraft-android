@@ -220,14 +220,33 @@ fn ref_adjusted(l: &Layer, adj: &Adjustment, clipped: &[Layer], p: Cmyka, x: i32
     if p[4] > 0.0 {
         a = ref_clip(clipped, a, x, y);
     }
-    let k = l.opacity * l.fill_opacity * ref_mask(l, x, y);
+    let special = l.fill_opacity < 1.0 && crate::psblend::fill_is_special(l.blend);
+    let op = if special { l.opacity } else { l.opacity * l.fill_opacity };
+    let k = op * ref_mask(l, x, y);
     if l.blend == BlendMode::Dissolve {
         // Opacity and mask are the chance the pixel takes the adjustment fully.
         return if k > 0.0 && crate::dissolve_noise(x, y) < k { [a[0], a[1], a[2], a[3], p[4]] } else { p };
     }
     let mut o = p;
+    let bl = std::array::from_fn::<_, 4, _>(|c| {
+        if !special {
+            return ref_blend(l.blend, p[c], a[c]);
+        }
+        // Independent scalar oracle: apply Fill toward the mode's neutral brightness.
+        let f = l.fill_opacity.clamp(0.0, 1.0);
+        let (back, source) = (1.0 - p[c], 1.0 - a[c]);
+        if l.blend == BlendMode::HardMix {
+            return 1.0 - ((back - f * (1.0 - source)) / (1.0 - f)).clamp(0.0, 1.0);
+        }
+        let neutral = match l.blend {
+            BlendMode::ColorBurn | BlendMode::LinearBurn => 1.0,
+            BlendMode::VividLight | BlendMode::LinearLight => 0.5,
+            _ => 0.0,
+        };
+        ref_blend(l.blend, p[c], 1.0 - (neutral + (source - neutral) * f))
+    });
     for c in 0..4 {
-        o[c] = p[c] + (ref_blend(l.blend, p[c], a[c]) - p[c]) * k;
+        o[c] = p[c] + (bl[c] - p[c]) * k;
     }
     o
 }
@@ -1856,5 +1875,78 @@ fn every_cmyk_route_rounds_after_an_adjustment_layer() {
         let display = crate::render(&d, rect).px[0][3];
         let export = render_cmyk(&d, rect).unwrap_or_else(|| panic!("supported")).px[0][4];
         assert_eq!((display, export), (105.0 / 255.0, 105.0 / 255.0), "opacity {opacity}");
+    }
+}
+
+/// The exact group stack captured by proptest seed 4725294a, with source pixels
+/// stored at the requested depth rather than only changing the document label.
+fn captured_adjustment_doc(depth: SampleType, blend: BlendMode, opacity: f32, fill: f32, layer_mask: Option<LayerMask>) -> (Document, f32) {
+    let mut source = Layer::raster("source", PixelFormat { mode: ColorMode::Cmyk, sample: depth, alpha: true });
+    source.surface_mut().unwrap().fill_rect(Rect::new(0, 0, 1, 1), &[0.0, 0.0, 0.583_913_15, 0.0, 1.0]);
+    let stored_yellow = source.surface().unwrap().sample_channel(0, 0, 2);
+    let mut invert = adjustment(Adjustment::Invert);
+    invert.blend = blend;
+    invert.opacity = opacity;
+    invert.fill_opacity = fill;
+    invert.mask = layer_mask;
+    let mut pass = Layer::group("pass", vec![invert]);
+    pass.blend = BlendMode::PassThrough;
+    let mut outer = Layer::group("isolated", vec![source, pass]);
+    outer.blend = BlendMode::Normal;
+    let mut d = Document::new("captured", Size::new(4, 5), ColorMode::Cmyk, depth);
+    d.layers.push(outer);
+    (d, stored_yellow)
+}
+
+#[test]
+fn adjustment_special_fill_recreates_captured_repro() {
+    let (d, _) = captured_adjustment_doc(SampleType::U8, BlendMode::Difference, 1.0, 0.170_322_34, None);
+    assert_routes_agree(&d);
+    assert_matches_reference(&d);
+    assert_eq!(render1(&d, 0, 0)[2], 174.0 / 255.0);
+}
+
+#[test]
+fn adjustment_special_fill_depths() {
+    for depth in [SampleType::U8, SampleType::U16, SampleType::F32] {
+        let (d, stored) = captured_adjustment_doc(depth, BlendMode::Difference, 1.0, 0.170_322_34, None);
+        assert!(supports(&d));
+        if depth == SampleType::F32 {
+            assert!(!split::supports(&d), "float documents use the native path");
+        } else {
+            assert_routes_agree(&d);
+        }
+        // Difference on brightness: 1 - |(1 - ink) - ink * Fill|.
+        let unrounded = 1.0 - ((1.0 - stored) - stored * 0.170_322_34).abs();
+        let expected = match depth {
+            SampleType::U8 => (255.0 - ((1.0 - unrounded) * 255.0 + 0.5).floor()) / 255.0,
+            SampleType::U16 => (32768.0 - ((1.0 - unrounded) * 32768.0 + 0.5).floor()) / 32768.0,
+            _ => unrounded,
+        };
+        let got = render1(&d, 0, 0);
+        assert!((got[2] - expected).abs() <= 1e-5, "{depth:?}: {got:?} vs {expected}");
+        assert_eq!(got[4], 1.0);
+    }
+}
+
+#[test]
+fn adjustment_fill_attenuation_and_boundaries() {
+    let cases = [
+        (BlendMode::Difference, 0.5, 0.170_322_34, None),
+        (BlendMode::Difference, 1.0, 0.170_322_34, Some(mask(&[(Rect::new(0, 0, 1, 1), 0.5)], 1.0, 1.0, true))),
+        (BlendMode::Normal, 1.0, 0.170_322_34, None),
+        (BlendMode::Difference, 1.0, 1.0, None),
+        (BlendMode::Difference, 1.0, 0.0, None),
+        (BlendMode::Dissolve, 1.0, 0.5, None),
+    ];
+    for (blend, opacity, fill, layer_mask) in cases {
+        let (d, stored) = captured_adjustment_doc(SampleType::U8, blend, opacity, fill, layer_mask);
+        assert_routes_agree(&d);
+        assert_matches_reference(&d);
+        let got = render1(&d, 0, 0);
+        assert_eq!(got[4], 1.0);
+        if fill == 0.0 {
+            assert_eq!(got[2], stored);
+        }
     }
 }
