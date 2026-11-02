@@ -99,8 +99,17 @@ mod tests {
     fn named_nonactive_effects_layer_can_be_replayed() {
         let (mut s, a, _) = session();
         s.execute("layer.new.layer", json!({"name": "top"})).unwrap();
-        s.execute("layer.setEffectsVisible", json!({"layer": "a", "visible": false})).unwrap();
+        let replay = s.active().unwrap().doc.as_ref().clone();
+        s.execute("actions.record", json!({"name": "Hide effects"})).unwrap();
+        s.execute("layer.setEffectsVisible", json!({"layer": a, "visible": false})).unwrap();
+        s.execute("actions.stop", json!({})).unwrap();
         assert!(!state(&s, a).0);
+        let steps = s.execute("actions.get", json!({"action": "Hide effects"})).unwrap()["steps"].clone();
+        assert_eq!(steps[0][1]["layer"], "a");
+        s.add_document(replay, None);
+        let played = s.execute("actions.play", json!({"action": "Hide effects"})).unwrap();
+        assert!(played.get("failed").is_none(), "{played}");
+        assert!(!state(&s, a).0, "the recorded name targeted the nonactive layer on replay");
     }
 
     fn steps(s: &Session) -> usize {

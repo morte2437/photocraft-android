@@ -40,13 +40,18 @@ impl Before {
     }
 }
 
+/// Commands whose explicit `layer` names source content rather than a default target.
+pub(crate) fn needs_source_layer(id: &str) -> bool {
+    matches!(id, "layer.new.frame" | "select.loadSelection" | "type.createSelection")
+}
+
 /// `params` with its `layer` id made portable (see the module doc).
 pub(crate) fn portable(id: &str, mut params: Value, before: &Before) -> Value {
     let Some(doc) = before.doc.as_deref() else { return params };
     let Some(target) = params.get("layer").and_then(Value::as_u64).map(LayerId) else { return params };
     let Some(obj) = params.as_object_mut() else { return params };
     let only_selected = before.selected.len() <= 1;
-    if !matches!(id, "layer.select" | "layer.new.frame") && before.active_layer == Some(target) && only_selected {
+    if id != "layer.select" && !needs_source_layer(id) && before.active_layer == Some(target) && only_selected {
         obj.remove("layer");
         return params;
     }

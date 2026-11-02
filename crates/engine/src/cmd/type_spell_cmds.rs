@@ -117,7 +117,7 @@ fn list(s: &Session, p: &Value) -> Result<Value> {
 /// Replaces one occurrence (verified to still be `word` when given).
 fn change(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "edit.checkSpelling";
-    let id = LayerId(p.get("layer").and_then(Value::as_u64).ok_or_else(|| bad(cmd, "`change` needs `layer`"))?);
+    let id = crate::commands::explicit_layer(s, p)?.ok_or_else(|| bad(cmd, "`change` needs `layer`"))?;
     let start = p.get("start").and_then(Value::as_u64).ok_or_else(|| bad(cmd, "`change` needs `start`"))? as usize;
     let end = p.get("end").and_then(Value::as_u64).ok_or_else(|| bad(cmd, "`change` needs `end`"))? as usize;
     let to = p.get("replace").and_then(Value::as_str).ok_or_else(|| bad(cmd, "`change` needs `replace`"))?.to_string();
@@ -270,7 +270,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Check Spelling…",
             menu: &["Edit"],
             shortcut: None,
-            params: r#"{"action":"list|change|changeAll|addToDictionary|removeFromDictionary|suggest"="list","allLayers":bool=true,"layer":id? (check one layer),"ignore":[word]? (Ignore All for this check),"suggestions":n=5; change: "layer","start","end" (chars),"word"? (verified),"replace"; changeAll: "word","replace"; addToDictionary/removeFromDictionary/suggest: "word"} → list: {"misspellings":[{"layer","start","end","word","suggestions"}],"count"}"#,
+            params: r#"{"action":"list|change|changeAll|addToDictionary|removeFromDictionary|suggest"="list","allLayers":bool=true,"layer":id|name? (check one layer),"ignore":[word]? (Ignore All for this check),"suggestions":n=5; change: "layer","start","end" (chars),"word"? (verified),"replace"; changeAll: "word","replace"; addToDictionary/removeFromDictionary/suggest: "word"} → list: {"misspellings":[{"layer","start","end","word","suggestions"}],"count"}"#,
             enabled: has_type,
             journal: true,
             run: check_spelling,
@@ -312,6 +312,23 @@ mod tests {
 
     fn text_of(s: &Session, id: u64) -> String {
         text(&s.active().unwrap().doc, LayerId(id)).unwrap().to_string()
+    }
+
+    #[test]
+    fn a_recorded_spelling_change_replays_on_a_named_nonactive_layer() {
+        let (mut s, id) = session("Teh");
+        let name = s.active().unwrap().doc.layer(LayerId(id)).unwrap().name.clone();
+        s.execute("layer.new.layer", json!({"name": "Top"})).unwrap();
+        let replay = s.active().unwrap().doc.as_ref().clone();
+        s.execute("actions.record", json!({"name": "Fix spelling"})).unwrap();
+        s.execute("edit.checkSpelling", json!({"action": "change", "layer": id, "start": 0, "end": 3, "word": "Teh", "replace": "The"})).unwrap();
+        s.execute("actions.stop", json!({})).unwrap();
+        let steps = s.execute("actions.get", json!({"action": "Fix spelling"})).unwrap()["steps"].clone();
+        assert_eq!(steps[0][1]["layer"], name);
+        s.add_document(replay, None);
+        let played = s.execute("actions.play", json!({"action": "Fix spelling"})).unwrap();
+        assert!(played.get("failed").is_none(), "{played}");
+        assert_eq!(text_of(&s, id), "The");
     }
 
     #[test]
