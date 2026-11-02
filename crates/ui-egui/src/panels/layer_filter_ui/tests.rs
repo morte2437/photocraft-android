@@ -10,6 +10,7 @@ use serde_json::json;
 use super::{Filter, FilterBy};
 use crate::PhotocraftApp;
 use crate::state::UiState;
+use crate::theme::ThemeKind;
 
 /// Background, "Ink" (Multiply) and "Paper" in a group "Sheets", and "ink notes" (type) on top.
 fn session() -> photocraft_engine::Session {
@@ -91,10 +92,17 @@ fn saved_settings_without_the_new_fields_still_load() {
 }
 
 fn harness() -> Harness<'static, PhotocraftApp> {
+    harness_in(ThemeKind::default())
+}
+
+fn harness_in(theme: ThemeKind) -> Harness<'static, PhotocraftApp> {
     let session = session();
     let mut h = Harness::builder().with_size(vec2(1440.0, 900.0)).with_max_steps(64).build_eframe(move |cc| {
-        PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
-        PhotocraftApp::new(session, crate::Services::default())
+        PhotocraftApp::setup_context(&cc.egui_ctx, theme);
+        let mut app = PhotocraftApp::new(session, crate::Services::default());
+        app.run("prefs.set", json!({"path": "interface.theme", "value": theme.id()})).unwrap();
+        app.ui.theme = theme;
+        app
     });
     h.run_steps(8);
     h
@@ -135,4 +143,17 @@ fn the_dropdown_switches_the_panel_between_filter_types() {
     h.state_mut().ui.layer_filter_by = FilterBy::Kind;
     h.run_steps(4);
     assert_eq!(drawn(&h), ["ink notes"]);
+}
+
+/// The filter row was drawn in the Pro themes only, while Filter Options › Show is in every
+/// theme's panel menu: in Studio and the others it did nothing.
+#[test]
+fn every_theme_shows_the_filter_row() {
+    for theme in ThemeKind::ALL {
+        let mut h = harness_in(theme);
+        assert!(h.query_by_value("Kind").is_some(), "{theme:?} draws the filter row");
+        h.state_mut().ui.layer_filter = vec!["type".into()];
+        h.run_steps(4);
+        assert_eq!(drawn(&h), ["ink notes"], "{theme:?} filters by kind");
+    }
 }

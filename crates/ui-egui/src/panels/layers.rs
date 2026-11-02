@@ -123,7 +123,8 @@ pub(super) fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     if !ui.input(|i| i.pointer.primary_down()) || !app.ui.layers_panel_options.preview_on_canvas_when_reordering_layers {
         app.reorder_preview = None;
     }
-    if t.pro && app.ui.layers_panel_options.show_filters {
+    // Every theme draws the filter row: Filter Options › Show is in every theme's panel menu.
+    if app.ui.layers_panel_options.show_filters {
         crate::layer_filter_ui::bar(app, ui);
         ui.add_space(4.0);
     }
