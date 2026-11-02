@@ -14,12 +14,13 @@
 //!    letters, each page's punctuation, and the degree sign). The highest share wins. Two
 //!    single-byte readings don't count: the letters windows-1252 alone has at 0x80–0x9F (Š š Ž
 //!    ž Ÿ ƒ ˆ), where Mac Roman keeps its accented lowercase (Mac "Opacité" is 1252
-//!    "OpacitŽ"), and a windows-1251 Cyrillic letter in a name whose letters are mostly ASCII
-//!    (Mac "Höhe" is 1251 "Hшhe"; "CMYKканал" and "Копiя" still count).
+//!    "OpacitŽ"), unless a capital one starts a word ("Škoda"); and a windows-1251 Cyrillic
+//!    letter glued into an ASCII word (Mac "Höhe" is 1251 "Hшhe"), unless the name's letters
+//!    are mostly Cyrillic ("CMYKканал", "Копiя") or the letter is in a Cyrillic word of its own
+//!    ("Layer Слой").
 //! 3. A tie is broken by the script of a hint (text the file stores as UTF-16, so it decodes
 //!    fine): kana → Shift_JIS; Hangul → EUC-KR; Cyrillic → windows-1251; Han → GBK, then
-//!    Big5, then Shift_JIS; Latin letters → windows-1252, then Mac Roman. A hint with accented
-//!    Latin letters also rules windows-1251 out (step 1).
+//!    Big5, then Shift_JIS; Latin letters → windows-1252, then Mac Roman.
 //! 4. Still tied: windows-1252, flagged [`Guess::uncertain`].
 //! 5. Mac Roman must also beat windows-1252 when the Latin-1 symbols that are no letter in
 //!    Mac Roman (© ° « ± …) count as common text (1252 "Größe »" is Mac Roman "Grˆﬂe ª").
@@ -79,10 +80,8 @@ pub(crate) fn guess(legacy: &[&[u8]], hint: &str) -> Guess {
     }
     let mut best: Vec<&'static Encoding> = Vec::new();
     let mut best_score = (0u64, 1u64);
-    // Names from a Photoshop whose UTF-16 text has accented Latin letters are not Cyrillic.
-    let latin_hint = hinted(hint).first() == Some(&WINDOWS_1252);
     for enc in candidates() {
-        if (latin_hint && enc == WINDOWS_1251) || !sample.iter().all(|(name, truncated)| decodes_cleanly(enc, name, *truncated)) {
+        if !sample.iter().all(|(name, truncated)| decodes_cleanly(enc, name, *truncated)) {
             continue;
         }
         let score = sample.iter().fold((0u64, 0u64), |(c, h), (name, _)| {
@@ -204,18 +203,31 @@ fn decodes_cleanly(enc: &'static Encoding, bytes: &[u8], truncated: bool) -> boo
 fn score(enc: &'static Encoding, name: &[u8]) -> (u64, u64) {
     if enc == WINDOWS_1252 || enc == WINDOWS_1251 || enc == MACINTOSH {
         // Letters, typographic punctuation and the degree sign ("Rotation 90°") are common, as
-        // the double-byte pages' punctuation rows are; not the letters windows-1252 alone has at
-        // 0x80–0x9F, where Mac Roman keeps its accented lowercase (Mac "Opacité" is 1252
-        // "OpacitŽ"), nor a Cyrillic letter in a name whose letters are mostly ASCII (Mac "Höhe"
-        // is 1251 "Hшhe"; "CMYKканал" and Ukrainian "Копiя" keep counting).
-        let decoded = decode(name, enc);
-        let cyrillic_name = decoded.chars().filter(|c| is_cyrillic(*c)).count() >= decoded.chars().filter(|c| c.is_ascii_alphabetic()).count();
-        let common = |ch: char| {
-            let letter =
-                ch.is_alphabetic() && !(enc == WINDOWS_1252 && RARE_1252_LETTERS.contains(&ch)) && !(enc == WINDOWS_1251 && is_cyrillic(ch) && !cyrillic_name);
-            letter || TYPOGRAPHIC.contains(&ch) || ch == '°'
-        };
-        return single_byte_score(enc, name, common);
+        // the double-byte pages' punctuation rows are, with two readings held back: the letters
+        // windows-1252 alone has at 0x80–0x9F, where Mac Roman keeps its accented lowercase (Mac
+        // "Opacité" is 1252 "OpacitŽ"), unless a capital one starts a word ("Škoda"); and a
+        // windows-1251 Cyrillic letter glued into an ASCII word (Mac "Höhe" is 1251 "Hшhe"),
+        // unless the name's letters are mostly Cyrillic ("CMYKканал", Ukrainian "Копiя") or the
+        // letter is in a Cyrillic word of its own ("Layer Слой").
+        let chars: Vec<char> = decode(name, enc).chars().collect();
+        let cyrillic_name = chars.iter().filter(|c| is_cyrillic(**c)).count() >= chars.iter().filter(|c| c.is_ascii_alphabetic()).count();
+        let (mut common, mut high) = (0u64, 0u64);
+        for (i, &ch) in chars.iter().enumerate() {
+            if ch.is_ascii() {
+                continue;
+            }
+            high += 1;
+            let counts = if enc == WINDOWS_1252 && RARE_1252_LETTERS.contains(&ch) {
+                let after_ascii = i.checked_sub(1).and_then(|k| chars.get(k)).is_some_and(|c| c.is_ascii_alphanumeric());
+                ch.is_uppercase() && !after_ascii && chars.get(i + 1).is_some_and(|c| c.is_ascii_lowercase())
+            } else if enc == WINDOWS_1251 && is_cyrillic(ch) {
+                cyrillic_name || cyrillic_word(&chars, i)
+            } else {
+                ch.is_alphabetic() || TYPOGRAPHIC.contains(&ch) || ch == '°'
+            };
+            common += u64::from(counts);
+        }
+        return (common, high);
     }
     let (mut common, mut high) = (0u64, 0u64);
     let mut i = 0usize;
@@ -274,6 +286,21 @@ const RARE_1252_LETTERS: [char; 7] = ['Š', 'š', 'Ž', 'ž', 'Ÿ', 'ƒ', 'ˆ'];
 /// A Cyrillic letter (windows-1251's 0xC0–0xFF and the letters among 0x80–0xBF).
 fn is_cyrillic(ch: char) -> bool {
     ('\u{0400}'..='\u{04FF}').contains(&ch) && ch.is_alphabetic()
+}
+
+/// Whether the Cyrillic letter at `i` is in a Cyrillic word of its own: a run of two or more,
+/// not glued to an ASCII letter or digit ("Слой" beside "Layer"; not "OpacitЋ" or "90Ў").
+fn cyrillic_word(chars: &[char], i: usize) -> bool {
+    let mut start = i;
+    while start > 0 && chars.get(start - 1).is_some_and(|c| is_cyrillic(*c)) {
+        start -= 1;
+    }
+    let mut end = i + 1;
+    while chars.get(end).is_some_and(|c| is_cyrillic(*c)) {
+        end += 1;
+    }
+    let glued = |k: Option<usize>| k.and_then(|k| chars.get(k)).is_some_and(|c| c.is_ascii_alphanumeric());
+    end - start >= 2 && !glued(start.checked_sub(1)) && !glued(Some(end))
 }
 
 /// Latin-1 symbols people type in names (windows-1252 0xA2–0xB7) whose byte is not a letter in
@@ -487,6 +514,28 @@ mod tests {
         for words in [&["Opacité 50%"][..], &["Höhe", "Grün", "Bär"], &["Rotation 90°"], &["Ändern"], &["Fläche m²"], &["Preis £5"]] {
             assert_eq!(guess_words(WINDOWS_1252, words, "Set 1").encoding, WINDOWS_1252, "{words:?}");
             assert_eq!(guess_words(WINDOWS_1252, words, "Größe ändern"), Guess { encoding: WINDOWS_1252, uncertain: false }, "{words:?}");
+        }
+    }
+
+    #[test]
+    fn cyrillic_names_in_latin_hinted_files_and_cyrillic_words_beside_latin_ones_stay_1251() {
+        // A Cyrillic step name in a set with a French name reads as it did; a Cyrillic word beside
+        // a Latin one counts as Cyrillic, and the hint settles the tie with windows-1252's letters.
+        assert_eq!(guess_words(WINDOWS_1251, &["Ёлка"], "Définir"), Guess { encoding: WINDOWS_1251, uncertain: false });
+        assert_eq!(guess_words(WINDOWS_1251, &["Layer Слой"], "Набор 1"), Guess { encoding: WINDOWS_1251, uncertain: false });
+        assert_eq!(guess_words(WINDOWS_1251, &["Layer Слой", "Ёлка"], "Set 1"), Guess { encoding: WINDOWS_1251, uncertain: false });
+        // Alone and without a hint, "Layer Слой" is as ambiguous as before (every letter is one in
+        // windows-1252 too): the flagged fallback.
+        assert_eq!(guess_words(WINDOWS_1251, &["Layer Слой"], "Set 1"), Guess { encoding: WINDOWS_1252, uncertain: true });
+    }
+
+    #[test]
+    fn a_capital_rare_letter_starting_a_word_keeps_windows_1252() {
+        // windows-1252 Š Ž Ÿ (0x8A 0x8E 0x9F) are Mac Roman ä é ü: a capital one starting a word
+        // ("Škoda") counts, an accent inside a word (Mac "Opacité" as "OpacitŽ") does not.
+        for words in [&["Škoda"][..], &["Žaba"], &["Šibenik", "Žaba"]] {
+            assert_eq!(guess_words(WINDOWS_1252, words, "Größe ändern"), Guess { encoding: WINDOWS_1252, uncertain: false }, "{words:?}");
+            assert_eq!(guess_words(WINDOWS_1252, words, "Set 1").encoding, WINDOWS_1252, "{words:?}");
         }
     }
 
