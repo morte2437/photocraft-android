@@ -497,7 +497,7 @@ fn tiff_with_separate_mask() -> Vec<u8> {
     assert_eq!(&bytes[..2], b"II");
     let first = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
     let count = u16::from_le_bytes(bytes[first..first + 2].try_into().unwrap()) as usize;
-    if bytes.len() % 2 != 0 {
+    if !bytes.len().is_multiple_of(2) {
         bytes.push(0);
     }
     let mask = bytes.len() as u32;
