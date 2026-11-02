@@ -639,6 +639,14 @@ pub(super) const EVENTS: &[Event] = &[
     Event { code: "save", name: "save", label: "Save", ids: &["file.save", "file.saveAs", "file.saveACopy"], from: save_from, to: save_to },
     ev!("Rvrt", "revert", "Revert", "file.revert", &[]),
     Event { code: "Ply ", name: "play", label: "Play", ids: &["actions.play"], from: play_from, to: play_to },
+    Event {
+        code: "Btch",
+        name: "batch",
+        label: "Batch",
+        ids: &["file.automate.batch"],
+        from: super::steps_batch::batch_from,
+        to: super::steps_batch::batch_to,
+    },
     Event { code: "", name: "applyComp", label: "Apply Layer Comp", ids: &["layerComp.apply"], from: apply_comp_from, to: apply_comp_to },
     Event { code: "Stop", name: "stop", label: "Stop", ids: &[STOP_MESSAGE], from: stop_from, to: stop_to },
 ];

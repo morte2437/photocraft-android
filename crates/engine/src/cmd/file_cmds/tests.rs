@@ -1,5 +1,29 @@
 use super::*;
 
+// Named Batch action regression adapted from #7170 by @HirthikBalaji.
+#[test]
+fn batch_resolves_action_by_name_and_detects_recursion() {
+    let dir = tmp("batch-action-name");
+    let input = png(&dir, "in.png", 8, 8, "#ff0000");
+    let out = join(&dir, "out");
+    std::fs::create_dir_all(&out).unwrap();
+    let mut s = Session::new();
+    let mut action = crate::actions_cmds::Action::new("Scale".into(), vec![("image.imageSize".into(), json!({"width":16,"height":16}))]);
+    action.set = Some("Ops".into());
+    s.actions.list.push(action);
+    let result = s.execute("file.automate.batch", json!({"action":"Scale","set":"Ops","input":[input.clone()],"output":out})).unwrap();
+    assert_eq!(result["files"].as_array().unwrap().len(), 1, "{result}");
+    for p in [json!({"action":"Nonexistent"}), json!({"action":"Scale","set":"Wrong set"})] {
+        let mut p = p;
+        p["input"] = json!([input.clone()]);
+        p["output"] = json!(out);
+        assert!(s.execute("file.automate.batch", p).is_err());
+    }
+    s.actions.playback_stack.push("Scale".into());
+    let err = s.execute("file.automate.batch", json!({"action":"Scale","input":[input],"output":out})).unwrap_err();
+    assert!(err.to_string().contains("recursive action call"), "{err}");
+}
+
 fn tmp(name: &str) -> String {
     let d = std::env::temp_dir().join(format!("photocraft-file-cmds-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);

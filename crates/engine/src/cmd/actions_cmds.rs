@@ -250,8 +250,10 @@ pub fn called_actions(list: &[Action], steps: &mut [(String, Value)]) -> Vec<Act
     fn targets(list: &[Action], steps: &mut [(String, Value)], depth: usize, queue: &mut Vec<(usize, usize)>) {
         for (id, params) in steps.iter_mut() {
             match id.as_str() {
-                "actions.play" => {
-                    let Ok(i) = resolve(list, params, "actions.play") else { continue };
+                "actions.play" | "file.automate.batch" => {
+                    let resolved =
+                        if id == "file.automate.batch" { crate::file_cmds::batch_action(list, params) } else { resolve(list, params, "actions.play") };
+                    let Ok(i) = resolved else { continue };
                     if let (Some(action), Some(obj)) = (list.get(i), params.as_object_mut()) {
                         obj.insert("action".into(), json!(action.name));
                     }

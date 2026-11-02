@@ -244,19 +244,23 @@ pub(crate) fn batch_keeps_step(id: &str) -> bool {
     (batch_save_point(id) || !crate::actions_cmds::shell_save_command(id)) && !crate::actions_cmds::shell_view_command(id)
 }
 
+/// Resolve Batch's recorded action and set without substituting an action from another set.
+pub(crate) fn batch_action(list: &[crate::actions_cmds::Action], p: &Value) -> Result<usize> {
+    const CMD: &str = "file.automate.batch";
+    if let Some(set) = p.get("set").filter(|v| !v.is_null()) {
+        let set = set.as_str().ok_or_else(|| EngineError::BadParams { cmd: CMD.into(), msg: "set must be a string".into() })?;
+        let name =
+            p.get("action").and_then(Value::as_str).ok_or_else(|| EngineError::BadParams { cmd: CMD.into(), msg: "a set needs a named action".into() })?;
+        return list
+            .iter()
+            .position(|a| a.name == name && a.set.as_deref() == Some(set))
+            .ok_or_else(|| EngineError::BadParams { cmd: CMD.into(), msg: format!("no action named `{name}` in set `{set}`") });
+    }
+    crate::actions_cmds::resolve(list, p, CMD)
+}
+
 pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "file.automate.batch";
-    let mut steps =
-        parse_steps(p.get("steps").or_else(|| p.get("action")).ok_or_else(|| EngineError::BadParams { cmd: cmd.into(), msg: "missing \"steps\"".into() })?)?;
-    // Each result goes to the destination folder, which overrides the action's recorded Save /
-    // Save As steps: they only mark the result.
-    steps.retain(|(id, _)| batch_keeps_step(id) && id != "file.export.quickExport");
-    if let Some((id, _)) = steps.iter().find(|(id, _)| !batch_save_point(id) && crate::commands::find(id).is_none()) {
-        return Err(EngineError::BadParams { cmd: cmd.into(), msg: format!("unknown command `{id}` in the action") });
-    }
-    let output = str_param(p, "output", cmd)?.to_string();
-    let inputs = batch_inputs_tree(p, cmd, &output)?;
-    let format = p.get("format").and_then(Value::as_str).unwrap_or("same").to_string();
     // Steps that call another action play it from the caller's actions; the playback stack comes
     // along so an action that batches itself is caught as a recursive call.
     let list = match p.get("calledActions") {
@@ -271,6 +275,27 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
             list
         }
     };
+    let mut called_name = None;
+    let mut steps = if let Some(st) = p.get("steps") {
+        parse_steps(st)?
+    } else if let Some(act) = p.get("action").filter(|v| v.is_array()) {
+        parse_steps(act)?
+    } else {
+        let action = list.get(batch_action(&list, p)?).ok_or_else(|| EngineError::Other("batch action disappeared".into()))?;
+        if s.actions.playback_stack.contains(&action.name) {
+            return Err(EngineError::BadParams { cmd: cmd.into(), msg: format!("recursive action call to `{}`", action.name) });
+        }
+        called_name = Some(action.name.clone());
+        action.enabled_steps().map(|(_, (id, params))| (id.clone(), params.clone())).collect()
+    };
+    // Preserve the current Save snapshots and view-step policy while adding named actions.
+    steps.retain(|(id, _)| batch_keeps_step(id) && id != "file.export.quickExport");
+    if let Some((id, _)) = steps.iter().find(|(id, _)| !batch_save_point(id) && crate::commands::find(id).is_none()) {
+        return Err(EngineError::BadParams { cmd: cmd.into(), msg: format!("unknown command `{id}` in the action") });
+    }
+    let output = str_param(p, "output", cmd)?.to_string();
+    let inputs = batch_inputs_tree(p, cmd, &output)?;
+    let format = p.get("format").and_then(Value::as_str).unwrap_or("same").to_string();
     // A batch inside a played action charges its inputs × steps (at least one each: an input is read,
     // decoded and saved even with no steps) to the playback tree it is in and
     // hands the count on, so a batch of batches can't multiply past the limit. A top-level batch
@@ -283,13 +308,9 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
         }
         s.actions.playback_steps = playback_steps;
     }
-    let actions = crate::actions_cmds::ActionState {
-        list,
-        playing: s.actions.playing,
-        playback_stack: s.actions.playback_stack.clone(),
-        playback_steps,
-        ..Default::default()
-    };
+    let mut playback_stack = s.actions.playback_stack.clone();
+    playback_stack.extend(called_name);
+    let actions = crate::actions_cmds::ActionState { list, playing: s.actions.playing, playback_stack, playback_steps, ..Default::default() };
     let names = batch_naming::plan(&inputs, &output, &format, p)?;
     let save = SaveOpts::from_params(s, p, cmd)?;
     let authorize = s.authorize;

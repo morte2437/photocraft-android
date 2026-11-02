@@ -32,6 +32,7 @@ mod descriptors;
 mod events;
 mod fields;
 mod files;
+mod steps_batch;
 mod steps_calculations;
 mod steps_custom;
 mod steps_doc;
