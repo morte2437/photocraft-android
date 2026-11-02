@@ -13,10 +13,12 @@ it back unchanged. Playback stops at an enabled kept step with its name, so an a
 work. Kept steps with no effect on the document (tool selections and the like) are imported switched off,
 so playback skips them.
 
-This page has two parts: the events PhotoCraft maps today, and a measured reference for the events it
-does not map yet, with everything needed to implement them without the reference application.
+This page covers the events PhotoCraft maps today, the settings some of them still lose, how steps name
+layers and documents, newer and older events and files, and a measured reference for the events it does not
+map yet, with everything needed to implement them without
+the reference application.
 
-## Supported events (120)
+## Supported events (144)
 
 | Code | String ID | Label | PhotoCraft command(s) |
 |---|---|---|---|
@@ -27,19 +29,22 @@ does not map yet, with everything needed to implement them without the reference
 | (string ID only) | applyLocking | Apply Locking | `layer.lockLayers` |
 | (string ID only) | assignProfile | Assign Profile | `edit.assignProfile` |
 | (string ID only) | autoColor | Auto Color | `image.autoColor` |
+| `Avrg` | Avrg | Average | `filter.blur.average` |
 | (string ID only) | blackAndWhite | Black & White | `image.adjustments.blackWhite` |
 | `Blr ` | blur | Blur | `filter.blur.blur` |
 | `BlrM` | blurMore | Blur More | `filter.blur.blurMore` |
 | `Brdr` | border | Border | `select.modify.border` |
 | (string ID only) | boxblur | Box Blur | `filter.blur.boxBlur` |
 | `BrgC` | brightnessEvent | Brightness/Contrast | `image.adjustments.brightnessContrast` |
+| (string ID only) | Adobe Camera Raw Filter | Camera Raw Filter | `filter.cameraRaw` |
 | `CnvS` | canvasSize | Canvas Size | `image.canvasSize` |
 | `ChnM` | channelMixer | Channel Mixer | `image.adjustments.channelMixer` |
 | (string ID only) | clearEvent | Clear | `select.editInQuickMaskMode`, `history.clear` |
 | `Cls ` | close | Close | `file.close` |
+| `Clds` | clouds | Clouds | `filter.render.clouds` |
 | (string ID only) | collapseAllGroupsEvent | Collapse All Groups | `layer.setExpanded` |
-| `ClrR` | colorRange | Color Range | `select.colorRange` |
 | `ClrB` | colorBalance | Color Balance | `image.adjustments.colorBalance` |
+| `ClrR` | colorRange | Color Range | `select.colorRange` |
 | `Cntc` | contract | Contract | `select.modify.contract` |
 | `CnvM` | convertMode | Convert Mode | `image.mode.rgb`, `image.mode.grayscale`, `image.mode.cmyk`, `image.mode.lab`, `image.mode.multichannel`, `image.mode.bits8`, `image.mode.bits16`, `image.mode.bits32`, `image.mode.bitmap` |
 | (string ID only) | convertToProfile | Convert to Profile | `edit.convertToProfile` |
@@ -51,12 +56,15 @@ does not map yet, with everything needed to implement them without the reference
 | `Crop` | crop | Crop | `image.crop` |
 | `Crst` | crystallize | Crystallize | `filter.pixelate.crystallize` |
 | `Crvs` | curves | Curves | `image.adjustments.curves` |
+| `Cstm` | custom | Custom | `filter.other.custom` |
 | `cut ` | cut | Cut | `edit.cut` |
+| `Dntr` | deInterlace | De-Interlace | `filter.video.deInterlace` |
 | `Dfrg` | defringe | Defringe | `layer.matting.defringe` |
 | `Dlt ` | delete | Delete | `layer.delete`, `edit.clear`, `layer.layerMask.delete`, `layer.smartFilter.deleteFilterMask` |
 | `Dstt` | desaturate | Desaturate | `image.adjustments.desaturate` |
 | (string ID only) | selectNoLayers | Deselect Layers | `select.deselectLayers` |
 | `Dspc` | despeckle | Despeckle | `filter.noise.despeckle` |
+| `DfrC` | differenceClouds | Difference Clouds | `filter.render.differenceClouds` |
 | `Dfs ` | diffuse | Diffuse | `filter.stylize.diffuse` |
 | `Dplc` | duplicate | Duplicate | `layer.duplicate`, `image.duplicate` |
 | `DstS` | dustAndScratches | Dust & Scratches | `filter.noise.dustAndScratches` |
@@ -68,19 +76,18 @@ does not map yet, with everything needed to implement them without the reference
 | `Expr` | export | Export | `file.export.saveForWebLegacy` |
 | `Exps` | exposure | Exposure | `image.adjustments.exposure` |
 | `Fthr` | feather | Feather | `select.modify.feather` |
+| `Fbrs` |  | Fibers | `filter.render.fibers` |
 | `Fl  ` | fill | Fill | `edit.fill`, `paint.bucket` |
-| `GEfc` | filterGallery | Filter Gallery | `filter.gallery.spatter` |
+| `GEfc` | filterGallery | Filter Gallery | `filter.gallery.accentedEdges`, `filter.gallery.angledStrokes`, `filter.gallery.basRelief`, `filter.gallery.chalkCharcoal`, `filter.gallery.charcoal`, `filter.gallery.chrome`, `filter.gallery.coloredPencil`, `filter.gallery.conteCrayon`, `filter.gallery.craquelure`, `filter.gallery.crosshatch`, `filter.gallery.cutout`, `filter.gallery.darkStrokes`, `filter.gallery.diffuseGlow`, `filter.gallery.dryBrush`, `filter.gallery.filmGrain`, `filter.gallery.fresco`, `filter.gallery.glass`, `filter.gallery.glowingEdges`, `filter.gallery.graphicPen`, `filter.gallery.halftonePattern`, `filter.gallery.inkOutlines`, `filter.gallery.mosaicTiles`, `filter.gallery.neonGlow`, `filter.gallery.notePaper`, `filter.gallery.oceanRipple`, `filter.gallery.paintDaubs`, `filter.gallery.paletteKnife`, `filter.gallery.patchwork`, `filter.gallery.photocopy`, `filter.gallery.plaster`, `filter.gallery.plasticWrap`, `filter.gallery.posterEdges`, `filter.gallery.reticulation`, `filter.gallery.roughPastels`, `filter.gallery.smudgeStick`, `filter.gallery.spatter`, `filter.gallery.sponge`, `filter.gallery.sprayedStrokes`, `filter.gallery.stainedGlass`, `filter.gallery.stamp`, `filter.gallery.sumiE`, `filter.gallery.texturizer`, `filter.gallery.tornEdges`, `filter.gallery.underpainting`, `filter.gallery.waterPaper`, `filter.gallery.watercolor`, `filter.gallery.grain` |
 | `FltI` | flattenImage | Flatten Image | `layer.flattenImage` |
 | `Flip` | flip | Flip | `image.imageRotation.flipCanvasHorizontal`, `image.imageRotation.flipCanvasVertical`, `edit.transform.flipHorizontal`, `edit.transform.flipVertical` |
-| `Clds` | clouds | Clouds | `filter.render.clouds` |
-| `DfrC` | differenceClouds | Difference Clouds | `filter.render.differenceClouds` |
-| `Fbrs` | (code only) | Fibers | `filter.render.fibers` |
-| `LnsF` | lensFlare | Lens Flare | `filter.render.lensFlare` |
+| (string ID only) | focusMask | Focus Area | `select.focusArea` |
 | `GsnB` | gaussianBlur | Gaussian Blur | `filter.blur.gaussianBlur` |
-| `GdMp` | gradientMapEvent | Gradient Map | `image.adjustments.gradientMap` |
+| (string ID only) | gradientMapEvent | Gradient Map | `image.adjustments.gradientMap` |
 | `Grow` | grow | Grow | `select.grow` |
 | `Hd  ` | hide | Hide | `layer.hideLayers` |
 | `HghP` | highPass | High Pass | `filter.other.highPass` |
+| `HsbP` | HsbP | HSB/HSL | `filter.other.hsbHsl` |
 | `HStr` | hueSaturation | Hue/Saturation | `image.adjustments.hueSaturation` |
 | (string ID only) | conditional | If | `actions.conditional` |
 | `ImgS` | imageSize | Image Size | `image.imageSize` |
@@ -88,27 +95,38 @@ does not map yet, with everything needed to implement them without the reference
 | `Invr` | invert | Invert | `image.adjustments.invert` |
 | `CpTL` | copyToLayer | Layer Via Copy | `layer.new.layerViaCopy` |
 | `CtTL` | cutToLayer | Layer Via Cut | `layer.new.layerViaCut` |
+| `LnsF` | lensFlare | Lens Flare | `filter.render.lensFlare` |
 | `Lvls` | levels | Levels | `image.adjustments.levels`, `image.autoTone`, `image.autoContrast` |
 | `Mk  ` | make | Make | `layer.new.layer`, `layer.new.group`, `layer.groupLayers`, `layer.duplicate`, `layer.new.layerViaCopy`, `layer.new.layerViaCut`, `layer.newFillLayer.solidColor`, `layer.newFillLayer.pattern`, `layer.newAdjustmentLayer.levels`, `layer.newAdjustmentLayer.curves`, `layer.newAdjustmentLayer.hueSaturation`, `layer.newAdjustmentLayer.brightnessContrast`, `layer.newAdjustmentLayer.threshold`, `layer.newAdjustmentLayer.posterize`, `layer.newAdjustmentLayer.invert`, `layer.newAdjustmentLayer.colorBalance`, `layer.newAdjustmentLayer.vibrance`, `layer.newAdjustmentLayer.exposure`, `layer.newAdjustmentLayer.photoFilter`, `layer.newAdjustmentLayer.blackWhite`, `layer.newAdjustmentLayer.channelMixer`, `layer.newAdjustmentLayer.selectiveColor`, `layer.newAdjustmentLayer.gradientMap`, `layer.layerMask.revealAll`, `layer.layerMask.hideAll`, `layer.layerMask.revealSelection`, `layer.layerMask.hideSelection`, `file.new`, `file.newFromClipboard`, `history.newSnapshot` |
+| (string ID only) | animationFramesFromLayers | Make Frames from Layers |  |
+| (string ID only) | matchColor | Match Color | `image.adjustments.matchColor` |
 | `Mxm ` | maximum | Maximum | `filter.other.maximum` |
 | `Mdn ` | median | Median | `filter.noise.median` |
 | `Mrg2` | mergeLayersNew | Merge Layers | `layer.mergeLayers` |
+| `MSpt` | mergeSpotChannel | Merge Spot Channel | `channel.mergeSpot` |
 | `MrgV` | mergeVisible | Merge Visible | `layer.mergeVisible`, `layer.stampVisible` |
 | `Mnm ` | minimum | Minimum | `filter.other.minimum` |
 | `MtnB` | motionBlur | Motion Blur | `filter.blur.motionBlur` |
-| `move` | move | Move | `layer.translate`, `layer.arrange.bringToFront`, `layer.arrange.sendToBack`, `layer.arrange.bringForward`, `layer.arrange.sendBackward` |
+| `move` | move | Move | `layer.translate`, `layer.moveTo`, `layer.arrange.bringToFront`, `layer.arrange.sendToBack`, `layer.arrange.bringForward`, `layer.arrange.sendBackward` |
+| `NTSC` | NTSC | NTSC Colors | `filter.video.ntscColors` |
 | `Ofst` | offset | Offset | `filter.other.offset` |
+| (string ID only) | oilPaint | Oil Paint | `filter.stylize.oilPaint` |
 | `Opn ` | open | Open | `file.openAs` |
 | `past` | paste | Paste | `edit.paste`, `edit.pasteSpecial.pasteInPlace` |
 | (string ID only) | pasteEffects | Paste Layer Style | `layer.layerStyle.pasteLayerStyle` |
 | (string ID only) | photoFilter | Photo Filter | `image.adjustments.photoFilter` |
+| `Pnch` | pinch | Pinch | `filter.distort.pinch` |
 | `Plc ` | placeEvent | Place | `file.placeEmbedded`, `file.placeLinked` |
 | `Ply ` | play | Play | `actions.play` |
+| `Plr ` | polar | Polar Coordinates | `filter.distort.polarCoordinates` |
 | `Pstr` | posterize | Posterize | `image.adjustments.posterize` |
 | `Prge` | purge | Purge | `edit.purge.all`, `edit.purge.clipboard`, `edit.purge.histories`, `edit.purge.undo` |
 | `RdlB` | radialBlur | Radial Blur | `filter.blur.radialBlur` |
 | (string ID only) | rasterizeLayer | Rasterize | `layer.rasterize.layer` |
 | `Ungr` | ungroup | Release Clipping Mask | `layer.releaseClippingMask` |
+| (string ID only) | removeBackground | Remove Background | `layer.removeBackground` |
+| `RmvB` | removeBlackMatte | Remove Black Matte | `layer.matting.removeBlackMatte` |
+| `RmvW` | removeWhiteMatte | Remove White Matte | `layer.matting.removeWhiteMatte` |
 | `Rset` | reset | Reset | `tools.defaultColors` |
 | `RvlA` | revealAll | Reveal All | `image.revealAll` |
 | `Rvrt` | revert | Revert | `file.revert` |
@@ -126,73 +144,86 @@ does not map yet, with everything needed to implement them without the reference
 | `Shrp` | sharpen | Sharpen | `filter.sharpen.sharpen` |
 | `ShrE` | sharpenEdges | Sharpen Edges | `filter.sharpen.sharpenEdges` |
 | `ShrM` | sharpenMore | Sharpen More | `filter.sharpen.sharpenMore` |
-| `Shw ` | show | Show | `layer.showLayers` |
+| `Shw ` | show | Show | `layer.showLayers`, `layer.showOnly` |
 | `Smlr` | similar | Similar | `select.similar` |
+| (string ID only) | selectSky | Sky | `select.sky` |
 | `SmrB` | smartBlur | Smart Blur | `filter.blur.smartBlur` |
+| (string ID only) | smartSharpen | Smart Sharpen | `filter.sharpen.smartSharpen` |
 | `Smth` | smoothness | Smooth | `select.modify.smooth` |
-| `Stop` | stop | Stop | `actions.stopMessage` |
+| `Sphr` | spherize | Spherize | `filter.distort.spherize` |
+| `SplC` | splitChannels | Split Channels | `channel.split` |
+| `Stop` | stop | Stop | `STOP_MESSAGE` |
 | `Strk` | stroke | Stroke | `edit.stroke` |
 | (string ID only) | surfaceBlur | Surface Blur | `filter.blur.surfaceBlur` |
 | `Thrs` | threshold | Threshold | `image.adjustments.threshold` |
 | `Trnf` | transform | Transform | `edit.transform`, `select.transformSelection` |
+| `Trap` | trap | Trap | `image.trap` |
 | (string ID only) | trim | Trim | `image.trim` |
+| `Twrl` | twirl | Twirl | `filter.distort.twirl` |
 | (string ID only) | ungroupLayersEvent | Ungroup Layers | `layer.ungroupLayers` |
 | `UnsM` | unsharpMask | Unsharp Mask | `filter.sharpen.unsharpMask` |
 | (string ID only) | updatePlacedLayer | Update Smart Objects | `layer.smartObjects.updateModifiedContent` |
-| `Vbrn` | vibrance | Vibrance | `image.adjustments.vibrance` |
+| (string ID only) | vibrance | Vibrance | `image.adjustments.vibrance` |
+| `Wave` | wave | Wave | `filter.distort.wave` |
+| `ZgZg` | zigZag | ZigZag | `filter.distort.zigZag` |
 
-### Group B: The Render filters Clouds, Difference Clouds, Fibers and Lens Flare
+### Settings retained by mapped events
 
-These four events load, play and save through the existing Render commands. Lighting Effects still needs a recorded step through its dialog.
+- Transform keeps its recorded `FTcs` reference point. Show with `TglO` true maps to
+  `layer.showOnly`; repeating it restores the other layers' visibility.
+- Make keeps top-level group names, new-layer clipping (`Usng.Grup`) and adjustment colour labels
+  (`Usng.Clr `). Layer via Copy / Cut keeps names, blend modes, opacity and colour labels.
+- Loading another layer's transparency keeps its source reference. Background property references
+  remain independent of translated names; ordinary layer-name references remain names.
+- Close without `Svng` preserves the unanswered save choice. Headless playback refuses to discard a
+  changed document. Native `file.close` still defaults to discard; `save: "ask"` opts into this policy.
+- Photo Filter converts recorded Lab colours through `photocraft-cms`.
+- Direct Vibrance and Gradient Map save as the string events `vibrance` and `gradientMapEvent`.
+  Stroke Outside uses `StrL.Otsd`, group Pass Through uses `BlnM.passThrough`, Canvas Size extension
+  colours use `FrgC` and `Clr `, and Absolute Colorimetric intent uses `Inte.AClr`.
+- Make adjustment layers keeps surrounding `Usng.Opct` as layer opacity, independently of the
+  adjustment settings. Recorded percentages use eight-bit layer-opacity storage at every document
+  depth: 70 % becomes 179/255. Native creation accepts an optional 0..1 `opacity` fraction.
+  A default adjustment with only layer opacity still saves as a default preset.
+- Document offsets wrap in opening order, independently of dragged tabs. An ATN zero offset remains
+  a kept step; the native command retains its existing zero-offset no-op.
+- Convert Mode saves `T   ` as a class. Layer-retaining RGB, grayscale, CMYK and Lab conversions
+  read and write explicit false `Fltt` and `Rstr` flags. True or malformed flags remain kept steps;
+  depth, bitmap and multichannel recordings with these flags also remain kept.
+- Canvas Size preserves percentage units and resolves them against the playback document.
+  Percentages are absolute sizes; mixed units and relative percentages remain kept steps.
+- Image Size preserves points (`#Rlt`) and resolves them using the playback document's resolution.
+  Mixed units and unsupported physical-size/resolution combinations remain kept steps.
+  Without resampling, native Image Size still changes only resolution.
 
-#### Clouds
+Shape creation (`contentLayer`) with geometry or stroke settings remains a kept step. Save preserves
+its descriptor, and enabled playback stops instead of creating a canvas-wide solid fill. Editable
+shape creation is not mapped yet.
 
-- Event: `Clds` / `clouds`
-- PhotoCraft command: `filter.render.clouds`
-- Uses the current foreground and background colours; the step itself carries no colours.
+The Vibrance event and adjustment-opacity handling incorporate [@bommerts' contribution in #8659](https://github.com/storytold/photocraft/pull/8659).
 
-No parameters: the step carries an empty descriptor.
+### Command options retained by mapped events
 
-#### Difference Clouds
+- Image Size preserves `scaleStyles`. Native calls default to true; an absent ATN flag means
+  false (the reference application plays both alike), so Save writes the key only when it is true.
+  Crop and resolution-only resizing retain their existing behavior.
+- Convert to Profile preserves `Dthr`, `Fltt` and `rasterizePlaced`, defaulting to false.
+  `sdwM` is written as the reference application records it (-1); other values and malformed
+  flags remain kept steps. Absolute intent writes `AClr`, with `AbsC` still accepted on import.
+- Content-Aware Fill preserves colour, quarter-turn rotation, scale and mirror adaptation.
+  Existing native defaults remain unchanged.
+- Paste Layer Style preserves `allowPasteFXOnLayerSet`. False skips selected groups without
+  applying their styles to children; a selection with no eligible targets fails without editing.
+- Paste preserves `As ` path or shape using the original bounded SVG source. Unsupported
+  geometry fails instead of silently rasterizing. `As Pxel` plays as an ordinary Paste (or Paste
+  in Place), as does omission.
 
-- Event: `DfrC` / `differenceClouds`
-- PhotoCraft command: `filter.render.differenceClouds`
-- Same as Clouds, blended with Difference.
+Generated fixtures verify these native options and their load/save/playback behavior. Conversion order,
+SVG rasterization and placement were not compared with the reference application.
 
-No parameters: the step carries an empty descriptor.
-
-#### Fibers
-
-- Event: `Fbrs` (no string ID)
-- PhotoCraft command: `filter.render.fibers`
-- `randomSeed` makes playback reproduce the recorded result; keep it.
-
-| Key | String ID | Type | Unit | Default | Allowed |
-|---|---|---|---|---|---|
-| `Vrnc` | (none) | integer |  | 16 | not clamped in the step (values are returned unchanged); limits pending, see "Events that need a step recorded through their dialog" |
-| `Strg` | strengthPlugin | integer |  | 4 | not clamped in the step (values are returned unchanged); limits pending, see "Events that need a step recorded through their dialog" |
-| `RndS` | randomSeed | integer |  | random | any 32-bit integer; a new random value per recording |
-
-#### Lens Flare
-
-- Event: `LnsF` / `lensFlare`
-- PhotoCraft command: `filter.render.lensFlare`
-- Lens types: `Zm  ` 50-300 mm Zoom, `Nkn ` 35 mm Prime, `Nkn1` 105 mm Prime, `PnVs` Movie Prime.
-
-| Key | String ID | Type | Unit | Default | Allowed |
-|---|---|---|---|---|---|
-| `Brgh` | brightness | integer |  | 100 | 10 .. 300 (out-of-range values are clamped) |
-| `FlrC` | flareCenter | object |  | obj 'Pnt ' point | `Hrzn` / `Vrtc` doubles, 0.4 / 0.4 by default; not clamped: (5, -5) is kept as given and plays |
-| `Lns ` | lens | enumerated |  | `Zm  ` zoom | `Nkn ` nikon, `Nkn1` nikon105, `PnVs` panaVision, `Zm  ` zoom |
-
-Nested values as recorded (defaults):
-```
-    'Hrzn' horizontal : DOUBLETYPE = 0.40000000596046
-    'Vrtc' vertical : DOUBLETYPE = 0.40000000596046
-```
+### Render filters
 
 Native commands without an explicit Lens Flare center still use 0.5 / 0.5. Imported steps materialize the measured center above. A missing Fibers seed is captured once at import and preserved for later playback and export. Native color overrides and other settings without ATN fields are refused during strict export.
-
 
 ## Recognized steps kept disabled
 
@@ -204,12 +235,440 @@ supported-event count and the measured unmapped reference.
 |---|---|
 | animationFramesFromLayers | Make Frames from Layers |
 
-## Event reference: events not mapped yet
+## Known gaps in mapped events
 
-Each entry below is an event the reference application records that PhotoCraft does not map yet: its
-4-character code and string ID, the PhotoCraft command it should map to, and every key the step carries,
-in the order it is recorded, with type, unit, factory default and allowed values. When an event is
-implemented, move it to the table above in the same change.
+A mapped event can still lose a setting. Every mapped event was checked on 2026-11-01: the 5 296 steps of
+the `.atn` corpus (sets the reference application recorded) and factory descriptors measured in the
+reference application went through `actions.load` and `actions.save`, and each saved descriptor was compared
+with the original. Then every step PhotoCraft saves for the cases in
+`every_mapped_command_exports_and_imports_back` was played in the reference application: 128 of 151 ran.
+Three failed on a wrong code (Vibrance, Gradient Map, Stroke Outside); the others needed a document the test
+did not have (a mask, a group, a named pattern or channel). Checking every code the mapping writes found
+three more (Pass Through, canvas extension colour, Absolute Colorimetric). The steps below change what a
+step does. Every one of them is fixed now: the sections "Settings retained by mapped events" and
+"Command options retained by mapped events" above say how each setting is kept. What remains are
+differences that do not change what a step does.
+
+### Differences that do not change the result
+
+- Value types: `long` and unit values are interchangeable for the reference application (Motion Blur
+  `Angl`, Dust & Scratches `Rds `, Apply Image `Ofst`: same pixels either way); Apply Image's `With`
+  object plays the same with class `null`.
+- Save writes the 4-character event code where the file had the string ID, writes `null` as the
+  top-level class (the application writes the event code), and writes an empty descriptor for steps that
+  had none.
+- Ids of the recording session (`LyrI`, `DocI`, `Idnt`, `layerSectionStart`, `layerSectionEnd`, `Vrsn`,
+  `forceNotify`) and default flags (`MkVs` false, `Adjs` false) are not written back.
+- An adjustment layer's values equal to the defaults are not written back (other values are).
+- Colours are kept as 8-bit values (51.0031 becomes 51); gradient names become "Custom".
+- Levels and Curves write the composite as `Chnl.Cmps` (the application skips `Ordn.Trgt`, #8543).
+
+## Reference forms
+
+How the reference application resolves a layer or document a step names, measured on 2026-11-01 by
+playing `select` and `move` steps with each form (documents with and without a Background, a group,
+layers above and below it). A recorded step can use any of these; PhotoCraft reads names and the target
+today.
+
+### Layers
+
+The stack is counted from the bottom and includes a hidden "group end" entry below each group's
+children. Example stack, bottom to top: Background, L1, L2, *group end*, Gchild, G (the group), L3.
+
+| Form | Meaning | Measured |
+|---|---|---|
+| By name (`name`) | The layer with that name (the first match). | (supported) |
+| Target (`Ordn.Trgt`) | The active layer. | (supported) |
+| By index (`indx`) | Position in the stack above. With a Background, the Background is 0 and L1 is 1. Without one, the bottom layer is 1, and 0 fails. The group end is a position but cannot be selected: the step leaves the selection unchanged. A number past the top fails. | with Background: 0 Background, 1 L1, 2 L2, 3 (group end: no change), 4 Gchild, 5 G, 6 L3, 7 fails |
+| By id (`Idnt`) | The layer id of the document the step was recorded in (`LyrI`, never reused in that document). In another document it names an unrelated layer or none. | id 3 = L2 with a Background, L1 without |
+| By offset (`rele`) | Not supported for layers: every offset fails. | -3..3 all fail |
+| `Ordn.Frwr` / `Ordn.Bckw` | The next layer up / down in the stack, entering groups (group ends are skipped). | from L2: Frwr Gchild, Bckw L1 |
+| `Ordn.Frnt` / `Ordn.Back` | The top layer / the bottom layer (the Background when there is one). | L3 / Background |
+
+**Move to an index** (`move`, `T` = layer by index `m`): counted as above on the stack before the move.
+Moving down, the layer lands at index `m`; moving up, at `m - 1` (directly below the layer that had index
+`m`). With a Background, `m` = 0 fails; without one, `m` = 0 sends the layer to the bottom. Moving to an
+index inside a group puts the layer into that group.
+
+| m (with Background, moving L2 at index 2) | 0 | 1 | 2, 3 | 4 | 5 | 6 |
+|---|---|---|---|---|---|---|
+| Stack after | fails | Bg, L2, L1, ... | unchanged | Bg, L1, *end*, L2, Gchild, G, L3 (L2 inside G, bottom) | ... *end*, Gchild, L2, G (inside G, top) | ... G, L2, L3 |
+
+### Documents
+
+| Form | Meaning | Measured (D1, D2, D3 opened in that order, D2 active) |
+|---|---|---|
+| By offset (`rele`) | That many documents after (positive) or before (negative) the active one, in opening order, **wrapping around** at the ends. 0 fails. | -1 D1, +1 D3, -2 D3, +2 D1 |
+| By index (`indx`) | 1-based, in opening order; 0 fails. | 1 D1, 2 D2, 3 D3 |
+
+PhotoCraft's `document.activate {"offset"}` refuses to wrap (#7103); the reference application wraps.
+
+### Layer comps
+
+Measured with three comps (CompA, CompB, CompC) that each show a different layer, applied with
+`applyComp` and every reference form. The document's `compsList` gives each comp's `title`, `itemIndex`
+(1-based), `ID` (long) and `selection`.
+
+| Form | Result |
+|---|---|
+| By name (`name`) | Applies that comp. An unknown name fails. |
+| By index (`indx`) | 1-based, in panel order. 0, negative and past-the-end indexes are **accepted and change nothing**. |
+| By ID (`Idnt`) | Applies the comp with that `ID`. An unknown ID fails. |
+| By offset (`rele`) | Always fails, for every offset. |
+| Ordinal (`Ordn`) `Trgt`, `Nxt `, `Prvs` | Applies the current (last applied) comp; `Nxt ` and `Prvs` do not move. |
+| Ordinal `Frst`, `Lst `, `Al  ` | Applies the **first** comp (also for `Lst `). |
+
+Delete (`Dlt `) by index uses the same 1-based numbering. PhotoCraft's `applyComp` import reads only the
+name form today; the index, ID and ordinal forms load as kept steps.
+
+## Newer events (string ID only)
+
+The events the reference application records for the menu items PhotoCraft has that are neither mapped
+nor in the reference below: 63 candidates from PhotoCraft's menu catalogue, each run in the reference
+application without a dialog on a document prepared for it (layers, a selection, a smart object, a type
+layer, a layer style or a group) on 2026-11-01. 27 more menu items record no event of their own (puppet
+warp and warp splits, combine shapes, scripts such as Load Files into Stack and Statistics, artboard and
+video export, missing-font commands): they cannot be recorded or play as a script step.
+
+**Measured: no settings beyond the target.** A step with these events carries at most `null` (the target
+layer reference, `Ordn.Trgt`); mapping them needs only the event name.
+
+| Event | Menu item |
+|---|---|
+| `reverse` | Layer > Arrange > Reverse (several layers selected) |
+| `linkSelectedLayers` / `unlinkSelectedLayers` | Layer > Link Layers / Unlink Layers |
+| `selectLinkedLayers` | Layer > Select Linked Layers |
+| `disableLayerStyle` | Layer > Layer Style > Clear Layer Style |
+| `placedLayerMakeCopy` | Layer > Smart Objects > New Smart Object via Copy |
+| `placedLayerConvertToLayers` | Layer > Smart Objects > Convert to Layers |
+| `placedLayerConvertToEmbedded` | Layer > Smart Objects > Embed Linked |
+| `placedLayerUpdateAllModified` | Layer > Smart Objects > Update All Modified Content (the returned `documentID` and `layerIDs` are session ids, not settings) |
+| `rasterizeAll` | Layer > Rasterize > All Layers |
+| `addBlankVideoLayer` | Layer > Video Layers > New Blank Video Layer |
+| `isolateLayers` | Select > Isolate Layers |
+| `textLoadDefaultTypeStyles` / `textSaveDefaultTypeStyles` | Type > Load / Save Default Type Styles |
+| `recordMeasurements` | Image > Analysis > Record Measurements |
+| `CropPhotosAuto0001` | File > Automate > Crop and Straighten Photos |
+
+**Measured: settings.**
+
+| Event | Menu item | Keys |
+|---|---|---|
+| `placedLayerExportContents` | Layer > Smart Objects > Export Contents | `null`: path of the file written |
+| `placedLayerConvertToLinked` | Layer > Smart Objects > Convert to Linked | `null`: target layer; `Usng`: path of the file written |
+| `placedLayerRelinkToFile` | Layer > Smart Objects > Relink to File | `null`: path; `LyrI`: session layer id |
+| `placedLayerReplaceContents` | Layer > Smart Objects > Replace Contents | `null`: path; `LyrI`: session layer id |
+| `artboardFromLayerGroupEvent` | Layer > New > Artboard from Group | `null` target; `artboard` (object: `guideIDs` list, `artboardPresetName` text, `Clr ` RGB background colour, `artboardBackgroundType` long: 1 white, 2 black, 3 transparent, 4 other = `Clr `); `changeBackground` long. See *Artboard from Group: guides and background* below. |
+| `shapeBlur` | Filter > Blur > Shape Blur | `Rds ` radius in pixels (factory 10); the shape itself comes from the dialog |
+| Make `contentLayer` with `Usng` = reference to `textLayer` `Ordn.Trgt` | Type > Convert to Shape (recorded as Make, not as `convertToShape`) | `null`: class `contentLayer`; `Usng`: the type layer |
+
+**Recorded through the menus** (2026-11-01, steps read back from the saved Actions panel):
+
+| Menu | Recorded step | Keys |
+|---|---|---|
+| Layer > Layer Style > Scale Effects | `scaleEffectsEvent` | `Scl ` percent, whole number 1..1000 (the dialog clamps) |
+| Layer > Layer Style > Create Layer(s) | Make, `null` = class `Lyr `, `Usng` = reference to the `Lefx` property of the target layer | none; the dialog first warns that some effects cannot be reproduced with layers (OK / Cancel) |
+| Layer > New > Frame from Layers | Make, `null` = class `framedGroupSection`, `From` = layer **by name**, `layerSectionStart`, `layerSectionEnd` long, `Nm  ` text | the dialog also shows width and height, which are not recorded |
+| Layer > New > Artboard from Layers | Make, `null` = class `artboardSection`, `From` = layer target, `layerSectionStart`, `layerSectionEnd`, `Nm  ` | |
+| Layer > New > Artboard | Make, `null` = class `artboardSection`, `layerSectionStart`, `layerSectionEnd`, `Nm  `, `artboardRect` (`Top `, `Left`, `Btom`, `Rght` doubles, pixels) | |
+| Properties panel > Artboard Background Color (Artboard selected) | `editArtboardEvent` | `null` target; `artboard` (object: `artboardRect` `Top `/`Left`/`Btom`/`Rght` pixels, `guideIDs` list, `artboardPresetName` text, `Clr `, `artboardBackgroundType` 1..4 as above); `changeSizes` long (8 when only the background changed), `changeBackground` 1. `Clr ` is only meaningful with type 4: with types 1..3 it holds the previously used colour |
+| Layer > Smart Objects > Stack Mode > mode | `applyImageStackPluginRenderer`: `imageStackPlugin` **class** with the mode's code, `Nm  ` text = the menu name (localised, except "Entropy") | codes: Range `rang`, Entropy `entr`, Kurtosis `kurt`, Maximum `maxx`, Median `medn`, Minimum `minn`, Mean `avrg`, Skewness `skew`, Standard Deviation `stdv`, Summation `summ`, Variance `vari` |
+| Layer > Smart Objects > Stack Mode > None | `imageStackConvertSmartObject` | none |
+| Layer > Video Layers > New Blank Video Layer, Insert Blank Frame, Delete Frame, Show / Hide Altered Video | `addBlankVideoLayer`, `insertBlankFrame`, `deleteFrame`, `showAlteredVideo` / `hideAlteredVideo` | none |
+| Layer > Video Layers > Interpret Footage | `interpretFootage` | `Vrsn` long (1), `interpretAlpha` (`alphaInterpretation`: `Ignr` ignore, …), `colorConvertAlterations` bool |
+| Type > Create Work Path | Make, `null` = class `Path`, `From` = text layer (`TxLr`) target | |
+| Edit > Find and Replace Text (Replace All) | `replace`, `null` = reference: property `replace` of all text layers (`TxLr` `Ordn.Al`), `Usng` = `find` text, `replace` text, `checkAll`, `Fwd `, `caseSensitive`, `wholeWord`, `ignoreAccents` bool | |
+| Edit > Check Spelling | `spellCheck`, `null` = property `spellCheck` of all text layers, `Usng` = `checkAll` bool | recorded with its dialog switched on; the corrections themselves are not recorded |
+| Image > Analysis > Set Measurement Scale > Custom | Set, `null` = property `measurementScale` of the document target, `T   ` = `pixelLength` long, `logicalLength` double, `logicalUnits` text | |
+| Image > Analysis > Place Scale Marker | a script step (`AdobeScriptAutomation Scripts`) with `jsop` = `measurementScaleMarkerLength`, `measurementScaleMarkerDisplayText`, `measurementScaleMarkerTextPositionBottom` bool, `measurementScaleMarkerColor` text (`FFFFFF` / `000000`), `measurementScaleMarkerFont`, `measurementScaleMarkerFontSize` text ("4 pt") | the dialog is a bundled script; the step stores its options |
+| Image > Analysis > Record Measurements | `recordMeasurements` | none |
+| File > Close All | one `close` per document: `Svng` (`YsN ` `N   ` when "don't save" was chosen), `DocI`, `forceNotify` | not a `closeAll` event |
+
+**Not recorded:** File > Close Others, Image > Variables > Define (the variables are kept, no step).
+
+**Recorded with source files** (2026-11-01):
+
+| Menu | Recorded step | Keys |
+|---|---|---|
+| Image > Apply Data Set | `apply`, `null` = `dataSetClass` **by name** | |
+| File > Export > Data Sets as Files | `exportDataSet`, `null` = class `dataSetClass` | `All ` bool (all data sets), `T   ` alias (folder), `fileNamingRules` (`fileNamingComponents` list of 7 incl. `None`; components as in Batch plus `underscore` and `dataSetName`; `Mcnt`, `Win `, `unix`) |
+| File > Import > Variable Data Sets | `importDataSets`, `null` = class `dataSetClass` | `Usng` alias (the text file), `Encd` (`dataSetEncoding`: `dataSetEncodingAuto`, …), `eraseAll` bool (replace existing), `useFirstColumn` bool (first column = data set names) |
+| File > Package | `packageFile` | `T   ` alias (folder); writes "<document> Folder" (localised) with the document and a `Links` folder |
+| File > Import > Video Frames to Layers | `importVideoToLayers` | `Usng` alias (video), `makeAnimation` bool, `frameSkip` long (limit to every n-th frame; absent when off) |
+| File > Import > Notes (Annotations) | `importAnnots` | `Usng` alias (PDF). A file without notes shows "No annotations were imported" and records nothing |
+| Layer > Video Layers > New Video Layer from File | `addVideoLayer` | `null` alias (video) |
+| Layer > Video Layers > Replace Footage | `replaceFootage` | `null` alias (video) |
+| Layer > Video Layers > Duplicate Frame, Restore Frame, Restore All Frames, Reload Frame | `duplicateFrame`, `restoreFrame`, `restoreAllFrames`, `reloadFrame` | none. Duplicate needs a painted frame; Restore needs an altered frame; Restore All asks for confirmation |
+| File > Automate > Photomerge | the steps the script runs (open dialog, open, duplicate, `addLayerFromFile`, `align` with `layerTransformation`, `mergeAlignedLayers` …), then the script event `0f9db13f-a772-4035-9020-840f0e5e2f02` with an empty descriptor (class `cjsp`) | the layout and options are not in the step |
+| File > Automate > Crop and Straighten Photos | `CropPhotosAuto0001` (no keys), then the steps it runs: `CropPhotos0001` with `Vl  ` (list of 8 doubles: the four corners), duplicate, `crop` | needs a selected, visible, unlocked layer, otherwise an error message and a step without effect |
+| File > Automate > Conditional Mode Change | the Convert Mode it runs, then `8cba8cd6-cb66-11d1-bc43-0060b0a13dc4` | `Msge` text, `SrcM` list of `Cndn` enums (`UGry`, `URGB`, …: the source modes), `DstM` object whose class is the target mode (`CMYM` for CMYK) |
+| File > Automate > Fit Image | the Image Size it runs, then `3caa3434-cb67-11d1-bc43-0060b0a13dc4` | `Msge` text, `Hght`, `Wdth` pixels, `limit` bool (don't enlarge) |
+
+**Not recorded:** importing or applying inside Image > Variables > Data Sets (only the separate menu
+commands record).
+
+**Artboard from Group: guides and background** (measured 2026-11-02, script runs and a recording through the menu):
+
+- **Recorded form:** the menu item opens no dialog. The step always has `guideIDs` empty, `artboardPresetName` "", `changeBackground` 1, and the
+  background type and colour **last used** for an artboard (the Properties panel choice is sticky: after picking Black for one artboard, the
+  next Artboard from Group records type 2 and makes a black artboard). Guides in the document do not change the recorded step.
+- **`guideIDs`:** session metadata, not a playback input. Guide ids are a counter for the whole application session (a new document's
+  guides got 5, 6, 7 after an earlier one's 2, 3, 4). Playing the step with the document's own guide ids, an unknown id (99999) or an
+  empty list gives the same result: no error, the guides stay document guides (`kind` document), and the new artboard's `guideIDs` is empty.
+  An implementation can ignore the list on playback and write `[]`.
+- **`changeBackground`:** 1 or absent applies `artboardBackgroundType` and `Clr `. Any other value (0, 2, 3, -1, 7 tried) ignores both and
+  makes a white artboard (type 1, `Clr ` 255/255/255), and the step's result then has no `changeBackground` key.
+  `artboardBackgroundType` absent with `changeBackground` 1 gives type 1 (white).
+- The artboard takes the group's bounds; `Clr ` is stored on the artboard as given even when the type is 1..3.
+
+**Measured for the mapped events** (2026-11-02, script runs in the reference application):
+
+- **Transform reference point** (`FTcs`, type `QCSt`): `Qcs0` top-left, `Qcs1` top-right, `Qcs2` bottom-right, `Qcs3` bottom-left
+  corner; `Qcs4` top, `Qcs5` right, `Qcs6` bottom, `Qcs7` left edge centre; `Qcsa` the centre. `Qcs8` and unknown values also scale
+  about the centre (not recorded).
+- **Convert to Profile** records `sdwM` = -1 (with `Inte`, `Dthr`, `Fltt`, `rasterizePlaced`).
+- **Plain Edit > Paste** records `AntA` = `Annt.Anno` and `As  ` = class `Pxel`.
+- **Link Layers** (`linkSelectedLayers`) toggles when played: played twice on the same two layers it links, then unlinks them.
+- **Split Channels** splits a document with a single layer, Background or not (a lone layer gives one more document); a document
+  with more than one layer is refused.
+- **Load Actions** with a set whose name is already in the panel adds a second set of that name; nothing is replaced.
+
+## Measured through dialogs and recordings
+
+Measured on 2026-11-01 in two ways: by running the event with its dialog and pressing OK (the reference
+application then returns the full descriptor), and by recording actions through the menus and reading
+the recorded steps back from the saved Actions panel. Ranges come from the dialog's own "a value between
+… is required" message.
+
+| Event | Keys (recorded order) | Notes |
+|---|---|---|
+| Custom (`Cstm`) | `Scl ` long 1..9999, `Ofst` long -9999..9999, `Mtrx` list of 25 longs -999..999 | Without the dialog the step needs all 25 cells, or the application fails. |
+| Fibers (`Fbrs`) | `Vrnc` long 1..64, `Strg` long 1..64, `RndS` long (seed) | |
+| Displace (`Dspl`) | `HrzS`, `VrtS` long -999..999; `DspM` (`StrF` stretch to fit, or tile); `UndA` (`RptE` repeat edge pixels, or wrap around); `DspF` alias: path of the displacement map (.psd) | The map file is chosen after OK. |
+| Color Lookup (`colorLookup`) | `lookupType` (`colorLookupType`: `3DLUT`, abstract, device link); `Nm  ` text: the file's path; `Dthr` bool; `profile` raw data (ICC); `LUTFormat` (`LUTFormatType`, e.g. `LUTFormatLOOK`); `LUT3DFileData` raw data: the LUT file itself; `LUT3DFileName` text | The LUT travels inside the step. |
+| Shape Blur (`shapeBlur`) | `Rds ` pixels 5..1000; `customShape` object (`Nm  ` text, `Idnt` text: the shape's id); `keyOriginType` long (9) | |
+| Lighting Effects (`lightFilterLightingEffects`) | `k3DLights` list of lights (`Nm  `, colour `Rd  `/`Grn `/`Bl  ` 0..1, `hots`, `FlOf`, `shdw`, attenuation keys, `Type`, `ison`, `key3DMatrix` raw + floats, `X   `/`Y   `/`Z   `, target `tarx`/`tary`/`tarz`, `key3DPosition`), `key3DCurrentCameraPosition`, `Glos`, `Mtrl`, `Exps`, `AmbB`, `AmbC` RGB, `BmpA`, `BmpC` (texture channel by name, localised: "Ohne" = none), `Wdth`, `Hght` | A dialog-less run returns nothing; only a recording shows the keys. |
+| Blur Gallery (`blurbTransform`) | `blurbType`, `VrsM`, `VrsN`, `referenceRect` (rectangle), `blurbOpenPanel`, `blurbGeneralBlurEffectApplied`, `blurbSaveMaskChannel`, `blurbHighQuality`, `blurbWidgetList` (per widget: `blurbWidgetType` (0 = field blur), `blurbWidgetLocationX`/`Y`, `blurbWidgetSelected`, `blurbWidgetEffectEnabled`, `blurbGeneralBlurAmount`) | One event for all five Blur Gallery filters. |
+| Liquify (`LqFy`) | `LqMe` raw data: the mesh | Opaque; keep the step as recorded. |
+| Camera Raw Filter | `CrVe` text (version), `PrVN` long, `PrVe` long | With settings at their defaults; changed settings add keys. |
+| Vanishing Point (`VnPt`) | none | The planes are not recorded. |
+| Calculations | recorded as Make: `Nw  ` class channel, `Usng` object (`T   ` reference: source 1 channel and layer, `Clcl` blend mode, `Src2` reference) | Not a `calculations` event. |
+| Image Size, size in cm or inches | `Wdth` in `#Rlt` (points), `scaleStyles`, `CnsP`, `Intr` | A physical size is recorded in points, not pixels: playback needs the document's resolution. |
+| Canvas Size | only the changed side; `canvasExtensionColorType` `FrgC` for the foreground colour | |
+| Convert Mode, several layers, "Don't Flatten" | `T   ` as a **class** (`Grys`), `Fltt` false, `Rstr` false | With `Fltt` and `Rstr` the step plays without the flatten question. |
+| New Group with a colour | `Usng` (`Clr ` label), `layerSectionStart`, `layerSectionEnd`, top-level `Nm  ` | |
+| Shear (`Shr `) | `ShrP` list of `Pnt ` (`Hrzn`, `Vrtc` doubles), `UndA` (`WrpA` wrap around, `RptE` repeat edge pixels), `ShrS` long, `ShrE` long | The dialog writes whole numbers: `Hrzn` -64..63 (dragging past the grid clamps), `Vrtc` 1..128 with the first point at 1 and the last at 128; dragging a point out of the grid deletes it. `ShrS` is 0 and `ShrE` the last point's index (count - 1). Script runs take any value unclamped and crashed on far-off `ShrE`/`ShrS` or a first `Vrtc` below 1. |
+| Gradient tool, classic (`Grdn` / `gradientClassEvent`) | `From`, `T   ` points in pixels; `Opct` percent, `Md  ` blend mode, `Type` (`GrdT`: `Lnr `, `Rdl `, `Angl`, `Rflc`, `Dmnd`), `Rvrs` bool, `Dthr` bool, `UsMs` bool (transparency), `gradientsInterpolationMethod` (`Perc` perceptual, …), `Grad` gradient object (as in Gradient Map) | Recorded in that order. `Opct`, `Md  ` and `Rvrs` appear only when they differ from 100 %, Normal and off; `Dthr` and `UsMs` only when on. The five types are the only accepted values. A step without `Grad` fails. |
+| Gradient tool, default mode | two steps: Make (`null` = class `contentLayer`, `Usng` = `Type` gradient layer object) then Set (`null` = `contentLayer` target, `T   ` = the same object plus `Algn` false) | The object: `Dthr`, `gradientsInterpolationMethod`, `Angl` angle, `Type`, `Scl ` percent, `Ofst` (`Hrzn`, `Vrtc` percent), `Grad`. The new tool makes a gradient fill layer; Make holds the first click, Set the finished drag. |
+| Content-Aware Fill (`cafWorkspace`) | `cafSamplingRegion` (`cafSamplingRegionRectangular`, …), `cafSampleAllLayers` bool, `cafColorAdaptationLevel` (`cafColorAdaptationDefault`, …), `cafRotationAmount` (`cafRotationAmountNone`, …), `cafScale` bool, `cafMirror` bool, `cafOutput` (`cafOutputToNewLayer`, …) | Runs on the selection, which is recorded as its own step before it. |
+| Perspective Warp (`perspectiveWarpTransform`) | `null` = layer target, `Md  ` (`perspectiveWarpMode`: `warp`), `referenceRect` rectangle in pixels, `vertices` list of points in pixels (the layout quad), `warpedVertices` (the same points after warping), `quads` list of `indices` (4 vertex indexes each) | Layout and warp are one step. |
+| Print (`print`) then Print One Copy (`printOneCopy`) | `print`: `null` = reference `printOutput` property of the target document; `printOutput` (`PstS`, `Inte`, `printSixteenBit`, `printerName` text, `printProofSetup`), `printViewProofSetup`, `printOutputOptions` (caption, marks, `Bckg` colour, `BrdT`, `Bld `, `Rslt`, `vectorData`, `PgPs`, `Left`, `Top `, `Scl `, crop rectangle), `osSpecificPrintInfo` raw data, `Cptn` text. `printOneCopy` has no keys. | Pressing Print in the dialog records both steps. |
+| Create Droplet (`CrtD`) | `In  ` alias: the droplet file; `Fldr` bool (include subfolders); `Usng` reference to the action; then the Batch keys below (destination, file naming, error log) when set | The same settings as Batch, with the droplet file instead of a source folder. |
+| Sky Replacement (`skyReplacement`) | `shiftEdge` double, `borderSmoothness` long (fade edge, default 50), `Brgh` long, `temperature` long, `harmonizationOpacity` long (35), `foregroundLightingOpacity` long, `lightingMode` blend mode (`Mltp`), `edgeLightingOpacity` long (70), `skyReplacementOutput` (`skyReplacementOutputToNewSheets` new layers, …), `Idnt` text (the sky preset's id), `Nm  ` text (its name), `File` alias (the sky image) | Scale and Flip are **not** in the step: with 150 % and Flip on, the returned keys were the same. `foregroundLightingOpacity` is computed from the sky (44 and 29 for two skies). Without a chosen sky the dialog returns no keys. |
+
+**Not recordable:** Edit > Purge (no step is recorded; this version's Purge menu has Clipboard,
+Histories, All and Video Cache, no Undo); File > Export > Export As and Quick Export as PNG (the file
+is written, no step is recorded). `vectorStrokeToFill` (Convert Stroke to Fill) exists only internally: the reference application knows
+it by a localised command name ("command … is not currently available"), but it is in no menu, panel
+menu, context menu, the stroke options (incl. their gear menu), the Properties panel or the Keyboard
+Shortcuts summary of all commands and tools, and the event is refused even with a stroked path component
+selected. It can't be triggered, so it is never recorded: no action contains it, nothing to map.
+
+### Batch
+
+Running Batch while recording records the steps the batch played, not a Batch step. The Batch
+descriptor itself (`Btch`, as the dialog returns it):
+
+| Key | Type | Meaning |
+|---|---|---|
+| `null` | alias, or enum | source folder; for open documents the enum `batchSourceType` `sourceOpenFiles` |
+| `OvrO` | bool | override action "Open" commands (written only when on) |
+| `Fldr` | bool | include all subfolders |
+| `suppressWarnings` | bool | suppress colour profile warnings |
+| `suppressOpenOptions` | bool | suppress file open options dialogs |
+| `Usng` | reference | the action: `Actn` by name in `ASet` by name |
+| `T   ` | alias | destination folder (destination Folder) |
+| `SvAn` | bool | destination Save and Close (written instead of `T   `) |
+| `Ovrd` | bool | override action "Save As" commands (written only when on) |
+| `fileNamingRules` | object | file naming (below) |
+| `Log ` | alias | folder of the error log ("log errors to file") |
+| `Nm  ` | text | error log file name |
+
+`fileNamingRules`: `fileNamingComponents` (list of up to six objects; each is `component` enum
+`fileNamingComponent`, or `Txt ` text for typed text), `Strt` long (starting serial number), `Mcnt`, `Win `,
+`unix` bool (compatibility).
+
+| Component | Menu entry |
+|---|---|
+| `Nm  ` / `lowerCase` / `upperCase` | Document Name / document name / DOCUMENT NAME |
+| `oneDigit` `twoDigit` `threeDigit` `fourDigit` | 1, 2, 3, 4 digit serial number |
+| `lowerCaseSerial` / `upperCaseSerial` | serial letter (a, b, c…) / (A, B, C…) |
+| `mmddyy` `mmdd` `yyyymmdd` `yymmdd` `yyddmm` `ddmmyy` `ddmm` | dates |
+| `lowerCaseExtension` / `upperCaseExtension` | extension / EXTENSION |
+
+The extension component is written **without a dot, unless it is the last component**, and nothing
+else adds an extension: the name is exactly what the components spell. Measured on `a.png`:
+
+| Components | Saved as |
+|---|---|
+| Name + extension | `a.png` |
+| Name + EXTENSION | `a.PNG` |
+| Name + extension + 3 digit serial | `apng001` (no extension) |
+| Name + 3 digit serial | `a001` (no extension) |
+| Name + extension + text `x` | `apngx` |
+| Name + extension + extension | `apng.png` |
+| Name + text `.jpg` | `a.jpg` (still PNG data) |
+| DOCUMENT NAME + `_` + serial letter + `_` + SERIAL LETTER | `A_a_A` |
+
+The two short date entries are `mmdd` and `ddmm` (on 1 November they give `1101` and `0111`).
+
+#### Batch behaviour
+
+Measured with a folder `in` holding `a.png`, `b.png`, `notes.txt` and `sub/a.png`, `sub/c.png`,
+`sub/deeper/d.png`:
+
+- **Order:** the folder's files by name, then each subfolder (by name, depth first). The serial number
+  counts across all of them: `a_001` (`in/a`), `b_002`, `a_003` (`in/sub/a`), `c_004`, `d_005`.
+- **Include All Subfolders:** results all go **flat into the destination folder**; the subfolder structure
+  is not rebuilt. A later file with the same output name **silently overwrites** an earlier one
+  (`in/a.png` and `in/sub/a.png` give one `a.png`).
+- **Destination None:** every processed file stays open, changed and unsaved. **Save and Close** saves
+  each file over itself in its own format and closes it. **Folder** saves a copy named by the file
+  naming rules. An open document that was never saved asks with a Save As dialog (Photoshop format,
+  the document's name) even with Folder as the destination.
+- **Override Open:** files are opened only by the action's own Open steps; without one the action runs
+  with no document and every file fails. **Override Save As:** files are saved only by the action's own
+  Save As steps, into the destination folder; without one nothing is saved. The dialog says both when
+  the box is ticked.
+- **Files that are not images** (`notes.txt`) are an error for that file (code -25600, "extension not
+  recognised"), not skipped silently.
+- **Errors, Stop For Errors** (no `Log ` key): the batch stops at the failing file; files before it are
+  saved, nothing after it is processed.
+- **Errors, Log Errors To File:** the batch goes on, and at the end a message says an error occurred and
+  the details are in the log. The log file is **UTF-16 LE with BOM and CRLF**, and is written even when
+  nothing failed. In German the lines are (the application's own language):
+
+  ```
+  Stapelanfang
+  <blank>
+  Datei: "<full path, or the document's name for open documents>"
+  Fehler: <message> (<error code>)
+  <blank>
+  …one pair per failed file…
+  Stapelende
+  ```
+- **Cancel:** Esc during a batch stops the running command and asks "A command was cancelled or stopped
+  during batch processing. Continue with the next file or stop?" (Continue / Stop). Stop ends the batch
+  at once; the file being processed is not saved (12 of 60 written in the test). There is no progress
+  bar: the documents open and close in the window as they are processed.
+- **Return value:** when any file failed, the Batch step itself reports "cancelled" (the dialog returns no
+  descriptor); a script run with Stop For Errors reports success even though it stopped.
+
+### Actions panel menu
+
+Button Mode; New Action, New Set, Duplicate, Delete, Play; Start Recording, Record Again, Insert Menu
+Item, Insert Stop, Insert Conditional, Insert Path; Action Options, Playback Options, Allow Tool
+Recording; Clear All Actions, Reset Actions, Load Actions, Replace Actions, Save Actions; the bundled sets
+(Commands, Frames, Image Effects, LAB Black & White Technique, Production, Star Trails, Text Effects,
+Textures, Video Actions); Close, Close Tab Group. Playback Options: Accelerated, Step by Step, Pause For
+1..60 seconds.
+
+How two menu entries record: **Insert Menu Item** records the chosen menu command's own event with no
+descriptor (Image > Image Size gives an `imageSize` step without settings; playback opens its dialog).
+**Insert Path** records a `set` of the work path: `null` = reference `Path` property `WrPt`, `T   ` = list
+of path components (`shapeOperation`, `SbpL` list of subpaths, each with `Clsp` closed and `Pts ` list of
+points with `Anch` in pixels).
+
+## Recording that plays on any document
+
+What the reference application records when a user works normally, measured on 2026-11-01 by recording
+an action through the panel, mouse and keyboard on a document with layers A, B and C and a second open
+document, then reading the steps back. This is the form PhotoCraft's recorder should write (AUTO-219-1);
+today it copies journal entries with explicit layer ids.
+
+| User action | Recorded step |
+|---|---|
+| Click a layer in the Layers panel | `select`, `null` = layer **by name** (`"B"`), `MkVs` false, `LyrI` list of layer ids (a hint, not the reference) |
+| Ctrl+J (Layer via Copy) | `copyToLayer`, no keys |
+| Click an empty spot of the canvas with Auto-Select on | `selectNoLayers`, `null` = layer target |
+| Arrow keys with the Move tool | **one** `move` step per run of key presses, `null` = layer target, `T   ` offset in pixels: Right, Right, Right, Shift+Down gave `Hrzn` 3, `Vrtc` 10 |
+| Eye icon | `hide` (or `show`), `null` = **list** of layers by name |
+| Opacity typed in the Layers panel | `set` of the target layer, `T   ` = `Opct` percent (pressing Enter after typing recorded the same step twice) |
+| Select All, Deselect | `set` of the selection (`fsel`) to `Al  ` / `None` |
+| Alt+Backspace (fill with foreground) | `fill`, `Usng` `FrgC`, `Opct` 100 %, `Md  ` Normal |
+| Type tool: click, type "Hallo", commit | **one** `make` of a text layer (`TxLr`) with `Txt ` = the whole text; position `TxtC` in **percent of the canvas**; bounds in points |
+| Ctrl+E (Merge Down) | `mergeLayersNew`, no keys |
+| Ctrl+Tab / Ctrl+Shift+Tab | `select` of a document **by offset** (`rele` +1 / -1) plus `DocI` (the document id, a hint) and `forceNotify` |
+
+So the recorder names layers by name and acts on the target layer, never by id; it merges a run of
+nudges into one relative move and a typing session into one text step; text and document positions are
+relative.
+
+### Playing on another document
+
+The same recording played on two other documents (Play from step 2, skipping the setup step):
+
+- **Same layer names, new ids:** plays through; layers are found by name, `LyrI` and `DocI` are ignored.
+- **No layer with that name** (layers X, Y, Z): each step that names a missing layer stops with a
+  message and Continue / Stop. Select by name: "The command 'Select' is not currently available". Hide by
+  name: "The object 'Layer "A"' is not currently available". Steps on the target layer act on whatever
+  layer is selected (Ctrl+J copied Z into "Z Kopie").
+- **After `selectNoLayers`**, steps that need a target layer (move, set opacity, fill) each stop with
+  "The command '…' is not currently available" and Continue / Stop. Continue skips the step; nothing is
+  undone.
+- **Play from a step:** selecting a step in the panel and pressing Play plays from that step to the end.
+
+## Older files: version 12
+
+Action sets saved by the reference application's version 5 era use file version 12. PhotoCraft rejects
+them today; this is what reading them needs. Checked on 2026-11-01 on 325 real version 12 sets (all parse
+to the end with this layout) and against AtnKit (MIT), which reads version 12 but gets two details wrong
+(noted below).
+
+**Only the descriptor differs.** The file header, the action record and the step record are the same as
+in version 16 (set and action names are UTF-16 strings with a counted NUL; events are almost always
+4-character codes, so the existing event table applies). Trailing bytes after the last action occur in
+22 of 325 files (stale data from an overwritten file): keep them a warning.
+
+The version 12 descriptor:
+
+- The step's descriptor has no name and no class: it starts with the item count.
+- Every identifier is a bare 4-byte code, with no length prefix: keys, classes, enum types and values,
+  units, reference classes. No Unicode class names anywhere.
+- Strings (`TEXT`, reference names) are the same UTF-16 strings as in version 16.
+
+```text
+step descriptor := count u32, count × (key [4], type [4], value)
+object          := class [4], count u32, count × (key [4], type [4], value)
+
+bool u8 | long i32 | comp i64 | doub f64 | UntF unit [4] + f64
+UnFl unit [4] + n u32 + n × f64
+TEXT UTF-16 string | enum type [4] + value [4]
+Objc / GlbO object | type / GlbC class [4]
+VlLs n u32 + n × (type [4] + value)
+ObAr class [4] + object count u32 + count u32 + count × (key [4], type [4], value)
+obj  n u32 + n × reference item
+tdta / alis / Pth  u32 length + bytes
+
+reference item := form [4] + class [4] + (prop: key [4] | Clss: nothing | Enmr: type [4] + value [4]
+                  | rele: i32 | indx: u32 | Idnt: u32 | name: UTF-16 string)
+```
+
+AtnKit reads `indx` without its class code and has no case for `UnFl`, `ObAr` and `Pth `; with those
+fixed, all 325 files parse. `Idnt` was not seen in a version 12 file; its layout follows `indx`.
+
+**Into PhotoCraft's model:** every id becomes a 4-character code; the step descriptor gets the empty name
+and class `null` that version 16 files use for code events; nested classes get the empty name. Save Actions
+keeps writing version 16. Version 7 files (a different layout with 8-bit strings) and sets wrapped in
+MacBinary stay rejected.
+
+## Event reference: measured specs
+
+Each entry below is an event the reference application records, as measured there: its 4-character code
+and string ID, the PhotoCraft command it maps to (or should map to), and every key the step carries, in the
+order it is recorded, with type, unit, factory default and allowed values. The Supported events table says
+which of them PhotoCraft maps today; for the others an entry has everything needed to implement them. When
+an event is implemented, add it to that table in the same change.
 
 ### How these values were measured
 
@@ -245,7 +704,7 @@ implemented, move it to the table above in the same change.
 
 ### Group A: The 47 Filter Gallery effects
 
-Each Filter Gallery effect is recorded as its own event (one per effect), carrying a `GEfk` key with the effect id plus the effect's settings. Today they all load as kept steps that stop at playback. PhotoCraft already has every effect (`crates/algo/src/artistic.rs`) behind `filter.filterGallery`; this issue only maps them. Where our own range or default differs from the measured one, fix ours to match (marked in each table).
+Each Filter Gallery effect is recorded as its own event (one per effect), carrying a `GEfk` key with the effect id plus the effect's settings. Today only Spatter (`GEfk` = `Spt`) is mapped (to `filter.gallery.spatter`); the other effects load as kept steps that stop at playback. PhotoCraft already has every effect (`crates/algo/src/artistic.rs`) behind `filter.filterGallery`; this issue only maps them. Where our own range or default differs from the measured one, fix ours to match (marked in each table).
 
 #### Accented Edges
 
@@ -781,6 +1240,56 @@ Nested values as recorded (defaults):
 | `Cntr` | contrast | integer |  | 50 | 0 .. 100 (out-of-range values are clamped) | maps to our `contrast` (same range and default) |
 | `Grnt` | grainType | enumerated |  | `GrnR` grainRegular | `GrCn` grainContrasty, `GrSf` grainSoft, `GrSp` grainSpeckle, `GrSr` grainSprinkles, `GrSt` grainStippled, `GrnC` grainClumped, `GrnE` grainEnlarged, `GrnH` grainHorizontal, `GrnR` grainRegular, `GrnV` grainVertical |  |
 
+### Group B: The Render filters Clouds, Difference Clouds, Fibers and Lens Flare
+
+All four commands exist in PhotoCraft; only the `.atn` mapping is missing. Lighting Effects is covered with the events that need a recorded step (its lights are only recorded through the dialog).
+
+#### Clouds
+
+- Event: `Clds` / `clouds`
+- PhotoCraft command: `filter.render.clouds`
+- Uses the current foreground and background colours; the step itself carries no colours.
+
+No parameters: the step carries an empty descriptor.
+
+#### Difference Clouds
+
+- Event: `DfrC` / `differenceClouds`
+- PhotoCraft command: `filter.render.differenceClouds`
+- Same as Clouds, blended with Difference.
+
+No parameters: the step carries an empty descriptor.
+
+#### Fibers
+
+- Event: `Fbrs` (no string ID)
+- PhotoCraft command: `filter.render.fibers`
+- `randomSeed` makes playback reproduce the recorded result; keep it.
+
+| Key | String ID | Type | Unit | Default | Allowed |
+|---|---|---|---|---|---|
+| `Vrnc` | (none) | integer |  | 16 | not clamped in the step (values are returned unchanged); limits pending, see "Events that need a step recorded through their dialog" |
+| `Strg` | strengthPlugin | integer |  | 4 | not clamped in the step (values are returned unchanged); limits pending, see "Events that need a step recorded through their dialog" |
+| `RndS` | randomSeed | integer |  | random | any 32-bit integer; a new random value per recording |
+
+#### Lens Flare
+
+- Event: `LnsF` / `lensFlare`
+- PhotoCraft command: `filter.render.lensFlare`
+- Lens types: `Zm  ` 50-300 mm Zoom, `Nkn ` 35 mm Prime, `Nkn1` 105 mm Prime, `PnVs` Movie Prime.
+
+| Key | String ID | Type | Unit | Default | Allowed |
+|---|---|---|---|---|---|
+| `Brgh` | brightness | integer |  | 100 | 10 .. 300 (out-of-range values are clamped) |
+| `FlrC` | flareCenter | object |  | obj 'Pnt ' point | `Hrzn` / `Vrtc` doubles, 0.4 / 0.4 by default; not clamped: (5, -5) is kept as given and plays |
+| `Lns ` | lens | enumerated |  | `Zm  ` zoom | `Nkn ` nikon, `Nkn1` nikon105, `PnVs` panaVision, `Zm  ` zoom |
+
+Nested values as recorded (defaults):
+```
+    'Hrzn' horizontal : DOUBLETYPE = 0.40000000596046
+    'Vrtc' vertical : DOUBLETYPE = 0.40000000596046
+```
+
 ### Group C: The Distort filters (Pinch, Polar Coordinates, Shear, Spherize, Twirl, Wave, ZigZag)
 
 All commands exist in PhotoCraft (`filter.distort.*`); only the `.atn` mapping is missing. Displace needs a displacement map file and is listed separately at the end.
@@ -811,10 +1320,10 @@ All commands exist in PhotoCraft (`filter.distort.*`); only the `.atn` mapping i
 
 | Key | String ID | Type | Unit | Default | Allowed |
 |---|---|---|---|---|---|
-| `ShrP` | shearPoints | list |  | list[2] | list of `Pnt ` points (`Hrzn`, `Vrtc`); default two points (0, 1) and (0, 128); limits pending |
+| `ShrP` | shearPoints | list |  | list[2] | list of `Pnt ` points (`Hrzn`, `Vrtc`) from top to bottom; default two points (0, 1) and (0, 128). The dialog writes whole numbers: `Hrzn` -64..63 (dragging past the grid edge clamps), `Vrtc` 1..128 with the first point at 1 and the last at 128; dragging a point out of the grid deletes it. A script run accepts any value without clamping (e.g. `Hrzn` ±10000, fractions) and crashed on a first point with `Vrtc` < 1: clamp to the dialog ranges on import |
 | `UndA` | undefinedArea | enumerated |  | `WrpA` wrapAround | `RptE` repeatEdgePixels, `WrpA` wrapAround |
-| `ShrS` | shearStart | integer |  | 0 | limits pending, see "Events that need a step recorded through their dialog" |
-| `ShrE` | shearEnd | integer |  | 1 | limits pending, see "Events that need a step recorded through their dialog" |
+| `ShrS` | shearStart | integer |  | 0 | index of the first curve point; the dialog always writes 0 |
+| `ShrE` | shearEnd | integer |  | 1 | index of the last curve point (point count - 1); the dialog writes it. Script runs with other values change the result, and far-off values (`ShrE` 100 or 1000, `ShrS` -1000) crashed the application: on import accept only `ShrS` 0 and `ShrE` = point count - 1, otherwise keep the step as a kept step |
 
 Nested values as recorded (defaults):
 ```
@@ -918,8 +1427,8 @@ No parameters: the step carries an empty descriptor.
 
 | Key | String ID | Type | Unit | Default | Allowed |
 |---|---|---|---|---|---|
-| `Lvl ` | level | integer |  | 128 | applied, but not echoed: the returned step always shows 128. Levels <= 0 and >= 255 give the same image. Dialog range pending. |
-| `Edg ` | edge | enumerated |  | `Upr ` upper | `Lwr ` lower, `Upr ` upper (applied; the returned step always shows upper) |
+| `Lvl ` | level | integer |  | 128 | whole number 0..255 (the dialog clamps to the nearest value). A recorded step carries the real level (e.g. 77); only a script run echoes 128 back. Levels <= 0 and >= 255 give the same image. |
+| `Edg ` | edge | enumerated |  | `Upr ` upper | `CntE` enum: `Lwr ` lower, `Upr ` upper; recorded as set in the dialog |
 
 #### Wind
 
@@ -1101,9 +1610,9 @@ No parameters: the step carries an empty descriptor.
 
 | Key | String ID | Type | Unit | Example value | Allowed |
 |---|---|---|---|---|---|
-| `Scl ` | scale | integer |  | 1 | ignored without the dialog; see "Events that need a step recorded through their dialog" |
-| `Ofst` | offset | integer |  | 0 | ignored without the dialog; see "Events that need a step recorded through their dialog" |
-| `Mtrx` | matrix | list |  | none: the 25 cells as set in the dialog | exactly 25 integers (5 x 5, row by row); a 3 x 3 list makes the application fail |
+| `Scl ` | scale | integer |  | 1 | 1 .. 9999 (measured in the dialog); applied also when played without the dialog (scale 2 halves the result) |
+| `Ofst` | offset | integer |  | 0 | -9999 .. 9999 (measured in the dialog); applied also when played without the dialog (offset 50 adds 50) |
+| `Mtrx` | matrix | list |  | none: a step always carries all 25 cells | exactly 25 integers (5 x 5, row by row), each -999 .. 999; a 3 x 3 list makes the application fail |
 
 #### Replace Color
 
@@ -1408,15 +1917,6 @@ their tables will be added once a recorded step was read.
 
 | Event | Why |
 |---|---|
-| Lighting Effects | The light list only appears after the dialog. |
-| Displace | Reads a displacement map file chosen in the dialog. |
-| Fibers (`Vrnc`, `Strg` ranges) | Values outside the dialog's range are returned unchanged, not clamped; the limits come from the dialog. |
-| Custom | Without the dialog, scale and offset are ignored, and a matrix that is not 5 x 5 makes the application fail. |
-| Shear | Probing the point list made the application fail; the limits come from the dialog. |
-| Trace Contour | The step's level and edge are applied, but the returned descriptor always shows the defaults (level 128, upper). Lower (`Lwr `) is valid; levels at or below 0 and at or above 255 give the same image. |
-| Gradient tool | The drag needs a full gradient object (see Gradient Map in group E for its form). |
-| Batch, Create Droplet, Print | File and printer settings come from their dialogs; Batch's file naming is still unknown (a step written with PhotoCraft's current naming rules is refused). |
-| Sky Replacement, Smart Object commands (embed, link, relink, replace, export contents), Convert Stroke to Fill, Rasterize All Layers | Known to the application but need a matching document (a sky, a smart object, a shape with a stroke). |
 | Generative Fill (`syntheticFill`) | AI feature: in PhotoCraft this goes through the shared AI layer; until then such steps stay kept steps. |
 
 ### Recorded under another event
