@@ -979,7 +979,7 @@ impl Session {
             _ => crate::layer_multi_cmds::recorded_step(self, id, params, pre_selected),
         };
         let params = crate::actions_cmds::recorded_params(self, id, params);
-        let params = crate::actions_record::portable(id, params, before);
+        let params = crate::actions_record::portable(self, id, params, before);
         match crate::actions_record::fold_keystroke(self, id, &params, self.typed_layer) {
             crate::actions_record::Keystroke::Folded => {}
             crate::actions_record::Keystroke::None => {

@@ -114,6 +114,13 @@ impl Session {
         self.docs.iter().position(|st| st.doc.id == *id).ok_or(EngineError::NoDocument)
     }
 
+    /// Relative opening-order distance between two open documents, for portable action steps.
+    pub(crate) fn document_offset_between(&self, from: photocraft_doc::DocId, to: photocraft_doc::DocId) -> Option<i64> {
+        let from = self.open_document_order.iter().position(|&id| id == from)?;
+        let to = self.open_document_order.iter().position(|&id| id == to)?;
+        i64::try_from(to).ok()?.checked_sub(i64::try_from(from).ok()?)
+    }
+
     /// Add a document (from File → New, an import, etc.) and make it active.
     /// Preserve its identity unless another open document already owns it.
     /// Identity-dependent callers must read the admitted document at the returned index.

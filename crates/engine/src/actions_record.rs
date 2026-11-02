@@ -46,8 +46,29 @@ pub(crate) fn needs_source_layer(id: &str) -> bool {
 }
 
 /// `params` with its `layer` id made portable (see the module doc).
-pub(crate) fn portable(id: &str, mut params: Value, before: &Before) -> Value {
+pub(crate) fn portable(s: &Session, id: &str, mut params: Value, before: &Before) -> Value {
+    if id == "document.activate"
+        && let (Some(from), Some(to)) = (before.doc.as_ref().map(|doc| doc.id), s.active().map(|state| state.doc.id))
+        && let Some(offset) = s.document_offset_between(from, to)
+    {
+        return serde_json::json!({"offset": offset});
+    }
     let Some(doc) = before.doc.as_deref() else { return params };
+    if id == "type.create" && s.actions.recording.is_some() && params.get("box").is_none() && doc.size.width > 0 && doc.size.height > 0 {
+        let x = params.get("x").and_then(Value::as_f64).unwrap_or(0.0);
+        let y = params.get("y").and_then(Value::as_f64).unwrap_or(0.0);
+        let x_percent = x / f64::from(doc.size.width) * 100.0;
+        let y_percent = y / f64::from(doc.size.height) * 100.0;
+        if x_percent.is_finite()
+            && y_percent.is_finite()
+            && let Some(object) = params.as_object_mut()
+        {
+            object.remove("x");
+            object.remove("y");
+            object.insert("xPercent".into(), serde_json::json!(x_percent));
+            object.insert("yPercent".into(), serde_json::json!(y_percent));
+        }
+    }
     let Some(target) = params.get("layer").and_then(Value::as_u64).map(LayerId) else { return params };
     let Some(obj) = params.as_object_mut() else { return params };
     let only_selected = before.selected.len() <= 1;

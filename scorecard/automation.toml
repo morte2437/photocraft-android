@@ -16,7 +16,7 @@ id = "AUTO-219-1"
 target = "Record actions in a document-independent form (implicit layer, merged type keystrokes)"
 status = "partial"
 issue = 219
-note = "actions_record.rs: active layer ids are dropped, uniquely named layers replay by name, and Type tool keystrokes fold per document and layer; full coverage of all numeric-only command receivers and ambiguous layer names is still open"
+note = "actions_record.rs/actions_cmds.rs: active layer ids are dropped, uniquely named layers replay by name, Type tool keystrokes and Move-tool nudge runs fold, document activation records an opening-order offset, and point text placement scales with the playback canvas; numeric-only receivers, ambiguous layer names and paragraph box placement remain open, #4514"
 
 [[item]]
 id = "AUTO-219-2"
