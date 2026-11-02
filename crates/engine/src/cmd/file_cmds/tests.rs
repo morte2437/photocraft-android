@@ -2111,7 +2111,7 @@ fn pending_preflights_cap_fails_closed() {
     let mut s = Session::new();
     let src = crate::jobs::OpenSource::Bytes(std::sync::Arc::new(vec![0; 4]));
     let fp = crate::jobs::SourceFingerprint::of(&src).unwrap();
-    for i in 0..crate::jobs::Session::MAX_PENDING_PREFLIGHTS {
+    for i in 0..crate::Session::MAX_PENDING_PREFLIGHTS {
         assert!(
             s.store_pending_preflight(crate::jobs::PendingPsdPreflight {
                 id: 0,

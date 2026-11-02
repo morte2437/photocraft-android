@@ -552,6 +552,7 @@ pub fn import_source_with_options(
     Ok((r, damaged))
 }
 
+#[cfg(test)]
 pub(crate) fn import_source_with_limit(
     name: &str,
     source: photocraft_psd::Source,

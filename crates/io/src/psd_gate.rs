@@ -140,7 +140,7 @@ mod tests {
         assert!(!is_holding_admission());
 
         // Can acquire again after release
-        let guard3 = acquire_decode_admission(&ctl).unwrap();
+        let _guard3 = acquire_decode_admission(&ctl).unwrap();
         assert!(is_holding_admission());
     }
 

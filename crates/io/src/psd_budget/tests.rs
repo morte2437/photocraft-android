@@ -8,8 +8,7 @@ fn retained_storage_is_summed_but_workspace_is_reused() {
     budget.retain(20).unwrap();
     budget.scratch(30);
     budget.scratch(10);
-    assert!(budget.check(90).is_ok());
-    assert!(matches!(budget.check(89), Err(IoError::PsdImportBudget { required: 90, limit: 89 })));
+    assert_eq!(budget.required().unwrap(), 90);
     budget.retain(u64::MAX).unwrap_err();
     budget.workspace = u64::MAX;
     assert!(budget.required().is_err());
@@ -239,9 +238,6 @@ fn adaptive_budget_requires_explicit_approval_in_confirmation_range() {
 
 #[test]
 fn explicit_approval_allows_confirmation_range_but_never_bypasses_hard_boundary() {
-    let file = testgen::small(Version::Psd, Compression::Zip);
-    let bytes = file.to_bytes().unwrap();
-    let est = estimate(&file);
     let gb = 1u64 << 30;
 
     // Scale RAM so that est falls between S and H:

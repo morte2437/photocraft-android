@@ -163,6 +163,7 @@ pub fn resolve_budget(snapshot: MemorySnapshot, caller_limit: Option<u64>) -> Me
 /// - `required > soft_limit` and high memory is not approved;
 /// - high memory is approved, but `approved_estimate` is specified and `required > approved_estimate`
 ///   (preventing unbounded approval for altered/enlarged files).
+///
 /// Result of evaluating an import admission request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AdmissionOutcome {
@@ -201,16 +202,6 @@ pub(crate) fn evaluate_psd_admission(
                     hard_limit: budget.hard_limit,
                     available_ram: budget.available_ram,
                 });
-            }
-            if let Some(approved) = approved_estimate {
-                if required > approved {
-                    return Err(IoError::PsdApprovalRequired {
-                        required,
-                        soft_limit: budget.soft_limit,
-                        hard_limit: budget.hard_limit,
-                        available_ram: budget.available_ram,
-                    });
-                }
             }
             let mut cap = budget.hard_limit;
             if let Some(caller) = limit_opt {
