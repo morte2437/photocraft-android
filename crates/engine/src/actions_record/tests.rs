@@ -97,6 +97,26 @@ fn a_background_job_journals_the_same_way() {
 }
 
 #[test]
+fn frame_action_keeps_the_layer_it_wraps() {
+    let mut s = session();
+    let picture = new_layer(&mut s, "Picture");
+    s.execute("actions.record", json!({"name": "Frame picture"})).unwrap();
+    s.execute("layer.new.frame", json!({"x": 1, "y": 1, "width": 20, "height": 20, "layer": picture})).unwrap();
+    s.execute("actions.stop", json!({})).unwrap();
+    let steps = s.execute("actions.get", json!({"action": "Frame picture"})).unwrap()["steps"].clone();
+    assert_eq!(steps[0][1]["layer"], "Picture", "the frame must wrap the recorded source layer");
+}
+
+#[test]
+fn merged_named_layer_keeps_its_id_as_a_selection_source() {
+    let mut s = session();
+    let source = new_layer(&mut s, "merged");
+    new_layer(&mut s, "Top");
+    s.execute("select.loadSelection", json!({"channel": "transparency", "layer": source})).unwrap();
+    assert_eq!(last(&s).1["layer"], source, "the reserved name must not mean the merged document");
+}
+
+#[test]
 fn keystrokes_fold_into_the_type_layer_they_made() {
     let mut s = session();
     let id = s.execute("type.create", json!({"x": 2, "y": 20, "text": "", "size": 12})).unwrap()["layer"].as_u64().unwrap();
@@ -115,19 +135,43 @@ fn keystrokes_fold_into_the_type_layer_they_made() {
 }
 
 #[test]
-fn keystrokes_in_an_existing_layer_become_one_edit() {
+fn keystrokes_in_an_existing_layer_keep_separate_replacements() {
     let mut s = session();
     let id = s.execute("type.create", json!({"x": 2, "y": 20, "text": "Hi", "size": 12})).unwrap()["layer"].as_u64().unwrap();
     s.execute("layer.setProps", json!({"opacity": 0.9})).unwrap();
     let n = s.journal.len();
     s.execute("type.edit", json!({"layer": id, "replace": {"start": 2, "end": 2, "text": "!"}, "coalesce": "t2"})).unwrap();
     s.execute("type.edit", json!({"layer": id, "replace": {"start": 0, "end": 1, "text": "h"}, "coalesce": "t2"})).unwrap();
-    assert_eq!(s.journal.len(), n + 1);
-    assert_eq!(last(&s), &("type.edit".into(), json!({"text": "hi!", "coalesce": "t2"})));
+    assert_eq!(s.journal.len(), n + 2);
+    assert_eq!(s.journal[n].1, json!({"replace": {"start": 2, "end": 2, "text": "!"}, "coalesce": "t2"}));
+    assert_eq!(last(&s).1, json!({"replace": {"start": 0, "end": 1, "text": "h"}, "coalesce": "t2"}));
     // A new editing session starts a new step.
     s.execute("type.edit", json!({"layer": id, "replace": {"start": 3, "end": 3, "text": "?"}, "coalesce": "t3"})).unwrap();
-    assert_eq!(s.journal.len(), n + 2);
-    assert_eq!(last(&s).1, json!({"text": "hi!?", "coalesce": "t3"}));
+    assert_eq!(s.journal.len(), n + 3);
+    assert_eq!(last(&s).1, json!({"replace": {"start": 3, "end": 3, "text": "?"}, "coalesce": "t3"}));
+}
+
+#[test]
+fn action_replay_preserves_styles_between_separate_typing_edits() {
+    let mut s = session();
+    let id = s.execute("type.create", json!({"x": 2, "y": 20, "text": "a M z", "size": 12})).unwrap()["layer"].as_u64().unwrap();
+    s.execute("type.edit", json!({"layer": id, "runs": [{"start": 2, "end": 3, "size": 24}]})).unwrap();
+    let replay = s.active().unwrap().doc.as_ref().clone();
+    s.execute("actions.record", json!({"name": "Two typed edits"})).unwrap();
+    s.execute("type.edit", json!({"layer": id, "replace": {"start": 0, "end": 1, "text": "A"}, "coalesce": "typing"})).unwrap();
+    s.execute("type.edit", json!({"layer": id, "replace": {"start": 4, "end": 5, "text": "Z"}, "coalesce": "typing"})).unwrap();
+    s.execute("actions.stop", json!({})).unwrap();
+    let original = s.active().unwrap().doc.layer(LayerId(id)).unwrap();
+    let photocraft_doc::LayerContent::Text(original) = &original.content else { panic!("type layer") };
+    let original = original.clone();
+    assert_eq!(original.text, "A M Z");
+    s.add_document(replay, None);
+    let played = s.execute("actions.play", json!({"action": "Two typed edits"})).unwrap();
+    assert!(played.get("failed").is_none(), "{played}");
+    let copy = s.active().unwrap().doc.layer(LayerId(id)).unwrap();
+    let photocraft_doc::LayerContent::Text(copy) = &copy.content else { panic!("type layer") };
+    assert_eq!(copy.text, original.text);
+    assert_eq!(copy.char_runs(), original.char_runs(), "the unchanged middle run keeps its style");
 }
 
 #[test]
@@ -138,7 +182,7 @@ fn recording_does_not_fold_into_a_step_from_before_recording_started() {
     s.execute("type.edit", json!({"layer": id, "replace": {"start": 2, "end": 2, "text": "!"}, "coalesce": "t2"})).unwrap();
     s.execute("actions.stop", json!({})).unwrap();
     let steps = s.execute("actions.get", json!({"action": "Type more"})).unwrap()["steps"].clone();
-    assert_eq!(steps, json!([["type.edit", {"text": "Hi!", "coalesce": "t2"}]]));
+    assert_eq!(steps, json!([["type.edit", {"replace": {"start": 2, "end": 2, "text": "!"}, "coalesce": "t2"}]]));
 }
 
 #[test]
@@ -151,7 +195,7 @@ fn keystrokes_into_another_layer_do_not_fold() {
     let n = s.journal.len();
     s.execute("type.edit", json!({"layer": first, "replace": {"start": 3, "end": 3, "text": "!"}, "coalesce": "t4"})).unwrap();
     assert_eq!(s.journal.len(), n + 1, "typing into the first layer is its own step");
-    assert_eq!(last(&s).1, json!({"text": "One!", "coalesce": "t4"}));
+    assert_eq!(last(&s).1, json!({"replace": {"start": 3, "end": 3, "text": "!"}, "coalesce": "t4"}));
     assert_eq!(s.journal[n - 1].1["text"], "", "the second Make Type Layer keeps its own text");
     // Programmatic edits (no session key) and other edits stand on their own.
     s.execute("type.edit", json!({"layer": second, "replace": {"start": 0, "end": 0, "text": "x"}})).unwrap();
@@ -174,7 +218,7 @@ fn keystrokes_in_another_document_do_not_fold_into_the_previous_document() {
     s.execute("type.edit", json!({"layer": second, "replace": {"start": 1, "end": 1, "text": "!"}, "coalesce": "typing"})).unwrap();
     assert_eq!(s.journal.len(), before + 1, "typing in a different document needs a new journal step");
     assert_eq!(s.journal[before - 1].1["text"], "A");
-    assert_eq!(last(&s).1["text"], "B!");
+    assert_eq!(last(&s).1["replace"], json!({"start": 1, "end": 1, "text": "!"}));
 }
 
 #[test]

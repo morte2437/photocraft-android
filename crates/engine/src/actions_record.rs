@@ -9,10 +9,8 @@
 //! - any other `layer` id becomes the layer's name when the name is unique in the document, and
 //!   `layer.select` always does (selecting is choosing a layer by name, as Photoshop records
 //!   it); an ambiguous name keeps the id, which still replays on the recording document;
-//! - the Type tool's keystrokes (`type.edit` with `replace` and the editing session's `coalesce`
-//!   key) fold into the entry before them: the `type.create` that made the layer gets the final
-//!   text, and keystrokes in an existing layer become one `type.edit` with the whole text, as
-//!   Photoshop records "Make text layer" and "Set current text layer".
+//! - the Type tool's keystrokes fold into the `type.create` that made the layer. On an existing
+//!   layer, each replacement stays separate so replay keeps style runs between edited spans.
 //!
 //! Ids are still accepted everywhere; only what the journal keeps changes.
 
@@ -48,11 +46,12 @@ pub(crate) fn portable(id: &str, mut params: Value, before: &Before) -> Value {
     let Some(target) = params.get("layer").and_then(Value::as_u64).map(LayerId) else { return params };
     let Some(obj) = params.as_object_mut() else { return params };
     let only_selected = before.selected.len() <= 1;
-    if id != "layer.select" && before.active_layer == Some(target) && only_selected {
+    if !matches!(id, "layer.select" | "layer.new.frame") && before.active_layer == Some(target) && only_selected {
         obj.remove("layer");
         return params;
     }
     if let Some(layer) = doc.layer(target)
+        && !(id == "select.loadSelection" && (layer.name.is_empty() || layer.name == "merged"))
         && doc.walk().iter().filter(|(_, _, l)| l.name == layer.name).count() == 1
     {
         obj.insert("layer".into(), Value::String(layer.name.clone()));
@@ -78,18 +77,19 @@ pub(crate) enum Keystroke {
     None,
     /// Folded into the entry before it.
     Folded,
-    /// A new entry setting the whole text, so a later keystroke can fold into it.
-    Step(Value),
 }
 
-/// Folds a Type-tool keystroke into the journal entry before it (see the module doc), or turns
-/// it into a whole-text step. `previous` is the layer the last entry typed into.
+/// Fold a Type-tool keystroke into its creation step only. A whole-text step on an existing
+/// layer can collapse distinct style runs between separate edited spans on replay (#4514).
+/// `previous` is the layer the last entry typed into.
 pub(crate) fn fold_keystroke(s: &mut Session, id: &str, params: &Value, previous: Option<(DocId, LayerId)>) -> Keystroke {
     if id != "type.edit" {
         return Keystroke::None;
     }
     let Some(obj) = params.as_object() else { return Keystroke::None };
-    let Some(key) = obj.get("coalesce").and_then(Value::as_str) else { return Keystroke::None };
+    if obj.get("coalesce").and_then(Value::as_str).is_none() {
+        return Keystroke::None;
+    }
     if !obj.contains_key("replace") || !obj.keys().all(|k| matches!(k.as_str(), "layer" | "replace" | "coalesce")) {
         return Keystroke::None;
     }
@@ -101,31 +101,19 @@ pub(crate) fn fold_keystroke(s: &mut Session, id: &str, params: &Value, previous
     }) else {
         return Keystroke::None;
     };
-    let layer = obj.get("layer");
-    let whole = || {
-        let mut step = obj.clone();
-        step.remove("replace");
-        step.insert("text".into(), Value::String(text.clone()));
-        Keystroke::Step(Value::Object(step))
-    };
     if previous != s.active().map(|st| (st.doc.id, target)) {
-        return whole();
+        return Keystroke::None;
     }
     // A new recording starts at a journal boundary. Its first edit cannot change an entry
     // before that boundary, or actions.stop would miss the edit altogether.
     if s.actions.recording.is_some_and(|(start, _)| s.journal.len() <= start) {
-        return whole();
+        return Keystroke::None;
     }
-    let Some((last, lp)) = s.journal.last_mut() else { return whole() };
-    let Some(lo) = lp.as_object_mut() else { return whole() };
-    let folds = match last.as_str() {
-        "type.create" => layer.is_none(),
-        "type.edit" => lo.get("coalesce").and_then(Value::as_str) == Some(key) && lo.get("layer") == layer && lo.contains_key("text"),
-        _ => false,
-    };
-    if !folds {
-        return whole();
+    let Some((last, lp)) = s.journal.last_mut() else { return Keystroke::None };
+    if last != "type.create" || obj.contains_key("layer") {
+        return Keystroke::None;
     }
+    let Some(lo) = lp.as_object_mut() else { return Keystroke::None };
     lo.insert("text".into(), Value::String(text));
     Keystroke::Folded
 }

@@ -430,6 +430,9 @@ fn new_style(s: &mut Session, p: &Value, paragraph: bool) -> Result<Value> {
     let (mut ca, mut pa) = parse_attrs(cmd, p.get("attrs").unwrap_or(&Value::Null))?;
     // With a type layer targeted, the style starts from the text's formatting (as Photoshop).
     let from_text = p.get("fromSelection").and_then(Value::as_bool).unwrap_or(true);
+    if from_text {
+        crate::commands::explicit_layer(s, p)?;
+    }
     if from_text && let Some((run, para, _, _)) = sample(s, p) {
         if paragraph {
             let base_c = st.resolve_char(None, None, FAMILY);

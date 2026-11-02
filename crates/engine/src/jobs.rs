@@ -982,7 +982,6 @@ impl Session {
         let params = crate::actions_record::portable(id, params, before);
         match crate::actions_record::fold_keystroke(self, id, &params, self.typed_layer) {
             crate::actions_record::Keystroke::Folded => {}
-            crate::actions_record::Keystroke::Step(step) => self.journal.push((id.to_string(), step)),
             crate::actions_record::Keystroke::None => {
                 if !crate::brush_cmds::coalesce_journal(self, id, &params) {
                     self.journal.push((id.to_string(), params));
