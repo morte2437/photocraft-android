@@ -19,7 +19,7 @@
 //!   message naming the job (queries and document-independent commands still run).
 
 use std::any::Any;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use photocraft_doc::{DocId, Document, LayerId};
@@ -84,12 +84,15 @@ pub struct JobCtx {
 
 #[derive(Default)]
 struct Shared {
-    cancel: AtomicBool,
+    state: AtomicU8,
     /// `f32` bits of the progress fraction. Non-negative floats order like their bits, so
     /// `fetch_max` keeps progress monotonic even with several reporting threads.
     progress: AtomicU32,
     message: Mutex<String>,
 }
+
+const CANCEL_REQUESTED: u8 = 1;
+const WORK_FINISHED: u8 = 2;
 
 impl std::fmt::Debug for JobCtx {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -118,12 +121,26 @@ impl JobCtx {
 
     /// Has the job been cancelled? Long loops check this and stop early.
     pub fn cancelled(&self) -> bool {
-        self.shared.cancel.load(Ordering::Relaxed)
+        self.shared.state.load(Ordering::Acquire) & CANCEL_REQUESTED != 0
     }
 
     /// Ask the job to stop (idempotent).
     pub fn cancel(&self) {
-        self.shared.cancel.store(true, Ordering::Relaxed);
+        self.shared.state.fetch_or(CANCEL_REQUESTED, Ordering::AcqRel);
+    }
+
+    /// Accept a cancellation only while the worker has not finished its result. One atomic state
+    /// orders a late cancel against completion, including the interval before the UI polls.
+    fn cancel_if_running(&self) -> bool {
+        self.shared
+            .state
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |state| (state & (CANCEL_REQUESTED | WORK_FINISHED) == 0).then_some(state | CANCEL_REQUESTED))
+            .is_ok()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn finish_work(&self) {
+        self.shared.state.fetch_or(WORK_FINISHED, Ordering::Release);
     }
 
     /// `Err(Cancelled)` once cancelled, for `?` between stages.
@@ -406,6 +423,7 @@ pub fn run<T: Send + 'static>(
             let _document = crate::doc_path::scope(document.as_deref());
             let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(&wctx).map(|t| Box::new(t) as Payload)))
                 .unwrap_or_else(|_| Err(EngineError::Other(format!("`{label_w}` failed with an internal error (logged); the document is unchanged"))));
+            wctx.finish_work();
             // The receiver is gone when the job was cancelled: nothing to report.
             let _ = tx.send(r);
         });
@@ -701,11 +719,7 @@ impl Session {
         // Earlier batch outputs are already on disk. Let the worker stop after its current
         // input and return the completed and skipped lists.
         if self.jobs.running[i].command == "file.automate.batch" {
-            if self.jobs.running[i].ctx.cancelled() {
-                return false;
-            }
-            self.jobs.running[i].ctx.cancel();
-            return true;
+            return self.jobs.running[i].ctx.cancel_if_running();
         }
         // A print worker can already have handed the job to the OS. Discarding its result
         // would falsely report cancellation; removal belongs to the system print queue.

@@ -192,6 +192,26 @@ fn recursive_batch_reports_an_unreadable_subfolder() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn folder_listing_reports_metadata_denial_and_skips_broken_links() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let dir = tmp("batch-list-metadata-denial");
+    let image = png(&dir, "image.png", 8, 6, "#ff0000");
+    symlink(join(&dir, "gone.png"), join(&dir, "broken.png")).unwrap();
+    assert_eq!(list_images(&dir).unwrap(), std::slice::from_ref(&image), "broken links are not inputs");
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o400)).unwrap();
+    let denied = std::fs::metadata(&image).is_err();
+    let result = list_images(&dir);
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    if denied {
+        assert!(result.is_err(), "metadata denial must not turn a folder of images into an empty batch");
+    } else {
+        eprintln!("metadata denial regression skipped: this user can search a mode-0400 folder");
+        assert_eq!(result.unwrap(), [image]);
+    }
+}
+
 #[test]
 fn close_all_and_close_others() {
     let mut s = session(8, 8, 8);

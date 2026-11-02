@@ -592,6 +592,24 @@ fn cancel_all_counts_an_accepted_batch_cancellation() {
     assert!(matches!(wait_event(&mut s, id).outcome, JobOutcome::Done(_)));
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_finished_batch_worker_rejects_late_cancellation() {
+    let mut s = Session::new();
+    let id = job(s
+        .start_job("file.automate.batch", json!({}), "Batch", false, |_| Ok(json!({"files": ["done.png"], "cancelled": false})), |_, result| Ok(result))
+        .unwrap());
+    let started = Instant::now();
+    while !s.jobs.running.iter().any(|running| running.id == id && running.handle.as_ref().is_some_and(|handle| handle.is_finished())) {
+        assert!(started.elapsed() < Duration::from_secs(10), "batch worker did not finish");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(!s.cancel_job(id), "a result already sent cannot be cancelled");
+    let JobOutcome::Done(result) = wait_event(&mut s, id).outcome else { panic!("completed batch result was lost") };
+    assert_eq!(result["files"], json!(["done.png"]));
+    assert_eq!(result["cancelled"], false);
+}
+
 /// Ask When Opening: a file whose profile doesn't match is decoded but not added; the shell takes
 /// it once the prompt is answered. Without Ask it opens as usual.
 #[test]

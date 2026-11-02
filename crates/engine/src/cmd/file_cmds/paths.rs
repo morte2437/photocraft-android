@@ -43,8 +43,14 @@ pub fn list_images(dir: &str) -> Result<Vec<String>> {
     let mut out = Vec::new();
     for entry in rd {
         let path = entry.map_err(|e| EngineError::Other(format!("{dir}: {e}")))?.path();
-        if path.is_file() && openable_name(&path.to_string_lossy()) {
-            out.push(path.to_string_lossy().into_owned());
+        if !openable_name(&path.to_string_lossy()) {
+            continue;
+        }
+        match std::fs::metadata(&path) {
+            Ok(metadata) if metadata.is_file() => out.push(path.to_string_lossy().into_owned()),
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {} // broken link or entry removed during traversal
+            Err(error) => return Err(EngineError::Other(format!("{}: {error}", path.display()))),
         }
     }
     out.sort();
