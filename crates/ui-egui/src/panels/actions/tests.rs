@@ -1968,4 +1968,8 @@ fn bulk_load_summary_counts_unsupported_steps_of_surviving_sets() {
     let status = bulk_load_status(&mut app, files);
     assert!(status.contains("1 step has no PhotoCraft equivalent yet"), "{status}");
     assert!(!app.ui.status_error, "{status}");
+    // Both sets stay loaded: the unsupported step is counted for one that is in the panel.
+    let names: Vec<&str> = app.session.actions.list.iter().map(|a| a.name.as_str()).collect();
+    assert_eq!(names, ["A", "B"]);
+    assert!(app.session.actions.list[0].steps.iter().any(|(id, _)| id == "actions.photoshopStep"));
 }

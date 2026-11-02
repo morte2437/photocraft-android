@@ -436,7 +436,8 @@ pub struct Services {
     /// OS clipboard images: copies go out, screenshots and images from other apps come in.
     pub clipboard_set_image: Option<ClipboardSetFn>,
     pub clipboard_get_image: Option<ClipboardGetFn>,
-    /// SVG text copied by another app, read only for an explicit pixels/path/shape paste.
+    /// SVG text copied by another app: imported only by an explicit pixels/path/shape paste,
+    /// and read after an ordinary paste too, only to remember which SVG came with that image.
     pub clipboard_get_svg: Option<ClipboardGetSvgFn>,
     /// True when the last `clipboard_get_image` read had no clipboard to read, as in a Flatpak on
     /// Wayland (#5031), rather than a clipboard that holds no image. `None` where that can't happen.
