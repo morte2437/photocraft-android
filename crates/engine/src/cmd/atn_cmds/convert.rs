@@ -162,7 +162,7 @@ pub(super) fn export_item(id: &str, params: &Value, set: &str) -> Option<AtnItem
     if e.code == "GEfc"
         && let Some((event, name)) = super::steps_gallery::recorded_event(id, &params)
     {
-        return Some(AtnItem { event, dictionary: name.into_bytes(), descriptor: Some(descriptor), ..Default::default() });
+        return Some(AtnItem { event, dictionary: name, descriptor: Some(descriptor), ..Default::default() });
     }
     let event = if e.code.is_empty() { AtnEvent::name(e.name) } else { AtnEvent::Code(e.code.as_bytes().try_into().ok()?) };
     Some(AtnItem { event, dictionary: e.label.as_bytes().to_vec(), descriptor: Some(descriptor), ..Default::default() })

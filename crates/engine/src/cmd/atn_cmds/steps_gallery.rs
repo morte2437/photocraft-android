@@ -611,12 +611,15 @@ pub(super) fn remember_event(item: &AtnItem, steps: &mut [(String, Value)]) {
         AtnEvent::Code(_) => "code",
         AtnEvent::Name(_) => "name",
     };
-    p.insert(RECORDED_EVENT.into(), json!({"event": item.event.id(), "eventKind": kind, "name": item.dictionary()}));
+    // `dictionary` keeps the panel name's bytes as recorded (a GBK or Shift_JIS name would not
+    // survive a round trip through text); `name` is for reading.
+    let dictionary = photocraft_paint::tile::b64_encode(&item.dictionary);
+    p.insert(RECORDED_EVENT.into(), json!({"event": item.event.id(), "eventKind": kind, "name": item.dictionary(), "dictionary": dictionary}));
 }
 
-/// The event and panel name a step of command `id` remembered by [`remember_event`] saves as;
-/// `None` (save as `GEfc`) when it has none or it is not the own event of `id`'s effect.
-pub(super) fn recorded_event(id: &str, params: &Value) -> Option<(AtnEvent, String)> {
+/// The event and panel name bytes a step of command `id` remembered by [`remember_event`] saves
+/// as; `None` (save as `GEfc`) when it has none or it is not the own event of `id`'s effect.
+pub(super) fn recorded_event(id: &str, params: &Value) -> Option<(AtnEvent, Vec<u8>)> {
     let r = params.get(RECORDED_EVENT)?;
     let event = jstr(r, "event")?;
     let event = match jstr(r, "eventKind")? {
@@ -624,7 +627,11 @@ pub(super) fn recorded_event(id: &str, params: &Value) -> Option<(AtnEvent, Stri
         "name" => AtnEvent::name(event),
         _ => return None,
     };
-    (effect_command(&event) == Some(id)).then(|| (event, jstr(r, "name").unwrap_or("").to_string()))
+    let name = match jstr(r, "dictionary").and_then(photocraft_paint::tile::b64_decode) {
+        Some(bytes) => bytes,
+        None => jstr(r, "name").unwrap_or("").as_bytes().to_vec(),
+    };
+    (effect_command(&event) == Some(id)).then_some((event, name))
 }
 
 /// A Filter Gallery step: the effect `GEfk` names, every key clamped or looked up, Photoshop's

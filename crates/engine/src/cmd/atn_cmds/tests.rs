@@ -5837,3 +5837,20 @@ fn steps_that_record_a_setting_twice_are_kept() {
     assert!(!kept(gallery_step("GEfc", "AccE", edges())));
     assert!(kept(gallery_step("GEfc", "AccE", edges().with("EdgW", D::Integer(9)))));
 }
+
+/// A gallery effect's own step whose panel name is in the file's legacy code page (GBK
+/// "强化的边缘", not UTF-8) saves back with the same name bytes (CodeRabbit on #10776).
+#[test]
+fn gallery_effect_steps_keep_a_legacy_panel_name_byte_for_byte() {
+    let edges = desc("null").with("GEfk", enm("GEft", "AccE")).with("EdgW", D::Integer(2)).with("EdgB", D::Integer(38)).with("Smth", D::Integer(5));
+    let gbk = vec![0xC7, 0xBF, 0xBB, 0xAF, 0xB5, 0xC4, 0xB1, 0xDF, 0xD4, 0xB5];
+    assert!(std::str::from_utf8(&gbk).is_err());
+    let source = AtnItem { dictionary: gbk.clone(), ..item("AccE", "", Some(edges)) };
+    let mut s = Session::new();
+    let loaded = s.execute("actions.load", json!({"data": set_of("S", vec![("A", vec![source])])})).unwrap();
+    assert_eq!(loaded["unsupported"], json!([]), "{loaded}");
+    let saved = s.execute("actions.save", json!({"set": "S"})).unwrap();
+    let file = atn::parse(&photocraft_paint::tile::b64_decode(saved["data"].as_str().unwrap()).unwrap()).unwrap();
+    let back = &file.actions[0].items[0];
+    assert_eq!((back.event.clone(), back.dictionary.clone()), (AtnEvent::Code(*b"AccE"), gbk));
+}
