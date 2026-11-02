@@ -254,10 +254,13 @@ The original native template format and subfolder layout remain the defaults;
 recorded folder steps use flat structured output. Duplicate output protection
 remains in place rather than silently overwriting an earlier result.
 
-Recorded folder steps without an error log set `stopOnError`: the first failed
-input is reported, earlier outputs stay saved and later inputs are not processed.
-The native command still continues by default. That continuing mode cannot be
-exported as a no-log Batch step, which would change its error policy.
+Recorded folder steps set `includeNonImages`: ordinary non-image files and
+unsupported RAW extensions become per-file errors instead of being skipped or
+opened through an embedded preview. Native folder inputs still select images
+only by default; explicit file arrays are unchanged. Without an error log,
+recorded steps also set `stopOnError`: the first failed input is reported,
+earlier outputs stay saved and later inputs are not processed. Native Batch
+continues by default. Export requires both recorded policies to preserve them.
 Any reported file error fails a recorded Batch step, so its parent action does
 not run later steps. A direct scripting call still returns the collected file
 results successfully, as measured in the reference application.

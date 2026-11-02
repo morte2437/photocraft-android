@@ -69,7 +69,7 @@ fn batch_structured_names_keep_image_format_and_refuse_unsupported_save_routing(
     child.set = Some("S".into());
     s.actions.list.push(child);
     let params = json!({"input":dir,"output":output,"action":"Child","set":"S","includeSubfolders":false,"flatOutput":true,
-        "overrideSaveAs":false,"stopOnError":true,"namingComponents":[{"text":"from-atn"}]});
+        "overrideSaveAs":false,"stopOnError":true,"includeNonImages":true,"namingComponents":[{"text":"from-atn"}]});
     let driver = crate::actions_cmds::Action::new("Driver", vec![("file.automate.batch".into(), params)]);
     let (bytes, skipped) = crate::atn_cmds::export("S", &[&driver], &[], false).unwrap();
     assert!(skipped.is_empty());
@@ -84,10 +84,12 @@ fn batch_structured_names_keep_image_format_and_refuse_unsupported_save_routing(
 #[test]
 fn batch_recorded_stop_for_errors_retains_earlier_outputs_and_stops_before_later_inputs() {
     let dir = tmp("batch-stop-for-errors");
-    let first = png(&dir, "a.png", 3, 2, "#ff0000");
-    let bad = join(&dir, "b.png");
-    std::fs::write(&bad, b"not a PNG").unwrap();
-    let last = png(&dir, "c.png", 3, 2, "#0000ff");
+    let input = join(&dir, "in");
+    std::fs::create_dir_all(&input).unwrap();
+    let first = png(&input, "a.png", 3, 2, "#ff0000");
+    let bad = join(&input, "b.txt");
+    std::fs::write(&bad, b"not an image").unwrap();
+    let last = png(&input, "c.png", 3, 2, "#0000ff");
     let mut s = Session::new();
     for (mode, stop) in [("default", None), ("continue", Some(false)), ("stop", Some(true))] {
         let output = join(&dir, mode);
@@ -102,11 +104,15 @@ fn batch_recorded_stop_for_errors_retains_earlier_outputs_and_stops_before_later
         assert!(std::path::Path::new(&join(&output, "a.png")).is_file());
         assert_eq!(std::path::Path::new(&join(&output, "c.png")).exists(), stop != Some(true));
     }
+    // Native folder defaults still select images only.
+    let native = s.execute("file.automate.batch", json!({"input":input,"output":join(&dir,"folder-default"),"steps":[]})).unwrap();
+    assert_eq!(native["files"].as_array().unwrap().len(), 2, "{native}");
+    assert!(native["errors"].as_array().unwrap().is_empty(), "{native}");
     let mut child = crate::actions_cmds::Action::new("Child", vec![]);
     child.set = Some("S".into());
     s.actions.list.push(child);
     let output = join(&dir, "recorded");
-    let p = json!({"input":dir,"output":output,"action":"Child","set":"S","stopOnError":true,
+    let p = json!({"input":input,"output":output,"action":"Child","set":"S","stopOnError":true,"includeNonImages":true,
         "includeSubfolders":false,"overrideSaveAs":false,"flatOutput":true,
         "namingComponents":[{"component":"name"},{"component":"extension"}]});
     let sentinel = json!({"width":7,"height":9});
@@ -119,7 +125,7 @@ fn batch_recorded_stop_for_errors_retains_earlier_outputs_and_stops_before_later
     let result = s.execute("actions.play", json!({"action":"Driver"})).unwrap();
     assert_eq!(result["ran"], 0, "{result}");
     assert_eq!(result["failed"]["id"], "file.automate.batch");
-    assert!(result["failed"]["error"].as_str().unwrap().contains("b.png"), "{result}");
+    assert!(result["failed"]["error"].as_str().unwrap().contains("b.txt"), "{result}");
     assert!(s.documents().is_empty(), "the command after the failed Batch must not run");
     assert!(std::path::Path::new(&join(&output, "a.png")).is_file());
     assert!(!std::path::Path::new(&join(&output, "c.png")).exists());
@@ -128,10 +134,40 @@ fn batch_recorded_stop_for_errors_retains_earlier_outputs_and_stops_before_later
     assert_eq!(result["ok"], true, "{result}");
     assert_eq!(result["results"][0]["result"]["errors"].as_array().unwrap().len(), 1);
     assert_eq!(s.documents().len(), 1, "the direct script caller still runs its next command");
-    let invalid_output = join(&dir, "invalid");
-    let err = s.execute("file.automate.batch", json!({"input":[first],"output":invalid_output,"steps":[],"stopOnError":"true"})).unwrap_err();
-    assert!(err.to_string().contains("stopOnError"), "{err}");
-    assert!(!std::path::Path::new(&invalid_output).exists());
+    // The recursive mode keeps output exclusion and reports excluded RAW names before import.
+    let output = join(&input, "out");
+    std::fs::create_dir_all(&output).unwrap();
+    png(&output, "ignored.png", 3, 2, "#ffffff");
+    let sub = join(&input, "sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    let raw = join(&sub, "d.cr3");
+    std::fs::copy(&first, &raw).unwrap();
+    let result = s
+        .execute(
+            "file.automate.batch",
+            json!({"input":input,"output":output,"steps":[],"format":"png",
+        "includeSubfolders":true,"includeNonImages":true}),
+        )
+        .unwrap();
+    assert_eq!(result["files"], json!([join(&output, "a.png"), join(&output, "c.png")]), "{result}");
+    assert_eq!(result["errors"].as_array().unwrap().len(), 2, "{result}");
+    assert_eq!(result["errors"][0]["file"], bad);
+    assert_eq!(result["errors"][1]["file"], raw);
+    assert!(result["errors"][1]["error"].as_str().unwrap().contains("unsupported Batch folder input"), "{result}");
+    assert!(!std::path::Path::new(&join(&output, "sub/d.png")).exists());
+    // Explicit arrays still sniff the image content, including with the folder option enabled.
+    let output = join(&dir, "explicit-array");
+    let result = s.execute("file.automate.batch", json!({"input":[raw],"output":output,"steps":[],"format":"png","includeNonImages":true})).unwrap();
+    assert_eq!(result["files"], json!([join(&output, "d.png")]), "{result}");
+    assert!(result["errors"].as_array().unwrap().is_empty(), "{result}");
+    for key in ["stopOnError", "includeNonImages"] {
+        let invalid_output = join(&dir, key);
+        let mut p = json!({"input":[first],"output":invalid_output,"steps":[]});
+        p[key] = json!("true");
+        let err = s.execute("file.automate.batch", p).unwrap_err();
+        assert!(err.to_string().contains(key), "{err}");
+        assert!(!std::path::Path::new(&invalid_output).exists());
+    }
 }
 
 fn tmp(name: &str) -> String {
@@ -1796,7 +1832,7 @@ fn batch_subfolder_walk_is_depth_limited() {
             std::fs::write(join(&deep, &format!("l{level}.png")), b"x").unwrap();
         }
     }
-    let found = list_images_tree(&dir, "", "test").unwrap();
+    let found = list_files_tree(&dir, "", "test", false).unwrap();
     let names: Vec<_> = found.iter().map(|i| file_name(&i.path)).collect();
     assert_eq!(names, vec![format!("l{MAX_SUBFOLDER_DEPTH}.png")], "{found:?}");
     assert_eq!(found[0].rel_dir.split('/').count(), MAX_SUBFOLDER_DEPTH);
@@ -1822,7 +1858,7 @@ fn batch_subfolder_walk_survives_symlink_loops() {
         eprintln!("skipped: cannot create a directory symlink here");
         return;
     }
-    let found = list_images_tree(&dir, "", "test").unwrap();
+    let found = list_files_tree(&dir, "", "test", false).unwrap();
     let names: Vec<_> = found.iter().map(|i| (i.rel_dir.as_str(), file_name(&i.path))).collect();
     assert_eq!(names, vec![("", "a.png".to_string()), ("sub", "b.png".to_string())]);
 }

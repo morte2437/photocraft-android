@@ -1,5 +1,5 @@
 use super::open::import_at_raw_ppi;
-use super::paths::{extension, file_name, join, list_images, read_file, stem};
+use super::paths::{extension, file_name, join, list_files, list_images, read_file, stem};
 use super::processing::parse_steps;
 use super::save::{SaveOpts, save_doc};
 use super::{Arc, Document, EngineError, Result, Session, Value, batch_naming, json, str_param};
@@ -33,23 +33,31 @@ pub(crate) const MAX_SUBFOLDER_FILES: usize = 100_000;
 /// subfolders, each tagged with its relative folder. `output` (when inside the input folder, as
 /// the dialog's default `<input>/batch` is) is not walked, so a rerun doesn't process its results.
 pub(crate) fn batch_inputs_tree(p: &Value, cmd: &str, output: &str) -> Result<Vec<BatchInput>> {
+    collect_inputs(p, cmd, output, false)
+}
+
+/// Collect folder inputs with Batch's explicit unsupported-file policy; arrays keep their order.
+fn collect_inputs(p: &Value, cmd: &str, output: &str, include_non_images: bool) -> Result<Vec<BatchInput>> {
     let recurse = match p.get("includeSubfolders") {
         None | Some(Value::Null) => false,
         Some(Value::Bool(b)) => *b,
         Some(_) => return Err(EngineError::BadParams { cmd: cmd.into(), msg: "\"includeSubfolders\" must be true or false".into() }),
     };
     match p.get("input").or_else(|| p.get("files")) {
-        Some(Value::String(dir)) if recurse => list_images_tree(dir, output, cmd),
+        Some(Value::String(dir)) if recurse => list_files_tree(dir, output, cmd, include_non_images),
+        Some(Value::String(dir)) if include_non_images => {
+            Ok(list_files(dir, true)?.into_iter().map(|path| BatchInput { path, rel_dir: String::new() }).collect())
+        }
         _ => Ok(batch_inputs(p, cmd)?.into_iter().map(|path| BatchInput { path, rel_dir: String::new() }).collect()),
     }
 }
 
-/// The images under `dir` and its subfolders: each folder's files sorted by name, then its
+/// The selected files under `dir` and its subfolders: each folder's files sorted by name, then its
 /// subfolders in name order (depth first). Bounded by [`MAX_SUBFOLDER_DEPTH`] and
 /// [`MAX_SUBFOLDER_FILES`]; a folder reached twice (a symlink loop) is walked once, and `skip`
 /// (the output folder) is left out.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn list_images_tree(dir: &str, skip: &str, cmd: &str) -> Result<Vec<BatchInput>> {
+pub(crate) fn list_files_tree(dir: &str, skip: &str, cmd: &str, include_non_images: bool) -> Result<Vec<BatchInput>> {
     use std::path::{Path, PathBuf};
     let canon = |p: &Path| std::fs::canonicalize(p).ok();
     let root = Path::new(dir);
@@ -63,13 +71,13 @@ pub(crate) fn list_images_tree(dir: &str, skip: &str, cmd: &str) -> Result<Vec<B
     while let Some((folder, rel, depth)) = stack.pop() {
         let shown = folder.to_string_lossy().into_owned();
         // The top folder must be readable; a subfolder that isn't is skipped.
-        let files = match list_images(&shown) {
+        let files = match list_files(&shown, include_non_images) {
             Ok(f) => f,
             Err(e) if depth == 0 => return Err(e),
             Err(_) => continue,
         };
         if out.len().saturating_add(files.len()) > MAX_SUBFOLDER_FILES {
-            return Err(EngineError::BadParams { cmd: cmd.into(), msg: format!("{dir} holds more than {MAX_SUBFOLDER_FILES} images with its subfolders") });
+            return Err(EngineError::BadParams { cmd: cmd.into(), msg: format!("{dir} holds more than {MAX_SUBFOLDER_FILES} files with its subfolders") });
         }
         out.extend(files.into_iter().map(|path| BatchInput { path, rel_dir: rel.clone() }));
         if depth >= MAX_SUBFOLDER_DEPTH {
@@ -97,7 +105,7 @@ pub(crate) fn list_images_tree(dir: &str, skip: &str, cmd: &str) -> Result<Vec<B
 }
 
 #[cfg(target_arch = "wasm32")]
-pub(crate) fn list_images_tree(dir: &str, _skip: &str, _cmd: &str) -> Result<Vec<BatchInput>> {
+pub(crate) fn list_files_tree(dir: &str, _skip: &str, _cmd: &str, _include_non_images: bool) -> Result<Vec<BatchInput>> {
     Err(EngineError::Other(format!("cannot list {dir}: no file system on the web")))
 }
 
@@ -129,7 +137,7 @@ pub(crate) fn process_tree(
     suffix: &str,
     f: &dyn Fn(&mut Session, &str) -> Result<bool>,
 ) -> Value {
-    process_outputs(s, default_outputs(inputs, output, format, suffix), save, None, false, f)
+    process_outputs(s, default_outputs(inputs, output, format, suffix), save, None, false, false, f)
 }
 
 /// Stream legacy destination names without collecting another path list for large batches.
@@ -188,6 +196,7 @@ fn process_outputs<'a>(
     save: SaveOpts,
     content_format: Option<&str>,
     stop_on_error: bool,
+    check_folder_format: bool,
     f: &dyn Fn(&mut Session, &str) -> Result<bool>,
 ) -> Value {
     // The scratch sessions have default preferences; a raw opens at the user's Raw Defaults.
@@ -198,6 +207,13 @@ fn process_outputs<'a>(
     for (path, out) in outputs {
         let r = (|| -> Result<()> {
             written.check(&out).map_err(EngineError::Other)?;
+            // A folder must not silently use the embedded preview of an unsupported raw format.
+            #[cfg(not(target_arch = "wasm32"))]
+            if check_folder_format && !super::paths::openable_name(path) {
+                return Err(EngineError::Other(format!("unsupported Batch folder input: {path}")));
+            }
+            #[cfg(target_arch = "wasm32")]
+            let _ = check_folder_format;
             let bytes = read_file(path)?;
             let mut scratch = Session::new();
             let doc = import_at_raw_ppi(raw_ppi, &file_name(path), &bytes)?;
@@ -286,6 +302,11 @@ pub(crate) fn batch_action(list: &[crate::actions_cmds::Action], p: &Value) -> R
 /// Apply the selected file-error policy while retaining per-file results for direct callers.
 pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "file.automate.batch";
+    let include_non_images = match p.get("includeNonImages") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(value)) => *value,
+        _ => return Err(EngineError::BadParams { cmd: cmd.into(), msg: "includeNonImages must be a boolean".into() }),
+    };
     let stop_on_error = match p.get("stopOnError") {
         None | Some(Value::Null) => false,
         Some(Value::Bool(value)) => *value,
@@ -338,7 +359,8 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(EngineError::BadParams { cmd: cmd.into(), msg: format!("unknown command `{id}` in the action") });
     }
     let output = str_param(p, "output", cmd)?.to_string();
-    let inputs = batch_inputs_tree(p, cmd, &output)?;
+    let inputs = collect_inputs(p, cmd, &output, include_non_images)?;
+    let check_folder_format = include_non_images && p.get("input").or_else(|| p.get("files")).is_some_and(Value::is_string);
     let format = p.get("format").and_then(Value::as_str).unwrap_or("same").to_string();
     // A batch inside a played action charges its inputs × steps (at least one each: an input is read,
     // decoded and saved even with no steps) to the playback tree it is in and
@@ -405,8 +427,16 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
         result
     };
     let r = match names {
-        Some(names) => process_outputs(s, inputs.iter().map(|i| i.path.as_str()).zip(names), save, structured.then_some(format.as_str()), stop_on_error, &run),
-        None => process_outputs(s, default_outputs(&inputs, &output, &format, ""), save, None, stop_on_error, &run),
+        Some(names) => process_outputs(
+            s,
+            inputs.iter().map(|i| i.path.as_str()).zip(names),
+            save,
+            structured.then_some(format.as_str()),
+            stop_on_error,
+            check_folder_format,
+            &run,
+        ),
+        None => process_outputs(s, default_outputs(&inputs, &output, &format, ""), save, None, stop_on_error, check_folder_format, &run),
     };
     if s.actions.playing > 0 {
         s.actions.playback_steps = carried.get();

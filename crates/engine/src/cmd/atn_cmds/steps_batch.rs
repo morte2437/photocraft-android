@@ -118,7 +118,7 @@ fn read(d: &Descriptor) -> Option<Value> {
             return None;
         }
     }
-    let mut p = json!({"input":path_text(d.get("null")?)?,"output":path_text(d.get("T   ")?)?,"flatOutput":true,"stopOnError":true});
+    let mut p = json!({"input":path_text(d.get("null")?)?,"output":path_text(d.get("T   ")?)?,"flatOutput":true,"stopOnError":true,"includeNonImages":true});
     let D::Reference(items) = d.get("Usng")? else { return None };
     match items.as_slice() {
         [ReferenceItem::Name { class: action, name }, ReferenceItem::Name { class: set, name: set_name }]
@@ -167,6 +167,7 @@ pub(super) fn batch_to(_: &str, p: &Value) -> Option<Descriptor> {
             "includeSubfolders",
             "overrideSaveAs",
             "stopOnError",
+            "includeNonImages",
             "namingComponents",
             "startingSerial",
             "compatibility",
@@ -176,8 +177,8 @@ pub(super) fn batch_to(_: &str, p: &Value) -> Option<Descriptor> {
     }) {
         return None;
     }
-    // Without Log, the recorded dialog stops at the first failing file. Native defaults continue.
-    if p.get("stopOnError") != Some(&Value::Bool(true)) {
+    // Recorded folders include unsupported files and stop at the first error without Log.
+    if p.get("stopOnError") != Some(&Value::Bool(true)) || p.get("includeNonImages") != Some(&Value::Bool(true)) {
         return None;
     }
     if let Some(original) = p.get(ORIGINAL) {
