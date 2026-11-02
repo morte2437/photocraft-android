@@ -141,25 +141,65 @@ fn a_picker_or_parent_closed_any_other_way_ends_the_preview() {
     assert_eq!(fields(&app, fill), &before);
     assert!(app.color_picker_live.is_empty());
 
+    // A cancelled dialog takes its field picker with it, leaving no picker whose OK has no target.
     let (fill, picker) = fill_with_picker(&mut app);
+    let other = open_for_field(&mut app, "Color Picker (Other)", [0.0; 3], 999_999, "color");
     pick(&mut app, picker, "#336699");
     crate::dialogs::cancel(&mut app, fill).unwrap();
-    pick(&mut app, picker, "#ff0000");
+    assert!(app.ui.dialogs.iter().all(|d| d.id != picker), "the picker closes with its dialog");
+    assert!(app.ui.dialogs.iter().any(|d| d.id == other), "another dialog's picker stays");
     assert!(app.color_picker_live.is_empty(), "the preview ends with its dialog");
-    assert!(crate::dialogs::confirm(&mut app, picker).is_err(), "OK reports the closed dialog");
     assert_eq!(past(&app), 0);
 }
 
 /// The dialog under a picker can't be confirmed (by automation) with a colour the picker still
-/// only shows.
+/// only shows, even when the picker's `__dialog` was rewritten to point elsewhere.
 #[test]
 fn the_dialog_waits_for_its_picker() {
     let mut app = app();
     let (fill, picker) = fill_with_picker(&mut app);
     pick(&mut app, picker, "#336699");
     assert!(crate::dialogs::confirm(&mut app, fill).is_err());
+    app.ui.dialog_mut(picker).unwrap().fields.insert("__dialog".into(), json!(999_999));
+    assert!(crate::dialogs::confirm(&mut app, fill).is_err(), "the live preview's record of the dialog counts");
     assert_eq!(past(&app), 0);
     assert!(app.ui.dialogs.iter().any(|d| d.id == fill), "the dialog stays open");
+}
+
+/// Automation can't edit a dialog under a previewing picker: Cancel would put the edit back.
+#[test]
+fn the_dialog_under_a_picker_refuses_control_edits() {
+    let ctx = egui::Context::default();
+    let mut app = app();
+    let (fill, picker) = fill_with_picker(&mut app);
+    let (req, _rx) = crate::control::ControlRequest::new("ui.dialog.set", json!({"dialog": fill, "field": "opacity", "value": 50}));
+    let crate::control::Outcome::Done(r) = crate::control::handle(&mut app, &ctx, &req) else { panic!("an immediate reply") };
+    assert_eq!(r["ok"], false, "{r}");
+    assert_eq!(fields(&app, fill)["opacity"], json!(100.0));
+    crate::dialogs::cancel(&mut app, picker).unwrap();
+    let (req, _rx) = crate::control::ControlRequest::new("ui.dialog.set", json!({"dialog": fill, "field": "opacity", "value": 50}));
+    let crate::control::Outcome::Done(r) = crate::control::handle(&mut app, &ctx, &req) else { panic!("an immediate reply") };
+    assert_eq!(r["ok"], true, "{r}");
+}
+
+/// A shield colour set elsewhere (`ui.set cropShield`) while its picker is open survives the
+/// picker's Cancel.
+#[test]
+fn the_crop_shield_keeps_a_colour_set_while_its_picker_is_open() {
+    let mut app = app();
+    let picker = crate::crop_shield::pick_custom_color(&mut app);
+    pick(&mut app, picker, "#336699");
+    app.ui.tool_options.crop_shield.custom_color = [1, 2, 3];
+    crate::dialogs::cancel(&mut app, picker).unwrap();
+    let s = &app.ui.tool_options.crop_shield;
+    assert_eq!((s.color, s.custom_color), (ShieldColor::Custom, [1, 2, 3]));
+
+    let picker = crate::crop_shield::pick_custom_color(&mut app);
+    app.ui.tool_options.crop_shield.color = ShieldColor::MatchCanvas;
+    pick(&mut app, picker, "#ff0000");
+    crate::dialogs::cancel(&mut app, picker).unwrap();
+    let s = &app.ui.tool_options.crop_shield;
+    assert_eq!((s.color, s.custom_color), (ShieldColor::MatchCanvas, [1, 2, 3]), "Cancel puts back the choice made while it was open");
 }
 
 /// The dialog's own ⌘Z history records no step for a previewed colour: none after Cancel, one
