@@ -67,7 +67,7 @@ fn mesh_three_value_shaper_is_applied() {
     }
 }
 
-/// An untouched one-name Batch keeps all original bytes; an edit still receives its enclosing set.
+/// An untouched one-name Batch keeps all original bytes; an edit keeps its unqualified lookup.
 #[test]
 fn batch_untouched_reference_and_edited_set_are_distinct() {
     let d = Descriptor::new("Btch").with("null", path("input")).with("T   ", path("output")).with("Usng", D::Reference(vec![named("Actn", "Child")]));
@@ -78,7 +78,7 @@ fn batch_untouched_reference_and_edited_set_are_distinct() {
     action.steps[0].1["action"] = json!("Edited");
     let edited = exported(&action);
     let D::Reference(names) = edited.get("Usng").unwrap() else { panic!("action reference") };
-    assert_eq!(*names, vec![named("Actn", "Edited"), named("ASet", "Parent")]);
+    assert_eq!(*names, vec![named("Actn", "Edited")]);
 }
 
 /// Native Batch's optional false flag must export, but malformed values must not.
@@ -123,6 +123,39 @@ fn custom_non_object_params_refuse_export() {
         assert!(atn_cmds::export("Parent", &[&Action::new("Bad", vec![("filter.other.custom".into(), params)])], &[], false).is_err());
     }
     exported(&Action::new("Identity", vec![("filter.other.custom".into(), json!({}))]));
+}
+
+/// Accepted main encodings still map and play, while an unchanged save retains their exact descriptor.
+#[test]
+fn custom_supported_representations_map_and_save_losslessly() {
+    let kernel = D::List((0..25).map(|i| D::Integer(i32::from(i == 12))).collect());
+    for d in [
+        Descriptor::new("null").with("Scl", D::Integer(3)).with("Mtrx", kernel.clone()),
+        Descriptor::new("null").with("Mtrx", kernel.clone()).with("Scl ", D::Double(2.0)),
+        Descriptor::new("Cstm").with("Ofst", D::Double(0.0)).with("Mtrx", kernel).with("Scl ", D::Integer(1)),
+    ] {
+        let imported = atn_cmds::import(&encoded(*b"Cstm", d.clone(), true)).unwrap();
+        assert!(imported.unsupported.is_empty());
+        let mut action = imported.actions[0].clone();
+        assert_eq!(action.steps[0].0, "filter.other.custom");
+        assert_eq!(exported(&action), d);
+        let mut native = session("rgb");
+        native.execute("filter.other.custom", action.steps[0].1.clone()).unwrap();
+        let mut played = session("rgb");
+        played.actions.list.push(action.clone());
+        played.execute("actions.play", json!({"action":action.name})).unwrap();
+        let commands: Vec<_> = played.journal.iter().filter(|(id, _)| id == "filter.other.custom").collect();
+        assert!(!commands.is_empty());
+        assert!(commands.iter().all(|(_, params)| params.get("__atnCustom").is_none()));
+        let (id, last) = photocraft_engine::filters::last_filter(&played).unwrap();
+        assert_eq!(id, "filter.other.custom");
+        assert!(last.get("__atnCustom").is_none());
+        assert!(played.actions.list[0].steps[0].1.get("__atnCustom").is_some());
+        assert_eq!(exported(&played.actions.list[0]), d, "Save Actions still owns the original descriptor");
+        assert_eq!(photocraft_compose::flatten(&played.active().unwrap().doc).px, photocraft_compose::flatten(&native.active().unwrap().doc).px);
+        action.steps[0].1["scale"] = json!(4);
+        assert_eq!(exported(&action).get("Scl "), Some(&D::Integer(4)), "editing must not reuse stale original metadata");
+    }
 }
 
 /// Cached and cache-less shapes expose identical component and composite Calculations planes.
@@ -373,7 +406,7 @@ fn batch_null_set_exports_like_absent_and_preserves_explicit_sets() {
         if allowed {
             let bytes = result.unwrap().0;
             let imported = atn_cmds::import(&bytes).unwrap();
-            assert_eq!(imported.actions[0].steps[0].1["set"], if set.is_null() { json!("Parent") } else { set.clone() });
+            assert_eq!(imported.actions[0].steps[0].1.get("set"), if set.is_null() { None } else { Some(&set) });
             if set.is_null() {
                 assert_eq!(atn::parse(&bytes).unwrap().actions[0].items[0].descriptor, Some(absent.clone()));
             }
@@ -381,9 +414,66 @@ fn batch_null_set_exports_like_absent_and_preserves_explicit_sets() {
     }
 }
 
-/// Extra GIF image blocks must survive both ordinary and saved/closed Batch refusal paths.
+/// Both native and edited imported Batch steps keep global lookup when their reference is unqualified.
 #[test]
-fn batch_save_close_preserves_animation_and_allows_still_gif() {
+fn batch_unqualified_export_keeps_cross_set_resolution() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("input.png"), small_image(photocraft_codecs::Format::Png)).unwrap();
+    for edited in [false, true] {
+        let p = json!({"input":dir.path(),"output":dir.path().join(format!("out-{edited}")),"action":"Child","stopOnError":true,"includeNonImages":true,"namingComponents":[{"component":"name"},{"component":"extension"}]});
+        let mut parent = Action::new("Parent", vec![("file.automate.batch".into(), p)]);
+        if edited {
+            parent = atn_cmds::import(&atn_cmds::export("Parent set", &[&parent], &[], false).unwrap().0).unwrap().actions.remove(0);
+            parent.steps[0].1["suppressWarnings"] = json!(true);
+        }
+        let imported = atn_cmds::import(&atn_cmds::export("Parent set", &[&parent], &[], false).unwrap().0).unwrap();
+        let batch = imported.actions[0].steps[0].1.clone();
+        assert!(batch.get("set").is_none());
+        let mut child = Action::new("Child", vec![("image.imageSize".into(), json!({"width":3,"height":1,"resample":"nearest"}))]);
+        child.set = Some("Other set".into());
+        let mut s = Session::new();
+        s.actions.list.push(child);
+        let result = s.execute("file.automate.batch", batch).unwrap();
+        assert_eq!(result["files"].as_array().unwrap().len(), 1, "{result}");
+        let doc = photocraft_io::import("out.png", &std::fs::read(result["files"][0].as_str().unwrap()).unwrap()).unwrap().document;
+        assert_eq!(doc.size, photocraft_doc::Size::new(3, 1));
+    }
+}
+
+/// Rebinding the imported set follows local children, but a foreign destination-set reference stays foreign.
+#[test]
+fn batch_load_override_preserves_original_set_identity_and_foreign_references() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("input.png"), small_image(photocraft_codecs::Format::Png)).unwrap();
+    for (foreign, collision) in [(false, false), (false, true), (true, true)] {
+        let params = json!({"input":dir.path(),"output":dir.path().join(format!("out-{foreign}-{collision}")),"action":"Child","set":if foreign {"Destination"} else {"Original"},"stopOnError":true,"includeNonImages":true,"namingComponents":[{"component":"name"},{"component":"extension"}]});
+        let parent = Action::new("Parent", vec![("file.automate.batch".into(), params)]);
+        let child = Action::new("Child", vec![("image.imageSize".into(), json!({"width":3,"height":1,"resample":"nearest"}))]);
+        let bytes = atn_cmds::export("Original", &[&parent, &child], &[], false).unwrap().0;
+        let mut s = Session::new();
+        if collision {
+            let mut old = Action::new("Child", vec![("image.imageSize".into(), json!({"width":5,"height":1,"resample":"nearest"}))]);
+            old.set = Some("Destination".into());
+            s.actions.list.push(old);
+        }
+        let loaded = s.execute("actions.load", json!({"data":photocraft_paint::tile::b64_encode(&bytes),"set":"Destination","replace":false})).unwrap();
+        let parent = s.actions.list.iter().find(|a| a.name == loaded["actions"][0].as_str().unwrap()).unwrap();
+        let batch = parent.steps[0].1.clone();
+        assert_eq!(batch["set"], "Destination");
+        assert_eq!(batch["action"], if foreign { json!("Child") } else { loaded["actions"][1].clone() });
+        let saved = atn_cmds::import(&atn_cmds::export("Destination", &[parent], &[], false).unwrap().0).unwrap();
+        assert_eq!(saved.actions[0].steps[0].1["set"], batch["set"]);
+        assert_eq!(saved.actions[0].steps[0].1["action"], batch["action"]);
+        let result = s.execute("file.automate.batch", batch).unwrap();
+        assert_eq!(result["files"].as_array().unwrap().len(), 1, "{result}");
+        let doc = photocraft_io::import("out.png", &std::fs::read(result["files"][0].as_str().unwrap()).unwrap()).unwrap().document;
+        assert_eq!(doc.size, photocraft_doc::Size::new(if foreign { 5 } else { 3 }, 1));
+    }
+}
+
+/// Extra source images must survive both ordinary and saved/closed Batch refusal paths.
+#[test]
+fn batch_save_close_preserves_additional_images_and_allows_single_images() {
     let dir = tempfile::tempdir().unwrap();
     let still = small_image(photocraft_codecs::Format::Gif);
     let flags = still[10];
@@ -391,24 +481,46 @@ fn batch_save_close_preserves_animation_and_allows_still_gif() {
     let mut animated = still[..still.len() - 1].to_vec();
     animated.extend_from_slice(&still[blocks..]);
     assert_eq!(photocraft_codecs::decode_gif_frames(&animated, &Default::default()).unwrap().len(), 2);
-    let input = dir.path().join("source.gif");
-    for steps in [
-        json!([]),
-        json!([{"command":"file.openAs","params":{"path":"recorded.gif"}},{"command":"file.saveAs","params":{}},{"command":"file.close","params":{"force":true}}]),
-    ] {
-        std::fs::write(&input, &animated).unwrap();
-        let override_open = !steps.as_array().unwrap().is_empty();
-        let mut s = Session::new();
-        let result =
-            s.execute("file.automate.batch", json!({"input":[input],"destination":"saveAndClose","overrideOpen":override_open,"steps":steps})).unwrap();
-        assert!(result["files"].as_array().unwrap().is_empty(), "{result}");
-        assert!(result["errors"][0]["error"].as_str().unwrap().contains("additional source images"), "{result}");
-        assert_eq!(std::fs::read(&input).unwrap(), animated);
+    let dpx = small_image(photocraft_codecs::Format::Dpx);
+    let mut elements = dpx.clone();
+    elements[770..772].copy_from_slice(&2u16.to_be_bytes());
+    elements.extend_from_slice(b"distinct second DPX element payload");
+    let rgb = photocraft_codecs::Image::from_u8(2, 2, photocraft_codecs::ChannelLayout::Rgb, [32, 64, 128].repeat(4)).unwrap();
+    let fits = photocraft_codecs::encode(&rgb, photocraft_codecs::Format::Fits, &Default::default()).unwrap();
+    let mut hdu = fits.clone();
+    hdu[..80].fill(b' ');
+    hdu[..17].copy_from_slice(b"XTENSION= 'IMAGE'");
+    hdu[2880] ^= 0xff;
+    let mut hdus = fits.clone();
+    hdus.extend(hdu);
+    let mut cubes = fits.clone();
+    let axis = cubes.as_chunks_mut::<80>().0.iter_mut().find(|card| card.starts_with(b"NAXIS3  =")).unwrap();
+    axis.fill(b' ');
+    axis[..11].copy_from_slice(b"NAXIS3  = 4");
+    for (extension, multiple) in [("gif", animated), ("dpx", elements), ("fits", hdus), ("fits", cubes)] {
+        photocraft_codecs::decode(&multiple).unwrap();
+        let input = dir.path().join(format!("source.{extension}"));
+        for steps in [
+            json!([]),
+            json!([{"command":"file.openAs","params":{"path":"recorded.png"}},{"command":"file.saveAs","params":{}},{"command":"file.close","params":{"force":true}}]),
+        ] {
+            std::fs::write(&input, &multiple).unwrap();
+            let override_open = !steps.as_array().unwrap().is_empty();
+            let mut s = Session::new();
+            let result =
+                s.execute("file.automate.batch", json!({"input":[input],"destination":"saveAndClose","overrideOpen":override_open,"steps":steps})).unwrap();
+            assert!(result["files"].as_array().unwrap().is_empty(), "{extension}: {result}");
+            assert!(result["errors"][0]["error"].as_str().unwrap().contains("additional source images"), "{extension}: {result}");
+            assert_eq!(std::fs::read(&input).unwrap(), multiple);
+        }
     }
-    std::fs::write(&input, &still).unwrap();
-    let result = Session::new().execute("file.automate.batch", json!({"input":[input],"destination":"saveAndClose","steps":[]})).unwrap();
-    assert_eq!(result["files"].as_array().unwrap().len(), 1, "{result}");
-    assert_eq!(photocraft_codecs::decode_gif_frames(&std::fs::read(input).unwrap(), &Default::default()).unwrap().len(), 1);
+    for (extension, bytes) in [("gif", still), ("dpx", dpx), ("fits", fits)] {
+        let input = dir.path().join(format!("still.{extension}"));
+        std::fs::write(&input, bytes).unwrap();
+        let result = Session::new().execute("file.automate.batch", json!({"input":[input],"destination":"saveAndClose","steps":[]})).unwrap();
+        assert_eq!(result["files"].as_array().unwrap().len(), 1, "{extension}: {result}");
+        assert!(!photocraft_codecs::has_additional_images(&std::fs::read(input).unwrap()).unwrap());
+    }
 }
 
 /// Scripts nested through Batch retain the caller's depth and cumulative spending across failed inputs.

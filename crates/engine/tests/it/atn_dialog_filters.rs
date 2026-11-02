@@ -88,12 +88,34 @@ fn custom_and_fibers_recordings_round_trip_replay_native_settings_and_undo() {
     }
 }
 
+/// A missing Fibers seed is captured once, then replay and Save Actions reuse the same bits.
+#[test]
+fn fibers_missing_seed_is_stable_across_playback_and_save() {
+    let d = Descriptor::new("null").with("Vrnc", D::Integer(16)).with("Strg", D::Integer(4));
+    let imported = atn_cmds::import(&encoded(b"Fbrs", d)).unwrap();
+    assert!(imported.unsupported.is_empty());
+    let p = &imported.actions[0].steps[0].1;
+    let seed = i32::try_from(p["seed"].as_i64().unwrap()).unwrap();
+    let (out, skipped) = atn_cmds::export("Dialog", &[&imported.actions[0]], &[], false).unwrap();
+    assert!(skipped.is_empty());
+    assert_eq!(atn::parse(&out).unwrap().actions[0].items[0].descriptor.as_ref().unwrap().get("RndS"), Some(&D::Integer(seed)));
+    let saved = atn_cmds::import(&out).unwrap();
+    assert_eq!(saved.actions[0].steps[0].1, *p);
+    let render = |actions| {
+        let mut s = fixture(8);
+        s.actions.list = actions;
+        s.execute("actions.play", json!({"action":"Dialog"})).unwrap();
+        photocraft_compose::flatten(&s.active().unwrap().doc).px.clone()
+    };
+    assert_eq!(render(imported.actions.clone()), render(saved.actions));
+}
+
 /// Malformed and unsupported forms remain complete steps instead of being partially interpreted.
 #[test]
 fn dialog_filters_keep_unrepresented_types_ranges_and_fields_whole() {
     for (code, d, _, _) in cases() {
         let changes = if code == *b"Cstm" {
-            vec![("Scl ", D::Integer(0)), ("Ofst", D::Integer(10000)), ("Mtrx", D::List(vec![D::Integer(0); 24])), ("Scl ", D::Double(1.0))]
+            vec![("Scl ", D::Integer(0)), ("Ofst", D::Integer(10000)), ("Mtrx", D::List(vec![D::Integer(0); 24])), ("Scl ", D::Double(1.5))]
         } else {
             vec![("Vrnc", D::Integer(0)), ("Strg", D::Integer(65)), ("RndS", D::Double(1.0))]
         };

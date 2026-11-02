@@ -190,7 +190,8 @@ pub fn webp_is_animated(bytes: &[u8]) -> bool {
     crate::codecs::webp::is_animated(bytes)
 }
 
-/// Inspect additional frames in GIF/APNG/WebP, full TIFF pages, ICO entries and DDS mip levels.
+/// Inspect additional frames in GIF/APNG/WebP, full TIFF pages, ICO entries, DDS mip levels,
+/// DPX elements and FITS image planes/HDUs which flat decoding cannot retain.
 /// Pixels are not decoded; TIFF thumbnails and masks do not count as extra document pages.
 /// Other formats return false; this does not establish preservation of other format-specific data.
 pub fn has_additional_images(bytes: &[u8]) -> Result<bool, CodecError> {
@@ -210,6 +211,8 @@ pub fn has_additional_images(bytes: &[u8]) -> Result<bool, CodecError> {
             Ok(u16::from_le_bytes(count) > 1)
         }
         Some(Format::Dds) => dds::has_additional_images(bytes),
+        Some(Format::Dpx) => dpx::has_additional_images(bytes),
+        Some(Format::Fits) => fits::has_additional_images(bytes),
         _ => Ok(false),
     }
 }

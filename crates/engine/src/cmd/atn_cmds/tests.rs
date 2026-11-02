@@ -3,6 +3,17 @@ use photocraft_psd::atn::{AtnAction, AtnEvent, AtnFile, AtnItem};
 use photocraft_psd::descriptor::{Descriptor, Id, ReferenceItem, UnicodeString, Value as D};
 use serde_json::json;
 
+/// A wire key has one mapper; distinct wire aliases may still name the same command.
+#[test]
+fn event_wire_keys_are_unique() {
+    let mut codes = std::collections::BTreeSet::new();
+    let mut names = std::collections::BTreeSet::new();
+    for event in EVENTS {
+        assert!(event.code.is_empty() || codes.insert(event.code), "duplicate ATN code {}", event.code);
+        assert!(event.name.is_empty() || names.insert(event.name), "duplicate ATN name {}", event.name);
+    }
+}
+
 #[test]
 fn blend_modes_accept_photoshop_string_ids_and_export_canonical_ids() {
     for (string_id, char_id, label) in [

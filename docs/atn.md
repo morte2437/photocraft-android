@@ -18,7 +18,7 @@ layers and documents, newer and older events and files, and a measured reference
 map yet, with everything needed to implement them without
 the reference application.
 
-## Supported events (149)
+## Supported events (147)
 
 | Code | String ID | Label | PhotoCraft command(s) |
 |---|---|---|---|
@@ -46,8 +46,6 @@ the reference application.
 | `ClrB` | colorBalance | Color Balance | `image.adjustments.colorBalance` |
 | `ClrR` | colorRange | Color Range | `select.colorRange` |
 | (string ID only) | colorLookup | Color Lookup (embedded 3D LUT forms) | `image.adjustments.colorLookup` |
-| `Cstm` | custom | Custom | `filter.other.custom` |
-| `Fbrs` | (code only) | Fibers | `filter.render.fibers` |
 | `Btch` | batch | Batch (supported folder and naming forms) | `file.automate.batch` |
 | (string ID only) | shapeBlur | Shape Blur (custom shape by installed ID) | `filter.blur.shapeBlur` |
 | `Cntc` | contract | Contract | `select.modify.contract` |
@@ -1450,8 +1448,8 @@ No parameters: the step carries an empty descriptor.
 
 | Key | String ID | Type | Unit | Default | Allowed |
 |---|---|---|---|---|---|
-| `Vrnc` | (none) | integer |  | 16 | not clamped in the step (values are returned unchanged); limits pending, see "Events that need a step recorded through their dialog" |
-| `Strg` | strengthPlugin | integer |  | 4 | not clamped in the step (values are returned unchanged); limits pending, see "Events that need a step recorded through their dialog" |
+| `Vrnc` | (none) | integer |  | 16 | 1 .. 64 (measured in the dialog); out-of-range steps are kept whole |
+| `Strg` | strengthPlugin | integer |  | 4 | 1 .. 64 (measured in the dialog); out-of-range steps are kept whole |
 | `RndS` | randomSeed | integer |  | random | any 32-bit integer; a new random value per recording |
 
 #### Lens Flare

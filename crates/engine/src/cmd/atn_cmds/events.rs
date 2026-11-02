@@ -369,22 +369,6 @@ pub(super) const EVENTS: &[Event] = &[
     ev!("Blr ", "blur", "Blur", "filter.blur.blur", &[]),
     ev!("BlrM", "blurMore", "Blur More", "filter.blur.blurMore", &[]),
     Event {
-        code: "Cstm",
-        name: "custom",
-        label: "Custom",
-        ids: &["filter.other.custom"],
-        from: super::steps_custom::custom_from,
-        to: super::steps_custom::custom_to,
-    },
-    Event {
-        code: "Fbrs",
-        name: "",
-        label: "Fibers",
-        ids: &["filter.render.fibers"],
-        from: super::steps_fibers::fibers_from,
-        to: super::steps_fibers::fibers_to,
-    },
-    Event {
         code: "",
         name: "shapeBlur",
         label: "Shape Blur",

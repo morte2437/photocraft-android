@@ -334,6 +334,35 @@ fn additional_images_probe_uses_container_structure_without_decoding_pixels() {
         options.dds.mipmaps = mipmaps;
         let bytes = encode(&image, Format::Dds, &options).unwrap();
         assert_eq!(has_additional_images(&bytes).unwrap(), mipmaps);
+        if mipmaps {
+            let mut flagless = bytes;
+            let flags = u32::from_le_bytes(flagless[8..12].try_into().unwrap());
+            flagless[8..12].copy_from_slice(&(flags & !0x0002_0000).to_le_bytes());
+            decode(&flagless).unwrap();
+            // Microsoft DDS_HEADER: readers cannot rely on DDSD_MIPMAPCOUNT being set.
+            assert!(has_additional_images(&flagless).unwrap());
+        }
+    }
+    let dpx = encode(&image, Format::Dpx, &Default::default()).unwrap();
+    for little in [false, true] {
+        let mut bytes = dpx.clone();
+        if little {
+            bytes[..4].copy_from_slice(b"XPDS");
+            for at in [4, 772, 776, 780, 808, 812] {
+                bytes[at..at + 4].reverse();
+            }
+            for at in [768, 770, 804, 806] {
+                bytes[at..at + 2].reverse();
+            }
+        }
+        assert!(!has_additional_images(&bytes).unwrap());
+        for count in [2u16, 8] {
+            bytes[770..772].copy_from_slice(&if little { count.to_le_bytes() } else { count.to_be_bytes() });
+            assert!(has_additional_images(&bytes).unwrap());
+        }
+        bytes[770..772].fill(0);
+        assert!(has_additional_images(&bytes).is_err());
+        assert!(has_additional_images(&bytes[..771]).is_err());
     }
     let one = encode(&image, Format::Ico, &Default::default()).unwrap();
     assert!(!has_additional_images(&one).unwrap());
@@ -348,4 +377,41 @@ fn additional_images_probe_uses_container_structure_without_decoding_pixels() {
     decode(&multiple).unwrap();
     assert!(has_additional_images(&multiple).unwrap());
     assert!(has_additional_images(b"\x89PNG\r\n\x1a\n").is_err());
+}
+
+/// FITS RGB planes form one image; other cubes and later image HDUs would be discarded.
+#[test]
+fn fits_additional_images_probe_distinguishes_color_planes_and_hdus() {
+    let hdu = |primary: bool, axes: &[usize]| {
+        let mut cards = vec![
+            if primary { "SIMPLE  = T".to_string() } else { "XTENSION= 'IMAGE'".to_string() },
+            "BITPIX  = 8".into(),
+            format!("NAXIS   = {}", axes.len() + 2),
+            "NAXIS1  = 1".into(),
+            "NAXIS2  = 1".into(),
+        ];
+        cards.extend(axes.iter().enumerate().map(|(index, n)| format!("NAXIS{}  = {n}", index + 3)));
+        cards.push("END".into());
+        let mut bytes = Vec::new();
+        for card in cards.drain(..) {
+            bytes.extend_from_slice(format!("{card:<80}").as_bytes());
+        }
+        bytes.resize(bytes.len().div_ceil(2880) * 2880, b' ');
+        bytes.extend((0..axes.iter().product::<usize>()).map(|i| i as u8 + 1));
+        bytes.resize(bytes.len().div_ceil(2880) * 2880, 0);
+        bytes
+    };
+    for (axes, multiple) in [(vec![1], false), (vec![2], true), (vec![3], false), (vec![4], true), (vec![1, 3], true), (vec![3, 1], false)] {
+        let bytes = hdu(true, &axes);
+        let image = decode(&bytes).unwrap();
+        assert_eq!(image.warnings.iter().any(|w| matches!(w, DecodeWarning::MorePages { .. })), multiple);
+        assert_eq!(has_additional_images(&bytes).unwrap(), multiple);
+    }
+    let mut bytes = hdu(true, &[1]);
+    bytes.extend(hdu(false, &[1]));
+    decode(&bytes).unwrap();
+    assert!(has_additional_images(&bytes).unwrap());
+    let mut incomplete = hdu(true, &[1]);
+    incomplete.extend_from_slice(b"XTENSION= 'IMAGE'");
+    assert!(has_additional_images(&incomplete).is_err());
 }

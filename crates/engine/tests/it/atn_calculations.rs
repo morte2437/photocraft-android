@@ -178,9 +178,11 @@ fn atn_calculations_explicit_merged_transparency_reads_composite_alpha() {
     assert_eq!(alpha(&s, 0), vec![0.625, 0.5, 0.25], "top alpha plus base alpha times one minus top alpha");
     s.execute("edit.undo", json!({})).unwrap();
     assert_eq!(saved(&s), before);
-    s.execute("image.calculations",json!({"source1Layer":"merged","source1Channel":"transparency","source2Layer":"merged","source2Channel":"transparency","blending":"multiply","maskLayer":"merged"})).unwrap();
-    assert_eq!(alpha(&s, 0), vec![0.390625, 0.25, 0.0625], "both flat sources retain merged alpha; a channel-less merged mask remains absent");
-    s.execute("edit.undo", json!({})).unwrap();
+    for channel in ["transparency", "Transparency", "TRANSPARENCY"] {
+        s.execute("image.calculations",json!({"source1Layer":"merged","source1Channel":channel,"source2Layer":"merged","source2Channel":channel,"blending":"multiply","maskLayer":"merged"})).unwrap();
+        assert_eq!(alpha(&s, 0), vec![0.390625, 0.25, 0.0625], "both flat sources retain merged alpha; a channel-less merged mask remains absent");
+        s.execute("edit.undo", json!({})).unwrap();
+    }
     s.execute("image.calculations", json!({"source1":{"channel":"transparency"},"source2":{"channel":{"color":"red"}},"blending":"normal"})).unwrap();
     assert_eq!(alpha(&s, 0), vec![0.25, 0.5, 0.0], "omitting the layer still reads the active layer's alpha");
 }

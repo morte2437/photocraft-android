@@ -26,10 +26,10 @@ pub fn parse_ref(v: &Value, doc: &Document) -> Option<ChanRef> {
     match v {
         Value::Number(n) => n.as_u64().map(|i| ChanRef::Alpha(i as usize)),
         Value::Object(o) => {
-            if o.len() == 1 {
-                if let Some(name) = o.get("name").and_then(Value::as_str) {
-                    return doc.channels.iter().position(|c| c.name == name).map(ChanRef::Alpha);
-                }
+            if o.len() == 1
+                && let Some(name) = o.get("name").and_then(Value::as_str)
+            {
+                return doc.channels.iter().position(|c| c.name == name).map(ChanRef::Alpha);
             }
             if let Some(name) = o.get("color").and_then(Value::as_str) {
                 let names = color_names(mode);
@@ -330,7 +330,10 @@ pub(crate) fn source_spec(p: &Value, key: &str, prefix: &str) -> Option<Value> {
         match p.get(format!("{prefix}{field}")) {
             None | Some(Value::Null) => {}
             Some(Value::String(s))
-                if s.is_empty() || (k == "layer" && s == "merged" && p.get(format!("{prefix}Channel")).is_none_or(|v| v != "transparency")) => {}
+                if s.is_empty()
+                    || (k == "layer"
+                        && s == "merged"
+                        && !p.get(format!("{prefix}Channel")).and_then(Value::as_str).is_some_and(|channel| channel.eq_ignore_ascii_case("transparency"))) => {}
             Some(v) => {
                 m.insert(k.into(), v.clone());
             }
