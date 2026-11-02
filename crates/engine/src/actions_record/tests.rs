@@ -162,9 +162,12 @@ fn named_nonactive_smart_layer_passes_admission_and_converts_to_layers() {
     let smart = s.execute("layer.smartObjects.convertToSmartObject", json!({})).unwrap()["layer"].as_u64().unwrap();
     let name = s.active().unwrap().doc.layer(LayerId(smart)).unwrap().name.clone();
     let top = new_layer(&mut s, "Top");
-    s.execute("layer.smartObjects.convertToLayers", json!({"layer": name})).unwrap();
+    let restored = s.execute("layer.smartObjects.convertToLayers", json!({"layer": name})).unwrap()["layer"].as_u64().unwrap();
     assert!(s.active().unwrap().doc.layer(LayerId(smart)).is_none());
     assert!(s.active().unwrap().doc.layer(LayerId(top)).is_some());
+    assert!(s.active().unwrap().doc.layer(LayerId(restored)).is_some(), "the restored layer is present");
+    let error = s.execute("layer.smartObjects.convertToLayers", json!({"layer": "Removed smart"})).unwrap_err();
+    assert!(error.to_string().contains("Removed smart"), "missing named layer should be identified: {error}");
 }
 
 #[test]
@@ -196,6 +199,10 @@ fn named_nonactive_layer_is_the_one_converted_to_smart() {
     assert!(played.get("failed").is_none(), "{played}");
     assert!(s.active().unwrap().doc.layer(LayerId(replay_target)).is_none(), "replay removes the named source");
     assert!(s.active().unwrap().doc.layer(LayerId(top)).is_some(), "replay keeps the selected top layer");
+    assert!(
+        s.active().unwrap().doc.walk().iter().any(|(_, _, layer)| matches!(layer.content, photocraft_doc::LayerContent::Smart(_))),
+        "replay creates a smart object"
+    );
 }
 
 #[test]

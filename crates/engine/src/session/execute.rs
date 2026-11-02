@@ -99,7 +99,7 @@ impl Session {
         if let Some(why) = color_channels::refusal(self, id, &run_params) {
             return Err(EngineError::Disabled(id.into(), why));
         }
-        if let Err(why) = self.explicit_layer_enabled(spec, params).unwrap_or_else(|| self.precondition(spec, &run_params)) {
+        if let Err(why) = self.explicit_layer_enabled(spec, params)?.unwrap_or_else(|| self.precondition(spec, &run_params)) {
             return Err(EngineError::Disabled(id.to_string(), why));
         }
         if let Some(why) = self.job_conflict(id, spec.journal) {
@@ -167,19 +167,28 @@ impl Session {
     /// than on the active one, which stays active (#466). A script, action or agent can then
     /// Replace Contents, Rasterize or Merge Down a layer without selecting it first. `None` for
     /// other commands, or without such a layer.
-    pub(crate) fn explicit_layer_enabled(&mut self, spec: &commands::CommandSpec, params: &Value) -> Option<std::result::Result<(), String>> {
+    pub(crate) fn explicit_layer_enabled(&mut self, spec: &commands::CommandSpec, params: &Value) -> Result<Option<std::result::Result<(), String>>> {
         if !spec.params.contains("\"layer\":id") {
-            return None;
+            return Ok(None);
         }
-        let target = commands::explicit_layer(self, params).ok().flatten()?;
-        let d = self.active_mut()?;
-        d.doc.layer(target)?;
+        let target = match commands::explicit_layer(self, params) {
+            Ok(Some(target)) => target,
+            Ok(None) => return Ok(None),
+            // Read-only queries keep their own parameter-error contract; recorded commands
+            // must identify a missing named receiver before checking the active layer.
+            Err(_) if !spec.journal => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let Some(d) = self.active_mut() else { return Ok(None) };
+        if d.doc.layer(target).is_none() {
+            return Ok(None);
+        }
         let active = d.active_layer.replace(target);
         let r = self.precondition(spec, params);
         if let Some(d) = self.active_mut() {
             d.active_layer = active;
         }
-        Some(r)
+        Ok(Some(r))
     }
 
     /// Apply an undoable edit to the active document.

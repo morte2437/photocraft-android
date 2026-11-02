@@ -341,6 +341,18 @@ mod tests {
     }
 
     #[test]
+    fn named_layer_list_and_change_all_resolve_a_nonactive_layer() {
+        let (mut s, id) = session("Teh");
+        let name = s.active().unwrap().doc.layer(LayerId(id)).unwrap().name.clone();
+        s.execute("layer.new.layer", json!({"name": "Top"})).unwrap();
+        let listed = s.execute("edit.checkSpelling", json!({"action": "list", "layer": name})).unwrap();
+        assert_eq!(listed["count"], 1);
+        let changed = s.execute("edit.checkSpelling", json!({"action": "changeAll", "layer": name, "word": "Teh", "replace": "The"})).unwrap();
+        assert_eq!(changed["changed"], 1);
+        assert_eq!(text_of(&s, id), "The");
+    }
+
+    #[test]
     fn all_locked_layer_rejects_insert_text_and_spelling_change_without_history() {
         // #4188: Lock All stopped type.edit (#3132) but not these two text edits.
         let (mut s, id) = session("Teh");
