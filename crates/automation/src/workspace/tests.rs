@@ -526,6 +526,18 @@ fn registry_filesystem_path_params_are_classified() {
     assert!(unclassified.is_empty(), "filesystem path parameters in the command registry need an automation policy: {unclassified:?}");
 }
 
+/// Shape Blur uses inline vector geometry without granting a headless caller filesystem access.
+#[test]
+fn shape_blur_accepts_inline_geometry_and_rejects_filesystem_strings() {
+    let mut headless = crate::headless::Headless::new();
+    headless.command_run("file.new", serde_json::json!({"width":8,"height":8})).unwrap();
+    headless
+        .command_run("filter.blur.shapeBlur", serde_json::json!({"radius":5,"shapePath":{"subpaths":[{"knots":[[0,0],[1,0],[1,1],[0,1]],"closed":true}]}}))
+        .unwrap();
+    let error = headless.command_run("filter.blur.shapeBlur", serde_json::json!({"radius":5,"shapePath":"/outside/shape.svg"})).unwrap_err();
+    assert!(error.to_string().contains("nonempty vector path"), "{error}");
+}
+
 #[test]
 fn native_vector_preview_updates_are_not_an_untrusted_automation_capability() {
     let params = serde_json::json!({"document":1,"layer":1,"contentsId":1,"fingerprint":"00".repeat(32),"extension":"ai","sourceBase64":"JVBERi0=","previewSvg":"<svg/>"});
@@ -661,7 +673,8 @@ fn documents_filesystem_path_params(id: &str, params: &str) -> bool {
     // These registry descriptions refer to document vector paths, not host files.
     if matches!(
         id,
-        "filter.blurGallery.pathBlur"
+        "filter.blur.shapeBlur"
+            | "filter.blurGallery.pathBlur"
             | "filter.render.flame"
             | "shape.create"
             | "shape.edit"
