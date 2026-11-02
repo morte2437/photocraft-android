@@ -202,7 +202,21 @@ impl PhotocraftApp {
             }
         };
         let doc = st.doc.id;
-        self.pick_save(&suggested, move |app, path| {
+        // Where the save picker can't choose a file type, Save As asks for the format first.
+        if crate::save_format_ui::wants_prompt(self, &suggested) {
+            if self.file_dialog.is_some() {
+                return Err("a file dialog is already open".into());
+            }
+            crate::save_format_ui::park(self, doc, suggested, choices, plain_save);
+            return Ok(serde_json::json!({ "fileDialog": "save" }));
+        }
+        self.pick_document_save(&suggested, doc, choices, plain_save)
+    }
+
+    /// The save picker for document `doc`, starting from `suggested`, then the save
+    /// ([`Self::save_dialog_flow`]).
+    pub(crate) fn pick_document_save(&mut self, suggested: &str, doc: DocId, choices: FormatChoices, plain_save: bool) -> Result<Value, String> {
+        self.pick_save(suggested, move |app, path| {
             app.with_document(doc, |app| {
                 let own = app.session.active().and_then(|st| st.path.clone());
                 // Confirming the document's own file: ask first if another app changed it (#6596).
@@ -543,7 +557,7 @@ impl PhotocraftApp {
 
     /// TIFF, Targa, DDS or JPEG Options is waiting on an answer before a save is written.
     pub(crate) fn save_options_open(&self) -> bool {
-        self.tiff_options.is_some() || self.targa_options.is_some() || self.dds_options.is_some() || self.jpeg_options.is_some()
+        self.save_format.is_some() || self.tiff_options.is_some() || self.targa_options.is_some() || self.dds_options.is_some() || self.jpeg_options.is_some()
     }
 
     /// Writes a save that waited on a format prompt (Targa, DDS or JPEG Options) once answered:

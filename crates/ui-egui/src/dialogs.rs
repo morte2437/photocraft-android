@@ -1201,6 +1201,7 @@ pub(crate) mod pattern_fill_ui;
 pub mod rasterize_prompt;
 pub mod replace_prompt;
 pub(super) mod rgb_histogram;
+pub mod save_format_ui;
 pub mod screen_picker;
 pub mod select_mask_ui;
 pub mod shape_dialog;

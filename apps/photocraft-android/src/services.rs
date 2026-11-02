@@ -30,6 +30,8 @@ pub fn services(bridge: Arc<Bridge>, files_dir: &Path) -> Services {
             photocraft_io::export(doc, path, &export_options(settings)).map(|r| (r.bytes, r.warnings)).map_err(|e| e.to_string())
         })),
         file_dialog: Some(Box::new(move |request, _parent, reply| show_picker(&b_dialog, request, reply))),
+        // Android's save picker has no list of file types: Save As asks for the format first (#26).
+        save_format_prompt: true,
         write: Some(Box::new(move |path: &str, bytes: &[u8]| write_and_sync(&b_write, Path::new(path), bytes))),
         save_file: Some(Arc::new(
             move |doc: &Document, path: &str, settings: &photocraft_ui_egui::ExportSettings, ctl: &photocraft_ui_egui::jobs_ui::SaveCtl| {

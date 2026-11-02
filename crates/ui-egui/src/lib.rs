@@ -167,6 +167,7 @@ pub(crate) use dialogs::pattern_fill_ui;
 pub use dialogs::rasterize_prompt;
 pub use dialogs::replace_prompt;
 use dialogs::rgb_histogram;
+pub use dialogs::save_format_ui;
 pub use dialogs::screen_picker;
 pub use dialogs::select_mask_ui;
 pub use dialogs::shape_dialog;
@@ -663,6 +664,9 @@ pub struct PhotocraftApp {
     pub(crate) file_dialog: Option<file_dialog::Pending>,
     /// A Save As to a layered TIFF parked behind the TIFF Options prompt (see `tiff_options_ui`).
     pub(crate) tiff_options: Option<tiff_options_ui::Prompt>,
+    /// A Save As waiting for its format, where the save picker has no type list (see
+    /// `save_format_ui`).
+    pub(crate) save_format: Option<save_format_ui::Prompt>,
     /// Where each document was last saved or exported to through a dialog (#1826): its next Save
     /// As or export dialog starts there rather than beside the document. Session-only.
     pub(crate) save_dirs: HashMap<photocraft_doc::DocId, std::path::PathBuf>,
