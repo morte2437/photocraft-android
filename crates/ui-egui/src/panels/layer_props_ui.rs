@@ -361,10 +361,11 @@ mod tests {
         assert!((at("H") - at("Y")).abs() < 0.01, "H and Y: {centres:?}");
     }
 
-    /// Types `text` into the Transform field named `name` of an 80 × 40 px rectangle shape at
-    /// (10, 10) in a 200 × 120 document, with the rulers in `unit`, and returns its path's
-    /// [x, y, w, h] (a shape's path scales exactly, where resampled pixels would blur its edge).
-    fn type_into_transform_field(unit: photocraft_engine::prefs::Unit, name: &str, text: &str) -> [f64; 4] {
+    /// Types each `(name, text)` of `edits` in turn into the Transform field named `name` of an
+    /// 80 × 40 px rectangle shape at (10, 10) in a 200 × 120 document, with the rulers in `unit`,
+    /// and returns its path's [x, y, w, h] (a shape's path scales exactly, where resampled pixels
+    /// would blur its edge).
+    fn type_into_transform_fields(unit: photocraft_engine::prefs::Unit, edits: &[(&str, &str)]) -> [f64; 4] {
         use egui_kittest::kittest::Queryable;
         let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
         app.session.prefs.edit(|p| p.units_and_rulers.rulers = unit);
@@ -383,14 +384,16 @@ mod tests {
             app,
         );
         h.run_steps(3);
-        h.get_by_label(name).click();
-        h.run();
-        for c in text.chars() {
-            h.event(egui::Event::Text(c.to_string()));
+        for (name, text) in edits {
+            h.get_by_label(name).click();
             h.run();
+            for c in text.chars() {
+                h.event(egui::Event::Text(c.to_string()));
+                h.run();
+            }
+            h.key_press(egui::Key::Enter);
+            h.run_steps(3);
         }
-        h.key_press(egui::Key::Enter);
-        h.run_steps(3);
         let st = h.state().session.active().unwrap();
         let LayerContent::Shape(sh) = &st.doc.layer(st.active_layer.unwrap()).unwrap().content else { panic!("still a shape") };
         let c = sh.path.control_bounds().unwrap();
@@ -403,17 +406,20 @@ mod tests {
     fn transform_fields_take_a_typed_percentage() {
         use photocraft_engine::prefs::Unit;
         // Linked W/H: half the width halves the height too (typed live, `50` alone would be 50 px).
-        assert_eq!(type_into_transform_field(Unit::Pixels, "Width", "50%"), [10.0, 10.0, 40.0, 20.0]);
-        assert_eq!(type_into_transform_field(Unit::Pixels, "Height", "150%"), [10.0, 10.0, 120.0, 60.0]);
-        assert_eq!(type_into_transform_field(Unit::Pixels, "X", "50%"), [100.0, 10.0, 80.0, 40.0]);
+        assert_eq!(type_into_transform_fields(Unit::Pixels, &[("Width", "50%")]), [10.0, 10.0, 40.0, 20.0]);
+        assert_eq!(type_into_transform_fields(Unit::Pixels, &[("Height", "150%")]), [10.0, 10.0, 120.0, 60.0]);
+        assert_eq!(type_into_transform_fields(Unit::Pixels, &[("X", "50%")]), [100.0, 10.0, 80.0, 40.0]);
+        assert_eq!(type_into_transform_fields(Unit::Pixels, &[("Y", "50%")]), [10.0, 60.0, 80.0, 40.0]);
+        // A second edit takes its percentage of the size the first one left.
+        assert_eq!(type_into_transform_fields(Unit::Pixels, &[("Width", "50%"), ("Width", "50%")]), [10.0, 10.0, 20.0, 10.0]);
         // In inches too (72 dpi: 80 px is 1.11 in).
-        assert_eq!(type_into_transform_field(Unit::Inches, "Width", "50%"), [10.0, 10.0, 40.0, 20.0]);
+        assert_eq!(type_into_transform_fields(Unit::Inches, &[("Width", "50%")]), [10.0, 10.0, 40.0, 20.0]);
         // A plain number and another length are unchanged.
-        assert_eq!(type_into_transform_field(Unit::Pixels, "Width", "60"), [10.0, 10.0, 60.0, 30.0]);
-        assert_eq!(type_into_transform_field(Unit::Pixels, "Width", "1in"), [10.0, 10.0, 72.0, 36.0]);
+        assert_eq!(type_into_transform_fields(Unit::Pixels, &[("Width", "60")]), [10.0, 10.0, 60.0, 30.0]);
+        assert_eq!(type_into_transform_fields(Unit::Pixels, &[("Width", "1in")]), [10.0, 10.0, 72.0, 36.0]);
         // Rulers in percent show W as a share of the 200 px document; a typed length is that length.
-        assert_eq!(type_into_transform_field(Unit::Percent, "Width", "40px"), [10.0, 10.0, 40.0, 20.0]);
-        assert_eq!(type_into_transform_field(Unit::Percent, "Width", "25"), [10.0, 10.0, 50.0, 25.0]);
+        assert_eq!(type_into_transform_fields(Unit::Percent, &[("Width", "40px")]), [10.0, 10.0, 40.0, 20.0]);
+        assert_eq!(type_into_transform_fields(Unit::Percent, &[("Width", "25")]), [10.0, 10.0, 50.0, 25.0]);
     }
 
     #[test]
