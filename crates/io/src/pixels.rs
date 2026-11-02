@@ -47,7 +47,8 @@ fn invert_sample(bytes: &mut [u8], s: SampleType) {
 /// are filled with `fill[c]` (a native-endian encoded sample). Channels whose
 /// `invert[c]` is set are inverted (PSD stores CMYK as `max - ink`).
 pub fn interleave(planes: &[Option<&[u8]>], fill: &[Vec<u8>], n: usize, s: SampleType, invert: &[bool]) -> Vec<u8> {
-    let mut out = vec![0u8; n * planes.len() * s.bytes()];
+    // Large results come from (and callers may return them to) the scratch pool.
+    let mut out = photocraft_raster::scratch::take(n * planes.len() * s.bytes(), 0u8);
     interleave_into(planes, fill, n, s, invert, &mut out);
     out
 }
@@ -69,9 +70,7 @@ pub fn try_interleave(planes: &[Option<&[u8]>], fill: &[Vec<u8>], n: usize, s: S
             return Err(PsdError::Invalid("interleave fill has the wrong sample size".into()));
         }
     }
-    let mut out = Vec::new();
-    out.try_reserve_exact(len).map_err(|_| PsdError::OutOfMemory("not enough memory to interleave PSD pixels"))?;
-    out.resize(len, 0);
+    let mut out = photocraft_raster::scratch::try_take_exact(len, 0u8).ok_or(PsdError::OutOfMemory("not enough memory to interleave PSD pixels"))?;
     interleave_into(planes, fill, n, s, invert, &mut out);
     Ok(out)
 }

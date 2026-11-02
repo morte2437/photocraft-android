@@ -628,7 +628,7 @@ fn smart_displace_preview_uses_the_map_document() {
             applied.add_document((**d).clone(), None);
         }
         applied.execute(SMART_FILTER_SET_PARAMS, p.clone()).unwrap();
-        let want = photocraft_compose::render(&applied.active().unwrap().doc, doc.bounds()).px;
+        let want = photocraft_compose::render(&applied.active().unwrap().doc, doc.bounds()).into_px();
         let preview = preview_document_for_target(
             &doc,
             layer,

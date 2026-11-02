@@ -49,7 +49,7 @@ struct CompositeSampler<'a>(&'a Document);
 
 impl Sampler for CompositeSampler<'_> {
     fn rgba(&self, r: Rect) -> Vec<[f32; 4]> {
-        photocraft_compose::render(self.0, r).px
+        photocraft_compose::render(self.0, r).into_px()
     }
 }
 

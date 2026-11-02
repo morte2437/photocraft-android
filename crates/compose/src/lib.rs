@@ -84,18 +84,39 @@ pub use render::{
 };
 
 /// Straight-alpha RGBA float buffer covering a rectangle.
-#[derive(Clone, Debug, PartialEq)]
+///
+/// The pixel storage comes from, and goes back to, the scratch pool.
+#[derive(Debug, PartialEq)]
 pub struct Buffer {
     pub rect: Rect,
     pub px: Vec<[f32; 4]>,
 }
 
+impl Clone for Buffer {
+    fn clone(&self) -> Self {
+        let mut px = photocraft_raster::scratch::take(self.px.len(), [0.0; 4]);
+        px.copy_from_slice(&self.px);
+        Self { rect: self.rect, px }
+    }
+}
+
+impl Drop for Buffer {
+    fn drop(&mut self) {
+        photocraft_raster::scratch::give(std::mem::take(&mut self.px));
+    }
+}
+
 impl Buffer {
     pub fn transparent(rect: Rect) -> Self {
-        Self { rect, px: vec![[0.0; 4]; rect.width() as usize * rect.height() as usize] }
+        Self::filled(rect, [0.0; 4])
     }
     pub fn filled(rect: Rect, c: [f32; 4]) -> Self {
-        Self { rect, px: vec![c; rect.width() as usize * rect.height() as usize] }
+        Self { rect, px: photocraft_raster::scratch::take(rect.width() as usize * rect.height() as usize, c) }
+    }
+    /// The pixels, taken out of the buffer (it can't be destructured: it returns them to the
+    /// pool on drop).
+    pub fn into_px(mut self) -> Vec<[f32; 4]> {
+        std::mem::take(&mut self.px)
     }
     #[inline]
     pub fn get(&self, x: i32, y: i32) -> [f32; 4] {
