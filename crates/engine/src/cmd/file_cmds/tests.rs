@@ -388,7 +388,8 @@ fn batch_override_open_authorizes_effective_path_and_carries_failure_budget() {
     assert!(s.documents().is_empty());
     s.batch_open = None;
     s.authorize = Some(gate);
-    s.actions.playing = 1;
+    let driver = crate::actions_cmds::Action::new("Driver", vec![]);
+    let recording = crate::actions_cmds::begin_playback(&mut s, &driver).unwrap();
     OPENS.store(0, std::sync::atomic::Ordering::SeqCst);
     let result = s
         .execute(
@@ -406,6 +407,7 @@ fn batch_override_open_authorizes_effective_path_and_carries_failure_budget() {
     assert_eq!(std::fs::read(&existing).unwrap(), intact);
     assert!(s.documents().is_empty());
     assert!(s.batch_open.is_none());
+    crate::actions_cmds::finish_playback(&mut s, recording, &driver, 0);
 }
 
 /// Inner Batch bindings do not replace outer input provenance or the shared logical-step budget.
@@ -422,14 +424,15 @@ fn batch_override_open_nested_binding_and_save_close_preserve_sources() {
     let steps = json!([["actions.play",{"action":"Open"}],
         ["file.automate.batch",{"input":[second],"output":inner,"overrideOpen":true,"steps":[["file.openAs",open],["image.adjustments.invert",{}]]}],
         ["file.closeAll",{}],["file.openAs",open],["image.adjustments.invert",{}]]);
-    s.actions.playing = 1;
+    let driver = crate::actions_cmds::Action::new("Driver", vec![]);
+    let recording = crate::actions_cmds::begin_playback(&mut s, &driver).unwrap();
     s.actions.playback_steps = crate::actions_cmds::MAX_PLAYBACK_STEPS - 8;
     let result = s.execute("file.automate.batch", json!({"input":[first],"output":output,"overrideOpen":true,"steps":steps})).unwrap();
     assert!(result["errors"].as_array().unwrap().is_empty(), "{result}");
     assert_eq!(batch_open_pixel(&join(&output, "a.png")), [0.0, 1.0, 1.0, 1.0]);
     assert_eq!(batch_open_pixel(&join(&inner, "b.png")), [1.0, 1.0, 0.0, 1.0]);
     assert_eq!(s.actions.playback_steps, crate::actions_cmds::MAX_PLAYBACK_STEPS);
-    s.actions.playing = 0;
+    crate::actions_cmds::finish_playback(&mut s, recording, &driver, 0);
     let original = std::fs::read(&first).unwrap();
     for steps in [
         json!([["image.adjustments.invert", {}]]),
