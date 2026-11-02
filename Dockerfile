@@ -25,8 +25,8 @@ RUN set -eu; \
     asset="trunk-${arch}-unknown-linux-musl.tar.gz"; \
     url="https://github.com/trunk-rs/trunk/releases/download/v${TRUNK_VERSION}"; \
     cd /tmp; \
-    curl -fsSL --retry 3 -A Photocraft-dev "$url/$asset" -o "$asset"; \
-    curl -fsSL --retry 3 -A Photocraft-dev "$url/$asset.sha256" -o "$asset.sha256"; \
+    curl --proto '=https' -fsSL --retry 3 -A Photocraft-dev "$url/$asset" -o "$asset"; \
+    curl --proto '=https' -fsSL --retry 3 -A Photocraft-dev "$url/$asset.sha256" -o "$asset.sha256"; \
     printf '%s  %s\n' "$(cat "$asset.sha256")" "$asset" | sha256sum -c -; \
     tar -xzf "$asset" -C /usr/local/bin trunk; \
     rm "$asset" "$asset.sha256"; \

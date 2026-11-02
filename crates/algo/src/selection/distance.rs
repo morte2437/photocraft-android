@@ -3,8 +3,71 @@
 
 const NO_SEED: u32 = u32::MAX;
 // Keep the public API's finite result for a mask with no selected pixel.
-const EMPTY_DISTANCE: f32 = 1e10;
+pub(super) const EMPTY_DISTANCE: f32 = 1e10;
 const BAND_ROWS: usize = 32;
+
+/// Exact distances within `reach` (at most six pixels), EMPTY_DISTANCE beyond it.
+/// Two contiguous vertical sweeps and a short horizontal stencil avoid envelopes,
+/// transposes and task-local buffers. One byte per pixel stores capped vertical distances.
+pub(super) fn edt_bounded(seeds: &[bool], w: usize, h: usize, reach: f32) -> Vec<f32> {
+    if w == 0 || h == 0 || w.checked_mul(h) != Some(seeds.len()) || !(0.0..=6.0).contains(&reach) {
+        return Vec::new();
+    }
+    // Select All and empty complements need no sweeps, just as in the general EDT.
+    if !seeds.iter().any(|seed| *seed) {
+        return vec![EMPTY_DISTANCE; seeds.len()];
+    }
+    if seeds.iter().all(|seed| *seed) {
+        return vec![0.0; seeds.len()];
+    }
+    let radius = reach.ceil() as usize;
+    let cap = radius as u8 + 1;
+    let mut vertical: Vec<u8> = seeds.iter().map(|s| if *s { 0 } else { cap }).collect();
+    for y in 1..h {
+        let (before, after) = vertical.split_at_mut(y * w);
+        if let (Some(prev), Some(row)) = (before.get((y - 1) * w..), after.get_mut(..w)) {
+            for (d, p) in row.iter_mut().zip(prev) {
+                *d = (*d).min(p.saturating_add(1));
+            }
+        }
+    }
+    for y in (1..h).rev() {
+        let (before, after) = vertical.split_at_mut(y * w);
+        if let (Some(row), Some(next)) = (before.get_mut((y - 1) * w..), after.get(..w)) {
+            for (d, n) in row.iter_mut().zip(next) {
+                *d = (*d).min(n.saturating_add(1));
+            }
+        }
+    }
+    let mut out = vec![EMPTY_DISTANCE; seeds.len()];
+    for_chunks(&mut out, w, |y, dst| {
+        let Some(row) = vertical.get(y * w..(y + 1) * w) else { return };
+        if row.iter().all(|d| *d == cap) {
+            return;
+        }
+        for (x, d) in dst.iter_mut().enumerate() {
+            if row.get(x) == Some(&0) {
+                *d = 0.0;
+                continue;
+            }
+            let left = x.saturating_sub(radius);
+            let right = x.saturating_add(radius).saturating_add(1).min(w);
+            let Some(span) = row.get(left..right) else { continue };
+            let mut best = (radius + 1).pow(2);
+            for (i, &dy) in span.iter().enumerate() {
+                best = best.min((left + i).abs_diff(x).pow(2) + usize::from(dy).pow(2));
+                if best == 1 {
+                    break;
+                }
+            }
+            let distance = (best as f64).sqrt() as f32;
+            if distance <= reach {
+                *d = distance;
+            }
+        }
+    });
+    out
+}
 
 /// Euclidean distance to the nearest `true` pixel, in row-major order.
 ///

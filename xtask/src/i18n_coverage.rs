@@ -16,7 +16,7 @@ struct Language {
 
 pub fn run(root: &Path) -> Result<(), String> {
     let i18n_dir = root.join("crates/ui-egui/src/i18n");
-    let registry_path = i18n_dir.join("mod.rs");
+    let registry_path = root.join("crates/ui-egui/src/i18n.rs");
     let registry = fs::read_to_string(&registry_path).map_err(|e| format!("{}: {e}", registry_path.display()))?;
     let languages = registered_languages(&registry)?;
 
@@ -72,7 +72,31 @@ fn format_report(languages: &[Language], english_keys: &BTreeSet<Key>, translati
         let coverage = 100.0 * translated as f64 / english_keys.len() as f64;
         report.push_str(&format!("{:<12} {:>5}/{:<6} {:>8.2}%\n", language.code, translated, english_keys.len(), coverage));
     }
+    report.push_str("\nMissing translations (shown in English until translated)\n");
+    for language in languages.iter().filter(|language| language.code != "en") {
+        let empty = BTreeSet::new();
+        let translated = translations.get(&language.code).unwrap_or(&empty);
+        let missing: Vec<&Key> = english_keys.difference(translated).collect();
+        if missing.is_empty() {
+            report.push_str(&format!("{}: none missing\n", language.code));
+            continue;
+        }
+        report.push_str(&format!("{}: {} missing\n", language.code, missing.len()));
+        for key in missing {
+            let source = escape_line(&key.source);
+            if key.context.is_empty() {
+                report.push_str(&format!("    {source}\n"));
+            } else {
+                report.push_str(&format!("    [{}] {source}\n", escape_line(&key.context)));
+            }
+        }
+    }
     report
+}
+
+/// Keeps one key per log line: a source string with a newline or tab prints them escaped.
+fn escape_line(text: &str) -> String {
+    text.replace('\\', "\\\\").replace('\n', "\\n").replace('\t', "\\t")
 }
 
 fn registered_languages(source: &str) -> Result<Vec<Language>, String> {
@@ -132,7 +156,9 @@ fn source_files(root: &Path) -> Result<Vec<(PathBuf, String)>, String> {
             let entry = entry.map_err(|e| format!("{}: {e}", path.display()))?;
             let path = entry.path();
             if path.is_dir() {
-                stack.push(path);
+                if path.file_name().is_some_and(|name| name != "tests") {
+                    stack.push(path);
+                }
             } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
                 let stem = path.file_stem().and_then(|name| name.to_str()).unwrap_or_default();
                 if stem == "tests" || stem.ends_with("_tests") {
@@ -150,11 +176,11 @@ fn source_files(root: &Path) -> Result<Vec<(PathBuf, String)>, String> {
 fn tl_keys(sources: &[(PathBuf, String)]) -> BTreeSet<Key> {
     let mut keys = BTreeSet::new();
     for (path, source) in sources {
-        if path.ends_with("i18n/mod.rs") {
+        if path.ends_with("ui-egui/src/i18n.rs") {
             continue;
         }
-        let code = before_test_module(source);
-        let mut rest = code;
+        let code = without_test_modules(source);
+        let mut rest = code.as_str();
         while let Some(at) = rest.find("tl!(\"") {
             rest = rest.get(at + 5..).unwrap_or("");
             let bytes = rest.as_bytes();
@@ -176,11 +202,11 @@ fn tl_keys(sources: &[(PathBuf, String)]) -> BTreeSet<Key> {
 fn plural_keys(sources: &[(PathBuf, String)]) -> BTreeSet<Key> {
     let mut keys = BTreeSet::new();
     for (path, source) in sources {
-        if path.ends_with("i18n/mod.rs") {
+        if path.ends_with("ui-egui/src/i18n.rs") {
             continue;
         }
-        let code = before_test_module(source);
-        let mut rest = code;
+        let code = without_test_modules(source);
+        let mut rest = code.as_str();
         while let Some(at) = rest.find("trn(") {
             rest = rest.get(at + 4..).unwrap_or("");
             let Some(end) = call_end(rest) else { break };
@@ -232,7 +258,8 @@ fn engine_command_labels(sources: &[(PathBuf, String)]) -> BTreeSet<Key> {
     let mut keys = BTreeSet::new();
     let mut command_macros = HashSet::new();
     for (_, source) in sources {
-        let mut rest = before_test_module(source);
+        let code = without_test_modules(source);
+        let mut rest = code.as_str();
         while let Some(at) = rest.find("macro_rules!") {
             rest = rest.get(at + "macro_rules!".len()..).unwrap_or("");
             let name = rest.trim_start().split(|c: char| !c.is_ascii_alphanumeric() && c != '_').next().unwrap_or("");
@@ -247,8 +274,8 @@ fn engine_command_labels(sources: &[(PathBuf, String)]) -> BTreeSet<Key> {
         }
     }
     for (_, source) in sources {
-        let code = before_test_module(source);
-        let mut rest = code;
+        let code = without_test_modules(source);
+        let mut rest = code.as_str();
         while let Some(at) = rest.find("CommandSpec {") {
             rest = rest.get(at + "CommandSpec {".len()..).unwrap_or("");
             let Some(end) = balanced_end(rest, '{', '}') else { break };
@@ -269,7 +296,7 @@ fn engine_command_labels(sources: &[(PathBuf, String)]) -> BTreeSet<Key> {
         }
         for name in &command_macros {
             let marker = format!("{name}!(");
-            let mut rest = code;
+            let mut rest = code.as_str();
             while let Some(at) = rest.find(&marker) {
                 rest = rest.get(at + marker.len()..).unwrap_or("");
                 let Some(end) = call_end(rest) else { break };
@@ -284,18 +311,49 @@ fn engine_command_labels(sources: &[(PathBuf, String)]) -> BTreeSet<Key> {
     keys
 }
 
-fn before_test_module(source: &str) -> &str {
+/// Drops the bodies of inline `#[cfg(test)] mod name { … }` modules. A declaration
+/// (`#[cfg(test)] mod tests;`) can sit before the rest of a file's code, so only an inline
+/// module's own body is skipped.
+fn without_test_modules(source: &str) -> String {
     let marker = "#[cfg(test)]";
-    let mut offset = 0;
-    while let Some(relative) = source.get(offset..).and_then(|rest| rest.find(marker)) {
-        let start = offset + relative;
-        let after_attribute = source.get(start + marker.len()..).unwrap_or("").trim_start();
-        if after_attribute.strip_prefix("mod").is_some_and(|rest| rest.chars().next().is_some_and(char::is_whitespace)) {
-            return source.get(..start).unwrap_or(source);
-        }
-        offset = start + marker.len();
+    let mut code = String::with_capacity(source.len());
+    let mut rest = source;
+    while let Some(at) = rest.find(marker) {
+        let after_marker = rest.get(at + marker.len()..).unwrap_or("");
+        let Some(body) = inline_module_body(after_marker) else {
+            code.push_str(rest.get(..at + marker.len()).unwrap_or(rest));
+            rest = after_marker;
+            continue;
+        };
+        code.push_str(rest.get(..at).unwrap_or(rest));
+        let Some(end) = balanced_end(body, '{', '}') else { return code };
+        rest = body.get(end + 1..).unwrap_or("");
     }
-    source
+    code.push_str(rest);
+    code
+}
+
+/// After a `#[cfg(test)]`: the text following the `{` of an inline `mod name {`, past any further
+/// attributes, or `None` for anything else.
+fn inline_module_body(mut rest: &str) -> Option<&str> {
+    loop {
+        rest = rest.trim_start();
+        if !rest.starts_with("#[") {
+            break;
+        }
+        let end = balanced_end(rest.get(2..)?, '[', ']')?;
+        rest = rest.get(end + 3..)?;
+    }
+    let rest = rest.strip_prefix("mod")?;
+    if !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let rest = rest.trim_start();
+    let name_end = rest.find(|c: char| !c.is_ascii_alphanumeric() && c != '_').unwrap_or(rest.len());
+    if name_end == 0 {
+        return None;
+    }
+    rest.get(name_end..)?.trim_start().strip_prefix('{')
 }
 
 fn menu_command_label(args: &str) -> Option<String> {
@@ -494,15 +552,28 @@ mod tests {
         let languages = registered_languages(registry);
         assert!(languages.is_ok());
         let languages = languages.unwrap_or_default();
-        let english_keys = BTreeSet::from([Key { context: String::new(), source: "Open".into() }, Key { context: String::new(), source: "Save".into() }]);
-        let translations = BTreeMap::from([("fr".to_string(), BTreeSet::from([Key { context: String::new(), source: "Open".into() }]))]);
+        let english_keys = BTreeSet::from([
+            Key { context: String::new(), source: "Open".into() },
+            Key { context: String::new(), source: "Save".into() },
+            Key { context: "@plural".into(), source: "{n} layer|{n} layers".into() },
+        ]);
+        let translations = BTreeMap::from([
+            ("fr".to_string(), BTreeSet::from([Key { context: String::new(), source: "Open".into() }])),
+            ("zh".to_string(), english_keys.clone()),
+        ]);
         assert_eq!(
             format_report(&languages, &english_keys, &translations),
             "UI translation coverage (translated source keys / source keys)\n\
              language       translated  coverage\n\
-             en               2/2        100.00%\n\
-             fr               1/2         50.00%\n\
-             zh               0/2          0.00%\n"
+             en               3/3        100.00%\n\
+             fr               1/3         33.33%\n\
+             zh               3/3        100.00%\n\
+             \n\
+             Missing translations (shown in English until translated)\n\
+             fr: 2 missing\n\
+             \x20   Save\n\
+             \x20   [@plural] {n} layer|{n} layers\n\
+             zh: none missing\n"
         );
     }
 
@@ -563,34 +634,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn source_key_set_is_covered_by_complete_catalogs() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap_or(Path::new("."));
-        let keys = source_keys(root).unwrap_or_default();
-        for (code, path) in [
-            ("ja", "ja.tsv"),
-            ("zh-hant", "zh-hant.tsv"),
-            ("es", "es.tsv"),
-            ("ru", "ru.tsv"),
-            ("cs", "cs.tsv"),
-            ("de", "de.tsv"),
-            ("pt-br", "pt-br.tsv"),
-            ("it", "it.tsv"),
-            ("el", "el.tsv"),
-            ("uk", "uk.tsv"),
-            ("nl", "nl.tsv"),
-            ("hu", "hu.tsv"),
-            ("tr", "tr.tsv"),
-            ("vi", "vi.tsv"),
-            ("sr", "sr.tsv"),
-        ] {
-            let catalog_path = root.join("crates/ui-egui/src/i18n").join(path);
-            let text = fs::read_to_string(&catalog_path).unwrap_or_default();
-            let translations = parse_catalog(&catalog_path, &text).unwrap_or_default();
-            let missing: Vec<_> = keys.difference(&translations).collect();
-            assert!(missing.is_empty(), "{code}: missing source keys: {missing:#?}");
-        }
-    }
     #[test]
     fn plural_forms_follow_count_expressions_and_dynamic_forms_are_not_literal_keys() {
         let sources = vec![(

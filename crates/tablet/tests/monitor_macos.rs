@@ -14,6 +14,16 @@ fn main() {
     use photocraft_tablet::Sample;
     use photocraft_tablet::macos::Monitor;
 
+    // Answer cargo-nextest's `--list` (and nothing for `--ignored`), as tests/mac_menu_appkit.rs
+    // in apps/photocraft does; `monitor_macos --exact` falls through to the test.
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--list") {
+        if !args.iter().any(|a| a == "--ignored") {
+            println!("monitor_macos: test");
+        }
+        return;
+    }
+
     let mtm = MainThreadMarker::new().expect("harness = false runs on the main thread");
     let app = NSApplication::sharedApplication(mtm);
     let event = |kind: CGEventType, pressure: f64, tilt: (f64, f64), subtype: CGEventMouseSubtype| {

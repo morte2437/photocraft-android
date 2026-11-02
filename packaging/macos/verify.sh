@@ -23,7 +23,7 @@ set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/../env.sh"
 
 ARCH=universal
-while [ $# -gt 0 ]; do
+while [[ $# -gt 0 ]]; do
   case "$1" in
     --arch) ARCH="$2"; shift 2 ;;
     -h | --help) sed -n '2,20p' "$0"; exit 0 ;;
@@ -41,13 +41,13 @@ DMG="$DIST/photocraft-$VERSION-macos-$ARCH.dmg"
 CLI_ZIP="$DIST/photocraft-cli-$VERSION-macos-$ARCH.zip"
 IDENTITY="${MACOS_SIGN_IDENTITY:--}"
 STRICT=0
-if [ "$IDENTITY" != "-" ] && [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_PASSWORD:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ]; then
+if [[ "$IDENTITY" != "-" ]] && [[ -n "${APPLE_ID:-}" ]] && [[ -n "${APPLE_PASSWORD:-}" ]] && [[ -n "${APPLE_TEAM_ID:-}" ]]; then
   STRICT=1
 fi
 
 FAILED=0
 fail() {
-  if [ "$STRICT" = 1 ]; then
+  if [[ "$STRICT" = 1 ]]; then
     echo "error: $*" >&2
     FAILED=1
   else
@@ -58,20 +58,31 @@ fail() {
 # spctl's online ticket lookup can lag a few seconds behind notarytool's "Accepted".
 assess() {
   local out attempt tries=1
-  [ "$STRICT" = 1 ] && tries=5
+  [[ "$STRICT" = 1 ]] && tries=5
   for attempt in $(seq "$tries"); do
     if out="$(spctl "$@" 2>&1)"; then
       printf '%s\n' "$out"
       return 0
     fi
-    [ "$attempt" = "$tries" ] || sleep 10
+    [[ "$attempt" = "$tries" ]] || sleep 10
   done
   printf '%s\n' "$out"
   return 1
 }
 
+# `stapler validate` asks Apple's CloudKit service too, which sometimes drops the connection
+# (error 68) though the ticket is there.
+validate_staple() {
+  local target="$1" attempt
+  for attempt in 1 2 3 4 5; do
+    xcrun stapler validate "$target" && return 0
+    [[ "$attempt" = 5 ]] || sleep $((attempt * 20))
+  done
+  return 1
+}
+
 for f in "$DMG" "$CLI_ZIP"; do
-  if [ ! -f "$f" ]; then
+  if [[ ! -f "$f" ]]; then
     echo "error: missing $f" >&2
     exit 1
   fi
@@ -84,7 +95,7 @@ trap 'rm -rf "$WORK"' EXIT
 echo "==> $(basename "$CLI_ZIP")"
 ditto -x -k "$CLI_ZIP" "$WORK/cli"
 CLI="$WORK/cli/photocraft-cli-$VERSION-macos-$ARCH/photocraft-cli"
-if [ ! -x "$CLI" ]; then
+if [[ ! -x "$CLI" ]]; then
   echo "error: $(basename "$CLI_ZIP") has no executable photocraft-cli-$VERSION-macos-$ARCH/photocraft-cli" >&2
   exit 1
 fi
@@ -108,7 +119,7 @@ printf '%s\n' "$details" | grep -q '^Authority=Developer ID Application:' \
   || fail "photocraft-cli is not signed with a Developer ID Application identity"
 printf '%s\n' "$details" | grep -q '^Timestamp=' \
   || fail "photocraft-cli signature has no secure timestamp"
-if [ -n "${APPLE_TEAM_ID:-}" ]; then
+if [[ -n "${APPLE_TEAM_ID:-}" ]]; then
   printf '%s\n' "$details" | grep -qx "TeamIdentifier=$APPLE_TEAM_ID" \
     || fail "photocraft-cli is signed by a different team"
 fi
@@ -125,24 +136,24 @@ fi
 # ---- DMG ---------------------------------------------------------------------------------------
 echo "==> $(basename "$DMG")"
 codesign --verify --strict --verbose=2 "$DMG"
-if [ "$STRICT" = 1 ]; then
-  xcrun stapler validate "$DMG" || fail "no notarization ticket stapled to the DMG"
+if [[ "$STRICT" = 1 ]]; then
+  validate_staple "$DMG" || fail "no notarization ticket stapled to the DMG"
   assess --assess --type open --context context:primary-signature -vv "$DMG" \
     || fail "Gatekeeper rejects the DMG"
 fi
 
-if [ "$FAILED" != 0 ]; then
+if [[ "$FAILED" != 0 ]]; then
   echo "error: macOS artifacts failed verification" >&2
   exit 1
 fi
 
-if [ "$STRICT" = 1 ]; then
+if [[ "$STRICT" = 1 ]]; then
   result="signed (Developer ID, hardened runtime), notarized; DMG stapled"
 else
   result="signature intact; Developer ID and notarization not required (no signing secrets)"
 fi
 echo "==> verified: $result"
-if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
   {
     echo "- macOS \`$(basename "$DMG")\`, \`$(basename "$CLI_ZIP")\`: $result"
   } >>"$GITHUB_STEP_SUMMARY"

@@ -11,7 +11,10 @@ use photocraft_doc::{
 use photocraft_geom::{TILE_SIZE, TileCoord};
 use photocraft_raster::{Surface, Tile, decode_pixel, encode_pixel};
 
-use crate::manifest::*;
+use crate::manifest::{
+    ChannelM, CompAppearanceM, CompStateM, ContentM, DocM, EffectsM, FillCacheM, Hash, LayerCompM, LayerM, MaskM, MetadataM, NamedPathM, PatternM,
+    SmartSourceM, SurfaceM, TileRef, VectorPreviewM,
+};
 use crate::{FormatError, Result};
 
 /// Deepest group nesting a bundle may hold — the one nesting limit every consumer of the layer
@@ -42,6 +45,8 @@ pub(crate) trait Fetch {
     /// Canonical (little-endian) tile bytes of the given expected length.
     fn tile(&mut self, hash: &str, len: usize) -> Result<Vec<u8>>;
     fn blob(&mut self, hash: &str) -> Result<Arc<Vec<u8>>>;
+    /// Fetch an optional display payload without allocating beyond its stricter limit.
+    fn blob_bounded(&mut self, hash: &str, limit: usize) -> Result<Arc<Vec<u8>>>;
 }
 
 pub(crate) fn hex(bytes: &[u8]) -> String {
@@ -125,9 +130,12 @@ fn video_m(v: &photocraft_doc::VideoData, sink: &mut dyn Sink) -> crate::manifes
 fn layer_m(l: &Layer, sink: &mut dyn Sink) -> LayerM {
     let content = match &l.content {
         LayerContent::Raster(s) => ContentM::Raster { surface: surface_m(s, sink) },
-        LayerContent::Group(g) => {
-            ContentM::Group { children: g.children.iter().map(|c| layer_m(c, sink)).collect(), expanded: g.expanded, artboard: g.artboard.clone() }
-        }
+        LayerContent::Group(g) => ContentM::Group {
+            children: g.children.iter().map(|c| layer_m(c, sink)).collect(),
+            expanded: g.expanded,
+            artboard: g.artboard.clone(),
+            frame_stroke: g.frame_stroke.clone(),
+        },
         LayerContent::Adjustment(a) => ContentM::Adjustment { adjustment: a.clone() },
         LayerContent::Fill(f) => ContentM::Fill { fill: f.clone() },
         LayerContent::Text(t) => ContentM::Text {
@@ -151,7 +159,18 @@ fn layer_m(l: &Layer, sink: &mut dyn Sink) -> LayerM {
             psd_raw: opt_blob(&s.psd_raw, sink),
             path: s.path.clone(),
             stroke: s.stroke.clone(),
-            live: s.live.clone(),
+            // Older PhotoCraft versions cannot deserialize ArrowLine.
+            // The saved path preserves the arrow's visual appearance.
+            live: match &s.live {
+                Some(photocraft_doc::LiveShape::ArrowLine { .. }) => None,
+                other => other.clone(),
+            },
+            arrow_live: match &s.live {
+                Some(arrow @ photocraft_doc::LiveShape::ArrowLine { .. }) => Some(arrow.clone()),
+                _ => None,
+            },
+            density: s.density,
+            feather: s.feather,
         },
         LayerContent::Smart(s) => ContentM::Smart {
             contents_id: Some(s.contents_id.0),
@@ -159,6 +178,7 @@ fn layer_m(l: &Layer, sink: &mut dyn Sink) -> LayerM {
                 SmartSource::Embedded { file_name, bytes } => SmartSourceM::Embedded { file_name: file_name.clone(), blob: sink.blob(bytes) },
                 SmartSource::Linked { path } => SmartSourceM::Linked { path: path.clone() },
             },
+            vector_preview: s.vector_preview.as_ref().map(|preview| VectorPreviewM { source_hash: preview.source_hash, svg: sink.blob(&preview.svg) }),
             transform: s.transform,
             smart_filters: s.smart_filters.clone(),
             cache: s.cache.as_ref().map(|c| surface_m(c, sink)),
@@ -209,6 +229,7 @@ fn layer_m(l: &Layer, sink: &mut dyn Sink) -> LayerM {
         blend_if: l.blend_if.clone(),
         advanced: l.advanced,
         video: l.video.as_ref().map(|v| video_m(v, sink)),
+        xmp: l.xmp.as_deref().map(str::to_string),
     }
 }
 
@@ -233,7 +254,7 @@ pub(crate) fn doc_m(d: &Document, sink: &mut dyn Sink) -> DocM {
         ruler_origin: d.ruler_origin,
         selection: d.selection.as_ref().map(|s| surface_m(s, sink)),
         metadata: MetadataM {
-            xmp: d.metadata.xmp.clone(),
+            xmp: d.metadata.xmp.as_deref().map(str::to_owned),
             exif: opt_blob(&d.metadata.exif, sink),
             text: d.metadata.text.clone(),
             psd_resources: d.metadata.psd_resources.iter().map(|(id, n, b)| (*id, n.clone(), sink.blob(b))).collect(),
@@ -446,7 +467,9 @@ impl Loader<'_> {
     fn layer_with(&mut self, m: &LayerM, children: Vec<Layer>) -> Result<Layer> {
         let content = match &m.content {
             ContentM::Raster { surface } => LayerContent::Raster(self.surface(surface)?),
-            ContentM::Group { expanded, artboard, .. } => LayerContent::Group(Group { artboard: artboard.clone(), children, expanded: *expanded }),
+            ContentM::Group { expanded, artboard, frame_stroke, .. } => {
+                LayerContent::Group(Group { artboard: artboard.clone(), children, expanded: *expanded, frame_stroke: frame_stroke.clone() })
+            }
             ContentM::Adjustment { adjustment } => LayerContent::Adjustment(adjustment.clone()),
             ContentM::Fill { fill } => LayerContent::Fill(fill.clone()),
             ContentM::Text { text, font_family, size_pt, color, transform, cache, psd_raw, runs, paragraphs, shape, orientation, antialias, warp } => {
@@ -466,41 +489,62 @@ impl Loader<'_> {
                     warp: warp.clone(),
                 })
             }
-            ContentM::Shape { fill, cache, psd_raw, path, stroke, live } => LayerContent::Shape(ShapeLayer {
+            ContentM::Shape { fill, cache, psd_raw, path, stroke, live, arrow_live, density, feather } => LayerContent::Shape(ShapeLayer {
                 path: path.clone(),
                 fill: fill.clone(),
                 stroke: stroke.clone(),
-                live: live.clone(),
+                live: arrow_live.as_ref().filter(|shape| matches!(shape, photocraft_doc::LiveShape::ArrowLine { .. })).cloned().or_else(|| live.clone()),
                 cache: self.opt_surface(cache)?,
                 psd_raw: self.opt_blob(psd_raw)?,
+                density: *density,
+                feather: *feather,
             }),
-            ContentM::Smart { contents_id, source, transform, smart_filters, cache, psd_raw, filters_enabled, filter_mask, warp, stack_mode, perspective } => {
-                LayerContent::Smart(SmartObject {
-                    contents_id: self.contents_id(*contents_id, source),
-                    source: match source {
-                        SmartSourceM::Embedded { file_name, blob } => SmartSource::Embedded { file_name: file_name.clone(), bytes: self.fetch.blob(blob)? },
-                        SmartSourceM::Linked { path } => SmartSource::Linked { path: path.clone() },
-                    },
-                    transform: *transform,
-                    smart_filters: smart_filters.clone(),
-                    cache: self.opt_surface(cache)?,
-                    psd_raw: self.opt_blob(psd_raw)?,
-                    filters_enabled: *filters_enabled,
-                    filter_mask: match filter_mask {
-                        Some(mm) => Some(LayerMask {
-                            surface: self.surface(&mm.surface)?,
-                            enabled: mm.enabled,
-                            linked: mm.linked,
-                            density: mm.density,
-                            feather: mm.feather,
-                        }),
-                        None => None,
-                    },
-                    warp: warp.clone().filter(|w| w.mesh.as_ref().is_none_or(|m| m.is_valid())),
-                    stack_mode: *stack_mode,
-                    perspective: perspective.filter(|p| p.iter().all(|v| v.is_finite())),
-                })
-            }
+            ContentM::Smart {
+                contents_id,
+                source,
+                vector_preview,
+                transform,
+                smart_filters,
+                cache,
+                psd_raw,
+                filters_enabled,
+                filter_mask,
+                warp,
+                stack_mode,
+                perspective,
+            } => LayerContent::Smart(SmartObject {
+                contents_id: self.contents_id(*contents_id, source),
+                source: match source {
+                    SmartSourceM::Embedded { file_name, blob } => SmartSource::Embedded { file_name: file_name.clone(), bytes: self.fetch.blob(blob)? },
+                    SmartSourceM::Linked { path } => SmartSource::Linked { path: path.clone() },
+                },
+                vector_preview: match vector_preview {
+                    // A display-only preview must not prevent recovery of the native source
+                    // and cached pixels if its optional blob is missing or damaged.
+                    Some(preview) => {
+                        self.fetch.blob_bounded(&preview.svg, 16 << 20).ok().map(|svg| photocraft_doc::VectorPreview { source_hash: preview.source_hash, svg })
+                    }
+                    None => None,
+                },
+                transform: *transform,
+                smart_filters: smart_filters.clone(),
+                cache: self.opt_surface(cache)?,
+                psd_raw: self.opt_blob(psd_raw)?,
+                filters_enabled: *filters_enabled,
+                filter_mask: match filter_mask {
+                    Some(mm) => Some(LayerMask {
+                        surface: self.surface(&mm.surface)?,
+                        enabled: mm.enabled,
+                        linked: mm.linked,
+                        density: mm.density,
+                        feather: mm.feather,
+                    }),
+                    None => None,
+                },
+                warp: warp.clone().filter(|w| w.mesh.as_ref().is_none_or(|m| m.is_valid())),
+                stack_mode: *stack_mode,
+                perspective: perspective.filter(|p| p.iter().all(|v| v.is_finite())),
+            }),
         };
         let mask = match &m.mask {
             Some(mm) => {
@@ -543,6 +587,7 @@ impl Loader<'_> {
             blend_if: m.blend_if.clone(),
             advanced: m.advanced,
             video: m.video.as_ref().map(|v| self.video(v)).transpose()?,
+            xmp: m.xmp.as_deref().map(Arc::from),
         })
     }
 
@@ -575,7 +620,7 @@ impl Loader<'_> {
         }
         let quick_mask = m.quick_mask.as_ref().map(|c| self.channel(c)).transpose()?;
         let mut md = Metadata {
-            xmp: m.metadata.xmp.clone(),
+            xmp: m.metadata.xmp.as_deref().map(std::sync::Arc::from),
             exif: self.opt_blob(&m.metadata.exif)?,
             text: m.metadata.text.clone(),
             psd_resources: Vec::new(),
@@ -617,6 +662,15 @@ impl Loader<'_> {
                 }
             }
         }
+        // Variable targets follow their layers through id remapping; a dangling one keeps a
+        // non-colliding placeholder so it stays a missing-layer skip rather than driving an
+        // unrelated layer (#4969). With preserved ids the map is the identity and defs stay as saved.
+        let mut variables = m.variables.clone();
+        if !self.preserve_ids {
+            for vd in &mut variables.defs {
+                vd.layer = self.id_map.get(&vd.layer.0).copied().unwrap_or(LayerId(u64::MAX - vd.layer.0.min(u64::MAX / 2)));
+            }
+        }
         let id = if self.preserve_ids { DocId(m.id) } else { DocId::fresh() };
         Ok(Document {
             id,
@@ -641,7 +695,7 @@ impl Loader<'_> {
             patterns,
             color_table: m.color_table.clone(),
             duotone: m.duotone.clone(),
-            variables: m.variables.clone(),
+            variables,
             timeline: m.timeline.clone(),
             file_encoding: m.file_encoding,
             layer_comps,

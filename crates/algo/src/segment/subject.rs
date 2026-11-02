@@ -13,8 +13,17 @@
 //!    S. Süsstrunk, "Frequency-tuned Salient Region Detection", CVPR 2009): distance of the
 //!    lightly blurred CIELAB image from its mean colour.
 //! 4. Otsu's threshold on the saliency map seeds a GrabCut trimap (low-saliency border pixels
-//!    are definite background); the result is cleaned (small islands dropped, small holes
-//!    filled) and re-cut at full resolution.
+//!    are definite background); the result is cleaned (small islands dropped).
+//! 5. A second GrabCut whose background model only knows the backdrop: a colour model fitted
+//!    to the image's frame marks every pixel it explains as probable background, and the rest
+//!    (the blob, plus whatever the backdrop cannot account for) starts as probable foreground.
+//!    Parts of the subject whose colour is close to the backdrop (a cream shirt on a near-white
+//!    wall) have low saliency and in step 4 land in the background model, which then explains
+//!    them away; here they start as foreground and the cut keeps them (#2788). Only what
+//!    touches the first pass's result survives, so the pass cannot pull in unrelated things.
+//! 6. Holes are filled only when their colour fits the foreground model better than the
+//!    background's, so a patch of backdrop enclosed by the subject (between an arm and the
+//!    torso) stays open; specks still fill. Then the mask is re-cut at full resolution.
 //!
 //! Works well for a distinct object on a comparatively plain background; it is not a semantic
 //! segmenter.
@@ -25,6 +34,7 @@ use std::collections::BinaryHeap;
 use photocraft_geom::Rect;
 use photocraft_raster::{Cancelled, Interrupt};
 
+use super::gmm::Gmm;
 use super::grabcut::{self, BG, PR_BG, PR_FG};
 use super::slic::{rgb_to_lab, slic_lab};
 use super::{Region, Sampler};
@@ -72,11 +82,63 @@ pub fn select_subject_with(sampler: &dyn Sampler, canvas: Rect, ctl: &Interrupt)
     }
     let Some((fg, bg)) = grabcut::grabcut_with(&img, &mut trimap, 6, ctl)? else { return Ok(None) };
     let low: Vec<bool> = trimap.iter().map(|v| *v == PR_FG || *v == grabcut::FG).collect();
-    let low = super::clean_mask(&low, w, h, 0.2, 0.05);
+    let low = super::clean_mask(&low, w, h, 0.2, 0.0);
     if !low.iter().any(|v| *v) {
         return Ok(None);
     }
+    let (low, fg, bg) = backdrop_pass(&img, &low, ctl)?.unwrap_or((low, fg, bg));
+    ctl.check()?;
+    let low = super::fill_holes_by_model(&low, &img, &fg, &bg, 0.002, 0.05);
     super::finish_region_with(sampler, canvas, step, &low, w, h, Some((&fg, &bg)), ctl)
+}
+
+/// Step 5: GrabCut again with a background model that only knows the backdrop. A colour model
+/// is fitted to the image's frame (the outer pixels, minus a margin around `blob` in case the
+/// subject runs out of the picture); the frame is definite background, every other pixel it
+/// explains well is probable background, and the rest (the blob, and anything the backdrop
+/// cannot account for, such as a cream shirt on a near-white wall) starts as probable
+/// foreground. `Ok(None)` when the frame cannot be modelled or the cut keeps nothing that
+/// touches the blob; `Err(Cancelled)` once `ctl` is cancelled, as in the first pass.
+fn backdrop_pass(img: &super::RgbImage, blob: &[bool], ctl: &Interrupt) -> Result<Option<(Vec<bool>, Gmm, Gmm)>, Cancelled> {
+    let (w, h) = (img.w, img.h);
+    let (mut x0, mut y0, mut x1, mut y1) = (w, h, 0usize, 0usize);
+    for (i, on) in blob.iter().enumerate() {
+        if *on {
+            let (x, y) = (i % w, i / w);
+            (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
+        }
+    }
+    if x1 < x0 || y1 < y0 {
+        return Ok(None);
+    }
+    let margin = (((x1 - x0 + 1).max(y1 - y0 + 1) as f32 * 0.15).ceil() as usize).max(4);
+    let (bx0, by0) = (x0.saturating_sub(margin), y0.saturating_sub(margin));
+    let (bx1, by1) = ((x1 + margin).min(w - 1), (y1 + margin).min(h - 1));
+    let frame = ((w.min(h) as f32 * 0.06).round() as usize).max(2);
+    let in_frame = |x: usize, y: usize| x < frame || y < frame || x + frame >= w || y + frame >= h;
+    let near_blob = |x: usize, y: usize| (bx0..=bx1).contains(&x) && (by0..=by1).contains(&y);
+    let samples: Vec<[f32; 3]> = (0..w * h).filter(|i| in_frame(i % w, i / w) && !near_blob(i % w, i / w)).map(|i| img.px[i]).collect();
+    let Some(backdrop) = Gmm::fit(&super::subsample(&samples, 40_000), grabcut::K, super::gmm::DEFAULT_REG) else { return Ok(None) };
+    // What the frame itself costs under its own model bounds "explained well".
+    let mut frame_costs: Vec<f32> = samples.iter().map(|p| backdrop.neg_log(*p)).collect();
+    frame_costs.sort_by(|a, b| a.total_cmp(b));
+    let Some(limit) = frame_costs.get(frame_costs.len() * 99 / 100).map(|c| c + 4.0) else { return Ok(None) };
+    let mut trimap: Vec<u8> = (0..w * h)
+        .map(|i| {
+            let (x, y) = (i % w, i / w);
+            if in_frame(x, y) && !near_blob(x, y) {
+                BG
+            } else if blob[i] || backdrop.neg_log(img.px[i]) > limit {
+                PR_FG
+            } else {
+                PR_BG
+            }
+        })
+        .collect();
+    let Some((fg, bg)) = grabcut::grabcut_with(img, &mut trimap, 4, ctl)? else { return Ok(None) };
+    let cut: Vec<bool> = trimap.iter().map(|v| *v == PR_FG || *v == grabcut::FG).collect();
+    let low = super::keep_seeded(&cut, blob, w, h);
+    Ok(low.iter().any(|v| *v).then_some((low, fg, bg)))
 }
 
 /// Per-pixel saliency in `0..=1` (see the module docs).

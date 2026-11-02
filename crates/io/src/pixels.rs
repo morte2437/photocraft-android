@@ -21,6 +21,14 @@ pub fn sample_for_depth(depth: u16) -> SampleType {
     }
 }
 
+/// Complements every native-endian sample of one plane (`max − v`, `1 − v` for float). A
+/// trailing partial sample is left unchanged.
+pub(crate) fn invert_plane(bytes: &mut [u8], s: SampleType) {
+    for c in bytes.chunks_exact_mut(s.bytes().max(1)) {
+        invert_sample(c, s);
+    }
+}
+
 fn invert_sample(bytes: &mut [u8], s: SampleType) {
     match s {
         SampleType::U8 => bytes[0] = 255 - bytes[0],
@@ -39,42 +47,73 @@ fn invert_sample(bytes: &mut [u8], s: SampleType) {
 /// are filled with `fill[c]` (a native-endian encoded sample). Channels whose
 /// `invert[c]` is set are inverted (PSD stores CMYK as `max - ink`).
 pub fn interleave(planes: &[Option<&[u8]>], fill: &[Vec<u8>], n: usize, s: SampleType, invert: &[bool]) -> Vec<u8> {
+    let mut out = vec![0u8; n * planes.len() * s.bytes()];
+    interleave_into(planes, fill, n, s, invert, &mut out);
+    out
+}
+
+/// Fallible interleave for file imports. Validate sizes and missing-plane fills before
+/// workers write disjoint slices of one reserved output buffer.
+pub fn try_interleave(planes: &[Option<&[u8]>], fill: &[Vec<u8>], n: usize, s: SampleType, invert: &[bool]) -> photocraft_psd::Result<Vec<u8>> {
+    use photocraft_psd::PsdError;
+    let plane_bytes = n.checked_mul(s.bytes()).ok_or(PsdError::LimitExceeded("interleave size overflow"))?;
+    let len = plane_bytes.checked_mul(planes.len()).ok_or(PsdError::LimitExceeded("interleave size overflow"))?;
+    if len as u64 > photocraft_psd::compression::MAX_DECODED_BYTES {
+        return Err(PsdError::LimitExceeded("interleave exceeds MAX_DECODED_BYTES"));
+    }
+    if n > 0 && planes.is_empty() {
+        return Err(PsdError::Invalid("interleave needs at least one channel".into()));
+    }
+    for (c, plane) in planes.iter().enumerate() {
+        if plane.is_none_or(|p| p.len() < plane_bytes) && fill.get(c).is_none_or(|f| f.len() != s.bytes()) {
+            return Err(PsdError::Invalid("interleave fill has the wrong sample size".into()));
+        }
+    }
+    let mut out = Vec::new();
+    out.try_reserve_exact(len).map_err(|_| PsdError::OutOfMemory("not enough memory to interleave PSD pixels"))?;
+    out.resize(len, 0);
+    interleave_into(planes, fill, n, s, invert, &mut out);
+    Ok(out)
+}
+
+fn interleave_into(planes: &[Option<&[u8]>], fill: &[Vec<u8>], n: usize, s: SampleType, invert: &[bool], out: &mut [u8]) {
+    if out.is_empty() {
+        return;
+    }
     let bps = s.bytes();
     let ch = planes.len();
     let row = ch * bps;
-    let mut out = vec![0u8; n * row];
-    // One band of rows per core, written straight into its slice of the shared output: the
-    // per-pixel channel loop stays, but a band holds ~1/cores of a 20 MP image's iterations
-    // instead of all of them.
     let bs = bands(n);
-    let parts: Vec<Vec<u8>> = par_map(bs.clone(), |band| {
-        let mut part = vec![0u8; band.len() * row];
-        for (i, p) in band.clone().enumerate() {
-            for (c, plane) in planes.iter().enumerate() {
-                let dst = &mut part[(i * ch + c) * bps..(i * ch + c + 1) * bps];
-                match plane {
-                    Some(pl) if pl.len() >= (p + 1) * bps => {
-                        let src = &pl[p * bps..(p + 1) * bps];
-                        for k in 0..bps {
-                            dst[k] = src[bps - 1 - k];
-                        }
-                        if cfg!(target_endian = "big") {
-                            dst.copy_from_slice(src);
-                        }
-                        if invert[c] {
-                            invert_sample(dst, s);
-                        }
-                    }
-                    _ => dst.copy_from_slice(&fill[c]),
-                }
+    let step = bs.first().map_or(n, ExactSizeIterator::len) * row;
+    par_map(bs.into_iter().zip(out.chunks_mut(step)).collect(), |(band, part)| {
+        for (c, plane) in planes.iter().enumerate() {
+            let src = plane.and_then(|p| p.get(band.start * bps..)).unwrap_or_default();
+            let inv = src.len() >= bps && invert.get(c).copied().unwrap_or(false);
+            let fill = fill.get(c).map(Vec::as_slice).unwrap_or_default();
+            match s {
+                SampleType::U8 => write_channel(part, ch, c, src, fill, |[v]| [if inv { 255 - v } else { v }]),
+                SampleType::U16 => write_channel(part, ch, c, src, fill, |v| {
+                    let v = u16::from_be_bytes(v);
+                    (if inv { 65535 - v } else { v }).to_ne_bytes()
+                }),
+                SampleType::F32 => write_channel(part, ch, c, src, fill, |v| {
+                    // Preserve float bits when no inversion is requested.
+                    if inv { (1.0 - f32::from_be_bytes(v)).to_ne_bytes() } else { u32::from_be_bytes(v).to_ne_bytes() }
+                }),
             }
         }
-        part
     });
-    for (band, part) in bs.into_iter().zip(parts) {
-        out[band.start * row..band.end * row].copy_from_slice(&part);
+}
+
+fn write_channel<const N: usize>(out: &mut [u8], ch: usize, c: usize, src: &[u8], fill: &[u8], decode: impl Fn([u8; N]) -> [u8; N]) {
+    let mut samples = src.as_chunks::<N>().0.iter();
+    for pixel in out.chunks_exact_mut(ch * N) {
+        let dst = &mut pixel[c * N..(c + 1) * N];
+        match samples.next() {
+            Some(sample) => dst.copy_from_slice(&decode(*sample)),
+            None => dst.copy_from_slice(fill),
+        }
     }
-    out
 }
 
 /// Splits interleaved native-endian bytes into big-endian planes.
@@ -82,11 +121,30 @@ pub fn deinterleave(bytes: &[u8], ch: usize, s: SampleType, invert: &[bool]) -> 
     let bps = s.bytes();
     let n = bytes.len() / (ch * bps).max(1);
     if s == SampleType::U8 {
-        // Fast path: one plane per thread, no per-sample copies.
-        return par_map((0..ch).collect(), |c| {
-            let it = bytes.iter().skip(c).step_by(ch).take(n);
-            if invert[c] { it.map(|v| 255 - v).collect() } else { it.copied().collect() }
+        // Fast path: one band of pixels per core, written straight into every plane.
+        let mut planes = vec![vec![0u8; n]; ch];
+        let bs = bands(n);
+        let mut slots: Vec<Vec<&mut [u8]>> = bs.iter().map(|_| Vec::with_capacity(ch)).collect();
+        for plane in &mut planes {
+            let mut rest = plane.as_mut_slice();
+            for (slot, band) in slots.iter_mut().zip(&bs) {
+                let Some((part, tail)) = rest.split_at_mut_checked(band.len()) else { break };
+                slot.push(part);
+                rest = tail;
+            }
+        }
+        par_map(bs.into_iter().zip(slots).collect(), |(band, mut outs)| {
+            let src = bytes.get(band.start * ch..band.end * ch).unwrap_or(&[]);
+            for (c, out) in outs.iter_mut().enumerate() {
+                let px = src.chunks_exact(ch).filter_map(|p| p.get(c).copied());
+                if invert.get(c).copied().unwrap_or(false) {
+                    out.iter_mut().zip(px).for_each(|(o, v)| *o = 255 - v);
+                } else {
+                    out.iter_mut().zip(px).for_each(|(o, v)| *o = v);
+                }
+            }
         });
+        return planes;
     }
     // One band of rows per core, appended in band order into pre-grown planes.
     let row = ch * bps;
@@ -217,20 +275,28 @@ pub fn bands(n: usize) -> Vec<std::ops::Range<usize>> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn banded_shuffles_match_a_sequential_reference() {
-        fn seq_interleave(planes: &[Option<&[u8]>], fill: &[Vec<u8>], n: usize, s: SampleType, invert: &[bool]) -> Vec<u8> {
-            let bps = s.bytes();
-            let ch = planes.len();
-            let mut out = vec![0u8; n * ch * bps];
-            for (c, plane) in planes.iter().enumerate() {
-                for i in 0..n {
-                    let dst = &mut out[(i * ch + c) * bps..(i * ch + c + 1) * bps];
+    pub(super) fn previous_interleave(planes: &[Option<&[u8]>], fill: &[Vec<u8>], n: usize, s: SampleType, invert: &[bool]) -> Vec<u8> {
+        let bps = s.bytes();
+        let ch = planes.len();
+        let row = ch * bps;
+        let mut out = vec![0u8; n * row];
+        // One band of rows per core, written straight into its slice of the shared output: the
+        // per-pixel channel loop stays, but a band holds ~1/cores of a 20 MP image's iterations
+        // instead of all of them.
+        let bs = bands(n);
+        let parts: Vec<Vec<u8>> = par_map(bs.clone(), |band| {
+            let mut part = vec![0u8; band.len() * row];
+            for (i, p) in band.clone().enumerate() {
+                for (c, plane) in planes.iter().enumerate() {
+                    let dst = &mut part[(i * ch + c) * bps..(i * ch + c + 1) * bps];
                     match plane {
-                        Some(p) if p.len() >= (i + 1) * bps => {
-                            let src = &p[i * bps..(i + 1) * bps];
+                        Some(pl) if pl.len() >= (p + 1) * bps => {
+                            let src = &pl[p * bps..(p + 1) * bps];
                             for k in 0..bps {
                                 dst[k] = src[bps - 1 - k];
+                            }
+                            if cfg!(target_endian = "big") {
+                                dst.copy_from_slice(src);
                             }
                             if invert[c] {
                                 invert_sample(dst, s);
@@ -240,8 +306,16 @@ mod tests {
                     }
                 }
             }
-            out
+            part
+        });
+        for (band, part) in bs.into_iter().zip(parts) {
+            out[band.start * row..band.end * row].copy_from_slice(&part);
         }
+        out
+    }
+
+    #[test]
+    fn banded_shuffles_match_a_sequential_reference() {
         fn seq_deinterleave(bytes: &[u8], ch: usize, s: SampleType, invert: &[bool]) -> Vec<Vec<u8>> {
             let bps = s.bytes();
             let n = bytes.len() / (ch * bps).max(1);
@@ -260,21 +334,36 @@ mod tests {
             planes
         }
         // Odd pixel counts cross band boundaries; a missing plane exercises the fill path.
-        for n in [1usize, 7, 64, 1000] {
+        for n in [0usize, 1, 7, 64, 1000] {
             for s in [SampleType::U8, SampleType::U16, SampleType::F32] {
                 let bps = s.bytes();
                 let planes: Vec<Vec<u8>> = (0..4).map(|c| (0..n * bps).map(|i| (i * 13 + c * 5) as u8).collect()).collect();
                 let mut refs: Vec<Option<&[u8]>> = planes.iter().map(|p| Some(&p[..])).collect();
                 refs[2] = None;
+                refs[3] = Some(&planes[3][..(n * bps).saturating_sub(1)]);
                 let fill: Vec<Vec<u8>> = (0..4).map(|c| vec![c as u8 * 40; bps]).collect();
                 let invert = [false, true, false, true];
                 let got = interleave(&refs, &fill, n, s, &invert);
-                let want = seq_interleave(&refs, &fill, n, s, &invert);
+                let want = previous_interleave(&refs, &fill, n, s, &invert);
                 assert_eq!(got, want, "interleave n={n}");
                 let planes_back = deinterleave(&got, 4, s, &invert);
                 let want_back = seq_deinterleave(&got, 4, s, &invert);
                 assert_eq!(planes_back, want_back, "deinterleave n={n}");
             }
+        }
+    }
+
+    #[test]
+    fn fallible_interleave_checks_sizes_and_missing_plane_fills() {
+        assert!(try_interleave(&[None], &[vec![0]], usize::MAX, SampleType::F32, &[]).is_err());
+        assert!(try_interleave(&[None], &[], 1, SampleType::U8, &[]).is_err());
+        assert!(try_interleave(&[], &[], 1, SampleType::U8, &[]).is_err());
+        assert!(try_interleave(&[None], &[vec![0]], usize::MAX / 2, SampleType::U8, &[]).is_err());
+        for s in [SampleType::U8, SampleType::U16, SampleType::F32] {
+            let plane = vec![1; 1001 * s.bytes()];
+            let planes = [Some(plane.as_slice()), None];
+            let fill = vec![zero_sample(s), max_sample(s)];
+            assert_eq!(try_interleave(&planes, &fill, 1001, s, &[true, false]).unwrap(), interleave(&planes, &fill, 1001, s, &[true, false]));
         }
     }
 
@@ -287,6 +376,7 @@ mod tests {
             let fill = vec![zero_sample(s); 3];
             let inv = [false, true, false];
             let il = interleave(&refs, &fill, 4, s, &inv);
+            assert_eq!(interleave(&refs, &[], 4, s, &inv), il);
             let back = deinterleave(&il, 3, s, &inv);
             if s == SampleType::F32 {
                 // 1 - (1 - v) may not be exact for floats; only check non-inverted planes.
@@ -302,6 +392,12 @@ mod tests {
     fn missing_planes_use_fill() {
         let il = interleave(&[None, Some(&[5, 6])], &[vec![9], vec![0]], 2, SampleType::U8, &[false, false]);
         assert_eq!(il, vec![9, 5, 9, 6]);
+        for s in [SampleType::U8, SampleType::U16, SampleType::F32] {
+            for n in [1, 1000] {
+                let fill = vec![vec![9; s.bytes()]; 2];
+                assert_eq!(interleave(&[None, Some(&[1, 2, 3][..s.bytes() - 1])], &fill, n, s, &[]), vec![9; n * 2 * s.bytes()]);
+            }
+        }
     }
 
     #[test]
@@ -341,5 +437,37 @@ mod tests {
         let mut f = Vec::new();
         encode_be(2.5, SampleType::F32, &mut f);
         assert_eq!(decode_be(&f, 0, SampleType::F32), 2.5);
+    }
+}
+
+#[cfg(test)]
+mod measurement {
+    use super::*;
+    #[test]
+    #[ignore = "manual 24 MP release benchmark"]
+    fn benchmark_interleave() {
+        use std::{hint::black_box, time::Instant};
+        const N: usize = 24_000_000;
+        for sample in [SampleType::U8, SampleType::U16, SampleType::F32] {
+            let bps = sample.bytes();
+            let planes: Vec<Vec<u8>> = (0..4).map(|c| (0..N * bps).map(|i| (i * 13 + c * 5) as u8).collect()).collect();
+            let refs: Vec<_> = planes.iter().map(|p| Some(p.as_slice())).collect();
+            let fill = vec![vec![0; bps]; 4];
+            let invert = [false, true, false, true];
+            assert_eq!(tests::previous_interleave(&refs, &fill, N, sample, &invert), interleave(&refs, &fill, N, sample, &invert));
+            for trial in 0..6 {
+                let mut paths = [("main", tests::previous_interleave as fn(_, _, _, _, _) -> _), ("split", interleave)];
+                if trial % 2 == 1 {
+                    paths.reverse();
+                }
+                for (name, path) in paths {
+                    let t = Instant::now();
+                    let out = black_box(path)(&refs, &fill, N, sample, &invert);
+                    let elapsed = t.elapsed().as_secs_f64() * 1000.0;
+                    black_box(&out);
+                    println!("interleave,{sample:?},{trial},{name},{elapsed:.6}");
+                }
+            }
+        }
     }
 }

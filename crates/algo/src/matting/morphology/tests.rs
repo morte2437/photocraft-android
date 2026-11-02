@@ -231,65 +231,6 @@ fn octagonal_morphology_release_comparison() {
 }
 
 #[test]
-#[ignore = "release comparison of the full tiled Select and Mask CPU path"]
-#[allow(clippy::assertions_on_constants)]
-fn tiled_refinement_release_comparison() {
-    use crate::{
-        matting::{RefineParams, refine_mask_with, region_reader},
-        segment::{ImageSampler, RgbImage, trim_region},
-        selection::Region,
-    };
-    use photocraft_geom::Rect;
-    use std::{hint::black_box, time::Instant};
-    assert!(!cfg!(debug_assertions), "run with --release");
-    for (w, h) in [(6000usize, 4000usize), (7200, 5000)] {
-        let image = RgbImage::from_fn(w, h, |x, y| {
-            let t = x as f32 / w as f32;
-            let u = y as f32 / h as f32;
-            [0.2 + 0.5 * t, 0.15 + 0.55 * u, 0.3 + 0.15 * ((x / 17 + y / 23) % 3) as f32]
-        });
-        let sampler = ImageSampler { img: &image, origin: (0, 0) };
-        let canvas = Rect::new(0, 0, w as i32, h as i32);
-        let mask: Vec<_> = (0..w * h)
-            .map(|i| {
-                let dx = (i % w) as f64 - w as f64 * 0.51;
-                let dy = (i / w) as f64 - h as f64 * 0.48;
-                let d = (dx * dx + dy * dy).sqrt();
-                ((0.5 + (w.min(h) as f64 * 0.27 - d) / 7.0).clamp(0.0, 1.0) * 255.0).round() as u8
-            })
-            .collect();
-        let region = trim_region(Region { bbox: canvas, mask }).unwrap();
-        let reader = region_reader(&region);
-        let p = RefineParams { radius: 64.0, shift_edge: 100.0, ..Default::default() };
-        let old = refine_mask_with(&sampler, &reader, region.bbox, canvas, &p, None, repeated).unwrap();
-        let new = refine_mask_with(&sampler, &reader, region.bbox, canvas, &p, None, morph).unwrap();
-        assert_eq!(new.bbox, old.bbox);
-        assert_eq!(new.mask, old.mask);
-        let (mut old_ms, mut new_ms) = (Vec::new(), Vec::new());
-        for run in 0..3 {
-            let mut measure = |fast: bool| {
-                let start = Instant::now();
-                let out = if fast {
-                    refine_mask_with(&sampler, black_box(&reader), region.bbox, canvas, &p, None, morph)
-                } else {
-                    refine_mask_with(&sampler, black_box(&reader), region.bbox, canvas, &p, None, repeated)
-                }
-                .unwrap();
-                let elapsed = start.elapsed().as_secs_f64() * 1000.0;
-                assert_eq!(out.bbox, old.bbox);
-                assert_eq!(out.mask, old.mask);
-                if fast { new_ms.push(elapsed) } else { old_ms.push(elapsed) }
-            };
-            measure(run % 2 == 0);
-            measure(run % 2 != 0);
-        }
-        old_ms.sort_by(f64::total_cmp);
-        new_ms.sort_by(f64::total_cmp);
-        println!("REFINE {w}x{h} radius=64 shift=100 old_ms={old_ms:?} new_ms={new_ms:?} speedup={:.2}", old_ms[1] / new_ms[1]);
-    }
-}
-
-#[test]
 #[ignore = "release comparison on a dense fractional 24 MP matte"]
 #[allow(clippy::assertions_on_constants)]
 fn dense_matte_release_comparison() {

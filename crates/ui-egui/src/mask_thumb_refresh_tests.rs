@@ -45,5 +45,5 @@ fn inverting_a_tileless_mask_refreshes_its_thumbnail() {
     assert_eq!(mask.surface.default_pixel(), vec![0.0], "and now hides everything");
     let after = h.state().thumbs.get(&key).map(|(r, _)| *r).expect("mask thumbnail drawn");
     assert_ne!(before, after, "the thumbnail was rebuilt after Invert");
-    assert_eq!(after, surface_fingerprint(&mask.surface) ^ 200u64 << 40, "keyed on the inverted mask");
+    assert_eq!(after, surface_fingerprint(&mask.surface) ^ 200u64 << 40 ^ 100u64 << 16, "keyed on the inverted mask and the document size");
 }

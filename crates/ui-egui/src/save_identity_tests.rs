@@ -9,8 +9,8 @@ fn app() -> PhotocraftApp {
     let mut app = PhotocraftApp::new(
         Session::new(),
         Services {
-            import: Some(Box::new(|name, bytes, max_svg_group_depth| {
-                photocraft_io::import_with_svg_group_depth(name, bytes, max_svg_group_depth).map(|r| (r.document, r.warnings)).map_err(|e| e.to_string())
+            import: Some(Box::new(|name, bytes, opts| {
+                photocraft_io::import_with_options(name, bytes, opts).map(|r| (r.document, r.warnings)).map_err(|e| e.to_string())
             })),
             export: Some(Box::new(|doc, path, _| {
                 photocraft_io::export(doc, path, &Default::default()).map(|r| (r.bytes, r.warnings)).map_err(|e| e.to_string())
@@ -28,6 +28,16 @@ fn app() -> PhotocraftApp {
 fn identity(app: &PhotocraftApp) -> (String, Option<String>, u64, u64) {
     let st = app.session.active().unwrap();
     (st.doc.name.clone(), st.path.clone(), st.revision, st.saved_revision)
+}
+
+#[test]
+fn save_settings_share_only_the_open_documents_native_cache() {
+    let mut app = app();
+    let first = app.save_settings().io_options().pcraft_cache.unwrap();
+    assert_eq!(first, app.session.active().unwrap().pcraft_cache);
+    assert_eq!(first, app.save_settings().io_options().pcraft_cache.unwrap());
+    app.run("file.new", json!({"width": 2, "height": 2})).unwrap();
+    assert_ne!(first, app.save_settings().io_options().pcraft_cache.unwrap());
 }
 
 #[test]
@@ -139,7 +149,8 @@ fn save_as_flat_keeps_the_layered_original() {
         app.run("edit.fill", json!({"color": "#000000"})).unwrap();
         let before = identity(&app);
         for flat in ["art.jpg", "art.png"] {
-            menus::invoke(&mut app, &ctx, "file.saveAs", json!({"path": flat})).unwrap();
+            // A JPEG Options answer, so the JPEG doesn't wait on the prompt.
+            menus::invoke(&mut app, &ctx, "file.saveAs", json!({"path": flat, "jpegFormat": "baseline"})).unwrap();
             assert_eq!(identity(&app), before, "{flat}, layered: {layered}");
         }
         menus::invoke(&mut app, &ctx, "file.save", json!({})).unwrap();
@@ -149,8 +160,15 @@ fn save_as_flat_keeps_the_layered_original() {
     }
     // An untitled layered document saved as a JPEG is still untitled and unsaved.
     let mut app = app();
+    let written = Rc::new(RefCell::new(Vec::new()));
+    let w = written.clone();
+    app.services.write = Some(Box::new(move |path, _| {
+        w.borrow_mut().push(path.to_string());
+        Ok(())
+    }));
     let before = identity(&app);
-    app.save_as(Some("flat.jpg".into())).unwrap();
+    menus::invoke(&mut app, &ctx, "file.saveAs", json!({"path": "flat.jpg", "jpegFormat": "baseline"})).unwrap();
+    assert_eq!(*written.borrow(), ["flat.jpg"]);
     assert_eq!(identity(&app), before);
 }
 
@@ -162,6 +180,8 @@ fn save_as_flat_retargets_a_flat_document() {
     app.save_as(Some("shot.png".into())).unwrap();
     assert_eq!(app.session.active().unwrap().path.as_deref(), Some("shot.png"));
     app.save_as(Some("shot.jpg".into())).unwrap();
+    // JPEG Options asks first; OK writes.
+    crate::jpeg_options_ui::confirm(&mut app, &egui::Context::default());
     let st = app.session.active().unwrap();
     assert_eq!((st.doc.name.as_str(), st.path.as_deref()), ("shot.jpg", Some("shot.jpg")));
     assert_eq!(st.saved_revision, st.revision);
@@ -253,4 +273,22 @@ fn save_settings_start_at_the_opened_files_encoding() {
     let lossless = photocraft_codecs::encode(&img, Format::WebP, &EncodeOptions::default()).unwrap();
     app.open_bytes("art.webp", &lossless).unwrap();
     assert!(app.save_settings().webp_lossless);
+}
+
+/// A browser download is only requested: the document takes the name but keeps its unsaved
+/// changes, so the leave-page guard stays armed (#4962). A confirmed write still saves it.
+#[test]
+fn unconfirmed_download_names_the_document_but_keeps_it_unsaved() {
+    assert_eq!(crate::saved_revision_after_write(true, 7, 3), 7);
+    assert_eq!(crate::saved_revision_after_write(false, 7, 3), 3);
+    let mut app = app();
+    app.services.write_unconfirmed = true;
+    let (_, _, revision, saved) = identity(&app);
+    app.save_as(Some("download.psd".into())).unwrap();
+    assert_eq!(identity(&app), ("download.psd".into(), Some("download.psd".into()), revision, saved));
+    assert!(app.session.active().unwrap().is_dirty());
+    assert!(app.has_unsaved_work());
+    app.services.write_unconfirmed = false;
+    app.save_as(Some("download.psd".into())).unwrap();
+    assert!(!app.has_unsaved_work());
 }

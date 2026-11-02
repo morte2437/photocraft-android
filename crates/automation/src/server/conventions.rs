@@ -1,7 +1,10 @@
 //! Catalog metadata, strict tool envelopes and live resources.
-use super::*;
+use super::{Arc, Backend, BatchParams, DocIndex, ListParams, McpError, Parameters, PhotocraftMcp, RunParams, ServerHandler, Value, json};
 use rmcp::RoleServer;
-use rmcp::model::*;
+use rmcp::model::{
+    CallToolRequestParams, CallToolResponse, Implementation, ListResourcesResult, ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams,
+    ReadResourceResponse, ReadResourceResult, ServerCapabilities, ServerConfig, Tool, ToolAnnotations,
+};
 use rmcp::service::RequestContext;
 
 const DOCUMENT: &str = "photocraft://document";

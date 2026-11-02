@@ -1,0 +1,17 @@
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="24"
+  height="24"
+  viewBox="0 0 24 24"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="2"
+  stroke-linecap="round"
+  stroke-linejoin="round"
+>
+  <!-- PhotoCraft's own Create Warped Text glyph (not from an icon set): a T above a bowed arc. -->
+  <path d="M6 5V3h12v2" />
+  <path d="M12 3v11" />
+  <path d="M9.5 14h5" />
+  <path d="M3 17c5 5 13 5 18 0" />
+</svg>

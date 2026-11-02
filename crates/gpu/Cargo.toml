@@ -14,6 +14,9 @@ photocraft-color = { workspace = true }
 photocraft-raster = { workspace = true }
 photocraft-doc = { workspace = true }
 photocraft-compose = { workspace = true }
+# Camera Raw's per-pixel stages (`camera_raw.rs`) take their constants from the CPU develop.
+photocraft-algo = { workspace = true }
+bytemuck = { workspace = true }
 # Same major version as eframe's wgpu so the app's device can be shared.
 wgpu = { version = "30", default-features = false, features = ["std", "wgsl"] }
 log = { workspace = true }
@@ -27,3 +30,5 @@ wgpu = { version = "30" }
 pollster = "1"
 # Shape layers in the effect parity tests.
 photocraft-vector = { workspace = true }
+# A document-tagged CMYK profile in the tile conversion test.
+photocraft-cms = { workspace = true }

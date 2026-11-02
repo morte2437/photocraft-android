@@ -66,6 +66,21 @@ impl<'a> Reader<'a> {
         }
     }
 
+    /// PAM ends its header with an LF-terminated line, unlike P4–P6's single separator.
+    fn pam_endhdr(&mut self) -> Result<(), CodecError> {
+        while let Some(&c) = self.b.get(self.pos) {
+            self.pos += 1;
+            if c == b'\n' {
+                // Stop at the first LF: whitespace and '#' after it are raster bytes.
+                return Ok(());
+            }
+            if !c.is_ascii_whitespace() {
+                return Err(err("unexpected data after PAM ENDHDR"));
+            }
+        }
+        Err(err("unterminated PAM ENDHDR line"))
+    }
+
     fn rest(&self) -> &'a [u8] {
         &self.b[self.pos.min(self.b.len())..]
     }
@@ -269,7 +284,7 @@ fn decode_pam(r: &mut Reader<'_>, limits: &Limits) -> Result<Image, CodecError> 
             _ => return Err(err("unknown PAM header field")),
         }
     }
-    r.single_ws()?;
+    r.pam_endhdr()?;
     let (w, h, depth, maxval) = match (w, h, depth, maxval) {
         (Some(a), Some(b), Some(c), Some(d)) => (a, b, c, d),
         _ => return Err(err("incomplete PAM header")),

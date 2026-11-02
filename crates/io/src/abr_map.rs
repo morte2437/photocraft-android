@@ -57,7 +57,7 @@ pub fn map_file(f: &AbrFile, group: &str) -> AbrImport {
 /// [`map_file`] that checks `ctl` before each brush.
 pub fn map_file_with(f: &AbrFile, group: &str, ctl: &photocraft_raster::Interrupt) -> Result<AbrImport, photocraft_raster::Cancelled> {
     let mut out = AbrImport { version: f.version, warnings: f.warnings.clone(), ..Default::default() };
-    let mut m = Mapper { file: f, warnings: BTreeSet::new(), unknown: BTreeSet::new() };
+    let mut m = Mapper { file: f, warnings: BTreeSet::new(), unknown: BTreeSet::new(), tips: Default::default() };
     let total = f.legacy.len().max(f.samples.len()).max(f.presets.len()).max(1) as f32;
     let step = |i: usize| -> Result<(), photocraft_raster::Cancelled> {
         ctl.check()?;
@@ -255,18 +255,26 @@ struct Mapper<'a> {
     file: &'a AbrFile,
     warnings: BTreeSet<String>,
     unknown: BTreeSet<String>,
+    /// Tips already converted, by sample: presets can name one sample thousands of times, and a
+    /// tile clones by sharing its data.
+    tips: std::collections::HashMap<*const AbrSample, (photocraft_paint::tile::GrayTile, f32)>,
 }
 
 impl Mapper<'_> {
     /// A sampled tip (downsampled to [`MAX_TIP_EDGE`]) and its size (larger side).
     fn tip(&mut self, s: &AbrSample) -> (TipShape, f32) {
+        if let Some((tile, size)) = self.tips.get(&std::ptr::from_ref(s)) {
+            return (TipShape::Sampled(tile.clone()), *size);
+        }
         let v = s.to_unit();
         let (w, h, v) = fit(s.width, s.height, v, MAX_TIP_EDGE);
         if (w, h) != (s.width, s.height) {
             self.warnings.insert(format!("tips larger than {MAX_TIP_EDGE} px were downsampled"));
         }
         let data = v.iter().map(|x| (x.clamp(0.0, 1.0) * 65535.0 + 0.5) as u16).collect();
-        (TipShape::Sampled(GrayTile { width: w, height: h, data }), s.width.max(s.height) as f32)
+        let (tile, size) = (GrayTile { width: w, height: h, data }, s.width.max(s.height) as f32);
+        self.tips.insert(std::ptr::from_ref(s), (tile.clone(), size));
+        (TipShape::Sampled(tile), size)
     }
 
     fn dynamic(&mut self, d: Option<&Descriptor>) -> Dynamic {
@@ -290,6 +298,7 @@ impl Mapper<'_> {
             control,
             fade_steps: num(d, "fStp").map_or(25, |v| v.clamp(1.0, 9999.0) as u32),
             minimum: pct(d, "Mnm ").unwrap_or(0.0).clamp(0.0, 1.0),
+            ..Dynamic::default()
         }
     }
 
@@ -472,7 +481,8 @@ impl Mapper<'_> {
                 tilt_y: (num(d, "brushPoseTiltY").unwrap_or(0.0) * 0.9).clamp(-90.0, 90.0) as f32,
                 rotation: num(d, "brushPoseAngle").unwrap_or(0.0).rem_euclid(360.0) as f32,
                 pressure: pct(d, "brushPosePressure").unwrap_or(1.0).clamp(0.0, 1.0),
-                override_tilt: boolean(d, "overridePoseTiltX").unwrap_or(false) || boolean(d, "overridePoseTiltY").unwrap_or(false),
+                override_tilt_x: boolean(d, "overridePoseTiltX").unwrap_or(false),
+                override_tilt_y: boolean(d, "overridePoseTiltY").unwrap_or(false),
                 override_rotation: boolean(d, "overridePoseAngle").unwrap_or(false),
                 override_pressure: boolean(d, "overridePosePressure").unwrap_or(false),
             };
@@ -527,10 +537,17 @@ fn fit(w: u32, h: u32, v: Vec<f32>, max: u32) -> (u32, u32, Vec<f32>) {
     let k = (w.max(h) as f32 / max as f32).max(1.0);
     let (nw, nh) = (((w as f32 / k).round() as u32).clamp(1, max), ((h as f32 / k).round() as u32).clamp(1, max));
     let mut out = vec![0.0f32; nw as usize * nh as usize];
+    // Source rows/columns `[i * n / m, (i + 1) * n / m)` (at least one) for output index `i` of
+    // `m`; in u64, as `(i + 1) * n` passes u32 for a plane over 2^32 / `max` long. The parsers'
+    // edge caps keep today's inputs below that, but this function should not depend on them.
+    let span = |i: u32, n: u32, m: u32| {
+        let at = |k: u32| usize::try_from(u64::from(k) * u64::from(n) / u64::from(m)).unwrap_or(usize::MAX);
+        (at(i), at(i + 1).max(at(i).saturating_add(1)).min(n as usize))
+    };
     for y in 0..nh {
-        let (y0, y1) = ((y * h / nh) as usize, (((y + 1) * h / nh) as usize).max((y * h / nh) as usize + 1).min(h as usize));
+        let (y0, y1) = span(y, h, nh);
         for x in 0..nw {
-            let (x0, x1) = ((x * w / nw) as usize, (((x + 1) * w / nw) as usize).max((x * w / nw) as usize + 1).min(w as usize));
+            let (x0, x1) = span(x, w, nw);
             let (mut sum, mut n) = (0.0, 0usize);
             for yy in y0..y1 {
                 for xx in x0..x1 {
@@ -593,3 +610,18 @@ fn pattern_tile(p: &PsdPattern) -> Option<GrayTile> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod fit_tests {
+    use super::fit;
+
+    /// A tall, narrow plane: `(y + 1) * h` passes `u32::MAX` once `h` is over 2^32 / `max` rows.
+    /// The ABR and pattern parsers cap edges well below that, but `fit` must not rely on it.
+    #[test]
+    fn fit_tall_planes_without_overflow() {
+        let h = 5_000_000u32;
+        let (w, nh, out) = fit(1, h, vec![1.0; h as usize], 1024);
+        assert_eq!((w, nh), (1, 1024));
+        assert!(out.iter().all(|v| (*v - 1.0).abs() < 1e-6), "every output row averages real input rows");
+    }
+}

@@ -16,7 +16,7 @@
 #
 # Cross builds (CI: riscv64, tar.gz only): set CROSS_ARCH (riscv64), CROSS_TARGET (the Rust
 # triple), CROSS_COMPILE (binutils prefix, for strip) and optionally EMULATOR (e.g. qemu-riscv64)
-# to smoke-test the CLI.
+# to smoke-test the CLI and run the example that writes its man pages and completions.
 set -euo pipefail
 # shellcheck source=../env.sh
 . "$(dirname "${BASH_SOURCE[0]}")/../env.sh"
@@ -27,7 +27,7 @@ APP_ID=ai.storyteller.photocraft
 
 SKIP_BUILD=0
 FORMATS="appimage deb rpm tar"
-while [ $# -gt 0 ]; do
+while [[ $# -gt 0 ]]; do
   case "$1" in
     --skip-build) SKIP_BUILD=1; shift ;;
     --formats) FORMATS="$2"; shift 2 ;;
@@ -48,11 +48,16 @@ BASENAME="photocraft-$VERSION-linux-$ARCH"
 
 echo "==> PhotoCraft $VERSION for Linux $ARCH ($FORMATS)"
 
-if [ "$SKIP_BUILD" = 0 ]; then
-  if [ -n "${CROSS_TARGET:-}" ]; then
-    (cd "$ROOT" && cargo build --release --locked -p photocraft -p photocraft-cli --features heif --target "$CROSS_TARGET")
+# The man-and-completions example writes photocraft-cli's man pages and shell completions below. It
+# is built in its own cargo run: built with the binaries, its dev-dependencies' features would be
+# unified into them.
+if [[ "$SKIP_BUILD" = 0 ]]; then
+  if [[ -n "${CROSS_TARGET:-}" ]]; then
+    (cd "$ROOT" && cargo build --release --locked -p photocraft -p photocraft-cli --features heif --bins --target "$CROSS_TARGET")
+    (cd "$ROOT" && cargo build --release --locked -p photocraft-cli --features heif --example man-and-completions --target "$CROSS_TARGET")
   else
-    (cd "$ROOT" && cargo build --release --locked -p photocraft -p photocraft-cli --features heif)
+    (cd "$ROOT" && cargo build --release --locked -p photocraft -p photocraft-cli --features heif --bins)
+    (cd "$ROOT" && cargo build --release --locked -p photocraft-cli --features heif --example man-and-completions)
   fi
 fi
 BIN="$CARGO_TARGET_DIR/${CROSS_TARGET:+$CROSS_TARGET/}release"
@@ -73,6 +78,27 @@ mkdir -p "$STAGE/usr/share/icons"
 cp -R "$ROOT/assets/app-icon/hicolor" "$STAGE/usr/share/icons/"
 mkdir -p "$STAGE/usr/share/doc/photocraft"
 copy_docs "$STAGE/usr/share/doc/photocraft"
+# photocraft-cli's man pages and shell completions, from its clap definition, written by the
+# example built above. A cross build runs it through $EMULATOR, like the --version check at the
+# end, and leaves them out without one, as a --skip-build run whose prebuilt binaries came without
+# the example does. zsh reads site-functions on Fedora and openSUSE; the deb also links the
+# completion into Debian's vendor-completions (nfpm.yaml).
+CLI_DOCS="$BIN/examples/man-and-completions"
+if [[ -n "${CROSS_TARGET:-}" ]] && [[ -z "${EMULATOR:-}" ]]; then
+  warn "no EMULATOR to run the $CROSS_TARGET build, so photocraft-cli's man pages and completions are left out"
+elif [[ ! -x "$CLI_DOCS" ]]; then
+  warn "$CLI_DOCS is not built, so photocraft-cli's man pages and completions are left out"
+else
+  if [[ -n "${CROSS_TARGET:-}" ]]; then
+    "$EMULATOR" "$CLI_DOCS" "$WORK/cli-docs"
+  else
+    "$CLI_DOCS" "$WORK/cli-docs"
+  fi
+  install -Dm644 -t "$STAGE/usr/share/man/man1" "$WORK"/cli-docs/*.1
+  install -Dm644 "$WORK/cli-docs/photocraft-cli.bash" "$STAGE/usr/share/bash-completion/completions/photocraft-cli"
+  install -Dm644 "$WORK/cli-docs/_photocraft-cli" "$STAGE/usr/share/zsh/site-functions/_photocraft-cli"
+  install -Dm644 "$WORK/cli-docs/photocraft-cli.fish" "$STAGE/usr/share/fish/vendor_completions.d/photocraft-cli.fish"
+fi
 
 if command -v desktop-file-validate >/dev/null; then
   desktop-file-validate "$STAGE/usr/share/applications/$APP_ID.desktop"
@@ -97,7 +123,11 @@ if has deb || has rpm; then
   export VERSION
   export NFPM_ARCH="$DEB_ARCH"
   # nfpm expands env vars in fields like `version` and `arch`, but not in `contents[].src`.
-  sed "s|\${STAGE}|$STAGE|g" "$HERE/nfpm.yaml" >"$WORK/nfpm.yaml"
+  # Without the completions (a cross build with no EMULATOR) the deb's zsh symlink would dangle,
+  # so its entry is dropped too.
+  DROP_ZSH_LINK=
+  [[ -f "$STAGE/usr/share/zsh/site-functions/_photocraft-cli" ]] || DROP_ZSH_LINK='\|^  - src: /usr/share/zsh/site-functions/|,/packager: deb/d;'
+  sed "${DROP_ZSH_LINK}s|\${STAGE}|$STAGE|g" "$HERE/nfpm.yaml" >"$WORK/nfpm.yaml"
   for fmt in deb rpm; do
     if has "$fmt"; then (cd "$ROOT" && nfpm package -f "$WORK/nfpm.yaml" -p "$fmt" -t "$DIST/$BASENAME.$fmt"); fi
   done
@@ -107,7 +137,6 @@ fi
 if has appimage; then
   APPDIR="$WORK/PhotoCraft.AppDir"
   cp -R "$STAGE" "$APPDIR"
-  mv "$APPDIR/usr/share/doc" "$WORK/doc-unused"
   # AppRun is a script, not a symlink: it installs the .desktop entry and icons into
   # $XDG_DATA_HOME before launching, so Wayland compositors can resolve the window's
   # app_id to our icon instead of the generic Wayland logo (#593; opt-out env in the
@@ -136,7 +165,7 @@ if has appimage; then
   esac
   mkdir -p "$CARGO_TARGET_DIR"
   TOOL="${APPIMAGETOOL:-$CARGO_TARGET_DIR/appimagetool-$TOOL_VERSION-$ARCH.AppImage}"
-  if [ -n "${APPIMAGETOOL:-}" ]; then
+  if [[ -n "${APPIMAGETOOL:-}" ]]; then
     verify_appimagetool_override "$TOOL" "$TOOL_SHA256" "$TOOL_VERSION" "$ARCH"
   else
     download_verified \
@@ -167,16 +196,16 @@ if has appimage; then
   (cd "$DIST" && ARCH="$ARCH" APPIMAGE_EXTRACT_AND_RUN=1 "$TOOL" --no-appstream \
     --runtime-file "$RUNTIME" -u "$UPDATE_INFO" "$APPDIR" "$OUT")
   echo "wrote $OUT"
-  if [ -s "$OUT.zsync" ]; then
+  if [[ -s "$OUT.zsync" ]]; then
     echo "wrote $OUT.zsync"
   else
     warn "zsyncmake not found, so $OUT.zsync was not written; AppImage delta updates need it"
   fi
 fi
 
-if [ -z "${CROSS_TARGET:-}" ]; then
+if [[ -z "${CROSS_TARGET:-}" ]]; then
   "$STAGE/usr/bin/photocraft-cli" --version
-elif [ -n "${EMULATOR:-}" ]; then
+elif [[ -n "${EMULATOR:-}" ]]; then
   "$EMULATOR" "$STAGE/usr/bin/photocraft-cli" --version
 fi
 echo "==> done"

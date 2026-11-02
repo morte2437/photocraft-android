@@ -45,12 +45,9 @@ pub const PATCH_RADIUS: usize = 15;
 
 struct Rng(u64);
 impl Rng {
+    /// The next value of the SplitMix64 sequence.
     fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
+        crate::photo_util::splitmix64(&mut self.0)
     }
     fn unit(&mut self) -> f64 {
         (self.next() >> 11) as f64 / (1u64 << 53) as f64
@@ -60,25 +57,98 @@ impl Rng {
     }
 }
 
+/// Columns per band of the vertical blur pass: 64 f32 = 256 bytes = four cache lines per row, so
+/// walking down a band touches whole lines, and the band's working set stays in cache.
+const BLUR_BAND: usize = 64;
+
+/// Box blur of radius `r` (edges clamped): a running f32 sum along rows, then along columns.
+///
+/// Both passes are parallel and give bit for bit what the one-line-at-a-time version gave: every
+/// output sums its window in the same order. Rows are independent. For the column pass, the
+/// image is cut into bands of columns; each column keeps its own f32 running sum, started from
+/// its first window summed in order and updated in the same order, so only the loop nest changes
+/// (the inner loop runs across a band's columns and vectorises), never any column's arithmetic.
 fn blur(w: usize, h: usize, v: &[f32], r: usize) -> Vec<f32> {
-    let pass = |src: &[f32], horizontal: bool| -> Vec<f32> {
-        let mut dst = vec![0.0f32; src.len()];
-        let (n, m) = if horizontal { (h, w) } else { (w, h) };
-        for line in 0..n {
-            let at = |k: i64| {
-                let k = k.clamp(0, m as i64 - 1) as usize;
-                if horizontal { src[line * w + k] } else { src[k * w + line] }
-            };
-            let mut acc: f32 = (-(r as i64)..=r as i64).map(at).sum();
-            for k in 0..m {
-                let i = if horizontal { line * w + k } else { k * w + line };
-                dst[i] = acc / (2 * r + 1) as f32;
-                acc += at(k as i64 + r as i64 + 1) - at(k as i64 - r as i64);
+    if w == 0 || h == 0 {
+        return Vec::new();
+    }
+    let den = (2 * r + 1) as f32;
+    let mut tmp = vec![0.0f32; w * h];
+    par_rows(&mut tmp, w, |line, dst| {
+        let src = &v[line * w..(line + 1) * w];
+        let at = |k: i64| src[k.clamp(0, w as i64 - 1) as usize];
+        let mut acc: f32 = (-(r as i64)..=r as i64).map(at).sum();
+        for (k, o) in dst.iter_mut().enumerate() {
+            *o = acc / den;
+            acc += at(k as i64 + r as i64 + 1) - at(k as i64 - r as i64);
+        }
+    });
+    let mut dst = vec![0.0f32; w * h];
+    // One list of row segments per band, each segment a `&mut` slice of `dst`: no `unsafe`.
+    let mut bands: Vec<Vec<&mut [f32]>> = (0..w.div_ceil(BLUR_BAND)).map(|_| Vec::with_capacity(h)).collect();
+    for row in dst.chunks_exact_mut(w) {
+        for (band, seg) in bands.iter_mut().zip(row.chunks_mut(BLUR_BAND)) {
+            band.push(seg);
+        }
+    }
+    let src = &tmp;
+    let run = |bi: usize, segs: &mut [&mut [f32]], acc: &mut Vec<f32>| {
+        let (x0, bw) = (bi * BLUR_BAND, segs.first().map_or(0, |s| s.len()));
+        let row = |k: i64| {
+            let o = (k.clamp(0, h as i64 - 1) as usize) * w + x0;
+            &src[o..o + bw]
+        };
+        // The first window, summed in order from the same start as `Iterator::sum` uses.
+        acc.clear();
+        acc.resize(bw, std::iter::empty::<f32>().sum());
+        for k in -(r as i64)..=r as i64 {
+            for (t, &x) in acc.iter_mut().zip(row(k)) {
+                *t += x;
             }
         }
-        dst
+        for (k, seg) in segs.iter_mut().enumerate() {
+            let (add, sub) = (row(k as i64 + r as i64 + 1), row(k as i64 - r as i64));
+            for (((o, t), &p), &m) in seg.iter_mut().zip(acc.iter_mut()).zip(add).zip(sub) {
+                *o = *t / den;
+                *t += p - m;
+            }
+        }
     };
-    pass(&pass(v, true), false)
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use rayon::prelude::*;
+        bands.into_par_iter().enumerate().for_each_init(Vec::new, |acc, (bi, mut segs)| run(bi, &mut segs, acc));
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let mut acc = Vec::new();
+        for (bi, mut segs) in bands.into_iter().enumerate() {
+            run(bi, &mut segs, &mut acc);
+        }
+    }
+    dst
+}
+
+/// Runs `f(y, row)` over the `w`-wide rows of `buf`, in parallel on native targets.
+fn par_rows(buf: &mut [f32], w: usize, f: impl Fn(usize, &mut [f32]) + Sync + Send) {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use rayon::prelude::*;
+        buf.par_chunks_mut(w).enumerate().for_each(|(y, row)| f(y, row));
+    }
+    #[cfg(target_arch = "wasm32")]
+    buf.chunks_mut(w).enumerate().for_each(|(y, row)| f(y, row));
+}
+
+/// [`par_rows`] over three row-aligned buffers in lockstep.
+fn par_rows3(a: &mut [f32], b: &mut [f32], c: &mut [f32], w: usize, f: impl Fn(usize, &mut [f32], &mut [f32], &mut [f32]) + Sync + Send) {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use rayon::prelude::*;
+        a.par_chunks_mut(w).zip(b.par_chunks_mut(w)).zip(c.par_chunks_mut(w)).enumerate().for_each(|(y, ((a, b), c))| f(y, a, b, c));
+    }
+    #[cfg(target_arch = "wasm32")]
+    a.chunks_mut(w).zip(b.chunks_mut(w)).zip(c.chunks_mut(w)).enumerate().for_each(|(y, ((a, b), c))| f(y, a, b, c));
 }
 
 /// Harris corners: at most `max` corners at least `min_dist` pixels apart, strongest first,
@@ -88,28 +158,40 @@ pub fn harris(w: usize, h: usize, img: &[f32], max: usize, min_dist: f32, valid:
         return Vec::new();
     }
     let (mut xx, mut yy, mut xy) = (vec![0.0f32; w * h], vec![0.0f32; w * h], vec![0.0f32; w * h]);
-    for y in 1..h - 1 {
+    // Rows are independent (each output pixel reads only `img`), so they run in parallel.
+    par_rows3(&mut xx, &mut yy, &mut xy, w, |y, xxr, yyr, xyr| {
+        if y == 0 || y + 1 == h {
+            return;
+        }
         for x in 1..w - 1 {
             let p = |dx: i64, dy: i64| img[((y as i64 + dy) as usize) * w + (x as i64 + dx) as usize];
             // Sobel.
             let gx = (p(1, -1) + 2.0 * p(1, 0) + p(1, 1)) - (p(-1, -1) + 2.0 * p(-1, 0) + p(-1, 1));
             let gy = (p(-1, 1) + 2.0 * p(0, 1) + p(1, 1)) - (p(-1, -1) + 2.0 * p(0, -1) + p(1, -1));
-            let i = y * w + x;
-            xx[i] = gx * gx;
-            yy[i] = gy * gy;
-            xy[i] = gx * gy;
+            xxr[x] = gx * gx;
+            yyr[x] = gy * gy;
+            xyr[x] = gx * gy;
         }
-    }
+    });
     // Two box passes approximate the Gaussian window.
     let (xx, yy, xy) = (blur(w, h, &blur(w, h, &xx, 1), 1), blur(w, h, &blur(w, h, &yy, 1), 1), blur(w, h, &blur(w, h, &xy, 1), 1));
-    let r: Vec<f32> = (0..w * h).map(|i| xx[i] * yy[i] - xy[i] * xy[i] - 0.04 * (xx[i] + yy[i]).powi(2)).collect();
+    let mut r = vec![0.0f32; w * h];
+    par_rows(&mut r, w, |y, row| {
+        for (x, o) in row.iter_mut().enumerate() {
+            let i = y * w + x;
+            *o = xx[i] * yy[i] - xy[i] * xy[i] - 0.04 * (xx[i] + yy[i]).powi(2);
+        }
+    });
     let peak = r.iter().copied().fold(0.0f32, f32::max);
     if peak <= 0.0 {
         return Vec::new();
     }
     let m = PATCH_RADIUS + 1;
-    let mut cand: Vec<Corner> = Vec::new();
-    for y in m..h - m {
+    // Rows are scanned in parallel and joined in row order; the sort below fully orders the
+    // candidates anyway (score, then y, then x), so the order they arrive in cannot matter.
+    let rows = par_map((h - m).saturating_sub(m), |i| {
+        let y = m + i;
+        let mut found: Vec<Corner> = Vec::new();
         for x in m..w - m {
             let v = r[y * w + x];
             if v < peak * 0.01 {
@@ -125,9 +207,11 @@ pub fn harris(w: usize, h: usize, img: &[f32], max: usize, min_dist: f32, valid:
                     continue;
                 }
             }
-            cand.push(Corner { x: x as f32, y: y as f32, score: v });
+            found.push(Corner { x: x as f32, y: y as f32, score: v });
         }
-    }
+        found
+    });
+    let mut cand: Vec<Corner> = rows.into_iter().flatten().collect();
     cand.sort_by(|a, b| b.score.total_cmp(&a.score).then(a.y.total_cmp(&b.y)).then(a.x.total_cmp(&b.x)));
     // Minimum spacing via a coarse occupancy grid.
     let cell = min_dist.max(1.0);
@@ -176,37 +260,37 @@ pub fn describe(w: usize, h: usize, img: &[f32], corners: &[Corner], upright: bo
         let (xi, yi) = ((x.round() as i64).clamp(0, w as i64 - 1) as usize, (y.round() as i64).clamp(0, h as i64 - 1) as usize);
         smooth[yi * w + xi]
     };
-    corners
-        .iter()
-        .map(|c| {
-            let (s, co) = if upright {
-                (0.0, 1.0)
-            } else {
-                let (mut m10, mut m01) = (0.0f32, 0.0f32);
-                let r = PATCH_RADIUS as i64;
-                for dy in -r..=r {
-                    for dx in -r..=r {
-                        if dx * dx + dy * dy <= r * r {
-                            let v = at(c.x + dx as f32, c.y + dy as f32);
-                            m10 += dx as f32 * v;
-                            m01 += dy as f32 * v;
-                        }
+    // Every descriptor depends only on its own corner and the smoothed image: computed in
+    // parallel, kept in corner order.
+    par_map(corners.len(), |ci| {
+        let c = &corners[ci];
+        let (s, co) = if upright {
+            (0.0, 1.0)
+        } else {
+            let (mut m10, mut m01) = (0.0f32, 0.0f32);
+            let r = PATCH_RADIUS as i64;
+            for dy in -r..=r {
+                for dx in -r..=r {
+                    if dx * dx + dy * dy <= r * r {
+                        let v = at(c.x + dx as f32, c.y + dy as f32);
+                        m10 += dx as f32 * v;
+                        m01 += dy as f32 * v;
                     }
                 }
-                m01.atan2(m10).sin_cos()
-            };
-            let mut d = [0u64; 4];
-            for (i, p) in pairs().iter().enumerate() {
-                let rot = |x: f32, y: f32| (c.x + x * co - y * s, c.y + x * s + y * co);
-                let (ax, ay) = rot(p[0], p[1]);
-                let (bx, by) = rot(p[2], p[3]);
-                if at(ax, ay) < at(bx, by) {
-                    d[i / 64] |= 1 << (i % 64);
-                }
             }
-            d
-        })
-        .collect()
+            m01.atan2(m10).sin_cos()
+        };
+        let mut d = [0u64; 4];
+        for (i, p) in pairs().iter().enumerate() {
+            let rot = |x: f32, y: f32| (c.x + x * co - y * s, c.y + x * s + y * co);
+            let (ax, ay) = rot(p[0], p[1]);
+            let (bx, by) = rot(p[2], p[3]);
+            if at(ax, ay) < at(bx, by) {
+                d[i / 64] |= 1 << (i % 64);
+            }
+        }
+        d
+    })
 }
 
 pub fn hamming(a: &Descriptor, b: &Descriptor) -> u32 {
@@ -558,5 +642,126 @@ mod tests {
         let c = harris(w, h, &img, 50, 6.0, None);
         assert_eq!(describe(w, h, &img, &c, false), describe(w, h, &img, &c, false));
         assert_eq!(hamming(&[0, 0, 0, 0], &[1, 3, 0, u64::MAX]), 67);
+    }
+}
+
+/// The row / column-band parallel `blur`, `harris` and `describe` against the serial code they
+/// replaced. Every output must stay bit for bit the same.
+#[cfg(test)]
+mod parallel_tests {
+    use super::*;
+
+    /// The serial blur exactly as it was before the parallelisation.
+    fn ref_blur(w: usize, h: usize, v: &[f32], r: usize) -> Vec<f32> {
+        let pass = |src: &[f32], horizontal: bool| -> Vec<f32> {
+            let mut dst = vec![0.0f32; src.len()];
+            let (n, m) = if horizontal { (h, w) } else { (w, h) };
+            for line in 0..n {
+                let at = |k: i64| {
+                    let k = k.clamp(0, m as i64 - 1) as usize;
+                    if horizontal { src[line * w + k] } else { src[k * w + line] }
+                };
+                let mut acc: f32 = (-(r as i64)..=r as i64).map(at).sum();
+                for k in 0..m {
+                    let i = if horizontal { line * w + k } else { k * w + line };
+                    dst[i] = acc / (2 * r + 1) as f32;
+                    acc += at(k as i64 + r as i64 + 1) - at(k as i64 - r as i64);
+                }
+            }
+            dst
+        };
+        pass(&pass(v, true), false)
+    }
+
+    fn mix(mut z: u64) -> u64 {
+        z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    /// Integer-only data with negatives, signed zeros and large values, so a different order of
+    /// additions cannot hide.
+    fn noise(len: usize, seed: u64) -> Vec<f32> {
+        (0..len as u64)
+            .map(|i| {
+                let z = mix(seed.wrapping_mul(0x1234_5678_9ABC).wrapping_add(i));
+                let v = (z >> 40) as f32 / 16_777_216.0;
+                match z & 31 {
+                    0 => -v,
+                    1 => -0.0,
+                    2 => v * 1000.0,
+                    _ => v,
+                }
+            })
+            .collect()
+    }
+
+    /// Blocks of random brightness: lots of strong corners, no libm in the making. Only the
+    /// recorded-hash test below uses it, and that one is Linux x86_64 only.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    fn blocks(w: usize, h: usize, seed: u64) -> Vec<f32> {
+        (0..w * h).map(|i| (mix(seed + ((i % w) / 8) as u64 * 4096 + ((i / w) / 8) as u64) >> 40) as f32 / 16_777_216.0).collect()
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    fn fnv(parts: &[u64]) -> u64 {
+        let mut h = 0xcbf2_9ce4_8422_2325u64;
+        for p in parts {
+            h ^= p;
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        h
+    }
+
+    #[test]
+    fn blur_matches_the_serial_code() {
+        // Widths around the 64-column band (1 band, band + 1, several bands, a ragged last one),
+        // 1-wide and 1-high images, and radii 0, 1, 2, larger than the image.
+        let widths = [1usize, 2, 3, 31, 63, 64, 65, 127, 128, 129, 200];
+        let heights = [1usize, 2, 3, 5, 17, 40];
+        for (a, &w) in widths.iter().enumerate() {
+            for (b, &h) in heights.iter().enumerate() {
+                let v = noise(w * h, (a * 10 + b) as u64);
+                for r in [0usize, 1, 2, 3, 7, 50] {
+                    let (got, want) = (blur(w, h, &v, r), ref_blur(w, h, &v, r));
+                    let (g, e): (Vec<u32>, Vec<u32>) = (got.iter().map(|x| x.to_bits()).collect(), want.iter().map(|x| x.to_bits()).collect());
+                    assert_eq!(g, e, "blur {w}x{h} r={r}");
+                }
+            }
+        }
+        assert!(blur(0, 0, &[], 1).is_empty());
+    }
+
+    // `harris` and `describe` go through the platform's hypot / ln / cos / atan2 / sin_cos, so the
+    // hashes recorded from the old code only hold where those are the same functions.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn harris_and_describe_hashes_recorded_from_the_serial_code() {
+        // Sizes: a whole number of 64-column bands and a ragged one; with and without a validity mask.
+        for (w, h, max, md, want_corners, want_desc) in
+            [(211usize, 157usize, 300usize, 6.0f32, 0xeccc6928d3ae3b8cu64, 0xd1e6caae4d68f253u64), (128, 97, 60, 3.0, 0xe3f6615117fa7da7, 0x818ae7e965ecf88f)]
+        {
+            let img = blocks(w, h, 7);
+            let valid: Vec<bool> = (0..w * h).map(|i| !((i % w) > w / 2 && (i / w) < h / 3)).collect();
+            let mut parts = Vec::new();
+            for v in [None, Some(valid.as_slice())] {
+                let c = harris(w, h, &img, max, md, v);
+                for k in &c {
+                    parts.extend([k.x.to_bits() as u64, k.y.to_bits() as u64, k.score.to_bits() as u64]);
+                }
+                parts.push(c.len() as u64);
+            }
+            assert_eq!(fnv(&parts), want_corners, "harris {w}x{h}");
+            let c = harris(w, h, &img, max, md, None);
+            assert!(c.len() > 10, "{} corners", c.len());
+            let mut parts = Vec::new();
+            for upright in [false, true] {
+                for d in describe(w, h, &img, &c, upright) {
+                    parts.extend(d);
+                }
+            }
+            assert_eq!(fnv(&parts), want_desc, "describe {w}x{h}");
+        }
     }
 }

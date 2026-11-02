@@ -65,6 +65,35 @@ pub fn replace_color(px: &mut [[f32; 4]], color: [f32; 3], fuzziness: f32, hue: 
     mask
 }
 
+/// Replace Color's Result swatch: `color` after the hue (±180°), saturation and lightness (±100)
+/// shift, as a fully matched pixel of that colour becomes.
+pub fn replace_color_result(color: [f32; 3], hue: f32, saturation: f32, lightness: f32) -> [f32; 3] {
+    let mut px = [[color[0], color[1], color[2], 1.0]];
+    replace_color_masked(&mut px, &[1.0], hue, saturation, lightness);
+    [px[0][0], px[0][1], px[0][2]]
+}
+
+/// The hue (±180°), saturation and lightness (±100) shift that turns `from` into `to`, as
+/// Photoshop's Result Color Picker sets the sliders. A shift the sliders can't reach (a grey has
+/// no hue to turn, black or white no saturation to give) goes as far as they do.
+pub fn replace_color_shift(from: [f32; 3], to: [f32; 3]) -> (f32, f32, f32) {
+    let [fh, fs, fl] = rgb_to_hsl(from);
+    let [th, ts, tl] = rgb_to_hsl(to);
+    // Hue turns the short way round; a grey target keeps the hue where it is.
+    let hue = if ts <= 0.0 { 0.0 } else { ((th - fh + 0.5).rem_euclid(1.0) - 0.5) * 360.0 };
+    // Inverse of the shift in `replace_color_masked`: up moves toward 1, down toward 0.
+    let amount = |from: f32, to: f32| {
+        if to >= from {
+            if from >= 1.0 { 0.0 } else { (to - from) / (1.0 - from) * 100.0 }
+        } else if from <= 0.0 {
+            0.0
+        } else {
+            (to / from - 1.0) * 100.0
+        }
+    };
+    (hue.clamp(-180.0, 180.0), amount(fs, ts).clamp(-100.0, 100.0), amount(fl, tl).clamp(-100.0, 100.0))
+}
+
 /// Replace Color's hue, saturation and lightness shift, applied to each pixel as far as `mask`
 /// (`0..=1`, one per pixel: the colour match, localized or not) covers it.
 pub fn replace_color_masked(px: &mut [[f32; 4]], mask: &[f32], hue: f32, saturation: f32, lightness: f32) {
@@ -276,6 +305,28 @@ pub fn hdr_toning(px: &mut [[f32; 4]], w: usize, h: usize, p: &HdrToning) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #6278: the Result swatch is the sampled colour after the shift, and a picked Result sets
+    /// the sliders that give it.
+    #[test]
+    fn replace_color_result_and_shift_round_trip() {
+        let from = [0.8, 0.2, 0.2];
+        let near = |a: [f32; 3], b: [f32; 3]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 2e-3);
+        assert!(near(replace_color_result(from, 0.0, 0.0, 0.0), from), "no shift, no change");
+        for to in [[0.2, 0.3, 0.9], [0.9, 0.85, 0.1], [0.4, 0.1, 0.1], [0.95, 0.6, 0.6], [0.1, 0.6, 0.3]] {
+            let (h, s, l) = replace_color_shift(from, to);
+            assert!((-180.0..=180.0).contains(&h) && (-100.0..=100.0).contains(&s) && (-100.0..=100.0).contains(&l));
+            assert!(near(replace_color_result(from, h, s, l), to), "{to:?}: ({h}, {s}, {l}) gives {:?}", replace_color_result(from, h, s, l));
+        }
+        // Red to blue turns the short way (−120°, not +240°).
+        assert!((replace_color_shift([1.0, 0.0, 0.0], [0.0, 0.0, 1.0]).0 + 120.0).abs() < 0.5);
+        // A grey target: saturation all the way down, the hue left alone.
+        let (h, s, _) = replace_color_shift(from, [0.5, 0.5, 0.5]);
+        assert_eq!((h, s), (0.0, -100.0));
+        // Black has no saturation to raise: the slider stays put rather than dividing by zero.
+        let (h, s, l) = replace_color_shift([0.0, 0.0, 0.0], [0.2, 0.6, 0.3]);
+        assert!(h.is_finite() && s.is_finite() && l > 0.0);
+    }
 
     fn ramp(w: usize, h: usize) -> Vec<[f32; 4]> {
         (0..w * h)

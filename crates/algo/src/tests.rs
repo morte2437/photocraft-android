@@ -1,5 +1,8 @@
 use super::*;
 use photocraft_color::{PixelFormat, SampleType};
+mod ext;
+mod mosaic;
+mod selection_mix;
 
 fn fmt(s: SampleType) -> PixelFormat {
     PixelFormat::new(ColorMode::Rgb, s, true)
@@ -88,6 +91,27 @@ fn radial_blur_quality_defaults_for_older_serialized_parameters() {
     });
     let decoded: FilterParams = serde_json::from_value(params).unwrap();
     assert_eq!(decoded, FilterParams::RadialBlur { amount: 20.0, method: RadialMethod::Spin, quality: RadialQuality::Good, center_x: 0.5, center_y: 0.5 });
+}
+
+#[test]
+fn nonpositive_tile_sizes_match_one_pixel_tiles() {
+    let area = Rect::new(0, 0, 4, 3);
+    for depth in [SampleType::U8, SampleType::U16, SampleType::F32] {
+        let source = pattern(depth, area);
+        for params in all_filters().into_iter().chain([FilterParams::ShapeBlur { radius: 3.0, shape: BlurShape::Star }]) {
+            let expected = apply_tiled(&source, &params, area, area, None, 1, Some(area));
+            for tile in [0, -64, i32::MIN] {
+                let actual = apply_tiled(&source, &params, area, area, None, tile, Some(area));
+                assert_eq!(actual.read_region(area), expected.read_region(area), "{}: {depth:?}, tile={tile}", params.label());
+                let cancellable = apply_tiled_with(&source, &params, area, area, None, tile, Some(area), &photocraft_raster::Interrupt::NONE)
+                    .expect("a nonpositive tile size is normalized, not rejected");
+                assert_eq!(cancellable.read_region(area), expected.read_region(area), "{}: {depth:?}, tile={tile}", params.label());
+                let cancelled = photocraft_raster::Interrupt::cancel_only(&|| true);
+                assert!(apply_tiled_with(&source, &params, area, area, None, tile, Some(area), &cancelled).is_none());
+            }
+        }
+        assert_eq!(source.read_region(area), pattern(depth, area).read_region(area));
+    }
 }
 
 #[test]
@@ -246,6 +270,32 @@ fn minimum_maximum_spread() {
     assert!((mx.pixel(12, 10)[0] - 0.5).abs() < 1e-6);
     let mn = run(&s, &FilterParams::Minimum { radius: 1.0, preserve: Preserve::Squareness });
     assert!((mn.pixel(10, 10)[0] - 0.5).abs() < 1e-6);
+}
+
+/// CMYK samples are ink, so Maximum spreads paper white and Minimum spreads ink, as Photoshop
+/// does: Maximum r 1 removes a 1-px C 100% line on white, Minimum widens it to 3 px. Alpha keeps
+/// the usual polarity (Maximum grows opaque areas, Minimum grows transparent ones).
+#[test]
+fn minimum_maximum_treat_cmyk_as_ink() {
+    for depth in [SampleType::U8, SampleType::U16, SampleType::F32] {
+        let mut s = Surface::new(PixelFormat::new(ColorMode::Cmyk, depth, true));
+        s.fill_rect(R, &[0.0, 0.0, 0.0, 0.0, 1.0]);
+        s.fill_rect(Rect::new(20, 0, 21, 30), &[1.0, 0.0, 0.0, 0.0, 1.0]);
+        s.write_pixel(5, 5, &[0.0, 0.0, 0.0, 0.0, 0.0]);
+        for preserve in [Preserve::Squareness, Preserve::Roundness] {
+            let mx = run(&s, &FilterParams::Maximum { radius: 1.0, preserve });
+            for x in 17..24 {
+                assert!(mx.pixel(x, 15)[0].abs() < 1e-6, "{depth:?} {preserve:?} Maximum C at x {x}: {:?}", mx.pixel(x, 15));
+            }
+            assert!((mx.pixel(5, 5)[4] - 1.0).abs() < 1e-6, "{depth:?} {preserve:?} Maximum grows alpha");
+            let mn = run(&s, &FilterParams::Minimum { radius: 1.0, preserve });
+            for x in 17..24 {
+                let want = if (19..=21).contains(&x) { 1.0 } else { 0.0 };
+                assert!((mn.pixel(x, 15)[0] - want).abs() < 1e-6, "{depth:?} {preserve:?} Minimum C at x {x}: {:?}", mn.pixel(x, 15));
+            }
+            assert!(mn.pixel(6, 5)[4].abs() < 1e-6, "{depth:?} {preserve:?} Minimum shrinks alpha");
+        }
+    }
 }
 
 #[test]
@@ -414,6 +464,24 @@ fn twirl_keeps_centre_and_outside() {
     assert_ne!(out.pixel(20, 12), s.pixel(20, 12));
 }
 
+/// #5643: on a wide image Twirl, Pinch and Spherize fill the ellipse inscribed in the bounds, as
+/// Photoshop's do, not just a circle fitted to the height: a point near the left and right edges
+/// on the middle row changes, the corners don't, and a square still uses its inscribed circle.
+#[test]
+fn round_distortions_fill_the_inscribed_ellipse() {
+    let b = Rect::new(0, 0, 80, 40);
+    let s = pattern(SampleType::F32, b);
+    for p in [FilterParams::Twirl { angle: 180.0 }, FilterParams::Pinch { amount: 80.0 }, FilterParams::Spherize { amount: 80.0, mode: SpherizeMode::Normal }] {
+        let out = apply(&s, &p, b, b, None);
+        // 30 px left of centre on the middle row: outside the old 20 px circle, inside the ellipse.
+        assert_ne!(out.pixel(10, 21), s.pixel(10, 21), "{p:?}");
+        assert_ne!(out.pixel(69, 18), s.pixel(69, 18), "{p:?}");
+        for (x, y) in [(0, 0), (79, 0), (0, 39), (79, 39)] {
+            assert_eq!(out.pixel(x, y), s.pixel(x, y), "{p:?}: corner ({x}, {y}) is outside the ellipse");
+        }
+    }
+}
+
 #[test]
 fn motion_blur_spreads_along_angle_only() {
     let mut s = flat(SampleType::F32, R, [0.0, 0.0, 0.0, 1.0]);
@@ -446,6 +514,10 @@ fn halos_and_output_area() {
     assert_eq!(output_area(&FilterParams::Twirl { angle: 1.0 }, content, R, None), R);
     assert_eq!(output_area(&FilterParams::BoxBlur { radius: 1.0 }, content, R, Some(Rect::new(0, 0, 12, 12))), Rect::new(8, 8, 12, 12));
     assert!(output_area(&FilterParams::Invert, Rect::EMPTY, R, None).is_empty());
+    // Fibers renders without reading the layer: an empty layer still fills the bounds (#5241).
+    let fibers = FilterParams::Fibers { variance: 16.0, strength: 4.0, seed: 0, foreground: [0.0; 4], background: [1.0; 4] };
+    assert_eq!(output_area(&fibers, Rect::EMPTY, R, None), R);
+    assert_eq!(output_area(&fibers, content, R, Some(Rect::new(0, 0, 12, 12))), Rect::new(0, 0, 12, 12));
 }
 
 #[test]
@@ -570,4 +642,13 @@ fn mix_selection_reads_the_selection_once_per_tile() {
         mix_selection_reference(&mut b, t, &sel, &orig, alpha);
         assert!(a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()), "alpha {alpha}: results differ");
     }
+}
+
+#[test]
+fn blur_halos_follow_the_clamped_radius_and_never_overflow() {
+    let smart = |radius| FilterParams::SmartBlur { radius, threshold: 25.0, quality: BlurQuality::default(), mode: SmartBlurMode::default() };
+    assert_eq!(smart(1e9).halo(), Halo::Radius(101));
+    assert_eq!(smart(f32::INFINITY).halo(), Halo::Radius(101));
+    let gaussian = FilterParams::GaussianBlur { radius: f32::INFINITY };
+    assert_eq!(gaussian.halo(), Halo::Radius(i32::MAX));
 }

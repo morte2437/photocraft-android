@@ -35,8 +35,14 @@
 #![allow(clippy::needless_range_loop)] // index loops mirror the maths (pixels × channels)
 
 use crate::features::{self, Descriptor, Model};
-use crate::photo_util::{Normal, Rng, par_map, solve_dense};
+use crate::photo_util::{Normal, Rng, par_map, par_rows, solve_dense};
 use crate::transform::Homography;
+
+mod blend;
+
+pub use blend::{Geometry, Photometric, RoiImage, blend_levels, multiband, photometric, seam_labels};
+#[cfg(test)]
+use blend::{expand, multiband_batched, push_pull, reduce};
 
 /// Photomerge layouts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -720,506 +726,6 @@ fn align_layout(feats: &[ImageFeatures], matches: &[PairMatch], opts: &AlignOpti
     Some(Alignment { layout, reference, placements, focal, k1, pairs: edges.iter().map(|e| (e.0, e.1, e.2)).collect(), rms })
 }
 
-// ---------- photometric ----------
-
-/// One image warped into the panorama: an axis-aligned region with colour channels and coverage.
-#[derive(Clone, Debug)]
-pub struct RoiImage {
-    pub x0: i32,
-    pub y0: i32,
-    pub w: usize,
-    pub h: usize,
-    /// Colour channels per pixel (no alpha).
-    pub ch: usize,
-    pub px: Vec<f32>,
-    /// Coverage `0..=1`.
-    pub alpha: Vec<f32>,
-}
-
-impl RoiImage {
-    fn at(&self, x: i32, y: i32) -> Option<usize> {
-        let (lx, ly) = (x - self.x0, y - self.y0);
-        (lx >= 0 && ly >= 0 && (lx as usize) < self.w && (ly as usize) < self.h).then(|| ly as usize * self.w + lx as usize)
-    }
-}
-
-/// Placements and source sizes (for the vignetting radius).
-pub type Geometry<'a> = (&'a [Placement], &'a [(usize, usize)]);
-
-/// Gains (per image, per channel) and the vignetting model found by [`photometric`].
-#[derive(Clone, Debug, PartialEq)]
-pub struct Photometric {
-    pub gains: Vec<Vec<f32>>,
-    /// `log V(r) = a·r² + b·r⁴`, `r` = distance from the image centre over the half diagonal.
-    pub vignette: [f64; 2],
-}
-
-impl Photometric {
-    /// Multiplier that corrects a pixel of image `i` at normalised squared radius `r2`.
-    pub fn factor(&self, i: usize, c: usize, r2: f64) -> f32 {
-        let v = (self.vignette[0] * r2 + self.vignette[1] * r2 * r2).exp();
-        (1.0 / (self.gains[i][c] as f64 * v)) as f32
-    }
-}
-
-/// Estimates exposure gains (`gain`) and a shared vignetting falloff (`vignette`) from the
-/// overlaps of `imgs` (`placements`/`sizes` give each panorama pixel's source radius).
-/// Without `geometry` (placements and source sizes) the vignetting model is not estimated.
-pub fn photometric(imgs: &[RoiImage], geometry: Option<Geometry>, gain: bool, vignette: bool) -> Photometric {
-    let vignette = vignette && geometry.is_some();
-    let n = imgs.len();
-    let ch = imgs.first().map_or(1, |i| i.ch);
-    let identity = Photometric { gains: vec![vec![1.0; ch]; n], vignette: [0.0, 0.0] };
-    if n == 0 || (!gain && !vignette) {
-        return identity;
-    }
-    // Overlap samples on a grid: (a, b, colours, radii²).
-    let (mut x0, mut y0, mut x1, mut y1) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
-    for im in imgs {
-        x0 = x0.min(im.x0);
-        y0 = y0.min(im.y0);
-        x1 = x1.max(im.x0 + im.w as i32);
-        y1 = y1.max(im.y0 + im.h as i32);
-    }
-    let step = (((x1 - x0) as i64 * (y1 - y0) as i64 / 40_000).max(1) as f64).sqrt().ceil() as i32;
-    let r2_of = |i: usize, u: i32, v: i32| -> Option<f64> {
-        let Some((placements, sizes)) = geometry else { return Some(0.0) };
-        let (sx, sy) = placements[i].inverse(u as f64 + 0.5, v as f64 + 0.5)?;
-        let (w, h) = (sizes[i].0 as f64, sizes[i].1 as f64);
-        let (dx, dy) = (sx - w / 2.0, sy - h / 2.0);
-        Some((dx * dx + dy * dy) / (w * w / 4.0 + h * h / 4.0))
-    };
-    type Sample = (usize, usize, Vec<f32>, Vec<f32>, f64, f64);
-    let mut samples: Vec<Sample> = Vec::new();
-    let mut y = y0;
-    while y < y1 {
-        let mut x = x0;
-        while x < x1 {
-            let cover: Vec<(usize, usize)> = (0..n).filter_map(|i| imgs[i].at(x, y).filter(|&k| imgs[i].alpha[k] > 0.999).map(|k| (i, k))).collect();
-            for p in 0..cover.len() {
-                for q in p + 1..cover.len() {
-                    let ((a, ka), (b, kb)) = (cover[p], cover[q]);
-                    let ca = imgs[a].px[ka * ch..(ka + 1) * ch].to_vec();
-                    let cb = imgs[b].px[kb * ch..(kb + 1) * ch].to_vec();
-                    if ca.iter().chain(&cb).any(|v| !(0.02..=0.98).contains(v)) {
-                        continue;
-                    }
-                    // Disagreeing content (parallax, moving objects) says nothing about exposure.
-                    if ca.iter().zip(&cb).any(|(x, y)| (x / y).ln().abs() > 1.0) {
-                        continue;
-                    }
-                    let (Some(ra), Some(rb)) = (r2_of(a, x, y), r2_of(b, x, y)) else { continue };
-                    samples.push((a, b, ca, cb, ra, rb));
-                }
-            }
-            x += step;
-        }
-        y += step;
-    }
-    if samples.len() < 20 {
-        return identity;
-    }
-    // Unknowns: log gain per image (per channel), then a, b (shared, from mean log intensity).
-    let sigma_n = 0.05;
-    let sigma_g = if gain { 0.15 } else { 1e-4 };
-    let mut out = identity.clone();
-    let nv = if vignette { 2 } else { 0 };
-    // Vignetting is solved on the channel mean, then gains per channel with it fixed.
-    let mut ne = Normal::new(n + nv);
-    for (a, b, ca, cb, ra, rb) in &samples {
-        let la = ca.iter().map(|v| (*v as f64).ln()).sum::<f64>() / ch as f64;
-        let lb = cb.iter().map(|v| (*v as f64).ln()).sum::<f64>() / ch as f64;
-        let mut row = vec![(*a, 1.0), (*b, -1.0)];
-        if vignette {
-            row.push((n, ra - rb));
-            row.push((n + 1, ra * ra - rb * rb));
-        }
-        ne.add(&row, la - lb, 1.0 / sigma_n);
-    }
-    for i in 0..n {
-        ne.add(&[(i, 1.0)], 0.0, 1.0 / sigma_g);
-    }
-    if vignette {
-        ne.add(&[(n, 1.0)], 0.0, 0.5);
-        ne.add(&[(n + 1, 1.0)], 0.0, 0.5);
-    }
-    let Some(sol) = ne.solve() else { return out };
-    if vignette {
-        // Vignetting only darkens; clamp a runaway brightening fit.
-        out.vignette = [sol[n].clamp(-2.0, 0.5), sol[n + 1].clamp(-2.0, 2.0)];
-    }
-    if gain {
-        for c in 0..ch {
-            let mut ne = Normal::new(n);
-            for (a, b, ca, cb, ra, rb) in &samples {
-                let va = out.vignette[0] * ra + out.vignette[1] * ra * ra;
-                let vb = out.vignette[0] * rb + out.vignette[1] * rb * rb;
-                ne.add(&[(*a, 1.0), (*b, -1.0)], ((ca[c] as f64).ln() - va) - ((cb[c] as f64).ln() - vb), 1.0 / sigma_n);
-            }
-            for i in 0..n {
-                ne.add(&[(i, 1.0)], 0.0, 1.0 / sigma_g);
-            }
-            if let Some(g) = ne.solve() {
-                for i in 0..n {
-                    out.gains[i][c] = g[i].exp().clamp(0.2, 5.0) as f32;
-                }
-            }
-        }
-    }
-    out
-}
-
-// ---------- seams ----------
-
-/// Seam labels on a `w × h` grid (`-1` = no image): images are added in `order`; each new image
-/// takes the part of its overlap with the composite that lies on its side of the cheapest path
-/// through the overlap (cost = colour difference).
-pub fn seam_labels(w: usize, h: usize, luma: &[Vec<f32>], cover: &[Vec<bool>], order: &[usize]) -> Vec<i32> {
-    let mut label = vec![-1i32; w * h];
-    for &img in order {
-        let cov = &cover[img];
-        let mut overlap = vec![false; w * h];
-        let (mut sx, mut sy, mut no) = (0.0f64, 0.0f64, 0usize);
-        let (mut nx, mut ny, mut nn) = (0.0f64, 0.0f64, 0usize);
-        for i in 0..w * h {
-            if !cov[i] {
-                continue;
-            }
-            nx += (i % w) as f64;
-            ny += (i / w) as f64;
-            nn += 1;
-            if label[i] >= 0 {
-                overlap[i] = true;
-                sx += (i % w) as f64;
-                sy += (i / w) as f64;
-                no += 1;
-            } else {
-                label[i] = img as i32;
-            }
-        }
-        if no == 0 || nn == no {
-            continue;
-        }
-        let (ox, oy) = (sx / no as f64, sy / no as f64);
-        let (cx, cy) = (nx / nn as f64, ny / nn as f64);
-        let vertical = (cx - ox).abs() >= (cy - oy).abs();
-        // Image on the increasing side along the seam's cross axis?
-        let positive = if vertical { cx > ox } else { cy > oy };
-        let cost = |i: usize| -> f32 { 0.002 + (luma[img][i] - luma[label[i] as usize][i]).abs() };
-        let (lines, len) = if vertical { (h, w) } else { (w, h) };
-        let idx = |line: usize, k: usize| if vertical { line * w + k } else { k * w + line };
-        // DP over lines (rows for a vertical seam), within the overlap.
-        let mut acc = vec![f32::INFINITY; w * h];
-        let mut from = vec![usize::MAX; w * h];
-        let mut prev_line: Option<usize> = None;
-        for line in 0..lines {
-            let any = (0..len).any(|k| overlap[idx(line, k)]);
-            if !any {
-                continue;
-            }
-            for k in 0..len {
-                let i = idx(line, k);
-                if !overlap[i] {
-                    continue;
-                }
-                let mut best = (0.0f32, usize::MAX);
-                if let Some(pl) = prev_line.filter(|pl| *pl + 1 == line) {
-                    best = (f32::INFINITY, usize::MAX);
-                    for dk in [-1i64, 0, 1] {
-                        let kk = k as i64 + dk;
-                        if kk < 0 || kk >= len as i64 {
-                            continue;
-                        }
-                        let j = idx(pl, kk as usize);
-                        if acc[j] < best.0 {
-                            best = (acc[j], kk as usize);
-                        }
-                    }
-                    if best.1 == usize::MAX {
-                        best = (0.0, usize::MAX);
-                    }
-                }
-                acc[i] = best.0 + cost(i);
-                from[i] = best.1;
-            }
-            prev_line = Some(line);
-        }
-        // Backtrack from the cheapest end; lines not reached keep their own best cell.
-        let mut seam = vec![usize::MAX; lines];
-        let mut line = lines;
-        while line > 0 {
-            line -= 1;
-            if seam[line] != usize::MAX {
-                continue;
-            }
-            let Some(k) = (0..len).filter(|&k| overlap[idx(line, k)]).min_by(|&a, &b| acc[idx(line, a)].total_cmp(&acc[idx(line, b)])) else { continue };
-            let (mut l, mut k) = (line, k);
-            loop {
-                seam[l] = k;
-                let f = from[idx(l, k)];
-                if f == usize::MAX || l == 0 {
-                    break;
-                }
-                l -= 1;
-                if seam[l] != usize::MAX {
-                    break;
-                }
-                k = f;
-            }
-        }
-        for line in 0..lines {
-            let s = seam[line];
-            if s == usize::MAX {
-                continue;
-            }
-            for k in 0..len {
-                let i = idx(line, k);
-                if overlap[i] && ((positive && k > s) || (!positive && k < s)) {
-                    label[i] = img as i32;
-                }
-            }
-        }
-    }
-    label
-}
-
-// ---------- multi-band blending ----------
-
-/// Number of pyramid levels used by [`multiband`] for a seam mask of this size.
-pub fn blend_levels(w: usize, h: usize) -> usize {
-    let mut s = w.min(h);
-    let mut n = 1;
-    while s > 16 && n < 7 {
-        s /= 2;
-        n += 1;
-    }
-    n
-}
-
-fn reduce(w: usize, h: usize, ch: usize, src: &[f32]) -> (usize, usize, Vec<f32>) {
-    let (nw, nh) = (w.div_ceil(2), h.div_ceil(2));
-    let k = [1.0f32, 4.0, 6.0, 4.0, 1.0];
-    // Separable 5-tap binomial, then decimate.
-    let mut tmp = vec![0.0f32; nw * h * ch];
-    for y in 0..h {
-        for x in 0..nw {
-            for c in 0..ch {
-                let mut s = 0.0;
-                for (t, kv) in k.iter().enumerate() {
-                    let xx = (2 * x as i64 + t as i64 - 2).clamp(0, w as i64 - 1) as usize;
-                    s += kv * src[(y * w + xx) * ch + c];
-                }
-                tmp[(y * nw + x) * ch + c] = s / 16.0;
-            }
-        }
-    }
-    let mut out = vec![0.0f32; nw * nh * ch];
-    for y in 0..nh {
-        for x in 0..nw {
-            for c in 0..ch {
-                let mut s = 0.0;
-                for (t, kv) in k.iter().enumerate() {
-                    let yy = (2 * y as i64 + t as i64 - 2).clamp(0, h as i64 - 1) as usize;
-                    s += kv * tmp[(yy * nw + x) * ch + c];
-                }
-                out[(y * nw + x) * ch + c] = s / 16.0;
-            }
-        }
-    }
-    (nw, nh, out)
-}
-
-fn expand(sw: usize, sh: usize, ch: usize, src: &[f32], w: usize, h: usize) -> Vec<f32> {
-    // Bilinear upsampling at half-pixel-aligned positions.
-    let mut out = vec![0.0f32; w * h * ch];
-    for y in 0..h {
-        let fy = ((y as f32 + 0.5) / 2.0 - 0.5).clamp(0.0, (sh - 1) as f32);
-        let (y0, ty) = (fy.floor() as usize, fy - fy.floor());
-        let y1 = (y0 + 1).min(sh - 1);
-        for x in 0..w {
-            let fx = ((x as f32 + 0.5) / 2.0 - 0.5).clamp(0.0, (sw - 1) as f32);
-            let (x0, tx) = (fx.floor() as usize, fx - fx.floor());
-            let x1 = (x0 + 1).min(sw - 1);
-            for c in 0..ch {
-                let p = |xx: usize, yy: usize| src[(yy * sw + xx) * ch + c];
-                let top = p(x0, y0) + (p(x1, y0) - p(x0, y0)) * tx;
-                let bot = p(x0, y1) + (p(x1, y1) - p(x0, y1)) * tx;
-                out[(y * w + x) * ch + c] = top + (bot - top) * ty;
-            }
-        }
-    }
-    out
-}
-
-/// Fills pixels with zero `wt` from their surroundings (push-pull), so pyramid levels don't
-/// pull in black from outside an image.
-fn push_pull(w: usize, h: usize, ch: usize, px: &mut [f32], wt: &[f32]) {
-    if w <= 1 && h <= 1 {
-        return;
-    }
-    let (nw, nh) = (w.div_ceil(2), h.div_ceil(2));
-    let mut cpx = vec![0.0f32; nw * nh * ch];
-    let mut cw = vec![0.0f32; nw * nh];
-    for y in 0..h {
-        for x in 0..w {
-            let (i, j) = (y * w + x, (y / 2) * nw + x / 2);
-            let a = wt[i];
-            cw[j] += a;
-            for c in 0..ch {
-                cpx[j * ch + c] += a * px[i * ch + c];
-            }
-        }
-    }
-    for j in 0..nw * nh {
-        if cw[j] > 0.0 {
-            for c in 0..ch {
-                cpx[j * ch + c] /= cw[j];
-            }
-            cw[j] = 1.0;
-        }
-    }
-    if cw.contains(&0.0) && cw.iter().any(|v| *v > 0.0) {
-        push_pull(nw, nh, ch, &mut cpx, &cw);
-    }
-    for y in 0..h {
-        for x in 0..w {
-            let i = y * w + x;
-            if wt[i] < 1.0 {
-                let j = (y / 2) * nw + x / 2;
-                let a = wt[i];
-                for c in 0..ch {
-                    px[i * ch + c] = a * px[i * ch + c] + (1.0 - a) * cpx[j * ch + c];
-                }
-            }
-        }
-    }
-}
-
-/// Multi-band blend of `imgs` into a `w × h` panorama (origin 0,0) with one weight map per image
-/// over the same grid as its ROI (`weights[i]` has `w_i × h_i` entries). Returns the colour
-/// channels (`ch` per pixel) and the total coverage.
-pub fn multiband(w: usize, h: usize, imgs: &[RoiImage], weights: &[Vec<f32>], levels: usize) -> (Vec<f32>, Vec<f32>) {
-    let ch = imgs.first().map_or(1, |i| i.ch);
-    let levels = levels.max(1);
-    let align = 1i32 << (levels - 1);
-    // Level sizes of the panorama.
-    let mut sizes = vec![(w, h)];
-    for _ in 1..levels {
-        let Some(&(pw, ph)) = sizes.last() else { break };
-        sizes.push((pw.div_ceil(2), ph.div_ceil(2)));
-    }
-    let mut acc: Vec<Vec<f32>> = sizes.iter().map(|&(lw, lh)| vec![0.0; lw * lh * ch]).collect();
-    let mut wsum: Vec<Vec<f32>> = sizes.iter().map(|&(lw, lh)| vec![0.0; lw * lh]).collect();
-    let margin = align * 4;
-    // Each image on its ROI grown by a margin and aligned to the coarsest level's grid.
-    let bands = par_map(imgs.len(), |k| {
-        let im = &imgs[k];
-        let gx0 = ((im.x0 - margin).max(0) / align) * align;
-        let gy0 = ((im.y0 - margin).max(0) / align) * align;
-        let gx1 = (im.x0 + im.w as i32 + margin).min(w as i32);
-        let gy1 = (im.y0 + im.h as i32 + margin).min(h as i32);
-        let (gw, gh) = ((gx1 - gx0).max(1) as usize, (gy1 - gy0).max(1) as usize);
-        let mut px = vec![0.0f32; gw * gh * ch];
-        let mut cov = vec![0.0f32; gw * gh];
-        let mut wt = vec![0.0f32; gw * gh];
-        for y in 0..im.h {
-            for x in 0..im.w {
-                let (gx, gy) = (im.x0 + x as i32 - gx0, im.y0 + y as i32 - gy0);
-                if gx < 0 || gy < 0 || gx as usize >= gw || gy as usize >= gh {
-                    continue;
-                }
-                let (i, g) = (y * im.w + x, gy as usize * gw + gx as usize);
-                cov[g] = im.alpha[i];
-                wt[g] = weights[k][i] * im.alpha[i].min(1.0);
-                px[g * ch..(g + 1) * ch].copy_from_slice(&im.px[i * ch..(i + 1) * ch]);
-            }
-        }
-        let bin: Vec<f32> = cov.iter().map(|a| if *a > 0.5 { 1.0 } else { 0.0 }).collect();
-        push_pull(gw, gh, ch, &mut px, &bin);
-        // Laplacian of the colours, Gaussian of the weights.
-        let mut lap: Vec<(usize, usize, Vec<f32>)> = Vec::new();
-        let mut gau: Vec<Vec<f32>> = Vec::new();
-        let (mut cw, mut chh, mut cur, mut cwt) = (gw, gh, px, wt);
-        for l in 0..levels {
-            if l + 1 == levels {
-                lap.push((cw, chh, cur.clone()));
-                gau.push(cwt.clone());
-                break;
-            }
-            let (nw, nh, down) = reduce(cw, chh, ch, &cur);
-            let up = expand(nw, nh, ch, &down, cw, chh);
-            lap.push((cw, chh, cur.iter().zip(&up).map(|(a, b)| a - b).collect()));
-            gau.push(cwt.clone());
-            let (_, _, wdown) = reduce(cw, chh, 1, &cwt);
-            cw = nw;
-            chh = nh;
-            cur = down;
-            cwt = wdown;
-        }
-        (gx0, gy0, lap, gau)
-    });
-    for (gx0, gy0, lap, gau) in &bands {
-        for (l, ((lw, lh, band), g)) in lap.iter().zip(gau).enumerate() {
-            let (ox, oy) = ((gx0 >> l) as usize, (gy0 >> l) as usize);
-            let (pw, ph) = sizes[l];
-            for y in 0..*lh {
-                let py = oy + y;
-                if py >= ph {
-                    break;
-                }
-                for x in 0..*lw {
-                    let px = ox + x;
-                    if px >= pw {
-                        break;
-                    }
-                    let (i, p) = (y * lw + x, py * pw + px);
-                    let k = g[i];
-                    if k <= 0.0 {
-                        continue;
-                    }
-                    wsum[l][p] += k;
-                    for c in 0..ch {
-                        acc[l][p * ch + c] += k * band[i * ch + c];
-                    }
-                }
-            }
-        }
-    }
-    for l in 0..levels {
-        let (pw, ph) = sizes[l];
-        for p in 0..pw * ph {
-            let k = wsum[l][p];
-            for c in 0..ch {
-                acc[l][p * ch + c] = if k > 1e-8 { acc[l][p * ch + c] / k } else { 0.0 };
-            }
-        }
-    }
-    // Collapse.
-    // `levels ≥ 1`, so there is always a coarsest level.
-    let Some(mut cur) = acc.pop() else { return (vec![0.0; w * h * ch], vec![0.0; w * h]) };
-    for l in (0..levels - 1).rev() {
-        let (pw, ph) = sizes[l];
-        let (sw, sh) = sizes[l + 1];
-        let up = expand(sw, sh, ch, &cur, pw, ph);
-        cur = acc[l].iter().zip(&up).map(|(a, b)| a + b).collect();
-    }
-    // Coverage: union of the images.
-    let mut cov = vec![0.0f32; w * h];
-    for im in imgs {
-        for y in 0..im.h {
-            for x in 0..im.w {
-                let (px, py) = (im.x0 + x as i32, im.y0 + y as i32);
-                if px < 0 || py < 0 || px as usize >= w || py as usize >= h {
-                    continue;
-                }
-                let p = py as usize * w + px as usize;
-                cov[p] = cov[p].max(im.alpha[y * im.w + x]);
-            }
-        }
-    }
-    (cur, cov)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1430,4 +936,61 @@ mod tests {
         assert!(max_jump < 0.1, "max step {max_jump}");
         assert!(cov.iter().all(|c| *c == 1.0));
     }
+
+    #[test]
+    fn an_image_wholly_inside_the_composite_still_gets_its_side() {
+        // #5745: the first image covers the whole 120×40 grid, the second only its right part
+        // (x ≥ 70), all of it overlap. It used to be skipped, so the first image kept everything.
+        let (w, h) = (120usize, 40usize);
+        let luma = vec![vec![0.5f32; w * h], vec![0.5f32; w * h]];
+        let cover: Vec<Vec<bool>> = vec![vec![true; w * h], (0..w * h).map(|i| i % w >= 70).collect()];
+        let labels = seam_labels(w, h, &luma, &cover, &[0, 1]);
+        for y in 0..h {
+            assert_eq!(labels[y * w + 5], 0, "row {y}");
+            assert_eq!(labels[y * w + w - 1], 1, "row {y}");
+            // The second image's region is one run at the right of its seam.
+            let row = &labels[y * w..(y + 1) * w];
+            let first = row.iter().position(|l| *l == 1).unwrap();
+            assert!(first >= 70 && row[first..].iter().all(|l| *l == 1), "row {y}: {row:?}");
+        }
+        // The same on the left (x < 50) and on top (y < 15): the seam stays inside the overlap
+        // instead of on the image's outer edge, which used to leave it nothing.
+        let left: Vec<Vec<bool>> = vec![vec![true; w * h], (0..w * h).map(|i| i % w < 50).collect()];
+        let labels = seam_labels(w, h, &luma, &left, &[0, 1]);
+        for y in 0..h {
+            let row = &labels[y * w..(y + 1) * w];
+            assert_eq!(row[0], 1, "row {y}: {row:?}");
+            assert_eq!(row[w - 1], 0, "row {y}");
+            let last = row.iter().rposition(|l| *l == 1).unwrap();
+            assert!(last < 50 && row[..=last].iter().all(|l| *l == 1), "row {y}: {row:?}");
+        }
+        let (tw, th) = (40usize, 120usize);
+        let tluma = vec![vec![0.5f32; tw * th], vec![0.5f32; tw * th]];
+        let top: Vec<Vec<bool>> = vec![vec![true; tw * th], (0..tw * th).map(|i| i / tw < 50).collect()];
+        let labels = seam_labels(tw, th, &tluma, &top, &[0, 1]);
+        for x in 0..tw {
+            assert_eq!(labels[x], 1, "column {x}");
+            assert_eq!(labels[(th - 1) * tw + x], 0, "column {x}");
+        }
+        // One column or row wide: the seam can only run through it, and the image keeps it.
+        for col in [0, w - 1] {
+            let strip: Vec<Vec<bool>> = vec![vec![true; w * h], (0..w * h).map(|i| i % w == col).collect()];
+            let labels = seam_labels(w, h, &luma, &strip, &[0, 1]);
+            assert!(labels.iter().enumerate().all(|(i, l)| *l == i32::from(i % w == col)), "column {col}: {labels:?}");
+        }
+        let strip: Vec<Vec<bool>> = vec![vec![true; tw * th], (0..tw * th).map(|i| i / tw == 0).collect()];
+        let labels = seam_labels(tw, th, &tluma, &strip, &[0, 1]);
+        assert!(labels.iter().enumerate().all(|(i, l)| *l == i32::from(i / tw == 0)), "{labels:?}");
+        // An image centred on the composite has no side: the first image keeps the overlap.
+        let centred: Vec<Vec<bool>> = vec![vec![true; w * h], (0..w * h).map(|i| (20..100).contains(&(i % w))).collect()];
+        assert!(seam_labels(w, h, &luma, &centred, &[0, 1]).iter().all(|l| *l == 0));
+        // Two images covering the same cells, likewise.
+        let same = vec![vec![true; w * h]; 2];
+        assert!(seam_labels(w, h, &luma, &same, &[0, 1]).iter().all(|l| *l == 0));
+    }
 }
+
+/// The row-parallel `reduce` / `expand` / `push_pull` / `multiband` against the serial code they
+/// replaced, kept below verbatim as the reference. Every output must stay bit for bit the same.
+#[cfg(test)]
+mod parallel_tests;

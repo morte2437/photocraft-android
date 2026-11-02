@@ -128,9 +128,9 @@ fn run(surface: &Surface, area: Rect, amount: f32, radius: f32, selection: Optio
     let resident = samples.checked_mul(4)?;
     let mut planner = FftPlanner::<f64>::new();
     let horizontal = Plan::new(w.checked_add(2 * r)?, &kernel, &mut planner)?;
-    let vertical = Plan::new(h.checked_add(2 * r)?, &kernel, &mut planner)?;
+    let vertical_plan = Plan::new(h.checked_add(2 * r)?, &kernel, &mut planner)?;
     // A conservative allowance includes FFT plans/twiddles in addition to spectra.
-    let plans = horizontal.size.checked_add(vertical.size)?.checked_mul(256)?;
+    let plans = horizontal.size.checked_add(vertical_plan.size)?.checked_mul(256)?;
     let resident = resident.checked_add(plans)?;
     let workers = rayon::current_num_threads().max(1);
     let horizontal_worker = read_width.checked_mul(n)?.checked_mul(4)?.checked_add(horizontal.size.checked_add(horizontal.scratch)?.checked_mul(16)?)?;
@@ -139,7 +139,7 @@ fn run(surface: &Surface, area: Rect, amount: f32, radius: f32, selection: Optio
         .checked_mul(n)?
         .checked_mul(4)?
         .checked_add(STRIPE.checked_mul(h)?.checked_mul(n)?.checked_mul(12)?)?
-        .checked_add(vertical.size.checked_add(vertical.scratch)?.checked_mul(16)?)?;
+        .checked_add(vertical_plan.size.checked_add(vertical_plan.scratch)?.checked_mul(16)?)?;
     let group = group_size(resident, horizontal_worker.max(vertical_worker), w.div_ceil(STRIPE), workers)?;
     let mut tmp = buffer(samples, 0.0f32)?;
     let finished = AtomicUsize::new(0);
@@ -210,98 +210,29 @@ fn run(surface: &Surface, area: Rect, amount: f32, radius: f32, selection: Optio
     }
     let mut out = surface.clone();
     let count = w.div_ceil(STRIPE);
+    let vertical = VerticalPass {
+        surface,
+        selection,
+        tmp: &tmp,
+        plan: &vertical_plan,
+        ctl,
+        area,
+        n,
+        w,
+        h,
+        rows,
+        row_len,
+        r,
+        y0,
+        read_y0,
+        read_y1,
+        alpha,
+        amount,
+        kernel_len: kernel.len(),
+    };
     for first in (0..count).step_by(group) {
         let end = first.checked_add(group)?.min(count);
-        let results: Option<Vec<_>> = (first..end)
-            .into_par_iter()
-            .map(|index| {
-                if ctl.cancelled() {
-                    return None;
-                }
-                let x = index.checked_mul(STRIPE)?;
-                let width = STRIPE.min(w.checked_sub(x)?);
-                let mut columns = buffer(width.checked_mul(rows)?.checked_mul(n)?, 0.0f32)?;
-                for (y, row) in tmp.chunks_exact(row_len).enumerate() {
-                    if y % 64 == 0 && ctl.cancelled() {
-                        return None;
-                    }
-                    for (c, px) in row.get(x * n..(x + width) * n)?.chunks_exact(n).enumerate() {
-                        let start = (c * rows + y) * n;
-                        columns.get_mut(start..start + n)?.copy_from_slice(px);
-                    }
-                }
-                let rect = Rect::new(area.x0.checked_add(x as i32)?, area.y0, area.x0.checked_add((x + width) as i32)?, area.y1);
-                let len = width.checked_mul(h)?.checked_mul(n)?;
-                let mut result = buffer(len, 0.0f32)?;
-                let mut original = buffer(len, 0.0f32)?;
-                surface.read_region_into(rect, &mut original);
-                let (mut data, mut scratch) = vertical.work()?;
-                for (c, samples) in columns.chunks_exact(rows * n).enumerate() {
-                    if ctl.cancelled() {
-                        return None;
-                    }
-                    let mut scales = [0.0f64; crate::fxutil::MAXC];
-                    for px in samples.chunks_exact(n) {
-                        for (s, v) in scales.iter_mut().zip(px) {
-                            *s = s.max(f64::from(v.abs()));
-                        }
-                    }
-                    for channel in (0..n).step_by(2) {
-                        if ctl.cancelled() {
-                            return None;
-                        }
-                        data.fill(Number::default());
-                        for (i, d) in data.iter_mut().take(h + 2 * r).enumerate() {
-                            let sy = y0.checked_add(i as i32)?.clamp(read_y0, read_y1.checked_sub(1)?);
-                            let start = usize::try_from(sy - read_y0).ok()?.checked_mul(n)?;
-                            let px = samples.get(start..start + n)?;
-                            let sample = |c: usize| -> f64 {
-                                match (px.get(c), scales.get(c)) {
-                                    (Some(v), Some(s)) if *s > 0.0 => f64::from(*v) / s,
-                                    _ => 0.0,
-                                }
-                            };
-                            *d = Number::new(sample(channel), sample(channel + 1));
-                        }
-                        vertical.convolve(&mut data, &mut scratch)?;
-                        for (y, d) in data.get(2 * r..2 * r + h)?.iter().enumerate() {
-                            let start = (y * width + c) * n;
-                            *result.get_mut(start + channel)? = (d.re * scales.get(channel)?) as f32;
-                            if let Some(v) = result.get_mut(start + channel + 1).filter(|_| channel + 1 < n) {
-                                *v = (d.im * scales.get(channel + 1)?) as f32;
-                            }
-                        }
-                    }
-                }
-                for (px, o) in result.chunks_exact_mut(n).zip(original.chunks_exact(n)) {
-                    if alpha && *o.last()? <= 0.0 {
-                        px.copy_from_slice(o);
-                        continue;
-                    }
-                    let a = if alpha { *px.last()? } else { 1.0 };
-                    // Near the original unpremultiply cutoff, cancellation/FFT noise
-                    // or f32 sum order can expose colour. Decline the whole fast path.
-                    let uncertainty = 4.0 * kernel.len() as f32 * f32::EPSILON;
-                    if alpha && a <= 1e-7 + uncertainty {
-                        return None;
-                    }
-                    for (v, o) in px.iter_mut().zip(o).take(n - usize::from(alpha)) {
-                        let b = if alpha { *v / a } else { *v };
-                        *v = o + amount / 100.0 * (o - b);
-                        if !v.is_finite() {
-                            return None;
-                        }
-                    }
-                    if alpha {
-                        *px.last_mut()? = *o.last()?;
-                    }
-                }
-                if let Some(sel) = selection {
-                    crate::mix_selection(&mut result, rect, sel, &Image { rect, ch: n, data: original }, alpha);
-                }
-                Some((rect, result))
-            })
-            .collect();
+        let results: Option<Vec<_>> = (first..end).into_par_iter().map(|index| vertical.stripe(index)).collect();
         for (rect, data) in results? {
             if ctl.cancelled() {
                 return None;
@@ -319,6 +250,146 @@ fn run(surface: &Surface, area: Rect, amount: f32, radius: f32, selection: Optio
     }
     ctl.progress(1.0);
     Some(out)
+}
+
+/// Everything the vertical pass needs to turn one stripe of horizontally
+/// convolved columns into finished, sharpened output pixels.
+struct VerticalPass<'a> {
+    surface: &'a Surface,
+    selection: Option<&'a Surface>,
+    tmp: &'a [f32],
+    plan: &'a Plan,
+    ctl: &'a Interrupt<'a>,
+    area: Rect,
+    n: usize,
+    w: usize,
+    h: usize,
+    rows: usize,
+    row_len: usize,
+    r: usize,
+    y0: i32,
+    read_y0: i32,
+    read_y1: i32,
+    alpha: bool,
+    amount: f32,
+    kernel_len: usize,
+}
+
+/// Channel `c` of `px` scaled into [-1, 1], or zero when the column is all zero.
+fn normalized(px: &[f32], scales: &[f64], c: usize) -> f64 {
+    match (px.get(c), scales.get(c)) {
+        (Some(v), Some(s)) if *s > 0.0 => f64::from(*v) / s,
+        _ => 0.0,
+    }
+}
+
+impl VerticalPass<'_> {
+    /// Process the `index`th stripe of columns, returning its rect and pixels.
+    fn stripe(&self, index: usize) -> Option<(Rect, Vec<f32>)> {
+        let (ctl, n, h) = (self.ctl, self.n, self.h);
+        if ctl.cancelled() {
+            return None;
+        }
+        let x = index.checked_mul(STRIPE)?;
+        let width = STRIPE.min(self.w.checked_sub(x)?);
+        let columns = self.gather_columns(x, width)?;
+        let rect = Rect::new(self.area.x0.checked_add(x as i32)?, self.area.y0, self.area.x0.checked_add((x + width) as i32)?, self.area.y1);
+        let len = width.checked_mul(h)?.checked_mul(n)?;
+        let mut result = buffer(len, 0.0f32)?;
+        let mut original = buffer(len, 0.0f32)?;
+        self.surface.read_region_into(rect, &mut original);
+        let (mut data, mut scratch) = self.plan.work()?;
+        for (c, samples) in columns.chunks_exact(self.rows * n).enumerate() {
+            if ctl.cancelled() {
+                return None;
+            }
+            self.convolve_column(samples, c, width, (&mut data, &mut scratch), &mut result)?;
+        }
+        self.sharpen(&mut result, &original)?;
+        if let Some(sel) = self.selection {
+            crate::mix_selection(&mut result, rect, sel, &Image { rect, ch: n, data: original }, self.alpha);
+        }
+        Some((rect, result))
+    }
+
+    /// Transpose the stripe at `x` of the horizontal results into column-major order.
+    fn gather_columns(&self, x: usize, width: usize) -> Option<Vec<f32>> {
+        let (n, rows) = (self.n, self.rows);
+        let mut columns = buffer(width.checked_mul(rows)?.checked_mul(n)?, 0.0f32)?;
+        for (y, row) in self.tmp.chunks_exact(self.row_len).enumerate() {
+            if y % 64 == 0 && self.ctl.cancelled() {
+                return None;
+            }
+            for (c, px) in row.get(x * n..(x + width) * n)?.chunks_exact(n).enumerate() {
+                let start = (c * rows + y) * n;
+                columns.get_mut(start..start + n)?.copy_from_slice(px);
+            }
+        }
+        Some(columns)
+    }
+
+    /// Convolve one gathered column, two channels per complex FFT, into `result`.
+    fn convolve_column(&self, samples: &[f32], c: usize, width: usize, work: (&mut [Number], &mut [Number]), result: &mut [f32]) -> Option<()> {
+        let (n, h, r) = (self.n, self.h, self.r);
+        let (data, scratch) = work;
+        let mut scales = [0.0f64; crate::fxutil::MAXC];
+        for px in samples.chunks_exact(n) {
+            for (s, v) in scales.iter_mut().zip(px) {
+                *s = s.max(f64::from(v.abs()));
+            }
+        }
+        for channel in (0..n).step_by(2) {
+            if self.ctl.cancelled() {
+                return None;
+            }
+            data.fill(Number::default());
+            for (i, d) in data.iter_mut().take(h + 2 * r).enumerate() {
+                let sy = self.y0.checked_add(i as i32)?.clamp(self.read_y0, self.read_y1.checked_sub(1)?);
+                let start = usize::try_from(sy - self.read_y0).ok()?.checked_mul(n)?;
+                let px = samples.get(start..start + n)?;
+                *d = Number::new(normalized(px, &scales, channel), normalized(px, &scales, channel + 1));
+            }
+            self.plan.convolve(data, scratch)?;
+            for (y, d) in data.get(2 * r..2 * r + h)?.iter().enumerate() {
+                let start = (y * width + c) * n;
+                *result.get_mut(start + channel)? = (d.re * scales.get(channel)?) as f32;
+                if let Some(v) = result.get_mut(start + channel + 1).filter(|_| channel + 1 < n) {
+                    *v = (d.im * scales.get(channel + 1)?) as f32;
+                }
+            }
+        }
+        Some(())
+    }
+
+    /// Turn the blurred stripe into the unsharp-masked result against `original`.
+    /// Declines (`None`) wherever the fast path cannot match the exact kernel.
+    fn sharpen(&self, result: &mut [f32], original: &[f32]) -> Option<()> {
+        let (n, alpha) = (self.n, self.alpha);
+        for (px, o) in result.chunks_exact_mut(n).zip(original.chunks_exact(n)) {
+            if alpha && *o.last()? <= 0.0 {
+                px.copy_from_slice(o);
+                continue;
+            }
+            let a = if alpha { *px.last()? } else { 1.0 };
+            // Near the original unpremultiply cutoff, cancellation/FFT noise
+            // or f32 sum order can expose colour. Decline the whole fast path.
+            let uncertainty = 4.0 * self.kernel_len as f32 * f32::EPSILON;
+            if alpha && a <= 1e-7 + uncertainty {
+                return None;
+            }
+            for (v, o) in px.iter_mut().zip(o).take(n - usize::from(alpha)) {
+                let b = if alpha { *v / a } else { *v };
+                *v = o + self.amount / 100.0 * (o - b);
+                if !v.is_finite() {
+                    return None;
+                }
+            }
+            if alpha {
+                *px.last_mut()? = *o.last()?;
+            }
+        }
+        Some(())
+    }
 }
 
 #[cfg(test)]

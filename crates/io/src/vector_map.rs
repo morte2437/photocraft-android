@@ -258,10 +258,20 @@ pub fn parse_vstk(data: &[u8], dpi: f32) -> Option<VstkInfo> {
         _ => Vec::new(),
     };
     let paint = get_desc(&d, "strokeStyleContent").and_then(content_fill).unwrap_or(Fill::Solid(photocraft_color::Color::BLACK));
+    let mut opacity = num(d.get("strokeStyleOpacity")).map_or(1.0, |v| v as f32 / 100.0);
+    // Write folds colour alpha into strokeStyleOpacity for Photoshop. Restore both Appearance
+    // fields when pcAl is present so PhotoCraft does not show a maxed colour alpha (#6180).
+    if let Fill::Solid(c) = &paint
+        && c.alpha.is_finite()
+        && c.alpha > 1e-6
+        && (c.alpha - 1.0).abs() > 1e-6
+    {
+        opacity = (opacity / c.alpha).clamp(0.0, 1.0);
+    }
     let stroke = ShapeStroke {
         width: unit_px(d.get("strokeStyleLineWidth"), dpi).unwrap_or(1.0) as f32,
         paint,
-        opacity: num(d.get("strokeStyleOpacity")).map_or(1.0, |v| v as f32 / 100.0),
+        opacity,
         align,
         cap,
         join,
@@ -276,10 +286,28 @@ fn en(ty: &str, v: &str) -> Value {
     Value::Enumerated { type_id: Id::new(ty), value: Id::new(v) }
 }
 
+/// Photoshop's stroke colour has no alpha. Fold the colour's alpha into `strokeStyleOpacity`
+/// so Appearance still matches after a PSD round-trip (#6180).
+fn fold_stroke_color_alpha(s: &ShapeStroke) -> ShapeStroke {
+    let mut out = s.clone();
+    if let Fill::Solid(c) = &mut out.paint
+        && c.alpha.is_finite()
+        && (c.alpha - 1.0).abs() > 1e-6
+    {
+        out.opacity = (out.opacity * c.alpha).clamp(0.0, 1.0);
+        c.alpha = 1.0;
+    }
+    out
+}
+
 pub fn vstk_bytes(stroke: Option<&ShapeStroke>, fill_enabled: bool, dpi: f32) -> Vec<u8> {
     let default = ShapeStroke::default();
-    let s = stroke.unwrap_or(&default);
-    let (_, content) = fill_to_desc(&s.paint);
+    let folded = stroke.map(fold_stroke_color_alpha);
+    let s = folded.as_ref().unwrap_or(&default);
+    // Keep pcAl on the original colour so Appearance can restore fill/stroke alphas separately
+    // from the folded Photoshop opacity (#6180).
+    let paint = stroke.map(|st| &st.paint).unwrap_or(&s.paint);
+    let (_, content) = fill_to_desc(paint);
     let class = match s.paint {
         Fill::Solid(_) => "solidColorLayer",
         Fill::Gradient { .. } => "gradientLayer",
@@ -379,11 +407,25 @@ pub fn live_from_vogk(data: &[u8]) -> Option<LiveShape> {
             Some(LiveShape::Rect { rect: rect_of(o)?, radii: [g("topLeft"), g("topRight"), g("bottomRight"), g("bottomLeft")] })
         }
         5 => Some(LiveShape::Ellipse { rect: rect_of(o)? }),
-        4 => Some(LiveShape::Line {
-            from: point_of(o, "keyOriginLineStart")?,
-            to: point_of(o, "keyOriginLineEnd")?,
-            weight: num(o.get("keyOriginLineWeight")).unwrap_or(1.0),
-        }),
+        4 => {
+            let from = point_of(o, "keyOriginLineStart")?;
+            let to = point_of(o, "keyOriginLineEnd")?;
+            let weight = num(o.get("keyOriginLineWeight")).unwrap_or(1.0);
+            let start = bool_of(o, "keyOriginLineArrowSt");
+            let end = bool_of(o, "keyOriginLineArrowEnd");
+            let width = num(o.get("keyOriginLineArrWdth")).unwrap_or(0.0);
+            let length = num(o.get("keyOriginLineArrLngth")).unwrap_or(0.0);
+            let concavity = num(o.get("keyOriginLineArrConc")).unwrap_or(0.0);
+            if start || end || width > 0.0 || length > 0.0 {
+                // Missing or invalid PSD arrow sizes must not prevent later edits.
+                let width = if width.is_finite() && width >= 1.0 { width } else { 52.0 };
+                let length = if length.is_finite() && length >= 1.0 { length } else { 50.0 };
+                let concavity = if concavity.is_finite() { concavity.clamp(0.0, 100.0) } else { 0.0 };
+                Some(LiveShape::ArrowLine { from, to, weight, start, end, width, length, concavity })
+            } else {
+                Some(LiveShape::Line { from, to, weight })
+            }
+        }
         _ => None,
     }
 }
@@ -434,6 +476,20 @@ pub fn vogk_bytes(s: &LiveShape, dpi: f32) -> Option<Vec<u8>> {
                 .with("keyOriginLineArrWdth", Value::Double(0.0))
                 .with("keyOriginLineArrLngth", Value::Double(0.0))
                 .with("keyOriginLineArrConc", Value::Integer(0))
+        }
+        LiveShape::ArrowLine { from, to, weight, start, end, width, length, concavity } => {
+            let pnt = |p: [f64; 2]| Value::Descriptor(Descriptor::new("Pnt ").with("Hrzn", Value::Double(p[0])).with("Vrtc", Value::Double(p[1])));
+            let r = [from[0].min(to[0]), from[1].min(to[1]), (from[0] - to[0]).abs(), (from[1] - to[1]).abs()];
+            base(4)
+                .with("keyOriginShapeBBox", bbox(r))
+                .with("keyOriginLineEnd", pnt(*to))
+                .with("keyOriginLineStart", pnt(*from))
+                .with("keyOriginLineWeight", Value::Double(*weight))
+                .with("keyOriginLineArrowSt", Value::Boolean(*start))
+                .with("keyOriginLineArrowEnd", Value::Boolean(*end))
+                .with("keyOriginLineArrWdth", Value::Double(*width))
+                .with("keyOriginLineArrLngth", Value::Double(*length))
+                .with("keyOriginLineArrConc", Value::Integer(concavity.round() as i32))
         }
         LiveShape::Polygon { .. } => return None,
     };
@@ -661,17 +717,34 @@ mod tests {
     }
 
     #[test]
+    fn vstk_folds_color_alpha_into_stroke_opacity() {
+        let s = ShapeStroke { width: 2.0, paint: Fill::Solid(Color::rgba(0.0, 0.0, 1.0, 0.4)), opacity: 0.5, ..ShapeStroke::default() };
+        let bytes = vstk_bytes(Some(&s), true, 72.0);
+        let raw = crate::blocks::parse_prefix_versioned(&bytes).unwrap();
+        let file_opacity = crate::blocks::num(raw.get("strokeStyleOpacity")).unwrap() as f32 / 100.0;
+        assert!((file_opacity - 0.2).abs() < 1e-4, "Photoshop sees the product in strokeStyleOpacity");
+        let got = parse_vstk(&bytes, 72.0).unwrap().stroke.unwrap();
+        assert!((got.opacity - 0.5).abs() < 1e-4);
+        let Fill::Solid(c) = got.paint else { panic!("solid") };
+        assert!((c.alpha - 0.4).abs() < 1e-5);
+        assert!((c.to_rgb()[2] - 1.0).abs() < 1e-3);
+    }
+
+    #[test]
     fn vogk_roundtrip() {
         for s in [
             LiveShape::Rect { rect: [1.0, 2.0, 30.0, 40.0], radii: [0.0; 4] },
             LiveShape::Rect { rect: [1.0, 2.0, 30.0, 40.0], radii: [1.0, 2.0, 3.0, 4.0] },
             LiveShape::Ellipse { rect: [5.0, 6.0, 7.0, 8.0] },
             LiveShape::Line { from: [0.0, 10.0], to: [20.0, 0.0], weight: 3.0 },
+            LiveShape::ArrowLine { from: [0.0, 10.0], to: [20.0, 0.0], weight: 3.0, start: false, end: true, width: 31.0, length: 31.0, concavity: 50.0 },
+            // Both arrowheads off still needs to retain the adjustable parameters.
+            LiveShape::ArrowLine { from: [0.0, 10.0], to: [20.0, 0.0], weight: 3.0, start: false, end: false, width: 31.0, length: 31.0, concavity: 0.0 },
         ] {
             let b = vogk_bytes(&s, 72.0).unwrap();
             assert_eq!(live_from_vogk(&b), Some(s));
         }
-        assert!(vogk_bytes(&LiveShape::Polygon { rect: [0.0; 4], sides: 5, star_ratio: 1.0 }, 72.0).is_none());
+        assert!(vogk_bytes(&LiveShape::Polygon { rect: [0.0; 4], sides: 5, star_ratio: 1.0, corner_radius: 0.0 }, 72.0).is_none());
     }
 
     #[test]
@@ -699,7 +772,7 @@ mod tests {
         // Edit: path changes → vmsk regenerated, live dropped when polygon.
         let mut edited = sh.clone();
         edited.path.subpaths.pop();
-        edited.live = Some(LiveShape::Polygon { rect: [0.0; 4], sides: 3, star_ratio: 1.0 });
+        edited.live = Some(LiveShape::Polygon { rect: [0.0; 4], sides: 3, star_ratio: 1.0, corner_radius: 0.0 });
         shape_blocks(&edited, &mut raw, 64, 64, 72.0);
         assert!(!raw.iter().any(|(k, _)| k == b"vogk"));
         let (p, _) = path_from_vmsk(&raw[0].1, 64, 64).unwrap();

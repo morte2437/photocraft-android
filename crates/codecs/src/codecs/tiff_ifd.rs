@@ -119,6 +119,20 @@ impl<'a> File<'a> {
         Some(f)
     }
 
+    /// [`parse`](Self::parse), also taking a Panasonic RW2 raw, whose classic little-endian TIFF
+    /// header has 0x55 (`IIU\0`) in place of 42.
+    pub fn parse_raw(b: &'a [u8]) -> Option<Self> {
+        if let Some(f) = Self::parse(b) {
+            return Some(f);
+        }
+        let mut f = File { b, le: true, big: false, first_ifd: 0 };
+        if b.get(0..2)? != b"II" || f.u16_at(2)? != 0x55 {
+            return None;
+        }
+        f.first_ifd = u64::from(f.u32_at(4)?);
+        Some(f)
+    }
+
     /// Length of the header; no directory can start inside it.
     pub fn header_len(&self) -> u64 {
         if self.big { 16 } else { 8 }

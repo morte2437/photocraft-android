@@ -27,6 +27,33 @@ fn begin(app: &mut PhotocraftApp) {
     crate::transform_tool::begin(app, &egui::Context::default()).unwrap();
 }
 
+#[test]
+fn styled_texture_tracks_monitor_changes_without_recoloring_effect_inputs() {
+    let mut app = app("rgb", 16);
+    let ctx = egui::Context::default();
+    crate::transform_tool::begin(&mut app, &ctx).unwrap();
+    ctx.tex_manager().write().take_delta().clear();
+    let raw = composite(&app, 1.0).unwrap().0;
+    let mut previous = None;
+    for monitor in ["srgb", "display-p3", "srgb"] {
+        app.session.color.settings.monitor_profile = monitor.into();
+        let display = app.session.color.canvas_display(&app.session.active().unwrap().doc).unwrap();
+        let expected = crate::canvas::display_image(Some(&display), &raw);
+        let (styled, frame) = crate::transform_tool::styled_frame(&app, 1.0, false).unwrap();
+        let (id, _) = styled.texture(&ctx, &frame, Some(&display)).unwrap();
+        assert_ne!(Some(id), previous, "monitor change invalidates the texture");
+        let builds = styled.builds();
+        assert_eq!(styled.texture(&ctx, &frame, Some(&display)).unwrap().0, id);
+        assert_eq!(styled.builds(), builds, "unchanged display reuses the composite");
+        let mut delta = ctx.tex_manager().write().take_delta();
+        let egui::ImageData::Color(shown) = &delta.set.get(&id).unwrap().last().unwrap().image;
+        assert_eq!(shown.pixels, expected.pixels, "monitor={monitor}");
+        delta.clear();
+        assert_eq!(composite(&app, 1.0).unwrap().0.px, raw.px, "effects still use document colors");
+        previous = Some(id);
+    }
+}
+
 /// What the box draws for the styled layer at `zoom`: `None` when it draws the bare pixels.
 fn composite(app: &PhotocraftApp, zoom: f32) -> Option<(Buffer, Plan)> {
     let (_, frame) = crate::transform_tool::styled_frame(app, zoom, false)?;

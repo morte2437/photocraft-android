@@ -1,5 +1,6 @@
 use super::*;
-use photocraft_color::Color;
+use photocraft_color::{Color, ColorMode, SampleType};
+use photocraft_doc::Size;
 use photocraft_format::{Autosaver, RecoveryEntry, SaveOptions, list_recovery};
 use std::sync::atomic::{AtomicUsize, Ordering};
 

@@ -280,6 +280,15 @@ pub fn covering_face(bytes: &[u8], c: char) -> Option<u32> {
     }
 }
 
+/// Whether face `index` of `bytes` (a font or collection) maps `c` in its character map.
+/// `false` for an out-of-range face or data that doesn't parse. Never panics.
+pub fn face_covers(bytes: &[u8], index: u32, c: char) -> bool {
+    use skrifa::MetadataProvider;
+
+    let Ok(font) = skrifa::FontRef::from_index(bytes, index) else { return false };
+    font.charmap().map(c).is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -351,6 +360,10 @@ mod tests {
         for bad in [&b""[..], b"ttcf", b"ttcf\0\x01\0\0\0\0\0\x02\xff\xff\xff\xff\0\0\0\x10", b"\0\x01\0\0\0\xff"] {
             assert_eq!(covering_face(bad, 'A'), None);
         }
+        assert!(face_covers(inter, 0, 'A'));
+        assert!(!face_covers(inter, 0, 'ส'));
+        assert!(!face_covers(inter, 1, 'A'), "a single-face file has no face 1");
+        assert!(!face_covers(b"", 0, 'A'));
     }
 
     /// With the real system fonts, each script that has a candidate installed has one that

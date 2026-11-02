@@ -5,13 +5,16 @@
 use photocraft_engine::{Session, command_specs};
 use serde_json::{Value, json};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, Once, PoisonError, mpsc};
 use std::time::Duration;
 
 fn fresh() -> Session {
     // Belt and braces with the EXTERNAL skip below: nothing in this process may reach a printer.
     photocraft_engine::print_cmds::disable_printing();
     let mut s = Session::new();
+    // `file.printers` and `file.print.printers` list no printers and do not ask the spooler.
+    s.printer_source = Some(std::sync::Arc::new(Vec::new));
     s.execute("file.new", json!({"width": 24, "height": 16})).unwrap();
     s.execute("layer.new.layer", json!({})).unwrap();
     s.execute("select.rect", json!({"x": 1, "y": 1, "width": 6, "height": 5})).unwrap();
@@ -22,19 +25,46 @@ fn fresh() -> Session {
 /// 0.3 s even on a heavily loaded machine, so this only catches real hangs.
 const DEADLINE: Duration = Duration::from_secs(4);
 
-/// Run `id` with `p` on a fresh session, on a worker thread. `None` if it timed out, else whether
-/// it finished without panicking (returning Ok or a graceful Err both count).
-fn run_once(id: &str, p: &Value) -> Option<bool> {
-    let (tx, rx) = mpsc::channel();
-    let (id, p) = (id.to_string(), p.clone());
-    std::thread::spawn(move || {
-        let r = catch_unwind(AssertUnwindSafe(|| {
-            let mut s = fresh();
-            let _ = s.execute(&id, p);
+/// Panics anywhere in the process, counted by a hook. `Session::execute` contains a command's
+/// panic and returns an ordinary `Err`, so the unwind never reaches `catch_unwind` here; the hook
+/// still sees it, on whichever thread (rayon workers included) it happened (#4982).
+static PANICS: AtomicUsize = AtomicUsize::new(0);
+/// One run at a time, so a panic is charged to the run that caused it.
+static RUN: Mutex<()> = Mutex::new(());
+
+/// Budget for the self-test below, which checks how panics are counted, not hangs. The panic hook
+/// prints a backtrace under `RUST_BACKTRACE=1` (as in CI), and on a loaded Windows runner the
+/// first symbol lookup alone can take 15–20 s.
+const SELF_TEST_DEADLINE: Duration = Duration::from_secs(120);
+
+/// Run `f` on a worker thread. `None` if it took longer than `deadline`, else whether it
+/// finished without panicking, contained or not (returning Ok or a graceful Err both count).
+fn run_watched(deadline: Duration, f: impl FnOnce() + Send + 'static) -> Option<bool> {
+    static HOOK: Once = Once::new();
+    HOOK.call_once(|| {
+        let default = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            PANICS.fetch_add(1, Ordering::SeqCst);
+            default(info);
         }));
+    });
+    let _one = RUN.lock().unwrap_or_else(PoisonError::into_inner);
+    let before = PANICS.load(Ordering::SeqCst);
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let r = catch_unwind(AssertUnwindSafe(f));
         let _ = tx.send(r.is_ok());
     });
-    rx.recv_timeout(DEADLINE).ok()
+    rx.recv_timeout(deadline).ok().map(|ok| ok && PANICS.load(Ordering::SeqCst) == before)
+}
+
+/// Run `id` with `p` on a fresh session; see [`run_watched`].
+fn run_once(id: &str, p: &Value) -> Option<bool> {
+    let (id, p) = (id.to_string(), p.clone());
+    run_watched(DEADLINE, move || {
+        let mut s = fresh();
+        let _ = s.execute(&id, p);
+    })
 }
 
 /// `Err` with a reason on panic or hang, `Ok` otherwise.
@@ -60,13 +90,18 @@ fn no_command_panics_or_hangs_on_adversarial_params() {
         json!({"x": 1e5, "y": -1e5, "radius": 300, "amount": 300, "angle": 1e5, "opacity": -100, "scale": -5, "gamma": -1}),
         json!({"points": [], "from": [0, 0], "to": [0, 0], "stops": [], "matrix": [0, 0, 0, 0, 0, 0], "colors": [], "name": "", "mode": "", "style": ""}),
     ];
-    // Commands whose success reaches outside the process: `file.print` and `file.printOneCopy`
-    // spool to CUPS, so a fuzz run with `{}` printed a blank page on the default printer. Their
-    // params are validated like everyone else's; the spooling itself is not fuzzed.
-    const EXTERNAL: &[&str] = &["file.print", "file.printOneCopy"];
     let mut bad: Vec<String> = Vec::new();
-    for spec in command_specs().iter().filter(|spec| !EXTERNAL.contains(&spec.id)) {
+    for spec in command_specs() {
         for p in &params {
+            // Print and Print One Copy reach real printers (lp, or the Windows driver): fuzz them
+            // as dry runs so the hunt never prints a page.
+            let mut p = p.clone();
+            if spec.id.starts_with("file.print")
+                && let Some(o) = p.as_object_mut()
+            {
+                o.insert("dryRun".into(), json!(true));
+            }
+            let p = &p;
             if let Err(why) = run_guarded(spec.id, p) {
                 bad.push(format!("{} [{why}] <- {p}", spec.id));
                 break;
@@ -74,4 +109,18 @@ fn no_command_panics_or_hangs_on_adversarial_params() {
         }
     }
     assert!(bad.is_empty(), "{} commands panicked or hung:\n{}", bad.len(), bad.join("\n"));
+}
+
+/// #4982: a panic the code under test contains still fails the run; a graceful `Err` does not.
+#[test]
+fn contained_panics_count_and_graceful_errors_do_not() {
+    let contained = run_watched(SELF_TEST_DEADLINE, || {
+        let _ = catch_unwind(|| panic!("contained, as Session::execute does"));
+    });
+    assert_eq!(contained, Some(false));
+    let graceful = run_watched(SELF_TEST_DEADLINE, || {
+        let mut s = fresh();
+        assert!(s.execute("layer.delete", json!({"layer": 999999})).is_err());
+    });
+    assert_eq!(graceful, Some(true));
 }

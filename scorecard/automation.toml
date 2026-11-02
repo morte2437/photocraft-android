@@ -44,7 +44,7 @@ id = "AUTO-219-5"
 target = "Batch: subfolders, open documents, naming template, progress/cancel, error log, stop"
 status = "done"
 issue = 219
-note = "batch.rs + file_cmds.rs: includeSubfolders (output mirrors the tree), source open (the open documents), naming template ({name} {serial:n} {letter} {date} {date:…} {ext}, startingSerial), stopOnError with the skipped files, errorLog file; runs as a job with per-file progress and Cancel; the Batch dialog, Image Processor, the lens batch and the CLI (--recursive --naming --start-serial --stop-on-error --error-log) share it"
+note = "file_cmds/batch_run.rs and batch_naming.rs: bounded recursive folder input with mirrored output folders; live open-document source; full Batch naming tokens and serials; per-file progress and cancellation for folder jobs; stop-on-error with skipped inputs and an optional error-log file; CLI flags and Batch dialog, #4579"
 
 [[item]]
 id = "AUTO-219-6"
@@ -79,4 +79,4 @@ id = "AUTO-219-10"
 target = "Agent acceptance suite grown to 30-50 workflows"
 status = "partial"
 issue = 219
-note = "automation/tests/agent_tasks.rs runs 10 workflows over MCP"
+note = "automation/tests/it/agent_tasks.rs runs 10 workflows over MCP"

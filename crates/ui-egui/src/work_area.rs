@@ -102,7 +102,7 @@ pub fn fits(outer: Vec2, monitor: Vec2) -> bool {
 }
 
 fn fitted_id() -> egui::Id {
-    egui::Id::new("pc-window-fitted")
+    egui::Id::unique("pc-window-fitted")
 }
 
 /// Once, as soon as the monitor is known: maximize a window that is bigger than its monitor
