@@ -1956,3 +1956,16 @@ fn save_hook_closing_the_target_stops_an_imported_close_with_save() {
         assert!(app.session.actions.playback_stack.is_empty());
     }
 }
+
+#[test]
+/// An unsupported step in a set that stays loaded is counted in the multi-file summary, unlike
+/// one in a set a later file replaced (CodeRabbit on #10776).
+fn bulk_load_summary_counts_unsupported_steps_of_surviving_sets() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    let mut a = photocraft_psd::atn::parse(&action_set_bytes("Set A", "A")).unwrap();
+    a.actions[0].items[0].event = photocraft_psd::atn::AtnEvent::Code(*b"Xxxx");
+    let files = vec![("a.atn".into(), photocraft_psd::atn::write(&a).unwrap()), ("b.atn".into(), action_set_bytes("Set B", "B"))];
+    let status = bulk_load_status(&mut app, files);
+    assert!(status.contains("1 step has no PhotoCraft equivalent yet"), "{status}");
+    assert!(!app.ui.status_error, "{status}");
+}
