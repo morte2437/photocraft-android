@@ -447,7 +447,12 @@ fn batch_dialogs_include_all_subfolders() {
         fields.insert("includeSubfolders".into(), json!(true));
         let r = crate::dialogs::confirm(&mut app, d).unwrap();
         assert_eq!(r["files"].as_array().map(Vec::len), Some(1), "{id}: {r}");
-        assert!(dir.join(out).join("sub").is_dir(), "{id} keeps the subfolder: {r}");
+        if id == "file.automate.batch" {
+            assert!(dir.join(out).join("a.png").is_file(), "{id} writes subfolder inputs flat: {r}");
+            assert!(!dir.join(out).join("sub").exists());
+        } else {
+            assert!(dir.join(out).join("sub").is_dir(), "{id} keeps the subfolder: {r}");
+        }
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
