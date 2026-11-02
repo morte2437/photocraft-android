@@ -15,23 +15,27 @@ use super::{D, Descriptor, Id, Map, ReferenceItem, UnicodeString, Value, json};
 /// Translate supported selection targets, retaining unknown references as Photoshop steps.
 pub(super) fn select_from(d: &Descriptor) -> Mapped {
     let Some(r) = get_ref(d, "null") else { return Mapped::Unsupported { harmless: false } };
+    // The layer selection's modifier, whichever way the step names the layer.
+    let with_modifier = |params| {
+        let mut p = Value::Object(params);
+        match get_enum(d, "selectionModifier").as_deref() {
+            Some("addToSelection") => p["mode"] = json!("add"),
+            Some("removeFromSelection") => p["mode"] = json!("remove"),
+            // Shift-click: select everything between the active layer and this one.
+            Some("addToSelectionContinuous") => p["mode"] = json!("range"),
+            _ => {}
+        }
+        step("layer.select", p)
+    };
     match (ref_class(r).as_deref(), target(r)) {
         (Some("Lyr"), Target::Name(_) | Target::Index(_) | Target::Ordinal(_)) => {
             let Some(params) = recorded_layer_target(r) else { return Mapped::Unsupported { harmless: false } };
-            let mut p = Value::Object(params);
-            match get_enum(d, "selectionModifier").as_deref() {
-                Some("addToSelection") => p["mode"] = json!("add"),
-                Some("removeFromSelection") => p["mode"] = json!("remove"),
-                // Shift-click: select everything between the active layer and this one.
-                Some("addToSelectionContinuous") => p["mode"] = json!("range"),
-                _ => {}
-            }
-            step("layer.select", p)
+            with_modifier(params)
         }
         // A Cmd-click recorded on a layer property (e.g. the Background, #10702).
         (Some("Lyr"), Target::Property(_)) => {
             let Some(p) = layer_target(r) else { return Mapped::Unsupported { harmless: false } };
-            step("layer.select", Value::Object(p))
+            with_modifier(p)
         }
         // The Channels panel: the active layer's mask, or back to the composite (`RGB`, `CMYK`…).
         (Some("Chnl"), Target::Ordinal(o)) => match o.as_str() {
@@ -293,10 +297,11 @@ pub(super) fn move_from(d: &Descriptor) -> Mapped {
             step("layer.translate", Value::Object(p))
         }
         Some(D::Reference(t)) => {
+            // Only a layer destination: an index or ordinal of anything else isn't a stack move.
+            if t.len() != 1 || ref_class(t).as_deref() != Some("Lyr") {
+                return Mapped::Unsupported { harmless: false };
+            }
             if let Target::Index(index) = target(t) {
-                if t.len() != 1 || ref_class(t).as_deref() != Some("Lyr") {
-                    return Mapped::Unsupported { harmless: false };
-                }
                 p.insert("target".into(), json!({"index": index}));
                 return step("layer.moveTo", Value::Object(p));
             }

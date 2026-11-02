@@ -5854,3 +5854,31 @@ fn gallery_effect_steps_keep_a_legacy_panel_name_byte_for_byte() {
     let back = &file.actions[0].items[0];
     assert_eq!((back.event.clone(), back.dictionary.clone()), (AtnEvent::Code(*b"AccE"), gbk));
 }
+
+/// A Cmd-click that adds the Background (a property reference) to the selection keeps its
+/// modifier, as a click on a named layer does, and saves back the same (CodeRabbit on #10776).
+#[test]
+fn a_background_selection_keeps_its_modifier() {
+    let bckg = || D::Reference(vec![ReferenceItem::Property { class: class("Lyr "), key: code("Bckg") }]);
+    for (modifier, mode) in [("addToSelection", "add"), ("removeFromSelection", "remove"), ("addToSelectionContinuous", "range")] {
+        let d = desc("null").with("null", bckg()).with("selectionModifier", enm("selectionModifierType", modifier)).with("MkVs", D::Boolean(false));
+        let loaded = mapped_recording("slct", d.clone());
+        assert_eq!(loaded.actions[0].steps, vec![("layer.select".into(), json!({"layer":{"background":true},"mode":mode}))], "{modifier}");
+        let (bytes, _) = export("S", &[&loaded.actions[0]], &[], false).unwrap();
+        assert_eq!(atn::parse(&bytes).unwrap().actions[0].items[0].descriptor, Some(d));
+    }
+}
+
+/// A Move whose destination is an ordinal of something other than a layer is no stack move:
+/// it stays a Photoshop step (CodeRabbit on #10776).
+#[test]
+fn a_move_to_an_ordinal_that_is_not_a_layer_is_kept() {
+    let ord = |cls: &str, o: &str| D::Reference(vec![ReferenceItem::Enumerated { class: class(cls), type_id: code("Ordn"), value: code(o) }]);
+    let target = || D::Reference(vec![ReferenceItem::Enumerated { class: class("Lyr "), type_id: code("Ordn"), value: code("Trgt") }]);
+    for o in ["Frnt", "Back", "Nxt ", "Prvs"] {
+        let layer = mapped_recording("move", desc("null").with("null", target()).with("T   ", ord("Lyr ", o)));
+        assert!(layer.unsupported.is_empty(), "{o} on a layer");
+        let channel = mapped_recording("move", desc("null").with("null", target()).with("T   ", ord("Chnl", o)));
+        assert_eq!(channel.unsupported.len(), 1, "{o} on a channel was mapped: {:?}", channel.actions[0].steps);
+    }
+}
