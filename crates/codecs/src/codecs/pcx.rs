@@ -34,7 +34,7 @@ pub(crate) fn looks_like_pcx(b: &[u8]) -> bool {
     stride >= min_stride && stride > 0 && (bits != 8 || matches!(planes, 1 | 3)) && (bits == 8 || u32::from(bits) * u32::from(planes) <= 4)
 }
 
-/// Read one compressed plane's row. RLE packets never cross a scanline.
+/// Read one compressed scanline, including all planes. RLE packets never cross a scanline.
 fn read_row(b: &[u8], pos: &mut usize, out: &mut [u8]) -> Result<(), CodecError> {
     let mut n = 0;
     while n < out.len() {
@@ -72,14 +72,35 @@ pub(crate) fn decode(b: &[u8], limits: &Limits) -> Result<Image, CodecError> {
         return Err(bad("8-bit indexed PCX has no 256-colour palette"));
     }
     let image_end = if vga { b.len() - 769 } else { b.len() };
+    // A 63-byte RLE packet takes 2 bytes; a trailing remainder of 1 byte below 0xC0
+    // can be encoded as a 1-byte literal, while any larger remainder takes at least 2 bytes.
+    // Because RLE packets may span planes within a scanline (`row_len`), compute the
+    // minimum encoded bytes across the full scanline (`row_len`) and multiply by `h`.
+    // Reject inputs that cannot possibly contain all scanlines before allocating
+    // the decoded image buffer.
+    let min_packets = (row_len / 63)
+        .checked_mul(2)
+        .and_then(|n| {
+            n.checked_add(match row_len % 63 {
+                0 => 0,
+                1 => 1,
+                _ => 2,
+            })
+        })
+        .ok_or_else(|| bad("compressed row size overflow"))?;
+    let min_encoded = min_packets.checked_mul(h as usize).ok_or_else(|| bad("compressed image size overflow"))?;
+    let encoded_len = image_end.saturating_sub(HEADER);
+    if encoded_len < min_encoded {
+        return Err(bad("PCX pixel data is too short for the declared image"));
+    }
     let mut row = vec![0u8; row_len];
-    let mut pixels = vec![0u8; total];
+    let mut pixels = Vec::new();
+    pixels.try_reserve_exact(total).map_err(|_| bad("PCX pixel buffer is too large"))?;
+    pixels.resize(total, 0);
     let mut p = HEADER;
     let width = w as usize;
     for y in 0..h as usize {
-        for plane in row.chunks_mut(stride) {
-            read_row(&b[..image_end], &mut p, plane)?;
-        }
+        read_row(&b[..image_end], &mut p, &mut row)?;
         for x in 0..width {
             let rgb = if bits == 8 && planes == 3 {
                 [row[x], row[stride + x], row[2 * stride + x]]

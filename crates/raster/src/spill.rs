@@ -186,9 +186,10 @@ impl Drop for Cell {
             M.read_errors.fetch_add(1, Ordering::Release);
             M.failed.fetch_sub(1, Ordering::Release);
         }
-        let resident = self.data.get_mut().unwrap_or_else(PoisonError::into_inner).is_some();
-        if resident {
+        if let Some(bytes) = self.data.get_mut().unwrap_or_else(PoisonError::into_inner).take() {
             M.resident.fetch_sub(self.len, Ordering::Relaxed);
+            // The next tile of this size reuses the buffer, as main's pool expects.
+            crate::scratch::give(bytes);
         }
         if let Some((file, extent)) = self.slot.get_mut().unwrap_or_else(PoisonError::into_inner).take() {
             file.free(extent);
@@ -198,8 +199,18 @@ impl Drop for Cell {
 }
 
 fn unpack(packed: &[u8], len: usize) -> Result<Vec<u8>, String> {
-    let bytes = lz4_flex::block::decompress(packed, len).map_err(|e| e.to_string())?;
-    if bytes.len() == len { Ok(bytes) } else { Err(format!("tile decoded to {} bytes, expected {len}", bytes.len())) }
+    let mut bytes = crate::scratch::take_exact(len, 0u8);
+    match lz4_flex::block::decompress_into(packed, &mut bytes) {
+        Ok(n) if n == len => Ok(bytes),
+        Ok(n) => {
+            crate::scratch::give(bytes);
+            Err(format!("tile decoded to {n} bytes, expected {len}"))
+        }
+        Err(e) => {
+            crate::scratch::give(bytes);
+            Err(e.to_string())
+        }
+    }
 }
 
 /// Process-wide state. Plain statics: everything here is const-constructible.

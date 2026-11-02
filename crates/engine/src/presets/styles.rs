@@ -6,7 +6,7 @@
 //! `layer.layerStyle.*`.
 
 use photocraft_color::{BlendMode, ColorMode, SampleType};
-use photocraft_doc::{Document, Effect, Layer, Size};
+use photocraft_doc::{Document, Effect, Layer, Pattern, Size};
 use photocraft_geom::Rect;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -25,6 +25,9 @@ pub struct StylePreset {
     pub blend: Option<BlendMode>,
     #[serde(default)]
     pub fill_opacity: Option<f32>,
+    /// Layer opacity saved with the blending options (0..1).
+    #[serde(default)]
+    pub opacity: Option<f32>,
 }
 
 impl Named for StylePreset {
@@ -43,7 +46,7 @@ impl StylePreset {
             .as_array()
             .map(|a| a.iter().filter_map(|e| effect_from_params(e.get(0)?.as_str()?, e.get(1).unwrap_or(&Value::Null))).collect())
             .unwrap_or_default();
-        StylePreset { name: name.into(), effects, blend: None, fill_opacity: fill }
+        StylePreset { name: name.into(), effects, blend: None, fill_opacity: fill, opacity: None }
     }
 
     pub fn to_json(&self) -> Value {
@@ -52,6 +55,7 @@ impl StylePreset {
             "effects": self.effects.iter().map(|e| e.label()).collect::<Vec<_>>(),
             "blend": self.blend.map(|b| b.label()),
             "fillOpacity": self.fill_opacity.map(|f| (f * 100.0).round()),
+            "opacity": self.opacity.map(|f| (f * 100.0).round()),
         })
     }
 }
@@ -166,6 +170,51 @@ fn targets(s: &Session, p: &Value) -> Vec<photocraft_doc::LayerId> {
     crate::layer_multi_cmds::selected(s)
 }
 
+/// Resolves each effect's pattern, plus the patterns that strokes and bevels name, copied from the library.
+fn resolve_style_effects(s: &Session, fx_list: &[Effect]) -> Result<(Vec<Effect>, Vec<Pattern>)> {
+    let mut effects = Vec::new();
+    let mut pats = Vec::new();
+    for fx in fx_list {
+        let (fx, pat) = crate::pattern_cmds::resolve_effect(s, fx.clone())?;
+        effects.push(fx);
+        pats.extend(pat);
+    }
+    // Pattern strokes and bevel textures name their pattern too: copy it when the library has it.
+    for (name, id) in photocraft_io::asl_map::referenced_patterns(&effects) {
+        if let Some(pat) = crate::pattern_cmds::resolve(s, if id.is_empty() { &name } else { &id }).filter(|_| !(id.is_empty() && name.is_empty())) {
+            pats.push(pat);
+        }
+    }
+    Ok((effects, pats))
+}
+
+/// Writes a preset onto one layer: replaces its effects, or appends to them when `add`.
+fn apply_to_layer(l: &mut Layer, style: &StylePreset, effects: &[Effect], add: bool) {
+    if add {
+        l.effects.items.extend(effects.iter().cloned());
+    } else {
+        l.effects.items = effects.to_vec();
+        l.effects.psd_raw = None;
+    }
+    l.effects.psd_raw = None;
+    l.effects.enabled = true;
+    // Adding keeps the layer's blending unless the preset carries some: a blend mode, or
+    // an Opacity saved on its own (`style.presets.new` with `includeBlending: false`).
+    if !add || style.blend.is_some() || style.opacity.is_some() {
+        if let Some(b) = style.blend {
+            l.blend = b;
+        }
+        if let Some(f) = style.fill_opacity {
+            l.fill_opacity = f;
+        } else if !add {
+            l.fill_opacity = 1.0;
+        }
+        if let Some(o) = style.opacity {
+            l.opacity = o;
+        }
+    }
+}
+
 fn apply(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "style.presets.apply";
     let style = find_style(s, p, CMD)?.clone();
@@ -175,13 +224,7 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(CMD, "no target layers"));
     }
     // Pattern overlays name their pattern; resolve to library patterns copied into the document.
-    let mut effects = Vec::new();
-    let mut pats = Vec::new();
-    for fx in style.effects {
-        let (fx, pat) = crate::pattern_cmds::resolve_effect(s, fx)?;
-        effects.push(fx);
-        pats.extend(pat);
-    }
+    let (effects, pats) = resolve_style_effects(s, &style.effects)?;
     let label = format!("Apply Style: {}", style.name);
     s.edit(&label, |doc, _| {
         for pat in &pats {
@@ -194,24 +237,7 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
             // Styles can't sit on the Background: Photoshop turns it into a normal layer first.
             crate::extra_cmds::background_to_layer(doc, *id);
             let l = doc.layer_mut(*id).ok_or(EngineError::NoLayer(*id))?;
-            if add {
-                l.effects.items.extend(effects.iter().cloned());
-            } else {
-                l.effects.items = effects.clone();
-                l.effects.psd_raw = None;
-            }
-            l.effects.psd_raw = None;
-            l.effects.enabled = true;
-            if !add || style.blend.is_some() {
-                if let Some(b) = style.blend {
-                    l.blend = b;
-                }
-                if let Some(f) = style.fill_opacity {
-                    l.fill_opacity = f;
-                } else if !add {
-                    l.fill_opacity = 1.0;
-                }
-            }
+            apply_to_layer(l, &style, &effects, add);
         }
         Ok(())
     })?;
@@ -256,6 +282,7 @@ fn new_preset(s: &mut Session, p: &Value) -> Result<Value> {
         },
         blend: p.get("blend").and_then(Value::as_str).and_then(crate::commands::blend_from_str).or_else(|| with_blend.then_some(l.blend)),
         fill_opacity: p.get("fillOpacity").and_then(Value::as_f64).map(|v| (v / 100.0).clamp(0.0, 1.0) as f32).or_else(|| with_blend.then_some(l.fill_opacity)),
+        opacity: p.get("opacity").and_then(Value::as_f64).map(|v| (v / 100.0).clamp(0.0, 1.0) as f32).or_else(|| with_blend.then_some(l.opacity)),
     };
     let gi = group_index(&mut s.presets.styles, str_param(p, "group"));
     let out = json!({"name": style.name, "group": s.presets.styles[gi].name, "effects": style.effects.len()});
@@ -336,7 +363,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Style Presets",
             menu: &[],
             shortcut: None,
-            params: "{} → {groups:[{name,presets:[{name,effects,blend,fillOpacity}]}]}",
+            params: "{} → {groups:[{name,presets:[{name,effects,blend,fillOpacity,opacity}]}]}",
             enabled: always,
             run: list,
             journal: false,
@@ -356,7 +383,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "New Style…",
             menu: &[],
             shortcut: None,
-            params: r##"{"name":str="Style","group":name?,"layer":id?,"includeEffects":bool=true,"includeBlending":bool=true,"effects":[[kind, params]]? (explicit list, e.g. the Layer Style dialog's pending state; overrides includeEffects),"blend":str?,"fillOpacity":0..100? (override the layer's blending options)}"##,
+            params: r##"{"name":str="Style","group":name?,"layer":id?,"includeEffects":bool=true,"includeBlending":bool=true,"effects":[[kind, params]]? (explicit list, e.g. the Layer Style dialog's pending state; overrides includeEffects),"blend":str?,"fillOpacity":0..100?,"opacity":0..100? (override the layer's blending options)}"##,
             enabled: has_layer,
             run: new_preset,
             journal: true,

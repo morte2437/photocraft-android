@@ -79,23 +79,48 @@ fn mirror(i: isize, n: usize) -> usize {
 
 const TAPS: [f32; 5] = [1.0 / 16.0, 4.0 / 16.0, 6.0 / 16.0, 4.0 / 16.0, 1.0 / 16.0];
 
+/// Planes smaller than this run their rows on one thread: the filter builds a whole pyramid per
+/// reference (up to 96), and splitting its small levels into one-row tasks cost more in rayon's
+/// scheduling than the rows themselves (a fifth of a Shadows render on 36 MP, measured).
+const PAR_MIN: usize = 1 << 15;
+
+/// [`par_rows`] for a plane, on one thread when it is small (see [`PAR_MIN`]).
+fn rows(buf: &mut [f32], w: usize, f: impl Fn(usize, &mut [f32]) + Sync + Send) {
+    if buf.len() < PAR_MIN {
+        buf.chunks_mut(w.max(1)).enumerate().for_each(|(y, row)| f(y, row));
+    } else {
+        par_rows(buf, w, 1, f);
+    }
+}
+
 /// The binomial 5-tap blur, sampled every `step` pixels from 0 (1 = full resolution).
 fn blur_step(p: &Plane, step: usize) -> Plane {
     let (w2, h2) = (p.w.div_ceil(step), p.h.div_ceil(step));
-    // Columns first at the kept rows, then rows at the kept columns.
+    // Columns first at the kept rows, then rows at the kept columns. Each sum adds the same terms
+    // in the same order as a `mirror` per tap would, so the result is bit for bit the same; the
+    // source rows are found once per row and the columns mirrored only near the edges.
     let mut tmp = vec![0.0f32; p.w * h2];
-    par_rows(&mut tmp, p.w, 1, |y2, row| {
+    rows(&mut tmp, p.w, |y2, row| {
         let y = (y2 * step) as isize;
+        let src: [&[f32]; 5] = std::array::from_fn(|k| {
+            let r = mirror(y + k as isize - 2, p.h);
+            &p.v[r * p.w..(r + 1) * p.w]
+        });
         for (x, o) in row.iter_mut().enumerate() {
-            *o = (0..5).map(|k| TAPS[k] * p.v[mirror(y + k as isize - 2, p.h) * p.w + x]).sum();
+            *o = (0..5).map(|k| TAPS[k] * src[k][x]).sum();
         }
     });
     let mut out = vec![0.0f32; w2 * h2];
-    par_rows(&mut out, w2, 1, |y2, row| {
+    rows(&mut out, w2, |y2, row| {
         let src = &tmp[y2 * p.w..(y2 + 1) * p.w];
         for (x2, o) in row.iter_mut().enumerate() {
-            let x = (x2 * step) as isize;
-            *o = (0..5).map(|k| TAPS[k] * src[mirror(x + k as isize - 2, p.w)]).sum();
+            let x = x2 * step;
+            *o = if x >= 2 && x + 2 < p.w {
+                let s = &src[x - 2..x + 3];
+                (0..5).map(|k| TAPS[k] * s[k]).sum()
+            } else {
+                (0..5).map(|k| TAPS[k] * src[mirror(x as isize + k as isize - 2, p.w)]).sum()
+            };
         }
     });
     Plane { w: w2, h: h2, v: out }
@@ -107,14 +132,78 @@ fn down(p: &Plane) -> Plane {
 }
 
 /// `p` brought up to `w × h`: zeros between samples, then the blur times four.
+///
+/// Three samples in four are zero, so their taps are skipped instead of blurring a zero-filled
+/// plane: the nonzero terms are added in the same order (skipping `+0.0` terms changes at most the
+/// sign of a zero, and the filter only adds and exponentiates these values).
 fn up(p: &Plane, w: usize, h: usize) -> Plane {
-    let mut z = Plane { w, h, v: vec![0.0; w * h] };
-    for y in 0..p.h.min(h.div_ceil(2)) {
-        for x in 0..p.w.min(w.div_ceil(2)) {
-            z.v[2 * y * w + 2 * x] = p.v[y * p.w + x] * 4.0;
-        }
+    let (lh, lw) = (p.h.min(h.div_ceil(2)), p.w.min(w.div_ceil(2)));
+    // The source sample behind index `i` of a zero-stuffed axis of length `n` holding `lim` samples.
+    let src = |i: isize, n: usize, lim: usize| {
+        let m = mirror(i, n);
+        (m.is_multiple_of(2) && m / 2 < lim).then_some(m / 2)
+    };
+    // Columns first, only at the even columns (the odd ones are all zero).
+    let mut tmp = vec![0.0f32; lw * h];
+    if lw > 0 {
+        rows(&mut tmp, lw, |y, row| {
+            let taps: [Option<&[f32]>; 5] = std::array::from_fn(|k| src(y as isize + k as isize - 2, h, lh).map(|r| &p.v[r * p.w..r * p.w + lw]));
+            for (j, o) in row.iter_mut().enumerate() {
+                *o = (0..5).filter_map(|k| taps[k].map(|s| TAPS[k] * (s[j] * 4.0))).sum();
+            }
+        });
     }
-    blur_step(&z, 1)
+    let mut out = vec![0.0f32; w * h];
+    rows(&mut out, w, |y, row| {
+        let t = &tmp[y * lw..(y + 1) * lw];
+        for (x, o) in row.iter_mut().enumerate() {
+            *o = if x >= 2 && x + 2 < w {
+                // Away from the edges no tap mirrors.
+                (0..5)
+                    .filter_map(|k| {
+                        let i = x + k - 2;
+                        (i.is_multiple_of(2) && i / 2 < lw).then(|| TAPS[k] * t[i / 2])
+                    })
+                    .sum()
+            } else {
+                (0..5).filter_map(|k| src(x as isize + k as isize - 2, w, lw).map(|j| TAPS[k] * t[j])).sum()
+            };
+        }
+    });
+    Plane { w, h, v: out }
+}
+
+/// The source rows of [`up`]`(p, w, h)` at output row `y`, one per tap (`None` where the
+/// zero-stuffed row is all zeros).
+fn up_rows(p: &Plane, h: usize, y: usize) -> [Option<usize>; 5] {
+    let lh = p.h.min(h.div_ceil(2));
+    std::array::from_fn(|k| {
+        let m = mirror(y as isize + k as isize - 2, h);
+        (m.is_multiple_of(2) && m / 2 < lh).then_some(m / 2)
+    })
+}
+
+/// One sample of [`up`]`(p, w, h)`: column `x` of the output row whose [`up_rows`] are `rows`.
+/// It adds the same terms in the same order as `up`, so it gives the same bits.
+fn up_at(p: &Plane, w: usize, rows: &[Option<usize>; 5], x: usize) -> f32 {
+    let lw = p.w.min(w.div_ceil(2));
+    let col = |j: usize| -> f32 { (0..5).filter_map(|k| rows[k].map(|r| TAPS[k] * (p.v[r * p.w + j] * 4.0))).sum() };
+    if x >= 2 && x + 2 < w {
+        // Away from the edges no tap mirrors.
+        (0..5)
+            .filter_map(|k| {
+                let i = x + k - 2;
+                (i.is_multiple_of(2) && i / 2 < lw).then(|| TAPS[k] * col(i / 2))
+            })
+            .sum()
+    } else {
+        (0..5)
+            .filter_map(|k| {
+                let m = mirror(x as isize + k as isize - 2, w);
+                (m.is_multiple_of(2) && m / 2 < lw).then(|| TAPS[k] * col(m / 2))
+            })
+            .sum()
+    }
 }
 
 /// Levels down to about 2 pixels on the short side.
@@ -154,21 +243,21 @@ fn llf(u: &Plane, remap: impl Fn(f32, f32) -> f32 + Sync) -> Plane {
     for k in 0..refs {
         let r = lo + step * k as f32;
         let mut m = Plane { w: u.w, h: u.h, v: u.v.clone() };
-        par_rows(&mut m.v, u.w, 1, |_, row| {
+        rows(&mut m.v, u.w, |_, row| {
             for v in row.iter_mut() {
                 *v = remap(*v, r);
             }
         });
         let gr = gaussian(m, n);
         for l in 0..n - 1 {
-            let coarse = up(&gr[l + 1], gr[l].w, gr[l].h);
-            let (gl, fine, lw) = (&g[l].v, &gr[l].v, g[l].w);
-            par_rows(&mut lap[l], lw, 1, |y, row| {
+            let (gl, fine, lw, lh, coarse) = (&g[l].v, &gr[l].v, g[l].w, g[l].h, &gr[l + 1]);
+            rows(&mut lap[l], lw, |y, row| {
+                let taps = up_rows(coarse, lh, y);
                 for (x, o) in row.iter_mut().enumerate() {
                     let i = y * lw + x;
                     let wgt = (1.0 - (gl[i].clamp(lo, hi) - r).abs() / step).max(0.0);
                     if wgt > 0.0 {
-                        *o += wgt * (fine[i] - coarse.v[i]);
+                        *o += wgt * (fine[i] - up_at(coarse, lw, &taps, x));
                     }
                 }
             });
@@ -188,8 +277,10 @@ fn llf(u: &Plane, remap: impl Fn(f32, f32) -> f32 + Sync) -> Plane {
 /// The `q` quantile (0 … 1) of `v`.
 fn quantile(v: &[f32], q: f32) -> f32 {
     let mut s = v.to_vec();
-    s.sort_by(f32::total_cmp);
-    s[((s.len() - 1) as f32 * q).round() as usize]
+    // Selecting the one element is linear, a full sort is not (5 sorts of the work copy were a
+    // fifteenth of a render). `total_cmp` ties are bit-identical, so it is the sorted element.
+    let i = ((s.len() - 1) as f32 * q).round() as usize;
+    *s.select_nth_unstable_by(i, f32::total_cmp).1
 }
 
 /// 1st and 99th percentiles of the log luminance on a copy at most 256 pixels across.
@@ -336,6 +427,84 @@ mod tests {
     use super::*;
 
     const SRGB: Encoding = Encoding(0.0);
+
+    /// The plain blur: a `mirror` per tap over the whole plane, the reference for [`blur_step`].
+    fn blur_step_reference(p: &Plane, step: usize) -> Plane {
+        let (w2, h2) = (p.w.div_ceil(step), p.h.div_ceil(step));
+        let mut tmp = vec![0.0f32; p.w * h2];
+        for y2 in 0..h2 {
+            for x in 0..p.w {
+                tmp[y2 * p.w + x] = (0..5).map(|k| TAPS[k] * p.v[mirror((y2 * step) as isize + k as isize - 2, p.h) * p.w + x]).sum();
+            }
+        }
+        let mut out = vec![0.0f32; w2 * h2];
+        for y2 in 0..h2 {
+            for x2 in 0..w2 {
+                out[y2 * w2 + x2] = (0..5).map(|k| TAPS[k] * tmp[y2 * p.w + mirror((x2 * step) as isize + k as isize - 2, p.w)]).sum();
+            }
+        }
+        Plane { w: w2, h: h2, v: out }
+    }
+
+    /// The plain upsampling: a zero-stuffed plane blurred whole, the reference for [`up`].
+    fn up_reference(p: &Plane, w: usize, h: usize) -> Plane {
+        let mut z = Plane { w, h, v: vec![0.0; w * h] };
+        for y in 0..p.h.min(h.div_ceil(2)) {
+            for x in 0..p.w.min(w.div_ceil(2)) {
+                z.v[2 * y * w + 2 * x] = p.v[y * p.w + x] * 4.0;
+            }
+        }
+        blur_step_reference(&z, 1)
+    }
+
+    fn noise_plane(w: usize, h: usize, seed: u32) -> Plane {
+        let mut s = seed.wrapping_mul(2_654_435_761).max(1);
+        let v = (0..w * h)
+            .map(|_| {
+                s ^= s << 13;
+                s ^= s >> 17;
+                s ^= s << 5;
+                (s % 20_000) as f32 / 1000.0 - 16.0
+            })
+            .collect();
+        Plane { w, h, v }
+    }
+
+    #[test]
+    fn the_fast_pyramid_matches_the_plain_one_exactly() {
+        // Odd, even, tiny and large-enough-to-run-in-parallel sizes, as the pyramid's levels are.
+        for (i, (w, h)) in [(1, 1), (1, 7), (2, 2), (3, 5), (5, 3), (8, 6), (37, 23), (64, 64), (301, 211)].into_iter().enumerate() {
+            let p = noise_plane(w, h, i as u32 + 1);
+            for step in [1, 2] {
+                assert_eq!(blur_step(&p, step).v, blur_step_reference(&p, step).v, "blur {w}×{h} step {step}");
+            }
+            for (uw, uh) in [(w * 2, h * 2), (w * 2 - 1, h * 2 - 1), (w * 2, h * 2 - 1), (w.max(2) * 2 - 3, h * 2)] {
+                let full = up(&p, uw, uh);
+                assert_eq!(full.v, up_reference(&p, uw, uh).v, "up {w}×{h} → {uw}×{uh}");
+                // The filter samples `up` one pixel at a time; every sample has the same bits.
+                for y in 0..uh {
+                    let taps = up_rows(&p, uh, y);
+                    for x in 0..uw {
+                        assert_eq!(up_at(&p, uw, &taps, x).to_bits(), full.v[y * uw + x].to_bits(), "up_at {w}×{h} → {uw}×{uh} at {x},{y}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn quantile_is_the_sorted_element() {
+        let p = noise_plane(301, 211, 9);
+        let mut v = p.v.clone();
+        // Ties and signed zeros, which `total_cmp` orders by their bits.
+        v.extend([0.0, -0.0, 0.0, -0.0, 3.5, 3.5, f32::MIN_POSITIVE]);
+        let mut sorted = v.clone();
+        sorted.sort_by(f32::total_cmp);
+        for q in [0.0, 0.001, 0.01, 0.25, 0.5, 0.99, 1.0] {
+            let want = sorted[((sorted.len() - 1) as f32 * q).round() as usize];
+            assert_eq!(quantile(&v, q).to_bits(), want.to_bits(), "q {q}");
+        }
+    }
 
     fn grey(w: usize, h: usize, f: impl Fn(usize, usize) -> f32) -> Vec<[f32; 4]> {
         (0..w * h).map(|i| f(i % w, i / w)).map(|v| [v, v, v, 1.0]).collect()

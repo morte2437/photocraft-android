@@ -16,7 +16,7 @@ fn scratch_pixels_history_and_failed_save_are_transactional() {
         p.performance.memory_usage_mb = 1;
     });
     assert!(spill::enabled());
-    assert_eq!(session.prefs().performance.history_budget_bytes(), 0);
+    assert_eq!(session.prefs().performance.history_cap_bytes(), 0);
     let mut doc = Document::new("Scratch fixture", Size::new(2048, 256), ColorMode::Rgb, SampleType::U8);
     let mut layer = Layer::raster("Pixels", PixelFormat::RGBA8);
     let id = layer.id;

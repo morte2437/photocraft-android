@@ -3,6 +3,8 @@
 //! together with the non-zero rule yields their exact union without computing offset curves.
 //! Dashing splits the flattened polylines by arc length first.
 
+use std::borrow::Cow;
+
 use photocraft_doc::{LineCap, LineJoin};
 
 use crate::flatten::Polyline;
@@ -86,8 +88,14 @@ fn area_radius(r: f64, step: f64) -> f64 {
     if step < 1e-9 { r } else { r * (step / step.sin()).sqrt() }
 }
 
-fn circle(c: P, r: f64, tol: f64) -> Vec<P> {
-    let n = ((std::f64::consts::TAU / arc_step(r, tol)).ceil() as usize).max(8);
+/// Points a full circle needs at `tol` (at least 8).
+fn circle_points(r: f64, tol: f64) -> usize {
+    ((std::f64::consts::TAU / arc_step(r, tol)).ceil() as usize).max(8)
+}
+
+/// A circle of at most `arc_cap` points (`usize::MAX` = no limit, at least 4).
+fn circle(c: P, r: f64, tol: f64, arc_cap: usize) -> Vec<P> {
+    let n = circle_points(r, tol).min(arc_cap).max(4);
     let rr = area_radius(r, std::f64::consts::TAU / n as f64);
     (0..n)
         .map(|i| {
@@ -97,28 +105,78 @@ fn circle(c: P, r: f64, tol: f64) -> Vec<P> {
         .collect()
 }
 
+/// Dash steps one stroke may spend, shared by all of its lines: it bounds the number of dashes
+/// (and so of caps) for file-provided patterns. Past it, the rest is drawn solid.
+const DASH_STEP_BUDGET: usize = 100_000;
+
+/// Outline points a stroke may spend before its round caps and joins get coarser (#5211).
+const OUTLINE_POINT_BUDGET: usize = 1 << 20;
+
 /// Stroke outline pieces for `lines`. Fill them with the non-zero rule.
+///
+/// The outline is bounded: when full-resolution round caps and joins would exceed
+/// [`OUTLINE_POINT_BUDGET`] points, every round cap and join gets the same, smaller number of
+/// segments (down to 4 per circle and 1 per join; areas stay exact). Strokes under the budget
+/// are unchanged and no piece is dropped, so the total is at most the larger of the budget and
+/// that minimal tessellation, which is linear in the (budgeted) flattened points and dashes.
 pub fn stroke_polygons(lines: &[Polyline], style: &StrokeStyle, tol: f64) -> Vec<Vec<P>> {
     let mut out = Vec::new();
     if style.width <= 0.0 || !style.width.is_finite() || !style.miter_limit.is_finite() || style.miter_limit < 1.0 {
         return out;
     }
+    let mut steps_left = DASH_STEP_BUDGET;
+    let mut pieces: Vec<Cow<Polyline>> = Vec::new();
     for pl in lines {
         if pl.pts.iter().any(|p| !p.0.is_finite() || !p.1.is_finite()) {
             continue;
         }
         if !style.dashes.is_empty() {
-            for dash in dash_polyline(pl, &style.dashes, style.dash_offset) {
-                stroke_one(&dash, style, tol, &mut out);
-            }
+            pieces.extend(dash_polyline_budgeted(pl, &style.dashes, style.dash_offset, &mut steps_left).into_iter().map(Cow::Owned));
         } else {
-            stroke_one(pl, style, tol, &mut out);
+            pieces.push(Cow::Borrowed(pl));
         }
+    }
+    let arc_cap = round_arc_cap(&pieces, style, tol);
+    for pl in &pieces {
+        stroke_one(pl, style, tol, arc_cap, &mut out);
     }
     out
 }
 
-fn stroke_one(pl: &Polyline, style: &StrokeStyle, tol: f64, out: &mut Vec<Vec<P>>) {
+/// Points per full circle allowed for round caps and joins so the outline of `pieces` stays
+/// within [`OUTLINE_POINT_BUDGET`]; `usize::MAX` when full resolution fits.
+fn round_arc_cap(pieces: &[Cow<Polyline>], style: &StrokeStyle, tol: f64) -> usize {
+    let (round_cap, round_join) = (style.cap == LineCap::Round, style.join == LineJoin::Round);
+    if !round_cap && !round_join {
+        return usize::MAX;
+    }
+    // Upper bounds: ribbons and miter/bevel pieces, full circles (caps and dots), round joins.
+    let (mut base, mut circles, mut joins) = (0usize, 0usize, 0usize);
+    for pl in pieces {
+        let m = pl.pts.len();
+        if m == 0 {
+            continue;
+        }
+        base = base.saturating_add(m.saturating_mul(6)).saturating_add(8);
+        if round_cap && !(pl.closed && m > 2) {
+            circles = circles.saturating_add(if m == 1 { 1 } else { 2 });
+        }
+        if round_join {
+            joins = joins.saturating_add(m);
+        }
+    }
+    // A join sweeps at most half a circle, plus its centre and two end points.
+    let cost = |n: usize| base.saturating_add(circles.saturating_mul(n)).saturating_add(joins.saturating_mul(n / 2 + 3));
+    let full = circle_points(style.width * 0.5, tol);
+    if cost(full) <= OUTLINE_POINT_BUDGET {
+        return usize::MAX;
+    }
+    let left = OUTLINE_POINT_BUDGET.saturating_sub(base).saturating_sub(joins.saturating_mul(3)) as f64;
+    let per_circle = circles as f64 + joins as f64 * 0.5;
+    ((left / per_circle.max(1.0)) as usize).clamp(4, full)
+}
+
+fn stroke_one(pl: &Polyline, style: &StrokeStyle, tol: f64, arc_cap: usize, out: &mut Vec<Vec<P>>) {
     let hw = style.width * 0.5;
     // Drop repeated points.
     let mut pts: Vec<P> = Vec::with_capacity(pl.pts.len());
@@ -145,7 +203,7 @@ fn stroke_one(pl: &Polyline, style: &StrokeStyle, tol: f64, out: &mut Vec<Vec<P>
         // A dot: only round and square caps draw something.
         let c = pts[0];
         match style.cap {
-            LineCap::Round => emit(out, circle(c, hw, tol)),
+            LineCap::Round => emit(out, circle(c, hw, tol, arc_cap)),
             LineCap::Square => emit(out, vec![(c.0 - hw, c.1 - hw), (c.0 + hw, c.1 - hw), (c.0 + hw, c.1 + hw), (c.0 - hw, c.1 + hw)]),
             LineCap::Butt => {}
         }
@@ -213,19 +271,19 @@ fn stroke_one(pl: &Polyline, style: &StrokeStyle, tol: f64, out: &mut Vec<Vec<P>
                 (jn, true) => jn,
                 (_, false) => LineJoin::Miter,
             };
-            join_piece(v, d1, d2, hw, join, if knot[j] { style.miter_limit.min(500.0) } else { f64::INFINITY }, tol, out);
+            join_piece(v, d1, d2, hw, join, if knot[j] { style.miter_limit.min(500.0) } else { f64::INFINITY }, tol, arc_cap, out);
         }
     }
     if !closed {
         let d0 = norm(sub(pts[1], pts[0]));
         let d1 = norm(sub(pts[n - 1], pts[n - 2]));
-        cap_piece(pts[0], mul(d0, -1.0), hw, style.cap, tol, out);
-        cap_piece(pts[n - 1], d1, hw, style.cap, tol, out);
+        cap_piece(pts[0], mul(d0, -1.0), hw, style.cap, tol, arc_cap, out);
+        cap_piece(pts[n - 1], d1, hw, style.cap, tol, arc_cap, out);
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-fn join_piece(v: P, d1: P, d2: P, hw: f64, join: LineJoin, miter_limit: f64, tol: f64, out: &mut Vec<Vec<P>>) {
+fn join_piece(v: P, d1: P, d2: P, hw: f64, join: LineJoin, miter_limit: f64, tol: f64, arc_cap: usize, out: &mut Vec<Vec<P>>) {
     let c = cross(d1, d2);
     let d = dot(d1, d2);
     if c.abs() < 1e-12 && d > 0.0 {
@@ -239,15 +297,14 @@ fn join_piece(v: P, d1: P, d2: P, hw: f64, join: LineJoin, miter_limit: f64, tol
     match join {
         LineJoin::Bevel => emit(out, vec![v, a, b]),
         LineJoin::Miter => {
-            // Miter length / width = 1 / sin(θ/2) where θ is the angle between the segments.
-            let half = ((1.0 - d) * 0.5).max(0.0).sqrt(); // sin of half the turning angle
+            // Miter length / width = 1 / sin(θ/2) where θ is the angle between the segments,
+            // i.e. 1 / cos of half the turning angle.
             let cos_half = ((1.0 + d) * 0.5).max(0.0).sqrt();
             if cos_half < 1e-9 || 1.0 / cos_half > miter_limit {
                 emit(out, vec![v, a, b]);
             } else {
                 let bis = norm(add(n1, n2));
                 let m = add(v, mul(bis, hw / cos_half));
-                let _ = half;
                 emit(out, vec![v, a, m, b]);
             }
         }
@@ -267,7 +324,12 @@ fn join_piece(v: P, d1: P, d2: P, hw: f64, join: LineJoin, miter_limit: f64, tol
                 delta = std::f64::consts::PI * if cross(n1, d1) > 0.0 { 1.0 } else { -1.0 };
             }
             a1 = a0 + delta;
-            let steps = ((delta.abs() / arc_step(hw, tol)).ceil() as usize).max(1);
+            let mut steps = (delta.abs() / arc_step(hw, tol)).ceil() as usize;
+            if arc_cap != usize::MAX {
+                // Over the outline budget: the join's share of an `arc_cap`-point circle.
+                steps = steps.min((arc_cap as f64 * delta.abs() / std::f64::consts::TAU).ceil() as usize);
+            }
+            let steps = steps.max(1);
             let rr = area_radius(hw, delta.abs() / steps as f64);
             let mut poly = vec![v, a];
             for k in 1..steps {
@@ -280,10 +342,10 @@ fn join_piece(v: P, d1: P, d2: P, hw: f64, join: LineJoin, miter_limit: f64, tol
     }
 }
 
-fn cap_piece(p: P, dir: P, hw: f64, cap: LineCap, tol: f64, out: &mut Vec<Vec<P>>) {
+fn cap_piece(p: P, dir: P, hw: f64, cap: LineCap, tol: f64, arc_cap: usize, out: &mut Vec<Vec<P>>) {
     match cap {
         LineCap::Butt => {}
-        LineCap::Round => emit(out, circle(p, hw, tol)),
+        LineCap::Round => emit(out, circle(p, hw, tol, arc_cap)),
         LineCap::Square => {
             let n = mul(perp(dir), hw);
             let e = mul(dir, hw);
@@ -294,6 +356,12 @@ fn cap_piece(p: P, dir: P, hw: f64, cap: LineCap, tol: f64, out: &mut Vec<Vec<P>
 
 /// Splits a polyline into dashes (open polylines). `pattern` alternates on/off lengths in px.
 pub fn dash_polyline(pl: &Polyline, pattern: &[f64], offset: f64) -> Vec<Polyline> {
+    dash_polyline_budgeted(pl, pattern, offset, &mut DASH_STEP_BUDGET.clone())
+}
+
+/// [`dash_polyline`] spending at most `steps_left` dash steps (decremented); once they are
+/// spent, the rest of the line is drawn solid.
+fn dash_polyline_budgeted(pl: &Polyline, pattern: &[f64], offset: f64, steps_left: &mut usize) -> Vec<Polyline> {
     if pattern.is_empty() {
         return vec![pl.clone()];
     }
@@ -313,13 +381,16 @@ pub fn dash_polyline(pl: &Polyline, pattern: &[f64], offset: f64) -> Vec<Polylin
     if !total.is_finite() || total <= 1e-9 || pl.pts.len() < 2 {
         return Vec::new();
     }
-    let mut pts = pl.pts.clone();
-    let mut knots = pl.knot.clone();
-    knots.resize(pts.len(), true);
-    if pl.closed {
+    // Only a closed polyline needs a copy (with its first point repeated at the end).
+    let pts: Cow<[P]> = if pl.closed {
+        let mut pts = pl.pts.clone();
         pts.push(pl.pts[0]);
-        knots.push(true);
-    }
+        pts.into()
+    } else {
+        pl.pts.as_slice().into()
+    };
+    // Knot flags past the source's (and the repeated closing point) count as knots.
+    let knot_at = |i: usize| i >= pl.pts.len() || pl.knot.get(i).copied().unwrap_or(true);
     // Position in the pattern.
     let mut idx = 0usize;
     let mut left = pat[0];
@@ -336,23 +407,27 @@ pub fn dash_polyline(pl: &Polyline, pattern: &[f64], offset: f64) -> Vec<Polylin
     }
     let mut out = Vec::new();
     let mut cur: Option<Polyline> = if idx.is_multiple_of(2) { Some(Polyline { pts: vec![pts[0]], knot: vec![true], closed: false }) } else { None };
-    let mut guard = 0usize;
-    for (wi, w) in pts.windows(2).enumerate() {
+    'walk: for (wi, w) in pts.windows(2).enumerate() {
         let (a, b) = (w[0], w[1]);
-        let b_knot = knots[wi + 1];
+        let b_knot = knot_at(wi + 1);
         let seg = len(sub(b, a));
         let mut pos = 0.0;
         while seg - pos > 1e-12 {
-            guard += 1;
-            if guard > 100_000 {
-                // Bound allocations and time, including file-provided patterns. Commands
-                // reject patterns that exceed this budget before document mutation.
-                return Vec::new();
-            }
             let step = left.min(seg - pos);
-            if step > 0.0 && pos + step == pos {
-                return Vec::new();
+            if *steps_left == 0 || (step > 0.0 && pos + step == pos) {
+                // Past the step budget (which bounds allocations and time for file-provided
+                // patterns; commands reject such patterns before mutating the document) or
+                // dashes below the coordinates' precision: keep the dashes made so far and draw
+                // the rest of the line solid rather than dropping the whole stroke (#5195).
+                let here = if pos > 0.0 { add(a, mul(sub(b, a), pos / seg)) } else { a };
+                let rest = cur.get_or_insert_with(|| Polyline { pts: vec![here], knot: vec![true], closed: false });
+                for (j, p) in pts.iter().enumerate().skip(wi + 1) {
+                    rest.pts.push(*p);
+                    rest.knot.push(knot_at(j));
+                }
+                break 'walk;
             }
+            *steps_left -= 1;
             pos += step;
             left -= step;
             let at_end = seg - pos <= 1e-12;
@@ -451,11 +526,57 @@ mod tests {
     #[test]
     fn invalid_and_too_dense_dashes_finish_with_bounded_work() {
         let pl = line(&[(0.0, 0.0), (100.0, 0.0)], false);
-        for pattern in [vec![0.0, 0.0], vec![f64::INFINITY, 1.0], vec![f64::NAN, 1.0], vec![-1.0, 2.0], vec![1.0; 33], vec![1e-8, 1e-8]] {
+        for pattern in [vec![0.0, 0.0], vec![f64::INFINITY, 1.0], vec![f64::NAN, 1.0], vec![-1.0, 2.0], vec![1.0; 33]] {
             assert!(dash_polyline(&pl, &pattern, 0.0).is_empty());
         }
         assert!(dash_polyline(&pl, &[2.0, 1.0], f64::INFINITY).is_empty());
         assert!(dash_polyline(&line(&[(f64::NAN, 0.0), (1.0, 0.0)], false), &[2.0, 1.0], 0.0).is_empty());
+        // Too dense for the step budget: bounded work, and the line is still drawn.
+        let d = dash_polyline(&pl, &[1e-8, 1e-8], 0.0);
+        assert!(!d.is_empty() && d.len() <= 50_001);
+        assert_eq!(d.last().and_then(|p| p.pts.last()), Some(&(100.0, 0.0)));
+    }
+
+    #[test]
+    fn dashes_past_the_step_budget_keep_the_rest_of_the_line_solid() {
+        // An SVG `stroke-dasharray="0.5 0.5"` along 60000 px needs more steps than the budget:
+        // the stroke used to vanish entirely (#5195). The dashes made so far stay, the rest of
+        // the line (through its later vertices) is drawn solid.
+        let pl = line(&[(0.0, 0.0), (60_000.0, 0.0), (60_000.0, 1000.0)], false);
+        let d = dash_polyline(&pl, &[0.5, 0.5], 0.0);
+        assert!(d.len() > 40_000, "{} dashes", d.len());
+        assert_eq!(d[0].pts, [(0.0, 0.0), (0.5, 0.0)]);
+        let tail = d.last().unwrap();
+        assert_eq!(tail.pts.last(), Some(&(60_000.0, 1000.0)));
+        assert!(tail.pts.contains(&(60_000.0, 0.0)) && tail.pts.len() == tail.knot.len());
+        // The solid tail starts where the dashes stopped (100000 steps of 0.5 px).
+        assert!((tail.pts[0].0 - 50_000.0).abs() < 1.0 && tail.pts[0].1 == 0.0, "{:?}", tail.pts[0]);
+        // Closed outlines finish the same way, back to their first point, where the solid tail
+        // joins the first dash (one piece with a join at the seam, no caps).
+        let outline = line(&[(0.0, 0.0), (60_000.0, 0.0), (60_000.0, 1000.0), (0.0, 1000.0)], true);
+        let d = dash_polyline(&outline, &[0.5, 0.5], 0.0);
+        let joined = &d[0];
+        assert!(joined.pts.contains(&(60_000.0, 1000.0)) && joined.pts.contains(&(0.0, 1000.0)) && joined.pts.contains(&(0.0, 0.0)));
+        assert_eq!(joined.pts.last(), Some(&(0.5, 0.0)));
+    }
+
+    #[test]
+    fn wide_round_capped_dashes_keep_the_outline_within_its_point_budget() {
+        let points = |polys: &[Vec<P>]| polys.iter().map(Vec::len).sum::<usize>();
+        // 5000 dashes, each with two round caps of ~629 points at full resolution (#5211).
+        let st = StrokeStyle { width: 4000.0, cap: LineCap::Round, join: LineJoin::Round, dashes: vec![1.0, 9.0], ..Default::default() };
+        let pl = line(&[(0.0, 0.0), (25_000.0, 0.0), (25_000.0, 25_000.0)], false);
+        let polys = stroke_polygons(std::slice::from_ref(&pl), &st, 0.01);
+        assert!(points(&polys) <= OUTLINE_POINT_BUDGET, "{} points", points(&polys));
+        // No dash is dropped: a ribbon and two caps each.
+        assert!(polys.len() >= 3 * 5000, "{} pieces", polys.len());
+        // Many tiny undashed subpaths: bounded too, every one still drawn.
+        let dots: Vec<Polyline> = (0..3000).map(|i| line(&[(f64::from(i), 0.0), (f64::from(i) + 0.5, 0.0)], false)).collect();
+        let polys = stroke_polygons(&dots, &StrokeStyle { dashes: Vec::new(), ..st.clone() }, 0.01);
+        assert!(points(&polys) <= OUTLINE_POINT_BUDGET && polys.len() >= 3 * 3000, "{} points", points(&polys));
+        // Under the budget, round caps keep their full resolution.
+        let one = stroke_polygons(&dots[..1], &StrokeStyle { dashes: Vec::new(), ..st }, 0.01);
+        assert!(one.iter().any(|p| p.len() == circle_points(2000.0, 0.01)) && circle_points(2000.0, 0.01) > 600);
     }
 
     #[test]

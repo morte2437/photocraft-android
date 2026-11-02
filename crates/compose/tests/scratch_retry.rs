@@ -17,7 +17,7 @@ fn failed_effect_build_is_not_reused_after_original_pixels_recover() {
     foreground.surface_mut().unwrap().fill_rect(Rect::new(16, 16, 48, 48), &[1.0, 0.0, 0.0, 1.0]);
     foreground.effects.items.push(Effect::default_drop_shadow());
     doc.layers.extend([background, foreground]);
-    let expected = photocraft_compose::flatten(&doc).px;
+    let expected = photocraft_compose::flatten(&doc).px.clone();
     // Keep the known-good bounds, but force a new effect-map build from the damaged source.
     photocraft_compose::purge_effect_cache();
     spill::settle();

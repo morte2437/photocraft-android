@@ -1,0 +1,35 @@
+//! The crate's integration tests, linked into one test binary.
+
+mod adjust_preview_gpu;
+mod arbitrary_rotation_preview;
+mod batch_export_options;
+mod camera_raw_histogram;
+mod camera_raw_localization;
+mod camera_raw_scope;
+mod camera_raw_zoom;
+mod canvas_16f;
+mod checker_canvas;
+mod color_managed_canvas;
+mod crop_beyond_canvas;
+mod crop_default_mode;
+mod crop_popup_keys;
+mod custom_print_paper;
+mod display_shadows;
+mod drag_preview_canvas;
+mod export_as_scaling;
+mod eyedropper_ring;
+mod full_res_preview;
+mod gpu_device_loss;
+mod layout_perf;
+mod live_stroke_canvas;
+mod marching_ants_pixels;
+mod marquee_autoscroll;
+mod paint_bucket_all_layers;
+mod pattern_preview_canvas;
+mod radial_blur_center;
+mod remove_channel_target;
+mod system_locale;
+mod transform_readout_units;
+mod ui_scale_canvas;
+mod variables_data_sets;
+mod workspace_presets;

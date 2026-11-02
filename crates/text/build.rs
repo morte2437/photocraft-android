@@ -1,5 +1,5 @@
 //! Optional craft-fonts build input (https://github.com/storytold/craft-fonts, recipe from its
-//! `docs/integration.md`; rules in `craftrules/standards/fonts.md`).
+//! `docs/integration.md`).
 //!
 //! With `CRAFT_FONTS_DIR=<craft-fonts checkout>`, every font in its `fonts/manifest.txt` is
 //! embedded and exposed as `photocraft_text::CRAFT_FONTS`; unset, `CRAFT_FONTS` is empty and the

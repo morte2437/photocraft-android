@@ -53,28 +53,48 @@ pub fn classify(c: char) -> Option<CjkChar> {
     })
 }
 
-/// Script order for a locale tag such as `ja_JP.UTF-8`, `zh-Hant-TW`, `zh_CN` or `ko-KR`.
-/// Non-CJK (or unknown) locales get Simplified Chinese first, so Japanese forms only win
-/// for shared Han when the locale is Japanese.
-pub fn script_order(locale: Option<&str>) -> [CjkScript; 4] {
+/// A locale tag reduced to what [`script_order`] and [`locale_script`] compare:
+/// lowercase, `_` as `-`, without an encoding or modifier suffix.
+fn normalized_locale(locale: Option<&str>) -> String {
+    locale.unwrap_or("").split(['.', '@']).next().unwrap_or("").to_ascii_lowercase().replace('_', "-")
+}
+
+/// The CJK script a locale explicitly asks for, or `None` for a non-CJK (or unknown) locale.
+///
+/// [`script_order`] also gives non-CJK locales a default order (Simplified Chinese first). The
+/// craft-font manifest, however, lists its Japanese faces before Noto Sans CJK SC, so the eager
+/// provider keeps that Japanese-first baseline for Han unless the user's locale names another
+/// script. This helper distinguishes a non-CJK/unknown effective locale (use the baseline
+/// manifest order) from "zh-Hans/zh-Hant/ja/ko, use this script".
+pub fn locale_script(locale: Option<&str>) -> Option<CjkScript> {
     use CjkScript::*;
-    let tag = locale.unwrap_or("").split(['.', '@']).next().unwrap_or("").to_ascii_lowercase().replace('_', "-");
+    let tag = normalized_locale(locale);
     let mut parts = tag.split('-');
     let lang = parts.next().unwrap_or("");
     let rest: Vec<&str> = parts.collect();
     match lang {
-        "ja" => [Japanese, SimplifiedChinese, TraditionalChinese, Korean],
-        "ko" => [Korean, TraditionalChinese, SimplifiedChinese, Japanese],
+        "ja" => Some(Japanese),
+        "ko" => Some(Korean),
         "zh" | "yue" => {
             let hant = rest.iter().any(|p| matches!(*p, "hant" | "tw" | "hk" | "mo"));
             let hans = rest.iter().any(|p| matches!(*p, "hans" | "cn" | "sg"));
-            if (hant || lang == "yue") && !hans {
-                [TraditionalChinese, SimplifiedChinese, Japanese, Korean]
-            } else {
-                [SimplifiedChinese, TraditionalChinese, Japanese, Korean]
-            }
+            if (hant || lang == "yue") && !hans { Some(TraditionalChinese) } else { Some(SimplifiedChinese) }
         }
-        _ => [SimplifiedChinese, TraditionalChinese, Japanese, Korean],
+        _ => None,
+    }
+}
+
+/// Script order for a locale tag such as `ja_JP.UTF-8`, `zh-Hant-TW`, `zh_CN` or `ko-KR`.
+/// Non-CJK (or unknown) locales get Simplified Chinese first for system fonts, so Japanese
+/// forms only win for shared Han when the locale is Japanese (craft faces keep the manifest's
+/// Japanese-first order through [`locale_script`]).
+pub fn script_order(locale: Option<&str>) -> [CjkScript; 4] {
+    use CjkScript::*;
+    match locale_script(locale) {
+        Some(Japanese) => [Japanese, SimplifiedChinese, TraditionalChinese, Korean],
+        Some(Korean) => [Korean, TraditionalChinese, SimplifiedChinese, Japanese],
+        Some(TraditionalChinese) => [TraditionalChinese, SimplifiedChinese, Japanese, Korean],
+        Some(SimplifiedChinese) | None => [SimplifiedChinese, TraditionalChinese, Japanese, Korean],
     }
 }
 
@@ -330,7 +350,10 @@ fn fontconfig_match(script: CjkScript) -> Option<FontFile> {
 fn fontconfig_font_covers_sample(bytes: &[u8], family: &str, script: CjkScript) -> bool {
     use skrifa::MetadataProvider;
 
-    let index = face_index_for_family(bytes, family);
+    let Some(index) = face_index_for_family_checked(bytes, family) else { return false };
+    if !font_face_is_readable(bytes, index) {
+        return false;
+    }
     let Ok(font) = skrifa::FontRef::from_index(bytes, index) else { return false };
     let sample = match script {
         CjkScript::Japanese => "レイヤー図",
@@ -509,28 +532,140 @@ pub fn mac_pingfang() -> Option<std::path::PathBuf> {
     None
 }
 
-/// Face index in a font file (or collection) whose family name is `family`; 0 when `family` is
-/// empty or no face matches. Never panics on malformed data.
-pub fn face_index_for_family(bytes: &[u8], family: &str) -> u32 {
-    use skrifa::{MetadataProvider, raw::FileRef, string::StringId};
-    if family.is_empty() {
-        return 0;
-    }
-    let Ok(FileRef::Collection(c)) = FileRef::new(bytes) else { return 0 };
-    for (i, f) in c.iter().enumerate() {
-        let Ok(f) = f else { continue };
-        let named = [StringId::TYPOGRAPHIC_FAMILY_NAME, StringId::FAMILY_NAME].iter().any(|id| f.localized_strings(*id).any(|s| s.chars().eq(family.chars())));
-        if named {
-            return i as u32;
+/// Maximum collection faces and cumulative `name` records inspected by
+/// [`face_index_for_family_checked`].
+const MAX_COLLECTION_FACES: usize = 256;
+const MAX_NAME_RECORDS: usize = 8192;
+
+/// Whether `font` has a family record exactly equal to `family`, charging each inspected record
+/// to `budget` so malformed fonts cannot make this scan unbounded.
+fn family_name_matches(font: &skrifa::FontRef<'_>, family: &str, budget: &mut usize) -> bool {
+    use skrifa::{MetadataProvider, string::StringId};
+
+    for id in [StringId::TYPOGRAPHIC_FAMILY_NAME, StringId::FAMILY_NAME] {
+        for s in font.localized_strings(id) {
+            let Some(rem) = budget.checked_sub(1) else {
+                return false;
+            };
+            *budget = rem;
+            if s.chars().eq(family.chars()) {
+                return true;
+            }
         }
     }
-    0
+    false
+}
+
+/// Whether every table in the selected face of `bytes` really is present in the file.
+///
+/// `FontRef` reads tables lazily: a face whose `cmap` and `name` are valid can still point another
+/// table outside the file. Coverage checks only read `cmap`, so callers that register a selected
+/// collection face (by family index, coverage result or face 0) must check this first; epaint
+/// panics when it installs a configured face the parser cannot read.
+fn face_tables_are_readable(font: &skrifa::raw::FontRef<'_>) -> bool {
+    let directory = font.table_directory();
+    let records = directory.table_records();
+    !records.is_empty() && records.len() == usize::from(directory.num_tables()) && records.iter().all(|record| font.table_data(record.tag()).is_some())
+}
+
+/// Whether face `index` of a font file or collection has a complete, in-bounds table directory.
+///
+/// This is the selected-index counterpart of [`font_file_is_readable`]. A readable collection may
+/// still contain a malformed face at `index`; the face's `cmap` and `name` can work while another
+/// table points outside the file. Returns `false` for an out-of-range index or malformed data.
+/// Never panics.
+pub fn font_face_is_readable(bytes: &[u8], index: u32) -> bool {
+    skrifa::raw::FontRef::from_index(bytes, index).is_ok_and(|font| face_tables_are_readable(&font))
+}
+
+/// Whether `bytes` is a font file or font collection that the text engine's parser can read.
+///
+/// This uses the same `skrifa` parser the text engine lays out and rasterizes with, instead of a
+/// hand-written table-directory check with invented face/table caps. A readable non-font or
+/// truncated file returns `false`; valid SFNT, OTF and TTC data returns `true`. For a collection,
+/// at least one face must have a complete table directory. That does **not** make every face
+/// readable: a face selected by family name, coverage or the empty-family face-0 contract must be
+/// checked with [`font_face_is_readable`], because its `cmap` and `name` can work while another
+/// table points out of bounds.
+pub fn font_file_is_readable(bytes: &[u8]) -> bool {
+    use skrifa::raw::FileRef;
+
+    match FileRef::new(bytes) {
+        Ok(FileRef::Font(font)) => face_tables_are_readable(&font),
+        Ok(FileRef::Collection(faces)) => faces.iter().any(|face| face.is_ok_and(|font| face_tables_are_readable(&font))),
+        Err(_) => false,
+    }
+}
+
+/// Face index in a font file (or collection) whose family name is `family`.
+///
+/// An empty `family` is the explicit "face 0" contract. A single-face file must actually carry
+/// the requested family name; a collection must contain a face with it. `None` when the family is
+/// missing, the data is malformed or the name budget is exhausted. The returned index has a
+/// matching `name`, but its other tables are not validated: use [`font_face_is_readable`] before
+/// registering it. Never panics.
+pub fn face_index_for_family_checked(bytes: &[u8], family: &str) -> Option<u32> {
+    use skrifa::raw::{FileRef, types::Tag};
+
+    if family.is_empty() {
+        return Some(0);
+    }
+    let mut budget = MAX_NAME_RECORDS;
+    match FileRef::new(bytes).ok()? {
+        FileRef::Font(font) => family_name_matches(&font, family, &mut budget).then_some(0),
+        FileRef::Collection(c) => {
+            let mut seen_faces = std::collections::HashSet::new();
+            let mut seen_names = std::collections::HashSet::new();
+            for (i, f) in c.iter().take(MAX_COLLECTION_FACES).enumerate() {
+                if let Some(off_bytes) = bytes.get(12 + i * 4..12 + (i + 1) * 4)
+                    && let Ok(arr) = <[u8; 4]>::try_from(off_bytes)
+                    && !seen_faces.insert(u32::from_be_bytes(arr))
+                {
+                    continue;
+                }
+                let Ok(f) = f else { continue };
+                if let Some(rec) = f.table_directory.table_records().iter().find(|r| r.tag() == Tag::new(b"name"))
+                    && !seen_names.insert((rec.offset(), rec.length()))
+                {
+                    continue;
+                }
+                if family_name_matches(&f, family, &mut budget) {
+                    return u32::try_from(i).ok();
+                }
+                if budget == 0 {
+                    return None;
+                }
+            }
+            None
+        }
+    }
+}
+
+/// Face index in a font file (or collection) whose family name is `family`; 0 when `family` is
+/// empty or no face matches. Kept for callers that prefer the historical face-0 fallback; new
+/// system-font selection should use [`face_index_for_family_checked`], verify the selected face
+/// with [`font_face_is_readable`], and then verify coverage. Never panics on malformed data.
+pub fn face_index_for_family(bytes: &[u8], family: &str) -> u32 {
+    face_index_for_family_checked(bytes, family).unwrap_or(0)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use CjkScript::*;
+
+    #[test]
+    fn explicit_locale_scripts_are_distinct_from_the_non_cjk_default() {
+        assert_eq!(locale_script(Some("ja_JP.UTF-8")), Some(Japanese));
+        assert_eq!(locale_script(Some("ko-KR")), Some(Korean));
+        assert_eq!(locale_script(Some("zh-Hans-CN")), Some(SimplifiedChinese));
+        assert_eq!(locale_script(Some("zh_CN")), Some(SimplifiedChinese));
+        assert_eq!(locale_script(Some("zh-Hant-TW")), Some(TraditionalChinese));
+        assert_eq!(locale_script(Some("yue-HK")), Some(TraditionalChinese));
+        for unknown in [None, Some(""), Some("en_US.UTF-8"), Some("C"), Some("de"), Some("!!@@")] {
+            assert_eq!(locale_script(unknown), None, "{unknown:?}");
+        }
+    }
 
     #[test]
     fn locale_orders() {
@@ -625,6 +760,118 @@ mod tests {
                 let _ = bplist_first_language(&b);
             }
         }
+    }
+
+    /// A two-face TrueType collection built at runtime from the repository's OFL-licensed
+    /// Inter and JetBrains Mono files. Each face directory is rewritten with offsets relative to
+    /// the collection, so no font fixture is committed.
+    fn two_face_ttc(first: &[u8], second: &[u8]) -> Vec<u8> {
+        let font_count = 2usize;
+        let tables = |font: &[u8]| u16::from_be_bytes([font[4], font[5]]) as usize;
+        let dir_lengths = [12 + 16 * tables(first), 12 + 16 * tables(second)];
+        let mut dir_offsets = Vec::with_capacity(font_count);
+        let mut cursor = 12 + 4 * font_count;
+        for length in dir_lengths {
+            dir_offsets.push(cursor);
+            cursor += length;
+        }
+        let data_start = cursor.next_multiple_of(4);
+        let mut bases = Vec::with_capacity(font_count);
+        let mut total = data_start;
+        for font in [first, second] {
+            bases.push(total);
+            total += font.len().next_multiple_of(4);
+        }
+        let mut out = vec![0u8; total];
+        out[..4].copy_from_slice(b"ttcf");
+        out[4..8].copy_from_slice(&0x0001_0000u32.to_be_bytes());
+        out[8..12].copy_from_slice(&u32::try_from(font_count).expect("two faces").to_be_bytes());
+        for (i, offset) in dir_offsets.iter().enumerate() {
+            let at = 12 + i * 4;
+            out[at..at + 4].copy_from_slice(&u32::try_from(*offset).expect("collection fits").to_be_bytes());
+        }
+        for (i, font) in [first, second].into_iter().enumerate() {
+            let dir = dir_offsets[i];
+            let base = bases[i];
+            out[dir..dir + font.len().min(12)].copy_from_slice(&font[..font.len().min(12)]);
+            for record in 0..tables(font) {
+                let src = 12 + 16 * record;
+                let dst = dir + 12 + 16 * record;
+                out[dst..dst + 8].copy_from_slice(&font[src..src + 8]);
+                let table_offset = u32::from_be_bytes(font[src + 8..src + 12].try_into().expect("four bytes"));
+                let collection_offset = u32::try_from(base).expect("collection fits") + table_offset;
+                out[dst + 8..dst + 12].copy_from_slice(&collection_offset.to_be_bytes());
+                out[dst + 12..dst + 16].copy_from_slice(&font[src + 12..src + 16]);
+            }
+            out[base..base + font.len()].copy_from_slice(font);
+        }
+        out
+    }
+
+    #[test]
+    fn checked_face_lookup_uses_the_requested_collection_family_and_exact_coverage() {
+        use crate::scripts::face_covers;
+
+        let inter = include_bytes!("../../../assets/fonts/Inter-Regular.ttf");
+        let jetbrains = include_bytes!("../../../assets/fonts/JetBrainsMono-Regular.ttf");
+        let ttc = two_face_ttc(inter, jetbrains);
+
+        assert_eq!(face_index_for_family_checked(&ttc, "Inter"), Some(0));
+        assert_eq!(face_index_for_family_checked(&ttc, "JetBrains Mono"), Some(1));
+        assert_eq!(face_index_for_family_checked(&ttc, "Noto Sans CJK TC"), None);
+        assert_eq!(face_index_for_family(&ttc, "JetBrains Mono"), 1, "the old wrapper keeps its face-0 fallback only on a miss");
+        assert_eq!(face_index_for_family_checked(inter, "Inter"), Some(0));
+        assert_eq!(face_index_for_family_checked(inter, "JetBrains Mono"), None, "a single-face file must carry the requested family");
+        assert_eq!(face_index_for_family_checked(inter, ""), Some(0), "empty family is the explicit face-0 contract");
+        assert_eq!(face_index_for_family_checked(b"", "Inter"), None);
+
+        // Both faces cover A. JetBrains Mono does not cover Latin Small Letter B with Stroke,
+        // while Inter does, so a first-covering-face lookup cannot satisfy this pair.
+        assert!(face_covers(&ttc, 0, 'A'));
+        assert!(face_covers(&ttc, 1, 'A'));
+        assert!(face_covers(&ttc, 0, 'ƀ'));
+        assert!(!face_covers(&ttc, 1, 'ƀ'));
+        assert!(!face_covers(&ttc, 1, '日'));
+        assert!(!face_covers(&ttc, 2, 'A'), "out-of-range face index");
+    }
+
+    #[test]
+    fn font_file_validation_uses_the_layout_parser() {
+        let inter = include_bytes!("../../../assets/fonts/Inter-Regular.ttf");
+        let jetbrains = include_bytes!("../../../assets/fonts/JetBrainsMono-Regular.ttf");
+        assert!(font_file_is_readable(inter));
+        assert!(font_file_is_readable(&two_face_ttc(inter, jetbrains)));
+        assert!(!font_file_is_readable(b"this is not a font"));
+        assert!(!font_file_is_readable(&inter[..20]));
+        let mut missing_table = inter.to_vec();
+        // The first directory record begins at 12; its offset occupies bytes 20..24.
+        missing_table[20..24].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert!(!font_file_is_readable(&missing_table), "a complete directory cannot point outside the file");
+    }
+
+    /// A readable collection can contain a malformed non-selected face, so the file-level check
+    /// must not stand in for validating the face a caller selects. The selected face keeps a valid
+    /// `cmap` (coverage succeeds) and `name` (family lookup succeeds) while another table points
+    /// past the end of the file.
+    #[test]
+    fn selected_face_validation_rejects_a_malformed_face_in_a_readable_collection() {
+        use crate::scripts::face_covers;
+
+        let inter = include_bytes!("../../../assets/fonts/Inter-Regular.ttf");
+        let jetbrains = include_bytes!("../../../assets/fonts/JetBrainsMono-Regular.ttf");
+        let mut malformed = jetbrains.to_vec();
+        let tables = u16::from_be_bytes([malformed[4], malformed[5]]) as usize;
+        let glyf = (0..tables).map(|i| 12 + 16 * i).find(|&rec| malformed.get(rec..rec + 4) == Some(&b"glyf"[..])).expect("JetBrains Mono has a glyf table");
+        malformed[glyf + 12..glyf + 16].copy_from_slice(&u32::MAX.to_be_bytes());
+        let ttc = two_face_ttc(inter, &malformed);
+
+        assert!(font_file_is_readable(&ttc), "face 0 remains a readable face");
+        assert_eq!(face_index_for_family_checked(&ttc, "JetBrains Mono"), Some(1), "the malformed face's name still resolves");
+        assert!(face_covers(&ttc, 1, 'A'), "the malformed face's cmap still covers A");
+        assert!(!font_face_is_readable(&ttc, 1), "its glyf table lies outside the collection");
+        assert!(font_face_is_readable(&ttc, 0), "positive control: the good face stays readable");
+        assert!(!font_face_is_readable(&ttc, 2), "out-of-range face");
+        assert!(font_face_is_readable(&two_face_ttc(inter, jetbrains), 1), "positive control: a valid selected face passes");
     }
 
     #[test]

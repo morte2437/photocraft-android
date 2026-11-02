@@ -6,5 +6,5 @@ use libfuzzer_sys::fuzz_target;
 fuzz_target!(|data: &[u8]| {
     let _ = photocraft_affinity::container::header(data);
     let _ = photocraft_affinity::preview(data);
-    let _ = photocraft_affinity::read(data, photocraft_affinity::Limits { max_entry: 16 << 20, max_total: 64 << 20 });
+    let _ = photocraft_affinity::read(data, photocraft_affinity::Limits { max_entry: 16 << 20, max_total: 64 << 20, max_pixel_bytes: 64 << 20 });
 });

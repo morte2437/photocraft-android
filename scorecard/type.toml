@@ -9,14 +9,14 @@ id = "TYPE-218-1"
 target = "Type on a path: path shape, glyphs along the curve, caret follows, PSD round trip"
 status = "partial"
 issue = 218
-note = "TextShape::Path (doc text.rs) with glyphs placed rigidly along the curve by arc length (text warp.rs PathFrame), type.attachToPath and type.detachFromPath (#4365), .pcraft round trip. Missing: clicking a path with the Type tool, the caret and selection following the curve, and PSD path text (it saves as point text)"
+note = "TextShape::Path (doc text.rs) with glyphs placed rigidly along the curve by arc length (text warp.rs PathFrame), type.attachToPath and type.detachFromPath (#4365), .pcraft round trip; a Type tool click on the work path or the active shape layer's path starts path type at the point clicked (type_tool.rs path_target, shared with area type, #6230; type.attachToPath at; path-type pointer over a path); PSD path text opens on its path from its Txt2 frame and saves back into the file's Txt2 object (#7962). Missing: vertical type on a path, dragging the start/flip, the caret and selection following the curve, and PSD path text in a file without Photoshop's Txt2 object for the layer (a new document saves it as point text)"
 
 [[item]]
 id = "TYPE-218-2"
 target = "Paragraph direction (Auto/LTR/RTL) in the panel and options bar; visual RTL caret"
-status = "missing"
+status = "partial"
 issue = 218
-note = "Engine has TextDirection (text.rs:155); no UI"
+note = "Paragraph section (Window > Paragraph and Properties) and the options bar have Auto / Left-to-right / Right-to-left buttons setting the paragraph direction through type.setStyle; the options bar's choice is also the direction new type starts with (type_tool.rs direction_items; paragraph_direction_buttons_set_and_show_the_direction, options_bar_direction_sets_selected_layers_and_new_type). Still missing: visual RTL caret (the arrow keys move in logical order), and PSD doesn't store the direction (crates/text psd.rs neither reads nor writes it, so it reopens as Auto)"
 
 [[item]]
 id = "TYPE-218-3"
@@ -44,14 +44,14 @@ id = "TYPE-218-6"
 target = "Manual pair kerning (Alt+arrows), optical kerning rendered, both round-trip PSD (#206)"
 status = "done"
 issue = 218
-note = "Alt+Left/Right at a collapsed caret kerns the pair (type_tool.rs kern_pair, 20 per step and 100 with Cmd; type_tool_alt_arrows_kern_the_pair). Optical kerning is computed from the glyph outlines in text/src/optical.rs and applied by layout.rs when the run's mode is Optical (optical_matches_photoshop, optical_kerning_tightens_open_pairs). Both modes and manual values round-trip through PSD (io/tests/psd_kerning.rs; the optical mode travels in Txt2, txt2_carries_optical_kerning)"
+note = "Alt+Left/Right at a collapsed caret kerns the pair (type_tool.rs kern_pair, 20 per step and 100 with Cmd; type_tool_alt_arrows_kern_the_pair). Optical kerning is computed from the glyph outlines in text/src/optical.rs and applied by layout.rs when the run's mode is Optical (optical_matches_photoshop, optical_kerning_tightens_open_pairs). Both modes and manual values round-trip through PSD (io/tests/it/psd_kerning.rs; the optical mode travels in Txt2, txt2_carries_optical_kerning)"
 
 [[item]]
 id = "TYPE-218-7"
 target = "Warp Text dialog previews live and opens with the layer's current warp"
-status = "missing"
+status = "done"
 issue = 218
-note = "view_cmds.rs:834 always seeds arc, bend 50"
+note = "Type > Warp Text opens with the shown layer's warp, or None, never remembered values (filter_dialog.rs:503 warp_defaults; warp_text_dialog_tests.rs:80 warp_text_opens_with_the_type_layers_current_warp, :99 warp_text_opens_at_none_for_a_layer_without_warp, :108 remembered_warp_values_never_override_the_layers_warp). The dialog previews live without editing the document, Cancel leaves no step and OK is one undoable step (:138 warp_text_dialog_previews_the_warp_without_editing_the_document, :160 cancelling_warp_text_leaves_the_document_and_history_untouched, :179 confirming_warp_text_is_one_undoable_step); the reduced-proxy preview matches the full-size result (filter_dialog.rs:2150 warp_text_preview_matches_the_full_size_result_on_a_reduced_proxy)"
 
 [[item]]
 id = "TYPE-218-8"
@@ -66,3 +66,10 @@ target = "Distort/Perspective/Warp on live type as in Photoshop (was: offer 'Ras
 status = "done"
 issue = 218
 note = "Photoshop 2026 prompts for none of these: Edit › Transform › Warp on live type stays enabled with no rasterize prompt and offers only the warp styles (the mesh can't be dragged), so the type stays editable; Distort, Perspective and the split warps are greyed. PhotoCraft does the same: Warp on type commits the layer's Warp Text in one step (transform_tool.rs enter_type_warp, warp_cmds.rs warp_type_layer, #3004; warp_on_type_takes_a_style_and_keeps_the_type_editable), Distort/Perspective greyed (enable_rules.rs, #2701)"
+
+[[item]]
+id = "TYPE-218-10"
+target = "Area type: Type tool click inside a closed path or shape wraps text inside it, holes and dents included, PSD round trip"
+status = "partial"
+issue = 218
+note = "TextShape::Area (doc text.rs) laid out line by line into the spans the path leaves (text area.rs, layout.rs break_area), type.fillPath (engine type_area_cmds.rs), released to box text by type.detachFromPath, area/path cursors and click-to-place (ui-egui type_tool.rs path_target), .pcraft round trip. Missing: PSD area type (saves as paragraph text over the path's bounds, with an export warning); mixed type sizes in one area paragraph space at its largest line; area type takes paths of at most 4096 anchors: beyond that a Type tool click makes point text (the pointer shows the plain I-beam), and type.fillPath refuses the path with \"the path has too many anchor points\" (type.attachToPath still takes a subpath of up to 100,000 anchors); a word too wide for every span in the shape overflows its span (box text breaks it at the edge, #6694); the first line starts about 0.24 em lower than in a text box of the same size; Photoshop area type in a PSD opens as box text; the area path has no handles to edit it after the type is placed"

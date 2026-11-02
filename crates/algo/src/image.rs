@@ -1,7 +1,7 @@
 //! Interleaved `f32` image regions and sampling helpers.
 
 use photocraft_geom::Rect;
-use photocraft_raster::Surface;
+use photocraft_raster::{Surface, scratch};
 
 /// How samples outside an image are read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -14,13 +14,28 @@ pub enum Edge {
     Wrap,
 }
 
-/// A rectangle of interleaved, normalized samples.
-#[derive(Clone, Debug, PartialEq)]
+/// A rectangle of interleaved, normalized samples. The samples come from, and go back to, the
+/// scratch pool.
+#[derive(Debug, PartialEq)]
 pub struct Image {
     pub rect: Rect,
     /// Channels per pixel (alpha last when the surface has alpha).
     pub ch: usize,
     pub data: Vec<f32>,
+}
+
+impl Clone for Image {
+    fn clone(&self) -> Self {
+        let mut data = scratch::take(self.data.len(), 0.0f32);
+        data.copy_from_slice(&self.data);
+        Image { rect: self.rect, ch: self.ch, data }
+    }
+}
+
+impl Drop for Image {
+    fn drop(&mut self) {
+        scratch::give(std::mem::take(&mut self.data));
+    }
 }
 
 impl Image {
@@ -53,9 +68,15 @@ impl Image {
         img
     }
 
+    /// The samples, taken out of the image (it can't be destructured: it returns them to the
+    /// pool on drop).
+    pub fn into_data(mut self) -> Vec<f32> {
+        std::mem::take(&mut self.data)
+    }
+
     /// New zeroed image.
     pub fn new(rect: Rect, ch: usize) -> Self {
-        Image { rect, ch, data: vec![0.0; rect.width() as usize * rect.height() as usize * ch] }
+        Image { rect, ch, data: scratch::take(rect.width() as usize * rect.height() as usize * ch, 0.0) }
     }
 
     #[inline]

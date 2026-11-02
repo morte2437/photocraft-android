@@ -15,7 +15,7 @@ use half::f16;
 use crate::Format;
 use crate::error::CodecError;
 use crate::fidelity::Plan;
-use crate::image::{ChannelLayout, DecodeWarning, ExrChannelInfo, ExrPartInfo, Image, SampleType, base_channel_name};
+use crate::image::{ChannelLayout, DecodeWarning, ExrChannelInfo, ExrPartInfo, Image, SampleType, base_channel_name, exr_color_channels};
 use crate::options::{EncodeOptions, ExrCompression, Limits};
 
 const F: Format = Format::OpenExr;
@@ -39,15 +39,29 @@ pub(super) fn read_meta(bytes: &[u8], limits: &Limits) -> Result<MetaData, Codec
     let meta = MetaData::read_from_buffered(Cursor::new(bytes), false).map_err(err)?;
     // Flat decoding reads every part at once, so the parts' sizes are also capped together.
     let mut total: u64 = 0;
+    // DWAA/DWAB parts are counted apart: they go past 2^16:1 (a flat 8192x4320 frame with 12
+    // alpha-scheme mattes is about 30 KB, over 75000:1).
+    let mut dwa: u64 = 0;
     for header in meta.headers.iter() {
         let size = header.layer_size;
         let (w, h) = (u32::try_from(size.0).unwrap_or(u32::MAX), u32::try_from(size.1).unwrap_or(u32::MAX));
         let bpp = header.channels.list.len().max(1) as u64 * 4;
         limits.check_bytes(w, h, bpp)?;
-        total = total.saturating_add(u64::from(w).saturating_mul(u64::from(h)).saturating_mul(bpp));
+        let bytes = u64::from(w).saturating_mul(u64::from(h)).saturating_mul(bpp);
+        total = total.saturating_add(bytes);
+        if matches!(header.compression, Compression::DWAA(_) | Compression::DWAB(_)) {
+            dwa = dwa.saturating_add(bytes);
+        }
     }
     if total > limits.max_alloc {
         return Err(CodecError::LimitExceeded(format!("{total} bytes across {} parts exceed max_alloc {}", meta.headers.len(), limits.max_alloc)));
+    }
+    // The `exr` crate allocates a flat part's samples before reading its chunks, so the file
+    // must be able to hold them (#8597). The other compressions stay far below 2^16:1 even
+    // against this f32 budget. DWA's run-length channels are zlib-packed on top and reach about
+    // 132000:1, so DWA parts get 2^18:1. Deep parts size their samples from the file's own counts.
+    if !meta.requirements.has_deep_data {
+        Limits::check_plausible(total.saturating_sub(dwa).saturating_add(dwa / 4), bytes.len(), 1 << 16)?;
     }
     Ok(meta)
 }
@@ -123,20 +137,9 @@ pub(super) fn read_layer(bytes: &[u8], index: usize) -> Result<Layer<AnyChannels
 fn layer_to_image(layer: &Layer<AnyChannels<FlatSamples>>) -> Result<Image, CodecError> {
     let (w, h) = (layer.size.0, layer.size.1);
     let channels = &layer.channel_data.list;
-    let find = |n: &str| channels.iter().find(|c| base_channel_name(&c.name.to_string()) == n);
-    let (color, layout): (Vec<_>, ChannelLayout) = if let (Some(r), Some(g), Some(b)) = (find("R"), find("G"), find("B")) {
-        match find("A") {
-            Some(a) => (vec![r, g, b, a], ChannelLayout::Rgba),
-            None => (vec![r, g, b], ChannelLayout::Rgb),
-        }
-    } else if let Some(y) = find("Y").or_else(|| (channels.len() == 1).then(|| &channels[0])) {
-        match find("A") {
-            Some(a) => (vec![y, a], ChannelLayout::GrayA),
-            None => (vec![y], ChannelLayout::Gray),
-        }
-    } else {
-        return Err(CodecError::unsupported(F, "no R/G/B or Y channels"));
-    };
+    let names: Vec<_> = channels.iter().map(|c| c.name.to_string()).collect();
+    let (layout, selected) = exr_color_channels(names.iter().map(String::as_str)).ok_or_else(|| CodecError::unsupported(F, "no R/G/B or Y channels"))?;
+    let color: Vec<_> = selected.iter().map(|i| channels.get(*i).ok_or_else(|| err("selected channel is missing"))).collect::<Result<_, _>>()?;
     let all_f16 = color.iter().all(|c| matches!(c.sample_data, FlatSamples::F16(_)));
     let sample = if all_f16 { SampleType::F16 } else { SampleType::F32 };
     let npx = w * h;
@@ -175,7 +178,7 @@ pub(crate) fn decode(bytes: &[u8], limits: &Limits) -> Result<Image, CodecError>
     // composite the samples into the flat image (a warning says what was lost).
     if meta.requirements.has_deep_data {
         let deep = super::deep_exr::decode_deep(&meta, bytes, limits)?;
-        return super::deep_exr::flatten(&deep);
+        return super::deep_exr::flatten(&deep, limits);
     }
 
     let pick = pick_part(&meta);
@@ -185,6 +188,21 @@ pub(crate) fn decode(bytes: &[u8], limits: &Limits) -> Result<Image, CodecError>
         img.warnings.push(DecodeWarning::MoreParts { total });
     }
     Ok(img)
+}
+
+/// The size of the part [`decode`] opens, from the headers alone. Deep files are refused (their
+/// flattened size comes from the deep decoder), as is a part [`decode`] cannot show.
+pub(crate) fn probe(bytes: &[u8], limits: &Limits) -> Result<(u32, u32), CodecError> {
+    let meta = read_meta(bytes, limits)?;
+    if meta.requirements.has_deep_data {
+        return Err(CodecError::unsupported(F, "no header-only size probe for deep data"));
+    }
+    let pick = pick_part(&meta);
+    let info = meta.headers.get(pick).map(|h| part_info(pick, h)).ok_or_else(|| err("no parts"))?;
+    if info.color_rank() == 0 {
+        return Err(CodecError::unsupported(F, "no R/G/B or Y channels"));
+    }
+    Ok((info.width, info.height))
 }
 
 /// Decode one part of a multi-part file by its index into [`info`]'s list. A file with

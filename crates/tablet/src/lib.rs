@@ -4,9 +4,13 @@
 //! - **macOS** ([`macos::Monitor`]): an AppKit local event monitor reads the tablet fields of
 //!   each `NSEvent` (`pressure`, `tilt`, `rotation`, `subtype`, and `pointingDeviceType` from
 //!   proximity events) before winit sees the event, so every pointer event the UI handles already
-//!   has its pen sample. AppKit's block-based monitor API needs Objective-C interop, so
-//!   `macos.rs` is the only module in the workspace that allows `unsafe` (craftrules
-//!   never-crash: an isolated, tested helper crate).
+//!   has its pen sample.
+//! - **Windows** ([`windows::Monitor`]): a thread-local message hook inspects `WM_POINTER*`
+//!   messages on the UI thread's message queue to read `PEN_FLAG_BARREL` (`GetPointerPenInfo`),
+//!   which winit 0.30 drops by mapping pen inputs to touch events.
+//!   AppKit's monitor API and Windows' thread hook need OS interop, so `macos.rs` and `windows.rs`
+//!   allow `unsafe` (an isolated, tested helper crate with `SAFETY:`
+//!   comments on every block).
 //! - **Linux X11** ([`x11::spawn`]): a second, pure-Rust X connection (x11rb) selects XInput2
 //!   raw events on the root window and maps the tablet device's valuators ("Abs Pressure",
 //!   "Abs Tilt X/Y", "Abs Rotary Z") to samples. Raw events reach every client that asks, also
@@ -31,6 +35,8 @@ pub mod xi;
 
 #[cfg(target_os = "macos")]
 pub mod macos;
+#[cfg(target_os = "windows")]
+pub mod windows;
 #[cfg(target_os = "linux")]
 pub mod x11;
 

@@ -19,7 +19,8 @@ pub struct Opened {
 /// Decode a document that was read through a filesystem capability.
 pub fn open_bytes(name: &str, bytes: &[u8]) -> Result<Opened, AutomationError> {
     if Path::new(name).extension().is_some_and(|extension| extension.eq_ignore_ascii_case(photocraft_format::EXTENSION)) {
-        return Ok(Opened { document: photocraft_format::load_from_bytes(bytes)?, warnings: Vec::new(), source_read_only: false });
+        let document = photocraft_format::load_from_bytes(bytes)?;
+        return Ok(Opened { warnings: photocraft_io::open_warnings(&document), document, source_read_only: false });
     }
     let r = photocraft_io::import(name, bytes)?;
     Ok(Opened { document: r.document, warnings: r.warnings, source_read_only: r.source_read_only })
@@ -29,11 +30,26 @@ pub fn open_bytes(name: &str, bytes: &[u8]) -> Result<Opened, AutomationError> {
 /// natively; everything else goes through `photocraft-io` (PSD, PNG, …).
 pub fn open(path: &Path) -> Result<Opened, AutomationError> {
     if path.is_dir() {
-        return Ok(Opened { document: photocraft_format::load_path(path)?, warnings: Vec::new(), source_read_only: false });
+        let document = photocraft_format::load_path(path)?;
+        return Ok(Opened { warnings: photocraft_io::open_warnings(&document), document, source_read_only: false });
     }
-    let bytes = photocraft_format::read_file(path).map_err(|e| AutomationError::Io(format!("{}: {e}", path.display())))?;
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    open_bytes(&name, &bytes)
+    // A PSD/PSB is parsed from the open file (channel data read as it is decoded), so a CLI
+    // convert or info of a 2 GB file does not hold the file in memory next to the document.
+    #[cfg(any(unix, windows))]
+    {
+        let r =
+            photocraft_io::import_file(&name, path, &photocraft_io::ImportOptions::default(), &photocraft_raster::Interrupt::NONE).map_err(|e| match e {
+                photocraft_io::IoError::Read(msg) => AutomationError::Io(msg),
+                e => e.into(),
+            })?;
+        Ok(Opened { document: r.document, warnings: r.warnings, source_read_only: r.source_read_only })
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let bytes = photocraft_format::read_file(path).map_err(|e| AutomationError::Io(format!("{}: {e}", path.display())))?;
+        open_bytes(&name, &bytes)
+    }
 }
 
 /// Previews for a `.pcraft` bundle.
