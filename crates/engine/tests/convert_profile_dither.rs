@@ -54,7 +54,7 @@ fn dither_rounds_fractional_colors_without_bias_or_alpha_noise() {
     let tile = pixels(&after).tile(TileCoord::new(0, 0)).unwrap();
     let mut total = 0u64;
     let mut raised = 0;
-    for px in tile.bytes().chunks_exact(4) {
+    for px in tile.bytes().as_chunks::<4>().0 {
         assert!(px[0] == 55 || px[0] == 56, "dither quantizes neighboring destination values");
         assert_eq!(px[0], px[1]);
         assert_eq!(px[0], px[2]);
