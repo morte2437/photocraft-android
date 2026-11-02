@@ -1,7 +1,7 @@
 use super::composite::texture_ctx;
 use super::ctx::{Ctx, PREPARE_DEPTH};
 use super::extents::{effect_shape, effect_source_bounds};
-use super::*;
+use super::{Layer, LayerContent, Rect, Surface, advanced, effects};
 
 // ---------------------------------------------------------------------------------------------
 // Layer-effect map cache

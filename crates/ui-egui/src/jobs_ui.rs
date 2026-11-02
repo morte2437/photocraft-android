@@ -382,6 +382,7 @@ pub fn tick(app: &mut PhotocraftApp, ctx: &egui::Context) {
     }
     if let Some(job) = job_in_view(app)
         && !ctx.text_edit_focused()
+        && !crate::zoom_field::editing(ctx)
         && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
     {
         cancel(app, job.id);

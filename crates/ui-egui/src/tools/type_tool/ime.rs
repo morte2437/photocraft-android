@@ -1,6 +1,6 @@
 use super::editing::edit_home;
 use super::ime_edit::{ime_geometry, reconcile_preedit};
-use super::*;
+use super::{Arc, HashMap, ImeContextTracker, ImeMutationStamp, ImeTarget, LayerId, PhotocraftApp, TextEdit, ViewXform, active_doc_id, current_text};
 
 /// Per-editor IME owner/generation bookkeeping for the custom Type tool.
 ///

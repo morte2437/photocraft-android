@@ -12,6 +12,7 @@ fn dragging_a_brush_shows_its_tip_preview() {
     for theme in crate::theme::ThemeKind::ALL {
         for mode in 0..3 {
             let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+            app.ui.tool = crate::Tool::Brush;
             app.run("prefs.set", json!({"path": "interface.theme", "value": theme.id()})).unwrap();
             app.ui.panels.brush_settings = mode != 2;
             app.ui.brush_tab = 1;

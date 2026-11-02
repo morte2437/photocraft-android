@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    BlendMode, EngineError, FadeTarget, Rect, Result, Session, Surface, Value, bad, blend_from_str, f32_or, from_rgba_into, json, str_or, surface_of,
+    surface_of_mut, to_rgba,
+};
 
 // ------------------------------------------------------------------ Fade
 

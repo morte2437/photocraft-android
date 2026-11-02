@@ -1,4 +1,4 @@
-use super::*;
+use super::Map;
 
 /// 1D squared distance transform (Felzenszwalb & Huttenlocher).
 fn dt1(f: &[f32], out: &mut [f32], v: &mut [usize], z: &mut [f32], near: &mut [usize]) {

@@ -1,4 +1,4 @@
-use super::*;
+use super::PhotocraftApp;
 
 impl PhotocraftApp {
     /// Zoom of the active document's main view: screen (device) pixels per document pixel, the

@@ -172,115 +172,126 @@ fn external_edit_invalidates_the_preedit_and_rejects_its_late_commit() {
     for bytes in [false, true] {
         for split in [false, true] {
             for discard in [false, true] {
-                let ctx = context();
-                let mut app = app();
-                run(&mut app, &ctx, Vec::new());
-                // Compose in the middle of committed text, so an application edit before it
-                // moves a still-in-range (but wrong) character range.
-                insert(&mut app, "def");
-                if let Some(ed) = app.ui.text_edit.as_mut() {
-                    ed.caret = 3;
-                    ed.anchor = 3;
-                }
-                let composing = run(&mut app, &ctx, vec![preedit("に")]).expect("composing descriptor");
-                assert_eq!(layer_text(&app), "abcにdef");
-                assert_eq!(payload(&composing).text, "abcdef", "the preview is not committed text");
-                let layer = app.ui.text_edit.as_ref().unwrap().layer;
-                let session = app.ui.text_edit.as_ref().unwrap().session.clone();
-                // The control channel edits the same layer without passing through `insert`.
-                app.run("type.edit", json!({"layer": layer, "replace": {"start": 0, "end": 1, "text": ""}, "coalesce": session})).unwrap();
-                assert_eq!(layer_text(&app), "bcにdef");
-                let revision = app.session.active().unwrap().revision;
-                let history = app.session.active().unwrap().history.entries();
-                let selection = app.ui.text_edit.as_ref().map(|ed| (ed.anchor, ed.caret));
-                let unchanged = |app: &PhotocraftApp| {
-                    assert_eq!(layer_text(app), "bcにdef");
-                    assert_eq!(app.session.active().unwrap().revision, revision);
-                    assert_eq!(app.session.active().unwrap().history.entries(), history);
-                    assert_eq!(app.ui.text_edit.as_ref().map(|ed| (ed.anchor, ed.caret)), selection);
-                };
-
-                // The old range (3,1) now covers `d`: report unavailable, cancel the
-                // composition and do not present `d` as the composition. A discarded pass
-                // must retain both latches until a descriptor is actually delivered.
-                let invalidated = if discard {
-                    ctx.options_mut(|o| o.max_passes = std::num::NonZeroUsize::new(4).expect("four passes"));
-                    let mut passes = Vec::new();
-                    let mut out = ctx.run_ui(egui::RawInput { focused: true, ..Default::default() }, |ui| {
-                        handle_keys(&mut app, ui.ctx());
-                        let rect = egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(400.0, 300.0));
-                        let xf = ViewXform { rect, zoom: 1.0, center: [100.0, 100.0], flip: false, rotation: 0.0, aspect: 1.0 };
-                        draw_overlay(&mut app, ui.painter(), &xf);
-                        if passes.is_empty() {
-                            ui.ctx().request_discard("invalidated preedit descriptor regression");
-                        }
-                        let discarded = ui.ctx().will_discard();
-                        let before = (app.type_ime.stale, app.type_ime.interrupt);
-                        sync_ime(&mut app, ui.ctx());
-                        finish_reset_pass(&mut app, ui.ctx());
-                        let unavailable = ui.ctx().output(|out| out.ime.as_ref().expect("pass descriptor").surrounding_text.available().is_none());
-                        passes.push((discarded, before, (app.type_ime.stale, app.type_ime.interrupt), unavailable));
-                    });
-                    out.textures_delta.clear();
-                    assert_eq!(passes.first(), Some(&(true, (true, true), (true, true), true)), "discard cannot consume invalidation");
-                    assert_eq!(passes.last(), Some(&(false, (true, true), (false, false), true)), "the accepted pass delivers it once");
-                    out.platform_output.ime.expect("descriptor")
-                } else {
-                    run(&mut app, &ctx, Vec::new()).expect("descriptor")
-                };
-                assert!(invalidated.surrounding_text.available().is_none());
-                assert!(invalidated.should_interrupt_composition);
-                assert_eq!(
-                    (invalidated.owner, invalidated.context_generation, invalidated.purpose),
-                    (composing.owner, composing.context_generation, composing.purpose)
-                );
-                assert_eq!(invalidated.change_cause, ImeChangeCause::Other);
-                assert_eq!(app.ui.text_edit.as_ref().unwrap().preedit, None);
-                assert!(app.type_ime.preedit.is_none());
-                unchanged(&app);
-
-                let recovered = run(&mut app, &ctx, Vec::new()).expect("idle descriptor");
-                assert_eq!(payload(&recovered).text, "bcにdef");
-                assert_eq!((payload(&recovered).cursor, payload(&recovered).anchor), (6, 6));
-                assert!(!recovered.should_interrupt_composition, "a delivered reset is not replayed");
-                assert!(matches!(app.type_ime.incoming, Some(IncomingComposition::Stale)), "idle availability does not accept an old terminal");
-                unchanged(&app);
-
-                // The pending deletion and commit belonged to the cancelled composition:
-                // neither combined nor split delivery may replace `d` or grow undo history.
-                let mut events = vec![terminal_delete(bytes)];
-                if split {
-                    run(&mut app, &ctx, events).expect("rejected deletion descriptor");
-                    unchanged(&app);
-                    for _ in 0..3 {
-                        run(&mut app, &ctx, Vec::new());
-                    }
-                    assert!(matches!(app.type_ime.incoming, Some(IncomingComposition::Stale)));
-                    events = Vec::new();
-                }
-                events.push(egui::Event::Ime(egui::ImeEvent::Commit("に".into())));
-                let late = run(&mut app, &ctx, events).expect("descriptor");
-                assert_eq!(layer_text(&app), "bcにdef");
-                assert_eq!(late.change_cause, ImeChangeCause::Other);
-                assert_eq!(payload(&late).text, "bcにdef");
-                unchanged(&app);
-                assert!(matches!(app.type_ime.incoming, Some(IncomingComposition::Stale)), "terminal input cannot acknowledge cancellation");
-
-                let fresh =
-                    run(&mut app, &ctx, vec![completed(invalidated.reset_request.expect("reset request")), preedit("Q")]).expect("fresh preview descriptor");
-                assert_eq!(layer_text(&app), "bcにdQef");
-                assert_eq!(payload(&fresh).text, "bcにdef", "fresh preview is excluded from committed text");
-                assert!(!fresh.should_interrupt_composition);
-                let committed = run(&mut app, &ctx, vec![egui::Event::Ime(egui::ImeEvent::Commit("Q".into()))]).expect("fresh commit descriptor");
-                assert_eq!(layer_text(&app), "bcにdQef");
-                assert_eq!(payload(&committed).text, "bcにdQef");
-                assert_eq!(committed.change_cause, ImeChangeCause::InputMethod);
-                let direct = run(&mut app, &ctx, vec![egui::Event::Ime(egui::ImeEvent::Commit("R".into()))]).expect("direct commit descriptor");
-                assert_eq!(layer_text(&app), "bcにdQRef");
-                assert_eq!(payload(&direct).text, "bcにdQRef");
-                assert_eq!(direct.change_cause, ImeChangeCause::InputMethod);
+                external_edit_case(bytes, split, discard);
             }
         }
+    }
+}
+
+fn external_edit_case(bytes: bool, split: bool, discard: bool) {
+    let ctx = context();
+    let mut app = app();
+    run(&mut app, &ctx, Vec::new());
+    // Compose in the middle of committed text, so an application edit before it
+    // moves a still-in-range (but wrong) character range.
+    insert(&mut app, "def");
+    if let Some(ed) = app.ui.text_edit.as_mut() {
+        ed.caret = 3;
+        ed.anchor = 3;
+    }
+    let composing = run(&mut app, &ctx, vec![preedit("に")]).expect("composing descriptor");
+    assert_eq!(layer_text(&app), "abcにdef");
+    assert_eq!(payload(&composing).text, "abcdef", "the preview is not committed text");
+    let layer = app.ui.text_edit.as_ref().unwrap().layer;
+    let session = app.ui.text_edit.as_ref().unwrap().session.clone();
+    // The control channel edits the same layer without passing through `insert`.
+    app.run("type.edit", json!({"layer": layer, "replace": {"start": 0, "end": 1, "text": ""}, "coalesce": session})).unwrap();
+    assert_eq!(layer_text(&app), "bcにdef");
+    let revision = app.session.active().unwrap().revision;
+    let history = app.session.active().unwrap().history.entries();
+    let selection = app.ui.text_edit.as_ref().map(|ed| (ed.anchor, ed.caret));
+    let unchanged = |app: &PhotocraftApp| {
+        assert_eq!(layer_text(app), "bcにdef");
+        assert_eq!(app.session.active().unwrap().revision, revision);
+        assert_eq!(app.session.active().unwrap().history.entries(), history);
+        assert_eq!(app.ui.text_edit.as_ref().map(|ed| (ed.anchor, ed.caret)), selection);
+    };
+
+    // The old range (3,1) now covers `d`: report unavailable, cancel the
+    // composition and do not present `d` as the composition. A discarded pass
+    // must retain both latches until a descriptor is actually delivered.
+    let invalidated = invalidated_descriptor(&mut app, &ctx, discard);
+    assert!(invalidated.surrounding_text.available().is_none());
+    assert!(invalidated.should_interrupt_composition);
+    assert_eq!((invalidated.owner, invalidated.context_generation, invalidated.purpose), (composing.owner, composing.context_generation, composing.purpose));
+    assert_eq!(invalidated.change_cause, ImeChangeCause::Other);
+    assert_eq!(app.ui.text_edit.as_ref().unwrap().preedit, None);
+    assert!(app.type_ime.preedit.is_none());
+    unchanged(&app);
+
+    let recovered = run(&mut app, &ctx, Vec::new()).expect("idle descriptor");
+    assert_eq!(payload(&recovered).text, "bcにdef");
+    assert_eq!((payload(&recovered).cursor, payload(&recovered).anchor), (6, 6));
+    assert!(!recovered.should_interrupt_composition, "a delivered reset is not replayed");
+    assert!(matches!(app.type_ime.incoming, Some(IncomingComposition::Stale)), "idle availability does not accept an old terminal");
+    unchanged(&app);
+
+    // The pending deletion and commit belonged to the cancelled composition:
+    // neither combined nor split delivery may replace `d` or grow undo history.
+    let mut events = reject_cancelled_deletion(&mut app, &ctx, bytes, split, &unchanged);
+    events.push(egui::Event::Ime(egui::ImeEvent::Commit("に".into())));
+    let late = run(&mut app, &ctx, events).expect("descriptor");
+    assert_eq!(layer_text(&app), "bcにdef");
+    assert_eq!(late.change_cause, ImeChangeCause::Other);
+    assert_eq!(payload(&late).text, "bcにdef");
+    unchanged(&app);
+    assert!(matches!(app.type_ime.incoming, Some(IncomingComposition::Stale)), "terminal input cannot acknowledge cancellation");
+
+    let fresh = run(&mut app, &ctx, vec![completed(invalidated.reset_request.expect("reset request")), preedit("Q")]).expect("fresh preview descriptor");
+    assert_eq!(layer_text(&app), "bcにdQef");
+    assert_eq!(payload(&fresh).text, "bcにdef", "fresh preview is excluded from committed text");
+    assert!(!fresh.should_interrupt_composition);
+    let committed = run(&mut app, &ctx, vec![egui::Event::Ime(egui::ImeEvent::Commit("Q".into()))]).expect("fresh commit descriptor");
+    assert_eq!(layer_text(&app), "bcにdQef");
+    assert_eq!(payload(&committed).text, "bcにdQef");
+    assert_eq!(committed.change_cause, ImeChangeCause::InputMethod);
+    let direct = run(&mut app, &ctx, vec![egui::Event::Ime(egui::ImeEvent::Commit("R".into()))]).expect("direct commit descriptor");
+    assert_eq!(layer_text(&app), "bcにdQRef");
+    assert_eq!(payload(&direct).text, "bcにdQRef");
+    assert_eq!(direct.change_cause, ImeChangeCause::InputMethod);
+}
+
+/// Delivers the deletion of the cancelled composition. With `split`, it is rejected on its own
+/// first. Returns the events that the caller still has to deliver.
+fn reject_cancelled_deletion(app: &mut PhotocraftApp, ctx: &egui::Context, bytes: bool, split: bool, unchanged: &dyn Fn(&PhotocraftApp)) -> Vec<egui::Event> {
+    let mut events = vec![terminal_delete(bytes)];
+    if split {
+        run(app, ctx, events).expect("rejected deletion descriptor");
+        unchanged(app);
+        for _ in 0..3 {
+            run(app, ctx, Vec::new());
+        }
+        assert!(matches!(app.type_ime.incoming, Some(IncomingComposition::Stale)));
+        events = Vec::new();
+    }
+    events
+}
+
+fn invalidated_descriptor(app: &mut PhotocraftApp, ctx: &egui::Context, discard: bool) -> egui::output::IMEOutput {
+    if discard {
+        ctx.options_mut(|o| o.max_passes = std::num::NonZeroUsize::new(4).expect("four passes"));
+        let mut passes = Vec::new();
+        let mut out = ctx.run_ui(egui::RawInput { focused: true, ..Default::default() }, |ui| {
+            handle_keys(app, ui.ctx());
+            let rect = egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(400.0, 300.0));
+            let xf = ViewXform { rect, zoom: 1.0, center: [100.0, 100.0], flip: false, rotation: 0.0, aspect: 1.0 };
+            draw_overlay(app, ui.painter(), &xf);
+            if passes.is_empty() {
+                ui.ctx().request_discard("invalidated preedit descriptor regression");
+            }
+            let discarded = ui.ctx().will_discard();
+            let before = (app.type_ime.stale, app.type_ime.interrupt);
+            sync_ime(app, ui.ctx());
+            finish_reset_pass(app, ui.ctx());
+            let unavailable = ui.ctx().output(|out| out.ime.as_ref().expect("pass descriptor").surrounding_text.available().is_none());
+            passes.push((discarded, before, (app.type_ime.stale, app.type_ime.interrupt), unavailable));
+        });
+        out.textures_delta.clear();
+        assert_eq!(passes.first(), Some(&(true, (true, true), (true, true), true)), "discard cannot consume invalidation");
+        assert_eq!(passes.last(), Some(&(false, (true, true), (false, false), true)), "the accepted pass delivers it once");
+        out.platform_output.ime.expect("descriptor")
+    } else {
+        run(app, ctx, Vec::new()).expect("descriptor")
     }
 }
 
@@ -1040,12 +1051,16 @@ fn reset_harness(app: PhotocraftApp) -> egui_kittest::Harness<'static, ResetHarn
                             photocraft_engine::prefs::FontPreview::Medium,
                             &mut FontLibrary::default(),
                         );
-                        let search = ui.scope_id().with(("font-search", "reset-font"));
-                        state.search = ui.data(|d| d.get_temp::<String>(search)).unwrap_or_default();
-                        let input = search.with("input");
-                        state.search_input = Some(input);
-                        state.search_focused = ui.memory(|m| m.has_focus(input));
-                        state.search_height = ui.data(|d| d.get_temp::<egui::Rect>(search.with("body"))).map(|r| r.height());
+                        // The font field is its own text input: it takes focus as a click would, and
+                        // its edit state holds what is typed and the measured popup height.
+                        if !ui.memory(|m| m.has_focus(button)) {
+                            ui.memory_mut(|m| m.request_focus(button));
+                        }
+                        let edit = ui.data(|d| d.get_temp::<FontFieldEdit>(button.with("edit")));
+                        state.search = edit.as_ref().map(|e| e.text.clone()).unwrap_or_default();
+                        state.search_input = Some(button);
+                        state.search_focused = ui.memory(|m| m.has_focus(button));
+                        state.search_height = edit.and_then(|e| e.menu_height);
                     });
                 }
                 if state.picker_button {
@@ -1083,12 +1098,13 @@ fn actual_font_search_owns_stock_input_without_a_speculative_custom_request() {
     assert!(h.state().search_focused, "the real font search field, not another stock field, owns focus");
     assert_eq!(h.ctx.memory(|m| m.focused()), Some(search_input), "the stock IME owner is the focused font search input");
     assert!(
-        h.state().search_height.is_some_and(|height| height > 0.0 && height <= FONT_MENU_HEIGHT),
+        h.state().search_height.is_some_and(|height| height > 0.0 && height <= FONT_LIST_HEIGHT),
         "the real font list measured within its bounded popup height"
     );
     h.input_mut().events = vec![completed(first), egui::Event::Text("Family".into())];
     h.step();
-    assert_eq!(h.state().search, "Family", "the actual font picker keeps its text event");
+    // The field opens holding the current family, so the typed text lands after it.
+    assert_eq!(h.state().search, "Family 00Family", "the actual font picker keeps its text event");
     assert_eq!(layer_text(&h.state().app), before);
     assert_eq!(pending(&h.state().app), None);
     let stock = h.output().platform_output.ime.as_ref().expect("stock output survives finalization");

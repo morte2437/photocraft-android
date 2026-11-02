@@ -569,3 +569,251 @@ fn a_targeted_vector_mask_on_type_on_a_path_is_edited_not_the_type_path() {
     assert!((type_path(&app).subpaths[0].knots[1].anchor.x - 160.0).abs() < 1e-6);
     assert_eq!(layer(&app).vector_mask.unwrap().path.subpaths[0].knots[0].anchor, Point::new(40.0, 30.0));
 }
+
+fn save_path(app: &mut PhotocraftApp) {
+    let path = photocraft_engine::vector_cmds::path_json(&work(app));
+    app.run("path.set", json!({"name": "Saved", "path": path})).unwrap();
+}
+
+fn saved(app: &PhotocraftApp) -> Path {
+    app.session.active().unwrap().doc.paths.iter().find(|path| path.name == "Saved").unwrap().path.clone()
+}
+
+/// The arrow keys nudge the anchors of the selected saved path, and the selection follows each
+/// nudge's new revision; the work path stays.
+#[test]
+fn arrow_keys_nudge_the_selected_saved_path() {
+    let mut app = app(Tool::DirectSelection);
+    with_path(&mut app);
+    save_path(&mut app);
+    app.ui.selected_path = Some("Saved".into());
+    click(&mut app, [40.0, 120.0], Modifiers::NONE);
+    assert_eq!(app.ui.direct_selection.target, Some(PathRef::Saved(0)));
+    let (work_before, n) = (work(&app), steps(&app));
+    assert!(press(&mut app, egui::Key::ArrowRight, Modifiers::NONE));
+    assert!(press(&mut app, egui::Key::ArrowRight, Modifiers::NONE));
+    assert_eq!(saved(&app).subpaths[0].knots[3].anchor, Point::new(42.0, 120.0));
+    assert_eq!(work(&app), work_before);
+    assert_eq!(steps(&app), n + 2);
+}
+
+#[test]
+fn selected_saved_and_work_paths_win_overlapping_shape_hits() {
+    for name in ["Saved", "work"] {
+        let mut app = app(Tool::DirectSelection);
+        app.ui.extras.snap = false; // This case isolates hit priority and exact anchor movement.
+        let id = app.run("shape.create", json!({"kind":"rect", "rect":[40,40,80,80]})).unwrap()["layer"].as_u64().unwrap();
+        with_path(&mut app);
+        save_path(&mut app);
+        app.ui.selected_path = Some(name.into());
+        let (before_work, before_saved, n) = (work(&app), saved(&app), steps(&app));
+        let before_shape = app.run("shape.info", json!({"layer":id})).unwrap()["path"].clone();
+        drag(&mut app, [40.0, 120.0], [55.0, 130.0], Modifiers::NONE);
+        let (actual, unchanged, target) = if name == "Saved" { (saved(&app), work(&app), PathRef::Saved(0)) } else { (work(&app), saved(&app), PathRef::Work) };
+        assert_eq!(actual.subpaths[0].knots[3].anchor, Point::new(55.0, 130.0));
+        assert_eq!(unchanged, if name == "Saved" { before_work.clone() } else { before_saved.clone() });
+        assert_eq!(app.ui.direct_selection.target.as_ref(), Some(&target));
+        assert_eq!(steps(&app), n + 1);
+        assert_eq!(app.run("shape.info", json!({"layer":id})).unwrap()["path"], before_shape);
+        assert!(app.session.undo());
+        assert_eq!(work(&app), before_work);
+        assert_eq!(saved(&app), before_saved);
+        app.sync_views();
+        assert!(app.ui.direct_selection.anchors.is_empty(), "undo invalidates runtime anchor ownership");
+    }
+}
+
+fn start_command_drag(app: &mut PhotocraftApp) {
+    assert!(super::pointer(app, ToolEvent::Down { x: 40.0, y: 120.0, pressure: 1.0 }, Modifiers::COMMAND));
+    assert!(matches!(app.ui.direct_selection.drag, Some(Drag::Edit { .. })));
+}
+
+fn consume_stale_drag(app: &mut PhotocraftApp) {
+    assert!(super::pointer(app, ToolEvent::Move { x: 60.0, y: 140.0, pressure: 1.0 }, Modifiers::NONE));
+    assert!(super::pointer(app, ToolEvent::Up { x: 60.0, y: 140.0 }, Modifiers::NONE));
+    assert!(app.ui.direct_selection.drag.is_none());
+    assert!(app.ui.direct_selection.anchors.is_empty());
+    assert!(!app.ui.direct_selection.cancelled_drag);
+}
+
+#[test]
+fn direct_selection_cannot_apply_to_another_document_or_a_reopened_identity() {
+    for reopen in [false, true] {
+        let mut app = app(Tool::Pen);
+        with_path(&mut app);
+        let source = app.session.active().unwrap().doc.clone();
+        let revision = app.session.active().unwrap().revision;
+        start_command_drag(&mut app);
+        if reopen {
+            app.session.close(0).unwrap();
+        }
+        app.session.add_document((*source).clone(), None);
+        app.session.active_mut().unwrap().revision = revision;
+        let (before, n) = (work(&app), steps(&app));
+        if !reopen {
+            assert_ne!(source.id, app.session.active().unwrap().doc.id);
+        } else {
+            assert_eq!(source.id, app.session.active().unwrap().doc.id, "a reopened document may preserve its ID");
+        }
+        // The frame hook may cancel before the old pointer event arrives.
+        app.sync_views();
+        consume_stale_drag(&mut app);
+        assert_eq!(work(&app), before);
+        assert_eq!(steps(&app), n);
+        assert!(app.ui.pen.is_none(), "an old release must not start a new Pen draft");
+        if !reopen {
+            assert_eq!(app.session.documents()[0].doc.work_path.as_ref(), source.work_path.as_ref());
+        }
+    }
+}
+
+#[test]
+fn external_revision_cancels_preview_and_preserves_the_new_path() {
+    let mut app = app(Tool::Pen);
+    with_path(&mut app);
+    start_command_drag(&mut app);
+    assert!(super::pointer(&mut app, ToolEvent::Move { x: 50.0, y: 130.0, pressure: 1.0 }, Modifiers::COMMAND));
+    app.session.execute("path.moveAnchors", json!({"name":"work", "anchors":[[0,0]], "move":[-5,7]})).unwrap();
+    let (before, n) = (work(&app), steps(&app));
+    consume_stale_drag(&mut app);
+    assert_eq!(work(&app), before);
+    assert_eq!(steps(&app), n);
+    assert!(app.ui.pen.is_none());
+}
+
+#[test]
+fn layer_path_and_tool_changes_cancel_the_owned_edit() {
+    for change in ["layer", "path", "vectorMask", "tool"] {
+        let mut app = app(Tool::Pen);
+        with_path(&mut app);
+        save_path(&mut app);
+        let first = app.session.active().unwrap().active_layer.unwrap();
+        app.run("layer.new.layer", json!({})).unwrap();
+        let second = app.session.active().unwrap().active_layer.unwrap();
+        app.run("layer.select", json!({"layer":first.0})).unwrap();
+        start_command_drag(&mut app);
+        match change {
+            "layer" => {
+                app.session.execute("layer.select", json!({"layer":second.0})).unwrap();
+            }
+            "path" => app.ui.selected_path = Some("Saved".into()),
+            "vectorMask" => app.ui.vector_mask_target = true,
+            "tool" => app.ui.tool = Tool::Brush,
+            _ => panic!("unknown target-change fixture: {change}"),
+        }
+        let (before_work, before_saved, n) = (work(&app), saved(&app), steps(&app));
+        consume_stale_drag(&mut app);
+        assert_eq!(work(&app), before_work, "{change}");
+        assert_eq!(saved(&app), before_saved, "{change}");
+        assert_eq!(steps(&app), n, "{change}");
+        assert!(app.ui.pen.is_none());
+    }
+}
+
+#[test]
+fn closing_a_document_and_changing_marquee_target_discard_old_events() {
+    let mut app = app(Tool::Pen);
+    with_path(&mut app);
+    start_command_drag(&mut app);
+    let closed = app.session.close(0).unwrap();
+    app.sync_views();
+    consume_stale_drag(&mut app);
+    assert_eq!(closed.doc.work_path.as_ref().unwrap().subpaths[0].knots[3].anchor, Point::new(40.0, 120.0));
+
+    app.session.add_document((*closed.doc).clone(), None);
+    app.sync_views();
+    save_path(&mut app);
+    app.ui.tool = Tool::DirectSelection;
+    assert!(super::pointer(&mut app, ToolEvent::Down { x: 30.0, y: 110.0, pressure: 1.0 }, Modifiers::NONE));
+    assert!(matches!(app.ui.direct_selection.drag, Some(Drag::Marquee { .. })));
+    app.ui.selected_path = Some("Saved".into());
+    let n = steps(&app);
+    consume_stale_drag(&mut app);
+    assert_eq!(steps(&app), n);
+}
+
+#[test]
+fn serialized_anchor_selection_has_no_runtime_ownership_and_is_not_restored() {
+    let mut app = app(Tool::DirectSelection);
+    with_path(&mut app);
+    click(&mut app, [40.0, 120.0], Modifiers::NONE);
+    let serialized = serde_json::to_value(&app.ui.direct_selection).unwrap();
+    assert!(serialized.get("owner").is_none());
+    assert!(serialized.get("drag").is_none());
+    assert!(serialized.get("cancelled_drag").is_none());
+    app.ui.direct_selection = serde_json::from_value(serialized).unwrap();
+    assert!(app.ui.direct_selection.owner.is_none());
+    super::cancel_stale(&mut app);
+    assert!(app.ui.direct_selection.anchors.is_empty());
+    assert!(app.ui.direct_selection.target.is_none());
+}
+
+#[test]
+fn command_drag_after_failed_pen_commit_preserves_draft_and_existing_work_path() {
+    let mut app = app(Tool::Pen);
+    with_path(&mut app);
+    app.ui.extras.snap = false;
+    for [x, y] in [[1e40, 0.0], [40.0, 120.0]] {
+        tool_event(&mut app, ToolEvent::Down { x, y, pressure: 1.0 }, Modifiers::NONE);
+        tool_event(&mut app, ToolEvent::Up { x, y }, Modifiers::NONE);
+    }
+    let before_draft = app.ui.pen.as_ref().unwrap().knots.clone();
+    let (before_work, n, revision) = (work(&app), steps(&app), app.session.active().unwrap().revision);
+    // ⌘ off the draft ends it (a press on it would edit it in place, #4022); here that fails.
+    tool_event(&mut app, ToolEvent::Down { x: 40.0, y: 40.0, pressure: 1.0 }, Modifiers::COMMAND);
+    assert!(app.ui.pen.as_ref().unwrap().commit_failed);
+    assert!(app.ui.direct_selection.drag.is_none(), "the press must not go on to edit the old work path");
+    assert!(app.ui.direct_selection.cancelled_drag);
+    tool_event(&mut app, ToolEvent::Move { x: 60.0, y: 140.0, pressure: 1.0 }, Modifiers::COMMAND);
+    tool_event(&mut app, ToolEvent::Up { x: 60.0, y: 140.0 }, Modifiers::COMMAND);
+    assert_eq!(app.ui.pen.as_ref().unwrap().knots, before_draft);
+    assert_eq!(work(&app), before_work);
+    assert_eq!(steps(&app), n);
+    assert_eq!(app.session.active().unwrap().revision, revision);
+    assert!(app.ui.status_error);
+    assert!(!app.ui.direct_selection.cancelled_drag);
+}
+
+#[test]
+fn switching_between_selection_and_convert_tools_cancels_an_in_flight_drag() {
+    for (from, to) in [(Tool::DirectSelection, Tool::ConvertPoint), (Tool::ConvertPoint, Tool::DirectSelection)] {
+        let mut app = app(from);
+        with_path(&mut app);
+        let (before, n) = (work(&app), steps(&app));
+        tool_event(&mut app, ToolEvent::Down { x: 40.0, y: 120.0, pressure: 1.0 }, Modifiers::NONE);
+        assert!(app.ui.direct_selection.drag.is_some());
+        app.ui.tool = to;
+        app.sync_views();
+        consume_stale_drag(&mut app);
+        assert_eq!((work(&app), steps(&app)), (before, n));
+    }
+}
+
+#[test]
+fn the_convert_point_tool_edits_selected_saved_paths_without_changing_the_work_path() {
+    let mut app = app(Tool::ConvertPoint);
+    with_path(&mut app);
+    save_path(&mut app);
+    app.ui.selected_path = Some("Saved".into());
+    let (before_work, before_saved, n) = (work(&app), saved(&app), steps(&app));
+    click(&mut app, [120.0, 40.0], Modifiers::NONE);
+    assert_eq!(saved(&app).subpaths[0].knots[1], photocraft_doc::Knot::corner(120.0, 40.0));
+    assert_eq!(work(&app), before_work);
+    assert_eq!(steps(&app), n + 1);
+    assert_eq!(app.ui.direct_selection.target, Some(PathRef::Saved(0)));
+    assert!(app.session.undo());
+    assert_eq!(saved(&app), before_saved);
+}
+
+#[test]
+fn changing_the_channel_vector_mask_target_cancels_an_owned_edit() {
+    let mut app = app(Tool::DirectSelection);
+    with_path(&mut app);
+    tool_event(&mut app, ToolEvent::Down { x: 40.0, y: 120.0, pressure: 1.0 }, Modifiers::NONE);
+    assert!(app.ui.direct_selection.drag.is_some());
+    let (before, n) = (work(&app), steps(&app));
+    app.session.active_mut().unwrap().channel_view.target = photocraft_engine::channel_cmds::ChannelTarget::VectorMask;
+    assert!(!app.ui.vector_mask_target, "the channel target can change before the UI syncs its mask flag");
+    consume_stale_drag(&mut app);
+    assert_eq!((work(&app), steps(&app)), (before, n));
+}

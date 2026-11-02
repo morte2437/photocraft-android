@@ -60,8 +60,8 @@ fn lab_round_trips_at_every_depth() {
         let p = back.layers[0].surface().unwrap().pixel(2, 0);
         let tol = if depth == SampleType::U8 { 0.5 / 255.0 + 1e-6 } else { 2e-5 };
         assert!((p[1] - A).abs() <= tol && (p[2] - B).abs() <= tol, "{depth:?}: {p:?}");
-        let a = photocraft_compose::flatten(&doc).px;
-        let b = photocraft_compose::flatten(&back).px;
+        let a = photocraft_compose::flatten(&doc).into_px();
+        let b = photocraft_compose::flatten(&back).into_px();
         for (x, y) in a.iter().zip(&b) {
             for c in 0..4 {
                 assert!((x[c] - y[c]).abs() <= 1.0 / 255.0, "{depth:?}: {x:?} vs {y:?}");

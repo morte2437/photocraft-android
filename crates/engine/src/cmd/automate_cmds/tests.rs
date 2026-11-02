@@ -156,6 +156,8 @@ fn droplets_are_written_and_run() {
         let shim = r["shim"].as_str().unwrap();
         let text = std::fs::read_to_string(shim).unwrap();
         assert!(text.starts_with("#!/bin/sh") && text.contains("droplet"));
+        assert!(text.contains("/Applications/PhotoCraft.app/Contents/MacOS/photocraft-cli"));
+        assert!(text.contains("${PHOTOCRAFT_CLI:-}"), "an explicit CLI path must take priority");
         use std::os::unix::fs::PermissionsExt;
         assert_ne!(std::fs::metadata(shim).unwrap().permissions().mode() & 0o111, 0, "executable");
     }

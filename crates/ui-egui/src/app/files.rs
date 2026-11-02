@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    DocId, ExportSettings, FormatChoices, PhotocraftApp, SAVE_OPTIONS_OPEN, SaveKind, Value, camera_raw_ui, dds_options_ui, file_open, jobs_ui,
+    jpeg_options_ui, json, notices, open_prompt, plain_raster, preset_files_ui, saved_revision_after_write, targa_options_ui, tiff_options_ui,
+};
 
 impl PhotocraftApp {
     /// Record `path` as the most-recently-opened file (File › Open Recent): de-duplicated, newest
@@ -160,6 +163,9 @@ impl PhotocraftApp {
     /// (a flat file): confirming the document's own file is recorded as a `file.save` step,
     /// which writes whichever file the action is played on, not as a Save As to a fixed path.
     pub(crate) fn save_dialog_flow(&mut self, path: Option<String>, choices: FormatChoices, plain_save: bool) -> Result<Value, String> {
+        if self.smart_svg.modal_open() {
+            return Err("Answer Edit SVG Contents before starting a save".into());
+        }
         if self.save_options_open() {
             return Err(SAVE_OPTIONS_OPEN.into());
         }
@@ -220,6 +226,9 @@ impl PhotocraftApp {
 
     /// [`Self::save_as_with`] once the path is known.
     pub(crate) fn save_to(&mut self, path: String, choices: FormatChoices) -> Result<Value, String> {
+        if self.smart_svg.modal_open() {
+            return Err("Answer Edit SVG Contents before starting a save".into());
+        }
         // An RGB Targa asks for its bits per pixel, a DDS texture for its compression, and a JPEG
         // for its quality and format, unless the caller chose them; the save continues from the
         // prompt (still a copy when it would be one without the prompt), which records the step

@@ -30,8 +30,87 @@ fn blob_path(h: &str) -> String {
     format!("blobs/{h}.zst")
 }
 
-fn compress(data: &[u8]) -> Vec<u8> {
-    ruzstd::encoding::compress_to_vec(data, ruzstd::encoding::CompressionLevel::Fastest)
+/// The bytes an [`Object`] stores, owned by (or shared with) the compressor's source so one
+/// [`Compressor`] can be reused for objects of any lifetime.
+enum Source {
+    Tile(Arc<Tile>),
+    Blob(Arc<Vec<u8>>),
+    /// A little-endian copy of a tile (big-endian hosts only).
+    Owned(Vec<u8>),
+}
+
+struct SourceReader {
+    source: Source,
+    pos: usize,
+}
+
+impl SourceReader {
+    fn all(&self) -> &[u8] {
+        match &self.source {
+            Source::Tile(t) => t.bytes(),
+            Source::Blob(b) => b.as_slice(),
+            Source::Owned(v) => v.as_slice(),
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.all().len()
+    }
+}
+
+impl Read for SourceReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let all = self.all();
+        let rest = all.get(self.pos..).unwrap_or(&[]);
+        let n = rest.len().min(buf.len());
+        if let (Some(dst), Some(src)) = (buf.get_mut(..n), rest.get(..n)) {
+            dst.copy_from_slice(src);
+        }
+        self.pos += n;
+        Ok(n)
+    }
+}
+
+/// A reusable zstd compressor. `ruzstd` allocates a block buffer, a ~1 MiB suffix table and a
+/// block output buffer per frame; keeping the [`FrameCompressor`](ruzstd::encoding::FrameCompressor)
+/// between objects reuses the first two (its matcher resets itself on every `compress`).
+/// Output is byte-identical to `compress_to_vec` at the same level.
+struct Compressor {
+    inner: ruzstd::encoding::FrameCompressor<SourceReader, Vec<u8>, ruzstd::encoding::MatchGeneratorDriver>,
+}
+
+impl Compressor {
+    fn new() -> Self {
+        Self { inner: ruzstd::encoding::FrameCompressor::new(ruzstd::encoding::CompressionLevel::Fastest) }
+    }
+
+    fn run(&mut self, source: Source) -> Vec<u8> {
+        let reader = SourceReader { source, pos: 0 };
+        // Room for the worst case (raw blocks: 3 bytes per 128 KiB, plus frame header and
+        // checksum), so the output never regrows; shrunk afterwards to what it used. Untouched
+        // pages cost nothing.
+        let len = reader.len();
+        let mut drain = Vec::new();
+        if drain.try_reserve_exact(len.saturating_add(len / 16384).saturating_add(64)).is_err() {
+            drain = Vec::new();
+        }
+        self.inner.set_source(reader);
+        self.inner.set_drain(drain);
+        self.inner.compress();
+        self.inner.take_source();
+        let mut out = self.inner.take_drain().unwrap_or_default();
+        out.shrink_to_fit();
+        out
+    }
+
+    fn object(&mut self, obj: &Object) -> Vec<u8> {
+        let source = match obj {
+            Object::Tile(tile, _) if cfg!(target_endian = "little") => Source::Tile(Arc::clone(tile)),
+            Object::Tile(tile, sample) => Source::Owned(tile_le(tile, *sample).into_owned()),
+            Object::Blob(blob) => Source::Blob(Arc::clone(blob)),
+        };
+        self.run(source)
+    }
 }
 
 /// Decodes a zstd frame of at most `max` bytes (`LimitExceeded` beyond). With `exact`, the
@@ -277,17 +356,27 @@ impl Fetch for LoadFetch<'_> {
     }
 
     fn blob(&mut self, hash: &str) -> Result<Arc<Vec<u8>>> {
+        self.blob_bounded(hash, self.opts.max_blob_bytes)
+    }
+
+    /// A content-addressed blob of at most `limit` bytes (never more than `max_blob_bytes`):
+    /// read once, decompressed within the limit, counted against the load's memory budget and
+    /// checked against its hash, then shared. Optional vector previews pass a 16 MiB limit.
+    fn blob_bounded(&mut self, hash: &str, limit: usize) -> Result<Arc<Vec<u8>>> {
+        let limit = limit.min(self.opts.max_blob_bytes);
         if let Some(b) = self.blobs.get(hash) {
-            return Ok(b.clone());
+            return if b.len() <= limit { Ok(b.clone()) } else { Err(FormatError::LimitExceeded("optional preview blob exceeds its limit".into())) };
         }
         if !is_valid_hash(hash) {
             return Err(FormatError::corrupt(format!("invalid blob hash `{hash}`")));
         }
         let path = blob_path(hash);
-        let z = self.src.get(&path, self.opts.max_blob_bytes)?;
+        // The stored zstd frame of incompressible data is a little larger than the data, so a
+        // blob right at `limit` must still be read; `decompress_bounded` enforces `limit`.
+        let z = self.src.get(&path, limit.saturating_add(limit / 8).saturating_add(4096))?;
         // Blob length is not in the manifest; the frame header bounds it and
         // we cap at max_blob_bytes.
-        let data = decompress_bounded(&z, self.opts.max_blob_bytes, None, &path)?;
+        let data = decompress_bounded(&z, limit, None, &path)?;
         self.account(data.len())?;
         if hash_bytes(&data) != hash {
             return Err(FormatError::corrupt(format!("{path}: content does not match its hash")));
@@ -518,8 +607,8 @@ enum Object {
 }
 
 impl Object {
-    fn compressed(&self) -> Vec<u8> {
-        compress(&self.content())
+    fn compressed(&self, compressor: &mut Compressor) -> Vec<u8> {
+        compressor.object(self)
     }
 
     /// The bytes this object stores (tiles little-endian).
@@ -850,7 +939,8 @@ type Compressed<'a> = (&'a String, Arc<Vec<u8>>);
 fn par_compress<'a>(objects: &[(&'a String, &'a Object)]) -> Result<Vec<Compressed<'a>>> {
     let threads = if cfg!(target_arch = "wasm32") { 1 } else { std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, 32) };
     if threads < 2 || objects.len() < 2 {
-        return Ok(objects.iter().map(|(p, o)| (*p, Arc::new(o.compressed()))).collect());
+        let mut compressor = Compressor::new();
+        return Ok(objects.iter().map(|(p, o)| (*p, Arc::new(o.compressed(&mut compressor)))).collect());
     }
     let next = std::sync::atomic::AtomicUsize::new(0);
     std::thread::scope(|sc| {
@@ -858,10 +948,11 @@ fn par_compress<'a>(objects: &[(&'a String, &'a Object)]) -> Result<Vec<Compress
             .map(|_| {
                 sc.spawn(|| {
                     let mut out = Vec::new();
+                    let mut compressor = Compressor::new();
                     loop {
                         let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         let Some((p, o)) = objects.get(i) else { break };
-                        out.push((*p, Arc::new(o.compressed())));
+                        out.push((*p, Arc::new(o.compressed(&mut compressor))));
                     }
                     out
                 })
@@ -966,6 +1057,7 @@ impl PcraftWriter {
         for (name, data) in &previews {
             z.add(name, data)?;
         }
+        let mut compressor: Option<Compressor> = None;
         for (path, obj) in &p.objects {
             let (key, data) = match self.compressed.remove_entry(path) {
                 Some((key, data)) => {
@@ -979,7 +1071,7 @@ impl PcraftWriter {
                         Object::Tile(..) => stats.tiles_written += 1,
                         Object::Blob(_) => stats.blobs_written += 1,
                     }
-                    (None, fresh.remove(path).unwrap_or_else(|| Arc::new(obj.compressed())))
+                    (None, fresh.remove(path).unwrap_or_else(|| Arc::new(obj.compressed(compressor.get_or_insert_with(Compressor::new)))))
                 }
             };
             z.add(path, &data)?;
@@ -1026,6 +1118,7 @@ impl PcraftWriter {
             None => 0,
         };
         let recheck = self.rolling_recheck(&p.objects);
+        let mut compressor: Option<Compressor> = None;
         for (path, obj) in &p.objects {
             let object_path = dir.join(path);
             // bundle_root and list_objects validated the fixed parent directories once. Check
@@ -1060,7 +1153,7 @@ impl PcraftWriter {
                 Object::Tile(..) => stats.tiles_written += 1,
                 Object::Blob(_) => stats.blobs_written += 1,
             }
-            write_bundle_file(dir, &object_path, &obj.compressed(), fs)?;
+            write_bundle_file(dir, &object_path, &obj.compressed(compressor.get_or_insert_with(Compressor::new)), fs)?;
             let written = path_signature(&object_path)?;
             if let Some(cache) = &mut self.verified_directory {
                 match written {
@@ -1410,3 +1503,65 @@ pub(crate) fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
 
 #[cfg(all(test, windows))]
 mod durability_tests;
+
+#[cfg(test)]
+#[test]
+fn reused_compressor_matches_compress_to_vec_and_round_trips() {
+    let mut state = 0x9e37_79b9_u32;
+    let mut noise = |n: usize| -> Vec<u8> {
+        (0..n)
+            .map(|_| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (state >> 24) as u8
+            })
+            .collect()
+    };
+    let inputs: Vec<Vec<u8>> = vec![
+        Vec::new(),
+        vec![7],
+        b"hello hello hello hello hello".to_vec(),
+        noise(1000),
+        (0..300_000u32).map(|i| (i / 7 % 251) as u8).collect(),
+        noise(300_000),
+        vec![0; 262_144],
+        // A repeat after a big one proves the matcher state is reset between objects.
+        b"hello hello hello hello hello".to_vec(),
+    ];
+    let mut compressor = Compressor::new();
+    for data in inputs {
+        let expected = ruzstd::encoding::compress_to_vec(data.as_slice(), ruzstd::encoding::CompressionLevel::Fastest);
+        let got = compressor.object(&Object::Blob(Arc::new(data.clone())));
+        assert_eq!(got, expected, "len {}", data.len());
+        assert_eq!(decompress(&got, data.len(), "test").unwrap(), data);
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn an_incompressible_blob_at_its_limit_still_loads() {
+    struct One(String, Vec<u8>);
+    impl ByteSource for One {
+        fn get(&self, path: &str, max: usize) -> Result<Vec<u8>> {
+            if path != self.0 || self.1.len() > max {
+                return Err(FormatError::LimitExceeded(format!("{path} over {max}")));
+            }
+            Ok(self.1.clone())
+        }
+    }
+    let mut x = 0x9e37_79b9_u32;
+    let data: Vec<u8> = (0..64 * 1024)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            x as u8
+        })
+        .collect();
+    let z = Compressor::new().object(&Object::Blob(Arc::new(data.clone())));
+    assert!(z.len() > data.len(), "the fixture must not compress");
+    let hash = hash_bytes(&data);
+    let src = One(blob_path(&hash), z);
+    let mut fetch = LoadFetch { src: &src, opts: crate::LoadOptions::default(), total: 0, blobs: HashMap::new() };
+    assert_eq!(fetch.blob_bounded(&hash, data.len()).unwrap().as_slice(), data.as_slice());
+    assert!(LoadFetch { src: &src, opts: crate::LoadOptions::default(), total: 0, blobs: HashMap::new() }.blob_bounded(&hash, data.len() - 1).is_err());
+}

@@ -1,4 +1,4 @@
-use super::*;
+use super::{FORMAT, FORMAT_HIGH, wgpu};
 
 /// Straight-alpha f32 RGBA (sRGB-encoded) → premultiplied RGBA8, split across threads on native.
 pub fn premultiply_rgba8(px: &[[f32; 4]]) -> Vec<u8> {

@@ -1,7 +1,7 @@
 //! Blurs: Gaussian, box, motion, radial, surface.
 
 use photocraft_geom::Rect;
-use photocraft_raster::Interrupt;
+use photocraft_raster::{Interrupt, scratch};
 
 use crate::image::{Edge, Image, premultiply, unpremultiply};
 use crate::photo_util::{par_map, par_rows};
@@ -31,6 +31,43 @@ pub(crate) fn gaussian_kernel(sigma: f32) -> Vec<f32> {
     k.into_iter().map(|v| v / s).collect()
 }
 
+/// Gaussian Blur's kernel for `radius` (its standard deviation). Sampling the curve at whole
+/// pixels leaves a small radius almost no blur: at 0.3 the neighbour weight is about 0.004, a
+/// tenth of the spread asked for (#8544). Below 1 the sampling width is instead chosen so the
+/// kernel has exactly the variance `radius²`; from 1 up the sampled kernel is within about 0.4%
+/// of it (its 3σ truncation), so larger radii are unchanged and the blur grows smoothly from 0.05.
+pub(crate) fn gaussian_blur_kernel(radius: f32) -> Vec<f32> {
+    if !(0.05..1.0).contains(&radius) {
+        return gaussian_kernel(radius);
+    }
+    let variance = |k: &[f32]| {
+        let r = (k.len() / 2) as f32;
+        k.iter().enumerate().map(|(i, w)| w * (i as f32 - r).powi(2)).sum::<f32>()
+    };
+    // Sampled at `width` with one fixed half-width for every radius below 1: its variance then
+    // rises steadily with `width` (the search can't settle on a step where taps are added), and
+    // the blur grows without the dips a width chosen per radius made at 1/3 and 2/3. Three is the
+    // half-width `gaussian_kernel` uses at radius 1, so the hand-over is smooth too.
+    let half = 3;
+    let sampled = |width: f32| {
+        let k: Vec<f32> = (-half..=half).map(|i| (-(i * i) as f32 / (2.0 * width * width)).exp()).collect();
+        let s: f32 = k.iter().sum();
+        k.into_iter().map(|v| v / s).collect::<Vec<f32>>()
+    };
+    let target = radius * radius;
+    // The sampled kernel's variance only falls short of sigma², so the width lies above `radius`.
+    let (mut lo, mut hi) = (radius, radius + 1.0);
+    for _ in 0..40 {
+        let mid = 0.5 * (lo + hi);
+        if variance(&sampled(mid)) < target {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    sampled(0.5 * (lo + hi))
+}
+
 /// Separable convolution of `src` (premultiplied internally) for `out`.
 /// `src` must cover `out` grown by the kernel radii.
 pub(crate) fn conv_sep(src: &Image, out: Rect, kx: &[f32], ky: &[f32], alpha: bool) -> Vec<f32> {
@@ -41,7 +78,7 @@ pub(crate) fn conv_sep(src: &Image, out: Rect, kx: &[f32], ky: &[f32], alpha: bo
     // Premultiplied copy of the needed source window.
     let win = Rect::new(out.x0 - rx, out.y0 - ry, out.x1 + rx, out.y1 + ry);
     let ww = win.width() as usize;
-    let mut p = vec![0.0f32; ww * win.height() as usize * n];
+    let mut p = scratch::Buf::new(ww * win.height() as usize * n, 0.0f32);
     for y in win.y0..win.y1 {
         for x in win.x0..win.x1 {
             let o = ((y - win.y0) as usize * ww + (x - win.x0) as usize) * n;
@@ -52,7 +89,7 @@ pub(crate) fn conv_sep(src: &Image, out: Rect, kx: &[f32], ky: &[f32], alpha: bo
     }
     premultiply(&mut p, n, alpha);
     // Horizontal pass: (ow × th).
-    let mut tmp = vec![0.0f32; ow * th * n];
+    let mut tmp = scratch::Buf::new(ow * th * n, 0.0f32);
     for ty in 0..th {
         let row = &p[ty * ww * n..(ty + 1) * ww * n];
         let dst = &mut tmp[ty * ow * n..(ty + 1) * ow * n];
@@ -76,7 +113,7 @@ pub(crate) fn conv_sep(src: &Image, out: Rect, kx: &[f32], ky: &[f32], alpha: bo
         }
     }
     // Vertical pass.
-    let mut res = vec![0.0f32; ow * oh * n];
+    let mut res = scratch::take(ow * oh * n, 0.0f32);
     for oy in 0..oh {
         let d = &mut res[oy * ow * n..(oy + 1) * ow * n];
         for (i, kv) in ky.iter().enumerate() {
@@ -107,13 +144,12 @@ fn conv_row<const N: usize>(src: &[f32], dst: &mut [f32], kernel: &[f32]) {
 
 pub(crate) fn gaussian(src: &Image, out: Rect, ctx: &Ctx, radius: f32) -> Vec<f32> {
     // Exact kernel for small radii; beyond that three box passes approximate the Gaussian with
-    // cost independent of the radius (Kovesi, "Fast almost-Gaussian filtering", 2010).
-    match box_widths(&FilterParams::GaussianBlur { radius }) {
-        Some(boxes) => box_passes(src, out, ctx.alpha, &boxes),
-        None => {
-            let k = gaussian_kernel(radius);
-            conv_sep(src, out, &k, &k, ctx.alpha)
-        }
+    // cost independent of the radius (Kovesi, "Fast almost-Gaussian filtering", 2010). Built
+    // from the description other devices run (`separable`), so they blur the same (#5772).
+    match crate::separable::Separable::of(&FilterParams::GaussianBlur { radius }) {
+        Some(crate::separable::Separable::Boxes(boxes)) => box_passes(src, out, ctx.alpha, &boxes),
+        Some(crate::separable::Separable::Kernel(k)) => conv_sep(src, out, &k, &k, ctx.alpha),
+        None => src.crop(out),
     }
 }
 
@@ -146,11 +182,27 @@ pub(crate) fn box_widths(params: &FilterParams) -> Option<Vec<usize>> {
 }
 
 /// Scratch buffers of one worker for [`box_blur`].
-#[derive(Default)]
 struct Scratch {
     line: Vec<f32>,
     next: Vec<f32>,
     acc: Vec<f32>,
+    /// The source row being read (horizontal passes only).
+    row: Vec<f32>,
+}
+
+impl Scratch {
+    /// Buffers with room for lines of `line` floats (and the shorter ones after the first pass).
+    fn new(line: usize, row: usize) -> Self {
+        Scratch { line: scratch::take_cap(line), next: scratch::take_cap(line), acc: Vec::new(), row: scratch::take_cap(row) }
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        scratch::give(std::mem::take(&mut self.line));
+        scratch::give(std::mem::take(&mut self.next));
+        scratch::give(std::mem::take(&mut self.row));
+    }
 }
 
 /// One running-sum box pass of radius `r` along a line of elements of `w` floats each (a pixel's
@@ -216,7 +268,7 @@ fn box_pass_px<const N: usize>(src: &[f32], dst: &mut [f32], r: usize) {
 /// `dst` unfinished) when `ctl` is cancelled before a pass: a column strip's passes take tens of
 /// milliseconds on a tall image, too long to finish once cancelled (#6205).
 fn line_passes(dst: &mut [f32], w: usize, radii: &[usize], s: &mut Scratch, ctl: &Interrupt) {
-    let Scratch { line, next, acc } = s;
+    let Scratch { line, next, acc, .. } = s;
     let Some(len) = dst.len().checked_div(w) else { return };
     let mut tail: usize = radii.iter().sum();
     for (k, &r) in radii.iter().enumerate() {
@@ -270,21 +322,21 @@ pub(crate) fn box_blur(
     // Horizontal passes over `used`'s rows only (the repeated rows above and below it would just
     // repeat their results), for the output columns. Each row is extended to the passes' reach by
     // repeating its end pixels.
-    let mut h = vec![0.0f32; used.height() as usize * ow * n];
+    let mut h = scratch::Buf::new(used.height() as usize * ow * n, 0.0f32);
     let (left, right) = ((used.x0 - out.x0.saturating_sub(reach)) as usize, (out.x1.saturating_add(reach) - used.x1) as usize);
     par_rows(&mut h, ow * ROWS_PER_TASK, n, |task, chunk| {
-        let (mut row, mut s) = (Vec::new(), Scratch::default());
+        let mut s = Scratch::new((used.width() as usize + left + right) * n, used.width() as usize * n);
         for (k, dst) in chunk.chunks_exact_mut(ow * n).enumerate() {
             if ctl.cancelled() {
                 return;
             }
             let y = used.y0 + (task * ROWS_PER_TASK + k) as i32;
-            read(Rect::new(used.x0, y, used.x1, y + 1), &mut row);
-            premultiply(&mut row, n, alpha);
-            let (Some(first), Some(last)) = (row.get(..n), row.get(row.len().saturating_sub(n)..)) else { return };
+            read(Rect::new(used.x0, y, used.x1, y + 1), &mut s.row);
+            premultiply(&mut s.row, n, alpha);
+            let (Some(first), Some(last)) = (s.row.get(..n), s.row.get(s.row.len().saturating_sub(n)..)) else { return };
             s.line.clear();
             (0..left).for_each(|_| s.line.extend_from_slice(first));
-            s.line.extend_from_slice(&row);
+            s.line.extend_from_slice(&s.row);
             (0..right).for_each(|_| s.line.extend_from_slice(last));
             line_passes(dst, n, &radii, &mut s, ctl);
         }
@@ -300,11 +352,11 @@ pub(crate) fn box_blur(
         }
         let (sx, w) = ((t.x0 - out.x0) as usize * n, t.width() as usize * n);
         let row = |y: usize| &h[y * stride + sx..y * stride + sx + w];
-        let mut s = Scratch::default();
+        let mut s = Scratch::new((rows + top + bottom) * w, 0);
         (0..top).for_each(|_| s.line.extend_from_slice(row(0)));
         (0..rows).for_each(|y| s.line.extend_from_slice(row(y)));
         (0..bottom).for_each(|_| s.line.extend_from_slice(row(rows - 1)));
-        let mut res = vec![0.0f32; oh * w];
+        let mut res = scratch::take(oh * w, 0.0f32);
         line_passes(&mut res, w, &radii, &mut s, ctl);
         if ctl.cancelled() {
             return (t, Vec::new());
@@ -331,7 +383,7 @@ fn box_passes(src: &Image, out: Rect, alpha: bool, boxes: &[usize]) -> Vec<f32> 
         buf.extend_from_slice(src.row(r));
     };
     let ow = out.width() as usize * n;
-    let mut res = vec![0.0f32; ow * out.height() as usize];
+    let mut res = scratch::take(ow * out.height() as usize, 0.0f32);
     if res.is_empty() {
         return res;
     }
@@ -340,6 +392,7 @@ fn box_passes(src: &Image, out: Rect, alpha: bool, boxes: &[usize]) -> Vec<f32> 
         for (dst, s) in res.chunks_exact_mut(ow).zip(data.chunks_exact(w)) {
             dst[x0..x0 + w].copy_from_slice(s);
         }
+        scratch::give(data);
     }
     res
 }

@@ -1,4 +1,4 @@
-use super::*;
+use super::FontData;
 
 /// How a character is set in vertical type (a simplification of Unicode's
 /// `Vertical_Orientation`, UAX #50).

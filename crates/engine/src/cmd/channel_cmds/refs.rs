@@ -1,6 +1,6 @@
 use super::planes::{color_count, edit_mode, luminosity, read_plane, tone};
 use super::view::{color_names, composite_name};
-use super::*;
+use super::{BlendMode, Document, EngineError, LayerContent, LayerId, Result, Session, Value, blend_channel, from_rgba, sel, to_rgba};
 
 // ---------------------------------------------------------------------------------------------
 // Channel references

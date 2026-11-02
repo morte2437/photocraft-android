@@ -912,3 +912,86 @@ fn row_values_round_to_their_own_decimals() {
     assert!((row_value(1.234, 0.01, 9.99, None) - 1.23).abs() < 1e-6, "small ranges keep two decimals");
     assert!(row_value(f32::NAN, -20.0, 20.0, Some(u32::MAX)).is_nan(), "no panic on odd input");
 }
+
+fn photo_filter_color(a: &Adjustment) -> [f32; 3] {
+    match a {
+        Adjustment::PhotoFilter { color, .. } => *color,
+        other => panic!("{other:?}"),
+    }
+}
+
+/// Click the Photo Filter swatch, wait for its Color Picker and show `hex` in it.
+fn photo_filter_picker_shows(h: &mut Harness<'_, PhotocraftApp>, hex: &str) {
+    h.get_by_label("Color Picker (Photo Filter)").click();
+    h.run_steps(3);
+    let d = h.state().ui.dialogs.last().expect("the swatch opens the Color Picker");
+    assert_eq!(d.fields["__label"], "Color Picker (Photo Filter)");
+    let id = d.id;
+    h.state_mut().ui.dialog_mut(id).unwrap().fields.insert("color".into(), json!(hex));
+    h.run_steps(3);
+}
+
+#[test]
+fn photo_filter_colour_picker_previews_live_cancel_restores_and_ok_is_one_step() {
+    let mut h = app_harness("photoFilter", "rgb", 8);
+    let (id, _) = layer(&h);
+    h.state_mut().run("layer.setAdjustment", json!({"layer": id.0, "color": "#336699"})).unwrap();
+    h.run_steps(4);
+    // The Color: radio enables the swatch.
+    h.get_by_label("Color:").click();
+    h.run_steps(3);
+    let start = photo_filter_color(&layer(&h).1);
+    let steps = |h: &Harness<'_, PhotocraftApp>| h.state().session.active().unwrap().history.past_len();
+    let before = steps(&h);
+
+    // While the picker is open, the canvas previews its colour; nothing is committed yet.
+    photo_filter_picker_shows(&mut h, "#ff0000");
+    let live = h.state().live_adjust.clone();
+    assert!(matches!(&live, Some((l, v)) if *l == id && v["color"] == "#ff0000"), "live preview while the picker is open: {live:?}");
+    assert_eq!(photo_filter_color(&layer(&h).1), start);
+    assert_eq!(steps(&h), before);
+
+    // Cancel: back to the opening colour, no history step.
+    h.get_by_label("Cancel").click();
+    h.run_steps(4);
+    assert!(h.state().live_adjust.is_none(), "Cancel ends the preview");
+    assert_eq!(photo_filter_color(&layer(&h).1), start);
+    assert_eq!(steps(&h), before);
+
+    // OK: the colour, as one history step however long it previewed.
+    photo_filter_picker_shows(&mut h, "#00ff80");
+    h.state_mut().ui.dialogs.last_mut().unwrap().fields.insert("color".into(), json!("#00ff00"));
+    h.run_steps(3);
+    assert_eq!(steps(&h), before);
+    h.get_by_label("OK").click();
+    h.run_steps(4);
+    assert!(h.state().live_adjust.is_none());
+    assert_eq!(photo_filter_color(&layer(&h).1), [0.0, 1.0, 0.0]);
+    assert_eq!(steps(&h), before + 1, "OK: one history step");
+}
+
+/// Opening a Gradient Map stop's Color Picker and closing it without a new colour (Cancel, or OK
+/// unchanged) edits nothing: a stop at a location finer than the editor's 0.001 grid (a PSD's
+/// 30 % is 1229/4096) stays as it is, with no history step.
+#[test]
+fn gradient_map_stop_picker_closed_without_a_colour_changes_nothing() {
+    let mut h = app_harness("gradientMap", "rgb", 16);
+    let (id, _) = layer(&h);
+    let fine = 1229.0 / 4096.0;
+    h.state_mut().run("layer.setAdjustment", json!({"layer": id.0, "stops": [[0, "#000000"], [fine, "#ff0000"], [1, "#ffffff"]]})).unwrap();
+    h.run_steps(4);
+    let before = layer(&h).1;
+    let steps = |h: &Harness<'_, PhotocraftApp>| h.state().session.active().unwrap().history.past_len();
+    let history = steps(&h);
+    for button in ["Cancel", "OK"] {
+        h.get_by_label("Color Picker (Stop Color)").click();
+        h.run_steps(3);
+        assert_eq!(h.state().ui.dialogs.last().expect("the stop's Color Picker").fields["__label"], "Color Picker (Stop Color)");
+        h.get_by_label(button).click();
+        h.run_steps(4);
+        assert!(h.state().ui.dialogs.is_empty());
+        assert_eq!(layer(&h).1, before, "{button}: the stops are untouched");
+        assert_eq!(steps(&h), history, "{button}: no history step");
+        assert!(h.state().live_adjust.is_none());
+    }
+}

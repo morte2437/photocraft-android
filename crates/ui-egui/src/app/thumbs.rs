@@ -1,4 +1,4 @@
-use super::*;
+use super::{DocId, Document, PhotocraftApp, mask_thumbs_ui};
 
 impl PhotocraftApp {
     pub(super) fn prune_thumbs(&mut self) {

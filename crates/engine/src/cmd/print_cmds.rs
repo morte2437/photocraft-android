@@ -250,8 +250,8 @@ enum SpoolError {
 
 /// Sends the job and says where it went and through what. A named print server takes the IPP
 /// route. Otherwise: the app's spooler when it is preferred; else `craft-print` (`lp`, or the
-/// Windows spooler) when it is there; else CUPS over IPP; and the app's spooler when that had
-/// no route either. A route that exists but fails (an unknown printer, a refused job) is an
+/// Windows spooler) when it is there, or the app's spooler when CUPS lists no printer for `lp`;
+/// else CUPS over IPP; and the app's spooler when that had no route either. A route that exists but fails (an unknown printer, a refused job) is an
 /// error, never a fall-through.
 fn spool_job(spooler: Option<&Spooler>, job: &PrintJob, lp: &craft_print::Job) -> Result<(String, String)> {
     let app = |sp: &Spooler| (sp.run)(job).map(|m| (m, sp.name.to_string())).map_err(other);
@@ -261,7 +261,19 @@ fn spool_job(spooler: Option<&Spooler>, job: &PrintJob, lp: &craft_print::Job) -
         }
         if let Some(name) = system_spooler() {
             require_windows_pdf()?;
-            return with_spooler(|| craft_print::submit(&job.pdf, lp)).map(|m| (m, name.to_string())).map_err(other);
+            // lpstat is CUPS, not a Windows driver, so it runs outside SPOOLER. A listing that
+            // can't finish in time can't tell, so lp gets the job as it did before the check.
+            let route = match name {
+                "lp" => lp_printers(LP_LISTING_TIMEOUT).map_or_else(|| Some(lp.clone()), |list| lp_route(lp, &list)),
+                _ => Some(lp.clone()),
+            };
+            return match (route, spooler) {
+                (Some(lp), _) => with_spooler(|| craft_print::submit(&job.pdf, &lp)).map(|m| (m, name.to_string())).map_err(other),
+                // CUPS lists no printer. IPP would ask the same CUPS, or (it ignores client.conf)
+                // another server whose printer the user never chose, so only the portal is left.
+                (None, Some(sp)) => app(sp),
+                (None, None) => Err(other("no printers found; set one up in the system's printer settings, or print to PDF")),
+            };
         }
     }
     match cups_spool(job) {
@@ -272,6 +284,78 @@ fn spool_job(spooler: Option<&Spooler>, job: &PrintJob, lp: &craft_print::Job) -
         },
         Err(SpoolError::Failed(why)) => Err(other(why)),
     }
+}
+
+/// How long a print job waits for CUPS' printer list (`lpstat`, whose `-e` browses the network).
+const LP_LISTING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The most a printer listing may print; a longer one counts as no answer.
+const LP_LISTING_CAP: u64 = 1 << 20;
+
+/// CUPS' printers as `craft_print::printers` lists them, or `None` when that can't be told: an
+/// `lpstat` can't start, outlasts `timeout`, prints more than `LP_LISTING_CAP`, or `lpstat -e`
+/// fails (CUPS unreachable, or listing forbidden by policy). `lpstat -p -d`'s own status is not
+/// a failure: it exits 1 whenever there are no queues, as on a host with only driverless
+/// printers. Each `lpstat` is killed and reaped at the deadline, so a hung one never outlives
+/// the job.
+fn lp_printers(timeout: std::time::Duration) -> Option<Vec<craft_print::Printer>> {
+    let deadline = std::time::Instant::now() + timeout;
+    let (_, queues) = output_by(craft_print::lpstat_command(), deadline)?;
+    // `lpstat -e`, as craft-print runs it (its builder is private): the driverless printers.
+    let mut driverless = std::process::Command::new("lpstat");
+    driverless.arg("-e").env("LC_ALL", "C").env("LANG", "C").env("SOFTWARE", "Craft");
+    let (listed, available) = output_by(driverless, deadline)?;
+    listed.then(|| craft_print::printers_parsed(&queues, Some(&available)))
+}
+
+/// Whether `command` succeeded, and its standard output; `None` when it can't start, prints more
+/// than `LP_LISTING_CAP`, or is still running at `deadline`, when it is killed and reaped. The
+/// output is read on its own thread, so a full pipe can't stall the wait, and that thread ends
+/// when the process does.
+fn output_by(mut command: std::process::Command, deadline: std::time::Instant) -> Option<(bool, String)> {
+    use std::io::Read as _;
+    use std::process::Stdio;
+    let mut child = command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+    let mut stdout = child.stdout.take()?;
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let reader = std::thread::Builder::new().name("print-listing".into()).spawn(move || {
+        let mut out = Vec::new();
+        // One byte over the cap tells an oversized listing apart; stopping closes the pipe.
+        let _ = sender.send((&mut stdout).take(LP_LISTING_CAP + 1).read_to_end(&mut out).map(|_| out));
+    });
+    let status = reader.ok().and_then(|_| {
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break Some(status),
+                Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(20)),
+                _ => break None,
+            }
+        }
+    });
+    let Some(status) = status else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return None;
+    };
+    let out = receiver.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())).ok()?.ok()?;
+    let fits = u64::try_from(out.len()).is_ok_and(|n| n <= LP_LISTING_CAP);
+    fits.then(|| (status.success(), String::from_utf8_lossy(&out).into_owned()))
+}
+
+/// The job for `lp`, or `None` when no printer was asked for and CUPS lists none: `lp` has
+/// nowhere to send it, and the portal still may (a Flatpak bundles `lp`). A printer asked for by
+/// name always goes to `lp`, which knows it even where CUPS won't list it, and the portal could
+/// not honour the name. With no printer asked for, no default and one printer, that printer, as
+/// `resolve_printer` picks for IPP.
+fn lp_route(lp: &craft_print::Job, printers: &[craft_print::Printer]) -> Option<craft_print::Job> {
+    let mut lp = lp.clone();
+    if lp.printer.is_none()
+        && !printers.iter().any(|p| p.default)
+        && let [only] = printers
+    {
+        lp.printer = Some(only.name.clone());
+    }
+    (lp.printer.is_some() || !printers.is_empty()).then_some(lp)
 }
 
 /// The spooler `craft-print` can talk to, as the job's `backend` name: `lp` when CUPS' command
@@ -905,11 +989,11 @@ fn with_driver_printable(p: &Value) -> Value {
 
 fn driver_printable(p: &Value) -> Option<Value> {
     let printer = printer_name(p).ok()?;
-    let settings = printer_settings(p).ok()?;
-    let pg = with_spooler(|| craft_print::rgb::page(&printer, settings.as_ref())).ok()?;
-    // Only for the paper the driver is set to: a print laid out on another paper keeps the
-    // fixed margin (and `print_windows` refuses it), as before.
     let (pw, ph) = paper(p, "file.print").ok()?;
+    // The page `print_windows` prints on, turned as it turns it for the layout's orientation.
+    let (_, pg) = settings_for_layout(&printer, printer_settings(p).ok()?, (pw, ph)).ok()?;
+    // Only for the paper the driver is set to, either way round: a print laid out on another
+    // paper keeps the fixed margin (and `print_windows` refuses it), as before.
     if (pg.paper.0 - pw).abs() > 2.0 || (pg.paper.1 - ph).abs() > 2.0 {
         return None;
     }

@@ -124,8 +124,8 @@ fn corpus_round_trips_through_layered_tiff() {
                 }
                 d
             };
-            let x = photocraft_compose::flatten(&expected).px;
-            let y = photocraft_compose::flatten(&back).px;
+            let x = photocraft_compose::flatten(&expected).into_px();
+            let y = photocraft_compose::flatten(&back).into_px();
             let diff = max_diff(&x, &y);
             if diff > 1.0 / 255.0 + 1e-5 {
                 return Err(format!("render differs by {diff}"));

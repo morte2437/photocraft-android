@@ -2,7 +2,7 @@ use super::appearance::{AppearanceRows, appearance_rows, system_theme};
 use super::dialogs::{mismatch_body, presets_body, presets_io_body, settings_height};
 use super::graphics::{gpu_memory_lines, gpu_status_rows, memory_usage_row, read_at_launch, rendering_mode_row};
 use super::shortcuts::shortcuts_body;
-use super::*;
+use super::{Color32, Map, PhotocraftApp, RichText, SECTIONS, Sense, Tokens, Value, json, prefs, vec2};
 
 // ------------------------------------------------------------------ bodies
 

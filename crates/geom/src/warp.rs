@@ -836,15 +836,8 @@ impl BezierMesh {
             *f = f.max((1.0 - interior) * w);
         }
         // Every control point moves with the anchor it is closest to.
-        for j in 0..self.ny() {
-            for i in 0..nx {
-                let (ai, aj) = (((i + 1) / 3).min(cols), ((j + 1) / 3).min(rows));
-                let k = share[aj * (cols + 1) + ai];
-                let p = &mut self.points[j * nx + i];
-                p[0] += d[0] * k;
-                p[1] += d[1] * k;
-            }
-        }
+        let ny = self.ny();
+        move_control_points(&mut self.points, nx, ny, cols, rows, &share, d);
         // Close the gap exactly, with three groups of control points that share the work:
         // - the four inner points of the grabbed patch (all of it in the middle of the patch,
         //   little near a grid line, where they barely reach the surface);
@@ -1019,6 +1012,18 @@ impl BezierMesh {
     /// Bounding box of the control points (the surface lies inside it).
     pub fn control_bounds(&self) -> [f64; 4] {
         self.points.iter().fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |b, p| [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])])
+    }
+}
+
+fn move_control_points(points: &mut [[f64; 2]], nx: usize, ny: usize, cols: usize, rows: usize, shares: &[f64], delta: [f64; 2]) {
+    for j in 0..ny {
+        for i in 0..nx {
+            let (ai, aj) = (((i + 1) / 3).min(cols), ((j + 1) / 3).min(rows));
+            let share = shares[aj * (cols + 1) + ai];
+            let point = &mut points[j * nx + i];
+            point[0] += delta[0] * share;
+            point[1] += delta[1] * share;
+        }
     }
 }
 

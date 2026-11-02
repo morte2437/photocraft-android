@@ -1,7 +1,7 @@
 use super::consts::{CHUNK_UNIFORM, OP_UNIFORM, STRIDE};
 use super::convert::{lut_texture, words};
 use super::textures::{ResKey, ResidentRef};
-use super::*;
+use super::{Arc, HashMap, I, Kernel, NonZeroU64, Rect};
 
 /// Pipelines and layouts, shared by cheap clones (wgpu handles are reference counted).
 #[derive(Clone)]

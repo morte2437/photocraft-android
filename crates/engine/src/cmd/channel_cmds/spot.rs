@@ -2,7 +2,7 @@ use super::manage::{fix_view_now, gray_document};
 use super::planes::{channel_format, edit_mode, plane_surface, read_plane, tone};
 use super::refs::{ChanRef, alpha_index, bad, gray_plane, native_pixels};
 use super::view::{ChannelTarget, ChannelView, color_names};
-use super::*;
+use super::{AlphaChannel, ColorMode, DocState, Document, EngineError, Layer, Result, Session, Value, from_rgba, json};
 
 /// Merge Spot Channel: flattens the image and prints the spot ink into the colour channels.
 pub(super) fn merge_spot(s: &mut Session, p: &Value) -> Result<Value> {

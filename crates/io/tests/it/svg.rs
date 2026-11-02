@@ -483,6 +483,9 @@ fn drawings_the_svg_renderer_panics_on_are_errors_not_crashes() {
     let bad_image = format!("<svg {NS} width=\"100\" height=\"100\"><image width=\"1e-30\" height=\"50\" href=\"{nested}\"/></svg>");
     let e = import("image.svg", bad_image.as_bytes()).err().unwrap_or_else(|| panic!("opened"));
     assert!(matches!(e, IoError::Svg(_)), "{e}");
+    // The budgeted parse (placed and embedded drawings) is guarded too.
+    let e = svg::import_svg_bounded_images("image.svg", bad_image.as_bytes(), 1 << 24).err().unwrap_or_else(|| panic!("opened"));
+    assert!(matches!(e, IoError::Svg(_)), "{e}");
     // resvg panics rendering an offset past the pixmap's size: that element is dropped with a
     // warning, the rest of the drawing still opens.
     let offset = "<filter id=\"f\"><feOffset dx=\"3e9\" dy=\"-3e9\"/></filter>\
@@ -494,6 +497,8 @@ fn drawings_the_svg_renderer_panics_on_are_errors_not_crashes() {
     assert!(r.warnings.iter().any(|w| w.contains("could not be rendered")), "{:?}", r.warnings);
     // The same drawing as a smart object, and past the element limit (opened as one pixel layer).
     let e = svg::rasterize(svg.as_bytes(), 1.0).err().unwrap_or_else(|| panic!("rendered"));
+    assert!(matches!(e, IoError::Svg(_)), "{e}");
+    let e = svg::rasterize_bounded(svg.as_bytes(), 1.0, 1 << 24).err().unwrap_or_else(|| panic!("rendered"));
     assert!(matches!(e, IoError::Svg(_)), "{e}");
     let many = format!("<svg {NS} width=\"100\" height=\"100\">{offset}{}</svg>", "<rect width=\"1\" height=\"1\"/>".repeat(2_000));
     let r = open(&many);

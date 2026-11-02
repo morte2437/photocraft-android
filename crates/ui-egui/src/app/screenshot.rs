@@ -1,4 +1,4 @@
-use super::*;
+use super::PhotocraftApp;
 
 impl PhotocraftApp {
     /// Issue due screenshot requests. UI phase only: settling counts real layout passes, and the

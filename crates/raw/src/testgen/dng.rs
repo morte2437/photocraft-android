@@ -182,6 +182,29 @@ impl DngSpec {
 
     pub fn build(&self) -> Vec<u8> {
         let mut t = TiffBuilder { big_endian: self.big_endian, ..Default::default() };
+        let mut raw = self.raw_base_tags();
+        self.push_storage_tags(&mut t, &mut raw);
+        self.push_geometry_tags(&mut raw);
+        if let Some(o) = &self.opcode_list2 {
+            raw.push((51009, Val::Undefined(o.clone())));
+        }
+        if let Some(l) = &self.linearization {
+            raw.push((50712, Val::Short(l.clone())));
+        }
+        raw.extend(self.raw_extra.iter().cloned());
+        let raw_ifd = t.ifd(raw);
+        // IFD0: a tiny RGB thumbnail plus the DNG metadata.
+        let thumb = t.blob(vec![128; 3 * 4]);
+        let mut ifd0 = self.ifd0_base_tags(thumb, raw_ifd);
+        self.push_color_tags(&mut ifd0);
+        ifd0.extend(self.ifd0_extra.iter().cloned());
+        let i0 = t.ifd(ifd0);
+        t.chain = vec![i0];
+        t.build()
+    }
+
+    /// The raw IFD's tags that don't depend on how the image is stored.
+    fn raw_base_tags(&self) -> Vec<(u16, Val)> {
         let mut raw: Vec<(u16, Val)> = vec![
             (254, Val::Long(vec![0])),
             (256, Val::Long(vec![self.width as u32])),
@@ -202,166 +225,162 @@ impl DngSpec {
             raw.push((50710, Val::Byte(vec![0, 1, 2])));
             raw.push((50711, Val::Short(vec![1])));
         }
+        raw
+    }
+
+    /// Encodes the image per `storage` into `t`'s blobs and adds the compression and
+    /// strip or tile tags that point at them.
+    fn push_storage_tags(&self, t: &mut TiffBuilder, raw: &mut Vec<(u16, Val)>) {
         match self.storage {
             DngStorage::DeflateStrips { rows, predictor } => {
-                use std::io::Write;
-                let mut offs = Vec::new();
-                let mut lens = Vec::new();
-                for y in (0..self.height).step_by(rows) {
-                    let r = (y + rows).min(self.height) - y;
-                    let n = self.width * self.samples;
-                    let mut v: Vec<u16> = self.data[y * n..(y + r) * n].to_vec();
-                    if predictor == 2 {
-                        // Horizontal differencing on the sample values, before byte packing
-                        // (the reader undoes predictor after unpacking, per row, per channel).
-                        let plane = if self.samples.is_multiple_of(3) { 3 } else { 1 };
-                        for row in v.chunks_mut(n) {
-                            for i in (plane..row.len()).rev() {
-                                row[i] = row[i].wrapping_sub(row[i - plane]);
-                            }
-                        }
-                    }
-                    // Pack the delta'd values with the file's byte order and bit depth.
-                    let bytes: Vec<u8> = match self.bits {
-                        8 => v.iter().map(|&x| x as u8).collect(),
-                        16 => v.iter().flat_map(|&x| if self.big_endian { x.to_be_bytes() } else { x.to_le_bytes() }).collect(),
-                        _ => v.iter().flat_map(|x| x.to_le_bytes()).collect(),
-                    };
-                    let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
-                    e.write_all(&bytes).expect("zlib");
-                    let z = e.finish().expect("zlib");
-                    lens.push(z.len() as u32);
-                    offs.push(t.blob(z));
-                }
+                let (offs, lens) = self.strip_blobs(t, rows, |y, r| self.deflate_strip(y, r, predictor));
                 raw.push((259, Val::Short(vec![8])));
                 raw.push((317, Val::Short(vec![predictor])));
-                raw.push((278, Val::Long(vec![rows as u32])));
-                raw.push((273, Val::Blobs(offs)));
-                raw.push((279, Val::Long(lens)));
+                push_strip_tags(raw, rows, offs, lens);
             }
             DngStorage::Strips { rows } => {
-                let mut offs = Vec::new();
-                let mut lens = Vec::new();
-                for y in (0..self.height).step_by(rows) {
-                    let b = self.pack(y..(y + rows).min(self.height));
-                    lens.push(b.len() as u32);
-                    offs.push(t.blob(b));
-                }
+                let (offs, lens) = self.strip_blobs(t, rows, |y, r| self.pack(y..y + r));
                 raw.push((259, Val::Short(vec![1])));
-                raw.push((278, Val::Long(vec![rows as u32])));
-                raw.push((273, Val::Blobs(offs)));
-                raw.push((279, Val::Long(lens)));
+                push_strip_tags(raw, rows, offs, lens);
             }
             DngStorage::LossyJpegTiles { width: tw, height: th } => {
-                let mut offs = Vec::new();
-                let mut lens = Vec::new();
                 let s = self.samples;
-                for ty in (0..self.height).step_by(th) {
-                    for tx in (0..self.width).step_by(tw) {
-                        // Edge tiles are padded by repeating the last row / column.
-                        let mut tile = vec![0u8; tw * th * s];
-                        for y in 0..th {
-                            for x in 0..tw {
-                                let sy = (ty + y).min(self.height - 1);
-                                let sx = (tx + x).min(self.width - 1);
-                                for c in 0..s {
-                                    tile[(y * tw + x) * s + c] = self.sample8(self.data[(sy * self.width + sx) * s + c]);
-                                }
-                            }
-                        }
-                        let j = self.lossy_segments.get(offs.len()).cloned().unwrap_or_else(|| baseline_jpeg(&tile, tw, th, s));
-                        lens.push(j.len() as u32);
-                        offs.push(t.blob(j));
-                    }
-                }
+                let (offs, lens) = self.tile_blobs(t, tw, th, |tile_no, tile: Vec<u8>| {
+                    self.lossy_segments.get(tile_no).cloned().unwrap_or_else(|| baseline_jpeg(&tile, tw, th, s))
+                });
                 raw.push((259, Val::Short(vec![34892])));
-                raw.push((322, Val::Long(vec![tw as u32])));
-                raw.push((323, Val::Long(vec![th as u32])));
-                raw.push((324, Val::Blobs(offs)));
-                raw.push((325, Val::Long(lens)));
+                push_tile_tags(raw, tw, th, offs, lens);
             }
             DngStorage::LossyJpegStrips { rows } => {
-                let mut offs = Vec::new();
-                let mut lens = Vec::new();
                 let n = self.width * self.samples;
-                for y in (0..self.height).step_by(rows) {
-                    let r = (y + rows).min(self.height) - y;
+                let (offs, lens) = self.strip_blobs(t, rows, |y, r| {
                     let strip: Vec<u8> = self.data[y * n..(y + r) * n].iter().map(|&v| self.sample8(v)).collect();
-                    let j = self.lossy_segments.get(offs.len()).cloned().unwrap_or_else(|| baseline_jpeg(&strip, self.width, r, self.samples));
-                    lens.push(j.len() as u32);
-                    offs.push(t.blob(j));
-                }
+                    let strip_no = y / rows;
+                    self.lossy_segments.get(strip_no).cloned().unwrap_or_else(|| baseline_jpeg(&strip, self.width, r, self.samples))
+                });
                 raw.push((259, Val::Short(vec![34892])));
-                raw.push((278, Val::Long(vec![rows as u32])));
-                raw.push((273, Val::Blobs(offs)));
-                raw.push((279, Val::Long(lens)));
+                push_strip_tags(raw, rows, offs, lens);
             }
             DngStorage::Lj92Strips { rows } => {
-                let mut offs = Vec::new();
-                let mut lens = Vec::new();
-                for y in (0..self.height).step_by(rows) {
-                    let r = (y + rows).min(self.height) - y;
-                    let n = self.width * self.samples;
-                    let j = lj92_encode(&self.data[y * n..(y + r) * n], self.width, r, self.samples, self.bits as u8, 1, None);
-                    lens.push(j.len() as u32);
-                    offs.push(t.blob(j));
-                }
+                let n = self.width * self.samples;
+                let (offs, lens) =
+                    self.strip_blobs(t, rows, |y, r| lj92_encode(&self.data[y * n..(y + r) * n], self.width, r, self.samples, self.bits as u8, 1, None));
                 raw.push((259, Val::Short(vec![7])));
-                raw.push((278, Val::Long(vec![rows as u32])));
-                raw.push((273, Val::Blobs(offs)));
-                raw.push((279, Val::Long(lens)));
+                push_strip_tags(raw, rows, offs, lens);
             }
             DngStorage::Lj92Tiles { width: tw, height: th } => {
-                let mut offs = Vec::new();
-                let mut lens = Vec::new();
                 let s = self.samples;
-                for ty in (0..self.height).step_by(th) {
-                    for tx in (0..self.width).step_by(tw) {
-                        // Edge tiles are padded by repeating the last row / column.
-                        let mut tile = vec![0u16; tw * th * s];
-                        for y in 0..th {
-                            for x in 0..tw {
-                                let sy = (ty + y).min(self.height - 1);
-                                let sx = (tx + x).min(self.width - 1);
-                                for c in 0..s {
-                                    tile[(y * tw + x) * s + c] = self.data[(sy * self.width + sx) * s + c];
-                                }
-                            }
-                        }
-                        // CFA tiles as Adobe writes them: half width, 2 components.
-                        let j = if s == 1 && tw % 2 == 0 {
-                            lj92_encode(&tile, tw / 2, th, 2, self.bits as u8, 1, None)
-                        } else {
-                            lj92_encode(&tile, tw, th, s, self.bits as u8, 1, None)
-                        };
-                        lens.push(j.len() as u32);
-                        offs.push(t.blob(j));
+                let (offs, lens) = self.tile_blobs(t, tw, th, |_, tile: Vec<u16>| {
+                    // CFA tiles as Adobe writes them: half width, 2 components.
+                    if s == 1 && tw % 2 == 0 {
+                        lj92_encode(&tile, tw / 2, th, 2, self.bits as u8, 1, None)
+                    } else {
+                        lj92_encode(&tile, tw, th, s, self.bits as u8, 1, None)
                     }
-                }
+                });
                 raw.push((259, Val::Short(vec![7])));
-                raw.push((322, Val::Long(vec![tw as u32])));
-                raw.push((323, Val::Long(vec![th as u32])));
-                raw.push((324, Val::Blobs(offs)));
-                raw.push((325, Val::Long(lens)));
+                push_tile_tags(raw, tw, th, offs, lens);
             }
             DngStorage::JxlStrips { rows } => {
-                let lens = self.jxl_segments.iter().map(|j| j.len() as u32).collect();
-                let offs = self.jxl_segments.iter().map(|j| t.blob(j.clone())).collect();
+                let (offs, lens) = self.jxl_blobs(t);
                 raw.push((259, Val::Short(vec![52546])));
-                raw.push((278, Val::Long(vec![rows as u32])));
-                raw.push((273, Val::Blobs(offs)));
-                raw.push((279, Val::Long(lens)));
+                push_strip_tags(raw, rows, offs, lens);
             }
             DngStorage::JxlTiles { width: tw, height: th } => {
-                let lens = self.jxl_segments.iter().map(|j| j.len() as u32).collect();
-                let offs = self.jxl_segments.iter().map(|j| t.blob(j.clone())).collect();
+                let (offs, lens) = self.jxl_blobs(t);
                 raw.push((259, Val::Short(vec![52546])));
-                raw.push((322, Val::Long(vec![tw as u32])));
-                raw.push((323, Val::Long(vec![th as u32])));
-                raw.push((324, Val::Blobs(offs)));
-                raw.push((325, Val::Long(lens)));
+                push_tile_tags(raw, tw, th, offs, lens);
             }
         }
+    }
+
+    /// One blob per strip of `rows` rows: `encode(first_row, rows_in_strip)` gives its bytes.
+    /// Returns the blob handles and lengths.
+    fn strip_blobs(&self, t: &mut TiffBuilder, rows: usize, mut encode: impl FnMut(usize, usize) -> Vec<u8>) -> (Vec<usize>, Vec<u32>) {
+        let mut offs = Vec::new();
+        let mut lens = Vec::new();
+        for y in (0..self.height).step_by(rows) {
+            let r = (y + rows).min(self.height) - y;
+            let bytes = encode(y, r);
+            lens.push(bytes.len() as u32);
+            offs.push(t.blob(bytes));
+        }
+        (offs, lens)
+    }
+
+    /// One blob per `tw`×`th` tile, in row-major tile order: `encode(tile_number, samples)`.
+    fn tile_blobs<T: Copy + Default + TileSample>(
+        &self,
+        t: &mut TiffBuilder,
+        tw: usize,
+        th: usize,
+        mut encode: impl FnMut(usize, Vec<T>) -> Vec<u8>,
+    ) -> (Vec<usize>, Vec<u32>) {
+        let mut offs = Vec::new();
+        let mut lens = Vec::new();
+        for ty in (0..self.height).step_by(th) {
+            for tx in (0..self.width).step_by(tw) {
+                let bytes = encode(offs.len(), self.tile_samples(tx, ty, tw, th));
+                lens.push(bytes.len() as u32);
+                offs.push(t.blob(bytes));
+            }
+        }
+        (offs, lens)
+    }
+
+    /// The samples of the tile at (`tx`, `ty`). Edge tiles are padded by repeating the last row
+    /// / column.
+    fn tile_samples<T: Copy + Default + TileSample>(&self, tx: usize, ty: usize, tw: usize, th: usize) -> Vec<T> {
+        let s = self.samples;
+        let mut tile = vec![T::default(); tw * th * s];
+        for y in 0..th {
+            for x in 0..tw {
+                let sy = (ty + y).min(self.height - 1);
+                let sx = (tx + x).min(self.width - 1);
+                for c in 0..s {
+                    tile[(y * tw + x) * s + c] = T::from_sample(self, self.data[(sy * self.width + sx) * s + c]);
+                }
+            }
+        }
+        tile
+    }
+
+    /// A deflated strip of `r` rows from row `y`, optionally with the horizontal-differencing
+    /// predictor applied.
+    fn deflate_strip(&self, y: usize, r: usize, predictor: u16) -> Vec<u8> {
+        use std::io::Write;
+        let n = self.width * self.samples;
+        let mut v: Vec<u16> = self.data[y * n..(y + r) * n].to_vec();
+        if predictor == 2 {
+            // Horizontal differencing on the sample values, before byte packing
+            // (the reader undoes predictor after unpacking, per row, per channel).
+            let plane = if self.samples.is_multiple_of(3) { 3 } else { 1 };
+            for row in v.chunks_mut(n) {
+                for i in (plane..row.len()).rev() {
+                    row[i] = row[i].wrapping_sub(row[i - plane]);
+                }
+            }
+        }
+        // Pack the delta'd values with the file's byte order and bit depth.
+        let bytes: Vec<u8> = match self.bits {
+            8 => v.iter().map(|&x| x as u8).collect(),
+            16 => v.iter().flat_map(|&x| if self.big_endian { x.to_be_bytes() } else { x.to_le_bytes() }).collect(),
+            _ => v.iter().flat_map(|x| x.to_le_bytes()).collect(),
+        };
+        let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        e.write_all(&bytes).expect("zlib");
+        e.finish().expect("zlib")
+    }
+
+    /// The pre-encoded JPEG XL segments as blobs.
+    fn jxl_blobs(&self, t: &mut TiffBuilder) -> (Vec<usize>, Vec<u32>) {
+        let lens = self.jxl_segments.iter().map(|j| j.len() as u32).collect();
+        let offs = self.jxl_segments.iter().map(|j| t.blob(j.clone())).collect();
+        (offs, lens)
+    }
+
+    /// Active area and default crop tags.
+    fn push_geometry_tags(&self, raw: &mut Vec<(u16, Val)>) {
         if let Some(a) = self.active_area {
             raw.push((50829, Val::Long(a.to_vec())));
         }
@@ -374,17 +393,12 @@ impl DngSpec {
         } else if let Some(size) = self.default_crop_size_only {
             raw.push((50720, Val::Long(size.to_vec())));
         }
-        if let Some(o) = &self.opcode_list2 {
-            raw.push((51009, Val::Undefined(o.clone())));
-        }
-        if let Some(l) = &self.linearization {
-            raw.push((50712, Val::Short(l.clone())));
-        }
-        raw.extend(self.raw_extra.iter().cloned());
-        let raw_ifd = t.ifd(raw);
-        // IFD0: a tiny RGB thumbnail plus the DNG metadata.
-        let thumb = t.blob(vec![128; 3 * 4]);
-        let mut ifd0: Vec<(u16, Val)> = vec![
+    }
+
+    /// IFD0's tags before the colour metadata: the thumbnail strip `thumb`, identity, orientation
+    /// and the sub-IFD `raw_ifd`.
+    fn ifd0_base_tags(&self, thumb: usize, raw_ifd: usize) -> Vec<(u16, Val)> {
+        vec![
             (254, Val::Long(vec![1])),
             (256, Val::Long(vec![2])),
             (257, Val::Long(vec![2])),
@@ -401,7 +415,11 @@ impl DngSpec {
             (330, Val::Ifds(vec![raw_ifd])),
             (50706, Val::Byte(vec![1, 4, 0, 0])),
             (50708, Val::Ascii(format!("{} {}", self.make, self.model))),
-        ];
+        ]
+    }
+
+    /// Colour matrices, white balance, exposure and the profile gain table.
+    fn push_color_tags(&self, ifd0: &mut Vec<(u16, Val)>) {
         let m = |v: &[f64; 9]| Val::SRational(v.iter().map(|&x| srat(x)).collect());
         if let Some((ill, cm)) = &self.color_matrix1 {
             ifd0.push((50721, m(cm)));
@@ -426,11 +444,39 @@ impl DngSpec {
         if let Some(m) = &self.profile_gain_table_map {
             ifd0.push((52525, Val::Undefined(m.clone())));
         }
-        ifd0.extend(self.ifd0_extra.iter().cloned());
-        let i0 = t.ifd(ifd0);
-        t.chain = vec![i0];
-        t.build()
     }
+}
+
+/// How a tile's samples are stored: raw 16-bit values, or the 8-bit samples of a lossy JPEG.
+trait TileSample {
+    fn from_sample(spec: &DngSpec, v: u16) -> Self;
+}
+
+impl TileSample for u16 {
+    fn from_sample(_: &DngSpec, v: u16) -> Self {
+        v
+    }
+}
+
+impl TileSample for u8 {
+    fn from_sample(spec: &DngSpec, v: u16) -> Self {
+        spec.sample8(v)
+    }
+}
+
+/// Strip layout tags for the blobs `offs` (lengths `lens`).
+fn push_strip_tags(raw: &mut Vec<(u16, Val)>, rows: usize, offs: Vec<usize>, lens: Vec<u32>) {
+    raw.push((278, Val::Long(vec![rows as u32])));
+    raw.push((273, Val::Blobs(offs)));
+    raw.push((279, Val::Long(lens)));
+}
+
+/// Tile layout tags for the blobs `offs` (lengths `lens`).
+fn push_tile_tags(raw: &mut Vec<(u16, Val)>, tw: usize, th: usize, offs: Vec<usize>, lens: Vec<u32>) {
+    raw.push((322, Val::Long(vec![tw as u32])));
+    raw.push((323, Val::Long(vec![th as u32])));
+    raw.push((324, Val::Blobs(offs)));
+    raw.push((325, Val::Long(lens)));
 }
 
 /// An OpcodeList2 with one GainMap over active-area rectangle `area` (top,

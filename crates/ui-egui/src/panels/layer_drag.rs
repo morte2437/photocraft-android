@@ -1,5 +1,5 @@
 use super::layers::footer_label;
-use super::*;
+use super::{Layer, LayerId, MaskKind, PhotocraftApp, Pos2, Rect, Sense, Stroke, StrokeKind, Tokens, Value, icons, json, pos2, vec2};
 
 /// Scroll the Layers panel while holding a layer drag over its top/bottom edge or past them.
 ///

@@ -1,5 +1,5 @@
 use super::doc_textures::mip_count;
-use super::*;
+use super::wgpu;
 
 /// Floor of the compositor's memory budget: enough for a viewport's pages of a dozen layers.
 pub const MIN_GPU_BUDGET: u64 = 512 << 20;

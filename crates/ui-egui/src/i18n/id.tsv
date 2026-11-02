@@ -13,18 +13,112 @@
 # letters; the trailing "…" of dialog commands is kept.
 
 # Layer Mask Display Options (the layer mask rubylith's colour and opacity)
-	Mask Options…	Opsi Mask…
-	Layer Mask Display Options…	Opsi Tampilan Mask Layer…
 
 # Channel Options and New Spot Channel (#3761)
-	Channel Color	Warna Saluran
-	Color Indicates:	Warna Menunjukkan:
-	Solidity:	Soliditas:
-	Ink Characteristics	Karakteristik Tinta
 
 # Guide layout dialog
 
 # Custom print paper (#3820)
+
+# Select and Mask dialog labels
+# Field Blur pins (#3373)
+# Counted status and panel messages
+
+
+# Layers-panel trash confirmation
+
+# Gradient Editor window, opened from the options bar's gradient swatch.
+
+# Labels added on main after this catalog (depth labels, Wayland drop, profiles, Camera Raw, Patch tool, rendering mode)
+
+# Warp grid presets (#388)
+
+
+
+
+
+
+# About ▸ Contributors / Models (credits)
+
+# Swatches panel
+# Layer Style > Blending Options (Advanced Blending)
+
+# Shared screen eyedropper and text Color Picker (#1128).
+
+# Fill dialog, layer style contours and Image Size
+
+
+
+# Layer colour labels.
+
+# Pattern Stamp tool
+
+# Painting symmetry presets.
+
+# Eyedropper Sample Size and Sample (#1649).
+
+# Color Picker warnings
+
+
+# Shared Layer Style color picker
+# File Info ▸ Camera Data (read-only EXIF fields; "Make" is the camera maker, not the verb).
+# Shared panel docking
+# Edit › Content-Aware Fill workspace
+
+
+# Smart Filter editors
+# Select and Mask view modes (#1754)
+# Select and Mask Refine Edge Brush (#2972)
+
+# Color Sampler (added with the i18n coverage repair)
+
+# History panel menu (#2966)
+# History panel › History Options… (#2966)
+# Print dialog (#2697)
+# View › Guides › New Guide… › Color
+
+# Actions panel: Load/Save Actions (.atn) and kept Photoshop steps
+
+# Actions panel: set folders, dialog toggle, Insert Stop
+# Batch / Image Processor
+
+# Native Windows printing qualification
+# PhotoCraft release checks.
+# History panel › History Brush source (#2966)
+# Bevel & Emboss shading controls.
+# Embedded Profile Mismatch: profile names beside the choices, Remember this choice
+
+# Darken / Lighten Interface (⇧⌘F1 / ⇧⌘F2)
+# Bevel & Emboss Technique.
+
+# View › Guides › right-click a guide
+
+# Image › Mode › Bitmap (#5559)
+# Free Transform: a new layer while the box is open (#5859)
+# Preferences › Performance › GPU Memory; the status bar and slow-redraw notice
+
+# DDS Options (#1327)
+
+# Color Table (.act) dialog
+
+# Graphics Adapter preference (#1885)
+
+# Styles panel: Import / Export Styles (.asl)
+# Actions: a step dialog holds a suspended recording (#7365)
+# Paragraph direction (TYPE-218-2)
+# Print preview image (#8236)
+# Color panel menu: modes, copy commands and colour ramps (#6000)
+
+# Pen draft after a refused commit (#7648)
+# Art History Brush (#213).
+
+# Egui 0.37 migration controls (Aspect Ratio, Category, Color Table, Gamma, Interpolation, Profile, Target, Units, Demosaic)
+	Mask Options…	Opsi Mask…
+	Layer Mask Display Options…	Opsi Tampilan Mask Layer…
+	Channel Color	Warna Saluran
+	Color Indicates:	Warna Menunjukkan:
+	Solidity:	Soliditas:
+	Ink Characteristics	Karakteristik Tinta
 	Paper Width	Lebar kertas
 	Paper Height	Tinggi kertas
 	Rows	Baris
@@ -43,7 +137,6 @@
 	5 Columns, 3 Rows	5 kolom, 3 baris
 	8 Columns	8 kolom
 	12 Columns	12 kolom
-
 	File	Berkas
 	Edit	Edit
 	Image	Gambar
@@ -435,6 +528,7 @@
 	Intersect Shape Areas	Irisan Area Bentuk
 	Exclude Overlapping Shapes	Kecualikan Bentuk yang Tumpang Tindih
 	Merge Shape Components	Gabungkan Komponen Bentuk
+	Path operations	Operasi path
 	Align	Rata
 	Top Edges	Tepi Atas
 	Vertical Centers	Tengah Vertikal
@@ -514,7 +608,6 @@
 	Color Range…	Rentang Warna…
 	Focus Area…	Area Fokus…
 	Select and Mask…	Seleksi dan Mask…
-# Select and Mask dialog labels
 	Smart Radius	Radius Cerdas
 	Shift Edge	Geser Tepi
 	Decontaminate	Dekontaminasi
@@ -541,7 +634,6 @@
 	Blur	Blur
 	Blur Gallery	Galeri Blur
 	Field Blur…	Field Blur…
-# Field Blur pins (#3373)
 	No pin selected	Tidak ada pin yang dipilih
 	Click the image to add a pin; drag a pin to move it, or its ring to change its blur. Delete removes the selected pin.	Klik gambar untuk menambah pin; seret pin untuk memindahkannya, atau cincinnya untuk mengubah blur. Delete menghapus pin yang dipilih.
 	Drag the handles on the outline to resize and turn it, the square to round its corners, and the dots inside to set where the blur starts.	Seret pegangan pada garis luar untuk mengubah ukuran dan memutarnya, kotak untuk membulatkan sudutnya, dan titik di dalam untuk menentukan di mana blur dimulai.
@@ -805,7 +897,6 @@
 	Statistics…	Statistik…
 	Refine Strokes	Goresan penyempurnaan
 	Edits	Suntingan
-# Counted status and panel messages
 @plural	Exported {n} swatch to {file}|Exported {n} swatches to {file}	{n} swatch diekspor ke {file}
 @plural	Imported {n} swatch from {file}|Imported {n} swatches from {file}	{n} swatch diimpor dari {file}
 @plural	Imported {n} brush from {group}|Imported {n} brushes from {group}	{n} kuas diimpor dari {group}
@@ -820,7 +911,6 @@
 @plural	{n} slice|{n} slices	{n} slice
 @plural	{warning} (+{n} more brush preset warning)|{warning} (+{n} more brush preset warnings)	{warning} (+{n} peringatan preset kuas lainnya)
 @plural	{what} with {n} warning|{what} with {n} warnings	{what} dengan {n} peringatan
-
 @plural	{n} item|{n} items	{n} item
 	Auto	Otomatis
 	(print to the printer)	(cetak ke printer)
@@ -836,6 +926,9 @@
 	Add Layer Mask	Tambah Mask Layer
 	Add Stop	Tambah Stop
 	Add a layer style	Tambah gaya layer
+	Move effect up	Pindahkan efek ke atas
+	Move effect down	Pindahkan efek ke bawah
+	Delete effect	Hapus efek
 	Add a mask  (from the selection; {key} inverts)	Tambah mask  (dari seleksi; {key} membalik)
 	Add an adjustment	Tambah penyesuaian
 	Add disk	Tambah disk
@@ -1061,8 +1154,6 @@
 	Delete current channel	Hapus channel saat ini
 	Delete current state	Hapus kondisi saat ini
 	Delete effect layer	Hapus layer efek
-
-# Layers-panel trash confirmation
 	Delete layer ‘{name}’?	Hapus layer ‘{name}’?
 	Delete {count} layers? {names}	Hapus {count} layer? {names}
 	Delete layer?	Hapus layer?
@@ -1071,7 +1162,6 @@
 	Missing delete command	Perintah hapus tidak tersedia
 	Invalid delete command	Perintah hapus tidak valid
 	Layer deleted, but confirmation preference could not be saved: {error}	Layer dihapus, tetapi preferensi konfirmasi tidak dapat disimpan: {error}
-
 	Delete layer	Hapus layer
 	Delete layer comp	Hapus layer comp
 	Delete note	Hapus catatan
@@ -2162,7 +2252,6 @@
 	Align with layer	Sejajarkan dengan layer
 	Reset Alignment	Reset Penyelarasan
 	Centre the gradient (offset 0, 0)	Tengahkan gradien (offset 0, 0)
-# Gradient Editor window, opened from the options bar's gradient swatch.
 	Gradient Editor	Editor Gradien
 	Gradient picker	Pemilih gradien
 	Save As Preset	Simpan sebagai Preset
@@ -2678,8 +2767,6 @@
 	Select Bottom Layer	Pilih Layer Terbawah
 	Add Layer Above to Selection	Tambah Layer di Atas ke Seleksi
 	Add Layer Below to Selection	Tambah Layer di Bawah ke Seleksi
-
-# Labels added on main after this catalog (depth labels, Wayland drop, profiles, Camera Raw, Patch tool, rendering mode)
 	8 bit	8 bit (bilangan bulat)
 	Integer	Bilangan bulat
 	16 bit	16 bit (bilangan bulat)
@@ -2739,21 +2826,15 @@ cameraRaw	Blending	Pembauran
 	GPU Backend	Backend GPU
 	Details	Detail
 	Rendering mode	Mode rendering
-
-# Warp grid presets (#388)
 	3 x 3	3 × 3
 	4 x 4	4 × 4
 	5 x 5	5 × 5
 	Grid:	Kisi-kisi:
 	Edit Type	Edit Teks
-
-
 	New Style…	Gaya Baru…
 	Style {name} saved	Gaya {name} disimpan
-
 	Create new style (from the selected type)	Buat gaya baru (dari teks terpilih)
 	Create new style from the selected layer	Buat gaya baru dari lapisan terpilih
-
 	Make Default	Jadikan Default
 	Reset to Default	Atur Ulang ke Default
 	Full-resolution preview unavailable	Pratinjau resolusi penuh tidak tersedia
@@ -2782,9 +2863,6 @@ cameraRaw	Blending	Pembauran
 	Magnetic Lasso Tool	Alat Magnetic Lasso
 	Frequency	Frekuensi
 	Use tablet pressure to change pen width	Gunakan tekanan tablet untuk mengubah lebar pena
-
-
-# About ▸ Contributors / Models (credits, craftrules standards/contributors.md)
 	About	Tentang
 	Contributors	Kontributor
 	Models	Model
@@ -2815,8 +2893,6 @@ cameraRaw	Blending	Pembauran
 	% of all commits	% dari semua commit
 	Lines +/−	Baris +/−
 	@{login}: {prs} PRs, {commits} commits, +{added} / −{deleted} lines (Δ {delta}), +{binAdded} / −{binDeleted} binary assets, {first} – {last}	@{login}: {prs} PR, {commits} commit, +{added} / −{deleted} baris (Δ {delta}), +{binAdded} / −{binDeleted} berkas biner, {first} – {last}
-
-# Swatches panel
 	Create new swatch	Buat swatch baru
 	New Swatch…	Swatch Baru…
 	New Swatch Group…	Grup Swatch Baru…
@@ -2826,13 +2902,12 @@ cameraRaw	Blending	Pembauran
 	Export Swatches for Exchange…	Ekspor Swatch untuk Pertukaran…
 	Reset Swatches	Atur Ulang Swatch
 	Add to Swatches	Tambahkan ke Swatch
-# Layer Style > Blending Options (Advanced Blending)
 	Blend If:	Blend If:
+	Current Layer:	Layer Saat Ini:
+	Underlying Layer:	Layer di Bawah:
 	Channels:	Channel:
 	Knockout	Knockout
 	Apply At Canvas Bounds	Terapkan efek di batas kanvas
-
-# Shared screen eyedropper and text Color Picker (#1128).
 	Color Picker (Text Color)	Pemilih Warna (Warna Teks)
 	Color Picker ({name})	Pemilih Warna ({name})
 	Color Picker (Fill Color)	Pemilih Warna (Warna Isian)
@@ -2849,8 +2924,6 @@ cameraRaw	Blending	Pembauran
 	Show/Hide Panels	Tampilkan/Sembunyikan Panel
 	Could not open	Tidak dapat membuka
 	{path}: the path is not valid Unicode; rename the file and open it again.	{path}: jalur bukan Unicode yang valid; ganti nama file lalu buka lagi.
-
-# Fill dialog, layer style contours and Image Size
 	Contents:	Isi:
 	Custom Pattern:	Pola Kustom:
 	Foreground Color	Warna Foreground
@@ -2877,14 +2950,12 @@ cameraRaw	Blending	Pembauran
 	Rolling Slope - Descending	Lereng Bergelombang - Menurun
 	Rounded Steps	Tangga Bulat
 	Sawtooth 1	Gigi Gergaji 1
-
 	Red Eye Tool	Alat Mata Merah
 	Pupil Size	Ukuran pupil
 	Darken Amount	Jumlah penggelapan
 	Click a red pupil to neutralize it	Klik pupil merah untuk memperbaikinya
 	open source	sumber terbuka
 	…and {n} more	…dan {n} lagi
-
 	Eyedroppers:	Eyedropper:
 	Set Black Point	Atur Titik Hitam
 	Set Neutral Gray Point	Atur Titik Abu-abu Netral
@@ -2893,8 +2964,6 @@ cameraRaw	Blending	Pembauran
 	Selection Preview:	Pratinjau Seleksi:
 	Black Matte	Latar Hitam
 	White Matte	Latar Putih
-
-# Layer colour labels.
 	Seafoam	Busa Laut
 	Indigo	Nila
 	Fuchsia	Fuksia
@@ -2914,20 +2983,14 @@ fontWeight	Bold	Tebal
 fontWeight	ExtraBold	Ekstra Tebal
 fontWeight	Black	Sangat Tebal
 fontWeight	Italic	Miring
-
-# Pattern Stamp tool
 	Pattern Stamp Tool	Alat Stempel Pola
 	Impressionist	Impresionis
 	Rotate View Tool	Alat Putar Tampilan
 	Reset View	Atur Ulang Tampilan
 	Drag around the centre to rotate the view  ·  Shift constrains to 15°	Seret di sekitar pusat untuk memutar tampilan  ·  Shift membatasi ke 15°
-
-# Painting symmetry presets.
 	Dual Axis	Sumbu Ganda
 	Diagonal	Diagonal
 	Transform Symmetry	Transformasi Simetri
-
-# Eyedropper Sample Size and Sample (#1649).
 	Point Sample	Sampel Titik
 	3 by 3 Average	Rata-rata 3 × 3
 	5 by 5 Average	Rata-rata 5 × 5
@@ -2939,15 +3002,12 @@ fontWeight	Italic	Miring
 	All Layers No Adjustments	Semua Layer Tanpa Penyesuaian
 	Current & Below No Adjustments	Saat Ini & Di Bawahnya Tanpa Penyesuaian
 	Show Sampling Ring	Tampilkan Cincin Sampel
-
-# Color Picker warnings
 	Out of gamut for printing: click for the nearest printable colour	Di luar gamut cetak: klik untuk warna cetak terdekat
 	Not a web colour: click for the nearest web colour	Bukan warna web: klik untuk warna web terdekat
 	Color to Alpha…	Warna ke Alpha…
 	Transparency Threshold	Ambang transparansi
 	Opacity Threshold	Ambang opasitas
 	PhotoCraft — Screen Color Picker	PhotoCraft — Pemilih Warna Layar
-
 	Rasterize svg groups deeper than	Rasterisasi grup SVG yang lebih dalam dari ini
 	0 turns this threshold off; SVG groups nested deeper than 100 levels are always rasterized.	0 menonaktifkan ambang ini; grup SVG yang bersarang lebih dari 100 tingkat selalu dirasterisasi.
 	Rule of Thirds	Aturan Sepertiga
@@ -2961,8 +3021,6 @@ fontWeight	Italic	Miring
 	Cycle Orientation	Ganti Orientasi
 	Set the overlay options for the Crop tool	Atur opsi overlay untuk alat Crop
 	Alt-click went to the desktop, which moves windows with Alt-drag. Set its window-move key to Super, or latch Alt in Window › Modifier Keys.	Alt-klik diambil oleh desktop, yang memindahkan jendela dengan Alt-seret. Atur tombol pemindah jendelanya ke Super, atau kunci Alt di Jendela › Tombol Pengubah.
-
-# Shared Layer Style color picker
 	Color Picker (Layer Style Color)	Pemilih Warna (Warna Gaya Lapisan)
 	Auto Hide Notifications	Sembunyikan notifikasi secara otomatis
 	Notification Duration (seconds)	Durasi notifikasi (detik)
@@ -3038,7 +3096,6 @@ fontWeight	Italic	Miring
 	Appearance Settings…	Pengaturan Tampilan…
 	Add to favorites	Tambahkan ke favorit
 	Remove from favorites	Hapus dari favorit
-# File Info ▸ Camera Data (read-only EXIF fields; "Make" is the camera maker, not the verb).
 cameraData	Make	Merek
 cameraData	Model	Model
 cameraData	Date Taken	Tanggal Diambil
@@ -3048,7 +3105,6 @@ cameraData	ISO Speed	Sensitivitas ISO
 cameraData	Focal Length	Panjang Fokal
 cameraData	Focal Length (35 mm)	Panjang Fokal (35 mm)
 cameraData	Lens	Lensa
-# Shared panel docking
 	Activate Panel	Aktifkan Panel
 	Change Panel Group	Ubah Grup Panel
 	Change Panel Layout	Ubah Tata Letak Panel
@@ -3092,7 +3148,6 @@ cameraData	Lens	Lensa
 	Snap to Origin	Jepret ke Titik Asal
 	Search settings…	Cari pengaturan…
 	No matching settings	Tidak ada pengaturan yang cocok
-# Edit › Content-Aware Fill workspace
 	Sampling Brush Tool	Alat Kuas Pengambilan Sampel
 	Sampling Area Overlay	Hamparan Area Pengambilan Sampel
 	Show Sampling Area	Tampilkan Area Pengambilan Sampel
@@ -3110,7 +3165,6 @@ cameraData	Lens	Lensa
 	Output To	Keluaran Ke
 	Duplicate Layer	Duplikat Layer
 	Contract	Ciutkan
-
 	Animation Options	Opsi Animasi
 	Entire Document	Seluruh Dokumen
 	Filter Options	Opsi Filter
@@ -3128,8 +3182,6 @@ cameraData	Lens	Lensa
 	Add “copy” to Copied Layers and Groups	Tambahkan “salinan” ke Lapisan dan Grup yang Disalin
 	Preview on canvas when reordering layers	Pratinjau pada kanvas saat mengurutkan ulang lapisan
 	Show layer mask badges	Tampilkan Lencana Masker Lapisan
-
-# Smart Filter editors
 	Blending Options ({filter})	Opsi Pencampuran ({filter})
 	Hide the layer's effects and Smart Filters  ({key}-click: all layers)	Sembunyikan efek lapisan dan Filter Cerdas  (klik-{key}: semua lapisan)
 	Show the layer's effects and Smart Filters  ({key}-click: all layers)	Tampilkan efek lapisan dan Filter Cerdas  (klik-{key}: semua lapisan)
@@ -3162,7 +3214,6 @@ curves	Smooth	Haluskan
 	Fix the red plane first: its corners must form a convex quad	Perbaiki bidang merah dulu: sudut-sudutnya harus membentuk segi empat cembung
 	Alt-click a plane to set the clone source	Alt-klik sebuah bidang untuk menetapkan sumber kloning
 	Too many clone strokes: apply Vanishing Point first	Terlalu banyak goresan kloning: terapkan Vanishing Point terlebih dahulu
-# Select and Mask view modes (#1754)
 	Onion Skin	Kulit Bawang
 	Marching Ants	Semut Berbaris
 	On Black	Di Atas Hitam
@@ -3171,7 +3222,6 @@ curves	Smooth	Haluskan
 	Show Edge	Tampilkan Tepi
 	Show Original	Tampilkan Asli
 	F cycles the views; hold X to see the image	F berganti tampilan; tahan X untuk melihat gambar
-# Select and Mask Refine Edge Brush (#2972)
 	Refine Edge Brush (R)	Kuas Perhalus Tepi (R)
 	Expand Detection Area	Perluas Area Deteksi
 	Restore Original Edge	Pulihkan Tepi Asli
@@ -3179,19 +3229,13 @@ curves	Smooth	Haluskan
 	Clear Brush Strokes	Hapus Goresan Kuas
 	Show rulers	Tampilkan Penggaris
 	Presentation	Presentasi
-
-# Color Sampler (added with the i18n coverage repair)
 	Click to place · Alt-click or drag off-canvas to remove	Klik untuk menempatkan · Alt-klik atau seret ke luar kanvas untuk menghapus
 	No document open	Tidak ada dokumen yang terbuka
 	{n} of {max} sample points	{n} dari {max} titik sampel
-
-# History panel menu (#2966)
 	New Snapshot…	Snapshot Baru…
 	History Options…	Opsi Riwayat…
-# History panel › History Options… (#2966)
 	Allow Non-Linear History	Izinkan Riwayat Non-Linier
 	Make Layer Visibility Changes Undoable	Perubahan Visibilitas Layer Dapat Diurungkan
-# Print dialog (#2697)
 	Emulsion Down	Emulsi di Bawah
 	Functions	Fungsi
 	Print Resolution:	Resolusi Cetak:
@@ -3203,7 +3247,6 @@ curves	Smooth	Haluskan
 	Apply mask to layer before removing?	Terapkan masker ke layer sebelum dihapus?
 	The layer or its mask changed. Drag the mask onto the Trash again.	Layer atau maskernya berubah. Seret masker ke Tempat Sampah lagi.
 	Delete the vector mask?	Hapus masker vektor?
-# View › Guides › New Guide… › Color
 	Light Blue	Biru Muda
 	Light Red	Merah Terang
 	Medium Blue	Biru Sedang
@@ -3224,8 +3267,6 @@ curves	Smooth	Haluskan
 	Clear Brush Controls	Hapus Kontrol Kuas
 	Reset All Locked Settings	Atur Ulang Semua Pengaturan Terkunci
 	Copy Texture to Other Tools	Salin Tekstur ke Alat Lain
-
-# Actions panel: Load/Save Actions (.atn) and kept Photoshop steps
 	Load Actions…	Muat Tindakan…
 	Save Actions…	Simpan Tindakan…
 	New Action…	Tindakan Baru…
@@ -3237,10 +3278,8 @@ curves	Smooth	Haluskan
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} langkah belum memiliki padanan di PhotoCraft
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	{n} tindakan disimpan ke {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	{n} langkah tanpa padanan Photoshop dilewati
-
 	File Naming	Penamaan Berkas
 	Starting serial	Nomor urut awal
-# Actions panel: set folders, dialog toggle, Insert Stop
 	Insert Stop…	Sisipkan Berhenti…
 	Save Set…	Simpan Set…
 	Message:	Pesan:
@@ -3252,11 +3291,8 @@ curves	Smooth	Haluskan
 @plural	{n} action|{n} actions	{n} tindakan
 	Background (Default)	Background (Default)
 	Content-Aware Fill	Isi Content-Aware
-# Batch / Image Processor
 	Include All Subfolders	Sertakan semua subfolder
 	Auto Add/Delete	Tambah/Hapus Otomatis
-
-# Native Windows printing qualification
 	Don't also tick Mirror Image in Print Settings…: the two flips cancel out.	Jangan aktifkan juga Gambar Cermin di Pengaturan Cetak: kedua pembalikan saling meniadakan.
 	Print Settings…	Pengaturan Cetak…
 	Remember to turn off the printer's own colour management in Print Settings…	Ingat untuk menonaktifkan pengelolaan warna milik printer di Pengaturan Cetak…
@@ -3301,48 +3337,30 @@ curves	Smooth	Haluskan
 	Could not write {name}: {error}	Tidak dapat menulis {name}: {error}
 	Kept {name}: written by another application	{name} dipertahankan: ditulis oleh aplikasi lain
 	Shadow Tint	Rona bayangan
-# PhotoCraft release checks.
 	Check for Updates…	Periksa Pembaruan…
-	PhotoCraft Updates	Pembaruan PhotoCraft
-	Checking for updates…	Memeriksa pembaruan…
 	Open the release page to choose an installer for your system.	Buka halaman rilis untuk memilih penginstal bagi sistem Anda.
-	Open Download Page	Buka Halaman Unduhan
-	PhotoCraft is up to date.	PhotoCraft sudah versi terbaru.
-	Could not check for updates.	Tidak dapat memeriksa pembaruan.
-	Updates have not been checked yet.	Pembaruan belum diperiksa.
-	Check Again	Periksa Lagi
 	Automatically Check for Updates	Periksa Pembaruan Secara Otomatis
-	Installed version: {version}	Versi terpasang: {version}
-	PhotoCraft {version} is available.	PhotoCraft {version} tersedia.
-# History panel › History Brush source (#2966)
 	Paints from the History panel's source state	Melukis dari status sumber panel Riwayat
 	Sets the source for the history brush	Menetapkan sumber untuk kuas riwayat
-# Bevel & Emboss shading controls.
 	Highlight Mode	Mode Sorotan
 	Highlight Color	Warna Sorotan
 	Highlight Opacity	Opasitas Sorotan
 	Shadow Mode	Mode Bayangan
 	Shadow Color	Warna Bayangan
 	Shadow Opacity	Opasitas Bayangan
-# Embedded Profile Mismatch: profile names beside the choices, Remember this choice
 	Use the embedded profile ({profile})	Pakai profil tertanam ({profile})
 	Convert to the working space ({profile})	Konversi ke working space ({profile})
 	Remember this choice for future images	Ingat pilihan ini untuk gambar berikutnya
 	Turn the prompt back on with Ask On Mismatch in Edit › Color Settings.	Aktifkan lagi pertanyaan ini lewat Ask On Mismatch di Edit › Pengaturan Warna.
 	Button Mode	Mode tombol
 	Button Mode On	Mode tombol aktif
-
-# Darken / Lighten Interface (⇧⌘F1 / ⇧⌘F2)
 	Darken Interface	Gelapkan Antarmuka
 	Lighten Interface	Cerahkan Antarmuka
-# Bevel & Emboss Technique.
 	Technique	Teknik
 	Chisel Hard	Pahat Keras
 	Chisel Soft	Pahat Lembut
 	Open color-less EXR as ACEScg	Buka EXR tanpa informasi warna sebagai ACEScg
 	Do not append "copy" to filename when saving a copy	Jangan tambahkan "copy" ke nama file saat menyimpan salinan
-
-# View › Guides › right-click a guide
 	Edit Selected Guides	Edit Panduan Terpilih
 	Clear Selected Guides	Hapus Panduan Terpilih
 	Bicubic Automatic	Bicubic otomatis
@@ -3368,8 +3386,6 @@ curves	Smooth	Haluskan
 	{set} (modified)	{set} (diubah)
 	Random	Acak
 	Show file name in title	Tampilkan nama file di judul
-
-# Image › Mode › Bitmap (#5559)
 	50% Threshold	Threshold 50%
 	Pattern Dither	Dither Pola
 	Diffusion Dither	Dither Difusi
@@ -3388,10 +3404,8 @@ curves	Smooth	Haluskan
 	Undo Changes	Batalkan Perubahan
 	{shortcut} is reserved by the system and can't be assigned.	{shortcut} dicadangkan oleh sistem dan tidak dapat ditetapkan.
 	Low-Latency Drawing (vsync off, applies at next launch)	Menggambar latensi rendah (tanpa vsync, berlaku saat peluncuran berikutnya)
-# Free Transform: a new layer while the box is open (#5859)
 	Free Transform is still being applied; try again when it has finished.	Transformasi Bebas masih diterapkan; coba lagi setelah selesai.
 	The transform couldn't be applied.	Transformasi tidak dapat diterapkan.
-# Preferences › Performance › GPU Memory; the status bar and slow-redraw notice
 	Its layers need {needed} of GPU memory; the budget leaves them {budget}.	Layer-nya membutuhkan {needed} memori GPU; anggaran menyisakan {budget}.
 	Set GPU Memory in Preferences › Performance to what your graphics card can hold, at most 3/8 of its memory. Automatic follows Memory Usage, within a quarter of this computer's memory and 3/8 of the card's, and doesn't count the document against a card whose memory is known. The status bar shows GPU Memory Full while they don't fit.	Atur Memori GPU di Preferensi › Performa sesuai kapasitas kartu grafis Anda, paling banyak 3/8 memorinya. Otomatis mengikuti Pemakaian memori, dalam seperempat memori komputer ini dan 3/8 memori kartu, dan tidak membebankan dokumen pada kartu yang memorinya diketahui. Selama belum muat, bilah status menampilkan Memori GPU Penuh.
 	GPU Memory Full	Memori GPU Penuh
@@ -3418,8 +3432,6 @@ curves	Smooth	Haluskan
 	The fastest and the softest, with colour fringing on fine detail.	Paling cepat dan paling lembut, dengan pinggiran warna pada detail halus.
 	“{name}” already exists. Replace it?	“{name}” sudah ada. Ganti?
 	The name in the save dialog was “{name}”.	Nama di dialog simpan adalah “{name}”.
-	Move Up	Pindah ke atas
-	Move Down	Pindah ke bawah
 	Previous Brush	Kuas sebelumnya
 	Next Brush	Kuas berikutnya
 	First Brush	Kuas pertama
@@ -3434,18 +3446,13 @@ curves	Smooth	Haluskan
 	Use	Gunakan
 	In Front	Di Depan
 	Behind	Di Belakang
-
-# DDS Options (#1327)
 	DDS Options	Opsi DDS
 	Compression	Kompresi
 	Generate Mipmaps	Buat mipmap
-
-# Color Table (.act) dialog
 	There is no color table to save.	Tidak ada tabel warna untuk disimpan.
 @plural	Saved {n} color to {file}|Saved {n} colors to {file}	{n} warna disimpan ke {file}
-
-# Graphics Adapter preference (#1885)
 	GPU adapter	Adaptor GPU
+smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded source; format-specific features may change.	Konten AI/PDF/EPS akan diedit sebagai SVG. Menyimpan akan mengganti sumber tersemat; fitur khusus format mungkin berubah.
 
 # Styles panel: Import / Export Styles (.asl)
 	Import Styles…	Impor Gaya…
@@ -3454,7 +3461,6 @@ curves	Smooth	Haluskan
 	{file} is not a style library (.asl)	{file} bukan pustaka gaya (.asl)
 @plural	Imported {n} style from {file}|Imported {n} styles from {file}	{n} gaya diimpor dari {file}
 @plural	Exported {n} style to {file}|Exported {n} styles to {file}	{n} gaya diekspor ke {file}
-# Actions: a step dialog holds a suspended recording (#7365)
 	Confirm or cancel the open action step dialog first	Konfirmasi atau batalkan dulu dialog langkah tindakan yang terbuka
 	Pro Medium Gray	Pro Abu-abu Sedang
 	Solarized	Solarized
@@ -3463,14 +3469,11 @@ curves	Smooth	Haluskan
 	Pro Light	Pro Terang
 	Resize Windows to Fit	Ubah ukuran jendela agar pas
 	EXR	EXR
-# Paragraph direction (TYPE-218-2)
 	Automatic paragraph direction	Arah paragraf otomatis
 	Left-to-right paragraph direction	Arah paragraf kiri ke kanan
 	Right-to-left paragraph direction	Arah paragraf kanan ke kiri
 	Not rendered: this adjustment ({key}) is kept as imported.	Tidak dirender: penyesuaian ini ({key}) disimpan seperti saat diimpor.
-# Print preview image (#8236)
 	Print preview image	Print preview image
-# Color panel menu: modes, copy commands and colour ramps (#6000)
 	Hue Cube	Kubus Hue
 	Brightness Cube	Kubus Kecerahan
 	Color Wheel	Roda Warna
@@ -3486,7 +3489,8 @@ curves	Smooth	Haluskan
 	Grayscale Ramp	Gradasi Grayscale
 	Current Colors	Warna Saat Ini
 	Make Ramp Web Safe	Jadikan Gradasi Aman untuk Web
-# Art History Brush (#213).
+	The path was kept as the Work Path	Path dipertahankan sebagai Work Path
+	The path was discarded	Path dibuang
 	Art History Brush Tool	Alat Kuas riwayat artistik
 	Tight Short	Rapet pendek
 	Tight Medium	Rapet sedang
@@ -3498,8 +3502,6 @@ curves	Smooth	Haluskan
 	Loose Curl	Ikal longgar
 	Area	Area
 	Stylized dabs from a history state	Cap bergaya dari sebuah keadaan riwayat
-
-# Egui 0.37 migration controls (Aspect Ratio, Category, Color Table, Gamma, Interpolation, Profile, Target, Units, Demosaic)
 	Color Table	Tabel Warna
 	Gamma	Gamma
 	Profile	Profil
@@ -3507,3 +3509,31 @@ curves	Smooth	Haluskan
 	Font size presets	Preset ukuran font
 	Leading presets	Preset leading
 	Tracking presets	Preset tracking
+	Invalid numeric entry. An integer between {min}% and {max}% is required. Previous value was inserted.	Entri numerik tidak valid. Diperlukan bilangan bulat antara {min}% dan {max}%. Nilai sebelumnya telah disisipkan.
+	Clear Selection	Hapus Seleksi
+	Color Aware	Berbasis Warna
+	Decontaminate Colors	Dekontaminasi Warna
+	Edge Detection	Deteksi Tepi
+	Global Refinements	Penyempurnaan Global
+	High Quality Preview	Pratinjau Kualitas Tinggi
+	Object Aware	Berbasis Objek
+	Real-Time Refinement	Penyempurnaan Waktu Nyata
+	Refine Edge Brush Tool	Alat Kuas Perhalus Tepi
+	Refine Hair	Perhalus Rambut
+	Refine Mode	Mode Penyempurnaan
+	Remember Settings	Ingat Pengaturan
+	View Mode	Mode Tampilan
+	Object Aware needs a segmentation model, which isn't available yet	Berbasis Objek memerlukan model segmentasi, yang belum tersedia
+	Refine Hair needs hair detection, which isn't available yet	Perhalus Rambut memerlukan deteksi rambut, yang belum tersedia
+	Select and Mask was closed: its document is no longer the active one	Seleksi dan Mask ditutup: dokumennya tidak lagi aktif
+	Select and Mask was closed: another layer was selected	Seleksi dan Mask ditutup: layer lain dipilih
+	Select Layer Under Cursor	Pilih Lapisan di Bawah Kursor
+
+# Shape Fill/Stroke popover and colour swatches opening the Color Picker
+	Color Picker	Pemilih Warna
+	Recently Used Colors	Warna yang Baru Digunakan
+	Stop Color	Warna Titik
+	Shapes can't use patterns yet	Bentuk belum dapat memakai pola
+	Solid Color	Warna Solid
+	Tint Color	Warna Tint
+	Edit Brush…	Edit Kuas…

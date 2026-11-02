@@ -148,7 +148,8 @@ fn save_for_recovery(app: &mut PhotocraftApp) -> Result<(), String> {
 /// path, record why, and tell the user. Documents are untouched.
 pub fn fall_back(app: &mut PhotocraftApp, fault: &photocraft_gpu::Fault) {
     let Some(gpu) = app.gpu.take() else { return };
-    log::error!("{fault}; using the CPU renderer");
+    // The GPU canvas is gone (that's this error); the switch to the CPU is `render_path`'s line.
+    log::error!("{fault}; GPU canvas dropped");
     gpu.release();
     app.gpu_fault = Some(fault.clone());
     // Canvas caches pointed at GPU textures: rebuild them as egui textures.
@@ -156,7 +157,7 @@ pub fn fall_back(app: &mut PhotocraftApp, fault: &photocraft_gpu::Fault) {
     app.proxy_uploaded = None;
     app.prefs_rt.gpu_style = None;
     app.perf.gpu = false;
-    app.perf.gpu_fallback = Some(fault.to_string());
+    crate::render_path::note_app(app, Some(crate::render_path::CpuReason::from_fault(fault)));
     // The CPU canvas has no GPU memory budget: GPU Memory Full no longer applies.
     app.perf.gpu_layer_fit = None;
     app.perf.gpu_info.canvas = "cpu".into();
@@ -221,7 +222,7 @@ fn retry_now(app: &mut PhotocraftApp) -> bool {
     // The CPU canvas's egui textures: rebuild every view on the GPU.
     app.canvases.clear();
     app.proxy_uploaded = None;
-    app.perf.gpu_fallback = None;
+    crate::render_path::note_app(app, None);
     app.perf.gpu_info.lost = None;
     app.ui.status = tl!("GPU acceleration resumed.").to_string();
     app.ui.status_error = false;

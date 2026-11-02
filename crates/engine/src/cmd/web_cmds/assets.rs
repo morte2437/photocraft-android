@@ -1,6 +1,6 @@
 use super::optimizer::{optimize, web_document};
 use super::settings::{WebFormat, WebMetadata, WebSettings};
-use super::*;
+use super::{Dither, DocId, Document, EngineError, LayerContent, LayerId, Result, Session, Value, is_windows_device_name, join, json, other, stem, write_file};
 
 // ---------- Generate › Image Assets ----------
 

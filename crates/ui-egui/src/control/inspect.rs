@@ -37,10 +37,31 @@ pub fn inspect(app: &PhotocraftApp, ctx: &egui::Context) -> Value {
         "strokeEditor": app.ui.stroke_editor,
         "magnetic": app.ui.magnetic,
         "textEdit": app.ui.text_edit,
+        // The paragraph box's overflow flag (set by the overlay each frame): agents
+        // learn the overflow without a screen; never persisted (serde skip). Gated on the
+        // session: the flag is a per-frame snapshot, and an `ui.inspect` running between the
+        // frame that ended the edit and the one that resets the flag would otherwise report
+        // overflow beside `"textEdit": null`.
+        "typeBoxOverflow": app.ui.text_edit.is_some() && app.ui.type_box_overflow,
         "typeTransform": app.ui.type_transform,
         "camTransform": app.ui.cam_transform,
         "layerMenu": app.ui.layer_menu,
         "layerPicker": app.ui.layer_picker,
+        "brushModeMenu": app.ui.brush_mode_menu.map(|pos| {
+            use crate::brush_mode_menu as m;
+            let tool = app.ui.tool;
+            let current = m::current(app, tool);
+            json!({
+                "pos": pos,
+                "tool": tool,
+                "mode": current.and_then(m::Item::label),
+                "choices": m::labels(tool),
+                "items": m::items(tool).into_iter().map(|i| match i.label() {
+                    Some(label) => json!({"label": label, "enabled": m::enabled(app, i), "checked": Some(i) == current}),
+                    None => json!({"separator": true}),
+                }).collect::<Vec<_>>(),
+            })
+        }),
         "brushPicker": app.ui.brush_picker.map(|pos| json!({
             "pos": pos,
             // The picker's content size once its corner grip was dragged (null: the default).
@@ -88,7 +109,13 @@ pub fn inspect(app: &PhotocraftApp, ctx: &egui::Context) -> Value {
         "frame": app.frame,
         "session": photocraft_engine::inspect::session(&app.session),
         "document": app.session.active().map(photocraft_engine::inspect::document),
-        "perf": {"fps": app.fps, "timings": app.perf, "strokeTrace": app.stroke_trace.last},
+        "perf": {
+            "fps": app.fps,
+            "timings": app.perf,
+            "strokeTrace": app.stroke_trace.last,
+            "renderPath": crate::render_path::inspect(app),
+            "slowFrames": app.slow_frames,
+        },
         "brush": {"size": app.session.tools.brush.size, "hardness": app.session.tools.brush.hardness, "opacity": app.session.tools.brush.opacity},
         "distort": app.distort.describe(),
         "jobs": crate::jobs_ui::inspect(app),

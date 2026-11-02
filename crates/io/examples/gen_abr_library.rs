@@ -13,7 +13,7 @@
 //! `--raw` store tips uncompressed (bigger files). Each file stays under the reader's decoded cap (1 GiB; 512 MiB on 32-bit).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use photocraft_paint::procedural::*;
+use photocraft_paint::procedural::{bristle_tip, chalk_tip, charcoal_tip, grass_tip, leaf_tip, rake_tip, spatter_tip, sponge_tip, star_tip};
 use photocraft_paint::tile::GrayTile;
 use photocraft_psd::abr::{AbrSample, MAX_TOTAL_BYTES, write_v6};
 use photocraft_psd::descriptor::{Descriptor, UnicodeString, Value};

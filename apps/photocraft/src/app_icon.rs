@@ -15,7 +15,7 @@
 //! be stamped on the shortcut, or the taskbar would stop matching the two.
 
 /// Window, taskbar and (when running unbundled) Dock icon. macOS gets the padded 1024 px render
-/// on Apple's icon grid; elsewhere the tighter 256 px hicolor render reads better at small sizes.
+/// on Apple's icon grid; elsewhere the 256 px hicolor render of the full tile.
 pub fn window_icon() -> egui::IconData {
     match eframe::icon_data::from_png_bytes(PNG) {
         Ok(icon) => icon,
@@ -106,6 +106,16 @@ mod tests {
         assert!(icon.width >= 256 && icon.width == icon.height, "{}x{}", icon.width, icon.height);
         assert_eq!(icon.rgba.len(), icon.width as usize * icon.height as usize * 4);
         assert!(icon.rgba.chunks(4).any(|p| p[3] > 0), "the icon isn't blank");
+    }
+
+    #[test]
+    fn windows_and_linux_icons_keep_the_round_corners() {
+        // rx=112 of 512 leaves (10, 10) of a 256 px render transparent; the old crop filled it (#4478).
+        let png = include_bytes!("../../../assets/app-icon/hicolor/256x256/apps/ai.storyteller.photocraft.png");
+        let icon = eframe::icon_data::from_png_bytes(png).unwrap();
+        assert_eq!(icon.width, 256);
+        assert_eq!(icon.rgba[(10 * 256 + 10) * 4 + 3], 0, "corner is transparent");
+        assert_eq!(icon.rgba[(128 * 256 + 2) * 4 + 3], 255, "the tile is full bleed");
     }
 
     /// The `.ico` build.rs embeds: every size Windows asks for, each a valid PNG or BMP image.

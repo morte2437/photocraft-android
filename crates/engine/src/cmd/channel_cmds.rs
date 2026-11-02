@@ -15,7 +15,7 @@
 use photocraft_algo::selection::{self as sel, SelectionMode};
 use photocraft_color::{BlendMode, Color, ColorMode, PixelFormat, blend::blend_channel};
 use photocraft_doc::{AlphaChannel, ColorIndicates, Document, Layer, LayerContent, LayerId};
-use photocraft_geom::{Rect, TileCoord};
+use photocraft_geom::Rect;
 use photocraft_raster::{Surface, from_rgba, to_rgba};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -83,6 +83,7 @@ pub fn channels_json(st: &DocState) -> Value {
         })).collect::<Vec<_>>(),
         "quickMask": doc.quick_mask.as_ref().map(|q| json!({ "visible": !v.quick_mask_hidden, "color": q.color.to_rgb(), "opacity": q.opacity, "indicates": q.indicates })),
         "target": v.target,
+        "selectedColors": v.color_selection(colors).map(|c| c.indices().collect::<Vec<_>>()),
         "compositeVisible": v.visible_colors(colors) == colors,
         "layerMaskView": crate::mask_view_cmds::view_json(st),
     })
@@ -115,8 +116,8 @@ use manage::{delete_channel, duplicate_channel, move_channel, new_channel, new_s
 use planes::edit_mode;
 pub(crate) use planes::tone;
 pub use planes::{
-    GraySurface, IsolatedCurveChannel, channel_format, color_count, filter_mask_curve_channel, isolated_curve_channel, isolated_curve_channel_for,
-    next_alpha_name,
+    GraySurface, IsolatedCurveChannel, channel_format, color_count, curve_channel_for_colors, filter_mask_curve_channel, isolated_curve_channel,
+    isolated_curve_channel_for, layer_mask_curve_channel, next_alpha_name,
 };
 pub(crate) use refs::source_spec;
 pub use refs::{Blending, ChanRef, parse_ref};
@@ -125,10 +126,9 @@ use spot::{merge, merge_spot, mergeable, split};
 use targeting::{SLOT_KEY, target_cmd, target_slot};
 pub(crate) use targeting::{
     Target, channel_surface_for_filter, clear_channel, clear_color_channel, color_restriction, edits_channel, filter_mask_layer, inject_target, invert_region,
-    is_channel_target, is_spot_target, mask_target_enabled, read_target_surface, restrict_to_color, routed, target_of, target_surface, targeted_channel,
-    targeted_color,
+    is_channel_target, is_spot_target, mask_target_enabled, restrict_to_color, routed, target_of, target_surface, targeted_channel,
 };
-pub use targeting::{follows_filter_mask, follows_target};
+pub use targeting::{follows_filter_mask, follows_target, read_target_surface};
 pub(crate) use view::fix_view;
 pub use view::{ChannelTarget, ChannelView, QuickMaskOptions, color_names, composite_name};
 
@@ -206,7 +206,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Target Channel",
             [],
             None,
-            r##"{"channel":"composite"|"mask"|"vectorMask"|"red|green|blue|…"|index|name="composite"}"##,
+            r##"{"channel":"composite"|"mask"|"vectorMask"|"red|green|blue|…"|index|name="composite","colors":[index,…]?,"extend":bool=false} (colors selects native colour components only; extend toggles one colour channel, as Shift-click; all components select the composite)"##,
             has_doc,
             target_cmd
         ),

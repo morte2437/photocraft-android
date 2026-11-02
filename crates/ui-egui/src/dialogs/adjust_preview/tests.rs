@@ -300,6 +300,77 @@ fn ineligible_dialogs_keep_the_proxy_preview() {
     assert!(!on_layer(&mut app, 0));
 }
 
+/// The proxy preview of a clipped target records why it doesn't preview through the layer
+/// instead of dropping the reason (#7487).
+#[test]
+fn a_clipped_adjustment_preview_records_why_it_uses_the_proxy() {
+    let (doc, _) = document(ColorMode::Rgb, SampleType::U8, false);
+    let clipped = doc.layers[2].id;
+    let mut app = app_with(doc, clipped);
+    app.render_path.assume_gpu = true;
+    let dialog = crate::adjust_dialog::open(&mut app, "image.adjustments.curves").unwrap();
+    assert!(!on_layer(&mut app, 0));
+    let doc = app.session.active().unwrap().doc.id.0;
+    assert_eq!(app.render_path.current(doc), Some(&crate::render_path::CpuReason::AdjustPreview("the target is clipped")));
+    let path = crate::render_path::inspect(&app);
+    assert_eq!(path["current"]["kind"], "adjustPreview");
+    assert!(path["current"]["detail"].as_str().is_some_and(|d| d.contains("the target is clipped")), "{path}");
+    // Asked again with nothing changed: no new entry.
+    assert!(!on_layer(&mut app, 0));
+    assert_eq!(app.render_path.history().count(), 1);
+    // A GPU refresh of the canvas while the dialog is open doesn't end the preview's reason.
+    crate::render_path::note(&mut app, doc, crate::render_path::Path::Gpu { full: true });
+    assert_eq!(app.render_path.current(doc), Some(&crate::render_path::CpuReason::AdjustPreview("the target is clipped")));
+    assert_eq!(app.render_path.history().count(), 1);
+    // Closing the dialog ends the reason, though the canvas is still current (no refresh).
+    app.ui.close_dialog(dialog);
+    assert!(!on_layer(&mut app, 0));
+    assert_eq!(app.render_path.current(doc), None);
+    assert_eq!(app.render_path.history().count(), 2);
+    let path = crate::render_path::inspect(&app);
+    assert_eq!(path["history"][1]["kind"], "adjustPreview", "the preview's end isn't the canvas back on the GPU: {path}");
+    assert!(path["history"][1]["detail"].is_null(), "{path}");
+}
+
+/// A document the canvas already draws on the CPU keeps that reason through an adjustment
+/// dialog's proxy preview, and closing the dialog doesn't report "back on the GPU".
+#[test]
+fn an_adjustment_preview_keeps_the_canvas_reason() {
+    use crate::render_path::{CpuReason, Path};
+    let (doc, _) = document(ColorMode::Rgb, SampleType::U8, false);
+    let clipped = doc.layers[2].id;
+    let canvas_back_on_gpu = |app: &crate::PhotocraftApp| app.render_path.history().any(|c| !c.preview && c.reason.is_none());
+    let mut app = app_with(doc.clone(), clipped);
+    app.render_path.assume_gpu = true;
+    let doc_id = app.session.active().unwrap().doc.id.0;
+    let canvas = CpuReason::Unsupported("Advanced Blending on Layer 1".into());
+    crate::render_path::note(&mut app, doc_id, Path::Cpu(canvas.clone()));
+    let dialog = crate::adjust_dialog::open(&mut app, "image.adjustments.curves").unwrap();
+    assert!(!on_layer(&mut app, 0));
+    assert_eq!(app.render_path.current(doc_id), Some(&canvas));
+    app.ui.close_dialog(dialog);
+    assert!(!on_layer(&mut app, 0));
+    assert_eq!(app.render_path.current(doc_id), Some(&canvas));
+    // The canvas entry, then the preview's start and end: never the canvas back on the GPU.
+    assert_eq!(app.render_path.history().filter(|c| !c.preview).count(), 1);
+    assert!(!canvas_back_on_gpu(&app));
+
+    // A window without the GPU (`--safe-gpu`): the preview adds nothing, before or after closing.
+    let mut app = app_with(doc, clipped);
+    app.render_path.assume_gpu = true;
+    let doc_id = app.session.active().unwrap().doc.id.0;
+    let cpu = CpuReason::CpuMode("--safe-gpu".into());
+    crate::render_path::note_app(&mut app, Some(cpu.clone()));
+    let dialog = crate::adjust_dialog::open(&mut app, "image.adjustments.curves").unwrap();
+    assert!(!on_layer(&mut app, 0));
+    assert_eq!(app.render_path.current(doc_id), Some(&cpu));
+    app.ui.close_dialog(dialog);
+    assert!(!on_layer(&mut app, 0));
+    assert_eq!(app.render_path.current(doc_id), Some(&cpu));
+    assert_eq!(app.render_path.history().count(), 1, "the app-wide entry only");
+    assert!(!canvas_back_on_gpu(&app));
+}
+
 #[test]
 fn proxy_factor_follows_the_zoom() {
     assert_eq!(proxy_factor(1.0), 1);
@@ -389,4 +460,28 @@ fn a_reveal_all_mask_does_not_empty_the_damage_region() {
     let region = live_switch_region(&app, id, 3, k1, k2).expect("same session");
     assert_eq!(region, bounds, "the whole document, not the mask's empty content");
     assert!(!live_switch_damage(&mut app, k2, region, bounds).is_empty(), "something is composited");
+}
+
+#[test]
+fn captured_subset_preview_stays_on_the_command_path_when_the_panel_changes() {
+    for kind in ["levels", "curves"] {
+        let (doc, target) = document(ColorMode::Rgb, SampleType::U16, false);
+        let mut app = app_with(doc, target);
+        app.session.execute("channel.target", json!({"colors":[0,2]})).unwrap();
+        let command = format!("image.adjustments.{kind}");
+        let id = crate::adjust_dialog::open(&mut app, &command).unwrap();
+        if let Some(values) = sample(kind).as_object() {
+            app.ui.dialog_mut(id).unwrap().fields.extend(values.clone());
+        }
+        app.session.execute("channel.target", json!({"channel":"composite"})).unwrap();
+        assert!(!on_layer(&mut app, 0), "captured colour set cannot use an all-channel adjustment layer");
+        let params = crate::filter_dialog::params_of(&app.ui.dialog_mut(id).unwrap().fields);
+        let doc = app.session.active().unwrap().doc.clone();
+        let preview = crate::filter_dialog::preview_document(&doc, Some(target), &command, &params, 1).unwrap();
+        let expected = destructive(&doc, target, kind, &params).unwrap();
+        assert!(max_diff(&preview, &expected) <= 1e-6);
+        app.session.execute("channel.target", json!({"colors":[0,2]})).unwrap();
+        app.ui.dialog_mut(id).unwrap().fields.insert("target".into(), json!("pixels"));
+        assert!(on_layer(&mut app, 0), "explicit composite target overrides the panel too");
+    }
 }

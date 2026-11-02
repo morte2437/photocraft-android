@@ -1,5 +1,5 @@
 use super::types::Unsupported;
-use super::*;
+use super::{Adjustment, BlendMode, Fill, Gradient, Layer, LayerContent, Pattern, StrokePosition, ToneSpace, Transfer, adjust, lut3d_len};
 
 /// Paint source of an effect.
 pub(super) enum Paint<'a> {

@@ -152,3 +152,56 @@ fn contiguous_mixer_matches_frozen_kernel_across_models_depths_and_spatial_loads
         }
     }
 }
+
+/// Dry dabs must preserve both the painted pixels and the carried pickup across transitions.
+#[test]
+fn dry_and_wet_transitions_match_frozen_kernel() {
+    use crate::retouch::Region;
+    use crate::{BrushContext, BrushSettings, Dab};
+    use photocraft_color::{ColorMode, PixelFormat, SampleType};
+    use photocraft_geom::Point;
+
+    let rect = Rect::new(0, 0, 48, 48);
+    for mode in [ColorMode::Rgb, ColorMode::Grayscale, ColorMode::Cmyk, ColorMode::Lab] {
+        for depth in [SampleType::U8, SampleType::U16, SampleType::F32] {
+            for alpha in [false, true] {
+                let fmt = PixelFormat::new(mode, depth, alpha);
+                let mut surface = Surface::new(fmt);
+                surface.fill_rect(rect, &from_rgba(&fmt, [0.25, 0.5, 0.75, 0.6]));
+                let mut source = Surface::new(PixelFormat::RGBA32F);
+                source.fill_rect(rect, &[0.7, 0.1, 0.3, 0.8]);
+                let ctx = BrushContext::new(&BrushSettings { size: 16.0, ..Default::default() });
+                for spatial in [false, true] {
+                    for loaded in [false, true] {
+                        for sample in [None, Some(&source)] {
+                            for lock in [false, true] {
+                                let mut actual = Region::read(&surface, rect);
+                                let mut expected = actual.clone();
+                                let mut state = MixerState::default();
+                                if loaded {
+                                    state.load([0.8, 0.2, 0.1, 1.0]);
+                                }
+                                if spatial {
+                                    state.spatial = Some(vec![[0.2, 0.8, 0.4, 0.7]; 4096]);
+                                }
+                                let mut expected_state = state.clone();
+                                for (i, (base_wet, dab_wet, mix)) in
+                                    [(0.7, 1.0, 0.0), (0.0, 1.0, 0.7), (0.7, 0.0, 0.7), (0.7, 1.0, 0.7)].into_iter().enumerate()
+                                {
+                                    let mut dab = Dab::round(Point::new(20.0 + i as f64, 20.0), 8.0, 1.0);
+                                    dab.wet = dab_wet;
+                                    let fp = ctx.footprint(&dab, i);
+                                    let settings = MixerSettings { wet: base_wet, mix, ..Default::default() };
+                                    reference(&mut expected, &fp, fmt, sample, &settings, &mut expected_state, lock);
+                                    apply_mixer_dab(&mut actual, &fp, fmt, sample, &settings, &mut state, lock);
+                                    assert_eq!(actual, expected, "{mode:?} {depth:?} alpha={alpha} spatial={spatial} loaded={loaded} lock={lock} dab={i}");
+                                    assert_eq!(state, expected_state, "mixer state after dab {i}");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

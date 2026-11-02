@@ -1,7 +1,7 @@
 use super::budget::canvas_texture_bytes;
 use super::resources::{DocTextures, Resources, Tile, f32_bytes};
 use super::texels::texel_bytes;
-use super::*;
+use super::{Ordering, WHOLE_MIP_SIDE, wgpu};
 
 pub(super) fn mip_count(w: u32, h: u32) -> u32 {
     32 - w.max(h).max(1).leading_zeros()

@@ -1,4 +1,4 @@
-use super::*;
+use super::{ColorMode, Document, Interrupt, PixelFormat, SampleType, encode_be, q255};
 
 pub(super) fn cmyk_of(fmt: &PixelFormat) -> bool {
     fmt.mode == ColorMode::Cmyk
@@ -196,6 +196,8 @@ pub(super) fn placeholder_planes(doc: &Document, fmt: &PixelFormat) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use photocraft_doc::{Layer, LayerContent};
+    use photocraft_raster::Surface;
 
     fn previous_merged_planes(doc: &Document, fmt: &PixelFormat, cmyk: bool, matte: bool) -> (Vec<u8>, bool, bool) {
         if cmyk && let Some(planes) = merged_ink_planes(doc, fmt.sample, matte, &Interrupt::NONE) {

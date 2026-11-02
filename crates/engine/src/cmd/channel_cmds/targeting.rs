@@ -1,8 +1,8 @@
 use super::manage::fix_view_now;
 use super::planes::{color_count, materialize};
 use super::refs::{ChanRef, bad, parse_ref};
-use super::view::ChannelTarget;
-use super::*;
+use super::view::{ChannelTarget, touch};
+use super::{ColorMode, Document, EngineError, Layer, LayerId, Rect, Result, Session, Surface, Value, from_rgba, json, list};
 
 // ---------------------------------------------------------------------------------------------
 // Targets for pixel commands
@@ -66,7 +66,8 @@ pub(crate) fn target_surface<'a>(doc: &'a mut Document, layer: Option<LayerId>, 
     }
 }
 
-pub(crate) fn read_target_surface<'a>(doc: &'a Document, layer: Option<LayerId>, p: &Value) -> Result<&'a Surface> {
+/// Read the explicitly targeted layer pixels, layer mask, saved channel or Quick Mask.
+pub fn read_target_surface<'a>(doc: &'a Document, layer: Option<LayerId>, p: &Value) -> Result<&'a Surface> {
     match target_of(p) {
         Target::Alpha(i) => {
             let n = doc.channels.len();
@@ -113,7 +114,7 @@ fn edits_mask(id: &str) -> bool {
         || crate::filters::params_for(id, &Value::Null).is_some()
         || id == "edit.fill"
         // Copying a targeted mask (#2928).
-        || id == "edit.copy"
+        || matches!(id, "edit.copy" | "edit.cut" | "edit.clear")
         || crate::fill_key_cmds::IDS.contains(&id)
 }
 
@@ -187,6 +188,8 @@ const PAINT_IDS: &[&str] = &[
     "paint.artHistoryBrush",
     "paint.redEye",
     "paint.remove",
+    "paint.patch",
+    "paint.contentAwareMove",
 ];
 
 /// Pasting into a targeted mask or channel (#1035).
@@ -194,8 +197,12 @@ const PASTE_IDS: &[&str] = &["edit.paste", "edit.pasteSpecial.pasteInPlace", "ed
 
 /// Commands whose target follows the Channels panel.
 pub(crate) fn routed(id: &str) -> bool {
+    // An allow-list, not a `paint.` prefix: Symmetry and the Mixer Brush's ⌥-click load
+    // (`paint.mixerLoad`) don't edit pixels, so they never follow or refuse a channel target.
     id.starts_with("filter.")
+        || id == "edit.stroke"
         || id == "plugin.run"
+        || matches!(id, "paint.magicEraser" | "paint.backgroundEraser" | "paint.colorReplacement" | "shape.paint" | "path.fill" | "path.stroke" | "edit.clear" | "edit.cut")
         || id.starts_with("image.adjustments.")
         || matches!(id, "edit.fill" | "image.applyImage")
         || crate::fill_key_cmds::IDS.contains(&id)
@@ -224,6 +231,17 @@ pub(crate) fn inject_target(s: &Session, id: &str, params: Value) -> Value {
         ChannelTarget::Alpha(i) if i < st.doc.channels.len() => json!({ "channel": i }),
         ChannelTarget::Composite if st.doc.quick_mask.is_some() => json!("quickMask"),
         ChannelTarget::LayerMask => json!("mask"),
+        ChannelTarget::Color(_) if crate::mask_view_cmds::current(st).is_some_and(|v| v.filter) => {
+            if !follows_filter_mask(id) {
+                return params;
+            }
+            json!("filterMask")
+        }
+        ChannelTarget::Color(_) if crate::mask_view_cmds::current(st).is_some() => json!("mask"),
+        ChannelTarget::Color(_) => match crate::color_channels::selected(s).filter(|c| c.len() > 1) {
+            Some(c) => c.params(),
+            None => return params,
+        },
         // Viewing the active layer's mask (⌥-click): pixel commands edit the mask.
         // A shown filter mask takes only the commands that edit it; the rest act on the smart object.
         ChannelTarget::Composite if crate::mask_view_cmds::current(st).is_some_and(|v| v.filter) => {
@@ -255,49 +273,29 @@ pub(crate) fn filter_mask_layer(s: &Session, id: &str, params: &Value) -> Option
 }
 
 /// The colour channel pixel commands are limited to, if a single colour channel is targeted.
-pub(crate) fn color_restriction(s: &Session, id: &str, params: &Value) -> Option<usize> {
+pub(crate) fn color_restriction(s: &Session, id: &str, params: &Value) -> Option<crate::color_channels::Restriction> {
     if !routed(id) || is_channel_target(params) || crate::commands::is_mask_target(params) {
         return None;
     }
-    match s.active()?.channel_view.target {
-        ChannelTarget::Color(k) => Some(k),
-        _ => None,
+    // Native plane implementations already write only the selected encoded samples. Avoid a
+    // second full-layer restore pass after these commands (painting still needs the guard).
+    if id.strip_prefix("image.adjustments.").is_some_and(|kind| crate::adjust_params::default_for(kind, ColorMode::Rgb).is_ok())
+        || crate::filters::params_for(id, params).is_some()
+    {
+        return None;
     }
+    let colors = crate::color_channels::target(s, params).ok().flatten()?;
+    let layer = crate::commands::layer_param(s, params).ok()?;
+    Some(crate::color_channels::Restriction { colors, layer })
 }
 
 /// After a pixel edit with colour channel `k` targeted, put the other channels (and the layer's
 /// transparency) of layer `id` back as they were. Only changed tiles are touched.
-pub(crate) fn restrict_to_color(before: &Document, after: &mut Document, id: LayerId, k: usize) {
-    let Some(old) = before.layer(id).and_then(Layer::surface) else { return };
-    let Some(new) = after.layer_mut(id).and_then(Layer::surface_mut) else { return };
-    if old.format() != new.format() {
-        return;
-    }
-    let mut coords: Vec<TileCoord> = new.tiles().filter(|(c, t)| old.tile(**c).is_none_or(|o| !std::sync::Arc::ptr_eq(o, t))).map(|(c, _)| *c).collect();
-    coords.extend(old.tiles().filter(|(c, _)| new.tile(**c).is_none()).map(|(c, _)| *c));
-    let n = new.channels();
-    for c in coords {
-        let r = c.rect();
-        let o = old.read_region(r);
-        let mut v = new.read_region(r);
-        for (pn, po) in v.chunks_exact_mut(n).zip(o.chunks_exact(n)) {
-            for ch in 0..n {
-                if ch != k {
-                    pn[ch] = po[ch];
-                }
-            }
-        }
-        new.write_region(r, &v);
-    }
-    new.prune();
-}
-
-/// The colour channel Clear is limited to: the Channels panel targets a single one.
-pub(crate) fn targeted_color(s: &Session) -> Option<usize> {
-    match s.active()?.channel_view.target {
-        ChannelTarget::Color(k) => Some(k),
-        _ => None,
-    }
+pub(crate) fn restrict_to_color(before: &Document, after: &mut Document, id: LayerId, colors: crate::color_channels::ColorChannels) -> Result<()> {
+    let Some(old) = before.layer(id).and_then(Layer::surface) else { return Ok(()) };
+    let Some(new) = after.layer_mut(id).and_then(Layer::surface_mut) else { return Ok(()) };
+    let extent = before.bounds().union(&old.content_bounds()).union(&new.content_bounds());
+    crate::color_channels::restrict_surface_in(old, new, colors, extent)
 }
 
 /// Clear (Delete) with colour channel `k` of layer `id` targeted (#2720): fill the selected area
@@ -374,14 +372,17 @@ pub(super) fn target(s: &mut Session, t: ChannelTarget) {
         let n = st.doc.channels.len();
         let v = &mut st.channel_view;
         v.target = t;
+        v.selected_colors.clear();
         match t {
             // Like clicking RGB in Photoshop: the alpha overlays go away with their eyes.
             ChannelTarget::Composite => {
+                v.layer_mask = None;
                 v.color_hidden.clear();
                 v.alpha_visible.clear();
             }
             ChannelTarget::LayerMask | ChannelTarget::VectorMask => v.color_hidden.clear(),
             ChannelTarget::Color(k) => {
+                v.layer_mask = None;
                 v.color_hidden = (0..colors).map(|c| c != k).collect();
                 v.alpha_visible.clear();
             }
@@ -420,8 +421,46 @@ fn parse_target(s: &Session, p: &Value, cmd: &str) -> Result<ChannelTarget> {
 }
 
 pub(super) fn target_cmd(s: &mut Session, p: &Value) -> Result<Value> {
-    let t = parse_target(s, p, "channel.target")?;
-    target(s, t);
+    let count = s.active().map_or(0, |st| color_count(&st.doc));
+    let colors = p.get("colors").or_else(|| p.get("channel").and_then(|c| c.get("colors")));
+    let extend = match p.get("extend") {
+        None => false,
+        Some(v) => v.as_bool().ok_or_else(|| bad("channel.target", "extend must be a boolean"))?,
+    };
+    let selected = if let Some(indices) = colors {
+        crate::color_channels::explicit(&json!({"target":{"colors":indices}}), count)?
+    } else {
+        let t = parse_target(s, p, "channel.target")?;
+        if extend {
+            let ChannelTarget::Color(k) = t else { return Err(bad("channel.target", "only colour channels can be selected together")) };
+            let mut indices: Vec<_> = crate::color_channels::selected(s).map(|c| c.indices().collect()).unwrap_or_else(|| {
+                if s.active().is_some_and(|st| st.channel_view.target == ChannelTarget::Composite) { (0..count).collect() } else { Vec::new() }
+            });
+            if indices.contains(&k) {
+                if indices.len() > 1 {
+                    indices.retain(|i| *i != k);
+                }
+            } else {
+                indices.push(k);
+            }
+            Some(crate::color_channels::ColorChannels::from_indices(indices, count)?)
+        } else {
+            target(s, t);
+            return Ok(list(s));
+        }
+    };
+    if let Some(colors) = selected {
+        if colors.len() == count {
+            target(s, ChannelTarget::Composite);
+        } else if let Some(first) = colors.indices().next() {
+            target(s, ChannelTarget::Color(first));
+            if let Some(st) = s.active_mut() {
+                st.channel_view.selected_colors = colors.indices().collect();
+                st.channel_view.color_hidden = (0..count).map(|i| !colors.contains(i)).collect();
+                touch(st);
+            }
+        }
+    }
     Ok(list(s))
 }
 

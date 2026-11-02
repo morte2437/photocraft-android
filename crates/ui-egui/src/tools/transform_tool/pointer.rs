@@ -1,8 +1,11 @@
-use super::begin::warps_type;
+use super::begin::{moving_layers, warps_type};
 use super::commit::{commit, committing, moves_type};
 use super::drag_modes::{apply_drag, apply_mode_drag, drag_mods, handle_indicator, mode_allows, mode_mods};
 use super::warp::{quick_split_kind, split_cursor, surface_at, warp_hit, warp_pointer};
-use super::*;
+use super::{
+    CursorIcon, HANDLE_PX, Homography, LayerContent, PhotocraftApp, ToolEvent, TransformMode, TransformPreview, TransformSession, ViewXform, WarpStyle,
+    handle_tolerance,
+};
 
 /// Which part of the box a document point hits.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -134,8 +137,9 @@ fn round_to_pixel_grid(app: &mut PhotocraftApp) {
     if t.selection || t.warp.is_some() || t.content_aware.is_some() || t.target.is_some() {
         return;
     }
-    let vector =
-        t.path.is_some() || app.session.active().and_then(|st| st.doc.layer(LayerId(t.layer))).is_some_and(|l| matches!(l.content, LayerContent::Shape(_)));
+    let shapes =
+        |st: &photocraft_engine::DocState| moving_layers(t).iter().all(|id| st.doc.layer(*id).is_some_and(|l| matches!(l.content, LayerContent::Shape(_))));
+    let vector = t.path.is_some() || app.session.active().is_some_and(shapes);
     if !vector || !upright(&t.quad) {
         return;
     }

@@ -175,7 +175,7 @@ fn refresh(g: &GpuCanvas, rs: &RenderState, doc: &Document, damage: Option<Rect>
     let r = g.refresh(doc.id.0, doc, damage, None);
     let _ = rs.device.poll(eframe::wgpu::PollType::Wait { submission_index: None, timeout: None });
     let kind = if r.kind.starts_with("gpu") { format!("{}, {} tiles up", r.kind, r.uploads) } else { r.kind.to_string() };
-    (kind, r.fallback)
+    (kind, r.fallback.map(|f| f.to_string()))
 }
 
 fn main() {

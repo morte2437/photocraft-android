@@ -1,7 +1,7 @@
 use super::params::{layer_id, parse_path, path_json};
 use super::paths::{is_work, resolve_path};
 use super::shape::with_shape;
-use super::*;
+use super::{EngineError, LayerContent, LayerId, Path, Result, Session, Value, VectorMask, bad, json, vector};
 
 // ---------------------------------------------------------------------------
 // Vector masks

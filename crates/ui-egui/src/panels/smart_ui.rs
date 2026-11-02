@@ -97,6 +97,18 @@ pub fn paint_badge(painter: &egui::Painter, center: egui::Pos2, color: Color32) 
     }
 }
 
+/// Select smart object `layer` now, ahead of its filter editor. The editor captures the
+/// document's revision as its target, so the click's queued `layer.select` must not run after it
+/// opens (OK would refuse the edit): select first, as the Layers panel runs it. False when the
+/// selection failed and the editor must stay closed.
+fn select_before_editor(app: &mut PhotocraftApp, layer: u64, actions: &mut Vec<(String, Value)>) -> bool {
+    actions.retain(|(id, p)| !(id == "layer.select" && p.get("layer").and_then(Value::as_u64) == Some(layer)));
+    if app.ui.text_edit.is_some() {
+        crate::type_tool::commit(app);
+    }
+    app.run("layer.select", json!({"layer": layer})).is_ok()
+}
+
 /// Paint the Smart Filters header and one row per filter of Smart Object `l` (top filter first), with their drag, drop and click handling; actions go to `actions`.
 pub fn filter_rows(app: &mut PhotocraftApp, ui: &mut egui::Ui, doc: &Document, l: &Layer, depth: usize, actions: &mut Vec<(String, Value)>) {
     let LayerContent::Smart(sm) = &l.content else { return };
@@ -130,16 +142,9 @@ pub fn filter_rows(app: &mut PhotocraftApp, ui: &mut egui::Ui, doc: &Document, l
         if t.pro {
             ui.painter().line_segment([pos2(rect.left() + 30.0, rect.top()), pos2(rect.left() + 30.0, rect.bottom())], Stroke::new(1.0, t.separator));
         }
-        let (name, on) = match index {
-            None => (tl!("Smart Filters").to_string(), sm.filters_enabled),
-            Some(i) => (filter_label(&sm.smart_filters[i]), sm.smart_filters[i].visible && sm.filters_enabled),
-        };
+        let (name, on, shown) = filter_row_label(sm, index);
         let eye = Rect::from_center_size(pos2(rect.left() + indent + if index.is_none() { 9.0 } else { 41.0 }, rect.center().y), vec2(18.0, 18.0));
         let eye_resp = ui.interact(eye, ui.scope_id().with(("sf-eye", l.id.0, index)), Sense::click());
-        let shown = match index {
-            None => sm.filters_enabled,
-            Some(i) => sm.smart_filters[i].visible,
-        };
         if shown {
             icons::paint(ui, eye, "eye", 12.0, if on { t.icon } else { t.text_faint });
         }
@@ -153,11 +158,7 @@ pub fn filter_rows(app: &mut PhotocraftApp, ui: &mut egui::Ui, doc: &Document, l
         // The shared mask scales with the thumbnail setting (hidden at None); the header name
         // follows it, while filter names stay aligned past their eyes.
         let mask_left = rect.left() + indent + 28.0;
-        let x = match index {
-            None if mask_size > 0.0 => mask_left + mask_size + 8.0,
-            None => mask_left,
-            Some(_) => rect.left() + indent + 60.0,
-        };
+        let x = filter_label_x(rect.left(), indent, mask_size, index);
         if index.is_none() && mask_size > 0.0 {
             let sw = Rect::from_min_size(pos2(mask_left, rect.center().y - mask_size / 2.0), vec2(mask_size, mask_size));
             if let Some(mask) = &sm.filter_mask {
@@ -213,6 +214,7 @@ pub fn filter_rows(app: &mut PhotocraftApp, ui: &mut egui::Ui, doc: &Document, l
         }
         if let Some(i) = index
             && hit(egui::Response::double_clicked)
+            && (active || select_before_editor(app, l.id.0, actions))
         {
             open_editor(app, ui.ctx(), l.id.0, sm, i);
         }
@@ -234,6 +236,24 @@ pub fn filter_rows(app: &mut PhotocraftApp, ui: &mut egui::Ui, doc: &Document, l
     if ui.ctx().data(|d| d.get_temp::<FilterDrag>(selected_key(doc.id))).is_some_and(|(layer, _)| layer == l.id.0) {
         let pass = ui.ctx().cumulative_pass_nr();
         ui.ctx().data_mut(|d| d.insert_temp(drawn_key(doc.id), pass));
+    }
+}
+
+fn filter_row_label(sm: &SmartObject, index: Option<usize>) -> (String, bool, bool) {
+    match index {
+        None => (tl!("Smart Filters").to_string(), sm.filters_enabled, sm.filters_enabled),
+        Some(i) => {
+            let filter = &sm.smart_filters[i];
+            (filter_label(filter), filter.visible && sm.filters_enabled, filter.visible)
+        }
+    }
+}
+
+fn filter_label_x(left: f32, indent: f32, mask_size: f32, index: Option<usize>) -> f32 {
+    match index {
+        None if mask_size > 0.0 => left + indent + 28.0 + mask_size + 8.0,
+        None => left + indent + 28.0,
+        Some(_) => left + indent + 60.0,
     }
 }
 

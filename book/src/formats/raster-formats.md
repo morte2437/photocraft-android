@@ -1,10 +1,22 @@
 # Raster formats
 
-`photocraft-codecs` provides format detection, capability declarations, decode limits, metadata handling, and encoding for flat images. The default build declares read/write support for PNG, JPEG, TIFF, WebP, GIF, BMP, TGA, ICO, Netpbm/PFM, QOI, OpenEXR, and Radiance HDR. HEIF/HEIC (iPhone and Mac photos) is read-only, decoded in pure Rust by `heic-rs` through the optional `photocraft-heif` crate. It is a build-time choice behind the `heif` cargo feature (`cargo build -p photocraft --features heif`): official builds include it; without it HEIC files are still recognised and opening one reports that HEIC support isn't included in that build. AVIF encoding is optional; AVIF decoding is not implemented in the current crate.
+`photocraft-codecs` provides format detection, capability declarations, decode limits, metadata handling, and encoding for flat images. The default build declares read/write support for PNG, JPEG, TIFF, WebP, GIF, BMP, TGA, ICO, Netpbm/PFM, QOI, OpenEXR, and Radiance HDR. HEIF/HEIC (iPhone and Mac photos) is read-only, decoded in pure Rust by `heic-rs` through the optional `photocraft-heif` crate. It is a build-time choice behind the `heif` cargo feature (`cargo build -p photocraft --features heif`): official builds include it; without it HEIC files are still recognised and opening one reports that HEIC support isn't included in that build. AVIF encoding is optional; AVIF decoding is not implemented in the current crate. Lossless JPEG XL (.jxl) export uses the pure-Rust `zune-jpegxl` encoder for 8/16-bit gray, RGB and RGBA data; gray+alpha is expanded to RGBA at the same bit depth. JPEG XL import is tracked separately in #2868.
 
 ## Layered TIFF
 
 A TIFF saved by Photoshop with its layers carries them in two private tags: 37724 (`ImageSourceData`, the same layer section a PSD has, preceded by the string `Adobe Photoshop Document Data Block`) and 34377 (the PSD image resources). `photocraft-codecs` passes both through as opaque bytes on `Metadata`; `photocraft-io` rebuilds a PSD model from them plus the TIFF's pixels and hands it to the PSD importer, so groups, masks, layer styles, type, shapes, smart objects and adjustment layers open from a TIFF exactly as from a PSD, and are written back the same way. In Intel-order (`II`) files Photoshop stores the whole block structure byte-swapped (reversed keys such as `MIB8` and `ryaL`, little-endian integers and doubles) while pixel samples stay big-endian; `photocraft-psd`'s `tiff` module converts between the two orders field by field, and drops, with a warning, any block whose layout it does not know rather than pass byte-swapped data to other readers. Limits: up to sixteen extra samples (spot colours and alpha channels, plus a Quick Mask) are written in the IFD and round-trip, with Photoshop image resources for the channel name, ink colour and solidity; Lab documents are saved flat, with their extra samples. Save As asks "Including layers will increase file size" (with "Discard Layers and Save a Copy") while *Ask Before Saving Layered TIFF Files* is on in Preferences › File Handling. Scripted and agent saves write a flat TIFF unless they ask for layers: `--tiff-layers` for `photocraft-cli convert`, `run` and `batch`, and `"tiffLayers": true` in the save, batch and export commands and MCP `doc_save`.
+
+## JPEG XL
+
+Save As, Export As and the CLI can write a lossless, single-image `.jxl` bare
+codestream at 8 or 16 bits per sample. Gray, RGB and RGBA are encoded
+natively. Grayscale with alpha is expanded to RGBA at the original bit depth
+to preserve both grayscale and alpha samples. For 16-bit RGBA the encoder's
+incorrect default 8-bit alpha header is corrected to explicitly describe
+16-bit alpha, with an independent decoder oracle checking alpha values.
+The bare codestream has no ICC, EXIF, XMP or DPI boxes; the export path
+converts tagged RGB to sRGB and surfaces metadata losses as fidelity warnings.
+JPEG XL opening remains under review in #2868.
 
 ## WebP
 

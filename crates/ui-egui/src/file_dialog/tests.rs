@@ -1472,3 +1472,15 @@ fn save_a_copy_appends_copy_unless_the_preference_says_not_to() {
         );
     }
 }
+
+#[test]
+fn import_variable_data_sets_menu_asks_for_a_csv_and_imports_it() {
+    let (mut app, open, _) = app();
+    let ctx = egui::Context::default();
+    assert_eq!(crate::menus::invoke(&mut app, &ctx, "file.import.variableDataSets", json!({})).unwrap(), json!({"fileDialog": "open"}));
+    app.poll_file_dialog(&ctx, None);
+    assert!(matches!(open.borrow().as_slice(), [(FileDialogRequest::Open { multiple: false, extensions: Some(e), .. }, _)] if e == &["csv", "txt"]));
+    answer(&open, Some(FileDialogAnswer::Contents("sets.csv".into(), b"headline\nHello\nWorld\n".to_vec())));
+    app.poll_file_dialog(&ctx, None);
+    assert_eq!(app.session.active().map(|d| d.doc.variables.data_sets.len()), Some(2));
+}

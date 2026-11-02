@@ -1,0 +1,128 @@
+[
+  [
+    "engine.execute",
+    {
+      "command": "file.new",
+      "params": {
+        "width": 800,
+        "height": 560,
+        "depth": 16,
+        "background": "white"
+      }
+    }
+  ],
+  [
+    "engine.execute",
+    {
+      "command": "paint.gradient",
+      "params": {
+        "from": [
+          0,
+          0
+        ],
+        "to": [
+          800,
+          560
+        ],
+        "colors": [
+          "#143b9b",
+          "#f6b552"
+        ]
+      }
+    }
+  ],
+  [
+    "engine.execute",
+    {
+      "command": "layer.layerMask.revealAll",
+      "params": {}
+    }
+  ],
+  [
+    "engine.execute",
+    {
+      "command": "channel.target",
+      "params": {
+        "colors": [
+          0,
+          2
+        ]
+      }
+    }
+  ],
+  [
+    "engine.execute",
+    {
+      "command": "view.layerMask",
+      "params": {
+        "mode": "gray"
+      }
+    }
+  ],
+  [
+    "ui.set",
+    {
+      "tool": "brush",
+      "activeTabs": {
+        "middle": "channels"
+      },
+      "fit": true
+    }
+  ],
+  [
+    "engine.execute",
+    {
+      "command": "tools.setColors",
+      "params": {
+        "foreground": [
+          0,
+          0,
+          0,
+          1
+        ]
+      }
+    }
+  ],
+  [
+    "engine.execute",
+    {
+      "command": "tools.setBrush",
+      "params": {
+        "brush": {
+          "size": 70,
+          "hardness": 1.0,
+          "smoothing": {
+            "amount": 0.0
+          }
+        }
+      }
+    }
+  ],
+  [
+    "ui.pointer",
+    {
+      "events": [
+        {
+          "kind": "down",
+          "x": 150,
+          "y": 200
+        },
+        {
+          "kind": "move",
+          "x": 400,
+          "y": 280
+        },
+        {
+          "kind": "move",
+          "x": 650,
+          "y": 200
+        },
+        {
+          "kind": "up",
+          "x": 650,
+          "y": 200
+        }
+      ]
+    }
+  ]
+]

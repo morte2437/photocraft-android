@@ -1,6 +1,6 @@
 use super::enabled::{check_all_unlocked, is_mask_target, paint_surface};
 use super::layer_params::{layer_param, mask_new_layer};
-use super::*;
+use super::{Adjustment, ColorMode, EngineError, Layer, LayerContent, Map, Result, Session, Value, json, pixels};
 
 /// Add an adjustment layer above the active one; it takes the mask `mask_new_layer` builds from `p` (a path, the selection, or the default white mask).
 pub(super) fn new_adjustment(s: &mut Session, adj: Adjustment, p: &Value, cmd: &str) -> Result<Value> {
@@ -18,9 +18,21 @@ pub(super) fn new_adjustment(s: &mut Session, adj: Adjustment, p: &Value, cmd: &
 
 /// Apply `adj` in place to the targeted layer mask, the targeted alpha channel or Quick Mask, or else the active layer's pixels, as one history step named `label`.
 pub(super) fn destructive_adjust(s: &mut Session, label: &str, adj: Adjustment, p: &Value) -> Result<Value> {
+    if let Some(colors) = crate::color_channels::target(s, p)? {
+        let id = layer_param(s, p)?;
+        return s.edit(label, |doc, _| {
+            let bounds = doc.bounds();
+            let selection = doc.selection.clone();
+            let surf = paint_surface(doc, id, p)?;
+            let extent = bounds.union(&surf.content_bounds());
+            crate::color_channels::adjust(surf, colors, &adj, selection.as_ref(), extent)?;
+            Ok(Value::Null)
+        });
+    }
+
     if is_mask_target(p) {
         // The targeted layer mask (#780): ⌘I inverts it, as in Photoshop.
-        let id = layer_param(s, &Value::Null)?;
+        let id = layer_param(s, p)?;
         return s.edit(label, |doc, _| {
             check_all_unlocked(doc, id)?;
             let sel = doc.selection.clone();
@@ -39,11 +51,11 @@ pub(super) fn destructive_adjust(s: &mut Session, label: &str, adj: Adjustment, 
             Ok(Value::Null)
         });
     }
-    let id = layer_param(s, &Value::Null)?;
+    let id = layer_param(s, p)?;
     s.edit(label, |doc, _| {
         let sel = doc.selection.clone();
         let mode = doc.mode;
-        let surf = paint_surface(doc, id, &Value::Null)?;
+        let surf = paint_surface(doc, id, p)?;
         pixels::adjust_surface(surf, &adj, sel.as_ref(), mode).map_err(EngineError::Other)?;
         Ok(())
     })?;

@@ -167,29 +167,7 @@ fn complete_cow<'a>(
     }
     let r = p.patch_radius.max(1);
     let psz = 2 * r + 1;
-    // Pyramid: shrink until the hole is about four patches across (a deeper pyramid decides the
-    // structure where the texture has averaged out, and fills flat). A thin hole stops while it
-    // is still about two patches thick: through it, not along it, is what counts (#1366).
-    let mut levels = vec![Level { w, h, img, px: Cow::Borrowed(px) }];
-    let mut boxes = vec![hb0];
-    let mut ext = hb0.width().max(hb0.height());
-    let thickness = hole_thickness(w, hb0, px);
-    let thin = thickness.saturating_mul(THIN_RATIO) <= ext;
-    if thin {
-        ext = thickness;
-    }
-    let mut exts = vec![ext];
-    while let Some(l) = levels.last() {
-        ctl.check()?;
-        if ext <= if thin { 2 * psz } else { 4 * psz } || l.w / 2 < 3 * psz || l.h / 2 < 3 * psz {
-            break;
-        }
-        let d = downsample(l, ch);
-        levels.push(d);
-        boxes.push(boxes[boxes.len() - 1].half());
-        ext = ext.div_ceil(2);
-        exts.push(ext);
-    }
+    let Pyramid { mut levels, boxes, exts, thin } = build_pyramid(Level { w, h, img, px: Cow::Borrowed(px) }, ch, hb0, psz, ctl)?;
     let nlev = levels.len();
     // The coarser level's result.
     let mut prev: Option<Coarser> = None;
@@ -209,15 +187,7 @@ fn complete_cow<'a>(
             return Ok(Err(limg));
         }
         // The level's own pixels to fill (at level 0 the caller's, or a copy made in parallel).
-        let mut limg = match limg {
-            Cow::Owned(v) => v,
-            Cow::Borrowed(b) => {
-                const CHUNK: usize = 1 << 16;
-                let mut v = vec![0.0f32; b.len()];
-                par::chunks_mut(&mut v, CHUNK, true, |i, d| d.copy_from_slice(&b[i * CHUNK..i * CHUNK + d.len()]));
-                v
-            }
-        };
+        let mut limg = into_owned_pixels(limg);
         let targets = targets_around(lw, r, &lpx, hb, tb);
         ctl.check()?;
         // Initialise the hole: at the coarsest level peeled from its edge inwards (or a membrane
@@ -225,40 +195,13 @@ fn complete_cow<'a>(
         // its scaled-up matches.
         let coarser = prev.take();
         match &coarser {
-            Some(c) => {
-                let (pw, ph) = (c.w, c.h);
-                for y in hb.y0..hb.y1 {
-                    for x in hb.x0..hb.x1 {
-                        if lpx[y * lw + x] == Px::Hole {
-                            let (sx, sy) = ((x / 2).min(pw - 1), (y / 2).min(ph - 1));
-                            let (d, s) = ((y * lw + x) * ch, (sy * pw + sx) * ch);
-                            limg[d..d + ch].copy_from_slice(&c.img[s..s + ch]);
-                        }
-                    }
-                }
-            }
+            Some(c) => copy_up_coarser(&mut limg, &lpx, lw, ch, hb, c),
             // A thin hole, when peeling it would take too long, takes the membrane below: a few
             // patches thick here, a membrane across it is its surroundings.
             None if sources.len() > 0 && (!thin || peel_affordable(lw, &lpx, hb, sources.len())) => {
                 onion_peel(lw, lh, ch, ri, &mut limg, &lpx, hb, &sources.all(&valid, lw), ctl)?
             }
-            None => {
-                let mut unknown: Vec<bool> = lpx.iter().map(|k| matches!(k, Px::Hole | Px::Void)).collect();
-                // Across a thin hole the membrane starts a patch radius out, past the
-                // anti-aliased fringe or halo that a selection drawn close to the object leaves.
-                if thin {
-                    let hole: Vec<bool> = lpx.iter().map(|k| *k == Px::Hole).collect();
-                    for (u, d) in unknown.iter_mut().zip(crate::selection::edt(&hole, lw, lh)) {
-                        *u |= d <= r as f32;
-                    }
-                }
-                let m = membrane_fill(lw, lh, ch, &limg, &unknown);
-                for (i, k) in lpx.iter().enumerate() {
-                    if *k == Px::Hole {
-                        limg[i * ch..(i + 1) * ch].copy_from_slice(&m[i * ch..(i + 1) * ch]);
-                    }
-                }
-            }
+            None => fill_hole_with_membrane(&mut limg, &lpx, (lw, lh, ch), r, thin),
         }
         if sources.len() == 0 {
             prev = Some(Coarser { w: lw, h: lh, img: limg, field: Vec::new(), tbox: tb });
@@ -290,36 +233,7 @@ fn complete_cow<'a>(
         // NNF init: the coarser level's matches scaled up where they land on a valid source,
         // random otherwise.
         let mut rng = Rng::new(p.seed ^ (li as u64) << 20);
-        let tw = tb.width();
-        let mut nnf = vec![(0i32, 0i32); tb.area()];
-        let mut upsampled = false;
-        for y in tb.y0..tb.y1 {
-            if y % 32 == 0 {
-                ctl.check()?;
-            }
-            for x in tb.x0..tb.x1 {
-                let k = (y - tb.y0) * tw + (x - tb.x0);
-                if !solver.targets[k] {
-                    continue;
-                }
-                let mut cand = None;
-                if let Some(c) = &coarser
-                    && !c.field.is_empty()
-                {
-                    let (cx, cy) = ((x / 2).min(c.w - 1), (y / 2).min(c.h - 1));
-                    let (sx, sy) = c.field_at(cx, cy);
-                    if sx != i32::MIN {
-                        // The same displacement, twice as long.
-                        let c = (x as i32 + 2 * (sx - cx as i32), y as i32 + 2 * (sy - cy as i32));
-                        if solver.is_valid(c.0, c.1) {
-                            cand = Some(c);
-                        }
-                    }
-                }
-                upsampled |= cand.is_some();
-                nnf[k] = cand.unwrap_or_else(|| sources.nth((rng.next() % sources.len() as u64) as usize, &solver.valid, lw));
-            }
-        }
+        let (mut nnf, upsampled) = seed_matches(&solver, coarser.as_ref(), &sources, &mut rng, lw, tb, ctl)?;
         // The coarser level has given all it had.
         drop(coarser);
         let mut cost = vec![f32::INFINITY; tb.area()];
@@ -368,6 +282,139 @@ fn complete_cow<'a>(
         prev = Some(Coarser { w: lw, h: lh, img: limg, field, tbox: tb });
     }
     Ok(prev.map(|c| c.img).ok_or(Cow::Owned(Vec::new())))
+}
+
+/// The levels of the completion, finest first, with the hole's bounds and extent at each.
+struct Pyramid<'a> {
+    levels: Vec<Level<'a>>,
+    boxes: Vec<common::Bounds>,
+    exts: Vec<usize>,
+    /// The hole is a thin one: its thickness, not its length, decides how deep to go.
+    thin: bool,
+}
+
+/// Shrinks the image until the hole is about four patches across (a deeper pyramid decides the
+/// structure where the texture has averaged out, and fills flat). A thin hole stops while it is
+/// still about two patches thick: through it, not along it, is what counts (#1366).
+fn build_pyramid<'a>(
+    first: Level<'a>,
+    ch: usize,
+    hb0: common::Bounds,
+    psz: usize,
+    ctl: &photocraft_raster::Interrupt,
+) -> Result<Pyramid<'a>, photocraft_raster::Cancelled> {
+    let thickness = hole_thickness(first.w, hb0, &first.px);
+    let mut levels = vec![first];
+    let mut boxes = vec![hb0];
+    let mut ext = hb0.width().max(hb0.height());
+    let thin = thickness.saturating_mul(THIN_RATIO) <= ext;
+    if thin {
+        ext = thickness;
+    }
+    let mut exts = vec![ext];
+    while let Some(l) = levels.last() {
+        ctl.check()?;
+        if ext <= if thin { 2 * psz } else { 4 * psz } || l.w / 2 < 3 * psz || l.h / 2 < 3 * psz {
+            break;
+        }
+        let d = downsample(l, ch);
+        levels.push(d);
+        boxes.push(boxes[boxes.len() - 1].half());
+        ext = ext.div_ceil(2);
+        exts.push(ext);
+    }
+    Ok(Pyramid { levels, boxes, exts, thin })
+}
+
+/// The level's own pixels to fill: the caller's, or a copy made in parallel.
+fn into_owned_pixels(img: Cow<'_, [f32]>) -> Vec<f32> {
+    match img {
+        Cow::Owned(v) => v,
+        Cow::Borrowed(b) => {
+            const CHUNK: usize = 1 << 16;
+            let mut v = vec![0.0f32; b.len()];
+            par::chunks_mut(&mut v, CHUNK, true, |i, d| d.copy_from_slice(&b[i * CHUNK..i * CHUNK + d.len()]));
+            v
+        }
+    }
+}
+
+/// Starts the hole from the coarser level's pixels, scaled up.
+fn copy_up_coarser(img: &mut [f32], px: &[Px], w: usize, ch: usize, hb: common::Bounds, c: &Coarser) {
+    let (pw, ph) = (c.w, c.h);
+    for y in hb.y0..hb.y1 {
+        for x in hb.x0..hb.x1 {
+            if px[y * w + x] == Px::Hole {
+                let (sx, sy) = ((x / 2).min(pw - 1), (y / 2).min(ph - 1));
+                let (d, s) = ((y * w + x) * ch, (sy * pw + sx) * ch);
+                img[d..d + ch].copy_from_slice(&c.img[s..s + ch]);
+            }
+        }
+    }
+}
+
+/// Starts the hole as a membrane over its surroundings, for where nothing can be copied. `dims`
+/// is the level's width, height and channel count.
+fn fill_hole_with_membrane(img: &mut [f32], px: &[Px], dims: (usize, usize, usize), r: usize, thin: bool) {
+    let (w, h, ch) = dims;
+    let mut unknown: Vec<bool> = px.iter().map(|k| matches!(k, Px::Hole | Px::Void)).collect();
+    // Across a thin hole the membrane starts a patch radius out, past the
+    // anti-aliased fringe or halo that a selection drawn close to the object leaves.
+    if thin {
+        let hole: Vec<bool> = px.iter().map(|k| *k == Px::Hole).collect();
+        for (u, d) in unknown.iter_mut().zip(crate::selection::edt(&hole, w, h)) {
+            *u |= d <= r as f32;
+        }
+    }
+    let m = membrane_fill(w, h, ch, img, &unknown);
+    for (i, k) in px.iter().enumerate() {
+        if *k == Px::Hole {
+            img[i * ch..(i + 1) * ch].copy_from_slice(&m[i * ch..(i + 1) * ch]);
+        }
+    }
+}
+
+/// The coarser level's match for `(x, y)`, scaled up, where it lands on a valid source.
+fn upscaled_match(solver: &Solver, c: &Coarser, x: usize, y: usize) -> Option<(i32, i32)> {
+    let (cx, cy) = ((x / 2).min(c.w - 1), (y / 2).min(c.h - 1));
+    let (sx, sy) = c.field_at(cx, cy);
+    if sx == i32::MIN {
+        return None;
+    }
+    // The same displacement, twice as long.
+    let m = (x as i32 + 2 * (sx - cx as i32), y as i32 + 2 * (sy - cy as i32));
+    solver.is_valid(m.0, m.1).then_some(m)
+}
+
+/// NNF init: the coarser level's matches scaled up where they land on a valid source, random
+/// otherwise. Also says whether any came from the coarser level.
+fn seed_matches(
+    solver: &Solver,
+    coarser: Option<&Coarser>,
+    sources: &Sources,
+    rng: &mut Rng,
+    lw: usize,
+    tb: common::Bounds,
+    ctl: &photocraft_raster::Interrupt,
+) -> Result<(Vec<(i32, i32)>, bool), photocraft_raster::Cancelled> {
+    let tw = tb.width();
+    let mut nnf = vec![(0i32, 0i32); tb.area()];
+    let mut upsampled = false;
+    for y in tb.y0..tb.y1 {
+        if y % 32 == 0 {
+            ctl.check()?;
+        }
+        for x in tb.x0..tb.x1 {
+            let k = (y - tb.y0) * tw + (x - tb.x0);
+            if !solver.targets[k] {
+                continue;
+            }
+            let cand = coarser.filter(|c| !c.field.is_empty()).and_then(|c| upscaled_match(solver, c, x, y));
+            upsampled |= cand.is_some();
+            nnf[k] = cand.unwrap_or_else(|| sources.nth((rng.next() % sources.len() as u64) as usize, &solver.valid, lw));
+        }
+    }
+    Ok((nnf, upsampled))
 }
 
 #[cfg(test)]

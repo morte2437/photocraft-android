@@ -449,7 +449,7 @@ pub use shortcuts::{
     reserved_shortcut,
 };
 use store::read_lenient;
-pub use store::{InvalidPref, PREFS_VERSION, PrefsStore};
+pub use store::{InvalidPref, PREFS_VERSION, PrefsStore, read_section};
 pub use validate::{HIDDEN_UNTIL_IMPLEMENTED, LINUX_ONLY, SECTIONS, choices, gpu_adapter_matches, is_color, is_hidden, parse_hex, range};
 use validate::{check_value, get_path, keyed, set_path};
 
@@ -562,6 +562,16 @@ impl Default for Export {
 /// [`Performance::memory_usage_mb`]'s default.
 pub const DEFAULT_MEMORY_USAGE_MB: u32 = 8192;
 
+/// The most Memory Usage the web build honours, in MB: a wasm module's linear memory tops out at
+/// 4 GiB, so a larger allowance (the desktop default is 8 GiB) would never trim anything.
+const WASM_MEMORY_USAGE_CAP_MB: u32 = 1536;
+
+/// The Memory Usage a build honours for a `stored` preference: capped on the web build (`web`).
+/// Separate from the target check so native tests exercise both.
+fn honoured_memory_usage_mb(stored: u32, web: bool) -> u32 {
+    if web { stored.min(WASM_MEMORY_USAGE_CAP_MB) } else { stored }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Performance {
@@ -617,10 +627,16 @@ impl Performance {
         self.rendering_mode.unwrap_or_else(|| if !self.use_gpu || self.gpu_backend == GpuBackend::Cpu { RenderingMode::Cpu } else { RenderingMode::Auto })
     }
 
+    /// [`Performance::memory_usage_mb`] as the build can honour it: capped on the web, where the
+    /// stored preference (a saved 8192 still loads) is larger than the module's address space.
+    pub fn effective_memory_usage_mb(&self) -> u32 {
+        honoured_memory_usage_mb(self.memory_usage_mb, cfg!(target_arch = "wasm32"))
+    }
+
     /// Pixel memory a document and its History may hold (Memory Usage), in bytes: beyond it
     /// the oldest history states are dropped.
     pub fn history_budget_bytes(&self) -> usize {
-        (self.memory_usage_mb as usize).saturating_mul(1 << 20)
+        (self.effective_memory_usage_mb() as usize).saturating_mul(1 << 20)
     }
 }
 
@@ -1132,6 +1148,9 @@ pub struct Preferences {
     /// as the user changes it and restored at launch when Workspace › Remember Workspace
     /// Changes is on. JSON owned by the shell.
     pub panel_layout: Value,
+    /// The Color panel's options (what it shows, its ramp, Web colors, which chip it edits),
+    /// kept across restarts as Photoshop keeps them. JSON owned by the shell.
+    pub color_panel: Value,
     /// The last choices of dialogs that remember them across restarts, by command id (Edit ›
     /// Fill…: `"edit.fill"` → its params). JSON owned by the shell.
     pub dialogs: BTreeMap<String, Value>,
@@ -1160,6 +1179,9 @@ pub struct Preferences {
     /// targets that differ from their defaults, saved as the user toggles them and restored at
     /// launch, as Photoshop keeps them between sessions (#3762). JSON owned by the shell.
     pub view_extras: Value,
+    /// Recently Used Colors (`"#rrggbb"`, newest first), shown by the shape Fill and Stroke
+    /// popovers and kept between sessions as in Photoshop. Owned by the shell.
+    pub recent_colors: Vec<String>,
     /// File › Scripts › Script Events Manager: event → script bindings.
     pub script_events: crate::automate_cmds::ScriptEvents,
     /// Layer Mask Display Options: the layer mask rubylith's colour and opacity.
@@ -1314,7 +1336,7 @@ impl Session {
             st.trim_history();
         }
         photocraft_compose::set_effect_cache_budget(budget << 20);
-        crate::transform_cmds::set_budget(u64::from(self.prefs().performance.memory_usage_mb) << 20);
+        crate::transform_cmds::set_budget(u64::from(self.prefs().performance.effective_memory_usage_mb()) << 20);
         // Without waiting for the system font scan: this runs on the UI thread at launch.
         photocraft_text::set_shared_missing_glyph_protection(self.prefs().type_.missing_glyph_protection());
         crate::plugin_cmds::sync_prefs(self);

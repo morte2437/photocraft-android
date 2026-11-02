@@ -114,6 +114,11 @@ fn spot_channels_copy_and_paste_as_tone() {
         s.execute("edit.copy", json!({})).unwrap();
         let clip = &s.clipboard.as_ref().unwrap().surface;
         assert!(clip.pixel(5, 5)[0] < 1e-3 && (clip.pixel(30, 5)[0] - 1.0).abs() < 1e-3, "depth {depth}: ink copies dark");
+        let expected = clip.clone();
+        // An explicit spot target must keep the same tone while multiple colour rows are selected.
+        s.execute("channel.target", json!({"colors": [0, 2]})).unwrap();
+        s.execute("edit.copy", json!({"target": {"channel": spot}})).unwrap();
+        assert_eq!(s.clipboard.as_ref().unwrap().surface, expected, "depth {depth}: explicit spot target overrides the colour set");
         s.execute("channel.target", json!({"channel": "black"})).unwrap();
         s.execute("edit.paste", json!({})).unwrap();
         assert!((px(&s, 5, 5)[3] - 1.0).abs() < 2e-3 && px(&s, 30, 5)[3] < 2e-3, "depth {depth}: black = the spot's ink");
@@ -247,7 +252,7 @@ fn channel_copy_allocation_failure_keeps_clipboard_and_document() {
         let clip = s.clipboard.as_ref().unwrap().surface.clone();
         let history = s.active().unwrap().history.entries();
         crate::allocation::fail_next_for_test();
-        let result = copy(&mut s);
+        let result = copy(&mut s, &Value::Null);
         let _ = crate::allocation::capacity::<u8>(0, "reset failpoint");
         assert!(result.is_err());
         assert_eq!(*s.active().unwrap().doc, *before);

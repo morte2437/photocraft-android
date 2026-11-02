@@ -1,6 +1,7 @@
 //! Editing an action's steps and its set, as the Actions panel does beyond recording:
 //! `actions.insert` (Photoshop's Insert Stop… and Insert Menu Item…), `actions.dialog` (the
-//! panel's dialog toggle column) and `actions.assignSet` (which set folder an action sits in).
+//! panel's dialog toggle column), `actions.assignSet` (which set folder an action sits in) and
+//! `actions.newSet` (New Set…, an empty set folder).
 //!
 //! All three refuse to run during playback, commit pending recorded steps first, and keep the
 //! per-step flag sets (`disabled`, `dialogs`) in step with the moved indices, like
@@ -124,6 +125,33 @@ fn assign_set(s: &mut Session, p: &Value) -> Result<Value> {
     let result = json!({"action": action.name, "set": action.set});
     s.actions.touch();
     Ok(result)
+}
+
+/// Every set name, in the Actions panel's order: the sets of the actions as they first appear,
+/// then the empty ones New Set made.
+pub fn set_names(s: &Session) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    s.actions.list.iter().filter_map(|a| a.set.as_ref()).chain(&s.actions.sets).filter(|set| seen.insert(set.as_str())).cloned().collect()
+}
+
+/// New Set…: an empty set folder, named `name` or "Set N" (the first number no set has), that New
+/// Action can record into.
+fn new_set(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "actions.newSet";
+    not_playing(s, cmd)?;
+    let names = set_names(s);
+    let name = match p.get("name") {
+        None | Some(Value::Null) => (1u32..).map(|n| format!("Set {n}")).find(|n| !names.contains(n)).ok_or_else(|| bad(cmd, "no free set name"))?,
+        Some(Value::String(n)) if !n.trim().is_empty() => n.trim().to_string(),
+        Some(Value::String(_)) => return Err(bad(cmd, "`name` is empty")),
+        Some(_) => return Err(bad(cmd, "`name` must be a string")),
+    };
+    if names.contains(&name) {
+        return Err(bad(cmd, format!("a set named `{name}` already exists")));
+    }
+    s.actions.sets.push(name.clone());
+    s.actions.touch();
+    Ok(json!({"set": name}))
 }
 
 /// The conditions of Photoshop's Insert Conditional, by their string ids.
@@ -285,6 +313,16 @@ pub fn specs() -> Vec<CommandSpec> {
             run: assign_set,
             journal: false,
         },
+        CommandSpec {
+            id: "actions.newSet",
+            label: "New Set",
+            menu: &[],
+            shortcut: None,
+            params: r##"{"name":str? (default "Set N")} → {set}. An empty set folder in the Actions panel, as Photoshop's New Set… makes; New Action records into the selected set (actions.record's `set`). Save Actions… (actions.save's `set`) writes it even while empty; it is remembered between sessions once it holds an action."##,
+            enabled: always,
+            run: new_set,
+            journal: false,
+        },
     ]
 }
 
@@ -410,6 +448,28 @@ mod tests {
                 "{p}"
             );
         }
+    }
+
+    #[test]
+    fn new_set_makes_an_empty_folder_that_new_actions_record_into() {
+        let mut s = session_with(&["select.all"]);
+        s.execute("actions.assignSet", json!({"action": "A", "set": "Set 1"})).unwrap();
+        // Numbered past the sets the actions already have.
+        assert_eq!(s.execute("actions.newSet", json!({})).unwrap()["set"], "Set 2");
+        assert_eq!(s.execute("actions.newSet", json!({"name": " Retouch "})).unwrap()["set"], "Retouch");
+        assert_eq!(set_names(&s), ["Set 1", "Set 2", "Retouch"]);
+        // CodeRabbit on batch 11: Actions List names the empty sets too, so an agent can find them.
+        assert_eq!(s.execute("actions.list", json!({})).unwrap()["sets"], json!(["Set 1", "Set 2", "Retouch"]));
+        assert!(s.execute("actions.newSet", json!({"name": "Set 1"})).is_err(), "a set an action is in");
+        assert!(s.execute("actions.newSet", json!({"name": "Retouch"})).is_err(), "an empty set");
+        assert!(s.execute("actions.newSet", json!({"name": " "})).is_err());
+        // New Action into the empty set.
+        let r = s.execute("actions.record", json!({"set": "Retouch"})).unwrap();
+        s.execute("actions.stop", json!({})).unwrap();
+        let i = r["index"].as_u64().unwrap() as usize;
+        assert_eq!(s.actions.list[i].set.as_deref(), Some("Retouch"));
+        assert_eq!(set_names(&s), ["Set 1", "Retouch", "Set 2"], "Retouch now holds an action");
+        assert!(s.execute("actions.record", json!({"set": 3})).is_err());
     }
 
     #[test]

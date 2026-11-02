@@ -1,12 +1,5 @@
-use super::*;
-
-/// How much of a PSD conversion the merged composite weighs, in layer records: rendering it
-/// (all layers composited) and encoding its planes cost about two full-canvas layers.
-pub(super) const MERGED_WEIGHT: f32 = 2.0;
-
-/// The part of the merged composite's share filled once its bands are rendered and converted; the
-/// rest is compressing its planes.
-pub(super) const MERGED_RENDERED: f32 = 0.8;
+use super::{Document, PSD_SAVE_HEADROOM};
+use photocraft_psd::{PsdFile, Version, file::LayerInfoPlacement};
 
 /// The signature a kept tagged block is written with. `8B64` exists only in PSB files: a PSD
 /// with an `8B64` block (kept from a PSB source, e.g. its global `FMsk` or `cinf`) is refused by
@@ -22,6 +15,12 @@ pub(crate) fn block_signature(sig: [u8; 4], key: [u8; 4], version: Version) -> [
     }
 }
 
+/// How much of a PSD conversion the merged composite weighs, in layer records.
+pub(super) const MERGED_WEIGHT: f32 = 2.0;
+
+/// The part of the merged composite's share filled once its bands are rendered and converted.
+pub(super) const MERGED_RENDERED: f32 = 0.8;
+
 /// The version a document is encoded as: PSB when asked for or past PSD's 30000 px; otherwise
 /// PSD, which [`fit_psd_size`] turns into PSB once the encoded file proves too large.
 pub(crate) fn psd_version(doc: &Document, force_psb: bool) -> Version {
@@ -29,22 +28,18 @@ pub(crate) fn psd_version(doc: &Document, force_psb: bool) -> Version {
     if force_psb || exceeds_dimensions { Version::Psb } else { Version::Psd }
 }
 
-/// Keeps an encoded PSD whose file fits `limit` (less [`PSD_SAVE_HEADROOM`]) and turns a larger
-/// one into PSB (#212, #5285). The decision is made on the exact length of the file as it will be
-/// written, not on the raw pixel size: RLE usually packs the channels far below it. Promoting
-/// re-encodes nothing (only the RLE row-count tables widen, see [`PsdFile::promote_to_psb`]).
-/// Returns a warning when the version changed or could not be changed.
+/// Promote files that exceed the PSD limit, accounting for the preview appended by the save
+/// (#212, #5285). The decision is made on the exact length of the file as it will be written,
+/// not on the raw pixel size: RLE usually packs the channels far below it.
 pub(crate) fn fit_psd_size(file: &mut PsdFile, limit: u64) -> Option<String> {
-    if file.written_version().is_psb() {
+    if file.written_version() == Version::Psb {
         return None;
     }
-    // A length that cannot be computed (it overflows) cannot fit either.
     if file.encoded_len().is_ok_and(|len| len.saturating_add(PSD_SAVE_HEADROOM) <= limit) {
         return None;
     }
     match file.promote_to_psb() {
         Ok(()) => {
-            // Photoshop pads the layer info to 4 bytes; the padding depends on the version.
             let padded = file.layer_info.as_ref().is_some_and(|info| info.padding.is_some());
             if matches!(file.layer_info_placement, LayerInfoPlacement::Section)
                 && padded
@@ -55,12 +50,11 @@ pub(crate) fn fit_psd_size(file: &mut PsdFile, limit: u64) -> Option<String> {
             }
             Some("encoded size exceeds 2 GB; written as PSB".into())
         }
-        Err(e) => Some(format!("encoded size exceeds 2 GB, but the file could not be written as PSB: {e}")),
+        Err(error) => Some(format!("encoded size exceeds 2 GB, but the file could not be written as PSB: {error}")),
     }
 }
 
-/// Signs every global block for the version `file` is written as ([`block_signature`]): run
-/// after [`fit_psd_size`], which may turn a PSD into a PSB.
+/// Signs every global block for the version the file is written as.
 pub(crate) fn sign_global_blocks(file: &mut PsdFile) {
     let version = file.written_version();
     for block in &mut file.global_blocks {

@@ -19,7 +19,7 @@ impl Default for Runtime {
             startup_checked: false,
             notified_version: None,
             #[cfg(not(target_arch = "wasm32"))]
-            updater: craft_update::updater::Updater::new(&craft_update::suite::PHOTOCRAFT, photocraft_engine::build_info::VERSION),
+            updater: craft_update::updater::Updater::new(&crate::UPDATE_APP, photocraft_engine::build_info::VERSION),
         }
     }
 }
@@ -49,6 +49,8 @@ pub(crate) fn check(app: &mut PhotocraftApp, _ctx: &egui::Context, params: Value
     if result.is_ok() || failed_to_start {
         app.ui.updates_open = true;
         app.updates_rt.startup_checked = true;
+        // A release the user dismissed is offered again by a manual check.
+        app.updates_rt.notified_version = None;
     }
     result
 }
@@ -78,10 +80,12 @@ pub(crate) fn tick(app: &mut PhotocraftApp, ctx: &egui::Context) {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn show(_app: &mut PhotocraftApp, _ctx: &egui::Context) {}
+
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let mut download: Option<String> = None;
-
-    #[cfg(not(target_arch = "wasm32"))]
     {
         let was_open = app.updates_rt.updater.prompt_open();
         app.updates_rt.updater.tick(ctx);
@@ -97,74 +101,35 @@ pub(crate) fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         if was_open && !app.updates_rt.updater.prompt_open() {
             app.ui.updates_open = false;
         }
-        if app.updates_rt.updater.prompt_open() {
-            return;
-        }
     }
-
-    if !app.ui.updates_open {
-        if let Some(url) = download {
-            crate::links::open(app, ctx, &url);
-        }
-        return;
-    }
-    let mut open = true;
-    let status = app.session.updates.status.clone();
-    let mut retry = false;
-    egui::Window::new(tl!("PhotoCraft Updates"))
-        .id(egui::Id::unique("photocraft_updates"))
-        .open(&mut open)
-        .collapsible(false)
-        .resizable(false)
-        .default_width(380.0)
-        .show(ctx, |ui| {
-            let t = crate::theme::Tokens::get(ctx);
-            ui.label(crate::i18n::fmt(crate::i18n::t("Installed version: {version}"), &[("version", photocraft_engine::build_info::VERSION)]));
-            ui.add_space(8.0);
-            match &status {
-                Status::Checking => {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(tl!("Checking for updates…"));
-                    });
-                }
-                Status::Available { release } => {
-                    ui.label(crate::i18n::fmt(crate::i18n::t("PhotoCraft {version} is available."), &[("version", &release.version)]));
-                    #[cfg(not(target_arch = "wasm32"))]
-                    {
-                        if crate::widgets::primary_button(ui, tl!("Update and Restart"), 180.0).clicked() {
-                            app.updates_rt.updater.offer(release_of(release));
-                        }
-                        if ui.button(tl!("Release Notes")).clicked() {
-                            download = Some(release.url.clone());
-                        }
-                    }
-                    #[cfg(target_arch = "wasm32")]
-                    if crate::widgets::primary_button(ui, tl!("Open Download Page"), 160.0).clicked() {
-                        download = Some(release.url.clone());
-                    }
-                }
-                Status::UpToDate => {
-                    ui.label(tl!("PhotoCraft is up to date."));
-                }
-                Status::Failed { message } => {
-                    ui.colored_label(t.warning, tl!("Could not check for updates."));
-                    ui.label(message);
-                }
-                Status::Idle => {
-                    ui.label(tl!("Updates have not been checked yet."));
-                }
-            }
-            if !matches!(status, Status::Checking) && ui.button(tl!("Check Again")).clicked() {
-                retry = true;
-            }
-        });
-    app.ui.updates_open = open;
     if let Some(url) = download {
         crate::links::open(app, ctx, &url);
     }
-    if retry {
-        let _ = check(app, ctx, serde_json::json!({}));
+    if app.updates_rt.updater.prompt_open() {
+        return;
+    }
+    if app.ui.updates_open {
+        let dialog = craft_update::CheckResultDialog::new(&crate::UPDATE_APP, photocraft_engine::build_info::VERSION);
+        match dialog.show(ctx, &check_status(&app.session.updates.status)) {
+            craft_update::CheckResultResponse::None => {}
+            craft_update::CheckResultResponse::Close => app.ui.updates_open = false,
+            craft_update::CheckResultResponse::CheckAgain => {
+                let _ = check(app, ctx, serde_json::json!({}));
+            }
+        }
+    }
+}
+
+/// The engine's check state as the result dialog shows it. An available release goes to the
+/// startup prompt, so the dialog draws nothing for it.
+#[cfg(not(target_arch = "wasm32"))]
+fn check_status(status: &Status) -> craft_update::updater::Status {
+    use craft_update::updater::Status as Shown;
+    match status {
+        Status::Checking => Shown::Checking,
+        Status::UpToDate => Shown::UpToDate,
+        Status::Failed { message } => Shown::Failed(message.clone()),
+        Status::Idle | Status::Available { .. } => Shown::Idle,
     }
 }
 

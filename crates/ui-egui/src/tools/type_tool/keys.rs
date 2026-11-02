@@ -9,7 +9,7 @@ use super::ime::{
 use super::ime_edit::{ime_delete_bytes, ime_delete_chars, ime_update};
 use super::layout::layout;
 use super::pointer::word_boundary;
-use super::*;
+use super::{LayerId, PhotocraftApp, byte_of, current_text, json, text_char_count, text_layer};
 
 /// Caret on the neighbouring line (±1; a column in vertical type), keeping the position
 /// along the line. Works in line space, so it serves both orientations.
@@ -138,14 +138,6 @@ pub fn handle_keys(app: &mut PhotocraftApp, ctx: &egui::Context) -> bool {
         let is_key = matches!(ev, egui::Event::Key { .. });
         let text = if is_key { current_text(app, id).unwrap_or_default() } else { String::new() };
         let n = if is_key { text.chars().count() } else { 0 };
-        let set = |app: &mut PhotocraftApp, caret: usize, extend: bool| {
-            if let Some(e) = app.ui.text_edit.as_mut() {
-                e.caret = caret.min(n);
-                if !extend {
-                    e.anchor = e.caret;
-                }
-            }
-        };
         handled[k] = true;
         match ev {
             egui::Event::Text(s) => insert_typed(app, s),
@@ -199,133 +191,9 @@ pub fn handle_keys(app: &mut PhotocraftApp, ctx: &egui::Context) -> bool {
             }
             egui::Event::Cut => cut_selection(app, ctx),
             egui::Event::Key { key, pressed: true, modifiers: m, .. } => {
-                use egui::Key;
-                let key = &flow_key(*key, vertical_flow);
-                match key {
-                    // Photoshop's type formatting keys act on the selected characters and win
-                    // over the global ⇧⌘K/U/B/I (Color Settings, Desaturate, Auto Color, Inverse)
-                    // while typing. Each press is one history step.
-                    Key::K | Key::U | Key::B | Key::I | Key::Slash | Key::Questionmark if m.command && m.shift && !m.alt => {
-                        let which = match key {
-                            Key::K => CharToggle::AllCaps,
-                            Key::U => CharToggle::Underline,
-                            Key::B => CharToggle::FauxBold,
-                            Key::I => CharToggle::FauxItalic,
-                            _ => CharToggle::Strikethrough,
-                        };
-                        toggle_char_style(app, which);
-                    }
-                    Key::H if m.command && m.shift && m.alt => toggle_hyphenate(app),
-                    // ⌥↑/↓ leading -/+2 pt, ⇧⌥↑/↓ baseline shift +/-2 pt (10 with ⌘/Ctrl).
-                    Key::ArrowUp | Key::ArrowDown if m.alt => {
-                        let step = if m.command { 10.0 } else { 2.0 };
-                        let up = *key == Key::ArrowUp;
-                        if m.shift {
-                            step_char_metric(app, "baselineShiftBy", if up { step } else { -step });
-                        } else {
-                            step_char_metric(app, "leadingBy", if up { -step } else { step });
-                        }
-                    }
-                    // ⌥←/→ over a selection tracks it by -/+20 (100 with ⌘/Ctrl).
-                    Key::ArrowLeft | Key::ArrowRight if m.alt && !m.shift && a != b => {
-                        let step = if m.command { 100.0 } else { 20.0 };
-                        step_char_metric(app, "trackingBy", if *key == Key::ArrowRight { step } else { -step });
-                    }
-                    Key::Backspace | Key::Delete => {
-                        if a == b {
-                            let fwd = *key == Key::Delete;
-                            let to = match (fwd, m.alt, m.command) {
-                                (false, _, true) => line_edge(app, id, a, false),
-                                (false, true, _) => word_boundary(&text, a, false),
-                                (false, _, _) => a.saturating_sub(1),
-                                (true, true, _) => word_boundary(&text, a, true),
-                                (true, _, _) => (a + 1).min(n),
-                            };
-                            if to != a {
-                                if let Some(e) = app.ui.text_edit.as_mut() {
-                                    e.anchor = to;
-                                }
-                                insert(app, "");
-                            }
-                        } else {
-                            insert(app, "");
-                        }
-                    }
-                    // Photoshop: Alt/Option+←/→ at a collapsed caret kerns the pair before it by
-                    // 20/1000 em (100 with ⌘/Ctrl), one history step per press.
-                    Key::ArrowLeft | Key::ArrowRight if m.alt && !m.shift && a == b => {
-                        let step = if m.command { 100.0 } else { 20.0 };
-                        kern_pair(app, id, ed.caret, if *key == Key::ArrowRight { step } else { -step });
-                    }
-                    Key::ArrowLeft | Key::ArrowRight => {
-                        let fwd = *key == Key::ArrowRight;
-                        // Word movement: ⌘/Ctrl (Photoshop's; Alt is kerning), and Alt+Shift
-                        // extends the selection by words; Home/End go to the line edges.
-                        let to = if m.command || m.alt {
-                            word_boundary(&text, ed.caret, fwd)
-                        } else if a != b && !m.shift {
-                            if fwd { b } else { a }
-                        } else if fwd {
-                            ed.caret + 1
-                        } else {
-                            ed.caret.saturating_sub(1)
-                        };
-                        set(app, to, m.shift);
-                    }
-                    Key::ArrowUp | Key::ArrowDown => {
-                        let to = if m.command {
-                            if *key == Key::ArrowUp { 0 } else { n }
-                        } else {
-                            line_step(app, id, ed.caret, if *key == Key::ArrowUp { -1 } else { 1 })
-                        };
-                        set(app, to, m.shift);
-                    }
-                    Key::Home | Key::End => {
-                        let to = line_edge(app, id, ed.caret, *key == Key::End);
-                        set(app, to, m.shift);
-                    }
-                    Key::Enter if m.command => commit_with(app, *m),
-                    Key::Enter => insert(app, "\n"),
-                    // Photoshop types a tab character; layout advances it to the next tab stop.
-                    Key::Tab if !m.command && !m.alt && !m.shift => {
-                        // egui queues focus navigation before this handler runs; consuming the
-                        // key alone would let the menu bar take focus after the first tab (#8889).
-                        ctx.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
-                        insert(app, "\t");
-                    }
-                    Key::Escape if crate::type_transform::active(app) => crate::type_transform::cancel_drag(app),
-                    // The Type Mask tools: Escape always cancels, leaving the selection as it was.
-                    Key::Escape if ed.mask => cancel(app),
-                    // Preferences ▸ Type: with "Use Escape to Commit" off, Escape cancels the
-                    // session (undoes it, removing a just-created layer) like the Cancel button.
-                    Key::Escape if app.session.prefs().type_.use_esc_to_commit => commit(app),
-                    Key::Escape => cancel(app),
-                    Key::A if m.command => {
-                        if let Some(e) = app.ui.text_edit.as_mut() {
-                            e.anchor = 0;
-                            e.caret = n;
-                        }
-                    }
-                    // Photoshop: while editing type, ⌘/Ctrl+T shows or hides the Character panel
-                    // (Free Transform of the layer being typed into is not what it means here).
-                    Key::T if m.command && !m.shift && !m.alt => {
-                        let _ = crate::menus::invoke(app, ctx, "window.panel.character", json!({}));
-                    }
-                    // Other command shortcuts (⌘Z, ⌘S, …) pass through to the menus.
-                    _ if m.command => {
-                        if *key == Key::Z {
-                            crate::type_transform::cancel_drag(app);
-                        }
-                        if reset_guarded(app, ctx.viewport_id()) || app.type_ime.incoming.is_some() {
-                            interrupt_action(app, ctx.viewport_id());
-                            custom_mutations = false;
-                            deferred_custom = true;
-                            suspend_reset(app, ctx);
-                        }
-                        handled[k] = false;
-                    }
-                    _ => {}
-                }
+                let edit = KeyEditContext { id, vertical_flow, edit: &ed, selection: (a, b), text: &text, char_count: n };
+                let mut flow = EventFlow { handled: &mut handled, index: k, custom_mutations: &mut custom_mutations, deferred_custom: &mut deferred_custom };
+                handle_pressed_key(app, ctx, key, m, &edit, &mut flow);
             }
             egui::Event::Key { pressed: false, modifiers: m, .. } => handled[k] = !m.command,
             _ => handled[k] = false,
@@ -344,4 +212,188 @@ pub fn handle_keys(app: &mut PhotocraftApp, ctx: &egui::Context) -> bool {
         });
     }
     app.ui.text_edit.is_some()
+}
+
+struct KeyEditContext<'a> {
+    id: LayerId,
+    vertical_flow: bool,
+    edit: &'a crate::state::TextEdit,
+    selection: (usize, usize),
+    text: &'a str,
+    char_count: usize,
+}
+
+struct EventFlow<'a> {
+    handled: &'a mut [bool],
+    index: usize,
+    custom_mutations: &'a mut bool,
+    deferred_custom: &'a mut bool,
+}
+
+fn handle_pressed_key(
+    app: &mut PhotocraftApp,
+    ctx: &egui::Context,
+    raw_key: &egui::Key,
+    modifiers: &egui::Modifiers,
+    edit: &KeyEditContext<'_>,
+    flow: &mut EventFlow<'_>,
+) {
+    let key = flow_key(*raw_key, edit.vertical_flow);
+    if handle_style_key(app, key, modifiers, edit) || handle_delete_key(app, key, modifiers, edit) || handle_move_key(app, key, modifiers, edit) {
+        return;
+    }
+
+    use egui::Key;
+    match key {
+        Key::Enter if modifiers.command && edit.edit.preedit.is_none() => commit_with(app, *modifiers),
+        Key::Enter if modifiers.command => {} // IME owns confirmation until preedit ends.
+        Key::Enter => insert(app, "\n"),
+        Key::Tab if !modifiers.command && !modifiers.alt && !modifiers.shift => {
+            // egui queues focus navigation before this handler runs; consuming the
+            // key alone would let the menu bar take focus after the first tab (#8889).
+            ctx.memory_mut(|memory| memory.move_focus(egui::FocusDirection::None));
+            insert(app, "\t");
+        }
+        Key::Escape if crate::type_transform::active(app) => crate::type_transform::cancel_drag(app),
+        Key::Escape if edit.edit.mask => cancel(app),
+        Key::Escape if app.session.prefs().type_.use_esc_to_commit => commit(app),
+        Key::Escape => cancel(app),
+        Key::A if modifiers.command => {
+            app.ui.type_insertion_style = None;
+            if let Some(state) = app.ui.text_edit.as_mut() {
+                state.anchor = 0;
+                state.caret = edit.char_count;
+            }
+        }
+        Key::T if modifiers.command && !modifiers.shift && !modifiers.alt => {
+            let _ = crate::menus::invoke(app, ctx, "window.panel.character", json!({}));
+        }
+        _ if modifiers.command => {
+            if key == Key::Z {
+                crate::type_transform::cancel_drag(app);
+            }
+            if reset_guarded(app, ctx.viewport_id()) || app.type_ime.incoming.is_some() {
+                interrupt_action(app, ctx.viewport_id());
+                *flow.custom_mutations = false;
+                *flow.deferred_custom = true;
+                suspend_reset(app, ctx);
+            }
+            flow.handled[flow.index] = false;
+        }
+        _ => {}
+    }
+}
+
+fn handle_style_key(app: &mut PhotocraftApp, key: egui::Key, modifiers: &egui::Modifiers, edit: &KeyEditContext<'_>) -> bool {
+    use egui::Key;
+    match key {
+        Key::K | Key::U | Key::B | Key::I | Key::Slash | Key::Questionmark if modifiers.command && modifiers.shift && !modifiers.alt => {
+            let style = match key {
+                Key::K => CharToggle::AllCaps,
+                Key::U => CharToggle::Underline,
+                Key::B => CharToggle::FauxBold,
+                Key::I => CharToggle::FauxItalic,
+                _ => CharToggle::Strikethrough,
+            };
+            toggle_char_style(app, style);
+            true
+        }
+        Key::H if modifiers.command && modifiers.shift && modifiers.alt => {
+            toggle_hyphenate(app);
+            true
+        }
+        Key::ArrowUp | Key::ArrowDown if modifiers.alt => {
+            let amount = if modifiers.command { 10.0 } else { 2.0 };
+            let up = key == Key::ArrowUp;
+            let (property, delta) =
+                if modifiers.shift { ("baselineShiftBy", if up { amount } else { -amount }) } else { ("leadingBy", if up { -amount } else { amount }) };
+            step_char_metric(app, property, delta);
+            true
+        }
+        Key::ArrowLeft | Key::ArrowRight if modifiers.alt && !modifiers.shift && edit.selection.0 != edit.selection.1 => {
+            let amount = if modifiers.command { 100.0 } else { 20.0 };
+            let delta = if key == Key::ArrowRight { amount } else { -amount };
+            step_char_metric(app, "trackingBy", delta);
+            true
+        }
+        Key::ArrowLeft | Key::ArrowRight if modifiers.alt && !modifiers.shift && edit.selection.0 == edit.selection.1 => {
+            let amount = if modifiers.command { 100.0 } else { 20.0 };
+            let delta = if key == Key::ArrowRight { amount } else { -amount };
+            kern_pair(app, edit.id, edit.edit.caret, delta);
+            true
+        }
+        _ => false,
+    }
+}
+
+fn handle_delete_key(app: &mut PhotocraftApp, key: egui::Key, modifiers: &egui::Modifiers, edit: &KeyEditContext<'_>) -> bool {
+    use egui::Key;
+    if !matches!(key, Key::Backspace | Key::Delete) {
+        return false;
+    }
+    let (start, end) = edit.selection;
+    if start == end {
+        let forward = key == Key::Delete;
+        let to = match (forward, modifiers.alt, modifiers.command) {
+            (false, _, true) => line_edge(app, edit.id, start, false),
+            (false, true, _) => word_boundary(edit.text, start, false),
+            (false, _, _) => start.saturating_sub(1),
+            (true, true, _) => word_boundary(edit.text, start, true),
+            (true, _, _) => (start + 1).min(edit.char_count),
+        };
+        if to != start {
+            if let Some(state) = app.ui.text_edit.as_mut() {
+                state.anchor = to;
+            }
+            insert(app, "");
+        }
+    } else {
+        insert(app, "");
+    }
+    true
+}
+
+fn handle_move_key(app: &mut PhotocraftApp, key: egui::Key, modifiers: &egui::Modifiers, edit: &KeyEditContext<'_>) -> bool {
+    use egui::Key;
+    let caret = edit.edit.caret;
+    let (start, end) = edit.selection;
+    let destination = match key {
+        Key::ArrowLeft | Key::ArrowRight => {
+            let forward = key == Key::ArrowRight;
+            Some(if modifiers.command || modifiers.alt {
+                word_boundary(edit.text, caret, forward)
+            } else if start != end && !modifiers.shift {
+                if forward { end } else { start }
+            } else if forward {
+                caret + 1
+            } else {
+                caret.saturating_sub(1)
+            })
+        }
+        Key::ArrowUp | Key::ArrowDown => Some(if modifiers.command {
+            if key == Key::ArrowUp { 0 } else { edit.char_count }
+        } else {
+            line_step(app, edit.id, caret, if key == Key::ArrowUp { -1 } else { 1 })
+        }),
+        Key::Home | Key::End => Some(line_edge(app, edit.id, caret, key == Key::End)),
+        _ => None,
+    };
+    if let Some(destination) = destination {
+        set_caret(app, edit.char_count, destination, modifiers.shift);
+        true
+    } else {
+        false
+    }
+}
+
+fn set_caret(app: &mut PhotocraftApp, char_count: usize, caret: usize, extend: bool) {
+    if let Some(state) = app.ui.text_edit.as_mut() {
+        if state.caret != caret.min(char_count) || (!extend && state.anchor != caret.min(char_count)) {
+            app.ui.type_insertion_style = None;
+        }
+        state.caret = caret.min(char_count);
+        if !extend {
+            state.anchor = state.caret;
+        }
+    }
 }

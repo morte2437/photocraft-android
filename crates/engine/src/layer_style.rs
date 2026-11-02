@@ -47,6 +47,9 @@ fn color_of(p: &Value, k: &str) -> Option<Color> {
             let h = |i: usize| s.get(i..i + 2).and_then(|x| u8::from_str_radix(x, 16).ok()).map_or(0.0, |v| f32::from(v) / 255.0);
             (s.len() >= 6).then_some(Color::rgb(h(0), h(2), h(4)))
         }
+        Some(v @ Value::Object(_)) => serde_json::from_value::<Color>(v.clone())
+            .ok()
+            .filter(|c| c.c.iter().all(|v| v.is_finite()) && c.alpha.is_finite() && (0.0..=1.0).contains(&c.alpha)),
         _ => None,
     }
 }
@@ -66,15 +69,77 @@ fn gradient_stops(p: &Value, from: Color, to: Color) -> Vec<(f32, Color)> {
         None => stops,
     }
 }
+/// The gradient of a stroke or overlay's params. Bad `stops` are ignored here, as bad values of
+/// any other key are; the commands refuse them first ([`check_gradient_params`]).
 fn gradient(p: &Value) -> Gradient {
+    let stops = match stops_param(p, "layer.layerStyle").ok().flatten() {
+        Some(stops) => stops,
+        None => gradient_stops(p, color(p, "from", [0.0; 3]), color(p, "to", [1.0; 3])),
+    };
     Gradient {
-        stops: gradient_stops(p, color(p, "from", [0.0; 3]), color(p, "to", [1.0; 3])),
+        stops,
+        opacity_stops: opacity_stops_param(p, "layer.layerStyle").ok().flatten().unwrap_or_default(),
         style: gradient_style(p.get("style").and_then(Value::as_str).unwrap_or("linear")),
         angle: f(p, "angle", 90.0),
         scale: (f(p, "scale", 100.0) / 100.0).clamp(0.1, 1.5),
         reverse: b(p, "reverse", false),
         ..Gradient::default()
     }
+}
+
+/// `Err` when `stops` or `opacityStops` are present but malformed, so a command refuses them
+/// instead of silently keeping the old gradient.
+pub fn check_gradient_params(p: &Value, cmd: &str) -> Result<()> {
+    stops_param(p, cmd)?;
+    opacity_stops_param(p, cmd)?;
+    Ok(())
+}
+
+/// Most stops a gradient parameter may carry.
+const MAX_STOPS: usize = 256;
+
+/// Explicit colour stops (#5177): `"stops": [[position 0..1, "#rrggbb" | [r, g, b]], …]`, at
+/// least 2 and at most [`MAX_STOPS`], returned sorted by position. `None` without the key.
+fn stops_param(p: &Value, cmd: &str) -> Result<Option<Vec<(f32, Color)>>> {
+    let Some(v) = p.get("stops") else { return Ok(None) };
+    let bad = |msg: String| EngineError::BadParams { cmd: cmd.into(), msg };
+    let a = v.as_array().ok_or_else(|| bad("\"stops\" must be an array of [position, colour]".into()))?;
+    if a.len() < 2 {
+        return Err(bad("\"stops\" needs at least 2 stops".into()));
+    }
+    if a.len() > MAX_STOPS {
+        return Err(bad(format!("\"stops\": at most {MAX_STOPS} stops")));
+    }
+    let mut stops = Vec::with_capacity(a.len());
+    for (i, s) in a.iter().enumerate() {
+        let t = s.get(0).and_then(Value::as_f64).filter(|t| t.is_finite()).ok_or_else(|| bad(format!("\"stops\"[{i}] must be [position 0..1, colour]")))?;
+        let c = s.get(1).and_then(|c| color_of(&json!({"c": c}), "c")).ok_or_else(|| bad(format!("\"stops\"[{i}]: no colour (\"#rrggbb\" or [r, g, b])")))?;
+        stops.push((t.clamp(0.0, 1.0) as f32, c));
+    }
+    stops.sort_by(|a, b| a.0.total_cmp(&b.0));
+    Ok(Some(stops))
+}
+
+/// Explicit transparency stops: `"opacityStops": [[position 0..1, opacity 0..100], …]`; an empty
+/// array means fully opaque. `None` without the key.
+fn opacity_stops_param(p: &Value, cmd: &str) -> Result<Option<Vec<(f32, f32)>>> {
+    let Some(v) = p.get("opacityStops") else { return Ok(None) };
+    let bad = |msg: String| EngineError::BadParams { cmd: cmd.into(), msg };
+    let a = v.as_array().ok_or_else(|| bad("\"opacityStops\" must be an array of [position, opacity]".into()))?;
+    if a.len() > MAX_STOPS {
+        return Err(bad(format!("\"opacityStops\": at most {MAX_STOPS} stops")));
+    }
+    if a.len() == 1 {
+        return Err(bad("\"opacityStops\" needs at least 2 stops (or none)".into()));
+    }
+    let mut stops = Vec::with_capacity(a.len());
+    for (i, s) in a.iter().enumerate() {
+        let num = |k: usize| s.get(k).and_then(Value::as_f64).filter(|x| x.is_finite());
+        let (t, o) = num(0).zip(num(1)).ok_or_else(|| bad(format!("\"opacityStops\"[{i}] must be [position 0..1, opacity 0..100]")))?;
+        stops.push((t.clamp(0.0, 1.0) as f32, (o / 100.0).clamp(0.0, 1.0) as f32));
+    }
+    stops.sort_by(|a, b| a.0.total_cmp(&b.0));
+    Ok(Some(stops))
 }
 
 /// Factory defaults for each effect kind, in the command's parameter units
@@ -572,11 +637,18 @@ fn fresh_effect(kind: &str) -> Option<Effect> {
     })
 }
 
-/// Edits an existing gradient in place: only the end colours and geometry.
-/// Intermediate stops, opacity stops, alignment and offset survive a round trip.
+/// Edits an existing gradient in place: explicit `stops` / `opacityStops` replace the lists;
+/// otherwise only the end colours and geometry change, and intermediate stops, opacity stops,
+/// alignment and offset survive a round trip.
 fn overlay_gradient(g: &mut Gradient, p: &Value) {
+    if let Some(stops) = stops_param(p, "layer.layerStyle").ok().flatten() {
+        g.stops = stops;
+    }
+    if let Some(os) = opacity_stops_param(p, "layer.layerStyle").ok().flatten() {
+        g.opacity_stops = os;
+    }
     // A method rebuilds the gradient from its end colours (the stops between are the old curve).
-    if p.get("method").and_then(Value::as_str).is_some_and(|m| photocraft_io::GradientMethod::from_name(m).is_some()) {
+    if p.get("stops").is_none() && p.get("method").and_then(Value::as_str).is_some_and(|m| photocraft_io::GradientMethod::from_name(m).is_some()) {
         let ends = (g.stops.first().map(|s| s.1), g.stops.last().map(|s| s.1));
         let from = color_of(p, "from").or(ends.0).unwrap_or(Color::BLACK);
         let to = color_of(p, "to").or(ends.1).unwrap_or(Color::WHITE);
@@ -610,248 +682,260 @@ fn overlay_gradient(g: &mut Gradient, p: &Value) {
 /// parameter units. Absent (or unparseable) keys leave the effect unchanged, so
 /// a dialog round trip never touches what it doesn't model: an imported
 /// gradient stroke keeps its gradient while its opacity is edited.
+fn overlay_color(p: &Value, k: &str, c: &mut Color) {
+    if let Some(x) = color_of(p, k) {
+        *c = x;
+    }
+}
+
+fn overlay_contour(p: &Value, key: &str, c: &mut Contour) {
+    if let Some(x) = p.get(key).and_then(contour_from_param) {
+        *c = x;
+    }
+}
+
+fn overlay_bool(p: &Value, key: &str, b: &mut bool) {
+    if let Some(x) = b_of(p, key) {
+        *b = x;
+    }
+}
+
+fn overlay_common(c: &mut FxCommon, p: &Value) {
+    if let Some(x) = b_of(p, "enabled") {
+        c.enabled = x;
+    }
+    if let Some(x) = p.get("blend").and_then(Value::as_str).and_then(blend_from_str) {
+        c.blend = x;
+    }
+    if let Some(x) = f_of(p, "opacity") {
+        c.opacity = (x / 100.0).clamp(0.0, 1.0);
+    }
+}
+
+fn overlay_shadow(s: &mut Shadow, p: &Value, inner: bool) {
+    overlay_common(&mut s.common, p);
+    overlay_color(p, "color", &mut s.color);
+    if let Some(x) = f_of(p, "angle") {
+        s.angle = x;
+    }
+    if let Some(x) = b_of(p, "useGlobalLight") {
+        s.use_global_light = x;
+    }
+    if let Some(x) = f_of(p, "distance") {
+        s.distance = x;
+    }
+    if let Some(x) = f_of(p, if inner { "choke" } else { "spread" }) {
+        s.spread = (x / 100.0).clamp(0.0, 1.0);
+    }
+    if let Some(x) = f_of(p, "size") {
+        s.size = x;
+    }
+    overlay_contour(p, "contour", &mut s.contour);
+    overlay_bool(p, "antiAlias", &mut s.anti_alias);
+    if let Some(x) = f_of(p, "noise") {
+        s.noise = (x / 100.0).clamp(0.0, 1.0);
+    }
+    if !inner && let Some(x) = b_of(p, "knocksOut") {
+        s.knocks_out = x;
+    }
+}
+
+fn overlay_glow(g: &mut Glow, p: &Value, inner: bool) {
+    overlay_common(&mut g.common, p);
+    if let Some(c) = color_of(p, "color") {
+        g.paint = FxPaint::Color(c);
+    }
+    if let Some(t) = p.get("technique").and_then(Value::as_str) {
+        g.technique = if t == "precise" { GlowTechnique::Precise } else { GlowTechnique::Softer };
+    }
+    if let Some(x) = f_of(p, if inner { "choke" } else { "spread" }) {
+        g.spread = (x / 100.0).clamp(0.0, 1.0);
+    }
+    if let Some(x) = f_of(p, "size") {
+        g.size = x;
+    }
+    overlay_contour(p, "contour", &mut g.contour);
+    overlay_bool(p, "antiAlias", &mut g.anti_alias);
+    if let Some(x) = f_of(p, "range") {
+        g.range = (x / 100.0).clamp(0.01, 1.0);
+    }
+    if let Some(x) = f_of(p, "noise") {
+        g.noise = (x / 100.0).clamp(0.0, 1.0);
+    }
+    if inner && let Some(s) = p.get("source").and_then(Value::as_str) {
+        g.source = if s == "center" { GlowSource::Center } else { GlowSource::Edge };
+    }
+}
+
+fn overlay_stroke(s: &mut StrokeFx, p: &Value) {
+    overlay_common(&mut s.common, p);
+    if let Some(x) = f_of(p, "size") {
+        s.size = x;
+    }
+    if let Some(pos) = p.get("position").and_then(Value::as_str) {
+        s.position = match pos {
+            "inside" => StrokePosition::Inside,
+            "center" => StrokePosition::Center,
+            _ => StrokePosition::Outside,
+        };
+    }
+    overlay_bool(p, "overprint", &mut s.overprint);
+    if p.get("from").is_some() || p.get("stops").is_some() {
+        s.paint = FxPaint::Gradient(gradient(p));
+    } else if let Some(c) = color_of(p, "color") {
+        s.paint = FxPaint::Color(c);
+    }
+}
+
+fn overlay_pattern(fx: &mut Effect, p: &Value) {
+    let Effect::PatternOverlay { common, name, id, scale, angle, link, phase } = fx else { return };
+    overlay_common(common, p);
+    if let Some(x) = p.get("pattern").and_then(Value::as_str) {
+        *name = x.to_string();
+        *id = String::new();
+    }
+    if let Some(x) = f_of(p, "scale") {
+        *scale = (x / 100.0).clamp(0.01, 10.0);
+    }
+    if let Some(x) = f_of(p, "angle") {
+        *angle = x;
+    }
+    if let Some(x) = b_of(p, "link") {
+        *link = x;
+    }
+    if let Some(x) = f_of(p, "phaseX") {
+        phase.0 = x;
+    }
+    if let Some(x) = f_of(p, "phaseY") {
+        phase.1 = x;
+    }
+}
+
+fn overlay_satin(s: &mut Satin, p: &Value) {
+    overlay_common(&mut s.common, p);
+    overlay_color(p, "color", &mut s.color);
+    if let Some(x) = f_of(p, "angle") {
+        s.angle = x;
+    }
+    if let Some(x) = f_of(p, "distance") {
+        s.distance = x;
+    }
+    if let Some(x) = f_of(p, "size") {
+        s.size = x;
+    }
+    if let Some(x) = b_of(p, "invert") {
+        s.invert = x;
+    }
+    overlay_contour(p, "contour", &mut s.contour);
+    overlay_bool(p, "antiAlias", &mut s.anti_alias);
+}
+
+fn overlay_bevel(bv: &mut Bevel, p: &Value) {
+    if let Some(x) = b_of(p, "enabled") {
+        bv.enabled = x;
+    }
+    if let Some(s) = p.get("style").and_then(Value::as_str) {
+        bv.style = match s {
+            "outer" => BevelStyle::OuterBevel,
+            "emboss" => BevelStyle::Emboss,
+            "pillow" => BevelStyle::PillowEmboss,
+            "stroke" => BevelStyle::StrokeEmboss,
+            _ => BevelStyle::InnerBevel,
+        };
+    }
+    if let Some(t) = p.get("technique").and_then(Value::as_str) {
+        bv.technique = match t {
+            "chiselHard" => BevelTechnique::ChiselHard,
+            "chiselSoft" => BevelTechnique::ChiselSoft,
+            _ => BevelTechnique::Smooth,
+        };
+    }
+    if let Some(x) = f_of(p, "depth") {
+        bv.depth = x / 100.0;
+    }
+    if let Some(d) = p.get("direction").and_then(Value::as_str) {
+        bv.up = d != "down";
+    }
+    if let Some(x) = f_of(p, "size") {
+        bv.size = x;
+    }
+    if let Some(x) = f_of(p, "soften") {
+        bv.soften = x;
+    }
+    if let Some(x) = f_of(p, "angle") {
+        bv.angle = x;
+    }
+    if let Some(x) = f_of(p, "altitude") {
+        bv.altitude = x;
+    }
+    if let Some(x) = b_of(p, "useGlobalLight") {
+        bv.use_global_light = x;
+    }
+    overlay_contour(p, "glossContour", &mut bv.gloss_contour);
+    overlay_bool(p, "glossAntiAlias", &mut bv.gloss_anti_alias);
+    if let Some(blend) = p.get("highlightBlend").and_then(Value::as_str).and_then(blend_from_str) {
+        bv.highlight.blend = blend;
+    }
+    if let Some(blend) = p.get("shadowBlend").and_then(Value::as_str).and_then(blend_from_str) {
+        bv.shadow.blend = blend;
+    }
+    overlay_color(p, "highlightColor", &mut bv.highlight_color);
+    overlay_color(p, "shadowColor", &mut bv.shadow_color);
+    if let Some(x) = f_of(p, "highlightOpacity") {
+        bv.highlight.opacity = (x / 100.0).clamp(0.0, 1.0);
+    }
+    if let Some(x) = f_of(p, "shadowOpacity") {
+        bv.shadow.opacity = (x / 100.0).clamp(0.0, 1.0);
+    }
+    match b_of(p, "contour") {
+        Some(false) => bv.contour = None,
+        Some(true) if bv.contour.is_none() => bv.contour = Some(photocraft_doc::BevelContour::default()),
+        _ => {}
+    }
+    if let Some(c) = &mut bv.contour {
+        overlay_contour(p, "contourName", &mut c.contour);
+        if let Some(x) = f_of(p, "contourRange") {
+            c.range = (x / 100.0).clamp(0.01, 1.0);
+        }
+        overlay_bool(p, "contourAntiAlias", &mut c.anti_alias);
+    }
+    if let Some(t) = p.get("texture").and_then(Value::as_str).filter(|t| !t.is_empty()) {
+        bv.texture = Some(photocraft_doc::BevelTexture {
+            name: t.to_string(),
+            id: t.to_string(),
+            scale: (f(p, "textureScale", 100.0) / 100.0).clamp(0.01, 10.0),
+            depth: (f(p, "textureDepth", 100.0) / 100.0).clamp(-10.0, 10.0),
+            invert: b(p, "textureInvert", false),
+            link: b(p, "textureLink", true),
+            phase: (0.0, 0.0),
+        });
+    }
+}
+
 pub fn overlay_effect(fx: &mut Effect, p: &Value) {
     if crate::commands::check_f32_values("layer.layerStyle", p).is_err() {
         return;
     }
-    fn set_color(p: &Value, k: &str, c: &mut Color) {
-        if let Some(x) = color_of(p, k) {
-            *c = x;
-        }
-    }
-    fn set_contour(p: &Value, key: &str, c: &mut Contour) {
-        if let Some(x) = p.get(key).and_then(contour_from_param) {
-            *c = x;
-        }
-    }
-    fn set_bool(p: &Value, key: &str, b: &mut bool) {
-        if let Some(x) = b_of(p, key) {
-            *b = x;
-        }
-    }
-    fn common(c: &mut FxCommon, p: &Value) {
-        if let Some(x) = b_of(p, "enabled") {
-            c.enabled = x;
-        }
-        if let Some(x) = p.get("blend").and_then(Value::as_str).and_then(blend_from_str) {
-            c.blend = x;
-        }
-        if let Some(x) = f_of(p, "opacity") {
-            c.opacity = (x / 100.0).clamp(0.0, 1.0);
-        }
-    }
-    let inner_shadow = matches!(fx, Effect::InnerShadow(_));
-    let inner_glow = matches!(fx, Effect::InnerGlow(_));
     match fx {
-        Effect::DropShadow(s) | Effect::InnerShadow(s) => {
-            let inner = inner_shadow;
-            common(&mut s.common, p);
-            set_color(p, "color", &mut s.color);
-            if let Some(x) = f_of(p, "angle") {
-                s.angle = x;
-            }
-            if let Some(x) = b_of(p, "useGlobalLight") {
-                s.use_global_light = x;
-            }
-            if let Some(x) = f_of(p, "distance") {
-                s.distance = x;
-            }
-            if let Some(x) = f_of(p, if inner { "choke" } else { "spread" }) {
-                s.spread = (x / 100.0).clamp(0.0, 1.0);
-            }
-            if let Some(x) = f_of(p, "size") {
-                s.size = x;
-            }
-            set_contour(p, "contour", &mut s.contour);
-            set_bool(p, "antiAlias", &mut s.anti_alias);
-            if let Some(x) = f_of(p, "noise") {
-                s.noise = (x / 100.0).clamp(0.0, 1.0);
-            }
-            if !inner && let Some(x) = b_of(p, "knocksOut") {
-                s.knocks_out = x;
-            }
+        Effect::DropShadow(s) => overlay_shadow(s, p, false),
+        Effect::InnerShadow(s) => overlay_shadow(s, p, true),
+        Effect::OuterGlow(g) => overlay_glow(g, p, false),
+        Effect::InnerGlow(g) => overlay_glow(g, p, true),
+        Effect::Stroke(s) => overlay_stroke(s, p),
+        Effect::ColorOverlay { common, color } => {
+            overlay_common(common, p);
+            overlay_color(p, "color", color);
         }
-        Effect::OuterGlow(g) | Effect::InnerGlow(g) => {
-            let inner = inner_glow;
-            common(&mut g.common, p);
-            if let Some(c) = color_of(p, "color") {
-                g.paint = FxPaint::Color(c);
-            }
-            if let Some(t) = p.get("technique").and_then(Value::as_str) {
-                g.technique = if t == "precise" { GlowTechnique::Precise } else { GlowTechnique::Softer };
-            }
-            if let Some(x) = f_of(p, if inner { "choke" } else { "spread" }) {
-                g.spread = (x / 100.0).clamp(0.0, 1.0);
-            }
-            if let Some(x) = f_of(p, "size") {
-                g.size = x;
-            }
-            set_contour(p, "contour", &mut g.contour);
-            set_bool(p, "antiAlias", &mut g.anti_alias);
-            if let Some(x) = f_of(p, "range") {
-                g.range = (x / 100.0).clamp(0.01, 1.0);
-            }
-            if let Some(x) = f_of(p, "noise") {
-                g.noise = (x / 100.0).clamp(0.0, 1.0);
-            }
-            if inner && let Some(s) = p.get("source").and_then(Value::as_str) {
-                g.source = if s == "center" { GlowSource::Center } else { GlowSource::Edge };
-            }
-        }
-        Effect::Stroke(s) => {
-            common(&mut s.common, p);
-            if let Some(x) = f_of(p, "size") {
-                s.size = x;
-            }
-            if let Some(pos) = p.get("position").and_then(Value::as_str) {
-                s.position = match pos {
-                    "inside" => StrokePosition::Inside,
-                    "center" => StrokePosition::Center,
-                    _ => StrokePosition::Outside,
-                };
-            }
-            set_bool(p, "overprint", &mut s.overprint);
-            if p.get("from").is_some() {
-                s.paint = FxPaint::Gradient(gradient(p));
-            } else if let Some(c) = color_of(p, "color") {
-                s.paint = FxPaint::Color(c);
-            }
-        }
-        Effect::ColorOverlay { common: c, color } => {
-            common(c, p);
-            set_color(p, "color", color);
-        }
-        Effect::GradientOverlay { common: c, gradient: g, dither, interpolation } => {
-            common(c, p);
-            gradient_overlay::overlay(g, interpolation, p);
+        Effect::GradientOverlay { common, gradient, dither, interpolation } => {
+            overlay_common(common, p);
+            gradient_overlay::overlay(gradient, interpolation, p);
             if let Some(x) = b_of(p, "dither") {
                 *dither = x;
             }
         }
-        Effect::PatternOverlay { common: c, name, id, scale, angle, link, phase } => {
-            common(c, p);
-            if let Some(x) = p.get("pattern").and_then(Value::as_str) {
-                *name = x.to_string();
-                *id = String::new();
-            }
-            if let Some(x) = f_of(p, "scale") {
-                *scale = (x / 100.0).clamp(0.01, 10.0);
-            }
-            if let Some(x) = f_of(p, "angle") {
-                *angle = x;
-            }
-            if let Some(x) = b_of(p, "link") {
-                *link = x;
-            }
-            if let Some(x) = f_of(p, "phaseX") {
-                phase.0 = x;
-            }
-            if let Some(x) = f_of(p, "phaseY") {
-                phase.1 = x;
-            }
-        }
-        Effect::Satin(s) => {
-            common(&mut s.common, p);
-            set_color(p, "color", &mut s.color);
-            if let Some(x) = f_of(p, "angle") {
-                s.angle = x;
-            }
-            if let Some(x) = f_of(p, "distance") {
-                s.distance = x;
-            }
-            if let Some(x) = f_of(p, "size") {
-                s.size = x;
-            }
-            if let Some(x) = b_of(p, "invert") {
-                s.invert = x;
-            }
-            set_contour(p, "contour", &mut s.contour);
-            set_bool(p, "antiAlias", &mut s.anti_alias);
-        }
-        Effect::BevelEmboss(bv) => {
-            if let Some(x) = b_of(p, "enabled") {
-                bv.enabled = x;
-            }
-            if let Some(s) = p.get("style").and_then(Value::as_str) {
-                bv.style = match s {
-                    "outer" => BevelStyle::OuterBevel,
-                    "emboss" => BevelStyle::Emboss,
-                    "pillow" => BevelStyle::PillowEmboss,
-                    "stroke" => BevelStyle::StrokeEmboss,
-                    _ => BevelStyle::InnerBevel,
-                };
-            }
-            if let Some(t) = p.get("technique").and_then(Value::as_str) {
-                bv.technique = match t {
-                    "chiselHard" => BevelTechnique::ChiselHard,
-                    "chiselSoft" => BevelTechnique::ChiselSoft,
-                    _ => BevelTechnique::Smooth,
-                };
-            }
-            if let Some(x) = f_of(p, "depth") {
-                bv.depth = x / 100.0;
-            }
-            if let Some(d) = p.get("direction").and_then(Value::as_str) {
-                bv.up = d != "down";
-            }
-            if let Some(x) = f_of(p, "size") {
-                bv.size = x;
-            }
-            if let Some(x) = f_of(p, "soften") {
-                bv.soften = x;
-            }
-            if let Some(x) = f_of(p, "angle") {
-                bv.angle = x;
-            }
-            if let Some(x) = f_of(p, "altitude") {
-                bv.altitude = x;
-            }
-            if let Some(x) = b_of(p, "useGlobalLight") {
-                bv.use_global_light = x;
-            }
-            set_contour(p, "glossContour", &mut bv.gloss_contour);
-            set_bool(p, "glossAntiAlias", &mut bv.gloss_anti_alias);
-            // Keep imported PSD shading settings when a command edits other bevel fields.
-            if let Some(blend) = p.get("highlightBlend").and_then(Value::as_str).and_then(blend_from_str) {
-                bv.highlight.blend = blend;
-            }
-            if let Some(blend) = p.get("shadowBlend").and_then(Value::as_str).and_then(blend_from_str) {
-                bv.shadow.blend = blend;
-            }
-            set_color(p, "highlightColor", &mut bv.highlight_color);
-            set_color(p, "shadowColor", &mut bv.shadow_color);
-            if let Some(x) = f_of(p, "highlightOpacity") {
-                bv.highlight.opacity = (x / 100.0).clamp(0.0, 1.0);
-            }
-            if let Some(x) = f_of(p, "shadowOpacity") {
-                bv.shadow.opacity = (x / 100.0).clamp(0.0, 1.0);
-            }
-            // The Contour element: `contour` turns it on/off; its curve, Range and
-            // Anti-aliased edit the element in place, so an imported curve survives.
-            match b_of(p, "contour") {
-                Some(false) => bv.contour = None,
-                Some(true) if bv.contour.is_none() => bv.contour = Some(photocraft_doc::BevelContour::default()),
-                _ => {}
-            }
-            if let Some(c) = &mut bv.contour {
-                set_contour(p, "contourName", &mut c.contour);
-                if let Some(x) = f_of(p, "contourRange") {
-                    c.range = (x / 100.0).clamp(0.01, 1.0);
-                }
-                set_bool(p, "contourAntiAlias", &mut c.anti_alias);
-            }
-            if let Some(t) = p.get("texture").and_then(Value::as_str).filter(|t| !t.is_empty()) {
-                bv.texture = Some(photocraft_doc::BevelTexture {
-                    name: t.to_string(),
-                    id: t.to_string(),
-                    scale: (f(p, "textureScale", 100.0) / 100.0).clamp(0.01, 10.0),
-                    depth: (f(p, "textureDepth", 100.0) / 100.0).clamp(-10.0, 10.0),
-                    invert: b(p, "textureInvert", false),
-                    link: b(p, "textureLink", true),
-                    phase: (0.0, 0.0),
-                });
-            }
-        }
+        Effect::PatternOverlay { .. } => overlay_pattern(fx, p),
+        Effect::Satin(s) => overlay_satin(s, p),
+        Effect::BevelEmboss(bv) => overlay_bevel(bv, p),
     }
 }
 
@@ -904,7 +988,7 @@ fn replace_effects(s: &mut Session, p: &Value) -> Result<Value> {
     let mut pats = Vec::new();
     for e in entries {
         let kind = e.get("kind").and_then(Value::as_str).ok_or_else(|| bad(CMD, "each effect needs a `kind` string"))?;
-        let params = match e.get("params") {
+        let mut params = match e.get("params") {
             None | Some(Value::Null) => json!({}),
             Some(Value::Object(_)) => e.get("params").cloned().unwrap_or_default(),
             Some(_) => return Err(bad(CMD, "`params` must be an object")),
@@ -915,10 +999,27 @@ fn replace_effects(s: &mut Session, p: &Value) -> Result<Value> {
                 if kind_of(&fx) != kind {
                     return Err(bad(CMD, format!("effect snapshot is a {}, not `{kind}`", kind_of(&fx))));
                 }
+                if let Effect::GradientOverlay { gradient, interpolation, .. } = &fx {
+                    let stops = interpolation.as_ref().map_or(&gradient.stops, |s| &s.stops);
+                    if exact_stops(&params).as_ref() == Some(stops)
+                        && let Some(o) = params.as_object_mut()
+                    {
+                        o.remove("stops");
+                    }
+                    if opacity_stops_param(&params, CMD).ok().flatten().as_ref() == Some(&gradient.opacity_stops)
+                        && let Some(o) = params.as_object_mut()
+                    {
+                        o.remove("opacityStops");
+                    }
+                }
+                check_gradient_params(&params, CMD)?;
                 overlay_effect(&mut fx, &params);
                 fx
             }
-            None => effect_from_params(kind, &params).ok_or_else(|| bad(CMD, format!("unknown effect {kind}")))?,
+            None => {
+                check_gradient_params(&params, CMD)?;
+                effect_from_params(kind, &params).ok_or_else(|| bad(CMD, format!("unknown effect {kind}")))?
+            }
         };
         let (fx, pat) = crate::pattern_cmds::resolve_effect(s, fx)?;
         if let Some(pat) = pat {
@@ -948,6 +1049,7 @@ fn replace_effects(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn set_effect(s: &mut Session, p: &Value, kind: &str) -> Result<Value> {
     crate::commands::check_f32_values(&format!("layer.layerStyle.{kind}"), p)?;
+    check_gradient_params(p, &format!("layer.layerStyle.{kind}"))?;
     let fx = effect_from_params(kind, p).ok_or_else(|| EngineError::Other(format!("unknown effect {kind}")))?;
     let (fx, pattern) = crate::pattern_cmds::resolve_effect(s, fx)?;
     let label = format!("Layer Style: {}", fx.label());
@@ -1056,7 +1158,7 @@ pub fn specs() -> Vec<CommandSpec> {
         style_cmd!(
             "gradientOverlay",
             "Gradient Overlay…",
-            r##"{"from":"#rrggbb","to":"#rrggbb","method":"classic|perceptual|linear|smooth"? (Photoshop's interpolation; omitted on new effects: straight stops; edits retain the recorded method),"smoothness":0..100=100,"style":"linear|radial|angle|reflected|diamond","angle":deg=90,"scale":10..150=100,"reverse":bool,"opacity":0..100,"blend":str,"add":bool}"##
+            r##"{"from":"#rrggbb","to":"#rrggbb","stops":[[0..1,"#rrggbb"],.]? (2..256 source stops),"opacityStops":[[0..1,0..100],.]?,"method":"classic|perceptual|linear|smooth"? (Photoshop's interpolation; omitted on new effects: straight stops; edits retain the recorded method),"smoothness":0..100=100,"style":"linear|radial|angle|reflected|diamond","angle":deg=90,"scale":10..150=100,"reverse":bool,"opacity":0..100,"blend":str,"add":bool}"##
         ),
         style_cmd!(
             "patternOverlay",
@@ -1155,3 +1257,15 @@ fn delete_effect(s: &mut Session, p: &Value, effect: &Value) -> Result<Value> {
 
 #[cfg(test)]
 mod tests;
+
+fn exact_stops(p: &Value) -> Option<Vec<(f32, Color)>> {
+    p.get("stops")?
+        .as_array()?
+        .iter()
+        .map(|s| {
+            let t = s.get(0)?.as_f64()? as f32;
+            let color = color_of(&json!({"c":s.get(1)?}), "c")?;
+            Some((t, color))
+        })
+        .collect()
+}

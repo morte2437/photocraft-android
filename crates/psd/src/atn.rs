@@ -22,10 +22,19 @@
 //! [`AtnItem::label`] gives a readable name. Photoshop 5-era files (version 12) use a
 //! different, undocumented layout and are rejected as unsupported.
 //!
+//! Which legacy encoding is not recorded: Windows Photoshop uses the system code page (GBK in
+//! Chinese, Shift_JIS in Japanese…), Mac Photoshop the Mac one. [`parse`] works it out once per
+//! file into [`AtnFile::encoding`], first from steps that also store their name as Unicode (the
+//! descriptor's class name), else by guessing from the bytes; [`parse_with_encoding`] takes it
+//! from the caller. [`AtnFile::item_label`] reads names with it. The bytes themselves stay as
+//! they are.
+//!
 //! [`parse`] never panics: every count is bounds-checked against the bytes left, descriptor
 //! nesting is bounded, and allocations are capped. [`write`] produces the same layout, so
-//! `parse(write(f)) == f`, and `write(parse(b)) == b` for files Photoshop wrote.
+//! `parse(write(f)) == f` for files [`parse`] read, and `write(parse(b)) == b` for files Photoshop
+//! wrote.
 
+use crate::codepage;
 use crate::descriptor::{Descriptor, UnicodeString};
 use crate::error::{PsdError, Result};
 use crate::io::{Reader, WriteExt, decode_legacy_name};
@@ -50,6 +59,37 @@ pub struct AtnFile {
     /// Problems that did not stop the parse (trailing bytes…).
     #[cfg_attr(feature = "serde", serde(default))]
     pub warnings: Vec<String>,
+    /// The encoding of the 8-bit names that are not ASCII or UTF-8 ("GBK", "Shift_JIS",
+    /// "macintosh"…): the one given to [`parse_with_encoding`], else the one that turns such
+    /// names into the Unicode class names stored with them, else a guess from the names shown
+    /// from their bytes alone. `None` when there are no such names, or nothing tells and no
+    /// name depends on it. [`write`] ignores it: names are written as stored.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub encoding: Option<String>,
+}
+
+impl AtnFile {
+    /// [`AtnItem::label`], with 8-bit names read in this file's [`encoding`](Self::encoding).
+    /// A name that is valid UTF-8 is read in that encoding only if it reads entirely as common
+    /// text there (GBK 去色 is also valid UTF-8, "ȥɫ").
+    pub fn item_label(&self, item: &AtnItem) -> String {
+        let Some(enc) = self.encoding.as_deref().and_then(|label| codepage::resolve_label(label).ok()) else { return item.label() };
+        let read = |bytes: &[u8]| match std::str::from_utf8(bytes) {
+            Ok(s) if s.is_ascii() || !codepage::reads_as_common(bytes, enc) => s.to_owned(),
+            _ => codepage::decode(bytes, enc),
+        };
+        if let Some(class) = class_name(item) {
+            return class;
+        }
+        let dict = read(&item.dictionary);
+        if !dict.trim().is_empty() {
+            return dict;
+        }
+        match &item.event {
+            AtnEvent::Name(n) => read(n),
+            AtnEvent::Code(_) => item.event.id(),
+        }
+    }
 }
 
 /// One action of a set.
@@ -116,13 +156,18 @@ impl AtnItem {
     /// A readable name for the step: the descriptor's class name when Photoshop stored one
     /// (Unicode, so a localised name survives), else [`Self::dictionary`], else the event id.
     pub fn label(&self) -> String {
-        let class = self.descriptor.as_ref().map(|d| d.name.to_string_lossy()).unwrap_or_default();
-        if !class.trim().is_empty() {
+        if let Some(class) = class_name(self) {
             return class;
         }
         let dict = self.dictionary();
         if dict.trim().is_empty() { self.event.id() } else { dict }
     }
+}
+
+/// The descriptor's class name, when Photoshop stored one: the step's name as Unicode.
+fn class_name(item: &AtnItem) -> Option<String> {
+    let class = item.descriptor.as_ref().map(|d| d.name.to_string_lossy())?;
+    (!class.trim().is_empty()).then_some(class)
 }
 
 /// A Photoshop event id: a four-character code (`GsnB`) or a string name (`trim`).
@@ -208,8 +253,25 @@ fn read_action(r: &mut Reader<'_>) -> Result<AtnAction> {
     Ok(AtnAction { function_key, shift, command, color, name, expanded, items })
 }
 
-/// Parses an `.atn` file.
+/// Parses an `.atn` file, working out the encoding of its 8-bit names (see the module docs).
 pub fn parse(data: &[u8]) -> Result<AtnFile> {
+    parse_with_encoding(data, None)
+}
+
+/// [`parse`], reading 8-bit names in `encoding` (a label such as `shift_jis`, `gbk`, `big5`,
+/// `euc-kr`, `windows-1252`, `macintosh`) instead of working it out. An unknown label, or one
+/// for an encoding that cannot hold an 8-bit name (UTF-16, `replacement`), is an error.
+pub fn parse_with_encoding(data: &[u8], encoding: Option<&str>) -> Result<AtnFile> {
+    let forced = encoding.map(codepage::resolve_label).transpose()?;
+    let mut f = parse_layout(data)?;
+    let mut warnings = Vec::new();
+    let enc = forced.or_else(|| name_encoding(&f, &mut warnings));
+    f.warnings.extend(warnings);
+    f.encoding = enc.map(|e| e.name().to_owned());
+    Ok(f)
+}
+
+fn parse_layout(data: &[u8]) -> Result<AtnFile> {
     let mut r = Reader::new(data);
     let version = r.u32()?;
     if version != VERSION {
@@ -231,7 +293,57 @@ pub fn parse(data: &[u8]) -> Result<AtnFile> {
     if !r.is_empty() {
         warnings.push(format!("{} trailing bytes ignored", r.remaining()));
     }
-    Ok(AtnFile { name, expanded, actions, warnings })
+    Ok(AtnFile { name, expanded, actions, warnings, encoding: None })
+}
+
+/// The encoding of `f`'s 8-bit names that are not ASCII or UTF-8, or `None` if no name shown
+/// from them needs one; adds a warning when the guess is uncertain.
+fn name_encoding(f: &AtnFile, warnings: &mut Vec<String>) -> Option<&'static encoding_rs::Encoding> {
+    let items = || f.actions.iter().flat_map(|a| &a.items);
+    let legacy = |b: &[u8]| !b.is_ascii();
+    // Steps that store their name as Unicode too: the encoding that turns one into the other.
+    let pairs: Vec<(&[u8], String)> = items()
+        .filter(|i| legacy(&i.dictionary))
+        .filter_map(|i| class_name(i).filter(|c| std::str::from_utf8(&i.dictionary) != Ok(c.as_str())).map(|c| (i.dictionary.as_slice(), c)))
+        .take(codepage::KNOWN_PAIRS)
+        .collect();
+    let pairs: Vec<(&[u8], &str)> = pairs.iter().map(|(b, c)| (*b, c.as_str())).collect();
+    if let Some(enc) = codepage::match_known(&pairs) {
+        return Some(enc);
+    }
+    // Otherwise guess from the names shown from bytes alone.
+    let invalid = |b: &[u8]| std::str::from_utf8(b).is_err();
+    let mut orphans: Vec<&[u8]> = Vec::new();
+    for i in items() {
+        if class_name(i).is_none() && invalid(&i.dictionary) {
+            orphans.push(&i.dictionary);
+        }
+        if let AtnEvent::Name(n) = &i.event
+            && invalid(n)
+        {
+            orphans.push(n);
+        }
+    }
+    if orphans.is_empty() {
+        return None;
+    }
+    // The set, action and class names are UTF-16: their script points at the writer's locale.
+    let mut hint = f.name.to_string_lossy();
+    for name in f.actions.iter().map(|a| a.name.to_string_lossy()).chain(items().filter_map(class_name)) {
+        if hint.len() > codepage::GUESS_SAMPLE {
+            break;
+        }
+        hint.push('\n');
+        hint.push_str(&name);
+    }
+    let guess = codepage::guess(&orphans, &hint);
+    if guess.uncertain {
+        warnings.push(format!(
+            "step names aren't UTF-8 and their encoding couldn't be determined; read as {}; load with an explicit encoding to choose another",
+            guess.encoding.name()
+        ));
+    }
+    Some(guess.encoding)
 }
 
 fn write_item(out: &mut Vec<u8>, item: &AtnItem) -> Result<()> {
@@ -336,6 +448,7 @@ mod tests {
                 AtnAction { name: UnicodeString::new_nul("Empty"), ..Default::default() },
             ],
             warnings: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -390,6 +503,7 @@ mod tests {
                 ..Default::default()
             }],
             warnings: Vec::new(),
+            ..Default::default()
         };
         let mut expect = Vec::new();
         expect.extend_from_slice(&[0, 0, 0, 16]); // version
@@ -445,6 +559,263 @@ mod tests {
         let at = bad_flag.windows(4).position(|w| w == [0xff; 4]).unwrap();
         bad_flag[at..at + 4].copy_from_slice(&[0, 0, 0, 7]);
         assert!(matches!(parse(&bad_flag), Err(PsdError::Invalid(_))));
+    }
+
+    const GBK_SELECTIVE_COLOR: &[u8] = b"\xbf\xc9\xd1\xa1\xd1\xd5\xc9\xab"; // 可选颜色 (from #6743)
+    const GBK_DESATURATE: &[u8] = b"\xc8\xa5\xc9\xab"; // 去色: valid UTF-8 by accident ("ȥɫ")
+    const LABELS: [Option<&str>; 5] = [None, Some("shift_jis"), Some("gbk"), Some("utf-8"), Some("macintosh")];
+
+    /// A step stored with no descriptor, so nothing but its 8-bit names tells what it is called.
+    fn bare(event: AtnEvent, dictionary: &[u8]) -> AtnItem {
+        AtnItem { event, dictionary: dictionary.to_vec(), ..Default::default() }
+    }
+
+    /// A step whose descriptor also stores its panel name as Unicode, as Photoshop does for most.
+    fn known(dictionary: &[u8], class: &str) -> AtnItem {
+        let descriptor = Descriptor { name: UnicodeString::new_nul(class), class_id: crate::descriptor::Id::new("setd"), items: Vec::new() };
+        AtnItem { event: AtnEvent::name("set"), dictionary: dictionary.to_vec(), descriptor: Some(descriptor), ..Default::default() }
+    }
+
+    fn one_action(set: &str, action: &str, items: Vec<AtnItem>) -> Vec<u8> {
+        let f = AtnFile {
+            name: UnicodeString::new_nul(set),
+            actions: vec![AtnAction { name: UnicodeString::new_nul(action), items, ..Default::default() }],
+            ..Default::default()
+        };
+        write(&f).unwrap()
+    }
+
+    /// The issue's set: Chinese Photoshop's Selective Color step, named in GBK.
+    fn gbk_set() -> Vec<u8> {
+        one_action("相馆", "调白", vec![bare(AtnEvent::name("syntheticFill"), GBK_SELECTIVE_COLOR)])
+    }
+
+    fn labels(f: &AtnFile) -> Vec<String> {
+        f.actions.iter().flat_map(|a| a.items.iter().map(|i| f.item_label(i))).collect()
+    }
+
+    #[test]
+    fn gbk_step_names_read_as_gbk() {
+        let f = parse(&gbk_set()).unwrap();
+        assert_eq!(f.encoding.as_deref(), Some("GBK"));
+        assert_eq!(labels(&f), ["可选颜色"]);
+        assert!(f.warnings.is_empty(), "{:?}", f.warnings);
+        // The item itself, without the file's code page, reads as before.
+        assert_ne!(f.actions[0].items[0].label(), "可选颜色");
+    }
+
+    #[test]
+    fn legacy_names_are_kept_byte_for_byte() {
+        let bytes = gbk_set();
+        let f = parse(&bytes).unwrap();
+        assert_eq!(f.actions[0].items[0].dictionary, GBK_SELECTIVE_COLOR);
+        assert_eq!(write(&f).unwrap(), bytes);
+        assert_eq!(parse(&write(&f).unwrap()).unwrap(), f);
+    }
+
+    #[test]
+    fn text_event_names_decode_too() {
+        let f = parse(&one_action("相馆", "调白", vec![bare(AtnEvent::Name(GBK_SELECTIVE_COLOR.to_vec()), b"")])).unwrap();
+        assert_eq!(f.encoding.as_deref(), Some("GBK"));
+        assert_eq!(labels(&f), ["可选颜色"]);
+    }
+
+    #[test]
+    fn known_names_decide_the_code_page_of_the_rest() {
+        // French Photoshop on a Mac: "Définir" is stored as Mac Roman and as Unicode; the bare
+        // step's "Répéter" is only Mac Roman, which also reads as windows-1252 ("RŽpŽter").
+        let items = vec![known(b"D\x8efinir", "Définir"), bare(AtnEvent::name("x"), b"R\x8ep\x8eter")];
+        let f = parse(&one_action("Set 1", "Action 1", items)).unwrap();
+        assert_eq!(f.encoding.as_deref(), Some("macintosh"));
+        assert_eq!(labels(&f), ["Définir", "Répéter"]);
+        assert!(f.warnings.is_empty(), "{:?}", f.warnings);
+    }
+
+    #[test]
+    fn class_names_hint_the_script() {
+        // GBK 保存 reads as common text in GBK, Big5 and EUC-KR alike; only the Chinese class
+        // name of another step (whose panel name is ASCII, so it settles nothing itself) says GBK.
+        let items = vec![known(b"Adjust", "调整"), bare(AtnEvent::name("x"), b"\xb1\xa3\xb4\xe6")];
+        let f = parse(&one_action("Set 1", "Action 1", items)).unwrap();
+        assert_eq!(f.encoding.as_deref(), Some("GBK"));
+        assert_eq!(labels(&f), ["调整", "保存"]);
+        assert!(f.warnings.is_empty(), "{:?}", f.warnings);
+    }
+
+    #[test]
+    fn latin1_symbol_names_read_as_windows_1252() {
+        // Windows Photoshop "Größe »" and "50 °" with no Unicode copy: Mac Roman reads these
+        // bytes as letters and symbols ("Grˆﬂe ª", "50 ∞"), but they are windows-1252, as before
+        // #6743.
+        let f = parse(&one_action("Größe ändern", "Aktion", vec![bare(AtnEvent::name("x"), b"Gr\xf6\xdfe \xbb")])).unwrap();
+        assert_eq!(f.encoding.as_deref(), Some("windows-1252"));
+        assert_eq!(labels(&f), ["Größe »"]);
+        assert!(f.warnings.is_empty(), "{:?}", f.warnings);
+        let f = parse(&one_action("Größe ändern", "Aktion", vec![bare(AtnEvent::name("x"), b"50 \xb0")])).unwrap();
+        assert_eq!(labels(&f), ["50 °"]);
+        // Known limitation: "Logo ®" alone reads as Mac Roman "Logo Æ", as Mac "Æble" needs that
+        // byte (codepage's symbols_on_mac_roman_letters_stay_ambiguous).
+        let f = parse(&one_action("Set 1", "Action 1", vec![bare(AtnEvent::name("x"), b"Logo \xae")])).unwrap();
+        assert_eq!(f.encoding.as_deref(), Some("macintosh"));
+        assert_eq!(labels(&f), ["Logo Æ"]);
+        // Mac Roman bytes that windows-1252 reads as controls or rare letters stay Mac Roman.
+        let f =
+            parse(&one_action("Définir", "Action 1", vec![bare(AtnEvent::name("x"), b"Gr\x9a\xa7e"), bare(AtnEvent::name("y"), b"Arri\x8fre-plan")])).unwrap();
+        assert_eq!(f.encoding.as_deref(), Some("macintosh"));
+        assert_eq!(labels(&f), ["Größe", "Arrière-plan"]);
+    }
+
+    #[test]
+    fn mac_roman_sharp_s_and_slashed_o_stay_mac_roman() {
+        // Mac Roman ß ø æ Æ are the bytes of windows-1252 § ¿ ¾ ®: German and Danish Mac names
+        // with no Unicode copy still read as Mac Roman, each alone and as a set.
+        let words: [&[u8]; 5] = [b"Wei\xa7", b"Gau\xa7scher Weichzeichner", b"St\xbfrrelse", b"L\xberredst\xbfrrelse", b"\xaeble"];
+        let text = ["Weiß", "Gaußscher Weichzeichner", "Størrelse", "Lærredstørrelse", "Æble"];
+        for (bytes, text) in words.iter().zip(text) {
+            let f = parse(&one_action("Größe ändern", "Aktion 1", vec![bare(AtnEvent::name("x"), bytes)])).unwrap();
+            assert_eq!((f.encoding.as_deref(), labels(&f)), (Some("macintosh"), vec![text.to_string()]));
+            assert!(f.warnings.is_empty(), "{:?}", f.warnings);
+        }
+        let items = words.iter().map(|w| bare(AtnEvent::name("x"), w)).collect();
+        let f = parse(&one_action("Größe ändern", "Aktion 1", items)).unwrap();
+        assert_eq!(f.encoding.as_deref(), Some("macintosh"));
+        assert_eq!(labels(&f), text);
+    }
+
+    #[test]
+    fn mac_roman_bullets_stay_mac_roman() {
+        // Mac Roman • (0xA5) is windows-1252 ¥, which must not count for windows-1252.
+        for (set, bytes, text) in [
+            ("Größe ändern", &b"Ebene \xa5 Kopie"[..], "Ebene • Kopie"),
+            ("Définir", b"Niveaux \xa5 Courbes", "Niveaux • Courbes"),
+            ("Tamaño de imagen", b"Tama\x96o \xa5 50%", "Tamaño • 50%"),
+        ] {
+            let f = parse(&one_action(set, "Aktion 1", vec![bare(AtnEvent::name("x"), bytes)])).unwrap();
+            assert_eq!((f.encoding.as_deref(), labels(&f)), (Some("macintosh"), vec![text.to_string()]));
+        }
+    }
+
+    #[test]
+    fn russian_sets_with_latin_compounds_stay_windows_1251() {
+        // Ordinary windows-1251 names plus one glued to a Latin word ("CMYKканал"): the whole
+        // set reads as Cyrillic, with no warning.
+        let words: [&[u8]; 5] = [
+            b"\xcd\xee\xe2\xfb\xe9 \xf1\xeb\xee\xe9",
+            b"\xd0\xe0\xe7\xec\xe5\xf0 \xe8\xe7\xee\xe1\xf0\xe0\xe6\xe5\xed\xe8\xff",
+            b"\xca\xee\xef\xe8\xff \xf1\xeb\xee\xff 2",
+            b"\xca\xe0\xed\xe0\xeb RGB",
+            b"CMYK\xea\xe0\xed\xe0\xeb",
+        ];
+        let text = ["Новый слой", "Размер изображения", "Копия слоя 2", "Канал RGB", "CMYKканал"];
+        let items = words.iter().map(|w| bare(AtnEvent::name("x"), w)).collect();
+        let f = parse(&one_action("Набор 1", "Операция 1", items)).unwrap();
+        assert_eq!(f.encoding.as_deref(), Some("windows-1251"));
+        assert_eq!(labels(&f), text);
+        assert!(f.warnings.is_empty(), "{:?}", f.warnings);
+    }
+
+    #[test]
+    fn known_names_alone_never_warn() {
+        // Nothing decodes to the Unicode name, but nothing is shown from the bytes either.
+        let f = parse(&one_action("Set 1", "Action 1", vec![known(b"\x80\xff\x80", "Something")])).unwrap();
+        assert_eq!(f.encoding, None);
+        assert!(f.warnings.is_empty(), "{:?}", f.warnings);
+        assert_eq!(labels(&f), ["Something"]);
+    }
+
+    #[test]
+    fn uncertain_guess_warns() {
+        let f = parse(&one_action("Set 1", "Action 1", vec![bare(AtnEvent::name("x"), b"\x80\xff\x80")])).unwrap();
+        assert_eq!(f.encoding.as_deref(), Some("windows-1252"));
+        assert_eq!(f.warnings.len(), 1, "{:?}", f.warnings);
+        assert!(f.warnings[0].contains("windows-1252"), "{:?}", f.warnings);
+        assert_eq!(labels(&f), ["€ÿ€"]);
+    }
+
+    #[test]
+    fn utf8_files_have_no_encoding() {
+        let f = parse(&write(&set()).unwrap()).unwrap();
+        assert_eq!(f.encoding, None);
+        let items: Vec<&AtnItem> = f.actions.iter().flat_map(|a| &a.items).collect();
+        assert_eq!(labels(&f), items.iter().map(|i| i.label()).collect::<Vec<_>>());
+        let f = parse(&one_action("Set", "A", vec![bare(AtnEvent::name("x"), "高斯模糊 ✓".as_bytes())])).unwrap();
+        assert_eq!((f.encoding.clone(), labels(&f)), (None, vec!["高斯模糊 ✓".to_string()]));
+    }
+
+    #[test]
+    fn utf8_lookalike_names_decode_with_the_file() {
+        let items = vec![
+            bare(AtnEvent::name("x"), GBK_SELECTIVE_COLOR),
+            bare(AtnEvent::name("y"), GBK_DESATURATE),
+            bare(AtnEvent::name("z"), "Gaussian Blur ✓".as_bytes()),
+        ];
+        let f = parse(&one_action("相馆", "调白", items)).unwrap();
+        assert_eq!(f.encoding.as_deref(), Some("GBK"));
+        assert_eq!(labels(&f), ["可选颜色", "去色", "Gaussian Blur ✓"]);
+    }
+
+    #[test]
+    fn utf8_names_stay_in_single_byte_files() {
+        // windows-1252 "Größe" beside a UTF-8 "Weiß"; windows-1251 "Уровни" beside a UTF-8 "Привет".
+        let latin = vec![bare(AtnEvent::name("x"), b"Gr\xf6\xdfe"), bare(AtnEvent::name("y"), "Weiß".as_bytes())];
+        let f = parse(&one_action("Größe ändern", "Aktion", latin)).unwrap();
+        assert_eq!(f.encoding.as_deref(), Some("windows-1252"));
+        assert_eq!(labels(&f), ["Größe", "Weiß"]);
+        let cyrillic = vec![bare(AtnEvent::name("x"), b"\xd3\xf0\xee\xe2\xed\xe8"), bare(AtnEvent::name("y"), "Привет".as_bytes())];
+        let f = parse(&one_action("Набор", "Операция", cyrillic)).unwrap();
+        assert_eq!(f.encoding.as_deref(), Some("windows-1251"));
+        assert_eq!(labels(&f), ["Уровни", "Привет"]);
+        // A forced single-byte encoding leaves UTF-8 names alone too.
+        let f = parse_with_encoding(&one_action("S", "A", vec![bare(AtnEvent::name("y"), "Weiß".as_bytes())]), Some("windows-1252")).unwrap();
+        assert_eq!(labels(&f), ["Weiß"]);
+    }
+
+    #[test]
+    fn forced_encoding_wins() {
+        let f = parse_with_encoding(&gbk_set(), Some("big5")).unwrap();
+        assert_eq!(f.encoding.as_deref(), Some("Big5"));
+        assert_ne!(labels(&f), ["可选颜色"]);
+        // A wrong override still loads, and saves the bytes it read.
+        let f = parse_with_encoding(&gbk_set(), Some("shift_jis")).unwrap();
+        assert_eq!(f.encoding.as_deref(), Some("Shift_JIS"));
+        assert_eq!(write(&f).unwrap(), gbk_set());
+        // Forcing applies to all-UTF-8 files too.
+        assert_eq!(parse_with_encoding(&write(&set()).unwrap(), Some("gbk")).unwrap().encoding.as_deref(), Some("GBK"));
+    }
+
+    #[test]
+    fn bad_labels_are_errors() {
+        for bad in ["nope", "replacement", "utf-16be", ""] {
+            assert!(matches!(parse_with_encoding(&gbk_set(), Some(bad)), Err(PsdError::Unsupported(_))), "{bad}");
+        }
+    }
+
+    #[test]
+    fn legacy_files_never_panic() {
+        let items = vec![known(b"D\x8efinir", "Définir"), bare(AtnEvent::Name(GBK_SELECTIVE_COLOR.to_vec()), GBK_DESATURATE)];
+        let seed = one_action("相馆", "调白", items);
+        let check = |bytes: &[u8]| {
+            for label in LABELS {
+                if let Ok(f) = parse_with_encoding(bytes, label) {
+                    let _ = labels(&f);
+                }
+            }
+        };
+        for cut in 0..seed.len() {
+            check(&seed[..cut]);
+        }
+        let mut x: u32 = 0x85eb_ca6b;
+        for i in 0..500 {
+            let mut bytes = seed.clone();
+            for _ in 0..(i % 5 + 1) {
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                let at = (x as usize) % bytes.len();
+                bytes[at] = (x >> 8) as u8;
+            }
+            check(&bytes);
+        }
     }
 
     #[test]

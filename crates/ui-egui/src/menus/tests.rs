@@ -1,4 +1,11 @@
+use super::invoke::data_sets_text;
 use super::*;
+
+#[test]
+fn data_set_files_must_be_valid_utf8() {
+    assert_eq!(data_sets_text(b"DataSet,headline\nS,Jos\xc3\xa9\n".to_vec()).unwrap(), "DataSet,headline\nS,José\n");
+    assert!(data_sets_text(b"DataSet,headline\nS\xff,Jos\xe9\n".to_vec()).is_err());
+}
 
 #[test]
 fn showing_grid_restores_hidden_extras() {

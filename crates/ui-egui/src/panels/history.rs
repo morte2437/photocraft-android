@@ -1,5 +1,5 @@
 use super::layer_drag::dropped_on;
-use super::*;
+use super::{Align2, Color32, HistorySource, PhotocraftApp, Rect, Sense, Stroke, StrokeKind, Tokens, Tool, Value, empty, icons, json, pos2, vec2, widgets};
 
 pub(super) fn history(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());

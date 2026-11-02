@@ -1,4 +1,4 @@
-use super::*;
+use super::{Document, ImageResource, TaggedBlock};
 
 pub(crate) fn legacy_name(s: &str) -> Vec<u8> {
     s.chars().map(|c| if c.is_ascii() && !c.is_ascii_control() { c as u8 } else { b'?' }).take(255).collect()

@@ -1,4 +1,4 @@
-use super::*;
+use super::{PhotocraftApp, gpu_canvas, gpu_status};
 
 impl PhotocraftApp {
     /// Draw the document canvas on the GPU (custom WGSL shader) instead of via egui textures.

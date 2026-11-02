@@ -54,7 +54,7 @@ curl -sfL -o assets/icons/<name>.svg https://raw.githubusercontent.com/lucide-ic
 | Feature | Module | Behaviour |
 |---|---|---|
 | Type tool | `type_tool.rs` | Click: point text with the placeholder "Lorem Ipsum" selected. Drag: paragraph box. Inline caret and selection drawn from the text engine layout. ⌥/⌘ word and line navigation, ↩ newline, ⌘↩ or Esc commits, a click outside commits. One history step per session (`coalesce`). A new layer is named after its text; an empty one is deleted. |
-| Free Transform | `transform_tool.rs` | ⌘T. Corners and edges scale proportionally (⇧ frees them: an edge then stretches one axis); ⌥ scales about the reference point; ⌘-corner distorts; dragging outside rotates (⇧ snaps to 15°); dragging inside moves. Preview = document without the moving pixels + a textured 24×24 mesh. ↩ or a double-click commits via `edit.transform {rect, quad}`. |
+| Free Transform | `transform_tool.rs` | ⌘T. Corners and edges scale proportionally (⇧ frees them: an edge then stretches one axis); ⌥ scales about the reference point; ⌘-corner distorts; dragging outside rotates (⇧ snaps to 15°); dragging inside moves. Preview = document without the moving pixels + a textured 24×24 mesh. ↩ or a double-click commits via `edit.transform {rect, quad}`. With several layers selected one box frames and moves them all (`layers`; the Background is left out, Warp is one layer at a time). |
 | Quick layer pick | `quick_pick.rs` | macOS: ⌘⌥⌃-click with any tool selects the topmost visible layer with pixels under the pointer (`layer.pickAt`) without switching tools; the drag and release are swallowed. Windows/Linux have no third modifier distinct from the ⌃⌥ brush resize, so the gesture is a no-op there (use the Move tool's Auto-Select). A failed pick is a status-bar error. |
 | Layers rows | `panels.rs` | Double-click: on the name renames in place; on the Background makes it a normal layer; on an adjustment or fill thumbnail opens its Properties; on a Smart Object thumbnail opens its contents (Edit Contents); anywhere else on the row opens Layer Style. |
 | Layer masks | `panels.rs` | Clicking the mask thumbnail targets the mask (corner-bracket frame; the tab reads "Layer, Layer Mask/8"). Brush, eraser (paints background colour), gradient, bucket and moving the selected pixels (⌘-drag, `select.float`; the hole takes the background colour) then send `"target": "mask"`. Adjustment and fill layers target their mask automatically. |
@@ -68,7 +68,11 @@ Shape Stroke Options (updated 2026-10-11) sizes to its content and scrolls only 
 It has no Apply/Cancel footer. Solid, Dashed and Dotted are full clickable rows with line
 samples and visible selection; opening the editor alone never changes a shape. Invalid pending
 numeric input leaves the last valid style in effect. Fill and Stroke use clickable swatches
-and the existing compact colour picker, preserving alpha and offering No Color. The style
+that open Photoshop's paint popover (paint types, Color Picker button, Recently Used Colors, swatch
+folders, the Gradient tab; updated 2026-10-27), preserving alpha and offering No Color. Every other colour swatch
+(`widgets::color_edit_button*`: Photo Filter, Black & White tint, Gradient Map stops, Content-Aware
+Fill overlay, Filter Gallery glow, Save for Web colour table) opens the full Color Picker dialog,
+never egui's built-in picker. The style
 button remains available when no stroke is set; deliberately choosing a stroke colour or
 style enables a 3 px stroke. Colours, borders and selection treatments come from theme tokens.
 These tool defaults are serde state, but are not restored across app restarts. See

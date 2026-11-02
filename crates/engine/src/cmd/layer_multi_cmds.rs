@@ -20,8 +20,10 @@ mod selection;
 mod structure;
 
 use align::{align, distribute};
-pub use damage::{layer_bounds, layers_damage, same_pixels, selection_only_change, step_damage};
-pub(crate) use damage::{note_damage, note_inert_insert, note_insert};
+#[cfg(any(test, debug_assertions))]
+pub(crate) use damage::hint_misses;
+pub(crate) use damage::note_insert;
+pub use damage::{layer_bounds, same_pixels, selection_only_change, step_damage};
 use moves::link_groups;
 pub(crate) use moves::shift_surface;
 #[cfg(test)]
@@ -164,3 +166,6 @@ mod tests;
 
 #[cfg(test)]
 mod layers_panel_parity_tests;
+
+#[cfg(test)]
+mod tile_damage_tests;

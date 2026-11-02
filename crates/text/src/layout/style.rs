@@ -1,5 +1,8 @@
 use super::paragraphs::quote;
-use super::*;
+use super::{
+    Caps, CharStyle, ClusterInfo, Cow, FontBaseline, FontDb, FontFamily, FontFeatures, FontStyle, FontVariations, FontWeight, Kerning, PlacedGlyph, RunBrush,
+    StyleProperty, Tag,
+};
 
 /// Photoshop synthesizes small caps for faces without an OpenType `smcp` table. Keep the same
 /// readable hierarchy for every font instead of silently rendering lowercase text unchanged.

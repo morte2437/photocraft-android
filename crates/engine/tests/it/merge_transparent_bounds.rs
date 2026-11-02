@@ -101,7 +101,6 @@ fn merging_a_masked_fill_layer_keeps_content_bounds_in_every_mode() {
         let (mut s, a, _) = scene(mode, depth);
         s.execute("select.rect", json!({"x": B[0], "y": B[1], "width": B[2], "height": B[3]})).unwrap();
         let fill = id_of(&s.execute("layer.newFillLayer.solidColor", json!({"color": "#3060c0"})).unwrap());
-        s.execute("select.deselect", json!({})).unwrap();
         (s, a, fill)
     };
     for &(mode, depth) in CASES {

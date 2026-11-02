@@ -300,6 +300,9 @@ pub fn read(bytes: &[u8], limits: Limits) -> Result<Document, Error> {
     let mut archive = Archive::open(bytes, limits)?;
     let doc = archive.read("doc.dat")?;
     let s = stream::parse(&doc)?;
+    // The parsed stream owns copies of everything it needs: do not hold the inflated bytes
+    // (hundreds of MB for a large vector document) while the model is built.
+    drop(doc);
     Reader::new(&s, &mut archive, limits).document()
 }
 
