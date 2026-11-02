@@ -250,7 +250,7 @@ fn memory_confirmation_resume_inline_success() {
     photocraft_io::psd_budget::with_test_estimate_charge(3 * gb, || {
         photocraft_io::memory::with_mock_memory(snap, || {
             // The real inline import raises the preflight: no fabricated prompt or preflight.
-            app.open_bytes_from("/test/inline_resume.psd", &psd, Some("/test/inline_resume.psd")).unwrap();
+            app.open_bytes_from("inline_resume.psd", &psd, Some("/test/inline_resume.psd")).unwrap();
             assert!(app.session.documents().is_empty(), "the file waits for approval");
             assert_eq!(app.held_memory_prompts.len(), 1);
             assert_eq!(app.ui.dialogs.len(), 1);
@@ -293,7 +293,7 @@ fn memory_confirmation_resume_background_success() {
     let snap = photocraft_io::memory::MemorySnapshot { available_ram: Some(5 * gb), swap_free: None, commit_headroom: None };
     photocraft_io::psd_budget::with_test_estimate_charge(3 * gb, || {
         photocraft_io::memory::with_mock_memory(snap, || {
-            app.open_bytes_from("/test/bg_resume.psd", &psd, Some("/test/bg_resume.psd")).unwrap();
+            app.open_bytes_from("bg_resume.psd", &psd, Some("/test/bg_resume.psd")).unwrap();
             assert_eq!(app.jobs.opens.len(), 1, "a background open tab appears at once");
             let jobs: Vec<_> = app.session.jobs().iter().map(|j| j.id).collect();
             for id in jobs {
