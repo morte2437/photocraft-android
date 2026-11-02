@@ -51,8 +51,10 @@ impl PhotocraftApp {
             }
             return Ok(false);
         };
-        if self.os_clip_svg.as_deref().is_some_and(|old| old == &source) && self.session.clipboard.is_some() {
-            // A newer internal copy remains authoritative until the external bytes change.
+        // Already imported, or a newer internal copy: either stays until the external bytes
+        // change. A raster mirror an ordinary paste took of these bytes is not their vectors.
+        let holds_vectors_or_newer = self.session.clipboard.as_ref().is_some_and(|clip| clip.svg.is_some() || !self.clip_external);
+        if self.os_clip_svg.as_deref().is_some_and(|old| old == &source) && holds_vectors_or_newer {
             return Ok(true);
         }
         let clip = photocraft_engine::edit_cmds::Clip::from_svg(&source).map_err(|error| {
@@ -67,6 +69,13 @@ impl PhotocraftApp {
         self.clip_external = true;
         self.clip_unmirrored = false;
         Ok(true)
+    }
+
+    /// The SVG bytes on the OS clipboard right now, read on an explicit paste without importing
+    /// them; `None` when there is no SVG service or the read fails (nothing is known then).
+    fn os_svg_now(&mut self) -> Option<Option<std::sync::Arc<Vec<u8>>>> {
+        let get = self.services.clipboard_get_svg.as_mut()?;
+        get().ok().map(|source| source.map(std::sync::Arc::new))
     }
 
     /// Mirror the session clipboard onto the OS clipboard (RGBA8).
@@ -122,6 +131,13 @@ impl PhotocraftApp {
         let Some((w, h, bytes)) = image else {
             if self.clip_unmirrored && !self.clip_external && self.session.clipboard.is_some() {
                 self.os_clip_sig = None;
+                // Keep remembering an SVG only while it is still there (an SVG-only clipboard),
+                // so a later copy of the same bytes in another app is imported again.
+                if let Some(now) = self.os_svg_now()
+                    && now != self.os_clip_svg
+                {
+                    self.os_clip_svg = None;
+                }
                 return Ok(false);
             }
             self.os_clip_svg = None;
@@ -141,7 +157,9 @@ impl PhotocraftApp {
         surface.prune();
         self.session.clipboard =
             Some(photocraft_engine::edit_cmds::Clip { components: None, surface, bounds: r, layers: None, resolution: None, source: None, svg: None });
-        self.os_clip_svg = None;
+        // The SVG that came with this image (a vector app puts both): a later internal copy is
+        // newer than it, so Paste As must not bring it back while it is unchanged.
+        self.os_clip_svg = self.os_svg_now().flatten();
         self.os_clip_sig = Some(sig);
         self.clip_external = true;
         self.clip_unmirrored = false;

@@ -97,9 +97,23 @@ impl PhotocraftApp {
                 None
             };
             if let Some(mode) = paste_as {
-                let imported = self.import_os_svg_clipboard()?;
+                // Pixels can come from the bitmap when the SVG can't be read; vectors can't.
+                let (imported, svg_error) = match self.import_os_svg_clipboard() {
+                    Ok(imported) => (imported, None),
+                    Err(error) if mode == "pixels" => (false, Some(error)),
+                    Err(error) => return Err(error),
+                };
                 if mode == "pixels" && !imported && !clip_read {
-                    self.import_os_clipboard()?;
+                    if let Err(error) = self.import_os_clipboard() {
+                        return Err(svg_error.unwrap_or(error));
+                    }
+                }
+                if let Some(error) = svg_error {
+                    if self.session.clipboard.is_none() {
+                        return Err(error);
+                    }
+                    self.ui.status.clear();
+                    self.ui.status_error = false;
                 }
             } else if !clip_read {
                 self.import_os_clipboard()?;
