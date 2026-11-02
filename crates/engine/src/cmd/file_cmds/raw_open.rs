@@ -89,7 +89,9 @@ pub(super) fn prepare(s: &Session, name: &str, path: Option<&str>, bytes: &[u8])
         dehaze: settings.dehaze,
     };
     if tuning != (RawTuning { demosaic: opts.demosaic, ..Default::default() }) {
-        let (developed, wb) = photocraft_io::raw::import_raw_tuned(name, bytes, &tuning).map_err(|error| EngineError::Other(format!("{name}: {error}")))?;
+        super::open::raw_defaults(s, &imported.warnings, &mut imported.document);
+        let (mut developed, wb) = photocraft_io::raw::import_raw_tuned(name, bytes, &tuning).map_err(|error| EngineError::Other(format!("{name}: {error}")))?;
+        developed.document.resolution_dpi = imported.document.resolution_dpi;
         imported = developed;
         settings.exposure = 0.0;
         settings.shadows = 0.0;
