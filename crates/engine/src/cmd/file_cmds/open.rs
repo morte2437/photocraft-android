@@ -146,6 +146,7 @@ fn raw_resolution(ppi: f64, warnings: &[String], doc: &mut Document) {
     }
 }
 
+/// Import bytes with an optional format override, retaining source identity and opening diagnostics.
 pub fn open_bytes_as(s: &mut Session, name: &str, bytes: &[u8], as_ext: Option<&str>, path: Option<String>) -> Result<Value> {
     crate::allocation::checkpoint("importing document")?;
     let decode_name = match as_ext {
