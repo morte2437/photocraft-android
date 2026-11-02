@@ -573,6 +573,39 @@ fn cancelled_batch_job_returns_its_partial_result() {
     assert!(matches!(s.wait_job(id), Err(EngineError::Cancelled)));
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn programmatic_cancel_wakes_a_batch_waiting_for_the_desktop_decision() {
+    let mut s = Session::new();
+    let id = job(s
+        .start_job(
+            "file.automate.batch",
+            json!({}),
+            "Batch",
+            false,
+            |ctx| {
+                while !ctx.batch_take_interrupt() {
+                    ctx.check()?;
+                    std::thread::yield_now();
+                }
+                let continued = ctx.batch_wait_for_decision();
+                Ok(json!({"continued": continued, "files": [], "cancelled": ctx.cancelled()}))
+            },
+            |_, result| Ok(result),
+        )
+        .unwrap());
+    assert!(s.request_batch_interrupt_job(id));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !s.batch_interrupt_waiting(id) && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert!(s.batch_interrupt_waiting(id));
+    assert!(s.cancel_job(id), "jobs.cancel remains direct and wakes the worker");
+    let JobOutcome::Done(result) = wait_event(&mut s, id).outcome else { panic!("batch partial result was lost") };
+    assert_eq!(result["continued"], false);
+    assert_eq!(result["cancelled"], true);
+}
+
 #[test]
 fn accepted_batch_cancellation_after_result_snapshot_is_reported() {
     let mut s = Session::new();

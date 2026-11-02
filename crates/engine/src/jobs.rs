@@ -20,7 +20,7 @@
 
 use std::any::Any;
 use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, PoisonError, Weak};
+use std::sync::{Arc, Condvar, Mutex, PoisonError, Weak};
 
 use photocraft_doc::{DocId, Document, LayerId};
 use photocraft_raster::Interrupt;
@@ -89,6 +89,33 @@ struct Shared {
     /// `fetch_max` keeps progress monotonic even with several reporting threads.
     progress: AtomicU32,
     message: Mutex<String>,
+    batch: Mutex<BatchInterrupt>,
+    batch_decision: Condvar,
+    batch_preview: Mutex<Option<BatchPreview>>,
+    batch_preview_generation: std::sync::atomic::AtomicU64,
+}
+
+/// The current folder Batch input, published as an immutable snapshot for the desktop canvas.
+/// It is never added to the live session and cannot receive commands or saves.
+#[derive(Clone, Debug)]
+pub struct BatchPreview {
+    pub path: String,
+    pub document: Arc<Document>,
+    pub generation: u64,
+}
+
+/// The desktop Batch Esc handshake. The worker alone enters `Waiting` at a pre-save
+/// checkpoint; only the UI supplies a decision. Programmatic cancellation uses the separate
+/// atomic flag above and wakes a waiting worker without asking a question.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum BatchInterrupt {
+    #[default]
+    Processing,
+    Requested,
+    Waiting,
+    Continue,
+    Stop,
+    Saving,
 }
 
 const CANCEL_REQUESTED: u8 = 1;
@@ -127,15 +154,122 @@ impl JobCtx {
     /// Ask the job to stop (idempotent).
     pub fn cancel(&self) {
         self.shared.state.fetch_or(CANCEL_REQUESTED, Ordering::AcqRel);
+        let _phase = self.shared.batch.lock().unwrap_or_else(PoisonError::into_inner);
+        self.shared.batch_decision.notify_all();
     }
 
     /// Accept a cancellation only while the worker has not finished its result. One atomic state
     /// orders a late cancel against completion, including the interval before the UI polls.
     fn cancel_if_running(&self) -> bool {
-        self.shared
+        let accepted = self
+            .shared
             .state
             .try_update(Ordering::AcqRel, Ordering::Acquire, |state| (state & (CANCEL_REQUESTED | WORK_FINISHED) == 0).then_some(state | CANCEL_REQUESTED))
-            .is_ok()
+            .is_ok();
+        if accepted {
+            let _phase = self.shared.batch.lock().unwrap_or_else(PoisonError::into_inner);
+            self.shared.batch_decision.notify_all();
+        }
+        accepted
+    }
+
+    /// Request the reference application's Esc decision for an interactive Batch. A save that
+    /// passed its final write checkpoint cannot be interrupted; the caller may try the next
+    /// input. This does not affect the direct `jobs.cancel` automation API.
+    pub fn request_batch_interrupt(&self) -> bool {
+        if self.cancelled() || self.shared.state.load(Ordering::Acquire) & WORK_FINISHED != 0 {
+            return false;
+        }
+        let mut phase = self.shared.batch.lock().unwrap_or_else(PoisonError::into_inner);
+        if *phase != BatchInterrupt::Processing {
+            return false;
+        }
+        *phase = BatchInterrupt::Requested;
+        true
+    }
+
+    /// The worker has stopped before writing the current input and awaits Continue or Stop.
+    pub fn batch_waiting_for_decision(&self) -> bool {
+        *self.shared.batch.lock().unwrap_or_else(PoisonError::into_inner) == BatchInterrupt::Waiting
+    }
+
+    /// Answer a waiting interactive Batch question. `continue_next` skips the current input.
+    pub fn decide_batch_interrupt(&self, continue_next: bool) -> bool {
+        let mut phase = self.shared.batch.lock().unwrap_or_else(PoisonError::into_inner);
+        if *phase != BatchInterrupt::Waiting {
+            return false;
+        }
+        *phase = if continue_next { BatchInterrupt::Continue } else { BatchInterrupt::Stop };
+        self.shared.batch_decision.notify_all();
+        true
+    }
+
+    /// Whether an action should stop before its next step because Esc was requested.
+    pub fn batch_interrupt_requested(&self) -> bool {
+        *self.shared.batch.lock().unwrap_or_else(PoisonError::into_inner) == BatchInterrupt::Requested
+    }
+
+    /// Move an accepted Esc request to the question at a worker checkpoint.
+    pub fn batch_take_interrupt(&self) -> bool {
+        let mut phase = self.shared.batch.lock().unwrap_or_else(PoisonError::into_inner);
+        if *phase != BatchInterrupt::Requested {
+            return *phase == BatchInterrupt::Waiting;
+        }
+        *phase = BatchInterrupt::Waiting;
+        true
+    }
+
+    /// Wait for the UI decision without polling. Closing the session or `jobs.cancel` wakes this
+    /// worker; the caller then reports its partial result.
+    pub fn batch_wait_for_decision(&self) -> bool {
+        let mut phase = self.shared.batch.lock().unwrap_or_else(PoisonError::into_inner);
+        while *phase == BatchInterrupt::Waiting && !self.cancelled() {
+            phase = self.shared.batch_decision.wait(phase).unwrap_or_else(PoisonError::into_inner);
+        }
+        let continue_next = *phase == BatchInterrupt::Continue && !self.cancelled();
+        *phase = BatchInterrupt::Processing;
+        continue_next
+    }
+
+    /// Mark the start of an input's output write. The same lock orders Esc against this
+    /// checkpoint: a requested interruption never writes that input.
+    pub(crate) fn batch_before_write(&self) -> Result<()> {
+        self.check()?;
+        let mut phase = self.shared.batch.lock().unwrap_or_else(PoisonError::into_inner);
+        if *phase == BatchInterrupt::Requested {
+            *phase = BatchInterrupt::Waiting;
+            return Err(EngineError::Cancelled);
+        }
+        if self.cancelled() {
+            return Err(EngineError::Cancelled);
+        }
+        *phase = BatchInterrupt::Saving;
+        Ok(())
+    }
+
+    /// A completed write allows Esc on the next input.
+    pub(crate) fn batch_after_write(&self) {
+        let mut phase = self.shared.batch.lock().unwrap_or_else(PoisonError::into_inner);
+        if *phase == BatchInterrupt::Saving {
+            *phase = BatchInterrupt::Processing;
+        }
+    }
+
+    /// Publish the current input's document after it opens or an action step changes it.
+    pub fn publish_batch_preview(&self, path: &str, document: Option<Arc<Document>>) {
+        let mut preview = self.shared.batch_preview.lock().unwrap_or_else(PoisonError::into_inner);
+        if preview.as_ref().zip(document.as_ref()).is_some_and(|(shown, next)| shown.path == path && Arc::ptr_eq(&shown.document, next))
+            || (preview.is_none() && document.is_none())
+        {
+            return;
+        }
+        let generation = self.shared.batch_preview_generation.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
+        *preview = document.map(|document| BatchPreview { path: path.to_string(), document, generation });
+    }
+
+    /// A snapshot for rendering, if the current input still has a document open.
+    pub fn batch_preview(&self) -> Option<BatchPreview> {
+        self.shared.batch_preview.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -754,6 +888,31 @@ impl Session {
             self.jobs.draining.push(Draining { handle, doc: job.doc, release: false });
         }
         true
+    }
+
+    /// Ask an interactive Batch worker to stop its current input at the next safe checkpoint.
+    /// Headless clients keep using [`Self::cancel_job`] for a direct partial result.
+    pub fn request_batch_interrupt_job(&self, id: JobId) -> bool {
+        self.jobs.running.iter().find(|job| job.id == id && job.command == "file.automate.batch").is_some_and(|job| job.ctx.request_batch_interrupt())
+    }
+
+    /// Whether a Batch worker has acknowledged Esc and is waiting for the desktop decision.
+    pub fn batch_interrupt_waiting(&self, id: JobId) -> bool {
+        self.jobs.running.iter().find(|job| job.id == id && job.command == "file.automate.batch").is_some_and(|job| job.ctx.batch_waiting_for_decision())
+    }
+
+    /// Continue with the next input or stop a Batch paused by the desktop Esc key.
+    pub fn decide_batch_interrupt_job(&self, id: JobId, continue_next: bool) -> bool {
+        self.jobs
+            .running
+            .iter()
+            .find(|job| job.id == id && job.command == "file.automate.batch")
+            .is_some_and(|job| job.ctx.decide_batch_interrupt(continue_next))
+    }
+
+    /// The current read-only folder Batch document shown by the desktop while work runs.
+    pub fn batch_preview(&self, id: JobId) -> Option<BatchPreview> {
+        self.jobs.running.iter().find(|job| job.id == id && job.command == "file.automate.batch").and_then(|job| job.ctx.batch_preview())
     }
 
     /// Cancel every running job (e.g. before quitting).
