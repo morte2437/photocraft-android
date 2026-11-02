@@ -94,7 +94,15 @@ pub(super) fn native_pixels(doc: &Document, layer: Option<LayerId>) -> Result<(V
     match layer {
         Some(id) => {
             let l = doc.layer(id).ok_or(EngineError::NoLayer(id))?;
-            let s = l.surface().ok_or_else(|| EngineError::Other(format!("layer \"{}\" has no pixels", l.name)))?;
+            let s = match l.surface() {
+                Some(s) => s,
+                None => {
+                    if let LayerContent::Shape(shape) = &l.content {
+                        return Ok((photocraft_vector::render_shape(shape, fmt, r).read_region(r), n));
+                    }
+                    return Err(EngineError::Other(format!("layer \"{}\" has no pixels", l.name)));
+                }
+            };
             if s.format() == fmt {
                 return Ok((s.read_region(r), n));
             }
@@ -238,6 +246,7 @@ pub(super) fn source(s: &Session, p: &Value, cmd: &str, gray: bool) -> Result<Ve
         match st.channel_view.target {
             super::view::ChannelTarget::Color(k) if st.channel_view.selected_colors.len() <= 1 => ChanRef::Color(k),
             super::view::ChannelTarget::Alpha(i) => ChanRef::Alpha(i),
+            super::view::ChannelTarget::Composite if color_count(&st.doc) == 1 => ChanRef::Composite,
             _ => return Err(bad(cmd, "the source must target one colour or alpha channel")),
         }
     } else {

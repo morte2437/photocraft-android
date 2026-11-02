@@ -148,7 +148,7 @@ pub use contents::{commit_child, contents_of, replace_contents_bytes, replace_co
 use contents::{edit_contents, export_contents, is_smart_child, path_param, replace_contents, set_source, update_all};
 #[cfg(test)]
 use filters::smart_mut;
-pub(crate) use filters::{add_smart_filter, filter_mask_paintable, filter_mask_surface, refresh_after_filter_mask_edit};
+pub(crate) use filters::{add_smart_filter, add_smart_filter_in, filter_mask_paintable, filter_mask_surface, refresh_after_filter_mask_edit};
 use filters::{blending_options, delete_filter, edit_filters, move_filter, set_filter_params, set_filter_visible, smart, transfer_filters};
 pub(crate) use placing::detach_psd;
 use placing::{convert, shift_layer, via_copy};

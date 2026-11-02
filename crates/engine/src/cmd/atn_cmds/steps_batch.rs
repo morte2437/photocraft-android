@@ -221,14 +221,8 @@ pub(super) fn batch_to(_: &str, p: &Value) -> Option<Descriptor> {
     if p.get("stopOnError") != Some(&Value::Bool(true)) || p.get("includeNonImages") != Some(&Value::Bool(true)) {
         return None;
     }
-    if let Some(original) = p.get(ORIGINAL) {
-        let d = Descriptor::from_bytes(&photocraft_paint::tile::b64_decode(original.as_str()?)?).ok()?;
-        let expected = read(&d)?;
-        let mut core = p.clone();
-        core.as_object_mut()?.remove(ORIGINAL);
-        if core == expected {
-            return Some(d);
-        }
+    if let Some(d) = original_batch(p) {
+        return Some(d);
     }
     let save_and_close = match p.get("destination") {
         None | Some(Value::Null) => false,
@@ -260,7 +254,7 @@ pub(super) fn batch_to(_: &str, p: &Value) -> Option<Descriptor> {
     }
     let d = desc("Btch").with("null", path_value(input)).with("Fldr", D::Boolean(subfolders)).with("Usng", D::Reference(reference));
     let d = if save_and_close { d.with("SvAn", D::Boolean(true)) } else { d.with("T   ", path_value(jstr(p, "output").filter(|s| !s.is_empty())?)) };
-    let mut d = d.with("Ovrd", D::Boolean(p.get("overrideSaveAs")?.as_bool()?));
+    let mut d = d.with("Ovrd", D::Boolean(p.get("overrideSaveAs").map(Value::as_bool).unwrap_or(Some(false))?));
     if let Some(value) = p.get("suppressWarnings") {
         d = d.with("suppressWarnings", D::Boolean(value.as_bool()?));
     }
@@ -276,4 +270,14 @@ pub(super) fn batch_to(_: &str, p: &Value) -> Option<Descriptor> {
         return None;
     }
     Some(d)
+}
+
+/// The original descriptor is reusable only while all represented settings remain unchanged.
+pub(super) fn original_batch(p: &Value) -> Option<Descriptor> {
+    let original = p.get(ORIGINAL)?.as_str()?;
+    let d = Descriptor::from_bytes(&photocraft_paint::tile::b64_decode(original)?).ok()?;
+    let expected = read(&d)?;
+    let mut core = p.clone();
+    core.as_object_mut()?.remove(ORIGINAL);
+    (core == expected).then_some(d)
 }

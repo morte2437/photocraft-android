@@ -18,6 +18,13 @@ fn encoded(code: &[u8; 4], d: Descriptor) -> Vec<u8> {
 /// Pair measured descriptors with native params, including signed Fibers seed bits.
 fn cases() -> Vec<([u8; 4], Descriptor, &'static str, Value)> {
     let kernel: Vec<i32> = (0..25).map(|i| if i == 12 { 1 } else { 0 }).collect();
+    let emboss: Vec<i32> = (0..25)
+        .map(|i| match i {
+            11 => -1,
+            13 => 1,
+            _ => 0,
+        })
+        .collect();
     vec![
         (
             *b"Cstm",
@@ -27,6 +34,15 @@ fn cases() -> Vec<([u8; 4], Descriptor, &'static str, Value)> {
                 .with("Mtrx", D::List(kernel.iter().copied().map(D::Integer).collect())),
             "filter.other.custom",
             json!({"kernel":kernel,"scale":1,"offset":17}),
+        ),
+        (
+            *b"Cstm",
+            Descriptor::new("null")
+                .with("Scl ", D::Integer(1))
+                .with("Ofst", D::Integer(17))
+                .with("Mtrx", D::List(emboss.iter().copied().map(D::Integer).collect())),
+            "filter.other.custom",
+            json!({"kernel":emboss,"scale":1,"offset":17}),
         ),
         (
             *b"Fbrs",

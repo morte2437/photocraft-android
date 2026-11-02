@@ -32,7 +32,7 @@ pub mod trace;
 use photocraft_color::{ColorMode, PixelFormat};
 use photocraft_doc::{Fill, FillRule, GradientStyle, Path, PathOp, ShapeLayer, ShapeStroke, StrokeAlign, VectorMask};
 use photocraft_geom::{Rect, TILE_SIZE};
-use photocraft_raster::Surface;
+use photocraft_raster::{Interrupt, Surface};
 
 pub use flatten::{Polyline, flatten_path, flatten_subpath};
 pub use raster::Rasterizer;
@@ -44,14 +44,21 @@ pub const DEFAULT_TOLERANCE: f64 = 0.01;
 /// Compiles the fill area of `path`: one component per subpath (filled with the path's rule)
 /// folded with the subpath operations; open subpaths are closed implicitly.
 pub fn fill_rasterizer(path: &Path, tol: f64) -> Rasterizer {
+    fill_rasterizer_with(path, tol, &Interrupt::NONE).unwrap_or_default()
+}
+
+/// [`fill_rasterizer`] with cooperative cancellation while compiling the path.
+fn fill_rasterizer_with(path: &Path, tol: f64, ctl: &Interrupt) -> Option<Rasterizer> {
+    ctl.check().ok()?;
     let mut r = Rasterizer::new(path.inverted);
     // One point budget for the whole path, then one edge sort for all components.
-    let polys: Vec<Vec<(f64, f64)>> = flatten_path(path, tol).into_iter().map(|l| l.pts).collect();
+    let polys: Vec<Vec<(f64, f64)>> = flatten::flatten_path_with(path, tol, ctl)?.into_iter().map(|l| l.pts).collect();
     for c in path.components() {
-        r.push_component(polys.get(c.clone()).unwrap_or_default(), path.effective_op(c.start), path.fill_rule);
+        r.push_component_with(polys.get(c.clone()).unwrap_or_default(), path.effective_op(c.start), path.fill_rule, ctl)?;
     }
     r.sort_edges();
-    r
+    ctl.check().ok()?;
+    Some(r)
 }
 
 /// Compiles the stroke outline of `path` (all subpaths, one non-zero component).
@@ -79,7 +86,13 @@ pub fn stroke_style(s: &ShapeStroke) -> StrokeStyle {
 
 /// Fill coverage of `path` over `rect` (row-major, `0..=1`).
 pub fn path_coverage(path: &Path, rect: Rect) -> Vec<f32> {
-    fill_rasterizer(path, DEFAULT_TOLERANCE).render(rect)
+    path_coverage_with(path, rect, &Interrupt::NONE).unwrap_or_default()
+}
+
+/// [`path_coverage`] with cancellation during geometry preparation and scanline rendering.
+/// Returns no partial coverage when cancelled.
+pub fn path_coverage_with(path: &Path, rect: Rect, ctl: &Interrupt) -> Option<Vec<f32>> {
+    fill_rasterizer_with(path, DEFAULT_TOLERANCE, ctl)?.render_with(rect, ctl)
 }
 
 enum MaskGeometry {

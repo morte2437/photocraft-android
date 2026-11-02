@@ -23,7 +23,7 @@ fn setting<T>(d: &Descriptor, key: &str, read: impl Fn(&D) -> Option<T>, default
 
 /// Whether `p` sets nothing but `allowed` (a `null` counts as unset).
 fn sets_only(p: &Value, allowed: &[&str]) -> bool {
-    p.as_object().is_none_or(|m| m.iter().all(|(k, v)| v.is_null() || allowed.contains(&k.as_str())))
+    p.as_object().is_some_and(|m| m.iter().all(|(k, v)| v.is_null() || allowed.contains(&k.as_str())))
 }
 
 /// `filter.other.custom`'s ranges: (scale, offset, kernel cell). The command clamps a value

@@ -61,6 +61,18 @@ fn mask_from_selection(sel: &Surface) -> LayerMask {
 /// filter mask, as in Photoshop. Without a renderable source the filter is applied to the cached
 /// pixels (and still recorded).
 pub(crate) fn add_smart_filter(doc: &mut Document, id: LayerId, sf: photocraft_doc::SmartFilter, selection: Option<&Surface>) -> Result<()> {
+    add_smart_filter_in(doc, id, sf, selection, &crate::jobs::JobCtx::new())
+}
+
+/// Append a filter while retaining the job's cancellation context through its re-render.
+pub(crate) fn add_smart_filter_in(
+    doc: &mut Document,
+    id: LayerId,
+    sf: photocraft_doc::SmartFilter,
+    selection: Option<&Surface>,
+    ctx: &crate::jobs::JobCtx,
+) -> Result<()> {
+    ctx.check()?;
     let canvas = doc.bounds();
     let renderable = source_bytes(&doc.metadata, &smart(doc, id)?.source).is_some();
     let sm = smart_mut(doc, id)?;
@@ -71,11 +83,11 @@ pub(crate) fn add_smart_filter(doc: &mut Document, id: LayerId, sf: photocraft_d
             sm.filter_mask = Some(mask_from_selection(sel));
         }
         sm.smart_filters.push(sf);
-        return refresh_or_fail(doc, id);
+        return refresh_or_fail_in(doc, id, ctx);
     }
     let bounds = selection.map(Surface::content_bounds).filter(|b| !b.is_empty()).unwrap_or(canvas);
     let cache = sm.cache.as_ref().ok_or_else(|| other("smart object has no pixels"))?;
-    let out = crate::filters::apply_filter_to_surface(&sf.command, &sf.params, cache, bounds, selection, canvas)?
+    let out = crate::filters::apply_filter_to_surface_in(&sf.command, &sf.params, cache, bounds, selection, canvas, ctx)?
         .ok_or_else(|| other(format!("unknown filter {}", sf.command)))?;
     sm.cache = Some(out);
     sm.smart_filters.push(sf);

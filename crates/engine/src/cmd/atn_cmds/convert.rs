@@ -151,7 +151,10 @@ pub(super) fn export_item(id: &str, params: &Value, set: &str) -> Option<AtnItem
         return Some(AtnItem { event, dictionary: jstr(params, "name").unwrap_or("").as_bytes().to_vec(), descriptor, ..Default::default() });
     }
     let mut params = params.clone();
-    if (id == "actions.play" || id == "actions.conditional" || id == "file.automate.batch") && params.get("set").is_none() {
+    if (id == "actions.play" || id == "actions.conditional" || id == "file.automate.batch")
+        && params.get("set").is_none()
+        && !(id == "file.automate.batch" && super::steps_batch::original_batch(&params).is_some())
+    {
         params["set"] = json!(set);
     }
     let (e, descriptor) = event_and_descriptor(id, &params)?;

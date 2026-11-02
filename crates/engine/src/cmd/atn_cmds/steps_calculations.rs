@@ -96,7 +96,7 @@ pub(super) fn from_descriptor(d: &Descriptor) -> Option<Mapped> {
         }
         // This also rejects duplicate/unknown keys, changed order and unsupported reference
         // metadata rather than losing any of them when the step is saved again.
-        (to_descriptor(&p)?.items == d.items).then_some(p)
+        (to_descriptor(&p)? == *d).then_some(p)
     };
     Some(mapped().map_or(Mapped::Unsupported { harmless: false }, |p| step("image.calculations", p)))
 }

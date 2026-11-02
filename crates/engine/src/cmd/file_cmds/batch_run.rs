@@ -508,6 +508,11 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
             if !from_source {
                 return Err(EngineError::Other("Save and Close needs the original source document or its recorded Save snapshot".into()));
             }
+            if extension(out).as_deref() == Some("exr") {
+                // All recorded Opens have passed their authorization gates before this read.
+                // Validate the original file, not only the selected part's imported document.
+                preserve_exr(&read_file(out)?)?;
+            }
             let tiff = extension(out).and_then(|ext| photocraft_codecs::from_extension(&ext)) == Some(photocraft_codecs::Format::Tiff);
             if tiff {
                 if !matches!(
@@ -535,7 +540,8 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
                     saved = Some(scratch.active().ok_or(EngineError::NoDocument)?.doc.clone());
                     continue;
                 }
-                let r = scratch.execute(id, params.clone())?;
+                let params = crate::actions_cmds::playback_params(scratch, id, params)?;
+                let r = scratch.execute(id, params)?;
                 // A failed step inside a called action makes this file an error, not a saved result.
                 if let Some(error) = crate::actions_cmds::nested_failure(id, &r) {
                     return Err(EngineError::Other(error));
@@ -575,4 +581,21 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
         notices.extend(imports.iter().cloned());
     }
     Ok(r)
+}
+
+/// Only a single flat, unprefixed RGB(A) source can be preserved by the EXR writer.
+fn preserve_exr(bytes: &[u8]) -> Result<()> {
+    let parts = photocraft_codecs::exr_info(bytes, &Default::default()).map_err(|e| EngineError::Other(format!("cannot inspect EXR source: {e}")))?;
+    if parts.len() != 1
+        || parts.first().is_none_or(|p| {
+            p.deep
+                || p.view.is_some()
+                || !(3..=4).contains(&p.channels.len())
+                || p.channels.iter().any(|c| !matches!(c.name.as_str(), "R" | "G" | "B" | "A"))
+                || ["R", "G", "B"].iter().any(|name| !p.channels.iter().any(|c| c.name == *name))
+        })
+    {
+        return Err(EngineError::Other("Save and Close cannot preserve this EXR's parts or channels; save to a separate output folder".into()));
+    }
+    Ok(())
 }

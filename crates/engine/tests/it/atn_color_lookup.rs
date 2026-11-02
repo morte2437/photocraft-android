@@ -200,3 +200,33 @@ fn unknown_lookup_forms_stay_whole_and_changed_native_steps_refuse_export() {
     s.execute("image.adjustments.colorLookup", json!({"data":std::str::from_utf8(CUBE).unwrap(),"fileName":"legacy.cube"})).unwrap();
     assert_ne!(saved(&s), before, "the existing text input remains supported");
 }
+
+/// Float playback must apply the recorded dither without hiding it in integer quantization.
+#[test]
+fn recorded_dither_changes_float_pixels_within_its_documented_bound() {
+    let render = |dither| {
+        let mut d = descriptor("LUTFormatCUBE", CUBE);
+        d.items.iter_mut().find(|(key, _)| key.is("Dthr")).unwrap().1 = D::Boolean(dither);
+        let imported = atn_cmds::import(&encoded(d)).unwrap();
+        assert!(imported.unsupported.is_empty());
+        let mut s = fixture(32);
+        s.actions.list = imported.actions;
+        assert_eq!(s.execute("actions.play", json!({"action":"Lookup"})).unwrap()["ran"], 1);
+        pixels(&s)
+    };
+    let plain = render(false);
+    // Opaque, unsaturated fixture pixels include nonzero ordered offsets.
+    assert!(plain.iter().all(|p| p[3] == 1.0 && p[..3].iter().all(|v| (0.01..0.99).contains(v))));
+    assert!((0..2).any(|y| (0..3).any(|x| photocraft_compose::adjust::bayer4(x, y) != 0.0)));
+    let dithered = render(true);
+    let mut changed = false;
+    for (a, b) in dithered.iter().zip(&plain) {
+        assert_eq!(a[3], b[3]);
+        for c in 0..3 {
+            let difference = (a[c] - b[c]).abs();
+            assert!(difference < 0.5 / 255.0, "channel {c}: {difference}");
+            changed |= difference > 0.0;
+        }
+    }
+    assert!(changed, "Dthr=true must change at least one float channel");
+}

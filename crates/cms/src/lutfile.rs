@@ -287,7 +287,12 @@ pub fn parse_3dl(text: &str) -> Result<LutFile, LutError> {
             let expected = n.checked_pow(3).ok_or_else(|| LutError(format!("unsupported 3dl cube size {n}")))?;
             // One row more than the declared cube, and the first row has exactly `n` values:
             // that row is the shaper, not a 28th node of a 3³ cube (#9078).
-            let nodes = if rows.len() == expected + 1 && first_len == Some(n) { &rows[1..] } else { &rows[..] };
+            let nodes = if rows.len() == expected + 1 && first_len == Some(n) {
+                shaper = rows.first().map(|row| row.to_vec());
+                &rows[1..]
+            } else {
+                &rows[..]
+            };
             if nodes.len() != expected {
                 return err(format!("expected {expected} rows for the declared {n}³ cube, found {}", nodes.len()));
             }

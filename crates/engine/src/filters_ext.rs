@@ -517,14 +517,6 @@ fn map_from_document(doc: &Document, layer: Option<u64>) -> Option<algo::Image> 
 /// `mapDocument` index with optional `mapLayer` id), and the alpha channel Lens Blur reads its
 /// depth from (`depthChannel`, an index or a name).
 pub(crate) fn resolve(s: &Session, fp: &mut FilterParams, p: &Value) -> Result<()> {
-    if matches!(fp, FilterParams::CustomShapeBlur { .. }) {
-        if p.get("shapePath").is_none() {
-            let mut resolved = p.clone();
-            resolved["shapePath"] = crate::vector_cmds::path_json(&crate::presets::shapes::filter_path(s, p)?);
-            return resolve_shape_kernel(fp, &resolved);
-        }
-        return resolve_shape_kernel(fp, p);
-    }
     if let FilterParams::LensBlur { depth: DepthSource::Channel, depth_map, .. } = fp {
         let doc = &s.active().ok_or(EngineError::NoDocument)?.doc;
         let channel = p
@@ -585,8 +577,8 @@ fn map_from_path(path: &str, layer: Option<u64>) -> Result<Option<algo::Image>> 
 /// the map, so their re-render reads the map again here; without it the filter passed the pixels
 /// through. The path is stored in the document, so it is followed only as
 /// [`crate::doc_path::resolve`] allows. `mapDocument` needs the session and is left unresolved.
-pub(crate) fn resolve_map_path(fp: &mut FilterParams, p: &Value) -> Result<()> {
-    resolve_shape_kernel(fp, p)?;
+pub(crate) fn resolve_map_path(fp: &mut FilterParams, p: &Value, ctl: &photocraft_raster::Interrupt) -> Result<()> {
+    resolve_shape_kernel(fp, p, ctl)?;
     if let FilterParams::Displace { map, .. } = fp
         && map.is_none()
         && let Some(path) = map_path(p)
@@ -598,8 +590,9 @@ pub(crate) fn resolve_map_path(fp: &mut FilterParams, p: &Value) -> Result<()> {
 }
 
 /// Rebuild a custom kernel from portable vector data for direct and Smart Filter rendering.
-fn resolve_shape_kernel(fp: &mut FilterParams, p: &Value) -> Result<()> {
+pub(crate) fn resolve_shape_kernel(fp: &mut FilterParams, p: &Value, ctl: &photocraft_raster::Interrupt) -> Result<()> {
     let FilterParams::CustomShapeBlur { radius, kernel } = fp else { return Ok(()) };
+    ctl.check().map_err(|_| EngineError::Cancelled)?;
     // Preserve Shape Blur's existing radius ceiling before rasterizing an O(r²) kernel.
     if !radius.is_finite() || !(0.0..=1000.0).contains(radius) {
         return Err(EngineError::Other("Shape Blur radius must be finite and at most 1000".into()));
@@ -622,7 +615,7 @@ fn resolve_shape_kernel(fp: &mut FilterParams, p: &Value) -> Result<()> {
         return Err(EngineError::Other("Shape Blur's selected shape has nonfinite geometry".into()));
     }
     let rect = Rect::new(0, 0, size, size);
-    let data = photocraft_vector::path_coverage(&fitted, rect);
+    let data = photocraft_vector::path_coverage_with(&fitted, rect, ctl).ok_or(EngineError::Cancelled)?;
     if data.len() != (size as usize).saturating_mul(size as usize) || !data.iter().any(|v| *v > 0.0) {
         return Err(EngineError::Other("Shape Blur's selected shape has no coverage".into()));
     }
