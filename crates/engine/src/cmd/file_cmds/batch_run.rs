@@ -137,7 +137,7 @@ pub(crate) fn process_tree(
     suffix: &str,
     f: &dyn Fn(&mut Session, &str) -> Result<bool>,
 ) -> Value {
-    process_outputs(s, default_outputs(inputs, output, format, suffix), save, None, false, false, f)
+    process_outputs(s, default_outputs(inputs, output, format, suffix), save, None, false, InputOpen::default(), f)
 }
 
 /// Stream legacy destination names without collecting another path list for large batches.
@@ -188,6 +188,13 @@ fn same_format_takes_the_file_names_extension() {
     assert_eq!(same_format("/in/.hidden"), "png");
 }
 
+/// How one Batch input is opened; Image Processor keeps automatic image-only opening.
+#[derive(Clone, Copy, Default)]
+struct InputOpen {
+    check_format: bool,
+    from_action: bool,
+}
+
 /// Check collisions before input reads and isolate each file in a scratch session.
 /// An optional content format decouples encoding from the structured destination filename.
 fn process_outputs<'a>(
@@ -196,11 +203,11 @@ fn process_outputs<'a>(
     save: SaveOpts,
     content_format: Option<&str>,
     stop_on_error: bool,
-    check_folder_format: bool,
+    open: InputOpen,
     f: &dyn Fn(&mut Session, &str) -> Result<bool>,
 ) -> Value {
     // The scratch sessions have default preferences; a raw opens at the user's Raw Defaults.
-    let raw_ppi = s.prefs().raw_defaults.resolution;
+    let raw_ppi = super::open::raw_open_resolution(s);
     let mut files = Vec::new();
     let mut errors = Vec::new();
     let mut written = OutputClaims::default();
@@ -209,15 +216,19 @@ fn process_outputs<'a>(
             written.check(&out).map_err(EngineError::Other)?;
             // A folder must not silently use the embedded preview of an unsupported raw format.
             #[cfg(not(target_arch = "wasm32"))]
-            if check_folder_format && !super::paths::openable_name(path) {
+            if open.check_format && !super::paths::openable_name(path) {
                 return Err(EngineError::Other(format!("unsupported Batch folder input: {path}")));
             }
             #[cfg(target_arch = "wasm32")]
-            let _ = check_folder_format;
-            let bytes = read_file(path)?;
+            let _ = open.check_format;
             let mut scratch = Session::new();
-            let doc = import_at_raw_ppi(raw_ppi, &file_name(path), &bytes)?;
-            scratch.add_document(doc, Some(path.to_string()));
+            if open.from_action {
+                scratch.batch_open = Some(super::open::BatchOpen { path: path.to_string(), sources: Vec::new(), raw_ppi });
+            } else {
+                let bytes = read_file(path)?;
+                let doc = import_at_raw_ppi(raw_ppi, &file_name(path), &bytes)?;
+                scratch.add_document(doc, Some(path.to_string()));
+            }
             if !f(&mut scratch, &out)? {
                 let d = scratch.active().ok_or(EngineError::NoDocument)?;
                 let ext = content_format.map(|format| if format == "same" { same_format(path) } else { format.trim_start_matches('.').to_ascii_lowercase() });
@@ -302,6 +313,11 @@ pub(crate) fn batch_action(list: &[crate::actions_cmds::Action], p: &Value) -> R
 /// Apply the selected file-error policy while retaining per-file results for direct callers.
 pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "file.automate.batch";
+    let override_open = match p.get("overrideOpen") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(value)) => *value,
+        _ => return Err(EngineError::BadParams { cmd: cmd.into(), msg: "overrideOpen must be a boolean".into() }),
+    };
     // Save and Close destination adapted from #10026 (@edaldridgePersonal, b96be5300cfa).
     let save_and_close = match p.get("destination") {
         None | Some(Value::Null) => false,
@@ -422,7 +438,7 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     let structured = !save_and_close && p.get("namingComponents").is_some_and(|v| !v.is_null());
     let run_format = structured.then(|| format.clone());
     let run = move |scratch: &mut Session, out: &str| {
-        let source_id = scratch.active().ok_or(EngineError::NoDocument)?.doc.id;
+        let source_id = scratch.active().map(|st| st.doc.id);
         if save_and_close {
             let encodable = extension(out).is_some_and(|ext| {
                 matches!(ext.as_str(), "psd" | "psb" | "pcraft" | "ora") || photocraft_codecs::from_extension(&ext).is_some_and(|format| format.caps().write)
@@ -433,17 +449,28 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
         }
         let content_ext = run_format.as_deref().map(|format| {
             if format == "same" {
-                same_format(scratch.active().and_then(|d| d.path.as_deref()).unwrap_or("input.png"))
+                same_format(
+                    scratch
+                        .batch_open
+                        .as_ref()
+                        .map(|binding| binding.path.as_str())
+                        .or_else(|| scratch.active().and_then(|d| d.path.as_deref()))
+                        .unwrap_or("input.png"),
+                )
             } else {
                 format.trim_start_matches('.').to_ascii_lowercase()
             }
         });
         // Check the actual result, including a saved snapshot after Close, before either write path.
-        let validate_result = |doc: &Document| -> Result<()> {
+        let validate_result = |scratch: &Session, doc: &Document| -> Result<()> {
+            if scratch.batch_open.as_ref().is_some_and(|binding| binding.sources.is_empty()) {
+                return Err(EngineError::Other("Override Open requires an executed Open step for this input".into()));
+            }
             if !save_and_close {
                 return Ok(());
             }
-            if doc.id != source_id {
+            let from_source = scratch.batch_open.as_ref().map_or(source_id == Some(doc.id), |binding| binding.sources.contains(&doc.id));
+            if !from_source {
                 return Err(EngineError::Other("Save and Close needs the original source document or its recorded Save snapshot".into()));
             }
             let tiff = extension(out).and_then(|ext| photocraft_codecs::from_extension(&ext)) == Some(photocraft_codecs::Format::Tiff);
@@ -484,14 +511,12 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
             // document left active, it is written as the save found it.
             match saved {
                 Some(doc) if scratch.active().is_none_or(|d| d.doc.id != doc.id) => {
-                    validate_result(&doc)?;
+                    validate_result(scratch, &doc)?;
                     save_output(&doc, out, save, content_ext.as_deref())?;
                     Ok(true)
                 }
                 _ => {
-                    if save_and_close {
-                        validate_result(&scratch.active().ok_or(EngineError::NoDocument)?.doc)?;
-                    }
+                    validate_result(scratch, &scratch.active().ok_or(EngineError::NoDocument)?.doc)?;
                     Ok(false)
                 }
             }
@@ -499,20 +524,13 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
         carried.set(scratch.actions.playback_steps);
         result
     };
+    let open = InputOpen { check_format: check_folder_format, from_action: override_open };
     let r = match names {
-        _ if save_and_close => {
-            process_outputs(s, inputs.iter().map(|input| (input.path.as_str(), input.path.clone())), save, None, stop_on_error, check_folder_format, &run)
+        _ if save_and_close => process_outputs(s, inputs.iter().map(|input| (input.path.as_str(), input.path.clone())), save, None, stop_on_error, open, &run),
+        Some(names) => {
+            process_outputs(s, inputs.iter().map(|i| i.path.as_str()).zip(names), save, structured.then_some(format.as_str()), stop_on_error, open, &run)
         }
-        Some(names) => process_outputs(
-            s,
-            inputs.iter().map(|i| i.path.as_str()).zip(names),
-            save,
-            structured.then_some(format.as_str()),
-            stop_on_error,
-            check_folder_format,
-            &run,
-        ),
-        None => process_outputs(s, default_outputs(&inputs, &output, &format, ""), save, None, stop_on_error, check_folder_format, &run),
+        None => process_outputs(s, default_outputs(&inputs, &output, &format, ""), save, None, stop_on_error, open, &run),
     };
     if s.actions.playing > 0 {
         s.actions.playback_steps = carried.get();

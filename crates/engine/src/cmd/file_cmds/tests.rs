@@ -308,6 +308,151 @@ fn batch_save_and_close_keeps_tiff_layers() {
     assert_eq!(result["files"], json!([flat]));
 }
 
+/// Read a small saved Batch result with the same import/compositor oracle as the existing fixtures.
+fn batch_open_pixel(path: &str) -> [f32; 4] {
+    let loaded = photocraft_io::import("result.png", &std::fs::read(path).unwrap()).unwrap().document;
+    photocraft_compose::render(&loaded, Rect::new(0, 0, 1, 1)).px[0]
+}
+
+/// Called and conditional actions and scripts retain Open settings and use each selected input.
+#[test]
+fn batch_override_open_follows_called_conditional_and_script_steps() {
+    let dir = tmp("batch-override-open");
+    let first = png(&dir, "a.png", 3, 2, "#ff0000");
+    let second = png(&dir, "b.png", 3, 2, "#0000ff");
+    let recorded = png(&dir, "recorded.png", 3, 2, "#00ff00");
+    let mut s = session(7, 9, 8);
+    let caller = photocraft_format::save_to_bytes(doc(&s), &Default::default()).unwrap();
+    let prefs = serde_json::to_value(s.prefs()).unwrap();
+    s.actions.list.push(crate::actions_cmds::Action::new("Open", vec![("file.openAs".into(), json!({"path":recorded,"as":"png"}))]));
+    let actions = serde_json::to_value(&s.actions.list).unwrap();
+    let steps = json!([["actions.conditional",{"if":"always","then":"Open"}],
+        ["file.scripts.browse",{"steps":[["file.closeAll",{}],["file.openAs",{"path":recorded,"as":"png"}]]}],
+        ["image.adjustments.invert",{}]]);
+    for enabled in [false, true] {
+        let output = join(&dir, if enabled { "redirected" } else { "legacy" });
+        let result = s
+            .execute(
+                "file.automate.batch",
+                json!({"input":[first,second],"output":output,"steps":steps,
+            "calledActions":s.actions.list,"overrideOpen":enabled}),
+            )
+            .unwrap();
+        assert!(result["errors"].as_array().unwrap().is_empty(), "{result}");
+        assert_eq!(batch_open_pixel(&join(&output, "a.png")), if enabled { [0.0, 1.0, 1.0, 1.0] } else { [1.0, 0.0, 1.0, 1.0] });
+        assert_eq!(batch_open_pixel(&join(&output, "b.png")), if enabled { [1.0, 1.0, 0.0, 1.0] } else { [1.0, 0.0, 1.0, 1.0] });
+    }
+    let failed = s
+        .execute(
+            "file.automate.batch",
+            json!({"input":[first],"output":join(&dir,"forced-format"),"overrideOpen":true,
+        "steps":[["file.openAs",{"path":recorded,"as":"pdn"}]]}),
+        )
+        .unwrap();
+    assert_eq!(failed["errors"].as_array().unwrap().len(), 1, "nondefault Open settings must still affect decoding: {failed}");
+    assert!(!std::path::Path::new(&join(&dir, "forced-format/a.png")).exists());
+    let invalid = join(&dir, "invalid-override");
+    assert!(s.execute("file.automate.batch", json!({"input":[first],"output":invalid,"steps":[],"overrideOpen":"true"})).is_err());
+    assert!(!std::path::Path::new(&invalid).exists());
+    assert_eq!(serde_json::to_value(&s.actions.list).unwrap(), actions);
+    assert_eq!(serde_json::to_value(s.prefs()).unwrap(), prefs);
+    assert_eq!(photocraft_format::save_to_bytes(doc(&s), &Default::default()).unwrap(), caller);
+    assert!(s.batch_open.is_none());
+}
+
+/// Both authorization gates see the actual input; a denied file keeps its source and output intact.
+#[test]
+fn batch_override_open_authorizes_effective_path_and_carries_failure_budget() {
+    static OPENS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    fn gate(id: &str, p: &Value) -> Result<()> {
+        if id == "file.openAs" {
+            OPENS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if p["as"] != "png" || p["path"].as_str().is_none_or(|path| file_name(path) != "a.png") {
+                return Err(EngineError::Other("effective Open denied".into()));
+            }
+        }
+        Ok(())
+    }
+    let dir = tmp("batch-open-authorization");
+    let first = png(&dir, "a.png", 3, 2, "#ff0000");
+    let second = png(&dir, "b.png", 3, 2, "#0000ff");
+    let original = std::fs::read(&second).unwrap();
+    let output = join(&dir, "out");
+    std::fs::create_dir_all(&output).unwrap();
+    let existing = png(&output, "b.png", 3, 2, "#4488aa");
+    let intact = std::fs::read(&existing).unwrap();
+    let mut s = Session::new();
+    s.actions.list.push(crate::actions_cmds::Action::new("Open", vec![("file.openAs".into(), json!({"path":"/recorded.png","as":"png"}))]));
+    s.batch_open = Some(BatchOpen { path: first.clone(), sources: Vec::new(), raw_ppi: 300.0 });
+    assert!(matches!(s.execute("file.openAs", json!([1])), Err(EngineError::BadParams { .. })));
+    assert!(s.documents().is_empty());
+    s.batch_open = None;
+    s.authorize = Some(gate);
+    s.actions.playing = 1;
+    OPENS.store(0, std::sync::atomic::Ordering::SeqCst);
+    let result = s
+        .execute(
+            "file.automate.batch",
+            json!({"input":[first,second],"output":output,"overrideOpen":true,"stopOnError":true,
+        "steps":[["actions.play",{"action":"Open"}]]}),
+        )
+        .unwrap();
+    assert_eq!(result["files"], json!([join(&output, "a.png")]), "{result}");
+    assert_eq!(result["errors"].as_array().unwrap().len(), 1, "{result}");
+    assert!(result["errors"][0]["error"].as_str().unwrap().contains("effective Open denied"));
+    assert_eq!(OPENS.load(std::sync::atomic::Ordering::SeqCst), 3, "two gates for the first Open, preauthorization denies the second");
+    assert_eq!(s.actions.playback_steps, 4);
+    assert_eq!(std::fs::read(&second).unwrap(), original);
+    assert_eq!(std::fs::read(&existing).unwrap(), intact);
+    assert!(s.documents().is_empty());
+    assert!(s.batch_open.is_none());
+}
+
+/// Inner Batch bindings do not replace outer input provenance or the shared logical-step budget.
+#[test]
+fn batch_override_open_nested_binding_and_save_close_preserve_sources() {
+    let dir = tmp("batch-open-nested");
+    let first = png(&dir, "a.png", 3, 2, "#ff0000");
+    let second = png(&dir, "b.png", 3, 2, "#0000ff");
+    let output = join(&dir, "outer");
+    let inner = join(&dir, "inner");
+    let open = json!({"path":"/recorded.png","as":"png"});
+    let mut s = Session::new();
+    s.actions.list.push(crate::actions_cmds::Action::new("Open", vec![("file.openAs".into(), open.clone())]));
+    let steps = json!([["actions.play",{"action":"Open"}],
+        ["file.automate.batch",{"input":[second],"output":inner,"overrideOpen":true,"steps":[["file.openAs",open],["image.adjustments.invert",{}]]}],
+        ["file.closeAll",{}],["file.openAs",open],["image.adjustments.invert",{}]]);
+    s.actions.playing = 1;
+    s.actions.playback_steps = crate::actions_cmds::MAX_PLAYBACK_STEPS - 8;
+    let result = s.execute("file.automate.batch", json!({"input":[first],"output":output,"overrideOpen":true,"steps":steps})).unwrap();
+    assert!(result["errors"].as_array().unwrap().is_empty(), "{result}");
+    assert_eq!(batch_open_pixel(&join(&output, "a.png")), [0.0, 1.0, 1.0, 1.0]);
+    assert_eq!(batch_open_pixel(&join(&inner, "b.png")), [1.0, 1.0, 0.0, 1.0]);
+    assert_eq!(s.actions.playback_steps, crate::actions_cmds::MAX_PLAYBACK_STEPS);
+    s.actions.playing = 0;
+    let original = std::fs::read(&first).unwrap();
+    for steps in [
+        json!([["image.adjustments.invert", {}]]),
+        json!([["file.new",{"width":2,"height":2}],["file.saveAs",{}]]),
+        json!([["file.openAs",open],["file.new",{"width":2,"height":2}],["file.saveAs",{}]]),
+    ] {
+        let result = s.execute("file.automate.batch", json!({"input":[first],"destination":"saveAndClose","overrideOpen":true,"steps":steps})).unwrap();
+        assert_eq!(result["errors"].as_array().unwrap().len(), 1, "{result}");
+        assert_eq!(std::fs::read(&first).unwrap(), original);
+    }
+    let result = s
+        .execute(
+            "file.automate.batch",
+            json!({"input":[first],"destination":"saveAndClose","overrideOpen":true,
+        "steps":[["file.openAs",open],["image.adjustments.invert",{}],["file.saveAs",{}],["file.close",{}]]}),
+        )
+        .unwrap();
+    assert!(result["errors"].as_array().unwrap().is_empty(), "{result}");
+    assert_eq!(batch_open_pixel(&first), [0.0, 1.0, 1.0, 1.0]);
+    assert!(s.documents().is_empty());
+    assert!(s.batch_open.is_none());
+}
+
 fn tmp(name: &str) -> String {
     let d = std::env::temp_dir().join(format!("photocraft-file-cmds-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
@@ -451,6 +596,20 @@ fn revert_batch_and_stack_open_a_raw_at_the_raw_defaults_resolution() {
     assert_eq!(files.len(), 1, "{r}");
     let psd = photocraft_io::import("IMG_0003.psd", &std::fs::read(files[0].as_str().unwrap()).unwrap()).unwrap().document;
     assert_eq!(psd.resolution_dpi, 240.0, "Batch");
+    // A nested Override Open inherits the outer input's resolution, not scratch defaults.
+    let nested = join(&dir, "nested");
+    let r = s
+        .execute(
+            "file.automate.batch",
+            json!({"input":[path],"output":join(&dir,"outer"),"format":"psd","overrideOpen":true,
+        "steps":[["file.openAs",{"path":"/recorded.dng"}],
+            ["file.automate.batch",{"input":[path],"output":nested,"format":"psd","overrideOpen":true,
+                "steps":[["file.openAs",{"path":"/recorded.dng"}]]}]]}),
+        )
+        .unwrap();
+    assert!(r["errors"].as_array().unwrap().is_empty(), "{r}");
+    let nested = photocraft_io::import("IMG_0003.psd", &std::fs::read(join(&nested, "IMG_0003.psd")).unwrap()).unwrap().document;
+    assert_eq!(nested.resolution_dpi, 240.0, "nested Override Open keeps the caller's RAW resolution");
     s.execute("file.scripts.loadFilesIntoStack", json!({"paths": [path]})).unwrap();
     assert_eq!(doc(&s).resolution_dpi, 240.0, "Load Files into Stack");
 }

@@ -170,11 +170,36 @@ fn batch_all_documented_components_and_compatibility_flags_round_trip() {
     }
 }
 
+/// Batch's Open binding round-trips, but richer Open descriptors must remain whole.
+#[test]
+fn batch_override_open_and_unrepresented_open_settings_round_trip() {
+    for enabled in [false, true] {
+        let mut p = batch_case();
+        p.as_object_mut().unwrap().remove("__atnBatch");
+        p["overrideOpen"] = json!(enabled);
+        let a = Action::new("Driver", vec![("file.automate.batch".into(), p)]);
+        let (bytes, skipped) = export("S", &[&a], &[], false).unwrap();
+        assert!(skipped.is_empty());
+        let loaded = import(&bytes).unwrap();
+        assert_eq!(loaded.actions[0].steps[0].1["overrideOpen"], enabled);
+        let (again, skipped) = export("S", &[&loaded.actions[0]], &[], false).unwrap();
+        assert!(skipped.is_empty());
+        assert_eq!(atn::parse(&again).unwrap().actions[0].items[0].descriptor, atn::parse(&bytes).unwrap().actions[0].items[0].descriptor);
+    }
+    let rich = desc("null").with("null", path_value("/recorded.png")).with("unrepresentedOpenSetting", D::Boolean(true));
+    let bytes = photocraft_paint::tile::b64_decode(&set_of("S", vec![("Driver", vec![item("Opn ", "Open", Some(rich.clone()))])])).unwrap();
+    let loaded = import(&bytes).unwrap();
+    assert_eq!(loaded.actions[0].steps[0].0, PHOTOSHOP_STEP);
+    let (again, _) = export("S", &[&loaded.actions[0]], &[], false).unwrap();
+    assert_eq!(atn::parse(&again).unwrap().actions[0].items[0].descriptor, Some(rich));
+    assert!(super::steps_doc::open_to("file.openAs", &json!({"path":"/recorded.png","as":"png"})).is_none());
+}
+
 /// Unsupported modes and misplaced fields must not lose data through a partial conversion.
 #[test]
 fn batch_unknown_components_wrong_start_placement_and_unsupported_modes_stay_whole() {
     let mut cases = vec![batch_descriptor("unknownComponent")];
-    for (key, value) in [("Strt", D::Integer(3)), ("OvrO", D::Boolean(true)), ("SvAn", D::Boolean(true)), ("Log ", path_value("/log"))] {
+    for (key, value) in [("Strt", D::Integer(3)), ("OvrO", D::Integer(1)), ("SvAn", D::Boolean(true)), ("Log ", path_value("/log"))] {
         cases.push(batch_descriptor("Nm  ").with(key, value));
     }
     let mut odd = batch_descriptor("Nm  ");

@@ -112,12 +112,17 @@ fn read(d: &Descriptor) -> Option<Value> {
     if !keys(d, &["null", "OvrO", "Fldr", "suppressWarnings", "suppressOpenOptions", "Usng", "T   ", "SvAn", "Ovrd", "fileNamingRules"]) {
         return None;
     }
-    // Enabled overrides and Alias payloads stay whole until their behavior is represented.
-    for key in ["OvrO", "suppressWarnings", "suppressOpenOptions"] {
+    // Dialog suppression and Alias payloads stay whole until their behavior is represented.
+    for key in ["suppressWarnings", "suppressOpenOptions"] {
         if d.get(key).is_some_and(|v| v != &D::Boolean(false)) {
             return None;
         }
     }
+    let override_open = match d.get("OvrO") {
+        None => None,
+        Some(D::Boolean(value)) => Some(*value),
+        _ => return None,
+    };
     let save_and_close = match d.get("SvAn") {
         None | Some(D::Boolean(false)) => false,
         Some(D::Boolean(true)) => true,
@@ -127,6 +132,9 @@ fn read(d: &Descriptor) -> Option<Value> {
         return None;
     }
     let mut p = json!({"input":path_text(d.get("null")?)?,"stopOnError":true,"includeNonImages":true});
+    if let Some(value) = override_open {
+        p["overrideOpen"] = json!(value);
+    }
     if save_and_close {
         p["destination"] = json!("saveAndClose");
     } else {
@@ -185,6 +193,7 @@ pub(super) fn batch_to(_: &str, p: &Value) -> Option<Descriptor> {
             "flatOutput",
             "includeSubfolders",
             "overrideSaveAs",
+            "overrideOpen",
             "stopOnError",
             "includeNonImages",
             "namingComponents",
@@ -240,6 +249,9 @@ pub(super) fn batch_to(_: &str, p: &Value) -> Option<Descriptor> {
     let d = desc("Btch").with("null", path_value(input)).with("Fldr", D::Boolean(subfolders)).with("Usng", D::Reference(reference));
     let d = if save_and_close { d.with("SvAn", D::Boolean(true)) } else { d.with("T   ", path_value(jstr(p, "output").filter(|s| !s.is_empty())?)) };
     let mut d = d.with("Ovrd", D::Boolean(p.get("overrideSaveAs")?.as_bool()?));
+    if let Some(value) = p.get("overrideOpen") {
+        d = d.with("OvrO", D::Boolean(value.as_bool()?));
+    }
     if p.get("namingComponents").is_some() {
         d = d.with("fileNamingRules", D::Descriptor(naming_to(p)?));
     } else if !save_and_close || ["startingSerial", "compatibility"].iter().any(|key| p.get(key).is_some()) {

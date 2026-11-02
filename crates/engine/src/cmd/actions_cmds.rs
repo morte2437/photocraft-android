@@ -443,6 +443,7 @@ pub fn saves_smart_contents(s: &Session, id: &str) -> bool {
     id == "file.save" && s.is_enabled(SAVE_CONTENTS)
 }
 
+/// Replay enabled steps with their effective parameters authorized before execution.
 fn run_recorded(s: &mut Session, action: &Action, from: usize) -> (u64, Option<Value>) {
     let mut ran = 0u64;
     let mut failed = None;
@@ -451,6 +452,8 @@ fn run_recorded(s: &mut Session, action: &Action, from: usize) -> (u64, Option<V
             failed = Some(json!({"step": i, "id": id, "error": format!("action playback exceeded the {}-step limit", MAX_PLAYBACK_STEPS)}));
             break;
         }
+        let effective = crate::file_cmds::batch_open_params(s, id, params);
+        let params = effective.as_ref().unwrap_or(params);
         if let Some(auth) = s.authorize
             && let Err(e) = auth(id, params)
         {

@@ -281,8 +281,21 @@ exact extension; import-only/unknown/extensionless inputs require Save As and
 fail instead of producing guessed sibling files. Caller documents and editing
 state stay unchanged.
 
+Override Open starts each input without a document and redirects executed Open
+steps to that input, preserving their represented native options. Called actions,
+conditionals and scripts share that input binding; nested Batch runs keep their
+own binding. Authorization sees the redirected path before opening. No executed
+Open is a per-file failure. Save and Close accepts only a document opened from
+that input or its recorded Save snapshot, including after Close.
+
+The Open ATN converter admits only its represented path field. Richer recorded
+Open settings remain complete steps; native format/decoder options execute but
+are refused on ATN export until their wire representation is supported. This does
+not claim parity for unrepresented Open options. Native Batch keeps automatic
+opening when overrideOpen is false or omitted.
+
 This maps supported text-path folder forms. Alias bytes, open-document sources,
-error logs and enabled Open/dialog overrides remain preserved steps. Save and
+error logs and enabled dialog overrides remain preserved steps. Save and
 Close with unrepresented override combinations also remains preserved. For an
 admitted recorded Save As configuration, native preflight refuses unrepresented
 save routing: override requires a directly represented Save step,

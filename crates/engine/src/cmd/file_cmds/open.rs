@@ -4,6 +4,32 @@ use super::{
     resize_surface, str_param, translate_surface,
 };
 
+/// Input and successfully opened document identities of one Override Open scratch session.
+pub(crate) struct BatchOpen {
+    pub path: String,
+    pub sources: Vec<photocraft_doc::DocId>,
+    pub raw_ppi: f64,
+}
+
+/// Replace only the file choice before either authorization gate; malformed params stay invalid.
+pub(crate) fn batch_open_params(s: &Session, id: &str, params: &Value) -> Option<Value> {
+    let binding = s.batch_open.as_ref()?;
+    if !matches!(id, "file.openAs" | "file.openExrParts") || !(params.is_object() || params.is_null()) {
+        return None;
+    }
+    let mut effective = if params.is_null() { super::json!({}) } else { params.clone() };
+    effective.as_object_mut()?.insert("path".into(), Value::String(binding.path.clone()));
+    Some(effective)
+}
+
+/// Record provenance after a redirected native Open succeeds, including repeated Opens.
+pub(crate) fn remember_batch_open(s: &mut Session) {
+    let id = s.active().map(|st| st.doc.id);
+    if let (Some(binding), Some(id)) = (&mut s.batch_open, id) {
+        binding.sources.push(id);
+    }
+}
+
 pub(crate) fn import(name: &str, bytes: &[u8]) -> Result<Document> {
     import_result(name, bytes).map(|r| r.document)
 }
@@ -99,7 +125,12 @@ pub(crate) fn tag_exr_colorspace(s: &Session, name: &str, doc: &mut Document) {
 /// Camera Raw's workflow options set it (the raw itself states none). `warnings` are the
 /// import's notes, which say whether the raw was developed or only its preview opened.
 pub fn raw_defaults(s: &Session, warnings: &[String], doc: &mut Document) {
-    raw_resolution(s.prefs().raw_defaults.resolution, warnings, doc);
+    raw_resolution(raw_open_resolution(s), warnings, doc);
+}
+
+/// RAW resolution inherited by nested Batch inputs, or the session preference outside a binding.
+pub(crate) fn raw_open_resolution(s: &Session) -> f64 {
+    s.batch_open.as_ref().map_or_else(|| s.prefs().raw_defaults.resolution, |binding| binding.raw_ppi)
 }
 
 fn raw_resolution(ppi: f64, warnings: &[String], doc: &mut Document) {
@@ -115,6 +146,9 @@ pub fn open_bytes_as(s: &mut Session, name: &str, bytes: &[u8], as_ext: Option<&
         None => name.to_string(),
     };
     let r = photocraft_io::import(&decode_name, bytes).map_err(|e| EngineError::Other(format!("{decode_name}: {e}")))?;
+    if s.batch_open.is_some() && r.preview_only {
+        return Err(EngineError::Other(format!("{name}: only an embedded preview could be read; Batch cannot process it as the source")));
+    }
     let mut doc = r.document;
     tag_exr_colorspace(s, &decode_name, &mut doc);
     raw_defaults(s, &r.warnings, &mut doc);
@@ -137,11 +171,14 @@ pub fn open_bytes_as(s: &mut Session, name: &str, bytes: &[u8], as_ext: Option<&
     Ok(json!({"document": i, "color": color, "warnings": r.warnings}))
 }
 
+/// Open the selected file with its decoder options and record its Batch source identity.
 pub(super) fn open_as(s: &mut Session, p: &Value) -> Result<Value> {
     let path = str_param(p, "path", "file.openAs")?.to_string();
     let bytes = read_file(&path)?;
     let as_ext = p.get("as").or_else(|| p.get("format")).and_then(Value::as_str);
-    open_bytes_as(s, &path, &bytes, as_ext, Some(path.clone()))
+    let result = open_bytes_as(s, &path, &bytes, as_ext, Some(path.clone()))?;
+    remember_batch_open(s);
+    Ok(result)
 }
 
 // ---------- place ----------
