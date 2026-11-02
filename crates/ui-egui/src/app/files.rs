@@ -215,9 +215,10 @@ impl PhotocraftApp {
                 {
                     return r;
                 }
+                let from = app.session.journal.len();
                 let r = app.save_to(path.clone(), choices)?;
                 if plain_save && own.as_deref() == Some(path.as_str()) {
-                    app.journal_as_plain_save(&path);
+                    app.journal_as_plain_save(&path, from);
                 }
                 Ok(r)
             })
@@ -344,8 +345,9 @@ impl PhotocraftApp {
     /// Re-label the Save As just journaled for `path` as File › Save (see [`Self::save_dialog_flow`]),
     /// keeping its Targa, DDS or JPEG answer so playback writes the file the same way. A save
     /// parked behind Targa, DDS or JPEG Options hasn't been journaled yet: it is recorded as
-    /// File › Save once answered.
-    pub(crate) fn journal_as_plain_save(&mut self, path: &str) {
+    /// File › Save once answered. Only a step journaled at index `from` or later (by this save)
+    /// is re-labeled.
+    pub(crate) fn journal_as_plain_save(&mut self, path: &str, from: usize) {
         let parked = [
             self.targa_options.as_mut().map(|p| (&p.path, &mut p.record)),
             self.dds_options.as_mut().map(|p| (&p.path, &mut p.record)),
@@ -359,8 +361,9 @@ impl PhotocraftApp {
         // played on the same way. Any other answer (TIFF layers) keeps the Save As.
         // A Save As that kept the document's own name was recorded as its folder (#5305); the
         // document now has that file, so it resolves back to `path`.
-        let recorded = self.session.journal.last().filter(|last| last.0 == "file.saveAs").and_then(|last| self.recorded_save_path(&last.1).ok());
-        if recorded.as_deref() == Some(path)
+        let journal = &self.session.journal;
+        let recorded = journal.last().filter(|last| last.0 == "file.saveAs" && journal.len() > from).and_then(|last| self.recorded_save_path(&last.1).ok());
+        if recorded.is_some_and(|r| std::path::Path::new(&r) == std::path::Path::new(path))
             && let Some(last) = self.session.journal.last_mut()
             && let Some(step) = last.1.as_object()
             && step

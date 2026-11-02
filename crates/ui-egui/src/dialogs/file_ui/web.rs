@@ -562,9 +562,7 @@ pub(super) fn web_confirm(app: &mut PhotocraftApp, f: &Map<String, Value>) -> Re
 fn kept_name_folder(path: &str, base: &str, ext: &str) -> Option<String> {
     let file = std::path::Path::new(path);
     let portable = photocraft_engine::file_cmds::portable_device_name(base.to_string()) == base;
-    let kept = portable
-        && file.file_stem().is_some_and(|s| s.to_string_lossy() == base)
-        && file.extension().is_some_and(|e| e.to_string_lossy().eq_ignore_ascii_case(ext));
+    let kept = portable && file.file_stem().is_some_and(|s| s.to_string_lossy() == base) && file.extension().is_some_and(|e| e.to_string_lossy() == ext);
     kept.then(|| file.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default())
 }
 
