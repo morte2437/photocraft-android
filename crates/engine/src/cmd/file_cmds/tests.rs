@@ -472,7 +472,7 @@ fn batch_quiet_profile_open_uses_caller_policy_and_retains_diagnostics() {
     s.execute("edit.colorSettings", json!({"workingRgb":"srgb","policyRgb":"convert","askOnMismatch":true,"askOnMissing":true})).unwrap();
     let prefs = serde_json::to_value(s.prefs()).unwrap();
     let settings = s.color.settings.clone();
-    let policy = s.color.open_question(&doc(&fixture)).unwrap();
+    let policy = s.color.open_question(doc(&fixture)).unwrap();
     assert_eq!(policy["ask"], true);
     let output = join(&dir, "out");
     let result = s.execute("file.automate.batch", json!({"input":[source,bad],"output":output,"suppressWarnings":true,"stopOnError":true,"steps":[]})).unwrap();
