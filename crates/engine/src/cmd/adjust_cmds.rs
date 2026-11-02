@@ -262,7 +262,7 @@ fn process_surface(surf: &mut Surface, selection: Option<&Surface>, f: &mut dyn 
 
 /// One history step running `f` on the active pixel layer (or targeted channel or layer mask).
 fn rgba_edit(s: &mut Session, label: &str, p: &Value, mut f: impl FnMut(&mut Vec<[f32; 4]>, Rect)) -> Result<Value> {
-    let id = crate::commands::layer_param(s, &Value::Null).ok();
+    let id = if p.get("layer").is_some() { Some(crate::commands::layer_param(s, p)?) } else { crate::commands::layer_param(s, p).ok() };
     if crate::channel_cmds::target_of(p) != crate::channel_cmds::Target::Pixels {
         return s.edit(label, |doc, _| {
             let sel = doc.selection.clone();
@@ -316,10 +316,10 @@ pub(crate) fn has_adjustable(s: &Session) -> std::result::Result<(), String> {
 /// the filter mask); `Ok(false)` when the command should edit pixels instead (a mask or channel
 /// target, or the active layer is not a smart object).
 pub(crate) fn adjust_as_smart_filter(s: &mut Session, kind: &str, label: &str, p: &Value) -> Result<bool> {
-    if crate::commands::is_mask_target(p) || crate::channel_cmds::is_channel_target(p) {
+    if crate::commands::is_mask_target(p) || crate::channel_cmds::is_channel_target(p) || crate::color_channels::target(s, p)?.is_some() {
         return Ok(false);
     }
-    let Some(id) = s.active().and_then(|d| d.active_layer) else { return Ok(false) };
+    let Ok(id) = crate::commands::layer_param(s, p) else { return Ok(false) };
     let smart = s.active().is_some_and(|d| matches!(d.doc.layer(id).map(|l| &l.content), Some(LayerContent::Smart(_))));
     if !smart {
         return Ok(false);

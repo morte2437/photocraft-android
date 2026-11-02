@@ -47,19 +47,48 @@ fn invert_sample(bytes: &mut [u8], s: SampleType) {
 /// are filled with `fill[c]` (a native-endian encoded sample). Channels whose
 /// `invert[c]` is set are inverted (PSD stores CMYK as `max - ink`).
 pub fn interleave(planes: &[Option<&[u8]>], fill: &[Vec<u8>], n: usize, s: SampleType, invert: &[bool]) -> Vec<u8> {
+    let mut out = vec![0u8; n * planes.len() * s.bytes()];
+    interleave_into(planes, fill, n, s, invert, &mut out);
+    out
+}
+
+/// Fallible interleave for file imports. Validate sizes and missing-plane fills before
+/// workers write disjoint slices of one reserved output buffer.
+pub fn try_interleave(planes: &[Option<&[u8]>], fill: &[Vec<u8>], n: usize, s: SampleType, invert: &[bool]) -> photocraft_psd::Result<Vec<u8>> {
+    use photocraft_psd::PsdError;
+    let plane_bytes = n.checked_mul(s.bytes()).ok_or(PsdError::LimitExceeded("interleave size overflow"))?;
+    let len = plane_bytes.checked_mul(planes.len()).ok_or(PsdError::LimitExceeded("interleave size overflow"))?;
+    if len as u64 > photocraft_psd::compression::MAX_DECODED_BYTES {
+        return Err(PsdError::LimitExceeded("interleave exceeds MAX_DECODED_BYTES"));
+    }
+    if n > 0 && planes.is_empty() {
+        return Err(PsdError::Invalid("interleave needs at least one channel".into()));
+    }
+    for (c, plane) in planes.iter().enumerate() {
+        if plane.is_none_or(|p| p.len() < plane_bytes) && fill.get(c).is_none_or(|f| f.len() != s.bytes()) {
+            return Err(PsdError::Invalid("interleave fill has the wrong sample size".into()));
+        }
+    }
+    let mut out = Vec::new();
+    out.try_reserve_exact(len).map_err(|_| PsdError::OutOfMemory("not enough memory to interleave PSD pixels"))?;
+    out.resize(len, 0);
+    interleave_into(planes, fill, n, s, invert, &mut out);
+    Ok(out)
+}
+
+fn interleave_into(planes: &[Option<&[u8]>], fill: &[Vec<u8>], n: usize, s: SampleType, invert: &[bool], out: &mut [u8]) {
+    if out.is_empty() {
+        return;
+    }
     let bps = s.bytes();
     let ch = planes.len();
     let row = ch * bps;
-    let mut out = vec![0u8; n * row];
-    if out.is_empty() {
-        return out;
-    }
     let bs = bands(n);
     let step = bs.first().map_or(n, ExactSizeIterator::len) * row;
     par_map(bs.into_iter().zip(out.chunks_mut(step)).collect(), |(band, part)| {
         for (c, plane) in planes.iter().enumerate() {
             let src = plane.and_then(|p| p.get(band.start * bps..)).unwrap_or_default();
-            let inv = src.len() >= bps && invert[c];
+            let inv = src.len() >= bps && invert.get(c).copied().unwrap_or(false);
             let fill = fill.get(c).map(Vec::as_slice).unwrap_or_default();
             match s {
                 SampleType::U8 => write_channel(part, ch, c, src, fill, |[v]| [if inv { 255 - v } else { v }]),
@@ -74,7 +103,6 @@ pub fn interleave(planes: &[Option<&[u8]>], fill: &[Vec<u8>], n: usize, s: Sampl
             }
         }
     });
-    out
 }
 
 fn write_channel<const N: usize>(out: &mut [u8], ch: usize, c: usize, src: &[u8], fill: &[u8], decode: impl Fn([u8; N]) -> [u8; N]) {
@@ -322,6 +350,20 @@ mod tests {
                 let want_back = seq_deinterleave(&got, 4, s, &invert);
                 assert_eq!(planes_back, want_back, "deinterleave n={n}");
             }
+        }
+    }
+
+    #[test]
+    fn fallible_interleave_checks_sizes_and_missing_plane_fills() {
+        assert!(try_interleave(&[None], &[vec![0]], usize::MAX, SampleType::F32, &[]).is_err());
+        assert!(try_interleave(&[None], &[], 1, SampleType::U8, &[]).is_err());
+        assert!(try_interleave(&[], &[], 1, SampleType::U8, &[]).is_err());
+        assert!(try_interleave(&[None], &[vec![0]], usize::MAX / 2, SampleType::U8, &[]).is_err());
+        for s in [SampleType::U8, SampleType::U16, SampleType::F32] {
+            let plane = vec![1; 1001 * s.bytes()];
+            let planes = [Some(plane.as_slice()), None];
+            let fill = vec![zero_sample(s), max_sample(s)];
+            assert_eq!(try_interleave(&planes, &fill, 1001, s, &[true, false]).unwrap(), interleave(&planes, &fill, 1001, s, &[true, false]));
         }
     }
 

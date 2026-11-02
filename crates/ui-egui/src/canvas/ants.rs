@@ -148,14 +148,20 @@ pub(crate) fn shapes(lines: impl Iterator<Item = (Pos2, Pos2)>, clip: Rect, styl
     (mesh, slanted)
 }
 
+/// The ants along `lines` (screen points) at frame time `time`, as `painter` would draw them but
+/// not yet drawn: the canvas traces them early and paints them over the guides (#10671).
+pub(crate) fn shapes_for(painter: &egui::Painter, lines: impl Iterator<Item = (Pos2, Pos2)>, time: f64, snap_slanted: bool) -> Vec<Shape> {
+    let style = Style::new(painter.pixels_per_point(), time);
+    let (mesh, mut slanted) = shapes(lines, painter.clip_rect(), style, snap_slanted);
+    if !mesh.is_empty() {
+        slanted.push(Shape::mesh(mesh));
+    }
+    slanted
+}
+
 /// Draw the ants along `lines` (screen points) at frame time `time`; see [`shapes`].
 pub(crate) fn draw(painter: &egui::Painter, lines: impl Iterator<Item = (Pos2, Pos2)>, time: f64, snap_slanted: bool) {
-    let style = Style::new(painter.pixels_per_point(), time);
-    let (mesh, slanted) = shapes(lines, painter.clip_rect(), style, snap_slanted);
-    painter.extend(slanted);
-    if !mesh.is_empty() {
-        painter.add(Shape::mesh(mesh));
-    }
+    painter.extend(shapes_for(painter, lines, time, snap_slanted));
 }
 
 /// The segments of the polyline `points`, back to the first when `closed`.

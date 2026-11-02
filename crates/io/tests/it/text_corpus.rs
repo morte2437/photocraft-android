@@ -315,3 +315,65 @@ fn created_text_layer_roundtrips_through_psd() {
     assert_eq!(bt.transform, t.transform);
     assert!(bt.cache.as_ref().is_some_and(|c| c.content_bounds().width() > 10));
 }
+
+/// Review of #8888: the older Photoshop's text objects (`/DocumentObjects /TextObjects`) in the
+/// real psd-tools `text.psd`. Saving the type layer unedited leaves them (and the font list they
+/// index) exactly as the file has them; editing only the size changes the size of the legacy style
+/// run and nothing else in it, and the object's text, paragraph runs and view are untouched.
+#[cfg(feature = "corpus")]
+#[test]
+fn corpus_text_psd_legacy_objects_are_edited_in_place() {
+    use photocraft_text::engine_data::Value as E;
+
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/psd-tools/text.psd");
+    assert!(path.is_file(), "{} is missing: run `cargo xtask corpus --all`", path.display());
+    let bytes = std::fs::read(&path).unwrap();
+    let doc = photocraft_io::import("text.psd", &bytes).unwrap().document;
+    let txt2 = doc.metadata.psd_global_blocks.iter().find(|b| &b.1 == b"Txt2").map(|b| b.2.clone()).expect("text.psd has a Txt2 block");
+    let mut all = Vec::new();
+    walk(&doc.layers, &mut all);
+    let layer = all.iter().find_map(|l| if let LayerContent::Text(t) = &l.content { Some(t.clone()) } else { None }).expect("a type layer");
+
+    let before = photocraft_text::psd::parse_txt2(&txt2).expect("the file's Txt2 parses");
+    let legacy = |block: &E| block.path(&["DocumentObjects", "TextObjects"]).and_then(E::as_array).and_then(<[E]>::first).cloned().expect("the legacy object");
+    let features = |entry: &E| {
+        entry
+            .path(&["Model", "StyleRun", "RunArray"])
+            .and_then(E::as_array)
+            .and_then(<[E]>::first)
+            .and_then(|r| r.path(&["RunData", "StyleSheet", "Features"]))
+            .cloned()
+    };
+    let items = |value: &E| if let E::Dict(items) = value { items.clone() } else { Vec::new() };
+
+    // Unedited: the legacy object and the font list are as the file has them.
+    let unedited = photocraft_text::psd::parse_txt2(&photocraft_text::psd::build_txt2_at(&[(0, &layer)], Some(&txt2), doc.resolution_dpi)).unwrap();
+    assert!(legacy(&unedited) == legacy(&before), "an unedited layer leaves the legacy text object alone");
+    assert!(unedited.path(&["DocumentResources", "FontSet"]) == before.path(&["DocumentResources", "FontSet"]), "and the font list it indexes");
+
+    // Edited: only the size.
+    let mut bigger = layer.clone();
+    for run in &mut bigger.runs {
+        run.style.size_pt += 7.0;
+    }
+    let edited = photocraft_text::psd::parse_txt2(&photocraft_text::psd::build_txt2_at(&[(0, &bigger)], Some(&txt2), doc.resolution_dpi)).unwrap();
+    let (was, now) = (features(&legacy(&before)).expect("features"), features(&legacy(&edited)).expect("features"));
+    let size = |f: &E| f.get("FontSize").and_then(E::as_f64).expect("FontSize");
+    assert!((size(&now) - size(&was) - 7.0).abs() < 1e-6, "the legacy size follows the edit: {} -> {}", size(&was), size(&now));
+    let rest = |f: &E| items(f).into_iter().filter(|(k, _)| k != "FontSize").collect::<Vec<_>>();
+    let changed: Vec<String> =
+        rest(&was).iter().zip(rest(&now).iter()).filter(|(a, b)| a != b).map(|(a, b)| format!("{}: {:?} -> {:?}", a.0, a.1, b.1)).collect();
+    assert!(rest(&was) == rest(&now), "every other style key of the run is as the file has it; changed: {changed:?}");
+    let others = |entry: &E, key: &str| entry.path(&["Model", key]).cloned();
+    for key in ["Text", "ParagraphRun", "KernRun"] {
+        assert!(others(&legacy(&edited), key) == others(&legacy(&before), key), "{key} is untouched");
+    }
+    assert!(legacy(&edited).get("View") == legacy(&before).get("View"), "the view is untouched");
+    let lengths = |entry: &E| {
+        entry
+            .path(&["Model", "StyleRun", "RunArray"])
+            .and_then(E::as_array)
+            .map(|rs| rs.iter().map(|r| r.get("Length").and_then(E::as_i64)).collect::<Vec<_>>())
+    };
+    assert!(lengths(&legacy(&edited)) == lengths(&legacy(&before)), "the runs still cover the text");
+}

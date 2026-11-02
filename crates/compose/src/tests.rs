@@ -417,6 +417,59 @@ fn every_blend_mode_matches_reference_on_opaque_pixels() {
     }
 }
 
+/// #9483: a Color Lookup's bounded output survives full coverage over a huge 32-bit pixel. The
+/// blend back to the backdrop computed `b + (r - b) · k`, and in f32 the difference had already
+/// lost the small result (1e8 and 0.5 gave 0).
+#[test]
+fn full_coverage_adjustment_keeps_its_result_over_huge_hdr_values() {
+    for v in [1.0e6_f32, 1.0e8, -1.0e6] {
+        let mut d = Document::new("hdr", Size::new(2, 2), ColorMode::Rgb, SampleType::F32);
+        let mut base = Layer::raster("b", PixelFormat::RGBA32F);
+        base.surface_mut().unwrap().fill_rect(Rect::new(0, 0, 2, 2), &[v, v, v, 1.0]);
+        let look = Adjustment::ColorLookup {
+            name: "half".into(),
+            lut: Some(std::sync::Arc::new(vec![0.5; 24])),
+            size: 2,
+            tetrahedral: false,
+            dither: false,
+            source: None,
+        };
+        d.layers = vec![base, Layer::new("look", LayerContent::Adjustment(look))];
+        let got = px(&d, 0, 0);
+        for c in &got[..3] {
+            assert!((c - 0.5).abs() < 1e-6, "{v}: {got:?}");
+        }
+    }
+}
+
+/// #9501: an adjustment layer at 40% Fill in Color Dodge or Linear Burn blends a result pulled
+/// toward the mode's neutral colour, as a pixel layer does, instead of fading the blend by Fill.
+/// Photoshop: a constant 0.5 look over (64, 128, 192) gives (80, 160, 240) and (13, 77, 141).
+#[test]
+fn adjustment_fill_changes_the_special_blend_modes() {
+    for (mode, want) in [(BlendMode::ColorDodge, [80, 160, 240]), (BlendMode::LinearBurn, [13, 77, 141])] {
+        let mut d = Document::with_background("fill", Size::new(1, 1), ColorMode::Rgb, SampleType::U8, Color::WHITE);
+        let mut base = Layer::raster("b", PixelFormat::RGBA8);
+        base.surface_mut().unwrap().fill_rect(Rect::new(0, 0, 1, 1), &[64.0 / 255.0, 128.0 / 255.0, 192.0 / 255.0, 1.0]);
+        let look = Adjustment::ColorLookup {
+            name: "half".into(),
+            lut: Some(std::sync::Arc::new(vec![0.5; 24])),
+            size: 2,
+            tetrahedral: false,
+            dither: false,
+            source: None,
+        };
+        let mut adj = Layer::new("look", LayerContent::Adjustment(look));
+        adj.blend = mode;
+        adj.fill_opacity = 0.4;
+        d.layers.push(base);
+        d.layers.push(adj);
+        let got = px(&d, 0, 0);
+        let got: Vec<i32> = got[..3].iter().map(|v| (v * 255.0).round() as i32).collect();
+        assert!(got.iter().zip(want).all(|(g, w)| (g - w).abs() <= 1), "{mode:?}: {got:?} vs Photoshop {want:?}");
+    }
+}
+
 /// One opaque pixel: `top` in `mode` over `bottom`, in a document of `depth`.
 fn blend_px(depth: SampleType, mode: BlendMode, bottom: [f32; 3], top: [f32; 3]) -> [f32; 4] {
     let mut d = Document::new("b", Size::new(1, 1), ColorMode::Rgb, depth);
@@ -562,6 +615,35 @@ fn clipped_dissolve_matches_whole_render_at_offset_regions_and_depths() {
             }
         }
     }
+}
+
+/// #4921: Dissolve coverage must survive clipping and use Opacity × Fill.
+#[test]
+fn clipped_dissolve_is_binary_and_preserves_the_base_shape() {
+    let mut d = doc_white(40, 12);
+    d.layers.push(solid_layer("base", Rect::new(0, 0, 20, 12), [0.0, 0.0, 1.0, 1.0]));
+    let mut clip = solid_layer("clip", d.bounds(), [1.0, 0.0, 0.0, 1.0]);
+    clip.clipped = true;
+    clip.blend = BlendMode::Dissolve;
+    clip.opacity = 0.6;
+    clip.fill_opacity = 0.5;
+    d.layers.push(clip);
+    let mut red = 0;
+    let mut blue = 0;
+    for y in 0..12 {
+        for x in 0..20 {
+            let p = px(&d, x, y);
+            if close4(p, [1.0, 0.0, 0.0, 1.0]) {
+                red += 1;
+            } else {
+                assert!(close4(p, [0.0, 0.0, 1.0, 1.0]), "Dissolve must not interpolate: {p:?} at ({x},{y})");
+                blue += 1;
+            }
+        }
+        assert!(close4(px(&d, 30, y), [1.0; 4]), "outside the base the clip is invisible");
+    }
+    assert!(red > 0 && blue > 0, "Dissolve must expose both source and base: {red}/{blue}");
+    assert!((red as f32 / (red + blue) as f32 - 0.3).abs() < 0.1, "coverage should follow 60% opacity × 50% fill: {red}/{blue}");
 }
 
 #[test]
@@ -835,6 +917,32 @@ fn threshold_posterize_levels_curves() {
 }
 
 #[test]
+fn curve_samples_preserve_spline_and_endpoint_behavior() {
+    use photocraft_doc::adjust::CurvePoint;
+    let points = [CurvePoint { input: 0.0, output: 0.0 }, CurvePoint { input: 0.5, output: 1.0 }, CurvePoint { input: 1.0, output: 0.0 }];
+    // Analytic natural spline: at x=1/4 and 3/4 the output is 11/16.
+    assert_eq!(adjust::curve_samples::<5>(&points), vec![0.0, 0.6875, 1.0, 0.6875, 0.0]);
+    let low = adjust::curve_samples::<256>(&points);
+    let full = adjust::curve_lut(&points);
+    assert_eq!(low.len(), 256);
+    assert_eq!(full.len(), 4096);
+    // Both grids share these inputs exactly (17/255 == 273/4095).
+    for k in 0..=15 {
+        assert_eq!(low[k * 17], full[k * 273]);
+    }
+
+    let unsorted = [CurvePoint { input: 0.75, output: 0.8 }, CurvePoint { input: 0.25, output: 0.2 }];
+    let table = adjust::curve_samples::<5>(&unsorted);
+    for (actual, expected) in table.iter().zip([0.2, 0.2, 0.5, 0.8, 0.8]) {
+        assert!((actual - expected).abs() < 1e-6);
+    }
+    assert_eq!(adjust::curve_samples::<3>(&[]), vec![0.0, 0.5, 1.0]);
+    assert_eq!(adjust::curve_samples::<3>(&points[..1]), vec![0.0, 0.5, 1.0]);
+    assert!(adjust::curve_samples::<0>(&points).is_empty());
+    assert_eq!(adjust::curve_samples::<1>(&points), vec![0.0]);
+}
+
+#[test]
 fn hue_saturation_roundtrips_and_desaturates() {
     let c = [0.8, 0.3, 0.1];
     let (h, s, l) = adjust::rgb_to_hsl(c);
@@ -931,6 +1039,55 @@ fn dissolve_coverage_matches_opacity() {
     assert!((covered - 0.3).abs() < 0.05, "{covered}");
     // deterministic
     assert_eq!(flatten(&d), b);
+}
+
+/// Invert at 50% Dissolve is black or white, not the gray of a Normal mix (#3050).
+#[test]
+fn dissolve_adjustment_is_a_per_pixel_choice() {
+    let mut d = doc_white(16, 16);
+    let mut inv = Layer::new("inv", LayerContent::Adjustment(Adjustment::Invert));
+    inv.blend = photocraft_color::BlendMode::Dissolve;
+    inv.opacity = 0.5;
+    d.layers.push(inv);
+    let b = flatten(&d);
+    let (black, white, other) = b.px.iter().fold((0, 0, 0), |(k, w, o), p| {
+        if close4(*p, [0.0, 0.0, 0.0, 1.0]) {
+            (k + 1, w, o)
+        } else if close4(*p, [1.0, 1.0, 1.0, 1.0]) {
+            (k, w + 1, o)
+        } else {
+            (k, w, o + 1)
+        }
+    });
+    assert_eq!(other, 0, "a partial mix would be gray");
+    assert!(black > 40 && white > 40, "black {black} white {white}");
+}
+
+/// A clipped black fill at 50% Dissolve stays black or white on an opaque base (#3052).
+#[test]
+fn clipped_dissolve_fill_is_a_per_pixel_choice() {
+    let mut d = doc_white(16, 16);
+    let mut l = solid_layer("k", Rect::new(0, 0, 16, 16), [0.0, 0.0, 0.0, 1.0]);
+    l.clipped = true;
+    l.blend = photocraft_color::BlendMode::Dissolve;
+    l.opacity = 0.5;
+    d.layers.push(l);
+    let b = flatten(&d);
+    assert!(b.px.iter().all(|p| close4(*p, [0.0, 0.0, 0.0, 1.0]) || close4(*p, [1.0; 4])));
+}
+
+/// A Color Overlay must not turn Dissolve coverage into a Normal mix (#3051).
+#[test]
+fn color_overlay_keeps_dissolve_coverage() {
+    use photocraft_doc::effects::{Effect, FxCommon};
+    let mut d = doc_white(16, 16);
+    let mut l = Layer::new("ink", LayerContent::Fill(Fill::Solid(photocraft_color::Color::BLACK)));
+    l.effects.items.push(Effect::ColorOverlay { common: FxCommon::new(photocraft_color::BlendMode::Normal, 1.0), color: photocraft_color::Color::BLACK });
+    l.blend = photocraft_color::BlendMode::Dissolve;
+    l.opacity = 0.5;
+    d.layers.push(l);
+    let b = flatten(&d);
+    assert!(b.px.iter().all(|p| close4(*p, [0.0, 0.0, 0.0, 1.0]) || close4(*p, [1.0; 4])));
 }
 
 #[test]
@@ -2453,6 +2610,71 @@ fn blend_if_hard_point_includes_its_own_level() {
     }
 }
 
+/// #9521: Photoshop compares Blend If at its 16-bit precision (0..32768). A hard point at level
+/// `c` sits on the step `round(c · 32768 / 255)`, inclusive for both black and white points:
+/// measured in Photoshop 2025 at 1, 64, 128 and 200 (black first shown at steps 129, 8224, 16448,
+/// 25700; white last shown at the same steps). RGB16 32895 is step 16448, so a white layer with
+/// Underlying Blue black at 128 shows over it; 32894 (step 16447) hides it.
+#[test]
+fn blend_if_16_bit_cutoffs_follow_photoshops_steps() {
+    let shown = |v16: u16, black: u8, white: u8| {
+        let v = f32::from(v16) / 65535.0;
+        let mut d = Document::new("t", Size::new(1, 1), ColorMode::Rgb, SampleType::U16);
+        let layer16 = |name: &str, c: [f32; 4]| {
+            let mut l = Layer::raster(name, PixelFormat::RGBA16);
+            l.surface_mut().unwrap().fill_rect(Rect::new(0, 0, 1, 1), &c);
+            l
+        };
+        d.layers.push(layer16("under", [v, v, v, 1.0]));
+        let mut l = layer16("top", [1.0, 1.0, 1.0, 1.0]);
+        l.blend_if.set(3, [FULL, range([black, black], [white, white])]);
+        d.layers.push(l);
+        px(&d, 0, 0)[0] > 0.999
+    };
+    // 16-bit file values for Photoshop's steps n: round(n · 65535 / 32768).
+    let at = |n: u32| ((n * 65535 + 16384) / 32768) as u16;
+    for (c, step) in [(1u8, 129u32), (64, 8224), (128, 16448), (200, 25700)] {
+        assert!(shown(at(step), c, 255), "black {c}: step {step} shows");
+        assert!(!shown(at(step - 1), c, 255), "black {c}: step {} hides", step - 1);
+        assert!(shown(at(step), 0, c), "white {c}: step {step} shows");
+        assert!(!shown(at(step + 1), 0, c), "white {c}: step {} hides", step + 1);
+    }
+    assert!(shown(32895, 128, 255) && !shown(32894, 128, 255), "the reporter's RGB16 boundary");
+}
+
+/// #9522: Blend If's Gray is Photoshop's (30 R + 59 G + 11 B) / 100 rounded half down, measured
+/// in Photoshop 2025 with a white layer over one 8-bit backdrop colour and a hard Gray point on
+/// Underlying Layer. Rec. 601 luma hid both of the reporter's colours.
+#[test]
+fn blend_if_gray_follows_photoshops_weights_and_rounding() {
+    let shown = |rgb: [u8; 3], black: u8, white: u8| {
+        let mut d = Document::new("t", Size::new(1, 1), ColorMode::Rgb, SampleType::U8);
+        let c = rgb.map(|v| f32::from(v) / 255.0);
+        d.layers.push(solid_layer("under", Rect::new(0, 0, 1, 1), [c[0], c[1], c[2], 1.0]));
+        let mut l = solid_layer("top", Rect::new(0, 0, 1, 1), [1.0, 1.0, 1.0, 1.0]);
+        l.blend_if.set(0, [FULL, range([black, black], [white, white])]);
+        d.layers.push(l);
+        px(&d, 0, 0)[0] > 0.999 && px(&d, 0, 0)[2] > 0.999
+    };
+    // (colour hidden by a black point at `cut`, the next colour shown), single channels.
+    for (cut, below, at) in [
+        (20, [65, 0, 0], [66, 0, 0]),
+        (25, [81, 0, 0], [82, 0, 0]),
+        (28, [91, 0, 0], [92, 0, 0]),
+        (20, [0, 33, 0], [0, 34, 0]),
+        (28, [0, 46, 0], [0, 47, 0]),
+        (20, [0, 0, 177], [0, 0, 178]),
+        (28, [0, 0, 250], [0, 0, 251]),
+    ] {
+        assert!(!shown(below, cut, 255), "{below:?} hidden by black {cut}");
+        assert!(shown(at, cut, 255), "{at:?} shown by black {cut}");
+    }
+    // The reporter's mixed colours, and the white point's half-down rounding.
+    assert!(shown([123, 126, 151], 128, 255), "127.85 is 128");
+    assert!(shown([120, 129, 149], 0, 128), "128.5 is 128");
+    assert!(!shown([121, 129, 149], 0, 128), "128.8 is 129");
+}
+
 #[test]
 fn blend_if_split_point_fades_like_opacity() {
     // A split black point (Alt-drag) at 50/150 shows a value-100 layer at half strength, which
@@ -2509,6 +2731,25 @@ fn blend_if_on_adjustment_and_clipped_layers() {
     d.layers.push(clip);
     assert!(close4(px(&d, 1, 1), [0.0, 0.0, 0.0, 1.0]));
     assert!(close4(px(&d, 6, 1), [0.0, 1.0, 0.0, 1.0]));
+}
+
+/// #9554: a Pass Through group with Blend If renders isolated, as Photoshop does: an Invert inside
+/// it leaves the layer beneath alone. Photoshop: (64, 128, 192) under such a group with Red ›
+/// Underlying Layer white at 110 stays (64, 128, 192); without the Blend If it is inverted.
+#[test]
+fn pass_through_group_with_blend_if_is_isolated() {
+    for (gated, want) in [(true, [64, 128, 192]), (false, [191, 127, 63])] {
+        let mut d = Document::with_background("pt", Size::new(1, 1), ColorMode::Rgb, SampleType::U8, Color::WHITE);
+        d.layers.push(solid_layer("base", Rect::new(0, 0, 1, 1), [64.0 / 255.0, 128.0 / 255.0, 192.0 / 255.0, 1.0]));
+        let mut g = Layer::group("group", vec![Layer::new("invert", LayerContent::Adjustment(Adjustment::Invert))]);
+        g.blend = BlendMode::PassThrough;
+        if gated {
+            g.blend_if.set(1, [FULL, range([0, 0], [110, 110])]);
+        }
+        d.layers.push(g);
+        let got: Vec<i32> = px(&d, 0, 0)[..3].iter().map(|v| (v * 255.0).round() as i32).collect();
+        assert!(got.iter().zip(want).all(|(g, w)| (g - w).abs() <= 1), "Blend If {gated}: {got:?} vs Photoshop {want:?}");
+    }
 }
 
 #[test]
@@ -4161,12 +4402,8 @@ fn reused_render_matches_previous_allocating_stack() {
                     adjust::apply_in(adj, &mut adjusted, adjust::Transfer::for_document(doc.mode, depth), Some(depth), doc.mode);
                     for (b, a) in previous.px.iter_mut().zip(&adjusted.px) {
                         let blended = blend::blend_rgb(layer.blend, [b[0], b[1], b[2]], [a[0], a[1], a[2]]);
-                        *b = [
-                            b[0] + (blended[0] - b[0]) * layer.opacity,
-                            b[1] + (blended[1] - b[1]) * layer.opacity,
-                            b[2] + (blended[2] - b[2]) * layer.opacity,
-                            b[3],
-                        ];
+                        let (k, j) = (layer.opacity, 1.0 - layer.opacity);
+                        *b = [b[0] * j + blended[0] * k, b[1] * j + blended[1] * k, b[2] * j + blended[2] * k, b[3]];
                     }
                     if let Some(q) = adjustment_quantum(depth) {
                         quantize(&mut previous, q);
@@ -4345,5 +4582,62 @@ fn branchless_floor_matches_floor_bitwise() {
             continue;
         }
         assert_eq!(branchless_floor(x).to_bits(), x.floor().to_bits(), "{x:e} ({:#010x})", x.to_bits());
+    }
+}
+
+/// #9542: an adjustment layer's "This Layer" range judges its result at full strength, before
+/// Opacity mixes it in. Photoshop: Invert at 40% over (64, 128, 192) with Red / This Layer black
+/// at 150 keeps the effect, (115, 128, 140), as Invert's red (191) passes 150; with white at 150
+/// it drops it. Judged after Opacity (red 115) the two came out the other way round.
+#[test]
+fn adjustment_blend_if_judges_the_result_before_opacity() {
+    for (black, white, want) in [(150u8, 255u8, [115, 128, 140]), (0, 150, [64, 128, 192])] {
+        let mut d = Document::with_background("bi", Size::new(1, 1), ColorMode::Rgb, SampleType::U8, Color::WHITE);
+        d.layers.push(solid_layer("base", Rect::new(0, 0, 1, 1), [64.0 / 255.0, 128.0 / 255.0, 192.0 / 255.0, 1.0]));
+        let mut inv = Layer::new("invert", LayerContent::Adjustment(Adjustment::Invert));
+        inv.opacity = 0.4;
+        inv.blend_if.set(1, [range([black, black], [white, white]), FULL]);
+        d.layers.push(inv);
+        let got: Vec<i32> = px(&d, 0, 0)[..3].iter().map(|v| (v * 255.0).round() as i32).collect();
+        assert!(got.iter().zip(want).all(|(g, w)| (g - w).abs() <= 1), "black {black} white {white}: {got:?} vs Photoshop {want:?}");
+    }
+}
+
+/// The reference application, measured: a 240 × 40 black document, an opaque white layer over
+/// its left 100 px (full height), Outer Glow Softer, white, Normal, 100 %, Spread 0, Noise 0,
+/// Size 60, Range 50 % and 100 % alike. Sampled at row 20, `d` px right of the edge, the glow
+/// reads 4 at 50 px, 1 at 54 and 0 from 56 to 70: it fades out just before Size, with no tail
+/// beyond it (#8039 added one; reverted). On black, the red value × 255 is the glow alpha × 255,
+/// compared as 8-bit levels. The tent gives 4, 1, 0, 0, 0 at Range 50 % and 2, 1, 0, 0, 0 at 100 %.
+#[test]
+fn softer_outer_glow_fades_out_before_its_size() {
+    let mut d = Document::with_background("t", Size::new(240, 40), ColorMode::Rgb, SampleType::U8, Color::BLACK);
+    for range in [0.5, 1.0] {
+        let mut l = solid_layer("shape", Rect::new(0, 0, 100, 40), [1.0; 4]);
+        l.effects.items = vec![Effect::OuterGlow(Glow {
+            common: FxCommon::new(photocraft_color::BlendMode::Normal, 1.0),
+            paint: FxPaint::Color(Color::WHITE),
+            technique: GlowTechnique::Softer,
+            spread: 0.0,
+            size: 60.0,
+            contour: photocraft_doc::Contour::Linear,
+            anti_alias: false,
+            range,
+            jitter: 0.0,
+            noise: 0.0,
+            source: GlowSource::Edge,
+        })];
+        d.layers.truncate(1);
+        d.layers.push(l);
+        let got: Vec<(i32, f32)> = [50, 54, 56, 60, 70].iter().map(|&dist| (dist, (255.0 * px(&d, 100 + dist, 20)[0]).round())).collect();
+        for &(dist, v) in &got {
+            let want = match dist {
+                50 => 4.0,
+                54 => 1.0,
+                _ => 0.0,
+            };
+            let tolerance = if dist >= 56 { 0.0 } else { 2.0 };
+            assert!((v - want).abs() <= tolerance, "range {range}, {dist} px: {v} vs the reference application's {want} ({got:?})");
+        }
     }
 }

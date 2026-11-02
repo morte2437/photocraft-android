@@ -1,4 +1,4 @@
-use super::*;
+use super::{Color32, Document, LayerContent, LayerId, ViewXform, pos2};
 
 /// Texels of the moving pixels over `b`: full resolution unless the long side exceeds the GPU's
 /// `max_side` (#91: this used to be capped at 2048 px, so big layers previewed blurry), plus the
@@ -136,7 +136,7 @@ impl Above {
 
 /// `rect` of `doc`'s composite as premultiplied texels: full resolution when it fits in
 /// `max_side`, composited in bands (no full-size float copy), else area-averaged down to fit.
-fn composite_image(doc: &Document, rect: photocraft_geom::Rect, max_side: usize) -> (egui::ColorImage, [f32; 2]) {
+pub(super) fn composite_image(doc: &Document, rect: photocraft_geom::Rect, max_side: usize) -> (egui::ColorImage, [f32; 2]) {
     let (w, h) = (rect.width() as usize, rect.height() as usize);
     let to_color = |p: &[u8; 4]| Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3]);
     if w.max(h) <= max_side.max(1) {

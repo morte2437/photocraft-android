@@ -11,8 +11,13 @@
 //! submission, without the vsync wait). What the app can't see (the OS input queue before a frame
 //! starts, frames queued for the display, the compositor) is the rest of the input-to-photon time;
 //! the summary names the GPU backend because GL ignores the frame-latency setting.
+//!
+//! The trace keeps no clock of its own: each row is the frame's `frame_stages::FrameStages`,
+//! which the app gathers every frame (the slow-frame ring reads the same record).
 
 use std::fmt::Write as _;
+
+use crate::frame_stages::FrameStages;
 
 /// One frame of a stroke. Times in ms.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -31,6 +36,13 @@ pub(crate) struct Row {
     pub ui: f64,
     /// eframe's CPU time for the previous frame: UI, tessellation and GPU submission.
     pub cpu_prev: Option<f64>,
+}
+
+impl Row {
+    /// The trace's row for a frame's stages.
+    pub(crate) fn from_stages(s: &FrameStages, interval: f64) -> Self {
+        Self { t: s.t, interval, moves: s.moves, stroke: s.stroke_ms, canvas: s.composite_ms + s.upload_ms, ui: s.ui_ms, cpu_prev: s.cpu_prev_ms }
+    }
 }
 
 /// Percentiles of a stroke's frames, for the summary line and the control channel.
@@ -86,8 +98,6 @@ pub(crate) enum Output {
 #[derive(Debug, Default)]
 pub struct StrokeTrace {
     pub(crate) output: Output,
-    /// The frame being built (started by `begin_frame`).
-    frame: Option<Row>,
     last_start: Option<f64>,
     /// The current stroke's frames.
     rows: Vec<Row>,
@@ -143,49 +153,20 @@ impl StrokeTrace {
         self.output != Output::Off
     }
 
-    /// A frame starts (the raw input hook) with `moves` pointer moves.
-    pub fn begin_frame(&mut self, now: f64, moves: usize) {
+    /// A frame ended, with the stages the app gathered for it (`frame_stages`; the trace keeps
+    /// no clock of its own). `stroking`: a stroke is being drawn (a frame that rendered stroke
+    /// points counts too, such as the release's commit). A stroke's frames are kept until the
+    /// first frame without one, which ends it.
+    pub fn frame(&mut self, s: &FrameStages, stroking: bool, backend: impl FnOnce() -> String) {
         if !self.enabled() {
             return;
         }
-        let interval = self.last_start.map_or(0.0, |t| now - t);
-        self.last_start = Some(now);
-        self.frame = Some(Row { t: now, interval, moves, ..Default::default() });
-    }
-
-    /// eframe's CPU time for the previous frame, in seconds (`Frame::info().cpu_usage`).
-    pub fn cpu_prev(&mut self, secs: Option<f32>) {
-        if let Some(f) = self.frame.as_mut() {
-            f.cpu_prev = secs.map(|s| f64::from(s) * 1000.0);
-        }
-    }
-
-    /// Time spent rendering stroke points this frame.
-    pub fn stroke(&mut self, ms: f64) {
-        if let Some(f) = self.frame.as_mut() {
-            f.stroke += ms;
-        }
-    }
-
-    /// Time spent refreshing the canvas this frame.
-    pub fn canvas(&mut self, ms: f64) {
-        if let Some(f) = self.frame.as_mut() {
-            f.canvas += ms;
-        }
-    }
-
-    /// The frame's UI is built (`ui` ms). `stroking`: a stroke is being drawn (a frame that
-    /// rendered stroke points counts too, such as the release's commit). A stroke's frames are
-    /// kept until the first frame without one, which ends it.
-    pub fn end_frame(&mut self, ui: f64, stroking: bool, backend: impl FnOnce() -> String) {
-        let Some(mut f) = self.frame.take() else { return };
-        if stroking || f.stroke > 0.0 {
-            f.ui = ui;
+        let interval = self.last_start.map_or(0.0, |t| s.t - t);
+        self.last_start = Some(s.t);
+        if stroking || s.stroke_ms > 0.0 {
             // The first frame of a stroke doesn't follow a stroke frame: its interval is idle time.
-            if self.rows.is_empty() {
-                f.interval = 0.0;
-            }
-            self.rows.push(f);
+            let interval = if self.rows.is_empty() { 0.0 } else { interval };
+            self.rows.push(Row::from_stages(s, interval));
         } else if !self.rows.is_empty() {
             self.finish(backend());
         }
@@ -251,14 +232,38 @@ mod tests {
         StrokeTrace { output: Output::Stderr, ..Default::default() }
     }
 
-    fn frame(t: &mut StrokeTrace, now: f64, cpu: f32, stroking: bool) {
-        t.begin_frame(now, 3);
-        t.cpu_prev(Some(cpu / 1000.0));
+    fn stages(now: f64, cpu: f32, stroking: bool) -> FrameStages {
+        let mut s = FrameStages::default();
+        s.start(now, 3);
+        s.ui_start(now, Some(cpu / 1000.0));
         if stroking {
-            t.stroke(1.0);
-            t.canvas(2.0);
+            s.stroke_ms = 1.0;
+            s.refresh("rect", 10, 1.5, 0.5);
         }
-        t.end_frame(4.0, stroking, || "vulkan Test GPU".into());
+        s.ui_ms = 4.0;
+        s
+    }
+
+    fn frame(t: &mut StrokeTrace, now: f64, cpu: f32, stroking: bool) {
+        t.frame(&stages(now, cpu, stroking), stroking, || "vulkan Test GPU".into());
+    }
+
+    #[test]
+    fn stroke_trace_reads_the_shared_frame_stages() {
+        let mut t = on();
+        let mut ring = crate::frame_stages::SlowFrames::default();
+        let mut last = None;
+        for (k, now) in [100.0, 116.0, 132.0].into_iter().enumerate() {
+            let s = ring.finish(stages(now, 6.0, true), now + 5.0, false, None);
+            t.frame(&s, true, || "test".into());
+            let interval = if k == 0 { 0.0 } else { 16.0 };
+            let row = t.rows.last().expect("a stroke frame").clone();
+            assert_eq!((row.t, row.interval, row.moves, row.stroke, row.canvas, row.ui), (s.t, interval, 3, 1.0, 2.0, 4.0));
+            assert_eq!(row.cpu_prev, s.cpu_prev_ms);
+            assert_eq!(t.rows.last(), Some(&Row::from_stages(&s, interval)), "the row is the frame's stages");
+            last = Some(s);
+        }
+        assert_eq!(last.map(|s| s.composite_ms + s.upload_ms), Some(2.0));
     }
 
     #[test]

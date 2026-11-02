@@ -3,7 +3,7 @@ use super::consts::{MAP16, MAP32};
 use super::kit::MapDraw;
 use super::paging::field_reaches;
 use super::textures::{FxEntry, FxKey, ProgState, Stats, Tex};
-use super::*;
+use super::{Arc, Compositor, Document, FieldKind, HashMap, LayerContent, Rect, Unsupported, fx, plan};
 
 impl Compositor {
     /// Build or update the effect maps of one layer over `region`: its whole effect region, or

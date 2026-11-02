@@ -1,6 +1,10 @@
 use super::heal::history_source;
 use super::sampling::{SampleLayers, sample, sample_layers};
-use super::*;
+use super::{
+    BlendMode, BrushSettings, Document, EngineError, LayerId, PixelFormat, Rect, Region, Result, SampleType, Session, Stroke, StrokePoint, Surface, Value,
+    alpha_index, apply_coverage, bad, blend_from_str, coverage, damage_json, flag, has_pixel_layer, json, parse_brush, pattern_stamp, periodic, point,
+    reject_huge_stroke, run_stroke, to_rgba,
+};
 
 /// Where a clone stroke samples: `offset` / `source` params, else the active Clone Source slot,
 /// with the slot's (or the call's) scale, rotation and flips (see `presets::clone_source`).
@@ -175,6 +179,7 @@ pub struct LiveRetouch {
     renderer: photocraft_paint::StrokeRenderer,
     pre: std::sync::Arc<Document>,
     pre_surf: Surface,
+    colors: Option<crate::color_channels::ColorChannels>,
     id: Option<LayerId>,
     params: Value,
     paint: LivePaint,
@@ -225,6 +230,8 @@ impl LiveRetouch {
 
     /// Start a live stroke of `cmd` painting `paint` through `stroke`'s coverage.
     fn with_paint(s: &Session, cmd: &str, p: &Value, stroke: Stroke, id: Option<LayerId>, paint: LivePaint, mode: BlendMode) -> Result<Self> {
+        let captured = crate::channel_cmds::inject_target(s, cmd, p.clone());
+        let p = &captured;
         let st = s.active().ok_or(EngineError::NoDocument)?;
         let (pre, base) = (st.doc.clone(), (st.doc.id, st.revision));
         let mut doc = (*pre).clone();
@@ -245,6 +252,7 @@ impl LiveRetouch {
             renderer,
             pre,
             pre_surf,
+            colors: crate::color_channels::target(s, p)?,
             id,
             params: p.clone(),
             paint,
@@ -307,6 +315,15 @@ impl LiveRetouch {
     /// Invalid coordinates reject the whole batch without changing the preview.
     /// Only the position and pressure of `pts` are used: the commands take no tilt or times.
     pub fn push(&mut self, pts: &[StrokePoint]) -> Result<Rect> {
+        let damage = self.push_inner(pts)?;
+        if let Some(colors) = self.colors {
+            let (surf, _) = crate::channel_cmds::target_surface(std::sync::Arc::make_mut(&mut self.doc), self.id, &self.params)?;
+            crate::color_channels::restrict_region(&self.pre_surf, surf, colors, damage)?;
+        }
+        Ok(damage)
+    }
+
+    fn push_inner(&mut self, pts: &[StrokePoint]) -> Result<Rect> {
         crate::brush_cmds::check_coords(pts, &self.cmd)?;
         let pts: Vec<_> = pts.iter().map(|q| StrokePoint::new(q.x, q.y, q.pressure)).collect();
         self.points.extend_from_slice(&pts);

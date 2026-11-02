@@ -9,20 +9,206 @@
 # Licensed MIT OR Apache-2.0. See LICENSE-translations.txt and ATTRIBUTION.md.
 
 # Layer Mask Display Options (the layer mask rubylith's colour and opacity)
-	Mask Options…	Параметри маски…
-	Layer Mask Display Options…	Параметри відображення маски шару…
 
 # Channel Options and New Spot Channel (#3761)
-	Channel Color	Колір каналу
-	Color Indicates:	Кольором позначено:
-	Solidity:	Щільність:
-	Ink Characteristics	Характеристики фарби
 
 # Menus
 
 # Guide layout dialog
 
 # Custom print paper (#3820)
+
+
+# File
+
+# Edit
+
+# Image
+
+# Layer
+
+# Type
+
+# Select
+# Select and Mask dialog labels
+
+# Filter
+# Field Blur pins (#3373)
+
+# View
+
+# Window
+
+# Help
+
+# Tools and options bar
+
+# Panels, dialogs and common widgets
+
+# Preferences dialog
+
+# Document and canvas status bar
+
+# Layers panel
+
+# Channels panel
+
+# Color picker and swatches
+
+# Filters and adjustments dialogs
+
+# Camera Raw and lens dialogs
+
+# Adjustments panel
+
+# History panel
+
+# Navigator panel
+
+# Brush Settings panel
+
+# Tool presets
+
+# Paragraph and character panels
+
+# Glyphs panel
+
+# Paths panel
+
+# Clone Source panel
+
+# Timeline panel
+
+# Info panel
+
+# Layer Comps panel
+
+# Analysis and variables
+
+# Automate
+
+# Color Settings dialog
+
+# Themes
+
+# Workspaces
+
+# New Document dialog
+
+# Placeholders, tooltips, status and keyboard hints
+
+# Transform / warp overlays
+
+# Vanishing Point
+
+# Misc dialog strings
+
+# Blend modes
+
+# Saved views and other bits
+
+# Plurals
+
+# Remaining menu strings (second pass)
+
+# tl! literals (third pass)
+# Gradient Editor window, opened from the options bar's gradient swatch.
+
+# Preference dialog: generated setting labels and dropdown choices
+# Rendering mode and recovery
+# Camera Raw: contextual controls and window title
+
+
+
+
+
+
+# About ▸ Contributors / Models (credits)
+
+# Swatches panel
+# Layer Style > Blending Options (Advanced Blending)
+
+# Shared screen eyedropper and text Color Picker (#1128).
+
+# Fill dialog, layer style contours and Image Size
+
+
+
+# Layer colour labels.
+
+# Pattern Stamp tool
+
+# Additional shell controls, dynamic dialog fields and command labels.
+
+# Layers-panel trash confirmation
+
+
+# Native macOS application menu.
+
+# Painting symmetry presets.
+
+
+# Shared Layer Style color picker
+# File Info ▸ Camera Data (read-only EXIF fields; "Make" is the camera maker, not the verb).
+# Shared panel docking
+# Edit › Content-Aware Fill workspace
+
+
+# Smart Filter editors
+# Select and Mask view modes (#1754)
+# Select and Mask Refine Edge Brush (#2972)
+
+# Color Sampler (added with the i18n coverage repair)
+
+# History panel menu (#2966)
+# History panel › History Options… (#2966)
+# Print dialog (#2697)
+# Counted status messages and labels (#3454; adapted from PR #3821)
+# View › Guides › New Guide… › Color
+
+# Actions panel: Load/Save Actions (.atn) and kept Photoshop steps
+
+# Actions panel: set folders, dialog toggle, Insert Stop
+# Batch / Image Processor
+
+# Native Windows printing qualification
+# PhotoCraft release checks.
+# History panel › History Brush source (#2966)
+# Bevel & Emboss shading controls.
+# Embedded Profile Mismatch: profile names beside the choices, Remember this choice
+
+# Darken / Lighten Interface (⇧⌘F1 / ⇧⌘F2)
+# Bevel & Emboss Technique.
+
+# View › Guides › right-click a guide
+
+# Image › Mode › Bitmap (#5559)
+# Free Transform: a new layer while the box is open (#5859)
+# Preferences › Performance › GPU Memory; the status bar and slow-redraw notice
+# Dynamic color-picker titles and warnings about losing editable layer content.
+
+# DDS Options (#1327)
+
+# Color Table (.act) dialog
+
+# Graphics Adapter preference (#1885)
+
+# Styles panel: Import / Export Styles (.asl)
+# Actions: a step dialog holds a suspended recording (#7365)
+# Paragraph direction (TYPE-218-2)
+# Print preview image (#8236)
+# Color panel menu: modes, copy commands and colour ramps (#6000)
+
+# Pen draft after a refused commit (#7648)
+# Art History Brush (#213).
+
+# Egui 0.37 migration controls (Aspect Ratio, Category, Color Table, Gamma, Interpolation, Profile, Target, Units, Demosaic)
+	Mask Options…	Параметри маски…
+	Layer Mask Display Options…	Параметри відображення маски шару…
+	Channel Color	Колір каналу
+	Color Indicates:	Кольором позначено:
+	Solidity:	Щільність:
+	Ink Characteristics	Характеристики фарби
 	Paper Width	Ширина паперу
 	Paper Height	Висота паперу
 	Rows	Рядки
@@ -40,7 +226,6 @@
 	5 Columns, 3 Rows	5 стовпців, 3 рядки
 	8 Columns	8 стовпців
 	12 Columns	12 стовпців
-
 	File	Файл
 	Edit	Редагування
 	Image	Зображення
@@ -57,8 +242,6 @@
 	View	Перегляд
 	Window	Вікно
 	Help	Довідка
-
-# File
 	New…	Створити…
 	New from Clipboard	Створити з буфера обміну
 	New	Створити
@@ -100,8 +283,6 @@
 	Save for Web (Legacy)…	Зберегти для вебу (застаріле)…
 	Generate	Генерувати
 	Image Assets	Ресурси зображення
-
-# Edit
 	Undo	Скасувати
 	Redo	Повторити
 	Fade…	Послабити…
@@ -125,8 +306,6 @@
 	Define Pattern…	Визначити візерунок…
 	Define Custom Shape…	Визначити довільну фігуру…
 	Purge	Очистити пам'ять
-
-# Image
 	Image Size…	Розмір зображення…
 	Image Size	Розмір зображення
 	Canvas Size…	Розмір полотна…
@@ -165,8 +344,6 @@
 	Duotone…	Дуплекс…
 	Duotone	Дуплекс
 	Trap…	Трепінг…
-
-# Layer
 	Layer via Copy	Шар через копіювання
 	Layer via Cut	Шар через вирізання
 	Duplicate Layer…	Дублювати шар…
@@ -251,8 +428,6 @@
 	Scale Effects…	Масштабувати ефекти…
 	New Layer…	Новий шар…
 	Delete Layer…	Видалити шар…
-
-# Type
 	Font	Шрифт
 	Font Preview Size	Розмір перегляду шрифту
 	Orientation	Орієнтація
@@ -279,8 +454,6 @@
 	Load Default Type Styles	Завантажити типові текстові стилі
 	Save Default Type Styles	Зберегти типові текстові стилі
 	Type…	Текст…
-
-# Select
 	All	Усе
 	Deselect	Зняти виділення
 	Reselect	Відновити виділення
@@ -288,7 +461,6 @@
 	Inverse	Інвертувати
 	Color Range…	Колірний діапазон…
 	Select and Mask…	Виділити та маскувати…
-# Select and Mask dialog labels
 	Smart Radius	Розумний радіус
 	Shift Edge	Змістити край
 	Decontaminate	Очистити
@@ -316,8 +488,6 @@
 	Current Layer	Поточний шар
 	Refine Strokes	Штрихи уточнення
 	Edits	Правки
-
-# Filter
 	Last Filter	Останній фільтр
 	Filter Gallery…	Галерея фільтрів…
 	Liquify…	Пластика…
@@ -328,7 +498,6 @@
 	Oil Paint…	Олійний живопис…
 	Blur Gallery	Галерея розмиття
 	Field Blur…	Розмиття поля…
-# Field Blur pins (#3373)
 	No pin selected	Шпильку не вибрано
 	Click the image to add a pin; drag a pin to move it, or its ring to change its blur. Delete removes the selected pin.	Клацніть зображення, щоб додати шпильку; перетягніть шпильку, щоб перемістити її, або її кільце, щоб змінити розмиття. Delete видаляє вибрану шпильку.
 	Drag the handles on the outline to resize and turn it, the square to round its corners, and the dots inside to set where the blur starts.	Перетягуйте маркери на контурі, щоб змінити розмір і повернути його, квадрат — щоб заокруглити кути, а точки всередині — щоб задати, де починається розмиття.
@@ -417,8 +586,6 @@
 	Mezzotint…	Мецотинто…
 	Color Halftone…	Колірний растр…
 	Layer…	Шар…
-
-# View
 	Proof Setup	Налаштування кольоропроби
 	Proof Colors	Кольори кольоропроби
 	Pixel Aspect Ratio	Співвідношення сторін пікселя
@@ -465,8 +632,6 @@
 	Canvas rotation	Поворот полотна
 	Zoom in	Збільшити
 	Zoom out	Зменшити
-
-# Window
 	Cascade	Каскадом
 	Tile	Плиткою
 	2-up Horizontal	2 по горизонталі
@@ -515,8 +680,6 @@
 	3D	3D
 	Toolbars	Панелі інструментів
 	Hide All	Приховати все
-
-# Help
 	About PhotoCraft	Про PhotoCraft
 	PhotoCraft Website	Вебсайт PhotoCraft
 	PhotoCraft on GitHub	PhotoCraft на GitHub
@@ -524,8 +687,6 @@
 	ArtCraft Website	Вебсайт ArtCraft
 	Join the ArtCraft Discord…	Приєднатися до Discord ArtCraft…
 	System Info…	Інформація про систему…
-
-# Tools and options bar
 	Move	Переміщення
 	Marquee	Прямокутне виділення
 	Lasso	Ласо
@@ -586,8 +747,6 @@
 	Rotation	Обертання
 	Align	Вирівняти
 	Aligned	Вирівняно
-
-# Panels, dialogs and common widgets
 	OK	Гаразд
 	Cancel	Скасувати
 	Cancel (Esc)	Скасувати (Esc)
@@ -647,8 +806,6 @@
 	Select Data Points…	Вибрати точки даних…
 	Set Measurement Scale…	Установити масштаб вимірювань…
 	Use Measurement Scale	Використовувати масштаб вимірювань
-
-# Preferences dialog
 	Preferences	Налаштування
 	General…	Загальні…
 	Interface…	Інтерфейс…
@@ -673,8 +830,6 @@
 	Thumbnail size (smallest: list)	Розмір мініатюр (найменший: список)
 	Reset GPU Backend	Скинути графічний бекенд
 	Applies at next launch.	Набуде чинності після перезапуску.
-
-# Document and canvas status bar
 	Untitled	Без назви
 	Untitled-1	Без назви-1
 	Doc: {flat}/{layered}	Документ: {flat}/{layered}
@@ -713,8 +868,6 @@
 	Both Axes	Обидві осі
 	Horizontally	Горизонтально
 	Vertically	Вертикально
-
-# Layers panel
 	Layers to Files…	Шари у файли…
 	Duplicate Layers…	Дублювати шари…
 	Group name	Назва групи
@@ -744,8 +897,6 @@
 	Smart Filter	Смартфільтр
 	Fill Content	Вміст заливки
 	Adjustment Preview	Перегляд корекції
-
-# Channels panel
 	Channel:	Канал:
 	Channel Mixer…	Змішувач каналів…
 	Output Channel:	Вихідний канал:
@@ -760,8 +911,6 @@
 	Spot Channel	Канал плашкового кольору
 	Mask All	Маскувати все
 	Mask All Objects	Маскувати всі об'єкти
-
-# Color picker and swatches
 	Color	Колір
 	Color:	Колір:
 	Colors	Кольори
@@ -776,8 +925,6 @@
 	Overlay Opacity	Непрозорість накладання
 	Glow Color	Колір світіння
 	Web Snap	Прив'язка до вебкольорів
-
-# Filters and adjustments dialogs
 	Brightness	Яскравість
 	Contrast	Контрастність
 	Brightness/Contrast…	Яскравість/контрастність…
@@ -838,8 +985,6 @@
 	Working Yellow Plate	Робоча жовта форма
 	Working Black Plate	Робоча чорна форма
 	Working Gray Plate	Робоча сіра форма
-
-# Camera Raw and lens dialogs
 	Basic	Основні
 	Detail	Деталі
 	HSL/Grayscale	HSL/градації сірого
@@ -936,8 +1081,6 @@
 	Selected Areas	Виділені області
 	Spot Color	Плашковий колір
 	Color indicates	Колір позначає
-
-# Adjustments panel
 	Curves	Криві
 	Levels	Рівні
 	Color Balance	Колірний баланс
@@ -950,8 +1093,6 @@
 	Channel Mixer	Змішувач каналів
 	Gradient Map	Карта градієнта
 	Selective Color	Вибіркова корекція кольору
-
-# History panel
 	History Log…	Журнал історії…
 	Create Snapshot	Створити знімок стану
 	Delete Snapshot	Видалити знімок стану
@@ -966,14 +1107,10 @@
 	Automatically Create New Snapshot When Saving	Автоматично створювати знімок стану під час збереження
 	Show New Snapshot Dialog by Default	Типово показувати діалог нового знімка стану
 	Clear History	Очистити історію
-
-# Navigator panel
 	Panel Options…	Параметри панелі…
 	View menu	Меню перегляду
 	Keep view in sync	Синхронізувати перегляд
 	{zoom}%	{zoom}%
-
-# Brush Settings panel
 	Brush name	Назва пензля
 	Brush Preview	Перегляд пензля
 	Brush Tip Shape	Форма кінчика пензля
@@ -1057,8 +1194,6 @@
 	Override Tilt Y	Перевизначити нахил Y
 	Override Rotation	Перевизначити обертання
 	Apply the pen's tilt and rotation to the tip shape	Застосувати нахил і обертання пера до форми кінчика
-
-# Tool presets
 	Preset Type	Тип набору
 	Preset Manager…	Менеджер наборів…
 	Rename Tool Preset…	Перейменувати набір інструмента…
@@ -1072,8 +1207,6 @@
 	Preset:	Набір:
 	Preset	Набір
 	Presets:	Набори:
-
-# Paragraph and character panels
 	Font Size:	Розмір шрифту:
 	Type:	Тип:
 	Style	Стиль
@@ -1150,8 +1283,6 @@
 	Indent First	Відступ першого рядка
 	Center	По центру
 	Justify	По ширині
-
-# Glyphs panel
 	Glyph	Гліф
 	Select a type layer or click into text to insert glyphs	Виберіть текстовий шар або клацніть у тексті, щоб вставити гліфи
 	Entire Font	Увесь шрифт
@@ -1171,8 +1302,6 @@
 	Ordinals	Порядкові числа
 	East Asian Features	Східноазійські можливості
 	Middle Eastern Features	Близькосхідні можливості
-
-# Paths panel
 	Path	Контур
 	Path:	Контур:
 	Work Path	Робочий контур
@@ -1189,11 +1318,9 @@
 	Current Path	Поточний контур
 	Vector Mask from Current Path	Векторна маска з поточного контуру
 	Create new shape from the current path	Створити нову фігуру з поточного контуру
-	Drag to move the active shape's path or the Work Path	Перетягніть, щоб перемістити контур активної фігури або робочий контур
+	Drag to move the selected path	Перетягніть, щоб перемістити вибраний контур
 	Click: select anchor · Drag: move anchor, handle or segment · {shift}-click: add · {alt}-click: whole subpath	Клацання: вибрати вузол · Перетягування: перемістити вузол, ручку або сегмент · {shift}+клацання: додати · {alt}+клацання: увесь підконтур
 	Draw with the Pen tool (P) or make a work path from a selection.	Малюйте пером (P) або створіть робочий контур із виділення.
-
-# Clone Source panel
 	Source: not set ({key}-click with Clone Stamp)	Джерело: не задано ({key}+клацання клонувальним штампом)
 	Clone source {n} ({key}-click with Clone Stamp to set)	Джерело клонування {n} ({key}+клацання клонувальним штампом для встановлення)
 	{key}-click to set the source	{key}+клацання, щоб установити джерело
@@ -1216,8 +1343,6 @@
 	Frame Sync	Синхронізація кадрів
 	Quick Sync	Швидка синхронізація
 	Enabled	Увімкнено
-
-# Timeline panel
 	Create Video Timeline	Створити відеошкалу часу
 	Open a document to use the timeline.	Відкрийте документ, щоб користуватися шкалою часу.
 	Video Layers	Відеошари
@@ -1259,8 +1384,6 @@
 	Repeat	Повторення
 	Play Once	Відтворити один раз
 	Video Cache	Відеокеш
-
-# Info panel
 	Info Options…	Параметри інформації…
 	First Color Readout	Перше колірне значення
 	Second Color Readout	Друге колірне значення
@@ -1283,8 +1406,6 @@
 	Mouse Coordinates	Координати миші
 	Ruler Units	Одиниці лінійки
 	Hide	Приховати
-
-# Layer Comps panel
 	Layer Comps to Files…	Композиції шарів у файли…
 	Apply next selected layer comp	Застосувати наступну вибрану композицію шарів
 	Apply previous selected layer comp	Застосувати попередню вибрану композицію шарів
@@ -1302,8 +1423,6 @@
 	Visibility	Видимість
 	Position	Положення
 	Appearance (Layer Style)	Вигляд (стиль шару)
-
-# Analysis and variables
 	Analysis	Аналіз
 	Variables	Змінні
 	Variable Data Sets…	Набори даних змінних…
@@ -1385,8 +1504,6 @@
 	Version {version}	Версія {version}
 	Advanced	Розширені
 	Import…	Імпортувати…
-
-# Automate
 	Automate	Автоматизація
 	Batch…	Пакетна обробка…
 	Create Droplet…	Створити дроплет…
@@ -1417,8 +1534,6 @@
 	Stop For Errors	Зупинятися в разі помилок
 	Log Errors To File	Записувати помилки у файл
 	Errors	Помилки
-
-# Color Settings dialog
 	Color Settings…	Налаштування кольору…
 	Settings	Налаштування
 	Settings:	Налаштування:
@@ -1447,8 +1562,6 @@
 	SMPTE C	SMPTE C
 	HDTV (Rec. 709)	HDTV (Rec. 709)
 	CIE RGB	CIE RGB
-
-# Themes
 	Theme	Тема
 	Switch theme	Перемкнути тему
 	Next Theme	Наступна тема
@@ -1473,8 +1586,6 @@
 	Pro Medium Gray Theme	Середньосіра тема «Профі»
 	Pro Light Gray Theme	Світло-сіра тема «Профі»
 	Pro Light Theme	Світла тема «Профі»
-
-# Workspaces
 	Workspace…	Робочий простір…
 	Essentials	Основне
 	New Workspace…	Новий робочий простір…
@@ -1502,8 +1613,6 @@
 	Collapse Panel Group	Згорнути групу панелей
 	Expand Panel Group	Розгорнути групу панелей
 	Close Tab Group	Закрити групу вкладок
-
-# New Document dialog
 	PRESET DETAILS	ПАРАМЕТРИ НАБОРУ
 	BLANK DOCUMENT PRESETS ({n})	НАБОРИ ПОРОЖНІХ ДОКУМЕНТІВ ({n})
 	Create a new document or open an existing file.	Створіть новий документ або відкрийте наявний файл.
@@ -1550,8 +1659,6 @@
 	Points	Пункти
 	Picas	Піки
 	Columns	Стовпці
-
-# Placeholders, tooltips, status and keyboard hints
 	{name} options	Параметри: {name}
 	Align {what}	Вирівняти: {what}
 	Untagged {mode}	{mode} без профілю
@@ -1728,8 +1835,6 @@
 	Current	Поточний
 	{added}, {removed} subtracted	{added}, віднято {removed}
 	Filter:	Фільтр:
-
-# Transform / warp overlays
 	Free Transform	Вільна трансформація
 	Free Transform a Copy	Вільна трансформація копії
 	Transform	Трансформація
@@ -1781,8 +1886,6 @@
 	Rotate Fixed	Фіксоване обертання
 	Adaptive Wide Angle isn't open	Адаптивний широкий кут не відкрито
 	Liquify is not open	Пластику не відкрито
-
-# Vanishing Point
 	Create Plane	Створити площину
 	Edit Plane	Редагувати площину
 	Select Plane	Вибрати площину
@@ -1796,8 +1899,6 @@
 	Blend	Змішування
 	Brush Size	Розмір пензля
 	Heal Color	Відновити колір
-
-# Misc dialog strings
 	Mask	Маска
 	Channel	Канал
 	Rectangle	Прямокутник
@@ -1820,8 +1921,6 @@
 	Add to	Додати до
 	Subtract from	Відняти від
 	Intersect with	Перетнути з
-
-# Blend modes
 	Pass Through	Наскрізне
 	Dissolve	Розчинення
 	Darken	Затемнення
@@ -1843,19 +1942,13 @@
 	Difference	Різниця
 	Exclusion	Виключення
 	Luminosity	Світність
-
-# Saved views and other bits
 	Capture Comp	Зберегти композицію
 	No Layer Comps	Немає композицій шарів
-
-# Plurals
 @plural	{n} item|{n} items	{n} елемент|{n} елементи|{n} елементів
 @plural	{n} Layer|{n} Layers	{n} Шар|{n} Шари|{n} Шарів
 @plural	{n} layer|{n} layers	{n} шар|{n} шари|{n} шарів
 @plural	Group · {n} layer|Group · {n} layers	Група · {n} шар|Група · {n} шари|Група · {n} шарів
 @plural	{n} sample|{n} samples	{n} зразок|{n} зразки|{n} зразків
-
-# Remaining menu strings (second pass)
 	180°	180°
 	32-bit Preview Options…	Параметри 32-бітного перегляду…
 	90° Clockwise	90° за годинниковою стрілкою
@@ -1952,6 +2045,7 @@
 	Merge Group	Об'єднати групу
 	Merge Layers	Об'єднати шари
 	Merge Shape Components	Об'єднати компоненти фігури
+	Path operations	Операції з контурами
 	Merge Visible	Об'єднати видимі
 	Stamp Visible	Створити об'єднану копію видимих
 	Select Layer Above	Вибрати шар вище
@@ -2024,8 +2118,6 @@
 	Video Frames to Layers…	Відеокадри в шари…
 	WIA Support…	Підтримка WIA…
 	Working CMY Plate	Робоча форма CMY
-
-# tl! literals (third pass)
 	Absolute	Абсолютний
 	Action	Дія
 	Adaptive	Адаптивний
@@ -2059,7 +2151,6 @@
 	Capture	Зберегти стан
 	Center Crop Marks	Центральні мітки обрізання
 	Centre the gradient (offset 0, 0)	Центрувати градієнт (зсув 0, 0)
-# Gradient Editor window, opened from the options bar's gradient swatch.
 	Gradient Editor	Редактор градієнтів
 	Gradient picker	Вибір градієнта
 	Gradient stops	Точки градієнта
@@ -2276,8 +2367,6 @@
 	Whites	Білі тони
 	Yellow	Жовтий
 	Yellow  ·  Blue	Жовтий  ·  Синій
-
-# Preference dialog: generated setting labels and dropdown choices
 	Adobe	Adobe
 	Adobe rgb	Adobe RGB
 	Allow agent control	Дозволити керування агентом
@@ -2500,7 +2589,6 @@
 	4 x 4	4 x 4
 	5 x 5	5 x 5
 	Grid:	Сітка:
-# Rendering mode and recovery
 	Rendering Mode	Режим рендерингу
 	Automatic (recommended)	Автоматичний (рекомендовано)
 	CPU / Compatibility	CPU / сумісність
@@ -2527,7 +2615,6 @@
 	Tone Histogram	Тонова гістограма
 	Show Selected Region	Показувати вибрану область
 cameraRaw	Light	Світло
-# Camera Raw: contextual controls and window title
 	Camera Raw Filter ({layer})	Фільтр Camera Raw ({layer})
 	Camera Raw ({name})	Camera Raw ({name})
 	Aqua	Аквамариновий
@@ -2557,14 +2644,10 @@ cameraRaw	Roughness	Шорсткість
 	Transform On Drop	Трансформувати після відпускання
 	Scale or rotate the moved area, then press {key}	Змініть масштаб або поверніть переміщену область, потім натисніть {key}
 	Edit Type	Редагувати текст
-
-
 	New Style…	Новий стиль…
 	Style {name} saved	Стиль {name} збережено
-
 	Create new style (from the selected type)	Створити новий стиль (із вибраного тексту)
 	Create new style from the selected layer	Створити новий стиль із вибраного шару
-
 	Make Default	Зробити типовим
 	Reset to Default	Скинути до типового
 	Full-resolution preview unavailable	Перегляд у повній роздільності недоступний
@@ -2593,9 +2676,6 @@ cameraRaw	Roughness	Шорсткість
 	Magnetic Lasso Tool	Інструмент «Магнітне ласо»
 	Frequency	Частота
 	Use tablet pressure to change pen width	Використовувати натиск планшета для зміни ширини пера
-
-
-# About ▸ Contributors / Models (credits, craftrules standards/contributors.md)
 	About	Про програму
 	Contributors	Учасники
 	Models	Моделі
@@ -2626,8 +2706,6 @@ cameraRaw	Roughness	Шорсткість
 	% of all commits	% усіх комітів
 	Lines +/−	Рядки +/−
 	@{login}: {prs} PRs, {commits} commits, +{added} / −{deleted} lines (Δ {delta}), +{binAdded} / −{binDeleted} binary assets, {first} – {last}	@{login}: {prs} PR, {commits} комітів, +{added} / −{deleted} рядків (Δ {delta}), +{binAdded} / −{binDeleted} бінарних ресурсів, {first} – {last}
-
-# Swatches panel
 	Create new swatch	Створити новий зразок кольору
 	New Swatch…	Новий зразок кольору…
 	New Swatch Group…	Нова група зразків кольорів…
@@ -2637,13 +2715,12 @@ cameraRaw	Roughness	Шорсткість
 	Export Swatches for Exchange…	Експортувати зразки кольорів для обміну…
 	Reset Swatches	Скинути зразки кольорів
 	Add to Swatches	Додати до зразків кольорів
-# Layer Style > Blending Options (Advanced Blending)
 	Blend If:	Накладати, якщо:
+	Current Layer:	Поточний шар:
+	Underlying Layer:	Нижній шар:
 	Channels:	Канали:
 	Knockout	Вибивання
 	Apply At Canvas Bounds	Застосувати на межах полотна
-
-# Shared screen eyedropper and text Color Picker (#1128).
 	Color Picker (Text Color)	Вибір кольору (колір тексту)
 	Color Picker ({name})	Вибір кольору ({name})
 	Color Picker (Fill Color)	Вибір кольору (колір заливки)
@@ -2660,8 +2737,6 @@ cameraRaw	Roughness	Шорсткість
 	Show/Hide Panels	Показати/приховати панелі
 	Could not open	Не вдалося відкрити
 	{path}: the path is not valid Unicode; rename the file and open it again.	{path}: шлях не є коректним Unicode; перейменуйте файл і відкрийте його знову.
-
-# Fill dialog, layer style contours and Image Size
 	Contents:	Вміст:
 	Custom Pattern:	Довільний візерунок:
 	Foreground Color	Колір переднього плану
@@ -2687,14 +2762,12 @@ cameraRaw	Roughness	Шорсткість
 	Rounded Steps	Заокруглені сходинки
 	Sawtooth 1	Пилка 1
 	Linear	Лінійний
-
 	Red Eye Tool	Інструмент «Червоні очі»
 	Pupil Size	Розмір зіниці
 	Darken Amount	Величина затемнення
 	Click a red pupil to neutralize it	Клацніть червону зіницю, щоб усунути ефект
 	open source	відкритий код
 	…and {n} more	…і ще {n}
-
 	Eyedroppers:	Піпетки:
 	Set Black Point	Установити точку чорного
 	Set Neutral Gray Point	Установити точку нейтрального сірого
@@ -2704,8 +2777,6 @@ cameraRaw	Roughness	Шорсткість
 	Black Matte	Чорна підкладка
 	White Matte	Біла підкладка
 	Quick Mask	Швидка маска
-
-# Layer colour labels.
 	Seafoam	Морська піна
 	Indigo	Індиго
 	Fuchsia	Фуксія
@@ -2725,17 +2796,16 @@ fontWeight	Bold	Жирний
 fontWeight	ExtraBold	Екстражирний
 fontWeight	Black	Наджирний
 fontWeight	Italic	Курсивний
-
-# Pattern Stamp tool
 	Pattern Stamp Tool	Інструмент «Візерунковий штамп»
 	Impressionist	Імпресіоністичний
 	Rotate View Tool	Інструмент «Поворот перегляду»
 	Reset View	Скинути перегляд
 	Drag around the centre to rotate the view  ·  Shift constrains to 15°	Перетягніть навколо центру, щоб повернути перегляд  ·  Shift обмежує крок до 15°
-
-# Additional shell controls, dynamic dialog fields and command labels.
 	(coming soon)	(незабаром)
 	Add a layer style	Додати стиль шару
+	Move effect up	Перемістити ефект вгору
+	Move effect down	Перемістити ефект вниз
+	Delete effect	Видалити ефект
 	Add a mask  (from the selection; {key} inverts)	Додати маску  (із виділення; {key} інвертує)
 	Add an adjustment	Додати корекцію
 	Add space after paragraph	Додати інтервал після абзацу
@@ -2770,8 +2840,6 @@ fontWeight	Italic	Курсивний
 	Merged Layers	Об'єднані шари
 	Delete Cropped Pixels	Видаляти обрізані пікселі
 	Delete current state	Видалити поточний стан
-
-# Layers-panel trash confirmation
 	Delete layer ‘{name}’?	Видалити шар «{name}»?
 	Delete {count} layers? {names}	Видалити шари ({count})? {names}
 	Delete layer?	Видалити шар?
@@ -2780,7 +2848,6 @@ fontWeight	Italic	Курсивний
 	Missing delete command	Відсутня команда видалення
 	Invalid delete command	Недійсна команда видалення
 	Layer deleted, but confirmation preference could not be saved: {error}	Шар видалено, але не вдалося зберегти налаштування підтвердження: {error}
-
 	Delete layer	Видалити шар
 	Diamond Gradient	Ромбічний градієнт
 	Enable airbrush-style build-up effects	Увімкнути ефекти накопичення як в аерографі
@@ -3598,8 +3665,6 @@ cameraRaw	Masking	Маскування
 	Expand group  (⌥-click: all groups)	Розгорнути групу  (⌥+клацання: усі групи)
 	Hide the layer's effects  (⌥-click: all layers)	Приховати ефекти шару  (⌥+клацання: усі шари)
 	Show the layer's effects  (⌥-click: all layers)	Показати ефекти шару  (⌥+клацання: усі шари)
-
-# Native macOS application menu.
 	About {app}	Про {app}
 	Hide {app}	Приховати {app}
 	Quit {app}	Вийти з {app}
@@ -3623,12 +3688,9 @@ cameraRaw	Masking	Маскування
 	Show Sampling Ring	Показувати кільце вибірки
 	Transparency Threshold	Поріг прозорості
 	Opacity Threshold	Поріг непрозорості
-
-# Painting symmetry presets.
 	Dual Axis	Подвійна вісь
 	Diagonal	Діагональна
 	Transform Symmetry	Трансформувати симетрію
-
 	Rasterize svg groups deeper than	Растеризувати групи SVG глибше цього рівня
 	0 turns this threshold off; SVG groups nested deeper than 100 levels are always rasterized.	0 вимикає цей поріг; групи SVG із вкладеністю понад 100 рівнів завжди растеризуються.
 	Rule of Thirds	Правило третин
@@ -3641,8 +3703,6 @@ cameraRaw	Masking	Маскування
 	Cycle Orientation	Змінити орієнтацію
 	Set the overlay options for the Crop tool	Задати параметри накладання для інструмента «Рамка»
 	Alt-click went to the desktop, which moves windows with Alt-drag. Set its window-move key to Super, or latch Alt in Window › Modifier Keys.	Alt-клік перехопило робоче середовище, яке переміщує вікна через Alt-перетягування. Призначте для переміщення вікон клавішу Super або зафіксуйте Alt у меню Вікно › Клавіші-модифікатори.
-
-# Shared Layer Style color picker
 	Color Picker (Layer Style Color)	Палітра кольорів (колір стилю шару)
 	Auto Hide Notifications	Автоматично приховувати сповіщення
 	Notification Duration (seconds)	Тривалість сповіщення (секунди)
@@ -3717,7 +3777,6 @@ cameraRaw	Masking	Маскування
 	Appearance Settings…	Налаштування вигляду…
 	Add to favorites	Додати до вибраного
 	Remove from favorites	Видалити з вибраного
-# File Info ▸ Camera Data (read-only EXIF fields; "Make" is the camera maker, not the verb).
 cameraData	Make	Виробник
 cameraData	Model	Модель
 cameraData	Date Taken	Дата зйомки
@@ -3727,7 +3786,6 @@ cameraData	ISO Speed	Світлочутливість ISO
 cameraData	Focal Length	Фокусна відстань
 cameraData	Focal Length (35 mm)	Фокусна відстань (35 мм)
 cameraData	Lens	Об'єктив
-# Shared panel docking
 	Activate Panel	Активувати панель
 	Change Panel Group	Змінити групу панелей
 	Change Panel Layout	Змінити розташування панелей
@@ -3760,7 +3818,6 @@ cameraData	Lens	Об'єктив
 	Search settings…	Пошук налаштувань…
 	No matching settings	Немає відповідних налаштувань
 	PhotoCraft — Screen Color Picker	PhotoCraft — Піпетка кольору екрана
-# Edit › Content-Aware Fill workspace
 	Sampling Brush Tool	Пензель області вибірки
 	Sampling Area Overlay	Накладання області вибірки
 	Show Sampling Area	Показати область вибірки
@@ -3776,7 +3833,6 @@ cameraData	Lens	Об'єктив
 	Mirror	Віддзеркалення
 	Output Settings	Параметри виводу
 	Output To	Вивести в
-
 	Animation Options	Параметри анімації
 	Entire Document	Увесь документ
 	Filter Options	Параметри фільтрів
@@ -3793,8 +3849,6 @@ cameraData	Lens	Об'єктив
 	Add “copy” to Copied Layers and Groups	Додавати «копія» до скопійованих шарів і груп
 	Preview on canvas when reordering layers	Попередній перегляд на полотні під час зміни порядку шарів
 	Show layer mask badges	Показувати позначки масок шарів
-
-# Smart Filter editors
 	Blending Options ({filter})	Параметри накладання ({filter})
 	Hide the layer's effects and Smart Filters  ({key}-click: all layers)	Приховати ефекти шару та смарт-фільтри  ({key}-клік: усі шари)
 	Show the layer's effects and Smart Filters  ({key}-click: all layers)	Показати ефекти шару та смарт-фільтри  ({key}-клік: усі шари)
@@ -3825,7 +3879,6 @@ curves	Smooth	Згладити
 	Fix the red plane first: its corners must form a convex quad	Спершу виправте червону площину: її кути мають утворювати опуклий чотирикутник
 	Alt-click a plane to set the clone source	Клацніть площину з Alt, щоб задати джерело клонування
 	Too many clone strokes: apply Vanishing Point first	Забагато мазків клонування: спочатку застосуйте «Точку сходження»
-# Select and Mask view modes (#1754)
 	Onion Skin	Калька
 	Marching Ants	Мурашки
 	On Black	На чорному
@@ -3834,7 +3887,6 @@ curves	Smooth	Згладити
 	Show Edge	Показати край
 	Show Original	Показати початкове
 	F cycles the views; hold X to see the image	F перемикає види; утримуйте X, щоб побачити зображення
-# Select and Mask Refine Edge Brush (#2972)
 	Refine Edge Brush (R)	Пензель уточнення краю (R)
 	Expand Detection Area	Розширити область виявлення
 	Restore Original Edge	Відновити початковий край
@@ -3854,19 +3906,13 @@ curves	Smooth	Згладити
 	Scale:	Масштаб:
 	Snap to Origin	Прив'язати до початку координат
 	Presentation	Представлення
-
-# Color Sampler (added with the i18n coverage repair)
 	Click to place · Alt-click or drag off-canvas to remove	Клацніть, щоб розмістити · Alt-клацання або перетягування за межі полотна для видалення
 	No document open	Документ не відкрито
 	{n} of {max} sample points	{n} з {max} точок вимірювання
-
-# History panel menu (#2966)
 	New Snapshot…	Новий знімок стану…
 	History Options…	Параметри історії…
-# History panel › History Options… (#2966)
 	Allow Non-Linear History	Дозволити нелінійну історію
 	Make Layer Visibility Changes Undoable	Дозволити скасування змін видимості шарів
-# Print dialog (#2697)
 	Emulsion Down	Емульсією донизу
 	Functions	Функції
 	Print Resolution:	Роздільна здатність друку:
@@ -3878,7 +3924,6 @@ curves	Smooth	Згладити
 	Apply mask to layer before removing?	Застосувати маску до шару перед видаленням?
 	The layer or its mask changed. Drag the mask onto the Trash again.	Шар або його маска змінилися. Перетягніть маску до кошика ще раз.
 	Delete the vector mask?	Видалити векторну маску?
-# Counted status messages and labels (#3454; adapted from PR #3821)
 @plural	Exported {n} swatch to {file}|Exported {n} swatches to {file}	Експортовано {n} зразок кольору до {file}|Експортовано {n} зразки кольорів до {file}|Експортовано {n} зразків кольорів до {file}
 @plural	Imported {n} brush from {group}|Imported {n} brushes from {group}	Імпортовано {n} пензель з {group}|Імпортовано {n} пензлі з {group}|Імпортовано {n} пензлів з {group}
 @plural	Imported {n} swatch from {file}|Imported {n} swatches from {file}	Імпортовано {n} зразок кольору з {file}|Імпортовано {n} зразки кольорів з {file}|Імпортовано {n} зразків кольорів з {file}
@@ -3893,7 +3938,6 @@ curves	Smooth	Згладити
 @plural	{n} step|{n} steps	{n} крок|{n} кроки|{n} кроків
 @plural	{warning} (+{n} more brush preset warning)|{warning} (+{n} more brush preset warnings)	{warning} (і ще {n} попередження щодо наборів пензлів)|{warning} (і ще {n} попередження щодо наборів пензлів)|{warning} (і ще {n} попереджень щодо наборів пензлів)
 @plural	{what} with {n} warning|{what} with {n} warnings	{what}: {n} попередження|{what}: {n} попередження|{what}: {n} попереджень
-# View › Guides › New Guide… › Color
 	Light Blue	Світло-синій
 	Light Red	Світло-червоний
 	Medium Blue	Середньо-синій
@@ -3914,8 +3958,6 @@ curves	Smooth	Згладити
 	Clear Brush Controls	Очистити параметри пензля
 	Reset All Locked Settings	Скинути всі заблоковані параметри
 	Copy Texture to Other Tools	Скопіювати текстуру в інші інструменти
-
-# Actions panel: Load/Save Actions (.atn) and kept Photoshop steps
 	Load Actions…	Завантажити операції…
 	Save Actions…	Зберегти операції…
 	New Action…	Нова операція…
@@ -3927,10 +3969,8 @@ curves	Smooth	Згладити
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} крок ще не має відповідника в PhotoCraft|{n} кроки ще не мають відповідника в PhotoCraft|{n} кроків ще не мають відповідника в PhotoCraft
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	Збережено {n} операцію до {file}|Збережено {n} операції до {file}|Збережено {n} операцій до {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	Пропущено {n} крок без відповідника в Photoshop|Пропущено {n} кроки без відповідника в Photoshop|Пропущено {n} кроків без відповідника в Photoshop
-
 	File Naming	Іменування файлів
 	Starting serial	Початковий порядковий номер
-# Actions panel: set folders, dialog toggle, Insert Stop
 	Insert Stop…	Вставити зупинку…
 	Save Set…	Зберегти набір…
 	Message:	Повідомлення:
@@ -3941,11 +3981,8 @@ curves	Smooth	Згладити
 	Step {step} is waiting for its dialog	Крок {step} очікує на свій діалог
 @plural	{n} action|{n} actions	{n} операція|{n} операції|{n} операцій
 	Background (Default)	Фон (типовий)
-# Batch / Image Processor
 	Include All Subfolders	Включити всі вкладені папки
 	Auto Add/Delete	Автододавання/видалення
-
-# Native Windows printing qualification
 	Don't also tick Mirror Image in Print Settings…: the two flips cancel out.	Не вмикайте також дзеркальне відображення в параметрах друку: два відображення скасовують одне одного.
 	Print Settings…	Параметри друку…
 	Remember to turn off the printer's own colour management in Print Settings…	Не забудьте вимкнути керування кольором самого принтера в параметрах друку…
@@ -3990,48 +4027,30 @@ curves	Smooth	Згладити
 	Could not write {name}: {error}	Не вдалося записати {name}: {error}
 	Kept {name}: written by another application	{name} залишено без змін: записаний іншою програмою
 	Shadow Tint	Відтінок тіней
-# PhotoCraft release checks.
 	Check for Updates…	Перевірити оновлення…
-	PhotoCraft Updates	Оновлення PhotoCraft
-	Checking for updates…	Перевірка оновлень…
 	Open the release page to choose an installer for your system.	Відкрийте сторінку випуску й виберіть інсталятор для своєї системи.
-	Open Download Page	Відкрити сторінку завантаження
-	PhotoCraft is up to date.	PhotoCraft оновлено до останньої версії.
-	Could not check for updates.	Не вдалося перевірити оновлення.
-	Updates have not been checked yet.	Оновлення ще не перевірялися.
-	Check Again	Перевірити знову
 	Automatically Check for Updates	Автоматично перевіряти оновлення
-	Installed version: {version}	Встановлена версія: {version}
-	PhotoCraft {version} is available.	Доступна версія PhotoCraft {version}.
-# History panel › History Brush source (#2966)
 	Paints from the History panel's source state	Малює з вихідного стану панелі «Історія»
 	Sets the source for the history brush	Задає джерело для пензля історії
-# Bevel & Emboss shading controls.
 	Highlight Mode	Режим світлих тонів
 	Highlight Color	Колір світлих тонів
 	Highlight Opacity	Непрозорість світлих тонів
 	Shadow Mode	Режим тіней
 	Shadow Color	Колір тіней
 	Shadow Opacity	Непрозорість тіней
-# Embedded Profile Mismatch: profile names beside the choices, Remember this choice
 	Use the embedded profile ({profile})	Використати вбудований профіль ({profile})
 	Convert to the working space ({profile})	Перетворити в робочий простір ({profile})
 	Remember this choice for future images	Запам’ятати цей вибір для наступних зображень
 	Turn the prompt back on with Ask On Mismatch in Edit › Color Settings.	Знову ввімкнути запитання можна параметром Ask On Mismatch у Редагування › Налаштування кольору.
 	Button Mode	Режим кнопок
 	Button Mode On	Режим кнопок увімкнено
-
-# Darken / Lighten Interface (⇧⌘F1 / ⇧⌘F2)
 	Darken Interface	Зробити інтерфейс темнішим
 	Lighten Interface	Зробити інтерфейс світлішим
-# Bevel & Emboss Technique.
 	Technique	Метод
 	Chisel Hard	Жорстке різьблення
 	Chisel Soft	М'яке різьблення
 	Open color-less EXR as ACEScg	Відкривати EXR без колірного профілю як ACEScg
 	Do not append "copy" to filename when saving a copy	Не додавати «copy» до імені файлу під час збереження копії
-
-# View › Guides › right-click a guide
 	Edit Selected Guides	Редагувати вибрані напрямні
 	Clear Selected Guides	Очистити вибрані напрямні
 	Bicubic Automatic	Бікубічна, автоматично
@@ -4056,8 +4075,6 @@ curves	Smooth	Згладити
 	set name	назва набору
 	{set} (modified)	{set} (змінено)
 	Show file name in title	Показувати ім’я файла в заголовку
-
-# Image › Mode › Bitmap (#5559)
 	50% Threshold	Поріг 50%
 	Pattern Dither	Візерунковий дизеринг
 	Diffusion Dither	Дифузійний дизеринг
@@ -4075,10 +4092,8 @@ curves	Smooth	Згладити
 	Undo Changes	Скасувати зміни
 	{shortcut} is reserved by the system and can't be assigned.	{shortcut} зарезервовано системою, його не можна призначити.
 	Low-Latency Drawing (vsync off, applies at next launch)	Малювання з малою затримкою (без вертикальної синхронізації, після перезапуску)
-# Free Transform: a new layer while the box is open (#5859)
 	Free Transform is still being applied; try again when it has finished.	Вільне трансформування ще застосовується; спробуйте знову, коли воно завершиться.
 	The transform couldn't be applied.	Не вдалося застосувати трансформування.
-# Preferences › Performance › GPU Memory; the status bar and slow-redraw notice
 	Its layers need {needed} of GPU memory; the budget leaves them {budget}.	Його шарам потрібно {needed} пам'яті GPU; бюджет залишає їм {budget}.
 	Set GPU Memory in Preferences › Performance to what your graphics card can hold, at most 3/8 of its memory. Automatic follows Memory Usage, within a quarter of this computer's memory and 3/8 of the card's, and doesn't count the document against a card whose memory is known. The status bar shows GPU Memory Full while they don't fit.	Задайте «Пам'ять GPU» в Налаштування › Продуктивність відповідно до того, скільки вміщує ваша відеокарта, не більше 3/8 її пам'яті. «Автоматично» стежить за використанням пам'яті, у межах чверті пам'яті цього комп'ютера й 3/8 пам'яті відеокарти, і не враховує документ на відеокарті з відомим обсягом пам'яті. Поки шари не вміщуються, рядок стану показує «Пам'ять GPU заповнена».
 	GPU Memory Full	Пам'ять GPU заповнена
@@ -4103,7 +4118,6 @@ curves	Smooth	Згладити
 	First Brush	Перший пензель
 	Last Brush	Останній пензель
 	Preview size	Preview size
-# Dynamic color-picker titles and warnings about losing editable layer content.
 	Color Picker (Background Color)	Вибір кольору (колір тла)
 	Color Picker (Foreground Color)	Вибір кольору (основний колір)
 	Color Picker (Custom Canvas Color)	Вибір кольору (власний колір полотна)
@@ -4118,8 +4132,6 @@ curves	Smooth	Згладити
 	Hirakawa–Parks: the cleanest edges and the least colour fringing, the slowest.	Хіракава–Паркс: найчистіші краї й найменше кольорової облямівки, найповільніший.
 	Gradient-corrected interpolation: sharp and fast, with some colour fringing on fine detail.	Інтерполяція з корекцією градієнта: різка й швидка, з невеликою кольоровою облямівкою на дрібних деталях.
 	The fastest and the softest, with colour fringing on fine detail.	Найшвидший і найм'якший, з кольоровою облямівкою на дрібних деталях.
-	Move Up	Перемістити вгору
-	Move Down	Перемістити вниз
 	Memory Usage	Використання пам’яті
 	Per-document RAM limit (MB)	Ліміт RAM на документ (МБ)
 	Installed RAM: {ram} MB; this limit: {percent}%	Встановлено RAM: {ram} МБ; цей ліміт: {percent}%
@@ -4129,18 +4141,13 @@ curves	Smooth	Згладити
 	Use	Використати
 	In Front	Спереду
 	Behind	Ззаду
-
-# DDS Options (#1327)
 	DDS Options	Параметри DDS
 	Compression	Стиснення
 	Generate Mipmaps	Створити MIP-карти
-
-# Color Table (.act) dialog
 	There is no color table to save.	Немає таблиці кольорів для збереження.
 @plural	Saved {n} color to {file}|Saved {n} colors to {file}	Збережено {n} колір у {file}|Збережено {n} кольори у {file}|Збережено {n} кольорів у {file}
-
-# Graphics Adapter preference (#1885)
 	GPU adapter	Адаптер GPU
+smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded source; format-specific features may change.	Вміст AI/PDF/EPS редагуватиметься як SVG. Збереження замінить вбудоване джерело; властивості початкового формату можуть змінитися.
 
 # Styles panel: Import / Export Styles (.asl)
 	Import Styles…	Імпортувати стилі…
@@ -4149,7 +4156,6 @@ curves	Smooth	Згладити
 	{file} is not a style library (.asl)	{file} не є бібліотекою стилів (.asl)
 @plural	Imported {n} style from {file}|Imported {n} styles from {file}	Імпортовано {n} стиль з {file}|Імпортовано {n} стилі з {file}|Імпортовано {n} стилів з {file}
 @plural	Exported {n} style to {file}|Exported {n} styles to {file}	Експортовано {n} стиль до {file}|Експортовано {n} стилі до {file}|Експортовано {n} стилів до {file}
-# Actions: a step dialog holds a suspended recording (#7365)
 	Confirm or cancel the open action step dialog first	Спочатку підтвердьте або скасуйте відкритий діалог кроку операції
 	Pro Medium Gray	Середньосіра «Профі»
 	Solarized	Solarized
@@ -4158,14 +4164,11 @@ curves	Smooth	Згладити
 	Pro Light	Світла «Профі»
 	Resize Windows to Fit	Підганяти розмір вікон
 	EXR	EXR
-# Paragraph direction (TYPE-218-2)
 	Automatic paragraph direction	Автоматичний напрямок абзацу
 	Left-to-right paragraph direction	Напрямок абзацу зліва направо
 	Right-to-left paragraph direction	Напрямок абзацу справа наліво
 	Not rendered: this adjustment ({key}) is kept as imported.	Не відображається: це коригування ({key}) збережено як було імпортовано.
-# Print preview image (#8236)
 	Print preview image	Print preview image
-# Color panel menu: modes, copy commands and colour ramps (#6000)
 	Hue Cube	Куб тону
 	Brightness Cube	Куб яскравості
 	Color Wheel	Колірне коло
@@ -4181,7 +4184,8 @@ curves	Smooth	Згладити
 	Grayscale Ramp	Шкала градацій сірого
 	Current Colors	Поточні кольори
 	Make Ramp Web Safe	Зробити шкалу безпечною для вебу
-# Art History Brush (#213).
+	The path was kept as the Work Path	Контур збережено як робочий контур
+	The path was discarded	Контур видалено
 	Art History Brush Tool	Інструмент «Художній пензель історії»
 	Tight Short	Щільний короткий
 	Tight Medium	Щільний середній
@@ -4192,9 +4196,32 @@ curves	Smooth	Згладити
 	Tight Curl	Щільний завиток
 	Loose Curl	Вільний завиток
 	Stylized dabs from a history state	Стилізовані мазки зі стану історії
-
-# Egui 0.37 migration controls (Aspect Ratio, Category, Color Table, Gamma, Interpolation, Profile, Target, Units, Demosaic)
 	Target	Ціль
 	Font size presets	Набори розмірів шрифту
 	Leading presets	Набори інтерліньяжу
 	Tracking presets	Набори трекінгу
+	Invalid numeric entry. An integer between {min}% and {max}% is required. Previous value was inserted.	Неприпустиме числове значення. Потрібне ціле число від {min}% до {max}%. Вставлено попереднє значення.
+	Clear Selection	Очистити виділення
+	Color Aware	З урахуванням кольору
+	Decontaminate Colors	Очистити кольори
+	Edge Detection	Виявлення краю
+	Global Refinements	Глобальне уточнення
+	High Quality Preview	Високоякісний перегляд
+	Object Aware	З урахуванням об'єктів
+	Real-Time Refinement	Уточнення в реальному часі
+	Refine Edge Brush Tool	Інструмент «Пензель уточнення краю»
+	Refine Hair	Уточнити волосся
+	Refine Mode	Режим уточнення
+	Remember Settings	Запам'ятати параметри
+	View Mode	Режим перегляду
+	Object Aware needs a segmentation model, which isn't available yet	Для режиму «З урахуванням об'єктів» потрібна модель сегментації, яка ще недоступна
+	Refine Hair needs hair detection, which isn't available yet	Для уточнення волосся потрібне розпізнавання волосся, яке ще недоступне
+	Select and Mask was closed: its document is no longer the active one	Вікно «Виділити та маскувати» закрито: його документ більше не активний
+	Select and Mask was closed: another layer was selected	Вікно «Виділити та маскувати» закрито: вибрано інший шар
+
+# Shape Fill/Stroke popover and colour swatches opening the Color Picker
+	Color Picker	Вибір кольору
+	Recently Used Colors	Нещодавно використані кольори
+	Stop Color	Колір контрольної точки
+	Shapes can't use patterns yet	Фігури поки не можуть використовувати візерунки
+	Edit Brush…	Редагувати пензель…

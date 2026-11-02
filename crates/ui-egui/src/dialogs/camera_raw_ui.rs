@@ -19,6 +19,7 @@ use photocraft_algo::camera_raw::{CameraRaw, Wheel, curve_lut};
 use photocraft_algo::histogram::RgbHistogram;
 
 use crate::camera_raw_scope_ui::{MAX_SAMPLERS, ToneZone};
+
 use photocraft_doc::LayerId;
 use photocraft_geom::Rect;
 use serde_json::{Value, json};

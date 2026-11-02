@@ -131,7 +131,39 @@ mod tests;
 /// the mask's default value), and without a selection the default changes too, since a mask
 /// reaches past the canvas: Invert turns a reveal-all mask into a hide-all one (#780).
 pub fn adjust_mask(s: &mut Surface, adj: &Adjustment, selection: Option<&Surface>) -> Result<(), String> {
-    let mode = photocraft_color::ColorMode::Grayscale;
+    adjust_mask_with_transfer(s, adj, selection, adjust::Transfer::for_document(photocraft_color::ColorMode::Grayscale, s.format().sample), false)
+}
+
+/// A native component is scalar, but Exposure must retain its source document's tone transfer.
+pub(crate) fn adjust_mask_with_transfer(
+    s: &mut Surface,
+    adj: &Adjustment,
+    selection: Option<&Surface>,
+    transfer: adjust::Transfer,
+    rgb_document: bool,
+) -> Result<(), String> {
+    // RGB32 Curves extend their endpoint slopes. Other native planes retain scalar tone rules,
+    // rather than treating a replicated grayscale buffer as a complete Lab or CMYK colour.
+    let mode = if rgb_document { photocraft_color::ColorMode::Rgb } else { photocraft_color::ColorMode::Grayscale };
+    if let Some(sel) = selection
+        && sel.default_pixel().first().is_some_and(|v| *v > 0.0)
+    {
+        // A selection can store holes in an otherwise selected default. Its stored bounds
+        // do not bound the edit: adjust the default and the union of explicitly stored tiles.
+        let fmt = s.format();
+        let unit = Rect::from_xywh(0, 0, 1, 1);
+        let blank = Surface::with_default(fmt, &s.default_pixel());
+        let mask_default = Surface::with_default(sel.format(), &sel.default_pixel());
+        let mut out = Surface::with_default(fmt, &adjusted_with_transfer(&blank, unit, adj, Some(&mask_default), mode, transfer));
+        let stored: std::collections::BTreeSet<_> = s.tiles().map(|(c, _)| *c).chain(sel.tiles().map(|(c, _)| *c)).collect();
+        for coord in stored {
+            let r = coord.rect();
+            out.try_write_region(r, &adjusted_with_transfer(s, r, adj, selection, mode, transfer)).map_err(|e| e.to_string())?;
+        }
+        out.prune();
+        *s = out;
+        return Ok(());
+    }
     if let Some(sel) = selection {
         let r = sel.content_bounds();
         // Tile by tile, and only where the selection stores something (it is unselected, so
@@ -150,7 +182,7 @@ pub fn adjust_mask(s: &mut Surface, adj: &Adjustment, selection: Option<&Surface
             tile_rects(r).collect()
         };
         for t in &tiles {
-            let out = adjusted(s, *t, adj, Some(sel), mode);
+            let out = adjusted_with_transfer(s, *t, adj, Some(sel), mode, transfer);
             s.write_region(*t, &out);
         }
         if !tiles.is_empty() {
@@ -160,12 +192,12 @@ pub fn adjust_mask(s: &mut Surface, adj: &Adjustment, selection: Option<&Surface
     }
     let fmt = s.format();
     let unit = Rect::from_xywh(0, 0, 1, 1);
-    let mut out = Surface::with_default(fmt, &adjusted(&Surface::with_default(fmt, &s.default_pixel()), unit, adj, None, mode));
+    let mut out = Surface::with_default(fmt, &adjusted_with_transfer(&Surface::with_default(fmt, &s.default_pixel()), unit, adj, None, mode, transfer));
     // Everything the mask doesn't store reads as its default, which `out` already holds adjusted.
     // So only the stored tiles are adjusted, not the (possibly huge) rectangle around them.
     let stored: Vec<Rect> = s.tiles().map(|(c, _)| c.rect()).collect();
     for r in stored {
-        out.write_region(r, &adjusted(s, r, adj, None, mode));
+        out.write_region(r, &adjusted_with_transfer(s, r, adj, None, mode, transfer));
     }
     out.prune();
     *s = out;
@@ -174,6 +206,17 @@ pub fn adjust_mask(s: &mut Surface, adj: &Adjustment, selection: Option<&Surface
 
 /// `s`'s pixels over `r` (untouched ones included) with `adj` applied through the selection, encoded.
 fn adjusted(s: &Surface, r: Rect, adj: &Adjustment, selection: Option<&Surface>, mode: photocraft_color::ColorMode) -> Vec<f32> {
+    adjusted_with_transfer(s, r, adj, selection, mode, adjust::Transfer::for_document(mode, s.format().sample))
+}
+
+fn adjusted_with_transfer(
+    s: &Surface,
+    r: Rect,
+    adj: &Adjustment,
+    selection: Option<&Surface>,
+    mode: photocraft_color::ColorMode,
+    transfer: adjust::Transfer,
+) -> Vec<f32> {
     let fmt = s.format();
     if fmt.mode == mode && matches!(mode, photocraft_color::ColorMode::Lab | photocraft_color::ColorMode::Cmyk) && adjust::stored_channel_adjustment(adj) {
         return adjusted_channels(s, r, selection, |ch| adjust::stored_channels(adj, fmt.mode, Some(fmt.sample), ch));
@@ -201,7 +244,7 @@ fn adjusted(s: &Surface, r: Rect, adj: &Adjustment, selection: Option<&Surface>,
         (photocraft_color::SampleType::U16, Adjustment::Posterize { .. } | Adjustment::Threshold { .. }) => Some(fmt.sample),
         _ => None,
     };
-    adjust::apply_in(adj, &mut buf, adjust::Transfer::for_document(mode, fmt.sample), depth, mode);
+    adjust::apply_in(adj, &mut buf, transfer, depth, mode);
     mix_through_selection(&fmt, r, &orig.px, &buf.px, selection)
 }
 
@@ -277,7 +320,9 @@ pub(crate) fn mix_through_selection(
             sel.sample_row_strided(r.y0.saturating_add(j as i32), r.x0, 1, 0, &mut coverage);
         }
         for ((a, o), k) in edited_row.iter().zip(orig_row).zip(&coverage) {
-            let mixed: [f32; 4] = std::array::from_fn(|c| o[c] + (a[c] - o[c]) * k);
+            // `o·(1−k) + a·k` keeps the edit exact at full coverage, even over huge 32-bit
+            // values whose difference from it would round the edit away (#9483).
+            let mixed: [f32; 4] = std::array::from_fn(|c| o[c] * (1.0 - k) + a[c] * k);
             let mut enc = [0.0f32; 8];
             let m = photocraft_raster::from_rgba_into(fmt, mixed, &mut enc);
             out.extend_from_slice(&enc[..m]);

@@ -611,7 +611,9 @@ fn clicking_the_vector_mask_targets_it_for_the_path_tools() {
     let k = layer(&h, masked).vector_mask.unwrap().path.subpaths[0].knots[0].anchor;
     assert_eq!((k.x, k.y), (25.0, 12.0));
     // The Pen adds a subpath to it.
-    h.state_mut().ui.pen = Some(crate::vector_ui::PenPath { knots: vec![[[150.0, 10.0]; 3], [[190.0, 10.0]; 3], [[190.0, 40.0]; 3]], ..Default::default() });
+    let owner = crate::vector_ui::capture_pen_owner(h.state());
+    h.state_mut().ui.pen =
+        Some(crate::vector_ui::PenPath { knots: vec![[[150.0, 10.0]; 3], [[190.0, 10.0]; 3], [[190.0, 40.0]; 3]], owner, ..Default::default() });
     crate::vector_ui::pen_commit(h.state_mut(), true);
     assert_eq!(layer(&h, masked).vector_mask.unwrap().path.subpaths.len(), 2);
     assert!(h.state().session.active().unwrap().doc.work_path.is_none(), "not a work path");
@@ -835,4 +837,35 @@ fn a_new_adjustment_layer_brings_properties_to_the_front() {
     assert_eq!(h.state().ui.dock_tabs.properties, 0, "Properties is the group's tab");
     assert!(!h.state().ui.dock.is_collapsed(crate::dock::Group::Properties), "the group is expanded");
     assert!(h.query_all_by_label("Reset to defaults").next().is_some(), "the Curves settings show");
+}
+
+#[test]
+fn selecting_an_adjustment_layer_from_another_layer_targets_its_mask() {
+    // The reference application: an adjustment layer picked by its name targets its mask; a
+    // masked pixel layer targets its contents; the content thumbnail still targets contents.
+    for command in ["layer.newAdjustmentLayer.hueSaturation", "layer.newAdjustmentLayer.curves"] {
+        let (mut s, masked, other) = session();
+        s.execute(command, json!({})).unwrap();
+        let id = s.active().unwrap().active_layer.unwrap().0;
+        let mut h = harness(s, 0, 1.0, 360.0);
+        assert!(layer(&h, id).mask.is_some(), "{command}: the adjustment layer has a mask");
+        let name_of =
+            |h: &Harness<'_, PhotocraftApp>, l: u64| crate::layer_row_ui::recorded(&h.ctx).into_iter().find(|r| r.layer == l).unwrap().name.unwrap().center();
+        let at = name_of(&h, other);
+        click_with(&mut h, at, Modifiers::NONE);
+        let at = name_of(&h, id);
+        click_with(&mut h, at, Modifiers::NONE);
+        assert_eq!(h.state().session.active().unwrap().active_layer.unwrap().0, id);
+        assert!(h.state().ui.mask_target && !h.state().ui.vector_mask_target, "{command}: a name click targets the mask");
+        assert_eq!(crate::canvas::paint_target(h.state()), json!("mask"));
+        // The content thumbnail targets the contents.
+        let thumb = layer_thumb_center(&h, id);
+        click_with(&mut h, thumb, Modifiers::NONE);
+        assert!(!h.state().ui.mask_target, "{command}: the content thumbnail targets contents");
+        // A masked pixel layer picked by its name targets its contents.
+        let at = name_of(&h, masked);
+        click_with(&mut h, at, Modifiers::NONE);
+        assert_eq!(h.state().session.active().unwrap().active_layer.unwrap().0, masked);
+        assert!(!h.state().ui.mask_target && !h.state().ui.vector_mask_target, "{command}: a pixel layer targets its contents");
+    }
 }

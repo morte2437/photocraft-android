@@ -1,6 +1,6 @@
 //! Integer-only Indexed Color field and a linear slider with common palette sizes.
 
-use super::*;
+use super::{Align2, Color32, Rect, Response, Sense, Stroke, StrokeKind, Tokens, Ui, pos2, surface, theme, vec2};
 
 const STOPS: [u32; 6] = [8, 16, 32, 64, 128, 256];
 
@@ -102,6 +102,7 @@ pub fn color_count_row(ui: &mut Ui, label: &str, count: &mut u32) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use egui::Pos2;
     use egui_kittest::{Harness, kittest::Queryable};
 
     #[test]

@@ -241,16 +241,14 @@ pub(crate) fn run_filter(s: &mut Session, id: &str, p: &Value) -> Result<Value> 
     let p = &prepared;
     let mut fp = params_for(id, p).ok_or_else(|| EngineError::Other(format!("unknown filter {id}")))?;
     crate::filters_ext::resolve(s, &mut fp, p)?;
-    let layer = match p.get("layer").and_then(Value::as_u64) {
-        Some(l) => photocraft_doc::LayerId(l),
-        None => s.active().and_then(|d| d.active_layer).ok_or(EngineError::Other("no active layer".into()))?,
-    };
+    let layer = crate::commands::layer_param(s, p)?;
     let label = preset(id).map_or(fp.label(), |(name, _)| name).to_string();
     let msg = label.clone();
     let mut params = p.clone();
     if let Value::Object(m) = &mut params {
         m.remove("__kind");
     }
+    let colors = crate::color_channels::target(s, p)?;
     let id = id.to_string();
     let p = p.clone();
     let layer_id = layer.0;
@@ -274,7 +272,7 @@ pub(crate) fn run_filter(s: &mut Session, id: &str, p: &Value) -> Result<Value> 
             if let Some(surf) = crate::channel_cmds::channel_surface_for_filter(doc, Some(layer), &p)? {
                 let content = doc_bounds.union(&surf.content_bounds());
                 let area = algo::output_area(&fp, content, bounds, sel_bounds);
-                *surf = filter(surf, &fp, area, bounds, selection.as_ref(), doc_bounds.union(&content))?;
+                *surf = filter(surf, &fp, area, bounds, selection.as_ref(), algo::separable::edge_extent(doc_bounds, content))?;
                 return Ok(fp.clone());
             }
             // Filters that make pixels transparent (Color to Alpha) turn the Background into a
@@ -323,10 +321,33 @@ pub(crate) fn run_filter(s: &mut Session, id: &str, p: &Value) -> Result<Value> 
                 }
                 _ => return Err(EngineError::Other("not a pixel layer".into())),
             };
+            if let Some(colors) = colors {
+                if fp.makes_transparency() {
+                    return Err(EngineError::Other("this filter requires composite channels".into()));
+                }
+                // A grayscale plane cannot distinguish an opaque black border from its zero
+                // default. Keep the native surface's extent when finding the filter support.
+                let content = surf.content_bounds();
+                let extent = doc_bounds.union(&content);
+                let opaque_default = !surf.format().alpha || surf.default_pixel().last().is_some_and(|alpha| *alpha > 0.0);
+                let support = if opaque_default { extent } else { content };
+                let mut area = algo::output_area(&fp, support, bounds, sel_bounds).intersect(&extent);
+                // Colour-only writes cannot create opacity, so generators need not materialize
+                // invisible samples across empty parts of a transparent layer.
+                if !opaque_default && fp.renders_from_nothing() {
+                    area = area.intersect(&content);
+                }
+                // Keep the full native input context: filters can read transparency as a depth
+                // or texture map, and colour-valued settings belong to the source colour model.
+                let before = surf.clone();
+                *surf = filter(surf, &fp, area, bounds, selection.as_ref(), extent)?;
+                crate::color_channels::restrict_surface_in(&before, surf, colors, extent)?;
+                return Ok(fp);
+            }
             let before = locks.transparency.then(|| surf.clone());
             let content = surf.content_bounds();
             let area = algo::output_area(&fp, content, bounds, sel_bounds);
-            *surf = filter(surf, &fp, area, bounds, selection.as_ref(), doc_bounds.union(&content))?;
+            *surf = filter(surf, &fp, area, bounds, selection.as_ref(), algo::separable::edge_extent(doc_bounds, content))?;
             if let Some(before) = &before {
                 keep_alpha(before, surf, &|| ctx.cancelled())?;
             }
@@ -477,8 +498,17 @@ pub fn specs() -> Vec<CommandSpec> {
                 has_filterable_layer(s)?;
                 last_filter(s).map(|_| ()).ok_or_else(|| "no filter applied yet".into())
             },
-            run: |s, _| {
-                let (id, params) = last_filter(s).ok_or_else(|| EngineError::Other("no filter applied yet".into()))?;
+            run: |s, p| {
+                let (id, mut params) = last_filter(s).ok_or_else(|| EngineError::Other("no filter applied yet".into()))?;
+                if let Some(target) = p.get("target") {
+                    if params.is_null() {
+                        params = json!({});
+                    }
+                    if let Some(object) = params.as_object_mut() {
+                        object.insert("target".into(), target.clone());
+                    }
+                }
+                crate::param_check::check(crate::commands::find(&id).ok_or_else(|| EngineError::Other("unknown saved filter".into()))?, &params)?;
                 run_filter(s, &id, &params)
             },
             journal: true,
@@ -493,6 +523,7 @@ pub fn last_filter(s: &Session) -> Option<(String, Value)> {
     let (id, mut params) = s.journal.iter().rev().find(|(id, _)| params_for(id, &Value::Null).is_some() && id.starts_with("filter.")).cloned()?;
     if let Value::Object(m) = &mut params {
         m.remove("layer");
+        m.remove("target");
     }
     Some((id, params))
 }

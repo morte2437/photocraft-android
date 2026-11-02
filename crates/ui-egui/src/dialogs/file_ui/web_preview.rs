@@ -1,5 +1,5 @@
 //! Save for Web navigation and indexed palette UI. Draft state is serialized in dialog fields.
-use super::*;
+use super::{Arc, Map, Optimized, PhotocraftApp, Tokens, Value, WebSettings, json, n, params, s, web_cmds};
 
 /// Export dimensions, using the same percent/width/height precedence as web_document.
 pub fn dimensions(doc: &photocraft_doc::Document, p: &Value) -> Result<(f64, f64), String> {
@@ -91,7 +91,7 @@ pub fn table(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
         egui::Grid::new("web-color-table").spacing(egui::vec2(1.0, 1.0)).show(ui, |ui| {
             for (i, source) in table.iter().enumerate() {
                 let mut color = settings.color_table_edits.get(&i).copied().unwrap_or(*source);
-                let response = ui.push_id(i, |ui| crate::widgets::color_edit_button_srgb(ui, &mut color)).inner;
+                let response = ui.push_id(i, |ui| crate::widgets::color_edit_button_srgb(ui, &mut color, tl!("Color Picker"))).inner;
                 response.clone().on_hover_text(format!("Index {i}: {}", web_cmds::rgb_hex(color)));
                 if response.clicked() {
                     f.insert("__selectedColor".into(), json!(i));

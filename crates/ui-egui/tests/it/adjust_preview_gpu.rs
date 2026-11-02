@@ -23,7 +23,9 @@ fn block_on<F: std::future::Future>(f: F) -> F::Output {
 }
 
 fn gpu() -> Option<(wgpu::Device, wgpu::Queue, Compositor)> {
-    let adapter = match block_on(wgpu::Instance::default().request_adapter(&wgpu::RequestAdapterOptions::default())) {
+    let adapter = match block_on(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()).request_adapter(&wgpu::RequestAdapterOptions::default()),
+    ) {
         Ok(a) => a,
         Err(e) => {
             eprintln!("skipping adjustment preview GPU parity: no adapter ({e})");

@@ -525,15 +525,13 @@ fn bitmap_rejects_bad_resolutions_and_patterns_without_editing_the_document() {
 
 #[test]
 fn bitmap_output_resolution_budgets_the_whole_conversion_not_just_the_resample() {
-    // 100 x 100 px at 1 ppi to 200 ppi is 20000 x 20000 px: 400 MP. Resampling an 8/16-bit gray
-    // document to it fits the resample budget (under 2 GB), but the conversion's f32 working
-    // buffers at that size (~40 B/px, 16 GB) don't: it is refused before anything is allocated.
+    // 100 x 100 px at 1 ppi to 1000 ppi is 100000 x 100000 px: 10 gigapixels. The resampled
+    // document and the conversion's 8-bit result at that size are refused before anything is
+    // allocated.
     for depth in [8, 16] {
         let mut s = ramp(100, 100, depth, 1.0);
-        let d = &s.active().unwrap().doc;
-        assert!(crate::image_cmds::check_resample_budget("t", d, 20_000, 20_000, "").is_ok(), "{depth}");
         let before = s.active().unwrap().history.past_len();
-        let e = s.execute("image.mode.bitmap", json!({"method": "diffusion", "resolution": 200})).unwrap_err().to_string();
+        let e = s.execute("image.mode.bitmap", json!({"method": "diffusion", "resolution": 1000})).unwrap_err().to_string();
         assert!(e.contains("megapixels") && e.contains("Output resolution"), "{depth}: {e}");
         assert_eq!(s.active().unwrap().history.past_len(), before, "{depth}");
         let d = doc(&s);
@@ -552,6 +550,108 @@ fn bitmap_output_resolution_budgets_the_whole_conversion_not_just_the_resample()
         s.execute("image.mode.bitmap", json!({"method": "diffusion", "resolution": 3})).unwrap();
         assert_eq!((doc(&s).size.width, doc(&s).mode), (300, ColorMode::Bitmap), "{depth}");
     }
+}
+
+#[test]
+fn bitmap_budgets_a_conversion_at_the_document_resolution_too() {
+    // #8477: without a resample nothing was budgeted, and a huge document's full-size f32
+    // working buffers aborted the app. 60000 x 60000 px (3.6 gigapixels, a plain white
+    // background shares one tile) needs more than the 8 GiB budget at any depth: refused.
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 60_000, "height": 60_000, "mode": "grayscale"})).unwrap();
+    let before = s.active().unwrap().history.past_len();
+    let e = s.execute("image.mode.bitmap", json!({"method": "threshold"})).unwrap_err().to_string();
+    assert!(e.contains("megapixels"), "{e}");
+    assert_eq!(s.active().unwrap().history.past_len(), before);
+    assert_eq!(doc(&s).mode, ColorMode::Grayscale);
+}
+
+/// The Bitmap conversion of `d` the pre-#8477 way, from one full-canvas composite over white.
+fn bitmap_oracle(d: &Document, method: Option<BitmapMethod>, custom: Option<(&[f32], usize, usize)>) -> Vec<f32> {
+    let px = photocraft_compose::flatten(d).over_background([1.0; 3]).px;
+    let mut gray: Vec<f32> = px.iter().map(|q| photocraft_color::convert::rgb_to_gray([q[0], q[1], q[2]])).collect();
+    let w = d.size.width as usize;
+    match (method, custom) {
+        (_, Some((map, mw, mh))) => quantize::to_bitmap_custom(&mut gray, w, map, mw, mh),
+        (Some(m), None) => quantize::to_bitmap(&mut gray, w, m),
+        (None, None) => {}
+    }
+    gray
+}
+
+fn bitmap_pixels(d: &Document) -> Vec<f32> {
+    let surf = d.layers[0].surface().unwrap();
+    let mut out = Vec::new();
+    for y in 0..d.size.height as i32 {
+        for x in 0..d.size.width as i32 {
+            let p = surf.pixel(x, y);
+            assert_eq!(p[1], 1.0, "({x}, {y}) is opaque");
+            out.push(p[0]);
+        }
+    }
+    out
+}
+
+#[test]
+fn bitmap_in_bands_matches_one_full_canvas_conversion() {
+    // #8477: the composite is converted in bands (32768 px wide: 256 rows each, so 300 rows are
+    // two). Diffusion carries its error across the band edge, and pattern, halftone and custom
+    // pattern stay anchored to the image's rows: the result equals one full-canvas conversion.
+    let (w, h) = (32_768u32, 300u32);
+    let mut s = session(w, h, 8, "grayscale");
+    paint(&mut s, |x, y| {
+        let v = ((x % 509) as f32 / 509.0 * 0.6 + (y as f32 / 300.0) * 0.4).fract();
+        [v, v, v, 1.0]
+    });
+    add_pattern(&mut s, "Cells", 3, 2, &[10, 200, 90, 250, 150, 40]);
+    let cases = [
+        ("threshold", None, Some(BitmapMethod::Threshold)),
+        ("pattern", None, Some(BitmapMethod::Pattern)),
+        ("diffusion", None, Some(BitmapMethod::Diffusion)),
+        ("halftone", Some(53.0), None),
+        ("customPattern", None, None),
+    ];
+    for (method, freq, m) in cases {
+        let before = doc(&s).clone();
+        let mut p = json!({"method": method});
+        if let Some(f) = freq {
+            p["frequency"] = json!(f);
+            p["angle"] = json!(30);
+            p["shape"] = json!("diamond");
+        }
+        if method == "customPattern" {
+            p["pattern"] = json!("Cells");
+        }
+        s.execute("image.mode.bitmap", p.clone()).unwrap();
+        let want = match method {
+            "halftone" => {
+                let cell = (before.resolution_dpi / 53.0).max(2.0);
+                bitmap_oracle(&before, Some(BitmapMethod::Halftone { cell, angle: 30.0, shape: HalftoneShape::Diamond }), None)
+            }
+            "customPattern" => {
+                let (map, mw, mh) = custom_pattern_map(&s, "t", &p).unwrap();
+                bitmap_oracle(&before, None, Some((&map, mw, mh)))
+            }
+            _ => bitmap_oracle(&before, m, None),
+        };
+        // Grayscale stores 0/1 the way `from_rgba` turns the old RGBA output into gray.
+        let want: Vec<f32> = want.iter().map(|g| photocraft_raster::from_rgba(&storage_format(ColorMode::Bitmap), [*g, *g, *g, 1.0])[0]).collect();
+        let got = bitmap_pixels(doc(&s));
+        let diff = got.iter().zip(&want).filter(|(a, b)| (**a - **b).abs() > 1e-6).count();
+        assert_eq!(diff, 0, "{method}: {diff} of {} pixels differ", got.len());
+        s.execute("edit.undo", json!({})).unwrap();
+    }
+}
+
+#[test]
+fn bitmap_lays_a_transparent_composite_over_white() {
+    // Transparent pixels flatten over white before the conversion: an empty canvas is white,
+    // 25%-opaque black is light (75% gray) and thresholds to white, 75%-opaque black to black.
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 3, "height": 1, "mode": "grayscale", "background": "transparent"})).unwrap();
+    paint(&mut s, |x, _| [0.0, 0.0, 0.0, [0.0, 0.25, 0.75][x as usize]]);
+    s.execute("image.mode.bitmap", json!({"method": "threshold"})).unwrap();
+    assert_eq!(bitmap_pixels(doc(&s)), [1.0, 1.0, 0.0]);
 }
 
 #[test]
@@ -748,4 +848,96 @@ fn color_table_rejects_an_invalid_transparent_index_without_editing() {
     // A valid index still applies.
     s.execute("image.mode.colorTable", json!({"transparent": 0})).unwrap();
     assert_eq!(doc(&s).color_table.as_ref().unwrap().transparent, Some(0));
+}
+
+/// A white 16×16 document in Indexed Color with the two-entry black/white table (#8669's repro).
+fn black_white_indexed(transparency: bool) -> Session {
+    let mut s = Session::new();
+    let background = if transparency { "transparent" } else { "white" };
+    s.execute("file.new", json!({"width": 16, "height": 16, "background": background})).unwrap();
+    paint(&mut s, |x, _| {
+        if x < 2 {
+            [0.0; 4]
+        } else if x < 4 {
+            [0.0, 0.0, 0.0, 1.0]
+        } else {
+            [1.0; 4]
+        }
+    });
+    s.execute("image.mode.indexedColor", json!({"palette": "exact", "forced": "none", "transparency": transparency, "dither": "none"})).unwrap();
+    s
+}
+
+#[test]
+fn brush_stroke_stays_in_indexed_color_table() {
+    let mut s = black_white_indexed(false);
+    assert_eq!(doc(&s).color_table.as_ref().unwrap().colors, vec![[0, 0, 0], [255, 255, 255]]);
+    s.execute("paint.stroke", json!({"points": [[8, 8, 1]], "size": 8, "color": "#ff0000", "opacity": 1, "flow": 1})).unwrap();
+    // Red's nearest entry is black.
+    assert_eq!(doc(&s).layers[0].surface().unwrap().rgba(8, 8), [0.0, 0.0, 0.0, 1.0]);
+    // Soft edges and partial opacity blend, and the blends map back onto the table too.
+    s.execute("paint.stroke", json!({"points": [[4, 12], [14, 12]], "size": 6, "hardness": 0.0, "color": "#808080", "opacity": 0.5})).unwrap();
+    let table = doc(&s).color_table.clone().unwrap();
+    assert!(colours(doc(&s)).iter().all(|c| table.colors.contains(c)), "off-table pixels: {:?}", colours(doc(&s)));
+    assert_eq!(doc(&s).mode, ColorMode::Indexed);
+}
+
+#[test]
+fn brush_stroke_keeps_indexed_transparency_binary() {
+    let mut s = black_white_indexed(true);
+    let table = doc(&s).color_table.clone().unwrap();
+    assert!(table.transparent.is_some());
+    s.execute("paint.stroke", json!({"points": [[0, 8], [15, 8]], "size": 8, "hardness": 0.0, "color": "#ff0000", "opacity": 0.7})).unwrap();
+    let d = doc(&s);
+    let surf = d.layers[0].surface().unwrap();
+    for (x, y) in (0..16).flat_map(|y| (0..16).map(move |x| (x, y))) {
+        let a = surf.rgba(x, y)[3];
+        assert!(a == 0.0 || a == 1.0, "alpha {a} at ({x},{y})");
+    }
+    assert!(colours(d).iter().all(|c| table.colors.contains(c)), "off-table pixels: {:?}", colours(d));
+}
+
+#[test]
+fn live_brush_preview_matches_indexed_commit() {
+    let mut s = black_white_indexed(false);
+    let params = json!({"points": [[4, 8], [12, 8]], "size": 7, "hardness": 0.0, "color": "#ff0000", "opacity": 0.6, "smoothing": 0.0, "seed": 1});
+    let preview = crate::brush_cmds::LiveStroke::begin(&s, &params).unwrap();
+    let table = doc(&s).color_table.clone().unwrap();
+    assert!(colours(&preview.doc).iter().all(|c| table.colors.contains(c)), "preview off the table: {:?}", colours(&preview.doc));
+    s.execute("paint.stroke", params).unwrap();
+    let (live, committed) = (preview.doc.layers[0].surface().unwrap(), doc(&s).layers[0].surface().unwrap());
+    for (x, y) in (0..16).flat_map(|y| (0..16).map(move |x| (x, y))) {
+        assert_eq!(live.rgba(x, y), committed.rgba(x, y), "preview/commit at ({x},{y})");
+    }
+}
+
+#[test]
+fn indexed_brush_stroke_leaves_pixels_it_did_not_paint() {
+    let mut s = black_white_indexed(false);
+    // An off-table pixel inside the stroke's bounds but away from its dabs (Paint Bucket can
+    // still leave one) is not the stroke's to remap.
+    s.edit("setup", |doc, active| {
+        let surf = doc.layer_mut(active.unwrap()).unwrap().surface_mut().unwrap();
+        let px = photocraft_raster::from_rgba(&surf.format(), [1.0, 0.0, 0.0, 1.0]);
+        surf.write_region(Rect::new(13, 2, 14, 3), &px);
+        Ok(())
+    })
+    .unwrap();
+    s.execute("paint.stroke", json!({"points": [[2, 2], [14, 14]], "size": 2, "hardness": 1.0, "color": "#ff0000", "smoothing": 0.0})).unwrap();
+    let surf = doc(&s).layers[0].surface().unwrap();
+    assert_eq!(surf.rgba(13, 2), [1.0, 0.0, 0.0, 1.0]);
+    assert_eq!(surf.rgba(8, 8), [0.0, 0.0, 0.0, 1.0]);
+}
+
+#[test]
+fn pencil_auto_erase_knows_the_indexed_foreground() {
+    let mut s = black_white_indexed(false);
+    let pencil = json!({"points": [[8, 8]], "size": 3, "color": "#ff0000", "autoErase": true});
+    s.execute("paint.pencil", pencil.clone()).unwrap();
+    assert_eq!(doc(&s).layers[0].surface().unwrap().rgba(8, 8), [0.0, 0.0, 0.0, 1.0]);
+    // Red painted as black, so a stroke starting there auto-erases to the (white) background.
+    let preview = crate::brush_cmds::LiveStroke::begin_with(&s, "paint.pencil", &pencil).unwrap();
+    assert_eq!(preview.doc.layers[0].surface().unwrap().rgba(8, 8), [1.0, 1.0, 1.0, 1.0]);
+    s.execute("paint.pencil", pencil).unwrap();
+    assert_eq!(doc(&s).layers[0].surface().unwrap().rgba(8, 8), [1.0, 1.0, 1.0, 1.0]);
 }

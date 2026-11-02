@@ -390,7 +390,7 @@ fn stage_copy(from: &Path, to: &Path) -> std::io::Result<PathBuf> {
 fn remove_stale_staging(folder: &Path) {
     let Ok(entries) = std::fs::read_dir(folder) else { return };
     for entry in entries.flatten() {
-        if !entry.file_name().to_str().is_some_and(|n| side_of(n, STAGED).is_some()) {
+        if entry.file_name().to_str().is_none_or(|n| side_of(n, STAGED).is_none()) {
             continue;
         }
         let removed = match entry.file_type() {

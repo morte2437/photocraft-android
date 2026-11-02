@@ -1,5 +1,6 @@
 //! The crate's integration tests, linked into one test binary.
 
+mod atn_contract;
 mod builder;
 mod corpus;
 mod corpus_atn;

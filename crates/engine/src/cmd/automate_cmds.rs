@@ -375,7 +375,19 @@ fn write_shim(droplet: &str) -> Result<String> {
     // quoted segment, emit a literal quote, then resume it.
     let quoted_abs = format!("'{}'", abs.replace('\'', "'\\''"));
     let body = format!(
-        "#!/bin/sh\n# PhotoCraft droplet: runs the action on the files given (or dropped).\nexec \"${{PHOTOCRAFT_CLI:-photocraft-cli}}\" droplet {quoted_abs} \"$@\"\n"
+        r#"#!/bin/sh
+# PhotoCraft droplet: runs the action on the files given (or dropped).
+if [ -n "${{PHOTOCRAFT_CLI:-}}" ]; then
+  cli="$PHOTOCRAFT_CLI"
+elif [ -x /Applications/PhotoCraft.app/Contents/MacOS/photocraft-cli ]; then
+  cli=/Applications/PhotoCraft.app/Contents/MacOS/photocraft-cli
+elif [ -x "$HOME/Applications/PhotoCraft.app/Contents/MacOS/photocraft-cli" ]; then
+  cli="$HOME/Applications/PhotoCraft.app/Contents/MacOS/photocraft-cli"
+else
+  cli=photocraft-cli
+fi
+exec "$cli" droplet {quoted_abs} "$@"
+"#
     );
     crate::file_cmds::write_file(&shim, body.as_bytes())?;
     #[cfg(unix)]

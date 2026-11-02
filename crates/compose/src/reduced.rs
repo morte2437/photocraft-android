@@ -1,7 +1,7 @@
 use super::content::RENDER_TILE;
 use super::ctx::Ctx;
 use super::render::{band_rows_for, render, render_bands, render_tiled_with};
-use super::*;
+use super::{Buffer, Document, Rect, Rgba8Image, pattern, proxy, uniform};
 
 /// Documents above this many pixels get thumbnails from a proxy (see [`proxy`]) when that is
 /// faithful; smaller ones are reduced from the exact composite.

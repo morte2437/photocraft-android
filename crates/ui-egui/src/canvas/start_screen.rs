@@ -1,5 +1,5 @@
 use super::tabs::{open_on_double_click, paint_dots};
-use super::*;
+use super::{PhotocraftApp, Rect, Sense};
 
 /// The Home screen's card is this wide when the canvas has room, and as wide as the canvas when it doesn't.
 const HOME_CARD_WIDTH: f32 = 460.0;

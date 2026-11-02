@@ -1,5 +1,5 @@
 use super::layer_params::layer_param;
-use super::*;
+use super::{EngineError, LayerId, Result, Session, Value, json};
 
 // ---------- param helpers ----------
 
@@ -67,6 +67,19 @@ pub(crate) fn check_f32_values(cmd: &str, value: &Value) -> Result<()> {
         Ok(())
     }
     check(cmd, value, 0)
+}
+
+/// `p[key]` as CMYK inks 0..1 (`[c, m, y, k]`), the values a colour was picked as, or `None`
+/// when absent or null. A CMYK document stores exactly these instead of what the colour's sRGB
+/// stand-in converts back to (#4196, #8568).
+pub(crate) fn cmyk_param(cmd: &str, p: &Value, key: &str) -> Result<Option<[f32; 4]>> {
+    let Some(v) = p.get(key).filter(|v| !v.is_null()) else { return Ok(None) };
+    let inks: Option<Vec<f32>> =
+        v.as_array().filter(|a| a.len() == 4).and_then(|a| a.iter().map(|x| x.as_f64().filter(|x| x.is_finite()).map(|x| x.clamp(0.0, 1.0) as f32)).collect());
+    match inks.as_deref() {
+        Some(&[c, m, y, k]) => Ok(Some([c, m, y, k])),
+        _ => Err(bad(cmd, format!("`{key}` must be [c, m, y, k] numbers 0..1"))),
+    }
 }
 
 pub(crate) fn color_param(cmd: &str, p: &Value, key: &str, default: [f32; 4]) -> Result<[f32; 4]> {

@@ -28,7 +28,7 @@ pub use document::{document_to_psd, document_to_psd_with};
 use document::{document_to_psd_nested, mask_parameters};
 pub(crate) use estimate::{fit_psd_size, psd_version, sign_global_blocks};
 pub(crate) use resources::{global_block, guides_resource, keep_imported_resource, legacy_name, pascal_names_resource, path_resources, unicode_names_resource};
-use smart::{LINK_KEYS, SmartOut, Source, contents_uuid, effects_unchanged, masked, size_from_layer, smart_keys, upsert};
+use smart::{LINK_KEYS, SmartOut, Source, contents_uuid, effects_unchanged, embed_source_hash, masked, size_from_layer, smart_keys, upsert};
 
 /// Blocks that define a layer's content as something other than pixels: fill (`SoCo`, `GdFl`,
 /// `PtFl`), placed / smart object (`SoLd`, `PlLd`, `SoLE`), type (`TySh`) and shape fill (`vscg`).
@@ -412,6 +412,9 @@ impl Ex {
         if effects_unchanged(l) == Some(false) {
             raw.retain(|(k, _)| k != b"lmfx");
         }
+        // Regenerate the private preview from its typed, source-bound value. Never retain a
+        // stale block after source replacement or rasterization.
+        raw.retain(|(key, _)| key != &crate::vector_preview::PSD_KEY);
         let mut regenerated: Vec<([u8; 4], Vec<u8>)> = Vec::new();
         // `keys` is in the importer's priority order (`psd_raw` came from the first key present),
         // not file order: Photoshop writes `PlLd` before `SoLd`, and overwriting the first match
@@ -521,6 +524,9 @@ impl Ex {
                 }
             }
             LayerContent::Smart(sm) => {
+                if let Some(preview) = self.smart.vector_preview(sm) {
+                    raw.push((crate::vector_preview::PSD_KEY, preview.block.clone()));
+                }
                 let parsed = sm.psd_raw.as_deref().and_then(|d| crate::smart_map::parse_sold(d));
                 if sm.psd_raw.is_some() && parsed.is_none() && !self.plld_edited(sm) {
                     // Placed-layer data that isn't `SoLd` (a CS2 `PlLd` record, or one we can't
@@ -796,7 +802,8 @@ impl Ex {
     /// they are; a linked file is read and embedded).
     fn smart_source(&mut self, sm: &photocraft_doc::SmartObject, template: Option<&crate::smart_map::Placed>) -> Result<Source, String> {
         use photocraft_doc::SmartSource;
-        match &sm.source {
+        let preview = self.smart.vector_preview(sm).and_then(|preview| Some((preview.document.clone(), preview.frame?)));
+        let mut source = match &sm.source {
             // A file of the imported document, or one its placed-layer data names (a missing
             // link stays a smart object, as in Photoshop).
             SmartSource::Linked { path } if self.smart.known.contains(path) || template.is_some_and(|t| t.idnt == *path) => {
@@ -840,7 +847,9 @@ impl Ex {
                         return Err(format!("the linked file {path} is not read for this export"));
                     }
                     let file = crate::doc_path::resolve(path, self.document.as_deref()).map_err(|e| format!("the linked file {path} is not opened: {e}"))?;
-                    let bytes = std::fs::read(file).map_err(|e| format!("the linked file {path} can't be read: {e}"))?;
+                    // Regular files only, in bounded reads: a link to a FIFO would block the save
+                    // and one to a device such as `/dev/zero` would never end (#8601).
+                    let bytes = photocraft_format::read_file(&file).map_err(|e| format!("the linked file {path} can't be read: {e}"))?;
                     let name = path.rsplit(['/', '\\']).next().unwrap_or(path).to_string();
                     let source = self.embed(sm.contents_id, &name, &bytes, true)?;
                     self.warnings.push(format!("the linked smart object {name} was embedded (PSD export keeps no external links)"));
@@ -849,8 +858,17 @@ impl Ex {
                 #[cfg(target_arch = "wasm32")]
                 Err(format!("the linked file {path} can't be read here"))
             }
-            SmartSource::Embedded { file_name, bytes } => self.embed(sm.contents_id, file_name, bytes, false),
+            SmartSource::Embedded { file_name, bytes } => {
+                let identity = std::sync::Arc::as_ptr(bytes).addr();
+                let hash = self.smart.embedded_hashes.entry(identity).or_insert_with(|| (bytes.clone(), embed_source_hash(bytes))).1;
+                self.embed_hashed(sm.contents_id, file_name, bytes, false, hash)
+            }
+        }?;
+        if let Some((preview, frame)) = preview {
+            source.size = frame;
+            self.smart.docs.insert(source.uuid.clone(), preview);
         }
+        Ok(source)
     }
 
     /// The composite of the source `uuid` (an embedded file of this export or of the imported
@@ -896,8 +914,14 @@ impl Ex {
     /// per contents identity and bytes. Equal bytes in independent objects stay independent.
     /// `linked`: the bytes were read from a path the document names, so only a file PhotoCraft
     /// can open is embedded (a link to a text or settings file is written as pixels instead).
+    #[cfg(not(target_arch = "wasm32"))]
     fn embed(&mut self, contents_id: SmartContentsId, file_name: &str, bytes: &[u8], linked: bool) -> Result<Source, String> {
-        let key = (contents_id, *blake3::hash(bytes).as_bytes(), linked);
+        self.embed_hashed(contents_id, file_name, bytes, linked, embed_source_hash(bytes))
+    }
+
+    /// Reuse conversion only for the same contents identity, actual-byte digest and linked-file policy.
+    fn embed_hashed(&mut self, contents_id: SmartContentsId, file_name: &str, bytes: &[u8], linked: bool, hash: [u8; 32]) -> Result<Source, String> {
+        let key = (contents_id, hash, linked);
         if let Some(r) = self.smart.converted.get(&key) {
             return r.clone();
         }
@@ -1033,3 +1057,6 @@ impl Ex {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(crate) use smart::EMBED_HASHED_SOURCE_BYTES;

@@ -9,7 +9,7 @@
 //!   messages on the UI thread's message queue to read `PEN_FLAG_BARREL` (`GetPointerPenInfo`),
 //!   which winit 0.30 drops by mapping pen inputs to touch events.
 //!   AppKit's monitor API and Windows' thread hook need OS interop, so `macos.rs` and `windows.rs`
-//!   allow `unsafe` (craftrules never-crash: an isolated, tested helper crate with `SAFETY:`
+//!   allow `unsafe` (an isolated, tested helper crate with `SAFETY:`
 //!   comments on every block).
 //! - **Linux X11** ([`x11::spawn`]): a second, pure-Rust X connection (x11rb) selects XInput2
 //!   raw events on the root window and maps the tablet device's valuators ("Abs Pressure",

@@ -1,6 +1,6 @@
 use super::batch::write_tile;
 use super::textures::{Resident, TexKind};
-use super::*;
+use super::{Arc, F, HashMap, I, PixelFormat, Rect, SampleType, Surface, TILE_SIZE, Tile, TileCoord, U, fx};
 
 /// Distinct tiles converted per parallel batch: bounds the converted bytes held at once (64 tiles
 /// of a 16-bit page are 32 MiB).

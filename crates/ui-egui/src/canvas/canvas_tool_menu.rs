@@ -1066,8 +1066,8 @@ pub(crate) fn make_selection(app: &mut PhotocraftApp) -> Result<(), String> {
     // else the Paths panel path it adds to (a selected saved path, or the Work Path), which it
     // selects so it is the active path.
     let pending_layer = pending && (app.ui.tool_options.vector_mode == "shape" || crate::vector_ui::targeted_vector_mask(app).is_some());
-    if pending {
-        crate::vector_ui::pen_commit(app, false);
+    if pending && !crate::vector_ui::pen_commit(app, false) {
+        return Err(app.ui.status.clone());
     }
     let name = if pending_layer { Some("layer".to_string()) } else { crate::vector_ui::active_path_name(app) }
         .ok_or_else(|| "No path is available for this action".to_string())?;
@@ -1086,8 +1086,8 @@ fn choose_pen(app: &mut PhotocraftApp, ctx: &Context, menu: &CanvasToolMenu, com
     }
     let pending = app.ui.pen.as_ref().is_some_and(|p| p.knots.len() >= 2);
     let pending_layer = pending && (app.ui.tool_options.vector_mode == "shape" || app.ui.vector_mask_target);
-    if pending {
-        crate::vector_ui::pen_commit(app, false);
+    if pending && !crate::vector_ui::pen_commit(app, false) {
+        return Err(app.ui.status.clone());
     }
     let name = if pending { Some(if pending_layer { "layer" } else { "work" }.to_string()) } else { menu.path_name.clone() }
         .ok_or_else(|| "No path is available for this action".to_string())?;

@@ -31,6 +31,43 @@ pub(crate) fn gaussian_kernel(sigma: f32) -> Vec<f32> {
     k.into_iter().map(|v| v / s).collect()
 }
 
+/// Gaussian Blur's kernel for `radius` (its standard deviation). Sampling the curve at whole
+/// pixels leaves a small radius almost no blur: at 0.3 the neighbour weight is about 0.004, a
+/// tenth of the spread asked for (#8544). Below 1 the sampling width is instead chosen so the
+/// kernel has exactly the variance `radius²`; from 1 up the sampled kernel is within about 0.4%
+/// of it (its 3σ truncation), so larger radii are unchanged and the blur grows smoothly from 0.05.
+pub(crate) fn gaussian_blur_kernel(radius: f32) -> Vec<f32> {
+    if !(0.05..1.0).contains(&radius) {
+        return gaussian_kernel(radius);
+    }
+    let variance = |k: &[f32]| {
+        let r = (k.len() / 2) as f32;
+        k.iter().enumerate().map(|(i, w)| w * (i as f32 - r).powi(2)).sum::<f32>()
+    };
+    // Sampled at `width` with one fixed half-width for every radius below 1: its variance then
+    // rises steadily with `width` (the search can't settle on a step where taps are added), and
+    // the blur grows without the dips a width chosen per radius made at 1/3 and 2/3. Three is the
+    // half-width `gaussian_kernel` uses at radius 1, so the hand-over is smooth too.
+    let half = 3;
+    let sampled = |width: f32| {
+        let k: Vec<f32> = (-half..=half).map(|i| (-(i * i) as f32 / (2.0 * width * width)).exp()).collect();
+        let s: f32 = k.iter().sum();
+        k.into_iter().map(|v| v / s).collect::<Vec<f32>>()
+    };
+    let target = radius * radius;
+    // The sampled kernel's variance only falls short of sigma², so the width lies above `radius`.
+    let (mut lo, mut hi) = (radius, radius + 1.0);
+    for _ in 0..40 {
+        let mid = 0.5 * (lo + hi);
+        if variance(&sampled(mid)) < target {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    sampled(0.5 * (lo + hi))
+}
+
 /// Separable convolution of `src` (premultiplied internally) for `out`.
 /// `src` must cover `out` grown by the kernel radii.
 pub(crate) fn conv_sep(src: &Image, out: Rect, kx: &[f32], ky: &[f32], alpha: bool) -> Vec<f32> {
@@ -107,13 +144,12 @@ fn conv_row<const N: usize>(src: &[f32], dst: &mut [f32], kernel: &[f32]) {
 
 pub(crate) fn gaussian(src: &Image, out: Rect, ctx: &Ctx, radius: f32) -> Vec<f32> {
     // Exact kernel for small radii; beyond that three box passes approximate the Gaussian with
-    // cost independent of the radius (Kovesi, "Fast almost-Gaussian filtering", 2010).
-    match box_widths(&FilterParams::GaussianBlur { radius }) {
-        Some(boxes) => box_passes(src, out, ctx.alpha, &boxes),
-        None => {
-            let k = gaussian_kernel(radius);
-            conv_sep(src, out, &k, &k, ctx.alpha)
-        }
+    // cost independent of the radius (Kovesi, "Fast almost-Gaussian filtering", 2010). Built
+    // from the description other devices run (`separable`), so they blur the same (#5772).
+    match crate::separable::Separable::of(&FilterParams::GaussianBlur { radius }) {
+        Some(crate::separable::Separable::Boxes(boxes)) => box_passes(src, out, ctx.alpha, &boxes),
+        Some(crate::separable::Separable::Kernel(k)) => conv_sep(src, out, &k, &k, ctx.alpha),
+        None => src.crop(out),
     }
 }
 

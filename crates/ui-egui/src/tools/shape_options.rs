@@ -51,6 +51,7 @@ pub(crate) fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool
             (o.shape_fill, o.shape_fill.then_some(fill), (o.stroke_width > 0.0).then(|| o.shape_stroke.stroke(o.stroke_width, stroke)))
         }
     };
+    let lib = crate::paint_picker::library(&app.session, ui.ctx());
     let mut gradients =
         GradientChoices { presets: &app.session.presets.gradients, current: &app.session.presets.gradient, recent: &mut app.ui.recent_gradients, fg, bg };
     let mut width = stroke.as_ref().map_or(0.0, |s| s.width);
@@ -65,9 +66,9 @@ pub(crate) fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool
         o.shape_fill = has_fill;
         edit = Some(json!({"fill": if has_fill { o.shape_fill_gradient.as_ref().map_or_else(|| json!(fg), paint_param) } else { Value::Null }}));
     }
-    let fill_color = swatch(ui, fill.as_ref(), fg, tl!("Fill color"), &mut gradients);
+    let fill_color = swatch(ui, &lib, fill.as_ref(), fg, tl!("Fill color"), &mut gradients);
     lbl(ui, tl!("Stroke:"));
-    let stroke_color = swatch(ui, stroke.as_ref().map(|s| &s.paint), bg, tl!("Stroke color"), &mut gradients);
+    let stroke_color = swatch(ui, &lib, stroke.as_ref().map(|s| &s.paint), bg, tl!("Stroke color"), &mut gradients);
     if crate::widgets::value_field(ui, &mut width, 0.0..=288.0, "px", 58.0).accessible_name(tl!("Stroke:")).changed() {
         o.stroke_width = width;
         // A 0 px "change" (an arrow step clamped at the minimum) must not add a stroke.
@@ -139,11 +140,28 @@ pub(crate) fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool
         }
         _ => {}
     }
+    // A swatch picked in a Fill/Stroke popover joins the Recently Used Colors once it was applied.
+    let mut recent: Option<[f32; 3]> = None;
     for (is_stroke, change) in [(false, fill_color), (true, stroke_color)] {
         let Some(change) = change else { continue };
-        if let Err(e) = set_tool_paint(app, is_stroke, change.clone()) {
-            app.ui.status = e;
-            app.ui.status_error = true;
+        match change {
+            PaintChange::OpenPicker => {
+                let (which, fallback) = if is_stroke { (crate::shape_fill_ui::Paint::Stroke, bg) } else { (crate::shape_fill_ui::Paint::Fill, fg) };
+                crate::shape_fill_ui::open_paint(app, which, target.as_ref().map(|s| s.layer), true, fallback);
+                continue;
+            }
+            PaintChange::Color(_) | PaintChange::Gradient(_) | PaintChange::None => {}
+        }
+        match set_tool_paint(app, is_stroke, change.clone()) {
+            Ok(_) => {
+                if let PaintChange::Color(c) = &change {
+                    recent = Some([c[0], c[1], c[2]]);
+                }
+            }
+            Err(e) => {
+                app.ui.status = e;
+                app.ui.status_error = true;
+            }
         }
         edit = Some(match (is_stroke, change) {
             (false, PaintChange::None) => json!({"fill": null}),
@@ -152,6 +170,7 @@ pub(crate) fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool
             (true, PaintChange::None) => json!({"stroke": null}),
             (true, PaintChange::Color(color)) => json!({"stroke": {"color": color, "width": enabled_stroke_width(width)}, "coalesce": key("stroke")}),
             (true, PaintChange::Gradient(g)) => json!({"stroke": {"color": paint_param(&g), "width": enabled_stroke_width(width)}, "coalesce": key("stroke")}),
+            (_, PaintChange::OpenPicker) => continue,
         });
     }
     if let (Some(mut p), Some(s)) = (edit, &target) {
@@ -159,6 +178,7 @@ pub(crate) fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool
         if let Err(e) = app.run("shape.edit", p) {
             app.ui.status = e;
             app.ui.status_error = true;
+            recent = None;
         }
         if !ui.input(|i| i.pointer.any_down()) {
             ui.data_mut(|d| {
@@ -166,6 +186,9 @@ pub(crate) fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool
                 gesture.0 = gesture.0.wrapping_add(1);
             });
         }
+    }
+    if let Some(rgb) = recent {
+        crate::paint_picker::remember(app, rgb);
     }
 }
 
@@ -178,6 +201,8 @@ pub(crate) fn set_tool_paint(app: &mut PhotocraftApp, stroke: bool, change: Pain
         PaintChange::Gradient(g) => *gradient = Some(g.clone()),
         PaintChange::Color(_) => *gradient = None,
         PaintChange::None => {}
+        // Opening the Color Picker changes nothing until its OK (a `Color` then).
+        PaintChange::OpenPicker => return Ok(()),
     }
     if let PaintChange::Color(color) = change {
         app.run("tools.setColors", if stroke { json!({"background": color}) } else { json!({"foreground": color}) })?;

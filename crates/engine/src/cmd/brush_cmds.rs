@@ -236,23 +236,18 @@ pub fn resolve_brush(s: &Session, p: &Value, cmd: &str) -> Result<BrushSettings>
 }
 
 fn layer_id(s: &Session, p: &Value) -> Result<photocraft_doc::LayerId> {
-    match p.get("layer").and_then(Value::as_u64) {
-        Some(id) => Ok(photocraft_doc::LayerId(id)),
-        None => s.active().and_then(|d| d.active_layer).ok_or(EngineError::Other("no active layer".into())),
-    }
+    crate::commands::layer_param(s, p)
 }
 
 fn damage_json(s: &mut Session, dmg: Rect) -> Value {
-    if let Some(st) = s.active_mut() {
-        st.last_damage = Some(dmg);
-    }
+    s.hint_damage(dmg);
     json!({ "damage": [dmg.x0, dmg.y0, dmg.width(), dmg.height()] })
 }
 
 /// The target layer (`None` for a channel), brush and zoom of a stroke. On a mask or channel the
 /// eraser paints the background colour (Photoshop).
 fn stroke_target(s: &Session, p: &Value, brush: BrushSettings) -> Result<(Option<photocraft_doc::LayerId>, BrushSettings, f32)> {
-    let gray = is_mask_target(p) || crate::channel_cmds::is_channel_target(p);
+    let gray = is_mask_target(p) || crate::channel_cmds::is_channel_target(p) || crate::color_channels::target(s, p)?.is_some();
     let id = if crate::channel_cmds::is_channel_target(p) { None } else { Some(layer_id(s, p)?) };
     let brush = if gray && brush.erase { BrushSettings { erase: false, color: s.tools.background, ..brush } } else { brush };
     Ok((id, brush, num(p, "zoom").unwrap_or(1.0)))
@@ -293,12 +288,16 @@ fn stroke_with(s: &mut Session, cmd: &str, p: &Value, label: &str, brush: BrushS
                 return Ok(l.bounds);
             }
             let sel = doc.selection.clone();
+            let table = crate::mode_cmds::paint_color_table(doc, p);
             let (surf, lock) = crate::channel_cmds::target_surface(doc, id, p)?;
             let mut brush = brush;
             erase_locked(&mut brush, lock, bg);
             if auto_erase {
+                // A stroke in the table's colour starts on what the foreground painted as.
+                let fg = table.as_ref().map_or(fg, |t| crate::mode_cmds::table_color(t, fg));
                 apply_auto_erase(&mut brush, surf, pts.first(), fg, bg);
             }
+            let unpainted = table.as_ref().map(|_| surf.clone());
             let damage = if let Some(axis) = &symmetry {
                 let reflected = axis.reflected_passes(&pts);
                 let copies: Vec<_> = reflected
@@ -323,6 +322,9 @@ fn stroke_with(s: &mut Session, cmd: &str, p: &Value, label: &str, brush: BrushS
             } else {
                 render_stroke(surf, &brush, &pts, sel.as_ref(), lock, zoom)
             };
+            if let (Some(table), Some(pre)) = (&table, &unpainted) {
+                crate::mode_cmds::keep_in_color_table(table, pre, surf, damage);
+            }
             Ok(damage)
         })
     })?;
@@ -405,14 +407,19 @@ fn clear_mode(p: &Value) -> bool {
 }
 
 /// Applies the options-bar blend `mode` to a brush. `"mode"` accepts any blend-mode name
-/// (normal|multiply|screen|…), or `clear` to erase with the brush. The Eraser has no blend mode in
+/// (normal|multiply|screen|…), or `behind` to paint beneath existing pixels, or `clear` to erase with the brush. The Eraser has no blend mode in
 /// Photoshop, so it is forced to Normal.
 fn with_blend_mode(mut b: BrushSettings, p: &Value) -> BrushSettings {
     b.erase |= clear_mode(p);
     if b.erase {
         b.mode = photocraft_color::BlendMode::Normal;
+        b.behind = false;
+    } else if p.get("mode").and_then(Value::as_str).is_some_and(|m| m.eq_ignore_ascii_case("behind")) {
+        b.mode = photocraft_color::BlendMode::Normal;
+        b.behind = true;
     } else if let Some(m) = p.get("mode").and_then(Value::as_str).and_then(crate::commands::blend_from_str) {
         b.mode = m;
+        b.behind = false;
     }
     b
 }
@@ -526,6 +533,7 @@ pub struct LiveStroke {
     /// passes it merged (a mirror joining redraws every tile).
     union_live: Option<(photocraft_paint::UnionLive, usize)>,
     pre: Surface,
+    colors: Option<crate::color_channels::ColorChannels>,
     sel: Option<Surface>,
     lock: bool,
     layer: Option<photocraft_doc::LayerId>,
@@ -588,6 +596,8 @@ impl LiveStroke {
     /// Start a live stroke of `cmd`: `paint.stroke` (the Brush and Eraser) or `paint.pencil`.
     /// Committing `cmd` with the same params and `"seed": live.seed` gives the same pixels.
     pub fn begin_with(s: &Session, cmd: &str, p: &Value) -> Result<Self> {
+        let captured = crate::channel_cmds::inject_target(s, cmd, p.clone());
+        let p = &captured;
         has_paintable(s).map_err(EngineError::Other)?;
         let pts = parse_points(p, cmd)?;
         let pencil = match cmd {
@@ -602,9 +612,11 @@ impl LiveStroke {
         let base = (st.doc.id, st.revision);
         let mut doc = (*st.doc).clone();
         let sel = doc.selection.clone();
+        let table = crate::mode_cmds::paint_color_table(&doc, p);
         let (surf, lock) = crate::channel_cmds::target_surface(&mut doc, layer, p)?;
         erase_locked(&mut brush, lock, s.tools.background);
         if pencil && flag(p, "autoErase", false) {
+            let fg = table.as_ref().map_or(fg, |t| crate::mode_cmds::table_color(t, fg));
             apply_auto_erase(&mut brush, surf, pts.first(), fg, s.tools.background);
         }
         let renderer = StrokeRenderer::new(&brush, Some(surf.format()), zoom);
@@ -622,6 +634,7 @@ impl LiveStroke {
             mirror_distinct,
             union_live: None,
             pre,
+            colors: crate::color_channels::target(s, p)?,
             sel,
             lock,
             layer,
@@ -678,7 +691,7 @@ impl LiveStroke {
         check_coords(pts, &self.cmd)?;
         self.points.extend_from_slice(pts);
         let cmyk = self.cmyk.clone();
-        photocraft_color::convert::with_cmyk_space(cmyk.as_ref(), || {
+        let dmg = photocraft_color::convert::with_cmyk_space(cmyk.as_ref(), || -> Result<Rect> {
             self.renderer.push(pts);
             if let Some(symmetry) = &self.symmetry {
                 for ((mirror, distinct), reflected) in self.mirrors.iter_mut().zip(&mut self.mirror_distinct).zip(symmetry.reflected_passes(pts)) {
@@ -708,6 +721,9 @@ impl LiveStroke {
                 dmg = dmg.union(&StrokeRenderer::composite_union_live(&mut renderers, &mut live, full, &self.pre, surf, self.sel.as_ref(), self.lock));
                 self.tail = old.union(&live.bounds());
                 self.union_live = Some((live, passes));
+                if let Some(colors) = self.colors {
+                    crate::color_channels::restrict_region(&self.pre, surf, colors, dmg)?;
+                }
                 return Ok(dmg);
             }
             let mut dmg = Rect::EMPTY;
@@ -723,8 +739,17 @@ impl LiveStroke {
                 self.tail = tail.composite(&self.pre, surf, self.sel.as_ref(), self.lock, false);
                 dmg = dmg.union(&self.tail);
             }
+            if let Some(colors) = self.colors {
+                crate::color_channels::restrict_region(&self.pre, surf, colors, dmg)?;
+            }
             Ok(dmg)
-        })
+        })?;
+        // The preview shows the pixels the commit keeps (see `stroke_with`).
+        if let Some(table) = crate::mode_cmds::paint_color_table(&self.doc, &self.params) {
+            let (surf, _) = crate::channel_cmds::target_surface(std::sync::Arc::make_mut(&mut self.doc), self.layer, &self.params)?;
+            crate::mode_cmds::keep_in_color_table(&table, &self.pre, surf, dmg);
+        }
+        Ok(dmg)
     }
 }
 
@@ -776,12 +801,40 @@ fn mixer_clean(s: &mut Session, _: &Value) -> Result<Value> {
     Ok(serde_json::to_value(&s.tools.mixer).unwrap_or_default())
 }
 
+/// `paint.mixerLoad`: ⌥-click with the Mixer Brush loads the reservoir from the canvas colour at
+/// (`x`, `y`) (Photoshop's Current Brush Load), from the layers Sample All Layers names. The
+/// foreground colour is left alone. Over transparency or off the canvas nothing is loaded.
+fn mixer_load_pixel(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "paint.mixerLoad";
+    let coord = |k: &str| {
+        let v = p.get(k).and_then(Value::as_f64).filter(|v| v.is_finite());
+        v.ok_or_else(|| bad(cmd, format!("`{k}` must be a finite number (document pixels)")))
+    };
+    let (x, y) = (coord("x")?, coord("y")?);
+    let size = crate::sample_cmds::size_param(cmd, p)?;
+    let which = if flag(p, "sampleAllLayers", s.tools.brush.mixer.sample_all_layers) {
+        crate::sample_cmds::SampleLayers::All
+    } else {
+        crate::sample_cmds::SampleLayers::Current
+    };
+    let d = s.active().ok_or(EngineError::NoDocument)?;
+    let [r, g, b, a] = crate::sample_cmds::sample_color(&d.doc, d.active_layer, x, y, size, which);
+    if a.is_nan() || a <= 0.0 {
+        return Ok(json!({"loaded": false}));
+    }
+    let foreground = s.tools.foreground;
+    s.tools.mixer.load_sampled([r, g, b, 1.0], foreground);
+    Ok(json!({"loaded": true, "color": [r, g, b, 1.0]}))
+}
+
 /// `paint.colorReplacement`'s stroke and settings. The replacement colour is the brush colour
 /// (the foreground unless `color` says otherwise). It paints layer pixels only: a mask, alpha
 /// channel or Quick Mask `target` is refused rather than recolouring the layer instead.
 fn color_replacement_setup(s: &Session, p: &Value) -> Result<(Stroke, ReplaceSettings, photocraft_doc::LayerId)> {
     let cmd = "paint.colorReplacement";
-    if let Some(t) = p.get("target").filter(|t| t.as_str() != Some("pixels")) {
+    if let Some(t) = p.get("target").filter(|t| t.as_str() != Some("pixels"))
+        && crate::color_channels::explicit(p, s.active().map_or(0, |st| crate::channel_cmds::color_count(&st.doc)))?.is_none()
+    {
         return Err(bad(cmd, format!("Color Replacement paints layer pixels only (`target` {t} is not \"pixels\")")));
     }
     let pts = parse_points(p, cmd)?;
@@ -817,10 +870,8 @@ fn color_replacement(s: &mut Session, p: &Value) -> Result<Value> {
 /// recolouring per dab as the commit, so the preview at the last point is the committed result.
 pub fn live_color_replacement(s: &Session, p: &Value) -> Result<crate::retouch_cmds::LiveDab> {
     let (stroke, rs, id) = color_replacement_setup(s, p)?;
-    crate::retouch_cmds::LiveDab::with_effect(s, "paint.colorReplacement", &json!({}), stroke, Some(id), 0, |pre| {
-        Box::new(color_replacement_effect(pre.clone(), rs))
-    })?
-    .with_tail_preview()
+    crate::retouch_cmds::LiveDab::with_effect(s, "paint.colorReplacement", p, stroke, Some(id), 0, |pre| Box::new(color_replacement_effect(pre.clone(), rs)))?
+        .with_tail_preview()
 }
 
 fn brush_json(b: &BrushSettings) -> Value {
@@ -1054,6 +1105,9 @@ pub(crate) fn set_brush(s: &mut Session, p: &Value) -> Result<Value> {
     }
     b = merge_brush(&b, &patch, cmd)?;
     validate_brush(&b, cmd)?;
+    // Loading a stored tip can fail. Finish preparing the brush before changing its identity or
+    // foreground colour, so a failed pick leaves the entire current brush state intact.
+    s.load_brush_tips(&mut b).map_err(|e| bad(cmd, e))?;
     // The picked preset stays "the current brush" across later edits, so `brush.presets.update`
     // knows what to overwrite. Only once the brush is accepted: a failed call leaves no state
     // behind (a `reset` wins over a `preset`, as it replaces the whole brush).
@@ -1066,8 +1120,6 @@ pub(crate) fn set_brush(s: &mut Session, p: &Value) -> Result<Value> {
             s.tools.foreground = c;
         }
     }
-    // The tool's brush always paints with full tips: load a library preset's from the store.
-    s.load_brush_tips(&mut b).map_err(|e| bad(cmd, e))?;
     let before = std::mem::replace(&mut s.tools.brush, b);
     // A coalesced gesture (one slider drag) journals as one call: remember the brush it started from.
     let key = p.get("coalesce").and_then(Value::as_str).filter(|_| p.get("preset").is_none() && p.get("reset").is_none());
@@ -1258,7 +1310,7 @@ pub fn specs() -> Vec<CommandSpec> {
         spec!(
             "paint.pencil",
             "Pencil",
-            r##"{"points":[[x,y,pressure?,tiltX?,tiltY?,rotation?,timeMs?,wheel?],…],"brush":{…}?,"preset":name?,"size":0.5..5000 px?,"opacity":0..1?,"color":"#rrggbb"?=foreground,"mode":"normal|multiply|screen|…|clear (erases with this brush)"="normal","erase":bool?,"block":bool=false (a hard 16×16 screen-px square, 16/zoom doc px; size, opacity, flow, hardness and dynamics ignored: the Eraser's Block mode),"zoom":view zoom=1,"autoErase":bool=false,"seed":u64?,"target":"pixels"|"mask"|"filterMask"|"quickMask"|{"channel":i}=Channels panel target}"##,
+            r##"{"points":[[x,y,pressure?,tiltX?,tiltY?,rotation?,timeMs?,wheel?],…],"brush":{…}?,"preset":name?,"size":0.5..5000 px?,"opacity":0..1?,"color":"#rrggbb"?=foreground,"mode":"normal|multiply|screen|…|behind (paints beneath existing pixels)|clear (erases with this brush)"="normal","erase":bool?,"block":bool=false (a hard 16×16 screen-px square, 16/zoom doc px; size, opacity, flow, hardness and dynamics ignored: the Eraser's Block mode),"zoom":view zoom=1,"autoErase":bool=false,"seed":u64?,"target":"pixels"|"mask"|"filterMask"|"quickMask"|{"channel":i}=Channels panel target}"##,
             has_paintable,
             pencil,
             true
@@ -1273,6 +1325,14 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         spec!("brush.mixer.load", "Load Mixer Brush", r##"{"color":"#rrggbb"|[r,g,b,a?] 0..1?=foreground}"##, always, mixer_load, true),
         spec!("brush.mixer.clean", "Clean Mixer Brush", "{}", always, mixer_clean, true),
+        spec!(
+            "paint.mixerLoad",
+            "Load Mixer Brush",
+            r##"{"x":px,"y":px,"size":"point"|1|3|5|11|31|51|101=1,"sampleAllLayers":bool=brush.mixer.sampleAllLayers} → {"loaded":bool,"color"?:[r,g,b,a]} (loads the Mixer Brush reservoir from the canvas colour there, as ⌥-click does; the foreground colour is unchanged; the next strokes keep that load while the foreground stays as it is)"##,
+            has_paintable,
+            mixer_load_pixel,
+            true
+        ),
         spec!(
             "paint.colorReplacement",
             "Color Replacement",

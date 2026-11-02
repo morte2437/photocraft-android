@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use photocraft_color::{PixelFormat, SampleType};
 use photocraft_geom::Rect;
-use photocraft_paint::*;
+use photocraft_paint::{BrushSettings, Dynamic, Scattering, ShapeDynamics, StrokePoint, StrokeRenderer, Texture, presets};
 use photocraft_raster::Surface;
 
 fn run(fmt: PixelFormat, label: &str, brush: &BrushSettings) {

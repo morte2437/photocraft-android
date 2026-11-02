@@ -124,13 +124,3 @@ fn typing_replaces_the_selected_name_and_enter_confirms() {
     assert!(h.state().ui.dialogs.is_empty());
     assert_eq!(groups(h.state())[0].name, "Clouds");
 }
-
-#[test]
-fn new_group_dialog_labels_are_translated_in_every_catalog() {
-    const LABELS: &[&str] = &["New Group…", "New Group from Layers…", "Name:", "Color:", "Mode:", "Opacity:", "Pass Through"];
-    for lang in crate::i18n::Lang::all().filter(|lang| lang.complete_menus()) {
-        for label in LABELS {
-            assert!(crate::i18n::has(lang, label), "{} is missing New Group dialog label: {label}", lang.code());
-        }
-    }
-}

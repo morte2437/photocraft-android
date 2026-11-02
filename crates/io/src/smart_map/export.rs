@@ -5,7 +5,10 @@ use super::import::{
     colour_rgbc, enum_param, from_hex, gallery_item, known_by_command, pf_range, pi_range, seed_param,
 };
 use super::placed::enumv;
-use super::*;
+use super::{
+    Class, Descriptor, FilterStack, Id, J, ReferenceItem, SmartFilter, UNSUPPORTED_FILTER, UnicodeString, Value, camera_raw, displace, hue_sat,
+    perspective_warp,
+};
 
 // ---------- writing ----------
 

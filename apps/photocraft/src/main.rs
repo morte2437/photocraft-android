@@ -49,6 +49,8 @@ mod mac_menu;
 #[cfg(target_os = "macos")]
 mod mac_window;
 // Pure logic is tested on every platform; only Linux runs the check.
+#[cfg(not(target_arch = "wasm32"))]
+mod external_svg;
 #[cfg(any(target_os = "linux", test))]
 mod linux_libs;
 mod logging;
@@ -66,6 +68,7 @@ mod services;
 // macOS gets one instance from LaunchServices (open-documents Apple events).
 #[cfg(any(not(target_os = "macos"), test))]
 mod single_instance;
+mod startup_report;
 // Tablet support (macOS AppKit monitor, Linux X11/Wayland, Windows barrel button).
 mod tablet;
 mod ui_state;
@@ -75,8 +78,7 @@ mod window_frame;
 use photocraft_engine::Session;
 use photocraft_ui_egui::PhotocraftApp;
 
-/// Matches the `.desktop` file and hicolor icon name, so Wayland docks pick up the icon.
-const APP_ID: &str = "ai.storyteller.photocraft";
+use photocraft_ui_egui::os_window::APP_ID;
 
 /// Windows and Linux: no OS title bar; the app's top bar is the title bar, with its own caption
 /// buttons and edge resizing (`photocraft_ui_egui::titlebar`), as Photoshop does on Windows. macOS
@@ -193,12 +195,156 @@ fn at_least_min_size(mut builder: egui::ViewportBuilder) -> egui::ViewportBuilde
     builder
 }
 
+/// Attach the log file under the settings directory. Called after the arguments are parsed, so
+/// `--version` and usage errors leave no file behind. Records logged until now are written first.
+fn attach_log_file(logger: Option<&'static logging::AppLogger>) {
+    if let (Some(logger), Some(dir)) = (logger, services::config_dir()) {
+        match logger.attach_dir(&dir.join("logs")) {
+            Ok(path) => log::info!("PhotoCraft {}, log file {}", photocraft_engine::build_info::long_version(), path.display()),
+            // Standard error only by now (`attach_dir` gave up on the file); unlike `eprintln!`, never panics.
+            Err(e) => log::warn!("no log file: {e}"),
+        }
+    }
+}
+
+/// One PhotoCraft per user (#3708). Only with the per-user settings folder (a portable copy's may
+/// be shared between users), and not for automation, `--new-instance` or per-process options.
+/// `Break` when the files were handed to the running PhotoCraft and this launch is done.
+#[cfg(not(target_os = "macos"))]
+fn claim_single_instance(
+    files: &[String],
+    new_instance: bool,
+    control: bool,
+    unreadable_paths: bool,
+    mut launch_options: Vec<launch_args::PerProcess>,
+) -> std::ops::ControlFlow<(), Option<single_instance::Primary>> {
+    use std::ops::ControlFlow::{Break, Continue};
+    let new_instance_env = std::env::var("PHOTOCRAFT_NEW_INSTANCE").ok();
+    // A variable documented as the equivalent of a per-launch flag counts as that flag: a
+    // launch that sets only `PHOTOCRAFT_PRESENT_MODE` (say) has per-process options too, so it
+    // keeps its own process instead of handing its files over and being ignored.
+    launch_options.extend_from_slice(&single_instance::env_launch_options());
+    let context = single_instance::LaunchContext {
+        per_user_settings: app_dirs::current().mode == app_dirs::Mode::Platform,
+        new_instance_flag: new_instance,
+        new_instance_env: new_instance_env.as_deref(),
+        control,
+        unreadable_paths,
+        launch_options: &launch_options,
+    };
+    match (single_instance::skip_reason(&context), services::config_dir()) {
+        (Some(reason), _) => {
+            log::info!("running as a separate PhotoCraft: {reason}");
+            Continue(None)
+        }
+        (None, None) => Continue(None),
+        (None, Some(dir)) => {
+            let paths: Vec<String> = files.iter().map(|f| single_instance::absolute(f)).collect();
+            match single_instance::claim(&dir, &paths) {
+                single_instance::Launch::Forwarded => {
+                    log::info!("handed {} file(s) to the running PhotoCraft", paths.len());
+                    Break(())
+                }
+                single_instance::Launch::Primary(primary) => Continue(Some(primary)),
+                single_instance::Launch::Standalone(reason) => {
+                    log::warn!("starting a separate PhotoCraft: {reason}");
+                    Continue(None)
+                }
+            }
+        }
+    }
+}
+
+/// The display server to open the window on: Xwayland for a pen on Wayland, which gives this app
+/// no pen input (#639). Exits with the package to install when its libraries are missing.
+#[cfg(target_os = "linux")]
+fn linux_display_session() -> linux_libs::DisplaySession {
+    let session = tablet::display_session();
+    // Preferences › Performance › Linux display server = X11: Xwayland on a Wayland session too,
+    // where native file drops work (winit 0.30 has none on Wayland, #386). Only when Xwayland can
+    // run the window ($DISPLAY set, X11 libraries installed); otherwise the session's own.
+    let session = if session == linux_libs::DisplaySession::Wayland
+        && gpu_startup::read_display_server(services::prefs_file().as_deref()) == photocraft_engine::prefs::LinuxDisplayServer::X11
+        && std::env::var_os("DISPLAY").is_some_and(|d| !d.is_empty())
+        && linux_libs::available(linux_libs::DisplaySession::X11)
+    {
+        eprintln!("photocraft: opening the window through Xwayland (Preferences › Performance › Linux display server)");
+        linux_libs::DisplaySession::X11
+    } else {
+        session
+    };
+    // winit and wgpu dlopen the windowing and GPU libraries, and some of those crates panic when
+    // one is missing (issue #201). Name the package to install and exit instead.
+    if let Err(message) = linux_libs::preflight(session) {
+        eprint!("{message}");
+        std::process::exit(1);
+    }
+    session
+}
+
+/// The control server's port, token and workspace, when it is on (exits 2 on a bad configuration).
+fn control_setup(
+    cli_port: Option<u16>,
+    auth: photocraft_automation::args::ControlArgs,
+    automation: &photocraft_automation::args::AutomationArgs,
+) -> Option<(std::net::TcpListener, String, photocraft_automation::workspace::AuthorizedWorkspace)> {
+    let (port, warning) = control_port_for(cli_port, &integrations(services::prefs_file().as_deref()));
+    if let Some(warning) = &warning {
+        eprint!("{warning}");
+    }
+    let port = port?;
+    let listener = match std::net::TcpListener::bind(("127.0.0.1", port)) {
+        Ok(listener) => listener,
+        Err(error) => {
+            eprintln!("photocraft: control server failed to bind 127.0.0.1:{port}: {error}");
+            std::process::exit(2);
+        }
+    };
+    let (supplied, token_file) = (auth.control_token, auth.control_token_file);
+    let token = match photocraft_automation::security::server_token(supplied.as_deref(), token_file.as_deref()) {
+        Ok(token) => token,
+        Err(e) => {
+            eprintln!("photocraft: cannot configure control authentication: {e}");
+            std::process::exit(2);
+        }
+    };
+    if let Some(path) = token_file {
+        eprintln!("photocraft: control token file: {}", path.display());
+    } else if supplied.is_none() {
+        eprintln!("photocraft: control token: {token}");
+    } else {
+        eprintln!("photocraft: using supplied control token");
+    }
+    let workspace = match automation.workspace() {
+        Ok(workspace) => workspace,
+        Err(error) => {
+            eprintln!("photocraft: cannot configure automation workspace: {error}");
+            std::process::exit(2);
+        }
+    };
+    Some((listener, token, workspace))
+}
+
+/// Record this start's backend in the GPU startup marker, if the marker is locked.
+fn write_start_marker(sentinel: &gpu_startup::SharedSentinel, plan: &gpu_startup::Plan) {
+    if let Some(s) = sentinel.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_mut() {
+        let backend = match &plan.env {
+            Some(v) => format!("env:{v}"),
+            None => plan.backend.name().to_string(),
+        };
+        let marker = gpu_startup::Marker { backend, version: photocraft_engine::build_info::long_version().to_string(), ..Default::default() };
+        if let Err(e) = s.write(marker) {
+            log::warn!("GPU startup marker: {e}");
+        }
+    }
+}
+
 fn main() -> eframe::Result {
     // First, so the panic hook and every start-up warning are recorded (`logging`).
     let logger = logging::install();
     crash_guard::install_hook();
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(done) = craft_update::self_update::finish(&craft_update::suite::PHOTOCRAFT, &std::env::args_os().skip(1).collect::<Vec<_>>()) {
+    if let Some(done) = craft_update::self_update::finish(&photocraft_ui_egui::UPDATE_APP, &std::env::args_os().skip(1).collect::<Vec<_>>()) {
         if let Err(e) = done {
             eprintln!("PhotoCraft update helper failed: {e}");
             std::process::exit(1);
@@ -228,15 +374,7 @@ fn main() -> eframe::Result {
         mut launch_options,
     } = launch;
 
-    // The log file lives under the settings directory; opened after the arguments, so `--version`
-    // and usage errors leave no file behind. Records logged until now are written to it first.
-    if let (Some(logger), Some(dir)) = (logger, services::config_dir()) {
-        match logger.attach_dir(&dir.join("logs")) {
-            Ok(path) => log::info!("PhotoCraft {}, log file {}", photocraft_engine::build_info::long_version(), path.display()),
-            // Standard error only by now (`attach_dir` gave up on the file); unlike `eprintln!`, never panics.
-            Err(e) => log::warn!("no log file: {e}"),
-        }
-    }
+    attach_log_file(logger);
 
     // An adapter named in the environment is chosen at startup, which a forwarded launch never reaches.
     let rendering_mode = gpu_startup::read_rendering_prefs(services::prefs_file().as_deref()).1;
@@ -244,114 +382,26 @@ fn main() -> eframe::Result {
         launch_options.push(launch_args::PerProcess::GpuAdapterEnv);
     }
     // One PhotoCraft per user (#3708): files opened from Explorer or a file manager while it runs
-    // become tabs in its window. Only with the per-user settings folder (a portable copy's may be
-    // shared between users), and not for automation, `--new-instance` or per-process options.
+    // become tabs in its window. Lives until the event loop returns, then `shutdown` lets the next
+    // launch become the primary.
     #[cfg(not(target_os = "macos"))]
-    let single_instance = {
-        let new_instance_env = std::env::var("PHOTOCRAFT_NEW_INSTANCE").ok();
-        // A variable documented as the equivalent of a per-launch flag counts as that flag: a
-        // launch that sets only `PHOTOCRAFT_PRESENT_MODE` (say) has per-process options too, so it
-        // keeps its own process instead of handing its files over and being ignored.
-        // Folded in here, inside the block that only non-macOS builds compile, so the binding
-        // above keeps its `mut` off macOS, where nothing is folded in.
-        let mut launch_options = launch_options;
-        launch_options.extend_from_slice(&single_instance::env_launch_options());
-        let context = single_instance::LaunchContext {
-            per_user_settings: app_dirs::current().mode == app_dirs::Mode::Platform,
-            new_instance_flag: new_instance,
-            new_instance_env: new_instance_env.as_deref(),
-            control: control_port.is_some(),
-            unreadable_paths: !unreadable_paths.is_empty(),
-            launch_options: &launch_options,
-        };
-        match (single_instance::skip_reason(&context), services::config_dir()) {
-            (Some(reason), _) => {
-                log::info!("running as a separate PhotoCraft: {reason}");
-                None
-            }
-            (None, None) => None,
-            (None, Some(dir)) => {
-                let paths: Vec<String> = files.iter().map(|f| single_instance::absolute(f)).collect();
-                match single_instance::claim(&dir, &paths) {
-                    single_instance::Launch::Forwarded => {
-                        log::info!("handed {} file(s) to the running PhotoCraft", paths.len());
-                        return Ok(());
-                    }
-                    single_instance::Launch::Primary(primary) => Some(primary),
-                    single_instance::Launch::Standalone(reason) => {
-                        log::warn!("starting a separate PhotoCraft: {reason}");
-                        None
-                    }
-                }
-            }
-        }
+    let single_instance = match claim_single_instance(&files, new_instance, control_port.is_some(), !unreadable_paths.is_empty(), launch_options) {
+        std::ops::ControlFlow::Break(()) => return Ok(()),
+        std::ops::ControlFlow::Continue(primary) => primary,
     };
-    // Lives until the event loop returns, then `shutdown` lets the next launch become the primary.
     #[cfg(not(target_os = "macos"))]
     let single_instance = &single_instance;
     #[cfg(target_os = "macos")]
     let _ = (new_instance, &launch_options);
 
-    // The display server to open the window on: Xwayland for a pen on Wayland, which gives this
-    // app no pen input (#639).
+    // Bind and authenticate the authorized control listener before display/GPU initialization.
+    let control = control_setup(control_port, auth, &automation);
+
     #[cfg(target_os = "linux")]
     let native_session = linux_libs::session_from_env(|name| std::env::var(name).ok());
     #[cfg(target_os = "linux")]
-    let session = tablet::display_session();
-    // Preferences › Performance › Linux display server = X11: Xwayland on a Wayland session too,
-    // where native file drops work (winit 0.30 has none on Wayland, #386). Only when Xwayland can
-    // run the window ($DISPLAY set, X11 libraries installed); otherwise the session's own.
-    #[cfg(target_os = "linux")]
-    let session = if session == linux_libs::DisplaySession::Wayland
-        && gpu_startup::read_display_server(services::prefs_file().as_deref()) == photocraft_engine::prefs::LinuxDisplayServer::X11
-        && std::env::var_os("DISPLAY").is_some_and(|d| !d.is_empty())
-        && linux_libs::available(linux_libs::DisplaySession::X11)
-    {
-        eprintln!("photocraft: opening the window through Xwayland (Preferences › Performance › Linux display server)");
-        linux_libs::DisplaySession::X11
-    } else {
-        session
-    };
+    let session = linux_display_session();
 
-    // winit and wgpu dlopen the windowing and GPU libraries, and some of those crates panic when
-    // one is missing (issue #201). Name the package to install and exit instead.
-    #[cfg(target_os = "linux")]
-    if let Err(message) = linux_libs::preflight(session) {
-        eprint!("{message}");
-        std::process::exit(1);
-    }
-
-    let (control_port, control_pref_warning) = control_port_for(control_port, &integrations(services::prefs_file().as_deref()));
-    if let Some(warning) = &control_pref_warning {
-        eprint!("{warning}");
-    }
-    let control = if let Some(port) = control_port {
-        let (supplied, token_file) = (auth.control_token, auth.control_token_file);
-        let token = match photocraft_automation::security::server_token(supplied.as_deref(), token_file.as_deref()) {
-            Ok(token) => token,
-            Err(e) => {
-                eprintln!("photocraft: cannot configure control authentication: {e}");
-                std::process::exit(2);
-            }
-        };
-        if let Some(path) = token_file {
-            eprintln!("photocraft: control token file: {}", path.display());
-        } else if supplied.is_none() {
-            eprintln!("photocraft: control token: {token}");
-        } else {
-            eprintln!("photocraft: using supplied control token");
-        }
-        let workspace = match automation.workspace() {
-            Ok(workspace) => workspace,
-            Err(error) => {
-                eprintln!("photocraft: cannot configure automation workspace: {error}");
-                std::process::exit(2);
-            }
-        };
-        Some((port, token, workspace))
-    } else {
-        None
-    };
     // Finder / Dock / Open With deliver files as Apple events, not arguments; catch the one that
     // launched us as well as later ones. Lives until the event loop returns.
     #[cfg(target_os = "macos")]
@@ -409,16 +459,7 @@ fn main() -> eframe::Result {
         log::warn!("the previous start didn't finish (GPU backend {}, adapter {:?}); {}", m.backend, m.adapter, plan.reason.as_deref().unwrap_or(""));
     }
     let sentinel: gpu_startup::SharedSentinel = std::sync::Arc::new(std::sync::Mutex::new(sentinel));
-    if let Some(s) = sentinel.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_mut() {
-        let backend = match &plan.env {
-            Some(v) => format!("env:{v}"),
-            None => plan.backend.name().to_string(),
-        };
-        let marker = gpu_startup::Marker { backend, version: photocraft_engine::build_info::long_version().to_string(), ..Default::default() };
-        if let Err(e) = s.write(marker) {
-            log::warn!("GPU startup marker: {e}");
-        }
-    }
+    write_start_marker(&sentinel, &plan);
     let gpu_note: std::sync::Arc<std::sync::Mutex<Option<String>>> = Default::default();
     // The adapter's real texture limits (egui asks for 8192 px), so big documents stay on the GPU.
     let wanted_adapter =
@@ -443,6 +484,10 @@ fn main() -> eframe::Result {
     log::info!("GPU startup: {:?} ({sentinel_ms:.2} ms)", plan);
     let retry_cpu = !safe_gpu && plan.backend != photocraft_engine::prefs::GpuBackend::Cpu;
     let keep_marker = gpu_startup::keep_marker_after_error(&plan, os);
+    // For the failure dialog below: the plan itself moves into the window closure. With
+    // `WGPU_BACKEND` set (`plan.env`) wgpu picks the backend, so name that rather than `auto`.
+    let started_renderer = plan.env.clone().unwrap_or_else(|| plan.backend.name().to_string());
+    let started_note = plan.reason.clone();
     let app_created = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let created_in_callback = app_created.clone();
     let started_sentinel = sentinel.clone();
@@ -569,8 +614,8 @@ fn main() -> eframe::Result {
                     log::warn!("couldn't remember GPU backend {}: {e}", b.name());
                 }
             });
-            if let Some((port, token, _)) = control {
-                let rx = control_server::start(port, token, cc.egui_ctx.clone());
+            if let Some((listener, token, _)) = control {
+                let rx = control_server::start(listener, token, cc.egui_ctx.clone());
                 app = app.with_control(rx);
             }
             #[cfg(target_os = "macos")]
@@ -602,7 +647,14 @@ fn main() -> eframe::Result {
             // Caps Lock state (X11/Windows/macOS; `None` on native Wayland): the canvas shows the
             // precise crosshair for painting tools while it is toggled on (#1758).
             app.services.caps_lock = caps_lock::service(cc);
-            app.services.screen_pick = screen_color::service(cc, app.services.is_wayland);
+            // Pick through the portal on a Wayland desktop even when the window went through
+            // Xwayland (a pen, or the X11 display-server preference): Xwayland's root window has
+            // no desktop pixels to read (#8977).
+            #[cfg(target_os = "linux")]
+            let portal = screen_color::uses_portal(native_session);
+            #[cfg(not(target_os = "linux"))]
+            let portal = false;
+            app.services.screen_pick = screen_color::service(cc, portal);
             // Tablet pressure/tilt/eraser (winit drops them): the macOS monitor and the X11 reader
             // write into the stylus feed. The monitor goes in here, not before the event loop:
             // AppKit's shared application only exists once winit created it (#759).
@@ -678,6 +730,16 @@ fn main() -> eframe::Result {
                 Ok(_) => return Ok(()),
                 Err(error) => log::error!("could not start CPU compatibility mode: {error}"),
             }
+        }
+    }
+    // A launch that fails before a window exists leaves nothing on screen, and a desktop launch
+    // has no console for the `Err` above: log it, then say why in a native dialog with the log
+    // file to attach (#7643). A terminal or automation launch can read standard error or the
+    // exit status instead, so it keeps the silent exit.
+    if let Err(error) = &result {
+        log::error!("PhotoCraft could not start: {error}");
+        if startup_report::needs_dialog(control_port.is_some()) {
+            startup_report::show(&error.to_string(), &started_renderer, started_note.as_deref(), logger.and_then(logging::AppLogger::path).as_deref());
         }
     }
     result

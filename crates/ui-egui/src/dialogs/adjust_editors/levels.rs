@@ -1,12 +1,12 @@
-use super::curves::{ToneChannel, bar_color, channel_picker, gradient_bar, hist_color, tone_channels};
-use super::*;
+use super::curves::{ToneChannel, bar_color, editor_channel_picker, editor_channels, gradient_bar, hist_color};
+use super::{Color32, Edit, EditorCx, Sense, Stroke, StrokeKind, Tokens, Value, json, label, pos2, round, space_of, tone, vec2, widgets};
 
 // ---------------------------------------------------------------------------------------------
 // Levels
 
 type Lv = [f32; 5]; // in_black, gamma, in_white, out_black, out_white (0–255, gamma as is)
 
-fn read_levels(v: &Value, key: &str) -> Lv {
+pub(super) fn read_levels(v: &Value, key: &str) -> Lv {
     let o = if key.is_empty() { Some(v) } else { v.get(key) };
     let g = |k: &str, d: f32| o.and_then(|o| o.get(k)).and_then(Value::as_f64).map_or(d, |x| x as f32);
     [g("inBlack", 0.0), g("gamma", 1.0), g("inWhite", 255.0), g("outBlack", 0.0), g("outWhite", 255.0)]
@@ -62,21 +62,21 @@ pub(super) fn nearest(xs: &[f32], x: f32) -> Option<u8> {
 
 pub(super) fn levels(ui: &mut egui::Ui, v: &mut Value, cx: &EditorCx) -> Edit {
     let t = Tokens::get(ui.ctx());
-    let chans = tone_channels(space_of(v), cx.gray);
+    let channels = editor_channels(cx, space_of(v));
     let mut ch = 0;
     let mut auto = false;
     ui.horizontal(|ui| {
-        ch = channel_picker(ui, cx.mem.with("levels-ch"), chans, tl!("Channel:"));
+        ch = editor_channel_picker(ui, cx.mem.with("levels-ch"), &channels);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             auto = widgets::secondary_button(ui, tl!("Auto"), 0.0).clicked();
         });
     });
-    let chan = chans.get(ch).copied().unwrap_or(ToneChannel { key: "", label: "" });
+    let (chan, _, hist_i) = channels.get(ch).cloned().unwrap_or((ToneChannel { key: "", label: "" }, String::new(), 0));
     let mut l = read_levels(v, chan.key);
     let mut e = Edit::default();
     let mut changed = false;
     if auto && let Some(h) = &cx.hist {
-        let (lo, hi) = auto_levels(&h[ch]);
+        let (lo, hi) = auto_levels(&h[hist_i]);
         l[0] = lo;
         l[2] = hi;
         l[1] = 1.0;
@@ -90,7 +90,7 @@ pub(super) fn levels(ui: &mut egui::Ui, v: &mut Value, cx: &EditorCx) -> Edit {
     let p = ui.painter_at(hr.expand(1.0));
     p.rect_filled(hr, 0.0, t.field);
     if let Some(h) = &cx.hist {
-        tone::draw_histogram(&p, hr, &h[ch], hist_color(&chan, &t));
+        tone::draw_histogram(&p, hr, &h[hist_i], hist_color(&chan, &t));
     }
     p.rect_stroke(hr, 0.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
     // Input sliders: black, gamma, white.

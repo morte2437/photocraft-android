@@ -65,8 +65,8 @@ pub(crate) fn open_new(app: &mut PhotocraftApp) -> Result<u64, String> {
         return Err(why);
     }
     let st = app.session.active().ok_or("no document open")?;
-    let pattern = photocraft_engine::pattern_cmds::resolve(&app.session, "").ok_or("no patterns")?;
-    let values = json!({"pattern": pattern.id, "scale": 100.0, "angle": 0.0, "link": true, "phase": [0.0, 0.0]});
+    let pattern = photocraft_engine::pattern_cmds::resolve_id(&app.session, "").ok_or("no patterns")?;
+    let values = json!({"pattern": pattern, "scale": 100.0, "angle": 0.0, "link": true, "phase": [0.0, 0.0]});
     let f = fields(cmds::CREATE, json!({"document": st.doc.id.0}), values);
     Ok(app.ui.open_dialog(crate::state::DialogKind::Command, f))
 }

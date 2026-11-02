@@ -1,4 +1,4 @@
-use super::*;
+use super::PhotocraftApp;
 
 impl PhotocraftApp {
     /// Whether the title bar's free gap gets the drag overlay this frame: the app draws its title

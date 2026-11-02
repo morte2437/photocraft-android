@@ -13,6 +13,11 @@ use crate::{EngineError, Result, Session};
 
 mod modify_window;
 
+#[cfg(test)]
+mod color_range_performance;
+#[cfg(test)]
+mod color_range_window_tests;
+
 fn has_doc(s: &Session) -> std::result::Result<(), String> {
     s.active().map(|_| ()).ok_or_else(|| "no document open".into())
 }
@@ -45,14 +50,17 @@ fn scope_color_range(mask: &mut [f32], doc: &Document, area: Rect, m: SelectionM
 }
 
 /// RGBA pixels the tools sample: the composite, or the active layer.
-fn sample_pixels(s: &Session, all_layers: bool) -> Result<(Rect, Vec<[f32; 4]>)> {
+fn sample_pixels(s: &Session, all_layers: bool, window: Option<Rect>) -> Result<(Rect, Vec<[f32; 4]>)> {
     let d = s.active().ok_or(EngineError::NoDocument)?;
-    let area = d.doc.bounds();
+    let area = window.map_or(d.doc.bounds(), |r| r.intersect(&d.doc.bounds()));
     // Match the decoders' raster budget before either the layer or composite path allocates.
     let len = area.size().area();
     let max_bytes: u64 = if cfg!(target_pointer_width = "64") { 8 << 30 } else { 2 << 30 };
     if len > max_bytes / std::mem::size_of::<[f32; 4]>() as u64 {
         return Err(EngineError::Other("the canvas is too large to sample for a selection".into()));
+    }
+    if area.is_empty() {
+        return Ok((area, Vec::new()));
     }
     let layer = d.active_layer.and_then(|id| d.doc.layer(id)).and_then(|l| l.surface());
     match (all_layers, layer) {
@@ -147,31 +155,6 @@ fn parse_color(p: &Value) -> [f32; 3] {
         }
         _ => [0.0; 3],
     }
-}
-
-/// Eyedropper samples from `key` (`[[x, y], …]` in document pixels): the colour under each point
-/// and where it was picked (area-local, for Localized Color Clusters).
-fn eyedropper_samples(p: &Value, key: &str, area: Rect, px: &[[f32; 4]], bad: &impl Fn(String) -> EngineError) -> Result<Vec<sel::RangeSample>> {
-    let Some(pts) = p.get(key) else { return Ok(Vec::new()) };
-    let pts = pts.as_array().ok_or_else(|| bad(format!("`{key}` must be [[x, y], …]")))?;
-    let w = area.width() as usize;
-    let mut out = Vec::with_capacity(pts.len().min(4096));
-    for pt in pts {
-        let xy = pt.as_array().and_then(|a| match a.as_slice() {
-            [x, y] => Some((x.as_f64()?, y.as_f64()?)),
-            _ => None,
-        });
-        let Some((x, y)) = xy.filter(|(x, y)| x.is_finite() && y.is_finite()) else {
-            return Err(bad(format!("bad point {pt} in `{key}` (want [x, y])")));
-        };
-        let (xi, yi) = (x.floor() as i32, y.floor() as i32);
-        let q = if area.contains(xi, yi) { px.get((yi - area.y0) as usize * w + (xi - area.x0) as usize) } else { None };
-        let Some(&[r, g, b, _]) = q else {
-            return Err(bad(format!("point [{x}, {y}] in `{key}` is outside the canvas")));
-        };
-        out.push(sel::RangeSample { color: [r, g, b], at: Some(((xi - area.x0) as f32, (yi - area.y0) as f32)) });
-    }
-    Ok(out)
 }
 
 /// Composite RGB (the compositor's output profile for the document) → CIE Lab D50.
@@ -346,6 +329,23 @@ impl ColorRangeSamples {
     }
 }
 
+/// Replace refines the existing selection; no output outside its nonzero bounds survives.
+fn color_range_area(doc: &Document, m: SelectionMode) -> Rect {
+    let canvas = doc.bounds();
+    let Some(selection) = doc.selection.as_ref().filter(|_| m == SelectionMode::Replace) else { return canvas };
+    // content_bounds describes differences from the default, not implicit selected pixels.
+    if selection.default_pixel().first().is_some_and(|v| *v != 0.0) {
+        return canvas;
+    }
+    // content_bounds orders raw tile coordinates by their differences. Reject coordinates
+    // outside the pixel-addressable range before those differences can overflow.
+    let valid = (i32::MIN / photocraft_geom::TILE_SIZE)..=(i32::MAX / photocraft_geom::TILE_SIZE);
+    if selection.tiles().any(|(tile, _)| !valid.contains(&tile.tx) || !valid.contains(&tile.ty)) {
+        return canvas;
+    }
+    selection.content_bounds().intersect(&canvas)
+}
+
 fn color_range(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "select.colorRange";
     let bad = |msg: String| EngineError::BadParams { cmd: CMD.into(), msg };
@@ -357,17 +357,16 @@ fn color_range(s: &mut Session, p: &Value) -> Result<Value> {
     if b(p, "detectFaces", false) {
         return Err(bad("detectFaces: face detection isn't available yet; select without it".into()));
     }
+    let area = color_range_area(&s.active().ok_or(EngineError::NoDocument)?.doc, selection_mode);
     let (area, mut mask) = match preset {
         "sampledColors" => {
-            let (area, px) = sample_pixels(s, b(p, "sampleAllLayers", true))?;
+            let (area, px) = sample_pixels(s, b(p, "sampleAllLayers", true), Some(area))?;
             let w = area.width() as usize;
             // The dialog's eyedroppers: colours picked on the image, at their positions.
             // Like Photoshop's, they may sample anywhere on the canvas: an active selection only
             // limits the result (scope_color_range), not where colours are picked (#5244).
-            let plus = eyedropper_samples(p, "points", area, &px, &bad)?;
-            let minus = eyedropper_samples(p, "subtractPoints", area, &px, &bad)?;
-            let query = ColorRangeSamples::with_samples(s, p, area, &plus, &minus)?;
-            let mask = query.coverage(&px, w, 1.0, [0.0, 0.0]);
+            let query = ColorRangeSamples::new(s, p)?;
+            let mask = query.coverage(&px, w, 1.0, [area.x0 as f32, area.y0 as f32]);
             (area, mask)
         }
         "reds" | "yellows" | "greens" | "cyans" | "blues" | "magentas" => {
@@ -379,11 +378,11 @@ fn color_range(s: &mut Session, p: &Value) -> Result<Value> {
                 "blues" => 240.0,
                 _ => 300.0,
             };
-            let (area, px) = sample_pixels(s, b(p, "sampleAllLayers", true))?;
+            let (area, px) = sample_pixels(s, b(p, "sampleAllLayers", true), Some(area))?;
             (area, sel::hue_range(&px, center))
         }
         "skinTones" => {
-            let (area, px) = sample_pixels(s, b(p, "sampleAllLayers", true))?;
+            let (area, px) = sample_pixels(s, b(p, "sampleAllLayers", true), Some(area))?;
             (area, sel::skin_tones(&px, fuzz(40.0).min(200.0)))
         }
         "highlights" | "midtones" | "shadows" => {
@@ -406,7 +405,7 @@ fn color_range(s: &mut Session, p: &Value) -> Result<Value> {
                     .filter(|(l, h)| l <= h)
                     .ok_or_else(|| bad(format!("tonalRange: want [low, high] levels 0..255 (got {v})")))?,
             };
-            let (area, px) = sample_pixels(s, b(p, "sampleAllLayers", true))?;
+            let (area, px) = sample_pixels(s, b(p, "sampleAllLayers", true), Some(area))?;
             (area, sel::tone_range(&px, lo, hi, fuzz(20.0).min(100.0) / 100.0 * 255.0))
         }
         "outOfGamut" => {
@@ -458,16 +457,16 @@ fn modify(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
     if canvas.size().area() > MAX_MODIFY_PIXELS as u64 {
         return Err(EngineError::BadParams { cmd: format!("select.modify.{op}"), msg: "the selection is too large to modify".into() });
     }
+    // Feather reaches ⌈3σ⌉ (σ = r, as in Photoshop); the others reach at most ceil(r).
+    let reach = if op == "feather" { sel::feather_reach(r) } else { r.ceil() as usize };
     // Keep both mask conversion and tiled replacement within the affected region. The
     // zero halo makes internal window edges inert; nonzero edges can only be canvas edges,
     // so the existing Apply effect at canvas bounds padding still has the same meaning.
-    let area = if matches!(op, "expand" | "contract" | "border") { modify_window::area(doc, r) } else { canvas };
+    let area = modify_window::area(doc, reach as f32);
     let m = sel::mask_from_surface(doc.selection.as_ref(), area);
     let (w, h) = (area.width() as usize, area.height() as usize);
-    // Feather reaches ⌈3σ⌉ (σ = r, as in Photoshop); the others reach r. A margin past that
-    // keeps the canvas edge out of reach. A selection clear of the canvas edge needs none: both
-    // readings agree there.
-    let reach = if op == "feather" { sel::feather_reach(r) } else { r.ceil() as usize };
+    // A margin past the reach keeps the padded edge out of reach. A selection clear of the
+    // canvas edge needs none: both readings agree there.
     let pad = if touches_edge(&m, w, h) { reach.saturating_add(2) } else { 0 };
     let grown = |n: usize| pad.checked_mul(2).and_then(|p| n.checked_add(p));
     let (Some(pw), Some(ph)) = (grown(w), grown(h)) else {
@@ -545,7 +544,7 @@ fn crop_mask(m: &[f32], pw: usize, pad: usize, w: usize, h: usize) -> Vec<f32> {
 /// the selected pixels' colour range widened by the tolerance.
 fn grow_similar(s: &mut Session, p: &Value, contiguous: bool) -> Result<Value> {
     let tol = f(p, "tolerance", 32.0) / 255.0;
-    let (area, px) = sample_pixels(s, b(p, "sampleAllLayers", false))?;
+    let (area, px) = sample_pixels(s, b(p, "sampleAllLayers", false), None)?;
     let (_, m) = current_mask(&s.active().ok_or(EngineError::NoDocument)?.doc);
     let (mut lo, mut hi) = ([f32::MAX; 4], [f32::MIN; 4]);
     for (q, v) in px.iter().zip(&m) {
@@ -656,16 +655,7 @@ fn polygon_rows(pts: &[(f32, f32)], area: Rect) -> Rect {
 /// whole-canvas combine gives: Replace and Intersect are empty outside the band, and Add and
 /// Subtract keep the old selection there.
 pub(crate) fn combine_band(old: Option<&Surface>, mask: &[f32], band: Rect, m: SelectionMode) -> Option<Surface> {
-    let inside = sel::combine(old, mask, band, m);
-    let Some(old) = old.filter(|_| matches!(m, SelectionMode::Add | SelectionMode::Subtract)) else { return inside };
-    if band.is_empty() {
-        return Some(old.clone());
-    }
-    let values = inside.map_or_else(|| vec![0.0; band.width() as usize * band.height() as usize], |w| w.read_region(band));
-    let mut s = old.clone();
-    s.write_region(band, &values);
-    s.prune();
-    (s.tile_count() > 0).then_some(s)
+    sel::combine_band(old, mask, band, m)
 }
 
 /// Keep dense feather masks local to the drawn shape. Clip before inflating: pixels outside

@@ -2,7 +2,7 @@ use super::content::{channel_weights, empty_in, recycle_buffer, render_content, 
 use super::ctx::Ctx;
 use super::extents::{effects_frame, mask_k, mask_vals, shapeless_stroke_bounds};
 use super::fx_cache::effect_maps;
-use super::*;
+use super::{BlendMode, Buffer, Fill, Layer, LayerContent, Rect, Surface, advanced, blend, effects, psblend, shape_split};
 
 /// Composite an isolated group's sibling list (bottom→top) onto `backdrop` (its own buffer).
 pub(crate) fn composite_stack(layers: &[Layer], backdrop: &mut Buffer, cx: &Ctx) {
@@ -72,8 +72,10 @@ pub(crate) fn branchless_floor(x: f32) -> f32 {
 }
 
 /// Blend an adjustment layer's result (`adjusted`) back into the backdrop it was made from, each
-/// pixel by its coverage `ks` (opacity × mask) in blend mode `mode`.
-fn blend_back(backdrop: &mut [[f32; 4]], adjusted: &[[f32; 4]], ks: impl Iterator<Item = f32>, mode: BlendMode) {
+/// pixel by its coverage `ks` (opacity × mask) in blend mode `mode` at layer Fill `fill`: below
+/// 100% the special eight ([`psblend::fill_is_special`]) blend a result pulled toward the mode's
+/// neutral colour, as a pixel layer does (#9501); for every other mode Fill is in `ks`.
+fn blend_back(backdrop: &mut [[f32; 4]], adjusted: &[[f32; 4]], ks: impl Iterator<Item = f32>, mode: BlendMode, fill: f32) {
     for ((b, a), k) in backdrop.iter_mut().zip(adjusted).zip(ks) {
         if k <= 0.0 {
             continue;
@@ -81,8 +83,11 @@ fn blend_back(backdrop: &mut [[f32; 4]], adjusted: &[[f32; 4]], ks: impl Iterato
         let s = [a[0], a[1], a[2]];
         // Normal is the source as it is (`blend_rgb` gives exactly that), and most adjustment
         // layers are Normal: no per-pixel mode dispatch for them.
-        let blended = if mode == BlendMode::Normal { s } else { blend::blend_rgb(mode, [b[0], b[1], b[2]], s) };
-        *b = [b[0] + (blended[0] - b[0]) * k, b[1] + (blended[1] - b[1]) * k, b[2] + (blended[2] - b[2]) * k, b[3]];
+        let blended = if mode == BlendMode::Normal { s } else { blend::blend_rgb_fill(mode, [b[0], b[1], b[2]], s, fill) };
+        // `b·(1−k) + s·k`, not `b + (s − b)·k`: with a huge 32-bit backdrop the difference loses a
+        // small result to f32 rounding, so full coverage gave 0 instead of a lookup's 0.5 (#9483).
+        let j = 1.0 - k;
+        *b = [b[0] * j + blended[0] * k, b[1] * j + blended[1] * k, b[2] * j + blended[2] * k, b[3]];
     }
 }
 
@@ -147,9 +152,9 @@ fn blend_if_weight(layer: &Layer, mode: photocraft_color::ColorMode, this: Optio
         let Some(p) = px else { continue };
         let v = |c: usize| blend_if_level(p[c]);
         match mode {
-            // Gray is the colour channels' luma (Rec. 601 weights), then R, G, B.
+            // Gray, then R, G, B.
             M::Rgb => {
-                let gray = 0.299 * v(0) + 0.587 * v(1) + 0.114 * v(2);
+                let gray = blend_if_gray(v(0), v(1), v(2));
                 k *= bi.get(0)[side].weight(gray);
                 for c in 0..3 {
                     k *= bi.get(c + 1)[side].weight(v(c));
@@ -166,15 +171,28 @@ fn blend_if_weight(layer: &Layer, mode: photocraft_color::ColorMode, this: Optio
     k
 }
 
-/// A channel value on Blend If's 0..=255 scale. Compositing can leave an 8- or 16-bit level a few
-/// millionths off (a level-20 backdrop composited at partial alpha reads 19.999998), which would
-/// put it on the wrong side of a hard point at that level: a value that close to a level is that
-/// level. Values of those depths that aren't on a level are at least 1/257 away from one. The GPU
-/// compositor (`compose.wgsl` `blend_if_weight`) snaps alike.
+/// A channel value on Blend If's 0..=255 scale. Photoshop compares Blend If at its 16-bit
+/// precision (0..=32768): a cutoff at level `c` falls on the step `round(c · 32768 / 255)`, and a
+/// value on that step is exactly level `c`, inside both a black point and a white point there
+/// (#9521: RGB16 32895 is step 16448, level 128's, so it passes a hard black point at 128; read as
+/// 127.996 it didn't). Every 8-bit level is on its own step, which also absorbs compositing's few
+/// millionths of drift (a level-20 backdrop at partial alpha reads 19.999998). The GPU compositor
+/// (`compose.wgsl` `blend_if_weight`) snaps alike.
 fn blend_if_level(x: f32) -> f32 {
-    let v = x.clamp(0.0, 1.0) * 255.0;
-    let r = v.round();
-    if (v - r).abs() < 1e-4 { r } else { v }
+    let x = x.clamp(0.0, 1.0);
+    let v = x * 255.0;
+    let level = v.round();
+    if (x * 32768.0).round() == (level * 32768.0 / 255.0).round() { level } else { v }
+}
+
+/// Blend If's Gray from channel levels: Photoshop's (30 R + 59 G + 11 B) / 100, rounded half down
+/// on 8-bit levels (#9522). Measured in Photoshop 2025: pure red passes a black point at 20 from
+/// 66 (19.8) but not 65 (19.5), pure blue at 28 from 251 (27.61) but not 250 (27.5); (123, 126,
+/// 151) is 128 (127.85) and (120, 129, 149) is 128 (128.5), where Rec. 601 luma gave 127.95 and
+/// 128.59. Levels between whole ones (deeper documents) keep the unrounded weighting.
+fn blend_if_gray(r: f32, g: f32, b: f32) -> f32 {
+    let sum = 30.0 * r + 59.0 * g + 11.0 * b;
+    if [r, g, b].iter().all(|c| c.fract() == 0.0) { ((sum + 49.0) / 100.0).floor() } else { sum / 100.0 }
 }
 
 /// Blend If groups inside one another whose own colour is still rendered separately. Each extra
@@ -191,13 +209,18 @@ thread_local! {
 /// Mixing premultiplied colour by `k` equals compositing the layer at `k` × its alpha, since
 /// every blend mode's source-over result is linear in the source alpha.
 fn apply_blend_if(layer: &Layer, before: &Buffer, out: &mut Buffer, cx: &Ctx) {
-    // "This Layer" is the layer's own colour; adjustment layers (no content of their own) are
-    // judged by their result. So are groups nested deeper than `MAX_BLEND_IF_GROUP_DEPTH` Blend
-    // Ifs: a group's own colour re-composites its children, which doubles the work at every
-    // level of Blend If groups inside one another.
+    // "This Layer" is the layer's own colour. An adjustment layer (no content of its own) is
+    // judged by its result at full strength, before Opacity and its mask mix it in, as Photoshop
+    // does (#9542). Groups nested deeper than `MAX_BLEND_IF_GROUP_DEPTH` Blend Ifs are judged by
+    // the composite: a group's own colour re-composites its children, which doubles the work at
+    // every level of Blend If groups inside one another.
     let is_group = matches!(layer.content, LayerContent::Group(_));
     let nested = BLEND_IF_GROUPS.with(std::cell::Cell::get);
-    let own = if matches!(layer.content, LayerContent::Adjustment(_)) || (is_group && nested >= MAX_BLEND_IF_GROUP_DEPTH) {
+    let own = if let LayerContent::Adjustment(adj) = &layer.content {
+        let mut result = before.clone();
+        cx.apply_adjustment(adj, &mut result);
+        Some(result)
+    } else if is_group && nested >= MAX_BLEND_IF_GROUP_DEPTH {
         None
     } else {
         BLEND_IF_GROUPS.with(|d| d.set(nested + u32::from(is_group)));
@@ -334,6 +357,8 @@ pub(crate) fn composite_layer_plain(layer: &Layer, clipped: &[Layer], backdrop: 
     // is the base of a clipping group and holds an adjustment layer (psd-tools
     // passthrough_clipping_mask_adjustment: an Exposure inside leaves the layers beneath alone),
     // while such a group's blend modes still reach the backdrop (passthrough_clipping_mask_blendmode).
+    // A group with Blend If renders isolated too: an adjustment inside it no longer changes the
+    // layers beneath (#9554).
     let clip_base_adjusts = clipped.iter().any(|c| c.visible)
         && matches!(&layer.content, LayerContent::Group(g) if g.children.iter().any(|c| c.visible && matches!(c.content, LayerContent::Adjustment(_))));
     if let LayerContent::Group(g) = &layer.content
@@ -341,6 +366,7 @@ pub(crate) fn composite_layer_plain(layer: &Layer, clipped: &[Layer], backdrop: 
         && layer.fill_opacity >= 1.0
         && !effects::has_effects(layer)
         && !clip_base_adjusts
+        && !blend_if_active(layer, cx.mode)
     {
         let needs_mix = opacity < 1.0 || layer.mask.is_some() || layer.vector_mask.is_some();
         let has_clipped = clipped.iter().any(|c| c.visible);
@@ -420,9 +446,13 @@ pub(crate) fn composite_layer_plain(layer: &Layer, clipped: &[Layer], backdrop: 
                 }
             }
         } else {
+            // Fill below 100% in one of the special eight changes the blend itself and leaves
+            // coverage to Opacity, as for a pixel layer (psblend::composite_fill, #9501).
+            let (k, fill) =
+                if layer.fill_opacity < 1.0 && psblend::fill_is_special(layer.blend) { (layer.opacity, layer.fill_opacity) } else { (opacity, 1.0) };
             match &mv {
-                Some(m) => blend_back(&mut backdrop.px, &adjusted.px, m.iter().map(|v| opacity * v), layer.blend),
-                None => blend_back(&mut backdrop.px, &adjusted.px, std::iter::repeat(opacity), layer.blend),
+                Some(m) => blend_back(&mut backdrop.px, &adjusted.px, m.iter().map(|v| k * v), layer.blend, fill),
+                None => blend_back(&mut backdrop.px, &adjusted.px, std::iter::repeat(k), layer.blend, fill),
             }
         }
         recycle_buffer(adjusted);

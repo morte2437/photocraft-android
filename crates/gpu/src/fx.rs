@@ -25,13 +25,14 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-use photocraft_compose::effects::BevelPaint;
 use photocraft_compose::effects::FieldKind;
-use photocraft_doc::{BevelTechnique, Contour, Effect, GlobalLight, GlowSource, GlowTechnique, Layer, LayerContent, Pattern};
+use photocraft_doc::{Contour, Effect, GlobalLight, Layer, LayerContent, Pattern};
 use photocraft_geom::{Rect, TileCoord};
 use photocraft_raster::{Surface, Tile};
 
-use crate::plan::{Kernel, stroke_widths};
+use crate::plan::Kernel;
+
+mod builders;
 
 /// Input of a map stage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -306,181 +307,14 @@ pub(crate) fn program(e: &Effect, light: &GlobalLight, vector_shape: bool) -> Ma
 pub(crate) fn program_with(e: &Effect, light: &GlobalLight, vector_shape: bool, patterns: &[Pattern], anchor: (f64, f64)) -> MapProgram {
     let mut b = B { stages: Vec::new(), fields: Vec::new() };
     let maps = match e {
-        Effect::DropShadow(s) | Effect::InnerShadow(s) => {
-            // shadow_map
-            let inner = matches!(e, Effect::InnerShadow(_));
-            let angle = if s.use_global_light { light.angle } else { s.angle };
-            let (dx, dy) = offset(angle, s.distance);
-            let src = b.shift(In::Shape, dx, dy, if inner { 1.0 } else { 0.0 }, inner);
-            let (r, bw) = photocraft_compose::effects::spread_split(s.size, s.spread);
-            let mut m = src;
-            if r > 0.0 {
-                // dist_outside of the shifted map is the shifted field (integer offsets; shifted-in
-                // pixels are far away for a drop shadow, inside for an inner shadow).
-                let f = b.field(if inner { FieldKind::ChokeInside } else { FieldKind::StrokeOutside }, r);
-                let d = if dx == 0.0 && dy == 0.0 {
-                    f
-                } else {
-                    b.push(stage(Kernel::MShift, Some(f), None, [dx, dy, if inner { -0.5 } else { 1e10 }, 0.0], dx.abs().max(dy.abs()) as i32))
-                };
-                m = b.dilate(src, d, r);
-            }
-            let m = b.blur(m, bw);
-            b.finish(m, None, false, &s.contour, inner, 0);
-            1
-        }
-        Effect::OuterGlow(g) | Effect::InnerGlow(g) => {
-            // glow_map
-            let inner = matches!(e, Effect::InnerGlow(_));
-            let center = inner && g.source == GlowSource::Center;
-            match g.technique {
-                GlowTechnique::Precise => {
-                    let d = b.field(if inner { FieldKind::Inside } else { FieldKind::Outside }, g.size);
-                    let solid = g.size * g.spread;
-                    let soft = (g.size + 1.0 - solid).max(1e-3);
-                    let m = b.push(stage(Kernel::MGlow, Some(d), None, [solid, soft, 0.0, 0.0], 0));
-                    b.finish_glow(m, photocraft_compose::effects::glow_lut(g), inner, center);
-                }
-                GlowTechnique::Softer => {
-                    // Inner glows (edge, and centre as 1 - the edge result) spread 1 - alpha.
-                    let src = if inner { b.shift(In::Shape, 0.0, 0.0, 0.0, true) } else { In::Shape };
-                    let (r, bw) = photocraft_compose::effects::spread_split(g.size, g.spread);
-                    let mut m = src;
-                    if r > 0.0 {
-                        let d = b.field(if inner { FieldKind::ChokeInside } else { FieldKind::StrokeOutside }, r);
-                        m = b.dilate(src, d, r);
-                    }
-                    let m = b.blur(m, bw);
-                    b.finish_glow(m, photocraft_compose::effects::glow_lut(g), inner, center);
-                }
-            }
-            1
-        }
-        Effect::Satin(s) => {
-            // satin_map
-            let (dx, dy) = offset(s.angle, photocraft_compose::effects::satin_distance(s));
-            let a = b.shift(In::Shape, dx, dy, 0.0, false);
-            let a = b.conv(a, photocraft_compose::effects::tent_kernel(s.size));
-            let c = b.shift(In::Shape, -dx, -dy, 0.0, false);
-            let c = b.conv(c, photocraft_compose::effects::tent_kernel(s.size));
-            b.finish_lut(a, Some(c), s.invert, photocraft_compose::effects::satin_lut(&s.contour), true, 0);
-            1
-        }
-        Effect::BevelEmboss(bv) => {
-            // bevel_maps: height map (tent blur of the shape, or chiselled distance ramps), then
-            // highlight / shadow shading inside and / or outside the shape.
-            let g = photocraft_compose::effects::bevel_geom(bv);
-            let size = bv.size.max(1.0);
-            let paint = |p: BevelPaint| match p {
-                BevelPaint::Outer => 0.0,
-                BevelPaint::Both => 1.0,
-                BevelPaint::Inner => 2.0,
-            };
-            let mut h = if bv.technique == BevelTechnique::Smooth {
-                b.conv(In::Shape, photocraft_compose::effects::tent_kernel(g.width))
-            } else {
-                let [din, dout] = b.bevel_fields(size);
-                let soft = g.chisel_soft > 0.0;
-                let h = b.push(stage(Kernel::MBevelH, Some(din), Some(dout), [paint(g.paint), size, f32::from(u8::from(soft)), 0.0], 0));
-                // As `effects::bevel_height`: only emboss styles blur a Chisel Soft ramp.
-                if soft && g.paint == BevelPaint::Both { b.conv(h, photocraft_compose::effects::tent_kernel(g.chisel_soft)) } else { h }
-            };
-            if let Some(c) = &bv.contour {
-                // Contour element: the height through the contour (`bevel_contour_lut`).
-                let lut = photocraft_compose::effects::bevel_contour_lut(c);
-                let mut st = stage(Kernel::MFinish, Some(h), None, [0.0, 0.0, 1.0, 0.0], 0);
-                st.lut = Some(Arc::new(lut));
-                h = b.push(st);
-            }
-            if let Some(t) = &bv.texture
-                && let Some(pat) = photocraft_doc::pattern::find(patterns, &t.id, &t.name).filter(|p| p.is_paintable())
-            {
-                // Texture element (`effects::bevel_height`): luminance × depth / unit added.
-                let unit = if bv.depth.abs() > 1e-6 { (g.depth / bv.depth).abs().max(1e-3) } else { g.width.max(1.0) };
-                let pl = photocraft_compose::pattern::Placement::anchored(anchor, t.link, t.phase, t.scale, 0.0);
-                let (origin, cs, inv) = pl.parts();
-                let mut st = stage(Kernel::MBevelTex, Some(h), None, [t.depth / unit, f32::from(u8::from(t.invert)), 0.0, 0.0], 0);
-                st.p3 = [origin.0 as f32, origin.1 as f32, cs.0 as f32, cs.1 as f32];
-                st.p4 = [inv as f32, pat.width as f32, pat.height as f32, 0.0];
-                st.pattern = Some(pat.clone());
-                h = b.push(st);
-            }
-            if bv.soften >= 1.0 {
-                h = b.conv(h, photocraft_compose::effects::tent_kernel(bv.soften));
-            }
-            let (angle, altitude) = if bv.use_global_light { (light.angle, light.altitude) } else { (bv.angle, bv.altitude) };
-            let (sa, ca) = angle.to_radians().sin_cos();
-            let (se, ce) = altitude.to_radians().sin_cos();
-            let lut = contour_lut(&bv.gloss_contour).map(Arc::new);
-            // Region (`fs_mbevelshade`): 0 inside, 1 under the edge and outside, 2 / 3 emboss /
-            // pillow emboss (both halves in one map).
-            let passes: Vec<(f32, f32)> = match g.paint {
-                BevelPaint::Inner => vec![(g.depth, 0.0)],
-                BevelPaint::Outer => vec![(g.depth, 1.0)],
-                BevelPaint::Both => vec![(g.depth, if g.pillow { 3.0 } else { 2.0 })],
-            };
-            let mut out = 0;
-            for (depth, region) in &passes {
-                for which in [0.0, 1.0] {
-                    let mut s = stage(Kernel::MBevelShade, Some(h), None, [ca * ce, -sa * ce, se, se], 1);
-                    s.p1 = [*depth, *region, which, f32::from(u8::from(lut.is_some()))];
-                    s.p3 = [f32::from(u8::from(g.paint == BevelPaint::Outer && bv.technique != BevelTechnique::Smooth)), 0.0, 0.0, 0.0];
-                    s.lut = lut.clone();
-                    s.s = Some(In::Shape);
-                    s.out = Some(out);
-                    out += 1;
-                    b.stages.push(s);
-                }
-            }
-            out
-        }
-        Effect::Stroke(st) => {
-            // composite_with_effects' stroke bands (maps 0 outside, 1 inside)
-            let (in_w, out_w) = stroke_widths(st);
-            if out_w > 0.0 {
-                // Narrow strokes keep the fitted chamfer, wide ones the exact transform (#3646);
-                // the CPU picks the same field by the same width (`stroke_outside_exact`).
-                let kind = match (vector_shape, photocraft_compose::effects::stroke_outside_exact(out_w)) {
-                    (true, true) => FieldKind::StrokeOutsideVector,
-                    (true, false) => FieldKind::StrokeOutsideVectorChamfer,
-                    (false, true) => FieldKind::StrokeOutsideExact,
-                    (false, false) => FieldKind::StrokeOutside,
-                };
-                let d = b.field(kind, out_w);
-                let mut s = stage(Kernel::MStroke, Some(d), None, [out_w, 0.0, 0.0, 0.0], 0);
-                s.out = Some(0);
-                b.stages.push(s);
-            }
-            if in_w > 0.0 {
-                let d = b.field(FieldKind::StrokeInside, in_w);
-                let mut s = stage(Kernel::MStroke, Some(d), None, [in_w, 0.0, 0.0, 0.0], 0);
-                s.out = Some(1);
-                b.stages.push(s);
-            }
-            2
-        }
+        Effect::DropShadow(s) | Effect::InnerShadow(s) => b.shadow(s, light, matches!(e, Effect::InnerShadow(_))),
+        Effect::OuterGlow(g) | Effect::InnerGlow(g) => b.glow(g, matches!(e, Effect::InnerGlow(_))),
+        Effect::Satin(s) => b.satin(s),
+        Effect::BevelEmboss(bv) => b.bevel(bv, light, patterns, anchor),
+        Effect::Stroke(st) => b.stroke(st, vector_shape),
         Effect::ColorOverlay { .. } | Effect::GradientOverlay { .. } | Effect::PatternOverlay { .. } => return MapProgram::empty(),
     };
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    for s in &b.stages {
-        (format!("{:?}", s.kernel), s.a, s.b, s.s, s.radius, s.out).hash(&mut h);
-        for v in s.p0.iter().chain(&s.p1).chain(&s.p3).chain(&s.p4) {
-            v.to_bits().hash(&mut h);
-        }
-        if let Some(p) = &s.pattern {
-            (&p.id, &p.name, p.width, p.height).hash(&mut h);
-            for (c, t) in p.surface.tiles() {
-                (c.tx, c.ty, Arc::as_ptr(t) as usize).hash(&mut h);
-            }
-        }
-        if let Some(l) = &s.lut {
-            for v in l.iter() {
-                v.to_bits().hash(&mut h);
-            }
-        }
-    }
-    (maps, &b.fields).hash(&mut h);
-    MapProgram { key: h.finish() | 1, maps, stages: b.stages, fields: b.fields }
+    MapProgram { key: b.key(maps), maps, stages: b.stages, fields: b.fields }
 }
 
 // ---------------------------------------------------------------------------------------------

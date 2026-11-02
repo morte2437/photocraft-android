@@ -57,7 +57,7 @@ impl Mode {
         Mode::ALL.into_iter().find(|m| m.id() == id)
     }
 
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Mode::OnionSkin => tl!("Onion Skin"),
             Mode::MarchingAnts => tl!("Marching Ants"),
@@ -70,7 +70,7 @@ impl Mode {
     }
 
     /// The single-letter key that picks this view.
-    fn key(self) -> egui::Key {
+    pub(crate) fn key(self) -> egui::Key {
         match self {
             Mode::OnionSkin => egui::Key::O,
             Mode::MarchingAnts => egui::Key::M,
@@ -83,7 +83,7 @@ impl Mode {
     }
 
     /// The view's opacity (percent) until it is changed; `None` for views without one.
-    fn default_opacity(self) -> Option<f32> {
+    pub(crate) fn default_opacity(self) -> Option<f32> {
         match self {
             Mode::OnionSkin | Mode::Overlay => Some(50.0),
             Mode::OnBlack | Mode::OnWhite => Some(100.0),
@@ -91,7 +91,7 @@ impl Mode {
         }
     }
 
-    fn next(self) -> Mode {
+    pub(crate) fn next(self) -> Mode {
         let i = Mode::ALL.iter().position(|m| *m == self).unwrap_or(0);
         Mode::ALL.get(i + 1).copied().unwrap_or(Mode::OnionSkin)
     }
@@ -438,6 +438,10 @@ struct View {
     opacity: f32,
     show_edge: bool,
     show_original: bool,
+    /// Overlay's colour (Photoshop's default rubylith red) and whether it marks the selected
+    /// areas rather than the masked ones.
+    color: Color,
+    selected: bool,
 }
 
 impl View {
@@ -449,6 +453,16 @@ impl View {
             opacity: v.and_then(|v| v.get("opacity")).and_then(Value::as_f64).filter(|o| o.is_finite()).unwrap_or(0.5).clamp(0.0, 1.0) as f32,
             show_edge: b("showEdge"),
             show_original: b("showOriginal"),
+            color: v
+                .and_then(|v| v.get("color"))
+                .and_then(Value::as_array)
+                .filter(|c| c.len() == 3)
+                .and_then(|c| {
+                    let ch = |i: usize| c.get(i).and_then(Value::as_f64).filter(|v| v.is_finite()).map(|v| v.clamp(0.0, 1.0) as f32);
+                    Some(Color::rgb(ch(0)?, ch(1)?, ch(2)?))
+                })
+                .unwrap_or(Color::rgb(1.0, 0.0, 0.0)),
+            selected: v.and_then(|v| v.get("indicates")).and_then(Value::as_str) == Some("selected"),
         }
     }
 }
@@ -461,16 +475,31 @@ fn length(params: &Value, key: &str, k: u32) -> f64 {
 /// The preview of the Select and Mask dialog for `doc`: the proxy reduced by `k`, shown in the
 /// requested view. `None` when the refinement fails or is cancelled.
 pub fn preview_document(doc: &Document, active: Option<LayerId>, params: &Value, k: u32, cancel: Option<&photocraft_engine::jobs::JobCtx>) -> Option<Document> {
+    let k = k.max(1);
+    preview_proxy(crate::proxy::proxy_document(doc, k), active, params, k, cancel)
+}
+
+/// [`preview_document`] on `proxy`, the document already reduced by `k` (the Select and Mask
+/// workspace builds it itself, its selection already carrying the workspace's tool edits).
+pub fn preview_proxy(
+    mut proxy: Document,
+    active: Option<LayerId>,
+    params: &Value,
+    k: u32,
+    cancel: Option<&photocraft_engine::jobs::JobCtx>,
+) -> Option<Document> {
     let view = View::of(params);
     let k = k.max(1);
-    let mut proxy = crate::proxy::proxy_document(doc, k);
     let active = active.filter(|id| proxy.layer(*id).is_some());
     // What Select and Mask starts from: the selection, else the active layer's mask.
     let original = proxy.selection.clone().or_else(|| active.and_then(|id| proxy.layer(id)).and_then(|l| l.mask.as_ref()).map(|m| m.surface.clone()));
     let canvas = Rect::new(0, 0, i32::try_from(proxy.size.width).unwrap_or(i32::MAX), i32::try_from(proxy.size.height).unwrap_or(i32::MAX));
     let coverage = if view.show_edge {
         let band = Coverage::edge_band(original.as_ref(), canvas, length(params, "radius", k).round().clamp(1.0, 250.0) as usize);
-        band.with_brush(scaled_strokes(params, k).as_ref().and_then(|s| photocraft_algo::matting::EdgeBrush::new(s, canvas)).as_ref(), canvas)
+        // With nothing selected OK refines nothing (`matting::refine_area`), so the brush shows nothing either.
+        let selects = original.as_ref().is_some_and(|s| !s.content_bounds().intersect(&canvas).is_empty());
+        let brush = if selects { scaled_strokes(params, k).and_then(|s| photocraft_algo::matting::EdgeBrush::new(&s, canvas)) } else { None };
+        band.with_brush(brush.as_ref(), canvas)
     } else if view.show_original {
         Coverage::read(original.as_ref(), canvas)
     } else {
@@ -559,7 +588,10 @@ fn show(doc: &mut Document, active: Option<LayerId>, view: &View, coverage: &Cov
     doc.selection = Some(coverage.surface(|v| v));
     match view.mode {
         Mode::MarchingAnts => {}
-        Mode::Overlay => doc.layers.push(veil("Overlay", Color::rgb(1.0, 0.0, 0.0), o, Some(coverage.surface(|v| 1.0 - v)))),
+        Mode::Overlay => {
+            let marked = if view.selected { coverage.surface(|v| v) } else { coverage.surface(|v| 1.0 - v) };
+            doc.layers.push(veil("Overlay", view.color, o, Some(marked)));
+        }
         Mode::OnBlack => doc.layers.push(veil("On Black", Color::BLACK, o, Some(coverage.surface(|v| 1.0 - v)))),
         Mode::OnWhite => doc.layers.push(veil("On White", Color::WHITE, o, Some(coverage.surface(|v| 1.0 - v)))),
         Mode::BlackWhite => {
@@ -703,6 +735,24 @@ mod tests {
         params["__view"]["showEdge"] = json!(true);
         let edge = preview_document(&doc, active, &params, 2, None).expect("a preview");
         assert!(pixel(&edge, 35, 10)[0] > 0.99 && pixel(&edge, 55, 10)[0] < 0.01, "Show Edge includes the painted area");
+    }
+
+    /// Overlay takes Photoshop's colour swatch and Indicates: the masked (default) or the selected
+    /// areas carry the tint.
+    #[test]
+    fn overlay_colour_and_what_it_indicates() {
+        let doc = half_selected();
+        let active = doc.layers.first().map(|l| l.id);
+        let near = |a: &[f32], b: &[f32]| a.iter().zip(b).all(|(a, b)| (a - b).abs() < 0.02);
+        let view = |indicates: &str| json!({"__view": {"mode": "overlay", "opacity": 1.0, "color": [0.0, 0.0, 1.0], "indicates": indicates}});
+        let masked = preview_document(&doc, active, &view("masked"), 1, None).expect("a preview");
+        assert!(near(&pixel(&masked, 35, 10), &[0.0, 0.0, 1.0, 1.0]) && near(&pixel(&masked, 5, 10), &[1.0, 1.0, 1.0, 1.0]));
+        let selected = preview_document(&doc, active, &view("selected"), 1, None).expect("a preview");
+        assert!(near(&pixel(&selected, 5, 10), &[0.0, 0.0, 1.0, 1.0]) && near(&pixel(&selected, 35, 10), &[1.0, 1.0, 1.0, 1.0]));
+        // A hostile colour falls back to red.
+        let bad = json!({"__view": {"mode": "overlay", "opacity": 1.0, "color": ["x", 2, null]}});
+        let red = preview_document(&doc, active, &bad, 1, None).expect("a preview");
+        assert!(near(&pixel(&red, 35, 10), &[1.0, 0.0, 0.0, 1.0]));
     }
 
     /// Show Edge shows the band around the selection's edge; Show Original the unrefined selection.

@@ -1,5 +1,8 @@
 use super::paths::{file_name, read_file, stem, template_name};
-use super::*;
+use super::{
+    Affine, Arc, Document, EngineError, Layer, LayerContent, Resample, Result, Session, SmartObject, SmartSource, Value, f64_param, flattened_checked, json,
+    resize_surface, str_param, translate_surface,
+};
 
 pub(crate) fn import(name: &str, bytes: &[u8]) -> Result<Document> {
     import_result(name, bytes).map(|r| r.document)

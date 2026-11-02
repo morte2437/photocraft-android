@@ -18,20 +18,213 @@
 # the Russian typographic equivalent, with the space the source carries.
 
 # Layer Mask Display Options (the layer mask rubylith's colour and opacity)
-	Mask Options…	Параметры маски…
-	Layer Mask Display Options…	Параметры отображения маски слоя…
 
 # Channel Options and New Spot Channel (#3761)
-	Channel Color	Цвет канала
-	Color Indicates:	Цветом обозначены:
-	Solidity:	Плотность:
-	Ink Characteristics	Характеристики краски
 
 # Menus
 
 # Guide layout dialog
 
 # Custom print paper (#3820)
+
+
+# File
+
+# Edit
+
+# Image
+
+# Layer
+
+# Type
+
+# Select
+# Select and Mask dialog labels
+
+# Filter
+# Field Blur pins (#3373)
+
+# View
+
+# Window
+
+# Help
+
+# Tools and options bar
+
+# Panels, dialogs and common widgets
+
+# Preferences dialog
+
+# Document and canvas status bar
+
+# Layers panel
+
+# Channels panel
+
+# Color picker and swatches
+
+# Filters and adjustments dialogs
+
+# Camera Raw and lens dialogs
+
+# Adjustments panel
+
+# History panel
+
+# Navigator panel
+
+# Brush Settings panel
+
+# Tool presets
+
+# Paragraph and character panels
+
+# Glyphs panel
+
+# Paths panel
+
+# Clone Source panel
+
+# Timeline panel
+
+# Info panel
+
+# Layer Comps panel
+
+# Analysis and variables
+
+# Automate
+
+# Color Settings dialog
+
+# Themes
+
+# Workspaces
+
+# New Document dialog
+
+# Placeholders, tooltips, status and keyboard hints
+
+# Transform / warp overlays
+
+# Vanishing Point
+
+# Misc dialog strings
+
+# Blend modes
+
+# Saved views and other bits
+
+# Plurals
+
+# Remaining menu strings (second pass)
+
+# tl! literals (third pass)
+# Gradient Editor window, opened from the options bar's gradient swatch.
+
+# Preference dialog: generated setting labels and dropdown choices
+# Rendering mode and recovery
+# Camera Raw: contextual controls and window title
+
+
+
+
+
+
+# About ▸ Contributors / Models (credits)
+
+# Swatches panel
+# Layer Style > Blending Options (Advanced Blending)
+
+# Shared screen eyedropper and text Color Picker (#1128).
+
+# Fill dialog, layer style contours and Image Size
+
+
+
+# Layer colour labels.
+
+# Pattern Stamp tool
+
+# Painting symmetry presets.
+
+# Eyedropper Sample Size and Sample (#1649).
+
+# Color Picker warnings
+
+
+# Shared Layer Style color picker
+
+# Layers-panel trash confirmation
+# File Info ▸ Camera Data (read-only EXIF fields; "Make" is the camera maker, not the verb).
+# Shared panel docking
+# Edit › Content-Aware Fill workspace
+
+
+# Smart Filter editors
+# Select and Mask view modes (#1754)
+# Select and Mask Refine Edge Brush (#2972)
+
+# Color Sampler (added with the i18n coverage repair)
+
+# History panel menu (#2966)
+# History panel › History Options… (#2966)
+# Print dialog (#2697)
+# Counted status messages and labels (#3454; adapted from PR #3821)
+# View › Guides › New Guide… › Color
+
+# Actions panel: Load/Save Actions (.atn) and kept Photoshop steps
+
+# Actions panel: set folders, dialog toggle, Insert Stop
+# Batch / Image Processor
+
+# Native Windows printing qualification
+# History panel › History Brush source (#2966)
+
+# Dynamic selection context menu and appearance favorites
+
+# Measurement Log column headers (analysis_cmds::COLUMNS)
+# Bevel & Emboss shading controls.
+# PhotoCraft release checks.
+# Embedded Profile Mismatch: profile names beside the choices, Remember this choice
+
+# Darken / Lighten Interface (⇧⌘F1 / ⇧⌘F2)
+# Bevel & Emboss Technique.
+
+# View › Guides › right-click a guide
+
+# Image › Mode › Bitmap (#5559)
+# Free Transform: a new layer while the box is open (#5859)
+# Preferences › Performance › GPU Memory; the status bar and slow-redraw notice
+
+
+# Dynamic UI labels (fourth pass): filter and adjustment parameters, Camera Raw panels,
+# lighting, History/Layers/paths/channels menus, metadata, System Info, status templates and
+# dialog text that other catalogs already carry. Written from the meaning of the English labels
+# in the ordinary Russian graphics-editor vocabulary; no proprietary resource consulted.
+
+# DDS Options (#1327)
+
+# Color Table (.act) dialog
+
+# Graphics Adapter preference (#1885)
+
+# Styles panel: Import / Export Styles (.asl)
+# Actions: a step dialog holds a suspended recording (#7365)
+# Dynamic command-id, plural, and contextual labels (fourth pass).
+# Paragraph direction (TYPE-218-2)
+# Print preview image (#8236)
+# Color panel menu: modes, copy commands and colour ramps (#6000)
+
+# Pen draft after a refused commit (#7648)
+# Art History Brush (#213).
+	Mask Options…	Параметры маски…
+	Layer Mask Display Options…	Параметры отображения маски слоя…
+	Channel Color	Цвет канала
+	Color Indicates:	Цветом обозначены:
+	Solidity:	Плотность:
+	Ink Characteristics	Характеристики краски
 	Paper Width	Ширина бумаги
 	Paper Height	Высота бумаги
 	Rows	Строки
@@ -50,7 +243,6 @@
 	5 Columns, 3 Rows	5 столбцов, 3 строки
 	8 Columns	8 столбцов
 	12 Columns	12 столбцов
-
 	File	Файл
 	Edit	Редактирование
 	Image	Изображение
@@ -67,8 +259,6 @@
 	View	Просмотр
 	Window	Окно
 	Help	Справка
-
-# File
 	New…	Создать…
 	New from Clipboard	Создать из буфера обмена
 	New	Создать
@@ -110,8 +300,6 @@
 	Save for Web (Legacy)…	Сохранить для Web (устаревшее)…
 	Generate	Генерировать
 	Image Assets	Ресурсы изображений
-
-# Edit
 	Undo	Отменить
 	Redo	Повторить
 	Fade…	Ослабить…
@@ -135,8 +323,6 @@
 	Define Pattern…	Определить паттерн…
 	Define Custom Shape…	Определить свою фигуру…
 	Purge	Очистить
-
-# Image
 	Image Size…	Размер изображения…
 	Image Size	Размер изображения
 	Canvas Size…	Размер холста…
@@ -175,8 +361,6 @@
 	Duotone…	Дуотон…
 	Duotone	Дуотон
 	Trap…	Приводка…
-
-# Layer
 	Layer via Copy	Скопировать на новый слой
 	Layer via Cut	Вырезать на новый слой
 	Duplicate Layer…	Дублировать слой…
@@ -273,8 +457,6 @@
 	Scale Effects…	Масштабировать эффекты…
 	New Layer…	Новый слой…
 	Delete Layer…	Удалить слой…
-
-# Type
 	Font	Шрифт
 	Font Preview Size	Размер предпросмотра шрифтов
 	Orientation	Ориентация
@@ -301,8 +483,6 @@
 	Load Default Type Styles	Загрузить стили текста по умолчанию
 	Save Default Type Styles	Сохранить стили текста по умолчанию
 	Type…	Текст…
-
-# Select
 	All	Всё
 	Deselect	Отменить выделение
 	Reselect	Повторить выделение
@@ -310,7 +490,6 @@
 	Inverse	Инверсия
 	Color Range…	Цветовой диапазон…
 	Select and Mask…	Выделение и маска…
-# Select and Mask dialog labels
 	Smart Radius	Умный радиус
 	Shift Edge	Сместить край
 	Decontaminate	Очистить
@@ -338,8 +517,6 @@
 	Current Layer	Текущий слой
 	Refine Strokes	Штрихи уточнения
 	Edits	Правки
-
-# Filter
 	Last Filter	Последний фильтр
 	Filter Gallery…	Галерея фильтров…
 	Liquify…	Пластичность…
@@ -350,7 +527,6 @@
 	Oil Paint…	Масляная живопись…
 	Blur Gallery	Галерея размытия
 	Field Blur…	Размытие по полю…
-# Field Blur pins (#3373)
 	No pin selected	Булавка не выбрана
 	Click the image to add a pin; drag a pin to move it, or its ring to change its blur. Delete removes the selected pin.	Щелкните изображение, чтобы добавить булавку; перетащите булавку, чтобы переместить ее, или ее кольцо, чтобы изменить размытие. Delete удаляет выбранную булавку.
 	Drag the handles on the outline to resize and turn it, the square to round its corners, and the dots inside to set where the blur starts.	Перетаскивайте маркеры на контуре, чтобы изменить размер и повернуть его, квадрат — чтобы скруглить углы, а точки внутри — чтобы задать, где начинается размытие.
@@ -440,8 +616,6 @@
 	Mezzotint…	Меццотинто…
 	Color Halftone…	Цветные полутона…
 	Layer…	Слой…
-
-# View
 	Proof Setup	Настройка цветопробы
 	Proof Colors	Цветопроба
 	Pixel Aspect Ratio	Пиксельное соотношение сторон
@@ -488,8 +662,6 @@
 	Canvas rotation	Вращение холста
 	Zoom in	Увеличить
 	Zoom out	Уменьшить
-
-# Window
 	Cascade	Каскадом
 	Tile	Мозаикой
 	2-up Horizontal	Два по горизонтали
@@ -538,8 +710,6 @@
 	3D	3D
 	Toolbars	Панели инструментов
 	Hide All	Скрыть все
-
-# Help
 	About PhotoCraft	О программе PhotoCraft
 	PhotoCraft Website	Сайт PhotoCraft
 	PhotoCraft on GitHub	PhotoCraft на GitHub
@@ -547,8 +717,6 @@
 	ArtCraft Website	Сайт ArtCraft
 	Join the ArtCraft Discord…	Discord сообщества ArtCraft…
 	System Info…	Информация о системе…
-
-# Tools and options bar
 	Move	Перемещение
 	Marquee	Область
 	Lasso	Лассо
@@ -609,8 +777,6 @@
 	Rotation	Поворот
 	Align	Выравнивание
 	Aligned	Выровнено
-
-# Panels, dialogs and common widgets
 	OK	OK
 	Cancel	Отмена
 	Cancel (Esc)	Отмена (Esc)
@@ -670,8 +836,6 @@
 	Select Data Points…	Выбрать точки данных…
 	Set Measurement Scale…	Задать масштаб измерений…
 	Use Measurement Scale	Использовать масштаб измерений
-
-# Preferences dialog
 	Preferences	Настройки
 	General…	Общие…
 	Interface…	Интерфейс…
@@ -696,8 +860,6 @@
 	Thumbnail size (smallest: list)	Размер миниатюр (минимальный: список)
 	Reset GPU Backend	Сбросить GPU-бэкенд
 	Applies at next launch.	Применится при следующем запуске.
-
-# Document and canvas status bar
 	Untitled	Без имени
 	Untitled-1	Без имени-1
 	Doc: {flat}/{layered}	Док: {flat}/{layered}
@@ -736,8 +898,6 @@
 	Both Axes	По обеим осям
 	Horizontally	По горизонтали
 	Vertically	По вертикали
-
-# Layers panel
 	Layers to Files…	Слои в файлы…
 	Duplicate Layers…	Дублировать слои…
 	Group name	Имя группы
@@ -767,8 +927,6 @@
 	Smart Filter	Смарт-фильтр
 	Fill Content	Содержимое заливки
 	Adjustment Preview	Предпросмотр коррекции
-
-# Channels panel
 	Channel:	Канал:
 	Channel Mixer…	Микширование каналов…
 	Output Channel:	Выходной канал:
@@ -783,8 +941,6 @@
 	Spot Channel	Цветовой канал
 	Mask All	Маскировать всё
 	Mask All Objects	Маскировать все объекты
-
-# Color picker and swatches
 	Color	Цвет
 	Color:	Цвет:
 	Colors	Цвета
@@ -799,8 +955,6 @@
 	Overlay Opacity	Непрозрачность наложения
 	Glow Color	Цвет свечения
 	Web Snap	Привязка к web-палитре
-
-# Filters and adjustments dialogs
 	Brightness	Яркость
 	Contrast	Контраст
 	Brightness/Contrast…	Яркость/Контраст…
@@ -861,8 +1015,6 @@
 	Working Yellow Plate	Рабочая жёлтая форма
 	Working Black Plate	Рабочая чёрная форма
 	Working Gray Plate	Рабочая серая форма
-
-# Camera Raw and lens dialogs
 	Basic	Основные
 	Detail	Детализация
 	HSL/Grayscale	HSL/Градации серого
@@ -959,8 +1111,6 @@
 	Selected Areas	Выделенные области
 	Spot Color	Цветовой (spot) канал
 	Color indicates	Цвет обозначает
-
-# Adjustments panel
 	Curves	Кривые
 	Levels	Уровни
 	Color Balance	Цветовой баланс
@@ -973,8 +1123,6 @@
 	Channel Mixer	Микширование каналов
 	Gradient Map	Градиентная карта
 	Selective Color	Выборочная коррекция цвета
-
-# History panel
 	History Log…	Журнал истории…
 	Create Snapshot	Создать снимок
 	Delete Snapshot	Удалить снимок
@@ -989,14 +1137,10 @@
 	Automatically Create New Snapshot When Saving	Автоматически создавать снимок при сохранении
 	Show New Snapshot Dialog by Default	По умолчанию показывать диалог нового снимка
 	Clear History	Очистить историю
-
-# Navigator panel
 	Panel Options…	Параметры панели…
 	View menu	Меню «Просмотр»
 	Keep view in sync	Держать обзор синхронным
 	{zoom}%	{zoom}%
-
-# Brush Settings panel
 	Brush name	Имя кисти
 	Brush Preview	Предпросмотр кисти
 	Brush Tip Shape	Форма отпечатка
@@ -1082,8 +1226,6 @@
 	Override Tilt Y	Переопределить наклон Y
 	Override Rotation	Переопределить поворот
 	Apply the pen's tilt and rotation to the tip shape	Применять наклон и поворот пера к форме отпечатка
-
-# Tool presets
 	Preset Type	Тип набора
 	Preset Manager…	Управление наборами…
 	Rename Tool Preset…	Переименовать набор…
@@ -1097,8 +1239,6 @@
 	Preset:	Набор:
 	Preset	Набор
 	Presets:	Наборы:
-
-# Paragraph and character panels
 	Font Size:	Кегль:
 	Font size	Кегль
 	Type:	Текст:
@@ -1176,8 +1316,6 @@
 	Indent First	Отступ первой строки
 	Center	По центру
 	Justify	По ширине
-
-# Glyphs panel
 	Glyph	Глиф
 	Select a type layer or click into text to insert glyphs	Выберите текстовый слой или щёлкните в текст, чтобы вставить глифы
 	Entire Font	Весь шрифт
@@ -1197,8 +1335,6 @@
 	Ordinals	Порядковые числительные
 	East Asian Features	Восточноазиатские возможности
 	Middle Eastern Features	Ближневосточные возможности
-
-# Paths panel
 	Path	Контур
 	Path:	Контур:
 	Work Path	Рабочий контур
@@ -1215,11 +1351,9 @@
 	Current Path	Текущий контур
 	Vector Mask from Current Path	Векторная маска из текущего контура
 	Create new shape from the current path	Создать новую фигуру из текущего контура
-	Drag to move the active shape's path or the Work Path	Перетащите, чтобы переместить контур активной фигуры или рабочий контур
+	Drag to move the selected path	Перетащите, чтобы переместить выбранный контур
 	Click: select anchor · Drag: move anchor, handle or segment · {shift}-click: add · {alt}-click: whole subpath	Щелчок: выбрать узел · Перетаскивание: переместить узел, маркер или сегмент · {shift}-щелчок: добавить · {alt}-щелчок: весь подконтур
 	Draw with the Pen tool (P) or make a work path from a selection.	Нарисуйте пером (P) или создайте рабочий контур из выделения.
-
-# Clone Source panel
 	Source: not set ({key}-click with Clone Stamp)	Источник: не задан ({key}-клик штампом)
 	Clone source {n} ({key}-click with Clone Stamp to set)	Источник клонирования {n} ({key}-клик штампом, чтобы задать)
 	{key}-click to set the source	{key}-клик, чтобы задать источник
@@ -1242,8 +1376,6 @@
 	Frame Sync	Синхронизация кадров
 	Quick Sync	Быстрая синхронизация
 	Enabled	Включено
-
-# Timeline panel
 	Create Video Timeline	Создать видео-шкалу
 	Open a document to use the timeline.	Откройте документ, чтобы работать со шкалой времени.
 	Video Layers	Видеослои
@@ -1285,8 +1417,6 @@
 	Repeat	Повтор
 	Play Once	Однократно
 	Video Cache	Видеокэш
-
-# Info panel
 	Info Options…	Параметры информации…
 	First Color Readout	Первая цветовая проба
 	Second Color Readout	Вторая цветовая проба
@@ -1309,8 +1439,6 @@
 	Mouse Coordinates	Координаты курсора
 	Ruler Units	Единицы линеек
 	Hide	Скрыть
-
-# Layer Comps panel
 	Layer Comps to Files…	Варианты слоя в файлы…
 	Apply next selected layer comp	Применить следующий выбранный вариант
 	Apply previous selected layer comp	Применить предыдущий выбранный вариант
@@ -1328,8 +1456,6 @@
 	Visibility	Видимость
 	Position	Положение
 	Appearance (Layer Style)	Внешний вид (стиль слоя)
-
-# Analysis and variables
 	Analysis	Анализ
 	Variables	Переменные
 	Variable Data Sets…	Наборы данных переменных…
@@ -1410,8 +1536,6 @@
 	Version {version}	Версия {version}
 	Advanced	Дополнительно
 	Import…	Импортировать…
-
-# Automate
 	Automate	Автоматизация
 	Batch…	Пакетная обработка…
 	Create Droplet…	Создать модуль-дроплет…
@@ -1442,8 +1566,6 @@
 	Stop For Errors	Останавливаться при ошибках
 	Log Errors To File	Записывать ошибки в файл
 	Errors	Ошибки
-
-# Color Settings dialog
 	Color Settings…	Настройки цвета…
 	Settings	Наборы
 	Settings:	Наборы:
@@ -1472,8 +1594,6 @@
 	SMPTE C	SMPTE C
 	HDTV (Rec. 709)	HDTV (Rec. 709)
 	CIE RGB	CIE RGB
-
-# Themes
 	Theme	Тема
 	Switch theme	Сменить тему
 	Next Theme	Следующая тема
@@ -1496,8 +1616,6 @@
 	Pro Medium Gray Theme	Средне-серая тема Pro
 	Pro Light Gray Theme	Светло-серая тема Pro
 	Pro Light Theme	Светлая тема Pro
-
-# Workspaces
 	Workspace…	Рабочая среда…
 	Essentials	Основные
 	New Workspace…	Новая рабочая среда…
@@ -1525,8 +1643,6 @@
 	Collapse Panel Group	Свернуть группу панелей
 	Expand Panel Group	Развернуть группу панелей
 	Close Tab Group	Закрыть группу вкладок
-
-# New Document dialog
 	PRESET DETAILS	ПАРАМЕТРЫ НАБОРА
 	BLANK DOCUMENT PRESETS ({n})	НАБОРЫ ПУСТЫХ ДОКУМЕНТОВ ({n})
 	Create a new document or open an existing file.	Создайте новый документ или откройте существующий файл.
@@ -1573,8 +1689,6 @@
 	Points	Пункты
 	Picas	Пики
 	Columns	Столбцы
-
-# Placeholders, tooltips, status and keyboard hints
 	{name} options	Параметры: {name}
 	Align {what}	Выровнять: {what}
 	Untagged {mode}	Без профиля ({mode})
@@ -1751,8 +1865,6 @@
 	Current	Текущий
 	{added}, {removed} subtracted	{added}, вычтено {removed}
 	Filter:	Фильтр:
-
-# Transform / warp overlays
 	Free Transform	Свободное трансформирование
 	Free Transform a Copy	Свободное трансформирование копии
 	Transform	Трансформирование
@@ -1805,8 +1917,6 @@
 	Rotate Fixed	Фиксированный поворот
 	Adaptive Wide Angle isn't open	Адаптивный широкий угол не открыт
 	Liquify is not open	Пластичность не открыта
-
-# Vanishing Point
 	Create Plane	Создать плоскость
 	Edit Plane	Править плоскость
 	Select Plane	Выбрать плоскость
@@ -1820,8 +1930,6 @@
 	Blend	Смешивание
 	Brush Size	Размер кисти
 	Heal Color	Цвет восстановления
-
-# Misc dialog strings
 	Mask	Маска
 	Channel	Канал
 	Rectangle	Прямоугольник
@@ -1845,8 +1953,6 @@
 	Add to	Добавить к
 	Subtract from	Вычесть из
 	Intersect with	Пересечь с
-
-# Blend modes
 	Pass Through	Пропустить
 	Dissolve	Растворение
 	Darken	Замена тёмным
@@ -1868,19 +1974,13 @@
 	Difference	Разница
 	Exclusion	Исключение
 	Luminosity	Яркость
-
-# Saved views and other bits
 	Capture Comp	Зафиксировать вариант
 	No Layer Comps	Нет вариантов слоя
-
-# Plurals
 @plural	{n} item|{n} items	{n} элемент|{n} элемента|{n} элементов
 @plural	{n} Layer|{n} Layers	{n} слой|{n} слоя|{n} слоёв
 @plural	{n} layer|{n} layers	{n} слой|{n} слоя|{n} слоёв
 @plural	Group · {n} layer|Group · {n} layers	Группа · {n} слой|Группа · {n} слоя|Группа · {n} слоёв
 @plural	{n} sample|{n} samples	{n} образец|{n} образца|{n} образцов
-
-# Remaining menu strings (second pass)
 	180°	180°
 	32-bit Preview Options…	Параметры предпросмотра 32 бит…
 	90° Clockwise	90° по часовой стрелке
@@ -1977,6 +2077,7 @@
 	Merge Group	Объединить группу
 	Merge Layers	Объединить слои
 	Merge Shape Components	Объединить компоненты фигуры
+	Path operations	Операции с контурами
 	Merge Visible	Свести видимые
 	Stamp Visible	Штамп видимых
 	Select Layer Above	Выбрать слой выше
@@ -2049,8 +2150,6 @@
 	Video Frames to Layers…	Видеокадры в слои…
 	WIA Support…	Поддержка WIA…
 	Working CMY Plate	Рабочая голубая форма
-
-# tl! literals (third pass)
 	Absolute	Абсолютный
 	Action	Операция
 	Adaptive	Адаптивный
@@ -2277,7 +2376,6 @@
 	Outside	Снаружи
 	Tetrahedral	Тетраэдрическая
 	Texture Each Tip	Текстура на каждый отпечаток
-# Gradient Editor window, opened from the options bar's gradient swatch.
 	Gradient Editor	Редактор градиентов
 	Gradient picker	Выбор градиента
 	Save As Preset	Сохранить как набор
@@ -2305,8 +2403,6 @@
 	Whites	Белые
 	Yellow	Жёлтый
 	Yellow  ·  Blue	Жёлтый  ·  Синий
-
-# Preference dialog: generated setting labels and dropdown choices
 	Adobe	Adobe
 	Adobe rgb	Adobe RGB
 	Allow agent control	Разрешить управление агентами
@@ -2531,7 +2627,6 @@
 	4 x 4	4 × 4
 	5 x 5	5 × 5
 	Grid:	Сетка:
-# Rendering mode and recovery
 	Rendering Mode	Режим отрисовки
 	Automatic (recommended)	Автоматически (рекомендуется)
 	CPU / Compatibility	CPU / Совместимость
@@ -2558,7 +2653,6 @@
 	Tone Histogram	Тональная гистограмма
 	Show Selected Region	Показать выделенную область
 cameraRaw	Light	Свет
-# Camera Raw: contextual controls and window title
 	Camera Raw Filter ({layer})	Фильтр Camera Raw ({layer})
 	Camera Raw ({name})	Camera Raw ({name})
 	Aqua	Голубой
@@ -2589,14 +2683,10 @@ cameraRaw	Roughness	Неровность
 	Scale or rotate the moved area, then press {key}	Масштабируйте или поверните перемещённую область, затем нажмите {key}
 	Now drag the selection onto another area	Теперь перетащите выделение на другую область
 	Edit Type	Редактировать текст
-
-
 	New Style…	Новый стиль…
 	Style {name} saved	Стиль {name} сохранён
-
 	Create new style (from the selected type)	Создать стиль (из выделенного текста)
 	Create new style from the selected layer	Создать стиль из выделенного слоя
-
 	Make Default	Сделать по умолчанию
 	Reset to Default	Сбросить к значению по умолчанию
 	Full-resolution preview unavailable	Полноразмерный предпросмотр недоступен
@@ -2625,9 +2715,6 @@ cameraRaw	Roughness	Неровность
 	Magnetic Lasso Tool	Магнитное лассо
 	Frequency	Частота
 	Use tablet pressure to change pen width	Использовать нажим планшета для изменения ширины пера
-
-
-# About ▸ Contributors / Models (credits, craftrules standards/contributors.md)
 	About	О программе
 	Contributors	Участники
 	Models	Модели
@@ -2658,8 +2745,6 @@ cameraRaw	Roughness	Неровность
 	% of all commits	% от всех коммитов
 	Lines +/−	Строки +/−
 	@{login}: {prs} PRs, {commits} commits, +{added} / −{deleted} lines (Δ {delta}), +{binAdded} / −{binDeleted} binary assets, {first} – {last}	@{login}: PR: {prs}, коммиты: {commits}, строки +{added} / −{deleted} (Δ {delta}), двоичные файлы +{binAdded} / −{binDeleted}, {first} – {last}
-
-# Swatches panel
 	Create new swatch	Создать новый образец
 	New Swatch…	Новый образец…
 	New Swatch Group…	Новая группа образцов…
@@ -2669,13 +2754,12 @@ cameraRaw	Roughness	Неровность
 	Export Swatches for Exchange…	Экспортировать образцы для обмена…
 	Reset Swatches	Восстановить образцы
 	Add to Swatches	Добавить в образцы
-# Layer Style > Blending Options (Advanced Blending)
 	Blend If:	Изображение если:
+	Current Layer:	Текущий слой:
+	Underlying Layer:	Нижележащий слой:
 	Channels:	Каналы:
 	Knockout	Просвечивание
 	Apply At Canvas Bounds	Применить эффект на границах холста
-
-# Shared screen eyedropper and text Color Picker (#1128).
 	Color Picker (Text Color)	Палитра цветов (Цвет текста)
 	Color Picker ({name})	Палитра цветов ({name})
 	Color Picker (Fill Color)	Палитра цветов (Цвет заливки)
@@ -2692,8 +2776,6 @@ cameraRaw	Roughness	Неровность
 	Show/Hide Panels	Показать/скрыть панели
 	Could not open	Не удалось открыть
 	{path}: the path is not valid Unicode; rename the file and open it again.	{path}: путь не является допустимым Unicode; переименуйте файл и откройте его снова.
-
-# Fill dialog, layer style contours and Image Size
 	Contents:	Содержимое:
 	Custom Pattern:	Свой узор:
 	Foreground Color	Основной цвет
@@ -2721,14 +2803,12 @@ cameraRaw	Roughness	Неровность
 	Rounded Steps	Скруглённые ступени
 	Sawtooth 1	Пила 1
 	Linear	Линейный
-
 	Red Eye Tool	Инструмент «Красные глаза»
 	Pupil Size	Размер зрачка
 	Darken Amount	Степень затемнения
 	Click a red pupil to neutralize it	Щёлкните по красному зрачку, чтобы убрать блик
 	open source	открытый исходный код
 	…and {n} more	…и ещё {n}
-
 	Eyedroppers:	Пипетки:
 	Set Black Point	Задать точку чёрного
 	Set Neutral Gray Point	Задать нейтральную серую точку
@@ -2738,8 +2818,6 @@ cameraRaw	Roughness	Неровность
 	Black Matte	На чёрном фоне
 	White Matte	На белом фоне
 	Quick Mask	Быстрая маска
-
-# Layer colour labels.
 	Seafoam	Морская пена
 	Indigo	Индиго
 	Fuchsia	Фуксия
@@ -2759,21 +2837,15 @@ fontWeight	Bold	Жирный
 fontWeight	ExtraBold	Сверхжирный
 fontWeight	Black	Сверхжирный (Black)
 fontWeight	Italic	Курсив
-
-# Pattern Stamp tool
 	Pattern Stamp Tool	Инструмент узорный штамп
 	Impressionist	Импрессионист
 	Rotate View Tool	Инструмент поворота вида
 	Reset View	Сбросить вид
 	Drag around the centre to rotate the view  ·  Shift constrains to 15°	Перетащите вокруг центра, чтобы повернуть вид  ·  Shift фиксирует шаг 15°
-
-# Painting symmetry presets.
 	Dual Axis	Две оси
 	Diagonal	Диагональная
 	Transform Symmetry	Трансформировать симметрию
 	Set painting symmetry options	Настроить параметры симметричного рисования
-
-# Eyedropper Sample Size and Sample (#1649).
 	Point Sample	Точечная выборка
 	3 by 3 Average	Среднее 3 × 3
 	5 by 5 Average	Среднее 5 × 5
@@ -2786,15 +2858,12 @@ fontWeight	Italic	Курсив
 	Current & Below No Adjustments	Текущий и ниже без коррекции
 	Show Sampling Ring	Показать кольцо выборки
 	Click to sample the foreground colour  ·  {key}-click for background	Клик — взять основной цвет  ·  {key}-клик — фоновый цвет
-
-# Color Picker warnings
 	Out of gamut for printing: click for the nearest printable colour	Вне цветового охвата печати: щёлкните, чтобы выбрать ближайший печатаемый цвет
 	Not a web colour: click for the nearest web colour	Не веб-цвет: щёлкните, чтобы выбрать ближайший веб-цвет
 	Color to Alpha…	Цвет в альфа-канал…
 	Transparency Threshold	Порог прозрачности
 	Opacity Threshold	Порог непрозрачности
 	PhotoCraft — Screen Color Picker	PhotoCraft — Пипетка цвета экрана
-
 	Rasterize svg groups deeper than	Растеризовать группы SVG глубже этого уровня
 	0 turns this threshold off; SVG groups nested deeper than 100 levels are always rasterized.	0 отключает этот порог; группы SVG с вложенностью более 100 уровней всегда растрируются.
 	Rule of Thirds	Правило третей
@@ -2808,8 +2877,6 @@ fontWeight	Italic	Курсив
 	Cycle Orientation	Сменить ориентацию
 	Set the overlay options for the Crop tool	Задать параметры перекрытия для инструмента «Рамка»
 	Alt-click went to the desktop, which moves windows with Alt-drag. Set its window-move key to Super, or latch Alt in Window › Modifier Keys.	Alt+щелчок перехватило окружение рабочего стола: оно перемещает окна через Alt+перетаскивание. Назначьте для перемещения окон клавишу Super или зафиксируйте Alt в меню Окно › Клавиши-модификаторы.
-
-# Shared Layer Style color picker
 	Color Picker (Layer Style Color)	Палитра цветов (цвет стиля слоя)
 	Auto Hide Notifications	Автоскрытие уведомлений
 	Notification Duration (seconds)	Длительность уведомления (секунды)
@@ -2879,8 +2946,6 @@ fontWeight	Italic	Курсив
 	Quick Selection found nothing there	Быстрое выделение ничего здесь не нашло
 	Object Selection found nothing there — try a tighter rectangle	Выделение объектов ничего здесь не нашло — попробуйте более узкий прямоугольник
 	No subject found — try a rectangle around the object	Объект не найден — попробуйте прямоугольник вокруг объекта
-
-# Layers-panel trash confirmation
 	Delete layer ‘{name}’?	Удалить слой «{name}»?
 	Delete {count} layers? {names}	Удалить слои ({count})? {names}
 	Delete layer?	Удалить слой?
@@ -2890,6 +2955,9 @@ fontWeight	Italic	Курсив
 	Invalid delete command	Недопустимая команда удаления
 	Layer deleted, but confirmation preference could not be saved: {error}	Слой удалён, но не удалось сохранить настройку подтверждения: {error}
 	Add a layer style	Добавить стиль слоя
+	Move effect up	Переместить эффект вверх
+	Move effect down	Переместить эффект вниз
+	Delete effect	Удалить эффект
 	Add a mask  (from the selection; {key} inverts)	Добавить маску  (из выделения; {key} инвертирует)
 	Add an adjustment	Добавить коррекцию
 	Add to selection  ({key})	Добавить к выделению  ({key})
@@ -2964,7 +3032,6 @@ fontWeight	Italic	Курсив
 	Appearance Settings…	Настройки оформления…
 	Add to favorites	Добавить в избранное
 	Remove from favorites	Удалить из избранного
-# File Info ▸ Camera Data (read-only EXIF fields; "Make" is the camera maker, not the verb).
 cameraData	Make	Производитель
 cameraData	Model	Модель
 cameraData	Date Taken	Дата съёмки
@@ -2974,7 +3041,6 @@ cameraData	ISO Speed	Светочувствительность ISO
 cameraData	Focal Length	Фокусное расстояние
 cameraData	Focal Length (35 mm)	Фокусное расстояние (35 мм)
 cameraData	Lens	Объектив
-# Shared panel docking
 	Activate Panel	Активировать панель
 	Change Panel Group	Изменить группу панелей
 	Change Panel Layout	Изменить расположение панелей
@@ -3014,7 +3080,6 @@ cameraData	Lens	Объектив
 	Rasterize Layer Style	Растрировать стиль слоя
 	Search settings…	Поиск настроек…
 	No matching settings	Нет подходящих настроек
-# Edit › Content-Aware Fill workspace
 	Sampling Brush Tool	Кисть области выборки
 	Sampling Area Overlay	Наложение области выборки
 	Show Sampling Area	Показать область выборки
@@ -3032,7 +3097,6 @@ cameraData	Lens	Объектив
 	Output To	Вывод в
 	Duplicate Layer	Дубликат слоя
 	Contract	Сжать
-
 	Animation Options	Параметры анимации
 	Entire Document	Весь документ
 	Filter Options	Параметры фильтра
@@ -3050,8 +3114,6 @@ cameraData	Lens	Объектив
 	Add “copy” to Copied Layers and Groups	Добавлять «копия» к дублированным слоям и группам
 	Preview on canvas when reordering layers	Предпросмотр на холсте при изменении порядка слоёв
 	Show layer mask badges	Показывать значки типов масок слоя
-
-# Smart Filter editors
 	Blending Options ({filter})	Параметры наложения ({filter})
 	Hide the layer's effects and Smart Filters  ({key}-click: all layers)	Скрыть эффекты слоя и смарт-фильтры  ({key}-клик: все слои)
 	Show the layer's effects and Smart Filters  ({key}-click: all layers)	Показать эффекты слоя и смарт-фильтры  ({key}-клик: все слои)
@@ -3084,7 +3146,6 @@ curves	Smooth	Сгладить
 	Fix the red plane first: its corners must form a convex quad	Сначала исправьте красную плоскость: ее углы должны образовывать выпуклый четырехугольник
 	Alt-click a plane to set the clone source	Щёлкните плоскость с Alt, чтобы задать источник клонирования
 	Too many clone strokes: apply Vanishing Point first	Слишком много мазков клонирования: сначала примените «Точку схода»
-# Select and Mask view modes (#1754)
 	Onion Skin	Калька
 	Marching Ants	Бегущие муравьи
 	On Black	На черном
@@ -3093,7 +3154,6 @@ curves	Smooth	Сгладить
 	Show Edge	Показать край
 	Show Original	Показать исходное
 	F cycles the views; hold X to see the image	F переключает виды; удерживайте X, чтобы увидеть изображение
-# Select and Mask Refine Edge Brush (#2972)
 	Refine Edge Brush (R)	Кисть уточнения края (R)
 	Expand Detection Area	Расширить область обнаружения
 	Restore Original Edge	Восстановить исходный край
@@ -3107,19 +3167,13 @@ curves	Smooth	Сгладить
 	Enter a name for the crop preset	Введите имя набора параметров кадрирования
 	There is no crop size or ratio to save	Нет размера или соотношения сторон кадрирования для сохранения
 	Presentation	Представление
-
-# Color Sampler (added with the i18n coverage repair)
 	Click to place · Alt-click or drag off-canvas to remove	Щёлкните, чтобы разместить · Alt-щелчок или перетаскивание за пределы холста для удаления
 	No document open	Документ не открыт
 	{n} of {max} sample points	{n} из {max} точек замера
-
-# History panel menu (#2966)
 	New Snapshot…	Новый снимок…
 	History Options…	Параметры истории…
-# History panel › History Options… (#2966)
 	Allow Non-Linear History	Разрешить нелинейную историю
 	Make Layer Visibility Changes Undoable	Разрешить отмену изменений видимости слоёв
-# Print dialog (#2697)
 	Emulsion Down	Эмульсией вниз
 	Functions	Функции
 	Print Resolution:	Разрешение печати:
@@ -3131,7 +3185,6 @@ curves	Smooth	Сгладить
 	Apply mask to layer before removing?	Применить маску к слою перед удалением?
 	The layer or its mask changed. Drag the mask onto the Trash again.	Слой или его маска изменились. Перетащите маску в корзину ещё раз.
 	Delete the vector mask?	Удалить векторную маску?
-# Counted status messages and labels (#3454; adapted from PR #3821)
 @plural	Exported {n} swatch to {file}|Exported {n} swatches to {file}	Экспортирован {n} образец в {file}|Экспортированы {n} образца в {file}|Экспортировано {n} образцов в {file}
 @plural	Imported {n} brush from {group}|Imported {n} brushes from {group}	Импортирована {n} кисть из {group}|Импортированы {n} кисти из {group}|Импортировано {n} кистей из {group}
 @plural	Imported {n} swatch from {file}|Imported {n} swatches from {file}	Импортирован {n} образец из {file}|Импортированы {n} образца из {file}|Импортировано {n} образцов из {file}
@@ -3146,7 +3199,6 @@ curves	Smooth	Сгладить
 @plural	{n} step|{n} steps	{n} шаг|{n} шага|{n} шагов
 @plural	{warning} (+{n} more brush preset warning)|{warning} (+{n} more brush preset warnings)	{warning} (и ещё {n} предупреждение о наборах кистей)|{warning} (и ещё {n} предупреждения о наборах кистей)|{warning} (и ещё {n} предупреждений о наборах кистей)
 @plural	{what} with {n} warning|{what} with {n} warnings	{what}: {n} предупреждение|{what}: {n} предупреждения|{what}: {n} предупреждений
-# View › Guides › New Guide… › Color
 	Light Blue	Светло-синий
 	Light Red	Светло-красный
 	Medium Blue	Средне-синий
@@ -3167,8 +3219,6 @@ curves	Smooth	Сгладить
 	Clear Brush Controls	Очистить параметры кисти
 	Reset All Locked Settings	Сбросить все заблокированные параметры
 	Copy Texture to Other Tools	Скопировать текстуру в другие инструменты
-
-# Actions panel: Load/Save Actions (.atn) and kept Photoshop steps
 	Load Actions…	Загрузить операции…
 	Save Actions…	Сохранить операции…
 	New Action…	Новая операция…
@@ -3180,10 +3230,8 @@ curves	Smooth	Сгладить
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} шаг пока не имеет эквивалента в PhotoCraft|{n} шага пока не имеют эквивалента в PhotoCraft|{n} шагов пока не имеют эквивалента в PhotoCraft
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	Сохранена {n} операция в {file}|Сохранены {n} операции в {file}|Сохранено {n} операций в {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	Пропущен {n} шаг без эквивалента в Photoshop|Пропущены {n} шага без эквивалента в Photoshop|Пропущено {n} шагов без эквивалента в Photoshop
-
 	File Naming	Именование файлов
 	Starting serial	Начальный порядковый номер
-# Actions panel: set folders, dialog toggle, Insert Stop
 	Insert Stop…	Вставить остановку…
 	Save Set…	Сохранить набор…
 	Message:	Сообщение:
@@ -3195,11 +3243,8 @@ curves	Smooth	Сгладить
 @plural	{n} action|{n} actions	{n} операция|{n} операции|{n} операций
 	Background (Default)	Фон (по умолчанию)
 	Content-Aware Fill	Заливка с учётом содержимого
-# Batch / Image Processor
 	Include All Subfolders	Включить все вложенные папки
 	Auto Add/Delete	Автодобавление/удаление
-
-# Native Windows printing qualification
 	Don't also tick Mirror Image in Print Settings…: the two flips cancel out.	Не включайте также зеркальное отражение в параметрах печати: два отражения отменяют друг друга.
 	Print Settings…	Параметры печати…
 	Remember to turn off the printer's own colour management in Print Settings…	Не забудьте отключить управление цветом самого принтера в параметрах печати…
@@ -3217,16 +3262,11 @@ curves	Smooth	Сгладить
 	Could not write {name}: {error}	Не удалось записать {name}: {error}
 	Kept {name}: written by another application	{name} сохранён без изменений: записан другим приложением
 	Shadow Tint	Оттенок теней
-# History panel › History Brush source (#2966)
 	Paints from the History panel's source state	Рисует из исходного состояния панели «История»
 	Sets the source for the history brush	Задаёт источник для кисти истории
-
-# Dynamic selection context menu and appearance favorites
 	Select Inverse	Инвертировать выделение
 	Pro (Light)	Pro (светлая)
 	Pro (Light Gray)	Pro (светло-серая)
-
-# Measurement Log column headers (analysis_cmds::COLUMNS)
 	Label	Метка
 	Date and Time	Дата и время
 	Scale Units	Единицы масштаба
@@ -3267,45 +3307,28 @@ curves	Smooth	Сгладить
 	Slab Serif	С брусковыми засечками
 	TrueType font	Шрифт TrueType
 	Variable font	Вариативный шрифт
-# Bevel & Emboss shading controls.
 	Highlight Mode	Режим светлых тонов
 	Highlight Color	Цвет светлых тонов
 	Highlight Opacity	Непрозрачность светлых тонов
 	Shadow Mode	Режим теней
 	Shadow Color	Цвет теней
 	Shadow Opacity	Непрозрачность теней
-# PhotoCraft release checks.
 	Check for Updates…	Проверить обновления…
-	PhotoCraft Updates	Обновления PhotoCraft
-	Checking for updates…	Проверка обновлений…
 	Open the release page to choose an installer for your system.	Откройте страницу выпуска и выберите установщик для своей системы.
-	Open Download Page	Открыть страницу загрузки
-	PhotoCraft is up to date.	Установлена последняя версия PhotoCraft.
-	Could not check for updates.	Не удалось проверить обновления.
-	Updates have not been checked yet.	Обновления ещё не проверялись.
-	Check Again	Проверить снова
 	Automatically Check for Updates	Автоматически проверять обновления
-	Installed version: {version}	Установленная версия: {version}
-	PhotoCraft {version} is available.	Доступна версия PhotoCraft {version}.
-# Embedded Profile Mismatch: profile names beside the choices, Remember this choice
 	Use the embedded profile ({profile})	Использовать встроенный профиль ({profile})
 	Convert to the working space ({profile})	Преобразовать в рабочее пространство ({profile})
 	Remember this choice for future images	Запомнить этот выбор для следующих изображений
 	Turn the prompt back on with Ask On Mismatch in Edit › Color Settings.	Снова включить вопрос можно параметром Ask On Mismatch в Редактирование › Настройки цвета.
 	Button Mode	Режим кнопок
 	Button Mode On	Режим кнопок включён
-
-# Darken / Lighten Interface (⇧⌘F1 / ⇧⌘F2)
 	Darken Interface	Сделать интерфейс темнее
 	Lighten Interface	Сделать интерфейс светлее
-# Bevel & Emboss Technique.
 	Technique	Метод
 	Chisel Hard	Жесткая огранка
 	Chisel Soft	Мягкая огранка
 	Open color-less EXR as ACEScg	Открывать EXR без цветового профиля как ACEScg
 	Do not append "copy" to filename when saving a copy	Не добавлять «copy» к имени файла при сохранении копии
-
-# View › Guides › right-click a guide
 	Edit Selected Guides	Изменить выбранные направляющие
 	Clear Selected Guides	Удалить выбранные направляющие
 	Bicubic Automatic	Бикубическая, автоматически
@@ -3331,8 +3354,6 @@ curves	Smooth	Сгладить
 	{set} (modified)	{set} (изменён)
 	Random	Случайно
 	Show file name in title	Показывать имя файла в заголовке
-
-# Image › Mode › Bitmap (#5559)
 	50% Threshold	Порог 50%
 	Pattern Dither	Регулярный дизеринг
 	Diffusion Dither	Диффузионный дизеринг
@@ -3352,10 +3373,8 @@ curves	Smooth	Сгладить
 	Undo Changes	Отменить изменения
 	{shortcut} is reserved by the system and can't be assigned.	Комбинация {shortcut} зарезервирована системой и не может быть назначена.
 	Low-Latency Drawing (vsync off, applies at next launch)	Рисование с малой задержкой (без вертикальной синхронизации, после перезапуска)
-# Free Transform: a new layer while the box is open (#5859)
 	Free Transform is still being applied; try again when it has finished.	Свободное трансформирование ещё применяется; повторите попытку, когда оно завершится.
 	The transform couldn't be applied.	Не удалось применить трансформирование.
-# Preferences › Performance › GPU Memory; the status bar and slow-redraw notice
 	Its layers need {needed} of GPU memory; the budget leaves them {budget}.	Слоям нужно {needed} памяти GPU; бюджет оставляет им {budget}.
 	Set GPU Memory in Preferences › Performance to what your graphics card can hold, at most 3/8 of its memory. Automatic follows Memory Usage, within a quarter of this computer's memory and 3/8 of the card's, and doesn't count the document against a card whose memory is known. The status bar shows GPU Memory Full while they don't fit.	Задайте «Память GPU» в разделе Настройки › Производительность по объёму, который вмещает ваша видеокарта, не больше 3/8 её памяти. «Автоматически» следует параметру «Память», в пределах четверти памяти этого компьютера и 3/8 памяти видеокарты, и не учитывает документ на видеокарте с известным объёмом памяти. Пока слои не помещаются, в строке состояния показано «Память GPU заполнена».
 	GPU Memory Full	Память GPU заполнена
@@ -3369,12 +3388,6 @@ curves	Smooth	Сгладить
 	Replace	Заменить
 	{name} was changed by another app after it was opened or saved here.	Файл {name} был изменён другим приложением после того, как его открыли или сохранили здесь.
 	Replace it with this document, or cancel and use File › Save As to keep both.	Замените его этим документом или отмените и используйте Файл › Сохранить как, чтобы сохранить оба.
-
-
-# Dynamic UI labels (fourth pass): filter and adjustment parameters, Camera Raw panels,
-# lighting, History/Layers/paths/channels menus, metadata, System Info, status templates and
-# dialog text that other catalogs already carry. Written from the meaning of the English labels
-# in the ordinary Russian graphics-editor vocabulary; no proprietary resource consulted.
 	(coming soon)	(скоро)
 	(none)	(нет)
 	32-bit Preview Options	Параметры предпросмотра 32 бит
@@ -3837,7 +3850,6 @@ curves	Smooth	Сгладить
 	Hearts	Сердца
 	Heptagon	Семиугольник
 	Hexagon	Шестиугольник
-	Hidden	Скрыто
 	Hide Grid	Скрыть сетку
 	Hide Others	Скрыть остальные
 	Hide the layer's effects  (⌥-click: all layers)	Скрыть эффекты слоя  (⌥+щелчок: все слои)
@@ -3883,8 +3895,6 @@ curves	Smooth	Сгладить
 	The fastest and the softest, with colour fringing on fine detail.	Самый быстрый и самый мягкий, с цветной каймой на мелких деталях.
 	“{name}” already exists. Replace it?	«{name}» уже существует. Заменить?
 	The name in the save dialog was “{name}”.	В окне сохранения было указано имя «{name}».
-	Move Up	Переместить вверх
-	Move Down	Переместить вниз
 	Previous Brush	Предыдущая кисть
 	Next Brush	Следующая кисть
 	First Brush	Первая кисть
@@ -3900,18 +3910,13 @@ curves	Smooth	Сгладить
 	Use	Использовать
 	In Front	Спереди
 	Behind	Сзади
-
-# DDS Options (#1327)
 	DDS Options	Параметры DDS
 	Compression	Сжатие
 	Generate Mipmaps	Создать MIP-карты
-
-# Color Table (.act) dialog
 	There is no color table to save.	Нет таблицы цветов для сохранения.
 @plural	Saved {n} color to {file}|Saved {n} colors to {file}	Сохранён {n} цвет в {file}|Сохранены {n} цвета в {file}|Сохранено {n} цветов в {file}
-
-# Graphics Adapter preference (#1885)
 	GPU adapter	Адаптер GPU
+smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded source; format-specific features may change.	Содержимое AI/PDF/EPS будет редактироваться как SVG. Сохранение заменит встроенный источник; особенности исходного формата могут измениться.
 
 # Styles panel: Import / Export Styles (.asl)
 	Import Styles…	Импортировать стили…
@@ -3920,7 +3925,6 @@ curves	Smooth	Сгладить
 	{file} is not a style library (.asl)	{file} не является библиотекой стилей (.asl)
 @plural	Imported {n} style from {file}|Imported {n} styles from {file}	Импортирован {n} стиль из {file}|Импортировано {n} стиля из {file}|Импортировано {n} стилей из {file}
 @plural	Exported {n} style to {file}|Exported {n} styles to {file}	Экспортирован {n} стиль в {file}|Экспортировано {n} стиля в {file}|Экспортировано {n} стилей в {file}
-# Actions: a step dialog holds a suspended recording (#7365)
 	Confirm or cancel the open action step dialog first	Сначала подтвердите или отмените открытый диалог шага операции
 	Pro Medium Gray	Средне-серая Pro
 	Solarized	Solarized
@@ -4495,7 +4499,6 @@ curves	Smooth	Сгладить
 	Type Options	Параметры текста
 	Unaltered	Без изменений
 	Undefined Areas	Неопределённые области
-	Underlying Layer:	Нижележащий слой:
 	Underpainting	Подмалёвок
 	Underwater	Под водой
 	Ungroup	Разгруппировать
@@ -4605,7 +4608,6 @@ curves	Smooth	Сгладить
 	↑↓ navigate   ↵ run   esc close	↑↓ навигация   ↵ выполнить   esc закрыть
 	✓ Color Indicates Masked Areas	✓ Цветом обозначены маскированные области
 	✓ Color Indicates Selected Areas	✓ Цветом обозначены выделенные области
-# Dynamic command-id, plural, and contextual labels (fourth pass).
 @id	edit.clear	Очистить
 @id	edit.purge.undo	Данные отмены
 @id	edit.stroke	Обвести…
@@ -4651,14 +4653,11 @@ layers	Fill	Заливка
 layers	Fill:	Заливка:
 navigator	Zoom	Масштаб
 shape	Appearance	Оформление
-# Paragraph direction (TYPE-218-2)
 	Automatic paragraph direction	Автоматическое направление абзаца
 	Left-to-right paragraph direction	Направление абзаца слева направо
 	Right-to-left paragraph direction	Направление абзаца справа налево
 	Not rendered: this adjustment ({key}) is kept as imported.	Не отображается: эта коррекция ({key}) сохранена как при импорте.
-# Print preview image (#8236)
 	Print preview image	Print preview image
-# Color panel menu: modes, copy commands and colour ramps (#6000)
 	Hue Cube	Куб цветового тона
 	Brightness Cube	Куб яркости
 	Color Wheel	Цветовой круг
@@ -4674,7 +4673,8 @@ shape	Appearance	Оформление
 	Grayscale Ramp	Шкала градаций серого
 	Current Colors	Текущие цвета
 	Make Ramp Web Safe	Сделать шкалу безопасной для web
-# Art History Brush (#213).
+	The path was kept as the Work Path	Контур сохранён как рабочий контур
+	The path was discarded	Контур удалён
 	Art History Brush Tool	Инструмент «Кисть истории искусств»
 	Tight Short	Плотный короткий
 	Tight Medium	Плотный средний
@@ -4688,3 +4688,26 @@ shape	Appearance	Оформление
 	Font size presets	Наборы размеров шрифта
 	Leading presets	Наборы интерлиньяжа
 	Tracking presets	Наборы трекинга
+	Invalid numeric entry. An integer between {min}% and {max}% is required. Previous value was inserted.	Недопустимое числовое значение. Требуется целое число от {min}% до {max}%. Вставлено предыдущее значение.
+	Color Aware	С учетом цвета
+	Decontaminate Colors	Очистить цвета
+	Edge Detection	Обнаружение краев
+	Global Refinements	Глобальное уточнение
+	High Quality Preview	Высококачественный просмотр
+	Object Aware	С учетом объектов
+	Real-Time Refinement	Уточнение в реальном времени
+	Refine Edge Brush Tool	Инструмент «Кисть уточнения края»
+	Refine Hair	Уточнить волосы
+	Refine Mode	Режим уточнения
+	Remember Settings	Запомнить параметры
+	View Mode	Режим просмотра
+	Object Aware needs a segmentation model, which isn't available yet	Для режима «С учетом объектов» нужна модель сегментации, которая пока недоступна
+	Refine Hair needs hair detection, which isn't available yet	Для уточнения волос нужно распознавание волос, которое пока недоступно
+	Select and Mask was closed: its document is no longer the active one	Окно «Выделение и маска» закрыто: его документ больше не активен
+	Select and Mask was closed: another layer was selected	Окно «Выделение и маска» закрыто: выбран другой слой
+
+# Shape Fill/Stroke popover and colour swatches opening the Color Picker
+	Recently Used Colors	Недавно использованные цвета
+	Stop Color	Цвет контрольной точки
+	Shapes can't use patterns yet	Фигуры пока не могут использовать узоры
+	Edit Brush…	Изменить кисть…

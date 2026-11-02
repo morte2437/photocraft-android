@@ -210,7 +210,7 @@ fn set_tool_mode(app: &mut PhotocraftApp, mode: Option<BlendMode>) {
     }
 }
 
-fn set_gradient_mode(app: &mut PhotocraftApp, mode: BlendMode) {
+pub(crate) fn set_gradient_mode(app: &mut PhotocraftApp, mode: BlendMode) {
     let before = app.ui.tool_options.clone();
     app.ui.tool_options.gradient_blend_mode = mode;
     // Live mode: a selected gradient fill layer follows, as with the dropdown.

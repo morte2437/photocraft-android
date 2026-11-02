@@ -18,6 +18,8 @@
 //! output's layout is decoded in place; anything else goes through one strip- or tile-sized
 //! scratch buffer per worker, so no second full-size buffer exists. Image data cut off by the
 //! end of the file leaves the missing chunks empty and adds a [`DecodeWarning::Truncated`].
+//! [`TiffBands`] runs the same decode a group of bands at a time and hands each group to its
+//! caller, so a document can be filled without the image ever existing whole (#8169).
 //!
 //! Photoshop's private tags are carried as opaque bytes in [`Metadata`]: 34377 (image
 //! resources) and 37724 (`ImageSourceData`, the layers of a layered TIFF). They are read with
@@ -27,7 +29,7 @@
 //! (see [`writes_little_endian`]), which the layer data must match.
 
 use std::borrow::Cow;
-use std::io::{self, Cursor, Read, Seek, SeekFrom};
+use std::io::{self, Read, Seek, SeekFrom};
 
 use half::f16;
 use tiff::decoder::{ChunkType, Decoder};
@@ -167,6 +169,7 @@ mod decode;
 mod encode;
 mod tags;
 
+pub use decode::TiffBands;
 pub(crate) use decode::{decode, decode_page, orientation};
 pub(crate) use encode::encode;
 #[cfg(test)]

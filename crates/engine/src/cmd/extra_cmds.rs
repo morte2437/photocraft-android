@@ -76,7 +76,7 @@ pub(crate) fn step_key(s: &Session, what: &str) -> String {
 /// Quick Mask or the layer mask (`Session::execute` fills that in from the Channels panel), that
 /// grayscale surface is rewritten instead, as the core filters do (#935).
 fn map_pixels(s: &mut Session, label: &str, p: &Value, f: impl FnOnce(Rect, &mut [[f32; 4]], &[f32])) -> Result<Value> {
-    let id = layer_param(s, &Value::Null)?;
+    let id = layer_param(s, p)?;
     let channel = crate::channel_cmds::target_of(p) != crate::channel_cmds::Target::Pixels;
     s.edit(label, |doc, _| {
         let canvas = doc.bounds();
@@ -360,6 +360,15 @@ fn paste_into(s: &mut Session, p: &Value, outside: bool) -> Result<Value> {
     let mut params = json!({"center": [(b.x0 + b.x1) as f64 / 2.0, (b.y0 + b.y1) as f64 / 2.0], "clampToCanvas": false});
     if let Some(c) = p.get("center") {
         params["center"] = c.clone();
+    }
+    if let Some(colors) = crate::color_channels::target(s, p)?
+        .filter(|c| c.len() > 1 || p.get("target").is_some() || s.clipboard.as_ref().is_some_and(|clip| clip.components.is_some()))
+    {
+        params["target"] = colors.params();
+        if let Some(layer) = p.get("layer") {
+            params["layer"] = layer.clone();
+        }
+        return crate::channel_clip::paste_colors(s, &params, colors, false, Some(&limit), label);
     }
     // A targeted colour channel (#2307): the paste goes into it, only where `limit` allows.
     if let Some(k) = crate::channel_clip::paste_color_target(s, p) {

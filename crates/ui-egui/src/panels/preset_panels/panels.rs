@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    Align2, Color32, CornerRadius, Ev, FontId, GroupView, ItemView, PhotocraftApp, Place, Pos2, Rect, Sense, Stroke, TextureHandle, Tokens, Tool, Value,
+    browser, canvas_drop_rect, empty, generic, json, paint_gradient, pattern_texture, pos2, run, shape_texture, style_texture, vec2,
+};
 
 // ------------------------------------------------------------------ Gradients
 
@@ -44,7 +47,11 @@ pub fn gradients_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
 // ------------------------------------------------------------------ Patterns
 
 pub fn patterns_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
-    photocraft_engine::presets::patterns::sync(&mut app.session);
+    // Until the preset store has loaded the saved patterns, their folder entries would look
+    // deleted: don't prune them yet.
+    if app.services.preset_store.is_none() {
+        photocraft_engine::presets::patterns::sync(&mut app.session);
+    }
     let lib = app.session.patterns.items.clone();
     let groups: Vec<GroupView> = app
         .session

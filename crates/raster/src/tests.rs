@@ -339,6 +339,30 @@ fn fallible_region_write_rejects_bad_input_without_mutating_surface() {
 }
 
 #[test]
+fn fallible_interleaved_write_matches_the_infallible_one_and_rejects_bad_lengths() {
+    for fmt in [PixelFormat::RGBA8, PixelFormat::RGBA16, PixelFormat::RGBA32F] {
+        // Across tile edges, at a negative origin.
+        let r = Rect::new(-3, 250, 300, 517);
+        let bytes: Vec<u8> = (0..r.width() as usize * r.height() as usize * fmt.bytes_per_pixel()).map(|i| (i * 31 % 251) as u8).collect();
+        let mut a = Surface::new(fmt);
+        a.write_interleaved(r, &bytes);
+        let mut b = Surface::new(fmt);
+        b.try_write_interleaved(r, &bytes).unwrap();
+        assert_eq!(a, b);
+        let before = b.clone();
+        let got = bytes.len() - 1;
+        assert_eq!(b.try_write_interleaved(r, &bytes[1..]), Err(AllocationError::LengthMismatch { expected: bytes.len(), got }));
+        assert_eq!(b, before);
+        // Tiles an undo snapshot shares are copied, not written through.
+        let again: Vec<u8> = bytes.iter().map(|v| v ^ 0x5a).collect();
+        b.try_write_interleaved(r, &again).unwrap();
+        a.write_interleaved(r, &again);
+        assert_eq!(a, b);
+        assert_eq!(before.to_interleaved(r), bytes);
+    }
+}
+
+#[test]
 fn fallible_tile_edits_move_weakly_cached_pixels_and_copy_shared_pixels() {
     for fmt in [PixelFormat::RGBA8, PixelFormat::RGBA16, PixelFormat::RGBA32F] {
         let mut surface = Surface::new(fmt);
@@ -809,4 +833,23 @@ fn content_bounds_with_tile_skipping() {
     s.fill_rect(Rect::new(0, 0, 2000, 1500), &[1.0]);
     s.fill_rect(Rect::new(-700, 4000, -699, 4001), &[0.5]);
     assert_eq!(s.content_bounds(), Rect::new(-700, 0, 2000, 4001));
+}
+
+#[test]
+fn fallible_interleaved_writes_match_encoded_pixels_and_reject_bad_lengths() {
+    for sample in [SampleType::U8, SampleType::U16, SampleType::F32] {
+        let format = PixelFormat::new(ColorMode::Rgb, sample, true);
+        let rect = Rect::new(-2, -1, 3, 2);
+        let bytes: Vec<u8> = (0..rect.width() as usize * rect.height() as usize * format.bytes_per_pixel()).map(|i| (i % 251) as u8).collect();
+        let mut surface = Surface::new(format);
+        assert!(surface.try_write_interleaved(rect, &bytes[..bytes.len() - 1]).is_err());
+        assert!(surface.tiles.is_empty());
+        surface.try_write_interleaved(rect, &bytes).unwrap();
+        assert_eq!(surface.to_interleaved(rect), bytes);
+        let mut shared = surface.clone();
+        let replacement = vec![0; bytes.len()];
+        shared.try_write_interleaved(rect, &replacement).unwrap();
+        assert_eq!(surface.to_interleaved(rect), bytes);
+        assert_eq!(shared.to_interleaved(rect), replacement);
+    }
 }

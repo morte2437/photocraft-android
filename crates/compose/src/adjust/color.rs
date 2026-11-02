@@ -1,5 +1,5 @@
 use super::tone::LUT_SIZE;
-use super::*;
+use super::{D50, HueRange, SRGB_TO_XYZ_D50, SampleType, Transfer, XYZ_D50_TO_SRGB, mat3_mul, srgb_to_linear};
 
 /// Hue/Saturation's range edits as three hue-indexed tables (hue shift in degrees, saturation and
 /// lightness as fractions), sampled at hue `k / (len - 1)` turns. Ranges add up where they overlap.

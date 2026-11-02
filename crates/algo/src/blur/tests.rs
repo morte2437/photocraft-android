@@ -2,6 +2,76 @@ use super::*;
 use photocraft_color::{ColorMode, PixelFormat, SampleType};
 use photocraft_raster::Surface;
 
+/// #8544, rendered: Gaussian Blur at 0.1–0.3 px through the filter itself (the direct-kernel
+/// path) visibly softens a hard edge, more with each step, as the kernel predicts.
+#[test]
+fn small_gaussian_radii_soften_a_rendered_edge() {
+    let canvas = Rect::new(0, 0, 20, 4);
+    let mut s = Surface::new(PixelFormat::RGBA8);
+    s.fill_rect(canvas, &[0.0, 0.0, 0.0, 1.0]);
+    s.fill_rect(Rect::new(10, 0, 20, 4), &[1.0, 1.0, 1.0, 1.0]);
+    let mut last = 0.0f32;
+    for radius in [0.1f32, 0.2, 0.3] {
+        let p = FilterParams::GaussianBlur { radius };
+        assert!(box_widths(&p).is_none(), "the direct-kernel path");
+        let out = crate::apply(&s, &p, canvas, canvas, None);
+        // The last black pixel takes the white side's share of the kernel.
+        let got = out.pixel(9, 1)[0];
+        let k = gaussian_blur_kernel(radius);
+        let want: f32 = k[k.len() / 2 + 1..].iter().sum();
+        assert!((got - want).abs() <= 1.0 / 255.0, "radius {radius}: {got} vs {want}");
+        assert!(got >= 1.0 / 255.0 && got > last, "radius {radius}: {got} after {last}");
+        last = got;
+    }
+}
+
+/// #8544: Gaussian Blur spreads a hard edge for every radius from 0.1, growing smoothly
+/// with the radius (no dead zone up to 0.3, then a jump); from 1 up the kernel is unchanged.
+#[test]
+fn small_gaussian_radii_blur_smoothly() {
+    let spread = |k: &[f32]| {
+        let r = (k.len() / 2) as f32;
+        k.iter().enumerate().map(|(i, w)| w * (i as f32 - r).powi(2)).sum::<f32>()
+    };
+    let mut last = 0.0f32;
+    for step in 1..=20 {
+        let radius = step as f32 * 0.05;
+        let k = gaussian_blur_kernel(radius);
+        assert!((k.iter().sum::<f32>() - 1.0).abs() < 1e-5, "normalised at {radius}");
+        if radius < 1.0 {
+            assert!((spread(&k) - radius * radius).abs() < 1e-4, "variance at {radius}: {}", spread(&k));
+        }
+        // A hard 0 → 1 edge: the first pixel past it takes the kernel's tail beyond the centre.
+        let c = k.len() / 2;
+        let edge: f32 = k[c + 1..].iter().sum();
+        assert!(edge > last, "radius {radius}: edge {edge} after {last}");
+        if radius > 0.1 {
+            assert!(edge - last < 0.05, "radius {radius}: jump {} from {last}", edge - last);
+        }
+        last = edge;
+    }
+    assert!(gaussian_blur_kernel(0.1).len() >= 3, "0.1 blurs");
+    // No step where the variance-matched range hands over to plain sampling.
+    let edge = |r: f32| {
+        let k = gaussian_blur_kernel(r);
+        k[k.len() / 2 + 1..].iter().sum::<f32>()
+    };
+    assert!((edge(0.999) - edge(1.0)).abs() < 0.005, "{} vs {}", edge(0.999), edge(1.0));
+    // No dip where a per-radius width used to add taps (1/3 and 2/3).
+    for pair in [(0.33f32, 0.34f32), (0.66, 0.67)] {
+        assert!(edge(pair.1) > edge(pair.0), "edge falls from {} to {}", pair.0, pair.1);
+    }
+    // Exact variance right up to the hand-over, past where `gaussian_kernel` changes width.
+    for radius in [0.98f32, 0.995, 0.998, 0.9995] {
+        let k = gaussian_blur_kernel(radius);
+        assert!((spread(&k) - radius * radius).abs() < 2e-5, "variance at {radius}: {}", spread(&k));
+    }
+    for radius in [1.0, 1.5, 3.0, 4.0] {
+        assert_eq!(gaussian_blur_kernel(radius), gaussian_kernel(radius), "{radius}");
+    }
+    assert_eq!(gaussian_blur_kernel(0.0), vec![1.0]);
+}
+
 #[test]
 fn radial_blur_samples_large_arcs_beyond_64_intervals() {
     let bounds = Rect::new(0, 0, 1000, 1000);

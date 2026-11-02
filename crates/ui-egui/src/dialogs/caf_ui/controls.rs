@@ -1,6 +1,6 @@
 use super::lifecycle::{apply, cancel, close, fill_edit, redo, report, reset, set_sampling, undo};
 use super::preview::{rebase, wait_preview};
-use super::*;
+use super::{CafTool, CafWorkspace, LASSO_OPS, PhotocraftApp, ToolEvent, Value, json};
 
 /// Control channel: `edit.contentAwareFill {"ui": {...}}` while the workspace is open.
 pub fn control(app: &mut PhotocraftApp, ui: &Value) -> Result<Value, String> {
@@ -149,6 +149,9 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) {
 }
 
 pub fn keys(app: &mut PhotocraftApp, ctx: &egui::Context) {
+    if crate::color_picker_ui::any_open(app) {
+        return;
+    }
     let cmd_shift = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;
     if ctx.input_mut(|i| i.consume_key(cmd_shift, egui::Key::Z)) {
         redo(app);

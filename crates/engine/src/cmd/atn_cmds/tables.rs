@@ -1,5 +1,5 @@
 use super::descriptors::{Target, class, code, get_ref, target};
-use super::*;
+use super::{D, Descriptor, ReferenceItem};
 
 /// Photoshop's `BlnM` enumeration ↔ PhotoCraft's blend mode labels.
 const BLEND_MODES: &[(&str, &str)] = &[

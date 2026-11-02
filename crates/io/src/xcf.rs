@@ -593,49 +593,19 @@ fn write_pixels(surface: &mut Surface, px: &Pixels, x: i32, y: i32) -> Result<()
     Ok(())
 }
 
-/// Imports an XCF file (already inflated when it was gzipped).
-pub(crate) fn import(name: &str, bytes: &[u8], ctl: &Interrupt<'_>) -> Result<ImportResult> {
-    if !is_xcf(bytes) {
-        return Err(invalid("not an XCF file"));
-    }
-    let mut c = Cursor { b: bytes, pos: MAGIC.len(), wide: false };
-    let tag = c.take(5)?;
-    let version = match tag {
-        b"file\0" => 0,
-        [b'v', a, b, d, 0] if a.is_ascii_digit() && b.is_ascii_digit() && d.is_ascii_digit() => {
-            u32::from(a - b'0') * 100 + u32::from(b - b'0') * 10 + u32::from(d - b'0')
-        }
-        _ => return Err(invalid("unknown XCF version tag")),
-    };
-    c.wide = version >= 11;
-    let mut warnings = Warnings::default();
-    if version > KNOWN_VERSION {
-        warnings.note(&format!("XCF version {version} is newer than this reader (version {KNOWN_VERSION}); unknown parts were skipped"));
-    }
-    let (w, h, base_type) = (c.u32()?, c.u32()?, c.u32()?);
-    if w == 0 || h == 0 || w > MAX_SIDE || h > MAX_SIDE {
-        return Err(invalid(format!("canvas {w}x{h} must be 1 to {MAX_SIDE} pixels a side")));
-    }
-    if (w as usize).saturating_mul(h as usize).saturating_mul(16) > MAX_PIXEL_BYTES {
-        return Err(invalid("the canvas exceeds the 1 GiB pixel limit"));
-    }
-    let precision = if version >= 4 { Precision::from_header(version, c.u32()?)? } else { Precision::GAMMA8 };
-    let mode = match base_type {
-        0 => ColorMode::Rgb,
-        1 => ColorMode::Grayscale,
-        2 => ColorMode::Rgb,
-        t => return Err(invalid(format!("unknown image type {t}"))),
-    };
-    let depth = precision.depth();
-    if base_type == 2 {
-        warnings.note("the indexed image opens as RGB");
-    }
-    if !precision.float && precision.bytes == 4 {
-        warnings.note("32-bit integer samples open as 16-bit");
-    }
+struct ImageMetadata {
+    compression: Compression,
+    colormap: Vec<[u8; 3]>,
+    resolution: Option<(f32, f32)>,
+    guides: Vec<(i32, u8)>,
+    icc: Option<Vec<u8>>,
+    comment: Option<String>,
+    path_count: usize,
+}
 
+fn read_image_metadata(c: &mut Cursor<'_>) -> Result<ImageMetadata> {
     // Image properties.
-    let image_props = props(&mut c)?;
+    let image_props = props(c)?;
     let mut compression = Compression::None;
     let mut colormap = Vec::new();
     let mut resolution = None;
@@ -682,6 +652,52 @@ pub(crate) fn import(name: &str, bytes: &[u8], ctl: &Interrupt<'_>) -> Result<Im
             _ => {}
         }
     }
+
+    Ok(ImageMetadata { compression, colormap, resolution, guides, icc, comment, path_count })
+}
+
+/// Imports an XCF file (already inflated when it was gzipped).
+pub(crate) fn import(name: &str, bytes: &[u8], ctl: &Interrupt<'_>) -> Result<ImportResult> {
+    if !is_xcf(bytes) {
+        return Err(invalid("not an XCF file"));
+    }
+    let mut c = Cursor { b: bytes, pos: MAGIC.len(), wide: false };
+    let tag = c.take(5)?;
+    let version = match tag {
+        b"file\0" => 0,
+        [b'v', a, b, d, 0] if a.is_ascii_digit() && b.is_ascii_digit() && d.is_ascii_digit() => {
+            u32::from(a - b'0') * 100 + u32::from(b - b'0') * 10 + u32::from(d - b'0')
+        }
+        _ => return Err(invalid("unknown XCF version tag")),
+    };
+    c.wide = version >= 11;
+    let mut warnings = Warnings::default();
+    if version > KNOWN_VERSION {
+        warnings.note(&format!("XCF version {version} is newer than this reader (version {KNOWN_VERSION}); unknown parts were skipped"));
+    }
+    let (w, h, base_type) = (c.u32()?, c.u32()?, c.u32()?);
+    if w == 0 || h == 0 || w > MAX_SIDE || h > MAX_SIDE {
+        return Err(invalid(format!("canvas {w}x{h} must be 1 to {MAX_SIDE} pixels a side")));
+    }
+    if (w as usize).saturating_mul(h as usize).saturating_mul(16) > MAX_PIXEL_BYTES {
+        return Err(invalid("the canvas exceeds the 1 GiB pixel limit"));
+    }
+    let precision = if version >= 4 { Precision::from_header(version, c.u32()?)? } else { Precision::GAMMA8 };
+    let mode = match base_type {
+        0 => ColorMode::Rgb,
+        1 => ColorMode::Grayscale,
+        2 => ColorMode::Rgb,
+        t => return Err(invalid(format!("unknown image type {t}"))),
+    };
+    let depth = precision.depth();
+    if base_type == 2 {
+        warnings.note("the indexed image opens as RGB");
+    }
+    if !precision.float && precision.bytes == 4 {
+        warnings.note("32-bit integer samples open as 16-bit");
+    }
+
+    let ImageMetadata { compression, colormap, resolution, guides, icc, comment, mut path_count } = read_image_metadata(&mut c)?;
 
     let mut layer_ptrs = Vec::new();
     loop {
@@ -814,6 +830,12 @@ pub(crate) fn import(name: &str, bytes: &[u8], ctl: &Interrupt<'_>) -> Result<Im
     if path_count > 0 {
         image.warnings.note(&format!("{path_count} path(s) were not imported"));
     }
+    add_document_warnings(&mut image, &document, precision, linear_compositing);
+    ctl.progress(1.0);
+    Ok(ImportResult { document, warnings: image.warnings.finish(), source_read_only: true, preview_only: false })
+}
+
+fn add_document_warnings(image: &mut Image<'_>, document: &Document, precision: Precision, linear_compositing: bool) {
     // GIMP clips a layer in any mode but Normal to the layers beneath it, so it shows nothing where
     // they are transparent; PhotoCraft (like Photoshop) shows it there. Only tell when there is
     // transparency to show through: a bottom layer that is not opaque.
@@ -832,8 +854,6 @@ pub(crate) fn import(name: &str, bytes: &[u8], ctl: &Interrupt<'_>) -> Result<Im
     if document.layers.is_empty() {
         image.warnings.note("the XCF file has no layers");
     }
-    ctl.progress(1.0);
-    Ok(ImportResult { document, warnings: image.warnings.finish(), source_read_only: true, preview_only: false })
 }
 
 /// Puts `node` where its item path says, under the groups already placed; a path that leads

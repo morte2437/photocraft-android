@@ -1,4 +1,4 @@
-use super::*;
+use super::{CMD, CafWorkspace, Color32, LayerId, MAX_CAF_POINTS, MAX_OUTLINE_EDGES, PhotocraftApp, Rect, TextureHandle, Value, json, stroke_json};
 
 /// What the plan (without the brush strokes) says: the window, the fill area and the sampling
 /// option's area, over `rect`.

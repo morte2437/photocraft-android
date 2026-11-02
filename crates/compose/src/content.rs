@@ -2,7 +2,7 @@ use super::composite::{adjustment_quantum, blend_into, composite_stack};
 use super::ctx::Ctx;
 use super::extents::{effect_shape, effect_source_bounds, mask_vals, shapeless_stroke_bounds, transparent_outside};
 use super::fx_cache::effect_maps;
-use super::*;
+use super::{BlendMode, Buffer, Document, Fill, Layer, LayerContent, Pattern, Rect, Surface, bounds, effects, gradient_fill, pattern, shape_split};
 
 /// Tile size for parallel rendering (tile results are independent).
 pub const RENDER_TILE: i32 = 256;

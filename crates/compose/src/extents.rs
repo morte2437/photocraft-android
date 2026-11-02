@@ -1,6 +1,6 @@
 use super::content::{render_content, surface_to_buffer};
 use super::ctx::Ctx;
-use super::*;
+use super::{BlendMode, Document, Layer, LayerContent, Rect, advanced, bounds, effects, masks, shape_split};
 
 /// Bounds of a layer's own pixels (union over group children; the canvas
 /// for fill layers; an artboard's board).

@@ -228,7 +228,7 @@ struct Running {
     ctx: JobCtx,
     started_ms: f64,
     coalesce: Option<String>,
-    color_restrict: Option<usize>,
+    color_restrict: Option<crate::color_channels::Restriction>,
     filter_mask_layer: Option<LayerId>,
     /// The document's layer selection when the job started: applying targets it, not whatever
     /// got selected meanwhile (a Type click does that without editing the document, #7366).
@@ -514,6 +514,7 @@ pub fn import_options(prefs: &crate::prefs::Preferences) -> photocraft_io::Impor
     photocraft_io::ImportOptions {
         max_group_depth: prefs.file_handling.rasterize_svg_groups_deeper_than as usize,
         demosaic: prefs.raw_defaults.demosaic.method(),
+        ..Default::default()
     }
 }
 
@@ -799,8 +800,18 @@ impl Session {
         // (#3089), as Transform Again records its transform (#1440). With no filter yet it falls
         // through to its own precondition.
         if id == "filter.lastFilter"
-            && let Some((filter, p)) = crate::filters::last_filter(self).filter(|(f, _)| f != id)
+            && let Some((filter, mut p)) = crate::filters::last_filter(self).filter(|(f, _)| f != id)
         {
+            for key in ["target", "layer"] {
+                if let Some(value) = params.get(key) {
+                    if p.is_null() {
+                        p = serde_json::json!({});
+                    }
+                    if let Some(object) = p.as_object_mut() {
+                        object.insert(key.into(), value.clone());
+                    }
+                }
+            }
             return self.dispatch(&filter, p, background);
         }
         if id == "file.new" {
@@ -860,6 +871,10 @@ impl Session {
         self.coalesce_request = None;
         self.color_restrict = None;
         self.filter_mask_layer = None;
+        #[cfg(any(test, debug_assertions))]
+        {
+            self.hint_before = None;
+        }
         let pending = self.jobs.pending.take();
         match (r, pending) {
             (Err(e), Some(job)) => {
@@ -951,6 +966,7 @@ impl Session {
                 "layerComp.apply" => crate::comps_cmds::recorded_apply(self, params),
                 _ => crate::layer_multi_cmds::recorded_step(self, id, params, pre_selected),
             };
+            let params = crate::actions_cmds::recorded_params(self, id, params);
             self.journal.push((id.to_string(), params));
         }
     }

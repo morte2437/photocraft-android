@@ -1,4 +1,4 @@
-use super::*;
+use super::{Rect, Response, Sense, Ui};
 
 /// A drag on a value field's label this frame, for the value field drawn next on the label's row
 /// (Photoshop's scrubby labels). Left by [`scrub_label`], taken by that field.

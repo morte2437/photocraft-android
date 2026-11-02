@@ -12,7 +12,7 @@ use photocraft_geom::Rect;
 use photocraft_psd::patterns::{PatternBudget, PsdPattern, block_has_user_mask, block_key, mode_channels, parse_pattern_block_with, write_pattern_block};
 use photocraft_raster::Surface;
 
-use crate::pixels::{deinterleave, interleave, max_sample, psd_depth, sample_for_depth, zero_sample};
+use crate::pixels::{deinterleave, max_sample, psd_depth, sample_for_depth, try_interleave, zero_sample};
 
 /// Global block keys holding patterns.
 pub const PATTERN_KEYS: [[u8; 4]; 3] = [*b"Patt", *b"Pat2", *b"Pat3"];
@@ -26,28 +26,67 @@ fn psd_mode(m: ColorMode) -> u32 {
     }
 }
 
-/// A PSD pattern as a document pattern (indexed patterns become RGB through their palette).
+/// A PSD pattern as a document pattern (indexed patterns become RGB through their palette). A
+/// malformed pattern, or one that can't be allocated, is `None`; [`try_from_psd`] tells them apart.
 pub fn from_psd(p: &PsdPattern) -> Option<Pattern> {
+    try_from_psd(p).ok().flatten()
+}
+
+/// [`from_psd`], with `Ok(None)` for a malformed pattern and `Err` for a failed allocation.
+pub fn try_from_psd(p: &PsdPattern) -> Result<Option<Pattern>, String> {
+    let mut oom = None;
+    let pattern = pattern_from_psd(p, &mut oom);
+    match oom {
+        Some(error) => Err(error),
+        None => Ok(pattern),
+    }
+}
+
+fn pattern_from_psd(p: &PsdPattern, oom: &mut Option<String>) -> Option<Pattern> {
     let (w, h) = (p.width as usize, p.height as usize);
-    if w == 0 || h == 0 {
+    if w == 0 || h == 0 || w > 30_000 || h > 30_000 || !matches!(p.depth, 1 | 8 | 16 | 32) {
         return None;
+    }
+    let n = w.checked_mul(h)?;
+    let plane_len = w.checked_mul(usize::from(p.depth))?.div_ceil(8).checked_mul(h)?;
+    if p.channels.iter().chain(p.alpha.iter()).any(|plane| plane.len() != plane_len) {
+        return None;
+    }
+    fn copy_plane(plane: &[u8], oom: &mut Option<String>) -> Option<Vec<u8>> {
+        let mut out = Vec::new();
+        reserve(&mut out, plane.len(), oom)?;
+        out.extend_from_slice(plane);
+        Some(out)
+    }
+    fn reserve(out: &mut Vec<u8>, n: usize, oom: &mut Option<String>) -> Option<()> {
+        out.try_reserve_exact(n).map_err(|e| *oom = Some(e.to_string())).ok()
     }
     // 1-bit patterns: expand to 8-bit grey.
     let (channels, depth): (Vec<Vec<u8>>, u16) = if p.depth == 1 {
         let row = w.div_ceil(8);
-        let expand = |plane: &Vec<u8>| -> Vec<u8> {
-            (0..w * h).map(|i| if plane.get((i / w) * row + (i % w) / 8).is_some_and(|b| b & (0x80 >> (i % w % 8)) != 0) { 0 } else { 255 }).collect()
+        let expand = |plane: &Vec<u8>, oom: &mut Option<String>| -> Option<Vec<u8>> {
+            let mut out = Vec::new();
+            reserve(&mut out, n, oom)?;
+            out.extend((0..n).map(|i| if plane.get((i / w) * row + (i % w) / 8).is_some_and(|b| b & (0x80 >> (i % w % 8)) != 0) { 0 } else { 255 }));
+            Some(out)
         };
-        (p.channels.iter().map(expand).collect(), 8)
+        (p.channels.iter().map(|plane| expand(plane, oom)).collect::<Option<_>>()?, 8)
     } else {
-        (p.channels.clone(), p.depth)
+        (p.channels.iter().map(|plane| copy_plane(plane, oom)).collect::<Option<_>>()?, p.depth)
     };
     let (mode, channels) = match p.mode {
         1 | 8 => (ColorMode::Grayscale, channels),
         2 => {
             let pal = p.palette.as_deref()?;
             let idx = channels.first()?;
-            let ch: Vec<Vec<u8>> = (0..3).map(|c| idx.iter().map(|i| pal.get(usize::from(*i) * 3 + c).copied().unwrap_or(0)).collect()).collect();
+            let ch: Vec<Vec<u8>> = (0..3)
+                .map(|c| {
+                    let mut out = Vec::new();
+                    reserve(&mut out, idx.len(), oom)?;
+                    out.extend(idx.iter().map(|i| pal.get(usize::from(*i) * 3 + c).copied().unwrap_or(0)));
+                    Some(out)
+                })
+                .collect::<Option<_>>()?;
             (ColorMode::Rgb, ch)
         }
         4 => (ColorMode::Cmyk, channels),
@@ -69,11 +108,22 @@ pub fn from_psd(p: &PsdPattern) -> Option<Pattern> {
         fill.push(max_sample(s));
         invert.push(false);
     }
-    let mut bytes = interleave(&refs, &fill, w * h, s, &invert);
+    let mut bytes = match try_interleave(&refs, &fill, n, s, &invert) {
+        Ok(bytes) => bytes,
+        Err(photocraft_psd::PsdError::OutOfMemory(error)) => {
+            *oom = Some(error.to_string());
+            return None;
+        }
+        Err(_) => return None,
+    };
     if mode == ColorMode::Lab && s == SampleType::U16 {
         crate::pixels::lab16_chroma(&mut bytes, refs.len(), true);
     }
-    let surface = Surface::from_interleaved(fmt, Rect::new(0, 0, w as i32, h as i32), &bytes);
+    let mut surface = Surface::new(fmt);
+    if let Err(error) = surface.try_write_interleaved(Rect::new(0, 0, w as i32, h as i32), &bytes) {
+        *oom = Some(error.to_string());
+        return None;
+    }
     Some(Pattern { id: p.id.clone(), name: p.name.clone(), width: p.width, height: p.height, surface })
 }
 
@@ -110,18 +160,34 @@ pub fn to_psd(p: &Pattern) -> PsdPattern {
     }
 }
 
+/// A warning for each of `patterns` too large to paint: such a pattern fills with transparency,
+/// so the file says so on opening.
+pub fn unpaintable_warnings(patterns: &[Pattern]) -> Vec<String> {
+    patterns.iter().filter_map(|p| Some(format!("pattern \"{}\" would paint nothing: {}", p.display_name(), p.paint_problem()?))).collect()
+}
+
 /// Patterns decoded from the document's raw pattern blocks (malformed blocks are skipped). All
 /// blocks share one memory budget, so repeating a block can't multiply it.
 pub fn from_global_blocks(doc: &Document) -> Vec<Pattern> {
+    try_from_global_blocks(doc).unwrap_or_default()
+}
+
+/// [`from_global_blocks`], failing with the allocation error instead of dropping the pattern it
+/// hit, so an import reports that the file could not be opened in full.
+pub fn try_from_global_blocks(doc: &Document) -> Result<Vec<Pattern>, String> {
     let mut budget = PatternBudget::default();
-    doc.metadata
-        .psd_global_blocks
-        .iter()
-        .filter(|(_, k, _)| PATTERN_KEYS.contains(k))
-        .filter_map(|(_, _, d)| parse_pattern_block_with(d, &mut budget).ok())
-        .flatten()
-        .filter_map(|p| from_psd(&p))
-        .collect()
+    let mut out = Vec::new();
+    for (_, _, d) in doc.metadata.psd_global_blocks.iter().filter(|(_, k, _)| PATTERN_KEYS.contains(k)) {
+        let patterns = match parse_pattern_block_with(d, &mut budget) {
+            Ok(patterns) => patterns,
+            Err(photocraft_psd::PsdError::OutOfMemory(error)) => return Err(error.to_string()),
+            Err(_) => continue,
+        };
+        for p in patterns {
+            out.extend(try_from_psd(&p)?);
+        }
+    }
+    Ok(out)
 }
 
 /// Global blocks to write: the raw ones while they still match [`Document::patterns`] (see
@@ -276,5 +342,57 @@ mod tests {
         assert_eq!(from_global_blocks(&back), d.patterns);
         // Saving again keeps every block as it is.
         assert_eq!(export_global_blocks(&back), back.metadata.psd_global_blocks);
+    }
+}
+
+#[cfg(test)]
+mod unpaintable_tests {
+    use super::*;
+    use photocraft_doc::PixelFormat;
+    use photocraft_raster::Surface;
+
+    #[test]
+    fn a_pattern_too_large_to_paint_is_named_on_opening() {
+        let sparse = |name: &str, format: PixelFormat, side: u32| Pattern {
+            id: name.into(),
+            name: name.into(),
+            width: side,
+            height: side,
+            surface: Surface::new(format),
+        };
+        let patterns =
+            [sparse("Small", PixelFormat::RGBA8, 64), sparse("Huge float", PixelFormat::RGBA32F, 5000), sparse("Largest 8-bit", PixelFormat::RGBA8, 8000)];
+        let warnings = unpaintable_warnings(&patterns);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("Huge float") && warnings[0].contains("would paint nothing") && warnings[0].contains("32 bits"), "{warnings:?}");
+    }
+}
+
+#[cfg(test)]
+mod allocation_tests {
+    use super::*;
+
+    #[test]
+    fn malformed_dimensions_and_planes_fail_before_conversion() {
+        let mut p = PsdPattern {
+            mode: 1,
+            width: 9,
+            height: 2,
+            name: "Bits".into(),
+            id: "bits".into(),
+            palette: None,
+            depth: 1,
+            channels: vec![vec![0x80, 0, 0, 0x80]],
+            alpha: None,
+        };
+        let converted = from_psd(&p).unwrap();
+        assert_eq!(converted.surface.to_interleaved(converted.rect()), [0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 0]);
+        p.channels[0].pop();
+        assert!(from_psd(&p).is_none());
+        p.width = u32::MAX;
+        assert!(from_psd(&p).is_none());
+        p.width = 9;
+        p.depth = 7;
+        assert!(from_psd(&p).is_none());
     }
 }

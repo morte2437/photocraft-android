@@ -1,6 +1,12 @@
 use super::filters::smart;
-use super::source::{SourceImage, cache_get, cache_key, cache_put, source_bytes, source_image, source_surface, svg_source_image, vector_scale};
-use super::*;
+use super::source::{
+    SourceImage, cache_get, cache_key, cache_put, convert_svg_source, source_bytes, source_image, source_surface_from_buffer, svg_source_image_in, vector_scale,
+};
+use super::{
+    Affine, Arc, BlendMode, Document, EngineError, Homography, JobCtx, Layer, LayerContent, LayerId, PixelFormat, Rect, Result, SmartFilter, SmartObject,
+    SmartSource, Stage, StageKey, Surface, Value, decode_source, other, stack_cache,
+};
+use std::sync::Mutex;
 
 /// Layer › Smart Objects › Stack Mode: the source's layers (or, when it holds a single group, the
 /// group's layers) combined per pixel with `mode`. Cached like [`source_image`], keyed by mode.
@@ -17,6 +23,15 @@ pub fn stack_image(file_name: &str, bytes: &[u8], fmt: PixelFormat, mode: photoc
         all => all,
     };
     let bounds = doc.bounds();
+    // An SVG opens with one layer per shape, and every visible one gets its own float frame:
+    // they may take 1 GiB together, the SVG import's own budget, before any is rendered.
+    if photocraft_io::svg::is_svg(bytes) {
+        let visible = u64::try_from(layers.iter().filter(|l| l.visible).count()).unwrap_or(u64::MAX);
+        let frame_bytes = doc.size.area().saturating_mul(16);
+        if visible.saturating_mul(frame_bytes) > 1 << 30 {
+            return Err(EngineError::Other("the SVG has too many shapes for Stack Mode at this size".into()));
+        }
+    }
     let frames: Vec<Vec<[f32; 4]>> = layers
         .iter()
         .filter(|l| l.visible)
@@ -44,7 +59,7 @@ pub fn stack_image(file_name: &str, bytes: &[u8], fmt: PixelFormat, mode: photoc
         photocraft_doc::StackMode::Variance => Stat::Variance,
     };
     let buf = photocraft_compose::Buffer { rect: bounds, px: photocraft_algo::stack::combine(&frames, stat) };
-    let img = SourceImage { surface: Arc::new(source_surface(&doc, &buf, fmt)?), bounds };
+    let img = SourceImage { surface: Arc::new(source_surface_from_buffer(&doc, &buf, fmt)?), bounds };
     cache_put(key, img.clone());
     Ok(img)
 }
@@ -150,12 +165,13 @@ fn apply_smart_filter(f: &SmartFilter, cur: &Surface, canvas: Rect, extent: Rect
 }
 
 /// The source placed in document pixels, before any smart filter.
-pub(super) fn place(name: &str, bytes: &[u8], fmt: PixelFormat, sm: &SmartObject) -> Result<Surface> {
+pub(super) fn place(name: &str, bytes: &[u8], doc: &Document, sm: &SmartObject) -> Result<Surface> {
+    let fmt = doc.pixel_format();
     // A vector source is rendered at the placement's scale, and the placement is divided by
     // that scale so the rendered pixels land where the source units would.
     if sm.stack_mode.is_none() && sm.warp.is_none() && photocraft_io::svg::is_svg(bytes) {
         let k = vector_scale(sm);
-        let img = svg_source_image(bytes, fmt, k)?;
+        let img = svg_source_image_in(bytes, doc, k)?;
         return Ok(match &sm.perspective {
             Some(p) => {
                 let [h0, h1, h2, h3, h4, h5, h6, h7, h8] = *p;
@@ -170,6 +186,8 @@ pub(super) fn place(name: &str, bytes: &[u8], fmt: PixelFormat, sm: &SmartObject
         });
     }
     let img = match sm.stack_mode {
+        Some(mode) if photocraft_io::svg::is_svg(bytes) => convert_svg_source(stack_image(name, bytes, PixelFormat::RGBA32F, mode)?, doc)?,
+        None if photocraft_io::svg::is_svg(bytes) => svg_source_image_in(bytes, doc, 1.0)?,
         Some(mode) => stack_image(name, bytes, fmt, mode)?,
         None => source_image(name, bytes, fmt)?,
     };
@@ -180,17 +198,103 @@ pub(super) fn place(name: &str, bytes: &[u8], fmt: PixelFormat, sm: &SmartObject
     })
 }
 
+#[cfg(test)]
+thread_local! { pub(crate) static DISPLAY_NATIVE_HASH_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+/// BLAKE3 digests of native vector sources, remembered per source allocation so explicit
+/// refreshes and warp source frames of shared contents hash a (up to 16 MiB) source once.
+///
+/// Entries hold a [`Weak`](std::sync::Weak), never a strong reference: the source buffer is freed
+/// as soon as the document drops it, and only the small `Arc` header stays allocated until the
+/// entry is pruned. That header pinning is what makes the address a sound identity: no other
+/// `Arc` can be allocated there while the entry exists, and an `Arc` with a live `Weak` cannot be
+/// mutated in place (`Arc::get_mut` fails, `Arc::make_mut` moves to a new allocation), so a
+/// remembered digest always describes the bytes at that address. At most [`Self::CAPACITY`]
+/// entries are kept, least recently used first out, and dead entries are pruned on every lookup.
+pub(super) struct NativeDigests {
+    pub(super) entries: Vec<(std::sync::Weak<Vec<u8>>, [u8; 32])>,
+    capacity: usize,
+}
+
+impl NativeDigests {
+    const CAPACITY: usize = 32;
+
+    /// An empty cache holding at most `capacity` digests.
+    pub(super) const fn new(capacity: usize) -> Self {
+        Self { entries: Vec::new(), capacity }
+    }
+
+    /// The remembered digest of exactly this allocation, refreshing its recency.
+    pub(super) fn get(&mut self, bytes: &Arc<Vec<u8>>) -> Option<[u8; 32]> {
+        self.entries.retain(|(weak, _)| weak.strong_count() > 0);
+        let index = self.entries.iter().position(|(weak, _)| std::ptr::eq(weak.as_ptr(), Arc::as_ptr(bytes)))?;
+        let entry = self.entries.remove(index);
+        let digest = entry.1;
+        self.entries.push(entry);
+        Some(digest)
+    }
+
+    /// Remember `digest` (computed from `bytes`), evicting the least recently used entry.
+    pub(super) fn insert(&mut self, bytes: &Arc<Vec<u8>>, digest: [u8; 32]) {
+        if self.get(bytes).is_some() || self.capacity == 0 {
+            return;
+        }
+        if self.entries.len() >= self.capacity {
+            self.entries.remove(0);
+        }
+        self.entries.push((Arc::downgrade(bytes), digest));
+    }
+}
+
+static NATIVE_DIGESTS: Mutex<NativeDigests> = Mutex::new(NativeDigests::new(NativeDigests::CAPACITY));
+
+/// The BLAKE3 digest of a native source, hashed only the first time this allocation is seen.
+/// The lock is not held while hashing, so other renders never wait on a 16 MiB hash.
+fn native_digest(bytes: &Arc<Vec<u8>>) -> [u8; 32] {
+    let lock = || NATIVE_DIGESTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(digest) = lock().get(bytes) {
+        return digest;
+    }
+    #[cfg(test)]
+    DISPLAY_NATIVE_HASH_BYTES.with(|count| count.set(count.get().saturating_add(bytes.len())));
+    let digest = *blake3::hash(bytes).as_bytes();
+    lock().insert(bytes, digest);
+    digest
+}
+
+/// Preview data is untrusted after reload. Keep it on the bounded SVG path and
+/// never reuse it after a source replacement, even if a command retained the field.
+pub(super) fn display_source(sm: &SmartObject, bytes: &Arc<Vec<u8>>) -> Arc<Vec<u8>> {
+    sm.vector_preview
+        .as_ref()
+        .filter(|preview| {
+            if bytes.len() > 16 * 1024 * 1024 || !photocraft_io::vector_preview::is_native_source(bytes) {
+                return false;
+            }
+            preview.source_hash == native_digest(bytes)
+                && !preview.svg.is_empty()
+                && preview.svg.len() <= 16 * 1024 * 1024
+                && photocraft_io::svg::is_svg(&preview.svg)
+        })
+        .map_or_else(|| bytes.clone(), |preview| preview.svg.clone())
+}
+
 /// The box of a smart object's source in source pixels (what its warp's `us`/`vs` span), or `None`
 /// when the source can't be read.
+///
+/// An SVG (or a native source's SVG preview) without Stack Mode is rendered by the bounded
+/// whole-drawing path, so its box only needs the canvas bounds: no editable layer caches are
+/// built, and a drawing whose layer caches exceed the budget still gets a warp frame. Stack Mode
+/// keeps the strict layered import it renders with.
 pub(crate) fn source_box(doc: &Document, sm: &SmartObject) -> Option<[f64; 4]> {
     let (name, bytes) = source_bytes(&doc.metadata, &sm.source)?;
+    let bytes = display_source(sm, &bytes);
     let fmt = doc.pixel_format();
-    let img = match sm.stack_mode {
-        Some(mode) => stack_image(&name, &bytes, fmt, mode),
-        None => source_image(&name, &bytes, fmt),
-    }
-    .ok()?;
-    let r = img.bounds;
+    let r = match sm.stack_mode {
+        None if photocraft_io::svg::is_svg(&bytes) => photocraft_io::svg::bounded_canvas_bounds(&bytes, 24_000_000).ok()?,
+        Some(mode) => stack_image(&name, &bytes, fmt, mode).ok()?.bounds,
+        None => source_image(&name, &bytes, fmt).ok()?.bounds,
+    };
     Some([f64::from(r.x0), f64::from(r.y0), f64::from(r.x1), f64::from(r.y1)])
 }
 
@@ -210,13 +314,20 @@ pub(super) fn render_in(doc: &Document, sm: &SmartObject, ctx: &JobCtx) -> Resul
         crate::jobs::authorize_render_command(&filter.command, &filter.params)?;
     }
     let Some((name, bytes)) = source_bytes(&doc.metadata, &sm.source) else { return Ok(None) };
+    let bytes = display_source(sm, &bytes);
     let (fmt, canvas) = (doc.pixel_format(), doc.bounds());
-    let placed_key = stack_cache::placed_key(&bytes, fmt, sm, canvas);
+    let mut placed_key = stack_cache::placed_key(&bytes, fmt, sm, canvas);
+    if photocraft_io::svg::is_svg(&bytes) {
+        let mut h = blake3::Hasher::new();
+        h.update(&placed_key);
+        h.update(&crate::color_cmds::document_profile(doc).to_bytes());
+        placed_key = *h.finalize().as_bytes();
+    }
     let placed = || -> Result<Stage> {
         if let Some(stage) = stack_cache::get(&placed_key) {
             return Ok(stage);
         }
-        let surface = place(&name, &bytes, fmt, sm)?;
+        let surface = place(&name, &bytes, doc, sm)?;
         // Edge pixels repeat at the canvas ∪ placed-content edge, as for layer filters.
         let stage = Stage { extent: canvas.union(&surface.content_bounds()), surface };
         stack_cache::put(placed_key, &stage);

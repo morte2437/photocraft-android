@@ -11,6 +11,10 @@ pub enum Value {
     Dict(Vec<(String, Value)>),
     Array(Vec<Value>),
     String(String),
+    /// A string the file stored as plain bytes, without the `FE FF` mark (one char per byte).
+    /// Kept apart from [`Value::String`] so it is written back as the same bytes: Photoshop
+    /// rejects a `Txt2` whose raw strings come back as UTF-16 (#9091).
+    RawString(String),
     Int(i64),
     Real(f64),
     Bool(bool),
@@ -67,7 +71,7 @@ impl Value {
     }
     pub fn as_str(&self) -> Option<&str> {
         match self {
-            Value::String(s) | Value::Name(s) => Some(s),
+            Value::String(s) | Value::RawString(s) | Value::Name(s) => Some(s),
             _ => None,
         }
     }
@@ -173,7 +177,7 @@ impl Parser<'_> {
                         }
                     }
                 }
-                Ok(Value::String(decode_string(&raw)))
+                Ok(decode_string(&raw))
             }
             Some(b'/') => Ok(Value::Name(self.name())),
             Some(_) => {
@@ -205,12 +209,12 @@ impl Parser<'_> {
     }
 }
 
-fn decode_string(raw: &[u8]) -> String {
+fn decode_string(raw: &[u8]) -> Value {
     if raw.len() >= 2 && raw[0] == 0xFE && raw[1] == 0xFF {
         let u: Vec<u16> = raw[2..].as_chunks::<2>().0.iter().map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
-        String::from_utf16_lossy(&u)
+        Value::String(String::from_utf16_lossy(&u))
     } else {
-        raw.iter().map(|&c| c as char).collect()
+        Value::RawString(raw.iter().map(|&c| c as char).collect())
     }
 }
 
@@ -293,7 +297,18 @@ fn write_value(v: &Value, depth: usize, out: &mut Vec<u8>) {
             }
             out.extend_from_slice(b" ]");
         }
-        Value::String(s) => {
+        Value::RawString(s) if s.chars().all(|c| u32::from(c) <= 0xFF) => {
+            out.push(b'(');
+            for c in s.chars() {
+                let c = u32::from(c) as u8;
+                if matches!(c, b'(' | b')' | b'\\') {
+                    out.push(b'\\');
+                }
+                out.push(c);
+            }
+            out.push(b')');
+        }
+        Value::String(s) | Value::RawString(s) => {
             out.push(b'(');
             let mut raw = vec![0xFE, 0xFF];
             for u in s.encode_utf16() {
@@ -380,6 +395,17 @@ mod tests {
         assert_eq!(v.path(&["EngineDict", "Flag"]).and_then(Value::as_bool), Some(true));
         assert_eq!(v.path(&["EngineDict", "Kind"]), Some(&Value::Name("Roman".into())));
         assert_eq!(v.path(&["EngineDict", "Runs"]).unwrap().as_array().unwrap()[0].get("A").and_then(Value::as_i64), Some(1));
+    }
+
+    #[test]
+    fn raw_strings_are_written_back_as_the_same_bytes() {
+        let v = parse(b"<< /2 (0100\\)) /3 (\xFE\xFF\x00h) >>").unwrap();
+        assert_eq!(v.get("2"), Some(&Value::RawString("0100)".into())));
+        assert_eq!(v.get("2").and_then(Value::as_str), Some("0100)"));
+        assert_eq!(v.get("3"), Some(&Value::String("h".into())));
+        let bytes = write(&v);
+        assert!(bytes.windows(8).any(|w| w == b"(0100\\))"), "{:?}", String::from_utf8_lossy(&bytes));
+        assert_eq!(parse(&bytes).unwrap(), v);
     }
 
     #[test]

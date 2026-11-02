@@ -287,12 +287,12 @@ mod tests {
     #[test]
     fn selected_tool_and_non_default_options_roundtrip() {
         let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
-        app.ui.tool = Tool::Move;
+        app.ui.tool = Tool::Lasso;
         app.ui.tool_options.tolerance = 42.5;
         persist(&mut app, &egui::Context::default());
 
         let saved = app.session.prefs();
-        assert_eq!(saved.selected_tool, serde_json::to_value(Tool::Move).unwrap());
+        assert_eq!(saved.selected_tool, serde_json::to_value(Tool::Lasso).unwrap());
         assert_eq!(saved.tool_options["tolerance"], Value::from(42.5));
         assert!(saved.tool_options.get("contiguous").is_none(), "unchanged defaults are not written");
 
@@ -302,7 +302,7 @@ mod tests {
             p.tool_options = saved.tool_options.clone();
         });
         restore(&mut restored);
-        assert_eq!(restored.ui.tool, Tool::Move);
+        assert_eq!(restored.ui.tool, Tool::Lasso);
         assert_eq!(restored.ui.tool_options.tolerance, 42.5);
     }
 

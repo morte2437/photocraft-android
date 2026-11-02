@@ -163,6 +163,10 @@ fn new_snapshot(s: &mut Session, p: &Value) -> Result<Value> {
     let name = name.unwrap_or_else(|| next_snapshot_name(st));
     let id = st.next_snapshot;
     st.next_snapshot = id.saturating_add(1);
+    // An action's New Snapshot with "replace existing": a snapshot of that name gives way.
+    if p.get("replaceExisting").and_then(Value::as_bool) == Some(true) {
+        st.snapshots.retain(|snap| snap.name != name);
+    }
     st.snapshots.push(Snapshot { id, name: name.clone(), doc, layers });
     Ok(json!({ "snapshot": id, "name": name }))
 }
@@ -284,7 +288,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "New Snapshot",
             menu: &[],
             shortcut: None,
-            params: r##"{"name":str?="Snapshot N","from":"fullDocument"|"mergedLayers"|"currentLayer"="fullDocument"} → {snapshot,name}: a named copy of the document for the session (not a history state)"##,
+            params: r##"{"name":str?="Snapshot N","from":"fullDocument"|"mergedLayers"|"currentLayer"="fullDocument","replaceExisting":bool=false (drop snapshots of the same name first)} → {snapshot,name}: a named copy of the document for the session (not a history state)"##,
             enabled: has_doc,
             run: new_snapshot,
             journal: true,
@@ -440,6 +444,31 @@ mod tests {
         assert_eq!(r, json!({"snapshot": 2, "name": "Before green"}));
         let first = json!({"id": 0, "name": s.active().unwrap().doc.name});
         assert_eq!(snapshots(&s), json!([first, {"id": 1, "name": "Snapshot 1"}, {"id": 2, "name": "Before green"}]));
+    }
+
+    #[test]
+    fn replace_existing_snapshot_and_clear_history() {
+        let mut s = session();
+        s.execute("history.newSnapshot", json!({"name": "Result"})).unwrap();
+        s.execute("history.newSnapshot", json!({"name": "Other"})).unwrap();
+        s.execute("history.newSnapshot", json!({"name": "Result", "replaceExisting": true})).unwrap();
+        let opening = json!({"id": 0, "name": s.active().unwrap().doc.name});
+        assert_eq!(snapshots(&s), json!([opening, {"id": 2, "name": "Other"}, {"id": 3, "name": "Result"}]));
+        let kept_snapshots = snapshots(&s);
+        let history_before = entries(&s);
+        let pixel = top_pixel(&s);
+        s.execute("history.clear", json!({})).unwrap();
+        assert_eq!(entries(&s).len(), 1, "only the current state is left");
+        assert!(s.active().unwrap().history.can_undo(), "the current Clear History remains undoable");
+        assert_eq!(top_pixel(&s), pixel, "the document is unchanged");
+        assert_eq!(snapshots(&s), kept_snapshots, "opening and named snapshots stay unchanged");
+        // Current History menu semantics refuse a second clear; snapshots remain independent.
+        assert!(s.execute("history.clear", json!({})).is_err());
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(entries(&s), history_before, "Undo restores the cleared states");
+        assert_eq!(snapshots(&s), kept_snapshots, "Undo also preserves every snapshot");
+        assert_eq!(top_pixel(&s), pixel);
+        assert!(Session::new().execute("history.clear", json!({})).is_err(), "no document");
     }
 
     #[test]
