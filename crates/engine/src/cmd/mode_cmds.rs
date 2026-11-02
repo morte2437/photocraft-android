@@ -186,7 +186,7 @@ fn with_released_movement_locks<R>(l: &mut Layer, f: impl FnOnce(&mut Layer) -> 
 /// The flattened image as straight RGBA (over white when `opaque`).
 fn composite(doc: &Document, opaque: bool) -> Vec<[f32; 4]> {
     let buf = photocraft_compose::flatten(doc);
-    if opaque { buf.over_background([1.0, 1.0, 1.0]).px } else { buf.px }
+    if opaque { buf.over_background([1.0, 1.0, 1.0]).into_px() } else { buf.into_px() }
 }
 
 /// Replace the document's layers by one 8-bit layer holding `px` in `mode`'s storage format.

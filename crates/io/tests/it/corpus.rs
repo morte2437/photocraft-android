@@ -316,9 +316,9 @@ fn check_file(name: &str, bytes: &[u8]) -> (Outcome, Option<f32>) {
             return (Outcome::Error, None);
         }
     };
-    let ours = photocraft_compose::flatten(doc).px;
+    let ours = photocraft_compose::flatten(doc).into_px();
     // Our own export must not change how the document renders.
-    let again = photocraft_compose::flatten(&reimported).px;
+    let again = photocraft_compose::flatten(&reimported).into_px();
     let rt = if again.len() == ours.len() { common::max_diff(&ours, &again) } else { f32::INFINITY };
     let layers = doc.layer_count();
     // Oracle choice: the merged image (Photoshop's composite; for files without layers it is the
