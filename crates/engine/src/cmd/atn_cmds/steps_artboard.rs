@@ -99,6 +99,9 @@ pub(super) fn artboard_to(_: &str, p: &Value) -> Option<Descriptor> {
     }
     let mut settings = p.clone();
     let fields = settings.as_object_mut()?;
+    if !fields.contains_key("color") && fields.get("background").and_then(Value::as_str) == Some("custom") {
+        fields.insert("background".into(), json!("white"));
+    }
     let background = if fields.contains_key("color") { "custom" } else { "white" };
     // Native custom-without-color means white. Other types ignore this last-used color.
     for (key, value) in [("background", json!(background)), ("color", json!([1.0, 1.0, 1.0])), ("preset", json!("")), ("guideIDs", json!([]))] {

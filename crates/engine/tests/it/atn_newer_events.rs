@@ -549,6 +549,23 @@ fn artboard_from_group_replaces_the_previous_layer_selection() {
     assert!(s.active().unwrap().doc.layer(group).is_none());
 }
 
+/// A missing custom color means White; an explicit white color remains Custom through save/load.
+#[test]
+fn artboard_partial_custom_background_preserves_the_document_variant() {
+    for params in [json!({"background":"custom"}), json!({"background":"custom","color":[1,1,1]})] {
+        let mut s = artboard_fixture();
+        s.execute("layer.new.artboardFromGroup", params.clone()).unwrap();
+        let expected = s.active().unwrap().doc.clone();
+        assert!(s.undo());
+        let action = Action::new("A", vec![("layer.new.artboardFromGroup".into(), params)]);
+        let (bytes, skipped) = atn_cmds::export("Links", &[&action], &[], false).unwrap();
+        assert!(skipped.is_empty());
+        assert_eq!(load(&mut s, &bytes)["unsupported"], json!([]));
+        play(&mut s);
+        assert_eq!(s.active().unwrap().doc, expected);
+    }
+}
+
 /// Preserve fractional wire values exactly while playback uses normalized native RGB.
 #[test]
 fn artboard_fractional_colors_survive_import_save_and_playback() {
