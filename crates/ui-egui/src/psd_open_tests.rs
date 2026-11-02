@@ -735,7 +735,8 @@ fn memory_prompt_states_unknown_capacity_and_the_eight_gib_warning() {
     assert!(message.contains("could not be measured"), "{message}");
     assert!(message.contains("8 GiB") && message.contains("may run out of memory"), "{message}");
     assert!(!message.contains("available)"), "the unknown-capacity message claims no available figure: {message}");
-    assert_eq!(call(&mut app, "ui.dialog.cancel", json!({"dialog": app.ui.dialogs[0].id}))["ok"], true);
+    let dialog = app.ui.dialogs[0].id;
+    assert_eq!(call(&mut app, "ui.dialog.cancel", json!({"dialog": dialog}))["ok"], true);
 
     // A measured capacity shows the number and drops the uncertainty warning.
     let id = store_preflight(&mut app, "known.psd", 3 * gb, Some(5 * gb));
@@ -752,7 +753,8 @@ fn memory_prompt_states_unknown_capacity_and_the_eight_gib_warning() {
     let message = fields["message"].as_str().unwrap();
     assert!(message.contains("5.0 GiB available"), "{message}");
     assert!(!message.contains("could not be measured") && !message.contains("may run out of memory"), "{message}");
-    assert_eq!(call(&mut app, "ui.dialog.cancel", json!({"dialog": app.ui.dialogs[0].id}))["ok"], true);
+    let dialog = app.ui.dialogs[0].id;
+    assert_eq!(call(&mut app, "ui.dialog.cancel", json!({"dialog": dialog}))["ok"], true);
     assert!(app.ui.dialogs.is_empty());
 }
 

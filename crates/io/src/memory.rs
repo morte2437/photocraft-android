@@ -1451,7 +1451,7 @@ mod tests {
         assert_eq!(b.soft_limit, WASM_BUDGET);
         assert_eq!(b.hard_limit, WASM_MAX_PEAK_BUDGET);
         assert!(b.hard_limit < WASM_LINEAR_MEMORY_LIMIT, "the aggregate cap stays below the wasm32 address space");
-        assert!(WASM_MAX_SINGLE_ALLOCATION < WASM_LINEAR_MEMORY_LIMIT, "a single Rust allocation cannot use all 4 GiB");
+        const { assert!(WASM_MAX_SINGLE_ALLOCATION < WASM_LINEAR_MEMORY_LIMIT, "a single Rust allocation cannot use all 4 GiB") };
         assert_eq!(b.available_ram, None);
         assert_eq!(b.warning_threshold, None);
 
@@ -1459,7 +1459,7 @@ mod tests {
         assert_eq!(b.decide(WASM_BUDGET + 1), BudgetDecision::RequiresApproval);
         assert_eq!(b.decide(WASM_MAX_PEAK_BUDGET), BudgetDecision::RequiresApproval);
         assert_eq!(b.decide(WASM_MAX_PEAK_BUDGET + 1), BudgetDecision::Refused);
-        assert!(WASM_MAX_SINGLE_ALLOCATION < WASM_MAX_PEAK_BUDGET, "the aggregate cap must not be the single-allocation layout bound");
+        const { assert!(WASM_MAX_SINGLE_ALLOCATION < WASM_MAX_PEAK_BUDGET, "the aggregate cap must not be the single-allocation layout bound") };
         let out = evaluate_psd_admission_for(Platform::Web, WASM_MAX_PEAK_BUDGET, 0, true, Some(WASM_MAX_PEAK_BUDGET), MemorySnapshot::UNKNOWN).unwrap();
         assert_eq!(out.authorized_total, WASM_MAX_PEAK_BUDGET, "approval may authorize an aggregate above one buffer's layout limit");
 

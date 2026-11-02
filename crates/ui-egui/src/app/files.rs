@@ -52,7 +52,7 @@ impl PhotocraftApp {
     /// shown to the user). Files from disk go through [`open_file`](Self::open_file), which also
     /// remembers the path. Brush and gradient files go to the preset libraries instead.
     pub fn open_bytes(&mut self, name: &str, bytes: &[u8]) -> Result<Vec<String>, String> {
-        self.open_bytes_placed(name, bytes, None, None, None)
+        self.open_bytes_from(name, bytes, None)
     }
 
     /// [`Self::open_bytes`] for a file read from `path` (File › Save writes back there; it goes
