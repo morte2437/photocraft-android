@@ -171,12 +171,21 @@ pub(crate) fn apply_mode_drag(s: &mut TransformSession, g: Gesture, p: [f64; 2],
             s.quad = keep_convex(q0, q);
             s.pivot = carry_pivot(q0, s.quad, g.pivot0);
         }
-        // Skew, and Perspective's side handles, as in Photoshop: an edge slides only along itself
-        // (⌘⇧ in Free Transform).
-        (TransformMode::Skew | TransformMode::Perspective, Hit::Edge(_)) => {
+        // Skew: an edge slides only along itself (⌘⇧ in Free Transform).
+        (TransformMode::Skew, Hit::Edge(_)) => {
             mods.command = true;
             mods.shift = true;
             apply_drag(s, g, p, mods);
+        }
+        // Perspective's side handles, as in Photoshop: the edge slides along itself, stopping
+        // before the box folds over (#1323). That happens once the opposite edge isn't parallel,
+        // as after a corner drag on the other axis.
+        (TransformMode::Perspective, Hit::Edge(_)) => {
+            mods.command = true;
+            mods.shift = true;
+            apply_drag(s, g, p, mods);
+            s.quad = keep_convex(g.quad0, s.quad);
+            s.pivot = carry_pivot(g.quad0, s.quad, g.pivot0);
         }
         _ => apply_drag(s, g, p, mode_mods(mode, g.hit, mods)),
     }

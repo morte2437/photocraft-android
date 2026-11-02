@@ -1650,6 +1650,27 @@ fn perspective_mode_edge_slides_along_itself() {
     assert_eq!(drag_in(persp, [50.0, 0.0], [62.0, 7.0], egui::Modifiers::ALT), [[12.0, 0.0], [112.0, 0.0], [88.0, 50.0], [-12.0, 50.0]]);
 }
 
+/// A Perspective side handle on a box whose opposite edge isn't parallel (here its right side
+/// already pulled out by a vertical corner pair) stops before the box folds over, as its
+/// corners do (#1323): a long slide along the top edge turned it concave.
+#[test]
+fn perspective_mode_edge_slide_stops_before_the_box_folds() {
+    let mut s = session();
+    s.quad = [[0.0, 0.0], [100.0, -20.0], [100.0, 70.0], [0.0, 50.0]];
+    let start = turns(&s.quad);
+    // Along the top edge, (5, -1), 100 steps the other way.
+    let g = Gesture { hit: Hit::Edge(0), start: [50.0, -10.0], quad0: s.quad, pivot0: s.pivot };
+    apply_mode_drag(&mut s, g, [-450.0, 90.0], TransformMode::Perspective, false, egui::Modifiers::NONE);
+    let q = s.quad;
+    assert!(turns(&q).iter().zip(start).all(|(t, t0)| t * t0.signum() > 0.0), "still convex: {q:?}");
+    assert!(q.iter().flatten().all(|v| v.is_finite()), "{q:?}");
+    assert_eq!((q[2], q[3]), (g.quad0[2], g.quad0[3]), "the other corners stay");
+    // The top edge only slid along itself, and some way.
+    assert!(((q[0][0] - g.quad0[0][0]) + (q[0][1] - g.quad0[0][1]) * 5.0).abs() < 1e-9, "{q:?}");
+    assert!(([q[1][0] - q[0][0] - 100.0, q[1][1] - q[0][1] + 20.0]).iter().all(|v| v.abs() < 1e-9), "{q:?}");
+    assert!(q[0][0] < -1.0, "it still slid: {q:?}");
+}
+
 /// #3941: Edit › Transform › Rotate must rotate from a corner handle, not scale.
 #[test]
 fn rotate_mode_turns_the_box_from_a_corner_handle() {
