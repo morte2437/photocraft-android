@@ -69,7 +69,7 @@ fn batch_structured_names_keep_image_format_and_refuse_unsupported_save_routing(
     child.set = Some("S".into());
     s.actions.list.push(child);
     let params = json!({"input":dir,"output":output,"action":"Child","set":"S","includeSubfolders":false,"flatOutput":true,
-        "overrideSaveAs":false,"namingComponents":[{"text":"from-atn"}]});
+        "overrideSaveAs":false,"stopOnError":true,"namingComponents":[{"text":"from-atn"}]});
     let driver = crate::actions_cmds::Action::new("Driver", vec![("file.automate.batch".into(), params)]);
     let (bytes, skipped) = crate::atn_cmds::export("S", &[&driver], &[], false).unwrap();
     assert!(skipped.is_empty());
@@ -78,6 +78,50 @@ fn batch_structured_names_keep_image_format_and_refuse_unsupported_save_routing(
     s.actions.list.extend(imported.actions);
     s.execute("actions.play", json!({"action":"Driver"})).unwrap();
     assert!(std::fs::read(join(&output, "from-atn")).unwrap().starts_with(b"\x89PNG\r\n\x1a\n"));
+}
+
+/// Recorded Stop For Errors keeps prior writes and leaves later inputs untouched; native defaults continue.
+#[test]
+fn batch_recorded_stop_for_errors_retains_earlier_outputs_and_stops_before_later_inputs() {
+    let dir = tmp("batch-stop-for-errors");
+    let first = png(&dir, "a.png", 3, 2, "#ff0000");
+    let bad = join(&dir, "b.png");
+    std::fs::write(&bad, b"not a PNG").unwrap();
+    let last = png(&dir, "c.png", 3, 2, "#0000ff");
+    let mut s = Session::new();
+    for (mode, stop) in [("default", None), ("continue", Some(false)), ("stop", Some(true))] {
+        let output = join(&dir, mode);
+        let mut p = json!({"input":[first,bad,last],"output":output,"steps":[]});
+        if let Some(stop) = stop {
+            p["stopOnError"] = json!(stop);
+        }
+        let result = s.execute("file.automate.batch", p).unwrap();
+        assert_eq!(result["files"].as_array().unwrap().len(), if stop == Some(true) { 1 } else { 2 }, "{result}");
+        assert_eq!(result["errors"].as_array().unwrap().len(), 1, "{result}");
+        assert_eq!(result["errors"][0]["file"], bad);
+        assert!(std::path::Path::new(&join(&output, "a.png")).is_file());
+        assert_eq!(std::path::Path::new(&join(&output, "c.png")).exists(), stop != Some(true));
+    }
+    let mut child = crate::actions_cmds::Action::new("Child", vec![]);
+    child.set = Some("S".into());
+    s.actions.list.push(child);
+    let output = join(&dir, "recorded");
+    let p = json!({"input":dir,"output":output,"action":"Child","set":"S","stopOnError":true,
+        "includeSubfolders":false,"overrideSaveAs":false,"flatOutput":true,
+        "namingComponents":[{"component":"name"},{"component":"extension"}]});
+    let driver = crate::actions_cmds::Action::new("Driver", vec![("file.automate.batch".into(), p)]);
+    let (bytes, skipped) = crate::atn_cmds::export("S", &[&driver], &[], false).unwrap();
+    assert!(skipped.is_empty());
+    s.actions.list.extend(crate::atn_cmds::import(&bytes).unwrap().actions);
+    let result = s.execute("actions.play", json!({"action":"Driver"})).unwrap();
+    assert_eq!(result["ran"], 1, "{result}");
+    assert!(result.get("failed").is_none(), "{result}");
+    assert!(std::path::Path::new(&join(&output, "a.png")).is_file());
+    assert!(!std::path::Path::new(&join(&output, "c.png")).exists());
+    let invalid_output = join(&dir, "invalid");
+    let err = s.execute("file.automate.batch", json!({"input":[first],"output":invalid_output,"steps":[],"stopOnError":"true"})).unwrap_err();
+    assert!(err.to_string().contains("stopOnError"), "{err}");
+    assert!(!std::path::Path::new(&invalid_output).exists());
 }
 
 fn tmp(name: &str) -> String {

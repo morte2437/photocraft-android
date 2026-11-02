@@ -107,7 +107,7 @@ fn batch_descriptor(component: &str) -> Descriptor {
 
 /// Preserve the recorded template in the generic registry round-trip witness.
 fn batch_case() -> Value {
-    json!({"input":"/input","output":"/output","action":"Child","set":"S","flatOutput":true,"includeSubfolders":false,"overrideSaveAs":false,
+    json!({"input":"/input","output":"/output","action":"Child","set":"S","flatOutput":true,"includeSubfolders":false,"overrideSaveAs":false,"stopOnError":true,
         "namingComponents":[{"component":"serial3"}],"startingSerial":7,"compatibility":{"macintosh":true,"windows":false,"unix":true},
         "__atnBatch":b64(&batch_descriptor("threeDigit").to_bytes())})
 }
@@ -123,6 +123,7 @@ fn batch_all_documented_components_and_compatibility_flags_round_trip() {
         let p = &imported.actions[0].steps[0].1;
         assert_eq!(p["namingComponents"], json!([{"component":native}]));
         assert_eq!(p["startingSerial"], 7);
+        assert_eq!(p["stopOnError"], true);
         assert_eq!(p["compatibility"], json!({"macintosh":true,"windows":false,"unix":true}));
         let (out, skipped) = export("S", &[&imported.actions[0]], &[], false).unwrap();
         assert!(skipped.is_empty());
@@ -149,6 +150,14 @@ fn batch_unknown_components_wrong_start_placement_and_unsupported_modes_stay_who
     }
     let mut p = batch_case();
     p["target"] = json!("mask");
+    assert!(super::steps_batch::batch_to("file.automate.batch", &p).is_none());
+    for value in [Value::Null, json!(false), json!("yes")] {
+        let mut p = batch_case();
+        p["stopOnError"] = value;
+        assert!(super::steps_batch::batch_to("file.automate.batch", &p).is_none());
+    }
+    let mut p = batch_case();
+    p.as_object_mut().unwrap().remove("stopOnError");
     assert!(super::steps_batch::batch_to("file.automate.batch", &p).is_none());
 }
 

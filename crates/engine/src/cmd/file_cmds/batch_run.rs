@@ -129,11 +129,15 @@ pub(crate) fn process_tree(
     suffix: &str,
     f: &dyn Fn(&mut Session, &str) -> Result<bool>,
 ) -> Value {
-    let outputs = inputs.iter().map(|BatchInput { path, rel_dir }| {
+    process_outputs(s, default_outputs(inputs, output, format, suffix), save, None, false, f)
+}
+
+/// Stream legacy destination names without collecting another path list for large batches.
+fn default_outputs<'a>(inputs: &'a [BatchInput], output: &'a str, format: &'a str, suffix: &'a str) -> impl Iterator<Item = (&'a str, String)> {
+    inputs.iter().map(move |BatchInput { path, rel_dir }| {
         let ext = if format == "same" { same_format(path) } else { format.trim_start_matches('.').to_ascii_lowercase() };
         (path.as_str(), join(&join(output, rel_dir), &format!("{}{suffix}.{ext}", stem(path))))
-    });
-    process_outputs(s, outputs, save, None, f)
+    })
 }
 
 /// The extension a batch output takes with Format "Same": the input's own, except for formats
@@ -183,6 +187,7 @@ fn process_outputs<'a>(
     outputs: impl IntoIterator<Item = (&'a str, String)>,
     save: SaveOpts,
     content_format: Option<&str>,
+    stop_on_error: bool,
     f: &dyn Fn(&mut Session, &str) -> Result<bool>,
 ) -> Value {
     // The scratch sessions have default preferences; a raw opens at the user's Raw Defaults.
@@ -209,7 +214,12 @@ fn process_outputs<'a>(
                 written.record(&out, path);
                 files.push(out);
             }
-            Err(e) => errors.push(json!({"file": path, "error": e.to_string()})),
+            Err(e) => {
+                errors.push(json!({"file": path, "error": e.to_string()}));
+                if stop_on_error {
+                    break;
+                }
+            }
         }
     }
     json!({"files": files, "errors": errors})
@@ -275,6 +285,11 @@ pub(crate) fn batch_action(list: &[crate::actions_cmds::Action], p: &Value) -> R
 
 pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "file.automate.batch";
+    let stop_on_error = match p.get("stopOnError") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(value)) => *value,
+        _ => return Err(EngineError::BadParams { cmd: cmd.into(), msg: "stopOnError must be a boolean".into() }),
+    };
     // Steps that call another action play it from the caller's actions; the playback stack comes
     // along so an action that batches itself is caught as a recursive call.
     let list = match p.get("calledActions") {
@@ -389,8 +404,8 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
         result
     };
     let r = match names {
-        Some(names) => process_outputs(s, inputs.iter().map(|i| i.path.as_str()).zip(names), save, structured.then_some(format.as_str()), &run),
-        None => process_tree(s, &inputs, &output, &format, save, "", &run),
+        Some(names) => process_outputs(s, inputs.iter().map(|i| i.path.as_str()).zip(names), save, structured.then_some(format.as_str()), stop_on_error, &run),
+        None => process_outputs(s, default_outputs(&inputs, &output, &format, ""), save, None, stop_on_error, &run),
     };
     if s.actions.playing > 0 {
         s.actions.playback_steps = carried.get();

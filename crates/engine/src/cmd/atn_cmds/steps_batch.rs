@@ -118,7 +118,7 @@ fn read(d: &Descriptor) -> Option<Value> {
             return None;
         }
     }
-    let mut p = json!({"input":path_text(d.get("null")?)?,"output":path_text(d.get("T   ")?)?,"flatOutput":true});
+    let mut p = json!({"input":path_text(d.get("null")?)?,"output":path_text(d.get("T   ")?)?,"flatOutput":true,"stopOnError":true});
     let D::Reference(items) = d.get("Usng")? else { return None };
     match items.as_slice() {
         [ReferenceItem::Name { class: action, name }, ReferenceItem::Name { class: set, name: set_name }]
@@ -166,6 +166,7 @@ pub(super) fn batch_to(_: &str, p: &Value) -> Option<Descriptor> {
             "flatOutput",
             "includeSubfolders",
             "overrideSaveAs",
+            "stopOnError",
             "namingComponents",
             "startingSerial",
             "compatibility",
@@ -173,6 +174,10 @@ pub(super) fn batch_to(_: &str, p: &Value) -> Option<Descriptor> {
         ]
         .contains(&k.as_str())
     }) {
+        return None;
+    }
+    // Without Log, the recorded dialog stops at the first failing file. Native defaults continue.
+    if p.get("stopOnError") != Some(&Value::Bool(true)) {
         return None;
     }
     if let Some(original) = p.get(ORIGINAL) {
