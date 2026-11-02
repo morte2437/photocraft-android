@@ -87,7 +87,7 @@ the reference application.
 | `CpTL` | copyToLayer | Layer Via Copy | `layer.new.layerViaCopy` |
 | `CtTL` | cutToLayer | Layer Via Cut | `layer.new.layerViaCut` |
 | `Lvls` | levels | Levels | `image.adjustments.levels`, `image.autoTone`, `image.autoContrast` |
-| `Mk  ` | make | Make | `layer.new.layer`, `layer.new.group`, `layer.groupLayers`, `layer.duplicate`, `layer.new.layerViaCopy`, `layer.new.layerViaCut`, `layer.newFillLayer.solidColor`, `layer.newFillLayer.pattern`, `layer.newAdjustmentLayer.levels`, `layer.newAdjustmentLayer.curves`, `layer.newAdjustmentLayer.hueSaturation`, `layer.newAdjustmentLayer.brightnessContrast`, `layer.newAdjustmentLayer.threshold`, `layer.newAdjustmentLayer.posterize`, `layer.newAdjustmentLayer.invert`, `layer.newAdjustmentLayer.colorBalance`, `layer.newAdjustmentLayer.vibrance`, `layer.newAdjustmentLayer.exposure`, `layer.newAdjustmentLayer.photoFilter`, `layer.newAdjustmentLayer.blackWhite`, `layer.newAdjustmentLayer.channelMixer`, `layer.newAdjustmentLayer.selectiveColor`, `layer.newAdjustmentLayer.gradientMap`, `layer.layerMask.revealAll`, `layer.layerMask.hideAll`, `layer.layerMask.revealSelection`, `layer.layerMask.hideSelection`, `file.new`, `file.newFromClipboard`, `history.newSnapshot` |
+| `Mk  ` | make | Make | `image.calculations`, `layer.new.layer`, `layer.new.group`, `layer.groupLayers`, `layer.duplicate`, `layer.new.layerViaCopy`, `layer.new.layerViaCut`, `layer.newFillLayer.solidColor`, `layer.newFillLayer.pattern`, `layer.newAdjustmentLayer.levels`, `layer.newAdjustmentLayer.curves`, `layer.newAdjustmentLayer.hueSaturation`, `layer.newAdjustmentLayer.brightnessContrast`, `layer.newAdjustmentLayer.threshold`, `layer.newAdjustmentLayer.posterize`, `layer.newAdjustmentLayer.invert`, `layer.newAdjustmentLayer.colorBalance`, `layer.newAdjustmentLayer.vibrance`, `layer.newAdjustmentLayer.exposure`, `layer.newAdjustmentLayer.photoFilter`, `layer.newAdjustmentLayer.blackWhite`, `layer.newAdjustmentLayer.channelMixer`, `layer.newAdjustmentLayer.selectiveColor`, `layer.newAdjustmentLayer.gradientMap`, `layer.layerMask.revealAll`, `layer.layerMask.hideAll`, `layer.layerMask.revealSelection`, `layer.layerMask.hideSelection`, `file.new`, `file.newFromClipboard`, `history.newSnapshot` |
 | (string ID only) | animationFramesFromLayers | Make Frames from Layers |  |
 | `Mxm ` | maximum | Maximum | `filter.other.maximum` |
 | `Mdn ` | median | Median | `filter.noise.median` |
@@ -139,6 +139,26 @@ the reference application.
 | `UnsM` | unsharpMask | Unsharp Mask | `filter.sharpen.unsharpMask` |
 | (string ID only) | updatePlacedLayer | Update Smart Objects | `layer.smartObjects.updateModifiedContent` |
 | `Vbrn` | vibrance | Vibrance | `image.adjustments.vibrance` |
+
+### Calculations through Make Channel
+
+The recorded `Nw  ` class `Chnl` with an `Usng` object of class `Clcl` maps to
+`image.calculations`, creating a new alpha channel in one undoable edit. The
+supported object writes `T   `, explicit `Clcl` (`Clcn`), optional `Scl ` (double
+1..2), optional `Ofst` (integer -255..255), then `Src2` in recorded order.
+Colour-channel enumerations, literal alpha-channel names, single targeted colour
+or alpha channels, and optional merged or named layers retain their identities.
+An omitted layer uses the native source document's existing merged-image semantics.
+
+The nested types are corroborated by firsthand ScriptListener output for
+[Add with target and Green](https://community.adobe.com/questions-712/combining-channels-1103103).
+The later [transparency recording](https://community.adobe.com/questions-712/generating-an-alpha-channel-for-document-1102257)
+corroborates the Make/Clcl structure but omits the blend key. Omitted blends,
+transparency/mask sources, other-document references, unknown settings and
+unrepresented reference forms remain whole preserved steps. Composite, multiple
+colour and mask targets fail before mutation when a supported step requests the
+current channel. These limits remain open under #10705; fresh Photoshop pixel
+parity has not been measured.
 
 ## Known gaps in mapped events
 

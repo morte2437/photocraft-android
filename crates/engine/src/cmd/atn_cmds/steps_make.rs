@@ -140,6 +140,9 @@ fn new_document_from_descriptor(d: &Descriptor) -> Option<Mapped> {
 const SNAPSHOT_FROM: &[(&str, &str)] = &[("FllD", "fullDocument"), ("MrgL", "mergedLayers"), ("CrnL", "currentLayer")];
 
 pub(super) fn make_from(d: &Descriptor) -> Mapped {
+    if let Some(mapped) = super::steps_calculations::from_descriptor(d) {
+        return mapped;
+    }
     if let Some(mapped) = duplicate_layer_from_descriptor(d) {
         return mapped;
     }
@@ -224,6 +227,9 @@ pub(super) fn make_from(d: &Descriptor) -> Mapped {
 }
 
 pub(super) fn make_to(id: &str, p: &Value) -> Option<Descriptor> {
+    if id == "image.calculations" {
+        return super::steps_calculations::to_descriptor(p);
+    }
     let with_name = |cls: &str| {
         let mut u = desc(cls);
         if let Some(n) = jstr(p, "name") {

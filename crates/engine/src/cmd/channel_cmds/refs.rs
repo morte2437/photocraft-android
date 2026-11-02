@@ -25,6 +25,14 @@ pub fn parse_ref(v: &Value, doc: &Document) -> Option<ChanRef> {
     match v {
         Value::Number(n) => n.as_u64().map(|i| ChanRef::Alpha(i as usize)),
         Value::Object(o) => {
+            if o.len() == 1 {
+                if let Some(name) = o.get("name").and_then(Value::as_str) {
+                    return doc.channels.iter().position(|c| c.name == name).map(ChanRef::Alpha);
+                }
+                if let Some(name) = o.get("color").and_then(Value::as_str) {
+                    return color_names(mode).iter().position(|n| n.eq_ignore_ascii_case(name)).map(ChanRef::Color);
+                }
+            }
             if let Some(k) = o.get("color").and_then(Value::as_u64) {
                 Some(ChanRef::Color(k as usize))
             } else {
@@ -102,19 +110,26 @@ pub(super) fn native_pixels(doc: &Document, layer: Option<LayerId>) -> Result<(V
 }
 
 /// `"layer"` param of a source: a layer id, a layer name (the topmost of that name, as a loaded
-/// Photoshop action refers to it), or `"merged"` (default). An unknown name is an error.
+/// Photoshop action refers to it), `{"name":"merged"}` for a literal name, or `"merged"`
+/// (default). An unknown name is an error.
 fn source_layer(doc: &Document, p: &Value, cmd: &str) -> Result<Option<LayerId>> {
-    match p.get("layer") {
-        Some(Value::Number(n)) => Ok(n.as_u64().map(LayerId)),
-        Some(Value::String(name)) if !name.is_empty() && name != "merged" => doc
-            .walk()
-            .into_iter()
-            .rev()
-            .find(|(_, _, l)| l.name == *name)
-            .map(|(_, _, l)| Some(l.id))
-            .ok_or_else(|| bad(cmd, format!("no source layer named \"{name}\""))),
-        _ => Ok(None),
-    }
+    // The same literal-name selector is used by the recorded source mapping in #10702.
+    let name = match p.get("layer") {
+        Some(Value::Number(n)) => return Ok(n.as_u64().map(LayerId)),
+        Some(Value::Object(selector)) => selector
+            .get("name")
+            .filter(|_| selector.len() == 1)
+            .and_then(Value::as_str)
+            .ok_or_else(|| bad(cmd, "a source layer selector must be {\"name\":\"layer name\"}"))?,
+        Some(Value::String(name)) if !name.is_empty() && name != "merged" => name,
+        _ => return Ok(None),
+    };
+    doc.walk()
+        .into_iter()
+        .rev()
+        .find(|(_, _, l)| l.name == name)
+        .map(|(_, _, l)| Some(l.id))
+        .ok_or_else(|| bad(cmd, format!("no source layer named \"{name}\"")))
 }
 
 /// Planes of channel `r` from document `doc` (`layer` = None: merged). A composite gives one
@@ -161,6 +176,7 @@ fn ref_planes(doc: &Document, layer: Option<LayerId>, active: Option<LayerId>, r
                             .map(|p| p[3])
                             .collect(),
                     ],
+                    LayerContent::Group(_) => return Err(EngineError::Other("group transparency sources are not supported".into())),
                     // Adjustment and fill layers cover the whole canvas.
                     _ => vec![vec![1.0; area.width() as usize * area.height() as usize]],
                 },
@@ -216,7 +232,17 @@ pub(super) fn source(s: &Session, p: &Value, cmd: &str, gray: bool) -> Result<Ve
     if st.doc.size != target.doc.size {
         return Err(bad(cmd, format!("source document \"{}\" is {}×{}; it must match the target size", st.doc.name, st.doc.size.width, st.doc.size.height)));
     }
-    let r = p.get("channel").map_or(Some(ChanRef::Composite), |v| parse_ref(v, &st.doc)).ok_or_else(|| bad(cmd, "unknown `channel`"))?;
+    let r = if p.get("channel") == Some(&serde_json::json!({"targeted": true})) {
+        // Resolve on replay, before the calculation creates a channel. A string selector would
+        // collide with an existing alpha named "targeted".
+        match st.channel_view.target {
+            super::view::ChannelTarget::Color(k) if st.channel_view.selected_colors.len() <= 1 => ChanRef::Color(k),
+            super::view::ChannelTarget::Alpha(i) => ChanRef::Alpha(i),
+            _ => return Err(bad(cmd, "the source must target one colour or alpha channel")),
+        }
+    } else {
+        p.get("channel").map_or(Some(ChanRef::Composite), |v| parse_ref(v, &st.doc)).ok_or_else(|| bad(cmd, "unknown `channel`"))?
+    };
     let layer = source_layer(&st.doc, p, cmd)?;
     let mut planes = if gray { vec![gray_plane(&st.doc, layer, st.active_layer, r)?] } else { ref_planes(&st.doc, layer, st.active_layer, r)? };
     // Guard every caller (`.remove(0)` / `src[0]`) against an empty source.

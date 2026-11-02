@@ -358,6 +358,7 @@ pub(super) const EVENTS: &[Event] = &[
         name: "make",
         label: "Make",
         ids: &[
+            "image.calculations",
             "layer.new.layer",
             "layer.new.group",
             "layer.groupLayers",
