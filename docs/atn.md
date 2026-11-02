@@ -306,14 +306,16 @@ XMP settings without a dialog. Sensor-stage adjustments use the RAW developer,
 followed by remaining Camera Raw adjustments and the selected workflow profile,
 depth and Smart Object setting. Unsupported prior settings fail the input rather
 than being ignored; this includes absolute white balance, lens and geometry data.
-Implicit sidecar reads require a trusted session because gated sessions have no
-sidecar read capability. A profile question still requires an interactive answer
-unless Suppress Color Profile Warnings is enabled. Neither source nor XMP is
-rewritten by opening. This is the supported subset, not complete prior-XMP parity.
+Only a regular XMP sidecar beside the named RAW file is read; embedded DNG
+settings are not represented. Implicit sidecar reads require a trusted session
+because gated sessions have no sidecar read capability. An unsuppressed profile
+question fails this noninteractive input; Suppress Color Profile Warnings is a
+separate option. Neither source nor XMP is rewritten by opening. This is the
+supported subset, not complete prior-XMP parity.
 
-This maps supported text-path folder forms. Alias bytes, open-document sources,
-error logs remain preserved steps. Save and
-Close with unrepresented override combinations also remains preserved. For an
+This maps supported text-path folder forms. Alias bytes, open-document sources
+and error logs remain preserved steps. Save and Close with unrepresented
+override combinations also remains preserved. For an
 admitted recorded Save As configuration, native preflight refuses unrepresented
 save routing: override requires a directly represented Save step,
 and an action with Save steps cannot follow their original destinations without
