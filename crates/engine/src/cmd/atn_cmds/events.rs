@@ -4,6 +4,7 @@ use super::descriptors::{class, code, desc, get_bool, get_obj, get_ref, jbool, l
 use super::fields::{F, Kind, Mapped, fields_from, fields_to, none, step};
 
 use super::steps_channels::{match_color_from, match_color_to, merge_spot_from, merge_spot_to, split_from, split_to, trap_from, trap_to};
+use super::steps_direct_adjustments::{gradient_from, gradient_to, replace_from, replace_to};
 use super::steps_distort::{PINCH, POLAR, SPHERIZE, TWIRL, ZIGZAG, keys_from, keys_to, wave_from, wave_to};
 use super::steps_doc::{
     align_from, align_to, canvas_size_from, canvas_size_to, close_from, close_to, conditional_from, conditional_to, convert_mode_from, convert_mode_to,
@@ -556,7 +557,9 @@ pub(super) const EVENTS: &[Event] = &[
     adjustment_event!("", "PhtF", "photoFilter", "Photo Filter"),
     adjustment_event!("", "BanW", "blackAndWhite", "Black & White", "image.adjustments.blackWhite"),
     adjustment_event!("ChnM", "ChnM", "channelMixer", "Channel Mixer"),
+    Event { code: "GrMp", name: "", label: "Gradient Map", ids: &["image.adjustments.gradientMap"], from: gradient_from, to: gradient_to },
     adjustment_event!("", "GdMp", "gradientMapEvent", "Gradient Map", "image.adjustments.gradientMap"),
+    Event { code: "RplC", name: "replaceColor", label: "Replace Color", ids: &["image.adjustments.replaceColor"], from: replace_from, to: replace_to },
     adjustment_event!("SlcC", "SlcC", "selectiveColor", "Selective Color"),
     Event { code: "", name: "matchColor", label: "Match Color", ids: &["image.adjustments.matchColor"], from: match_color_from, to: match_color_to },
     ev!("Dstt", "desaturate", "Desaturate", "image.adjustments.desaturate", &[]),

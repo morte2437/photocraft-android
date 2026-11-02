@@ -18,7 +18,7 @@ layers and documents, newer and older events and files, and a measured reference
 map yet, with everything needed to implement them without
 the reference application.
 
-## Supported events (144)
+## Supported events (146)
 
 | Code | String ID | Label | PhotoCraft command(s) |
 |---|---|---|---|
@@ -84,6 +84,8 @@ the reference application.
 | (string ID only) | focusMask | Focus Area | `select.focusArea` |
 | `GsnB` | gaussianBlur | Gaussian Blur | `filter.blur.gaussianBlur` |
 | (string ID only) | gradientMapEvent | Gradient Map | `image.adjustments.gradientMap` |
+| `GrMp` | (code only) | Gradient Map (recorded classic form) | `image.adjustments.gradientMap` |
+| `RplC` | replaceColor | Replace Color (Lab sample box) | `image.adjustments.replaceColor` |
 | `Grow` | grow | Grow | `select.grow` |
 | `Hd  ` | hide | Hide | `layer.hideLayers` |
 | `HghP` | highPass | High Pass | `filter.other.highPass` |
@@ -234,6 +236,81 @@ supported-event count and the measured unmapped reference.
 | String ID | Label |
 |---|---|
 | animationFramesFromLayers | Make Frames from Layers |
+
+### Supported direct adjustment settings
+
+#### Gradient Map (direct)
+
+- Event: `GrMp` (no string ID)
+- PhotoCraft command: `image.adjustments.gradientMap`
+- Supported: classic (`Gcls`, also when omitted), 2..64 ordered custom RGB stops at midpoint 50, smoothness 4096, and the two opaque endpoint transparency stops. Fractional RGB components retain their precision and the recorded name and event survive save.
+- Other interpolation methods, midpoints, transparency, unsorted stops and unsupported descriptor forms remain kept steps. This does not change the separate legacy `GdMp` event mapping.
+
+| Key | String ID | Type | Unit | Default | Allowed |
+|---|---|---|---|---|---|
+| `` | gradientsInterpolationMethod | enumerated |  |  gradientInterpolationMethodType.'Gcls' classic |  |
+| `Grad` | gradient | object |  | obj 'Grdn' gradientClassEvent |  |
+
+Nested values as recorded (defaults):
+```
+    'Nm  ' name : STRINGTYPE = "Vorder- zu Hintergrundfarbe"
+    'GrdF' gradientForm : ENUMERATEDTYPE = 'GrdF' gradientForm.'CstS' customStops
+    'Intr' interfaceIconFrameDimmed : DOUBLETYPE = 4096
+    'Clrs' colors : LISTTYPE = list[2]
+        [0] OBJECTTYPE = obj 'Clrt' colorStop
+            'Clr ' color : OBJECTTYPE = obj 'RGBC' RGBColor
+                'Rd  ' red : DOUBLETYPE = 0
+                'Grn ' green : DOUBLETYPE = 0
+                'Bl  ' blue : DOUBLETYPE = 0
+            'Type' type : ENUMERATEDTYPE = 'Clry' colorStopType.'UsrS' userStop
+            'Lctn' location : INTEGERTYPE = 0
+            'Mdpn' midpoint : INTEGERTYPE = 50
+        [1] OBJECTTYPE = obj 'Clrt' colorStop
+            'Clr ' color : OBJECTTYPE = obj 'RGBC' RGBColor
+                'Rd  ' red : DOUBLETYPE = 255
+                'Grn ' green : DOUBLETYPE = 255
+                'Bl  ' blue : DOUBLETYPE = 255
+            'Type' type : ENUMERATEDTYPE = 'Clry' colorStopType.'UsrS' userStop
+            'Lctn' location : INTEGERTYPE = 4096
+            'Mdpn' midpoint : INTEGERTYPE = 50
+    'Trns' transparency : LISTTYPE = list[2]
+        [0] OBJECTTYPE = obj 'TrnS' transferSpec
+            'Opct' opacity : UNITDOUBLE = 100 '#Prc' percentUnit
+            'Lctn' location : INTEGERTYPE = 0
+            'Mdpn' midpoint : INTEGERTYPE = 50
+        [1] OBJECTTYPE = obj 'TrnS' transferSpec
+            'Opct' opacity : UNITDOUBLE = 100 '#Prc' percentUnit
+            'Lctn' location : INTEGERTYPE = 4096
+            'Mdpn' midpoint : INTEGERTYPE = 50
+```
+
+#### Replace Color
+
+- Event: `RplC` / `replaceColor`
+- PhotoCraft command: `image.adjustments.replaceColor`
+- Supported: the explicit D50 Lab minimum/maximum box and `colorModel` 0, with the four integer settings clamped to the ranges below. Matching uses original pixel channels through the document profile. Unsupported color models, malformed or missing samples and unknown keys remain kept steps.
+- Measured with example values in a prepared document: the Value column shows what was sent and recorded, not a factory default (a step always carries the values the user set).
+
+| Key | String ID | Type | Unit | Example value | Allowed |
+|---|---|---|---|---|---|
+| `Fzns` | fuzziness | integer |  | 40 | 0 .. 200 (out-of-range values are clamped) |
+| `Mnm ` | minimum | object |  | obj 'LbCl' labColor |  |
+| `Mxm ` | maximum | object |  | obj 'LbCl' labColor |  |
+| `H   ` | hue | integer |  | 30 | -180 .. 180 (out-of-range values are clamped) |
+| `Strt` | saturation | integer |  | 0 | -100 .. 100 (out-of-range values are clamped) |
+| `Lght` | lightness | integer |  | 0 | -100 .. 100 (out-of-range values are clamped) |
+| `` | colorModel | integer |  | 0 |  |
+
+Nested values as recorded (example values):
+```
+    'Lmnc' luminance : DOUBLETYPE = 40
+    'A   ' a : DOUBLETYPE = 30
+    'B   ' b : DOUBLETYPE = 40
+    'Lmnc' luminance : DOUBLETYPE = 40
+    'A   ' a : DOUBLETYPE = 30
+    'B   ' b : DOUBLETYPE = 40
+```
+
 
 ## Known gaps in mapped events
 
@@ -1507,7 +1584,7 @@ No parameters: the step carries an empty descriptor.
 
 ### Group E: Video, Other and matting filters and the direct Gradient Map / Replace Color adjustments
 
-All commands exist in PhotoCraft; only the `.atn` mapping is missing. Gradient Map and Replace Color here are the direct adjustments (Image > Adjustments), not adjustment layers (those are already mapped).
+All commands exist in PhotoCraft. The two direct adjustments, classic Gradient Map and Lab-range Replace Color, are supported above; the remaining events below still need their `.atn` mappings. These direct adjustments are separate from adjustment layers.
 
 #### De-Interlace
 
@@ -1550,50 +1627,6 @@ No parameters: the step carries an empty descriptor.
 
 No parameters: the step carries an empty descriptor.
 
-#### Gradient Map (direct)
-
-- Event: `GrMp` (no string ID)
-- PhotoCraft command: `image.adjustments.gradientMap`
-- The `gradient` object is the same gradient form the adjustment layer already maps; reuse that code.
-
-| Key | String ID | Type | Unit | Default | Allowed |
-|---|---|---|---|---|---|
-| `` | gradientsInterpolationMethod | enumerated |  |  gradientInterpolationMethodType.'Gcls' classic |  |
-| `Grad` | gradient | object |  | obj 'Grdn' gradientClassEvent |  |
-
-Nested values as recorded (defaults):
-```
-    'Nm  ' name : STRINGTYPE = "Vorder- zu Hintergrundfarbe"
-    'GrdF' gradientForm : ENUMERATEDTYPE = 'GrdF' gradientForm.'CstS' customStops
-    'Intr' interfaceIconFrameDimmed : DOUBLETYPE = 4096
-    'Clrs' colors : LISTTYPE = list[2]
-        [0] OBJECTTYPE = obj 'Clrt' colorStop
-            'Clr ' color : OBJECTTYPE = obj 'RGBC' RGBColor
-                'Rd  ' red : DOUBLETYPE = 0
-                'Grn ' green : DOUBLETYPE = 0
-                'Bl  ' blue : DOUBLETYPE = 0
-            'Type' type : ENUMERATEDTYPE = 'Clry' colorStopType.'UsrS' userStop
-            'Lctn' location : INTEGERTYPE = 0
-            'Mdpn' midpoint : INTEGERTYPE = 50
-        [1] OBJECTTYPE = obj 'Clrt' colorStop
-            'Clr ' color : OBJECTTYPE = obj 'RGBC' RGBColor
-                'Rd  ' red : DOUBLETYPE = 255
-                'Grn ' green : DOUBLETYPE = 255
-                'Bl  ' blue : DOUBLETYPE = 255
-            'Type' type : ENUMERATEDTYPE = 'Clry' colorStopType.'UsrS' userStop
-            'Lctn' location : INTEGERTYPE = 4096
-            'Mdpn' midpoint : INTEGERTYPE = 50
-    'Trns' transparency : LISTTYPE = list[2]
-        [0] OBJECTTYPE = obj 'TrnS' transferSpec
-            'Opct' opacity : UNITDOUBLE = 100 '#Prc' percentUnit
-            'Lctn' location : INTEGERTYPE = 0
-            'Mdpn' midpoint : INTEGERTYPE = 50
-        [1] OBJECTTYPE = obj 'TrnS' transferSpec
-            'Opct' opacity : UNITDOUBLE = 100 '#Prc' percentUnit
-            'Lctn' location : INTEGERTYPE = 4096
-            'Mdpn' midpoint : INTEGERTYPE = 50
-```
-
 #### Average
 
 - Event: `Avrg` (no string ID)
@@ -1613,32 +1646,6 @@ No parameters: the step carries an empty descriptor.
 | `Scl ` | scale | integer |  | 1 | 1 .. 9999 (measured in the dialog); applied also when played without the dialog (scale 2 halves the result) |
 | `Ofst` | offset | integer |  | 0 | -9999 .. 9999 (measured in the dialog); applied also when played without the dialog (offset 50 adds 50) |
 | `Mtrx` | matrix | list |  | none: a step always carries all 25 cells | exactly 25 integers (5 x 5, row by row), each -999 .. 999; a 3 x 3 list makes the application fail |
-
-#### Replace Color
-
-- Event: `RplC` / `replaceColor`
-- PhotoCraft command: `image.adjustments.replaceColor`
-- Measured with example values in a prepared document: the Value column shows what was sent and recorded, not a factory default (a step always carries the values the user set).
-
-| Key | String ID | Type | Unit | Example value | Allowed |
-|---|---|---|---|---|---|
-| `Fzns` | fuzziness | integer |  | 40 | 0 .. 200 (out-of-range values are clamped) |
-| `Mnm ` | minimum | object |  | obj 'LbCl' labColor |  |
-| `Mxm ` | maximum | object |  | obj 'LbCl' labColor |  |
-| `H   ` | hue | integer |  | 30 | -180 .. 180 (out-of-range values are clamped) |
-| `Strt` | saturation | integer |  | 0 | -100 .. 100 (out-of-range values are clamped) |
-| `Lght` | lightness | integer |  | 0 | -100 .. 100 (out-of-range values are clamped) |
-| `` | colorModel | integer |  | 0 |  |
-
-Nested values as recorded (example values):
-```
-    'Lmnc' luminance : DOUBLETYPE = 40
-    'A   ' a : DOUBLETYPE = 30
-    'B   ' b : DOUBLETYPE = 40
-    'Lmnc' luminance : DOUBLETYPE = 40
-    'A   ' a : DOUBLETYPE = 30
-    'B   ' b : DOUBLETYPE = 40
-```
 
 ### Group F: Selection combinations, Paste Into/Outside, Fade, Link, Distribute, Define Pattern and older merge/mask events
 
