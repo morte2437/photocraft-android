@@ -204,18 +204,22 @@ fn atn_calculations_unsupported_targets_and_missing_sources_leave_history_unchan
     }
     assert_eq!(saved(&s), before);
     assert_eq!(s.active().unwrap().history.undo_label(), label.as_deref());
+}
+
+#[test]
+fn atn_calculations_group_transparency_uses_the_canvas_and_undoes() {
     let mut group = fixture(32);
     group.execute("layer.new.group", json!({"name":"source"})).unwrap();
     let before = saved(&group);
     let label = group.active().unwrap().history.undo_label().map(str::to_owned);
-    assert!(
-        group
-            .execute(
-                "image.calculations",
-                json!({"source1":{"layer":{"name":"source"},"channel":"transparency"},"source2":{"channel":{"color":"green"}},"blending":"add"})
-            )
-            .is_err()
-    );
+    group
+        .execute(
+            "image.calculations",
+            json!({"source1":{"layer":{"name":"source"},"channel":"transparency"},"source2":{"channel":{"color":"green"}},"blending":"add"}),
+        )
+        .unwrap();
+    assert_eq!(alpha(&group, 0), vec![1.0; 3]);
+    group.execute("edit.undo", json!({})).unwrap();
     assert_eq!(saved(&group), before);
     assert_eq!(group.active().unwrap().history.undo_label(), label.as_deref());
 }
