@@ -158,6 +158,11 @@ impl ScratchFile {
         })
     }
 
+    /// Another handle to the open file (the Unix one has no name), for fault-injection tests.
+    pub(crate) fn duplicate_handle(&self) -> std::io::Result<File> {
+        self.main.try_clone()
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
     }

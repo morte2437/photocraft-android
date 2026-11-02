@@ -377,12 +377,16 @@ pub fn run<T: Send + 'static>(
     work: impl FnOnce(&JobCtx) -> Result<T> + Send + 'static,
     apply: impl FnOnce(&mut Session, T) -> Result<Value> + Send + 'static,
 ) -> Result<Value> {
+    // The job reads the active document it captured; only that document's pixels gate it.
+    let source = s.active().map(|d| d.doc.clone());
     let work = move |ctx: &JobCtx| -> Result<T> {
         photocraft_compose::discard_unreadable_pixel_caches();
-        photocraft_raster::spill::check_integrity().map_err(EngineError::Other)?;
+        let health = || source.as_deref().map_or(Ok(()), photocraft_doc::Document::scratch_health).map_err(EngineError::Other);
+        health()?;
         let generation = photocraft_raster::spill::read_error_generation();
         let value = work(ctx)?;
         photocraft_raster::spill::check_since(generation).map_err(EngineError::Other)?;
+        health()?;
         Ok(value)
     };
     let authorization = s.authorize.or_else(|| RENDER_AUTHORIZATION.with(std::cell::Cell::get));

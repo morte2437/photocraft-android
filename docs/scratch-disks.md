@@ -35,9 +35,15 @@ operations; standalone callers work without a background thread. `sysinfo` is na
 with its default features disabled and only the `system` feature enabled.
 
 An unavailable or full scratch disk retains resident pixels and reports the failure.
-A failed read retains its backing extent and blocks editing, cache admission and saving
-until the tile is readable again. Recovery can retry the original bytes after the storage
-becomes available; zeros from a failed display read must never become saved pixels.
+A failed read retains its backing extent and blocks editing, saving and exporting of the
+document that holds the tile until it is readable again; other open documents keep working.
+Each commit checks the health of its own document (before and after an edit, the document a
+job captured, the imported result, the document being saved or exported) and refuses a result
+if any tile failed or recovered while it ran; the retry succeeds. Derived-pixel caches never
+admit results built from unreadable tiles and are purged once per new failure. Recovery can
+retry the original bytes after the storage becomes available; zeros from a failed display
+read must never become saved pixels. Limitation: a tile that was already unreadable and is
+read from outside the edited document (for example a clipboard copy) is not detected.
 
 Scratch storage alone does not make every format, filter or renderer streamable. The native
 PSD/EXR import and viewport streaming changes build on these guards and memory reservations.

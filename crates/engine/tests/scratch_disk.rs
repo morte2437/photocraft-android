@@ -48,8 +48,8 @@ fn scratch_pixels_history_and_failed_save_are_transactional() {
     spill::settle();
     assert_eq!(spill::stats().resident_bytes, 0);
     // Damage only this test's scratch file; retain its exact contents to restore the backing.
-    let path = std::fs::read_dir(&dir).unwrap().filter_map(Result::ok).map(|e| e.path()).find(|p| p.extension().is_some_and(|e| e == "scratch")).unwrap();
-    let mut file = std::fs::OpenOptions::new().read(true).write(true).open(path).unwrap();
+    let mut file = spill::scratch_handle_for_tests().unwrap();
+    file.seek(SeekFrom::Start(0)).unwrap();
     let mut good = Vec::new();
     file.read_to_end(&mut good).unwrap();
     file.seek(SeekFrom::Start(0)).unwrap();
@@ -71,6 +71,35 @@ fn scratch_pixels_history_and_failed_save_are_transactional() {
     let mut writer = photocraft_format::PcraftWriter::new();
     assert!(writer.save_zip(&retained, &Default::default()).is_err());
     assert!(photocraft_io::export(&retained, "png", &Default::default()).is_err());
+    // No failure or recovery happens during a retry, so only the document's own health
+    // refuses it.
+    let generation = spill::read_error_generation();
+    assert!(session.edit("Retry paint", |_, _| Ok(())).is_err());
+    assert_eq!(spill::read_error_generation(), generation, "an already-failed tile does not change the generation");
+    assert!(Arc::ptr_eq(&session.active().unwrap().doc, &retained));
+
+    // Another document is unaffected: it edits, saves and exports while this one is unreadable.
+    assert!(spill::check_integrity().is_err(), "the process-wide status still reports the failure");
+    let mut other = Document::new("Healthy", Size::new(512, 256), ColorMode::Rgb, SampleType::U8);
+    let mut pixels = Layer::raster("Other", PixelFormat::RGBA8);
+    let other_id = pixels.id;
+    pixels.surface_mut().unwrap().fill_rect(Rect::from_xywh(0, 0, 512, 256), &[0.0, 0.0, 1.0, 1.0]);
+    other.layers.push(pixels);
+    session.add_document(other, None);
+    session.select_layer(other_id).unwrap();
+    session
+        .edit("Paint other", |d, _| {
+            d.layer_mut(other_id).unwrap().surface_mut().unwrap().fill_rect(Rect::from_xywh(0, 0, 8, 8), &[1.0, 1.0, 0.0, 1.0]);
+            Ok(())
+        })
+        .unwrap();
+    spill::settle();
+    let healthy = session.active().unwrap().doc.clone();
+    assert!(healthy.scratch_health().is_ok());
+    let (saved, _) = photocraft_format::PcraftWriter::new().save_zip(&healthy, &Default::default()).unwrap();
+    assert_eq!(photocraft_format::load_from_bytes(&saved).unwrap().layers, healthy.layers);
+    assert!(photocraft_io::export(&healthy, "png", &Default::default()).is_ok());
+    assert!(retained.scratch_health().is_err());
 
     file.seek(SeekFrom::Start(0)).unwrap();
     file.write_all(&good).unwrap();
@@ -84,7 +113,7 @@ fn scratch_pixels_history_and_failed_save_are_transactional() {
     let (bytes, _) = writer.save_zip(&retained, &Default::default()).unwrap();
     let loaded = photocraft_format::load_from_bytes(&bytes).unwrap();
     assert_eq!(loaded.layers, retained.layers);
-    drop((session, before, retained, loaded, writer, file));
+    drop((session, before, retained, healthy, loaded, writer, file));
     spill::configure(None, 0).unwrap();
     let _ = std::fs::remove_dir_all(dir);
 }

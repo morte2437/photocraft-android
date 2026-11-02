@@ -124,7 +124,7 @@ fn finish_mask(c: &Mutex<Cache>, k: u64, slot: &Arc<OnceLock<Surface>>, generati
         // Never hold the global cache mutex while rasterizing or feathering.
         let read_generation = photocraft_raster::spill::read_error_generation();
         let (surface, pixel_input) = build();
-        if photocraft_raster::spill::check_since(read_generation).is_err() {
+        if photocraft_raster::spill::check_since(read_generation).is_err() || pixel_input.as_ref().is_some_and(|p| p.scratch_health().is_err()) {
             return surface;
         }
         let bytes = entry_bytes(&surface, pixel_input.as_ref());

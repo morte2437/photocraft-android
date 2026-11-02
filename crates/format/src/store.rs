@@ -579,6 +579,14 @@ struct Prepared {
     stats: SaveStats,
 }
 
+/// Refuse to write pixels of `doc` that are unreadable now, or that may have been read as a
+/// placeholder because some tile failed or recovered since `generation` (the save's start).
+/// Other documents' scratch failures do not block this save.
+fn scratch_ok(doc: &Document, generation: u64) -> Result<()> {
+    doc.scratch_health().map_err(FormatError::corrupt)?;
+    photocraft_raster::spill::check_since(generation).map_err(FormatError::corrupt)
+}
+
 enum Object {
     Tile(Arc<Tile>, SampleType),
     Blob(Arc<Vec<u8>>),
@@ -973,7 +981,7 @@ impl PcraftWriter {
     }
 
     fn prepare(&mut self, doc: &Document, opts: &SaveOptions) -> Result<Prepared> {
-        photocraft_raster::spill::check_integrity().map_err(FormatError::corrupt)?;
+        doc.scratch_health().map_err(FormatError::corrupt)?;
         let generation = photocraft_raster::spill::read_error_generation();
         let prepared = self.prepare_inner(doc, opts);
         if let Err(error) = photocraft_raster::spill::check_since(generation) {
@@ -1012,12 +1020,13 @@ impl PcraftWriter {
         for (h, b) in c.blobs {
             objects.insert(blob_path(&h).ok_or_else(|| invalid(&h))?, Object::Blob(b));
         }
-        photocraft_raster::spill::check_integrity().map_err(FormatError::corrupt)?;
+        doc.scratch_health().map_err(FormatError::corrupt)?;
         Ok(Prepared { manifest, objects, stats })
     }
 
     /// Save as a ZIP bundle in memory.
     pub fn save_zip(&mut self, doc: &Document, opts: &SaveOptions) -> Result<(Vec<u8>, SaveStats)> {
+        let generation = photocraft_raster::spill::read_error_generation();
         // Another thread encodes the previews while the document is collected and its new
         // objects are compressed on all cores (zstd dominates a full save).
         let (previews, prepared) = beside(
@@ -1070,7 +1079,7 @@ impl PcraftWriter {
                 next.insert(key.unwrap_or_else(|| path.clone()), data);
             }
         }
-        photocraft_raster::spill::check_integrity().map_err(FormatError::corrupt)?;
+        scratch_ok(doc, generation)?;
         self.compressed = next;
         Ok((z.finish()?, stats))
     }
@@ -1085,6 +1094,7 @@ impl PcraftWriter {
 
     /// The same save path with an injectable publication barrier, for failure/GC ordering tests.
     fn save_dir_with(&mut self, doc: &Document, dir: &Path, opts: &SaveOptions, fs: &dyn crate::atomic::AtomicFs) -> Result<SaveStats> {
+        let scratch_generation = photocraft_raster::spill::read_error_generation();
         let canonical_dir = bundle_root(dir)?;
         let dir = canonical_dir.as_path();
         // Held until the end of the save: listing, writing, publishing and cleanup (#4957).
@@ -1145,7 +1155,7 @@ impl PcraftWriter {
                 Object::Blob(_) => stats.blobs_written += 1,
             }
             let compressed = obj.compressed(compressor.get_or_insert_with(Compressor::new));
-            photocraft_raster::spill::check_integrity().map_err(FormatError::corrupt)?;
+            scratch_ok(doc, scratch_generation)?;
             write_bundle_file(dir, &object_path, &compressed, fs)?;
             let written = path_signature(&object_path)?;
             if let Some(cache) = &mut self.verified_directory {
@@ -1182,7 +1192,7 @@ impl PcraftWriter {
                 confirm_flushed(&folder, &folder)?;
             }
         }
-        photocraft_raster::spill::check_integrity().map_err(FormatError::corrupt)?;
+        scratch_ok(doc, scratch_generation)?;
         write_bundle_file(dir, &dir.join(MANIFEST), &p.manifest, fs)?;
         // Omitted previews belong to the previous manifest until the new one commits.
         // After commit, a locked leftover is only housekeeping, just like unused objects.

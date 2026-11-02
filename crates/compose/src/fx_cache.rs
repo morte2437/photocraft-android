@@ -122,10 +122,14 @@ pub fn purge_effect_cache() -> usize {
     freed
 }
 
-/// Discard derived pixels and their source pins after a scratch read failure. This also lets
-/// closing the affected document release its failed tiles instead of keeping them in a cache.
+/// Discard derived pixels and their source pins once after each new scratch read failure.
+/// This lets closing the affected document release its failed tiles instead of keeping them
+/// in a cache. Caches never admit results built from unreadable tiles, so healthy documents'
+/// caches are not purged again on every call while one document stays unreadable.
 pub fn discard_unreadable_pixel_caches() {
-    if photocraft_raster::spill::check_integrity().is_err() {
+    static SEEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let generation = photocraft_raster::spill::read_error_generation();
+    if SEEN.swap(generation, std::sync::atomic::Ordering::AcqRel) != generation && photocraft_raster::spill::any_failed() {
         purge_effect_cache();
         super::bounds::purge();
         super::masks::purge();
@@ -233,11 +237,15 @@ fn build_fx_slot_maps(layer: &Layer, region: Rect, key: u64, cx: &Ctx, slot: &Fx
     let shape: Vec<f32> = if region.is_empty() { Vec::new() } else { effect_shape(layer, region, cx) };
     let maps = effects::build_maps_prepared(layer, shape, region, &cx.light, &texture_ctx(layer, region, cx), cx.patterns);
     let mut pin = Vec::new();
-    layer_identity(layer, &mut std::collections::hash_map::DefaultHasher::new(), &mut |t| pin.push(std::sync::Arc::downgrade(t)));
+    let mut readable = true;
+    layer_identity(layer, &mut std::collections::hash_map::DefaultHasher::new(), &mut |t| {
+        readable &= t.scratch_health().is_ok();
+        pin.push(std::sync::Arc::downgrade(t));
+    });
     // The maps, plus what each reserved tile address keeps allocated.
     let bytes = maps.bytes().saturating_add(pin.len().saturating_mul(std::mem::size_of::<photocraft_raster::Tile>() + 2 * std::mem::size_of::<usize>()));
     let maps = std::sync::Arc::new(maps);
-    if photocraft_raster::spill::check_since(generation).is_err() {
+    if !readable || photocraft_raster::spill::check_since(generation).is_err() {
         // Built from a scratch placeholder: use it for this frame, never cache it.
         return maps;
     }

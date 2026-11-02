@@ -129,6 +129,14 @@ impl Tile {
         let placeholder = if guard.is_none() { vec![0; self.len()] } else { Vec::new() };
         TileBytesMut(guard, placeholder)
     }
+    /// `Err` while this tile's scratch copy is unreadable (its bytes read as a placeholder).
+    /// Free when no tile in the process has failed.
+    pub fn scratch_health(&self) -> Result<(), String> {
+        if !spill::any_failed() {
+            return Ok(());
+        }
+        self.cell.read_error().map_or(Ok(()), Err)
+    }
     /// Fallible pixel access for callers that can propagate a scratch read failure.
     pub fn try_bytes(&self) -> Result<TileBytes<'_>, String> {
         let bytes = self.bytes();
@@ -451,7 +459,25 @@ impl Surface {
         let generation = spill::read_error_generation();
         self.read_region_into(r, &mut out);
         spill::check_since(generation).map_err(AllocationError::ScratchRead)?;
+        self.region_health(r).map_err(AllocationError::ScratchRead)?;
         Ok(out)
+    }
+
+    /// `Err` if any stored tile of this surface is unreadable. Free when no tile in the
+    /// process has failed.
+    pub fn scratch_health(&self) -> Result<(), String> {
+        if !spill::any_failed() {
+            return Ok(());
+        }
+        self.tiles.values().try_for_each(|t| t.scratch_health())
+    }
+
+    /// [`Surface::scratch_health`] for the tiles overlapping `r` only.
+    pub fn region_health(&self, r: Rect) -> Result<(), String> {
+        if !spill::any_failed() {
+            return Ok(());
+        }
+        r.tiles().filter_map(|c| self.tiles.get(&c)).try_for_each(|t| t.scratch_health())
     }
 
     /// Reads a region as encoded interleaved bytes with fallible allocation.

@@ -83,7 +83,7 @@ pub fn split(sh: &ShapeLayer, canvas: Rect, depth: SampleType) -> Option<(Surfac
     if let Some(cache) = &sh.cache {
         fit_stroke(&parts.0, &mut parts.1, cache, canvas);
     }
-    if photocraft_raster::spill::check_since(generation).is_err() {
+    if photocraft_raster::spill::check_since(generation).is_err() || sh.cache.as_ref().is_some_and(|c| c.scratch_health().is_err()) {
         return Some(parts);
     }
     let mut c = cache().lock().unwrap_or_else(|e| e.into_inner());

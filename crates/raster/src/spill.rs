@@ -17,7 +17,8 @@
 //!
 //! Failures never panic: a scratch write that fails keeps the tile in memory and turns spilling
 //! off (reported in [`SpillStats::last_error`]). A failed read retains its disk extent and
-//! poisons the tile: edits and saves must check [`check_integrity`] before committing. The
+//! poisons the tile: edits and saves check the health of the document they publish, plus
+//! [`check_since`] for failures that came and went during the operation. The
 //! infallible display API uses a temporary placeholder, never replacement pixel storage.
 
 use std::path::{Path, PathBuf};
@@ -487,30 +488,48 @@ pub fn enabled() -> bool {
     M.budget.load(Ordering::Relaxed) > 0
 }
 
-/// Refuse to publish edited or serialized pixels after a scratch read failure. A failed
-/// tile can retry its original extent; changing preferences cannot clear this protection.
+/// Whether any live tile in the process is currently unreadable (cheap; the fast path of
+/// every per-document health check).
+pub fn any_failed() -> bool {
+    M.failed.load(Ordering::Acquire) > 0
+}
+
+/// Process-wide status for the UI: some live tile, in any document, is unreadable. Commit
+/// guards check only the pixels they publish ([`Tile::scratch_health`](crate::Tile::scratch_health)
+/// and the document's health) so one document's failure does not block the others.
 pub fn check_integrity() -> Result<(), String> {
-    if M.failed.load(Ordering::Acquire) == 0 {
-        Ok(())
-    } else {
+    if any_failed() {
         Err(M.config().last_error.clone().unwrap_or_else(|| "scratch pixels are unreadable; editing and saving are blocked".into()))
+    } else {
+        Ok(())
     }
 }
 
-/// Capture before an edit/import/save or derived cache computation. A failed tile might be dropped or repaired
-/// before the operation ends; its placeholder must still never be committed as real pixels.
-/// Both failure and recovery change this generation, including computations begun during a failure.
+/// Capture before an edit/import/save or derived cache computation. A tile that fails or
+/// recovers while the operation runs might have fed it placeholder pixels and then been
+/// dropped or repaired; its result must still never be committed as real pixels. Both failure
+/// and recovery change this generation. Tiles that were already unreadable when the operation
+/// began do not change it: callers also check the health of the pixels they read.
 pub fn read_error_generation() -> u64 {
     M.read_errors.load(Ordering::Acquire)
 }
 
+/// Refuse a result if any tile failed or recovered since `generation` was captured. A retry
+/// (capturing a new generation) succeeds once the transition is over.
 pub fn check_since(generation: u64) -> Result<(), String> {
-    check_integrity()?;
     if generation == read_error_generation() {
         Ok(())
     } else {
         Err(last_error().unwrap_or_else(|| "scratch read failed during this operation; the result was discarded".into()))
     }
+}
+
+/// A second handle to the current scratch file, for tests that damage or restore its bytes.
+/// The Unix file is unlinked, so it cannot be reopened by path. All scratch I/O is positioned,
+/// so the shared file offset of a duplicated handle does not affect it.
+#[doc(hidden)]
+pub fn scratch_handle_for_tests() -> Option<std::fs::File> {
+    M.config().file.as_ref().and_then(|f| f.duplicate_handle().ok())
 }
 
 /// Evict down to the budget now, on this thread (tests, and before a measurement).
@@ -549,6 +568,10 @@ mod tests {
         let failed_generation = read_error_generation();
         assert!(tile.cell.data.read().unwrap().is_none(), "placeholder must never become stored pixels");
         assert!(check_integrity().is_err());
+        assert!(tile.scratch_health().is_err(), "the tile reports its own failure");
+        assert!(crate::Tile::from_vec(vec![1; 16]).scratch_health().is_ok(), "other tiles stay healthy");
+        assert!(tile.try_bytes().is_err());
+        assert!(check_since(failed_generation).is_ok(), "re-reading a tile that already failed is not a new transition");
         tile.bytes_mut()[0] = 9;
         assert!(tile.cell.data.read().unwrap().is_none());
         assert!(tile.cell.slot.lock().unwrap().is_some(), "a failed mutation must preserve the original extent");
@@ -560,6 +583,7 @@ mod tests {
         tile.cell.slot.lock().unwrap().as_mut().unwrap().1 = good;
         assert_eq!(&*tile.try_bytes().unwrap(), &[73; 1024]);
         assert!(check_integrity().is_ok());
+        assert!(tile.scratch_health().is_ok());
         assert!(check_since(generation).is_err(), "repairing or dropping a failed tile must not validate an earlier result");
         assert!(check_since(failed_generation).is_err(), "recovery must reject a computation begun during the failure");
         assert_eq!(tile.cell.evict(&file).unwrap(), 1024);
