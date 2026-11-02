@@ -24,6 +24,7 @@ mod editing;
 mod fonts;
 mod ime;
 mod ime_edit;
+mod insertion_style;
 mod keys;
 mod layout;
 mod options_bar;
@@ -31,20 +32,23 @@ mod overlay;
 mod panel;
 mod pointer;
 
+use defaults::apply;
 #[cfg(test)]
-use defaults::{apply, default_style_params, default_styles, shown_scale};
+use defaults::{default_style_params, default_styles, shown_scale};
 pub use defaults::{foreground_changed, open_color_picker};
 pub(crate) use defaults::{formatting_params, target, target_text, type_unit};
+use editing::selected_styles;
 #[cfg(test)]
 pub(crate) use editing::{CharToggle, step_char_metric, toggle_char_style, toggle_hyphenate};
 pub use editing::{cancel, commit, commit_with, edit_active, edit_at, end_if_left};
-pub(crate) use editing::{copy_selection, cut_selection, request_paste, select_all};
+pub(crate) use editing::{commit_shortcut, copy_selection, cut_selection, request_paste, select_all};
 #[cfg(test)]
 use editing::{insert, insert_typed, smart_quotes};
 #[cfg(test)]
 pub(crate) use fonts::{Axis, axis_value, slider_axes};
 #[cfg(test)]
-use fonts::{FONT_MENU_HEIGHT, font_labels_id, font_menu_rows, font_picker_in, preview_text, style_names, wheel_family_index};
+use fonts::{FONT_LIST_HEIGHT, font_picker_in, preview_text, style_names, wheel_family_index};
+use fonts::{FontFieldEdit, accept_row, font_labels_id, font_menu_rows};
 pub(crate) use fonts::{FontLibrary, family_picker_in, fonts_ready, selected_style};
 pub use fonts::{families, style_label, styles, sync_font_names, warm_fonts};
 pub(crate) use ime::{ImeState, controls_only, finish_reset_logic, finish_reset_pass, in_ui_pass, install_reset_hooks};
@@ -129,6 +133,8 @@ fn byte_range(text: &str, a: usize, b: usize) -> (usize, usize) {
 #[cfg(test)]
 mod canvas_tests;
 
+#[cfg(test)]
+mod font_commit_tests;
 #[cfg(test)]
 mod font_picker_tests;
 

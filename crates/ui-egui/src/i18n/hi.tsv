@@ -17,6 +17,37 @@
 # (`plural_one_other` in i18n/mod.rs).
 
 # Top-level Menus
+
+# File Menu
+
+# Edit Menu
+
+# Image Menu
+
+# Layer Menu
+
+# Select Menu
+
+# View Menu
+
+# Window Menu & Panels
+
+# Tools (Toolbox)
+
+# Common Dialogs and Buttons
+
+# Plurals
+
+# Tool and Scope strings
+
+# Camera Raw
+
+# Coverage-test keys (English until translated)
+
+# Pen draft after a refused commit (#7648)
+# Art History Brush (#213).
+
+# Egui 0.37 migration controls (Aspect Ratio, Category, Color Table, Gamma, Interpolation, Profile, Target, Units, Demosaic)
 	File	फ़ाइल
 	Edit	एडिट
 	Image	इमेज
@@ -28,8 +59,6 @@
 	View	व्यू
 	Window	विंडो
 	Help	सहायता
-
-# File Menu
 	New…	नया…
 	Open…	खोलें…
 	Open Recent	हाल ही में खोले गए
@@ -48,8 +77,6 @@
 	Print…	प्रिंट करें…
 	Print One Copy	एक प्रति प्रिंट करें
 	Exit	बाहर निकलें
-
-# Edit Menu
 	Undo	पूर्ववत करें
 	Redo	फिर से करें
 	Cut	काटें
@@ -79,8 +106,6 @@
 	Workspace…	कार्यस्थान…
 	Tools…	टूल्स…
 	Performance…	परफॉरमेंस…
-
-# Image Menu
 	Mode	मोड
 	RGB Color	RGB रंग
 	CMYK Color	CMYK रंग
@@ -113,8 +138,6 @@
 	Trim…	ट्रिम करें…
 	Reveal All	सभी दिखाएँ
 	Duplicate…	डुप्लीकेट…
-
-# Layer Menu
 	New	नया
 	Layer…	लेयर…
 	Layer from Background	बैकग्राउंड से लेयर
@@ -141,8 +164,6 @@
 	Merge Down	नीचे मर्ज करें
 	Merge Visible	दृश्यमान मर्ज करें
 	Flatten Image	इमेज फ़्लैट करें
-
-# Select Menu
 	All	सभी
 	Deselect	अचयनित करें
 	Reselect	पुनः चयन करें
@@ -163,8 +184,6 @@
 	Transform Selection	चयन रूपांतरित करें
 	Load Selection…	चयन लोड करें…
 	Save Selection…	चयन सहेजें…
-
-# View Menu
 	Proof Setup	प्रूफ़ सेटअप
 	Proof Colors	प्रूफ़ रंग
 	Zoom In	ज़ूम इन
@@ -187,8 +206,6 @@
 	New Guide…	नई गाइड…
 	Lock Slices	स्लाइस लॉक करें
 	Clear Slices	स्लाइस हटाएं
-
-# Window Menu & Panels
 	Arrange	व्यवस्थित करें
 	Tile Horizontally	क्षैतिज टाइल
 	Tile Vertically	लंबवत टाइल
@@ -216,8 +233,6 @@
 	Tools	टूल्स
 	Options	विकल्प
 	Status Bar	स्टेटस बार
-
-# Tools (Toolbox)
 	Move Tool	मूव टूल
 	Artboard Tool	आर्टबोर्ड टूल
 	Rectangular Marquee Tool	रेक्टेंगुलर मार्की टूल
@@ -286,8 +301,6 @@
 	Hand Tool	हैंड टूल
 	Rotate View Tool	रोटेट व्यू टूल
 	Zoom Tool	ज़ूम टूल
-
-# Common Dialogs and Buttons
 	OK	ठीक है
 	Cancel	रद्द करें
 	Reset	रीसेट करें
@@ -316,14 +329,10 @@
 	Presets:	प्रीसेट्स:
 	Language	भाषा
 	Auto	स्वचालित
-
-# Plurals
 @plural	{n} layer|{n} layers	{n} लेयर|{n} लेयर्स
 @plural	{n} item|{n} items	{n} आइटम|{n} आइटम्स
 @plural	{n} document|{n} documents	{n} दस्तावेज़|{n} दस्तावेज़
 @plural	{n} pixel|{n} pixels	{n} पिक्सेल|{n} पिक्सेल्स
-
-# Tool and Scope strings
 	Scope	दायरा
 	Selected	चयनित
 	Mixer Brush	मिक्सर ब्रश
@@ -337,8 +346,6 @@
 	Aligned	संरेखित
 	Fit in View	दृश्य में फ़िट करें
 	Camera Raw	Camera Raw
-
-# Camera Raw
 cameraRaw	Amount	मात्रा
 	Amount	मात्रा
 cameraRaw	Aqua	एक्वा
@@ -493,8 +500,6 @@ cameraRaw	Whites	व्हाइट्स
 	Whites	व्हाइट्स
 cameraRaw	Yellow	पीला
 	Yellow	पीला
-
-# Coverage-test keys (English until translated)
 	Black Point Compensation	Black Point Compensation
 	Apply At Canvas Bounds	Apply At Canvas Bounds
 	Convert to Shape…	Convert to Shape…
@@ -539,7 +544,8 @@ cameraRaw	Yellow	पीला
 	Missing delete command	हटाने का कमांड नहीं मिला
 	Invalid delete command	हटाने का कमांड अमान्य है
 	Layer deleted, but confirmation preference could not be saved: {error}	लेयर हटा दी गई, लेकिन पुष्टि की प्राथमिकता सहेजी नहीं जा सकी: {error}
-# Art History Brush (#213).
+	The path was kept as the Work Path	पथ को कार्य पथ के रूप में रखा गया
+	The path was discarded	पथ हटा दिया गया
 	Art History Brush	आर्ट हिस्ट्री ब्रश
 	Style	शैली
 	Area	क्षेत्र
@@ -552,8 +558,6 @@ cameraRaw	Yellow	पीला
 	Tight Curl	सघन घुमाव
 	Loose Curl	ढीला घुमाव
 	Stylized dabs from a history state	इतिहास स्थिति से शैलीबद्ध थपके
-
-# Egui 0.37 migration controls (Aspect Ratio, Category, Color Table, Gamma, Interpolation, Profile, Target, Units, Demosaic)
 	Aspect Ratio	पहलू अनुपात
 	Category	श्रेणी
 	Color Table	रंग तालिका
@@ -563,3 +567,25 @@ cameraRaw	Yellow	पीला
 	Target	लक्ष्य
 	Units	इकाइयाँ
 	Demosaic	डिमोज़ेक
+	Clear Selection	चयन साफ़ करें
+	Color Aware	रंग-आधारित
+	Decontaminate Colors	रंग शुद्ध करें
+	Edge Detection	किनारा पहचान
+	Global Refinements	वैश्विक परिशोधन
+	High Quality Preview	उच्च गुणवत्ता पूर्वावलोकन
+	Object Aware	ऑब्जेक्ट-आधारित
+	Real-Time Refinement	रियल-टाइम परिशोधन
+	Refine Edge Brush Tool	किनारा परिशोधन ब्रश टूल
+	Refine Hair	बाल परिशोधित करें
+	Refine Mode	परिशोधन मोड
+	Remember Settings	सेटिंग्स याद रखें
+	View Mode	दृश्य मोड
+	Object Aware needs a segmentation model, which isn't available yet	ऑब्जेक्ट-आधारित के लिए सेगमेंटेशन मॉडल चाहिए, जो अभी उपलब्ध नहीं है
+	Refine Hair needs hair detection, which isn't available yet	बाल परिशोधित करने के लिए बालों की पहचान चाहिए, जो अभी उपलब्ध नहीं है
+	Select and Mask was closed: its document is no longer the active one	चयन और मास्क बंद कर दिया गया: उसका दस्तावेज़ अब सक्रिय नहीं है
+	Select and Mask was closed: another layer was selected	चयन और मास्क बंद कर दिया गया: दूसरी लेयर चुनी गई
+# Art History Brush (#213).
+
+# Egui 0.37 migration controls (Aspect Ratio, Category, Color Table, Gamma, Interpolation, Profile, Target, Units, Demosaic)
+	Invalid numeric entry. An integer between {min}% and {max}% is required. Previous value was inserted.	अमान्य संख्यात्मक प्रविष्टि। {min}% और {max}% के बीच एक पूर्णांक आवश्यक है। पिछला मान डाला गया।
+	Edit Brush…	ब्रश संपादित करें…

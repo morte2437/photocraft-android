@@ -73,28 +73,51 @@ fn eval(seg: &[Point; 4], t: f64) -> (f64, f64) {
 /// Validate before interactive rendering: finite coordinates and a bounded tessellation and
 /// dash workload. Arc length is bounded by the cubic control polygon, without allocating pixels.
 pub fn validate_shape(path: &Path, stroke: Option<&photocraft_doc::ShapeStroke>) -> Result<(), &'static str> {
+    validate_workload(path, stroke, 1_000_000.0, "shape coordinates must be finite and within ±1000000 px")
+}
+
+fn validate_workload(
+    path: &Path,
+    stroke: Option<&photocraft_doc::ShapeStroke>,
+    coordinate_limit: f64,
+    coordinate_error: &'static str,
+) -> Result<(), &'static str> {
     let knots = path.subpaths.iter().try_fold(0usize, |n, s| n.checked_add(s.knots.len())).ok_or("too many path knots")?;
     if knots > 4096 || path.subpaths.len() > 4096 {
-        return Err("shape path exceeds 4096 knots/subpaths");
+        return Err("path exceeds 4096 knots/subpaths");
     }
     let mut points = 0usize;
     let mut length = 0.0;
     for sub in &path.subpaths {
         for k in &sub.knots {
             for p in [k.anchor, k.in_ctrl, k.out_ctrl] {
-                if !p.x.is_finite() || !p.y.is_finite() || p.x.abs() > 1_000_000.0 || p.y.abs() > 1_000_000.0 {
-                    return Err("shape coordinates must be finite and within ±1000000 px");
+                if !p.x.is_finite() || !p.y.is_finite() || p.x.abs() > coordinate_limit || p.y.abs() > coordinate_limit {
+                    return Err(coordinate_error);
                 }
             }
         }
         points = points.saturating_add(1);
         for seg in sub.segments() {
+            let mut segment_length = 0.0;
+            for pair in seg.windows(2) {
+                let (dx, dy) = (pair[1].x - pair[0].x, pair[1].y - pair[0].y);
+                if !dx.is_finite() || !dy.is_finite() {
+                    return Err("path geometry arithmetic must be finite");
+                }
+                segment_length += dx.hypot(dy);
+                if !segment_length.is_finite() {
+                    return Err("path geometry arithmetic must be finite");
+                }
+            }
+            length += segment_length;
+            if !length.is_finite() {
+                return Err("path geometry arithmetic must be finite");
+            }
             points = points.saturating_add(if is_line(&seg) { 1 } else { pieces(&seg, crate::DEFAULT_TOLERANCE) });
-            length += seg.windows(2).map(|w| (w[1].x - w[0].x).hypot(w[1].y - w[0].y)).sum::<f64>();
         }
     }
     if points > 100_000 {
-        return Err("shape tessellation exceeds 100000 points");
+        return Err("path tessellation exceeds 100000 points");
     }
     if let Some(s) = stroke {
         s.validate()?;
@@ -107,6 +130,12 @@ pub fn validate_shape(path: &Path, stroke: Option<&photocraft_doc::ShapeStroke>)
         }
     }
     Ok(())
+}
+
+/// Work and saved paths may extend far beyond the canvas. Keep their coordinates usable by the
+/// f32 UI while bounding the complete path's flattening workload before publishing an edit.
+pub fn validate_path(path: &Path) -> Result<(), &'static str> {
+    validate_workload(path, None, f64::from(f32::MAX), "path coordinates must be finite and representable as f32")
 }
 
 /// Points one flattened path may hold. Paths that never pass [`validate_shape`] (vector masks
@@ -200,6 +229,58 @@ mod tests {
                 assert!(100.0 - r <= tol + 0.03, "tol {tol}: chord mid at r={r}");
             }
             assert!(p.pts.len() < 4 * (1 + (0.75 * 100.0 / tol.min(0.15)).sqrt() as usize + 1));
+        }
+    }
+
+    #[test]
+    fn general_paths_bound_total_knots_subpaths_and_combined_tessellation() {
+        let line = Subpath::polygon(&[(0.0, 0.0)]);
+        let mut paths = Path { subpaths: vec![line.clone(); 4096], ..Default::default() };
+        assert!(validate_path(&paths).is_ok());
+        paths.subpaths.push(line);
+        assert_eq!(validate_path(&paths), Err("path exceeds 4096 knots/subpaths"));
+        let knots = Path { subpaths: vec![Subpath::polygon(&vec![(0.0, 0.0); 4097])], ..Default::default() };
+        assert_eq!(validate_path(&knots), Err("path exceeds 4096 knots/subpaths"));
+
+        let curve = shapes::ellipse(0.0, 0.0, 1000.0, 1000.0).subpaths.remove(0);
+        let points = 1 + curve.segments().iter().map(|s| if is_line(s) { 1 } else { pieces(s, crate::DEFAULT_TOLERANCE) }).sum::<usize>();
+        let half = 100_000 / points / 2 + 1;
+        let mut combined = Path { subpaths: vec![curve.clone(); half], ..Default::default() };
+        assert!(validate_path(&combined).is_ok());
+        assert!(validate_shape(&combined, None).is_ok());
+        combined.subpaths.extend(vec![curve; half]);
+        assert!(combined.subpaths.len() < 4096 && combined.subpaths.iter().map(|s| s.knots.len()).sum::<usize>() < 4096);
+        assert_eq!(validate_path(&combined), Err("path tessellation exceeds 100000 points"));
+        assert_eq!(validate_shape(&combined, None), Err("path tessellation exceeds 100000 points"));
+    }
+
+    #[test]
+    fn general_paths_reject_coordinates_that_overflow_the_ui_or_segment_arithmetic() {
+        for extent in [f64::from(f32::MAX) * 2.0, 1.0e308, f64::INFINITY, f64::NAN] {
+            let path = Path { subpaths: vec![Subpath::polygon(&[(-extent, 0.0), (extent, 0.0)])], ..Default::default() };
+            assert_eq!(validate_path(&path), Err("path coordinates must be finite and representable as f32"));
+        }
+        // The shared arithmetic guard also rejects overflow independently of coordinate policy.
+        let overflowing_difference = Path { subpaths: vec![Subpath::polygon(&[(-1.0e308, 0.0), (1.0e308, 0.0)])], ..Default::default() };
+        assert_eq!(validate_workload(&overflowing_difference, None, f64::MAX, "coordinates"), Err("path geometry arithmetic must be finite"));
+        let overflowing_length = Path { subpaths: vec![Subpath::polygon(&[(0.0, 0.0), (f64::MAX, f64::MAX)])], ..Default::default() };
+        assert_eq!(validate_workload(&overflowing_length, None, f64::MAX, "coordinates"), Err("path geometry arithmetic must be finite"));
+    }
+
+    #[test]
+    fn general_paths_keep_large_straight_coordinates_and_shape_limits_stay_put() {
+        let at_shape_limit = Path { subpaths: vec![Subpath::polygon(&[(0.0, 0.0), (1_000_000.0, 0.0)])], ..Default::default() };
+        assert!(validate_shape(&at_shape_limit, None).is_ok());
+        let outside_shape = Path { subpaths: vec![Subpath::polygon(&[(0.0, 0.0), (1_000_001.0, 0.0)])], ..Default::default() };
+        assert_eq!(validate_shape(&outside_shape, None), Err("shape coordinates must be finite and within ±1000000 px"));
+        assert!(validate_path(&outside_shape).is_ok());
+        for extent in [3.0e9, f64::from(f32::MAX)] {
+            let path = Path { subpaths: vec![Subpath::polygon(&[(0.0, 0.0), (extent, 0.0), (extent, extent)])], ..Default::default() };
+            assert!(validate_path(&path).is_ok());
+            let line = flatten_subpath(&path.subpaths[0], crate::DEFAULT_TOLERANCE);
+            assert_eq!(line.pts, [(0.0, 0.0), (extent, 0.0), (extent, extent)]);
+            assert!(line.pts.iter().all(|(x, y)| (*x as f32).is_finite() && (*y as f32).is_finite()));
+            assert!(validate_shape(&path, None).is_err());
         }
     }
 

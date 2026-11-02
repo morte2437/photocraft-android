@@ -67,7 +67,7 @@ impl DocState {
     }
 
     /// Pixel bytes of the document, the tiles only its history holds and the tiles only its
-    /// History panel snapshots hold.
+    /// History panel snapshots hold; embedded smart object contents count too.
     pub fn memory_bytes(&self) -> usize {
         let snaps: Vec<&Document> = self.snapshots.iter().map(|s| &*s.doc).collect();
         self.history.pixel_bytes(&self.doc).saturating_add(self.history.extra_bytes(&self.doc, &snaps))

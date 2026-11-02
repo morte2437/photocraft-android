@@ -239,7 +239,7 @@ fn shape_gradient_angles_after(cmd: &str, p: serde_json::Value) -> (f32, f32) {
 fn shape_gradient_stroke_turns_with_the_canvas() {
     let same = |a: f32, b: f32| {
         let d = (a - b).rem_euclid(360.0);
-        d < 1e-3 || d > 360.0 - 1e-3
+        d.is_finite() && !(1e-3..=360.0 - 1e-3).contains(&d)
     };
     for (cmd, p, want) in [
         ("image.imageRotation.90cw", json!({}), -90.0),

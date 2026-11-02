@@ -155,7 +155,18 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: Modifiers) -> bool 
     if !p.iter().all(|n| n.is_finite()) {
         return true;
     }
+    if tool == Tool::FreeformPen && matches!(ev, ToolEvent::Down { .. }) && !active(app) && crate::vector_ui::freeform_locked_shape(app) {
+        app.ui.status = tl!("Locked").into();
+        app.ui.status_error = true;
+        return true;
+    }
     modifiers(app, mods);
+    // A fitted path whose commit failed remains the user's draft. Starting another trace
+    // must neither retry it automatically nor replace it on the next release. Releasing Alt
+    // in this press may itself have finished the previous trace into that failed draft.
+    if tool == Tool::FreeformPen && matches!(ev, ToolEvent::Down { .. }) && !active(app) && app.ui.pen.is_some() {
+        return true;
+    }
     match ev {
         ToolEvent::Down { .. } => {
             if active(app) {
@@ -200,6 +211,9 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: Modifiers) -> bool 
                 let polygonal = mods.alt && nothing_selected;
                 let intent = if polygonal { Modifiers { alt: false, ..mods } } else { mods };
                 let mut d = Drag::new(tool, p, vec![[p[0], p[1], 1.0]], intent, false);
+                if tool == Tool::FreeformPen {
+                    d.capture_vector_owners(app);
+                }
                 let document = app.session.active().map(|st| st.doc.id);
                 d.lasso = Some(Lasso { cursor: p, down: true, polygonal, document, straight: Vec::new() });
                 app.drag = Some(d);

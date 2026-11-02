@@ -210,7 +210,7 @@ pub fn decode_planes(compression: Compression, data: &[u8], layout: &PlaneLayout
                 return Err(PsdError::UnexpectedEof { offset: data.len(), needed: total - data.len() });
             }
             let mut out = Vec::new();
-            out.try_reserve_exact(total).map_err(|_| PsdError::LimitExceeded("not enough memory for the decoded channel data"))?;
+            out.try_reserve_exact(total).map_err(|_| PsdError::OutOfMemory("not enough memory for the decoded channel data"))?;
             out.extend_from_slice(&data[..total]);
             Ok(out)
         }
@@ -311,7 +311,7 @@ thread_local! {
 // Keep only the requested pixels, but consume the trailer to verify Adler-32.
 // A bounded surplus tolerates padding without unbounded decompression work.
 fn inflate_checked(data: &[u8], expected: u64, keep: bool) -> Result<Vec<u8>> {
-    const OOM: PsdError = PsdError::LimitExceeded("not enough memory for the decoded channel data");
+    const OOM: PsdError = PsdError::OutOfMemory("not enough memory for the decoded channel data");
     #[cfg(test)]
     INFLATES.with(|n| n.set(n.get() + 1));
     let mut decoder = flate2::Decompress::new(true);
@@ -364,7 +364,7 @@ fn decode_rle(data: &[u8], layout: &PlaneLayout, total: usize) -> Result<Vec<u8>
     }
     // Up to MAX_DECODED_BYTES: report a machine without that much memory instead of aborting.
     let mut out = Vec::new();
-    out.try_reserve_exact(total).map_err(|_| PsdError::LimitExceeded("not enough memory for the decoded channel data"))?;
+    out.try_reserve_exact(total).map_err(|_| PsdError::OutOfMemory("not enough memory for the decoded channel data"))?;
     for c in counts {
         let row = r.bytes(c)?;
         packbits::decode_into(row, rb, &mut out)?;
@@ -450,7 +450,7 @@ pub fn zip_compress(data: &[u8]) -> Vec<u8> {
 /// bytes, so a stream declaring a huge size reports an error on a machine
 /// without that much memory instead of aborting.
 pub fn zip_decompress(data: &[u8], expected: usize) -> Result<Vec<u8>> {
-    const OOM: PsdError = PsdError::LimitExceeded("not enough memory for the decoded channel data");
+    const OOM: PsdError = PsdError::OutOfMemory("not enough memory for the decoded channel data");
     const CHUNK: usize = 1 << 20;
     let mut dec = flate2::read::ZlibDecoder::new(data).take(u64::try_from(expected).unwrap_or(u64::MAX));
     let mut out = Vec::new();

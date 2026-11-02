@@ -4,9 +4,9 @@ use super::{
     brush_picker, camera_raw_ui, canvas, dds_options_ui, delete_layer_prompt, dialogs, discard_ui, distort_ui, dock, field_wheel, file_open, gpu_canvas,
     gpu_status, gradient_ui, histogram_panel, i18n, jobs_ui, jpeg_options_ui, json, kys_import, last_brush, layers_panel_ui, mask_thumbs_ui, mask_trash_prompt,
     monitor_status, native_menu, notices, open_prompt, paint_mouse, palette, panel_docking, panels, prefs_ui, preset_files_ui, preset_panels, rasterize_prompt,
-    screen_picker, shape_stroke_ui, shortcuts, single_line_drag, state, stroke_trace, stylus, targa_options_ui, text_field_menu, theme, tiff_options_ui,
-    timeline_ui, titlebar, tool_cursor, tool_memory, transform_tool, type_panels_ui, type_tool, type_transform, updates_ui, vector_ui, view_cmds, wheel_nav,
-    wide_angle_ui, widgets, work_area, workspace_ui,
+    screen_picker, shape_stroke_ui, shortcuts, single_line_drag, smart_svg_ui, state, stroke_trace, stylus, targa_options_ui, text_field_menu, theme,
+    tiff_options_ui, timeline_ui, titlebar, tool_cursor, tool_memory, transform_tool, type_panels_ui, type_tool, type_transform, updates_ui, vector_ui,
+    view_cmds, wheel_nav, wide_angle_ui, widgets, work_area, workspace_ui,
 };
 
 mod clipboard;
@@ -47,6 +47,7 @@ impl PhotocraftApp {
             monitors: Default::default(),
             checker: None,
             drag: None,
+            cancelled_vector_drag: false,
             move_blocked: false,
             tool_override: None,
             live_stroke: None,
@@ -98,6 +99,7 @@ impl PhotocraftApp {
             tab_strip: None,
             drop_places: Default::default(),
             view_docs: Vec::new(),
+            path_document: None,
             fps: 0.0,
             last_frame_time: 0.0,
             thumbs: HashMap::new(),
@@ -122,6 +124,7 @@ impl PhotocraftApp {
             synthetic_reinject: false,
             synthetic_snapshot: None,
             automation_input: false,
+            run_depth: 0,
             paused_playbacks: Default::default(),
             channel_thumbs: None,
             channel_views: HashMap::new(),
@@ -129,6 +132,7 @@ impl PhotocraftApp {
             type_clicks: None,
             type_transform_preview: None,
             type_font_preview: None,
+            color_picker_preview: None,
             guide_drag: None,
             layer_box: None,
             crop: Default::default(),
@@ -142,6 +146,7 @@ impl PhotocraftApp {
             clip_unmirrored: true,
             clip_external: false,
             clip_read_for_paste: false,
+            smart_svg: Default::default(),
             transform_preview: None,
             move_mods: Default::default(),
             nudge_bundle: Default::default(),
@@ -150,6 +155,7 @@ impl PhotocraftApp {
             solid_fill_preview: None,
             pattern_fill_preview: None,
             shape_fill_preview: None,
+            widget_colors: Vec::new(),
             distort: Default::default(),
             gradient: Default::default(),
             camera_raw: None,
@@ -174,6 +180,7 @@ impl PhotocraftApp {
             perf: Default::default(),
             stroke_trace: stroke_trace::StrokeTrace::from_env(),
             render_path: Default::default(),
+            slow_frames: Default::default(),
             prefs_rt: Default::default(),
             updates_rt: Default::default(),
             discard: None,
@@ -185,6 +192,7 @@ impl PhotocraftApp {
             jpeg_options: None,
             dds_options: None,
             held_opens: Default::default(),
+            held_preset_import: None,
             allow_close: false,
             stylus: Default::default(),
             control_click: Default::default(),
@@ -256,11 +264,9 @@ impl eframe::App for PhotocraftApp {
         if self.custom_titlebar {
             titlebar::release_after_os_resize(ctx, raw_input);
         }
-        if self.stroke_trace.enabled() {
-            // The OS's moves and the control channel's (injected just above).
-            let moves = raw_input.events.iter().filter(|e| matches!(e, egui::Event::PointerMoved(_))).count();
-            self.stroke_trace.begin_frame(frame_start, moves);
-        }
+        // The OS's moves and the control channel's (injected just above).
+        let moves = raw_input.events.iter().filter(|e| matches!(e, egui::Event::PointerMoved(_))).count();
+        self.perf.stage.start(frame_start, moves);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {

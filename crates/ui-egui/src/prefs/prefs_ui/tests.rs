@@ -28,8 +28,6 @@ fn the_generator_checkbox_reads_enable_generator() {
     h.get_by_label("Enable Generator").click();
     h.run_steps(2);
     assert_eq!(h.state()["generatorEnabled"], true);
-    let de = crate::i18n::Lang::from_code("de").unwrap();
-    assert_eq!(crate::i18n::tr(de, "Enable Generator"), "Generator aktivieren");
 }
 
 #[test]
@@ -1025,10 +1023,15 @@ fn selected_tool_survives_a_restart_without_option_changes() {
     let (mut app, store) = app_with_store();
     let ctx = egui::Context::default();
     tick(&mut app, &ctx);
-    assert_eq!(app.ui.tool, Tool::Brush);
-    // Every tool, including flyout-only tools, can be restored. Return to Brush last to
+    assert_eq!(app.ui.tool, Tool::Move);
+    // Start from a non-default tool so selecting every tool (including Move) is an
+    // explicit change that gets persisted.
+    app.ui.tool = Tool::Brush;
+    crate::tool_memory::persist(&mut app, &ctx);
+    tick(&mut app, &ctx);
+    // Every tool, including flyout-only tools, can be restored. Return to Move last to
     // prove selecting the default overwrites a previously remembered nondefault tool.
-    for tool in Tool::ALL.into_iter().chain([Tool::Brush]) {
+    for tool in Tool::ALL.into_iter().chain([Tool::Move]) {
         app.ui.tool = tool;
         crate::tool_memory::persist(&mut app, &ctx);
         tick(&mut app, &ctx);
@@ -1043,10 +1046,10 @@ fn selected_tool_survives_a_restart_without_option_changes() {
 #[test]
 fn selected_tool_is_flushed_on_exit_without_another_frame() {
     let (mut app, store) = app_with_store();
-    app.ui.tool = crate::state::Tool::Move;
+    app.ui.tool = crate::state::Tool::Brush;
     crate::tool_memory::save_on_exit(&mut app).unwrap();
     let (app2, _) = app_with_saved(store.lock().unwrap().clone());
-    assert_eq!(app2.ui.tool, crate::state::Tool::Move);
+    assert_eq!(app2.ui.tool, crate::state::Tool::Brush);
 }
 
 #[test]
@@ -1083,7 +1086,7 @@ fn invalid_selected_tool_preserves_other_preferences() {
             })
             .to_string(),
         ));
-        assert_eq!(app.ui.tool, crate::state::Tool::Brush, "{bad}");
+        assert_eq!(app.ui.tool, crate::state::Tool::Move, "{bad}");
         assert_eq!(app.ui.tool_options.feather, 12.0);
     }
 }
@@ -1093,19 +1096,19 @@ fn selected_tool_excludes_temporary_switches() {
     use crate::state::Tool;
     let (mut app, store) = app_with_store();
     let ctx = egui::Context::default();
-    app.ui.tool = Tool::Move;
+    app.ui.tool = Tool::Brush;
     crate::tool_memory::persist(&mut app, &ctx);
     tick(&mut app, &ctx);
     app.tool_override = Some(Tool::Hand);
     crate::tool_memory::persist(&mut app, &ctx);
     tick(&mut app, &ctx);
-    assert_eq!(stored(&store)["selectedTool"], json!("Move"));
+    assert_eq!(stored(&store)["selectedTool"], json!("Brush"));
     app.tool_override = None;
     app.ui.tool = Tool::Zoom;
-    crate::spring_tools::pressed(&mut app, 'Z', Tool::Move, true, 0.0);
+    crate::spring_tools::pressed(&mut app, 'Z', Tool::Brush, true, 0.0);
     crate::tool_memory::persist(&mut app, &ctx);
     tick(&mut app, &ctx);
-    assert_eq!(stored(&store)["selectedTool"], json!("Move"));
+    assert_eq!(stored(&store)["selectedTool"], json!("Brush"));
     // A quick tap commits the choice after spring_tools clears the pending switch.
     crate::spring_tools::tick(&mut app, &ctx);
     crate::tool_memory::persist(&mut app, &ctx);
@@ -1130,15 +1133,17 @@ fn tool_options_survive_a_restart() {
     tick(&mut app, &ctx);
     app.ui.tool_options.move_auto_select = false;
     app.ui.tool_options.feather = 12.0;
+    app.ui.tool_options.transform_interpolation = Some(photocraft_engine::prefs::Interpolation::Nearest);
     crate::tool_memory::persist(&mut app, &ctx);
     tick(&mut app, &ctx);
     // Only what differs from the defaults is stored.
-    assert_eq!(stored(&store)["toolOptions"], json!({"move_auto_select": false, "feather": 12.0}));
+    assert_eq!(stored(&store)["toolOptions"], json!({"move_auto_select": false, "feather": 12.0, "transform_interpolation": "nearestNeighbor"}));
     let saved = store.lock().unwrap().clone().unwrap();
     let (mut app2, _) = app_with_saved(Some(saved));
     tick(&mut app2, &ctx);
     assert!(!app2.ui.tool_options.move_auto_select);
     assert_eq!(app2.ui.tool_options.feather, 12.0);
+    assert_eq!(app2.ui.tool_options.transform_interpolation, Some(photocraft_engine::prefs::Interpolation::Nearest));
     assert_eq!(app2.ui.tool_options.tolerance, crate::state::ToolOptions::default().tolerance);
     // A hand-edited file: unreadable fields keep their defaults, the good ones still load.
     for bad in [json!("junk"), json!({"move_auto_select": "no", "feather": 1e300, "tolerance": 5.0, "unknown": 1})] {

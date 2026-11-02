@@ -9,8 +9,8 @@
 #   escapes  \n  \t  \\  inside a column. `{name}` placeholders must appear in both columns.
 #   lines starting with # and blank lines are ignored.
 #
-# Status: complete. Every source key is translated (`complete_menus`), and the coverage test in
-# xtask/src/i18n_coverage.rs keeps it that way: new `tl!` strings need a Vietnamese row.
+# Status: complete when last measured. `cargo xtask i18n-coverage` lists any `tl!` string without a
+# Vietnamese row; a missing row shows in English.
 #
 # Clean-room: every entry was written from the plain meaning of the English label using ordinary
 # Vietnamese computing and image-editing vocabulary. No proprietary localisation resource, string
@@ -21,20 +21,151 @@
 
 
 # Layer Mask Display Options (the layer mask rubylith's colour and opacity)
-	Mask Options…	Tùy chọn mặt nạ…
-	Layer Mask Display Options…	Tùy chọn hiển thị mặt nạ lớp…
 
 # Channel Options and New Spot Channel (#3761)
+
+# Phase 3.1 — top-level menus, File menu, Edit menu
+# Custom paper dimensions in Print Settings.
+
+
+
+# Phase 3.2 — Image menu, Layer menu
+
+
+# Phase 3.3 — Type menu, Select menu
+
+
+# Phase 3.4 — Filter menu
+# Field Blur pins (#3373)
+
+
+# Phase 3.5 — View menu
+
+
+# Phase 3.6 — Window menu, Help menu
+
+
+# Phase 3.7 — tool names + Tool Options bar
+
+
+# Phase 3.8 — Layers + Properties + History panel internals
+
+
+# Phase 3.9 — Character + Paragraph + Glyphs typography panels
+
+
+# Phase 3.10 — Brushes + Brush Settings panel internals
+
+# Phase 3.11 — Gradients + Patterns + Swatches asset panels
+
+# Phase 3.12 — Channels + Paths + Navigator + Info + Histogram
+
+# Mixer Brush (required for every registered non-English language)
+
+# Camera Raw labels (required for every registered non-English language)
+
+# Phase 4.1 — Preferences dialog
+
+
+# Phase 4.2 — general dialogs, status/progress, warnings/errors
+
+# Phase 4.3 — Keyboard Shortcuts and Menus editor
+
+# Phase 4.4 — Color Settings dialog
+
+# Phase 4.5 — Preset Manager + Export/Import Presets
+
+# Phase 4.6 — Camera Raw chrome + Light/Color basics (tone, WB, presence)
+
+# Phase 4.7 — Camera Raw Curve + Color Mixer
+
+# Phase 4.8 — Camera Raw Color Grading + Detail
+
+# Phase 4.10 — Camera Raw Effects (Texture/Clarity/Dehaze + Vignetting + Grain)
+
+# Phase 4.13 — New Document + Home + Image Size
+
+# Phase 4.14 — Export / Save for Web / TIFF options
+
+# Phase 4.15 — Warp / Liquify / Perspective / Puppet
+
+# Gap Batch 4 — Layer Comps / Styles leftovers / Color Range / plurals / command palette
+
+# Visual QA finalization
+
+# Post-rebase gate-required strings
+
+# Phase 5.1 — tools / paths / assets / filters / layers
+
+# Phase 5.2 — dialogs / chrome / preferences / file UI / engine labels
+
+# Phase 5.3A — print / proof
+
+# Phase 5.3B — specialist workflows
+
+# Phase 5.4 — Help / About / credits
+
+# Phase 5.5 — final stable-key completion
+
+# Phase 5.6 — upstream kys first-launch import prompt
+
+# Upstream sync after rebase onto main
+
+# Labels added on main since this catalog was written (maintainer pass)
+
+# Rows from @tonguyenducmanh's Vietnamese catalog (#3453), merged here so the catalog is complete
+
+# Remaining labels (maintainer pass)
+# Edit › Content-Aware Fill workspace
+
+# Actions panel: Load/Save Actions (.atn) and kept Photoshop steps
+
+# Actions panel: set folders, dialog toggle, Insert Stop
+# History panel menu (#2966)
+# History panel › History Options… (#2966)
+# Batch / Image Processor
+
+# Native Windows printing qualification
+# History panel › History Brush source (#2966)
+# Bevel & Emboss shading controls.
+# Embedded Profile Mismatch: profile names beside the choices, Remember this choice
+
+# Darken / Lighten Interface (⇧⌘F1 / ⇧⌘F2)
+# Bevel & Emboss Technique.
+
+# View › Guides › right-click a guide
+
+# Image › Mode › Bitmap (#5559)
+
+# Layers panel options and Smart Filter editors
+
+# Free Transform: a new layer while the box is open (#5859)
+# Preferences › Performance › GPU Memory; the status bar and slow-redraw notice
+
+# DDS Options (#1327)
+
+# Color Table (.act) dialog
+
+# Graphics Adapter preference (#1885)
+
+# Styles panel: Import / Export Styles (.asl)
+# Actions: a step dialog holds a suspended recording (#7365)
+# Paragraph direction (TYPE-218-2)
+# Print preview image (#8236)
+# Color panel menu: modes, copy commands and colour ramps (#6000)
+
+# Pen draft after a refused commit (#7648)
+# Art History Brush (#213).
+
+# Egui 0.37 migration controls (Aspect Ratio, Category, Color Table, Gamma, Interpolation, Profile, Target, Units, Demosaic)
+	Mask Options…	Tùy chọn mặt nạ…
+	Layer Mask Display Options…	Tùy chọn hiển thị mặt nạ lớp…
 	Channel Color	Màu kênh
 	Color Indicates:	Màu biểu thị:
 	Solidity:	Độ đặc:
 	Ink Characteristics	Đặc tính mực
-
-# Phase 3.1 — top-level menus, File menu, Edit menu
-# Custom paper dimensions in Print Settings.
 	Paper Width	Chiều rộng giấy
 	Paper Height	Chiều cao giấy
-
 	Again	Lặp lại
 	AI Integrations…	Tích hợp AI…
 	All	Tất cả
@@ -200,9 +331,6 @@
 	WIA Support…	Hỗ trợ WIA…
 	Window	Cửa sổ
 	Workspace…	Không gian làm việc…
-
-
-# Phase 3.2 — Image menu, Layer menu
 	16 Bits/Channel	16 bit/kênh
 	180°	180°
 	32 Bits/Channel	32 bit/kênh
@@ -335,6 +463,7 @@
 	Median	Trung vị
 	Merge Layers	Gộp lớp
 	Merge Shape Components	Gộp thành phần hình
+	Path operations	Thao tác đường dẫn
 	Merge Visible	Gộp các lớp hiển thị
 	Minimum	Cực tiểu
 	Mode	Chế độ
@@ -410,9 +539,6 @@
 	Vibrance…	Độ sống động…
 	Video	Video
 	Video Layers	Lớp video
-
-
-# Phase 3.3 — Type menu, Select menu
 	Anti-Alias	Khử răng cưa
 	Border…	Viền…
 	Character Panel	Bảng ký tự
@@ -486,9 +612,6 @@
 	Warp Text…	Biến dạng chữ…
 	Windows	Windows
 	Windows LCD	Windows LCD
-
-
-# Phase 3.4 — Filter menu
 	Adaptive Wide Angle…	Góc rộng thích ứng…
 	Add Noise…	Thêm nhiễu…
 	Average	Trung bình
@@ -513,7 +636,6 @@
 	Facet	Mặt cắt
 	Fibers…	Sợi…
 	Field Blur…	Làm mờ vùng…
-# Field Blur pins (#3373)
 	No pin selected	Chưa chọn ghim nào
 	Click the image to add a pin; drag a pin to move it, or its ring to change its blur. Delete removes the selected pin.	Bấm vào ảnh để thêm ghim; kéo ghim để di chuyển, hoặc kéo vòng của ghim để đổi độ mờ. Delete xóa ghim đã chọn.
 	Drag the handles on the outline to resize and turn it, the square to round its corners, and the dots inside to set where the blur starts.	Kéo các tay nắm trên đường viền để đổi kích thước và xoay, kéo ô vuông để bo tròn góc, và kéo các chấm bên trong để đặt nơi bắt đầu làm mờ.
@@ -575,9 +697,6 @@
 	Wave…	Sóng…
 	Wind…	Gió…
 	ZigZag…	Zigzag…
-
-
-# Phase 3.5 — View menu
 	100%	100%
 	105%	105%
 	110%	110%
@@ -654,9 +773,6 @@
 	Working Yellow Plate	Bản Yellow làm việc
 	Zoom In	Phóng to
 	Zoom Out	Thu nhỏ
-
-
-# Phase 3.6 — Window menu, Help menu
 	2-up Horizontal	2 cửa sổ ngang
 	2-up Vertical	2 cửa sổ dọc
 	3-up Horizontal	3 cửa sổ ngang
@@ -729,9 +845,6 @@
 	Tool Presets	Thiết lập sẵn công cụ
 	Tools	Công cụ
 	Workspace	Không gian làm việc
-
-
-# Phase 3.7 — tool names + Tool Options bar
 	Move Tool	Công cụ Di chuyển
 	Rectangular Marquee Tool	Công cụ Vùng chọn chữ nhật
 	Elliptical Marquee Tool	Công cụ Vùng chọn elip
@@ -923,11 +1036,9 @@
 	Align horizontal centers	Căn tâm ngang
 	Align right edges	Căn cạnh phải
 	Drag to move the active shape's path or the Work Path	Kéo để di chuyển đường dẫn hình đang chọn hoặc Đường dẫn làm việc
+	Drag to move the selected path	Kéo để di chuyển đường dẫn đã chọn
 	Click: corner · Drag: smooth · Click first point: close · {key} finish · Esc cancel	Bấm: góc · Kéo: mượt · Bấm điểm đầu: đóng · {key} xong · Esc hủy
 	Click: select anchor · Drag: move anchor, handle or segment · {shift}-click: add · {alt}-click: whole subpath	Bấm: chọn điểm neo · Kéo: di chuyển điểm neo, tay nắm hoặc đoạn · {shift}-bấm: thêm · {alt}-bấm: cả nhánh con
-
-
-# Phase 3.8 — Layers + Properties + History panel internals
 	Pixel Layer	Lớp pixel
 	Type Layer	Lớp chữ
 	Shape Layer	Lớp hình
@@ -957,6 +1068,9 @@
 	Delete layer	Xóa lớp
 	Link layers	Liên kết lớp
 	Add a layer style	Thêm kiểu lớp
+	Move effect up	Chuyển hiệu ứng lên
+	Move effect down	Chuyển hiệu ứng xuống
+	Delete effect	Xóa hiệu ứng
 	Add a mask  (from the selection; {key} inverts)	Thêm mặt nạ  (từ vùng chọn; {key} đảo)
 	No document	Không có tài liệu
 	Collapse	Thu gọn
@@ -1057,9 +1171,6 @@
 	Use Legacy	Dùng bản cũ
 	Violet, Orange	Tím, Cam
 	Yellow  ·  Blue	Vàng  ·  Xanh dương
-
-
-# Phase 3.9 — Character + Paragraph + Glyphs typography panels
 	Font size	Cỡ chữ
 	Leading	Giãn dòng
 	Leading (set to the font size × auto-leading when Auto)	Giãn dòng (đặt bằng cỡ chữ × giãn dòng tự động khi Tự động)
@@ -1131,9 +1242,6 @@
 	Symbols	Ký hiệu
 	Math Symbols	Ký hiệu toán
 	Arrows	Mũi tên
-
-
-# Phase 3.10 — Brushes + Brush Settings panel internals
 	Brush Tip Shape	Hình dạng đầu cọ
 	Shape Dynamics	Biến thiên hình dạng
 	Scattering	Phân tán
@@ -1231,8 +1339,6 @@
 	Linear Burn	Đốt tuyến tính
 	Hard Mix	Trộn cứng
 	Linear Height	Cao tuyến tính
-
-# Phase 3.11 — Gradients + Patterns + Swatches asset panels
 	Gradient	Chuyển sắc
 	Gradient Options	Tùy chọn chuyển sắc
 	Linear	Tuyến tính
@@ -1254,8 +1360,6 @@
 	Thumbnail size (smallest: list)	Cỡ hình thu nhỏ (nhỏ nhất: danh sách)
 	Color & Swatches	Màu & Mẫu màu
 	Click sets foreground · right-click sets background	Bấm đặt nền trước · chuột phải đặt nền
-
-# Phase 3.12 — Channels + Paths + Navigator + Info + Histogram
 	Show the layer mask as an overlay	Hiện mặt nạ lớp dạng phủ
 	Toggle visibility	Hiện/ẩn
 	Load channel as selection	Tải kênh thành vùng chọn
@@ -1308,8 +1412,6 @@
 	Median:	Trung vị:
 	Pixels:	Pixel:
 	Cache Level:	Mức đệm:
-
-# Mixer Brush (required for every registered non-English language)
 	Mixer Brush	Cọ trộn
 	Mixer Brush Tool	Công cụ Cọ trộn
 	Wet	Ướt
@@ -1322,8 +1424,6 @@
 	Mix	Trộn
 	Flow	Lưu lượng
 	Sample All Layers	Lấy mẫu mọi lớp
-
-# Camera Raw labels (required for every registered non-English language)
 	Amount	Mức
 	Aqua	Xanh ngọc
 	Balance	Cân bằng
@@ -1408,8 +1508,6 @@ cameraRaw	Masking	Mặt nạ
 cameraRaw	Blending	Độ hòa trộn
 cameraRaw	Highlights	Vùng sáng
 cameraRaw	Shadows	Vùng tối
-
-# Phase 4.1 — Preferences dialog
 	125%	125%
 	150%	150%
 	175%	175%
@@ -1559,9 +1657,6 @@ cameraRaw	Shadows	Vùng tối
 	Vulkan	Vulkan
 	Webp	WebP
 	Zoom with scroll wheel	Thu phóng bằng bánh xe cuộn
-
-
-# Phase 4.2 — general dialogs, status/progress, warnings/errors
 	Yes	Có
 	No	Không
 	Don't Save	Không lưu
@@ -1621,8 +1716,6 @@ cameraRaw	Shadows	Vùng tối
 	Retry GPU tries the graphics processor again now.	Thử lại GPU sẽ thử lại bộ xử lý đồ họa ngay bây giờ.
 	GPU acceleration resumed.	Đã tiếp tục tăng tốc GPU.
 	Keep Using CPU	Tiếp tục dùng CPU
-
-# Phase 4.3 — Keyboard Shortcuts and Menus editor
 	Keyboard Shortcuts and Menus	Phím tắt và menu
 	Keyboard Shortcuts	Phím tắt
 	Menus	Menu
@@ -1653,8 +1746,6 @@ cameraRaw	Shadows	Vùng tối
 	blue	Xanh dương
 	violet	Tím
 	gray	Xám
-
-# Phase 4.4 — Color Settings dialog
 	Color Settings	Cài đặt màu
 	Black Point Compensation	Bù điểm đen
 	Working Rgb	RGB làm việc
@@ -1688,8 +1779,6 @@ cameraRaw	Shadows	Vùng tối
 	Color Management Policies	Chính sách quản lý màu
 	Relative Colorimetric	Đo màu tương đối
 	Absolute Colorimetric	Đo màu tuyệt đối
-
-# Phase 4.5 — Preset Manager + Export/Import Presets
 	Preset Manager	Quản lý thiết lập sẵn
 	Export/Import Presets	Xuất/Nhập thiết lập sẵn
 	Preset Type	Loại thiết lập sẵn
@@ -1701,8 +1790,6 @@ cameraRaw	Shadows	Vùng tối
 	Action	Thao tác
 	Export Presets	Xuất thiết lập sẵn
 	Import Presets	Nhập thiết lập sẵn
-
-# Phase 4.6 — Camera Raw chrome + Light/Color basics (tone, WB, presence)
 	Fit in View	Vừa khung nhìn
 	Camera Raw	Camera Raw
 cameraRaw	Color	Màu
@@ -1716,8 +1803,6 @@ cameraRaw	Dehaze	Khử sương
 cameraRaw	Temperature	Nhiệt độ màu
 cameraRaw	Vibrance	Độ sống động
 cameraRaw	Saturation	Độ bão hòa
-
-# Phase 4.7 — Camera Raw Curve + Color Mixer
 cameraRaw	Curve	Đường cong
 cameraRaw	Color Mixer	Bộ trộn màu
 cameraRaw	Hue	Sắc màu
@@ -1730,8 +1815,6 @@ cameraRaw	Aqua	Xanh ngọc
 cameraRaw	Blue	Xanh dương
 cameraRaw	Purple	Tím
 cameraRaw	Magenta	Đỏ tía
-
-# Phase 4.8 — Camera Raw Color Grading + Detail
 cameraRaw	Color Grading	Phân cấp màu
 cameraRaw	Midtones	Tông trung gian
 cameraRaw	Global	Tổng thể
@@ -1740,15 +1823,11 @@ cameraRaw	Detail	Chi tiết
 cameraRaw	Radius	Bán kính
 cameraRaw	Luminance Detail	Chi tiết độ sáng
 cameraRaw	Color Detail	Chi tiết màu
-
-# Phase 4.10 — Camera Raw Effects (Texture/Clarity/Dehaze + Vignetting + Grain)
 cameraRaw	Feather	Độ mềm cạnh
 cameraRaw	Midpoint	Điểm giữa
 cameraRaw	Roundness	Độ tròn
 cameraRaw	Roughness	Độ thô
 cameraRaw	Size	Kích thước
-
-# Phase 4.13 — New Document + Home + Image Size
 	Home	Trang chủ
 	Recent	Gần đây
 	Photo	Ảnh
@@ -1798,8 +1877,6 @@ document	Orientation	Hướng trang
 	32 bit (float)	32-bit (float)
 	Integer	Số nguyên
 	Floating point	Số thực
-
-# Phase 4.14 — Export / Save for Web / TIFF options
 	File Settings	Cài đặt tệp
 	Transparency	Độ trong suốt
 	TIFF Options	Tùy chọn TIFF
@@ -1828,8 +1905,6 @@ document	Orientation	Hướng trang
 	All Slices	Mọi lát cắt
 	All User Slices	Mọi lát cắt người dùng
 	Matte	Matte
-
-# Phase 4.15 — Warp / Liquify / Perspective / Puppet
 	Warp:	Biến dạng:
 	Bend:	Độ uốn:
 	Split:	Chia:
@@ -1904,8 +1979,6 @@ document	Orientation	Hướng trang
 	Fixed	Cố định
 	Remove All Pins	Xóa mọi ghim
 	Commit Puppet Warp ({key})	Áp dụng biến dạng con rối ({key})
-
-# Gap Batch 4 — Layer Comps / Styles leftovers / Color Range / plurals / command palette
 	Last Document State	Trạng thái tài liệu cuối
 	Capture the visibility, position and style of every layer with + below, then switch between versions.	Dùng + bên dưới để ghi hiển thị, vị trí và kiểu của mọi lớp, rồi chuyển giữa các phiên bản.
 	Visibility	Hiển thị
@@ -1990,8 +2063,6 @@ colorRange	Invert	Đảo ngược
 	No matching commands	Không tìm thấy lệnh
 	↑↓ navigate   {key} run   esc close	↑↓ điều hướng   {key} chạy   esc đóng
 	Tool	Công cụ
-
-# Visual QA finalization
 	New document…	Tài liệu mới…
 	Join us on Discord	Tham gia Discord
 	PhotoCraft website	Trang web PhotoCraft
@@ -1999,8 +2070,6 @@ colorRange	Invert	Đảo ngược
 	Canvas extension color:	Màu mở rộng canvas:
 layers	Fill	Độ tô
 layers	Fill:	Độ tô:
-
-# Post-rebase gate-required strings
 	Pattern Stamp Tool	Công cụ Con dấu họa tiết
 	Pattern Stamp	Con dấu họa tiết
 	Impressionist	Ấn tượng
@@ -2009,8 +2078,6 @@ layers	Fill:	Độ tô:
 	Open	Mở
 	Camera Raw ({name})	Camera Raw ({name})
 	Developing {name}	Đang xử lý {name}
-
-# Phase 5.1 — tools / paths / assets / filters / layers
 	101 by 101 Average	Trung bình 101 × 101
 	11 by 11 Average	Trung bình 11 × 11
 	3 by 3 Average	Trung bình 3 × 3
@@ -2030,6 +2097,8 @@ layers	Fill:	Độ tô:
 	Bitmap…	Bitmap…
 	Blend If	Điều kiện hòa trộn
 	Blend If:	Điều kiện hòa trộn:
+	Current Layer:	Lớp hiện tại:
+	Underlying Layer:	Lớp bên dưới:
 	Bottom Left	Dưới trái
 	Bottom Right	Dưới phải
 	Brush Name	Tên cọ
@@ -2148,8 +2217,6 @@ layers	Fill:	Độ tô:
 	Weight	Độ dày
 	Zoom in	Phóng to
 	Zoom out	Thu nhỏ
-
-# Phase 5.2 — dialogs / chrome / preferences / file UI / engine labels
 	A save to {name} is still running; try again when it finishes	Đang lưu {name}; thử lại khi hoàn tất
 	Adwaita Dark Theme	Chủ đề Adwaita tối
 	Adwaita Light Theme	Chủ đề Adwaita sáng
@@ -2239,8 +2306,6 @@ layers	Fill:	Độ tô:
 	{size} (was {old})	{size} (trước là {old})
 	{w} px x {h} px ({ppi} ppi)	{w} px x {h} px ({ppi} ppi)
 	…and {n} more	…và {n} nữa
-
-# Phase 5.3A — print / proof
 	(print to the printer)	(in ra máy in)
 	Adobe RGB (1998) compatible	Tương thích Adobe RGB (1998)
 	Center Crop Marks	Dấu cắt giữa
@@ -2256,8 +2321,6 @@ layers	Fill:	Độ tô:
 	Printer Setup	Thiết lập máy in
 	Printing Marks	Dấu in
 	Registration Marks	Dấu chồng màu
-
-# Phase 5.3B — specialist workflows
 	+ Add variable	+ Thêm biến
 	30 frames @ 30 fps	30 khung hình @ 30 fps
 	3D LUT File	Tệp 3D LUT
@@ -2317,8 +2380,6 @@ layers	Fill:	Độ tô:
 	Suggestions:	Gợi ý:
 	Text Position:	Vị trí văn bản:
 	Variables bind a layer's visibility, text or pixels to a named data slot.	Biến gắn trạng thái hiện, văn bản hoặc pixel của lớp với một khe dữ liệu có tên.
-
-# Phase 5.4 — Help / About / credits
 	% of all commits	% tổng số commit
 	@{login}: {prs} PRs, {commits} commits, +{added} / −{deleted} lines (Δ {delta}), +{binAdded} / −{binDeleted} binary assets, {first} – {last}	@{login}: {prs} PR, {commits} commit, dòng +{added} / −{deleted} (Δ {delta}), tài sản nhị phân +{binAdded} / −{binDeleted}, {first} – {last}
 	0 turns this threshold off; SVG groups nested deeper than 100 levels are always rasterized.	0 tắt ngưỡng này; nhóm SVG lồng nhau sâu hơn 100 cấp luôn được raster hóa.
@@ -2349,8 +2410,6 @@ layers	Fill:	Độ tô:
 	Table	Bảng
 	Username	Tên người dùng
 	Version	Phiên bản
-
-# Phase 5.5 — final stable-key completion
 	Active	Đang dùng
 	Add	Thêm
 	Appearance	Giao diện
@@ -2377,16 +2436,12 @@ shape	Appearance	Diện mạo
 	Tetrahedral	Tetrahedral
 	Top	Trên
 	Trilinear	Trilinear
-
-# Phase 5.6 — upstream kys first-launch import prompt
 	Show channels in color	Hiện kênh bằng màu
 	Import keyboard shortcuts?	Nhập phím tắt?
 	PhotoCraft found your keyboard shortcut set {set} from another image editor on this computer: {n} of its shortcuts differ from PhotoCraft's. Import it?	PhotoCraft tìm thấy bộ phím tắt {set} từ trình chỉnh sửa ảnh khác trên máy này: {n} phím tắt khác với PhotoCraft. Nhập vào?
 	Edit › Keyboard Shortcuts › Reset All to Defaults undoes an import.	Chỉnh sửa › Phím tắt › Đặt lại tất cả về mặc định sẽ hoàn tác lần nhập.
 	Don't Import	Không nhập
 	The keyboard shortcut set was not imported: {error}	Không nhập được bộ phím tắt: {error}
-
-# Upstream sync after rebase onto main
 	Auto Center Preview	Tự động căn giữa xem trước
 	Brush	Cọ
 	Color Picker ({name})	Bộ chọn màu ({name})
@@ -2402,8 +2457,6 @@ shape	Appearance	Diện mạo
 	Use Classic Mode	Dùng chế độ cổ điển
 	W x H x Resolution	Rộng x Cao x Độ phân giải
 	Block	Khối
-
-# Labels added on main since this catalog was written (maintainer pass)
 	(No neutral color exists for {mode} mode.)	(Không có màu trung tính cho chế độ {mode}.)
 	24 bits/pixel	24 bit/pixel
 	32 bits/pixel	32 bit/pixel
@@ -2558,8 +2611,6 @@ shape	Appearance	Diện mạo
 @plural	{n} step|{n} steps	{n} bước
 @plural	{warning} (+{n} more brush preset warning)|{warning} (+{n} more brush preset warnings)	{warning} (+{n} cảnh báo thiết lập sẵn cọ khác)
 @plural	{what} with {n} warning|{what} with {n} warnings	{what} với {n} cảnh báo
-
-# Rows from @tonguyenducmanh's Vietnamese catalog (#3453), merged here so the catalog is complete
 	(coming soon)	(sắp có)
 	Add beauty precomp from the AOVs	Thêm precomp beauty từ các AOV
 	Show in Explorer	Hiện trong Explorer
@@ -3596,8 +3647,6 @@ cameraData	Lens	Ống kính
 	sRGB IEC61966-2.1	sRGB IEC61966-2.1
 	shortcut	phím tắt
 	Drag (lasso) or click points (polygonal) · {add} add · {sub} subtract	Kéo (dây mềm) hoặc bấm các điểm (đa giác) · {add} thêm · {sub} trừ
-
-# Remaining labels (maintainer pass)
 	Selected Artboards	Các artboard đã chọn
 	5 Columns, 3 Rows	5 cột, 3 hàng
 	8 Columns	8 cột
@@ -3646,7 +3695,6 @@ curves	Smooth	Làm mượt
 	Delete Contour	Xóa đường viền
 	Loaded contours from {file}	Đã tải đường viền từ {file}
 	Saved contours to {file}	Đã lưu đường viền vào {file}
-# Edit › Content-Aware Fill workspace
 	Excluded Area	Vùng loại trừ
 	Fill Settings	Cài đặt tô
 	Full	Toàn phần
@@ -3666,8 +3714,6 @@ curves	Smooth	Làm mượt
 	Clear Brush Controls	Xóa điều khiển cọ
 	Reset All Locked Settings	Đặt lại tất cả cài đặt đã khóa
 	Copy Texture to Other Tools	Sao chép họa tiết sang các công cụ khác
-
-# Actions panel: Load/Save Actions (.atn) and kept Photoshop steps
 	Load Actions…	Nạp hành động…
 	Save Actions…	Lưu hành động…
 	New Action…	Hành động mới…
@@ -3679,10 +3725,8 @@ curves	Smooth	Làm mượt
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} bước chưa có chức năng tương ứng trong PhotoCraft
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	Đã lưu {n} hành động vào {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	Đã bỏ qua {n} bước không có chức năng tương ứng trong Photoshop
-
 	File Naming	Đặt tên tệp
 	Starting serial	Số thứ tự bắt đầu
-# Actions panel: set folders, dialog toggle, Insert Stop
 	Insert Stop…	Chèn điểm dừng…
 	Save Set…	Lưu bộ…
 	Message:	Thông báo:
@@ -3692,24 +3736,19 @@ curves	Smooth	Làm mượt
 	Action playback stopped	Đã dừng phát hành động
 	Step {step} is waiting for its dialog	Bước {step} đang chờ hộp thoại của nó
 @plural	{n} action|{n} actions	{n} hành động
-# History panel menu (#2966)
 	Step Forward	Tiến một bước
 	New Snapshot…	Ảnh chụp trạng thái mới…
 	Clear History	Xóa lịch sử
 	History Options…	Tùy chọn lịch sử…
 	Background (Default)	Nền (mặc định)
-# History panel › History Options… (#2966)
 	Allow Non-Linear History	Cho phép lịch sử không tuyến tính
 	Make Layer Visibility Changes Undoable	Cho phép hoàn tác thay đổi hiển thị lớp
 	Presentation	Trình bày
-# Batch / Image Processor
 	Include All Subfolders	Bao gồm tất cả thư mục con
 	Gradient Preset Options	Tùy chọn thiết lập sẵn chuyển sắc
 	Import .GRD	Nhập .GRD
 	Choose a gradient file (.grd).	Chọn tệp chuyển sắc (.grd).
 	Auto Add/Delete	Tự động thêm/xóa
-
-# Native Windows printing qualification
 	Don't also tick Mirror Image in Print Settings…: the two flips cancel out.	Đừng bật thêm Ảnh phản chiếu trong thiết lập in: hai lần lật sẽ triệt tiêu nhau.
 	Print Settings…	Thiết lập in…
 	Remember to turn off the printer's own colour management in Print Settings…	Nhớ tắt quản lý màu riêng của máy in trong thiết lập in…
@@ -3755,46 +3794,29 @@ curves	Smooth	Làm mượt
 	Kept {name}: written by another application	Đã giữ {name}: do ứng dụng khác ghi
 	Shadow Tint	Sắc độ bóng tối
 	Check for Updates…	Kiểm tra bản cập nhật…
-	PhotoCraft Updates	Bản cập nhật PhotoCraft
-	Checking for updates…	Đang kiểm tra bản cập nhật…
 	Open the release page to choose an installer for your system.	Mở trang phát hành để chọn bộ cài đặt cho hệ thống của bạn.
-	Open Download Page	Mở trang tải xuống
-	PhotoCraft is up to date.	PhotoCraft đã được cập nhật.
-	Could not check for updates.	Không thể kiểm tra bản cập nhật.
-	Updates have not been checked yet.	Chưa kiểm tra bản cập nhật.
-	Check Again	Kiểm tra lại
 	Automatically Check for Updates	Tự động kiểm tra bản cập nhật
-	Installed version: {version}	Phiên bản đã cài: {version}
-	PhotoCraft {version} is available.	PhotoCraft {version} đã có sẵn.
-# History panel › History Brush source (#2966)
 	Paints from the History panel's source state	Vẽ từ trạng thái nguồn của bảng Lịch sử
 	Sets the source for the history brush	Đặt nguồn cho cọ lịch sử
-# Bevel & Emboss shading controls.
 	Highlight Mode	Chế độ vùng sáng
 	Highlight Color	Màu vùng sáng
 	Highlight Opacity	Độ mờ vùng sáng
 	Shadow Mode	Chế độ bóng
 	Shadow Color	Màu bóng
 	Shadow Opacity	Độ mờ bóng
-# Embedded Profile Mismatch: profile names beside the choices, Remember this choice
 	Use the embedded profile ({profile})	Dùng hồ sơ nhúng ({profile})
 	Convert to the working space ({profile})	Chuyển sang không gian làm việc ({profile})
 	Remember this choice for future images	Ghi nhớ lựa chọn này cho các ảnh sau
 	Turn the prompt back on with Ask On Mismatch in Edit › Color Settings.	Bật lại câu hỏi bằng Ask On Mismatch trong Chỉnh sửa › Cài đặt màu.
 	Button Mode	Chế độ nút
 	Button Mode On	Chế độ nút bật
-
-# Darken / Lighten Interface (⇧⌘F1 / ⇧⌘F2)
 	Darken Interface	Làm tối giao diện
 	Lighten Interface	Làm sáng giao diện
-# Bevel & Emboss Technique.
 	Technique	Kỹ thuật
 	Chisel Hard	Đục cứng
 	Chisel Soft	Đục mềm
 	Open color-less EXR as ACEScg	Mở EXR không khai báo màu sắc dưới dạng ACEScg
 	Do not append "copy" to filename when saving a copy	Không thêm "copy" vào tên tệp khi lưu bản sao
-
-# View › Guides › right-click a guide
 	Edit Selected Guides	Sửa đường căn đã chọn
 	Clear Selected Guides	Xóa đường căn đã chọn
 	Bicubic Automatic	Bicubic tự động
@@ -3819,8 +3841,6 @@ curves	Smooth	Làm mượt
 	set name	tên bộ
 	{set} (modified)	{set} (đã sửa đổi)
 	Show file name in title	Hiển thị tên tệp trong tiêu đề
-
-# Image › Mode › Bitmap (#5559)
 	50% Threshold	Ngưỡng 50%
 	Pattern Dither	Hòa sắc họa tiết
 	Diffusion Dither	Hòa sắc khuếch tán
@@ -3830,8 +3850,6 @@ curves	Smooth	Làm mượt
 	Lines/Inch	Đường/inch
 	Lines/Centimeter	Đường/centimet
 	Ellipse	Elip
-
-# Layers panel options and Smart Filter editors
 	Add “copy” to Copied Layers and Groups	Thêm “bản sao” vào lớp và nhóm được sao chép
 	Animation Options	Tùy chọn hoạt ảnh
 	Entire Document	Toàn bộ tài liệu
@@ -3849,7 +3867,6 @@ curves	Smooth	Làm mượt
 	Thumbnail Contents	Nội dung hình thu nhỏ
 	Thumbnail Size	Kích thước hình thu nhỏ
 	Use Default Masks on Fill Layers	Dùng mặt nạ mặc định cho lớp tô
-
 	Blending Options ({filter})	Tùy chọn hòa trộn ({filter})
 	Hide the layer's effects and Smart Filters  ({key}-click: all layers)	Ẩn hiệu ứng và bộ lọc thông minh của lớp  ({key}-bấm: tất cả các lớp)
 	Opacity must be between 0% and 100%.	Độ mờ phải nằm trong khoảng từ 0% đến 100%.
@@ -3865,11 +3882,9 @@ curves	Smooth	Làm mượt
 	Undo Changes	Hoàn tác thay đổi
 	{shortcut} is reserved by the system and can't be assigned.	{shortcut} được hệ thống dành riêng và không thể gán.
 	Low-Latency Drawing (vsync off, applies at next launch)	Vẽ độ trễ thấp (tắt vsync, áp dụng ở lần khởi động sau)
-# Free Transform: a new layer while the box is open (#5859)
 	Reference point location	Vị trí điểm tham chiếu
 	Free Transform is still being applied; try again when it has finished.	Biến đổi tự do vẫn đang được áp dụng; hãy thử lại khi hoàn tất.
 	The transform couldn't be applied.	Không thể áp dụng phép biến đổi.
-# Preferences › Performance › GPU Memory; the status bar and slow-redraw notice
 	Its layers need {needed} of GPU memory; the budget leaves them {budget}.	Các lớp cần {needed} bộ nhớ GPU; ngân sách chỉ dành cho chúng {budget}.
 	Set GPU Memory in Preferences › Performance to what your graphics card can hold, at most 3/8 of its memory. Automatic follows Memory Usage, within a quarter of this computer's memory and 3/8 of the card's, and doesn't count the document against a card whose memory is known. The status bar shows GPU Memory Full while they don't fit.	Đặt Bộ nhớ GPU trong Tùy chọn › Hiệu năng bằng mức card đồ họa của bạn chứa được, tối đa 3/8 bộ nhớ của card. Tự động theo mức sử dụng bộ nhớ, trong giới hạn một phần tư bộ nhớ máy này và 3/8 bộ nhớ card, và không tính tài liệu vào card đã biết dung lượng bộ nhớ. Khi chúng chưa vừa, thanh trạng thái hiện Bộ nhớ GPU đầy.
 	GPU Memory Full	Bộ nhớ GPU đầy
@@ -3896,8 +3911,6 @@ curves	Smooth	Làm mượt
 	The fastest and the softest, with colour fringing on fine detail.	Nhanh nhất và mềm nhất, có viền màu ở chi tiết nhỏ.
 	“{name}” already exists. Replace it?	“{name}” đã tồn tại. Thay thế?
 	The name in the save dialog was “{name}”.	Tên trong hộp thoại lưu là “{name}”.
-	Move Up	Di chuyển lên
-	Move Down	Di chuyển xuống
 	Previous Brush	Cọ trước
 	Next Brush	Cọ tiếp theo
 	First Brush	Cọ đầu tiên
@@ -3912,18 +3925,22 @@ curves	Smooth	Làm mượt
 	Use	Dùng
 	In Front	Phía trước
 	Behind	Phía sau
-
-# DDS Options (#1327)
 	DDS Options	Tùy chọn DDS
 	Compression	Nén
 	Generate Mipmaps	Tạo mipmap
-
-# Color Table (.act) dialog
 	There is no color table to save.	Không có bảng màu nào để lưu.
 @plural	Saved {n} color to {file}|Saved {n} colors to {file}	Đã lưu {n} màu vào {file}
-
-# Graphics Adapter preference (#1885)
 	GPU adapter	Bộ điều hợp GPU
+smartSvg	Choose executable…	Chọn tệp thực thi…
+smartSvg	Choose the application used to edit this SVG:	Chọn ứng dụng dùng để chỉnh sửa SVG này:
+smartSvg	Edit SVG Smart Object	Chỉnh sửa Đối tượng thông minh SVG
+smartSvg	Other application	Ứng dụng khác
+smartSvg	PhotoCraft (internal editor)	PhotoCraft (trình chỉnh sửa nội bộ)
+smartSvg	SVG editor opened. Save the SVG to update this Smart Object.	Đã mở trình chỉnh sửa SVG. Lưu SVG để cập nhật Đối tượng thông minh này.
+smartSvg	Save to the opened SVG file. Each saved change becomes one undo step in PhotoCraft.	Lưu vào tệp SVG đã mở. Mỗi lần lưu thay đổi tạo một bước hoàn tác trong PhotoCraft.
+smartSvg	Stop syncing this Smart Object	Dừng đồng bộ Đối tượng thông minh này
+smartSvg	Updates wait while another document or an editing dialog is active.	Các cập nhật sẽ chờ khi tài liệu khác hoặc hộp thoại chỉnh sửa đang hoạt động.
+smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded source; format-specific features may change.	Nội dung AI/PDF/EPS sẽ được chỉnh sửa dưới dạng SVG. Lưu sẽ thay thế nguồn nhúng; các tính năng riêng của định dạng có thể thay đổi.
 
 # Styles panel: Import / Export Styles (.asl)
 	Import Styles…	Nhập kiểu…
@@ -3932,7 +3949,6 @@ curves	Smooth	Làm mượt
 	{file} is not a style library (.asl)	{file} không phải là thư viện kiểu (.asl)
 @plural	Imported {n} style from {file}|Imported {n} styles from {file}	Đã nhập {n} kiểu từ {file}
 @plural	Exported {n} style to {file}|Exported {n} styles to {file}	Đã xuất {n} kiểu sang {file}
-# Actions: a step dialog holds a suspended recording (#7365)
 	Confirm or cancel the open action step dialog first	Hãy xác nhận hoặc hủy hộp thoại bước hành động đang mở trước
 	Pro Medium Gray	Pro xám vừa
 	Solarized	Solarized
@@ -3941,14 +3957,11 @@ curves	Smooth	Làm mượt
 	Pro Light	Pro sáng
 	Resize Windows to Fit	Đổi cỡ cửa sổ cho vừa ảnh
 	EXR	EXR
-# Paragraph direction (TYPE-218-2)
 	Automatic paragraph direction	Hướng đoạn văn tự động
 	Left-to-right paragraph direction	Hướng đoạn văn từ trái sang phải
 	Right-to-left paragraph direction	Hướng đoạn văn từ phải sang trái
 	Not rendered: this adjustment ({key}) is kept as imported.	Không được kết xuất: điều chỉnh này ({key}) được giữ nguyên như khi nhập.
-# Print preview image (#8236)
 	Print preview image	Print preview image
-# Color panel menu: modes, copy commands and colour ramps (#6000)
 	Hue Cube	Khối sắc màu
 	Brightness Cube	Khối độ sáng
 	Color Wheel	Bánh xe màu
@@ -3965,7 +3978,8 @@ curves	Smooth	Làm mượt
 	Grayscale Ramp	Dải thang xám
 	Current Colors	Màu hiện tại
 	Make Ramp Web Safe	Giới hạn dải màu ở màu web
-# Art History Brush (#213).
+	The path was kept as the Work Path	Đường dẫn được giữ lại làm Đường dẫn làm việc
+	The path was discarded	Đường dẫn đã bị loại bỏ
 	Art History Brush	Cọ lịch sử nghệ thuật
 	Art History Brush Tool	Công cụ Cọ lịch sử nghệ thuật
 	Tight Short	Chặt ngắn
@@ -3977,9 +3991,33 @@ curves	Smooth	Làm mượt
 	Tight Curl	Xoắn chặt
 	Loose Curl	Xoắn lỏng
 	Stylized dabs from a history state	Các chấm cách điệu từ một trạng thái lịch sử
-
-# Egui 0.37 migration controls (Aspect Ratio, Category, Color Table, Gamma, Interpolation, Profile, Target, Units, Demosaic)
 	Aspect Ratio	Tỷ lệ khung hình
 	Font size presets	Cỡ chữ đặt sẵn
 	Leading presets	Giãn dòng đặt sẵn
 	Tracking presets	Khoảng cách chữ đặt sẵn
+	Invalid numeric entry. An integer between {min}% and {max}% is required. Previous value was inserted.	Giá trị số không hợp lệ. Cần một số nguyên từ {min}% đến {max}%. Đã chèn giá trị trước đó.
+	Clear Selection	Xóa vùng chọn
+	Color Aware	Nhận biết màu
+	Decontaminate Colors	Khử nhiễm màu
+	Edge Detection	Phát hiện cạnh
+	Global Refinements	Tinh chỉnh tổng thể
+	High Quality Preview	Xem trước chất lượng cao
+	Object Aware	Nhận biết đối tượng
+	Real-Time Refinement	Tinh chỉnh theo thời gian thực
+	Refine Edge Brush Tool	Công cụ cọ tinh chỉnh cạnh
+	Refine Hair	Tinh chỉnh tóc
+	Refine Mode	Chế độ tinh chỉnh
+	Remember Settings	Ghi nhớ cài đặt
+	View Mode	Chế độ xem
+	Object Aware needs a segmentation model, which isn't available yet	Nhận biết đối tượng cần mô hình phân đoạn, hiện chưa có
+	Refine Hair needs hair detection, which isn't available yet	Tinh chỉnh tóc cần tính năng phát hiện tóc, hiện chưa có
+	Select and Mask was closed: its document is no longer the active one	Đã đóng Chọn và Mặt nạ: tài liệu của nó không còn là tài liệu đang hoạt động
+	Select and Mask was closed: another layer was selected	Đã đóng Chọn và Mặt nạ: một lớp khác đã được chọn
+	Select Layer Under Cursor	Chọn lớp dưới con trỏ
+
+# Shape Fill/Stroke popover and colour swatches opening the Color Picker
+	Color Picker	Bộ chọn màu
+	Recently Used Colors	Màu dùng gần đây
+	Stop Color	Màu điểm dừng
+	Shapes can't use patterns yet	Hình chưa thể dùng mẫu tô
+	Edit Brush…	Chỉnh sửa cọ…

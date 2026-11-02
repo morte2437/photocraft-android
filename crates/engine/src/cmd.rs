@@ -2,7 +2,7 @@
 
 use photocraft_color::{BlendMode, Color, ColorMode, SampleType};
 use photocraft_doc::{Adjustment, Document, Fill, Layer, LayerContent, LayerId, LayerMask, Size};
-use photocraft_geom::Rect;
+use photocraft_geom::{Rect, TILE_SIZE};
 use photocraft_raster::Surface;
 use serde_json::{Map, Value, json};
 
@@ -133,6 +133,7 @@ pub mod select_extra_cmds;
 pub mod selection_cmds;
 pub mod slice_cmds;
 pub mod smart_cmds;
+pub mod smart_svg_cmds;
 pub mod smartselect_cmds;
 pub mod solid_fill_cmds;
 pub mod stamp_cmds;
@@ -168,7 +169,7 @@ pub(crate) use layer_params::{NEW_LAYER_PATH, explicit_layer, layer_listing, lay
 use ops::{arrange, merge_group, set_mask, set_mask_and_deselect};
 pub(crate) use ops::{layer_copy, translate_layer};
 use params::{bad, set_clipped};
-pub(crate) use params::{check_f32_values, color_param, int, int_i32, parse_hex, u32_id, u32_id_param};
+pub(crate) use params::{check_f32_values, cmyk_param, color_param, int, int_i32, parse_hex, u32_id, u32_id_param};
 
 pub fn command_specs() -> &'static [CommandSpec] {
     &registry().specs
@@ -321,26 +322,50 @@ fn build() -> Vec<CommandSpec> {
             has_pixel_or_channel,
             crate::fill_cmds::fill
         ),
-        cmd!("edit.clear", "Clear", ["Edit"], Some("Delete"), "{} (a targeted channel or Quick Mask is cleared alone)", has_pixel_or_channel, |s, p| {
-            let bg = s.tools.background;
-            // A targeted alpha channel or Quick Mask is filled instead (#2734).
-            if let Some(t) = crate::channel_cmds::targeted_channel(s) {
-                s.edit("Clear", |doc, _| crate::channel_cmds::clear_channel(doc, &t, bg))?;
-                return Ok(Value::Null);
+        cmd!(
+            "edit.clear",
+            "Clear",
+            ["Edit"],
+            Some("Delete"),
+            r##"{"target":"mask"|{"color":i}|{"colors":[i,…]}?=Channels panel target,"layer":id|name?=active} (a targeted mask, channel or Quick Mask is cleared alone)"##,
+            has_pixel_or_channel,
+            |s, p| {
+                let bg = s.tools.background;
+                // A targeted alpha channel or Quick Mask is filled instead (#2734).
+                let channel = if crate::channel_cmds::is_channel_target(p) {
+                    Some(p.clone())
+                } else if p.get("target").is_none() {
+                    crate::channel_cmds::targeted_channel(s)
+                } else {
+                    None
+                };
+                if let Some(t) = channel {
+                    s.edit("Clear", |doc, _| crate::channel_cmds::clear_channel(doc, &t, bg))?;
+                    return Ok(Value::Null);
+                }
+                let id = layer_param(s, p)?;
+                if is_mask_target(p) {
+                    s.edit("Clear Mask", |doc, _| crate::edit_cmds::clear_mask(doc, id, bg, p))?;
+                    return Ok(Value::Null);
+                }
+                // A targeted colour channel clears that channel only (#2720).
+                if let Some(colors) = crate::color_channels::target(s, p)? {
+                    s.edit("Clear", |doc, _| {
+                        for k in colors.indices() {
+                            crate::channel_cmds::clear_color_channel(doc, id, k, bg)?;
+                        }
+                        Ok(())
+                    })?;
+                    return Ok(Value::Null);
+                }
+                s.edit("Clear", |doc, _| {
+                    let sel = doc.selection.clone();
+                    let area = sel.as_ref().map(|m| m.content_bounds()).unwrap_or(doc.bounds());
+                    crate::edit_cmds::clear_area(doc, id, area, sel.as_ref(), bg)
+                })?;
+                Ok(Value::Null)
             }
-            let id = layer_param(s, p)?;
-            // A targeted colour channel clears that channel only (#2720).
-            if let Some(k) = crate::channel_cmds::targeted_color(s) {
-                s.edit("Clear", |doc, _| crate::channel_cmds::clear_color_channel(doc, id, k, bg))?;
-                return Ok(Value::Null);
-            }
-            s.edit("Clear", |doc, _| {
-                let sel = doc.selection.clone();
-                let area = sel.as_ref().map(|m| m.content_bounds()).unwrap_or(doc.bounds());
-                crate::edit_cmds::clear_area(doc, id, area, sel.as_ref(), bg)
-            })?;
-            Ok(Value::Null)
-        }),
+        ),
         // Select
         cmd!("select.all", "All", ["Select"], Some("Cmd+A"), "{}", has_doc, |s, _| {
             s.edit("Select All", |doc, _| {
@@ -365,12 +390,7 @@ fn build() -> Vec<CommandSpec> {
         cmd!("select.inverse", "Inverse", ["Select"], Some("Cmd+Shift+I"), "{}", has_selection, |s, _| {
             s.edit("Inverse", |doc, _| {
                 let old = doc.selection.take().unwrap_or_else(|| Surface::new(photocraft_color::PixelFormat::GRAY8));
-                let b = doc.bounds();
-                let data: Vec<f32> = old.read_region(b).into_iter().map(|v| 1.0 - v).collect();
-                let mut m = Surface::new(photocraft_color::PixelFormat::GRAY8);
-                m.write_region(b, &data);
-                m.prune();
-                doc.selection = Some(m);
+                doc.selection = Some(photocraft_algo::selection::inverse_surface(&old, doc.bounds()));
                 Ok(())
             })?;
             Ok(Value::Null)
@@ -419,15 +439,34 @@ fn build() -> Vec<CommandSpec> {
                     }
                     let old = doc.selection.take();
                     let combined = match (mode.as_str(), old) {
-                        ("add", Some(o)) => sel::combine_surfaces(&o, &shape, area, |a, b| a.max(b)),
-                        ("subtract", Some(o)) => sel::combine_surfaces(&o, &shape, area, |a, b| a * (1.0 - b)),
+                        ("add", Some(o)) => sel::combine_sparse(&o, &shape, area, |a, b| a.max(b)),
+                        ("subtract", Some(o)) => sel::combine_sparse(&o, &shape, area, |a, b| a * (1.0 - b)),
                         ("intersect", Some(o)) => sel::combine_surfaces(&o, &shape, area, |a, b| a.min(b)),
                         // With no existing selection, neither operation can select new pixels.
                         ("subtract" | "intersect", None) => Surface::new(photocraft_color::PixelFormat::GRAY8),
                         _ => shape,
                     };
-                    // Nothing selected on the canvas (e.g. dragged entirely outside it) deselects.
-                    doc.selection = (!combined.content_bounds().is_empty()).then_some(combined);
+                    // Sparse Add/Subtract keeps untouched pixels outside the canvas. Only pixels
+                    // inside the document count when deciding whether a selection remains.
+                    let has_on_canvas_pixels = (combined.default_bytes().first().copied().unwrap_or(0) != 0 && {
+                        let canvas_tiles = u64::from(area.width().div_ceil(TILE_SIZE as u32)) * u64::from(area.height().div_ceil(TILE_SIZE as u32));
+                        let stored = combined.tiles().filter(|(coord, _)| !coord.rect().intersect(&area).is_empty()).count() as u64;
+                        stored < canvas_tiles
+                    }) || combined.tiles().any(|(coord, tile)| {
+                        let tile_rect = coord.rect();
+                        let overlap = tile_rect.intersect(&area);
+                        if overlap.is_empty() {
+                            return false;
+                        }
+                        let x0 = (overlap.x0 - tile_rect.x0) as usize;
+                        let x1 = (overlap.x1 - tile_rect.x0) as usize;
+                        (overlap.y0 - tile_rect.y0..overlap.y1 - tile_rect.y0).any(|y| {
+                            let row_start = y as usize * TILE_SIZE as usize;
+                            let start = row_start + x0;
+                            tile.bytes().get(start..row_start + x1).is_some_and(|row| row.iter().any(|&v| v != 0))
+                        })
+                    });
+                    doc.selection = has_on_canvas_pixels.then_some(combined);
                     Ok(())
                 })?;
                 Ok(Value::Null)
@@ -464,7 +503,6 @@ fn build() -> Vec<CommandSpec> {
                     *active = Some(id);
                     Ok(id)
                 })?;
-                crate::layer_multi_cmds::note_inert_insert(s, id);
                 Ok(json!({ "layer": id.0 }))
             }
         ),
@@ -606,9 +644,6 @@ fn build() -> Vec<CommandSpec> {
                     ["name"] => "Rename Layer",
                     _ => "Layer Properties",
                 };
-                let before = s.active().ok_or(EngineError::NoDocument)?.doc.clone();
-                // Clipping and channel changes reach the layers around it: recomposite everything.
-                let local = p.get("clipped").is_none() && p.get("channels").is_none();
                 // The eye: a history state only with History Options › Make Layer Visibility
                 // Changes Undoable.
                 let only_visibility = changed.as_slice() == ["visible"];
@@ -664,9 +699,6 @@ fn build() -> Vec<CommandSpec> {
                     }
                     Ok(())
                 })?;
-                if local {
-                    crate::layer_multi_cmds::note_damage(s, &before, &ids);
-                }
                 Ok(Value::Null)
             }
         ),
@@ -785,13 +817,22 @@ fn build() -> Vec<CommandSpec> {
             "Solid Color…",
             ["Layer", "New Fill Layer"],
             None,
-            r##"{"color":"#rrggbb"=foreground,"path":"work"|saved path name|{…path}? (the active path: becomes the vector mask, making a shape; else the selection is the layer mask)}"##,
+            r##"{"color":"#rrggbb"=foreground,"cmyk":[c,m,y,k]? (inks 0..1 the colour was picked as: a CMYK document's fill holds exactly these; default the foreground's CMYK pick),"path":"work"|saved path name|{…path}? (the active path: becomes the vector mask, making a shape; else the selection is the layer mask)}"##,
             has_doc,
             |s, p| {
                 let c = color_param("layer.newFillLayer.solidColor", p, "color", s.tools.foreground)?;
+                // The inks the colour was picked as, so CMYK 50/50/50/100 stays 50/50/50/100 instead
+                // of what its sRGB stand-in converts back to through the document profile (#8568).
+                let inks = match cmyk_param("layer.newFillLayer.solidColor", p, "cmyk")? {
+                    Some(k) => Some(k),
+                    None => s.tools.picked_cmyk([c[0], c[1], c[2]]),
+                };
                 let default_mask = layer_panel_option(s, "useDefaultMasksOnFillLayers", true);
                 let id = s.edit("New Color Fill Layer", |doc, active| {
-                    let fill = Fill::Solid(Color::rgba(c[0], c[1], c[2], c[3])).in_mode(doc.mode);
+                    let fill = match inks {
+                        Some(k) if doc.mode == ColorMode::Cmyk => Fill::Solid(Color { mode: ColorMode::Cmyk, c: k, alpha: c[3] }),
+                        _ => Fill::Solid(Color::rgba(c[0], c[1], c[2], c[3])).in_mode(doc.mode),
+                    };
                     let mut l = Layer::new(doc.next_layer_name("Color Fill"), LayerContent::Fill(fill));
                     mask_new_layer(doc, &mut l, p, "layer.newFillLayer.solidColor", default_mask)?;
                     let id = crate::layer_place::insert_new(doc, *active, l, crate::layer_place::Place::Auto);
@@ -898,20 +939,28 @@ fn build() -> Vec<CommandSpec> {
         cmd!("image.imageRotation.90ccw", "90° Counter Clockwise", ["Image", "Image Rotation"], None, "{}", has_doc, |s, _| {
             turn(s, "Rotate Canvas", crate::canvas_geom::Turn::Ccw90)
         }),
-        cmd!("image.adjustments.desaturate", "Desaturate", ["Image", "Adjustments"], Some("Cmd+Shift+U"), "{}", has_pixel_layer, |s, _| {
-            destructive_adjust(
-                s,
-                "Desaturate",
-                Adjustment::HueSaturation {
-                    hue: 0.0,
-                    saturation: -100.0,
-                    lightness: 0.0,
-                    colorize: false,
-                    ranges: photocraft_doc::adjust::HueRange::defaults(),
-                },
-                &Value::Null,
-            )
-        }),
+        cmd!(
+            "image.adjustments.desaturate",
+            "Desaturate",
+            ["Image", "Adjustments"],
+            Some("Cmd+Shift+U"),
+            r##"{"target":"pixels"|"mask"|{"color":i}|{"colors":[i,…]}?=Channels panel target,"layer":id|name?=active}"##,
+            has_pixel_layer,
+            |s, p| {
+                destructive_adjust(
+                    s,
+                    "Desaturate",
+                    Adjustment::HueSaturation {
+                        hue: 0.0,
+                        saturation: -100.0,
+                        lightness: 0.0,
+                        colorize: false,
+                        ranges: photocraft_doc::adjust::HueRange::defaults(),
+                    },
+                    p,
+                )
+            }
+        ),
         // Paint
         cmd!(
             "paint.stroke",
@@ -930,17 +979,7 @@ fn build() -> Vec<CommandSpec> {
             r##"{"foreground":"#rrggbb"|[r,g,b,a?]?,"background":same?,"foregroundCmyk":[c,m,y,k]? (inks 0..1 the foreground was picked as: a CMYK document is filled with exactly these),"backgroundCmyk":same?}"##,
             always,
             |s, p| {
-                let cmyk = |key: &str| -> Result<Option<[f32; 4]>> {
-                    let Some(v) = p.get(key).filter(|v| !v.is_null()) else { return Ok(None) };
-                    let inks: Option<Vec<f32>> = v
-                        .as_array()
-                        .filter(|a| a.len() == 4)
-                        .and_then(|a| a.iter().map(|x| x.as_f64().filter(|x| x.is_finite()).map(|x| x.clamp(0.0, 1.0) as f32)).collect());
-                    match inks.as_deref() {
-                        Some(&[c, m, y, k]) => Ok(Some([c, m, y, k])),
-                        _ => Err(bad("tools.setColors", format!("`{key}` must be [c, m, y, k] numbers 0..1"))),
-                    }
-                };
+                let cmyk = |key: &str| cmyk_param("tools.setColors", p, key);
                 let (fg_cmyk, bg_cmyk) = (cmyk("foregroundCmyk")?, cmyk("backgroundCmyk")?);
                 let foreground = color_param("tools.setColors", p, "foreground", s.tools.foreground)?;
                 let background = color_param("tools.setColors", p, "background", s.tools.background)?;
@@ -1006,7 +1045,7 @@ fn build() -> Vec<CommandSpec> {
             label: "Activate Document",
             menu: &[],
             shortcut: None,
-            params: r##"{"document":index} or {"offset":int} (the open document that many tabs after the active one, before it when negative: a Photoshop action's switch to another document) → {document}"##,
+            params: r##"{"document":index} or {"offset":int} (the document that many places after the active one in opening order, before it when negative: a Photoshop action's switch to another document) → {document}"##,
             enabled: has_doc,
             run: |s, p| {
                 // A null key counts as omitted.
@@ -1014,18 +1053,11 @@ fn build() -> Vec<CommandSpec> {
                 let idx = match (given("document"), given("offset")) {
                     (Some(_), Some(_)) => return Err(bad("document.activate", "give `document` or `offset`, not both")),
                     (None, None) => return Err(bad("document.activate", "needs `document` (a tab index) or `offset`")),
-                    // Past the first or last tab is refused rather than wrapped, so an action that
+                    // Refuse offsets past the opening-order ends rather than wrap, so an action that
                     // copies from one document never silently pastes into the wrong one (#7103).
                     (None, Some(o)) => {
                         let o = o.as_i64().ok_or_else(|| bad("document.activate", "`offset` must be an integer"))?;
-                        let (active, len) = (s.active_index().ok_or(EngineError::NoDocument)?, s.documents().len());
-                        let target = i64::try_from(active).ok().and_then(|a| a.checked_add(o)).and_then(|i| usize::try_from(i).ok());
-                        let Some(i) = target.filter(|&i| i < len) else {
-                            let side = if o < 0 { "before" } else { "after" };
-                            let msg = format!("no document {} {side} the active one, which is {} of {len}", o.unsigned_abs(), active + 1);
-                            return Err(EngineError::Other(msg));
-                        };
-                        i
+                        s.document_at_offset(o)?
                     }
                     (Some(d), None) => {
                         let i = d.as_u64().ok_or_else(|| bad("document.activate", "`document` must be a tab index"))?;
@@ -1206,6 +1238,13 @@ fn build() -> Vec<CommandSpec> {
                         crate::adjust_params::from_params(&kind, &tone, None, adjust_mode(s, p))?
                     }
                 };
+                let adj = if matches!(kind.as_str(), "levels" | "curves")
+                    && let Some(colors) = crate::color_channels::target(s, p)?
+                {
+                    crate::color_channels::tone_adjustment(&kind, p, adj, doc_mode(s), colors)?
+                } else {
+                    adj
+                };
                 let label = adj.label().to_string();
                 // A smart object records the adjustment as a smart filter (Photoshop), which
                 // re-runs from the source instead of baking into a copy of the pixels.
@@ -1237,6 +1276,7 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::cutout_cmds::specs());
     v.extend(crate::symmetry_cmds::specs());
     v.extend(crate::edit_cmds::specs());
+    v.extend(crate::smart_svg_cmds::specs());
     v.extend(crate::color_cmds::specs());
     v.extend(crate::brush_cmds::specs());
     v.extend(crate::brush_preset_cmds::specs());

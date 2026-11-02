@@ -45,6 +45,7 @@ fn layer_steps_with_string_id_blend_modes_import_with_their_mode() {
             ..Default::default()
         }],
         warnings: vec![],
+        ..Default::default()
     };
     let imp = import(&atn::write(&file).unwrap()).unwrap();
     assert!(imp.unsupported.is_empty(), "{:?}", imp.unsupported.iter().map(|u| &u.event).collect::<Vec<_>>());
@@ -116,6 +117,7 @@ fn sample() -> AtnFile {
             AtnAction { name: UnicodeString::new_nul("Finish"), items: vec![item("Invs", "Inverse", None)], ..Default::default() },
         ],
         warnings: Vec::new(),
+        ..Default::default()
     }
 }
 
@@ -428,7 +430,8 @@ fn a_selective_color_step_in_the_scalar_form_keeps_its_values() {
 
 /// A setting Photoshop's event has no field for is dropped by export, and the step then plays back
 /// as a different edit: Crystallize's `seed` (#7668), Radial Blur's centre, Minimum's and
-/// Maximum's `preserve`. Such a step is refused, as one with no equivalent event already is.
+/// Maximum's `preserve`. Such a step is refused, as one with no equivalent event already is. So is
+/// an adjustment edit that names its layer: the event edits the active one (#8532).
 #[test]
 fn a_setting_the_event_cannot_hold_is_refused() {
     for (id, params) in [
@@ -436,6 +439,8 @@ fn a_setting_the_event_cannot_hold_is_refused() {
         ("filter.blur.radialBlur", json!({"amount": 10, "centerX": 0.25, "centerY": 0.5})),
         ("filter.other.minimum", json!({"radius": 4, "preserve": "roundness"})),
         ("filter.other.maximum", json!({"radius": 4, "preserve": "roundness"})),
+        ("layer.setAdjustment", json!({"kind": "exposure", "layer": "Target_existing", "exposure": -0.75, "offset": 0.035, "gamma": 1.37})),
+        ("layer.setAdjustment", json!({"kind": "exposure", "document": 2, "exposure": -0.75})),
     ] {
         let mut s = Session::new();
         s.actions.list.push(Action::new("A", vec![(id.into(), params)]));
@@ -460,6 +465,9 @@ fn settings_at_the_value_the_event_plays_still_export() {
         ("filter.blur.radialBlur", json!({"amount": 10})),
         ("filter.other.minimum", json!({"radius": 4, "preserve": "squareness"})),
         ("filter.other.maximum", json!({"radius": 4})),
+        ("layer.setAdjustment", json!({"kind": "exposure", "exposure": -0.75, "offset": 0.035, "gamma": 1.37})),
+        ("layer.setAdjustment", json!({"kind": "exposure", "layer": null, "exposure": -0.75})),
+        ("layer.setAdjustment", json!({"kind": "exposure", "document": null, "exposure": -0.75})),
         // `preserve` reaches the filter through a comparison with the exact string "roundness",
         // so these play as squareness -- replay's own value -- and lose nothing by export (#7759
         // review).
@@ -654,13 +662,24 @@ fn every_mapped_command_exports_and_imports_back() {
         ("edit.undo", json!({})),
         ("edit.redo", json!({})),
         ("layer.select", json!({"layer": "YELLOW", "mode": "remove"})),
+        ("layer.select", json!({"layer": "Or paste photocopy texture here", "mode": "range"})),
         ("layer.translate", json!({"dx": 0.36, "dy": -1.08, "units": "pt"})),
         ("select.loadSelection", json!({"channel": "targeted"})),
         ("layer.newFillLayer.pattern", json!({"pattern": "Debaser-Distressed-Dark", "scale": 50, "angle": 0, "link": true})),
         ("layer.fill.pattern.set", json!({"pattern": "1 -R2.jpg"})),
+        ("layer.newFillLayer.pattern", json!({"pattern": "b7a3c1d2-0000-4000-8000-000000000001", "patternName": "Twin", "scale": 50})),
         ("image.mode.bitmap", json!({"method": "threshold"})),
         ("image.imageSize", json!({"resolution": 1200, "resample": "preserveDetails", "keepPrintSize": true})),
         ("layer.new.layerFromBackground", json!({"ifPresent": true, "select": false})),
+        // COPYCAT, AJ_Actions2023 and the Line and Color tutorial set.
+        ("layer.smartFilter.deleteFilterMask", json!({"ifPresent": true})),
+        ("layer.smartFilter.blendingOptions", json!({"index": 1, "opacity": 0.5, "blend": "Darken"})),
+        ("layer.layerStyle.blendingOptions", json!({"blendClippedLayersAsGroup": false, "transparencyShapesLayer": false})),
+        ("layer.createClippingMask", json!({})),
+        ("layer.lockLayers", json!({"transparency": true})),
+        ("filter.stylize.diffuse", json!({"mode": "normal", "seed": 321654})),
+        ("history.clear", json!({})),
+        ("history.newSnapshot", json!({"name": "CopyCat - action result", "from": "fullDocument", "replaceExisting": true})),
         ("layerComp.apply", json!({"comp": "Comp 1"})),
     ];
     for (id, params) in &cases {
@@ -764,6 +783,8 @@ fn every_mapped_command_exports_and_imports_back() {
         "filter.sharpen.sharpen",
         "filter.sharpen.sharpenEdges",
         "filter.sharpen.sharpenMore",
+        // Saves back only as the descriptor it was loaded from (loaded_camera_raw_filter_steps_save_back_unchanged).
+        "filter.cameraRaw",
     ];
     let unexpected: Vec<&str> = missing.iter().copied().filter(|id| !allowed.contains(id)).collect();
     assert!(unexpected.is_empty(), "add round-trip cases for {unexpected:?}");
@@ -824,6 +845,27 @@ fn bucket_keeps_an_explicit_color_through_atn() {
     for c in [json!("#ff000080"), json!([1.0, 0.0, 0.0, 0.5]), json!([2.0, 0.0, 0.0])] {
         assert!(bucket_round_trip(json!({"x": 1, "y": 1, "color": c})).is_none(), "{c}");
     }
+}
+
+/// A Stroke step that leaves settings at their defaults still writes them (#8303): Photoshop
+/// opens the Stroke dialog for a descriptor without its blend mode, even with dialogs off.
+#[test]
+fn stroke_writes_the_defaults_it_leaves_out() {
+    let exported = |params: Value| export_item("edit.stroke", &params, "S").and_then(|item| item.descriptor).unwrap();
+    let d = exported(json!({"width": 2, "location": "inside", "color": "#d03060", "opacity": 63}));
+    assert_eq!(get_enum(&d, "Md  ").as_deref(), Some("Nrml"), "{d:?}");
+    assert_eq!(get_enum(&d, "Lctn").as_deref(), Some("Insd"), "an explicit setting is kept");
+    assert_eq!(get_num(&d, "Opct"), Some(63.0));
+    let d = exported(json!({"width": 2}));
+    assert_eq!(get_enum(&d, "Lctn").as_deref(), Some("Cntr"), "{d:?}");
+    assert_eq!(get_num(&d, "Opct"), Some(100.0));
+    assert_eq!(get_enum(&d, "Md  ").as_deref(), Some("Nrml"));
+    assert!(get_bool(&d, "PrsT") == Some(false), "{d:?}");
+    // An explicit mode is kept, and the step imports back to the same stroke.
+    let p = json!({"width": 3, "location": "outside", "mode": "Multiply", "opacity": 40, "color": "#000000", "preserveTransparency": true});
+    let d = exported(p.clone());
+    let Mapped::Steps(steps) = (event_for(&AtnEvent::Code(*b"Strk")).unwrap().from)(&d) else { panic!("{d:?}") };
+    assert_eq!(steps[0].1, json!({"width": 3.0, "location": "outside", "mode": "Multiply", "opacity": 40.0, "color": "#000000", "preserveTransparency": true}));
 }
 
 /// `image.adjustments.photoFilter` exported to .atn and imported back → its params, or None.
@@ -952,6 +994,7 @@ fn unsupported_shapes_become_photoshop_steps_not_errors() {
         expanded: false,
         actions: vec![AtnAction { name: UnicodeString::new_nul("A"), items, ..Default::default() }],
         warnings: vec![],
+        ..Default::default()
     };
     let imp = import(&atn::write(&file).unwrap()).unwrap();
     let ids: Vec<&str> = imp.actions[0].steps.iter().map(|(id, _)| id.as_str()).collect();
@@ -975,6 +1018,7 @@ fn save_preserves_the_kind_of_unsupported_atn_events() {
             ..Default::default()
         }],
         warnings: vec![],
+        ..Default::default()
     };
     let mut session = Session::new();
     session.execute("actions.load", json!({"data": b64(&atn::write(&source).unwrap())})).unwrap();
@@ -1050,6 +1094,7 @@ fn retouching_set_events_map_to_their_commands() {
         expanded: false,
         actions: vec![AtnAction { name: UnicodeString::new_nul("A"), items, ..Default::default() }],
         warnings: vec![],
+        ..Default::default()
     };
     let imp = import(&atn::write(&file).unwrap()).unwrap();
     let steps = &imp.actions[0].steps;
@@ -1342,6 +1387,7 @@ fn remaining_events_import_in_their_photoshop_shapes() {
         expanded: false,
         actions: vec![AtnAction { name: UnicodeString::new_nul("A"), items, ..Default::default() }],
         warnings: vec![],
+        ..Default::default()
     };
     let imp = import(&atn::write(&file).unwrap()).unwrap();
     let steps = &imp.actions[0].steps;
@@ -1430,6 +1476,7 @@ fn remaining_events_import_in_their_photoshop_shapes() {
         expanded: false,
         actions: vec![AtnAction { name: UnicodeString::new_nul("A"), items, ..Default::default() }],
         warnings: vec![],
+        ..Default::default()
     };
     let rest = import(&atn::write(&file).unwrap()).unwrap();
     let rest_steps = &rest.actions[0].steps;
@@ -1468,6 +1515,7 @@ fn remaining_events_import_in_their_photoshop_shapes() {
         expanded: false,
         actions: vec![AtnAction { name: UnicodeString::new_nul("A"), items, ..Default::default() }],
         warnings: vec![],
+        ..Default::default()
     };
     let more = import(&atn::write(&file).unwrap()).unwrap();
     let more_steps = &more.actions[0].steps;
@@ -1532,6 +1580,8 @@ fn select_document_by_offset_imports_plays_and_saves_back() {
     s.execute("file.new", json!({"width": 8, "height": 8, "name": "source"})).unwrap();
     s.execute("edit.fill", json!({"contents": "color", "color": "#ff0000"})).unwrap();
     s.execute("file.new", json!({"width": 8, "height": 8, "name": "template", "background": "transparent"})).unwrap();
+    // Reorder tabs before playback: the source remains the previous *opened* document.
+    s.execute("document.move", json!({"document": 1, "to": 0})).unwrap();
     let r = s.execute("actions.load", json!({"data": data})).unwrap();
     assert_eq!(r["unsupported"], json!([]), "{r}");
     let steps = &s.actions.list[0].steps;
@@ -1545,7 +1595,7 @@ fn select_document_by_offset_imports_plays_and_saves_back() {
     assert_eq!(s.active().unwrap().doc.name, "template");
     assert_eq!(s.active().unwrap().doc.layers.len(), 2, "the source's pixels are pasted on a new layer");
     assert_eq!(pixel(&mut s), [1.0, 0.0, 0.0, 1.0]);
-    assert_eq!(s.documents()[0].doc.layers.len(), 1, "the source is only copied from");
+    assert_eq!(s.documents()[1].doc.layers.len(), 1, "the source is only copied from");
 
     let first = s.actions.list.clone();
     let r = s.execute("actions.save", json!({"set": "Template"})).unwrap();
@@ -1584,6 +1634,7 @@ fn set_of(name: &str, actions: Vec<(&str, Vec<AtnItem>)>) -> String {
         expanded: false,
         actions: actions.into_iter().map(|(n, items)| AtnAction { name: UnicodeString::new_nul(n), items, ..Default::default() }).collect(),
         warnings: vec![],
+        ..Default::default()
     };
     b64(&atn::write(&file).unwrap())
 }
@@ -2268,6 +2319,54 @@ fn partial_color_balance_and_hue_saturation_edits_refuse_strict_export() {
     }
 }
 
+/// Levels, like Color Balance and Hue/Saturation: the descriptor writes both ends of the Input and
+/// of the Output range, filling the end an edit did not name with 0 or 255, so replaying
+/// `inBlack: 31` alone would also reset a retained Input White (#8530). Strict export refuses it;
+/// a pair given whole, or none of it, still exports and round-trips.
+#[test]
+fn partial_levels_edits_refuse_strict_export() {
+    let one = |p: Value| Action { name: "Probe".into(), steps: vec![("layer.setAdjustment".into(), p)], ..Default::default() };
+    for p in [
+        json!({"kind": "levels", "inBlack": 31}),
+        json!({"kind": "levels", "inWhite": 239}),
+        json!({"kind": "levels", "outBlack": 10}),
+        json!({"kind": "levels", "outWhite": 240}),
+        json!({"kind": "levels", "inBlack": 31, "inWhite": 239, "outWhite": 240}),
+        json!({"kind": "levels", "red": {"inBlack": 2}}),
+        json!({"kind": "levels", "inBlack": 1, "inWhite": 250, "blue": {"outBlack": 3}}),
+        // A value of the wrong shape is no value: the other end is then alone.
+        json!({"kind": "levels", "inBlack": 31, "inWhite": "239"}),
+        // CodeRabbit on batch 11: both ends of the wrong shape, or a channel that isn't an object,
+        // would be written as nothing too.
+        json!({"kind": "levels", "inBlack": "31", "inWhite": "239"}),
+        json!({"kind": "levels", "gamma": "1.2"}),
+        json!({"kind": "levels", "red": 5}),
+        json!({"kind": "levels", "green": [0, 255]}),
+        json!({"kind": "levels", "blue": {"outBlack": "3", "outWhite": "250"}}),
+    ] {
+        let err = export("Audit8", &[&one(p.clone())], &[], false).unwrap_err();
+        assert!(err.contains("`layer.setAdjustment`"), "{p}: {err}");
+        let (_, skipped) = export("Audit8", &[&one(p.clone())], &[], true).unwrap();
+        assert_eq!(skipped, vec![Skipped { action: "Probe".into(), step: 0, id: "layer.setAdjustment".into() }], "{p}");
+    }
+    for p in [
+        json!({"kind": "levels", "inBlack": 31, "inWhite": 239}),
+        json!({"kind": "levels", "outBlack": 10, "outWhite": 240}),
+        json!({"kind": "levels", "inBlack": 31, "inWhite": 239, "outBlack": 10, "outWhite": 240, "gamma": 1.2}),
+        json!({"kind": "levels", "gamma": 0.8}),
+        json!({"kind": "levels", "inBlack": 1, "inWhite": 250, "red": {"inBlack": 2, "inWhite": 200}}),
+    ] {
+        let (bytes, skipped) = export("Audit8", &[&one(p.clone())], &[], false).unwrap_or_else(|e| panic!("{p}: {e}"));
+        assert!(skipped.is_empty(), "{p}");
+        let steps = import(&bytes).unwrap().actions[0].steps.clone();
+        let (id, back) = steps.first().unwrap();
+        assert_eq!(id, "layer.setAdjustment");
+        for k in ["inBlack", "inWhite", "outBlack", "outWhite"] {
+            assert_eq!(back.get(k), p.get(k), "{p}: {k} in {back}");
+        }
+    }
+}
+
 /// Photoshop's Close has no document target: a Close of a specific document must not be
 /// exported as a plain Close, which would close the active document on playback.
 #[test]
@@ -2294,6 +2393,7 @@ fn fractional_translation_only_transform_keeps_offset_and_interpolation() {
         expanded: false,
         actions: vec![AtnAction { name: UnicodeString::new_nul("A"), items: vec![item("transform", "Transform", Some(d))], ..Default::default() }],
         warnings: vec![],
+        ..Default::default()
     };
     let imp = import(&atn::write(&file).unwrap()).unwrap();
     assert!(imp.unsupported.is_empty());
@@ -2706,10 +2806,103 @@ fn adjustment_layer_reset_still_resets() {
             ..Default::default()
         }],
         warnings: vec![],
+        ..Default::default()
     };
     let steps = import(&atn::write(&file).unwrap()).unwrap().actions.remove(0).steps;
     assert_eq!(steps[0], ("layer.setAdjustment".to_string(), json!({})));
     assert_eq!(steps[1].1, json!({"midtones": [10, 0, 0], "kind": "colorBalance"}));
+}
+
+/// Photoshop's Properties panel records an edit of an existing Vibrance layer with the string
+/// class `vibrance`, not the `Vbrn` code: both import as the same `layer.setAdjustment` (#8534).
+#[test]
+fn adjustment_layer_set_accepts_the_vibrance_string_class() {
+    let set = |class: &str| {
+        let t = desc(class).with("temperature", long(0.0)).with("tint", long(0.0)).with("vibrance", long(28.0)).with("Strt", long(-7.0));
+        desc("null").with("null", target_ref("AdjL")).with("T   ", D::Descriptor(t))
+    };
+    let file = AtnFile {
+        name: UnicodeString::new_nul("Vibrance"),
+        expanded: false,
+        actions: vec![AtnAction {
+            name: UnicodeString::new_nul("A"),
+            items: vec![item("set", "Set", Some(set("vibrance"))), item("set", "Set", Some(set("Vbrn")))],
+            ..Default::default()
+        }],
+        warnings: vec![],
+        ..Default::default()
+    };
+    let action = import(&atn::write(&file).unwrap()).unwrap().actions.remove(0);
+    assert_eq!(action.steps[0].0, "layer.setAdjustment", "{:?}", action.steps);
+    assert_eq!(action.steps[0].1, json!({"vibrance": 28, "saturation": -7, "kind": "vibrance"}));
+    assert_eq!(action.steps[0], action.steps[1]);
+}
+
+/// A Vibrance Set and Make as Photoshop records them (class `vibrance`) save back with that
+/// class, not the `Vbrn` code Photoshop refuses (#8383); old PhotoCraft files with `Vbrn` still
+/// load and now save with `vibrance` too.
+#[test]
+fn vibrance_adjustment_layer_steps_save_with_the_string_class() {
+    let set = |class: &str| {
+        let t = desc(class).with("temperature", long(0.0)).with("tint", long(0.0)).with("vibrance", long(28.0)).with("Strt", long(-7.0));
+        desc("null").with("null", target_ref("AdjL")).with("T   ", D::Descriptor(t))
+    };
+    let make = |class: &str| {
+        let t = desc(class).with("vibrance", long(10.0)).with("Strt", long(5.0));
+        desc("null").with("null", class_ref("AdjL")).with("Usng", D::Descriptor(desc("AdjL").with("Type", D::Descriptor(t))))
+    };
+    let data = set_of(
+        "Vibrance",
+        vec![(
+            "A",
+            vec![
+                item("set", "Set", Some(set("vibrance"))),
+                item("Mk  ", "Make", Some(make("vibrance"))),
+                item("set", "Set", Some(set("Vbrn"))),
+                item("Mk  ", "Make", Some(make("Vbrn"))),
+            ],
+        )],
+    );
+    let mut s = Session::new();
+    let loaded = s.execute("actions.load", json!({"data": data})).unwrap();
+    assert_eq!(loaded["unsupported"], json!([]), "{loaded}");
+    let steps = &s.actions.list[0].steps;
+    assert_eq!(steps[1], ("layer.newAdjustmentLayer.vibrance".to_string(), json!({"vibrance": 10, "saturation": 5})), "{steps:?}");
+    assert_eq!((&steps[0], &steps[1]), (&steps[2], &steps[3]), "the old `Vbrn` class imports the same");
+    let saved = s.execute("actions.save", json!({"set": "Vibrance"})).unwrap();
+    assert_eq!(saved["skipped"], json!([]));
+    let bytes = photocraft_paint::tile::b64_decode(saved["data"].as_str().unwrap()).unwrap();
+    let file = atn::parse(&bytes).unwrap();
+    let items = &file.actions[0].items;
+    assert_eq!(items.len(), 4);
+    for pair in items.chunks(2) {
+        let t = get_obj(pair[0].descriptor.as_ref().unwrap(), "T   ").unwrap();
+        assert!(t.class_id.is("vibrance"), "Set class {:?}", t.class_id);
+        let ty = get_obj(pair[1].descriptor.as_ref().unwrap(), "Usng").and_then(|u| get_obj(u, "Type")).unwrap();
+        assert!(ty.class_id.is("vibrance"), "Make class {:?}", ty.class_id);
+    }
+    let mut reloaded = Session::new();
+    reloaded.execute("actions.load", json!({"data": saved["data"]})).unwrap();
+    assert_eq!(reloaded.actions.list[0].steps, s.actions.list[0].steps);
+}
+
+/// Our Vibrance has no `temperature` or `tint`: a recorded Vibrance Set or Make with either one
+/// non-zero stays a kept Photoshop step and saves back unchanged instead of losing them.
+#[test]
+fn vibrance_steps_with_temperature_or_tint_save_back_unchanged() {
+    let t = || desc("vibrance").with("temperature", long(0.0)).with("tint", long(12.0)).with("vibrance", long(28.0)).with("Strt", long(-7.0));
+    let set = desc("null").with("null", target_ref("AdjL")).with("T   ", D::Descriptor(t()));
+    let warm = desc("vibrance").with("temperature", long(-20.0)).with("vibrance", long(5.0));
+    let make = desc("null").with("null", class_ref("AdjL")).with("Usng", D::Descriptor(desc("AdjL").with("Type", D::Descriptor(warm))));
+    let data = set_of("Vibrance", vec![("A", vec![item("set", "Set", Some(set.clone())), item("Mk  ", "Make", Some(make.clone()))])]);
+    let mut s = Session::new();
+    s.execute("actions.load", json!({"data": data})).unwrap();
+    assert!(s.actions.list[0].steps.iter().all(|(id, _)| id == "actions.photoshopStep"), "{:?}", s.actions.list[0].steps);
+    let saved = s.execute("actions.save", json!({"set": "Vibrance"})).unwrap();
+    let bytes = photocraft_paint::tile::b64_decode(saved["data"].as_str().unwrap()).unwrap();
+    let file = atn::parse(&bytes).unwrap();
+    assert_eq!(file.actions[0].items[0].descriptor, Some(set));
+    assert_eq!(file.actions[0].items[1].descriptor, Some(make));
 }
 
 /// A Free Transform recorded against an unlinked mask or an alpha channel must not export as a
@@ -3051,12 +3244,207 @@ fn hue_saturation_uses_photoshops_hue_key() {
     assert_eq!(p["hue"], json!(30), "{p}");
 }
 
+/// #6745: a recorded Camera Raw Filter step (`Adobe Camera Raw Filter`, the layout of 62 real
+/// recordings) imports as `filter.cameraRaw` with its sliders, colour mixer, grading wheels,
+/// vignette style and point curves, and plays. One that uses the Calibration panel (or noise
+/// settings the command lacks) stays a Photoshop step rather than replaying a different look.
+#[test]
+fn camera_raw_filter_steps_import_as_filter_camera_raw() {
+    let int = |v: i32| D::Integer(v);
+    // Every step carries the version keys a recording has (a verified process version).
+    let cr = || desc("null").with("CrVe", D::Text(UnicodeString::new_nul("16.1.1"))).with("PrVN", int(5)).with("PrVe", int(184_549_376));
+    let mut d = cr()
+        .with("WBal", enm("WBal", "Cst "))
+        .with("Temp", int(12))
+        .with("Tint", int(-4))
+        .with("Ex12", D::Double(0.35))
+        .with("Cr12", int(10))
+        .with("Hi12", int(-30))
+        .with("Sh12", int(25))
+        .with("Cl12", int(8))
+        .with("Vibr", int(15))
+        .with("PC_1", int(20))
+        .with("PC_2", int(50))
+        .with("PC_3", int(80))
+        .with("STSH", int(210))
+        .with("STSS", int(12))
+        .with("CgSL", int(0))
+        .with("CgBl", int(60))
+        .with("STB ", int(-10))
+        .with("Shrp", int(40))
+        .with("ShpR", D::Double(1.2))
+        .with("LNR ", int(20))
+        .with("LNRC", int(0))
+        .with("CNR ", int(25))
+        .with("CNRS", int(50))
+        .with("PCVA", int(-20))
+        .with("PCVS", int(2))
+        .with("Crv ", D::List([0, 0, 64, 50, 255, 255].map(int).to_vec()))
+        .with("CrvR", D::List([0, 0, 255, 255].map(int).to_vec()));
+    for (k, v) in ["R", "O", "Y", "G", "A", "B", "P", "M"].iter().zip(1..) {
+        d = d.with(&format!("HA_{k}"), int(v));
+    }
+    d = d.with("SA_O", int(-15));
+    let calibrated = cr().with("Ex12", D::Double(0.2)).with("RHue", int(8));
+    let smoothed = cr().with("CNR ", int(25)).with("CNRS", int(70));
+    let auto_wb = cr().with("WBal", enm("WBal", "Atmt")).with("Temp", int(5));
+    let partial_splits = cr().with("PC_1", int(20));
+    let odd_curve = cr().with("Crv ", int(3));
+    // Review of #8714: values that would replay differently, or fail to play, stay Photoshop steps.
+    let reversed_splits = cr().with("PC_1", int(80)).with("PC_2", int(50)).with("PC_3", int(20));
+    let split_past_100 = cr().with("PC_1", int(20)).with("PC_2", int(50)).with("PC_3", int(120));
+    let one_point_curve = cr().with("Crv ", D::List([0, 0].map(int).to_vec()));
+    let unordered_curve = cr().with("CrvG", D::List([0, 0, 128, 90, 64, 50, 255, 255].map(int).to_vec()));
+    let text_contrast = cr().with("Cr12", D::Text(UnicodeString::new_nul("ten")));
+    let text_hue = cr().with("HA_R", D::Text(UnicodeString::new_nul("red")));
+    let text_grade = cr().with("STSH", D::Text(UnicodeString::new_nul("blue")));
+    let exposure_past_5 = cr().with("Ex12", D::Double(6.0));
+    let negative_sharpening = cr().with("Shrp", int(-10));
+    // CodeRabbit on batch 11: a process version the PSD mapping hasn't verified renders differently.
+    let unknown_version =
+        desc("null").with("CrVe", D::Text(UnicodeString::new_nul("16.1.1"))).with("PrVN", int(4)).with("PrVe", int(184_549_376)).with("Ex12", D::Double(0.2));
+    let no_version_number = desc("null").with("CrVe", D::Text(UnicodeString::new_nul("16.1.1"))).with("PrVe", int(184_549_376)).with("Ex12", D::Double(0.2));
+    let mismatched_pair =
+        desc("null").with("CrVe", D::Text(UnicodeString::new_nul("16.1.1"))).with("PrVN", int(6)).with("PrVe", int(184_549_376)).with("Ex12", D::Double(0.2));
+    let no_camera_raw_version = desc("null").with("PrVN", int(5)).with("PrVe", int(184_549_376)).with("Ex12", D::Double(0.2));
+    let items = vec![
+        item("Adobe Camera Raw Filter", "Camera Raw Filter", Some(d)),
+        item("Adobe Camera Raw Filter", "Camera Raw Filter", Some(calibrated)),
+        item("Adobe Camera Raw Filter", "Camera Raw Filter", Some(smoothed)),
+        item("Adobe Camera Raw Filter", "Camera Raw Filter", Some(auto_wb)),
+        item("Adobe Camera Raw Filter", "Camera Raw Filter", Some(partial_splits)),
+        item("Adobe Camera Raw Filter", "Camera Raw Filter", Some(odd_curve)),
+        item("Adobe Camera Raw Filter", "Camera Raw Filter", Some(reversed_splits)),
+        item("Adobe Camera Raw Filter", "Camera Raw Filter", Some(split_past_100)),
+        item("Adobe Camera Raw Filter", "Camera Raw Filter", Some(one_point_curve)),
+        item("Adobe Camera Raw Filter", "Camera Raw Filter", Some(unordered_curve)),
+        item("Adobe Camera Raw Filter", "Camera Raw Filter", Some(text_contrast)),
+        item("Adobe Camera Raw Filter", "Camera Raw Filter", Some(text_hue)),
+        item("Adobe Camera Raw Filter", "Camera Raw Filter", Some(text_grade)),
+        item("Adobe Camera Raw Filter", "Camera Raw Filter", Some(exposure_past_5)),
+        item("Adobe Camera Raw Filter", "Camera Raw Filter", Some(negative_sharpening)),
+        item("Adobe Camera Raw Filter", "Camera Raw Filter", Some(unknown_version)),
+        item("Adobe Camera Raw Filter", "Camera Raw Filter", Some(no_version_number)),
+        item("Adobe Camera Raw Filter", "Camera Raw Filter", Some(mismatched_pair)),
+        item("Adobe Camera Raw Filter", "Camera Raw Filter", Some(no_camera_raw_version)),
+    ];
+    let file = AtnFile {
+        name: UnicodeString::new_nul("Looks"),
+        expanded: false,
+        actions: vec![AtnAction { name: UnicodeString::new_nul("Warm"), items, ..Default::default() }],
+        warnings: vec![],
+        ..Default::default()
+    };
+    let imp = import(&atn::write(&file).unwrap()).unwrap();
+    let steps = &imp.actions[0].steps;
+    let (id, p) = &steps[0];
+    assert_eq!(id, "filter.cameraRaw");
+    // The recorded descriptor rides along, so Save Actions can write the step back.
+    let mut p = p.clone();
+    assert!(p.as_object_mut().unwrap().remove("__atnDescriptor").is_some(), "{p}");
+    assert_eq!(
+        p,
+        json!({
+            "temperature": 12, "tint": -4, "exposure": 0.35, "contrast": 10, "highlights": -30, "shadows": 25,
+            "clarity": 8, "vibrance": 15, "curveSplits": [20, 50, 80],
+            "hslHue": [1, 2, 3, 4, 5, 6, 7, 8], "hslSat": [0, -15, 0, 0, 0, 0, 0, 0],
+            "gradeShadows": {"hue": 210, "sat": 12, "lum": 0}, "gradeBlending": 60, "gradeBalance": -10,
+            "sharpenAmount": 40, "sharpenRadius": 1.2, "noiseLuminance": 20, "noiseColor": 25,
+            "vignetteAmount": -20, "vignetteStyle": "colorPriority", "pointCurve": [[0, 0], [64, 50], [255, 255]]
+        })
+    );
+    for (k, (id, _)) in steps.iter().enumerate().skip(1) {
+        assert_eq!(id, PHOTOSHOP_STEP, "step {k}");
+    }
+    assert_eq!(imp.unsupported.iter().map(|u| u.step).collect::<Vec<_>>(), (1..=18).collect::<Vec<_>>());
+    // The imported step plays.
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 16, "height": 12})).unwrap();
+    s.execute("layer.new.layer", json!({})).unwrap();
+    s.execute("edit.fill", json!({"color": "#808080"})).unwrap();
+    s.execute(id, p.clone()).unwrap();
+}
+
+/// Review of #8714: a Camera Raw Filter step that was loaded saves back as the recorded step,
+/// byte for byte, as it did while it was a kept Photoshop step; once edited (or when PhotoCraft
+/// recorded it) Save Actions refuses it as before. The loaded step plays.
+#[test]
+fn loaded_camera_raw_filter_steps_save_back_unchanged() {
+    let recorded = desc("null")
+        .with("CrVe", D::Text(UnicodeString::new_nul("16.1.1")))
+        .with("PrVN", D::Integer(5))
+        .with("PrVe", D::Integer(184_549_376))
+        .with("WBal", enm("WBal", "Cst "))
+        .with("Ex12", D::Double(0.35))
+        .with("Cr12", D::Integer(10))
+        .with("Crv ", D::List([0, 0, 64, 50, 255, 255].map(D::Integer).to_vec()));
+    let file = one_action(vec![item("Adobe Camera Raw Filter", "Camera Raw Filter", Some(recorded.clone()))]);
+    let mut s = Session::new();
+    let loaded = s.execute("actions.load", json!({"data": b64(&atn::write(&file).unwrap())})).unwrap();
+    assert_eq!(loaded["unsupported"], json!([]), "{loaded}");
+    assert_eq!(s.actions.list[0].steps[0].0, "filter.cameraRaw");
+    let saved_step = |r: &Value| {
+        let saved = atn::parse(&photocraft_paint::tile::b64_decode(r["data"].as_str().unwrap()).unwrap()).unwrap();
+        saved.actions[0].items.first().map(|i| (i.event.clone(), i.descriptor.clone()))
+    };
+    // Strict save, and the Actions panel's save (which skips what can't be written).
+    for skip in [false, true] {
+        let r = s.execute("actions.save", json!({"action": "A", "skipUnsupported": skip})).unwrap();
+        assert_eq!(r["skipped"], json!([]), "{r}");
+        assert_eq!(saved_step(&r), Some((AtnEvent::name("Adobe Camera Raw Filter"), Some(recorded.clone()))));
+    }
+    // It plays.
+    s.execute("file.new", json!({"width": 16, "height": 12})).unwrap();
+    s.execute("layer.new.layer", json!({})).unwrap();
+    s.execute("edit.fill", json!({"color": "#808080"})).unwrap();
+    let played = s.execute("actions.play", json!({"action": "A"})).unwrap();
+    assert_eq!(played["ran"], 1, "{played}");
+    assert!(played.get("failed").is_none(), "{played}");
+    // Edited, it no longer matches what was recorded.
+    let original = s.actions.list[0].steps[0].1.clone();
+    s.actions.list[0].steps[0].1["exposure"] = json!(1.5);
+    let e = s.execute("actions.save", json!({"action": "A"})).unwrap_err().to_string();
+    assert!(e.contains("filter.cameraRaw"), "{e}");
+    // Recorded by PhotoCraft: no descriptor to write back.
+    s.actions.list[0].steps[0].1 = original;
+    s.actions.list[0].steps[0].1.as_object_mut().unwrap().remove("__atnDescriptor");
+    let r = s.execute("actions.save", json!({"action": "A", "skipUnsupported": true})).unwrap();
+    assert_eq!(r["skipped"].as_array().unwrap().len(), 1, "{r}");
+}
+
+/// Review of #8714: a Camera Raw Filter step with a key the table doesn't map (an Upright
+/// setting, a profile name, any other panel) or with no settings at all stays a Photoshop step
+/// and is reported, rather than replaying without that processing.
+#[test]
+fn camera_raw_filter_steps_with_unknown_keys_stay_photoshop_steps() {
+    let cr = || desc("null").with("CrVe", D::Text(UnicodeString::new_nul("16.1.1"))).with("PrVN", D::Integer(5)).with("PrVe", D::Integer(184_549_376));
+    let upright = cr().with("Ex12", D::Double(0.2)).with("PerV", D::Integer(20));
+    let profile = cr().with("Cr12", D::Integer(10)).with("LookName", D::Text(UnicodeString::new_nul("B&W 05")));
+    let file = one_action(vec![
+        item("Adobe Camera Raw Filter", "Camera Raw Filter", Some(upright.clone())),
+        item("Adobe Camera Raw Filter", "Camera Raw Filter", Some(profile)),
+        item("Adobe Camera Raw Filter", "Camera Raw Filter", None),
+        item("Adobe Camera Raw Filter", "Camera Raw Filter", Some(cr().with("Ex12", D::Double(0.2)))),
+    ]);
+    let mut s = Session::new();
+    let loaded = s.execute("actions.load", json!({"data": b64(&atn::write(&file).unwrap())})).unwrap();
+    let unsupported: Vec<u64> = loaded["unsupported"].as_array().unwrap().iter().map(|u| u["step"].as_u64().unwrap()).collect();
+    assert_eq!(unsupported, [0, 1, 2], "{loaded}");
+    let ids: Vec<&str> = s.actions.list[0].steps.iter().map(|(id, _)| id.as_str()).collect();
+    assert_eq!(ids, [PHOTOSHOP_STEP, PHOTOSHOP_STEP, PHOTOSHOP_STEP, "filter.cameraRaw"]);
+    // Kept, it still saves back as recorded.
+    let r = s.execute("actions.save", json!({"action": "A"})).unwrap();
+    let saved = atn::parse(&photocraft_paint::tile::b64_decode(r["data"].as_str().unwrap()).unwrap()).unwrap();
+    assert_eq!(saved.actions[0].items[0].descriptor, Some(upright));
+}
+
 fn one_action(items: Vec<AtnItem>) -> AtnFile {
     AtnFile {
         name: UnicodeString::new_nul("Saves"),
         expanded: false,
         actions: vec![AtnAction { name: UnicodeString::new_nul("A"), items, ..Default::default() }],
         warnings: vec![],
+        ..Default::default()
     }
 }
 
@@ -3155,6 +3543,7 @@ fn long_names_are_clipped_instead_of_copied_into_every_diagnostic() {
         expanded: false,
         actions: vec![AtnAction { name: UnicodeString::new_nul(&long), items: unknown(50), ..Default::default() }],
         warnings: vec![],
+        ..Default::default()
     };
     let imp = import(&atn::write(&file).unwrap()).unwrap();
     assert_eq!(imp.set.chars().count(), MAX_NAME_CHARS);
@@ -3162,4 +3551,257 @@ fn long_names_are_clipped_instead_of_copied_into_every_diagnostic() {
     assert_eq!(imp.actions[0].set.as_deref().map(|s| s.chars().count()), Some(MAX_NAME_CHARS));
     assert_eq!(imp.unsupported.len(), 50);
     assert!(imp.unsupported.iter().all(|u| u.action.chars().count() == MAX_NAME_CHARS));
+}
+
+/// A Pattern Fill step whose `Ptrn` holds `id` and `name`, as the reference application records it.
+fn pattern_fill_step(id: &str, name: &str) -> AtnItem {
+    let t = desc("patternLayer").with("Ptrn", D::Descriptor(desc("Ptrn").with("Idnt", text(id)).with("Nm  ", text(name))));
+    item(
+        "Mk  ",
+        "Make",
+        Some(desc("null").with("null", class_ref("contentLayer")).with("Usng", D::Descriptor(desc("contentLayer").with("Type", D::Descriptor(t))))),
+    )
+}
+
+/// Defines a 4×4 pattern of `color` named `name` in `s`'s library from its active document.
+fn define_pattern(s: &mut Session, color: &str, name: &str) -> String {
+    s.execute("edit.fill", json!({"contents": "color", "color": color})).unwrap();
+    s.execute("edit.definePattern", json!({"name": name})).unwrap()["pattern"].as_str().unwrap().to_string()
+}
+
+fn pixel(s: &mut Session) -> Vec<f64> {
+    let v = s.execute("document.pixel", json!({"x": 1, "y": 1})).unwrap();
+    v.as_array().unwrap().iter().map(|c| c.as_f64().unwrap()).collect()
+}
+
+/// A Pattern Fill step whose `Ptrn` names both an installed id and a display name shared by
+/// another pattern plays the pattern with that id; a foreign id falls back to the name.
+#[test]
+fn pattern_fill_prefers_an_installed_id_over_a_colliding_name() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 4, "height": 4, "mode": "rgb", "depth": 8})).unwrap();
+    let mut define = |color: &str| {
+        s.execute("edit.fill", json!({"contents": "color", "color": color})).unwrap();
+        s.execute("edit.definePattern", json!({"name": "Twin"})).unwrap()["pattern"].as_str().unwrap().to_string()
+    };
+    let red = define("#ff0000");
+    let blue = define("#0000ff");
+    assert_ne!(red, blue);
+    s.patterns.items.retain(|p| p.id == red || p.id == blue);
+    s.patterns.items.sort_by_key(|p| p.id != blue);
+    let fill_step = |id: &str| {
+        let t = desc("patternLayer").with("Ptrn", D::Descriptor(desc("Ptrn").with("Idnt", text(id)).with("Nm  ", text("Twin"))));
+        item(
+            "Mk  ",
+            "Make",
+            Some(desc("null").with("null", class_ref("contentLayer")).with("Usng", D::Descriptor(desc("contentLayer").with("Type", D::Descriptor(t))))),
+        )
+    };
+    let data = set_of("Pat", vec![("Installed", vec![fill_step(&red)]), ("Foreign", vec![fill_step("not-installed-id")])]);
+    let r = s.execute("actions.load", json!({"data": data})).unwrap();
+    assert!(r["unsupported"].as_array().is_none_or(|u| u.is_empty()), "{r}");
+    for (action, want) in [("Installed", [1.0, 0.0, 0.0, 1.0]), ("Foreign", [0.0, 0.0, 1.0, 1.0])] {
+        s.execute("file.new", json!({"width": 4, "height": 4, "mode": "rgb", "depth": 8})).unwrap();
+        let r = s.execute("actions.play", json!({"action": action})).unwrap();
+        assert!(r.get("failed").is_none(), "{r}");
+        let v = s.execute("document.pixel", json!({"x": 1, "y": 1})).unwrap();
+        let got: Vec<f64> = v.as_array().unwrap().iter().map(|c| c.as_f64().unwrap()).collect();
+        assert_eq!(got, want, "{action}");
+    }
+}
+
+/// The recorded id is looked up by id alone, in the document and then the library, before any
+/// name: a document pattern *named* like the id does not beat the library pattern with that id,
+/// and a foreign id that happens to be another pattern's name falls back to the recorded name.
+/// An id and a name of the same pattern play it.
+#[test]
+fn pattern_fill_ids_beat_names_across_document_and_library() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 4, "height": 4, "mode": "rgb", "depth": 8})).unwrap();
+    let red = define_pattern(&mut s, "#ff0000", "Red");
+    define_pattern(&mut s, "#0000ff", "Blue");
+    let green = define_pattern(&mut s, "#00ff00", &red);
+    let data = set_of(
+        "Pat",
+        vec![
+            ("IdWins", vec![pattern_fill_step(&red, "Blue")]),
+            ("NameFallback", vec![pattern_fill_step("Red", "Blue")]),
+            ("Same", vec![pattern_fill_step(&red, "Red")]),
+        ],
+    );
+    s.execute("actions.load", json!({"data": data})).unwrap();
+    // Only the playback document holds the green pattern named like the red one's id.
+    s.execute("file.new", json!({"width": 4, "height": 4, "mode": "rgb", "depth": 8})).unwrap();
+    s.execute("layer.newFillLayer.pattern", json!({"pattern": green})).unwrap();
+    s.execute("pattern.delete", json!({"pattern": green})).unwrap();
+    assert!(s.active().unwrap().doc.patterns.iter().any(|p| p.id == green && p.name == red));
+    assert_eq!(pixel(&mut s), [0.0, 1.0, 0.0, 1.0]);
+    for (action, want) in [("IdWins", [1.0, 0.0, 0.0, 1.0]), ("NameFallback", [0.0, 0.0, 1.0, 1.0]), ("Same", [1.0, 0.0, 0.0, 1.0])] {
+        let r = s.execute("actions.play", json!({"action": action})).unwrap();
+        assert!(r.get("failed").is_none(), "{action}: {r}");
+        assert_eq!(pixel(&mut s), want, "{action}");
+    }
+}
+
+/// CodeRabbit on batch 11: a pattern step that names its pattern only by `patternName` exports
+/// that name, rather than a step with no pattern (which plays the current one).
+#[test]
+fn pattern_steps_named_only_by_pattern_name_export_the_name() {
+    let one = Action { name: "P".into(), steps: vec![("layer.newFillLayer.pattern".into(), json!({"patternName": "Checkerboard"}))], ..Default::default() };
+    let (bytes, skipped) = export("Pat", &[&one], &[], false).unwrap();
+    assert!(skipped.is_empty());
+    let steps = import(&bytes).unwrap().actions[0].steps.clone();
+    assert_eq!(steps[0].0, "layer.newFillLayer.pattern");
+    assert_eq!(steps[0].1["pattern"], json!("Checkerboard"), "{}", steps[0].1);
+}
+
+/// CodeRabbit on batch 11: when the recorded id is installed nowhere, the recorded name is looked
+/// up as a name only. A pattern whose id equals that name text doesn't beat the one named so.
+#[test]
+fn pattern_fill_name_fallback_matches_names_not_ids() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 4, "height": 4, "mode": "rgb", "depth": 8})).unwrap();
+    let red = define_pattern(&mut s, "#ff0000", "Red");
+    // Green is named like the red pattern's id.
+    define_pattern(&mut s, "#00ff00", &red);
+    let data = set_of("Pat", vec![("NameIsAnId", vec![pattern_fill_step("5e1c0000-aaaa-4bbb-8ccc-000000000000", &red)])]);
+    s.execute("actions.load", json!({"data": data})).unwrap();
+    s.execute("file.new", json!({"width": 4, "height": 4, "mode": "rgb", "depth": 8})).unwrap();
+    let r = s.execute("actions.play", json!({"action": "NameIsAnId"})).unwrap();
+    assert!(r.get("failed").is_none(), "{r}");
+    assert_eq!(pixel(&mut s), [0.0, 1.0, 0.0, 1.0]);
+}
+
+/// A recorded pattern installed neither by id nor by name fails with an error that names the
+/// pattern, from the imported step and from the Pattern Fill dialog's command alike.
+#[test]
+fn pattern_fill_missing_everywhere_names_the_pattern() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 4, "height": 4, "mode": "rgb", "depth": 8})).unwrap();
+    define_pattern(&mut s, "#ff0000", "Red");
+    let data = set_of("Pat", vec![("Missing", vec![pattern_fill_step("5e1c0000-aaaa-4bbb-8ccc-000000000000", "My Wood")])]);
+    s.execute("actions.load", json!({"data": data})).unwrap();
+    let r = s.execute("actions.play", json!({"action": "Missing"})).unwrap();
+    let err = r["failed"]["error"].as_str().unwrap_or_default();
+    assert!(err.contains("\"My Wood\""), "{r}");
+    s.execute("layer.newFillLayer.pattern", json!({"pattern": "Red"})).unwrap();
+    let e = s.execute("layer.fill.pattern.set", json!({"pattern": "5e1c0000-aaaa-4bbb-8ccc-000000000000", "patternName": "My Wood"})).unwrap_err();
+    assert!(e.to_string().contains("\"My Wood\""), "{e}");
+}
+
+/// FredApps review on #10459: a set whose name has surrounding spaces (a Photoshop `.atn` or an
+/// older actions.json can have one, and New Action records into it under that exact name) saves
+/// by that name. `actions.save` used to trim it and then find no set.
+#[test]
+fn save_finds_a_set_by_its_exact_name_with_spaces() {
+    let mut s = Session::new();
+    s.actions.list.push(Action { set: Some(" Web ".into()), ..Action::new("Old", Vec::new()) });
+    s.execute("actions.record", json!({"name": "New", "set": " Web "})).unwrap();
+    s.execute("actions.stop", json!({})).unwrap();
+    let saved = s.execute("actions.save", json!({"set": " Web "})).unwrap();
+    assert_eq!((&saved["set"], &saved["actions"]), (&json!(" Web "), &json!(["Old", "New"])));
+    // The file keeps the name, as Photoshop's does.
+    let mut reloaded = Session::new();
+    let r = reloaded.execute("actions.load", json!({"data": saved["data"]})).unwrap();
+    assert_eq!(r["set"], " Web ");
+    // Other names are still trimmed.
+    s.execute("actions.assignSet", json!({"action": "Old", "set": "Print"})).unwrap();
+    assert_eq!(s.execute("actions.save", json!({"set": "  Print "})).unwrap()["set"], "Print");
+}
+
+/// FredApps review on #10459: Save Actions… on an empty set made with New Set writes it, as
+/// Photoshop saves an empty set to the `.atn`, and loading that file brings the empty set back.
+#[test]
+fn an_empty_new_set_saves_and_loads_back() {
+    let mut s = Session::new();
+    s.execute("actions.newSet", json!({"name": "Later"})).unwrap();
+    let saved = s.execute("actions.save", json!({"set": "Later"})).unwrap();
+    assert_eq!((&saved["set"], &saved["actions"], &saved["steps"]), (&json!("Later"), &json!([]), &json!(0)));
+    let mut other = Session::new();
+    let r = other.execute("actions.load", json!({"data": saved["data"]})).unwrap();
+    assert_eq!((&r["set"], &r["actions"]), (&json!("Later"), &json!([])));
+    assert_eq!(crate::actions_edit_cmds::set_names(&other), ["Later"], "an empty folder");
+    other.execute("actions.load", json!({"data": saved["data"]})).unwrap();
+    assert_eq!(crate::actions_edit_cmds::set_names(&other), ["Later"], "loaded twice, still one folder");
+    // New Action records into it as into any set, and it saves with that action.
+    other.execute("actions.record", json!({"name": "Now", "set": "Later"})).unwrap();
+    other.execute("actions.stop", json!({})).unwrap();
+    assert_eq!(other.execute("actions.save", json!({"set": "Later"})).unwrap()["actions"], json!(["Now"]));
+    // A set that doesn't exist is still refused, and so is saving every action when there is none.
+    let err = s.execute("actions.save", json!({"set": "Nope"})).unwrap_err().to_string();
+    assert!(err.contains("no actions in a set named `Nope`"), "{err}");
+    let err = Session::new().execute("actions.save", json!({})).unwrap_err().to_string();
+    assert!(err.contains("there are no actions to save"), "{err}");
+}
+
+/// A set from Chinese Photoshop: UTF-16 set and action names, a step name in GBK (可选颜色,
+/// the bytes from #6743) on an event PhotoCraft has no command for, with no descriptor.
+fn gbk_set() -> Vec<u8> {
+    let step = AtnItem { dictionary: b"\xbf\xc9\xd1\xa1\xd1\xd5\xc9\xab".to_vec(), ..item("syntheticFill", "", None) };
+    let file = AtnFile {
+        name: UnicodeString::new_nul("相馆"),
+        actions: vec![AtnAction { name: UnicodeString::new_nul("调白"), items: vec![step], ..Default::default() }],
+        ..Default::default()
+    };
+    atn::write(&file).unwrap()
+}
+
+#[test]
+fn load_decodes_legacy_step_names() {
+    let mut s = Session::new();
+    let r = s.execute("actions.load", json!({"data": b64(&gbk_set())})).unwrap();
+    assert_eq!(r["encoding"], "GBK", "{r}");
+    assert_eq!(r["unsupported"][0]["name"], "可选颜色", "{r}");
+    s.execute("file.new", json!({"width": 8, "height": 8})).unwrap();
+    let played = s.execute("actions.play", json!({"action": "调白"})).unwrap();
+    assert!(played["failed"]["error"].as_str().unwrap().contains("可选颜色"), "{played}");
+}
+
+#[test]
+fn load_keeps_windows_1252_symbols() {
+    // Windows Photoshop step names with no Unicode copy: Mac Roman reads ° and » as ∞ and ª,
+    // which must not win ("50 ∞", "Grˆﬂe ª"). Save Actions writes the names back as that text.
+    let steps = vec![
+        AtnItem { dictionary: b"50 \xb0".to_vec(), ..item("syntheticFill", "", None) },
+        AtnItem { dictionary: b"Gr\xf6\xdfe \xbb".to_vec(), ..item("syntheticFill", "", None) },
+    ];
+    let file = AtnFile {
+        name: UnicodeString::new_nul("Größe ändern"),
+        actions: vec![AtnAction { name: UnicodeString::new_nul("Logo"), items: steps, ..Default::default() }],
+        ..Default::default()
+    };
+    let mut s = Session::new();
+    let r = s.execute("actions.load", json!({"data": b64(&atn::write(&file).unwrap())})).unwrap();
+    assert_eq!(r["encoding"], "windows-1252", "{r}");
+    assert_eq!(r["unsupported"][0]["name"], "50 °", "{r}");
+    assert_eq!(r["unsupported"][1]["name"], "Größe »", "{r}");
+    let saved = s.execute("actions.save", json!({"set": "Größe ändern"})).unwrap();
+    let saved = atn::parse(&photocraft_paint::tile::b64_decode(saved["data"].as_str().unwrap()).unwrap()).unwrap();
+    let names: Vec<String> = saved.actions[0].items.iter().map(|i| saved.item_label(i)).collect();
+    assert_eq!(names, ["50 °", "Größe »"]);
+}
+
+#[test]
+fn load_encoding_override() {
+    let mut s = Session::new();
+    let r = s.execute("actions.load", json!({"data": b64(&gbk_set()), "encoding": "shift_jis"})).unwrap();
+    assert_eq!(r["encoding"], "Shift_JIS", "{r}");
+    let r = s.execute("actions.load", json!({"data": b64(&gbk_set()), "encoding": "auto"})).unwrap();
+    assert_eq!(r["encoding"], "GBK", "{r}");
+}
+
+#[test]
+fn load_reports_utf8() {
+    let mut s = Session::new();
+    let r = s.execute("actions.load", json!({"data": b64(&atn::write(&sample()).unwrap())})).unwrap();
+    assert_eq!(r["encoding"], "UTF-8", "{r}");
+}
+
+#[test]
+fn load_rejects_bad_encodings() {
+    let mut s = Session::new();
+    for bad in [json!(3), json!(""), json!("nope"), json!("replacement"), json!(["gbk"])] {
+        assert!(s.execute("actions.load", json!({"data": b64(&gbk_set()), "encoding": bad})).is_err(), "{bad}");
+    }
+    assert!(s.actions.list.is_empty(), "nothing is loaded when the encoding is bad");
 }

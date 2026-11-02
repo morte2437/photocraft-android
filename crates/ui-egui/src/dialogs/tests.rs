@@ -219,12 +219,31 @@ fn layer_style_title_gutters_can_start_drags() {
     }
 }
 
+/// #9515: Bevel & Emboss is taller than a small window (1435 × 858, the reporter's): its page
+/// scrolls, so OK and Cancel stay on screen.
+#[test]
+fn layer_style_buttons_stay_on_a_short_window() {
+    use egui_kittest::{Harness, kittest::Queryable};
+
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", serde_json::json!({"width": 64, "height": 64})).unwrap();
+    app.run("layer.new.layer", serde_json::json!({})).unwrap();
+    let mut h = Harness::builder().with_size(egui::vec2(1435.0, 858.0)).build_ui_state(|ui, app| show(app, ui.ctx()), app);
+    PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+    crate::layer_style::open(h.state_mut(), Some("bevelEmboss")).unwrap();
+    h.run_steps(4);
+    for label in ["OK", "Cancel"] {
+        let r = h.get_by_label(label).rect();
+        assert!(r.bottom() <= 858.0, "{label} is off the window: {r:?}");
+    }
+}
+
 #[test]
 fn dragging_the_title_bar_moves_the_dialog() {
     use egui_kittest::{Harness, kittest::Queryable};
 
     let app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
-    let mut harness = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_ui_state(|ui, app| show(app, ui.ctx()), app);
+    let mut harness = Harness::builder().with_size(egui::vec2(1400.0, 1100.0)).build_ui_state(|ui, app| show(app, ui.ctx()), app);
     PhotocraftApp::setup_context(&harness.ctx, crate::theme::ThemeKind::ALL[0]);
     harness.state_mut().ui.open_dialog(DialogKind::LayerStyle, serde_json::Map::new());
     harness.run_steps(3);
@@ -245,6 +264,21 @@ fn dragging_the_title_bar_moves_the_dialog() {
     let moved = harness.get_by_label("Layer Style").rect().min - before.min;
     assert!((moved - egui::vec2(-120.0, 80.0)).length() < 1.0, "dialog moved by {moved:?}");
     assert_eq!(harness.state().ui.dialogs.len(), 1, "dragging must not close the dialog");
+}
+
+/// Layer Style open on Bevel & Emboss (its tallest page) for a pixel layer.
+fn layer_style_on_bevel(size: egui::Vec2) -> egui_kittest::Harness<'static, PhotocraftApp> {
+    use egui_kittest::kittest::Queryable;
+
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 64, "height": 64})).unwrap();
+    app.run("layer.new.layer", json!({})).unwrap();
+    let mut h = egui_kittest::Harness::builder().with_size(size).build_ui_state(|ui, app| show(app, ui.ctx()), app);
+    PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+    crate::layer_style::open(h.state_mut(), Some("bevelEmboss")).expect("Layer Style opens");
+    h.run_steps(4);
+    assert!(h.query_by_label("Gloss Contour").is_some(), "the Bevel & Emboss page is showing");
+    h
 }
 
 /// #4872: an alert (Error, About) closes with ↩ as with OK, but not on the ↩ that raised it.
@@ -271,6 +305,97 @@ fn enter_closes_an_alert_but_not_the_enter_that_opened_it() {
     h.key_press(egui::Key::Escape);
     h.run_steps(2);
     assert!(h.state().ui.dialogs.is_empty(), "Esc too");
+}
+
+/// The bin under the effect list deletes the selected effect from the dialog.
+#[test]
+fn layer_style_bin_deletes_the_selected_effect() {
+    use egui_kittest::kittest::Queryable;
+
+    let mut h = layer_style_on_bevel(egui::vec2(1400.0, 900.0));
+    let effects = |h: &egui_kittest::Harness<'_, PhotocraftApp>| h.state().ui.dialogs[0].fields["effects"].as_array().map_or(0, Vec::len);
+    assert_eq!(effects(&h), 1);
+    h.get_by_label("Delete effect").click();
+    h.run_steps(3);
+    assert_eq!(effects(&h), 0, "Bevel & Emboss is gone from the list");
+    assert_eq!(h.state().ui.dialogs.len(), 1, "the dialog stays open");
+}
+
+/// The right-hand column's OK applies the style and Cancel drops it; Enter is OK.
+#[test]
+fn layer_style_ok_cancel_and_enter() {
+    let bevels = |h: &egui_kittest::Harness<'_, PhotocraftApp>| {
+        let st = h.state().session.active().unwrap();
+        let layer = st.doc.layer(st.active_layer.unwrap()).unwrap();
+        layer.effects.items.iter().filter(|e| matches!(e, photocraft_doc::Effect::BevelEmboss { .. })).count()
+    };
+    for (how, applied) in [("OK", 1), ("Cancel", 0), ("Enter", 1)] {
+        use egui_kittest::kittest::Queryable;
+
+        let mut h = layer_style_on_bevel(egui::vec2(1400.0, 900.0));
+        if how == "Enter" {
+            h.key_press(egui::Key::Enter);
+        } else {
+            h.get_by_label(how).click();
+        }
+        h.run_steps(3);
+        assert!(h.state().ui.dialogs.is_empty(), "{how} closes the dialog");
+        assert_eq!(bevels(&h), applied, "{how}");
+    }
+}
+
+/// On a short screen Layer Style fits, its page scrolling, so OK and Cancel stay reachable
+/// (the Bevel & Emboss page used to push them off the bottom).
+#[test]
+fn layer_style_fits_a_short_screen() {
+    use egui_kittest::kittest::Queryable;
+
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1366.0, 640.0));
+    let h = layer_style_on_bevel(screen.size());
+    assert!(screen.contains_rect(frame(&h)), "{:?} fits on {screen:?}", frame(&h));
+    for button in ["OK", "Cancel"] {
+        assert!(screen.contains_rect(h.get_by_label(button).rect()), "{button} is on screen");
+    }
+}
+
+/// Layer Style is laid out like Photoshop's: wide and short, the effect list on the left, the
+/// page in the middle and OK, Cancel, New Style…, Preview in a column on the right.
+#[test]
+fn layer_style_is_laid_out_like_photoshops() {
+    use egui_kittest::kittest::Queryable;
+
+    let h = layer_style_on_bevel(egui::vec2(1400.0, 900.0));
+    let at = |label: &str| h.get_by_label(label).rect();
+    let frame = frame(&h);
+    assert!(frame.width() > frame.height() * 1.3, "wide and short: {:?}", frame.size());
+    // The list's rows are painted; its bar's fx button marks the column.
+    let (list, page) = (at("Add a layer style"), at("Depth"));
+    let [ok, cancel, new_style, preview] = ["OK", "Cancel", "New Style…", "Preview"].map(at);
+    assert!(list.right() < page.left(), "the list is left of the page");
+    for (name, r) in [("OK", ok), ("Cancel", cancel), ("New Style…", new_style), ("Preview", preview)] {
+        assert!(r.left() > page.right(), "{name} is right of the page");
+    }
+    assert!(ok.top() < cancel.top() && cancel.top() < new_style.top() && new_style.top() < preview.top(), "top to bottom");
+}
+
+/// Layer Style keeps one size on every page, as Photoshop's does (it used to grow and shrink
+/// with each page), and has no resize grip: Photoshop's isn't resizable either.
+#[test]
+fn layer_style_keeps_one_size_on_every_page() {
+    let mut h = layer_style_on_bevel(egui::vec2(1400.0, 900.0));
+    let size = frame(&h).size();
+    let dialog = h.state().ui.dialogs[0].id;
+    for page in ["blendingOptions", "styles"] {
+        h.state_mut().ui.dialog_mut(dialog).expect("still open").fields.insert("selected".into(), json!(page));
+        h.run_steps(3);
+        assert_eq!(frame(&h).size(), size, "{page}");
+    }
+    let grip = egui::Id::unique(("dialog", dialog)).with("resize").with("__resize_corner");
+    assert!(h.ctx.read_response(grip).is_none(), "no resize grip");
+}
+
+fn frame(h: &egui_kittest::Harness<'_, PhotocraftApp>) -> egui::Rect {
+    rects(&h.ctx).first().copied().expect("the dialog is drawn")
 }
 
 fn dialog_harness(size: egui::Vec2, command: &str) -> egui_kittest::Harness<'static, PhotocraftApp> {
@@ -427,5 +552,91 @@ fn fit_image_is_as_narrow_as_its_content() {
         // A caption and the field it names share the label; either sits inside the window.
         let node = h.query_all_by_label(label).next().unwrap_or_else(|| panic!("{label} in the dialog"));
         assert!(window.contains_rect(node.rect()), "{label} inside the window");
+    }
+}
+
+#[test]
+fn german_color_picker_fits_its_actions_and_translates_the_title() {
+    use egui_kittest::{Harness, kittest::Queryable};
+    let lang = crate::i18n::Lang::from_pref("de");
+    let text = |key| crate::i18n::with_language(lang, || crate::i18n::t(key).to_owned());
+    let app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    let mut h =
+        Harness::builder().with_size(egui::vec2(760.0, 480.0)).build_ui_state(move |ui, app| crate::i18n::with_language(lang, || show(app, ui.ctx())), app);
+    PhotocraftApp::setup_context(&h.ctx, Default::default());
+    crate::color_picker_ui::open(h.state_mut(), "foreground");
+    h.run_steps(4);
+    let title = h.get_by_label("Farbwähler (Vordergrundfarbe)").rect();
+    let swatch = h.get_by_label(&text("Click to restore the current colour")).rect();
+    let frame = rects(&h.ctx)[0];
+    for label in ["OK", "Cancel", "Add to Swatches"] {
+        let r = h.get_by_label(&text(label)).rect();
+        assert!(r.left() > swatch.right(), "{label} must stay beside the swatches: {r:?}, {swatch:?}");
+        assert!((r.right() - title.right()).abs() < 1.0, "{label} aligns with the title edge");
+    }
+    assert!(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(760.0, 480.0)).contains_rect(frame), "{frame:?}");
+}
+
+#[test]
+fn file_info_multiline_fields_keep_enter_and_cancel_discards_edits() {
+    use egui_kittest::kittest::Queryable;
+
+    crate::i18n::with_language(crate::i18n::Lang::EN, || {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"width": 64, "height": 64})).unwrap();
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(900.0, 700.0)).build_ui_state(|ui, app| show(app, ui.ctx()), app);
+        PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+        let ctx = h.ctx.clone();
+        crate::menus::invoke(h.state_mut(), &ctx, "file.fileInfo", json!({})).unwrap();
+        h.run_steps(4);
+        use egui::accesskit::Role;
+        let fields = [
+            (Role::TextInput, "Document Title"),
+            (Role::TextInput, "Author"),
+            (Role::TextInput, "Author title"),
+            (Role::MultilineTextInput, "Description"),
+            (Role::MultilineTextInput, "Keywords"),
+            (Role::ComboBox, "Copyright status"),
+            (Role::MultilineTextInput, "Copyright Notice"),
+            (Role::TextInput, "Copyright Info URL"),
+        ];
+        for pair in fields.windows(2) {
+            assert!(
+                h.get_by_role_and_label(pair[0].0, pair[0].1).rect().center().y < h.get_by_role_and_label(pair[1].0, pair[1].1).rect().center().y,
+                "field order: {pair:?}"
+            );
+        }
+        for (label, key) in [("Description", "description"), ("Keywords", "keywords"), ("Copyright Notice", "copyright")] {
+            h.get_by_role_and_label(Role::MultilineTextInput, label).click();
+            h.run_steps(1);
+            h.event(egui::Event::Text("First".into()));
+            h.run_steps(1);
+            h.key_press(egui::Key::Enter);
+            h.run_steps(1);
+            h.event(egui::Event::Text("Second".into()));
+            h.run_steps(1);
+            let dialog = h.state().ui.dialogs.last().expect("Enter edits the field, not OK");
+            assert_eq!(dialog.fields[key], "First\nSecond", "{label}");
+        }
+        h.get_by_label("Cancel").click();
+        h.run_steps(2);
+        assert!(h.state().ui.dialogs.is_empty());
+        assert_eq!(h.state_mut().run("file.fileInfo", json!({})).unwrap()["description"], "");
+    });
+}
+
+#[test]
+fn file_info_keeps_multiline_metadata_on_confirm_and_reopen() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 64, "height": 64})).unwrap();
+    let ctx = egui::Context::default();
+    let id = crate::menus::invoke(&mut app, &ctx, "file.fileInfo", json!({})).unwrap()["dialog"].as_u64().unwrap();
+    for key in ["description", "copyright"] {
+        app.ui.dialog_mut(id).unwrap().fields.insert(key.into(), json!("First line\nSecond line"));
+    }
+    confirm(&mut app, id).unwrap();
+    let id = crate::menus::invoke(&mut app, &ctx, "file.fileInfo", json!({})).unwrap()["dialog"].as_u64().unwrap();
+    for key in ["description", "copyright"] {
+        assert_eq!(app.ui.dialog_mut(id).unwrap().fields[key], "First line\nSecond line");
     }
 }

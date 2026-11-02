@@ -1,3 +1,4 @@
+const DIFFUSE_MODE: &[(&str, &str)] = &[("Nrml", "normal"), ("DrkO", "darkenOnly"), ("LghO", "lightenOnly"), ("Anst", "anisotropic")];
 use super::adjustments::{adjustment_by_class, adjustment_steps, levels_from, levels_to, shadows_highlights_from, shadows_highlights_to};
 use super::descriptors::{desc, get_bool, get_ref, jbool, layer_ref, layer_target, ref_class};
 use super::fields::{F, Kind, Mapped, fields_from, fields_to, none, step};
@@ -7,14 +8,14 @@ use super::steps_doc::{
     place_from, place_to, profile_from, profile_to, purge_from, purge_to, reset_from, reset_to, save_from, save_to, stop_from, stop_to,
 };
 use super::steps_image::{
-    GALLERY_IDS, REFINE_EDGE, RIPPLE_SIZE, SMART_BRUSH, apply_image_from, apply_image_to, color_range_from, color_range_to, gallery_from, gallery_to,
-    has_refine_strokes, radial_blur_from, radial_blur_to, refine_edge_to, transform_from, transform_to,
+    GALLERY_IDS, REFINE_EDGE, RIPPLE_SIZE, SMART_BRUSH, apply_image_from, apply_image_to, camera_raw_from, camera_raw_to, color_range_from, color_range_to,
+    gallery_from, gallery_to, has_refine_strokes, radial_blur_from, radial_blur_to, refine_edge_to, transform_from, transform_to,
 };
 use super::steps_layer::{
     STROKE, apply_comp_from, apply_comp_to, clear_from, clear_to, delete_from, delete_to, duplicate_from, duplicate_to, fill_from, fill_to, flip_from, flip_to,
     move_from, move_to, play_from, play_to, rotate_from, rotate_to, select_from, select_to, stroke_to, visibility_from, visibility_to,
 };
-use super::steps_make::{make_from, make_to, set_from, set_to};
+use super::steps_make::{locking_from, locking_to, make_from, make_to, set_from, set_to};
 use super::tables::{NOISE, OFFSET_FILL, SMART_BLUR_MODE, SMART_BLUR_QUALITY, TRIM};
 use super::{AtnEvent, D, Descriptor, STOP_MESSAGE, Value, json};
 
@@ -248,7 +249,11 @@ pub(super) const EVENTS: &[Event] = &[
     ),
     ev!("Rple", "ripple", "Ripple", "filter.distort.ripple", &[F("Amnt", "amount", Kind::ExactLong), F("RplS", "size", Kind::Enum("RplS", RIPPLE_SIZE))]),
     ev!("Crst", "crystallize", "Crystallize", "filter.pixelate.crystallize", &[F("ClSz", "cellSize", Kind::ExactLong)]),
+    ev!("Dfs ", "diffuse", "Diffuse", "filter.stylize.diffuse", &[F("Md  ", "mode", Kind::Enum("DfsM", DIFFUSE_MODE)), F("FlRs", "seed", Kind::Long)]),
     Event { code: "GEfc", name: "filterGallery", label: "Filter Gallery", ids: GALLERY_IDS, from: gallery_from, to: gallery_to },
+    // What Photoshop needs in a written step (process version, the full settings set) is
+    // unverified, so only an imported step saves back, as its recorded descriptor while unedited.
+    Event { code: "", name: "Adobe Camera Raw Filter", label: "Camera Raw Filter", ids: &[crate::lens_cmds::RAW], from: camera_raw_from, to: camera_raw_to },
     // Adjustments (Image › Adjustments).
     Event {
         code: "",
@@ -273,7 +278,7 @@ pub(super) const EVENTS: &[Event] = &[
     adjustment_event!("Pstr", "Pstr", "posterize", "Posterize"),
     adjustment_event!("Invr", "Invr", "invert", "Invert"),
     adjustment_event!("ClrB", "ClrB", "colorBalance", "Color Balance"),
-    adjustment_event!("Vbrn", "Vbrn", "vibrance", "Vibrance"),
+    adjustment_event!("Vbrn", "vibrance", "vibrance", "Vibrance"),
     adjustment_event!("Exps", "Exps", "exposure", "Exposure"),
     // Photoshop runs Photo Filter by name only: `PhtF` is the class, not an event (#8301).
     adjustment_event!("", "PhtF", "photoFilter", "Photo Filter"),
@@ -385,6 +390,7 @@ pub(super) const EVENTS: &[Event] = &[
             "layer.layerMask.hideSelection",
             "file.new",
             "file.newFromClipboard",
+            "history.newSnapshot",
         ],
         from: make_from,
         to: make_to,
@@ -408,6 +414,8 @@ pub(super) const EVENTS: &[Event] = &[
             "layer.setAdjustment",
             "layer.fill.pattern.set",
             "layer.new.layerFromBackground",
+            "layer.layerStyle.blendingOptions",
+            "layer.smartFilter.blendingOptions",
         ],
         from: set_from,
         to: set_to,
@@ -436,8 +444,25 @@ pub(super) const EVENTS: &[Event] = &[
         from: select_from,
         to: select_to,
     },
-    Event { code: "Dlt ", name: "delete", label: "Delete", ids: &["layer.delete", "edit.clear", "layer.layerMask.delete"], from: delete_from, to: delete_to },
-    Event { code: "", name: "clearEvent", label: "Clear", ids: &["select.editInQuickMaskMode"], from: clear_from, to: clear_to },
+    Event {
+        code: "Dlt ",
+        name: "delete",
+        label: "Delete",
+        ids: &["layer.delete", "edit.clear", "layer.layerMask.delete", "layer.smartFilter.deleteFilterMask"],
+        from: delete_from,
+        to: delete_to,
+    },
+    Event { code: "", name: "applyLocking", label: "Apply Locking", ids: &["layer.lockLayers"], from: locking_from, to: locking_to },
+    // Timeline › Make Frames from Layers: no frame animation in PhotoCraft, no document change.
+    Event {
+        code: "",
+        name: "animationFramesFromLayers",
+        label: "Make Frames from Layers",
+        ids: &[],
+        from: |_| Mapped::Unsupported { harmless: true },
+        to: |_, _| None,
+    },
+    Event { code: "", name: "clearEvent", label: "Clear", ids: &["select.editInQuickMaskMode", "history.clear"], from: clear_from, to: clear_to },
     Event {
         code: "Trnf",
         name: "transform",

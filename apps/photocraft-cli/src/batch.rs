@@ -83,7 +83,10 @@ pub(crate) fn batch(a: &BatchArgs, out: &mut dyn Write, err: &mut dyn Write) -> 
             h.session.actions.list = set.clone();
             h.open(input)?;
             for (id, p) in &actions {
-                if photocraft_engine::actions_cmds::shell_view_command(id) || photocraft_engine::actions_cmds::shell_save_command(id) {
+                if photocraft_engine::actions_cmds::shell_view_command(id)
+                    || photocraft_engine::actions_cmds::shell_save_command(id)
+                    || photocraft_engine::actions_cmds::noop_step(&h.session, id, p)
+                {
                     continue;
                 }
                 let r = h.command_run(id, p.clone()).map_err(|source| CliError::Command { id: id.clone(), source })?;

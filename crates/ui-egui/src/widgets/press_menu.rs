@@ -98,12 +98,17 @@ pub fn above_parent_ui(parent: egui::LayerId, popup_ui: &egui::Ui) {
 /// Shows `button`'s menu (an `egui::Popup::menu`) with press-drag-release; `content` chooses its
 /// items with [`PressMenu::item`].
 pub fn show<R>(button: &Response, content: impl FnOnce(&mut Ui, &PressMenu) -> R) -> Option<R> {
+    show_with_close_behavior(button, PopupCloseBehavior::CloseOnClick, content)
+}
+
+/// A press menu whose content owns its close behavior (e.g. a scrollable font list).
+pub fn show_with_close_behavior<R>(button: &Response, close_behavior: PopupCloseBehavior, content: impl FnOnce(&mut Ui, &PressMenu) -> R) -> Option<R> {
     let ctx = button.ctx.clone();
     let menu = PressMenu { popup: Popup::default_response_id(button) };
     let open = open_command(button, menu.popup);
     // The release ending the press that opened the menu is a click outside the popup: it must not
     // close it again.
-    let close = if button.clicked() && menu.owns_gesture(&ctx) { PopupCloseBehavior::IgnoreClicks } else { PopupCloseBehavior::CloseOnClick };
+    let close = if button.clicked() && menu.owns_gesture(&ctx) { PopupCloseBehavior::IgnoreClicks } else { close_behavior };
     let shown = Popup::menu(button).open_memory(open).close_behavior(close).show(|ui| content(ui, &menu)).map(|r| r.inner);
     if shown.is_some() || Popup::is_id_open(&ctx, menu.popup) {
         above_parent(&ctx, button.layer_id, egui::LayerId::new(egui::Order::Foreground, menu.popup));

@@ -166,25 +166,34 @@ pub(crate) fn decode(t: &Tiff, format: RawFormat, limits: &Limits) -> Result<Sen
     let make = ifds.iter().find_map(|i| t.tag_ascii(i, tag::MAKE));
     let model = ifds.iter().find_map(|i| t.tag_ascii(i, tag::MODEL));
 
+    // Older Sony bodies put the applied white balance and black levels only in SR2SubIFD.
+    // Plain tags win when usable; a malformed plain value must not hide valid private metadata.
     let bl = t.tag_floats(&raw, tag::BLACK_LEVEL);
+    let sony_black = t.tag_floats(&raw, SONY_BLACK_LEVEL);
+    let sony_plain_wb = sony_wb(&t.tag_floats(&raw, SONY_WB_RGGB_LEVELS));
+    let needs_sony_levels = (bl.is_empty() && rggb_by_position(&cfa, &sony_black).is_none()) || sony_plain_wb.is_none();
+    let sony_levels = if format == RawFormat::Arw && needs_sony_levels { crate::sony_metadata::read(t, limits) } else { None };
     let vendor_black = match &nikon {
         // Nikon's BlackLevel is in 14-bit units whatever the sample depth:
         // 12-bit D750 / D850 / Z 50 files store 600 / 400 / 1008 while their
         // darkest samples are about a quarter of that (measured on CC0
         // raw.pixls.us samples, documented in LightCraft's NEF decoder).
         Some((n, m)) => n.tag_floats(m, NIKON_BLACK_LEVEL).into_iter().map(|v| if plane.bits == 12 { v / 4.0 } else { v }).collect(),
-        None => t.tag_floats(&raw, SONY_BLACK_LEVEL),
+        None => {
+            if rggb_by_position(&cfa, &sony_black).is_some() {
+                sony_black
+            } else {
+                sony_levels.as_ref().and_then(|s| s.black).map(|v| v.to_vec()).unwrap_or_default()
+            }
+        }
     };
     let black = if let Some(b) = bl.first() {
         BlackLevels::uniform(*b as f32)
     } else if let Some(v) = rggb_by_position(&cfa, &vendor_black) {
         BlackLevels { rows: 2, cols: 2, values: v.to_vec(), delta_h: Vec::new(), delta_v: Vec::new() }
     } else if craw {
-        // cRAW files of the first generation (an ILCE-7 writes none) carry no
-        // BlackLevel tag; the tone curve maps the black code to 512, so their
-        // decoded data has a 512 black level (see `sony.rs`). Other tag-less
-        // bodies sit higher (a DSC-RX0's darkest samples are near 800), so 512
-        // is a floor, still far closer than 0.
+        // When neither plain nor encrypted metadata is readable, the common cRAW
+        // black code maps to 512. Some bodies sit higher, so this remains a fallback.
         BlackLevels::uniform(512.0)
     } else if nikon.is_some() {
         // Nikon bodies that write no BlackLevel tag subtract the black level in camera: a D3200
@@ -204,10 +213,7 @@ pub(crate) fn decode(t: &Tiff, format: RawFormat, limits: &Limits) -> Result<Sen
             [r, b, ..] => Some([*r, 1.0, *b]),
             _ => None,
         },
-        None => match t.tag_floats(&raw, SONY_WB_RGGB_LEVELS).as_slice() {
-            [r, g1, g2, b] if *g1 + *g2 > 0.0 => Some([2.0 * r / (g1 + g2), 1.0, 2.0 * b / (g1 + g2)]),
-            _ => None,
-        },
+        None => sony_plain_wb.or_else(|| sony_levels.as_ref().and_then(|s| s.wb).and_then(|v| sony_wb(&v))),
     }
     .filter(|m| m.iter().all(|v| (0.25..8.0).contains(v)));
     // DNG-style DefaultCropOrigin / DefaultCropSize (some vendors write them in the raw IFD).
@@ -256,6 +262,16 @@ pub(crate) fn decode(t: &Tiff, format: RawFormat, limits: &Limits) -> Result<Sen
     };
     crate::cameras::apply(&mut sensor, plane.bits);
     Ok(sensor)
+}
+
+fn sony_wb(levels: &[f64]) -> Option<[f64; 3]> {
+    let [r, g1, g2, b] = <[f64; 4]>::try_from(levels).ok()?;
+    if [r, g1, g2, b].iter().any(|v| !v.is_finite() || *v <= 0.0) {
+        return None;
+    }
+    let g = (g1 + g2) / 2.0;
+    let m = [r / g, 1.0, b / g];
+    m.iter().all(|v| (0.25..8.0).contains(v)).then_some(m)
 }
 
 #[cfg(test)]

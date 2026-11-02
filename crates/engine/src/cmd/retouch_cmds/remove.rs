@@ -252,15 +252,11 @@ pub(super) fn remove(s: &mut Session, p: &Value) -> Result<Value> {
                     *active = Some(r.1);
                     Ok(r)
                 })?;
-                if let Some(st) = s.active_mut() {
-                    st.last_damage = Some(damage);
-                }
+                s.hint_damage(damage);
                 return Ok(json!({ "damage": damage_json(damage), "layer": nid.0 }));
             }
             let damage = s.edit(label, |doc, _| replace(doc, Target { id, all_layers: false }, &p, &out, &hole))?;
-            if let Some(st) = s.active_mut() {
-                st.last_damage = Some(damage);
-            }
+            s.hint_damage(damage);
             Ok(json!({ "damage": damage_json(damage) }))
         },
     )

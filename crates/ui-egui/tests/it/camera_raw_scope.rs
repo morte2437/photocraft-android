@@ -592,10 +592,9 @@ fn curve_deletion_reentry_keyboard_limits_and_controller_replacement_share_captu
     assert!(std::sync::Arc::ptr_eq(&original, &h.state().session.active().unwrap().doc));
 }
 
-#[test]
-fn curve_gpu_paints_the_moved_handle_in_every_theme() {
+fn curve_gpu_paints_the_moved_handle_in_every_theme_part(part: usize) {
     let _gpu = gpu_lock();
-    for theme in ThemeKind::ALL {
+    for theme in ThemeKind::ALL.into_iter().skip(part).step_by(4) {
         let mut h = fixture_render(theme, true);
         let graph = open_curve(&mut h);
         set_curve(&mut h, json!([[0, 0], [128, 128], [255, 255]]));
@@ -616,6 +615,26 @@ fn curve_gpu_paints_the_moved_handle_in_every_theme() {
             after.save(std::path::Path::new(&dir).join(format!("{theme:?}.png"))).unwrap();
         }
     }
+}
+
+#[test]
+fn curve_gpu_paints_the_moved_handle_in_every_theme_part_0() {
+    curve_gpu_paints_the_moved_handle_in_every_theme_part(0);
+}
+
+#[test]
+fn curve_gpu_paints_the_moved_handle_in_every_theme_part_1() {
+    curve_gpu_paints_the_moved_handle_in_every_theme_part(1);
+}
+
+#[test]
+fn curve_gpu_paints_the_moved_handle_in_every_theme_part_2() {
+    curve_gpu_paints_the_moved_handle_in_every_theme_part(2);
+}
+
+#[test]
+fn curve_gpu_paints_the_moved_handle_in_every_theme_part_3() {
+    curve_gpu_paints_the_moved_handle_in_every_theme_part(3);
 }
 
 #[test]
@@ -664,12 +683,15 @@ fn pixel_hover_tracks_displayed_rgb_before_after_and_keeps_analysis_cached() {
     assert!(inspect(&h)["vectorscopeRect"].is_null());
 }
 
-#[test]
-fn pixel_hover_gpu_badge_single_band_and_crosshair_appear_and_clear_in_all_themes() {
+fn pixel_hover_gpu_badge_single_band_and_crosshair_appear_and_clear_in_all_themes_part(part: usize) {
     let _gpu = gpu_lock();
-    for theme in ThemeKind::ALL {
-        let mut h = fixture_render(theme, true);
+    let mut h = fixture_render(ThemeKind::Pro, true);
+    for theme in ThemeKind::ALL.into_iter().skip(part).step_by(4) {
         let ctx = h.ctx.clone();
+        h.state_mut().set_theme(&ctx, theme);
+        h.run_steps(3);
+        settle(&mut h);
+        assert_eq!(h.state().ui.theme, theme);
         menu(h.state_mut(), &ctx, json!({"ui":{"scope":{"vectorscope":true}}})).unwrap();
         h.run_steps(4);
         let histogram = rect(&h, "scopeRect");
@@ -725,6 +747,26 @@ fn pixel_hover_gpu_badge_single_band_and_crosshair_appear_and_clear_in_all_theme
             }
         }
     }
+}
+
+#[test]
+fn pixel_hover_gpu_badge_single_band_and_crosshair_appear_and_clear_in_all_themes_part_0() {
+    pixel_hover_gpu_badge_single_band_and_crosshair_appear_and_clear_in_all_themes_part(0);
+}
+
+#[test]
+fn pixel_hover_gpu_badge_single_band_and_crosshair_appear_and_clear_in_all_themes_part_1() {
+    pixel_hover_gpu_badge_single_band_and_crosshair_appear_and_clear_in_all_themes_part(1);
+}
+
+#[test]
+fn pixel_hover_gpu_badge_single_band_and_crosshair_appear_and_clear_in_all_themes_part_2() {
+    pixel_hover_gpu_badge_single_band_and_crosshair_appear_and_clear_in_all_themes_part(2);
+}
+
+#[test]
+fn pixel_hover_gpu_badge_single_band_and_crosshair_appear_and_clear_in_all_themes_part_3() {
+    pixel_hover_gpu_badge_single_band_and_crosshair_appear_and_clear_in_all_themes_part(3);
 }
 
 #[test]

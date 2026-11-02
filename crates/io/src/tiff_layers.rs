@@ -21,7 +21,7 @@ use photocraft_raster::Surface;
 
 use crate::flat::{csample, encode_image, image_to_document, layout_for, single_layer, try_buffer};
 use crate::psd_export::PsdExportOptions;
-use crate::psd_import::psd_to_document;
+use crate::psd_import::psd_to_document_owned;
 use crate::{ExportOptions, ExportResult, ImportResult, IoError};
 
 /// `true` when saving `doc` as TIFF writes layer data: anything beyond a single Background
@@ -49,7 +49,7 @@ fn set_resource(resources: &mut Vec<ImageResource>, id: u16, data: Option<Vec<u8
 }
 
 /// Opens a TIFF whose `img` carries Photoshop layer data in `layers` (its 37724 tag).
-pub(crate) fn import_layered(name: &str, img: &Image, layers: &[u8]) -> Result<ImportResult, IoError> {
+pub(crate) fn import_layered(name: &str, img: &Image, layers: &[u8], pixel_limit: u64) -> Result<ImportResult, IoError> {
     let mut warnings = Vec::new();
     let (isd, w) = match ImageSourceData::from_bytes(layers) {
         Ok(v) => v,
@@ -85,12 +85,6 @@ pub(crate) fn import_layered(name: &str, img: &Image, layers: &[u8]) -> Result<I
     }
 
     // The TIFF's pixels become the PSD's merged image: planar, big-endian, CMYK inverted.
-    let img = if img.sample_type() == CSample::F16 {
-        warnings.push("16-bit float samples are stored as 32-bit float".to_string());
-        std::borrow::Cow::Owned(img.convert(img.layout(), CSample::F32))
-    } else {
-        std::borrow::Cow::Borrowed(img)
-    };
     let (mode, color_channels) = match img.layout() {
         ChannelLayout::Gray | ChannelLayout::GrayA => (PsdMode::Grayscale, 1),
         ChannelLayout::Rgb | ChannelLayout::Rgba => (PsdMode::Rgb, 3),
@@ -103,23 +97,17 @@ pub(crate) fn import_layered(name: &str, img: &Image, layers: &[u8]) -> Result<I
         CSample::F16 | CSample::F32 => 32,
     };
     let (w, h) = img.dimensions();
-    let mut data = planar_big_endian(&img, color_channels, mode == PsdMode::Cmyk)?;
-    let bps = img.sample_type().bytes();
+    // A half-float image is stored as 32-bit float; it is converted after the budget check, as
+    // the conversion allocates several times the decoded image.
+    let bps = if img.sample_type() == CSample::F16 { CSample::F32.bytes() } else { img.sample_type().bytes() };
     let plane_len = (w as usize).saturating_mul(h as usize).saturating_mul(bps);
-    let mut added = 0usize;
-    for e in img.meta.extra_samples.iter().take(codecs::MAX_EXTRA_SAMPLES) {
-        match native_plane_to_be(&e.data, bps) {
-            Ok(be) if be.len() == plane_len => {
-                data.extend(be);
-                added += 1;
-            }
-            _ => warnings.push("an extra TIFF sample did not match the image and was dropped".into()),
-        }
-    }
-    let channels = u16::try_from(img.layout().channels().saturating_add(added)).map_err(|_| IoError::Unsupported("too many channels".into()))?;
+    // The budget is checked on the model before the planar copy of the whole image is allocated,
+    // so an over-budget file is refused without it. The extra samples that fit the image count
+    // towards the channels the check sees.
+    let extras = img.meta.extra_samples.iter().take(codecs::MAX_EXTRA_SAMPLES).filter(|e| e.data.len() == plane_len).count();
+    let channels = u16::try_from(img.layout().channels().saturating_add(extras)).map_err(|_| IoError::Unsupported("too many channels".into()))?;
     let header = Header::new(isd.version, w, h, channels, depth, mode);
-    let image_data = ImageData::new(Compression::Raw, data);
-    let mut file = isd.into_psd(header, resources, image_data);
+    let mut file = isd.into_psd(header, resources, ImageData::new(Compression::Raw, Vec::new()));
     // Empty `Patt` and the default filter mask are written so Photoshop's block list matches
     // a file it saved. They carry nothing the document stores, so they are not kept: a
     // round trip would otherwise grow `metadata.psd_global_blocks` on every open.
@@ -130,10 +118,41 @@ pub(crate) fn import_layered(name: &str, img: &Image, layers: &[u8]) -> Result<I
     });
     // The same nesting limit as opening a PSD (#2940).
     crate::psd_import::check_group_depth(&file)?;
+    // The planar composite is copied whether or not the budget counts a merged image, so it is
+    // held against the allowance as well.
+    let composite = u64::try_from(plane_len.saturating_mul(usize::from(channels))).unwrap_or(u64::MAX);
+    if composite > pixel_limit {
+        return Err(photocraft_psd::PsdError::LimitExceeded("the TIFF composite exceeds the import allowance").into());
+    }
+    crate::psd_budget::check(&file, pixel_limit - composite)?;
+    let img = if img.sample_type() == CSample::F16 {
+        warnings.push("16-bit float samples are stored as 32-bit float".to_string());
+        std::borrow::Cow::Owned(img.convert(img.layout(), CSample::F32))
+    } else {
+        std::borrow::Cow::Borrowed(img)
+    };
+    let mut data = planar_big_endian(&img, color_channels, mode == PsdMode::Cmyk)?;
+    let mut added = 0usize;
+    for e in img.meta.extra_samples.iter().take(codecs::MAX_EXTRA_SAMPLES) {
+        match native_plane_to_be(&e.data, bps) {
+            Ok(be) if be.len() == plane_len => {
+                data.try_reserve(be.len()).map_err(|_| IoError::OutOfMemory("not enough memory for the TIFF extra samples".into()))?;
+                data.extend(be);
+                added += 1;
+            }
+            Err(error @ IoError::OutOfMemory(_)) => return Err(error),
+            _ => warnings.push("an extra TIFF sample did not match the image and was dropped".into()),
+        }
+    }
+    file.header.channels = u16::try_from(img.layout().channels().saturating_add(added)).map_err(|_| IoError::Unsupported("too many channels".into()))?;
+    file.image_data = ImageData::new(Compression::Raw, data);
     // Spot planes are read in Photoshop's polarity (0 = solid ink), as from a PSD. The importer's
     // rule for PSDs from earlier PhotoCraft versions never applies: those versions stored no
     // extra samples in a TIFF, and a TIFF with them carries 1053.
-    let (mut doc, w) = psd_to_document(&file);
+    let (mut doc, w, _, fatal_error) = psd_to_document_owned(file, &photocraft_raster::Interrupt::NONE, None).ok_or(IoError::Cancelled)?;
+    if let Some(error) = fatal_error {
+        return Err(error);
+    }
     warnings.extend(w);
     doc.name = name.to_string();
     if doc.icc_profile.is_none() {
@@ -553,12 +572,16 @@ pub fn strip_foreign_order_blocks(file: &mut photocraft_psd::PsdFile) -> Vec<Str
 /// Big-endian planar samples (a PSD merged-image plane) to native endian, or the reverse.
 fn swap_plane(src: &[u8], bps: usize, to_be: bool) -> Result<Vec<u8>, IoError> {
     if bps == 1 {
-        return Ok(src.to_vec());
+        let mut out = Vec::new();
+        out.try_reserve_exact(src.len()).map_err(|_| IoError::OutOfMemory("not enough memory for a TIFF extra sample".into()))?;
+        out.extend_from_slice(src);
+        return Ok(out);
     }
     if !matches!(bps, 2 | 4) || !src.len().is_multiple_of(bps) {
         return Err(IoError::Unsupported("an extra channel plane is incomplete".into()));
     }
-    let mut out = Vec::with_capacity(src.len());
+    let mut out = Vec::new();
+    out.try_reserve_exact(src.len()).map_err(|_| IoError::OutOfMemory("not enough memory for a TIFF extra sample".into()))?;
     for c in src.chunks_exact(bps) {
         match (bps, to_be, c) {
             (2, true, [a, b]) => {

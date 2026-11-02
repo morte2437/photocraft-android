@@ -54,7 +54,7 @@ pub(super) fn select_from(d: &Descriptor) -> Mapped {
             None => Mapped::Unsupported { harmless: false },
         },
         // Switching to another open document: its offset from the active one, -1 for the previous
-        // tab and 1 for the next (a template action copies from one and pastes into the other, #7103).
+        // opened document and 1 for the next, independently of dragged tabs (#7103).
         (Some("Dcmn"), Target::Offset(o)) => step("document.activate", json!({"offset": o})),
         _ => Mapped::Unsupported { harmless: false },
     }
@@ -117,6 +117,15 @@ pub(super) fn delete_from(d: &Descriptor) -> Mapped {
         // The targeted channel of a layer is its mask (what Photoshop records after making an
         // adjustment layer over a selection and discarding the mask).
         Some(r) if ref_class(r).as_deref() == Some("Chnl") && matches!(target(r), Target::Ordinal(o) if o == "Trgt") => none("layer.layerMask.delete"),
+        // The mask Photoshop adds to a new fill or adjustment layer, or to a smart object's filters.
+        Some(r) if ref_class(r).as_deref() == Some("Chnl") => match target(r) {
+            Target::Ordinal(o) if o == "Msk" => none("layer.layerMask.delete"),
+            // Photoshop adds an empty filter mask with the first smart filter; PhotoCraft doesn't.
+            Target::Ordinal(o) if o == "filterMask" => step("layer.smartFilter.deleteFilterMask", json!({"ifPresent": true})),
+            _ => Mapped::Unsupported { harmless: false },
+        },
+        // Timeline frames: PhotoCraft has no frame animation, so there is nothing to delete.
+        Some(r) if ref_class(r).as_deref() == Some("animationClass") => Mapped::Unsupported { harmless: true },
         Some(_) => Mapped::Unsupported { harmless: false },
     }
 }
@@ -131,6 +140,8 @@ pub(super) fn quick_mask_ref() -> D {
 pub(super) fn clear_from(d: &Descriptor) -> Mapped {
     match get_ref(d, "null").map(target) {
         Some(Target::Property(p)) if p == "QucM" => step("select.editInQuickMaskMode", json!({"on": false})),
+        // History panel menu › Clear History.
+        Some(Target::Property(p)) if p == "HsSt" => none("history.clear"),
         None => none("edit.clear"),
         _ => Mapped::Unsupported { harmless: false },
     }
@@ -139,6 +150,13 @@ pub(super) fn clear_from(d: &Descriptor) -> Mapped {
 pub(super) fn clear_to(id: &str, p: &Value) -> Option<Descriptor> {
     match id {
         "select.editInQuickMaskMode" if jbool(p, "on") == Some(false) => Some(desc("null").with("null", quick_mask_ref())),
+        "history.clear" => Some(desc("null").with(
+            "null",
+            D::Reference(vec![
+                ReferenceItem::Property { class: class("Prpr"), key: code("HsSt") },
+                ReferenceItem::Enumerated { class: class("Dcmn"), type_id: code("Ordn"), value: code("Trgt") },
+            ]),
+        )),
         _ => None,
     }
 }
@@ -148,6 +166,8 @@ pub(super) fn delete_to(id: &str, p: &Value) -> Option<Descriptor> {
         "edit.clear" => desc("null"),
         "layer.delete" => desc("null").with("null", layer_ref(p)?),
         "layer.layerMask.delete" => desc("null").with("null", target_ref("Chnl")),
+        "layer.smartFilter.deleteFilterMask" => desc("null")
+            .with("null", D::Reference(vec![ReferenceItem::Enumerated { class: class("Chnl"), type_id: code("Chnl"), value: Id::new("filterMask") }])),
         _ => return None,
     })
 }
@@ -479,6 +499,11 @@ pub(super) fn stroke_to(_: &str, p: &Value) -> Option<Descriptor> {
     }
     let mut params = if p.is_null() { Map::new() } else { p.as_object()?.clone() };
     params.insert("width".into(), Value::from(crate::extra_cmds::stroke_width(p)));
+    // Photoshop opens the Stroke dialog for a descriptor that leaves out a setting, even with
+    // dialogs off (#8303), so the command's defaults for the ones left out are written too.
+    for (key, default) in [("location", json!("center")), ("opacity", json!(100)), ("mode", json!("Normal")), ("preserveTransparency", json!(false))] {
+        params.entry(key).or_insert(default);
+    }
     fields_to(&Value::Object(params), STROKE, desc("null"))
 }
 

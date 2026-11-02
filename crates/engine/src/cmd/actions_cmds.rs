@@ -106,6 +106,12 @@ pub struct ActionState {
     /// Steps run by the current top-level script and everything it calls.
     #[serde(skip)]
     pub script_steps: u64,
+    /// Sets made with New Set (`actions.newSet`), or loaded from an `.atn` with no actions, that
+    /// hold no action yet: the Actions panel shows them as empty folders. Save Actions… writes one
+    /// to an `.atn` as Photoshop does, but the preset store keeps sets through their actions, so
+    /// an empty one isn't remembered past the session.
+    #[serde(skip)]
+    pub sets: Vec<String>,
     /// Bumped whenever `list` changes, so the preset store can skip unchanged writes.
     #[serde(skip)]
     pub rev: u64,
@@ -113,6 +119,47 @@ pub struct ActionState {
     /// started in is still the one running when its result lands.
     #[serde(skip)]
     pub take: u64,
+}
+
+/// Visibility gestures name a layer for replay, since document-local ids change on another image.
+pub(crate) fn recorded_params(s: &Session, id: &str, mut p: Value) -> Value {
+    if s.actions.recording.is_none() || id != "layer.setProps" || p.get("visible").is_none() {
+        return p;
+    }
+    let Some(st) = s.active() else { return p };
+    let Some(layer) = p.get("layer").and_then(Value::as_u64).map(photocraft_doc::LayerId).or(st.active_layer).and_then(|id| st.doc.layer(id)) else { return p };
+    let ordinal = st.doc.walk().into_iter().filter(|(_, _, l)| l.name == layer.name).position(|(_, _, l)| l.id == layer.id).unwrap_or(0);
+    if let Some(object) = p.as_object_mut() {
+        object.remove("layer");
+        object.remove("coalesce");
+        object.insert("_actionLayer".into(), json!({"name": layer.name, "ordinal": ordinal}));
+    }
+    p
+}
+
+/// Resolve the recorded visibility target identically in engine and shell playback.
+pub fn playback_params(s: &Session, id: &str, p: &Value) -> Result<Value> {
+    let mut p = p.clone();
+    if id == "layer.setProps"
+        && let Some(target) = p.get("_actionLayer")
+    {
+        let name = target.get("name").and_then(Value::as_str).ok_or_else(|| bad(id, "missing recorded layer name"))?;
+        let ordinal =
+            target.get("ordinal").and_then(Value::as_u64).and_then(|v| usize::try_from(v).ok()).ok_or_else(|| bad(id, "invalid recorded layer ordinal"))?;
+        let doc = &s.active().ok_or(EngineError::NoDocument)?.doc;
+        let layer = doc
+            .walk()
+            .into_iter()
+            .filter(|(_, _, l)| l.name == name)
+            .nth(ordinal)
+            .map(|(_, _, l)| l.id)
+            .ok_or_else(|| bad(id, format!("recorded layer `{name}` does not exist")))?;
+        if let Some(object) = p.as_object_mut() {
+            object.remove("_actionLayer");
+            object.insert("layer".into(), json!(layer.0));
+        }
+    }
+    Ok(p)
 }
 
 impl ActionState {
@@ -292,7 +339,7 @@ fn from_step(p: &Value, len: usize) -> Result<usize> {
 fn list(s: &mut Session, _p: &Value) -> Result<Value> {
     let actions: Vec<Value> = s.actions.list.iter().map(|a| json!({"name": a.name, "steps": a.steps.len(), "set": a.set})).collect();
     let recording = s.actions.recording.and_then(|(_, i)| s.actions.list.get(i).map(|a| a.name.clone()));
-    Ok(json!({"actions": actions, "recording": recording}))
+    Ok(json!({"actions": actions, "sets": crate::actions_edit_cmds::set_names(s), "recording": recording}))
 }
 
 fn get(s: &mut Session, p: &Value) -> Result<Value> {
@@ -325,7 +372,15 @@ fn record(s: &mut Session, p: &Value) -> Result<Value> {
         if s.actions.list.iter().any(|action| action.name == name) {
             return Err(bad("actions.record", "an action with this name already exists"));
         }
-        s.actions.list.push(Action::new(name, Vec::new()));
+        let set = match p.get("set") {
+            None | Some(Value::Null) => None,
+            // An existing set, empty ones included, keeps its exact name (an older actions.json or
+            // a `.atn` may pad it); a new one is trimmed.
+            Some(Value::String(n)) if crate::actions_edit_cmds::set_names(s).contains(n) => Some(n.clone()),
+            Some(Value::String(n)) if !n.trim().is_empty() => Some(n.trim().to_string()),
+            Some(_) => return Err(bad("actions.record", "\"set\" must be a set name or null")),
+        };
+        s.actions.list.push(Action { set, ..Action::new(name, Vec::new()) });
         s.actions.touch();
         s.actions.list.len() - 1
     };
@@ -367,9 +422,23 @@ fn stop(s: &mut Session, _p: &Value) -> Result<Value> {
 }
 
 /// A step Photoshop plays as a silent no-op although its menu item is greyed: Deselect with an
-/// open document and nothing selected (actions often start with it to clear any selection, #6744).
-fn noop_step(s: &Session, id: &str) -> bool {
-    id == "select.deselect" && s.active().is_some_and(|d| d.doc.selection.is_none())
+/// open document and nothing selected (actions often start with it to clear any selection, #6744),
+/// and an Arrange that can't move the layer, such as Bring to Front on a new adjustment layer that
+/// is already on top (#8453). The CLI's `run` and `batch` scripts skip these too (#8802).
+pub fn noop_step(s: &Session, id: &str, params: &Value) -> bool {
+    let Some(d) = s.active() else { return false };
+    let dir = match id {
+        "select.deselect" => return d.doc.selection.is_none(),
+        "layer.arrange.bringForward" | "layer.arrange.bringToFront" => 1,
+        "layer.arrange.sendBackward" | "layer.arrange.sendToBack" => -1,
+        _ => return false,
+    };
+    crate::commands::layer_param(s, params).is_ok_and(|layer| super::ops::arrange_at_end(&d.doc, layer, dir))
+}
+
+pub const SAVE_CONTENTS: &str = "layer.smartObjects.saveContents";
+pub fn saves_smart_contents(s: &Session, id: &str) -> bool {
+    id == "file.save" && s.is_enabled(SAVE_CONTENTS)
 }
 
 fn run_recorded(s: &mut Session, action: &Action, from: usize) -> (u64, Option<Value>) {
@@ -386,11 +455,11 @@ fn run_recorded(s: &mut Session, action: &Action, from: usize) -> (u64, Option<V
             failed = Some(json!({"step": i, "id": id, "error": e.to_string()}));
             break;
         }
-        if noop_step(s, id) {
+        if noop_step(s, id, params) {
             ran += 1;
             continue;
         }
-        match s.execute(id, params.clone()) {
+        match playback_params(s, id, params).and_then(|p| if saves_smart_contents(s, id) { s.execute(SAVE_CONTENTS, json!({})) } else { s.execute(id, p) }) {
             Ok(value) => {
                 if let Some(error) = nested_failure(id, &value) {
                     failed = Some(json!({"step": i, "id": id, "error": error}));
@@ -691,7 +760,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "List Actions",
             menu: &[],
             shortcut: None,
-            params: "{} → {actions:[{name, steps:count, set:name|null}], recording:name|null}",
+            params: "{} → {actions:[{name, steps:count, set:name|null}], sets:[name…] (every set in panel order, empty ones too), recording:name|null}",
             enabled: always,
             run: list,
             journal: false,
@@ -711,7 +780,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Record Action",
             menu: &[],
             shortcut: None,
-            params: r##"{"name":str? (new action, default "Action N")} or {"action":name|index} (append) → {action, index}"##,
+            params: r##"{"name":str? (new action, default "Action N"),"set":name? (the set it goes in, as New Action records into the selected set)} or {"action":name|index} (append) → {action, index}"##,
             enabled: always,
             run: record,
             journal: false,

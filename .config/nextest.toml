@@ -19,10 +19,29 @@ gpu = { max-threads = 4 }
 filter = 'package(photocraft-gpu) | (package(photocraft-ui-egui) & (kind(test) | test(/canvas|gpu|mip|type_tool|background_redraw::|floating_group_titles|swap_arrow::tests::rendered_glyph/)))'
 test-group = 'gpu'
 
-# CI (`--profile ci`, .github/workflows/ci.yml). Stops at the first failure so a red PR frees its
-# runner, fails a test that hangs instead of letting it hold the runner, and repeats every failure
-# at the end of the log. The default profile's GPU override still applies.
+# CI (`--profile ci`, .github/workflows/ci.yml). Collect all failures in one integration run
+# instead of exposing one regression per rebuild. A hanging test still terminates, and every
+# failure is repeated at the end of the log. The default profile's GPU override still applies.
 [profile.ci]
-fail-fast = true
+fail-fast = false
 slow-timeout = { period = "60s", terminate-after = 10 }
 failure-output = "immediate-final"
+
+# Keep phase timings for the remaining expensive Windows GPU regressions visible. This does
+# not relax their timeout, isolate failures differently or remove any test cases.
+# Page eviction and budget borrowing redraw multi-effect documents. On the Windows
+# CPU-backed adapter it uses all GPU slots, avoiding oversubscription without skipping work.
+[[profile.ci.overrides]]
+platform = 'cfg(target_os = "windows")'
+filter = 'package(photocraft-gpu) & test(/pages_are_evicted_under_the_budget|layer_pages_that_just_miss_borrow_the_effect_map_share/)'
+threads-required = 4
+success-output = "immediate"
+
+[[profile.ci.overrides]]
+platform = 'cfg(target_os = "windows")'
+filter = 'package(photocraft-gpu) & test(/documents_larger_than_the_texture_limit|layer_effects_update_incrementally|pages_are_evicted_under_the_budget|the_focused_view_stays_resident_after_a_full_refresh/)'
+success-output = "immediate"
+# These multi-page effect regressions saturate the Windows software GPU. Reserve two
+# scheduling slots so four independent devices do not compete for the same CPU renderer.
+# All cases and the 60-second warning remain unchanged.
+threads-required = 2

@@ -249,8 +249,9 @@ fn an_edit_damaging_most_of_a_large_document_is_drawn_in_the_background_too() {
     let Some(mut g) = gpu_app() else { return };
     let doc = cpu_only_document(g.harness.state_mut(), 2600, 1700);
     settle(&mut g);
-    // Filling part of the Blend If layer can change the composite anywhere: the whole canvas.
-    g.harness.state_mut().run("select.rect", json!({"x": 100, "y": 100, "width": 300, "height": 300})).expect("select");
+    // Filling most of the Blend If layer touches tiles all over it: the whole canvas (a fill of a
+    // small part damages only its own tiles, #9329).
+    g.harness.state_mut().run("select.rect", json!({"x": 100, "y": 100, "width": 2500, "height": 1500})).expect("select");
     g.harness.step();
     g.harness.state_mut().run("edit.fill", json!({"color": "#22ee22"})).expect("fill");
     assert_eq!(g.harness.state().session.active().expect("document").last_damage, Some(Rect::new(0, 0, 2600, 1700)));

@@ -225,34 +225,89 @@ pub fn parse_cube(text: &str) -> Result<LutFile, LutError> {
     err("no LUT_3D_SIZE in .cube file")
 }
 
-/// Lustre `.3dl`: an optional shaper line of input values, then integer RGB rows with **blue**
-/// varying fastest; the output bit depth is inferred from the largest value, and is at least 12
-/// bits in a file without a header.
+/// Lustre `.3dl`: an optional `3DMESH` magic and `Mesh <inBits> <outBits>` line, an optional
+/// shaper line of input values, then integer RGB rows with **blue** varying fastest. The
+/// `Mesh` line declares the cube edge (2^inBits + 1) and the output code range (up to
+/// 2^outBits − 1), and Photoshop honours both (#9073, #9078); without it the edge is the cube
+/// root of the row count and the range is inferred from the largest value (#9121).
 pub fn parse_3dl(text: &str) -> Result<LutFile, LutError> {
+    let mut mesh: Option<(u32, u32)> = None;
     let mut rows: Vec<[f64; 3]> = Vec::new();
+    // How many numbers the first numeric line carried: a shaper of exactly `n` values (n ≤ 3)
+    // is otherwise indistinguishable from a node row.
+    let mut first_len: Option<usize> = None;
+    // Any text line before the rows is a header: a headerless table peaking at 255 or 1023 is
+    // on the 12-bit scale, as Photoshop 27.11 reads it (#9121).
     let mut header = false;
     for line in text.lines() {
         let line = line.split('#').next().unwrap_or("").trim();
-        if line.is_empty() || line.starts_with(|c: char| c.is_ascii_alphabetic()) {
-            header |= !line.is_empty();
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with(|c: char| c.is_ascii_alphabetic()) {
+            header = true;
+            // The only header keyword that carries data. A malformed or out-of-range `Mesh`
+            // line is ignored, as every text line always was.
+            let mut it = line.split_whitespace();
+            if it.next().is_some_and(|k| k.eq_ignore_ascii_case("Mesh")) {
+                // A declaration is exactly two integer fields after the keyword. Anything else
+                // (a non-numeric field, too few or too many) is not a declaration: `mesh` stays
+                // unset so headerless inference applies, rather than recovering numbers from
+                // the wrong positions (#9078).
+                let fields: Vec<&str> = it.collect();
+                if let [a, b] = fields.as_slice()
+                    && let (Ok(n), Ok(bits)) = (a.parse::<u32>(), b.parse::<u32>())
+                    && (1..=7).contains(&n)
+                    && (1..=16).contains(&bits)
+                {
+                    mesh = Some((n, bits));
+                }
+            }
             continue;
         }
         let v: Vec<f64> = line.split_whitespace().filter_map(|s| s.parse().ok()).collect();
+        if v.is_empty() {
+            // The `3DMESH` magic carries no numbers, but it is a header all the same: a table
+            // behind it reads a 1023 peak on the 10-bit scale (#9121).
+            header = true;
+            continue;
+        }
+        first_len.get_or_insert(v.len());
         if v.len() == 3 {
             rows.push([v[0], v[1], v[2]]);
         }
         // Lines with more than three numbers are the input shaper; it is assumed linear.
     }
-    let n = (rows.len() as f64).cbrt().round() as usize;
-    if n < 2 || n * n * n != rows.len() {
-        return err(format!("{} rows is not a cube", rows.len()));
-    }
-    let max = rows.iter().flatten().fold(0.0f64, |a, &b| a.max(b));
-    // Photoshop 27.11 reads a headerless table peaking at 255 or 1023 on the 12-bit scale (#9121).
-    let depths: &[f64] = if header { &[1023.0, 4095.0, 16383.0, 65535.0] } else { &[4095.0, 16383.0, 65535.0] };
-    let scale = if max <= 1.0 { 1.0 } else { depths.iter().copied().find(|&s| max <= s).unwrap_or(max) };
+    let (n, nodes, scale) = match mesh {
+        Some((in_bits, out_bits)) => {
+            let n = 2usize.pow(in_bits) + 1;
+            let expected = n.checked_pow(3).ok_or_else(|| LutError(format!("unsupported 3dl cube size {n}")))?;
+            // One row more than the declared cube, and the first row has exactly `n` values:
+            // that row is the shaper, not a 28th node of a 3³ cube (#9078).
+            let nodes = if rows.len() == expected + 1 && first_len == Some(n) { &rows[1..] } else { &rows[..] };
+            if nodes.len() != expected {
+                return err(format!("expected {expected} rows for the declared {n}³ cube, found {}", nodes.len()));
+            }
+            // Under a valid declaration the node codes are integers in the declared range, so
+            // the declaration wins for every in-range value — including a small max, where 1 is
+            // 1/declared of full output, not full output itself (#9073). Only a node beyond the
+            // declared range is a wrong declaration, and the old inference keeps such a file
+            // loading as before.
+            let max = nodes.iter().flatten().fold(0.0f64, |a, &b| a.max(b));
+            let declared = 2f64.powi(i32::try_from(out_bits).unwrap_or(16)) - 1.0;
+            (n, nodes, if max > declared { inferred_3dl_scale(max, header) } else { declared })
+        }
+        None => {
+            let n = (rows.len() as f64).cbrt().round() as usize;
+            if n < 2 || n * n * n != rows.len() {
+                return err(format!("{} rows is not a cube", rows.len()));
+            }
+            let max = rows.iter().flatten().fold(0.0f64, |a, &b| a.max(b));
+            (n, &rows[..], inferred_3dl_scale(max, header))
+        }
+    };
     let mut data = vec![0.0f32; n * n * n * 3];
-    for (i, row) in rows.iter().enumerate() {
+    for (i, row) in nodes.iter().enumerate() {
         let (r, g, b) = (i / (n * n), (i / n) % n, i % n);
         let at = ((b * n + g) * n + r) * 3;
         for k in 0..3 {
@@ -260,6 +315,18 @@ pub fn parse_3dl(text: &str) -> Result<LutFile, LutError> {
         }
     }
     LutFile { title: String::new(), size: n, data, domain_min: [0.0; 3], domain_max: [1.0; 3] }.check()
+}
+
+/// The code range a `.3dl` node table without a declared output depth was written with: the
+/// smallest common integer depth that covers the largest value; a table of 0..1 floats passes
+/// through. A headerless table has no 10-bit reading — 255 and 1023 are on the 12-bit scale, as
+/// Photoshop 27.11 reads them (#9121).
+fn inferred_3dl_scale(max: f64, header: bool) -> f64 {
+    if max <= 1.0 {
+        return 1.0;
+    }
+    let depths: &[f64] = if header { &[1023.0, 4095.0, 16383.0, 65535.0] } else { &[4095.0, 16383.0, 65535.0] };
+    depths.iter().copied().find(|&s| max <= s).unwrap_or(max)
 }
 
 /// SpeedGrade `.look`: `<size>` and a hex `<data>` string of little-endian float32 RGB triplets
@@ -515,8 +582,9 @@ DOMAIN_MAX 0.5 1 1
             let white = parse_3dl(&table(peak)).unwrap().data[21..24].to_vec();
             assert_eq!(white, [peak as f32 / 4095.0; 3], "peak {peak}");
         }
-        // A header keeps the inferred 10-bit depth.
-        let white = parse_3dl(&format!("3DMESH\nMesh 1 10\n{}", table(1023))).unwrap().data[21..24].to_vec();
+        // A header keeps the inferred 10-bit depth. The bare `3DMESH` magic is a header without a
+        // cube declaration; `Mesh 1 10` would declare a 3³ cube and refuse this 2³ table (#9078).
+        let white = parse_3dl(&format!("3DMESH\n{}", table(1023))).unwrap().data[21..24].to_vec();
         assert_eq!(white, [1.0; 3]);
     }
 
@@ -533,6 +601,130 @@ DOMAIN_MAX 0.5 1 1
         let l = parse_3dl(&text).unwrap();
         assert_eq!(l.size, 2);
         assert_eq!(l.data, LutFile::identity(2).data);
+    }
+
+    /// A `size`³ inverse-identity `.3dl` (blue fastest): node (r,g,b) outputs `max - max·v/(size-1)`
+    /// per channel, with a uniform shaper of `size` codes up to 1023.
+    fn mesh_3dl(n_bits: u32, out_bits: u32, size: usize, max: f64, shaper: bool) -> String {
+        let mut text = format!("3DMESH\nMesh {n_bits} {out_bits}\n");
+        if shaper {
+            for i in 0..size {
+                if i > 0 {
+                    text.push(' ');
+                }
+                text.push_str(&format!("{}", (1023.0 * i as f64 / (size - 1) as f64).round()));
+            }
+            text.push('\n');
+        }
+        for r in 0..size {
+            for g in 0..size {
+                for b in 0..size {
+                    let v = [r, g, b].map(|c| (max - max * c as f64 / (size - 1) as f64).round());
+                    text.push_str(&format!("{} {} {}\n", v[0], v[1], v[2]));
+                }
+            }
+        }
+        text
+    }
+
+    #[test]
+    fn three_dl_mesh_three_point_shaper_is_not_a_node() {
+        // #9078: Photoshop loads a 3³ cube whose shaper line has three values; counting it as a
+        // 28th node rejected the whole file.
+        let l = parse_3dl(&mesh_3dl(1, 12, 3, 4095.0, true)).unwrap();
+        assert_eq!(l.size, 3);
+        assert_eq!(l.data.len(), 3 * 3 * 3 * 3);
+        // The inverse identity: node (0,0,0) is full, node (2,2,2) black.
+        assert!((l.data[0] - 1.0).abs() < 1e-6 && (l.data[1] - 1.0).abs() < 1e-6 && (l.data[2] - 1.0).abs() < 1e-6);
+        let last = &l.data[l.data.len() - 3..];
+        assert_eq!(last, [0.0, 0.0, 0.0]);
+        // The same 27 nodes without the shaper row still load (the node-only control).
+        assert_eq!(parse_3dl(&mesh_3dl(1, 12, 3, 4095.0, false)).unwrap().data, l.data);
+    }
+
+    #[test]
+    fn three_dl_mesh_declares_the_output_depth() {
+        // #9073: identical node codes divide by the declared range, not by the largest value.
+        let mut text_10 = String::new();
+        let mut text_12 = String::new();
+        for (n_bits, out_bits, dst) in [(2, 10, &mut text_10), (2, 12, &mut text_12)] {
+            // A 5³ identity scaled to 10-bit codes (max 1023).
+            *dst = format!("3DMESH\nMesh {n_bits} {out_bits}\n0 256 512 768 1023\n");
+            for r in 0..5 {
+                for g in 0..5 {
+                    for b in 0..5 {
+                        dst.push_str(&format!("{} {} {}\n", r * 255, g * 255, b * 255));
+                    }
+                }
+            }
+        }
+        let white_10 = parse_3dl(&text_10).unwrap();
+        let white_12 = parse_3dl(&text_12).unwrap();
+        assert_eq!(white_10.size, 5);
+        let last_10 = &white_10.data[white_10.data.len() - 3..];
+        let last_12 = &white_12.data[white_12.data.len() - 3..];
+        assert!((last_10[0] - 1020.0 / 1023.0).abs() < 1e-6, "{last_10:?}");
+        // 1020/4095 ≈ 0.249: white renders grey, as Photoshop measures it.
+        assert!((last_12[0] - 1020.0 / 4095.0).abs() < 1e-6, "{last_12:?}");
+    }
+
+    #[test]
+    fn three_dl_mesh_header_mismatch_is_rejected() {
+        // A Mesh header that disagrees with the row count is refused, not silently re-inferred.
+        assert!(parse_3dl("3DMESH\nMesh 1 12\n0 0 0\n0 0 1\n").is_err());
+        // A node beyond the declared range is a wrong declaration: the old inference from the
+        // largest value keeps the file loading as it did before the header was honoured.
+        let mut text = String::from("3DMESH\nMesh 1 10\n");
+        for r in 0..3 {
+            for g in 0..3 {
+                for b in 0..3 {
+                    text.push_str(&format!("{} {} {}\n", r * 2047, g * 2047, b * 2047));
+                }
+            }
+        }
+        let l = parse_3dl(&text).unwrap();
+        let last = &l.data[l.data.len() - 3..];
+        assert!((last[0] - 4094.0 / 4095.0).abs() < 1e-6, "{last:?}");
+    }
+
+    #[test]
+    fn three_dl_malformed_mesh_header_falls_back_to_inference() {
+        // A `Mesh` line that is not exactly two integer fields is not a declaration: it is
+        // ignored and the table is inferred as if headerless, rather than recovering numbers
+        // from the wrong positions (#9078). A 2³ cube would otherwise be read as a 3³ cube.
+        for header in ["Mesh invalid 1 12", "Mesh 1 12 13", "Mesh 1 x", "Mesh 1"] {
+            let mut text = format!("3DMESH\n{header}\n");
+            for r in 0..2 {
+                for g in 0..2 {
+                    for b in 0..2 {
+                        text.push_str(&format!("{} {} {}\n", r * 1023, g * 1023, b * 1023));
+                    }
+                }
+            }
+            let l = parse_3dl(&text).unwrap();
+            assert_eq!(l.size, 2, "{header}");
+            assert_eq!(l.data, LutFile::identity(2).data, "{header}");
+        }
+    }
+
+    #[test]
+    fn three_dl_mesh_uses_declared_range_for_small_integer_codes() {
+        // #9073: under a valid `Mesh` declaration the node codes are integers in the declared
+        // range, so a max value of 1 is 1/4095 of full output — not full output itself.
+        let mut text = String::from("3DMESH\nMesh 1 12\n");
+        for r in 0..3 {
+            for g in 0..3 {
+                for b in 0..3 {
+                    let v = u8::from(r == 0 && g == 0 && b == 0);
+                    text.push_str(&format!("{v} {v} {v}\n"));
+                }
+            }
+        }
+        let l = parse_3dl(&text).unwrap();
+        assert_eq!(l.size, 3);
+        // blue fastest: node (0,0,0) is the first entry, code 1 → 1/4095.
+        assert!((l.data[0] - 1.0 / 4095.0).abs() < 1e-6, "{:?}", &l.data[0..3]);
+        assert!(l.data[3..].iter().all(|&v| v == 0.0), "{:?}", l.data);
     }
 
     #[test]

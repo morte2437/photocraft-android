@@ -751,3 +751,33 @@ issue = 1015
 bench = "perf_scenarios"
 row = "zoomed-out reduced composite of the huge document with one painted layer"
 enforce = false  # tracked only
+
+[[scenario]]
+id = "P80"
+title = "App frame: full CPU refresh of a 24 MP document"
+issue = 9328
+bench = "perf_scenarios"
+row = "app frame: full CPU refresh of a 24 MP document"
+budget_ms = 50
+enforce = false  # track only: the worst case for the slow-frame ring (#9328 PR B)
+
+# ---- #9329: redraw area of edits on full-canvas layers (track only) ---------------------------
+#
+# Each row checks it hits the path it claims (a full-canvas layer; a non-empty edit; a small
+# selection) and prints `refresh px <p50>` after its timing line.
+
+[[scenario]]
+id = "P81"
+title = "Undo a brush dab on a full-canvas 16-bit 15000 x 10000 layer + refresh"
+issue = 9329
+bench = "perf_scenarios"
+row = "undo a brush dab on a full-canvas 16-bit 15000x10000 layer + refresh"
+enforce = false  # new; no baseline yet
+
+[[scenario]]
+id = "P82"
+title = "Fill a 2 % selection on a full-canvas 24 MP layer + refresh"
+issue = 9329
+bench = "perf_scenarios"
+row = "fill a 2 % selection on a full-canvas 24 MP layer + refresh"
+enforce = false  # new; no baseline yet

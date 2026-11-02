@@ -2,20 +2,13 @@ use super::defaults::{apply, formatting_params, open_color_picker, shown_scale, 
 use super::editing::{cancel, commit_with};
 use super::fonts::{font_picker, fonts_ready, selected_style, style_label, styles};
 use super::keys::is_vertical;
-use super::{Color32, LayerId, PhotocraftApp, Stroke, byte_of, json, text_layer};
+use super::{Color32, LayerId, PhotocraftApp, Stroke, byte_of, insertion_style, json, selected_styles, text_layer};
 
 /// Photoshop's Type options bar.
 pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let t = crate::theme::Tokens::get(ui.ctx());
-    // Show the target layer's (first-run) style, else the tool defaults.
-    let shown = target(app).and_then(|(id, _)| {
-        let st = app.session.active()?;
-        let tl = text_layer(&st.doc, LayerId(id))?;
-        let run = tl.char_runs().into_iter().next().map(|r| r.style);
-        // The size at the selection (else the first run), as the layer shows it (#124).
-        let size = styles_at(app).map_or(tl.size_pt, |(c, _)| c.size_pt) * shown_scale(app);
-        Some((tl.font_family.clone(), run.as_ref().map(selected_style).unwrap_or_default(), size, styles_at(app).map_or(tl.color, |(c, _)| c.color)))
-    });
+    // Both Type controls describe the selected characters, or the caret's typing style.
+    let shown = styles_at(app).map(|(c, _)| (shown_family(app, &c), selected_style(&c), c.size_pt * shown_scale(app), c.color));
     let o = app.ui.tool_options.clone();
     let (mut fam, mut style, size) = match &shown {
         Some((f, s, z, _)) => (f.clone(), if s.is_empty() { "Regular".into() } else { s.clone() }, *z),
@@ -50,7 +43,8 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 None => apply(app, ui.ctx(), json!({"font": fam})),
             }
         }
-        let opts: Vec<(String, String)> = styles(&fam).into_iter().map(|s| (s.clone(), style_label(&s))).collect();
+        let style_family = if fam.is_empty() { styles_at(app).map(|(c, _)| c.font_family).unwrap_or_default() } else { fam.clone() };
+        let opts: Vec<(String, String)> = styles(&style_family).into_iter().map(|s| (s.clone(), style_label(&s))).collect();
         let opts_ref: Vec<(String, &str)> = opts.iter().map(|(a, b)| (a.clone(), b.as_str())).collect();
         if crate::widgets::dropdown(ui, "type-style", tl!("Style"), &mut style, &opts_ref, 110.0) {
             app.ui.tool_options.type_style = style.clone();
@@ -168,13 +162,29 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     }
 }
 
-/// Character and paragraph style at the target (selection start, else the layer's first run).
-/// The paragraph at a collapsed caret is the caret's, as Photoshop's options bar and Paragraph
-/// panel show it.
+/// A blank family represents mixed fonts, rather than falsely reporting the first one after
+/// commit. At a caret, the current/pending insertion font is the relevant single style.
+pub(super) fn shown_family(app: &PhotocraftApp, c: &photocraft_doc::text::CharStyle) -> String {
+    let same = |s: &photocraft_doc::text::CharStyle| s.font_family == c.font_family;
+    let Some(st) = target_doc(app) else { return c.font_family.clone() };
+    let uniform = if let Some(ed) = &app.ui.text_edit {
+        if ed.caret == ed.anchor {
+            true
+        } else {
+            text_layer(&st.doc, LayerId(ed.layer)).is_none_or(|t| selected_styles(t, ed.anchor, ed.caret).iter().all(same))
+        }
+    } else {
+        st.selected_layers().into_iter().filter_map(|id| text_layer(&st.doc, id)).all(|t| t.char_runs().iter().all(|r| same(&r.style)))
+    };
+    if uniform { c.font_family.clone() } else { String::new() }
+}
+
+/// Character and paragraph style at the selection, caret, or first run of selected layers.
+/// The paragraph at a collapsed caret is the caret's, as the options bar and Paragraph panel show it.
 pub(crate) fn styles_at(app: &PhotocraftApp) -> Option<(photocraft_doc::text::CharStyle, photocraft_doc::text::ParagraphStyle)> {
     let (layer, range) = target(app)?;
     let t = text_layer(&target_doc(app)?.doc, LayerId(layer))?;
-    let at = range.map_or(0, |r| byte_of(&t.text, r[0]));
+    let at = range.map_or_else(|| app.ui.text_edit.as_ref().map_or(0, |ed| byte_of(&t.text, ed.caret.saturating_sub(1))), |r| byte_of(&t.text, r[0]));
     let para_at = match (range, &app.ui.text_edit) {
         (None, Some(ed)) => byte_of(&t.text, ed.caret),
         _ => at,
@@ -191,7 +201,8 @@ pub(crate) fn styles_at(app: &PhotocraftApp) -> Option<(photocraft_doc::text::Ch
     };
     let runs = t.char_runs();
     let paras = t.paragraph_runs();
-    let c = runs.get(pick_at(at, runs.iter().map(|r| r.len).collect())).map(|r| r.style.clone())?;
+    let mut c = runs.get(pick_at(at, runs.iter().map(|r| r.len).collect())).map(|r| r.style.clone())?;
+    insertion_style::shown(app, &mut c);
     let p = paras.get(pick_at(para_at, paras.iter().map(|r| r.len).collect())).map(|r| r.style.clone()).unwrap_or_default();
     Some((c, p))
 }

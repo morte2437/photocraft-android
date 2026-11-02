@@ -136,7 +136,18 @@ pub fn form_body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
     // Data-driven labels (a per-part checkbox shows the part's name, not a catalogue entry)
     // come from `__labels` verbatim; everything else goes through the catalogue.
     let labels = f.get("__labels").cloned().unwrap_or(Value::Null);
-    let label = |k: &str| labels.get(k).and_then(Value::as_str).map_or_else(|| label_of(k), str::to_string);
+    let file_info = f.get("__command").and_then(Value::as_str) == Some("file.fileInfo");
+    let label = |k: &str| {
+        if file_info {
+            match k {
+                "title" => return tl!("Document Title").to_owned(),
+                "copyright" => return tl!("Copyright Notice").to_owned(),
+                "copyrightUrl" => return tl!("Copyright Info URL").to_owned(),
+                _ => {}
+            }
+        }
+        labels.get(k).and_then(Value::as_str).map_or_else(|| label_of(k), str::to_string)
+    };
     let keys = form_keys(f);
     let mut browse: Option<String> = None;
     egui::Grid::new("form-dialog").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
@@ -185,13 +196,22 @@ pub fn form_body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
                             crate::widgets::dropdown(ui, &format!("form-{k}"), &label(&k), &mut s, &refs, 200.0);
                         }
                         None => {
-                            ui.horizontal(|ui| {
-                                ui.add(egui::TextEdit::singleline(&mut s).desired_width(260.0)).accessible_name(label(&k));
-                                // A folder field gets the system folder picker (#7942, #9357).
-                                if crate::dialogs::is_folder_field(&k) && crate::widgets::secondary_button(ui, tl!("Browse…"), 0.0).clicked() {
-                                    browse = Some(k.clone());
-                                }
-                            });
+                            if file_info && matches!(k.as_str(), "description" | "keywords" | "copyright") {
+                                egui::ScrollArea::vertical().id_salt(("form-text", &k)).max_height(80.0).show(ui, |ui| {
+                                    let response = ui.add(egui::TextEdit::multiline(&mut s).desired_rows(3).desired_width(260.0)).accessible_name(label(&k));
+                                    if response.has_focus() {
+                                        ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+                                    }
+                                });
+                            } else {
+                                ui.horizontal(|ui| {
+                                    ui.add(egui::TextEdit::singleline(&mut s).desired_width(260.0)).accessible_name(label(&k));
+                                    // A folder field gets the system folder picker (#7942, #9357).
+                                    if crate::dialogs::is_folder_field(&k) && crate::widgets::secondary_button(ui, tl!("Browse…"), 0.0).clicked() {
+                                        browse = Some(k.clone());
+                                    }
+                                });
+                            }
                         }
                     }
                     json!(s)
@@ -396,7 +416,7 @@ pub(super) fn front(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, para
             let (_, _, name) = doc?;
             dialog(
                 app,
-                json!({"dir": dir, "prefix": name.rsplit_once('.').map_or(name.as_str(), |(a, _)| a), "format": "png", "visibleOnly": true}),
+                json!({"dir": dir, "prefix": name.rsplit_once('.').map_or(name.as_str(), |(a, _)| a), "format": "png", "visibleOnly": true, "trim": false}),
                 json!({"format": ["png", "jpg", "psd", "tiff", "webp", "bmp"]}),
             )
         }

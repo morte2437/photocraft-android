@@ -216,6 +216,13 @@ fn nesting_beyond_the_load_limit_is_refused_at_save() {
     assert!(matches!(e, FormatError::LimitExceeded(_)), "{e}");
 }
 
+/// craft-pcraft-format's default manifest nesting limit is computed from its own copy of the
+/// group depth, so the two must stay equal.
+#[test]
+fn group_depth_matches_craft_pcraft_format() {
+    assert_eq!(MAX_GROUP_DEPTH, craft_pcraft_format::MAX_GROUP_DEPTH);
+}
+
 #[test]
 fn empty_document_roundtrips() {
     let doc = Document::new("empty", photocraft_doc::Size::new(1, 1), ColorMode::Rgb, SampleType::U8);
@@ -522,6 +529,22 @@ fn save_is_deterministic() {
     let a = save_to_bytes(&doc, &SaveOptions::default()).unwrap();
     let b = save_to_bytes(&doc, &SaveOptions::default()).unwrap();
     assert_eq!(a, b);
+}
+
+/// A bundle that is read and saved again gives the same bytes, previews included.
+#[test]
+fn save_load_save_gives_the_same_bytes() {
+    let mut preview = Rgba8Image::new(4, 3);
+    preview.pixels.iter_mut().enumerate().for_each(|(i, p)| *p = i as u8);
+    for opts in [SaveOptions::default(), SaveOptions { thumbnail: Some(preview.clone()), composite: Some(preview.clone()) }] {
+        for mode in MODES {
+            for depth in SampleType::ALL {
+                let first = save_to_bytes(&rich_doc(mode, depth), &opts).unwrap();
+                let again = save_to_bytes(&load_from_bytes(&first).unwrap(), &opts).unwrap();
+                assert!(first == again, "{mode:?} {depth:?}: the second save differs");
+            }
+        }
+    }
 }
 
 #[test]
@@ -974,4 +997,58 @@ fn locked_stale_preview_does_not_fail_committed_save() {
     writer.save_dir(&doc, &dir, &SaveOptions::default()).unwrap();
     assert!(!dir.join("thumb.png").exists());
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn arrow_document_is_backward_compatible() {
+    use photocraft_doc::{Fill, LiveShape, Path, ShapeLayer, Subpath};
+
+    let arrow =
+        LiveShape::ArrowLine { from: [12.0, 64.0], to: [140.0, 64.0], weight: 16.0, start: false, end: true, width: 52.0, length: 50.0, concavity: 20.0 };
+
+    let path = Path::new(vec![Subpath::polygon(&[(12.0, 56.0), (100.0, 56.0), (100.0, 44.0), (140.0, 64.0), (100.0, 84.0), (100.0, 72.0), (12.0, 72.0)])]);
+
+    let mut doc = Document::new("Arrow compatibility", photocraft_doc::Size::new(256, 256), ColorMode::Rgb, SampleType::U8);
+
+    doc.layers.push(Layer::new(
+        "Editable arrow",
+        LayerContent::Shape(ShapeLayer {
+            path: path.clone(),
+            fill: Some(Fill::Solid(photocraft_doc::Color::BLACK)),
+            live: Some(arrow.clone()),
+            ..Default::default()
+        }),
+    ));
+
+    let bytes = save_to_bytes(&doc, &SaveOptions::default()).unwrap();
+    let manifest = read_manifest(&bytes).unwrap();
+    let json = serde_json::to_value(&manifest).unwrap();
+    let saved = &json["document"]["layers"][0]["content"];
+
+    assert_eq!(saved["kind"], "shape");
+    assert!(saved["live"].is_null());
+    assert_eq!(saved["arrow_live"]["kind"], "arrowLine");
+    assert_eq!(saved["path"], serde_json::to_value(&path).unwrap());
+
+    // Simulate an old reader that knows no ArrowLine or arrow_live.
+    #[derive(serde::Deserialize)]
+    struct LegacyShape {
+        live: Option<LegacyLive>,
+        path: Path,
+    }
+
+    #[derive(serde::Deserialize)]
+    #[serde(tag = "kind", rename_all = "camelCase")]
+    #[allow(dead_code)]
+    enum LegacyLive {
+        Line { from: [f64; 2], to: [f64; 2], weight: f64 },
+    }
+
+    let legacy: LegacyShape = serde_json::from_value(saved.clone()).unwrap();
+    assert!(legacy.live.is_none());
+    assert_eq!(legacy.path, path);
+
+    // The new reader restores full parametric editability.
+    let loaded = load_from_bytes(&bytes).unwrap();
+    assert_eq!(loaded, doc);
 }

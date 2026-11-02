@@ -10,6 +10,9 @@ pub enum WebFormat {
     Png24,
     Jpeg,
     Wbmp,
+    /// WebP, lossy (our VP8 encoder) or lossless. Not in Photoshop's legacy dialog, but the
+    /// format people prepare web images in now (#2415, #6391).
+    Webp,
 }
 
 impl WebFormat {
@@ -20,6 +23,7 @@ impl WebFormat {
             "png24" | "png-24" | "png" | "png32" => WebFormat::Png24,
             "jpeg" | "jpg" => WebFormat::Jpeg,
             "wbmp" => WebFormat::Wbmp,
+            "webp" => WebFormat::Webp,
             _ => return None,
         })
     }
@@ -29,6 +33,7 @@ impl WebFormat {
             WebFormat::Png8 | WebFormat::Png24 => "png",
             WebFormat::Jpeg => "jpg",
             WebFormat::Wbmp => "wbmp",
+            WebFormat::Webp => "webp",
         }
     }
     pub fn indexed(self) -> bool {
@@ -68,8 +73,10 @@ pub struct WebSettings {
     /// Web Snap: palette entries within this distance (0..=1 of the channel range) snap to the
     /// web-safe cube.
     pub web_snap: f32,
-    /// JPEG quality 0..=100.
+    /// JPEG and lossy WebP quality 0..=100.
     pub quality: u8,
+    /// WebP: lossless instead of lossy at `quality`.
+    pub lossless: bool,
     pub progressive: bool,
     pub optimized: bool,
     pub embed_icc: bool,
@@ -92,6 +99,7 @@ impl Default for WebSettings {
             interlaced: false,
             web_snap: 0.0,
             quality: 60,
+            lossless: false,
             progressive: false,
             optimized: true,
             embed_icc: false,
@@ -123,7 +131,7 @@ impl WebSettings {
         }
         let s = |k: &str| p.get(k).and_then(Value::as_str);
         if let Some(f) = s("format") {
-            st.format = WebFormat::from_id(f).ok_or_else(|| bad(cmd, format!("unknown format `{f}` (gif|png8|png24|jpeg|wbmp)")))?;
+            st.format = WebFormat::from_id(f).ok_or_else(|| bad(cmd, format!("unknown format `{f}` (gif|png8|png24|jpeg|wbmp|webp)")))?;
         }
         if let Some(k) = s("palette") {
             st.palette = match k {
@@ -148,7 +156,13 @@ impl WebSettings {
         if let Some(a) = p.get("ditherAmount").and_then(Value::as_f64) {
             st.dither_amount = (a as f32 / 100.0).clamp(0.0, 1.0);
         }
-        if let Some(b) = p.get("transparency").and_then(Value::as_bool) {
+        // An on/off option given as anything but true or false is an error, not its default.
+        let flag = |k: &str| match p.get(k) {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::Bool(b)) => Ok(Some(*b)),
+            Some(_) => Err(bad(cmd, format!("`{k}` must be true or false"))),
+        };
+        if let Some(b) = flag("transparency")? {
             st.transparency = b;
         }
         match s("matte") {
@@ -159,11 +173,12 @@ impl WebSettings {
         for (k, slot) in [
             ("interlaced", &mut st.interlaced),
             ("progressive", &mut st.progressive),
+            ("lossless", &mut st.lossless),
             ("optimized", &mut st.optimized),
             ("embedIcc", &mut st.embed_icc),
             ("convertToSrgb", &mut st.convert_to_srgb),
         ] {
-            if let Some(b) = p.get(k).and_then(Value::as_bool) {
+            if let Some(b) = flag(k)? {
                 *slot = b;
             }
         }
@@ -217,6 +232,7 @@ impl WebSettings {
             WebFormat::Png24 => "png24",
             WebFormat::Jpeg => "jpeg",
             WebFormat::Wbmp => "wbmp",
+            WebFormat::Webp => "webp",
         };
         let palette = match self.palette {
             PaletteKind::Exact => "exact",
@@ -242,7 +258,7 @@ impl WebSettings {
             WebMetadata::All => "all",
         };
         let matte = self.matte.map_or("none".to_string(), |c| format!("#{:02x}{:02x}{:02x}", to8(c[0]), to8(c[1]), to8(c[2])));
-        let mut p = json!({"format": format, "palette": palette, "colors": self.colors, "dither": dither, "ditherAmount": (self.dither_amount * 100.0).round(), "transparency": self.transparency, "matte": matte, "interlaced": self.interlaced, "webSnap": (self.web_snap * 100.0).round(), "quality": self.quality, "progressive": self.progressive, "optimized": self.optimized, "embedIcc": self.embed_icc, "metadata": metadata, "convertToSrgb": self.convert_to_srgb});
+        let mut p = json!({"format": format, "palette": palette, "colors": self.colors, "dither": dither, "ditherAmount": (self.dither_amount * 100.0).round(), "transparency": self.transparency, "matte": matte, "interlaced": self.interlaced, "webSnap": (self.web_snap * 100.0).round(), "quality": self.quality, "lossless": self.lossless, "progressive": self.progressive, "optimized": self.optimized, "embedIcc": self.embed_icc, "metadata": metadata, "convertToSrgb": self.convert_to_srgb});
         if let Some(table) = &self.color_table {
             p["colorTable"] = json!(table.iter().map(|c| rgb_hex(*c)).collect::<Vec<_>>());
         }

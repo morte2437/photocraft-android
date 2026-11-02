@@ -68,9 +68,9 @@ pub struct Perf {
     pub spans: std::collections::BTreeMap<&'static str, f64>,
     #[serde(skip)]
     max_decay: f64,
-    /// Composite and upload time of this frame's canvas refreshes, in ms (the stroke trace).
+    /// This frame's stages, gathered as it runs (see `frame_stages`).
     #[serde(skip)]
-    pub(crate) frame_refresh_ms: f64,
+    pub(crate) stage: crate::frame_stages::FrameStages,
 }
 
 /// What the app renders with and why (Help › System Info, Preferences › Performance, the `perf`
@@ -214,7 +214,7 @@ pub fn backend_name(b: wgpu::Backend) -> &'static str {
 
 impl Perf {
     pub fn record(&mut self, kind: &'static str, px: u64, composite_ms: f64, upload_ms: f64) {
-        self.frame_refresh_ms += composite_ms + upload_ms;
+        self.stage.refresh(kind, px, composite_ms, upload_ms);
         self.last_refresh = kind;
         self.last_refresh_px = px;
         self.composite_ms = composite_ms;

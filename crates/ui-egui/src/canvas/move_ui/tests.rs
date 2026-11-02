@@ -161,6 +161,232 @@ fn live(outline: bool) -> bool {
     shown
 }
 
+/// A layer past the pixel-memory limit isn't copied for each frame of a drag (#6114, #6163).
+#[test]
+fn layers_over_the_limit_are_not_followed_live() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.session.execute("file.new", json!({"width": 64, "height": 64})).unwrap();
+    app.session.execute("layer.new.layer", json!({})).unwrap();
+    app.session.execute("select.rect", json!({"x": 8, "y": 8, "width": 16, "height": 16})).unwrap();
+    app.session.execute("edit.fill", json!({"color": "#ff0000"})).unwrap();
+    let st = app.session.active().unwrap();
+    let id = st.active_layer.unwrap();
+    let one_tile = u64::from(photocraft_geom::TILE_SIZE.unsigned_abs()).pow(2) * 4;
+    assert!(super::exceeds(&st.doc, &[id], one_tile - 1, false), "a tile of pixels is over a limit below its size");
+    assert!(super::exceeds(&st.doc, &[id], one_tile * 4 - 1, false), "a shift can write four tiles for each stored one");
+    assert!(!super::exceeds(&st.doc, &[id], u64::MAX, false), "nothing is over an unlimited drag");
+    assert!(!super::exceeds(&st.doc, &[], 0, false), "no layers hold no pixels");
+    assert!(!super::exceeds(&st.doc, &[id], super::LIVE_LIMIT, false), "an ordinary layer follows the pointer");
+}
+
+/// A drag whose layers are past the limit shows no live copy (the outline and arrow stay), and
+/// the release still moves the layer once (#6114, #6163).
+#[test]
+fn a_drag_over_the_limit_shows_no_live_copy_and_still_commits() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.session.execute("file.new", json!({"width": 64, "height": 64})).unwrap();
+    app.sync_views();
+    app.session.execute("layer.new.layer", json!({})).unwrap();
+    app.session.execute("select.rect", json!({"x": 8, "y": 8, "width": 16, "height": 16})).unwrap();
+    app.session.execute("edit.fill", json!({"color": "#ff0000"})).unwrap();
+    app.session.execute("select.deselect", json!({})).unwrap();
+    let id = app.session.active().unwrap().active_layer.unwrap();
+    // Enough stored tiles, all sharing one allocation, to be past the limit before the drag starts.
+    let step = photocraft_geom::TILE_SIZE;
+    app.session
+        .edit("paint", |doc, a| {
+            let surface = doc.layer_mut(a.unwrap()).unwrap().surface_mut().unwrap();
+            let tile_bytes = u64::from(step.unsigned_abs()).pow(2) * surface.format().bytes_per_pixel() as u64;
+            let count = (super::LIVE_LIMIT / (tile_bytes * 2) + 2) as i32; // a row writes about (n + 1) x 2 tiles
+            let tile = surface.solid_tile(&[1.0, 0.0, 0.0, 1.0]);
+            surface.put_tiles((0..count).map(|x| (photocraft_geom::TileCoord::new(x, 0), tile.clone())));
+            Ok(())
+        })
+        .unwrap();
+    app.ui.tool = Tool::Move;
+    app.ui.extras.snap = false;
+    app.ui.view.show.smart_guides = false;
+    let m = egui::Modifiers::NONE;
+    let to = 16.0 + f64::from(step); // a whole tile, so the release shares the tiles too
+    crate::canvas::tool_event(&mut app, ToolEvent::Down { x: 16.0, y: 16.0, pressure: 1.0 }, m);
+    crate::canvas::tool_event(&mut app, ToolEvent::Move { x: to, y: 16.0, pressure: 1.0 }, m);
+    assert!(super::display_doc(&mut app, 0).is_none(), "a layer over the limit isn't copied for the frame");
+    assert!(!super::showing(&app));
+    crate::canvas::tool_event(&mut app, ToolEvent::Up { x: to, y: 16.0 }, m);
+    let d = &app.session.active().unwrap().doc;
+    assert!(d.layer(id).and_then(|l| l.surface()).is_some_and(|s| s.pixel(to as i32, 16)[3] > 0.5), "the release moved the layer");
+}
+
+/// What a live drag frame writes is the tiles the content can reach, not four per stored tile for
+/// every layer: a dense photo stays live, isolated tiles (each straddles four) don't (#6114).
+#[test]
+fn the_estimate_counts_reachable_target_tiles_and_what_moved_target_copies() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.session.execute("file.new", json!({"width": 64, "height": 64, "background": "transparent"})).unwrap();
+    app.session.execute("layer.new.layer", json!({})).unwrap();
+    let step = photocraft_geom::TILE_SIZE;
+    let tile_bytes = u64::from(step.unsigned_abs()).pow(2) * 4;
+    let tiles_over_limit = (super::LIVE_LIMIT / tile_bytes + 1) as i32;
+    // A dense block of the same number of stored tiles as the sparse one below.
+    let side = (f64::from(tiles_over_limit / 4)).sqrt() as i32;
+    app.session
+        .edit("paint", |doc, a| {
+            let surface = doc.layer_mut(a.unwrap()).unwrap().surface_mut().unwrap();
+            let tile = surface.solid_tile(&[1.0, 0.0, 0.0, 1.0]);
+            surface.put_tiles((0..side * side).map(|i| (photocraft_geom::TileCoord::new(i % side, i / side), tile.clone())));
+            Ok(())
+        })
+        .unwrap();
+    let st = app.session.active().unwrap();
+    let id = st.active_layer.unwrap();
+    assert!(!super::exceeds(&st.doc, &[id], super::LIVE_LIMIT, false), "a dense layer writes about as many tiles as it stores");
+    // The same count of isolated tiles: each straddles four target tiles.
+    let sparse = tiles_over_limit / 4 + 1;
+    app.session
+        .edit("paint", |doc, a| {
+            let surface = doc.layer_mut(a.unwrap()).unwrap().surface_mut().unwrap();
+            let tile = surface.solid_tile(&[1.0, 0.0, 0.0, 1.0]);
+            surface.put_tiles((0..sparse).map(|i| (photocraft_geom::TileCoord::new(i * 10, i * 10 + 1000), tile.clone())));
+            Ok(())
+        })
+        .unwrap();
+    let st = app.session.active().unwrap();
+    assert!(super::exceeds(&st.doc, &[id], super::LIVE_LIMIT, false), "isolated tiles each write up to four");
+    // Only the mask is copied when an unlinked mask is dragged alone: the huge content isn't charged.
+    app.session.execute("layer.layerMask.revealAll", json!({})).unwrap();
+    app.session.execute("layer.layerMask.linked", json!({"linked": false})).unwrap();
+    let st = app.session.active().unwrap();
+    assert!(super::exceeds(&st.doc, &[id], 1, false), "dragging the layer copies its content");
+    assert!(!super::exceeds(&st.doc, &[id], super::LIVE_LIMIT / 4, true), "dragging the unlinked mask alone copies the mask only");
+}
+
+/// A group moves its contents whole; a group's unlinked mask dragged alone leaves them where they are.
+#[test]
+fn the_estimate_follows_a_group_into_its_contents() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.session.execute("file.new", json!({"width": 64, "height": 64, "background": "transparent"})).unwrap();
+    app.session.execute("layer.new.layer", json!({})).unwrap();
+    let inner = app.session.active().unwrap().active_layer.unwrap();
+    app.session
+        .edit("paint", |doc, a| {
+            let surface = doc.layer_mut(a.unwrap()).unwrap().surface_mut().unwrap();
+            let tile = surface.solid_tile(&[1.0, 0.0, 0.0, 1.0]);
+            surface.put_tiles((0..600).map(|i| (photocraft_geom::TileCoord::new(i * 10, i * 10), tile.clone())));
+            Ok(())
+        })
+        .unwrap();
+    let group = app.session.execute("layer.new.group", json!({})).unwrap()["layer"].as_u64().unwrap();
+    app.session.execute("layer.moveTo", json!({"layer": inner.0, "target": group, "position": "into"})).unwrap();
+    let group = photocraft_doc::LayerId(group);
+    let st = app.session.active().unwrap();
+    assert!(super::exceeds(&st.doc, &[group], super::LIVE_LIMIT, false), "the group's contents are shifted with it");
+    app.session.execute("layer.layerMask.revealAll", json!({"layer": group.0})).unwrap();
+    app.session.execute("layer.layerMask.linked", json!({"layer": group.0, "linked": false})).unwrap();
+    let st = app.session.active().unwrap();
+    assert!(st.doc.layer(group).is_some_and(|l| l.mask.as_ref().is_some_and(|m| !m.linked)), "the group has an unlinked mask");
+    assert!(!super::exceeds(&st.doc, &[group], super::LIVE_LIMIT, true), "an unlinked group mask dragged alone leaves the contents");
+}
+
+/// A `width` × `height` `depth`-bit document whose new layer covers the canvas, one fill per tile
+/// with its own colour (a photo: no two tiles share pixels), and the Move tool on.
+fn photo(width: u32, height: u32, depth: u32) -> PhotocraftApp {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.session.execute("file.new", json!({"width": width, "height": height, "depth": depth})).unwrap();
+    app.sync_views();
+    app.session.execute("layer.new.layer", json!({})).unwrap();
+    app.session
+        .edit("paint", |doc, a| {
+            let canvas = Rect::new(0, 0, width as i32, height as i32);
+            let surface = doc.layer_mut(a.unwrap()).unwrap().surface_mut().unwrap();
+            for (i, c) in canvas.tiles().enumerate() {
+                let v = (i % 251) as f32 / 251.0;
+                surface.fill_rect(c.rect().intersect(&canvas), &[v, 1.0 - v, 0.5, 1.0]);
+            }
+            Ok(())
+        })
+        .unwrap();
+    app.ui.tool = Tool::Move;
+    app.ui.extras.snap = false;
+    app.ui.view.show.smart_guides = false;
+    app
+}
+
+/// Mid-drag by (37, 11): is the layer shown at the pointer?
+fn follows_a_drag(app: &mut PhotocraftApp) -> bool {
+    let m = egui::Modifiers::NONE;
+    crate::canvas::tool_event(app, ToolEvent::Down { x: 100.0, y: 100.0, pressure: 1.0 }, m);
+    crate::canvas::tool_event(app, ToolEvent::Move { x: 137.0, y: 111.0, pressure: 1.0 }, m);
+    let shown = super::display_doc(app, 0).is_some();
+    crate::canvas::tool_event(app, ToolEvent::Up { x: 137.0, y: 111.0 }, m);
+    shown
+}
+
+/// Ordinary photos keep the live drag: a 36 MP 8-bit layer (580 stored tiles) and a 24 MP 16-bit
+/// one write their tiles plus one edge row and column, not four tiles for each stored one.
+#[test]
+fn ordinary_photos_follow_the_pointer() {
+    for (w, h, depth) in [(7360, 4912, 8), (6000, 4000, 16)] {
+        let mut app = photo(w, h, depth);
+        assert!(follows_a_drag(&mut app), "{w} × {h} {depth}-bit");
+    }
+}
+
+/// A solid fill stores one tile shared by every covered position, and a shift shares it too (only
+/// the edge is written), so a large filled layer drags live as it does without the limit.
+#[test]
+fn a_large_solid_layer_follows_the_pointer() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.session.execute("file.new", json!({"width": 12000, "height": 12000, "depth": 16})).unwrap();
+    app.sync_views();
+    app.session.execute("layer.new.layer", json!({})).unwrap();
+    app.session.execute("select.all", json!({})).unwrap();
+    app.session.execute("edit.fill", json!({"color": "#ff0000"})).unwrap();
+    app.session.execute("select.deselect", json!({})).unwrap();
+    app.ui.tool = Tool::Move;
+    app.ui.extras.snap = false;
+    app.ui.view.show.smart_guides = false;
+    assert!(follows_a_drag(&mut app), "a filled 12000 × 12000 16-bit layer");
+}
+
+/// Content off the tile grid: the 2 × 2 blocks round its stored tiles reach a column and a row
+/// past what a shift writes, which is at most the tiles the content can reach.
+#[test]
+fn the_estimate_is_capped_by_what_the_content_reaches() {
+    let format = photocraft_color::PixelFormat::RGBA8;
+    let mut s = photocraft_raster::Surface::new(format);
+    s.fill_rect(Rect::new(128, 128, 384, 384), &[1.0, 0.0, 0.0, 1.0]);
+    let tile = u64::from(photocraft_geom::TILE_SIZE.unsigned_abs()).pow(2) * format.bytes_per_pixel() as u64;
+    assert_eq!(s.tile_count(), 4, "a tile-sized square straddles four tiles");
+    assert_eq!(super::shift_bytes(&s), 4 * tile, "it reaches (1 + 1) × (1 + 1) target tiles, not the nine blocks round its tiles");
+}
+
+/// `shift_smart` shifts a smart object's filter mask with it: the estimate counts it.
+#[test]
+fn the_estimate_counts_a_smart_filter_mask() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.session.execute("file.new", json!({"width": 64, "height": 64, "background": "transparent"})).unwrap();
+    app.session.execute("layer.new.layer", json!({})).unwrap();
+    app.session.execute("select.rect", json!({"x": 8, "y": 8, "width": 16, "height": 16})).unwrap();
+    app.session.execute("edit.fill", json!({"color": "#ff0000"})).unwrap();
+    app.session.execute("select.deselect", json!({})).unwrap();
+    app.session.execute("layer.smartObjects.convertToSmartObject", json!({})).unwrap();
+    let id = app.session.active().unwrap().active_layer.unwrap();
+    assert!(!super::exceeds(&app.session.active().unwrap().doc, &[id], super::LIVE_LIMIT, false), "a small smart object");
+    app.session
+        .edit("paint", |doc, a| {
+            let photocraft_doc::LayerContent::Smart(sm) = &mut doc.layer_mut(a.unwrap()).unwrap().content else { panic!("not a smart object") };
+            let mut mask = photocraft_doc::LayerMask::hide_all();
+            // Isolated tiles, each written as four by a shift: past the limit at one byte a pixel.
+            let tile = mask.surface.solid_tile(&[1.0]);
+            let count = (super::LIVE_LIMIT / (1 << 16) / 4 + 1) as i32;
+            mask.surface.put_tiles((0..count).map(|i| (photocraft_geom::TileCoord::new(i * 10, 0), tile.clone())));
+            sm.filter_mask = Some(mask);
+            Ok(())
+        })
+        .unwrap();
+    assert!(super::exceeds(&app.session.active().unwrap().doc, &[id], super::LIVE_LIMIT, false), "the filter mask moves with it");
+}
+
 #[test]
 fn bounding_box_preference_turns_the_live_drag_off() {
     assert!(live(false), "by default the layer follows the pointer");

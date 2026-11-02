@@ -52,6 +52,28 @@ fn clone_stamp_in_pattern_preview_wraps_a_dab_across_the_right_edge() {
     }
 }
 
+/// A Clone Stamp click paints with the brush's hardness (the Brush popup's), not a hard tip:
+/// near the rim a soft brush paints only part of the source, a hard one all of it.
+#[test]
+fn clone_stamp_paints_with_the_brush_hardness() {
+    let rim = |hardness: f32| {
+        let mut app = app();
+        app.run("tools.setBrush", json!({"brush": {"size": 24, "hardness": hardness}})).unwrap();
+        app.run("paint.pencil", json!({"points": [[15, 30]], "size": 40, "color": "#ff0000"})).unwrap();
+        app.ui.tool = Tool::CloneStamp;
+        app.ui.clone_source = Some([15.0, 30.0]);
+        let m = egui::Modifiers::NONE;
+        tool_event(&mut app, ToolEvent::Down { x: 70.0, y: 30.0, pressure: 1.0 }, m);
+        tool_event(&mut app, ToolEvent::Up { x: 70.0, y: 30.0 }, m);
+        assert!(!app.ui.status_error, "{}", app.ui.status);
+        // 9 px from the centre of a 12 px radius: inside a hard tip, on a soft tip's falloff.
+        1.0 - active(&app).surface().unwrap().rgba(79, 30)[1]
+    };
+    let (hard, soft) = (rim(1.0), rim(0.0));
+    assert!(hard > 0.99, "a hard tip clones fully near its rim: {hard}");
+    assert!(soft < 0.8, "a soft tip clones only part of the source there: {soft}");
+}
+
 #[test]
 fn alt_flips_dodge_burn_and_blur_sharpen() {
     for (tool, flipped) in [(Tool::Dodge, Tool::Burn), (Tool::Burn, Tool::Dodge), (Tool::Blur, Tool::Sharpen), (Tool::Sharpen, Tool::Blur)] {
@@ -701,6 +723,25 @@ fn remove_strokes_waiting_are_dropped_when_the_tool_changes() {
     app.ui.tool = Tool::SpotHealing;
     assert!(!remove_pending_live(&mut app));
     assert!(app.remove_pending.is_empty(), "the strokes belong to the Remove tool");
+}
+
+#[test]
+fn subset_remove_uses_the_existing_layer_without_losing_the_saved_new_layer_option() {
+    let mut app = app();
+    app.ui.tool = Tool::Remove;
+    app.ui.tool_options.remove_new_layer = true;
+    app.run("channel.target", json!({"colors":[0,2]})).unwrap();
+    let layers = app.session.active().unwrap().doc.walk().len();
+    tool_event(&mut app, ToolEvent::Down { x: 30.0, y: 18.0, pressure: 1.0 }, egui::Modifiers::NONE);
+    tool_event(&mut app, ToolEvent::Up { x: 30.0, y: 42.0 }, egui::Modifiers::NONE);
+    assert!(!app.ui.status_error, "{}", app.ui.status);
+    let (id, params) = app.session.journal.last().unwrap();
+    assert_eq!(id, "paint.remove");
+    assert_eq!(params["newLayer"], json!(false));
+    assert_eq!(app.session.active().unwrap().doc.walk().len(), layers);
+    assert!(app.ui.tool_options.remove_new_layer);
+    app.run("channel.target", json!({"channel":"composite"})).unwrap();
+    assert_eq!(remove_params(&app.ui.tool_options, true)["newLayer"], json!(true));
 }
 
 #[test]

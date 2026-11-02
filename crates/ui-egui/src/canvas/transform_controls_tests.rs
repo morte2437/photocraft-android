@@ -115,7 +115,7 @@ fn a_floating_piece_among_several_selected_layers_keeps_the_shared_frame() {
     app.session.execute("select.rect", json!({"x": 20, "y": 20, "width": 100, "height": 90})).unwrap();
     app.ui.tool = Tool::Move;
     app.ui.tool_options.move_show_transform = true;
-    assert!(transform_controls_several(&app), "two layers framed");
+    assert_eq!(transform_controls_layers(&app).len(), 2, "two layers framed");
     app.session.execute("select.float", json!({"dx": 5, "dy": 0})).unwrap();
     assert!(photocraft_engine::float_cmds::floating(app.session.active().unwrap()).is_some());
     let xf =
@@ -126,34 +126,36 @@ fn a_floating_piece_among_several_selected_layers_keeps_the_shared_frame() {
 }
 
 #[test]
-fn several_selected_layers_share_one_frame_without_handles() {
-    // As in Photoshop: Show Transform Controls frames every selected layer. Free Transform
-    // works on one layer, so the shared frame doesn't start it.
+fn several_selected_layers_share_one_frame_that_transforms_them_all() {
+    // As in Photoshop: Show Transform Controls frames every selected layer, and its handles
+    // start one Free Transform of all of them (#6501).
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", json!({"width": 200, "height": 200})).unwrap();
     app.session.execute("shape.create", json!({"kind": "rect", "rect": [20, 30, 40, 40], "fill": "#ff0000"})).unwrap();
     let a = app.session.active().unwrap().active_layer.unwrap();
     app.session.execute("shape.create", json!({"kind": "rect", "rect": [100, 120, 50, 30], "fill": "#ff0000"})).unwrap();
+    let b = app.session.active().unwrap().active_layer.unwrap();
     app.sync_views();
     app.ui.tool = Tool::Move;
     app.ui.tool_options.move_show_transform = true;
     let xf =
         ViewXform { rect: Rect::from_min_size(Pos2::ZERO, vec2(200.0, 200.0)), zoom: 1.0, center: [100.0, 100.0], flip: false, rotation: 0.0, aspect: 1.0 };
     let one = transform_controls_rect(&app, &xf).unwrap();
-    assert!(!transform_controls_several(&app));
     app.session.execute("layer.select", json!({"layer": a.0, "mode": "add"})).unwrap();
-    assert!(transform_controls_several(&app));
     let both = transform_controls_rect(&app, &xf).unwrap();
     assert!(both.contains_rect(one) && both.width() > one.width() && both.height() > one.height(), "{both:?} frames both");
     let (lt, rb) = (xf.to_doc(both.left_top()), xf.to_doc(both.right_bottom()));
     assert!((lt[0] - 20.0).abs() < 1e-3 && (lt[1] - 30.0).abs() < 1e-3 && (rb[0] - 150.0).abs() < 1e-3 && (rb[1] - 150.0).abs() < 1e-3, "{lt:?} {rb:?}");
-    let ctx = egui::Context::default();
-    assert!(!begin_transform_controls_at(&mut app, &ctx, &xf, both.right_bottom()));
-    assert!(app.ui.transform.is_none());
     // The Background never joins the frame.
     let bg = app.session.active().unwrap().doc.layers[0].id;
     app.session.execute("layer.select", json!({"layer": bg.0, "mode": "add"})).unwrap();
     assert_eq!(transform_controls_layers(&app).len(), 2);
+    assert_eq!(transform_controls_rect(&app, &xf), Some(both));
+    let ctx = egui::Context::default();
+    assert!(begin_transform_controls_at(&mut app, &ctx, &xf, both.right_bottom()));
+    let t = app.ui.transform.as_ref().expect("the shared frame's handle starts Free Transform");
+    assert_eq!(t.rect, [20.0, 30.0, 150.0, 150.0]);
+    assert_eq!(t.layers, [a.0, b.0]);
 }
 
 #[test]

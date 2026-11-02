@@ -182,9 +182,8 @@ fn open_filters_keep_literal_extensions_on_windows_and_macos() {
 }
 
 #[test]
-fn flatpak_builds_have_no_update_transport() {
-    assert!(update_transport(Some(std::ffi::OsStr::new("ai.storyteller.photocraft"))).is_none());
-    assert!(update_transport(None).is_some());
+fn native_services_provide_update_transport() {
+    assert!(native(None).check_updates.is_some());
 }
 
 #[test]
@@ -253,7 +252,7 @@ fn every_save_dialog_leads_with_its_own_extension() {
         app.run("prefs.set", json!({"path": "export.quickExportFormat", "value": format})).unwrap();
         let _ = invoke(&mut app, "file.export.quickExportAsPng");
     }
-    for format in ["gif", "png8", "png24", "jpeg", "wbmp"] {
+    for format in ["gif", "png8", "png24", "jpeg", "webp", "wbmp"] {
         dialog(&mut app, "file.export.saveForWebLegacy", json!({"format": format}));
     }
     app.run("slice.new", json!({"x": 0, "y": 0, "width": 2, "height": 2})).unwrap();
@@ -266,13 +265,13 @@ fn every_save_dialog_leads_with_its_own_extension() {
     let exts: Vec<&str> = asked.iter().filter_map(|s| s.rsplit_once('.').map(|(_, e)| e)).collect();
     // The extension each save above should suggest, in order.
     let want = [
-        "psd",                       // Save As untitled
-        "pcraft jpeg gif bmp psd",   // Save As opened .pcraft .jpeg .gif .bmp .dng
-        "psd",                       // Save a Copy
-        "png jpg webp tif tga",      // Export As
-        "png jpg gif webp",          // Quick Export
-        "gif png png jpg wbmp html", // Save for Web: gif png8 png24 jpeg wbmp, then with slices
-        "csv pcpresets",             // Measurement Log, Export Presets
+        "psd",                            // Save As untitled
+        "pcraft jpeg gif bmp psd",        // Save As opened .pcraft .jpeg .gif .bmp .dng
+        "psd",                            // Save a Copy
+        "png jpg webp tif tga",           // Export As
+        "png jpg gif webp",               // Quick Export
+        "gif png png jpg webp wbmp html", // Save for Web: gif png8 png24 jpeg webp wbmp, then with slices
+        "csv pcpresets",                  // Measurement Log, Export Presets
     ]
     .join(" ");
     assert_eq!(exts, want.split(' ').collect::<Vec<_>>());
@@ -313,10 +312,15 @@ fn save_as_offers_only_writable_formats_including_ico() {
         let subtype = name.rsplit('.').next().unwrap_or_default();
         assert!(!filters.iter().any(|(_, exts)| exts.iter().any(|e| e == subtype)), "{name}: .{subtype} is offered");
     }
-    // File › Open lists every file Save As writes, also in that format's own type (PDF is written
-    // but not read yet).
+    // File Open lists readable Save As formats in their own type. Export-only formats must
+    // stay absent from both Open filters rather than advertising an unavailable decoder.
     for (name, exts) in SAVE_FILTERS {
         for ext in exts.iter().filter(|e| **e != "pdf") {
+            if photocraft_codecs::from_extension(ext).is_some_and(|format| !format.caps().read) {
+                assert!(!OPEN_EXTS.contains(ext), "{name}: export-only .{ext} must not appear in All Formats");
+                assert!(!OPEN_FILTERS.iter().any(|(_, open)| open.contains(ext)), "{name}: export-only .{ext} must not appear in an Open type");
+                continue;
+            }
             assert!(OPEN_EXTS.contains(ext), "{name}: Open's All Formats lacks .{ext}");
             assert!(OPEN_FILTERS.iter().any(|(_, open)| open.contains(ext)), "{name}: no Open type lists .{ext}");
         }

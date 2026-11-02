@@ -694,8 +694,8 @@ fn with_text_layer<R>(s: &mut Session, p: &Value, label: &str, f: impl FnOnce(&m
         }
         Ok((r, damage))
     })?;
-    if let Some(st) = s.active_mut() {
-        st.last_damage = damage;
+    if let Some(d) = damage {
+        s.hint_damage(d);
     }
     Ok(r)
 }
@@ -764,8 +764,8 @@ pub(crate) fn with_text_targets(
         }
         Ok(damage)
     })?;
-    if let Some(st) = s.active_mut() {
-        st.last_damage = damage;
+    if let Some(d) = damage {
+        s.hint_damage(d);
     }
     Ok(ids)
 }

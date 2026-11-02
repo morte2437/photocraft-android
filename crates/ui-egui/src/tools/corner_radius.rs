@@ -178,7 +178,7 @@ fn target(layer: u64, live: &LiveShape) -> Option<Target> {
             let vertices = sharp.subpaths.first()?.knots.iter().map(|k| [k.anchor.x, k.anchor.y]).collect();
             Some(Target { layer, geom: Geom::Polygon { rect, sides, star_ratio, vertices }, radii: [corner_radius.max(0.0); 4] })
         }
-        LiveShape::Ellipse { .. } | LiveShape::Line { .. } => None,
+        LiveShape::Ellipse { .. } | LiveShape::Line { .. } | LiveShape::ArrowLine { .. } => None,
     }
 }
 

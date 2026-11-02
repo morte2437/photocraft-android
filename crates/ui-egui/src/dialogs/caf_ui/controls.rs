@@ -149,6 +149,9 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) {
 }
 
 pub fn keys(app: &mut PhotocraftApp, ctx: &egui::Context) {
+    if crate::color_picker_ui::any_open(app) {
+        return;
+    }
     let cmd_shift = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;
     if ctx.input_mut(|i| i.consume_key(cmd_shift, egui::Key::Z)) {
         redo(app);

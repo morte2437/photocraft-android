@@ -389,6 +389,13 @@ pub(crate) fn damage_since(app: &PhotocraftApp, idx: usize, seen: (u64, u64), no
     {
         return Some(if r.is_empty() { r } else { r.inflate(effect_reach(&st.doc.layers)) });
     }
+    // Between colours under a text or stop Color Picker (and the document): the target layers' bounds.
+    if seen.0 == now.0
+        && let Some(st) = app.session.documents().get(idx)
+        && let Some(r) = crate::color_picker_preview::damage(app, st.doc.id, now.0, seen.1 ^ display_key, now.1)
+    {
+        return Some(if r.is_empty() { r } else { r.inflate(effect_reach(&st.doc.layers)) });
+    }
     // Between hovered fonts (and the document): the text layer's old/new ink bounds.
     if seen.0 == now.0
         && let Some(st) = app.session.documents().get(idx)
@@ -466,10 +473,12 @@ pub(super) fn ensure_gpu(app: &mut PhotocraftApp, ctx: &egui::Context, idx: usiz
     // The texture is shared by every display: only what it stores counts, not the monitor.
     let display_key = texture_key(display.as_deref());
     let seen = app.canvases.get(&(id, GPU_OUTPUT)).map(|c| (c.revision, c.preview_key));
+    let damage_start = crate::gpu_canvas::now_ms();
     let mut damage = seen.and_then(|seen| damage_since(app, idx, seen, (revision, raw_key), display_key, last_damage));
     if let Some(region) = damage {
         damage = Some(crate::blend_preview::clip_damage(app, id, revision, raw_key, region, blend_visible));
     }
+    app.perf.stage.damage_ms += crate::gpu_canvas::now_ms() - damage_start;
     // To an adjustment dialog's preview: only what the view shows now (the rest as it moves there).
     if damage.is_some()
         && let Some(r) = seen.filter(|s| s.0 == revision).and_then(|s| crate::adjust_preview::switch_region(app, id, revision, s.1 ^ display_key, raw_key))
@@ -551,7 +560,9 @@ pub(super) fn ensure_gpu(app: &mut PhotocraftApp, ctx: &egui::Context, idx: usiz
         return false;
     }
     let partial = present && damage.is_some();
+    let budget_start = crate::gpu_canvas::now_ms();
     gpu_budget(app, &gpu, idx, partial, visible);
+    app.perf.stage.damage_ms += crate::gpu_canvas::now_ms() - budget_start;
     let defer = crate::background_redraw::enabled(app);
     let r = gpu.refresh_with(id.0, &doc, if partial { damage } else { None }, display.as_deref(), defer);
     app.perf.gpu_layer_fit = gpu.layer_fit();
@@ -621,7 +632,7 @@ fn gpu_budget(app: &mut PhotocraftApp, gpu: &crate::gpu_canvas::GpuCanvas, idx: 
 /// Memory Usage and GPU Memory (Preferences › Performance), in bytes.
 fn budget_allowance(app: &PhotocraftApp) -> (u64, u64) {
     let performance = &app.session.prefs().performance;
-    (u64::from(performance.memory_usage_mb).saturating_mul(1 << 20), u64::from(performance.gpu_memory_mb).saturating_mul(1 << 20))
+    (u64::from(performance.effective_memory_usage_mb()).saturating_mul(1 << 20), u64::from(performance.gpu_memory_mb).saturating_mul(1 << 20))
 }
 
 /// The document pixels a view shows, with a margin for filtering. Uses all four canvas corners

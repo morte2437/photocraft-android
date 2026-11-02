@@ -162,6 +162,22 @@ fn write_refuses_a_fifo_target_without_blocking() {
     assert!(temp_files(&inside).is_empty());
 }
 
+/// #9401 review: replacing a file through the automation path keeps its creation time, the
+/// same as a save through `atomic_write` does on macOS (#9388).
+#[cfg(target_os = "macos")]
+#[test]
+fn write_keeps_the_replaced_files_creation_time() {
+    use std::os::macos::fs::FileTimesExt;
+    let (inside, _, workspace) = roots("created");
+    let path = inside.join("doc.psd");
+    workspace.write("doc.psd", b"original").unwrap();
+    let born = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000);
+    std::fs::OpenOptions::new().write(true).open(&path).unwrap().set_times(std::fs::FileTimes::new().set_created(born)).unwrap();
+    workspace.write("doc.psd", b"replacement").unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), b"replacement");
+    assert_eq!(std::fs::metadata(&path).unwrap().created().unwrap(), born, "the creation time survives the automation write");
+}
+
 /// #7095: replacing a file through the automation path keeps the old file's extended
 /// attributes, the same as a save through `atomic_write` does.
 #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
@@ -510,6 +526,132 @@ fn registry_filesystem_path_params_are_classified() {
     assert!(unclassified.is_empty(), "filesystem path parameters in the command registry need an automation policy: {unclassified:?}");
 }
 
+#[test]
+fn native_vector_preview_updates_are_not_an_untrusted_automation_capability() {
+    let params = serde_json::json!({"document":1,"layer":1,"contentsId":1,"fingerprint":"00".repeat(32),"extension":"ai","sourceBase64":"JVBERi0=","previewSvg":"<svg/>"});
+    assert!(authorize_engine_command("layer.smartObjects.updateVectorSource", &params).is_err());
+    assert!(authorize_desktop_engine_command("layer.smartObjects.updateVectorSource", &params).is_err());
+}
+
+#[test]
+fn svg_smart_handoff_is_memory_only_and_linked_sources_stay_denied() {
+    let mut headless = crate::Headless::new();
+    headless.command_run("file.new", serde_json::json!({"width": 16, "height": 16})).unwrap();
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"><rect width="4" height="4" fill="red"/></svg>"#;
+    let inserted = photocraft_engine::file_cmds::place_bytes(
+        &mut headless.session,
+        "Artwork.svg",
+        svg.as_bytes().to_vec(),
+        None,
+        &serde_json::json!({"smartObject":true}),
+    )
+    .unwrap();
+    let layer = inserted["layer"].clone();
+    let handoff = headless.command_run("layer.smartObjects.exportSvg", serde_json::json!({"layer": layer})).unwrap();
+    assert_eq!(handoff["svg"], svg);
+    let params = serde_json::json!({
+        "document": handoff["document"], "layer": layer,
+        "contentsId": handoff["contentsId"], "fingerprint": handoff["fingerprint"],
+        "svg": svg.replace("red", "blue"),
+    });
+    assert!(authorize_desktop_engine_command("layer.smartObjects.updateSvg", &params).is_ok());
+    assert_eq!(headless.command_run("layer.smartObjects.updateSvg", params.clone()).unwrap()["updated"], true);
+    for id in ["layer.smartObjects.exportSvg", "layer.smartObjects.updateSvg"] {
+        let mut ambient = params.clone();
+        ambient["path"] = serde_json::json!("/outside/source.svg");
+        assert!(authorize_engine_command(id, &ambient).is_err(), "{id}");
+        assert!(authorize_desktop_engine_command(id, &ambient).is_err(), "{id}");
+        assert!(headless.command_run(id, ambient).is_err(), "{id}");
+    }
+    let doc = Arc::make_mut(&mut headless.session.active_mut().unwrap().doc);
+    let id = photocraft_doc::LayerId(layer.as_u64().unwrap());
+    let photocraft_doc::LayerContent::Smart(sm) = &mut doc.layer_mut(id).unwrap().content else { panic!("SVG smart object") };
+    sm.source = photocraft_doc::SmartSource::Linked { path: "/outside/source.svg".into() };
+    let before = headless.session.active().unwrap().doc.clone();
+    assert!(headless.command_run("layer.smartObjects.exportSvg", serde_json::json!({"layer": layer})).is_err());
+    assert!(headless.command_run("layer.smartObjects.updateSvg", params).is_err());
+    assert_eq!(headless.session.active().unwrap().doc, before);
+    assert!(headless.command_run("layer.smartObjects.exportContents", serde_json::json!({"layer": layer, "path": "/outside/export.svg"})).is_err());
+}
+
+#[test]
+fn svg_update_cannot_replay_desktop_lut_file_in_any_shared_instance() {
+    let (_, outside, _) = roots("svg-stored-filter");
+    let lut = outside.join("private.cube");
+    let cube = "LUT_3D_SIZE 2\n0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n";
+    std::fs::write(&lut, cube).unwrap();
+    for shared_only in [false, true] {
+        let mut headless = crate::Headless::new();
+        headless.command_run("file.new", serde_json::json!({"width": 16, "height": 16})).unwrap();
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"><rect width="4" height="4" fill="red"/></svg>"#;
+        let pasted = photocraft_engine::file_cmds::place_bytes(
+            &mut headless.session,
+            "Artwork.svg",
+            svg.as_bytes().to_vec(),
+            None,
+            &serde_json::json!({"smartObject":true}),
+        )
+        .unwrap();
+        let target = photocraft_doc::LayerId(pasted["layer"].as_u64().unwrap());
+        let filtered = if shared_only {
+            let doc = Arc::make_mut(&mut headless.session.active_mut().unwrap().doc);
+            let duplicate = doc.layer(target).unwrap().duplicate();
+            let id = duplicate.id;
+            doc.layers.push(duplicate);
+            id
+        } else {
+            target
+        };
+        headless.session.select_layer(filtered).unwrap();
+        // Record a natural desktop Color Lookup operation with its original file params,
+        // then restore the untrusted automation hook as for an imported document.
+        let authorization = headless.session.authorize.take();
+        headless.session.execute("image.adjustments.colorLookup", serde_json::json!({"file":lut.to_string_lossy()})).unwrap();
+        headless.session.authorize = authorization;
+        let photocraft_doc::LayerContent::Smart(sm) = &headless.session.active().unwrap().doc.layer(filtered).unwrap().content else { panic!("smart object") };
+        assert_eq!(sm.smart_filters.last().unwrap().params["file"], lut.to_string_lossy().as_ref());
+        let handoff = headless.command_run("layer.smartObjects.exportSvg", serde_json::json!({"layer":target.0})).unwrap();
+        let params = serde_json::json!({"document":handoff["document"],"layer":target.0,"contentsId":handoff["contentsId"],"fingerprint":handoff["fingerprint"],"svg":svg.replace("red","blue")});
+        let before = headless.session.active().unwrap().doc.clone();
+        let revision = headless.session.active().unwrap().revision;
+        let error = headless.command_run("layer.smartObjects.updateSvg", params.clone()).unwrap_err();
+        assert!(error.to_string().contains("ambient filesystem paths"), "{error}");
+        assert_eq!(headless.session.active().unwrap().doc, before);
+        assert_eq!(headless.session.active().unwrap().revision, revision);
+        // A hidden stored filter is not executed, so its unused filename grants no access.
+        let doc = Arc::make_mut(&mut headless.session.active_mut().unwrap().doc);
+        let photocraft_doc::LayerContent::Smart(sm) = &mut doc.layer_mut(filtered).unwrap().content else { panic!("smart object") };
+        sm.smart_filters.last_mut().unwrap().visible = false;
+        assert_eq!(headless.command_run("layer.smartObjects.updateSvg", params).unwrap()["updated"], true);
+    }
+}
+
+#[test]
+fn svg_update_keeps_inline_and_builtin_smart_filters_working() {
+    let cube = "LUT_3D_SIZE 2\n0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n";
+    for filter_params in [serde_json::json!({"lut":"warm"}), serde_json::json!({"data":cube,"fileName":"look.cube"})] {
+        let mut headless = crate::Headless::new();
+        headless.command_run("file.new", serde_json::json!({"width":16,"height":16})).unwrap();
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"><rect width="4" height="4" fill="red"/></svg>"#;
+        let pasted = photocraft_engine::file_cmds::place_bytes(
+            &mut headless.session,
+            "Artwork.svg",
+            svg.as_bytes().to_vec(),
+            None,
+            &serde_json::json!({"smartObject":true}),
+        )
+        .unwrap();
+        let id = photocraft_doc::LayerId(pasted["layer"].as_u64().unwrap());
+        headless.command_run("image.adjustments.colorLookup", filter_params).unwrap();
+        let handoff = headless.command_run("layer.smartObjects.exportSvg", serde_json::json!({"layer":id.0})).unwrap();
+        let result = headless.command_run("layer.smartObjects.updateSvg",serde_json::json!({"document":handoff["document"],"layer":id.0,"contentsId":handoff["contentsId"],"fingerprint":handoff["fingerprint"],"svg":svg.replace("red","blue")})).unwrap();
+        assert_eq!(result["updated"], true);
+        let photocraft_doc::LayerContent::Smart(sm) = &headless.session.active().unwrap().doc.layer(id).unwrap().content else { panic!("smart object") };
+        assert_eq!(sm.smart_filters.len(), 1);
+        assert!(!sm.cache.as_ref().unwrap().content_bounds().is_empty());
+    }
+}
+
 fn documents_filesystem_path_params(id: &str, params: &str) -> bool {
     // These commands return settings or installed-profile paths; they do not accept a host
     // filesystem path as an automation input.
@@ -528,6 +670,8 @@ fn documents_filesystem_path_params(id: &str, params: &str) -> bool {
             | "shape.presets.new"
             | "path.list"
             | "path.info"
+            | "path.addToSelection"
+            | "path.subtractFromSelection"
             | "path.set"
             | "path.transform"
             | "path.moveAnchors"
@@ -536,6 +680,8 @@ fn documents_filesystem_path_params(id: &str, params: &str) -> bool {
             | "path.convertPoint"
             | "path.addAnchor"
             | "path.deleteAnchor"
+            | "path.mergeShapeComponents"
+            | "path.setOperation"
             | "path.clippingPath.set"
             | "path.rename"
             | "path.stroke"
@@ -636,6 +782,217 @@ fn absolute_paths_beneath_the_root_are_translated_and_others_refused() {
     assert!(!outside.join("escape.bin").exists());
     assert!(!outside.join("traversal.bin").exists());
     assert_eq!(std::fs::read(inside.join("a.bin")).unwrap(), b"one");
+}
+
+/// Equivalent drive, UNC and ASCII-case root spellings need no ambient path resolution.
+#[cfg(windows)]
+#[test]
+fn canonical_windows_prefixes_match_without_ambient_resolution() {
+    for (request, root) in [
+        (r"c:\root\new.bin", r"\\?\C:\root"),
+        (r"\\?\C:\root\new.bin", r"C:\root"),
+        (r"\\server\share\root\new.bin", r"\\?\UNC\SERVER\SHARE\root"),
+        (r"c:\ROOT\new.bin", r"\\?\C:\root"),
+        (r"\\?\C:\ROOT\new.bin", r"c:\root"),
+        (r"\\server\share\ROOT\new.bin", r"\\?\UNC\SERVER\SHARE\root"),
+    ] {
+        let remaining = path_beneath_root(Path::new(request), Path::new(root)).unwrap();
+        assert_eq!(remaining.as_path(), Path::new("new.bin"));
+    }
+    for request in [r"C:\root-sibling\new.bin", r"D:\root\new.bin", r"\\.\C:\root\new.bin", r"\\other\share\root\new.bin"] {
+        assert!(path_beneath_root(Path::new(request), Path::new(r"\\?\C:\root")).is_none());
+    }
+}
+
+/// Case variants of the granted Windows prefix still use its held directory capability.
+#[cfg(windows)]
+#[test]
+fn windows_root_case_variants_keep_io_inside_the_grant() {
+    let (inside, outside, workspace) = roots("root-case");
+    let configured = PathBuf::from(inside.to_string_lossy().to_ascii_uppercase());
+    let canonical = PathBuf::from(std::fs::canonicalize(&inside).unwrap().to_string_lossy().to_ascii_uppercase());
+    for spelling in [&configured, &canonical] {
+        let path = spelling.join("new.png");
+        workspace.write(&path.to_string_lossy(), b"inside").unwrap();
+        assert_eq!(workspace.read(&path.to_string_lossy()).unwrap(), b"inside");
+        assert!(workspace.write(&spelling.join("..").join("outside").join("blocked.bin").to_string_lossy(), b"no").is_err());
+    }
+    assert_eq!(std::fs::read(inside.join("new.png")).unwrap(), b"inside");
+    assert!(workspace.write(&configured.with_file_name("INSIDE-SIBLING").join("blocked.bin").to_string_lossy(), b"no").is_err());
+    assert!(!outside.join("blocked.bin").exists());
+    // Case normalization must not bypass the refusal to replace unrelated existing files.
+    std::fs::write(inside.join("notes.bin"), b"keep").unwrap();
+    assert!(workspace.write(&configured.join("notes.bin").to_string_lossy(), b"no").is_err());
+    assert_eq!(std::fs::read(inside.join("notes.bin")).unwrap(), b"keep");
+}
+
+/// Unix roots with different case must not become aliases of the granted prefix.
+#[cfg(unix)]
+#[test]
+fn unix_root_prefixes_remain_case_sensitive() {
+    assert!(path_beneath_root(Path::new("/Root/new.bin"), Path::new("/root")).is_none());
+}
+
+#[test]
+fn configured_parent_components_accept_resolved_absolute_paths() {
+    let (inside, outside, _) = roots("resolved-parent-root");
+    let configured = inside.join("..").join("inside");
+    let workspace = AuthorizedWorkspace::new(Some(&configured), Some(&configured)).unwrap();
+    let resolved = std::fs::canonicalize(&inside).unwrap();
+    workspace.write(&resolved.join("new.bin").to_string_lossy(), b"new").unwrap();
+    assert_eq!(workspace.read(&resolved.join("new.bin").to_string_lossy()).unwrap(), b"new");
+    workspace.write(&configured.join("launch-spelling.bin").to_string_lossy(), b"trusted prefix").unwrap();
+    assert_eq!(workspace.read(&configured.join("launch-spelling.bin").to_string_lossy()).unwrap(), b"trusted prefix");
+    assert_eq!(workspace.read(&resolved.join("launch-spelling.bin").to_string_lossy()).unwrap(), b"trusted prefix");
+    assert!(workspace.write(&configured.join("..").join("outside/escaped.bin").to_string_lossy(), b"no").is_err());
+    assert!(!outside.join("escaped.bin").exists());
+    assert!(workspace.write(&outside.join("blocked.bin").to_string_lossy(), b"no").is_err());
+    assert!(!outside.join("blocked.bin").exists());
+}
+
+#[test]
+fn relative_configured_root_accepts_resolved_absolute_paths() {
+    let relative = PathBuf::from("target").join(format!("automation-relative-root-{}", std::process::id()));
+    std::fs::create_dir_all(&relative).unwrap();
+    let workspace = AuthorizedWorkspace::new(Some(&relative), Some(&relative)).unwrap();
+    let resolved = std::fs::canonicalize(&relative).unwrap();
+    workspace.write(&resolved.join("new.bin").to_string_lossy(), b"relative").unwrap();
+    assert_eq!(workspace.read(&resolved.join("new.bin").to_string_lossy()).unwrap(), b"relative");
+    std::fs::remove_file(resolved.join("new.bin")).unwrap();
+    drop(workspace);
+    std::fs::remove_dir(resolved).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn trusted_root_names_are_not_validated_as_relative_request_names() {
+    let (inside, outside, _) = roots("trusted-root-names");
+    let root = inside.join("aux");
+    std::fs::create_dir(&root).unwrap();
+    let alias = outside.join("CON");
+    link_directory(&root, &alias);
+    let workspace = AuthorizedWorkspace::new(Some(&alias), Some(&alias)).unwrap();
+    for (index, spelling) in [&root, &alias].into_iter().enumerate() {
+        let fresh = spelling.join(format!("new-{index}.bin"));
+        workspace.write(&fresh.to_string_lossy(), b"trusted").unwrap();
+        assert_eq!(workspace.read(&fresh.to_string_lossy()).unwrap(), b"trusted");
+        assert!(workspace.write(&fresh.to_string_lossy(), b"replacement").is_err(), "unknown existing files remain protected");
+        assert!(workspace.write(&spelling.join("NUL").to_string_lossy(), b"no").is_err());
+    }
+    assert!(!root.join("NUL").exists());
+    remove_directory_link(&alias);
+}
+
+// Windows junctions exercise the same root alias without requiring Developer Mode.
+#[cfg(any(unix, windows))]
+fn link_directory(target: &Path, link: &Path) {
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(target, link).unwrap();
+    #[cfg(windows)]
+    assert!(std::process::Command::new("cmd.exe").args(["/D", "/C", "mklink", "/J"]).arg(link).arg(target).output().unwrap().status.success());
+}
+
+#[cfg(any(unix, windows))]
+fn remove_directory_link(link: &Path) {
+    #[cfg(unix)]
+    std::fs::remove_file(link).unwrap();
+    #[cfg(windows)]
+    std::fs::remove_dir(link).unwrap();
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn linked_root_accepts_both_spellings_and_new_nested_exports() {
+    let (inside, outside, _) = roots("linked-root");
+    let link = outside.join("root-link");
+    link_directory(&inside, &link);
+    let workspace = AuthorizedWorkspace::new(Some(&link), Some(&link)).unwrap();
+    let resolved = std::fs::canonicalize(&inside).unwrap();
+    for (i, spelling) in [resolved, link.clone()].iter().enumerate() {
+        let name = format!("new-{i}.bin");
+        workspace.write(&spelling.join(&name).to_string_lossy(), b"new").unwrap();
+        assert_eq!(workspace.read(&spelling.join(&name).to_string_lossy()).unwrap(), b"new");
+        assert_eq!(workspace.read(&name).unwrap(), b"new");
+        let mut export = workspace.export_sequence(&spelling.join(format!("frames-{i}")).join("nested").to_string_lossy()).unwrap();
+        export.write("frame.png", b"frame").unwrap();
+        export.commit();
+        assert_eq!(std::fs::read(inside.join(format!("frames-{i}/nested/frame.png"))).unwrap(), b"frame");
+    }
+    remove_directory_link(&link);
+}
+
+/// TEMP can name the same directory differently from canonicalize (8.3 on Windows).
+/// A junction makes that mismatch deterministic even when 8.3 names are disabled.
+#[cfg(windows)]
+#[test]
+fn root_alias_tests_work_with_an_aliased_windows_temp() {
+    let (inside, outside, _) = roots("aliased-temp");
+    let temp_alias = outside.join("temp-alias");
+    link_directory(&inside, &temp_alias);
+    let exe = std::env::current_exe().unwrap();
+    for test in [
+        "workspace::tests::ungranted_absolute_aliases_and_link_escapes_are_refused",
+        "workspace::tests::retargeting_root_alias_does_not_regrant_the_held_authority",
+    ] {
+        // Set TEMP only in the child; changing the process environment races other tests.
+        let output = std::process::Command::new(&exe).args(["--exact", test, "--nocapture"]).env("TEMP", &temp_alias).env("TMP", &temp_alias).output().unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{test}: {stdout}\n{stderr}");
+        assert!(stdout.contains("1 passed;"), "child must run the requested test: {stdout}");
+    }
+    remove_directory_link(&temp_alias);
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn ungranted_absolute_aliases_and_link_escapes_are_refused() {
+    let (inside, outside, workspace) = roots("request-alias");
+    // TEMP may use an 8.3 name or a junction. A grant through `alias` below recognises
+    // that configured alias and the canonical target, not every other name for `inside`.
+    let resolved_inside = std::fs::canonicalize(&inside).unwrap();
+    let alias = outside.join("inside-alias");
+    link_directory(&inside, &alias);
+    workspace.write("new.bin", b"inside").unwrap();
+    assert!(workspace.read(&alias.join("new.bin").to_string_lossy()).is_err());
+    assert!(workspace.write(&alias.join("ungranted.bin").to_string_lossy(), b"no").is_err());
+    assert!(!inside.join("ungranted.bin").exists());
+    std::fs::write(outside.join("secret.bin"), b"outside").unwrap();
+    let escape = inside.join("escape");
+    link_directory(&outside, &escape);
+    assert!(workspace.read(&escape.join("secret.bin").to_string_lossy()).is_err());
+    assert!(workspace.write(&escape.join("blocked.bin").to_string_lossy(), b"no").is_err());
+    assert!(workspace.export_sequence(&escape.join("frames").join("nested").to_string_lossy()).is_err());
+    assert!(!outside.join("blocked.bin").exists());
+    assert!(!outside.join("frames").exists());
+    assert_eq!(std::fs::read(outside.join("secret.bin")).unwrap(), b"outside");
+    let read_only = AuthorizedWorkspace::new(Some(&alias), Some(&outside)).unwrap();
+    assert_eq!(read_only.read(&resolved_inside.join("new.bin").to_string_lossy()).unwrap(), b"inside");
+    assert!(read_only.write(&alias.join("denied.bin").to_string_lossy(), b"no").is_err());
+    assert!(!inside.join("denied.bin").exists());
+    remove_directory_link(&escape);
+    remove_directory_link(&alias);
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn retargeting_root_alias_does_not_regrant_the_held_authority() {
+    let (inside, outside, _) = roots("retargeted-root");
+    let resolved_inside = std::fs::canonicalize(&inside).unwrap();
+    let alias = outside.join("root-alias");
+    link_directory(&inside, &alias);
+    let workspace = AuthorizedWorkspace::new(Some(&alias), Some(&alias)).unwrap();
+    remove_directory_link(&alias);
+    link_directory(&outside, &alias);
+    std::fs::write(outside.join("secret.bin"), b"secret").unwrap();
+    workspace.write("held.bin", b"held").unwrap();
+    assert_eq!(workspace.read(&resolved_inside.join("held.bin").to_string_lossy()).unwrap(), b"held");
+    assert!(workspace.read(&alias.join("secret.bin").to_string_lossy()).is_err());
+    workspace.write(&alias.join("held-alias.bin").to_string_lossy(), b"original grant").unwrap();
+    assert_eq!(std::fs::read(inside.join("held-alias.bin")).unwrap(), b"original grant");
+    assert!(!outside.join("held-alias.bin").exists());
+    assert_eq!(std::fs::read(outside.join("secret.bin")).unwrap(), b"secret");
+    remove_directory_link(&alias);
 }
 
 /// Each authority is checked against its own root, and none granted refuses absolute paths.

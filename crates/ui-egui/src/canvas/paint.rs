@@ -140,7 +140,13 @@ fn paint_mapped_quad(painter: &egui::Painter, xf: &ViewXform, origin: [f32; 2], 
 
 /// Draw boundary segments as marching ants: white base, black dashes phased along x + y.
 pub(super) fn marching_ants_segments(painter: &egui::Painter, xf: &ViewXform, segs: &[crate::outline::Segment], time: f64) {
-    marching_ants_mapped(painter, segs, time, |p| xf.to_screen(p[0] as f32, p[1] as f32));
+    painter.extend(marching_ants_segment_shapes(painter, xf, segs, time));
+}
+
+/// [`marching_ants_segments`] as shapes, not yet drawn (`ants::shapes_for`).
+pub(super) fn marching_ants_segment_shapes(painter: &egui::Painter, xf: &ViewXform, segs: &[crate::outline::Segment], time: f64) -> Vec<egui::Shape> {
+    let lines = segs.iter().map(|(a, b)| (xf.to_screen(a[0] as f32, a[1] as f32), xf.to_screen(b[0] as f32, b[1] as f32)));
+    marching_ants_line_shapes(painter, lines, time)
 }
 
 /// [`marching_ants_segments`] with each outline point placed on screen by `to_screen` (a
@@ -175,6 +181,11 @@ pub(crate) fn clip_line(r: Rect, a: Pos2, b: Pos2) -> Option<(Pos2, Pos2)> {
 /// in device pixels like Photoshop's (`crate::ants`, #7489).
 pub(crate) fn marching_ants_lines(painter: &egui::Painter, lines: impl Iterator<Item = (Pos2, Pos2)>, time: f64) {
     crate::ants::draw(painter, lines, time, true);
+}
+
+/// [`marching_ants_lines`] as shapes, not yet drawn (`ants::shapes_for`).
+pub(crate) fn marching_ants_line_shapes(painter: &egui::Painter, lines: impl Iterator<Item = (Pos2, Pos2)>, time: f64) -> Vec<egui::Shape> {
+    crate::ants::shapes_for(painter, lines, time, true)
 }
 
 /// Photoshop crop overlay: the `shield` outside (`crop_shield::fill`; none when disabled), bright

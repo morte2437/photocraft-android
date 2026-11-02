@@ -61,6 +61,11 @@ pub(super) fn purge(s: &mut Session, what: &str) -> Result<Value> {
             freed = freed.saturating_add(stages);
             items.push("smart filter cache");
         }
+        let sources = crate::smart_cmds::purge_source_cache();
+        if sources > 0 {
+            freed = freed.saturating_add(sources);
+            items.push("smart object source cache");
+        }
         let strokes = photocraft_compose::shape_split::purge_cache();
         if strokes > 0 {
             freed = freed.saturating_add(strokes);
@@ -86,7 +91,11 @@ pub(super) fn can_purge_histories(s: &Session) -> std::result::Result<(), String
 
 pub(super) fn can_purge_all(s: &Session) -> std::result::Result<(), String> {
     can_purge_histories(s).or_else(|_| can_purge_clipboard(s)).or_else(|_| {
-        if photocraft_compose::effect_cache_bytes() > 0 || photocraft_compose::masks::cache_bytes() > 0 || crate::smart_cmds::stack_cache_bytes() > 0 {
+        if photocraft_compose::effect_cache_bytes() > 0
+            || photocraft_compose::masks::cache_bytes() > 0
+            || crate::smart_cmds::stack_cache_bytes() > 0
+            || crate::smart_cmds::source_cache_bytes() > 0
+        {
             Ok(())
         } else {
             Err("nothing to purge".into())
