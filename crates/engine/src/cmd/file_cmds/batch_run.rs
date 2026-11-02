@@ -1,7 +1,7 @@
 use super::open::import_at_raw_ppi;
 use super::paths::{extension, file_name, join, list_images, read_file, stem};
 use super::processing::parse_steps;
-use super::save::{SaveOpts, save_doc};
+use super::save::{SaveOpts, save_doc, save_doc_as};
 use super::{Arc, Document, EngineError, Result, Session, Value, batch_naming, json, str_param};
 
 /// Inputs of a batch command: `"input"` is a folder or an array of files.
@@ -189,7 +189,7 @@ fn process_outputs<'a>(
     let mut errors = Vec::new();
     let mut written = OutputClaims::default();
     for (path, out) in outputs {
-        let r = process_one(raw_ppi, path, &out, save, &written, f);
+        let r = process_one(raw_ppi, path, &out, save, ProcessOptions { format: None, written: Some(&written), ctx: None }, f);
         match r {
             Ok(()) => {
                 written.record(&out, path);
@@ -201,23 +201,40 @@ fn process_outputs<'a>(
     json!({"files": files, "errors": errors})
 }
 
-fn process_one(raw_ppi: f64, path: &str, out: &str, save: SaveOpts, written: &OutputClaims, f: &dyn Fn(&mut Session, &str) -> Result<bool>) -> Result<()> {
-    written.check(out).map_err(EngineError::Other)?;
+struct ProcessOptions<'a> {
+    format: Option<&'a str>,
+    written: Option<&'a OutputClaims>,
+    ctx: Option<&'a crate::jobs::JobCtx>,
+}
+
+fn process_one(raw_ppi: f64, path: &str, out: &str, save: SaveOpts, options: ProcessOptions<'_>, f: &dyn Fn(&mut Session, &str) -> Result<bool>) -> Result<()> {
+    if let Some(written) = options.written {
+        written.check(out).map_err(EngineError::Other)?;
+    }
     let bytes = read_file(path)?;
     let mut scratch = Session::new();
     let doc = import_at_raw_ppi(raw_ppi, &file_name(path), &bytes)?;
     scratch.add_document(doc, Some(path.to_string()));
-    if !f(&mut scratch, out)? {
+    let saved_by_action = f(&mut scratch, out)?;
+    if let Some(ctx) = options.ctx {
+        ctx.check()?;
+    }
+    if !saved_by_action {
         let d = scratch.active().ok_or(EngineError::NoDocument)?;
-        save_doc(&d.doc, out, save)?;
+        if let Some(format) = options.format {
+            let ext = if format == "same" { same_format(path) } else { format.trim_start_matches('.').to_ascii_lowercase() };
+            save_doc_as(&d.doc, out, &ext, save)?;
+        } else {
+            save_doc(&d.doc, out, save)?;
+        }
     }
     Ok(())
 }
 
 #[derive(Clone, Debug)]
-struct BatchPolicy {
-    stop_on_error: bool,
-    error_log: Option<String>,
+pub(super) struct BatchPolicy {
+    pub(super) stop_on_error: bool,
+    pub(super) error_log: Option<String>,
 }
 
 impl BatchPolicy {
@@ -237,29 +254,38 @@ impl BatchPolicy {
     }
 }
 
-fn write_error_log(path: &str, errors: &[Value]) -> Result<()> {
-    let date = crate::analysis_cmds::now_iso();
-    let mut body = format!("PhotoCraft Batch: {} error(s) on {}\n", errors.len(), date.get(..10).unwrap_or("unknown date"));
-    for error in errors {
-        let input = error.get("file").or_else(|| error.get("document")).and_then(Value::as_str).unwrap_or("?");
-        let reason = error.get("error").and_then(Value::as_str).unwrap_or("?");
-        body.push_str(&format!("{input}: {reason}\n"));
+/// Photoshop-compatible Batch log encoding, shared by the desktop command and CLI.
+pub fn encode_batch_error_log<'a>(errors: impl IntoIterator<Item = (&'a str, &'a str)>) -> Vec<u8> {
+    let mut body = String::from("Batch Start\r\n\r\n");
+    for (input, reason) in errors {
+        body.push_str(&format!("File: \"{input}\"\r\nError: {reason}\r\n\r\n"));
     }
-    super::paths::write_file(path, body.as_bytes()).map_err(|error| EngineError::Other(format!("error log: {error}")))
+    body.push_str("Batch End\r\n");
+    let mut bytes = vec![0xff, 0xfe];
+    for word in body.encode_utf16() {
+        bytes.extend_from_slice(&word.to_le_bytes());
+    }
+    bytes
+}
+
+fn write_error_log(path: &str, errors: &[Value]) -> Result<()> {
+    let bytes = encode_batch_error_log(errors.iter().map(|error| {
+        (error.get("file").or_else(|| error.get("document")).and_then(Value::as_str).unwrap_or("?"), error.get("error").and_then(Value::as_str).unwrap_or("?"))
+    }));
+    super::paths::write_file(path, &bytes).map_err(|error| EngineError::Other(format!("error log: {error}")))
 }
 
 fn error_log_failure(path: Option<&str>, errors: &[Value]) -> Option<String> {
-    path.filter(|_| !errors.is_empty()).and_then(|path| write_error_log(path, errors).err().map(|error| error.to_string()))
+    path.and_then(|path| write_error_log(path, errors).err().map(|error| error.to_string()))
 }
 
 fn batch_outcome(files: Vec<String>, errors: Vec<Value>, stopped: Option<(String, Vec<String>)>, error_log: Option<&str>) -> Value {
-    let logged = !errors.is_empty();
     let mut result = json!({"files": files, "errors": errors});
     if let Some((at, skipped)) = stopped {
         result["stopped"] = json!(at);
         result["skipped"] = json!(skipped);
     }
-    if logged && let Some(path) = error_log {
+    if let Some(path) = error_log {
         result["errorLog"] = json!(path);
     }
     result
@@ -274,9 +300,29 @@ fn validate_error_log(policy: &BatchPolicy, inputs: impl IntoIterator<Item = Str
     Ok(())
 }
 
-fn process_batch_outputs(
+/// A flat Batch result must not replace another input before it is opened. Compare resolved
+/// identities once for the whole plan, so aliases and large folder batches stay safe and linear.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn validate_flat_outputs(outputs: &[(String, String)]) -> Result<()> {
+    let sources: std::collections::HashMap<_, _> =
+        outputs.iter().enumerate().filter_map(|(index, (input, _))| std::fs::canonicalize(input).ok().map(|identity| (identity, index))).collect();
+    for (index, (_, output)) in outputs.iter().enumerate() {
+        let identity = super::paths::destination_identity(std::path::Path::new(output))
+            .ok_or_else(|| EngineError::BadParams { cmd: "file.automate.batch".into(), msg: format!("output path cannot be resolved safely: {output}") })?;
+        if sources.get(&identity).is_some_and(|&source_index| source_index != index) {
+            return Err(EngineError::BadParams {
+                cmd: "file.automate.batch".into(),
+                msg: format!("output would replace another input file: {output}; choose a different destination or naming template"),
+            });
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn process_batch_outputs(
     raw_ppi: f64,
     outputs: Vec<(String, String)>,
+    format: &str,
     save: SaveOpts,
     policy: &BatchPolicy,
     ctx: &crate::jobs::JobCtx,
@@ -285,7 +331,6 @@ fn process_batch_outputs(
     let total = outputs.len();
     let mut files = Vec::new();
     let mut errors = Vec::new();
-    let mut written = OutputClaims::default();
     let mut stopped = None;
     let mut done = 0;
     for (index, (path, out)) in outputs.iter().enumerate() {
@@ -293,11 +338,14 @@ fn process_batch_outputs(
             break;
         }
         ctx.progress(index as f32 / total.max(1) as f32, &format!("{} of {total}: {}", index + 1, file_name(path)));
-        let result = process_one(raw_ppi, path, out, save, &written, f);
+        let result = process_one(raw_ppi, path, out, save, ProcessOptions { format: Some(format), written: None, ctx: Some(ctx) }, f);
+        if ctx.cancelled() {
+            done = index;
+            break;
+        }
         done = index + 1;
         match result {
             Ok(()) => {
-                written.record(out, path);
                 files.push(out.clone());
             }
             Err(error) => {
@@ -440,11 +488,13 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
             .iter()
             .map(|input| {
                 let ext = if format == "same" { same_format(&input.path) } else { format.trim_start_matches('.').to_ascii_lowercase() };
-                let out = join(&join(&output, &input.rel_dir), &format!("{}.{ext}", stem(&input.path)));
+                let out = join(&output, &format!("{}.{ext}", stem(&input.path)));
                 (input.path.clone(), out)
             })
             .collect(),
     };
+    #[cfg(not(target_arch = "wasm32"))]
+    validate_flat_outputs(&outputs)?;
     validate_error_log(&policy, outputs.iter().map(|(input, _)| input.clone()), outputs.iter().map(|(_, output)| output.clone()))?;
     // Each input runs in its own scratch session, so what the played steps spend is carried from
     // one input to the next (failed or not) and back to this session, not restarted per input.
@@ -462,6 +512,8 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
                 let result = (|| {
                     // A recorded save marks a result. If the action later closes or switches
                     // documents, write the saved snapshot instead of the new active document.
+                    let source = scratch.active().and_then(|state| state.path.as_deref()).unwrap_or("");
+                    let encode_format = if format == "same" { same_format(source) } else { format.trim_start_matches('.').to_ascii_lowercase() };
                     let mut saved: Option<Arc<Document>> = None;
                     for (id, params) in &steps {
                         if batch_save_point(id) {
@@ -475,7 +527,8 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
                     }
                     match saved {
                         Some(doc) if scratch.active().is_none_or(|active| active.doc.id != doc.id) => {
-                            save_doc(&doc, out, save)?;
+                            ctx.check()?;
+                            save_doc_as(&doc, out, &encode_format, save)?;
                             Ok(true)
                         }
                         _ => Ok(false),
@@ -484,7 +537,7 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
                 carried.set(scratch.actions.playback_steps);
                 result
             };
-            let result = process_batch_outputs(raw_ppi, outputs, save, &policy, ctx, &run);
+            let result = process_batch_outputs(raw_ppi, outputs, &format, save, &policy, ctx, &run);
             Ok((result, carried.get()))
         },
         move |s, (result, carried)| {
@@ -539,10 +592,9 @@ fn batch_open_documents(
     validate_error_log(policy, originals.iter().map(|(_, _, path)| path.clone()), planned.iter().flat_map(|paths| paths.iter().cloned()))?;
     let mut files = Vec::new();
     let mut errors = Vec::new();
-    let mut claims = OutputClaims::default();
     let mut stopped = None;
     let mut done = 0;
-    for (index, (id, name, _)) in originals.iter().enumerate() {
+    for (index, (id, name, path)) in originals.iter().enumerate() {
         let result = (|| -> Result<()> {
             let position = s.documents().iter().position(|state| state.doc.id.0 == *id).ok_or(EngineError::NoDocument)?;
             s.set_active(position);
@@ -559,13 +611,12 @@ fn batch_open_documents(
             }
             let Some(paths) = &planned else { return Ok(()) };
             let out = paths.get(index).ok_or_else(|| EngineError::Other("batch output plan is incomplete".into()))?;
-            claims.check(out).map_err(EngineError::Other)?;
             let doc = match saved {
                 Some(saved) => saved,
                 None => s.documents().iter().find(|state| state.doc.id.0 == *id).ok_or(EngineError::NoDocument)?.doc.clone(),
             };
-            save_doc(&doc, out, save)?;
-            claims.record(out, name);
+            let ext = if format == "same" { same_format(path) } else { format.trim_start_matches('.').to_ascii_lowercase() };
+            save_doc_as(&doc, out, &ext, save)?;
             files.push(out.clone());
             Ok(())
         })();

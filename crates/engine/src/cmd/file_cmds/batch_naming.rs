@@ -111,7 +111,7 @@ fn parse(template: &str) -> Result<Vec<Part<'_>>> {
 
 fn expand(parts: &[Part<'_>], name: &str, ext: &str, serial: u32, date: Date) -> String {
     let mut out = String::new();
-    for part in parts {
+    for (index, part) in parts.iter().enumerate() {
         match part {
             Part::Literal(s) => out.push_str(s),
             Part::Name(NameCase::AsIs) => out.push_str(name),
@@ -126,13 +126,19 @@ fn expand(parts: &[Part<'_>], name: &str, ext: &str, serial: u32, date: Date) ->
             Part::Serial(width) => out.push_str(&format!("{serial:0width$}")),
             Part::Letter(upper) => out.push_str(&letters(serial, *upper)),
             Part::Date(kind) => out.push_str(&date.format(*kind)),
-            Part::Ext(false) => out.push_str(ext),
-            Part::Ext(true) => out.push_str(&ext.to_uppercase()),
+            Part::Ext(upper) => {
+                // The reference app adds the separator only for the final extension component.
+                // A literal dot in the template already supplies that separator.
+                if !parts[index + 1..].iter().any(|part| !matches!(part, Part::Literal(""))) && !out.ends_with('.') {
+                    out.push('.');
+                }
+                if *upper {
+                    out.push_str(&ext.to_uppercase());
+                } else {
+                    out.push_str(ext);
+                }
+            }
         }
-    }
-    if !parts.iter().any(|part| matches!(part, Part::Ext(_))) {
-        out.push('.');
-        out.push_str(ext);
     }
     out
 }
@@ -162,7 +168,7 @@ pub fn plan(inputs: &[BatchInput], output: &str, format: &str, params: &Value) -
     let timestamp = crate::analysis_cmds::now_iso();
     let date = Date::from_iso(&timestamp).ok_or_else(|| bad("naming: the current UTC date is unavailable"))?;
     let mut outputs = Vec::with_capacity(inputs.len());
-    for (index, BatchInput { path, rel_dir }) in inputs.iter().enumerate() {
+    for (index, BatchInput { path, .. }) in inputs.iter().enumerate() {
         let serial = if has_serial {
             u32::try_from(index).ok().and_then(|index| start.checked_add(index)).ok_or_else(|| bad("startingSerial plus the input count exceeds 4294967295"))?
         } else {
@@ -173,8 +179,8 @@ pub fn plan(inputs: &[BatchInput], output: &str, format: &str, params: &Value) -
         if name.is_empty() || name.ends_with(['.', ' ']) || name.len() > 255 || name.chars().any(|c| c.is_control() || "/\\<>:\"|?*".contains(c)) {
             return Err(bad("naming must produce a nonempty filename of at most 255 bytes without trailing spaces, path separators or reserved characters"));
         }
-        // From subfolders ("Include All Subfolders"), each result keeps its subfolder.
-        outputs.push(join(&join(output, rel_dir), &name));
+        // Photoshop Batch writes all subfolder results into the destination itself.
+        outputs.push(join(output, &name));
     }
     // Renaming within the source folder could replace a later input before it is read. Resolve
     // existing paths so aliases such as `source/./001.png` cannot bypass the check. The default
@@ -201,9 +207,18 @@ mod tests {
     fn substituted_names_are_literal_and_serials_do_not_wrap_or_truncate() {
         let parts = parse("{date}_{name}_{serial}").unwrap();
         let date = Date { year: 2026, month: 10, day: 13 };
-        assert_eq!(expand(&parts, "photo{serial}", "png", 7, date), "2026-10-13_photo{serial}_007.png");
-        assert_eq!(expand(&parts, "photo", "png", 1000, date), "2026-10-13_photo_1000.png");
+        assert_eq!(expand(&parts, "photo{serial}", "png", 7, date), "2026-10-13_photo{serial}_007");
+        assert_eq!(expand(&parts, "photo", "png", 1000, date), "2026-10-13_photo_1000");
         let parts = parse("{NAME}_{Name}_{serial:1}_{letter}{LETTER}_{date:mmddyy}.{EXT}").unwrap();
         assert_eq!(expand(&parts, "my Photo", "png", 27, date), "MY PHOTO_My photo_27_aaAA_101326.PNG");
+    }
+
+    #[test]
+    fn extension_component_only_adds_a_dot_at_the_end() {
+        let date = Date { year: 2026, month: 11, day: 1 };
+        for (template, expected) in [("{name}{ext}", "a.png"), ("{name}{ext}{serial}", "apng001"), ("{name}{serial}", "a001"), ("{name}{ext}{ext}", "apng.png")]
+        {
+            assert_eq!(expand(&parse(template).unwrap(), "a", "png", 1, date), expected, "{template}");
+        }
     }
 }

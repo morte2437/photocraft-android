@@ -42,9 +42,9 @@ note = "actions_cmds.rs: a_recorded_edit_run_replays_on_a_second_document record
 [[item]]
 id = "AUTO-219-5"
 target = "Batch: subfolders, open documents, naming template, progress/cancel, error log, stop"
-status = "done"
+status = "partial"
 issue = 219
-note = "file_cmds/batch_run.rs and batch_naming.rs: bounded recursive folder input with mirrored output folders; live open-document source; full Batch naming tokens and serials; per-file progress and cancellation for folder jobs; stop-on-error with skipped inputs and an optional error-log file; CLI flags and Batch dialog, #4579"
+note = "file_cmds/batch_run.rs and batch_naming.rs: flat subfolder output and last-result-wins names measured in Photoshop 2026; live open-document source; file naming components and serials; UTF-16 LE error log; stop-on-error; CLI and Batch dialog, #4579. The UI still shows background progress and cancels immediately instead of showing Photoshop's Continue/Stop prompt; folder processing uses scratch sessions rather than opening each file in the window."
 
 [[item]]
 id = "AUTO-219-6"

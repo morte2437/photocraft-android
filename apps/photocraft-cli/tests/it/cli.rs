@@ -434,9 +434,25 @@ fn batch_applies_actions_to_directory() {
     write_png(&inp.join("two.png"), 9, 9, 2);
     std::fs::write(inp.join("notes.txt"), "ignored").unwrap();
     let actions = d.join("actions.json");
+    let log = d.join("errors.txt");
     std::fs::write(&actions, json!([{"command": "layer.new.layer", "params": {"name": "Batch"}}]).to_string()).unwrap();
-    let out = ok(bin().args(["batch", "--actions"]).arg(&actions).arg("--in").arg(&inp).arg("--out").arg(&outp).args(["--format", "pcraft"])).stdout;
+    let out = ok(bin()
+        .args(["batch", "--actions"])
+        .arg(&actions)
+        .arg("--in")
+        .arg(&inp)
+        .arg("--out")
+        .arg(&outp)
+        .args(["--format", "pcraft", "--error-log"])
+        .arg(&log))
+    .stdout;
     assert!(out.contains("2 succeeded, 0 failed"), "{out}");
+    let clean_log = std::fs::read(&log).unwrap();
+    assert!(clean_log.starts_with(&[0xff, 0xfe]));
+    let (pairs, remainder) = clean_log[2..].as_chunks::<2>();
+    assert!(remainder.is_empty());
+    let body = String::from_utf16(&pairs.iter().map(|pair| u16::from_le_bytes(*pair)).collect::<Vec<_>>()).unwrap();
+    assert_eq!(body, "Batch Start\r\n\r\nBatch End\r\n");
     for n in ["one", "two"] {
         let info = ok(bin().arg("info").arg(outp.join(format!("{n}.pcraft")))).stdout;
         let v: Value = serde_json::from_str(&info).unwrap();
@@ -470,11 +486,15 @@ fn batch_recursive_naming_stop_and_error_log() {
     let stdout = String::from_utf8_lossy(&result.stdout);
     assert!(!result.status.success(), "{stdout}");
     assert!(stdout.contains("3 succeeded, 1 failed"), "{stdout}");
-    for file in ["a-05.png", "sub/a-06.png", "sub/c-08.png"] {
+    for file in ["a-05.png", "a-06.png", "c-08.png"] {
         assert!(output.join(file).is_file(), "{file}: {stdout}");
     }
-    let errors = std::fs::read_to_string(log).unwrap();
-    assert!(errors.contains("1 error(s)") && errors.contains("b.png"), "{errors}");
+    let bytes = std::fs::read(log).unwrap();
+    assert!(bytes.starts_with(&[0xff, 0xfe]));
+    let (pairs, remainder) = bytes[2..].as_chunks::<2>();
+    assert!(remainder.is_empty());
+    let errors = String::from_utf16(&pairs.iter().map(|pair| u16::from_le_bytes(*pair)).collect::<Vec<_>>()).unwrap();
+    assert!(errors.contains("Batch Start\r\n") && errors.contains("b.png") && errors.ends_with("Batch End\r\n"), "{errors}");
 
     let stopped = root.join("stopped");
     let result = run(&stopped, &["--recursive", "--stop-on-error"]);
@@ -483,7 +503,7 @@ fn batch_recursive_naming_stop_and_error_log() {
     assert!(!result.status.success(), "{stdout}");
     assert!(stdout.contains("2 succeeded, 1 failed, 1 skipped"), "{stdout}");
     assert!(stderr.contains("--stop-on-error"), "{stderr}");
-    assert!(!stopped.join("sub/c.png").exists());
+    assert!(!stopped.join("c.png").exists());
 
     let collision = root.join("collision");
     let alias = collision.join("../collision/a.png");
@@ -1014,9 +1034,9 @@ fn mcp_bridge_takes_a_port_or_an_address() {
     let _ = child.wait();
 }
 
-/// `--format` mapping two inputs to one name fails the second instead of overwriting the first (#420).
+/// Photoshop Batch processes every input in order, replacing earlier flat results with the same name.
 #[test]
-fn batch_fails_inputs_that_share_an_output_name() {
+fn batch_later_input_replaces_a_same_named_output() {
     let d = tmp("batch-collide");
     let input = d.join("in");
     std::fs::create_dir_all(&input).unwrap();
@@ -1031,15 +1051,10 @@ fn batch_fails_inputs_that_share_an_output_name() {
     let out_dir = d.join("out");
     let o = bin().args(["batch", "--actions"]).arg(&actions).arg("--in").arg(&input).arg("--out").arg(&out_dir).args(["--format", "png"]).output().unwrap();
     let (out, err) = (String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
-    assert!(
-        !o.status.success(),
-        "a lost result must fail the run
-{out}
-{err}"
-    );
-    assert!(out.contains("1 succeeded, 2 failed"), "{out}");
-    assert_eq!(err.matches("not written").count(), 2, "{err}");
-    assert_eq!(std::fs::read_dir(&out_dir).unwrap().count(), 1);
+    assert!(o.status.success(), "{out}{err}");
+    assert!(out.contains("3 succeeded, 0 failed"), "{out}");
+    assert!(out_dir.join("a.png").is_file());
+    assert!(std::fs::read_dir(&out_dir).unwrap().count() <= 2);
     // Keeping each file's format, every input gets its own output.
     let out_dir = d.join("same");
     let out = ok(bin().args(["batch", "--actions"]).arg(&actions).arg("--in").arg(&input).arg("--out").arg(&out_dir)).stdout;
