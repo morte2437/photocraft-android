@@ -65,6 +65,12 @@ pub(crate) fn pickers_of(app: &PhotocraftApp, parent: u64) -> Vec<u64> {
     app.color_picker_live.iter().filter(|l| matches!(l.before, Before::Field { parent: p, .. } if p == parent)).map(|l| l.picker).collect()
 }
 
+/// Whether picker `picker` has a live target: then its parent is the one recorded here, not its
+/// `__dialog` field, which automation could have rewritten.
+pub(crate) fn previews(app: &PhotocraftApp, picker: u64) -> bool {
+    app.color_picker_live.iter().any(|l| l.picker == picker)
+}
+
 /// The colour picker `picker` shows: `Some(None)` while it is the one it opened on (or not
 /// a colour), `None` once the picker is closed.
 fn picked(app: &PhotocraftApp, picker: u64) -> Option<Option<String>> {

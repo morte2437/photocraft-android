@@ -299,3 +299,28 @@ fn the_dialog_shows_the_colour_while_the_picker_is_open() {
     assert_eq!(crate::color_picker_ui::top(h.state()), None);
     assert_eq!(fields(h.state(), fill)["color"], json!("#20a040"));
 }
+
+/// A picker's target is fixed when it opens: automation can't point its OK at another dialog, and
+/// cancelling a dialog its `__dialog` was rewritten to never closes it.
+#[test]
+fn a_pickers_target_stays_the_dialog_it_opened_on() {
+    let ctx = egui::Context::default();
+    let mut app = app();
+    let (fill, picker) = fill_with_picker(&mut app);
+    let other = app.ui.open_dialog(DialogKind::Command, Map::new());
+    let set = |app: &mut PhotocraftApp, field: &str, value: Value| {
+        let (req, _rx) = crate::control::ControlRequest::new("ui.dialog.set", json!({"dialog": picker, "field": field, "value": value}));
+        let crate::control::Outcome::Done(r) = crate::control::handle(app, &ctx, &req) else { panic!("an immediate reply") };
+        r["ok"].as_bool()
+    };
+    assert_eq!(set(&mut app, "__dialog", json!(other)), Some(false));
+    assert_eq!(set(&mut app, "__field", json!("opacity")), Some(false));
+    assert_eq!(set(&mut app, "color", json!("#336699")), Some(true), "the colour itself stays drivable");
+    assert_eq!(fields(&app, fill)["color"], json!("#336699"));
+
+    // Rewritten another way, `__dialog` still doesn't make it another dialog's picker.
+    app.ui.dialog_mut(picker).unwrap().fields.insert("__dialog".into(), json!(other));
+    crate::dialogs::cancel(&mut app, other).unwrap();
+    assert!(app.ui.dialogs.iter().any(|d| d.id == picker), "the picker stays with its own dialog");
+    assert_eq!(fields(&app, fill)["color"], json!("#336699"), "and keeps previewing there");
+}

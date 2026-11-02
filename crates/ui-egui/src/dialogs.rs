@@ -1072,9 +1072,16 @@ pub fn cancel(app: &mut PhotocraftApp, id: u64) -> Result<Value, String> {
     // A Color Picker puts back what its live preview showed in its target.
     crate::color_picker_ui::live_preview::end(app, id);
     // A field Color Picker of this dialog has no target left: it closes with the dialog.
+    // A picker with a live target goes by the parent recorded when it opened; `__dialog` only
+    // names the parent of one without (e.g. its parent was closed before it could preview).
     let mut pickers = crate::color_picker_ui::live_preview::pickers_of(app, id);
     pickers.extend(
-        app.ui.dialogs.iter().filter(|d| crate::color_picker_ui::owns(&d.fields) && d.fields.get("__dialog").and_then(Value::as_u64) == Some(id)).map(|d| d.id),
+        app.ui
+            .dialogs
+            .iter()
+            .filter(|d| crate::color_picker_ui::owns(&d.fields) && d.fields.get("__dialog").and_then(Value::as_u64) == Some(id))
+            .filter(|d| !crate::color_picker_ui::live_preview::previews(app, d.id))
+            .map(|d| d.id),
     );
     for picker in &pickers {
         crate::color_picker_ui::live_preview::end(app, *picker);
