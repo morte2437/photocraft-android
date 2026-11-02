@@ -156,8 +156,8 @@ fn batch_folder_input_controls(s: &mut Session, dir: &str, input: &str, first: &
         .unwrap();
     assert_eq!(result["files"], json!([join(&output, "a.png"), join(&output, "c.png")]), "{result}");
     assert_eq!(result["errors"].as_array().unwrap().len(), 2, "{result}");
-    assert_eq!(result["errors"][0]["file"], bad);
-    assert_eq!(result["errors"][1]["file"], raw);
+    assert_eq!(std::path::Path::new(result["errors"][0]["file"].as_str().unwrap()), std::path::Path::new(bad));
+    assert_eq!(std::path::Path::new(result["errors"][1]["file"].as_str().unwrap()), std::path::Path::new(&raw));
     assert!(result["errors"][1]["error"].as_str().unwrap().contains("unsupported Batch folder input"), "{result}");
     assert!(!std::path::Path::new(&join(&output, "sub/d.png")).exists());
     // Explicit arrays still sniff the image content, including with the folder option enabled.
