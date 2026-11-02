@@ -11,6 +11,9 @@ fn relight_admission_tracks_the_document_dependent_working_set() {
     let large = Rect::new(0, 0, 86400, 43200);
     assert!(working_bytes(&params, small, small, 4) < working_bytes(&params, small, large, 4));
     assert_eq!(working_bytes(&params, Rect::EMPTY, large, 4), 0);
+    // A tiny image must not reserve the 256 MiB group budget three times over.
+    let tiny = Rect::new(0, 0, 24, 18);
+    assert!(working_bytes(&params, tiny, tiny, 4) < 64 << 20, "{}", working_bytes(&params, tiny, tiny, 4));
 }
 
 fn fmt(s: SampleType) -> PixelFormat {

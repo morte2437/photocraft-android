@@ -1035,7 +1035,8 @@ pub fn working_bytes(params: &FilterParams, area: Rect, bounds: Rect, channels: 
     let threads = 1u64;
     let tile = auto_tile(params, bounds).max(1) as u64;
     let floats = (channels as u64).saturating_mul(4);
-    let base = (RESULT_BUDGET as u64).saturating_mul(3);
+    // Result groups hold at most RESULT_BUDGET bytes of floats, and never more than the area.
+    let base = area.size().area().saturating_mul(floats).min(RESULT_BUDGET as u64).saturating_mul(3);
     match params.halo_for(bounds) {
         Halo::Bounds => base.saturating_add(bounds.union(&area).size().area().saturating_mul(floats)),
         Halo::Radius(r) => {
