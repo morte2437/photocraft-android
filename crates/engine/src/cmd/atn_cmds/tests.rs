@@ -693,6 +693,10 @@ fn every_mapped_command_exports_and_imports_back() {
         ),
         (
             "file.export.saveForWebLegacy",
+            json!({"folder": "/tmp/out", "format": "png24", "interlaced": false, "transparency": true, "embedIcc": false, "progressive": false, "optimized": true, "matte": "#ffffff"}),
+        ),
+        (
+            "file.export.saveForWebLegacy",
             json!({"path": "C:\\shots\\a.jpg", "format": "jpeg", "interlaced": false, "transparency": false, "embedIcc": true, "progressive": true, "optimized": true, "quality": 80, "matte": "none"}),
         ),
         ("image.adjustments.gradientMap", json!({"stops": [[0, "#000000"], [0.5, "#ff8000"], [1, "#ffffff"]], "reverse": true, "dither": false})),
@@ -3631,7 +3635,9 @@ fn save_as_that_cannot_be_mapped_stops_playback_instead_of_saving_over_the_file(
     // action was played on.
     let file = one_action(vec![
         item("save", "Save", Some(save_as("PNGF", "/out/folder"))),
-        item("save", "Save", Some(save_as("PNGF", "/out/v1.png").with("DIDr", D::Boolean(true)))),
+        // Save a Copy into a folder under the document's own name has no PhotoCraft step.
+        item("save", "Save", Some(save_as("PNGF", "/out").with("DIDr", D::Boolean(true)).with("Cpy ", D::Boolean(true)))),
+        item("save", "Save", Some(save_as("Not a format", "/out").with("DIDr", D::Boolean(true)))),
         item("save", "Save", Some(save_as("PNGF", "/out/result.webp"))),
         item("save", "Save", Some(save_as("GIFf", "/out/result.gif"))),
         item("save", "Save", Some(desc("null").with("As  ", D::Descriptor(desc("PNGF"))))),
@@ -3643,7 +3649,7 @@ fn save_as_that_cannot_be_mapped_stops_playback_instead_of_saving_over_the_file(
     ]);
     let imp = import(&atn::write(&file).unwrap()).unwrap();
     let ids: Vec<&str> = imp.actions[0].steps.iter().map(|(id, _)| id.as_str()).collect();
-    assert_eq!(ids, [PHOTOSHOP_STEP; 8]);
+    assert_eq!(ids, [PHOTOSHOP_STEP; 9]);
     assert!(imp.actions[0].disabled.is_empty(), "kept saves stay on, so playback stops on them");
     // The kept steps are written back byte for byte.
     let a = &imp.actions[0];
@@ -3653,6 +3659,39 @@ fn save_as_that_cannot_be_mapped_stops_playback_instead_of_saving_over_the_file(
     for (out, orig) in back.actions[0].items.iter().zip(&file.actions[0].items) {
         assert_eq!(out.descriptor, orig.descriptor);
     }
+}
+
+#[test]
+fn save_as_into_a_folder_imports_as_a_folder_step_and_saves_back() {
+    // #5305: "save in directory" (`DIDr`), recorded when Photoshop's suggested name is kept:
+    // `In` is the folder, and each played document saves under its own name there.
+    let file = one_action(vec![
+        item("save", "Save", Some(save_as("PNGF", "/out/web").with("DIDr", D::Boolean(true)))),
+        item("save", "Save", Some(save_as("JPEG", "C:\\shots").with("DIDr", D::Boolean(true)))),
+    ]);
+    let imp = import(&atn::write(&file).unwrap()).unwrap();
+    let steps = vec![
+        ("file.saveAs".to_string(), json!({"folder": "/out/web", "extension": "png"})),
+        ("file.saveAs".to_string(), json!({"folder": "C:\\shots", "extension": "jpg"})),
+    ];
+    assert_eq!(imp.actions[0].steps, steps);
+    assert!(imp.unsupported.is_empty());
+    // Saved back as the same "save in directory" steps.
+    let (bytes, skipped) = export("Saves", &[&imp.actions[0]], &[], false).unwrap();
+    assert!(skipped.is_empty());
+    let back = atn::parse(&bytes).unwrap();
+    for (out, orig) in back.actions[0].items.iter().zip(&file.actions[0].items) {
+        let (out, orig) = (out.descriptor.as_ref().unwrap(), orig.descriptor.as_ref().unwrap());
+        for key in ["As  ", "In  ", "DIDr"] {
+            assert_eq!(out.get(key), orig.get(key), "{key}");
+        }
+    }
+    assert_eq!(import(&bytes).unwrap().actions[0].steps, steps);
+    // A folder step without its extension, or as a copy, has no Photoshop event.
+    let odd = Action::new("B", vec![("file.saveAs".to_string(), json!({"folder": "/out"}))]);
+    assert!(export("Saves", &[&odd], &[], false).is_err());
+    let copy = Action::new("C", vec![("file.saveACopy".to_string(), json!({"folder": "/out", "extension": "png"}))]);
+    assert!(export("Saves", &[&copy], &[], false).is_err());
 }
 
 #[test]

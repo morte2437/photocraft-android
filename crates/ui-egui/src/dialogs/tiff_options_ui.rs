@@ -72,8 +72,12 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
             app.session.edit_prefs(|prefs| prefs.file_handling.ask_before_saving_layered_tiff = false);
         }
         let settings = ExportSettings { tiff_layers: !p.discard_layers, ..app.save_settings() };
-        let step = serde_json::json!({"path": p.path, "tiffLayers": !p.discard_layers});
-        let written = app.with_document(p.doc, |app| app.write_document(p.path, &settings, p.discard_layers));
+        let mut step = serde_json::Value::Null;
+        let written = app.with_document(p.doc, |app| {
+            step = app.save_as_record(&p.path);
+            app.write_document(p.path, &settings, p.discard_layers)
+        });
+        step["tiffLayers"] = (!p.discard_layers).into();
         if written.is_ok() {
             // An action being recorded keeps the Save As with this answer (#2032).
             app.session.journal.push(("file.saveAs".into(), step));

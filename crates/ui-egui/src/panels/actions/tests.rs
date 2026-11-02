@@ -682,15 +682,15 @@ fn recorded_save_never_flattens_layers_over_a_flat_file() {
     assert!(!b_changed && !a_changed);
 }
 
-/// Loads a Photoshop set holding Invert + a Save As into `dest` and plays it on a PSD.
-/// Returns the played result, whether the PSD changed on disk and the files in `out`.
-fn play_imported_save_as(dest: &str) -> (Value, bool, Vec<String>) {
+/// Loads a Photoshop set holding Invert + a Save As into `dest` (in `out`; with `in_folder`,
+/// Photoshop's "save in directory", `out` itself) and plays it on each PSD in `sources`.
+/// Returns the played results, whether any PSD changed on disk and the files in `out`.
+fn play_imported_save_as(dest: &str, in_folder: bool, sources: &[&str]) -> (Vec<Value>, bool, Vec<String>) {
     use photocraft_psd::atn::{AtnAction, AtnEvent, AtnFile, AtnItem};
     use photocraft_psd::descriptor::{Descriptor, UnicodeString, Value as D};
-    let dir = std::env::temp_dir().join(format!("photocraft-atn-save-as-{}-{}", dest.len(), std::process::id()));
+    let dir = std::env::temp_dir().join(format!("photocraft-atn-save-as-{dest}-{in_folder}-{}", std::process::id()));
     let out = dir.join("out");
     std::fs::create_dir_all(&out).unwrap();
-    let src = dir.join("src.psd").to_string_lossy().into_owned();
     let path = |text: &str| {
         let units: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
         let mut b = b"txtu".to_vec();
@@ -699,10 +699,13 @@ fn play_imported_save_as(dest: &str) -> (Value, bool, Vec<String>) {
         units.iter().for_each(|u| b.extend_from_slice(&u.to_le_bytes()));
         D::Path(b)
     };
-    let save = Descriptor::new("null")
-        .with("As  ", D::Descriptor(Descriptor::new("PNGF")))
-        .with("In  ", path(&out.join(dest).to_string_lossy()))
-        .with("DocI", D::Integer(53));
+    let mut save = Descriptor::new("null").with("As  ", D::Descriptor(Descriptor::new("PNGF")));
+    save = if in_folder {
+        save.with("In  ", path(&out.to_string_lossy())).with("DIDr", D::Boolean(true))
+    } else {
+        save.with("In  ", path(&out.join(dest).to_string_lossy()))
+    };
+    let save = save.with("DocI", D::Integer(53));
     let item = |code: &[u8; 4], label: &str, d: Option<Descriptor>| AtnItem {
         event: AtnEvent::Code(*code),
         dictionary: label.into(),
@@ -719,35 +722,97 @@ fn play_imported_save_as(dest: &str) -> (Value, bool, Vec<String>) {
         ..Default::default()
     };
     let mut app = disk_app(vec![]);
-    app.run("file.new", json!({"width": 16, "height": 16})).unwrap();
-    app.save_as(Some(src.clone())).unwrap();
-    let before = std::fs::read(&src).unwrap();
+    let sources: Vec<String> = sources.iter().map(|n| dir.join(format!("{n}.psd")).to_string_lossy().into_owned()).collect();
+    let mut before = Vec::new();
+    for src in &sources {
+        app.run("file.new", json!({"width": 16, "height": 16})).unwrap();
+        app.save_as(Some(src.clone())).unwrap();
+        before.push(std::fs::read(src).unwrap());
+    }
     app.run("actions.load", json!({"data": photocraft_engine::paint::tile::b64_encode(&photocraft_psd::atn::write(&set).unwrap())})).unwrap();
-    app.open_path(&src).unwrap();
-    let played = app.run("actions.play", json!({"action": 0})).unwrap();
+    let mut played = Vec::new();
+    for src in &sources {
+        app.open_path(src).unwrap();
+        played.push(app.run("actions.play", json!({"action": 0})).unwrap());
+    }
     let mut written: Vec<String> = std::fs::read_dir(&out).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
     written.sort();
-    let r = (played, std::fs::read(&src).unwrap() != before, written);
+    let changed = sources.iter().zip(&before).any(|(src, before)| std::fs::read(src).unwrap() != *before);
     let _ = std::fs::remove_dir_all(&dir);
-    r
+    (played, changed, written)
 }
 
 #[test]
 fn imported_save_as_writes_the_recorded_file_not_the_played_one() {
     // #7102: the Save As imported as File › Save, which wrote over src.psd.
-    let (played, src_changed, written) = play_imported_save_as("result.png");
-    assert!(played.get("failed").is_none(), "{played}");
+    let (played, src_changed, written) = play_imported_save_as("result.png", false, &["src"]);
+    assert!(played[0].get("failed").is_none(), "{}", played[0]);
     assert!(!src_changed, "the Save As wrote over the file the action was played on");
     assert_eq!(written, ["result.png"]);
 }
 
 #[test]
-fn imported_save_as_into_a_folder_stops_before_writing() {
-    // A folder destination isn't mapped yet (#5430): playback stops on it, nothing is saved.
-    let (played, src_changed, written) = play_imported_save_as("folder");
-    assert!(played.get("failed").is_some(), "{played}");
+fn imported_save_as_to_a_file_without_an_extension_stops_before_writing() {
+    // A destination that isn't a file of the recorded format stays a kept step (#7102):
+    // playback stops on it, nothing is saved.
+    let (played, src_changed, written) = play_imported_save_as("folder", false, &["src"]);
+    assert!(played[0].get("failed").is_some(), "{}", played[0]);
     assert!(!src_changed);
     assert!(written.is_empty(), "{written:?}");
+}
+
+#[test]
+fn imported_save_as_into_a_folder_saves_each_document_under_its_own_name() {
+    // #5305: Photoshop's "save in directory" Save As, played on two documents, writes one file
+    // for each, named after it, in the recorded folder, and leaves the played files alone.
+    let (played, src_changed, written) = play_imported_save_as("", true, &["first", "second"]);
+    for p in &played {
+        assert!(p.get("failed").is_none(), "{p}");
+    }
+    assert!(!src_changed);
+    assert_eq!(written, ["first.png", "second.png"]);
+}
+
+/// #5305: a Save As recorded with the document's own name (the one Save As suggests) keeps
+/// only the folder, so playing the action saves each document under its own name instead of
+/// over the recorded file; a name typed in is recorded as it is.
+#[test]
+fn recorded_save_as_with_the_suggested_name_saves_each_document_under_its_own() {
+    let written = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    let log = written.clone();
+    let services = crate::Services {
+        export: Some(Box::new(|doc, path, _| photocraft_io::export(doc, path, &Default::default()).map(|r| (r.bytes, r.warnings)).map_err(|e| e.to_string()))),
+        write: Some(Box::new(move |path, _| {
+            log.borrow_mut().push(path.to_string());
+            Ok(())
+        })),
+        ..Default::default()
+    };
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), services);
+    app.background_jobs = false;
+    let ctx = egui::Context::default();
+    app.run("file.new", json!({"width": 16, "height": 16, "name": "first"})).unwrap();
+    app.run("actions.record", json!({})).unwrap();
+    crate::menus::invoke(&mut app, &ctx, "file.saveAs", json!({"path": "out/first.psd"})).unwrap();
+    crate::menus::invoke(&mut app, &ctx, "file.saveAs", json!({"path": "out/renamed.psd"})).unwrap();
+    app.run("actions.stop", json!({})).unwrap();
+    let steps = &app.session.actions.list[0].steps;
+    assert_eq!(steps, &[("file.saveAs".into(), json!({"folder": "out", "extension": "psd"})), ("file.saveAs".into(), json!({"path": "out/renamed.psd"}))]);
+    // Played on two other documents: each under its own name in the recorded folder.
+    app.session.actions.list[0].steps.truncate(1);
+    written.borrow_mut().clear();
+    let mut expected = Vec::new();
+    for name in ["second", "third"] {
+        app.run("file.new", json!({"width": 16, "height": 16, "name": name})).unwrap();
+        let played = app.run("actions.play", json!({"action": 0})).unwrap();
+        assert!(played.get("failed").is_none(), "{played}");
+        let own = std::path::Path::new("out").join(format!("{name}.psd")).to_string_lossy().into_owned();
+        assert_eq!(app.session.active().unwrap().path.as_deref(), Some(own.as_str()));
+        expected.push(own);
+    }
+    assert_eq!(*written.borrow(), expected);
+    // A folder step needs its extension.
+    assert!(app.replay_save("file.saveAs", &json!({"folder": "out"})).is_err());
 }
 
 #[test]
