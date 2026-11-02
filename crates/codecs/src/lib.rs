@@ -191,7 +191,7 @@ pub fn webp_is_animated(bytes: &[u8]) -> bool {
 }
 
 /// Inspect declared source data which a flat decode and save cannot retain: additional frames,
-/// TIFF pages or separate masks, ICO entries, DDS mip levels, DPX elements and FITS HDU payloads.
+/// TIFF pages, masks or unretained channels, ICO entries, DDS mip levels, DPX elements and FITS HDU payloads.
 /// Pixels are not decoded; derived TIFF thumbnails do not require preservation here.
 /// Other formats return false; this does not establish preservation of other format-specific data.
 pub fn has_unretained_source_data(bytes: &[u8]) -> Result<bool, CodecError> {
@@ -205,7 +205,10 @@ pub fn has_unretained_source_data(bytes: &[u8]) -> Result<bool, CodecError> {
                 return Err(CodecError::malformed(Format::Tiff, "cannot inspect every source image directory"));
             }
             let retained = info.default_page();
-            Ok(info.pages.iter().enumerate().any(|(index, page)| Some(index) != retained && page.kind != TiffPageKind::ReducedResolution))
+            if info.pages.iter().enumerate().any(|(index, page)| Some(index) != retained && page.kind != TiffPageKind::ReducedResolution) {
+                return Ok(true);
+            }
+            retained.and_then(|index| info.pages.get(index)).map_or(Ok(false), |page| tiff::has_unretained_samples(bytes, page.ifd_offset))
         }
         Some(Format::Ico) => {
             let count = bytes.get(4..6).and_then(|b| <[u8; 2]>::try_from(b).ok()).ok_or_else(|| CodecError::malformed(Format::Ico, "truncated image count"))?;

@@ -528,6 +528,52 @@ fn tiff_with_separate_mask() -> Vec<u8> {
     bytes
 }
 
+/// A flat RGB(A) TIFF with individually identifiable auxiliary channels.
+fn tiff_with_aux_channels(extras: usize, alpha: bool) -> Vec<u8> {
+    let samples = 3 + usize::from(alpha) + extras;
+    let kinds = extras + usize::from(alpha);
+    let bits = 8 + 2 + 12 * 12 + 4;
+    let kind_at = bits + samples * 2;
+    let data = kind_at + kinds * 2;
+    let mut bytes = b"II\x2a\0\x08\0\0\0".to_vec();
+    bytes.extend_from_slice(&12u16.to_le_bytes());
+    for (tag, ty, count, value) in [
+        (256u16, 4u16, 1u32, 2u32),
+        (257, 4, 1, 2),
+        (258, 3, samples as u32, bits as u32),
+        (259, 3, 1, 1),
+        (262, 3, 1, 2),
+        (273, 4, 1, data as u32),
+        (277, 3, 1, samples as u32),
+        (278, 4, 1, 2),
+        (279, 4, 1, (samples * 4) as u32),
+        (284, 3, 1, 1),
+        (338, 3, kinds as u32, kind_at as u32),
+        (339, 3, 1, 1),
+    ] {
+        bytes.extend_from_slice(&tag.to_le_bytes());
+        bytes.extend_from_slice(&ty.to_le_bytes());
+        bytes.extend_from_slice(&count.to_le_bytes());
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    for _ in 0..samples {
+        bytes.extend_from_slice(&8u16.to_le_bytes());
+    }
+    for i in 0..kinds {
+        bytes.extend_from_slice(&(if alpha && i == 0 { 2u16 } else { 0 }).to_le_bytes());
+    }
+    for _ in 0..4 {
+        bytes.extend_from_slice(&[32, 64, 128]);
+        if alpha {
+            bytes.push(200);
+        }
+        bytes.extend((0..extras).map(|i| i as u8 + 1));
+    }
+    assert_eq!(bytes.len(), data + samples * 4);
+    bytes
+}
+
 /// Extra source payloads must survive both ordinary and saved/closed Batch refusal paths.
 #[test]
 fn batch_save_close_preserves_additional_images_and_allows_single_images() {
@@ -573,9 +619,11 @@ fn batch_save_close_preserves_additional_images_and_allows_single_images() {
     table.resize(table.len().div_ceil(2880) * 2880, b' ');
     table.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
     table.resize(table.len().div_ceil(2880) * 2880, 0);
-    for (index, (extension, multiple)) in
-        [("gif", animated), ("dpx", elements), ("fits", hdus), ("fits", cubes), ("fits", table), ("tiff", tiff_with_separate_mask())].into_iter().enumerate()
-    {
+    let mut cases = vec![("gif", animated), ("dpx", elements), ("fits", hdus), ("fits", cubes), ("fits", table), ("tiff", tiff_with_separate_mask())];
+    for alpha in [false, true] {
+        cases.push(("tiff", tiff_with_aux_channels(photocraft_codecs::MAX_EXTRA_SAMPLES + 1, alpha)));
+    }
+    for (index, (extension, multiple)) in cases.into_iter().enumerate() {
         photocraft_codecs::decode(&multiple).unwrap();
         let input = dir.path().join(format!("source.{extension}"));
         for steps in [
@@ -603,6 +651,25 @@ fn batch_save_close_preserves_additional_images_and_allows_single_images() {
         let result = Session::new().execute("file.automate.batch", json!({"input":[input],"destination":"saveAndClose","steps":[]})).unwrap();
         assert_eq!(result["files"].as_array().unwrap().len(), 1, "{extension}: {result}");
         assert!(!photocraft_codecs::has_unretained_source_data(&std::fs::read(input).unwrap()).unwrap());
+    }
+}
+
+/// Auxiliary channels below and at the cap remain writable, including beside a retained alpha.
+#[test]
+fn batch_save_close_preserves_aux_channels_at_the_supported_cap() {
+    let dir = tempfile::tempdir().unwrap();
+    for alpha in [false, true] {
+        for extras in [photocraft_codecs::MAX_EXTRA_SAMPLES - 1, photocraft_codecs::MAX_EXTRA_SAMPLES] {
+            let bytes = tiff_with_aux_channels(extras, alpha);
+            let expected = photocraft_codecs::decode(&bytes).unwrap().meta.extra_samples;
+            assert_eq!(expected.len(), extras);
+            let input = dir.path().join(format!("{alpha}-{extras}.tiff"));
+            std::fs::write(&input, bytes).unwrap();
+            let result = Session::new().execute("file.automate.batch", json!({"input":[input],"destination":"saveAndClose","steps":[]})).unwrap();
+            assert_eq!(result["files"].as_array().unwrap().len(), 1, "{result}");
+            let saved = photocraft_codecs::decode(&std::fs::read(input).unwrap()).unwrap();
+            assert_eq!(saved.meta.extra_samples, expected, "alpha={alpha} extras={extras}");
+        }
     }
 }
 
