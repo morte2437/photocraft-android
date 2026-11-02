@@ -1,11 +1,26 @@
 use super::descriptors::{
-    PX, Target, ang, class, code, desc, enm, get_bool, get_enum, get_list, get_num, get_obj, get_ref, jbool, jnum, jstr, layer_ref, layer_target, long, num,
-    pct, px, ref_class, target, trimmed,
+    PX, Target, ang, boolean, class, code, desc, enm, enumerated, get_bool, get_enum, get_list, get_num, get_obj, get_ref, jbool, jnum, jstr, layer_ref,
+    layer_target, long, num, pct, px, ref_class, target, trimmed,
 };
 use super::events::pixel_target;
 use super::fields::{F, Kind, Mapped, fields_from, fields_to, step};
 use super::tables::{CHANNELS, INTERPOLATION, RADIAL_METHOD, RADIAL_QUALITY, channel_of, lookup, lookup_back};
 use super::{D, Descriptor, Map, ReferenceItem, UnicodeString, Value, json};
+
+/// The reference point of a Free Transform (`QCSt`): `Qcsa` the centre (average), `Qcs0`..`Qcs3`
+/// the corners clockwise from the top left, `Qcs4`..`Qcs7` the sides top, right, bottom, left.
+/// `Qcsi` (independent) and unknown codes have no mapping and stay kept steps.
+const TRANSFORM_REFERENCE: &[(&str, &str)] = &[
+    ("Qcsa", "center"),
+    ("Qcs0", "topLeft"),
+    ("Qcs4", "top"),
+    ("Qcs1", "topRight"),
+    ("Qcs7", "left"),
+    ("Qcs5", "right"),
+    ("Qcs3", "bottomLeft"),
+    ("Qcs6", "bottom"),
+    ("Qcs2", "bottomRight"),
+];
 
 /// `transform`: Photoshop records a Free Transform relative to the frame (offset of its centre,
 /// width/height in percent, angle). A layer moved only becomes `layer.translate`; anything
@@ -40,6 +55,13 @@ pub(super) fn transform_from(d: &Descriptor) -> Mapped {
     // to keep its sub-pixel placement and interpolation.
     let whole_pixels = ["dx", "dy"].iter().all(|k| p.get(*k).and_then(Value::as_f64).is_none_or(|v| v.fract() == 0.0));
     let geometry_only = p.keys().all(|k| k == "dx" || k == "dy") && whole_pixels;
+    if let Some(value) = d.get("FTcs") {
+        let D::Enumerated { type_id, value } = value else { return unsupported };
+        let Some(reference) = lookup(TRANSFORM_REFERENCE, &trimmed(value)).filter(|_| type_id.is("QCSt")) else { return unsupported };
+        if reference != "center" && !geometry_only {
+            p.insert("reference".into(), reference.into());
+        }
+    }
     // The resampling applies to a selection as much as to a layer (#7515).
     // Photoshop's bicubic variants are kept (the transforms render them as Bicubic, and they export
     // back unchanged); Automatic and Preserve Details become the nearest bicubic choice. Dropping
@@ -74,17 +96,15 @@ pub(super) fn transform_from(d: &Descriptor) -> Mapped {
     }
 }
 
+/// Export relative transforms with frame anchors, refusing unsupported geometry and targets.
 pub(super) fn transform_to(id: &str, p: &Value) -> Option<Descriptor> {
     let given = |k: &str| p.get(k).is_some_and(|v| !v.is_null());
     if ["quad", "corners", "matrix", "rect"].iter().any(|k| given(k)) {
         return None;
     }
-    // The descriptor scales and rotates about the centre (`FTcs` average) without skew or warp:
-    // another reference point, a skew or a warp would replay as a different transform (#7516,
-    // #7517, #7518, #7519).
+    // Skew and warp still have no descriptor mapping (#7517, #7518, #7519).
     let nonzero = |k: &str| p.get(k).is_some_and(|v| !v.is_null() && v.as_f64() != Some(0.0));
-    let off_centre = p.get("reference").is_some_and(|v| !v.is_null() && *v != json!("center"));
-    if nonzero("skewX") || nonzero("skewY") || off_centre || ["warp", "style", "mesh", "grid"].iter().any(|k| given(k)) {
+    if nonzero("skewX") || nonzero("skewY") || ["warp", "style", "mesh", "grid"].iter().any(|k| given(k)) {
         return None;
     }
     let target = match id {
@@ -95,7 +115,11 @@ pub(super) fn transform_to(id: &str, p: &Value) -> Option<Descriptor> {
         "select.transformSelection" => D::Reference(vec![ReferenceItem::Property { class: class("Chnl"), key: code("fsel") }]),
         _ => return None,
     };
-    let mut d = desc("null").with("null", target).with("FTcs", enm("QCSt", "Qcsa"));
+    let reference = match p.get("reference").filter(|v| !v.is_null()) {
+        Some(v) => lookup_back(TRANSFORM_REFERENCE, v.as_str()?)?,
+        None => "Qcsa",
+    };
+    let mut d = desc("null").with("null", target).with("FTcs", enm("QCSt", reference));
     d = d.with("Ofst", D::Descriptor(desc("Ofst").with("Hrzn", px(jnum(p, "dx").unwrap_or(0.0))).with("Vrtc", px(jnum(p, "dy").unwrap_or(0.0)))));
     for (key, param) in [("Wdth", "scaleX"), ("Hght", "scaleY")] {
         if let Some(v) = jnum(p, param) {
@@ -477,24 +501,7 @@ const REFINE_OUTPUT: &[(&str, &str)] = &[
     ("selectionOutputToSelection", "selection"),
 ];
 
-/// Filter Gallery effects (`GEfc` with the effect in `GEfk`): Photoshop's effect code, the
-/// command, and its fields. A stack of several effects stays unsupported.
-const GALLERY: &[(&str, &str, &[F])] = &[("Spt", "filter.gallery.spatter", &[F("SprR", "sprayRadius", Kind::Long), F("Smth", "smoothness", Kind::Long)])];
-
-pub(super) const GALLERY_IDS: &[&str] = &["filter.gallery.spatter"];
-
-pub(super) fn gallery_from(d: &Descriptor) -> Mapped {
-    let Some(effect) = get_enum(d, "GEfk") else { return Mapped::Unsupported { harmless: false } };
-    match GALLERY.iter().find(|(code, _, _)| *code == effect).and_then(|(_, id, fields)| Some((*id, fields_from(d, fields)?))) {
-        Some((id, p)) => step(id, Value::Object(p)),
-        None => Mapped::Unsupported { harmless: false },
-    }
-}
-
-pub(super) fn gallery_to(id: &str, p: &Value) -> Option<Descriptor> {
-    let (code, _, fields) = GALLERY.iter().find(|(_, cmd, _)| *cmd == id)?;
-    fields_to(p, fields, desc("null").with("GEfk", enm("GEft", code)))
-}
+pub(super) use super::steps_gallery::{GALLERY_IDS, gallery_from, gallery_to};
 
 /// Select and Mask as Photoshop CC 2015.5 and later record it (`smartBrushWorkspace`); the
 /// older Refine Edge event is [`REFINE_EDGE`], which is also what Select and Mask exports as.
@@ -639,4 +646,240 @@ pub(super) fn radial_blur_to(_: &str, p: &Value) -> Option<Descriptor> {
         return None;
     }
     fields_to(p, RADIAL_BLUR_FIELDS, desc("null"))
+}
+
+// ------------------------------------------------------------------ newer features (#10610)
+
+/// Whether every key of `d` is one of `keys` (codes compare without their space padding).
+fn only_keys(d: &Descriptor, keys: &[&str]) -> bool {
+    d.items.iter().all(|(k, _)| keys.contains(&trimmed(k).as_str()))
+}
+
+/// The step's `key` read by `read` (its space padding ignored, as `only_keys` admits it),
+/// `default` when the step leaves it out, `None` when it holds a value `read` can't take: that
+/// is still the step's setting, so the step is kept rather than played with the default. A key
+/// recorded more than once is `None` too: the step saves one value, so it would drop the other.
+fn setting<T>(d: &Descriptor, key: &str, read: impl Fn(&D) -> Option<T>, default: T) -> Option<T> {
+    let mut found = d.items.iter().filter(|(k, _)| trimmed(k) == key.trim_end());
+    match (found.next(), found.next()) {
+        (Some((_, v)), None) => read(v),
+        (None, _) => Some(default),
+        (Some(_), Some(_)) => None,
+    }
+}
+
+/// Whether `p` sets nothing but `allowed` (a `null` counts as unset).
+fn sets_only(p: &Value, allowed: &[&str]) -> bool {
+    p.is_null() || p.as_object().is_some_and(|m| m.iter().all(|(k, v)| v.is_null() || allowed.contains(&k.as_str())))
+}
+
+/// Focus Area (`focusMask`) and Remove Background (`removeBackground`): Photoshop runs both with
+/// an empty descriptor. A step that carries settings keeps them as a Photoshop step.
+pub(super) fn empty_from(d: &Descriptor, id: &str) -> Mapped {
+    if d.items.is_empty() { step(id, json!({})) } else { Mapped::Unsupported { harmless: false } }
+}
+
+/// Only a step with no settings writes the empty descriptor; any setting would be lost.
+pub(super) fn empty_to(_: &str, p: &Value) -> Option<Descriptor> {
+    sets_only(p, &[]).then(|| desc("null"))
+}
+
+/// Select Sky (`selectSky`): `sampleAllLayers` only, false when the step leaves it out
+/// (the command's own default is true).
+pub(super) fn select_sky_from(d: &Descriptor) -> Mapped {
+    match setting(d, "sampleAllLayers", boolean, false) {
+        Some(all) if only_keys(d, &["sampleAllLayers"]) => step("select.sky", json!({"sampleAllLayers": all})),
+        _ => Mapped::Unsupported { harmless: false },
+    }
+}
+
+/// The event has no mode, threshold or softness: only their replay values survive.
+pub(super) fn select_sky_to(_: &str, p: &Value) -> Option<Descriptor> {
+    let at = |k: &str, v: Value| p.get(k).is_none_or(|x| x.is_null() || *x == v || (x.as_f64().is_some() && x.as_f64() == v.as_f64()));
+    if !sets_only(p, &["sampleAllLayers", "mode", "threshold", "softness"])
+        || !at("mode", json!("replace"))
+        || !at("threshold", json!(50))
+        || !at("softness", json!(50))
+    {
+        return None;
+    }
+    let all = match p.get("sampleAllLayers") {
+        None | Some(Value::Null) => true,
+        Some(v) => v.as_bool()?,
+    };
+    Some(desc("null").with("sampleAllLayers", D::Boolean(all)))
+}
+
+/// A plain double, as Photoshop records Oil Paint's settings and the step saves them back: a
+/// value with a unit, or an integer, would save back as another value.
+fn double(v: &D) -> Option<f64> {
+    match v {
+        D::Double(n) if n.is_finite() => Some(*n),
+        _ => None,
+    }
+}
+
+/// An integer, as Photoshop records Oil Paint's light direction and the step saves it back.
+fn integer(v: &D) -> Option<i32> {
+    match v {
+        D::Integer(n) => Some(*n),
+        _ => None,
+    }
+}
+
+/// Oil Paint's keys in recorded order: (key, param, Photoshop's default, the command's default).
+const OIL_PAINT: &[(&str, &str, f64, f64)] = &[
+    ("stylization", "stylization", 4.0, 4.0),
+    ("cleanliness", "cleanliness", 2.299_999_952_316_28, 5.0),
+    ("brushScale", "scale", 0.800_000_011_920_93, 1.0),
+    ("microBrush", "bristleDetail", 10.0, 5.0),
+];
+
+/// `filter.stylize.oilPaint`'s ranges (the light direction's is the command's -180..180). Photoshop
+/// clamps a recorded value outside them when the step plays, so the import clamps it too; export
+/// refuses one, as the dialog cannot hold it.
+const OIL_PAINT_LIMITS: &[(&str, f64, f64)] = &[
+    ("stylization", 0.1, 10.0),
+    ("cleanliness", 0.0, 10.0),
+    ("scale", 0.1, 10.0),
+    ("bristleDetail", 0.0, 10.0),
+    ("angle", -180.0, 180.0),
+    ("shine", 0.0, 10.0),
+];
+
+/// Whether `n` is within `filter.stylize.oilPaint`'s range for `param` (a param without one is).
+fn in_oil_paint_limits(param: &str, n: f64) -> bool {
+    OIL_PAINT_LIMITS.iter().all(|(p, min, max)| *p != param || (*min..=*max).contains(&n))
+}
+
+/// `n` clamped to `filter.stylize.oilPaint`'s range for `param` (unchanged for a param without one).
+fn oil_paint_clamped(param: &str, n: f64) -> f64 {
+    OIL_PAINT_LIMITS.iter().find(|(p, ..)| *p == param).map_or(n, |(_, min, max)| n.clamp(*min, *max))
+}
+
+/// Oil Paint (`oilPaint`). Missing keys take Photoshop's defaults, which differ from the
+/// command's for cleanliness, scale, bristle detail and shine, so they are written out. A
+/// setting of another number type or with a unit keeps the Photoshop step; one outside the
+/// command's ranges is clamped, as Photoshop clamps it.
+pub(super) fn oil_paint_from(d: &Descriptor) -> Mapped {
+    match oil_paint_params(d) {
+        Some(p) => step("filter.stylize.oilPaint", Value::Object(p)),
+        None => Mapped::Unsupported { harmless: false },
+    }
+}
+
+fn oil_paint_params(d: &Descriptor) -> Option<Map<String, Value>> {
+    let keys = ["lightingOn", "stylization", "cleanliness", "brushScale", "microBrush", "LghD", "specularity"];
+    if !only_keys(d, &keys) {
+        return None;
+    }
+    let mut p = Map::new();
+    p.insert("lighting".into(), setting(d, "lightingOn", boolean, true)?.into());
+    for (key, param, ps, _) in OIL_PAINT {
+        p.insert((*param).into(), oil_paint_clamped(param, setting(d, key, double, *ps)?).into());
+    }
+    p.insert("angle".into(), oil_paint_clamped("angle", setting(d, "LghD", |v| integer(v).map(f64::from), -60.0)?).into());
+    p.insert("shine".into(), oil_paint_clamped("shine", setting(d, "specularity", double, 1.299_999_952_316_28)?).into());
+    Some(p)
+}
+
+/// Every key in recorded order, the command's defaults for what the step leaves out. The light
+/// direction is an integer: a fractional angle would replay rounded, so the step is refused, as
+/// is a setting outside the command's ranges.
+pub(super) fn oil_paint_to(_: &str, p: &Value) -> Option<Descriptor> {
+    if !pixel_target(p) || !sets_only(p, &["target", "lighting", "stylization", "cleanliness", "scale", "bristleDetail", "angle", "shine"]) {
+        return None;
+    }
+    let num = |k: &str, default: f64| match p.get(k) {
+        None | Some(Value::Null) => Some(default),
+        Some(v) => v.as_f64().filter(|n| n.is_finite() && in_oil_paint_limits(k, *n)),
+    };
+    let lighting = match p.get("lighting") {
+        None | Some(Value::Null) => true,
+        Some(v) => v.as_bool()?,
+    };
+    let angle = num("angle", -60.0)?;
+    if angle.fract() != 0.0 || !(f64::from(i32::MIN)..=f64::from(i32::MAX)).contains(&angle) {
+        return None;
+    }
+    let mut d = desc("null").with("lightingOn", D::Boolean(lighting));
+    for (key, param, _, ours) in OIL_PAINT {
+        d = d.with(key, D::Double(num(param, *ours)?));
+    }
+    Some(d.with("LghD", D::Integer(angle as i32)).with("specularity", D::Double(num("shine", 1.0)?)))
+}
+
+/// A unit double in `unit`: the step saves `Amnt` in `#Prc` and the radius in `#Pxl`, so a
+/// value in another unit, or without one, would save back as another value.
+fn in_unit(unit: [u8; 4]) -> impl Fn(&D) -> Option<f64> {
+    move |v| match v {
+        D::UnitFloat { unit: u, value } if *u == unit && value.is_finite() => Some(*value),
+        _ => None,
+    }
+}
+
+/// `filter.sharpen.smartSharpen`'s amount, radius and noise reduction limits, in
+/// `smart_sharpen_params`' key order. Photoshop clamps a recorded value outside them when the step
+/// plays, so the import clamps it too; export refuses one, as the dialog cannot hold it.
+const SMART_SHARPEN_LIMITS: &[(&str, f64, f64)] = &[("amount", 1.0, 500.0), ("radius", 0.1, 64.0), ("reduceNoise", 0.0, 100.0)];
+
+/// Smart Sharpen (`smartSharpen`) in the one form the command plays, the same form PSD smart
+/// filters map (`photocraft-io`'s `smart_map`): the newer filter (`useLegacy` false) removing a
+/// Gaussian blur (`blur` `GsnB`), both recorded. The legacy filter (Photoshop's default, which
+/// removes Lens Blur), Lens Blur, Motion Blur, a preset other than Custom or any other key, or an
+/// amount, radius or noise reduction in another unit, keeps it as a Photoshop step. A missing
+/// amount, radius or noise reduction takes Photoshop's default (200 %, 1 px, 10 %).
+pub(super) fn smart_sharpen_from(d: &Descriptor) -> Mapped {
+    match smart_sharpen_params(d) {
+        Some(p) => step("filter.sharpen.smartSharpen", Value::Object(p)),
+        None => Mapped::Unsupported { harmless: false },
+    }
+}
+
+/// A `blurType` enumeration's value (`enumerated` alone does not check the type).
+fn blur_type(v: &D) -> Option<String> {
+    match v {
+        D::Enumerated { type_id, .. } if trimmed(type_id) == "blurType" => enumerated(v),
+        _ => None,
+    }
+}
+
+fn smart_sharpen_params(d: &Descriptor) -> Option<Map<String, Value>> {
+    let keys = ["presetKind", "useLegacy", "Amnt", "Rds", "noiseReduction", "blur"];
+    let gaussian = only_keys(d, &keys)
+        && setting(d, "presetKind", enumerated, "presetKindCustom".into())? == "presetKindCustom"
+        && !setting(d, "useLegacy", boolean, true)?
+        && setting(d, "blur", blur_type, "lensBlur".into())? == "GsnB";
+    if !gaussian {
+        return None;
+    }
+    let mut p = Map::new();
+    let read = [("Amnt", *b"#Prc", 200.0), ("Rds", PX, 1.0), ("noiseReduction", *b"#Prc", 10.0)];
+    for ((key, unit, default), (param, min, max)) in read.into_iter().zip(SMART_SHARPEN_LIMITS) {
+        let n = setting(d, key, in_unit(unit), default)?.clamp(*min, *max);
+        p.insert((*param).into(), n.into());
+    }
+    Some(p)
+}
+
+/// The form `smart_sharpen_params` reads, with the keys in the order Photoshop records them (as
+/// recorded steps carry them, `presetKind` Custom first). The command's defaults fill what the
+/// step leaves out.
+pub(super) fn smart_sharpen_to(_: &str, p: &Value) -> Option<Descriptor> {
+    if !pixel_target(p) || !sets_only(p, &["target", "amount", "radius", "reduceNoise"]) {
+        return None;
+    }
+    let num = |k: &str, default: f64| match p.get(k) {
+        None | Some(Value::Null) => Some(default),
+        Some(v) => v.as_f64().filter(|n| SMART_SHARPEN_LIMITS.iter().any(|(param, min, max)| *param == k && (*min..=*max).contains(n))),
+    };
+    Some(
+        desc("null")
+            .with("presetKind", enm("presetKindType", "presetKindCustom"))
+            .with("useLegacy", D::Boolean(false))
+            .with("Amnt", pct(num("amount", 100.0)?))
+            .with("Rds ", px(num("radius", 1.0)?))
+            .with("noiseReduction", pct(num("reduceNoise", 10.0)?))
+            .with("blur", enm("blurType", "GsnB")),
+    )
 }

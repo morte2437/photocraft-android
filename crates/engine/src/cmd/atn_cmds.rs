@@ -34,14 +34,21 @@ mod fields;
 mod files;
 mod steps_batch;
 mod steps_calculations;
+mod steps_channels;
 mod steps_custom;
+mod steps_distort;
 mod steps_doc;
 mod steps_fibers;
+mod steps_gallery;
 mod steps_image;
 mod steps_layer;
 mod steps_lookup;
 mod steps_make;
+mod steps_other;
+mod steps_render;
+mod steps_selection;
 mod steps_shape_blur;
+mod steps_stylize;
 mod tables;
 
 #[cfg(test)]
@@ -62,6 +69,7 @@ use fields::Mapped;
 use files::{load, save};
 #[cfg(test)]
 use steps_doc::crop_from;
+pub(crate) use steps_gallery::RECORDED_EVENT;
 #[cfg(test)]
 use steps_image::{apply_image_from, transform_to};
 #[cfg(test)]
@@ -151,3 +159,12 @@ mod tests;
 
 #[cfg(test)]
 mod layer_props_tests;
+
+#[cfg(test)]
+mod stylize_tests;
+
+#[cfg(test)]
+mod selection_tests;
+
+#[cfg(test)]
+mod render_tests;

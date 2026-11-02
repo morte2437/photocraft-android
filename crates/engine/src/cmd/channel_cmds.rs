@@ -46,7 +46,13 @@ fn has_spot(s: &Session) -> std::result::Result<(), String> {
 }
 fn can_split(s: &Session) -> std::result::Result<(), String> {
     let d = s.active().ok_or("no document open")?;
-    if color_count(&d.doc) + d.doc.channels.len() < 2 { Err("only one channel to split".into()) } else { Ok(()) }
+    if !is_flat(&d.doc) {
+        Err(spot::NOT_FLAT.into())
+    } else if color_count(&d.doc) + d.doc.channels.len() < 2 {
+        Err("only one channel to split".into())
+    } else {
+        Ok(())
+    }
 }
 fn can_merge(s: &Session) -> std::result::Result<(), String> {
     has_doc(s)?;
@@ -122,7 +128,7 @@ pub use planes::{
 pub(crate) use refs::source_spec;
 pub use refs::{Blending, ChanRef, parse_ref};
 use selection::{load_selection, quick_mask, save_selection};
-use spot::{merge, merge_spot, mergeable, split};
+use spot::{is_flat, merge, merge_spot, mergeable, split};
 use targeting::{SLOT_KEY, target_cmd, target_slot};
 pub(crate) use targeting::{
     Target, channel_surface_for_filter, clear_channel, clear_color_channel, color_restriction, edits_channel, filter_mask_layer, inject_target, invert_region,
@@ -148,7 +154,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Load Selection…",
             ["Select"],
             None,
-            r##"{"channel":index|name|"composite"|"red|green|blue|…"|"transparency"|"mask"|"vectorMask"|"quickMask"|"selection"|"targeted" (the Channels panel's target),"layer":id?,"document":index?,"invert":bool=false,"operation":"new|add|subtract|intersect"="new"}"##,
+            r##"{"channel":index|name|"composite"|"red|green|blue|…"|"transparency"|"mask"|"vectorMask"|"quickMask"|"selection"|"targeted" (the Channels panel's target),"layer":id|name|{"name":str}|{"background":true}?,"document":index?,"invert":bool=false,"operation":"new|add|subtract|intersect"="new"}"##,
             has_doc,
             load_selection
         ),
@@ -158,7 +164,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Apply Image…",
             ["Image"],
             None,
-            r##"{"source":{"document":index?,"layer":id|name|"merged"="merged","channel":"composite"|"red|…"|index|"selection"|"transparency"|"mask"="composite","invert":bool=false},"blending":"normal|multiply|screen|overlay|softLight|hardLight|colorDodge|colorBurn|darken|lighten|difference|exclusion|linearBurn|linearDodge|add|subtract|…"="multiply","opacity":0..100=100,"scale":1..2=1,"offset":-255..255=0,"preserveTransparency":bool=false,"mask":{"document","layer","channel","invert"}?,"sourceChannel|sourceDocument|sourceLayer|sourceInvert|maskChannel|…":flat form of source/mask?}"##,
+            r##"{"source":{"document":index?,"layer":id|name|{"name":str}|{"background":true}|"merged"="merged","channel":"composite"|"red|…"|index|"selection"|"transparency"|"mask"="composite","invert":bool=false},"blending":"normal|multiply|screen|overlay|softLight|hardLight|colorDodge|colorBurn|darken|lighten|difference|exclusion|linearBurn|linearDodge|add|subtract|…"="multiply","opacity":0..100=100,"scale":1..2=1,"offset":-255..255=0,"preserveTransparency":bool=false,"mask":{"document","layer","channel","invert"}?,"sourceChannel|sourceDocument|sourceLayer|sourceInvert|maskChannel|…":flat form of source/mask?}"##,
             has_apply_target,
             apply_image
         ),
@@ -206,7 +212,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Target Channel",
             [],
             None,
-            r##"{"channel":"composite"|"mask"|"vectorMask"|"red|green|blue|…"|index|name="composite","colors":[index,…]?,"extend":bool=false} (colors selects native colour components only; extend toggles one colour channel, as Shift-click; all components select the composite)"##,
+            r##"{"channel":"composite"|"mask"|"vectorMask"|"red|green|blue|…"|index|name|{"color":index|name}|{"alpha":index}="composite","colors":[index,…]?,"extend":bool=false} (a color object selects only a native component, never a named alpha channel; colors selects native colour components only; extend toggles one colour channel, as Shift-click; all components select the composite)"##,
             has_doc,
             target_cmd
         ),

@@ -3183,6 +3183,9 @@ curves	Smooth	Tasoita
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} vaiheella ei ole vielä vastaavuutta PhotoCraftissa|{n} vaiheella ei ole vielä vastaavuutta PhotoCraftissa
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	Tallennettu {n} toiminto tiedostoon {file}|Tallennettu {n} toimintoa tiedostoon {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	{n} vaihe jätettiin pois, koska sillä ei ole Photoshop-vastinetta|{n} vaihetta jätettiin pois, koska niillä ei ole Photoshop-vastinetta
+@plural	{n} action file loaded|{n} action files loaded	Ladattu {n} toimintotiedosto|Ladattu {n} toimintotiedostoa
+	{set} from {file} replaced the one from {earlier}	Sarja {set} tiedostosta {file} korvasi sarjan tiedostosta {earlier}
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	{n} tiedoston lataaminen epäonnistui: {errors}|{n} tiedoston lataaminen epäonnistui: {errors}
 
 	File Naming	Tiedostojen nimeäminen
 	Starting serial	Aloitusnumero

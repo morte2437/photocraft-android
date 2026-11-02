@@ -1090,6 +1090,20 @@ fn batch_plays_a_photoshop_actions_file() {
     assert!(!o.status.success());
 }
 
+/// A version 12 Actions file (Photoshop 5, often saved on classic Mac OS without an extension) is
+/// recognised by its version word like version 16, not read as a JSON actions list.
+#[test]
+fn extensionless_version_12_actions_file_is_read_as_atn() {
+    let d = tmp("atn-v12");
+    let path = d.join("Legacy Actions");
+    std::fs::write(&path, include_bytes!("../../../../crates/psd/tests/fixtures/atn/v12-commands.atn")).unwrap();
+    let (steps, set, warnings) = photocraft_cli::load_actions_file(&path, None).unwrap();
+    assert_eq!(set.len(), 1);
+    assert_eq!(steps, vec![("actions.play".to_string(), json!({"action": set[0].name}))]);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    std::fs::remove_dir_all(d).unwrap();
+}
+
 /// What `photocraft_cli::run` returned and wrote, in-process.
 struct Invoke {
     code: i32,

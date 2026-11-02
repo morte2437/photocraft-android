@@ -291,6 +291,10 @@ sync_github_name = true
 [people.dylanmtaylor]
 sync_github_name = true
 
+[people.Yuki-init]
+display_name = "DC@yuki.himejima"
+sync_github_name = false
+
 [people.sn-o-w]
 real_name = "Cristian Silaghi"
 sync_github_name = false

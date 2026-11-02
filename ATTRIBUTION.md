@@ -145,7 +145,7 @@ Files copied into `corpus/` by hand (tiff, exr, raw) must be MIT, BSD or CC0.
 
 | Path | Title | Author | Source | License |
 |---|---|---|---|---|
-| `crates/psd/tests/fixtures/atn/*.atn` | Independently encoded ATN version-16 parser fixtures | PhotoCraft contributors | Original synthetic test data; wire layout documented in `crates/psd/src/atn.rs`; provenance in the adjacent README | MIT OR Apache-2.0 |
+| `crates/psd/tests/fixtures/atn/*.atn` | Independently encoded ATN version-16 and version-12 parser fixtures | PhotoCraft contributors (version-12 files: @yoriswind) | Original synthetic test data; wire layout documented in `crates/psd/src/atn.rs`; provenance in the adjacent README | MIT OR Apache-2.0 |
 
 ## Embedded-vector editor source
 
