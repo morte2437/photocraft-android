@@ -68,6 +68,9 @@ pub(crate) fn update_changed(s: &mut Session, _: &Value) -> Result<Value> {
     let st = s.active().ok_or(EngineError::NoDocument)?;
     let (doc, files) = (st.doc.id.0, resolved_files(st));
     let now = files.into_iter().map(|(p, file, ids)| (p, ids, stamp(file.as_deref()))).collect();
+    // Drop a look still running on a worker thread. It stamped the files before this one, and
+    // applying it later would replace this look's result.
+    s.link_scan = None;
     s.apply_link_stamps(doc, now)
 }
 
@@ -108,6 +111,30 @@ impl Session {
         }
     }
 
+    /// The active document's linked files that were not there at the last look (the Layers
+    /// panel's Missing filter). A path that is not followed ([`crate::doc_path`]) is never looked
+    /// at, so it is not listed.
+    pub fn missing_links(&self) -> HashSet<String> {
+        let Some(doc) = self.active().map(|d| d.doc.id.0) else { return HashSet::new() };
+        self.link_missing.iter().filter(|(d, _)| *d == doc).map(|(_, p)| p.clone()).collect()
+    }
+
+    /// Remember which of document `doc`'s files in `now` were not there, and forget the files of
+    /// closed documents. The web app has no files to look at, so it lists none.
+    fn note_missing_links(&mut self, doc: u64, now: &[(String, Vec<u64>, Option<Stamp>)]) {
+        let open: HashSet<u64> = self.documents().iter().map(|d| d.doc.id.0).collect();
+        self.link_missing.retain(|(d, _)| *d != doc && open.contains(d));
+        if cfg!(target_arch = "wasm32") {
+            return;
+        }
+        let document = self.active().and_then(|st| st.path.clone());
+        for (path, _, stamp) in now {
+            if stamp.is_none() && crate::doc_path::resolve_in(path, document.as_deref().map(std::path::Path::new)).is_ok() {
+                self.link_missing.insert((doc, path.clone()));
+            }
+        }
+    }
+
     /// Apply a finished look (`None` while there is none, or it is still running).
     pub fn poll_link_scan(&mut self) -> Option<Result<Value>> {
         let (doc, stamps) = self.link_scan.as_ref()?.lock().unwrap_or_else(PoisonError::into_inner).take()?;
@@ -122,6 +149,7 @@ impl Session {
         if self.active().map(|d| d.doc.id.0) != Some(doc) {
             return Ok(json!({"updated": []}));
         }
+        self.note_missing_links(doc, &now);
         // A background job holds the document: refreshing now would replace the snapshot it works
         // on and its result would be discarded. The stamps stay as they were, so the change is
         // seen again by the first look after the job ends.
@@ -280,6 +308,88 @@ mod tests {
         s.set_active(0);
         assert_eq!(s.execute("layer.smartObjects.updateChanged", json!({})).unwrap(), json!({"updated": [id]}));
         assert!(is(centre(&s), BLUE));
+    }
+
+    #[test]
+    fn a_look_lists_the_linked_files_that_are_not_there() {
+        let d = dir("missing");
+        let path = d.join("art.png");
+        std::fs::write(&path, png(10, 10, "#ff0000")).unwrap();
+        let (mut s, _) = placed(&path);
+        let stored = super::linked_files(&s.active().unwrap().doc)[0].0.clone();
+        assert!(s.missing_links().is_empty(), "nothing looked at yet");
+        s.execute("layer.smartObjects.updateChanged", json!({})).unwrap();
+        assert!(s.missing_links().is_empty());
+        std::fs::remove_file(&path).unwrap();
+        s.execute("layer.smartObjects.updateChanged", json!({})).unwrap();
+        assert_eq!(s.missing_links(), [stored.clone()].into());
+        // Only the document's own files: another one in front lists none.
+        s.execute("file.new", json!({"width": 10, "height": 10})).unwrap();
+        assert!(s.missing_links().is_empty());
+        s.set_active(0);
+        assert_eq!(s.missing_links(), [stored].into());
+        std::fs::write(&path, png(10, 10, "#0000ff")).unwrap();
+        s.execute("layer.smartObjects.updateChanged", json!({})).unwrap();
+        assert!(s.missing_links().is_empty(), "the file is back");
+    }
+
+    #[test]
+    fn a_reopened_document_lists_no_file_missing_before_it_closed() {
+        let d = dir("reopen");
+        let (path, saved) = (d.join("art.png"), d.join("doc.pcraft"));
+        std::fs::write(&path, png(10, 10, "#ff0000")).unwrap();
+        let (mut s, _) = placed(&path);
+        s.execute("file.saveACopy", json!({"path": saved.to_string_lossy()})).unwrap();
+        let id = s.active().unwrap().doc.id;
+        std::fs::remove_file(&path).unwrap();
+        s.execute("layer.smartObjects.updateChanged", json!({})).unwrap();
+        assert_eq!(s.missing_links().len(), 1);
+        s.close(0);
+        std::fs::write(&path, png(10, 10, "#0000ff")).unwrap();
+        let bytes = std::fs::read(&saved).unwrap();
+        crate::file_cmds::open_bytes_as(&mut s, "doc.pcraft", &bytes, None, Some(saved.to_string_lossy().into_owned())).unwrap();
+        assert_eq!(s.active().unwrap().doc.id, id, "the saved document keeps its id");
+        assert!(s.missing_links().is_empty(), "nothing looked at since it opened");
+    }
+
+    #[test]
+    fn a_look_started_before_update_changed_does_not_replace_its_result() {
+        let d = dir("stale");
+        let path = d.join("art.png");
+        std::fs::write(&path, png(10, 10, "#ff0000")).unwrap();
+        let (mut s, _) = placed(&path);
+        s.start_link_scan();
+        let t0 = std::time::Instant::now();
+        while s.link_scan.as_ref().is_some_and(|l| l.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none()) {
+            assert!(t0.elapsed().as_secs() < 10, "the look never finished");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        std::fs::remove_file(&path).unwrap();
+        s.execute("layer.smartObjects.updateChanged", json!({})).unwrap();
+        assert_eq!(s.missing_links().len(), 1);
+        let _ = s.poll_link_scan();
+        assert_eq!(s.missing_links().len(), 1, "the earlier look found the file, but it is gone");
+    }
+
+    #[test]
+    fn a_scan_finished_after_close_cannot_change_a_reopened_document() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("art.png");
+        let saved = directory.path().join("doc.pcraft");
+        std::fs::write(&path, png(10, 10, "#ff0000")).unwrap();
+        let (mut s, layer) = placed(&path);
+        s.execute("file.saveACopy", json!({"path": saved.to_string_lossy()})).unwrap();
+        let id = s.active().unwrap().doc.id;
+        let stored = super::linked_files(&s.active().unwrap().doc)[0].0.clone();
+        let scan = std::sync::Arc::new(std::sync::Mutex::new(None));
+        s.link_scan = Some(scan.clone());
+        s.close(0);
+        let bytes = std::fs::read(&saved).unwrap();
+        crate::file_cmds::open_bytes_as(&mut s, "doc.pcraft", &bytes, None, Some(saved.to_string_lossy().into_owned())).unwrap();
+        assert_eq!(s.active().unwrap().doc.id, id);
+        *scan.lock().unwrap() = Some((id.0, vec![(stored, vec![layer], None)]));
+        assert!(s.poll_link_scan().is_none());
+        assert!(s.missing_links().is_empty());
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! #5048: the Layers panel's filter-type dropdown (Kind, Name, Mode, Artboard).
+//! #5048: the Layers panel's filter-type dropdown (Kind, Name, Mode, Color, Smart Object, Artboard).
 
 use egui::vec2;
 use egui_kittest::Harness;
@@ -301,4 +301,102 @@ fn the_artboard_filter_walks_deep_groups_without_recursion() {
         .unwrap()
         .join()
         .unwrap();
+}
+
+/// Creates a PNG fixture and returns its temporary directory with the file path.
+fn art_file() -> (tempfile::TempDir, std::path::PathBuf) {
+    let directory = tempfile::tempdir().unwrap();
+    let file = directory.path().join("art.png");
+    let mut s = photocraft_engine::Session::new();
+    s.execute("file.new", json!({"width": 8, "height": 8, "background": "#ff0000"})).unwrap();
+    s.execute("file.saveACopy", json!({"path": file.to_string_lossy(), "layers": false})).unwrap();
+    (directory, file)
+}
+
+/// "Linked art" (linked to `file`) above "Embedded art" (a copy of `file`), "Plain" and
+/// "Background".
+fn smart_session(file: &std::path::Path) -> photocraft_engine::Session {
+    let mut s = photocraft_engine::Session::new();
+    s.execute("file.new", json!({"width": 32, "height": 32})).unwrap();
+    s.execute("layer.new.layer", json!({"name": "Plain"})).unwrap();
+    for (command, name) in [("file.placeEmbedded", "Embedded art"), ("file.placeLinked", "Linked art")] {
+        s.execute(command, json!({"path": file.to_string_lossy()})).unwrap();
+        let id = s.active().unwrap().active_layer.unwrap().0;
+        s.execute("layer.setProps", json!({"layer": id, "name": name})).unwrap();
+    }
+    s
+}
+
+fn by_smart(smart: &[&str], missing: std::collections::HashSet<String>) -> Filter {
+    Filter { smart: smart.iter().map(|k| k.to_string()).collect(), missing, ..filter(FilterBy::SmartObject, &[], "", BlendMode::Normal) }
+}
+
+#[test]
+fn the_smart_object_filter_lists_linked_missing_and_embedded_smart_objects() {
+    let (_directory, file) = art_file();
+    let mut s = smart_session(&file);
+    let doc = &s.active().unwrap().doc;
+    let none = std::collections::HashSet::new;
+    assert!(!by_smart(&[], none()).active(), "no toggle on: every layer");
+    assert_eq!(listed(doc, &by_smart(&[], none())), ["Linked art", "Embedded art", "Plain", "Background"]);
+    assert_eq!(listed(doc, &by_smart(&["linked"], none())), ["Linked art"]);
+    assert_eq!(listed(doc, &by_smart(&["embedded"], none())), ["Embedded art"]);
+    assert_eq!(listed(doc, &by_smart(&["linked", "embedded"], none())), ["Linked art", "Embedded art"]);
+    assert_eq!(listed(doc, &by_smart(&["missing"], s.missing_links())), Vec::<String>::new(), "the file is there");
+    std::fs::remove_file(&file).unwrap();
+    s.execute("layer.smartObjects.updateChanged", json!({})).unwrap();
+    let doc = &s.active().unwrap().doc;
+    assert_eq!(listed(doc, &by_smart(&["missing"], s.missing_links())), ["Linked art"]);
+    assert_eq!(listed(doc, &by_smart(&["missing", "embedded"], s.missing_links())), ["Linked art", "Embedded art"]);
+}
+
+#[test]
+fn saved_settings_without_the_smart_object_toggles_still_load() {
+    let mut saved = serde_json::to_value(UiState::default()).unwrap();
+    assert!(saved.as_object_mut().unwrap().remove("layer_filter_smart").is_some(), "layer_filter_smart is saved");
+    let ui: UiState = serde_json::from_value(saved).unwrap();
+    assert!(ui.layer_filter_smart.is_empty());
+    let round =
+        serde_json::to_value(UiState { layer_filter_by: FilterBy::SmartObject, layer_filter_smart: vec!["missing".into()], ..UiState::default() }).unwrap();
+    let back: UiState = serde_json::from_value(round.clone()).unwrap();
+    assert_eq!(
+        (round["layer_filter_by"].as_str(), back.layer_filter_by, back.layer_filter_smart),
+        (Some("smartObject"), FilterBy::SmartObject, vec!["missing".to_string()])
+    );
+}
+
+#[test]
+fn the_smart_object_toggles_filter_the_panel() {
+    let (_directory, file) = art_file();
+    let session = smart_session(&file);
+    let mut h = Harness::builder().with_size(vec2(1440.0, 900.0)).with_max_steps(64).build_eframe(move |cc| {
+        PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
+        PhotocraftApp::new(session, crate::Services::default())
+    });
+    h.run_steps(8);
+    let all = ["Linked art", "Embedded art", "Plain", "Background"];
+    assert_eq!(drawn(&h), all);
+    h.get_by_value("Kind").click();
+    h.run_steps(4);
+    h.query_all_by_label("Smart Object").last().expect("Smart Object in the open list").click();
+    h.run_steps(4);
+    assert_eq!(h.state().ui.layer_filter_by, FilterBy::SmartObject);
+    assert_eq!(drawn(&h), all, "no toggle on yet: every layer");
+    h.get_by_label("Filter for embedded smart objects").click();
+    h.run_steps(4);
+    assert_eq!(h.state().ui.layer_filter_smart, ["embedded"]);
+    assert_eq!(drawn(&h), ["Embedded art"]);
+    h.get_by_label("Filter for embedded smart objects").click();
+    h.get_by_label("Filter for smart objects linked locally").click();
+    h.run_steps(4);
+    assert_eq!(drawn(&h), ["Linked art"]);
+    h.get_by_label("Filter for smart objects linked locally").click();
+    h.get_by_label("Filter for linked smart objects that are missing").click();
+    h.run_steps(4);
+    assert_eq!(h.state().ui.layer_filter_smart, ["missing"]);
+    assert_eq!(drawn(&h), Vec::<String>::new(), "the file is there");
+    std::fs::remove_file(&file).unwrap();
+    h.state_mut().session.execute("layer.smartObjects.updateChanged", json!({})).unwrap();
+    h.run_steps(4);
+    assert_eq!(drawn(&h), ["Linked art"]);
 }

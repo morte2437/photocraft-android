@@ -166,6 +166,8 @@ impl Session {
             self.cancel_jobs_on(id);
             self.subject_cache.forget_doc(id);
             self.object_finder.forget_doc(id);
+            self.link_missing.retain(|(d, _)| *d != id.0);
+            self.link_scan = None;
         }
         let d = self.docs.remove(index);
         self.open_document_order.retain(|&id| id != d.doc.id);

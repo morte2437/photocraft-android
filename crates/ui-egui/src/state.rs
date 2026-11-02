@@ -349,6 +349,9 @@ pub struct UiState {
     /// Layers panel kind filter ("pixel", "adjustment", "type", "shape", "smart"); empty = all.
     #[serde(default)]
     pub layer_filter: Vec<String>,
+    /// Layers panel Smart Object filter ("linked", "missing", "embedded"); empty = all.
+    #[serde(default)]
+    pub layer_filter_smart: Vec<String>,
     /// Thumbnail dimensions, content cropping and filter-strip visibility.
     #[serde(default)]
     pub layers_panel_options: LayersPanelOptions,
@@ -571,6 +574,7 @@ impl Default for UiState {
             artboard_tool: Default::default(),
             shell: Default::default(),
             layer_filter: Vec::new(),
+            layer_filter_smart: Vec::new(),
             layers_panel_options: LayersPanelOptions::default(),
             histogram_panel: Default::default(),
             histogram_range: None,
