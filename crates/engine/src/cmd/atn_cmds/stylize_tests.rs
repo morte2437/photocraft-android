@@ -411,7 +411,7 @@ fn prepare_pattern(s: &mut Session, depth: u32, mode: &str) {
 }
 
 fn pixels(s: &Session) -> Vec<[f32; 4]> {
-    photocraft_compose::render(&s.active().unwrap().doc, photocraft_geom::Rect::new(0, 0, 32, 24)).px
+    photocraft_compose::render(&s.active().unwrap().doc, photocraft_geom::Rect::new(0, 0, 32, 24)).into_px()
 }
 
 /// Saving omitted native params preserves their actual command behavior, not Photoshop's defaults.

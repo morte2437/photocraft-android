@@ -50,7 +50,7 @@ fn from_document(doc: Document, active: Option<LayerId>) -> Session {
 }
 
 fn composed(s: &Session) -> Vec<[f32; 4]> {
-    photocraft_compose::flatten(&s.active().unwrap().doc).px
+    photocraft_compose::flatten(&s.active().unwrap().doc).into_px()
 }
 
 /// The public source-first control must differ from conversion before flattening.

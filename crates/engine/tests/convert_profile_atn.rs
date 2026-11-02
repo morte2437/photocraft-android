@@ -113,7 +113,7 @@ fn intent_fixture() -> Session {
 }
 
 fn rendered(s: &Session) -> Vec<[f32; 4]> {
-    photocraft_compose::flatten(&s.active().unwrap().doc).px
+    photocraft_compose::flatten(&s.active().unwrap().doc).into_px()
 }
 
 /// Assert saved typed fields and independent pixel/model effects, not just paired adapters.
