@@ -1,6 +1,6 @@
 [package]
 name = "photocraft-automation"
-description = "MCP server (rmcp) over the Photocraft engine, plus a bridge to a running GUI"
+description = "MCP server (rmcp) over the PhotoCraft engine, plus a bridge to a running GUI"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,8 +10,8 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-photocraft-geom = { workspace = true }
 photocraft-doc = { workspace = true }
+photocraft-raster = { workspace = true }
 photocraft-compose = { workspace = true }
 photocraft-codecs = { workspace = true }
 photocraft-io = { workspace = true }
@@ -22,11 +22,18 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 rmcp = { version = "3.5", default-features = false, features = ["server", "macros", "transport-io"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "sync", "net", "io-util", "time"] }
-base64 = "0.22"
+base64 = "0.23"
 schemars = "1"
 getrandom = { workspace = true }
 cap-std = "4"
+clap = { workspace = true }
 
 [dev-dependencies]
+# Synthetic camera raws (#7789).
+photocraft-raw = { workspace = true, features = ["testgen"] }
 rmcp = { version = "3.5", default-features = false, features = ["client", "server", "macros", "transport-io"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "sync", "net", "io-util", "time"] }
+
+# Reading back an extended attribute the write path should have preserved (#7095).
+[target.'cfg(unix)'.dev-dependencies]
+rustix = { version = "1.1", default-features = false, features = ["std", "fs"] }

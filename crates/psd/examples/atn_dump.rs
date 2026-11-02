@@ -56,9 +56,10 @@ fn main() {
         match atn::parse(&bytes) {
             Ok(f) => {
                 println!(
-                    "== {path}: set {:?}, {} actions{}",
+                    "== {path}: set {:?}, {} actions{}{}",
                     f.name.to_string_lossy(),
                     f.actions.len(),
+                    f.encoding.as_deref().map(|e| format!(", names in {e}")).unwrap_or_default(),
                     if f.warnings.is_empty() { String::new() } else { format!(" ({})", f.warnings.join("; ")) }
                 );
                 for a in &f.actions {
@@ -66,8 +67,8 @@ fn main() {
                     for item in &a.items {
                         let flags = format!("{}{}", if item.enabled { "" } else { " off" }, if item.with_dialog { " dialog" } else { "" });
                         match &item.descriptor {
-                            Some(d) => println!("    {:<22} {:<28}{flags}  {}", item.event.id(), item.label(), keys(d)),
-                            None => println!("    {:<22} {:<28}{flags}", item.event.id(), item.label()),
+                            Some(d) => println!("    {:<22} {:<28}{flags}  {}", item.event.id(), f.item_label(item), keys(d)),
+                            None => println!("    {:<22} {:<28}{flags}", item.event.id(), f.item_label(item)),
                         }
                     }
                 }

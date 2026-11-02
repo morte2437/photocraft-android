@@ -12,5 +12,9 @@ photocraft-geom = { workspace = true }
 photocraft-color = { workspace = true }
 serde = { workspace = true }
 
+# Native only: converting a region's tiles is independent per tile, so it runs on all cores.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rayon = { workspace = true }
+
 [dev-dependencies]
 proptest = { workspace = true }

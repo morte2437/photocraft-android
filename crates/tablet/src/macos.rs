@@ -92,7 +92,10 @@ fn read(e: &NSEvent) -> RawEvent {
 }
 
 fn is_mouse(kind: usize) -> bool {
-    use crate::appkit::event_type::*;
+    use crate::appkit::event_type::{
+        LEFT_MOUSE_DOWN, LEFT_MOUSE_DRAGGED, LEFT_MOUSE_UP, MOUSE_MOVED, OTHER_MOUSE_DOWN, OTHER_MOUSE_DRAGGED, OTHER_MOUSE_UP, RIGHT_MOUSE_DOWN,
+        RIGHT_MOUSE_DRAGGED, RIGHT_MOUSE_UP,
+    };
     matches!(
         kind,
         LEFT_MOUSE_DOWN

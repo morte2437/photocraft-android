@@ -28,7 +28,7 @@
 //!   Bodies whose full profile is not measured yet can still carry a measured
 //!   image area (the D800E, the ILCE-7).
 //!
-//! Decoded today: DNG (uncompressed, lossless-JPEG and JPEG XL, strips and
+//! Decoded today: DNG (uncompressed, deflate, lossless-JPEG, lossy-JPEG and JPEG XL, strips and
 //! tiles, CFA and LinearRaw), CR2 (lossless JPEG with Canon slices), uncompressed or
 //! lossless-JPEG TIFF/EP raws (NEF, ARW, PEF… when not vendor-compressed),
 //! Nikon compressed NEF (lossless and lossy), Sony compressed ARW (cRAW),
@@ -64,6 +64,7 @@ mod rw2;
 mod saturation;
 mod sensor;
 mod sony;
+mod sony_metadata;
 mod tiff;
 mod tiffep;
 mod tone;
@@ -76,8 +77,8 @@ pub use crate::demosaic::Demosaic;
 pub use crate::develop::{DevelopOptions, Developed, RawInfo, WhiteBalance, develop_sensor};
 pub use crate::error::RawError;
 pub use crate::look::{CameraLook, LookRejected, PROXY_EDGE, Reference, ToneCurve, fit_look};
-pub use crate::opcodes::GainMap;
-pub use crate::preview::{Preview, PreviewColorSpace, embedded_preview, embedded_preview_color_space, embedded_previews};
+pub use crate::opcodes::{GainMap, MapPolynomial};
+pub use crate::preview::{DecodedPreview, Preview, PreviewColorSpace, embedded_jxl_preview, embedded_preview, embedded_preview_color_space, embedded_previews};
 pub use crate::sensor::{BlackLevels, Cfa, Rect, Sensor};
 pub use crate::tone::{Tone, retone};
 

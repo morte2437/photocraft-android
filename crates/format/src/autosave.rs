@@ -9,6 +9,7 @@
 //! [`RecoveryStore`] is the app-facing lifecycle: an entry is only deleted once
 //! the document is saved or closed, never just because it was recovered.
 
+use std::collections::BTreeSet;
 #[cfg(not(target_arch = "wasm32"))]
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -20,7 +21,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use photocraft_doc::Document;
 use serde::{Deserialize, Serialize};
 
-use crate::store::write_atomic;
 use crate::{FormatError, PcraftWriter, Result, SaveOptions, SaveStats};
 
 /// Sidecar describing an autosave.
@@ -168,7 +168,7 @@ fn worker(rx: Receiver<Job>, bundle: PathBuf, sidecar: PathBuf, last: Arc<Mutex<
         let r = (|| {
             std::fs::create_dir_all(&bundle)?;
             let stats = writer.save_dir(&job.snapshot, &bundle, &job.opts)?;
-            write_atomic(&sidecar, &serde_json::to_vec_pretty(&job.info)?)?;
+            write_sidecar(&sidecar, &serde_json::to_vec_pretty(&job.info)?)?;
             Ok(stats)
         })();
         if let Ok(mut results) = completed.lock() {
@@ -180,29 +180,141 @@ fn worker(rx: Receiver<Job>, bundle: PathBuf, sidecar: PathBuf, last: Arc<Mutex<
     }
 }
 
-/// Recoverable documents in `recovery_dir`, newest first. A sidecar must be named after its own
-/// (sanitized) key, so a stray or hand-edited one can never point outside the directory.
-pub fn list_recovery(recovery_dir: &Path) -> Vec<RecoveryEntry> {
-    let mut out = Vec::new();
-    let Ok(rd) = std::fs::read_dir(recovery_dir) else {
-        return out;
-    };
-    for e in rd.flatten() {
-        let p = e.path();
-        if p.extension().is_some_and(|x| x == "json")
-            && let Ok(bytes) = std::fs::read(&p)
-            && let Ok(info) = serde_json::from_slice::<RecoveryInfo>(&bytes)
-            && sanitize(&info.key) == info.key
-            && p.file_stem().is_some_and(|stem| *stem == *info.key)
-        {
-            let bundle = recovery_dir.join(format!("{}.pcraft", info.key));
-            if bundle.join(crate::store::MANIFEST).is_file() {
-                out.push(RecoveryEntry { info, bundle });
+/// Publish a recovery sidecar atomically: a flushed temporary file renamed over the old one.
+///
+/// The replacing step is a plain rename on every platform, never `ReplaceFileW` (what
+/// [`crate::atomic::RealFs`] uses on Windows to keep a user file's ACL and named streams). That
+/// call first moves the old file to a backup name and only then moves the new one in, so for a
+/// moment `<key>.json` does not exist: a listing in between took the entry for a sidecar-less
+/// bundle and listed it twice, or not at all (#9034). A rename swaps the name in one step, and
+/// recovery data is private to the app, so there is no metadata to keep.
+fn write_sidecar(path: &Path, bytes: &[u8]) -> Result<()> {
+    struct SidecarFs;
+    impl crate::atomic::AtomicFs for SidecarFs {
+        // As before: Windows refuses a read-only sidecar up front, Unix replaces it.
+        #[cfg(not(unix))]
+        fn is_readonly(&self, path: &Path) -> bool {
+            crate::atomic::RealFs.is_readonly(path)
+        }
+        fn write_new(&self, tmp: &Path, bytes: &[u8]) -> std::io::Result<()> {
+            #[cfg(unix)]
+            {
+                use std::io::Write;
+                use std::os::unix::fs::OpenOptionsExt;
+                let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(tmp)?;
+                f.write_all(bytes)?;
+                crate::atomic::sync_file(&f)
+            }
+            #[cfg(not(unix))]
+            {
+                crate::atomic::RealFs.write_new(tmp, bytes)
             }
         }
+        fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+            crate::atomic::RealFs.rename(from, to)
+        }
+        // `replace_existing` keeps the trait's default: this same one-step rename.
+        fn remove(&self, path: &Path) -> std::io::Result<()> {
+            crate::atomic::RealFs.remove(path)
+        }
+        fn sync_dir(&self, dir: &Path) -> std::io::Result<()> {
+            crate::atomic::RealFs.sync_dir(dir)
+        }
+        fn copy_metadata(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+            crate::atomic::RealFs.copy_metadata(from, to)
+        }
     }
+    crate::atomic::atomic_write_with(&SidecarFs, crate::atomic::RenameRetry::platform(), path, bytes)?;
+    Ok(())
+}
+
+fn read_sidecar_bounded(path: &Path, max: usize) -> Option<Vec<u8>> {
+    use std::io::Read;
+    #[cfg(unix)]
+    let mut file = {
+        use rustix::fs::{Mode, OFlags, open};
+        let fd = open(path, OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC, Mode::empty()).ok()?;
+        let file = std::fs::File::from(fd);
+        if !file.metadata().ok()?.is_file() {
+            return None;
+        }
+        let _ = rustix::fs::fcntl_setfl(&file, OFlags::empty());
+        file
+    };
+    #[cfg(not(unix))]
+    let mut file = {
+        if !std::fs::symlink_metadata(path).ok()?.file_type().is_file() {
+            return None;
+        }
+        let file = std::fs::File::open(path).ok()?;
+        if !file.metadata().ok()?.is_file() {
+            return None;
+        }
+        file
+    };
+    let mut bytes = Vec::new();
+    (&mut file).take((max as u64).saturating_add(1)).read_to_end(&mut bytes).ok()?;
+    if bytes.len() > max {
+        return None;
+    }
+    Some(bytes)
+}
+
+/// Recoverable documents in `recovery_dir`, newest first. A sidecar must be named after its own
+/// (sanitized) key, so a stray or hand-edited one can never point outside the directory.
+///
+/// Each key is looked at once, after the directory has been read: an autosave may publish a
+/// document's first sidecar while the listing runs, and judging the bundle and the sidecar as
+/// each name came up listed that bundle twice, or not at all.
+pub fn list_recovery(recovery_dir: &Path) -> Vec<RecoveryEntry> {
+    let Ok(rd) = std::fs::read_dir(recovery_dir) else {
+        return Vec::new();
+    };
+    let keys: BTreeSet<String> = rd
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().into_string().ok()?;
+            name.strip_suffix(".json").or_else(|| name.strip_suffix(".pcraft")).map(str::to_string)
+        })
+        .collect();
+    let mut out: Vec<RecoveryEntry> = keys.iter().filter_map(|key| recovery_entry(recovery_dir, key)).collect();
     out.sort_by(|a, b| b.info.saved_at.cmp(&a.info.saved_at).then(a.info.key.cmp(&b.info.key)));
     out
+}
+
+/// `key`'s entry. The sidecar is tried again last: it can appear after the first look, once the
+/// bundle it describes is committed, and is never removed by a save.
+fn recovery_entry(recovery_dir: &Path, key: &str) -> Option<RecoveryEntry> {
+    let bundle = recovery_dir.join(format!("{key}.pcraft"));
+    sidecar_entry(recovery_dir, key, &bundle).or_else(|| sidecarless_entry(recovery_dir, &bundle)).or_else(|| sidecar_entry(recovery_dir, key, &bundle))
+}
+
+fn sidecar_entry(recovery_dir: &Path, key: &str, bundle: &Path) -> Option<RecoveryEntry> {
+    let bytes = read_sidecar_bounded(&recovery_dir.join(format!("{key}.json")), 1 << 20)?;
+    let info = serde_json::from_slice::<RecoveryInfo>(&bytes).ok()?;
+    (sanitize(&info.key) == info.key && info.key == key && bundle.join(crate::store::MANIFEST).is_file())
+        .then(|| RecoveryEntry { info, bundle: bundle.to_path_buf() })
+}
+
+/// A committed `<key>.pcraft` bundle (its manifest is written last) whose sidecar was never
+/// published, e.g. a crash during a document's first autosave. The metadata is rebuilt from the
+/// manifest (read like a load reads it) and its modification time. Incomplete bundles (no
+/// readable manifest) and bundles with anything at the sidecar's path are not entries.
+fn sidecarless_entry(recovery_dir: &Path, bundle: &Path) -> Option<RecoveryEntry> {
+    let key = bundle.file_name()?.to_str()?.strip_suffix(".pcraft")?;
+    if !std::fs::symlink_metadata(bundle).is_ok_and(|m| m.is_dir())
+        || key.is_empty()
+        || sanitize(key) != key
+        || std::fs::symlink_metadata(recovery_dir.join(format!("{key}.json"))).is_ok()
+    {
+        return None;
+    }
+    let meta = std::fs::symlink_metadata(bundle.join(crate::store::MANIFEST)).ok().filter(|m| m.is_file())?;
+    let source = crate::store::DirSource { root: bundle.to_path_buf() };
+    let manifest = crate::store::read_manifest(&source, &crate::LoadOptions::default()).ok()?;
+    let saved_at = meta.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
+    let info = RecoveryInfo { key: key.to_string(), document_name: manifest.document.name, original_path: None, saved_at, revision: 0 };
+    Some(RecoveryEntry { info, bundle: bundle.to_path_buf() })
 }
 
 /// Load a recovered document.
@@ -276,6 +388,24 @@ impl RecoveryStore {
         self.savers.iter().flat_map(|(&id, saver)| saver.take_completed().into_iter().map(move |(revision, result)| (id, revision, result))).collect()
     }
 
+    /// Finish every queued autosave and wait for it, then return the outcomes as
+    /// [`take_completed`](Self::take_completed) does. For a session that ends without asking,
+    /// e.g. because the window's graphics device was lost (#3438). The workers stop; a later
+    /// autosave of the same document starts a new one on the same entry, so a failed write can be
+    /// tried again.
+    pub fn flush(&mut self) -> Vec<(u64, u64, std::result::Result<(), String>)> {
+        for saver in self.savers.values_mut() {
+            saver.shutdown();
+        }
+        let done = self.take_completed();
+        // Keep each entry's key, so a later autosave writes the same entry and a discard (the
+        // document was saved or closed meanwhile) still removes it.
+        for (id, saver) in self.savers.drain() {
+            self.adopted.entry(id).or_insert(saver.key.clone());
+        }
+        done
+    }
+
     /// Document `doc_id` was saved or closed: remove its recovery data, both its own autosaves
     /// and the entry it adopted.
     pub fn discard(&mut self, doc_id: u64) -> Result<()> {
@@ -292,8 +422,9 @@ impl RecoveryStore {
 const ORPHAN_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
 
 /// Best-effort removal of recovery data nothing can ever load or clean up:
-/// - `<key>.pcraft` bundle folders with no `<key>.json` sidecar (a crash during a document's
-///   first autosave: the sidecar is written after the bundle, and `list_recovery` skips them);
+/// - `<key>.pcraft` bundle folders with no `<key>.json` sidecar and no readable manifest (a
+///   crash in the middle of a document's first autosave). A sidecar-less bundle whose manifest
+///   was committed is complete and listed by `list_recovery`, so it is kept;
 /// - `*.pcsave.tmp` files left by an interrupted atomic write (see [`crate::atomic::temp_name`])
 ///   that another process created.
 ///
@@ -321,7 +452,8 @@ fn sweep_orphans(recovery_dir: &Path, min_age: std::time::Duration) {
         // Anything at the sidecar's path (even a broken one) keeps the bundle.
         let has_sidecar = std::fs::symlink_metadata(recovery_dir.join(format!("{key}.json"))).is_ok();
         let parts = [path.clone(), path.join("tiles"), path.join("blobs")];
-        if !has_sidecar && parts.iter().all(|p| untouched_for(p, min_age, true)) {
+        // A committed bundle is recoverable work: keep exactly what `list_recovery` lists.
+        if !has_sidecar && sidecarless_entry(recovery_dir, &path).is_none() && parts.iter().all(|p| untouched_for(p, min_age, true)) {
             let _ = std::fs::remove_dir_all(&path);
         } else {
             bundles.extend(parts);
@@ -361,6 +493,9 @@ fn untouched_for(path: &Path, min_age: std::time::Duration, missing_ok: bool) ->
 }
 
 fn remove_entry(dir: &Path, key: &str) -> Result<()> {
+    if sanitize(key) != key {
+        return Err(FormatError::corrupt("recovery entry key contains path components"));
+    }
     let bundle = dir.join(format!("{key}.pcraft"));
     if bundle.exists() {
         std::fs::remove_dir_all(bundle)?;
@@ -435,6 +570,43 @@ mod tests {
         let entries = list_recovery(&dir);
         assert_eq!(entries.len(), 1, "the complete entry survives");
         assert_eq!(recover(&entries[0]).unwrap(), *doc);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_committed_bundle_without_a_sidecar_is_listed_and_survives_the_sweep() {
+        let dir = std::env::temp_dir().join(format!(
+            "pcraft-nosidecar-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)
+        ));
+        let doc =
+            Arc::new(Document::new("Lost", photocraft_doc::Size { width: 4, height: 4 }, photocraft_color::ColorMode::Rgb, photocraft_color::SampleType::U8));
+        let saver = Autosaver::new(&dir, "first");
+        saver.request(doc.clone(), 1, None, SaveOptions::default());
+        assert!(saver.flush().is_some_and(|r| r.is_ok()));
+        // The crash: the bundle was committed, the sidecar never published.
+        std::fs::remove_file(dir.join("first.json")).unwrap();
+
+        let entries = list_recovery(&dir);
+        assert_eq!(entries.len(), 1, "the committed bundle is discoverable");
+        assert_eq!((entries[0].info.key.as_str(), entries[0].info.document_name.as_str()), ("first", "Lost"));
+        assert_eq!(recover(&entries[0]).unwrap(), *doc);
+
+        sweep_orphans(&dir, std::time::Duration::ZERO);
+        assert!(dir.join("first.pcraft").is_dir(), "aged cleanup keeps a committed bundle");
+
+        // Incomplete bundles (no manifest, or one that does not read) are neither listed nor kept.
+        let partial = dir.join("partial.pcraft");
+        std::fs::create_dir_all(partial.join("tiles")).unwrap();
+        let broken = dir.join("broken.pcraft");
+        std::fs::create_dir_all(&broken).unwrap();
+        std::fs::write(broken.join("manifest.json"), b"{").unwrap();
+        assert_eq!(list_recovery(&dir).len(), 1);
+        sweep_orphans(&dir, std::time::Duration::ZERO);
+        assert!(!partial.exists() && !broken.exists());
+        assert!(dir.join("first.pcraft").is_dir());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

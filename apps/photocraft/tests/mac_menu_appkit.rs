@@ -22,6 +22,18 @@ fn main() {
     use photocraft_ui_egui::native_menu;
     use serde_json::json;
 
+    // Without a harness nothing answers cargo-nextest's `--list`, so it ran the whole test as its
+    // listing and failed on the output. List the one test, as libtest's terse format would, and
+    // nothing for `--ignored` (nextest asks twice). Running it passes `<name> --exact`, which falls
+    // through to the test below.
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--list") {
+        if !args.iter().any(|a| a == "--ignored") {
+            println!("mac_menu_appkit: test");
+        }
+        return;
+    }
+
     let mtm = MainThreadMarker::new().expect("harness = false runs on the main thread");
     let nsapp = NSApplication::sharedApplication(mtm);
     nsapp.finishLaunching();

@@ -88,7 +88,7 @@ impl Dictionary {
     /// Whether `word` is spelled correctly (also accepting `user` words, compared without case).
     pub fn check(&self, word: &str, user: &HashSet<String>) -> bool {
         let w = normalize(word);
-        let w = w.strip_suffix("'s").filter(|b| !b.is_empty()).unwrap_or(&w);
+        let w = w.strip_suffix("'s").or_else(|| w.strip_suffix("'S")).filter(|b| !b.is_empty()).unwrap_or(&w);
         let w = w.trim_matches('\'');
         if w.is_empty() || w.chars().any(|c| c.is_numeric()) || !w.chars().any(char::is_alphabetic) {
             return true;
@@ -216,6 +216,13 @@ struct Rows {
     cur: Vec<usize>,
 }
 
+/// Damerau–Levenshtein (optimal string alignment) distance between `a` and `b` in chars, or None
+/// when above `max`. Exposed for "did you mean" hints elsewhere (engine command ids, #3674).
+pub fn edit_distance(a: &str, b: &str, max: usize) -> Option<usize> {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    distance(&a, &b, max, &mut Rows::default())
+}
+
 /// Damerau–Levenshtein (optimal string alignment) distance, or None when above `max`.
 fn distance(a: &[char], b: &[char], max: usize, rows: &mut Rows) -> Option<usize> {
     let (n, m) = (a.len(), b.len());
@@ -256,6 +263,15 @@ mod tests {
 
     fn none() -> HashSet<String> {
         HashSet::new()
+    }
+
+    #[test]
+    fn all_caps_possessive_is_accepted() {
+        let d = Dictionary::english();
+        for w in ["MOTHER'S", "MONDAY'S", "Mother's", "mother's", "MOTHER’S"] {
+            assert!(d.check(w, &none()), "{w}");
+        }
+        assert!(!d.check("MOTHER'SX", &none()));
     }
 
     #[test]
@@ -318,5 +334,7 @@ mod tests {
         assert_eq!(distance(&c("teh"), &c("the"), 2, &mut r), Some(1));
         assert_eq!(distance(&c("teh"), &c("toe"), 2, &mut r), Some(2));
         assert_eq!(distance(&c("teh"), &c("banana"), 2, &mut r), None);
+        assert_eq!(edit_distance("edit.undoo", "edit.undo", 2), Some(1));
+        assert_eq!(edit_distance("teh", "banana", 2), None);
     }
 }

@@ -18,13 +18,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let settings = WebSettings::from_params(&json!({"format": "gif", "colors": 128, "dither": "diffusion"}), "bench")?;
     let rect = Rect::new(0, 0, w as i32, h as i32);
     let started = Instant::now();
-    let original = optimize(&pixels, w, rect, &settings, None, None, 72.0, false)?;
+    let original = optimize(&pixels, w, rect, &settings, None, None, None, 72.0, false)?;
     println!("24 MP generated palette: {:.1} ms", started.elapsed().as_secs_f64() * 1000.0);
     let mut edited = settings;
     edited.color_table = Some(original.color_table);
     edited.color_table_edits.insert(0, [0, 255, 0]);
     let started = Instant::now();
-    let result = optimize(&pixels, w, rect, &edited, None, None, 72.0, false)?;
+    let result = optimize(&pixels, w, rect, &edited, None, None, None, 72.0, false)?;
     println!("24 MP edited fixed palette: {:.1} ms ({} bytes)", started.elapsed().as_secs_f64() * 1000.0, result.bytes.len());
     Ok(())
 }

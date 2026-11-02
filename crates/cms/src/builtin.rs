@@ -26,6 +26,8 @@ pub enum Builtin {
     ProPhotoCompat,
     /// sRGB primaries with a linear transfer function.
     LinearSrgb,
+    /// ACEScg: AP1 primaries, the ACES white point (~D60), linear transfer. The ACES working space for CG renders.
+    AcesCg,
     /// Rec. 2020 primaries, D65, Rec. 709 transfer function.
     Rec2020,
     /// Gray, gamma 2.2.
@@ -43,12 +45,13 @@ pub enum Builtin {
 }
 
 impl Builtin {
-    pub const ALL: [Builtin; 11] = [
+    pub const ALL: [Builtin; 12] = [
         Builtin::Srgb,
         Builtin::DisplayP3,
         Builtin::AdobeRgbCompat,
         Builtin::ProPhotoCompat,
         Builtin::LinearSrgb,
+        Builtin::AcesCg,
         Builtin::Rec2020,
         Builtin::GrayGamma22,
         Builtin::SGray,
@@ -65,6 +68,7 @@ impl Builtin {
             Builtin::AdobeRgbCompat => "adobe-rgb-compat",
             Builtin::ProPhotoCompat => "prophoto-compat",
             Builtin::LinearSrgb => "linear-srgb",
+            Builtin::AcesCg => "aces-cg",
             Builtin::Rec2020 => "rec2020",
             Builtin::GrayGamma22 => "gray-gamma-2.2",
             Builtin::SGray => "sgray",
@@ -79,14 +83,15 @@ impl Builtin {
         match self {
             Builtin::Srgb => "sRGB IEC61966-2.1",
             Builtin::DisplayP3 => "Display P3",
-            Builtin::AdobeRgbCompat => "Adobe RGB (1998)-compatible (Photocraft)",
-            Builtin::ProPhotoCompat => "ProPhoto RGB-compatible (ROMM primaries, Photocraft)",
-            Builtin::LinearSrgb => "Linear sRGB (Photocraft)",
-            Builtin::Rec2020 => "Rec. ITU-R BT.2020 (Photocraft)",
-            Builtin::GrayGamma22 => "Gray Gamma 2.2 (Photocraft)",
-            Builtin::SGray => "sGray (sRGB tone curve, Photocraft)",
-            Builtin::DotGain20Compat => "Dot Gain 20%-compatible (gamma 1.732, Photocraft)",
-            Builtin::LabD50 => "Lab D50 identity (Photocraft)",
+            Builtin::AdobeRgbCompat => "Adobe RGB (1998)-compatible (PhotoCraft)",
+            Builtin::ProPhotoCompat => "ProPhoto RGB-compatible (ROMM primaries, PhotoCraft)",
+            Builtin::LinearSrgb => "Linear sRGB (PhotoCraft)",
+            Builtin::AcesCg => "ACEScg (AP1, linear, PhotoCraft)",
+            Builtin::Rec2020 => "Rec. ITU-R BT.2020 (PhotoCraft)",
+            Builtin::GrayGamma22 => "Gray Gamma 2.2 (PhotoCraft)",
+            Builtin::SGray => "sGray (sRGB tone curve, PhotoCraft)",
+            Builtin::DotGain20Compat => "Dot Gain 20%-compatible (gamma 1.732, PhotoCraft)",
+            Builtin::LabD50 => "Lab D50 identity (PhotoCraft)",
             Builtin::CoatedCmyk => crate::synth::DESCRIPTION,
         }
     }
@@ -104,6 +109,7 @@ impl Builtin {
             "gray" | "graygamma22" | "gamma22" => Some(Builtin::GrayGamma22),
             "sgray" | "graysrgb" => Some(Builtin::SGray),
             "dotgain20" | "dotgain20compat" | "dotgain" => Some(Builtin::DotGain20Compat),
+            "aces-cg" | "acescg" => Some(Builtin::AcesCg),
             "lab" | "labd50" | "cielab" => Some(Builtin::LabD50),
             "cmyk" | "coatedcmyk" | "defaultcmyk" | "photocraftcoatedcmyk" => Some(Builtin::CoatedCmyk),
             _ => None,
@@ -113,7 +119,7 @@ impl Builtin {
 
     /// The profile (built once per process).
     pub fn profile(self) -> &'static Profile {
-        static CELLS: [OnceLock<Profile>; 11] = [const { OnceLock::new() }; 11];
+        static CELLS: [OnceLock<Profile>; 12] = [const { OnceLock::new() }; 12];
         // `ALL` lists the variants in declaration order (checked by `all_in_declaration_order`),
         // so the discriminant is the cell index.
         CELLS[self as usize].get_or_init(|| build(self))
@@ -140,7 +146,7 @@ pub fn srgb() -> &'static Profile {
 /// only assigned to such files, never offered as a working space.
 pub fn linear_gray() -> &'static Profile {
     static PROFILE: OnceLock<Profile> = OnceLock::new();
-    PROFILE.get_or_init(|| gray("Linear Gray (Photocraft)", Curve::Gamma(1.0)))
+    PROFILE.get_or_init(|| gray("Linear Gray (PhotoCraft)", Curve::Gamma(1.0)))
 }
 
 /// The ICC D65 used for the RGB spaces (chromaticity 0.3127, 0.3290).
@@ -255,13 +261,61 @@ fn lab() -> Profile {
 /// with `PHOTOCRAFT_REGEN_PROFILES=1 cargo test -p photocraft-cms --release regen`).
 pub const COATED_CMYK_ICC: &[u8] = include_bytes!("../profiles/photocraft-coated-cmyk.icc");
 
+/// Rec. 709 / sRGB primaries (xy).
+const BT709: [[f64; 2]; 3] = [[0.64, 0.33], [0.30, 0.60], [0.15, 0.06]];
+/// DCI-P3 primaries (xy), used with D65 by Display P3.
+const P3: [[f64; 2]; 3] = [[0.680, 0.320], [0.265, 0.690], [0.150, 0.060]];
+/// Rec. 2020 primaries (xy).
+const BT2020: [[f64; 2]; 3] = [[0.708, 0.292], [0.170, 0.797], [0.131, 0.046]];
+
+/// Rec. 709 OETF inverse: V = 1.099 L^0.45 − 0.099 (L ≥ 0.018), 4.5 L below.
+fn rec709_trc() -> Curve {
+    let a = 1.099;
+    Curve::Parametric { kind: 3, p: [1.0 / 0.45, 1.0 / a, (a - 1.0) / a, 1.0 / 4.5, 0.081, 0.0, 0.0] }
+}
+
+/// The RGB profile for an ITU-T H.273 (CICP) colour description, as a HEIF `nclx` or a video
+/// stream declares it: BT.709, BT.2020 or P3-D65 primaries (codes 1, 9, 12) with the sRGB,
+/// BT.709, linear or gamma 2.2/2.8 transfer (13; 1, 6, 14, 15; 8; 4; 5). `linear` means the
+/// samples were already decoded to linear light, which is how PQ and HLG (16, 18) images are
+/// held, since no ICC curve represents those transfers. `None` for anything else.
+pub fn cicp_rgb(primaries: u16, transfer: u16, linear: bool) -> Option<Profile> {
+    let (prim, name) = match primaries {
+        1 => (BT709, "BT.709"),
+        9 => (BT2020, "Rec. ITU-R BT.2020"),
+        12 => (P3, "Display P3"),
+        _ => return None,
+    };
+    let transfer = if linear { 8 } else { transfer };
+    let builtin = match (primaries, transfer) {
+        (1, 13) => Some(Builtin::Srgb),
+        (1, 8) => Some(Builtin::LinearSrgb),
+        (12, 13) => Some(Builtin::DisplayP3),
+        (9, 1 | 6 | 14 | 15) => Some(Builtin::Rec2020),
+        _ => None,
+    };
+    if let Some(b) = builtin {
+        return Some(b.profile().clone());
+    }
+    let (trc, curve) = match transfer {
+        8 => (Curve::Gamma(1.0), "linear"),
+        13 => (srgb_trc(), "sRGB curve"),
+        1 | 6 | 14 | 15 => (rec709_trc(), "BT.709 curve"),
+        4 => (Curve::Gamma(2.2), "gamma 2.2"),
+        5 => (Curve::Gamma(2.8), "gamma 2.8"),
+        _ => return None,
+    };
+    Some(rgb(&format!("{name} {curve} (PhotoCraft)"), prim, d65(), trc))
+}
+
 fn build(b: Builtin) -> Profile {
-    let (srgb_p, p3, adobe, romm, bt2020) = (
-        [[0.64, 0.33], [0.30, 0.60], [0.15, 0.06]],
-        [[0.680, 0.320], [0.265, 0.690], [0.150, 0.060]],
+    let (srgb_p, p3, adobe, romm, bt2020, ap1) = (
+        BT709,
+        P3,
         [[0.64, 0.33], [0.21, 0.71], [0.15, 0.06]],
         [[0.7347, 0.2653], [0.1596, 0.8404], [0.0366, 0.0001]],
-        [[0.708, 0.292], [0.170, 0.797], [0.131, 0.046]],
+        BT2020,
+        [[0.713, 0.293], [0.165, 0.830], [0.128, 0.044]],
     );
     match b {
         Builtin::Srgb => rgb(b.description(), srgb_p, d65(), srgb_trc()),
@@ -269,12 +323,10 @@ fn build(b: Builtin) -> Profile {
         Builtin::AdobeRgbCompat => rgb(b.description(), adobe, d65(), Curve::Gamma(563.0 / 256.0)),
         Builtin::ProPhotoCompat => rgb(b.description(), romm, math::D50, Curve::Gamma(1.8)),
         Builtin::LinearSrgb => rgb(b.description(), srgb_p, d65(), Curve::Gamma(1.0)),
-        Builtin::Rec2020 => {
-            // Rec. 709 OETF inverse: V = 1.099 L^0.45 − 0.099 (L ≥ 0.018), 4.5 L below.
-            let a = 1.099;
-            let trc = Curve::Parametric { kind: 3, p: [1.0 / 0.45, 1.0 / a, (a - 1.0) / a, 1.0 / 4.5, 0.081, 0.0, 0.0] };
-            rgb(b.description(), bt2020, d65(), trc)
-        }
+        // ACEScg is scene-linear on the AP1 primaries with the ACES white point (~D60,
+        // xy 0.32168/0.33767, the ACES 2065-1 neutral).
+        Builtin::AcesCg => rgb(b.description(), ap1, math::xy_to_xyz([0.32168, 0.33767]), Curve::Gamma(1.0)),
+        Builtin::Rec2020 => rgb(b.description(), bt2020, d65(), rec709_trc()),
         Builtin::GrayGamma22 => gray(b.description(), Curve::Gamma(2.2)),
         Builtin::SGray => gray(b.description(), srgb_trc()),
         Builtin::DotGain20Compat => gray(b.description(), Curve::Gamma(1.732)),
@@ -282,5 +334,32 @@ fn build(b: Builtin) -> Profile {
         // The shipped bytes are `synth::coated_cmyk()` (checked by the `regen` test); rebuild
         // them rather than crash if they ever fail to parse.
         Builtin::CoatedCmyk => Profile::parse(COATED_CMYK_ICC).unwrap_or_else(|_| crate::synth::coated_cmyk()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cicp_maps_onto_the_builtins_and_linear_bt2020() {
+        let desc = |p: Option<Profile>| p.map(|p| p.description);
+        assert_eq!(desc(cicp_rgb(1, 13, false)), Some(Builtin::Srgb.description().to_string()));
+        assert_eq!(desc(cicp_rgb(12, 13, false)), Some(Builtin::DisplayP3.description().to_string()));
+        assert_eq!(desc(cicp_rgb(9, 14, false)), Some(Builtin::Rec2020.description().to_string()));
+        assert_eq!(desc(cicp_rgb(1, 18, true)), Some(Builtin::LinearSrgb.description().to_string()));
+
+        // An HLG BT.2020 image decoded to linear light: BT.2020's colorants, a linear curve.
+        let hlg = cicp_rgb(9, 18, true).unwrap();
+        assert_eq!(hlg.trc, Some([Curve::Gamma(1.0), Curve::Gamma(1.0), Curve::Gamma(1.0)]));
+        assert_eq!(hlg.matrix, Builtin::Rec2020.profile().matrix);
+        assert!(hlg.description.contains("BT.2020") && hlg.description.contains("linear"), "{}", hlg.description);
+        assert!(Profile::parse(&hlg.to_bytes()).is_ok(), "encodes as a valid ICC profile");
+
+        // HLG and PQ have no ICC curve; unknown primaries have no profile.
+        assert!(cicp_rgb(9, 18, false).is_none());
+        assert!(cicp_rgb(9, 16, false).is_none());
+        assert!(cicp_rgb(2, 13, false).is_none());
+        assert!(cicp_rgb(u16::MAX, u16::MAX, true).is_none());
     }
 }

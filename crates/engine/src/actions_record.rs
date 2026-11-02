@@ -110,6 +110,11 @@ pub(crate) fn fold_keystroke(s: &mut Session, id: &str, params: &Value, previous
     if previous != Some(target) {
         return whole();
     }
+    // A new recording starts at a journal boundary. Its first edit cannot change an entry
+    // before that boundary, or actions.stop would miss the edit altogether.
+    if s.actions.recording.is_some_and(|(start, _)| s.journal.len() <= start) {
+        return whole();
+    }
     let Some((last, lp)) = s.journal.last_mut() else { return whole() };
     let Some(lo) = lp.as_object_mut() else { return whole() };
     let folds = match last.as_str() {

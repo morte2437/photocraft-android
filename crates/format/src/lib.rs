@@ -8,6 +8,7 @@
 //! blobs/<blake3>.zst       content-addressed binary data (ICC, EXIF, PSD blocks, smart objects)
 //! thumb.png                optional thumbnail (caller-rendered)
 //! composite/preview.png    optional flattened preview (caller-rendered)
+//! save.lock                directory bundles only: held while a save runs (empty)
 //! ```
 //!
 //! A bundle is either a ZIP archive (STORE entries) or a directory with the
@@ -15,7 +16,9 @@
 //! already compressed/wrote, so only new tiles are encoded. Directory saves
 //! verify existing content-addressed objects once per writer and folder,
 //! rechecking files whose size or modification time changes; they replace
-//! damaged or missing objects and garbage-collect unreferenced ones.
+//! damaged or missing objects and garbage-collect unreferenced ones. A directory
+//! save holds an OS file lock on `save.lock` throughout, so two writers (or two
+//! processes) saving one bundle take turns instead of removing each other's objects.
 //!
 //! This crate sits at L3 next to the compositor, so it does not render.
 //! Callers pass previews in [`SaveOptions`]; `photocraft-io` does that.

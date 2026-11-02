@@ -7,7 +7,7 @@ use crate::Format;
 use crate::error::CodecError;
 use crate::fidelity::Plan;
 use crate::image::{ChannelLayout, DecodeWarning, Image, Metadata, SampleType};
-use crate::options::{EncodeOptions, Limits, PngCompression, alloc_zeroed};
+use crate::options::{EncodeOptions, Limits, PngCompression, PngStereo, alloc_zeroed};
 
 const F: Format = Format::Png;
 pub(crate) const XMP_KEYWORD: &str = "XML:com.adobe.xmp";
@@ -127,6 +127,38 @@ pub fn palette(bytes: &[u8]) -> Result<Option<PngPalette>, CodecError> {
     Ok(Some(PngPalette { colors, transparent }))
 }
 
+/// The stereo pairing a PNG declares in its `sTER` chunk (PNG Extensions 1.4.0, §3.6), read
+/// from the headers without decoding pixels. `None` when the file has no CRC-valid `sTER` with a
+/// defined mode byte. The first valid chunk wins, as a later one would contradict it.
+pub fn stereo(bytes: &[u8]) -> Option<PngStereo> {
+    let mut rest = bytes.get(8..)?;
+    while let Some((length, tail)) = rest.split_first_chunk::<4>() {
+        let Some((kind, tail)) = tail.split_first_chunk::<4>() else { break };
+        let length = u32::from_be_bytes(*length);
+        if length > i32::MAX as u32 {
+            break;
+        }
+        let Ok(length) = usize::try_from(length) else { break };
+        let Some(data) = tail.get(..length) else { break };
+        let Some((checksum, next)) = tail.get(length..).and_then(<[u8]>::split_first_chunk::<4>) else { break };
+        rest = next;
+        if kind == b"IEND" {
+            break;
+        }
+        if kind != b"sTER" || data.len() != 1 {
+            continue;
+        }
+        let mut crc = flate2::Crc::new();
+        crc.update(kind);
+        crc.update(data);
+        if crc.sum() != u32::from_be_bytes(*checksum) {
+            continue;
+        }
+        return PngStereo::from_mode(data[0]);
+    }
+    None
+}
+
 fn map_png_err(e: png::DecodingError) -> CodecError {
     match e {
         png::DecodingError::LimitsExceeded => CodecError::LimitExceeded("PNG decoder memory limit".into()),
@@ -162,7 +194,7 @@ fn read_text_metadata(bytes: &[u8], mut remaining: usize, meta: &mut Metadata) -
         }
         let Ok(length) = usize::try_from(length) else { break };
         let Some(data) = tail.get(..length) else { break };
-        let Some((checksum, next)) = tail.get(length..).and_then(|t| t.split_first_chunk::<4>()) else { break };
+        let Some((checksum, next)) = tail.get(length..).and_then(<[u8]>::split_first_chunk::<4>) else { break };
         rest = next;
         if kind == b"IEND" {
             break;
@@ -274,42 +306,73 @@ fn is_latin1_keyword(k: &str) -> bool {
 pub(crate) fn encode(src: &Image, plan: Plan, opts: &EncodeOptions) -> Result<Vec<u8>, CodecError> {
     let img = src.converted(plan.layout, plan.sample);
     let (w, h) = img.dimensions();
-    let color = match img.layout() {
+    let bpp = img.layout().channels() * img.sample_type().bytes();
+    // Big-endian sample bytes.
+    let mut data = std::borrow::Cow::Borrowed(img.data());
+    if img.sample_type() == SampleType::U16 {
+        to_big_endian(data.to_mut());
+    }
+    let mut out = Vec::new();
+    {
+        let mut writer = start(&mut out, (w, h), (img.layout(), img.sample_type()), img.icc.as_ref(), &img.meta, opts)?;
+        if opts.png_interlaced {
+            let idat = adam7_idat(&data, w as usize, h as usize, bpp, opts.png_compression)?;
+            write_idat(&mut writer, &idat, MAX_IDAT)?;
+        } else if let Some(idat) = parallel_idat(&data, w as usize, h as usize, bpp, opts.png_compression) {
+            write_idat(&mut writer, &idat, MAX_IDAT)?;
+        } else {
+            writer.write_image_data(&data).map_err(|e| CodecError::encode(F, e))?;
+        }
+        writer.finish().map_err(|e| CodecError::encode(F, e))?;
+    }
+    Ok(out)
+}
+
+/// 16-bit native-endian samples to PNG's big-endian order, in place.
+fn to_big_endian(data: &mut [u8]) {
+    for c in data.as_chunks_mut::<2>().0 {
+        let v = u16::from_ne_bytes([c[0], c[1]]);
+        c.copy_from_slice(&v.to_be_bytes());
+    }
+}
+
+/// Writes the signature and every chunk ahead of the image data for a `w` × `h` PNG of
+/// `layout` and `sample` (already the encode plan's), with its profile and metadata.
+fn start<W: Write>(
+    out: W,
+    (w, h): (u32, u32),
+    (layout, sample): (ChannelLayout, SampleType),
+    icc: Option<&Vec<u8>>,
+    meta: &Metadata,
+    opts: &EncodeOptions,
+) -> Result<png::Writer<W>, CodecError> {
+    let color = match layout {
         ChannelLayout::Gray => png::ColorType::Grayscale,
         ChannelLayout::GrayA => png::ColorType::GrayscaleAlpha,
         ChannelLayout::Rgb => png::ColorType::Rgb,
         ChannelLayout::Rgba => png::ColorType::Rgba,
         l => return Err(CodecError::encode(F, format!("unsupported layout {l:?}"))),
     };
-    let depth = match img.sample_type() {
+    let depth = match sample {
         SampleType::U8 => png::BitDepth::Eight,
         SampleType::U16 => png::BitDepth::Sixteen,
         s => return Err(CodecError::encode(F, format!("unsupported sample {s:?}"))),
     };
-    // Big-endian sample bytes.
-    let mut data = std::borrow::Cow::Borrowed(img.data());
-    if depth == png::BitDepth::Sixteen {
-        for c in data.to_mut().as_chunks_mut::<2>().0 {
-            let v = u16::from_ne_bytes([c[0], c[1]]);
-            c.copy_from_slice(&v.to_be_bytes());
-        }
-    }
-
     let mut info = png::Info::with_size(w, h);
     info.color_type = color;
     info.bit_depth = depth;
     info.interlaced = opts.png_interlaced;
     if opts.embed_icc
-        && let Some(icc) = &img.icc
+        && let Some(icc) = icc
     {
         info.icc_profile = Some(icc.clone().into());
     }
     if opts.embed_metadata {
-        if let Some(exif) = &img.meta.exif {
+        if let Some(exif) = &meta.exif {
             // The pixels are written as they are shown: never let a viewer rotate them again.
-            info.exif_metadata = Some(crate::resolution::export_exif(exif, img.meta.dpi).into_owned().into());
+            info.exif_metadata = Some(crate::resolution::export_exif(exif, meta.dpi).into_owned().into());
         }
-        if let Some((x, y)) = img.meta.dpi
+        if let Some((x, y)) = meta.dpi
             && x > 0.0
             && y > 0.0
         {
@@ -317,47 +380,150 @@ pub(crate) fn encode(src: &Image, plan: Plan, opts: &EncodeOptions) -> Result<Ve
                 Some(png::PixelDimensions { xppu: (x / METERS_PER_INCH).round() as u32, yppu: (y / METERS_PER_INCH).round() as u32, unit: png::Unit::Meter });
         }
     }
-
-    let mut out = Vec::new();
-    {
-        let mut encoder = png::Encoder::with_info(&mut out, info).map_err(|e| CodecError::encode(F, e))?;
-        encoder.set_compression(match opts.png_compression {
-            PngCompression::None => png::Compression::NoCompression,
-            PngCompression::Fast => png::Compression::Fast,
-            PngCompression::Default => png::Compression::Balanced,
-            PngCompression::Best => png::Compression::High,
-        });
-        if opts.embed_metadata {
-            for (k, v) in &img.meta.text {
-                let latin1_text = v.chars().all(|c| (c as u32) < 256);
-                let res = if is_latin1_keyword(k) && latin1_text {
-                    encoder.add_text_chunk(k.clone(), v.clone())
-                } else if is_latin1_keyword(k) {
-                    encoder.add_itxt_chunk(k.clone(), v.clone())
-                } else {
-                    continue;
-                };
-                res.map_err(|e| CodecError::encode(F, e))?;
-            }
-            if let Some(xmp) = &img.meta.xmp {
-                encoder
-                    .add_itxt_chunk(XMP_KEYWORD.into(), crate::resolution::export_xmp(xmp, img.meta.dpi).into_owned())
-                    .map_err(|e| CodecError::encode(F, e))?;
-            }
+    let mut encoder = png::Encoder::with_info(out, info).map_err(|e| CodecError::encode(F, e))?;
+    encoder.set_compression(match opts.png_compression {
+        PngCompression::None => png::Compression::NoCompression,
+        PngCompression::Fast => png::Compression::Fast,
+        PngCompression::Default => png::Compression::Balanced,
+        PngCompression::Best => png::Compression::High,
+    });
+    if opts.embed_metadata {
+        for (k, v) in &meta.text {
+            let latin1_text = v.chars().all(|c| (c as u32) < 256);
+            let res = if is_latin1_keyword(k) && latin1_text {
+                encoder.add_text_chunk(k.clone(), v.clone())
+            } else if is_latin1_keyword(k) {
+                encoder.add_itxt_chunk(k.clone(), v.clone())
+            } else {
+                continue;
+            };
+            res.map_err(|e| CodecError::encode(F, e))?;
         }
-        let mut writer = encoder.write_header().map_err(|e| CodecError::encode(F, e))?;
-        if opts.png_interlaced {
-            let bpp = img.layout().channels() * img.sample_type().bytes();
-            let idat = adam7_idat(&data, w as usize, h as usize, bpp, opts.png_compression)?;
-            writer.write_chunk(png::chunk::IDAT, &idat).map_err(|e| CodecError::encode(F, e))?;
-        } else if let Some(idat) = parallel_idat(&data, w as usize, h as usize, img.layout().channels() * img.sample_type().bytes(), opts.png_compression) {
-            writer.write_chunk(png::chunk::IDAT, &idat).map_err(|e| CodecError::encode(F, e))?;
-        } else {
-            writer.write_image_data(&data).map_err(|e| CodecError::encode(F, e))?;
+        if let Some(xmp) = &meta.xmp {
+            encoder.add_itxt_chunk(XMP_KEYWORD.into(), crate::resolution::export_xmp(xmp, meta.dpi).into_owned()).map_err(|e| CodecError::encode(F, e))?;
         }
-        writer.finish().map_err(|e| CodecError::encode(F, e))?;
     }
-    Ok(out)
+    let mut writer = encoder.write_header().map_err(|e| CodecError::encode(F, e))?;
+    if let Some(stereo) = opts.png_stereo {
+        // Ancillary chunk before IDAT, as the spec recommends for `sTER`.
+        writer.write_chunk(png::chunk::ChunkType(*b"sTER"), &[stereo.mode()]).map_err(|e| CodecError::encode(F, e))?;
+    }
+    Ok(writer)
+}
+
+/// Largest IDAT chunk written. A chunk holds at most 2^31 - 1 bytes, so a zlib stream past that
+/// (a multi-gigapixel image) is split over several IDAT chunks, which readers join back.
+const MAX_IDAT: usize = 1 << 30;
+
+/// `zlib` as IDAT chunks of at most `max` bytes.
+fn write_idat<W: Write>(writer: &mut png::Writer<W>, zlib: &[u8], max: usize) -> Result<(), CodecError> {
+    for part in zlib.chunks(max.max(1)) {
+        writer.write_chunk(png::chunk::IDAT, part).map_err(|e| CodecError::encode(F, e))?;
+    }
+    Ok(())
+}
+
+/// A PNG encoded a band of rows at a time, for images too large to hold whole (a multi-gigapixel
+/// print): each band is converted to the encode plan, filtered and deflated on all cores as it
+/// arrives and written as IDAT chunks, so only about one band is ever held. The deflate bands are
+/// [`parallel_idat`]'s, so the zlib stream is the one [`crate::encode`] writes for a large image.
+/// Never interlaced (Adam7 needs the whole image).
+pub struct PngRows<W: Write> {
+    writer: png::Writer<W>,
+    plan: Plan,
+    width: u32,
+    height: u32,
+    /// Rows received so far.
+    rows: u32,
+    level: PngCompression,
+    /// Converted, big-endian rows that don't fill a deflate band yet.
+    pending: Vec<u8>,
+    /// The last row deflated: the row above `pending` for the filters.
+    prev: Vec<u8>,
+    adler: u32,
+    /// Whether the zlib header is written.
+    started: bool,
+}
+
+impl<W: Write> PngRows<W> {
+    /// Writes the header of a `first.width()` × `height` PNG to `out`. The layout, sample type,
+    /// profile and metadata come from `first`, the first band (not written yet: [`Self::push`]
+    /// it like the others), through the same plan as [`crate::encode`].
+    pub fn new(out: W, first: &Image, height: u32, opts: &EncodeOptions) -> Result<Self, CodecError> {
+        if opts.png_interlaced {
+            return Err(CodecError::unsupported(F, "an interlaced PNG can't be written a band of rows at a time"));
+        }
+        let width = first.width();
+        if width == 0 || height == 0 {
+            return Err(CodecError::InvalidImage("cannot encode an empty image".into()));
+        }
+        let plan = crate::fidelity::plan(first, F, opts);
+        let writer = start(out, (width, height), (plan.layout, plan.sample), first.icc.as_ref(), &first.meta, opts)?;
+        Ok(Self { writer, plan, width, height, rows: 0, level: opts.png_compression, pending: Vec::new(), prev: Vec::new(), adler: 1, started: false })
+    }
+
+    /// Encodes the next rows of the image: `band` is as wide as the image, in any layout and
+    /// sample type (converted like the first band).
+    pub fn push(&mut self, band: &Image) -> Result<(), CodecError> {
+        if band.width() != self.width {
+            return Err(CodecError::InvalidImage(format!("a {} px wide band for a {} px wide image", band.width(), self.width)));
+        }
+        let rows = self.rows.checked_add(band.height()).filter(|&r| r <= self.height);
+        let Some(rows) = rows else {
+            return Err(CodecError::InvalidImage(format!("more than the image's {} rows", self.height)));
+        };
+        let img = band.converted(self.plan.layout, self.plan.sample);
+        let at = self.pending.len();
+        self.pending.try_reserve(img.data().len()).map_err(|_| CodecError::encode(F, "not enough memory for a band of rows"))?;
+        self.pending.extend_from_slice(img.data());
+        if self.plan.sample == SampleType::U16 {
+            to_big_endian(self.pending.get_mut(at..).unwrap_or_default());
+        }
+        self.rows = rows;
+        self.deflate_pending()
+    }
+
+    /// Deflates the whole bands held, and the rest once every row is in.
+    fn deflate_pending(&mut self) -> Result<(), CodecError> {
+        let bpp = self.plan.layout.channels() * self.plan.sample.bytes();
+        let stride = self.width as usize * bpp;
+        let per_band = band_rows(stride);
+        let held = self.pending.len() / stride.max(1);
+        let finish = self.rows == self.height;
+        let take = if finish { held } else { held / per_band * per_band };
+        if take == 0 {
+            return Ok(());
+        }
+        let rows = self.pending.get(..take * stride).unwrap_or_default();
+        let prev = (!self.prev.is_empty()).then_some(self.prev.as_slice());
+        let parts = deflate_rows(rows, prev, stride, bpp, per_band, deflate_level(self.level), finish, encode_threads())
+            .ok_or_else(|| CodecError::encode(F, "a band of rows could not be compressed"))?;
+        let mut zlib = Vec::with_capacity(parts.iter().map(|p| p.z.len()).sum::<usize>() + 6);
+        if !self.started {
+            zlib.extend_from_slice(&zlib_header(self.level));
+            self.started = true;
+        }
+        for p in &parts {
+            zlib.extend_from_slice(&p.z);
+            self.adler = adler32_combine(self.adler, p.adler, p.len);
+        }
+        if finish {
+            zlib.extend_from_slice(&self.adler.to_be_bytes());
+        }
+        write_idat(&mut self.writer, &zlib, MAX_IDAT)?;
+        self.prev.clear();
+        self.prev.extend_from_slice(rows.get(rows.len() - stride..).unwrap_or_default());
+        self.pending.drain(..take * stride);
+        Ok(())
+    }
+
+    /// Ends the file. Fails when fewer rows than the image's height were pushed.
+    pub fn finish(self) -> Result<(), CodecError> {
+        if self.rows != self.height || !self.pending.is_empty() {
+            return Err(CodecError::InvalidImage(format!("{} of the image's {} rows were written", self.rows, self.height)));
+        }
+        self.writer.finish().map_err(|e| CodecError::encode(F, e))
+    }
 }
 
 /// Build the zlib stream for an Adam7-interlaced image (filter type 0).
@@ -381,16 +547,15 @@ fn adam7_idat(data: &[u8], w: usize, h: usize, bpp: usize, level: PngCompression
             y += dy;
         }
     }
-    let lvl = match level {
-        PngCompression::None => flate2::Compression::none(),
-        PngCompression::Fast => flate2::Compression::fast(),
-        PngCompression::Default => flate2::Compression::default(),
-        PngCompression::Best => flate2::Compression::best(),
-    };
-    let mut z = flate2::write::ZlibEncoder::new(Vec::new(), lvl);
+    let mut z = flate2::write::ZlibEncoder::new(Vec::new(), deflate_level(level));
     z.write_all(&raw).map_err(|e| CodecError::encode(F, e))?;
     z.finish().map_err(|e| CodecError::encode(F, e))
 }
+
+/// The deflate level of [`PngCompression::Fast`]: zlib-rs level 1 writes static Huffman blocks
+/// only (20-30% bigger on filtered photos); level 3 is the lowest that is never bigger than
+/// miniz's level 1 was, at about twice its time.
+const FAST: flate2::Compression = flate2::Compression::new(3);
 
 /// Images at least this large (bytes) are filtered and deflated on all cores.
 const PARALLEL_MIN_BYTES: usize = 4 << 20;
@@ -406,44 +571,108 @@ fn parallel_idat(data: &[u8], w: usize, h: usize, bpp: usize, level: PngCompress
     if cfg!(target_arch = "wasm32") || data.len() < PARALLEL_MIN_BYTES || level == PngCompression::None || w == 0 || h == 0 {
         return None;
     }
-    let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, 32);
-    banded_idat(data, w, h, bpp, level, threads)
+    banded_idat(data, w, h, bpp, level, encode_threads())
 }
 
 /// Filtered bytes per deflate band. The bands depend only on the image, never on the number of
 /// threads, so the same image and options give the same bytes whatever the machine's core count.
 const BAND_BYTES: usize = 512 << 10;
 
+/// The deflate effort for `level`.
+fn deflate_level(level: PngCompression) -> flate2::Compression {
+    match level {
+        PngCompression::None => flate2::Compression::none(),
+        PngCompression::Fast => FAST,
+        PngCompression::Default => flate2::Compression::default(),
+        PngCompression::Best => flate2::Compression::best(),
+    }
+}
+
+/// The zlib stream header: deflate, 32 K window; FLEVEL only advertises the effort.
+fn zlib_header(level: PngCompression) -> [u8; 2] {
+    match level {
+        PngCompression::None | PngCompression::Fast => [0x78, 0x01],
+        PngCompression::Best => [0x78, 0xDA],
+        PngCompression::Default => [0x78, 0x9C],
+    }
+}
+
+/// Rows per deflate band for rows of `stride` bytes.
+fn band_rows(stride: usize) -> usize {
+    (BAND_BYTES / stride.saturating_add(1)).max(1)
+}
+
+/// Worker threads for the banded encoders: one on wasm (no threads), else the machine's cores.
+fn encode_threads() -> usize {
+    if cfg!(target_arch = "wasm32") { 1 } else { std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, 32) }
+}
+
 /// [`parallel_idat`] on `threads` worker threads.
 fn banded_idat(data: &[u8], w: usize, h: usize, bpp: usize, level: PngCompression, threads: usize) -> Option<Vec<u8>> {
     let stride = w * bpp;
-    let band_rows = (BAND_BYTES / stride.saturating_add(1)).max(1);
-    let bands: Vec<(usize, usize)> = (0..h).step_by(band_rows).map(|y| (y, (y + band_rows).min(h))).collect();
-    let lvl = match level {
-        PngCompression::Fast => flate2::Compression::fast(),
-        PngCompression::Best => flate2::Compression::best(),
-        _ => flate2::Compression::default(),
+    let parts = deflate_rows(data.get(..h * stride)?, None, stride, bpp, band_rows(stride), deflate_level(level), true, threads)?;
+    let mut out = Vec::with_capacity(parts.iter().map(|p| p.z.len()).sum::<usize>() + 6);
+    out.extend_from_slice(&zlib_header(level));
+    let mut adler = 1u32;
+    for p in &parts {
+        out.extend_from_slice(&p.z);
+        adler = adler32_combine(adler, p.adler, p.len);
+    }
+    out.extend_from_slice(&adler.to_be_bytes());
+    Some(out)
+}
+
+/// One band of rows filtered and deflated: the raw deflate bytes, and the Adler-32 and length of
+/// the filtered bytes they hold.
+struct Deflated {
+    z: Vec<u8>,
+    adler: u32,
+    len: usize,
+}
+
+/// `rows` (whole rows of `stride` bytes; `prev` is the row above the first, if any) filtered and
+/// deflated in independent bands of `band_rows` rows on up to `threads` workers (inline for one).
+/// The last band finishes the deflate stream when `finish`; every other band ends on a sync flush.
+/// `None` when a band did not deflate in one call ([`deflate_band`]).
+#[allow(clippy::too_many_arguments)]
+fn deflate_rows(
+    rows: &[u8],
+    prev: Option<&[u8]>,
+    stride: usize,
+    bpp: usize,
+    band_rows: usize,
+    lvl: flate2::Compression,
+    finish: bool,
+    threads: usize,
+) -> Option<Vec<Deflated>> {
+    let h = rows.len() / stride.max(1);
+    let bands: Vec<(usize, usize)> = (0..h).step_by(band_rows.max(1)).map(|y| (y, (y + band_rows).min(h))).collect();
+    let band = |&(y0, y1): &(usize, usize)| -> Option<Deflated> {
+        let mut filtered = Vec::with_capacity((y1 - y0) * (stride + 1));
+        let mut scratch = vec![0u8; stride];
+        for y in y0..y1 {
+            let row = rows.get(y * stride..(y + 1) * stride)?;
+            let above = if y > 0 { rows.get((y - 1) * stride..y * stride) } else { prev };
+            filter_row(row, above, bpp, &mut scratch, &mut filtered);
+        }
+        let adler = adler32(1, &filtered);
+        let z = deflate_band(&filtered, lvl, finish && y1 == h)?;
+        Some(Deflated { z, adler, len: filtered.len() })
     };
+    if threads <= 1 || bands.len() <= 1 {
+        return bands.iter().map(band).collect();
+    }
     let next = std::sync::atomic::AtomicUsize::new(0);
-    type Band = (usize, Vec<u8>, u32, usize);
-    let mut parts: Vec<Band> = std::thread::scope(|sc| {
-        let workers: Vec<_> = (0..threads.min(bands.len()).max(1))
+    let mut parts: Vec<(usize, Deflated)> = std::thread::scope(|sc| {
+        let workers: Vec<_> = (0..threads.min(bands.len()))
             .map(|_| {
                 sc.spawn(|| {
-                    let mut out: Vec<Band> = Vec::new();
+                    let mut out = Vec::new();
                     loop {
                         let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        let Some(&(y0, y1)) = bands.get(i) else { break };
-                        let mut filtered = Vec::with_capacity((y1 - y0) * (stride + 1));
-                        let mut scratch = vec![0u8; stride];
-                        for y in y0..y1 {
-                            let row = &data[y * stride..(y + 1) * stride];
-                            let prev = (y > 0).then(|| &data[(y - 1) * stride..y * stride]);
-                            filter_row(row, prev, bpp, &mut scratch, &mut filtered);
-                        }
-                        let adler = adler32(1, &filtered);
-                        let Some(z) = deflate_band(&filtered, lvl, y1 == h) else { return Vec::new() };
-                        out.push((i, z, adler, filtered.len()));
+                        let Some(b) = bands.get(i) else { break };
+                        let Some(d) = band(b) else { return Vec::new() };
+                        out.push((i, d));
                     }
                     out
                 })
@@ -455,25 +684,12 @@ fn banded_idat(data: &[u8], w: usize, h: usize, bpp: usize, level: PngCompressio
         return None;
     }
     parts.sort_by_key(|p| p.0);
-    let mut out = Vec::with_capacity(parts.iter().map(|p| p.1.len()).sum::<usize>() + 6);
-    // zlib header: deflate, 32 K window; FLEVEL only advertises the effort.
-    out.extend_from_slice(match level {
-        PngCompression::Fast => &[0x78, 0x01],
-        PngCompression::Best => &[0x78, 0xDA],
-        _ => &[0x78, 0x9C],
-    });
-    let mut adler = 1u32;
-    for (_, z, a, len) in &parts {
-        out.extend_from_slice(z);
-        adler = adler32_combine(adler, *a, *len);
-    }
-    out.extend_from_slice(&adler.to_be_bytes());
-    Some(out)
+    Some(parts.into_iter().map(|p| p.1).collect())
 }
 
 /// Raw deflate of one band: ends on a sync flush, or finishes the stream for the `last` band.
 /// The output buffer is sized past deflate's worst case so that one call takes the whole band
-/// and completes the flush: when a sync flush fills the buffer, miniz_oxide (flate2's Rust
+/// and completes the flush: when a sync flush fills the buffer, miniz_oxide (flate2's former Rust
 /// backend) can return before compressing the last lookahead bytes, and the next call only
 /// drains the pending output, so a resumed flush silently drops data. `None` (the caller then
 /// uses the serial encoder) if the single call did not finish.
@@ -505,8 +721,15 @@ fn filter_row(row: &[u8], prev: Option<&[u8]>, bpp: usize, scratch: &mut [u8], o
         }
     };
     let cost = |v: &[u8]| v.iter().map(|&b| u64::from((b as i8).unsigned_abs())).sum::<u64>();
-    let mut best = (cost(row), 0u8);
+    let mut best = cost(row);
+    let start = out.len();
+    out.push(0);
+    out.extend_from_slice(row);
     for kind in 1u8..=4 {
+        if best == 0 {
+            break;
+        }
+        let mut c = 0u64;
         for i in 0..n {
             let x = row[i];
             scratch[i] = match kind {
@@ -515,27 +738,17 @@ fn filter_row(row: &[u8], prev: Option<&[u8]>, bpp: usize, scratch: &mut [u8], o
                 3 => x.wrapping_sub(((u16::from(left(i)) + u16::from(up(i))) / 2) as u8),
                 _ => x.wrapping_sub(paeth(left(i), up(i), ul(i))),
             };
+            c += u64::from((scratch[i] as i8).unsigned_abs());
+            if c >= best {
+                break;
+            }
         }
-        let c = cost(&scratch[..n]);
-        if c < best.0 {
-            best = (c, kind);
+        if c < best {
+            best = c;
+            out[start] = kind;
+            out[start + 1..].copy_from_slice(&scratch[..n]);
         }
     }
-    out.push(best.1);
-    if best.1 == 0 {
-        out.extend_from_slice(row);
-        return;
-    }
-    for i in 0..n {
-        let x = row[i];
-        scratch[i] = match best.1 {
-            1 => x.wrapping_sub(left(i)),
-            2 => x.wrapping_sub(up(i)),
-            3 => x.wrapping_sub(((u16::from(left(i)) + u16::from(up(i))) / 2) as u8),
-            _ => x.wrapping_sub(paeth(left(i), up(i), ul(i))),
-        };
-    }
-    out.extend_from_slice(&scratch[..n]);
 }
 
 const ADLER_MOD: u32 = 65_521;
@@ -574,6 +787,7 @@ pub fn encode_indexed(
     palette: &[[u8; 3]],
     transparent: Option<u8>,
     dpi: Option<(f32, f32)>,
+    stereo: Option<PngStereo>,
 ) -> Result<Vec<u8>, CodecError> {
     if width == 0 || height == 0 || indices.len() != width as usize * height as usize {
         return Err(CodecError::InvalidImage("index data does not match the size".into()));
@@ -603,10 +817,111 @@ pub fn encode_indexed(
     {
         let encoder = png::Encoder::with_info(&mut out, info).map_err(|e| CodecError::encode(F, e))?;
         let mut writer = encoder.write_header().map_err(|e| CodecError::encode(F, e))?;
+        if let Some(stereo) = stereo {
+            writer.write_chunk(png::chunk::ChunkType(*b"sTER"), &[stereo.mode()]).map_err(|e| CodecError::encode(F, e))?;
+        }
         writer.write_image_data(indices).map_err(|e| CodecError::encode(F, e))?;
         writer.finish().map_err(|e| CodecError::encode(F, e))?;
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod stereo_tests {
+    use super::*;
+
+    /// One CRC-valid chunk as it appears in a file.
+    fn chunk(kind: &[u8; 4], data: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        out.extend_from_slice(kind);
+        out.extend_from_slice(data);
+        let mut crc = flate2::Crc::new();
+        crc.update(kind);
+        crc.update(data);
+        out.extend_from_slice(&crc.sum().to_be_bytes());
+        out
+    }
+
+    fn png_with(stereo: &[u8]) -> Vec<u8> {
+        let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
+        out.extend_from_slice(&chunk(b"IHDR", &[0, 0, 0, 2, 0, 0, 0, 1, 8, 2, 0, 0, 0]));
+        if !stereo.is_empty() {
+            out.extend_from_slice(&chunk(b"sTER", stereo));
+        }
+        out.extend_from_slice(&chunk(b"IDAT", &[0x78, 0x01, 0x01, 0x00, 0xff, 0xff, 0, 3, 1, 0, 0]));
+        out.extend_from_slice(&chunk(b"IEND", &[]));
+        out
+    }
+
+    #[test]
+    fn reads_both_defined_views() {
+        assert_eq!(stereo(&png_with(&[0])), Some(PngStereo::CrossFuse));
+        assert_eq!(stereo(&png_with(&[1])), Some(PngStereo::DivergingFuse));
+        assert_eq!(stereo(&png_with(&[])), None);
+        // Reserved and unknown mode bytes are not a pairing we can keep.
+        assert_eq!(stereo(&png_with(&[2])), None);
+        assert_eq!(stereo(&png_with(&[255])), None);
+        // A two-byte payload is not sTER data.
+        assert_eq!(stereo(&png_with(&[0, 0])), None);
+        assert_eq!(stereo(b"not a png"), None);
+    }
+
+    #[test]
+    fn ster_mode_bytes_describe_eye_order_not_vertical_packing() {
+        // PNG Extensions 1.4.0 §3.6: both views occupy horizontal halves.
+        // Each view is eight columns, so the second starts on an eight-column boundary.
+        for (mode, left_pixel, right_pixel) in [(0, [0, 0, 255], [255, 0, 0]), (1, [255, 0, 0], [0, 0, 255])] {
+            let pixels: Vec<u8> = [left_pixel; 8].into_iter().chain([right_pixel; 8]).flatten().collect();
+            let img = Image::from_raw(16, 1, ChannelLayout::Rgb, SampleType::U8, pixels.clone()).unwrap();
+            let pairing = if mode == 0 { PngStereo::CrossFuse } else { PngStereo::DivergingFuse };
+            let opts = EncodeOptions { png_stereo: Some(pairing), ..Default::default() };
+            let bytes = crate::encode(&img, Format::Png, &opts).unwrap();
+            let chunk = bytes.windows(4).position(|w| w == b"sTER").unwrap();
+            assert_eq!(bytes[chunk + 4], mode, "the specification's literal mode byte");
+            let decoded = decode(&bytes, &Limits::default()).unwrap();
+            assert_eq!(decoded.dimensions(), (16, 1));
+            assert_eq!(decoded.data(), pixels);
+        }
+    }
+
+    #[test]
+    fn a_broken_crc_is_not_a_stereo_mark() {
+        let mut bytes = png_with(&[0]);
+        let kind = bytes.windows(4).position(|w| w == b"sTER").unwrap();
+        // The CRC trails the type and the one-byte payload of the chunk.
+        bytes[kind + 8] ^= 0xff;
+        assert_eq!(stereo(&bytes), None);
+    }
+
+    #[test]
+    fn encode_writes_the_chunk_before_idat_and_it_reads_back() {
+        let img = Image::from_raw(2, 1, ChannelLayout::Rgb, SampleType::U8, vec![9; 6]).unwrap();
+        for view in [PngStereo::CrossFuse, PngStereo::DivergingFuse] {
+            let opts = EncodeOptions { png_stereo: Some(view), ..Default::default() };
+            let bytes = crate::encode(&img, Format::Png, &opts).unwrap();
+            assert_eq!(stereo(&bytes), Some(view));
+            let back = decode(&bytes, &Limits::default()).unwrap();
+            assert_eq!(back.data(), img.data());
+            let ter = bytes.windows(4).position(|w| w == b"sTER").unwrap();
+            let idat = bytes.windows(4).position(|w| w == b"IDAT").unwrap();
+            assert!(ter < idat, "sTER before IDAT");
+        }
+        let plain = crate::encode(&img, Format::Png, &EncodeOptions::default()).unwrap();
+        assert_eq!(stereo(&plain), None);
+    }
+
+    #[test]
+    fn interlaced_and_indexed_encoders_keep_the_mark() {
+        let img = Image::from_raw(2, 2, ChannelLayout::Rgb, SampleType::U8, vec![9; 12]).unwrap();
+        let opts = EncodeOptions { png_stereo: Some(PngStereo::DivergingFuse), png_interlaced: true, ..Default::default() };
+        let bytes = crate::encode(&img, Format::Png, &opts).unwrap();
+        assert_eq!(stereo(&bytes), Some(PngStereo::DivergingFuse));
+        let pal = [[255, 0, 0], [0, 0, 255]];
+        let bytes = encode_indexed(2, 1, &[0, 1], &pal, None, None, Some(PngStereo::CrossFuse)).unwrap();
+        assert_eq!(stereo(&bytes), Some(PngStereo::CrossFuse));
+        assert_eq!(palette(&bytes).unwrap().map(|p| p.colors), Some(pal.to_vec()));
+    }
 }
 
 #[cfg(test)]
@@ -617,14 +932,14 @@ mod indexed_tests {
     fn png8_roundtrips_through_the_decoder() {
         let pal = [[255, 0, 0], [0, 0, 255], [0, 0, 0]];
         let idx = [0u8, 1, 2, 1, 0, 2];
-        let bytes = encode_indexed(3, 2, &idx, &pal, Some(2), None).unwrap();
+        let bytes = encode_indexed(3, 2, &idx, &pal, Some(2), None, None).unwrap();
         let img = decode(&bytes, &Limits::default()).unwrap();
         assert_eq!(img.dimensions(), (3, 2));
         let px = img.convert(ChannelLayout::Rgba, SampleType::U8);
         assert_eq!(&px.data()[..8], &[255, 0, 0, 255, 0, 0, 255, 255]);
         assert_eq!(px.data()[11], 0, "transparent entry");
-        assert!(encode_indexed(3, 2, &[9; 6], &pal, None, None).is_err());
-        assert!(encode_indexed(3, 3, &idx, &pal, None, None).is_err());
+        assert!(encode_indexed(3, 2, &[9; 6], &pal, None, None, None).is_err());
+        assert!(encode_indexed(3, 3, &idx, &pal, None, None, None).is_err());
     }
 
     fn png(color: png::ColorType, trns: Option<&[u8]>) -> Vec<u8> {
@@ -643,7 +958,7 @@ mod indexed_tests {
 
     #[test]
     fn palette_reads_the_table_and_its_one_transparent_entry() {
-        let bytes = encode_indexed(2, 1, &[0, 1], &[[1, 2, 3], [4, 5, 6]], Some(1), None).unwrap();
+        let bytes = encode_indexed(2, 1, &[0, 1], &[[1, 2, 3], [4, 5, 6]], Some(1), None, None).unwrap();
         let colors = vec![[1, 2, 3], [4, 5, 6]];
         assert_eq!(palette(&bytes).unwrap(), Some(PngPalette { colors: colors.clone(), transparent: Some(1) }));
         assert_eq!(palette(&png(png::ColorType::Indexed, None)).unwrap(), Some(PngPalette { colors, transparent: None }));
@@ -658,6 +973,109 @@ mod indexed_tests {
 #[cfg(test)]
 mod parallel_tests {
     use super::*;
+
+    #[test]
+    #[ignore = "manual 24 MP release benchmark"]
+    fn benchmark_filter_selection() {
+        use std::{hint::black_box, time::Instant};
+        for pattern in ["zero", "identical", "varied"] {
+            let row: Vec<u8> = (0..6000 * 4).map(|i| if pattern == "zero" { 0 } else { (i * 17 + i / 13) as u8 }).collect();
+            let prev: Vec<_> = row.iter().map(|v| if pattern == "identical" { *v } else { v.wrapping_add(3) }).collect();
+            let mut scratch = vec![0; row.len()];
+            let mut out = Vec::with_capacity(row.len() + 1);
+            for trial in 0..6 {
+                type Filter = fn(&[u8], Option<&[u8]>, usize, &mut [u8], &mut Vec<u8>);
+                let mut paths: [(&str, Filter); 2] = [("main", previous_filter_row), ("split", filter_row)];
+                if trial % 2 == 1 {
+                    paths.reverse();
+                }
+                for (name, path) in paths {
+                    let t = Instant::now();
+                    for _ in 0..4000 {
+                        out.clear();
+                        black_box(path)(black_box(&row), Some(black_box(&prev)), 4, &mut scratch, &mut out);
+                        black_box(&out);
+                    }
+                    println!("filter,{pattern},{trial},{name},{:.6}", t.elapsed().as_secs_f64() * 1000.0);
+                }
+            }
+        }
+    }
+
+    // The main-branch implementation before this refactor.
+    fn previous_filter_row(row: &[u8], prev: Option<&[u8]>, bpp: usize, scratch: &mut [u8], out: &mut Vec<u8>) {
+        let n = row.len();
+        let up = |i: usize| prev.map_or(0, |p| p[i]);
+        let left = |i: usize| if i >= bpp { row[i - bpp] } else { 0 };
+        let ul = |i: usize| if i >= bpp { prev.map_or(0, |p| p[i - bpp]) } else { 0 };
+        let paeth = |a: u8, b: u8, c: u8| {
+            let p = i16::from(a) + i16::from(b) - i16::from(c);
+            let (pa, pb, pc) = ((p - i16::from(a)).abs(), (p - i16::from(b)).abs(), (p - i16::from(c)).abs());
+            if pa <= pb && pa <= pc {
+                a
+            } else if pb <= pc {
+                b
+            } else {
+                c
+            }
+        };
+        let cost = |v: &[u8]| v.iter().map(|&b| u64::from((b as i8).unsigned_abs())).sum::<u64>();
+        let mut best = (cost(row), 0u8);
+        for kind in 1u8..=4 {
+            for i in 0..n {
+                let x = row[i];
+                scratch[i] = match kind {
+                    1 => x.wrapping_sub(left(i)),
+                    2 => x.wrapping_sub(up(i)),
+                    3 => x.wrapping_sub(((u16::from(left(i)) + u16::from(up(i))) / 2) as u8),
+                    _ => x.wrapping_sub(paeth(left(i), up(i), ul(i))),
+                };
+            }
+            let c = cost(&scratch[..n]);
+            if c < best.0 {
+                best = (c, kind);
+            }
+        }
+        out.push(best.1);
+        if best.1 == 0 {
+            out.extend_from_slice(row);
+            return;
+        }
+        for i in 0..n {
+            let x = row[i];
+            scratch[i] = match best.1 {
+                1 => x.wrapping_sub(left(i)),
+                2 => x.wrapping_sub(up(i)),
+                3 => x.wrapping_sub(((u16::from(left(i)) + u16::from(up(i))) / 2) as u8),
+                _ => x.wrapping_sub(paeth(left(i), up(i), ul(i))),
+            };
+        }
+        out.extend_from_slice(&scratch[..n]);
+    }
+
+    #[test]
+    fn adaptive_filter_preserves_minimum_cost_and_ties() {
+        for bpp in [1, 2, 3, 4, 6, 8] {
+            for seed in 0..32usize {
+                let row: Vec<u8> = (0..137).map(|i| (i * seed + i / 5) as u8).collect();
+                let shifted: Vec<_> = row.iter().map(|v| v.wrapping_add(seed as u8)).collect();
+                for prev in [None, Some(row.as_slice()), Some(shifted.as_slice())] {
+                    let mut expected = vec![99];
+                    let mut actual = expected.clone();
+                    let mut scratch = vec![0; row.len()];
+                    previous_filter_row(&row, prev, bpp, &mut scratch, &mut expected);
+                    filter_row(&row, prev, bpp, &mut scratch, &mut actual);
+                    assert_eq!(actual, expected, "bpp={bpp}, seed={seed}");
+                }
+            }
+        }
+        let mut out = Vec::new();
+        filter_row(&[0; 16], None, 4, &mut [0; 16], &mut out);
+        assert_eq!(out, vec![0; 17]);
+        out.clear();
+        filter_row(&[1; 16], Some(&[0; 16]), 1, &mut [0; 16], &mut out);
+        assert_eq!(out, [vec![1, 1], vec![0; 15]].concat());
+    }
 
     #[test]
     fn adler_combine_matches_one_pass() {
@@ -733,5 +1151,134 @@ mod parallel_tests {
                 assert_eq!((o.width(), o.height()), (w, h));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod streamed_tests {
+    use super::*;
+
+    /// (bytes ahead of the first IDAT, the IDAT payloads joined, how many IDAT chunks).
+    fn split(png: &[u8]) -> (Vec<u8>, Vec<u8>, usize) {
+        let (mut at, mut head, mut zlib, mut count) = (8, None, Vec::new(), 0);
+        while at + 12 <= png.len() {
+            let len = u32::from_be_bytes(png[at..at + 4].try_into().unwrap()) as usize;
+            if &png[at + 4..at + 8] == b"IDAT" {
+                head.get_or_insert_with(|| png[..at].to_vec());
+                zlib.extend_from_slice(&png[at + 8..at + 8 + len]);
+                count += 1;
+            }
+            at += 12 + len;
+        }
+        (head.unwrap(), zlib, count)
+    }
+
+    fn noise(n: usize, seed: u32) -> Vec<u8> {
+        (0..n).map(|i| ((i / 3) as u32 ^ seed).wrapping_mul(2_654_435_761).rotate_left(i as u32 % 7) as u8 / 3 + (i % 97) as u8).collect()
+    }
+
+    /// `img` pushed in bands of `heights` rows (the last one takes the rest).
+    fn streamed(img: &Image, heights: &[u32], opts: &EncodeOptions) -> Vec<u8> {
+        let (w, h) = img.dimensions();
+        let row = img.data().len() / h as usize;
+        let mut bands = Vec::new();
+        let mut y = 0;
+        for &n in heights.iter().chain(std::iter::once(&u32::MAX)) {
+            let n = n.min(h - y);
+            if n == 0 {
+                continue;
+            }
+            let data = img.data()[y as usize * row..(y + n) as usize * row].to_vec();
+            bands.push(Image::from_raw(w, n, img.layout(), img.sample_type(), data).unwrap().with_icc(img.icc.clone()).with_meta(img.meta.clone()));
+            y += n;
+        }
+        let mut out = Vec::new();
+        let mut rows = PngRows::new(&mut out, &bands[0], h, opts).unwrap();
+        for b in &bands {
+            rows.push(b).unwrap();
+        }
+        rows.finish().unwrap();
+        out
+    }
+
+    /// Bands of any height give the zlib stream, header chunks and pixels the whole-image encoder
+    /// gives, at 8 and 16 bits, with a profile, resolution, text and XMP.
+    #[test]
+    fn streamed_rows_match_the_whole_image_encoder() {
+        for (layout, sample, ch, bytes) in [(ChannelLayout::Rgba, SampleType::U8, 4usize, 1usize), (ChannelLayout::Rgb, SampleType::U16, 3, 2)] {
+            let (w, h) = (1201u32, 1013u32);
+            let meta = Metadata {
+                dpi: Some((300.0, 300.0)),
+                text: vec![("Title".into(), "Tent".into())],
+                xmp: Some("<x:xmpmeta xmlns:x='adobe:ns:meta/'/>".into()),
+                ..Default::default()
+            };
+            let img = Image::from_raw(w, h, layout, sample, noise(w as usize * h as usize * ch * bytes, 7))
+                .unwrap()
+                .with_icc(Some((0..600u32).map(|i| (i % 251) as u8).collect()))
+                .with_meta(meta);
+            for level in [PngCompression::Fast, PngCompression::Default] {
+                let opts = EncodeOptions { png_compression: level, ..Default::default() };
+                let whole = crate::encode(&img, Format::Png, &opts).unwrap();
+                let (head, zlib, _) = split(&whole);
+                for heights in [&[1u32, 77, 300][..], &[256, 256, 256], &[1013]] {
+                    let png = streamed(&img, heights, &opts);
+                    let (h2, z2, _) = split(&png);
+                    assert!(h2 == head, "{layout:?} {level:?} {heights:?}: header chunks differ");
+                    assert!(z2 == zlib, "{layout:?} {level:?} {heights:?}: zlib stream differs");
+                    assert_eq!(decode(&png, &Limits::default()).unwrap().data(), img.data());
+                }
+            }
+        }
+    }
+
+    /// Small images, no compression and bands in another sample type (converted by the plan).
+    #[test]
+    fn small_uncompressed_and_converted_bands_round_trip() {
+        let img = Image::from_raw(3, 5, ChannelLayout::GrayA, SampleType::U8, noise(30, 3)).unwrap();
+        for level in [PngCompression::None, PngCompression::Best] {
+            let opts = EncodeOptions { png_compression: level, ..Default::default() };
+            let png = streamed(&img, &[2, 1], &opts);
+            assert_eq!(decode(&png, &Limits::default()).unwrap().data(), img.data(), "{level:?}");
+        }
+        // Float bands are written with 16 bits, as `encode` writes them.
+        let f = img.convert(ChannelLayout::GrayA, SampleType::F32);
+        let png = streamed(&f, &[4], &EncodeOptions::default());
+        let back = decode(&png, &Limits::default()).unwrap();
+        assert_eq!(back.sample_type(), SampleType::U16);
+        assert_eq!(back.convert(ChannelLayout::GrayA, SampleType::U8).data(), img.data());
+    }
+
+    /// A zlib stream longer than one chunk may hold is split over IDAT chunks that read back.
+    #[test]
+    fn long_streams_split_over_several_idat_chunks() {
+        let img = Image::from_raw(64, 40, ChannelLayout::Rgb, SampleType::U8, noise(64 * 40 * 3, 9)).unwrap();
+        let whole = crate::encode(&img, Format::Png, &EncodeOptions::default()).unwrap();
+        let (_, zlib, _) = split(&whole);
+        let mut out = Vec::new();
+        let mut w = start(&mut out, (64, 40), (ChannelLayout::Rgb, SampleType::U8), None, &Metadata::default(), &EncodeOptions::default()).unwrap();
+        write_idat(&mut w, &zlib, 100).unwrap();
+        w.finish().unwrap();
+        let (_, joined, count) = split(&out);
+        assert_eq!(count, zlib.len().div_ceil(100));
+        assert!(joined == zlib);
+        assert_eq!(decode(&out, &Limits::default()).unwrap().data(), img.data());
+    }
+
+    /// Bands that don't fit the image, missing rows and interlacing are errors, not panics.
+    #[test]
+    fn bands_that_dont_fit_are_errors() {
+        let band = Image::from_raw(4, 2, ChannelLayout::Rgb, SampleType::U8, vec![0; 24]).unwrap();
+        let opts = EncodeOptions::default();
+        assert!(PngRows::new(Vec::new(), &band, 0, &opts).is_err());
+        assert!(PngRows::new(Vec::new(), &band, 3, &EncodeOptions { png_interlaced: true, ..Default::default() }).is_err());
+        let mut rows = PngRows::new(Vec::new(), &band, 3, &opts).unwrap();
+        rows.push(&band).unwrap();
+        // Two more rows than the image holds.
+        assert!(rows.push(&band).is_err());
+        let narrow = Image::from_raw(3, 1, ChannelLayout::Rgb, SampleType::U8, vec![0; 9]).unwrap();
+        assert!(rows.push(&narrow).is_err());
+        // Two of three rows.
+        assert!(rows.finish().is_err());
     }
 }

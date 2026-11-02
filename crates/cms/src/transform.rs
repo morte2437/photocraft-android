@@ -2,14 +2,14 @@
 //! compensation, soft-proofing chains, and fast lookup-table evaluation of pixel buffers.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use crate::clut::{Clut, MAX_CHANNELS};
 use crate::curve::Curve;
 use crate::math;
 use crate::pipeline::{Pipeline, Stage};
 use crate::profile::{ColorSpace, Pcs, Profile, ProfileClass};
-use crate::{CmsError, Intent};
+use crate::{CmsError, GpuMatrixShaper, Intent};
 
 /// Sample storage of a byte buffer for [`Transform::convert_bytes_many`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -39,9 +39,9 @@ impl Default for TransformOptions {
 /// Grid sizes of the device-link tables built for integer (and fast float) evaluation.
 pub const GRID_3D: usize = 33;
 pub const GRID_4D: usize = 17;
-const TABLE_1D: usize = 4096;
+const TABLE_1D: usize = GpuMatrixShaper::INPUT_INTERVALS;
 /// Resolution of output shaper tables (indexed by `x^(1/4)`).
-const OUT_TABLE: usize = 4096;
+const OUT_TABLE: usize = GpuMatrixShaper::OUTPUT_ENTRIES;
 
 /// ICC v4 perceptual reference medium black (ICC.1:2010 §6.3.4.4), XYZ.
 const PERCEPTUAL_BLACK: [f64; 3] = [0.00336, 0.0034731, 0.00287];
@@ -133,12 +133,11 @@ impl Transform {
             let tables = cs
                 .iter()
                 .map(|c| {
-                    (0..OUT_TABLE)
-                        .map(|i| {
-                            let u = i as f64 / (OUT_TABLE - 1) as f64;
-                            c.eval_inverse64(u * u * u * u).clamp(0.0, 1.0) as f32
-                        })
-                        .collect()
+                    let ys = (0..OUT_TABLE).map(|i| {
+                        let u = i as f64 / (OUT_TABLE - 1) as f64;
+                        u * u * u * u
+                    });
+                    c.inverse_table(ys).into_iter().map(|v| v.clamp(0.0, 1.0)).collect()
                 })
                 .collect();
             post = Some(Post { tables });
@@ -224,6 +223,31 @@ impl Transform {
     /// The exact evaluation pipeline.
     pub fn pipeline(&self) -> &Pipeline {
         &self.pipeline
+    }
+
+    /// A separable RGB transform for accurate GPU display conversion, when available.
+    ///
+    /// Reuses the input/matrix/output acceleration of the integer conversion path instead
+    /// of interpolating final encoded RGB over a coarse 3D grid. Returns `None` for other
+    /// channel counts, CLUTs, proofing stages, or invalid/unavailable table data, so callers
+    /// can keep their existing display-LUT fallback. This is an SDR representation; see
+    /// [`GpuMatrixShaper`] for the precise sampling and clamping contract.
+    pub fn gpu_matrix_shaper(&self) -> Option<GpuMatrixShaper> {
+        if self.inputs != 3 || self.outputs != 3 {
+            return None;
+        }
+        let Core::Shaper { curves, matrix, .. } = &self.core else { return None };
+        let mut rows = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]];
+        if let Some((nr, nc, coefficients, offsets)) = matrix {
+            if *nr != 3 || *nc != 3 || coefficients.len() != 9 || offsets.len() != 3 {
+                return None;
+            }
+            for (row, (coefficients, offset)) in rows.iter_mut().zip(coefficients.as_chunks::<3>().0.iter().zip(offsets)) {
+                let [r, g, b] = coefficients;
+                *row = [*r, *g, *b, *offset];
+            }
+        }
+        GpuMatrixShaper::from_parts(rows, curves, self.post.as_ref().map(|p| p.tables.as_slice()))
     }
 
     /// Exact evaluation of one colour (`inputs` → `outputs` normalised values).
@@ -679,20 +703,33 @@ pub fn black_point(p: &Profile, intent: Intent, _input: bool) -> Result<f64, Cms
 
 type Key = (u64, u64, TransformOptions);
 
-/// Process-wide cache of transforms keyed by profile content and options.
+/// A cached transform with the ICC bytes of the profiles it was built from.
+struct Entry {
+    src: Arc<Vec<u8>>,
+    dst: Arc<Vec<u8>>,
+    transform: Arc<Transform>,
+}
+
+/// Process-wide cache of transforms keyed by profile content and options. The key is the
+/// profiles' 64-bit hashes, which a crafted profile can share with another (#8613), so a hit
+/// counts only when the bytes match too; a colliding pair gets its own, uncached transform.
 pub fn cached(src: &Profile, dst: &Profile, opts: TransformOptions) -> Result<Arc<Transform>, CmsError> {
-    static CACHE: OnceLock<Mutex<HashMap<Key, Arc<Transform>>>> = OnceLock::new();
+    static CACHE: OnceLock<Mutex<HashMap<Key, Entry>>> = OnceLock::new();
     let key = (src.content_hash(), dst.content_hash(), opts);
+    let (src_bytes, dst_bytes) = (src.to_bytes(), dst.to_bytes());
     let cache = CACHE.get_or_init(Default::default);
-    if let Some(t) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
-        return Ok(t.clone());
+    let hit = cache.lock().unwrap_or_else(PoisonError::into_inner).get(&key).map(|e| (e.src == src_bytes && e.dst == dst_bytes).then(|| e.transform.clone()));
+    match hit {
+        Some(Some(t)) => return Ok(t),
+        Some(None) => return Ok(Arc::new(Transform::with_options(src, dst, opts)?)),
+        None => {}
     }
     let t = Arc::new(Transform::with_options(src, dst, opts)?);
-    let mut c = cache.lock().unwrap_or_else(|e| e.into_inner());
+    let mut c = cache.lock().unwrap_or_else(PoisonError::into_inner);
     if c.len() > 64 {
         c.clear();
     }
-    c.insert(key, t.clone());
+    c.insert(key, Entry { src: src_bytes, dst: dst_bytes, transform: t.clone() });
     Ok(t)
 }
 

@@ -141,11 +141,7 @@ fn walk<'a>(raw: &'a [u8], b: &'a [u8], depth: usize, budget: &mut usize, found:
     }
     boxes(b, budget, |item, budget| match item.kind {
         b"moov" => walk(raw, item.body, depth + 1, budget, found),
-        b"trak" => {
-            if found.previews.len() < 128 {
-                found.previews.extend(track_preview(raw, item.body, budget, &found.media));
-            }
-        }
+        b"trak" if found.previews.len() < 128 => found.previews.extend(track_preview(raw, item.body, budget, &found.media)),
         b"uuid" => {
             if item.body.get(..16) == Some(META_UUID)
                 && let Some(children) = item.body.get(16..)

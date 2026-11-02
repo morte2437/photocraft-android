@@ -70,25 +70,61 @@ pub fn start() {
 
 /// Whether the portal's `FileChooser` interface is on the session bus: `Some(false)` only when the
 /// bus or the interface is definitely absent, `None` for anything inconclusive (a slow reply).
+///
+/// Asks the portal object to introspect itself rather than reading the interface's `version`
+/// property: xdg-desktop-portal exports `FileChooser` only when a backend offers it, and without
+/// one a property read fails with `InvalidArgs` ("No such interface"), an error the old check
+/// didn't count as absent (#5739). The interface list answers the question directly.
 #[cfg(target_os = "linux")]
 fn file_chooser_portal() -> Option<bool> {
     let Ok(conn) = zbus::blocking::connection::Builder::session().and_then(|b| b.method_timeout(std::time::Duration::from_secs(5)).build()) else {
         return Some(false);
     };
-    let proxy = zbus::blocking::proxy::Builder::<zbus::blocking::Proxy<'_>>::new(&conn)
-        .destination("org.freedesktop.portal.Desktop")
-        .and_then(|b| b.path("/org/freedesktop/portal/desktop"))
-        .and_then(|b| b.interface("org.freedesktop.portal.FileChooser"))
-        .and_then(|b| b.cache_properties(zbus::proxy::CacheProperties::No).build())
-        .ok()?;
-    match proxy.get_property::<u32>("version") {
-        Ok(_) => Some(true),
-        Err(zbus::Error::MethodError(name, _, _)) => {
-            let name = name.as_str();
-            let absent = ["ServiceUnknown", "UnknownObject", "UnknownInterface", "UnknownProperty"].iter().any(|n| name.ends_with(n));
-            absent.then_some(false)
-        }
-        Err(_) => None,
+    let reply = conn.call_method(
+        Some("org.freedesktop.portal.Desktop"),
+        "/org/freedesktop/portal/desktop",
+        Some("org.freedesktop.DBus.Introspectable"),
+        "Introspect",
+        &(),
+    );
+    match reply {
+        Ok(message) => match message.body().deserialize::<String>() {
+            Ok(xml) => Some(interface_listed(&xml)),
+            Err(_) => None,
+        },
+        Err(e) => classify_error(&e),
+    }
+}
+
+/// Whether introspection XML lists the portal's `FileChooser` interface (not a longer name such as
+/// `FileChooser2`).
+#[cfg(target_os = "linux")]
+fn interface_listed(xml: &str) -> bool {
+    ["\"", "'"].iter().any(|quote| xml.contains(&format!("<interface name={quote}org.freedesktop.portal.FileChooser{quote}")))
+}
+
+/// What a failed call says about the interface: `Some(false)` when the D-Bus error means the
+/// service, object or interface isn't there, `None` for anything else (a timeout, a dropped
+/// connection, an unknown error), which counts as present.
+#[cfg(target_os = "linux")]
+fn classify_error(e: &zbus::Error) -> Option<bool> {
+    use zbus::fdo::Error as Fdo;
+    // Names a bus daemon or portal answers with when the thing asked about is absent.
+    const ABSENT: [&str; 7] = ["ServiceUnknown", "NameHasNoOwner", "UnknownObject", "UnknownInterface", "UnknownMethod", "UnknownProperty", "InvalidArgs"];
+    match e {
+        zbus::Error::FDO(fdo) => matches!(
+            **fdo,
+            Fdo::ServiceUnknown(_)
+                | Fdo::NameHasNoOwner(_)
+                | Fdo::UnknownObject(_)
+                | Fdo::UnknownInterface(_)
+                | Fdo::UnknownMethod(_)
+                | Fdo::UnknownProperty(_)
+                | Fdo::InvalidArgs(_)
+        )
+        .then_some(false),
+        zbus::Error::MethodError(name, _, _) => ABSENT.iter().any(|n| name.as_str().ends_with(n)).then_some(false),
+        _ => None,
     }
 }
 
@@ -125,5 +161,70 @@ mod tests {
         assert!(on_path("zenity", &path));
         assert!(!on_path("kdialog", &path));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    mod portal {
+        use super::super::*;
+
+        const WITH_FILE_CHOOSER: &str = r#"<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN" "http://www.freedesktop.org/standards/dbus/introspect.dtd">
+<node>
+  <interface name="org.freedesktop.DBus.Peer"/>
+  <interface name="org.freedesktop.portal.Settings"><property name="version" type="u" access="read"/></interface>
+  <interface name="org.freedesktop.portal.FileChooser">
+    <method name="OpenFile"/>
+  </interface>
+</node>"#;
+        const WITHOUT_FILE_CHOOSER: &str = r#"<node>
+  <interface name="org.freedesktop.DBus.Peer"/>
+  <interface name="org.freedesktop.portal.Settings"/>
+</node>"#;
+
+        fn method_error(name: &'static str) -> zbus::Error {
+            let call = zbus::message::Message::method_call("/a", "M").unwrap().build(&()).unwrap();
+            let reply = zbus::message::Message::error(&call.header(), name).unwrap().build(&"detail").unwrap();
+            zbus::Error::MethodError(name.try_into().unwrap(), Some("detail".into()), reply)
+        }
+
+        #[test]
+        fn the_interface_list_says_whether_a_file_chooser_is_offered() {
+            assert!(interface_listed(WITH_FILE_CHOOSER));
+            assert!(interface_listed("<interface name='org.freedesktop.portal.FileChooser'>"), "single quotes");
+            assert!(!interface_listed(WITHOUT_FILE_CHOOSER), "portal without a backend");
+            assert!(!interface_listed(r#"<interface name="org.freedesktop.portal.FileChooser2">"#), "longer name");
+            assert!(!interface_listed(""));
+        }
+
+        #[test]
+        fn dbus_errors_for_a_missing_interface_mean_absent() {
+            // zbus's fdo proxies hand D-Bus errors back as `Error::FDO`, a plain method call as
+            // `MethodError`; both forms count. The portal answers `InvalidArgs` ("No such interface")
+            // when no backend offers the interface (#5739).
+            for e in [
+                zbus::fdo::Error::InvalidArgs("No such interface".into()),
+                zbus::fdo::Error::UnknownInterface("x".into()),
+                zbus::fdo::Error::ServiceUnknown("x".into()),
+                zbus::fdo::Error::NameHasNoOwner("x".into()),
+                zbus::fdo::Error::UnknownObject("x".into()),
+            ] {
+                let desc = format!("{e:?}");
+                assert_eq!(classify_error(&zbus::Error::FDO(Box::new(e))), Some(false), "{desc}");
+            }
+        }
+
+        #[test]
+        fn method_error_names_still_count_as_absent() {
+            for name in ["org.freedesktop.DBus.Error.ServiceUnknown", "org.freedesktop.DBus.Error.InvalidArgs", "org.freedesktop.DBus.Error.UnknownMethod"] {
+                assert_eq!(classify_error(&method_error(name)), Some(false), "{name}");
+            }
+            assert_eq!(classify_error(&method_error("org.freedesktop.DBus.Error.AccessDenied")), None);
+        }
+
+        #[test]
+        fn inconclusive_errors_are_not_absent() {
+            assert_eq!(classify_error(&zbus::Error::FDO(Box::new(zbus::fdo::Error::NoReply("slow".into())))), None);
+            assert_eq!(classify_error(&zbus::Error::FDO(Box::new(zbus::fdo::Error::Failed("x".into())))), None);
+            assert_eq!(classify_error(&zbus::Error::InputOutput(std::sync::Arc::new(std::io::Error::other("gone")))), None);
+        }
     }
 }

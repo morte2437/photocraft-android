@@ -38,15 +38,19 @@ let out = encode(&img, Format::Tiff, &EncodeOptions::default())?;
 | WebP | yes | yes | U8 | RGB, RGBA | yes | yes | yes | yes | no | no | yes (VP8, when `webp_lossless` is off) | `image-webp` / built-in VP8 |
 | GIF | yes | yes | U8 | RGBA | 1-bit | no | no | no | no | no | yes (256-colour palette) | `image` |
 | BMP | yes | yes | U8 | RGB, RGBA | yes | no | no | no | no | no | no | `image` |
-| TGA | yes | yes | U8 | Gray, GrayA, RGB, RGBA | yes | no | no | no | no | no | no | `image` |
+| TGA | yes | yes | U8 | Gray, GrayA, RGB, RGBA | yes | no | no | no | no | no | no | `image` (read) / built in (RLE write, one scanline per packet) |
 | ICO | yes | yes | U8 | RGBA (at most 256×256) | yes | no | no | no | no | no | no | `image` |
-| DDS | yes | **no** | U8 | Gray, GrayA, RGB, RGBA | yes | no | no | no | no | no | n/a | built in |
+| DDS | yes | yes | U8 | Gray, GrayA, RGB, RGBA | yes | no | no | no | no | no | yes (BC1–BC3, when `EncodeOptions::dds` asks for one) | built in |
 | Netpbm (PBM/PGM/PPM/PAM/PFM) | yes | yes | U8, U16, F32 (float: PFM gray/RGB only) | all six (PAM `CMYK`/`CMYK_ALPHA`) | yes (PAM) | no | no | no | no | no | no | built in |
 | QOI | yes | yes | U8 | RGB, RGBA | yes | no | no | no | no | no | no | `image` |
 | OpenEXR | yes | yes | F16, F32 | Y, YA, RGB, RGBA | yes | no | no | no | no | no | no | `exr` |
 | Radiance HDR | yes | yes | F32 | RGB | no | no | no | no | no | no | yes (RGBE) | `image` |
 | FITS | yes | yes | U8, U16, F32 | Gray, RGB | no | no | no | no | no | yes (header cards) | no | built in |
+| JPEG XL (.jxl) | **no** (see #2868) | yes | U8, U16 | Gray, RGB, RGBA (GrayA expands to RGBA) | yes | no (bare codestream) | no | no | no | no | no | `zune-jpegxl` |
 | DPX | yes | yes | U8, U16 (10/12-bit code values read and written exactly through U16) | Gray, RGB, RGBA | yes | no | no | no | no | DPX header fields only (creator, project, copyright, creation time, transfer, colorimetric, frame position, frame rate, time code) | no | built in |
+| Cineon | yes | yes | U16 (10-bit code values read and written exactly through U16) | Gray, RGB | no | no | no | no | no | no | no | built in |
+| DICOM | yes | **no** | U8, U16 | Gray, RGB | no | no | no | no | no | no | n/a | built in |
+| Amiga IFF (ILBM/PBM) | yes | yes (24-bit ILBM) | U8 | RGB, RGBA | yes (1-bit mask plane on write) | no | no | no | no | no | no | built in |
 | AVIF | **no** | only with feature `avif` | U8 | RGB, RGBA | yes | no | no | no | no | no | yes | `image` + `ravif` |
 | HEIF/HEIC | with feature `heif` | **no** | U8, U16 (10/12-bit decodes to U16) | RGB, RGBA | yes (auxiliary alpha) | yes (`colr` prof) | yes | yes | no | no | n/a | `heic-rs` |
 
@@ -65,14 +69,36 @@ the same.
 
 Palette BMP and PNG pixels decode as RGB(A) in `Image`; `bmp_palette` and `png_palette` expose the
 embedded table (and a PNG's transparent entry) so `photocraft-io` can open them in Indexed Color mode.
+`bmp_palette` returns the colours the header declares, not the decoder's 256-entry padding.
+`encode_bmp_indexed` writes the inverse: indices plus a table as an 8-bit palette BMP.
 
 ## Documented asymmetries and limitations
 
+* **JPEG XL export.** Writes lossless 8/16-bit bare codestreams with `zune-jpegxl`.
+  Native layouts are Gray, RGB and RGBA. GrayA is expanded to RGBA at the
+  original depth. For 16-bit RGBA (including expanded GrayA), we correct
+  zune-jpegxl 0.5.2's extra-channel header, which otherwise describes the
+  16-bit alpha samples as 8-bit. This preserves alpha precision; the independent
+  jxl-oxide decoder test checks the actual gray and alpha samples. The expansion
+  is not a native GrayA layout. No ICC, EXIF, XMP or DPI container boxes are written; the
+  document pipeline converts tagged images to sRGB and reports metadata loss.
+  Reading remains in the separate #2868 PR. The `ASYMMETRIC_EXCEPTIONS`
+  entry stays until import is merged.
+
 * **DDS.** The top mip level of a 2D texture: uncompressed pixels described by channel masks
   (8, 16, 24 or 32 bits, RGB or luminance, with or without alpha) or BC1/BC2/BC3 (DXT1/DXT3/DXT5),
-  with the legacy header or the DX10 one. Everything opens as U8; the other mip levels are
-  ignored. Cubemaps, texture arrays, volume textures, premultiplied DXT2/DXT4 and other formats
-  (BC4–BC7, float) are refused with `CodecError::Unsupported`. Writing is not provided.
+  with the legacy header or the DX10 one. Uncompressed row padding follows the header's
+  `DDSD_PITCH` stride; without that flag, rows are tightly packed. Everything opens as U8; the
+  other mip levels are ignored. Cubemaps, texture arrays, volume textures, premultiplied DXT2/DXT4 and other formats
+  (BC4–BC7, float) are refused with `CodecError::Unsupported`. Writing (`EncodeOptions::dds`) makes
+  a 2D texture with the legacy header: uncompressed by default (BGRA, BGRX, or luminance with or
+  without alpha, so it reads back exactly), or BC1/BC2/BC3. The block encoder is our own, from
+  Microsoft's public block-compression documentation: RGB565 endpoints fitted along each block's
+  principal axis and refined by least squares, indices picked against the palette the reader
+  decodes; BC1 turns texels under half opacity into its transparent black, and BC3 picks
+  whichever alpha mode fits. `mipmaps` adds the full chain down to 1×1, each level a box filter
+  of the one above (the last column and row of an odd-sized level average three pixels, so none
+  is dropped). Cubemaps, arrays, BC4–BC7 and sRGB (DX10-only) formats aren't written.
 
 * **FITS.** The image in the primary HDU, or the first `IMAGE` extension, is read; `NAXIS3 = 3`
   opens as RGB and any other plane count opens the first plane with `DecodeWarning::MorePages`.
@@ -92,8 +118,45 @@ embedded table (and a PNG's transparent entry) so `photocraft-io` can open them 
   give `DecodeWarning::MoreElements`; the image orientation is applied on import. Writing is
   big-endian, one unencoded element, at `EncodeOptions::dpx_bits` (8/10/12/16; by default 8 for
   U8 and 16 otherwise), packing 1 for 10 and 12 bits; gray with alpha is written as luma.
+  `FidelityWarning::BitsReduced` reports a 10- or 12-bit save (and every Cineon save) that drops
+  precision: always for float samples, for U16 ones unless they are already code values at that
+  depth.
   Other descriptors, signed or run-length-encoded data and other bit depths return
-  `CodecError::Unsupported` naming the field. Cineon (`.cin`) is not supported.
+  `CodecError::Unsupported` naming the field.
+
+* **Cineon.** Kodak's 10-bit logarithmic film-scan format (the one DPX grew from),
+  read from the same Kodak header family: the generic 1024-byte header, big-endian, one (Gray)
+  or three (RGB) channels, three 10-bit samples packed into each 32-bit word, lines on a word
+  boundary. The 10-bit code values open as U16 `round(c × 65535 / 1023)`; the file's black/white
+  reference points are a log-conversion choice and are not applied. A depth other than 10 bits or
+  a channel count other than 1/3 returns `CodecError::Unsupported`; truncation errors rather than
+  panicking. Writing follows the Cineon 4.5 layout: a 1024-byte generic header (version `V4.5`,
+  one or three channels designated as universal-metric gray or R, G, B, 10 bits, data 0–1023 over
+  densities 0–2.048) and a 1024-byte film header left undefined, then the samples three to a
+  big-endian 32-bit word, left justified (packing 5), lines on a word boundary. Samples are written
+  as `round(v × 1023 / 65535)`, so a frame opened from Cineon keeps its code values; any other
+  image takes the encode plan (alpha dropped, CMYK and Lab to RGB) and is quantized to 10 bits.
+
+* **DICOM (read-only).** Single-frame medical images over the uncompressed transfer syntaxes
+  (implicit VR little-endian, explicit VR little/big-endian): MONOCHROME1/2 gray (with the
+  1 = white inversion) and RGB/YBR_FULL, 8- and 16-bit allocated samples, interleaved or planar,
+  scaled from `BitsStored`/`HighBit` and mapped up when `PixelRepresentation` is signed.
+  Undefined-length sequences outside the pixel data are skipped, as clinical files contain them.
+  Compressed transfer syntaxes, sequences over the pixel data and other photometric
+  interpretations return `Unsupported`/`Malformed`. There is no DICOM writer
+  (`ASYMMETRIC_EXCEPTIONS`).
+
+* **Amiga IFF.** `FORM ... ILBM` stores interleaved 1–8 bitplanes;
+  `FORM ... PBM ` stores 8-bit chunky palette indices with even-padded rows. Both support
+  stored and ByteRun1 compression, a `CMAP` palette (grey ramp when absent, black for missing
+  entries), and transparent-color masking. ILBM also supports a separate mask plane and
+  24-bitplane RGB ("deep" ILBM: 8 planes each of red, green and blue, least significant bit
+  first, no palette). HAM/EHB viewport modes, PBM mask planes, a transparent color in a
+  24-bitplane file, other bit depths and compressions return `CodecError::Unsupported`.
+  Writing produces a 24-bitplane ILBM, ByteRun1 compressed one plane row at a time, at most
+  65535 × 65535 pixels. An image with alpha gets a mask plane (masking 1): alpha of 128 or more
+  is opaque, and `AlphaBinarized` is raised when any pixel is not fully opaque. Gray is
+  expanded to RGB, and 16-bit and float images are reduced to 8 bits.
 
 * **Camera raw files** (DNG, CR2, NEF, ARW… which are TIFF-structured) are recognised and refused
   with `CodecError::Unsupported`: they are sensor data, not flat images. `photocraft-raw` decodes
@@ -128,7 +191,10 @@ embedded table (and a PNG's transparent entry) so `photocraft-io` can open them 
   with `decode_tiff_page` (and `photocraft_io::import_tiff_page`). Every frame of a GIF comes
   from `decode_gif_frames`: each frame composited onto the logical screen with the disposal
   methods applied, as RGBA8 with its delay in milliseconds, within `Limits` and
-  `MAX_GIF_FRAMES`. The video-layer commands use it (`photocraft_io::import_gif_frames`).
+  `MAX_GIF_FRAMES`. Every frame of an animated WebP comes from `decode_webp_frames` the same
+  way, composited onto its canvas, with its duration in milliseconds and the file's ICC profile.
+  The video-layer commands use both (`photocraft_io::import_gif_frames`,
+  `photocraft_io::import_webp_frames`).
 * **EXIF in TIFF** is stored as a sub-IFD rather than a blob, so it is not preserved yet.
   `caps.exif = false` for TIFF, and a warning is raised.
 * **Orientation** (EXIF tag 274 in JPEG, PNG `eXIf` and WebP; the decoded page's tag in TIFF and
@@ -170,8 +236,14 @@ embedded table (and a PNG's transparent entry) so `photocraft-io` can open them 
     planar configuration 1 or 2.
   * Supports 1, 2 and 4-bit gray, 8/16/32/64-bit integers (32 and 64-bit are reduced to U16),
     F16, F32 and F64 (converted to F32), WhiteIsZero (#691: the tones are no longer inverted),
-    palette images (opened as RGB), associated alpha (made straight) and extra samples (dropped
-    unless the first is alpha).
+    palette images (opened as RGB) and associated alpha (made straight).
+  * Extra samples: the first alpha sample (ExtraSamples 1 or 2, wherever it sits) is the image's
+    alpha. Every other extra sample, such as a spot colour or a further alpha channel
+    (ExtraSamples 0), comes back in `Metadata::extra_samples`: one plane per sample in the
+    image's sample type, with its ExtraSamples value as `kind` (a reserved value above 2 reads as
+    0). At most `MAX_EXTRA_SAMPLES` (16) are kept, and they count against `Limits::max_alloc` with
+    the image: when the image fits but its extra samples don't, it opens without them and carries
+    `DecodeWarning::ExtraSamplesDropped`.
   * Every directory is reachable: `tiff_info` lists the main IFD chain and its SubIFDs (tag 330)
     with each page's size, kind (page, reduced-resolution copy, mask) and storage, walked with a
     seen-set, a depth limit and a 10 000-directory cap; `decode_tiff_page` opens any of them.
@@ -185,7 +257,11 @@ embedded table (and a PNG's transparent entry) so `photocraft-io` can open them 
   * YCbCr, CIE Lab, signed integers and compressions that the `tiff` crate lacks (CCITT,
     JPEG-in-TIFF) return `Unsupported`.
 * **TIFF encode** writes classic TIFF, or BigTIFF when `EncodeOptions::tiff_bigtiff` is set or
-  the file could pass 4 GiB.
+  the file could pass 4 GiB. `Metadata::extra_samples` (up to 16) are written after the colour
+  and alpha samples, with their `kind` in the ExtraSamples tag (a reserved `kind` above 2 is
+  written as 0). Each plane must be exactly
+  `width × height × sample.bytes()` bytes; a plane of any other length, and more than 16 planes,
+  are encode errors rather than silently truncated or reinterpreted.
 * **EXR**
   * Multi-part files (a Maya/Arnold render writes one part per AOV) open the part that
     looks most like a colour image — RGBA beats RGB beats YA beats a single channel, so a

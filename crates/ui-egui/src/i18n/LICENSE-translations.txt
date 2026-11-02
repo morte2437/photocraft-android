@@ -1,5 +1,6 @@
-PhotoCraft's Korean, German, Brazilian Portuguese, Italian, Ukrainian, Dutch, Czech, Turkish,
-Hungarian and Serbian UI translation catalogs are licensed under MIT OR Apache-2.0, at your option.
+PhotoCraft's Korean, German, Spanish, Brazilian Portuguese, Italian, Ukrainian, Dutch, Czech,
+Turkish, Hungarian, Serbian, Russian, Swedish, Finnish, Danish and Norwegian Bokmål UI translation
+catalogs are licensed under MIT OR Apache-2.0, at your option.
 The full license texts are in ../../../../LICENSE-MIT and ../../../../LICENSE-APACHE.
 
 Korean translations: PhotoCraft contributors, original translations of
@@ -7,6 +8,11 @@ PhotoCraft's English labels; no proprietary translation resources were used.
 
 German translations: PhotoCraft contributors, original translations of
 PhotoCraft's English labels; no proprietary translation resources were used.
+
+Spanish translations: contributed by @gorevyoneticisi with OpenAI Codex as an AI contributor.
+The resulting catalog is licensed under MIT OR Apache-2.0 as stated above; the translations are
+original translations of PhotoCraft's English labels, and no proprietary translation resources
+were used.
 
 Brazilian Portuguese translations: PhotoCraft contributors, original translations of
 PhotoCraft's English labels; no proprietary translation resources were used.
@@ -31,3 +37,23 @@ PhotoCraft's English labels; no proprietary translation resources were used.
 
 Serbian translations: PhotoCraft contributors, original translations of
 PhotoCraft's English labels; no proprietary translation resources were used.
+
+Russian translations: PhotoCraft contributors, original translations of
+PhotoCraft's English labels; no proprietary translation resources were used.
+
+Arabic translations: PhotoCraft contributors, combined from the catalogs contributed by @azizr12,
+@hicbest, @hasan-sdaif, @NibrasAz7, @vfggf95565, @syrrevshin4202-prog and @test-bit-sys and
+reviewed with Claude (Anthropic) as an AI contributor; original translations of PhotoCraft's
+English labels, and no proprietary translation resources were used.
+Swedish translations: PhotoCraft contributors, combined from the catalogs contributed by @kler and
+@davvarn and reviewed with Claude (Anthropic) as an AI contributor; original translations of
+PhotoCraft's English labels, and no proprietary translation resources were used.
+Finnish translations: PhotoCraft contributors, combined from the catalogs contributed by @Janiz-zzz
+and @metuuu and reviewed with Claude (Anthropic) as an AI contributor; original translations of
+PhotoCraft's English labels, and no proprietary translation resources were used.
+Danish translations: PhotoCraft contributors, based on the catalog contributed by
+@pechnikov2026-star, completed and reviewed with Claude (Anthropic) as an AI contributor; original
+translations of PhotoCraft's English labels, and no proprietary translation resources were used.
+Norwegian Bokmål translations: PhotoCraft contributors, combined from the catalogs contributed by
+@nikolainyegaard and @Bolla76 and reviewed with Claude (Anthropic) as an AI contributor; original
+translations of PhotoCraft's English labels, and no proprietary translation resources were used.

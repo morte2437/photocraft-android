@@ -1,4 +1,4 @@
-//! Photocraft colour management: a pure-Rust ICC v2/v4 colour management module.
+//! PhotoCraft colour management: a pure-Rust ICC v2/v4 colour management module.
 //!
 //! * [`Profile`] parses ICC profiles (matrix/TRC RGB, gray TRC, `mft1`/`mft2`/`mAB `/`mBA `
 //!   LUT profiles incl. CMYK↔Lab, `curv`/`para` curves) and writes ICC v4 profiles.
@@ -8,6 +8,7 @@
 //! * [`builtin`] ships sRGB, Display P3, Adobe RGB (1998)-compatible, ProPhoto-compatible,
 //!   linear sRGB, Rec. 2020, Gray 2.2, sGray, Lab D50 and a synthetic coated CMYK profile.
 //! * [`Lut3d`] samples a display transform into a 3D texture for the GPU canvas.
+//! * [`GpuMatrixShaper`] preserves near-black precision for separable RGB display transforms.
 //!
 //! Implemented from the public ICC.1:2010 (v4.3) and ICC.1:2001-04 (v2) specifications,
 //! CIE 15, and Adobe's published black point compensation paper. This crate depends on no
@@ -19,6 +20,7 @@ pub mod builtin;
 pub mod clut;
 pub mod curve;
 pub mod gamut;
+mod gpu_matrix_shaper;
 pub mod lut3d;
 pub mod lutfile;
 pub mod math;
@@ -32,6 +34,7 @@ pub use builtin::Builtin;
 pub use clut::Clut;
 pub use curve::Curve;
 pub use gamut::GamutCheck;
+pub use gpu_matrix_shaper::GpuMatrixShaper;
 pub use lut3d::Lut3d;
 pub use profile::{ColorSpace, Pcs, Profile, ProfileClass};
 pub use transform::{SampleKind, Transform, TransformOptions, black_point, cached};

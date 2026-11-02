@@ -16,13 +16,13 @@ photocraft-raster = { workspace = true }
 photocraft-doc = { workspace = true }
 photocraft-codecs = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true, features = ["unbounded_depth"] }
+serde_json = { workspace = true, features = ["unbounded_depth", "float_roundtrip"] }
 thiserror = { workspace = true }
 flate2 = { workspace = true }
 # Same IEEE CRC-32 the ZIP container needs; already in Cargo.lock through flate2.
 crc32fast = "1.5"
 blake3 = { version = "1.8", default-features = false, features = ["pure"] }
-ruzstd = "0.9"
+ruzstd = "0.9.1"
 
 # Unix directory cleanup uses no-follow descriptor-relative operations; the same
 # dependency provides the plain-fsync fallback on Apple file systems.
@@ -33,6 +33,17 @@ rustix = { version = "1.1", default-features = false, features = ["std", "fs"] }
 # constant is used; all descriptor operations remain in safe rustix APIs.
 [target.'cfg(target_vendor = "apple")'.dependencies]
 libc = "0.2"
+
+# Replacing a file keeps its ACL (#7073). `fcopyfile(COPYFILE_ACL)` is an `unsafe fn` and
+# `fclonefileat(CLONE_ACL)` is APFS-only; exacl is a safe wrapper over acl_get_file/acl_set_file.
+[target.'cfg(target_os = "macos")'.dependencies]
+exacl = "0.13"
+
+# `ReplaceFileW` is how Windows replaces a file without dropping its DACL, named streams
+# (Zone.Identifier, the Mark of the Web) and creation time (#7094, #7096). winsafe's `kernel`
+# feature is a dependency-free safe wrapper; the workspace forbids writing the FFI call here.
+[target.'cfg(windows)'.dependencies]
+winsafe = { version = "0.0.29", features = ["kernel"] }
 
 [dev-dependencies]
 proptest = { workspace = true }

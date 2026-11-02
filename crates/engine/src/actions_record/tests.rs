@@ -81,7 +81,7 @@ fn a_name_or_no_document_is_left_alone() {
     s.execute("layer.setProps", json!({"layer": "Background", "visible": false})).unwrap();
     assert_eq!(last(&s).1, json!({"layer": "Background", "visible": false}));
     let e = s.execute("layer.setProps", json!({"layer": 999, "visible": false})).unwrap_err();
-    assert!(matches!(e, EngineError::NoLayer(_)), "{e}");
+    assert!(matches!(e, EngineError::UnknownLayer { .. }), "{e}");
 }
 
 #[test]
@@ -128,6 +128,17 @@ fn keystrokes_in_an_existing_layer_become_one_edit() {
     s.execute("type.edit", json!({"layer": id, "replace": {"start": 3, "end": 3, "text": "?"}, "coalesce": "t3"})).unwrap();
     assert_eq!(s.journal.len(), n + 2);
     assert_eq!(last(&s).1, json!({"text": "hi!?", "coalesce": "t3"}));
+}
+
+#[test]
+fn recording_does_not_fold_into_a_step_from_before_recording_started() {
+    let mut s = session();
+    let id = s.execute("type.create", json!({"x": 2, "y": 20, "text": "Hi", "size": 12})).unwrap()["layer"].as_u64().unwrap();
+    s.execute("actions.record", json!({"name": "Type more"})).unwrap();
+    s.execute("type.edit", json!({"layer": id, "replace": {"start": 2, "end": 2, "text": "!"}, "coalesce": "t2"})).unwrap();
+    s.execute("actions.stop", json!({})).unwrap();
+    let steps = s.execute("actions.get", json!({"action": "Type more"})).unwrap()["steps"].clone();
+    assert_eq!(steps, json!([["type.edit", {"text": "Hi!", "coalesce": "t2"}]]));
 }
 
 #[test]

@@ -195,6 +195,16 @@ fn archive(stack: &str, images: &[(&str, Vec<u8>)]) -> Vec<u8> {
     z.finish().unwrap()
 }
 
+/// A stack.xml nested 20 000 deep overflowed the XML parser's recursion (an abort nothing can
+/// catch); it is an error now. The small stack makes a regression abort instead of passing.
+#[test]
+fn deeply_nested_stack_xml_is_an_error_not_a_stack_overflow() {
+    let stack = format!("<image w=\"4\" h=\"4\">{}{}</image>", "<stack>".repeat(20_000), "</stack>".repeat(20_000));
+    let bytes = archive(&stack, &[]);
+    let e = std::thread::Builder::new().stack_size(512 * 1024).spawn(move || crate::import("deep.ora", &bytes).err()).unwrap().join().unwrap();
+    assert!(matches!(&e, Some(IoError::Ora(m)) if m.contains("nested")), "{e:?}");
+}
+
 fn solid_png(w: u32, h: u32, rgba: [u8; 4]) -> Vec<u8> {
     let data = rgba.iter().copied().cycle().take((w * h * 4) as usize).collect();
     codecs::encode(&Image::from_raw(w, h, ChannelLayout::Rgba, CSample::U8, data).unwrap(), Format::Png, &Default::default()).unwrap()
@@ -203,6 +213,84 @@ fn solid_png(w: u32, h: u32, rgba: [u8; 4]) -> Vec<u8> {
 fn gray16_png(w: u32, h: u32) -> Vec<u8> {
     let data = (0..w * h).flat_map(|i| ((i * 1000) as u16).to_ne_bytes()).collect();
     codecs::encode(&Image::from_raw(w, h, ChannelLayout::Gray, CSample::U16, data).unwrap(), Format::Png, &Default::default()).unwrap()
+}
+
+/// A green Multiply layer over a red backdrop distinguishes isolation (green) from
+/// pass-through (black), even though both groups use Normal compositing by default.
+fn group_isolation_document(version: Option<&str>, attributes: &str, depth: SampleType) -> Document {
+    let version = version.map(|v| format!("version=\"{v}\"")).unwrap_or_default();
+    let xml = format!(
+        r#"<image {version} w="1" h="1"><stack>
+          <stack name="Group" {attributes}>
+            <layer name="Multiply" src="green.png" composite-op="svg:multiply"/>
+          </stack>
+          <layer name="Backdrop" src="red.png"/>
+        </stack></image>"#
+    );
+    let fmt = PixelFormat::new(ColorMode::Rgb, depth, true);
+    let png = |rgba| {
+        let image = Image::from_raw(1, 1, ChannelLayout::Rgba, csample(depth), px(fmt, rgba)).unwrap();
+        codecs::encode(&image, Format::Png, &Default::default()).unwrap()
+    };
+    let bytes = archive(&xml, &[("green.png", png([0.0, 1.0, 0.0, 1.0])), ("red.png", png([1.0, 0.0, 0.0, 1.0]))]);
+    let result = crate::import("isolation.ora", &bytes).unwrap();
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(result.document.depth, depth);
+    result.document
+}
+
+#[test]
+fn omitted_group_isolation_defaults_to_isolated_since_version_0_0_6() {
+    for depth in [SampleType::U8, SampleType::U16] {
+        for version in ["0.0.6", " 0.0.6 ", "0.0.6+app.1", "0.0.6-rc.1", "0.0.10", "0.1.0", "1.0.0"] {
+            let d = group_isolation_document(Some(version), "", depth);
+            assert_eq!(d.layers[1].blend, BlendMode::Normal, "{version}, {depth:?}");
+            assert_eq!(photocraft_compose::flatten(&d).px, [[0.0, 1.0, 0.0, 1.0]], "{version}, {depth:?}");
+        }
+    }
+}
+
+#[test]
+fn explicit_group_isolation_preserves_isolate_and_auto() {
+    for depth in [SampleType::U8, SampleType::U16] {
+        for version in ["0.0.3", "0.0.5", "0.0.6"] {
+            for (attributes, blend, expected) in [
+                ("isolation=' isolate '", BlendMode::Normal, [0.0, 1.0, 0.0, 1.0]),
+                ("isolation=' auto '", BlendMode::PassThrough, [0.0, 0.0, 0.0, 1.0]),
+                ("isolation='isolate' composite-op='svg:multiply'", BlendMode::Multiply, [0.0, 0.0, 0.0, 1.0]),
+            ] {
+                let d = group_isolation_document(Some(version), attributes, depth);
+                assert_eq!(d.layers[1].blend, blend, "{version}, {attributes}, {depth:?}");
+                assert_eq!(photocraft_compose::flatten(&d).px, [expected], "{version}, {attributes}, {depth:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn auto_group_ignores_its_composite_op_since_version_0_0_6() {
+    for depth in [SampleType::U8, SampleType::U16] {
+        let d = group_isolation_document(Some("0.0.6"), "isolation='auto' composite-op='svg:screen'", depth);
+        assert_eq!(d.layers[1].blend, BlendMode::PassThrough);
+        assert_eq!(photocraft_compose::flatten(&d).px, [[0.0, 0.0, 0.0, 1.0]], "{depth:?}");
+    }
+}
+
+#[test]
+fn legacy_group_isolation_keeps_inference_from_blend_mode() {
+    for depth in [SampleType::U8, SampleType::U16] {
+        for version in [None, Some("0.0.3"), Some("0.0.5"), Some("unknown"), Some("0.0"), Some("0.0.6.0")] {
+            for (attributes, blend, expected) in [
+                ("", BlendMode::PassThrough, [0.0, 0.0, 0.0, 1.0]),
+                ("composite-op='svg:screen'", BlendMode::Screen, [1.0, 1.0, 0.0, 1.0]),
+                ("isolation='auto' composite-op='svg:screen'", BlendMode::Screen, [1.0, 1.0, 0.0, 1.0]),
+            ] {
+                let d = group_isolation_document(version, attributes, depth);
+                assert_eq!(d.layers[1].blend, blend, "{version:?}, {attributes}, {depth:?}");
+                assert_eq!(photocraft_compose::flatten(&d).px, [expected], "{version:?}, {attributes}, {depth:?}");
+            }
+        }
+    }
 }
 
 #[test]
@@ -249,9 +337,45 @@ fn reads_other_applications_stacks() {
     assert_eq!(get("Strange").blend, BlendMode::Normal);
     assert!(get("Lost").surface().unwrap().content_bounds().is_empty());
     let all = r.warnings.join("\n");
-    for needle in ["svg:dst-in", "<text>", "missing from the archive", "krita:hard mix", "svg:soft-light"] {
+    for needle in ["svg:dst-in", "<text>", "missing from the archive", "krita:hard mix"] {
         assert!(all.contains(needle), "{needle} not in {all}");
     }
+    // svg:soft-light is the W3C curve, which is Photoshop's Soft Light (#8804): no warning.
+    assert!(!all.contains("soft-light"), "{all}");
+}
+
+#[test]
+fn krita_soft_light_ids_map_to_photoshop_soft_light() {
+    // Krita's own soft_light keeps sqrt(cb) over dark backdrops, so it is the approximation;
+    // soft_light_svg is the W3C curve Photoshop uses (#8804).
+    assert_eq!(super::krita_blend("soft_light"), Some((BlendMode::SoftLight, true)));
+    assert_eq!(super::krita_blend("soft_light_svg"), Some((BlendMode::SoftLight, false)));
+    assert_eq!(super::krita_id(BlendMode::SoftLight), Some("soft_light_svg"));
+    let xml = r#"<image w="2" h="2"><stack>
+      <layer name="Own" src="a.png" composite-op="krita:soft_light"/>
+      <layer name="W3C" src="a.png" composite-op="krita:soft_light_svg"/>
+    </stack></image>"#;
+    let r = crate::import("soft.ora", &archive(xml, &[("a.png", solid_png(2, 2, [40, 40, 40, 255]))])).unwrap();
+    assert!(r.document.layers.iter().all(|l| l.blend == BlendMode::SoftLight));
+    let all = r.warnings.join("\n");
+    assert!(all.contains("krita:soft_light blend mode is approximated"), "{all}");
+    assert!(!all.contains("soft_light_svg"), "{all}");
+}
+
+#[test]
+fn soft_light_exports_as_svg_soft_light() {
+    // The W3C id, not krita:soft_light_svg (which import also accepts): other applications read it.
+    let mut d = doc(SampleType::U8);
+    let mut soft = block("Soft", PixelFormat::RGBA8, 0, 0, 10, 10, 5);
+    soft.blend = BlendMode::SoftLight;
+    d.layers.push(soft);
+    let out = export(&d).unwrap();
+    let xml = String::from_utf8(ZipReader::new(&out.bytes).unwrap().read_by_name("stack.xml", 1 << 20).unwrap()).unwrap();
+    assert!(xml.contains("name=\"Soft\"") && xml.contains("composite-op=\"svg:soft-light\""), "{xml}");
+    assert!(!xml.contains("soft_light"), "{xml}");
+    let (back, exported, imported) = round_trip(&d);
+    assert!(back.layers.iter().any(|l| l.name == "Soft" && l.blend == BlendMode::SoftLight));
+    assert!(!exported.iter().chain(&imported).any(|w| w.to_lowercase().contains("soft")), "{exported:?} {imported:?}");
 }
 
 #[test]
@@ -416,6 +540,9 @@ fn lossy_documents() -> Vec<(&'static str, Document)> {
         }),
         ("clipped", with(&|d| d.layers[1].clipped = true)),
         ("fill opacity", with(&|d| d.layers[0].fill_opacity = 0.5)),
+        ("pixel lock", with(&|d| d.layers[0].locks.pixels = true)),
+        // Not the bottom layer: with its transparency lock, `Base` would become the Background.
+        ("position lock", with(&|d| d.layers[1].locks.position = true)),
         ("float", doc(SampleType::F32)),
         ("profile", with(&|d| d.icc_profile = Some(photocraft_cms::Builtin::DisplayP3.profile().to_bytes()))),
         ("metadata", with(&|d| d.metadata.xmp = Some("<x/>".into()))),
@@ -442,6 +569,15 @@ fn plain_documents_lose_nothing() {
         d.icc_profile = Some(photocraft_cms::Builtin::Srgb.profile().to_bytes());
         assert_eq!(losses(&d), Vec::<String>::new(), "{depth:?} tagged sRGB");
         assert_eq!(export(&d).unwrap().warnings, Vec::<String>::new());
+        // OpenRaster's edit-locked and alpha-preserve hold Lock All and Lock Transparent Pixels.
+        d.layers[0].locks.all = true;
+        d.layers[1].locks.transparency = true;
+        assert_eq!(losses(&d), Vec::<String>::new(), "{depth:?} locked");
+        // A Background (every new document's bottom layer) loses nothing for its position lock.
+        d.layers[0].locks.all = false;
+        d.layers[0].locks.position = true;
+        assert!(d.background().is_some());
+        assert_eq!(losses(&d), Vec::<String>::new(), "{depth:?} Background");
     }
     let mut cmyk = doc(SampleType::U8);
     cmyk.mode = ColorMode::Cmyk;

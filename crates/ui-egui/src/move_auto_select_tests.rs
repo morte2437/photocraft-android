@@ -146,9 +146,35 @@ fn every_theme_shows_the_auto_select_toggle() {
         PhotocraftApp::setup_context(&h.ctx, theme);
         h.run_steps(4);
         assert!(h.state().ui.tool_options.move_auto_select);
-        h.get_by_label("Auto-Select:").click();
+        h.get_by_role_and_label(egui::accesskit::Role::CheckBox, "Auto-Select:").click();
         h.run_steps(2);
         assert!(!h.state().ui.tool_options.move_auto_select, "{theme:?}: the toggle turns Auto-Select off");
+    }
+}
+
+#[test]
+fn every_theme_shows_the_transform_controls_toggle() {
+    // #5740: outside the Pro themes the Move tool's options bar had no Show Transform Controls, so
+    // a click on a layer never showed its box and handles there.
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
+    for theme in crate::theme::ThemeKind::ALL {
+        let (app, _, _) = app();
+        let mut h = Harness::builder().with_size(egui::vec2(1400.0, 60.0)).build_ui_state(
+            |ui, app: &mut PhotocraftApp| {
+                if !ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
+                    return;
+                }
+                crate::panels::options_bar(app, ui);
+            },
+            app,
+        );
+        PhotocraftApp::setup_context(&h.ctx, theme);
+        h.run_steps(4);
+        let before = h.state().ui.tool_options.move_show_transform;
+        h.get_by_label("Show Transform Controls").click();
+        h.run_steps(2);
+        assert_ne!(h.state().ui.tool_options.move_show_transform, before, "{theme:?}: the toggle flips Show Transform Controls");
     }
 }
 
@@ -174,12 +200,12 @@ fn every_theme_shows_the_type_options() {
         );
         PhotocraftApp::setup_context(&h.ctx, theme);
         h.run_steps(4);
-        let combos: Vec<String> = h
-            .query_all_by_role(egui::accesskit::Role::ComboBox)
+        let fields: Vec<String> = h
+            .query_all_by_role(egui::accesskit::Role::TextInput)
             .map(|n| format!("{:?} {:?}", n.accesskit_node().label(), n.accesskit_node().value()))
             .collect();
         let font = h.state().ui.tool_options.type_font.clone();
-        assert!(combos.iter().any(|c| c.contains(&font)), "{theme:?}: the font picker shows {font:?}; combo boxes: {combos:?}");
+        assert!(fields.iter().any(|c| c.contains(&font)), "{theme:?}: the font picker shows {font:?}; font fields: {fields:?}");
     }
 }
 
@@ -209,4 +235,25 @@ fn every_theme_shows_the_gradient_options() {
             .collect();
         assert!(combos.iter().any(|c| c.contains("Normal")), "{theme:?}: the blend mode picker shows; combo boxes: {combos:?}");
     }
+}
+
+#[test]
+fn shift_click_adds_shape_layers_one_after_another() {
+    // Shapes, as in Photoshop: a click selects one, each ⇧-click adds the one under it.
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.session.execute("file.new", json!({"width": 200, "height": 200})).unwrap();
+    for rect in [[10, 10, 40, 40], [80, 10, 40, 40], [10, 100, 40, 40]] {
+        app.session.execute("shape.create", json!({"kind": "rect", "rect": rect, "fill": "#ff0000"})).unwrap();
+    }
+    app.sync_views();
+    app.ui.tool = Tool::Move;
+    app.ui.extras.snap = false;
+    app.ui.view.show.smart_guides = false;
+    let ids: Vec<LayerId> = app.session.active().unwrap().doc.layers.iter().skip(1).map(|l| l.id).collect();
+    drag(&mut app, [30.0, 30.0], [0.0, 0.0], egui::Modifiers::NONE);
+    drag(&mut app, [100.0, 30.0], [0.0, 0.0], egui::Modifiers::SHIFT);
+    drag(&mut app, [30.0, 120.0], [0.0, 0.0], egui::Modifiers::SHIFT);
+    let mut selected = app.session.active().unwrap().selected_layers();
+    selected.sort_by_key(|l| l.0);
+    assert_eq!(selected, ids);
 }

@@ -26,17 +26,35 @@ fn bits(v: Vec<f32>) -> Vec<u32> {
 const MODELS: [ColorMode; 8] =
     [ColorMode::Rgb, ColorMode::Grayscale, ColorMode::Cmyk, ColorMode::Lab, ColorMode::Bitmap, ColorMode::Duotone, ColorMode::Indexed, ColorMode::Multichannel];
 
-#[test]
-fn swept_blocks_match_the_pixel_search() {
+// Keep the same daily/full-sweep cases, but expose four independent tests to nextest so one
+// large reference comparison cannot hold a runner after its other tests have finished.
+fn swept_blocks_match_the_pixel_search_part(part: u64) {
     let bounds = Rect::new(-13, -9, 31, 26);
+    // Unless the heights are level-based, the colour mode reaches extrude only through the channel
+    // count and whether the samples are CMYK ink, so modes that agree on both repeat those cases.
+    // A run takes a quarter of the rest, a different quarter each day.
+    let mut seen = std::collections::HashSet::new();
+    let sweep = photocraft_testkit::Sweep::new(4);
+    let mut case = 0;
+    let mut selected = 0;
     for mode in MODELS {
         for alpha in [false, true] {
             let n = PixelFormat::new(mode, SampleType::F32, alpha).channels();
             let ctx = Ctx { bounds, mode, alpha };
+            let repeat = !seen.insert((n, alpha, mode == ColorMode::Cmyk));
             for kind in 0..5 {
                 let src = image(bounds.inflate(20), n, kind);
                 for (size, depth) in [(2.0, 0.0), (2.0, 255.0), (3.5, 190.0), (8.0, 64.0), (22.0, 255.0), (255.0, 100.0)] {
-                    for flags in 0..8 {
+                    for flags in (0..8).filter(|f| !repeat || f & 1 != 0) {
+                        case += 1;
+                        if !sweep.includes(case) {
+                            continue;
+                        }
+                        let assigned = selected % 4;
+                        selected += 1;
+                        if assigned != part {
+                            continue;
+                        }
                         let spec = ExtrudeSpec {
                             kind: ExtrudeType::Blocks,
                             size,
@@ -57,6 +75,26 @@ fn swept_blocks_match_the_pixel_search() {
             }
         }
     }
+}
+
+#[test]
+fn swept_blocks_match_the_pixel_search_part_0() {
+    swept_blocks_match_the_pixel_search_part(0);
+}
+
+#[test]
+fn swept_blocks_match_the_pixel_search_part_1() {
+    swept_blocks_match_the_pixel_search_part(1);
+}
+
+#[test]
+fn swept_blocks_match_the_pixel_search_part_2() {
+    swept_blocks_match_the_pixel_search_part(2);
+}
+
+#[test]
+fn swept_blocks_match_the_pixel_search_part_3() {
+    swept_blocks_match_the_pixel_search_part(3);
 }
 
 #[test]

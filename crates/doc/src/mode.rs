@@ -57,8 +57,9 @@ impl DuotoneInk {
 pub struct Duotone {
     pub inks: Vec<DuotoneInk>,
     /// The PSD colour-mode data this came from, written back unchanged while the inks are unedited.
+    /// Shared between document snapshots (#4535).
     #[serde(default)]
-    pub psd_raw: Option<Vec<u8>>,
+    pub psd_raw: Option<std::sync::Arc<[u8]>>,
 }
 
 impl DuotoneInk {
@@ -74,7 +75,7 @@ impl Duotone {
         let density = 1.0 - gray.clamp(0.0, 1.0);
         let mut out = [1.0f32; 3];
         for ink in &self.inks {
-            let d = curve_eval(&ink.curve, density);
+            let d = ink.density(density);
             for (o, c) in out.iter_mut().zip(ink.color) {
                 // Each ink filters light: full density transmits the ink colour.
                 *o *= 1.0 - d * (1.0 - c);
@@ -207,6 +208,22 @@ mod tests {
         let d = Duotone { inks: vec![DuotoneInk::new("Black", [0.0; 3]), DuotoneInk::new("Orange", [1.0, 0.5, 0.0])], psd_raw: None };
         let c = d.render(0.5);
         assert!(c[0] > c[2], "{c:?}");
+    }
+
+    #[test]
+    fn duotone_render_clamps_ink_density_like_multichannel() {
+        // Curves above 100 % (accepted by `image.mode.duotone`) must not push the print out of
+        // gamut: red + blue at full density is black, not green.
+        let over = |name: &str, color| {
+            let mut ink = DuotoneInk::new(name, color);
+            ink.curve = vec![CurvePoint { input: 0.0, output: 0.0 }, CurvePoint { input: 1.0, output: 2.0 }];
+            ink
+        };
+        let d = Duotone { inks: vec![over("Red", [1.0, 0.0, 0.0]), over("Blue", [0.0, 0.0, 1.0])], psd_raw: None };
+        assert_eq!(d.render(0.0), [0.0, 0.0, 0.0]);
+        for g in [0.0, 0.25, 0.5, 1.0] {
+            assert!(d.render(g).iter().all(|c| (0.0..=1.0).contains(c)), "{g}: {:?}", d.render(g));
+        }
     }
 
     #[test]
