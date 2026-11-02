@@ -229,7 +229,7 @@ fn animated_gif_keeps_transparency() {
     // Each frame has a transparent index and is cleared before the next (disposal 2).
     let packed: Vec<u8> = gif.windows(4).filter(|w| w[..3] == [0x21, 0xF9, 0x04]).map(|w| w[3]).collect();
     assert_eq!(packed, [0x09, 0x09]);
-    let px = photocraft_compose::flatten(&photocraft_io::import("t.gif", &gif).unwrap().document).px;
+    let px = photocraft_compose::flatten(&photocraft_io::import("t.gif", &gif).unwrap().document).into_px();
     assert_eq!(px[0][3], 0.0, "the corner stays transparent");
     assert_eq!(px[3 * 8 + 3], [1.0, 0.0, 0.0, 1.0], "the square stays red");
 }

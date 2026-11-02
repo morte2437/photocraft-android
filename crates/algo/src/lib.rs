@@ -1269,7 +1269,10 @@ fn apply_tiled_with_impl(
         }
         for (t, data) in results {
             match data {
-                TileData::Samples(data) => out.write_region(t, &data),
+                TileData::Samples(data) => {
+                    out.write_region(t, &data);
+                    photocraft_raster::scratch::give(data);
+                }
                 TileData::Encoded(data) => out.write_interleaved(t, &data),
             }
         }
@@ -1324,6 +1327,7 @@ fn apply_box_blur(
                     mix_selection(data, *t, sel, &Image::read(surface, *t), fmt.alpha);
                 }
                 s.write_region(*t, data);
+                photocraft_raster::scratch::give(std::mem::take(data));
             }
         };
         #[cfg(not(target_arch = "wasm32"))]

@@ -283,7 +283,7 @@ fn imported_type_layers_keep_their_full_bounds() {
         let o = iou(&ours.surface, cache);
         assert!(o > 0.97, "{}: re-render overlap {o}", c.name);
         // And the document composite is the file's merged composite.
-        let px = photocraft_compose::flatten(&doc).px;
+        let px = photocraft_compose::flatten(&doc).into_px();
         let worst = common::max_diff(&px, &merged);
         assert!(worst <= 2.0 / 255.0, "{}: composite differs from the merged image by {worst}", c.name);
     }

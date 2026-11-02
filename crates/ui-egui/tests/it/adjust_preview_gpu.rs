@@ -152,14 +152,14 @@ fn preview_layer_composites_on_the_gpu_like_the_command() {
                     // may flip a few pixels sitting right at a step (1 % allowed).
                     let skip = if matches!(kind, "threshold" | "posterize") && depth != SampleType::U8 { (b.width() * b.height()) as usize / 100 } else { 0 };
                     let on_gpu = render_to_vec(&mut comp, &device, &queue, &preview, b).unwrap_or_else(|e| panic!("{what}: {e:?}"));
-                    let on_cpu = photocraft_compose::render(&preview, b).px;
+                    let on_cpu = photocraft_compose::render(&preview, b).into_px();
                     let d = max_diff(&on_gpu, &on_cpu, skip);
                     assert!(d <= tol_gpu, "{what}: GPU vs CPU {:.2}/255", d * 255.0);
                     let mut s = photocraft_engine::Session::new();
                     s.add_document(doc.clone(), None);
                     s.select_layer(target).unwrap();
                     s.execute(&format!("image.adjustments.{kind}"), params.clone()).unwrap();
-                    let cmd = photocraft_compose::render(&s.active().unwrap().doc, b).px;
+                    let cmd = photocraft_compose::render(&s.active().unwrap().doc, b).into_px();
                     let d = max_diff(&on_gpu, &cmd, skip);
                     worst = worst.max(d);
                     assert!(d <= tol_cmd, "{what}: GPU preview vs command {:.2}/255", d * 255.0);
@@ -184,7 +184,7 @@ fn proxy_preview_composites_on_the_gpu() {
         for kind in photocraft_ui_egui::adjust_editors::KINDS {
             let p = proxy_with_settings(&proxy, kind, &sample(kind)).unwrap();
             let on_gpu = render_to_vec(&mut comp, &device, &queue, &p, p.bounds()).unwrap();
-            let on_cpu = photocraft_compose::render(&p, p.bounds()).px;
+            let on_cpu = photocraft_compose::render(&p, p.bounds()).into_px();
             let d = max_diff(&on_gpu, &on_cpu, 0);
             assert!(d <= 2.0 / 255.0, "{kind} selection {selection}: {:.2}/255", d * 255.0);
         }

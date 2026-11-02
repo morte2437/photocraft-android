@@ -307,8 +307,8 @@ fn shear(p: &Value) -> FilterParams {
 fn lens_flare(p: &Value) -> FilterParams {
     FilterParams::LensFlare {
         brightness: f(p, "brightness", 100.0).clamp(10.0, 300.0),
-        center_x: f(p, "centerX", 0.5).clamp(-0.5, 1.5),
-        center_y: f(p, "centerY", 0.5).clamp(-0.5, 1.5),
+        center_x: f(p, "centerX", 0.5),
+        center_y: f(p, "centerY", 0.5),
         lens: choice(p, "lens", "zoom", LENS_TYPES, LensType::Zoom),
     }
 }
@@ -725,7 +725,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "filter.render.lensFlare",
             "Lens Flare…",
             ["Filter", "Render"],
-            r##"{"brightness":10..300=100,"centerX":0..1=0.5,"centerY":0..1=0.5,"lens":"zoom|prime35|prime105|moviePrime"}"##
+            r##"{"brightness":10..300=100,"centerX":0..1=0.5,"centerY":0..1=0.5,"lens":"zoom|prime35|prime105|moviePrime"} (normalized centre: 0..1 is the canvas; agents and actions may pass values outside it, which place the flare off the canvas unclamped)"##
         ),
         cmd!(
             "filter.render.lightingEffects",

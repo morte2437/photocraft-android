@@ -3264,6 +3264,9 @@ curves	Smooth	تنعيم
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} خطوة ليس لها مكافئ في PhotoCraft بعد|{n} خطوة ليس لها مكافئ في PhotoCraft بعد|{n} خطوتان ليس لهما مكافئ في PhotoCraft بعد|{n} خطوات ليس لها مكافئ في PhotoCraft بعد|{n} خطوةً ليس لها مكافئ في PhotoCraft بعد|{n} خطوة ليس لها مكافئ في PhotoCraft بعد
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	تم حفظ {n} إجراء في {file}|تم حفظ {n} إجراء في {file}|تم حفظ {n} إجراءين في {file}|تم حفظ {n} إجراءات في {file}|تم حفظ {n} إجراءً في {file}|تم حفظ {n} إجراء في {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	تم استبعاد {n} خطوة ليس لها مكافئ في Photoshop|تم استبعاد {n} خطوة ليس لها مكافئ في Photoshop|تم استبعاد {n} خطوتين ليس لهما مكافئ في Photoshop|تم استبعاد {n} خطوات ليس لها مكافئ في Photoshop|تم استبعاد {n} خطوةً ليس لها مكافئ في Photoshop|تم استبعاد {n} خطوة ليس لها مكافئ في Photoshop
+@plural	{n} action file loaded|{n} action files loaded	تم تحميل {n} ملف إجراءات|تم تحميل {n} ملف إجراءات|تم تحميل {n} ملفي إجراءات|تم تحميل {n} ملفات إجراءات|تم تحميل {n} ملفًا للإجراءات|تم تحميل {n} ملف إجراءات
+	{set} from {file} replaced the one from {earlier}	حلّت المجموعة {set} من {file} محل المجموعة من {earlier}
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	تعذّر تحميل {n} ملف: {errors}|تعذّر تحميل {n} ملف: {errors}|تعذّر تحميل {n} ملفين: {errors}|تعذّر تحميل {n} ملفات: {errors}|تعذّر تحميل {n} ملفًا: {errors}|تعذّر تحميل {n} ملف: {errors}
 
 	File Naming	تسمية الملفات
 	Starting serial	الرقم التسلسلي الأولي

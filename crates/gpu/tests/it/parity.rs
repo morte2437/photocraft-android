@@ -957,7 +957,7 @@ fn hard_stop_gradients_match_cpu_or_fall_back() {
                 Ok(out) => out,
                 Err(e) => {
                     assert!(e.0.contains("coincident gradient stops"), "{e}");
-                    photocraft_compose::render(&d, d.bounds()).px
+                    photocraft_compose::render(&d, d.bounds()).into_px()
                 }
             };
             let worst = worst_diff(&cpu.px, &out);
