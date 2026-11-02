@@ -32,9 +32,10 @@ pub(super) enum HandleIndicator {
 
 /// What dragging handle `h` with `mods` does, worked out by the same rules as the drag itself
 /// ([`drag_mods`], [`mode_mods`], [`apply_mode_drag`]): ⌘ on a corner distorts (⌘⌥⇧ adds
-/// perspective) and on an edge skews, Distort and Perspective modes distort from the corners,
-/// Skew mode skews from the edges. Rotate mode turns the box whatever the keys, a Skew-mode corner
-/// slides along an edge, editable type refuses Distort and Content-Aware Scale only scales: `None`.
+/// perspective) and on an edge skews, Distort mode distorts from every handle, Perspective mode
+/// distorts from the corners and skews from the edges, Skew mode skews from the edges. Rotate
+/// mode turns the box whatever the keys, a Skew-mode corner slides along an edge, editable type
+/// refuses Distort and Content-Aware Scale only scales: `None`.
 pub(super) fn handle_indicator(app: &PhotocraftApp, t: &TransformSession, h: Hit, mods: egui::Modifiers) -> Option<HandleIndicator> {
     if t.warp.is_some() || t.content_aware.is_some() || !mode_allows(t.mode, h) {
         return None;
@@ -42,7 +43,8 @@ pub(super) fn handle_indicator(app: &PhotocraftApp, t: &TransformSession, h: Hit
     let (mode, mods) = drag_mods(app, t, h, mods);
     match (mode, h) {
         (TransformMode::Rotate, _) | (TransformMode::Skew, Hit::Corner(_)) => None,
-        (TransformMode::Skew, Hit::Edge(_)) => Some(HandleIndicator::Skew),
+        (TransformMode::Distort, Hit::Edge(_)) => Some(HandleIndicator::Distort),
+        (TransformMode::Skew | TransformMode::Perspective, Hit::Edge(_)) => Some(HandleIndicator::Skew),
         (_, Hit::Corner(_)) if mode_mods(mode, h, mods).command => Some(HandleIndicator::Distort),
         (_, Hit::Edge(_)) if mods.command => Some(HandleIndicator::Skew),
         _ => None,
@@ -155,8 +157,23 @@ pub(crate) fn apply_mode_drag(s: &mut TransformSession, g: Gesture, p: [f64; 2],
             g.hit = Hit::Outside;
             apply_drag(s, g, p, mods);
         }
-        // Skew: an edge slides only along itself (⌘⇧ in Free Transform).
-        (TransformMode::Skew, Hit::Edge(_)) => {
+        // Distort (#10085): a side handle moves its edge freely, both of its corners by the drag
+        // and the opposite edge staying put, up to where the box would fold over, as a corner
+        // does (#1323). Like a Distort corner, it takes no ⇧ or ⌥ constraint.
+        (TransformMode::Distort, Hit::Edge(i)) if i < 4 => {
+            let (d, q0) = ([p[0] - g.start[0], p[1] - g.start[1]], g.quad0);
+            let mut q = q0;
+            for k in [i, (i + 1) % 4] {
+                if let (Some(dst), Some(src)) = (q.get_mut(k), q0.get(k)) {
+                    *dst = [src[0] + d[0], src[1] + d[1]];
+                }
+            }
+            s.quad = keep_convex(q0, q);
+            s.pivot = carry_pivot(q0, s.quad, g.pivot0);
+        }
+        // Skew, and Perspective's side handles, as in Photoshop: an edge slides only along itself
+        // (⌘⇧ in Free Transform).
+        (TransformMode::Skew | TransformMode::Perspective, Hit::Edge(_)) => {
             mods.command = true;
             mods.shift = true;
             apply_drag(s, g, p, mods);
@@ -165,13 +182,11 @@ pub(crate) fn apply_mode_drag(s: &mut TransformSession, g: Gesture, p: [f64; 2],
     }
 }
 
-/// What a drag can do in each Edit › Transform mode: in Distort only the corners (and moving the
-/// box from inside); in Skew everything but rotating from outside the box (#3437). A click
-/// outside still commits.
+/// What a drag can do in each Edit › Transform mode: in Distort and Skew everything but rotating
+/// from outside the box (#3437, #10085). A click outside still commits.
 pub(super) fn mode_allows(mode: TransformMode, h: Hit) -> bool {
     match mode {
-        TransformMode::Distort => !matches!(h, Hit::Outside | Hit::Edge(_)),
-        TransformMode::Skew => h != Hit::Outside,
+        TransformMode::Distort | TransformMode::Skew => h != Hit::Outside,
         _ => true,
     }
 }
