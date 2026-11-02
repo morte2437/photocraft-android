@@ -52,7 +52,7 @@ pub struct OpenParams {
     pub path: String,
     /// Explicitly approve high-memory PSD/PSB imports that fit within the hard memory budget.
     #[serde(default)]
-    pub approve_high_memory: Option<bool>,
+    pub approve_high_memory: bool,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -658,7 +658,7 @@ impl PhotocraftMcp {
     #[tool(description = "Open an image or document file and make it active. Returns index, size and import warnings.")]
     async fn doc_open(&self, Parameters(p): Parameters<OpenParams>) -> Result<CallToolResult, McpError> {
         let path = PathBuf::from(&p.path);
-        let approve = p.approve_high_memory.unwrap_or(false);
+        let approve = p.approve_high_memory;
         if let Some(r) = self.headless_op(move |h| h.open_with_approval(&path, approve)).await {
             return to_result(r);
         }
@@ -1320,6 +1320,13 @@ mod tests {
     async fn mcp_doc_open_schema_and_structured_error() {
         let schema = &PhotocraftMcp::tool_router().map["doc_open"].attr.input_schema;
         assert_eq!(schema["properties"]["approve_high_memory"]["type"], "boolean");
+        let omitted: OpenParams = serde_json::from_value(json!({"path": "file.psd"})).unwrap();
+        assert!(!omitted.approve_high_memory);
+        let approved: OpenParams = serde_json::from_value(json!({"path": "file.psd", "approve_high_memory": true})).unwrap();
+        assert!(approved.approve_high_memory);
+        for invalid in [Value::Null, json!("true"), json!(1)] {
+            assert!(serde_json::from_value::<OpenParams>(json!({"path": "file.psd", "approve_high_memory": invalid})).is_err());
+        }
 
         let err = AutomationError::Import(photocraft_io::IoError::PsdApprovalRequired {
             required: 6000,
