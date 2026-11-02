@@ -1,10 +1,13 @@
 //! The Layers panel's filter row (#5048): a filter-type dropdown, as in Photoshop, then the
 //! controls for that type. Kind toggles layer kinds, Name matches part of the layer name, Mode
-//! picks one blend mode, Color one layer colour label (#5898). The criteria live in `UiState` (`layer_filter*`), so the control channel
-//! can read and set them.
+//! picks one blend mode, Color one layer colour label (#5898), Artboard lists only the artboards
+//! that hold the selected layers. The criteria live in `UiState` (`layer_filter*`), so the control
+//! channel can read and set them.
+
+use std::collections::HashSet;
 
 use photocraft_color::BlendMode;
-use photocraft_doc::{LabelColor, Layer, LayerContent};
+use photocraft_doc::{Document, LabelColor, Layer, LayerContent, LayerId};
 use serde::{Deserialize, Serialize};
 
 use crate::state::UiState;
@@ -19,6 +22,7 @@ pub enum FilterBy {
     Name,
     Mode,
     Color,
+    Artboard,
 }
 
 /// The filter criteria, copied out of `UiState` for one frame of the Layers panel.
@@ -30,6 +34,8 @@ pub struct Filter {
     pub name: String,
     pub mode: BlendMode,
     pub color: LabelColor,
+    /// The rows the Artboard filter lists ([`board_rows`]); empty lists every row.
+    pub board_rows: HashSet<LayerId>,
 }
 
 impl Filter {
@@ -40,16 +46,32 @@ impl Filter {
             name: ui.layer_filter_name.clone(),
             mode: ui.layer_filter_mode,
             color: ui.layer_filter_color,
+            board_rows: HashSet::new(),
         }
     }
 
+    /// Returns [`Filter::of`] for `app`'s settings, with `board_rows` set to the rows of the
+    /// artboards that hold the active document's selected layers while the panel filters by
+    /// Artboard.
+    pub fn of_app(app: &PhotocraftApp) -> Self {
+        let mut f = Self::of(&app.ui);
+        if f.by == FilterBy::Artboard
+            && let Some(d) = app.session.active()
+        {
+            f.board_rows = board_rows(&d.doc, &d.selected_layers());
+        }
+        f
+    }
+
     /// Whether the panel is filtered. Like Photoshop, Mode and Color always filter (by Normal and
-    /// by no colour at first); Kind and Name only once a kind is toggled or some text is typed.
+    /// by no colour at first); Kind and Name only once a kind is toggled or some text is typed;
+    /// Artboard only while some layers are selected and each of them is in an artboard.
     pub fn active(&self) -> bool {
         match self.by {
             FilterBy::Kind => !self.kinds.is_empty(),
             FilterBy::Name => !self.name.trim().is_empty(),
             FilterBy::Mode | FilterBy::Color => true,
+            FilterBy::Artboard => !self.board_rows.is_empty(),
         }
     }
 
@@ -63,8 +85,43 @@ impl Filter {
             FilterBy::Name => l.name.to_lowercase().contains(&self.name.trim().to_lowercase()),
             FilterBy::Mode => l.blend == self.mode,
             FilterBy::Color => l.label == self.color,
+            FilterBy::Artboard => self.board_rows.contains(&l.id),
         }
     }
+}
+
+/// The Artboard filter's rows for `selection`: the artboards that hold the selected layers and
+/// every layer inside them. The set is empty when nothing is selected or a selected layer is in
+/// no artboard, and the panel is then not filtered. The panel lists these rows as its tree does: the contents of a closed
+/// group stay hidden until the group is opened (`layer_tree_ui::panel_rows` opens every group only
+/// for the types whose matches can sit in a closed group).
+pub fn board_rows(doc: &Document, selection: &[LayerId]) -> HashSet<LayerId> {
+    fn add(l: &Layer, rows: &mut HashSet<LayerId>) {
+        let mut pending = vec![l];
+        while let Some(layer) = pending.pop() {
+            rows.insert(layer.id);
+            pending.extend(layer.children().unwrap_or_default());
+        }
+    }
+    let selected: HashSet<LayerId> = selection.iter().copied().collect();
+    if selected.is_empty() {
+        return HashSet::new();
+    }
+    // Artboards are top-level groups ([`Document::artboard_of`]): each one's layers are walked once.
+    let (mut rows, mut held) = (HashSet::new(), 0);
+    for board in doc.layers.iter().filter(|l| l.artboard().is_some()) {
+        let mut inside = HashSet::new();
+        add(board, &mut inside);
+        let n = selected.iter().filter(|id| inside.contains(id)).count();
+        if n > 0 {
+            held += n;
+            rows.extend(inside);
+        }
+    }
+    if held < selected.len() {
+        return HashSet::new();
+    }
+    rows
 }
 
 /// The kinds the Kind filter toggles.
@@ -72,8 +129,9 @@ pub const KINDS: [&str; 5] = ["pixel", "adjustment", "type", "shape", "smart"];
 
 /// `ui.set {layerFilter: {by?, kinds?, name?, mode?, color?}}`: `current` with the given fields
 /// replaced, or an error naming the bad field (nothing changes then). `by` is `kind`, `name`,
-/// `mode` or `color`; `kinds` a list of [`KINDS`]; `mode` a blend mode name such as `Multiply` or
-/// `Pass Through`; `color` a label colour id (`none`, `red`, … `gray`, [`LabelColor::id`]).
+/// `mode`, `color` or `artboard`; `kinds` a list of [`KINDS`]; `mode` a blend mode name such as
+/// `Multiply` or `Pass Through`; `color` a label colour id (`none`, `red`, … `gray`,
+/// [`LabelColor::id`]). Artboard has no criteria of its own: the selected layers pick the artboards.
 pub fn patched(current: &UiState, v: &serde_json::Value) -> Result<Filter, String> {
     let Some(o) = v.as_object() else { return Err("layerFilter must be an object".into()) };
     if let Some(k) = o.keys().find(|k| !["by", "kinds", "name", "mode", "color"].contains(&k.as_str())) {
@@ -81,7 +139,7 @@ pub fn patched(current: &UiState, v: &serde_json::Value) -> Result<Filter, Strin
     }
     let mut f = Filter::of(current);
     if let Some(by) = o.get("by") {
-        f.by = serde_json::from_value(by.clone()).map_err(|_| "layerFilter.by must be kind, name, mode or color".to_string())?;
+        f.by = serde_json::from_value(by.clone()).map_err(|_| "layerFilter.by must be kind, name, mode, color or artboard".to_string())?;
     }
     if let Some(kinds) = o.get("kinds") {
         let list = kinds.as_array().ok_or("layerFilter.kinds must be a list")?;
@@ -139,7 +197,13 @@ fn kind(l: &Layer) -> &'static str {
 pub fn bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
-        let by = [(FilterBy::Kind, tl!("Kind")), (FilterBy::Name, tl!("Name")), (FilterBy::Mode, tl!("Mode")), (FilterBy::Color, tl!("Color"))];
+        let by = [
+            (FilterBy::Kind, tl!("Kind")),
+            (FilterBy::Name, tl!("Name")),
+            (FilterBy::Mode, tl!("Mode")),
+            (FilterBy::Color, tl!("Color")),
+            (FilterBy::Artboard, tl!("Artboard")),
+        ];
         widgets::dropdown(ui, "layer-filter-by", tl!("Kind"), &mut app.ui.layer_filter_by, &by, 64.0);
         ui.add_space(4.0);
         match app.ui.layer_filter_by {
@@ -177,6 +241,8 @@ pub fn bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 let width = ui.available_width().max(96.0);
                 widgets::dropdown(ui, "layer-filter-color", tl!("Color"), &mut app.ui.layer_filter_color, &colors, width);
             }
+            // Artboard has no controls: the selected layers pick the artboards ([`board_rows`]).
+            FilterBy::Artboard => {}
         }
     });
 }

@@ -349,8 +349,9 @@ pub struct UiSetParams {
     /// `shape.edit` names and units; colour comes from `tools.setColors`. camTransformOnDrop (bool,
     /// the Content-Aware Move tool's Transform On Drop). tileGrid (bool, a developer overlay of the
     /// active layer's storage tiles). layerFilter (an object patching by ("kind", "name", "mode"
-    /// or "color"), kinds (a list of layer kinds), name (matches part of the layer name), mode (a
-    /// blend mode name) and color (a layer colour label, or "none") for the Layers panel filter). strokeTrace (true, false, "stderr" or "off":
+    /// "color" or "artboard", which lists the artboards that hold the selected layers), kinds (a list
+    /// of layer kinds), name (matches part of the layer name), mode (a blend mode name) and color (a
+    /// layer colour label, or "none") for the Layers panel filter). strokeTrace (true, false, "stderr" or "off":
     /// the stroke latency trace at runtime; a CSV file is set at launch with --stroke-trace, not
     /// over this channel). updatesOpen (bool, the Help › Check for Updates window).
     /// histogramPanel (an object patching view ("compact", "expanded" or "allChannels"), channel

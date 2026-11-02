@@ -879,6 +879,21 @@ fn ui_set_gradient_blend_mode_validates_and_updates_options() {
     assert!(app.ui.tool_options.gradient_classic, "invalid mode must not change options");
 }
 
+/// The Layers panel's Artboard filter type is drivable; it has no criteria of its own.
+#[test]
+fn ui_set_drives_the_layers_panel_artboard_filter() {
+    use crate::layer_filter_ui::FilterBy;
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    let ctx = egui::Context::default();
+    let ok = call(&mut app, &ctx, "ui.set", json!({"layerFilter": {"by": "artboard"}}));
+    assert_eq!(ok["ok"], true, "{ok}");
+    assert_eq!(app.ui.layer_filter_by, FilterBy::Artboard);
+    let bad = call(&mut app, &ctx, "ui.set", json!({"layerFilter": {"by": "artboards"}}));
+    assert_eq!(bad["ok"], false, "{bad}");
+    assert!(bad.to_string().contains("kind, name, mode or artboard"), "{bad}");
+    assert_eq!(app.ui.layer_filter_by, FilterBy::Artboard, "a bad value changed nothing");
+}
+
 /// #5048: the Layers panel filter is drivable; a bad field changes nothing.
 #[test]
 fn ui_set_drives_the_layers_panel_filter() {
