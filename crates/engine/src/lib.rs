@@ -188,6 +188,8 @@ pub struct Session {
     docs: Vec<DocState>,
     /// Override Open belongs only to one Batch scratch session, never to caller preferences.
     pub(crate) batch_open: Option<file_cmds::BatchOpen>,
+    /// Import diagnostics retained by a Batch scratch that suppresses only profile prompts.
+    pub(crate) batch_open_notices: Option<Vec<Value>>,
     /// Admitted document identities in opening order, independent of visual-tab reordering.
     open_document_order: Vec<photocraft_doc::DocId>,
     active: Option<usize>,

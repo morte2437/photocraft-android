@@ -57,6 +57,7 @@ fn open_exr_parts(s: &mut Session, p: &Value) -> Result<Value> {
     crate::file_cmds::tag_exr_colorspace(s, &path, &mut r.document);
     let (i, color) = s.open_document(r.document, Some(path.clone()));
     crate::file_cmds::remember_batch_open(s);
+    super::file_cmds::batch_open_notice(s, &path, &r.warnings, &color);
     Ok(json!({"document": i, "color": color, "warnings": r.warnings}))
 }
 

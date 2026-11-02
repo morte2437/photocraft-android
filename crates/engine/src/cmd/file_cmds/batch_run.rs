@@ -193,6 +193,7 @@ fn same_format_takes_the_file_names_extension() {
 struct InputOpen {
     check_format: bool,
     from_action: bool,
+    quiet_profiles: bool,
 }
 
 /// Check collisions before input reads and isolate each file in a scratch session.
@@ -210,8 +211,17 @@ fn process_outputs<'a>(
     let raw_ppi = super::open::raw_open_resolution(s);
     let mut files = Vec::new();
     let mut errors = Vec::new();
+    let mut notices = Vec::new();
     let mut written = OutputClaims::default();
     for (path, out) in outputs {
+        let mut scratch = Session::new();
+        if open.quiet_profiles {
+            scratch.prefs = s.prefs.clone();
+            scratch.color.settings = s.color.settings.clone();
+            scratch.color.settings.ask_on_mismatch = false;
+            scratch.color.settings.ask_on_missing = false;
+            scratch.batch_open_notices = Some(Vec::new());
+        }
         let r = (|| -> Result<()> {
             written.check(&out).map_err(EngineError::Other)?;
             // A folder must not silently use the embedded preview of an unsupported raw format.
@@ -221,13 +231,16 @@ fn process_outputs<'a>(
             }
             #[cfg(target_arch = "wasm32")]
             let _ = open.check_format;
-            let mut scratch = Session::new();
             if open.from_action {
                 scratch.batch_open = Some(super::open::BatchOpen { path: path.to_string(), sources: Vec::new(), raw_ppi });
             } else {
                 let bytes = read_file(path)?;
-                let doc = import_at_raw_ppi(raw_ppi, &file_name(path), &bytes)?;
-                scratch.add_document(doc, Some(path.to_string()));
+                if open.quiet_profiles {
+                    super::open::open_bytes_as(&mut scratch, &file_name(path), &bytes, None, Some(path.to_string()))?;
+                } else {
+                    let doc = import_at_raw_ppi(raw_ppi, &file_name(path), &bytes)?;
+                    scratch.add_document(doc, Some(path.to_string()));
+                }
             }
             if !f(&mut scratch, &out)? {
                 let d = scratch.active().ok_or(EngineError::NoDocument)?;
@@ -236,6 +249,7 @@ fn process_outputs<'a>(
             }
             Ok(())
         })();
+        notices.extend(scratch.batch_open_notices.take().unwrap_or_default());
         match r {
             Ok(()) => {
                 written.record(&out, path);
@@ -249,7 +263,11 @@ fn process_outputs<'a>(
             }
         }
     }
-    json!({"files": files, "errors": errors})
+    let mut result = json!({"files":files,"errors":errors});
+    if !notices.is_empty() {
+        result["notices"] = json!(notices);
+    }
+    result
 }
 
 /// Structured naming determines the filename, not the encoded image format.
@@ -313,6 +331,11 @@ pub(crate) fn batch_action(list: &[crate::actions_cmds::Action], p: &Value) -> R
 /// Apply the selected file-error policy while retaining per-file results for direct callers.
 pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "file.automate.batch";
+    let quiet_profiles = match p.get("suppressWarnings") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(value)) => *value,
+        _ => return Err(EngineError::BadParams { cmd: cmd.into(), msg: "suppressWarnings must be a boolean".into() }),
+    };
     let override_open = match p.get("overrideOpen") {
         None | Some(Value::Null) => false,
         Some(Value::Bool(value)) => *value,
@@ -524,7 +547,7 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
         carried.set(scratch.actions.playback_steps);
         result
     };
-    let open = InputOpen { check_format: check_folder_format, from_action: override_open };
+    let open = InputOpen { check_format: check_folder_format, from_action: override_open, quiet_profiles };
     let r = match names {
         _ if save_and_close => process_outputs(s, inputs.iter().map(|input| (input.path.as_str(), input.path.clone())), save, None, stop_on_error, open, &run),
         Some(names) => {
@@ -534,6 +557,10 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     };
     if s.actions.playing > 0 {
         s.actions.playback_steps = carried.get();
+    }
+    // Nested Batch completion delivers its imports once to the enclosing input's diagnostics.
+    if let (Some(notices), Some(imports)) = (&mut s.batch_open_notices, r.get("notices").and_then(Value::as_array)) {
+        notices.extend(imports.iter().cloned());
     }
     Ok(r)
 }

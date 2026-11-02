@@ -22,6 +22,13 @@ pub(crate) fn batch_open_params(s: &Session, id: &str, params: &Value) -> Option
     Some(effective)
 }
 
+/// Keep import warnings and the applied color policy when only profile questions are suppressed.
+pub(crate) fn batch_open_notice(s: &mut Session, name: &str, warnings: &[String], color: &Value) {
+    if let Some(notices) = &mut s.batch_open_notices {
+        notices.push(json!({"file":name,"warnings":warnings,"color":color}));
+    }
+}
+
 /// Record provenance after a redirected native Open succeeds, including repeated Opens.
 pub(crate) fn remember_batch_open(s: &mut Session) {
     let id = s.active().map(|st| st.doc.id);
@@ -145,8 +152,13 @@ pub fn open_bytes_as(s: &mut Session, name: &str, bytes: &[u8], as_ext: Option<&
         Some(ext) => format!("{}.{}", stem(name), ext.trim_start_matches('.')),
         None => name.to_string(),
     };
-    let r = photocraft_io::import(&decode_name, bytes).map_err(|e| EngineError::Other(format!("{decode_name}: {e}")))?;
-    if s.batch_open.is_some() && r.preview_only {
+    let r = if s.batch_open_notices.is_some() {
+        photocraft_io::import_with_options(&decode_name, bytes, &crate::jobs::import_options(s.prefs()))
+    } else {
+        photocraft_io::import(&decode_name, bytes)
+    }
+    .map_err(|e| EngineError::Other(format!("{decode_name}: {e}")))?;
+    if (s.batch_open.is_some() || s.batch_open_notices.is_some()) && r.preview_only {
         return Err(EngineError::Other(format!("{name}: only an embedded preview could be read; Batch cannot process it as the source")));
     }
     let mut doc = r.document;
@@ -167,6 +179,7 @@ pub fn open_bytes_as(s: &mut Session, name: &str, bytes: &[u8], as_ext: Option<&
     if let Some(st) = s.active_mut() {
         st.source_read_only = r.source_read_only;
     }
+    batch_open_notice(s, name, &r.warnings, &color);
     // Import notes (e.g. how a camera raw was developed, or that only its preview opened).
     Ok(json!({"document": i, "color": color, "warnings": r.warnings}))
 }

@@ -294,8 +294,16 @@ are refused on ATN export until their wire representation is supported. This doe
 not claim parity for unrepresented Open options. Native Batch keeps automatic
 opening when overrideOpen is false or omitted.
 
+Suppress Color Profile Warnings applies a private snapshot of the caller's color
+and import settings to each scratch input without profile questions. Import
+warnings and the applied color-policy report remain in the Batch result's
+`notices`; file errors still follow the selected error policy. Caller settings
+are not changed. Defaults and recorded Open decoder options remain effective.
+This does not suppress fidelity warnings or enable Suppress File Open Options.
+Previous RAW settings and the complete RAW workflow still need a shared consumer.
+
 This maps supported text-path folder forms. Alias bytes, open-document sources,
-error logs and enabled dialog overrides remain preserved steps. Save and
+error logs and Suppress File Open Options remain preserved steps. Save and
 Close with unrepresented override combinations also remains preserved. For an
 admitted recorded Save As configuration, native preflight refuses unrepresented
 save routing: override requires a directly represented Save step,

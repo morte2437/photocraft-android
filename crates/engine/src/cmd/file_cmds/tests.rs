@@ -456,6 +456,59 @@ fn batch_override_open_nested_binding_and_save_close_preserve_sources() {
     assert!(s.batch_open.is_none());
 }
 
+/// Profile suppression uses caller settings without silencing import errors or changing the caller.
+#[test]
+fn batch_quiet_profile_open_uses_caller_policy_and_retains_diagnostics() {
+    let dir = tmp("batch-quiet-profile");
+    let source = png(&dir, "a.png", 3, 2, "#4488aa");
+    let mut fixture = Session::new();
+    fixture.execute("file.openAs", json!({"path":source})).unwrap();
+    fixture.execute("edit.assignProfile", json!({"profile":"display-p3"})).unwrap();
+    fixture.execute("file.saveAs", json!({"path":source})).unwrap();
+    let original = std::fs::read(&source).unwrap();
+    let bad = join(&dir, "b.png");
+    std::fs::write(&bad, b"not an image").unwrap();
+    let mut s = Session::new();
+    s.execute("edit.colorSettings", json!({"workingRgb":"srgb","policyRgb":"convert","askOnMismatch":true,"askOnMissing":true})).unwrap();
+    let prefs = serde_json::to_value(s.prefs()).unwrap();
+    let settings = s.color.settings.clone();
+    let policy = s.color.open_question(&doc(&fixture)).unwrap();
+    assert_eq!(policy["ask"], true);
+    let output = join(&dir, "out");
+    let result = s.execute("file.automate.batch", json!({"input":[source,bad],"output":output,"suppressWarnings":true,"stopOnError":true,"steps":[]})).unwrap();
+    assert_eq!(result["files"].as_array().unwrap().len(), 1, "{result}");
+    assert_eq!(result["errors"].as_array().unwrap().len(), 1, "{result}");
+    assert_eq!(result["notices"][0]["color"]["action"], "converted");
+    assert_eq!(result["notices"][0]["color"]["ask"], false);
+    let saved = photocraft_io::import("a.png", &std::fs::read(join(&output, "a.png")).unwrap()).unwrap().document;
+    let profile = photocraft_cms::Profile::parse(saved.icc_profile.as_ref().unwrap()).unwrap();
+    assert!(profile.same_colors(photocraft_cms::Builtin::Srgb.profile()));
+    // A script calling an action with a failing inner Batch still retains both import reports.
+    let inner = join(&dir, "inner");
+    s.actions.list.push(crate::actions_cmds::Action::new(
+        "Quiet inner",
+        vec![("file.automate.batch".into(), json!({"input":[source,bad],"output":inner,"suppressWarnings":true,"stopOnError":true,"steps":[]}))],
+    ));
+    let nested = s
+        .execute(
+            "file.automate.batch",
+            json!({"input":[source],"output":join(&dir,"nested-root"),"suppressWarnings":true,
+        "steps":[["file.scripts.browse",{"steps":[["actions.play",{"action":"Quiet inner"}]]}]]}),
+        )
+        .unwrap();
+    assert_eq!(nested["errors"].as_array().unwrap().len(), 1, "{nested}");
+    let notices = nested["notices"].as_array().unwrap();
+    assert_eq!(notices.len(), 2, "one outer and one inner import, no duplicate: {nested}");
+    assert!(notices.iter().all(|notice| notice["color"]["action"] == "converted" && notice["color"]["ask"] == false));
+    assert_eq!(std::fs::read(&source).unwrap(), original);
+    assert_eq!(s.color.settings, settings);
+    assert_eq!(serde_json::to_value(s.prefs()).unwrap(), prefs);
+    assert!(s.batch_open_notices.is_none());
+    let invalid = join(&dir, "invalid");
+    assert!(s.execute("file.automate.batch", json!({"input":[source],"output":invalid,"steps":[],"suppressWarnings":"true"})).is_err());
+    assert!(!std::path::Path::new(&invalid).exists());
+}
+
 fn tmp(name: &str) -> String {
     let d = std::env::temp_dir().join(format!("photocraft-file-cmds-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
@@ -613,6 +666,15 @@ fn revert_batch_and_stack_open_a_raw_at_the_raw_defaults_resolution() {
     assert!(r["errors"].as_array().unwrap().is_empty(), "{r}");
     let nested = photocraft_io::import("IMG_0003.psd", &std::fs::read(join(&nested, "IMG_0003.psd")).unwrap()).unwrap().document;
     assert_eq!(nested.resolution_dpi, 240.0, "nested Override Open keeps the caller's RAW resolution");
+    let quiet = join(&dir, "quiet-raw");
+    let r = s.execute("file.automate.batch", json!({"input":[path],"output":quiet,"format":"psd","suppressWarnings":true,"steps":[]})).unwrap();
+    assert!(r["errors"].as_array().unwrap().is_empty(), "{r}");
+    assert!(
+        r["notices"][0]["warnings"].as_array().unwrap().iter().any(|warning| warning.as_str().unwrap().contains(photocraft_io::raw::DEVELOPED_NOTE)),
+        "{r}"
+    );
+    let quiet = photocraft_io::import("IMG_0003.psd", &std::fs::read(join(&quiet, "IMG_0003.psd")).unwrap()).unwrap().document;
+    assert_eq!(quiet.resolution_dpi, 240.0);
     s.execute("file.scripts.loadFilesIntoStack", json!({"paths": [path]})).unwrap();
     assert_eq!(doc(&s).resolution_dpi, 240.0, "Load Files into Stack");
 }

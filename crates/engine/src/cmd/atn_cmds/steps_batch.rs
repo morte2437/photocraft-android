@@ -112,12 +112,15 @@ fn read(d: &Descriptor) -> Option<Value> {
     if !keys(d, &["null", "OvrO", "Fldr", "suppressWarnings", "suppressOpenOptions", "Usng", "T   ", "SvAn", "Ovrd", "fileNamingRules"]) {
         return None;
     }
-    // Dialog suppression and Alias payloads stay whole until their behavior is represented.
-    for key in ["suppressWarnings", "suppressOpenOptions"] {
-        if d.get(key).is_some_and(|v| v != &D::Boolean(false)) {
-            return None;
-        }
+    // RAW opening-dialog suppression and Alias payloads stay whole until represented.
+    if d.get("suppressOpenOptions").is_some_and(|v| v != &D::Boolean(false)) {
+        return None;
     }
+    let quiet_profiles = match d.get("suppressWarnings") {
+        None => None,
+        Some(D::Boolean(value)) => Some(*value),
+        _ => return None,
+    };
     let override_open = match d.get("OvrO") {
         None => None,
         Some(D::Boolean(value)) => Some(*value),
@@ -132,6 +135,9 @@ fn read(d: &Descriptor) -> Option<Value> {
         return None;
     }
     let mut p = json!({"input":path_text(d.get("null")?)?,"stopOnError":true,"includeNonImages":true});
+    if let Some(value) = quiet_profiles {
+        p["suppressWarnings"] = json!(value);
+    }
     if let Some(value) = override_open {
         p["overrideOpen"] = json!(value);
     }
@@ -194,6 +200,7 @@ pub(super) fn batch_to(_: &str, p: &Value) -> Option<Descriptor> {
             "includeSubfolders",
             "overrideSaveAs",
             "overrideOpen",
+            "suppressWarnings",
             "stopOnError",
             "includeNonImages",
             "namingComponents",
@@ -249,6 +256,9 @@ pub(super) fn batch_to(_: &str, p: &Value) -> Option<Descriptor> {
     let d = desc("Btch").with("null", path_value(input)).with("Fldr", D::Boolean(subfolders)).with("Usng", D::Reference(reference));
     let d = if save_and_close { d.with("SvAn", D::Boolean(true)) } else { d.with("T   ", path_value(jstr(p, "output").filter(|s| !s.is_empty())?)) };
     let mut d = d.with("Ovrd", D::Boolean(p.get("overrideSaveAs")?.as_bool()?));
+    if let Some(value) = p.get("suppressWarnings") {
+        d = d.with("suppressWarnings", D::Boolean(value.as_bool()?));
+    }
     if let Some(value) = p.get("overrideOpen") {
         d = d.with("OvrO", D::Boolean(value.as_bool()?));
     }
