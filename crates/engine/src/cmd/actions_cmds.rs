@@ -513,8 +513,16 @@ pub fn restore_recording(s: &mut Session, idx: usize, action: &str, from: usize)
 }
 
 /// Recorded child commands can report failure inside a successful response.
-/// Promote action or Batch failures so a recorded parent does not run later steps.
+/// Promote action, Batch or script failures so a recorded parent does not run later steps.
 pub fn nested_failure(id: &str, value: &Value) -> Option<String> {
+    if id == "file.scripts.browse" && value.get("ok") == Some(&Value::Bool(false)) {
+        let error = value
+            .get("results")
+            .and_then(Value::as_array)
+            .and_then(|results| results.iter().find_map(|result| result.get("error").and_then(Value::as_str)))
+            .unwrap_or("unknown error");
+        return Some(format!("script failed: {error}"));
+    }
     // Batch keeps per-file results for direct callers, but a failed recorded Batch step stops its parent.
     if id == "file.automate.batch" {
         let failure = value.get("errors")?.as_array()?.first()?;
