@@ -743,7 +743,10 @@ fn absolute_colorimetric_writes_aclr_and_rejects_unknown_intents() {
     let profile = || Descriptor::new("null").with("T   ", D::Text(UnicodeString::new_nul("sRGB IEC61966-2.1")));
     for input in ["AClr", "AbsC"] {
         let action = recorded(AtnEvent::name("convertToProfile"), profile().with("Inte", enm("Inte", input)));
-        assert_eq!(action.steps, vec![("edit.convertToProfile".into(), json!({"profile":"srgb","intent":"absolute"}))]);
+        assert_eq!(
+            action.steps,
+            vec![("edit.convertToProfile".into(), json!({"profile":"srgb","intent":"absolute","dither":false,"flatten":false,"rasterizePlaced":false}))]
+        );
         assert_eq!(*enum_value(saved(&action).descriptor.as_ref().unwrap(), "Inte", "Inte"), Id::new("AClr"));
     }
     for value in [enm("Inte", "futureIntent"), D::Integer(1)] {

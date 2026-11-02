@@ -17,7 +17,8 @@ use super::steps_image::{
 };
 use super::steps_layer::{
     STROKE, apply_comp_from, apply_comp_to, clear_from, clear_to, delete_from, delete_to, duplicate_from, duplicate_to, fill_from, fill_to, flip_from, flip_to,
-    move_from, move_to, play_from, play_to, rotate_from, rotate_to, select_from, select_to, stroke_to, visibility_from, visibility_to,
+    move_from, move_to, paste_effects_from, paste_effects_to, play_from, play_to, rotate_from, rotate_to, select_from, select_to, stroke_to, visibility_from,
+    visibility_to,
 };
 use super::steps_make::{locking_from, locking_to, make_from, make_to, set_from, set_to};
 use super::steps_other::{DE_INTERLACE, HSB_HSL, bare_from, bare_to, custom_from, custom_to, enums_from, enums_to};
@@ -756,7 +757,14 @@ pub(super) const EVENTS: &[Event] = &[
     clipping_event!("GrpL", "groupEvent", "Create Clipping Mask", "layer.createClippingMask"),
     ev!("", "ungroupLayersEvent", "Ungroup Layers", "layer.ungroupLayers", &[]),
     ev!("", "copyEffects", "Copy Layer Style", "layer.layerStyle.copyLayerStyle", &[]),
-    ev!("", "pasteEffects", "Paste Layer Style", "layer.layerStyle.pasteLayerStyle", &[]),
+    Event {
+        code: "",
+        name: "pasteEffects",
+        label: "Paste Layer Style",
+        ids: &["layer.layerStyle.pasteLayerStyle"],
+        from: paste_effects_from,
+        to: paste_effects_to,
+    },
     Event {
         code: "",
         name: "collapseAllGroupsEvent",

@@ -247,6 +247,9 @@ pub type ClipboardSetFn = Box<dyn FnMut(u32, u32, &[u8]) -> Result<(), String>>;
 /// `Err` means the contents could not be read and must not invalidate the internal copy.
 pub type ClipboardGetFn = Box<dyn FnMut() -> Result<Option<(u32, u32, Vec<u8>)>, String>>;
 
+/// Read original SVG markup for an explicit Paste As. A read error preserves the internal copy.
+pub type ClipboardGetSvgFn = Box<dyn FnMut() -> Result<Option<Vec<u8>>, String>>;
+
 /// Whether the last clipboard read found no way to reach the OS clipboard at all.
 pub type ClipboardUnreadableFn = Box<dyn Fn() -> bool>;
 
@@ -433,6 +436,8 @@ pub struct Services {
     /// OS clipboard images: copies go out, screenshots and images from other apps come in.
     pub clipboard_set_image: Option<ClipboardSetFn>,
     pub clipboard_get_image: Option<ClipboardGetFn>,
+    /// SVG text copied by another app, read only for an explicit pixels/path/shape paste.
+    pub clipboard_get_svg: Option<ClipboardGetSvgFn>,
     /// True when the last `clipboard_get_image` read had no clipboard to read, as in a Flatpak on
     /// Wayland (#5031), rather than a clipboard that holds no image. `None` where that can't happen.
     pub clipboard_unreadable: Option<ClipboardUnreadableFn>,

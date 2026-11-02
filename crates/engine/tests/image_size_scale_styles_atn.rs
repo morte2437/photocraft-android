@@ -5,7 +5,7 @@ use photocraft_doc::{Effect, Effects, FxCommon, FxPaint, LayerId, StrokeFx, Stro
 use photocraft_engine::{Session, actions_cmds::Action, atn_cmds};
 use photocraft_psd::{
     atn::{self, AtnAction, AtnEvent, AtnFile, AtnItem},
-    descriptor::{Descriptor, UnicodeString, Value as D},
+    descriptor::{Descriptor, Id, UnicodeString, Value as D},
 };
 use serde_json::{Value, json};
 
@@ -68,6 +68,7 @@ fn assert_size_and_style(s: &Session, id: LayerId, scale: bool) {
     assert_eq!(stroke.size, if scale { 10.0 } else { 20.0 });
 }
 
+/// Recorded true, false and omitted flags retain their meaning through save and playback.
 #[test]
 fn imported_style_scaling_survives_saved_bytes_and_playback() {
     for event in ["ImgS", "imageSize"] {
@@ -83,7 +84,8 @@ fn imported_style_scaling_survives_saved_bytes_and_playback() {
             assert_eq!(s.actions.list[0].steps, vec![("image.imageSize".into(), json!({"percent": 50, "scaleStyles": scale}))]);
             let saved = save(&mut s);
             let parsed = atn::parse(&saved).unwrap();
-            assert_eq!(parsed.actions[0].items[0].descriptor.as_ref().unwrap().get("scaleStyles"), Some(&D::Boolean(scale)));
+            // Only scaling needs the key: without it the step keeps style sizes.
+            assert_eq!(parsed.actions[0].items[0].descriptor.as_ref().unwrap().get("scaleStyles"), scale.then_some(&D::Boolean(true)));
             let imported = atn_cmds::import(&saved).unwrap();
             assert!(imported.unsupported.is_empty());
             assert_eq!(imported.actions[0].steps, s.actions.list[0].steps);
@@ -96,6 +98,7 @@ fn imported_style_scaling_survives_saved_bytes_and_playback() {
     }
 }
 
+/// Saving native calls writes their effective default instead of changing style scaling.
 #[test]
 fn native_default_is_written_explicitly_and_keeps_its_behavior() {
     for option in [None, Some(json!(false)), Some(json!(true)), Some(Value::Null), Some(json!(1)), Some(json!("false"))] {
@@ -108,7 +111,7 @@ fn native_default_is_written_explicitly_and_keeps_its_behavior() {
         let (bytes, skipped) = atn_cmds::export("Styles", &[&action], &[], false).unwrap();
         assert!(skipped.is_empty());
         let parsed = atn::parse(&bytes).unwrap();
-        assert_eq!(parsed.actions[0].items[0].descriptor.as_ref().unwrap().get("scaleStyles"), Some(&D::Boolean(scale)), "{params}");
+        assert_eq!(parsed.actions[0].items[0].descriptor.as_ref().unwrap().get("scaleStyles"), scale.then_some(&D::Boolean(true)), "{params}");
         let (mut direct, direct_id) = fixture();
         direct.execute("image.imageSize", params).unwrap();
         assert_size_and_style(&direct, direct_id, scale);
@@ -122,6 +125,7 @@ fn native_default_is_written_explicitly_and_keeps_its_behavior() {
     }
 }
 
+/// Unsupported flags and empty steps remain complete descriptors instead of becoming resizes.
 #[test]
 fn malformed_or_empty_steps_are_kept_without_becoming_resizes() {
     for event in ["ImgS", "imageSize"] {
@@ -146,5 +150,23 @@ fn malformed_or_empty_steps_are_kept_without_becoming_resizes() {
             assert_eq!(saved.actions[0].items[0].descriptor, original.actions[0].items[0].descriptor);
             assert_eq!(saved.actions[0].items[0].event, original.actions[0].items[0].event);
         }
+    }
+}
+
+/// A recorded Image Size step without `scaleStyles` (Fit Image records none) saves back identically.
+#[test]
+fn step_without_scale_styles_saves_back_identically() {
+    for event in ["ImgS", "imageSize"] {
+        let fit = Descriptor::new("null")
+            .with("Wdth", D::UnitFloat { unit: *b"#Pxl", value: 100.0 })
+            .with("Hght", D::UnitFloat { unit: *b"#Pxl", value: 78.0 })
+            .with("Rslt", D::UnitFloat { unit: *b"#Rsl", value: 72.0 })
+            .with("Intr", D::Enumerated { type_id: Id::new("Intp"), value: Id::new("Bcbc") });
+        let source = recorded(event, Some(fit));
+        let original = atn::parse(&source).unwrap();
+        let mut s = Session::new();
+        assert_eq!(load(&mut s, &source)["unsupported"], json!([]));
+        let saved = atn::parse(&save(&mut s)).unwrap();
+        assert_eq!(saved.actions[0].items[0].descriptor, original.actions[0].items[0].descriptor);
     }
 }

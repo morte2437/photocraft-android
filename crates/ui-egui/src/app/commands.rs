@@ -85,10 +85,26 @@ impl PhotocraftApp {
         let t0 = gpu_canvas::now_ms();
         // The OS clipboard is read only on an explicit paste, never in the background (privacy, CPU).
         if matches!(id, "edit.paste" | "edit.pasteSpecial.pasteInPlace" | "file.newFromClipboard") {
-            if !clip_read {
+            let paste_as = if id == "edit.paste" {
+                match params.get("as") {
+                    None => None,
+                    Some(value) => match value.as_str() {
+                        Some(mode @ ("pixels" | "path" | "shape")) => Some(mode),
+                        _ => return Err("`as` must be pixels, path or shape".into()),
+                    },
+                }
+            } else {
+                None
+            };
+            if let Some(mode) = paste_as {
+                let imported = self.import_os_svg_clipboard()?;
+                if mode == "pixels" && !imported && !clip_read {
+                    self.import_os_clipboard()?;
+                }
+            } else if !clip_read {
                 self.import_os_clipboard()?;
             }
-            if self.session.clipboard.is_none() && self.services.clipboard_get_image.is_some() {
+            if paste_as.is_none() && self.session.clipboard.is_none() && self.services.clipboard_get_image.is_some() {
                 if self.services.clipboard_unreadable.as_ref().is_some_and(|unreadable| unreadable()) {
                     // The clipboard may well hold an image that can't be reached: say why.
                     notices::clipboard_unreadable(self);

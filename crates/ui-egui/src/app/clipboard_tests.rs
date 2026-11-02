@@ -58,6 +58,128 @@ fn os_clipboard_honours_export_clipboard_preference() {
 
 type OsClip = Arc<Mutex<Option<(u32, u32, Vec<u8>)>>>;
 
+const CLIP_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="6"><path d="M1 1 C2 0 6 0 7 1 L7 5 L1 5 Z" fill="#e03020"/></svg>"##;
+
+#[test]
+fn svg_clipboard_paste_as_keeps_source_and_creates_the_requested_content() {
+    for mode in ["pixels", "path", "shape"] {
+        let services = Services { clipboard_get_svg: Some(Box::new(|| Ok(Some(CLIP_SVG.as_bytes().to_vec())))), ..Default::default() };
+        let mut app = PhotocraftApp::new(Session::new(), services);
+        app.run("file.new", json!({"width": 24, "height": 20})).unwrap();
+        let (layers, paths) = {
+            let doc = &app.session.active().unwrap().doc;
+            (doc.layers.len(), doc.paths.len())
+        };
+        app.run("edit.paste", json!({"as": mode})).unwrap();
+        let state = app.session.active().unwrap();
+        if mode == "path" {
+            assert_eq!(state.doc.paths.len(), paths + 1);
+            assert_eq!(state.doc.layers.len(), layers);
+        } else {
+            let content = &state.doc.layer(state.active_layer.unwrap()).unwrap().content;
+            assert!(match mode {
+                "pixels" => matches!(content, photocraft_doc::LayerContent::Raster(_)),
+                _ => matches!(content, photocraft_doc::LayerContent::Shape(_)),
+            });
+        }
+        let source = app.session.clipboard.as_ref().unwrap().svg.clone().unwrap();
+        assert_eq!(source.as_slice(), CLIP_SVG.as_bytes());
+        app.run("edit.undo", json!({})).unwrap();
+        let doc = &app.session.active().unwrap().doc;
+        assert_eq!((doc.layers.len(), doc.paths.len()), (layers, paths));
+        app.run("edit.redo", json!({})).unwrap();
+        assert!(Arc::ptr_eq(&source, app.session.clipboard.as_ref().unwrap().svg.as_ref().unwrap()));
+    }
+}
+
+#[test]
+fn svg_clipboard_errors_preserve_the_copy_and_empty_reads_invalidate_external_source() {
+    let response = Arc::new(Mutex::new(Ok(Some(CLIP_SVG.as_bytes().to_vec()))));
+    let read = response.clone();
+    let services = Services { clipboard_get_svg: Some(Box::new(move || read.lock().unwrap().clone())), ..Default::default() };
+    let mut app = PhotocraftApp::new(Session::new(), services);
+    app.run("file.new", json!({"width": 24, "height": 20})).unwrap();
+    app.run("edit.paste", json!({"as": "path"})).unwrap();
+    let before = app.session.active().unwrap().doc.clone();
+    let source = app.session.clipboard.as_ref().unwrap().svg.clone().unwrap();
+    for failure in [Err("clipboard is busy".into()), Ok(Some(b"<svg invalid".to_vec()))] {
+        *response.lock().unwrap() = failure;
+        assert!(app.run("edit.paste", json!({"as": "path"})).is_err());
+        assert!(app.ui.status_error);
+        assert_eq!(app.session.active().unwrap().doc, before);
+        assert!(Arc::ptr_eq(&source, app.session.clipboard.as_ref().unwrap().svg.as_ref().unwrap()));
+    }
+    let changed = CLIP_SVG.replace("<path", "<!-- new copy --><path");
+    *response.lock().unwrap() = Ok(Some(changed.as_bytes().to_vec()));
+    app.run("edit.paste", json!({"as": "path"})).unwrap();
+    assert_eq!(app.session.clipboard.as_ref().unwrap().svg.as_ref().unwrap().as_slice(), changed.as_bytes());
+    let before = app.session.active().unwrap().doc.clone();
+    *response.lock().unwrap() = Ok(None);
+    assert!(app.run("edit.paste", json!({"as": "path"})).is_err(), "missing vectors must not become a successful no-op");
+    assert_eq!(app.session.active().unwrap().doc, before);
+    assert!(app.session.clipboard.is_none());
+}
+
+#[test]
+fn explicit_pixel_paste_still_reads_raster_clipboards() {
+    let services = Services {
+        clipboard_get_svg: Some(Box::new(|| Ok(None))),
+        clipboard_get_image: Some(Box::new(|| Ok(Some((2, 1, vec![255; 8]))))),
+        ..Default::default()
+    };
+    let mut app = PhotocraftApp::new(Session::new(), services);
+    app.run("file.new", json!({"width": 24, "height": 20})).unwrap();
+    app.run("edit.paste", json!({"as": "pixels"})).unwrap();
+    let state = app.session.active().unwrap();
+    assert!(matches!(state.doc.layer(state.active_layer.unwrap()).unwrap().content, photocraft_doc::LayerContent::Raster(_)));
+    assert!(app.session.clipboard.as_ref().unwrap().svg.is_none());
+}
+
+#[test]
+fn newer_internal_copies_survive_an_unchanged_external_svg() {
+    const SOURCE: &str =
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="40" height="20" fill="#335577" opacity="0.5"/></svg>"##;
+    for params in [json!({}), json!({"as":"pixels"})] {
+        let image = OsClip::default();
+        let read = image.clone();
+        let services = Services {
+            clipboard_get_svg: Some(Box::new(|| Ok(Some(SOURCE.as_bytes().to_vec())))),
+            clipboard_get_image: Some(Box::new(move || Ok(read.lock().unwrap().clone()))),
+            ..Default::default()
+        };
+        let mut app = PhotocraftApp::new(Session::new(), services);
+        app.run("file.new", json!({"width":64,"height":64})).unwrap();
+        app.import_os_svg_clipboard().unwrap();
+        let clip = app.session.clipboard.as_ref().unwrap();
+        let b = clip.bounds;
+        let mut pixels = vec![[0; 4]; b.size().area() as usize];
+        clip.surface.read_rgba8_into(b, &mut pixels);
+        let bytes: Vec<_> = pixels.into_iter().flatten().collect();
+        let signature = bytes.iter().step_by(997).fold((u64::from(b.width()) << 32) | u64::from(b.height()), |sig, byte| sig.rotate_left(5) ^ u64::from(*byte));
+        assert_eq!(app.os_clip_sig, Some(signature), "match the image signature across all four RGBA components");
+        *image.lock().unwrap() = Some((b.width(), b.height(), bytes));
+        app.session.edit_prefs(|prefs| prefs.general.export_clipboard = false);
+        app.run("file.new", json!({"width":8,"height":6})).unwrap();
+        app.run("edit.fill", json!({"color":"#0000ff"})).unwrap();
+        app.run("edit.copy", json!({})).unwrap();
+        app.run("edit.paste", params).unwrap();
+        assert_eq!(app.session.clipboard.as_ref().unwrap().surface.rgba(0, 0), [0.0, 0.0, 1.0, 1.0]);
+        assert!(!app.clip_external, "the unchanged older SVG must not replace the newer internal copy");
+    }
+}
+
+#[test]
+fn action_vector_paste_reads_the_current_svg_source() {
+    let services = Services { clipboard_get_svg: Some(Box::new(|| Ok(Some(CLIP_SVG.as_bytes().to_vec())))), ..Default::default() };
+    let mut app = PhotocraftApp::new(Session::new(), services);
+    app.run("file.new", json!({"width": 24, "height": 20})).unwrap();
+    app.session.actions.list.push(photocraft_engine::actions_cmds::Action::new("SVG", vec![("edit.paste".into(), json!({"as": "shape"}))]));
+    let result = app.run("actions.play", json!({"action": "SVG"})).unwrap();
+    assert!(result.get("failed").is_none(), "{result}");
+    let state = app.session.active().unwrap();
+    assert!(matches!(state.doc.layer(state.active_layer.unwrap()).unwrap().content, photocraft_doc::LayerContent::Shape(_)));
+}
+
 #[test]
 fn failed_clipboard_reads_preserve_editable_contents_until_retry() {
     use std::sync::atomic::{AtomicBool, Ordering};

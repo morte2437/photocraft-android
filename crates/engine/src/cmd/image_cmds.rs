@@ -191,7 +191,7 @@ fn parse_resample(s: &str) -> Method {
 }
 
 /// The largest raster Image Size resamples to: the decoders' default allocation budget.
-const MAX_RESAMPLE_BYTES: u64 = if cfg!(target_pointer_width = "64") { 8 << 30 } else { 2 << 30 };
+pub(crate) const MAX_RESAMPLE_BYTES: u64 = if cfg!(target_pointer_width = "64") { 8 << 30 } else { 2 << 30 };
 
 /// Keep pixel defaults while rejecting an explicit unsupported dimension unit.
 fn size_units<'a>(p: &'a Value, cmd: &str, allowed: &[&str]) -> Result<&'a str> {

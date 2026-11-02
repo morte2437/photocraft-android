@@ -255,6 +255,9 @@ fn play_owned(app: &mut PhotocraftApp, params: &Value, suspended: Option<Value>)
         } else if actions_cmds::shell_view_command(id) {
             app.sync_views();
             app.run(id, p.clone())
+        } else if id == "edit.paste" && p.get("as").is_some() {
+            // An explicit vector paste needs the original OS source, not just an old pixel copy.
+            app.run(id, p.clone())
         } else {
             app.session.execute(id, p.clone()).map_err(|e| e.to_string())
         };
