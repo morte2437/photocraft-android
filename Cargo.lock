@@ -1389,6 +1389,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-pcraft-format"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=b8f7d93b00dfb8f172938f3d2d796ae62dcfe123#b8f7d93b00dfb8f172938f3d2d796ae62dcfe123"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "craft-print"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=c5a1cbfb5f9049f9270955caffb5bee5997aebf7#c5a1cbfb5f9049f9270955caffb5bee5997aebf7"
@@ -5199,6 +5209,7 @@ name = "photocraft-format"
 version = "0.19.0"
 dependencies = [
  "blake3",
+ "craft-pcraft-format",
  "crc32fast",
  "exacl",
  "flate2",
