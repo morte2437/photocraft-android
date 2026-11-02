@@ -773,10 +773,12 @@ fn refresh_spelling(app: &mut PhotocraftApp) {
     }
 }
 
-/// Opens Edit › Check Spelling (returns the misspellings).
+/// Opens Edit › Check Spelling (returns the misspellings). Opening it again while an action waits
+/// at a Check Spelling step keeps that action's token, so Done still continues it.
 pub fn open_spelling(app: &mut PhotocraftApp, all_layers: bool) -> Result<Value, String> {
     app.session.execute("edit.checkSpelling", json!({ "action": "list", "allLayers": all_layers })).map_err(|e| e.to_string())?;
-    app.ui.type_panels.spell = Some(SpellDialog { all_layers, ..Default::default() });
+    let resume = app.ui.type_panels.spell.as_ref().and_then(|d| d.resume);
+    app.ui.type_panels.spell = Some(SpellDialog { all_layers, resume, ..Default::default() });
     refresh_spelling(app);
     let d = app.ui.type_panels.spell.as_ref().map(|d| d.items.clone()).unwrap_or_default();
     Ok(json!({ "dialog": SPELLING, "misspellings": d }))

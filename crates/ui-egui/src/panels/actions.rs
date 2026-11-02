@@ -253,7 +253,12 @@ fn play_owned(app: &mut PhotocraftApp, params: &Value, suspended: Option<Value>)
             break;
         }
         // Check Spelling's dialog opens with Check All Layers as recorded; Done continues the action.
+        // While another action waits at the open dialog, this step fails and the waiting one keeps it.
         if action.dialogs.contains(&i) && !app.automation_input && id == "edit.checkSpelling" {
+            if app.ui.type_panels.spell.as_ref().is_some_and(|d| d.resume.is_some()) {
+                failed = Some(json!({"step": i, "id": id, "error": "Check Spelling is already open for another action"}));
+                break;
+            }
             if let Err(error) = crate::type_panels_ui::open_spelling(app, p.get("allLayers").and_then(Value::as_bool).unwrap_or(true)) {
                 failed = Some(json!({"step": i, "id": id, "error": error}));
                 break;
