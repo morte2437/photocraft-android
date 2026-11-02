@@ -905,7 +905,10 @@ pub(super) fn event_and_descriptor(id: &str, params: &Value) -> Option<(&'static
     {
         return None;
     }
-    if let Some(origin) = params.get("_atnEvent") {
+    // A string names the recorded event of a mask or merge step; an object is a Filter Gallery
+    // effect's own event, which `export_item` checks (`steps_gallery::recorded_event`).
+    let gallery_event = id.starts_with("filter.gallery.") && params.get("_atnEvent").is_some_and(Value::is_object);
+    if let Some(origin) = params.get("_atnEvent").filter(|_| !gallery_event) {
         let origin = origin.as_str()?;
         if !matches!((id, origin), ("layer.layerMask.delete", "RmvL") | ("layer.mergeLayers", "MrgL")) {
             return None;
