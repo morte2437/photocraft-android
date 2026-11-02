@@ -112,6 +112,44 @@ fn batch_case() -> Value {
         "__atnBatch":b64(&batch_descriptor("threeDigit").to_bytes())})
 }
 
+/// Save and Close replaces the folder path while retaining its recorded naming metadata.
+fn batch_save_and_close_case() -> Value {
+    let mut d = batch_descriptor("threeDigit");
+    d.items.retain(|(key, _)| !key.is("T   "));
+    let d = d.with("SvAn", D::Boolean(true));
+    let mut p = batch_case();
+    p.as_object_mut().unwrap().remove("output");
+    p.as_object_mut().unwrap().remove("flatOutput");
+    p["destination"] = json!("saveAndClose");
+    p["__atnBatch"] = json!(b64(&d.to_bytes()));
+    p
+}
+
+/// Destination changes retain exact descriptors and reject ambiguous output/override settings.
+#[test]
+fn batch_save_and_close_round_trips_without_folder_defaults() {
+    let p = batch_save_and_close_case();
+    let d = super::steps_batch::batch_to("file.automate.batch", &p).unwrap();
+    let bytes = photocraft_paint::tile::b64_decode(&set_of("S", vec![("Driver", vec![item("Btch", "Batch", Some(d.clone()))])])).unwrap();
+    let imported = import(&bytes).unwrap();
+    assert!(imported.unsupported.is_empty());
+    assert_eq!(imported.actions[0].steps[0].1, p);
+    let (out, skipped) = export("S", &[&imported.actions[0]], &[], false).unwrap();
+    assert!(skipped.is_empty());
+    assert_eq!(atn::parse(&out).unwrap().actions[0].items[0].descriptor, Some(d.clone()));
+    for bad in [d.clone().with("T   ", path_value("/other")), {
+        let mut bad = d.clone();
+        bad.items.retain(|(key, _)| !key.is("Ovrd"));
+        bad.with("Ovrd", D::Boolean(true))
+    }] {
+        let bytes = photocraft_paint::tile::b64_decode(&set_of("S", vec![("Driver", vec![item("Btch", "Batch", Some(bad.clone()))])])).unwrap();
+        let imported = import(&bytes).unwrap();
+        assert_eq!(imported.actions[0].steps[0].0, PHOTOSHOP_STEP);
+        let (out, _) = export("S", &[&imported.actions[0]], &[], false).unwrap();
+        assert_eq!(atn::parse(&out).unwrap().actions[0].items[0].descriptor, Some(bad));
+    }
+}
+
 /// Each documented component and portability flag must survive native conversion and save.
 #[test]
 fn batch_all_documented_components_and_compatibility_flags_round_trip() {
@@ -587,6 +625,7 @@ fn every_mapped_command_exports_and_imports_back() {
         ("image.calculations", json!({"source1":{"channel":{"color":"red"}},"source2":{"channel":{"color":"green"}},"blending":"add","scale":1,"offset":0})),
         ("image.adjustments.colorLookup", color_lookup_case()),
         ("file.automate.batch", batch_case()),
+        ("file.automate.batch", batch_save_and_close_case()),
         ("filter.other.custom", json!({"kernel":[0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0],"scale":1,"offset":0})),
         ("filter.render.fibers", json!({"variance":64,"strength":1,"seed":-1})),
         ("filter.blur.shapeBlur", json!({"radius":5,"shapeName":"Recorded Square","shapeId":"original-fixture-square","shapeOriginType":9})),

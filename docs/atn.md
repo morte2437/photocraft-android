@@ -265,10 +265,27 @@ Any reported file error fails a recorded Batch step, so its parent action does
 not run later steps. A direct scripting call still returns the collected file
 results successfully, as measured in the reference application.
 
+Save and Close support builds on
+[#10026 by @edaldridgePersonal](https://github.com/storytold/photocraft/pull/10026)
+(revision b96be5300cfa7308f832362fe46295af6895cf91). Recorded SvAn true writes each
+successful result to the same source path and format. Existing Save snapshots
+remain usable after a recorded Close; a failed save leaves that source intact.
+Folder remains the native default. Naming fields affect Folder output only.
+Save and Close keeps TIFF layers by default; explicit tiffLayers false is
+refused when it would lose layer data. TIFF color modes the writer cannot
+preserve are refused. Existing Folder save defaults are unchanged.
+
+Save and Close refuses format conversion, sources already open in the caller,
+and a result from a different document. An input must have an encoder for its
+exact extension; import-only/unknown/extensionless inputs require Save As and
+fail instead of producing guessed sibling files. Caller documents and editing
+state stay unchanged.
+
 This maps supported text-path folder forms. Alias bytes, open-document sources,
-Save and Close, error logs and enabled Open/dialog overrides remain preserved
-steps. For an admitted recorded Save As configuration, native preflight refuses
-unrepresented save routing: override requires a directly represented Save step,
+error logs and enabled Open/dialog overrides remain preserved steps. Save and
+Close with unrepresented override combinations also remains preserved. For an
+admitted recorded Save As configuration, native preflight refuses unrepresented
+save routing: override requires a directly represented Save step,
 and an action with Save steps cannot follow their original destinations without
 override. Unsupported filename rewrites are refused, not guessed. These limits
 remain open under #10705; this is not full Batch parity.

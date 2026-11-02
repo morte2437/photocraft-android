@@ -175,6 +175,139 @@ fn batch_folder_input_controls(s: &mut Session, dir: &str, input: &str, first: &
     }
 }
 
+/// In-place Batch retains caller state and commits only successful sources, including a saved Close snapshot.
+#[test]
+fn batch_save_and_close_preserves_caller_and_failed_sources() {
+    let dir = tmp("batch-save-close");
+    let inputs: Vec<String> = ["a.png", "b.png", "c.png"].iter().map(|name| png(&dir, name, 3, 2, "#ff0000")).collect();
+    let originals: Vec<Vec<u8>> = inputs.iter().map(|path| std::fs::read(path).unwrap()).collect();
+    let caller_dir = join(&dir, "caller");
+    std::fs::create_dir_all(&caller_dir).unwrap();
+    let caller_path = png(&caller_dir, "caller.png", 7, 9, "#4488aa");
+    let mut s = Session::new();
+    open_bytes_as(&mut s, "caller.png", &std::fs::read(&caller_path).unwrap(), None, Some(caller_path)).unwrap();
+    s.execute("select.all", json!({})).unwrap();
+    let caller_state = |s: &Session| {
+        let docs: Vec<Value> = s
+            .documents()
+            .iter()
+            .map(|st| {
+                json!({
+                    "id":st.doc.id,"path":st.path,"revision":st.revision,"saved":st.saved_revision,
+                    "activeLayer":st.active_layer,"selected":st.selected_layers,"channels":format!("{:?}",st.channel_view),
+                    "history":st.history.past_len(),"undo":st.history.undo_label(),"redo":st.history.can_redo(),
+                    "bytes":photocraft_format::save_to_bytes(&st.doc,&Default::default()).unwrap()
+                })
+            })
+            .collect();
+        json!({"active":s.active_index(),"generation":s.active_generation(),"docs":docs})
+    };
+    let before = caller_state(&s);
+    let mut child = crate::actions_cmds::Action::new(
+        "Child",
+        vec![("image.adjustments.invert".into(), json!({})), ("file.saveAs".into(), json!({})), ("file.close".into(), json!({}))],
+    );
+    child.set = Some("S".into());
+    s.actions.list.push(child);
+    let params = json!({"input":dir,"destination":"saveAndClose","action":"Child","set":"S",
+        "includeSubfolders":false,"overrideSaveAs":false,"stopOnError":true,"includeNonImages":true});
+    let driver = crate::actions_cmds::Action::new("Driver", vec![("file.automate.batch".into(), params)]);
+    let (bytes, skipped) = crate::atn_cmds::export("S", &[&driver], &[], false).unwrap();
+    assert!(skipped.is_empty());
+    s.actions.list.extend(crate::atn_cmds::import(&bytes).unwrap().actions);
+    let result = s.execute("actions.play", json!({"action":"Driver"})).unwrap();
+    assert_eq!(result["ran"], 1, "{result}");
+    assert!(result.get("failed").is_none(), "{result}");
+    for (path, original) in inputs.iter().zip(&originals) {
+        assert_ne!(std::fs::read(path).unwrap(), *original);
+        let loaded = photocraft_io::import("saved.png", &std::fs::read(path).unwrap()).unwrap().document;
+        assert_eq!(photocraft_compose::render(&loaded, Rect::new(1, 0, 2, 1)).px[0], [0.0, 1.0, 1.0, 1.0]);
+    }
+    assert_eq!(caller_state(&s), before);
+
+    /// Arm the existing save failpoint at the second file's last nonallocating action step.
+    fn fail_second_save(id: &str, _: &Value) -> Result<()> {
+        static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        if id == "prefs.get" && CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+            crate::allocation::fail_next_for_test();
+        }
+        Ok(())
+    }
+    let original: Vec<Vec<u8>> = inputs.iter().map(|path| std::fs::read(path).unwrap()).collect();
+    s.authorize = Some(fail_second_save);
+    let result = s
+        .execute(
+            "file.automate.batch",
+            json!({"input":inputs,"destination":"saveAndClose","stopOnError":true,
+        "steps":[["image.adjustments.invert",{}],["prefs.get",{"path":"interface.uiScale"}]]}),
+        )
+        .unwrap();
+    s.authorize = None;
+    assert_eq!(result["files"], json!([inputs[0]]), "{result}");
+    assert_eq!(result["errors"][0]["file"], inputs[1]);
+    assert!(result["errors"][0]["error"].as_str().unwrap().contains("not enough memory for saving document"), "{result}");
+    assert_ne!(std::fs::read(&inputs[0]).unwrap(), original[0]);
+    assert_eq!(std::fs::read(&inputs[1]).unwrap(), original[1]);
+    assert_eq!(std::fs::read(&inputs[2]).unwrap(), original[2]);
+    assert_eq!(caller_state(&s), before);
+
+    let source = std::fs::read(&inputs[0]).unwrap();
+    open_bytes_as(&mut s, "a.png", &source, None, Some(inputs[0].clone())).unwrap();
+    let open_before = caller_state(&s);
+    assert!(s.execute("file.automate.batch", json!({"input":[inputs[0]],"destination":"saveAndClose","steps":[]})).is_err());
+    assert_eq!(caller_state(&s), open_before);
+    assert_eq!(std::fs::read(&inputs[0]).unwrap(), source);
+    s.close(s.documents().len() - 1);
+    let before = caller_state(&s);
+    let result = s
+        .execute(
+            "file.automate.batch",
+            json!({"input":[inputs[0]],"destination":"saveAndClose","stopOnError":true,
+        "steps":[["file.new",{"width":2,"height":2}]]}),
+        )
+        .unwrap();
+    assert!(result["files"].as_array().unwrap().is_empty(), "{result}");
+    assert!(result["errors"][0]["error"].as_str().unwrap().contains("original source document"), "{result}");
+    assert_eq!(std::fs::read(&inputs[0]).unwrap(), source);
+    assert_eq!(caller_state(&s), before);
+    assert!(s.execute("file.automate.batch", json!({"input":[inputs[0]],"destination":"saveAndClose","format":"jpg","steps":[]})).is_err());
+    assert_eq!(std::fs::read(&inputs[0]).unwrap(), source);
+    assert_eq!(caller_state(&s), before);
+}
+
+/// In-place TIFF keeps layers by default; explicit flattening is allowed only when it loses no layer data.
+#[test]
+fn batch_save_and_close_keeps_tiff_layers() {
+    let dir = tmp("batch-save-close-tiff");
+    let path = join(&dir, "layered.tif");
+    let mut source = session(3, 2, 8);
+    source.execute("layer.new.layer", json!({"name":"Overlay"})).unwrap();
+    let names: Vec<_> = doc(&source).layers.iter().map(|layer| layer.name.clone()).collect();
+    save_doc(doc(&source), &path, super::save::SaveOpts { tiff_layers: true, ..Default::default() }).unwrap();
+    let mut s = Session::new();
+    let result = s.execute("file.automate.batch", json!({"input":[path],"destination":"saveAndClose","steps":[]})).unwrap();
+    assert!(result["errors"].as_array().unwrap().is_empty(), "{result}");
+    let bytes = std::fs::read(&path).unwrap();
+    assert!(photocraft_codecs::tiff_photoshop_tags(&bytes).1.is_some());
+    let back = photocraft_io::import("layered.tif", &bytes).unwrap().document;
+    assert_eq!(back.layers.iter().map(|layer| layer.name.clone()).collect::<Vec<_>>(), names);
+    let result = s.execute("file.automate.batch", json!({"input":[path],"destination":"saveAndClose","tiffLayers":false,"steps":[]})).unwrap();
+    assert!(result["files"].as_array().unwrap().is_empty(), "{result}");
+    assert!(result["errors"][0]["error"].as_str().unwrap().contains("TIFF layer data"), "{result}");
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+
+    // Existing Folder defaults still write a flat copy; that flat source may explicitly keep layers off.
+    let copies = join(&dir, "copies");
+    let result = s.execute("file.automate.batch", json!({"input":[path],"output":copies,"steps":[]})).unwrap();
+    assert!(result["errors"].as_array().unwrap().is_empty(), "{result}");
+    let flat = result["files"][0].as_str().unwrap();
+    let flat_bytes = std::fs::read(flat).unwrap();
+    assert!(photocraft_codecs::tiff_photoshop_tags(&flat_bytes).1.is_none());
+    let result = s.execute("file.automate.batch", json!({"input":[flat],"destination":"saveAndClose","tiffLayers":false,"steps":[]})).unwrap();
+    assert!(result["errors"].as_array().unwrap().is_empty(), "{result}");
+    assert_eq!(result["files"], json!([flat]));
+}
+
 fn tmp(name: &str) -> String {
     let d = std::env::temp_dir().join(format!("photocraft-file-cmds-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);

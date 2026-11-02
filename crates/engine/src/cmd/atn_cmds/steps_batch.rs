@@ -109,7 +109,7 @@ fn naming_to(p: &Value) -> Option<Descriptor> {
 
 /// Admit supported folder settings while leaving unrepresented input and dialog modes as whole steps.
 fn read(d: &Descriptor) -> Option<Value> {
-    if !keys(d, &["null", "OvrO", "Fldr", "suppressWarnings", "suppressOpenOptions", "Usng", "T   ", "Ovrd", "fileNamingRules"]) {
+    if !keys(d, &["null", "OvrO", "Fldr", "suppressWarnings", "suppressOpenOptions", "Usng", "T   ", "SvAn", "Ovrd", "fileNamingRules"]) {
         return None;
     }
     // Enabled overrides and Alias payloads stay whole until their behavior is represented.
@@ -118,7 +118,21 @@ fn read(d: &Descriptor) -> Option<Value> {
             return None;
         }
     }
-    let mut p = json!({"input":path_text(d.get("null")?)?,"output":path_text(d.get("T   ")?)?,"flatOutput":true,"stopOnError":true,"includeNonImages":true});
+    let save_and_close = match d.get("SvAn") {
+        None | Some(D::Boolean(false)) => false,
+        Some(D::Boolean(true)) => true,
+        _ => return None,
+    };
+    if save_and_close && d.get("T   ").is_some() {
+        return None;
+    }
+    let mut p = json!({"input":path_text(d.get("null")?)?,"stopOnError":true,"includeNonImages":true});
+    if save_and_close {
+        p["destination"] = json!("saveAndClose");
+    } else {
+        p["output"] = json!(path_text(d.get("T   ")?)?);
+        p["flatOutput"] = json!(true);
+    }
     let D::Reference(items) = d.get("Usng")? else { return None };
     match items.as_slice() {
         [ReferenceItem::Name { class: action, name }, ReferenceItem::Name { class: set, name: set_name }]
@@ -138,9 +152,13 @@ fn read(d: &Descriptor) -> Option<Value> {
         };
         p[native] = json!(value);
     }
+    if save_and_close && p["overrideSaveAs"] == Value::Bool(true) {
+        return None;
+    }
     match d.get("fileNamingRules") {
         Some(D::Descriptor(rules)) => p.as_object_mut()?.extend(naming_from(rules)?.as_object()?.clone()),
-        None => p["namingComponents"] = json!([{"component":"name"},{"component":"extension"}]),
+        None if !save_and_close => p["namingComponents"] = json!([{"component":"name"},{"component":"extension"}]),
+        None => {}
         _ => return None,
     }
     Some(p)
@@ -161,6 +179,7 @@ pub(super) fn batch_to(_: &str, p: &Value) -> Option<Descriptor> {
         ![
             "input",
             "output",
+            "destination",
             "action",
             "set",
             "flatOutput",
@@ -190,27 +209,41 @@ pub(super) fn batch_to(_: &str, p: &Value) -> Option<Descriptor> {
             return Some(d);
         }
     }
+    let save_and_close = match p.get("destination") {
+        None | Some(Value::Null) => false,
+        Some(Value::String(value)) if value == "folder" => false,
+        Some(Value::String(value)) if value == "saveAndClose" => true,
+        _ => return None,
+    };
     let subfolders = p.get("includeSubfolders").map(Value::as_bool).unwrap_or(Some(false))?;
-    if subfolders && p.get("flatOutput") != Some(&Value::Bool(true)) {
-        return None;
-    }
-    if p.get("flatOutput").is_some_and(|v| v != &Value::Bool(true)) {
-        return None;
+    if save_and_close {
+        if p.get("output").is_some_and(|v| !v.is_null())
+            || p.get("flatOutput").is_some_and(|v| !v.is_null())
+            || p.get("overrideSaveAs") == Some(&Value::Bool(true))
+        {
+            return None;
+        }
+    } else {
+        if subfolders && p.get("flatOutput") != Some(&Value::Bool(true)) {
+            return None;
+        }
+        if p.get("flatOutput").is_some_and(|v| v != &Value::Bool(true)) {
+            return None;
+        }
     }
     let input = jstr(p, "input").filter(|s| !s.is_empty())?;
-    let output = jstr(p, "output").filter(|s| !s.is_empty())?;
     let action = jstr(p, "action").filter(|s| !s.is_empty())?;
     let mut reference = vec![ReferenceItem::Name { class: class("Actn"), name: UnicodeString::new_nul(action) }];
     if let Some(set) = p.get("set") {
         reference.push(ReferenceItem::Name { class: class("ASet"), name: UnicodeString::new_nul(set.as_str()?) });
     }
-    Some(
-        desc("Btch")
-            .with("null", path_value(input))
-            .with("Fldr", D::Boolean(subfolders))
-            .with("Usng", D::Reference(reference))
-            .with("T   ", path_value(output))
-            .with("Ovrd", D::Boolean(p.get("overrideSaveAs")?.as_bool()?))
-            .with("fileNamingRules", D::Descriptor(naming_to(p)?)),
-    )
+    let d = desc("Btch").with("null", path_value(input)).with("Fldr", D::Boolean(subfolders)).with("Usng", D::Reference(reference));
+    let d = if save_and_close { d.with("SvAn", D::Boolean(true)) } else { d.with("T   ", path_value(jstr(p, "output").filter(|s| !s.is_empty())?)) };
+    let mut d = d.with("Ovrd", D::Boolean(p.get("overrideSaveAs")?.as_bool()?));
+    if p.get("namingComponents").is_some() {
+        d = d.with("fileNamingRules", D::Descriptor(naming_to(p)?));
+    } else if !save_and_close || ["startingSerial", "compatibility"].iter().any(|key| p.get(key).is_some()) {
+        return None;
+    }
+    Some(d)
 }

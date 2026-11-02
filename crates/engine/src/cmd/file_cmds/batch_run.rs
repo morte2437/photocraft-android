@@ -302,6 +302,30 @@ pub(crate) fn batch_action(list: &[crate::actions_cmds::Action], p: &Value) -> R
 /// Apply the selected file-error policy while retaining per-file results for direct callers.
 pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "file.automate.batch";
+    // Save and Close destination adapted from #10026 (@edaldridgePersonal, b96be5300cfa).
+    let save_and_close = match p.get("destination") {
+        None | Some(Value::Null) => false,
+        Some(Value::String(value)) if value == "folder" => false,
+        Some(Value::String(value)) if value == "saveAndClose" => true,
+        _ => return Err(EngineError::BadParams { cmd: cmd.into(), msg: "destination must be folder or saveAndClose".into() }),
+    };
+    let save_close_tiff_layers = if save_and_close {
+        match p.get("tiffLayers") {
+            None | Some(Value::Null) => true,
+            Some(Value::Bool(value)) => *value,
+            _ => return Err(EngineError::BadParams { cmd: cmd.into(), msg: "tiffLayers must be a boolean".into() }),
+        }
+    } else {
+        false
+    };
+    if save_and_close {
+        if p.get("output").is_some_and(|v| !v.is_null()) {
+            return Err(EngineError::BadParams { cmd: cmd.into(), msg: "Save and Close writes each source; omit output".into() });
+        }
+        if p.get("format").is_some_and(|v| !v.is_null() && v.as_str() != Some("same")) {
+            return Err(EngineError::BadParams { cmd: cmd.into(), msg: "Save and Close requires the source format (same)".into() });
+        }
+    }
     let include_non_images = match p.get("includeNonImages") {
         None | Some(Value::Null) => false,
         Some(Value::Bool(value)) => *value,
@@ -344,7 +368,10 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(value) = p.get("overrideSaveAs").filter(|v| !v.is_null()) {
         let override_save = value.as_bool().ok_or_else(|| EngineError::BadParams { cmd: cmd.into(), msg: "overrideSaveAs must be a boolean".into() })?;
         let has_save = steps.iter().any(|(id, _)| batch_save_point(id));
-        if override_save != has_save {
+        if save_and_close && override_save {
+            return Err(EngineError::BadParams { cmd: cmd.into(), msg: "Save and Close does not represent Override Save As".into() });
+        }
+        if !save_and_close && override_save != has_save {
             return Err(EngineError::BadParams {
                 cmd: cmd.into(),
                 msg: if override_save {
@@ -358,8 +385,13 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some((id, _)) = steps.iter().find(|(id, _)| !batch_save_point(id) && crate::commands::find(id).is_none()) {
         return Err(EngineError::BadParams { cmd: cmd.into(), msg: format!("unknown command `{id}` in the action") });
     }
-    let output = str_param(p, "output", cmd)?.to_string();
+    let output = if save_and_close { String::new() } else { str_param(p, "output", cmd)?.to_string() };
     let inputs = collect_inputs(p, cmd, &output, include_non_images)?;
+    if save_and_close
+        && inputs.iter().any(|input| s.documents().iter().any(|doc| doc.path.as_deref().is_some_and(|path| super::paths::same_file(&input.path, path))))
+    {
+        return Err(EngineError::BadParams { cmd: cmd.into(), msg: "Save and Close cannot overwrite a source already open in this session".into() });
+    }
     let check_folder_format = include_non_images && p.get("input").or_else(|| p.get("files")).is_some_and(Value::is_string);
     let format = p.get("format").and_then(Value::as_str).unwrap_or("same").to_string();
     // A batch inside a played action charges its inputs × steps (at least one each: an input is read,
@@ -377,16 +409,28 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     let mut playback_stack = s.actions.playback_stack.clone();
     playback_stack.extend(called_name);
     let actions = crate::actions_cmds::ActionState { list, playing: s.actions.playing, playback_stack, playback_steps, ..Default::default() };
-    let names = batch_naming::plan(&inputs, &output, &format, p)?;
-    let save = SaveOpts::from_params(s, p, cmd)?;
+    let names = if save_and_close { None } else { batch_naming::plan(&inputs, &output, &format, p)? };
+    let mut save = SaveOpts::from_params(s, p, cmd)?;
+    if save_and_close {
+        save.tiff_layers = save_close_tiff_layers;
+    }
     let authorize = s.authorize;
     // Each input runs in its own scratch session, so what the played steps spend is carried from
     // one input to the next (failed or not) and back to this session, not restarted per input.
     let carried = std::cell::Cell::new(playback_steps);
     let carried = &carried;
-    let structured = p.get("namingComponents").is_some_and(|v| !v.is_null());
+    let structured = !save_and_close && p.get("namingComponents").is_some_and(|v| !v.is_null());
     let run_format = structured.then(|| format.clone());
     let run = move |scratch: &mut Session, out: &str| {
+        let source_id = scratch.active().ok_or(EngineError::NoDocument)?.doc.id;
+        if save_and_close {
+            let encodable = extension(out).is_some_and(|ext| {
+                matches!(ext.as_str(), "psd" | "psb" | "pcraft" | "ora") || photocraft_codecs::from_extension(&ext).is_some_and(|format| format.caps().write)
+            });
+            if !encodable {
+                return Err(EngineError::Other(format!("Save and Close needs Save As for this source format: {out}")));
+            }
+        }
         let content_ext = run_format.as_deref().map(|format| {
             if format == "same" {
                 same_format(scratch.active().and_then(|d| d.path.as_deref()).unwrap_or("input.png"))
@@ -394,6 +438,29 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
                 format.trim_start_matches('.').to_ascii_lowercase()
             }
         });
+        // Check the actual result, including a saved snapshot after Close, before either write path.
+        let validate_result = |doc: &Document| -> Result<()> {
+            if !save_and_close {
+                return Ok(());
+            }
+            if doc.id != source_id {
+                return Err(EngineError::Other("Save and Close needs the original source document or its recorded Save snapshot".into()));
+            }
+            let tiff = extension(out).and_then(|ext| photocraft_codecs::from_extension(&ext)) == Some(photocraft_codecs::Format::Tiff);
+            if tiff {
+                if !matches!(
+                    doc.pixel_format().mode,
+                    photocraft_color::ColorMode::Rgb | photocraft_color::ColorMode::Grayscale | photocraft_color::ColorMode::Cmyk
+                ) || doc.mode == photocraft_color::ColorMode::Multichannel
+                {
+                    return Err(EngineError::Other("Save and Close cannot preserve this TIFF color mode".into()));
+                }
+                if !save.tiff_layers && super::save::tiff_would_write_layers(doc) {
+                    return Err(EngineError::Other("Save and Close would flatten TIFF layer data; keep tiffLayers enabled".into()));
+                }
+            }
+            Ok(())
+        };
         scratch.authorize = authorize;
         scratch.actions = actions.clone();
         scratch.actions.playback_steps = carried.get();
@@ -417,16 +484,25 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
             // document left active, it is written as the save found it.
             match saved {
                 Some(doc) if scratch.active().is_none_or(|d| d.doc.id != doc.id) => {
+                    validate_result(&doc)?;
                     save_output(&doc, out, save, content_ext.as_deref())?;
                     Ok(true)
                 }
-                _ => Ok(false),
+                _ => {
+                    if save_and_close {
+                        validate_result(&scratch.active().ok_or(EngineError::NoDocument)?.doc)?;
+                    }
+                    Ok(false)
+                }
             }
         })();
         carried.set(scratch.actions.playback_steps);
         result
     };
     let r = match names {
+        _ if save_and_close => {
+            process_outputs(s, inputs.iter().map(|input| (input.path.as_str(), input.path.clone())), save, None, stop_on_error, check_folder_format, &run)
+        }
         Some(names) => process_outputs(
             s,
             inputs.iter().map(|i| i.path.as_str()).zip(names),
