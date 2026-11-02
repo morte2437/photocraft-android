@@ -151,7 +151,41 @@ fn selection_actions_keep_the_active_layer_as_their_source() {
     assert_ne!(replay_type, type_id);
     let played = s.execute("actions.play", json!({"action": "Mask text"})).unwrap();
     assert!(played.get("failed").is_none(), "{played}");
+    assert!(s.active().unwrap().doc.selection.as_ref().is_some_and(|mask| !mask.content_bounds().is_empty()), "replay selects the glyphs");
     assert!(s.active().unwrap().doc.layer(LayerId(replay_type)).is_none(), "replay removed the named source type layer");
+}
+
+#[test]
+fn named_nonactive_smart_layer_passes_admission_and_converts_to_layers() {
+    let mut s = session();
+    s.execute("type.create", json!({"x": 2, "y": 20, "text": "I", "size": 12})).unwrap();
+    let smart = s.execute("layer.smartObjects.convertToSmartObject", json!({})).unwrap()["layer"].as_u64().unwrap();
+    let name = s.active().unwrap().doc.layer(LayerId(smart)).unwrap().name.clone();
+    let top = new_layer(&mut s, "Top");
+    s.execute("layer.smartObjects.convertToLayers", json!({"layer": name})).unwrap();
+    assert!(s.active().unwrap().doc.layer(LayerId(smart)).is_none());
+    assert!(s.active().unwrap().doc.layer(LayerId(top)).is_some());
+}
+
+#[test]
+fn named_nonactive_layer_is_the_one_converted_to_smart() {
+    let mut s = session();
+    let target = s.execute("type.create", json!({"x": 2, "y": 20, "text": "I", "size": 12})).unwrap()["layer"].as_u64().unwrap();
+    let name = s.active().unwrap().doc.layer(LayerId(target)).unwrap().name.clone();
+    new_layer(&mut s, "Top");
+    s.execute("actions.record", json!({"name": "Convert source"})).unwrap();
+    s.execute("layer.smartObjects.convertToSmartObject", json!({"layer": target})).unwrap();
+    s.execute("actions.stop", json!({})).unwrap();
+    let steps = s.execute("actions.get", json!({"action": "Convert source"})).unwrap()["steps"].clone();
+    assert_eq!(steps[0][1]["layer"], name, "the journal names the explicit source");
+
+    s.execute("file.new", json!({"width": 32, "height": 32, "background": "white"})).unwrap();
+    let replay_target = s.execute("type.create", json!({"x": 2, "y": 20, "text": "I", "size": 12})).unwrap()["layer"].as_u64().unwrap();
+    let top = new_layer(&mut s, "Top");
+    let played = s.execute("actions.play", json!({"action": "Convert source"})).unwrap();
+    assert!(played.get("failed").is_none(), "{played}");
+    assert!(s.active().unwrap().doc.layer(LayerId(replay_target)).is_none(), "replay removes the named source");
+    assert!(s.active().unwrap().doc.layer(LayerId(top)).is_some(), "replay keeps the selected top layer");
 }
 
 #[test]

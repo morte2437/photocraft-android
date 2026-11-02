@@ -79,14 +79,14 @@ fn accepted(s: &Session, p: &Value) -> HashSet<String> {
     set
 }
 
-fn layers_param(s: &Session, p: &Value) -> Vec<LayerId> {
-    let Some(st) = s.active() else { return Vec::new() };
+fn layers_param(s: &Session, p: &Value) -> Result<Vec<LayerId>> {
+    let st = s.active().ok_or(EngineError::NoDocument)?;
     let all = type_layers(&st.doc);
     if p.get("allLayers").and_then(Value::as_bool) == Some(false) || p.get("layer").is_some() {
-        let active = layer_param(s, p).ok();
-        all.into_iter().filter(|id| Some(*id) == active).collect()
+        let active = layer_param(s, p)?;
+        Ok(all.into_iter().filter(|id| *id == active).collect())
     } else {
-        all
+        Ok(all)
     }
 }
 
@@ -96,7 +96,7 @@ fn list(s: &Session, p: &Value) -> Result<Value> {
     let ok = accepted(s, p);
     let max = p.get("suggestions").and_then(Value::as_u64).unwrap_or(5) as usize;
     let mut out = Vec::new();
-    for id in layers_param(s, p) {
+    for id in layers_param(s, p)? {
         let Some(t) = text(&st.doc, id) else { continue };
         let found = dict.misspellings(t, &ok);
         // Convert every start/end byte offset to a character offset in one pass over the
@@ -147,7 +147,7 @@ fn change_all(s: &mut Session, p: &Value) -> Result<Value> {
     let word = p.get("word").and_then(Value::as_str).filter(|w| !w.is_empty()).ok_or_else(|| bad(cmd, "`changeAll` needs `word`"))?.to_string();
     let to = p.get("replace").and_then(Value::as_str).ok_or_else(|| bad(cmd, "`changeAll` needs `replace`"))?.to_string();
     let doc = s.active().ok_or(EngineError::NoDocument)?.doc.clone();
-    let plan: Vec<(LayerId, Vec<(usize, usize)>)> = layers_param(s, p)
+    let plan: Vec<(LayerId, Vec<(usize, usize)>)> = layers_param(s, p)?
         .into_iter()
         .filter_map(|id| {
             let t = text(&doc, id)?;
@@ -329,6 +329,15 @@ mod tests {
         let played = s.execute("actions.play", json!({"action": "Fix spelling"})).unwrap();
         assert!(played.get("failed").is_none(), "{played}");
         assert_eq!(text_of(&s, id), "The");
+    }
+
+    #[test]
+    fn missing_named_spelling_layer_is_an_error_for_list_and_change_all() {
+        let (mut s, _) = session("Teh");
+        for action in ["list", "changeAll"] {
+            let result = s.execute("edit.checkSpelling", json!({"action": action, "layer": "Removed type", "word": "Teh", "replace": "The"}));
+            assert!(result.is_err(), "{action} silently accepted a missing named layer: {result:?}");
+        }
     }
 
     #[test]

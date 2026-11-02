@@ -171,7 +171,7 @@ impl Session {
         if !spec.params.contains("\"layer\":id") {
             return None;
         }
-        let target = LayerId(params.get("layer")?.as_u64()?);
+        let target = commands::explicit_layer(self, params).ok().flatten()?;
         let d = self.active_mut()?;
         d.doc.layer(target)?;
         let active = d.active_layer.replace(target);
