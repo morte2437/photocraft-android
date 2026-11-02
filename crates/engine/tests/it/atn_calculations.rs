@@ -178,6 +178,9 @@ fn atn_calculations_explicit_merged_transparency_reads_composite_alpha() {
     assert_eq!(alpha(&s, 0), vec![0.625, 0.5, 0.25], "top alpha plus base alpha times one minus top alpha");
     s.execute("edit.undo", json!({})).unwrap();
     assert_eq!(saved(&s), before);
+    s.execute("image.calculations",json!({"source1Layer":"merged","source1Channel":"transparency","source2Layer":"merged","source2Channel":"transparency","blending":"multiply","maskLayer":"merged"})).unwrap();
+    assert_eq!(alpha(&s, 0), vec![0.390625, 0.25, 0.0625], "both flat sources retain merged alpha; a channel-less merged mask remains absent");
+    s.execute("edit.undo", json!({})).unwrap();
     s.execute("image.calculations", json!({"source1":{"channel":"transparency"},"source2":{"channel":{"color":"red"}},"blending":"normal"})).unwrap();
     assert_eq!(alpha(&s, 0), vec![0.25, 0.5, 0.0], "omitting the layer still reads the active layer's alpha");
 }
@@ -271,4 +274,23 @@ fn atn_calculations_make_routing_retains_mask_creation() {
     let doc = &s.active().unwrap().doc;
     assert!(doc.channels.is_empty());
     assert!(doc.layer(s.active().unwrap().active_layer.unwrap()).unwrap().mask.is_some());
+}
+
+/// Non-default valid scale and offset retain their wire types and affect the calculated pixels.
+#[test]
+fn atn_calculations_valid_scale_and_offset_roundtrip_and_pixels() {
+    for (scale, offset) in [(2.0, 0), (1.0, 32), (2.0, -32)] {
+        let mut d = make(channel("Chnl", "Rd  "), channel("Chnl", "Grn "));
+        let D::Descriptor(using) = &mut d.items[1].1 else { panic!("Calculations settings") };
+        using.items.iter_mut().find(|(k, _)| k.is("Scl ")).unwrap().1 = D::Double(scale);
+        using.items.iter_mut().find(|(k, _)| k.is("Ofst")).unwrap().1 = D::Integer(offset);
+        let action = roundtrip(d);
+        let mut s = fixture(32);
+        let input = photocraft_compose::flatten(&s.active().unwrap().doc).into_px();
+        assert_eq!(play(&mut s, action)["ran"], 1);
+        for (got, rgba) in alpha(&s, 0).iter().zip(input) {
+            let expected = ((rgba[0] + rgba[1]) / scale as f32 + offset as f32 / 255.0).clamp(0.0, 1.0);
+            assert!((got - expected).abs() < 1e-6, "scale={scale} offset={offset}: {got} vs {expected}");
+        }
+    }
 }

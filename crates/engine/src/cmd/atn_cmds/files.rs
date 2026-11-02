@@ -48,13 +48,14 @@ pub(super) fn load(s: &mut Session, p: &Value) -> Result<Value> {
         names.push(name);
         added.push(a);
     }
-    // Play and Conditional steps call actions by name: follow the renames in the actions just
+    // Play, Conditional and Batch steps call actions by name: follow the renames in the actions just
     // loaded, each target looked up once by the name the file gave it.
     for a in &mut added {
         for (id, params) in &mut a.steps {
             let keys: &[&str] = match id.as_str() {
                 "actions.play" => &["action"],
                 "actions.conditional" => &["then", "else"],
+                "file.automate.batch" if params.get("set").is_none_or(|set| set.is_null() || set.as_str() == Some(imp.set.as_str())) => &["action"],
                 _ => &[],
             };
             for key in keys {

@@ -190,6 +190,30 @@ pub fn webp_is_animated(bytes: &[u8]) -> bool {
     crate::codecs::webp::is_animated(bytes)
 }
 
+/// Inspect additional frames in GIF/APNG/WebP, full TIFF pages, ICO entries and DDS mip levels.
+/// Pixels are not decoded; TIFF thumbnails and masks do not count as extra document pages.
+/// Other formats return false; this does not establish preservation of other format-specific data.
+pub fn has_additional_images(bytes: &[u8]) -> Result<bool, CodecError> {
+    match detect(bytes) {
+        Some(Format::Gif) => Ok(via_image::gif_more_frames(bytes).is_some()),
+        Some(Format::Png) => png::has_additional_images(bytes),
+        Some(Format::WebP) => Ok(webp_is_animated(bytes)),
+        Some(Format::Tiff) => {
+            let info = tiff_info(bytes)?;
+            if !info.complete {
+                return Err(CodecError::malformed(Format::Tiff, "cannot inspect every source image directory"));
+            }
+            Ok(info.pages.iter().filter(|page| page.kind == TiffPageKind::Page).take(2).count() > 1)
+        }
+        Some(Format::Ico) => {
+            let count = bytes.get(4..6).and_then(|b| <[u8; 2]>::try_from(b).ok()).ok_or_else(|| CodecError::malformed(Format::Ico, "truncated image count"))?;
+            Ok(u16::from_le_bytes(count) > 1)
+        }
+        Some(Format::Dds) => dds::has_additional_images(bytes),
+        _ => Ok(false),
+    }
+}
+
 /// The Orientation (1–8) of the page [`decode`] opens from a TIFF or BigTIFF file; 1 when it is
 /// absent, malformed or out of range.
 pub fn tiff_orientation(bytes: &[u8]) -> u16 {

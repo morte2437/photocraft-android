@@ -152,7 +152,7 @@ pub(super) fn export_item(id: &str, params: &Value, set: &str) -> Option<AtnItem
     }
     let mut params = params.clone();
     if (id == "actions.play" || id == "actions.conditional" || id == "file.automate.batch")
-        && params.get("set").is_none()
+        && params.get("set").is_none_or(Value::is_null)
         && !(id == "file.automate.batch" && super::steps_batch::original_batch(&params).is_some())
     {
         params["set"] = json!(set);

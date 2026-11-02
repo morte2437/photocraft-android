@@ -314,3 +314,132 @@ fn batch_naming_components_rebuild_without_original_descriptor() {
         assert_eq!(exported(&action).get("fileNamingRules"), Some(&D::Descriptor(rules)), "{wire}");
     }
 }
+
+/// Tiny encoded sources keep Batch tests independent of external image assets.
+fn small_image(format: photocraft_codecs::Format) -> Vec<u8> {
+    let image = photocraft_codecs::Image::from_u8(2, 2, photocraft_codecs::ChannelLayout::Rgba, [32, 64, 128, 255].repeat(4)).unwrap();
+    photocraft_codecs::encode(&image, format, &Default::default()).unwrap()
+}
+
+/// A real one-name Batch import follows its own renamed action, never a same-name existing action.
+#[test]
+fn imported_batch_references_follow_collision_renames_once_and_keep_other_sets() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("input.png");
+    let output = dir.path().join("out");
+    std::fs::write(&input, small_image(photocraft_codecs::Format::Png)).unwrap();
+    let d = Descriptor::new("Btch")
+        .with("null", path(dir.path().to_str().unwrap()))
+        .with("T   ", path(output.to_str().unwrap()))
+        .with("Usng", D::Reference(vec![named("Actn", "Child")]));
+    let mut file = atn::parse(&encoded(*b"Btch", d, true)).unwrap();
+    file.name = UnicodeString::new_nul("Imported");
+    for name in ["Child", "Child 2"] {
+        let child = Action::new(name, vec![("image.imageSize".into(), json!({"width":3,"height":1,"resample":"nearest"}))]);
+        file.actions.push(atn::parse(&atn_cmds::export("Imported", &[&child], &[], false).unwrap().0).unwrap().actions.remove(0));
+    }
+    let mut external = file.actions[0].items[0].clone();
+    external.descriptor.as_mut().unwrap().items.iter_mut().find(|(k, _)| k.is("Usng")).unwrap().1 =
+        D::Reference(vec![named("Actn", "Child"), named("ASet", "Other")]);
+    file.actions[0].items.push(external);
+    let mut s = Session::new();
+    let mut old = Action::new("Child", vec![("select.deselect".into(), json!({}))]);
+    old.set = Some("Other".into());
+    s.actions.list.push(old);
+    let loaded = s.execute("actions.load", json!({"data":photocraft_paint::tile::b64_encode(&atn::write(&file).unwrap()),"replace":false})).unwrap();
+    let own_name = loaded["actions"][1].as_str().unwrap();
+    let imported = &s.actions.list[1];
+    assert_eq!(imported.steps[0].1["action"], own_name);
+    assert_eq!(imported.steps[1].1["action"], "Child");
+    assert_eq!(imported.steps[1].1["set"], "Other");
+    let batch = imported.steps[0].1.clone();
+    let result = s.execute("file.automate.batch", batch).unwrap();
+    assert_eq!(result["files"].as_array().unwrap().len(), 1, "{result}");
+    let doc = photocraft_io::import("output.png", &std::fs::read(result["files"][0].as_str().unwrap()).unwrap()).unwrap().document;
+    assert_eq!(doc.size, photocraft_doc::Size::new(3, 1), "the renamed imported child ran");
+}
+
+/// Null is the optional default set, while invalid typed and explicit set values remain distinct.
+#[test]
+fn batch_null_set_exports_like_absent_and_preserves_explicit_sets() {
+    let p = json!({"input":"in","output":"out","action":"Child","stopOnError":true,"includeNonImages":true,"namingComponents":[{"component":"name"},{"component":"extension"}]});
+    let absent = exported(&Action::new("Review", vec![("file.automate.batch".into(), p.clone())]));
+    for (set, allowed) in [(Value::Null, true), (json!("Other"), true), (json!(4), false)] {
+        let mut p = p.clone();
+        p["set"] = set.clone();
+        let action = Action::new("Review", vec![("file.automate.batch".into(), p)]);
+        let result = atn_cmds::export("Parent", &[&action], &[], false);
+        assert_eq!(result.is_ok(), allowed);
+        if allowed {
+            let bytes = result.unwrap().0;
+            let imported = atn_cmds::import(&bytes).unwrap();
+            assert_eq!(imported.actions[0].steps[0].1["set"], if set.is_null() { json!("Parent") } else { set.clone() });
+            if set.is_null() {
+                assert_eq!(atn::parse(&bytes).unwrap().actions[0].items[0].descriptor, Some(absent.clone()));
+            }
+        }
+    }
+}
+
+/// Extra GIF image blocks must survive both ordinary and saved/closed Batch refusal paths.
+#[test]
+fn batch_save_close_preserves_animation_and_allows_still_gif() {
+    let dir = tempfile::tempdir().unwrap();
+    let still = small_image(photocraft_codecs::Format::Gif);
+    let flags = still[10];
+    let blocks = 13 + if flags & 0x80 != 0 { 3usize << ((flags & 7) + 1) } else { 0 };
+    let mut animated = still[..still.len() - 1].to_vec();
+    animated.extend_from_slice(&still[blocks..]);
+    assert_eq!(photocraft_codecs::decode_gif_frames(&animated, &Default::default()).unwrap().len(), 2);
+    let input = dir.path().join("source.gif");
+    for steps in [
+        json!([]),
+        json!([{"command":"file.openAs","params":{"path":"recorded.gif"}},{"command":"file.saveAs","params":{}},{"command":"file.close","params":{"force":true}}]),
+    ] {
+        std::fs::write(&input, &animated).unwrap();
+        let override_open = !steps.as_array().unwrap().is_empty();
+        let mut s = Session::new();
+        let result =
+            s.execute("file.automate.batch", json!({"input":[input],"destination":"saveAndClose","overrideOpen":override_open,"steps":steps})).unwrap();
+        assert!(result["files"].as_array().unwrap().is_empty(), "{result}");
+        assert!(result["errors"][0]["error"].as_str().unwrap().contains("additional source images"), "{result}");
+        assert_eq!(std::fs::read(&input).unwrap(), animated);
+    }
+    std::fs::write(&input, &still).unwrap();
+    let result = Session::new().execute("file.automate.batch", json!({"input":[input],"destination":"saveAndClose","steps":[]})).unwrap();
+    assert_eq!(result["files"].as_array().unwrap().len(), 1, "{result}");
+    assert_eq!(photocraft_codecs::decode_gif_frames(&std::fs::read(input).unwrap(), &Default::default()).unwrap().len(), 1);
+}
+
+/// Scripts nested through Batch retain the caller's depth and cumulative spending across failed inputs.
+#[test]
+fn batch_carries_script_limits_and_restores_balanced_depth() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("source.png");
+    std::fs::write(&input, small_image(photocraft_codecs::Format::Png)).unwrap();
+    let step = json!({"command":"file.scripts.browse","params":{"steps":[{"command":"select.all"}]}});
+    for (depth, spending, allowed) in [(16, 0, false), (1, photocraft_engine::actions_cmds::MAX_PLAYBACK_STEPS - 1, false), (1, 2, true)] {
+        let mut s = Session::new();
+        s.actions.script_depth = depth;
+        s.actions.script_steps = spending;
+        let result = s.execute("file.automate.batch",json!({"input":[input,input],"output":dir.path().join("out"),"steps":[step],"namingComponents":[{"component":"serial2"},{"component":"extension"}]})).unwrap();
+        assert_eq!(result["errors"].as_array().unwrap().is_empty(), allowed, "{result}");
+        assert_eq!(s.actions.script_depth, depth);
+        if depth == 1 {
+            assert_eq!(s.actions.script_steps, spending + 2);
+        }
+    }
+}
+
+/// Structured naming with Override Open keeps the actual input encoding when format defaults to same.
+#[test]
+fn structured_batch_override_open_saves_default_same_signature() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("source.png");
+    std::fs::write(&input, small_image(photocraft_codecs::Format::Png)).unwrap();
+    let result=Session::new().execute("file.automate.batch",json!({"input":[input],"output":dir.path().join("out"),"overrideOpen":true,"namingComponents":[{"component":"name"},{"component":"extension"}],"steps":[{"command":"file.openAs","params":{"path":"recorded.jpg"}}]})).unwrap();
+    assert_eq!(result["files"].as_array().unwrap().len(), 1, "{result}");
+    let output = result["files"][0].as_str().unwrap();
+    assert_eq!(std::path::Path::new(output).extension().unwrap(), "png");
+    assert!(std::fs::read(output).unwrap().starts_with(b"\x89PNG\r\n\x1a\n"));
+}

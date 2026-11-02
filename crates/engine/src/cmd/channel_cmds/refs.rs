@@ -324,7 +324,8 @@ pub(crate) fn source_spec(p: &Value, key: &str, prefix: &str) -> Option<Value> {
     for (k, field) in [("document", "Document"), ("layer", "Layer"), ("channel", "Channel"), ("invert", "Invert")] {
         match p.get(format!("{prefix}{field}")) {
             None | Some(Value::Null) => {}
-            Some(Value::String(s)) if s.is_empty() || (k == "layer" && s == "merged") => {}
+            Some(Value::String(s))
+                if s.is_empty() || (k == "layer" && s == "merged" && p.get(format!("{prefix}Channel")).is_none_or(|v| v != "transparency")) => {}
             Some(v) => {
                 m.insert(k.into(), v.clone());
             }

@@ -249,7 +249,7 @@ pub(super) fn batch_to(_: &str, p: &Value) -> Option<Descriptor> {
     let input = jstr(p, "input").filter(|s| !s.is_empty())?;
     let action = jstr(p, "action").filter(|s| !s.is_empty())?;
     let mut reference = vec![ReferenceItem::Name { class: class("Actn"), name: UnicodeString::new_nul(action) }];
-    if let Some(set) = p.get("set") {
+    if let Some(set) = p.get("set").filter(|set| !set.is_null()) {
         reference.push(ReferenceItem::Name { class: class("ASet"), name: UnicodeString::new_nul(set.as_str()?) });
     }
     let d = desc("Btch").with("null", path_value(input)).with("Fldr", D::Boolean(subfolders)).with("Usng", D::Reference(reference));

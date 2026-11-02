@@ -459,7 +459,15 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let mut playback_stack = s.actions.playback_stack.clone();
     playback_stack.extend(called_name);
-    let actions = crate::actions_cmds::ActionState { list, playing: s.actions.playing, playback_stack, playback_steps, ..Default::default() };
+    let actions = crate::actions_cmds::ActionState {
+        list,
+        playing: s.actions.playing,
+        playback_stack,
+        playback_steps,
+        script_depth: s.actions.script_depth,
+        script_steps: s.actions.script_steps,
+        ..Default::default()
+    };
     let names = if save_and_close { None } else { batch_naming::plan(&inputs, &output, &format, p)? };
     let mut save = SaveOpts::from_params(s, p, cmd)?;
     if save_and_close {
@@ -470,6 +478,8 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     // one input to the next (failed or not) and back to this session, not restarted per input.
     let carried = std::cell::Cell::new(playback_steps);
     let carried = &carried;
+    let script_steps = std::cell::Cell::new(s.actions.script_steps);
+    let script_steps = &script_steps;
     let structured = !save_and_close && p.get("namingComponents").is_some_and(|v| !v.is_null());
     let run_format = structured.then(|| format.clone());
     let run = move |scratch: &mut Session, out: &str| {
@@ -508,11 +518,9 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
             if !from_source {
                 return Err(EngineError::Other("Save and Close needs the original source document or its recorded Save snapshot".into()));
             }
-            if extension(out).as_deref() == Some("exr") {
-                // All recorded Opens have passed their authorization gates before this read.
-                // Validate the original file, not only the selected part's imported document.
-                preserve_exr(&read_file(out)?)?;
-            }
+            // All recorded Opens passed their gates before inspecting the original source,
+            // including when this result is a saved snapshot whose document has been closed.
+            preserve_source(out)?;
             let tiff = extension(out).and_then(|ext| photocraft_codecs::from_extension(&ext)) == Some(photocraft_codecs::Format::Tiff);
             if tiff {
                 if !matches!(
@@ -531,6 +539,7 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
         scratch.authorize = authorize;
         scratch.actions = actions.clone();
         scratch.actions.playback_steps = carried.get();
+        scratch.actions.script_steps = script_steps.get();
         let result = (|| {
             // The document as the last recorded save found it, written once the action has run so a
             // failing step still writes nothing.
@@ -563,6 +572,7 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
             }
         })();
         carried.set(scratch.actions.playback_steps);
+        script_steps.set(scratch.actions.script_steps);
         result
     };
     let open = InputOpen { check_format: check_folder_format, from_action: override_open, quiet_profiles, quiet_raw };
@@ -576,11 +586,24 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     if s.actions.playing > 0 {
         s.actions.playback_steps = carried.get();
     }
+    s.actions.script_steps = script_steps.get();
     // Nested Batch completion delivers its imports once to the enclosing input's diagnostics.
     if let (Some(notices), Some(imports)) = (&mut s.batch_open_notices, r.get("notices").and_then(Value::as_array)) {
         notices.extend(imports.iter().cloned());
     }
     Ok(r)
+}
+
+/// Check source structure once at the common pre-write seam, after Open authorization and ownership.
+fn preserve_source(path: &str) -> Result<()> {
+    let bytes = read_file(path)?;
+    if photocraft_codecs::has_additional_images(&bytes).map_err(|e| EngineError::Other(format!("cannot inspect source images: {e}")))? {
+        return Err(EngineError::Other("Save and Close cannot preserve additional source images; save to a separate output folder".into()));
+    }
+    if photocraft_codecs::detect(&bytes) == Some(photocraft_codecs::Format::OpenExr) {
+        preserve_exr(&bytes)?;
+    }
+    Ok(())
 }
 
 /// Only a single flat, unprefixed RGB(A) source can be preserved by the EXR writer.

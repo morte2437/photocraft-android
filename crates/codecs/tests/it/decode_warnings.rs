@@ -307,3 +307,45 @@ fn warnings_survive_orientation() {
     }
     assert_eq!(img.convert(ChannelLayout::Rgba, SampleType::U16).warnings, img.warnings);
 }
+
+/// Header-only inspection distinguishes actual frames/pages from stills, TIFF thumbnails and masks.
+#[test]
+fn additional_images_probe_uses_container_structure_without_decoding_pixels() {
+    use photocraft_codecs::has_additional_images;
+    let frames: Vec<_> = COLOURS.iter().take(2).map(|&c| solid(c)).collect();
+    for (bytes, multiple) in [
+        (gif(1), false),
+        (gif(2), true),
+        (apng(0, false, false), false),
+        (apng(1, false, false), false),
+        (apng(1, false, true), true),
+        (apng(2, true, false), true),
+        (animated_webp(&frames[..1]), false),
+        (animated_webp(&frames), true),
+        (tiff(&[(0, SampleType::U8)]), false),
+        (tiff(&[(0, SampleType::U8), (2, SampleType::U8)]), true),
+        (tiff(&[(0, SampleType::U8), (1, SampleType::U8), (4, SampleType::U8)]), false),
+    ] {
+        assert_eq!(has_additional_images(&bytes).unwrap(), multiple);
+    }
+    let image = solid(COLOURS[0]);
+    for mipmaps in [false, true] {
+        let mut options = EncodeOptions::default();
+        options.dds.mipmaps = mipmaps;
+        let bytes = encode(&image, Format::Dds, &options).unwrap();
+        assert_eq!(has_additional_images(&bytes).unwrap(), mipmaps);
+    }
+    let one = encode(&image, Format::Ico, &Default::default()).unwrap();
+    assert!(!has_additional_images(&one).unwrap());
+    let mut multiple = one[..6].to_vec();
+    multiple[4..6].copy_from_slice(&2u16.to_le_bytes());
+    let mut entry = one[6..22].to_vec();
+    let offset = u32::from_le_bytes(entry[12..16].try_into().unwrap()) + 16;
+    entry[12..16].copy_from_slice(&offset.to_le_bytes());
+    multiple.extend_from_slice(&entry);
+    multiple.extend_from_slice(&entry);
+    multiple.extend_from_slice(&one[22..]);
+    decode(&multiple).unwrap();
+    assert!(has_additional_images(&multiple).unwrap());
+    assert!(has_additional_images(b"\x89PNG\r\n\x1a\n").is_err());
+}

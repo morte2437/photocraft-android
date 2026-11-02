@@ -46,6 +46,11 @@ fn le32(b: &[u8], at: usize) -> Result<u32, CodecError> {
     Ok(u32::from_le_bytes(bytes))
 }
 
+/// The reader opens only the top mip; rewriting cannot retain independently authored lower levels.
+pub(crate) fn has_additional_images(bytes: &[u8]) -> Result<bool, CodecError> {
+    Ok(le32(bytes, 28)? > 1)
+}
+
 /// A FourCC as text when it is printable, else as the number legacy writers store there.
 fn fourcc_name(fourcc: u32) -> String {
     let bytes = fourcc.to_le_bytes();

@@ -120,6 +120,9 @@ fn imported_csh_id_resolves_in_an_action_after_reimport_and_preference_reload() 
     let path = photocraft_engine::vector_cmds::path_json(&matches[0].path);
     let mut expected = fixture(16);
     expected.execute("filter.blur.shapeBlur", json!({"radius":5,"shapePath":path})).unwrap();
+    let mut square = fixture(16);
+    square.execute("filter.blur.shapeBlur", json!({"radius":5,"shape":"square"})).unwrap();
+    assert_ne!(pixels(&expected), pixels(&square), "the non-square imported triangle must differ from a square kernel");
     let prefs = s.presets.to_json(&s);
     let mut s = fixture(16);
     s.load_presets_json(prefs);
