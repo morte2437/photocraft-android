@@ -190,11 +190,11 @@ pub fn webp_is_animated(bytes: &[u8]) -> bool {
     crate::codecs::webp::is_animated(bytes)
 }
 
-/// Inspect additional frames in GIF/APNG/WebP, full TIFF pages, ICO entries, DDS mip levels,
-/// DPX elements and FITS image planes/HDUs which flat decoding cannot retain.
-/// Pixels are not decoded; TIFF thumbnails and masks do not count as extra document pages.
+/// Inspect declared source data which a flat decode and save cannot retain: additional frames,
+/// TIFF pages or separate masks, ICO entries, DDS mip levels, DPX elements and FITS HDU payloads.
+/// Pixels are not decoded; derived TIFF thumbnails do not require preservation here.
 /// Other formats return false; this does not establish preservation of other format-specific data.
-pub fn has_additional_images(bytes: &[u8]) -> Result<bool, CodecError> {
+pub fn has_unretained_source_data(bytes: &[u8]) -> Result<bool, CodecError> {
     match detect(bytes) {
         Some(Format::Gif) => Ok(via_image::gif_more_frames(bytes).is_some()),
         Some(Format::Png) => png::has_additional_images(bytes),
@@ -204,7 +204,8 @@ pub fn has_additional_images(bytes: &[u8]) -> Result<bool, CodecError> {
             if !info.complete {
                 return Err(CodecError::malformed(Format::Tiff, "cannot inspect every source image directory"));
             }
-            Ok(info.pages.iter().filter(|page| page.kind == TiffPageKind::Page).take(2).count() > 1)
+            let retained = info.default_page();
+            Ok(info.pages.iter().enumerate().any(|(index, page)| Some(index) != retained && page.kind != TiffPageKind::ReducedResolution))
         }
         Some(Format::Ico) => {
             let count = bytes.get(4..6).and_then(|b| <[u8; 2]>::try_from(b).ok()).ok_or_else(|| CodecError::malformed(Format::Ico, "truncated image count"))?;

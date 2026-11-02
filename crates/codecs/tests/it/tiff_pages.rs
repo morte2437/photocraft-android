@@ -455,6 +455,63 @@ fn the_chain_walk_is_capped() {
     assert_eq!(decode_ok(&b.bytes).warnings, [DecodeWarning::MorePages { total: None }]);
 }
 
+/// A partial child walk remains usable for decoding, but cannot authorize destructive saves.
+#[test]
+fn incomplete_subifd_lists_and_depth_are_reported() {
+    for (little, big) in ORDERS {
+        let ty = if big { IFD8 } else { IFD };
+        for depth in [4usize, 5] {
+            let dirs: Vec<_> = (0..=depth)
+                .map(|i| {
+                    let dir = gray_page(
+                        2,
+                        2,
+                        i as u8,
+                        Some(if i == 0 {
+                            0
+                        } else if i == depth {
+                            4
+                        } else {
+                            1
+                        }),
+                    );
+                    if i < depth { dir.sub_ifds(ty, &[i + 1]) } else { dir }
+                })
+                .collect();
+            let b = build(little, big, &dirs, &[0]);
+            assert_eq!(tiff_info(&b.bytes).unwrap().complete, depth == 4);
+            decode_ok(&b.bytes);
+            if depth == 4 {
+                assert!(has_unretained_source_data(&b.bytes).unwrap());
+            } else {
+                assert!(has_unretained_source_data(&b.bytes).is_err());
+            }
+        }
+        for count in [0usize, 1, 256, 257] {
+            let b = build(little, big, &[gray_page(2, 2, 9, None).tag(330, ty, &vec![0; count])], &[0]);
+            assert_eq!(tiff_info(&b.bytes).unwrap().complete, count <= 256, "null child slots {count}");
+            decode_ok(&b.bytes);
+        }
+        for invalid in [SHORT, u16::MAX] {
+            let b = build(little, big, &[gray_page(2, 2, 9, None).tag(330, invalid, &[0])], &[0]);
+            assert!(!tiff_info(&b.bytes).unwrap().complete);
+            assert!(has_unretained_source_data(&b.bytes).is_err());
+            decode_ok(&b.bytes);
+        }
+        let b = build(little, big, &[gray_page(2, 2, 9, None).tag(330, ty, &[0]).tag(330, ty, &[0])], &[0]);
+        assert!(!tiff_info(&b.bytes).unwrap().complete, "duplicate child declarations");
+        let mut b = build(little, big, &[gray_page(2, 2, 9, None).tag(330, ty, &[0, 0])], &[0]);
+        let (entry, ..) = find_entry(&b, little, big, 0, 330).unwrap();
+        let offset = b.bytes.len() as u64 - 1;
+        let value = if little { offset.to_le_bytes() } else { offset.to_be_bytes() };
+        let (field, width) = if big { (entry + 12, 8) } else { (entry + 8, 4) };
+        b.bytes[field..field + width].copy_from_slice(if little { &value[..width] } else { &value[8 - width..] });
+        assert!(!tiff_info(&b.bytes).unwrap().complete, "truncated child list");
+        assert!(has_unretained_source_data(&b.bytes).is_err());
+        decode_ok(&b.bytes);
+    }
+}
+
 #[test]
 fn image_data_cut_off_decodes_with_a_warning() {
     let (w, h) = (4u32, 8u32);

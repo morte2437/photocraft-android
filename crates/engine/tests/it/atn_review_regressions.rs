@@ -471,7 +471,44 @@ fn batch_load_override_preserves_original_set_identity_and_foreign_references() 
     }
 }
 
-/// Extra source images must survive both ordinary and saved/closed Batch refusal paths.
+/// A real one-bit transparency-mask IFD, skipped by default TIFF decoding, retains separate data.
+fn tiff_with_separate_mask() -> Vec<u8> {
+    let mut bytes = small_image(photocraft_codecs::Format::Tiff);
+    assert_eq!(&bytes[..2], b"II");
+    let first = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+    let count = u16::from_le_bytes(bytes[first..first + 2].try_into().unwrap()) as usize;
+    if bytes.len() % 2 != 0 {
+        bytes.push(0);
+    }
+    let mask = bytes.len() as u32;
+    bytes[first + 2 + count * 12..first + 6 + count * 12].copy_from_slice(&mask.to_le_bytes());
+    let data = mask + 2 + 11 * 12 + 4;
+    bytes.extend_from_slice(&11u16.to_le_bytes());
+    for (tag, ty, value) in [
+        (254u16, 4u16, 4u32),
+        (256, 4, 2),
+        (257, 4, 2),
+        (258, 3, 1),
+        (259, 3, 1),
+        (262, 3, 4),
+        (273, 4, data),
+        (277, 3, 1),
+        (278, 4, 2),
+        (279, 4, 2),
+        (284, 3, 1),
+    ] {
+        bytes.extend_from_slice(&tag.to_le_bytes());
+        bytes.extend_from_slice(&ty.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    bytes.extend_from_slice(&[0x80, 0x40]);
+    assert!(photocraft_codecs::tiff_info(&bytes).unwrap().pages.iter().any(|p| p.kind == photocraft_codecs::TiffPageKind::Mask));
+    bytes
+}
+
+/// Extra source payloads must survive both ordinary and saved/closed Batch refusal paths.
 #[test]
 fn batch_save_close_preserves_additional_images_and_allows_single_images() {
     let dir = tempfile::tempdir().unwrap();
@@ -497,7 +534,28 @@ fn batch_save_close_preserves_additional_images_and_allows_single_images() {
     let axis = cubes.as_chunks_mut::<80>().0.iter_mut().find(|card| card.starts_with(b"NAXIS3  =")).unwrap();
     axis.fill(b' ');
     axis[..11].copy_from_slice(b"NAXIS3  = 4");
-    for (extension, multiple) in [("gif", animated), ("dpx", elements), ("fits", hdus), ("fits", cubes)] {
+    let mut table = fits.clone();
+    for card in [
+        "XTENSION= 'BINTABLE'",
+        "BITPIX  = 8",
+        "NAXIS   = 2",
+        "NAXIS1  = 4",
+        "NAXIS2  = 1",
+        "PCOUNT  = 0",
+        "GCOUNT  = 1",
+        "TFIELDS = 1",
+        "TTYPE1  = 'DATA'",
+        "TFORM1  = '4B'",
+        "END",
+    ] {
+        table.extend_from_slice(format!("{card:<80}").as_bytes());
+    }
+    table.resize(table.len().div_ceil(2880) * 2880, b' ');
+    table.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+    table.resize(table.len().div_ceil(2880) * 2880, 0);
+    for (index, (extension, multiple)) in
+        [("gif", animated), ("dpx", elements), ("fits", hdus), ("fits", cubes), ("fits", table), ("tiff", tiff_with_separate_mask())].into_iter().enumerate()
+    {
         photocraft_codecs::decode(&multiple).unwrap();
         let input = dir.path().join(format!("source.{extension}"));
         for steps in [
@@ -510,16 +568,21 @@ fn batch_save_close_preserves_additional_images_and_allows_single_images() {
             let result =
                 s.execute("file.automate.batch", json!({"input":[input],"destination":"saveAndClose","overrideOpen":override_open,"steps":steps})).unwrap();
             assert!(result["files"].as_array().unwrap().is_empty(), "{extension}: {result}");
-            assert!(result["errors"][0]["error"].as_str().unwrap().contains("additional source images"), "{extension}: {result}");
+            assert!(result["errors"][0]["error"].as_str().unwrap().contains("additional source data"), "{extension}: {result}");
             assert_eq!(std::fs::read(&input).unwrap(), multiple);
         }
+        let result =
+            Session::new().execute("file.automate.batch", json!({"input":[input],"output":dir.path().join(format!("separate-{index}")),"steps":[]})).unwrap();
+        assert_eq!(result["files"].as_array().unwrap().len(), 1, "{extension}: {result}");
+        assert!(std::path::Path::new(result["files"][0].as_str().unwrap()).is_file());
+        assert_eq!(std::fs::read(&input).unwrap(), multiple);
     }
-    for (extension, bytes) in [("gif", still), ("dpx", dpx), ("fits", fits)] {
+    for (extension, bytes) in [("gif", still), ("dpx", dpx), ("fits", fits), ("tiff", small_image(photocraft_codecs::Format::Tiff))] {
         let input = dir.path().join(format!("still.{extension}"));
         std::fs::write(&input, bytes).unwrap();
         let result = Session::new().execute("file.automate.batch", json!({"input":[input],"destination":"saveAndClose","steps":[]})).unwrap();
         assert_eq!(result["files"].as_array().unwrap().len(), 1, "{extension}: {result}");
-        assert!(!photocraft_codecs::has_additional_images(&std::fs::read(input).unwrap()).unwrap());
+        assert!(!photocraft_codecs::has_unretained_source_data(&std::fs::read(input).unwrap()).unwrap());
     }
 }
 

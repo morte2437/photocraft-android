@@ -605,8 +605,8 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
 /// Check source structure once at the common pre-write seam, after Open authorization and ownership.
 fn preserve_source(path: &str) -> Result<()> {
     let bytes = read_file(path)?;
-    if photocraft_codecs::has_additional_images(&bytes).map_err(|e| EngineError::Other(format!("cannot inspect source images: {e}")))? {
-        return Err(EngineError::Other("Save and Close cannot preserve additional source images; save to a separate output folder".into()));
+    if photocraft_codecs::has_unretained_source_data(&bytes).map_err(|e| EngineError::Other(format!("cannot inspect source data: {e}")))? {
+        return Err(EngineError::Other("Save and Close cannot preserve additional source data; save to a separate output folder".into()));
     }
     if photocraft_codecs::detect(&bytes) == Some(photocraft_codecs::Format::OpenExr) {
         preserve_exr(&bytes)?;

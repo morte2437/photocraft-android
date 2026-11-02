@@ -308,10 +308,10 @@ fn warnings_survive_orientation() {
     assert_eq!(img.convert(ChannelLayout::Rgba, SampleType::U16).warnings, img.warnings);
 }
 
-/// Header-only inspection distinguishes actual frames/pages from stills, TIFF thumbnails and masks.
+/// Header-only inspection protects unretained source payloads while allowing stills and thumbnails.
 #[test]
 fn additional_images_probe_uses_container_structure_without_decoding_pixels() {
-    use photocraft_codecs::has_additional_images;
+    use photocraft_codecs::has_unretained_source_data;
     let frames: Vec<_> = COLOURS.iter().take(2).map(|&c| solid(c)).collect();
     for (bytes, multiple) in [
         (gif(1), false),
@@ -324,23 +324,27 @@ fn additional_images_probe_uses_container_structure_without_decoding_pixels() {
         (animated_webp(&frames), true),
         (tiff(&[(0, SampleType::U8)]), false),
         (tiff(&[(0, SampleType::U8), (2, SampleType::U8)]), true),
-        (tiff(&[(0, SampleType::U8), (1, SampleType::U8), (4, SampleType::U8)]), false),
+        (tiff(&[(0, SampleType::U8), (1, SampleType::U8)]), false),
+        (tiff(&[(4, SampleType::U8)]), false),
+        (tiff(&[(0, SampleType::U8), (4, SampleType::U8)]), true),
+        (tiff(&[(4, SampleType::U8), (0, SampleType::U8)]), true),
+        (tiff(&[(0, SampleType::U8), (1, SampleType::U8), (4, SampleType::U8)]), true),
     ] {
-        assert_eq!(has_additional_images(&bytes).unwrap(), multiple);
+        assert_eq!(has_unretained_source_data(&bytes).unwrap(), multiple);
     }
     let image = solid(COLOURS[0]);
     for mipmaps in [false, true] {
         let mut options = EncodeOptions::default();
         options.dds.mipmaps = mipmaps;
         let bytes = encode(&image, Format::Dds, &options).unwrap();
-        assert_eq!(has_additional_images(&bytes).unwrap(), mipmaps);
+        assert_eq!(has_unretained_source_data(&bytes).unwrap(), mipmaps);
         if mipmaps {
             let mut flagless = bytes;
             let flags = u32::from_le_bytes(flagless[8..12].try_into().unwrap());
             flagless[8..12].copy_from_slice(&(flags & !0x0002_0000).to_le_bytes());
             decode(&flagless).unwrap();
             // Microsoft DDS_HEADER: readers cannot rely on DDSD_MIPMAPCOUNT being set.
-            assert!(has_additional_images(&flagless).unwrap());
+            assert!(has_unretained_source_data(&flagless).unwrap());
         }
     }
     let dpx = encode(&image, Format::Dpx, &Default::default()).unwrap();
@@ -355,17 +359,17 @@ fn additional_images_probe_uses_container_structure_without_decoding_pixels() {
                 bytes[at..at + 2].reverse();
             }
         }
-        assert!(!has_additional_images(&bytes).unwrap());
+        assert!(!has_unretained_source_data(&bytes).unwrap());
         for count in [2u16, 8] {
             bytes[770..772].copy_from_slice(&if little { count.to_le_bytes() } else { count.to_be_bytes() });
-            assert!(has_additional_images(&bytes).unwrap());
+            assert!(has_unretained_source_data(&bytes).unwrap());
         }
         bytes[770..772].fill(0);
-        assert!(has_additional_images(&bytes).is_err());
-        assert!(has_additional_images(&bytes[..771]).is_err());
+        assert!(has_unretained_source_data(&bytes).is_err());
+        assert!(has_unretained_source_data(&bytes[..771]).is_err());
     }
     let one = encode(&image, Format::Ico, &Default::default()).unwrap();
-    assert!(!has_additional_images(&one).unwrap());
+    assert!(!has_unretained_source_data(&one).unwrap());
     let mut multiple = one[..6].to_vec();
     multiple[4..6].copy_from_slice(&2u16.to_le_bytes());
     let mut entry = one[6..22].to_vec();
@@ -375,8 +379,8 @@ fn additional_images_probe_uses_container_structure_without_decoding_pixels() {
     multiple.extend_from_slice(&entry);
     multiple.extend_from_slice(&one[22..]);
     decode(&multiple).unwrap();
-    assert!(has_additional_images(&multiple).unwrap());
-    assert!(has_additional_images(b"\x89PNG\r\n\x1a\n").is_err());
+    assert!(has_unretained_source_data(&multiple).unwrap());
+    assert!(has_unretained_source_data(b"\x89PNG\r\n\x1a\n").is_err());
 }
 
 /// FITS RGB planes form one image; other cubes and later image HDUs would be discarded.
@@ -405,13 +409,69 @@ fn fits_additional_images_probe_distinguishes_color_planes_and_hdus() {
         let bytes = hdu(true, &axes);
         let image = decode(&bytes).unwrap();
         assert_eq!(image.warnings.iter().any(|w| matches!(w, DecodeWarning::MorePages { .. })), multiple);
-        assert_eq!(has_additional_images(&bytes).unwrap(), multiple);
+        assert_eq!(has_unretained_source_data(&bytes).unwrap(), multiple);
     }
     let mut bytes = hdu(true, &[1]);
     bytes.extend(hdu(false, &[1]));
     decode(&bytes).unwrap();
-    assert!(has_additional_images(&bytes).unwrap());
+    assert!(has_unretained_source_data(&bytes).unwrap());
     let mut incomplete = hdu(true, &[1]);
     incomplete.extend_from_slice(b"XTENSION= 'IMAGE'");
-    assert!(has_additional_images(&incomplete).is_err());
+    assert!(has_unretained_source_data(&incomplete).is_err());
+}
+
+/// Tables and extension heaps are source data even though the flat image decoder skips them.
+#[test]
+fn fits_source_probe_preserves_nonimage_payload_and_allows_empty_extensions() {
+    let primary = encode(&solid(COLOURS[0]), Format::Fits, &Default::default()).unwrap();
+    for (kind, rows, heap, unretained) in
+        [("BINTABLE", 1, 0, true), ("TABLE", 1, 0, true), ("OTHER", 1, 0, true), ("BINTABLE", 0, 4, true), ("BINTABLE", 0, 0, false)]
+    {
+        let mut bytes = primary.clone();
+        for card in [
+            format!("XTENSION= '{kind}'"),
+            "BITPIX  = 8".into(),
+            "NAXIS   = 2".into(),
+            "NAXIS1  = 4".into(),
+            format!("NAXIS2  = {rows}"),
+            format!("PCOUNT  = {heap}"),
+            "GCOUNT  = 1".into(),
+            "TFIELDS = 1".into(),
+            "TTYPE1  = 'DATA'".into(),
+            "TFORM1  = '4B'".into(),
+            "END".into(),
+        ] {
+            bytes.extend_from_slice(format!("{card:<80}").as_bytes());
+        }
+        bytes.resize(bytes.len().div_ceil(2880) * 2880, b' ');
+        bytes.extend(std::iter::repeat_n(0xa5, rows * 4 + heap));
+        bytes.resize(bytes.len().div_ceil(2880) * 2880, 0);
+        assert_eq!(decode(&bytes).unwrap().data(), decode(&primary).unwrap().data());
+        assert_eq!(has_unretained_source_data(&bytes).unwrap(), unretained, "{kind} rows={rows} heap={heap}");
+    }
+    let mut heap = primary.clone();
+    let end = heap.as_chunks::<80>().0.iter().position(|c| c.starts_with(b"END ")).unwrap() * 80;
+    heap[end..end + 160].fill(b' ');
+    heap[end..end + 11].copy_from_slice(b"PCOUNT  = 1");
+    heap[end + 80..end + 83].copy_from_slice(b"END");
+    heap[2880 + (W * H * 3) as usize] = 0xa5;
+    decode(&heap).unwrap();
+    assert!(has_unretained_source_data(&heap).unwrap());
+    for data in [false, true] {
+        let mut bytes = Vec::new();
+        for card in ["SIMPLE  = T", "BITPIX  = 8", if data { "NAXIS   = 1" } else { "NAXIS   = 0" }, "NAXIS1  = 2", "END"] {
+            bytes.extend_from_slice(format!("{card:<80}").as_bytes());
+        }
+        bytes.resize(2880, b' ');
+        if data {
+            bytes.extend_from_slice(&[0x11, 0x22]);
+            bytes.resize(5760, 0);
+        }
+        let mut image = primary.clone();
+        image[..80].fill(b' ');
+        image[..17].copy_from_slice(b"XTENSION= 'IMAGE'");
+        bytes.extend(image);
+        decode(&bytes).unwrap();
+        assert_eq!(has_unretained_source_data(&bytes).unwrap(), data, "empty primary versus skipped one-dimensional payload");
+    }
 }
