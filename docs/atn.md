@@ -574,6 +574,7 @@ Batch cancellation conformance (Photoshop 2026 observation above; PhotoCraft's p
 | Keep headless cancellation direct | `jobs.cancel` returns partial results without an interactive question | Implemented and tested, including a worker waiting for a desktop decision |
 | No progress bar | The desktop Batch preview is the visible feedback | Implemented, UI tested and visually checked |
 | Preserve error policy and log | Continue retains earlier errors and writes one final UTF-16 LE log | Implemented and tested with errors before and after Esc |
+
 - **Return value:** when any file failed, the Batch step itself reports "cancelled" (the dialog returns no
   descriptor); a script run with Stop For Errors reports success even though it stopped.
 
