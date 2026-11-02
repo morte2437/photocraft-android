@@ -33,12 +33,12 @@ pub const SECTIONS: [(&str, &str); 18] = [
 /// They still load, save and round-trip through `prefs.get` / `prefs.set` unchanged.
 ///
 /// When you implement one, remove it here; the `prefs_usage` test fails while a listed
-/// preference is read anywhere outside `prefs.rs`, and while an unlisted one is read nowhere.
+/// preference is read anywhere outside the prefs model (`prefs.rs` except its `impl Session`
+/// blocks), and while an unlisted one is read nowhere.
 pub const HIDDEN_UNTIL_IMPLEMENTED: &[&str] = &[
     "general.colorPicker",
     "workspace.autoShowHiddenPanels",
     "workspace.enableFloatingDocumentWindowDocking",
-    "performance.effectCacheMb",
     "performance.legacyCompositing",
     "unitsAndRulers.columnWidth",
     "unitsAndRulers.gutter",

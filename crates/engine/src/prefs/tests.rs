@@ -1081,3 +1081,16 @@ fn the_web_build_caps_memory_usage() {
         assert_eq!(honoured_memory_usage_mb(stored, false), stored, "desktop, {stored} MB");
     }
 }
+
+/// The effect cache budget is the stored MB in bytes, capped on the web like Memory Usage, and
+/// never wraps: on wasm32 an uncapped 4096 MB shifted into `usize` was 0.
+#[test]
+fn the_effect_cache_budget_is_capped_on_the_web_and_never_wraps() {
+    let web = cfg!(target_arch = "wasm32");
+    for stored in [16, 768, WASM_MEMORY_USAGE_CAP_MB + 1, 4096, 65536, u32::MAX] {
+        let p = Performance { effect_cache_mb: stored, ..Performance::default() };
+        let mb = if web { stored.min(WASM_MEMORY_USAGE_CAP_MB) } else { stored };
+        assert_eq!(p.effect_cache_budget_bytes(), (mb as usize).saturating_mul(1 << 20), "{stored} MB");
+        assert!(p.effect_cache_budget_bytes() >= 16 << 20, "{stored} MB");
+    }
+}

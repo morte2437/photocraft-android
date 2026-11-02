@@ -568,7 +568,8 @@ impl Default for Export {
 pub const DEFAULT_MEMORY_USAGE_MB: u32 = 8192;
 
 /// The most Memory Usage the web build honours, in MB: a wasm module's linear memory tops out at
-/// 4 GiB, so a larger allowance (the desktop default is 8 GiB) would never trim anything.
+/// 4 GiB, so a larger allowance (the desktop default is 8 GiB) would never trim anything. The
+/// effect cache budget is capped the same way, or the cache could grow until allocation fails.
 const WASM_MEMORY_USAGE_CAP_MB: u32 = 1536;
 
 /// The Memory Usage a build honours for a `stored` preference: capped on the web build (`web`).
@@ -664,6 +665,12 @@ impl Performance {
             .map(|mb| mb.saturating_mul(1 << 20))
             .unwrap_or_else(|| u64::from(self.effective_memory_usage_mb()).saturating_mul(1 << 20) / 2);
         usize::try_from(bytes).unwrap_or(usize::MAX)
+    }
+
+    /// The layer-effect cache budget the build honours, in bytes: [`Performance::effect_cache_mb`],
+    /// capped on the web like Memory Usage.
+    pub fn effect_cache_budget_bytes(&self) -> usize {
+        (honoured_memory_usage_mb(self.effect_cache_mb, cfg!(target_arch = "wasm32")) as usize).saturating_mul(1 << 20)
     }
 }
 
@@ -1362,7 +1369,7 @@ impl Session {
         self.scratch_epoch = photocraft_raster::spill::epoch();
         let n = self.prefs().performance.history_states.max(1) as usize;
         let bytes = self.prefs().performance.history_cap_bytes();
-        let budget = self.prefs().performance.effect_cache_mb as usize;
+        let budget = self.prefs().performance.effect_cache_budget_bytes();
         let non_linear = self.prefs().history_options.allow_non_linear_history;
         for st in &mut self.docs {
             st.history.max_states = n;
@@ -1370,7 +1377,7 @@ impl Session {
             st.history.non_linear = non_linear;
             st.trim_history();
         }
-        photocraft_compose::set_effect_cache_budget(budget << 20);
+        photocraft_compose::set_effect_cache_budget(budget);
         crate::transform_cmds::set_budget(u64::from(self.prefs().performance.effective_memory_usage_mb()) << 20);
         // Without waiting for the system font scan: this runs on the UI thread at launch.
         photocraft_text::set_shared_missing_glyph_protection(self.prefs().type_.missing_glyph_protection());
