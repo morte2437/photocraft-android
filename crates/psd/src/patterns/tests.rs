@@ -267,7 +267,7 @@ fn large_channel_padding_within_the_existing_budget_is_allowed() {
 #[test]
 fn padded_plane_allocation_failure_is_an_error() {
     // Capacity overflow is deterministic and never asks the OS for huge memory.
-    assert!(matches!(zeroed_pattern_plane(usize::MAX), Err(PsdError::LimitExceeded("not enough memory for the padded pattern channel"))));
+    assert!(matches!(zeroed_pattern_plane(usize::MAX), Err(PsdError::OutOfMemory("not enough memory for the padded pattern channel"))));
 }
 
 #[test]

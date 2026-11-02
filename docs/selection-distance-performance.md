@@ -145,8 +145,8 @@ selections clear normally. The existing oversized-canvas safety limit remains.
 
 Replacement already accepts a rectangle and builds a fresh sparse selection surface,
 so it writes only affected tiles and retains the existing undoable transaction. The
-shared `current_mask` helper and Grow/Similar are unchanged. Smooth and Feather keep
-their existing command paths.
+shared `current_mask` helper and Grow/Similar are unchanged. Smooth and Feather also
+use command windows as described below.
 
 Command tests compare against full-canvas reads, padding and replacement for empty/full
 selections, both canvas-bounds settings, edge-touching masks, holes, fractional coverage,
@@ -176,3 +176,32 @@ Border also skips distance planes and coverage passes when its binary mask is un
 there is no edge inside the supplied rectangle. Extreme library radii retain the finite
 no-seed sentinel behavior; the command's canvas-edge padding still creates a real edge
 for Select All.
+
+
+## Cropped Smooth and Feather commands (2026-10-27)
+
+All five Select › Modify commands now use the same bounded mask read and replacement.
+Smooth grows the nonzero selection bounds by `ceil(radius) + 1`. Feather takes the
+truncated Gaussian reach from `selection::feather_reach(radius)` and adds the same
+one-pixel zero margin: `ceil(3 * radius) + 1` for the accepted command radii. Using the
+blur's shared reach keeps command windows and canvas-edge padding in sync with the
+kernel. Both windows are clipped to the canvas before any mask allocation.
+
+For a 50×50 selection at radius 5 on a 6000×6000 canvas, the command supplies 62×62
+samples to Smooth and 82×82 to Feather, instead of 36 million samples. Nonzero implicit
+defaults and malformed tile coordinates retain the full-canvas fallback. The existing
+canvas-size safety limit still applies.
+
+The command comparisons above now include Smooth and Feather, fractional radii down
+to Feather's 0.1 px minimum, both canvas-bound settings, soft coverage at 8/16/32-bit
+sample depths, one-pixel/thin canvases, and undo/redo. They compare stored selection
+coverage with the previous full-canvas path.
+
+Dispatch the fork's CI with `selection_morphology=true` to run the release comparison
+and the general quick performance suite. The existing
+`sparse_modify_release_comparison` test now measures both blurs on sparse 50×50,
+dense 4000×4000 and fully selected masks in a 36 MP canvas, at radii 3 and 50. It
+alternates execution order for three rounds, reports median command times and verifies
+every output sample outside timing. The full-canvas reference uses the same optimized
+blur kernels and includes the undoable edit. GUI rendering and live-preview scheduling
+are excluded; these measurements do not update the P26/P27 scorecard budgets.

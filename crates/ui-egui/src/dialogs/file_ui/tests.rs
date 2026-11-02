@@ -483,6 +483,7 @@ fn web_preview_grows_with_resize_and_accepts_zoom_and_pan() {
     app.ui.dialog_mut(id).unwrap().fields.insert("__view".into(), json!("optimized"));
     let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1600.0, 1100.0)).build_ui_state(
         |ui, app| {
+            crate::color_picker_ui::widget_tick(app, ui.ctx());
             if ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("semibold".into()))) {
                 crate::dialogs::show(app, ui.ctx());
             }
@@ -528,16 +529,64 @@ fn web_preview_grows_with_resize_and_accepts_zoom_and_pan() {
     h.run_steps(3);
     assert_ne!(h.state().ui.dialogs[0].fields["__center"], json!([0.5, 0.5]));
     assert_eq!(h.state().session.active().unwrap().revision, revision);
-    // Enter while editing a swatch must not export and close the parent dialog.
+    // A colour table swatch opens the Color Picker over the dialog; Enter confirms the picker
+    // only: it must not export and close the parent dialog.
     h.state_mut().ui.dialogs[0].fields.insert("format".into(), json!("gif"));
     h.run_steps(4);
     use egui_kittest::kittest::Queryable;
     h.get_by_role(egui::accesskit::Role::ColorWell).click();
     h.run_steps(3);
-    assert!(egui::Popup::is_any_open(&h.ctx));
+    assert_eq!(h.state().ui.dialogs.len(), 2);
+    assert!(crate::color_picker_ui::owns(&h.state().ui.dialogs[1].fields));
     h.key_press(egui::Key::Enter);
     h.run_steps(3);
     assert_eq!(h.state().ui.dialogs.len(), 1);
+}
+
+/// #10675: moving the pointer over Save for Web repaints it, and each repaint must lay it out the
+/// same way. At a fractional display scale the previews came out a fraction of a pixel wider than
+/// the room they were given, so the dialog grew a little on every repaint and the fitted zoom
+/// with it.
+#[test]
+fn web_preview_keeps_its_size_and_zoom_while_the_pointer_moves() {
+    let mut drifted = Vec::new();
+    for ppp in [1.0, 1.25, 1.5, 1.75, 2.25] {
+        for screen in [egui::vec2(1600.0, 1100.0), egui::vec2(1097.0, 617.0), egui::vec2(1280.0, 720.0)] {
+            for view in ["2up", "4up", "original"] {
+                let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+                app.run("file.new", json!({"width": 1980, "height": 1200})).unwrap();
+                let id = open_web(&mut app);
+                app.ui.dialog_mut(id).unwrap().fields.insert("__view".into(), json!(view));
+                let mut h = egui_kittest::Harness::builder().with_size(screen).with_pixels_per_point(ppp).build_ui_state(
+                    |ui, app: &mut PhotocraftApp| {
+                        if ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("semibold".into()))) {
+                            crate::dialogs::show(app, ui.ctx());
+                        }
+                    },
+                    app,
+                );
+                PhotocraftApp::setup_context(&h.ctx, Default::default());
+                h.run_steps(8);
+                let layout = |h: &egui_kittest::Harness<'_, PhotocraftApp>| {
+                    let f = &h.state().ui.dialogs[0].fields;
+                    let rects: Vec<egui::Rect> = h.ctx.data(|m| m.get_temp(egui::Id::unique("pc-dialog-rects"))).unwrap();
+                    (rects[0], f["__previewRects"].clone(), f["__effectiveZoom"].clone())
+                };
+                let before = layout(&h);
+                let pane = &before.1[0];
+                let at = egui::pos2(pane[0].as_f64().unwrap() as f32 + 20.0, pane[1].as_f64().unwrap() as f32 + 20.0);
+                for i in 0..30 {
+                    h.event(egui::Event::PointerMoved(at + egui::vec2(i as f32 * 3.0, i as f32)));
+                    h.step();
+                }
+                let after = layout(&h);
+                if after != before {
+                    drifted.push(format!("{view} at {ppp}x on {screen:?}: {before:?} -> {after:?}"));
+                }
+            }
+        }
+    }
+    assert!(drifted.is_empty(), "the dialog or its zoom changed while the pointer moved: {drifted:#?}");
 }
 
 #[test]
@@ -739,5 +788,31 @@ fn a_turn_takes_settings_and_paper_together() {
         take_turned_page(&mut f, &partial);
         assert_eq!((f.get("printerSettings"), f.get("paper")), (Some(&json!("old")), Some(&json!([595.28, 841.89]))), "{partial}");
         assert!(f.get("__pageError").is_some(), "{partial}");
+    }
+}
+
+/// #7782: the driver's printable area turns with the paper. Left portrait on a landscape
+/// sheet, Scale to Fit Media refused the print instead of fitting it.
+#[test]
+fn a_turn_takes_the_printable_area_with_the_paper() {
+    let (mut app, ctx) = app();
+    crate::menus::invoke(&mut app, &ctx, "file.new", json!({"width": 500, "height": 1000})).unwrap();
+    let doc = app.session.active().unwrap().doc.clone();
+    let mut f = Map::new();
+    f.insert("scaleToFit".into(), json!(true));
+    f.insert("dryRun".into(), json!(false));
+    f.insert("printerSettings".into(), json!("old"));
+    f.insert("paper".into(), json!([842.29, 1191.14]));
+    f.insert("printable".into(), json!([12.0, 12.0, 818.29, 1167.14]));
+    f.insert("orientation".into(), json!("portrait"));
+    take_turned_page(&mut f, &json!({"printerSettings": "new", "paper": [1191.14, 842.29], "printable": [12.0, 12.0, 1167.14, 818.29]}));
+    let l = photocraft_engine::print_cmds::layout(&doc, &print_params(&f), "file.print");
+    assert_eq!(l.map(|l| l.paper).map_err(|e| e.to_string()), Ok((1191.14, 842.29)));
+    assert_eq!(f.get("printable"), Some(&json!([12.0, 12.0, 1167.14, 818.29])));
+    // An answer without a usable area drops the old one: the fixed margin, not a stale area.
+    for area in [Value::Null, json!([12.0, 12.0, 818.29]), json!("x")] {
+        f.insert("printable".into(), json!([12.0, 12.0, 1167.14, 818.29]));
+        take_turned_page(&mut f, &json!({"printerSettings": "newer", "paper": [842.29, 1191.14], "printable": area}));
+        assert!(f.get("printable").is_none(), "{area}");
     }
 }

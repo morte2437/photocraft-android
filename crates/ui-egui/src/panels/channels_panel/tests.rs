@@ -131,6 +131,72 @@ fn alphas(h: &egui_kittest::Harness<'_, PhotocraftApp>) -> Vec<String> {
     h.state().session.active().unwrap().doc.channels.iter().map(|c| c.name.clone()).collect()
 }
 
+/// Row selection sets the visible components; eye clicks subsequently override only the
+/// view. Exercise real Shift-clicks so panel event routing and later frames keep that split.
+#[test]
+fn channel_selection_sets_visibility_and_eye_overrides_do_not_retarget() {
+    use egui::{Event, Modifiers, PointerButton};
+    for (mode, first, second, third, selected) in
+        [("rgb", "Red", "Blue", "Green", vec![0, 2]), ("cmyk", "Cyan", "Magenta", "Yellow", vec![0, 1]), ("lab", "a", "b", "Lightness", vec![1, 2])]
+    {
+        let (mut h, _) = channels_harness();
+        if mode != "rgb" {
+            h.state_mut().run(&format!("image.mode.{mode}"), json!({})).unwrap();
+            h.run_steps(2);
+        }
+        let click = |h: &mut egui_kittest::Harness<'_, PhotocraftApp>, label: &str, modifiers| {
+            let pos = at(h, label);
+            h.event(Event::ModifiersChanged(modifiers));
+            h.hover_at(pos);
+            h.run_steps(1);
+            for pressed in [true, false] {
+                h.event(Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers });
+                h.run_steps(1);
+            }
+            h.event(Event::ModifiersChanged(Modifiers::NONE));
+            h.run_steps(3);
+        };
+        let visible = |h: &egui_kittest::Harness<'_, PhotocraftApp>| {
+            let st = h.state().session.active().unwrap();
+            (0..st.doc.pixel_format().mode.color_channels()).filter(|k| st.channel_view.color_visible(*k)).collect::<Vec<_>>()
+        };
+        let colors = |h: &egui_kittest::Harness<'_, PhotocraftApp>| {
+            photocraft_engine::color_channels::selected(&h.state().session).unwrap().indices().collect::<Vec<_>>()
+        };
+
+        click(&mut h, first, Modifiers::NONE);
+        assert_eq!(visible(&h), vec![selected[0]], "{mode}: clicking one row shows it alone");
+        assert!(!h.state().session.active().unwrap().channel_view.alpha_shown(0));
+        click(&mut h, second, Modifiers::SHIFT);
+        assert_eq!(colors(&h), selected);
+        assert_eq!(visible(&h), selected, "{mode}: extending the selection shows just its components");
+
+        click(&mut h, &format!("Visibility {third}"), Modifiers::NONE);
+        assert_eq!(visible(&h).len(), 3, "{mode}: the eye adds a visible component");
+        assert_eq!(colors(&h), selected, "the eye does not extend the editing target");
+        click(&mut h, &format!("Visibility {first}"), Modifiers::NONE);
+        let manual = visible(&h);
+        assert!(!manual.contains(&selected[0]));
+        assert_eq!(colors(&h), selected, "a selected component can be hidden manually");
+        h.state_mut().run("image.adjustments.invert", json!({})).unwrap();
+        h.run_steps(3);
+        assert_eq!(visible(&h), manual, "editing and rendering preserve manual visibility");
+
+        click(&mut h, first, Modifiers::NONE);
+        assert_eq!(visible(&h), vec![selected[0]], "a new row selection resets its default view");
+        click(&mut h, second, Modifiers::SHIFT);
+        assert_eq!(visible(&h), selected);
+        click(&mut h, third, Modifiers::SHIFT);
+        assert_eq!(visible(&h).len(), 3);
+        if mode == "cmyk" {
+            click(&mut h, "Black", Modifiers::SHIFT);
+        }
+        let st = h.state().session.active().unwrap();
+        assert_eq!(st.channel_view.target, ChannelTarget::Composite);
+        assert_eq!(visible(&h).len(), st.doc.pixel_format().mode.color_channels());
+    }
+}
+
 /// #9163: alpha channels reorder by dragging, as in Photoshop: a drop in a row's upper half
 /// lands above it, over the colour channels it lands first among the alphas, colour channels
 /// don't move, and each reorder is one history step.

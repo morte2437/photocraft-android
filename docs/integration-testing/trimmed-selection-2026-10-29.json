@@ -1,0 +1,551 @@
+{
+  "previous_head": "8f9f1a9481f274ae15f952fd946eab13007f592d",
+  "base": "5f9b4391874aabc9deb2fcb905267613e4d93ec8",
+  "retained_count": 87,
+  "removed_count": 21,
+  "removed": [
+    {
+      "number": 3139,
+      "commit": "ab7b1412d0e62257049af1ce66f24710d86ef9b7",
+      "title": "Merge approved PhotoCraft PR #3139: Draw right-to-left layer names in visual word order"
+    },
+    {
+      "number": 3345,
+      "commit": "5a5e2c48ddbd36bb98c1e4378e34dc3d906915c4",
+      "title": "Merge approved PhotoCraft PR #3345: Add grouped gradient presets and selectable style icons"
+    },
+    {
+      "number": 3967,
+      "commit": "97dfeda00cbcd1399532db4dca7eb419a01f47b2",
+      "title": "Merge approved PhotoCraft PR #3967: Add move and delete actions to Smart Filter rows"
+    },
+    {
+      "number": 4042,
+      "commit": "b753d0e942e67a5eb4d0dcefa9b1a53804ccfb8c",
+      "title": "Merge approved PhotoCraft PR #4042: feat(canvas): rotate view with Shift + middle-mouse drag"
+    },
+    {
+      "number": 4783,
+      "commit": "7836d4b9e6914452cce273de75e786db1ae2932c",
+      "title": "Merge approved PhotoCraft PR #4783: Fix/4758 type extreme finite geometry 20261013s1215"
+    },
+    {
+      "number": 4890,
+      "commit": "1daf3bc079e7105ee5a8536ebf1b41480ba0cfeb",
+      "title": "Merge approved PhotoCraft PR #4890: Add scrollbar visibility preferences (#3262)"
+    },
+    {
+      "number": 5453,
+      "commit": "8323688e1f21cb4362e3386bd027bcc5d5c33806",
+      "title": "Merge approved PhotoCraft PR #5453: Shapes: independent fill and stroke paints (solid, gradient, pattern), part 1"
+    },
+    {
+      "number": 5493,
+      "commit": "c81347aaa86e7304fbcd11f873f5b4de1e910263",
+      "title": "Merge approved PhotoCraft PR #5493: Import Photoshop custom shape sets into the Shapes panel"
+    },
+    {
+      "number": 6621,
+      "commit": "78f9c137b36b38fe90ebbebe2d3661a174a52622",
+      "title": "Merge approved PhotoCraft PR #6621: Crop: right-click on the pending crop opens the crop menu (#6561)"
+    },
+    {
+      "number": 8347,
+      "commit": "a62b9ee21771e5d7d312cc2be02ba02a8d3b6383",
+      "title": "Merge approved PhotoCraft PR #8347: Type: Roman Hanging Punctuation (trailing marks hang, don't steer the alignment)"
+    },
+    {
+      "number": 9282,
+      "commit": "0fd326b1ccb0d548e78d5eeabcbf80aeb44d54b0",
+      "title": "Merge approved PhotoCraft PR #9282: feat(ui): Preset menus for Levels, Exposure, Black & White and Channel Mixer"
+    },
+    {
+      "number": 7742,
+      "commit": "99cf87f5ec7fb6b25d121b6c29c33a83be020d68",
+      "title": "Merge approved PhotoCraft PR #7742: Actions: a fractional setting an integer field cannot hold is refused, not rounded"
+    },
+    {
+      "number": 5090,
+      "commit": "2f6156bebe1271bfe64fe0e594cc68e62d792726",
+      "title": "Merge approved PhotoCraft PR #5090: Actions: add editable PhotoCraft Essentials starter presets"
+    },
+    {
+      "number": 3455,
+      "commit": "6e13443ca662e262bd9f8c1eb33718c69259fc85",
+      "title": "Merge approved PhotoCraft PR #3455: Undo and redo action definition edits from the Actions panel"
+    },
+    {
+      "number": 1991,
+      "commit": "45e790c2166c89db505bf7926982ebfddf6673ed",
+      "title": "Merge approved PhotoCraft PR #1991: feat(actions): import and export reusable Actions JSON files"
+    },
+    {
+      "number": 4305,
+      "commit": "17c4dabf90b48ce284fb8b1fb6e5a151d5dd1777",
+      "title": "Merge approved PhotoCraft PR #4305: Filter > Other > Frequency Separation (#1714)"
+    },
+    {
+      "number": 5939,
+      "commit": "cb1c76e6cf29015ca80683ae83b40562383c79f0",
+      "title": "Merge approved PhotoCraft PR #5939: fix(paint): scale blur sigma with brush size (#5892)"
+    },
+    {
+      "number": 4883,
+      "commit": "bb436088f14e88a56762b2d320527a3b19f7ee2d",
+      "title": "Merge approved PhotoCraft PR #4883: feat(ui): show selection and active-layer bounds in the status bar"
+    },
+    {
+      "number": 9172,
+      "commit": "a074b07b4b697de4887b09b4c4b6b4fbe21a090f",
+      "title": "Merge approved PhotoCraft PR #9172: Gradient Fill layer: default to Foreground to Transparent (#8708)"
+    },
+    {
+      "number": 7153,
+      "commit": "fe2379f27fb1ebb53a10aeec79f57b47e387ea46",
+      "title": "Merge approved PhotoCraft PR #7153: Smart Filters: double-clicking a Liquify filter reopens it in the Liquify workspace"
+    },
+    {
+      "number": 5870,
+      "commit": "63fbd96e2be807496d458d406c5ed52fc5a56580",
+      "title": "Merge approved PhotoCraft PR #5870: fix(format): reject duplicate native layer identities"
+    }
+  ],
+  "retained": [
+    {
+      "number": 9703,
+      "head": "3605d30c38294c4d970e52f4a02f44f97e8bc1a9",
+      "title": "Fix adjustment layer name clicks targeting masks"
+    },
+    {
+      "number": 9651,
+      "head": "67666bdf72a58066df868868cef82e5b9cc838de",
+      "title": "perf(algo): row-parallel local_sharpen with fast-path protect_detail (#5426)"
+    },
+    {
+      "number": 9623,
+      "head": "652075f4da7fe905ad651eebc3a6c276fe1d7a5d",
+      "title": "Pencil: keep a 1 px freehand line connected where it turns"
+    },
+    {
+      "number": 9606,
+      "head": "6cc516a3d20120b678040050d95ccadc8d1dfd3f",
+      "title": "fix(ui): the Color panel remembers its options across restarts"
+    },
+    {
+      "number": 9598,
+      "head": "47aea89e9220b996f0d5a0d2bb8b5938100b4ad1",
+      "title": "fix(ui): Liquify's Twirl Counterclockwise gets a mirrored twirl icon"
+    },
+    {
+      "number": 9597,
+      "head": "9429df26b371c04c2afa65228a60ded739b5fbc2",
+      "title": "fix(ui): the layer list doesn't move with no layer selected"
+    },
+    {
+      "number": 9596,
+      "head": "e62013cfd652fa60470a0f7a185fbc8f3d2a2c92",
+      "title": "fix(io): drop a kept Txt2 once no type layers are left"
+    },
+    {
+      "number": 9595,
+      "head": "75fa71a4f55a098061b12d91508b514565ab8dcf",
+      "title": "fix(compose, gpu): a Pass Through group with Blend If renders isolated"
+    },
+    {
+      "number": 9594,
+      "head": "46512521fec2b4b462c29d9fefd16398cb81212c",
+      "title": "fix(engine): copied type keeps its size across resolutions after an edit"
+    },
+    {
+      "number": 9590,
+      "head": "a9744ed44dc782613b19a97b8c159a091f73e669",
+      "title": "fix(io): PSD layer-effect contours keep at most 16 points"
+    },
+    {
+      "number": 9589,
+      "head": "da157945077190e550b53a5e14b0536f62761292",
+      "title": "fix(compose, gpu): an adjustment layer's This Layer range judges its result before Opacity"
+    },
+    {
+      "number": 9584,
+      "head": "fc0f7b1132f799b5bba7be642c9047499d95a887",
+      "title": "fix(compose, gpu): Blend If hard points match Photoshop at 16 bits and for Gray"
+    },
+    {
+      "number": 9523,
+      "head": "728782c595e768bdb6febc7f30e4d1456d13fd36",
+      "title": "Fix Type on a Path wrapping and caret positioning across closed-path seams"
+    },
+    {
+      "number": 9517,
+      "head": "81b434c6149732eadc94e0465fea81bd075facd4",
+      "title": "fix(ui): Layer Style scrolls on a short window so OK stays on screen"
+    },
+    {
+      "number": 9512,
+      "head": "6c55561128caf5ac917eb3d174e8e7bb4bd48e23",
+      "title": "fix(compose, gpu): adjustment layers apply Fill inside the special eight blend modes"
+    },
+    {
+      "number": 9509,
+      "head": "d78d7493d3f0b6e760c88de969ac810e9bc5d910",
+      "title": "fix: an edit at full coverage keeps its result over huge 32-bit values"
+    },
+    {
+      "number": 9504,
+      "head": "993c9ed167c6acd9bc8f87c6cff6e2c7abba17a8",
+      "title": "fix(ui): Keyboard Shortcuts records \u2318Z instead of undoing the capture"
+    },
+    {
+      "number": 9493,
+      "head": "61a413d8df9e90ee545eb08e57c5615aa2b29cea",
+      "title": "fix(vector): a mask feather continues the mask past the canvas edge"
+    },
+    {
+      "number": 9481,
+      "head": "7937adff961027154d795b8905e821244ae4f929",
+      "title": "fix(ui): new layer effects start from the Make Default values"
+    },
+    {
+      "number": 9478,
+      "head": "cc208ee0440bbdf1858565dca49667272a490c56",
+      "title": "fix(text): vertical type sets roman letters upright, one per em, as Photoshop does (#9470)"
+    },
+    {
+      "number": 9472,
+      "head": "4bab657cd4fb4a91ced44d3721e63a002ca5068c",
+      "title": "fix(io): import a Displace smart filter that names its map file without embedding it (#9162)"
+    },
+    {
+      "number": 9457,
+      "head": "2863c3281c2a22dade0ce92d42bf8900074f76c6",
+      "title": "raw: faster tone stage (Shadows, Highlights, Clarity, Texture, Dehaze), same bytes"
+    },
+    {
+      "number": 9436,
+      "head": "819f2692db4302019638c57b6ea34cd1e8f4c24b",
+      "title": "Startup: a failed launch says why in a dialog instead of closing silently (#7643)"
+    },
+    {
+      "number": 9418,
+      "head": "da4b838e54f6073cda4798fa7b63b3b7214aaf93",
+      "title": "Color Lookup: honour the .3dl Mesh header's cube edge and output depth (#9078, #9073)"
+    },
+    {
+      "number": 9416,
+      "head": "742b06805284d8d76d5a29ec1821193f4835fedf",
+      "title": "Affinity reader: contiguous curve records and a cheaper object tag index"
+    },
+    {
+      "number": 9401,
+      "head": "f241bba1adfb9c7ec5dd5ed9d86f95b63c7bc2c3",
+      "title": "fix(format): a save on macOS keeps the file's creation time (#9388)"
+    },
+    {
+      "number": 9354,
+      "head": "41eb1de5cff17f5f5b9c22913e48b71565b56a2a",
+      "title": "fix(ui): Full Screen Mode needs a document (#9349)"
+    },
+    {
+      "number": 9342,
+      "head": "c46a74621d36adae9707ab8f3eb39cf6b4c302b9",
+      "title": "fix(io, engine): Embed Color Profile writes sRGB for an untagged document (#9325)"
+    },
+    {
+      "number": 9339,
+      "head": "393645ab91460af2e37cc3ba8f6921e7551f676e",
+      "title": "fix(export): embed requested sRGB profile for untagged sources (#9325)"
+    },
+    {
+      "number": 9110,
+      "head": "2e716f93b2e2135944e07d821be4eb38fce13ec9",
+      "title": "test: GPU tests honour WGPU_BACKEND, so they run on Windows with an Intel GPU (#4)"
+    },
+    {
+      "number": 9019,
+      "head": "364c4be1c19728aefa601ee924bc7a0cd6a09789",
+      "title": "fix(xtask): reject unknown performance benchmark selections"
+    },
+    {
+      "number": 9015,
+      "head": "afb4364a8795c42e6353762891b4890d878f9a68",
+      "title": "fix(xtask): reject leading zeroes in numeric prerelease identifiers"
+    },
+    {
+      "number": 9004,
+      "head": "39cf823cdfe486bb967cf81df725d229f7eed903",
+      "title": "fix(ui): enlarge Move tool alignment icons for legibility"
+    },
+    {
+      "number": 8986,
+      "head": "390dfbbcb026b33d46c52c62360b65deca00f258",
+      "title": "Path tools: edit the saved path selected in the Paths panel (#8478)"
+    },
+    {
+      "number": 8985,
+      "head": "8e695caf885b529f01f482b3f0c90cdb34df1915",
+      "title": "Color panel and Color Picker: clip the round cursor to the colour field"
+    },
+    {
+      "number": 8931,
+      "head": "d42dd4c6302c77c1f9dc46b7b53ffa5eb0047a13",
+      "title": "feat(algo): describe the Gaussian blur as data for other devices"
+    },
+    {
+      "number": 8905,
+      "head": "0fdc6259193aab32b8feab7347ddc36196f40a19",
+      "title": "fix(plugins): bound a run's total plug-in memory, not just each instance"
+    },
+    {
+      "number": 8903,
+      "head": "d387f52f1f2f5681b2c7d1c517aa5b5992c7bc88",
+      "title": "Box-filter minified patterns in the CPU and GPU samplers (#8831)"
+    },
+    {
+      "number": 8897,
+      "head": "eb06798f15516eb7e4fac24c98346fd9052e7f8e",
+      "title": "fix(io): read linked smart objects for PSD export as regular files only"
+    },
+    {
+      "number": 8896,
+      "head": "19fa473039ef11deda7c3200c8fac1de41309086",
+      "title": "Select and Mask: Photoshop's full-window workspace (#7069, #8148)"
+    },
+    {
+      "number": 8892,
+      "head": "9267c4fcf83a260d4bae0e441dc1af9bc48aa23b",
+      "title": "ui: larger Align icons and overflow button; Save for Web keeps its width on an invalid Matte"
+    },
+    {
+      "number": 8193,
+      "head": "864024609b872de3d869879f1632b951c896c6cd",
+      "title": "Filter Gallery \u203a Cutout 3/4: edges and curves stage"
+    },
+    {
+      "number": 8192,
+      "head": "412e3b7cf1f4836a5772d93391d21728dbe1f74f",
+      "title": "Filter Gallery \u203a Cutout 2/4: regions stage"
+    },
+    {
+      "number": 8191,
+      "head": "91e4cec43525ca739c05cff614701fbd3576e389",
+      "title": "Filter Gallery \u203a Cutout 1/4: colour and palette stage"
+    },
+    {
+      "number": 8074,
+      "head": "290f924d0fecc3bf6bea159c0d9e86255d326a96",
+      "title": "Transform: remember selected interpolation (#8067)"
+    },
+    {
+      "number": 8039,
+      "head": "5579cf5439856fed93f41a669a3fc9b56d5813cf",
+      "title": "Compose: Extend Softer outer glows past Size (#7899)"
+    },
+    {
+      "number": 7903,
+      "head": "5c30699087b02edcaa23397a0f7076bf503be048",
+      "title": "Filter Gallery \u203a Cutout 4/4: trace the image into flat paper shapes"
+    },
+    {
+      "number": 7848,
+      "head": "389a1d5bd67072d5581c27989080222a7065b585",
+      "title": "fix(retouch): preserve Smudge pickup with live-pixel stroke commits"
+    },
+    {
+      "number": 7743,
+      "head": "fd6fc92015fd08560362b4b32844edf97722f292",
+      "title": "packaging: the portable zip holds the files, not a folder with the files in it"
+    },
+    {
+      "number": 7648,
+      "head": "d24669d412f64ab079a668b0b8520ddbc607410c",
+      "title": "Pen: Path Operations menu, as in Photoshop (#1397)"
+    },
+    {
+      "number": 7255,
+      "head": "1b810052bc3a876c1eaf1a8766870ffdba9f8a80",
+      "title": "fix(engine): guard trim and duplicate merged against documents exceeding render limits (#7223)"
+    },
+    {
+      "number": 6510,
+      "head": "8bb0a5e67474d36ae08d565251edb1ae780dd044",
+      "title": "Automation: resolve configured root aliases for absolute paths (#6426)"
+    },
+    {
+      "number": 6492,
+      "head": "657cfd503d4ce276df6b5e9f763cb3a5cf2deaeb",
+      "title": "Fail control startup promptly when its port is occupied"
+    },
+    {
+      "number": 6449,
+      "head": "25c38a0b69b7bff31badcdbe2ef9f2ff6aba1c63",
+      "title": "Hand tool: Cmd held zooms in and Alt zooms out, as in Photoshop"
+    },
+    {
+      "number": 6387,
+      "head": "8bfbbf816025942b74130adf16fb07265817b691",
+      "title": "Video Frames to Layers: every page of a multi-page TIFF (part of #6379)"
+    },
+    {
+      "number": 6383,
+      "head": "74aadae69e3b3f5cd257bca1926acc1b1297b1a2",
+      "title": "Windows releases ship a symbols zip: the release build's PDBs for profilers (#688)"
+    },
+    {
+      "number": 6236,
+      "head": "ce546dd4b5451a17b843ef1e129bdb40fbfe3160",
+      "title": "Shift+Alt+right-click opens Photoshop's HUD Color Picker (#6098)"
+    },
+    {
+      "number": 6139,
+      "head": "e2347f8ead85d929193044f139788b850e31c06f",
+      "title": "Fix painting workflows, File Info and layer selection"
+    },
+    {
+      "number": 6026,
+      "head": "248ba660576f4896f69cbb6639353e2f1d295271",
+      "title": "Marquee: Fixed Size selects exactly the entered width and height (fixes #6015)"
+    },
+    {
+      "number": 5744,
+      "head": "50b1f6734799cf7b5d45dd84868976afd31aa711",
+      "title": "fix(ui): keep detached documents in one interactive window"
+    },
+    {
+      "number": 5650,
+      "head": "4b1bd6fb6d264f885cb9caa3b8a6578ee527bd7b",
+      "title": "Guides: \u2325 turns a dragged guide; dropping one on either ruler deletes it (#5034)"
+    },
+    {
+      "number": 5515,
+      "head": "375d4894a119b6cd5933d53e8fe7f506d2783392",
+      "title": "Selecting subject now automatically applies to selected layer, and us\u2026"
+    },
+    {
+      "number": 5270,
+      "head": "9db1c7ae1d48ce4f31622b5f9029c70c590842f8",
+      "title": "Layer Style: Gradient Overlay takes any number of colour stops (#5177)"
+    },
+    {
+      "number": 5176,
+      "head": "c96891c298151c5cb11a55928b9e1c27911f38bd",
+      "title": "Play CopyCat, AJ and Line and Color action sets; keep patterns across restarts; Shift Edge scale"
+    },
+    {
+      "number": 5165,
+      "head": "27bc6e4b37b701480efa69559ab13eafc52bd94c",
+      "title": "Fix: brush section selection"
+    },
+    {
+      "number": 5082,
+      "head": "23bab3cc9204568aaeb012b9e1da70a2caacb879",
+      "title": "fix(mixer-brush): Alt-click samples the foreground colour like the Brush (#4873)"
+    },
+    {
+      "number": 5010,
+      "head": "cc865221894e21f846d92b721cce7421ea338363",
+      "title": "Layer Style: Photoshop's layout (three columns, OK/Cancel/New Style/Preview on the right, one-line rows) [depends on #4938]"
+    },
+    {
+      "number": 4993,
+      "head": "81964dc5ef77a71a2ae2a938958cf3ed77d90719",
+      "title": "Prevent control-channel engine commands from editing behind modal dialogs"
+    },
+    {
+      "number": 4992,
+      "head": "194a8976cd6c14441222b287b9b4f4841a0eb2f9",
+      "title": "Preserve Dissolve coverage when compositing clipped layers"
+    },
+    {
+      "number": 4985,
+      "head": "1dc98f80f60e993f3edf20af815391b6a7e7add7",
+      "title": "feat(ui): add Shift+right-click brush mode picker"
+    },
+    {
+      "number": 4938,
+      "head": "63b7c921634835259139e4d3e7b9d3c396998b4d",
+      "title": "Layer Style: one dialog size on every page, and it fits short screens"
+    },
+    {
+      "number": 4763,
+      "head": "f2804a7cf013519d9ba8bac1da3d96458c4f656b",
+      "title": "refactor(liquify): reuse native brush resizing and anchored HUD feedback"
+    },
+    {
+      "number": 4742,
+      "head": "b7145b5a8afb85d0eef3922931d6749436966943",
+      "title": "fix(macos): bundle photocraft-cli and resolve it from droplet scripts"
+    },
+    {
+      "number": 4711,
+      "head": "db546ff4822a011a7915b66af3834f94c05767db",
+      "title": "Treat Dissolve as a per-pixel choice"
+    },
+    {
+      "number": 4547,
+      "head": "a08f7a2295488c2692f68902835a693322017b64",
+      "title": "fix(icons): PhotoCraft icon corner radius matches other Craft apps (#4478)"
+    },
+    {
+      "number": 4035,
+      "head": "15ebf8fc940031abdf772e5fdd687c8b55938639",
+      "title": "fix(cmyk): Flatten Image and merges keep the inks of a tagged CMYK document (#3778)"
+    },
+    {
+      "number": 4023,
+      "head": "303a5346fcb5961cf3a776024db58507b401e4ea",
+      "title": "i18n(es): add 548 missing rows, fix five filter and video terms"
+    },
+    {
+      "number": 3874,
+      "head": "92488307722c3b840507827cac7ee9a88470fc8a",
+      "title": "fix(layer-style): support Blend If Alt-split handle feathering and throttle live preview"
+    },
+    {
+      "number": 3748,
+      "head": "c45d01eafe84e600bb28033a6853cc19c827b7bf",
+      "title": "control: suggest near matches for unknown command ids and methods (#3674)"
+    },
+    {
+      "number": 3554,
+      "head": "dd21e325b515cbf67fd4a461ae5b3e1b195aa53d",
+      "title": "fix(packaging): launch bundled CLI directly from AppImage"
+    },
+    {
+      "number": 3520,
+      "head": "d36ec9a21e9c1ed70de2e0d185efd7e084644157",
+      "title": "fix(ui): restore square color chips in Studio Dark theme"
+    },
+    {
+      "number": 3519,
+      "head": "807de6c043a512cb947d86b944c758b3db1277c7",
+      "title": "feat(export): optionally trim transparent margins from layer files"
+    },
+    {
+      "number": 3464,
+      "head": "1eecd00b2dff4ae4c642269cec211cd06ce1c3aa",
+      "title": "fix(vector): target selected saved paths and own Pen gestures"
+    },
+    {
+      "number": 3461,
+      "head": "5d8cb2a39ad70e31260f1f3fc2010ca132daff65",
+      "title": "Replay recorded layer visibility on the intended named layer"
+    },
+    {
+      "number": 3387,
+      "head": "58b83f42a4b39cf56751be53ec8d227efee70f68",
+      "title": "feat(codecs): add lossless JPEG XL export for 8/16-bit images"
+    },
+    {
+      "number": 3142,
+      "head": "e2ed234e654e574109ffcdb9756f8e8d1b8a00b2",
+      "title": "Read applied Sony RAW metadata and crop ILCE-6000 images"
+    },
+    {
+      "number": 2300,
+      "head": "ebf3777aec961d1815aa141d9987eaa645c2273f",
+      "title": "Scroll the viewport while outlining with Polygonal Lasso"
+    }
+  ],
+  "validation": "New combined CI pending; previous 108-PR CI and Windows artifact do not validate this trimmed source. Manual tests NOT RUN."
+}

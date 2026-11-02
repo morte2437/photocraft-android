@@ -34,11 +34,14 @@ egui = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
+blake3 = { version = "1.8", default-features = false, features = ["pure"] }
 chrono = { workspace = true }
 clap = { workspace = true }
 thiserror = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tempfile = "=3.27.0"
+roxmltree = "0.21"
 craft-update = { workspace = true }
 rfd = { workspace = true }
 arboard = { version = "3.7", features = ["wayland-data-control"] }
@@ -68,6 +71,15 @@ muda = { version = "=0.21.2", default-features = false }
 # Quit with `terminate:` from the main queue, outside winit's event handler (mac_window.rs).
 # Already in Cargo.lock (winit, objc2-app-kit); pinned exactly to the same version.
 dispatch2 = { version = "=0.3.1", default-features = false, features = ["std"] }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "=1.1.5", features = ["fs"] }
+# Reads CFBundleExecutable from a chosen macOS application bundle's Info.plist (XML or binary) for
+# external vector editing. Already in Cargo.lock (craft-update); built on every Unix so Linux CI
+# compiles and tests the bundle checks. The event-stream reader (behind plist's "unstable"
+# feature) lets us cap nesting: building a `Value`, or serde's ignored fields, recurses per level.
+# Pinned exactly because that API may change in a minor release: review the diff before bumping.
+plist = { version = "=1.10.3", features = ["enable_unstable_features_that_may_break_with_minor_version_bumps"] }
 
 # Drop position on X11 (`cursor.rs`): pure-Rust X client, already in Cargo.lock; pinned exactly.
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -110,3 +122,7 @@ harness = false
 [build-dependencies]
 # Icon + VERSIONINFO for photocraft.exe; build.rs only uses it when targeting Windows.
 winresource = "0.1"
+
+[dev-dependencies]
+# Opt-in native save-back acceptance transports embedded sources through engine JSON.
+base64 = "=0.22.1"

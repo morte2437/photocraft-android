@@ -149,6 +149,9 @@ const PROFILES: &[Profile] = &[Profile {
 ///   4352 x 2868 sensor data, giving the camera JPEG's 4288 x 2848 frame
 ///   (10 pixels of margin on the right and bottom; the right border reads the
 ///   camera's flat 255 from column 4310 on).
+/// * **ILCE-6000** (3 files): the same 12 x 12 origin and 6000 x 4000 image;
+///   confirmed by the file's EXIF size and SR2SubIFD's area [12, 12, 6012, 4012],
+///   and checked against the matching camera JPEGs. No colour profile is inferred.
 struct ImageArea {
     make: &'static str,
     model: &'static str,
@@ -163,6 +166,7 @@ const IMAGE_AREAS: &[ImageArea] = &[
     ImageArea { make: "NIKON CORPORATION", model: "NIKON D5100", size: (4992, 3280), crop: (8, 8, 4928, 3264) },
     ImageArea { make: "NIKON CORPORATION", model: "NIKON D800E", size: (7424, 4924), crop: (8, 6, 7360, 4912) },
     ImageArea { make: "SONY", model: "ILCE-7", size: (6048, 4024), crop: (12, 12, 6000, 4000) },
+    ImageArea { make: "SONY", model: "ILCE-6000", size: (6048, 4024), crop: (12, 12, 6000, 4000) },
 ];
 
 /// Applies the measured profile of the camera that made `s`, when there is one,
@@ -306,6 +310,19 @@ mod tests {
         let mut s = sensor("SONY", "ILCE-7", 6048, 4024);
         apply(&mut s, 14);
         assert_eq!(s.crop, Rect::new(12, 12, 6000, 4000));
+
+        let mut s = sensor("SONY", "ILCE-6000", 6048, 4024);
+        apply(&mut s, 14);
+        assert_eq!(s.crop, Rect::new(12, 12, 6000, 4000));
+        assert!(s.color.calibrations.is_empty() && s.tone_curve.is_empty());
+        // A file's explicit crop wins, including a different in-camera aspect ratio.
+        s.crop = Rect::new(12, 324, 6000, 3376);
+        apply(&mut s, 14);
+        assert_eq!(s.crop, Rect::new(12, 324, 6000, 3376));
+
+        let mut s = sensor("SONY", "ILCE-6000", 3024, 2012);
+        apply(&mut s, 14);
+        assert_eq!(s.crop, Rect::new(0, 0, 3024, 2012));
 
         // Another size or model of the same maker is left alone.
         let mut s = nef("NIKON D800E", 2496, 1646);

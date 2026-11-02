@@ -107,6 +107,9 @@ pub fn menu_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> f32 {
                 buttons.push(title);
             }
             edge = if rtl { buttons.iter().map(|b| b.rect.left()).fold(edge, f32::min) } else { buttons.iter().map(|b| b.rect.right()).fold(edge, f32::max) };
+            if let (Some(first), Some(last)) = (buttons.first(), buttons.last()) {
+                crate::zoom_field::set_menu_bar_rect(ui.ctx(), first.rect.union(last.rect));
+            }
             switch_on_hover(ui.ctx(), &buttons);
             // ← and → step to the menu on that side, so in screen order.
             let mut tops: Vec<egui::Id> = buttons.iter().map(egui::Popup::default_response_id).collect();

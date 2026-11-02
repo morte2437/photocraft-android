@@ -705,6 +705,59 @@ fn cmd_is_not_the_move_tool_for_selection_hand_zoom_pen_shape_or_type_tools() {
     }
 }
 
+/// With the Hand tool, ⌘ (Ctrl off the Mac) held is Zoom In and ⌥ Zoom Out, as in Photoshop; the
+/// Hand is back when the key comes up (#6434).
+#[test]
+fn cmd_and_alt_with_the_hand_tool_zoom_in_and_out_while_held() {
+    let mut h = harness(Tool::Hand);
+    let z0 = h.state().ui.views[0].zoom;
+    hold_mods(&mut h, Modifiers::COMMAND);
+    assert_eq!(held_tool(h.state(), &h.ctx), Some(Temporary::ZoomIn));
+    click(&mut h, 200.0, 150.0, Modifiers::COMMAND);
+    let z1 = h.state().ui.views[0].zoom;
+    assert!(z1 > z0, "{z0} -> {z1}");
+    hold_mods(&mut h, Modifiers::ALT);
+    assert_eq!(held_tool(h.state(), &h.ctx), Some(Temporary::ZoomOut));
+    click(&mut h, 200.0, 150.0, Modifiers::ALT);
+    let z2 = h.state().ui.views[0].zoom;
+    assert!(z2 < z1, "{z1} -> {z2}");
+    hold_mods(&mut h, Modifiers::COMMAND | Modifiers::ALT);
+    assert_eq!(held_tool(h.state(), &h.ctx), Some(Temporary::ZoomOut), "⌥ turns ⌘'s Zoom In around");
+    hold_mods(&mut h, Modifiers::NONE);
+    assert_eq!(held_tool(h.state(), &h.ctx), None);
+    // Released: a drag pans again.
+    let (center, zoom) = (h.state().ui.views[0].center, h.state().ui.views[0].zoom);
+    drag_with(&mut h, Modifiers::NONE, 200.0, 150.0, 260.0, 190.0);
+    assert_ne!(h.state().ui.views[0].center, center, "the Hand pans");
+    assert_eq!(h.state().ui.views[0].zoom, zoom);
+    assert_eq!(h.state().ui.tool, Tool::Hand);
+}
+
+/// ⌘ pressed in the middle of a Hand drag doesn't stop the pan, and an open Free Transform keeps ⌘
+/// for its handles.
+#[test]
+fn cmd_mid_pan_or_during_free_transform_is_not_the_hand_tools_zoom() {
+    let mut h = harness(Tool::Hand);
+    let z0 = h.state().ui.views[0].zoom;
+    press_at(&mut h, 200.0, 150.0);
+    hold_mods(&mut h, Modifiers::COMMAND);
+    let center = h.state().ui.views[0].center;
+    move_to(&mut h, 300.0, 150.0);
+    assert_ne!(h.state().ui.views[0].center, center, "the drag kept panning after ⌘ went down");
+    release(&mut h, 300.0, 150.0, Modifiers::COMMAND);
+    hold_mods(&mut h, Modifiers::NONE);
+    assert_eq!(h.state().ui.views[0].zoom, z0, "no zoom");
+
+    with_layer(&mut h);
+    let ctx = h.ctx.clone();
+    crate::menus::invoke(h.state_mut(), &ctx, "edit.freeTransform", json!({})).unwrap();
+    h.run_steps(2);
+    assert!(h.state().ui.transform.is_some());
+    hold_mods(&mut h, Modifiers::COMMAND);
+    assert_eq!(held_tool(h.state(), &h.ctx), None);
+    hold_mods(&mut h, Modifiers::NONE);
+}
+
 /// The params of the last brush stroke (`paint.stroke`, or the Pencil's `paint.pencil`).
 fn last_stroke(app: &PhotocraftApp) -> serde_json::Value {
     let journal = &app.session.journal;

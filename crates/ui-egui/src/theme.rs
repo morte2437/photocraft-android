@@ -363,7 +363,9 @@ impl Tokens {
                 radius_lg: 12.0,
                 bevel: false,
                 pro: false,
-                round_chips: true,
+                // Studio Dark uses the compact overlapping square foreground/background
+                // chips rather than the large stacked circles (#3494).
+                round_chips: false,
                 tab_strip: Color32::TRANSPARENT,
                 row_selected: Color32::TRANSPARENT,
                 histogram_bg: Color32::from_rgb(14, 14, 15),

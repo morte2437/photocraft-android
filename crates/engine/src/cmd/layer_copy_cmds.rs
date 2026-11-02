@@ -118,6 +118,10 @@ pub(crate) fn adapt_copies(s: &Session, copies: &mut Document, dest: &Document) 
             *surf = surf.convert(f);
         });
     }
+    // Type keeps its pixels and takes the destination's point size, as in the reference
+    // application (24 pt at 72 ppi becomes 5.76 pt at 300 ppi, with no transform). Left at the
+    // source's, a copy re-laid out at the destination's resolution on its next edit (#9560).
+    crate::canvas_geom::retarget_type_resolution(copies, dest.resolution_dpi);
     let new_canvas = copies.bounds() != dest.bounds();
     prepare_shapes(&mut copies.layers, dest, new_canvas);
     Ok(())

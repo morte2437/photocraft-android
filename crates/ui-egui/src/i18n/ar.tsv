@@ -546,6 +546,22 @@
 	Decontaminate	إزالة التلوث اللوني
 	Output	الإخراج
 	Refine Edge	تحسين الحافة
+	Clear Selection	مسح التحديد
+	Color Aware	مراعٍ للألوان
+	Decontaminate Colors	إزالة تلوث الألوان
+	Edge Detection	اكتشاف الحواف
+	Global Refinements	تحسينات عامة
+	High Quality Preview	معاينة عالية الجودة
+	Object Aware	مراعٍ للكائنات
+	Object Aware needs a segmentation model, which isn't available yet	يتطلب «مراعٍ للكائنات» نموذج تجزئة، وهو غير متوفر بعد
+	Real-Time Refinement	تحسين في الوقت الفعلي
+	Refine Edge Brush Tool	أداة فرشاة تحسين الحافة
+	Refine Hair	تحسين الشعر
+	Refine Hair needs hair detection, which isn't available yet	يتطلب «تحسين الشعر» اكتشاف الشعر، وهو غير متوفر بعد
+	Refine Mode	وضع التحسين
+	Select and Mask was closed: another layer was selected	تم إغلاق «تحديد وقناع»: حُدِّدت طبقة أخرى
+	Select and Mask was closed: its document is no longer the active one	تم إغلاق «تحديد وقناع»: لم يعد مستنده هو المستند النشط
+	View Mode	وضع العرض
 	Modify	تعديل
 	Border…	حدود التحديد…
 	Smooth…	تنعيم…
@@ -2400,7 +2416,7 @@
 	Frequency	التردد
 	Use tablet pressure to change pen width	استخدام ضغط الجهاز اللوحي لتغيير عرض القلم
 
-# About ▸ Contributors / Models (credits, craftrules standards/contributors.md)
+# About ▸ Contributors / Models (credits)
 	About	حول
 	Contributors	المساهمون
 	Models	النماذج
@@ -3314,17 +3330,8 @@ curves	Smooth	تنعيم
 	Shadow Tint	صبغة الظلال
 # PhotoCraft release checks.
 	Check for Updates…	التحقق من وجود تحديثات…
-	PhotoCraft Updates	تحديثات PhotoCraft
-	Checking for updates…	جارٍ التحقق من وجود تحديثات…
 	Open the release page to choose an installer for your system.	افتح صفحة الإصدار لاختيار برنامج التثبيت المناسب لنظامك.
-	Open Download Page	فتح صفحة التنزيل
-	PhotoCraft is up to date.	PhotoCraft محدّث.
-	Could not check for updates.	تعذر التحقق من وجود تحديثات.
-	Updates have not been checked yet.	لم يتم التحقق من التحديثات بعد.
-	Check Again	التحقق مرة أخرى
 	Automatically Check for Updates	التحقق من وجود تحديثات تلقائيًا
-	Installed version: {version}	الإصدار المثبت: {version}
-	PhotoCraft {version} is available.	يتوفر PhotoCraft {version}.
 # History panel › History Brush source (#2966)
 	Paints from the History panel's source state	يرسم من حالة المصدر في لوحة السجل
 	Sets the source for the history brush	يحدد مصدر فرشاة السجل
@@ -3525,12 +3532,16 @@ curves	Smooth	تنعيم
 	Drawn on the CPU: {reason}. Click for System Info.	يُرسم على CPU: {reason}. انقر لعرض معلومات النظام.
 	Level:	المستوى:
 	Percentile:	المئين:
-	Release Notes	ملاحظات الإصدار
 	Remember Settings	تذكر الإعدادات
 	Show Channels in Color	عرض القنوات بالألوان
 	Show Statistics	عرض الإحصائيات
 	Source:	المصدر:
 	Uncached Refresh	تحديث دون ذاكرة التخزين المؤقت
-	Update and Restart	التحديث وإعادة التشغيل
 	X	X
 	Y	Y
+
+# Select and Mask target ownership diagnostics (#8896 integration)
+
+	The path was kept as the Work Path	تم الاحتفاظ بالمسار كمسار عمل
+	The path was discarded	تم تجاهل المسار
+	Edit Brush…	تحرير الفرشاة…

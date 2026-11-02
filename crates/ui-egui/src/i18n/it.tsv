@@ -13,18 +13,132 @@
 # letters; the trailing … of dialog commands is kept.
 
 # Layer Mask Display Options (the layer mask rubylith's colour and opacity)
-	Mask Options…	Opzioni maschera…
-	Layer Mask Display Options…	Opzioni di visualizzazione maschera di livello…
 
 # Channel Options and New Spot Channel (#3761)
-	Channel Color	Colore canale
-	Color Indicates:	Il colore indica:
-	Solidity:	Solidità:
-	Ink Characteristics	Caratteristiche inchiostro
 
 # Guide layout dialog
 
 # Custom print paper (#3820)
+
+# Select and Mask dialog labels
+# Field Blur pins (#3373)
+
+# Dialogs and panels
+
+# Layers-panel trash confirmation
+
+
+# Tool names, brush and style option tables
+
+# Templates with placeholders
+
+# Preferences (labels are generated from the setting names)
+
+# Added with the rebase onto the dock / brush picker work
+
+# Strings added to the UI after this catalog was first written (rebase onto main, 2026-10).
+# Gradient Editor window, opened from the options bar's gradient swatch.
+
+# Tool, filter, warp-style, path, layer-comp and metadata names that fell outside the `tl!` test.
+# Italian follows the tool wording used above (Strumento X).
+
+# Command-id override: under Edit > Purge a bare Annulla reads as an action, not the history.
+# Rendering mode and recovery
+
+
+
+
+
+# Camera Raw: contextual controls and window title
+
+# Strings added on main after this catalog was written (2026-10).
+
+
+# About ▸ Contributors / Models (credits)
+# Layer Style > Blending Options (Advanced Blending)
+
+# Swatches panel
+
+# Shared screen eyedropper and text Color Picker (#1128).
+
+# Fill dialog, layer style contours and Image Size
+
+
+# Layer colour labels.
+
+# Pattern Stamp tool
+
+# Painting symmetry presets.
+
+# Eyedropper Sample Size and Sample (#1649).
+
+# Color Picker warnings
+
+
+# Shared Layer Style color picker
+# File Info ▸ Camera Data (read-only EXIF fields; "Make" is the camera maker, not the verb).
+# Shared panel docking
+# Edit › Content-Aware Fill workspace
+
+
+# Smart Filter editors
+# Select and Mask view modes (#1754)
+# Select and Mask Refine Edge Brush (#2972)
+
+# Color Sampler (added with the i18n coverage repair)
+
+# History panel menu (#2966)
+# History panel › History Options… (#2966)
+# Print dialog (#2697)
+# Counted status messages and labels (#3454; adapted from PR #3821)
+# View › Guides › New Guide… › Color
+
+# Dynamic labels (filter and adjustment parameters, Camera Raw, panels, dialogs) that the
+# other catalogs already translate
+
+# Path, channel, layer style, status and System Info labels the Czech catalog added
+
+# Actions panel: Load/Save Actions (.atn) and kept Photoshop steps
+
+# Actions panel: set folders, dialog toggle, Insert Stop
+# Batch / Image Processor
+
+# Native Windows printing qualification
+# PhotoCraft release checks.
+# History panel › History Brush source (#2966)
+# Bevel & Emboss shading controls.
+# Embedded Profile Mismatch: profile names beside the choices, Remember this choice
+# Darken / Lighten Interface (⇧⌘F1 / ⇧⌘F2)
+# Bevel & Emboss Technique.
+
+# Color management, Liquify, glyph group, warp and Camera Raw labels the Serbian, Vietnamese and Japanese catalogs added
+# Shortcut commands, find and replace, profile prompts and metadata labels the German, Hungarian and Serbian catalogs added
+# View › Guides › right-click a guide
+
+# Image › Mode › Bitmap (#5559)
+# Free Transform: a new layer while the box is open (#5859)
+# Preferences › Performance › GPU Memory; the status bar and slow-redraw notice
+
+# DDS Options (#1327)
+
+# Color Table (.act) dialog
+
+# Graphics Adapter preference (#1885)
+
+# Styles panel: Import / Export Styles (.asl)
+# Actions: a step dialog holds a suspended recording (#7365)
+# Paragraph direction (TYPE-218-2)
+# Print preview image (#8236)
+# Color panel menu: modes, copy commands and colour ramps (#6000)
+
+# Pen draft after a refused commit (#7648)
+# Art History Brush (#213).
+	Mask Options…	Opzioni maschera…
+	Layer Mask Display Options…	Opzioni di visualizzazione maschera di livello…
+	Channel Color	Colore canale
+	Color Indicates:	Il colore indica:
+	Solidity:	Solidità:
+	Ink Characteristics	Caratteristiche inchiostro
 	Paper Width	Larghezza della carta
 	Paper Height	Altezza della carta
 	Columns	Colonne
@@ -44,7 +158,6 @@
 	5 Columns, 3 Rows	5 colonne, 3 righe
 	8 Columns	8 colonne
 	12 Columns	12 colonne
-
 	File	File
 	Edit	Modifica
 	Image	Immagine
@@ -451,6 +564,7 @@
 	Intersect Shape Areas	Interseca aree forme
 	Exclude Overlapping Shapes	Escludi forme sovrapposte
 	Merge Shape Components	Unisci componenti forma
+	Path operations	Operazioni sui tracciati
 	Align	Allinea
 	Top Edges	Bordi superiori
 	Vertical Centers	Centri verticali
@@ -530,7 +644,6 @@
 	Color Range…	Intervallo colori…
 	Focus Area…	Area di messa a fuoco…
 	Select and Mask…	Seleziona e maschera…
-# Select and Mask dialog labels
 	Smart Radius	Raggio avanzato
 	Shift Edge	Sposta bordo
 	Decontaminate	Decontamina
@@ -557,7 +670,6 @@
 	Blur	Sfocatura
 	Blur Gallery	Galleria sfocatura
 	Field Blur…	Sfocatura campo…
-# Field Blur pins (#3373)
 	No pin selected	Nessuna puntina selezionata
 	Click the image to add a pin; drag a pin to move it, or its ring to change its blur. Delete removes the selected pin.	Fai clic sull’immagine per aggiungere una puntina; trascina una puntina per spostarla o il suo anello per cambiare la sfocatura. Canc rimuove la puntina selezionata.
 	Drag the handles on the outline to resize and turn it, the square to round its corners, and the dots inside to set where the blur starts.	Trascina le maniglie sul contorno per ridimensionarlo e ruotarlo, il quadrato per arrotondarne gli angoli e i punti interni per stabilire dove inizia la sfocatura.
@@ -821,8 +933,6 @@
 	Edits	Modifiche
 @plural	{n} item|{n} items	{n} elemento|{n} elementi
 	Auto	Automatico
-
-# Dialogs and panels
 	(print to the printer)	(stampa sulla stampante)
 	+ Add variable	+ Aggiungi variabile
 	30 frames @ 30 fps	30 fotogrammi @ 30 fps
@@ -836,6 +946,9 @@
 	Add Layer Mask	Aggiungi maschera di livello
 	Add Stop	Aggiungi punto
 	Add a layer style	Aggiungi uno stile livello
+	Move effect up	Sposta effetto in alto
+	Move effect down	Sposta effetto in basso
+	Delete effect	Elimina effetto
 	Add a mask  (from the selection; {key} inverts)	Aggiungi una maschera (dalla selezione; {key} inverte)
 	Add an adjustment	Aggiungi una regolazione
 	Add disk	Aggiungi disco
@@ -1063,8 +1176,6 @@
 	Delete current channel	Elimina canale corrente
 	Delete current state	Elimina stato corrente
 	Delete effect layer	Elimina livello effetto
-
-# Layers-panel trash confirmation
 	Delete layer ‘{name}’?	Eliminare il livello «{name}»?
 	Delete {count} layers? {names}	Eliminare {count} livelli? {names}
 	Delete layer?	Eliminare il livello?
@@ -1073,7 +1184,6 @@
 	Missing delete command	Comando di eliminazione mancante
 	Invalid delete command	Comando di eliminazione non valido
 	Layer deleted, but confirmation preference could not be saved: {error}	Il livello è stato eliminato, ma non è stato possibile salvare la preferenza di conferma: {error}
-
 	Delete layer	Elimina livello
 	Delete layer comp	Elimina composizione livelli
 	Delete note	Elimina nota
@@ -1105,6 +1215,7 @@
 	Drag a rectangle around the object	Trascina un rettangolo attorno all'oggetto
 	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click a constraint to change or delete it.	Trascina sull'immagine per aggiungere un vincolo; Maiusc per orizz/vert; clic destro su un vincolo per modificarlo o eliminarlo.
 	Drag to move the active shape's path or the Work Path	Trascina per spostare il tracciato forma attiva o il Tracciato di lavoro
+	Drag to move the selected path	Trascina per spostare il tracciato selezionato
 	Click: select anchor · Drag: move anchor, handle or segment · {shift}-click: add · {alt}-click: whole subpath	Clic: seleziona punto · Trascina: sposta punto, maniglia o segmento · {shift}-clic: aggiungi · {alt}-clic: intero sottotracciato
 	Draw with the Pen tool (P) or make a work path from a selection.	Disegna con Penna (P) o crea un tracciato di lavoro da una selezione.
 	Drop an image or PSD anywhere to open it.	Trascina un'immagine o PSD ovunque per aprirlo.
@@ -1626,8 +1737,6 @@
 	No saved presets yet.	Nessun predefinito salvato.
 	Error	Errore
 	Command	Comando
-
-# Tool names, brush and style option tables
 	Adjustment layers have nothing to transform	I livelli di regolazione non hanno nulla da trasformare
 	Altitude	Altitudine
 	Android 1080p	Android 1080p
@@ -1859,8 +1968,6 @@
 	Yellows	Gialli
 	Zoom Tool	Strumento Zoom
 	{name} Properties	Proprietà {name}
-
-# Templates with placeholders
 	Revert “{name}” to the last saved version? Your changes will be lost.	Ripristinare “{name}” all'ultima versione salvata? Le modifiche andranno perse.
 	Do you want to save the changes you made to “{name}” before quitting?	Vuoi salvare le modifiche apportate a “{name}” prima di uscire?
 	Do you want to save the changes you made to “{name}” before closing?	Vuoi salvare le modifiche apportate a “{name}” prima di chiudere?
@@ -1881,8 +1988,6 @@
 @plural	{n} Layer|{n} Layers	{n} livello|{n} livelli
 @plural	{n} layer|{n} layers	{n} livello|{n} livelli
 @plural	Group · {n} layer|Group · {n} layers	Gruppo · {n} livello|Gruppo · {n} livelli
-
-# Preferences (labels are generated from the setting names)
 	Additional plugins folder	Cartella plugin aggiuntiva
 	Adobe	Adobe
 	Adobe rgb	Adobe RGB
@@ -2082,8 +2187,6 @@
 	Luminosity	Luminosità
 @plural	{n} sample|{n} samples	{n} campione|{n} campioni
 	{added}, {removed} subtracted	{added}, {removed} sottratti
-
-# Added with the rebase onto the dock / brush picker work
 	Adjustment Preview	Anteprima regolazione
 	Airbrush: keeps depositing paint while the pointer rests.	Aerografo: continua a depositare vernice mentre il puntatore è fermo.
 	Angle:	Angolo:
@@ -2116,8 +2219,6 @@
 	Brush picker	Selettore pennelli
 	Erase	Cancella
 	Right click with painting tools	Clic destro con strumenti pittura
-
-# Strings added to the UI after this catalog was first written (rebase onto main, 2026-10).
 	System Info…	Info sistema…
 	System Info	Info sistema
 	More panels	Altri pannelli
@@ -2188,7 +2289,6 @@
 	Align with layer	Allinea con livello
 	Reset Alignment	Reimposta allineamento
 	Centre the gradient (offset 0, 0)	Centra sfumatura (offset 0,0)
-# Gradient Editor window, opened from the options bar's gradient swatch.
 	Gradient Editor	Editor sfumatura
 	Gradient picker	Selettore sfumatura
 	Gradient stops	Punti della sfumatura
@@ -2248,9 +2348,6 @@
 	4 x 4	4 × 4
 	5 x 5	5 × 5
 	Grid:	Griglia:
-
-# Tool, filter, warp-style, path, layer-comp and metadata names that fell outside the `tl!` test.
-# Italian follows the tool wording used above (Strumento X).
 	Color Range	Intervallo colori
 	Adaptive Wide Angle	Grandangolo adattivo
 	Chalk & Charcoal	Gessetto e carboncino
@@ -2334,10 +2431,7 @@
 	New Channel	Nuovo canale
 	Save Selection	Salva selezione
 	Load Selection	Carica selezione
-
-# Command-id override: under Edit > Purge a bare Annulla reads as an action, not the history.
 @id	edit.purge.undo	Cronologia annullamenti
-# Rendering mode and recovery
 	Rendering Mode	Modalità rendering
 	Automatic (recommended)	Automatico (consigliato)
 	CPU / Compatibility	CPU / Compatibilità
@@ -2353,11 +2447,8 @@
 	Advanced	Avanzato
 	GPU Backend	Backend GPU
 	Details	Dettagli
-
 	Rendering mode	Modalità rendering
 	Freeze Lasso: drag to freeze an area, Alt-drag to thaw it (L)	Lazo congela: trascina per congelare un'area, Alt-trascina per scongelare (L)
-
-
 	Shadow Clipping Warning (U)	Avviso clipping ombre (U)
 	Highlight Clipping Warning (O)	Avviso clipping luci (O)
 	Show Lab Color Readouts	Mostra letture colore Lab
@@ -2366,10 +2457,7 @@
 	Show Skin Tone Indicator	Mostra indicatore incarnato
 	Tone Histogram	Istogramma tonale
 	Show Selected Region	Mostra regione selezionata
-
 cameraRaw	Light	Luce
-
-# Camera Raw: contextual controls and window title
 	Camera Raw Filter ({layer})	Filtro Camera Raw ({layer})
 	Camera Raw ({name})	Camera Raw ({name})
 cameraRaw	Lights	Toni chiari
@@ -2393,8 +2481,6 @@ cameraRaw	Amount	Quantità
 	Scale or rotate the moved area, then press {key}	Ridimensiona o ruota l'area spostata, poi premi {key}
 	Now drag the selection onto another area	Ora trascina la selezione su un'altra area
 	Edit Type	Modifica testo
-
-# Strings added on main after this catalog was written (2026-10).
 	Relight…	Riillumina…
 	No patterns	Nessun pattern
 	Enable {name}	Attiva {name}
@@ -2424,9 +2510,6 @@ cameraRaw	Amount	Quantità
 	Magnetic Lasso Tool	Strumento Lazo magnetico
 	Frequency	Frequenza
 	Use tablet pressure to change pen width	Usa pressione tavoletta per cambiare la larghezza della penna
-
-
-# About ▸ Contributors / Models (credits, craftrules standards/contributors.md)
 	About	Informazioni
 	Contributors	Collaboratori
 	Models	Modelli
@@ -2457,12 +2540,9 @@ cameraRaw	Amount	Quantità
 	% of all commits	% di tutti i commit
 	Lines +/−	Righe +/−
 	@{login}: {prs} PRs, {commits} commits, +{added} / −{deleted} lines (Δ {delta}), +{binAdded} / −{binDeleted} binary assets, {first} – {last}	@{login}: {prs} PR, {commits} commit, +{added} / −{deleted} righe (Δ {delta}), +{binAdded} / −{binDeleted} risorse binarie, {first} – {last}
-# Layer Style > Blending Options (Advanced Blending)
 	Blend If:	Fondi se:
 	Channels:	Canali:
 	Knockout	Foratura
-
-# Swatches panel
 	Create new swatch	Crea nuovo campione
 	New Swatch…	Nuovo campione…
 	New Swatch Group…	Nuovo gruppo di campioni…
@@ -2474,8 +2554,6 @@ cameraRaw	Amount	Quantità
 	Add to Swatches	Aggiungi ai campioni
 	Convert to Layers	Converti in livelli
 	Apply At Canvas Bounds	Applica ai limiti del quadro
-
-# Shared screen eyedropper and text Color Picker (#1128).
 	Color Picker (Text Color)	Selettore colore (Colore del testo)
 	Color Picker ({name})	Selettore colore ({name})
 	Color Picker (Fill Color)	Selettore colore (Colore di riempimento)
@@ -2492,8 +2570,6 @@ cameraRaw	Amount	Quantità
 	Show/Hide Panels	Mostra/nascondi pannelli
 	Could not open	Impossibile aprire
 	{path}: the path is not valid Unicode; rename the file and open it again.	{path}: il percorso non è Unicode valido; rinomina il file e riaprilo.
-
-# Fill dialog, layer style contours and Image Size
 	Contents:	Contenuto:
 	Custom Pattern:	Pattern personalizzato:
 	Foreground Color	Colore primo piano
@@ -2527,7 +2603,6 @@ cameraRaw	Amount	Quantità
 	Click a red pupil to neutralize it	Fai clic su una pupilla rossa per correggerla
 	open source	open source
 	…and {n} more	…e altri {n}
-
 	Eyedroppers:	Contagocce:
 	Set Black Point	Imposta punto nero
 	Set Neutral Gray Point	Imposta il punto grigio neutro
@@ -2536,8 +2611,6 @@ cameraRaw	Amount	Quantità
 	Selection Preview:	Anteprima selezione:
 	Black Matte	Sfondo nero
 	White Matte	Sfondo bianco
-
-# Layer colour labels.
 	Seafoam	Schiuma marina
 	Indigo	Indaco
 	Fuchsia	Fucsia
@@ -2557,8 +2630,6 @@ fontWeight	Bold	Grassetto
 fontWeight	ExtraBold	Extragrassetto
 fontWeight	Black	Nero
 fontWeight	Italic	Corsivo
-
-# Pattern Stamp tool
 	Pattern Stamp Tool	Strumento Timbro pattern
 	Pattern Stamp	Timbro pattern
 	Impressionist	Impressionista
@@ -2566,13 +2637,9 @@ fontWeight	Italic	Corsivo
 	Rotate View Tool	Strumento Ruota vista
 	Reset View	Reimposta vista
 	Drag around the centre to rotate the view  ·  Shift constrains to 15°	Trascina intorno al centro per ruotare la vista  ·  Maiusc vincola a 15°
-
-# Painting symmetry presets.
 	Dual Axis	Doppio asse
 	Diagonal	Diagonale
 	Transform Symmetry	Trasforma simmetria
-
-# Eyedropper Sample Size and Sample (#1649).
 	Point Sample	Campione puntiforme
 	3 by 3 Average	Media 3 × 3
 	5 by 5 Average	Media 5 × 5
@@ -2584,15 +2651,12 @@ fontWeight	Italic	Corsivo
 	All Layers No Adjustments	Tutti i livelli senza regolazioni
 	Current & Below No Adjustments	Corrente e inferiori senza regolazioni
 	Show Sampling Ring	Mostra anello di campionamento
-
-# Color Picker warnings
 	Out of gamut for printing: click for the nearest printable colour	Fuori gamma di stampa: fai clic per il colore stampabile più vicino
 	Not a web colour: click for the nearest web colour	Non è un colore web: fai clic per il colore web più vicino
 	Color to Alpha…	Colore ad alfa…
 	Transparency Threshold	Soglia di trasparenza
 	Opacity Threshold	Soglia di opacità
 	PhotoCraft — Screen Color Picker	PhotoCraft — Selettore colore schermo
-
 	Rasterize svg groups deeper than	Rasterizza i gruppi SVG oltre questa profondità
 	0 turns this threshold off; SVG groups nested deeper than 100 levels are always rasterized.	0 disattiva questa soglia; i gruppi SVG annidati oltre 100 livelli vengono sempre rasterizzati.
 	Rule of Thirds	Regola dei terzi
@@ -2606,8 +2670,6 @@ fontWeight	Italic	Corsivo
 	Cycle Orientation	Cambia orientamento
 	Set the overlay options for the Crop tool	Imposta le opzioni di sovrapposizione dello strumento Taglierina
 	Alt-click went to the desktop, which moves windows with Alt-drag. Set its window-move key to Super, or latch Alt in Window › Modifier Keys.	L’Alt-clic è andato al desktop, che sposta le finestre con Alt-trascina. Imposta il suo tasto per spostare le finestre su Super, oppure blocca Alt in Finestra › Tasti modificatori.
-
-# Shared Layer Style color picker
 	Color Picker (Layer Style Color)	Selettore colore (colore dello stile livello)
 	Auto Hide Notifications	Nascondi automaticamente le notifiche
 	Notification Duration (seconds)	Durata della notifica (secondi)
@@ -2684,7 +2746,6 @@ fontWeight	Italic	Corsivo
 	Appearance Settings…	Impostazioni aspetto…
 	Add to favorites	Aggiungi ai preferiti
 	Remove from favorites	Rimuovi dai preferiti
-# File Info ▸ Camera Data (read-only EXIF fields; "Make" is the camera maker, not the verb).
 	Camera Data	Dati fotocamera
 cameraData	Make	Marca
 cameraData	Model	Modello
@@ -2695,7 +2756,6 @@ cameraData	ISO Speed	Sensibilità ISO
 cameraData	Focal Length	Lunghezza focale
 cameraData	Focal Length (35 mm)	Lunghezza focale (35 mm)
 cameraData	Lens	Obiettivo
-# Shared panel docking
 	Activate Panel	Attiva pannello
 	Change Panel Group	Cambia gruppo di pannelli
 	Change Panel Layout	Cambia disposizione dei pannelli
@@ -2739,7 +2799,6 @@ cameraData	Lens	Obiettivo
 	Snap to Origin	Aggancia all'origine
 	Search settings…	Cerca impostazioni…
 	No matching settings	Nessuna impostazione corrispondente
-# Edit › Content-Aware Fill workspace
 	Sampling Brush Tool	Strumento Pennello di campionamento
 	Sampling Area Overlay	Sovrapposizione area di campionamento
 	Show Sampling Area	Mostra area di campionamento
@@ -2755,7 +2814,6 @@ cameraData	Lens	Obiettivo
 	Mirror	Rifletti
 	Output Settings	Impostazioni di output
 	Output To	Output in
-
 	Animation Options	Opzioni animazione
 	Entire Document	Documento intero
 	Filter Options	Opzioni filtro
@@ -2772,8 +2830,6 @@ cameraData	Lens	Obiettivo
 	Add “copy” to Copied Layers and Groups	Aggiungi «copia» ai livelli e ai gruppi duplicati
 	Preview on canvas when reordering layers	Anteprima sulla tela durante il riordino dei livelli
 	Show layer mask badges	Mostra distintivi delle maschere di livello
-
-# Smart Filter editors
 	Blending Options ({filter})	Opzioni di fusione ({filter})
 	Hide the layer's effects and Smart Filters  ({key}-click: all layers)	Nascondi effetti del livello e filtri avanzati  ({key}-clic: tutti i livelli)
 	Show the layer's effects and Smart Filters  ({key}-click: all layers)	Mostra effetti del livello e filtri avanzati  ({key}-clic: tutti i livelli)
@@ -2808,7 +2864,6 @@ curves	Smooth	Leviga
 	Fix the red plane first: its corners must form a convex quad	Correggi prima il piano rosso: i suoi angoli devono formare un quadrilatero convesso
 	Alt-click a plane to set the clone source	Alt-clic su un piano per impostare l’origine della clonazione
 	Too many clone strokes: apply Vanishing Point first	Troppi tratti di clonazione: applica prima Punto di fuga
-# Select and Mask view modes (#1754)
 	Onion Skin	Velina
 	Marching Ants	Formiche in marcia
 	On Black	Su nero
@@ -2817,7 +2872,6 @@ curves	Smooth	Leviga
 	Show Edge	Mostra bordo
 	Show Original	Mostra originale
 	F cycles the views; hold X to see the image	F scorre le viste; tieni premuto X per vedere l'immagine
-# Select and Mask Refine Edge Brush (#2972)
 	Refine Edge Brush (R)	Pennello per migliorare il bordo (R)
 	Expand Detection Area	Espandi area di rilevamento
 	Restore Original Edge	Ripristina bordo originale
@@ -2825,19 +2879,13 @@ curves	Smooth	Leviga
 	Clear Brush Strokes	Cancella tracce del pennello
 	Show rulers	Mostra righelli
 	Presentation	Presentazione
-
-# Color Sampler (added with the i18n coverage repair)
 	Click to place · Alt-click or drag off-canvas to remove	Fai clic per posizionare · Alt-clic o trascina fuori dal quadro per rimuovere
 	No document open	Nessun documento aperto
 	{n} of {max} sample points	{n} di {max} punti di campionamento
-
-# History panel menu (#2966)
 	New Snapshot…	Nuova istantanea…
 	History Options…	Opzioni cronologia…
-# History panel › History Options… (#2966)
 	Allow Non-Linear History	Consenti cronologia non lineare
 	Make Layer Visibility Changes Undoable	Rendi annullabili le modifiche di visibilità dei livelli
-# Print dialog (#2697)
 	Emulsion Down	Emulsione sotto
 	Functions	Funzioni
 	Print Resolution:	Risoluzione di stampa:
@@ -2849,7 +2897,6 @@ curves	Smooth	Leviga
 	Apply mask to layer before removing?	Applicare la maschera al livello prima di rimuoverla?
 	The layer or its mask changed. Drag the mask onto the Trash again.	Il livello o la sua maschera è cambiato. Trascina di nuovo la maschera nel cestino.
 	Delete the vector mask?	Eliminare la maschera vettoriale?
-# Counted status messages and labels (#3454; adapted from PR #3821)
 @plural	Exported {n} swatch to {file}|Exported {n} swatches to {file}	{n} campione esportato in {file}|{n} campioni esportati in {file}
 @plural	Imported {n} brush from {group}|Imported {n} brushes from {group}	{n} pennello importato da {group}|{n} pennelli importati da {group}
 @plural	Imported {n} swatch from {file}|Imported {n} swatches from {file}	{n} campione importato da {file}|{n} campioni importati da {file}
@@ -2864,14 +2911,10 @@ curves	Smooth	Leviga
 @plural	{n} step|{n} steps	{n} passaggio|{n} passaggi
 @plural	{warning} (+{n} more brush preset warning)|{warning} (+{n} more brush preset warnings)	{warning} (+{n} altro avviso sui predefiniti pennello)|{warning} (+{n} altri avvisi sui predefiniti pennello)
 @plural	{what} with {n} warning|{what} with {n} warnings	{what} con {n} avviso|{what} con {n} avvisi
-# View › Guides › New Guide… › Color
 	Light Blue	Blu chiaro
 	Light Red	Rosso chiaro
 	Medium Blue	Blu medio
 	Light Gray	Grigio chiaro
-
-# Dynamic labels (filter and adjustment parameters, Camera Raw, panels, dialogs) that the
-# other catalogs already translate
 	No	No
 	Yes	Sì
 @id	select.all	Seleziona tutto
@@ -4013,8 +4056,6 @@ layerLabel	No Color	Nessun colore
 	Set Colors	Imposta colori
 	Switch Foreground and Background Colors	Scambia colori di primo piano e sfondo
 	Target	Destinazione
-
-# Path, channel, layer style, status and System Info labels the Czech catalog added
 	Make Work Path…	Crea tracciato di lavoro…
 	Create Vector Mask	Crea maschera vettoriale
 	Make Selection…	Crea selezione…
@@ -4057,7 +4098,7 @@ layerLabel	No Color	Nessun colore
 	Layer Mask Hides Effects	La maschera di livello nasconde gli effetti
 	Vector Mask Hides Effects	La maschera vettoriale nasconde gli effetti
 	General Blending	Fusione generale
-	This Layer:	Questo livello:
+	Current Layer:	Livello corrente:
 	Underlying Layer:	Livello sottostante:
 	Nothing to paste: the clipboard holds no image	Niente da incollare: gli appunti non contengono un'immagine
 	Preferences saved	Preferenze salvate
@@ -4178,8 +4219,6 @@ navigator	Zoom	Zoom
 	Clear Brush Controls	Cancella controlli pennello
 	Reset All Locked Settings	Ripristina tutte le impostazioni bloccate
 	Copy Texture to Other Tools	Copia texture su altri strumenti
-
-# Actions panel: Load/Save Actions (.atn) and kept Photoshop steps
 	Load Actions…	Carica azioni…
 	Save Actions…	Salva azioni…
 	New Action…	Nuova azione…
@@ -4191,10 +4230,8 @@ navigator	Zoom	Zoom
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} passaggio non ha ancora un equivalente in PhotoCraft|{n} passaggi non hanno ancora un equivalente in PhotoCraft
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	Salvata {n} azione in {file}|Salvate {n} azioni in {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	Omesso {n} passaggio senza equivalente in Photoshop|Omessi {n} passaggi senza equivalente in Photoshop
-
 	File Naming	Denominazione file
 	Starting serial	Numero di serie iniziale
-# Actions panel: set folders, dialog toggle, Insert Stop
 	Insert Stop…	Inserisci interruzione…
 	Save Set…	Salva set…
 	Message:	Messaggio:
@@ -4205,11 +4242,8 @@ navigator	Zoom	Zoom
 	Step {step} is waiting for its dialog	Il passaggio {step} attende la sua finestra di dialogo
 @plural	{n} action|{n} actions	{n} azione|{n} azioni
 	Background (Default)	Sfondo (predefinito)
-# Batch / Image Processor
 	Include All Subfolders	Includi tutte le sottocartelle
 	Auto Add/Delete	Aggiungi/elimina automaticamente
-
-# Native Windows printing qualification
 	Don't also tick Mirror Image in Print Settings…: the two flips cancel out.	Non attivare anche Immagine speculare nelle impostazioni di stampa: le due inversioni si annullano.
 	Print Settings…	Impostazioni di stampa…
 	Remember to turn off the printer's own colour management in Print Settings…	Ricorda di disattivare la gestione del colore della stampante nelle impostazioni di stampa…
@@ -4254,47 +4288,30 @@ navigator	Zoom	Zoom
 	Could not write {name}: {error}	Impossibile scrivere {name}: {error}
 	Kept {name}: written by another application	{name} mantenuto: scritto da un’altra applicazione
 	Shadow Tint	Tinta ombre
-# PhotoCraft release checks.
 	Check for Updates…	Cerca aggiornamenti…
-	PhotoCraft Updates	Aggiornamenti di PhotoCraft
-	Checking for updates…	Ricerca aggiornamenti…
 	Open the release page to choose an installer for your system.	Apri la pagina della versione per scegliere un programma di installazione per il tuo sistema.
-	Open Download Page	Apri pagina di download
-	PhotoCraft is up to date.	PhotoCraft è aggiornato.
-	Could not check for updates.	Impossibile cercare aggiornamenti.
-	Updates have not been checked yet.	Gli aggiornamenti non sono ancora stati verificati.
-	Check Again	Controlla di nuovo
 	Automatically Check for Updates	Cerca automaticamente aggiornamenti
-	Installed version: {version}	Versione installata: {version}
-	PhotoCraft {version} is available.	PhotoCraft {version} è disponibile.
-# History panel › History Brush source (#2966)
 	Paints from the History panel's source state	Dipinge dallo stato di origine del pannello Cronologia
 	Sets the source for the history brush	Imposta l'origine del pennello storia
-# Bevel & Emboss shading controls.
 	Highlight Mode	Metodo luci
 	Highlight Color	Colore luci
 	Highlight Opacity	Opacità luci
 	Shadow Mode	Metodo ombre
 	Shadow Color	Colore ombre
 	Shadow Opacity	Opacità ombre
-# Embedded Profile Mismatch: profile names beside the choices, Remember this choice
 	Use the embedded profile ({profile})	Usa profilo incorporato ({profile})
 	Convert to the working space ({profile})	Converti in spazio di lavoro ({profile})
 	Remember this choice for future images	Ricorda questa scelta per le prossime immagini
 	Turn the prompt back on with Ask On Mismatch in Edit › Color Settings.	Riattiva la richiesta con Ask On Mismatch in Modifica › Impostazioni colore.
 	Button Mode	Modalità pulsante
 	Button Mode On	Modalità pulsante attiva
-# Darken / Lighten Interface (⇧⌘F1 / ⇧⌘F2)
 	Darken Interface	Scurisci interfaccia
 	Lighten Interface	Schiarisci interfaccia
-# Bevel & Emboss Technique.
 	Technique	Tecnica
 	Chisel Hard	Cesello duro
 	Chisel Soft	Cesello morbido
 	Open color-less EXR as ACEScg	Apri gli EXR senza spazio colore come ACEScg
 	Do not append "copy" to filename when saving a copy	Non aggiungere "copy" al nome del file quando si salva una copia
-
-# Color management, Liquify, glyph group, warp and Camera Raw labels the Serbian, Vietnamese and Japanese catalogs added
 	Adobe-rgb-compat	Adobe RGB (compatibile)
 	All shortcuts reset to Photoshop defaults.	Tutte le scorciatoie ripristinate ai predefiniti di Photoshop.
 	Arc Lower	Arco inferiore
@@ -4369,7 +4386,6 @@ navigator	Zoom	Zoom
 	red	rosso
 	violet	viola
 	yellow	giallo
-# Shortcut commands, find and replace, profile prompts and metadata labels the German, Hungarian and Serbian catalogs added
 	Export As: {name}	Esporta come: {name}
 	Color Sampler Tool	Strumento Campionatore colore
 	Proof Setup…	Configurazione prova…
@@ -4457,7 +4473,6 @@ layerLabel	Red	Rosso
 layers	Fill	Riempimento
 layers	Fill:	Riempimento:
 shape	Appearance	Aspetto
-# View › Guides › right-click a guide
 	Edit Selected Guides	Modifica guide selezionate
 	Clear Selected Guides	Cancella guide selezionate
 	Bicubic Automatic	Bicubica automatica
@@ -4482,8 +4497,6 @@ shape	Appearance	Aspetto
 	set name	nome del set
 	{set} (modified)	{set} (modificato)
 	Show file name in title	Mostra nome file nel titolo
-
-# Image › Mode › Bitmap (#5559)
 	50% Threshold	Soglia 50%
 	Pattern Dither	Dithering pattern
 	Diffusion Dither	Dithering diffusione
@@ -4501,10 +4514,8 @@ shape	Appearance	Aspetto
 	Undo Changes	Annulla modifiche
 	{shortcut} is reserved by the system and can't be assigned.	{shortcut} è riservata dal sistema e non può essere assegnata.
 	Low-Latency Drawing (vsync off, applies at next launch)	Disegno a bassa latenza (senza vsync, si applica al prossimo avvio)
-# Free Transform: a new layer while the box is open (#5859)
 	Free Transform is still being applied; try again when it has finished.	Trasformazione libera è ancora in corso di applicazione; riprova quando è terminata.
 	The transform couldn't be applied.	Impossibile applicare la trasformazione.
-# Preferences › Performance › GPU Memory; the status bar and slow-redraw notice
 	Its layers need {needed} of GPU memory; the budget leaves them {budget}.	I livelli richiedono {needed} di memoria GPU; il budget ne lascia {budget}.
 	Set GPU Memory in Preferences › Performance to what your graphics card can hold, at most 3/8 of its memory. Automatic follows Memory Usage, within a quarter of this computer's memory and 3/8 of the card's, and doesn't count the document against a card whose memory is known. The status bar shows GPU Memory Full while they don't fit.	Imposta Memoria GPU in Preferenze › Prestazioni su quanto può contenere la tua scheda grafica, al massimo 3/8 della sua memoria. Automatico segue Uso memoria, entro un quarto della memoria di questo computer e 3/8 di quella della scheda, e non conta il documento su una scheda la cui memoria è nota. Finché non ci stanno, la barra di stato mostra Memoria GPU piena.
 	GPU Memory Full	Memoria GPU piena
@@ -4526,8 +4537,6 @@ shape	Appearance	Aspetto
 	The fastest and the softest, with colour fringing on fine detail.	Il più veloce e il più morbido, con frange di colore nei dettagli fini.
 	“{name}” already exists. Replace it?	“{name}” esiste già. Sostituirlo?
 	The name in the save dialog was “{name}”.	Il nome nella finestra di salvataggio era “{name}”.
-	Move Up	Sposta su
-	Move Down	Sposta giù
 	Memory Usage	Utilizzo memoria
 	Per-document RAM limit (MB)	Limite RAM per documento (MB)
 	Installed RAM: {ram} MB; this limit: {percent}%	RAM installata: {ram} MB; questo limite: {percent}%
@@ -4537,17 +4546,12 @@ shape	Appearance	Aspetto
 	Use	Usa
 	In Front	Davanti
 	Behind	Dietro
-
-# DDS Options (#1327)
 	DDS Options	Opzioni DDS
 	Generate Mipmaps	Genera mipmap
-
-# Color Table (.act) dialog
 	There is no color table to save.	Non c'è alcuna tabella colori da salvare.
 @plural	Saved {n} color to {file}|Saved {n} colors to {file}	Salvato {n} colore in {file}|Salvati {n} colori in {file}
-
-# Graphics Adapter preference (#1885)
 	GPU adapter	Adattatore GPU
+smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded source; format-specific features may change.	Il contenuto AI/PDF/EPS verrà modificato come SVG. Il salvataggio sostituisce la sorgente incorporata; le caratteristiche specifiche del formato potrebbero cambiare.
 
 # Styles panel: Import / Export Styles (.asl)
 	Import Styles…	Importa stili…
@@ -4556,7 +4560,6 @@ shape	Appearance	Aspetto
 	{file} is not a style library (.asl)	{file} non è una libreria di stili (.asl)
 @plural	Imported {n} style from {file}|Imported {n} styles from {file}	{n} stile importato da {file}|{n} stili importati da {file}
 @plural	Exported {n} style to {file}|Exported {n} styles to {file}	{n} stile esportato in {file}|{n} stili esportati in {file}
-# Actions: a step dialog holds a suspended recording (#7365)
 	Confirm or cancel the open action step dialog first	Conferma o annulla prima la finestra di dialogo aperta del passo dell’azione
 	Pro Medium Gray	Pro grigio medio
 	Solarized	Solarized
@@ -4565,28 +4568,11 @@ shape	Appearance	Aspetto
 	Pro Light	Pro chiaro
 	Resize Windows to Fit	Ridimensiona finestre per adattare
 	EXR	EXR
-# Paragraph direction (TYPE-218-2)
 	Automatic paragraph direction	Direzione del paragrafo automatica
 	Left-to-right paragraph direction	Direzione del paragrafo da sinistra a destra
 	Right-to-left paragraph direction	Direzione del paragrafo da destra a sinistra
 	Not rendered: this adjustment ({key}) is kept as imported.	Non renderizzato: questa regolazione ({key}) viene conservata come importata.
-# Print preview image (#8236)
 	Print preview image	Print preview image
-	Color Aware	In base al colore
-	Decontaminate Colors	Decontamina colori
-	Edge Detection	Rilevamento bordi
-	Global Refinements	Perfezionamenti globali
-	High Quality Preview	Anteprima di alta qualità
-	Object Aware	In base all'oggetto
-	Real-Time Refinement	Perfezionamento in tempo reale
-	Refine Edge Brush Tool	Strumento Pennello per migliorare il bordo
-	Refine Hair	Migliora capelli
-	Refine Mode	Metodo di perfezionamento
-	Remember Settings	Ricorda impostazioni
-	View Mode	Modalità di visualizzazione
-	Object Aware needs a segmentation model, which isn't available yet	In base all'oggetto richiede un modello di segmentazione, non ancora disponibile
-	Refine Hair needs hair detection, which isn't available yet	Migliora capelli richiede il rilevamento dei capelli, non ancora disponibile
-# Color panel menu: modes, copy commands and colour ramps (#6000)
 	Hue Cube	Cubo tonalità
 	Brightness Cube	Cubo luminosità
 	Color Wheel	Ruota dei colori
@@ -4602,9 +4588,8 @@ shape	Appearance	Aspetto
 	Grayscale Ramp	Barra scala di grigio
 	Current Colors	Colori correnti
 	Make Ramp Web Safe	Limita la barra ai colori web
-	Select and Mask was closed: its document is no longer the active one	Seleziona e maschera è stato chiuso: il suo documento non è più quello attivo
-	Select and Mask was closed: another layer was selected	Seleziona e maschera è stato chiuso: è stato selezionato un altro livello
-# Art History Brush (#213).
+	The path was kept as the Work Path	Il tracciato è stato conservato come tracciato di lavoro
+	The path was discarded	Il tracciato è stato scartato
 	Art History Brush Tool	Strumento Pennello storia artistica
 	Tight Short	Corto stretto
 	Tight Medium	Medio stretto
@@ -4618,3 +4603,26 @@ shape	Appearance	Aspetto
 	Font size presets	Predefiniti dimensione font
 	Leading presets	Predefiniti interlinea
 	Tracking presets	Predefiniti spaziatura
+	Invalid numeric entry. An integer between {min}% and {max}% is required. Previous value was inserted.	Valore numerico non valido. È richiesto un numero intero compreso tra {min}% e {max}%. È stato inserito il valore precedente.
+	Color Aware	In base al colore
+	Decontaminate Colors	Decontamina colori
+	Edge Detection	Rilevamento bordi
+	Global Refinements	Perfezionamenti globali
+	High Quality Preview	Anteprima di alta qualità
+	Object Aware	In base all'oggetto
+	Real-Time Refinement	Perfezionamento in tempo reale
+	Refine Edge Brush Tool	Strumento Pennello per migliorare il bordo
+	Refine Hair	Migliora capelli
+	Refine Mode	Metodo di perfezionamento
+	Remember Settings	Ricorda impostazioni
+	View Mode	Modalità di visualizzazione
+	Object Aware needs a segmentation model, which isn't available yet	In base all'oggetto richiede un modello di segmentazione, non ancora disponibile
+	Refine Hair needs hair detection, which isn't available yet	Migliora capelli richiede il rilevamento dei capelli, non ancora disponibile
+	Select and Mask was closed: its document is no longer the active one	Seleziona e maschera è stato chiuso: il suo documento non è più quello attivo
+	Select and Mask was closed: another layer was selected	Seleziona e maschera è stato chiuso: è stato selezionato un altro livello
+
+# Shape Fill/Stroke popover and colour swatches opening the Color Picker
+	Recently Used Colors	Colori usati di recente
+	Stop Color	Colore del punto
+	Shapes can't use patterns yet	Le forme non possono ancora usare pattern
+	Edit Brush…	Modifica pennello…

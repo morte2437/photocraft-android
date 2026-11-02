@@ -345,7 +345,6 @@ fn cached_gradient_fill() -> Session {
     let mut s = session();
     s.execute("select.rect", json!({"x": 10, "y": 10, "width": 30, "height": 30})).unwrap();
     s.execute("layer.newFillLayer.gradient", json!({"from": "#ff0000", "to": "#0000ff", "angle": 0})).unwrap();
-    s.execute("select.deselect", json!({})).unwrap();
     s.edit("cache", |doc, active| {
         let (fmt, canvas) = (doc.pixel_format(), doc.bounds());
         let l = doc.layer_mut(active.unwrap()).unwrap();
@@ -367,7 +366,7 @@ fn off_from_fresh(s: &Session) -> f32 {
     let st = s.active().unwrap();
     let mut fresh: Document = (*st.doc).clone();
     fresh.layer_mut(st.active_layer.unwrap()).unwrap().fill_cache = None;
-    let (a, b) = (photocraft_compose::render(&st.doc, st.doc.bounds()).px, photocraft_compose::render(&fresh, fresh.bounds()).px);
+    let (a, b) = (photocraft_compose::render(&st.doc, st.doc.bounds()).into_px(), photocraft_compose::render(&fresh, fresh.bounds()).into_px());
     a.iter().zip(&b).flat_map(|(p, q)| p.iter().zip(q).map(|(x, y)| (x - y).abs())).fold(0.0, f32::max)
 }
 

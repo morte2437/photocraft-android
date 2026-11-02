@@ -12,10 +12,114 @@
 # Product and technology names retain their spelling. See docs/localization-zh-hans.md.
 
 # Layer Mask Display Options (the layer mask rubylith's colour and opacity)
-	Mask Options…	蒙版选项…
-	Layer Mask Display Options…	图层蒙版显示选项…
 
 # Channel Options and New Spot Channel (#3761)
+
+# Guide layout dialog
+
+# Custom print paper (#3820)
+
+# Select and Mask dialog labels
+# Field Blur pins (#3373)
+# Counted status and panel messages
+
+
+# Layers-panel trash confirmation
+
+# Camera Raw: contextual controls and window title
+# Current shell labels and shortcut templates. Keep {key} platform-dependent.
+# Gradient Editor window, opened from the options bar's gradient swatch.
+# Layer navigation, copy transforms and cancellable opening (labels added on main since this catalog).
+# Rendering mode and recovery
+
+
+
+
+
+
+# About ▸ Contributors / Models (credits)
+
+# Swatches panel
+# Layer Style > Blending Options (Advanced Blending)
+
+# Shared screen eyedropper and text Color Picker (#1128).
+
+# Fill dialog, layer style contours and Image Size
+
+
+
+# Layer colour labels.
+
+# Pattern Stamp tool
+
+# Painting symmetry presets.
+
+# Eyedropper Sample Size and Sample (#1649).
+
+# Color Picker warnings
+
+
+# Shared Layer Style color picker
+# File Info ▸ Camera Data (read-only EXIF fields; "Make" is the camera maker, not the verb).
+# Shared panel docking
+# Edit › Content-Aware Fill workspace
+
+
+# Smart Filter editors
+# Select and Mask view modes (#1754)
+# Select and Mask Refine Edge Brush (#2972)
+
+# Color Sampler (added with the i18n coverage repair)
+
+# History panel menu (#2966)
+# History panel › History Options… (#2966)
+# Print dialog (#2697)
+# View › Guides › New Guide… › Color
+
+# Actions panel: Load/Save Actions (.atn) and kept Photoshop steps
+
+# Actions panel: set folders, dialog toggle, Insert Stop
+# Batch / Image Processor
+
+# Native Windows printing qualification
+# PhotoCraft release checks.
+# History panel › History Brush source (#2966)
+# Bevel & Emboss shading controls.
+# Embedded Profile Mismatch: profile names beside the choices, Remember this choice
+
+# Darken / Lighten Interface (⇧⌘F1 / ⇧⌘F2)
+# Bevel & Emboss Technique.
+# Export As metadata and profile options
+
+# View › Guides › right-click a guide
+
+# Image › Mode › Bitmap (#5559)
+# Free Transform: a new layer while the box is open (#5859)
+# Preferences › Performance › GPU Memory; the status bar and slow-redraw notice
+
+# DDS Options (#1327)
+
+# Color Table (.act) dialog
+
+# Graphics Adapter preference (#1885)
+
+# Styles panel: Import / Export Styles (.asl)
+# Actions: a step dialog holds a suspended recording (#7365)
+# Paragraph direction (TYPE-218-2)
+# Print preview image (#8236)
+
+# Color panel menu: modes, copy commands and colour ramps (#6000)
+
+# File opening, export status and graphics driver information
+
+# Pen draft after a refused commit (#7648)
+# Art History Brush (#213).
+
+# Egui 0.37 migration controls (Aspect Ratio, Category, Color Table, Gamma, Interpolation, Profile, Target, Units, Demosaic)
+# Smart Filter row actions (#1265)
+
+	Mask Options…	蒙版选项…
+	Layer Mask Display Options…	图层蒙版显示选项…
 	Channel Color	通道颜色
 	Color Indicates:	色彩指示：
 	Solidity:	密度：
@@ -23,10 +127,6 @@
 	Selected Areas	所选区域
 	Spot Color	专色
 	Ink Characteristics	油墨特性
-
-# Guide layout dialog
-
-# Custom print paper (#3820)
 	Paper Width	纸张宽度
 	Paper Height	纸张高度
 	Columns	列
@@ -46,7 +146,6 @@
 	5 Columns, 3 Rows	5列，3行
 	8 Columns	8列
 	12 Columns	12列
-
 	File	文件
 	Edit	编辑
 	Image	图像
@@ -458,6 +557,7 @@
 	Intersect Shape Areas	形状区域相交
 	Exclude Overlapping Shapes	排除重叠形状
 	Merge Shape Components	合并形状组件
+	Path operations	路径操作
 	Align	对齐
 	Top Edges	顶边
 	Vertical Centers	垂直居中
@@ -537,7 +637,6 @@
 	Color Range…	色彩范围…
 	Focus Area…	焦点区域…
 	Select and Mask…	选择与蒙版…
-# Select and Mask dialog labels
 	Smart Radius	智能半径
 	Shift Edge	移动边缘
 	Decontaminate	净化
@@ -564,7 +663,6 @@
 	Blur	模糊
 	Blur Gallery	模糊库
 	Field Blur…	场景模糊…
-# Field Blur pins (#3373)
 	No pin selected	未选择图钉
 	Click the image to add a pin; drag a pin to move it, or its ring to change its blur. Delete removes the selected pin.	单击图像以添加图钉；拖动图钉可移动它，拖动其圆环可更改模糊程度。按 Delete 键删除所选图钉。
 	Drag the handles on the outline to resize and turn it, the square to round its corners, and the dots inside to set where the blur starts.	拖动轮廓上的手柄可调整大小并旋转，拖动方块可将角变圆，拖动内部的点可设置模糊开始的位置。
@@ -829,7 +927,6 @@
 	Statistics…	统计…
 	Refine Strokes	调整描边
 	Edits	编辑
-# Counted status and panel messages
 @plural	Exported {n} swatch to {file}|Exported {n} swatches to {file}	已将 {n} 个色板导出到 {file}
 @plural	Imported {n} swatch from {file}|Imported {n} swatches from {file}	已从 {file} 导入 {n} 个色板
 @plural	Imported {n} brush from {group}|Imported {n} brushes from {group}	已从 {group} 导入 {n} 个画笔
@@ -844,7 +941,6 @@
 @plural	{n} slice|{n} slices	{n} 个切片
 @plural	{warning} (+{n} more brush preset warning)|{warning} (+{n} more brush preset warnings)	{warning}（另有 {n} 条画笔预设警告）
 @plural	{what} with {n} warning|{what} with {n} warnings	{what}，含 {n} 条警告
-
 @plural	{n} item|{n} items	{n} 项
 	Auto	自动
 	(print to the printer)	（输出到打印机）
@@ -860,6 +956,9 @@
 	Add Layer Mask	添加图层蒙版
 	Add Stop	添加色标
 	Add a layer style	添加图层样式
+	Move effect up	上移效果
+	Move effect down	下移效果
+	Delete effect	删除效果
 	Add a mask  (from the selection; ⌥ inverts)	添加蒙版  （基于选区；⌥ 反相）
 	Add an adjustment	添加调整
 	Add disk	添加磁盘
@@ -1090,8 +1189,6 @@
 	Delete current channel	删除当前通道
 	Delete current state	删除当前状态
 	Delete effect layer	删除效果图层
-
-# Layers-panel trash confirmation
 	Delete layer ‘{name}’?	删除图层“{name}”？
 	Delete {count} layers? {names}	删除 {count} 个图层？{names}
 	Delete layer?	删除图层？
@@ -1100,7 +1197,6 @@
 	Missing delete command	缺少删除命令
 	Invalid delete command	无效的删除命令
 	Layer deleted, but confirmation preference could not be saved: {error}	图层已删除，但无法保存确认设置：{error}
-
 	Delete layer	删除图层
 	Delete layer comp	删除图层复合
 	Delete note	删除注释
@@ -1133,7 +1229,6 @@
 	Dots	点
 	Drag a rectangle around the object	围绕对象拖出矩形
 	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click a constraint to change or delete it.	在图像上拖动以添加约束；按 Shift 保持水平或垂直；右键单击约束可更改或删除。
-	Drag to move the active shape's path or the Work Path	拖动以移动当前形状的路径或工作路径
 	Click: select anchor · Drag: move anchor, handle or segment · {shift}-click: add · {alt}-click: whole subpath	单击：选择锚点 · 拖动：移动锚点、手柄或线段 · {shift}-单击：添加 · {alt}-单击：整个子路径
 	Draw with the Pen tool (P) or make a work path from a selection.	使用钢笔工具（P）绘制，或从选区创建工作路径。
 	Drop an image or PSD anywhere to open it.	将图像或 PSD 拖放到任意位置即可打开。
@@ -2171,7 +2266,6 @@
 	Tone Histogram	色调直方图
 	Show Selected Region	显示选定区域
 cameraRaw	Light	光线
-# Camera Raw: contextual controls and window title
 	Camera Raw Filter ({layer})	Camera Raw 滤镜（{layer}）
 	Camera Raw ({name})	Camera Raw（{name}）
 cameraRaw	Lights	亮调
@@ -2187,7 +2281,6 @@ cameraRaw	Blending	混合
 	Transform On Drop	放下时变换
 	Scale or rotate the moved area, then press {key}	缩放或旋转移动的区域，然后按 {key}
 	Now drag the selection onto another area	现在将选区拖动到另一个区域
-# Current shell labels and shortcut templates. Keep {key} platform-dependent.
 	Add a mask  (from the selection; {key} inverts)	添加蒙版  （基于选区；{key} 反相）
 	Add to selection  ({key})	添加到选区  （{key}）
 	Click the first point or press {key} to close · Esc cancels	单击起点或按 {key} 闭合 · Esc 取消
@@ -2282,7 +2375,6 @@ cameraRaw	Blending	混合
 	Align with layer	与图层对齐
 	Reset Alignment	重置对齐
 	Centre the gradient (offset 0, 0)	将渐变居中（偏移量 0, 0）
-# Gradient Editor window, opened from the options bar's gradient swatch.
 	Gradient Editor	渐变编辑器
 	Gradient picker	渐变拾色器
 	Save As Preset	存储为预设
@@ -2313,7 +2405,6 @@ cameraRaw	Blending	混合
 	Use tablet pressure	使用数位板压感
 	Vulkan	Vulkan
 	No path to make a selection from: draw one with the Pen tool or select one in the Paths panel.	没有可用于生成选区的路径：请用钢笔工具绘制路径，或在路径面板中选择路径。
-# Layer navigation, copy transforms and cancellable opening (labels added on main since this catalog).
 	Cancel opening	取消打开
 	Cancelled opening {name}	已取消打开 {name}
 	Damaged Photoshop document	已损坏的 Photoshop 文档
@@ -2338,7 +2429,6 @@ cameraRaw	Blending	混合
 	Opening…	正在打开…
 	Reading…	正在读取…
 	Working…	正在处理…
-# Rendering mode and recovery
 	Rendering Mode	渲染模式
 	Automatic (recommended)	自动（推荐）
 	CPU / Compatibility	CPU / 兼容模式
@@ -2356,14 +2446,10 @@ cameraRaw	Blending	混合
 	Details	详细信息
 	Rendering mode	渲染模式
 	Edit Type	编辑文字
-
-
 	New Style…	新建样式…
 	Style {name} saved	已保存样式 {name}
-
 	Create new style (from the selected type)	新建样式（基于所选文本）
 	Create new style from the selected layer	从所选图层新建样式
-
 	Make Default	设为默认
 	Reset to Default	重置为默认
 	Full-resolution preview unavailable	全分辨率预览不可用
@@ -2392,9 +2478,6 @@ cameraRaw	Blending	混合
 	Magnetic Lasso Tool	磁性套索工具
 	Frequency	频率
 	Use tablet pressure to change pen width	使用绘图板压力以更改钢笔宽度
-
-
-# About ▸ Contributors / Models (credits, craftrules standards/contributors.md)
 	About	关于
 	Contributors	贡献者
 	Models	模型
@@ -2426,8 +2509,6 @@ cameraRaw	Blending	混合
 	% of all commits	占全部提交的 %
 	Lines +/−	行数 +/−
 	@{login}: {prs} PRs, {commits} commits, +{added} / −{deleted} lines (Δ {delta}), +{binAdded} / −{binDeleted} binary assets, {first} – {last}	@{login}：{prs} 个 PR，{commits} 次提交，行 +{added} / −{deleted}（Δ {delta}），二进制文件 +{binAdded} / −{binDeleted}，{first} – {last}
-
-# Swatches panel
 	Create new swatch	创建新色板
 	New Swatch…	新建色板…
 	New Swatch Group…	新建色板组…
@@ -2437,13 +2518,12 @@ cameraRaw	Blending	混合
 	Export Swatches for Exchange…	导出色板以供交换…
 	Reset Swatches	复位色板
 	Add to Swatches	添加到色板
-# Layer Style > Blending Options (Advanced Blending)
 	Blend If:	混合颜色带:
+	Current Layer:	当前图层:
+	Underlying Layer:	下一图层:
 	Channels:	通道:
 	Knockout	挖空
 	Apply At Canvas Bounds	应用画布边界的效果
-
-# Shared screen eyedropper and text Color Picker (#1128).
 	Color Picker (Text Color)	拾色器（文字颜色）
 	Color Picker ({name})	拾色器（{name}）
 	Color Picker (Fill Color)	拾色器（填充颜色）
@@ -2460,8 +2540,6 @@ cameraRaw	Blending	混合
 	Show/Hide Panels	显示/隐藏面板
 	Could not open	无法打开
 	{path}: the path is not valid Unicode; rename the file and open it again.	{path}：路径不是有效的 Unicode；请重命名文件后再打开。
-
-# Fill dialog, layer style contours and Image Size
 	Contents:	内容：
 	Custom Pattern:	自定义图案：
 	Foreground Color	前景色
@@ -2489,7 +2567,6 @@ cameraRaw	Blending	混合
 	Rolling Slope - Descending	滚动斜坡 - 递减
 	Rounded Steps	圆角梯形
 	Sawtooth 1	锯齿 1
-
 	Red Eye Tool	红眼工具
 	Red Eye	红眼
 	Pupil Size	瞳孔大小
@@ -2497,7 +2574,6 @@ cameraRaw	Blending	混合
 	Click a red pupil to neutralize it	单击红色瞳孔以消除反光
 	open source	开源
 	…and {n} more	…以及另外 {n} 项
-
 	Eyedroppers:	吸管：
 	Set Black Point	设置黑场
 	Set Neutral Gray Point	设置中性灰场
@@ -2506,8 +2582,6 @@ cameraRaw	Blending	混合
 	Selection Preview:	选区预览：
 	Black Matte	黑色背景
 	White Matte	白色背景
-
-# Layer colour labels.
 	Seafoam	海沫色
 	Indigo	靛蓝色
 	Fuchsia	紫红色
@@ -2528,8 +2602,6 @@ fontWeight	Bold	粗体
 fontWeight	ExtraBold	特粗
 fontWeight	Black	黑体
 fontWeight	Italic	斜体
-
-# Pattern Stamp tool
 	Pattern Stamp Tool	图案图章工具
 	Pattern Stamp	图案图章
 	Impressionist	印象派
@@ -2537,13 +2609,9 @@ fontWeight	Italic	斜体
 	Rotate View Tool	旋转视图工具
 	Reset View	重置视图
 	Drag around the centre to rotate the view  ·  Shift constrains to 15°	绕中心拖动以旋转视图  ·  Shift 限制为 15°
-
-# Painting symmetry presets.
 	Dual Axis	双轴
 	Diagonal	对角线
 	Transform Symmetry	变换对称轴
-
-# Eyedropper Sample Size and Sample (#1649).
 	Point Sample	采样点
 	3 by 3 Average	3 × 3 平均
 	5 by 5 Average	5 × 5 平均
@@ -2555,15 +2623,12 @@ fontWeight	Italic	斜体
 	All Layers No Adjustments	所有图层（不含调整）
 	Current & Below No Adjustments	当前及下方图层（不含调整）
 	Show Sampling Ring	显示采样环
-
-# Color Picker warnings
 	Out of gamut for printing: click for the nearest printable colour	超出打印色域：单击使用最接近的可打印颜色
 	Not a web colour: click for the nearest web colour	不是 Web 颜色：单击使用最接近的 Web 颜色
 	Color to Alpha…	颜色转为 Alpha…
 	Transparency Threshold	透明度阈值
 	Opacity Threshold	不透明度阈值
 	PhotoCraft — Screen Color Picker	PhotoCraft — 屏幕取色器
-
 	Rasterize svg groups deeper than	栅格化超过此深度的 SVG 组
 	0 turns this threshold off; SVG groups nested deeper than 100 levels are always rasterized.	设为 0 可关闭此阈值；嵌套超过 100 层的 SVG 组始终会被栅格化。
 	Rule of Thirds	三等分
@@ -2577,8 +2642,6 @@ fontWeight	Italic	斜体
 	Cycle Orientation	循环切换取向
 	Set the overlay options for the Crop tool	设置裁剪工具的叠加选项
 	Alt-click went to the desktop, which moves windows with Alt-drag. Set its window-move key to Super, or latch Alt in Window › Modifier Keys.	Alt 单击被桌面环境截获了，它用 Alt 拖动来移动窗口。请把桌面的窗口移动键改为 Super，或在 窗口 › 修饰键 中锁定 Alt。
-
-# Shared Layer Style color picker
 	Color Picker (Layer Style Color)	拾色器（图层样式颜色）
 	Auto Hide Notifications	自动隐藏通知
 	Notification Duration (seconds)	通知持续时间（秒）
@@ -2659,7 +2722,6 @@ fontWeight	Italic	斜体
 	Appearance Settings…	外观设置…
 	Add to favorites	添加到收藏
 	Remove from favorites	从收藏中移除
-# File Info ▸ Camera Data (read-only EXIF fields; "Make" is the camera maker, not the verb).
 	Camera Data	相机数据
 cameraData	Make	制造商
 cameraData	Model	型号
@@ -2670,7 +2732,6 @@ cameraData	ISO Speed	ISO 感光度
 cameraData	Focal Length	焦距
 cameraData	Focal Length (35 mm)	焦距（35 毫米等效）
 cameraData	Lens	镜头
-# Shared panel docking
 	Activate Panel	激活面板
 	Change Panel Group	更改面板组
 	Change Panel Layout	更改面板布局
@@ -2710,7 +2771,6 @@ cameraData	Lens	镜头
 	Snap to Origin	贴紧原点
 	Search settings…	搜索设置…
 	No matching settings	没有匹配的设置
-# Edit › Content-Aware Fill workspace
 	Sampling Brush Tool	取样画笔工具
 	Sampling Area Overlay	取样区域叠加
 	Show Sampling Area	显示取样区域
@@ -2730,7 +2790,6 @@ cameraData	Lens	镜头
 	Output To	输出到
 	Duplicate Layer	复制图层
 	Contract	收缩
-
 	Animation Options	动画选项
 	Entire Document	整个文档
 	Filter Options	过滤选项
@@ -2751,8 +2810,6 @@ cameraData	Lens	镜头
 	Add “copy” to Copied Layers and Groups	为复制的图层和组添加“副本”
 	Preview on canvas when reordering layers	重新排列图层时在画布上预览
 	Show layer mask badges	显示图层蒙版标记
-
-# Smart Filter editors
 	Blending Options ({filter})	混合选项 ({filter})
 	Hide the layer's effects and Smart Filters  ({key}-click: all layers)	隐藏图层效果和智能滤镜  （{key} 单击：所有图层）
 	Show the layer's effects and Smart Filters  ({key}-click: all layers)	显示图层效果和智能滤镜  （{key} 单击：所有图层）
@@ -2792,7 +2849,6 @@ curves	Smooth	平滑
 	Alt-click a plane to set the clone source	按住 Alt 键单击平面以设置仿制源
 	Too many clone strokes: apply Vanishing Point first	仿制描边过多：请先应用消失点
 	Stamp	图章
-# Select and Mask view modes (#1754)
 	Onion Skin	洋葱皮
 	Marching Ants	蚂蚁线
 	On Black	黑底
@@ -2801,7 +2857,6 @@ curves	Smooth	平滑
 	Show Edge	显示边缘
 	Show Original	显示原始
 	F cycles the views; hold X to see the image	按 F 切换视图；按住 X 查看图像
-# Select and Mask Refine Edge Brush (#2972)
 	Refine Edge Brush (R)	调整边缘画笔 (R)
 	Expand Detection Area	扩展检测区域
 	Restore Original Edge	恢复原始边缘
@@ -2815,22 +2870,16 @@ curves	Smooth	平滑
 	Enter a name for the crop preset	输入裁剪预设的名称
 	There is no crop size or ratio to save	没有可保存的裁剪大小或比例
 	Presentation	演示
-
-# Color Sampler (added with the i18n coverage repair)
 	Click to place · Alt-click or drag off-canvas to remove	单击以放置 · Alt 单击或拖到画布外以移除
 	No document open	未打开任何文档
 	{n} of {max} sample points	{max} 个取样点中的 {n} 个
-
-# History panel menu (#2966)
 	Step Forward	前进一步
 	Step Backward	后退一步
 	Clear History	清除历史记录
 	New Snapshot…	新建快照…
 	History Options…	历史记录选项…
-# History panel › History Options… (#2966)
 	Allow Non-Linear History	允许非线性历史记录
 	Make Layer Visibility Changes Undoable	允许撤销图层可见性更改
-# Print dialog (#2697)
 	Emulsion Down	药膜朝下
 	Functions	功能
 	Print Resolution:	打印分辨率：
@@ -2842,7 +2891,6 @@ curves	Smooth	平滑
 	Apply mask to layer before removing?	移去之前将蒙版应用到图层吗？
 	The layer or its mask changed. Drag the mask onto the Trash again.	图层或其蒙版已更改。请再次将蒙版拖到垃圾桶。
 	Delete the vector mask?	要删除矢量蒙版吗？
-# View › Guides › New Guide… › Color
 	Light Blue	浅蓝色
 	Light Red	浅红色
 	Medium Blue	中蓝色
@@ -2864,8 +2912,6 @@ curves	Smooth	平滑
 	Clear Brush Controls	清除画笔控件
 	Reset All Locked Settings	复位所有锁定的设置
 	Copy Texture to Other Tools	将纹理复制到其他工具
-
-# Actions panel: Load/Save Actions (.atn) and kept Photoshop steps
 	Load Actions…	载入动作…
 	Save Actions…	存储动作…
 	New Action…	新建动作…
@@ -2877,10 +2923,8 @@ curves	Smooth	平滑
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} 个步骤在 PhotoCraft 中尚无对应功能
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	已将 {n} 个动作存储到 {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	已省略 {n} 个没有 Photoshop 对应功能的步骤
-
 	File Naming	文件命名
 	Starting serial	起始序号
-# Actions panel: set folders, dialog toggle, Insert Stop
 	Insert Stop…	插入停止…
 	Save Set…	存储组…
 	Message:	信息:
@@ -2892,11 +2936,8 @@ curves	Smooth	平滑
 @plural	{n} action|{n} actions	{n} 个动作
 	Background (Default)	背景（默认）
 	Content-Aware Fill	内容识别填充
-# Batch / Image Processor
 	Include All Subfolders	包含所有子文件夹
 	Auto Add/Delete	自动添加/删除
-
-# Native Windows printing qualification
 	Don't also tick Mirror Image in Print Settings…: the two flips cancel out.	不要同时勾选打印设置中的镜像：两次翻转会相互抵消。
 	Print Settings…	打印设置…
 	Remember to turn off the printer's own colour management in Print Settings…	请记得在打印设置中关闭打印机自身的色彩管理…
@@ -2941,51 +2982,32 @@ curves	Smooth	平滑
 	Could not write {name}: {error}	无法写入 {name}：{error}
 	Kept {name}: written by another application	已保留 {name}：由其他应用程序写入
 	Shadow Tint	阴影色调
-# PhotoCraft release checks.
 	Check for Updates…	检查更新…
-	PhotoCraft Updates	PhotoCraft 更新
-	Checking for updates…	正在检查更新…
 	Open the release page to choose an installer for your system.	打开发布页，选择适合您系统的安装包。
-	Open Download Page	打开下载页面
-	PhotoCraft is up to date.	PhotoCraft 已是最新版本。
-	Could not check for updates.	无法检查更新。
-	Updates have not been checked yet.	尚未检查更新。
-	Check Again	重新检查
 	Automatically Check for Updates	自动检查更新
-	Installed version: {version}	已安装版本：{version}
-	PhotoCraft {version} is available.	PhotoCraft {version} 已发布。
-# History panel › History Brush source (#2966)
 	Paints from the History panel's source state	从历史记录面板的源状态绘画
 	Sets the source for the history brush	设置历史记录画笔的源
-# Bevel & Emboss shading controls.
 	Highlight Mode	高光模式
 	Highlight Color	高光颜色
 	Highlight Opacity	高光不透明度
 	Shadow Mode	阴影模式
 	Shadow Color	阴影颜色
 	Shadow Opacity	阴影不透明度
-# Embedded Profile Mismatch: profile names beside the choices, Remember this choice
 	Use the embedded profile ({profile})	使用嵌入的配置文件（{profile}）
 	Convert to the working space ({profile})	转换到工作空间（{profile}）
 	Remember this choice for future images	以后打开的图像都使用此选择
 	Turn the prompt back on with Ask On Mismatch in Edit › Color Settings.	可在 编辑 › 颜色设置 中打开 Ask On Mismatch，重新显示此提示。
 	Button Mode	按钮模式
 	Button Mode On	按钮模式 开
-
-# Darken / Lighten Interface (⇧⌘F1 / ⇧⌘F2)
 	Darken Interface	界面变暗
 	Lighten Interface	界面变亮
-# Bevel & Emboss Technique.
 	Technique	方法
 	Chisel Hard	雕刻清晰
 	Chisel Soft	雕刻柔和
 	Open color-less EXR as ACEScg	将无色彩空间信息的 EXR 以 ACEScg 打开
 	Do not append "copy" to filename when saving a copy	存储副本时不在文件名后添加“copy”
-# Export As metadata and profile options
 	Color Profile	颜色配置文件
 	EXIF	EXIF
-
-# View › Guides › right-click a guide
 	Edit Selected Guides	编辑所选参考线
 	Clear Selected Guides	清除所选参考线
 	Make Selection	建立选区
@@ -3012,8 +3034,6 @@ curves	Smooth	平滑
 	{set} (modified)	{set}（已修改）
 	Random	随机
 	Show file name in title	标题中显示文件名
-
-# Image › Mode › Bitmap (#5559)
 	50% Threshold	50% 阈值
 	Pattern Dither	图案仿色
 	Diffusion Dither	扩散仿色
@@ -3033,11 +3053,9 @@ curves	Smooth	平滑
 	Undo Changes	撤消更改
 	{shortcut} is reserved by the system and can't be assigned.	{shortcut} 由系统保留，无法指定。
 	Low-Latency Drawing (vsync off, applies at next launch)	低延迟绘画（关闭垂直同步，下次启动时生效）
-# Free Transform: a new layer while the box is open (#5859)
 	Reference point location	参考点位置
 	Free Transform is still being applied; try again when it has finished.	自由变换仍在应用中；请在完成后重试。
 	The transform couldn't be applied.	无法应用变换。
-# Preferences › Performance › GPU Memory; the status bar and slow-redraw notice
 	Its layers need {needed} of GPU memory; the budget leaves them {budget}.	其图层需要 {needed} GPU 内存；预算只留给它们 {budget}。
 	Set GPU Memory in Preferences › Performance to what your graphics card can hold, at most 3/8 of its memory. Automatic follows Memory Usage, within a quarter of this computer's memory and 3/8 of the card's, and doesn't count the document against a card whose memory is known. The status bar shows GPU Memory Full while they don't fit.	在 首选项 › 性能 中将 GPU 内存设置为显卡能容纳的大小，最多为其显存的 3/8。自动跟随内存使用量，不超过本机内存的四分之一和显卡显存的 3/8，且在显存已知的显卡上不把文档计入。在图层放不下期间，状态栏显示“GPU 内存已满”。
 	GPU Memory Full	GPU 内存已满
@@ -3064,8 +3082,6 @@ curves	Smooth	平滑
 	The fastest and the softest, with colour fringing on fine detail.	最快也最柔和，细节处有色边。
 	“{name}” already exists. Replace it?	“{name}”已存在。要替换它吗？
 	The name in the save dialog was “{name}”.	存储对话框中的名称是“{name}”。
-	Move Up	上移
-	Move Down	下移
 	Previous Brush	上一个画笔
 	Next Brush	下一个画笔
 	First Brush	第一个画笔
@@ -3081,18 +3097,13 @@ curves	Smooth	平滑
 	In Front	前面
 	Behind	后面
 	Blend	混合
-
-# DDS Options (#1327)
 	DDS Options	DDS 选项
 	Compression	压缩
 	Generate Mipmaps	生成 Mipmap
-
-# Color Table (.act) dialog
 	There is no color table to save.	没有可保存的色表。
 @plural	Saved {n} color to {file}|Saved {n} colors to {file}	已将 {n} 种颜色保存到 {file}
-
-# Graphics Adapter preference (#1885)
 	GPU adapter	GPU 适配器
+smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded source; format-specific features may change.	AI/PDF/EPS 内容将以 SVG 格式编辑。保存会替换嵌入的源文件；格式特有的功能可能会发生变化。
 
 # Styles panel: Import / Export Styles (.asl)
 	Import Styles…	导入样式…
@@ -3101,7 +3112,6 @@ curves	Smooth	平滑
 	{file} is not a style library (.asl)	{file} 不是样式库 (.asl)
 @plural	Imported {n} style from {file}|Imported {n} styles from {file}	已从 {file} 导入 {n} 个样式
 @plural	Exported {n} style to {file}|Exported {n} styles to {file}	已将 {n} 个样式导出到 {file}
-# Actions: a step dialog holds a suspended recording (#7365)
 	Confirm or cancel the open action step dialog first	请先确认或取消打开的动作步骤对话框
 	Pro Medium Gray	专业中灰
 	Solarized	Solarized
@@ -3110,30 +3120,11 @@ curves	Smooth	平滑
 	Pro Light	专业浅色
 	Resize Windows to Fit	调整窗口大小以适合
 	EXR	EXR
-# Paragraph direction (TYPE-218-2)
 	Automatic paragraph direction	自动段落方向
 	Left-to-right paragraph direction	从左到右的段落方向
 	Right-to-left paragraph direction	从右到左的段落方向
 	Not rendered: this adjustment ({key}) is kept as imported.	未渲染：此调整（{key}）按导入时的原样保留。
-# Print preview image (#8236)
 	Print preview image	打印预览图像
-	Clear Selection	清除选区
-	Color Aware	颜色识别
-	Decontaminate Colors	净化颜色
-	Edge Detection	边缘检测
-	Global Refinements	全局调整
-	High Quality Preview	高品质预览
-	Object Aware	对象识别
-	Real-Time Refinement	实时调整
-	Refine Edge Brush Tool	调整边缘画笔工具
-	Refine Hair	调整细线
-	Refine Mode	调整模式
-	Remember Settings	记住设置
-	View Mode	视图模式
-	Object Aware needs a segmentation model, which isn't available yet	对象识别需要分割模型，目前尚不可用
-	Refine Hair needs hair detection, which isn't available yet	调整细线需要毛发检测，目前尚不可用
-
-# Color panel menu: modes, copy commands and colour ramps (#6000)
 	Hue Cube	色相立方体
 	Brightness Cube	亮度立方体
 	Color Wheel	色轮
@@ -3150,16 +3141,13 @@ curves	Smooth	平滑
 	Grayscale Ramp	灰度色带
 	Current Colors	当前颜色
 	Make Ramp Web Safe	使色带成为 Web 安全色
-
-# File opening, export status and graphics driver information
 	Couldn't open {name}: {error}	无法打开 {name}：{error}
 	Exported {path} ({size})	已导出 {path}（{size}）
 	Exported {path}	已导出 {path}
 	Exported {n} files	已导出 {n} 个文件
 	Driver: {driver}	驱动程序：{driver}
-	Select and Mask was closed: its document is no longer the active one	已关闭“选择与蒙版”：其文档不再是当前文档
-	Select and Mask was closed: another layer was selected	已关闭“选择与蒙版”：已选择另一个图层
-# Art History Brush (#213).
+	The path was kept as the Work Path	路径已保留为工作路径
+	The path was discarded	路径已丢弃
 	Art History Brush	艺术历史画笔
 	Art History Brush Tool	艺术历史画笔工具
 	Tight Short	紧密短
@@ -3172,8 +3160,6 @@ curves	Smooth	平滑
 	Loose Curl	宽松卷曲
 	Area	区域
 	Stylized dabs from a history state	从历史状态绘制风格化点涂
-
-# Egui 0.37 migration controls (Aspect Ratio, Category, Color Table, Gamma, Interpolation, Profile, Target, Units, Demosaic)
 	Aspect Ratio	长宽比
 	Category	类别
 	Color Table	颜色表
@@ -3185,3 +3171,31 @@ curves	Smooth	平滑
 	Font size presets	字号预设
 	Leading presets	行距预设
 	Tracking presets	字距调整预设
+	Invalid numeric entry. An integer between {min}% and {max}% is required. Previous value was inserted.	数值输入无效。需要介于 {min}% 和 {max}% 之间的整数。已插入先前的值。
+	Clear Selection	清除选区
+	Color Aware	颜色识别
+	Decontaminate Colors	净化颜色
+	Edge Detection	边缘检测
+	Global Refinements	全局调整
+	High Quality Preview	高品质预览
+	Object Aware	对象识别
+	Real-Time Refinement	实时调整
+	Refine Edge Brush Tool	调整边缘画笔工具
+	Refine Hair	调整细线
+	Refine Mode	调整模式
+	Remember Settings	记住设置
+	View Mode	视图模式
+	Object Aware needs a segmentation model, which isn't available yet	对象识别需要分割模型，目前尚不可用
+	Refine Hair needs hair detection, which isn't available yet	调整细线需要毛发检测，目前尚不可用
+	Select and Mask was closed: its document is no longer the active one	已关闭“选择与蒙版”：其文档不再是当前文档
+	Select and Mask was closed: another layer was selected	已关闭“选择与蒙版”：已选择另一个图层
+	Drag to move the selected path	拖动以移动选中的路径
+
+# Shape Fill/Stroke popover and colour swatches opening the Color Picker
+	Color Picker	拾色器
+	Recently Used Colors	最近使用的颜色
+	Stop Color	色标颜色
+	Shapes can't use patterns yet	形状暂不支持图案
+	Solid Color	纯色
+	Tint Color	色调颜色
+	Edit Brush…	编辑画笔…

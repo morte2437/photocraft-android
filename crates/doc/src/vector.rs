@@ -318,6 +318,17 @@ pub enum LiveShape {
         to: [f64; 2],
         weight: f64,
     },
+    /// Editable vector arrow with parameters preserved by serde in the project document.
+    ArrowLine {
+        from: [f64; 2],
+        to: [f64; 2],
+        weight: f64,
+        start: bool,
+        end: bool,
+        width: f64,
+        length: f64,
+        concavity: f64,
+    },
 }
 
 /// A shape layer: a filled and/or stroked path.

@@ -215,6 +215,65 @@ pub fn line(a: (f64, f64), b: (f64, f64), weight: f64) -> Path {
     Path::new(vec![Subpath::polygon(&[(a.0 + nx, a.1 + ny), (b.0 + nx, b.1 + ny), (b.0 - nx, b.1 - ny), (a.0 - nx, a.1 - ny)])])
 }
 
+/// A filled vector line with optional arrowheads at its endpoints (#6408).
+/// `width` and `length` measure the head in document pixels, independently of the shaft weight.
+/// `concavity` is 0..100 percent: 0 has a flat rear edge, 100 a deep V-shaped notch.
+/// The shaft stops at the notch, so a concave head remains concave after filling.
+// The arguments correspond to the stored LiveShape::ArrowLine parameters.
+#[allow(clippy::too_many_arguments)]
+pub fn arrow_line(a: (f64, f64), b: (f64, f64), weight: f64, start: bool, end: bool, width: f64, length: f64, concavity: f64) -> Path {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let distance = dx.hypot(dy);
+    if !distance.is_finite() || !weight.is_finite() {
+        return Path::default();
+    }
+    // Without arrowheads, use the ordinary line even for segments shorter than 1 px.
+    if !start && !end {
+        return line(a, b, weight);
+    }
+    if distance < 1.0 {
+        return Path::default();
+    }
+    let (ux, uy) = (dx / distance, dy / distance);
+    let (vx, vy) = (-uy, ux);
+    let size = (if length.is_finite() { length.max(1.0) } else { 1.0 }).min(distance * if start && end { 0.49 } else { 0.9 });
+    let half = (if width.is_finite() { width.max(1.0) } else { 1.0 }) / 2.0;
+    let requested_notch = concavity.clamp(0.0, 100.0) / 100.0;
+    // Preserve 0..50%. Beyond that compress the usable range so the head never collapses.
+    let max_notch = 0.75;
+    let notch = if requested_notch <= 0.5 { requested_notch } else { 0.5 + (requested_notch - 0.5) * (max_notch - 0.5) / 0.5 };
+    // Put the shaft up to the notch, leaving the head's concave edges visible.
+    let inner = size * (1.0 - notch);
+    let shaft_a = if start { (a.0 + ux * inner, a.1 + uy * inner) } else { a };
+    let shaft_b = if end { (b.0 - ux * inner, b.1 - uy * inner) } else { b };
+    let hw = weight.max(0.1) / 2.0;
+    let mut pieces = vec![Subpath::polygon(&[
+        (shaft_a.0 + vx * hw, shaft_a.1 + vy * hw),
+        (shaft_b.0 + vx * hw, shaft_b.1 + vy * hw),
+        (shaft_b.0 - vx * hw, shaft_b.1 - vy * hw),
+        (shaft_a.0 - vx * hw, shaft_a.1 - vy * hw),
+    ])];
+    // The tip, both outer corners of the head and the recessed midpoint.
+    // Positive `sign` points towards the tail of the head (away from its tip).
+    let mut head = |tip: (f64, f64), sign: f64| {
+        let base = (tip.0 + ux * sign * size, tip.1 + uy * sign * size);
+        let rear_middle = (base.0 - ux * sign * size * notch, base.1 - uy * sign * size * notch);
+        pieces.push(Subpath::polygon(&[tip, (base.0 + vx * half, base.1 + vy * half), rear_middle, (base.0 - vx * half, base.1 - vy * half)]));
+    };
+    if start {
+        head(a, 1.0);
+    }
+    if end {
+        head(b, -1.0);
+    }
+    // Never return non-finite arrow geometry.
+    // Large but valid scaled arrowheads remain unchanged.
+    if pieces.iter().flat_map(|sp| &sp.knots).any(|k| !k.anchor.x.is_finite() || !k.anchor.y.is_finite()) {
+        return Path::default();
+    }
+    Path::new(pieces)
+}
+
 /// The path of a live shape.
 pub fn live_path(s: &LiveShape) -> Path {
     match s {
@@ -224,6 +283,9 @@ pub fn live_path(s: &LiveShape) -> Path {
             round_corners(polygon(*x, *y, *w, *h, *sides, *star_ratio), *corner_radius)
         }
         LiveShape::Line { from, to, weight } => line((from[0], from[1]), (to[0], to[1]), *weight),
+        LiveShape::ArrowLine { from, to, weight, start, end, width, length, concavity } => {
+            arrow_line((from[0], from[1]), (to[0], to[1]), *weight, *start, *end, *width, *length, *concavity)
+        }
     }
 }
 
@@ -231,6 +293,33 @@ pub fn live_path(s: &LiveShape) -> Path {
 mod tests {
     use super::*;
 
+    #[test]
+    fn rejects_non_finite_arrowhead_coordinates() {
+        let path = arrow_line((1.5e308, 0.0), (1.5e308, 200.0), 8.0, false, true, f64::MAX, 50.0, 0.0);
+        assert!(path.subpaths.is_empty());
+    }
+
+    #[test]
+    fn preserves_scaled_head_dimensions_above_ui_limit() {
+        let path = arrow_line((0.0, 0.0), (20000.0, 0.0), 8.0, false, true, 5200.0, 5200.0, 0.0);
+        let head = &path.subpaths[1].knots;
+        assert!((head[1].anchor.x - 14800.0).abs() < 1e-6);
+        assert!((head[1].anchor.y - 2600.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn live_arrow_can_be_regenerated_after_edit() {
+        let shape =
+            LiveShape::ArrowLine { from: [10.0, 10.0], to: [200.0, 10.0], weight: 4.0, start: false, end: true, width: 31.0, length: 31.0, concavity: 50.0 };
+        let before = live_path(&shape);
+        assert_eq!(before.subpaths.len(), 2);
+        let mut edited = shape;
+        if let LiveShape::ArrowLine { width, .. } = &mut edited {
+            *width = 60.0;
+        }
+        let after = live_path(&edited);
+        assert_ne!(before, after);
+    }
     /// The point at `t` of the cubic leaving `a` towards `b`.
     fn at(a: &Knot, b: &Knot, t: f64) -> [f64; 2] {
         let u = 1.0 - t;
@@ -315,5 +404,35 @@ mod tests {
         assert_eq!(polygon(0.0, 0.0, 10.0, 10.0, 6, 1.0).subpaths[0].knots.len(), 6);
         let top = polygon(0.0, 0.0, 10.0, 10.0, 3, 1.0).subpaths[0].knots[0].anchor;
         assert!((top.x - 5.0).abs() < 1e-9 && top.y.abs() < 1e-9);
+    }
+}
+
+#[cfg(test)]
+mod line_arrow_6408_tests {
+    use super::*;
+
+    #[test]
+    fn short_line_without_heads_matches_regular_line() {
+        let a = (0.0, 0.0);
+        let b = (0.25, 0.0);
+        assert_eq!(arrow_line(a, b, 5.0, false, false, 52.0, 50.0, 0.0), line(a, b, 5.0));
+    }
+
+    #[test]
+    fn plain_line_has_single_subpath() {
+        let p = arrow_line((0.0, 0.0), (100.0, 0.0), 5.0, false, false, 52.0, 50.0, 0.0);
+        assert_eq!(p.subpaths.len(), 1);
+    }
+
+    #[test]
+    fn start_end_arrowheads_add_two_vector_subpaths() {
+        let p = arrow_line((0.0, 0.0), (100.0, 0.0), 5.0, true, true, 52.0, 50.0, 25.0);
+        assert_eq!(p.subpaths.len(), 3);
+    }
+
+    #[test]
+    fn degenerate_line_returns_empty_path() {
+        let p = arrow_line((2.0, 2.0), (2.0, 2.0), 5.0, true, true, 52.0, 50.0, 0.0);
+        assert!(p.subpaths.is_empty());
     }
 }

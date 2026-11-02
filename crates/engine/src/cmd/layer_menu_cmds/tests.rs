@@ -757,11 +757,11 @@ fn applying_a_feathered_mask_preserves_its_soft_composite() {
             Ok(())
         })
         .unwrap();
-        let before = photocraft_compose::flatten(doc(&s)).px;
+        let before = photocraft_compose::flatten(doc(&s)).into_px();
         assert!(before[15 * 40 + 19][3] > 0.0 && before[15 * 40 + 19][3] < 1.0, "mask must start with a soft edge");
         s.execute("layer.layerMask.apply", json!({})).unwrap();
         assert!(active(&s).mask.is_none(), "Apply removes the pixel mask");
-        let after = photocraft_compose::flatten(doc(&s)).px;
+        let after = photocraft_compose::flatten(doc(&s)).into_px();
         for (a, b) in before.iter().zip(&after) {
             assert!((a[3] - b[3]).abs() <= 1.0 / 255.0 + 1e-5, "depth {depth}: alpha {a:?} became {b:?}");
         }
@@ -791,13 +791,13 @@ fn from_transparency_preserves_mask_coverage_outside_the_canvas() {
     for depth in DEPTHS {
         let mut s = session(depth, "rgb");
         paint(&mut s, |_, _| [1.0, 0.0, 0.0, 0.5]);
-        let before = photocraft_compose::flatten(doc(&s)).px;
+        let before = photocraft_compose::flatten(doc(&s)).into_px();
         s.execute("layer.translate", json!({"dx": 20})).unwrap();
         s.execute("layer.layerMask.fromTransparency", json!({})).unwrap();
         let mask = active(&s).mask.as_ref().unwrap();
         assert!((mask.value(50, 10) - 0.5).abs() < 1.0 / 255.0 + 1e-6, "off-canvas mask at depth {depth}");
         s.execute("layer.translate", json!({"dx": -20})).unwrap();
-        let after = photocraft_compose::flatten(doc(&s)).px;
+        let after = photocraft_compose::flatten(doc(&s)).into_px();
         for (a, b) in before.iter().zip(&after) {
             assert!((a[3] - b[3]).abs() <= 1.0 / 255.0 + 1e-6, "alpha changed at depth {depth}: {a:?} -> {b:?}");
         }

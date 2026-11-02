@@ -62,66 +62,211 @@ impl Normal {
     }
 }
 
-/// A sparse least-squares problem `min Σ w²(row·x − rhs)²`, solved by conjugate gradients on the
-/// normal equations (CGLS). Used for mesh warps with thousands of unknowns.
-#[derive(Default)]
-pub(crate) struct SparseLs {
-    pub n: usize,
-    rows: Vec<(Vec<(usize, f64)>, f64)>,
+/// A compressed sparse row matrix (symmetric, used by CG).
+pub(crate) struct Csr {
+    pub rows: Vec<usize>,
+    pub cols: Vec<usize>,
+    pub vals: Vec<f64>,
+    pub diag: Vec<f64>,
 }
 
-impl SparseLs {
-    pub fn new(n: usize) -> Self {
-        SparseLs { n, rows: Vec::new() }
-    }
-    pub fn add(&mut self, row: Vec<(usize, f64)>, rhs: f64, w: f64) {
-        self.rows.push((row.into_iter().map(|(i, c)| (i, c * w)).collect(), rhs * w));
-    }
-    /// CGLS from `x0`; at most `iters` iterations.
-    pub fn solve(&self, x0: &[f64], iters: usize) -> Vec<f64> {
-        let n = self.n;
-        let mut x = x0.to_vec();
-        let ax = |x: &[f64]| -> Vec<f64> { self.rows.iter().map(|(r, _)| r.iter().map(|&(i, c)| c * x[i]).sum()).collect() };
-        let atv = |v: &[f64]| -> Vec<f64> {
-            let mut out = vec![0.0; n];
-            for ((r, _), vi) in self.rows.iter().zip(v) {
-                for &(i, c) in r {
-                    out[i] += c * vi;
+impl Csr {
+    pub fn from_triplets(n: usize, mut t: Vec<(usize, usize, f64)>) -> Csr {
+        t.sort_by_key(|a| (a.0, a.1));
+        let mut rows = vec![0usize; n + 1];
+        let mut cols = Vec::with_capacity(t.len());
+        let mut vals: Vec<f64> = Vec::with_capacity(t.len());
+        let mut last = (usize::MAX, usize::MAX);
+        for (i, j, v) in t {
+            if (i, j) == last {
+                *vals.last_mut().unwrap_or(&mut 0.0) += v;
+                continue;
+            }
+            last = (i, j);
+            cols.push(j);
+            vals.push(v);
+            rows[i + 1] = cols.len();
+        }
+        for i in 0..n {
+            rows[i + 1] = rows[i + 1].max(rows[i]);
+        }
+        let mut diag = vec![1.0; n];
+        for (i, d) in diag.iter_mut().enumerate() {
+            for k in rows[i]..rows[i + 1] {
+                if cols[k] == i && vals[k] > 0.0 {
+                    *d = vals[k];
                 }
             }
-            out
-        };
-        let mut r: Vec<f64> = self.rows.iter().zip(ax(&x)).map(|((_, b), a)| b - a).collect();
-        let mut s = atv(&r);
-        let mut p = s.clone();
-        let mut gamma: f64 = s.iter().map(|v| v * v).sum();
-        let g0 = gamma.max(1e-30);
-        for _ in 0..iters {
-            if gamma <= g0 * 1e-20 {
+        }
+        Csr { rows, cols, vals, diag }
+    }
+
+    pub fn mul(&self, x: &[f64], out: &mut [f64]) {
+        for (i, o) in out.iter_mut().enumerate() {
+            let mut s = 0.0;
+            for k in self.rows[i]..self.rows[i + 1] {
+                s += self.vals[k] * x[self.cols[k]];
+            }
+            *o = s;
+        }
+    }
+
+    /// Jacobi-preconditioned conjugate gradients, warm-started from `x`.
+    pub fn solve(&self, b: &[f64], x: &mut [f64]) {
+        let n = b.len();
+        let mut r = vec![0.0; n];
+        self.mul(x, &mut r);
+        for i in 0..n {
+            r[i] = b[i] - r[i];
+        }
+        let bn: f64 = b.iter().map(|v| v * v).sum::<f64>().sqrt().max(1e-30);
+        let mut z: Vec<f64> = r.iter().zip(&self.diag).map(|(r, d)| r / d).collect();
+        let mut p = z.clone();
+        let mut rz: f64 = r.iter().zip(&z).map(|(a, b)| a * b).sum();
+        let mut ap = vec![0.0; n];
+        for _ in 0..(4 * n).clamp(50, 2000) {
+            if r.iter().map(|v| v * v).sum::<f64>().sqrt() <= 1e-12 * bn {
                 break;
             }
-            let q = ax(&p);
-            let qq: f64 = q.iter().map(|v| v * v).sum();
-            if qq <= 1e-300 {
+            self.mul(&p, &mut ap);
+            let pap: f64 = p.iter().zip(&ap).map(|(a, b)| a * b).sum();
+            if pap.abs() < 1e-300 {
                 break;
             }
-            let alpha = gamma / qq;
+            let alpha = rz / pap;
             for i in 0..n {
                 x[i] += alpha * p[i];
+                r[i] -= alpha * ap[i];
             }
-            for (ri, qi) in r.iter_mut().zip(&q) {
-                *ri -= alpha * qi;
-            }
-            s = atv(&r);
-            let g1: f64 = s.iter().map(|v| v * v).sum();
-            let beta = g1 / gamma;
-            gamma = g1;
             for i in 0..n {
-                p[i] = s[i] + beta * p[i];
+                z[i] = r[i] / self.diag[i];
+            }
+            let rz2: f64 = r.iter().zip(&z).map(|(a, b)| a * b).sum();
+            let beta = rz2 / rz;
+            rz = rz2;
+            for i in 0..n {
+                p[i] = z[i] + beta * p[i];
             }
         }
-        x
     }
+}
+
+/// Banded Cholesky factor `A = L Lᵀ` (the mesh numbers its vertices in reverse Cuthill–McKee
+/// order, so the system's bandwidth is about one breadth-first front): factored once per pin
+/// set, then each global step is two triangular solves.
+pub(crate) struct BandChol {
+    n: usize,
+    p: usize,
+    /// Row `i` holds `L[i][i - p ..= i]`.
+    l: Vec<f64>,
+}
+
+impl BandChol {
+    /// `None` when the band would be too large (or the matrix isn't positive definite).
+    pub fn new(a: &Csr) -> Option<BandChol> {
+        let n = a.diag.len();
+        let mut p = 0;
+        for i in 0..n {
+            for k in a.rows[i]..a.rows[i + 1] {
+                p = p.max(i.abs_diff(a.cols[k]));
+            }
+        }
+        if n.saturating_mul(p + 1) > 40_000_000 {
+            return None;
+        }
+        let w = p + 1;
+        let mut l = vec![0.0f64; n * w];
+        for i in 0..n {
+            for k in a.rows[i]..a.rows[i + 1] {
+                let j = a.cols[k];
+                if j <= i {
+                    l[i * w + (j + p - i)] = a.vals[k];
+                }
+            }
+        }
+        for i in 0..n {
+            let lo = i.saturating_sub(p);
+            for j in lo..=i {
+                let jlo = j.saturating_sub(p).max(lo);
+                let mut s = l[i * w + (j + p - i)];
+                for k in jlo..j {
+                    s -= l[i * w + (k + p - i)] * l[j * w + (k + p - j)];
+                }
+                if i == j {
+                    if s <= 0.0 || !s.is_finite() {
+                        return None;
+                    }
+                    l[i * w + p] = s.sqrt();
+                } else {
+                    l[i * w + (j + p - i)] = s / l[j * w + p];
+                }
+            }
+        }
+        Some(BandChol { n, p, l })
+    }
+
+    #[allow(clippy::needless_range_loop)] // band index arithmetic reads clearer with indices
+    pub fn solve(&self, b: &[f64], x: &mut [f64]) {
+        let (n, p, w) = (self.n, self.p, self.p + 1);
+        let mut y = b.to_vec();
+        for i in 0..n {
+            let mut s = y[i];
+            for k in i.saturating_sub(p)..i {
+                s -= self.l[i * w + (k + p - i)] * y[k];
+            }
+            y[i] = s / self.l[i * w + p];
+        }
+        for i in (0..n).rev() {
+            let mut s = y[i];
+            for k in i + 1..(i + p + 1).min(n) {
+                s -= self.l[k * w + (i + p - k)] * x[k];
+            }
+            x[i] = s / self.l[i * w + p];
+        }
+    }
+}
+
+/// Preconditioned conjugate gradients on the SPD system `A x = b`, warm-started from `x`.
+/// `a(v, out)` writes `A·v` and `m(r, out)` writes `M⁻¹·r`. Stops when `‖r‖ ≤ tol·‖b‖`, when the
+/// system stops being usable (non-finite or non-positive curvature), or after `max_iter`
+/// iterations. Returns the iterations used.
+pub(crate) fn pcg(a: impl Fn(&[f64], &mut [f64]), m: impl Fn(&[f64], &mut [f64]), b: &[f64], x: &mut [f64], tol: f64, max_iter: usize) -> usize {
+    let dot = |u: &[f64], v: &[f64]| -> f64 { u.iter().zip(v).map(|(p, q)| p * q).sum() };
+    let n = b.len().min(x.len());
+    let mut r = vec![0.0; n];
+    a(x, &mut r);
+    for (ri, bi) in r.iter_mut().zip(b) {
+        *ri = bi - *ri;
+    }
+    let stop = tol * dot(b, b).sqrt().max(1e-30);
+    let mut z = vec![0.0; n];
+    m(&r, &mut z);
+    let mut p = z.clone();
+    let mut rz = dot(&r, &z);
+    let mut ap = vec![0.0; n];
+    for it in 0..max_iter {
+        if dot(&r, &r).sqrt() <= stop || rz <= 1e-300 || !rz.is_finite() {
+            return it;
+        }
+        a(&p, &mut ap);
+        let pap = dot(&p, &ap);
+        if pap <= 1e-300 || !pap.is_finite() {
+            return it;
+        }
+        let alpha = rz / pap;
+        for i in 0..n {
+            x[i] += alpha * p[i];
+            r[i] -= alpha * ap[i];
+        }
+        m(&r, &mut z);
+        let rz2 = dot(&r, &z);
+        let beta = rz2 / rz;
+        rz = rz2;
+        for i in 0..n {
+            p[i] = z[i] + beta * p[i];
+        }
+    }
+    max_iter
 }
 
 /// Runs `f(y, row)` for every row of a `w × h × ch` buffer, in parallel on native targets.
@@ -251,20 +396,48 @@ mod tests {
     }
 
     #[test]
-    fn dense_and_sparse_solvers_agree() {
+    fn dense_solver_fits_a_line_and_rejects_singular_systems() {
         // Overdetermined line fit y = 2x + 1.
         let mut ne = Normal::new(2);
-        let mut sp = SparseLs::new(2);
         for x in 0..10 {
-            let y = 2.0 * x as f64 + 1.0;
-            ne.add(&[(0, x as f64), (1, 1.0)], y, 1.0);
-            sp.add(vec![(0, x as f64), (1, 1.0)], y, 1.0);
+            ne.add(&[(0, x as f64), (1, 1.0)], 2.0 * x as f64 + 1.0, 1.0);
         }
         let a = ne.solve().unwrap();
-        let b = sp.solve(&[0.0, 0.0], 50);
         assert!((a[0] - 2.0).abs() < 1e-9 && (a[1] - 1.0).abs() < 1e-9);
-        assert!((b[0] - 2.0).abs() < 1e-6 && (b[1] - 1.0).abs() < 1e-6, "{b:?}");
         assert!(solve_dense(2, vec![1.0, 2.0, 2.0, 4.0], vec![1.0, 2.0]).is_none());
+    }
+
+    /// A tridiagonal SPD system: identity preconditioning needs many iterations, the exact
+    /// banded Cholesky preconditioner one or two; both match the dense solve.
+    #[test]
+    fn pcg_matches_the_dense_solve_and_an_exact_preconditioner_converges_at_once() {
+        let n = 40;
+        let mut trip = Vec::new();
+        for i in 0..n {
+            trip.push((i, i, 2.5));
+            if i + 1 < n {
+                trip.push((i, i + 1, -1.0));
+                trip.push((i + 1, i, -1.0));
+            }
+        }
+        let k = Csr::from_triplets(n, trip);
+        let mut dense = vec![0.0; n * n];
+        for i in 0..n {
+            for e in k.rows[i]..k.rows[i + 1] {
+                dense[i * n + k.cols[e]] = k.vals[e];
+            }
+        }
+        let b: Vec<f64> = (0..n).map(|i| (i as f64 * 0.7).sin()).collect();
+        let want = solve_dense(n, dense, b.clone()).unwrap();
+        let mul = |v: &[f64], out: &mut [f64]| k.mul(v, out);
+        let mut x = vec![0.0; n];
+        let slow = pcg(mul, |r, z| z.copy_from_slice(r), &b, &mut x, 1e-12, 500);
+        assert!(x.iter().zip(&want).all(|(a, b)| (a - b).abs() < 1e-8), "identity-preconditioned result differs");
+        let chol = BandChol::new(&k).unwrap();
+        let mut y = vec![0.0; n];
+        let fast = pcg(mul, |r, z| chol.solve(r, z), &b, &mut y, 1e-12, 500);
+        assert!(y.iter().zip(&want).all(|(a, b)| (a - b).abs() < 1e-8), "cholesky-preconditioned result differs");
+        assert!(fast <= 2 && slow > fast, "iterations: exact {fast}, identity {slow}");
     }
 
     #[test]

@@ -1051,12 +1051,16 @@ fn reset_harness(app: PhotocraftApp) -> egui_kittest::Harness<'static, ResetHarn
                             photocraft_engine::prefs::FontPreview::Medium,
                             &mut FontLibrary::default(),
                         );
-                        let search = ui.scope_id().with(("font-search", "reset-font"));
-                        state.search = ui.data(|d| d.get_temp::<String>(search)).unwrap_or_default();
-                        let input = search.with("input");
-                        state.search_input = Some(input);
-                        state.search_focused = ui.memory(|m| m.has_focus(input));
-                        state.search_height = ui.data(|d| d.get_temp::<egui::Rect>(search.with("body"))).map(|r| r.height());
+                        // The font field is its own text input: it takes focus as a click would, and
+                        // its edit state holds what is typed and the measured popup height.
+                        if !ui.memory(|m| m.has_focus(button)) {
+                            ui.memory_mut(|m| m.request_focus(button));
+                        }
+                        let edit = ui.data(|d| d.get_temp::<FontFieldEdit>(button.with("edit")));
+                        state.search = edit.as_ref().map(|e| e.text.clone()).unwrap_or_default();
+                        state.search_input = Some(button);
+                        state.search_focused = ui.memory(|m| m.has_focus(button));
+                        state.search_height = edit.and_then(|e| e.menu_height);
                     });
                 }
                 if state.picker_button {
@@ -1094,12 +1098,13 @@ fn actual_font_search_owns_stock_input_without_a_speculative_custom_request() {
     assert!(h.state().search_focused, "the real font search field, not another stock field, owns focus");
     assert_eq!(h.ctx.memory(|m| m.focused()), Some(search_input), "the stock IME owner is the focused font search input");
     assert!(
-        h.state().search_height.is_some_and(|height| height > 0.0 && height <= FONT_MENU_HEIGHT),
+        h.state().search_height.is_some_and(|height| height > 0.0 && height <= FONT_LIST_HEIGHT),
         "the real font list measured within its bounded popup height"
     );
     h.input_mut().events = vec![completed(first), egui::Event::Text("Family".into())];
     h.step();
-    assert_eq!(h.state().search, "Family", "the actual font picker keeps its text event");
+    // The field opens holding the current family, so the typed text lands after it.
+    assert_eq!(h.state().search, "Family 00Family", "the actual font picker keeps its text event");
     assert_eq!(layer_text(&h.state().app), before);
     assert_eq!(pending(&h.state().app), None);
     let stock = h.output().platform_output.ime.as_ref().expect("stock output survives finalization");

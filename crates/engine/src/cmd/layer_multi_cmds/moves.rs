@@ -301,16 +301,63 @@ pub fn preview_move(doc: &Document, p: &Value, add_copy: bool) -> Option<Documen
     Some(preview)
 }
 
+/// The rect of the artboard layer `id` sits in, or `None` when it sits in none (or is itself a
+/// board: boards are never nested, and moving one beside another carries its own rect).
+fn board_rect_of(doc: &Document, id: LayerId) -> Option<photocraft_geom::Rect> {
+    if doc.layer(id)?.artboard().is_some() {
+        return None;
+    }
+    doc.layer(doc.artboard_of(id)?)?.artboard().map(|board| board.rect)
+}
+
+/// Where a dropped layer came from: the rect of the board it sat on, and whether its position was
+/// locked there (by its own lock or one on a group or board around it).
+#[derive(Clone, Copy)]
+struct Origin {
+    board: Option<photocraft_geom::Rect>,
+    pinned: bool,
+}
+
+/// The moves that keep each of `ids` where it sat on its board after a drop into another board.
+/// Boards share one canvas, so a layer re-parented without moving keeps its canvas position and
+/// lands outside (and is clipped by) the board it was dropped on. `from[i]` is where `ids[i]` was
+/// before the drop; the layer shifts by the offset between the two boards' origins. A layer that
+/// stays on its board, joins one from outside any board, leaves for the top level, or has its
+/// position locked stays where it is. The lock is read on both sides: a lock the layer had from a
+/// group or board it left no longer shows on it once it has left (#10489 review).
+fn board_offsets(doc: &Document, ids: &[LayerId], from: &[Origin]) -> Vec<(LayerId, i32, i32)> {
+    ids.iter()
+        .zip(from)
+        .filter_map(|(&id, src)| {
+            let (board, dst) = (src.board.as_ref()?, board_rect_of(doc, id)?);
+            let (dx, dy) = (dst.x0.checked_sub(board.x0)?, dst.y0.checked_sub(board.y0)?);
+            let locks = doc.effective_locks(id);
+            ((dx != 0 || dy != 0) && !src.pinned && !(locks.position || locks.all)).then_some((id, dx, dy))
+        })
+        .collect()
+}
+
 /// The document-only part of `move_to`, shared with [`preview_move`] so the Layers panel's hover
 /// preview cannot drift from what the drop commits. Moves (or, with `copy`, duplicates) the
 /// top-level `moved_ids` to `pos` (`above`, `below` or `into`) `target`, then applies the
 /// group-depth cap, the Background-stays-at-the-bottom rule and the clip-group rules
-/// (`clip_group::settle`). Returns the ids of the new copies (empty for a move). On `Err` `doc` is
-/// half edited: run it inside `Session::edit` or on a scratch copy.
+/// (`clip_group::settle`). A layer dropped on a different artboard keeps its place on its board
+/// (see [`board_offsets`]). Returns the ids of the new copies (empty for a move). On `Err` `doc`
+/// is half edited: run it inside `Session::edit` or on a scratch copy.
 fn apply_move(doc: &mut Document, moved_ids: &[LayerId], target: LayerId, pos: &str, copy: bool, add_copy: bool) -> Result<Vec<LayerId>> {
     const CMD: &str = "layer.moveTo";
     let background = crate::background_cmds::background_id(doc);
     let before = if copy { Default::default() } else { crate::clip_group::Before::read(doc, moved_ids) };
+    // Read before the layers are lifted out: afterwards the source board, and any lock the layer
+    // had from the groups around it, are out of reach. A copy is a new layer, so only its own
+    // locks (which it keeps) can pin it.
+    let from: Vec<Origin> = moved_ids
+        .iter()
+        .map(|&id| {
+            let locks = doc.effective_locks(id);
+            Origin { board: board_rect_of(doc, id), pinned: !copy && (locks.position || locks.all) }
+        })
+        .collect();
     let mut moved = Vec::with_capacity(moved_ids.len());
     for &id in moved_ids {
         moved.push(if copy { crate::commands::layer_copy(doc, id, add_copy)? } else { doc.remove(id).ok_or(EngineError::NoLayer(id))? });
@@ -332,8 +379,16 @@ fn apply_move(doc: &mut Document, moved_ids: &[LayerId], target: LayerId, pos: &
         siblings.splice(at..at, moved);
     }
     check_group_depth(doc, "Reorder Layer")?;
+    // The layers now sit in their new parents; carry each across to its new board. Copies keep the
+    // order of `moved_ids`, so `from` lines up with either list.
+    let landed: &[LayerId] = if copy { &copies } else { moved_ids };
+    let shifts = board_offsets(doc, landed, &from);
+    if !shifts.is_empty() {
+        let snapshot = doc.clone();
+        move_layers(doc, &snapshot, &shifts)?;
+    }
     crate::background_cmds::keep_background_at_bottom(background, doc)?;
-    crate::clip_group::settle(doc, if copy { &copies } else { moved_ids }, &before, false);
+    crate::clip_group::settle(doc, landed, &before, false);
     Ok(copies)
 }
 

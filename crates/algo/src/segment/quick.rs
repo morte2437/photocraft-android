@@ -265,7 +265,7 @@ fn cut_levels<const OPTIMIZED: bool>(
     let (w, h) = (img.w, img.h);
     let zeros = vec![0.0f32; w * h];
     if w * h <= direct_px || w < 8 || h < 8 {
-        return super::grid_cut_impl::<OPTIMIZED>(img, cost_fg, &zeros, fixed, |d2| scale * weight(d2), cancel);
+        return super::grid_cut_impl::<OPTIMIZED>(img, cost_fg, &zeros, fixed, |d2| scale * weight(d2), cancel, false);
     }
     let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
     let coarse_img = img.downsample(2);
@@ -310,7 +310,7 @@ fn cut_levels<const OPTIMIZED: bool>(
             }
         })
         .collect();
-    super::grid_cut_impl::<OPTIMIZED>(img, cost_fg, &zeros, &banded, |d2| scale * weight(d2), cancel)
+    super::grid_cut_impl::<OPTIMIZED>(img, cost_fg, &zeros, &banded, |d2| scale * weight(d2), cancel, false)
 }
 
 /// Pixels within `radius` (working pixels) of the polyline `pts`, plus each point's own pixel.

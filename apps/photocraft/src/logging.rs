@@ -315,21 +315,30 @@ pub struct AppLogger {
     filter: Filter,
     stderr: bool,
     sink: Mutex<Sink>,
+    /// The file [`AppLogger::attach_dir`] opened, so a failure can tell the user what to attach.
+    path: Mutex<Option<PathBuf>>,
     /// The lock that marks the attached log file as in use (see [`rotate`]); held until exit.
     owner: Mutex<Option<File>>,
 }
 
 impl AppLogger {
     pub fn new(filter: Filter, stderr: bool) -> AppLogger {
-        AppLogger { filter, stderr, sink: Mutex::new(Sink::new(MAX_FILE_BYTES)), owner: Mutex::new(None) }
+        AppLogger { filter, stderr, sink: Mutex::new(Sink::new(MAX_FILE_BYTES)), path: Mutex::new(None), owner: Mutex::new(None) }
     }
 
     /// Rotate the logs in `dir` and send records to the fresh file; returns its path.
     pub fn attach_dir(&self, dir: &Path) -> Result<PathBuf, String> {
         let LogFile { path, file, owner } = rotate(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         self.sink.lock().unwrap_or_else(PoisonError::into_inner).attach(file);
+        *self.path.lock().unwrap_or_else(PoisonError::into_inner) = Some(path.clone());
         *self.owner.lock().unwrap_or_else(PoisonError::into_inner) = owner;
         Ok(path)
+    }
+
+    /// The log file records are written to, once [`AppLogger::attach_dir`] opened one: `None` when
+    /// the file could not be created (standard error is the only sink, see [`install`]).
+    pub fn path(&self) -> Option<PathBuf> {
+        self.path.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
 }
 
@@ -377,6 +386,21 @@ mod tests {
         let d = std::env::temp_dir().join(format!("photocraft-logging-{tag}-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
         let _ = std::fs::remove_dir_all(&d);
         d
+    }
+
+    /// The startup-failure dialog names the log file, so the logger has to remember it (#7643).
+    /// A start that couldn't create one keeps `None` and the dialog leaves the line out.
+    #[test]
+    fn path_names_the_attached_log_file() {
+        let _spawns = crate::no_child_spawns();
+        let dir = temp_dir("path");
+        let logger = AppLogger::new(Filter::parse(DEFAULT_FILTER), false);
+        assert_eq!(logger.path(), None, "nothing is written before a file is attached");
+        let path = logger.attach_dir(&dir).expect("attach");
+        assert_eq!(path, dir.join(LOG_FILE));
+        assert_eq!(logger.path(), Some(path));
+        drop(logger);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -504,3 +504,112 @@ fn alt_held_during_a_drag_is_no_tap() {
     alt_tap(&mut h);
     assert!(Keys::current(&h.ctx).focus.is_some(), "a lone tap still focuses the bar");
 }
+
+/// Typing a zoom: Alt only asks for the system alert. The bar does not take the keyboard, and the
+/// field keeps its focus and its text.
+#[test]
+fn alt_in_a_zoom_field_only_alerts() {
+    let mut h = Harness::builder().with_size(egui::vec2(1280.0, 720.0)).build_ui_state(
+        |ui, (app, pct): &mut (PhotocraftApp, f32)| {
+            crate::menus::menu_bar(app, ui);
+            crate::widgets::compact_wrapping_value_field(ui, pct, 0.0..=12800.0, "%", egui::vec2(90.0, 20.0)).accessible_name("Zoom");
+        },
+        (app(), 100.0),
+    );
+    PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+    h.run_steps(3);
+    h.get_by_role(egui::accesskit::Role::SpinButton).click();
+    h.run_steps(2);
+    for c in "200".chars() {
+        h.event(egui::Event::Text(c.to_string()));
+        h.run_steps(2);
+    }
+    h.key_down(egui::Key::AltLeft);
+    h.run_steps(2);
+    h.key_up(egui::Key::AltLeft);
+    h.run_steps(3);
+    assert_eq!(Keys::current(&h.ctx).focus, None, "Alt does not put the keyboard on the bar");
+    assert!(crate::zoom_field::alert_pending(&h.ctx), "it asks for the alert instead");
+    assert_eq!(h.state().1, 100.0, "and the zoom stays");
+    assert!(h.get_by_role(egui::accesskit::Role::SpinButton).is_focused(), "the field keeps the keyboard");
+    // The text was not selected by Alt: this adds to 200 instead of replacing it.
+    h.event(egui::Event::Text("3".into()));
+    h.run_steps(2);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert_eq!(h.state().1, 2003.0, "typing went on in the same text");
+}
+
+/// The menu bar and a zoom field, with `zoom_field::tick` as the app runs it. `beep` stands in for
+/// the platform's alert.
+fn bar_and_zoom_field(beep: fn()) -> Harness<'static, (PhotocraftApp, f32)> {
+    let mut app = app();
+    app.services.beep = Some(beep);
+    let mut h = Harness::builder().with_size(egui::vec2(1280.0, 720.0)).build_ui_state(
+        |ui, (app, pct): &mut (PhotocraftApp, f32)| {
+            crate::zoom_field::tick(app, &ui.ctx().clone());
+            crate::menus::menu_bar(app, ui);
+            crate::widgets::compact_wrapping_value_field(ui, pct, 0.0..=12800.0, "%", egui::vec2(90.0, 20.0)).accessible_name("Zoom");
+        },
+        (app, 100.0),
+    );
+    PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+    h.run_steps(3);
+    h.get_by_role(egui::accesskit::Role::SpinButton).click();
+    h.run_steps(2);
+    for c in "300".chars() {
+        h.event(egui::Event::Text(c.to_string()));
+        h.run_steps(2);
+    }
+    h
+}
+
+/// A letter as the platform sends it: the key, and the text it types.
+fn letter(h: &mut Harness<'static, (PhotocraftApp, f32)>, c: char) {
+    let key = egui::Key::from_name(&c.to_string()).unwrap();
+    h.event(egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
+    h.event(egui::Event::Text(c.to_lowercase().to_string()));
+    h.event(egui::Event::Key { key, physical_key: None, pressed: false, repeat: false, modifiers: egui::Modifiers::NONE });
+    h.run_steps(6);
+}
+
+/// A zoom field keeps the keyboard, and what was typed, through a click on a menu title. The menu
+/// that click opened still takes its keys: → moves to the next menu and a letter runs its row,
+/// without the letter also reaching the field.
+#[test]
+fn a_menu_opened_while_typing_a_zoom_takes_its_keys() {
+    static BEEPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let mut h = bar_and_zoom_field(|| {
+        BEEPS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    });
+    h.get_by_label("Filter").click();
+    h.run_steps(4);
+    assert!(is_open(&h.ctx), "the click opened Filter");
+    assert!(crate::zoom_field::is_focused(&h.ctx), "the zoom field kept the keyboard");
+    h.key_press(egui::Key::ArrowRight);
+    h.run_steps(5);
+    assert!(h.query_by_label_contains("Zoom In").is_some(), "→ moved to View");
+    let row = Nav::current(&h.ctx).rows.first().and_then(|l| l.iter().find(|r| r.command.as_deref() == Some("view.zoomIn")).cloned());
+    let c = row.and_then(|r| r.mnemonic).expect("Zoom In has a mnemonic");
+    let zoom = h.state().0.ui.views[0].zoom;
+    letter(&mut h, c);
+    assert!(h.state().0.ui.views[0].zoom > zoom, "its letter ran Zoom In ({c})");
+    assert_eq!(BEEPS.load(std::sync::atomic::Ordering::SeqCst), 0, "and did not reach the zoom field, which would alert");
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert_eq!(h.state().1, 300.0, "the field still holds the typed 300, nothing more");
+}
+
+/// Help has a text field of its own: while a zoom is typed, its letters stay typing, never run
+/// Help's rows (#5996: S for System Info).
+#[test]
+fn help_letters_stay_typing_while_a_zoom_is_typed() {
+    let mut h = bar_and_zoom_field(|| {});
+    h.get_by_label("Help").click();
+    h.run_steps(4);
+    assert!(is_open(&h.ctx), "the click opened Help");
+    let rows = Nav::current(&h.ctx).rows.first().cloned().unwrap_or_default();
+    let c = rows.iter().find(|r| r.enabled && r.mnemonic.is_some()).and_then(|r| r.mnemonic).expect("a Help row with a mnemonic");
+    letter(&mut h, c);
+    assert!(is_open(&h.ctx), "{c} ran no row: Help stays open");
+}

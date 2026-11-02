@@ -14,11 +14,14 @@ use crate::{PhotocraftApp, widgets};
 /// the top-left corner (Photoshop's Properties W/H fields), or `layer.translate` params for X/Y.
 /// `tol` is the smallest change, in px, that counts as an edit (see [`edit_tolerance`]).
 pub fn transform_params(layer: u64, b: [f64; 4], w: Option<f32>, h: Option<f32>, linked: bool, tol: f32) -> Option<Value> {
-    let (bw, bh) = ((b[2] - b[0]) as f32, (b[3] - b[1]) as f32);
-    if bw <= 0.0 || bh <= 0.0 {
+    // Keep the transform geometry in f64. Rounding the linked W/H ratio and
+    // quad corners to f32 can introduce a tiny anisotropic scale, which makes
+    // a diagonal live ArrowLine lose its editable parameters after resizing.
+    let (bw, bh) = (b[2] - b[0], b[3] - b[1]);
+    if !bw.is_finite() || !bh.is_finite() || bw <= 0.0 || bh <= 0.0 {
         return None;
     }
-    let (mut nw, mut nh) = (w.unwrap_or(bw).max(1.0), h.unwrap_or(bh).max(1.0));
+    let (mut nw, mut nh) = (w.map(f64::from).unwrap_or(bw).max(1.0), h.map(f64::from).unwrap_or(bh).max(1.0));
     if linked {
         if w.is_some() {
             nh = (nw * bh / bw).max(1.0);
@@ -26,10 +29,10 @@ pub fn transform_params(layer: u64, b: [f64; 4], w: Option<f32>, h: Option<f32>,
             nw = (nh * bw / bh).max(1.0);
         }
     }
-    if (nw - bw).abs() < tol && (nh - bh).abs() < tol {
+    if (nw - bw).abs() < f64::from(tol) && (nh - bh).abs() < f64::from(tol) {
         return None;
     }
-    let (x0, y0) = (b[0] as f32, b[1] as f32);
+    let (x0, y0) = (b[0], b[1]);
     let quad = [[x0, y0], [x0 + nw, y0], [x0 + nw, y0 + nh], [x0, y0 + nh]];
     Some(json!({"layer": layer, "rect": b, "quad": quad}))
 }
@@ -383,6 +386,67 @@ mod tests {
         s.execute("edit.transform", p).unwrap();
         let b = s.active().unwrap().doc.layer(id).unwrap().surface().unwrap().content_bounds();
         assert_eq!((b.x0, b.y0, b.width(), b.height()), (10, 20, 50, 25));
+    }
+
+    /// Linked W/H edits must generate a truly uniform affine scale, not one
+    /// rounded independently on each axis to f32 precision.
+    #[test]
+    fn linked_transform_preserves_scale_precision() {
+        let b = [203.6, 171.7, 712.4, 690.3];
+        let p = transform_params(7, b, Some(600.0), None, true, 0.05).unwrap();
+        let x0 = p["quad"][0][0].as_f64().unwrap();
+        let y0 = p["quad"][0][1].as_f64().unwrap();
+        let x1 = p["quad"][1][0].as_f64().unwrap();
+        let y1 = p["quad"][2][1].as_f64().unwrap();
+        let sx = (x1 - x0) / (b[2] - b[0]);
+        let sy = (y1 - y0) / (b[3] - b[1]);
+        assert!((sx - sy).abs() < 1e-12, "linked resize produced different scales: {sx} and {sy}");
+    }
+
+    /// A diagonal arrow must remain live after a proportional width edit in
+    /// Properties, while its outline is transformed by the engine as usual.
+    #[test]
+    fn linked_properties_resize_keeps_diagonal_arrow_editable() {
+        let mut s = photocraft_engine::Session::new();
+        s.execute("file.new", json!({"width": 1200, "height": 1200})).unwrap();
+        s.execute(
+            "shape.create",
+            json!({
+                "kind": "line",
+                "from": [203.6, 171.7],
+                "to": [712.4, 690.3],
+                "weight": 20.0,
+                "arrowStart": false,
+                "arrowEnd": true,
+                "arrowWidth": 55.0,
+                "arrowLength": 85.0,
+                "arrowConcavity": 50.0
+            }),
+        )
+        .unwrap();
+        let (id, b) = {
+            let st = s.active().unwrap();
+            let id = st.active_layer.unwrap();
+            let layer = st.doc.layer(id).unwrap();
+            let LayerContent::Shape(shape) = &layer.content else { panic!("expected shape layer") };
+            assert!(matches!(shape.live.as_ref(), Some(photocraft_doc::vector::LiveShape::ArrowLine { .. })));
+            let px = photocraft_compose::bounds::content_bounds(layer.surface().unwrap());
+            (id, frame(layer, px))
+        };
+        let p = transform_params(id.0, b, Some(600.0), None, true, 0.05).unwrap();
+        s.execute("edit.transform", p).unwrap();
+        let layer = s.active().unwrap().doc.layer(id).unwrap();
+        let LayerContent::Shape(shape) = &layer.content else { panic!("expected shape layer") };
+        assert!(
+            matches!(shape.live.as_ref(), Some(photocraft_doc::vector::LiveShape::ArrowLine { .. })),
+            "proportional Properties resize must preserve live arrow settings"
+        );
+
+        // The next live-property edit must still be accepted after resizing.
+        s.execute("shape.edit", json!({"layer": id.0, "arrowConcavity": 60.0})).unwrap();
+        let layer = s.active().unwrap().doc.layer(id).unwrap();
+        let LayerContent::Shape(shape) = &layer.content else { panic!("expected shape layer") };
+        assert!(matches!(shape.live.as_ref(), Some(photocraft_doc::vector::LiveShape::ArrowLine { concavity, .. }) if (*concavity - 60.0).abs() < 1e-9));
     }
 
     /// A stroked shape's Transform fields show its path, not the stroke's pixels, and a W edit

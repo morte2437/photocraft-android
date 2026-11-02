@@ -1,0 +1,45 @@
+{
+  "date": "2026-10-25",
+  "cpu": "AMD Ryzen 7 9700X (8 cores / 16 threads)",
+  "compiler": "rustc 1.99.0",
+  "profile": "release (workspace defaults, thin LTO)",
+  "rayon_threads": 8,
+  "base_commit": "6719f1813e84e96129fc31676cc945d51be0e736",
+  "baseline_binary_sha256": "103b32f5aeeeef26e7554a1f8287a6b5bbeff32f7400280f4a7d34c3163a0f94",
+  "baseline_resources": "elapsed_seconds=14.81 peak_rss_kib=665344",
+  "candidate_binary_sha256": "c29daf0495d8e764e2c615f322bde6d8790b58a3a816f8cc6fdce57cec24bc62",
+  "candidate_resources": "elapsed_seconds=10.69 peak_rss_kib=665584",
+  "measurement_isolation": "Retained full-image, small-selection and one-pixel clipboard runs had no concurrent Rust compilation or engine/UI test processes. Interrupted runs were discarded and repeated.",
+  "baseline_harness_sha256": "d8503bfea031eb9da9689d2676c42f87190f201f12789e391621495ca2a1b289",
+  "candidate_harness_sha256": "28f1d433f20a72e97069521362899d0b6d724eed5788cb612eb70e20113d0ec7",
+  "candidate_region_resources": "elapsed_seconds=3.10 peak_rss_kib=438464",
+  "candidate_clipboard_resources": "elapsed_seconds=0.10 peak_rss_kib=214620",
+  "candidate_before_fused_binary_sha256": "91568e5215657c1127ab5cb330ebfadb6a1545687607b48c168370a2c5c8dc9c",
+  "candidate_before_fused_original_resources": "elapsed_seconds=17.22 peak_rss_kib=700760",
+  "candidate_source_commit": "aeff53449221e8b42a628d832abc595c9503a146",
+  "candidate_tone_source_sha256": "da42e686db09ed4e5bf2c19316a6b47261c97185aec83c6bba86831e29e39c6e",
+  "before_fused_rerun_resources": "elapsed_seconds=16.47 peak_rss_kib=690516",
+  "before_fused_commit": "15bf0873ba03622e54189e668df20a1403e41d56",
+  "liquify_preview": {
+    "source_content_commit": "009c4fa6128dad1e564d731656a304953d879842",
+    "build_git_head": "a37d21de7e1a90451d5afcad6772ae358f69e07a",
+    "binary_sha256": "309bc5e882403080ade9410103fba6eb73b296da897274a7816380f50e413c3a",
+    "files_sha256": {
+      "crates/ui-egui/examples/multi_channel_preview_bench.rs": "84f4e6fd4a0f79a35da706a06144401ad06509a06608ea5ed89729d394f6e0b1",
+      "crates/ui-egui/src/liquify_ui.rs": "1179cb7403fa189a8e0d1872212e150bd98b10844d189140e954cd0cdd279f29",
+      "crates/ui-egui/src/gallery_ui.rs": "118249270993f1443882df4808fd0f6e05b129a091441f3560bdcc0e4d80a4ca",
+      "crates/ui-egui/src/wide_angle_ui.rs": "6ebf9f1d291642dc3cc42c72980830f79e9f82c6d9b743c145e9048adddb1b36",
+      "crates/engine/src/color_channels.rs": "e6737a5dfb79a5324f08173d18cf271a539dddb386b9488249c150810537313e"
+    },
+    "measured_at_utc": "2026-10-25T17:45:11.612486+00:00",
+    "profile": "release, thin LTO",
+    "rayon_threads": 8,
+    "measurement": "CPU field deformation plus dirty native proxy render. GPU texture upload/presentation excluded. One warmup plus six interleaved updates; p50 is upper middle; max_ms is max of six. open_ms is one sequential setup timing per mode, not a median.",
+    "resources": {
+      "elapsed_seconds": 0.72,
+      "peak_rss_kib": 389664
+    },
+    "isolation": "Measured after final tests, builds and cargo xtask perf --quick ended; no Cargo or rustc processes were running.",
+    "correctness_proof": "Each workspace reports a nonzero Liquify maxDisplacement after the measured updates."
+  }
+}

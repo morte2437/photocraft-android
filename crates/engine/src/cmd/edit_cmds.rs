@@ -22,6 +22,8 @@ pub(crate) use paste_target;
 /// Pixels on the session clipboard, with where they came from (for Paste in Place).
 #[derive(Clone, Debug)]
 pub struct Clip {
+    /// Native colour indices for a multi-component clip, in channel order. Singletons are grayscale.
+    pub components: Option<Vec<usize>>,
     pub surface: Surface,
     pub bounds: Rect,
     /// The copied layer itself, when Copy took a whole layer that Paste should recreate rather
@@ -198,7 +200,7 @@ fn lift(src: &Surface, sel: Option<&Surface>, canvas: Rect) -> Result<Clip> {
     };
     let mut out = Surface::new(with_alpha);
     if area.is_empty() {
-        return Ok(Clip { surface: out, bounds: Rect::EMPTY, layers: None, resolution: None, source: None });
+        return Ok(Clip { components: None, surface: out, bounds: Rect::EMPTY, layers: None, resolution: None, source: None });
     }
     // Only the selected area is read: converting the whole layer (a 24 MP Background gaining
     // alpha) cost about a second per Layer via Copy (#668).
@@ -220,7 +222,7 @@ fn lift(src: &Surface, sel: Option<&Surface>, canvas: Rect) -> Result<Clip> {
     out.put_tiles(shared);
     out.prune();
     let bounds = out.content_bounds();
-    Ok(Clip { surface: out, bounds, layers: None, resolution: None, source: None })
+    Ok(Clip { components: None, surface: out, bounds, layers: None, resolution: None, source: None })
 }
 
 /// [`lift`] over one rectangle: `src`'s pixels with alpha (`n` channels), the selection
@@ -281,7 +283,7 @@ fn copy(s: &mut Session, merged: bool) -> Result<Value> {
             copy_linked_sources(&d.doc, copies)?;
         }
         match (d.doc.layer(id).and_then(Layer::surface).filter(|_| several.is_empty()), &layers) {
-            (Some(surf), _) => Clip { layers, ..lift(surf, d.doc.selection.as_ref(), canvas)? },
+            (Some(surf), _) => Clip { components: None, layers, ..lift(surf, d.doc.selection.as_ref(), canvas)? },
             // A group or fill layer has no pixels of its own: the clipboard pixels are what it
             // shows. Adjustment layers show nothing by themselves, so their clip spans the canvas
             // they apply to: Paste places them as a full-canvas layer, and the UI still mirrors
@@ -293,7 +295,7 @@ fn copy(s: &mut Session, merged: bool) -> Result<Value> {
                 }
                 let clip = lift(&merged_surface(&shown), None, canvas)?;
                 let bounds = if clip.bounds.is_empty() { canvas } else { clip.bounds };
-                Clip { layers, bounds, ..clip }
+                Clip { components: None, layers, bounds, ..clip }
             }
             (None, None) => return Err(EngineError::Other("the active layer has no pixels".into())),
         }
@@ -349,7 +351,7 @@ fn copy_mask(s: &mut Session, filter: bool) -> Result<Value> {
     }
     let b = bounds;
     let (resolution, source) = (Some(d.doc.resolution_dpi), Some(d.doc.id));
-    s.clipboard = Some(Clip { surface, bounds: b, layers: None, resolution, source });
+    s.clipboard = Some(Clip { components: None, surface, bounds: b, layers: None, resolution, source });
     Ok(json!({"bounds": [b.x0, b.y0, b.width(), b.height()], "target": if filter { "filterMask" } else { "mask" }}))
 }
 
@@ -358,6 +360,15 @@ fn clear_selected(doc: &mut Document, id: LayerId, background: [f32; 4]) -> Resu
     let canvas = doc.bounds();
     let area = sel.as_ref().map_or(canvas, |m| m.content_bounds().intersect(&canvas));
     clear_area(doc, id, area, sel.as_ref(), background)
+}
+
+/// Clear/Cut fill the selected mask samples with background gray, preserving layer pixels.
+pub(crate) fn clear_mask(doc: &mut Document, id: LayerId, background: [f32; 4], params: &Value) -> Result<()> {
+    let sel = doc.selection.clone();
+    let canvas = doc.bounds();
+    let area = sel.as_ref().map_or(canvas, |m| m.content_bounds().intersect(&canvas));
+    let mask = crate::commands::paint_surface(doc, id, params)?;
+    crate::fill_cmds::fill_color(mask, area, [background[0], background[1], background[2], 1.0], sel.as_ref())
 }
 
 /// Cut / Clear on a layer: makes the selected pixels transparent. The Background can't hold
@@ -386,6 +397,9 @@ fn paste(s: &mut Session, p: &Value, in_place: bool) -> Result<Value> {
     };
     if crate::channel_cmds::target_of(p) != crate::channel_cmds::Target::Pixels {
         return paste_to_target(s, p, in_place, None, "Paste");
+    }
+    if let Some(colors) = crate::color_channels::target(s, p)?.filter(|c| c.len() > 1 || p.get("target").is_some() || clip.components.is_some()) {
+        return crate::channel_clip::paste_colors(s, p, colors, in_place, None, "Paste");
     }
     // A targeted colour channel takes the paste instead of a new layer (#2307).
     if let Some(k) = crate::channel_clip::paste_color_target(s, p) {
@@ -916,7 +930,18 @@ fn edit_guide(s: &mut Session, p: &Value) -> Result<Value> {
 /// View › New Guide / guide moves (undoable, like Photoshop's "New Guide"/"Move Guide" states).
 fn guide_cmd(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
     let vertical = p.get("orientation").and_then(Value::as_str).unwrap_or("horizontal") == "vertical";
-    let pos = guide_position(s, p, vertical)?;
+    // Move Guide can turn the guide (⌥ while dragging it, as in Photoshop): `toOrientation`.
+    let to_vertical = match p.get("toOrientation").map(|v| v.as_str()) {
+        None => vertical,
+        Some(Some("vertical")) => true,
+        Some(Some("horizontal")) => false,
+        Some(_) => return Err(EngineError::Other("`toOrientation` must be \"horizontal\" or \"vertical\"".into())),
+    };
+    if to_vertical != vertical && op != "move" {
+        return Err(EngineError::Other("`toOrientation` applies to view.moveGuide only".into()));
+    }
+    // A % position is of the axis the guide ends up on.
+    let pos = guide_position(s, p, to_vertical)?;
     let color = if op == "new" { guide_color(p)? } else { None };
     let index = p.get("index").and_then(Value::as_u64).map(|v| v as usize);
     let label = match op {
@@ -939,10 +964,20 @@ fn guide_cmd(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
             "move" => {
                 let i = index.filter(|i| *i < g.len()).ok_or(EngineError::Other("no such guide".into()))?;
                 let to = pos.ok_or(EngineError::Other("missing `position`".into()))?;
-                let from = std::mem::replace(&mut g[i], to);
+                let from = if to_vertical == vertical {
+                    std::mem::replace(&mut g[i], to)
+                } else {
+                    let from = g.remove(i);
+                    if to_vertical {
+                        guides.vertical.push(to)
+                    } else {
+                        guides.horizontal.push(to)
+                    }
+                    from
+                };
                 // The guide takes its colour along; another guide left at the old position keeps it.
                 if let Some(rgb) = guides.color(vertical, from) {
-                    guides.set_color(vertical, to, Some(rgb));
+                    guides.set_color(to_vertical, to, Some(rgb));
                 }
                 guides.prune_colors();
             }
@@ -995,31 +1030,61 @@ pub fn specs() -> Vec<CommandSpec> {
         };
     }
     vec![
-        spec!("edit.cut", "Cut", &["Edit"], Some("Cmd+X"), "{} (a targeted colour channel cuts that channel only)", has_pixels, |s, p| {
-            // Refuse a locked layer before copying, so a refused Cut leaves the clipboard alone.
-            let id = active_id(s)?;
-            crate::commands::check_pixels_unlocked(&s.active().ok_or(EngineError::NoDocument)?.doc, id)?;
-            // A targeted colour channel cuts that channel only (#2698).
-            if let Some(k) = crate::channel_clip::paste_color_target(s, p) {
-                return crate::channel_clip::cut(s, id, k);
+        spec!(
+            "edit.cut",
+            "Cut",
+            &["Edit"],
+            Some("Cmd+X"),
+            r##"{"target":"mask|filterMask"|{"color":i}|{"colors":[i,…]}?=Channels panel target,"layer":id|name?=active (colour targets only)} (a targeted mask or colour channel cuts that channel only; a colour set cuts its selected components)"##,
+            has_pixels,
+            |s, p| {
+                if crate::commands::is_mask_target(p) {
+                    let id = active_id(s)?;
+                    crate::commands::check_all_unlocked(&s.active().ok_or(EngineError::NoDocument)?.doc, id)?;
+                    let result = copy_mask(s, crate::channel_cmds::target_of(p) == crate::channel_cmds::Target::FilterMask)?;
+                    let bg = s.tools.background;
+                    s.edit("Cut Mask", |doc, _| clear_mask(doc, id, bg, p))?;
+                    return Ok(result);
+                }
+                // Refuse a locked layer before copying, so a refused Cut leaves the clipboard alone.
+                let colors = crate::color_channels::target(s, p)?.filter(|c| c.len() > 1 || p.get("target").is_some() || p.get("layer").is_some());
+                // Composite Cut retains Copy's active-layer semantics. A native colour target uses
+                // the same resolved destination for both the copied planes and the cleared samples.
+                let id = if colors.is_some() { crate::commands::layer_param(s, p)? } else { active_id(s)? };
+                crate::commands::check_pixels_unlocked(&s.active().ok_or(EngineError::NoDocument)?.doc, id)?;
+                if let Some(colors) = colors {
+                    let result = crate::channel_clip::copy_colors(s, p, colors)?;
+                    let bg = s.tools.background;
+                    s.edit("Cut Pixels", |doc, _| {
+                        for k in colors.indices() {
+                            crate::channel_cmds::clear_color_channel(doc, id, k, bg)?;
+                        }
+                        Ok(())
+                    })?;
+                    return Ok(result);
+                }
+                // A targeted colour channel cuts that channel only (#2698).
+                if let Some(k) = crate::channel_clip::paste_color_target(s, p) {
+                    return crate::channel_clip::cut(s, id, k);
+                }
+                let r = copy(s, false)?;
+                let bg = s.tools.background;
+                s.edit("Cut Pixels", |doc, _| clear_selected(doc, id, bg))?;
+                Ok(r)
             }
-            let r = copy(s, false)?;
-            let bg = s.tools.background;
-            s.edit("Cut Pixels", |doc, _| clear_selected(doc, id, bg))?;
-            Ok(r)
-        }),
+        ),
         spec!(
             "edit.copy",
             "Copy",
             &["Edit"],
             Some("Cmd+C"),
-            r##"{"target":"mask|filterMask"? = the targeted mask, copied as grayscale (#2928)} (a targeted colour or alpha channel copies that channel, as grayscale)"##,
+            r##"{"target":"mask|filterMask"|{"color":i}|{"colors":[i,…]}?=Channels panel target,"layer":id|name?=active (colour targets only)} (a targeted mask, colour or alpha channel copies that channel as grayscale; a colour set copies its selected components)"##,
             can_copy,
             |s, p| {
                 if crate::commands::is_mask_target(p) {
                     return copy_mask(s, crate::channel_cmds::target_of(p) == crate::channel_cmds::Target::FilterMask);
                 }
-                match crate::channel_clip::copy(s)? {
+                match crate::channel_clip::copy(s, p)? {
                     Some(r) => Ok(r),
                     None => copy(s, false),
                 }
@@ -1088,7 +1153,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Move Guide",
             &[],
             None,
-            r##"{"orientation":"horizontal|vertical","index":n,"position":px or "<number><unit>"} (units as for view.newGuide)"##,
+            r##"{"orientation":"horizontal|vertical","index":n,"position":px or "<number><unit>","toOrientation":"horizontal|vertical"?} (units as for view.newGuide; toOrientation turns the guide, its position then on the new axis)"##,
             has_doc,
             |s, p| guide_cmd(s, p, "move")
         ),

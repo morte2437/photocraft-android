@@ -26,50 +26,70 @@ const ALPHA_IDENTIFIERS: u16 = 1053;
 const LAYER_ONLY_RESOURCES: [u16; 4] = [ids::LAYER_STATE, ids::LAYER_GROUP_INFO, 1069, 1072];
 
 /// Value of sample `i` of a big-endian plane.
-fn decode(plane: &[u8], i: usize, s: SampleType) -> f32 {
-    match s {
-        SampleType::U8 => f32::from(plane[i]) / 255.0,
-        SampleType::U16 => f32::from(u16::from_be_bytes([plane[2 * i], plane[2 * i + 1]])) / 65535.0,
-        SampleType::F32 => f32::from_be_bytes([plane[4 * i], plane[4 * i + 1], plane[4 * i + 2], plane[4 * i + 3]]),
-    }
+fn decode(plane: &[u8], i: usize, s: SampleType) -> Option<f32> {
+    let start = i.checked_mul(s.bytes())?;
+    let bytes = plane.get(start..start.checked_add(s.bytes())?)?;
+    Some(match s {
+        SampleType::U8 => f32::from(*bytes.first()?) / 255.0,
+        SampleType::U16 => f32::from(u16::from_be_bytes(bytes.try_into().ok()?)) / 65535.0,
+        SampleType::F32 => f32::from_be_bytes(bytes.try_into().ok()?),
+    })
 }
 
 /// Fills `doc` (already in Multichannel mode at the file depth) from the merged planes `all`.
-pub(crate) fn import(file: &PsdFile, all: &[u8], doc: &mut Document, names: &[String], warnings: &mut Vec<String>) {
+pub(crate) fn import(file: &PsdFile, all: &[u8], doc: &mut Document, names: &[String], warnings: &mut Vec<String>) -> Result<(), crate::IoError> {
     let h = &file.header;
     let depth = doc.depth;
     let (w, hh) = (h.width as usize, h.height as usize);
-    let n = w * hh;
-    let plane = h.row_bytes() * hh;
-    let canvas = Rect::new(0, 0, h.width as i32, h.height as i32);
+    let invalid = || crate::IoError::Unsupported("multichannel pixel size overflow".into());
+    let plane = h.row_bytes().checked_mul(hh).ok_or_else(invalid)?;
+    let pixels = w.checked_mul(hh).ok_or_else(invalid)?;
+    if pixels.checked_mul(depth.bytes()).ok_or_else(invalid)? != plane {
+        return Err(crate::IoError::Unsupported("multichannel channel depth does not match its pixel layout".into()));
+    }
     let fmt = PixelFormat::new(ColorMode::Grayscale, depth, false);
     for k in 0..usize::from(h.channels) {
-        let Some(p) = all.get(k * plane..(k + 1) * plane) else {
+        let start = k.checked_mul(plane).ok_or_else(invalid)?;
+        let end = start.checked_add(plane).ok_or_else(invalid)?;
+        if all.get(start..end).is_none() {
             warnings.push(format!("multichannel: channel {} is missing", k + 1));
             break;
-        };
-        let vals: Vec<f32> = (0..n).map(|i| 1.0 - decode(p, i, depth)).collect();
-        let mut s = Surface::new(fmt);
-        s.write_region(canvas, &vals);
-        s.prune();
+        }
         let name = names.get(k).cloned().filter(|s| !s.is_empty()).unwrap_or_else(|| format!("Channel {}", k + 1));
-        // Without DisplayInfo the channels print in black, as Photoshop shows them. DisplayInfo
-        // turns alpha-type channels (selected / masked areas) back into alpha channels.
-        doc.channels.push(AlphaChannel { spot: Some((Color::BLACK, 0.0)), ..AlphaChannel::new(name, s) });
+        doc.channels.push(AlphaChannel { spot: Some((Color::BLACK, 0.0)), ..AlphaChannel::new(name, Surface::new(fmt)) });
     }
     if let Some(r) = file.resource(crate::channel_map::DISPLAY_INFO) {
         crate::channel_map::apply_display_info(&r.data, true, 0, &mut doc.channels);
     } else if let Some(r) = file.resource(crate::channel_map::DISPLAY_INFO_OLD) {
         crate::channel_map::apply_display_info(&r.data, false, 0, &mut doc.channels);
     }
-    // Alpha-type planes are stored as-is, not as ink: undo the inversion for them.
-    for ch in doc.channels.iter_mut().filter(|c| c.spot.is_none()) {
-        let vals: Vec<f32> = ch.surface.read_region(canvas).chunks_exact(ch.surface.channels()).map(|v| 1.0 - v[0]).collect();
-        let mut s = Surface::new(fmt);
-        s.write_region(canvas, &vals);
-        s.prune();
-        ch.surface = s;
+    for (k, ch) in doc.channels.iter_mut().enumerate() {
+        let start = k.checked_mul(plane).ok_or_else(invalid)?;
+        let p = all.get(start..start.checked_add(plane).ok_or_else(invalid)?).ok_or_else(invalid)?;
+        // DisplayInfo is known before conversion: alpha channels need no inversion or
+        // second full-plane readback. One tile row is the only conversion buffer.
+        for y in (0..hh).step_by(photocraft_geom::TILE_SIZE as usize) {
+            let bottom = (y + photocraft_geom::TILE_SIZE as usize).min(hh);
+            let samples = w.checked_mul(bottom - y).ok_or_else(invalid)?;
+            let len = samples.checked_mul(depth.bytes()).ok_or_else(invalid)?;
+            let mut bytes = Vec::new();
+            bytes.try_reserve_exact(len).map_err(|_| crate::IoError::OutOfMemory("not enough memory for multichannel pixels".into()))?;
+            for i in y.checked_mul(w).ok_or_else(invalid)?..bottom.checked_mul(w).ok_or_else(invalid)? {
+                let v = decode(p, i, depth).ok_or_else(invalid)?;
+                let v = if ch.spot.is_some() { 1.0 - v } else { v };
+                match depth {
+                    SampleType::U8 => bytes.push((v.clamp(0.0, 1.0) * 255.0).round() as u8),
+                    SampleType::U16 => bytes.extend_from_slice(&((v.clamp(0.0, 1.0) * 65535.0).round() as u16).to_ne_bytes()),
+                    SampleType::F32 => bytes.extend_from_slice(&v.to_ne_bytes()),
+                }
+            }
+            ch.surface
+                .try_write_interleaved(Rect::new(0, y as i32, h.width as i32, bottom as i32), &bytes)
+                .map_err(|e| crate::IoError::OutOfMemory(format!("multichannel pixel allocation: {e}")))?;
+        }
+        ch.surface.prune();
     }
+    Ok(())
 }
 
 /// Writes a Multichannel document as a mode-7 PSD (no layer section; every channel a plane).
@@ -203,4 +223,21 @@ pub(crate) fn layerless_file(
     }
     crate::psd_export::sign_global_blocks(&mut file);
     file
+}
+
+#[cfg(test)]
+mod import_allocation_tests {
+    use super::*;
+
+    #[test]
+    fn missing_planes_remain_recoverable_without_reading_past_input() {
+        let file = photocraft_psd::testgen::merged_only(photocraft_psd::Version::Psd, PsdMode::Multichannel, 8, Compression::Raw, 3, 2);
+        let mut doc = Document::new("Partial", photocraft_geom::Size::new(3, 2), ColorMode::Multichannel, SampleType::U8);
+        let mut warnings = Vec::new();
+        import(&file, &[0; 6], &mut doc, &[], &mut warnings).unwrap();
+        assert_eq!(doc.channels.len(), 1);
+        assert_eq!(doc.channels[0].surface.read_region(doc.bounds()), vec![1.0; 6]);
+        assert_eq!(warnings.len(), 1);
+        assert!(decode(&[], usize::MAX, SampleType::F32).is_none());
+    }
 }

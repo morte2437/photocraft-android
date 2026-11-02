@@ -20,6 +20,7 @@ testgen = []
 [dependencies]
 thiserror = { workspace = true }
 flate2 = { workspace = true }
+encoding_rs = { workspace = true }
 serde = { workspace = true, optional = true }
 
 [dev-dependencies]

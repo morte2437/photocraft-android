@@ -192,6 +192,14 @@ fn applying_a_palette_clears_a_pinned_native_appearance_preference() {
 }
 
 #[test]
+fn studio_dark_keeps_square_colour_chips() {
+    assert!(!Tokens::for_kind(ThemeKind::Studio).round_chips);
+    // Only the dark variant changes; the light palette retains its layout.
+    assert!(Tokens::for_kind(ThemeKind::StudioLight).round_chips);
+    assert!(!Tokens::for_kind(ThemeKind::Pro).round_chips);
+}
+
+#[test]
 fn studio_text_contrast_is_high() {
     let t = Tokens::for_kind(ThemeKind::Studio);
     let p = Tokens::for_kind(ThemeKind::Pro);

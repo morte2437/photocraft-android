@@ -48,7 +48,7 @@ pub(crate) use draw::draw_handle_cursor;
 use draw::scale_values;
 #[cfg(test)]
 pub(crate) use draw::{Readout, live_readout, styled_frame};
-pub(crate) use draw::{carries_selection_of, draw_selection};
+pub(crate) use draw::{carries_selection_of, selection_ants};
 pub use draw::{draw_content, draw_overlay};
 #[cfg(test)]
 use draw::{front_vertices, handle_anchor};
@@ -313,6 +313,16 @@ impl Steps {
 
 pub(crate) fn corners(r: [f64; 4]) -> [[f64; 2]; 4] {
     [[r[0], r[1]], [r[2], r[1]], [r[2], r[3]], [r[0], r[3]]]
+}
+
+/// The transform choices supported by the options bar, using its remembered choice or the general default.
+pub(crate) fn default_interpolation(app: &PhotocraftApp) -> &'static str {
+    use photocraft_engine::prefs::Interpolation;
+    match app.ui.tool_options.transform_interpolation.unwrap_or(app.session.prefs().general.image_interpolation) {
+        Interpolation::Nearest => "nearest",
+        Interpolation::Bilinear => "bilinear",
+        _ => "bicubic",
+    }
 }
 
 #[cfg(test)]

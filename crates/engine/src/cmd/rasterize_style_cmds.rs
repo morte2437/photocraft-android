@@ -69,9 +69,12 @@ fn bake_one(s: &mut Session, id: LayerId, key: &str) -> Result<bool> {
             doc.layers = stack;
             let n = fmt.channels();
             data = vec![0.0f32; buf.px.len() * n];
-            for (p, out) in buf.px.iter().zip(data.chunks_exact_mut(n)) {
-                from_rgba_into(&fmt, *p, out);
-            }
+            // Separate CMYK through the document's profile, the one the render read it with.
+            photocraft_color::convert::with_cmyk_space(photocraft_compose::cmyk_space(doc).as_ref(), || {
+                for (p, out) in buf.px.iter().zip(data.chunks_exact_mut(n)) {
+                    from_rgba_into(&fmt, *p, out);
+                }
+            });
         }
         let mut px = Surface::new(fmt);
         if !area.is_empty() {

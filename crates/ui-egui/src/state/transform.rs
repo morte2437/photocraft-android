@@ -119,6 +119,17 @@ pub struct BoxResize {
     pub aff: photocraft_geom::Affine,
 }
 
+/// A font choice for subsequent typing, invalidated by navigation or a document edit.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TypeInsertionStyle {
+    pub document: u64,
+    pub layer: u64,
+    pub session: String,
+    pub revision: u64,
+    pub caret: usize,
+    pub style: photocraft_doc::text::CharStyle,
+}
+
 /// In-progress inline type editing (Type tool). Offsets are character indices.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TextEdit {

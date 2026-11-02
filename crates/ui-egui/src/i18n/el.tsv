@@ -4,18 +4,106 @@
 # Covers every source label the i18n coverage check lists.
 
 # Layer Mask Display Options (the layer mask rubylith's colour and opacity)
-	Mask Options…	Επιλογές μάσκας…
-	Layer Mask Display Options…	Επιλογές εμφάνισης μάσκας επιπέδου…
 
 # Channel Options and New Spot Channel (#3761)
-	Channel Color	Χρώμα καναλιού
-	Color Indicates:	Το χρώμα υποδεικνύει:
-	Solidity:	Συμπαγότητα:
-	Ink Characteristics	Χαρακτηριστικά μελανιού
 
 # Guide layout dialog
 
 # Custom print paper (#3820)
+
+
+# Consolidated Greek localization additions
+# Select and Mask dialog labels
+# Gradient Editor window, opened from the options bar's gradient swatch.
+
+# Greek audit completion – menus and layers
+
+# Final interface terminology refinements
+
+# Greek full-localization recovery additions
+
+# Layers-panel trash confirmation
+
+# Field Blur pins (#3373)
+
+# Greek tool names, original English in parentheses
+
+# Labels added on main since the first batch
+
+# Screen color picker (#1232)
+
+# Saved New Document presets (#1516)
+
+# Painting symmetry presets.
+
+# Eyedropper Sample Size and Sample (#1649).
+
+# Color Picker warnings
+
+
+# Shared Layer Style color picker
+
+# Shared text style Color Picker (#2015)
+# File Info ▸ Camera Data (read-only EXIF fields; "Make" is the camera maker, not the verb).
+# Shared panel docking
+# Edit › Content-Aware Fill workspace
+
+
+# Smart Filter editors
+# Select and Mask view modes (#1754)
+# Select and Mask Refine Edge Brush (#2972)
+
+# Color Sampler (added with the i18n coverage repair)
+
+# History panel menu (#2966)
+# History panel › History Options… (#2966)
+# Print dialog (#2697)
+# Counted status messages and labels (#3454; adapted from PR #3821)
+# View › Guides › New Guide… › Color
+
+# Actions panel: Load/Save Actions (.atn) and kept Photoshop steps
+
+# Actions panel: set folders, dialog toggle, Insert Stop
+# Batch / Image Processor
+
+# Native Windows printing qualification
+# PhotoCraft release checks.
+# History panel › History Brush source (#2966)
+# Bevel & Emboss shading controls.
+# Embedded Profile Mismatch: profile names beside the choices, Remember this choice
+
+# Darken / Lighten Interface (⇧⌘F1 / ⇧⌘F2)
+# Bevel & Emboss Technique.
+# Export As metadata and profile options
+
+# View › Guides › right-click a guide
+
+# Image › Mode › Bitmap (#5559)
+# Free Transform: a new layer while the box is open (#5859)
+# Preferences › Performance › GPU Memory; the status bar and slow-redraw notice
+
+# DDS Options (#1327)
+
+# Color Table (.act) dialog
+
+# Graphics Adapter preference (#1885)
+
+# Styles panel: Import / Export Styles (.asl)
+# Actions: a step dialog holds a suspended recording (#7365)
+# Paragraph direction (TYPE-218-2)
+# Print preview image (#8236)
+# Color panel menu: modes, copy commands and colour ramps (#6000)
+
+# Pen draft after a refused commit (#7648)
+# Art History Brush (#213).
+
+# Egui 0.37 migration controls (Aspect Ratio, Category, Color Table, Gamma, Interpolation, Profile, Target, Units, Demosaic)
+	Mask Options…	Επιλογές μάσκας…
+	Layer Mask Display Options…	Επιλογές εμφάνισης μάσκας επιπέδου…
+	Channel Color	Χρώμα καναλιού
+	Color Indicates:	Το χρώμα υποδεικνύει:
+	Solidity:	Συμπαγότητα:
+	Ink Characteristics	Χαρακτηριστικά μελανιού
 	Paper Width	Πλάτος χαρτιού
 	Paper Height	Ύψος χαρτιού
 	Rows	Γραμμές
@@ -33,7 +121,6 @@
 	5 Columns, 3 Rows	5 στήλες, 3 γραμμές
 	8 Columns	8 στήλες
 	12 Columns	12 στήλες
-
 	File	Αρχείο
 	Edit	Επεξεργασία
 	Image	Εικόνα
@@ -212,8 +299,6 @@
 	Pixelate	Εικονοστοιχείωση
 	Render	Απόδοση
 	About PhotoCraft	Πληροφορίες για το PhotoCraft
-
-# Consolidated Greek localization additions
 	Content-Aware Fill…	Γέμισμα βάσει περιεχομένου…
 	Content-Aware Scale	Κλιμάκωση βάσει περιεχομένου
 	Puppet Warp	Παραμόρφωση με σημεία ελέγχου
@@ -258,7 +343,6 @@
 	Mask All Objects	Απόκρυψη όλων των αντικειμένων με μάσκα
 	Update All Text Layers	Ενημέρωση όλων των επιπέδων κειμένου
 	Select and Mask…	Επιλογή και μάσκα…
-# Select and Mask dialog labels
 	Smart Radius	Έξυπνη ακτίνα
 	Shift Edge	Μετατόπιση άκρης
 	Decontaminate	Απομάκρυνση επιμόλυνσης
@@ -1602,7 +1686,6 @@
 	Centre the gradient (offset 0, 0)	Κεντράρισμα διαβάθμισης (μετατόπιση 0, 0)
 	Refine Strokes	Πινελιές βελτίωσης
 	Edits	Επεξεργασίες
-# Gradient Editor window, opened from the options bar's gradient swatch.
 	Gradient Editor	Επεξεργασία διαβάθμισης
 	Gradient picker	Επιλογή διαβάθμισης
 	Gradient stops	Σημεία διαβάθμισης
@@ -1727,8 +1810,6 @@
 	Rulers  (⌘R)	Χάρακες  (⌘R)
 	Show Guides  (⌘;)	Εμφάνιση οδηγών  (⌘;)
 	Grid  (⌘')	Πλέγμα  (⌘')
-
-# Greek audit completion – menus and layers
 	Free Transform a Copy	Ελεύθερος μετασχηματισμός αντιγράφου
 	Again	Επανάληψη
 	Transform Again on a Copy	Επανάληψη μετασχηματισμού σε αντίγραφο
@@ -1929,6 +2010,7 @@
 	Intersect Shape Areas	Τομή περιοχών σχημάτων
 	Exclude Overlapping Shapes	Εξαίρεση επικαλυπτόμενων σχημάτων
 	Merge Shape Components	Συγχώνευση συστατικών σχήματος
+	Path operations	Λειτουργίες διαδρομών
 	Top Edges	Επάνω ακμές
 	Vertical Centers	Κατακόρυφα κέντρα
 	Bottom Edges	Κάτω ακμές
@@ -1950,8 +2032,6 @@
 	Glyphs Panel	Πλαίσιο γλυφών
 	Anti-Alias	Εξομάλυνση ακμών
 	Orientation	Προσανατολισμός
-
-# Final interface terminology refinements
 	PDF Presentation…	Παρουσίαση PDF…
 	Picture Package…	Πακέτο εικόνων…
 	Web Photo Gallery…	Συλλογή φωτογραφιών ιστού…
@@ -2018,8 +2098,6 @@
 	Mix	Ανάμειξη
 	8 bit	8 bit ανά κανάλι
 	16 bit	16 bit ανά κανάλι
-
-# Greek full-localization recovery additions
 	(print to the printer)	(εκτύπωση στον εκτυπωτή)
 	+ Add variable	+ Προσθήκη μεταβλητής
 	2-up Horizontal	Δύο οριζόντια
@@ -2046,6 +2124,9 @@
 	Add Pins	Προσθήκη καρφιτσών
 	Add Stop	Προσθήκη σημείου διαβάθμισης
 	Add a layer style	Προσθήκη στυλ επιπέδου
+	Move effect up	Μετακίνηση εφέ προς τα πάνω
+	Move effect down	Μετακίνηση εφέ προς τα κάτω
+	Delete effect	Διαγραφή εφέ
 	Add a mask  (from the selection; {key} inverts)	Προσθήκη μάσκας (από την επιλογή· το {key} αντιστρέφει)
 	Add a mask  (from the selection; ⌥ inverts)	Προσθήκη μάσκας (από την επιλογή· ⌥ για αντιστροφή)
 	Add an adjustment	Προσθήκη προσαρμογής
@@ -2327,8 +2408,6 @@
 	Delete Pins	Διαγραφή καρφιτσών
 	Delete Workspace	Διαγραφή χώρου εργασίας
 	Delete Workspace…	Διαγραφή χώρου εργασίας…
-
-# Layers-panel trash confirmation
 	Delete layer ‘{name}’?	Διαγραφή του επιπέδου «{name}»;
 	Delete {count} layers? {names}	Διαγραφή {count} επιπέδων; {names}
 	Delete layer?	Διαγραφή επιπέδου;
@@ -2337,7 +2416,6 @@
 	Missing delete command	Λείπει η εντολή διαγραφής
 	Invalid delete command	Μη έγκυρη εντολή διαγραφής
 	Layer deleted, but confirmation preference could not be saved: {error}	Το επίπεδο διαγράφηκε, αλλά δεν ήταν δυνατή η αποθήκευση της προτίμησης επιβεβαίωσης: {error}
-
 	Delete layer	Διαγραφή επιπέδου
 	Density:	Πυκνότητα:
 	Depth	Βάθος
@@ -2375,7 +2453,7 @@
 	Drag or click polygon points · hold Alt during lasso for straight segments · {add} add · {sub} before drawing subtracts	Σύρετε ή κάντε κλικ για πολυγωνικά σημεία · κρατήστε Alt κατά το λάσο για ευθείες · {add} προσθήκη · {sub} αφαίρεση πριν από τη σχεδίαση
 	Drag to draw a gradient	Σύρετε για να σχεδιάσετε διαβάθμιση
 	Drag to move the active layer	Σύρετε για μετακίνηση του ενεργού επιπέδου
-	Drag to move the active shape's path or the Work Path	Σύρετε για μετακίνηση της διαδρομής του ενεργού σχήματος ή της διαδρομής εργασίας
+	Drag to move the selected path	Σύρετε για μετακίνηση της επιλεγμένης διαδρομής
 	Dual Brush	Διπλό πινέλο
 	Duplicate Path	Διπλασιασμός διαδρομής
 	Rename Path…	Μετονομασία διαδρομής…
@@ -2430,7 +2508,6 @@
 	Fibers…	Ίνες…
 	Field Blur	Θόλωση πεδίου
 	Field Blur…	Θόλωση πεδίου…
-# Field Blur pins (#3373)
 	No pin selected	Δεν έχει επιλεγεί καρφίτσα
 	Click the image to add a pin; drag a pin to move it, or its ring to change its blur. Delete removes the selected pin.	Κάντε κλικ στην εικόνα για να προσθέσετε καρφίτσα· σύρετε μια καρφίτσα για να τη μετακινήσετε ή τον δακτύλιό της για να αλλάξετε τη θόλωση. Το Delete αφαιρεί την επιλεγμένη καρφίτσα.
 	Drag the handles on the outline to resize and turn it, the square to round its corners, and the dots inside to set where the blur starts.	Σύρετε τις λαβές στο περίγραμμα για αλλαγή μεγέθους και περιστροφή, το τετράγωνο για στρογγύλεμα των γωνιών και τις κουκκίδες μέσα για να ορίσετε πού αρχίζει η θόλωση.
@@ -3352,8 +3429,6 @@ cameraRaw	Tint	Χρωματική απόχρωση
 cameraRaw	Vibrance	Ζωντάνια χρωμάτων
 cameraRaw	Whites	Λευκά
 cameraRaw	Yellow	Κίτρινο
-
-# Greek tool names, original English in parentheses
 	Ruler Tool	Χάρακας (Ruler Tool)
 	Count Tool	Καταμέτρηση (Count Tool)
 	Background Eraser Tool	Γόμα φόντου (Background Eraser Tool)
@@ -3431,8 +3506,6 @@ cameraRaw	Yellow	Κίτρινο
 	Quit {app}	Τερματισμός του {app}
 	Services	Υπηρεσίες
 	Hide Others	Απόκρυψη άλλων
-
-# Labels added on main since the first batch
 	100%	100%
 	105%	105%
 	110%	110%
@@ -3449,6 +3522,8 @@ cameraRaw	Yellow	Κίτρινο
 	Anamorphic 2:1 (2)	Αναμορφικό 2:1 (2)
 	ArtCraft	ArtCraft
 	Blend If:	Ανάμειξη υπό όρους:
+	Current Layer:	Τρέχον επίπεδο:
+	Underlying Layer:	Υποκείμενο επίπεδο:
 	Channels:	Κανάλια:
 	Click a red pupil to neutralize it	Κάντε κλικ σε μια κόκκινη κόρη για να την εξουδετερώσετε
 	Cmd	Cmd
@@ -3589,25 +3664,17 @@ fontWeight	Medium	Μεσαία
 fontWeight	Regular	Κανονικά
 fontWeight	SemiBold	Ημιέντονα
 fontWeight	Thin	Πολύ λεπτά
-
-# Screen color picker (#1232)
 	Pick screen color	Επιλογή χρώματος οθόνης
 	Pick a screen pixel or press Esc to cancel	Επιλέξτε ένα εικονοστοιχείο της οθόνης ή πατήστε Esc για ακύρωση
 	Sample a pixel anywhere on the screen	Δειγματοληψία ενός pixel οπουδήποτε στην οθόνη
 	Click to pick · Esc to cancel	Κλικ για επιλογή · Esc για ακύρωση
 	Scroll to zoom	Κύλιση για μεγέθυνση
 	Drag to pan · Scroll to zoom · Double-click to fit	Σύρετε για μετακίνηση · Κυλήστε για μεγέθυνση · Διπλό κλικ για προσαρμογή
-
-# Saved New Document presets (#1516)
 	Preset Name	Όνομα προεπιλογής
 	No saved presets yet.	Δεν υπάρχουν ακόμη αποθηκευμένες προεπιλογές.
-
-# Painting symmetry presets.
 	Dual Axis	Διπλός άξονας
 	Diagonal	Διαγώνια
 	Transform Symmetry	Μετασχηματισμός συμμετρίας
-
-# Eyedropper Sample Size and Sample (#1649).
 	Point Sample	Σημειακό δείγμα
 	3 by 3 Average	Μέσος όρος 3 × 3
 	5 by 5 Average	Μέσος όρος 5 × 5
@@ -3619,15 +3686,12 @@ fontWeight	Thin	Πολύ λεπτά
 	All Layers No Adjustments	Όλα τα επίπεδα χωρίς προσαρμογές
 	Current & Below No Adjustments	Τρέχον και υποκείμενα χωρίς προσαρμογές
 	Show Sampling Ring	Εμφάνιση δακτυλίου δειγματοληψίας
-
-# Color Picker warnings
 	Out of gamut for printing: click for the nearest printable colour	Εκτός γκάμας εκτύπωσης: κάντε κλικ για το πλησιέστερο εκτυπώσιμο χρώμα
 	Not a web colour: click for the nearest web colour	Δεν είναι χρώμα web: κάντε κλικ για το πλησιέστερο χρώμα web
 	Color to Alpha…	Χρώμα σε άλφα…
 	Transparency Threshold	Κατώφλι διαφάνειας
 	Opacity Threshold	Κατώφλι αδιαφάνειας
 	PhotoCraft — Screen Color Picker	PhotoCraft — Επιλογή χρώματος οθόνης
-
 	Rasterize svg groups deeper than	Ραστεροποίηση ομάδων SVG πέρα από αυτό το βάθος
 	0 turns this threshold off; SVG groups nested deeper than 100 levels are always rasterized.	Το 0 απενεργοποιεί αυτό το όριο· ομάδες SVG με ένθεση βαθύτερη από 100 επίπεδα ραστεροποιούνται πάντα.
 	Rule of Thirds	Κανόνας των τρίτων
@@ -3640,11 +3704,7 @@ fontWeight	Thin	Πολύ λεπτά
 	Cycle Orientation	Εναλλαγή προσανατολισμού
 	Set the overlay options for the Crop tool	Ορισμός επιλογών επικάλυψης για το εργαλείο Περικοπή
 	Alt-click went to the desktop, which moves windows with Alt-drag. Set its window-move key to Super, or latch Alt in Window › Modifier Keys.	Το Alt-κλικ πήγε στο περιβάλλον εργασίας, που μετακινεί παράθυρα με Alt-σύρσιμο. Ορίστε το πλήκτρο μετακίνησης παραθύρων του σε Super ή κλειδώστε το Alt στο Παράθυρο › Πλήκτρα τροποποίησης.
-
-# Shared Layer Style color picker
 	Color Picker (Layer Style Color)	Επιλογέας χρώματος (χρώμα στυλ επιπέδου)
-
-# Shared text style Color Picker (#2015)
 	Color Picker (Text Color)	Επιλογέας χρώματος (χρώμα κειμένου)
 	Color Picker ({name})	Επιλογέας χρώματος ({name})
 	Auto Hide Notifications	Αυτόματη απόκρυψη ειδοποιήσεων
@@ -3713,7 +3773,6 @@ fontWeight	Thin	Πολύ λεπτά
 	Appearance Settings…	Ρυθμίσεις εμφάνισης…
 	Add to favorites	Προσθήκη στα αγαπημένα
 	Remove from favorites	Αφαίρεση από τα αγαπημένα
-# File Info ▸ Camera Data (read-only EXIF fields; "Make" is the camera maker, not the verb).
 cameraData	Make	Κατασκευαστής
 cameraData	Model	Μοντέλο
 cameraData	Date Taken	Ημερομηνία λήψης
@@ -3723,7 +3782,6 @@ cameraData	ISO Speed	Ευαισθησία ISO
 cameraData	Focal Length	Εστιακή απόσταση
 cameraData	Focal Length (35 mm)	Εστιακή απόσταση (35 mm)
 cameraData	Lens	Φακός
-# Shared panel docking
 	Activate Panel	Ενεργοποίηση πάνελ
 	Change Panel Group	Αλλαγή ομάδας πάνελ
 	Change Panel Layout	Αλλαγή διάταξης πάνελ
@@ -3768,7 +3826,6 @@ cameraData	Lens	Φακός
 	Snap to Origin	Προσκόλληση στην αρχή
 	Search settings…	Αναζήτηση ρυθμίσεων…
 	No matching settings	Δεν βρέθηκαν ρυθμίσεις
-# Edit › Content-Aware Fill workspace
 	Sampling Brush Tool	Εργαλείο πινέλου δειγματοληψίας
 	Sampling Area Overlay	Επικάλυψη περιοχής δειγματοληψίας
 	Show Sampling Area	Εμφάνιση περιοχής δειγματοληψίας
@@ -3784,7 +3841,6 @@ cameraData	Lens	Φακός
 	Mirror	Κατοπτρισμός
 	Output Settings	Ρυθμίσεις εξόδου
 	Output To	Έξοδος σε
-
 	Animation Options	Επιλογές κίνησης
 	Entire Document	Ολόκληρο έγγραφο
 	Filter Options	Επιλογές φίλτρου
@@ -3801,8 +3857,6 @@ cameraData	Lens	Φακός
 	Add “copy” to Copied Layers and Groups	Προσθήκη «αντίγραφο» σε αντιγραμμένα επίπεδα και ομάδες
 	Preview on canvas when reordering layers	Προεπισκόπηση στον καμβά κατά την αναδιάταξη επιπέδων
 	Show layer mask badges	Εμφάνιση σημάτων μασκών επιπέδου
-
-# Smart Filter editors
 	Blending Options ({filter})	Επιλογές ανάμειξης ({filter})
 	Hide the layer's effects and Smart Filters  ({key}-click: all layers)	Απόκρυψη εφέ επιπέδου και έξυπνων φίλτρων  ({key}-κλικ: όλα τα επίπεδα)
 	Show the layer's effects and Smart Filters  ({key}-click: all layers)	Εμφάνιση εφέ επιπέδου και έξυπνων φίλτρων  ({key}-κλικ: όλα τα επίπεδα)
@@ -3836,7 +3890,6 @@ curves	Smooth	Εξομάλυνση
 	Fix the red plane first: its corners must form a convex quad	Διορθώστε πρώτα το κόκκινο επίπεδο: οι γωνίες του πρέπει να σχηματίζουν κυρτό τετράπλευρο
 	Alt-click a plane to set the clone source	Alt-κλικ σε ένα επίπεδο για να ορίσετε την πηγή κλωνοποίησης
 	Too many clone strokes: apply Vanishing Point first	Πάρα πολλές πινελιές κλωνοποίησης: εφαρμόστε πρώτα το Σημείο φυγής
-# Select and Mask view modes (#1754)
 	Onion Skin	Φλούδα κρεμμυδιού
 	Marching Ants	Κινούμενο περίγραμμα
 	On Black	Σε μαύρο
@@ -3845,7 +3898,6 @@ curves	Smooth	Εξομάλυνση
 	Show Edge	Εμφάνιση άκρης
 	Show Original	Εμφάνιση αρχικού
 	F cycles the views; hold X to see the image	Το F εναλλάσσει τις προβολές· κρατήστε το X για να δείτε την εικόνα
-# Select and Mask Refine Edge Brush (#2972)
 	Refine Edge Brush (R)	Πινέλο βελτίωσης ακμής (R)
 	Expand Detection Area	Επέκταση περιοχής ανίχνευσης
 	Restore Original Edge	Επαναφορά αρχικής ακμής
@@ -3853,18 +3905,12 @@ curves	Smooth	Εξομάλυνση
 	Clear Brush Strokes	Απαλοιφή πινελιών
 	Show rulers	Εμφάνιση χαράκων
 	Presentation	Παρουσίαση
-
-# Color Sampler (added with the i18n coverage repair)
 	Click to place · Alt-click or drag off-canvas to remove	Κλικ για τοποθέτηση · Alt-κλικ ή σύρσιμο εκτός καμβά για αφαίρεση
 	{n} of {max} sample points	{n} από {max} σημεία δειγματοληψίας
-
-# History panel menu (#2966)
 	New Snapshot…	Νέο στιγμιότυπο…
 	History Options…	Επιλογές ιστορικού…
-# History panel › History Options… (#2966)
 	Allow Non-Linear History	Να επιτρέπεται μη γραμμικό ιστορικό
 	Make Layer Visibility Changes Undoable	Οι αλλαγές ορατότητας επιπέδων να αναιρούνται
-# Print dialog (#2697)
 	Emulsion Down	Γαλάκτωμα προς τα κάτω
 	Functions	Λειτουργίες
 	Print Resolution:	Ανάλυση εκτύπωσης:
@@ -3876,7 +3922,6 @@ curves	Smooth	Εξομάλυνση
 	Apply mask to layer before removing?	Εφαρμογή της μάσκας στο επίπεδο πριν από την αφαίρεση;
 	The layer or its mask changed. Drag the mask onto the Trash again.	Το επίπεδο ή η μάσκα του άλλαξε. Σύρετε ξανά τη μάσκα στον Κάδο.
 	Delete the vector mask?	Διαγραφή της διανυσματικής μάσκας;
-# Counted status messages and labels (#3454; adapted from PR #3821)
 @plural	Exported {n} swatch to {file}|Exported {n} swatches to {file}	Εξήχθη {n} δείγμα χρώματος στο {file}|Εξήχθησαν {n} δείγματα χρωμάτων στο {file}
 @plural	Imported {n} brush from {group}|Imported {n} brushes from {group}	Εισήχθη {n} πινέλο από την ομάδα {group}|Εισήχθησαν {n} πινέλα από την ομάδα {group}
 @plural	Imported {n} swatch from {file}|Imported {n} swatches from {file}	Εισήχθη {n} δείγμα χρώματος από το {file}|Εισήχθησαν {n} δείγματα χρωμάτων από το {file}
@@ -3891,7 +3936,6 @@ curves	Smooth	Εξομάλυνση
 @plural	{n} step|{n} steps	{n} βήμα|{n} βήματα
 @plural	{warning} (+{n} more brush preset warning)|{warning} (+{n} more brush preset warnings)	{warning} (+{n} ακόμη προειδοποίηση προεπιλογών πινέλων)|{warning} (+{n} ακόμη προειδοποιήσεις προεπιλογών πινέλων)
 @plural	{what} with {n} warning|{what} with {n} warnings	{what} με {n} προειδοποίηση|{what} με {n} προειδοποιήσεις
-# View › Guides › New Guide… › Color
 	Light Blue	Ανοιχτό μπλε
 	Light Red	Ανοιχτό κόκκινο
 	Medium Blue	Μεσαίο μπλε
@@ -3912,8 +3956,6 @@ curves	Smooth	Εξομάλυνση
 	Clear Brush Controls	Απαλοιφή στοιχείων ελέγχου πινέλου
 	Reset All Locked Settings	Επαναφορά όλων των κλειδωμένων ρυθμίσεων
 	Copy Texture to Other Tools	Αντιγραφή υφής σε άλλα εργαλεία
-
-# Actions panel: Load/Save Actions (.atn) and kept Photoshop steps
 	Load Actions…	Φόρτωση ενεργειών…
 	Save Actions…	Αποθήκευση ενεργειών…
 	New Action…	Νέα ενέργεια…
@@ -3925,10 +3967,8 @@ curves	Smooth	Εξομάλυνση
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} βήμα δεν έχει ακόμη αντίστοιχο στο PhotoCraft|{n} βήματα δεν έχουν ακόμη αντίστοιχο στο PhotoCraft
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	Αποθηκεύτηκε {n} ενέργεια στο {file}|Αποθηκεύτηκαν {n} ενέργειες στο {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	Παραλείφθηκε {n} βήμα χωρίς αντίστοιχο στο Photoshop|Παραλείφθηκαν {n} βήματα χωρίς αντίστοιχο στο Photoshop
-
 	File Naming	Ονομασία αρχείων
 	Starting serial	Αρχικός αριθμός σειράς
-# Actions panel: set folders, dialog toggle, Insert Stop
 	Insert Stop…	Εισαγωγή διακοπής…
 	Save Set…	Αποθήκευση συνόλου…
 	Message:	Μήνυμα:
@@ -3939,11 +3979,8 @@ curves	Smooth	Εξομάλυνση
 	Step {step} is waiting for its dialog	Το βήμα {step} περιμένει το παράθυρο διαλόγου του
 @plural	{n} action|{n} actions	{n} ενέργεια|{n} ενέργειες
 	Background (Default)	Φόντο (προεπιλογή)
-# Batch / Image Processor
 	Include All Subfolders	Συμπερίληψη όλων των υποφακέλων
 	Auto Add/Delete	Αυτόματη προσθήκη/διαγραφή
-
-# Native Windows printing qualification
 	Don't also tick Mirror Image in Print Settings…: the two flips cancel out.	Μην ενεργοποιείτε επίσης τον κατοπτρισμό στις ρυθμίσεις εκτύπωσης: οι δύο αναστροφές αλληλοαναιρούνται.
 	Print Settings…	Ρυθμίσεις εκτύπωσης…
 	Remember to turn off the printer's own colour management in Print Settings…	Θυμηθείτε να απενεργοποιήσετε τη διαχείριση χρωμάτων του εκτυπωτή στις ρυθμίσεις εκτύπωσης…
@@ -3988,50 +4025,31 @@ curves	Smooth	Εξομάλυνση
 	Could not write {name}: {error}	Αδυναμία εγγραφής του {name}: {error}
 	Kept {name}: written by another application	Το {name} διατηρήθηκε: γράφτηκε από άλλη εφαρμογή
 	Shadow Tint	Χροιά σκιών
-# PhotoCraft release checks.
 	Check for Updates…	Έλεγχος ενημερώσεων…
-	PhotoCraft Updates	Ενημερώσεις PhotoCraft
-	Checking for updates…	Έλεγχος για ενημερώσεις…
 	Open the release page to choose an installer for your system.	Ανοίξτε τη σελίδα της έκδοσης για να επιλέξετε πρόγραμμα εγκατάστασης για το σύστημά σας.
-	Open Download Page	Άνοιγμα σελίδας λήψης
-	PhotoCraft is up to date.	Το PhotoCraft είναι ενημερωμένο.
-	Could not check for updates.	Δεν ήταν δυνατός ο έλεγχος ενημερώσεων.
-	Updates have not been checked yet.	Δεν έχει γίνει ακόμη έλεγχος ενημερώσεων.
-	Check Again	Νέος έλεγχος
 	Automatically Check for Updates	Αυτόματος έλεγχος ενημερώσεων
-	Installed version: {version}	Εγκατεστημένη έκδοση: {version}
-	PhotoCraft {version} is available.	Το PhotoCraft {version} είναι διαθέσιμο.
-# History panel › History Brush source (#2966)
 	Paints from the History panel's source state	Βάφει από την κατάσταση πηγής του πίνακα Ιστορικό
 	Sets the source for the history brush	Ορίζει την πηγή για το πινέλο ιστορικού
-# Bevel & Emboss shading controls.
 	Highlight Mode	Λειτουργία φωτεινών τόνων
 	Highlight Color	Χρώμα φωτεινών τόνων
 	Highlight Opacity	Αδιαφάνεια φωτεινών τόνων
 	Shadow Mode	Λειτουργία σκιών
 	Shadow Color	Χρώμα σκιών
 	Shadow Opacity	Αδιαφάνεια σκιών
-# Embedded Profile Mismatch: profile names beside the choices, Remember this choice
 	Use the embedded profile ({profile})	Χρήση ενσωματωμένου προφίλ ({profile})
 	Convert to the working space ({profile})	Μετατροπή στον χώρο εργασίας ({profile})
 	Remember this choice for future images	Απομνημόνευση αυτής της επιλογής για μελλοντικές εικόνες
 	Turn the prompt back on with Ask On Mismatch in Edit › Color Settings.	Ενεργοποιήστε ξανά την ερώτηση με το Ask On Mismatch στο Επεξεργασία › Ρυθμίσεις χρωμάτων.
 	Button Mode	Λειτουργία κουμπιών
 	Button Mode On	Λειτουργία κουμπιών ενεργή
-
-# Darken / Lighten Interface (⇧⌘F1 / ⇧⌘F2)
 	Darken Interface	Σκουρότερο περιβάλλον
 	Lighten Interface	Φωτεινότερο περιβάλλον
-# Bevel & Emboss Technique.
 	Technique	Τεχνική
 	Chisel Hard	Σκληρή σμίλευση
 	Chisel Soft	Μαλακή σμίλευση
 	Open color-less EXR as ACEScg	Άνοιγμα EXR χωρίς χρωματική δήλωση ως ACEScg
 	Do not append "copy" to filename when saving a copy	Να μην προστίθεται «copy» στο όνομα αρχείου κατά την αποθήκευση αντιγράφου
-# Export As metadata and profile options
 	EXIF	EXIF
-
-# View › Guides › right-click a guide
 	Edit Selected Guides	Επεξεργασία επιλεγμένων οδηγών
 	Clear Selected Guides	Απαλοιφή επιλεγμένων οδηγών
 	Bicubic Automatic	Δικυβική αυτόματη
@@ -4056,8 +4074,6 @@ curves	Smooth	Εξομάλυνση
 	set name	όνομα συνόλου
 	{set} (modified)	{set} (τροποποιημένο)
 	Show file name in title	Εμφάνιση ονόματος αρχείου στον τίτλο
-
-# Image › Mode › Bitmap (#5559)
 	50% Threshold	Κατώφλι 50%
 	Pattern Dither	Πρόσμιξη μοτίβου
 	Diffusion Dither	Πρόσμιξη διάχυσης
@@ -4075,10 +4091,8 @@ curves	Smooth	Εξομάλυνση
 	Undo Changes	Αναίρεση αλλαγών
 	{shortcut} is reserved by the system and can't be assigned.	Η συντόμευση {shortcut} δεσμεύεται από το σύστημα και δεν μπορεί να εκχωρηθεί.
 	Low-Latency Drawing (vsync off, applies at next launch)	Σχεδίαση χαμηλής καθυστέρησης (χωρίς vsync, ισχύει στην επόμενη εκκίνηση)
-# Free Transform: a new layer while the box is open (#5859)
 	Free Transform is still being applied; try again when it has finished.	Ο Ελεύθερος μετασχηματισμός εφαρμόζεται ακόμη· δοκιμάστε ξανά όταν ολοκληρωθεί.
 	The transform couldn't be applied.	Δεν ήταν δυνατή η εφαρμογή του μετασχηματισμού.
-# Preferences › Performance › GPU Memory; the status bar and slow-redraw notice
 	Its layers need {needed} of GPU memory; the budget leaves them {budget}.	Τα επίπεδά του χρειάζονται {needed} μνήμης GPU· το όριο τους αφήνει {budget}.
 	Set GPU Memory in Preferences › Performance to what your graphics card can hold, at most 3/8 of its memory. Automatic follows Memory Usage, within a quarter of this computer's memory and 3/8 of the card's, and doesn't count the document against a card whose memory is known. The status bar shows GPU Memory Full while they don't fit.	Ορίστε τη Μνήμη GPU στις Προτιμήσεις › Επιδόσεις σε όσο χωράει η κάρτα γραφικών σας, το πολύ στα 3/8 της μνήμης της. Το Αυτόματο ακολουθεί τη Χρήση μνήμης, εντός του ενός τετάρτου της μνήμης αυτού του υπολογιστή και των 3/8 της κάρτας, και δεν χρεώνει το έγγραφο σε κάρτα με γνωστή μνήμη. Όσο δεν χωρούν, η γραμμή κατάστασης δείχνει Η μνήμη GPU είναι πλήρης.
 	GPU Memory Full	Η μνήμη GPU είναι πλήρης
@@ -4104,8 +4118,6 @@ curves	Smooth	Εξομάλυνση
 	The fastest and the softest, with colour fringing on fine detail.	Η πιο γρήγορη και η πιο μαλακή, με χρωματικά περιθώρια στις λεπτές λεπτομέρειες.
 	“{name}” already exists. Replace it?	Το «{name}» υπάρχει ήδη. Να αντικατασταθεί;
 	The name in the save dialog was “{name}”.	Το όνομα στο παράθυρο αποθήκευσης ήταν «{name}».
-	Move Up	Μετακίνηση επάνω
-	Move Down	Μετακίνηση κάτω
 	Previous Brush	Προηγούμενο πινέλο
 	Next Brush	Επόμενο πινέλο
 	First Brush	Πρώτο πινέλο
@@ -4120,17 +4132,12 @@ curves	Smooth	Εξομάλυνση
 	Use	Χρήση
 	In Front	Μπροστά
 	Behind	Πίσω
-
-# DDS Options (#1327)
 	DDS Options	Επιλογές DDS
 	Generate Mipmaps	Δημιουργία mipmap
-
-# Color Table (.act) dialog
 	There is no color table to save.	Δεν υπάρχει πίνακας χρωμάτων για αποθήκευση.
 @plural	Saved {n} color to {file}|Saved {n} colors to {file}	Αποθηκεύτηκε {n} χρώμα στο {file}|Αποθηκεύτηκαν {n} χρώματα στο {file}
-
-# Graphics Adapter preference (#1885)
 	GPU adapter	Προσαρμογέας GPU
+smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded source; format-specific features may change.	Το περιεχόμενο AI/PDF/EPS θα υποστεί επεξεργασία ως SVG. Η αποθήκευση αντικαθιστά την ενσωματωμένη πηγή· οι ιδιότητες του αρχικού τύπου αρχείου μπορεί να αλλάξουν.
 
 # Styles panel: Import / Export Styles (.asl)
 	Import Styles…	Εισαγωγή στιλ…
@@ -4139,7 +4146,6 @@ curves	Smooth	Εξομάλυνση
 	{file} is not a style library (.asl)	Το {file} δεν είναι βιβλιοθήκη στιλ (.asl)
 @plural	Imported {n} style from {file}|Imported {n} styles from {file}	Εισήχθη {n} στιλ από το {file}|Εισήχθησαν {n} στιλ από το {file}
 @plural	Exported {n} style to {file}|Exported {n} styles to {file}	Εξήχθη {n} στιλ στο {file}|Εξήχθησαν {n} στιλ στο {file}
-# Actions: a step dialog holds a suspended recording (#7365)
 	Confirm or cancel the open action step dialog first	Επιβεβαιώστε ή ακυρώστε πρώτα το ανοιχτό παράθυρο βήματος της ενέργειας
 	Pro Medium Gray	Pro μεσαίου γκρι
 	Solarized	Solarized
@@ -4148,28 +4154,11 @@ curves	Smooth	Εξομάλυνση
 	Pro Light	Φωτεινό Pro
 	Resize Windows to Fit	Προσαρμογή μεγέθους παραθύρων
 	EXR	EXR
-# Paragraph direction (TYPE-218-2)
 	Automatic paragraph direction	Αυτόματη κατεύθυνση παραγράφου
 	Left-to-right paragraph direction	Κατεύθυνση παραγράφου από αριστερά προς τα δεξιά
 	Right-to-left paragraph direction	Κατεύθυνση παραγράφου από δεξιά προς τα αριστερά
 	Not rendered: this adjustment ({key}) is kept as imported.	Δεν αποδίδεται: αυτή η προσαρμογή ({key}) διατηρείται όπως εισήχθη.
-# Print preview image (#8236)
 	Print preview image	Print preview image
-	Color Aware	Με βάση το χρώμα
-	Decontaminate Colors	Απολύμανση χρωμάτων
-	Edge Detection	Ανίχνευση άκρης
-	Global Refinements	Καθολικές βελτιώσεις
-	High Quality Preview	Προεπισκόπηση υψηλής ποιότητας
-	Object Aware	Με βάση το αντικείμενο
-	Real-Time Refinement	Βελτίωση σε πραγματικό χρόνο
-	Refine Edge Brush Tool	Εργαλείο πινέλου βελτίωσης ακμής
-	Refine Hair	Βελτίωση μαλλιών
-	Refine Mode	Λειτουργία βελτίωσης
-	Remember Settings	Απομνημόνευση ρυθμίσεων
-	View Mode	Λειτουργία προβολής
-	Object Aware needs a segmentation model, which isn't available yet	Η λειτουργία Με βάση το αντικείμενο χρειάζεται μοντέλο τμηματοποίησης, που δεν είναι ακόμη διαθέσιμο
-	Refine Hair needs hair detection, which isn't available yet	Η Βελτίωση μαλλιών χρειάζεται ανίχνευση μαλλιών, που δεν είναι ακόμη διαθέσιμη
-# Color panel menu: modes, copy commands and colour ramps (#6000)
 	Hue Cube	Κύβος απόχρωσης
 	Brightness Cube	Κύβος φωτεινότητας
 	Color Wheel	Χρωματικός τροχός
@@ -4185,9 +4174,8 @@ curves	Smooth	Εξομάλυνση
 	Grayscale Ramp	Διαβάθμιση του γκρι
 	Current Colors	Τρέχοντα χρώματα
 	Make Ramp Web Safe	Μόνο χρώματα ιστού στη διαβάθμιση
-	Select and Mask was closed: its document is no longer the active one	Η Επιλογή και μάσκα έκλεισε: το έγγραφό της δεν είναι πλέον το ενεργό
-	Select and Mask was closed: another layer was selected	Η Επιλογή και μάσκα έκλεισε: επιλέχθηκε άλλο επίπεδο
-# Art History Brush (#213).
+	The path was kept as the Work Path	Η διαδρομή διατηρήθηκε ως διαδρομή εργασίας
+	The path was discarded	Η διαδρομή απορρίφθηκε
 	Art History Brush Tool	Πινέλο ιστορικού τέχνης (Art History Brush Tool)
 	Tight Short	Σφιχτό κοντό
 	Tight Medium	Σφιχτό μεσαίο
@@ -4198,9 +4186,31 @@ curves	Smooth	Εξομάλυνση
 	Tight Curl	Σφιχτή μπούκλα
 	Loose Curl	Χαλαρή μπούκλα
 	Stylized dabs from a history state	Στυλιζαρισμένες πινελιές από μια κατάσταση ιστορικού
-
-# Egui 0.37 migration controls (Aspect Ratio, Category, Color Table, Gamma, Interpolation, Profile, Target, Units, Demosaic)
 	Target	Στόχος
 	Font size presets	Προεπιλογές μεγέθους γραμματοσειράς
 	Leading presets	Προεπιλογές διάστιχου
 	Tracking presets	Προεπιλογές διαστήματος χαρακτήρων
+	Invalid numeric entry. An integer between {min}% and {max}% is required. Previous value was inserted.	Μη έγκυρη αριθμητική τιμή. Απαιτείται ακέραιος αριθμός μεταξύ {min}% και {max}%. Εισήχθη η προηγούμενη τιμή.
+	Color Aware	Με βάση το χρώμα
+	Decontaminate Colors	Απολύμανση χρωμάτων
+	Edge Detection	Ανίχνευση άκρης
+	Global Refinements	Καθολικές βελτιώσεις
+	High Quality Preview	Προεπισκόπηση υψηλής ποιότητας
+	Object Aware	Με βάση το αντικείμενο
+	Real-Time Refinement	Βελτίωση σε πραγματικό χρόνο
+	Refine Edge Brush Tool	Εργαλείο πινέλου βελτίωσης ακμής
+	Refine Hair	Βελτίωση μαλλιών
+	Refine Mode	Λειτουργία βελτίωσης
+	Remember Settings	Απομνημόνευση ρυθμίσεων
+	View Mode	Λειτουργία προβολής
+	Object Aware needs a segmentation model, which isn't available yet	Η λειτουργία Με βάση το αντικείμενο χρειάζεται μοντέλο τμηματοποίησης, που δεν είναι ακόμη διαθέσιμο
+	Refine Hair needs hair detection, which isn't available yet	Η Βελτίωση μαλλιών χρειάζεται ανίχνευση μαλλιών, που δεν είναι ακόμη διαθέσιμη
+	Select and Mask was closed: its document is no longer the active one	Η Επιλογή και μάσκα έκλεισε: το έγγραφό της δεν είναι πλέον το ενεργό
+	Select and Mask was closed: another layer was selected	Η Επιλογή και μάσκα έκλεισε: επιλέχθηκε άλλο επίπεδο
+	Select Layer Under Cursor	Επιλογή επιπέδου κάτω από τον δρομέα
+
+# Shape Fill/Stroke popover and colour swatches opening the Color Picker
+	Recently Used Colors	Χρώματα που χρησιμοποιήθηκαν πρόσφατα
+	Stop Color	Χρώμα στάσης
+	Shapes can't use patterns yet	Τα σχήματα δεν μπορούν ακόμη να χρησιμοποιούν μοτίβα
+	Edit Brush…	Επεξεργασία πινέλου…

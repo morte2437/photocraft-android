@@ -17,7 +17,7 @@ fn uncached(s: &Session) -> Surface {
     let doc = &s.active().unwrap().doc;
     let sm = active_smart(s);
     let (name, bytes) = source_bytes(&doc.metadata, &sm.source).unwrap();
-    apply_smart_filters(&place(&name, &bytes, doc.pixel_format(), &sm).unwrap(), &sm, doc.bounds()).unwrap()
+    apply_smart_filters(&place(&name, &bytes, doc, &sm).unwrap(), &sm, doc.bounds()).unwrap()
 }
 
 #[test]

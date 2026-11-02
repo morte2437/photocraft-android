@@ -9,18 +9,81 @@
 # informally ("je") and uses sentence case.
 
 # Layer Mask Display Options (the layer mask rubylith's colour and opacity)
-	Mask Options…	Maskeropties…
-	Layer Mask Display Options…	Weergaveopties voor laagmasker…
 
 # Channel Options and New Spot Channel (#3761)
-	Channel Color	Kanaalkleur
-	Color Indicates:	Kleur geeft aan:
-	Solidity:	Soliditeit:
-	Ink Characteristics	Inktkenmerken
 
 # Guide layout dialog
 
 # Custom print paper (#3820)
+
+# Select and Mask dialog labels
+# Field Blur pins (#3373)
+
+# Layers-panel trash confirmation
+
+# Gradient Editor window, opened from the options bar's gradient swatch.
+
+# Painting symmetry presets.
+
+
+# Shared Layer Style color picker
+# File Info ▸ Camera Data (read-only EXIF fields; "Make" is the camera maker, not the verb).
+# Shared panel docking
+# Edit › Content-Aware Fill workspace
+
+
+# Smart Filter editors
+# Select and Mask view modes (#1754)
+# Select and Mask Refine Edge Brush (#2972)
+
+# Color Sampler (added with the i18n coverage repair)
+
+# History panel menu (#2966)
+# History panel › History Options… (#2966)
+# Print dialog (#2697)
+# Counted status messages and labels (#3454; adapted from PR #3821)
+# View › Guides › New Guide… › Color
+
+# Actions panel: Load/Save Actions (.atn) and kept Photoshop steps
+
+# Actions panel: set folders, dialog toggle, Insert Stop
+# Batch / Image Processor
+
+# Native Windows printing qualification
+# PhotoCraft release checks.
+# History panel › History Brush source (#2966)
+# Bevel & Emboss shading controls.
+# Embedded Profile Mismatch: profile names beside the choices, Remember this choice
+
+# Darken / Lighten Interface (⇧⌘F1 / ⇧⌘F2)
+# Bevel & Emboss Technique.
+
+# View › Guides › right-click a guide
+
+# Image › Mode › Bitmap (#5559)
+# Free Transform: a new layer while the box is open (#5859)
+# Preferences › Performance › GPU Memory; the status bar and slow-redraw notice
+
+# DDS Options (#1327)
+
+# Color Table (.act) dialog
+
+# Graphics Adapter preference (#1885)
+
+# Styles panel: Import / Export Styles (.asl)
+# Actions: a step dialog holds a suspended recording (#7365)
+# Paragraph direction (TYPE-218-2)
+# Print preview image (#8236)
+# Color panel menu: modes, copy commands and colour ramps (#6000)
+
+# Pen draft after a refused commit (#7648)
+# Art History Brush (#213).
+	Mask Options…	Maskeropties…
+	Layer Mask Display Options…	Weergaveopties voor laagmasker…
+	Channel Color	Kanaalkleur
+	Color Indicates:	Kleur geeft aan:
+	Solidity:	Soliditeit:
+	Ink Characteristics	Inktkenmerken
 	Paper Width	Papierbreedte
 	Paper Height	Papierhoogte
 	Rows	Rijen
@@ -38,7 +101,6 @@
 	5 Columns, 3 Rows	5 kolommen, 3 rijen
 	8 Columns	8 kolommen
 	12 Columns	12 kolommen
-
 	File	Bestand
 	Edit	Bewerken
 	Image	Afbeelding
@@ -444,6 +506,7 @@
 	Intersect Shape Areas	Overlappende vormgebieden
 	Exclude Overlapping Shapes	Overlappende vormen uitsluiten
 	Merge Shape Components	Vormcomponenten samenvoegen
+	Path operations	Padbewerkingen
 	Align	Uitlijnen
 	Top Edges	Bovenranden
 	Vertical Centers	Verticale middens
@@ -523,7 +586,6 @@
 	Color Range…	Kleurbereik…
 	Focus Area…	Scherptegebied…
 	Select and Mask…	Selecteren en maskeren…
-# Select and Mask dialog labels
 	Smart Radius	Slimme straal
 	Shift Edge	Rand verschuiven
 	Decontaminate	Verontreiniging verwijderen
@@ -549,7 +611,6 @@
 	Blur	Vervagen
 	Blur Gallery	Vervagingsgalerie
 	Field Blur…	Veldvervaging…
-# Field Blur pins (#3373)
 	No pin selected	Geen speld geselecteerd
 	Click the image to add a pin; drag a pin to move it, or its ring to change its blur. Delete removes the selected pin.	Klik in de afbeelding om een speld toe te voegen; sleep een speld om hem te verplaatsen, of zijn ring om de vervaging te wijzigen. Delete verwijdert de geselecteerde speld.
 	Drag the handles on the outline to resize and turn it, the square to round its corners, and the dots inside to set where the blur starts.	Sleep de grepen op de omtrek om hem te schalen en te draaien, het vierkantje om de hoeken af te ronden en de punten binnenin om in te stellen waar de vervaging begint.
@@ -819,6 +880,9 @@
 	Add Layer Mask	Laagmasker toevoegen
 	Add Stop	Kleurstop toevoegen
 	Add a layer style	Een laagstijl toevoegen
+	Move effect up	Effect omhoog verplaatsen
+	Move effect down	Effect omlaag verplaatsen
+	Delete effect	Effect verwijderen
 	Add a mask  (from the selection; {key} inverts)	Een masker toevoegen  (vanuit de selectie; {key} keert om)
 	Add an adjustment	Een aanpassing toevoegen
 	Add disk	Schijf toevoegen
@@ -1045,8 +1109,6 @@
 	Delete current channel	Huidig kanaal verwijderen
 	Delete current state	Huidige staat verwijderen
 	Delete effect layer	Effectlaag verwijderen
-
-# Layers-panel trash confirmation
 	Delete layer ‘{name}’?	Laag ‘{name}’ verwijderen?
 	Delete {count} layers? {names}	{count} lagen verwijderen? {names}
 	Delete layer?	Laag verwijderen?
@@ -1055,7 +1117,6 @@
 	Missing delete command	Verwijderopdracht ontbreekt
 	Invalid delete command	Ongeldige verwijderopdracht
 	Layer deleted, but confirmation preference could not be saved: {error}	De laag is verwijderd, maar de bevestigingsvoorkeur kon niet worden opgeslagen: {error}
-
 	Delete layer	Laag verwijderen
 	Delete layer comp	Laagcompositie verwijderen
 	Delete note	Notitie verwijderen
@@ -2153,7 +2214,6 @@
 	Align with layer	Uitlijnen met laag
 	Reset Alignment	Uitlijning herstellen
 	Centre the gradient (offset 0, 0)	Het verloop centreren (verschuiving 0, 0)
-# Gradient Editor window, opened from the options bar's gradient swatch.
 	Gradient Editor	Verloopeditor
 	Gradient picker	Verloopkiezer
 	Gradient stops	Verloopstops
@@ -2408,6 +2468,8 @@
 	Reset Swatches	Stalen herstellen
 	Add to Swatches	Aan stalen toevoegen
 	Blend If:	Overvloeien als:
+	Current Layer:	Huidige laag:
+	Underlying Layer:	Onderliggende laag:
 	Channels:	Kanalen:
 	Knockout	Uitsparing
 	Apply At Canvas Bounds	Toepassen op canvasgrenzen
@@ -3692,12 +3754,9 @@ cameraRaw	Whites	Witten
 	Point Sample	Puntmonster
 	Sample Size:	Monstergrootte:
 	Show Sampling Ring	Monsterring tonen
-
-# Painting symmetry presets.
 	Dual Axis	Dubbele as
 	Diagonal	Diagonaal
 	Transform Symmetry	Symmetrie transformeren
-
 	Rasterize svg groups deeper than	SVG-groepen rasteriseren dieper dan deze grens
 	0 turns this threshold off; SVG groups nested deeper than 100 levels are always rasterized.	0 schakelt deze drempel uit; SVG-groepen die dieper dan 100 niveaus zijn genest, worden altijd gerasterd.
 	Rule of Thirds	Regel van derden
@@ -3710,8 +3769,6 @@ cameraRaw	Whites	Witten
 	Cycle Orientation	Oriëntatie wisselen
 	Set the overlay options for the Crop tool	Overlay-opties voor het gereedschap Uitsnijden instellen
 	Alt-click went to the desktop, which moves windows with Alt-drag. Set its window-move key to Super, or latch Alt in Window › Modifier Keys.	De Alt-klik ging naar het bureaublad, dat vensters verplaatst met Alt-slepen. Stel daar de toets voor het verplaatsen van vensters in op Super, of vergrendel Alt via Venster › Wijzigingstoetsen.
-
-# Shared Layer Style color picker
 	Color Picker (Layer Style Color)	Kleurkiezer (kleur van laagstijl)
 	Auto Hide Notifications	Meldingen automatisch verbergen
 	Notification Duration (seconds)	Duur van melding (seconden)
@@ -3779,7 +3836,6 @@ cameraRaw	Whites	Witten
 	Appearance Settings…	Weergave-instellingen…
 	Add to favorites	Toevoegen aan favorieten
 	Remove from favorites	Verwijderen uit favorieten
-# File Info ▸ Camera Data (read-only EXIF fields; "Make" is the camera maker, not the verb).
 cameraData	Make	Merk
 cameraData	Model	Model
 cameraData	Date Taken	Opnamedatum
@@ -3789,7 +3845,6 @@ cameraData	ISO Speed	ISO-waarde
 cameraData	Focal Length	Brandpuntsafstand
 cameraData	Focal Length (35 mm)	Brandpuntsafstand (35 mm)
 cameraData	Lens	Lens
-# Shared panel docking
 	Activate Panel	Paneel activeren
 	Change Panel Group	Paneelgroep wijzigen
 	Change Panel Layout	Paneelindeling wijzigen
@@ -3827,7 +3882,6 @@ cameraData	Lens	Lens
 	Search settings…	Instellingen zoeken…
 	No matching settings	Geen overeenkomende instellingen
 	PhotoCraft — Screen Color Picker	PhotoCraft — Schermkleurkiezer
-# Edit › Content-Aware Fill workspace
 	Sampling Brush Tool	Gereedschap Monsterpenseel
 	Sampling Area Overlay	Overlay van monstergebied
 	Show Sampling Area	Monstergebied tonen
@@ -3843,7 +3897,6 @@ cameraData	Lens	Lens
 	Mirror	Spiegelen
 	Output Settings	Uitvoerinstellingen
 	Output To	Uitvoer naar
-
 	Animation Options	Animatieopties
 	Entire Document	Hele document
 	Filter Options	Filteropties
@@ -3860,8 +3913,6 @@ cameraData	Lens	Lens
 	Add “copy” to Copied Layers and Groups	„kopie” toevoegen aan gekopieerde lagen en groepen
 	Preview on canvas when reordering layers	Voorvertoning op canvas bij herschikken van lagen
 	Show layer mask badges	Badges voor laagmaskers tonen
-
-# Smart Filter editors
 	Blending Options ({filter})	Overvloeiopties ({filter})
 	Hide the layer's effects and Smart Filters  ({key}-click: all layers)	Laageffecten en slimme filters verbergen  ({key}-klik: alle lagen)
 	Show the layer's effects and Smart Filters  ({key}-click: all layers)	Laageffecten en slimme filters tonen  ({key}-klik: alle lagen)
@@ -3892,7 +3943,6 @@ curves	Smooth	Vloeiend maken
 	Fix the red plane first: its corners must form a convex quad	Herstel eerst het rode vlak: de hoeken moeten een convexe vierhoek vormen
 	Alt-click a plane to set the clone source	Alt-klik op een vlak om de kloonbron in te stellen
 	Too many clone strokes: apply Vanishing Point first	Te veel kloonstreken: pas eerst Verdwijnpunt toe
-# Select and Mask view modes (#1754)
 	Onion Skin	Uienschil
 	Marching Ants	Mierenmars
 	On Black	Op zwart
@@ -3901,7 +3951,6 @@ curves	Smooth	Vloeiend maken
 	Show Edge	Rand tonen
 	Show Original	Origineel tonen
 	F cycles the views; hold X to see the image	F wisselt de weergaven; houd X ingedrukt om de afbeelding te zien
-# Select and Mask Refine Edge Brush (#2972)
 	Refine Edge Brush (R)	Penseel Rand verfijnen (R)
 	Expand Detection Area	Detectiegebied uitbreiden
 	Restore Original Edge	Oorspronkelijke rand herstellen
@@ -3915,18 +3964,12 @@ curves	Smooth	Vloeiend maken
 	Scale:	Schaal:
 	Snap to Origin	Uitlijnen op oorsprong
 	Presentation	Presentatie
-
-# Color Sampler (added with the i18n coverage repair)
 	Click to place · Alt-click or drag off-canvas to remove	Klik om te plaatsen · Alt-klik of sleep buiten het canvas om te verwijderen
 	{n} of {max} sample points	{n} van {max} steekproefpunten
-
-# History panel menu (#2966)
 	New Snapshot…	Nieuwe momentopname…
 	History Options…	Geschiedenisopties…
-# History panel › History Options… (#2966)
 	Allow Non-Linear History	Niet-lineaire geschiedenis toestaan
 	Make Layer Visibility Changes Undoable	Wijzigingen in laagzichtbaarheid ongedaan kunnen maken
-# Print dialog (#2697)
 	Emulsion Down	Emulsie omlaag
 	Functions	Functies
 	Print Resolution:	Afdrukresolutie:
@@ -3938,7 +3981,6 @@ curves	Smooth	Vloeiend maken
 	Apply mask to layer before removing?	Masker toepassen op laag voordat het wordt verwijderd?
 	The layer or its mask changed. Drag the mask onto the Trash again.	De laag of het masker is gewijzigd. Sleep het masker opnieuw naar de prullenbak.
 	Delete the vector mask?	Het vectormasker verwijderen?
-# Counted status messages and labels (#3454; adapted from PR #3821)
 @plural	Exported {n} swatch to {file}|Exported {n} swatches to {file}	{n} staal geëxporteerd naar {file}|{n} stalen geëxporteerd naar {file}
 @plural	Imported {n} brush from {group}|Imported {n} brushes from {group}	{n} penseel geïmporteerd uit {group}|{n} penselen geïmporteerd uit {group}
 @plural	Imported {n} swatch from {file}|Imported {n} swatches from {file}	{n} staal geïmporteerd uit {file}|{n} stalen geïmporteerd uit {file}
@@ -3953,7 +3995,6 @@ curves	Smooth	Vloeiend maken
 @plural	{n} step|{n} steps	{n} stap|{n} stappen
 @plural	{warning} (+{n} more brush preset warning)|{warning} (+{n} more brush preset warnings)	{warning} (+{n} andere waarschuwing over penseelvoorinstellingen)|{warning} (+{n} andere waarschuwingen over penseelvoorinstellingen)
 @plural	{what} with {n} warning|{what} with {n} warnings	{what} met {n} waarschuwing|{what} met {n} waarschuwingen
-# View › Guides › New Guide… › Color
 	Light Blue	Lichtblauw
 	Light Red	Lichtrood
 	Medium Blue	Middelblauw
@@ -3974,8 +4015,6 @@ curves	Smooth	Vloeiend maken
 	Clear Brush Controls	Penseelbesturing wissen
 	Reset All Locked Settings	Alle vergrendelde instellingen opnieuw instellen
 	Copy Texture to Other Tools	Structuur kopiëren naar andere gereedschappen
-
-# Actions panel: Load/Save Actions (.atn) and kept Photoshop steps
 	Load Actions…	Handelingen laden…
 	Save Actions…	Handelingen opslaan…
 	New Action…	Nieuwe handeling…
@@ -3987,10 +4026,8 @@ curves	Smooth	Vloeiend maken
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} stap heeft nog geen equivalent in PhotoCraft|{n} stappen hebben nog geen equivalent in PhotoCraft
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	{n} handeling opgeslagen in {file}|{n} handelingen opgeslagen in {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	{n} stap zonder Photoshop-equivalent weggelaten|{n} stappen zonder Photoshop-equivalent weggelaten
-
 	File Naming	Bestandsnamen
 	Starting serial	Beginnummer
-# Actions panel: set folders, dialog toggle, Insert Stop
 	Insert Stop…	Stop invoegen…
 	Save Set…	Set opslaan…
 	Message:	Bericht:
@@ -4001,11 +4038,8 @@ curves	Smooth	Vloeiend maken
 	Step {step} is waiting for its dialog	Stap {step} wacht op zijn dialoogvenster
 @plural	{n} action|{n} actions	{n} handeling|{n} handelingen
 	Background (Default)	Achtergrond (standaard)
-# Batch / Image Processor
 	Include All Subfolders	Alle submappen opnemen
 	Auto Add/Delete	Automatisch toevoegen/verwijderen
-
-# Native Windows printing qualification
 	Don't also tick Mirror Image in Print Settings…: the two flips cancel out.	Schakel niet ook Spiegelbeeld in bij de afdrukinstellingen: de twee spiegelingen heffen elkaar op.
 	Print Settings…	Afdrukinstellingen…
 	Remember to turn off the printer's own colour management in Print Settings…	Vergeet niet het eigen kleurbeheer van de printer uit te schakelen in de afdrukinstellingen…
@@ -4050,48 +4084,30 @@ curves	Smooth	Vloeiend maken
 	Could not write {name}: {error}	Kan {name} niet schrijven: {error}
 	Kept {name}: written by another application	{name} behouden: geschreven door een andere toepassing
 	Shadow Tint	Schaduwtint
-# PhotoCraft release checks.
 	Check for Updates…	Controleren op updates…
-	PhotoCraft Updates	PhotoCraft-updates
-	Checking for updates…	Controleren op updates…
 	Open the release page to choose an installer for your system.	Open de releasepagina om een installatieprogramma voor uw systeem te kiezen.
-	Open Download Page	Downloadpagina openen
-	PhotoCraft is up to date.	PhotoCraft is bijgewerkt.
-	Could not check for updates.	Kan niet controleren op updates.
-	Updates have not been checked yet.	Er is nog niet op updates gecontroleerd.
-	Check Again	Opnieuw controleren
 	Automatically Check for Updates	Automatisch op updates controleren
-	Installed version: {version}	Geïnstalleerde versie: {version}
-	PhotoCraft {version} is available.	PhotoCraft {version} is beschikbaar.
-# History panel › History Brush source (#2966)
 	Paints from the History panel's source state	Schildert vanuit de bronstatus van het deelvenster Geschiedenis
 	Sets the source for the history brush	Stelt de bron voor het historiepenseel in
-# Bevel & Emboss shading controls.
 	Highlight Mode	Hooglichtmodus
 	Highlight Color	Hooglichtkleur
 	Highlight Opacity	Hooglichtdekking
 	Shadow Mode	Schaduwmodus
 	Shadow Color	Schaduwkleur
 	Shadow Opacity	Schaduwdekking
-# Embedded Profile Mismatch: profile names beside the choices, Remember this choice
 	Use the embedded profile ({profile})	Het ingesloten profiel gebruiken ({profile})
 	Convert to the working space ({profile})	Omzetten naar de werkruimte ({profile})
 	Remember this choice for future images	Deze keuze onthouden voor volgende afbeeldingen
 	Turn the prompt back on with Ask On Mismatch in Edit › Color Settings.	Zet de vraag weer aan met Ask On Mismatch in Bewerken › Kleurinstellingen.
 	Button Mode	Knopmodus
 	Button Mode On	Knopmodus aan
-
-# Darken / Lighten Interface (⇧⌘F1 / ⇧⌘F2)
 	Darken Interface	Interface donkerder maken
 	Lighten Interface	Interface lichter maken
-# Bevel & Emboss Technique.
 	Technique	Techniek
 	Chisel Hard	Beitel hard
 	Chisel Soft	Beitel zacht
 	Open color-less EXR as ACEScg	EXR zonder kleurruimte als ACEScg openen
 	Do not append "copy" to filename when saving a copy	Geen "copy" aan de bestandsnaam toevoegen bij het opslaan van een kopie
-
-# View › Guides › right-click a guide
 	Edit Selected Guides	Geselecteerde hulplijnen bewerken
 	Clear Selected Guides	Geselecteerde hulplijnen wissen
 	Bicubic Automatic	Bicubisch automatisch
@@ -4116,8 +4132,6 @@ curves	Smooth	Vloeiend maken
 	set name	naam van de set
 	{set} (modified)	{set} (gewijzigd)
 	Show file name in title	Bestandsnaam in titel weergeven
-
-# Image › Mode › Bitmap (#5559)
 	50% Threshold	50% drempel
 	Pattern Dither	Patroondithering
 	Diffusion Dither	Diffusiedithering
@@ -4135,10 +4149,8 @@ curves	Smooth	Vloeiend maken
 	Undo Changes	Wijzigingen ongedaan maken
 	{shortcut} is reserved by the system and can't be assigned.	{shortcut} is door het systeem gereserveerd en kan niet worden toegewezen.
 	Low-Latency Drawing (vsync off, applies at next launch)	Tekenen met lage latentie (zonder vsync, na de volgende start)
-# Free Transform: a new layer while the box is open (#5859)
 	Free Transform is still being applied; try again when it has finished.	Vrije transformatie wordt nog toegepast; probeer het opnieuw als die klaar is.
 	The transform couldn't be applied.	De transformatie kon niet worden toegepast.
-# Preferences › Performance › GPU Memory; the status bar and slow-redraw notice
 	Its layers need {needed} of GPU memory; the budget leaves them {budget}.	De lagen hebben {needed} GPU-geheugen nodig; het budget laat ze {budget}.
 	Set GPU Memory in Preferences › Performance to what your graphics card can hold, at most 3/8 of its memory. Automatic follows Memory Usage, within a quarter of this computer's memory and 3/8 of the card's, and doesn't count the document against a card whose memory is known. The status bar shows GPU Memory Full while they don't fit.	Stel GPU-geheugen in bij Voorkeuren › Prestaties op wat uw videokaart aankan, hooguit 3/8 van haar geheugen. Automatisch volgt Geheugengebruik, binnen een kwart van het geheugen van deze computer en 3/8 van dat van de kaart, en rekent het document niet af van een kaart waarvan het geheugen bekend is. Zolang ze niet passen, toont de statusbalk GPU-geheugen vol.
 	GPU Memory Full	GPU-geheugen vol
@@ -4164,8 +4176,6 @@ curves	Smooth	Vloeiend maken
 	The fastest and the softest, with colour fringing on fine detail.	Het snelst en het zachtst, met kleurranden in fijne details.
 	“{name}” already exists. Replace it?	“{name}” bestaat al. Vervangen?
 	The name in the save dialog was “{name}”.	De naam in het venster Opslaan was “{name}”.
-	Move Up	Omhoog
-	Move Down	Omlaag
 	Previous Brush	Vorig penseel
 	Next Brush	Volgend penseel
 	First Brush	Eerste penseel
@@ -4180,17 +4190,12 @@ curves	Smooth	Vloeiend maken
 	Use	Gebruiken
 	In Front	Voor
 	Behind	Achter
-
-# DDS Options (#1327)
 	DDS Options	DDS-opties
 	Generate Mipmaps	Mipmaps genereren
-
-# Color Table (.act) dialog
 	There is no color table to save.	Er is geen kleurtabel om op te slaan.
 @plural	Saved {n} color to {file}|Saved {n} colors to {file}	{n} kleur opgeslagen in {file}|{n} kleuren opgeslagen in {file}
-
-# Graphics Adapter preference (#1885)
 	GPU adapter	GPU-adapter
+smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded source; format-specific features may change.	AI/PDF/EPS-inhoud wordt als SVG bewerkt. Opslaan vervangt de ingesloten bron; formaatspecifieke eigenschappen kunnen veranderen.
 
 # Styles panel: Import / Export Styles (.asl)
 	Import Styles…	Stijlen importeren…
@@ -4199,7 +4204,6 @@ curves	Smooth	Vloeiend maken
 	{file} is not a style library (.asl)	{file} is geen stijlbibliotheek (.asl)
 @plural	Imported {n} style from {file}|Imported {n} styles from {file}	{n} stijl geïmporteerd uit {file}|{n} stijlen geïmporteerd uit {file}
 @plural	Exported {n} style to {file}|Exported {n} styles to {file}	{n} stijl geëxporteerd naar {file}|{n} stijlen geëxporteerd naar {file}
-# Actions: a step dialog holds a suspended recording (#7365)
 	Confirm or cancel the open action step dialog first	Bevestig of annuleer eerst het geopende dialoogvenster van de handelingsstap
 	Pro Medium Gray	Pro middelgrijs
 	Solarized	Solarized
@@ -4208,28 +4212,11 @@ curves	Smooth	Vloeiend maken
 	Pro Light	Pro licht
 	Resize Windows to Fit	Venstergrootte aanpassen
 	EXR	EXR
-# Paragraph direction (TYPE-218-2)
 	Automatic paragraph direction	Automatische alinearichting
 	Left-to-right paragraph direction	Alinearichting van links naar rechts
 	Right-to-left paragraph direction	Alinearichting van rechts naar links
 	Not rendered: this adjustment ({key}) is kept as imported.	Niet weergegeven: deze aanpassing ({key}) blijft behouden zoals geïmporteerd.
-# Print preview image (#8236)
 	Print preview image	Print preview image
-	Color Aware	Kleurbewust
-	Decontaminate Colors	Kleuren zuiveren
-	Edge Detection	Randdetectie
-	Global Refinements	Globale verfijningen
-	High Quality Preview	Voorvertoning in hoge kwaliteit
-	Object Aware	Objectbewust
-	Real-Time Refinement	Verfijning in realtime
-	Refine Edge Brush Tool	Gereedschap Penseel Rand verfijnen
-	Refine Hair	Haar verfijnen
-	Refine Mode	Verfijningsmodus
-	Remember Settings	Instellingen onthouden
-	View Mode	Weergavemodus
-	Object Aware needs a segmentation model, which isn't available yet	Objectbewust vereist een segmentatiemodel dat nog niet beschikbaar is
-	Refine Hair needs hair detection, which isn't available yet	Haar verfijnen vereist haardetectie die nog niet beschikbaar is
-# Color panel menu: modes, copy commands and colour ramps (#6000)
 	Hue Cube	Kleurtoonkubus
 	Brightness Cube	Helderheidskubus
 	Color Wheel	Kleurenwiel
@@ -4245,9 +4232,8 @@ curves	Smooth	Vloeiend maken
 	Grayscale Ramp	Grijswaardenbalk
 	Current Colors	Huidige kleuren
 	Make Ramp Web Safe	Balk beperken tot webkleuren
-	Select and Mask was closed: its document is no longer the active one	Selecteren en maskeren is gesloten: het document is niet meer het actieve document
-	Select and Mask was closed: another layer was selected	Selecteren en maskeren is gesloten: er is een andere laag geselecteerd
-# Art History Brush (#213).
+	The path was kept as the Work Path	Het pad is behouden als werkpad
+	The path was discarded	Het pad is weggegooid
 	Art History Brush Tool	Artistiek historiepenseel
 	Tight Short	Strak kort
 	Tight Medium	Strak middel
@@ -4261,3 +4247,27 @@ curves	Smooth	Vloeiend maken
 	Font size presets	Voorinstellingen lettergrootte
 	Leading presets	Voorinstellingen interlinie
 	Tracking presets	Voorinstellingen spatiëring
+	Invalid numeric entry. An integer between {min}% and {max}% is required. Previous value was inserted.	Ongeldige numerieke invoer. Er is een geheel getal tussen {min}% en {max}% vereist. De vorige waarde is ingevoegd.
+	Color Aware	Kleurbewust
+	Decontaminate Colors	Kleuren zuiveren
+	Edge Detection	Randdetectie
+	Global Refinements	Globale verfijningen
+	High Quality Preview	Voorvertoning in hoge kwaliteit
+	Object Aware	Objectbewust
+	Real-Time Refinement	Verfijning in realtime
+	Refine Edge Brush Tool	Gereedschap Penseel Rand verfijnen
+	Refine Hair	Haar verfijnen
+	Refine Mode	Verfijningsmodus
+	Remember Settings	Instellingen onthouden
+	View Mode	Weergavemodus
+	Object Aware needs a segmentation model, which isn't available yet	Objectbewust vereist een segmentatiemodel dat nog niet beschikbaar is
+	Refine Hair needs hair detection, which isn't available yet	Haar verfijnen vereist haardetectie die nog niet beschikbaar is
+	Select and Mask was closed: its document is no longer the active one	Selecteren en maskeren is gesloten: het document is niet meer het actieve document
+	Select and Mask was closed: another layer was selected	Selecteren en maskeren is gesloten: er is een andere laag geselecteerd
+	Select Layer Under Cursor	Laag onder cursor selecteren
+
+# Shape Fill/Stroke popover and colour swatches opening the Color Picker
+	Recently Used Colors	Recent gebruikte kleuren
+	Stop Color	Kleur van het punt
+	Shapes can't use patterns yet	Vormen kunnen nog geen patronen gebruiken
+	Edit Brush…	Penseel bewerken…

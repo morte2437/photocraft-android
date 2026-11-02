@@ -211,7 +211,8 @@ fn the_pen_carries_on_an_open_path_from_either_end() {
 }
 
 /// #6593 review: carrying on a subpath keeps its path operation, and a draft whose subpath changed
-/// meanwhile is added as a new subpath instead of overwriting another one.
+/// meanwhile refuses without overwriting newer work. The historical test name is retained
+/// for reviewed-head provenance; captured-revision validation supersedes its stale fallback.
 #[test]
 fn a_resumed_subpath_keeps_its_operation_and_a_stale_draft_adds_a_new_one() {
     let mut app = app(Tool::Pen);
@@ -223,21 +224,28 @@ fn a_resumed_subpath_keeps_its_operation_and_a_stale_draft_adds_a_new_one() {
     let work = work_path(&app);
     assert_eq!((work.subpaths.len(), work.subpaths[0].knots.len()), (1, 3));
     assert_eq!(work.subpaths[0].op, photocraft_doc::vector::PathOp::Subtract, "the operation is kept");
-    // The work path is replaced while the draft is open: the draft becomes a new subpath.
+    // Replacing the source invalidates the draft; neither explicit commit nor a frame retries it.
     click(&mut app, 20.0, 20.0);
     click(&mut app, 20.0, 80.0);
     app.run("path.set", json!({"name": "work", "path": {"subpaths": [open(120.0, 180.0, "combine")]}})).unwrap();
+    let newer = work_path(&app);
+    let steps = app.session.active().unwrap().history.past_len();
     crate::vector_ui::pen_commit(&mut app, false);
     let work = work_path(&app);
-    assert_eq!(work.subpaths.len(), 2, "a new subpath, the replaced one untouched");
+    assert_eq!(work, newer, "the replaced source is unchanged by a stale draft");
+    assert_eq!(work.subpaths.len(), 1);
+    assert!(app.ui.pen.is_none() && app.ui.status_error);
+    assert_eq!(app.session.active().unwrap().history.past_len(), steps);
     assert_eq!(work.subpaths[0].knots.iter().map(|k| k.anchor.x).collect::<Vec<_>>(), [120.0, 180.0]);
-    // The same with nothing selected in the Paths panel: still added to the Work Path it came from.
+    // Deselecting the path does not allow a stale draft to replace the newer source.
     click(&mut app, 180.0, 20.0);
     click(&mut app, 180.0, 90.0);
     app.ui.selected_path = None;
     app.run("path.set", json!({"name": "work", "path": {"subpaths": [open(120.0, 160.0, "combine")]}})).unwrap();
     crate::vector_ui::pen_commit(&mut app, false);
-    assert_eq!(work_path(&app).subpaths.len(), 2, "added, not replacing the Work Path");
+    assert_eq!(work_path(&app).subpaths.len(), 1, "no stale component is appended");
+    assert_eq!(work_path(&app).subpaths[0].knots.iter().map(|k| k.anchor.x).collect::<Vec<_>>(), [120.0, 160.0]);
+    assert!(app.ui.pen.is_none() && app.ui.status_error);
     // And with another path selected: the draft still goes back to the path it came from.
     app.run("path.set", json!({"name": "Other", "path": {"subpaths": [open(10.0, 30.0, "combine")]}})).unwrap();
     click(&mut app, 160.0, 20.0);
@@ -245,7 +253,9 @@ fn a_resumed_subpath_keeps_its_operation_and_a_stale_draft_adds_a_new_one() {
     app.ui.selected_path = Some("Other".into());
     app.run("path.set", json!({"name": "work", "path": {"subpaths": [open(120.0, 150.0, "combine")]}})).unwrap();
     crate::vector_ui::pen_commit(&mut app, false);
-    assert_eq!(work_path(&app).subpaths.len(), 2, "joined the Work Path it came from");
+    assert_eq!(work_path(&app).subpaths.len(), 1, "neither selected path accepts stale geometry");
+    assert_eq!(work_path(&app).subpaths[0].knots.iter().map(|k| k.anchor.x).collect::<Vec<_>>(), [120.0, 150.0]);
+    assert!(app.ui.pen.is_none() && app.ui.status_error);
     let st = app.session.active().unwrap();
     let other = st.doc.paths.iter().find(|p| p.name == "Other").unwrap();
     assert_eq!(other.path.subpaths.len(), 1, "the selected path is untouched");

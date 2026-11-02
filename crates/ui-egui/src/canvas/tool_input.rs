@@ -1,9 +1,10 @@
+use super::cancel_stale_vector_drag;
 use super::cursors::{alt_eyedropper, sample_eyedropper};
 use super::drag::Drag;
 use super::gesture::{finish_gesture, polygon_click, selection_mode};
 use super::selection::finish_selection_drag;
 use super::strokes::{HOLD_REPEAT_MS, begin_live_stroke, feed_live_stroke, paint_target, snap_aliased_tip, stroke_params, strokes_live};
-use super::{PhotocraftApp, Tool, json};
+use super::{PhotocraftApp, Tool, json, multiple_color_target};
 
 /// Abstract tool event, produced by the mouse or by automation (`ui.pointer`).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -191,7 +192,9 @@ fn filter_event_before_tool(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::
     if let ToolEvent::Down { x, y, .. } = raw
         && let Some((vertical, i)) = command_guide_at(app, app.active_tool(), [x, y], mods)
     {
-        app.guide_drag = Some(crate::rulers::GuideDrag::existing(vertical, i, [x, y]));
+        let mut guide = crate::rulers::GuideDrag::existing(vertical, i, [x, y]);
+        guide.track([x, y], mods.alt);
+        app.guide_drag = Some(guide);
         crate::snap_ui::begin_guide(app, [x, y]);
         return None;
     }
@@ -214,7 +217,13 @@ fn handle_move_pointer(app: &mut PhotocraftApp, ev: ToolEvent, tool: Tool, mods:
                     crate::guide_select::flip(app, vertical, i, [x, y]);
                     return true;
                 }
-                app.guide_drag = Some(crate::rulers::GuideDrag::existing(vertical, i, [x, y]));
+                let mut guide = crate::rulers::GuideDrag::existing(vertical, i, [x, y]);
+                guide.track([x, y], mods.alt);
+                app.guide_drag = Some(guide);
+                return true;
+            }
+            if multiple_color_target(app) {
+                app.ui.status = "Move and transforms on several colour channels are not implemented yet".into();
                 return true;
             }
             // Auto-Select (or ⌘-click while it is off) picks the layer under the pointer first
@@ -273,14 +282,14 @@ fn handle_move_pointer(app: &mut PhotocraftApp, ev: ToolEvent, tool: Tool, mods:
         }
         ToolEvent::Move { x, y, .. } => {
             if let Some(d) = app.guide_drag.as_mut().filter(|d| d.index.is_some()) {
-                d.pos = if d.vertical { x } else { y };
+                d.track([x, y], mods.alt);
                 return true;
             }
         }
         ToolEvent::Up { x, y } => {
             if let Some(mut d) = app.guide_drag.filter(|d| d.index.is_some()) {
                 app.guide_drag = None;
-                d.pos = if d.vertical { x } else { y };
+                d.track([x, y], mods.alt);
                 crate::rulers::finish_drag(app, d);
                 return true;
             }
@@ -290,19 +299,42 @@ fn handle_move_pointer(app: &mut PhotocraftApp, ev: ToolEvent, tool: Tool, mods:
     false
 }
 
+fn consumes_cancelled_vector_event(app: &mut PhotocraftApp, ev: ToolEvent) -> bool {
+    cancel_stale_vector_drag(app);
+    if app.cancelled_vector_drag {
+        match ev {
+            ToolEvent::Down { .. } => app.cancelled_vector_drag = false,
+            ToolEvent::Move { .. } => return true,
+            ToolEvent::Up { .. } => {
+                app.cancelled_vector_drag = false;
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn handle_eyedropper_event(app: &mut PhotocraftApp, tool: Tool, ev: ToolEvent, mods: egui::Modifiers) -> bool {
+    if tool != Tool::Eyedropper {
+        return false;
+    }
+    match ev {
+        ToolEvent::Down { x, y, .. } | ToolEvent::Move { x, y, .. } => sample_eyedropper(app, x, y, mods),
+        ToolEvent::Up { .. } => {}
+    }
+    true
+}
+
 /// Tool state machine. Shared by mouse input and automation.
 pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) {
+    if consumes_cancelled_vector_event(app, ev) {
+        return;
+    }
     let Some((armed, mods)) = preflight_tool_event(app, ev, mods) else { return };
     let Some((raw, ev, mods)) = filter_event_before_tool(app, ev, mods, armed) else { return };
     let tool = event_tool(app, mods);
-    if tool == Tool::Eyedropper {
-        match ev {
-            ToolEvent::Down { x, y, .. } | ToolEvent::Move { x, y, .. } => {
-                sample_eyedropper(app, x, y, mods);
-                return;
-            }
-            ToolEvent::Up { .. } => return,
-        }
+    if handle_eyedropper_event(app, tool, ev, mods) {
+        return;
     }
     // A locked layer (the Background without a selection, say): no drag, and Photoshop's message
     // once the pointer moves (a click says nothing). ⌘ with a selection tool here (#896); the Move
@@ -391,6 +423,8 @@ pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers)
                     {
                         let _ = app.run("layer.select", json!({"layer": id.0}));
                     }
+                    // The component pressed is selected, so the drag moves it (and the others selected).
+                    crate::path_components::press(app, [x, y], mods.shift);
                 }
                 Tool::Pen => {
                     if !(mods.alt && crate::vector_ui::pen_grab_handle(app, x, y)) {
@@ -473,7 +507,9 @@ pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers)
             }
             // ⌥ flips Dodge/Burn and Blur/Sharpen for this stroke.
             let tool = crate::retouch_ui::alt_flipped(tool, mods.alt);
-            app.drag = Some(Drag { clear, ..Drag::new(tool, from.map_or([x, y], |p| [p[0], p[1]]), points, mods, erase) });
+            let mut drag = Drag { clear, ..Drag::new(tool, from.map_or([x, y], |p| [p[0], p[1]]), points, mods, erase) };
+            drag.capture_vector_owners(app);
+            app.drag = Some(drag);
             app.trail = None;
             app.stylus.begin_stroke();
             if from.is_some() {

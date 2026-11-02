@@ -24,6 +24,7 @@ mod resolution;
 mod roundtrip;
 mod source_settings;
 mod tga;
+mod tiff_bands;
 mod tiff_bench;
 mod tiff_exif;
 mod tiff_lab;

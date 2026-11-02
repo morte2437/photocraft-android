@@ -5,6 +5,30 @@ fn pixel(s: &Session, layer: usize, x: i32, y: i32) -> Vec<f32> {
     s.active().unwrap().doc.layers[layer].surface().unwrap().pixel(x, y)
 }
 
+/// CopyCat's shape: Edit Contents, change the contents, Save. The Save step has no file to
+/// write: it updates the smart object, headless too.
+#[test]
+fn save_in_edit_contents_updates_the_smart_object() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 8, "height": 8})).unwrap();
+    s.execute("layer.new.layer", json!({})).unwrap();
+    s.execute("edit.fill", json!({"contents": "color", "color": "#ff0000"})).unwrap();
+    s.execute("layer.smartObjects.convertToSmartObject", json!({})).unwrap();
+    s.execute("layer.smartObjects.editContents", json!({})).unwrap();
+    let steps = vec![("edit.fill".to_string(), json!({"contents": "color", "color": "#0000ff"})), ("file.save".to_string(), json!({}))];
+    s.actions.list.push(Action::new("Edit and save", steps));
+    let played = s.execute("actions.play", json!({"action": "Edit and save"})).unwrap();
+    assert!(played.get("failed").is_none(), "{played}");
+    s.set_active(0);
+    let doc = &s.active().unwrap().doc;
+    let flat = crate::file_cmds::flattened(doc, doc.pixel_format());
+    let p = flat.pixel(2, 2);
+    assert!(p[0] < 0.01 && p[2] > 0.99, "the smart object shows the saved contents: {p:?}");
+    // With no Edit Contents document, Save stays the shell's (it needs the document's file).
+    s.actions.list.push(Action::new("Save", vec![("file.save".to_string(), json!({}))]));
+    assert!(s.execute("actions.play", json!({"action": "Save"})).unwrap().get("failed").is_some());
+}
+
 #[test]
 fn deselect_with_nothing_selected_is_a_noop_in_playback() {
     // #6744: imported actions often start with Deselect; with no selection Photoshop plays on.
@@ -67,6 +91,27 @@ fn unchecked_steps_are_skipped_and_follow_move_and_delete() {
         assert!(s.execute("actions.toggle", bad.clone()).is_err(), "{bad}");
     }
     assert_eq!(s.actions.list[0].disabled.iter().copied().collect::<Vec<_>>(), [1], "rejected toggles change nothing");
+}
+
+#[test]
+fn recorded_eye_visibility_replays_on_another_document_and_duplicate_names() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 8, "height": 8})).unwrap();
+    s.execute("layer.new.layer", json!({"name": "Same"})).unwrap();
+    let hidden = s.execute("layer.new.layer", json!({"name": "Same"})).unwrap()["layer"].as_u64().unwrap();
+    s.execute("actions.record", json!({"name": "Hide"})).unwrap();
+    s.execute("layer.setProps", json!({"layer": hidden, "visible": false, "coalesce": "eye-sweep"})).unwrap();
+    s.execute("actions.stop", json!({})).unwrap();
+    s.execute("file.new", json!({"width": 8, "height": 8})).unwrap();
+    let keep = s.execute("layer.new.layer", json!({"name": "Same"})).unwrap()["layer"].as_u64().unwrap();
+    let target = s.execute("layer.new.layer", json!({"name": "Same"})).unwrap()["layer"].as_u64().unwrap();
+    s.execute("select.deselectLayers", json!({})).unwrap();
+    let result = s.execute("actions.play", json!({"action": "Hide"})).unwrap();
+    assert!(result.get("failed").is_none(), "{result}");
+    assert!(s.active().unwrap().doc.layer(photocraft_doc::LayerId(keep)).unwrap().visible);
+    assert!(!s.active().unwrap().doc.layer(photocraft_doc::LayerId(target)).unwrap().visible);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(s.active().unwrap().doc.layer(photocraft_doc::LayerId(target)).unwrap().visible);
 }
 
 #[test]
@@ -1095,7 +1140,7 @@ fn arrange_that_cannot_move_is_a_noop_in_playback() {
     assert!(played.get("failed").is_none(), "{played}");
     assert_eq!(s.active().unwrap().history.past_len(), before + 2, "the no-op adds no history step");
 
-    // The predicate agrees with the command for every layer: top level, above the Background,
+    // The predicate identifies no movement for every layer: top level, above the Background,
     // and inside a group.
     let a = s.execute("layer.new.layer", json!({"name": "A"})).unwrap()["layer"].clone();
     s.execute("layer.select", json!({"layer": a})).unwrap();
@@ -1107,9 +1152,18 @@ fn arrange_that_cannot_move_is_a_noop_in_playback() {
     for id in ids.into_iter().filter(|id| Some(*id) != bg) {
         for (cmd, dir) in cmds {
             let at_end = super::super::ops::arrange_at_end(&s.active().unwrap().doc, id, dir);
+            let history = s.active().unwrap().history.past_len();
             let ran = s.execute(cmd, json!({"layer": id.0}));
-            assert_eq!(at_end, ran.is_err(), "{cmd} on {id:?}: {ran:?}");
-            if ran.is_ok() {
+            if at_end {
+                if matches!(cmd, "layer.arrange.bringToFront" | "layer.arrange.sendToBack") {
+                    assert_eq!(ran.unwrap(), json!({"moved": false}), "{cmd} on {id:?}");
+                } else {
+                    assert!(ran.is_err(), "{cmd} on {id:?}: {ran:?}");
+                }
+                assert_eq!(s.active().unwrap().history.past_len(), history, "a no-op must not add history");
+            } else {
+                ran.unwrap();
+                assert_eq!(s.active().unwrap().history.past_len(), history + 1);
                 s.execute("edit.undo", json!({})).unwrap();
             }
         }
@@ -1121,4 +1175,36 @@ fn arrange_that_cannot_move_is_a_noop_in_playback() {
     let played = s.execute("actions.play", json!({"action": 1})).unwrap();
     assert_eq!(played["ran"], 0, "{played}");
     assert!(played["failed"].is_object(), "{played}");
+}
+
+/// #10459 review: recording into an existing set keeps that set's exact name, even one with
+/// surrounding spaces (from an older actions.json); a new set name is trimmed.
+#[test]
+fn record_keeps_an_existing_sets_exact_name() {
+    let mut s = Session::new();
+    s.actions.list.push(Action { set: Some(" Web ".into()), ..Action::new("Old", Vec::new()) });
+    s.execute("actions.record", json!({"name": "New", "set": " Web "})).unwrap();
+    s.execute("actions.stop", json!({})).unwrap();
+    let set_of = |s: &Session, n: &str| s.actions.list.iter().find(|a| a.name == n).and_then(|a| a.set.clone());
+    assert_eq!(set_of(&s, "New").as_deref(), Some(" Web "), "the existing set");
+    s.execute("actions.record", json!({"name": "Fresh", "set": "  Print  "})).unwrap();
+    s.execute("actions.stop", json!({})).unwrap();
+    assert_eq!(set_of(&s, "Fresh").as_deref(), Some("Print"), "a new set is trimmed");
+}
+
+/// CodeRabbit review on #10459: an empty set loaded from a `.atn` (or made by New Set) keeps its
+/// exact name too, so the first action recorded into it lands in that folder and saves with it.
+#[test]
+fn record_keeps_an_empty_loaded_sets_exact_name() {
+    let mut src = Session::new();
+    src.actions.sets.push(" Web ".into());
+    let saved = src.execute("actions.save", json!({"set": " Web "})).unwrap();
+    let mut s = Session::new();
+    assert_eq!(s.execute("actions.load", json!({"data": saved["data"]})).unwrap()["set"], " Web ");
+    s.execute("actions.record", json!({"name": "First", "set": " Web "})).unwrap();
+    s.execute("actions.stop", json!({})).unwrap();
+    let set = s.actions.list.iter().find(|a| a.name == "First").and_then(|a| a.set.clone());
+    assert_eq!(set.as_deref(), Some(" Web "));
+    assert_eq!(crate::actions_edit_cmds::set_names(&s), [" Web "], "one folder, not a trimmed second one");
+    assert_eq!(s.execute("actions.save", json!({"set": " Web "})).unwrap()["actions"], json!(["First"]));
 }

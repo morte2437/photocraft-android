@@ -141,3 +141,37 @@ fn extreme_smart_contents_ids_remap_without_poisoning_allocator() {
     assert!(SmartContentsId::fresh().0 < u64::MAX / 2);
     assert!(LayerId::fresh().0 < u64::MAX / 2);
 }
+
+#[test]
+fn native_vector_display_preview_roundtrips_separately_from_original_payload() {
+    let source = Arc::new(b"%PDF-1.7\noriginal editable source".to_vec());
+    let svg = Arc::new(br#"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="6"/>"#.to_vec());
+    let mut smart = SmartObject::new(SmartSource::Embedded { file_name: "Artwork.ai".into(), bytes: source.clone() }, Affine::IDENTITY, None);
+    smart.vector_preview = Some(photocraft_doc::VectorPreview { source_hash: *blake3::hash(&source).as_bytes(), svg });
+    let mut doc = Document::new("native vector", Size::new(8, 6), ColorMode::Rgb, SampleType::U8);
+    doc.layers.push(Layer::new("vector", LayerContent::Smart(smart)));
+    let bytes = save_to_bytes(&doc, &Default::default()).unwrap();
+    assert_eq!(load_from_bytes(&bytes).unwrap(), doc);
+    let missing_preview = rewrite_manifest(&bytes, |manifest| {
+        manifest["document"]["layers"][0]["content"]["vector_preview"]["svg"] = serde_json::json!("0".repeat(64));
+    });
+    let recovered = load_from_bytes(&missing_preview).unwrap();
+    let LayerContent::Smart(recovered_smart) = &recovered.layers[0].content else { panic!("smart object lost") };
+    assert!(recovered_smart.vector_preview.is_none(), "an unavailable display preview must not hide the original vector");
+    assert_eq!(recovered_smart.source, SmartSource::Embedded { file_name: "Artwork.ai".into(), bytes: source.clone() });
+    let mut oversized = doc.clone();
+    let LayerContent::Smart(oversized_smart) = &mut oversized.layers[0].content else { panic!("smart object lost") };
+    oversized_smart.vector_preview.as_mut().unwrap().svg = Arc::new(vec![b'x'; (16 << 20) + 1]);
+    let oversized = save_to_bytes(&oversized, &Default::default()).unwrap();
+    let recovered = load_from_bytes(&oversized).unwrap();
+    let LayerContent::Smart(recovered_smart) = &recovered.layers[0].content else { panic!("smart object lost") };
+    assert!(recovered_smart.vector_preview.is_none(), "an oversized optional preview is ignored before unbounded decompression");
+    assert_eq!(recovered_smart.source, SmartSource::Embedded { file_name: "Artwork.ai".into(), bytes: source.clone() });
+    let legacy = rewrite_manifest(&bytes, |manifest| {
+        manifest["document"]["layers"][0]["content"].as_object_mut().unwrap().remove("vector_preview");
+    });
+    let back = load_from_bytes(&legacy).unwrap();
+    let LayerContent::Smart(smart) = &back.layers[0].content else { panic!("smart object lost") };
+    assert!(smart.vector_preview.is_none());
+    assert_eq!(smart.source, SmartSource::Embedded { file_name: "Artwork.ai".into(), bytes: source });
+}

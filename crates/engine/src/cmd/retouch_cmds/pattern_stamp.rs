@@ -21,7 +21,7 @@ const STREAM_PHASE_Y: u64 = 102;
 
 pub(super) fn enabled(s: &Session) -> std::result::Result<(), String> {
     has_pixel_layer(s)?;
-    if crate::pattern_cmds::resolve(s, "").is_none() { Err("no pattern selected".into()) } else { Ok(()) }
+    if crate::pattern_cmds::resolve_id(s, "").is_none() { Err("no pattern selected".into()) } else { Ok(()) }
 }
 
 /// A parsed `paint.patternStamp`: shared by the command and its live preview, so both paint the

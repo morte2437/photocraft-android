@@ -326,7 +326,14 @@ pub fn toolbar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 {
                     let _ = crate::menus::invoke(app, &ctx, "select.editInQuickMaskMode", json!({}));
                 }
-                let sm = icons::button_with_icon_size_tip(ui, "app-window", bx, (bx * 0.52).round(), false, tl!("Change Screen Mode  (F)"), tool_tips);
+                // Greyed out while Cycle is unavailable (no document in Standard, #9349): its
+                // list would offer nothing else either.
+                let cycle_enabled = crate::view_cmds::is_enabled(app, "view.screenMode.cycle").unwrap_or(true);
+                let sm = ui
+                    .add_enabled_ui(cycle_enabled, |ui| {
+                        icons::button_with_icon_size_tip(ui, "app-window", bx, (bx * 0.52).round(), false, tl!("Change Screen Mode  (F)"), tool_tips)
+                    })
+                    .inner;
                 paint_toolbar_flyout_indicator(ui, &t, &sm);
 
                 // Right-click, or click and hold like the tool flyouts (#4444), lists the modes,
@@ -366,7 +373,8 @@ pub fn toolbar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                         ("view.screenMode.fullScreen", tl!("Full Screen Mode")),
                     ] {
                         let on = crate::view_cmds::checked(app, id).unwrap_or(false);
-                        if ui.add(egui::Button::selectable(on, label)).clicked() {
+                        let enabled = crate::view_cmds::is_enabled(app, id).unwrap_or(true);
+                        if ui.add_enabled(enabled, egui::Button::selectable(on, label)).clicked() {
                             let _ = crate::menus::invoke(app, &ctx, id, json!({}));
                             ui.close();
                         }

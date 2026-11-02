@@ -19,14 +19,14 @@ mod dispatch;
 mod options;
 
 pub use arrange::cells;
-pub(crate) use arrange::float_window;
+pub(crate) use arrange::{document_is_floating, float_window};
 pub(crate) use dialogs::write_copy;
 #[cfg(test)]
 use dialogs::{form, front, label_of};
 pub use dialogs::{form_body, form_keys, reset_form};
 #[cfg(test)]
 use dispatch::is_enabled_with_engine;
-pub use dispatch::{checked, handles, invoke, is_enabled};
+pub use dispatch::{checked, handles, invoke, is_enabled, leave_full_screen_without_document};
 #[cfg(test)]
 use options::screen_mode_commands;
 pub use options::{persist, pixel_aspect_ratio, restore};

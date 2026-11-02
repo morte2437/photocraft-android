@@ -261,7 +261,7 @@ pub fn cancel(ctx: &Context) {
 
 /// The picker window: hidden until its snapshot has been painted (#3210).
 fn viewport_builder(ctx: &Context, image: &ScreenImage) -> egui::ViewportBuilder {
-    let mut builder = egui::ViewportBuilder::default()
+    let mut builder = crate::os_window::builder()
         .with_title(tl!("PhotoCraft — Screen Color Picker"))
         .with_decorations(false)
         .with_resizable(false)

@@ -553,6 +553,7 @@ const PREVIEW_MARGIN: i32 = 48;
 /// The result is close to, not the same as, what the command makes; [`Self::refine`] gives the
 /// command's own result for a coarse one.
 pub struct ContentAwarePreview {
+    colors: Option<crate::color_channels::ColorChannels>,
     doc: std::sync::Arc<Document>,
     plan: Plan,
     params: Value,
@@ -566,11 +567,14 @@ impl ContentAwarePreview {
     pub fn run(&self, ctx: &crate::jobs::JobCtx) -> Result<(Document, Rect)> {
         let mut work = (*self.doc).clone();
         let sel = self.doc.selection.as_ref().ok_or_else(|| bad(CMD, "select the area to move first"))?;
-        if self.is_coarse() {
-            let damage = run_scaled(&mut work, sel, &self.plan, &self.params, self.scale, ctx)?;
-            return Ok((work, damage));
+        let damage = if self.is_coarse() {
+            run_scaled(&mut work, sel, &self.plan, &self.params, self.scale, ctx)?
+        } else {
+            run_move(&mut work, sel, &self.plan, &self.params, ctx, "Content-Aware Move preview")?.1
+        };
+        if let (Some(colors), Some(id)) = (self.colors, self.plan.target.id) {
+            crate::channel_cmds::restrict_to_color(&self.doc, &mut work, id, colors)?;
         }
-        let (_, damage, _) = run_move(&mut work, sel, &self.plan, &self.params, ctx, "Content-Aware Move preview")?;
         Ok((work, damage))
     }
 
@@ -585,6 +589,7 @@ impl ContentAwarePreview {
     /// resolution.
     pub fn refine(&self) -> Option<ContentAwarePreview> {
         self.is_coarse().then(|| ContentAwarePreview {
+            colors: self.colors,
             doc: self.doc.clone(),
             plan: Plan { margin: MAX_MARGIN, ..self.plan },
             params: self.params.clone(),
@@ -596,12 +601,14 @@ impl ContentAwarePreview {
 /// Prepare the preview of `paint.contentAwareMove` with params `p` on the active document. Errors
 /// as the command does (bad params, nothing to move, a selection larger than the command takes).
 pub fn preview(s: &Session, p: &Value) -> Result<ContentAwarePreview> {
+    let captured = crate::channel_cmds::inject_target(s, CMD, p.clone());
+    let p = &captured;
     let plan = plan(s, p, PREVIEW_MARGIN)?;
     let px = |r: Rect| u64::from(r.width()) * u64::from(r.height());
     let pixels = px(plan.area).max(px(plan.dest));
     let scale = if pixels > PREVIEW_MAX_PIXELS { (PREVIEW_MAX_PIXELS as f64 / pixels as f64).sqrt() } else { 1.0 };
     let d = s.active().ok_or(EngineError::NoDocument)?;
-    Ok(ContentAwarePreview { doc: d.doc.clone(), plan, params: p.clone(), scale })
+    Ok(ContentAwarePreview { colors: crate::color_channels::target(s, p)?, doc: d.doc.clone(), plan, params: p.clone(), scale })
 }
 
 /// The surface's tiles over `r` (shared, not copied) on a surface of their own: what a resize of
@@ -768,10 +775,12 @@ mod tests {
         // An 8-bit selection of scattered 1/255 pixels: scaled down in 8 bits it averaged to 0
         // everywhere, so the coarse preview failed with "the selection is empty" while the
         // command itself moves it.
-        let mut s = textured(1200, 800);
+        // Just over four times the preview budget still averages each isolated 1/255
+        // sample below half an 8-bit level, reproducing the loss without a 0.77 MP solve.
+        let mut s = textured(600, 600);
         s.edit("faint selection", |doc, _| {
             let mut sel = Surface::new(photocraft_color::PixelFormat::GRAY8);
-            let r = Rect::new(20, 20, 1120, 720);
+            let r = Rect::new(20, 20, 536, 536);
             let data: Vec<f32> = (r.y0..r.y1).flat_map(|y| (r.x0..r.x1).map(move |x| if x % 4 == 0 && y % 4 == 0 { 1.0 / 255.0 } else { 0.0 })).collect();
             sel.write_region(r, &data);
             doc.selection = Some(sel);
@@ -781,6 +790,7 @@ mod tests {
         let p = json!({"offset": [40, 40]});
         let job = preview(&s, &p).unwrap();
         assert!(job.is_coarse());
+        assert!(job.scale < 0.51, "the sparse mask must actually be averaged down");
         let (got, damage) = job.run(&JobCtx::new()).unwrap();
         assert!(!damage.is_empty());
         let b = got.bounds();
