@@ -158,6 +158,26 @@ fn custom_supported_representations_map_and_save_losslessly() {
     }
 }
 
+/// Duplicate kernels are ambiguous even when both lists are valid or use different wire ID kinds.
+#[test]
+fn custom_duplicate_kernel_fields_are_kept_with_their_enabled_state() {
+    let kernel = D::List((0..25).map(|i| D::Integer(i32::from(i == 12))).collect());
+    for key in [Id::new("Mtrx"), Id::Str(b"Mtrx".to_vec())] {
+        for enabled in [false, true] {
+            for second in [kernel.clone(), D::List(vec![D::Integer(0); 25])] {
+                let mut d = Descriptor::new("null").with("Mtrx", kernel.clone());
+                d.items.push((key.clone(), second));
+                let imported = atn_cmds::import(&encoded(*b"Cstm", d.clone(), enabled)).unwrap();
+                assert_eq!(imported.unsupported.len(), 1);
+                let action = &imported.actions[0];
+                assert_eq!(action.steps[0].0, atn_cmds::PHOTOSHOP_STEP);
+                assert_eq!(action.disabled.contains(&0), !enabled);
+                assert_eq!(exported(action), d);
+            }
+        }
+    }
+}
+
 /// Cached and cache-less shapes expose identical component and composite Calculations planes.
 #[test]
 fn calculations_uncached_shape_matches_cached_pixels() {

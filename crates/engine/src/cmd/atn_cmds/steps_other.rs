@@ -106,7 +106,7 @@ fn within(range: &RangeInclusive<f64>) -> impl Fn(&D) -> Option<f64> + '_ {
 /// so Save Actions would refuse it), or one outside the command's range (it would play clamped).
 /// Retain the measured mapping adapted from #10631 by @hectorviov.
 fn custom_params(d: &Descriptor) -> Option<Value> {
-    if !only_keys(d, &["Scl", "Ofst", "Mtrx"]) {
+    if !only_keys(d, &["Scl", "Ofst", "Mtrx"]) || d.items.iter().filter(|(key, _)| trimmed(key) == "Mtrx").count() != 1 {
         return None;
     }
     let cells = get_list(d, "Mtrx").filter(|c| c.len() == 25)?;
