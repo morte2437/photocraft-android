@@ -659,9 +659,10 @@ pub(super) const EVENTS: &[Event] = &[
 const LEGACY_CODES: &[(&str, &str)] =
     &[("BoxB", "boxblur"), ("SrfB", "surfaceBlur"), ("Fltn", "flattenImage"), ("BlnW", "blackAndWhite"), ("PhtF", "photoFilter")];
 
+/// Match populated event identifiers, retaining legacy code aliases on import.
 pub(super) fn event_for(item: &AtnEvent) -> Option<&'static Event> {
     let id = item.id();
-    let find = |id: &str| EVENTS.iter().find(|e| (!e.code.is_empty() && e.code.trim_end() == id.trim_end()) || e.name == id);
+    let find = |id: &str| EVENTS.iter().find(|e| (!e.code.is_empty() && e.code.trim_end() == id.trim_end()) || (!e.name.is_empty() && e.name == id));
     find(&id).or_else(|| match item {
         AtnEvent::Code(_) => LEGACY_CODES.iter().find(|(code, _)| *code == id).and_then(|(_, name)| find(name)),
         AtnEvent::Name(_) => None,
