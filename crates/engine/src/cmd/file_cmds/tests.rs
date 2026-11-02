@@ -134,14 +134,19 @@ fn batch_recorded_stop_for_errors_retains_earlier_outputs_and_stops_before_later
     assert_eq!(result["ok"], true, "{result}");
     assert_eq!(result["results"][0]["result"]["errors"].as_array().unwrap().len(), 1);
     assert_eq!(s.documents().len(), 1, "the direct script caller still runs its next command");
+    batch_folder_input_controls(&mut s, &dir, &input, &first, &bad);
+}
+
+/// Check folder selection and explicit-array behavior against the same three Batch inputs.
+fn batch_folder_input_controls(s: &mut Session, dir: &str, input: &str, first: &str, bad: &str) {
     // The recursive mode keeps output exclusion and reports excluded RAW names before import.
-    let output = join(&input, "out");
+    let output = join(input, "out");
     std::fs::create_dir_all(&output).unwrap();
     png(&output, "ignored.png", 3, 2, "#ffffff");
-    let sub = join(&input, "sub");
+    let sub = join(input, "sub");
     std::fs::create_dir_all(&sub).unwrap();
     let raw = join(&sub, "d.cr3");
-    std::fs::copy(&first, &raw).unwrap();
+    std::fs::copy(first, &raw).unwrap();
     let result = s
         .execute(
             "file.automate.batch",
@@ -156,12 +161,12 @@ fn batch_recorded_stop_for_errors_retains_earlier_outputs_and_stops_before_later
     assert!(result["errors"][1]["error"].as_str().unwrap().contains("unsupported Batch folder input"), "{result}");
     assert!(!std::path::Path::new(&join(&output, "sub/d.png")).exists());
     // Explicit arrays still sniff the image content, including with the folder option enabled.
-    let output = join(&dir, "explicit-array");
+    let output = join(dir, "explicit-array");
     let result = s.execute("file.automate.batch", json!({"input":[raw],"output":output,"steps":[],"format":"png","includeNonImages":true})).unwrap();
     assert_eq!(result["files"], json!([join(&output, "d.png")]), "{result}");
     assert!(result["errors"].as_array().unwrap().is_empty(), "{result}");
     for key in ["stopOnError", "includeNonImages"] {
-        let invalid_output = join(&dir, key);
+        let invalid_output = join(dir, key);
         let mut p = json!({"input":[first],"output":invalid_output,"steps":[]});
         p[key] = json!("true");
         let err = s.execute("file.automate.batch", p).unwrap_err();
