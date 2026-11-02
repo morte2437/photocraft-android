@@ -216,6 +216,13 @@ fn nesting_beyond_the_load_limit_is_refused_at_save() {
     assert!(matches!(e, FormatError::LimitExceeded(_)), "{e}");
 }
 
+/// craft-pcraft-format's default manifest nesting limit is computed from its own copy of the
+/// group depth, so the two must stay equal.
+#[test]
+fn group_depth_matches_craft_pcraft_format() {
+    assert_eq!(MAX_GROUP_DEPTH, craft_pcraft_format::MAX_GROUP_DEPTH);
+}
+
 #[test]
 fn empty_document_roundtrips() {
     let doc = Document::new("empty", photocraft_doc::Size::new(1, 1), ColorMode::Rgb, SampleType::U8);
@@ -522,6 +529,22 @@ fn save_is_deterministic() {
     let a = save_to_bytes(&doc, &SaveOptions::default()).unwrap();
     let b = save_to_bytes(&doc, &SaveOptions::default()).unwrap();
     assert_eq!(a, b);
+}
+
+/// A bundle that is read and saved again gives the same bytes, previews included.
+#[test]
+fn save_load_save_gives_the_same_bytes() {
+    let mut preview = Rgba8Image::new(4, 3);
+    preview.pixels.iter_mut().enumerate().for_each(|(i, p)| *p = i as u8);
+    for opts in [SaveOptions::default(), SaveOptions { thumbnail: Some(preview.clone()), composite: Some(preview.clone()) }] {
+        for mode in MODES {
+            for depth in SampleType::ALL {
+                let first = save_to_bytes(&rich_doc(mode, depth), &opts).unwrap();
+                let again = save_to_bytes(&load_from_bytes(&first).unwrap(), &opts).unwrap();
+                assert!(first == again, "{mode:?} {depth:?}: the second save differs");
+            }
+        }
+    }
 }
 
 #[test]

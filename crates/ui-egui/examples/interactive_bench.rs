@@ -83,9 +83,9 @@ struct Bench {
     /// state later rows need).
     only: Option<String>,
     rows: Vec<(String, f64, f64, f64, f64)>,
-    /// Per row (same order as `rows`): the timed samples and the peak RSS while they ran, for
-    /// `--json` (`cargo xtask perf`).
-    extra: Vec<(Vec<f64>, Option<u64>)>,
+    /// Per row (same order as `rows`): the timed samples, the peak RSS while they ran and the
+    /// minor page faults per warm run (all of it, untimed setup included), for `--json` (`cargo xtask perf`).
+    extra: Vec<(Vec<f64>, Option<u64>, Option<u64>)>,
     rss: photocraft_testkit::perf::RssSampler,
 }
 
@@ -127,11 +127,17 @@ impl Bench {
         }
         self.rss.reset();
         let cold = f(self);
+        let faults0 = photocraft_testkit::perf::minor_faults();
         let mut v: Vec<f64> = (0..self.reps).map(|_| f(self)).collect();
-        self.extra.push((v.clone(), self.rss.peak()));
+        // Minor page faults per warm run: memory mapped fresh from the kernel each time (#10479).
+        // Counted over the whole of `f`, so it includes untimed setup and cleanup (an undo, an
+        // extra refresh), not only the work the milliseconds measure.
+        let faults = faults0.zip(photocraft_testkit::perf::minor_faults()).map(|(a, b)| b.saturating_sub(a) / self.reps as u64);
+        self.extra.push((v.clone(), self.rss.peak(), faults));
         v.sort_by(f64::total_cmp);
         let med = v[v.len() / 2];
-        println!("{name:<44} {med:>9.1} ms   (min {:>8.1}, max {:>8.1}, cold {:>8.1})", v[0], v[v.len() - 1], cold);
+        let fl = faults.map_or(String::new(), |f| format!(", {f} faults/run incl. setup"));
+        println!("{name:<44} {med:>9.1} ms   (min {:>8.1}, max {:>8.1}, cold {:>8.1}{fl})", v[0], v[v.len() - 1], cold);
         self.rows.push((name.to_string(), med, v[0], v[v.len() - 1], cold));
     }
 }
@@ -473,11 +479,12 @@ fn main() {
             .rows
             .iter()
             .zip(&b.extra)
-            .map(|((n, med, min, max, cold), (samples, rss))| {
+            .map(|((n, med, min, max, cold), (samples, rss, faults))| {
                 let mut r = json!({"name": n, "median_ms": med, "min_ms": min, "max_ms": max, "cold_ms": cold});
                 // For `cargo xtask perf`: raw samples (it computes p50 / p95) and peak RSS.
                 r["samples_ms"] = json!(samples);
                 r["peak_rss_bytes"] = json!(rss);
+                r["minor_faults_per_run"] = json!(faults);
                 r
             })
             .collect();

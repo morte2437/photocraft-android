@@ -120,7 +120,9 @@ fn pattern_from_psd(p: &PsdPattern, oom: &mut Option<String>) -> Option<Pattern>
         crate::pixels::lab16_chroma(&mut bytes, refs.len(), true);
     }
     let mut surface = Surface::new(fmt);
-    if let Err(error) = surface.try_write_interleaved(Rect::new(0, 0, w as i32, h as i32), &bytes) {
+    let result = surface.try_write_interleaved(Rect::new(0, 0, w as i32, h as i32), &bytes);
+    photocraft_raster::scratch::give(bytes);
+    if let Err(error) = result {
         *oom = Some(error.to_string());
         return None;
     }
