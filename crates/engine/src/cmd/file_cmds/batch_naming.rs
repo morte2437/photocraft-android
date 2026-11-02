@@ -36,6 +36,7 @@ pub(crate) const COMPONENTS: &[(&str, &str)] = &[
     ("upperCaseExtension", "EXTENSION"),
 ];
 
+/// Bound structured fields before file processing; literals never pass through the legacy template parser.
 fn components(params: &Value) -> Result<Option<&[Value]>> {
     let Some(value) = params.get("namingComponents").filter(|v| !v.is_null()) else { return Ok(None) };
     let list = value.as_array().filter(|a| (1..=6).contains(&a.len())).ok_or_else(|| bad("namingComponents needs one to six components"))?;
@@ -52,6 +53,7 @@ fn components(params: &Value) -> Result<Option<&[Value]>> {
     Ok(Some(list))
 }
 
+/// Read explicit portability flags; path-containment and host-filesystem checks remain mandatory.
 fn compatibility(params: &Value) -> Result<(bool, bool, bool)> {
     let Some(value) = params.get("compatibility").filter(|v| !v.is_null()) else { return Ok((false, false, false)) };
     let flags = value.as_object().ok_or_else(|| bad("compatibility must be an object"))?;
@@ -65,8 +67,8 @@ fn compatibility(params: &Value) -> Result<(bool, bool, bool)> {
     ))
 }
 
-// Serial-letter conversion from #4579 by @FabioLissi, adapted to the bounded input index.
-// Adobe specifies that letters start at A independently of the numeric starting serial.
+/// Serial-letter conversion from #4579 by @FabioLissi, using the one-based input index.
+/// Adobe specifies that letters start at A independently of the numeric starting serial.
 fn letters(mut n: u64, upper: bool) -> String {
     let mut out = Vec::new();
     while n > 0 {
@@ -79,6 +81,7 @@ fn letters(mut n: u64, upper: bool) -> String {
     String::from_utf8(out).unwrap_or_default()
 }
 
+/// Construct the entire filename in recorded order, adding a dot only for the final extension component.
 fn expand_components(parts: &[Value], name: &str, serial: u32, index: usize, ext: &str, date: chrono::NaiveDate) -> Result<String> {
     let mut out = String::new();
     for (i, part) in parts.iter().enumerate() {
@@ -256,6 +259,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// Fix the date and input index so naming checks are independent of the clock and serial start.
     #[test]
     fn batch_components_cover_names_serials_letters_and_every_measured_date() {
         let date = chrono::NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
@@ -288,6 +292,7 @@ mod tests {
         assert_eq!(expand_components(&[json!({"component":"letter"})], "x", 9999, 27, "png", date).unwrap(), "ab");
     }
 
+    /// Literal braces stay literal and an extension adds its dot only in the final position.
     #[test]
     fn batch_extension_position_and_literal_text_determine_the_entire_name() {
         let date = chrono::NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
@@ -304,6 +309,7 @@ mod tests {
         }
     }
 
+    /// Check filename admission before processing, including counter overflow and portability limits.
     #[test]
     fn batch_component_preflight_retains_bounds_platform_checks_and_serial_overflow() {
         let inputs =

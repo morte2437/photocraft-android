@@ -6,6 +6,7 @@ use serde_json::json;
 
 const CUBE: &[u8] = b"LUT_3D_SIZE 2\n1 1 1\n0 1 1\n1 0 1\n0 0 1\n1 1 0\n0 1 0\n1 0 0\n0 0 0\n";
 
+/// An unreadable recorded filename ensures playback depends on embedded data alone.
 fn descriptor(format: &str, bytes: &[u8]) -> Descriptor {
     let text = |s: &str| D::Text(UnicodeString::new_nul(s));
     let en = |ty: &str, value: &str| D::Enumerated { type_id: Id::new(ty), value: Id::new(value) };
@@ -45,6 +46,7 @@ fn saved(s: &Session) -> Vec<u8> {
     photocraft_format::save_to_bytes(&s.active().unwrap().doc, &Default::default()).unwrap()
 }
 
+/// Original invert tables exercise text CUBE/3DL and binary UTF-16 LOOK decoding.
 fn samples() -> Vec<(&'static str, Vec<u8>)> {
     let mut three_dl = String::from("0 1023\n");
     for r in 0..2 {
@@ -62,6 +64,7 @@ fn samples() -> Vec<(&'static str, Vec<u8>)> {
     vec![("LUTFormatCUBE", CUBE.to_vec()), ("LUTFormat3DL", three_dl.into_bytes()), ("LUTFormatLOOK", le), ("LUTFormatLOOK", be)]
 }
 
+/// Compare every supported encoding and document depth with native adjustment playback and Undo.
 #[test]
 fn embedded_lookup_bytes_replay_invert_and_save_the_exact_descriptor() {
     for (format, bytes) in samples() {
@@ -90,6 +93,7 @@ fn embedded_lookup_bytes_replay_invert_and_save_the_exact_descriptor() {
     }
 }
 
+/// Saving an adjustment must preserve the original payload rather than a decoded substitute.
 #[test]
 fn encoded_lookup_keeps_its_bytes_in_a_saved_adjustment() {
     for (format, bytes) in samples() {
@@ -112,6 +116,7 @@ fn encoded_lookup_keeps_its_bytes_in_a_saved_adjustment() {
     }
 }
 
+/// An identity table isolates the nonlinear shaper through import, replay and saved adjustment bytes.
 #[test]
 fn embedded_three_dl_retains_its_nonlinear_shaper_through_action_playback() {
     // A two-node identity table with a four-knot shaper. Ignoring the first row
@@ -155,6 +160,7 @@ fn embedded_three_dl_retains_its_nonlinear_shaper_through_action_playback() {
     assert_eq!(atn::parse(&out).unwrap().actions[0].items[0].descriptor, Some(bad));
 }
 
+/// Unsupported recording fields and native edits must not silently become partial lookup steps.
 #[test]
 fn unknown_lookup_forms_stay_whole_and_changed_native_steps_refuse_export() {
     let d = descriptor("LUTFormatCUBE", CUBE);

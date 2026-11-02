@@ -82,6 +82,7 @@ fn color_lookup_case() -> Value {
     json!({"data":b64(bytes),"dataEncoding":"base64","lutFormat":"cube","fileName":"identity.cube","dither":false,"__atnColorLookup":b64(&d.to_bytes())})
 }
 
+/// Keep the starting counter nested in naming rules, as recorded by the Batch dialog.
 fn batch_descriptor(component: &str) -> Descriptor {
     let rules = desc("fileNamingRules")
         .with("fileNamingComponents", D::List(vec![D::Descriptor(desc("fileNamingComponent").with("component", enm("fileNamingComponent", component)))]))
@@ -104,12 +105,14 @@ fn batch_descriptor(component: &str) -> Descriptor {
         .with("fileNamingRules", D::Descriptor(rules))
 }
 
+/// Preserve the recorded template in the generic registry round-trip witness.
 fn batch_case() -> Value {
     json!({"input":"/input","output":"/output","action":"Child","set":"S","flatOutput":true,"includeSubfolders":false,"overrideSaveAs":false,
         "namingComponents":[{"component":"serial3"}],"startingSerial":7,"compatibility":{"macintosh":true,"windows":false,"unix":true},
         "__atnBatch":b64(&batch_descriptor("threeDigit").to_bytes())})
 }
 
+/// Each documented component and portability flag must survive native conversion and save.
 #[test]
 fn batch_all_documented_components_and_compatibility_flags_round_trip() {
     for &(wire, native) in crate::file_cmds::BATCH_NAMING_COMPONENTS {
@@ -127,6 +130,7 @@ fn batch_all_documented_components_and_compatibility_flags_round_trip() {
     }
 }
 
+/// Unsupported modes and misplaced fields must not lose data through a partial conversion.
 #[test]
 fn batch_unknown_components_wrong_start_placement_and_unsupported_modes_stay_whole() {
     let mut cases = vec![batch_descriptor("unknownComponent")];

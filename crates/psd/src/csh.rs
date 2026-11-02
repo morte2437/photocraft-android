@@ -94,6 +94,7 @@ pub fn parse(bytes: &[u8]) -> Result<Vec<CshShape>> {
     Ok(shapes)
 }
 
+/// Refuse nonzero alignment bytes rather than silently discarding extra payload data as padding.
 fn zero_padding(bytes: &[u8]) -> Result<()> {
     if bytes.iter().any(|&b| b != 0) {
         return Err(PsdError::invalid("CSH nonzero padding"));

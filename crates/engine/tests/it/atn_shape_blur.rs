@@ -9,6 +9,7 @@ mod csh_fixture;
 
 const SHAPE_ID: &str = "original-fixture-square";
 
+/// The recorded display name differs from the installed ID to expose accidental name lookup.
 fn descriptor() -> Descriptor {
     Descriptor::new("null")
         .with("Rds ", D::UnitFloat { unit: *b"#Pxl", value: 5.0 })
@@ -54,6 +55,7 @@ fn saved(s: &Session) -> Vec<u8> {
     photocraft_format::save_to_bytes(&s.active().unwrap().doc, &Default::default()).unwrap()
 }
 
+/// A conflicting display name must not select a different kernel; playback remains undoable.
 #[test]
 fn custom_shape_uses_installed_id_despite_name_collision_and_undoes() {
     let original = descriptor();
@@ -77,6 +79,7 @@ fn custom_shape_uses_installed_id_despite_name_collision_and_undoes() {
     }
 }
 
+/// A saved Smart Filter carries geometry so reopening does not depend on ambient presets.
 #[test]
 fn custom_shape_smart_filter_keeps_geometry_across_save_without_preset_library() {
     let mut s = fixture(16);
@@ -103,6 +106,7 @@ fn custom_shape_smart_filter_keeps_geometry_across_save_without_preset_library()
     assert_eq!(pixels(&reopened), expected);
 }
 
+/// Exercise the CSH-to-action bridge, including duplicate imports and durable ID lookup.
 #[test]
 fn imported_csh_id_resolves_in_an_action_after_reimport_and_preference_reload() {
     let mut s = fixture(16);
@@ -142,6 +146,7 @@ fn imported_csh_id_resolves_in_an_action_after_reimport_and_preference_reload() 
     assert_eq!(saved(&s), before);
 }
 
+/// Admission failure must leave both pixels and the Undo history untouched.
 #[test]
 fn missing_or_invalid_custom_shapes_refuse_before_document_or_history_changes() {
     let mut s = fixture(8);
@@ -166,6 +171,7 @@ fn missing_or_invalid_custom_shapes_refuse_before_document_or_history_changes() 
     assert_eq!(saved(&s), before);
 }
 
+/// New IDs survive preferences serialization without requiring them in older stored presets.
 #[test]
 fn shape_ids_persist_and_old_preferences_without_ids_still_load() {
     let mut s = Session::new();
@@ -187,6 +193,7 @@ fn shape_ids_persist_and_old_preferences_without_ids_still_load() {
     assert!(reopened.presets.shapes.iter().flat_map(|g| &g.items).all(|shape| shape.id.is_none()));
 }
 
+/// Neither unknown recording settings nor portable native geometry may be dropped during export.
 #[test]
 fn unrepresented_shape_fields_stay_whole_and_native_geometry_refuses_atn_export() {
     for (key, value) in [

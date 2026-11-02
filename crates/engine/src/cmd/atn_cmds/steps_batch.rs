@@ -6,10 +6,12 @@ use super::{D, Descriptor, ReferenceItem, UnicodeString, Value, json};
 
 const ORIGINAL: &str = "__atnBatch";
 
+/// Reject unknown or duplicate wire keys before conversion could discard them.
 fn keys(d: &Descriptor, allowed: &[&str]) -> bool {
     d.items.iter().all(|(k, _)| allowed.iter().any(|s| k.is(s))) && allowed.iter().all(|s| d.items.iter().filter(|(k, _)| k.is(s)).count() <= 1)
 }
 
+/// Read the measured list and nested serial/compatibility fields without collapsing unknown components.
 fn naming_from(rules: &Descriptor) -> Option<Value> {
     if !rules.class_id.is("fileNamingRules") || !keys(rules, &["fileNamingComponents", "Strt", "Mcnt", "Win ", "unix"]) {
         return None;
@@ -60,6 +62,7 @@ fn naming_from(rules: &Descriptor) -> Option<Value> {
     Some(p)
 }
 
+/// Write each literal or known component explicitly; counters must fit the signed wire field.
 fn naming_to(p: &Value) -> Option<Descriptor> {
     let components = p.get("namingComponents")?.as_array()?;
     if !(1..=6).contains(&components.len()) {
@@ -104,6 +107,7 @@ fn naming_to(p: &Value) -> Option<Descriptor> {
     Some(d)
 }
 
+/// Admit supported folder settings while leaving unrepresented input and dialog modes as whole steps.
 fn read(d: &Descriptor) -> Option<Value> {
     if !keys(d, &["null", "OvrO", "Fldr", "suppressWarnings", "suppressOpenOptions", "Usng", "T   ", "Ovrd", "fileNamingRules"]) {
         return None;
@@ -142,6 +146,7 @@ fn read(d: &Descriptor) -> Option<Value> {
     Some(p)
 }
 
+/// Retain original metadata beside native params so an unedited save need not canonicalize the descriptor.
 pub(super) fn batch_from(d: &Descriptor) -> Mapped {
     let p = read(d).map(|mut p| {
         p[ORIGINAL] = json!(photocraft_paint::tile::b64_encode(&d.to_bytes()));
@@ -150,6 +155,7 @@ pub(super) fn batch_from(d: &Descriptor) -> Mapped {
     p.map_or(Mapped::Unsupported { harmless: false }, |p| step("file.automate.batch", p))
 }
 
+/// Reuse recorded metadata only while params match; represented edits get a fresh descriptor.
 pub(super) fn batch_to(_: &str, p: &Value) -> Option<Descriptor> {
     if p.as_object()?.keys().any(|k| {
         ![

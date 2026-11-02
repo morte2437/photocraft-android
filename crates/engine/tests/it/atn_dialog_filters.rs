@@ -15,6 +15,7 @@ fn encoded(code: &[u8; 4], d: Descriptor) -> Vec<u8> {
     .unwrap()
 }
 
+/// Pair measured descriptors with native params, including signed Fibers seed bits.
 fn cases() -> Vec<([u8; 4], Descriptor, &'static str, Value)> {
     let kernel: Vec<i32> = (0..25).map(|i| if i == 12 { 1 } else { 0 }).collect();
     vec![
@@ -43,6 +44,7 @@ fn fixture(depth: u32) -> Session {
     s
 }
 
+/// Compare imported actions with native execution across depths, then verify descriptor save and Undo.
 #[test]
 fn custom_and_fibers_recordings_round_trip_replay_native_settings_and_undo() {
     for (code, d, id, p) in cases() {
@@ -70,6 +72,7 @@ fn custom_and_fibers_recordings_round_trip_replay_native_settings_and_undo() {
     }
 }
 
+/// Malformed and unsupported forms remain complete steps instead of being partially interpreted.
 #[test]
 fn dialog_filters_keep_unrepresented_types_ranges_and_fields_whole() {
     for (code, d, _, _) in cases() {

@@ -176,6 +176,8 @@ fn same_format_takes_the_file_names_extension() {
     assert_eq!(same_format("/in/.hidden"), "png");
 }
 
+/// Check collisions before input reads and isolate each file in a scratch session.
+/// An optional content format decouples encoding from the structured destination filename.
 fn process_outputs<'a>(
     s: &Session,
     outputs: impl IntoIterator<Item = (&'a str, String)>,

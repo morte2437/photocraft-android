@@ -1,6 +1,7 @@
 use super::*;
 
 // Named Batch action regression adapted from #7170 by @HirthikBalaji.
+/// Named action lookup retains the original #7170 behavior while rejecting recursive Batch calls.
 #[test]
 fn batch_resolves_action_by_name_and_detects_recursion() {
     let dir = tmp("batch-action-name");
@@ -8,7 +9,7 @@ fn batch_resolves_action_by_name_and_detects_recursion() {
     let out = join(&dir, "out");
     std::fs::create_dir_all(&out).unwrap();
     let mut s = Session::new();
-    let mut action = crate::actions_cmds::Action::new("Scale".into(), vec![("image.imageSize".into(), json!({"width":16,"height":16}))]);
+    let mut action = crate::actions_cmds::Action::new("Scale", vec![("image.imageSize".into(), json!({"width":16,"height":16}))]);
     action.set = Some("Ops".into());
     s.actions.list.push(action);
     let result = s.execute("file.automate.batch", json!({"action":"Scale","set":"Ops","input":[input.clone()],"output":out})).unwrap();
@@ -24,6 +25,7 @@ fn batch_resolves_action_by_name_and_detects_recursion() {
     assert!(err.to_string().contains("recursive action call"), "{err}");
 }
 
+/// Exercise saved-action replay through Batch; filename suffixes cannot change encoded image content.
 #[test]
 fn batch_structured_names_keep_image_format_and_refuse_unsupported_save_routing() {
     let dir = tmp("batch-component-format");
@@ -63,12 +65,12 @@ fn batch_structured_names_keep_image_format_and_refuse_unsupported_save_routing(
     assert!(saved["errors"].as_array().unwrap().is_empty(), "{saved}");
     assert!(std::fs::read(saved["files"][0].as_str().unwrap()).unwrap().starts_with(b"\x89PNG\r\n\x1a\n"));
     // One composition witness: Save Actions -> Load Actions -> named Batch -> actual PNG bytes.
-    let mut child = crate::actions_cmds::Action::new("Child".into(), vec![]);
+    let mut child = crate::actions_cmds::Action::new("Child", vec![]);
     child.set = Some("S".into());
     s.actions.list.push(child);
     let params = json!({"input":dir,"output":output,"action":"Child","set":"S","includeSubfolders":false,"flatOutput":true,
         "overrideSaveAs":false,"namingComponents":[{"text":"from-atn"}]});
-    let driver = crate::actions_cmds::Action::new("Driver".into(), vec![("file.automate.batch".into(), params)]);
+    let driver = crate::actions_cmds::Action::new("Driver", vec![("file.automate.batch".into(), params)]);
     let (bytes, skipped) = crate::atn_cmds::export("S", &[&driver], &[], false).unwrap();
     assert!(skipped.is_empty());
     let imported = crate::atn_cmds::import(&bytes).unwrap();

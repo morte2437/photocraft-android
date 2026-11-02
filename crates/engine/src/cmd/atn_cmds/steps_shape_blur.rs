@@ -4,6 +4,7 @@ use super::descriptors::{PX, desc, get_text, px, text};
 use super::fields::{Mapped, step};
 use super::{D, Descriptor, Value, json};
 
+/// Admit the measured custom-shape form; the native command resolves its installed ID at playback.
 pub(super) fn from(d: &Descriptor) -> Mapped {
     let mapped = || -> Option<Value> {
         let D::UnitFloat { unit, value } = d.get("Rds ")? else { return None };
@@ -26,6 +27,7 @@ pub(super) fn from(d: &Descriptor) -> Mapped {
     mapped().map_or(Mapped::Unsupported { harmless: false }, |p| step("filter.blur.shapeBlur", p))
 }
 
+/// Refuse native geometry or target options that the recorded installed-shape reference cannot carry.
 pub(super) fn to(_: &str, p: &Value) -> Option<Descriptor> {
     if p.as_object()?.keys().any(|key| !["radius", "shapeName", "shapeId", "shapeOriginType"].contains(&key.as_str())) {
         return None;

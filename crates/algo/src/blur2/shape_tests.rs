@@ -233,6 +233,7 @@ fn direct_36mp_image_with_small_output_is_not_rejected() {
     assert_eq!(result, vec![0.25; 4]);
 }
 
+/// An asymmetric weighted kernel detects mirroring independently of span accumulation.
 #[test]
 fn custom_shape_coverage_matches_point_convolution_without_mirroring() {
     let mask = Image { rect: Rect::new(0, 0, 3, 3), ch: 1, data: vec![1.0, 0.25, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0] };
@@ -276,6 +277,7 @@ fn custom_shape_coverage_matches_point_convolution_without_mirroring() {
     assert_eq!(out[4 * 7 + 4], 0.0);
 }
 
+/// The custom path must agree with the existing square blur, including tiled boundaries.
 #[test]
 fn custom_square_preserves_builtin_result_and_tile_boundaries() {
     let rect = Rect::new(-3, -2, 17, 14);
@@ -293,6 +295,7 @@ fn custom_square_preserves_builtin_result_and_tile_boundaries() {
     exact(&tiled.read_region(rect), &ordinary.read_region(rect));
 }
 
+/// Oversized and invalid kernel metadata must be rejected before proportional allocation.
 #[test]
 fn invalid_custom_kernels_are_refused_without_allocating_their_declared_size() {
     for mask in [

@@ -7,6 +7,7 @@ use super::{D, Descriptor, Value, json};
 const ORIGINAL: &str = "__atnColorLookup";
 const KEYS: &[&str] = &["lookupType", "Nm  ", "Dthr", "profile", "LUTFormat", "LUT3DFileData", "LUT3DFileName"];
 
+/// Admit only measured 3D-LUT fields and parser-supported data; other profiles and settings stay whole.
 fn read(d: &Descriptor) -> Option<(&[u8], &'static str, String, bool)> {
     if d.items.iter().any(|(k, _)| !KEYS.iter().any(|key| k.is(key))) || KEYS.iter().any(|key| d.items.iter().filter(|(k, _)| k.is(key)).count() > 1) {
         return None;
@@ -48,6 +49,7 @@ fn read(d: &Descriptor) -> Option<(&[u8], &'static str, String, bool)> {
     Some((bytes, format, get_text(d, "LUT3DFileName")?, get_bool(d, "Dthr")?))
 }
 
+/// Carry the original bytes into native playback without following the recorded source path.
 fn params(d: &Descriptor) -> Option<Value> {
     let (bytes, format, file_name, dither) = read(d)?;
     // Keep the potentially large file only in `data`; the template retains key order and
@@ -67,6 +69,7 @@ fn params(d: &Descriptor) -> Option<Value> {
     }))
 }
 
+/// Keep unsupported lookup forms intact instead of replaying only a subset of their processing.
 pub(super) fn from(d: &Descriptor) -> Mapped {
     params(d).map_or(Mapped::Unsupported { harmless: false }, |p| step("image.adjustments.colorLookup", p))
 }
