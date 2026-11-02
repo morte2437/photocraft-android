@@ -14,11 +14,14 @@ fn only_keys(d: &Descriptor, keys: &[&str]) -> bool {
 
 /// The step's `key` read by `read` (its space padding ignored, as `only_keys` admits it),
 /// `default` when the step leaves it out, `None` when it holds a value `read` can't take: that
-/// is still the step's setting, so the step is kept rather than played with the default.
+/// is still the step's setting, so the step is kept rather than played with the default. A key
+/// recorded more than once is `None` too: the step saves one value, so it would drop the other.
 fn setting<T>(d: &Descriptor, key: &str, read: impl Fn(&D) -> Option<T>, default: T) -> Option<T> {
-    match d.items.iter().find(|(k, _)| trimmed(k) == key.trim_end()) {
-        Some((_, v)) => read(v),
-        None => Some(default),
+    let mut found = d.items.iter().filter(|(k, _)| trimmed(k) == key.trim_end());
+    match (found.next(), found.next()) {
+        (Some((_, v)), None) => read(v),
+        (None, _) => Some(default),
+        (Some(_), Some(_)) => None,
     }
 }
 

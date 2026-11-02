@@ -5815,3 +5815,25 @@ fn load_rejects_bad_encodings() {
     }
     assert!(s.actions.list.is_empty(), "nothing is loaded when the encoding is bad");
 }
+
+/// A setting recorded twice (`Wdth`, `Fade`, `Scl `, a gallery key) would play one value and
+/// save one, dropping the other: such a step stays a Photoshop step (CodeRabbit on #10776).
+#[test]
+fn steps_that_record_a_setting_twice_are_kept() {
+    let kept = |m: Mapped| matches!(m, Mapped::Unsupported { harmless: false });
+    let identity = D::List((0..25).map(|i| D::Integer(i32::from(i == 12))).collect());
+    let once = [
+        ("Trap", desc("null").with("Wdth", px(2.0))),
+        ("matchColor", desc("null").with("Fade", D::Integer(10))),
+        ("Cstm", desc("null").with("Mtrx", identity.clone()).with("Scl ", D::Integer(3))),
+    ];
+    for (event, d) in once {
+        assert!(!kept(channel_step(event, d.clone())), "{event} once was kept");
+        let (key, value) = d.items.last().cloned().unwrap();
+        let twice = Descriptor { items: [d.items.clone(), vec![(key, value)]].concat(), ..d };
+        assert!(kept(channel_step(event, twice)), "{event} twice was mapped");
+    }
+    let edges = || desc("null").with("EdgW", D::Integer(2)).with("EdgB", D::Integer(38)).with("Smth", D::Integer(5));
+    assert!(!kept(gallery_step("GEfc", "AccE", edges())));
+    assert!(kept(gallery_step("GEfc", "AccE", edges().with("EdgW", D::Integer(9)))));
+}

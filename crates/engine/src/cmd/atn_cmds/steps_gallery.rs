@@ -640,6 +640,11 @@ fn effect_step(d: &Descriptor) -> Option<Mapped> {
     if !d.items.iter().all(|(k, _)| known.contains(&trimmed(k).as_str())) {
         return None;
     }
+    // A key recorded twice would play and save one of its values: keep the step instead.
+    let names: Vec<String> = d.items.iter().map(|(k, _)| trimmed(k)).collect();
+    if names.iter().enumerate().any(|(i, n)| names[..i].contains(n)) {
+        return None;
+    }
     let mut p = Map::new();
     for k in keys.iter() {
         // Only a missing key takes Photoshop's default: a key that is there with the wrong type
