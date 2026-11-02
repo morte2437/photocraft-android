@@ -578,6 +578,18 @@ fn honoured_memory_usage_mb(stored: u32, web: bool) -> u32 {
     if web { stored.min(WASM_MEMORY_USAGE_CAP_MB) } else { stored }
 }
 
+/// The largest Effect Cache the Preferences dialog and `prefs.set` accept, in MB: the web build's
+/// cap there, so the field shows the budget the cache really gets.
+fn effect_cache_max_mb(web: bool) -> u32 {
+    if web { WASM_MEMORY_USAGE_CAP_MB } else { 65536 }
+}
+
+/// The layer-effect cache budget a build honours for a `stored` preference, in bytes: capped on
+/// the web build (`web`), and saturating rather than wrapping a 32-bit `usize`.
+fn effect_cache_budget_bytes_for(stored: u32, web: bool) -> usize {
+    (honoured_memory_usage_mb(stored, web) as usize).saturating_mul(1 << 20)
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Performance {
@@ -670,7 +682,7 @@ impl Performance {
     /// The layer-effect cache budget the build honours, in bytes: [`Performance::effect_cache_mb`],
     /// capped on the web like Memory Usage.
     pub fn effect_cache_budget_bytes(&self) -> usize {
-        (honoured_memory_usage_mb(self.effect_cache_mb, cfg!(target_arch = "wasm32")) as usize).saturating_mul(1 << 20)
+        effect_cache_budget_bytes_for(self.effect_cache_mb, cfg!(target_arch = "wasm32"))
     }
 }
 
