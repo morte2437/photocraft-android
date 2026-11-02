@@ -615,7 +615,11 @@ fn legacy_rgb_replace_color_and_ordinary_gradient_exports_are_unchanged() {
         vec![("image.adjustments.gradientMap".into(), json!({"stops":[[0,"#000000"],[1,"#ffffff"]]}))],
     );
     let (b, _) = atn_cmds::export("Ordinary", &[&action], &[], false).unwrap();
-    assert_eq!(atn::parse(&b).unwrap().actions[0].items[0].event, AtnEvent::name("gradientMapEvent"), "an ordinary Gradient Map saves as the string event (#10702)");
+    assert_eq!(
+        atn::parse(&b).unwrap().actions[0].items[0].event,
+        AtnEvent::name("gradientMapEvent"),
+        "an ordinary Gradient Map saves as the string event (#10702)"
+    );
 }
 
 /// Replacement preserves alpha and refuses locked or profile-incompatible surfaces before editing.

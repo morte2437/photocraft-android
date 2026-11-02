@@ -164,8 +164,7 @@ pub fn patched(current: &UiState, v: &serde_json::Value) -> Result<Filter, Strin
     }
     let mut f = Filter::of(current);
     if let Some(by) = o.get("by") {
-        f.by = serde_json::from_value(by.clone())
-            .map_err(|_| "layerFilter.by must be kind, name, mode, color, smartObject or artboard".to_string())?;
+        f.by = serde_json::from_value(by.clone()).map_err(|_| "layerFilter.by must be kind, name, mode, color, smartObject or artboard".to_string())?;
     }
     if let Some(kinds) = o.get("kinds") {
         let list = kinds.as_array().ok_or("layerFilter.kinds must be a list")?;
