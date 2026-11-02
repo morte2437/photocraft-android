@@ -509,8 +509,8 @@ pub fn restore_recording(s: &mut Session, idx: usize, action: &str, from: usize)
     s.journal.push(("actions.play".into(), params));
 }
 
-/// Nested playback returns a structured failure even though the command itself succeeded.
-/// Promote it to the caller's failed step so no later parent steps run after a child fails.
+/// Recorded child commands can report failure inside a successful response.
+/// Promote action or Batch failures so a recorded parent does not run later steps.
 pub fn nested_failure(id: &str, value: &Value) -> Option<String> {
     // Batch keeps per-file results for direct callers, but a failed recorded Batch step stops its parent.
     if id == "file.automate.batch" {

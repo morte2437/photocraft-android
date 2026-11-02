@@ -1652,8 +1652,8 @@ No parameters: the step carries an empty descriptor.
 
 | Key | String ID | Type | Unit | Example value | Allowed |
 |---|---|---|---|---|---|
-| `Scl ` | scale | integer |  | 1 | 1 .. 9999 (measured in the dialog). Without the dialog the value is ignored |
-| `Ofst` | offset | integer |  | 0 | -9999 .. 9999 (measured in the dialog). Without the dialog the value is ignored |
+| `Scl ` | scale | integer |  | 1 | 1 .. 9999 (measured in the dialog). Applies without the dialog too: scale 2 halves the output |
+| `Ofst` | offset | integer |  | 0 | -9999 .. 9999 (measured in the dialog). Applies without the dialog too: offset 50 adds 50 |
 | `Mtrx` | matrix | list |  | none: a step always carries all 25 cells | exactly 25 integers (5 x 5, row by row), each -999 .. 999; a 3 x 3 list makes the application fail |
 
 #### Replace Color

@@ -129,6 +129,7 @@ fn nested_script_failure(id: &str, r: &Value) -> Option<String> {
     (id == "file.scripts.browse" && r.get("ok") == Some(&Value::Bool(false))).then(|| "a script it runs failed".to_string())
 }
 
+/// Direct Batch file errors remain script results; called action failures stop later script steps.
 fn run_steps(s: &mut Session, steps: &[(String, Value)]) -> Vec<Value> {
     let mut results = Vec::new();
     for (id, params) in steps {

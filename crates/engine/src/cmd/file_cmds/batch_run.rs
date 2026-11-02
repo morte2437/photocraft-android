@@ -283,6 +283,7 @@ pub(crate) fn batch_action(list: &[crate::actions_cmds::Action], p: &Value) -> R
     crate::actions_cmds::resolve(list, p, CMD)
 }
 
+/// Apply the selected file-error policy while retaining per-file results for direct callers.
 pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "file.automate.batch";
     let stop_on_error = match p.get("stopOnError") {
