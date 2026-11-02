@@ -665,6 +665,8 @@ fn every_mapped_command_exports_and_imports_back() {
         ("edit.pasteSpecial.pasteInPlace", json!({})),
         ("edit.paste", json!({})),
         ("edit.purge.histories", json!({})),
+        ("edit.checkSpelling", json!({"allLayers": true})),
+        ("edit.checkSpelling", json!({"allLayers": false})),
         ("tools.defaultColors", json!({})),
         (
             "edit.convertToProfile",
@@ -5814,6 +5816,86 @@ fn load_rejects_bad_encodings() {
         assert!(s.execute("actions.load", json!({"data": b64(&gbk_set()), "encoding": bad})).is_err(), "{bad}");
     }
     assert!(s.actions.list.is_empty(), "nothing is loaded when the encoding is bad");
+}
+
+/// Edit › Check Spelling in its recorded form: `spellCheck`, `null` = the `spellCheck` property of
+/// all text layers, `Usng` = `checkAll`, with the step's dialog on.
+fn spell_check(all: bool) -> Descriptor {
+    desc("null")
+        .with(
+            "null",
+            D::Reference(vec![
+                ReferenceItem::Property { class: class("Prpr"), key: Id::new("spellCheck") },
+                ReferenceItem::Enumerated { class: class("TxLr"), type_id: code("Ordn"), value: code("Al") },
+            ]),
+        )
+        .with("Usng", D::Descriptor(desc("spellCheck").with("checkAll", D::Boolean(all))))
+}
+
+#[test]
+fn check_spelling_loads_and_saves_as_the_spell_check_event() {
+    for all in [true, false] {
+        let mut step = item("spellCheck", "Check Spelling", Some(spell_check(all)));
+        step.with_dialog = true;
+        let file = AtnFile {
+            name: UnicodeString::new_nul("S"),
+            actions: vec![AtnAction { name: UnicodeString::new_nul("A"), items: vec![step], ..Default::default() }],
+            ..Default::default()
+        };
+        let imported = import(&atn::write(&file).unwrap()).unwrap();
+        assert!(imported.unsupported.is_empty(), "{:?}", imported.unsupported);
+        let action = &imported.actions[0];
+        assert_eq!(action.steps, [("edit.checkSpelling".to_string(), json!({"allLayers": all}))]);
+        assert_eq!(action.dialogs.iter().copied().collect::<Vec<_>>(), [0]);
+        let (bytes, skipped) = export("S", &[action], &[], false).unwrap();
+        assert!(skipped.is_empty());
+        let saved = atn::parse(&bytes).unwrap();
+        let saved = &saved.actions[0].items[0];
+        assert_eq!(saved.event.id(), "spellCheck");
+        assert!(saved.with_dialog);
+        assert_eq!(saved.descriptor.as_ref().unwrap().to_bytes(), spell_check(all).to_bytes(), "checkAll {all}");
+    }
+}
+
+#[test]
+fn other_check_spelling_forms_stay_kept_steps_and_corrections_are_not_saved() {
+    let event = event_for(&AtnEvent::name("spellCheck")).unwrap();
+    let mut extra = spell_check(true);
+    extra.items.push((Id::new("Fwd "), D::Boolean(true)));
+    let mut other_target = spell_check(true);
+    other_target.items[0].1 = D::Reference(vec![ReferenceItem::Property { class: class("Prpr"), key: Id::new("spellCheck") }]);
+    let mut other_class = spell_check(true);
+    other_class.items[1].1 = D::Descriptor(desc("findReplace").with("checkAll", D::Boolean(true)));
+    let mut more_using = spell_check(true);
+    more_using.items[1].1 = D::Descriptor(desc("spellCheck").with("checkAll", D::Boolean(true)).with("Fwd ", D::Boolean(true)));
+    let mut twice = spell_check(true);
+    twice.items[1] = twice.items[0].clone();
+    for d in [extra, other_target, other_class, more_using, twice, desc("null")] {
+        assert!(matches!((event.from)(&d), Mapped::Unsupported { harmless: false }), "{d:?}");
+    }
+    for params in [
+        json!({"action": "change", "start": 0, "end": 3, "replace": "The"}),
+        json!({"action": "changeAll", "word": "teh", "replace": "the"}),
+        json!({"allLayers": true, "layer": "Title"}),
+        json!({"allLayers": "yes"}),
+    ] {
+        assert!(export_item("edit.checkSpelling", &params, "S").is_none(), "{params}");
+    }
+}
+
+/// Check Spelling's `null` and `Usng` are read by name: a step that holds them in the other
+/// order loads as the same step.
+#[test]
+fn check_spelling_reads_its_keys_in_either_order() {
+    let event = event_for(&AtnEvent::name("spellCheck")).unwrap();
+    for all in [true, false] {
+        let mut reversed = spell_check(all);
+        reversed.items.reverse();
+        match (event.from)(&reversed) {
+            Mapped::Steps(steps) => assert_eq!(steps, [("edit.checkSpelling".to_string(), json!({"allLayers": all}))]),
+            Mapped::Unsupported { .. } => panic!("Usng before null was kept: {reversed:?}"),
+        }
+    }
 }
 
 /// A setting recorded twice (`Wdth`, `Fade`, `Scl `, a gallery key) would play one value and

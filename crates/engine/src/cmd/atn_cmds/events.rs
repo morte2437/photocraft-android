@@ -1,6 +1,6 @@
 const DIFFUSE_MODE: &[(&str, &str)] = &[("Nrml", "normal"), ("DrkO", "darkenOnly"), ("LghO", "lightenOnly"), ("Anst", "anisotropic")];
 use super::adjustments::{adjustment_by_class, adjustment_steps, levels_from, levels_to, shadows_highlights_from, shadows_highlights_to};
-use super::descriptors::{desc, get_bool, get_ref, jbool, layer_ref, layer_target, ref_class};
+use super::descriptors::{class, code, desc, get_bool, get_obj, get_ref, jbool, layer_ref, layer_target, ref_class, trimmed};
 use super::fields::{F, Kind, Mapped, fields_from, fields_to, none, step};
 
 use super::steps_channels::{match_color_from, match_color_to, merge_spot_from, merge_spot_to, split_from, split_to, trap_from, trap_to};
@@ -23,7 +23,7 @@ use super::steps_layer::{
 use super::steps_make::{locking_from, locking_to, make_from, make_to, set_from, set_to};
 use super::steps_other::{DE_INTERLACE, HSB_HSL, bare_from, bare_to, custom_from, custom_to, enums_from, enums_to};
 use super::tables::{NOISE, OFFSET_FILL, SMART_BLUR_MODE, SMART_BLUR_QUALITY, TRIM};
-use super::{AtnEvent, D, Descriptor, STOP_MESSAGE, Value, json};
+use super::{AtnEvent, D, Descriptor, Id, ReferenceItem, STOP_MESSAGE, Value, json};
 
 /// An event: code (empty when Photoshop only has a string name), string name, the panel
 /// label, the command ids it exports (the first is the one simple events import to), and the
@@ -185,6 +185,44 @@ fn clipping_from(d: &Descriptor, id: &str) -> Mapped {
 
 fn clipping_to(_: &str, p: &Value) -> Option<Descriptor> {
     Some(desc("null").with("null", layer_ref(p)?))
+}
+
+/// Check Spelling's `null`: the `spellCheck` property of all text layers.
+fn spell_check_ref() -> D {
+    D::Reference(vec![
+        ReferenceItem::Property { class: class("Prpr"), key: Id::new("spellCheck") },
+        ReferenceItem::Enumerated { class: class("TxLr"), type_id: code("Ordn"), value: code("Al") },
+    ])
+}
+
+/// Edit › Check Spelling (`spellCheck`): `null` is [`spell_check_ref`] and `Usng` holds only
+/// `checkAll`. Any other form stays a kept Photoshop step.
+fn spell_check_from(d: &Descriptor) -> Mapped {
+    let same_ref = |r: &[ReferenceItem]| match r {
+        [ReferenceItem::Property { class: p, key }, ReferenceItem::Enumerated { class: t, type_id, value }] => {
+            trimmed(&p.class_id) == "Prpr" && key.is("spellCheck") && trimmed(&t.class_id) == "TxLr" && trimmed(type_id) == "Ordn" && trimmed(value) == "Al"
+        }
+        _ => false,
+    };
+    // Two keys, read by name: `null` and `Usng` in either order, each once.
+    let using = get_obj(d, "Usng").filter(|u| u.class_id.is("spellCheck") && u.items.len() == 1);
+    match (d.items.len(), get_ref(d, "null"), using.and_then(|u| get_bool(u, "checkAll"))) {
+        (2, Some(r), Some(all)) if same_ref(r) => step("edit.checkSpelling", json!({"allLayers": all})),
+        _ => Mapped::Unsupported { harmless: false },
+    }
+}
+
+/// A Check Spelling step that holds nothing but `allLayers` (Check All Layers, on by default).
+fn spell_check_to(_: &str, p: &Value) -> Option<Descriptor> {
+    let params = p.as_object()?;
+    if params.keys().any(|k| k != "allLayers") {
+        return None;
+    }
+    let all = match params.get("allLayers") {
+        None => true,
+        Some(v) => v.as_bool()?,
+    };
+    Some(desc("null").with("null", spell_check_ref()).with("Usng", D::Descriptor(desc("spellCheck").with("checkAll", D::Boolean(all)))))
 }
 
 /// A clipping mask event: `clipping_from` / `clipping_to` with one command id.
@@ -841,6 +879,7 @@ pub(super) const EVENTS: &[Event] = &[
     },
     Event { code: "Rset", name: "reset", label: "Reset", ids: &["tools.defaultColors"], from: reset_from, to: reset_to },
     ev!("Exch", "exchange", "Exchange", "tools.swapColors", &[]),
+    Event { code: "", name: "spellCheck", label: "Check Spelling", ids: &["edit.checkSpelling"], from: spell_check_from, to: spell_check_to },
     Event {
         code: "",
         name: "assignProfile",

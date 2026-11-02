@@ -4,7 +4,8 @@
 //! (`photocraft_text::spell`, SCOWL size 50) plus the user dictionary in the preferences
 //! (`userDictionary`). Headless, it lists misspellings with suggestions and changes, changes all,
 //! or adds words to the dictionary; the UI's dialog drives the same actions. Offsets are
-//! character indices.
+//! character indices. An action records Check Spelling as one `{"allLayers"}` step with its
+//! dialog on, and records none of the corrections.
 //!
 //! `type.insertText` inserts a string (a glyph) into a type layer at a character position or
 //! over a range.
@@ -117,7 +118,7 @@ fn list(s: &Session, p: &Value) -> Result<Value> {
 /// Replaces one occurrence (verified to still be `word` when given).
 fn change(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "edit.checkSpelling";
-    let id = LayerId(p.get("layer").and_then(Value::as_u64).ok_or_else(|| bad(cmd, "`change` needs `layer`"))?);
+    let id = layer_param(s, p)?;
     let start = p.get("start").and_then(Value::as_u64).ok_or_else(|| bad(cmd, "`change` needs `start`"))? as usize;
     let end = p.get("end").and_then(Value::as_u64).ok_or_else(|| bad(cmd, "`change` needs `end`"))? as usize;
     let to = p.get("replace").and_then(Value::as_str).ok_or_else(|| bad(cmd, "`change` needs `replace`"))?.to_string();
@@ -203,6 +204,18 @@ fn remove_word(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({ "removed": removed, "userDictionary": s.prefs().user_dictionary }))
 }
 
+/// Whether an action records this call: only Check Spelling itself (no `action`), which the
+/// dialog runs when it closes. Its corrections, dictionary edits and lookups are not recorded.
+pub(crate) fn records(p: &Value) -> bool {
+    p.get("action").is_none()
+}
+
+/// The step a recorded Check Spelling becomes: `{"allLayers"}`, `false` when it checked one layer.
+pub(crate) fn recorded_step(p: &Value) -> Value {
+    let one_layer = p.get("allLayers").and_then(Value::as_bool) == Some(false) || p.get("layer").is_some();
+    json!({ "allLayers": !one_layer })
+}
+
 fn check_spelling(s: &mut Session, p: &Value) -> Result<Value> {
     match p.get("action").and_then(Value::as_str).unwrap_or("list") {
         "list" | "check" => list(s, p),
@@ -270,7 +283,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Check Spelling…",
             menu: &["Edit"],
             shortcut: None,
-            params: r#"{"action":"list|change|changeAll|addToDictionary|removeFromDictionary|suggest"="list","allLayers":bool=true,"layer":id? (check one layer),"ignore":[word]? (Ignore All for this check),"suggestions":n=5; change: "layer","start","end" (chars),"word"? (verified),"replace"; changeAll: "word","replace"; addToDictionary/removeFromDictionary/suggest: "word"} → list: {"misspellings":[{"layer","start","end","word","suggestions"}],"count"}"#,
+            params: r#"{"action":"list|change|changeAll|addToDictionary|removeFromDictionary|suggest"="list","allLayers":bool=true,"layer":id? (check one layer),"ignore":[word]? (Ignore All for this check),"suggestions":n=5; change: "layer"? (default: the active layer),"start","end" (chars),"word"? (verified),"replace"; changeAll: "word","replace"; addToDictionary/removeFromDictionary/suggest: "word"} → list: {"misspellings":[{"layer","start","end","word","suggestions"}],"count"} (an action records only a call without "action", as {"allLayers"} with its dialog on)"#,
             enabled: has_type,
             journal: true,
             run: check_spelling,
@@ -367,6 +380,59 @@ mod tests {
         assert!(s.execute("edit.checkSpelling", json!({"action": "bogus"})).is_err());
         let r = s.execute("edit.checkSpelling", json!({"action": "suggest", "word": "recieve"})).unwrap();
         assert_eq!(r["correct"], false);
+    }
+
+    #[test]
+    fn change_without_layer_edits_the_active_type_layer() {
+        let (mut s, id) = session("Teh end");
+        let r = s.execute("edit.checkSpelling", json!({"action": "change", "start": 0, "end": 3, "word": "Teh", "replace": "The"})).unwrap();
+        assert_eq!((r["layer"].as_u64(), r["end"].as_u64()), (Some(id), Some(3)));
+        assert_eq!(text_of(&s, id), "The end");
+    }
+
+    #[test]
+    fn recording_keeps_check_spelling_with_its_dialog_and_not_its_corrections() {
+        let (mut s, id) = session("Teh brwon end");
+        s.execute("actions.record", json!({"name": "Spell"})).unwrap();
+        s.execute("edit.checkSpelling", json!({"action": "list", "allLayers": true})).unwrap();
+        s.execute("edit.checkSpelling", json!({"action": "change", "layer": id, "start": 0, "end": 3, "word": "Teh", "replace": "The"})).unwrap();
+        s.execute("edit.checkSpelling", json!({"action": "changeAll", "word": "brwon", "replace": "brown"})).unwrap();
+        s.execute("edit.checkSpelling", json!({"action": "suggest", "word": "recieve"})).unwrap();
+        s.execute("edit.checkSpelling", json!({"action": "addToDictionary", "word": "Photocraft"})).unwrap();
+        s.execute("edit.checkSpelling", json!({"action": "removeFromDictionary", "word": "Photocraft"})).unwrap();
+        // The dialog closing.
+        s.execute("edit.checkSpelling", json!({"allLayers": true, "suggestions": 8})).unwrap();
+        s.execute("actions.stop", json!({})).unwrap();
+        assert_eq!(text_of(&s, id), "The brown end");
+        let action = &s.actions.list[0];
+        assert_eq!(action.steps, vec![("edit.checkSpelling".to_string(), json!({"allLayers": true}))]);
+        assert_eq!(action.dialogs.iter().copied().collect::<Vec<_>>(), [0]);
+    }
+
+    #[test]
+    fn recorded_check_of_one_layer_records_all_layers_off() {
+        let (mut s, id) = session("Teh end");
+        s.execute("actions.record", json!({"name": "One"})).unwrap();
+        s.execute("edit.checkSpelling", json!({"allLayers": false})).unwrap();
+        s.execute("edit.checkSpelling", json!({"layer": id})).unwrap();
+        s.execute("actions.stop", json!({})).unwrap();
+        let steps: Vec<&Value> = s.actions.list[0].steps.iter().map(|(_, p)| p).collect();
+        assert_eq!(steps, [&json!({"allLayers": false}), &json!({"allLayers": false})]);
+        assert_eq!(s.actions.list[0].dialogs.len(), 2);
+    }
+
+    #[test]
+    fn played_check_spelling_without_its_dialog_changes_nothing() {
+        let (mut s, id) = session("Teh end");
+        s.execute("actions.record", json!({"name": "Spell"})).unwrap();
+        s.execute("edit.checkSpelling", json!({"allLayers": true})).unwrap();
+        s.execute("actions.stop", json!({})).unwrap();
+        let history = s.active().unwrap().history.past_len();
+        let r = s.execute("actions.play", json!({"action": "Spell"})).unwrap();
+        assert!(r.get("failed").is_none(), "{r}");
+        assert_eq!(r["ran"], 1);
+        assert_eq!(text_of(&s, id), "Teh end");
+        assert_eq!(s.active().unwrap().history.past_len(), history);
     }
 
     #[test]
