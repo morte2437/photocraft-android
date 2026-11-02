@@ -39,7 +39,7 @@ fn fixture(depth: u32) -> Session {
 }
 
 fn pixels(s: &Session) -> Vec<[f32; 4]> {
-    photocraft_compose::flatten(&s.active().unwrap().doc).px
+    photocraft_compose::flatten(&s.active().unwrap().doc).into_px()
 }
 
 fn saved(s: &Session) -> Vec<u8> {

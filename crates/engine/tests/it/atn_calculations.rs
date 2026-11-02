@@ -89,7 +89,7 @@ fn atn_calculations_add_creates_alpha_with_expected_pixels_and_undo() {
     for depth in [8, 16, 32] {
         let mut s = fixture(depth);
         let before = saved(&s);
-        let original = photocraft_compose::flatten(&s.active().unwrap().doc).px;
+        let original = photocraft_compose::flatten(&s.active().unwrap().doc).into_px();
         assert_eq!(play(&mut s, action.clone())["ran"], 1);
         let doc = &s.active().unwrap().doc;
         assert_eq!(doc.channels.len(), 1);

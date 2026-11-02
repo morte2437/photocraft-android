@@ -49,7 +49,7 @@ fn install_square(s: &mut Session) {
 }
 
 fn pixels(s: &Session) -> Vec<[f32; 4]> {
-    photocraft_compose::flatten(&s.active().unwrap().doc).px
+    photocraft_compose::flatten(&s.active().unwrap().doc).into_px()
 }
 fn saved(s: &Session) -> Vec<u8> {
     photocraft_format::save_to_bytes(&s.active().unwrap().doc, &Default::default()).unwrap()
