@@ -200,7 +200,7 @@ pub struct Session {
     /// Log of executed commands (for action recording and debugging).
     pub journal: Vec<(String, Value)>,
     /// Text layer changed by the last journal entry, for folding Type tool keystrokes.
-    typed_layer: Option<LayerId>,
+    typed_layer: Option<(photocraft_doc::DocId, LayerId)>,
     /// Coalescing key of the command being executed.
     coalesce_request: Option<String>,
     /// Pixels copied with Edit › Copy / Cut (shared by all documents, like Photoshop).

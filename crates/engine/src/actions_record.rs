@@ -18,7 +18,7 @@
 
 use std::sync::Arc;
 
-use photocraft_doc::{Document, LayerContent, LayerId};
+use photocraft_doc::{DocId, Document, LayerContent, LayerId};
 use serde_json::Value;
 
 use crate::Session;
@@ -63,10 +63,11 @@ pub(crate) fn portable(id: &str, mut params: Value, before: &Before) -> Value {
 /// The text layer a journaled `type.create` made or `type.edit` changed, so the keystrokes that
 /// follow fold into that entry only when they type into the same layer (the Type tool selects
 /// a clicked layer without a command, so the journal alone cannot tell).
-pub(crate) fn typed_layer(s: &Session, id: &str, params: &Value) -> Option<LayerId> {
+pub(crate) fn typed_layer(s: &Session, id: &str, params: &Value) -> Option<(DocId, LayerId)> {
+    let doc_id = s.active()?.doc.id;
     match id {
-        "type.create" => s.active()?.active_layer,
-        "type.edit" => crate::commands::layer_param(s, params).ok(),
+        "type.create" => s.active()?.active_layer.map(|layer| (doc_id, layer)),
+        "type.edit" => crate::commands::layer_param(s, params).ok().map(|layer| (doc_id, layer)),
         _ => None,
     }
 }
@@ -83,7 +84,7 @@ pub(crate) enum Keystroke {
 
 /// Folds a Type-tool keystroke into the journal entry before it (see the module doc), or turns
 /// it into a whole-text step. `previous` is the layer the last entry typed into.
-pub(crate) fn fold_keystroke(s: &mut Session, id: &str, params: &Value, previous: Option<LayerId>) -> Keystroke {
+pub(crate) fn fold_keystroke(s: &mut Session, id: &str, params: &Value, previous: Option<(DocId, LayerId)>) -> Keystroke {
     if id != "type.edit" {
         return Keystroke::None;
     }
@@ -107,7 +108,7 @@ pub(crate) fn fold_keystroke(s: &mut Session, id: &str, params: &Value, previous
         step.insert("text".into(), Value::String(text.clone()));
         Keystroke::Step(Value::Object(step))
     };
-    if previous != Some(target) {
+    if previous != s.active().map(|st| (st.doc.id, target)) {
         return whole();
     }
     // A new recording starts at a journal boundary. Its first edit cannot change an entry

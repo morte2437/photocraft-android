@@ -159,6 +159,25 @@ fn keystrokes_into_another_layer_do_not_fold() {
 }
 
 #[test]
+fn keystrokes_in_another_document_do_not_fold_into_the_previous_document() {
+    let mut s = session();
+    let first = s.execute("type.create", json!({"x": 2, "y": 20, "text": "A", "size": 12})).unwrap()["layer"].as_u64().unwrap();
+    let mut copy = s.active().unwrap().doc.as_ref().clone();
+    if let Some(layer) = copy.layer_mut(LayerId(first))
+        && let photocraft_doc::LayerContent::Text(text) = &mut layer.content
+    {
+        text.text = "B".into();
+    }
+    s.add_document(copy, None);
+    let second = first;
+    let before = s.journal.len();
+    s.execute("type.edit", json!({"layer": second, "replace": {"start": 1, "end": 1, "text": "!"}, "coalesce": "typing"})).unwrap();
+    assert_eq!(s.journal.len(), before + 1, "typing in a different document needs a new journal step");
+    assert_eq!(s.journal[before - 1].1["text"], "A");
+    assert_eq!(last(&s).1["text"], "B!");
+}
+
+#[test]
 fn a_recording_replays_on_a_document_with_other_layer_ids() {
     let mut s = session();
     let bg = background(&s);
@@ -192,4 +211,28 @@ fn a_recording_replays_on_a_document_with_other_layer_ids() {
     });
     assert_eq!(text.as_deref(), Some("Hi"), "the typed text replayed as one step");
     assert!(s.documents()[0].doc.layer(LayerId(bg)).is_some());
+}
+
+#[test]
+fn recorded_edit_targets_a_named_nonactive_type_layer_on_another_document() {
+    let mut s = session();
+    let first = s.execute("type.create", json!({"x": 2, "y": 20, "text": "Old", "size": 12})).unwrap()["layer"].as_u64().unwrap();
+    s.execute("layer.setProps", json!({"layer": first, "name": "Caption"})).unwrap();
+    new_layer(&mut s, "Top");
+    s.execute("actions.record", json!({"name": "Edit caption"})).unwrap();
+    s.execute("type.edit", json!({"layer": first, "text": "New"})).unwrap();
+    s.execute("actions.stop", json!({})).unwrap();
+    let steps = s.execute("actions.get", json!({"action": "Edit caption"})).unwrap()["steps"].clone();
+    assert_eq!(steps, json!([["type.edit", {"layer": "Caption", "text": "New"}]]));
+
+    s.execute("file.new", json!({"width": 32, "height": 32})).unwrap();
+    let second = s.execute("type.create", json!({"x": 2, "y": 20, "text": "Other", "size": 12})).unwrap()["layer"].as_u64().unwrap();
+    s.execute("layer.setProps", json!({"layer": second, "name": "Caption"})).unwrap();
+    new_layer(&mut s, "Top");
+    assert_ne!(first, second);
+    let played = s.execute("actions.play", json!({"action": "Edit caption"})).unwrap();
+    assert!(played.get("failed").is_none(), "{played}");
+    let layer = s.active().unwrap().doc.layer(LayerId(second)).unwrap();
+    let photocraft_doc::LayerContent::Text(text) = &layer.content else { panic!("expected type layer") };
+    assert_eq!(text.text, "New");
 }

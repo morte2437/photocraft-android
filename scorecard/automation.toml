@@ -14,9 +14,9 @@ note = "docs/parity-checklist.md: all menu items live; menus.rs is_live"
 [[item]]
 id = "AUTO-219-1"
 target = "Record actions in a document-independent form (implicit layer, merged type keystrokes)"
-status = "done"
+status = "partial"
 issue = 219
-note = "actions_record.rs: the active layer's id is dropped, other layers are journaled by name (layer.select always), Type tool keystrokes fold into one type.create/type.edit with the whole text; replay test on a document with other layer ids"
+note = "actions_record.rs: active layer ids are dropped, uniquely named layers replay by name, and Type tool keystrokes fold per document and layer; full coverage of all numeric-only command receivers and ambiguous layer names is still open"
 
 [[item]]
 id = "AUTO-219-2"
