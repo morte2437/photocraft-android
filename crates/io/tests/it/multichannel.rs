@@ -56,7 +56,7 @@ fn alpha_type_channels_import_as_alpha_and_round_trip() {
         as_ink.channels[1].surface = s;
         as_ink.channels[1].spot = Some((photocraft_color::Color::BLACK, 0.0));
         // Within f32 rounding: the inverted copy is re-quantised to the channel depth.
-        let (shown, inked) = (photocraft_compose::flatten(&d).px, photocraft_compose::flatten(&as_ink).px);
+        let (shown, inked) = (photocraft_compose::flatten(&d).into_px(), photocraft_compose::flatten(&as_ink).into_px());
         assert_eq!(shown.len(), inked.len());
         for (a, b) in shown.iter().zip(&inked) {
             assert!(a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-5), "{a:?} vs {b:?} ({depth}-bit)");
@@ -115,7 +115,7 @@ fn alpha_type_channels_are_stored_as_is_not_as_ink() {
         assert_eq!(values(&d.channels[0]), [1.0, 0.0, 1.0, 0.0], "spot channel ({depth}-bit)");
 
         // The composite is what Photoshop shows: the alpha prints as black ink where unselected.
-        let px = photocraft_compose::flatten(&d).px;
+        let px = photocraft_compose::flatten(&d).into_px();
         assert_eq!(px.iter().map(|p| [p[0], p[1], p[2]]).collect::<Vec<_>>(), [[0.0, 1.0, 1.0], [1.0, 1.0, 1.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]);
 
         // Saved back byte for byte.

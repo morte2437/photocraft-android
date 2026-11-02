@@ -397,6 +397,8 @@ pub(crate) fn keep_alpha(old: &photocraft_raster::Surface, new: &mut photocraft_
                 }
             }
             s.write_region(*r, &v);
+            photocraft_raster::scratch::give(o);
+            photocraft_raster::scratch::give(v);
             true
         })
         .reduce(|| true, |a, b| a && b);

@@ -2,6 +2,7 @@ use std::borrow::Cow;
 
 use super::bands::{Tally, convert_ab, decode_bands, extra_sample_indices, refill_zeroed, split_extra_samples, zeroed};
 use super::tags::{F, TAG_IMAGE_SOURCE_DATA, TAG_PHOTOSHOP, TAG_XMP, TEXT_TAGS, photoshop_tags};
+use super::ycbcr::YCbCr;
 use super::{
     ChannelLayout, ChunkType, CodecError, DecodeWarning, Decoder, ExifDirs, File, Ifd, Image, Limits, Metadata, Read, SampleType, Seek, SeekFrom, Tag,
     camera_raw, err, ifd, io, map_err, tiff_exif,
@@ -185,6 +186,9 @@ impl<'a> TiffBands<'a> {
             // Missing chunks leave their rows as they are: they must start empty in every group.
             buf = refill_zeroed(buf, len)?;
             tally = tally + decode_bands(p, self.b, &mut buf, band, first, &mut [], 0)?;
+            if let Some(c) = p.ycbcr {
+                c.convert(&mut buf, p.lay.out_channels(), p.lay.out);
+            }
             if let Some(signed) = p.lab {
                 convert_ab(&mut buf, p.lay.out_channels(), p.lay.out, signed, false);
             }
@@ -520,6 +524,20 @@ fn header_patches(
     Ok(patches)
 }
 
+/// Lab and YCbCr are converted after decoding, from 8 or 16-bit samples only: Lab needs at least
+/// its three colour samples, YCbCr exactly three.
+fn check_converted_model(photometric: u64, spp: u64, bits: u64, src: Src) -> Result<(), CodecError> {
+    let (name, samples_ok) = match photometric {
+        8 | 9 => ("Lab", spp >= 3),
+        6 => ("YCbCr", spp == 3),
+        _ => return Ok(()),
+    };
+    if samples_ok && matches!(src, Src::U8 | Src::U16) {
+        return Ok(());
+    }
+    Err(CodecError::unsupported(F, format!("{name} image with {spp} samples of {bits} bits")))
+}
+
 /// A directory checked and laid out for decoding, before any pixel is read.
 pub(super) struct Prepared {
     w: u32,
@@ -531,6 +549,8 @@ pub(super) struct Prepared {
     tl: tiff::decoder::Limits,
     /// Lab samples: `Some(true)` for CIELab (a* and b* stored signed), `Some(false)` for ICCLab.
     lab: Option<bool>,
+    /// YCbCr samples: the conversion to RGB (#10316).
+    ycbcr: Option<YCbCr>,
     /// The colour samples of a pixel in the file's colour model.
     color: usize,
     /// The ExtraSamples tag (0 unspecified, 1 associated alpha, 2 unassociated alpha).
@@ -566,6 +586,9 @@ fn decode_ifd(f: &File<'_>, dir: &Ifd, limits: &Limits) -> Result<Image, CodecEr
     let tally = decode_bands(&p, f.b, &mut data, p.band_bytes()?, 0, extra_data.as_mut_slice(), extra_band)?;
     if tally.decoded == 0 && tally.missing > 0 {
         return Err(err("the image data is missing (cut off or past the end of the file)"));
+    }
+    if let Some(c) = p.ycbcr {
+        c.convert(&mut data, p.lay.out_channels(), p.lay.out);
     }
     if let Some(signed) = p.lab {
         convert_ab(&mut data, p.lay.out_channels(), p.lay.out, signed, false);
@@ -642,15 +665,17 @@ fn prepare(f: &File<'_>, dir: &Ifd, limits: &Limits, whole: bool) -> Result<Prep
     // `tiff` crate as RGB, then labelled Lab with a* and b* in PhotoCraft's encoding
     // (`convert_ab`).
     let lab = matches!(photometric, 8 | 9);
-    if lab && (spp < 3 || !matches!(src, Src::U8 | Src::U16)) {
-        return Err(CodecError::unsupported(F, format!("Lab image with {spp} samples of {bits} bits")));
-    }
+    // YCbCr (6), as scanners and cameras write it (usually JPEG-compressed with subsampled
+    // chroma): the `tiff` crate decodes and upsamples the samples, and they are turned into RGB
+    // after decoding (#10316).
+    let ycbcr = photometric == 6;
+    check_converted_model(photometric, spp, bits, src)?;
     // TIFF 6.0 lets any extra sample be the alpha (#1349). For RGB and CMYK the `tiff` crate
     // returns the alpha only when it is the first extra sample: otherwise it is asked for every
     // sample (as multiband gray) and the colour and alpha samples are picked here. An alpha
     // position past the samples the file has is ignored.
     let color: usize = match photometric {
-        2 | 8 | 9 => 3,
+        2 | 6 | 8 | 9 => 3,
         5 => 4,
         _ => 1,
     };
@@ -686,6 +711,7 @@ fn prepare(f: &File<'_>, dir: &Ifd, limits: &Limits, whole: bool) -> Result<Prep
             (if gray_alpha { ChannelLayout::GrayA } else { ChannelLayout::Gray }, usize::from(num_samples))
         }
         tiff::ColorType::RGB(_) => (ChannelLayout::Rgb, 3),
+        tiff::ColorType::YCbCr(_) if ycbcr => (ChannelLayout::Rgb, 3),
         tiff::ColorType::RGBA(_) => (ChannelLayout::Rgba, 4),
         tiff::ColorType::CMYK(_) => (ChannelLayout::Cmyk, 4),
         tiff::ColorType::CMYKA(_) => (ChannelLayout::CmykA, 5),
@@ -729,8 +755,9 @@ fn prepare(f: &File<'_>, dir: &Ifd, limits: &Limits, whole: bool) -> Result<Prep
     // strip or tile tables point at inside the file count (and never more than the file), so
     // padding the file while pointing the chunks past its end does not raise the bound: the
     // banded decoder has no whole-image `max_alloc` to fall back on.
+    let compression = f.tag_uint(dir, ifd::TAG_COMPRESSION).unwrap_or(1);
     let stored = u64::from(w).saturating_mul(u64::from(h)).saturating_mul(spp).saturating_mul(bits).div_ceil(8);
-    let ratio: u64 = match f.tag_uint(dir, ifd::TAG_COMPRESSION).unwrap_or(1) {
+    let ratio: u64 = match compression {
         1 => 4,
         32773 => 130,
         4 => cw.clamp(4096, 65_535),
@@ -814,6 +841,7 @@ fn prepare(f: &File<'_>, dir: &Ifd, limits: &Limits, whole: bool) -> Result<Prep
         patches,
         tl,
         lab: lab.then_some(photometric == 8),
+        ycbcr: ycbcr.then(|| YCbCr::of(f, dir, compression, if out == SampleType::U16 { 65535.0 } else { 255.0 })),
         color,
         extra_kinds: extra,
         extras_over_limit,

@@ -32,7 +32,7 @@ fn truncated_merged_image_keeps_layer_pixels_at_every_depth_and_compression() {
             for compression in Compression::ALL {
                 let mut file = layered_in_mode(mode, depth, extension);
                 let intact = import(extension, &file.to_bytes().unwrap()).unwrap();
-                let expected = photocraft_compose::flatten(&intact.document).px;
+                let expected = photocraft_compose::flatten(&intact.document).into_px();
                 let pixels = file.decode_merged().unwrap();
                 file.image_data = photocraft_psd::ImageData::encode(compression, &pixels, &file.header).unwrap();
                 file.image_data.data.truncate(file.image_data.data.len() / 2);

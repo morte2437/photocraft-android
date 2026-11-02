@@ -23,7 +23,7 @@ fn fixture(depth: u32) -> Session {
 
 /// Compare the flattened document, including alpha, rather than only imported JSON.
 fn pixels(s: &Session) -> Vec<[f32; 4]> {
-    photocraft_compose::flatten(&s.active().unwrap().doc).px
+    photocraft_compose::flatten(&s.active().unwrap().doc).into_px()
 }
 
 /// Direct execution, native playback and strict binary ATN playback must agree exactly.

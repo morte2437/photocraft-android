@@ -340,7 +340,10 @@ fn write_start_marker(sentinel: &gpu_startup::SharedSentinel, plan: &gpu_startup
 }
 
 fn main() -> eframe::Result {
-    // First, so the panic hook and every start-up warning are recorded (`logging`).
+    // Before anything starts a thread: may re-execute this process with glibc tuned to return
+    // the memory of closed documents (#8743).
+    photocraft_engine::malloc_tuning::apply();
+    // Then, so the panic hook and every start-up warning are recorded (`logging`).
     let logger = logging::install();
     crash_guard::install_hook();
     #[cfg(not(target_arch = "wasm32"))]

@@ -118,7 +118,7 @@ fn layered_32bit_export_reimports_render_equal() {
     for mode in [ColorMode::Rgb, ColorMode::Grayscale] {
         let doc = common::gen_doc(mode, SampleType::F32, Features::ALL);
         let back = import("t.psd", &export_psd(&doc)).unwrap().document;
-        let (a, b) = (photocraft_compose::flatten(&doc).px, photocraft_compose::flatten(&back).px);
+        let (a, b) = (photocraft_compose::flatten(&doc).into_px(), photocraft_compose::flatten(&back).into_px());
         assert_eq!(a.len(), b.len());
         let d = common::max_diff(&a, &b);
         assert!(d <= 1e-4, "{mode:?}: render differs by {d}");
@@ -154,7 +154,7 @@ fn photoshop_32bit_corpus_round_trip() {
         assert_32bit_layout(&name, &out);
         let back = import(&name, &out).unwrap().document;
         assert_eq!(doc.layer_count(), back.layer_count(), "{name}: layer count");
-        let (a, b) = (photocraft_compose::flatten(&doc).px, photocraft_compose::flatten(&back).px);
+        let (a, b) = (photocraft_compose::flatten(&doc).into_px(), photocraft_compose::flatten(&back).into_px());
         assert_eq!(a.len(), b.len(), "{name}");
         let d = common::max_diff(&a, &b);
         assert!(d <= 1e-4, "{name}: render differs by {d}");

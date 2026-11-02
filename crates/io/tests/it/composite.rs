@@ -15,7 +15,7 @@ fn check_export_oracle(d: &photocraft_doc::Document, tol: f32) {
     let f = PsdFile::from_bytes(&r.bytes).unwrap();
     let merged = merged_composite(&f).unwrap();
     let d2 = import("x.psd", &r.bytes).unwrap().document;
-    let mut ours = photocraft_compose::flatten(&d2).px;
+    let mut ours = photocraft_compose::flatten(&d2).into_px();
     if d.mode == ColorMode::Cmyk {
         // The merged CMYK image is the RGB composite separated through the CMYK profile, which
         // gamut-maps colours that blend modes push outside CMYK: project ours the same way.
@@ -107,7 +107,7 @@ fn builder_oracle(depth: u16, mode: ColorMode) {
     let f = PsdFile::from_bytes(&bytes).unwrap();
     let merged = merged_composite(&f).unwrap();
     let d2 = import("b.psd", &bytes).unwrap().document;
-    let ours = photocraft_compose::flatten(&d2).px;
+    let ours = photocraft_compose::flatten(&d2).into_px();
     let m = max_diff(&ours, &merged);
     // Density/feather of masks are not written by the builder; the generated
     // doc uses them only on a disabled mask, so results must match.
@@ -157,7 +157,7 @@ fn hidden_and_clipped_affect_composite() {
     for l in &mut d2.layers {
         l.visible = true;
     }
-    let other = photocraft_compose::flatten(&d2).px;
+    let other = photocraft_compose::flatten(&d2).into_px();
     assert!(max_diff(&other, &merged) > 0.0, "unhiding a layer must change the composite");
 }
 

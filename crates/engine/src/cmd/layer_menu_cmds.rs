@@ -230,7 +230,7 @@ fn mask_all_objects(s: &mut Session, p: &Value) -> Result<Value> {
             struct Composite<'a>(&'a Document);
             impl photocraft_algo::segment::Sampler for Composite<'_> {
                 fn rgba(&self, r: Rect) -> Vec<[f32; 4]> {
-                    photocraft_compose::render(self.0, r).px
+                    photocraft_compose::render(self.0, r).into_px()
                 }
             }
             photocraft_algo::segment::subject::select_subject(&Composite(&doc), doc.bounds())

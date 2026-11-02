@@ -765,14 +765,14 @@ pub fn merged_composite(file: &PsdFile) -> Result<Vec<[f32; 4]>, IoError> {
     let (doc, _) = psd_to_document(&PsdFile { layer_info, ..file.clone() });
     // Multichannel documents keep their channels apart (no layer): composite them.
     if doc.layers.is_empty() && doc.mode == photocraft_color::ColorMode::Multichannel {
-        return Ok(photocraft_compose::flatten(&doc).px);
+        return Ok(photocraft_compose::flatten(&doc).into_px());
     }
     let l = doc.layers.first().ok_or_else(|| IoError::Unsupported("no merged image".into()))?;
     let s = l.surface().ok_or_else(|| IoError::Unsupported("no merged image".into()))?;
     // CMYK reads through the file's own profile, as the compositor reads its layers, so a tagged
     // file's merged image and its composite are compared in the same colours.
     let cmyk = photocraft_compose::cmyk_space(&doc);
-    Ok(photocraft_color::convert::with_cmyk_space(cmyk.as_ref(), || photocraft_compose::surface_to_buffer(s, doc.bounds()).px))
+    Ok(photocraft_color::convert::with_cmyk_space(cmyk.as_ref(), || photocraft_compose::surface_to_buffer(s, doc.bounds()).into_px()))
 }
 
 #[cfg(test)]
