@@ -1128,17 +1128,17 @@ pub(super) mod linux {
         let mut out = Vec::with_capacity(bytes.len());
         let mut index = 0;
         while let Some(&byte) = bytes.get(index) {
-            if byte == b'\\' {
-                if let Some(digits) = bytes.get(index + 1..index + 4) {
-                    let code = digits.iter().try_fold(0u32, |acc, digit| {
-                        let value = digit.checked_sub(b'0')?;
-                        (value < 8).then_some(acc * 8 + u32::from(value))
-                    });
-                    if let Some(byte) = code.and_then(|code| u8::try_from(code).ok()) {
-                        out.push(byte);
-                        index += 4;
-                        continue;
-                    }
+            if byte == b'\\'
+                && let Some(digits) = bytes.get(index + 1..index + 4)
+            {
+                let code = digits.iter().try_fold(0u32, |acc, digit| {
+                    let value = digit.checked_sub(b'0')?;
+                    (value < 8).then_some(acc * 8 + u32::from(value))
+                });
+                if let Some(byte) = code.and_then(|code| u8::try_from(code).ok()) {
+                    out.push(byte);
+                    index += 4;
+                    continue;
                 }
             }
             out.push(byte);

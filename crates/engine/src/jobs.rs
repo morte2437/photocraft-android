@@ -577,7 +577,7 @@ impl SourceFingerprint {
         match source {
             OpenSource::Bytes(b) => Ok(SourceFingerprint::Bytes { len: b.len(), identity: Arc::as_ptr(b) as usize }),
             OpenSource::Path(p) => {
-                Self::path(p.clone(), photocraft_io::FileIdentity::of_path(std::path::Path::new(p)).map_err(|e| EngineError::Other(format!("{p}: {e}")))?)
+                Ok(Self::path(p.clone(), photocraft_io::FileIdentity::of_path(std::path::Path::new(p)).map_err(|e| EngineError::Other(format!("{p}: {e}")))?))
             }
         }
     }

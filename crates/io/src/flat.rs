@@ -1562,7 +1562,7 @@ mod tiff_banded_tests {
         let img = Image::from_raw(64, 64, ChannelLayout::Rgb, CSample::U8, vec![77; 64 * 64 * 3]).unwrap();
         let bytes = codecs::encode(&img, Format::Tiff, &codecs::EncodeOptions::default()).unwrap();
         let bands = codecs::TiffBands::open(&bytes, None, &codecs::Limits::banded()).unwrap();
-        let r = tiff_to_document("small.tif", bands.upright(), || Some(0), BAND_BYTES).unwrap();
+        let r = tiff_to_document("small.tif", bands.upright(), || Some(0), BAND_BYTES, &photocraft_raster::Interrupt::NONE).unwrap();
         assert_eq!((r.document.size.width, r.document.size.height), (64, 64));
     }
 
@@ -1578,7 +1578,7 @@ mod tiff_banded_tests {
             let bytes = codecs::encode(&img, Format::Tiff, &codecs::EncodeOptions::default()).unwrap();
             let bands = codecs::TiffBands::open(&bytes, None, &codecs::Limits::banded()).unwrap();
             let row = w as usize * layout.channels() * sample.bytes();
-            let r = tiff_to_document("rounds.tif", bands, || None, 3 * row).unwrap();
+            let r = tiff_to_document("rounds.tif", bands, || None, 3 * row, &photocraft_raster::Interrupt::NONE).unwrap();
             let f = document_format(layout, sample);
             let want = codecs::decode(&bytes).unwrap().convert(f.layout, f.sample);
             let LayerContent::Raster(s) = &r.document.layers[0].content else { panic!("not a raster layer") };
