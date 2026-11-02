@@ -785,15 +785,20 @@ pub fn open_spelling(app: &mut PhotocraftApp, all_layers: bool) -> Result<Value,
 }
 
 /// Done: an action being recorded gets one Check Spelling step with Check All Layers as the dialog
-/// has it, and an action paused at a Check Spelling step continues.
+/// has it, and an action paused at a Check Spelling step continues on the document it was playing
+/// on. When recording the step fails, the status keeps that error with the playback's outcome.
 pub fn close_spelling(app: &mut PhotocraftApp) {
     let Some(d) = app.ui.type_panels.spell.take() else { return };
-    if app.session.actions.recording.is_some() {
-        let _ = run(app, "edit.checkSpelling", json!({ "allLayers": d.all_layers }));
+    let mut recording_error = None;
+    if app.session.actions.recording.is_some() && run(app, "edit.checkSpelling", json!({ "allLayers": d.all_layers })).is_none() {
+        recording_error = Some(app.ui.status.clone());
     }
     if let Some(token) = d.resume {
-        let fields = serde_json::Map::from_iter([(crate::actions::RESUME.to_string(), json!(token))]);
-        let _ = crate::actions::resume(app, &fields);
+        let _ = crate::actions::resume_spelling(app, token);
+        if let Some(error) = recording_error {
+            app.ui.status = format!("{error} ({})", app.ui.status);
+            app.ui.status_error = true;
+        }
     }
 }
 

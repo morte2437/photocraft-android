@@ -1541,6 +1541,81 @@ fn a_check_spelling_step_with_its_dialog_opens_it_and_done_continues() {
     assert_eq!(texts, ["Teh cat"]);
 }
 
+/// A correction step (`action` set) runs as it did before the dialog toggle applied to Check
+/// Spelling: its dialog switch opens nothing.
+#[test]
+fn a_check_spelling_correction_with_its_dialog_on_runs_without_opening_it() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 300, "height": 100})).unwrap();
+    app.run("type.create", json!({"x": 10, "y": 50, "text": "Teh cat"})).unwrap();
+    let change = json!({"action": "change", "start": 0, "end": 3, "word": "Teh", "replace": "The"});
+    let mut a = Action::new("Fix", vec![("edit.checkSpelling".into(), change), ("layer.new.layer".into(), json!({"name": "after"}))]);
+    a.dialogs.insert(0);
+    app.session.actions.list.push(a);
+    let v = play(&mut app, &json!({"action": "Fix"})).unwrap();
+    assert_eq!(v["ran"], 2, "{v}");
+    assert!(app.ui.type_panels.spell.is_none(), "no dialog opened");
+    let st = app.session.active().unwrap();
+    let texts: Vec<String> = st
+        .doc
+        .walk()
+        .into_iter()
+        .filter_map(|(_, _, l)| match &l.content {
+            photocraft_doc::LayerContent::Text(t) => Some(t.text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(texts, ["The cat"]);
+}
+
+/// Done after another document became active ends the waiting action there: its remaining steps
+/// don't run on the other document.
+#[test]
+fn check_spelling_done_on_another_document_ends_the_waiting_action() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 300, "height": 100})).unwrap();
+    app.run("type.create", json!({"x": 10, "y": 50, "text": "Teh cat"})).unwrap();
+    let mut a = Action::new("Spell", vec![("edit.checkSpelling".into(), json!({"allLayers": false})), ("layer.new.layer".into(), json!({"name": "after"}))]);
+    a.dialogs.insert(0);
+    app.session.actions.list.push(a);
+    let v = play(&mut app, &json!({"action": "Spell"})).unwrap();
+    assert_eq!(v["paused"]["dialog"], crate::type_panels_ui::SPELLING, "{v}");
+    app.run("file.new", json!({"width": 64, "height": 64})).unwrap();
+    crate::type_panels_ui::close_spelling(&mut app);
+    for st in app.session.documents() {
+        assert!(!st.doc.walk().iter().any(|(_, _, l)| l.name == "after"), "a step after the dialog ran");
+    }
+    assert!(app.paused_playbacks.paused.is_empty());
+    assert!(app.ui.status_error, "{}", app.ui.status);
+    assert!(app.ui.status.contains("document"), "{}", app.ui.status);
+}
+
+fn deny_spelling(id: &str, p: &Value) -> photocraft_engine::Result<()> {
+    if id == "edit.checkSpelling" && p.get("action").is_none() { Err(photocraft_engine::EngineError::Other("spelling denied".into())) } else { Ok(()) }
+}
+
+/// Done records the step and continues the waiting action: when recording it fails, the status
+/// keeps that error next to the playback's outcome.
+#[test]
+fn check_spelling_done_keeps_a_recording_error_beside_the_playback_status() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 300, "height": 100})).unwrap();
+    app.run("type.create", json!({"x": 10, "y": 50, "text": "Teh cat"})).unwrap();
+    let mut a = Action::new("Spell", vec![("edit.checkSpelling".into(), json!({"allLayers": false})), ("layer.new.layer".into(), json!({"name": "after"}))]);
+    a.dialogs.insert(0);
+    app.session.actions.list.push(a);
+    let v = play(&mut app, &json!({"action": "Spell"})).unwrap();
+    assert_eq!(v["paused"]["dialog"], crate::type_panels_ui::SPELLING, "{v}");
+    app.run("actions.record", json!({"name": "Rec"})).unwrap();
+    app.session.authorize = Some(deny_spelling);
+    crate::type_panels_ui::close_spelling(&mut app);
+    app.session.authorize = None;
+    assert!(layer_names(&app).contains(&"after".to_string()), "Done played the rest");
+    assert!(app.ui.status_error, "{}", app.ui.status);
+    assert!(app.ui.status.contains("spelling denied"), "{}", app.ui.status);
+    assert!(app.ui.status.contains("Played"), "{}", app.ui.status);
+}
+
 #[test]
 fn check_spelling_opened_again_while_an_action_waits_keeps_its_continuation() {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());

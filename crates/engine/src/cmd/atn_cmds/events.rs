@@ -204,10 +204,10 @@ fn spell_check_from(d: &Descriptor) -> Mapped {
         }
         _ => false,
     };
-    let keys: Vec<String> = d.items.iter().map(|(k, _)| trimmed(k)).collect();
+    // Two keys, read by name: `null` and `Usng` in either order, each once.
     let using = get_obj(d, "Usng").filter(|u| u.class_id.is("spellCheck") && u.items.len() == 1);
-    match (keys.as_slice(), get_ref(d, "null"), using.and_then(|u| get_bool(u, "checkAll"))) {
-        ([null, usng], Some(r), Some(all)) if null == "null" && usng == "Usng" && same_ref(r) => step("edit.checkSpelling", json!({"allLayers": all})),
+    match (d.items.len(), get_ref(d, "null"), using.and_then(|u| get_bool(u, "checkAll"))) {
+        (2, Some(r), Some(all)) if same_ref(r) => step("edit.checkSpelling", json!({"allLayers": all})),
         _ => Mapped::Unsupported { harmless: false },
     }
 }

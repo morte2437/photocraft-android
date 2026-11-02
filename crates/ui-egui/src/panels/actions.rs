@@ -255,7 +255,8 @@ fn play_owned(app: &mut PhotocraftApp, params: &Value, suspended: Option<Value>)
         }
         // Check Spelling's dialog opens with Check All Layers as recorded; Done continues the action.
         // While another action waits at the open dialog, this step fails and the waiting one keeps it.
-        if action.dialogs.contains(&i) && !app.automation_input && id == "edit.checkSpelling" {
+        // A correction (`action` set) opens no dialog and runs below.
+        if action.dialogs.contains(&i) && !app.automation_input && id == "edit.checkSpelling" && p.get("action").is_none() {
             if app.ui.type_panels.spell.as_ref().is_some_and(|d| d.resume.is_some()) {
                 failed = Some(json!({"step": i, "id": id, "error": "Check Spelling is already open for another action"}));
                 break;
@@ -265,6 +266,9 @@ fn play_owned(app: &mut PhotocraftApp, params: &Value, suspended: Option<Value>)
                 break;
             }
             let token = app.paused_playbacks.pause(action.name.clone(), i + 1, app.session.authorize);
+            if let Some(entry) = app.paused_playbacks.paused.get_mut(&token) {
+                entry.doc = app.session.active().map(|d| d.doc.id);
+            }
             if let Some(d) = app.ui.type_panels.spell.as_mut() {
                 d.resume = Some(token);
             }
@@ -823,6 +827,9 @@ pub(crate) struct PausedPlayback {
     /// The steps that Play ran before this pause (earlier actions of the set, and this one's
     /// steps before the dialog), so the final count covers the whole Play.
     ran: u64,
+    /// The document a pause at Check Spelling was playing on. That dialog doesn't block the
+    /// document tabs, so Done ([`resume_spelling`]) continues only on this document.
+    doc: Option<photocraft_doc::DocId>,
 }
 
 /// The paused playbacks, by the token their dialog carries. The dialog's fields hold only the
@@ -836,13 +843,30 @@ pub(crate) struct PausedPlaybacks {
 impl PausedPlaybacks {
     fn pause(&mut self, action: String, from: usize, gate: Option<Gate>) -> u64 {
         self.last = self.last.wrapping_add(1);
-        self.paused.insert(self.last, PausedPlayback { action, from, gate, record: None, then: Vec::new(), ran: 0 });
+        self.paused.insert(self.last, PausedPlayback { action, from, gate, record: None, then: Vec::new(), ran: 0, doc: None });
         self.last
     }
 
     fn take(&mut self, token: &Value) -> Option<PausedPlayback> {
         token.as_u64().and_then(|token| self.paused.remove(&token))
     }
+}
+
+/// Check Spelling's Done for the action paused at its step: the action continues when the document
+/// it was playing on is still the active one, and otherwise ends there with the reason in the
+/// status bar. Returns `Ok` when nothing failed.
+pub(crate) fn resume_spelling(app: &mut PhotocraftApp, token: u64) -> Result<(), String> {
+    let fields = serde_json::Map::from_iter([(RESUME.to_string(), json!(token))]);
+    let Some((from, doc)) = app.paused_playbacks.paused.get(&token).map(|p| (p.from, p.doc)) else {
+        return resume(app, &fields);
+    };
+    if doc.is_none() || doc == app.session.active().map(|d| d.doc.id) {
+        return resume(app, &fields);
+    }
+    abandoned(app, &fields);
+    let error = "the active document changed while Check Spelling was open";
+    report_play(app, &json!({"failed": {"step": from.saturating_sub(1), "id": "edit.checkSpelling", "error": error}}));
+    Err(error.into())
 }
 
 /// A step dialog confirmed: continue the action after it (`dialogs::confirm` calls this).

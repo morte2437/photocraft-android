@@ -5868,7 +5868,9 @@ fn other_check_spelling_forms_stay_kept_steps_and_corrections_are_not_saved() {
     other_class.items[1].1 = D::Descriptor(desc("findReplace").with("checkAll", D::Boolean(true)));
     let mut more_using = spell_check(true);
     more_using.items[1].1 = D::Descriptor(desc("spellCheck").with("checkAll", D::Boolean(true)).with("Fwd ", D::Boolean(true)));
-    for d in [extra, other_target, other_class, more_using, desc("null")] {
+    let mut twice = spell_check(true);
+    twice.items[1] = twice.items[0].clone();
+    for d in [extra, other_target, other_class, more_using, twice, desc("null")] {
         assert!(matches!((event.from)(&d), Mapped::Unsupported { harmless: false }), "{d:?}");
     }
     for params in [
@@ -5878,6 +5880,21 @@ fn other_check_spelling_forms_stay_kept_steps_and_corrections_are_not_saved() {
         json!({"allLayers": "yes"}),
     ] {
         assert!(export_item("edit.checkSpelling", &params, "S").is_none(), "{params}");
+    }
+}
+
+/// Check Spelling's `null` and `Usng` are read by name: a step that holds them in the other
+/// order loads as the same step.
+#[test]
+fn check_spelling_reads_its_keys_in_either_order() {
+    let event = event_for(&AtnEvent::name("spellCheck")).unwrap();
+    for all in [true, false] {
+        let mut reversed = spell_check(all);
+        reversed.items.reverse();
+        match (event.from)(&reversed) {
+            Mapped::Steps(steps) => assert_eq!(steps, [("edit.checkSpelling".to_string(), json!({"allLayers": all}))]),
+            Mapped::Unsupported { .. } => panic!("Usng before null was kept: {reversed:?}"),
+        }
     }
 }
 
