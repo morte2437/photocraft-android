@@ -51,7 +51,8 @@ fn replace_sample(format: &PixelFormat, pixel: &mut [f32], sample: &[f32; 4], ra
     if edited[0] == original {
         return false;
     }
-    let mixed = std::array::from_fn(|c| original[c] * (1.0 - selected) + edited[0][c] * selected);
+    let mut mixed = std::array::from_fn(|c| original[c] * (1.0 - selected) + edited[0][c] * selected);
+    mixed[3] = original[3];
     photocraft_raster::from_rgba_into(format, mixed, pixel);
     true
 }

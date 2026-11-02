@@ -144,7 +144,9 @@ fn direct_forms_save_exact_descriptors_including_fractional_rgb() {
     changed.items[5].1 = D::Integer(-20);
     for descriptor in [replace(), changed] {
         let s = load(*b"RplC", descriptor.clone(), "image.adjustments.replaceColor");
-        assert_eq!(saved(&s).descriptor, Some(descriptor));
+        let item = saved(&s);
+        assert_eq!(item.event, AtnEvent::Code(*b"RplC"));
+        assert_eq!(item.descriptor, Some(descriptor));
     }
 }
 
@@ -645,6 +647,30 @@ fn lab_replace_preserves_alpha_and_rejects_locked_or_mismatched_surfaces() {
     let original = mismatch.active().unwrap().doc.clone();
     assert!(mismatch.execute("image.adjustments.replaceColor", p).is_err());
     assert_eq!(mismatch.active().unwrap().doc, original);
+}
+
+/// Fractional selection mixing changes RGB while preserving each F32 alpha bit exactly.
+#[test]
+fn lab_replace_fractional_selection_preserves_f32_alpha_bits() {
+    for coverage in [53.0 / 255.0, 127.0 / 255.0] {
+        let mut s = fixture("rgb", 32);
+        s.edit("fractional alpha and selection", |doc, active| {
+            doc.layer_mut(active.unwrap()).unwrap().surface_mut().unwrap().write_region(photocraft_doc::Rect::new(2, 0, 3, 1), &[0.7, 0.2, 0.6, 0.7]);
+            doc.selection = Some(photocraft_raster::Surface::with_default(photocraft_doc::PixelFormat::GRAY8, &[coverage]));
+            Ok(())
+        })
+        .unwrap();
+        let before = s.active().unwrap().doc.clone();
+        let original = raw(&s);
+        s.execute("image.adjustments.replaceColor", json!({"labMinimum":[0,-128,-128],"labMaximum":[100,127,127],"lightness":100})).unwrap();
+        let after = raw(&s);
+        assert_ne!(&after[8..11], &original[8..11]);
+        for (after, before) in after.chunks_exact(4).zip(original.chunks_exact(4)) {
+            assert_eq!(after[3].to_bits(), before[3].to_bits(), "coverage {coverage}");
+        }
+        assert!(s.undo());
+        assert_eq!(s.active().unwrap().doc, before);
+    }
 }
 
 /// A zero shift must not alter native ink values through an unnecessary RGB separation.
