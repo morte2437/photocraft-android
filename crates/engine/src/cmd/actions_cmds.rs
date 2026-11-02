@@ -253,34 +253,69 @@ pub fn playback_plan(s: &Session, p: &Value) -> Result<(Action, usize)> {
     Ok((action, from))
 }
 
-/// The actions that `steps` call through Play Action steps and the branches of Conditional steps,
+/// The actions that `steps` call through Play Action, explicit/named Batch and Conditional steps,
 /// followed transitively, in list order, so a droplet can run without the Actions panel that made
 /// it (#2794, #6804). Index references in `steps` and in the copies become names, which resolve
 /// without the rest of the list. A target that doesn't resolve is left alone: it fails at
 /// playback, as it would have before.
 pub fn called_actions(list: &[Action], steps: &mut [(String, Value)]) -> Vec<Action> {
+    fn step_ref(step: &mut Value) -> Option<(String, &mut Value)> {
+        match step {
+            Value::Array(a) => {
+                let id = a.first()?.as_str()?.to_string();
+                Some((id, a.get_mut(1)?))
+            }
+            Value::Object(o) => {
+                let id = o.get("command").or_else(|| o.get("id"))?.as_str()?.to_string();
+                Some((id, o.get_mut("params")?))
+            }
+            // A parameter-less step cannot name another action.
+            _ => None,
+        }
+    }
     fn targets(list: &[Action], steps: &mut [(String, Value)], depth: usize, queue: &mut Vec<(usize, usize)>) {
+        let mut pending = Vec::new();
         for (id, params) in steps.iter_mut() {
-            match id.as_str() {
-                "actions.play" | "file.automate.batch" => {
-                    let resolved =
-                        if id == "file.automate.batch" { crate::file_cmds::batch_action(list, params) } else { resolve(list, params, "actions.play") };
-                    let Ok(i) = resolved else { continue };
-                    if let (Some(action), Some(obj)) = (list.get(i), params.as_object_mut()) {
-                        obj.insert("action".into(), json!(action.name));
+            pending.push((id.clone(), params));
+            while let Some((id, params)) = pending.pop() {
+                // Follow the same explicit-step precedence as Batch. Walk the JSON tree with a
+                // heap stack; containers do not consume action-call depth or recurse on the stack.
+                if id == "file.automate.batch" {
+                    let explicit = if params.get("steps").is_some() {
+                        Some("steps")
+                    } else if params.get("action").is_some_and(Value::is_array) {
+                        Some("action")
+                    } else {
+                        None
+                    };
+                    if let Some(key) = explicit {
+                        if let Some(children) = params.get_mut(key).and_then(Value::as_array_mut) {
+                            pending.extend(children.iter_mut().rev().filter_map(step_ref));
+                        }
+                        continue;
                     }
-                    queue.push((i, depth));
                 }
-                // Conditional branches only take names, so there is nothing to rewrite.
-                "actions.conditional" => {
-                    for key in ["then", "else"] {
-                        let Some(name) = params.get(key).and_then(Value::as_str) else { continue };
-                        if let Some(i) = list.iter().position(|a| a.name == name) {
-                            queue.push((i, depth));
+                match id.as_str() {
+                    "actions.play" | "file.automate.batch" => {
+                        let resolved =
+                            if id == "file.automate.batch" { crate::file_cmds::batch_action(list, params) } else { resolve(list, params, "actions.play") };
+                        let Ok(i) = resolved else { continue };
+                        if let (Some(action), Some(obj)) = (list.get(i), params.as_object_mut()) {
+                            obj.insert("action".into(), json!(action.name));
+                        }
+                        queue.push((i, depth));
+                    }
+                    // Conditional branches only take names, so there is nothing to rewrite.
+                    "actions.conditional" => {
+                        for key in ["then", "else"] {
+                            let Some(name) = params.get(key).and_then(Value::as_str) else { continue };
+                            if let Some(i) = list.iter().position(|a| a.name == name) {
+                                queue.push((i, depth));
+                            }
                         }
                     }
+                    _ => {}
                 }
-                _ => {}
             }
         }
     }

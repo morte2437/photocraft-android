@@ -266,8 +266,10 @@ kernel cells, scale 1..9999 and offset -9999..9999. Fibers uses the correspondin
 part of [#10620](https://github.com/storytold/photocraft/pull/10620), revision
 `33ee38b43165610b295e91f8b99841c591cf97b8`, with the now-measured variance and
 strength limits 1..64. Its seed retains all 32 bits. Both native commands already
-support these ranges. Unrepresented types, settings, omitted fields or values
-that would clamp stay complete preserved steps; export refuses native settings
+support these ranges. Custom requires all 25 kernel cells; omitted scale and offset
+use 1 and 0. Fibers defaults to variance 16 and strength 4 and captures an omitted seed
+once for later playback and save. Unrepresented types, duplicate fields, settings or
+values that would clamp stay complete preserved steps; export refuses native settings
 that the recorded form cannot retain.
 
 ### Color Lookup with an embedded LUT

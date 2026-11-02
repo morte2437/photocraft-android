@@ -606,6 +606,76 @@ fn batch_save_close_preserves_additional_images_and_allows_single_images() {
     }
 }
 
+/// Droplet dependencies retain explicit Batch calls and rewrite their indices before packaging.
+#[test]
+fn called_actions_packages_explicit_batch_children_and_replays_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("input.png");
+    std::fs::write(&input, small_image(photocraft_codecs::Format::Png)).unwrap();
+    let list = vec![Action::new("Decoy", vec![]), Action::new("Child", vec![("image.imageSize".into(), json!({"width":3,"height":1,"resample":"nearest"}))])];
+    for field in ["steps", "action"] {
+        for shape in 0..3 {
+            let step = match shape {
+                0 => json!(["actions.play", {"action":1}]),
+                1 => json!({"command":"actions.play","params":{"action":1},"kept":17}),
+                _ => json!({"id":"actions.play","params":{"action":1},"kept":17}),
+            };
+            let mut params = json!({"input":[input],"output":dir.path().join(format!("{field}-{shape}"))});
+            params[field] = json!([step]);
+            if field == "steps" {
+                params["action"] = json!(0);
+            }
+            let mut steps = vec![("file.automate.batch".into(), params)];
+            let captured = photocraft_engine::actions_cmds::called_actions(&list, &mut steps);
+            assert_eq!(captured.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["Child"]);
+            let rewritten = &steps[0].1[field][0];
+            let params = if shape == 0 { &rewritten[1] } else { &rewritten["params"] };
+            assert_eq!(params["action"], "Child");
+            if shape != 0 {
+                assert_eq!(rewritten["kept"], 17);
+            }
+            let mut s = Session::new();
+            s.actions.list = captured;
+            let result = s.execute(&steps[0].0, steps[0].1.clone()).unwrap();
+            assert_eq!(result["files"].as_array().unwrap().len(), 1, "{result}");
+            let doc = photocraft_io::import("saved.png", &std::fs::read(result["files"][0].as_str().unwrap()).unwrap()).unwrap().document;
+            assert_eq!(doc.size, photocraft_doc::Size::new(3, 1));
+        }
+    }
+}
+
+/// JSON containers do not consume action-call depth; the existing cycle and sixteen-call limits remain.
+#[test]
+fn called_actions_nested_batch_shapes_keep_cycle_and_action_depth_bounds() {
+    let cycle = vec![Action::new("Child", vec![("actions.play".into(), json!({"action":0}))])];
+    let mut step = json!(["actions.play", {"action":0}]);
+    for level in 0..64 {
+        let key = if level % 2 == 0 { "steps" } else { "action" };
+        let mut params = json!({"kept":level});
+        params[key] = json!([step]);
+        step = json!({"id":"file.automate.batch","params":params});
+    }
+    let mut steps = vec![("file.automate.batch".into(), json!({"steps":[step]}))];
+    let captured = photocraft_engine::actions_cmds::called_actions(&cycle, &mut steps);
+    assert_eq!(captured.len(), 1);
+    assert_eq!(captured[0].steps[0].1["action"], "Child");
+    let mut node = &steps[0].1["steps"][0];
+    for level in (0..64).rev() {
+        let params = &node["params"];
+        assert_eq!(params["kept"], level);
+        node = &params[if level % 2 == 0 { "steps" } else { "action" }][0];
+    }
+    assert_eq!(node[1]["action"], "Child");
+    let chain: Vec<_> =
+        (0..17).map(|i| Action::new(format!("A{i}"), if i == 16 { vec![] } else { vec![("actions.play".into(), json!({"action":i+1}))] })).collect();
+    let mut steps = vec![("file.automate.batch".into(), json!({"steps":[["actions.play",{"action":0}]]}))];
+    assert_eq!(photocraft_engine::actions_cmds::called_actions(&chain, &mut steps).len(), 16);
+    let mut invalid = vec![("file.automate.batch".into(), json!({"steps":null,"action":0}))];
+    let before = invalid.clone();
+    assert!(photocraft_engine::actions_cmds::called_actions(&chain, &mut invalid).is_empty());
+    assert_eq!(invalid, before, "malformed explicit steps must not fall back to a named action");
+}
+
 /// Scripts nested through Batch retain the caller's depth and cumulative spending across failed inputs.
 #[test]
 fn batch_carries_script_limits_and_restores_balanced_depth() {
