@@ -378,14 +378,14 @@ fn nested_imports_consume_from_shared_allowance_and_do_not_reset_parent() {
     crate::psd_gate::set_active_attempt_budget(2 * gb);
 
     // First nested consume fits within 2 GB
-    assert!(crate::psd_gate::consume_attempt_allowance(1 * gb).is_ok());
+    assert!(crate::psd_gate::consume_attempt_allowance(gb).is_ok());
 
     // Second nested consume exceeds remaining 1 GB
     let err = crate::psd_gate::consume_attempt_allowance(2 * gb).unwrap_err();
-    assert!(matches!(err, IoError::PsdImportBudget { required, limit } if required == 2 * gb && limit == 1 * gb));
+    assert!(matches!(err, IoError::PsdImportBudget { required, limit } if required == 2 * gb && limit == gb));
 
     // Allowance is still 1 GB (failed attempt does not reset or corrupt parent)
-    assert!(crate::psd_gate::consume_attempt_allowance(1 * gb).is_ok());
+    assert!(crate::psd_gate::consume_attempt_allowance(gb).is_ok());
     assert!(crate::psd_gate::consume_attempt_allowance(1).is_err());
 }
 
@@ -397,7 +397,7 @@ fn nested_tiff_layer_import_consumes_composite_and_estimate_without_resetting_pa
     crate::psd_gate::set_active_attempt_budget(3 * gb);
 
     assert!(crate::psd_gate::is_holding_admission());
-    assert!(crate::psd_gate::consume_attempt_allowance(1 * gb).is_ok());
+    assert!(crate::psd_gate::consume_attempt_allowance(gb).is_ok());
     assert!(crate::psd_gate::consume_attempt_allowance(2 * gb).is_ok());
     assert!(crate::psd_gate::consume_attempt_allowance(1).is_err());
 }

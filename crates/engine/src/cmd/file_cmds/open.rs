@@ -179,7 +179,7 @@ pub(super) fn approve_memory(s: &mut Session, p: &Value) -> Result<Value> {
             return Err(EngineError::BadParams { cmd: "file.approveMemory".into(), msg: "expected boolean for \"approve\"".into() });
         }
     };
-    let background = match p.get("background") {
+    let _background = match p.get("background") {
         None | Some(Value::Null) => true,
         Some(Value::Bool(b)) => *b,
         Some(_) => {
@@ -214,7 +214,7 @@ pub(super) fn approve_memory(s: &mut Session, p: &Value) -> Result<Value> {
             preflight.confirm_damage,
             Some(preflight.required),
             Some(preflight.fingerprint),
-            background,
+            _background,
         )?;
         match started {
             crate::jobs::Started::Done(v) => Ok(json!({"id": id, "approved": true, "result": v})),

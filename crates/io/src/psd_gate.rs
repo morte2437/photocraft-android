@@ -9,6 +9,7 @@ use std::cell::Cell;
 use std::marker::PhantomData;
 use std::sync::{Condvar, Mutex, OnceLock};
 use std::thread::ThreadId;
+#[cfg(any(test, not(target_arch = "wasm32")))]
 use std::time::Duration;
 
 use crate::IoError;
@@ -88,7 +89,7 @@ pub(crate) fn consume_attempt_allowance(bytes: u64) -> Result<(), IoError> {
 /// `ctl.check()` every 50 ms while waiting so cancellation halts the wait immediately.
 pub(crate) fn acquire_decode_admission(ctl: &photocraft_raster::Interrupt) -> Result<AdmissionGuard, IoError> {
     let current_thread = std::thread::current().id();
-    let (mutex, cvar) = get_gate();
+    let (mutex, _cvar) = get_gate();
     let mut state = mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
     if state.active && state.owner == Some(current_thread) {
@@ -106,7 +107,7 @@ pub(crate) fn acquire_decode_admission(ctl: &photocraft_raster::Interrupt) -> Re
     #[cfg(not(target_arch = "wasm32"))]
     while state.active {
         ctl.check().map_err(|_| IoError::Cancelled)?;
-        let (next_state, _) = cvar.wait_timeout(state, Duration::from_millis(50)).unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (next_state, _) = _cvar.wait_timeout(state, Duration::from_millis(50)).unwrap_or_else(std::sync::PoisonError::into_inner);
         state = next_state;
     }
 

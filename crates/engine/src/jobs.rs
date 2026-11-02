@@ -610,16 +610,6 @@ impl Session {
         self.dispatch(id, params, true)
     }
 
-    /// Open a file in the background: read (for a path) and decode on a worker, with progress
-    /// (per layer for PSD/PSB) and cancellation, then add the document like
-    /// [`Session::open_document`] (Color Settings policies apply). `name` names the document.
-    /// The job's result is `{document, docId, name, warnings, color}`; on wasm it runs inline.
-    /// `document` is the tab index at apply time; resolve `docId` before handling a delayed
-    /// completion, since earlier handlers may have moved or closed tabs. When
-    /// Color Settings ask about the file's profile, the document is held back instead and the
-    /// result is `{held, name, warnings, color}` (`color` the question): take it with
-    /// [`Session::take_held_open`] once answered.
-
     pub const MAX_PENDING_PREFLIGHTS: usize = 32;
 
     pub fn store_pending_preflight(&mut self, mut preflight: PendingPsdPreflight) -> Result<u64> {
@@ -673,6 +663,15 @@ impl Session {
         self.start_open_inner(name, source, confirm_damage, true, approved_estimate, expected_fingerprint, background)
     }
 
+    /// Open a file in the background: read (for a path) and decode on a worker, with progress
+    /// (per layer for PSD/PSB) and cancellation, then add the document like
+    /// [`Session::open_document`] (Color Settings policies apply). `name` names the document.
+    /// The job's result is `{document, docId, name, warnings, color}`; on wasm it runs inline.
+    /// `document` is the tab index at apply time; resolve `docId` before handling a delayed
+    /// completion, since earlier handlers may have moved or closed tabs. When
+    /// Color Settings ask about the file's profile, the document is held back instead and the
+    /// result is `{held, name, warnings, color}` (`color` the question): take it with
+    /// [`Session::take_held_open`] once answered.
     pub fn start_open(&mut self, name: &str, source: OpenSource) -> Result<Started> {
         self.start_open_inner(name, source, false, false, None, None, true)
     }
@@ -710,7 +709,7 @@ impl Session {
         opts.psd_approved_estimate = approved_estimate;
         let test_memory_scope = photocraft_io::memory::TestMemoryScope::capture();
         enum WorkResult {
-            Decoded((photocraft_io::ImportResult, bool)),
+            Decoded(Box<(photocraft_io::ImportResult, bool)>),
             PreflightNeeded { required: u64, soft_limit: u64, hard_limit: u64, available_ram: Option<u64>, source: OpenSource, fingerprint: SourceFingerprint },
         }
         self.start_job_with_spawn(
@@ -743,7 +742,7 @@ impl Session {
                         ctx.progress(0.02, "Decoding");
                         let res = ctx.stage(0.02, 0.95, "Decoding", |ctl| photocraft_io::import_for_open_with(&name_w, &bytes, &opts, ctl));
                         match res {
-                            Ok(imported) => WorkResult::Decoded(imported),
+                            Ok(imported) => WorkResult::Decoded(Box::new(imported)),
                             Err(photocraft_io::IoError::PsdApprovalRequired { required, soft_limit, hard_limit, available_ram }) if confirm_damage => {
                                 let src = OpenSource::Bytes(bytes);
                                 let fingerprint = SourceFingerprint::of(&src)?;
@@ -767,7 +766,7 @@ impl Session {
                     OpenSource::Path(p) => {
                         let res = ctx.stage(0.0, 0.95, "Decoding", |ctl| import_path(&name_w, &p, &opts, ctl));
                         match res {
-                            Ok(imported) => WorkResult::Decoded(imported),
+                            Ok(imported) => WorkResult::Decoded(Box::new(imported)),
                             Err(photocraft_io::IoError::PsdApprovalRequired { required, soft_limit, hard_limit, available_ram }) if confirm_damage => {
                                 let src = OpenSource::Path(p);
                                 let fingerprint = SourceFingerprint::of(&src)?;
@@ -826,7 +825,8 @@ impl Session {
                         "availableRam": available_ram,
                     }))
                 }
-                WorkResult::Decoded((mut r, damaged)) => {
+                WorkResult::Decoded(imported) => {
+                    let (mut r, damaged) = *imported;
                     crate::file_cmds::tag_exr_colorspace(s, &name_a, &mut r.document);
                     crate::file_cmds::raw_defaults(s, &r.warnings, &mut r.document);
                     let raw = r.warnings.iter().any(|w| w.contains(photocraft_io::raw::DEVELOPED_NOTE));
