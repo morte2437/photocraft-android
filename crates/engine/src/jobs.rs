@@ -886,7 +886,7 @@ impl Session {
         // Commands this one runs on its own behalf journal after this mark (#3067).
         let nested_from = self.journal.len();
         let pre_selected = if self.actions.recording.is_some() { self.active().map(|st| st.selected_layers()) } else { None };
-        let record_before = crate::actions_record::Before::capture(self);
+        let mut record_before = crate::actions_record::Before::capture(self);
         // A replayable command is recorded as one step, so recording pauses while it runs: an
         // action it plays (a script step) must not flush the steps it ran so far into the action
         // being recorded, nor move the recording mark past the entries it is about to replace.
@@ -924,7 +924,7 @@ impl Session {
                 job.journal = spec.journal;
                 job.recorded_by = self.actions.recording.map(|_| self.actions.take);
                 job.pre_selected = pre_selected.clone();
-                job.before = record_before;
+                job.before = std::mem::take(&mut record_before);
                 let jid = job.id;
                 self.jobs.running.push(job);
                 Ok(Started::Job(jid))
@@ -948,11 +948,12 @@ impl Session {
                 Ok(Started::Done(v))
             }
         };
-        // A closed document's freed buffers went to the scratch pool (`before` kept the active
-        // one alive until here): hand them back to the OS (#10479). Compared by id, since Split
-        // and Merge Channels close documents while opening others.
+        // A closed document's freed buffers went to the scratch pool (`before` and the action
+        // recording snapshot kept it alive until here). Drop both before handing the pool back
+        // to the OS (#10479). Compare ids since Split/Merge Channels open replacement documents.
         if docs_before.iter().any(|id| !self.docs.iter().any(|st| st.doc.id == *id)) {
             drop(before);
+            drop(record_before);
             photocraft_raster::scratch::release();
         }
         out
