@@ -190,6 +190,8 @@ pub struct Session {
     pub(crate) batch_open: Option<file_cmds::BatchOpen>,
     /// Import diagnostics retained by a Batch scratch that suppresses only profile prompts.
     pub(crate) batch_open_notices: Option<Vec<Value>>,
+    /// Frozen RAW workflow settings for one noninteractive Batch input.
+    pub(crate) batch_raw_open: Option<prefs::RawDefaults>,
     /// Admitted document identities in opening order, independent of visual-tab reordering.
     open_document_order: Vec<photocraft_doc::DocId>,
     active: Option<usize>,

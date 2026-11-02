@@ -152,12 +152,18 @@ pub fn open_bytes_as(s: &mut Session, name: &str, bytes: &[u8], as_ext: Option<&
         Some(ext) => format!("{}.{}", stem(name), ext.trim_start_matches('.')),
         None => name.to_string(),
     };
-    let r = if s.batch_open_notices.is_some() {
-        photocraft_io::import_with_options(&decode_name, bytes, &crate::jobs::import_options(s.prefs()))
+    let raw = super::raw_open::prepare(s, &decode_name, path.as_deref(), bytes)?;
+    let (r, raw_settings) = if let Some((imported, settings)) = raw {
+        (imported, Some(settings))
     } else {
-        photocraft_io::import(&decode_name, bytes)
-    }
-    .map_err(|e| EngineError::Other(format!("{decode_name}: {e}")))?;
+        let r = if s.batch_open_notices.is_some() {
+            photocraft_io::import_with_options(&decode_name, bytes, &crate::jobs::import_options(s.prefs()))
+        } else {
+            photocraft_io::import(&decode_name, bytes)
+        }
+        .map_err(|e| EngineError::Other(format!("{decode_name}: {e}")))?;
+        (r, None)
+    };
     if (s.batch_open.is_some() || s.batch_open_notices.is_some()) && r.preview_only {
         return Err(EngineError::Other(format!("{name}: only an embedded preview could be read; Batch cannot process it as the source")));
     }
@@ -174,10 +180,16 @@ pub fn open_bytes_as(s: &mut Session, name: &str, bytes: &[u8], as_ext: Option<&
             path
         }
     };
+    if raw_settings.is_some() && s.color.open_question(&doc).is_some() {
+        return Err(EngineError::Other(format!("{name}: a color profile question requires interactive opening or suppressWarnings")));
+    }
     // Color Settings policies (preserve / convert / discard the embedded profile).
     let (i, color) = s.open_document(doc, path.filter(|_| !r.source_read_only));
     if let Some(st) = s.active_mut() {
         st.source_read_only = r.source_read_only;
+    }
+    if let Some(settings) = raw_settings {
+        super::raw_open::finish(s, settings)?;
     }
     batch_open_notice(s, name, &r.warnings, &color);
     // Import notes (e.g. how a camera raw was developed, or that only its preview opened).

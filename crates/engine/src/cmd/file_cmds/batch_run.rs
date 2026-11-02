@@ -194,6 +194,7 @@ struct InputOpen {
     check_format: bool,
     from_action: bool,
     quiet_profiles: bool,
+    quiet_raw: bool,
 }
 
 /// Check collisions before input reads and isolate each file in a scratch session.
@@ -215,11 +216,17 @@ fn process_outputs<'a>(
     let mut written = OutputClaims::default();
     for (path, out) in outputs {
         let mut scratch = Session::new();
-        if open.quiet_profiles {
+        if open.quiet_profiles || open.quiet_raw {
             scratch.prefs = s.prefs.clone();
             scratch.color.settings = s.color.settings.clone();
-            scratch.color.settings.ask_on_mismatch = false;
-            scratch.color.settings.ask_on_missing = false;
+            if open.quiet_profiles {
+                scratch.color.settings.ask_on_mismatch = false;
+                scratch.color.settings.ask_on_missing = false;
+            }
+            scratch.authorize = s.authorize;
+            if open.quiet_raw {
+                scratch.batch_raw_open = Some(s.batch_raw_open.as_ref().unwrap_or(&s.prefs().raw_defaults).clone());
+            }
             scratch.batch_open_notices = Some(Vec::new());
         }
         let r = (|| -> Result<()> {
@@ -235,7 +242,7 @@ fn process_outputs<'a>(
                 scratch.batch_open = Some(super::open::BatchOpen { path: path.to_string(), sources: Vec::new(), raw_ppi });
             } else {
                 let bytes = read_file(path)?;
-                if open.quiet_profiles {
+                if open.quiet_profiles || open.quiet_raw {
                     super::open::open_bytes_as(&mut scratch, &file_name(path), &bytes, None, Some(path.to_string()))?;
                 } else {
                     let doc = import_at_raw_ppi(raw_ppi, &file_name(path), &bytes)?;
@@ -331,6 +338,11 @@ pub(crate) fn batch_action(list: &[crate::actions_cmds::Action], p: &Value) -> R
 /// Apply the selected file-error policy while retaining per-file results for direct callers.
 pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "file.automate.batch";
+    let quiet_raw = match p.get("suppressOpenOptions") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(value)) => *value,
+        _ => return Err(EngineError::BadParams { cmd: cmd.into(), msg: "suppressOpenOptions must be a boolean".into() }),
+    };
     let quiet_profiles = match p.get("suppressWarnings") {
         None | Some(Value::Null) => false,
         Some(Value::Bool(value)) => *value,
@@ -547,7 +559,7 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
         carried.set(scratch.actions.playback_steps);
         result
     };
-    let open = InputOpen { check_format: check_folder_format, from_action: override_open, quiet_profiles };
+    let open = InputOpen { check_format: check_folder_format, from_action: override_open, quiet_profiles, quiet_raw };
     let r = match names {
         _ if save_and_close => process_outputs(s, inputs.iter().map(|input| (input.path.as_str(), input.path.clone())), save, None, stop_on_error, open, &run),
         Some(names) => {

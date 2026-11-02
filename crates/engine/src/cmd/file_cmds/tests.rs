@@ -509,6 +509,54 @@ fn batch_quiet_profile_open_uses_caller_policy_and_retains_diagnostics() {
     assert!(!std::path::Path::new(&invalid).exists());
 }
 
+/// Quiet RAW opening applies supported prior XMP and refuses settings or reads it cannot honor.
+#[test]
+fn batch_quiet_raw_applies_prior_settings_and_workflow_without_touching_inputs() {
+    use photocraft_raw::testgen::{DngSpec, mosaic, scene};
+    let dir = tmp("batch-quiet-raw");
+    let path = join(&dir, "raw.dng");
+    let (w, h) = (24, 16);
+    let bytes = DngSpec::cfa(w, h, mosaic(&scene(w, h), w, [0, 1, 1, 2], 0, 65535)).build();
+    std::fs::write(&path, &bytes).unwrap();
+    let sidecar = join(&dir, "raw.xmp");
+    let settings = photocraft_algo::camera_raw::CameraRaw { exposure: 1.0, ..Default::default() };
+    let xmp = photocraft_io::camera_raw_xmp::save(&settings);
+    std::fs::write(&sidecar, &xmp).unwrap();
+    let mut s = Session::new();
+    s.execute("prefs.set", json!({"path":"rawDefaults.resolution","value":240})).unwrap();
+    let prefs = serde_json::to_value(s.prefs()).unwrap();
+    let output = join(&dir, "out");
+    let p = json!({"input":[path],"output":output,"format":"psd","suppressOpenOptions":true,"suppressWarnings":true,"steps":[]});
+    let result = s.execute("file.automate.batch", p.clone()).unwrap();
+    assert!(result["errors"].as_array().unwrap().is_empty(), "{result}");
+    let actual = photocraft_io::import("raw.psd", &std::fs::read(join(&output, "raw.psd")).unwrap()).unwrap().document;
+    assert_eq!(actual.resolution_dpi, 240.0);
+    let (expected, _) =
+        photocraft_io::raw::import_raw_tuned("raw.dng", &bytes, &photocraft_io::raw::RawTuning { exposure: 1.0, ..Default::default() }).unwrap();
+    let mut oracle = Session::new();
+    oracle.add_document(expected.document, None);
+    oracle.execute("edit.convertToProfile", json!({"profile":s.prefs().raw_defaults.color_space.profile_id(),"intent":"relative"})).unwrap();
+    let area = Rect::new(0, 0, w as i32, h as i32);
+    let got = photocraft_compose::render(&actual, area);
+    let want = photocraft_compose::render(doc(&oracle), area);
+    assert!(got.px.iter().zip(&want.px).all(|(got, want)| got.iter().zip(want).all(|(a, b)| (a - b).abs() < 1.0 / 65535.0)));
+    let saved = std::fs::read(join(&output, "raw.psd")).unwrap();
+    std::fs::write(&sidecar, xmp.replace("crs:Exposure2012=", "crs:Temperature=")).unwrap();
+    let failed = s.execute("file.automate.batch", p.clone()).unwrap();
+    assert!(failed["errors"][0]["error"].as_str().unwrap().contains("Temperature"), "{failed}");
+    assert_eq!(std::fs::read(join(&output, "raw.psd")).unwrap(), saved);
+    fn allow(_: &str, _: &Value) -> Result<()> {
+        Ok(())
+    }
+    s.authorize = Some(allow);
+    let failed = s.execute("file.automate.batch", p).unwrap();
+    assert!(failed["errors"][0]["error"].as_str().unwrap().contains("no implicit read capability"), "{failed}");
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    assert_eq!(serde_json::to_value(s.prefs()).unwrap(), prefs);
+    assert!(s.batch_raw_open.is_none());
+    assert!(s.batch_open_notices.is_none());
+}
+
 fn tmp(name: &str) -> String {
     let d = std::env::temp_dir().join(format!("photocraft-file-cmds-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);

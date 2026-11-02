@@ -178,12 +178,14 @@ fn batch_override_open_and_unrepresented_open_settings_round_trip() {
         p.as_object_mut().unwrap().remove("__atnBatch");
         p["overrideOpen"] = json!(enabled);
         p["suppressWarnings"] = json!(enabled);
+        p["suppressOpenOptions"] = json!(enabled);
         let a = Action::new("Driver", vec![("file.automate.batch".into(), p)]);
         let (bytes, skipped) = export("S", &[&a], &[], false).unwrap();
         assert!(skipped.is_empty());
         let loaded = import(&bytes).unwrap();
         assert_eq!(loaded.actions[0].steps[0].1["overrideOpen"], enabled);
         assert_eq!(loaded.actions[0].steps[0].1["suppressWarnings"], enabled);
+        assert_eq!(loaded.actions[0].steps[0].1["suppressOpenOptions"], enabled);
         let (again, skipped) = export("S", &[&loaded.actions[0]], &[], false).unwrap();
         assert!(skipped.is_empty());
         assert_eq!(atn::parse(&again).unwrap().actions[0].items[0].descriptor, atn::parse(&bytes).unwrap().actions[0].items[0].descriptor);

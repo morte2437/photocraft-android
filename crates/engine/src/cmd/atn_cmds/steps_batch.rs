@@ -112,10 +112,11 @@ fn read(d: &Descriptor) -> Option<Value> {
     if !keys(d, &["null", "OvrO", "Fldr", "suppressWarnings", "suppressOpenOptions", "Usng", "T   ", "SvAn", "Ovrd", "fileNamingRules"]) {
         return None;
     }
-    // RAW opening-dialog suppression and Alias payloads stay whole until represented.
-    if d.get("suppressOpenOptions").is_some_and(|v| v != &D::Boolean(false)) {
-        return None;
-    }
+    let quiet_raw = match d.get("suppressOpenOptions") {
+        None => None,
+        Some(D::Boolean(value)) => Some(*value),
+        _ => return None,
+    };
     let quiet_profiles = match d.get("suppressWarnings") {
         None => None,
         Some(D::Boolean(value)) => Some(*value),
@@ -137,6 +138,9 @@ fn read(d: &Descriptor) -> Option<Value> {
     let mut p = json!({"input":path_text(d.get("null")?)?,"stopOnError":true,"includeNonImages":true});
     if let Some(value) = quiet_profiles {
         p["suppressWarnings"] = json!(value);
+    }
+    if let Some(value) = quiet_raw {
+        p["suppressOpenOptions"] = json!(value);
     }
     if let Some(value) = override_open {
         p["overrideOpen"] = json!(value);
@@ -201,6 +205,7 @@ pub(super) fn batch_to(_: &str, p: &Value) -> Option<Descriptor> {
             "overrideSaveAs",
             "overrideOpen",
             "suppressWarnings",
+            "suppressOpenOptions",
             "stopOnError",
             "includeNonImages",
             "namingComponents",
@@ -258,6 +263,9 @@ pub(super) fn batch_to(_: &str, p: &Value) -> Option<Descriptor> {
     let mut d = d.with("Ovrd", D::Boolean(p.get("overrideSaveAs")?.as_bool()?));
     if let Some(value) = p.get("suppressWarnings") {
         d = d.with("suppressWarnings", D::Boolean(value.as_bool()?));
+    }
+    if let Some(value) = p.get("suppressOpenOptions") {
+        d = d.with("suppressOpenOptions", D::Boolean(value.as_bool()?));
     }
     if let Some(value) = p.get("overrideOpen") {
         d = d.with("OvrO", D::Boolean(value.as_bool()?));
