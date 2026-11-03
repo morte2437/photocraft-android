@@ -434,19 +434,15 @@ fn nested_effects_references_stay_whole_without_a_blank_layer_edit() {
         ("object array", D::ObjectArray(ObjectArray { prefix: 16, body: nested.clone() })),
         (
             "mixed containers",
-            D::List(vec![
-                D::Boolean(false),
-                D::GlobalObject(Descriptor::new("Lyr ").with("data", D::ObjectArray(ObjectArray { prefix: 16, body: nested }))),
-            ]),
+            D::List(vec![D::Boolean(false), D::GlobalObject(Descriptor::new("Lyr ").with("data", D::ObjectArray(ObjectArray { prefix: 16, body: nested })))]),
         ),
         ("parser depth limit", deepest),
     ];
     for (label, value) in cases {
         for key in ["Usng", "Usin"] {
-            let d = Descriptor::new("null").with("null", D::Reference(vec![ReferenceItem::Class(class("Lyr "))])).with(
-                key,
-                D::Descriptor(Descriptor::new("Lyr ").with("Nm  ", D::Text(UnicodeString::new_nul("Ordinary"))).with("data", value.clone())),
-            );
+            let d = Descriptor::new("null")
+                .with("null", D::Reference(vec![ReferenceItem::Class(class("Lyr "))]))
+                .with(key, D::Descriptor(Descriptor::new("Lyr ").with("Nm  ", D::Text(UnicodeString::new_nul("Ordinary"))).with("data", value.clone())));
             let source = item(CREATE, d);
             let loaded = import(&atn::write(&file(vec![source.clone()])).unwrap()).unwrap();
             let (mut s, _) = fixture(8);
@@ -481,12 +477,7 @@ fn nested_effects_references_stay_whole_without_a_blank_layer_edit() {
 #[test]
 fn ordinary_layer_make_native_export_matches_native_playback() {
     let params = json!({"name": "Lefx", "opacity": 0.375, "mode": "Multiply", "clipToPrevious": true});
-    let opaque = D::List(vec![
-        D::RawData(create().to_bytes()),
-        D::Alias(b"Lefx".to_vec()),
-        D::Path(b"Lefx".to_vec()),
-        D::Text(UnicodeString::new_nul("Lefx")),
-    ]);
+    let opaque = D::List(vec![D::RawData(create().to_bytes()), D::Alias(b"Lefx".to_vec()), D::Path(b"Lefx".to_vec()), D::Text(UnicodeString::new_nul("Lefx"))]);
     for metadata in [None, Some(opaque)] {
         let mut source = exported("layer.new.layer", params.clone()).unwrap();
         if let Some(value) = metadata {
