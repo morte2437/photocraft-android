@@ -8,6 +8,7 @@ mod atn_newer_events;
 mod atn_reference_forms;
 mod atn_ripple_amount;
 mod atn_selective_color;
+mod atn_shear;
 mod atn_stroke_width;
 mod atn_v12;
 mod background_and_mask_depth;

@@ -18,7 +18,7 @@ layers and documents, newer and older events and files, and a measured reference
 map yet, with everything needed to implement them without
 the reference application.
 
-## Supported events (168)
+## Supported events
 
 | Code | String ID | Label | PhotoCraft command(s) |
 |---|---|---|---|
@@ -129,6 +129,7 @@ the reference application.
 | (string ID only) | removeBackground | Remove Background | `layer.removeBackground` |
 | `RmvB` | removeBlackMatte | Remove Black Matte | `layer.matting.removeBlackMatte` |
 | `RmvW` | removeWhiteMatte | Remove White Matte | `layer.matting.removeWhiteMatte` |
+| `Shr ` | shear | Shear | `filter.distort.shear` |
 | `Rset` | reset | Reset | `tools.defaultColors` |
 | `RvlA` | revealAll | Reveal All | `image.revealAll` |
 | `Rvrt` | revert | Revert | `file.revert` |
@@ -1469,7 +1470,7 @@ Nested values as recorded (defaults):
 
 ### Group C: The Distort filters (Pinch, Polar Coordinates, Shear, Spherize, Twirl, Wave, ZigZag)
 
-All commands exist in PhotoCraft (`filter.distort.*`); only the `.atn` mapping is missing. Displace needs a displacement map file and is listed separately at the end.
+The seven Distort events below map to PhotoCraft's `filter.distort.*` commands for their documented supported forms, including complete Shear curves. Displace needs a displacement map file and is listed separately at the end.
 
 #### Pinch
 
@@ -1494,6 +1495,19 @@ All commands exist in PhotoCraft (`filter.distort.*`); only the `.atn` mapping i
 - Event: `Shr ` / `shear`
 - PhotoCraft command: `filter.distort.shear`
 - `shearPoints` is a list of curve points; keep their order and count.
+
+Supported for complete curves: import clamps finite grid coordinates to the measured ranges below,
+maps them to the native top-to-bottom position `(Vrtc - 1) / 127` and half-width offset `Hrzn / 64`,
+and preserves fractional recorded coordinates exactly on save. Both edge modes are supported.
+Only `ShrS` 0 and `ShrE` equal to the last point's index map; an omitted `ShrE` still defaults to 1.
+The adapter accepts 2..4096 points as an execution safety budget, not a measured Photoshop format
+maximum. This bounds point-vector allocation and the renderer's linear per-row curve search while
+allowing fractional scripted points. Larger recorded curves stay intact as kept steps, and native
+exports above that budget are refused before point conversion. No renderer performance is claimed.
+The budget covers adapter mapping and playback; input parsing and generic export copies remain outside it.
+Malformed settings, unknown keys, nonfinite values, and curves whose order or points the native
+renderer would change remain complete kept steps. Export refuses unrepresentable native options
+and mask targets. The native Shear renderer and its ordinary command behavior are unchanged.
 
 | Key | String ID | Type | Unit | Default | Allowed |
 |---|---|---|---|---|---|
