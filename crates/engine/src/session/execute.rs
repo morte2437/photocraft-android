@@ -282,12 +282,16 @@ impl Session {
         let keep_clean = st.keeps_clean(&before);
         #[cfg(any(test, debug_assertions))]
         let hint_before = before.clone();
-        let key = self.coalesce_request.clone();
+        let group = self.action_history.clone();
+        let key = group.as_ref().map(|g| g.key.clone()).or_else(|| self.coalesce_request.clone());
+        let label = group.as_ref().map_or(label, |g| g.label.as_str());
         let st = self.active_mut().ok_or(EngineError::NoDocument)?;
         let layers = st.layer_target();
         if !record {
             // Nothing to coalesce with: the next recorded step starts a state of its own.
-            st.coalesce = None;
+            if group.is_none() {
+                st.coalesce = None;
+            }
         } else if key.is_none() || st.coalesce != key || !st.history.can_undo() {
             st.history.set_current_layers(prior);
             st.history.record(label, before.clone(), layers);
