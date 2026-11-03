@@ -103,7 +103,7 @@ fn the_selection_entry_stands_only_on_the_untouched_selection_frame() {
 #[test]
 fn the_preset_dropdown_lists_selection_while_the_frame_is_the_selections() {
     use egui::accesskit::Role;
-    use egui_kittest::kittest::Queryable;
+    use egui_kittest::kittest::{NodeT as _, Queryable};
 
     let mut selected = app();
     selected.run("select.all", json!({})).expect("select all");
@@ -113,6 +113,12 @@ fn the_preset_dropdown_lists_selection_while_the_frame_is_the_selections() {
     h.get_by_role(Role::ComboBox).click();
     h.run();
     assert!(drawn(&h).iter().any(|t| t == "Selection"), "open list: {:?}", drawn(&h));
+    // Above the Ratio presets, and checked: the entry names the frame, so it must read as the
+    // current one (#10872).
+    let selection = h.get_by_label("Selection");
+    let presets = h.get_by_label("W x H x Resolution");
+    assert!(selection.rect().top() < presets.rect().top(), "Selection sits above the Ratio presets");
+    assert_eq!(selection.accesskit_node().toggled(), Some(egui::accesskit::Toggled::True), "Selection is checked");
 
     h.state_mut().crop.default_frame = false;
     h.run();
@@ -129,6 +135,13 @@ fn a_picked_ratio_hides_the_selection_entry() {
     selected.run("select.all", json!({})).expect("select all");
     crop_ui::ensure_frame(&mut selected);
     selected.ui.tool_options.crop_ratio = "1:1".into();
+    // The options bar fits the untouched frame to the picked ratio; it is no longer the
+    // selection's bounds.
+    crop_ui::apply_ratio(&mut selected);
+    assert!(!crop_presets::shows_selection(&selected), "a fitted frame is not the selection's");
+    // Clearing the ratio leaves the fitted frame, so the entry must not come back.
+    selected.ui.tool_options.crop_ratio.clear();
+    assert!(!crop_presets::shows_selection(&selected), "the entry does not return");
     let mut h = dropdown_harness(selected);
     h.run();
     h.get_by_role(Role::ComboBox).click();

@@ -283,6 +283,9 @@ fn fit_frame(app: &mut PhotocraftApp) {
         // stays a pending crop even on the default frame.
         if fitted != r && !sized && app.crop.default_frame {
             app.ui.crop_rect = Some(fitted);
+            // The frame is no longer the selection's bounds, so the temporary "Selection" entry
+            // must not come back when the ratio is cleared again (#10872).
+            app.crop.frame_from_selection = false;
         } else {
             keyed(app, fitted);
         }
