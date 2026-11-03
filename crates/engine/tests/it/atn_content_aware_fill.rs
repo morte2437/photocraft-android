@@ -6,6 +6,7 @@ use photocraft_engine::{
 };
 use photocraft_psd::atn::{self, AtnAction, AtnEvent, AtnFile, AtnItem};
 use photocraft_psd::descriptor::{Descriptor, Id, UnicodeString, Value as D};
+use photocraft_raster::Surface;
 use serde_json::{Value, json};
 
 const CMD: &str = "edit.contentAwareFill";
@@ -219,6 +220,14 @@ fn session(depth: u32) -> Session {
     s
 }
 
+fn assert_same_pixels(actual: &Surface, expected: &Surface, depth: u32, output: &str) {
+    for y in 0..8 {
+        for x in 0..8 {
+            assert_eq!(actual.rgba(x, y), expected.rgba(x, y), "{depth}/{output}: pixel{x},{y}");
+        }
+    }
+}
+
 /// Native and imported fills produce the same real pixels, source/selection state and Undo/Redo.
 #[test]
 fn caf_action_matches_native_pixels_and_undo_at_each_depth() {
@@ -247,11 +256,7 @@ fn caf_action_matches_native_pixels_and_undo_at_each_depth() {
         assert_eq!(after.layers.len(), expected.layers.len());
         for (a, b) in after.layers.iter().zip(&expected.layers) {
             let (a, b) = (a.surface().unwrap(), b.surface().unwrap());
-            for y in 0..8 {
-                for x in 0..8 {
-                    assert_eq!(a.rgba(x, y), b.rgba(x, y), "{depth}: pixel{x},{y}");
-                }
-            }
+            assert_same_pixels(a, b, depth, "new");
         }
         assert!(s.undo());
         assert_eq!(s.active().unwrap().doc, before);
@@ -283,11 +288,7 @@ fn caf_action_matches_native_pixels_and_undo_at_each_depth() {
         assert_eq!(recorded.active().unwrap().history.past_len(), past + 1);
         let expected = current.active().unwrap().doc.layers[0].surface().unwrap();
         let actual = after.layer(source).unwrap().surface().unwrap();
-        for y in 0..8 {
-            for x in 0..8 {
-                assert_eq!(actual.rgba(x, y), expected.rgba(x, y), "{depth}: Current Layer pixel{x},{y}");
-            }
-        }
+        assert_same_pixels(actual, expected, depth, "current");
         assert!(recorded.undo());
         assert_eq!(recorded.active().unwrap().doc, before);
         assert!(recorded.redo());
