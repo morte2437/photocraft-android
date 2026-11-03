@@ -29,10 +29,29 @@ pub(crate) fn arranged_cells(app: &PhotocraftApp, rect: Rect) -> Option<Vec<(usi
     Some(documents[start..].iter().copied().zip(cells).collect())
 }
 
+/// Tell the GPU canvas which documents are on screen (the arranged tiles or the main canvas's,
+/// plus those of open document windows): they split the display texture budget, and the
+/// textures of the others are freed first. Only a change of that set (or a document's size)
+/// re-splits it, so switching between shown documents or windows moves no texture.
+pub(crate) fn publish_shown(app: &PhotocraftApp) {
+    let Some(gpu) = &app.gpu else { return };
+    let docs = app.session.documents();
+    let mut shown: Vec<usize> = match arranged_cells(app, app.last_canvas_rect) {
+        Some(cells) => cells.into_iter().map(|(d, _)| d).collect(),
+        None => main_canvas_document(app).into_iter().collect(),
+    };
+    shown.extend(app.ui.windows.iter().filter(|w| w.open).map(|w| w.document));
+    let mut shown: Vec<(u64, u64)> = shown.into_iter().filter_map(|d| docs.get(d)).map(|st| (st.doc.id.0, gpu.canvas_bytes(&st.doc))).collect();
+    shown.sort_unstable();
+    shown.dedup();
+    gpu.show_documents(&shown);
+}
+
 fn documents(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     app.drop_canvas_rect = None;
     app.tab_strip = None;
     retain_gpu_documents(app);
+    publish_shown(app);
     crate::transform_tool::track_steps(app, ui.ctx());
     crate::cas_transform::tick(app, ui.ctx());
     crate::symmetry_ui::track(app, ui.ctx());
@@ -66,6 +85,8 @@ fn documents(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         app.tab_strip = Some(tabs(app, ui));
         ui.spacing_mut().item_spacing.y = spacing;
         drop_slot_line(app, ui);
+        // A tab click switches documents before any canvas is drawn this frame.
+        publish_shown(app);
     }
     if let Some(job) = app.jobs.focus.or_else(|| (n == 0).then(|| app.jobs.opens.last().map(|o| o.job)).flatten()) {
         crate::jobs_ui::open_card(app, ui, job);

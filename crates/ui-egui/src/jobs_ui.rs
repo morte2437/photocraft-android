@@ -20,12 +20,12 @@
 //! The canvas keeps showing the pre-job state: workers never touch the session's documents.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 
 use egui::{Color32, Rect, RichText, Sense, Stroke, vec2};
 use photocraft_doc::DocId;
-use photocraft_engine::jobs::{JobCtx, JobEvent, JobId, JobInfo, JobOutcome, OPEN_JOB, OpenSource, Started};
+use photocraft_engine::jobs::{CancelRefused, JobCtx, JobEvent, JobId, JobInfo, JobOutcome, OPEN_JOB, OpenSource, Started};
 use serde_json::{Value, json};
 
 use crate::theme::Tokens;
@@ -73,23 +73,14 @@ pub(crate) struct OpenBatch {
 /// The job command of a background save.
 pub const SAVE_JOB: &str = "file.save";
 
-const ENCODING: u8 = 0;
-const WRITING: u8 = 1;
-const CANCELLED: u8 = 2;
-
-/// A save worker's stage, shared between the worker and the UI.
+/// A save worker's state, shared between the worker and the UI. Whether it may still be
+/// cancelled is its job's ([`JobCtx::commit`]), so every cancel path agrees.
 #[derive(Debug, Default)]
 pub struct SaveState {
-    stage: AtomicU8,
     finished: AtomicBool,
 }
 
 impl SaveState {
-    /// Cancel unless writing has started; false once it has.
-    fn try_cancel(&self) -> bool {
-        matches!(self.stage.compare_exchange(ENCODING, CANCELLED, Ordering::AcqRel, Ordering::Acquire), Ok(_) | Err(CANCELLED))
-    }
-
     /// The worker has returned (or unwound): nothing of this save can still touch the file.
     pub fn finished(&self) -> bool {
         self.finished.load(Ordering::Acquire)
@@ -110,7 +101,6 @@ impl Drop for WorkerDone {
 /// be cancelled.
 pub struct SaveCtl {
     pub job: JobCtx,
-    state: Arc<SaveState>,
 }
 
 impl SaveCtl {
@@ -120,15 +110,15 @@ impl SaveCtl {
 
     /// `Err` once the save was cancelled: stop, write nothing.
     pub fn check(&self) -> Result<(), String> {
-        if self.job.cancelled() || self.state.stage.load(Ordering::Acquire) == CANCELLED { Err(SAVE_CANCELLED.into()) } else { Ok(()) }
+        if self.job.cancelled() { Err(SAVE_CANCELLED.into()) } else { Ok(()) }
     }
 
     /// Call once, right before replacing the file. `Ok`: the save can no longer be cancelled
-    /// (Cancel and Esc are refused) and must run to the end; `Err`: it was cancelled first and
-    /// nothing may be written.
+    /// (Cancel, Esc, `jobs.cancel`, cancelling every job and closing the document all leave it
+    /// running) and must run to the end; `Err`: it was cancelled first and nothing may be
+    /// written.
     pub fn commit(&self) -> Result<(), String> {
-        self.check()?;
-        self.state.stage.compare_exchange(ENCODING, WRITING, Ordering::AcqRel, Ordering::Acquire).map(|_| ()).map_err(|_| SAVE_CANCELLED.into())
+        self.job.commit().map_err(|_| SAVE_CANCELLED.into())
     }
 }
 
@@ -311,8 +301,8 @@ pub fn start_save(
         &label,
         true,
         move |ctx| {
-            let _done = WorkerDone(Arc::clone(&worker));
-            let ctl = SaveCtl { job: ctx.clone(), state: worker };
+            let _done = WorkerDone(worker);
+            let ctl = SaveCtl { job: ctx.clone() };
             save(&snapshot, &target, &settings, &ctl)
                 .map_err(|e| if ctl.check().is_err() { photocraft_engine::EngineError::Cancelled } else { photocraft_engine::EngineError::Other(e) })
         },
@@ -447,25 +437,27 @@ pub fn job_in_view(app: &PhotocraftApp) -> Option<JobInfo> {
 
 /// Cancel job `id` (the status bar's ×, the dialog's Cancel, Esc, closing an opening tab).
 pub fn cancel(app: &mut PhotocraftApp, id: JobId) -> bool {
+    try_cancel(app, id).is_ok()
+}
+
+/// [`cancel`], saying why a job was left running.
+pub fn try_cancel(app: &mut PhotocraftApp, id: JobId) -> Result<(), CancelRefused> {
     let label = app.session.job(id).map(|j| j.label);
+    let r = app.session.try_cancel_job(id);
     // A save that has started replacing the file runs to the end: cancelling it now would leave
     // the file written but the document marked unsaved.
-    if let Some(save) = app.jobs.saves.iter().find(|s| s.job == id)
-        && !save.state.try_cancel()
-    {
+    if r == Err(CancelRefused::Committing) {
         app.ui.status = crate::i18n::fmt(tl!("{label} is writing the file and can no longer be cancelled"), &[("label", label.as_deref().unwrap_or_default())]);
         app.ui.status_error = false;
-        return false;
     }
-    let cancelled = app.session.cancel_job(id);
-    if cancelled {
+    if r.is_ok() {
         // The event (and its status text) arrives with the next poll; say so now as well.
         if let Some(l) = label {
             app.ui.status = crate::i18n::fmt(tl!("Cancelled {label}"), &[("label", &l)]);
             app.ui.status_error = false;
         }
     }
-    cancelled
+    r
 }
 
 /// Handles one finished job: optional completion beep, waiting control replies, and the
