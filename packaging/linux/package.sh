@@ -208,7 +208,9 @@ fi
 if [[ -z "${CROSS_TARGET:-}" ]]; then
   "$STAGE/usr/bin/photocraft-cli" --version
 elif [[ -n "${EMULATOR:-}" ]]; then
-  "$EMULATOR" "$STAGE/usr/bin/photocraft-cli" --version
+  # Set, so malloc_tuning::apply doesn't re-execute the CLI (#8743): under qemu-user that exec goes
+  # to the host kernel, which can't run a $CROSS_ARCH binary, and glibc then hands it to /bin/sh.
+  MALLOC_TRIM_THRESHOLD_=131072 "$EMULATOR" "$STAGE/usr/bin/photocraft-cli" --version
 fi
 echo "==> done"
 ls -lh "$DIST"
