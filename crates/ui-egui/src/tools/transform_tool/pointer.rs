@@ -106,6 +106,10 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) ->
             if matches!(ev, ToolEvent::Up { .. }) && g.is_some_and(|g| accepts_outside_click(g, [x, y], tol)) {
                 if on_pasteboard(app, [x, y]) {
                     commit(app);
+                } else if let (Some(g), Some(s)) = (g, app.ui.transform.as_mut()) {
+                    // Jitter before the release may have turned the box a little: put it back.
+                    s.quad = g.quad0;
+                    s.pivot = g.pivot0;
                 }
                 return true;
             }

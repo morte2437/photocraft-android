@@ -50,6 +50,17 @@ fn a_click_outside_the_box_on_the_image_keeps_it_open() {
 }
 
 #[test]
+fn a_jittery_click_outside_the_box_leaves_it_unchanged() {
+    let mut app = app();
+    let (quad, pivot) = (app.ui.transform.as_ref().unwrap().quad, app.ui.transform.as_ref().unwrap().pivot);
+    tool_event(&mut app, ToolEvent::Down { x: 150.0, y: 150.0, pressure: 1.0 }, Modifiers::NONE);
+    tool_event(&mut app, ToolEvent::Move { x: 150.0, y: 151.0, pressure: 1.0 }, Modifiers::NONE);
+    tool_event(&mut app, ToolEvent::Up { x: 150.0, y: 151.0 }, Modifiers::NONE);
+    let t = app.ui.transform.as_ref().unwrap();
+    assert_eq!((t.quad, t.pivot), (quad, pivot));
+}
+
+#[test]
 fn a_click_on_the_pasteboard_commits_one_free_transform_step() {
     for p in [[-30.0, 100.0], [100.0, -30.0], [230.0, 100.0], [100.0, 230.0]] {
         let mut app = app();
