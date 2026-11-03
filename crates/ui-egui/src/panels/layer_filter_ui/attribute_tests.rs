@@ -174,6 +174,40 @@ fn a_layer_erased_completely_is_empty() {
 }
 
 #[test]
+fn a_layer_with_an_opaque_default_pixel_is_not_empty() {
+    // No stored tiles, but the default pixel covers the whole canvas.
+    let mut doc = Document::new("Opaque default", photocraft_geom::Size::new(40, 30), photocraft_doc::ColorMode::Rgb, photocraft_doc::SampleType::U8);
+    let opaque = photocraft_raster::Surface::with_default(photocraft_doc::PixelFormat::RGBA8, &RED);
+    doc.layers.push(Layer::new("opaque", LayerContent::Raster(opaque)));
+    doc.layers.push(Layer::new("clear", LayerContent::Raster(photocraft_raster::Surface::new(photocraft_doc::PixelFormat::RGBA8))));
+    assert_eq!(listed(&doc, Attribute::Empty), names(&["clear"]));
+    assert_eq!(listed(&doc, Attribute::NotEmpty), names(&["opaque"]));
+}
+
+#[test]
+fn the_empty_layers_are_found_once_per_revision() {
+    let mut s = photocraft_engine::Session::new();
+    s.execute("file.new", json!({"width": 40, "height": 30, "background": "transparent"})).unwrap();
+    s.execute("edit.fill", json!({"color": "#ff0000"})).unwrap();
+    let mut app = PhotocraftApp::new(s, crate::Services::default());
+    app.ui.layer_filter_by = FilterBy::Attribute;
+    app.ui.layer_filter_attribute = Attribute::Empty;
+    let first = Filter::of_app(&app).empty.expect("found for Empty");
+    assert!(first.is_empty(), "the filled layer has pixels");
+    let again = Filter::of_app(&app).empty.unwrap();
+    assert!(std::sync::Arc::ptr_eq(&first, &again), "the same revision reuses the result");
+    app.session.execute("paint.stroke", json!({"points": [[20, -10], [20, 40]], "size": 60, "erase": true, "brush": {"hardness": 1.0}})).unwrap();
+    let after = Filter::of_app(&app);
+    assert_eq!(after.empty.as_ref().map(|set| set.len()), Some(1), "an edit finds them again");
+    let doc = &app.session.active().unwrap().doc;
+    assert!(doc.walk().into_iter().all(|(_, _, l)| after.shows(l)), "the erased layer is listed");
+    app.ui.layer_filter_attribute = Attribute::NotEmpty;
+    assert!(Filter::of_app(&app).empty.is_some(), "Not Empty uses them too");
+    app.ui.layer_filter_attribute = Attribute::Visible;
+    assert!(Filter::of_app(&app).empty.is_none(), "other attributes don't read pixels");
+}
+
+#[test]
 fn each_opposite_lists_the_rest_groups_included() {
     let s = session();
     let doc = &s.active().unwrap().doc;

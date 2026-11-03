@@ -1,7 +1,10 @@
 //! The Layers panel's Attribute filter (#10881): lists the layers with one attribute (visible,
 //! locked, empty, linked, clipped, masks, effects, advanced blending) or without it.
 
-use photocraft_doc::{AdvancedBlending, Layer, LayerContent};
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex, PoisonError};
+
+use photocraft_doc::{AdvancedBlending, DocId, Layer, LayerContent, LayerId};
 use photocraft_raster::Surface;
 use serde::{Deserialize, Serialize};
 
@@ -103,14 +106,15 @@ impl Attribute {
     }
 
     /// Whether `l` is listed under this attribute. Each "Not …"/"No …" entry lists the layers
-    /// (and groups) its positive entry doesn't.
-    pub fn shows(self, l: &Layer) -> bool {
+    /// (and groups) its positive entry doesn't. `empty` is the document's empty layers
+    /// ([`empty_layers`]); without it, Empty reads `l`'s pixels.
+    pub fn shows(self, l: &Layer, empty: Option<&HashSet<LayerId>>) -> bool {
         match self {
             Attribute::Visible => l.visible,
             // Any lock counts, the Background's too.
             Attribute::Locked => l.locks.any(),
             // A pixel layer with no visible pixels; an empty group isn't listed.
-            Attribute::Empty => matches!(&l.content, LayerContent::Raster(s) if !has_visible_pixels(s)),
+            Attribute::Empty => empty.map_or_else(|| is_empty(l), |set| set.contains(&l.id)),
             Attribute::Linked => l.link_group.is_some(),
             // The clipped layer, not its base.
             Attribute::Clipped => l.clipped,
@@ -120,30 +124,61 @@ impl Attribute {
             // Also a layer whose only effect is turned off, unlike the Effect filter.
             Attribute::LayerEffects => !l.effects.items.is_empty(),
             Attribute::AdvancedBlending => advanced_blending(l),
-            Attribute::NotVisible => !Attribute::Visible.shows(l),
-            Attribute::NotLocked => !Attribute::Locked.shows(l),
-            Attribute::NotEmpty => !Attribute::Empty.shows(l),
-            Attribute::NotLinked => !Attribute::Linked.shows(l),
-            Attribute::NotClipped => !Attribute::Clipped.shows(l),
-            Attribute::NoLayerMask => !Attribute::LayerMask.shows(l),
-            Attribute::NoVectorMask => !Attribute::VectorMask.shows(l),
-            Attribute::NoLayerEffects => !Attribute::LayerEffects.shows(l),
-            Attribute::NoAdvancedBlending => !Attribute::AdvancedBlending.shows(l),
+            Attribute::NotVisible => !Attribute::Visible.shows(l, empty),
+            Attribute::NotLocked => !Attribute::Locked.shows(l, empty),
+            Attribute::NotEmpty => !Attribute::Empty.shows(l, empty),
+            Attribute::NotLinked => !Attribute::Linked.shows(l, empty),
+            Attribute::NotClipped => !Attribute::Clipped.shows(l, empty),
+            Attribute::NoLayerMask => !Attribute::LayerMask.shows(l, empty),
+            Attribute::NoVectorMask => !Attribute::VectorMask.shows(l, empty),
+            Attribute::NoLayerEffects => !Attribute::LayerEffects.shows(l, empty),
+            Attribute::NoAdvancedBlending => !Attribute::AdvancedBlending.shows(l, empty),
         }
     }
 }
 
+/// Whether `l` is a pixel layer with no visible pixels; an empty group isn't listed.
+fn is_empty(l: &Layer) -> bool {
+    matches!(&l.content, LayerContent::Raster(s) if !has_visible_pixels(s))
+}
+
 /// Whether `s` has a pixel with alpha > 0. The Eraser only clears alpha, so an erased pixel keeps
 /// its colour bytes and `content_bounds` still counts it (as Reveal All's `visible_bounds` notes,
-/// #9379). Without an alpha channel, or over an opaque default, any content counts.
+/// #9379). A surface without an alpha channel, or with an opaque default pixel, covers the
+/// whole canvas.
 fn has_visible_pixels(s: &Surface) -> bool {
     let fmt = s.format();
     if !fmt.alpha || s.default_pixel().last().is_none_or(|a| *a > 0.0) {
-        return !s.content_bounds().is_empty();
+        return true;
     }
     let (n, bpp) = (fmt.channels(), fmt.bytes_per_pixel());
     let Some(alpha) = n.checked_sub(1).filter(|_| bpp > 0) else { return false };
     s.tiles().any(|(_, t)| t.bytes().chunks_exact(bpp).any(|px| photocraft_color::read_sample(px, fmt.sample, alpha) > 0.0))
+}
+
+/// The document, revision and document allocation [`empty_layers`] was found for.
+type EmptyKey = (DocId, u64, usize);
+
+static EMPTY: Mutex<Option<(EmptyKey, Arc<HashSet<LayerId>>)>> = Mutex::new(None);
+
+/// The empty layers of `app`'s active document while Empty or Not Empty is picked, found once per
+/// document revision: a layer erased to nothing has every pixel read, too much for every repaint
+/// of the Layers panel.
+pub fn empty_layers(app: &PhotocraftApp, attribute: Attribute) -> Option<Arc<HashSet<LayerId>>> {
+    if !matches!(attribute, Attribute::Empty | Attribute::NotEmpty) {
+        return None;
+    }
+    let d = app.session.active()?;
+    let key = (d.doc.id, d.revision, Arc::as_ptr(&d.doc) as usize);
+    let mut cache = EMPTY.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some((k, set)) = cache.as_ref()
+        && *k == key
+    {
+        return Some(set.clone());
+    }
+    let set: Arc<HashSet<LayerId>> = Arc::new(d.doc.walk().into_iter().filter(|(_, _, l)| is_empty(l)).map(|(_, _, l)| l.id).collect());
+    *cache = Some((key, set.clone()));
+    Some(set)
 }
 
 /// Whether any Advanced Blending option is away from its default: a channel left out, Knockout,

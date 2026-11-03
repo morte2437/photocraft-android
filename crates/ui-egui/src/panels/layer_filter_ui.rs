@@ -45,6 +45,9 @@ pub struct Filter {
     pub missing: HashSet<String>,
     /// The rows the Artboard filter lists ([`board_rows`]); empty lists every row.
     pub board_rows: HashSet<LayerId>,
+    /// The empty layers the Attribute filter's Empty and Not Empty use
+    /// ([`attribute::empty_layers`]); `None` reads each layer's pixels.
+    pub empty: Option<std::sync::Arc<HashSet<LayerId>>>,
 }
 
 impl Filter {
@@ -59,12 +62,14 @@ impl Filter {
             smart: ui.layer_filter_smart.clone(),
             missing: HashSet::new(),
             board_rows: HashSet::new(),
+            empty: None,
         }
     }
 
     /// Returns [`Filter::of`] for `app`'s settings, with the active document's missing linked
     /// files while the panel filters by Smart Object, and `board_rows` set to the rows of the
-    /// artboards that hold the active document's selected layers while it filters by Artboard.
+    /// artboards that hold the active document's selected layers while it filters by Artboard,
+    /// and `empty` set while it filters by Empty or Not Empty.
     pub fn of_app(app: &PhotocraftApp) -> Self {
         let mut f = Self::of(&app.ui);
         if f.by == FilterBy::SmartObject {
@@ -74,6 +79,9 @@ impl Filter {
             && let Some(d) = app.session.active()
         {
             f.board_rows = board_rows(&d.doc, &d.selected_layers());
+        }
+        if f.by == FilterBy::Attribute {
+            f.empty = attribute::empty_layers(app, f.attribute);
         }
         f
     }
@@ -101,7 +109,7 @@ impl Filter {
             FilterBy::Kind => self.kinds.iter().any(|k| k == kind(l)),
             FilterBy::Name => l.name.to_lowercase().contains(&self.name.trim().to_lowercase()),
             FilterBy::Mode => l.blend == self.mode,
-            FilterBy::Attribute => self.attribute.shows(l),
+            FilterBy::Attribute => self.attribute.shows(l, self.empty.as_deref()),
             FilterBy::Color => l.label == self.color,
             FilterBy::SmartObject => {
                 let LayerContent::Smart(sm) = &l.content else { return false };
