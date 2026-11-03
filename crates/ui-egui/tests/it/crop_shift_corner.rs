@@ -73,6 +73,12 @@ fn commit(app: &mut PhotocraftApp) -> (u32, u32) {
 /// Drags the bottom-right corner by document vector `d` in steps through `ui.pointer`, holding
 /// `mods`, and commits.
 fn drag_corner_and_commit(app: &mut PhotocraftApp, d: [f64; 2], mods: Value) -> (u32, u32) {
+    drag_corner(app, d, mods);
+    commit(app)
+}
+
+/// [`drag_corner_and_commit`] without the commit: the frame stays pending.
+fn drag_corner(app: &mut PhotocraftApp, d: [f64; 2], mods: Value) {
     let [x, y] = corner(app);
     let mut events = vec![json!({"kind": "down", "x": x, "y": y})];
     events.extend((1..=4).map(|i| {
@@ -83,7 +89,6 @@ fn drag_corner_and_commit(app: &mut PhotocraftApp, d: [f64; 2], mods: Value) -> 
     let mut params = mods;
     params["events"] = Value::Array(events);
     pointer(app, params);
-    commit(app)
 }
 
 fn assert_near(got: (u32, u32), want: (u32, u32), what: &str) {
@@ -176,5 +181,34 @@ fn a_shift_corner_drag_snaps_where_its_handle_is() {
         app.run("view.newGuide", json!({"orientation": "vertical", "position": guide})).expect("guide");
         let got = drag_corner_and_commit(&mut app, DRAG, json!({"shift": true}));
         assert_near(got, want, &format!("⇧ drag with a guide at x = {guide}"));
+    }
+}
+
+/// On a frame turned 30° the corner slides along the turned diagonal, direction (0.89, 1.67) for
+/// 8 : 5, so a vertical guide is met by sliding along it, not by moving the handle sideways.
+///
+/// - ⇧, free ratio: the measured drag leaves the handle at x ≈ 569.2, 4.2 px from a guide at
+///   x = 565. Sliding on to it shortens the frame by 12.7 % to 698.1 × 436.3. Moving the handle
+///   sideways and projecting that back onto the diagonal stopped it at x ≈ 568.3, off the guide,
+///   at 704 × 440.
+/// - An 8 : 5 preset (the larger extent wins, 720 × 450) leaves it at x ≈ 577.1, 4.1 px from a
+///   guide at x = 573: 712.5 × 445.3. Sideways, the larger extent grew the frame to 723 × 452,
+///   away from the guide.
+#[test]
+fn a_shift_corner_drag_on_a_turned_frame_snaps_along_its_diagonal() {
+    for (ratio, guide, want) in [("", 565.0, (698, 436)), ("8:5", 573.0, (712, 445))] {
+        for classic in [true, false] {
+            let what = format!("ratio {ratio:?}, guide at x = {guide}, Classic Mode {classic}");
+            let mut app = crop_app(Setup { classic, ratio, snap: true, ..Setup::default() });
+            app.ui.crop_angle = 30.0;
+            photocraft_ui_egui::crop_mode::sync_frame(&mut app);
+            app.run("view.newGuide", json!({"orientation": "vertical", "position": guide})).expect("guide");
+            drag_corner(&mut app, crop_ui::turn(DRAG, [0.0, 0.0], 30.0), json!({"shift": true}));
+            let at = corner(&app);
+            assert!((at[0] - guide).abs() < 1e-3, "{what}: the handle is at {at:?}, not on the guide");
+            let r = app.ui.crop_rect.expect("a frame");
+            assert!(((r[2] - r[0]) / (r[3] - r[1]) - 1.6).abs() < 1e-9, "{what}: 8 : 5 kept, {r:?}");
+            assert_near(commit(&mut app), want, &what);
+        }
     }
 }
