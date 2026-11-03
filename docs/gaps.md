@@ -99,8 +99,10 @@ what an agent can't finish alone.
   and saves back into the file's `Txt2` since 2026-10-21, #7962),
   the visual RTL caret and PSD storage of the paragraph direction (TYPE-218-2; the paragraph
   direction buttons landed 2026-10-22), complex-script fallback fonts and golden tests
-  (TYPE-218-3), OpenType Numerals and Stylistic Sets submenus
-  (TYPE-218-5; the Character panel buttons landed 2026-10-11, #3752), text free transform
+  (TYPE-218-3), OpenType Stylistic Sets submenu and greying out features the font lacks
+  (TYPE-218-5; Character panel buttons 2026-10-11, #3752; Numerals submenu 2026-11-03 —
+  `.pcraft` keeps all figure tags; PSD EngineData only `OldStyle`/`onum` until a Photoshop-authored
+  oracle lands), text free transform
   (#2630), area type in PSD (TYPE-218-10). Done since the re-measure: manual and optical kerning with PSD round trip
   (TYPE-218-6, #206), variable-font axes (TYPE-218-4, #2985), Warp on live type without a
   rasterize prompt, as in Photoshop (TYPE-218-9, #3004), and the live Warp Text preview that opens
@@ -528,6 +530,7 @@ what an agent can't finish alone.
 | 2026-10-11 | minor | G13: Czech dynamic UI text localized; engine messages and native review remain open |
 | 2026-10-11 | minor | G8: triple/quadruple/five-click type selection done (TYPE-218-8, #3493); Type evidence recounted |
 | 2026-10-11 | minor | G4: Pattern Stamp and Background Eraser draw live, Spot Healing shows a dark overlay while dragging (#3754); only the Mixer Brush is left of TOOL-213-7 |
+| 2026-11-03 | minor | G8: Type › OpenType › Numerals submenu landed (TYPE-218-5); `.pcraft` keeps figure tags, PSD only `OldStyle`/`onum` for now; Stylistic Sets and font-feature greying still missing |
 | 2026-10-11 | minor | G8: Character panel OpenType buttons landed (TYPE-218-5, #3752); Numerals and Stylistic Sets submenus still missing |
 | 2026-10-11 | minor | G10: one-page flattened PDF write shipped (io::pdf, #3401); FILE-215-10 now partial |
 | 2026-10-10 | minor | G2: recorded Tilt-Shift computation/filtered-proxy measurements and limits; gap and estimate remain open

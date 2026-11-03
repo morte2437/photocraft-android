@@ -256,6 +256,26 @@ fn type_menu_checkmarks_follow_the_layer() {
 }
 
 #[test]
+fn numerals_checkmark_follows_the_selection() {
+    let (mut app, ctx) = app_with(1);
+    let id = "type.openType.numerals.tabularLining";
+    assert!(!crate::menus::is_enabled(&app, id));
+    assert_eq!(checked(&app, id), None, "no type layer");
+    app.run("type.create", json!({"x": 10, "y": 50, "text": "Type", "size": 24})).unwrap();
+    assert!(crate::menus::is_enabled(&app, id));
+    assert_eq!(checked(&app, "type.openType.numerals.default"), Some(true));
+    assert_eq!(checked(&app, id), Some(false));
+    menu(&mut app, &ctx, id, json!({})).unwrap();
+    assert_eq!(checked(&app, id), Some(true));
+    assert_eq!(checked(&app, "type.openType.numerals.default"), Some(false));
+    assert_eq!(checked(&app, "type.openType.numerals.lining"), Some(false));
+    menu(&mut app, &ctx, "type.openType.numerals.default", json!({})).unwrap();
+    assert_eq!(checked(&app, "type.openType.numerals.default"), Some(true));
+    assert_eq!(checked(&app, id), Some(false));
+    assert_eq!(checked(&app, "type.openType.numerals.notAStyle"), None);
+}
+
+#[test]
 fn batch_menu_requires_a_recorded_action() {
     let (mut app, ctx) = app_with(1);
     assert!(!crate::menus::is_enabled(&app, "file.automate.batch"));
