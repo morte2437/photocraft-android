@@ -1130,6 +1130,8 @@ fn a_set_paused_inside_a_called_action_stops_there() {
     use egui_kittest::kittest::Queryable;
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({"width": 8, "height": 8})).unwrap();
+    let before = app.session.active().unwrap().doc.clone();
+    let count = app.session.active().unwrap().history.past_len();
     let mut a = Action::new("A", vec![("actions.play".into(), json!({"action": "C"})), ("layer.new.layer".into(), json!({"name": "a-tail"}))]);
     a.set = Some("S".into());
     let mut b = Action::new("B", vec![("layer.new.layer".into(), json!({"name": "b"}))]);
@@ -1147,6 +1149,13 @@ fn a_set_paused_inside_a_called_action_stops_there() {
     crate::dialogs::confirm(h.state_mut(), dialog).unwrap();
     h.run_steps(2);
     assert_eq!(layer_names(h.state()), ["c"], "C finished; B didn't run ahead of A's tail");
+    assert_eq!(h.state().session.active().unwrap().history.past_len(), count + 1);
+    assert_eq!(h.state().session.active().unwrap().history.undo_label(), Some("Action: A"));
+    let after = h.state().session.active().unwrap().doc.clone();
+    assert!(h.state_mut().session.undo());
+    assert_eq!(h.state().session.active().unwrap().doc.as_ref(), before.as_ref());
+    assert!(h.state_mut().session.redo());
+    assert_eq!(h.state().session.active().unwrap().doc.as_ref(), after.as_ref());
 }
 
 /// #10459 fix-up: a set folder activated without a pointer (keyboard, accessibility) still
