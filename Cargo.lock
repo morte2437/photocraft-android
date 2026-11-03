@@ -5080,6 +5080,7 @@ dependencies = [
  "photocraft-doc",
  "photocraft-engine",
  "photocraft-format",
+ "photocraft-geom",
  "photocraft-io",
  "photocraft-raster",
  "photocraft-raw",
