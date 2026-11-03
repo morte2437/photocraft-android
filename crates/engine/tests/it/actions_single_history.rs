@@ -9,6 +9,179 @@ fn session() -> Session {
     s
 }
 
+/// Start with distinct older source pixels and a nondefault History Brush source.
+fn history_control_session(single_state: bool) -> Session {
+    let mut s = session();
+    s.execute("actions.setHistory", json!({"singleState":single_state})).unwrap();
+    s.execute("edit.fill", json!({"color":"#ff0000"})).unwrap();
+    s.execute("edit.fill", json!({"color":"#00ff00"})).unwrap();
+    let current = s.active().unwrap().history.past_len();
+    s.execute("history.setSource", json!({"state":current})).unwrap();
+    s
+}
+
+/// An explicit clear stays undoable; later edits forget it and group from its boundary.
+#[test]
+fn recorded_clear_preserves_its_boundary_and_grouped_suffix() {
+    for single_state in [false, true] {
+        for prefix in [false, true] {
+            for suffix in [false, true] {
+                let mut s = history_control_session(single_state);
+                let past = s.active().unwrap().history.past_len();
+                let mut steps = Vec::new();
+                if prefix {
+                    steps.push(("edit.fill".into(), json!({"color":"#0000ff"})));
+                }
+                steps.push(("history.clear".into(), json!({})));
+                if suffix {
+                    steps.extend([("layer.renameLayer".into(), json!({"name":"Suffix one"})), ("layer.renameLayer".into(), json!({"name":"Suffix two"}))]);
+                }
+                s.actions.list = vec![Action::new("Clear", steps)];
+                let result = s.execute("actions.play", json!({"action":0})).unwrap();
+                assert!(result.get("failed").is_none(), "{result}");
+                let after = s.active().unwrap().doc.clone();
+                if suffix {
+                    assert!(!s.active().unwrap().history.is_cleared());
+                    assert_eq!(s.active().unwrap().history.past_len(), if single_state { 1 } else { 2 });
+                    assert!(s.undo());
+                    if !single_state {
+                        assert!(s.undo());
+                    }
+                    assert!(!s.undo(), "the next edit really forgot the cleared older states");
+                } else {
+                    assert!(s.active().unwrap().history.is_cleared());
+                    assert_eq!(s.active().unwrap().history.past_len(), 0);
+                    assert!(s.undo(), "Undo Clear History restores rows, not older pixels");
+                    assert!(std::sync::Arc::ptr_eq(&s.active().unwrap().doc, &after));
+                    assert_eq!(s.active().unwrap().history.past_len(), past + usize::from(prefix));
+                }
+            }
+        }
+    }
+}
+
+/// Both a surviving old row and an intermediate action row remain usable brush sources.
+#[test]
+fn recorded_source_change_preserves_selected_pixels_and_grouping() {
+    for single_state in [false, true] {
+        for prefix in [false, true] {
+            for current in [false, true] {
+                let mut s = history_control_session(single_state);
+                let past = s.active().unwrap().history.past_len();
+                let before = s.active().unwrap().doc.clone();
+                let mut steps = Vec::new();
+                if prefix {
+                    steps.push(("edit.fill".into(), json!({"color":"#0000ff"})));
+                }
+                let selected = if current { past + usize::from(prefix) } else { 1 };
+                steps.extend([
+                    ("history.setSource".into(), json!({"state":selected})),
+                    ("edit.fill".into(), json!({"color":"#00ffff"})),
+                    ("layer.renameLayer".into(), json!({"name":"After source"})),
+                ]);
+                s.actions.list = vec![Action::new("Source", steps)];
+                let result = s.execute("actions.play", json!({"action":0})).unwrap();
+                assert!(result.get("failed").is_none(), "{result}");
+                let added = if single_state { 1 } else { 2 + usize::from(prefix) };
+                assert_eq!(s.active().unwrap().history.past_len(), past + added);
+                let after = s.active().unwrap().doc.clone();
+                for _ in 0..added {
+                    assert!(s.undo());
+                }
+                assert_eq!(s.active().unwrap().doc.as_ref(), before.as_ref());
+                for _ in 0..added {
+                    assert!(s.redo());
+                }
+                assert_eq!(s.active().unwrap().doc.as_ref(), after.as_ref());
+                s.execute("edit.fill", json!({"contents":"history"})).unwrap();
+                let pixel = s.active().unwrap().doc.layers[0].surface().unwrap().rgba(0, 0);
+                let expected = if !current {
+                    [1.0, 0.0, 0.0, 1.0]
+                } else if prefix {
+                    [0.0, 0.0, 1.0, 1.0]
+                } else {
+                    [0.0, 1.0, 0.0, 1.0]
+                };
+                assert_eq!(pixel, expected, "singleState={single_state}, prefix={prefix}, current={current}");
+            }
+        }
+    }
+}
+
+/// Purge Histories is irreversible; suffix edits keep their grouped Undo/Redo boundary.
+#[test]
+fn recorded_purge_histories_does_not_restore_discarded_states() {
+    for single_state in [false, true] {
+        for prefix in [false, true] {
+            let mut s = history_control_session(single_state);
+            let mut steps = Vec::new();
+            if prefix {
+                steps.push(("edit.fill".into(), json!({"color":"#0000ff"})));
+            }
+            steps.extend([
+                ("edit.purge.histories".into(), json!({})),
+                ("layer.renameLayer".into(), json!({"name":"Suffix one"})),
+                ("layer.renameLayer".into(), json!({"name":"Suffix two"})),
+            ]);
+            s.actions.list = vec![Action::new("Purge", steps)];
+            let result = s.execute("actions.play", json!({"action":0})).unwrap();
+            assert!(result.get("failed").is_none(), "{result}");
+            let after = s.active().unwrap().doc.clone();
+            assert_eq!(s.active().unwrap().history.past_len(), if single_state { 1 } else { 2 });
+            assert!(s.undo());
+            if !single_state {
+                assert!(s.undo());
+            }
+            assert!(!s.undo(), "Purge Histories cannot be undone");
+            assert!(s.redo());
+            if !single_state {
+                assert!(s.redo());
+            }
+            assert_eq!(s.active().unwrap().doc.as_ref(), after.as_ref());
+        }
+    }
+}
+
+/// Dialog identity protection is independent of the optional history grouping.
+#[test]
+fn per_step_playback_also_binds_its_dialog_continuation() {
+    use photocraft_engine::actions_cmds;
+    let mut s = history_control_session(false);
+    let action = s.actions.list[0].clone();
+    let recording = actions_cmds::begin_playback(&mut s, &action).unwrap();
+    s.execute("layer.renameLayer", json!({"name":"Prefix"})).unwrap();
+    let continuation = actions_cmds::suspend_history(&mut s).expect("per-step playback still needs a document/history binding");
+    actions_cmds::finish_playback(&mut s, recording, &action, 0);
+    s.execute("layer.renameLayer", json!({"name":"Unrelated"})).unwrap();
+    let before = s.active().unwrap().doc.clone();
+    assert!(continuation.resume(&mut s).is_err());
+    assert!(std::sync::Arc::ptr_eq(&s.active().unwrap().doc, &before));
+}
+
+/// Selecting another existing source snapshot invalidates a pause even when its pixels match.
+#[test]
+fn snapshot_source_identity_is_bound_to_the_dialog_continuation() {
+    use photocraft_engine::actions_cmds;
+    for single_state in [false, true] {
+        let mut s = session();
+        s.execute("actions.setHistory", json!({"singleState":single_state})).unwrap();
+        let a = s.execute("history.newSnapshot", json!({"name":"Source A"})).unwrap()["snapshot"].clone();
+        let b = s.execute("history.newSnapshot", json!({"name":"Source B"})).unwrap()["snapshot"].clone();
+        s.execute("history.setSource", json!({"snapshot":a})).unwrap();
+        let action = s.actions.list[0].clone();
+        let recording = actions_cmds::begin_playback(&mut s, &action).unwrap();
+        s.execute("layer.renameLayer", json!({"name":"Prefix"})).unwrap();
+        let continuation = actions_cmds::suspend_history(&mut s).unwrap();
+        actions_cmds::finish_playback(&mut s, recording, &action, 0);
+        let before = s.active().unwrap().doc.clone();
+        let history = s.active().unwrap().history.entries();
+        s.execute("history.setSource", json!({"snapshot":b})).unwrap();
+        assert!(continuation.resume(&mut s).is_err(), "singleState={single_state}");
+        assert!(std::sync::Arc::ptr_eq(&s.active().unwrap().doc, &before));
+        assert_eq!(s.active().unwrap().history.entries(), history);
+    }
+}
+
 /// Default playback is one named edit, including the complete Undo and Redo states.
 #[test]
 fn default_playback_is_one_named_history_state() {

@@ -60,6 +60,8 @@ pub struct History {
     current_visibility: Vec<LayerId>,
     /// Optional compound-operation accumulator; snapshots and rollback carry it with the history.
     visibility_capture: Option<Arc<Vec<LayerId>>>,
+    /// Changes only when every undo/redo state is irreversibly discarded.
+    purge_generation: u64,
     /// History Options › Allow Non-Linear History: a step recorded while later states exist
     /// (after stepping back) keeps them and goes to the end of the list, instead of discarding
     /// them; see [`History::record`] and [`History::remove`].
@@ -125,6 +127,7 @@ impl History {
             current_layers: LayerTarget::default(),
             current_visibility: Vec::new(),
             visibility_capture: None,
+            purge_generation: 0,
             non_linear: false,
             last_record: None,
             cleared: None,
@@ -237,6 +240,33 @@ impl History {
 
     pub fn captured_visibility(&self) -> Option<&[LayerId]> {
         self.visibility_capture.as_deref().map(Vec::as_slice)
+    }
+
+    /// Release an action's accumulator when a purge leaves no grouped step to publish.
+    pub fn end_visibility_capture(&mut self) {
+        self.visibility_capture = None;
+    }
+
+    /// An irreversible history purge establishes a new starting point for later edits.
+    pub fn was_purged_since(&self, earlier: &Self) -> bool {
+        self.purge_generation != earlier.purge_generation
+    }
+
+    /// Keep source selections when temporary action rows are consolidated. Return a selected
+    /// intermediate state so the caller can retain its pixels as a normal history snapshot.
+    /// A source already deleted before consolidation remains unresolved.
+    pub fn preserve_action_brush_source(&mut self, later: &Self) -> Option<HistoryState> {
+        let current = self.current_id;
+        let prior_current = later.current_id;
+        let collapsed = later
+            .brush_source
+            .and_then(|id| if id == prior_current || self.row_of(id).is_some() { None } else { later.held_states().find(|state| state.id == id).cloned() });
+        let map = |source: Option<u64>| source.map(|id| if id == prior_current { current } else { id });
+        self.brush_source = map(later.brush_source);
+        if let (Some(dst), Some(src)) = (&mut self.cleared, &later.cleared) {
+            dst.brush_source = map(src.brush_source);
+        }
+        collapsed
     }
 
     /// Undo: `current` becomes redoable; returns the document to make current and the layers it
@@ -505,6 +535,7 @@ impl History {
     /// goes back to the default, the oldest state held (now the current one): a source set on a
     /// state the purge removed would otherwise leave no source.
     pub fn clear(&mut self) {
+        self.purge_generation = self.purge_generation.wrapping_add(1);
         self.last_record = None;
         self.current_visibility.clear();
         self.undo.clear();

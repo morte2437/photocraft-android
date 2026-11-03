@@ -35,6 +35,12 @@ Batch and droplets group each processed document independently under the action'
 name and use the same saved option.
 Existing non-linear History ordering and visibility options continue to apply.
 
+Explicit Clear History and Purge Histories steps keep their normal effects. Later
+edits form a grouped entry from that new boundary, without restoring discarded
+states. If an action explicitly chooses an intermediate row as the History Brush
+source, its pixels are retained as a named snapshot when grouping removes that
+row; the action still adds only one Undo entry.
+
 ## Supported events (144)
 
 | Code | String ID | Label | PhotoCraft command(s) |

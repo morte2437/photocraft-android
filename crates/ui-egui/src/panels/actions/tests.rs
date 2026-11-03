@@ -74,9 +74,10 @@ fn single_history_dialog_confirmation_and_cancel() {
 /// A stale dialog must reject its own edit before it can change an unrelated document/history.
 #[test]
 fn single_history_dialog_refuses_intervening_edit_or_document_switch() {
-    for switch in [false, true] {
+    for (single_state, switch) in [(true, false), (true, true), (false, false), (false, true)] {
         let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
         app.run("file.new", json!({"width":4,"height":4,"background":"#804020"})).unwrap();
+        app.run("actions.setHistory", json!({"singleState":single_state})).unwrap();
         let mut action =
             Action::new("Bound", vec![("layer.renameLayer".into(), json!({"name":"Prefix"})), ("filter.blur.gaussianBlur".into(), json!({"radius":1}))]);
         action.dialogs.insert(1);
