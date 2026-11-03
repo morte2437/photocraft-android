@@ -118,35 +118,9 @@ impl std::fmt::Debug for ScratchFile {
 
 impl ScratchFile {
     pub fn create(dir: &Path) -> std::io::Result<Self> {
-        std::fs::create_dir_all(dir)?;
-        static COUNTER: AtomicUsize = AtomicUsize::new(0);
-        // A reused process id must not collide with an abandoned file from an older launch.
-        let n = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-            .saturating_add(COUNTER.fetch_add(1, Ordering::Relaxed) as u128);
-        let path = dir.join(format!("photocraft-{}-{n}.scratch", std::process::id()));
-        let mut options = std::fs::OpenOptions::new();
-        options.read(true).write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
+        let (main, path, linked) = open_private(dir)?;
         #[cfg(windows)]
-        {
-            use std::os::windows::fs::OpenOptionsExt;
-            const FILE_FLAG_DELETE_ON_CLOSE: u32 = 0x0400_0000;
-            options.custom_flags(FILE_FLAG_DELETE_ON_CLOSE);
-        }
-        let main = options.open(&path)?;
-        #[cfg(unix)]
-        reap_abandoned(dir, &main);
-        // Unix: the open handle keeps the inode; nothing is left behind at any exit. A
-        // filesystem that refuses the unlink keeps the name until drop or the next reap.
-        #[cfg(not(windows))]
-        let linked = std::fs::remove_file(&path).is_err();
+        let _ = linked;
         Ok(Self {
             main,
             #[cfg(windows)]
@@ -231,6 +205,45 @@ impl ScratchFile {
     }
 }
 
+/// Creates a file only this process can reach in `dir`, gone once its last handle closes: Unix
+/// opens it private (0600) and unlinks it right away, Windows opens it delete-on-close. Files
+/// of dead processes are reaped. Returns the file, its name, and whether the name is still
+/// there (a filesystem refused the unlink: remove it when done).
+pub(crate) fn open_private(dir: &Path) -> std::io::Result<(File, PathBuf, bool)> {
+    std::fs::create_dir_all(dir)?;
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+    // A reused process id must not collide with an abandoned file from an older launch.
+    let n = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+        .saturating_add(COUNTER.fetch_add(1, Ordering::Relaxed) as u128);
+    let path = dir.join(format!("photocraft-{}-{n}.scratch", std::process::id()));
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_DELETE_ON_CLOSE: u32 = 0x0400_0000;
+        options.custom_flags(FILE_FLAG_DELETE_ON_CLOSE);
+    }
+    let file = options.open(&path)?;
+    #[cfg(unix)]
+    reap_abandoned(dir, &file);
+    // Unix: the open handle keeps the inode; nothing is left behind at any exit. A
+    // filesystem that refuses the unlink keeps the name until drop or the next reap.
+    #[cfg(not(windows))]
+    let linked = std::fs::remove_file(&path).is_err();
+    #[cfg(windows)]
+    let linked = false;
+    Ok((file, path, linked))
+}
+
 /// Accept only the names we generate, never other temporary files or directories.
 #[cfg(any(unix, test))]
 fn scratch_pid(name: &str) -> Option<u32> {
@@ -297,17 +310,17 @@ fn thread_slot() -> usize {
 }
 
 #[cfg(unix)]
-fn write_all_at(file: &File, data: &[u8], offset: u64) -> std::io::Result<()> {
+pub(crate) fn write_all_at(file: &File, data: &[u8], offset: u64) -> std::io::Result<()> {
     std::os::unix::fs::FileExt::write_all_at(file, data, offset)
 }
 
 #[cfg(unix)]
-fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> std::io::Result<()> {
+pub(crate) fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> std::io::Result<()> {
     std::os::unix::fs::FileExt::read_exact_at(file, buf, offset)
 }
 
 #[cfg(windows)]
-fn write_all_at(file: &File, mut data: &[u8], mut offset: u64) -> std::io::Result<()> {
+pub(crate) fn write_all_at(file: &File, mut data: &[u8], mut offset: u64) -> std::io::Result<()> {
     use std::os::windows::fs::FileExt;
     while !data.is_empty() {
         let n = file.seek_write(data, offset)?;
@@ -321,7 +334,7 @@ fn write_all_at(file: &File, mut data: &[u8], mut offset: u64) -> std::io::Resul
 }
 
 #[cfg(windows)]
-fn read_exact_at(file: &File, mut buf: &mut [u8], mut offset: u64) -> std::io::Result<()> {
+pub(crate) fn read_exact_at(file: &File, mut buf: &mut [u8], mut offset: u64) -> std::io::Result<()> {
     use std::os::windows::fs::FileExt;
     while !buf.is_empty() {
         let n = file.seek_read(buf, offset)?;
@@ -335,12 +348,12 @@ fn read_exact_at(file: &File, mut buf: &mut [u8], mut offset: u64) -> std::io::R
 }
 
 #[cfg(not(any(unix, windows)))]
-fn write_all_at(_file: &File, _data: &[u8], _offset: u64) -> std::io::Result<()> {
+pub(crate) fn write_all_at(_file: &File, _data: &[u8], _offset: u64) -> std::io::Result<()> {
     Err(std::io::ErrorKind::Unsupported.into())
 }
 
 #[cfg(not(any(unix, windows)))]
-fn read_exact_at(_file: &File, _buf: &mut [u8], _offset: u64) -> std::io::Result<()> {
+pub(crate) fn read_exact_at(_file: &File, _buf: &mut [u8], _offset: u64) -> std::io::Result<()> {
     Err(std::io::ErrorKind::Unsupported.into())
 }
 
