@@ -74,6 +74,7 @@ fn shear_steps_roundtrip_curves_defaults_and_flags() {
     let mut step = item("Shr ", "Shear", Some(shear_descriptor(&[[0.0, 1.0], [0.0, 128.0]], "RptE")));
     step.enabled = false;
     step.with_dialog = true;
+    step.dialog_options = 2; // The wire mode for showing the enabled dialog toggle.
     let loaded = import(&atn::write(&one_action(vec![step.clone()])).unwrap()).unwrap();
     let bytes = export("S", &[&loaded.actions[0]], &[], false).unwrap().0;
     let saved = atn::parse(&bytes).unwrap();
