@@ -477,25 +477,38 @@ fn nested_effects_references_stay_whole_without_a_blank_layer_edit() {
     }
 }
 
-/// Native-exported layer options, including a name equal to Lefx, retain their actual settings.
+/// Native layer options still play with Lefx as a name or in synthetic opaque metadata.
 #[test]
 fn ordinary_layer_make_native_export_matches_native_playback() {
     let params = json!({"name": "Lefx", "opacity": 0.375, "mode": "Multiply", "clipToPrevious": true});
-    let a = action(vec![exported("layer.new.layer", params.clone()).unwrap()]);
-    assert_eq!(a.steps[0], ("layer.new.layer".into(), params.clone()));
-    let (mut native, _) = fixture(8);
-    native.execute("layer.new.layer", params).unwrap();
-    let (mut recorded, source) = fixture(8);
-    let before = recorded.active().unwrap().doc.clone();
-    let past = recorded.active().unwrap().history.past_len();
-    recorded.actions.list.push(a);
-    let result = recorded.execute("actions.play", json!({"action": 0})).unwrap();
-    assert_eq!(result["ran"], 1);
-    assert!(result.get("failed").is_none());
-    let after = recorded.active().unwrap().doc.clone();
-    assert_eq!(after.layers.len(), before.layers.len() + 1);
-    assert_eq!(after.layer(source), before.layer(source));
-    assert_eq!(recorded.active().unwrap().history.past_len(), past + 1);
-    equivalent(&recorded, &native);
-    undo_redo(&mut recorded, &before, &after, 1);
+    let opaque = D::List(vec![
+        D::RawData(create().to_bytes()),
+        D::Alias(b"Lefx".to_vec()),
+        D::Path(b"Lefx".to_vec()),
+        D::Text(UnicodeString::new_nul("Lefx")),
+    ]);
+    for metadata in [None, Some(opaque)] {
+        let mut source = exported("layer.new.layer", params.clone()).unwrap();
+        if let Some(value) = metadata {
+            let D::Descriptor(options) = &mut source.descriptor.as_mut().unwrap().items[1].1 else { panic!("native layer options") };
+            options.items.push((Id::new("data"), value));
+        }
+        let a = action(vec![source]);
+        assert_eq!(a.steps[0], ("layer.new.layer".into(), params.clone()));
+        let (mut native, _) = fixture(8);
+        native.execute("layer.new.layer", params.clone()).unwrap();
+        let (mut recorded, source) = fixture(8);
+        let before = recorded.active().unwrap().doc.clone();
+        let past = recorded.active().unwrap().history.past_len();
+        recorded.actions.list.push(a);
+        let result = recorded.execute("actions.play", json!({"action": 0})).unwrap();
+        assert_eq!(result["ran"], 1);
+        assert!(result.get("failed").is_none());
+        let after = recorded.active().unwrap().doc.clone();
+        assert_eq!(after.layers.len(), before.layers.len() + 1);
+        assert_eq!(after.layer(source), before.layer(source));
+        assert_eq!(recorded.active().unwrap().history.past_len(), past + 1);
+        equivalent(&recorded, &native);
+        undo_redo(&mut recorded, &before, &after, 1);
+    }
 }
