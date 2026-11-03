@@ -543,11 +543,11 @@ fn batch_open_source_save_step_leaves_an_unwritten_document_changed() {
     let result = session.execute("file.automate.batch", json!({"source": "open", "steps": steps})).unwrap();
     assert_eq!(result["errors"], json!([]), "{result}");
     assert!(session.documents()[0].is_dirty(), "a document Batch did not write stays changed");
-    // A destination that can't be written: the write fails.
+    // A destination that can't be written: the result's name is taken by a folder, so the path
+    // resolves on every platform and the write itself fails.
     let dir = tmp("batch-open-save-fails");
-    let blocker = join(&dir, "not-a-folder");
-    std::fs::write(&blocker, b"file").unwrap();
-    let result = session.execute("file.automate.batch", json!({"source": "open", "steps": steps, "output": blocker, "format": "png"})).unwrap();
+    std::fs::create_dir_all(join(&dir, "First.png")).unwrap();
+    let result = session.execute("file.automate.batch", json!({"source": "open", "steps": steps, "output": dir, "format": "png"})).unwrap();
     assert_eq!(result["errors"].as_array().map(Vec::len), Some(1), "{result}");
     assert!(session.documents()[0].is_dirty(), "a failed write leaves the document changed");
 }
