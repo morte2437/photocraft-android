@@ -1,5 +1,5 @@
 //! Measured layer-style action steps retain their settings and use the existing native commands.
-use photocraft_doc::{Document, LayerId};
+use photocraft_doc::{Document, Effect, LayerId};
 use photocraft_engine::{
     Session,
     actions_cmds::Action,
@@ -57,6 +57,32 @@ fn exported(id: &str, params: Value) -> Option<AtnItem> {
     atn::parse(&bytes).ok()?.actions.into_iter().next()?.items.into_iter().next()
 }
 
+/// Wire bytes also compare preserved NaN payloads, whose floating values are not reflexively equal.
+fn same_item_wire(mut actual: AtnItem, mut expected: AtnItem) {
+    assert_eq!(actual.descriptor.take().map(|d| d.to_bytes()), expected.descriptor.take().map(|d| d.to_bytes()));
+    assert_eq!(actual, expected);
+}
+
+/// The direct control must actually scale the known one-pixel shadow, not merely accept the call.
+fn scaled_shadow(s: &Session, source: LayerId, percent: f64) {
+    let shadow = s
+        .active()
+        .unwrap()
+        .doc
+        .layer(source)
+        .unwrap()
+        .effects
+        .items
+        .iter()
+        .find_map(|effect| match effect {
+            Effect::DropShadow(shadow) => Some(shadow),
+            _ => None,
+        })
+        .unwrap();
+    let factor = percent as f32 / 100.0;
+    assert_eq!((shadow.distance, shadow.size), (factor, factor));
+}
+
 /// A small painted source with two effects makes a real conversion differ from a blank layer.
 fn fixture(depth: u32) -> (Session, LayerId) {
     let mut s = Session::new();
@@ -97,11 +123,11 @@ fn undo_redo(s: &mut Session, before: &Document, after: &Document, edits: usize)
     for _ in 0..edits {
         assert!(s.undo());
     }
-    assert_eq!(&s.active().unwrap().doc, before);
+    assert_eq!(s.active().unwrap().doc.as_ref(), before);
     for _ in 0..edits {
         assert!(s.redo());
     }
-    assert_eq!(&s.active().unwrap().doc, after);
+    assert_eq!(s.active().unwrap().doc.as_ref(), after);
 }
 
 /// Playback must produce actual effect layers, not the blank layer the old Make branch creates.
@@ -140,9 +166,10 @@ fn create_layers_playback_matches_native_effect_layers_and_undo_at_each_depth() 
 fn scale_effects_playback_matches_native_settings_and_undo_at_each_depth() {
     for depth in [8, 16, 32] {
         for percent in [1.0, 100.0, 200.0, 1000.0] {
-            let (mut native, _) = fixture(depth);
+            let (mut native, native_source) = fixture(depth);
             let native_past = native.active().unwrap().history.past_len();
             native.execute(SCALE, json!({"scale":percent})).unwrap();
+            scaled_shadow(&native, native_source, percent);
             let edits = native.active().unwrap().history.past_len() - native_past;
             let (mut recorded, _) = fixture(depth);
             let before = recorded.active().unwrap().doc.clone();
@@ -192,7 +219,9 @@ fn layer_style_descriptors_roundtrip_and_edited_scale_does_not_revive_source() {
         let a = action(vec![source.clone()]);
         assert_eq!(a.steps[0].0, id);
         let bytes = export("S", &[&a], &[], false).unwrap().0;
-        assert_eq!(atn::parse(&bytes).unwrap().actions[0].items, vec![source]);
+        let saved = atn::parse(&bytes).unwrap().actions.into_iter().next().unwrap().items;
+        assert_eq!(saved.len(), 1);
+        same_item_wire(saved.into_iter().next().unwrap(), source);
         let mut damaged = a.steps[0].1.clone();
         damaged["_atnLayerStyleDescriptor"] = json!("not base64");
         assert!(exported(id, damaged).is_none());
@@ -279,6 +308,19 @@ fn layer_style_malformed_records_stay_kept_without_an_edit() {
             ReferenceItem::Property { class: class("Prpr"), key: Id::new("Lefx") },
             ReferenceItem::Enumerated { class: class("Lyr "), type_id: Id::new("Ordn"), value: Id::new("Al  ") },
         ]),
+        D::Reference(vec![
+            ReferenceItem::Property { class: class("Prpr"), key: Id::new("Lefx") },
+            ReferenceItem::Enumerated { class: class("Lyr "), type_id: Id::new("wrong"), value: Id::new("Trgt") },
+        ]),
+        D::Reference(vec![
+            ReferenceItem::Property { class: class("Prpr"), key: Id::new("Lefx") },
+            ReferenceItem::Name { class: class("Lyr "), name: UnicodeString::new_nul("Source") },
+        ]),
+        D::Reference(vec![
+            ReferenceItem::Property { class: class("Prpr"), key: Id::new("Lefx") },
+            ReferenceItem::Enumerated { class: class("Lyr "), type_id: Id::new("Ordn"), value: Id::new("Trgt") },
+            ReferenceItem::Class(class("Lyr ")),
+        ]),
     ] {
         let mut d = create();
         d.items[1].1 = using;
@@ -290,7 +332,9 @@ fn layer_style_malformed_records_stay_kept_without_an_edit() {
         assert_eq!(loaded.unsupported.len(), 1, "{id}: {source:?}");
         assert_eq!(loaded.actions[0].steps[0].0, "actions.photoshopStep");
         let bytes = export("S", &[&loaded.actions[0]], &[], false).unwrap().0;
-        assert_eq!(atn::parse(&bytes).unwrap().actions[0].items, vec![source]);
+        let saved = atn::parse(&bytes).unwrap().actions.into_iter().next().unwrap().items;
+        assert_eq!(saved.len(), 1);
+        same_item_wire(saved.into_iter().next().unwrap(), source);
         let (mut s, _) = fixture(8);
         let before = s.active().unwrap().doc.clone();
         let past = s.active().unwrap().history.past_len();
