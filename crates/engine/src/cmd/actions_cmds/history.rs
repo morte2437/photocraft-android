@@ -2,6 +2,7 @@
 use super::{EngineError, Result, Session};
 use photocraft_doc::{DocId, Document};
 use photocraft_ops::{History, LayerTarget};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 #[derive(Clone, Debug)]
@@ -13,6 +14,21 @@ struct BeforeDocument {
     coalesce: Option<String>,
     saved_revision: u64,
     clean: bool,
+}
+
+impl BeforeDocument {
+    /// Capture the complete document boundary, including clean state and targeted layers.
+    fn capture(st: &crate::DocState) -> Self {
+        Self {
+            id: st.doc.id,
+            doc: st.doc.clone(),
+            history: st.history.clone(),
+            layers: st.layer_target(),
+            coalesce: st.coalesce.clone(),
+            saved_revision: st.saved_revision,
+            clean: !st.is_dirty(),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -38,15 +54,7 @@ pub(crate) fn before_edit(s: &mut Session) {
     if previous.is_some_and(|i| !st.history.is_cleared() && !st.history.was_purged_since(&group.before[i].history)) {
         return;
     }
-    let before = BeforeDocument {
-        id: st.doc.id,
-        doc: st.doc.clone(),
-        history: st.history.clone(),
-        layers: st.layer_target(),
-        coalesce: st.coalesce.clone(),
-        saved_revision: st.saved_revision,
-        clean: !st.is_dirty(),
-    };
+    let before = BeforeDocument::capture(st);
     if let Some(group) = &mut s.action_history {
         match previous {
             Some(i) => group.before[i] = before,
@@ -56,6 +64,53 @@ pub(crate) fn before_edit(s: &mut Session) {
     if let Some(st) = s.active_mut() {
         st.coalesce = None;
         st.history.begin_visibility_capture(&[]);
+    }
+}
+
+/// Rows visible just before the user deletes history, distinct from internal compound purges.
+pub(crate) fn history_rows(s: &Session) -> Vec<u64> {
+    if s.action_history.is_none() {
+        return Vec::new();
+    }
+    let Some(st) = s.active() else { return Vec::new() };
+    st.history.row_ids().collect()
+}
+
+/// Apply only the user's actual row removals to the existing action boundary immediately.
+pub(crate) fn reconcile_history_removal(s: &mut Session, rows: &[u64]) {
+    let Some(st) = s.active() else { return };
+    let Some(group) = &s.action_history else { return };
+    let Some(index) = group.before.iter().position(|before| before.id == st.doc.id) else { return };
+    let prior = &group.before[index].history;
+    let after: HashSet<_> = st.history.row_ids().collect();
+    let baseline: HashSet<_> = prior.row_ids().collect();
+    let removed: Vec<_> = rows.iter().copied().filter(|id| !after.contains(id) && baseline.contains(id)).collect();
+    if removed.is_empty() {
+        return;
+    }
+    if prior.row_id(prior.past_len()).is_some_and(|id| removed.contains(&id)) {
+        // The original pixels themselves were deleted. Only the post-delete document may
+        // start a later grouped suffix; its accumulator excludes edits before that boundary.
+        let mut before = BeforeDocument::capture(st);
+        before.history.end_visibility_capture();
+        if let Some(group) = &mut s.action_history {
+            group.before[index] = before;
+        }
+        if let Some(st) = s.active_mut() {
+            st.coalesce = None;
+            st.history.begin_visibility_capture(&[]);
+        }
+    } else if let Some(group) = &mut s.action_history {
+        let history = &mut group.before[index].history;
+        for id in removed {
+            let Some(row) = history.row_of(id) else { continue };
+            let current = history.past_len();
+            if row < current {
+                history.remove(row);
+            } else if row > current {
+                history.remove_later(row - current - 1);
+            }
+        }
     }
 }
 

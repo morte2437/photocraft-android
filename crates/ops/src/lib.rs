@@ -378,6 +378,11 @@ impl History {
         }
     }
 
+    /// Visible History panel row ids in order, including the current and dimmed redo rows.
+    pub fn row_ids(&self) -> impl Iterator<Item = u64> + '_ {
+        self.undo.iter().map(|state| state.id).chain(std::iter::once(self.current_id)).chain(self.redo.iter().rev().map(|state| state.id))
+    }
+
     /// The History panel row of the state with id `id`, if it is still held.
     pub fn row_of(&self, id: u64) -> Option<usize> {
         let past = self.undo.len();
@@ -431,7 +436,17 @@ impl History {
         self.current_label = label.into();
     }
 
-    /// Forget the most recent undo state and every redo state (Edit › Purge › Undo): the
+    /// The user's Edit › Purge › Undo also starts a new action-history boundary. Internal
+    /// compound commands use [`Self::purge_last`] to fold their records without this boundary.
+    pub fn purge_undo(&mut self) -> bool {
+        let purged = self.purge_last();
+        if purged {
+            self.purge_generation = self.purge_generation.wrapping_add(1);
+        }
+        purged
+    }
+
+    /// Forget the most recent undo state and every redo state: the
     /// last step can no longer be undone and its pixels are released.
     pub fn purge_last(&mut self) -> bool {
         self.clear_redo();

@@ -23,7 +23,7 @@ pub(super) fn purge(s: &mut Session, what: &str) -> Result<Value> {
     if matches!(what, "undo" | "all") && s.active().is_some_and(|d| d.history.can_undo()) {
         let before = history_bytes(s, false);
         if let Some(st) = s.active_mut() {
-            st.history.purge_last();
+            st.history.purge_undo();
         }
         freed += before.saturating_sub(history_bytes(s, false));
         items.push("undo");

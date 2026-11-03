@@ -26,7 +26,7 @@ use crate::{EngineError, Result, Session};
 mod history;
 pub(crate) use history::ActionHistory;
 pub use history::{ActionHistoryContinuation, finish_pending_history, suspend_history};
-pub(crate) use history::{before_edit as before_action_edit, begin_document_history, finish_document_history};
+pub(crate) use history::{before_edit as before_action_edit, begin_document_history, finish_document_history, history_rows, reconcile_history_removal};
 
 fn bad(cmd: &str, msg: impl Into<String>) -> EngineError {
     EngineError::BadParams { cmd: cmd.into(), msg: msg.into() }
