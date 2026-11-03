@@ -355,14 +355,20 @@ impl PhotocraftApp {
     /// What a save writes by default under the preferences: File Handling › Image Previews
     /// decides whether a PSD/PSB gets its thumbnail, and Maximize PSD and PSB File Compatibility
     /// whether it gets its real merged image. Ask When Saving has no dialog here yet, so it saves
-    /// both, as Photoshop's checkboxes start on. A JPEG or WebP is written the way the active
+    /// both, as Photoshop's checkboxes start on. Save Full-Size Composite in .pcraft Files decides
+    /// whether a `.pcraft` save also writes `composite/full.png`. A JPEG or WebP is written the way the active
     /// document's file was (its JPEG quality, a WebP lossy at its quality or lossless), as
     /// Photoshop's Save and Save As options start there.
     pub(crate) fn save_settings(&self) -> ExportSettings {
         let file_handling = &self.session.prefs().file_handling;
         let previews = file_handling.image_previews != photocraft_engine::prefs::Ask::Never;
         let maximize = file_handling.maximize_psd_compatibility != photocraft_engine::prefs::Ask::Never;
-        let mut settings = ExportSettings { image_previews: previews, psd_maximize_compatibility: maximize, ..ExportSettings::default() };
+        let mut settings = ExportSettings {
+            image_previews: previews,
+            psd_maximize_compatibility: maximize,
+            pcraft_full_composite: file_handling.pcraft_full_composite,
+            ..ExportSettings::default()
+        };
         if let Some(st) = self.session.active() {
             let e = &st.doc.file_encoding;
             settings.jpeg_quality = e.jpeg_quality.map(|q| q.clamp(1, 100));
