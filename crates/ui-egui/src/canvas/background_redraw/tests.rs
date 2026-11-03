@@ -687,6 +687,9 @@ fn a_canvas_over_the_texture_budget_draws_its_viewport_pages_on_the_gpu() {
     gpu.set_canvas_budget(1);
     g.harness.run_steps(3);
     assert_eq!(render_path_of(&g), (Some("canvasTooLarge"), Some("CPU Rendering")));
+    // Its pages and their work are freed meanwhile (#5332 review).
+    assert!(gpu.pages(key).0.is_empty(), "pages freed");
+    assert!(!g.harness.state().streams.contains_key(&doc.id), "stream dropped");
     gpu.set_canvas_budget(set - 1);
     settle_pages(&mut g);
     // Closing the document cancels its work and frees its pages.

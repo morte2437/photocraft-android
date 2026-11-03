@@ -597,6 +597,20 @@ pub(super) fn show(app: &mut PhotocraftApp, ctx: &egui::Context, idx: usize, xf:
         }
         return false;
     }
+    let key = stream_key(id.0);
+    // Half the per-document canvas budget: the rest is headroom for what the compositor needs.
+    let limit = gpu.canvas_budget() / 2;
+    let page_bytes = gpu.page_texture_bytes(doc.depth, size, PAGE_SIDE + 2, PAGE_SIDE + 2).max(1);
+    let max_pages = usize::try_from(limit / page_bytes).unwrap_or(usize::MAX);
+    // No room for a single page: the CPU canvas draws the document, as main does for every
+    // document over the budget, and the pages and work held for it are freed.
+    if max_pages == 0 {
+        if let Some(s) = app.streams.remove(&id) {
+            drop(s);
+            gpu.retain_pages(key, &[]);
+        }
+        return false;
+    }
     let (display, _) = canvas_display(app, &doc, None);
     let display_key = texture_key(display.as_deref());
     let now = Identity { revision, preview: raw_key, display: display_key, size };
@@ -607,11 +621,6 @@ pub(super) fn show(app: &mut PhotocraftApp, ctx: &egui::Context, idx: usize, xf:
             .and_then(|s| damage_since(app, idx, (s.revision, s.preview ^ display_key), (revision, raw_key), display_key, last_damage));
         app.streams.entry(id).or_default().invalidate(now, damage);
     }
-    let key = stream_key(id.0);
-    // Half the per-document canvas budget: the rest is headroom for what the compositor needs.
-    let limit = gpu.canvas_budget() / 2;
-    let page_bytes = gpu.page_texture_bytes(doc.depth, size, PAGE_SIDE + 2, PAGE_SIDE + 2).max(1);
-    let max_pages = usize::try_from(limit / page_bytes).unwrap_or(usize::MAX);
     let wanted = pages(size, visible_doc_rect(xf), zoom, max_pages);
     if gpu.texture_info(id.0).is_some() {
         // Switching from the texture set: free it, the pages are budgeted against that memory.
@@ -619,9 +628,8 @@ pub(super) fn show(app: &mut PhotocraftApp, ctx: &egui::Context, idx: usize, xf:
     }
     let stream = app.streams.entry(id).or_default();
     stream.retry_after((photocraft_raster::spill::read_error_generation(), photocraft_raster::memory::configuration_generation()));
-    // No room for a single page, or a page that failed: the CPU canvas draws the document, as
-    // main does for every document over the budget.
-    if max_pages == 0 || stream.stuck(&wanted) {
+    // A page that failed: the CPU canvas draws the document until it is retried.
+    if stream.stuck(&wanted) {
         return false;
     }
     let faithful = photocraft_compose::proxy::proxy_faithful(&doc);
