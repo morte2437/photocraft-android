@@ -71,6 +71,25 @@ fn every_overlay_has_its_own_embedded_icon() {
     assert_eq!(names.len(), CropOverlay::ALL.len(), "one icon per overlay");
 }
 
+/// The six files are different drawings, not one picture saved under six names: a duplicate would
+/// still get six texture ids and pass the texture checks above.
+#[test]
+fn the_overlay_glyphs_are_six_different_drawings() {
+    let art: [(&str, &[u8]); 6] = [
+        ("crop-overlay-thirds", include_bytes!("../../../../assets/icons/crop-overlay-thirds.svg")),
+        ("crop-overlay-grid", include_bytes!("../../../../assets/icons/crop-overlay-grid.svg")),
+        ("crop-overlay-diagonal", include_bytes!("../../../../assets/icons/crop-overlay-diagonal.svg")),
+        ("crop-overlay-triangle", include_bytes!("../../../../assets/icons/crop-overlay-triangle.svg")),
+        ("crop-overlay-golden-ratio", include_bytes!("../../../../assets/icons/crop-overlay-golden-ratio.svg")),
+        ("crop-overlay-golden-spiral", include_bytes!("../../../../assets/icons/crop-overlay-golden-spiral.svg")),
+    ];
+    let icons: Vec<&str> = CropOverlay::ALL.iter().map(|k| k.icon()).collect();
+    assert_eq!(art.iter().map(|(name, _)| *name).collect::<Vec<_>>(), icons, "one file per overlay, in ALL order");
+    for (i, (name, bytes)) in art.iter().enumerate() {
+        assert!(art[..i].iter().all(|(_, other)| other != bytes), "{name} repeats another overlay's drawing");
+    }
+}
+
 #[test]
 fn the_overlay_button_paints_the_current_overlays_icon() {
     // One context: the SVG loader gives every new file its own texture, so the id changes as the
