@@ -1,6 +1,6 @@
 //! The Layers panel's filter row (#5048): a filter-type dropdown, as in Photoshop, then the
-//! controls for that type. Kind toggles layer kinds, Name matches part of the layer name, Mode
-//! picks one blend mode. The criteria live in `UiState` (`layer_filter*`), so the control channel
+//! controls for that type. Kind toggles layer kinds, Name matches part of the layer name, Effect
+//! picks one effect kind (#10880), Mode picks one blend mode. The criteria live in `UiState` (`layer_filter*`), so the control channel
 //! can read and set them.
 
 use photocraft_color::BlendMode;
@@ -17,6 +17,7 @@ pub enum FilterBy {
     #[default]
     Kind,
     Name,
+    Effect,
     Mode,
 }
 
@@ -28,20 +29,28 @@ pub struct Filter {
     /// As typed; matched trimmed and ignoring case.
     pub name: String,
     pub mode: BlendMode,
+    pub effect: effect::EffectKind,
 }
 
 impl Filter {
     pub fn of(ui: &UiState) -> Self {
-        Self { by: ui.layer_filter_by, kinds: ui.layer_filter.clone(), name: ui.layer_filter_name.clone(), mode: ui.layer_filter_mode }
+        Self {
+            by: ui.layer_filter_by,
+            kinds: ui.layer_filter.clone(),
+            name: ui.layer_filter_name.clone(),
+            mode: ui.layer_filter_mode,
+            effect: ui.layer_filter_effect,
+        }
     }
 
-    /// Whether the panel is filtered. Like Photoshop, Mode always filters (by Normal at first);
+    /// Whether the panel is filtered. Like Photoshop, Mode and Effect always filter (by Normal and
+    /// by Bevel & Emboss at first);
     /// Kind and Name only once a kind is toggled or some text is typed.
     pub fn active(&self) -> bool {
         match self.by {
             FilterBy::Kind => !self.kinds.is_empty(),
             FilterBy::Name => !self.name.trim().is_empty(),
-            FilterBy::Mode => true,
+            FilterBy::Effect | FilterBy::Mode => true,
         }
     }
 
@@ -53,6 +62,7 @@ impl Filter {
         match self.by {
             FilterBy::Kind => self.kinds.iter().any(|k| k == kind(l)),
             FilterBy::Name => l.name.to_lowercase().contains(&self.name.trim().to_lowercase()),
+            FilterBy::Effect => self.effect.shows(l),
             FilterBy::Mode => l.blend == self.mode,
         }
     }
@@ -66,13 +76,12 @@ pub const KINDS: [&str; 5] = ["pixel", "adjustment", "type", "shape", "smart"];
 /// `kinds` a list of [`KINDS`]; `mode` a blend mode name such as `Multiply` or `Pass Through`.
 pub fn patched(current: &UiState, v: &serde_json::Value) -> Result<Filter, String> {
     let Some(o) = v.as_object() else { return Err("layerFilter must be an object".into()) };
-    if let Some(k) = o.keys().find(|k| !["by", "kinds", "name", "mode"].contains(&k.as_str())) {
-        return Err(format!("unknown layerFilter field `{k}` (fields: by, kinds, name, mode)"));
+    if let Some(k) = o.keys().find(|k| !["by", "kinds", "name", "mode", "effect"].contains(&k.as_str())) {
+        return Err(format!("unknown layerFilter field `{k}` (fields: by, kinds, name, mode, effect)"));
     }
-    let mut f =
-        Filter { by: current.layer_filter_by, kinds: current.layer_filter.clone(), name: current.layer_filter_name.clone(), mode: current.layer_filter_mode };
+    let mut f = Filter::of(current);
     if let Some(by) = o.get("by") {
-        f.by = serde_json::from_value(by.clone()).map_err(|_| "layerFilter.by must be kind, name or mode".to_string())?;
+        f.by = serde_json::from_value(by.clone()).map_err(|_| "layerFilter.by must be kind, name, effect or mode".to_string())?;
     }
     if let Some(kinds) = o.get("kinds") {
         let list = kinds.as_array().ok_or("layerFilter.kinds must be a list")?;
@@ -95,6 +104,9 @@ pub fn patched(current: &UiState, v: &serde_json::Value) -> Result<Filter, Strin
             .filter(|m| *m == BlendMode::PassThrough || BlendMode::LAYER_MODES.contains(m))
             .ok_or_else(|| format!("layerFilter.mode: unknown blend mode `{name}`"))?;
     }
+    if let Some(e) = o.get("effect") {
+        f.effect = effect::parse(e)?;
+    }
     Ok(f)
 }
 
@@ -104,6 +116,7 @@ pub fn apply(ui: &mut UiState, f: Filter) {
     ui.layer_filter = f.kinds;
     ui.layer_filter_name = f.name;
     ui.layer_filter_mode = f.mode;
+    ui.layer_filter_effect = f.effect;
 }
 
 /// The kind filter's name for `l`'s content ("" for groups, which no kind matches).
@@ -122,7 +135,7 @@ fn kind(l: &Layer) -> &'static str {
 pub fn bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
-        let by = [(FilterBy::Kind, tl!("Kind")), (FilterBy::Name, tl!("Name")), (FilterBy::Mode, tl!("Mode"))];
+        let by = [(FilterBy::Kind, tl!("Kind")), (FilterBy::Name, tl!("Name")), (FilterBy::Effect, tl!("Effect")), (FilterBy::Mode, tl!("Mode"))];
         widgets::dropdown(ui, "layer-filter-by", tl!("Kind"), &mut app.ui.layer_filter_by, &by, 64.0);
         ui.add_space(4.0);
         match app.ui.layer_filter_by {
@@ -148,6 +161,7 @@ pub fn bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 let width = ui.available_width().max(48.0);
                 widgets::text_field(ui, ui.scope_id().with("layer-filter-name"), &mut app.ui.layer_filter_name, tl!("Search"), width, false);
             }
+            FilterBy::Effect => effect::controls(app, ui),
             FilterBy::Mode => {
                 let modes: Vec<(BlendMode, &str)> = std::iter::once(BlendMode::PassThrough).chain(BlendMode::LAYER_MODES).map(|m| (m, m.label())).collect();
                 let width = ui.available_width().max(96.0);
@@ -157,5 +171,9 @@ pub fn bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     });
 }
 
+pub mod effect;
+
+#[cfg(test)]
+mod effect_tests;
 #[cfg(test)]
 mod tests;
