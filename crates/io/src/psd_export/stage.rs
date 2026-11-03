@@ -95,9 +95,129 @@ impl Stage {
         image
     }
 
+    /// Appends one part of a channel written band by band; `None` when the write fails.
+    fn append(&self, data: &[u8]) -> Option<u64> {
+        self.file.0.append(data).ok()
+    }
+
     /// Bytes on the scratch disk.
     #[cfg(test)]
     pub(crate) fn len(&self) -> u64 {
         self.file.0.len()
+    }
+}
+
+/// One channel of a layer encoded band by band (#5333): its head (an RLE row-count table, filled
+/// in when the last band is encoded) and the bands' encoded parts in order. With a stage every
+/// part goes to the scratch disk as it is made, so a layer of any size is saved holding about one
+/// band; without one the parts are joined in memory, as a channel encoded whole would be.
+pub(crate) struct Parts {
+    stage: Option<Arc<Stage>>,
+    head_len: usize,
+    /// Without a stage: the head's room and the parts so far.
+    joined: Vec<u8>,
+    /// With a stage: the parts, staged or (when a write failed) kept.
+    parts: Vec<Part>,
+    len: u64,
+}
+
+enum Part {
+    Kept(Vec<u8>),
+    Staged { offset: u64, len: u64 },
+}
+
+impl Part {
+    fn len(&self) -> u64 {
+        match self {
+            Part::Kept(v) => v.len() as u64,
+            Part::Staged { len, .. } => *len,
+        }
+    }
+}
+
+impl Parts {
+    pub(crate) fn new(stage: Option<Arc<Stage>>, head_len: usize) -> Self {
+        let joined = if stage.is_none() { vec![0; head_len] } else { Vec::new() };
+        Parts { stage, head_len, joined, parts: Vec::new(), len: head_len as u64 }
+    }
+
+    /// Adds the next encoded part.
+    pub(crate) fn push(&mut self, data: Vec<u8>) {
+        if data.is_empty() {
+            return;
+        }
+        self.len += data.len() as u64;
+        match &self.stage {
+            None => self.joined.extend_from_slice(&data),
+            Some(stage) => self.parts.push(match stage.append(&data) {
+                Some(offset) => Part::Staged { offset, len: data.len() as u64 },
+                None => Part::Kept(data),
+            }),
+        }
+    }
+
+    /// The channel: `head` (of the length given to [`Parts::new`]) and then the parts.
+    pub(crate) fn finish(mut self, id: i16, compression: photocraft_psd::Compression, head: &[u8]) -> photocraft_psd::Result<ChannelData> {
+        if head.len() != self.head_len {
+            return Err(PsdError::Invalid("banded channel head has the wrong length".into()));
+        }
+        let Some(stage) = self.stage else {
+            self.joined[..head.len()].copy_from_slice(head);
+            self.joined.shrink_to_fit();
+            return Ok(ChannelData::new(id, Some(compression), self.joined));
+        };
+        let mut parts = Vec::with_capacity(self.parts.len() + 1);
+        if !head.is_empty() {
+            parts.push(Part::Kept(head.to_vec()));
+        }
+        parts.append(&mut self.parts);
+        let mut starts = Vec::with_capacity(parts.len());
+        let mut at = 0;
+        for p in &parts {
+            starts.push(at);
+            at += p.len();
+        }
+        let joined = Joined { file: stage.file.clone(), parts, starts, len: self.len };
+        let stored = Stored { source: Source::from_arc(Arc::new(joined)), offset: 0, len: self.len };
+        Ok(ChannelData { id, compression: Some(compression), data: Vec::new(), stored: Some(stored) })
+    }
+}
+
+/// A banded channel's bytes, in memory and in its staged parts. A read is split at the parts, so
+/// the writer's consecutive pass reads each staged append from its start to its end, and the stage
+/// file checks it.
+struct Joined {
+    file: Arc<Backing>,
+    parts: Vec<Part>,
+    starts: Vec<u64>,
+    len: u64,
+}
+
+impl ReadAt for Joined {
+    fn len(&self) -> u64 {
+        self.len
+    }
+
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> photocraft_psd::Result<()> {
+        if offset.checked_add(buf.len() as u64).is_none_or(|end| end > self.len) {
+            return Err(PsdError::Read(format!("staged export data, {} bytes at offset {offset} past its {} bytes", buf.len(), self.len)));
+        }
+        let mut pos = offset;
+        let mut buf = buf;
+        let mut i = self.starts.partition_point(|&s| s <= pos).saturating_sub(1);
+        while !buf.is_empty() {
+            let (part, start) = (&self.parts[i], self.starts[i]);
+            let within = pos - start;
+            let n = usize::try_from((part.len() - within).min(buf.len() as u64)).unwrap_or(buf.len());
+            let (now, rest) = std::mem::take(&mut buf).split_at_mut(n);
+            match part {
+                Part::Kept(v) => now.copy_from_slice(&v[within as usize..within as usize + n]),
+                Part::Staged { offset, .. } => self.file.read_at(offset + within, now)?,
+            }
+            buf = rest;
+            pos += n as u64;
+            i += 1;
+        }
+        Ok(())
     }
 }

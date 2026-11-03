@@ -672,3 +672,130 @@ fn staging_keeps_short_or_unwritable_data_in_memory() {
     assert!(stage::Stage::for_document(10, None).is_none(), "not asked for");
     let _ = std::fs::remove_dir(&dir);
 }
+
+/// The first layer's channels, decoded.
+fn decoded_channels(file: &PsdFile) -> Vec<Vec<u8>> {
+    let layer = &file.layers()[0];
+    let (w, h) = (layer.rect.width() as usize, layer.rect.height() as usize);
+    layer.channels.iter().map(|c| c.decode(w, h, file.header.depth, file.header.version).unwrap()).collect()
+}
+
+/// A noisy, translucent layer inset from the canvas: `w`×`h` px in `mode`/`depth`.
+fn banding_document(mode: ColorMode, depth: SampleType, w: u32, h: u32) -> Document {
+    let mut doc = Document::new("banded", photocraft_geom::Size::new(w, h), mode, depth);
+    let mut layer = Layer::raster("Layer 1", doc.pixel_format());
+    let rect = photocraft_geom::Rect::new(5, 3, w as i32 - 7, h as i32 - 2);
+    let surface = layer.surface_mut().unwrap();
+    let ch = surface.channels();
+    let mut state = 0x2545_f491_u32;
+    let n = rect.width() as usize * rect.height() as usize * ch;
+    let data: Vec<f32> = (0..n)
+        .map(|i| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            // Runs as well as noise, so RLE packs both kinds of row.
+            let v = if (i / (ch * 40)).is_multiple_of(3) { 0.5 } else { (state >> 20) as f32 / 4095.0 };
+            if i % ch == ch - 1 { v.max(0.25) } else { v }
+        })
+        .collect();
+    surface.write_region(rect, &data);
+    doc.layers.push(layer);
+    doc
+}
+
+/// Exports `doc` with layers past `banded` bytes saved in bands of `rows` rows.
+fn export_banded(doc: &Document, options: &PsdExportOptions, banded: Option<usize>) -> (PsdFile, Vec<String>) {
+    let row_bytes = doc.size.width as usize * doc.pixel_format().bytes_per_pixel();
+    banded::BANDS_FOR_TESTS.set(banded.map(|rows| (0, rows * row_bytes + 3)));
+    let out = document_to_psd_sized(doc, options, 0, &Interrupt::NONE, PSD_MAX_FILE_SIZE);
+    banded::BANDS_FOR_TESTS.set(None);
+    out
+}
+
+/// #5333: a layer saved band by band (here every layer, in bands of a few rows) writes the bytes
+/// of one gathered whole (ZIP with prediction, 32-bit, the same pixels); RGB, CMYK and Lab; PSD, PSB and a PSD
+/// promoted to PSB; in memory and staged on the scratch disk (then also streamed).
+#[test]
+fn banded_layers_write_the_bytes_of_whole_ones() {
+    let dir = std::env::temp_dir().join(format!("pc-psd-banded-{}", std::process::id()));
+    let cases = [
+        (ColorMode::Rgb, SampleType::U8),
+        (ColorMode::Rgb, SampleType::U16),
+        (ColorMode::Rgb, SampleType::F32),
+        (ColorMode::Cmyk, SampleType::U8),
+        (ColorMode::Lab, SampleType::U16),
+    ];
+    for (mode, depth) in cases {
+        let doc = banding_document(mode, depth, 203, 157);
+        for force_psb in [false, true] {
+            for staged in [false, true] {
+                stage::DIR_FOR_TESTS.with(|d| *d.borrow_mut() = staged.then(|| dir.clone()));
+                let options = PsdExportOptions { force_psb, stage_on_scratch_from: staged.then_some(0), ..Default::default() };
+                let (want, want_warnings) = export_banded(&doc, &options, None);
+                for rows in [1, 7, 1000] {
+                    let what = format!("{mode:?} {depth:?}, psb {force_psb}, staged {staged}, {rows} rows a band");
+                    let (file, warnings) = export_banded(&doc, &options, Some(rows));
+                    assert_eq!(warnings, want_warnings, "{what}");
+                    let layer = &file.layers()[0];
+                    assert_eq!(layer.rect, want.layers()[0].rect, "{what}");
+                    if staged {
+                        assert!(layer.channels.iter().all(|c| c.stored.is_some() && c.data.is_empty()), "{what}: banded channels are staged");
+                    }
+                    if depth == SampleType::F32 {
+                        // One zlib stream fed band by band packs differently from one fed whole
+                        // (the encoder sees a different amount of input ahead), so the ZIP
+                        // channels are compared decoded, here and as the streamed file reads back.
+                        let mut w = std::io::Cursor::new(Vec::new());
+                        file.write_to(&mut w).unwrap();
+                        let back = PsdFile::from_bytes(&w.into_inner()).unwrap();
+                        assert_eq!(decoded_channels(&back), decoded_channels(&want), "{what}: banded ZIP channels differ");
+                        assert!(back.image_data.encoded().unwrap() == want.image_data.encoded().unwrap(), "{what}");
+                        continue;
+                    }
+                    let bytes = want.to_bytes().unwrap();
+                    assert!(file.to_bytes().unwrap() == bytes, "{what}: banded bytes differ");
+                    let mut w = std::io::Cursor::new(Vec::new());
+                    file.write_to(&mut w).unwrap();
+                    assert!(w.into_inner() == bytes, "{what}: streamed banded bytes differ");
+                    if !force_psb {
+                        let (mut promoted, mut whole) = (file.clone(), want.clone());
+                        promoted.promote_to_psb().unwrap();
+                        whole.promote_to_psb().unwrap();
+                        let mut w = std::io::Cursor::new(Vec::new());
+                        promoted.write_to(&mut w).unwrap();
+                        assert!(w.into_inner() == whole.to_bytes().unwrap(), "{what}: promoted banded bytes differ");
+                    }
+                }
+            }
+        }
+    }
+    stage::DIR_FOR_TESTS.with(|d| *d.borrow_mut() = None);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// #5333: a layer past the gather size is saved with its pixels (it used to be saved empty, with a
+/// warning), and they come back on import.
+#[test]
+fn banded_layers_round_trip() {
+    let dir = std::env::temp_dir().join(format!("pc-psd-banded-rt-{}", std::process::id()));
+    for depth in [SampleType::U8, SampleType::U16, SampleType::F32] {
+        let doc = banding_document(ColorMode::Rgb, depth, 181, 133);
+        for staged in [false, true] {
+            stage::DIR_FOR_TESTS.with(|d| *d.borrow_mut() = staged.then(|| dir.clone()));
+            let options = PsdExportOptions { stage_on_scratch_from: staged.then_some(0), ..Default::default() };
+            let (file, warnings) = export_banded(&doc, &options, Some(5));
+            assert!(warnings.is_empty(), "{warnings:?}");
+            let mut w = std::io::Cursor::new(Vec::new());
+            file.write_to(&mut w).unwrap();
+            let back = PsdFile::from_bytes(&w.into_inner()).unwrap();
+            let (read, _) = crate::psd_import::psd_to_document(&back);
+            let full = photocraft_geom::Rect::new(0, 0, doc.size.width as i32, doc.size.height as i32);
+            let want = doc.layers[0].surface().unwrap().read_region(full);
+            let got = read.layers[0].surface().unwrap().read_region(full);
+            assert!(got == want, "{depth:?}, staged {staged}: pixels differ after the round trip");
+        }
+    }
+    stage::DIR_FOR_TESTS.with(|d| *d.borrow_mut() = None);
+    let _ = std::fs::remove_dir_all(&dir);
+}
