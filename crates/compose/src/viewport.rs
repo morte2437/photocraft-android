@@ -63,7 +63,13 @@ pub fn preview_page(doc: &Document, source: Rect, factor: u32, interrupt: Interr
             LayerContent::Raster(s) => *s = shrink(s, r, k, last, i)?,
             LayerContent::Group(g) => {
                 if let Some(a) = &mut g.artboard {
-                    a.rect = Rect::new(a.rect.x0.div_euclid(k), a.rect.y0.div_euclid(k), a.rect.x1.div_euclid(k), a.rect.y1.div_euclid(k));
+                    // A cell is on the board when its sample `c·k + k/2` is: each edge maps to the
+                    // first cell sampling at or after it.
+                    let edge = |e: i32| {
+                        let (s, k) = (i64::from(e) - i64::from(k / 2), i64::from(k));
+                        (s.div_euclid(k) + i64::from(s.rem_euclid(k) != 0)) as i32
+                    };
+                    a.rect = Rect::new(edge(a.rect.x0), edge(a.rect.y0), edge(a.rect.x1), edge(a.rect.y1));
                 }
                 for c in &mut g.children {
                     layer(c, r, k, i, depth + 1, last)?;
@@ -220,6 +226,24 @@ mod tests {
             assert_eq!(p.rect, Rect::new(source.x0 / 4, source.y0 / 4, 3, 3));
             for (i, px) in p.px.iter().enumerate() {
                 assert!((px[0] - 1.0).abs() < 1e-6 && (px[3] - 1.0).abs() < 1e-6, "{source:?} cell {i}: {px:?}");
+            }
+        }
+    }
+    /// An artboard covers the preview cells whose sample (`c·k + k/2`) lies on the board, so a
+    /// narrow board, or one whose edges fall mid-cell, keeps exactly those cells (#5332 review).
+    #[test]
+    fn preview_artboard_covers_the_cells_it_samples() {
+        let k = 4;
+        // (board x0..x1, cells expected on it); cell c samples x = 4c + 2.
+        for (x0, x1, on) in [(2, 3, 0..1), (0, 3, 0..1), (3, 16, 1..4), (1, 7, 0..2), (4, 14, 1..3), (-6, 6, 0..1), (-6, 7, 0..2)] {
+            let mut d = Document::new("boards", Size::new(16, 4), ColorMode::Rgb, SampleType::U8);
+            let board = photocraft_doc::Artboard::new(Rect::new(x0, 0, x1, 4));
+            let group = photocraft_doc::Group { children: vec![], expanded: true, artboard: Some(board), frame_stroke: None };
+            d.layers.push(photocraft_doc::Layer::new("board", photocraft_doc::LayerContent::Group(group)));
+            let p = preview_page(&d, d.bounds(), k, Interrupt::NONE).unwrap();
+            assert_eq!(p.rect, Rect::new(0, 0, 4, 1));
+            for (c, px) in p.px.iter().enumerate() {
+                assert_eq!(px[3] > 0.5, on.contains(&c), "board {x0}..{x1}, cell {c}: {px:?}");
             }
         }
     }
