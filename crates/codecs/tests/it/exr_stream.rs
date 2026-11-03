@@ -135,8 +135,8 @@ fn mixed_samples_and_offset_data_window_keep_coordinates_and_values() {
     while let Some(band) = decoder.next_band(&|| false).unwrap() {
         assert_eq!(band.y, rows);
         rows += band.height;
-        for p in band.data.chunks_exact(16) {
-            let v: Vec<f32> = p.chunks_exact(4).map(|s| f32::from_le_bytes(s.try_into().unwrap())).collect();
+        for p in band.data.as_chunks::<16>().0 {
+            let v: Vec<f32> = p.as_chunks::<4>().0.iter().map(|s| f32::from_le_bytes(*s)).collect();
             assert_eq!(v, [-0.25, 3.5, 42.0, 1.0]);
         }
     }

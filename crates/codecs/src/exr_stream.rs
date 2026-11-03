@@ -141,15 +141,17 @@ impl<R: Read + Seek> Decoder<R> {
         if list.is_empty() || list.len() > 64 || list.iter().any(|c| c.sampling.0 != 1 || c.sampling.1 != 1) {
             return Err(unsupported("EXR channel count or subsampling"));
         }
+        // The same channels the whole-file decoder shows, so both routes open the same image.
         let names: Vec<String> = list.iter().map(|c| c.name.to_string()).collect();
-        let find = |name| names.iter().position(|n| n.rsplit('.').next() == Some(name));
-        let (selected, gray) = if let (Some(r), Some(g), Some(b)) = (find("R"), find("G"), find("B")) {
-            (vec![Some(r), Some(g), Some(b), find("A")], false)
-        } else if let Some(y) = find("Y").or_else(|| (list.len() == 1).then_some(0)) {
-            (vec![Some(y), find("A")], true)
-        } else {
-            return Err(unsupported("no R/G/B or Y channels"));
-        };
+        let (layout, picked) = crate::image::exr_color_channels(names.iter().map(String::as_str)).ok_or_else(|| unsupported("no R/G/B or Y channels"))?;
+        let gray = matches!(layout, crate::ChannelLayout::Gray | crate::ChannelLayout::GrayA);
+        let mut selected: Vec<Option<usize>> = picked.into_iter().map(Some).collect();
+        if !matches!(layout, crate::ChannelLayout::GrayA | crate::ChannelLayout::Rgba) {
+            selected.push(None);
+        }
+        if selected.len() != if gray { 2 } else { 4 } {
+            return Err(unsupported("EXR channel selection"));
+        }
         // The document path currently tags Rec. 709 linear samples. Keep custom
         // primaries on the existing decoder until their profiles can be mapped.
         if !gray && header.shared_attributes.chromaticities.is_some() {

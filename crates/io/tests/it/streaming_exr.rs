@@ -1,16 +1,16 @@
-#![cfg(not(target_arch = "wasm32"))]
 use photocraft_codecs::{ChannelLayout, EncodeOptions, ExrCompression, Format, Image, SampleType};
 use photocraft_doc::LayerContent;
 use photocraft_raster::Interrupt;
-use std::{
-    io::Cursor,
-    sync::atomic::{AtomicBool, Ordering},
-};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 fn fixture(layout: ChannelLayout, sample: SampleType, compression: ExrCompression) -> Vec<u8> {
     let values: Vec<f32> = (0..31 * 35 * layout.channels()).map(|i| [-0.25, 4.0, 0.0, 0.0001, 0.5][i % 5]).collect();
     let image = Image::from_f32(31, 35, layout, &values).unwrap().convert(layout, sample);
     photocraft_codecs::encode(&image, Format::OpenExr, &EncodeOptions { exr_compression: compression, ..Default::default() }).unwrap()
+}
+
+fn open(path: &std::path::Path, ctl: &Interrupt) -> Result<photocraft_io::ImportResult, photocraft_io::IoError> {
+    photocraft_io::import_file("HDR", path, &photocraft_io::ImportOptions::default(), ctl)
 }
 
 // One test keeps these imports from competing for the global working allowance.
@@ -23,9 +23,8 @@ fn native_scanline_import_preserves_hdr_document_and_cancels_without_publication
                 let bytes = fixture(layout, sample, compression);
                 std::fs::write(&path, &bytes).unwrap();
                 let reference = photocraft_io::import("HDR", &bytes).unwrap();
-                let native = photocraft_io::import_path_with("HDR", &path, &Interrupt::NONE).unwrap();
-                let authorized = photocraft_io::import_seekable_with("HDR", &|| Ok(Cursor::new(&bytes)), &Interrupt::NONE).unwrap();
-                for actual in [native, authorized] {
+                let actual = open(&path, &Interrupt::NONE).unwrap();
+                {
                     let a = &actual.document;
                     let r = &reference.document;
                     assert_eq!(actual.warnings, reference.warnings);
@@ -56,9 +55,9 @@ fn native_scanline_import_preserves_hdr_document_and_cancels_without_publication
             cancelled.store(true, Ordering::Relaxed);
         }
     };
-    assert!(matches!(photocraft_io::import_path_with("HDR", &path, &Interrupt::new(&cancel, &progress)), Err(photocraft_io::IoError::Cancelled)));
+    assert!(matches!(open(&path, &Interrupt::new(&cancel, &progress)), Err(photocraft_io::IoError::Cancelled)));
     std::fs::write(&path, &bytes[..bytes.len() / 2]).unwrap();
-    assert!(photocraft_io::import_path_with("HDR", &path, &Interrupt::NONE).is_err());
+    assert!(open(&path, &Interrupt::NONE).is_err());
     // A syntactically complete huge header/table must be refused before reading
     // its pixel blocks when scratch is unavailable. No giant fixture is needed.
     assert!(!photocraft_raster::spill::enabled());
@@ -87,8 +86,7 @@ fn native_scanline_import_preserves_hdr_document_and_cancels_without_publication
         huge.extend_from_slice(&offset.to_le_bytes());
     }
     huge.extend_from_slice(&[0; 8]);
-    assert!(
-        matches!(photocraft_io::import_seekable_with("huge", &|| Ok(Cursor::new(&huge)), &Interrupt::NONE), Err(photocraft_io::IoError::Unsupported(ref message)) if message.contains("decoded image tiles"))
-    );
+    std::fs::write(&path, &huge).unwrap();
+    assert!(matches!(open(&path, &Interrupt::NONE), Err(photocraft_io::IoError::OutOfMemory(ref message)) if message.contains("decoded image tiles")));
     std::fs::remove_file(path).unwrap();
 }

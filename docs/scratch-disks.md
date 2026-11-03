@@ -57,5 +57,5 @@ read must never become saved pixels. Limitation: a tile that was already unreada
 read from outside the edited document (for example a clipboard copy) is not detected.
 
 Scratch storage alone does not make every format, filter or renderer streamable. See
-[native PSD/EXR streaming](streaming-io.md) for the seekable import and output APIs. Viewport
-rendering is a separate change built on these guards and memory reservations.
+[EXR streaming](streaming-io.md) for the block-by-block EXR import. Viewport rendering is a
+separate change built on these guards and memory reservations.
