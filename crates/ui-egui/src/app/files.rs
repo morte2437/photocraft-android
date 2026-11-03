@@ -142,6 +142,7 @@ impl PhotocraftApp {
         self.open_automation_bytes_with_approval(name, bytes, false)
     }
 
+    /// [`Self::open_automation_bytes`] with the caller's high-memory approval for the imported bytes.
     pub fn open_automation_bytes_with_approval(&mut self, name: &str, bytes: &[u8], approved: bool) -> Result<Vec<String>, String> {
         let events_enabled = self.session.prefs().script_events.enabled;
         if events_enabled {

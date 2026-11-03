@@ -201,6 +201,7 @@ enum Platform {
     Web,
 }
 
+/// The platform policy selected for this build: Web on wasm32, Native everywhere else.
 fn active_platform() -> Platform {
     if cfg!(target_arch = "wasm32") { Platform::Web } else { Platform::Native }
 }
@@ -235,6 +236,7 @@ pub fn resolve_budget(snapshot: MemorySnapshot, caller_limit: Option<u64>) -> Me
     resolve_budget_for(active_platform(), snapshot, caller_limit)
 }
 
+/// [`resolve_budget`] for an explicit platform, so tests can exercise the web policy on a native host.
 fn resolve_budget_for(platform: Platform, snapshot: MemorySnapshot, caller_limit: Option<u64>) -> MemoryBudget {
     if platform == Platform::Web {
         let mut hard = WASM_MAX_PEAK_BUDGET;
@@ -308,6 +310,7 @@ pub(crate) fn evaluate_psd_admission(
     evaluate_psd_admission_for(active_platform(), required, caller_limit, high_memory_approved, approved_estimate, snapshot)
 }
 
+/// [`evaluate_psd_admission`] for an explicit platform, so tests can exercise the web policy on a native host.
 fn evaluate_psd_admission_for(
     platform: Platform,
     required: u64,
@@ -629,6 +632,9 @@ pub(super) mod linux {
         super_options: String,
     }
 
+    /// Measures available RAM and free swap from `/proc/meminfo`, capped by the process's memory
+    /// cgroup. Unreadable cgroup constraints fail closed as zero available memory rather than
+    /// falling back to unrestricted host memory.
     pub(super) fn snapshot() -> MemorySnapshot {
         snapshot_at(Path::new("/proc"), Path::new("/sys/fs/cgroup"))
     }
@@ -754,6 +760,9 @@ pub(super) mod linux {
         MembershipParse::Parsed(membership)
     }
 
+    /// Parses `/proc/self/mountinfo` into the mount fields used to locate a cgroup hierarchy.
+    ///
+    /// Malformed lines are skipped; callers fail closed when no matching mount is found.
     fn parse_mountinfo(text: &str) -> Vec<Mount> {
         let mut mounts = Vec::new();
         for line in text.lines() {
@@ -860,6 +869,8 @@ pub(super) mod linux {
         Unknown,
     }
 
+    /// Whether the cgroup v2 hierarchy at `root` exposes the memory controller. An unreadable
+    /// `cgroup.controllers` is `Unknown`, so its absence cannot be proven.
     fn v2_controller(root: &Path) -> V2Controller {
         match std::fs::read_to_string(root.join("cgroup.controllers")) {
             Ok(text) => {
@@ -885,6 +896,8 @@ pub(super) mod linux {
         Unknown,
     }
 
+    /// Whether `parent` enables the memory controller for its children in
+    /// `cgroup.subtree_control`. An unreadable file is `Unknown`, not "disabled".
     fn v2_delegation(parent: &Path) -> Delegation {
         match std::fs::read_to_string(parent.join("cgroup.subtree_control")) {
             Ok(text) => {
@@ -1075,6 +1088,8 @@ pub(super) mod linux {
         CgroupLimits::Limited { ram, swap }
     }
 
+    /// Reads a cgroup limit file: `max` is unlimited, a number is a byte limit, and a missing file
+    /// is distinguished from one that cannot be read or parsed.
     fn read_limit(path: &Path) -> Limit {
         match std::fs::read_to_string(path) {
             Ok(text) => match text.trim() {
@@ -1089,14 +1104,17 @@ pub(super) mod linux {
         }
     }
 
+    /// Reads a whitespace-terminated unsigned value from a cgroup interface file.
     fn read_u64(path: &Path) -> Option<u64> {
         std::fs::read_to_string(path).ok()?.trim().parse().ok()
     }
 
+    /// Reads `field` from a cgroup `*.stat` file, treating a missing file or field as zero.
     fn read_stat(path: &Path, field: &str) -> u64 {
         std::fs::read_to_string(path).ok().and_then(|s| stat(&s, field)).unwrap_or(0)
     }
 
+    /// Finds `field` in `key value` stat lines and parses its value.
     fn stat(s: &str, field: &str) -> Option<u64> {
         s.lines().find_map(|l| {
             let mut parts = l.split_whitespace();
@@ -1105,6 +1123,7 @@ pub(super) mod linux {
         })
     }
 
+    /// Whether a comma-separated mount option list contains `controller`.
     fn has_option(options: &str, controller: &str) -> bool {
         options.split(',').any(|option| option.trim() == controller)
     }
@@ -1161,6 +1180,8 @@ pub(super) mod linux {
 mod windows_mem {
     use super::MemorySnapshot;
 
+    /// Measures available physical and commit memory through `GlobalMemoryStatusEx`. A failed
+    /// query reports unknown memory rather than inventing a measurement.
     pub(super) fn snapshot() -> MemorySnapshot {
         match winsafe::GlobalMemoryStatusEx() {
             Ok(msx) => MemorySnapshot { available_ram: Some(msx.ullAvailPhys), swap_free: None, commit_headroom: Some(msx.ullAvailPageFile) },

@@ -34,6 +34,7 @@ pub(crate) fn with_before_composite_decode<R>(hook: std::rc::Rc<dyn Fn()>, f: im
     f()
 }
 
+/// Runs the test hook installed by [`with_before_composite_decode`], if any.
 #[cfg(test)]
 fn before_composite_decode() {
     if let Some(hook) = TEST_BEFORE_COMPOSITE_DECODE.with(|h| h.borrow().clone()) {
@@ -41,6 +42,7 @@ fn before_composite_decode() {
     }
 }
 
+/// No-op outside tests: production decodes have no pre-composite hook.
 #[cfg(not(test))]
 fn before_composite_decode() {}
 

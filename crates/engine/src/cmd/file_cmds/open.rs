@@ -125,6 +125,10 @@ pub fn open_bytes_as(s: &mut Session, name: &str, bytes: &[u8], as_ext: Option<&
     open_bytes_as_with_options(s, name, bytes, as_ext, path, false)
 }
 
+/// [`open_bytes_as`] with the caller's high-memory approval for these bytes.
+///
+/// A one-shot approved estimate is deliberately not forwarded: these bytes may be a fresh copy
+/// whose estimate was never approved, so approval applies only through the boolean flag.
 pub fn open_bytes_as_with_options(
     s: &mut Session,
     name: &str,
@@ -178,6 +182,9 @@ pub(super) fn open_as(s: &mut Session, p: &Value) -> Result<Value> {
     open_bytes_as_with_options(s, &path, &bytes, as_ext, Some(path.clone()), approve_high_memory)
 }
 
+/// Answers a pending high-memory preflight: `approve` false cancels it; true rechecks the hard
+/// limit and starts the approved open. The preflight is removed either way, so a refusal or a
+/// later failure releases the source it held.
 pub(super) fn approve_memory(s: &mut Session, p: &Value) -> Result<Value> {
     let id = crate::file_cmds::u64_param(p, "id", "file.approveMemory")?;
     let approve = match p.get("approve") {

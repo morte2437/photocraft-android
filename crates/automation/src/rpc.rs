@@ -61,6 +61,8 @@ pub const METHODS: &[&str] = &[
     "methods",
 ];
 
+/// Adds the structured memory fields (`required`, soft and hard limits and measured capacity)
+/// from a typed admission error to a JSON error object, so clients can offer approval.
 fn attach_memory_error_details(obj: &mut Value, err: &AutomationError) {
     match err {
         AutomationError::Import(photocraft_io::IoError::PsdApprovalRequired { required, soft_limit, hard_limit, available_ram })

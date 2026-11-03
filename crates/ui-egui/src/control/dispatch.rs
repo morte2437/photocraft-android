@@ -1392,6 +1392,8 @@ fn app_methods(app: &mut PhotocraftApp, ctx: &egui::Context, req: &ControlReques
     })
 }
 
+/// The `app.open` control method: opens a path through the configured automation read
+/// capability, with optional high-memory approval.
 fn app_open(app: &mut PhotocraftApp, path: &str, approved: bool) -> Outcome {
     if let Some(outcome) = open_pcraft_directory(app, path) {
         return outcome;

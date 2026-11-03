@@ -468,6 +468,8 @@ pub fn cancel(app: &mut PhotocraftApp, id: JobId) -> bool {
     cancelled
 }
 
+/// Handles one finished job: optional completion beep, waiting control replies, and the
+/// command-specific open, save, transform and recovery paths.
 fn on_event(app: &mut PhotocraftApp, ctx: &egui::Context, e: JobEvent) {
     // Preferences ▸ General ▸ Beep When Done (off by default): a finished operation beeps, like
     // Photoshop's cue. Cancelling is the user's own action and stays silent.

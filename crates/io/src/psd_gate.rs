@@ -25,6 +25,7 @@ struct GateState {
 
 static GATE: OnceLock<(Mutex<GateState>, Condvar)> = OnceLock::new();
 
+/// Returns the process-wide decode gate, creating its mutex and condition variable on first use.
 fn get_gate() -> &'static (Mutex<GateState>, Condvar) {
     GATE.get_or_init(|| (Mutex::new(GateState { active: false, owner: None }), Condvar::new()))
 }

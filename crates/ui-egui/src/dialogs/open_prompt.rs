@@ -85,6 +85,7 @@ pub fn arrive(app: &mut PhotocraftApp, held: Held) {
     advance(app);
 }
 
+/// Whether any open prompt (damage, profile or high-memory) is currently on screen.
 pub fn has_open_dialog(app: &PhotocraftApp) -> bool {
     app.ui.dialogs.iter().any(|d| owns(&d.fields) || owns_damage(&d.fields) || owns_memory(&d.fields))
 }
@@ -353,6 +354,7 @@ fn open(app: &mut PhotocraftApp, held: Held, action: Option<&str>) -> Result<Val
     Ok(json!({"document": index, "action": action}))
 }
 
+/// Queues a high-memory prompt in arrival order and shows it when it reaches the front.
 #[allow(clippy::too_many_arguments)]
 pub fn arrive_memory(
     app: &mut PhotocraftApp,
@@ -371,18 +373,23 @@ pub fn arrive_memory(
     advance_memory(app);
 }
 
+/// Whether a dialog's fields mark it as the high-memory confirmation.
 pub fn owns_memory(fields: &serde_json::Map<String, Value>) -> bool {
     fields.contains_key(MEMORY_FIELD)
 }
 
+/// Draws the high-memory prompt's message body from its dialog fields.
 pub(crate) fn memory_body(ui: &mut egui::Ui, fields: &serde_json::Map<String, Value>) {
     ui.label(fields.get("message").and_then(Value::as_str).unwrap_or_default());
 }
 
+/// Advances the shared open-prompt queue; memory prompts take their turn with damage and profile
+/// prompts in arrival order.
 pub fn advance_memory(app: &mut PhotocraftApp) {
     advance(app);
 }
 
+/// Builds and opens the confirmation dialog for a queued high-memory preflight.
 fn show_memory(app: &mut PhotocraftApp, prompt: &MemoryPrompt) {
     let est_gb = prompt.estimated as f64 / (1u64 << 30) as f64;
     // An unmeasured capacity is never printed as a number, even if a stale measurement is
@@ -424,6 +431,8 @@ fn show_memory(app: &mut PhotocraftApp, prompt: &MemoryPrompt) {
     app.ui.open_dialog(crate::state::DialogKind::Command, fields);
 }
 
+/// Answers the front high-memory prompt: accepts and starts the approved open, or declines and
+/// advances the queue. The engine command revalidates the source identity and the hard limit.
 pub(crate) fn answer_memory(app: &mut PhotocraftApp, accept: bool) -> Result<Value, String> {
     let Some(front) = app.held_memory_prompts.pop_front() else {
         advance(app);

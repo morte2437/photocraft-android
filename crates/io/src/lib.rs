@@ -217,6 +217,10 @@ impl FileIdentity {
         Self::of_metadata(&std::fs::metadata(path)?)
     }
 
+    /// Builds an identity from metadata already read from an open handle or path.
+    ///
+    /// Unix adds the device, inode and inode-change time so a same-size rewrite with a restored
+    /// modification time is still detected; other platforms compare length and modification time.
     fn of_metadata(metadata: &std::fs::Metadata) -> std::io::Result<Self> {
         let len = metadata.len();
         let modified = metadata.modified()?;
@@ -681,6 +685,8 @@ pub fn import_source_with_options(
     Ok((r, damaged))
 }
 
+/// [`import_source_with_options`] with an explicit PSD pixel limit, for tests that exercise
+/// admission without the default allowance.
 #[cfg(test)]
 pub(crate) fn import_source_with_limit(
     name: &str,

@@ -595,10 +595,12 @@ impl SourceFingerprint {
         }
     }
 
+    /// Whether both fingerprints capture the same source identity (and, for a path, the same path).
     pub fn matches(&self, other: &Self) -> bool {
         self == other
     }
 
+    /// Re-reads `source`'s fingerprint and compares it with this one; an unreadable source does not match.
     pub fn matches_source(&self, source: &OpenSource) -> bool {
         match Self::of(source) {
             Ok(cur) => self.matches(&cur),
@@ -655,6 +657,8 @@ impl Session {
     /// bounded too.
     pub const MAX_PENDING_PREFLIGHT_BYTES: u64 = 1 << 30;
 
+    /// Queues an approval prompt, assigning its id, and enforces both the pending-count and
+    /// retained-byte limits.
     pub fn store_pending_preflight(&mut self, preflight: PendingPsdPreflight) -> Result<u64> {
         self.store_pending_preflight_with_limit(preflight, Self::MAX_PENDING_PREFLIGHT_BYTES)
     }
@@ -697,6 +701,10 @@ impl Session {
         Self::retained_source_bytes(sources)
     }
 
+    /// Total retained capacity of distinct in-memory sources, counting a shared buffer once.
+    ///
+    /// Capacity, not length, is charged because a truncated `Vec` keeps its allocation; overflow
+    /// is an error rather than a wrapped total.
     fn retained_source_bytes<'a>(sources: impl IntoIterator<Item = &'a OpenSource>) -> Result<u64> {
         let mut seen: Vec<usize> = Vec::new();
         let mut total: u64 = 0;
@@ -718,19 +726,24 @@ impl Session {
         Ok(total)
     }
 
+    /// Removes and returns the pending preflight with `id`, releasing the source it held.
     pub fn take_pending_preflight(&mut self, id: u64) -> Option<PendingPsdPreflight> {
         let i = self.pending_preflights.iter().position(|p| p.id == id)?;
         Some(self.pending_preflights.remove(i))
     }
 
+    /// Cancels the pending preflight with `id` by removing it; `None` means no such prompt.
     pub fn cancel_pending_preflight(&mut self, id: u64) -> Option<PendingPsdPreflight> {
         self.take_pending_preflight(id)
     }
 
+    /// Drops every pending preflight, releasing all retained source buffers.
     pub fn clear_pending_preflights(&mut self) {
         self.pending_preflights.clear();
     }
 
+    /// Starts an open with high-memory approval already granted, on a background worker.
+    /// `expected_fingerprint`, when given, must still match the decoded source.
     pub fn start_open_approved(
         &mut self,
         name: &str,
@@ -742,6 +755,8 @@ impl Session {
         self.start_open_approved_with_background(name, source, confirm_damage, approved_estimate, expected_fingerprint, true)
     }
 
+    /// [`Self::start_open_approved`] with an explicit choice between a background worker and
+    /// inline work.
     pub fn start_open_approved_with_background(
         &mut self,
         name: &str,
@@ -774,6 +789,8 @@ impl Session {
         self.start_open_for_user_with_background(name, source, true)
     }
 
+    /// Interactive open with an explicit background/inline choice: damaged PSD content and
+    /// high-memory preflights wait for the user instead of opening non-interactively.
     pub fn start_open_for_user_with_background(&mut self, name: &str, source: OpenSource, background: bool) -> Result<Started> {
         self.start_open_inner(name, source, true, false, None, None, background)
     }
@@ -953,6 +970,8 @@ impl Session {
     }
 
     // Keep the worker and apply closures together with their execution options.
+    /// [`Self::start_job`] with an explicit `spawn` flag: when false (or on wasm) the work runs
+    /// inline and its result is returned directly; otherwise it becomes a background job.
     #[allow(clippy::too_many_arguments)]
     pub fn start_job_with_spawn<T: Send + 'static>(
         &mut self,
@@ -1442,6 +1461,8 @@ impl Session {
         self.end_job_with_error(job, outcome, None);
     }
 
+    /// Records a finished job's terminal state (done, failed or cancelled) and optional typed
+    /// error in the recent-job list, invalidating any live preview.
     fn end_job_with_error(&mut self, job: &Running, outcome: JobOutcome, error_kind: Option<EngineError>) {
         // Every terminal path invalidates a preview, including worker errors, cancellation
         // and discarded results whose document was closed or changed.
