@@ -2042,3 +2042,323 @@ fn sanitize_keeps_windows_device_names_off_the_disk() {
         assert_eq!(sanitize(name), name);
     }
 }
+
+#[test]
+fn approve_memory_validates_parameters_and_unknown_ids() {
+    let mut s = session(4, 4, 8);
+    assert!(matches!(s.execute("file.approveMemory", json!({})), Err(EngineError::BadParams { .. })));
+    assert!(matches!(s.execute("file.approveMemory", json!({"id": "not_a_number"})), Err(EngineError::BadParams { .. })));
+    assert!(matches!(s.execute("file.approveMemory", json!({"id": 12345})), Err(EngineError::BadParams { .. })));
+    assert!(
+        matches!(s.execute("file.approveMemory", json!({"id": 12345, "approve": false})), Err(EngineError::BadParams { .. })),
+        "unknown id on cancel must fail"
+    );
+    assert!(
+        matches!(s.execute("file.approveMemory", json!({"id": 12345, "approve": "true"})), Err(EngineError::BadParams { .. })),
+        "wrong approve type string must BadParams"
+    );
+    assert!(
+        matches!(s.execute("file.approveMemory", json!({"id": 12345, "approve": 1})), Err(EngineError::BadParams { .. })),
+        "wrong approve type int must BadParams"
+    );
+    assert!(
+        matches!(s.execute("file.openAs", json!({"path": "a.psd", "approveHighMemory": "true"})), Err(EngineError::BadParams { .. })),
+        "wrong approveHighMemory on openAs must BadParams"
+    );
+    assert!(
+        matches!(s.execute("file.placeEmbedded", json!({"path": "a.psd", "approveHighMemory": 1})), Err(EngineError::BadParams { .. })),
+        "wrong approveHighMemory on placeEmbedded must BadParams"
+    );
+    assert!(
+        matches!(s.execute("file.approveMemory", json!({"id": 12345, "background": "true"})), Err(EngineError::BadParams { .. })),
+        "wrong background type string must BadParams"
+    );
+    assert!(
+        matches!(s.execute("file.approveMemory", json!({"id": 12345, "background": 1})), Err(EngineError::BadParams { .. })),
+        "wrong background type int must BadParams"
+    );
+}
+
+#[test]
+fn approve_memory_cancels_and_removes_pending_preflight() {
+    let mut s = Session::new();
+    let id = s
+        .store_pending_preflight(crate::jobs::PendingPsdPreflight {
+            id: 0,
+            name: "test.psd".into(),
+            source: crate::jobs::OpenSource::Bytes(std::sync::Arc::new(vec![1, 2, 3])),
+            fingerprint: crate::jobs::SourceFingerprint::of(&crate::jobs::OpenSource::Bytes(std::sync::Arc::new(vec![1, 2, 3]))).unwrap(),
+            required: 1000,
+            soft_limit: 500,
+            hard_limit: 2000,
+            available_ram: Some(4000),
+            confirm_damage: true,
+        })
+        .unwrap();
+    let res = s.execute("file.approveMemory", json!({"id": id, "approve": false})).unwrap();
+    assert_eq!(res["approved"], false);
+    assert_eq!(res["cancelled"], true);
+    assert!(s.take_pending_preflight(id).is_none(), "preflight removed on cancel");
+}
+
+#[test]
+fn approve_memory_refuses_when_source_changes_before_confirmation() {
+    let dir = tmp("fingerprint_test");
+    let path = join(&dir, "change.psd");
+    std::fs::write(&path, b"initial content").unwrap();
+
+    let mut s = Session::new();
+    let src = crate::jobs::OpenSource::Path(path.clone());
+    let fp = crate::jobs::SourceFingerprint::of(&src).unwrap();
+    let id = s
+        .store_pending_preflight(crate::jobs::PendingPsdPreflight {
+            id: 0,
+            name: "change.psd".into(),
+            source: src,
+            fingerprint: fp,
+            required: 1000,
+            soft_limit: 500,
+            hard_limit: 2000,
+            available_ram: Some(4000),
+            confirm_damage: true,
+        })
+        .unwrap();
+
+    // Modify file on disk
+    std::fs::write(&path, b"changed content longer").unwrap();
+
+    let res = s.execute("file.approveMemory", json!({"id": id, "approve": true, "background": false}));
+    assert!(matches!(res, Err(EngineError::SourceChanged { .. })), "changed file must fail identity verification: {res:?}");
+}
+
+#[test]
+fn approve_memory_refuses_when_available_ram_decreases() {
+    let gb = 1u64 << 30;
+    let mut s = Session::new();
+    let src = crate::jobs::OpenSource::Bytes(std::sync::Arc::new(vec![0; 16]));
+    let fp = crate::jobs::SourceFingerprint::of(&src).unwrap();
+    let id = s
+        .store_pending_preflight(crate::jobs::PendingPsdPreflight {
+            id: 0,
+            name: "ram_drop.psd".into(),
+            source: src,
+            fingerprint: fp,
+            required: 8 * gb,
+            soft_limit: 6 * gb,
+            hard_limit: 9 * gb,
+            available_ram: Some(12 * gb),
+            confirm_damage: true,
+        })
+        .unwrap();
+
+    // Memory drops: only 6 GiB available -> H = 4.5 GiB < 8 GiB
+    let snap_low = photocraft_io::memory::MemorySnapshot { available_ram: Some(6 * gb), swap_free: None, commit_headroom: None };
+    photocraft_io::memory::with_mock_memory(snap_low, || {
+        let res = s.execute("file.approveMemory", json!({"id": id, "approve": true}));
+        assert!(res.is_err(), "decreased memory must refuse");
+    });
+}
+
+#[test]
+fn pending_preflights_cap_fails_closed() {
+    let mut s = Session::new();
+    let src = crate::jobs::OpenSource::Bytes(std::sync::Arc::new(vec![0; 4]));
+    let fp = crate::jobs::SourceFingerprint::of(&src).unwrap();
+    for i in 0..crate::Session::MAX_PENDING_PREFLIGHTS {
+        assert!(
+            s.store_pending_preflight(crate::jobs::PendingPsdPreflight {
+                id: 0,
+                name: format!("file_{i}.psd"),
+                source: src.clone(),
+                fingerprint: fp.clone(),
+                required: 1000,
+                soft_limit: 500,
+                hard_limit: 2000,
+                available_ram: Some(4000),
+                confirm_damage: true,
+            })
+            .is_ok()
+        );
+    }
+    assert!(
+        s.store_pending_preflight(crate::jobs::PendingPsdPreflight {
+            id: 0,
+            name: "overflow.psd".into(),
+            source: src,
+            fingerprint: fp,
+            required: 1000,
+            soft_limit: 500,
+            hard_limit: 2000,
+            available_ram: Some(4000),
+            confirm_damage: true,
+        })
+        .is_err()
+    );
+}
+
+/// A queued high-memory preflight for `source`, with fields a test can read.
+fn memory_preflight(name: &str, source: crate::jobs::OpenSource) -> crate::jobs::PendingPsdPreflight {
+    let fingerprint = crate::jobs::SourceFingerprint::of(&source).unwrap();
+    crate::jobs::PendingPsdPreflight {
+        id: 0,
+        name: name.into(),
+        source,
+        fingerprint,
+        required: 1000,
+        soft_limit: 500,
+        hard_limit: 2000,
+        available_ram: Some(4000),
+        confirm_damage: true,
+    }
+}
+
+#[test]
+fn pending_preflights_bound_retained_bytes_and_charge_a_shared_buffer_once() {
+    let mut s = Session::new();
+    let cap = 100;
+    let a_src = crate::jobs::OpenSource::Bytes(std::sync::Arc::new(vec![0u8; 40]));
+    let b_src = crate::jobs::OpenSource::Bytes(std::sync::Arc::new(vec![0u8; 40]));
+    let a_id = s.store_pending_preflight_with_limit(memory_preflight("a.psd", a_src.clone()), cap).unwrap();
+    let b_id = s.store_pending_preflight_with_limit(memory_preflight("b.psd", b_src), cap).unwrap();
+    assert_eq!(s.pending_preflight_bytes().unwrap(), 80);
+    // A second reference to the same allocation is already held: queued for free.
+    let a_again = s.store_pending_preflight_with_limit(memory_preflight("a-again.psd", a_src), cap).unwrap();
+    assert_eq!(s.pending_preflight_bytes().unwrap(), 80, "one shared buffer is charged once, not three times");
+    // A different buffer would carry the total over the cap: refused, and nothing is charged.
+    let c_src = crate::jobs::OpenSource::Bytes(std::sync::Arc::new(vec![0u8; 30]));
+    let err = s.store_pending_preflight_with_limit(memory_preflight("c.psd", c_src.clone()), cap).expect_err("a further 30 bytes must not fit beside 80");
+    assert!(err.to_string().contains("waiting for a memory approval"), "{err}");
+    assert_eq!(s.pending_preflight_bytes().unwrap(), 80, "a refused preflight adds no charge");
+    // Cancelling one released its buffer; the refused one now fits; clearing releases the rest.
+    assert!(s.cancel_pending_preflight(a_again).is_some());
+    assert_eq!(s.pending_preflight_bytes().unwrap(), 80, "the other live reference still holds the buffer");
+    assert!(s.cancel_pending_preflight(a_id).is_some());
+    assert_eq!(s.pending_preflight_bytes().unwrap(), 40);
+    let c_id = s.store_pending_preflight_with_limit(memory_preflight("c.psd", c_src), cap).unwrap();
+    assert_eq!(s.pending_preflight_bytes().unwrap(), 70);
+    s.clear_pending_preflights();
+    assert_eq!(s.pending_preflight_bytes().unwrap(), 0, "clear releases every held buffer");
+    assert!(s.cancel_pending_preflight(b_id).is_none());
+    assert!(s.cancel_pending_preflight(c_id).is_none());
+}
+
+#[test]
+fn pending_preflights_charge_the_retained_allocation_not_the_visible_length() {
+    let mut s = Session::new();
+    let cap = 100;
+    // Room for 128 bytes but one byte of contents: what stays resident is the allocation, so a
+    // cap that fits the contents must still refuse it.
+    let mut grown = Vec::with_capacity(128);
+    grown.push(7u8);
+    let held = grown.capacity() as u64;
+    assert!(held >= 128, "the buffer really has the larger allocation: {held}");
+    let big = std::sync::Arc::new(grown);
+    let err = s
+        .store_pending_preflight_with_limit(memory_preflight("big.psd", crate::jobs::OpenSource::Bytes(std::sync::Arc::clone(&big))), cap)
+        .expect_err("the held capacity, not the one byte of contents, must be charged");
+    assert!(err.to_string().contains("waiting for a memory approval"), "{err}");
+    assert_eq!(s.pending_preflight_bytes().unwrap(), 0, "a refused preflight adds no charge");
+
+    // A cap that admits the whole allocation accepts it, and shared clones count once.
+    let id = s.store_pending_preflight_with_limit(memory_preflight("big.psd", crate::jobs::OpenSource::Bytes(std::sync::Arc::clone(&big))), held).unwrap();
+    let shared =
+        s.store_pending_preflight_with_limit(memory_preflight("shared.psd", crate::jobs::OpenSource::Bytes(std::sync::Arc::clone(&big))), held).unwrap();
+    assert_eq!(s.pending_preflight_bytes().unwrap(), held, "one shared allocation is charged once, whatever its length");
+    assert!(s.cancel_pending_preflight(shared).is_some());
+    assert_eq!(s.pending_preflight_bytes().unwrap(), held, "the other shared reference still holds the allocation");
+    assert!(s.cancel_pending_preflight(id).is_some());
+    assert_eq!(s.pending_preflight_bytes().unwrap(), 0, "cancelling the last reference releases the allocation");
+    s.clear_pending_preflights();
+
+    // A buffer whose length was shrunk to zero still holds its allocation: the held capacity is
+    // measured, so it is charged even though `len()` says nothing is there.
+    let mut emptied = Vec::with_capacity(128);
+    emptied.push(1u8);
+    emptied.clear();
+    assert!(emptied.is_empty(), "the length is zero while the allocation stays");
+    let emptied = std::sync::Arc::new(emptied);
+    let emptied_held = emptied.capacity() as u64;
+    assert!(emptied_held >= 128, "clearing does not release the allocation: {emptied_held}");
+    let emptied_id = s
+        .store_pending_preflight_with_limit(memory_preflight("emptied.psd", crate::jobs::OpenSource::Bytes(emptied)), emptied_held)
+        .expect("the allocation fits the cap that admits it");
+    assert_eq!(s.pending_preflight_bytes().unwrap(), emptied_held, "an empty length is not zero bytes held");
+    s.clear_pending_preflights();
+    assert_eq!(s.pending_preflight_bytes().unwrap(), 0, "clear releases every held allocation");
+    assert!(s.cancel_pending_preflight(emptied_id).is_none());
+}
+
+#[test]
+fn approve_memory_is_neither_journaled_nor_recorded_in_an_action() {
+    let mut s = Session::new();
+    let id = s.store_pending_preflight(memory_preflight("cancel.psd", crate::jobs::OpenSource::Bytes(std::sync::Arc::new(vec![0u8; 4])))).unwrap();
+    s.execute("actions.record", json!({"name": "Memory approvals"})).unwrap();
+    let r = s.execute("file.approveMemory", json!({"id": id, "approve": false})).unwrap();
+    assert_eq!((r["approved"].clone(), r["cancelled"].clone()), (json!(false), json!(true)));
+    s.execute("actions.stop", json!({})).unwrap();
+    assert!(s.journal.iter().all(|(command, _)| command != "file.approveMemory"), "one-shot approval must not become a journal entry: {:?}", s.journal);
+    let action = s.actions.list.first().expect("the recorded action");
+    assert!(action.steps.iter().all(|(command, _)| command != "file.approveMemory"), "one-shot approval must not replay from an action: {:?}", action.steps);
+}
+
+#[test]
+fn approve_memory_releases_the_preflight_when_the_hard_limit_refuses_it() {
+    let gb = 1u64 << 30;
+    let mut s = Session::new();
+    let preflight = crate::jobs::PendingPsdPreflight {
+        required: 8 * gb,
+        soft_limit: 6 * gb,
+        hard_limit: 9 * gb,
+        available_ram: Some(12 * gb),
+        ..memory_preflight("ram_drop.psd", crate::jobs::OpenSource::Bytes(std::sync::Arc::new(vec![0u8; 16])))
+    };
+    let id = s.store_pending_preflight(preflight).unwrap();
+    let snap_low = photocraft_io::memory::MemorySnapshot { available_ram: Some(4 * gb), swap_free: None, commit_headroom: None };
+    let expected_limit = photocraft_io::memory::resolve_budget(snap_low, None).hard_limit;
+    photocraft_io::memory::with_mock_memory(snap_low, || {
+        let err = s.execute("file.approveMemory", json!({"id": id, "approve": true, "background": false})).unwrap_err();
+        match &err {
+            EngineError::PsdHardBudget { name, required, limit } => {
+                assert_eq!(name, "ram_drop.psd");
+                assert_eq!((*required, *limit), (8 * gb, expected_limit));
+            }
+            other => panic!("the hard refusal must keep its fields, got {other}"),
+        }
+    });
+    assert!(s.take_pending_preflight(id).is_none(), "a hard refusal releases the held source");
+    assert_eq!(s.pending_preflight_bytes().unwrap(), 0);
+}
+
+#[test]
+fn open_as_and_place_keep_the_typed_hard_budget_fields() {
+    let gb = 1u64 << 30;
+    let dir = tmp("hard_budget");
+    let path = join(&dir, "big.psd");
+    let mut src = Session::new();
+    src.execute("file.new", json!({"width": 4, "height": 4, "depth": 8})).unwrap();
+    std::fs::write(&path, photocraft_io::export(&src.active().unwrap().doc, "x.psd", &Default::default()).unwrap().bytes).unwrap();
+    // An estimate over the resolved hard ceiling is refused, and no approval raises the ceiling.
+    // The estimate charge is a test seam so the fixture stays tiny.
+    let snap = photocraft_io::memory::MemorySnapshot { available_ram: Some(4 * gb), swap_free: None, commit_headroom: None };
+    let hard = photocraft_io::memory::resolve_budget(snap, None).hard_limit;
+    assert!(hard < u64::MAX);
+    photocraft_io::memory::with_mock_memory(snap, || {
+        photocraft_io::psd_budget::with_test_estimate_charge(hard + 1, || {
+            let mut s = Session::new();
+            let err = s.execute("file.openAs", json!({"path": path.clone(), "approveHighMemory": true})).unwrap_err();
+            match &err {
+                EngineError::PsdHardBudget { name, required, limit } => {
+                    assert_eq!(name, &path);
+                    assert!(*required > hard && *limit == hard);
+                }
+                other => panic!("openAs must keep name/required/limit, got {other}"),
+            }
+            let mut s = session(8, 8, 8);
+            let err = s.execute("file.placeEmbedded", json!({"path": path.clone(), "approveHighMemory": true})).unwrap_err();
+            match &err {
+                EngineError::PsdHardBudget { required, limit, .. } => assert!(*required > hard && *limit == hard),
+                other => panic!("place must keep required/limit, got {other}"),
+            }
+        });
+    });
+}

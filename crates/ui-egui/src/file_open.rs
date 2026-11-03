@@ -93,16 +93,27 @@ impl PhotocraftApp {
     /// `path` for File › Save unless it is a derivative preview, and `path` goes to the top of Open Recent. Returns the import
     /// warnings (also shown to the user).
     pub fn open_file(&mut self, path: &str, bytes: &[u8]) -> Result<Vec<String>, String> {
+        self.open_file_placed(path, bytes, None, None)
+    }
+
+    /// [`Self::open_file`] for a file dropped on a tab slot or opened as one of a set.
+    pub(crate) fn open_file_placed(
+        &mut self,
+        path: &str,
+        bytes: &[u8],
+        slot: Option<usize>,
+        order: Option<crate::jobs_ui::OpenOrder>,
+    ) -> Result<Vec<String>, String> {
         // Brushes/gradients go to the preset libraries (no document, no Open Recent entry).
         if let Some(r) = crate::preset_files_ui::open(self, path, bytes) {
             return r.map(|()| Vec::new());
         }
         if self.background_jobs {
             // The path and Open Recent are recorded when the background open finishes.
-            crate::jobs_ui::start_open(self, &display_name(path), Some(path.to_string()), crate::jobs_ui::bytes(bytes))?;
+            crate::jobs_ui::start_open(self, &display_name(path), Some(path.to_string()), crate::jobs_ui::bytes(bytes), slot, order)?;
             return Ok(Vec::new());
         }
-        self.open_bytes_from(&display_name(path), bytes, Some(path))
+        self.open_bytes_placed(&display_name(path), bytes, Some(path), slot, order)
     }
 
     /// Record that the active document was just opened from `path`: File › Save writes back to it
@@ -131,6 +142,13 @@ impl PhotocraftApp {
     /// Read and open the file at `path` (see [`open_file`](Self::open_file)).
     #[cfg(not(target_arch = "wasm32"))]
     pub fn open_path(&mut self, path: &str) -> Result<Vec<String>, String> {
+        self.open_path_placed(path, None, None)
+    }
+
+    /// [`Self::open_path`] for a file dropped on a tab slot or opened as one of a set: the slot
+    /// and order survive an inline memory/profile prompt and the document's final placement.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn open_path_placed(&mut self, path: &str, slot: Option<usize>, order: Option<crate::jobs_ui::OpenOrder>) -> Result<Vec<String>, String> {
         if self.show_if_open(path) {
             return Ok(Vec::new());
         }
@@ -138,15 +156,28 @@ impl PhotocraftApp {
         // would block the window). Preset files (brushes, gradients) go the usual way.
         let ext = std::path::Path::new(path).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
         if self.background_jobs && !crate::preset_files_ui::PRESET_EXTS.contains(&ext.as_str()) {
-            crate::jobs_ui::start_open(self, &display_name(path), Some(path.to_string()), photocraft_engine::jobs::OpenSource::Path(path.to_string()))?;
+            crate::jobs_ui::start_open(
+                self,
+                &display_name(path),
+                Some(path.to_string()),
+                photocraft_engine::jobs::OpenSource::Path(path.to_string()),
+                slot,
+                order,
+            )?;
             return Ok(Vec::new());
         }
         let bytes = photocraft_format::read_file(std::path::Path::new(path)).map_err(|e| format!("{path}: {e}"))?;
-        self.open_file(path, &bytes)
+        self.open_file_placed(path, &bytes, slot, order)
     }
 
     #[cfg(target_arch = "wasm32")]
     pub fn open_path(&mut self, path: &str) -> Result<Vec<String>, String> {
+        Err(format!("cannot open paths on the web: {path}"))
+    }
+
+    /// The web has no filesystem paths: a drop read by the shell arrives as bytes.
+    #[cfg(target_arch = "wasm32")]
+    fn open_path_placed(&mut self, path: &str, _slot: Option<usize>, _order: Option<crate::jobs_ui::OpenOrder>) -> Result<Vec<String>, String> {
         Err(format!("cannot open paths on the web: {path}"))
     }
 
@@ -168,21 +199,14 @@ impl PhotocraftApp {
                 continue;
             }
             let order = crate::jobs_ui::OpenOrder { batch, seq };
-            let pending = self.jobs.opens.len();
-            match self.open_path(abs) {
-                Ok(_) => {
-                    opened += 1;
-                    // A background open's tab takes its place when it finishes; a document opened
-                    // at once is in place now.
-                    match self.jobs.opens.get_mut(pending) {
-                        Some(tab) => tab.order = Some(order),
-                        None => crate::jobs_ui::opened_in_order(&mut self.jobs, order),
-                    }
-                }
+            // The order travels with the open: a background tab, an inline document, or a memory
+            // prompt that is answered later all place the file at its place in the set.
+            match self.open_path_placed(abs, None, Some(order)) {
+                Ok(_) => opened += 1,
                 Err(e) => self.open_failed(&display_name(abs), &e),
             }
         }
-        crate::jobs_ui::end_batch(&mut self.jobs);
+        crate::jobs_ui::end_batch(self);
         opened
     }
 
@@ -198,6 +222,13 @@ impl PhotocraftApp {
         } else if let Some(o) = self.jobs.opens.iter().find(|o| o.path.as_deref().is_some_and(|p| !is_template(p) && same(p))) {
             // A template still loading opens as another Untitled, as it does once loaded.
             self.jobs.focus = Some(o.job);
+        } else if self.held_memory_prompts.iter().any(|m| m.path.as_deref().is_some_and(|p| !is_template(p) && same(p))) {
+            // The file's high-memory prompt is already waiting: show it, don't queue a second
+            // prompt and a second open for the same file. A template still opens again as
+            // another Untitled, like one that is still loading.
+            crate::open_prompt::advance_memory(self);
+            self.ui.chrome.home = None;
+            return true;
         } else {
             return false;
         }
@@ -282,22 +313,23 @@ impl PhotocraftApp {
         DropTarget::Elsewhere
     }
 
-    /// Open one dropped file; with `slot`, its tab goes there (when it finishes opening, for
-    /// background opens). True when it took the slot.
+    /// Open one dropped file; with `slot`, its tab goes there (at once, or when a held prompt is
+    /// answered). True when it took the slot.
     fn open_dropped_file(&mut self, f: &egui::DroppedFileHandle, name: &str, slot: Option<usize>) -> Result<bool, String> {
-        // Opens append: a background open's tab, or a document.
         let (docs, opens) = (self.session.documents().len(), self.jobs.opens.len());
+        let held = self.held_opens.len() + self.held_memory_prompts.len();
+        // The slot travels with the open through the inline document, a background tab and a
+        // memory/profile prompt, so no separate move here can land on another document.
         if f.path().is_absolute() {
-            self.open_path(&path_text(f.path(), false)?)?;
+            self.open_path_placed(&path_text(f.path(), false)?, slot, None)?;
         } else {
-            self.open_bytes(name, &crate::read_dropped(&**f)?)?;
+            self.open_bytes_placed(name, &crate::read_dropped(&**f)?, None, slot, None)?;
         }
-        let Some(slot) = slot else { return Ok(false) };
-        if let Some(tab) = self.jobs.opens.get_mut(opens) {
-            tab.slot = Some(slot);
-            return Ok(true);
+        if slot.is_none() {
+            return Ok(false);
         }
-        Ok(self.run("document.move", serde_json::json!({"document": docs, "to": slot})).is_ok())
+        let took = self.jobs.opens.len() > opens || self.session.documents().len() > docs || self.held_opens.len() + self.held_memory_prompts.len() > held;
+        Ok(took)
     }
 
     /// Place the next file dropped on the canvas and start Free Transform on it, once no other
