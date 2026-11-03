@@ -14,6 +14,8 @@ workspace = true
 corpus = []
 # HEIC/HEIF decode (forwarded to photocraft-codecs; see its `heif` feature).
 heif = ["photocraft-codecs/heif"]
+# Test support for synthetic memory injection, estimate charges and verification across crates.
+testgen = []
 
 [dependencies]
 photocraft-geom = { workspace = true }

@@ -283,6 +283,8 @@ pub struct Session {
     /// document, source read-only)`. The shell takes them with [`Session::take_held_open`].
     held_opens: Vec<(u64, Document, bool)>,
     next_held_open: u64,
+    pub(crate) pending_preflights: Vec<jobs::PendingPsdPreflight>,
+    next_pending_preflight: u64,
     /// Shared native memory supervision, owned and stopped by the last session using it.
     scratch_runtime: Option<scratch::Runtime>,
     /// [`photocraft_raster::spill::epoch`] when History's byte limits were last applied: a
