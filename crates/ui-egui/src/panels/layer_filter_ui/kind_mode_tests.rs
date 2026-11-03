@@ -83,6 +83,7 @@ fn a_normal_group_is_listed_by_mode_and_a_pass_through_group_never_is() {
     let normal_rows = listed(doc, &mode(BlendMode::Normal));
     assert!(normal_rows.iter().any(|n| n == "Normal group"), "a Normal group is listed under Normal: {normal_rows:?}");
     assert!(!normal_rows.iter().any(|n| n == "Child"), "its Multiply child is not");
+    assert!(listed(doc, &mode(BlendMode::Multiply)).iter().any(|n| n == "Child"), "a Multiply layer inside a group is listed under Multiply");
     assert!(!normal_rows.iter().any(|n| n == "Pass group"), "a Pass Through group is not");
     for m in BlendMode::LAYER_MODES {
         assert!(!listed(doc, &mode(m)).iter().any(|n| n == "Pass group"), "no mode lists the Pass Through group ({m:?})");
