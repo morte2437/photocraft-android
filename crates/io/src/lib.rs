@@ -1010,6 +1010,7 @@ fn export_stages(doc: &Document, name_or_ext: &str, opts: &ExportOptions, ctl: &
             maximize_compatibility: opts.psd_maximize_compatibility,
             document_path: opts.document_path.clone(),
             read_linked_files: opts.read_linked_files,
+            stage_on_scratch_from: Some(psd_export::STAGE_DOCUMENTS_FROM),
             ..Default::default()
         };
         // The preview is rendered first, while only the document is in memory: its full-size

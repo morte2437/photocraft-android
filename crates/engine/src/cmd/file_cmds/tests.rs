@@ -31,6 +31,622 @@ fn composite(s: &Session, x: i32, y: i32) -> [f32; 4] {
     b.px[0]
 }
 
+fn batch_log(path: &str) -> String {
+    let bytes = std::fs::read(path).unwrap();
+    assert!(bytes.starts_with(&[0xff, 0xfe]), "Batch log needs a UTF-16 LE BOM");
+    let (pairs, remainder) = bytes[2..].as_chunks::<2>();
+    assert!(remainder.is_empty(), "UTF-16 bytes must have even length");
+    let words: Vec<u16> = pairs.iter().map(|pair| u16::from_le_bytes(*pair)).collect();
+    String::from_utf16(&words).unwrap()
+}
+
+#[test]
+fn batch_stop_on_error_reports_skipped_inputs_and_writes_the_error_log() {
+    let dir = tmp("batch-stop-error-log");
+    let good = png(&dir, "good.png", 8, 6, "#00ff00");
+    let missing = join(&dir, "missing.png");
+    let output = join(&dir, "out");
+    let log = join(&dir, "errors.txt");
+    let result = Session::new()
+        .execute("file.automate.batch", json!({"steps": [], "input": [missing, good], "output": output, "stopOnError": true, "errorLog": log}))
+        .unwrap();
+    assert_eq!(result["files"], json!([]), "{result}");
+    assert_eq!(result["errors"].as_array().map(Vec::len), Some(1), "{result}");
+    assert_eq!(result["stopped"], json!(missing), "{result}");
+    assert_eq!(result["skipped"], json!([good]), "{result}");
+    let text = batch_log(&log);
+    assert!(text.starts_with("Batch Start\r\n\r\n") && text.contains("missing.png") && text.contains("File: \"") && text.contains("Error: "), "{text}");
+    assert!(text.ends_with("Batch End\r\n"), "{text}");
+    assert!(!std::path::Path::new(&join(&output, "good.png")).exists());
+}
+
+#[test]
+fn batch_writes_a_utf16_error_log_even_when_every_file_succeeds() {
+    let dir = tmp("batch-clean-log");
+    let input = png(&dir, "good.png", 8, 6, "#00ff00");
+    let output = join(&dir, "out");
+    let log = join(&dir, "errors.txt");
+    let result = Session::new().execute("file.automate.batch", json!({"steps": [], "input": [input], "output": output, "errorLog": log})).unwrap();
+    assert_eq!(result["errors"], json!([]), "{result}");
+    assert_eq!(result["errorLog"], json!(log));
+    assert_eq!(batch_log(&log), "Batch Start\r\n\r\nBatch End\r\n");
+}
+
+#[test]
+fn batch_cancelled_during_an_action_does_not_save_that_input() {
+    let dir = tmp("batch-cancel-current");
+    let input = png(&dir, "source.png", 8, 6, "#ff0000");
+    let out = join(&dir, "out/source.png");
+    let ctx = crate::jobs::JobCtx::new();
+    let policy = super::batch_run::BatchPolicy { stop_on_error: false, error_log: None };
+    let result = super::batch_run::process_batch_outputs(72.0, vec![(input, out.clone())], "png", SaveOpts::default(), &policy, &ctx, &|_, _| {
+        ctx.cancel();
+        Ok(false)
+    })
+    .unwrap();
+    assert_eq!(result["files"], json!([]), "{result}");
+    assert_eq!(result["cancelled"], json!(true), "{result}");
+    assert!(!std::path::Path::new(&out).exists());
+}
+
+/// An action that saved and then closed its document has its saved snapshot written by the time
+/// it returns: a cancel landing then counts that file as written, not skipped.
+#[test]
+fn batch_cancel_after_a_saved_snapshot_is_written_keeps_that_file() {
+    let dir = tmp("batch-cancel-after-snapshot");
+    let first = png(&dir, "first.png", 8, 6, "#ff0000");
+    let second = png(&dir, "second.png", 8, 6, "#00ff00");
+    let first_out = join(&dir, "out/first.png");
+    let ctx = crate::jobs::JobCtx::new();
+    let policy = super::batch_run::BatchPolicy { stop_on_error: false, error_log: None };
+    let outputs = vec![(first, first_out.clone()), (second.clone(), join(&dir, "out/second.png"))];
+    let result = super::batch_run::process_batch_outputs(72.0, outputs, "png", SaveOpts::default(), &policy, &ctx, &|s, out| {
+        save_doc(&s.active().unwrap().doc, out, None).unwrap();
+        ctx.cancel();
+        Ok(true)
+    })
+    .unwrap();
+    assert_eq!(result["files"], json!([first_out]), "{result}");
+    assert_eq!(result["skipped"], json!([second]), "{result}");
+    assert_eq!(result["cancelled"], json!(true), "{result}");
+}
+
+/// A cancel that lands while an input fails on its own keeps that failure and its reason; only
+/// the inputs after it are skipped.
+#[test]
+fn batch_cancel_during_a_failing_input_keeps_its_error() {
+    let dir = tmp("batch-cancel-failing");
+    let first = png(&dir, "first.png", 8, 6, "#ff0000");
+    let second = png(&dir, "second.png", 8, 6, "#00ff00");
+    let ctx = crate::jobs::JobCtx::new();
+    let policy = super::batch_run::BatchPolicy { stop_on_error: false, error_log: None };
+    let outputs = vec![(first.clone(), join(&dir, "out/first.png")), (second.clone(), join(&dir, "out/second.png"))];
+    let result = super::batch_run::process_batch_outputs(72.0, outputs, "png", SaveOpts::default(), &policy, &ctx, &|_, _| {
+        ctx.cancel();
+        Err(EngineError::Other("boom".into()))
+    })
+    .unwrap();
+    assert_eq!(result["errors"], json!([{"file": first, "error": "boom"}]), "{result}");
+    assert_eq!(result["skipped"], json!([second]), "{result}");
+    assert_eq!(result["cancelled"], json!(true), "{result}");
+}
+
+/// Esc during an input that fails on its own: Continue records the failure (not an interrupted
+/// input) and goes on with the next one.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn batch_interruption_during_a_failing_input_keeps_its_error() {
+    use std::time::Duration;
+
+    let dir = tmp("batch-interrupt-failing");
+    let first = png(&dir, "first.png", 8, 6, "#ff0000");
+    let second = png(&dir, "second.png", 8, 6, "#00ff00");
+    let second_out = join(&dir, "out/second.png");
+    let ctx = crate::jobs::JobCtx::new();
+    let worker_ctx = ctx.clone();
+    let outputs = vec![(first.clone(), join(&dir, "out/first.png")), (second, second_out.clone())];
+    let worker = std::thread::spawn(move || {
+        let policy = super::batch_run::BatchPolicy { stop_on_error: false, error_log: None };
+        super::batch_run::process_batch_outputs(72.0, outputs, "png", SaveOpts::default(), &policy, &worker_ctx, &|_, path| {
+            if path.ends_with("first.png") {
+                assert!(worker_ctx.request_batch_interrupt());
+                return Err(EngineError::Other("boom".into()));
+            }
+            Ok(false)
+        })
+    });
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !ctx.batch_waiting_for_decision() && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert!(ctx.decide_batch_interrupt(true));
+    let result = worker.join().unwrap().unwrap();
+    assert_eq!(result["errors"], json!([{"file": first, "error": "boom"}]), "{result}");
+    assert_eq!(result["files"], json!([second_out]), "{result}");
+    assert!(result.get("skipped").is_none(), "{result}");
+}
+
+/// Once the last input is handled, Esc has nothing to interrupt and is refused, so the desktop
+/// never waits for a question that will not come.
+#[test]
+fn batch_refuses_esc_after_its_last_input() {
+    let dir = tmp("batch-late-esc");
+    let input = png(&dir, "source.png", 8, 6, "#ff0000");
+    let ctx = crate::jobs::JobCtx::new();
+    let policy = super::batch_run::BatchPolicy { stop_on_error: false, error_log: None };
+    let result =
+        super::batch_run::process_batch_outputs(72.0, vec![(input, join(&dir, "out/source.png"))], "png", SaveOpts::default(), &policy, &ctx, &|_, _| {
+            Ok(false)
+        })
+        .unwrap();
+    assert_eq!(result["errors"], json!([]), "{result}");
+    assert!(!ctx.request_batch_interrupt());
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn batch_interruption_continues_with_the_original_next_output() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let dir = tmp("batch-interrupt-continue");
+    let first = png(&dir, "first.png", 8, 6, "#ff0000");
+    let second = png(&dir, "second.png", 8, 6, "#00ff00");
+    let first_out = join(&dir, "out/first_001.png");
+    let second_out = join(&dir, "out/second_002.png");
+    let ctx = crate::jobs::JobCtx::new();
+    let worker_ctx = ctx.clone();
+    let (opened_tx, opened_rx) = mpsc::channel();
+    let (resume_tx, resume_rx) = mpsc::channel();
+    let first_action = std::sync::atomic::AtomicBool::new(true);
+    let worker = std::thread::spawn(move || {
+        let policy = super::batch_run::BatchPolicy { stop_on_error: false, error_log: None };
+        super::batch_run::process_batch_outputs(
+            72.0,
+            vec![(first, first_out.clone()), (second, second_out.clone())],
+            "png",
+            SaveOpts::default(),
+            &policy,
+            &worker_ctx,
+            &|_, _| {
+                if first_action.swap(false, std::sync::atomic::Ordering::AcqRel) {
+                    let _ = opened_tx.send(());
+                    let _ = resume_rx.recv_timeout(Duration::from_secs(10));
+                }
+                Ok(false)
+            },
+        )
+        .map(|result| (result, first_out, second_out))
+    });
+    opened_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    let preview = ctx.batch_preview().expect("the real opened input is published before its action");
+    assert_eq!(preview.path, join(&dir, "first.png"));
+    assert_eq!((preview.document.size.width, preview.document.size.height), (8, 6));
+    assert!(ctx.request_batch_interrupt(), "Esc is accepted while the first action runs");
+    resume_tx.send(()).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !ctx.batch_waiting_for_decision() && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert!(ctx.batch_waiting_for_decision(), "the worker stopped before writing");
+    assert!(!std::path::Path::new(&join(&dir, "out/first_001.png")).exists());
+    assert!(ctx.decide_batch_interrupt(true));
+    let (result, first_out, second_out) = worker.join().unwrap().unwrap();
+    assert_eq!(result["files"], json!([second_out]), "Continue keeps the original serial: {result}");
+    assert!(!std::path::Path::new(&first_out).exists());
+    assert!(std::path::Path::new(&second_out).exists());
+    assert!(ctx.batch_preview().is_none(), "the preview closes after the last input");
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn batch_stop_after_interruption_preserves_prior_outputs_and_never_saves_current() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let dir = tmp("batch-interrupt-stop");
+    let first = png(&dir, "first.png", 8, 6, "#ff0000");
+    let second = png(&dir, "second.png", 8, 6, "#00ff00");
+    let third = png(&dir, "third.png", 8, 6, "#0000ff");
+    let out = join(&dir, "out");
+    let first_out = join(&out, "first.png");
+    let second_out = join(&out, "second.png");
+    let third_out = join(&out, "third.png");
+    let ctx = crate::jobs::JobCtx::new();
+    let worker_ctx = ctx.clone();
+    let (opened_tx, opened_rx) = mpsc::channel();
+    let (resume_tx, resume_rx) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let policy = super::batch_run::BatchPolicy { stop_on_error: false, error_log: None };
+        super::batch_run::process_batch_outputs(
+            72.0,
+            vec![(first, first_out), (second, second_out), (third, third_out)],
+            "png",
+            SaveOpts::default(),
+            &policy,
+            &worker_ctx,
+            &|_, path| {
+                if path.ends_with("second.png") {
+                    let _ = opened_tx.send(());
+                    let _ = resume_rx.recv_timeout(Duration::from_secs(10));
+                }
+                Ok(false)
+            },
+        )
+    });
+    opened_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert!(ctx.request_batch_interrupt());
+    resume_tx.send(()).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !ctx.batch_waiting_for_decision() && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert!(ctx.batch_waiting_for_decision());
+    assert!(ctx.decide_batch_interrupt(false));
+    let result = worker.join().unwrap().unwrap();
+    assert_eq!(result["files"], json!([join(&out, "first.png")]), "{result}");
+    assert_eq!(result["cancelled"], true, "{result}");
+    assert_eq!(result["skipped"], json!([join(&dir, "second.png"), join(&dir, "third.png")]), "{result}");
+    assert!(std::path::Path::new(&join(&out, "first.png")).exists());
+    assert!(!std::path::Path::new(&join(&out, "second.png")).exists());
+    assert!(!std::path::Path::new(&join(&out, "third.png")).exists());
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn batch_continue_keeps_errors_before_and_after_the_interruption_in_one_log() {
+    use std::time::Duration;
+
+    let dir = tmp("batch-interrupt-error-log");
+    let second = png(&dir, "second.png", 8, 6, "#00ff00");
+    let fourth = png(&dir, "fourth.png", 8, 6, "#0000ff");
+    let before = join(&dir, "missing-before.png");
+    let after = join(&dir, "missing-after.png");
+    let out = join(&dir, "out");
+    let log = join(&dir, "errors.txt");
+    let ctx = crate::jobs::JobCtx::new();
+    let decider_ctx = ctx.clone();
+    let decider = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !decider_ctx.batch_waiting_for_decision() && std::time::Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        if !decider_ctx.batch_waiting_for_decision() {
+            decider_ctx.cancel();
+            return false;
+        }
+        decider_ctx.decide_batch_interrupt(true)
+    });
+    let policy = super::batch_run::BatchPolicy { stop_on_error: false, error_log: Some(log.clone()) };
+    let result = super::batch_run::process_batch_outputs(
+        72.0,
+        vec![
+            (before.clone(), join(&out, "missing-before.png")),
+            (second.clone(), join(&out, "second.png")),
+            (after.clone(), join(&out, "missing-after.png")),
+            (fourth, join(&out, "fourth.png")),
+        ],
+        "png",
+        SaveOpts::default(),
+        &policy,
+        &ctx,
+        &|_, path| {
+            if path.ends_with("second.png") {
+                assert!(ctx.request_batch_interrupt());
+            }
+            Ok(false)
+        },
+    )
+    .unwrap();
+    assert!(decider.join().unwrap());
+    assert_eq!(result["errors"].as_array().map(Vec::len), Some(2), "{result}");
+    assert_eq!(result["skipped"], json!([second]), "{result}");
+    assert_eq!(result["files"], json!([join(&out, "fourth.png")]), "{result}");
+    let text = batch_log(&log);
+    assert!(text.contains("missing-before.png") && text.contains("missing-after.png"), "{text}");
+    assert!(!text.contains("second.png"), "a skipped input is not an error: {text}");
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn batch_continue_between_inputs_still_processes_the_next_input() {
+    use std::time::Duration;
+
+    let dir = tmp("batch-interrupt-between-inputs");
+    let input = png(&dir, "next.png", 8, 6, "#ff0000");
+    let output = join(&dir, "out/next.png");
+    let ctx = crate::jobs::JobCtx::new();
+    assert!(ctx.request_batch_interrupt());
+    let decider_ctx = ctx.clone();
+    let decider = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !decider_ctx.batch_waiting_for_decision() && std::time::Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        if !decider_ctx.batch_waiting_for_decision() {
+            decider_ctx.cancel();
+            return false;
+        }
+        decider_ctx.decide_batch_interrupt(true)
+    });
+    let policy = super::batch_run::BatchPolicy { stop_on_error: false, error_log: None };
+    let result =
+        super::batch_run::process_batch_outputs(72.0, vec![(input, output.clone())], "png", SaveOpts::default(), &policy, &ctx, &|_, _| Ok(false)).unwrap();
+    assert!(decider.join().unwrap());
+    assert_eq!(result["files"], json!([output]), "the unopened input is still next: {result}");
+    assert!(result.get("skipped").is_none(), "{result}");
+}
+
+#[test]
+fn batch_error_log_cannot_replace_an_input_or_result() {
+    let dir = tmp("batch-error-log-collision");
+    let input = png(&dir, "source.png", 8, 6, "#ff0000");
+    let original = std::fs::read(&input).unwrap();
+    let output = join(&dir, "out");
+    for log in [input.clone(), join(&output, "source.png"), join(&output, "./source.png"), join(&output, "../out/source.png")] {
+        let error = Session::new().execute("file.automate.batch", json!({"steps": [], "input": [input], "output": output, "errorLog": log})).unwrap_err();
+        assert!(error.to_string().contains("errorLog"), "{error}");
+        assert_eq!(std::fs::read(&input).unwrap(), original);
+        assert!(!std::path::Path::new(&join(&output, "source.png")).exists());
+    }
+}
+
+#[test]
+fn batch_naming_rejects_an_input_alias_through_a_missing_parent() {
+    let dir = tmp("batch-missing-parent-alias");
+    let first = png(&dir, "a.png", 8, 6, "#ff0000");
+    let second = png(&dir, "b.png", 8, 6, "#00ff00");
+    let original = std::fs::read(&second).unwrap();
+    let output = join(&dir, "missing/..");
+    let error =
+        Session::new().execute("file.automate.batch", json!({"steps": [], "input": [first, second], "output": output, "naming": "b.{ext}"})).unwrap_err();
+    assert!(error.to_string().contains("replace an input"), "{error}");
+    assert_eq!(std::fs::read(&second).unwrap(), original);
+    assert!(!std::path::Path::new(&join(&dir, "missing")).exists());
+}
+
+#[test]
+fn flat_batch_cannot_replace_a_later_unread_input() {
+    let dir = tmp("batch-flat-input-alias");
+    let input_png = png(&dir, "a.png", 8, 6, "#0000ff");
+    let mut s = session(8, 6, 8);
+    save_doc(doc(&s), &join(&dir, "a.jpg"), None).unwrap();
+    let before = std::fs::read(&input_png).unwrap();
+    let result = s.execute("file.automate.batch", json!({"steps": [], "input": dir, "output": dir, "format": "png"}));
+    assert!(result.as_ref().is_err_and(|e| e.to_string().contains("input")), "{result:?}");
+    assert_eq!(std::fs::read(&input_png).unwrap(), before);
+}
+
+#[cfg(unix)]
+#[test]
+fn batch_error_log_rejects_a_symlink_parent_alias() {
+    use std::os::unix::fs::symlink;
+    let dir = tmp("batch-symlink-parent-alias");
+    let source_dir = join(&dir, "in");
+    std::fs::create_dir_all(&source_dir).unwrap();
+    let input = png(&source_dir, "result.png", 8, 6, "#ff0000");
+    let other = join(&dir, "other");
+    std::fs::create_dir_all(join(&other, "child")).unwrap();
+    symlink(join(&other, "child"), join(&dir, "link")).unwrap();
+    let output = other;
+    let log = join(&dir, "link/../result.png");
+    let error = Session::new().execute("file.automate.batch", json!({"steps": [], "input": [input], "output": output, "errorLog": log})).unwrap_err();
+    assert!(error.to_string().contains("errorLog"), "{error}");
+    assert!(!std::path::Path::new(&join(&output, "result.png")).exists());
+}
+
+#[test]
+fn batch_error_log_rejects_an_uncreated_output_alias() {
+    let dir = tmp("batch-error-log-future-alias");
+    let input = png(&dir, "source.png", 8, 6, "#ff0000");
+    let output = join(&dir, "new-output");
+    std::fs::create_dir_all(join(&output, "alias")).unwrap();
+    let log = join(&output, "alias/../source.png");
+    assert!(same_destination(&log, join(&output, "source.png")));
+    let error = Session::new().execute("file.automate.batch", json!({"steps": [], "input": [input], "output": output, "errorLog": log})).unwrap_err();
+    assert!(error.to_string().contains("errorLog"), "{error}");
+    assert!(!std::path::Path::new(&join(&dir, "new-output/source.png")).exists());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_distinct_case_destinations_are_not_the_same_file() {
+    let dir = tmp("batch-case-sensitive-destinations");
+    assert!(!same_destination(join(&dir, "Image.png"), join(&dir, "image.png")));
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[test]
+fn unicode_case_variants_follow_destination_volume() {
+    let dir = tmp("batch-unicode-case-destinations");
+    let existing = join(&dir, "Ä-probe");
+    std::fs::write(&existing, b"probe").unwrap();
+    let volume_aliases_case = same_file(&existing, join(&dir, "ä-probe"));
+    assert_eq!(same_destination(join(&dir, "Ä.png"), join(&dir, "ä.png")), volume_aliases_case);
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[test]
+fn future_folder_case_variants_follow_the_nearest_existing_ancestor() {
+    let dir = tmp("batch-future-folder-case");
+    let existing = join(&dir, "Ä-probe");
+    std::fs::write(&existing, b"probe").unwrap();
+    let volume_aliases_case = same_file(&existing, join(&dir, "ä-probe"));
+    let first = join(&dir, "new/nested/Image.png");
+    let second = join(&dir, "new/nested/image.png");
+    assert_eq!(super::paths::case_sensitive_destination(std::path::Path::new(&first)), Some(!volume_aliases_case));
+    assert_eq!(same_destination(first, second), volume_aliases_case);
+    assert!(!std::path::Path::new(&join(&dir, "new")).exists());
+}
+
+#[test]
+fn batch_open_source_edits_each_live_document_and_restores_the_active_one() {
+    let dir = tmp("batch-open-documents");
+    let mut session = Session::new();
+    session.execute("file.new", json!({"name": "First", "width": 8, "height": 6})).unwrap();
+    session.execute("file.new", json!({"name": "Second", "width": 12, "height": 5})).unwrap();
+    session.set_active(0);
+    let result = session
+        .execute(
+            "file.automate.batch",
+            json!({"source": "open", "steps": [["image.imageRotation.90cw", {}]], "output": dir, "format": "png", "naming": "{serial:2}_{NAME}.{EXT}"}),
+        )
+        .unwrap();
+    assert!(result["errors"].as_array().unwrap().is_empty(), "{result}");
+    assert_eq!(result["documents"], 2);
+    assert_eq!(result["files"].as_array().map(Vec::len), Some(2), "{result}");
+    assert_eq!(session.active_index(), Some(0));
+    assert_eq!((session.documents()[0].doc.size.width, session.documents()[0].doc.size.height), (6, 8));
+    assert_eq!((session.documents()[1].doc.size.width, session.documents()[1].doc.size.height), (5, 12));
+    assert!(std::path::Path::new(&join(&dir, "01_FIRST.PNG")).is_file());
+    assert!(std::path::Path::new(&join(&dir, "02_SECOND.PNG")).is_file());
+}
+
+#[test]
+fn batch_open_source_exports_later_edits_if_saved_document_stays_active() {
+    let dir = tmp("batch-open-save-point");
+    let mut session = Session::new();
+    session.execute("file.new", json!({"name": "First", "width": 8, "height": 6})).unwrap();
+    session.execute("file.new", json!({"name": "Second", "width": 12, "height": 5})).unwrap();
+    let result = session
+        .execute(
+            "file.automate.batch",
+            json!({
+                "source": "open", "steps": [["document.activate", {"document": 1}], ["file.save", {}], ["image.imageRotation.90cw", {}]],
+                "output": dir, "format": "png", "naming": "{name}.{ext}"
+            }),
+        )
+        .unwrap();
+    assert!(result["errors"].as_array().unwrap().is_empty(), "{result}");
+    let mut opened = Session::new();
+    opened.execute("file.openAs", json!({"path": join(&dir, "First.png"), "as": "png"})).unwrap();
+    assert_eq!((doc(&opened).size.width, doc(&opened).size.height), (5, 12), "the still-active saved document includes later edits");
+}
+
+#[test]
+fn batch_open_source_save_as_then_close_ask_writes_the_result() {
+    let dir = tmp("batch-open-save-close-ask");
+    let mut session = Session::new();
+    session.execute("file.new", json!({"name": "First", "width": 8, "height": 6})).unwrap();
+    let result = session
+        .execute(
+            "file.automate.batch",
+            json!({"source": "open", "steps": [["image.adjustments.invert", {}], ["file.saveAs", {}], ["file.close", {"save": "ask"}]], "output": dir, "format": "png"}),
+        )
+        .unwrap();
+    assert_eq!(result["errors"], json!([]), "{result}");
+    assert_eq!(result["files"], json!([join(&dir, "First.png")]), "{result}");
+    assert!(session.documents().is_empty());
+}
+
+#[test]
+fn batch_open_source_refuses_a_result_that_replaces_another_open_file() {
+    let dir = tmp("batch-open-replaces-input");
+    let mut session = Session::new();
+    // Saved as PNG under its default name, `a.jpg`'s result is the open `a.png`'s file.
+    for (name, format) in [("a.jpg", "jpg"), ("a.png", "png")] {
+        let path = png(&dir, name, 8, 6, "#ff0000");
+        session.execute("file.openAs", json!({"path": path, "as": format})).unwrap();
+    }
+    let before = std::fs::read(join(&dir, "a.png")).unwrap();
+    let error = session
+        .execute("file.automate.batch", json!({"source": "open", "steps": [["image.imageRotation.90cw", {}]], "output": dir, "format": "png"}))
+        .unwrap_err();
+    assert!(error.to_string().contains("replace another input"), "{error}");
+    assert_eq!(std::fs::read(join(&dir, "a.png")).unwrap(), before, "nothing is written before the refusal");
+}
+
+#[test]
+fn batch_open_source_save_step_leaves_an_unwritten_document_changed() {
+    let mut session = Session::new();
+    session.execute("file.new", json!({"name": "First", "width": 8, "height": 6})).unwrap();
+    let steps = json!([["image.adjustments.invert", {}], ["file.save", {}]]);
+    // No destination: nothing is written.
+    let result = session.execute("file.automate.batch", json!({"source": "open", "steps": steps})).unwrap();
+    assert_eq!(result["errors"], json!([]), "{result}");
+    assert!(session.documents()[0].is_dirty(), "a document Batch did not write stays changed");
+    // A destination that can't be written: the result's name is taken by a folder, so the path
+    // resolves on every platform and the write itself fails.
+    let dir = tmp("batch-open-save-fails");
+    std::fs::create_dir_all(join(&dir, "First.png")).unwrap();
+    let result = session.execute("file.automate.batch", json!({"source": "open", "steps": steps, "output": dir, "format": "png"})).unwrap();
+    assert_eq!(result["errors"].as_array().map(Vec::len), Some(1), "{result}");
+    assert!(session.documents()[0].is_dirty(), "a failed write leaves the document changed");
+}
+
+#[cfg(unix)]
+#[test]
+fn batch_error_log_rejects_a_dangling_link_to_a_planned_output() {
+    use std::os::unix::fs::symlink;
+    let dir = tmp("batch-dangling-error-log-alias");
+    let input = png(&dir, "source.png", 8, 6, "#ff0000");
+    let output = join(&dir, "out");
+    let result = join(&output, "source.png");
+    let log = join(&dir, "errors.txt");
+    symlink(&result, &log).unwrap();
+    let error = Session::new().execute("file.automate.batch", json!({"steps": [], "input": [input], "output": output, "errorLog": log})).unwrap_err();
+    assert!(error.to_string().contains("errorLog"), "{error}");
+    assert!(!std::path::Path::new(&result).exists(), "the batch must not write before rejecting the alias");
+}
+
+#[test]
+fn batch_reports_file_failures_even_if_error_log_cannot_be_written() {
+    let dir = tmp("batch-error-log-write-fails");
+    let mut session = session(8, 6, 8);
+    let result = session
+        .execute(
+            "file.automate.batch",
+            json!({
+                "source": "open", "steps": [["layer.select", {"layer": "does not exist"}]],
+                "output": dir, "format": "png", "errorLog": dir
+            }),
+        )
+        .unwrap();
+    assert_eq!(result["files"], json!([]));
+    assert_eq!(result["errors"].as_array().map(Vec::len), Some(1), "{result}");
+    assert!(result["errorLogError"].as_str().is_some(), "{result}");
+}
+
+#[cfg(unix)]
+#[test]
+fn recursive_batch_reports_an_unreadable_subfolder() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tmp("batch-unreadable-subfolder");
+    let sub = join(&dir, "locked");
+    std::fs::create_dir_all(&sub).unwrap();
+    png(&sub, "image.png", 8, 6, "#ff0000");
+    std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let inaccessible = std::fs::read_dir(&sub).is_err();
+    let result = list_images_tree(&dir, "", "file.automate.batch");
+    std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o700)).unwrap();
+    if inaccessible {
+        assert!(result.is_err(), "an inaccessible input folder must not be omitted");
+    } else {
+        eprintln!("permission regression skipped: this user can read a mode-000 folder");
+        assert!(result.is_ok(), "a privileged reader should still process the folder");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn folder_listing_reports_metadata_denial_and_skips_broken_links() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let dir = tmp("batch-list-metadata-denial");
+    let image = png(&dir, "image.png", 8, 6, "#ff0000");
+    symlink(join(&dir, "gone.png"), join(&dir, "broken.png")).unwrap();
+    assert_eq!(list_images(&dir).unwrap(), std::slice::from_ref(&image), "broken links are not inputs");
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o400)).unwrap();
+    let denied = std::fs::metadata(&image).is_err();
+    let result = list_images(&dir);
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    if denied {
+        assert!(result.is_err(), "metadata denial must not turn a folder of images into an empty batch");
+    } else {
+        eprintln!("metadata denial regression skipped: this user can search a mode-0400 folder");
+        assert_eq!(result.unwrap(), [image]);
+    }
+}
+
 #[test]
 fn close_all_and_close_others() {
     let mut s = session(8, 8, 8);
@@ -86,7 +702,8 @@ fn batch_same_format_saves_camera_raws_as_psd() {
         let mut files: Vec<String> = r["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap().replace('\\', "/")).collect();
         files.sort();
         assert_eq!(files.len(), 2, "{r}");
-        assert!(files[0].contains("/IMG_0001") && files[0].ends_with(".psd") && files[1].contains("/b") && files[1].ends_with(".png"), "{files:?}");
+        let suffixes = if naming.is_some() { ("_001", "_002") } else { (".psd", ".png") };
+        assert!(files[0].contains("/IMG_0001") && files[0].ends_with(suffixes.0) && files[1].contains("/b") && files[1].ends_with(suffixes.1), "{files:?}");
         let psd = photocraft_io::import("IMG_0001.psd", &std::fs::read(&files[0]).unwrap()).unwrap().document;
         assert_eq!((psd.size.width, psd.size.height), (w as u32, h as u32));
     }
@@ -1527,16 +2144,16 @@ fn batch_naming_serial_keeps_same_named_inputs_and_their_pixels() {
         )
         .unwrap();
     assert_eq!(result["errors"], json!([]), "{result}");
-    assert_eq!(result["files"], json!([join(&out, "photo_007.png"), join(&out, "photo_008.png")]));
-    for (name, expected) in [("photo_007.png", [1.0, 0.0, 0.0, 1.0]), ("photo_008.png", [0.0, 0.0, 1.0, 1.0])] {
-        let saved = photocraft_io::import(name, &std::fs::read(join(&out, name)).unwrap()).unwrap().document;
+    assert_eq!(result["files"], json!([join(&out, "photo_007"), join(&out, "photo_008")]));
+    for (name, expected) in [("photo_007", [1.0, 0.0, 0.0, 1.0]), ("photo_008", [0.0, 0.0, 1.0, 1.0])] {
+        let saved = photocraft_io::import("photo.png", &std::fs::read(join(&out, name)).unwrap()).unwrap().document;
         let pixel = photocraft_compose::render(&saved, Rect::new(1, 1, 2, 2)).px[0];
         assert_eq!(pixel, expected, "{name}");
     }
 }
 
-/// Two inputs with one output name: the first result is kept and the second is an error, never
-/// a silent overwrite listed as written (#422).
+/// Batch follows Photoshop's later-file-wins behavior. Image Processor and lens correction
+/// keep their existing collision error so their outputs are never silently replaced.
 #[test]
 fn batch_reports_inputs_that_share_an_output_name() {
     let dir = tmp("collide");
@@ -1560,12 +2177,16 @@ fn batch_reports_inputs_that_share_an_output_name() {
         let r = s.execute(cmd, p).unwrap();
         let files = r["files"].as_array().unwrap();
         let errors = r["errors"].as_array().unwrap();
-        // `a.*` and `B.png`/`b.tif` (names that differ only in case) each collide once.
-        assert_eq!((files.len(), errors.len()), (2, 2), "{cmd}: {r}");
-        assert!(errors.iter().all(|e| e["error"].as_str().unwrap().contains("not written")), "{r}");
-        let mut written: Vec<_> = files.iter().map(|f| f.as_str().unwrap().to_lowercase()).collect();
-        written.dedup();
-        assert_eq!(written.len(), 2, "each listed file is distinct: {r}");
+        if cmd == "file.automate.batch" {
+            assert_eq!((files.len(), errors.len()), (4, 0), "{cmd}: {r}");
+            assert_eq!(files[1], files[2], "the later a.png result replaces a.jpg: {r}");
+        } else {
+            assert_eq!((files.len(), errors.len()), (2, 2), "{cmd}: {r}");
+            assert!(errors.iter().all(|e| e["error"].as_str().unwrap().contains("not written")), "{r}");
+            let mut written: Vec<_> = files.iter().map(|f| f.as_str().unwrap().to_lowercase()).collect();
+            written.dedup();
+            assert_eq!(written.len(), 2, "each listed file is distinct: {r}");
+        }
     }
     // Keeping each file's format, nothing collides.
     let out = join(&dir, "same");
@@ -1579,10 +2200,10 @@ fn batch_reports_inputs_that_share_an_output_name() {
     std::fs::write(&droplet, json!({"photocraftDroplet": 1, "name": "d", "action": {"steps": []}, "options": {"format": "png"}}).to_string()).unwrap();
     let out = join(&dir, "droplet");
     let r = s.execute("file.automate.runDroplet", json!({"droplet": droplet, "input": [join(&input, "a.png"), other], "output": out})).unwrap();
-    assert_eq!((r["files"].as_array().unwrap().len(), r["errors"].as_array().unwrap().len()), (1, 1), "{r}");
+    assert_eq!((r["files"].as_array().unwrap().len(), r["errors"].as_array().unwrap().len()), (2, 0), "{r}");
     let kept = photocraft_io::import("a.png", &std::fs::read(join(&out, "a.png")).unwrap()).unwrap().document;
     let px = photocraft_compose::render(&kept, Rect::new(1, 1, 2, 2)).px[0];
-    assert!(px[0] > 0.99 && px[1] < 0.01, "the first input's result is kept: {px:?}");
+    assert!(px[0] > 0.99 && px[1] > 0.99, "the later input's result replaces the first: {px:?}");
 }
 
 /// `file.revealInFinder` (the document tab's Reveal, UI-217-6) reveals the clicked document's
@@ -1640,7 +2261,7 @@ fn batch_include_all_subfolders() {
     let out = join(&input, "batch");
     let r = s.execute("file.automate.batch", json!({"steps": [], "input": input, "output": out, "format": "png"})).unwrap();
     assert_eq!((r["files"].as_array().unwrap().len(), r["errors"].as_array().unwrap().len()), (1, 0), "{r}");
-    // With subfolders: every image, in folder order, results kept apart by subfolder; the output
+    // With subfolders: every image, in folder order, results saved flat; the output
     // folder (inside the input folder, holding last run's a.png) is not an input.
     let r = s
         .execute(
@@ -1651,12 +2272,12 @@ fn batch_include_all_subfolders() {
     assert!(r["errors"].as_array().unwrap().is_empty(), "{r}");
     let files: Vec<String> = r["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap().replace('\\', "/")).collect();
     let o = out.replace('\\', "/");
-    assert_eq!(files, vec![format!("{o}/a.png"), format!("{o}/sub/b.png"), format!("{o}/sub/deeper/a.png"), format!("{o}/z/a.png")]);
-    let deep = photocraft_io::import("a.png", &std::fs::read(join(&out, "sub/deeper/a.png")).unwrap()).unwrap().document;
-    let px = photocraft_compose::render(&deep, Rect::new(1, 1, 2, 2)).px[0];
-    assert!(px[0] > 0.99 && px[1] > 0.99 && px[2] < 0.01, "blue inverted to yellow: {px:?}");
+    assert_eq!(files, vec![format!("{o}/a.png"), format!("{o}/b.png"), format!("{o}/a.png"), format!("{o}/a.png")]);
+    let last = photocraft_io::import("a.png", &std::fs::read(join(&out, "a.png")).unwrap()).unwrap().document;
+    let px = photocraft_compose::render(&last, Rect::new(1, 1, 2, 2)).px[0];
+    assert!(px[0] < 0.01 && px[1] < 0.01 && px[2] < 0.01, "the last white input is inverted to black: {px:?}");
     std::fs::remove_dir_all(&out).unwrap();
-    // A naming template applies within each kept subfolder (output outside the input folder).
+    // A naming template applies across all inputs, with serials distinguishing the flat outputs.
     let named = join(&dir, "named");
     let r = s
         .execute("file.automate.batch", json!({"steps": [], "input": input, "includeSubfolders": true, "output": named, "format": "png", "naming": "{serial}"}))
@@ -1664,7 +2285,7 @@ fn batch_include_all_subfolders() {
     assert!(r["errors"].as_array().unwrap().is_empty(), "{r}");
     let files: Vec<String> = r["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap().replace('\\', "/")).collect();
     let n = named.replace('\\', "/");
-    assert_eq!(files, vec![format!("{n}/001.png"), format!("{n}/sub/002.png"), format!("{n}/sub/deeper/003.png"), format!("{n}/z/004.png")]);
+    assert_eq!(files, vec![format!("{n}/001"), format!("{n}/002"), format!("{n}/003"), format!("{n}/004")]);
     // Image Processor shares the option (with its results out of the input folder).
     let out = join(&dir, "jpg");
     let r = s.execute("file.scripts.imageProcessor", json!({"input": input, "includeSubfolders": true, "output": out})).unwrap();
@@ -1777,13 +2398,13 @@ fn batch_naming_keeps_serial_positions_after_errors_and_captures_the_utc_date() 
     assert_eq!(files.len(), 1, "{result}");
     let name = file_name(files[0].as_str().unwrap());
     assert!(
-        name == format!("{}_010_good.png", &before[..10]) || name == format!("{}_010_good.png", &after[..10]),
+        name == format!("{}_010_good", &before[..10]) || name == format!("{}_010_good", &after[..10]),
         "the missing input still consumes its serial: {name}"
     );
 }
 
 #[test]
-fn batch_naming_still_reports_collisions_instead_of_overwriting() {
+fn batch_naming_later_result_replaces_the_earlier_one() {
     let dir = tmp("naming-collision");
     let red = png(&dir, "red.png", 8, 8, "#ff0000");
     let blue = png(&dir, "blue.png", 8, 8, "#0000ff");
@@ -1797,11 +2418,10 @@ fn batch_naming_still_reports_collisions_instead_of_overwriting() {
             }),
         )
         .unwrap();
-    assert_eq!(result["files"], json!([join(&out, "constant.png")]));
-    assert_eq!(result["errors"].as_array().unwrap().len(), 1, "{result}");
-    assert!(result["errors"][0]["error"].as_str().unwrap().contains("not written"));
-    let saved = photocraft_io::import("constant.png", &std::fs::read(join(&out, "constant.png")).unwrap()).unwrap().document;
-    assert_eq!(photocraft_compose::render(&saved, Rect::new(1, 1, 2, 2)).px[0], [1.0, 0.0, 0.0, 1.0]);
+    assert_eq!(result["files"], json!([join(&out, "constant"), join(&out, "constant")]));
+    assert_eq!(result["errors"], json!([]), "{result}");
+    let saved = photocraft_io::import("constant.png", &std::fs::read(join(&out, "constant")).unwrap()).unwrap().document;
+    assert_eq!(photocraft_compose::render(&saved, Rect::new(1, 1, 2, 2)).px[0], [0.0, 0.0, 1.0, 1.0]);
 }
 #[test]
 fn batch_naming_rejects_outputs_that_replace_inputs_before_processing() {
@@ -1816,7 +2436,7 @@ fn batch_naming_rejects_outputs_that_replace_inputs_before_processing() {
         .execute(
             "file.automate.batch",
             json!({
-                "input": [first, second], "output": join(&dir, "."), "steps": [], "naming": "{serial}"
+                "input": [first, second], "output": join(&dir, "."), "steps": [], "naming": "{serial}.{ext}"
             }),
         )
         .unwrap_err();

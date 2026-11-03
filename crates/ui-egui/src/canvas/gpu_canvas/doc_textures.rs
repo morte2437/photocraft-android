@@ -44,6 +44,24 @@ pub(super) fn tile_uniform([x, y, w, h]: [u32; 4], core: Option<[i32; 4]>) -> [f
     [x as f32, y as f32, w as f32, h as f32, cx0, cy0, cx1, cy1]
 }
 
+/// Run `f` with its validation and out-of-memory errors caught, rather than reaching the
+/// device's uncaptured-error handler (which takes the GPU canvas down for the session): what `f`
+/// returned, and the first error. Native wgpu reports these synchronously; where they arrive
+/// later (WebGPU) none is seen.
+pub(super) fn catch_gpu_errors<T>(device: &wgpu::Device, f: impl FnOnce() -> T) -> (T, Option<wgpu::Error>) {
+    let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    let out = f();
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    let mut error = None;
+    for pop in [memory.pop(), validation.pop()] {
+        if let std::task::Poll::Ready(Some(e)) = std::pin::pin!(pop).poll(&mut cx) {
+            error.get_or_insert(e);
+        }
+    }
+    (out, error)
+}
+
 impl DocTextures {
     /// The texture set for a `size` canvas, or `None` (nothing created) when it doesn't fit
     /// the canvas budget or the GPU's memory. A set the GPU can't hold (a 3 GP canvas is 16 GB
@@ -54,23 +72,23 @@ impl DocTextures {
         if bytes > res.canvas_budget.load(Ordering::Relaxed) {
             return None;
         }
-        let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
-        let set = Self::create(device, res, size, tile, format);
-        // Native wgpu reports these synchronously; where they arrive later (WebGPU) none is seen.
-        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-        let mut error = None;
-        for pop in [memory.pop(), validation.pop()] {
-            if let std::task::Poll::Ready(Some(e)) = std::pin::pin!(pop).poll(&mut cx) {
-                error.get_or_insert(e);
-            }
-        }
+        let (set, error) = catch_gpu_errors(device, || Self::create(device, res, size, tile, format));
         if let Some(e) = error {
             log::warn!("{} MB of canvas textures failed ({e}); larger canvases are drawn on the CPU", bytes >> 20);
             res.canvas_budget.fetch_min(bytes.saturating_sub(1), Ordering::Relaxed);
             return None;
         }
         Some(set)
+    }
+
+    /// [`DocTextures::new`] for key `key`, first freeing the textures of documents no window
+    /// shows when the open documents' together wouldn't fit the canvas budget.
+    pub(super) fn new_for(device: &wgpu::Device, res: &mut Resources, key: u64, size: [u32; 2], tile: u32, format: wgpu::TextureFormat) -> Option<Self> {
+        let bytes = canvas_texture_bytes(size, tile, texel_bytes(format));
+        if bytes <= res.canvas_budget.load(Ordering::Relaxed) {
+            res.make_room(key, bytes);
+        }
+        Self::new(device, res, size, tile, format)
     }
 
     fn create(device: &wgpu::Device, res: &Resources, size: [u32; 2], tile: u32, format: wgpu::TextureFormat) -> Self {

@@ -28,11 +28,16 @@ mod paths;
 mod processing;
 mod save;
 
-pub use batch_run::OutputClaims;
-pub(crate) use batch_run::{BatchInput, batch_inputs, batch_keeps_step, batch_save_point, process_files};
+pub use batch_naming::plan as plan_batch_names;
 #[cfg(test)]
-pub(crate) use batch_run::{MAX_SUBFOLDER_DEPTH, list_images_tree};
-use batch_run::{batch, same_format};
+pub(crate) use batch_run::MAX_SUBFOLDER_DEPTH;
+use batch_run::batch;
+pub use batch_run::same_format as batch_same_format;
+use batch_run::same_format;
+#[cfg(not(target_arch = "wasm32"))]
+pub use batch_run::validate_flat_outputs;
+pub use batch_run::{BatchInput, OutputClaims, encode_batch_error_log, list_images_tree};
+pub(crate) use batch_run::{batch_inputs, batch_keeps_step, batch_save_point, process_files};
 pub use export::{LayerExportReport, SkippedExportLayer, bake_cube, export_layers_report_with, export_layers_with};
 use export::{color_lookup_tables, layers_to_files, push_unique};
 use info::file_info;
@@ -46,8 +51,8 @@ use paths::is_file;
 #[cfg(test)]
 use paths::openable_name;
 pub use paths::{
-    extension, holds, holds_at, is_template, layered_extension, list_images, losses_at, portable_device_name, same_file, saves_in_place, template_name,
-    untitled_name,
+    extension, holds, holds_at, is_template, layered_extension, list_images, losses_at, portable_device_name, same_destination, same_file, saves_in_place,
+    template_name, untitled_name,
 };
 pub(crate) use paths::{file_name, forward_slashes, is_windows_device_name, join, read_file, sanitize, stem, write_file};
 use processing::{conditional_mode_change, fit_image, flatten_all_effects, flatten_all_masks, image_processor, load_files_into_stack};
@@ -332,7 +337,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Batch…",
             &["File", "Automate"],
             None,
-            r##"{"steps":[[commandId,params]|{"command":id,"params":{}}…] (a recorded action; a Save, Save As or Save a Copy step marks the document written to output, in this command's format and options: as the save found it if it was closed or another document is active at the end, else as the action leaves it; with no such step, the active document at the end),"input":folder|[paths],"includeSubfolders":bool=false (a folder input also takes the images in its subfolders, up to 32 levels and 100000 files; each result keeps its subfolder under output),"output":folder,"format":"same|png|jpg|psd|tiff|…"="same","quality":0..12?,"jpegFormat":"baseline|optimized|progressive"?,"naming":string? (blank keeps source names; {name}, {serial} padded to 3 digits, {date} as YYYY-MM-DD UTC; extension added automatically),"startingSerial":1..4294967295=1 (input position, including failed inputs),"tiffLayers":bool=false,"tiffCompression":"none|lzw|zip"?,"tiffTransparency":bool?,"tiffPyramid":bool=false,"tgaBits":24|32?,"dpxBits":8|10|12|16? (DPX: bits per sample; unset, 8 for an 8-bit document, else 16),"ddsCompression":"none|bc1|bc2|bc3"="none" (DDS: uncompressed, or block compression; BC1 keeps alpha on or off),"ddsMipmaps":bool=false (DDS: also write the full mip chain),"calledActions":[{"name","steps"}…]? (the actions Play Action steps call; default: the session's)} → {files, errors} (an input whose output name was already written in the run goes to errors)"##,
+            r##"{"steps":[[commandId,params]|{"command":id,"params":{}}…] (a recorded action; Save/Save As marks the result),"source":"folder|open"="folder" (open: run on live open documents),"input":folder|[paths] (folder source),"includeSubfolders":bool=false (up to 32 levels and 100000 files, outputs are flat under output),"output":folder (optional for open source),"format":"same|png|jpg|psd|tiff|…"="same","naming":string? (tokens: {name}/{NAME}/{Name}, {serial}/{serial:1..4}, {letter}/{LETTER}, {date} and date formats, {ext}/{EXT}; the naming template determines the whole filename),"startingSerial":1..4294967295=1,"stopOnError":bool=false,"errorLog":path? (blank disables it),"quality":0..12?,"jpegFormat":"baseline|optimized|progressive"?,"tiffLayers":bool=false,"tiffCompression":"none|lzw|zip"?,"tiffTransparency":bool?,"tiffPyramid":bool=false,"tgaBits":24|32?,"dpxBits":8|10|12|16? (DPX: bits per sample; unset, 8 for an 8-bit document, else 16),"ddsCompression":"none|bc1|bc2|bc3"="none" (DDS: uncompressed, or block compression; BC1 keeps alpha on or off),"ddsMipmaps":bool=false (DDS: also write the full mip chain),"calledActions":[{"name","steps"}…]?} → {files, errors, stopped?, skipped?, errorLog?, documents?} (folder batches report per-file job progress and support cancellation)"##,
             native,
             batch
         ),

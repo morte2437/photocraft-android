@@ -3,13 +3,28 @@ use super::{Document, EngineError, Layer, LayerContent, LayerId, PixelFormat, Re
 
 // ---------- structural commands ----------
 
-pub(super) fn link_layers(s: &mut Session) -> Result<Value> {
+/// Set an explicit link state idempotently, or toggle when omitted, with singleton cleanup and Undo.
+pub(super) fn link_layers(s: &mut Session, p: &Value) -> Result<Value> {
+    let requested = match p.get("linked") {
+        None => None,
+        Some(Value::Bool(value)) => Some(*value),
+        Some(_) => return Err(bad("layer.linkLayers", "`linked` must be true or false")),
+    };
     let sel = selected(s);
-    let linked = s.edit("Link Layers", |doc, _| {
-        let groups: Vec<Option<u64>> = sel.iter().map(|id| doc.layer(*id).and_then(|l| l.link_group)).collect();
+    let doc = &s.active().ok_or(EngineError::NoDocument)?.doc;
+    let groups = sel.iter().map(|id| doc.layer(*id).map(|l| l.link_group).ok_or(EngineError::NoLayer(*id))).collect::<Result<Vec<_>>>()?;
+    let first = groups.first().copied().flatten();
+    let same_group = first.is_some() && groups.iter().all(|group| *group == first);
+    // A recorded Link/Unlink is an operation, not the UI's state-dependent toggle.
+    // An explicit repeat must neither allocate a group nor add an undo entry.
+    let linked_group = same_group && doc.walk().iter().filter(|(_, _, layer)| layer.link_group == first).take(2).count() == 2;
+    if requested == Some(true) && linked_group || requested == Some(false) && groups.iter().all(Option::is_none) {
+        return Ok(json!({"linked": requested == Some(true)}));
+    }
+    let label = if requested == Some(false) { "Unlink Layers" } else { "Link Layers" };
+    let linked = s.edit(label, |doc, _| {
         // Already one link group (or a single linked layer): unlink, like Photoshop's toggle.
-        let first = groups.first().copied().flatten();
-        let unlink = first.is_some() && groups.iter().all(|g| *g == first);
+        let unlink = requested.map_or(same_group, |linked| !linked) || sel.len() < 2;
         // A loaded file can store any id up to u64::MAX, so the new id must not be a bare
         // max + 1 (#961). Unlinking needs no new id at all.
         let next = if unlink { None } else { Some(doc.unused_link_group().ok_or_else(|| bad("layer.linkLayers", "no free link group id is left"))?) };

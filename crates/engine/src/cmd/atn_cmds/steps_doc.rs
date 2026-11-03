@@ -44,9 +44,12 @@ fn path_extension(path: &str) -> Option<String> {
 }
 
 /// `save`: a plain Save, or a Save As (`As` format, `In` destination, `Cpy` As a Copy).
-/// Only a destination that is a file of the recorded format imports: a folder (#5430), a missing
-/// or unknown format or a mismatched extension stays a kept Photoshop step, so playback stops
-/// before writing rather than saving over the played file (#7102).
+/// A destination that is a file of the recorded format imports with its path. "Save in
+/// directory" (`DIDr`, recorded when the suggested name was kept) imports as a folder step, so
+/// playback saves each document under its own name in that folder (#5305). Anything else (a
+/// missing or unknown format, a mismatched extension, a copy into a folder) stays a kept
+/// Photoshop step, so playback stops before writing rather than saving over the played file
+/// (#7102).
 pub(super) fn save_from(d: &Descriptor) -> Mapped {
     let unsupported = Mapped::Unsupported { harmless: false };
     if d.get("As  ").is_none() && d.get("In  ").is_none() {
@@ -56,11 +59,16 @@ pub(super) fn save_from(d: &Descriptor) -> Mapped {
     // with a format that isn't a descriptor) the step is kept.
     let Some(format) = get_obj(d, "As  ") else { return unsupported };
     let Some(path) = d.get("In  ").and_then(path_text) else { return unsupported };
+    let class = trimmed(&format.class_id);
     if get_bool(d, "DIDr") == Some(true) {
-        return unsupported;
+        // `In` is the folder alone. Save a Copy has no folder step: it stays kept.
+        let Some(ext) = SAVE_FORMATS.iter().find(|(c, _)| *c == class).and_then(|(_, exts)| exts.first()) else { return unsupported };
+        if get_bool(d, "Cpy ") == Some(true) {
+            return unsupported;
+        }
+        return step("file.saveAs", json!({"folder": path, "extension": ext}));
     }
     let Some(ext) = path_extension(&path) else { return unsupported };
-    let class = trimmed(&format.class_id);
     let Some((_, exts)) = SAVE_FORMATS.iter().find(|(c, _)| *c == class) else { return unsupported };
     if !exts.contains(&ext.as_str()) {
         return unsupported;
@@ -72,7 +80,15 @@ pub(super) fn save_to(id: &str, p: &Value) -> Option<Descriptor> {
     if id == "file.save" {
         return Some(desc("null"));
     }
-    let path = jstr(p, "path")?;
+    let Some(path) = jstr(p, "path").filter(|v| !v.is_empty()) else {
+        // A Save As recorded with the document's own name: "save in directory" (#5305).
+        let (folder, ext) = (jstr(p, "folder")?, jstr(p, "extension")?.to_ascii_lowercase());
+        if id != "file.saveAs" {
+            return None;
+        }
+        let (class, _) = SAVE_FORMATS.iter().find(|(_, exts)| exts.contains(&ext.as_str()))?;
+        return Some(desc("null").with("As  ", D::Descriptor(desc(class))).with("In  ", path_value(folder)).with("DIDr", D::Boolean(true)));
+    };
     let ext = path_extension(path)?;
     let (class, _) = SAVE_FORMATS.iter().find(|(_, exts)| exts.contains(&ext.as_str()))?;
     let d = desc("null").with("As  ", D::Descriptor(desc(class))).with("In  ", path_value(path));
@@ -144,7 +160,8 @@ pub(super) fn export_from(d: &Descriptor) -> Mapped {
     let unsupported = Mapped::Unsupported { harmless: false };
     let Some(u) = get_obj(d, "Usng") else { return unsupported };
     let Some(path) = d.get("In  ").and_then(path_text) else { return unsupported };
-    let mut p = json!({"path": path});
+    // "Save in directory": `In` is only the folder, and each document saves under its own name.
+    let mut p = if get_bool(u, "DIDr") == Some(true) { json!({"folder": path}) } else { json!({"path": path}) };
     if let Some(f) = get_enum(u, "Fmt ") {
         match lookup(WEB_FORMATS, &f) {
             Some(f) => p["format"] = json!(f),
@@ -171,8 +188,16 @@ pub(super) fn export_from(d: &Descriptor) -> Mapped {
 }
 
 pub(super) fn export_to(_: &str, p: &Value) -> Option<Descriptor> {
-    let path = jstr(p, "path")?;
+    // A step recorded with the document's own name keeps only its folder (#5305).
+    let (path, in_folder) = match (jstr(p, "path").filter(|v| !v.is_empty()), jstr(p, "folder")) {
+        (Some(path), _) => (path, false),
+        (None, Some(folder)) => (folder, true),
+        (None, None) => return None,
+    };
     let mut u = desc("SaveForWeb").with("Op  ", enm("SWOp", "OpSa")).with("Fmt ", enm("IRFm", lookup_back(WEB_FORMATS, jstr(p, "format").unwrap_or("png24"))?));
+    if in_folder {
+        u = u.with("DIDr", D::Boolean(true));
+    }
     for (key, param, default) in [
         ("Intr", "interlaced", false),
         ("Trns", "transparency", true),
