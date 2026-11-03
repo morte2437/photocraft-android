@@ -8,6 +8,10 @@
 //! writes. ZIP with prediction (32-bit) predicts per row and feeds one zlib stream: the same
 //! pixels, but not always the same bytes, as zlib packs input it is given in parts differently.
 //! With a stage each band's parts go to the scratch disk as they are made (see [`Parts`]).
+//!
+//! A banded layer is minutes of work on a large save, so it checks the save's interrupt before
+//! each band and each channel's part of it: once cancelled it stops there (and doesn't retry
+//! raw), leaving an incomplete model that the caller discards before the save's commit point.
 
 use std::io::Write as _;
 
@@ -30,6 +34,8 @@ const BAND_BYTES: usize = 64 << 20;
 thread_local! {
     /// `(BANDED_FROM, BAND_BYTES)` for this thread's exports, so tests band small layers.
     pub(crate) static BANDS_FOR_TESTS: std::cell::Cell<Option<(u64, usize)>> = const { std::cell::Cell::new(None) };
+    /// Bands this thread has gathered and encoded.
+    pub(crate) static BANDS_DONE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 pub(super) fn banded_from() -> u64 {
@@ -56,12 +62,18 @@ struct Channel {
     parts: Parts,
 }
 
-impl Ex {
+impl Ex<'_> {
     /// The channels of `s` over `r` (non-empty), alpha first, encoded band by band.
     pub(super) fn banded_channels(&self, s: &Surface, r: photocraft_geom::Rect) -> Vec<ChannelData> {
         // RLE fails only on a row too long for its count (not within PSD/PSB limits); then the
         // layer is written raw, as a channel encoded whole falls back to.
-        self.banded_pass(s, r, self.compression()).or_else(|_| self.banded_pass(s, r, Compression::Raw)).unwrap_or_else(|_| self.empty_channels())
+        match self.banded_pass(s, r, self.compression()) {
+            Ok(channels) => channels,
+            // Cancelled: the caller sees the interrupt and discards the whole model, so don't
+            // encode the layer again.
+            Err(_) if self.ctl.cancelled() => self.empty_channels(),
+            Err(_) => self.banded_pass(s, r, Compression::Raw).unwrap_or_else(|_| self.empty_channels()),
+        }
     }
 
     fn banded_pass(&self, s: &Surface, r: photocraft_geom::Rect, compression: Compression) -> photocraft_psd::Result<Vec<ChannelData>> {
@@ -81,7 +93,10 @@ impl Ex {
             .collect();
         let mut invert = vec![self.cmyk; self.cc];
         invert.push(false);
+        let ctl = self.ctl;
+        let check = || if ctl.cancelled() { Err(PsdError::Invalid("cancelled".into())) } else { Ok(()) };
         for y in (0..h).step_by(band_rows) {
+            check()?;
             let rows = band_rows.min(h - y);
             let top = r.y0 + y as i32;
             let pieces = crate::pixels::par_map(crate::pixels::bands(rows), |b| {
@@ -101,6 +116,7 @@ impl Ex {
             let work: Vec<(&mut Channel, Vec<u8>)> =
                 channels.iter_mut().enumerate().map(|(k, c)| (c, planes[if k == 0 { self.cc } else { k - 1 }].take().unwrap_or_default())).collect();
             let done = crate::pixels::par_map(work, |(c, mut plane)| -> photocraft_psd::Result<()> {
+                check()?;
                 match compression {
                     Compression::Rle => {
                         let mut packed = encode_planes(Compression::Rle, &plane, &layout)?;
@@ -120,6 +136,8 @@ impl Ex {
                 Ok(())
             });
             done.into_iter().collect::<photocraft_psd::Result<()>>()?;
+            #[cfg(test)]
+            BANDS_DONE.set(BANDS_DONE.get() + 1);
         }
         channels
             .into_iter()

@@ -67,6 +67,7 @@ fn export_supported_document(
     let big = doc.size.width > 30_000 || doc.size.height > 30_000;
     let version = psd_version(doc, opts.force_psb);
     let mut ex = Ex {
+        ctl: *ctl,
         fmt,
         dpi: doc.resolution_dpi,
         document: opts.document_path.clone(),
@@ -311,7 +312,7 @@ struct MergedExport<'a> {
 
 fn prepare_merged_planes<'a>(
     doc: &'a Document,
-    ex: &mut Ex,
+    ex: &mut Ex<'_>,
     opts: &PsdExportOptions,
     ctl: &Interrupt,
     fmt: PixelFormat,
@@ -345,7 +346,7 @@ fn prepare_merged_planes<'a>(
 
 fn append_extra_channels<'a>(
     doc: &'a Document,
-    ex: &mut Ex,
+    ex: &mut Ex<'_>,
     planes: &mut Vec<u8>,
     has_alpha: bool,
     sample: SampleType,
@@ -395,7 +396,7 @@ fn merged_image(doc: &Document, opts: &PsdExportOptions, ctl: &Interrupt, fmt: &
     (planes, has_alpha)
 }
 
-fn index_layer_ids_and_text(doc: &Document, ex: &mut Ex) {
+fn index_layer_ids_and_text(doc: &Document, ex: &mut Ex<'_>) {
     // Assign layer ids up front (stable across round trips): keep unique
     // `psd_id`s, number the rest after them; dividers come after all.
     {

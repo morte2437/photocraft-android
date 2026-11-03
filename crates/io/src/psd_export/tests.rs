@@ -799,3 +799,46 @@ fn banded_layers_round_trip() {
     stage::DIR_FOR_TESTS.with(|d| *d.borrow_mut() = None);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// #5333: a save cancelled while a layer is saved in bands stops at the next band (it neither
+/// finishes the layer nor encodes it again raw) and reports the cancel, so it never reaches its
+/// commit point and the target is never written: RLE and ZIP, PSD and PSB, in memory and staged.
+#[test]
+fn a_cancelled_save_stops_between_the_bands_of_a_layer() {
+    let dir = std::env::temp_dir().join(format!("pc-psd-banded-cancel-{}", std::process::id()));
+    let this = std::thread::current().id();
+    // Cancelled once two bands are done (they are counted on this thread).
+    let after_two = || std::thread::current().id() == this && banded::BANDS_DONE.get() >= 2;
+    let ctl = Interrupt::cancel_only(&after_two);
+    for depth in [SampleType::U8, SampleType::F32] {
+        let doc = banding_document(ColorMode::Rgb, depth, 203, 157);
+        let row_bytes = doc.size.width as usize * doc.pixel_format().bytes_per_pixel();
+        let bands = |ctl: &Interrupt, run: &dyn Fn(&Interrupt)| {
+            banded::BANDS_DONE.set(0);
+            banded::BANDS_FOR_TESTS.set(Some((0, row_bytes + 3)));
+            run(ctl);
+            banded::BANDS_FOR_TESTS.set(None);
+            banded::BANDS_DONE.get()
+        };
+        for force_psb in [false, true] {
+            for staged in [false, true] {
+                let what = format!("{depth:?}, psb {force_psb}, staged {staged}");
+                stage::DIR_FOR_TESTS.with(|d| *d.borrow_mut() = staged.then(|| dir.clone()));
+                let options = PsdExportOptions { force_psb, stage_on_scratch_from: staged.then_some(0), ..Default::default() };
+                let export = |ctl: &Interrupt| drop(document_to_psd_sized(&doc, &options, 0, ctl, PSD_MAX_FILE_SIZE));
+                let rows = doc.layers[0].surface().unwrap().content_bounds().height() as usize;
+                assert_eq!(bands(&Interrupt::NONE, &export), rows, "{what}: one band a row");
+                assert_eq!(bands(&ctl, &export), 2, "{what}: stops at the band after the cancel");
+            }
+        }
+        stage::DIR_FOR_TESTS.with(|d| *d.borrow_mut() = None);
+        // The save sees the cancel, so it returns before its commit point and writes nothing.
+        let name = format!("banded-cancel-{depth:?}.psd");
+        let save = |ctl: &Interrupt| {
+            let r = crate::encode_with(&doc, &name, &crate::ExportOptions::default(), ctl);
+            assert!(matches!(r, Err(crate::IoError::Cancelled)), "{depth:?}: {:?}", r.err());
+        };
+        assert_eq!(bands(&ctl, &save), 2, "{depth:?}: the save stops at the band after the cancel");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

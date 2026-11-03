@@ -94,7 +94,10 @@ impl Default for PsdExportOptions {
     }
 }
 
-struct Ex {
+struct Ex<'c> {
+    /// The save's interrupt: a layer saved in bands checks it between bands and channels, so a
+    /// cancelled save stops within a band (#5333).
+    ctl: Interrupt<'c>,
     fmt: PixelFormat,
     /// Document resolution (for generated type-layer data).
     dpi: f32,
@@ -181,7 +184,7 @@ fn q255(v: f32) -> u8 {
     (v.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
-impl Ex {
+impl Ex<'_> {
     fn compression(&self) -> Compression {
         if self.fmt.sample == SampleType::F32 { Compression::ZipPrediction } else { Compression::Rle }
     }
