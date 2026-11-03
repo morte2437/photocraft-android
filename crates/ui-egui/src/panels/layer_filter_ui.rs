@@ -46,15 +46,13 @@ impl Filter {
         }
     }
 
-    /// Returns [`Filter::of`] for `app`'s settings, with `board_rows` set to the rows of the
-    /// artboards that hold the active document's selected layers while the panel filters by
-    /// Artboard.
-    pub fn of_app(app: &PhotocraftApp) -> Self {
-        let mut f = Self::of(&app.ui);
-        if f.by == FilterBy::Artboard
-            && let Some(d) = app.session.active()
-        {
-            f.board_rows = board_rows(&d.doc, &d.selected_layers());
+    /// Returns [`Filter::of`] for `ui`'s settings, with `board_rows` set to the rows of the
+    /// artboards in `doc` that hold `selection` while the panel filters by Artboard. The Layers
+    /// panel passes the selection it already read for the frame.
+    pub fn with_selection(ui: &UiState, doc: &Document, selection: &[LayerId]) -> Self {
+        let mut f = Self::of(ui);
+        if f.by == FilterBy::Artboard {
+            f.board_rows = board_rows(doc, selection);
         }
         f
     }
