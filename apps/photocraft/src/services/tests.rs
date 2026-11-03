@@ -948,3 +948,22 @@ fn a_panicking_clipboard_read_is_reported_not_a_crash() {
     let mut set = guarded_clipboard_set(|_: u32, _: u32, _: &[u8]| panic!("clipboard writer bug"));
     assert!(set(1, 1, &[0; 4]).unwrap_err().contains("Copy failed"));
 }
+
+/// #8827: what TIFF Options sets in `ExportSettings` reaches the file the app writes: the
+/// compression, Save Transparency and Save Image Pyramid.
+#[test]
+fn tiff_options_reach_the_written_file() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 200, "height": 100, "background": "transparent"})).unwrap();
+    let doc = s.active().unwrap().doc.clone();
+    let settings = photocraft_ui_egui::ExportSettings {
+        tiff_compression: photocraft_codecs::TiffCompression::Lzw,
+        tiff_transparency: Some(false),
+        tiff_pyramid: true,
+        ..Default::default()
+    };
+    let bytes = photocraft_io::export(&doc, "t.tif", &export_options(&settings)).unwrap().bytes;
+    let info = photocraft_codecs::tiff_info(&bytes).unwrap();
+    assert_eq!(info.pages.iter().map(|p| (p.width, p.compression)).collect::<Vec<_>>(), [(200, 5), (100, 5), (50, 5)]);
+    assert!(!photocraft_codecs::decode(&bytes).unwrap().layout().has_alpha());
+}

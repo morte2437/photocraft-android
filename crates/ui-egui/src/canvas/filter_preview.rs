@@ -135,8 +135,9 @@ pub(crate) fn ensure_filter_preview(app: &mut PhotocraftApp, idx: usize, ctx: &e
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
         let preview = app.filter_preview.as_ref()?;
-        // Keep the last preview during a drag, but never one from another source or dialog.
-        if !preview.key.same_target(&request) {
+        // Keep the last preview during a drag, but never one from another source or dialog. It is
+        // drawn at its own factor, so a drag that changes the factor keeps it too (#10474).
+        if !preview.key.same_target_at_any_scale(&request) {
             return None;
         }
         let result = preview.result.as_ref()?;

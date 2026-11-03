@@ -276,6 +276,22 @@ pub fn preview_factor(command: &str, params: &Value, k: u32) -> u32 {
         },
         _ => k,
     });
+    // Minimum and Maximum measure the radius in whole pixels (Squareness rounds it, Roundness
+    // floors it, and 0 is the identity), so at k = 4 a typed 1.5 px became 0.375 = 0 proxy px and
+    // the preview showed the untouched document while OK applied a real effect (#10474). Keep at
+    // least one proxy pixel of radius, and for Squareness the largest k whose rounded proxy radius,
+    // scaled back, is within 1 px of the one OK applies (6 px at k = 4 rounded to 2 proxy px, 8 px).
+    // A large radius still previews on a proxy: at full size Roundness costs O(radius) per pixel.
+    if matches!(command, "filter.other.minimum" | "filter.other.maximum") {
+        let Some(r) = params.get("radius").and_then(Value::as_f64).filter(|r| r.is_finite()) else { return k };
+        let r = r.clamp(0.2, 500.0);
+        let square = params.get("preserve").and_then(Value::as_str) != Some("roundness");
+        let fits = |d: u32| {
+            let d = f64::from(d);
+            d <= r.floor() && (!square || ((r / d).round() * d - r.round()).abs() <= 1.0)
+        };
+        return (1..=k).rev().find(|&d| fits(d)).unwrap_or(1);
+    }
     // Mosaic rounds its cells to whole pixels: 10 px cells at k = 4 became 3 proxy px = 12 px.
     // Divide the cell size evenly instead.
     match params.get("cellSize").and_then(Value::as_f64) {
@@ -1353,13 +1369,20 @@ impl FilterPreviewKey {
     /// parameters moved on. A reopened dialog has a new id, a different command or a different
     /// document, and a committed document a new revision, so neither survives this test.
     pub fn same_target(&self, other: &Self) -> bool {
+        self.k == other.k && self.same_target_at_any_scale(other)
+    }
+
+    /// [`Self::same_target`] at any proxy factor: whether the canvas may keep showing this frame,
+    /// drawn at its own `k`, while the factor moves under a drag. A parameter can set the factor
+    /// (Minimum and Maximum's radius, Mosaic's cell size, #10474), and the frame for the old one is
+    /// still the closest thing to the result until the new one lands.
+    pub fn same_target_at_any_scale(&self, other: &Self) -> bool {
         self.doc == other.doc
             && self.revision == other.revision
             && self.dialog == other.dialog
             && self.active == other.active
             && self.target == other.target
             && self.command == other.command
-            && self.k == other.k
     }
 }
 

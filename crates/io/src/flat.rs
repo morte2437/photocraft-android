@@ -999,7 +999,7 @@ pub(crate) fn export_flat_with(doc: &Document, format: Format, opts: &ExportOpti
         img = dds_image(doc, img, &mut warnings)?;
     }
     if format == Format::Tiff {
-        warnings.extend(crate::tiff_layers::stamp_flat_channels(doc, &mut img));
+        warnings.extend(crate::tiff_layers::flat_transparency_and_channels(doc, &mut img, opts.tiff_transparency));
     }
     encode_image(&img, format, opts, warnings)
 }
