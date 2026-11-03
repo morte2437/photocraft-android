@@ -122,6 +122,52 @@ fn write_replaces_atomically_and_leaves_no_temp_file() {
     assert!(temp_files(&inside).is_empty());
 }
 
+/// #5333: a streamed write (a PSD/PSB serialized as it goes, lengths patched by seeking back)
+/// replaces the file the same way; a writer that fails leaves the original and no temp file.
+#[test]
+fn write_stream_seeks_back_and_keeps_the_original_on_failure() {
+    use std::io::SeekFrom;
+    let (inside, _, workspace) = roots("stream");
+    workspace.write("big.psb", b"original").unwrap();
+    workspace
+        .write_stream("big.psb", &mut |w| {
+            w.write_all(b"....body")?;
+            w.seek(SeekFrom::Start(0))?;
+            w.write_all(b"head")?;
+            w.seek(SeekFrom::End(0))?;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(std::fs::read(inside.join("big.psb")).unwrap(), b"headbody");
+    let failed = workspace.write_stream("big.psb", &mut |w| {
+        w.write_all(b"partial")?;
+        Err(std::io::Error::other("encoder failed"))
+    });
+    assert!(failed.is_err());
+    assert_eq!(std::fs::read(inside.join("big.psb")).unwrap(), b"headbody");
+    assert!(temp_files(&inside).is_empty());
+    // The same refusals as a plain write.
+    std::fs::write(inside.join("notes.txt"), b"keep").unwrap();
+    assert!(workspace.write_stream("notes.txt", &mut |w| w.write_all(b"x")).is_err());
+    assert_eq!(std::fs::read(inside.join("notes.txt")).unwrap(), b"keep");
+}
+
+/// A writer that panics leaves the original and no temporary file behind.
+#[test]
+fn write_stream_cleans_up_after_a_panicking_writer() {
+    let (inside, _, workspace) = roots("stream-panic");
+    workspace.write("big.psb", b"original").unwrap();
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = workspace.write_stream("big.psb", &mut |w| {
+            w.write_all(b"partial")?;
+            panic!("encoder bug")
+        });
+    }));
+    assert!(unwound.is_err());
+    assert_eq!(std::fs::read(inside.join("big.psb")).unwrap(), b"original");
+    assert!(temp_files(&inside).is_empty());
+}
+
 /// A directory at the target is refused before anything is opened, even under an image name.
 #[test]
 fn write_refuses_a_directory_target_before_opening_it() {
@@ -694,6 +740,8 @@ fn documents_filesystem_path_params(id: &str, params: &str) -> bool {
             | "layer.vectorMask.info"
             | "paint.symmetryFromPath"
             | "edit.defineCustomShape"
+            // `"as":"path"` pastes the clipboard as a vector path (#10694).
+            | "edit.paste"
             | "layer.combineShapes.unite"
             | "layer.combineShapes.subtractFrontShape"
             | "layer.combineShapes.intersectShapeAreas"

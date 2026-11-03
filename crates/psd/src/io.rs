@@ -1,5 +1,7 @@
 //! Bounds-checked big-endian reader and writer helpers.
 
+use std::io::{Seek, SeekFrom, Write};
+
 use crate::error::{PsdError, Result};
 
 /// A name as UTF-16 code units, capped at `max` **without ever splitting a surrogate pair**.
@@ -207,6 +209,182 @@ impl WriteExt for Vec<u8> {
         }
         Ok(())
     }
+}
+
+/// Staged bytes [`Sink`] collects before writing them out in one call.
+const STAGE: usize = 64 << 10;
+/// Bytes of stored channel data read per piece by [`Sink::put_encoded`].
+const COPY_CHUNK: u64 = if cfg!(test) { 7 } else { 8 << 20 };
+#[cfg(test)]
+pub(crate) const STAGE_FOR_TESTS: usize = STAGE;
+
+/// Writes the file to a seekable stream as it is serialized (#6607): the small parts (headers,
+/// records, lengths) are staged in a short buffer, while pixel data and other long slices go
+/// straight to the stream, so the whole file never sits in memory. A length placeholder
+/// ([`Sink::begin_len`]) that was already written out is back-patched by seeking. The bytes are
+/// exactly the ones the `Vec` writers ([`WriteExt`]) produce.
+pub(crate) struct Sink<'w, W: Write + Seek + ?Sized> {
+    w: &'w mut W,
+    /// Bytes not yet written; they start at stream position `base`.
+    buf: Vec<u8>,
+    base: u64,
+    /// Staged bytes that trigger a write ([`STAGE`]; tests use less).
+    stage: usize,
+}
+
+impl<'w, W: Write + Seek + ?Sized> Sink<'w, W> {
+    /// A sink writing at `w`'s current position.
+    pub(crate) fn new(w: &'w mut W) -> std::io::Result<Self> {
+        Self::staging(w, STAGE)
+    }
+
+    /// [`Self::new`] writing out once `stage` bytes are staged.
+    pub(crate) fn staging(w: &'w mut W, stage: usize) -> std::io::Result<Self> {
+        let base = w.stream_position()?;
+        Ok(Sink { w, buf: Vec::new(), base, stage })
+    }
+
+    /// The stream position of the next byte.
+    pub(crate) fn pos(&self) -> u64 {
+        self.base + self.buf.len() as u64
+    }
+
+    /// Appends a small part built by `f` with the `Vec` writers. Lengths `f` back-patches stay
+    /// inside what it appends.
+    pub(crate) fn small(&mut self, f: impl FnOnce(&mut Vec<u8>) -> Result<()>) -> std::io::Result<()> {
+        f(&mut self.buf)?;
+        if self.buf.len() >= self.stage { self.flush() } else { Ok(()) }
+    }
+
+    /// Appends `b`, straight to the stream when it is long.
+    pub(crate) fn put(&mut self, b: &[u8]) -> std::io::Result<()> {
+        if self.buf.len() + b.len() < self.stage {
+            self.buf.extend_from_slice(b);
+            return Ok(());
+        }
+        self.flush()?;
+        self.w.write_all(b)?;
+        self.base += b.len() as u64;
+        Ok(())
+    }
+
+    /// Appends RLE channel data whose 2-byte row-count table widens to 4 bytes (a PSD model
+    /// written as PSB): the table is widened in staged pieces, the packed rows go straight
+    /// through: each two-byte count becomes `00 00` and the count, the packed rows are unchanged.
+    pub(crate) fn put_widened_rle(&mut self, data: &[u8], rows: usize) -> std::io::Result<()> {
+        let table_len = usize::try_from(crate::compression::rle_widening(data, rows)?).map_err(|_| PsdError::LimitExceeded("row count overflow"))?;
+        let (table, packed) = data.split_at_checked(table_len).ok_or_else(|| PsdError::invalid("RLE row-count table out of range"))?;
+        for part in table.chunks(STAGE / 2) {
+            self.widen_counts(part)?;
+        }
+        self.put(packed)
+    }
+
+    /// [`Self::put_widened_rle`] for data held in memory (`data`) or, when `stored`, still in its
+    /// source: the count table and then the packed rows are read in [`COPY_CHUNK`]-sized parts
+    /// (#5333), so a staged merged image or channel is never read back whole to widen it.
+    pub(crate) fn put_widened_encoded(&mut self, data: &[u8], stored: Option<&crate::source::Stored>, rows: usize) -> std::io::Result<()> {
+        let Some(s) = stored else { return self.put_widened_rle(data, rows) };
+        let table_len = crate::compression::rle_widening_len(s.len, rows)?;
+        // Whole counts per part; the parts follow each other, so a staged range is read in one pass.
+        let table_part = (COPY_CHUNK / 2).max(1) * 2;
+        let mut at = 0u64;
+        while at < s.len {
+            let n = if at < table_len { (table_len - at).min(table_part) } else { (s.len - at).min(COPY_CHUNK) };
+            let part = s.read_part(at, n)?;
+            if at < table_len {
+                self.widen_counts(&part)?
+            } else {
+                self.put(&part)?
+            }
+            at += n;
+        }
+        Ok(())
+    }
+
+    /// Two-byte RLE row counts as four-byte ones (`00 00` and the count), staged.
+    fn widen_counts(&mut self, counts: &[u8]) -> std::io::Result<()> {
+        self.small(|o| {
+            for count in counts.as_chunks::<2>().0 {
+                o.extend_from_slice(&[0, 0, count[0], count[1]]);
+            }
+            Ok(())
+        })
+    }
+
+    /// Appends encoded bytes held in memory (`data`) or, when `stored`, still in their source:
+    /// those are copied through in [`COPY_CHUNK`] pieces, so a channel or merged image kept on
+    /// disk (an imported file's, or one an exporter spilled to scratch) is never read whole.
+    pub(crate) fn put_encoded(&mut self, data: &[u8], stored: Option<&crate::source::Stored>) -> std::io::Result<()> {
+        let Some(s) = stored else { return self.put(data) };
+        let mut at = 0u64;
+        while at < s.len {
+            let n = (s.len - at).min(COPY_CHUNK);
+            let part = s.read_part(at, n)?;
+            self.put(&part)?;
+            at += n;
+        }
+        Ok(())
+    }
+
+    /// `n` zero bytes (padding, at most a few).
+    pub(crate) fn zeros(&mut self, n: usize) -> std::io::Result<()> {
+        self.small(|b| {
+            b.extend(std::iter::repeat_n(0u8, n));
+            Ok(())
+        })
+    }
+
+    /// Reserves a length placeholder (4 or 8 bytes), returning its stream position.
+    pub(crate) fn begin_len(&mut self, long: bool) -> std::io::Result<u64> {
+        let at = self.pos();
+        self.zeros(if long { 8 } else { 4 })?;
+        Ok(at)
+    }
+
+    /// Back-patches the placeholder at `at` with the number of bytes written since.
+    pub(crate) fn end_len(&mut self, at: u64, long: bool) -> std::io::Result<()> {
+        let hdr = if long { 8 } else { 4 };
+        let n = self.pos() - at - hdr;
+        let bytes = if long {
+            n.to_be_bytes().to_vec()
+        } else {
+            u32::try_from(n).map_err(|_| PsdError::LimitExceeded("section too large for 32-bit length (use PSB)"))?.to_be_bytes().to_vec()
+        };
+        if at >= self.base {
+            let i = (at - self.base) as usize;
+            self.buf[i..i + bytes.len()].copy_from_slice(&bytes);
+            return Ok(());
+        }
+        self.flush()?;
+        self.w.seek(SeekFrom::Start(at))?;
+        self.w.write_all(&bytes)?;
+        self.w.seek(SeekFrom::Start(self.base))?;
+        Ok(())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.w.write_all(&self.buf)?;
+        self.base += self.buf.len() as u64;
+        self.buf.clear();
+        Ok(())
+    }
+
+    /// Writes out what is still staged. Dropping a sink without it loses those bytes.
+    pub(crate) fn finish(mut self) -> std::io::Result<()> {
+        self.flush()?;
+        self.w.flush()
+    }
+}
+
+/// Runs a streaming writer on the end of `out`, the `Vec` writers' way of sharing it.
+pub(crate) fn append_with(out: &mut Vec<u8>, f: impl FnOnce(&mut Sink<'_, std::io::Cursor<&mut Vec<u8>>>) -> std::io::Result<()>) -> Result<()> {
+    let at = out.len() as u64;
+    let mut c = std::io::Cursor::new(out);
+    c.set_position(at);
+    let mut s = Sink::new(&mut c).map_err(PsdError::from_io)?;
+    f(&mut s).map_err(PsdError::from_io)?;
+    s.finish().map_err(PsdError::from_io)
 }
 
 /// Reads a Pascal string (length byte + bytes) whose total size is padded to

@@ -1019,6 +1019,33 @@ fn spec_dialog(app: &mut PhotocraftApp, command: &str, label: &str, spec: &str, 
 /// current options) and Simulate Pressure (#2978).
 const STROKE_PATH_SPEC: &str = r##"{"tool":"brush|pencil|eraser|backgroundEraser|cloneStamp|patternStamp|healingBrush|spotHealingBrush|historyBrush|blur|sharpen|smudge|dodge|burn|sponge|colorReplacement|mixerBrush"="brush","simulatePressure":bool=false}"##;
 
+/// Where the Stroke Path dialog's Simulate Pressure choice is remembered: the UI-state preferences'
+/// dialogs map, under the command id, as `edit.fill` and `view.newGuide` use their own (#10527).
+const STROKE_PATH_REMEMBERED: &str = "path.stroke";
+
+/// The choice the next Stroke Path dialog opens with: what the last OK applied, else off. Saved data
+/// is never trusted — anything but an object holding a real bool (a hand-edited preferences file,
+/// an agent that wrote something else) falls back to Photoshop's default, off.
+fn remembered_simulate_pressure(app: &PhotocraftApp) -> bool {
+    app.session
+        .prefs()
+        .dialogs
+        .get(STROKE_PATH_REMEMBERED)
+        .and_then(Value::as_object)
+        .and_then(|saved| saved.get("simulatePressure"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// OK ran the stroke: remember the Simulate Pressure it applied so the dialog opens with it again
+/// next time (#10527). Cancel never reaches here, so cancelling changes nothing, and a stroke run
+/// without the dialog (the Paths panel's Stroke button) writes nothing either. A stroke whose params
+/// said nothing about pressure applied the engine's default, off.
+pub(crate) fn remember_simulate_pressure(app: &mut PhotocraftApp, params: &Value) {
+    let on = params.get("simulatePressure").and_then(Value::as_bool).unwrap_or(false);
+    app.session.prefs.edit(|p| p.dialogs.insert(STROKE_PATH_REMEMBERED.into(), json!({ "simulatePressure": on })));
+}
+
 /// The Stroke Path dialog for the path `name` (Paths panel menu, Alt-click on its Stroke button).
 pub(crate) fn stroke_path_dialog(app: &mut PhotocraftApp, name: &str) {
     pen_dialog(app, "path.stroke", "Stroke Path…", name);
@@ -1054,6 +1081,12 @@ fn pen_dialog(app: &mut PhotocraftApp, command: &str, label: &str, name: &str) {
         for (key, value) in [("translateX", 0.0), ("translateY", 0.0), ("scaleX", 1.0), ("scaleY", 1.0), ("angle", 0.0)] {
             fields.insert(key.into(), json!(value));
         }
+    }
+    if command == "path.stroke" {
+        // The spec-driven dialog reappears with fresh fields, so the checkbox needs its own seed:
+        // a schema dialog carrying a `__spec` is outside `filter_dialog::remember`. Only Simulate
+        // Pressure is remembered; the tool stays on the spec's default (#10527).
+        fields.insert("simulatePressure".into(), json!(remembered_simulate_pressure(app)));
     }
     spec_dialog(app, command, label, spec, fields);
 }

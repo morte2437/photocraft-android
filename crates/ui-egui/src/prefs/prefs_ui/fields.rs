@@ -63,6 +63,9 @@ pub(super) fn humanize(key: &str) -> String {
     if key == "doNotAppendCopy" {
         return "Do not append \"copy\" to filename when saving a copy".into();
     }
+    if key == "pcraftFullComposite" {
+        return "Save Full-Size Composite in .pcraft Files".into();
+    }
     // Plug-ins: Photoshop's wording (#9392).
     if key == "generatorEnabled" {
         return "Enable Generator".into();
@@ -71,6 +74,10 @@ pub(super) fn humanize(key: &str) -> String {
         return "Low-Latency Drawing (vsync off, applies at next launch)".into();
     }
     // Performance: the canvas compositor's GPU memory, 0 for the automatic budget (L3).
+    // Scratch Disks: how large the scratch file may grow; the free-space reserve always applies.
+    if key == "sizeLimitMb" {
+        return "Scratch Size Limit (MB, 0 = No Limit)".into();
+    }
     if key == "gpuMemoryMb" {
         return "GPU Memory (MB, 0 = Automatic)".into();
     }
@@ -371,7 +378,7 @@ pub(super) fn field_visible(section: &str, obj: &Map<String, Value>, k: &str, qu
     (query.is_empty() || preference_matches(section, k, query))
         && !drawn_elsewhere
         && !prefs::is_hidden(&path)
-        && obj.get(k).is_some_and(|v| !matches!(v, Value::Null | Value::Object(_)))
+        && obj.get(k).is_some_and(|v| (path == "performance.memoryUsagePercent" && v.is_null()) || !matches!(v, Value::Null | Value::Object(_)))
 }
 
 /// Generic editor for a section's fields: checkboxes, dropdowns for choices, colour swatches,
@@ -410,6 +417,18 @@ fn field_rows(ui: &mut egui::Ui, section: &str, obj: &mut Map<String, Value>, ke
         let v = obj.get(&k).cloned().unwrap_or(Value::Null);
         let human = humanize(&k);
         let label = tl!(&human).to_string();
+        if path == "performance.memoryUsagePercent" {
+            ui.label(RichText::new(&label).color(t.text_dim));
+            let mut enabled = v.is_number();
+            let mut percent = v.as_u64().and_then(|p| u32::try_from(p).ok()).unwrap_or(70);
+            ui.horizontal(|ui| {
+                crate::widgets::checkbox(ui, &mut enabled, "");
+                ui.add_enabled(enabled, egui::DragValue::new(&mut percent).range(1..=95).suffix("%"));
+            });
+            obj.insert(k, if enabled { json!(percent) } else { Value::Null });
+            ui.end_row();
+            continue;
+        }
         match &v {
             Value::Bool(b) => {
                 ui.label("");

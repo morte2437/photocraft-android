@@ -217,19 +217,25 @@ pub fn combine_surfaces(a: &Surface, b: &Surface, area: Rect, f: impl Fn(f32, f3
             }
         }
         let mut tile = Tile::clone(&blank);
-        let data = tile.bytes_mut();
+        let mut data = tile.bytes_mut();
+        let same_tile = ta.zip(tb).is_some_and(|(left, right)| Arc::ptr_eq(left, right));
+        let read_a = ta.map(|tile| tile.bytes());
+        let read_b = tb.filter(|_| !same_tile).map(|tile| tile.bytes());
+        let bytes_a = read_a.as_deref();
+        let bytes_b = if same_tile { bytes_a } else { read_b.as_deref() };
         let (mut lo, mut hi) = (if tr == rect { u8::MAX } else { 0 }, 0u8);
         let (x0, x1) = ((tr.x0 - rect.x0) as usize, (tr.x1 - rect.x0) as usize);
         for ly in (tr.y0 - rect.y0) as usize..(tr.y1 - rect.y0) as usize {
             let (s, e) = (ly * TS + x0, ly * TS + x1);
-            let src_a = ta.and_then(|t| t.bytes().get(s..e)).unwrap_or(&row_a[..x1 - x0]);
-            let src_b = tb.and_then(|t| t.bytes().get(s..e)).unwrap_or(&row_b[..x1 - x0]);
+            let src_a = bytes_a.and_then(|bytes| bytes.get(s..e)).unwrap_or(&row_a[..x1 - x0]);
+            let src_b = bytes_b.and_then(|bytes| bytes.get(s..e)).unwrap_or(&row_b[..x1 - x0]);
             let Some(dst) = data.get_mut(s..e) else { continue };
             for (d, (x, y)) in dst.iter_mut().zip(src_a.iter().zip(src_b)) {
                 *d = pair(*x, *y);
                 (lo, hi) = (lo.min(*d), hi.max(*d));
             }
         }
+        drop(data);
         (hi > 0).then(|| (tc, if lo == u8::MAX { Arc::clone(&full) } else { Arc::new(tile) }))
     });
     out.put_tiles(built.into_iter().flatten());
@@ -258,15 +264,17 @@ pub fn combine_sparse(a: &Surface, b: &Surface, area: Rect, f: impl Fn(f32, f32)
         let tr = rect.intersect(&area);
         let tb = b.tile(tc)?;
         let mut tile = Tile::clone(a.tile(tc).unwrap_or(&untouched));
-        let data = tile.bytes_mut();
+        let mut data = tile.bytes_mut();
+        let source = tb.bytes();
         let (x0, x1) = ((tr.x0 - rect.x0) as usize, (tr.x1 - rect.x0) as usize);
         for ly in (tr.y0 - rect.y0) as usize..(tr.y1 - rect.y0) as usize {
             let (s, e) = (ly * TS + x0, ly * TS + x1);
-            let (Some(dst), Some(src)) = (data.get_mut(s..e), tb.bytes().get(s..e)) else { continue };
+            let (Some(dst), Some(src)) = (data.get_mut(s..e), source.get(s..e)) else { continue };
             for (d, y) in dst.iter_mut().zip(src) {
                 *d = pair(*d, *y);
             }
         }
+        drop((data, source));
         let (lo, hi) = tile.bytes().iter().fold((u8::MAX, 0u8), |(lo, hi), v| (lo.min(*v), hi.max(*v)));
         Some((
             tc,

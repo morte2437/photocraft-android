@@ -440,7 +440,7 @@ fn visible_bounds(s: &photocraft_raster::Surface, canvas: Rect) -> Rect {
         }
         out
     };
-    tiles.par_iter().map(|(c, t)| tile_bounds(c.rect(), t.bytes())).reduce(|| Rect::EMPTY, |a, b| a.union(&b))
+    tiles.par_iter().map(|(c, t)| tile_bounds(c.rect(), &t.bytes())).reduce(|| Rect::EMPTY, |a, b| a.union(&b))
 }
 
 // ---------- layers ----------
@@ -877,9 +877,15 @@ pub fn specs() -> Vec<CommandSpec> {
             if all == d.doc.bounds() {
                 return Ok(json!({"changed": false}));
             }
-            // One History step named as in Photoshop, not the crop's "Crop".
+            // One History step named as in Photoshop, not the crop's "Crop". The Background stays a
+            // Background, unlike a Crop tool crop with Delete Cropped Pixels off (#10867).
             let p = json!({"x": all.x0, "y": all.y0, "width": all.width(), "height": all.height(), "deleteCroppedPixels": false});
-            crate::analysis_cmds::compound(s, "Reveal All", |s| s.execute("image.crop", p))?;
+            // The crop runs without `Session::execute`, so it passes the session's gate here, as a
+            // command run on Reveal All's behalf would.
+            if let Some(gate) = s.authorize {
+                gate("image.crop", &p)?;
+            }
+            crate::analysis_cmds::compound(s, "Reveal All", |s| crate::image_cmds::crop_keeping_background(s, &p))?;
             Ok(json!({"changed": true}))
         }),
         spec!(
@@ -912,13 +918,31 @@ pub fn specs() -> Vec<CommandSpec> {
             "Paste Layer Style",
             &["Layer", "Layer Style"],
             None,
-            r##"{"layer":id?} (no layer: every selected layer but the Background)"##,
+            r##"{"layer":id?,"allowGroups":bool=true} (no layer: every selected layer but the Background; false skips groups, refusing if none remain)"##,
             |s| {
                 has_layer(s)?;
                 s.style_clipboard.as_ref().map(|_| ()).ok_or_else(|| "no layer style has been copied".into())
             },
             |s, p| {
-                let ids = style_targets(s, p, |_| true)?;
+                let allow_groups = match p.get("allowGroups") {
+                    None | Some(Value::Null) => true,
+                    Some(Value::Bool(value)) => *value,
+                    Some(_) => {
+                        return Err(EngineError::BadParams {
+                            cmd: "layer.layerStyle.pasteLayerStyle".into(),
+                            msg: "`allowGroups` must be true or false".into(),
+                        });
+                    }
+                };
+                let mut ids = style_targets(s, p, |_| true)?;
+                if !allow_groups {
+                    // Apply this after resolution: the shared helper keeps single targets verbatim.
+                    let doc = &s.active().ok_or(EngineError::NoDocument)?.doc;
+                    ids.retain(|id| doc.layer(*id).is_some_and(|layer| !layer.is_group()));
+                    if ids.is_empty() {
+                        return Err(EngineError::Other("none of the selected layers can take this layer style change".into()));
+                    }
+                }
                 let style = s.style_clipboard.clone().ok_or(EngineError::Other("no layer style has been copied".into()))?;
                 let mut fx = style.effects;
                 s.edit("Paste Layer Style", |doc, _| {

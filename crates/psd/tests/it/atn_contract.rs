@@ -145,11 +145,15 @@ fn trailing_bytes_only_add_a_diagnostic() {
 
 #[test]
 fn unsupported_versions_and_invalid_item_tags_are_refused() {
-    for version in [0_u32, 12, 15, 17, u32::MAX] {
+    for version in [0_u32, 7, 11, 15, 17, u32::MAX] {
         let mut input = FIXTURES[0].1.to_vec();
         input[..4].copy_from_slice(&version.to_be_bytes());
         assert!(matches!(atn::parse(&input), Err(PsdError::Unsupported(_))));
     }
+    // Version 12 (Photoshop 5) is read too (#10743): the smallest set parses to an empty set.
+    let mut v12 = FIXTURES[0].1.to_vec();
+    v12[..4].copy_from_slice(&12_u32.to_be_bytes());
+    assert!(atn::parse(&v12).unwrap().actions.is_empty());
     let file = file_with(Descriptor::new("null"));
     let valid = atn::write(&file).unwrap();
     // The empty set/action names put the first step at offset 28.

@@ -102,7 +102,7 @@ pub fn isolation_shows(doc: &Document, isolated: &[LayerId], id: LayerId) -> boo
 
 /// The point the scale / rotate / skew params pivot about: a named point of the frame `r` or
 /// `[x, y]`; missing (or null) is the centre. Anything else is an error, not a silent centre.
-fn reference_point(cmd: &str, p: &Value, r: [f64; 4]) -> Result<[f64; 2]> {
+pub(crate) fn reference_point(cmd: &str, p: &Value, r: [f64; 4]) -> Result<[f64; 2]> {
     let (x0, y0, x1, y1) = (r[0], r[1], r[2], r[3]);
     let (cx, cy) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
     let unknown = || bad(cmd, "`reference` must be one of center|topLeft|top|topRight|left|right|bottomLeft|bottom|bottomRight or [x, y]");

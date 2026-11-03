@@ -1317,3 +1317,25 @@ fn embed_color_profile_tags_an_untagged_document_srgb() {
         assert_eq!(profile(&off), None, "{format}");
     }
 }
+
+/// #5305: `folder` writes the whole image there under the document's own name, so an action
+/// recorded with the suggested name saves each document it is played on under that name; it is
+/// a destination, never a remembered setting.
+#[test]
+fn folder_saves_under_the_documents_own_name() {
+    let dir = tmp("folder_own_name");
+    let mut s = session(8);
+    let r = s.execute("file.export.saveForWebLegacy", json!({"folder": dir, "format": "png24"})).unwrap();
+    let first = format!("{dir}/web.png");
+    assert_eq!(r["files"], json!([first]));
+    assert_eq!(decode(&first).dimensions(), (64, 48));
+    assert!(s.prefs().dialogs.get("file.export.saveForWebLegacy").is_some_and(|m| m.get("folder").is_none()));
+    s.execute("file.new", json!({"width": 8, "height": 4, "name": "second.psd"})).unwrap();
+    let r = s.execute("file.export.saveForWebLegacy", json!({"folder": dir, "format": "jpeg"})).unwrap();
+    assert_eq!(r["files"], json!([format!("{dir}/second.jpg")]));
+    assert_eq!(decode(&format!("{dir}/second.jpg")).dimensions(), (8, 4));
+    // A `path` wins over `folder`.
+    let r = s.execute("file.export.saveForWebLegacy", json!({"path": format!("{dir}/named.png"), "folder": dir, "format": "png24"})).unwrap();
+    assert_eq!(r["files"], json!([format!("{dir}/named.png")]));
+    let _ = std::fs::remove_dir_all(&dir);
+}

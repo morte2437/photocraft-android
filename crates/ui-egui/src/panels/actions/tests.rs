@@ -1,5 +1,133 @@
 use super::*;
 
+/// A small valid Photoshop set, generated without external action files.
+fn action_set_bytes(set: &str, action: &str) -> Vec<u8> {
+    use photocraft_psd::atn::{AtnAction, AtnEvent, AtnFile, AtnItem};
+    use photocraft_psd::descriptor::UnicodeString;
+    photocraft_psd::atn::write(&AtnFile {
+        name: UnicodeString::new_nul(set),
+        actions: vec![AtnAction {
+            name: UnicodeString::new_nul(action),
+            items: vec![AtnItem { event: AtnEvent::Code(*b"Invr"), dictionary: "Invert".into(), ..Default::default() }],
+            ..Default::default()
+        }],
+        ..Default::default()
+    })
+    .unwrap()
+}
+
+#[test]
+/// Browser multi-selection must not be truncated to the first file.
+fn bulk_load_imports_every_chosen_action_file() {
+    use crate::file_dialog::{FileDialogAnswer, FileDialogRequest};
+    let files = vec![("first.atn".into(), action_set_bytes("First set", "First")), ("second.atn".into(), action_set_bytes("Second set", "Second"))];
+    let (show, asked) = crate::file_dialog::fake(vec![Some(FileDialogAnswer::ContentsMany(files))]);
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services { file_dialog: Some(show), ..Default::default() });
+    load_dialog(&mut app).unwrap();
+    app.poll_file_dialog(&egui::Context::default(), None);
+    assert_eq!(app.session.actions.list.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["First", "Second"]);
+    assert!(matches!(asked.borrow().as_slice(), [FileDialogRequest::Open { multiple: true, extensions: Some(ext), .. }] if ext == &["atn"]));
+    assert!(!app.file_dialog_open());
+    assert!(!app.ui.status_error, "{}", app.ui.status);
+}
+
+#[test]
+/// A corrupt middle file cannot hide warnings or prevent a later set replacement.
+fn bulk_load_keeps_selection_order_and_earlier_warnings_and_errors() {
+    use crate::file_dialog::FileDialogAnswer;
+    let dir = tempfile::tempdir().unwrap();
+    let first = dir.path().join("z-first.atn");
+    let broken = dir.path().join("broken.atn");
+    let last = dir.path().join("a-last.atn");
+    let mut unsupported = photocraft_psd::atn::parse(&action_set_bytes("Same set", "Old")).unwrap();
+    unsupported.actions[0].items[0].event = photocraft_psd::atn::AtnEvent::Code(*b"Xxxx");
+    std::fs::write(&first, photocraft_psd::atn::write(&unsupported).unwrap()).unwrap();
+    std::fs::write(&broken, b"not an action file").unwrap();
+    std::fs::write(&last, action_set_bytes("Same set", "Replacement")).unwrap();
+    let paths = [first, broken, last].map(|p| p.to_string_lossy().into_owned()).to_vec();
+    let mut app = disk_app(vec![Some(FileDialogAnswer::Paths(paths))]);
+    load_dialog(&mut app).unwrap();
+    app.poll_file_dialog(&egui::Context::default(), None);
+    assert_eq!(app.session.actions.list.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["Replacement"]);
+    assert_eq!(app.ui.actions.selected, Some(0));
+    assert!(app.ui.status_error, "a later success must not hide an earlier failure");
+    // The replaced set's unsupported step is gone, so it is not counted.
+    for part in ["2 action files loaded", "1 action;", "Same set from a-last.atn replaced the one from z-first.atn", "1 file could not be loaded", "broken.atn"]
+    {
+        assert!(app.ui.status.contains(part), "{part}: {}", app.ui.status);
+    }
+    assert!(!app.ui.status.contains("PhotoCraft equivalent"), "{}", app.ui.status);
+}
+
+/// Load `files` (name, bytes) in one Load Actions… selection and return the status bar text.
+fn bulk_load_status(app: &mut PhotocraftApp, files: Vec<(String, Vec<u8>)>) -> String {
+    use crate::file_dialog::FileDialogAnswer;
+    let (show, _) = crate::file_dialog::fake(vec![Some(FileDialogAnswer::ContentsMany(files))]);
+    app.services.file_dialog = Some(show);
+    load_dialog(app).unwrap();
+    app.poll_file_dialog(&egui::Context::default(), None);
+    app.ui.status.clone()
+}
+
+#[test]
+/// Two files whose sets share a name: the later replaces the earlier, and the summary counts only
+/// what the panel holds afterwards and says which set was replaced.
+fn bulk_load_summary_counts_a_replaced_set_once() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    let mut a = photocraft_psd::atn::parse(&action_set_bytes("Set 1", "A")).unwrap();
+    a.actions[0].items[0].event = photocraft_psd::atn::AtnEvent::Code(*b"Xxxx");
+    let files = vec![("a.atn".into(), photocraft_psd::atn::write(&a).unwrap()), ("b.atn".into(), action_set_bytes("Set 1", "B"))];
+    let status = bulk_load_status(&mut app, files);
+    assert_eq!(app.session.actions.list.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["B"]);
+    assert!(!app.ui.status_error, "{status}");
+    assert_eq!(status, "2 action files loaded (1 action; Set 1 from b.atn replaced the one from a.atn)");
+}
+
+#[test]
+/// Distinct set names: every set counts, nothing is reported as replaced, and the file count reads
+/// right for one loaded file as well as several.
+fn bulk_load_summary_counts_distinct_sets_and_pluralises_files() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    let files = vec![("a.atn".into(), action_set_bytes("Set A", "A")), ("b.atn".into(), action_set_bytes("Set B", "B"))];
+    assert_eq!(bulk_load_status(&mut app, files), "2 action files loaded (2 actions)");
+    let files = vec![("c.atn".into(), action_set_bytes("Set C", "C")), ("bad.atn".into(), b"not an action file".to_vec())];
+    let status = bulk_load_status(&mut app, files);
+    assert!(app.ui.status_error);
+    assert!(status.starts_with("1 action file loaded (1 action; 1 file could not be loaded: bad.atn: "), "{status}");
+}
+
+#[test]
+/// The multi-file summary is translated like the rest of the Actions panel.
+fn bulk_load_summary_is_translated() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    let files = vec![("a.atn".into(), action_set_bytes("Set 1", "A")), ("b.atn".into(), action_set_bytes("Set 1", "B"))];
+    let status = crate::i18n::with_language(crate::i18n::Lang::from_code("de").unwrap(), || bulk_load_status(&mut app, files));
+    assert_eq!(status, "2 Aktionsdateien geladen (1 Aktion; Satz Set 1 aus b.atn hat den aus a.atn ersetzt)");
+}
+
+#[test]
+/// Dismissing the picker is inert; one selected file keeps its existing status message.
+fn bulk_load_keeps_cancel_empty_and_single_file_behavior() {
+    use crate::file_dialog::FileDialogAnswer;
+    for answer in [None, Some(FileDialogAnswer::Paths(Vec::new())), Some(FileDialogAnswer::ContentsMany(Vec::new()))] {
+        let mut app = disk_app(vec![answer]);
+        app.session.actions.list.push(Action::new("Existing", vec![]));
+        app.ui.actions.selected = Some(0);
+        app.ui.status = "Unchanged".into();
+        load_dialog(&mut app).unwrap();
+        app.poll_file_dialog(&egui::Context::default(), None);
+        assert_eq!(app.session.actions.list[0].name, "Existing");
+        assert_eq!(app.ui.actions.selected, Some(0));
+        assert_eq!(app.ui.status, "Unchanged");
+    }
+    let mut app = disk_app(vec![Some(FileDialogAnswer::Contents("single.atn".into(), action_set_bytes("Single", "One")))]);
+    load_dialog(&mut app).unwrap();
+    app.poll_file_dialog(&egui::Context::default(), None);
+    assert_eq!(app.session.actions.list[0].name, "One");
+    assert!(app.ui.status.contains("single.atn"));
+    assert!(!app.ui.status_error);
+}
+
 #[test]
 fn panel_menu_lists_load_save_and_existing_action_commands() {
     use egui_kittest::{Harness, kittest::Queryable};
@@ -554,15 +682,15 @@ fn recorded_save_never_flattens_layers_over_a_flat_file() {
     assert!(!b_changed && !a_changed);
 }
 
-/// Loads a Photoshop set holding Invert + a Save As into `dest` and plays it on a PSD.
-/// Returns the played result, whether the PSD changed on disk and the files in `out`.
-fn play_imported_save_as(dest: &str) -> (Value, bool, Vec<String>) {
+/// Loads a Photoshop set holding Invert + a Save As into `dest` (in `out`; with `in_folder`,
+/// Photoshop's "save in directory", `out` itself) and plays it on each PSD in `sources`.
+/// Returns the played results, whether any PSD changed on disk and the files in `out`.
+fn play_imported_save_as(dest: &str, in_folder: bool, sources: &[&str]) -> (Vec<Value>, bool, Vec<String>) {
     use photocraft_psd::atn::{AtnAction, AtnEvent, AtnFile, AtnItem};
     use photocraft_psd::descriptor::{Descriptor, UnicodeString, Value as D};
-    let dir = std::env::temp_dir().join(format!("photocraft-atn-save-as-{}-{}", dest.len(), std::process::id()));
+    let dir = std::env::temp_dir().join(format!("photocraft-atn-save-as-{dest}-{in_folder}-{}", std::process::id()));
     let out = dir.join("out");
     std::fs::create_dir_all(&out).unwrap();
-    let src = dir.join("src.psd").to_string_lossy().into_owned();
     let path = |text: &str| {
         let units: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
         let mut b = b"txtu".to_vec();
@@ -571,10 +699,13 @@ fn play_imported_save_as(dest: &str) -> (Value, bool, Vec<String>) {
         units.iter().for_each(|u| b.extend_from_slice(&u.to_le_bytes()));
         D::Path(b)
     };
-    let save = Descriptor::new("null")
-        .with("As  ", D::Descriptor(Descriptor::new("PNGF")))
-        .with("In  ", path(&out.join(dest).to_string_lossy()))
-        .with("DocI", D::Integer(53));
+    let mut save = Descriptor::new("null").with("As  ", D::Descriptor(Descriptor::new("PNGF")));
+    save = if in_folder {
+        save.with("In  ", path(&out.to_string_lossy())).with("DIDr", D::Boolean(true))
+    } else {
+        save.with("In  ", path(&out.join(dest).to_string_lossy()))
+    };
+    let save = save.with("DocI", D::Integer(53));
     let item = |code: &[u8; 4], label: &str, d: Option<Descriptor>| AtnItem {
         event: AtnEvent::Code(*code),
         dictionary: label.into(),
@@ -591,35 +722,97 @@ fn play_imported_save_as(dest: &str) -> (Value, bool, Vec<String>) {
         ..Default::default()
     };
     let mut app = disk_app(vec![]);
-    app.run("file.new", json!({"width": 16, "height": 16})).unwrap();
-    app.save_as(Some(src.clone())).unwrap();
-    let before = std::fs::read(&src).unwrap();
+    let sources: Vec<String> = sources.iter().map(|n| dir.join(format!("{n}.psd")).to_string_lossy().into_owned()).collect();
+    let mut before = Vec::new();
+    for src in &sources {
+        app.run("file.new", json!({"width": 16, "height": 16})).unwrap();
+        app.save_as(Some(src.clone())).unwrap();
+        before.push(std::fs::read(src).unwrap());
+    }
     app.run("actions.load", json!({"data": photocraft_engine::paint::tile::b64_encode(&photocraft_psd::atn::write(&set).unwrap())})).unwrap();
-    app.open_path(&src).unwrap();
-    let played = app.run("actions.play", json!({"action": 0})).unwrap();
+    let mut played = Vec::new();
+    for src in &sources {
+        app.open_path(src).unwrap();
+        played.push(app.run("actions.play", json!({"action": 0})).unwrap());
+    }
     let mut written: Vec<String> = std::fs::read_dir(&out).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
     written.sort();
-    let r = (played, std::fs::read(&src).unwrap() != before, written);
+    let changed = sources.iter().zip(&before).any(|(src, before)| std::fs::read(src).unwrap() != *before);
     let _ = std::fs::remove_dir_all(&dir);
-    r
+    (played, changed, written)
 }
 
 #[test]
 fn imported_save_as_writes_the_recorded_file_not_the_played_one() {
     // #7102: the Save As imported as File › Save, which wrote over src.psd.
-    let (played, src_changed, written) = play_imported_save_as("result.png");
-    assert!(played.get("failed").is_none(), "{played}");
+    let (played, src_changed, written) = play_imported_save_as("result.png", false, &["src"]);
+    assert!(played[0].get("failed").is_none(), "{}", played[0]);
     assert!(!src_changed, "the Save As wrote over the file the action was played on");
     assert_eq!(written, ["result.png"]);
 }
 
 #[test]
-fn imported_save_as_into_a_folder_stops_before_writing() {
-    // A folder destination isn't mapped yet (#5430): playback stops on it, nothing is saved.
-    let (played, src_changed, written) = play_imported_save_as("folder");
-    assert!(played.get("failed").is_some(), "{played}");
+fn imported_save_as_to_a_file_without_an_extension_stops_before_writing() {
+    // A destination that isn't a file of the recorded format stays a kept step (#7102):
+    // playback stops on it, nothing is saved.
+    let (played, src_changed, written) = play_imported_save_as("folder", false, &["src"]);
+    assert!(played[0].get("failed").is_some(), "{}", played[0]);
     assert!(!src_changed);
     assert!(written.is_empty(), "{written:?}");
+}
+
+#[test]
+fn imported_save_as_into_a_folder_saves_each_document_under_its_own_name() {
+    // #5305: Photoshop's "save in directory" Save As, played on two documents, writes one file
+    // for each, named after it, in the recorded folder, and leaves the played files alone.
+    let (played, src_changed, written) = play_imported_save_as("", true, &["first", "second"]);
+    for p in &played {
+        assert!(p.get("failed").is_none(), "{p}");
+    }
+    assert!(!src_changed);
+    assert_eq!(written, ["first.png", "second.png"]);
+}
+
+/// #5305: a Save As recorded with the document's own name (the one Save As suggests) keeps
+/// only the folder, so playing the action saves each document under its own name instead of
+/// over the recorded file; a name typed in is recorded as it is.
+#[test]
+fn recorded_save_as_with_the_suggested_name_saves_each_document_under_its_own() {
+    let written = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    let log = written.clone();
+    let services = crate::Services {
+        export: Some(Box::new(|doc, path, _| photocraft_io::export(doc, path, &Default::default()).map(|r| (r.bytes, r.warnings)).map_err(|e| e.to_string()))),
+        write: Some(Box::new(move |path, _| {
+            log.borrow_mut().push(path.to_string());
+            Ok(())
+        })),
+        ..Default::default()
+    };
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), services);
+    app.background_jobs = false;
+    let ctx = egui::Context::default();
+    app.run("file.new", json!({"width": 16, "height": 16, "name": "first"})).unwrap();
+    app.run("actions.record", json!({})).unwrap();
+    crate::menus::invoke(&mut app, &ctx, "file.saveAs", json!({"path": "out/first.psd"})).unwrap();
+    crate::menus::invoke(&mut app, &ctx, "file.saveAs", json!({"path": "out/renamed.psd"})).unwrap();
+    app.run("actions.stop", json!({})).unwrap();
+    let steps = &app.session.actions.list[0].steps;
+    assert_eq!(steps, &[("file.saveAs".into(), json!({"folder": "out", "extension": "psd"})), ("file.saveAs".into(), json!({"path": "out/renamed.psd"}))]);
+    // Played on two other documents: each under its own name in the recorded folder.
+    app.session.actions.list[0].steps.truncate(1);
+    written.borrow_mut().clear();
+    let mut expected = Vec::new();
+    for name in ["second", "third"] {
+        app.run("file.new", json!({"width": 16, "height": 16, "name": name})).unwrap();
+        let played = app.run("actions.play", json!({"action": 0})).unwrap();
+        assert!(played.get("failed").is_none(), "{played}");
+        let own = std::path::Path::new("out").join(format!("{name}.psd")).to_string_lossy().into_owned();
+        assert_eq!(app.session.active().unwrap().path.as_deref(), Some(own.as_str()));
+        expected.push(own);
+    }
+    assert_eq!(*written.borrow(), expected);
+    // A folder step needs its extension.
+    assert!(app.replay_save("file.saveAs", &json!({"folder": "out"})).is_err());
 }
 
 #[test]
@@ -1378,6 +1571,161 @@ fn dialog_worker_failure_stops_action_before_following_steps() {
 }
 
 #[test]
+fn a_check_spelling_step_with_its_dialog_opens_it_and_done_continues() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 300, "height": 100})).unwrap();
+    app.run("type.create", json!({"x": 10, "y": 50, "text": "Teh cat"})).unwrap();
+    let mut a = Action::new("Spell", vec![("edit.checkSpelling".into(), json!({"allLayers": false})), ("layer.new.layer".into(), json!({"name": "after"}))]);
+    a.dialogs.insert(0);
+    app.session.actions.list.push(a);
+    let v = play(&mut app, &json!({"action": "Spell"})).unwrap();
+    assert_eq!((v["ran"].as_u64(), v["paused"]["step"].as_u64()), (Some(0), Some(0)), "{v}");
+    assert_eq!(v["paused"]["dialog"], crate::type_panels_ui::SPELLING);
+    let d = app.ui.type_panels.spell.clone().expect("Check Spelling is open");
+    assert!(!d.all_layers, "the dialog opens with Check All Layers as recorded");
+    assert_eq!(d.items.len(), 1);
+    assert!(!layer_names(&app).contains(&"after".to_string()), "nothing after the dialog ran yet");
+    crate::type_panels_ui::close_spelling(&mut app);
+    assert!(layer_names(&app).contains(&"after".to_string()), "Done played the rest");
+    assert!(app.ui.status.starts_with("Played"), "{}", app.ui.status);
+    // With its dialog off, the step checks without opening anything and changes nothing.
+    app.session.actions.list[0].dialogs.clear();
+    let v = play(&mut app, &json!({"action": "Spell"})).unwrap();
+    assert_eq!(v["ran"], 2, "{v}");
+    assert!(app.ui.type_panels.spell.is_none());
+    let st = app.session.active().unwrap();
+    let texts: Vec<String> = st
+        .doc
+        .walk()
+        .into_iter()
+        .filter_map(|(_, _, l)| match &l.content {
+            photocraft_doc::LayerContent::Text(t) => Some(t.text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(texts, ["Teh cat"]);
+}
+
+/// Check Spelling opened by hand keeps its place: an action's Check Spelling step fails instead
+/// of replacing it.
+#[test]
+fn a_check_spelling_step_fails_while_the_dialog_is_open_by_hand() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 300, "height": 100})).unwrap();
+    app.run("type.create", json!({"x": 10, "y": 50, "text": "Teh cat"})).unwrap();
+    let mut a = Action::new("Spell", vec![("edit.checkSpelling".into(), json!({"allLayers": false})), ("layer.new.layer".into(), json!({"name": "after"}))]);
+    a.dialogs.insert(0);
+    app.session.actions.list.push(a);
+    crate::type_panels_ui::open_spelling(&mut app, true).unwrap();
+    let v = play(&mut app, &json!({"action": "Spell"})).unwrap();
+    assert_eq!(v["failed"]["error"], "Check Spelling is already open", "{v}");
+    let d = app.ui.type_panels.spell.as_ref().expect("the dialog stays open");
+    assert!(d.all_layers && d.resume.is_none(), "the hand-opened dialog is kept");
+    assert!(!layer_names(&app).contains(&"after".to_string()));
+}
+
+/// A correction step (`action` set) runs as it did before the dialog toggle applied to Check
+/// Spelling: its dialog switch opens nothing.
+#[test]
+fn a_check_spelling_correction_with_its_dialog_on_runs_without_opening_it() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 300, "height": 100})).unwrap();
+    app.run("type.create", json!({"x": 10, "y": 50, "text": "Teh cat"})).unwrap();
+    let change = json!({"action": "change", "start": 0, "end": 3, "word": "Teh", "replace": "The"});
+    let mut a = Action::new("Fix", vec![("edit.checkSpelling".into(), change), ("layer.new.layer".into(), json!({"name": "after"}))]);
+    a.dialogs.insert(0);
+    app.session.actions.list.push(a);
+    let v = play(&mut app, &json!({"action": "Fix"})).unwrap();
+    assert_eq!(v["ran"], 2, "{v}");
+    assert!(app.ui.type_panels.spell.is_none(), "no dialog opened");
+    let st = app.session.active().unwrap();
+    let texts: Vec<String> = st
+        .doc
+        .walk()
+        .into_iter()
+        .filter_map(|(_, _, l)| match &l.content {
+            photocraft_doc::LayerContent::Text(t) => Some(t.text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(texts, ["The cat"]);
+}
+
+/// Done after another document became active ends the waiting action there: its remaining steps
+/// don't run on the other document.
+#[test]
+fn check_spelling_done_on_another_document_ends_the_waiting_action() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 300, "height": 100})).unwrap();
+    app.run("type.create", json!({"x": 10, "y": 50, "text": "Teh cat"})).unwrap();
+    let mut a = Action::new("Spell", vec![("edit.checkSpelling".into(), json!({"allLayers": false})), ("layer.new.layer".into(), json!({"name": "after"}))]);
+    a.dialogs.insert(0);
+    app.session.actions.list.push(a);
+    let v = play(&mut app, &json!({"action": "Spell"})).unwrap();
+    assert_eq!(v["paused"]["dialog"], crate::type_panels_ui::SPELLING, "{v}");
+    app.run("file.new", json!({"width": 64, "height": 64})).unwrap();
+    crate::type_panels_ui::close_spelling(&mut app);
+    for st in app.session.documents() {
+        assert!(!st.doc.walk().iter().any(|(_, _, l)| l.name == "after"), "a step after the dialog ran");
+    }
+    assert!(app.paused_playbacks.paused.is_empty());
+    assert!(app.ui.status_error, "{}", app.ui.status);
+    assert!(app.ui.status.contains("document"), "{}", app.ui.status);
+}
+
+fn deny_spelling(id: &str, p: &Value) -> photocraft_engine::Result<()> {
+    if id == "edit.checkSpelling" && p.get("action").is_none() { Err(photocraft_engine::EngineError::Other("spelling denied".into())) } else { Ok(()) }
+}
+
+/// Done records the step and continues the waiting action: when recording it fails, the status
+/// keeps that error next to the playback's outcome.
+#[test]
+fn check_spelling_done_keeps_a_recording_error_beside_the_playback_status() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 300, "height": 100})).unwrap();
+    app.run("type.create", json!({"x": 10, "y": 50, "text": "Teh cat"})).unwrap();
+    let mut a = Action::new("Spell", vec![("edit.checkSpelling".into(), json!({"allLayers": false})), ("layer.new.layer".into(), json!({"name": "after"}))]);
+    a.dialogs.insert(0);
+    app.session.actions.list.push(a);
+    let v = play(&mut app, &json!({"action": "Spell"})).unwrap();
+    assert_eq!(v["paused"]["dialog"], crate::type_panels_ui::SPELLING, "{v}");
+    app.run("actions.record", json!({"name": "Rec"})).unwrap();
+    app.session.authorize = Some(deny_spelling);
+    crate::type_panels_ui::close_spelling(&mut app);
+    app.session.authorize = None;
+    assert!(layer_names(&app).contains(&"after".to_string()), "Done played the rest");
+    assert!(app.ui.status_error, "{}", app.ui.status);
+    assert!(app.ui.status.contains("spelling denied"), "{}", app.ui.status);
+    assert!(app.ui.status.contains("Played"), "{}", app.ui.status);
+}
+
+#[test]
+fn check_spelling_opened_again_while_an_action_waits_keeps_its_continuation() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 300, "height": 100})).unwrap();
+    app.run("type.create", json!({"x": 10, "y": 50, "text": "Teh cat"})).unwrap();
+    let mut a = Action::new("Spell", vec![("edit.checkSpelling".into(), json!({"allLayers": false})), ("layer.new.layer".into(), json!({"name": "after"}))]);
+    a.dialogs.insert(0);
+    app.session.actions.list.push(a);
+    let v = play(&mut app, &json!({"action": "Spell"})).unwrap();
+    assert_eq!(v["paused"]["dialog"], crate::type_panels_ui::SPELLING, "{v}");
+    let token = app.ui.type_panels.spell.as_ref().and_then(|d| d.resume);
+    assert!(token.is_some());
+    // Edit › Check Spelling… while the action waits.
+    crate::type_panels_ui::open_spelling(&mut app, true).unwrap();
+    assert_eq!(app.ui.type_panels.spell.as_ref().and_then(|d| d.resume), token, "the reopened dialog keeps the token");
+    // A second playback that reaches a Check Spelling step with its dialog fails there.
+    let v = play(&mut app, &json!({"action": "Spell"})).unwrap();
+    assert_eq!(v["failed"]["step"], 0, "{v}");
+    assert_eq!(app.ui.type_panels.spell.as_ref().and_then(|d| d.resume), token, "the waiting action keeps the dialog");
+    assert!(!layer_names(&app).contains(&"after".to_string()));
+    crate::type_panels_ui::close_spelling(&mut app);
+    let after = layer_names(&app).iter().filter(|n| *n == "after").count();
+    assert_eq!(after, 1, "Done continued the waiting action once");
+    assert!(app.paused_playbacks.paused.is_empty());
+}
+
+#[test]
 fn a_dialog_toggled_step_pauses_playback_and_resumes_on_ok() {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({"width": 16, "height": 16})).unwrap();
@@ -1827,4 +2175,21 @@ fn save_hook_closing_the_target_stops_an_imported_close_with_save() {
         assert_eq!(app.session.actions.playing, 0);
         assert!(app.session.actions.playback_stack.is_empty());
     }
+}
+
+#[test]
+/// An unsupported step in a set that stays loaded is counted in the multi-file summary, unlike
+/// one in a set a later file replaced (CodeRabbit on #10776).
+fn bulk_load_summary_counts_unsupported_steps_of_surviving_sets() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    let mut a = photocraft_psd::atn::parse(&action_set_bytes("Set A", "A")).unwrap();
+    a.actions[0].items[0].event = photocraft_psd::atn::AtnEvent::Code(*b"Xxxx");
+    let files = vec![("a.atn".into(), photocraft_psd::atn::write(&a).unwrap()), ("b.atn".into(), action_set_bytes("Set B", "B"))];
+    let status = bulk_load_status(&mut app, files);
+    assert!(status.contains("1 step has no PhotoCraft equivalent yet"), "{status}");
+    assert!(!app.ui.status_error, "{status}");
+    // Both sets stay loaded: the unsupported step is counted for one that is in the panel.
+    let names: Vec<&str> = app.session.actions.list.iter().map(|a| a.name.as_str()).collect();
+    assert_eq!(names, ["A", "B"]);
+    assert!(app.session.actions.list[0].steps.iter().any(|(id, _)| id == "actions.photoshopStep"));
 }

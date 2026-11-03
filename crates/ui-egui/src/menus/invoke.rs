@@ -707,7 +707,9 @@ fn invoke_window_command(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str)
             let count = app.session.documents().len();
             let active = app.session.active_index().ok_or("no document open")?;
             let next = if id == "window.nextDocument" { (active + 1) % count } else { (active + count - 1) % count };
-            app.session.set_active(next);
+            if next != active {
+                app.run("document.activate", json!({"document": next}))?;
+            }
             app.jobs.focus = None;
             Ok(json!({"document": next}))
         })()),

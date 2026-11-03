@@ -31,6 +31,8 @@ pub fn inspect(app: &PhotocraftApp, ctx: &egui::Context) -> Value {
     dialogs.extend(crate::discard_ui::inspect(app));
     json!({
         "window": {"width": screen.width(), "height": screen.height(), "pixelsPerPoint": ctx.pixels_per_point()},
+        "scratch": photocraft_raster::spill::stats(),
+        "memory": photocraft_raster::memory::stats(),
         "tool": app.ui.tool,
         "toolOptions": app.ui.tool_options,
         "perspectiveCrop": app.ui.perspective_crop,

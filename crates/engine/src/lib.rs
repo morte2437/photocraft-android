@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+mod actions_record;
 pub mod adjust_params;
 mod allocation;
 pub mod build_info;
@@ -37,6 +38,7 @@ pub mod prefs;
 pub mod preset_store;
 pub mod presets;
 pub mod proof_sim;
+mod scratch;
 pub mod select_mask_edits;
 pub mod shell_commands;
 pub mod shortcut_sets;
@@ -199,6 +201,8 @@ pub struct Session {
     pub tools: ToolState,
     /// Log of executed commands (for action recording and debugging).
     pub journal: Vec<(String, Value)>,
+    /// Text layer changed by the last journal entry, for folding Type tool keystrokes.
+    typed_layer: Option<(photocraft_doc::DocId, LayerId)>,
     /// Coalescing key of the command being executed.
     coalesce_request: Option<String>,
     /// Pixels copied with Edit › Copy / Cut (shared by all documents, like Photoshop).
@@ -269,6 +273,9 @@ pub struct Session {
     pub link_stamps: std::collections::HashMap<(u64, String), link_watch::Stamp>,
     /// The stamps being taken on a worker thread ([`Session::start_link_scan`]).
     pub link_scan: Option<link_watch::LinkScan>,
+    /// Each open document's linked smart objects' files that were not there when last looked at
+    /// ([`Session::missing_links`]).
+    link_missing: std::collections::HashSet<(u64, String)>,
     /// Select Subject's last result, reused while the pixels are unchanged (#2865).
     subject_cache: smartselect_cmds::SubjectCache,
     /// Object Selection's Object Finder results (#4087), shared by the hover preview and the
@@ -282,6 +289,13 @@ pub struct Session {
     /// document, source read-only)`. The shell takes them with [`Session::take_held_open`].
     held_opens: Vec<(u64, Document, bool)>,
     next_held_open: u64,
+    pub(crate) pending_preflights: Vec<jobs::PendingPsdPreflight>,
+    next_pending_preflight: u64,
+    /// Shared native memory supervision, owned and stopped by the last session using it.
+    scratch_runtime: Option<scratch::Runtime>,
+    /// [`photocraft_raster::spill::epoch`] when History's byte limits were last applied: a
+    /// scratch disk that pauses or resumes changes the limit ([`Session::sync_scratch_state`]).
+    scratch_epoch: u64,
     /// The document before the latest [`Session::edit`] of the running command, which
     /// [`Session::hint_damage`] checks a hint against. Set by `edit`, taken by `hint_damage`,
     /// dropped when the command ends. Debug and test builds only.

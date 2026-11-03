@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 use photocraft_engine::actions_cmds::{self, Action};
 
 use crate::PhotocraftApp;
+use crate::file_dialog::{FileDialogAnswer, FileDialogRequest};
 use crate::icons;
 use crate::theme::Tokens;
 
@@ -109,7 +110,7 @@ fn play_targets(app: &mut PhotocraftApp, targets: &[usize], before: u64) -> Resu
         let mut v = app.run("actions.play", json!({"action": i}))?;
         ran = ran.saturating_add(v.get("ran").and_then(Value::as_u64).unwrap_or(0));
         let failed = v.get("failed").is_some_and(Value::is_object);
-        let paused = v.get("paused").filter(|p| p.is_object()).and_then(|p| p.get("dialog")).and_then(Value::as_u64);
+        let paused = v.get("paused").filter(|p| p.is_object()).and_then(waiting_dialog).cloned();
         if let Some(o) = v.as_object_mut() {
             o.insert("ran".into(), json!(ran));
         }
@@ -119,7 +120,7 @@ fn play_targets(app: &mut PhotocraftApp, targets: &[usize], before: u64) -> Resu
             // (`actions.move`), and one deleted and made again under its name isn't the same action.
             let list = &app.session.actions.list;
             let rest: Vec<Action> = targets.get(n + 1..).unwrap_or_default().iter().filter_map(|i| list.get(*i).cloned()).collect();
-            let token = app.ui.dialog_mut(dialog).and_then(|d| d.fields.get(RESUME)).and_then(Value::as_u64);
+            let token = paused_token(app, &dialog);
             if let Some(entry) = token.and_then(|t| app.paused_playbacks.paused.get_mut(&t))
                 && name.as_ref() == Some(&entry.action)
             {
@@ -133,6 +134,19 @@ fn play_targets(app: &mut PhotocraftApp, targets: &[usize], before: u64) -> Resu
         }
     }
     Ok(last)
+}
+
+/// The dialog a paused playback waits at: a step dialog by id, or Check Spelling.
+fn waiting_dialog(paused: &Value) -> Option<&Value> {
+    paused.get("dialog").filter(|d| d.is_u64() || d.as_str() == Some(crate::type_panels_ui::SPELLING))
+}
+
+/// The token of the paused playback waiting at `dialog` (see [`waiting_dialog`]).
+fn paused_token(app: &mut PhotocraftApp, dialog: &Value) -> Option<u64> {
+    match dialog.as_u64() {
+        Some(id) => app.ui.dialog_mut(id).and_then(|d| d.fields.get(RESUME)).and_then(Value::as_u64),
+        None => app.ui.type_panels.spell.as_ref().and_then(|d| d.resume),
+    }
 }
 
 /// Index of the playback target. Photoshop's Play button uses the first action when
@@ -239,6 +253,30 @@ fn play_owned(app: &mut PhotocraftApp, params: &Value, suspended: Option<Value>)
             paused = Some(json!({"step": i, "id": id, "dialog": dialog}));
             break;
         }
+        // Check Spelling's dialog opens with Check All Layers as recorded; Done continues the action.
+        // While the dialog is open (for another action or by hand), this step fails and the open
+        // one keeps its place and ignored words.
+        // A correction (`action` set) opens no dialog and runs below.
+        if action.dialogs.contains(&i) && !app.automation_input && id == "edit.checkSpelling" && p.get("action").is_none() {
+            if let Some(open) = app.ui.type_panels.spell.as_ref() {
+                let error = if open.resume.is_some() { "Check Spelling is already open for another action" } else { "Check Spelling is already open" };
+                failed = Some(json!({"step": i, "id": id, "error": error}));
+                break;
+            }
+            if let Err(error) = crate::type_panels_ui::open_spelling(app, p.get("allLayers").and_then(Value::as_bool).unwrap_or(true)) {
+                failed = Some(json!({"step": i, "id": id, "error": error}));
+                break;
+            }
+            let token = app.paused_playbacks.pause(action.name.clone(), i + 1, app.session.authorize);
+            if let Some(entry) = app.paused_playbacks.paused.get_mut(&token) {
+                entry.doc = app.session.active().map(|d| d.doc.id);
+            }
+            if let Some(d) = app.ui.type_panels.spell.as_mut() {
+                d.resume = Some(token);
+            }
+            paused = Some(json!({"step": i, "id": id, "dialog": crate::type_panels_ui::SPELLING}));
+            break;
+        }
         let target = app.session.active().map(|d| d.doc.id);
         let result = if id == "actions.play" {
             play(app, p)
@@ -253,6 +291,9 @@ fn play_owned(app: &mut PhotocraftApp, params: &Value, suspended: Option<Value>)
             r
         } else if actions_cmds::shell_view_command(id) {
             app.sync_views();
+            app.run(id, p.clone())
+        } else if id == "edit.paste" && p.get("as").is_some() {
+            // An explicit vector paste needs the original OS source, not just an old pixel copy.
             app.run(id, p.clone())
         } else {
             app.session.execute(id, p.clone()).map_err(|e| e.to_string())
@@ -277,10 +318,11 @@ fn play_owned(app: &mut PhotocraftApp, params: &Value, suspended: Option<Value>)
         }
     }
     actions_cmds::finish_playback(&mut app.session, None, &action, from);
-    match paused.as_ref().and_then(|p| p.get("dialog")).and_then(Value::as_u64).and_then(|d| app.ui.dialog_mut(d)) {
+    match paused.as_ref().and_then(waiting_dialog).cloned() {
         // Paused for a dialog: the call goes on after it, so recording stays suspended.
-        Some(d) if failed.is_none() => {
-            let entry = d.fields.get(RESUME).and_then(Value::as_u64).and_then(|t| app.paused_playbacks.paused.get_mut(&t));
+        Some(dialog) if failed.is_none() => {
+            let token = paused_token(app, &dialog);
+            let entry = token.and_then(|t| app.paused_playbacks.paused.get_mut(&t));
             match (owner, entry) {
                 (Some(owner), Some(p)) => p.record = Some(owner),
                 // No continuation to carry the recording: the call ends here.
@@ -465,7 +507,12 @@ fn source(name: &str, bytes: &[u8]) -> Value {
 
 /// Load a `.atn` file's bytes into the Actions panel (the panel menu's Load Actions…).
 pub fn load_bytes(app: &mut PhotocraftApp, name: &str, bytes: &[u8]) -> Result<Value, String> {
-    let r = app.run("actions.load", source(name, bytes))?;
+    load_source(app, name, source(name, bytes))
+}
+
+/// Import one set and reveal its first action, for both native paths and browser contents.
+fn load_source(app: &mut PhotocraftApp, name: &str, params: Value) -> Result<Value, String> {
+    let r = app.run("actions.load", params)?;
     let n = r["actions"].as_array().map_or(0, Vec::len) as u64;
     let unsupported = r["unsupported"].as_array().map_or(0, Vec::len);
     let shown = crate::file_open::display_name(name);
@@ -499,8 +546,82 @@ pub fn load_bytes(app: &mut PhotocraftApp, name: &str, bytes: &[u8]) -> Result<V
     Ok(r)
 }
 
+/// Load every chosen action file in order, retaining failures and unsupported-step warnings.
 fn load_dialog(app: &mut PhotocraftApp) -> Result<Value, String> {
-    app.pick_file_bytes_filtered(&["atn"], |app, name, bytes| load_bytes(app, &name, &bytes))
+    let initial_dir = crate::file_dialog::last_used_dir(&app.ui.recent_files);
+    app.ask_file(FileDialogRequest::Open { multiple: true, initial_dir, extensions: Some(vec!["atn".into()]) }, |app, answer| {
+        let files: Vec<_> = match answer {
+            FileDialogAnswer::Paths(paths) => paths.into_iter().map(|name| (name, None)).collect(),
+            FileDialogAnswer::Contents(name, bytes) => vec![(name, Some(bytes))],
+            FileDialogAnswer::ContentsMany(files) => files.into_iter().map(|(name, bytes)| (name, Some(bytes))).collect(),
+            _ => return Err("the file dialog gave an unexpected answer".into()),
+        };
+        let count = files.len();
+        if count == 0 {
+            return Err(crate::file_dialog::CANCELLED.into());
+        }
+        let mut loaded = 0usize;
+        // What the panel holds afterwards, per set name: `actions.load` replaces a set of the same
+        // name, so a later file's set takes the earlier one's place (and its counts).
+        let mut sets: Vec<(String, String, usize, usize)> = Vec::new(); // set, file, actions, unsupported
+        let mut replaced = Vec::new();
+        let mut errors = Vec::new();
+        let mut last = Value::Null;
+        for (name, bytes) in files {
+            // Native paths go through the engine's size check before reading the file.
+            let params = match bytes {
+                Some(bytes) => source(&name, &bytes),
+                None => json!({"path": name}),
+            };
+            match load_source(app, &name, params) {
+                Ok(r) => {
+                    loaded += 1;
+                    let shown = crate::file_open::display_name(&name);
+                    let set = r["set"].as_str().unwrap_or_default().to_string();
+                    let n = r["actions"].as_array().map_or(0, Vec::len);
+                    let unsupported = r["unsupported"].as_array().map_or(0, Vec::len);
+                    if let Some(entry) = sets.iter_mut().find(|e| e.0 == set) {
+                        replaced.push(crate::i18n::fmt(
+                            tl!("{set} from {file} replaced the one from {earlier}"),
+                            &[("file", &shown), ("earlier", &entry.1), ("set", &set)],
+                        ));
+                        *entry = (set, shown, n, unsupported);
+                    } else {
+                        sets.push((set, shown, n, unsupported));
+                    }
+                    last = r;
+                }
+                Err(e) => errors.push(format!("{}: {e}", crate::file_open::display_name(&name))),
+            }
+        }
+        if count == 1 {
+            return match errors.pop() {
+                Some(e) => Err(e),
+                None => Ok(last),
+            };
+        }
+        let actions = sets.iter().fold(0usize, |sum, e| sum.saturating_add(e.2));
+        let unsupported = sets.iter().fold(0usize, |sum, e| sum.saturating_add(e.3));
+        let lang = crate::i18n::current();
+        let files = crate::i18n::trn(lang, loaded as u64, "{n} action file loaded", "{n} action files loaded");
+        let mut notes = vec![crate::i18n::trn(lang, actions as u64, "{n} action", "{n} actions")];
+        if unsupported > 0 {
+            notes.push(crate::i18n::trn(lang, unsupported as u64, "{n} step has no PhotoCraft equivalent yet", "{n} steps have no PhotoCraft equivalent yet"));
+        }
+        notes.extend(replaced);
+        if !errors.is_empty() {
+            let failed = crate::i18n::trn(lang, errors.len() as u64, "{n} file could not be loaded: {errors}", "{n} files could not be loaded: {errors}");
+            notes.push(crate::i18n::fmt(&failed, &[("errors", &errors.join("; "))]));
+        }
+        let template = "{message} ({note})";
+        let summary = crate::i18n::fmt(tl!(template), &[("message", &files), ("note", &notes.join("; "))]);
+        if !errors.is_empty() {
+            return Err(summary);
+        }
+        app.ui.status = summary;
+        app.ui.status_error = false;
+        Ok(json!({"files": loaded, "actions": actions, "unsupported": unsupported}))
+    })
 }
 
 /// Save Actions…: the selected action's set (every action of it), else the selected set folder,
@@ -708,6 +829,9 @@ pub(crate) struct PausedPlayback {
     /// The steps that Play ran before this pause (earlier actions of the set, and this one's
     /// steps before the dialog), so the final count covers the whole Play.
     ran: u64,
+    /// The document a pause at Check Spelling was playing on. That dialog doesn't block the
+    /// document tabs, so Done ([`resume_spelling`]) continues only on this document.
+    doc: Option<photocraft_doc::DocId>,
 }
 
 /// The paused playbacks, by the token their dialog carries. The dialog's fields hold only the
@@ -721,13 +845,30 @@ pub(crate) struct PausedPlaybacks {
 impl PausedPlaybacks {
     fn pause(&mut self, action: String, from: usize, gate: Option<Gate>) -> u64 {
         self.last = self.last.wrapping_add(1);
-        self.paused.insert(self.last, PausedPlayback { action, from, gate, record: None, then: Vec::new(), ran: 0 });
+        self.paused.insert(self.last, PausedPlayback { action, from, gate, record: None, then: Vec::new(), ran: 0, doc: None });
         self.last
     }
 
     fn take(&mut self, token: &Value) -> Option<PausedPlayback> {
         token.as_u64().and_then(|token| self.paused.remove(&token))
     }
+}
+
+/// Check Spelling's Done for the action paused at its step: the action continues when the document
+/// it was playing on is still the active one, and otherwise ends there with the reason in the
+/// status bar. Returns `Ok` when nothing failed.
+pub(crate) fn resume_spelling(app: &mut PhotocraftApp, token: u64) -> Result<(), String> {
+    let fields = serde_json::Map::from_iter([(RESUME.to_string(), json!(token))]);
+    let Some((from, doc)) = app.paused_playbacks.paused.get(&token).map(|p| (p.from, p.doc)) else {
+        return resume(app, &fields);
+    };
+    if doc.is_none() || doc == app.session.active().map(|d| d.doc.id) {
+        return resume(app, &fields);
+    }
+    abandoned(app, &fields);
+    let error = "the active document changed while Check Spelling was open";
+    report_play(app, &json!({"failed": {"step": from.saturating_sub(1), "id": "edit.checkSpelling", "error": error}}));
+    Err(error.into())
 }
 
 /// A step dialog confirmed: continue the action after it (`dialogs::confirm` calls this).
@@ -758,8 +899,8 @@ pub fn resume(app: &mut PhotocraftApp, fields: &serde_json::Map<String, Value>) 
     // Paused again at a later dialog of the same action (not of one it calls, which resumes
     // alone): that dialog carries the rest of the set.
     if let Ok(v) = &played
-        && let Some(dialog) = v.get("paused").and_then(|p| p.get("dialog")).and_then(Value::as_u64)
-        && let Some(token) = app.ui.dialog_mut(dialog).and_then(|d| d.fields.get(RESUME)).and_then(Value::as_u64)
+        && let Some(dialog) = v.get("paused").and_then(waiting_dialog)
+        && let Some(token) = paused_token(app, dialog)
         && let Some(entry) = app.paused_playbacks.paused.get_mut(&token)
         && entry.action == paused.action
     {

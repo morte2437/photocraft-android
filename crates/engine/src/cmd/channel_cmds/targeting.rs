@@ -269,7 +269,7 @@ pub(crate) fn filter_mask_layer(s: &Session, id: &str, params: &Value) -> Option
     if target_of(params) != Target::FilterMask || !follows_filter_mask(id) {
         return None;
     }
-    params.get("layer").and_then(Value::as_u64).map(LayerId).or_else(|| s.active()?.active_layer)
+    crate::commands::layer_param(s, params).ok()
 }
 
 /// The colour channel pixel commands are limited to, if a single colour channel is targeted.
