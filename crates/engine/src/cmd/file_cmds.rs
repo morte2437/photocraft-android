@@ -39,9 +39,9 @@ use info::file_info;
 pub use info::{CAMERA_FIELDS, camera_data, read_file_info, write_file_info};
 #[cfg(test)]
 use info::{exposure_text, find_element};
-pub use open::{PLACE_EMBEDDED, open_bytes_as, place_bytes, raw_defaults};
-use open::{close_all, close_others, open_as, place, revert};
-pub(crate) use open::{import, tag_exr_colorspace};
+pub use open::{PLACE_EMBEDDED, open_bytes_as, open_bytes_as_with_options, place_bytes, raw_defaults};
+use open::{approve_memory, close_all, close_others, open_as, place, revert};
+pub(crate) use open::{import, import_with_options, tag_exr_colorspace};
 use paths::is_file;
 #[cfg(test)]
 use paths::openable_name;
@@ -68,6 +68,10 @@ fn has_doc(s: &Session) -> std::result::Result<(), String> {
 /// The file system is reachable (not on the web).
 pub(crate) fn native(_: &Session) -> std::result::Result<(), String> {
     if cfg!(target_arch = "wasm32") { Err("not available on the web (no file system)".into()) } else { Ok(()) }
+}
+
+fn always(_: &Session) -> std::result::Result<(), String> {
+    Ok(())
 }
 
 pub(crate) fn native_doc(s: &Session) -> std::result::Result<(), String> {
@@ -117,6 +121,10 @@ impl crate::DocState {
 
 pub(crate) fn str_param<'a>(p: &'a Value, key: &str, cmd: &str) -> Result<&'a str> {
     p.get(key).and_then(Value::as_str).filter(|v| !v.is_empty()).ok_or_else(|| EngineError::BadParams { cmd: cmd.into(), msg: format!("missing \"{key}\"") })
+}
+
+pub(crate) fn u64_param(p: &Value, key: &str, cmd: &str) -> Result<u64> {
+    p.get(key).and_then(Value::as_u64).ok_or_else(|| EngineError::BadParams { cmd: cmd.into(), msg: format!("missing or invalid \"{key}\"") })
 }
 
 pub(crate) fn f64_param(p: &Value, key: &str) -> Option<f64> {
@@ -255,16 +263,30 @@ pub fn specs() -> Vec<CommandSpec> {
             "Open As…",
             &["File"],
             Some("Cmd+Alt+Shift+O"),
-            r##"{"path":str,"as":"psd|png|jpg|tiff|…"? (decode as this format)}"##,
+            r##"{"path":str,"as":"psd|png|jpg|tiff|…"? (decode as this format),"approveHighMemory":bool=false (explicitly approve high memory usage)}"##,
             native,
             open_as
         ),
+        // One-shot permission for one file, not something to replay later: never journaled or
+        // recorded in an action, since replaying it in another session/on another file would
+        // grant memory use nobody approved (#10897). It also releases the queued source on both
+        // answers, so it must not be replayed as a step that expects a missing preflight.
+        CommandSpec {
+            id: "file.approveMemory",
+            label: "Approve High Memory PSD Import",
+            menu: &[],
+            shortcut: None,
+            params: r##"{"id":u64,"approve":bool=true,"background":bool=true}"##,
+            enabled: always,
+            run: approve_memory,
+            journal: false,
+        },
         spec!(
             "file.placeEmbedded",
             "Place Embedded…",
             &["File"],
             None,
-            r##"{"path":str,"scale":%? (default: fit when larger than the canvas),"fit":bool? (default: Preferences > General > Resize Image During Place),"smartObject":bool? (default: Preferences > General > Always Create Smart Objects When Placing),"center":[x,y]?}"##,
+            r##"{"path":str,"scale":%? (default: fit when larger than the canvas),"fit":bool? (default: Preferences > General > Resize Image During Place),"smartObject":bool? (default: Preferences > General > Always Create Smart Objects When Placing),"center":[x,y]?,"approveHighMemory":bool=false (explicitly approve high memory usage)}"##,
             native_doc,
             |s, p| place(s, p, false)
         ),
@@ -273,7 +295,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Place Linked…",
             &["File"],
             None,
-            r##"{"path":str,"scale":%?,"fit":bool? (default: Preferences > General > Resize Image During Place),"center":[x,y]?}"##,
+            r##"{"path":str,"scale":%?,"fit":bool? (default: Preferences > General > Resize Image During Place),"center":[x,y]?,"approveHighMemory":bool=false (explicitly approve high memory usage)}"##,
             native_doc,
             |s, p| place(s, p, true)
         ),

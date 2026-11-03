@@ -81,7 +81,7 @@ pub(crate) fn batch(a: &BatchArgs, out: &mut dyn Write, err: &mut dyn Write) -> 
             // Steps that play another action find it in the set; the session's playback stack
             // stops an action that calls itself.
             h.session.actions.list = set.clone();
-            h.open(input)?;
+            h.open_with_approval(input, a.approve_high_memory)?;
             for (id, p) in &actions {
                 if photocraft_engine::actions_cmds::shell_view_command(id)
                     || photocraft_engine::actions_cmds::shell_save_command(id)

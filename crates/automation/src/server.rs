@@ -50,6 +50,9 @@ pub struct DocIndex {
 pub struct OpenParams {
     /// Path beneath the configured automation read root: relative (forward slashes) or absolute.
     pub path: String,
+    /// Explicitly approve high-memory PSD/PSB imports that fit within the hard memory budget.
+    #[serde(default)]
+    pub approve_high_memory: bool,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -69,6 +72,9 @@ pub struct PlaceParams {
     /// Centre of the placed layer, in document pixels.
     #[serde(default)]
     pub center: Option<[f64; 2]>,
+    /// Explicitly approve high-memory PSD/PSB imports that fit within the hard memory budget.
+    #[serde(default)]
+    pub approve_high_memory: bool,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -484,11 +490,62 @@ fn png_result(png: &[u8], note: String) -> CallToolResult {
     bounded_tool_result(CallToolResult::success(vec![Content::image(b64, "image/png"), Content::text(note)]))
 }
 
+/// Adds the typed byte counts of a memory refusal to an error object: an approval request keeps
+/// its soft limit, hard limit and (when known) capacity; a hard refusal keeps only its required
+/// and hard amounts, because no approval can raise that ceiling.
+fn attach_memory_error_details(obj: &mut Value, err: &AutomationError) {
+    let Some(obj) = obj.as_object_mut() else { return };
+    match err {
+        AutomationError::Import(photocraft_io::IoError::PsdApprovalRequired { required, soft_limit, hard_limit, available_ram })
+        | AutomationError::Engine(photocraft_engine::EngineError::PsdApprovalRequired { required, soft_limit, hard_limit, available_ram, .. }) => {
+            obj.insert("required".into(), json!(required));
+            obj.insert("soft".into(), json!(soft_limit));
+            obj.insert("softLimit".into(), json!(soft_limit));
+            obj.insert("hard".into(), json!(hard_limit));
+            obj.insert("hardLimit".into(), json!(hard_limit));
+            if let Some(avail) = available_ram {
+                obj.insert("available".into(), json!(avail));
+                obj.insert("availableRam".into(), json!(avail));
+            }
+        }
+        AutomationError::Import(photocraft_io::IoError::PsdImportBudget { required, limit })
+        | AutomationError::Engine(photocraft_engine::EngineError::PsdHardBudget { required, limit, .. }) => {
+            obj.insert("required".into(), json!(required));
+            obj.insert("hard".into(), json!(limit));
+            obj.insert("hardLimit".into(), json!(limit));
+        }
+        _ => {}
+    }
+}
+
 fn to_result(r: Result<Value, AutomationError>) -> Result<CallToolResult, McpError> {
     Ok(match r {
         Ok(v) => ok_json(&v),
-        Err(e) => fail(e),
+        Err(e) => {
+            let mut obj = json!({"error": e.to_string()});
+            attach_memory_error_details(&mut obj, &e);
+            let text = serde_json::to_string(&obj).unwrap_or_else(|_| e.to_string());
+            CallToolResult::error(vec![Content::text(text)])
+        }
     })
+}
+
+/// A `doc_place` call's command options, including the explicit high-memory approval.
+fn place_options(p: &PlaceParams) -> Value {
+    let mut opts = serde_json::Map::new();
+    if let Some(v) = p.scale {
+        opts.insert("scale".into(), json!(v));
+    }
+    if let Some(v) = p.fit {
+        opts.insert("fit".into(), json!(v));
+    }
+    if let Some(v) = p.center {
+        opts.insert("center".into(), json!(v));
+    }
+    if p.approve_high_memory {
+        opts.insert("approveHighMemory".into(), json!(true));
+    }
+    Value::Object(opts)
 }
 
 fn bridge_only(name: &str) -> Result<CallToolResult, McpError> {
@@ -635,30 +692,25 @@ impl PhotocraftMcp {
     #[tool(description = "Open an image or document file and make it active. Returns index, size and import warnings.")]
     async fn doc_open(&self, Parameters(p): Parameters<OpenParams>) -> Result<CallToolResult, McpError> {
         let path = PathBuf::from(&p.path);
-        if let Some(r) = self.headless_op(move |h| h.open(&path)).await {
+        let approve = p.approve_high_memory;
+        if let Some(r) = self.headless_op(move |h| h.open_with_approval(&path, approve)).await {
             return to_result(r);
         }
         let Some(b) = self.bridge_client() else {
             return Ok(no_backend());
         };
-        to_result(b.call("app.open", json!({"path": p.path})).await)
+        let mut params = json!({"path": p.path});
+        if approve {
+            params["approveHighMemory"] = json!(true);
+        }
+        to_result(b.call("app.open", params).await)
     }
 
     #[tool(
-        description = "Place a file into the document as a Smart Object layer (Place Embedded), reading `path` beneath the read root. `scale` (percent), `fit` and `center` are the command's own."
+        description = "Place a file into the document as a Smart Object layer (Place Embedded), reading `path` beneath the read root. `scale` (percent), `fit`, `center` and `approve_high_memory` (one-shot PSD/PSB consent, default false) are the command's own."
     )]
     async fn doc_place(&self, Parameters(p): Parameters<PlaceParams>) -> Result<CallToolResult, McpError> {
-        let mut opts = serde_json::Map::new();
-        if let Some(v) = p.scale {
-            opts.insert("scale".into(), json!(v));
-        }
-        if let Some(v) = p.fit {
-            opts.insert("fit".into(), json!(v));
-        }
-        if let Some(v) = p.center {
-            opts.insert("center".into(), json!(v));
-        }
-        let opts = Value::Object(opts);
+        let opts = place_options(&p);
         // Bridge mode runs the app on this machine, which reads the path itself like any command.
         let mut bridge_params = opts.clone();
         if let Some(o) = bridge_params.as_object_mut() {
@@ -943,7 +995,11 @@ impl PhotocraftMcp {
             let was_error = response.is_err();
             let result = match response {
                 Ok(value) => json!({"ok": true, "result": value}),
-                Err(error) => json!({"ok": false, "error": error.to_string()}),
+                Err(error) => {
+                    let mut obj = json!({"ok": false, "error": error.to_string()});
+                    attach_memory_error_details(&mut obj, &error);
+                    obj
+                }
             };
             if let Err(error) = reply_budget.charge(&result) {
                 failed += 1;
@@ -1263,6 +1319,66 @@ mod tests {
         assert_eq!(reply["failed"], 1);
         let docs = mcp.headless_op(|h| Ok(h.session.documents().len())).await.unwrap().unwrap();
         assert_eq!(docs, 0, "the step after the budget ran out did not run");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mcp_doc_open_schema_and_structured_error() {
+        let schema = &PhotocraftMcp::tool_router().map["doc_open"].attr.input_schema;
+        assert_eq!(schema["properties"]["approve_high_memory"]["type"], "boolean");
+        let omitted: OpenParams = serde_json::from_value(json!({"path": "file.psd"})).unwrap();
+        assert!(!omitted.approve_high_memory);
+        let approved: OpenParams = serde_json::from_value(json!({"path": "file.psd", "approve_high_memory": true})).unwrap();
+        assert!(approved.approve_high_memory);
+        for invalid in [Value::Null, json!("true"), json!(1)] {
+            assert!(serde_json::from_value::<OpenParams>(json!({"path": "file.psd", "approve_high_memory": invalid})).is_err());
+        }
+
+        let err = AutomationError::Import(photocraft_io::IoError::PsdApprovalRequired {
+            required: 6000,
+            soft_limit: 3000,
+            hard_limit: 9000,
+            available_ram: Some(12000),
+        });
+        let res = to_result(Err(err)).unwrap();
+        assert_eq!(res.is_error, Some(true));
+        let text = &res.content.first().and_then(|c| c.as_text()).unwrap().text;
+        let v: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(v["required"], 6000);
+        assert_eq!(v["soft"], 3000);
+        assert_eq!(v["hard"], 9000);
+        assert_eq!(v["available"], 12000);
+    }
+
+    /// #10897: the MCP `doc_place` tool takes the same strict, defaulted approval as `doc_open`
+    /// and forwards it as the command's `approveHighMemory` option. A hard refusal keeps its
+    /// typed `required`/`hardLimit` fields and claims nothing about a soft limit or capacity.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mcp_doc_place_schema_approval_and_structured_hard_error() {
+        let schema = &PhotocraftMcp::tool_router().map["doc_place"].attr.input_schema;
+        assert_eq!(schema["properties"]["approve_high_memory"]["type"], "boolean");
+        let omitted: PlaceParams = serde_json::from_value(json!({"path": "file.psd"})).unwrap();
+        assert!(!omitted.approve_high_memory);
+        assert!(place_options(&omitted).get("approveHighMemory").is_none(), "false is not forwarded");
+        let approved: PlaceParams = serde_json::from_value(json!({"path": "file.psd", "approve_high_memory": true})).unwrap();
+        assert!(approved.approve_high_memory);
+        assert_eq!(place_options(&approved)["approveHighMemory"], true);
+        let explicit_false: PlaceParams = serde_json::from_value(json!({"path": "file.psd", "approve_high_memory": false})).unwrap();
+        assert!(!explicit_false.approve_high_memory);
+        for invalid in [Value::Null, json!("true"), json!(1)] {
+            assert!(serde_json::from_value::<PlaceParams>(json!({"path": "file.psd", "approve_high_memory": invalid})).is_err(), "{invalid}");
+        }
+
+        let err = AutomationError::Engine(photocraft_engine::EngineError::PsdHardBudget { name: "huge.psd".into(), required: 9_000, limit: 8_000 });
+        let res = to_result(Err(err)).unwrap();
+        assert_eq!(res.is_error, Some(true));
+        let text = &res.content.first().and_then(|c| c.as_text()).unwrap().text;
+        let v: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(v["required"], 9_000);
+        assert_eq!(v["hard"], 8_000);
+        assert_eq!(v["hardLimit"], 8_000);
+        for absent in ["soft", "softLimit", "available", "availableRam"] {
+            assert!(v.get(absent).is_none(), "a hard refusal has no {absent}: {v}");
+        }
     }
 
     /// The MCP server applies finished jobs before every tool call too (#503).

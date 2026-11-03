@@ -678,12 +678,122 @@ before merged-image validation or decoding. The conservative estimate sums retai
 storage (including padding and negative offsets) and the largest decode/conversion workspace.
 It does not credit uniform-tile sharing or pruning, so some files that could fit after decoding
 are refused. Valid off-canvas pixels are preserved; oversized layers are rejected rather than
-clipped. Defaults are 2 GiB on native targets and 1 GiB on wasm. Applications can lower the
-allowance with `ImportOptions::psd_max_pixel_bytes`; values above the default are capped.
-The source-only convenience API uses the default; `import_file_for_open_with` honours options.
+clipped.
 
-An over-budget ordinary or interactive import returns `IoError::PsdImportBudget` with the
-estimated and allowed byte counts; damaged-file recovery never bypasses that error. The legacy
+Native desktop platforms use an adaptive memory policy evaluated against currently available
+physical RAM (excluding swap) and, where measurable, system commit headroom:
+- **Hard budget (H)** for known RAM: $\min(75\% \text{ RAM}, \text{RAM} - 1 \text{ GiB}, \text{commit headroom} - 512 \text{ MiB}, \text{aggregate address-space cap})$.
+- **Soft budget (S)**: $\min(50\% \text{ RAM}, 8 \text{ GiB}, H)$.
+- Files requiring $\le S$ are admitted automatically.
+- Files requiring $S < E \le H$ prompt for explicit one-shot user confirmation ("Open anyway") in the UI. Headless callers default to no interactive dialog and require explicit per-invocation opt-in:
+  - Engine commands: `file.openAs` and `file.placeEmbedded` take `approveHighMemory: bool` (default `false`); `file.approveMemory` takes `{"id": u64, "approve": bool = true}`.
+  - Headless RPC / control protocol: `doc.open` and `doc.place` take `approveHighMemory: bool`.
+  - MCP: `doc_open` and `doc_place` take `approve_high_memory: bool` (default `false`; a wrong type is refused, not coerced).
+  - CLI: `convert`, `info`, `run`, and `batch` take `--approve-high-memory`.
+  - Explicit approval authorizes imports within $(S, H]$ but never bypasses the hard memory budget $H$.
+- Files requiring $> H$ are refused and cannot be overridden.
+- When available RAM is unknown (an unsupported platform or a failed provider), native
+  automatic admission is 2 GiB, not 8 GiB:
+  $S = \min(2 \text{ GiB}, H)$, where $H$ is the aggregate address-space cap
+  (`native_platform_cap`), reduced by known commit headroom. Estimates above $S$ need the same
+  explicit, per-invocation approval as known-memory estimates above $S$, and approval is possible
+  up to $H$. Estimates above 8 GiB remain approvable; `MemoryBudget::warning_threshold` and
+  `MemoryBudget::requires_uncertainty_warning` let callers show the uncertain-capacity warning.
+  8 GiB is a warning threshold, not a hard ceiling, because the process may still run out of
+  memory.
+- These budgets apply to an import's **aggregate peak estimate**, not to one allocation: a peak
+  may sum many layer, mask, merged and workspace buffers. Each individual buffer must still fit
+  the target's layout limit (`isize::MAX`) and the decoder's own per-buffer allowance
+  (`photocraft-psd`'s `MAX_DECODED_BYTES`, `photocraft-codecs`' `Limits::max_alloc`), which is
+  enforced by fallible allocation or an explicit cap where that buffer is created. A 64-bit
+  native process has no measurable aggregate address-space cap, so admission relies on explicit
+  approval plus those per-buffer checks; 32-bit native uses a 2 GiB project cap
+  (`NATIVE_32BIT_PEAK_CAP`), a product choice below its 4 GiB address space.
+- WebAssembly (wasm32): automatic admission is 1 GiB; estimates above it use the same explicit
+  approval. The architectural linear-memory limit is 4 GiB (65,536 × 64 KiB pages), shared with
+  the runtime, stack, allocator, resident document and history, and one Rust allocation cannot
+  exceed `isize::MAX` (2 GiB − 1). Admission uses a **project cap of 2 GiB**
+  (`WASM_MAX_PEAK_BUDGET`) for the aggregate peak, chosen below the address space to leave room
+  for the rest; it is not an architectural maximum, browsers often allow less, and allocation can
+  still fail.
+- macOS reads a conservative reclaimable-memory measurement through `sysinfo`'s safe API:
+  $\min(\text{total} - \text{used}, \text{available})$, never below `free`. `total` is
+  `HW_MEMSIZE`; `used` is `internal_page_count - purgeable_count + wire_count +
+  compressor_page_count`; `available` is sysinfo's `available_memory` (`active + inactive +
+  free_count`, where XNU counts speculative pages inside `free_count`); `free` is its
+  `free_memory` (`free_count - speculative`). XNU documents *available memory* (active +
+  inactive + free + speculative) as everything not wired, compressed or stolen, which counts
+  anonymous working sets, while $\text{total} - \text{used}$ is the pool that can be handed out
+  without evicting one: free + file-backed + purgeable pages, close to the fully-reclaimable
+  pool jetsam monitors. Taking the smaller of the two keeps a counter disagreement
+  conservative, and `free` is a measured floor because those pages are allocatable by
+  definition. Swap is excluded. A genuine zero reading stays zero; unknown memory is reported
+  only when the provider query demonstrably failed (zero installed size or zero used memory,
+  which a live host cannot report). Linux reads `MemAvailable` from `/proc/meminfo` and
+  constrains it by the memory cgroup: v2 from the unified hierarchy's
+  `memory.max`/`memory.current`/`memory.swap.max`, using `cgroup.controllers` and
+  `cgroup.subtree_control` to distinguish a genuinely disabled controller (and the interface-file
+  exemption of the hierarchy root) from a view that is missing files it should expose; v1 from the
+  `memory` controller mount found in `/proc/self/mountinfo` (including dedicated mounts, bind
+  mounts and non-root process paths), applying every visible ancestor limit. When several mounts
+  match, the widest view (the shortest cgroup mount root) is used so a deep bind mount cannot hide
+  a constrained ancestor. Inactive page cache counts as reclaimable (`inactive_file` on v2,
+  `total_inactive_file` on v1). A v1 `memsw` limit also caps RAM; per ancestor its swap allowance
+  is `memsw limit - memory limit - swap already used`, and those allowances are combined
+  separately from RAM headroom. A memory cgroup whose mount, path, membership, limit or usage
+  cannot be read, or whose membership file is malformed or empty, fails closed (available memory
+  is treated as zero) rather than falling back to unrestricted host RAM.
+- Applications can lower the admission threshold with `ImportOptions::psd_max_pixel_bytes`; explicit caller limits may lower admission, never bypass the hard boundary.
+- Concurrent PSD decodes are serialized using a process-wide, cancellation-aware admission gate, with nested decodes sharing the enclosing allowance.
+- A pending high-memory approval is bound to one source and one estimate. The engine keeps at
+  most 32 pending preflights and, separately, at most 1 GiB of source bytes
+  (`Session::MAX_PENDING_PREFLIGHT_BYTES`): only an in-memory source holds data (a path streams
+  from its file once opened), and an `Arc` shared by several preflights is counted once. The
+  retention cap is not a pixel budget or an admission limit; it keeps an unanswered prompt from
+  pinning unbounded memory, and is deliberately below the 2 GiB web hard cap. The charge is
+  computed from the queue, so answering, cancelling, refusing or clearing releases it.
+- The approval verifies the file it decodes, not the path it was told about: the importer opens
+  the path once, reads `photocraft_io::FileIdentity` from that handle (Unix: device, inode,
+  length, mtime and ctime with nanoseconds), refuses with `SourceChanged` when it is not the
+  approved file, and re-reads the identity from the same handle when the memory preflight pauses
+  for approval. Windows has no stable file-index API in `std`, so its identity is the length and
+  modification time (a different file with both preserved is not distinguished there). The
+  `file.approveMemory` permission is one-shot and is not journaled or recorded in an action. A
+  refusal above the hard ceiling is the typed `PsdHardBudget` error (name, required, limit), not
+  a string, and it releases the queued source.
+- A layered TIFF (Photoshop layer data in tags 37724/34377) is admitted by the same policy
+  before its composite is decoded. The page's tags are read into the PSD model first, without
+  pixels; then that model's layer/workspace estimate, the decoded composite and its
+  extra-sample planes, the planar big-endian merged copy, a 16-bit-float conversion's extra
+  copies, the decoder's scratch buffers (one strip or tile per worker, see
+  `codecs::TiffBands::decode_scratch_bytes`) and the decoder's copy of the tags are charged
+  together, with the caller limit and approval flags from `ImportOptions`. A zero caller limit
+  means the adaptive budget, as for a PSD. A TIFF whose layer tag cannot be read still opens
+  flattened with the same warning as before, and that whole-image decode and conversion are
+  bounded the same way. A layered TIFF opened inside another import spends the enclosing
+  attempt's remaining allowance instead of resolving a fresh budget, and its admission guard is
+  held across the composite decode and the PSD conversion, so a top-level import is charged
+  once and a same-file continuation is never charged again.
+- Before waiting for the decode gate, an import checks admission; it checks again with a fresh
+  measurement once admitted, and only then decodes. This holds for the ordinary PSD and layered
+  TIFF paths and for the standalone legacy `psd_to_document` conversion, so an ineligible file
+  never waits behind an active decode. A nested import checks cancellation before consuming its
+  parent's remaining allowance and takes the reentrant admission guard first, so a cancelled or
+  refused nested import never spends the parent's budget. Hiding a large estimate behind a
+  destroyed composite or a malformed layer tag does not bypass the obvious bound: the
+  codecs' per-buffer limit (`Limits::max_alloc`) and the flat band check still apply to a page
+  opened without Photoshop layers.
+
+Headless RPC and MCP report approval-required memory errors with byte counts (`required`,
+`softLimit`, `hardLimit`, and `availableRam` when known). A hard-budget refusal reports only
+`required` and `hardLimit`: no approval can raise that ceiling, so there is no soft limit or
+capacity to act on. This holds for `doc.open` and `doc.place` and for the MCP `doc_open` and
+`doc_place` tools, including a refusal from `file.openAs`/`file.placeEmbedded` reached through a
+command. GUI automation imports currently cross a service boundary that returns string errors.
+
+An import exceeding the hard budget returns `IoError::PsdImportBudget` with the estimated
+and allowed byte counts; imports requiring confirmation return `IoError::PsdApprovalRequired`
+when unapproved. Damaged-file recovery never bypasses these memory guards. The legacy
 `psd_to_document` conversion APIs cannot return an error, so they return an empty document and
 an explicit warning on preflight refusal. Layer and mask pixel allocation failures also fail
 ordinary imports instead of opening partial content.
@@ -704,6 +814,12 @@ RSS: encoded input, parser metadata, smart-filter caches, embedded smart-object
 contents, generated vector caches, and text preparation are outside it and retain their
 existing limits. Joining these paths to a shared budget and streaming ZIP inflation are follow-up work. An accepted
 estimate does not guarantee allocation success on a memory-constrained host.
+
+The legacy `memory::available()` helper used by flat TIFF conversion keeps its established
+meaning: on Linux it reports `MemAvailable + SwapFree`, now bounded by cgroup v2 swap limits or
+v1 `memsw`, and it is `None` on Windows and macOS. The adaptive budget is the only consumer of
+the macOS physical-memory provider. Banded flat TIFF pages keep that helper; a layered TIFF's
+whole-image work is admitted by the adaptive policy above.
 
 ## Test corpora
 
