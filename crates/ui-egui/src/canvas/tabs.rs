@@ -5,6 +5,9 @@ use super::{Color32, PhotocraftApp, Pos2, Rect, Sense, Stroke, TextureOptions, c
 /// Tabs + canvas for the active document, or the start screen; then drops layers dragged onto
 /// another document (`layer_transfer`).
 pub fn document_area(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
+    if crate::jobs_ui::batch_preview(app, ui) {
+        return;
+    }
     crate::distort_ui::drop_foreign(app);
     documents(app, ui);
     crate::layer_transfer::finish(app, ui.ctx());

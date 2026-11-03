@@ -165,6 +165,8 @@ pub struct JobsUi {
     pub focus: Option<JobId>,
     /// The job the latest [`run`] started (the control channel waits on it).
     pub(crate) last_started: Option<JobId>,
+    /// Cached read-only canvas image of the current folder Batch input.
+    batch_preview_texture: Option<(JobId, u64, egui::TextureHandle)>,
 }
 
 /// Run command `id`: in the background when background jobs are on and the command is a job
@@ -396,7 +398,15 @@ pub fn tick(app: &mut PhotocraftApp, ctx: &egui::Context) {
         && !crate::zoom_field::editing(ctx)
         && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
     {
-        cancel(app, job.id);
+        if job.command == "file.automate.batch" {
+            if app.session.batch_interrupt_waiting(job.id) {
+                app.session.decide_batch_interrupt_job(job.id, false);
+            } else {
+                app.session.request_batch_interrupt_job(job.id);
+            }
+        } else {
+            cancel(app, job.id);
+        }
     }
 }
 
@@ -463,9 +473,12 @@ pub fn try_cancel(app: &mut PhotocraftApp, id: JobId) -> Result<(), CancelRefuse
 /// Handles one finished job: optional completion beep, waiting control replies, and the
 /// command-specific open, save, transform and recovery paths.
 fn on_event(app: &mut PhotocraftApp, ctx: &egui::Context, e: JobEvent) {
+    let cancelled_batch =
+        e.command == "file.automate.batch" && matches!(&e.outcome, JobOutcome::Done(result) if result.get("cancelled").and_then(Value::as_bool) == Some(true));
     // Preferences ▸ General ▸ Beep When Done (off by default): a finished operation beeps, like
     // Photoshop's cue. Cancelling is the user's own action and stays silent.
     if matches!(e.outcome, JobOutcome::Done(_))
+        && !cancelled_batch
         && app.session.prefs().general.beep_when_done
         && let Some(beep) = app.services.beep
     {
@@ -473,6 +486,7 @@ fn on_event(app: &mut PhotocraftApp, ctx: &egui::Context, e: JobEvent) {
     }
     // Control requests waiting on this job.
     let reply = match &e.outcome {
+        JobOutcome::Done(v) if cancelled_batch => json!({"ok": false, "error": "cancelled", "result": v}),
         JobOutcome::Done(v) => json!({"ok": true, "result": v}),
         JobOutcome::Failed(err) => json!({"ok": false, "error": err}),
         JobOutcome::Cancelled => json!({"ok": false, "error": "cancelled"}),
@@ -540,6 +554,10 @@ fn on_event(app: &mut PhotocraftApp, ctx: &egui::Context, e: JobEvent) {
         JobOutcome::Done(ref result) if matches!(e.command.as_str(), "file.print" | "file.printOneCopy") => {
             app.sync_views();
             crate::file_ui::print_status(app, result);
+        }
+        JobOutcome::Done(_) if cancelled_batch => {
+            app.ui.status = crate::i18n::fmt(tl!("Cancelled {label}"), &[("label", &e.label)]);
+            app.ui.status_error = false;
         }
         JobOutcome::Done(_) => {
             app.sync_views();
@@ -736,6 +754,9 @@ pub fn save_progress(app: &PhotocraftApp, doc: DocId) -> Option<String> {
 /// (the file name on hover). Draws nothing when no job runs.
 pub fn status_progress(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let Some(j) = job_in_view(app) else { return };
+    if j.command == "file.automate.batch" {
+        return;
+    }
     let saving = app.jobs.saves.iter().any(|s| s.job == j.id);
     let t = Tokens::get(ui.ctx());
     let (bar_w, bar_h) = if t.pro { (120.0, 6.0) } else { (140.0, 6.0) };
@@ -767,17 +788,63 @@ pub fn status_progress(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     }
 }
 
+/// Show the folder Batch worker's immutable current document in the canvas area. The worker
+/// publishes snapshots rather than adding them to `Session`, so no edit or Save can target one.
+pub(crate) fn batch_preview(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> bool {
+    let current = app
+        .session
+        .jobs()
+        .into_iter()
+        .filter(|job| job.command == "file.automate.batch")
+        .find_map(|job| app.session.batch_preview(job.id).map(|preview| (job.id, preview)));
+    let Some((id, preview)) = current else {
+        app.jobs.batch_preview_texture = None;
+        return false;
+    };
+    if !app.jobs.batch_preview_texture.as_ref().is_some_and(|(cached_id, generation, _)| *cached_id == id && *generation == preview.generation) {
+        let image = photocraft_compose::thumbnail(&preview.document, 1024);
+        let pixels = egui::ColorImage::from_rgba_unmultiplied([image.width as usize, image.height as usize], &image.pixels);
+        let texture = ui.ctx().load_texture(format!("batch-preview-{}-{}", id.0, preview.generation), pixels, egui::TextureOptions::LINEAR);
+        app.jobs.batch_preview_texture = Some((id, preview.generation, texture));
+    }
+    let Some((_, _, texture)) = &app.jobs.batch_preview_texture else { return false };
+    let t = Tokens::get(ui.ctx());
+    let name = std::path::Path::new(&preview.path).file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_else(|| preview.path.clone());
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(name).color(t.text).font(crate::theme::semibold(12.5)));
+        ui.label(RichText::new(tl!("Batch preview")).color(t.text_faint).size(11.0));
+    });
+    let area = ui.available_rect_before_wrap();
+    ui.allocate_rect(area, Sense::hover());
+    let size = texture.size_vec2();
+    if size.x > 0.0 && size.y > 0.0 {
+        let scale = (area.width() / size.x).min(area.height() / size.y);
+        if !scale.is_finite() {
+            return true;
+        }
+        let scale = scale.clamp(0.0, 1.0);
+        let target = Rect::from_center_size(area.center(), size * scale);
+        ui.painter().rect_filled(target, 0.0, Color32::WHITE);
+        ui.painter().image(texture.id(), target, Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)), Color32::WHITE);
+    }
+    true
+}
+
 /// The modal progress window for a job locking the active document (Photoshop shows one for
 /// long filters): title, status, bar, percentage and elapsed time, Cancel. Appears after
 /// [`DIALOG_DELAY_MS`]; Esc cancels (see [`tick`]). A save shows it only when it runs in the
 /// foreground (Save in Background off), and then at once, so nothing can be clicked meanwhile; a
 /// background save shows its progress in the tab and the status bar instead.
 pub fn dialog(app: &mut PhotocraftApp, ctx: &egui::Context) {
+    if let Some(job) = app.session.jobs().into_iter().find(|job| job.command == "file.automate.batch" && app.session.batch_interrupt_waiting(job.id)) {
+        batch_interrupt_dialog(app, ctx, job.id);
+        return;
+    }
     let j = match foreground_save(app) {
         Some(j) => j,
         None => {
             let Some(j) = app.session.active_job() else { return };
-            if j.elapsed_ms < DIALOG_DELAY_MS || app.jobs.saves.iter().any(|s| s.job == j.id) {
+            if j.command == "file.automate.batch" || j.elapsed_ms < DIALOG_DELAY_MS || app.jobs.saves.iter().any(|s| s.job == j.id) {
                 return;
             }
             j
@@ -814,6 +881,31 @@ pub fn dialog(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let _ = modal;
     if cancel_it {
         cancel(app, j.id);
+    }
+}
+
+/// Photoshop's question after Esc interrupts one input. The worker is parked before its save;
+/// Continue advances the same run to the next input, and Stop returns its partial result.
+fn batch_interrupt_dialog(app: &mut PhotocraftApp, ctx: &egui::Context, id: JobId) {
+    let t = Tokens::get(ctx);
+    let mut decision = None;
+    egui::Modal::new(egui::Id::unique("batch-interrupted")).show(ctx, |ui| {
+        ui.set_width(390.0);
+        ui.label(RichText::new(tl!("Batch")).font(crate::theme::semibold(15.0)));
+        ui.add_space(8.0);
+        ui.label(RichText::new(tl!("A command was cancelled or stopped during batch processing. Continue with the next file or stop?")).color(t.text_dim));
+        ui.add_space(14.0);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if crate::widgets::primary_button(ui, tl!("Continue"), 96.0).clicked() {
+                decision = Some(true);
+            }
+            if crate::widgets::secondary_button(ui, tl!("Stop"), 84.0).clicked() {
+                decision = Some(false);
+            }
+        });
+    });
+    if let Some(continue_next) = decision {
+        app.session.decide_batch_interrupt_job(id, continue_next);
     }
 }
 

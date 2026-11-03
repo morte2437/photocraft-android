@@ -457,12 +457,22 @@ fn batch_dialogs_include_all_subfolders() {
         let fields = &mut app.ui.dialog_mut(d).unwrap().fields;
         assert_eq!(fields["includeSubfolders"], json!(false), "{id}");
         assert_eq!(fields["__labels"]["includeSubfolders"], json!("Include All Subfolders"), "{id}");
+        if id == "file.automate.batch" {
+            assert_eq!(fields["source"], json!("folder"));
+            assert_eq!(fields["stopOnError"], json!(false));
+            assert_eq!(fields["errorLog"], json!(""));
+        }
         fields.insert("input".into(), json!(input));
         fields.insert("output".into(), json!(dir.join(out).to_string_lossy()));
         fields.insert("includeSubfolders".into(), json!(true));
         let r = crate::dialogs::confirm(&mut app, d).unwrap();
         assert_eq!(r["files"].as_array().map(Vec::len), Some(1), "{id}: {r}");
-        assert!(dir.join(out).join("sub").is_dir(), "{id} keeps the subfolder: {r}");
+        if id == "file.automate.batch" {
+            assert!(dir.join(out).join("a.png").is_file(), "{id} writes subfolder inputs flat: {r}");
+            assert!(!dir.join(out).join("sub").exists());
+        } else {
+            assert!(dir.join(out).join("sub").is_dir(), "{id} keeps the subfolder: {r}");
+        }
     }
     let _ = std::fs::remove_dir_all(&dir);
 }

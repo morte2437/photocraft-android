@@ -254,6 +254,13 @@ pub(crate) fn save_doc(doc: &Document, path: &str, save: impl Into<SaveOpts>) ->
     Ok(warnings)
 }
 
+/// Save Batch bytes in the chosen format even when its naming rules omit or replace the suffix.
+pub(crate) fn save_doc_as(doc: &Document, path: &str, format: &str, save: impl Into<SaveOpts>) -> Result<Vec<String>> {
+    let (bytes, warnings) = encode(doc, format, save)?;
+    write_file(path, &bytes)?;
+    Ok(warnings)
+}
+
 pub(super) fn save_a_copy(s: &mut Session, p: &Value) -> Result<Value> {
     let path = str_param(p, "path", "file.saveACopy")?.to_string();
     let d = s.active().ok_or(EngineError::NoDocument)?;

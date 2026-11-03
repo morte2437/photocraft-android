@@ -50,8 +50,9 @@ pub fn confirm(app: &mut PhotocraftApp, fields: &Map<String, Value>) -> Result<V
     let choices = crate::FormatChoices::from_step(&Value::Object(fields.clone()), "file.save")?;
     app.with_document(doc, |app| {
         if flat {
+            let from = app.session.journal.len();
             let r = app.save_to(path.clone(), choices)?;
-            app.journal_as_plain_save(&path);
+            app.journal_as_plain_save(&path, from);
             Ok(r)
         } else {
             app.save_in_place(path, crate::FormatChoices::default())

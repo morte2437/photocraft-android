@@ -190,6 +190,22 @@ pub(crate) struct BatchArgs {
     /// originals; --in-place allows it
     #[arg(long)]
     pub(crate) in_place: bool,
+    /// Include images in subfolders; every result goes straight into --out, so a later file of
+    /// the same name replaces an earlier one
+    #[arg(long)]
+    pub(crate) recursive: bool,
+    /// Name each result with Batch tokens such as {name}, {serial}, {date}, and {ext}
+    #[arg(long, value_name = "TEMPLATE")]
+    pub(crate) naming: Option<String>,
+    /// First serial number used by --naming
+    #[arg(long, value_name = "1-4294967295", value_parser = clap::value_parser!(u32).range(1..))]
+    pub(crate) start_serial: Option<u32>,
+    /// Stop after the first failed input
+    #[arg(long)]
+    pub(crate) stop_on_error: bool,
+    /// Write failed inputs and reasons to this text file
+    #[arg(long, value_name = "FILE")]
+    pub(crate) error_log: Option<PathBuf>,
     /// Explicitly approve high-memory PSD/PSB imports within the hard memory budget
     #[arg(long)]
     pub(crate) approve_high_memory: bool,

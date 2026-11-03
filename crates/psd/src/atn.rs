@@ -731,10 +731,28 @@ mod tests {
     #[test]
     fn uncertain_guess_warns() {
         let f = parse(&one_action("Set 1", "Action 1", vec![bare(AtnEvent::name("x"), b"\x80\xff\x80")])).unwrap();
-        assert_eq!(f.encoding.as_deref(), Some("windows-1252"));
+        assert_eq!(f.encoding.as_deref(), Some("windows-1251"));
         assert_eq!(f.warnings.len(), 1, "{:?}", f.warnings);
-        assert!(f.warnings[0].contains("windows-1252"), "{:?}", f.warnings);
-        assert_eq!(labels(&f), ["€ÿ€"]);
+        assert!(f.warnings[0].contains("windows-1251"), "{:?}", f.warnings);
+        assert_eq!(labels(&f), ["ЂяЂ"]);
+    }
+
+    #[test]
+    fn unresolved_codepage_tie_keeps_a_top_candidate_and_the_original_bytes() {
+        // GBK 保存 ties with other CJK pages. No Unicode name settles it, but windows-1252
+        // scored lower, so its "±£´æ" must not replace the tied candidates' readable text.
+        let bytes = one_action("Set 1", "Action 1", vec![bare(AtnEvent::name("x"), b"\xb1\xa3\xb4\xe6")]);
+        let f = parse(&bytes).unwrap();
+        assert_eq!(f.encoding.as_deref(), Some("GBK"));
+        assert_eq!(labels(&f), ["保存"]);
+        assert_eq!(f.warnings.len(), 1, "{:?}", f.warnings);
+        assert!(f.warnings[0].contains("read as GBK"), "{:?}", f.warnings);
+        assert_eq!(write(&f).unwrap(), bytes);
+        // Callers can still resolve an ambiguous guess explicitly.
+        let forced = parse_with_encoding(&bytes, Some("windows-1252")).unwrap();
+        assert_eq!(labels(&forced), ["±£´æ"]);
+        assert!(forced.warnings.is_empty(), "{:?}", forced.warnings);
+        assert_eq!(write(&forced).unwrap(), bytes);
     }
 
     #[test]

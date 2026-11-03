@@ -182,6 +182,40 @@ fn recorded_targa_save_as_keeps_its_bits_and_replays_without_asking() {
     );
 }
 
+/// #5305: a Targa Save As answered in Targa Options with the document's own name records only the
+/// folder and extension (with the bits), so playback saves each document under its own name; a
+/// Save a Copy keeps its path.
+#[test]
+fn recorded_targa_save_as_with_the_documents_name_keeps_only_the_folder() {
+    let (mut h, writes) = targa_app(false, "copy.tga");
+    let ctx = h.ctx.clone();
+    let name = h.state().session.active().unwrap().doc.name.clone();
+    h.state_mut().run("actions.record", json!({})).unwrap();
+    h.state_mut().save_as(Some(format!("out/{name}.tga"))).unwrap();
+    h.run_steps(2);
+    h.get_by_label("OK").click();
+    h.run_steps(3);
+    crate::menus::invoke(h.state_mut(), &ctx, "file.saveACopy", json!({})).unwrap();
+    h.run_steps(3);
+    h.key_press(Key::Enter);
+    h.run_steps(3);
+    h.state_mut().run("actions.stop", json!({})).unwrap();
+    let steps = &h.state().session.actions.list[0].steps;
+    assert_eq!(
+        steps,
+        &[
+            ("file.saveAs".into(), json!({"folder": "out", "extension": "tga", "tgaBits": 24})),
+            ("file.saveACopy".into(), json!({"path": "copy.tga", "tgaBits": 24}))
+        ]
+    );
+    writes.borrow_mut().clear();
+    h.state_mut().run("file.new", json!({"width": 8, "height": 8, "name": "second"})).unwrap();
+    let played = h.state_mut().run("actions.play", json!({"action": 0})).unwrap();
+    assert!(played.get("failed").is_none(), "{played}");
+    let second = std::path::Path::new("out").join("second.tga").to_string_lossy().into_owned();
+    assert_eq!(writes.borrow().as_slice(), &[(second, asked(Some(24))), ("copy.tga".to_string(), asked(Some(24)))]);
+}
+
 /// Closing an unsaved document whose save goes to a Targa waits behind Targa Options, then closes.
 #[test]
 fn closing_after_a_targa_save_waits_for_targa_options() {
