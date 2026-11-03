@@ -1,4 +1,4 @@
-//! Photoshop's Distort filter steps (#10605): Pinch, Polar Coordinates, Spherize, Twirl, Wave and
+//! Photoshop's Distort filter steps (#10605): Pinch, Polar Coordinates, Shear, Spherize, Twirl, Wave and
 //! ZigZag, each key in recorded order with the limits and defaults Photoshop measures.
 
 use super::descriptors::{desc, enm, num, trimmed};
@@ -218,4 +218,95 @@ pub(super) fn wave_to(_: &str, p: &Value) -> Option<Descriptor> {
         Some(v) => u32::try_from(v.as_u64()?).ok()? as i32,
     };
     Some(d.with("SclH", D::Integer(100)).with("SclV", D::Integer(100)).with("UndA", enm("UndA", undefined)).with("RndS", D::Integer(seed)))
+}
+
+/// A curve must retain its order and points when the native renderer sorts and deduplicates it.
+fn shear_curve(points: &[[f64; 2]]) -> bool {
+    points.len() >= 2
+        && points.iter().all(|p| p[0].is_finite() && (0.0..=1.0).contains(&p[0]) && (-1.0..=63.0 / 64.0).contains(&p[1]))
+        && points.windows(2).all(|p| p[1][0] as f32 - p[0][0] as f32 >= 1e-6)
+}
+
+/// Recorded grid coordinates become native top-to-bottom positions and half-width offsets.
+fn shear_normalized(points: &[[f64; 2]]) -> Vec<[f64; 2]> {
+    points.iter().map(|p| [(p[1] - 1.0) / 127.0, p[0] / 64.0]).collect()
+}
+
+/// Read every measured point; an invalid entry must not disappear in the native list parser.
+fn shear_points(value: &D) -> Option<Vec<[f64; 2]>> {
+    let D::List(values) = value else { return None };
+    values
+        .iter()
+        .map(|v| {
+            let D::Descriptor(point) = v else { return None };
+            if trimmed(&point.class_id) != "Pnt" {
+                return None;
+            }
+            let [(h, D::Double(x)), (v, D::Double(y))] = point.items.as_slice() else { return None };
+            (trimmed(h) == "Hrzn" && trimmed(v) == "Vrtc" && x.is_finite() && y.is_finite()).then(|| [x.clamp(-64.0, 63.0), y.clamp(1.0, 128.0)])
+        })
+        .collect()
+}
+
+/// Import only the complete measured curve range, with dialog clamps and exact fractional save data.
+pub(super) fn shear_from(d: &Descriptor) -> Mapped {
+    let mapped = || {
+        if !only_keys(d, &["ShrP", "UndA", "ShrS", "ShrE"]) {
+            return None;
+        }
+        let grid = setting(d, "ShrP", shear_points, vec![[0.0, 1.0], [0.0, 128.0]])?;
+        let index = |v: &D| if let D::Integer(n) = v { Some(*n) } else { None };
+        if setting(d, "ShrS", index, 0)? != 0 || setting(d, "ShrE", index, 1)? != i32::try_from(grid.len().checked_sub(1)?).ok()? {
+            return None;
+        }
+        let points = shear_normalized(&grid);
+        if !shear_curve(&points) {
+            return None;
+        }
+        let undefined = setting(d, "UndA", enum_of("UndA"), "WrpA".into())?;
+        let mut p = json!({"points": points, "undefinedAreas": lookup(WAVE_UNDEFINED, &undefined)?});
+        // Dividing by 127 can lose a wire bit (for example Vrtc = 4.975609756097561).
+        // Preserve only that case, and reject stale metadata on export after a point edit.
+        if points.iter().zip(&grid).any(|(p, g)| [p[1] * 64.0, p[0] * 127.0 + 1.0] != *g) {
+            p["_atnShearPoints"] = json!(grid);
+        }
+        Some(step("filter.distort.shear", p))
+    };
+    mapped().unwrap_or(Mapped::Unsupported { harmless: false })
+}
+
+/// Export the effective native curve; settings without a faithful measured wire form are refused.
+pub(super) fn shear_to(_: &str, p: &Value) -> Option<Descriptor> {
+    if !pixel_target(p) || !sets_only(p, &["points", "amount", "undefinedAreas", "target", "_atnShearPoints"]) {
+        return None;
+    }
+    let points: Vec<[f64; 2]> = match p.get("points") {
+        None | Some(Value::Null) => {
+            let amount = match p.get("amount") {
+                None | Some(Value::Null) => 0.0,
+                Some(value) => value.as_f64().filter(|n| n.is_finite())?,
+            };
+            // Match the native command's f32 conversion and amount clamp.
+            let amount = (amount as f32).clamp(-100.0, 100.0) / 100.0;
+            vec![[0.0, 0.0], [0.5, f64::from(amount)], [1.0, 0.0]]
+        }
+        Some(value) => serde_json::from_value(value.clone()).ok()?,
+    };
+    if !shear_curve(&points) {
+        return None;
+    }
+    let grid: Vec<[f64; 2]> = match p.get("_atnShearPoints") {
+        None => points.iter().map(|p| [p[1] * 64.0, p[0] * 127.0 + 1.0]).collect(),
+        Some(value) => serde_json::from_value(value.clone()).ok()?,
+    };
+    if grid.iter().any(|p| !(-64.0..=63.0).contains(&p[0]) || !(1.0..=128.0).contains(&p[1])) || shear_normalized(&grid) != points {
+        return None;
+    }
+    let end = i32::try_from(grid.len().checked_sub(1)?).ok()?;
+    let undefined = match p.get("undefinedAreas") {
+        None | Some(Value::Null) => "WrpA",
+        Some(value) => lookup_back(WAVE_UNDEFINED, value.as_str()?)?,
+    };
+    let grid = grid.into_iter().map(|p| D::Descriptor(desc("Pnt ").with("Hrzn", D::Double(p[0])).with("Vrtc", D::Double(p[1])))).collect();
+    Some(desc("null").with("ShrP", D::List(grid)).with("UndA", enm("UndA", undefined)).with("ShrS", D::Integer(0)).with("ShrE", D::Integer(end)))
 }

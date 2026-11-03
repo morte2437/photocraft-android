@@ -18,7 +18,7 @@ layers and documents, newer and older events and files, and a measured reference
 map yet, with everything needed to implement them without
 the reference application.
 
-## Supported events (144)
+## Supported events (145)
 
 | Code | String ID | Label | PhotoCraft command(s) |
 |---|---|---|---|
@@ -127,6 +127,7 @@ the reference application.
 | (string ID only) | removeBackground | Remove Background | `layer.removeBackground` |
 | `RmvB` | removeBlackMatte | Remove Black Matte | `layer.matting.removeBlackMatte` |
 | `RmvW` | removeWhiteMatte | Remove White Matte | `layer.matting.removeWhiteMatte` |
+| `Shr ` | shear | Shear | `filter.distort.shear` |
 | `Rset` | reset | Reset | `tools.defaultColors` |
 | `RvlA` | revealAll | Reveal All | `image.revealAll` |
 | `Rvrt` | revert | Revert | `file.revert` |
@@ -1317,6 +1318,14 @@ All commands exist in PhotoCraft (`filter.distort.*`); only the `.atn` mapping i
 - Event: `Shr ` / `shear`
 - PhotoCraft command: `filter.distort.shear`
 - `shearPoints` is a list of curve points; keep their order and count.
+
+Supported for complete curves: import clamps finite grid coordinates to the measured ranges below,
+maps them to the native top-to-bottom position `(Vrtc - 1) / 127` and half-width offset `Hrzn / 64`,
+and preserves fractional recorded coordinates exactly on save. Both edge modes are supported.
+Only `ShrS` 0 and `ShrE` equal to the last point's index map; an omitted `ShrE` still defaults to 1.
+Malformed settings, unknown keys, nonfinite values, and curves whose order or points the native
+renderer would change remain complete kept steps. Export refuses unrepresentable native options
+and mask targets. The native Shear renderer and its ordinary command behavior are unchanged.
 
 | Key | String ID | Type | Unit | Default | Allowed |
 |---|---|---|---|---|---|

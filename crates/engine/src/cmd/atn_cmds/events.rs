@@ -4,7 +4,7 @@ use super::descriptors::{desc, get_bool, get_ref, jbool, layer_ref, layer_target
 use super::fields::{F, Kind, Mapped, fields_from, fields_to, none, step};
 
 use super::steps_channels::{match_color_from, match_color_to, merge_spot_from, merge_spot_to, split_from, split_to, trap_from, trap_to};
-use super::steps_distort::{PINCH, POLAR, SPHERIZE, TWIRL, ZIGZAG, keys_from, keys_to, wave_from, wave_to};
+use super::steps_distort::{PINCH, POLAR, SPHERIZE, TWIRL, ZIGZAG, keys_from, keys_to, shear_from, shear_to, wave_from, wave_to};
 use super::steps_doc::{
     align_from, align_to, canvas_size_from, canvas_size_to, close_from, close_to, conditional_from, conditional_to, convert_mode_from, convert_mode_to,
     crop_from, crop_to, export_from, export_to, image_size_from, image_size_to, merge_visible_from, merge_visible_to, open_from, open_to, paste_from, paste_to,
@@ -382,6 +382,7 @@ pub(super) const EVENTS: &[Event] = &[
         &[F("Hrzn", "horizontal", Kind::Long), F("Vrtc", "vertical", Kind::Long), F("Fl  ", "undefinedAreas", Kind::Enum("FlMd", OFFSET_FILL))]
     ),
     // Distort (#10605): every key in recorded order, Photoshop's limits and defaults.
+    Event { code: "Shr ", name: "shear", label: "Shear", ids: &["filter.distort.shear"], from: shear_from, to: shear_to },
     Event {
         code: "Pnch",
         name: "pinch",
