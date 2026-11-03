@@ -1135,7 +1135,8 @@ fn the_effect_cache_range_matches_the_honoured_budget() {
 #[test]
 fn an_effect_cache_above_the_cap_loads_clamped_and_does_not_block_apply() {
     let cap = WASM_MEMORY_USAGE_CAP_MB;
-    for (stored, small_mb, large_mb) in [(0, 16, 16), (768, 768, 768), (cap + 1, cap, cap + 1), (4096, cap, 4096), (65536, cap, 65536), (u32::MAX, cap, 65536)] {
+    for (stored, small_mb, large_mb) in [(0, 16, 16), (768, 768, 768), (cap + 1, cap, cap + 1), (4096, cap, 4096), (65536, cap, 65536), (u32::MAX, cap, 65536)]
+    {
         assert_eq!(accepted_effect_cache_mb(stored, true), small_mb, "32-bit, {stored} MB");
         assert_eq!(accepted_effect_cache_mb(stored, false), large_mb, "64-bit, {stored} MB");
     }
