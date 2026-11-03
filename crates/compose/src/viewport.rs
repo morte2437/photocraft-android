@@ -112,6 +112,25 @@ pub fn render_page(doc: &Document, source: Rect, factor: u32, interrupt: Interru
     if k == 1 {
         return Ok(render(doc, source));
     }
+    if source.x0.rem_euclid(k) != 0 || source.y0.rem_euclid(k) != 0 {
+        return average_page(doc, source, k, out, interrupt);
+    }
+    // The reduced-render path the CPU canvas and navigator use: one-colour document tiles are
+    // composited once instead of per pixel, and the rest in parallel tiles, then area-averaged
+    // into cells aligned to multiples of `k` (the same cells as [`average_page`]).
+    let stats = &mut crate::reduced::ReducedStats::default();
+    let mut buf = crate::reduced::render_reduced_cells(doc, source, crate::reduced::Cells::Factor(factor), None, 128, true, stats, interrupt)?;
+    if buf.rect.width() != out.width() || buf.rect.height() != out.height() {
+        return Err("invalid viewport reduction".into());
+    }
+    buf.rect = out;
+    Ok(buf)
+}
+
+/// [`render_page`] by compositing every source pixel and averaging each `k`×`k` footprint (also
+/// the reference its reduced path is tested against).
+fn average_page(doc: &Document, source: Rect, k: i32, out: Rect, interrupt: Interrupt<'_>) -> Result<Buffer, String> {
+    let factor = k.unsigned_abs();
     let mut result = Buffer::transparent(out);
     render_bands(doc, source, 128, |band| -> Result<(), String> {
         interrupt.check().map_err(|e| e.to_string())?;
@@ -181,11 +200,61 @@ mod tests {
             }
         }
     }
+    /// A white document with a noisy, partly transparent layer and a multiplied solid over one-colour
+    /// tiles, so the reduced path takes both its one-colour and per-pixel branches.
+    fn busy(depth: SampleType) -> Document {
+        let mut d = Document::with_background("busy", Size::new(1100, 700), ColorMode::Rgb, depth, Color::WHITE);
+        let mut s = photocraft_raster::Surface::new(d.pixel_format());
+        let mut seed = 0x2545_f491_u32;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            (seed % 1000) as f32 / 999.0
+        };
+        for y in (100..530).step_by(3) {
+            for x in (190..905).step_by(3) {
+                let px = [next(), next(), next(), next()];
+                s.fill_rect(Rect::from_xywh(x, y, 3, 3), &px);
+            }
+        }
+        d.layers.push(photocraft_doc::Layer::new("noise", photocraft_doc::LayerContent::Raster(s)));
+        let mut s = photocraft_raster::Surface::new(d.pixel_format());
+        s.fill_rect(Rect::new(400, 0, 1100, 650), &[0.2, 0.5, 0.9, 1.0]);
+        let mut top = photocraft_doc::Layer::new("tint", photocraft_doc::LayerContent::Raster(s));
+        top.opacity = 0.6;
+        top.blend = photocraft_color::blend::BlendMode::Multiply;
+        d.layers.push(top);
+        d
+    }
+    #[test]
+    fn reduced_pages_match_averaging_every_composited_pixel() {
+        for depth in [SampleType::U8, SampleType::U16, SampleType::F32] {
+            let d = busy(depth);
+            for k in [2u32, 4, 16] {
+                let ki = k as i32;
+                for source in [d.bounds(), Rect::new(512, 256, 1024, 700), Rect::new(ki * 13, ki * 5, 1100, ki * 37)] {
+                    let source = source.intersect(&d.bounds());
+                    let out = Rect::new(source.x0 / ki, source.y0 / ki, (source.x1 + ki - 1) / ki, (source.y1 + ki - 1) / ki);
+                    let reference = average_page(&d, source, ki, out, Interrupt::NONE).unwrap();
+                    let got = render_page(&d, source, k, Interrupt::NONE).unwrap();
+                    assert_eq!(got.rect, reference.rect, "{depth:?} k={k} {source:?}");
+                    let worst = got.px.iter().zip(&reference.px).flat_map(|(a, b)| a.iter().zip(b).map(|(a, b)| (a - b).abs())).fold(0.0f32, f32::max);
+                    assert!(worst < 1e-4, "{depth:?} k={k} {source:?}: differs by {worst}");
+                }
+            }
+        }
+    }
     #[test]
     fn rejects_invalid_sizes_and_honors_cancellation() {
         let d = Document::new("d", Size::new(86400, 43200), ColorMode::Rgb, SampleType::U8);
         assert!(render_page(&d, d.bounds(), 1, Interrupt::NONE).is_err());
         assert!(render_page(&d, d.bounds(), 0, Interrupt::NONE).is_err());
         assert!(render_page(&d, Rect::new(0, 0, 512, 512), 1, Interrupt::cancel_only(&|| true)).is_err());
+        // Cancelled after the first band of the reduced path.
+        let checks = std::sync::atomic::AtomicUsize::new(0);
+        let later = || checks.fetch_add(1, std::sync::atomic::Ordering::Relaxed) >= 2;
+        assert!(render_page(&d, Rect::new(0, 0, 4096, 4096), 8, Interrupt::cancel_only(&later)).is_err());
+        assert!(checks.load(std::sync::atomic::Ordering::Relaxed) >= 3);
     }
 }
