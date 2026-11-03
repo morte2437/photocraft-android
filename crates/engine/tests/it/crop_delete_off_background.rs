@@ -2,8 +2,10 @@
 //! Photoshop does: it keeps the pixels past the canvas, and an extension is transparent on every
 //! layer. Delete on keeps the Background, and Image › Reveal All is unchanged (#10867).
 
-use photocraft_engine::Session;
+use photocraft_engine::actions_cmds::Action;
+use photocraft_engine::{EngineError, Session, atn_cmds};
 use photocraft_geom::Rect;
+use photocraft_psd::{atn, descriptor::Value as D};
 use serde_json::{Value, json};
 
 const MAGENTA: [f32; 4] = [1.0, 0.0, 1.0, 1.0];
@@ -106,11 +108,39 @@ fn a_turned_crop_turns_layer_0_with_the_others() {
 
 #[test]
 fn the_action_steps_turned_crop_unlocks_the_background() {
-    // The action step `Crop` with `Dlt` false, rect (100,100)–(700,400) and angle 10°, scaled down.
+    // The action step `Crop` with `Dlt` false, rect (100,100)–(700,400) and angle 10°, scaled down,
+    // through a binary .atn: its descriptor carries `Dlt` false, the importer decodes it and
+    // `actions.play` runs the step.
+    let params = json!({"x": 10, "y": 10, "width": 60, "height": 30, "angle": 10, "deleteCroppedPixels": false});
+    let action = Action::new("Crop", vec![("image.crop".into(), params)]);
+    let (bytes, skipped) = atn_cmds::export("Crop", &[&action], &[], false).unwrap();
+    assert!(skipped.is_empty());
+    let file = atn::parse(&bytes).unwrap();
+    let descriptor = file.actions[0].items[0].descriptor.as_ref().unwrap();
+    assert_eq!(descriptor.get("Dlt "), Some(&D::Boolean(false)));
+    let imported = atn_cmds::import(&bytes).unwrap();
+    assert!(imported.unsupported.is_empty() && imported.warnings.is_empty());
+    let step = &imported.actions[0].steps[0];
+    assert_eq!((step.0.as_str(), &step.1["deleteCroppedPixels"]), ("image.crop", &json!(false)));
+
     let mut s = doc();
-    crop(&mut s, json!({"x": 10, "y": 10, "width": 60, "height": 30, "angle": 10}), false);
+    s.actions.list = imported.actions;
+    let before = past(&s);
+    s.execute("actions.play", json!({"action": "Crop"})).unwrap();
+    assert_eq!(past(&s), before + 1, "one undo step");
     assert_eq!(size(&s), (60, 30));
     assert_layer_0(&s, "action step");
+}
+
+#[test]
+fn content_aware_with_delete_off_keeps_the_background() {
+    // Not measured in the reference: the Background stays, and the fill goes on it, as before.
+    let mut s = doc();
+    let mut p = json!({"x": 0, "y": 0, "width": 90, "height": 50, "contentAware": true});
+    p["deleteCroppedPixels"] = json!(false);
+    s.execute("image.crop", p).unwrap();
+    assert_eq!(size(&s), (90, 50));
+    assert_eq!(d(&s).background().map(|l| l.name.as_str()), Some("Background"));
 }
 
 #[test]
@@ -162,14 +192,7 @@ fn undo_restores_the_background() {
 
 #[test]
 fn reveal_all_keeps_the_background() {
-    let mut s = doc();
-    // Quads reaches 10 px past the right edge.
-    s.edit("paint past the canvas", |doc, _| {
-        let quads = doc.layers.last_mut().unwrap();
-        quads.surface_mut().unwrap().fill_rect(Rect::new(80, 0, 90, 50), &RED);
-        Ok(())
-    })
-    .unwrap();
+    let mut s = revealable();
     let before = past(&s);
     s.execute("image.revealAll", json!({})).unwrap();
     assert_eq!(past(&s), before + 1);
@@ -177,6 +200,41 @@ fn reveal_all_keeps_the_background() {
     let bg = d(&s).background().expect("Reveal All keeps the Background");
     assert_eq!(bg.name, "Background");
     assert_eq!(bg.surface().unwrap().rgba(85, 25), MAGENTA, "the extension takes the background colour, as before");
+}
+
+/// `doc()` with Quads reaching 10 px past the right edge, so Reveal All has something to reveal.
+fn revealable() -> Session {
+    let mut s = doc();
+    s.edit("paint past the canvas", |doc, _| {
+        let quads = doc.layers.last_mut().unwrap();
+        quads.surface_mut().unwrap().fill_rect(Rect::new(80, 0, 90, 50), &RED);
+        Ok(())
+    })
+    .unwrap();
+    s
+}
+
+#[test]
+fn reveal_alls_crop_passes_the_session_gate() {
+    // A gate that refuses `image.crop` refuses Reveal All's crop too, before anything changes.
+    let mut s = revealable();
+    s.authorize = Some(|id, _| if id == "image.crop" { Err(EngineError::Other("image.crop is not allowed".into())) } else { Ok(()) });
+    let before = past(&s);
+    let err = s.execute("image.revealAll", json!({})).unwrap_err();
+    assert!(err.to_string().contains("image.crop is not allowed"), "{err}");
+    assert_eq!(size(&s), (80, 50));
+    assert_eq!(past(&s), before);
+    assert!(d(&s).background().is_some());
+
+    // A gate that allows it sees the crop Reveal All runs.
+    let mut s = revealable();
+    // (An `Err`, not an assert: the gate runs inside the command's panic guard.)
+    s.authorize = Some(|id, p| {
+        let expected = json!({"x": 0, "y": 0, "width": 90, "height": 50, "deleteCroppedPixels": false});
+        if id == "image.crop" && *p != expected { Err(EngineError::Other(format!("unexpected crop {p}"))) } else { Ok(()) }
+    });
+    s.execute("image.revealAll", json!({})).unwrap();
+    assert_eq!(size(&s), (90, 50));
 }
 
 #[test]
