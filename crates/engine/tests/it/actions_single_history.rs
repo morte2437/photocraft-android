@@ -648,11 +648,11 @@ fn recorded_delete_case(case: &str) {
                 steps.push(("history.setSource".into(), json!({"state":past + 1})));
             }
             if case == "nonlinear-redo" {
-                steps.push(("history.selectState".into(), json!({"state":2})));
+                steps.push(("history.selectState".into(), json!({"state":3})));
             }
             let deleted = match case {
                 "linear-past" | "nonlinear-past" => 1,
-                "nonlinear-redo" => 3,
+                "nonlinear-redo" => 4,
                 _ => past + 1,
             };
             steps.extend([
@@ -692,9 +692,12 @@ fn recorded_delete_case(case: &str) {
             }
             let boundary = if case == "linear-past" {
                 &originals[0].2
+            } else if case == "nonlinear-redo" {
+                // Non-linear history appends the retained future after the original current.
+                &originals[3].2
             } else if single_state {
                 &before
-            } else if case == "nonlinear-redo" || (case == "nonlinear-past" && prefix) {
+            } else if case == "nonlinear-past" && prefix {
                 &originals[3].2
             } else {
                 &originals[4].2
