@@ -56,5 +56,6 @@ retry the original bytes after the storage becomes available; zeros from a faile
 read must never become saved pixels. Limitation: a tile that was already unreadable and is
 read from outside the edited document (for example a clipboard copy) is not detected.
 
-Scratch storage alone does not make every format, filter or renderer streamable. The native
-PSD/EXR import and viewport streaming changes build on these guards and memory reservations.
+Scratch storage alone does not make every format, filter or renderer streamable. See
+[EXR streaming](streaming-io.md) for the block-by-block EXR import. Viewport rendering is a
+separate change built on these guards and memory reservations.

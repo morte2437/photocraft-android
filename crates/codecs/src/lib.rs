@@ -7,8 +7,9 @@
 //!   metadata (EXIF, XMP, DPI, text) are preserved where the format allows.
 //! * [`caps`] declares per-format capabilities and [`fidelity_warnings`]
 //!   tells the UI exactly what an export will lose.
-//! * The API is I/O free (`&[u8]` in, `Vec<u8>` out) and builds for
-//!   `wasm32-unknown-unknown`. Decoders enforce [`Limits`] before allocating.
+//! * APIs use bytes or caller-provided readers, with no ambient filesystem access,
+//!   and build for `wasm32-unknown-unknown`. Byte decoders enforce [`Limits`];
+//!   [`exr_stream`] instead bounds metadata and one decoded compression block.
 
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
@@ -17,6 +18,7 @@ pub mod cicp;
 mod codecs;
 mod error;
 pub mod exif_color;
+pub mod exr_stream;
 mod fidelity;
 mod format;
 mod image;
