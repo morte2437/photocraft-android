@@ -122,14 +122,16 @@ fn enter_on_the_selection_frame_crops_to_it_at_8_and_16_bit() {
         assert_eq!(doc.size, Size::new(30, 40), "{depth:?}");
         assert_eq!(doc.depth, depth);
         assert!(doc.selection.is_none(), "cropping to the selection deselects, as in Photoshop");
-        // No frame until a press or re-picking the tool; then the default one is the whole
-        // (cropped) canvas, and ↵ on it does nothing.
+        // No frame until a press, also after another tool and back; then the default one is the
+        // whole (cropped) canvas, and ↵ on it does nothing.
         ensure_frame(&mut app);
         assert_eq!(app.ui.crop_rect, None);
         app.ui.tool = Tool::Move;
         ensure_frame(&mut app);
-        app.ui.tool = Tool::Crop;
+        crate::tool_memory::select(&mut app, Tool::Crop);
         ensure_frame(&mut app);
+        assert_eq!(app.ui.crop_rect, None, "picking the tool again keeps it hidden");
+        show_frame(&mut app);
         assert_eq!(app.ui.crop_rect, Some([0.0, 0.0, 30.0, 40.0]));
         let steps = app.session.active().unwrap().history.past_len();
         crate::canvas::commit_crop(&mut app);
@@ -138,10 +140,10 @@ fn enter_on_the_selection_frame_crops_to_it_at_8_and_16_bit() {
     }
 }
 
-/// A commit hides the frame; picking the Crop tool again, a ratio, or a press brings back the
-/// default frame, and the press's crop keeps its box Undo and Redo.
+/// A commit hides the frame; picking the Crop tool again keeps it hidden, as in Photoshop; a ratio
+/// or a press brings back the default frame, and the press's crop keeps its box Undo and Redo.
 #[test]
-fn a_hidden_frame_comes_back_on_re_picking_a_ratio_or_a_press_with_redo_intact() {
+fn a_hidden_frame_comes_back_on_a_ratio_or_a_press_with_redo_intact() {
     let committed = || {
         let mut app = app(SampleType::U8);
         app.ui.crop_rect = Some([20.0, 10.0, 120.0, 60.0]);
@@ -151,9 +153,17 @@ fn a_hidden_frame_comes_back_on_re_picking_a_ratio_or_a_press_with_redo_intact()
         app
     };
     let whole = Some([0.0, 0.0, 100.0, 50.0]);
-    // Picking the Crop tool while it is still picked.
+    // Picking the Crop tool while it is still picked, or after another tool: still hidden.
     let mut app = committed();
     crate::tool_memory::select(&mut app, Tool::Crop);
+    ensure_frame(&mut app);
+    assert_eq!(app.ui.crop_rect, None, "re-picked");
+    crate::tool_memory::select(&mut app, Tool::Move);
+    ensure_frame(&mut app);
+    crate::tool_memory::select(&mut app, Tool::Crop);
+    ensure_frame(&mut app);
+    assert_eq!(app.ui.crop_rect, None, "picked after another tool");
+    show_frame(&mut app);
     assert_eq!(app.ui.crop_rect, whole);
     assert!(app.crop.default_frame);
     // A ratio fits the frame it brings back.
@@ -1283,7 +1293,7 @@ fn info_size_is_shown_in_the_ruler_unit() {
 /// #3145 review: after the crop is cancelled or committed, or the tool is left, W and H are the
 /// selection's again. With the Crop tool still picked, the new default frame is the selection's
 /// bounds (or the canvas), as in Photoshop, so the panel shows the same size. After a commit that
-/// frame waits for the next press or re-picking the tool.
+/// frame waits for the next press.
 #[test]
 fn info_size_returns_to_the_selection_after_cancel_or_commit() {
     let mut app = app(SampleType::U8);
@@ -1306,8 +1316,8 @@ fn info_size_returns_to_the_selection_after_cancel_or_commit() {
     assert_eq!(info_size(&app), None, "committed: no frame");
     ensure_frame(&mut app);
     assert_eq!(info_size(&app), None, "committed: the frame stays hidden");
-    crate::tool_memory::select(&mut app, Tool::Crop);
-    ensure_frame(&mut app);
+    // A press brings it back.
+    show_frame(&mut app);
     assert_eq!(info_size(&app), Some([40.0, 30.0]), "the new frame is the cropped canvas");
     // Leaving the tool: the panel shows the selection, whatever the frame.
     app.ui.tool = Tool::Move;

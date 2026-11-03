@@ -381,7 +381,6 @@ pub fn ensure_frame(app: &mut PhotocraftApp) {
 fn frame(app: &mut PhotocraftApp) {
     if app.ui.tool != Tool::Crop {
         app.crop.editing = false;
-        app.crop.dismissed = None;
         crate::crop_straighten::reset(app);
         // Leaving the tool drops an untouched default frame and, as in Photoshop, commits a
         // drawn one (#3368).
@@ -449,6 +448,9 @@ fn commit_on_leave(app: &mut PhotocraftApp) {
         cancel(app);
     }
     app.ui.tool = tool;
+    // Committed by leaving the tool: back on it the default frame shows at once, as in Photoshop
+    // (only a commit with the Crop tool still picked hides it).
+    app.crop.dismissed = None;
 }
 
 /// A crop gesture is in progress: Space repositions the frame rather than panning.
@@ -471,8 +473,9 @@ pub fn cancel(app: &mut PhotocraftApp) {
 }
 
 /// After a committed crop, with the Crop tool picked: no new default frame for the cropped
-/// document until a press on the canvas or re-picking the tool, so its corners don't make the
-/// applied crop look still pending.
+/// document until a press on the canvas (or a ratio), so its corners don't make the applied crop
+/// look still pending. Picking the tool again, also after another tool, keeps it hidden, as in
+/// Photoshop.
 pub fn hide_frame(app: &mut PhotocraftApp) {
     if app.ui.tool == Tool::Crop {
         app.crop.dismissed = dismiss_key(app);
