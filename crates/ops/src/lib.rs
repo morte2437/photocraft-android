@@ -41,6 +41,13 @@ pub struct HistoryState {
     pub id: u64,
 }
 
+/// The context in which a selected action row must remain available after it is folded away.
+#[derive(Clone, Debug)]
+pub enum ActionBrushSource {
+    Current(HistoryState),
+    Cleared(HistoryState),
+}
+
 #[derive(Clone, Debug)]
 pub struct History {
     /// Past states; the last one is the state *before* the current document.
@@ -79,6 +86,9 @@ pub struct History {
     next_id: u64,
     /// The History Brush's source state, set in the History panel (`None`: the default).
     brush_source: Option<u64>,
+    /// A snapshot-backed alias of a folded row. Clear History moves this with its row source;
+    /// a snapshot selected explicitly by the user remains separate in the document state.
+    brush_source_snapshot: Option<u64>,
 }
 
 /// What [`History::rollback`] needs to take the most recent [`History::record`] back.
@@ -104,6 +114,7 @@ struct Cleared {
     undo: VecDeque<HistoryState>,
     redo: Vec<HistoryState>,
     brush_source: Option<u64>,
+    brush_source_snapshot: Option<u64>,
 }
 
 /// The undo label of the step [`History::clear_states`] adds (Edit › Undo Clear History).
@@ -134,6 +145,7 @@ impl History {
             current_id: 0,
             next_id: 1,
             brush_source: None,
+            brush_source_snapshot: None,
         }
     }
 
@@ -255,18 +267,44 @@ impl History {
     /// Keep source selections when temporary action rows are consolidated. Return a selected
     /// intermediate state so the caller can retain its pixels as a normal history snapshot.
     /// A source already deleted before consolidation remains unresolved.
-    pub fn preserve_action_brush_source(&mut self, later: &Self) -> Option<HistoryState> {
+    pub fn preserve_action_brush_source(&mut self, later: &Self) -> Option<ActionBrushSource> {
         let current = self.current_id;
         let prior_current = later.current_id;
-        let collapsed = later
+        let collapsed = |id| {
+            if id == prior_current || self.held_states().any(|state| state.id == id) { None } else { later.held_states().find(|state| state.id == id).cloned() }
+        };
+        let source = later
             .brush_source
-            .and_then(|id| if id == prior_current || self.row_of(id).is_some() { None } else { later.held_states().find(|state| state.id == id).cloned() });
+            .and_then(collapsed)
+            .map(ActionBrushSource::Current)
+            .or_else(|| later.cleared.as_ref().and_then(|cleared| cleared.brush_source).and_then(collapsed).map(ActionBrushSource::Cleared));
         let map = |source: Option<u64>| source.map(|id| if id == prior_current { current } else { id });
         self.brush_source = map(later.brush_source);
+        self.brush_source_snapshot = later.brush_source_snapshot;
         if let (Some(dst), Some(src)) = (&mut self.cleared, &later.cleared) {
             dst.brush_source = map(src.brush_source);
+            dst.brush_source_snapshot = src.brush_source_snapshot;
         }
-        collapsed
+        source
+    }
+
+    /// The snapshot retaining a folded row's pixels in the currently active source context.
+    pub fn brush_source_snapshot(&self) -> Option<u64> {
+        self.brush_source_snapshot
+    }
+
+    /// Retain a folded row through a native snapshot, without adding a visible Undo state.
+    pub fn set_action_brush_snapshot(&mut self, snapshot: u64) {
+        self.brush_source = None;
+        self.brush_source_snapshot = Some(snapshot);
+    }
+
+    /// Keep a folded source inactive until Undo Clear History restores its source context.
+    pub fn set_cleared_brush_snapshot(&mut self, snapshot: u64) {
+        if let Some(cleared) = &mut self.cleared {
+            cleared.brush_source = None;
+            cleared.brush_source_snapshot = Some(snapshot);
+        }
     }
 
     /// Undo: `current` becomes redoable; returns the document to make current and the layers it
@@ -274,10 +312,11 @@ impl History {
     pub fn undo(&mut self, current: Arc<Document>) -> Option<(Arc<Document>, LayerTarget)> {
         // Undo Clear History: the cleared states come back; the document doesn't change.
         if let Some(cleared) = self.cleared.take() {
-            let Cleared { undo, redo, brush_source } = *cleared;
+            let Cleared { undo, redo, brush_source, brush_source_snapshot } = *cleared;
             self.undo = undo;
             self.redo = redo;
             self.brush_source = brush_source;
+            self.brush_source_snapshot = brush_source_snapshot;
             self.tiles = None;
             return Some((current, self.current_layers.clone()));
         }
@@ -368,6 +407,7 @@ impl History {
     pub fn set_brush_source(&mut self, i: usize) -> bool {
         let Some(id) = self.row_id(i) else { return false };
         self.brush_source = Some(id);
+        self.brush_source_snapshot = None;
         true
     }
 
@@ -548,6 +588,7 @@ impl History {
     /// Make the History Brush's source the default again (the oldest state held), pinning no state.
     pub fn reset_brush_source(&mut self) {
         self.brush_source = None;
+        self.brush_source_snapshot = None;
     }
 
     /// History panel › Clear History: take every state but the current one off the list without
@@ -562,7 +603,8 @@ impl History {
         let undo = std::mem::take(&mut self.undo);
         let redo = std::mem::take(&mut self.redo);
         let brush_source = self.brush_source.take();
-        self.cleared = Some(Box::new(Cleared { undo, redo, brush_source }));
+        let brush_source_snapshot = self.brush_source_snapshot.take();
+        self.cleared = Some(Box::new(Cleared { undo, redo, brush_source, brush_source_snapshot }));
         self.last_record = None;
         self.tiles = None;
         true

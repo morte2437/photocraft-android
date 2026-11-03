@@ -91,13 +91,20 @@ fn consolidate(s: &mut Session, group: &ActionHistory) {
             history.clear_states();
         }
         if let Some(source) = history.preserve_action_brush_source(&st.history) {
+            let (source, restore_on_clear_undo) = match source {
+                photocraft_ops::ActionBrushSource::Current(source) => (source, false),
+                photocraft_ops::ActionBrushSource::Cleared(source) => (source, true),
+            };
             // The selected row will no longer exist, but the History Brush must still paint its
             // exact pixels. Snapshots already retain source pixels without adding an Undo row.
             let id = st.next_snapshot;
             st.next_snapshot = id.saturating_add(1);
             st.snapshots.push(crate::history_cmds::Snapshot { id, name: format!("{}: {}", group.name, source.label), doc: source.doc, layers: source.layers });
-            st.source_snapshot = Some(id);
-            history.reset_brush_source();
+            if restore_on_clear_undo {
+                history.set_cleared_brush_snapshot(id);
+            } else {
+                history.set_action_brush_snapshot(id);
+            }
         }
         st.history = history;
         st.trim_history();
@@ -134,6 +141,7 @@ struct HistoryBinding {
     past: usize,
     rows: Vec<(Option<u64>, String)>,
     source: Option<usize>,
+    source_snapshot: Option<u64>,
     cleared: bool,
 }
 
@@ -145,6 +153,7 @@ impl HistoryBinding {
             past: history.past_len(),
             rows: labels.enumerate().map(|(i, label)| (history.row_id(i), label)).collect(),
             source: history.brush_source(),
+            source_snapshot: history.brush_source_snapshot(),
             cleared: history.is_cleared(),
         }
     }
