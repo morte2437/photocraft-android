@@ -543,6 +543,38 @@ fn open_runs_as_a_job_and_cancel_adds_nothing() {
     assert!(matches!(wait_event(&mut s, id).outcome, JobOutcome::Failed(_)));
 }
 
+/// A flat scanline EXR opened from a path goes through the band decoder in the open job and
+/// arrives as the same 32-bit document the whole-file decoder makes; cancelling adds nothing.
+#[cfg(any(unix, windows))]
+#[test]
+fn an_exr_path_open_decodes_in_bands_and_cancels_cleanly() {
+    use photocraft_codecs::{ChannelLayout, EncodeOptions, ExrCompression, Format, Image, SampleType};
+    let values: Vec<f32> = (0..64 * 48 * 3).map(|i| [0.25, 3.0, -0.5][i % 3]).collect();
+    let image = Image::from_f32(64, 48, ChannelLayout::Rgb, &values).unwrap().convert(ChannelLayout::Rgb, SampleType::F16);
+    let bytes = photocraft_codecs::encode(&image, Format::OpenExr, &EncodeOptions { exr_compression: ExrCompression::Zip16, ..Default::default() }).unwrap();
+    let path = std::env::temp_dir().join(format!("photocraft-open-job-{}.exr", std::process::id()));
+    std::fs::write(&path, &bytes).unwrap();
+    let reference = photocraft_io::import("band.exr", &bytes).unwrap().document;
+    let mut s = Session::new();
+    let id = job(s.start_open("band.exr", OpenSource::Path(path.to_string_lossy().into_owned())).unwrap());
+    let e = wait_event(&mut s, id);
+    assert!(matches!(e.outcome, JobOutcome::Done(_)), "{e:?}");
+    let doc = &s.documents()[0].doc;
+    assert_eq!((doc.size, doc.mode, doc.depth), (reference.size, reference.mode, reference.depth));
+    use photocraft_doc::LayerContent;
+    let (LayerContent::Raster(a), LayerContent::Raster(r)) = (&doc.layers[0].content, &reference.layers[0].content) else { panic!("raster background") };
+    assert_eq!(a.to_interleaved(reference.bounds()), r.to_interleaved(reference.bounds()));
+
+    let id = job(s.start_open("again.exr", OpenSource::Path(path.to_string_lossy().into_owned())).unwrap());
+    s.cancel_job(id);
+    let outcome = wait_event(&mut s, id).outcome;
+    assert!(matches!(outcome, JobOutcome::Cancelled | JobOutcome::Done(_)), "{outcome:?}");
+    if outcome == JobOutcome::Cancelled {
+        assert_eq!(s.documents().len(), 1, "a cancelled open adds no document");
+    }
+    std::fs::remove_file(path).unwrap();
+}
+
 /// Ask When Opening: a file whose profile doesn't match is decoded but not added; the shell takes
 /// it once the prompt is answered. Without Ask it opens as usual.
 #[test]

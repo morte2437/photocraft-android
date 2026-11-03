@@ -12,6 +12,17 @@ pub(super) fn merged_planes(doc: &Document, fmt: &PixelFormat, cmyk: bool, matte
     if cmyk && let Some(planes) = merged_ink_planes(doc, fmt.sample, matte, ctl) {
         return planes;
     }
+    merged_planes_in_bands(doc, fmt, cmyk, matte, MERGED_BAND_PIXELS, ctl)
+}
+
+/// Pixels per band of the merged composite: an eighth of [`photocraft_compose::BAND_PIXELS`]. The
+/// planes it fills hold the whole image already, so a band's float pixels and their converted
+/// parts are the save's peak on top of them (#6607); smaller bands cut that and render the same
+/// pixels (bands are whole tiles).
+const MERGED_BAND_PIXELS: u64 = photocraft_compose::BAND_PIXELS / 8;
+
+/// [`merged_planes`] (its composite path) rendered in bands of about `band_pixels`.
+fn merged_planes_in_bands(doc: &Document, fmt: &PixelFormat, cmyk: bool, matte: bool, band_pixels: u64, ctl: &Interrupt) -> (Vec<u8>, bool, bool) {
     let sample = fmt.sample;
     let cc = fmt.mode.color_channels();
     let bps = sample.bytes();
@@ -25,7 +36,8 @@ pub(super) fn merged_planes(doc: &Document, fmt: &PixelFormat, cmyk: bool, matte
     let space = photocraft_compose::cmyk_space(doc);
     let lab16 = fmt.mode == ColorMode::Lab && sample == SampleType::U16;
     let rows = canvas.height().max(1) as f32;
-    let _ = photocraft_compose::render_bands(doc, canvas, 0, |band| -> Result<(), ()> {
+    let band_rows = i32::try_from((band_pixels / u64::from(canvas.width().max(1))).max(1)).unwrap_or(i32::MAX);
+    let _ = photocraft_compose::render_bands(doc, canvas, band_rows, |band| -> Result<(), ()> {
         if ctl.cancelled() {
             return Err(());
         }
@@ -269,5 +281,34 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// #6607: the merged composite is rendered in smaller bands than the default to keep a save's
+    /// peak down; the planes are the same however tall the bands are, effects that reach across a
+    /// band's edge (shadows) and translucent pixels included.
+    #[test]
+    fn the_merged_image_is_the_same_in_any_band_height() {
+        use photocraft_doc::{Effect, Shadow};
+        let mut doc = Document::new("bands", photocraft_geom::Size::new(300, 1100), ColorMode::Rgb, SampleType::U8);
+        let fmt = photocraft_color::PixelFormat::RGBA8;
+        for (i, y) in [240, 500, 760].into_iter().enumerate() {
+            let mut l = Layer::raster(format!("blob {i}"), fmt);
+            let (x, f) = (60 * i as i32, i as f32);
+            l.surface_mut().unwrap().fill_rect(photocraft_geom::Rect::new(30 + x, y, 150 + x, y + 40), &[0.8, 0.2 * f, 0.1, 0.6 + 0.2 * f]);
+            let shadow = |distance: f32, size: f32| match Effect::default_drop_shadow() {
+                Effect::DropShadow(s) => Effect::DropShadow(Shadow { distance, size, angle: 90.0, use_global_light: false, ..s }),
+                other => other,
+            };
+            l.effects.items = vec![shadow(24.0, 18.0), shadow(9.0, 40.0)];
+            doc.layers.push(l);
+        }
+        let dfmt = doc.pixel_format();
+        let tall = merged_planes_in_bands(&doc, &dfmt, false, true, photocraft_compose::BAND_PIXELS, &Interrupt::NONE);
+        assert!(photocraft_compose::band_rows_for(300, (photocraft_compose::BAND_PIXELS / 300) as i32) >= 1100, "one band");
+        for band_pixels in [1, 300 * 256, 300 * 512, MERGED_BAND_PIXELS] {
+            let banded = merged_planes_in_bands(&doc, &dfmt, false, true, band_pixels, &Interrupt::NONE);
+            assert!(banded == tall, "{band_pixels} px bands changed the merged image");
+        }
+        assert!(tall.1 && tall.2, "the test image has translucent pixels");
     }
 }

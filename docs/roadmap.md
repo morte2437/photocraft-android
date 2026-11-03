@@ -124,3 +124,5 @@ Each milestone has a **definition of done (DoD)** and must leave `main` green on
 | 2026-10-05 | major | Honest parity assessment added |
 
 2026-10-13: native scratch storage pages current and history tiles through compressed, CRC-checked files. Fresh RAM budgets default to 70%; engine-owned memory supervision stops with its last session. Scratch errors block edit/save commits and permit retry. Unix files are private and stale files swept at startup; Windows files use delete-on-close. See [scratch disks](scratch-disks.md). Streaming import and viewport rendering follow separately.
+
+2026-10-13: native path opens of single-part flat scanline EXR files decode one compression block at a time into tiles at the original resolution. See [EXR streaming](streaming-io.md).
