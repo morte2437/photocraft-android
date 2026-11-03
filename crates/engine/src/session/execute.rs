@@ -99,7 +99,7 @@ impl Session {
         if let Some(why) = color_channels::refusal(self, id, &run_params) {
             return Err(EngineError::Disabled(id.into(), why));
         }
-        if let Err(why) = self.explicit_layer_enabled(spec, params).unwrap_or_else(|| self.precondition(spec, &run_params)) {
+        if let Err(why) = self.explicit_layer_enabled(spec, params)?.unwrap_or_else(|| self.precondition(spec, &run_params)) {
             return Err(EngineError::Disabled(id.to_string(), why));
         }
         if let Some(why) = self.job_conflict(id, spec.journal) {
@@ -160,6 +160,12 @@ impl Session {
         if spec.id == "layer.smartFilter.deleteFilterMask" && params.get("ifPresent").and_then(Value::as_bool) == Some(true) {
             return smart_cmds::smart_layer_active(self);
         }
+        // Recorded Unlink can be repeated on a single, already-unlinked layer.
+        // Keep the menu toggle's two-layer requirement when no state is supplied.
+        if spec.id == "layer.linkLayers" && params.get("linked").and_then(Value::as_bool) == Some(false) {
+            let d = self.active().ok_or_else(|| "no document open".to_string())?;
+            return if d.selected_layers().is_empty() { Err("no layer selected".into()) } else { Ok(()) };
+        }
         channel_cmds::mask_target_enabled(self, spec.id, params).unwrap_or_else(|| (spec.enabled)(self))
     }
 
@@ -177,17 +183,31 @@ impl Session {
     /// than on the active one, which stays active (#466). A script, action or agent can then
     /// Replace Contents, Rasterize or Merge Down a layer without selecting it first. `None` for
     /// other commands, or without such a layer.
-    pub(crate) fn explicit_layer_enabled(&mut self, spec: &commands::CommandSpec, params: &Value) -> Option<std::result::Result<(), String>> {
+    pub(crate) fn explicit_layer_enabled(&mut self, spec: &commands::CommandSpec, params: &Value) -> Result<Option<std::result::Result<(), String>>> {
         if !spec.params.contains("\"layer\":id") {
-            return None;
+            return Ok(None);
         }
-        let layer = params.get("layer")?;
-        if !(layer.is_number() || layer.is_object()) {
-            return None;
+        // An ATN group-end index is a valid no-op only for Select. Let that command validate
+        // its other parameters and preserve the current selection.
+        if spec.id == "layer.select"
+            && let Some(selector @ Value::Object(fields)) = params.get("layer")
+            && (fields.contains_key("index") || fields.contains_key("ordinal"))
+            && commands::recorded_layer(self, selector)?.is_none()
+        {
+            return Ok(None);
         }
-        let target = commands::explicit_layer(self, params).ok()??;
-        let d = self.active_mut()?;
-        d.doc.layer(target)?;
+        let target = match commands::explicit_layer(self, params) {
+            Ok(Some(target)) => target,
+            Ok(None) => return Ok(None),
+            // Read-only queries keep their own parameter-error contract; recorded commands
+            // must identify a missing named receiver before checking the active layer.
+            Err(_) if !spec.journal => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let Some(d) = self.active_mut() else { return Ok(None) };
+        if d.doc.layer(target).is_none() {
+            return Ok(None);
+        }
         let active = d.active_layer.replace(target);
         // The checks see the resolved id: a relative ordinal (`Frwr`, `Bckw`) would otherwise
         // resolve again from the swapped-in active layer and land one layer further.
@@ -199,7 +219,7 @@ impl Session {
         if let Some(d) = self.active_mut() {
             d.active_layer = active;
         }
-        Some(r)
+        Ok(Some(r))
     }
 
     /// Apply an undoable edit to the active document.

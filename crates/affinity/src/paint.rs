@@ -125,18 +125,24 @@ pub struct Stroke {
 
 /// Gradient stops per gradient.
 const MAX_STOPS: usize = 1024;
+/// Dash and gap lengths per stroke. Affinity's editor offers three dash/gap pairs; a longer
+/// pattern would be copied into every shape that shares its style.
+const MAX_DASHES: usize = 64;
 
-fn floats(v: &Value) -> Option<Vec<f64>> {
+/// The first `n` components of a float vector or packed `f32` record. Colours and gradient
+/// positions use a few leading components; a shared colour with a huge record is decoded for
+/// every occurrence, so the rest is neither converted nor copied.
+fn floats(v: &Value, n: usize) -> Option<Vec<f64>> {
     match v {
-        Value::Floats(f) => Some(f.clone()),
-        Value::Bytes(b) if b.len() % 4 == 0 => Some(f32_samples(b)),
+        Value::Floats(f) => Some(f.iter().take(n).copied().collect()),
+        Value::Bytes(b) if b.len() % 4 == 0 => Some(f32_samples(b, n)),
         _ => None,
     }
 }
 
-/// Little-endian `f32` samples widened to `f64`.
-fn f32_samples(b: &[u8]) -> Vec<f64> {
-    b.as_chunks::<4>().0.iter().map(|c| f64::from(f32::from_le_bytes(*c))).collect()
+/// Up to `n` little-endian `f32` samples widened to `f64`.
+fn f32_samples(b: &[u8], n: usize) -> Vec<f64> {
+    b.as_chunks::<4>().0.iter().take(n).map(|c| f64::from(f32::from_le_bytes(*c))).collect()
 }
 
 /// Spot colours defined through spot colours. A spot colour (`Pant`) is read through its RGB
@@ -154,26 +160,27 @@ pub(crate) fn color(r: &mut Reader, id: ObjId) -> Option<Color> {
 fn color_at(r: &mut Reader, id: ObjId, depth: usize) -> Option<Color> {
     let s = r.s;
     let class = s.class(id)?;
-    let col = || -> Option<Vec<f64>> {
-        let v = floats(s.field(id, b"_col")?)?;
+    // `n` is how many components the model reads; only those are decoded and checked.
+    let col = |n: usize| -> Option<Vec<f64>> {
+        let v = floats(s.field(id, b"_col")?, n)?;
         v.iter().all(|f| f.is_finite()).then_some(v)
     };
     Some(match &class.0.to_be_bytes() {
         b"RGBA" => {
-            let v = col()?;
+            let v = col(4)?;
             Color::Rgb { r: *v.first()?, g: *v.get(1)?, b: *v.get(2)?, a: v.get(3)?.clamp(0.0, 1.0) }
         }
         b"HSLA" => {
-            let v = col()?;
+            let v = col(4)?;
             let (r2, g, b) = hsl(*v.first()?, *v.get(1)?, *v.get(2)?);
             Color::Rgb { r: r2, g, b, a: v.get(3)?.clamp(0.0, 1.0) }
         }
         b"CMYK" => {
-            let v = col()?;
+            let v = col(5)?;
             Color::Cmyk { c: *v.first()?, m: *v.get(1)?, y: *v.get(2)?, k: *v.get(3)?, a: v.get(4)?.clamp(0.0, 1.0) }
         }
         b"GRAY" => {
-            let v = col()?;
+            let v = col(2)?;
             Color::Gray { v: *v.first()?, a: v.get(1)?.clamp(0.0, 1.0) }
         }
         b"LABA" => {
@@ -245,9 +252,10 @@ pub(crate) fn descriptor(r: &mut Reader, id: ObjId, local: Affine) -> Option<Pai
             }
             let cols = s.objs(grad, b"Cols");
             let posn: Vec<Vec<f64>> = match s.field(grad, b"Posn") {
-                Some(Value::Array(a)) => a.iter().filter_map(floats).take(MAX_STOPS).collect(),
+                // A position is (offset, bias): later components are not decoded.
+                Some(Value::Array(a)) => a.iter().filter_map(|v| floats(v, 2)).take(MAX_STOPS).collect(),
                 Some(Value::Records { size, data }) if *size % 4 == 0 && *size > 0 => {
-                    data.chunks_exact(usize::from(*size)).map(f32_samples).take(MAX_STOPS).collect()
+                    data.chunks_exact(usize::from(*size)).map(|b| f32_samples(b, 2)).take(MAX_STOPS).collect()
                 }
                 _ => Vec::new(),
             };
@@ -274,23 +282,52 @@ pub(crate) fn descriptor(r: &mut Reader, id: ObjId, local: Affine) -> Option<Pai
     }
 }
 
-fn current(r: &Reader, id: ObjId, list: &[u8; 4], index: &[u8; 4]) -> Option<ObjId> {
-    let items = r.s.objs(id, list);
-    let i = r.s.int(id, index).and_then(|i| usize::try_from(i).ok()).unwrap_or(0);
-    items.get(i).or_else(|| items.first()).copied()
+/// The active entry of a paint list (the `index`-th object, else the first) and how many
+/// objects the list holds. Every raw slot, null ones included, is charged before the list is
+/// walked: a shared layer's lists are read again for each occurrence. A list beyond the
+/// document's work budget reads as empty.
+fn current(r: &mut Reader, id: ObjId, list: &[u8; 4], index: &[u8; 4]) -> (Option<ObjId>, usize) {
+    let s = r.s;
+    let Some(Value::Array(items)) = s.field(id, list) else { return (None, 0) };
+    if r.charge_slots(items.len()).is_err() {
+        r.warn("fill and stroke lists beyond the document work budget (left empty)");
+        return (None, 0);
+    }
+    let want = s.int(id, index).and_then(|i| usize::try_from(i).ok()).unwrap_or(0);
+    let (mut first, mut chosen, mut count) = (None, None, 0usize);
+    for o in items.iter().filter_map(|v| if let Value::Obj(Some(o)) = v { Some(*o) } else { None }) {
+        first = first.or(Some(o));
+        if count == want {
+            chosen = Some(o);
+        }
+        count += 1;
+    }
+    (chosen.or(first), count)
 }
 
 /// The fills of `list` (artboard backgrounds use `BFFl`).
 pub(crate) fn fills(r: &mut Reader, id: ObjId, local: Affine, list: &[u8; 4]) -> Vec<crate::paint::Paint> {
-    let d = current(r, id, list, b"BFCr").or_else(|| r.s.obj(id, b"BFil"));
-    d.and_then(|d| descriptor(r, d, local)).filter(|p| *p != Paint::None).into_iter().collect()
+    fills_counted(r, id, local, list).0
+}
+
+/// [`fills`], and how many entries `list` holds.
+fn fills_counted(r: &mut Reader, id: ObjId, local: Affine, list: &[u8; 4]) -> (Vec<Paint>, usize) {
+    let (d, count) = current(r, id, list, b"BFCr");
+    let d = d.or_else(|| r.s.obj(id, b"BFil"));
+    (d.and_then(|d| descriptor(r, d, local)).filter(|p| *p != Paint::None).into_iter().collect(), count)
 }
 
 /// A node's fill and stroke. `local` maps the node's space to document pixels.
 pub(crate) fn node_paint(r: &mut Reader, id: ObjId, local: Affine) -> (Vec<Paint>, Vec<Stroke>) {
     let s = r.s;
-    let fills = fills(r, id, local, b"BFFl");
-    if r.s.objs(id, b"BFFl").len() > 1 || r.s.objs(id, b"LIFl").len() > 1 {
+    let (fills, fill_count) = fills_counted(r, id, local, b"BFFl");
+    let (pen, style, pen_count) = if s.field(id, b"LIFl").is_some() {
+        let (pen, pens) = current(r, id, b"LIFl", b"LICr");
+        (pen, current(r, id, b"LILn", b"LICr").0, pens)
+    } else {
+        (s.obj(id, b"PFil"), s.obj(id, b"LSty"), 0)
+    };
+    if fill_count > 1 || pen_count > 1 {
         r.warn("several fills or strokes on one object (only the active one is imported)");
     }
     if s.f64(id, b"FOpc").is_some_and(|o| o < 0.999) {
@@ -299,11 +336,6 @@ pub(crate) fn node_paint(r: &mut Reader, id: ObjId, local: Affine) -> (Vec<Paint
     if s.obj(id, b"Trns").is_some() {
         r.warn("transparency gradients (imported without them)");
     }
-    let (pen, style) = if s.field(id, b"LIFl").is_some() {
-        (current(r, id, b"LIFl", b"LICr"), current(r, id, b"LILn", b"LICr"))
-    } else {
-        (s.obj(id, b"PFil"), s.obj(id, b"LSty"))
-    };
     let behind = matches!(s.field(id, b"DrwO"), Some(Value::Array(a)) if a.first() == Some(&Value::Enum { id: 1, version: 0 }));
     let stroke = match (pen, style) {
         (Some(pen), Some(style)) => stroke(r, pen, style, local, behind),
@@ -341,6 +373,17 @@ fn stroke(r: &mut Reader, pen: ObjId, ldsc: ObjId, local: Affine, behind: bool) 
         _ => Align::Center,
     };
     let dash = match s.field(lsty, b"Patn") {
+        // Each occurrence of a shared style keeps its own scaled copy: refuse long patterns
+        // before scanning or copying them.
+        Some(Value::Array(a)) if a.len() > MAX_DASHES => {
+            r.warn("dash patterns longer than 64 entries (imported as solid strokes)");
+            None
+        }
+        // The copies are retained across the document: charge them like other shared slots.
+        Some(Value::Array(a)) if r.charge_slots(a.len()).is_err() => {
+            r.warn("dash patterns beyond the document work budget (imported as solid strokes)");
+            None
+        }
         Some(Value::Array(a)) if data.get(10) == Some(&2) || !a.is_empty() => {
             let mut v: Vec<f64> = a.iter().filter_map(|x| if let Value::Float(f) = x { Some(*f) } else { None }).collect();
             while v.len() >= 2 && v.iter().rev().take(2).all(|x| *x == 0.0) {
@@ -355,4 +398,20 @@ fn stroke(r: &mut Reader, pen: ObjId, ldsc: ObjId, local: Affine, behind: bool) 
         r.warn("brush and pressure strokes (imported as plain strokes)");
     }
     Some(Stroke { paint, width, cap, join, miter_limit, align, dash, behind })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_components_a_schema_reads_are_decoded() {
+        // A 64 KiB record decodes to the four components asked for, not sixteen thousand.
+        let record = Value::Bytes(1.0f32.to_le_bytes().repeat(16_383));
+        assert_eq!(floats(&record, 4), Some(vec![1.0; 4]));
+        assert_eq!(floats(&Value::Floats(vec![0.5; 6]), 2), Some(vec![0.5; 2]));
+        // Fewer components than asked for are returned as they are, for the caller to refuse.
+        assert_eq!(floats(&Value::Floats(vec![0.5; 3]), 5), Some(vec![0.5; 3]));
+        assert_eq!(floats(&Value::Bytes(vec![0; 3]), 4), None);
+    }
 }

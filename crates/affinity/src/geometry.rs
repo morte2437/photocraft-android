@@ -177,7 +177,9 @@ pub(crate) fn curves(r: &mut Reader, crvs: ObjId) -> Option<Path> {
             r.warn("curves with more than four million nodes");
             return None;
         }
-        if let Err(reason) = r.geometry_budget.records(len) {
+        // Charge the subpath itself as well as its records: an empty subpath adds no records
+        // or points, but a shared curve full of them is still walked for every occurrence.
+        if let Err(reason) = r.geometry_budget.records(len.saturating_add(1)) {
             r.warn(reason);
             return None;
         }

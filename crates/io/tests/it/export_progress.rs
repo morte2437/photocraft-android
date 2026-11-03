@@ -91,3 +91,24 @@ fn a_cancelled_export_stops_with_cancelled() {
         assert!(matches!(r, Err(IoError::Cancelled)), "{name} midway: {:?}", r.map(|r| r.bytes.len()));
     }
 }
+
+/// #6607: a PSD/PSB save stops at the file model, which is serialized into the file as it is
+/// written; streamed into a file it holds exactly the exported bytes. Other formats come back as
+/// their bytes.
+#[test]
+fn encoded_saves_write_exactly_the_exported_bytes() {
+    for depth in [SampleType::U8, SampleType::U16] {
+        let doc = layered(depth);
+        for name in ["a.psd", "a.psb", "a.png"] {
+            let opts = ExportOptions::default();
+            let want = photocraft_io::export(&doc, name, &opts).unwrap().bytes;
+            let r = photocraft_io::encode_with(&doc, name, &opts, &Interrupt::NONE).unwrap();
+            assert_eq!(matches!(r.encoded, photocraft_io::Encoded::Psd(_)), !name.ends_with(".png"), "{name}");
+            assert_eq!(r.encoded.encoded_len().unwrap(), want.len() as u64, "{name} {depth:?}: the encoded length");
+            let mut file = std::io::Cursor::new(Vec::new());
+            r.encoded.write_to(&mut file).unwrap();
+            assert!(file.into_inner() == want, "{name} {depth:?}: the streamed file differs from the export");
+            assert!(r.encoded.into_bytes().unwrap() == want, "{name} {depth:?}");
+        }
+    }
+}

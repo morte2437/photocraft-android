@@ -382,6 +382,78 @@ fn record_explicit_transform_keeps_one_replayable_step() {
 }
 
 #[test]
+fn recording_folds_one_run_of_move_tool_nudges() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 24, "height": 24, "background": "transparent"})).unwrap();
+    s.execute("layer.new.layer", json!({"name": "Target"})).unwrap();
+    s.execute("actions.record", json!({"name": "Nudge"})).unwrap();
+    for (dx, dy, run) in [(1, 0, "nudge:1"), (1, 0, "nudge:1"), (1, 10, "nudge:1"), (0, 1, "nudge:2")] {
+        s.execute("layer.translate", json!({"dx": dx, "dy": dy, "coalesce": run})).unwrap();
+    }
+    s.execute("actions.stop", json!({})).unwrap();
+    let steps = &s.actions.list[0].steps;
+    assert_eq!(steps, &[("layer.translate".into(), json!({"dx": 3.0, "dy": 10.0})), ("layer.translate".into(), json!({"dx": 0.0, "dy": 1.0}))]);
+}
+
+/// Each nudge moves by whole pixels, so two 0.6 px steps fold into the 2 px they moved, not 1.2.
+#[test]
+fn folded_nudges_add_whole_pixel_steps() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 24, "height": 24, "background": "transparent"})).unwrap();
+    s.execute("layer.new.layer", json!({"name": "Target"})).unwrap();
+    s.execute("actions.record", json!({"name": "Nudge"})).unwrap();
+    for _ in 0..2 {
+        s.execute("layer.translate", json!({"dx": 0.6, "dy": 0.0, "coalesce": "nudge:1"})).unwrap();
+    }
+    s.execute("actions.stop", json!({})).unwrap();
+    assert_eq!(s.actions.list[0].steps, [("layer.translate".into(), json!({"dx": 2.0, "dy": 0.0}))]);
+}
+
+#[test]
+fn recording_document_activation_uses_opening_order_offset() {
+    let mut s = Session::new();
+    for name in ["First", "Second"] {
+        s.execute("file.new", json!({"width": 8, "height": 8, "name": name})).unwrap();
+    }
+    s.execute("actions.record", json!({"name": "Switch"})).unwrap();
+    s.execute("document.activate", json!({"document": 0})).unwrap();
+    s.execute("actions.stop", json!({})).unwrap();
+    assert_eq!(s.actions.list[0].steps, [("document.activate".into(), json!({"offset": -1}))]);
+}
+
+#[test]
+fn recorded_point_text_position_scales_with_the_playback_canvas() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 100, "height": 100, "background": "transparent"})).unwrap();
+    s.execute("actions.record", json!({"name": "Caption"})).unwrap();
+    s.execute("type.create", json!({"x": 20, "y": 30, "text": "Hi", "size": 12})).unwrap();
+    s.execute("actions.stop", json!({})).unwrap();
+    assert_eq!(s.actions.list[0].steps[0].1["xPercent"], json!(20.0));
+    assert_eq!(s.actions.list[0].steps[0].1["yPercent"], json!(30.0));
+    s.execute("file.new", json!({"width": 200, "height": 300, "background": "transparent"})).unwrap();
+    let played = s.execute("actions.play", json!({"action": "Caption"})).unwrap();
+    assert!(played.get("failed").is_none(), "{played}");
+    let info = s.execute("type.info", json!({})).unwrap();
+    assert_eq!(info["transform"][4], json!(40.0));
+    assert_eq!(info["transform"][5], json!(90.0));
+}
+
+#[test]
+fn recorded_point_text_rejects_invalid_relative_positions() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 100, "height": 100})).unwrap();
+    for params in [
+        json!({"xPercent": 20}),
+        json!({"xPercent": "20", "yPercent": 30}),
+        json!({"xPercent": 20, "yPercent": 30, "x": 20}),
+        json!({"xPercent": 20, "yPercent": 30, "box": [0, 0, 10, 10]}),
+        json!({"xPercent": 1e100, "yPercent": 30}),
+    ] {
+        assert!(playback_params(&s, "type.create", &params).is_err(), "{params}");
+    }
+}
+
+#[test]
 fn recorded_single_layer_transform_replays_after_layer_ids_shift() {
     let mut s = Session::new();
     s.execute("file.new", json!({"width": 20, "height": 8, "background": "transparent"})).unwrap();

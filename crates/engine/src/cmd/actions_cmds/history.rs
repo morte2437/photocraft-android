@@ -255,6 +255,52 @@ impl ActionHistoryContinuation {
         s.action_history = self.group.clone();
         Ok(())
     }
+
+    /// Rebind a completed nonmodal dialog edit, leaving open-dialog time outside its scope.
+    /// Only the scope resumed from this continuation may be taken; a parent remains untouched.
+    pub fn suspend_after_edit(&self, s: &mut Session) -> Result<Self> {
+        if s.actions.playing != 0 || s.active().map(|st| st.doc.id) != self.active {
+            return Err(EngineError::Other("the dialog's action scope is no longer current".into()));
+        }
+        let active = self.documents.iter().find(|doc| Some(doc.id) == self.active);
+        let at_dialog_boundary = |before: &BeforeDocument| active.is_some_and(|doc| before.id == doc.id && Arc::ptr_eq(&before.doc, &doc.doc));
+        let owned = match (&self.group, &s.action_history) {
+            (None, None) => true,
+            (Some(expected), Some(current)) => {
+                expected.name == current.name
+                    && expected.external == current.external
+                    && current.before.len() >= expected.before.len()
+                    && current.before.len() <= expected.before.len().saturating_add(1)
+                    && expected
+                        .before
+                        .iter()
+                        .zip(&current.before)
+                        .all(|(before, now)| before.id == now.id && (Arc::ptr_eq(&before.doc, &now.doc) || at_dialog_boundary(now)))
+                    && current.before.iter().skip(expected.before.len()).all(at_dialog_boundary)
+            }
+            _ => false,
+        };
+        if !owned {
+            return Err(EngineError::Other("the dialog no longer owns the active action scope".into()));
+        }
+        Ok(Self::capture(s))
+    }
+
+    /// Publish the prefix and capture the same document/history/source binding for both callers.
+    fn capture(s: &mut Session) -> Self {
+        let group = s.action_history.take();
+        if let Some(group) = &group {
+            consolidate(s, group);
+        }
+        let active = s.active().map(|st| st.doc.id);
+        let documents = s
+            .docs
+            .iter()
+            .filter(|st| Some(st.doc.id) == active || group.as_ref().is_some_and(|g| g.before.iter().any(|b| b.id == st.doc.id)))
+            .map(|st| PausedDocument { id: st.doc.id, doc: st.doc.clone(), history: HistoryBinding::of(&st.history), source_snapshot: st.source_snapshot })
+            .collect();
+        Self { group, active, documents }
+    }
 }
 
 /// Publish the completed prefix, then release the active scope while a dialog is open.
@@ -262,23 +308,75 @@ pub fn suspend_history(s: &mut Session) -> Option<ActionHistoryContinuation> {
     if s.actions.playing != 1 {
         return None;
     }
-    let group = s.action_history.take();
-    if let Some(group) = &group {
-        consolidate(s, group);
-    }
-    let active = s.active().map(|st| st.doc.id);
-    let documents = s
-        .docs
-        .iter()
-        .filter(|st| Some(st.doc.id) == active || group.as_ref().is_some_and(|g| g.before.iter().any(|b| b.id == st.doc.id)))
-        .map(|st| PausedDocument { id: st.doc.id, doc: st.doc.clone(), history: HistoryBinding::of(&st.history), source_snapshot: st.source_snapshot })
-        .collect();
-    Some(ActionHistoryContinuation { group, active, documents })
+    Some(ActionHistoryContinuation::capture(s))
 }
 
 /// End a dialog scope if its command or continuation fails before playback starts.
 pub fn finish_pending_history(s: &mut Session) {
     if s.actions.playing == 0 {
         finish_playback(s);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn idle_dialog_rebind_keeps_first_edit_and_clear_boundaries() {
+        for single in [false, true] {
+            for clear in [false, true] {
+                let mut s = Session::new();
+                s.execute("file.new", json!({"width":4,"height":4})).unwrap();
+                s.execute("actions.setHistory", json!({"singleState":single})).unwrap();
+                begin_document_history(&mut s, "Spell");
+                if clear {
+                    s.execute("layer.renameLayer", json!({"name":"Prefix"})).unwrap();
+                    s.execute("history.clear", json!({})).unwrap();
+                }
+                let before = s.active().unwrap().doc.clone();
+                let mut continuation = ActionHistoryContinuation::capture(&mut s);
+                for name in ["First correction", "Second correction"] {
+                    continuation.resume(&mut s).unwrap();
+                    s.execute("layer.renameLayer", json!({"name":name})).unwrap();
+                    continuation = continuation.suspend_after_edit(&mut s).unwrap();
+                    assert!(s.action_history.is_none(), "idle time must not own a history scope");
+                    assert_eq!(s.actions.playing, 0);
+                }
+                continuation.resume(&mut s).unwrap();
+                finish_document_history(&mut s);
+                let after = s.active().unwrap().doc.clone();
+                assert!(s.undo());
+                if single {
+                    assert_eq!(s.active().unwrap().doc.as_ref(), before.as_ref());
+                } else {
+                    assert_ne!(s.active().unwrap().doc.as_ref(), before.as_ref());
+                }
+                assert!(s.redo());
+                assert_eq!(s.active().unwrap().doc.as_ref(), after.as_ref());
+            }
+        }
+    }
+
+    #[test]
+    fn idle_dialog_rebind_never_takes_an_unrelated_parent_scope() {
+        for single in [false, true] {
+            let mut s = Session::new();
+            s.execute("file.new", json!({"width":4,"height":4})).unwrap();
+            s.execute("actions.setHistory", json!({"singleState":single})).unwrap();
+            begin_document_history(&mut s, "Spell");
+            let continuation = ActionHistoryContinuation::capture(&mut s);
+            s.execute("actions.setHistory", json!({"singleState":true})).unwrap();
+            begin_document_history(&mut s, "Parent");
+            let before = s.active().unwrap().doc.clone();
+            let rows = s.active().unwrap().history.entries();
+            assert!(continuation.suspend_after_edit(&mut s).is_err());
+            assert!(suspend_history(&mut s).is_none(), "ordinary suspension still requires playing == 1");
+            assert_eq!(s.action_history.as_ref().unwrap().name, "Parent");
+            assert!(Arc::ptr_eq(&s.active().unwrap().doc, &before));
+            assert_eq!(s.active().unwrap().history.entries(), rows);
+            finish_document_history(&mut s);
+        }
     }
 }

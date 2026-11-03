@@ -55,6 +55,14 @@ pub(crate) struct ExportArgs {
     /// Compress TIFF output: none (the default), lzw or zip
     #[arg(long, value_name = "none|lzw|zip", value_parser = tiff_compression)]
     pub(crate) tiff_compression: Option<TiffCompression>,
+    /// TIFF Save Transparency: on keeps the transparency (ahead of any alpha or spot channels),
+    /// off composites the image over white. Without it: kept unless the document has alpha or
+    /// spot channels
+    #[arg(long, value_name = "on|off", value_parser = on_off)]
+    pub(crate) tiff_transparency: Option<bool>,
+    /// Also write a TIFF image pyramid: half-size copies after the full image
+    #[arg(long)]
+    pub(crate) tiff_pyramid: bool,
     /// A TGA's bits per pixel: 32 writes the alpha channel (or else the transparency) as its
     /// alpha, 24 none. Without it: 32 with an alpha channel or transparency, else 24
     #[arg(long, value_name = "24|32", value_parser = tga_bits)]
@@ -95,6 +103,9 @@ pub(crate) struct ConvertArgs {
     /// Allow an <OUT> that is the <IN> file, replacing the original
     #[arg(long)]
     pub(crate) in_place: bool,
+    /// Explicitly approve high-memory PSD/PSB imports within the hard memory budget
+    #[arg(long)]
+    pub(crate) approve_high_memory: bool,
     #[command(flatten)]
     pub(crate) export: ExportArgs,
 }
@@ -106,6 +117,9 @@ pub(crate) struct InfoArgs {
     /// One line of JSON instead of pretty-printed
     #[arg(long)]
     pub(crate) compact: bool,
+    /// Explicitly approve high-memory PSD/PSB imports within the hard memory budget
+    #[arg(long)]
+    pub(crate) approve_high_memory: bool,
 }
 
 /// Open a file (or start a new document), run engine commands in order, save the result
@@ -134,6 +148,9 @@ pub(crate) struct RunArgs {
     /// Allow an --out that is the <FILE>, replacing the original
     #[arg(long)]
     pub(crate) in_place: bool,
+    /// Explicitly approve high-memory PSD/PSB imports within the hard memory budget
+    #[arg(long)]
+    pub(crate) approve_high_memory: bool,
     #[command(flatten)]
     pub(crate) export: ExportArgs,
     /// `--cmd` and `--params` values in command-line order, set by [`parse`].
@@ -173,6 +190,25 @@ pub(crate) struct BatchArgs {
     /// originals; --in-place allows it
     #[arg(long)]
     pub(crate) in_place: bool,
+    /// Include images in subfolders; every result goes straight into --out, so a later file of
+    /// the same name replaces an earlier one
+    #[arg(long)]
+    pub(crate) recursive: bool,
+    /// Name each result with Batch tokens such as {name}, {serial}, {date}, and {ext}
+    #[arg(long, value_name = "TEMPLATE")]
+    pub(crate) naming: Option<String>,
+    /// First serial number used by --naming
+    #[arg(long, value_name = "1-4294967295", value_parser = clap::value_parser!(u32).range(1..))]
+    pub(crate) start_serial: Option<u32>,
+    /// Stop after the first failed input
+    #[arg(long)]
+    pub(crate) stop_on_error: bool,
+    /// Write failed inputs and reasons to this text file
+    #[arg(long, value_name = "FILE")]
+    pub(crate) error_log: Option<PathBuf>,
+    /// Explicitly approve high-memory PSD/PSB imports within the hard memory budget
+    #[arg(long)]
+    pub(crate) approve_high_memory: bool,
     #[command(flatten)]
     pub(crate) export: ExportArgs,
 }
@@ -256,6 +292,8 @@ enum ValueError {
     TiffCompression,
     #[error("expected baseline, optimized or progressive")]
     JpegFormat,
+    #[error("expected on or off")]
+    OnOff,
     /// Why a `--bridge` value, or a PHOTOCRAFT_CONTROL_PORT value for `mcp`, is refused.
     #[error("expected a port, 0-65535 (--bridge also takes 127.0.0.1:<PORT>)")]
     Bridge,
@@ -307,6 +345,14 @@ fn tiff_compression(s: &str) -> Result<TiffCompression, ValueError> {
         "lzw" => Ok(TiffCompression::Lzw),
         "zip" => Ok(TiffCompression::Deflate),
         _ => Err(ValueError::TiffCompression),
+    }
+}
+
+fn on_off(s: &str) -> Result<bool, ValueError> {
+    match s {
+        "on" => Ok(true),
+        "off" => Ok(false),
+        _ => Err(ValueError::OnOff),
     }
 }
 

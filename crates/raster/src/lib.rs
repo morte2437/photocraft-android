@@ -49,6 +49,7 @@ impl std::error::Error for AllocationError {}
 pub mod memory;
 mod scratch_file;
 pub mod spill;
+pub mod stage_file;
 
 /// One shared tile per pixel value (and tile size), for [`Surface::share_uniform_tiles`].
 #[derive(Debug, Default)]
