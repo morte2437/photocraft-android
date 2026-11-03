@@ -8,11 +8,13 @@
 //! - Holding ⌘ (Ctrl off the Mac) with the Crop tool is a temporary Straighten: a ⌘-drag draws the
 //!   line; releasing ⌘ gives the normal crop gestures back.
 //!
-//! While the line is drawn its angle shows beside the pointer. Straighten sets the frame's angle
-//! and fits the frame to the image ([`fitted`]); in Classic Mode the frame then shows turned over
-//! the image, in the default mode the image turns behind the upright box (`crop_mode`). It is only a pending frame edit:
-//! ↵ commits it and Esc cancels it as any crop. A line shorter than [`MIN_LINE_PX`] screen points
-//! does nothing.
+//! While the line is drawn its angle shows beside the pointer. Straighten sets the frame's angle.
+//! The button's line also fits the frame to the image ([`fitted`]); a ⌘-held line keeps the
+//! frame's size and position, so ↵ fills the corners the turn uncovers, as Photoshop does
+//! (measured: an 800 × 500 frame stays 800 × 500, #10870). In Classic Mode the frame then shows
+//! turned over the image, in the default mode the image turns behind the upright box
+//! (`crop_mode`). It is only a pending frame edit: ↵ commits it and Esc cancels it as any crop. A
+//! line shorter than [`MIN_LINE_PX`] screen points does nothing.
 
 use egui::{Modifiers, Pos2};
 
@@ -87,10 +89,12 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: Modifiers) -> bool 
         }
         ToolEvent::Up { x, y } => {
             let Some([a, _]) = app.crop.straighten.line.take() else { return false };
-            // One line per click of the button.
-            app.crop.straighten.armed = false;
+            // One line per click of the button. Only the button's line fits the frame (also with
+            // ⌘ held while it is armed); a ⌘ line keeps the frame's size, even when ⌘ is let go
+            // before the mouse button.
+            let fit = std::mem::take(&mut app.crop.straighten.armed);
             let zoom = f64::from(app.point_zoom());
-            apply(app, a, [x, y], zoom);
+            apply(app, a, [x, y], zoom, fit);
             true
         }
     }
@@ -129,15 +133,23 @@ pub fn fitted(w: f64, h: f64, cw: f64, ch: f64, deg: f64) -> Option<[f64; 4]> {
     Some([cx - hw, cy - hh, cx + hw, cy + hh])
 }
 
-/// The line from `a` to `b` (document px, at `zoom` screen points per px) straightens the frame.
-fn apply(app: &mut PhotocraftApp, a: [f64; 2], b: [f64; 2], zoom: f64) {
+/// The line from `a` to `b` (document px, at `zoom` screen points per px) straightens the frame,
+/// fitting it to the image when `fit` (the options-bar button) and keeping its size and position
+/// otherwise (⌘ held).
+fn apply(app: &mut PhotocraftApp, a: [f64; 2], b: [f64; 2], zoom: f64, fit: bool) {
     let min_len = if zoom.is_finite() && zoom > 0.0 { MIN_LINE_PX / zoom } else { MIN_LINE_PX };
     let Some(deg) = frame_angle(a, b, min_len) else { return };
     let Some(size) = app.session.active().map(|st| (f64::from(st.doc.size.width), f64::from(st.doc.size.height))) else { return };
-    // The frame keeps its proportions (an options-bar ratio is already the frame's); no frame
-    // takes the canvas's.
-    let (w, h) = app.ui.crop_rect.filter(|r| r.iter().all(|v| v.is_finite())).map_or(size, |r| (r[2] - r[0], r[3] - r[1]));
-    let Some(r) = fitted(w, h, size.0, size.1, deg) else { return };
+    let frame = app.ui.crop_rect.filter(|r| r.iter().all(|v| v.is_finite()));
+    let r = if fit {
+        // The frame keeps its proportions (an options-bar ratio is already the frame's); no frame
+        // takes the canvas's.
+        let (w, h) = frame.map_or(size, |r| (r[2] - r[0], r[3] - r[1]));
+        let Some(r) = fitted(w, h, size.0, size.1, deg) else { return };
+        r
+    } else {
+        frame.unwrap_or([0.0, 0.0, size.0, size.1])
+    };
     if app.ui.crop_rect == Some(r) && crate::crop_ui::angle(app) == deg {
         return;
     }
