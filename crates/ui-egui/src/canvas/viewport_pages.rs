@@ -396,10 +396,11 @@ impl Stream {
         }
     }
 
-    /// Whether a wanted page can't be shown: its render or upload failed and nothing older of it
-    /// is held, so the view would have a hole (the CPU canvas draws instead).
+    /// Whether a wanted page can't be shown: its render or upload failed and nothing current of
+    /// it is held, so the view would have a hole, or keep showing the page from before an edit
+    /// (the CPU canvas draws instead).
     pub fn stuck(&self, wanted: &[PageId]) -> bool {
-        wanted.iter().any(|p| !self.pages.contains_key(p) && self.failed.contains(&(*p, self.epoch(*p))))
+        wanted.iter().any(|p| self.pages.get(p).is_none_or(|q| q.dirty) && self.failed.contains(&(*p, self.epoch(*p))))
     }
 
     /// Whether work is outstanding (the view repaints until it is done).
@@ -923,6 +924,22 @@ mod tests {
         s.retry_after((7, 7));
         assert!(!s.stuck(&view), "a new memory configuration retries");
         s.invalidate(id(2), None);
+        assert!(!s.stuck(&view));
+    }
+
+    /// An edited page whose new render fails isn't left showing its old content (#5332 review).
+    #[test]
+    fn a_dirty_page_whose_render_failed_falls_back() {
+        let view = [page(1, 0, 0)];
+        let mut s = holding(&view);
+        s.invalidate(id(2), None);
+        assert!(s.pages[&view[0]].dirty && !s.stuck(&view), "the old page shows while it renders");
+        let mut log = Vec::new();
+        s.update(&view, true, recorder(&mut log));
+        s.tx.send(Done { page: view[0], epoch: log[0].1, exact: true, region: None, result: Err("out of memory".into()) }).unwrap();
+        s.update(&view, true, |_, _, _, _, _| panic!("no retry while failed"));
+        assert!(s.stuck(&view), "a stale page is not drawn in place of the failed one");
+        s.retry_after((7, 7));
         assert!(!s.stuck(&view));
     }
 
