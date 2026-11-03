@@ -87,6 +87,13 @@ impl AuthorizedWorkspace {
     /// resolution and file creation relative to the held directory handle, so
     /// a non-existent final target is supported without ambient path access.
     pub fn write(&self, path: &str, bytes: &[u8]) -> Result<(), AutomationError> {
+        self.write_stream(path, &mut |w| w.write_all(bytes))
+    }
+
+    /// [`Self::write`] with the file's bytes produced by `write` straight into the temporary
+    /// file (it may seek back to patch lengths), so a large PSD/PSB is never held in memory
+    /// whole (#5333). The same refusals, the same atomic replace.
+    pub fn write_stream(&self, path: &str, write: &mut photocraft_format::atomic::StreamWriter<'_>) -> Result<(), AutomationError> {
         let relative = request_path(path, self.write.as_ref())?;
         let root = self.write.as_ref().ok_or_else(|| AutomationError::BadRequest(format!("{DENIED}: write authority is absent")))?;
         let leaf = relative.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -112,7 +119,7 @@ impl AuthorizedWorkspace {
         options.write(true).create_new(true);
         let written = root.dir.open_with(&tmp, &options).and_then(|file| {
             let mut file = file.into_std();
-            file.write_all(bytes)?;
+            write(&mut file)?;
             #[cfg(unix)]
             {
                 use std::os::fd::AsFd;
