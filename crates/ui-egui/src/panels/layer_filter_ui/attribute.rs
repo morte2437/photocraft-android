@@ -2,6 +2,7 @@
 //! locked, empty, linked, clipped, masks, effects, advanced blending) or without it.
 
 use photocraft_doc::{AdvancedBlending, Layer, LayerContent};
+use photocraft_raster::Surface;
 use serde::{Deserialize, Serialize};
 
 use crate::{PhotocraftApp, widgets};
@@ -108,8 +109,8 @@ impl Attribute {
             Attribute::Visible => l.visible,
             // Any lock counts, the Background's too.
             Attribute::Locked => l.locks.any(),
-            // A pixel layer with no pixels; an empty group isn't listed.
-            Attribute::Empty => matches!(&l.content, LayerContent::Raster(s) if s.content_bounds().is_empty()),
+            // A pixel layer with no visible pixels; an empty group isn't listed.
+            Attribute::Empty => matches!(&l.content, LayerContent::Raster(s) if !has_visible_pixels(s)),
             Attribute::Linked => l.link_group.is_some(),
             // The clipped layer, not its base.
             Attribute::Clipped => l.clipped,
@@ -130,6 +131,19 @@ impl Attribute {
             Attribute::NoAdvancedBlending => !Attribute::AdvancedBlending.shows(l),
         }
     }
+}
+
+/// Whether `s` has a pixel with alpha > 0. The Eraser only clears alpha, so an erased pixel keeps
+/// its colour bytes and `content_bounds` still counts it (as Reveal All's `visible_bounds` notes,
+/// #9379). Without an alpha channel, or over an opaque default, any content counts.
+fn has_visible_pixels(s: &Surface) -> bool {
+    let fmt = s.format();
+    if !fmt.alpha || s.default_pixel().last().is_none_or(|a| *a > 0.0) {
+        return !s.content_bounds().is_empty();
+    }
+    let (n, bpp) = (fmt.channels(), fmt.bytes_per_pixel());
+    let Some(alpha) = n.checked_sub(1).filter(|_| bpp > 0) else { return false };
+    s.tiles().any(|(_, t)| t.bytes().chunks_exact(bpp).any(|px| photocraft_color::read_sample(px, fmt.sample, alpha) > 0.0))
 }
 
 /// Whether any Advanced Blending option is away from its default: a channel left out, Knockout,

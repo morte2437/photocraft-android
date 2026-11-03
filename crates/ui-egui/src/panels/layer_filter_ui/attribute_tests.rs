@@ -152,6 +152,28 @@ fn each_attribute_lists_the_measured_layers() {
 }
 
 #[test]
+fn a_layer_erased_completely_is_empty() {
+    // The Eraser only clears alpha, so the erased pixels keep their colour bytes.
+    for depth in [8, 16, 32] {
+        let mut s = photocraft_engine::Session::new();
+        s.execute("file.new", json!({"width": 40, "height": 30, "depth": depth, "background": "transparent"})).unwrap();
+        s.execute("edit.fill", json!({"color": "#ff0000"})).unwrap();
+        let name = s.active().unwrap().doc.walk().into_iter().map(|(_, _, l)| l.name.clone()).next().unwrap();
+        let erase = |s: &mut photocraft_engine::Session, x: i32| {
+            s.execute("paint.stroke", json!({"points": [[x, -10], [x, 40]], "size": 30, "erase": true, "brush": {"hardness": 1.0}})).unwrap();
+        };
+        erase(&mut s, 10);
+        let doc = &s.active().unwrap().doc;
+        assert_eq!(listed(doc, Attribute::Empty), names(&[]), "{depth}: partly erased");
+        assert_eq!(listed(doc, Attribute::NotEmpty), names(&[&name]), "{depth}");
+        erase(&mut s, 30);
+        let doc = &s.active().unwrap().doc;
+        assert_eq!(listed(doc, Attribute::Empty), names(&[&name]), "{depth}: erased completely");
+        assert_eq!(listed(doc, Attribute::NotEmpty), names(&[]), "{depth}");
+    }
+}
+
+#[test]
 fn each_opposite_lists_the_rest_groups_included() {
     let s = session();
     let doc = &s.active().unwrap().doc;
