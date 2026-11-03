@@ -1,4 +1,4 @@
-﻿//! #10889: every Crop overlay has its own embedded glyph, the options bar's overlay button paints
+//! #10889: every Crop overlay has its own embedded glyph, the options bar's overlay button paints
 //! the one of the overlay in use, and the overlay menu lists a glyph per entry.
 
 use std::collections::HashSet;
@@ -32,6 +32,21 @@ fn drawn_textures<State>(h: &Harness<'_, State>) -> HashSet<egui::TextureId> {
         collect(&shape.shape, &mut ids);
     }
     ids
+}
+
+/// Every glyph texture and the rectangle it covers, in paint order.
+fn glyph_rects(shape: &egui::Shape, out: &mut Vec<(egui::TextureId, egui::Rect)>) {
+    match shape {
+        egui::Shape::Rect(r) => {
+            if let Some(brush) = r.brush.as_ref()
+                && brush.fill_texture_id != egui::TextureId::default()
+            {
+                out.push((brush.fill_texture_id, r.rect));
+            }
+        }
+        egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| glyph_rects(shape, out)),
+        _ => {}
+    }
 }
 
 fn harness() -> Harness<'static, ToolOptions> {
@@ -91,7 +106,24 @@ fn the_overlay_menu_lists_a_glyph_per_entry() {
     assert!(ids.len() >= CropOverlay::ALL.len(), "one glyph per overlay entry plus the button: {ids:?}");
 }
 
-/// The canvas right-click Crop menu's overlay rows carry the same glyphs (#10889).
+/// The glyph texture its row drew, found by row bounds.
+fn row_glyph<State>(h: &Harness<'_, State>, label: &str) -> egui::TextureId {
+    use egui_kittest::kittest::Queryable;
+
+    let mut drawn = Vec::new();
+    for shape in &h.output().shapes {
+        glyph_rects(&shape.shape, &mut drawn);
+    }
+    h.get_all_by_label(label)
+        .map(|node| node.rect())
+        .find_map(|row| drawn.iter().find(|(_, rect)| row.contains_rect(*rect)).map(|(id, _)| *id))
+        .unwrap_or_else(|| panic!("no {label} row draws a glyph"))
+}
+
+/// The canvas right-click Crop menu's overlay rows carry the same glyphs (#10889), each row its
+/// own: a swapped icon still adds six textures, so the count alone proves nothing. Checked per
+/// row, and pairwise distinct. (Comparing against a freshly loaded 14 px glyph does not work:
+/// egui frees icon textures at the end of every pass, so the reload gets a new id.)
 #[test]
 fn the_canvas_crop_menu_lists_a_glyph_per_overlay() {
     let mut h = Harness::builder().with_size(egui::vec2(1200.0, 800.0)).with_max_steps(64).with_accessibility_check(false).build_eframe(|cc| {
@@ -105,11 +137,11 @@ fn the_canvas_crop_menu_lists_a_glyph_per_overlay() {
         app
     });
     h.run();
-    let before = drawn_textures(&h);
     let ctx = h.ctx.clone();
     let opened = photocraft_ui_egui::canvas::canvas_tool_menu::open_crop(h.state_mut(), &ctx, Tool::Crop, [600.0, 400.0]);
     assert!(opened, "the crop menu opens on a pending crop");
     h.run();
-    let added: Vec<_> = drawn_textures(&h).difference(&before).copied().collect();
-    assert!(added.len() >= CropOverlay::ALL.len(), "the menu adds a glyph per overlay: {added:?}");
+    let glyphs: Vec<_> = CropOverlay::ALL.iter().map(|kind| row_glyph(&h, kind.label())).collect();
+    let unique: HashSet<_> = glyphs.iter().copied().collect();
+    assert_eq!(unique.len(), CropOverlay::ALL.len(), "one glyph per row: {glyphs:?}");
 }
