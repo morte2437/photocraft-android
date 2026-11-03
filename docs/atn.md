@@ -723,6 +723,20 @@ Measured with a folder `in` holding `a.png`, `b.png`, `notes.txt` and `sub/a.png
   during batch processing. Continue with the next file or stop?" (Continue / Stop). Stop ends the batch
   at once; the file being processed is not saved (12 of 60 written in the test). There is no progress
   bar: the documents open and close in the window as they are processed.
+
+Batch cancellation conformance (Photoshop 2026 observation above; PhotoCraft's producer is
+`file_cmds::batch_run::process_batch_outputs`, and its desktop consumer is `jobs_ui::tick`):
+
+| Reference step | Acceptance gate | Status |
+|---|---|---|
+| Plan folder order, names and serials once | Continue retains the original plan and next serial | Implemented and tested; Esc between inputs does not skip the unopened input |
+| Show the opened input while its action runs | A read-only document preview appears in the canvas and closes with the input | Implemented and visually checked; deliberate deviation: worker snapshots are not live tabs or Layers panel targets, so they cannot be edited or saved by mistake |
+| Interrupt the current command on Esc | The current input reaches a checkpoint before any output write | Implemented and tested before save; once the crash-safe atomic write begins, Esc is refused because publication cannot be retracted |
+| Ask Continue or Stop | Continue skips the interrupted input; Stop returns prior outputs and skips the rest | Implemented and tested in engine and UI |
+| Keep headless cancellation direct | `jobs.cancel` returns partial results without an interactive question | Implemented and tested, including a worker waiting for a desktop decision |
+| No progress bar | The desktop Batch preview is the visible feedback | Implemented, UI tested and visually checked |
+| Preserve error policy and log | Continue retains earlier errors and writes one final UTF-16 LE log | Implemented and tested with errors before and after Esc |
+
 - **Return value:** when any file failed, the Batch step itself reports "cancelled" (the dialog returns no
   descriptor); a script run with Stop For Errors reports success even though it stopped.
 

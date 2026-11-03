@@ -89,6 +89,200 @@ fn batch_cancelled_during_an_action_does_not_save_that_input() {
     assert!(!std::path::Path::new(&out).exists());
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn batch_interruption_continues_with_the_original_next_output() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let dir = tmp("batch-interrupt-continue");
+    let first = png(&dir, "first.png", 8, 6, "#ff0000");
+    let second = png(&dir, "second.png", 8, 6, "#00ff00");
+    let first_out = join(&dir, "out/first_001.png");
+    let second_out = join(&dir, "out/second_002.png");
+    let ctx = crate::jobs::JobCtx::new();
+    let worker_ctx = ctx.clone();
+    let (opened_tx, opened_rx) = mpsc::channel();
+    let (resume_tx, resume_rx) = mpsc::channel();
+    let first_action = std::sync::atomic::AtomicBool::new(true);
+    let worker = std::thread::spawn(move || {
+        let policy = super::batch_run::BatchPolicy { stop_on_error: false, error_log: None };
+        super::batch_run::process_batch_outputs(
+            72.0,
+            vec![(first, first_out.clone()), (second, second_out.clone())],
+            "png",
+            SaveOpts::default(),
+            &policy,
+            &worker_ctx,
+            &|_, _| {
+                if first_action.swap(false, std::sync::atomic::Ordering::AcqRel) {
+                    let _ = opened_tx.send(());
+                    let _ = resume_rx.recv_timeout(Duration::from_secs(10));
+                }
+                Ok(false)
+            },
+        )
+        .map(|result| (result, first_out, second_out))
+    });
+    opened_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    let preview = ctx.batch_preview().expect("the real opened input is published before its action");
+    assert_eq!(preview.path, join(&dir, "first.png"));
+    assert_eq!((preview.document.size.width, preview.document.size.height), (8, 6));
+    assert!(ctx.request_batch_interrupt(), "Esc is accepted while the first action runs");
+    resume_tx.send(()).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !ctx.batch_waiting_for_decision() && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert!(ctx.batch_waiting_for_decision(), "the worker stopped before writing");
+    assert!(!std::path::Path::new(&join(&dir, "out/first_001.png")).exists());
+    assert!(ctx.decide_batch_interrupt(true));
+    let (result, first_out, second_out) = worker.join().unwrap().unwrap();
+    assert_eq!(result["files"], json!([second_out]), "Continue keeps the original serial: {result}");
+    assert!(!std::path::Path::new(&first_out).exists());
+    assert!(std::path::Path::new(&second_out).exists());
+    assert!(ctx.batch_preview().is_none(), "the preview closes after the last input");
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn batch_stop_after_interruption_preserves_prior_outputs_and_never_saves_current() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let dir = tmp("batch-interrupt-stop");
+    let first = png(&dir, "first.png", 8, 6, "#ff0000");
+    let second = png(&dir, "second.png", 8, 6, "#00ff00");
+    let third = png(&dir, "third.png", 8, 6, "#0000ff");
+    let out = join(&dir, "out");
+    let first_out = join(&out, "first.png");
+    let second_out = join(&out, "second.png");
+    let third_out = join(&out, "third.png");
+    let ctx = crate::jobs::JobCtx::new();
+    let worker_ctx = ctx.clone();
+    let (opened_tx, opened_rx) = mpsc::channel();
+    let (resume_tx, resume_rx) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let policy = super::batch_run::BatchPolicy { stop_on_error: false, error_log: None };
+        super::batch_run::process_batch_outputs(
+            72.0,
+            vec![(first, first_out), (second, second_out), (third, third_out)],
+            "png",
+            SaveOpts::default(),
+            &policy,
+            &worker_ctx,
+            &|_, path| {
+                if path.ends_with("second.png") {
+                    let _ = opened_tx.send(());
+                    let _ = resume_rx.recv_timeout(Duration::from_secs(10));
+                }
+                Ok(false)
+            },
+        )
+    });
+    opened_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert!(ctx.request_batch_interrupt());
+    resume_tx.send(()).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !ctx.batch_waiting_for_decision() && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert!(ctx.batch_waiting_for_decision());
+    assert!(ctx.decide_batch_interrupt(false));
+    let result = worker.join().unwrap().unwrap();
+    assert_eq!(result["files"], json!([join(&out, "first.png")]), "{result}");
+    assert_eq!(result["cancelled"], true, "{result}");
+    assert_eq!(result["skipped"], json!([join(&dir, "second.png"), join(&dir, "third.png")]), "{result}");
+    assert!(std::path::Path::new(&join(&out, "first.png")).exists());
+    assert!(!std::path::Path::new(&join(&out, "second.png")).exists());
+    assert!(!std::path::Path::new(&join(&out, "third.png")).exists());
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn batch_continue_keeps_errors_before_and_after_the_interruption_in_one_log() {
+    use std::time::Duration;
+
+    let dir = tmp("batch-interrupt-error-log");
+    let second = png(&dir, "second.png", 8, 6, "#00ff00");
+    let fourth = png(&dir, "fourth.png", 8, 6, "#0000ff");
+    let before = join(&dir, "missing-before.png");
+    let after = join(&dir, "missing-after.png");
+    let out = join(&dir, "out");
+    let log = join(&dir, "errors.txt");
+    let ctx = crate::jobs::JobCtx::new();
+    let decider_ctx = ctx.clone();
+    let decider = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !decider_ctx.batch_waiting_for_decision() && std::time::Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        if !decider_ctx.batch_waiting_for_decision() {
+            decider_ctx.cancel();
+            return false;
+        }
+        decider_ctx.decide_batch_interrupt(true)
+    });
+    let policy = super::batch_run::BatchPolicy { stop_on_error: false, error_log: Some(log.clone()) };
+    let result = super::batch_run::process_batch_outputs(
+        72.0,
+        vec![
+            (before.clone(), join(&out, "missing-before.png")),
+            (second.clone(), join(&out, "second.png")),
+            (after.clone(), join(&out, "missing-after.png")),
+            (fourth, join(&out, "fourth.png")),
+        ],
+        "png",
+        SaveOpts::default(),
+        &policy,
+        &ctx,
+        &|_, path| {
+            if path.ends_with("second.png") {
+                assert!(ctx.request_batch_interrupt());
+            }
+            Ok(false)
+        },
+    )
+    .unwrap();
+    assert!(decider.join().unwrap());
+    assert_eq!(result["errors"].as_array().map(Vec::len), Some(2), "{result}");
+    assert_eq!(result["skipped"], json!([second]), "{result}");
+    assert_eq!(result["files"], json!([join(&out, "fourth.png")]), "{result}");
+    let text = batch_log(&log);
+    assert!(text.contains("missing-before.png") && text.contains("missing-after.png"), "{text}");
+    assert!(!text.contains("second.png"), "a skipped input is not an error: {text}");
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn batch_continue_between_inputs_still_processes_the_next_input() {
+    use std::time::Duration;
+
+    let dir = tmp("batch-interrupt-between-inputs");
+    let input = png(&dir, "next.png", 8, 6, "#ff0000");
+    let output = join(&dir, "out/next.png");
+    let ctx = crate::jobs::JobCtx::new();
+    assert!(ctx.request_batch_interrupt());
+    let decider_ctx = ctx.clone();
+    let decider = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !decider_ctx.batch_waiting_for_decision() && std::time::Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        if !decider_ctx.batch_waiting_for_decision() {
+            decider_ctx.cancel();
+            return false;
+        }
+        decider_ctx.decide_batch_interrupt(true)
+    });
+    let policy = super::batch_run::BatchPolicy { stop_on_error: false, error_log: None };
+    let result =
+        super::batch_run::process_batch_outputs(72.0, vec![(input, output.clone())], "png", SaveOpts::default(), &policy, &ctx, &|_, _| Ok(false)).unwrap();
+    assert!(decider.join().unwrap());
+    assert_eq!(result["files"], json!([output]), "the unopened input is still next: {result}");
+    assert!(result.get("skipped").is_none(), "{result}");
+}
+
 #[test]
 fn batch_error_log_cannot_replace_an_input_or_result() {
     let dir = tmp("batch-error-log-collision");

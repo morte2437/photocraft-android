@@ -799,6 +799,54 @@ fn cancelled_batch_with_partial_results_reports_cancellation_without_beeping() {
 }
 
 #[test]
+fn interactive_batch_shows_its_read_only_input_and_asks_after_escape() {
+    let mut h = app_harness();
+    let original = h.state().session.active().unwrap().doc.clone();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let Started::Job(id) = h
+        .state_mut()
+        .session
+        .start_job(
+            "file.automate.batch",
+            json!({}),
+            "Batch",
+            false,
+            move |ctx| {
+                let mut scratch = photocraft_engine::Session::new();
+                scratch.execute("file.new", json!({"name": "input.png", "width": 16, "height": 12, "background": "#00ff00"}))?;
+                ctx.publish_batch_preview("/source/input.png", scratch.active().map(|state| state.doc.clone()));
+                let _ = ready_tx.send(());
+                while !ctx.batch_take_interrupt() {
+                    ctx.check()?;
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                let continued = ctx.batch_wait_for_decision();
+                ctx.publish_batch_preview("/source/input.png", None);
+                Ok(json!({"continued": continued, "files": []}))
+            },
+            |_, result| Ok(result),
+        )
+        .unwrap()
+    else {
+        panic!("batch did not start as a job")
+    };
+    ready_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    frames_until(&mut h, 1, |h| h.query_by_label("Batch preview").is_some());
+    assert!(h.query_by_label("input.png").is_some(), "the current input appears in the canvas");
+    assert!(h.query_by_label("Batch").is_none(), "the Batch progress readout is hidden while its input is visible");
+    assert!(Arc::ptr_eq(&original, &h.state().session.active().unwrap().doc), "preview cannot replace the editable document");
+    h.key_press(egui::Key::Escape);
+    frames_until(&mut h, 1, |h| h.query_by_label("Continue").is_some());
+    assert!(h.state().session.batch_interrupt_waiting(id));
+    h.get_by_label("Continue").click();
+    frames_until(&mut h, 1, |h| h.state().session.job(id).is_none());
+    let result = h.state().session.jobs_with_recent().into_iter().find(|job| job.id == id).and_then(|job| job.result).unwrap();
+    assert_eq!(result["continued"], true);
+    assert!(h.query_by_label("Batch preview").is_none(), "the input closes after the decision");
+    assert!(Arc::ptr_eq(&original, &h.state().session.active().unwrap().doc));
+}
+
+#[test]
 fn printing_keeps_drawing_and_reports_only_the_final_spooler_result() {
     for success in [true, false] {
         let mut h = app_harness();

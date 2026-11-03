@@ -1,7 +1,7 @@
 use super::open::import_at_raw_ppi;
-use super::paths::{extension, file_name, join, list_images, read_file, stem};
+use super::paths::{extension, file_name, join, list_images, read_file, stem, write_file};
 use super::processing::parse_steps;
-use super::save::{SaveOpts, save_doc, save_doc_as};
+use super::save::{SaveOpts, encode, save_doc, save_doc_as};
 use super::{Arc, Document, EngineError, Result, Session, Value, batch_naming, json, str_param};
 
 /// Inputs of a batch command: `"input"` is a folder or an array of files.
@@ -215,19 +215,38 @@ fn process_one(raw_ppi: f64, path: &str, out: &str, save: SaveOpts, options: Pro
     let mut scratch = Session::new();
     let doc = import_at_raw_ppi(raw_ppi, &file_name(path), &bytes)?;
     scratch.add_document(doc, Some(path.to_string()));
+    if let Some(ctx) = options.ctx {
+        ctx.publish_batch_preview(path, scratch.active().map(|state| state.doc.clone()));
+    }
     let saved_by_action = f(&mut scratch, out)?;
     if let Some(ctx) = options.ctx {
         ctx.check()?;
+        if ctx.batch_interrupt_requested() {
+            return Err(EngineError::Cancelled);
+        }
     }
     if !saved_by_action {
         let d = scratch.active().ok_or(EngineError::NoDocument)?;
         if let Some(format) = options.format {
             let ext = if format == "same" { same_format(path) } else { format.trim_start_matches('.').to_ascii_lowercase() };
-            save_doc_as(&d.doc, out, &ext, save)?;
+            if let Some(ctx) = options.ctx {
+                save_batch_doc(&d.doc, out, &ext, save, ctx)?;
+            } else {
+                save_doc_as(&d.doc, out, &ext, save)?;
+            }
         } else {
             save_doc(&d.doc, out, save)?;
         }
     }
+    Ok(())
+}
+
+/// Encode before the Batch write checkpoint. Esc accepted during an action or encode therefore
+/// leaves the current destination untouched; the worker owns the write once the checkpoint passes.
+fn save_batch_doc(doc: &Document, out: &str, format: &str, save: SaveOpts, ctx: &crate::jobs::JobCtx) -> Result<()> {
+    let (bytes, _) = encode(doc, format, save)?;
+    ctx.batch_before_write()?;
+    write_file(out, &bytes)?;
     Ok(())
 }
 
@@ -333,16 +352,36 @@ pub(super) fn process_batch_outputs(
     let mut errors = Vec::new();
     let mut stopped = None;
     let mut done = 0;
+    let mut interrupted = Vec::new();
     for (index, (path, out)) in outputs.iter().enumerate() {
         if ctx.cancelled() {
+            break;
+        }
+        if ctx.batch_take_interrupt() && !ctx.batch_wait_for_decision() {
+            ctx.publish_batch_preview(path, None);
+            ctx.cancel();
             break;
         }
         ctx.progress(index as f32 / total.max(1) as f32, &format!("{} of {total}: {}", index + 1, file_name(path)));
         let result = process_one(raw_ppi, path, out, save, ProcessOptions { format: Some(format), written: None, ctx: Some(ctx) }, f);
         if ctx.cancelled() {
+            ctx.publish_batch_preview(path, None);
             done = index;
             break;
         }
+        if ctx.batch_take_interrupt() {
+            if ctx.batch_wait_for_decision() {
+                ctx.publish_batch_preview(path, None);
+                interrupted.push(path.clone());
+                done = index + 1;
+                continue;
+            }
+            ctx.publish_batch_preview(path, None);
+            ctx.cancel();
+            break;
+        }
+        ctx.batch_after_write();
+        ctx.publish_batch_preview(path, None);
         done = index + 1;
         match result {
             Ok(()) => {
@@ -362,11 +401,14 @@ pub(super) fn process_batch_outputs(
     if !cancelled {
         ctx.progress(1.0, "");
     }
-    let skipped = outputs.iter().skip(done).map(|(path, _)| path.clone()).collect();
-    let mut result = batch_outcome(files, errors, stopped.map(|at| (at, skipped)), policy.error_log.as_deref().filter(|_| log_failure.is_none()));
+    let mut skipped = interrupted;
+    skipped.extend(outputs.iter().skip(done).map(|(path, _)| path.clone()));
+    let mut result = batch_outcome(files, errors, stopped.map(|at| (at, skipped.clone())), policy.error_log.as_deref().filter(|_| log_failure.is_none()));
+    if !skipped.is_empty() {
+        result["skipped"] = json!(skipped);
+    }
     if cancelled {
         result["cancelled"] = json!(true);
-        result["skipped"] = json!(outputs.iter().skip(done).map(|(path, _)| path).collect::<Vec<_>>());
     }
     if let Some(error) = log_failure {
         result["errorLogError"] = json!(error);
@@ -512,10 +554,14 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
                 let result = (|| {
                     // A recorded save marks a result. If the action later closes or switches
                     // documents, write the saved snapshot instead of the new active document.
-                    let source = scratch.active().and_then(|state| state.path.as_deref()).unwrap_or("");
-                    let encode_format = if format == "same" { same_format(source) } else { format.trim_start_matches('.').to_ascii_lowercase() };
+                    let source = scratch.active().and_then(|state| state.path.as_deref()).unwrap_or("").to_string();
+                    let encode_format = if format == "same" { same_format(&source) } else { format.trim_start_matches('.').to_ascii_lowercase() };
                     let mut saved: Option<Arc<Document>> = None;
                     for (id, params) in &steps {
+                        ctx.check()?;
+                        if ctx.batch_interrupt_requested() {
+                            return Err(EngineError::Cancelled);
+                        }
                         if batch_save_point(id) {
                             let state = scratch.active_mut().ok_or(EngineError::NoDocument)?;
                             saved = Some(state.doc.clone());
@@ -527,6 +573,7 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
                             continue;
                         }
                         let result = scratch.execute(id, params.clone())?;
+                        ctx.publish_batch_preview(&source, scratch.active().map(|state| state.doc.clone()));
                         if let Some(error) = crate::actions_cmds::nested_failure(id, &result) {
                             return Err(EngineError::Other(error));
                         }
@@ -534,7 +581,7 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
                     match saved {
                         Some(doc) if scratch.active().is_none_or(|active| active.doc.id != doc.id) => {
                             ctx.check()?;
-                            save_doc_as(&doc, out, &encode_format, save)?;
+                            save_batch_doc(&doc, out, &encode_format, save, ctx)?;
                             Ok(true)
                         }
                         _ => Ok(false),
