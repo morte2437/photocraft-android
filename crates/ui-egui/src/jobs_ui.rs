@@ -249,51 +249,6 @@ pub(crate) fn finish_open_tab(app: &mut PhotocraftApp, tab: &OpenTab, v: &Value)
     r
 }
 
-pub(crate) fn open_authorized(app: &mut PhotocraftApp, path: String, import: crate::AutomationImportPathFn) -> Result<Value, String> {
-    let name = app.open_name(&crate::file_open::display_name(&path));
-    let worker_path = path.clone();
-    let apply_name = name.clone();
-    let apply_path = path.clone();
-    match app
-        .session
-        .start_job(
-            OPEN_JOB,
-            json!({"path": path}),
-            "Opening",
-            false,
-            move |ctx| {
-                ctx.stage(0.0, 1.0, "Decoding", |ctl| import(&worker_path, ctl))
-                    .map_err(|e| if ctx.cancelled() { photocraft_engine::EngineError::Cancelled } else { photocraft_engine::EngineError::Other(e) })
-            },
-            move |session, imported| {
-                let source_read_only = imported.source_read_only;
-                let (mut doc, warnings) = (imported.document, imported.warnings);
-                doc.name = apply_name.clone();
-                let document_path = (!source_read_only && !photocraft_engine::file_cmds::is_template(&apply_path)).then(|| apply_path.clone());
-                let (index, color) = session.open_document(doc, document_path);
-                if let Some(st) = session.active_mut() {
-                    st.source_read_only = source_read_only;
-                }
-                Ok(json!({"document": index, "name": apply_name, "warnings": warnings, "color": color, "path": apply_path, "automation": true}))
-            },
-        )
-        .map_err(|e| e.to_string())?
-    {
-        Started::Done(v) => {
-            finish_open(app, &name, Some(&path), &v, None)?;
-            Ok(v)
-        }
-        Started::Job(job) => {
-            app.jobs.opens.push(OpenTab { job, name, path: Some(path), slot: None, order: None });
-            app.jobs.focus = Some(job);
-            app.jobs.last_started = Some(job);
-            app.ui.chrome.home = None;
-            app.ui.status_error = false;
-            Ok(json!({"job": job.0, "pending": true}))
-        }
-    }
-}
-
 /// Save the active document to `path` in the background: `save` encodes and writes it on a
 /// worker while the window keeps drawing and shows the progress dialog. The document is locked
 /// until the job ends, which [`tick`] records like a synchronous save. `Ok(None)`: started;

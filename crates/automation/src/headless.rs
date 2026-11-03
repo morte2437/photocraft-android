@@ -79,17 +79,9 @@ impl Headless {
             Filesystem::Denied => return Err(AutomationError::BadRequest("automation filesystem access is not granted: read authority is absent".into())),
             Filesystem::TrustedLocal => files::open(path)?,
             Filesystem::Workspace(workspace) => {
-                #[cfg(not(target_arch = "wasm32"))]
-                {
-                    let r = workspace.read_document(requested, &photocraft_raster::Interrupt::NONE)?;
-                    files::Opened { document: r.document, warnings: r.warnings, source_read_only: r.source_read_only }
-                }
-                #[cfg(target_arch = "wasm32")]
-                {
-                    let bytes = workspace.read(requested)?;
-                    let name = path.file_name().and_then(|name| name.to_str()).unwrap_or(requested);
-                    files::open_bytes(name, &bytes)?
-                }
+                let bytes = workspace.read(requested)?;
+                let name = path.file_name().and_then(|name| name.to_str()).unwrap_or(requested);
+                files::open_bytes(name, &bytes)?
             }
         };
         let path = match file_cmds::template_name(&self.session, requested) {
@@ -259,29 +251,9 @@ impl Headless {
                 files::save(&doc, &target, format, opts, Some(writer))?
             }
             Filesystem::Workspace(workspace) => {
-                #[cfg(not(target_arch = "wasm32"))]
-                if format
-                    .map(|f| f.trim_start_matches('.').eq_ignore_ascii_case("psb"))
-                    .unwrap_or_else(|| target.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("psb")))
-                {
-                    let mut warnings = Vec::new();
-                    workspace.write_stream(target_text, |file| {
-                        warnings = photocraft_io::export_psb_into(&doc, file, &photocraft_raster::Interrupt::NONE)
-                            .map_err(|e| std::io::Error::other(e.to_string()))?;
-                        Ok(())
-                    })?;
-                    warnings
-                } else {
-                    let (bytes, warnings) = files::save_bytes(&doc, target_text, format, opts)?;
-                    workspace.write(target_text, &bytes)?;
-                    warnings
-                }
-                #[cfg(target_arch = "wasm32")]
-                {
-                    let (bytes, warnings) = files::save_bytes(&doc, target_text, format, opts)?;
-                    workspace.write(target_text, &bytes)?;
-                    warnings
-                }
+                let (bytes, warnings) = files::save_bytes(&doc, target_text, format, opts)?;
+                workspace.write(target_text, &bytes)?;
+                warnings
             }
         };
         warnings.extend(photocraft_engine::type_extra_cmds::missing_font_warnings(&doc));

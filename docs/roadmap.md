@@ -125,6 +125,4 @@ Each milestone has a **definition of done (DoD)** and must leave `main` green on
 
 2026-10-13: native scratch storage pages current and history tiles through compressed, CRC-checked files. Fresh RAM budgets default to 70%; engine-owned memory supervision stops with its last session. Scratch errors block edit/save commits and permit retry. Unix files are private and stale files swept at startup; Windows files use delete-on-close. See [scratch disks](scratch-disks.md). Streaming import and viewport rendering follow separately.
 
-2026-10-13: seekable native PSD/PSB and supported scanline EXR imports decode bounded bands at the original resolution. Authorized opens retain read-only source protection. See [native streaming I/O](streaming-io.md).
-
 2026-10-13: large canvases render visible original-resolution pages with bounded RAM/VRAM, cancellable workers and stale-result rejection; the new upstream background redraw remains available for full-canvas paths. See [GPU streaming](streaming-gpu.md).

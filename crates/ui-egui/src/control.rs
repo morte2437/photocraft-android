@@ -1219,11 +1219,6 @@ fn dispatch(app: &mut PhotocraftApp, ctx: &egui::Context, req: &ControlRequest) 
                         Err(e) => return err(e),
                     }
                 }
-                if matches!(path.rsplit('.').next().map(|s| s.to_ascii_lowercase()).as_deref(), Some("psd" | "psb" | "psdt" | "exr"))
-                    && let Some(import) = app.services.automation_import_path.clone()
-                {
-                    return run_waiting(app, wait, |app| crate::jobs_ui::open_authorized(app, path.to_string(), import));
-                }
                 let opened = match app.services.automation_read.as_mut() {
                     Some(read) => read(path),
                     None => Err("automation read authority is not configured".into()),
@@ -2331,51 +2326,6 @@ mod tests {
         let r = call(&mut app, &ctx, "app.save", json!({"path": "d.tga", "tgaBits": 16}));
         assert!(r["error"].as_str().unwrap().contains("tgaBits"), "{r}");
         assert_eq!(written.borrow().len(), 3, "a bad tgaBits writes nothing");
-    }
-
-    #[test]
-    fn automation_exr_open_uses_authorized_seekable_import() {
-        use std::sync::{
-            Arc,
-            atomic::{AtomicUsize, Ordering},
-        };
-        for source_read_only in [false, true] {
-            let reads = Arc::new(AtomicUsize::new(0));
-            let imported = reads.clone();
-            let services = crate::Services {
-                automation_import_path: Some(Arc::new(move |path, _| {
-                    assert_eq!(path, "in/starmap.EXR");
-                    imported.fetch_add(1, Ordering::Relaxed);
-                    Ok(photocraft_io::ImportResult {
-                        document: photocraft_doc::Document::new(
-                            "starmap.EXR",
-                            photocraft_geom::Size::new(65536, 32768),
-                            photocraft_color::ColorMode::Rgb,
-                            photocraft_color::SampleType::F32,
-                        ),
-                        warnings: Vec::new(),
-                        source_read_only,
-                        preview_only: source_read_only,
-                    })
-                })),
-                automation_read: Some(Box::new(|_| Err("whole-file read must not run".into()))),
-                ..Default::default()
-            };
-            let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), services);
-            let response = call(&mut app, &egui::Context::default(), "app.open", json!({"path": "in/starmap.EXR", "wait": false}));
-            assert_eq!(response["ok"], true, "{response}");
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            while !app.session.jobs().is_empty() && std::time::Instant::now() < deadline {
-                app.session.poll_jobs();
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
-            assert!(app.session.jobs().is_empty(), "EXR import did not finish");
-            assert_eq!(reads.load(Ordering::Relaxed), 1);
-            assert_eq!(app.session.active().unwrap().doc.size, photocraft_geom::Size::new(65536, 32768));
-            let st = app.session.active().unwrap();
-            assert_eq!(st.source_read_only, source_read_only);
-            assert_eq!(st.path.is_none(), source_read_only, "read-only imports must not keep a source save path");
-        }
     }
 
     #[test]

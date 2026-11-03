@@ -66,7 +66,6 @@ pub(crate) struct Ctx<'a> {
     /// Layer records decoded so far, out of `total` (progress).
     pub done: usize,
     pub total: usize,
-    pub streamed: Option<&'a std::collections::HashMap<(usize, i16), Surface>>,
 }
 
 fn doc_mode(m: PsdMode) -> Option<ColorMode> {
@@ -172,9 +171,6 @@ impl Ctx<'_> {
     }
 
     fn record_surface(&mut self, rec: &LayerRecord, name: &str) -> Surface {
-        if let Some(streamed) = self.streamed {
-            return streamed.get(&(rec as *const LayerRecord as usize, i16::MIN)).cloned().unwrap_or_else(|| Surface::new(self.fmt));
-        }
         let r = rec.rect;
         if r.is_empty() || r.size().is_err() {
             return Surface::new(self.fmt);
@@ -235,11 +231,7 @@ impl Ctx<'_> {
             }
         };
         let mut surface = Surface::with_default(self.mask_fmt, &[f32::from(default) / 255.0]);
-        if let Some(streamed) = self.streamed {
-            if let Some(decoded) = streamed.get(&(rec as *const LayerRecord as usize, id)) {
-                surface = decoded.clone();
-            }
-        } else if !rect.is_empty()
+        if !rect.is_empty()
             && let Ok((w, h)) = rect.size()
             && let Some(plane) = self.channel_plane(rec, id, name)
         {
@@ -665,14 +657,6 @@ pub fn psd_to_document(file: &PsdFile) -> (Document, Vec<String>) {
 /// [`psd_to_document`] for a background open: checks `ctl` per layer record and reports
 /// progress. `None` when cancelled.
 pub fn psd_to_document_with(file: &PsdFile, ctl: &photocraft_raster::Interrupt) -> Option<(Document, Vec<String>)> {
-    psd_to_document_decoded(file, ctl, None)
-}
-
-pub(crate) fn psd_to_document_decoded<'a>(
-    file: &'a PsdFile,
-    ctl: &photocraft_raster::Interrupt<'a>,
-    streamed: Option<&'a std::collections::HashMap<(usize, i16), Surface>>,
-) -> Option<(Document, Vec<String>)> {
     let h = &file.header;
     let mut warnings = Vec::new();
     let mode = doc_mode(h.color_mode).unwrap_or_else(|| {
@@ -770,7 +754,6 @@ pub(crate) fn psd_to_document_decoded<'a>(
         ctl: *ctl,
         done: 0,
         total: file.layers().len(),
-        streamed,
     };
     for b in file.global_blocks.iter().filter(|b| matches!(&b.key, b"FEid" | b"FXid")) {
         // Smart-filter caches can be large: a cancelled open stops between blocks.

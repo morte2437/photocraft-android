@@ -112,30 +112,8 @@ impl PhotocraftApp {
             crate::jobs_ui::start_open(self, &display_name(path), Some(path.to_string()), photocraft_engine::jobs::OpenSource::Path(path.to_string()))?;
             return Ok(Vec::new());
         }
-        let seekable = ext == "exr" || matches!(ext.as_str(), "psd" | "psb" | "psdt") && std::fs::metadata(path).is_ok_and(|m| m.len() >= 64 << 20);
-        if !seekable {
-            let bytes = photocraft_format::read_file(std::path::Path::new(path)).map_err(|e| format!("{path}: {e}"))?;
-            return self.open_file(path, &bytes);
-        }
-        let name = self.open_name(&display_name(path));
-        let imported = photocraft_io::import_path_with(&name, std::path::Path::new(path), &photocraft_raster::Interrupt::NONE).map_err(|e| e.to_string())?;
-        let warnings = with_missing_fonts_of(&imported.document, imported.warnings);
-        let question = self.session.color.open_question(&imported.document);
-        crate::open_prompt::arrive(
-            self,
-            crate::open_prompt::Held {
-                doc: imported.document,
-                read_only: imported.source_read_only,
-                name,
-                path: Some(path.to_string()),
-                warnings: warnings.clone(),
-                bytes: None,
-                slot: None,
-                question,
-                policy_applied: false,
-            },
-        );
-        Ok(warnings)
+        let bytes = photocraft_format::read_file(std::path::Path::new(path)).map_err(|e| format!("{path}: {e}"))?;
+        self.open_file(path, &bytes)
     }
 
     #[cfg(target_arch = "wasm32")]

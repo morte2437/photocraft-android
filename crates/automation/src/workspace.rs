@@ -68,24 +68,6 @@ impl AuthorizedWorkspace {
         let source = DirHandle { dir };
         Ok(Some(photocraft_format::load_bytes_source(&source, &photocraft_format::LoadOptions::default())?))
     }
-    /// Open a large document by rows through the held read capability, without a file-sized
-    /// byte array. Independent channel cursors remain rooted beneath the authorized directory.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn read_document(&self, path: &str, ctl: &photocraft_raster::Interrupt<'_>) -> Result<photocraft_io::ImportResult, AutomationError> {
-        let relative = request_path(path, self.read.as_ref())?;
-        let root = self.read.as_ref().ok_or_else(|| AutomationError::BadRequest(format!("{DENIED}: read authority is absent")))?;
-        let original = root.dir.metadata(&relative).map_err(|e| file_error("read", path, e))?;
-        if !original.is_file() {
-            return Err(AutomationError::BadRequest("automation read path is not a regular file".into()));
-        }
-        let name = relative.file_name().and_then(|n| n.to_str()).unwrap_or(path);
-        let result = photocraft_io::import_seekable_with(name, &|| root.dir.open(&relative), ctl)?;
-        let current = root.dir.metadata(&relative).map_err(|e| file_error("read", path, e))?;
-        if current.len() != original.len() || current.modified().ok() != original.modified().ok() {
-            return Err(AutomationError::Io("source changed during import; open it again".into()));
-        }
-        Ok(result)
-    }
 
     /// Create or replace one file below the configured write root, crash-safely: the bytes go to
     /// a temporary file beside the target, which is synced and renamed over it (the same steps
@@ -96,30 +78,18 @@ impl AuthorizedWorkspace {
     /// resolution and file creation relative to the held directory handle, so
     /// a non-existent final target is supported without ambient path access.
     pub fn write(&self, path: &str, bytes: &[u8]) -> Result<(), AutomationError> {
-        self.write_stream(path, |file| file.write_all(bytes))
-    }
-
-    /// Atomically publish a seekable encoder through the held write capability. No ambient
-    /// paths are exposed to the encoder, including for temporary-file creation and rename.
-    pub fn write_stream(&self, path: &str, encode: impl FnOnce(&mut cap_std::fs::File) -> std::io::Result<()>) -> Result<(), AutomationError> {
-        struct Cleanup(Arc<Dir>, PathBuf);
-        impl Drop for Cleanup {
-            fn drop(&mut self) {
-                let _ = self.0.remove_file(&self.1);
-            }
-        }
         let relative = request_path(path, self.write.as_ref())?;
         let root = self.write.as_ref().ok_or_else(|| AutomationError::BadRequest(format!("{DENIED}: write authority is absent")))?;
         let leaf = relative.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let parent = relative.parent().map(Path::to_path_buf).unwrap_or_default();
         let tmp = parent.join(photocraft_format::atomic::temp_name(&leaf));
         let mut options = OpenOptions::new();
-        options.read(true).write(true).create_new(true);
-        let file = root.dir.open_with(&tmp, &options).map_err(|e| file_error("write", path, e))?;
-        let _cleanup = Cleanup(root.dir.clone(), tmp.clone());
-        // This binding drops before the cleanup guard if an encoder unwinds.
-        let mut file = file;
-        let written = encode(&mut file).and_then(|()| photocraft_format::atomic::sync_file(&file.into_std()));
+        options.write(true).create_new(true);
+        let written = root.dir.open_with(&tmp, &options).and_then(|mut file| {
+            file.write_all(bytes)?;
+            // Falls back to a plain fsync on shares that refuse a full flush (#1336).
+            photocraft_format::atomic::sync_file(&file.into_std())
+        });
         let renamed = written.and_then(|()| photocraft_format::atomic::retry_rename(RenameRetry::platform(), || root.dir.rename(&tmp, &root.dir, &relative)));
         if let Err(e) = renamed {
             let _ = root.dir.remove_file(&tmp);
@@ -475,69 +445,6 @@ impl Drop for ExportSequence {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn seekable_document_import_stays_within_read_capability() {
-        let (_, _, workspace) = roots("stream-read");
-        let mut session = photocraft_engine::Session::new();
-        session.execute("file.new", serde_json::json!({"width": 32, "height": 16})).unwrap();
-        session.execute("layer.new.layer", serde_json::json!({})).unwrap();
-        let doc = &session.active().unwrap().doc;
-        workspace
-            .write_stream("small.psb", |file| {
-                photocraft_io::export_psb_into(doc, file, &photocraft_raster::Interrupt::NONE).map_err(|e| std::io::Error::other(e.to_string()))?;
-                Ok(())
-            })
-            .unwrap();
-        let opened = workspace.read_document("small.psb", &photocraft_raster::Interrupt::NONE).unwrap();
-        assert_eq!(opened.document.size, doc.size);
-        assert_eq!(opened.document.layers.len(), doc.layers.len());
-        assert!(workspace.read_document("../small.psb", &photocraft_raster::Interrupt::NONE).is_err());
-        assert!(workspace.read_document("C:/small.psb", &photocraft_raster::Interrupt::NONE).is_err());
-    }
-
-    #[test]
-    fn seekable_capability_writer_rejects_escape_and_preserves_failed_destination() {
-        use std::io::{Seek, SeekFrom};
-        let (inside, outside, workspace) = roots("stream");
-        std::fs::write(inside.join("kept.psb"), b"original").unwrap();
-        assert!(workspace.write_stream("../escaped.psb", |_| Ok(())).is_err());
-        assert!(!outside.join("escaped.psb").exists());
-        assert!(
-            workspace
-                .write_stream("kept.psb", |file| {
-                    file.write_all(b"partial")?;
-                    Err(std::io::Error::new(std::io::ErrorKind::StorageFull, "injected full disk"))
-                })
-                .is_err()
-        );
-        assert_eq!(std::fs::read(inside.join("kept.psb")).unwrap(), b"original");
-        assert!(temp_files(&inside).is_empty());
-        workspace
-            .write_stream("kept.psb", |file| {
-                file.write_all(b"0000payload")?;
-                file.seek(SeekFrom::Start(0))?;
-                file.write_all(b"0007")
-            })
-            .unwrap();
-        assert_eq!(std::fs::read(inside.join("kept.psb")).unwrap(), b"0007payload");
-    }
-
-    #[test]
-    fn seekable_capability_unwind_removes_temporary_after_closing_handle() {
-        let (inside, _, workspace) = roots("stream-unwind");
-        std::fs::write(inside.join("kept.psb"), b"original").unwrap();
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = workspace.write_stream("kept.psb", |file| {
-                file.write_all(b"partial")?;
-                panic!("injected encoder unwind");
-            });
-        }));
-        assert!(result.is_err());
-        assert_eq!(std::fs::read(inside.join("kept.psb")).unwrap(), b"original");
-        assert!(temp_files(&inside).is_empty());
-    }
 
     fn roots(name: &str) -> (PathBuf, PathBuf, AuthorizedWorkspace) {
         let base = std::env::temp_dir().join(format!("photocraft-workspace-{}-{name}", std::process::id()));

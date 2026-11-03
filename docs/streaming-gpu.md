@@ -23,4 +23,3 @@ the upstream full-canvas/proxy route for its repeated copies; ordinary large can
 Synthetic regressions cover oversized staging/readback allocations, coarse/fine page replacement,
 cancelled workers, eviction and tab switching. Native stress uses Earth.psb with the 2K/4K/8K/16K
 Milky Way EXR variants, rapid magnifier clicks and tab changes, then the original-size 64K EXR.
-Public large fixtures are linked from [native streaming I/O](streaming-io.md).

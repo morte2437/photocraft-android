@@ -81,8 +81,6 @@ struct Ex {
     patterns: Vec<photocraft_doc::Pattern>,
     /// The layer written as Photoshop's Background (see [`psd_background`]).
     background: Option<photocraft_doc::LayerId>,
-    deferred: bool,
-    sources: StreamSources,
 }
 
 /// The layer Photoshop should open as its Background: the bottom top-level layer when it is a
@@ -105,13 +103,9 @@ fn psd_background(doc: &Document) -> Option<photocraft_doc::LayerId> {
         return None;
     }
     let n = s.channels();
-    let opaque = canvas
-        .tiles()
-        .all(|tc| s.try_read_region(tc.rect().intersect(&canvas)).is_ok_and(|pixels| pixels.chunks_exact(n).all(|p| p.last().is_some_and(|a| *a >= 1.0))));
+    let opaque = s.read_region(canvas).chunks_exact(n).all(|p| p.last().is_some_and(|a| *a >= 1.0));
     opaque.then_some(l.id)
 }
-
-pub(crate) type StreamSources = std::collections::HashMap<u32, (Option<Surface>, Option<Surface>)>;
 
 /// How deep embedded documents are exported inside each other before a smart object is written
 /// as pixels instead.
@@ -342,13 +336,10 @@ impl Ex {
     }
 
     fn empty_channels(&self) -> Vec<ChannelData> {
-        if self.deferred {
-            return (-1..self.cc as i16).map(|id| ChannelData { id, compression: Some(Compression::Raw), data: Vec::new() }).collect();
-        }
         (-1..self.cc as i16).map(|id| self.encode(id, &[], 0, 0)).collect()
     }
 
-    fn pixel_channels(&mut self, s: &Surface, name: &str) -> (PsdRect, Vec<ChannelData>, Vec<String>, Option<Surface>) {
+    fn pixel_channels(&self, s: &Surface, name: &str) -> (PsdRect, Vec<ChannelData>, Vec<String>) {
         let mut warnings = Vec::new();
         let s = if s.format() != self.fmt {
             warnings.push(format!("layer \"{name}\": pixels converted from {:?} to {:?}", s.format(), self.fmt));
@@ -358,11 +349,7 @@ impl Ex {
         };
         let r = s.content_bounds();
         if r.is_empty() {
-            return (PsdRect::default(), self.empty_channels(), warnings, None);
-        }
-        if self.deferred {
-            let channels = (-1..self.cc as i16).map(|id| ChannelData { id, compression: Some(Compression::Raw), data: Vec::new() }).collect();
-            return (to_psd_rect(r), channels, warnings, Some(s));
+            return (PsdRect::default(), self.empty_channels(), warnings);
         }
         // The interleaved gather is the sequential pass for full-canvas layers, so it runs
         // in row bands on all cores and the band results concatenate in order.
@@ -386,15 +373,15 @@ impl Ex {
         let order: Vec<(i16, &Vec<u8>)> =
             std::iter::once((-1, &planes[self.cc])).chain(planes.iter().take(self.cc).enumerate().map(|(c, p)| (c as i16, p))).collect();
         let ch = crate::pixels::par_map(order, |(id, plane)| self.encode(id, plane, w, h));
-        (to_psd_rect(r), ch, warnings, None)
+        (to_psd_rect(r), ch, warnings)
     }
 
-    fn mask(&self, m: &LayerMask, vector: Option<(f32, f32)>) -> (MaskData, Option<ChannelData>, Option<Surface>) {
+    fn mask(&self, m: &LayerMask, vector: Option<(f32, f32)>) -> (MaskData, Option<ChannelData>) {
         let s = if m.surface.format() != self.mask_fmt { m.surface.convert(self.mask_fmt) } else { m.surface.clone() };
         let default = s.default_pixel().first().copied().unwrap_or(0.0);
         let r = s.content_bounds();
         let (w, h) = (r.width() as usize, r.height() as usize);
-        let plane = if self.deferred || r.is_empty() { Vec::new() } else { deinterleave(&s.to_interleaved(r), 1, self.mask_fmt.sample, &[false]).remove(0) };
+        let plane = if r.is_empty() { Vec::new() } else { deinterleave(&s.to_interleaved(r), 1, self.mask_fmt.sample, &[false]).remove(0) };
         let mut flags = 0u8;
         if !m.linked {
             flags |= PsdMask::FLAG_RELATIVE;
@@ -415,11 +402,7 @@ impl Ex {
             real: None,
             real_first: true,
         };
-        if self.deferred {
-            (MaskData::Mask(pm), Some(ChannelData { id: -2, compression: Some(Compression::Raw), data: Vec::new() }), Some(s))
-        } else {
-            (MaskData::Mask(pm), Some(self.encode(-2, &plane, w, h)), None)
-        }
+        (MaskData::Mask(pm), Some(self.encode(-2, &plane, w, h)))
     }
 
     /// Prefer numbers above imported layer IDs, wrapping safely at u32::MAX.
@@ -441,18 +424,16 @@ impl Ex {
 
     fn record(&mut self, l: &Layer, extra: Vec<TaggedBlock>, pixels: Option<&Surface>) -> LayerRecord {
         let id = self.layer_id(l);
-        let (rect, mut channels, warnings, source) = match pixels {
+        let (rect, mut channels, warnings) = match pixels {
             Some(s) => self.pixel_channels(s, &l.name),
-            None => (PsdRect::default(), self.empty_channels(), Vec::new(), None),
+            None => (PsdRect::default(), self.empty_channels(), Vec::new()),
         };
         self.warnings.extend(warnings);
         let mut mask = MaskData::None;
-        let mut mask_source = None;
         // Vector mask density/feather live in the mask parameters, with or without a user mask.
         let vector = l.vector_mask.as_ref().map(|vm| (vm.density, vm.feather));
         if let Some(m) = &l.mask {
-            let (md, ch, s) = self.mask(m, vector);
-            mask_source = s;
+            let (md, ch) = self.mask(m, vector);
             mask = md;
             channels.extend(ch);
         } else if let Some(parameters) = mask_parameters(None, vector) {
@@ -466,9 +447,6 @@ impl Ex {
                 trailing: Vec::new(),
                 real_first: true,
             });
-        }
-        if self.deferred {
-            self.sources.insert(id, (source, mask_source));
         }
         // A Background carries no transparency channel: that is how Photoshop tells it apart.
         if self.background == Some(l.id) {
@@ -1000,7 +978,7 @@ impl Ex {
             }
             let doc = photocraft_format::load_from_bytes(bytes).map_err(|e| format!("its contents can't be read: {e}"))?;
             let (file, warnings) =
-                document_to_psd_nested(&doc, &PsdExportOptions { force_psb: true, ..Default::default() }, self.smart.depth + 1, &Interrupt::NONE, None);
+                document_to_psd_nested(&doc, &PsdExportOptions { force_psb: true, ..Default::default() }, self.smart.depth + 1, &Interrupt::NONE);
             let data = file.to_bytes().map_err(|e| format!("its contents can't be written: {e}"))?;
             let stem = file_name.rsplit_once('.').map_or(file_name, |(a, _)| a);
             self.warnings.extend(warnings.into_iter().map(|w| format!("smart object {stem}: {w}")));
@@ -1365,21 +1343,14 @@ pub fn document_to_psd(doc: &Document) -> PsdFile {
 /// anything that could not be represented. The merged composite is rendered
 /// with `photocraft_compose::flatten`.
 pub fn document_to_psd_with(doc: &Document, opts: &PsdExportOptions) -> (PsdFile, Vec<String>) {
-    document_to_psd_nested(doc, opts, 0, &Interrupt::NONE, None)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn stream_metadata(doc: &Document, opts: &PsdExportOptions) -> (PsdFile, Vec<String>, StreamSources) {
-    let mut sources = StreamSources::new();
-    let (file, warnings) = document_to_psd_nested(doc, opts, 0, &Interrupt::NONE, Some(&mut sources));
-    (file, warnings, sources)
+    document_to_psd_nested(doc, opts, 0, &Interrupt::NONE)
 }
 
 /// [`document_to_psd_with`] for a background save (#3389): reports progress through `ctl` after
 /// each layer record and each band of the merged composite. Once `ctl` is cancelled it stops
 /// early and returns an **incomplete** model: callers check `ctl` and discard it.
 pub(crate) fn document_to_psd_interruptible(doc: &Document, opts: &PsdExportOptions, ctl: &Interrupt) -> (PsdFile, Vec<String>) {
-    document_to_psd_nested(doc, opts, 0, ctl, None)
+    document_to_psd_nested(doc, opts, 0, ctl)
 }
 
 /// How much of a PSD conversion the merged composite weighs, in layer records: rendering it
@@ -1509,13 +1480,7 @@ pub(crate) fn psd_size_exceeds_limit(doc: &Document) -> bool {
 }
 
 /// [`document_to_psd_with`] for a document embedded `depth` smart objects deep.
-fn document_to_psd_nested(
-    doc: &Document,
-    opts: &PsdExportOptions,
-    depth: u32,
-    ctl: &Interrupt,
-    deferred: Option<&mut StreamSources>,
-) -> (PsdFile, Vec<String>) {
+fn document_to_psd_nested(doc: &Document, opts: &PsdExportOptions, depth: u32, ctl: &Interrupt) -> (PsdFile, Vec<String>) {
     if doc.mode == ColorMode::Multichannel {
         return crate::multichannel_map::document_to_psd(doc, opts.force_psb);
     }
@@ -1545,8 +1510,6 @@ fn document_to_psd_nested(
         smart: SmartOut::new(doc, depth),
         patterns: doc.patterns.clone(),
         background: psd_background(doc),
-        deferred: deferred.is_some(),
-        sources: Default::default(),
     };
     if big && !opts.force_psb {
         ex.warnings.push("document exceeds 30000 px; written as PSB".into());
@@ -1621,9 +1584,7 @@ fn document_to_psd_nested(
     // isn't rendered at all. A document without layer records keeps the real image: its pixels
     // live nowhere else.
     let real_merged = opts.maximize_compatibility || ex.records.is_empty();
-    let (mut planes, has_alpha) = if ex.deferred {
-        (Vec::new(), true)
-    } else if real_merged {
+    let (mut planes, has_alpha) = if real_merged {
         // Merged composite, rendered and encoded in bands (no full-size float composite). Matting
         // against white only changes pixels with alpha < 1; if some are slightly translucent but
         // all round to opaque (so no alpha channel is written), encode once more without the matte.
@@ -1661,9 +1622,6 @@ fn document_to_psd_nested(
         None => None,
     };
     for a in &extra {
-        if ex.deferred {
-            continue;
-        }
         let s = if a.surface.format() != ex.mask_fmt { a.surface.convert(ex.mask_fmt) } else { a.surface.clone() };
         let bytes = s.to_interleaved(canvas);
         planes.extend(deinterleave(&bytes, 1, sample, &[false]).remove(0));
@@ -1671,13 +1629,9 @@ fn document_to_psd_nested(
     let channels = (cc + usize::from(has_alpha) + extra.len()) as u16;
     let header = Header::new(version, doc.size.width, doc.size.height, channels, psd_depth(sample), psd_mode(fmt.mode));
     let mcomp = if sample == SampleType::F32 { Compression::Raw } else { opts.merged_compression };
-    let image_data = if ex.deferred {
-        ImageData { compression: Compression::Raw, data: Vec::new() }
-    } else {
-        ImageData::encode(mcomp, &planes, &header)
-            .or_else(|_| ImageData::encode(Compression::Raw, &planes, &header))
-            .unwrap_or(ImageData { compression: Compression::Raw, data: planes })
-    };
+    let image_data = ImageData::encode(mcomp, &planes, &header)
+        .or_else(|_| ImageData::encode(Compression::Raw, &planes, &header))
+        .unwrap_or(ImageData { compression: Compression::Raw, data: planes });
     ctl.progress(1.0);
 
     // Resources.
@@ -1823,9 +1777,6 @@ fn document_to_psd_nested(
         layer_mask_trailing: Vec::new(),
         image_data,
     };
-    if let Some(out) = deferred {
-        *out = ex.sources;
-    }
     (file, ex.warnings)
 }
 

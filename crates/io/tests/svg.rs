@@ -93,23 +93,6 @@ fn svg_group_rasterization_threshold_is_configurable_and_clamped() {
     let LayerContent::Group(outer) = &unlimited.document.layers[0].content else { panic!("outer group should remain editable") };
     assert!(outer.children.iter().any(|child| matches!(child.content, LayerContent::Group(_))), "zero disables the preference threshold");
 
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let path = std::env::temp_dir().join(format!("photocraft-svg-depth-{}.svg", std::process::id()));
-        std::fs::write(&path, source.as_bytes()).unwrap();
-        for (depth, reference) in [(1, &shallow), (0, &unlimited)] {
-            let seekable = photocraft_io::import_path_with_svg_group_depth("nested.svg", &path, depth, &photocraft_raster::Interrupt::NONE).unwrap();
-            assert_eq!(seekable.warnings, reference.warnings);
-            let LayerContent::Group(outer) = &seekable.document.layers[0].content else { panic!("outer group should remain editable") };
-            assert!(outer.children.iter().any(|child| if depth == 1 {
-                matches!(child.content, LayerContent::Raster(_))
-            } else {
-                matches!(child.content, LayerContent::Group(_))
-            }));
-        }
-        std::fs::remove_file(path).unwrap();
-    }
-
     let clamped = import_with_svg_group_depth("nested.svg", source.as_bytes(), usize::MAX).unwrap();
     assert!(matches!(clamped.document.layers[0].content, LayerContent::Group(_)), "out-of-range settings clamp to the document's hard group limit");
 }
