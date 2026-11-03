@@ -613,3 +613,198 @@ fn grouping_preserves_nonlinear_history_and_a_one_state_limit() {
         assert_eq!(s.active().unwrap().doc.as_ref(), after.as_ref());
     }
 }
+
+/// Play the real Delete State command, retaining identities of the older rows it did not delete.
+fn recorded_delete_case(case: &str) {
+    for single_state in [false, true] {
+        for prefix in [false, true] {
+            if !prefix && case != "nonlinear-past" {
+                continue;
+            }
+            let nonlinear = case.starts_with("nonlinear");
+            let mut s = history_control_session(single_state);
+            s.execute("history.options", json!({"allowNonLinearHistory":nonlinear})).unwrap();
+            s.execute("edit.fill", json!({"color":"#0000ff"})).unwrap();
+            s.execute("edit.fill", json!({"color":"#00ffff"})).unwrap();
+            let originals: Vec<_> = (0..=s.active().unwrap().history.past_len())
+                .map(|i| {
+                    let st = s.active().unwrap();
+                    (st.history.row_id(i).unwrap(), st.history.entries()[i].clone(), st.history.row_doc(i, &st.doc).unwrap())
+                })
+                .collect();
+            let source = if case.ends_with("past") { 1 } else { 4 };
+            s.execute("history.setSource", json!({"state":source})).unwrap();
+            if case == "nonlinear-redo" {
+                assert!(s.undo());
+                assert!(s.undo());
+            }
+            let before = s.active().unwrap().doc.clone();
+            let past = s.active().unwrap().history.past_len();
+            let mut steps = Vec::new();
+            if prefix {
+                steps.push(("edit.fill".into(), json!({"color":"#0000ff"})));
+            }
+            if case.ends_with("current") {
+                steps.push(("history.setSource".into(), json!({"state":past + 1})));
+            }
+            if case == "nonlinear-redo" {
+                steps.push(("history.selectState".into(), json!({"state":2})));
+            }
+            let deleted = match case {
+                "linear-past" | "nonlinear-past" => 1,
+                "nonlinear-redo" => 3,
+                _ => past + 1,
+            };
+            steps.extend([
+                ("history.deleteState".into(), json!({"state":deleted})),
+                ("edit.fill".into(), json!({"color":"#ffff00"})),
+                ("edit.fill".into(), json!({"color":"#ff00ff"})),
+            ]);
+            s.actions.list = vec![Action::new("Delete state", steps)];
+            let result = s.execute("actions.play", json!({"action":0})).unwrap();
+            assert!(result.get("failed").is_none(), "{case}, singleState={single_state}: {result}");
+            let after = s.active().unwrap().doc.clone();
+            assert_eq!(after.layers[0].surface().unwrap().rgba(0, 0), [1.0, 0.0, 1.0, 1.0]);
+            let removed: Vec<_> = match case {
+                "linear-past" => (1..5).collect(),
+                "nonlinear-past" => vec![1],
+                "nonlinear-redo" => vec![4],
+                _ => Vec::new(),
+            };
+            for (i, (id, label, _)) in originals.iter().enumerate() {
+                let row = s.active().unwrap().history.row_of(*id);
+                if removed.contains(&i) {
+                    assert!(row.is_none(), "{case}, singleState={single_state}: deleted row {id} returned");
+                } else {
+                    let row = row.unwrap_or_else(|| panic!("{case}: surviving row {id} disappeared"));
+                    let st = s.active().unwrap();
+                    let labels: Vec<_> = st.history.entries().into_iter().chain(st.history.redo_labels().map(str::to_owned)).collect();
+                    assert_eq!(&labels[row], label);
+                }
+            }
+            let count = if single_state { 1 } else { 2 };
+            if single_state {
+                assert_eq!(s.active().unwrap().history.past_len(), originals.len() - removed.len());
+                assert_eq!(s.active().unwrap().history.undo_label(), Some("Action: Delete state"));
+            }
+            for _ in 0..count {
+                assert!(s.undo());
+            }
+            let boundary = if case == "linear-past" {
+                &originals[0].2
+            } else if single_state {
+                &before
+            } else if case == "nonlinear-redo" || (case == "nonlinear-past" && prefix) {
+                &originals[3].2
+            } else {
+                &originals[4].2
+            };
+            assert_eq!(s.active().unwrap().doc.as_ref(), boundary.as_ref(), "{case}, singleState={single_state}, prefix={prefix}");
+            for _ in 0..count {
+                assert!(s.redo());
+            }
+            assert_eq!(s.active().unwrap().doc.as_ref(), after.as_ref());
+            for i in removed {
+                assert!(s.active().unwrap().history.row_of(originals[i].0).is_none());
+            }
+            assert!(s.execute("edit.fill", json!({"contents":"history"})).is_err(), "the selected deleted source must stay unresolved");
+            assert_eq!(s.active().unwrap().doc.as_ref(), after.as_ref());
+        }
+    }
+}
+
+#[test]
+fn recorded_linear_past_deletion_keeps_its_boundary_and_suffix() {
+    recorded_delete_case("linear-past");
+}
+
+#[test]
+fn recorded_linear_current_deletion_keeps_surviving_rows() {
+    recorded_delete_case("linear-current");
+}
+
+#[test]
+fn recorded_nonlinear_past_deletion_keeps_only_surviving_rows() {
+    recorded_delete_case("nonlinear-past");
+}
+
+#[test]
+fn recorded_nonlinear_current_deletion_keeps_surviving_rows() {
+    recorded_delete_case("nonlinear-current");
+}
+
+#[test]
+fn recorded_nonlinear_redo_deletion_keeps_only_surviving_rows() {
+    recorded_delete_case("nonlinear-redo");
+}
+
+/// Purge Undo removes one predecessor, while native snapshots and legitimate older rows remain.
+fn recorded_user_purge_undo_case(suffix: bool) {
+    for single_state in [false, true] {
+        for prefix in [false, true] {
+            let mut s = history_control_session(single_state);
+            let old: Vec<_> = (0..=s.active().unwrap().history.past_len())
+                .map(|i| {
+                    let st = s.active().unwrap();
+                    (st.history.row_id(i).unwrap(), st.history.row_doc(i, &st.doc).unwrap())
+                })
+                .collect();
+            let removed = if prefix { 2 } else { 1 };
+            s.execute("history.setSource", json!({"state":removed})).unwrap();
+            let mut steps = Vec::new();
+            if prefix {
+                steps.push(("edit.fill".into(), json!({"color":"#0000ff"})));
+            }
+            steps.extend([("edit.purge.undo".into(), json!({})), ("history.newSnapshot".into(), json!({"name":"Purge boundary"}))]);
+            if suffix {
+                steps.extend([("edit.fill".into(), json!({"color":"#ffff00"})), ("edit.fill".into(), json!({"color":"#ff00ff"}))]);
+            }
+            s.actions.list = vec![Action::new("Purge Undo", steps)];
+            let result = s.execute("actions.play", json!({"action":0})).unwrap();
+            assert!(result.get("failed").is_none(), "singleState={single_state}, prefix={prefix}, suffix={suffix}: {result}");
+            let st = s.active().unwrap();
+            let after = st.doc.clone();
+            let boundary = st.snapshots.last().unwrap().doc.clone();
+            let snapshot = st.snapshots.last().unwrap().id;
+            assert_eq!(boundary.layers[0].surface().unwrap().rgba(0, 0), if prefix { [0.0, 0.0, 1.0, 1.0] } else { [0.0, 1.0, 0.0, 1.0] });
+            assert!(st.history.row_of(old[removed].0).is_none(), "Purge Undo's removed predecessor returned");
+            assert!(st.history.row_of(old[0].0).is_some());
+            let count = if single_state { 1 } else { 2 };
+            if suffix {
+                for _ in 0..count {
+                    assert!(s.undo());
+                }
+                assert_eq!(s.active().unwrap().doc.as_ref(), boundary.as_ref());
+            }
+            assert!(s.undo());
+            assert_eq!(s.active().unwrap().doc.as_ref(), old[if prefix { 1 } else { 0 }].1.as_ref(), "the purged pixels cannot be undone back into existence");
+            assert!(s.redo());
+            assert_eq!(s.active().unwrap().doc.as_ref(), boundary.as_ref());
+            if suffix {
+                for _ in 0..count {
+                    assert!(s.redo());
+                }
+            }
+            assert_eq!(s.active().unwrap().doc.as_ref(), after.as_ref());
+            assert!(s.active().unwrap().history.row_of(old[removed].0).is_none());
+            assert!(s.execute("edit.fill", json!({"contents":"history"})).is_err());
+            assert_eq!(s.active().unwrap().doc.as_ref(), after.as_ref());
+            s.execute("edit.fill", json!({"contents":"history", "snapshot":snapshot})).unwrap();
+            assert_eq!(
+                s.active().unwrap().doc.layers[0].surface().unwrap().rgba(0, 0),
+                boundary.layers[0].surface().unwrap().rgba(0, 0),
+                "native snapshots outlive Purge Undo"
+            );
+        }
+    }
+}
+
+#[test]
+fn recorded_user_purge_undo_does_not_restore_its_removed_predecessor() {
+    recorded_user_purge_undo_case(false);
+}
+
+#[test]
+fn recorded_user_purge_undo_groups_only_the_later_suffix() {
+    recorded_user_purge_undo_case(true);
+}
