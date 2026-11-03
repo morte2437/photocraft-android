@@ -502,17 +502,29 @@ const RECOVERY_UNRESOLVED: &str = "could not restore the original";
 
 /// The error for that unresolved Windows replacement state: names the recovery copy and says the
 /// destination is currently missing, instead of the usual `UNCHANGED` reassurance (#11178).
+/// When the restoration failed because the backup itself is gone (`NotFound`), nothing survives
+/// at that name and saying so would be a second false comfort after the lost original.
 /// Its kind is deliberately not `PermissionDenied`: the retry loop must not pick a fresh backup
 /// name over the unresolved recovery and forget where the original is.
 #[cfg(any(windows, test))]
 pub(crate) fn unresolved_recovery_error(dest: &Path, completion: &io::Error, restoration: &io::Error, recovery: &Path) -> io::Error {
-    io::Error::other(format!(
-        "cannot save {}: the previous version moved to its backup name but {RECOVERY_UNRESOLVED} from it \
-         (completing the save failed: {completion}; restoring the backup failed: {restoration}); \
-         your document survives at {}, recover it from there before saving again",
-        dest.display(),
-        recovery.display()
-    ))
+    let msg = if restoration.kind() == io::ErrorKind::NotFound {
+        format!(
+            "cannot save {}: the previous version moved to its backup name but {RECOVERY_UNRESOLVED} from it \
+             (completing the save failed: {completion}; the backup no longer exists: {restoration}), \
+             so the destination currently holds no file under that name",
+            dest.display()
+        )
+    } else {
+        format!(
+            "cannot save {}: the previous version moved to its backup name but {RECOVERY_UNRESOLVED} from it \
+             (completing the save failed: {completion}; restoring the backup failed: {restoration}); \
+             your document survives at {}, recover it from there before saving again",
+            dest.display(),
+            recovery.display()
+        )
+    };
+    io::Error::other(msg)
 }
 
 /// Replacement already happened: never claim that the original file is unchanged or undo it.

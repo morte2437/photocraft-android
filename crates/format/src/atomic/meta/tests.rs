@@ -372,3 +372,19 @@ fn the_unresolved_recovery_error_names_the_backup_and_is_not_retried() {
     assert!(!msg.contains("the original file was not changed"), "no false reassurance: {msg}");
     assert_ne!(e.kind(), io::ErrorKind::PermissionDenied, "the retry loop must stop, not pick a fresh backup name over the unresolved recovery");
 }
+
+/// When the restoration failed because the backup itself is gone, the error must not promise a
+/// recovery copy that does not exist (#11178).
+#[test]
+fn a_vanished_backup_is_reported_as_gone_rather_than_as_a_recovery_copy() {
+    let e = crate::atomic::unresolved_recovery_error(
+        Path::new("/docs/report.psd"),
+        &io::Error::new(io::ErrorKind::PermissionDenied, "locked"),
+        &io::Error::from_raw_os_error(2), // `ENOENT` / `ERROR_FILE_NOT_FOUND`: the backup is gone.
+        Path::new("/docs/.report.psd.9.pcsave.tmp"),
+    );
+    let msg = e.to_string();
+    assert!(msg.contains("no longer exists") && msg.contains("no file under that name"), "{msg}");
+    assert!(!msg.contains("survives at"), "no recovery promise for a vanished backup: {msg}");
+    assert!(!msg.contains("the original file was not changed"), "{msg}");
+}
