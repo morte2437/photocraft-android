@@ -1,5 +1,133 @@
 use super::*;
 
+/// A small valid Photoshop set, generated without external action files.
+fn action_set_bytes(set: &str, action: &str) -> Vec<u8> {
+    use photocraft_psd::atn::{AtnAction, AtnEvent, AtnFile, AtnItem};
+    use photocraft_psd::descriptor::UnicodeString;
+    photocraft_psd::atn::write(&AtnFile {
+        name: UnicodeString::new_nul(set),
+        actions: vec![AtnAction {
+            name: UnicodeString::new_nul(action),
+            items: vec![AtnItem { event: AtnEvent::Code(*b"Invr"), dictionary: "Invert".into(), ..Default::default() }],
+            ..Default::default()
+        }],
+        ..Default::default()
+    })
+    .unwrap()
+}
+
+#[test]
+/// Browser multi-selection must not be truncated to the first file.
+fn bulk_load_imports_every_chosen_action_file() {
+    use crate::file_dialog::{FileDialogAnswer, FileDialogRequest};
+    let files = vec![("first.atn".into(), action_set_bytes("First set", "First")), ("second.atn".into(), action_set_bytes("Second set", "Second"))];
+    let (show, asked) = crate::file_dialog::fake(vec![Some(FileDialogAnswer::ContentsMany(files))]);
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services { file_dialog: Some(show), ..Default::default() });
+    load_dialog(&mut app).unwrap();
+    app.poll_file_dialog(&egui::Context::default(), None);
+    assert_eq!(app.session.actions.list.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["First", "Second"]);
+    assert!(matches!(asked.borrow().as_slice(), [FileDialogRequest::Open { multiple: true, extensions: Some(ext), .. }] if ext == &["atn"]));
+    assert!(!app.file_dialog_open());
+    assert!(!app.ui.status_error, "{}", app.ui.status);
+}
+
+#[test]
+/// A corrupt middle file cannot hide warnings or prevent a later set replacement.
+fn bulk_load_keeps_selection_order_and_earlier_warnings_and_errors() {
+    use crate::file_dialog::FileDialogAnswer;
+    let dir = tempfile::tempdir().unwrap();
+    let first = dir.path().join("z-first.atn");
+    let broken = dir.path().join("broken.atn");
+    let last = dir.path().join("a-last.atn");
+    let mut unsupported = photocraft_psd::atn::parse(&action_set_bytes("Same set", "Old")).unwrap();
+    unsupported.actions[0].items[0].event = photocraft_psd::atn::AtnEvent::Code(*b"Xxxx");
+    std::fs::write(&first, photocraft_psd::atn::write(&unsupported).unwrap()).unwrap();
+    std::fs::write(&broken, b"not an action file").unwrap();
+    std::fs::write(&last, action_set_bytes("Same set", "Replacement")).unwrap();
+    let paths = [first, broken, last].map(|p| p.to_string_lossy().into_owned()).to_vec();
+    let mut app = disk_app(vec![Some(FileDialogAnswer::Paths(paths))]);
+    load_dialog(&mut app).unwrap();
+    app.poll_file_dialog(&egui::Context::default(), None);
+    assert_eq!(app.session.actions.list.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["Replacement"]);
+    assert_eq!(app.ui.actions.selected, Some(0));
+    assert!(app.ui.status_error, "a later success must not hide an earlier failure");
+    // The replaced set's unsupported step is gone, so it is not counted.
+    for part in ["2 action files loaded", "1 action;", "Same set from a-last.atn replaced the one from z-first.atn", "1 file could not be loaded", "broken.atn"]
+    {
+        assert!(app.ui.status.contains(part), "{part}: {}", app.ui.status);
+    }
+    assert!(!app.ui.status.contains("PhotoCraft equivalent"), "{}", app.ui.status);
+}
+
+/// Load `files` (name, bytes) in one Load Actions… selection and return the status bar text.
+fn bulk_load_status(app: &mut PhotocraftApp, files: Vec<(String, Vec<u8>)>) -> String {
+    use crate::file_dialog::FileDialogAnswer;
+    let (show, _) = crate::file_dialog::fake(vec![Some(FileDialogAnswer::ContentsMany(files))]);
+    app.services.file_dialog = Some(show);
+    load_dialog(app).unwrap();
+    app.poll_file_dialog(&egui::Context::default(), None);
+    app.ui.status.clone()
+}
+
+#[test]
+/// Two files whose sets share a name: the later replaces the earlier, and the summary counts only
+/// what the panel holds afterwards and says which set was replaced.
+fn bulk_load_summary_counts_a_replaced_set_once() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    let mut a = photocraft_psd::atn::parse(&action_set_bytes("Set 1", "A")).unwrap();
+    a.actions[0].items[0].event = photocraft_psd::atn::AtnEvent::Code(*b"Xxxx");
+    let files = vec![("a.atn".into(), photocraft_psd::atn::write(&a).unwrap()), ("b.atn".into(), action_set_bytes("Set 1", "B"))];
+    let status = bulk_load_status(&mut app, files);
+    assert_eq!(app.session.actions.list.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["B"]);
+    assert!(!app.ui.status_error, "{status}");
+    assert_eq!(status, "2 action files loaded (1 action; Set 1 from b.atn replaced the one from a.atn)");
+}
+
+#[test]
+/// Distinct set names: every set counts, nothing is reported as replaced, and the file count reads
+/// right for one loaded file as well as several.
+fn bulk_load_summary_counts_distinct_sets_and_pluralises_files() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    let files = vec![("a.atn".into(), action_set_bytes("Set A", "A")), ("b.atn".into(), action_set_bytes("Set B", "B"))];
+    assert_eq!(bulk_load_status(&mut app, files), "2 action files loaded (2 actions)");
+    let files = vec![("c.atn".into(), action_set_bytes("Set C", "C")), ("bad.atn".into(), b"not an action file".to_vec())];
+    let status = bulk_load_status(&mut app, files);
+    assert!(app.ui.status_error);
+    assert!(status.starts_with("1 action file loaded (1 action; 1 file could not be loaded: bad.atn: "), "{status}");
+}
+
+#[test]
+/// The multi-file summary is translated like the rest of the Actions panel.
+fn bulk_load_summary_is_translated() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    let files = vec![("a.atn".into(), action_set_bytes("Set 1", "A")), ("b.atn".into(), action_set_bytes("Set 1", "B"))];
+    let status = crate::i18n::with_language(crate::i18n::Lang::from_code("de").unwrap(), || bulk_load_status(&mut app, files));
+    assert_eq!(status, "2 Aktionsdateien geladen (1 Aktion; Satz Set 1 aus b.atn hat den aus a.atn ersetzt)");
+}
+
+#[test]
+/// Dismissing the picker is inert; one selected file keeps its existing status message.
+fn bulk_load_keeps_cancel_empty_and_single_file_behavior() {
+    use crate::file_dialog::FileDialogAnswer;
+    for answer in [None, Some(FileDialogAnswer::Paths(Vec::new())), Some(FileDialogAnswer::ContentsMany(Vec::new()))] {
+        let mut app = disk_app(vec![answer]);
+        app.session.actions.list.push(Action::new("Existing", vec![]));
+        app.ui.actions.selected = Some(0);
+        app.ui.status = "Unchanged".into();
+        load_dialog(&mut app).unwrap();
+        app.poll_file_dialog(&egui::Context::default(), None);
+        assert_eq!(app.session.actions.list[0].name, "Existing");
+        assert_eq!(app.ui.actions.selected, Some(0));
+        assert_eq!(app.ui.status, "Unchanged");
+    }
+    let mut app = disk_app(vec![Some(FileDialogAnswer::Contents("single.atn".into(), action_set_bytes("Single", "One")))]);
+    load_dialog(&mut app).unwrap();
+    app.poll_file_dialog(&egui::Context::default(), None);
+    assert_eq!(app.session.actions.list[0].name, "One");
+    assert!(app.ui.status.contains("single.atn"));
+    assert!(!app.ui.status_error);
+}
+
 #[test]
 fn panel_menu_lists_load_save_and_existing_action_commands() {
     use egui_kittest::{Harness, kittest::Queryable};
@@ -643,16 +771,653 @@ fn set_folders_group_actions_and_collapse() {
     assert!(h.get_by_label("Sharpen").rect().top() > folder.top());
     assert!(h.get_by_label("Soften").rect().top() > h.get_by_label("Sharpen").rect().top());
     assert_eq!(display_order(&[]), Vec::<usize>::new());
-    // Clicking the folder collapses it; its actions disappear and the state is remembered.
-    h.get_by_label("Retouch").click();
-    h.run_steps(3);
+    // Clicking the folder's triangle collapses it; its actions disappear and the state is remembered.
+    click_set_triangle(&mut h, "Retouch");
     assert_eq!(h.state().ui.actions.collapsed_sets, ["Retouch"]);
     assert!(h.query_by_label("Sharpen").is_none());
     assert!(h.query_by_label("Loose").is_some());
-    h.get_by_label("Retouch").click();
-    h.run_steps(3);
+    click_set_triangle(&mut h, "Retouch");
     assert!(h.state().ui.actions.collapsed_sets.is_empty());
     assert!(h.query_by_label("Sharpen").is_some());
+}
+
+/// Two sets, Web listed first: "Resize" (Web) adds a layer "w", "Sharpen" and "Soften" (Retouch)
+/// add "r1" and "r2".
+fn two_set_panel() -> egui_kittest::Harness<'static, PhotocraftApp> {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 8, "height": 8})).unwrap();
+    for (name, set, layer) in [("Resize", "Web", "w"), ("Sharpen", "Retouch", "r1"), ("Soften", "Retouch", "r2")] {
+        let mut a = Action::new(name, vec![("layer.new.layer".into(), json!({"name": layer}))]);
+        a.set = Some(set.into());
+        app.session.actions.list.push(a);
+    }
+    let mut h = egui_kittest::Harness::builder().with_size(vec2(360.0, 400.0)).build_ui_state(|ui, app| panel(app, ui), app);
+    h.run_steps(2);
+    h
+}
+
+fn layer_names(app: &PhotocraftApp) -> Vec<String> {
+    app.session.active().unwrap().doc.walk().iter().map(|(_, _, l)| l.name.clone()).filter(|n| n != "Background").collect()
+}
+
+/// Click a set folder row's disclosure triangle (a plain `click()` lands on the row's middle,
+/// which selects the set).
+fn click_set_triangle(h: &mut egui_kittest::Harness<'_, PhotocraftApp>, set: &str) {
+    use egui_kittest::kittest::Queryable;
+    let pos = h.get_by_label(set).rect().left_center() + vec2(12.0, 0.0);
+    h.event(egui::Event::PointerMoved(pos));
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE });
+    }
+    h.run_steps(2);
+}
+
+/// #10459 fix-up: a click on a set folder row (not its triangle) selects the set, and Play
+/// then plays every action of that set in order, as Photoshop plays a selected set, not the first
+/// action of the whole list.
+#[test]
+fn play_with_a_set_folder_selected_plays_that_sets_actions() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = two_set_panel();
+    h.get_by_label("Resize").click();
+    h.run_steps(2);
+    h.get_by_label("Retouch").click();
+    h.run_steps(2);
+    assert!(h.state().ui.actions.collapsed_sets.is_empty(), "a click on the row selects, it doesn't collapse");
+    h.get_by_label("Play selection").click();
+    h.run_steps(2);
+    let mut names = layer_names(h.state());
+    names.sort();
+    assert_eq!(names, ["r1", "r2"], "the Retouch set played, not Resize");
+    assert!(!h.state().ui.status_error, "{}", h.state().ui.status);
+    // Batch and Create Droplet start on the selected set too.
+    assert_eq!(selected_action(h.state()).map(|a| a.name.as_str()), Some("Sharpen"));
+}
+
+/// #10459 fix-up: Play with an empty set selected plays nothing.
+#[test]
+fn play_with_an_empty_set_selected_plays_nothing() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = two_set_panel();
+    h.state_mut().run("actions.newSet", json!({"name": "Print"})).unwrap();
+    h.run_steps(2);
+    h.get_by_label("Print").click();
+    h.run_steps(2);
+    assert_eq!(h.state().ui.actions.selected_set.as_deref(), Some("Print"));
+    h.get_by_label("Play selection").click();
+    h.run_steps(2);
+    assert!(layer_names(h.state()).is_empty(), "{:?}", layer_names(h.state()));
+}
+
+/// CodeRabbit on batch 11: with an empty set selected, Batch and Create Droplet start on the first
+/// action, as `selected_action` documents.
+#[test]
+fn an_empty_selected_set_falls_back_to_the_first_action() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = two_set_panel();
+    h.state_mut().run("actions.newSet", json!({"name": "Print"})).unwrap();
+    h.run_steps(2);
+    h.get_by_label("Print").click();
+    h.run_steps(2);
+    assert_eq!(selected_action(h.state()).map(|a| a.name.as_str()), Some("Resize"));
+}
+
+/// #10459 fix-up: the common case is unchanged: a selected action plays alone, also after a set
+/// folder was selected before it, and a later Delete doesn't bring that set back.
+#[test]
+fn play_with_an_action_selected_plays_only_that_action() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = two_set_panel();
+    h.get_by_label("Retouch").click();
+    h.run_steps(2);
+    h.get_by_label("Retouch").click();
+    h.run_steps(2);
+    h.get_by_label("Sharpen").click();
+    h.run_steps(2);
+    h.get_by_label("Play selection").click();
+    h.run_steps(2);
+    assert_eq!(layer_names(h.state()), ["r1"]);
+    assert_eq!(selected_action(h.state()).map(|a| a.name.as_str()), Some("Sharpen"));
+    h.get_by_label("Delete").click();
+    h.run_steps(2);
+    assert_eq!((h.state().ui.actions.selected, h.state().ui.actions.selected_set.as_deref()), (None, None));
+}
+
+/// #10459 fix-up: the disclosure triangle collapses and expands a set and leaves the selection
+/// alone, so Play still plays the selected action, not the set that was looked into.
+#[test]
+fn collapsing_a_set_keeps_the_selected_action_for_play() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = two_set_panel();
+    h.get_by_label("Resize").click();
+    h.run_steps(2);
+    click_set_triangle(&mut h, "Retouch");
+    assert_eq!(h.state().ui.actions.collapsed_sets, ["Retouch"]);
+    assert!(h.query_by_label("Sharpen").is_none());
+    click_set_triangle(&mut h, "Retouch");
+    assert!(h.state().ui.actions.collapsed_sets.is_empty());
+    assert_eq!((h.state().ui.actions.selected, h.state().ui.actions.selected_set.as_deref()), (Some(0), None));
+    h.get_by_label("Play selection").click();
+    h.run_steps(2);
+    assert_eq!(layer_names(h.state()), ["w"]);
+}
+
+/// #10459 fix-up: selecting a step (or any other way an action becomes the selection) drops a
+/// selected set, so deleting that step doesn't bring the set back as Play's target.
+#[test]
+fn a_selected_step_replaces_the_selected_set() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = two_set_panel();
+    h.state_mut().session.actions.list[0].steps.push(("select.all".into(), json!({})));
+    h.state_mut().ui.actions.expanded = vec![true, false, false];
+    h.run_steps(2);
+    h.get_by_label("Retouch").click();
+    h.run_steps(2);
+    assert_eq!(h.state().ui.actions.selected_set.as_deref(), Some("Retouch"));
+    h.get_by_label(&label_of("select.all")).click();
+    h.run_steps(2);
+    assert_eq!((h.state().ui.actions.selected, h.state().ui.actions.selected_step), (Some(0), Some(1)));
+    h.get_by_label("Delete").click();
+    h.run_steps(2);
+    assert_eq!(h.state().session.actions.list[0].steps.len(), 1, "the step went");
+    assert_eq!((h.state().ui.actions.selected, h.state().ui.actions.selected_set.as_deref()), (None, None));
+    h.get_by_label("Play selection").click();
+    h.run_steps(2);
+    assert_eq!(layer_names(h.state()), ["w"], "the first action, not the Retouch set");
+}
+
+/// #10459 fix-up: a set whose first action pauses at step dialogs plays the rest of the set
+/// after OK, and Cancel stops the whole set, as it stops one action.
+#[test]
+fn a_set_paused_at_a_step_dialog_plays_its_other_actions_after_ok() {
+    use egui_kittest::kittest::Queryable;
+    for ok in [true, false] {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"width": 8, "height": 8})).unwrap();
+        let mut a = Action::new(
+            "A",
+            vec![
+                ("layer.new.layer".into(), json!({"name": "a"})),
+                ("filter.blur.gaussianBlur".into(), json!({"radius": 1})),
+                ("filter.blur.gaussianBlur".into(), json!({"radius": 2})),
+                ("layer.new.layer".into(), json!({"name": "a2"})),
+            ],
+        );
+        a.set = Some("S".into());
+        a.dialogs.extend([1, 2]);
+        let mut b = Action::new("B", vec![("layer.new.layer".into(), json!({"name": "b"}))]);
+        b.set = Some("S".into());
+        app.session.actions.list.extend([a, b]);
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(360.0, 400.0)).build_ui_state(|ui, app| panel(app, ui), app);
+        h.run_steps(2);
+        h.get_by_label("S").click();
+        h.run_steps(2);
+        h.get_by_label("Play selection").click();
+        h.run_steps(2);
+        assert_eq!(layer_names(h.state()), ["a"]);
+        assert!(h.state().ui.status.contains("dialog"), "{}", h.state().ui.status);
+        let first = h.state().ui.dialogs.last().map(|d| d.id).expect("the first blur's dialog");
+        if !ok {
+            crate::dialogs::cancel(h.state_mut(), first).unwrap();
+            h.run_steps(2);
+            assert_eq!(layer_names(h.state()), ["a"], "Cancel stops the set");
+            continue;
+        }
+        crate::dialogs::confirm(h.state_mut(), first).unwrap();
+        h.run_steps(2);
+        // The second dialog of A pauses again; the rest of the set waits behind it.
+        let second = h.state().ui.dialogs.last().map(|d| d.id).expect("the second blur's dialog");
+        assert_ne!(first, second);
+        crate::dialogs::confirm(h.state_mut(), second).unwrap();
+        h.run_steps(2);
+        let mut names = layer_names(h.state());
+        names.sort();
+        assert_eq!(names, ["a", "a2", "b"], "B played after A's dialogs");
+        // CodeRabbit on batch 11: the count covers the whole Play, also the steps before each pause.
+        assert_eq!(h.state().ui.status, "Played 5 steps");
+    }
+}
+
+/// CodeRabbit on batch 11: the rest of a paused set is kept by name, so an action moved into the
+/// middle of the list while the dialog is open neither plays in its place nor skips one of the set.
+#[test]
+fn a_set_paused_at_a_dialog_plays_its_own_actions_after_a_move() {
+    use egui_kittest::kittest::Queryable;
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 8, "height": 8})).unwrap();
+    for (name, set, layer) in [("A", "S", "a"), ("B", "S", "b"), ("C", "S", "c"), ("X", "Other", "x")] {
+        let mut a = Action::new(name, vec![("layer.new.layer".into(), json!({"name": layer}))]);
+        a.set = Some(set.into());
+        app.session.actions.list.push(a);
+    }
+    app.session.actions.list[0].steps.push(("filter.blur.gaussianBlur".into(), json!({"radius": 1})));
+    app.session.actions.list[0].dialogs.insert(1);
+    let mut h = egui_kittest::Harness::builder().with_size(vec2(360.0, 400.0)).build_ui_state(|ui, app| panel(app, ui), app);
+    h.run_steps(2);
+    h.get_by_label("S").click();
+    h.run_steps(2);
+    h.get_by_label("Play selection").click();
+    h.run_steps(2);
+    assert_eq!(layer_names(h.state()), ["a"]);
+    let dialog = h.state().ui.dialogs.last().map(|d| d.id).expect("the blur's dialog");
+    h.state_mut().run("actions.move", json!({"action": "X", "to": 1})).unwrap();
+    crate::dialogs::confirm(h.state_mut(), dialog).unwrap();
+    h.run_steps(2);
+    let mut names = layer_names(h.state());
+    names.sort();
+    assert_eq!(names, ["a", "b", "c"]);
+}
+
+/// CodeRabbit on batch 11: an action of the paused set deleted and made again under its name while
+/// the dialog is open is a different action, so the set ends there instead of playing it.
+#[test]
+fn a_set_paused_at_a_dialog_ends_at_an_action_replaced_under_its_name() {
+    use egui_kittest::kittest::Queryable;
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 8, "height": 8})).unwrap();
+    for (name, layer) in [("A", "a"), ("B", "b"), ("C", "c")] {
+        let mut a = Action::new(name, vec![("layer.new.layer".into(), json!({"name": layer}))]);
+        a.set = Some("S".into());
+        app.session.actions.list.push(a);
+    }
+    app.session.actions.list[0].steps.push(("filter.blur.gaussianBlur".into(), json!({"radius": 1})));
+    app.session.actions.list[0].dialogs.insert(1);
+    let mut h = egui_kittest::Harness::builder().with_size(vec2(360.0, 400.0)).build_ui_state(|ui, app| panel(app, ui), app);
+    h.run_steps(2);
+    h.get_by_label("S").click();
+    h.run_steps(2);
+    h.get_by_label("Play selection").click();
+    h.run_steps(2);
+    assert_eq!(layer_names(h.state()), ["a"]);
+    let dialog = h.state().ui.dialogs.last().map(|d| d.id).expect("the blur's dialog");
+    h.state_mut().run("actions.delete", json!({"action": "B"})).unwrap();
+    let mut b = Action::new("B", vec![("layer.new.layer".into(), json!({"name": "new b"}))]);
+    b.set = Some("S".into());
+    h.state_mut().session.actions.list.insert(1, b);
+    crate::dialogs::confirm(h.state_mut(), dialog).unwrap();
+    h.run_steps(2);
+    assert_eq!(layer_names(h.state()), ["a"], "neither the new B nor C after it played");
+}
+
+/// #10459 fix-up: a set whose action pauses at a dialog inside an action it calls stops there:
+/// the called action resumes alone, so the next action of the set must not run on a caller that
+/// never finished.
+#[test]
+fn a_set_paused_inside_a_called_action_stops_there() {
+    use egui_kittest::kittest::Queryable;
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 8, "height": 8})).unwrap();
+    let mut a = Action::new("A", vec![("actions.play".into(), json!({"action": "C"})), ("layer.new.layer".into(), json!({"name": "a-tail"}))]);
+    a.set = Some("S".into());
+    let mut b = Action::new("B", vec![("layer.new.layer".into(), json!({"name": "b"}))]);
+    b.set = Some("S".into());
+    let mut c = Action::new("C", vec![("filter.blur.gaussianBlur".into(), json!({"radius": 1})), ("layer.new.layer".into(), json!({"name": "c"}))]);
+    c.dialogs.insert(0);
+    app.session.actions.list.extend([a, b, c]);
+    let mut h = egui_kittest::Harness::builder().with_size(vec2(360.0, 400.0)).build_ui_state(|ui, app| panel(app, ui), app);
+    h.run_steps(2);
+    h.get_by_label("S").click();
+    h.run_steps(2);
+    h.get_by_label("Play selection").click();
+    h.run_steps(2);
+    let dialog = h.state().ui.dialogs.last().map(|d| d.id).expect("C's blur dialog");
+    crate::dialogs::confirm(h.state_mut(), dialog).unwrap();
+    h.run_steps(2);
+    assert_eq!(layer_names(h.state()), ["c"], "C finished; B didn't run ahead of A's tail");
+}
+
+/// #10459 fix-up: a set folder activated without a pointer (keyboard, accessibility) still
+/// collapses and expands, and selects the set; the row reports whether it is selected.
+#[test]
+fn a_set_folder_toggles_without_a_pointer() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = two_set_panel();
+    use egui::accesskit::Toggled;
+    use egui_kittest::kittest::NodeT;
+    let selected = |h: &egui_kittest::Harness<'_, PhotocraftApp>| h.get_by_label("Retouch").accesskit_node().toggled();
+    assert_eq!(selected(&h), Some(Toggled::False));
+    h.get_by_label("Retouch").click_accesskit();
+    h.run_steps(2);
+    assert_eq!(h.state().ui.actions.collapsed_sets, ["Retouch"]);
+    assert_eq!(h.state().ui.actions.selected_set.as_deref(), Some("Retouch"));
+    assert_eq!(selected(&h), Some(Toggled::True), "selected and collapsed reads as selected");
+    h.get_by_label("Retouch").click_accesskit();
+    h.run_steps(2);
+    assert!(h.state().ui.actions.collapsed_sets.is_empty());
+}
+
+/// #7535: the folder button (and the panel menu's New Set…) names an empty set, shown as a folder
+/// row with no actions; New Action then records into it, as into any selected set.
+#[test]
+fn new_set_makes_an_empty_folder_that_new_action_records_into() {
+    use egui_kittest::{Harness, kittest::Queryable};
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 8, "height": 8})).unwrap();
+    let mut retouch = Action::new("Sharpen", vec![]);
+    retouch.set = Some("Retouch".into());
+    app.session.actions.list.push(retouch);
+    let mut h = Harness::builder().with_size(vec2(360.0, 400.0)).build_ui_state(|ui, app| panel(app, ui), app);
+    h.run_steps(2);
+    h.get_by_label("Create new set").click();
+    h.run_steps(2);
+    let id = h.state().ui.dialogs.last().map(|d| d.id).expect("the New Set dialog");
+    let d = h.state_mut().ui.dialog_mut(id).unwrap();
+    assert!(owns_new_set(&d.fields));
+    assert_eq!(d.fields["name"], "Set 1");
+    d.fields.insert("name".into(), json!("Web"));
+    crate::dialogs::confirm(h.state_mut(), id).unwrap();
+    h.run_steps(2);
+    // An empty folder row, selected.
+    assert!(h.query_by_label("Web").is_some());
+    assert_eq!(h.state().ui.actions.selected_set.as_deref(), Some("Web"));
+    h.get_by_label("Create new action").click();
+    h.run_steps(2);
+    h.state_mut().run("actions.stop", json!({})).unwrap();
+    let list = &h.state().session.actions.list;
+    assert_eq!((list[1].name.as_str(), list[1].set.as_deref()), ("Action 2", Some("Web")));
+    // With an action selected, New Action records into that action's set.
+    h.state_mut().ui.actions.selected = Some(0);
+    h.run_steps(2);
+    h.get_by_label("Create new action").click();
+    h.run_steps(2);
+    h.state_mut().run("actions.stop", json!({})).unwrap();
+    assert_eq!(h.state().session.actions.list[2].set.as_deref(), Some("Retouch"));
+}
+
+/// FredApps review on #10459: with no action and no set selected, New Action makes an action
+/// outside every set, even when sets (empty ones included) exist.
+#[test]
+fn new_action_with_no_set_selected_is_in_no_set() {
+    use egui_kittest::{Harness, kittest::Queryable};
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 8, "height": 8})).unwrap();
+    let mut retouch = Action::new("Sharpen", vec![]);
+    retouch.set = Some("Retouch".into());
+    app.session.actions.list.push(retouch);
+    app.run("actions.newSet", json!({"name": "Web"})).unwrap();
+    let mut h = Harness::builder().with_size(vec2(360.0, 400.0)).build_ui_state(|ui, app| panel(app, ui), app);
+    h.run_steps(2);
+    assert_eq!((h.state().ui.actions.selected, h.state().ui.actions.selected_set.as_deref()), (None, None));
+    h.get_by_label("Create new action").click();
+    h.run_steps(2);
+    h.state_mut().run("actions.stop", json!({})).unwrap();
+    let list = &h.state().session.actions.list;
+    assert_eq!((list.len(), list[1].name.as_str(), list[1].set.as_deref()), (2, "Action 2", None));
+}
+
+/// FredApps review on #10459: closing the Actions panel and opening it again keeps the selected
+/// set and the empty sets New Set made, so New Action still records into the selected one.
+#[test]
+fn reopening_the_actions_panel_keeps_the_selected_set_and_empty_sets() {
+    use egui_kittest::{Harness, kittest::Queryable};
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 8, "height": 8})).unwrap();
+    let mut retouch = Action::new("Sharpen", vec![]);
+    retouch.set = Some("Retouch".into());
+    app.session.actions.list.push(retouch);
+    app.run("actions.newSet", json!({"name": "Web"})).unwrap();
+    app.run("actions.newSet", json!({"name": "Print"})).unwrap();
+    let mut h = Harness::builder().with_size(vec2(360.0, 400.0)).build_ui_state(
+        |ui, app| {
+            // The Actions panel is the History group's second tab.
+            if app.ui.panels.history && app.ui.dock_tabs.history == 1 {
+                panel(app, ui);
+            }
+        },
+        app,
+    );
+    let ctx = h.ctx.clone();
+    let toggle = |h: &mut Harness<'_, PhotocraftApp>| {
+        crate::menus::invoke(h.state_mut(), &ctx, "window.panel.actions", json!({})).unwrap();
+        h.run_steps(2);
+    };
+    if !(h.state().ui.panels.history && h.state().ui.dock_tabs.history == 1) {
+        toggle(&mut h);
+    }
+    h.run_steps(2);
+    h.get_by_label("Web").click();
+    h.run_steps(2);
+    assert_eq!(h.state().ui.actions.selected_set.as_deref(), Some("Web"));
+    toggle(&mut h);
+    assert!(!h.state().ui.panels.history, "closed");
+    assert!(h.query_by_label("Web").is_none());
+    toggle(&mut h);
+    assert!(h.state().ui.panels.history && h.state().ui.dock_tabs.history == 1, "open again");
+    assert!(h.query_by_label("Web").is_some() && h.query_by_label("Print").is_some(), "the empty sets");
+    assert_eq!(h.state().session.actions.sets, ["Web", "Print"]);
+    assert_eq!((h.state().ui.actions.selected, h.state().ui.actions.selected_set.as_deref()), (None, Some("Web")));
+    h.get_by_label("Create new action").click();
+    h.run_steps(2);
+    h.state_mut().run("actions.stop", json!({})).unwrap();
+    assert_eq!(h.state().session.actions.list[1].set.as_deref(), Some("Web"));
+}
+
+/// #7535: with a set's folder row selected and no action, Start Recording (like the Record button)
+/// has no action to append to, so it records a new action into that set, as New Action does.
+#[test]
+fn start_recording_with_a_set_selected_records_a_new_action_into_it() {
+    use egui_kittest::{Harness, kittest::Queryable};
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 8, "height": 8})).unwrap();
+    let mut retouch = Action::new("Sharpen", vec![]);
+    retouch.set = Some("Retouch".into());
+    app.session.actions.list.push(retouch);
+    app.run("actions.newSet", json!({"name": "Web"})).unwrap();
+    let mut h = Harness::builder().with_size(vec2(360.0, 600.0)).build_ui_state(
+        |ui, app| {
+            panel_menu(app, ui);
+            panel(app, ui);
+        },
+        app,
+    );
+    h.run_steps(2);
+    h.get_by_label("Web").click();
+    h.run_steps(2);
+    assert_eq!((h.state().ui.actions.selected, h.state().ui.actions.selected_set.as_deref()), (None, Some("Web")));
+    h.get_by_label("Start Recording").click();
+    h.run_steps(2);
+    h.state_mut().run("actions.stop", json!({})).unwrap();
+    let list = &h.state().session.actions.list;
+    assert_eq!(list.len(), 2);
+    assert_eq!(list[1].set.as_deref(), Some("Web"));
+}
+
+/// Recording into a collapsed, selected set (New Action or Start Recording) expands the set
+/// again, so the new action and its steps show.
+#[test]
+fn recording_into_a_collapsed_set_expands_it() {
+    use egui_kittest::{Harness, kittest::Queryable};
+    for label in ["Create new action", "Start Recording"] {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"width": 8, "height": 8})).unwrap();
+        let mut retouch = Action::new("Sharpen", vec![]);
+        retouch.set = Some("Retouch".into());
+        app.session.actions.list.push(retouch);
+        let mut h = Harness::builder().with_size(vec2(360.0, 600.0)).build_ui_state(
+            |ui, app| {
+                panel_menu(app, ui);
+                panel(app, ui);
+            },
+            app,
+        );
+        h.run_steps(2);
+        click_set_triangle(&mut h, "Retouch");
+        h.get_by_label("Retouch").click();
+        h.run_steps(2);
+        assert_eq!(h.state().ui.actions.collapsed_sets, ["Retouch"], "{label}");
+        assert!(h.query_by_label("Sharpen").is_none(), "{label}");
+        h.get_by_label(label).click();
+        h.run_steps(2);
+        assert!(h.state().ui.actions.collapsed_sets.is_empty(), "{label}");
+        assert_eq!(h.state().ui.actions.selected, Some(1), "{label}");
+        assert!(h.query_by_label("Action 2").is_some(), "{label}");
+        h.state_mut().run("actions.stop", json!({})).unwrap();
+    }
+}
+
+/// Save Actions… after a click on set B's folder row saves set B, not the first action's set.
+#[test]
+fn save_actions_with_a_set_selected_saves_that_set() {
+    use egui_kittest::{Harness, kittest::Queryable};
+    let (file_dialog, asked) = crate::file_dialog::fake(vec![None]);
+    let services = crate::Services { file_dialog: Some(file_dialog), ..Default::default() };
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), services);
+    app.run("file.new", json!({"width": 8, "height": 8})).unwrap();
+    for (name, set) in [("Sharpen", "Retouch"), ("Resize", "Web")] {
+        let mut action = Action::new(name, vec![("layer.new.layer".into(), json!({}))]);
+        action.set = Some(set.into());
+        app.session.actions.list.push(action);
+    }
+    let mut h = Harness::builder().with_size(vec2(360.0, 600.0)).build_ui_state(
+        |ui, app| {
+            panel_menu(app, ui);
+            panel(app, ui);
+        },
+        app,
+    );
+    h.run_steps(2);
+    h.get_by_label("Web").click();
+    h.run_steps(2);
+    assert_eq!((h.state().ui.actions.selected, h.state().ui.actions.selected_set.as_deref()), (None, Some("Web")));
+    h.get_by_label("Save Actions…").click();
+    h.run_steps(2);
+    h.state_mut().poll_file_dialog(&egui::Context::default(), None);
+    assert!(matches!(asked.borrow().as_slice(), [crate::file_dialog::FileDialogRequest::Save { suggested }] if suggested == "Web.atn"), "{:?}", asked.borrow());
+}
+
+/// FredApps review on #10459: a set name can hold characters a file name can't. Save Actions…
+/// suggests the file with them replaced, and the set keeps its name in the file. The set here
+/// is an empty one New Set made, which Save Actions… writes as Photoshop does.
+#[test]
+fn save_actions_suggests_a_file_name_without_path_characters() {
+    use egui_kittest::{Harness, kittest::Queryable};
+    let (file_dialog, asked) = crate::file_dialog::fake(vec![None]);
+    let services = crate::Services { file_dialog: Some(file_dialog), ..Default::default() };
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), services);
+    app.run("file.new", json!({"width": 8, "height": 8})).unwrap();
+    app.session.actions.list.push(Action::new("Loose", vec![]));
+    let set = "Web/Print\\Mail: v2";
+    app.run("actions.newSet", json!({"name": set})).unwrap();
+    let mut h = Harness::builder().with_size(vec2(360.0, 600.0)).build_ui_state(
+        |ui, app| {
+            panel_menu(app, ui);
+            panel(app, ui);
+        },
+        app,
+    );
+    h.run_steps(2);
+    h.get_by_label(set).click();
+    h.run_steps(2);
+    h.get_by_label("Save Actions…").click();
+    h.run_steps(2);
+    h.state_mut().poll_file_dialog(&egui::Context::default(), None);
+    assert!(
+        matches!(asked.borrow().as_slice(), [crate::file_dialog::FileDialogRequest::Save { suggested }] if suggested == "Web_Print_Mail_ v2.atn"),
+        "{:?}",
+        asked.borrow()
+    );
+    let saved = h.state_mut().run("actions.save", json!({"set": set})).unwrap();
+    assert_eq!(saved["set"], set, "the file keeps the set's name");
+}
+
+/// An app with no actions and one empty set New Set made, its folder row shown with the panel
+/// menu, and a fake Save dialog whose requests the test reads.
+fn empty_set_save_harness(
+    set: &str,
+) -> (egui_kittest::Harness<'static, PhotocraftApp>, std::rc::Rc<std::cell::RefCell<Vec<crate::file_dialog::FileDialogRequest>>>) {
+    let (file_dialog, asked) = crate::file_dialog::fake(vec![None]);
+    let services = crate::Services { file_dialog: Some(file_dialog), ..Default::default() };
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), services);
+    app.run("file.new", json!({"width": 8, "height": 8})).unwrap();
+    app.run("actions.newSet", json!({"name": set})).unwrap();
+    // With no action, the panel shows its "Record ● … play ▶" hint, which the test fonts lack.
+    let mut h = egui_kittest::Harness::builder().with_size(vec2(360.0, 600.0)).allow_missing_glyphs().build_ui_state(
+        |ui, app| {
+            panel_menu(app, ui);
+            panel(app, ui);
+        },
+        app,
+    );
+    h.run_steps(2);
+    (h, asked)
+}
+
+/// CodeRabbit review on #10459: with no action at all, Save Actions… is still enabled for a
+/// selected empty set (the engine saves it), and stays disabled with nothing to save.
+#[test]
+fn save_actions_is_enabled_for_a_selected_empty_set_with_no_actions() {
+    use egui_kittest::kittest::Queryable;
+    let (mut h, asked) = empty_set_save_harness("Later");
+    h.get_by_label("Save Actions…").click();
+    h.run_steps(2);
+    h.state_mut().poll_file_dialog(&egui::Context::default(), None);
+    assert!(asked.borrow().is_empty(), "no set selected, nothing to save: {:?}", asked.borrow());
+    h.get_by_label("Later").click();
+    h.run_steps(2);
+    assert_eq!(h.state().ui.actions.selected_set.as_deref(), Some("Later"));
+    h.get_by_label("Save Actions…").click();
+    h.run_steps(2);
+    h.state_mut().poll_file_dialog(&egui::Context::default(), None);
+    assert!(
+        matches!(asked.borrow().as_slice(), [crate::file_dialog::FileDialogRequest::Save { suggested }] if suggested == "Later.atn"),
+        "{:?}",
+        asked.borrow()
+    );
+}
+
+/// CodeRabbit review on #10459: Save Set… in an empty set folder's context menu saves that set,
+/// as it does for a folder with actions.
+#[test]
+fn save_set_on_an_empty_set_folder_opens_the_save_dialog() {
+    use egui_kittest::kittest::Queryable;
+    let (mut h, asked) = empty_set_save_harness("Later");
+    h.get_by_label("Later").click_secondary();
+    h.run_steps(2);
+    h.get_by_label("Save Set…").click();
+    h.run_steps(2);
+    h.state_mut().poll_file_dialog(&egui::Context::default(), None);
+    assert!(
+        matches!(asked.borrow().as_slice(), [crate::file_dialog::FileDialogRequest::Save { suggested }] if suggested == "Later.atn"),
+        "{:?}",
+        asked.borrow()
+    );
+}
+
+/// CodeRabbit review on #10459: a set named after a Windows device (`CON`, `com1.v2`) or holding a
+/// control character gets a suggested file name Windows can create.
+#[test]
+fn save_actions_suggests_a_windows_safe_name_for_device_and_control_character_sets() {
+    use egui_kittest::kittest::Queryable;
+    for (set, suggested) in [("CON", "CON_.atn"), ("com1.v2", "com1_.v2.atn"), ("Web\u{1}Print\tMail", "Web_Print_Mail.atn"), ("Print", "Print.atn")] {
+        let (mut h, asked) = empty_set_save_harness(set);
+        h.get_by_label(set).click();
+        h.run_steps(2);
+        h.get_by_label("Save Actions…").click();
+        h.run_steps(2);
+        h.state_mut().poll_file_dialog(&egui::Context::default(), None);
+        assert!(
+            matches!(asked.borrow().as_slice(), [crate::file_dialog::FileDialogRequest::Save { suggested: s }] if s == suggested),
+            "{set:?}: {:?}",
+            asked.borrow()
+        );
+    }
+}
+
+/// CodeRabbit on batch 11: a set name longer than a file name may be is cut to 255 bytes with its
+/// suffix, at a character boundary.
+#[test]
+fn save_actions_suggests_a_file_name_of_at_most_255_bytes() {
+    use egui_kittest::kittest::Queryable;
+    let set = "é".repeat(200);
+    let (mut h, asked) = empty_set_save_harness(&set);
+    h.get_by_label(set.as_str()).click();
+    h.run_steps(2);
+    h.get_by_label("Save Actions…").click();
+    h.run_steps(2);
+    h.state_mut().poll_file_dialog(&egui::Context::default(), None);
+    let asked = asked.borrow();
+    let [crate::file_dialog::FileDialogRequest::Save { suggested }] = asked.as_slice() else { panic!("{asked:?}") };
+    assert_eq!(*suggested, format!("{}.atn", "é".repeat(125)));
 }
 
 #[test]
@@ -1190,4 +1955,21 @@ fn save_hook_closing_the_target_stops_an_imported_close_with_save() {
         assert_eq!(app.session.actions.playing, 0);
         assert!(app.session.actions.playback_stack.is_empty());
     }
+}
+
+#[test]
+/// An unsupported step in a set that stays loaded is counted in the multi-file summary, unlike
+/// one in a set a later file replaced (CodeRabbit on #10776).
+fn bulk_load_summary_counts_unsupported_steps_of_surviving_sets() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    let mut a = photocraft_psd::atn::parse(&action_set_bytes("Set A", "A")).unwrap();
+    a.actions[0].items[0].event = photocraft_psd::atn::AtnEvent::Code(*b"Xxxx");
+    let files = vec![("a.atn".into(), photocraft_psd::atn::write(&a).unwrap()), ("b.atn".into(), action_set_bytes("Set B", "B"))];
+    let status = bulk_load_status(&mut app, files);
+    assert!(status.contains("1 step has no PhotoCraft equivalent yet"), "{status}");
+    assert!(!app.ui.status_error, "{status}");
+    // Both sets stay loaded: the unsupported step is counted for one that is in the panel.
+    let names: Vec<&str> = app.session.actions.list.iter().map(|a| a.name.as_str()).collect();
+    assert_eq!(names, ["A", "B"]);
+    assert!(app.session.actions.list[0].steps.iter().any(|(id, _)| id == "actions.photoshopStep"));
 }

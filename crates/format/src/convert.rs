@@ -81,9 +81,7 @@ fn key4(s: &str) -> Result<[u8; 4]> {
     unhex(s)?.try_into().map_err(|_| FormatError::corrupt(format!("bad 4-byte key `{s}`")))
 }
 
-pub(crate) fn is_valid_hash(h: &str) -> bool {
-    h.len() == 64 && h.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-}
+pub(crate) use craft_pcraft_format::is_valid_hash;
 
 /// Convert native-endian sample bytes to little-endian in place (and back:
 /// the swap is an involution).
@@ -110,7 +108,7 @@ fn surface_m(s: &Surface, sink: &mut dyn Sink) -> SurfaceM {
     let mut dp = vec![0u8; f.bytes_per_pixel()];
     encode_pixel(&f, &s.default_pixel(), &mut dp);
     swap_to_le(&mut dp, f.sample);
-    SurfaceM { format: f, default: hex(&dp), tiles: s.tiles().map(|(c, t)| TileRef { tx: c.tx, ty: c.ty, hash: sink.tile(f, t) }).collect() }
+    SurfaceM { format: f, default: hex(&dp), tiles: s.tiles().map(|(c, t)| TileRef::new(c.tx, c.ty, sink.tile(f, t))).collect() }
 }
 
 fn opt_blob(b: &Option<Arc<Vec<u8>>>, sink: &mut dyn Sink) -> Option<Hash> {

@@ -182,12 +182,35 @@ pub fn resolve(s: &Session, key: &str) -> Option<Pattern> {
 
 pub(crate) fn resolve_param(s: &Session, cmd: &str, p: &Value) -> Result<Pattern> {
     let key = p.get("pattern").and_then(Value::as_str).unwrap_or("");
-    if let Some(pat) = resolve(s, key) {
-        return paintable(cmd, pat);
-    }
-    match library_pattern(s, key).map(|lp| full(s, lp)) {
-        Some(Err(e)) => Err(bad(cmd, e)),
-        _ => Err(bad(cmd, format!("no pattern \"{key}\" (see pattern.list)"))),
+    resolve_or_named(s, key, p).map_err(|e| bad(cmd, e)).and_then(|pat| paintable(cmd, pat))
+}
+
+/// The pattern `key` names, or with a `patternName` in `p` (an imported action's pattern recorded
+/// with both an id and a name) the pattern with id `key`: the active document's, then the
+/// library's, by id alone, and only when that id is installed nowhere the one `patternName`
+/// names, as the reference application plays such a step. The error says why: no such pattern,
+/// or a saved library pattern whose pixels can't be read.
+pub(crate) fn resolve_or_named(s: &Session, key: &str, p: &Value) -> std::result::Result<Pattern, String> {
+    use photocraft_doc::pattern::find;
+    let name = p.get("patternName").and_then(Value::as_str).filter(|n| !n.is_empty());
+    // `find` with an empty name looks up the id alone; both empty find nothing.
+    let in_doc = |id: &str, name: &str| s.active().and_then(|d| find(&d.doc.patterns, id, name)).map(|p| (p, false));
+    let by_key = |k: &str| in_doc(k, k).or_else(|| library_pattern(s, k).map(|p| (p, true)));
+    let found = match name {
+        // The name is a name: another pattern whose id happens to equal it doesn't count.
+        Some(n) => in_doc(key, "")
+            .or_else(|| find(&s.patterns.items, key, "").map(|p| (p, true)))
+            .or_else(|| in_doc("", n))
+            .or_else(|| find(&s.patterns.items, "", n).map(|p| (p, true))),
+        None => by_key(key),
+    };
+    match found {
+        Some((pat, false)) => Ok(pat.clone()),
+        Some((pat, true)) => full(s, pat),
+        None => Err(match name {
+            Some(n) => format!("no pattern \"{n}\" (id \"{key}\"; see pattern.list)"),
+            None => format!("no pattern \"{key}\" (see pattern.list)"),
+        }),
     }
 }
 
@@ -588,7 +611,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Pattern…",
             menu: &["Layer", "New Fill Layer"],
             shortcut: None,
-            params: r##"{"pattern":id|name?=first library pattern,"scale":1..1000=100,"angle":deg=0,"link":bool=true,"phase":[x,y]?,"path":"work"|saved path name|{…path}? (the active path: becomes the vector mask; else the selection is the layer mask)}"##,
+            params: r##"{"pattern":id|name?=first library pattern,"patternName":name? (then `pattern` is an id; the name is used when no pattern has that id),"scale":1..1000=100,"angle":deg=0,"link":bool=true,"phase":[x,y]?,"path":"work"|saved path name|{…path}? (the active path: becomes the vector mask; else the selection is the layer mask)}"##,
             enabled: has_doc,
             journal: true,
             run: new_fill_layer,

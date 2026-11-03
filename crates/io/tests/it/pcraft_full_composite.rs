@@ -33,10 +33,8 @@ fn on() -> ExportOptions {
 
 /// The bundle's member named by the manifest's `full_composite`, decoded: size and RGBA8 pixels.
 fn full_composite(bytes: &[u8]) -> ((u32, u32), Vec<u8>) {
-    let manifest = photocraft_format::read_manifest(bytes).expect("manifest");
-    let path = manifest.full_composite.expect("the manifest names the full-size composite");
-    assert_eq!(path, "composite/full.png");
-    let png = ZipReader::new(bytes).expect("zip").read_by_name(&path, usize::MAX).expect("entry");
+    let png = photocraft_format::read_full_composite(bytes).expect("manifest").expect("the manifest names the full-size composite");
+    assert_eq!(png, ZipReader::new(bytes).expect("zip").read_by_name("composite/full.png", usize::MAX).expect("entry"));
     let image = photocraft_codecs::decode(&png).expect("png");
     (image.dimensions(), image.to_rgba8())
 }
@@ -50,7 +48,7 @@ fn a_default_save_writes_the_bundle_without_the_full_composite() {
     for depth in SampleType::ALL {
         let d = doc(1500, 700, depth);
         let bytes = export(&d, "a.pcraft", &ExportOptions::default()).expect("export").bytes;
-        assert_eq!(photocraft_format::read_manifest(&bytes).expect("manifest").full_composite, None, "{depth:?}");
+        assert_eq!(photocraft_format::read_full_composite(&bytes).expect("manifest"), None, "{depth:?}");
         assert!(ZipReader::new(&bytes).expect("zip").find("composite/full.png").is_none(), "{depth:?}");
         // The bytes a save wrote before the option: the bundle with its two previews alone.
         let mut named = d.clone();
@@ -126,7 +124,7 @@ fn a_canvas_past_the_render_limit_is_saved_without_it() {
     d.size = Size::new(40_000, 30_000);
     assert!(photocraft_io::pcraft_full_composite(&d).is_none());
     let bytes = export(&d, "a.pcraft", &on()).expect("export").bytes;
-    assert_eq!(photocraft_format::read_manifest(&bytes).expect("manifest").full_composite, None);
+    assert_eq!(photocraft_format::read_full_composite(&bytes).expect("manifest"), None);
     assert!(ZipReader::new(&bytes).expect("zip").find("composite/full.png").is_none());
 }
 
@@ -137,6 +135,6 @@ fn a_sparse_canvas_past_the_composite_memory_budget_is_saved_without_it() {
     d.size = Size::new(8193, 8192);
     assert!(photocraft_io::pcraft_full_composite(&d).is_none());
     let bytes = export(&d, "a.pcraft", &on()).expect("export").bytes;
-    assert_eq!(photocraft_format::read_manifest(&bytes).expect("manifest").full_composite, None);
+    assert_eq!(photocraft_format::read_full_composite(&bytes).expect("manifest"), None);
     assert!(ZipReader::new(&bytes).expect("zip").find("composite/full.png").is_none());
 }

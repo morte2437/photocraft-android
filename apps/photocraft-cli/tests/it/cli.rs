@@ -1028,7 +1028,7 @@ fn tiff_output_is_flat_unless_tiff_layers_is_given() {
 #[test]
 fn pcraft_output_has_no_full_composite_unless_asked() {
     let d = tmp("pcraft-full-composite");
-    let full = |path: &std::path::Path| photocraft_format::read_manifest(&std::fs::read(path).unwrap()).unwrap().full_composite.is_some();
+    let full = |path: &std::path::Path| photocraft_format::read_full_composite(&std::fs::read(path).unwrap()).unwrap().is_some();
     for (name, flag, expect) in [("plain.pcraft", None, false), ("full.pcraft", Some("--pcraft-full-composite"), true)] {
         let out = d.join(name);
         let mut cmd = bin();
@@ -1108,6 +1108,20 @@ fn batch_plays_a_photoshop_actions_file() {
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(err.contains("Generative Fill"), "{err}");
     assert!(!o.status.success());
+}
+
+/// A version 12 Actions file (Photoshop 5, often saved on classic Mac OS without an extension) is
+/// recognised by its version word like version 16, not read as a JSON actions list.
+#[test]
+fn extensionless_version_12_actions_file_is_read_as_atn() {
+    let d = tmp("atn-v12");
+    let path = d.join("Legacy Actions");
+    std::fs::write(&path, include_bytes!("../../../../crates/psd/tests/fixtures/atn/v12-commands.atn")).unwrap();
+    let (steps, set, warnings) = photocraft_cli::load_actions_file(&path, None).unwrap();
+    assert_eq!(set.len(), 1);
+    assert_eq!(steps, vec![("actions.play".to_string(), json!({"action": set[0].name}))]);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    std::fs::remove_dir_all(d).unwrap();
 }
 
 /// What `photocraft_cli::run` returned and wrote, in-process.

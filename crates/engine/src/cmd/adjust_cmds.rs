@@ -459,9 +459,9 @@ fn stats_pixels(doc: &Document, layer: Option<u64>, use_selection: bool) -> Resu
     let px: Vec<[f32; 4]> = match layer {
         Some(id) => {
             let l = doc.layer(photocraft_doc::LayerId(id)).ok_or(EngineError::NoLayer(photocraft_doc::LayerId(id)))?;
-            photocraft_compose::render_layer(l, area).px
+            photocraft_compose::render_layer(l, area).into_px()
         }
-        None => photocraft_compose::flatten(doc).px,
+        None => photocraft_compose::flatten(doc).into_px(),
     };
     let mask = doc.selection.as_ref().filter(|_| use_selection).map(|sel| photocraft_algo::selection::mask_from_surface(Some(sel), area));
     Ok((px, mask))
@@ -521,7 +521,7 @@ fn hdr_toning(s: &mut Session, p: &Value) -> Result<Value> {
     s.edit("HDR Toning", |doc, active| {
         let buf = photocraft_compose::flatten(doc).over_background([1.0, 1.0, 1.0]);
         let (w, hgt) = (buf.rect.width() as usize, buf.rect.height() as usize);
-        let mut px = buf.px;
+        let mut px = buf.into_px();
         tone::hdr_toning(&mut px, w, hgt, &h);
         let fmt = doc.pixel_format();
         let data: Vec<f32> = px.iter().flat_map(|q| photocraft_raster::from_rgba(&fmt, *q)).collect();

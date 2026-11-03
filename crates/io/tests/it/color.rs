@@ -116,11 +116,11 @@ fn cmyk_fills_survive_psd_roundtrip_at_every_depth() {
                 let mut doc = Document::new("CMYK fill", photocraft_geom::Size::new(9, 6), ColorMode::Cmyk, depth);
                 doc.icc_profile = profile.clone();
                 doc.layers.push(Layer::new("Fill", LayerContent::Fill(fill)));
-                let expected = photocraft_compose::flatten(&doc).px;
+                let expected = photocraft_compose::flatten(&doc).into_px();
                 assert!(max_diff(&expected, &photocraft_compose::render_tiled(&doc, doc.bounds(), 3).px) <= 1e-6);
                 let bytes = export(&doc, "x.psd", &ExportOptions::default()).unwrap().bytes;
                 let back = import("x.psd", &bytes).unwrap().document;
-                let actual = photocraft_compose::flatten(&back).px;
+                let actual = photocraft_compose::flatten(&back).into_px();
                 let diff = max_diff(&expected, &actual);
                 assert!(diff <= 1e-6, "{depth:?} {style:?}: round-trip error {diff}");
                 assert_eq!(back.icc_profile, doc.icc_profile);
@@ -144,7 +144,7 @@ fn uncached_cmyk_gradient_corpus_roundtrip() {
     let bytes = std::fs::read(path).expect("run cargo xtask corpus --all");
     let doc = import("x.psd", &bytes).unwrap().document;
     assert!(doc.layers.iter().any(|l| matches!(l.content, photocraft_doc::LayerContent::Fill(_)) && l.fill_cache.is_none()));
-    let expected = photocraft_compose::flatten(&doc).px;
+    let expected = photocraft_compose::flatten(&doc).into_px();
     let saved = export(&doc, "x.psd", &ExportOptions::default()).unwrap().bytes;
     let back = import("x.psd", &saved).unwrap().document;
     let diff = max_diff(&expected, &photocraft_compose::flatten(&back).px);
@@ -305,7 +305,7 @@ fn gradient_maps_with_cmyk_lab_gray_stops_import_and_keep_their_space() {
                 _ => assert_eq!((first, last), ([1.0; 3], [0.0; 3])),
             }
             // The layer now renders: the composite differs from the background alone.
-            let with_map = photocraft_compose::flatten(&back).px;
+            let with_map = photocraft_compose::flatten(&back).into_px();
             let mut hidden = back.clone();
             hidden.layers[1].visible = false;
             assert!(max_diff(&with_map, &photocraft_compose::flatten(&hidden).px) > 0.01, "{mode:?} {depth:?}");

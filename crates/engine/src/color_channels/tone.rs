@@ -61,7 +61,7 @@ pub(super) fn adjust(surface: &mut Surface, colors: ColorChannels, adjustment: &
                         .collect(),
                 };
                 adjust::apply_in(&scalar, &mut buf, transfer, depth, mode);
-                Arc::new(IntegerTable { adjusted: buf.px.into_iter().map(|p| p[0]).collect(), encoded: Vec::new() })
+                Arc::new(IntegerTable { adjusted: buf.px.iter().map(|p| p[0]).collect(), encoded: Vec::new() })
             })
         });
         let mut component = Component { index, scalar, table, lab_invert };

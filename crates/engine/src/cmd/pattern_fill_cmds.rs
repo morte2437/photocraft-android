@@ -37,7 +37,7 @@ fn edited(s: &Session, base: &Fill, p: &Value) -> Result<(Fill, Option<Pattern>)
     let (mut scale, mut angle, mut link, mut phase, mut pat) = (*scale, *angle, *link, *phase, None);
     if let Some(v) = p.get("pattern").filter(|v| !v.is_null()) {
         let key = v.as_str().filter(|k| !k.is_empty()).ok_or_else(|| bad("`pattern` is a pattern id or name"))?;
-        pat = Some(crate::pattern_cmds::resolve(s, key).ok_or_else(|| bad(format!("no pattern \"{key}\" (see pattern.list)")))?);
+        pat = Some(crate::pattern_cmds::resolve_or_named(s, key, p).map_err(bad)?);
     }
     if let Some(v) = num("scale", SCALE_RANGE)? {
         scale = v / 100.0;
@@ -139,7 +139,7 @@ pub fn specs() -> Vec<CommandSpec> {
         label: "Pattern Fill…",
         menu: &[],
         shortcut: None,
-        params: r##"{"layer":id? (default active; a Pattern Fill layer),"document":id? (reject a stale dialog),"pattern":id|name?,"scale":1..1000?,"angle":-180..180?,"link":bool?,"phase":[x,y]? (Snap to Origin: [0,0])}; omitted values keep the layer's"##,
+        params: r##"{"layer":id? (default active; a Pattern Fill layer),"document":id? (reject a stale dialog),"pattern":id|name?,"patternName":name? (then `pattern` is an id; the name is used when no pattern has that id),"scale":1..1000?,"angle":-180..180?,"link":bool?,"phase":[x,y]? (Snap to Origin: [0,0])}; omitted values keep the layer's"##,
         enabled: |s| s.active().map(|_| ()).ok_or_else(|| "no document open".into()),
         run: set,
         journal: true,

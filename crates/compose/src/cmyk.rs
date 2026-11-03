@@ -27,6 +27,7 @@ use photocraft_doc::adjust::ToneSpace;
 use photocraft_doc::{Adjustment, Document, Knockout, Layer, LayerContent};
 use photocraft_geom::Rect;
 
+use super::extents::recycle_mask;
 use super::{Ctx, RENDER_TILE, advanced, empty_in, mask_vals, pattern};
 
 #[path = "cmyk_split.rs"]
@@ -355,6 +356,7 @@ fn apply_mask(l: &Layer, buf: &mut CmykBuffer, cx: &Ctx) {
         for (p, k) in buf.px.iter_mut().zip(&m) {
             p[4] *= clean(*k).max(0.0);
         }
+        recycle_mask(Some(m));
     }
 }
 
@@ -425,6 +427,7 @@ fn mix_adjusted(l: &Layer, base: &mut CmykBuffer, adjusted: &CmykBuffer, cx: &Ct
             *v = if k >= 1.0 { b } else { *v + (b - *v) * k };
         }
     }
+    recycle_mask(mv);
 }
 
 /// Rounds to the document's levels after an adjustment layer, as the compositor does (on the
@@ -534,6 +537,7 @@ fn composite_layer(l: &Layer, clipped: &[Layer], backdrop: &mut CmykBuffer, cx: 
                         [0.0; 5]
                     };
                 }
+                recycle_mask(mv);
             }
             return;
         }

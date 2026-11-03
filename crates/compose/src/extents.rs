@@ -134,6 +134,7 @@ pub(crate) fn effect_shape(layer: &Layer, rect: Rect, cx: &Ctx) -> Vec<f32> {
             out[i] = v * mask_k(&mv, i);
         }
     }
+    recycle_mask(mv);
     out
 }
 
@@ -283,13 +284,13 @@ pub(crate) fn mask_vals(layer: &Layer, rect: Rect, cx: &Ctx) -> Option<Vec<f32>>
     if masks::has_feather(layer)
         && let Some(s) = masks::combined_mask(layer, cx.canvas)
     {
-        let mut v = Vec::new();
+        let mut v = photocraft_raster::scratch::take_cap(rect.width() as usize * rect.height() as usize);
         s.read_region_into(rect, &mut v);
         return Some(v);
     }
     let vector = layer.vector_mask.as_ref().map(|vm| cx.vector_masks.values(vm, rect));
     let Some(m) = layer.mask.as_ref() else { return vector };
-    let mut v = Vec::new();
+    let mut v = photocraft_raster::scratch::take_cap(rect.width() as usize * rect.height() as usize);
     m.values_into(rect, &mut v);
     if let Some(vm) = vector {
         for (a, b) in v.iter_mut().zip(vm) {
@@ -297,6 +298,13 @@ pub(crate) fn mask_vals(layer: &Layer, rect: Rect, cx: &Ctx) -> Option<Vec<f32>>
         }
     }
     Some(v)
+}
+
+/// Hand a [`mask_vals`] result back to the scratch pool once its tile is done.
+pub(crate) fn recycle_mask(m: Option<Vec<f32>>) {
+    if let Some(v) = m {
+        photocraft_raster::scratch::give(v);
+    }
 }
 
 #[inline]

@@ -307,7 +307,15 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
             let mut saved: Option<Arc<Document>> = None;
             for (id, params) in &steps {
                 if batch_save_point(id) {
-                    saved = Some(scratch.active().ok_or(EngineError::NoDocument)?.doc.clone());
+                    let st = scratch.active_mut().ok_or(EngineError::NoDocument)?;
+                    saved = Some(st.doc.clone());
+                    // Batch performs the action's Save / Save As (to its destination), so the
+                    // document is saved there as far as the steps after it see: a Close recorded
+                    // without a save policy (`"save":"ask"`) then closes it. A Save a Copy leaves
+                    // the document as changed as it was.
+                    if id != "file.saveACopy" {
+                        st.saved_revision = st.revision;
+                    }
                     continue;
                 }
                 let r = scratch.execute(id, params.clone())?;

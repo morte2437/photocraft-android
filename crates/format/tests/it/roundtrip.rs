@@ -216,6 +216,13 @@ fn nesting_beyond_the_load_limit_is_refused_at_save() {
     assert!(matches!(e, FormatError::LimitExceeded(_)), "{e}");
 }
 
+/// craft-pcraft-format's default manifest nesting limit is computed from its own copy of the
+/// group depth, so the two must stay equal.
+#[test]
+fn group_depth_matches_craft_pcraft_format() {
+    assert_eq!(MAX_GROUP_DEPTH, craft_pcraft_format::MAX_GROUP_DEPTH);
+}
+
 #[test]
 fn empty_document_roundtrips() {
     let doc = Document::new("empty", photocraft_doc::Size::new(1, 1), ColorMode::Rgb, SampleType::U8);
@@ -510,9 +517,8 @@ fn bundles_without_the_full_composite_still_open() {
     let full = Rgba8Image::new(doc.size.width, doc.size.height);
     let opts = SaveOptions { thumbnail: Some(Rgba8Image::new(2, 2)), composite: Some(Rgba8Image::new(4, 3)), full_composite: Some(full), ..Default::default() };
     let bytes = save_to_bytes(&doc, &opts).unwrap();
-    let m = read_manifest(&bytes).unwrap();
-    assert_eq!(m.full_composite.as_deref(), Some("composite/full.png"));
-    assert_eq!(m.format_version, 1);
+    assert!(read_full_composite(&bytes).unwrap().is_some());
+    assert_eq!(read_manifest(&bytes).unwrap().format_version, 1);
     // Rewrite the bundle as an older writer left it: no member in the manifest, no entry.
     let r = zip::ZipReader::new(&bytes).unwrap();
     let mut manifest: serde_json::Value = serde_json::from_slice(&r.read_by_name("manifest.json", usize::MAX).unwrap()).unwrap();
@@ -523,7 +529,17 @@ fn bundles_without_the_full_composite_still_open() {
         z.add(&e.name, &r.read(e, usize::MAX).unwrap()).unwrap();
     }
     let older = z.finish().unwrap();
-    assert_eq!(read_manifest(&older).unwrap().full_composite, None);
+    assert_eq!(read_full_composite(&older).unwrap(), None);
+    // A member that names any other entry is refused, and the document still opens.
+    manifest["full_composite"] = serde_json::Value::from("thumb.png");
+    let mut z = zip::ZipWriter::new();
+    z.add("manifest.json", &serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+    for e in r.entries.iter().filter(|e| e.name != "manifest.json") {
+        z.add(&e.name, &r.read(e, usize::MAX).unwrap()).unwrap();
+    }
+    let other = z.finish().unwrap();
+    assert!(read_full_composite(&other).is_err());
+    assert_eq!(load_from_bytes(&other).unwrap(), doc);
     assert_eq!(load_from_bytes(&older).unwrap(), load_from_bytes(&bytes).unwrap());
     assert_eq!(load_from_bytes(&older).unwrap(), doc);
     // A save without it writes no member at all, as older writers did.
@@ -552,6 +568,22 @@ fn save_is_deterministic() {
     let a = save_to_bytes(&doc, &SaveOptions::default()).unwrap();
     let b = save_to_bytes(&doc, &SaveOptions::default()).unwrap();
     assert_eq!(a, b);
+}
+
+/// A bundle that is read and saved again gives the same bytes, previews included.
+#[test]
+fn save_load_save_gives_the_same_bytes() {
+    let mut preview = Rgba8Image::new(4, 3);
+    preview.pixels.iter_mut().enumerate().for_each(|(i, p)| *p = i as u8);
+    for opts in [SaveOptions::default(), SaveOptions { thumbnail: Some(preview.clone()), composite: Some(preview.clone()), ..Default::default() }] {
+        for mode in MODES {
+            for depth in SampleType::ALL {
+                let first = save_to_bytes(&rich_doc(mode, depth), &opts).unwrap();
+                let again = save_to_bytes(&load_from_bytes(&first).unwrap(), &opts).unwrap();
+                assert!(first == again, "{mode:?} {depth:?}: the second save differs");
+            }
+        }
+    }
 }
 
 #[test]

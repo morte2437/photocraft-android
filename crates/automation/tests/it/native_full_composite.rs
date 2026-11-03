@@ -6,14 +6,13 @@ use photocraft_format::zip::ZipReader;
 use serde_json::json;
 
 fn full_composite(bytes: &[u8]) -> ((u32, u32), Vec<u8>) {
-    let path = photocraft_format::read_manifest(bytes).unwrap().full_composite.expect("the manifest names the full-size composite");
-    let png = ZipReader::new(bytes).unwrap().read_by_name(&path, usize::MAX).unwrap();
+    let png = photocraft_format::read_full_composite(bytes).unwrap().expect("the manifest names the full-size composite");
     let image = photocraft_codecs::decode(&png).unwrap();
     (image.dimensions(), image.to_rgba8())
 }
 
 fn has_full_composite(bytes: &[u8]) -> bool {
-    photocraft_format::read_manifest(bytes).unwrap().full_composite.is_some() || ZipReader::new(bytes).unwrap().find("composite/full.png").is_some()
+    photocraft_format::read_full_composite(bytes).unwrap().is_some() || ZipReader::new(bytes).unwrap().find("composite/full.png").is_some()
 }
 
 #[test]

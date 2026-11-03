@@ -3180,6 +3180,9 @@ curves	Smooth	Jämna ut
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} steg saknar ännu motsvarighet i PhotoCraft|{n} steg saknar ännu motsvarighet i PhotoCraft
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	Sparade {n} åtgärd i {file}|Sparade {n} åtgärder i {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	{n} steg utan motsvarighet i Photoshop utelämnades|{n} steg utan motsvarighet i Photoshop utelämnades
+@plural	{n} action file loaded|{n} action files loaded	{n} åtgärdsfil inläst|{n} åtgärdsfiler inlästa
+	{set} from {file} replaced the one from {earlier}	Uppsättningen {set} från {file} ersatte den från {earlier}
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	{n} fil kunde inte läsas in: {errors}|{n} filer kunde inte läsas in: {errors}
 
 	File Naming	Filnamngivning
 	Starting serial	Startnummer

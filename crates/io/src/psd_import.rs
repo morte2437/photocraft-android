@@ -328,6 +328,12 @@ impl Ctx<'_> {
                 self.allocation_failed(format!("layer \"{name}\": {error}"));
                 return Surface::new(self.fmt);
             }
+            // The interleaved band goes back to the scratch pool for the next band (and the next
+            // import): it is a fresh page-faulted mmap otherwise. The decoded planes don't: the
+            // decoder allocates its own, so pooled ones would only sit there.
+            drop(refs);
+            photocraft_raster::scratch::give(bytes);
+            drop(planes);
         }
         surf.prune();
         // A white background, a solid fill's cache: one tile per value, shared across layers.
@@ -1408,6 +1414,7 @@ fn import_layered(import: DecodedImport<'_>, doc: &mut Document, cx: &mut Ctx<'_
     if let Err(error) = surface.try_write_interleaved(canvas, &bytes) {
         return cx.allocation_failed(format!("merged image: {error}"));
     }
+    photocraft_raster::scratch::give(bytes);
     if alpha_idx.is_some() {
         let white = photocraft_raster::from_rgba(&fmt, [1.0, 1.0, 1.0, 1.0]);
         let mut vals = Vec::new();
@@ -1547,6 +1554,7 @@ fn import_extra_channels(import: DecodedImport<'_>, doc: &mut Document, cx: &mut
         if let Err(error) = s.try_write_interleaved(canvas, &raw) {
             return cx.allocation_failed(format!("extra channel {idx}: {error}"));
         }
+        photocraft_raster::scratch::give(raw);
         s.prune();
         let name = names.get(k).cloned().unwrap_or_else(|| format!("Alpha {}", k + 1));
         doc.channels.push(AlphaChannel::new(name, s));

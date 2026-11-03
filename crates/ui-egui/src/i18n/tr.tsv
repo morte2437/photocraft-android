@@ -3951,6 +3951,9 @@ cameraData	Lens	Lens
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} adımın PhotoCraft’ta henüz karşılığı yok
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	{n} eylem {file} dosyasına kaydedildi
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	Photoshop karşılığı olmayan {n} adım atlandı
+@plural	{n} action file loaded|{n} action files loaded	{n} eylem dosyası yüklendi
+	{set} from {file} replaced the one from {earlier}	{file} dosyasındaki {set} kümesi, {earlier} dosyasındakinin yerini aldı
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	{n} dosya yüklenemedi: {errors}
 	Starting serial	Başlangıç sıra numarası
 	Insert Stop…	Durdurma Ekle…
 	Save Set…	Seti Kaydet…

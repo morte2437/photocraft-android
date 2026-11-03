@@ -3282,6 +3282,9 @@ curves	Smooth	Glätten
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} Schritt hat noch keine Entsprechung in PhotoCraft|{n} Schritte haben noch keine Entsprechung in PhotoCraft
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	{n} Aktion in {file} gespeichert|{n} Aktionen in {file} gespeichert
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	{n} Schritt ohne Photoshop-Entsprechung ausgelassen|{n} Schritte ohne Photoshop-Entsprechung ausgelassen
+@plural	{n} action file loaded|{n} action files loaded	{n} Aktionsdatei geladen|{n} Aktionsdateien geladen
+	{set} from {file} replaced the one from {earlier}	Satz {set} aus {file} hat den aus {earlier} ersetzt
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	{n} Datei konnte nicht geladen werden: {errors}|{n} Dateien konnten nicht geladen werden: {errors}
 	File Naming	Dateibenennung
 	Starting serial	Startnummer
 	Insert Stop…	Stopp einfügen…

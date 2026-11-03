@@ -27,6 +27,19 @@ pub fn process_peak_rss_bytes() -> Option<u64> {
     parse_vm_hwm(&status)
 }
 
+/// Minor page faults this process has taken so far (`/proc/self/stat` field 10), `None` off
+/// Linux. A scenario that maps fresh memory on every run shows up here (#10479).
+pub fn minor_faults() -> Option<u64> {
+    let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
+    parse_minflt(&stat)
+}
+
+fn parse_minflt(stat: &str) -> Option<u64> {
+    // `comm` (field 2) may contain spaces; the fields after its closing `)` start at field 3.
+    let rest = stat.get(stat.rfind(')')?.checked_add(1)?..)?;
+    rest.split_whitespace().nth(7)?.parse().ok()
+}
+
 fn parse_vm_hwm(status: &str) -> Option<u64> {
     let line = status.lines().find(|l| l.starts_with("VmHWM:"))?;
     let kb: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
@@ -148,6 +161,14 @@ pub fn write_report(path: &str, report: &Value) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn minflt_is_field_ten_even_with_spaces_in_comm() {
+        assert_eq!(parse_minflt("42 (cat) R 1 2 3 0 -1 4194304 122 0 0 0"), Some(122));
+        assert_eq!(parse_minflt("42 (a b) c) S 1 2 3 0 -1 0 7 0"), Some(7));
+        assert_eq!(parse_minflt("42 (cat) R 1"), None);
+        assert_eq!(parse_minflt("garbage"), None);
+    }
 
     #[test]
     fn summary_nearest_rank() {

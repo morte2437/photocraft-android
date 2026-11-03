@@ -23,6 +23,8 @@ use serde_json::{Value, json};
 use crate::commands::CommandSpec;
 use crate::{EngineError, Result, Session};
 
+mod profile_dither;
+
 // ------------------------------------------------------------------ state
 
 /// View › Proof Setup settings.
@@ -950,6 +952,78 @@ fn assign_profile(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({ "profile": desc }))
 }
 
+/// Read opt-in destructive profile options without accepting malformed values as defaults.
+fn profile_option(p: &Value, key: &str) -> Result<bool> {
+    match p.get(key) {
+        None | Some(Value::Null) => Ok(false),
+        Some(Value::Bool(value)) => Ok(*value),
+        Some(value) => Err(EngineError::BadParams { cmd: "edit.convertToProfile".into(), msg: format!("`{key}` must be true or false, not {value}") }),
+    }
+}
+
+/// Prepare displayed Smart pixels, refreshing only absent caches before a destructive edit.
+fn prepare_profile_smart_layers(doc: &mut Document, rasterize: bool) -> Result<()> {
+    let ids = {
+        let mut pending = crate::allocation::capacity(doc.layers.len(), "preparing placed layers for profile conversion")?;
+        pending.extend(doc.layers.iter().rev().map(|layer| (layer, true)));
+        let mut ids = Vec::new();
+        while let Some((layer, parent_visible)) = pending.pop() {
+            let visible = parent_visible && layer.visible;
+            if (rasterize || visible) && matches!(layer.content, LayerContent::Smart(_)) {
+                ids.try_reserve(1).map_err(|_| EngineError::Other("not enough memory to prepare placed layers for profile conversion".into()))?;
+                ids.push(layer.id);
+            }
+            if let Some(children) = layer.children() {
+                pending
+                    .try_reserve(children.len())
+                    .map_err(|_| EngineError::Other("not enough memory to prepare placed layers for profile conversion".into()))?;
+                pending.extend(children.iter().rev().map(|child| (child, visible)));
+            }
+        }
+        ids
+    };
+    let format = doc.pixel_format();
+    for id in ids {
+        let mut layer = doc.layer(id).cloned().ok_or(EngineError::NoLayer(id))?;
+        if matches!(&layer.content, LayerContent::Smart(smart) if smart.cache.is_none()) {
+            crate::smart_cmds::refresh_layer(doc, &mut layer)?;
+        }
+        let LayerContent::Smart(smart) = &layer.content else { return Err(EngineError::NoLayer(id)) };
+        let surface =
+            smart.cache.clone().ok_or_else(|| EngineError::Other(format!("could not render placed layer `{}` for profile conversion", layer.name)))?;
+        let target = doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?;
+        if rasterize {
+            target.content = LayerContent::Raster(if surface.format() == format { surface } else { surface.convert(format) });
+            target.psd_blocks.retain(|(key, _)| key != b"SoLd" && key != b"SoLE" && key != b"PlLd");
+        } else {
+            target.content = layer.content;
+        }
+    }
+    Ok(())
+}
+
+/// Flatten in the source space so conversion preserves the composited appearance.
+fn flatten_for_profile(doc: &mut Document, active: &mut Option<photocraft_doc::LayerId>) -> Result<()> {
+    let bounds = doc.bounds();
+    if u64::from(bounds.width()) * u64::from(bounds.height()) > photocraft_compose::MAX_RENDER_PIXELS {
+        return Err(EngineError::BadParams {
+            cmd: "edit.convertToProfile".into(),
+            msg: format!("the document's {}×{} canvas is too large to flatten", bounds.width(), bounds.height()),
+        });
+    }
+    prepare_profile_smart_layers(doc, false)?;
+    let format = doc.pixel_format();
+    let surface = photocraft_compose::flatten_to_surface(doc, format, Some([1.0, 1.0, 1.0]));
+    let mut background = Layer::raster("Background", format);
+    background.locks.transparency = true;
+    background.locks.position = true;
+    *crate::pixels_mut(&mut background)? = surface;
+    *active = Some(background.id);
+    doc.layers = vec![background];
+    Ok(())
+}
+
+/// Optionally freeze placed pixels or flatten the source, then convert in one atomic edit.
 fn convert_to_profile(s: &mut Session, p: &Value) -> Result<Value> {
     let spec = p
         .get("profile")
@@ -959,7 +1033,18 @@ fn convert_to_profile(s: &mut Session, p: &Value) -> Result<Value> {
     let dst = s.color.resolve(spec, Some(doc), None)?;
     let intent = intent_or(p, s.color.settings.intent())?;
     let bpc = bool_param(p, "bpc", s.color.settings.bpc);
-    s.edit("Convert to Profile", |doc, _| convert_document(doc, &dst, intent, bpc))?;
+    let flatten = profile_option(p, "flatten")?;
+    let rasterize = profile_option(p, "rasterizePlaced")?;
+    let dither = profile_option(p, "dither")?;
+    s.edit("Convert to Profile", |doc, active| {
+        if flatten {
+            // Flatten consumes the displayed image; discarded hidden objects need no source read.
+            flatten_for_profile(doc, active)?;
+        } else if rasterize {
+            prepare_profile_smart_layers(doc, true)?;
+        }
+        if dither { profile_dither::convert(doc, &dst, intent, bpc) } else { convert_document(doc, &dst, intent, bpc) }
+    })?;
     let d = &s.active().ok_or(EngineError::NoDocument)?.doc;
     Ok(json!({ "profile": dst.description, "mode": format!("{:?}", d.mode), "intent": intent.id(), "bpc": bpc }))
 }
@@ -1168,7 +1253,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "edit.convertToProfile",
             "Convert to Profile…",
             ["Edit"],
-            r##"{"profile":"srgb|display-p3|adobe-rgb-compat|prophoto-compat|linear-srgb|rec2020|gray-gamma-2.2|sgray|lab-d50|coated-cmyk|working" (or a path to an .icc file),"intent":"perceptual|relative|saturation|absolute"="relative","bpc":bool=true}"##,
+            r##"{"profile":"srgb|display-p3|adobe-rgb-compat|prophoto-compat|linear-srgb|rec2020|gray-gamma-2.2|sgray|lab-d50|coated-cmyk|working" (or a path to an .icc file),"intent":"perceptual|relative|saturation|absolute"="relative","bpc":bool=true,"dither":bool=false (deterministic color quantization for 8-bit profile changes),"flatten":bool=false (flatten in the source profile before conversion),"rasterizePlaced":bool=false (freeze displayed Smart Object pixels; flatten takes precedence)}"##,
             has_doc,
             convert_to_profile,
             true

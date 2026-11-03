@@ -452,9 +452,16 @@ pub(crate) fn image_surface(img: &Image, target_layout: ChannelLayout, csample: 
         let band = (BAND_BYTES / row.max(1)).max(1);
         for (i, rows) in img.data().chunks(row.max(1) * band).enumerate() {
             let n = (rows.len() / row.max(1)) as u32;
-            let part = Image::from_raw(w, n, img.layout(), img.sample_type(), rows.to_vec())?.convert(target_layout, csample);
+            // Band buffers cycle through the scratch pool: at this size each fresh one is an
+            // mmap that gets page-faulted in.
+            let mut src = photocraft_raster::scratch::take_cap::<u8>(rows.len());
+            src.extend_from_slice(rows);
+            let src = Image::from_raw(w, n, img.layout(), img.sample_type(), src)?;
+            let part = src.convert(target_layout, csample);
             let y0 = (i * band) as i32;
             s.write_interleaved(Rect::new(0, y0, w as i32, y0 + n as i32), part.data());
+            photocraft_raster::scratch::give(src.into_data());
+            photocraft_raster::scratch::give(part.into_data());
         }
     }
     Ok(s)

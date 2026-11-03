@@ -2884,6 +2884,9 @@ curves	Smooth	平滑
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} 個步驟在 PhotoCraft 中尚無對應功能
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	已將 {n} 個動作儲存到 {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	已略過 {n} 個沒有 Photoshop 對應功能的步驟
+@plural	{n} action file loaded|{n} action files loaded	已載入 {n} 個動作檔案
+	{set} from {file} replaced the one from {earlier}	{file} 中的組合 {set} 取代了 {earlier} 中的同名組合
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	{n} 個檔案無法載入：{errors}
 	File Naming	檔案命名
 	Starting serial	起始序號
 	Insert Stop…	插入停止…

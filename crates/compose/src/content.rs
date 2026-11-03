@@ -1,63 +1,29 @@
 use super::composite::{adjustment_quantum, blend_into, composite_stack};
 use super::ctx::Ctx;
-use super::extents::{effect_shape, effect_source_bounds, mask_vals, shapeless_stroke_bounds, transparent_outside};
+use super::extents::{effect_shape, effect_source_bounds, mask_vals, recycle_mask, shapeless_stroke_bounds, transparent_outside};
 use super::fx_cache::effect_maps;
 use super::{BlendMode, Buffer, Document, Fill, Layer, LayerContent, Pattern, Rect, Surface, bounds, effects, gradient_fill, pattern, shape_split};
 
 /// Tile size for parallel rendering (tile results are independent).
 pub const RENDER_TILE: i32 = 256;
 
-// One tile of scratch per worker; nested rendering takes its own buffer.
-thread_local! {
-    static SCRATCH: std::cell::RefCell<Vec<[f32; 4]>> = const { std::cell::RefCell::new(Vec::new()) };
-}
-
-pub(crate) fn scratch_buffer(rect: Rect) -> Buffer {
-    if rect.width() as usize * rect.height() as usize > (RENDER_TILE * RENDER_TILE) as usize {
-        return Buffer::transparent(rect);
-    }
-    let mut px = SCRATCH.with(|slot| std::mem::take(&mut *slot.borrow_mut()));
-    px.resize(rect.width() as usize * rect.height() as usize, [0.0; 4]);
-    Buffer { rect, px }
-}
-
-pub(crate) fn recycle_buffer(buf: Buffer) {
-    if buf.px.capacity() <= (RENDER_TILE * RENDER_TILE) as usize {
-        SCRATCH.with(|slot| {
-            let mut slot = slot.borrow_mut();
-            if slot.capacity() < buf.px.capacity() {
-                *slot = buf.px;
-            }
-        });
-    }
-}
-
 #[cfg(test)]
 #[test]
-fn scratch_reuse_preserves_pixels_and_bounds_retention() {
-    SCRATCH.with(|slot| slot.borrow_mut().clear());
-    let rect = Rect::new(-2, -3, 18, 11);
+fn scratch_reuse_preserves_pixels() {
+    // 256 × 256 pixels of [f32; 4] (1 MiB): over `MIN_POOLED_BYTES`, so the pool keeps it.
+    let rect = Rect::new(-2, -3, 254, 253);
     for fmt in [photocraft_color::PixelFormat::RGBA8, photocraft_color::PixelFormat::RGBA16, photocraft_color::PixelFormat::RGBA32F] {
         let s = Surface::with_default(fmt, &[0.2, 0.4, 0.6, 0.8]);
-        let buf = surface_to_scratch(&s, rect);
+        let mut buf = surface_to_scratch(&s, rect);
         assert_eq!(buf, surface_to_buffer(&s, rect));
-        let ptr = buf.px.as_ptr();
-        recycle_buffer(buf);
-        let reused = surface_to_scratch(&Surface::new(fmt), rect);
-        assert_eq!(reused.px.as_ptr(), ptr);
+        buf.px.fill([1.0; 4]);
+        // A dropped buffer goes back to the pool; the next one must come out cleared.
+        drop(buf);
+        let reused = Buffer::transparent(rect);
         assert!(reused.px.iter().all(|p| p == &[0.0; 4]));
-        let nested = scratch_buffer(rect);
+        let nested = Buffer::transparent(rect);
         assert_ne!(nested.px.as_ptr(), reused.px.as_ptr());
-        recycle_buffer(nested);
-        recycle_buffer(reused);
     }
-    let cached = SCRATCH.with(|slot| slot.borrow().as_ptr());
-    let huge = scratch_buffer(Rect::new(0, 0, RENDER_TILE + 1, RENDER_TILE));
-    recycle_buffer(huge);
-    SCRATCH.with(|slot| {
-        assert_eq!(slot.borrow().as_ptr(), cached);
-        assert!(slot.borrow().capacity() <= (RENDER_TILE * RENDER_TILE) as usize);
-    });
 }
 
 /// Render a layer's own content (no blending into the backdrop yet) into an isolated buffer.
@@ -93,6 +59,7 @@ pub(crate) fn render_content(layer: &Layer, rect: Rect, cx: &Ctx) -> Option<Buff
         for (p, k) in buf.px.iter_mut().zip(&m) {
             p[3] *= k;
         }
+        recycle_mask(Some(m));
     }
     // A Frame's stroke lies over its masked content; the frame doesn't clip it.
     if let Some(stroke) = shape_split::frame_stroke(layer, cx.canvas, cx.depth) {
@@ -125,13 +92,13 @@ pub fn stroke_frame(doc: &Document, layer: &Layer, st: &photocraft_doc::StrokeFx
 }
 
 pub fn surface_to_buffer(s: &Surface, rect: Rect) -> Buffer {
-    let mut px = vec![[0.0f32; 4]; rect.width() as usize * rect.height() as usize];
-    s.read_rgba_into(rect, &mut px);
-    Buffer { rect, px }
+    let mut buf = Buffer::transparent(rect);
+    s.read_rgba_into(rect, &mut buf.px);
+    buf
 }
 
 fn surface_to_scratch(s: &Surface, rect: Rect) -> Buffer {
-    let mut buf = scratch_buffer(rect);
+    let mut buf = Buffer::transparent(rect);
     s.read_rgba_into(rect, &mut buf.px);
     buf
 }
