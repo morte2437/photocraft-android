@@ -187,7 +187,9 @@ in [Stephen Marsh's published Action Manager example](https://community.adobe.co
 | `cafOutput` | `cafOutputToNewLayer`, `cafOutputToCurrentLayer` | `output: "new"`, `"current"` |
 
 Descriptor types, source identity and key order survive save while its native settings are
-unchanged. Native export writes the seven keys explicitly; the known native boolean, color
+unchanged. Editing a supported setting exports the new values in canonical form instead of
+restoring stale source values; malformed preservation data still refuses export.
+Native export writes the seven keys explicitly; the known native boolean, color
 adaptation, rotation and Current Layer output defaults are supported when sampling is explicitly
 Rectangular. A native call using the Auto sampling default cannot yet be exported.
 

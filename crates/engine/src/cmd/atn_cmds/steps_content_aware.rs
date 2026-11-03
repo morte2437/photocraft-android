@@ -67,6 +67,7 @@ fn descriptor(p: &Value) -> Option<Descriptor> {
     )
 }
 
+/// Import the verified seven-field form, retaining noncanonical wire data for an unchanged save.
 pub(super) fn caf_from(d: &Descriptor) -> Mapped {
     let Some(mut p) = recorded(d) else { return Mapped::Unsupported { harmless: false } };
     if descriptor(&p).as_ref() != Some(d) {
@@ -76,12 +77,15 @@ pub(super) fn caf_from(d: &Descriptor) -> Mapped {
     step(CMD, p)
 }
 
+/// Export supported settings; preserve the recorded wire form only while its settings agree.
 pub(super) fn caf_to(_: &str, p: &Value) -> Option<Descriptor> {
     let canonical = descriptor(p)?;
     if p.get(SOURCE).is_none() {
         return Some(canonical);
     }
     let source = Descriptor::from_bytes(&photocraft_paint::tile::b64_decode(jstr(p, SOURCE)?)?).ok()?;
-    // Edited native options must never be overwritten by stale preservation metadata.
-    (descriptor(&recorded(&source)?)? == canonical).then_some(source)
+    // Validate preserved data even after an edit; it cannot hide unsupported source options.
+    let original = descriptor(&recorded(&source)?)?;
+    // A supported edit has a verified canonical form; stale wire data cannot override it.
+    Some(if original == canonical { source } else { canonical })
 }
