@@ -360,6 +360,36 @@ fn layer_style_malformed_records_stay_kept_without_an_edit() {
     }
 }
 
+/// A miskeyed effects reference must be kept, rather than playing as an ordinary blank layer.
+#[test]
+fn miskeyed_effects_reference_stays_whole_without_a_blank_layer_edit() {
+    let mut d = create();
+    d.items[1].0 = Id::new("Usin");
+    let source = item(CREATE, d);
+    let loaded = import(&atn::write(&file(vec![source.clone()])).unwrap()).unwrap();
+    let (mut s, _) = fixture(8);
+    let before = s.active().unwrap().doc.clone();
+    let past = s.active().unwrap().history.past_len();
+    s.actions.list.extend(loaded.actions.clone());
+    let result = s.execute("actions.play", json!({"action": 0})).unwrap();
+    // Play before checking import classification: the old path actually creates a blank layer.
+    assert!(
+        s.active().unwrap().doc == before,
+        "miskeyed Lefx reference changed the document: layers {} -> {}, history {} -> {}",
+        before.layers.len(), s.active().unwrap().doc.layers.len(), past, s.active().unwrap().history.past_len()
+    );
+    assert_eq!(s.active().unwrap().history.past_len(), past);
+    assert_eq!(result["ran"], 0);
+    assert!(result.get("failed").is_some());
+    assert_eq!(loaded.unsupported.len(), 1);
+    assert_eq!(loaded.actions[0].steps[0].0, "actions.photoshopStep");
+    let (bytes, skipped) = export("S", &[&loaded.actions[0]], &[], false).unwrap();
+    assert!(skipped.is_empty());
+    let saved = atn::parse(&bytes).unwrap().actions.into_iter().next().unwrap().items;
+    assert_eq!(saved.len(), 1);
+    same_item_wire(saved.into_iter().next().unwrap(), source);
+}
+
 /// A normal layer Make, including class-only Make, still creates a blank layer without splitting fx.
 #[test]
 fn ordinary_layer_make_remains_a_legitimate_control() {
