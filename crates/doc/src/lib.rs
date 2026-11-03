@@ -1064,6 +1064,58 @@ impl Document {
         max
     }
 
+    /// Every pixel surface the document holds: layer pixels and caches, masks, smart filter
+    /// masks, video frames (including the originals), channels, the quick mask, patterns and
+    /// the selection. History snapshots and saves cover exactly these tiles.
+    pub fn for_each_surface(&self, mut visit: impl FnMut(&Surface)) {
+        for (_, _, layer) in self.walk() {
+            if let Some(surface) = layer.surface() {
+                visit(surface);
+            }
+            if let Some(mask) = &layer.mask {
+                visit(&mask.surface);
+            }
+            if let Some(cache) = &layer.fill_cache {
+                visit(&cache.surface);
+            }
+            if let LayerContent::Smart(smart) = &layer.content
+                && let Some(mask) = &smart.filter_mask
+            {
+                visit(&mask.surface);
+            }
+            if let Some(video) = &layer.video {
+                for frame in video.frames.iter().chain(video.original_frames.iter().flatten()) {
+                    visit(frame);
+                }
+            }
+        }
+        for channel in self.channels.iter().chain(&self.quick_mask) {
+            visit(&channel.surface);
+        }
+        for pattern in &self.patterns {
+            visit(&pattern.surface);
+        }
+        if let Some(selection) = &self.selection {
+            visit(selection);
+        }
+    }
+
+    /// `Err` if any of this document's tiles is unreadable on the scratch disk. Edits, saves
+    /// and exports of this document check it; other documents are unaffected. Free when no
+    /// tile in the process has failed.
+    pub fn scratch_health(&self) -> Result<(), String> {
+        if !photocraft_raster::spill::any_failed() {
+            return Ok(());
+        }
+        let mut health = Ok(());
+        self.for_each_surface(|surface| {
+            if health.is_ok() {
+                health = surface.scratch_health();
+            }
+        });
+        health
+    }
+
     /// Depth-first walk yielding `(path, depth, layer)` bottom-to-top.
     pub fn walk(&self) -> Vec<(LayerPath, usize, &Layer)> {
         fn rec<'a>(layers: &'a [Layer], prefix: &mut LayerPath, out: &mut Vec<(LayerPath, usize, &'a Layer)>) {

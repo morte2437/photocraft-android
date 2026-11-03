@@ -2908,6 +2908,7 @@ curves	Smooth	平滑
 	Sent to {printer}	已傳送至 {printer}
 	set in Print Settings…	在列印設定中設定…
 	ICO is limited to 256 × 256 pixels	ICO 最大為 256 × 256 像素
+	Memory usage percent	記憶體使用比例 (%)
 	Show Favorite Fonts	顯示我的最愛字體
 	No favorite fonts yet: click the star beside a font to add it.	尚無我的最愛字體：按一下字體旁的星號即可加入。
 	Favorite fonts	我的最愛字體
@@ -2970,6 +2971,7 @@ curves	Smooth	平滑
 	Chisel Soft	雕刻柔和
 	Open color-less EXR as ACEScg	將無色彩空間資訊的 EXR 以 ACEScg 開啟
 	Do not append "copy" to filename when saving a copy	儲存副本時不在檔名後加上「copy」
+	Save Full-Size Composite in .pcraft Files	在 .pcraft 檔案中儲存全尺寸合成影像
 	Color Profile	色彩描述檔
 	EXIF	EXIF
 	Edit Selected Guides	編輯所選參考線
@@ -3029,6 +3031,7 @@ curves	Smooth	平滑
 	This document's layers: {needed} of {budget} for layers	此文件的圖層：圖層可用 {budget} 中的 {needed}
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	此文件的圖層需要 {needed}，但只能佔用 {budget}：整份文件的重繪使用 CPU
 	GPU Memory (MB, 0 = Automatic)	GPU 記憶體（MB，0 = 自動）
+	Scratch Size Limit (MB, 0 = No Limit)	暫存磁碟大小上限（MB，0 = 無限制）
 	{path}: the path is not valid Unicode; save under another name.	{path}：路徑不是有效的 Unicode；請以其他名稱儲存。
 	Replace	取代
 	{name} was changed by another app after it was opened or saved here.	{name} 在此處開啟或儲存後已被其他 App 更改。

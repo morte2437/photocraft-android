@@ -350,6 +350,8 @@ pub struct PhotocraftApp {
     navigator_gpu: HashMap<DocId, crate::gpu_canvas::ViewParams>,
     /// Documents whose GPU canvas texture holds the plain document (`canvas::ensure_gpu`).
     navigator_plain: std::collections::HashSet<DocId>,
+    /// Viewport pages of documents too large for their GPU texture set (`canvas::viewport_pages`).
+    streams: HashMap<DocId, canvas::viewport_pages::Stream>,
     /// The Info panel's Color Sampler readouts for (document, revision) (`panels::sampler_readouts`).
     info_samplers: Option<panels::SamplerReadouts>,
     /// Display profile readings (#569).
@@ -689,6 +691,9 @@ pub struct PhotocraftApp {
     /// Files read but not opened yet: the first waits on its profile prompt, the rest behind it
     /// (see `open_prompt`).
     pub(crate) held_opens: std::collections::VecDeque<open_prompt::Held>,
+    /// PSD files whose memory preflight requires user approval before pixel decoding (see `open_prompt`).
+    pub(crate) held_memory_prompts: std::collections::VecDeque<open_prompt::MemoryPrompt>,
+    pub(crate) prompt_order: std::collections::VecDeque<open_prompt::PromptKind>,
     /// A brush or gradient file waiting on the group-name prompt (see `preset_group_prompt`).
     pub(crate) held_preset_import: Option<preset_group_prompt::Held>,
     /// Set once the user has agreed to quit, so the resulting close request goes through.

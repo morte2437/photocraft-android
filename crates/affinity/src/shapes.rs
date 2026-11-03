@@ -12,9 +12,10 @@ const KAPPA: f64 = 0.552_284_749_830_793_4;
 const MAX_SIDES: i64 = 10_000;
 
 /// The last value of a tag: a shape changed from one kind to another keeps a stale first block.
+/// Indexed: a shared shape is read again for every occurrence, and rescanning a large field
+/// list each time multiplied into work far beyond the file's size.
 fn last<'a>(r: &'a Reader, id: ObjId, tag: &[u8; 4]) -> Option<&'a Value> {
-    let t = Tag::of(tag);
-    r.s.object(id)?.fields.iter().rev().find(|(k, _)| *k == t).map(|(_, v)| v)
+    r.s.object(id)?.get_last(Tag::of(tag))
 }
 
 fn num(r: &Reader, id: ObjId, tag: &[u8; 4]) -> Option<f64> {
@@ -51,12 +52,14 @@ pub(crate) fn shape(r: &mut Reader, shape: ObjId, b: [f64; 4], world: Affine) ->
     let class = r.s.class(shape)?;
     let sub = match &class.0.to_be_bytes() {
         b"ShNR" | b"ShRR" => {
-            let types = match last(r, shape, b"CTyp") {
-                Some(Value::Array(a)) => a.iter().map(|t| if let Value::Enum { id, .. } = t { Some(*id) } else { None }).collect(),
+            // Only the four corners are read: a longer array is not scanned or copied, which
+            // would otherwise repeat for every occurrence of a shared shape.
+            let types: Vec<Option<u16>> = match last(r, shape, b"CTyp") {
+                Some(Value::Array(a)) => a.iter().take(4).map(|t| if let Value::Enum { id, .. } = t { Some(*id) } else { None }).collect(),
                 _ => Vec::new(),
             };
-            let radii = match last(r, shape, b"ShCR") {
-                Some(Value::Floats(v)) => v.iter().map(|f| if f.is_finite() && *f > 0.0 { *f } else { 0.0 }).collect(),
+            let radii: Vec<f64> = match last(r, shape, b"ShCR") {
+                Some(Value::Floats(v)) => v.iter().take(4).map(|f| if f.is_finite() && *f > 0.0 { *f } else { 0.0 }).collect(),
                 _ => Vec::new(),
             };
             // Corners follow the first one (top left) unless they were unlocked; then each has

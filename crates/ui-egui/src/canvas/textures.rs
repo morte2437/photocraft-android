@@ -677,11 +677,23 @@ pub(crate) fn retain_gpu_documents(app: &mut PhotocraftApp) {
     if let Some(gpu) = &app.gpu {
         // Keep each document's texture plus its preview textures (filter preview, adjustment proxy);
         // retaining only document ids freed the previews every frame (blank canvas while previewing).
-        let mut live: Vec<u64> = app.session.documents().iter().flat_map(|st| [st.doc.id.0, st.doc.id.0 ^ (1u64 << 61), st.doc.id.0 ^ (1u64 << 62)]).collect();
+        let mut live: Vec<u64> = app
+            .session
+            .documents()
+            .iter()
+            .flat_map(|st| [st.doc.id.0, st.doc.id.0 ^ (1u64 << 61), st.doc.id.0 ^ (1u64 << 62), super::viewport_pages::stream_key(st.doc.id.0)])
+            .collect();
         live.extend(crate::adjust_preview::gpu_keys(app));
         gpu.retain(&live);
     }
     crate::background_redraw::retain(app);
+    // Page work for closed documents (or of a dropped GPU canvas) is cancelled.
+    if app.gpu.is_none() {
+        app.streams.clear();
+    } else {
+        let ids: Vec<_> = app.session.documents().iter().map(|st| st.doc.id).collect();
+        app.streams.retain(|id, _| ids.contains(id));
+    }
     // Upload markers must not outlive the resources they describe: native reopen can reuse
     // both the document ID and revision before the next frame while a preview dialog stays open.
     let documents = app.session.documents();

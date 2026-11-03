@@ -263,10 +263,90 @@ type ImportFrames = fn(
 /// Frame storage one footage import may keep (whole tiles, all frames together).
 const MAX_FOOTAGE_BYTES: u64 = 2 << 30;
 
+/// The footage frame limit this import applies: the production cap, or a test scope's lowered
+/// cap so a regression can reach the refusal without keeping gibibytes of frames.
+fn footage_byte_limit() -> u64 {
+    #[cfg(test)]
+    if let Some(limit) = limits::max_footage_bytes() {
+        return limit;
+    }
+    MAX_FOOTAGE_BYTES
+}
+
+/// Import options for footage files. A test scope may lower the PSD/layered-TIFF memory limit,
+/// which the user's preferences do not expose, to reach an admission refusal on a small file.
+fn footage_import_options(s: &Session) -> photocraft_io::ImportOptions {
+    #[cfg(test)]
+    if let Some(limit) = limits::psd_max_pixel_bytes() {
+        return photocraft_io::ImportOptions { psd_max_pixel_bytes: limit, ..crate::jobs::import_options(s.prefs()) };
+    }
+    crate::jobs::import_options(s.prefs())
+}
+
+/// Per-thread test overrides for the footage import limits. A scope restores the previous values
+/// on drop, and the thread-local keeps parallel tests from lowering each other's limits.
+#[cfg(test)]
+mod limits {
+    use std::cell::Cell;
+
+    #[derive(Clone, Copy, Default)]
+    struct Overrides {
+        psd_max_pixel_bytes: Option<u64>,
+        max_footage_bytes: Option<u64>,
+    }
+
+    thread_local! {
+        static CURRENT: Cell<Overrides> = const { Cell::new(Overrides { psd_max_pixel_bytes: None, max_footage_bytes: None }) };
+    }
+
+    /// Restores the previous overrides when dropped.
+    pub(crate) struct Scoped(Overrides);
+
+    impl Scoped {
+        /// Lowers the PSD/layered-TIFF memory admission limit for the current thread.
+        pub(crate) fn psd_max_pixel_bytes(limit: u64) -> Self {
+            Self::set(Overrides { psd_max_pixel_bytes: Some(limit), ..Default::default() })
+        }
+
+        /// Lowers the retained footage-frame limit for the current thread.
+        pub(crate) fn max_footage_bytes(limit: u64) -> Self {
+            Self::set(Overrides { max_footage_bytes: Some(limit), ..Default::default() })
+        }
+
+        fn set(next: Overrides) -> Self {
+            Self(CURRENT.with(|current| current.replace(next)))
+        }
+    }
+
+    impl Drop for Scoped {
+        fn drop(&mut self) {
+            CURRENT.with(|current| current.set(self.0));
+        }
+    }
+
+    pub(super) fn psd_max_pixel_bytes() -> Option<u64> {
+        CURRENT.with(|current| current.get().psd_max_pixel_bytes)
+    }
+
+    pub(super) fn max_footage_bytes() -> Option<u64> {
+        CURRENT.with(|current| current.get().max_footage_bytes)
+    }
+}
+
+/// The engine error for a failed page of a multi-page TIFF. A memory refusal keeps its typed form,
+/// so the UI, control channel and agents still get the required and limit fields they need to
+/// offer approval or explain the hard limit; any other failure keeps the page's text.
+fn tiff_page_error(display: &std::path::Path, name: &str, page: usize, error: photocraft_io::IoError) -> EngineError {
+    match error {
+        photocraft_io::IoError::PsdApprovalRequired { .. } | photocraft_io::IoError::PsdImportBudget { .. } => crate::error::io_open_error(name, error),
+        error => EngineError::Other(format!("`{}` page {}: {error}", display.display(), page + 1)),
+    }
+}
+
 /// Load frames from `path`: a single image (1 frame, or every frame of an animated GIF or WebP), or a
 /// directory of images (sorted = an image sequence). Each becomes a full raster frame in the
 /// document's format.
-fn load_frames(path: &str, fmt: photocraft_color::PixelFormat) -> Result<Footage> {
+fn load_frames(path: &str, fmt: photocraft_color::PixelFormat, opts: &photocraft_io::ImportOptions) -> Result<Footage> {
     let p = std::path::Path::new(path);
     let is_img = |f: &std::path::Path| {
         matches!(
@@ -292,6 +372,7 @@ fn load_frames(path: &str, fmt: photocraft_color::PixelFormat) -> Result<Footage
     let mut delays = Vec::new();
     // Each frame stores whole tiles however little it draws, so count the tiles kept so far.
     let mut kept_bytes = 0u64;
+    let max_footage_bytes = footage_byte_limit();
     let mut keep = |frames: &mut Vec<Surface>, surface: Surface| -> std::result::Result<(), String> {
         // A frame of fully transparent pixels stores no tiles, so the count needs its own limit.
         if frames.len() >= crate::timeline_cmds::MAX_DURATION {
@@ -299,8 +380,8 @@ fn load_frames(path: &str, fmt: photocraft_color::PixelFormat) -> Result<Footage
         }
         let tile = u64::from(photocraft_geom::TILE_SIZE.unsigned_abs()).pow(2) * surface.format().bytes_per_pixel() as u64;
         kept_bytes = kept_bytes.saturating_add(tile.saturating_mul(surface.tile_count() as u64));
-        if kept_bytes > MAX_FOOTAGE_BYTES {
-            return Err(format!("the footage needs more than {} MiB of frames", MAX_FOOTAGE_BYTES >> 20));
+        if kept_bytes > max_footage_bytes {
+            return Err(format!("the footage needs more than {} MiB of frames", max_footage_bytes >> 20));
         }
         frames.push(surface);
         Ok(())
@@ -345,15 +426,20 @@ fn load_frames(path: &str, fmt: photocraft_color::PixelFormat) -> Result<Footage
                     )));
                 }
                 for page in pages {
-                    let doc = photocraft_io::import_tiff_page(&name, &bytes, Some(page))
-                        .map_err(|e| EngineError::Other(format!("`{}` page {}: {e}", f.display(), page + 1)))?
+                    // Same admission policy, caller limit and import settings as any other TIFF
+                    // page import: a multi-page TIFF is not a way around the memory budget.
+                    let doc = photocraft_io::import_tiff_page_with_options(&name, &bytes, Some(page), opts, &photocraft_raster::Interrupt::NONE)
+                        .map_err(|e| tiff_page_error(f, &name, page, e))?
                         .document;
-                    frames.push(crate::file_cmds::flattened(&doc, fmt));
+                    // The page is flattened before admission of the next one, so the retained
+                    // frames of every page count against the footage limit, as GIF and WebP
+                    // frames do.
+                    keep(&mut frames, crate::file_cmds::flattened(&doc, fmt)).map_err(|msg| EngineError::Other(format!("`{}`: {msg}", f.display())))?;
                 }
                 continue;
             }
         }
-        let mut doc = crate::file_cmds::import(&name, &bytes)?;
+        let mut doc = crate::file_cmds::import_with_options(&name, &bytes, opts)?;
         // A Targa's alpha opens as a channel (as in Photoshop); a frame's alpha is transparency.
         if f.extension().is_some_and(|e| e.eq_ignore_ascii_case("tga")) {
             photocraft_io::tga_alpha_channel_to_transparency(&mut doc);
@@ -373,7 +459,7 @@ fn new_from_file(s: &mut Session, p: &Value) -> Result<Value> {
         .ok_or_else(|| EngineError::BadParams { cmd: "layer.videoLayers.newVideoLayerFromFile".into(), msg: "need `path`".into() })?
         .to_string();
     let fmt = s.active().ok_or(EngineError::NoDocument)?.doc.pixel_format();
-    let Footage { frames, fps: footage_fps } = load_frames(&path, fmt)?;
+    let Footage { frames, fps: footage_fps } = load_frames(&path, fmt, &footage_import_options(s))?;
     // An explicit `fps` wins, then the rate the footage implies, then 30.
     let fps = crate::timeline_cmds::fps_param("layer.videoLayers.newVideoLayerFromFile", p)?.or(footage_fps).unwrap_or(30.0);
     let n = frames.len();
@@ -410,7 +496,7 @@ fn replace_footage(s: &mut Session, p: &Value) -> Result<Value> {
         .ok_or_else(|| EngineError::BadParams { cmd: "layer.videoLayers.replaceFootage".into(), msg: "need `path`".into() })?
         .to_string();
     let fmt = s.active().ok_or(EngineError::NoDocument)?.doc.pixel_format();
-    let frames = load_frames(&path, fmt)?.frames;
+    let frames = load_frames(&path, fmt, &footage_import_options(s))?.frames;
     edit_video(s, "Replace Footage", move |v, _| {
         v.original_frames = Some(frames.clone());
         v.frames = frames;
@@ -446,7 +532,7 @@ fn reload_frame(s: &mut Session, _p: &Value) -> Result<Value> {
     };
     // The footage path is stored in the document.
     let file = crate::doc_path::resolve(&path).map_err(|why| crate::doc_path::refusal("the footage", &path, why))?;
-    let frames = load_frames(&file.to_string_lossy(), fmt)?.frames;
+    let frames = load_frames(&file.to_string_lossy(), fmt, &footage_import_options(s))?.frames;
     edit_video(s, "Reload Frame", move |v, _| {
         v.original_frames = Some(frames.clone());
         v.frames = frames;
@@ -471,7 +557,7 @@ fn frames_to_layers(s: &mut Session, p: &Value) -> Result<Value> {
         .ok_or_else(|| EngineError::BadParams { cmd: "file.import.videoFramesToLayers".into(), msg: "need `path`".into() })?
         .to_string();
     let fmt = s.active().ok_or(EngineError::NoDocument)?.doc.pixel_format();
-    let frames = load_frames(&path, fmt)?.frames;
+    let frames = load_frames(&path, fmt, &footage_import_options(s))?.frames;
     let n = frames.len();
     s.edit("Video Frames to Layers", |doc, active| {
         let mut above = *active;

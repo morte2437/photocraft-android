@@ -3907,6 +3907,7 @@ navigator	Zoom	Zvětšení
 	Sent to {printer}	Odesláno do {printer}
 	set in Print Settings…	nastavuje se v nastavení tisku…
 	ICO is limited to 256 × 256 pixels	ICO je omezen na 256 × 256 pixelů
+	Memory usage percent	Využití paměti (%)
 	Show Favorite Fonts	Zobrazit oblíbená písma
 	No favorite fonts yet: click the star beside a font to add it.	Zatím žádná oblíbená písma: přidejte písmo kliknutím na hvězdičku vedle něj.
 	Favorite fonts	Oblíbená písma
@@ -3969,6 +3970,7 @@ navigator	Zoom	Zvětšení
 	Chisel Soft	Měkké tesání
 	Open color-less EXR as ACEScg	Otevřít EXR bez údaje o barevném prostoru jako ACEScg
 	Do not append "copy" to filename when saving a copy	Nepřidávat „copy“ k názvu souboru při ukládání kopie
+	Save Full-Size Composite in .pcraft Files	Ukládat složený obraz v plné velikosti do souborů .pcraft
 	Edit Selected Guides	Upravit vybraná vodítka
 	Clear Selected Guides	Vymazat vybraná vodítka
 	Bicubic Automatic	Bikubická automatická
@@ -4022,6 +4024,7 @@ navigator	Zoom	Zvětšení
 	This document's layers: {needed} of {budget} for layers	Vrstvy tohoto dokumentu: {needed} z {budget} pro vrstvy
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	Vrstvy tohoto dokumentu potřebují {needed}, ale mohou zabrat {budget}: překreslení celého dokumentu probíhá na CPU
 	GPU Memory (MB, 0 = Automatic)	Paměť GPU (MB, 0 = Automaticky)
+	Scratch Size Limit (MB, 0 = No Limit)	Limit velikosti odkládacího disku (MB, 0 = bez limitu)
 	{path}: the path is not valid Unicode; save under another name.	{path}: cesta není platný Unicode; uložte soubor pod jiným názvem.
 	{name} was changed by another app after it was opened or saved here.	Soubor {name} změnila jiná aplikace poté, co byl zde otevřen nebo uložen.
 	Replace it with this document, or cancel and use File › Save As to keep both.	Nahraďte ho tímto dokumentem, nebo zrušte a použijte Soubor › Uložit jako, abyste zachovali obojí.

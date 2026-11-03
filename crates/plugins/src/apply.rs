@@ -156,7 +156,7 @@ impl Plugin {
             let results: Vec<Result<Surface>> = chunk.iter().map(run).collect();
             for r in results {
                 for (c, t) in r?.tiles() {
-                    out.tile_mut(*c).bytes_mut().copy_from_slice(t.bytes());
+                    out.tile_mut(*c).bytes_mut().copy_from_slice(&t.bytes());
                 }
             }
         }
@@ -227,7 +227,7 @@ fn encode_band(surface: &Surface, band: Rect, data: &[f32]) -> Surface {
     let mut s = Surface::with_default(surface.format(), &surface.default_pixel());
     for c in band.tiles() {
         if let Some(t) = surface.tile(c) {
-            s.tile_mut(c).bytes_mut().copy_from_slice(t.bytes());
+            s.tile_mut(c).bytes_mut().copy_from_slice(&t.bytes());
         } else {
             s.tile_mut(c);
         }

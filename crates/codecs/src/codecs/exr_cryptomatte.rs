@@ -148,6 +148,7 @@ fn layer_streams(header: &exr::meta::header::Header, name: &str) -> Vec<String> 
 /// Lists every Cryptomatte layer of the file from the headers alone: what a Cryptomatte
 /// picker offers. The embedded manifest (capped, JSON) is parsed into (ID, name) pairs.
 pub(crate) fn layers(bytes: &[u8], limits: &Limits) -> Result<Vec<CryptomatteLayer>, CodecError> {
+    super::exr::check_previews(bytes)?;
     let meta = MetaData::read_from_buffered(Cursor::new(bytes), false).map_err(|e| CodecError::malformed(F, e))?;
     // Manifests can be large; bound the embedded text before parsing anything.
     const MANIFEST_CAP: usize = 16 << 20;
