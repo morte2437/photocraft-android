@@ -145,6 +145,39 @@ fn video_frames_to_layers_refuses_a_tiff_with_an_incomplete_page_list() {
     assert_eq!(s.active().unwrap().doc.layers.len(), before, "nothing imported");
 }
 
+/// #10897 review: a page refused by the PSD memory admission must reach the caller typed, so the
+/// UI, control channel and agents can offer approval or explain the hard limit; a multi-page TIFF
+/// is not a way to get a text-only refusal. Every other page failure keeps its file and page text.
+#[test]
+fn tiff_page_errors_keep_memory_refusals_typed_and_other_context() {
+    let display = std::path::Path::new("/tmp/footage/pages.tif");
+    let name = "/tmp/footage/pages.tif";
+
+    let refusal = photocraft_io::IoError::PsdApprovalRequired { required: 9_000, soft_limit: 8_000, hard_limit: 16_000, available_ram: Some(4_000) };
+    match tiff_page_error(display, name, 1, refusal) {
+        EngineError::PsdApprovalRequired { name: named, required, soft_limit, hard_limit, available_ram } => {
+            assert_eq!(named, name);
+            assert_eq!((required, soft_limit, hard_limit, available_ram), (9_000, 8_000, 16_000, Some(4_000)));
+        }
+        other => panic!("page 2 approval refusal lost its fields: {other:?}"),
+    }
+
+    let hard = photocraft_io::IoError::PsdImportBudget { required: 9_000, limit: 8_000 };
+    match tiff_page_error(display, name, 2, hard) {
+        EngineError::PsdHardBudget { name: named, required, limit } => {
+            assert_eq!(named, name);
+            assert_eq!((required, limit), (9_000, 8_000));
+        }
+        other => panic!("page 3 hard refusal lost its fields: {other:?}"),
+    }
+
+    let broken = photocraft_io::IoError::Unsupported("corrupt page".into());
+    let err = tiff_page_error(display, name, 0, broken);
+    assert!(matches!(err, EngineError::Other(_)), "{err:?}");
+    let msg = err.to_string();
+    assert!(msg.contains("pages.tif") && msg.contains("page 1") && msg.contains("corrupt page"), "{msg}");
+}
+
 #[test]
 fn new_video_layer_from_image_sequence() {
     let dir = tmpdir("seq");

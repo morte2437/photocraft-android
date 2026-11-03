@@ -263,6 +263,16 @@ type ImportFrames = fn(
 /// Frame storage one footage import may keep (whole tiles, all frames together).
 const MAX_FOOTAGE_BYTES: u64 = 2 << 30;
 
+/// The engine error for a failed page of a multi-page TIFF. A memory refusal keeps its typed form,
+/// so the UI, control channel and agents still get the required and limit fields they need to
+/// offer approval or explain the hard limit; any other failure keeps the page's text.
+fn tiff_page_error(display: &std::path::Path, name: &str, page: usize, error: photocraft_io::IoError) -> EngineError {
+    match error {
+        photocraft_io::IoError::PsdApprovalRequired { .. } | photocraft_io::IoError::PsdImportBudget { .. } => crate::error::io_open_error(name, error),
+        error => EngineError::Other(format!("`{}` page {}: {error}", display.display(), page + 1)),
+    }
+}
+
 /// Load frames from `path`: a single image (1 frame, or every frame of an animated GIF or WebP), or a
 /// directory of images (sorted = an image sequence). Each becomes a full raster frame in the
 /// document's format.
@@ -348,7 +358,7 @@ fn load_frames(path: &str, fmt: photocraft_color::PixelFormat, opts: &photocraft
                     // Same admission policy, caller limit and import settings as any other TIFF
                     // page import: a multi-page TIFF is not a way around the memory budget.
                     let doc = photocraft_io::import_tiff_page_with_options(&name, &bytes, Some(page), opts, &photocraft_raster::Interrupt::NONE)
-                        .map_err(|e| EngineError::Other(format!("`{}` page {}: {e}", f.display(), page + 1)))?
+                        .map_err(|e| tiff_page_error(f, &name, page, e))?
                         .document;
                     frames.push(crate::file_cmds::flattened(&doc, fmt));
                 }
