@@ -126,6 +126,10 @@ fn the_preset_dropdown_lists_selection_while_the_frame_is_the_selections() {
     h.run();
     assert_eq!((h.state().ui.crop_rect, h.state().ui.tool_options.crop_ratio.clone()), before, "choosing Selection changes neither the frame nor the ratio");
 
+    // The pick closes the list; reopen it, so the edited-frame check below looks at a drawn list.
+    h.get_by_role(Role::ComboBox).click();
+    h.run();
+    assert!(drawn(&h).iter().any(|t| t == "Selection"), "reopened list: {:?}", drawn(&h));
     h.state_mut().crop.default_frame = false;
     h.run();
     assert!(!drawn(&h).iter().any(|t| t == "Selection"), "edited frame: {:?}", drawn(&h));
