@@ -84,11 +84,14 @@ pub(crate) fn ensure_filter_preview(app: &mut PhotocraftApp, idx: usize, ctx: &e
                 Ok(computed) if finished == request => publish_filter_preview(app, idx, finished, computed.result, computed.ms),
                 // Mid-drag, a frame for the value the pointer has just left is what makes the
                 // canvas follow the drag. Three things have to hold for it: it belongs to this
-                // preview, it has a frame to show (an empty one would blank a good preview), and
-                // it must not displace a frame that is already exact for the dialog, which is
-                // what a slider dragged out and back would otherwise make the canvas do.
+                // preview (at any proxy factor: it is drawn at its own, and a radius drag can move
+                // the factor, #10474), it has a frame to show (an empty one would blank a good
+                // preview), and it must not displace a frame that is already exact for the dialog,
+                // which is what a slider dragged out and back would otherwise make the canvas do.
                 Ok(computed)
-                    if finished.same_target(&request) && computed.result.is_some() && !app.filter_preview.as_ref().is_some_and(|p| p.key == request) =>
+                    if finished.same_target_at_any_scale(&request)
+                        && computed.result.is_some()
+                        && !app.filter_preview.as_ref().is_some_and(|p| p.key == request) =>
                 {
                     publish_filter_preview(app, idx, finished, computed.result, computed.ms);
                 }

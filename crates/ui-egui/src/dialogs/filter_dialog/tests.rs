@@ -1047,16 +1047,29 @@ fn proxy_previews_scale_only_lengths() {
     assert_eq!(preview_factor("filter.pixelate.mosaic", &json!({"cellSize": "x"}), 4), 4);
     let (k, diff) = error("filter.pixelate.mosaic", json!({"cellSize": 10.0}));
     assert!(k == 2 && diff < 0.01, "Mosaic: {diff}");
+    // Roundness at a fractional radius: at 6.5 px, k = 3 reaches floor(2.17) = 2 proxy px along an
+    // axis (6 px), where k = 4 reached floor(1.63) = 1 (4 px), so the chosen factor previews closer
+    // to what OK applies than k = 4 did (#10474).
+    for cmd in ["filter.other.minimum", "filter.other.maximum"] {
+        let p = json!({"radius": 6.5, "preserve": "roundness"});
+        let (k, diff) = error(cmd, p.clone());
+        let applied = preview_document(&doc, Some(bg), cmd, &p, 1).unwrap();
+        let at_four = preview_document(&doc, Some(bg), cmd, &p, 4).unwrap();
+        let four = mean_abs(&every_kth(&applied, 4), &every_kth(&at_four, 1));
+        assert!(k == 3 && diff < four, "{cmd}: k = {k} differs by {diff}, k = 4 by {four}");
+    }
     // Minimum and Maximum keep at least one proxy pixel of radius (#10474), and a large radius
-    // keeps a proxy instead of a full-size preview that costs minutes at radius 500. Squareness
-    // also keeps its rounded radius within 1 px of OK's: 6 px is 2 proxy px at k = 3 (6 px), not
-    // at k = 4 (8 px); 50 px is 17 at k = 3 (51 px), not 13 at k = 4 (52 px).
+    // keeps a proxy instead of a full-size preview that costs minutes at radius 500. Both keep
+    // their whole-pixel radius within 1 px of OK's. Squareness rounds: 6 px is 2 proxy px at k = 3
+    // (6 px), not at k = 4 (8 px); 50 px is 17 at k = 3 (51 px), not 13 at k = 4 (52 px). Roundness's
+    // disc reaches floor(r) along an axis: 6 px is 2 at k = 3 (6 px), not 1 at k = 4 (4 px); 50 px
+    // is 25 at k = 2, not 12 at k = 4 or 16 at k = 3 (48 px).
     let factors = |cmd: &str, preserve: &str| {
         [0.2, 1.5, 2.5, 3.9, 6.0, 50.0, 500.0, 9999.0].map(|radius| preview_factor(cmd, &json!({"radius": radius, "preserve": preserve}), 4))
     };
     for cmd in ["filter.other.minimum", "filter.other.maximum"] {
         assert_eq!(factors(cmd, "squareness"), [1, 1, 2, 3, 3, 3, 4, 4], "{cmd} squareness");
-        assert_eq!(factors(cmd, "roundness"), [1, 1, 2, 3, 4, 4, 4, 4], "{cmd} roundness");
+        assert_eq!(factors(cmd, "roundness"), [1, 1, 2, 3, 3, 2, 4, 4], "{cmd} roundness");
         assert_eq!(preview_factor(cmd, &json!({"radius": 6.0}), 4), 3, "{cmd}: Squareness is the default");
         assert_eq!(preview_factor(cmd, &json!({"radius": "x"}), 4), 4, "{cmd}: a junk radius keeps the proxy");
     }
