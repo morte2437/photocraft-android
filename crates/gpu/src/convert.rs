@@ -160,13 +160,13 @@ pub(crate) fn colour_managed(fmt: &PixelFormat, kind: TexKind) -> bool {
 /// Tile pixels in the texture's format. `tile = None` gives the default pixel everywhere.
 pub(crate) fn convert_tile(surface: &Surface, tile: Option<&Arc<Tile>>, kind: TexKind, c: TileCoord) -> Vec<u8> {
     if let (Some(t), TexKind::Rgba8Direct | TexKind::R8Direct) = (tile, kind) {
-        let mut out = scratch::take_cap(t.bytes().len());
-        out.extend_from_slice(t.bytes());
+        let mut out = scratch::take_cap(t.len());
+        out.extend_from_slice(&t.bytes());
         return out;
     }
     let fmt = surface.format();
     if let (Some(t), TexKind::Rgba16F) = (tile, kind)
-        && let Some(out) = rgb_gray16_to_f16(&fmt, t.bytes()).or_else(|| rgb_gray32_to_f16(&fmt, t.bytes()))
+        && let Some(out) = rgb_gray16_to_f16(&fmt, &t.bytes()).or_else(|| rgb_gray32_to_f16(&fmt, &t.bytes()))
     {
         return out;
     }

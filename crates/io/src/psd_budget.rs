@@ -16,10 +16,102 @@ use crate::IoError;
 /// workspace and tile padding. Other format/parser limits still apply. Callers may lower it.
 pub const DEFAULT_PSD_IMPORT_PIXEL_BYTES: u64 = if cfg!(target_arch = "wasm32") { 1 << 30 } else { 2 << 30 };
 
+/// Structured memory estimate for a PSD/PSB import.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PsdMemoryEstimate {
+    /// Bytes required for all possible retained layer, mask, and merged surfaces.
+    pub retained_bytes: u64,
+    /// Largest scratch/conversion workspace required during decoding.
+    pub workspace_bytes: u64,
+    /// Total peak requirement (retained + workspace).
+    pub total_bytes: u64,
+    /// The part of `retained_bytes` that is tile pixels (layer, mask, channel, fallback and
+    /// pattern surfaces). Tiles can be spilled to the scratch disk while it is on, so admission
+    /// does not bound them by physical RAM; the merged planes, pattern decodes and the workspace
+    /// are ordinary memory.
+    pub tile_bytes: u64,
+}
+
 #[derive(Default)]
 struct ImportBudget {
     retained: u64,
     workspace: u64,
+    tiles: u64,
+}
+
+#[cfg(any(test, feature = "testgen"))]
+thread_local! {
+    /// Extra bytes added to every estimate on this thread by [`with_test_estimate_charge`].
+    static TEST_ESTIMATE_CHARGE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Extra tile-pixel bytes added by [`with_test_tile_charge`].
+    static TEST_TILE_CHARGE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Adds `bytes` to every PSD memory estimate made on this thread while `f` runs.
+///
+/// A test seam: an admission-threshold test can use a tiny fixture, so nothing near a gigabyte
+/// is ever allocated, while still exercising the real import path with its approval flags and
+/// gate ordering. Scoped to the thread and restored on return or panic.
+///
+/// The charge lives on the calling thread. A real import that runs on another thread (or a
+/// worker the engine starts for it) does not see it unless the caller propagates an explicitly
+/// captured scope: [`crate::memory::TestMemoryScope`] captures this charge together with the
+/// fixed mock snapshot, so an engine worker that enters that scope makes the same estimates as
+/// the test thread. This is the seam engine and UI dev-dependency tests use through the
+/// `testgen` feature; it is never process-global.
+#[cfg(any(test, feature = "testgen"))]
+pub fn with_test_estimate_charge<R>(bytes: u64, f: impl FnOnce() -> R) -> R {
+    struct Reset(u64);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_ESTIMATE_CHARGE.with(|c| c.set(self.0));
+        }
+    }
+    let prev = TEST_ESTIMATE_CHARGE.with(|c| c.replace(bytes));
+    let _reset = Reset(prev);
+    f()
+}
+
+/// [`with_test_estimate_charge`] for tile pixels: `bytes` are added to every estimate made on
+/// this thread while `f` runs, as spillable tile bytes ([`PsdMemoryEstimate::tile_bytes`]), so a
+/// scratch-aware admission test needs no huge fixture. Captured by
+/// [`crate::memory::TestMemoryScope`] like the plain charge.
+#[cfg(any(test, feature = "testgen"))]
+pub fn with_test_tile_charge<R>(bytes: u64, f: impl FnOnce() -> R) -> R {
+    struct Reset(u64);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_TILE_CHARGE.with(|c| c.set(self.0));
+        }
+    }
+    let prev = TEST_TILE_CHARGE.with(|c| c.replace(bytes));
+    let _reset = Reset(prev);
+    f()
+}
+
+/// The calling thread's current (plain, tile) estimate charges, for an explicit scope to capture.
+#[cfg(any(test, feature = "testgen"))]
+pub(crate) fn test_estimate_charge() -> (u64, u64) {
+    (TEST_ESTIMATE_CHARGE.with(|c| c.get()), TEST_TILE_CHARGE.with(|c| c.get()))
+}
+
+/// Enters captured estimate charges (an explicit [`crate::memory::TestMemoryScope`] worker) and
+/// returns the charges they replaced, to restore after the scope ends.
+#[cfg(any(test, feature = "testgen"))]
+pub(crate) fn enter_test_estimate_charge(bytes: u64, tiles: u64) -> (u64, u64) {
+    (TEST_ESTIMATE_CHARGE.with(|c| c.replace(bytes)), TEST_TILE_CHARGE.with(|c| c.replace(tiles)))
+}
+
+/// The test seam's extra (plain, tile) charges; zero in every other build.
+fn test_estimate_charge_value() -> (u64, u64) {
+    #[cfg(any(test, feature = "testgen"))]
+    {
+        test_estimate_charge()
+    }
+    #[cfg(not(any(test, feature = "testgen")))]
+    {
+        (0, 0)
+    }
 }
 
 fn overflow() -> IoError {
@@ -49,14 +141,6 @@ impl ImportBudget {
         self.retained.checked_add(self.workspace).ok_or_else(overflow)
     }
 
-    fn check(&self, limit: u64) -> Result<(), IoError> {
-        let required = self.required()?;
-        if required > limit {
-            return Err(IoError::PsdImportBudget { required, limit });
-        }
-        Ok(())
-    }
-
     fn surface(&mut self, rect: Rect, channels: u64, sample: u64) -> Result<(), IoError> {
         if rect.is_empty() {
             return Ok(());
@@ -66,15 +150,24 @@ impl ImportBudget {
         // origin occupies four tiles. Widen first, including the exclusive right/bottom edge.
         let nx = (i64::from(rect.right) - 1).div_euclid(tile) - i64::from(rect.left).div_euclid(tile) + 1;
         let ny = (i64::from(rect.bottom) - 1).div_euclid(tile) - i64::from(rect.top).div_euclid(tile) + 1;
-        self.retain(mul(mul(mul(nx as u64, ny as u64)?, (TILE_SIZE as u64).pow(2))?, mul(channels, sample)?)?)
+        let bytes = mul(mul(mul(nx as u64, ny as u64)?, (TILE_SIZE as u64).pow(2))?, mul(channels, sample)?)?;
+        self.tile(bytes)
+    }
+
+    /// Retained tile pixels: spillable to the scratch disk.
+    fn tile(&mut self, bytes: u64) -> Result<(), IoError> {
+        self.retain(bytes)?;
+        self.tiles = self.tiles.checked_add(bytes).ok_or_else(overflow)?;
+        Ok(())
     }
 }
 
+/// Computes the conservative preflight pixel memory and workspace estimate for `file`.
+///
 /// No decoding here: even a compact ZIP stream must be refused before inflation. The sum
 /// deliberately counts full decoded planes for every compression method, plus their row
-/// buffers, interleave output and float conversion workspace. This is an upper estimate,
-/// rather than a promise that an allocator or OS can satisfy an accepted import.
-pub(crate) fn check(file: &PsdFile, limit: u64) -> Result<(), IoError> {
+/// buffers, interleave output and float conversion workspace.
+pub fn estimate(file: &PsdFile) -> Result<PsdMemoryEstimate, IoError> {
     let mut budget = ImportBudget::default();
     let h = &file.header;
     h.validate()?;
@@ -145,7 +238,20 @@ pub(crate) fn check(file: &PsdFile, limit: u64) -> Result<(), IoError> {
             budget.scratch(converted.checked_add(p.decoded_bytes).ok_or_else(overflow)?);
         }
     }
-    budget.check(limit)
+    let (charge, tile_charge) = test_estimate_charge_value();
+    budget.retain(charge)?;
+    budget.tile(tile_charge)?;
+    let total_bytes = budget.required()?;
+    Ok(PsdMemoryEstimate { retained_bytes: budget.retained, workspace_bytes: budget.workspace, total_bytes, tile_bytes: budget.tiles })
+}
+
+/// Checks that `file`'s estimate does not exceed `limit`.
+pub fn check(file: &PsdFile, limit: u64) -> Result<PsdMemoryEstimate, IoError> {
+    let est = estimate(file)?;
+    if est.total_bytes > limit {
+        return Err(IoError::PsdImportBudget { required: est.total_bytes, limit });
+    }
+    Ok(est)
 }
 
 #[cfg(test)]

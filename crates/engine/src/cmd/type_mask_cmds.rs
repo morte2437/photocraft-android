@@ -8,7 +8,7 @@
 
 use photocraft_algo::selection::{self as sel, SelectionMode};
 use photocraft_doc::text::AntiAlias;
-use photocraft_doc::{Document, LayerContent, LayerId, TextLayer};
+use photocraft_doc::{Document, LayerContent, TextLayer};
 use photocraft_geom::Rect;
 use serde_json::{Value, json};
 
@@ -87,10 +87,7 @@ fn create_selection(s: &mut Session, p: &Value) -> Result<Value> {
         Some(v) => v.as_bool().ok_or_else(|| bad("removeLayer must be true or false"))?,
     };
     let doc = s.active().ok_or(EngineError::NoDocument)?.doc.clone();
-    let layer = match p.get("layer") {
-        None | Some(Value::Null) => None,
-        Some(v) => Some(LayerId(v.as_u64().ok_or_else(|| bad("layer must be a layer id"))?)),
-    };
+    let layer = crate::commands::explicit_layer(s, p)?;
     if remove && layer.is_none() {
         return Err(bad("removeLayer needs a layer"));
     }
@@ -144,7 +141,7 @@ pub fn specs() -> Vec<CommandSpec> {
         label: "Type Mask",
         menu: &[],
         shortcut: None,
-        params: r##"{"layer":id? (a type layer whose glyphs become the selection),"removeLayer":bool=false (delete that layer in the same step: the Type Mask tools' temporary text),"operation":"new|add|subtract|intersect"="new","antialias":"none|sharp|crisp|strong|smooth"?, …without "layer", type.create's keys: "text","x","y" or "box","orientation","font","size","align",…}"##,
+        params: r##"{"layer":id|name? (a type layer whose glyphs become the selection),"removeLayer":bool=false (delete that layer in the same step: the Type Mask tools' temporary text),"operation":"new|add|subtract|intersect"="new","antialias":"none|sharp|crisp|strong|smooth"?, …without "layer", type.create's keys: "text","x","y" or "box","orientation","font","size","align",…}"##,
         enabled: has_doc,
         journal: true,
         run: create_selection,
@@ -154,6 +151,7 @@ pub fn specs() -> Vec<CommandSpec> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use photocraft_doc::LayerId;
 
     fn session() -> Session {
         let mut s = Session::new();
@@ -163,6 +161,16 @@ mod tests {
 
     fn bounds(s: &Session) -> Option<Rect> {
         s.active().unwrap().doc.selection.as_ref().map(|m| m.content_bounds())
+    }
+
+    #[test]
+    fn a_named_type_layer_can_make_a_selection_for_action_replay() {
+        let mut s = session();
+        let id = s.execute("type.create", json!({"text": "I", "x": 40, "y": 120, "size": 48})).unwrap()["layer"].as_u64().unwrap();
+        let name = s.active().unwrap().doc.layer(LayerId(id)).unwrap().name.clone();
+        s.execute("layer.new.layer", json!({})).unwrap();
+        s.execute(CMD, json!({"layer": name})).unwrap();
+        assert!(bounds(&s).is_some());
     }
 
     #[test]

@@ -53,9 +53,10 @@ pub fn mask_from_surface(s: Option<&Surface>, area: Rect) -> Vec<f32> {
                     let tc = TileCoord::containing(x, y);
                     let x1 = (tc.rect().x1).min(area.x1);
                     let dst = row.get_mut((x - area.x0) as usize..(x1 - area.x0) as usize).unwrap_or_default();
-                    let src = s.tile(tc).and_then(|t| {
+                    let guard = s.tile(tc).map(|t| t.bytes());
+                    let src = guard.as_deref().and_then(|bytes| {
                         let base = (y - tc.ty * TILE_SIZE) as usize * TILE_SIZE as usize + (x - tc.tx * TILE_SIZE) as usize;
-                        t.bytes().get(base..base + dst.len())
+                        bytes.get(base..base + dst.len())
                     });
                     match src {
                         Some(src) => dst.iter_mut().zip(src).for_each(|(d, b)| *d = lut[*b as usize]),
@@ -115,7 +116,7 @@ fn surface_from_masks(area: Rect, new: &[f32], prev: Option<&[f32]>, f: impl Fn(
         let tr = tc.rect().intersect(&area);
         let (lx, span) = ((tr.x0 - area.x0) as usize, tr.width() as usize);
         let mut tile = Arc::clone(blank);
-        let data = Arc::make_mut(&mut tile).bytes_mut();
+        let mut data = Arc::make_mut(&mut tile).bytes_mut();
         let (mut lo, mut hi) = (if tr == tc.rect() { u8::MAX } else { 0 }, 0u8);
         for y in tr.y0..tr.y1 {
             let o = (y - tc.ty * TILE_SIZE) as usize * ts + (tr.x0 - tc.tx * TILE_SIZE) as usize;
@@ -123,6 +124,7 @@ fn surface_from_masks(area: Rect, new: &[f32], prev: Option<&[f32]>, f: impl Fn(
             row((y - area.y0) as usize * w + lx, dst);
             (lo, hi) = dst.iter().fold((lo, hi), |(lo, hi), b| (lo.min(*b), hi.max(*b)));
         }
+        drop(data);
         (hi > 0).then(|| (*tc, if lo == u8::MAX { Arc::clone(&full) } else { tile }))
     });
     s.put_tiles(built.into_iter().flatten());

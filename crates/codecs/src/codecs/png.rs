@@ -1,7 +1,7 @@
 //! PNG via the `png` crate directly: 8/16-bit, Adam7 read (and write),
 //! iCCP, eXIf, tEXt/zTXt/iTXt (XMP in `XML:com.adobe.xmp`), pHYs.
 
-use std::io::{Cursor, Write};
+use std::io::{self, Cursor, Write};
 
 use crate::Format;
 use crate::error::CodecError;
@@ -303,6 +303,21 @@ fn is_latin1_keyword(k: &str) -> bool {
     !k.is_empty() && k.len() <= 79 && k.chars().all(|c| (' '..='~').contains(&c) || ('\u{a1}'..='\u{ff}').contains(&c))
 }
 
+/// Makes the PNG writer's output growth report an encode error on allocation failure.
+struct FallibleOutput<'a>(&'a mut Vec<u8>);
+
+impl Write for FallibleOutput<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0.try_reserve(bytes.len()).map_err(|_| io::Error::other("not enough memory for PNG output"))?;
+        self.0.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 pub(crate) fn encode(src: &Image, plan: Plan, opts: &EncodeOptions) -> Result<Vec<u8>, CodecError> {
     let img = src.converted(plan.layout, plan.sample);
     let (w, h) = img.dimensions();
@@ -314,7 +329,8 @@ pub(crate) fn encode(src: &Image, plan: Plan, opts: &EncodeOptions) -> Result<Ve
     }
     let mut out = Vec::new();
     {
-        let mut writer = start(&mut out, (w, h), (img.layout(), img.sample_type()), img.icc.as_ref(), &img.meta, opts)?;
+        let mut output = FallibleOutput(&mut out);
+        let mut writer = start(&mut output, (w, h), (img.layout(), img.sample_type()), img.icc.as_ref(), &img.meta, opts)?;
         if opts.png_interlaced {
             let idat = adam7_idat(&data, w as usize, h as usize, bpp, opts.png_compression)?;
             write_idat(&mut writer, &idat, MAX_IDAT)?;
@@ -498,7 +514,8 @@ impl<W: Write> PngRows<W> {
         let prev = (!self.prev.is_empty()).then_some(self.prev.as_slice());
         let parts = deflate_rows(rows, prev, stride, bpp, per_band, deflate_level(self.level), finish, encode_threads())
             .ok_or_else(|| CodecError::encode(F, "a band of rows could not be compressed"))?;
-        let mut zlib = Vec::with_capacity(parts.iter().map(|p| p.z.len()).sum::<usize>() + 6);
+        let mut zlib = Vec::new();
+        zlib.try_reserve_exact(parts.iter().map(|p| p.z.len()).sum::<usize>() + 6).map_err(|_| CodecError::encode(F, "not enough memory for PNG data"))?;
         if !self.started {
             zlib.extend_from_slice(&zlib_header(self.level));
             self.started = true;
@@ -530,7 +547,8 @@ impl<W: Write> PngRows<W> {
 fn adam7_idat(data: &[u8], w: usize, h: usize, bpp: usize, level: PngCompression) -> Result<Vec<u8>, CodecError> {
     // (x0, y0, dx, dy) per pass.
     const PASSES: [(usize, usize, usize, usize); 7] = [(0, 0, 8, 8), (4, 0, 8, 8), (0, 4, 4, 8), (2, 0, 4, 4), (0, 2, 2, 4), (1, 0, 2, 2), (0, 1, 1, 2)];
-    let mut raw = Vec::with_capacity(data.len() + h * 7);
+    let mut raw = Vec::new();
+    raw.try_reserve_exact(data.len() + h * 7).map_err(|_| CodecError::encode(F, "not enough memory for PNG rows"))?;
     for (x0, y0, dx, dy) in PASSES {
         if x0 >= w || y0 >= h {
             continue;
@@ -611,7 +629,8 @@ fn encode_threads() -> usize {
 fn banded_idat(data: &[u8], w: usize, h: usize, bpp: usize, level: PngCompression, threads: usize) -> Option<Vec<u8>> {
     let stride = w * bpp;
     let parts = deflate_rows(data.get(..h * stride)?, None, stride, bpp, band_rows(stride), deflate_level(level), true, threads)?;
-    let mut out = Vec::with_capacity(parts.iter().map(|p| p.z.len()).sum::<usize>() + 6);
+    let mut out = Vec::new();
+    out.try_reserve_exact(parts.iter().map(|p| p.z.len()).sum::<usize>() + 6).ok()?;
     out.extend_from_slice(&zlib_header(level));
     let mut adler = 1u32;
     for p in &parts {
@@ -648,8 +667,11 @@ fn deflate_rows(
     let h = rows.len() / stride.max(1);
     let bands: Vec<(usize, usize)> = (0..h).step_by(band_rows.max(1)).map(|y| (y, (y + band_rows).min(h))).collect();
     let band = |&(y0, y1): &(usize, usize)| -> Option<Deflated> {
-        let mut filtered = Vec::with_capacity((y1 - y0) * (stride + 1));
-        let mut scratch = vec![0u8; stride];
+        let mut filtered = Vec::new();
+        filtered.try_reserve_exact((y1 - y0) * (stride + 1)).ok()?;
+        let mut scratch = Vec::new();
+        scratch.try_reserve_exact(stride).ok()?;
+        scratch.resize(stride, 0);
         for y in y0..y1 {
             let row = rows.get(y * stride..(y + 1) * stride)?;
             let above = if y > 0 { rows.get((y - 1) * stride..y * stride) } else { prev };
@@ -696,7 +718,8 @@ fn deflate_rows(
 fn deflate_band(filtered: &[u8], lvl: flate2::Compression, last: bool) -> Option<Vec<u8>> {
     let mut c = flate2::Compress::new(lvl, false);
     // Stored blocks cost 5 bytes per 64 KiB, the flush an empty stored block: 1/8 is ample.
-    let mut z = Vec::with_capacity(filtered.len() + filtered.len() / 8 + 1024);
+    let mut z = Vec::new();
+    z.try_reserve_exact(filtered.len() + filtered.len() / 8 + 1024).ok()?;
     let flush = if last { flate2::FlushCompress::Finish } else { flate2::FlushCompress::Sync };
     let status = c.compress_vec(filtered, &mut z, flush).ok()?;
     let done = if last { status == flate2::Status::StreamEnd } else { c.total_in() as usize == filtered.len() && z.len() < z.capacity() };

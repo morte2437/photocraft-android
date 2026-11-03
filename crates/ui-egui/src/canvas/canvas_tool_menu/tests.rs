@@ -905,6 +905,151 @@ fn pen_menu_saved_path_clipping_and_numeric_transform() {
     assert_eq!(app.session.journal.last().map(|(id, _)| id.as_str()), Some("path.transform"));
 }
 
+// #10527: the Stroke Path dialog's Simulate Pressure checkbox keeps the choice the last OK applied.
+
+/// A document with the Pen tool picked and a Work Path. Every route to the Stroke Path dialog (the
+/// Pen canvas menu, the Paths panel context menu, Alt-click on its Stroke button) ends in the same
+/// `pen_dialog`, so driving the menu route covers the other two.
+fn stroke_app() -> PhotocraftApp {
+    let mut app = app();
+    app.ui.tool = Tool::Pen;
+    work_path(&mut app);
+    app.ui.selected_path = Some("work".into());
+    app
+}
+
+/// Open the Stroke Path dialog through the Pen canvas menu and return its id.
+fn open_stroke(app: &mut PhotocraftApp) -> u64 {
+    choose_open(app, "path.stroke");
+    let d = app.ui.dialogs.last().expect("Stroke Path… opens a dialog");
+    assert_eq!(d.fields.get("__command").and_then(Value::as_str), Some("path.stroke"));
+    assert_eq!(d.fields.get("name").and_then(Value::as_str), Some("work"), "the Work Path is stroked");
+    d.id
+}
+
+/// The Simulate Pressure the freshly opened dialog carries, or `None` when it carries none at all.
+/// The spec body draws a missing field as the schema default (off), so `None` and `Some(false)` look
+/// the same on screen; asserting a seeded `Some(bool)` pins the defensive read, which must never
+/// trust a saved value into a non-bool.
+fn pressure_on_open(app: &mut PhotocraftApp) -> Option<bool> {
+    let id = open_stroke(app);
+    let on = app.ui.dialog_mut(id).unwrap().fields.get("simulatePressure").and_then(Value::as_bool);
+    app.ui.close_dialog(id);
+    on
+}
+
+/// Tick or untick Simulate Pressure in the open dialog.
+fn set_pressure(app: &mut PhotocraftApp, id: u64, on: bool) {
+    app.ui.dialog_mut(id).unwrap().fields.insert("simulatePressure".into(), json!(on));
+}
+
+#[test]
+fn stroke_path_reopens_with_the_simulate_pressure_that_was_applied() {
+    let mut app = stroke_app();
+    // The first one opens off: no remembered choice, and Photoshop's default is off.
+    assert_eq!(pressure_on_open(&mut app), Some(false), "the first Stroke Path opens with a seeded, off checkbox");
+    // Tick Simulate Pressure and press OK: the stroke runs with it.
+    let id = open_stroke(&mut app);
+    set_pressure(&mut app, id, true);
+    crate::dialogs::confirm(&mut app, id).unwrap();
+    assert_eq!(app.session.journal.last().map(|(id, _)| id.as_str()), Some("path.stroke"), "OK stroked the path");
+    // Re-opening shows the choice that was applied (#10527).
+    assert_eq!(pressure_on_open(&mut app), Some(true), "the applied choice opens next time");
+    // Unticking it and pressing OK applies off, which is what opens next time.
+    let id = open_stroke(&mut app);
+    set_pressure(&mut app, id, false);
+    crate::dialogs::confirm(&mut app, id).unwrap();
+    assert_eq!(pressure_on_open(&mut app), Some(false), "an applied off wins over the remembered on");
+}
+
+#[test]
+fn stroke_path_cancel_leaves_the_remembered_simulate_pressure_alone() {
+    let mut app = stroke_app();
+    let id = open_stroke(&mut app);
+    set_pressure(&mut app, id, true);
+    crate::dialogs::confirm(&mut app, id).unwrap();
+    assert_eq!(pressure_on_open(&mut app), Some(true), "the applied choice opens again");
+    // Untick it and press Cancel: nothing was applied, so the next opening is unchanged.
+    let id = open_stroke(&mut app);
+    set_pressure(&mut app, id, false);
+    crate::dialogs::cancel(&mut app, id).unwrap();
+    assert!(app.ui.dialogs.is_empty(), "Cancel closes the dialog");
+    assert_eq!(app.session.journal.iter().filter(|(id, _)| id == "path.stroke").count(), 1, "Cancel ran no stroke");
+    assert_eq!(pressure_on_open(&mut app), Some(true), "Cancel leaves the remembered choice alone (#10527)");
+    // Cancel can also be the first thing done: still nothing to remember.
+    let mut fresh = stroke_app();
+    let id = open_stroke(&mut fresh);
+    set_pressure(&mut fresh, id, true);
+    crate::dialogs::cancel(&mut fresh, id).unwrap();
+    assert_eq!(pressure_on_open(&mut fresh), Some(false), "a cancelled on never becomes the remembered choice");
+}
+
+#[test]
+fn stroke_path_falls_back_to_off_for_a_corrupt_saved_simulate_pressure() {
+    let mut app = stroke_app();
+    // Saved data is never trusted: anything but a real bool in the remembered choice reopens the
+    // checkbox off rather than showing or applying it.
+    let corrupt =
+        [json!("not an object"), json!(null), json!({}), json!({"simulatePressure": "yes"}), json!({"simulatePressure": 1}), json!({"simulatePressure": null})];
+    for bad in corrupt {
+        app.session.prefs.edit(|p| p.dialogs.insert("path.stroke".into(), bad.clone()));
+        assert_eq!(pressure_on_open(&mut app), Some(false), "{bad} must reopen the checkbox off");
+    }
+    // No remembered key at all: off as well, and one applied OK writes a clean value back.
+    app.session.prefs.edit(|p| p.dialogs.remove("path.stroke"));
+    assert_eq!(pressure_on_open(&mut app), Some(false), "no remembered choice opens off");
+    let id = open_stroke(&mut app);
+    set_pressure(&mut app, id, true);
+    crate::dialogs::confirm(&mut app, id).unwrap();
+    assert_eq!(app.session.prefs().dialogs.get("path.stroke"), Some(&json!({"simulatePressure": true})), "only the checkbox is stored");
+    assert_eq!(pressure_on_open(&mut app), Some(true), "and it comes back after a clean write");
+}
+
+#[test]
+fn stroke_path_failed_confirmation_does_not_remember_simulate_pressure() {
+    let mut app = stroke_app();
+    let id = open_stroke(&mut app);
+    set_pressure(&mut app, id, true);
+    crate::dialogs::confirm(&mut app, id).unwrap();
+    assert_eq!(pressure_on_open(&mut app), Some(true), "the applied choice is remembered");
+    // Untick it, point the dialog at a path that does not exist and press OK: the stroke fails, so
+    // nothing was applied and nothing may be remembered.
+    let id = open_stroke(&mut app);
+    set_pressure(&mut app, id, false);
+    app.ui.dialog_mut(id).unwrap().fields.insert("name".into(), json!("no such path"));
+    assert!(crate::dialogs::confirm(&mut app, id).is_err(), "stroking a missing path fails");
+    assert_eq!(app.session.journal.iter().filter(|(id, _)| id == "path.stroke").count(), 1, "the failed OK ran no stroke");
+    while let Some(d) = app.ui.dialogs.last().map(|d| d.id) {
+        app.ui.close_dialog(d);
+    }
+    assert_eq!(app.session.prefs().dialogs.get("path.stroke"), Some(&json!({"simulatePressure": true})), "a failed OK leaves the memory alone");
+    assert_eq!(pressure_on_open(&mut app), Some(true), "the next opening still shows the last applied choice");
+}
+
+#[test]
+fn stroke_path_does_not_remember_its_tool_choice() {
+    // Only Simulate Pressure sticks (#10527). Nobody asked for the tool to be remembered, so the
+    // dialog keeps opening on the spec's default and the engine keeps defaulting to the brush.
+    let mut app = stroke_app();
+    let id = open_stroke(&mut app);
+    app.ui.dialog_mut(id).unwrap().fields.insert("tool".into(), json!("pencil"));
+    set_pressure(&mut app, id, true);
+    crate::dialogs::confirm(&mut app, id).unwrap();
+    assert_eq!(app.session.journal.last().map(|(id, _)| id.as_str()), Some("path.stroke"));
+    let id = open_stroke(&mut app);
+    let (pressure, tool) = {
+        let f = &app.ui.dialog_mut(id).unwrap().fields;
+        (f.get("simulatePressure").cloned(), f.get("tool").cloned())
+    };
+    app.ui.close_dialog(id);
+    assert_eq!(pressure, Some(json!(true)), "the checkbox is remembered");
+    assert_eq!(tool, None, "the tool is not: the dialog opens on the spec default");
+    // The Paths panel's plain Stroke button strokes without a dialog, so it writes nothing: the
+    // remembered choice is still the one the dialog applied.
+    app.run("path.stroke", json!({"name": "work", "tool": "brush"})).unwrap();
+    assert_eq!(app.session.prefs().dialogs.get("path.stroke"), Some(&json!({"simulatePressure": true})), "a dialog-less stroke changes no memory");
+}
+
 #[test]
 fn pen_shape_menu_enables_shape_ops_and_style_copy_only_when_applicable() {
     let mut app = app();

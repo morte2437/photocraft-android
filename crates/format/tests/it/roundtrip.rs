@@ -497,7 +497,7 @@ fn previews_embedded_and_readable() {
     let doc = rich_doc(ColorMode::Rgb, SampleType::U8);
     let mut thumb = Rgba8Image::new(4, 3);
     thumb.pixels.iter_mut().enumerate().for_each(|(i, p)| *p = i as u8);
-    let opts = SaveOptions { thumbnail: Some(thumb.clone()), composite: Some(thumb.clone()) };
+    let opts = SaveOptions { thumbnail: Some(thumb.clone()), composite: Some(thumb.clone()), ..Default::default() };
     let bytes = save_to_bytes(&doc, &opts).unwrap();
     let png = read_thumbnail(&bytes).unwrap().unwrap();
     let img = photocraft_codecs::decode(&png).unwrap();
@@ -507,6 +507,45 @@ fn previews_embedded_and_readable() {
     assert_eq!(m.composite.as_deref(), Some("composite/preview.png"));
     assert_eq!(m.format_version, FORMAT_VERSION);
     assert!(read_thumbnail(&save_to_bytes(&doc, &SaveOptions::default()).unwrap()).unwrap().is_none());
+}
+
+/// The full-size composite is an optional manifest member: a bundle without it (every file saved
+/// before it was written) opens as before, at the same format version.
+#[test]
+fn bundles_without_the_full_composite_still_open() {
+    let doc = rich_doc(ColorMode::Rgb, SampleType::U8);
+    let full = Rgba8Image::new(doc.size.width, doc.size.height);
+    let opts = SaveOptions { thumbnail: Some(Rgba8Image::new(2, 2)), composite: Some(Rgba8Image::new(4, 3)), full_composite: Some(full), ..Default::default() };
+    let bytes = save_to_bytes(&doc, &opts).unwrap();
+    assert!(read_full_composite(&bytes).unwrap().is_some());
+    assert_eq!(read_manifest(&bytes).unwrap().format_version, 1);
+    // Rewrite the bundle as an older writer left it: no member in the manifest, no entry.
+    let r = zip::ZipReader::new(&bytes).unwrap();
+    let mut manifest: serde_json::Value = serde_json::from_slice(&r.read_by_name("manifest.json", usize::MAX).unwrap()).unwrap();
+    assert!(manifest.as_object_mut().unwrap().remove("full_composite").is_some());
+    let mut z = zip::ZipWriter::new();
+    z.add("manifest.json", &serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+    for e in r.entries.iter().filter(|e| e.name != "manifest.json" && e.name != "composite/full.png") {
+        z.add(&e.name, &r.read(e, usize::MAX).unwrap()).unwrap();
+    }
+    let older = z.finish().unwrap();
+    assert_eq!(read_full_composite(&older).unwrap(), None);
+    // A member that names any other entry is refused, and the document still opens.
+    manifest["full_composite"] = serde_json::Value::from("thumb.png");
+    let mut z = zip::ZipWriter::new();
+    z.add("manifest.json", &serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+    for e in r.entries.iter().filter(|e| e.name != "manifest.json") {
+        z.add(&e.name, &r.read(e, usize::MAX).unwrap()).unwrap();
+    }
+    let other = z.finish().unwrap();
+    assert!(read_full_composite(&other).is_err());
+    assert_eq!(load_from_bytes(&other).unwrap(), doc);
+    assert_eq!(load_from_bytes(&older).unwrap(), load_from_bytes(&bytes).unwrap());
+    assert_eq!(load_from_bytes(&older).unwrap(), doc);
+    // A save without it writes no member at all, as older writers did.
+    let plain = save_to_bytes(&doc, &SaveOptions::default()).unwrap();
+    let text = zip::ZipReader::new(&plain).unwrap().read_by_name("manifest.json", usize::MAX).unwrap();
+    assert!(!String::from_utf8(text).unwrap().contains("full_composite"));
 }
 
 #[test]
@@ -536,7 +575,7 @@ fn save_is_deterministic() {
 fn save_load_save_gives_the_same_bytes() {
     let mut preview = Rgba8Image::new(4, 3);
     preview.pixels.iter_mut().enumerate().for_each(|(i, p)| *p = i as u8);
-    for opts in [SaveOptions::default(), SaveOptions { thumbnail: Some(preview.clone()), composite: Some(preview.clone()) }] {
+    for opts in [SaveOptions::default(), SaveOptions { thumbnail: Some(preview.clone()), composite: Some(preview.clone()), ..Default::default() }] {
         for mode in MODES {
             for depth in SampleType::ALL {
                 let first = save_to_bytes(&rich_doc(mode, depth), &opts).unwrap();
@@ -934,7 +973,7 @@ fn directory_save_without_previews_removes_stale_files_after_commit() {
     let mut doc = Document::new("before", photocraft_doc::Size::new(4, 3), ColorMode::Rgb, SampleType::U8);
     let dir = temp_dir("preview-cleanup");
     let mut writer = PcraftWriter::new();
-    let opts = SaveOptions { thumbnail: Some(Rgba8Image::new(2, 2)), composite: Some(Rgba8Image::new(4, 3)) };
+    let opts = SaveOptions { thumbnail: Some(Rgba8Image::new(2, 2)), composite: Some(Rgba8Image::new(4, 3)), ..Default::default() };
     writer.save_dir(&doc, &dir, &opts).unwrap();
     doc.name = "after".into();
     writer.save_dir(&doc, &dir, &SaveOptions::default()).unwrap();
@@ -954,7 +993,7 @@ fn failed_manifest_commit_preserves_omitted_previews() {
         let mut doc = Document::with_background("before", photocraft_doc::Size::new(4, 3), ColorMode::Rgb, depth, photocraft_color::Color::WHITE);
         let dir = temp_dir("locked-manifest-previews");
         let mut writer = PcraftWriter::new();
-        let opts = SaveOptions { thumbnail: Some(Rgba8Image::new(2, 2)), composite: Some(Rgba8Image::new(4, 3)) };
+        let opts = SaveOptions { thumbnail: Some(Rgba8Image::new(2, 2)), composite: Some(Rgba8Image::new(4, 3)), ..Default::default() };
         writer.save_dir(&doc, &dir, &opts).unwrap();
         let old_doc = doc.clone();
         let paths = ["manifest.json", "thumb.png", "composite/preview.png"];
@@ -985,7 +1024,7 @@ fn locked_stale_preview_does_not_fail_committed_save() {
     let mut doc = Document::new("before", photocraft_doc::Size::new(4, 3), ColorMode::Rgb, SampleType::U8);
     let dir = temp_dir("locked-stale-preview");
     let mut writer = PcraftWriter::new();
-    let opts = SaveOptions { thumbnail: Some(Rgba8Image::new(2, 2)), composite: Some(Rgba8Image::new(4, 3)) };
+    let opts = SaveOptions { thumbnail: Some(Rgba8Image::new(2, 2)), composite: Some(Rgba8Image::new(4, 3)), ..Default::default() };
     writer.save_dir(&doc, &dir, &opts).unwrap();
     let held = std::fs::OpenOptions::new().read(true).share_mode(3).open(dir.join("thumb.png")).unwrap();
     doc.name = "after".into();

@@ -150,6 +150,17 @@ fn ctrl_tab_cycles_through_the_document_tabs() {
     assert!(!h.state().ui.panels.dock, "plain Tab hides the panels");
 }
 
+#[test]
+fn ctrl_tab_records_a_relative_document_switch() {
+    let mut h = harness(2, ThemeKind::Pro);
+    h.state_mut().run("actions.record", json!({"name": "Switch"})).unwrap();
+    h.key_press_modifiers(ctrl(), egui::Key::Tab);
+    h.run_steps(2);
+    h.state_mut().run("actions.stop", json!({})).unwrap();
+    let steps = &h.state().session.actions.list[0].steps;
+    assert_eq!(steps, &[("document.activate".into(), json!({"offset": -1}))]);
+}
+
 /// One document: Ctrl+Tab stays on it quietly; a focused widget or text field doesn't keep the key.
 #[test]
 fn ctrl_tab_with_one_document_or_a_focused_field() {

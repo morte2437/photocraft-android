@@ -110,7 +110,8 @@ fn editing_a_crop_frame_shows_the_pixels_past_the_canvas() {
         let app = h.state_mut();
         // 300 × 120: red down the left 60 px and blue down the right 60 px of a new layer, then
         // cropped to (50, 0) 200 × 100 keeping the pixels: 50 px of red past the left edge, 50 of
-        // blue past the right, and 20 rows of the white Background below.
+        // blue past the right, and 20 rows of the white Background below (the crop makes it "Layer 0",
+        // which keeps them, #10867).
         app.run("file.new", json!({"width": 300, "height": 120, "background": "white"})).expect("new");
         app.run("layer.new.layer", json!({})).expect("layer");
         for (x, color) in [(0, "#ff0000"), (240, "#0000ff")] {

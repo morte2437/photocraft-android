@@ -69,8 +69,10 @@ fn build(old: Option<&Surface>, area: Rect, mode: SelectionMode, keep_outside: b
         for y in cut.y0..cut.y1 {
             let offset = y.abs_diff(rect.y0) as usize * ts + cut.x0.abs_diff(rect.x0) as usize;
             let len = cut.width() as usize;
-            let Some(dst) = tile.bytes_mut().get_mut(offset..offset + len) else { continue };
-            let src = previous.and_then(|t| t.bytes().get(offset..offset + len));
+            let mut data = tile.bytes_mut();
+            let Some(dst) = data.get_mut(offset..offset + len) else { continue };
+            let previous_bytes = previous.map(|t| t.bytes());
+            let src = previous_bytes.as_ref().and_then(|t| t.get(offset..offset + len));
             let start = (y.abs_diff(area.y0) as usize).checked_mul(width).and_then(|i| i.checked_add(cut.x0.abs_diff(area.x0) as usize));
             for (i, d) in dst.iter_mut().enumerate() {
                 let new = start.and_then(|j| j.checked_add(i)).map(&sample).unwrap_or(0);
@@ -86,7 +88,7 @@ fn build(old: Option<&Surface>, area: Rect, mode: SelectionMode, keep_outside: b
         let (lo, hi) = tile.bytes().iter().fold((u8::MAX, 0u8), |(lo, hi), b| (lo.min(*b), hi.max(*b)));
         let tile = if lo == out_default && hi == out_default {
             None
-        } else if previous.is_some_and(|p| p.bytes() == tile.bytes()) {
+        } else if previous.is_some_and(|p| *p.bytes() == *tile.bytes()) {
             previous.cloned()
         } else if lo == u8::MAX {
             Some(Arc::clone(&full))
