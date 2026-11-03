@@ -26,6 +26,10 @@ pub(crate) fn select(app: &mut PhotocraftApp, tool: Tool) {
     app.stylus.tool_before_eraser = None;
     app.ui.spring = None;
     app.ui.tool = tool;
+    // Picking the Crop tool, even the one already picked, brings back a frame a commit hid.
+    if tool == Tool::Crop {
+        crate::crop_ui::show_frame(app);
+    }
 }
 
 /// Temporary canvas overrides do not change `ui.tool`. Spring-loaded letters and the pen's

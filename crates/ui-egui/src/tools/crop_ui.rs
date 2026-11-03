@@ -51,6 +51,10 @@ pub struct CropState {
     pub default_frame: bool,
     /// The document (index and size) the default frame was made for.
     frame_for: Option<(usize, u32, u32)>,
+    /// The document (id and size) whose frame [`hide_frame`] hid: no default frame is made for it
+    /// while this matches. Keyed by id, not tab index, so closing it never hides the frame of the
+    /// tab that takes its place.
+    dismissed: Option<(photocraft_doc::DocId, u32, u32)>,
     /// The frame is being edited (pressed since it was made): the canvas shows what lies past it.
     pub editing: bool,
     /// The document the pending frame (or gesture) belongs to ([`cancel_stale`], #1918).
@@ -268,6 +272,8 @@ pub(crate) fn apply_ratio(app: &mut PhotocraftApp) {
     if app.ui.tool != Tool::Crop || app.crop.drag.is_some() {
         return;
     }
+    // A ratio or size chosen after a commit fits a frame, not nothing.
+    show_frame(app);
     frame(app);
     fit_frame(app);
     crate::crop_mode::sync_frame(app);
@@ -374,6 +380,7 @@ pub fn ensure_frame(app: &mut PhotocraftApp) {
 fn frame(app: &mut PhotocraftApp) {
     if app.ui.tool != Tool::Crop {
         app.crop.editing = false;
+        app.crop.dismissed = None;
         crate::crop_straighten::reset(app);
         // Leaving the tool drops an untouched default frame and, as in Photoshop, commits a
         // drawn one (#3368).
@@ -401,6 +408,11 @@ fn frame(app: &mut PhotocraftApp) {
     if app.ui.crop_rect.is_some() || app.crop.drag.is_some() {
         return;
     }
+    // A committed crop hid the frame: it stays hidden for this document until the next press.
+    if app.crop.dismissed.is_some() && app.crop.dismissed == dismiss_key(app) {
+        return;
+    }
+    app.crop.dismissed = None;
     let Some(st) = app.session.active() else { return };
     let canvas = st.doc.bounds();
     // Computed once per new frame, not per frame drawn.
@@ -455,6 +467,28 @@ pub fn cancel(app: &mut PhotocraftApp) {
     app.crop.editing = false;
     clear_history(app);
     crate::crop_straighten::reset(app);
+}
+
+/// After a committed crop, with the Crop tool picked: no new default frame for the cropped
+/// document until a press on the canvas or re-picking the tool, so its corners don't make the
+/// applied crop look still pending.
+pub fn hide_frame(app: &mut PhotocraftApp) {
+    if app.ui.tool == Tool::Crop {
+        app.crop.dismissed = dismiss_key(app);
+    }
+}
+
+/// Ends [`hide_frame`] and makes the default frame now, so what follows acts on it as on any
+/// default frame: a press records it as the box's Undo step, a ratio fits it.
+pub(crate) fn show_frame(app: &mut PhotocraftApp) {
+    if app.crop.dismissed.take().is_some() {
+        frame(app);
+    }
+}
+
+/// The active document's identity for [`CropState::dismissed`].
+fn dismiss_key(app: &PhotocraftApp) -> Option<(photocraft_doc::DocId, u32, u32)> {
+    app.session.active().map(|st| (st.doc.id, st.doc.size.width, st.doc.size.height))
 }
 
 /// Drop the box's own Undo/Redo (leaving the tool, cancelling or committing a crop).
@@ -820,6 +854,11 @@ fn straighten(app: &mut PhotocraftApp, ev: ToolEvent, mods: Modifiers, p: [f64; 
     if !crate::crop_straighten::pointer(app, ev, mods) {
         return false;
     }
+    // A press it takes brings the hidden frame back like any other press, even when the line is
+    // too short to turn the frame.
+    if matches!(ev, ToolEvent::Down { .. }) {
+        show_frame(app);
+    }
     claim(app);
     // Default mode: the image turns so the line ends up level.
     // The turn is one box Undo step, like any other frame gesture.
@@ -839,6 +878,7 @@ fn straighten(app: &mut PhotocraftApp, ev: ToolEvent, mods: Modifiers, p: [f64; 
 
 /// Starts the drag a press at `p` selects: resize, move, turn or draw.
 fn begin_drag(app: &mut PhotocraftApp, p: [f64; 2]) {
+    show_frame(app);
     claim(app);
     app.crop.editing = true;
     app.crop.press_step = Some(step_of(app));

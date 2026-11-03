@@ -122,7 +122,13 @@ fn enter_on_the_selection_frame_crops_to_it_at_8_and_16_bit() {
         assert_eq!(doc.size, Size::new(30, 40), "{depth:?}");
         assert_eq!(doc.depth, depth);
         assert!(doc.selection.is_none(), "cropping to the selection deselects, as in Photoshop");
-        // The new default frame is the whole (cropped) canvas: ↵ on it does nothing.
+        // No frame until a press or re-picking the tool; then the default one is the whole
+        // (cropped) canvas, and ↵ on it does nothing.
+        ensure_frame(&mut app);
+        assert_eq!(app.ui.crop_rect, None);
+        app.ui.tool = Tool::Move;
+        ensure_frame(&mut app);
+        app.ui.tool = Tool::Crop;
         ensure_frame(&mut app);
         assert_eq!(app.ui.crop_rect, Some([0.0, 0.0, 30.0, 40.0]));
         let steps = app.session.active().unwrap().history.past_len();
@@ -130,6 +136,41 @@ fn enter_on_the_selection_frame_crops_to_it_at_8_and_16_bit() {
         let st = app.session.active().unwrap();
         assert_eq!((st.doc.size, st.history.past_len()), (Size::new(30, 40), steps), "{depth:?}");
     }
+}
+
+/// A commit hides the frame; picking the Crop tool again, a ratio, or a press brings back the
+/// default frame, and the press's crop keeps its box Undo and Redo.
+#[test]
+fn a_hidden_frame_comes_back_on_re_picking_a_ratio_or_a_press_with_redo_intact() {
+    let committed = || {
+        let mut app = app(SampleType::U8);
+        app.ui.crop_rect = Some([20.0, 10.0, 120.0, 60.0]);
+        crate::canvas::commit_crop(&mut app);
+        ensure_frame(&mut app);
+        assert_eq!(app.ui.crop_rect, None, "hidden after the commit");
+        app
+    };
+    let whole = Some([0.0, 0.0, 100.0, 50.0]);
+    // Picking the Crop tool while it is still picked.
+    let mut app = committed();
+    crate::tool_memory::select(&mut app, Tool::Crop);
+    assert_eq!(app.ui.crop_rect, whole);
+    assert!(app.crop.default_frame);
+    // A ratio fits the frame it brings back.
+    let mut app = committed();
+    app.ui.tool_options.crop_ratio = "1:1".into();
+    apply_ratio(&mut app);
+    assert_eq!(app.ui.crop_rect, Some([25.0, 0.0, 75.0, 50.0]));
+    // A drawn crop undoes to the default frame, and redoes.
+    let mut app = committed();
+    drag(&mut app, &[[10.0, 10.0], [40.0, 30.0]], NONE);
+    let drawn = app.ui.crop_rect;
+    assert_eq!(drawn, Some([10.0, 10.0, 40.0, 30.0]));
+    assert!(intercept(&mut app, "edit.undo").is_some());
+    ensure_frame(&mut app);
+    assert_eq!(app.ui.crop_rect, whole, "undo goes back to the default frame");
+    assert!(intercept(&mut app, "edit.redo").is_some());
+    assert_eq!(app.ui.crop_rect, drawn, "and redo still has the drawn frame");
 }
 
 #[test]
@@ -152,7 +193,7 @@ fn the_frame_is_edited_from_a_press_until_commit_cancel_or_another_tool() {
     assert!(shows_beyond_canvas(&app));
     crate::canvas::commit_crop(&mut app);
     ensure_frame(&mut app);
-    assert_eq!(app.ui.crop_rect, Some([0.0, 0.0, 50.0, 30.0]));
+    assert_eq!(app.ui.crop_rect, None, "no frame until the next press");
     assert!(!shows_beyond_canvas(&app));
     // Or until another tool is picked.
     drag(&mut app, &[[5.0, 5.0], [20.0, 20.0]], NONE);
@@ -872,7 +913,7 @@ fn enter_during_a_drag_ends_the_drag() {
     tool_event(&mut app, ToolEvent::Up { x: 60.0, y: 40.0 }, NONE);
     ensure_frame(&mut app);
     assert_eq!(app.session.active().unwrap().doc.size, Size::new(100, 50));
-    assert_eq!(app.ui.crop_rect, Some([0.0, 0.0, 100.0, 50.0]));
+    assert_eq!(app.ui.crop_rect, None);
     assert!(!pending(&app));
 }
 

@@ -716,6 +716,10 @@ fn a_recrop_handle_snaps_exactly_to_the_hidden_pixels_edge() {
                     let v = &mut app.ui.views[0];
                     (v.zoom, v.center, v.fit_pending, v.rotation) = (1.0, [50.0, 25.0], false, 0.0);
                     app.ui.extras.snap = true;
+                    // Re-picking the tool brings back the default frame the commit hid.
+                    app.ui.tool = Tool::Move;
+                    crate::crop_ui::ensure_frame(&mut app);
+                    app.ui.tool = Tool::Crop;
                     crate::crop_ui::ensure_frame(&mut app);
                     assert_eq!(app.ui.crop_rect, Some([0.0, 0.0, 100.0, 50.0]));
                     if ratio {
