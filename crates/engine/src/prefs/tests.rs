@@ -1127,3 +1127,27 @@ fn the_effect_cache_range_matches_the_honoured_budget() {
     assert!(check_value("performance.effectCacheMb", &json!(effect_cache_max_mb(small) + 1)).is_err());
     assert!(Performance::default().effect_cache_mb <= effect_cache_max_mb(true), "the default fits the 32-bit cap");
 }
+
+/// An Effect Cache the field no longer accepts loads as the nearest value it does: a 32-bit build
+/// took up to 65536 MB before its 1536 MB cap, and Apply from another Preferences tab sends every
+/// value, so the old one rejected the whole change. On every target: the helper for both kinds of
+/// build, and the load and Apply paths for this one.
+#[test]
+fn an_effect_cache_above_the_cap_loads_clamped_and_does_not_block_apply() {
+    let cap = WASM_MEMORY_USAGE_CAP_MB;
+    for (stored, small_mb, large_mb) in [(0, 16, 16), (768, 768, 768), (cap + 1, cap, cap + 1), (4096, cap, 4096), (65536, cap, 65536), (u32::MAX, cap, 65536)] {
+        assert_eq!(accepted_effect_cache_mb(stored, true), small_mb, "32-bit, {stored} MB");
+        assert_eq!(accepted_effect_cache_mb(stored, false), large_mb, "64-bit, {stored} MB");
+    }
+    let max = effect_cache_max_mb(SMALL_ADDRESS_SPACE);
+    for (saved, loaded) in [(u64::from(max) + 1, max), (u64::from(u32::MAX), max), (0, EFFECT_CACHE_MIN_MB), (768, 768)] {
+        let mut s = session();
+        let invalid = s.load_prefs_json(&json!({"performance": {"effectCacheMb": saved}}).to_string()).unwrap();
+        assert!(invalid.is_empty(), "{saved} MB reads, so it isn't reported: {invalid:?}");
+        assert_eq!(s.execute("prefs.get", json!({"path": "performance.effectCacheMb"})).unwrap(), json!(loaded), "{saved} MB");
+        let mut values = s.execute("prefs.get", json!({"path": ""})).unwrap();
+        values["fileHandling"]["recentFileCount"] = json!(7);
+        s.execute("prefs.set", json!({"path": "", "value": values})).unwrap();
+        assert_eq!(s.execute("prefs.get", json!({"path": "fileHandling.recentFileCount"})).unwrap(), json!(7), "{saved} MB");
+    }
+}

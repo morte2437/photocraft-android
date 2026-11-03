@@ -591,11 +591,18 @@ fn effect_cache_max_mb(small: bool) -> u32 {
     if small { WASM_MEMORY_USAGE_CAP_MB } else { 65536 }
 }
 
+/// The nearest Effect Cache the field accepts to a `stored` preference, in MB, on a build with a
+/// 32-bit address space (`small`) or not. Separate from the target check so native tests exercise
+/// both.
+fn accepted_effect_cache_mb(stored: u32, small: bool) -> u32 {
+    stored.clamp(EFFECT_CACHE_MIN_MB, effect_cache_max_mb(small))
+}
+
 /// The layer-effect cache budget a build honours for a `stored` preference, in bytes: within the
 /// range the field accepts, so a hand-edited 0 reports 16 MB, not 0. Separate from the target
 /// check so native tests exercise both.
 fn effect_cache_budget_bytes_for(stored: u32, small: bool) -> u64 {
-    u64::from(stored.clamp(EFFECT_CACHE_MIN_MB, effect_cache_max_mb(small))) << 20
+    u64::from(accepted_effect_cache_mb(stored, small)) << 20
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1480,7 +1487,11 @@ impl Session {
         let color = v.as_object_mut().and_then(|m| m.remove("colorSettings"));
         let presets = v.as_object_mut().and_then(|m| m.remove("presets"));
         let mut invalid = Vec::new();
-        let prefs: Preferences = read_lenient(v, &[], &mut invalid);
+        let mut prefs: Preferences = read_lenient(v, &[], &mut invalid);
+        // An Effect Cache the field no longer accepts (above the 32-bit cap, saved before the cap
+        // or by a 64-bit build; a hand-edited 0) loads as the nearest value it does. Otherwise
+        // Apply from another Preferences tab, which validates every value, would reject it.
+        prefs.performance.effect_cache_mb = accepted_effect_cache_mb(prefs.performance.effect_cache_mb, SMALL_ADDRESS_SPACE);
         if let Some(c) = color {
             self.color.settings = read_lenient(c, &["colorSettings"], &mut invalid);
             photocraft_compose::psblend::set_text_gamma(self.color.settings.blend_text_gamma);
