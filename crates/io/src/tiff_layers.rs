@@ -48,19 +48,64 @@ fn set_resource(resources: &mut Vec<ImageResource>, id: u16, data: Option<Vec<u8
     }
 }
 
-/// Opens a TIFF whose `img` carries Photoshop layer data in `layers` (its 37724 tag).
-pub(crate) fn import_layered(name: &str, img: &Image, layers: &[u8], pixel_limit: u64) -> Result<ImportResult, IoError> {
-    let mut warnings = Vec::new();
-    let (isd, w) = match ImageSourceData::from_bytes(layers) {
+/// Everything a layered TIFF page's Photoshop tags say, read before any pixel is decoded.
+///
+/// It is built from a [`codecs::TiffBands`] page's dimensions, layout, sample type,
+/// extra-sample count, metadata and decoder scratch bound, never from its pixels, so the whole
+/// import is admitted through the adaptive budget before the composite is decoded.
+pub(crate) struct LayeredPlan {
+    /// The PSD model the layer tag rebuilds, or `None` when the tag could not be read and the
+    /// page opens flattened.
+    model: Option<Box<LayeredModel>>,
+    /// Why the page opens flattened, when the layer tag did not parse.
+    flatten_warning: Option<String>,
+    /// Warnings the layer tag and the image resources produced.
+    warnings: Vec<String>,
+    /// Bytes this import needs beside what it already holds, for admission; see
+    /// [`layered_import_bytes`].
+    pub(crate) required: u64,
+    /// The part of `required` that is tile pixels, spillable to the scratch disk
+    /// ([`crate::psd_budget::PsdMemoryEstimate::tile_bytes`]); 0 for a flattened fallback, whose
+    /// admission charge is decode and conversion memory.
+    pub(crate) tiles: u64,
+}
+
+struct LayeredModel {
+    /// The PSD model with an empty merged image: the TIFF's pixels replace it after decoding.
+    file: photocraft_psd::PsdFile,
+}
+
+impl LayeredPlan {
+    /// Whether the page's layer tag parsed into a PSD model, as opposed to opening flattened.
+    ///
+    /// A flattened fallback still reads the page's image resources for channel names and spot
+    /// flags, so the decoder's copies stay available; a layered page's tags are already in the
+    /// plan and the decoder's copies can be dropped.
+    pub(crate) fn is_layered(&self) -> bool {
+        self.model.is_some()
+    }
+}
+
+/// Reads a layered TIFF page's layer tag and image resources into a [`LayeredPlan`] without
+/// decoding any pixels, and checks the group nesting depth and the PSD memory estimate.
+pub(crate) fn preflight(bands: &codecs::TiffBands<'_>) -> Result<LayeredPlan, IoError> {
+    let (w, h) = bands.dimensions();
+    let (layout, sample) = (bands.layout(), bands.sample_type());
+    let extras = bands.extra_samples();
+    let scratch = bands.decode_scratch_bytes();
+    let layers = bands.meta.photoshop_layers.as_deref().unwrap_or_default();
+    let (isd, isd_warnings) = match ImageSourceData::from_bytes(layers) {
         Ok(v) => v,
         Err(e) => {
-            let mut r = image_to_document(name, img)?;
-            r.warnings.push(format!("the PSD layer data could not be read ({e}); opened flattened"));
-            return Ok(r);
+            // Malformed layer data opens flat, but the composite it opens still has to be
+            // bounded: its whole-image decode and the conversion are admitted too.
+            let warning = format!("the PSD layer data could not be read ({e}); opened flattened");
+            let required = crate::flat::flattened_import_bytes(w, h, layout, sample, extras, scratch);
+            return Ok(LayeredPlan { model: None, flatten_warning: Some(warning), warnings: Vec::new(), required, tiles: 0 });
         }
     };
-    warnings.extend(w.into_iter().map(|w| format!("layer data: {w}")));
-    let (mut resources, w) = match img.meta.photoshop_resources.as_deref().filter(|r| !r.is_empty()).map(resources_from_bytes) {
+    let mut warnings: Vec<String> = isd_warnings.into_iter().map(|w| format!("layer data: {w}")).collect();
+    let (mut resources, resource_warnings) = match bands.meta.photoshop_resources.as_deref().filter(|r| !r.is_empty()).map(resources_from_bytes) {
         Some(Ok(v)) => v,
         Some(Err(e)) => {
             warnings.push(format!("the PSD image resources could not be read: {e}"));
@@ -68,44 +113,38 @@ pub(crate) fn import_layered(name: &str, img: &Image, layers: &[u8], pixel_limit
         }
         None => (Vec::new(), Vec::new()),
     };
-    warnings.extend(w.into_iter().map(|w| format!("image resources: {w}")));
-    // The profile, resolution, XMP and EXIF are the TIFF's own tags; they win over any copy
-    // in the resources.
-    set_resource(&mut resources, ids::ICC_PROFILE, img.icc.clone());
-    if let Some((x, y)) = img.meta.dpi.filter(|d| d.0 > 0.0) {
+    warnings.extend(resource_warnings.into_iter().map(|w| format!("image resources: {w}")));
+    // The profile, resolution, XMP and EXIF are the TIFF's own tags; they win over any copy in
+    // the resources. They are set here, from the page's metadata, because the model is complete
+    // before the composite exists.
+    set_resource(&mut resources, ids::ICC_PROFILE, bands.icc.clone());
+    if let Some((x, y)) = bands.meta.dpi.filter(|d| d.0 > 0.0) {
         // Both axes, so the PSD import notes a vertical resolution the document can't keep.
         let ri = ResolutionInfo { v_res_fixed: ResolutionInfo::from_dpi(f64::from(y)).v_res_fixed, ..ResolutionInfo::from_dpi(f64::from(x)) };
         set_resource(&mut resources, ids::RESOLUTION_INFO, Some(ri.to_bytes()));
     }
-    if let Some(xmp) = &img.meta.xmp {
+    if let Some(xmp) = &bands.meta.xmp {
         set_resource(&mut resources, ids::XMP, Some(xmp.as_bytes().to_vec()));
     }
-    if let Some(exif) = &img.meta.exif {
+    if let Some(exif) = &bands.meta.exif {
         set_resource(&mut resources, ids::EXIF, Some(exif.clone()));
     }
 
     // The TIFF's pixels become the PSD's merged image: planar, big-endian, CMYK inverted.
-    let (mode, color_channels) = match img.layout() {
-        ChannelLayout::Gray | ChannelLayout::GrayA => (PsdMode::Grayscale, 1),
-        ChannelLayout::Rgb | ChannelLayout::Rgba => (PsdMode::Rgb, 3),
-        ChannelLayout::Cmyk | ChannelLayout::CmykA => (PsdMode::Cmyk, 4),
-        ChannelLayout::Lab | ChannelLayout::LabA => (PsdMode::Lab, 3),
+    let mode = match layout {
+        ChannelLayout::Gray | ChannelLayout::GrayA => PsdMode::Grayscale,
+        ChannelLayout::Rgb | ChannelLayout::Rgba => PsdMode::Rgb,
+        ChannelLayout::Cmyk | ChannelLayout::CmykA => PsdMode::Cmyk,
+        ChannelLayout::Lab | ChannelLayout::LabA => PsdMode::Lab,
     };
-    let depth = match img.sample_type() {
+    let depth = match sample {
         CSample::U8 => 8,
         CSample::U16 => 16,
         CSample::F16 | CSample::F32 => 32,
     };
-    let (w, h) = img.dimensions();
-    // A half-float image is stored as 32-bit float; it is converted after the budget check, as
-    // the conversion allocates several times the decoded image.
-    let bps = if img.sample_type() == CSample::F16 { CSample::F32.bytes() } else { img.sample_type().bytes() };
-    let plane_len = (w as usize).saturating_mul(h as usize).saturating_mul(bps);
-    // The budget is checked on the model before the planar copy of the whole image is allocated,
-    // so an over-budget file is refused without it. The extra samples that fit the image count
-    // towards the channels the check sees.
-    let extras = img.meta.extra_samples.iter().take(codecs::MAX_EXTRA_SAMPLES).filter(|e| e.data.len() == plane_len).count();
-    let channels = u16::try_from(img.layout().channels().saturating_add(extras)).map_err(|_| IoError::Unsupported("too many channels".into()))?;
+    // The extra samples that fit the image count towards the channels the estimate sees; the
+    // codec already capped them at [`codecs::MAX_EXTRA_SAMPLES`].
+    let channels = u16::try_from(layout.channels().saturating_add(extras)).map_err(|_| IoError::Unsupported("too many channels".into()))?;
     let header = Header::new(isd.version, w, h, channels, depth, mode);
     let mut file = isd.into_psd(header, resources, ImageData::new(Compression::Raw, Vec::new()));
     // Empty `Patt` and the default filter mask are written so Photoshop's block list matches
@@ -118,13 +157,73 @@ pub(crate) fn import_layered(name: &str, img: &Image, layers: &[u8], pixel_limit
     });
     // The same nesting limit as opening a PSD (#2940).
     crate::psd_import::check_group_depth(&file)?;
-    // The planar composite is copied whether or not the budget counts a merged image, so it is
-    // held against the allowance as well.
-    let composite = u64::try_from(plane_len.saturating_mul(usize::from(channels))).unwrap_or(u64::MAX);
-    if composite > pixel_limit {
-        return Err(photocraft_psd::PsdError::LimitExceeded("the TIFF composite exceeds the import allowance").into());
-    }
-    crate::psd_budget::check(&file, pixel_limit - composite)?;
+    // Layer/mask/merged pixel planes and their conversion workspace, from the tag alone.
+    let est = crate::psd_budget::estimate(&file)?;
+    // The decoder makes its own copy of the two Photoshop tags while decoding. The plan's
+    // copies are already made and are bounded by the file, not by the image size.
+    let tags = layers.len().saturating_add(bands.meta.photoshop_resources.as_ref().map_or(0, |r| r.len()));
+    let required = layered_import_bytes(est.total_bytes, w, h, layout.channels(), sample, extras, scratch, tags);
+    Ok(LayeredPlan { model: Some(Box::new(LayeredModel { file })), flatten_warning: None, warnings, required, tiles: est.tile_bytes })
+}
+
+/// Bytes a layered TIFF import needs beyond [`crate::psd_budget::estimate`]'s layer, mask,
+/// merged and workspace charge:
+///
+/// - the decoded composite and its extra-sample planes: the decoder holds the interleaved extra
+///   buffer and one split plane per sample at once;
+/// - for a 16-bit float page, the normalized and 32-bit copies the conversion makes while the
+///   16-bit image and its planes are still alive;
+/// - the planar big-endian merged-image copy, with one extra plane copied while it grows;
+/// - the decoder's own scratch buffers (see [`codecs::TiffBands::decode_scratch_bytes`]);
+/// - the decoder's copy of the Photoshop tags.
+///
+/// Every term saturates instead of wrapping: an estimate too large for `u64` is the `u64::MAX`
+/// sentinel, which admission always refuses (see [`crate::memory::MemoryBudget::decide`]), so it
+/// can never become an admitted, wrapped-around value.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn layered_import_bytes(est: u64, w: u32, h: u32, channels: usize, sample: CSample, extras: usize, scratch: u64, tags: usize) -> u64 {
+    let pixels = u64::from(w).saturating_mul(u64::from(h));
+    let ch = channels as u64;
+    let e = extras as u64;
+    let in_bps = sample.bytes() as u64;
+    let out_bps = if sample == CSample::F16 { CSample::F32.bytes() as u64 } else { in_bps };
+    let decoded = pixels.saturating_mul(ch.saturating_add(e.saturating_mul(2))).saturating_mul(in_bps);
+    // A normalized 32-bit buffer and the 32-bit result exist beside the 16-bit source.
+    let float_convert = if sample == CSample::F16 { pixels.saturating_mul(ch.saturating_add(e)).saturating_mul(8) } else { 0 };
+    let planar = pixels.saturating_mul(ch.saturating_add(e)).saturating_mul(out_bps);
+    let plane = if e > 0 { pixels.saturating_mul(out_bps) } else { 0 };
+    est.saturating_add(decoded).saturating_add(float_convert).saturating_add(planar).saturating_add(plane).saturating_add(scratch).saturating_add(tags as u64)
+}
+
+/// Opens a layered TIFF page from its decoded `img`, using the model and estimate [`preflight`]
+/// read from the same page's tags.
+///
+/// The caller has admitted `plan.required` through the adaptive budget and holds decode
+/// admission before any pixel is decoded, so nothing here resolves a second budget or charges
+/// the enclosing attempt again: a top-level TIFF is charged once, and a nested independent one
+/// spends only what its parent still has. `ctl` stops the PSD conversion between layers.
+pub(crate) fn import_layered(name: &str, img: &Image, plan: LayeredPlan, ctl: &photocraft_raster::Interrupt) -> Result<ImportResult, IoError> {
+    let LayeredPlan { model, flatten_warning, mut warnings, required: _, tiles: _ } = plan;
+    let Some(model) = model else {
+        let mut r = image_to_document(name, img)?;
+        if let Some(warning) = flatten_warning {
+            r.warnings.push(warning);
+        }
+        return Ok(r);
+    };
+    let LayeredModel { mut file } = *model;
+    let mode = match img.layout() {
+        ChannelLayout::Gray | ChannelLayout::GrayA => PsdMode::Grayscale,
+        ChannelLayout::Rgb | ChannelLayout::Rgba => PsdMode::Rgb,
+        ChannelLayout::Cmyk | ChannelLayout::CmykA => PsdMode::Cmyk,
+        ChannelLayout::Lab | ChannelLayout::LabA => PsdMode::Lab,
+    };
+    let color_channels = img.layout().color_channels();
+    // A half-float image is stored as 32-bit float; it is converted here, after admission, as
+    // the conversion allocates several times the decoded image (charged by the estimate).
+    let bps = if img.sample_type() == CSample::F16 { CSample::F32.bytes() } else { img.sample_type().bytes() };
+    let (w, h) = img.dimensions();
+    let plane_len = (w as usize).saturating_mul(h as usize).saturating_mul(bps);
     let img = if img.sample_type() == CSample::F16 {
         warnings.push("16-bit float samples are stored as 32-bit float".to_string());
         std::borrow::Cow::Owned(img.convert(img.layout(), CSample::F32))
@@ -149,11 +248,11 @@ pub(crate) fn import_layered(name: &str, img: &Image, layers: &[u8], pixel_limit
     // Spot planes are read in Photoshop's polarity (0 = solid ink), as from a PSD. The importer's
     // rule for PSDs from earlier PhotoCraft versions never applies: those versions stored no
     // extra samples in a TIFF, and a TIFF with them carries 1053.
-    let (mut doc, w, _, fatal_error) = psd_to_document_owned(file, &photocraft_raster::Interrupt::NONE, None).ok_or(IoError::Cancelled)?;
+    let (mut doc, psd_warnings, _, fatal_error) = psd_to_document_owned(file, ctl, None).ok_or(IoError::Cancelled)?;
     if let Some(error) = fatal_error {
         return Err(error);
     }
-    warnings.extend(w);
+    warnings.extend(psd_warnings);
     doc.name = name.to_string();
     if doc.icc_profile.is_none() {
         doc.icc_profile = img.icc.clone().map(Arc::new);
@@ -256,11 +355,13 @@ pub(crate) fn export_layered(doc: &Document, opts: &ExportOptions, ctl: &photocr
     // on the encoded file size is not used here: PSB-style data is written only past 30000 px,
     // when asked for, or when a length really overflows 32 bits.
     let user_channels = !doc.channels.is_empty() || doc.quick_mask.is_some();
+    // Save Transparency (see `ExportOptions::tiff_transparency`): off, the composite is matted.
+    let save_transparency = opts.tiff_transparency.unwrap_or(!user_channels);
     let force_psb = opts.force_psb || big;
     let psd_opts = PsdExportOptions {
         force_psb,
         size_limit_psb: false,
-        merged_matte: user_channels,
+        merged_matte: !save_transparency,
         merged_compression: Compression::Raw,
         maximize_compatibility: true,
         document_path: opts.document_path.clone(),
@@ -282,7 +383,10 @@ pub(crate) fn export_layered(doc: &Document, opts: &ExportOptions, ctl: &photocr
     ctl.check().map_err(|_| IoError::Cancelled)?;
     warnings.extend(w);
     let order = if codecs::tiff_writes_little_endian() { ByteOrder::Little } else { ByteOrder::Big };
-    let (layers, w) = match tiff_image_source(doc, &file).to_bytes(order) {
+    let mut has_alpha = file.layer_info.as_ref().is_some_and(|l| l.merged_alpha);
+    // The layers move out of the model rather than being copied, and are freed once written
+    // (#6607); the model keeps its header, resources and composite for the image below.
+    let (layers, w) = match tiff_image_source(doc, &mut file, save_transparency && has_alpha).into_bytes(order) {
         Err(photocraft_psd::PsdError::LimitExceeded(_)) if !force_psb => {
             let psb_opts = PsdExportOptions { force_psb: true, ..psd_opts };
             let (psb, w) = crate::with_span(ctl, 0.0, TIFF_MODEL_DONE, |ctl| crate::psd_export::document_to_psd_interruptible(doc, &psb_opts, ctl));
@@ -290,7 +394,8 @@ pub(crate) fn export_layered(doc: &Document, opts: &ExportOptions, ctl: &photocr
             warnings.extend(w);
             warnings.push("layer data exceeds 4 GB; written with PSB-sized lengths, which some readers do not open".into());
             file = psb;
-            tiff_image_source(doc, &file).to_bytes(order)?
+            has_alpha = file.layer_info.as_ref().is_some_and(|l| l.merged_alpha);
+            tiff_image_source(doc, &mut file, save_transparency && has_alpha).into_bytes(order)?
         }
         r => r?,
     };
@@ -304,26 +409,28 @@ pub(crate) fn export_layered(doc: &Document, opts: &ExportOptions, ctl: &photocr
 
     let fmt = doc.pixel_format();
     let cc = fmt.mode.color_channels();
-    let has_alpha = file.layer_info.as_ref().is_some_and(|l| l.merged_alpha);
     let channels = cc + usize::from(has_alpha);
     let extra_n = usize::from(file.header.channels).saturating_sub(channels);
     let kept = extra_n.min(codecs::MAX_EXTRA_SAMPLES);
     if extra_n > kept {
         warnings.push(format!("{extra_n} extra channels; TIFF keeps the first {kept}"));
     }
-    // With spot or alpha channels, the IFD image is colour + those channels. The merged
-    // transparency plane stays out of the IFD (see above); a file with no extra channels keeps
-    // it, so a plain transparent TIFF still opens with alpha.
-    let write_alpha = has_alpha && kept == 0;
+    // The IFD image is colour, then the transparency with Save Transparency on, then the spot and
+    // alpha channels. With it on, the samples are the PSD merged image's channels in order, so
+    // the PSD model's channel resources (which list the transparency first) are kept as they are.
+    let write_alpha = has_alpha && save_transparency;
     // One identifier per extra sample actually stored. The PSD model's 1053 lists the merged
-    // transparency too, which the IFD leaves out next to extra samples, so it is not copied.
-    resources.retain(|r| r.id != crate::channel_map::ALPHA_IDENTIFIERS);
-    if kept > 0 {
-        resources.push(ImageResource::new(crate::channel_map::ALPHA_IDENTIFIERS, crate::channel_map::alpha_identifiers(false, kept)));
+    // transparency too, which the IFD leaves out without it, so it is not copied then.
+    if !write_alpha {
+        resources.retain(|r| r.id != crate::channel_map::ALPHA_IDENTIFIERS);
+        if kept > 0 {
+            resources.push(ImageResource::new(crate::channel_map::ALPHA_IDENTIFIERS, crate::channel_map::alpha_identifiers(false, kept)));
+        }
     }
     // Resource 1022 names a channel of the PSD merged image, which counts the transparency plane.
-    // The IFD below does not, so the id moves back by one.
+    // An IFD without it does not, so the id moves back by one.
     if has_alpha
+        && !write_alpha
         && kept > 0
         && let Some(r) = resources.iter_mut().find(|r| r.id == crate::channel_map::QUICK_MASK_INFO)
         && r.data.len() >= 2
@@ -341,8 +448,10 @@ pub(crate) fn export_layered(doc: &Document, opts: &ExportOptions, ctl: &photocr
     }
     // Past MAX_EXTRA_SAMPLES the TIFF stores only the first `kept` channels: the name and
     // DisplayInfo resources describe just those, and a Quick Mask among the rest is dropped.
+    // With the transparency written, those lists hold it ahead of the channels, and the
+    // channels sit one sample later in the IFD.
     if extra_n > kept {
-        keep_first_channels(&mut resources, kept, cc);
+        keep_first_channels(&mut resources, kept + usize::from(write_alpha), cc);
     }
     let resources = resources_to_bytes(&resources)?;
     let ifd_channels = cc + usize::from(write_alpha);
@@ -351,6 +460,8 @@ pub(crate) fn export_layered(doc: &Document, opts: &ExportOptions, ctl: &photocr
     let cmyk = fmt.mode == ColorMode::Cmyk;
     let data = interleave(&file.image_data.data, w, h, ifd_channels, cc, sample, cmyk)?;
     let extras = native_extra_planes(&file.image_data.data, w, h, channels, kept, sample)?;
+    // Likewise the planar composite, now interleaved.
+    drop(file);
     ctl.check().map_err(|_| IoError::Cancelled)?;
     ctl.progress(TIFF_COMPOSITE_DONE);
     let layout = layout_for(fmt.mode, write_alpha);
@@ -373,26 +484,35 @@ pub(crate) fn export_layered(doc: &Document, opts: &ExportOptions, ctl: &photocr
 }
 
 /// The layer data (`ImageSourceData`) of a layered TIFF saved from `file`, adjusted the way
-/// Photoshop writes it.
-fn tiff_image_source(doc: &Document, file: &photocraft_psd::PsdFile) -> ImageSourceData {
+/// Photoshop writes it. The layers, global mask and global blocks move out of `file` (the
+/// export's own model), which keeps its header, resources and merged image. `ifd_alpha`: the
+/// composite in the IFD keeps its transparency as the first extra sample (Save Transparency).
+fn tiff_image_source(doc: &Document, file: &mut photocraft_psd::PsdFile, ifd_alpha: bool) -> ImageSourceData {
     // Photoshop pairs alpha-name resources with samples past the colour channels and ignores
-    // the ExtraSamples kind. The merged transparency must not occupy that first slot when a
-    // spot is also stored. Layer transparency stays in each layer's channel −1.
-    let mut isd = ImageSourceData::from_psd(file);
+    // the ExtraSamples kind. Layer transparency stays in each layer's channel −1.
     let spot_extras = file.header.channels as usize > {
         let cc = doc.pixel_format().mode.color_channels();
         let alpha = file.layer_info.as_ref().is_some_and(|l| l.merged_alpha);
         cc + usize::from(alpha)
     };
-    // Positive layer count: the merged image's first extra sample is not transparency
-    // (Photoshop's own spot TIFF does this; a negative count would claim the spot plane is alpha).
-    if spot_extras && let Some(info) = &mut isd.layer_info {
-        info.merged_alpha = false;
-    }
-    // A merged-transparency marker kept from an opened file (Photoshop's `MTrn`) would make the
-    // first spot read back as transparency. The PSD export already drops it over an opaque
-    // composite; a transparent one keeps it there, but the TIFF leaves that sample out here.
-    if spot_extras {
+    let mut isd = ImageSourceData::take_from_psd(file);
+    if ifd_alpha && spot_extras {
+        // Save Transparency next to spot or alpha channels, as Photoshop (27.11) writes it: a
+        // positive layer count and an `MTrn` block first in the layer data mark the first extra
+        // sample as the merged transparency.
+        if let Some(info) = &mut isd.layer_info {
+            info.merged_alpha = false;
+        }
+    } else if !ifd_alpha {
+        // Positive layer count: the merged image's first extra sample, if any, is not
+        // transparency (Photoshop's own spot TIFF does this; a negative count would claim the
+        // spot plane is alpha).
+        if let Some(info) = &mut isd.layer_info {
+            info.merged_alpha = false;
+        }
+        // A merged-transparency marker kept from an opened file (Photoshop's `MTrn`) would make
+        // the first spot read back as transparency. The PSD export already drops it over an
+        // opaque composite; a transparent one keeps it there, but the IFD leaves that sample out.
         isd.global_blocks.retain(|b| !b.is_merged_transparency_marker());
     }
     if let Some(info) = &mut isd.layer_info {
@@ -417,6 +537,10 @@ fn tiff_image_source(doc: &Document, file: &photocraft_psd::PsdFile) -> ImageSou
     }
     if !isd.global_blocks.iter().any(|b| &b.key == b"FMsk") {
         isd.global_blocks.push(photocraft_psd::TaggedBlock::new(*b"FMsk", FILTER_MASK_DEFAULT.to_vec()));
+    }
+    // Photoshop writes the marker first, ahead of `Patt`.
+    if ifd_alpha && spot_extras && !isd.global_blocks.iter().any(|b| b.is_merged_transparency_marker()) {
+        isd.global_blocks.insert(0, photocraft_psd::TaggedBlock::new(*b"MTrn", Vec::new()));
     }
     isd
 }
@@ -691,7 +815,11 @@ fn matte_and_drop_alpha(img: &mut Image) -> bool {
     let white_f: f32 = if cmyk { 0.0 } else { 1.0 };
     // Lab's white is L* 100 with a* and b* 0, which PhotoCraft holds mid-range (`(0 + 128) / 255`).
     let lab = img.layout().is_lab();
-    let mut out = Vec::with_capacity(img.data().len() / stride * keep);
+    // Out of memory keeps the transparency (the caller warns) rather than aborting the app.
+    let mut out = Vec::new();
+    if out.try_reserve_exact(img.data().len() / stride * keep).is_err() {
+        return false;
+    }
     for px in img.data().chunks_exact(stride) {
         let Some(color) = px.get(..keep) else { return false };
         let Some(alpha) = px.get(keep..keep.saturating_add(bps)) else { return false };
@@ -800,12 +928,27 @@ fn ne_f32(b: &[u8]) -> Option<f32> {
     Some(f32::from_ne_bytes(arr))
 }
 
+/// A flat TIFF's composite under Save Transparency (`ExportOptions::tiff_transparency`), then
+/// its alpha and spot channels ([`stamp_flat_channels`]). Off, the image is matted over white
+/// and keeps no transparency; on, it keeps it next to the channels; unset, it keeps it only
+/// when there are no channels.
+pub(crate) fn flat_transparency_and_channels(doc: &Document, img: &mut Image, save_transparency: Option<bool>) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if save_transparency == Some(false) && img.layout().has_alpha() && !matte_and_drop_alpha(img) {
+        warnings.push("the image transparency could not be composited over white and was kept".into());
+    }
+    warnings.extend(stamp_flat_channels(doc, img, save_transparency == Some(true)));
+    warnings
+}
+
 /// Writes alpha and spot channels (and a Quick Mask) into a flat TIFF: extra samples in the
 /// IFD, plus Photoshop resources for the name, ink colour and solidity. At most
 /// [`codecs::MAX_EXTRA_SAMPLES`] are kept. A TIFF with no extra channels is left unchanged.
 /// When any are written, the composite's own transparency is left out of the IFD: readers pair
 /// the channel resources with every sample past the colour channels, in order.
-pub(crate) fn stamp_flat_channels(doc: &Document, img: &mut Image) -> Vec<String> {
+/// `keep_transparency` (Save Transparency on) keeps the composite's transparency as the first
+/// extra sample, ahead of the channels; off, the image is matted over white first.
+pub(crate) fn stamp_flat_channels(doc: &Document, img: &mut Image, keep_transparency: bool) -> Vec<String> {
     let total = doc.channels.len().saturating_add(usize::from(doc.quick_mask.is_some()));
     if total == 0 {
         return Vec::new();
@@ -848,7 +991,7 @@ pub(crate) fn stamp_flat_channels(doc: &Document, img: &mut Image) -> Vec<String
     // alpha plane is not an extra sample (it would be named as the first spot). The
     // composite transparency is gone after this; say so, because the user did not pick
     // that option themselves.
-    if img.layout().has_alpha() {
+    if img.layout().has_alpha() && !keep_transparency {
         if !matte_and_drop_alpha(img) {
             warnings.push("extra channels were not written: the composite transparency could not be separated from them".into());
             return warnings;
@@ -858,8 +1001,14 @@ pub(crate) fn stamp_flat_channels(doc: &Document, img: &mut Image) -> Vec<String
                 .into(),
         );
     }
-    let quick_id = if quick_last { u16::try_from(color_channels.saturating_add(picked.len()).saturating_sub(1)).ok() } else { None };
-    match channel_resources(img.meta.photoshop_resources.as_deref(), &names, &picked, quick_id) {
+    // Resource 1022 counts every sample past the colour channels, the transparency included.
+    let first = color_channels.saturating_add(usize::from(img.layout().has_alpha()));
+    let quick_id = if quick_last { u16::try_from(first.saturating_add(picked.len()).saturating_sub(1)).ok() } else { None };
+    // Save Transparency on: the transparency is the first extra sample, and Photoshop pairs the
+    // channel resources with every sample past the colour channels, so they list it first
+    // ("Transparency"), as the layered path and the PSD writer do.
+    let transparency = img.layout().has_alpha();
+    match channel_resources(img.meta.photoshop_resources.as_deref(), &names, &picked, quick_id, transparency) {
         Ok(bytes) => img.meta.photoshop_resources = Some(bytes),
         Err(e) => warnings.push(format!("spot channel options were not written to the TIFF: {e}")),
     }
@@ -868,7 +1017,13 @@ pub(crate) fn stamp_flat_channels(doc: &Document, img: &mut Image) -> Vec<String
 }
 
 /// Existing Photoshop resources with the channel-name, display-info and quick-mask blocks replaced.
-fn channel_resources(existing: Option<&[u8]>, names: &[&str], channels: &[&AlphaChannel], quick_id: Option<u16>) -> Result<Vec<u8>, IoError> {
+fn channel_resources(
+    existing: Option<&[u8]>,
+    names: &[&str],
+    channels: &[&AlphaChannel],
+    quick_id: Option<u16>,
+    transparency: bool,
+) -> Result<Vec<u8>, IoError> {
     let mut resources = match existing.filter(|b| !b.is_empty()) {
         Some(b) => resources_from_bytes(b)?.0,
         None => Vec::new(),
@@ -876,10 +1031,11 @@ fn channel_resources(existing: Option<&[u8]>, names: &[&str], channels: &[&Alpha
     resources.retain(|r| {
         !matches!(r.id, 1006 | 1045 | crate::channel_map::DISPLAY_INFO | crate::channel_map::QUICK_MASK_INFO | crate::channel_map::ALPHA_IDENTIFIERS)
     });
-    resources.push(ImageResource::new(1006, crate::psd_export::pascal_names_resource(names)));
-    resources.push(ImageResource::new(1045, crate::psd_export::unicode_names_resource(names)));
-    resources.push(ImageResource::new(crate::channel_map::DISPLAY_INFO, crate::channel_map::display_info(channels, false)));
-    resources.push(ImageResource::new(crate::channel_map::ALPHA_IDENTIFIERS, crate::channel_map::alpha_identifiers(false, names.len())));
+    let listed: Vec<&str> = transparency.then_some("Transparency").into_iter().chain(names.iter().copied()).collect();
+    resources.push(ImageResource::new(1006, crate::psd_export::pascal_names_resource(&listed)));
+    resources.push(ImageResource::new(1045, crate::psd_export::unicode_names_resource(&listed)));
+    resources.push(ImageResource::new(crate::channel_map::DISPLAY_INFO, crate::channel_map::display_info(channels, transparency)));
+    resources.push(ImageResource::new(crate::channel_map::ALPHA_IDENTIFIERS, crate::channel_map::alpha_identifiers(transparency, names.len())));
     if let Some(id) = quick_id {
         let mut data = id.to_be_bytes().to_vec();
         data.push(0);
@@ -990,7 +1146,7 @@ mod tests {
     use photocraft_doc::{Color, Document, Fill, FillCache, Layer, LayerContent};
     use photocraft_raster::Surface;
 
-    use crate::{ExportOptions, export};
+    use crate::{ExportOptions, ImportOptions, IoError, export};
 
     /// Hidden solid fills on a 2048² canvas: counted as canvas-sized planes (16 MiB each at 8
     /// bits), 140 of them pass 2 GB, while their real pixels (the cached rendering, pruned to
@@ -1007,6 +1163,30 @@ mod tests {
             doc.layers.push(l);
         }
         doc
+    }
+
+    /// A small two-layer RGB document exported as a TIFF with Photoshop layer data: the real
+    /// file the admission tests below import. No fixture is decoded at a size near a threshold.
+    fn layered_tiff(w: u32, h: u32) -> Vec<u8> {
+        let mut doc = Document::new("charge.tif", photocraft_geom::Size::new(w, h), photocraft_color::ColorMode::Rgb, photocraft_color::SampleType::U8);
+        let fmt = doc.pixel_format();
+        let bytes = (w as usize * h as usize * fmt.bytes_per_pixel()).max(1);
+        for name in ["bottom", "top"] {
+            let mut s = Surface::new(fmt);
+            s.write_interleaved(photocraft_geom::Rect::new(0, 0, w as i32, h as i32), &vec![96u8; bytes]);
+            doc.layers.push(Layer::new(name, LayerContent::Raster(s)));
+        }
+        export(&doc, "charge.tif", &ExportOptions { tiff_layers: true, ..Default::default() }).expect("export layered TIFF").bytes
+    }
+
+    /// The bytes of the layered TIFF's decoded composite: the size of both the planar copy the
+    /// importer builds and the interleaved image it keeps beside it.
+    fn composite_bytes(bytes: &[u8]) -> u64 {
+        let img = photocraft_codecs::decode_with(bytes, &photocraft_codecs::DecodeOptions { keep_orientation: true, ..Default::default() })
+            .expect("decode the composite");
+        let (w, h) = img.dimensions();
+        let sample = u64::try_from(img.sample_type().bytes()).unwrap_or(1);
+        u64::from(w).saturating_mul(u64::from(h)).saturating_mul(sample).saturating_mul(img.layout().channels() as u64)
     }
 
     #[test]
@@ -1032,5 +1212,338 @@ mod tests {
         let r = export(&doc, "x.tif", &ExportOptions { tiff_layers: true, force_psb: true, ..Default::default() }).unwrap();
         let (_, layers) = photocraft_codecs::tiff_photoshop_tags(&r.bytes);
         assert!(layers.unwrap().starts_with(photocraft_psd::tiff::SIGNATURE_PSB));
+    }
+
+    /// The adaptive budget, not only the caller's pixel limit, decides a layered TIFF: a known
+    /// zero reading refuses the import before the planar composite is allocated, while a normal
+    /// machine opens the same file. Before this route the fixed 2 GiB default admitted it.
+    #[test]
+    fn layered_tiff_import_honours_a_known_zero_adaptive_budget() {
+        let bytes = layered_tiff(8, 6);
+        let zero = crate::memory::MemorySnapshot { available_ram: Some(0), swap_free: None, commit_headroom: None };
+        crate::memory::with_mock_memory(zero, || match crate::import_with_options("zero.tif", &bytes, &ImportOptions::default()) {
+            Err(IoError::PsdImportBudget { limit: 0, .. }) => {}
+            other => panic!("expected an import-budget refusal, got {other:?}"),
+        });
+
+        let plenty = crate::memory::MemorySnapshot { available_ram: Some(16 << 30), swap_free: None, commit_headroom: None };
+        crate::memory::with_mock_memory(plenty, || {
+            let opened = crate::import_with_options("plenty.tif", &bytes, &ImportOptions::default()).expect("a normal machine opens it");
+            assert_eq!(opened.document.layers.len(), 2);
+        });
+    }
+
+    /// Approval and its estimate bound reach the TIFF route: the same options that a PSD takes
+    /// decide the layered TIFF's composite, layer and retained-image charge. The fixture is tiny;
+    /// the threshold charge is a thread-local test seam, so nothing near a gigabyte is allocated.
+    #[test]
+    fn layered_tiff_import_uses_the_adaptive_budget_approval_options() {
+        if cfg!(any(target_arch = "wasm32", target_pointer_width = "32")) {
+            return;
+        }
+        let gb = 1u64 << 30;
+        let bytes = layered_tiff(8, 6);
+        // 12 GiB: S = 6 GiB, H = 9 GiB.
+        let snapshot = crate::memory::MemorySnapshot { available_ram: Some(12 * gb), swap_free: None, commit_headroom: None };
+        crate::memory::with_mock_memory(snapshot, || {
+            let plain = crate::import_with_options("l.tif", &bytes, &ImportOptions::default()).expect("automatic").document.layers.len();
+            crate::psd_budget::with_test_estimate_charge(7 * gb, || {
+                let required = match crate::import_with_options("l.tif", &bytes, &ImportOptions::default()) {
+                    Err(IoError::PsdApprovalRequired { required, soft_limit, hard_limit, available_ram }) => {
+                        assert_eq!((soft_limit, hard_limit), (6 * gb, 9 * gb));
+                        assert_eq!(available_ram, Some(12 * gb));
+                        required
+                    }
+                    other => panic!("expected an approval request, got {other:?}"),
+                };
+                assert!((7 * gb..=9 * gb).contains(&required), "the charge lands in the approval band: {required}");
+
+                // Approval opens the same file.
+                let approved = ImportOptions { psd_high_memory_approved: true, ..Default::default() };
+                assert_eq!(crate::import_with_options("l.tif", &bytes, &approved).expect("approved").document.layers.len(), plain);
+                // A matching one-shot estimate bound is enough; a smaller one needs fresh consent.
+                let bounded = ImportOptions { psd_high_memory_approved: true, psd_approved_estimate: Some(required), ..Default::default() };
+                assert!(crate::import_with_options("l.tif", &bytes, &bounded).is_ok());
+                let stale = ImportOptions { psd_high_memory_approved: true, psd_approved_estimate: Some(required - 1), ..Default::default() };
+                assert!(matches!(crate::import_with_options("l.tif", &bytes, &stale), Err(IoError::PsdApprovalRequired { .. })));
+                // Approval never bypasses a lower caller limit.
+                let lowered = ImportOptions { psd_high_memory_approved: true, psd_max_pixel_bytes: required - 1, ..Default::default() };
+                assert!(matches!(
+                    crate::import_with_options("l.tif", &bytes, &lowered),
+                    Err(IoError::PsdImportBudget { required: r, limit: l }) if r == required && l == required - 1
+                ));
+            });
+        });
+    }
+
+    /// A real nested layered TIFF spends the enclosing attempt's remaining allowance: the charge
+    /// covers the planar composite and the decoded image kept beside it, and a refused nested
+    /// import neither waits for a fresh gate nor resets the parent's budget.
+    #[test]
+    fn real_nested_layered_tiff_import_is_charged_without_resetting_the_parent() {
+        let bytes = layered_tiff(8, 6);
+        let composite = composite_bytes(&bytes);
+        assert!(composite > 0);
+        let ctl = photocraft_raster::Interrupt::NONE;
+
+        let _guard = crate::psd_gate::acquire_decode_admission(&ctl).expect("parent admission");
+        let start = 1u64 << 40;
+        crate::psd_gate::set_active_attempt_budget(start);
+        crate::import_with_options_and_interrupt("charge.tif", &bytes, &ImportOptions::default(), &ctl).expect("nested import");
+        let remaining = crate::psd_gate::active_attempt_remaining().expect("the parent attempt keeps an allowance");
+        let charged = start - remaining;
+        assert!(
+            charged >= composite.saturating_mul(2),
+            "both the planar composite ({composite}) and the decoded image kept beside it are charged; charged {charged}"
+        );
+        assert!(crate::psd_gate::is_holding_admission(), "the nested import must not release the parent's admission");
+
+        // One byte short: the real import is refused, the reason is the charge, and the parent's
+        // remaining allowance is untouched.
+        crate::psd_gate::set_active_attempt_budget(charged - 1);
+        match crate::import_with_options_and_interrupt("charge.tif", &bytes, &ImportOptions::default(), &ctl) {
+            Err(IoError::PsdImportBudget { required, limit }) => assert_eq!((required, limit), (charged, charged - 1)),
+            other => panic!("expected an import-budget refusal, got {other:?}"),
+        }
+        assert_eq!(crate::psd_gate::active_attempt_remaining(), Some(charged - 1), "a failed nested import leaves the allowance as it was");
+
+        // Exactly enough succeeds and leaves nothing, so the charge is not reset per attempt.
+        crate::psd_gate::set_active_attempt_budget(charged);
+        crate::import_with_options_and_interrupt("charge.tif", &bytes, &ImportOptions::default(), &ctl).expect("exact allowance");
+        assert_eq!(crate::psd_gate::active_attempt_remaining(), Some(0));
+    }
+
+    /// A cancelled job stops waiting for the PSD decode gate: the interrupt reaches the layered
+    /// TIFF's gate wait, so it does not block behind another decode until that one finishes.
+    #[test]
+    fn cancelled_layered_tiff_import_stops_waiting_for_the_gate() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::{Duration, Instant};
+
+        let bytes = layered_tiff(8, 6);
+        let snapshot = crate::memory::MemorySnapshot { available_ram: Some(32 << 30), swap_free: None, commit_headroom: None };
+        let _guard = crate::psd_gate::acquire_decode_admission(&photocraft_raster::Interrupt::NONE).expect("active decode");
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let prechecked = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        let handle = {
+            let cancel = Arc::clone(&cancel);
+            let prechecked = Arc::clone(&prechecked);
+            std::thread::spawn(move || {
+                let provider = std::rc::Rc::new(move || {
+                    prechecked.store(true, Ordering::SeqCst);
+                    snapshot
+                });
+                let cancelled = move || cancel.load(Ordering::SeqCst);
+                let progress = |_: f32| {};
+                let ctl = photocraft_raster::Interrupt::new(&cancelled, &progress);
+                let result = crate::memory::with_mock_memory_provider(provider, || {
+                    crate::import_with_options_and_interrupt("cancel.tif", &bytes, &ImportOptions::default(), &ctl)
+                });
+                tx.send(result.map(|r| r.document.layers.len())).ok();
+            })
+        };
+
+        // The provider's first call is the precheck, which happens before the gate wait.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !prechecked.load(Ordering::SeqCst) {
+            assert!(Instant::now() < deadline, "the import never reached its admission precheck");
+            std::thread::yield_now();
+        }
+        cancel.store(true, Ordering::SeqCst);
+
+        // This thread still holds the gate, so the only way to answer is to abort the wait.
+        let result = rx.recv_timeout(Duration::from_secs(10)).expect("a cancelled import must stop waiting for the gate");
+        match result {
+            Err(IoError::Cancelled) => {}
+            other => panic!("expected the cancelled import to fail, got {other:?}"),
+        }
+
+        drop(_guard);
+        handle.join().expect("worker thread");
+    }
+
+    /// The estimate covers what the layered import holds besides the PSD layer model: the
+    /// decoded composite, the planar merged copy, the decoder's extra-sample planes and scratch,
+    /// the tags it copies, and a half-float conversion's extra buffers.
+    #[test]
+    fn layered_estimate_counts_decode_conversion_extras_and_scratch() {
+        use photocraft_codecs::SampleType as S;
+        // 100 × 50 px, RGB, 8-bit, no extras: the decoded image plus the planar copy.
+        let pixels = 100u64 * 50;
+        assert_eq!(super::layered_import_bytes(0, 100, 50, 3, S::U8, 0, 0, 0), 2 * pixels * 3);
+        // Two extra samples add their interleaved buffer, their split planes and one big-endian
+        // plane copied into the merged image.
+        assert_eq!(super::layered_import_bytes(0, 100, 50, 3, S::U8, 2, 0, 0), pixels * 13);
+        // A half-float page is converted: the 16-bit image and planes stay alive beside the
+        // normalized 32-bit buffer and the 32-bit result.
+        assert_eq!(super::layered_import_bytes(0, 100, 50, 3, S::F16, 0, 0, 0), pixels * (3 * 2 + 3 * 8 + 3 * 4));
+        let base = super::layered_import_bytes(0, 100, 50, 3, S::U8, 0, 0, 0);
+        assert_eq!(super::layered_import_bytes(0, 100, 50, 3, S::U8, 0, 1234, 99), base + 1234 + 99);
+        assert_eq!(super::layered_import_bytes(u64::MAX, 100, 50, 3, S::U8, 0, 0, 0), u64::MAX, "an estimate never wraps into an admitted one");
+    }
+
+    /// A TIFF whose layer tag cannot be read still opens flattened, and its whole-image decode
+    /// and conversion are admitted like a layered page: a refused file never reaches the decode,
+    /// and the flatten warning is unchanged.
+    #[test]
+    fn malformed_layer_tag_bounds_the_composite_before_it_is_decoded() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        use photocraft_codecs::{ChannelLayout, EncodeOptions, Format, Image, SampleType};
+
+        if cfg!(any(target_arch = "wasm32", target_pointer_width = "32")) {
+            return;
+        }
+        let mut img = Image::from_raw(4, 3, ChannelLayout::Rgb, SampleType::U8, vec![40; 4 * 3 * 3]).unwrap();
+        img.meta.photoshop_layers = Some(b"not Photoshop image source data".to_vec());
+        let bytes = photocraft_codecs::encode(&img, Format::Tiff, &EncodeOptions::default()).unwrap();
+
+        let decoded = Rc::new(Cell::new(0u32));
+        let hook = |decoded: &Rc<Cell<u32>>| -> Rc<dyn Fn()> {
+            let decoded = Rc::clone(decoded);
+            Rc::new(move || decoded.set(decoded.get() + 1))
+        };
+
+        let zero = crate::memory::MemorySnapshot { available_ram: Some(0), swap_free: None, commit_headroom: None };
+        crate::memory::with_mock_memory(zero, || {
+            crate::flat::with_before_composite_decode(hook(&decoded), || {
+                match crate::import_with_options("bogus.tif", &bytes, &ImportOptions::default()) {
+                    Err(IoError::PsdImportBudget { limit: 0, required }) => assert!(required > 0),
+                    other => panic!("expected an import-budget refusal, got {other:?}"),
+                }
+                assert_eq!(decoded.get(), 0, "a refused file must not decode its composite");
+            });
+        });
+
+        let plenty = crate::memory::MemorySnapshot { available_ram: Some(16 << 30), swap_free: None, commit_headroom: None };
+        crate::memory::with_mock_memory(plenty, || {
+            crate::flat::with_before_composite_decode(hook(&decoded), || {
+                let opened = crate::import_with_options("bogus.tif", &bytes, &ImportOptions::default()).expect("a normal machine opens the composite");
+                assert_eq!(opened.document.layers.len(), 1);
+                assert!(opened.warnings.iter().any(|w| w.contains("opened flattened")), "{:?}", opened.warnings);
+                assert_eq!(decoded.get(), 1, "the admitted import decodes the composite exactly once");
+            });
+        });
+    }
+
+    /// Admission happens before a layered TIFF's composite is decoded: a known-zero budget and
+    /// an approval-needed estimate both refuse the file without reaching the decode, and an
+    /// approved import does reach it. The fixture is the real tiny layered TIFF; the estimate
+    /// threshold is the scoped test seam, so nothing near a gigabyte is allocated.
+    #[test]
+    fn layered_tiff_is_refused_before_its_composite_is_decoded() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        if cfg!(any(target_arch = "wasm32", target_pointer_width = "32")) {
+            return;
+        }
+        let gb = 1u64 << 30;
+        let bytes = layered_tiff(8, 6);
+        let decoded = Rc::new(Cell::new(0u32));
+        let hook = |decoded: &Rc<Cell<u32>>| -> Rc<dyn Fn()> {
+            let decoded = Rc::clone(decoded);
+            Rc::new(move || decoded.set(decoded.get() + 1))
+        };
+
+        let zero = crate::memory::MemorySnapshot { available_ram: Some(0), swap_free: None, commit_headroom: None };
+        crate::memory::with_mock_memory(zero, || {
+            crate::flat::with_before_composite_decode(hook(&decoded), || {
+                match crate::import_with_options("zero.tif", &bytes, &ImportOptions::default()) {
+                    Err(IoError::PsdImportBudget { limit: 0, required }) => assert!(required > 0),
+                    other => panic!("expected an import-budget refusal, got {other:?}"),
+                }
+                assert_eq!(decoded.get(), 0, "a refused file must not decode its composite");
+            });
+        });
+
+        // 12 GiB: S = 6 GiB, H = 9 GiB. The seam puts the estimate in the approval band.
+        let snapshot = crate::memory::MemorySnapshot { available_ram: Some(12 * gb), swap_free: None, commit_headroom: None };
+        crate::memory::with_mock_memory(snapshot, || {
+            crate::flat::with_before_composite_decode(hook(&decoded), || {
+                crate::psd_budget::with_test_estimate_charge(7 * gb, || {
+                    match crate::import_with_options("approval.tif", &bytes, &ImportOptions::default()) {
+                        Err(IoError::PsdApprovalRequired { required, soft_limit, hard_limit, .. }) => {
+                            assert_eq!((soft_limit, hard_limit), (6 * gb, 9 * gb));
+                            assert!(required > 6 * gb, "the charge reaches the approval band: {required}");
+                        }
+                        other => panic!("expected an approval request, got {other:?}"),
+                    }
+                    assert_eq!(decoded.get(), 0, "approval is needed before the composite is decoded, not after it");
+
+                    let approved = ImportOptions { psd_high_memory_approved: true, ..Default::default() };
+                    let opened = crate::import_with_options("approval.tif", &bytes, &approved).expect("approved");
+                    assert_eq!(opened.document.layers.len(), 2);
+                    assert_eq!(decoded.get(), 1, "the approved import decodes the composite exactly once");
+                });
+            });
+        });
+    }
+
+    /// Available memory can drop while a layered TIFF waits for the decode gate: the post-gate
+    /// recheck must refuse it before the composite is decoded. A per-attempt provider shared with
+    /// this test only changes the measurement; nothing near a gigabyte is allocated.
+    #[test]
+    fn layered_tiff_memory_drop_while_waiting_for_the_gate_refuses_before_decoding() {
+        use std::rc::Rc;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+        use std::time::{Duration, Instant};
+
+        if cfg!(any(target_arch = "wasm32", target_pointer_width = "32")) {
+            return;
+        }
+        let gb = 1u64 << 30;
+        let bytes = layered_tiff(8, 6);
+
+        // Hold the gate so the import stops between its pre-gate check and the post-gate one.
+        let _guard = crate::psd_gate::acquire_decode_admission(&photocraft_raster::Interrupt::NONE).expect("active decode");
+        let available = Arc::new(AtomicU64::new(32 * gb));
+        let prechecked = Arc::new(AtomicBool::new(false));
+        let decoded = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        let handle = {
+            let available = Arc::clone(&available);
+            let prechecked = Arc::clone(&prechecked);
+            let decoded = Arc::clone(&decoded);
+            std::thread::spawn(move || {
+                let provider = Rc::new(move || {
+                    // Read before signalling, so the pre-gate check that the main thread waits
+                    // for has already measured the larger figure.
+                    let ram = available.load(Ordering::SeqCst);
+                    prechecked.store(true, Ordering::SeqCst);
+                    crate::memory::MemorySnapshot { available_ram: Some(ram), swap_free: None, commit_headroom: None }
+                });
+                let hook: Rc<dyn Fn()> = Rc::new(move || decoded.store(true, Ordering::SeqCst));
+                let result = crate::memory::with_mock_memory_provider(provider, || {
+                    crate::flat::with_before_composite_decode(hook, || crate::import_with_options("drop.tif", &bytes, &ImportOptions::default()))
+                });
+                tx.send(result.map(|r| r.document.layers.len())).ok();
+            })
+        };
+
+        // The provider's first call is the pre-gate admission check.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !prechecked.load(Ordering::SeqCst) {
+            assert!(Instant::now() < deadline, "the import never reached its admission precheck");
+            std::thread::yield_now();
+        }
+        // The precheck admitted it; now the machine has nothing left. Release the gate afterwards.
+        available.store(0, Ordering::SeqCst);
+        drop(_guard);
+
+        let result = rx.recv_timeout(Duration::from_secs(10)).expect("the post-gate recheck must refuse instead of decoding");
+        match result {
+            Err(IoError::PsdImportBudget { limit: 0, required }) => assert!(required > 0),
+            other => panic!("expected the post-gate recheck to refuse with a zero budget, got {other:?}"),
+        }
+        assert!(!decoded.load(Ordering::SeqCst), "the composite must not be decoded after the post-gate refusal");
+        handle.join().expect("worker thread");
     }
 }

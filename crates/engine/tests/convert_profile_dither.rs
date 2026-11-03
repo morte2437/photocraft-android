@@ -104,7 +104,7 @@ fn shared_tiles_and_distant_nondefault_pixels_use_actual_coordinates() {
     let a = converted(document(size, source, SampleType::U8), params(json!(true)));
     let b = converted(document(size, independent, SampleType::U8), params(json!(true)));
     assert_eq!(pixels(&a).read_region(a.bounds()), pixels(&b).read_region(b.bounds()));
-    assert_ne!(pixels(&a).tile(TileCoord::new(0, 0)).unwrap().bytes(), pixels(&a).tile(TileCoord::new(1, 0)).unwrap().bytes());
+    assert_ne!(pixels(&a).tile(TileCoord::new(0, 0)).unwrap().bytes().to_vec(), pixels(&a).tile(TileCoord::new(1, 0)).unwrap().bytes().to_vec());
     for (x, y) in [(-512, 0), (256_000_003, 256_000_007)] {
         let px = pixels(&a).pixel(x, y);
         assert!([55.0, 56.0].contains(&(px[0] * 255.0).round()));

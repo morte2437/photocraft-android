@@ -440,7 +440,7 @@ fn visible_bounds(s: &photocraft_raster::Surface, canvas: Rect) -> Rect {
         }
         out
     };
-    tiles.par_iter().map(|(c, t)| tile_bounds(c.rect(), t.bytes())).reduce(|| Rect::EMPTY, |a, b| a.union(&b))
+    tiles.par_iter().map(|(c, t)| tile_bounds(c.rect(), &t.bytes())).reduce(|| Rect::EMPTY, |a, b| a.union(&b))
 }
 
 // ---------- layers ----------

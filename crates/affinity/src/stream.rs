@@ -90,26 +90,34 @@ pub struct Object {
     pub chain: Vec<Tag>,
     /// Fields in stream order; positional fields have tag 0.
     pub fields: Vec<(Tag, Value)>,
-    /// Index for objects with more than [`SCAN`] fields: (tag, index of its first occurrence)
-    /// sorted by tag, so `get` is a binary search. A shared object can be referenced by many
-    /// sibling layers, and each reference used to rescan all of its fields; indexing once keeps
-    /// repeated lookups from multiplying into quadratic work. Smaller objects have no index
-    /// (and no per-object hash map to build): scanning a handful of fields is cheaper.
-    index: Vec<(Tag, u32)>,
+    /// Index for objects with more than [`SCAN`] fields: (tag, index of its first occurrence,
+    /// index of its last occurrence) sorted by tag, so `get` and `get_last` are a binary search.
+    /// A shared object can be referenced by many sibling layers, and each reference used to
+    /// rescan all of its fields; indexing once keeps repeated lookups from multiplying into
+    /// quadratic work. Smaller objects have no index (and no per-object hash map to build):
+    /// scanning a handful of fields is cheaper.
+    index: Vec<(Tag, u32, u32)>,
 }
 
 /// Objects with at most this many fields are scanned instead of indexed.
 const SCAN: usize = 12;
 
-fn build_index(fields: &[(Tag, Value)]) -> Vec<(Tag, u32)> {
+fn build_index(fields: &[(Tag, Value)]) -> Vec<(Tag, u32, u32)> {
     if fields.len() <= SCAN {
         return Vec::new();
     }
-    // Positional fields share tag 0 and are not looked up by tag. Sorting by (tag, index) and
-    // keeping the first of each tag preserves first-match semantics.
-    let mut index: Vec<(Tag, u32)> = fields.iter().zip(0u32..).filter(|((t, _), _)| t.0 != 0).map(|((t, _), i)| (*t, i)).collect();
+    // Positional fields share tag 0 and are not looked up by tag. Sorting by (tag, index) puts
+    // each tag's occurrences together in stream order: the first and last of each run keep
+    // first-match semantics for `get` and last-match semantics for `get_last`.
+    let mut index: Vec<(Tag, u32, u32)> = fields.iter().zip(0u32..).filter(|((t, _), _)| t.0 != 0).map(|((t, _), i)| (*t, i, i)).collect();
     index.sort_unstable();
-    index.dedup_by_key(|e| e.0);
+    index.dedup_by(|later, kept| {
+        let same = later.0 == kept.0;
+        if same {
+            kept.2 = later.2;
+        }
+        same
+    });
     index
 }
 
@@ -127,7 +135,21 @@ impl Object {
             return self.fields.iter().find(|(t, _)| *t == tag).map(|(_, v)| v);
         }
         let at = self.index.binary_search_by_key(&tag, |e| e.0).ok()?;
-        self.index.get(at).and_then(|&(_, i)| self.fields.get(i as usize)).map(|(_, v)| v)
+        self.index.get(at).and_then(|&(_, i, _)| self.fields.get(i as usize)).map(|(_, v)| v)
+    }
+
+    /// The last field with `tag`, for objects that may repeat a tag (a shape changed from one
+    /// kind to another keeps a stale first block). Indexed like [`Object::get`], so repeated
+    /// lookups on a large shared object do not rescan its fields.
+    pub fn get_last(&self, tag: Tag) -> Option<&Value> {
+        if tag.0 == 0 {
+            return None;
+        }
+        if self.fields.len() <= SCAN {
+            return self.fields.iter().rev().find(|(t, _)| *t == tag).map(|(_, v)| v);
+        }
+        let at = self.index.binary_search_by_key(&tag, |e| e.0).ok()?;
+        self.index.get(at).and_then(|&(_, _, i)| self.fields.get(i as usize)).map(|(_, v)| v)
     }
 
     /// Replaces the fields (the root object is filled in after it is pushed) and rebuilds the

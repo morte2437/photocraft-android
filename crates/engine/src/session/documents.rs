@@ -133,7 +133,7 @@ impl Session {
         self.open_document_order.push(doc.id);
         let mut st = DocState::new(doc, path);
         st.history.max_states = self.prefs.get().performance.history_states.max(1) as usize;
-        st.history.max_bytes = self.prefs.get().performance.history_budget_bytes();
+        st.history.max_bytes = self.prefs.get().performance.history_cap_bytes();
         st.history.non_linear = self.prefs.get().history_options.allow_non_linear_history;
         self.docs.push(st);
         let i = self.docs.len() - 1;

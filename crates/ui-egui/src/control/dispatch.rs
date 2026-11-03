@@ -1369,7 +1369,11 @@ fn app_methods(app: &mut PhotocraftApp, ctx: &egui::Context, req: &ControlReques
     let p = &req.params;
     Some(match req.method.as_str() {
         "app.open" => match str_param(p, "path") {
-            Some(path) => app_open(app, path),
+            Some(path) => match p.get("approveHighMemory") {
+                None | Some(Value::Null) => app_open(app, path, false),
+                Some(Value::Bool(approved)) => app_open(app, path, *approved),
+                Some(_) => err("expected boolean for `approveHighMemory`"),
+            },
             None => err("missing `path`"),
         },
         "app.save" => match crate::FormatChoices::from_params(p, "app.save") {
@@ -1388,7 +1392,9 @@ fn app_methods(app: &mut PhotocraftApp, ctx: &egui::Context, req: &ControlReques
     })
 }
 
-fn app_open(app: &mut PhotocraftApp, path: &str) -> Outcome {
+/// The `app.open` control method: opens a path through the configured automation read
+/// capability, with optional high-memory approval.
+fn app_open(app: &mut PhotocraftApp, path: &str, approved: bool) -> Outcome {
     if let Some(outcome) = open_pcraft_directory(app, path) {
         return outcome;
     }
@@ -1398,7 +1404,7 @@ fn app_open(app: &mut PhotocraftApp, path: &str) -> Outcome {
     };
     wrap(opened.and_then(|(name, bytes)| {
         let name = app.open_name(&name);
-        let warnings = app.open_automation_bytes(&name, &bytes)?;
+        let warnings = app.open_automation_bytes_with_approval(&name, &bytes, approved)?;
         // Brushes/gradients go to the preset libraries: no document, no Open Recent entry.
         if !crate::preset_files_ui::is_preset_file(&name) {
             app.opened_from(path);

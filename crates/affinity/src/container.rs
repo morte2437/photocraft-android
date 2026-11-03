@@ -20,6 +20,11 @@ const MAX_ENTRIES: usize = 1 << 22;
 /// Bytes of entry names the allocation tables may name. A name is retained twice (in the entry
 /// and as its map key), and tables can point many names at the same bytes.
 const MAX_NAME_BYTES: usize = 32 << 20;
+/// File and directory records parsed across every allocation table. Each table walks its own
+/// records, and tables may start inside one another and share a long suffix, so the per-table
+/// counts do not bound the work: a few thousand overlapping tables could reparse one large run
+/// of records each. Real files hold a few hundred saves of a few thousand entries.
+const MAX_TABLE_RECORDS: usize = 1 << 25;
 /// zstd window ceiling: real documents use a few MiB; this stops a header from reserving gigabytes.
 const MAX_ZSTD_WINDOW: u64 = 64 << 20;
 
@@ -175,6 +180,7 @@ impl<'a> Archive<'a> {
         let mut seen = HashSet::new();
         let mut next = header.fat_offset;
         let mut tables = 0usize;
+        let mut records_left = MAX_TABLE_RECORDS;
         while next != 0 {
             if !seen.insert(next) {
                 return Err(Error::Malformed("allocation tables form a cycle"));
@@ -199,6 +205,9 @@ impl<'a> Archive<'a> {
             c.take(8)?;
             let dirs = c.u16()?;
             c.take(1)?;
+            // Charge the declared records before walking them.
+            let declared = usize::try_from(files).unwrap_or(usize::MAX).saturating_add(usize::from(dirs));
+            records_left = records_left.checked_sub(declared).ok_or(Error::Limit("too many allocation records"))?;
             for _ in 0..files {
                 let id = c.u32()?;
                 let flag = c.u8()?;

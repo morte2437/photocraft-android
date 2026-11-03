@@ -367,7 +367,7 @@ impl Loader<'_> {
             if let Some(tile) = self.tiles.get(&f.sample).and_then(|m| m.get(&t.hash)) {
                 // One hash names one byte string, so a cached tile of another length means
                 // the same hash was referenced from formats of different pixel sizes.
-                if tile.bytes().len() != len {
+                if tile.len() != len {
                     return Err(FormatError::corrupt(format!("tile {} is referenced with different sizes", t.hash)));
                 }
                 s.put_tiles([(c, tile.clone())]);

@@ -80,3 +80,28 @@ fn a_flat_export_is_a_copy_and_leaves_the_document_dirty() {
     assert!(!headless.session.active().unwrap().is_dirty());
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+/// The control channel's `doc.save` takes the TIFF Options (#8827): compression, Save
+/// Transparency and Save Image Pyramid; a bad value is an error and writes nothing.
+#[test]
+fn doc_save_takes_tiff_options() {
+    let dir = tmp("tiff-options");
+    let mut headless = Headless::trusted_local();
+    headless.handle("doc.new", json!({"width": 200, "height": 100, "background": "transparent"})).unwrap();
+    let path = dir.join("o.tif");
+    let p = path.to_str().unwrap();
+    headless.handle("doc.save", json!({"path": p, "tiffCompression": "zip", "tiffTransparency": false, "tiffPyramid": true})).unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+    let info = photocraft_codecs::tiff_info(&bytes).unwrap();
+    assert_eq!(info.pages.len(), 3);
+    assert!(info.pages.iter().all(|pg| pg.compression == 8));
+    assert!(!photocraft_codecs::decode(&bytes).unwrap().layout().has_alpha());
+    let bad = dir.join("bad.tif");
+    for params in [json!({"tiffCompression": "jpeg"}), json!({"tiffPyramid": 1}), json!({"tiffTransparency": "no"})] {
+        let mut params = params;
+        params["path"] = json!(bad.to_str().unwrap());
+        assert!(headless.handle("doc.save", params.clone()).is_err(), "{params}");
+    }
+    assert!(!bad.exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}

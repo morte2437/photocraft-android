@@ -31,6 +31,7 @@ fn has_timeline(s: &Session) -> std::result::Result<(), String> {
 /// Mutate the document timeline without a history step (navigation / metadata).
 fn with_timeline(s: &mut Session, f: impl FnOnce(&mut Option<Timeline>)) -> Result<Value> {
     let st = s.active_mut().ok_or(EngineError::NoDocument)?;
+    let generation = photocraft_raster::spill::read_error_generation();
     let mut doc = (*st.doc).clone();
     crate::video_cmds::store(&mut doc);
     f(&mut doc.timeline);
@@ -38,6 +39,8 @@ fn with_timeline(s: &mut Session, f: impl FnOnce(&mut Option<Timeline>)) -> Resu
         t.clamp();
     }
     crate::video_cmds::sync(&mut doc);
+    // Storing and syncing video frames bypasses edit_with: apply the same scratch guard.
+    photocraft_raster::spill::check_since(generation).and_then(|()| doc.scratch_health()).map_err(EngineError::Other)?;
     st.doc = Arc::new(doc);
     st.revision += 1;
     info(s)

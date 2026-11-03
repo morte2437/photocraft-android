@@ -73,7 +73,7 @@ fn thumbnail_bytes(w: u32, h: u32, jfif: &[u8]) -> Result<Vec<u8>, IoError> {
 /// The profile of the compositor's RGB output for `doc`: an RGB document's own (embedded when it
 /// parses, else sRGB), a gray document's gray profile seen as RGB, and sRGB for CMYK and Lab
 /// (which the compositor renders in sRGB).
-fn composite_profile(doc: &Document) -> Profile {
+pub(crate) fn composite_profile(doc: &Document) -> Profile {
     let space = match doc.mode {
         ColorMode::Grayscale | ColorMode::Bitmap | ColorMode::Duotone => ColorSpace::Gray,
         ColorMode::Cmyk | ColorMode::Lab => return Builtin::Srgb.profile().clone(),

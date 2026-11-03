@@ -166,6 +166,9 @@ pub(super) struct Tile {
     pub(super) levels: Vec<wgpu::TextureView>,
     pub(super) bind_group: wgpu::BindGroup,
     pub(super) _uniform: wgpu::Buffer,
+    /// A viewport page ([`GpuCanvas::upload_page`]): its id and reduction factor (document
+    /// pixels per texel); `None` for a tile of a whole-document texture set.
+    pub(super) page: Option<(u64, u32)>,
 }
 
 fn uniform_entry(binding: u32, size: u64, vis: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {

@@ -235,18 +235,6 @@ pub(crate) fn rle_widening(data: &[u8], rows: usize) -> Result<u64> {
     Ok(table as u64)
 }
 
-/// Writes a PSD RLE stream (two-byte row counts) as the PSB one (four-byte row counts): the packed
-/// rows are the same in both versions, only the count table widens.
-pub(crate) fn put_widened_rle(out: &mut Vec<u8>, data: &[u8], rows: usize) -> Result<()> {
-    let table_len = usize::try_from(rle_widening(data, rows)?).map_err(|_| PsdError::LimitExceeded("row count overflow"))?;
-    let (table, packed) = data.split_at_checked(table_len).ok_or_else(|| PsdError::invalid("RLE row-count table out of range"))?;
-    for count in table.as_chunks::<2>().0 {
-        out.extend_from_slice(&[0, 0, count[0], count[1]]);
-    }
-    out.extend_from_slice(packed);
-    Ok(())
-}
-
 /// Encodes planar data (excluding the 2-byte compression field).
 pub fn encode_planes(compression: Compression, decoded: &[u8], layout: &PlaneLayout) -> Result<Vec<u8>> {
     let total = layout.decoded_len()?;
@@ -379,60 +367,67 @@ fn encode_rle(decoded: &[u8], layout: &PlaneLayout) -> Result<Vec<u8>> {
     if rows == 0 {
         return Ok(Vec::new());
     }
-    // Rows are independent, so they pack in parallel chunks and concatenate in order.
+    // Rows are independent, so they pack in parallel chunks of rows. Two passes: the first only
+    // measures each packed row, so the output is allocated once at its exact size and the second
+    // packs every row straight into its place. Collecting packed chunks and then copying them into
+    // the output held the encoded image twice, with growth slack, at the save's peak (#6607).
     let threads = if cfg!(target_arch = "wasm32") { 1 } else { std::thread::available_parallelism().map_or(1, |v| v.get()).clamp(1, 32) };
     let chunk_rows = rows.div_ceil(threads).max(1);
-    struct Chunk {
-        counts: Vec<u8>,
-        packed: Vec<u8>,
-    }
-    let pack_chunk = |first: usize, count: usize| -> Result<Chunk> {
-        let mut chunk = Chunk { counts: vec![0u8; count * cs], packed: Vec::new() };
-        for row in first..first + count {
-            let start = chunk.packed.len();
-            packbits::encode(&decoded[row * rb..(row + 1) * rb], &mut chunk.packed);
-            let n = chunk.packed.len() - start;
-            if cs == 2 {
-                let n = u16::try_from(n).map_err(|_| PsdError::LimitExceeded("RLE row exceeds 65535 bytes (use PSB)"))?;
-                chunk.counts[(row - first) * 2..(row - first) * 2 + 2].copy_from_slice(&n.to_be_bytes());
-            } else {
-                let n = u32::try_from(n).map_err(|_| PsdError::LimitExceeded("RLE row too large"))?;
-                chunk.counts[(row - first) * 4..(row - first) * 4 + 4].copy_from_slice(&n.to_be_bytes());
-            }
+    let row = |r: usize| &decoded[r * rb..(r + 1) * rb];
+    let mut lens = vec![0usize; rows];
+    for_each_chunk(threads, lens.chunks_mut(chunk_rows).enumerate().collect(), |(c, lens): (usize, &mut [usize])| {
+        let mut scratch = Vec::with_capacity(rb + rb.div_ceil(128));
+        for (i, len) in lens.iter_mut().enumerate() {
+            scratch.clear();
+            packbits::encode(row(c * chunk_rows + i), &mut scratch);
+            *len = scratch.len();
         }
-        Ok(chunk)
-    };
-    let chunk_list: Vec<Chunk> = if threads == 1 {
-        vec![pack_chunk(0, rows)?]
-    } else {
-        std::thread::scope(|scope| -> Result<Vec<Chunk>> {
-            let handles: Vec<_> = (0..threads)
-                .map(|t| {
-                    let first = t * chunk_rows;
-                    let count = chunk_rows.min(rows.saturating_sub(first));
-                    scope.spawn(move || pack_chunk(first, count))
-                })
-                .collect();
-            // Join every worker first, then surface the first error like the sequential
-            // path would instead of aborting the scope with a thread panic.
-            let mut all = Vec::with_capacity(threads);
-            for h in handles {
-                all.push(h.join().map_err(|_| PsdError::LimitExceeded("an RLE worker panicked"))??);
-            }
-            Ok(all)
-        })?
-    };
-    let packed_total: usize = chunk_list.iter().map(|c| c.packed.len()).sum();
-    let mut out = vec![0u8; rows * cs + packed_total];
-    let mut counts_at = 0usize;
-    let mut packed_at = rows * cs;
-    for chunk in &chunk_list {
-        out[counts_at..counts_at + chunk.counts.len()].copy_from_slice(&chunk.counts);
-        counts_at += chunk.counts.len();
-        out[packed_at..packed_at + chunk.packed.len()].copy_from_slice(&chunk.packed);
-        packed_at += chunk.packed.len();
+    })?;
+    let mut out = vec![0u8; rows * cs + lens.iter().sum::<usize>()];
+    let (counts, mut packed) = out.split_at_mut(rows * cs);
+    for (count, &n) in counts.chunks_exact_mut(cs).zip(&lens) {
+        if cs == 2 {
+            let n = u16::try_from(n).map_err(|_| PsdError::LimitExceeded("RLE row exceeds 65535 bytes (use PSB)"))?;
+            count.copy_from_slice(&n.to_be_bytes());
+        } else {
+            let n = u32::try_from(n).map_err(|_| PsdError::LimitExceeded("RLE row too large"))?;
+            count.copy_from_slice(&n.to_be_bytes());
+        }
     }
+    let mut parts = Vec::with_capacity(threads);
+    for (c, lens) in lens.chunks(chunk_rows).enumerate() {
+        let (part, rest) = packed.split_at_mut(lens.iter().sum());
+        parts.push((c, lens, part));
+        packed = rest;
+    }
+    for_each_chunk(threads, parts, |(c, lens, mut part): (usize, &[usize], &mut [u8])| {
+        let mut scratch = Vec::with_capacity(rb + rb.div_ceil(128));
+        for (i, &n) in lens.iter().enumerate() {
+            scratch.clear();
+            packbits::encode(row(c * chunk_rows + i), &mut scratch);
+            let (dst, rest) = std::mem::take(&mut part).split_at_mut(n);
+            dst.copy_from_slice(&scratch);
+            part = rest;
+        }
+    })?;
     Ok(out)
+}
+
+/// Runs `f` on every item, each on its own thread unless `threads` is 1 (wasm32).
+fn for_each_chunk<T: Send>(threads: usize, items: Vec<T>, f: impl Fn(T) + Sync) -> Result<()> {
+    if threads == 1 {
+        items.into_iter().for_each(f);
+        return Ok(());
+    }
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = items.into_iter().map(|item| scope.spawn(|| f(item))).collect();
+        // Join every worker instead of aborting the scope with a thread panic.
+        let mut ok = true;
+        for h in handles {
+            ok &= h.join().is_ok();
+        }
+        if ok { Ok(()) } else { Err(PsdError::LimitExceeded("an RLE worker panicked")) }
+    })
 }
 
 /// zlib-compresses `data` at the default level.
@@ -612,7 +607,20 @@ mod parallel_rle_equivalence {
             let parallel = encode_rle(&data, &layout).expect("parallel encode");
             let sequential = encode_rle_sequential(&data, &layout).expect("sequential encode");
             assert_eq!(parallel, sequential, "rows {rows} rb {rb}");
+            // #6607: measured first, then packed in place: one allocation, exactly the file's size.
+            assert_eq!(parallel.capacity(), parallel.len(), "rows {rows} rb {rb}: the output grew or was over-allocated");
         }
+    }
+
+    /// A row too long for a PSD's 16-bit RLE count is the same error from the two-pass encoder.
+    #[test]
+    fn rle_rows_past_sixteen_bits_are_refused_in_psd() {
+        let layout_for = |rows: usize, rb: usize, version: Version| PlaneLayout { planes: 1, width: rb, height: rows, depth: 8, version };
+        let rb = 70_000;
+        let layout = layout_for(3, rb, Version::Psd);
+        let noise: Vec<u8> = (0..3 * rb).map(|i| (i * 31 % 251) as u8).collect();
+        assert_eq!(encode_rle(&noise, &layout), Err(PsdError::LimitExceeded("RLE row exceeds 65535 bytes (use PSB)")));
+        assert_eq!(encode_rle(&noise, &layout_for(3, rb, Version::Psb)), encode_rle_sequential(&noise, &layout_for(3, rb, Version::Psb)));
     }
 
     /// The pre-parallel encoder, kept as the oracle.

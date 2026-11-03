@@ -37,6 +37,7 @@ pub mod prefs;
 pub mod preset_store;
 pub mod presets;
 pub mod proof_sim;
+mod scratch;
 pub mod select_mask_edits;
 pub mod shell_commands;
 pub mod shortcut_sets;
@@ -282,6 +283,13 @@ pub struct Session {
     /// document, source read-only)`. The shell takes them with [`Session::take_held_open`].
     held_opens: Vec<(u64, Document, bool)>,
     next_held_open: u64,
+    pub(crate) pending_preflights: Vec<jobs::PendingPsdPreflight>,
+    next_pending_preflight: u64,
+    /// Shared native memory supervision, owned and stopped by the last session using it.
+    scratch_runtime: Option<scratch::Runtime>,
+    /// [`photocraft_raster::spill::epoch`] when History's byte limits were last applied: a
+    /// scratch disk that pauses or resumes changes the limit ([`Session::sync_scratch_state`]).
+    scratch_epoch: u64,
     /// The document before the latest [`Session::edit`] of the running command, which
     /// [`Session::hint_damage`] checks a hint against. Set by `edit`, taken by `hint_damage`,
     /// dropped when the command ends. Debug and test builds only.

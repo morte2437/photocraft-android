@@ -3424,6 +3424,7 @@ curves	Smooth	تنعيم
 	This document's layers: {needed} of {budget} for layers	طبقات هذا المستند: {needed} من {budget} للطبقات
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	تحتاج طبقات هذا المستند إلى {needed} لكنها تستوعب {budget}: تستخدم إعادة رسم المستند بالكامل وحدة المعالجة المركزية
 	GPU Memory (MB, 0 = Automatic)	ذاكرة GPU (ميغابايت، 0 = تلقائي)
+	Scratch Size Limit (MB, 0 = No Limit)	حد حجم ملف التسويد (ميغابايت، 0 = بلا حد)
 	{path}: the path is not valid Unicode; save under another name.	{path}: المسار ليس Unicode صالحًا؛ احفظ باسم آخر.
 	{name} was changed by another app after it was opened or saved here.	تم تغيير {name} بواسطة تطبيق آخر بعد فتحه أو حفظه هنا.
 	Replace it with this document, or cancel and use File › Save As to keep both.	استبدله بهذا المستند، أو ألغِ واستخدم ملف › حفظ باسم للاحتفاظ بكليهما.
