@@ -74,6 +74,15 @@ fn character_style_lifecycle() {
 }
 
 #[test]
+fn creating_a_style_rejects_an_unmatched_named_source_layer() {
+    let (mut s, _) = session("Hello");
+    for id in ["type.characterStyle.new", "type.paragraphStyle.new"] {
+        let error = s.execute(id, json!({"name": "From missing", "layer": "Missing", "fromSelection": true})).unwrap_err();
+        assert!(error.to_string().contains("no layer named"), "{error}");
+    }
+}
+
+#[test]
 fn new_style_from_selection_and_redefine() {
     let (mut s, id) = session("Title");
     s.execute("type.setStyle", json!({"layer": id, "size": 48, "color": "#ff0000"})).unwrap();

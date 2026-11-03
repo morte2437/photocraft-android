@@ -18,7 +18,12 @@ lz4_flex = { version = "0.11", default-features = false, features = ["std", "saf
 # sysinfo reads the physical RAM size for the memory limit and the scratch volume's free space.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rayon = { workspace = true }
-sysinfo = { version = "0.37", default-features = false, features = ["system", "disk"] }
+sysinfo = { version = "=0.40.1", default-features = false, features = ["system", "disk"] }
+
+# Available physical memory and commit headroom (memory/system.rs) through winsafe's safe
+# `GlobalMemoryStatusEx` wrapper.
+[target.'cfg(windows)'.dependencies]
+winsafe = { version = "=0.0.29", default-features = false, features = ["kernel"] }
 
 [dev-dependencies]
 proptest = { workspace = true }

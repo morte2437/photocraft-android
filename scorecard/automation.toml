@@ -14,9 +14,9 @@ note = "docs/parity-checklist.md: all menu items live; menus.rs is_live"
 [[item]]
 id = "AUTO-219-1"
 target = "Record actions in a document-independent form (implicit layer, merged type keystrokes)"
-status = "missing"
+status = "partial"
 issue = 219
-note = "actions.rs:47 copies raw journal entries with explicit layer ids"
+note = "actions_record.rs/actions_cmds.rs: active layer ids are dropped, uniquely named layers replay by name, Type tool keystrokes and Move-tool nudge runs fold, document activation records an opening-order offset, and point text placement scales with the playback canvas; numeric-only receivers, ambiguous layer names and paragraph box placement remain open, #4514"
 
 [[item]]
 id = "AUTO-219-2"
@@ -44,7 +44,7 @@ id = "AUTO-219-5"
 target = "Batch: subfolders, open documents, naming template, progress/cancel, error log, stop"
 status = "partial"
 issue = 219
-note = "file_cmds.rs and file_cmds/batch_naming.rs: folder/array input, per-file errors, {name}/{serial}/{date} output templates and starting serial, Include All Subfolders (includeSubfolders: depth/loop/file-count bounded, results keep their subfolder; Batch and Image Processor dialogs, #3753); no open-documents source, cancel or error-log file"
+note = "file_cmds/batch_run.rs and batch_naming.rs: flat subfolder output and last-result-wins names measured in Photoshop 2026; live open-document source; file naming components and serials; UTF-16 LE error log; stop-on-error; CLI and Batch dialog, #4579. Desktop Esc asks Continue/Stop, retaining one plan and error log; a read-only canvas preview shows each scratch-session input without a progress bar. Inputs are not live tabs with Layers panel content, so full window parity remains open."
 
 [[item]]
 id = "AUTO-219-6"

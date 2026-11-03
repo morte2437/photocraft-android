@@ -8,6 +8,32 @@ use crate::testgen;
 /// Keys the generator plants that the transcoder (rightly) does not know.
 const UNKNOWN: [&[u8; 4]; 3] = [b"zOdd", b"zNop", b"Txt2"];
 
+/// #6607: moving the layers out of a PSD writes the bytes copying them does, and leaves the
+/// rest of the file (its merged image) as it was. The big-endian body is reserved at its exact
+/// length, so the buffer is never grown (a copy of every layer's pixels).
+#[test]
+fn taking_the_layers_writes_the_same_bytes_as_copying_them() {
+    for case in testgen::all_cases() {
+        for order in [ByteOrder::Big, ByteOrder::Little] {
+            let copied = ImageSourceData::from_psd(&case.file).to_bytes(order);
+            let mut file = case.file.clone();
+            let taken = ImageSourceData::take_from_psd(&mut file).into_bytes(order);
+            match (copied, taken) {
+                (Ok(a), Ok(b)) => {
+                    assert_eq!(a, b, "{} {order:?}", case.name);
+                    if !order.is_little() {
+                        assert_eq!(b.0.capacity(), b.0.len(), "{}: the body grew", case.name);
+                    }
+                }
+                (a, b) => assert_eq!(a.is_err(), b.is_err(), "{} {order:?}", case.name),
+            }
+            assert!(file.layer_info.is_none() && file.global_blocks.is_empty() && file.global_layer_mask.is_none(), "{}", case.name);
+            assert_eq!(file.image_data, case.file.image_data, "{}", case.name);
+            assert_eq!(file.header, case.file.header, "{}", case.name);
+        }
+    }
+}
+
 /// `d` without the blocks a little-endian round trip drops, and without the layer-info
 /// padding (which follows the body length, so it changes when blocks are dropped).
 fn known(d: &ImageSourceData) -> ImageSourceData {
@@ -973,6 +999,11 @@ fn global_blocks_written_without_copies_keep_their_bytes() {
         assert_eq!(d.to_bytes(ByteOrder::Big).unwrap().0, [signature, &body[..]].concat());
         let (little, _) = transcode_blocks(&body, version, ByteOrder::Big, ByteOrder::Little).unwrap();
         assert_eq!(d.to_bytes(ByteOrder::Little).unwrap().0, [signature, &little[..]].concat());
+        // Converted behind the signature in the buffer it starts with: never grown (growing
+        // would at least double it), so the body is not moved to make room.
+        let (after, _) = transcode_blocks_after(signature, &body, version, ByteOrder::Big, ByteOrder::Little).unwrap();
+        assert_eq!(after, [signature, &little[..]].concat());
+        assert_eq!(after.capacity(), signature.len() + body.len());
     }
 }
 

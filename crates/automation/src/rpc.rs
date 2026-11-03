@@ -61,6 +61,36 @@ pub const METHODS: &[&str] = &[
     "methods",
 ];
 
+/// Adds the structured memory fields (`required`, soft and hard limits and measured capacity)
+/// from a typed admission error to a JSON error object, so clients can offer approval.
+fn attach_memory_error_details(obj: &mut Value, err: &AutomationError) {
+    match err {
+        AutomationError::Import(photocraft_io::IoError::PsdApprovalRequired { required, soft_limit, hard_limit, available_ram })
+        | AutomationError::Engine(photocraft_engine::EngineError::PsdApprovalRequired { required, soft_limit, hard_limit, available_ram, .. }) => {
+            if let Some(m) = obj.as_object_mut() {
+                m.insert("required".into(), json!(required));
+                m.insert("soft".into(), json!(soft_limit));
+                m.insert("softLimit".into(), json!(soft_limit));
+                m.insert("hard".into(), json!(hard_limit));
+                m.insert("hardLimit".into(), json!(hard_limit));
+                if let Some(avail) = available_ram {
+                    m.insert("available".into(), json!(avail));
+                    m.insert("availableRam".into(), json!(avail));
+                }
+            }
+        }
+        AutomationError::Import(photocraft_io::IoError::PsdImportBudget { required, limit })
+        | AutomationError::Engine(photocraft_engine::EngineError::PsdHardBudget { required, limit, .. }) => {
+            if let Some(m) = obj.as_object_mut() {
+                m.insert("required".into(), json!(required));
+                m.insert("hard".into(), json!(limit));
+                m.insert("hardLimit".into(), json!(limit));
+            }
+        }
+        _ => {}
+    }
+}
+
 fn bad(msg: impl Into<String>) -> AutomationError {
     AutomationError::BadRequest(msg.into())
 }
@@ -107,10 +137,18 @@ impl Headless {
             "session.list" => Ok(self.session_list()),
             "doc.open" => {
                 let path = str_of(&p, "path").ok_or_else(|| bad("doc.open needs `path`"))?;
-                self.open(&PathBuf::from(path))
+                let approve = match p.get("approveHighMemory") {
+                    None | Some(Value::Null) => false,
+                    Some(Value::Bool(b)) => *b,
+                    Some(_) => return Err(bad("`approveHighMemory` must be a boolean")),
+                };
+                self.open_with_approval(&PathBuf::from(path), approve)
             }
             "doc.place" => {
                 let path = str_of(&p, "path").ok_or_else(|| bad("doc.place needs `path`"))?;
+                if p.get("approveHighMemory").is_some_and(|v| !v.is_boolean()) {
+                    return Err(bad("`approveHighMemory` must be a boolean"));
+                }
                 let mut opts = p.as_object().cloned().unwrap_or_default();
                 opts.remove("path");
                 opts.remove("index");
@@ -136,6 +174,12 @@ impl Headless {
                 };
                 opts.encode.dpx_bits = photocraft_engine::file_cmds::dpx_bits_param(&p, "doc.save").map_err(|e| bad(e.to_string()))?;
                 opts.encode.dds = photocraft_engine::file_cmds::dds_param(&p, "doc.save").map_err(|e| bad(e.to_string()))?.unwrap_or_default();
+                if let Some(c) = photocraft_engine::file_cmds::tiff_compression_param(&p, "doc.save").map_err(|e| bad(e.to_string()))? {
+                    opts.encode.tiff_compression = c;
+                }
+                let tiff_bool = |key| photocraft_engine::file_cmds::tiff_bool_param(&p, key, "doc.save").map_err(|e| bad(e.to_string()));
+                opts.tiff_transparency = tiff_bool("tiffTransparency")?;
+                opts.encode.tiff_pyramid = tiff_bool("tiffPyramid")?.unwrap_or(false);
                 match p.get("quality") {
                     None | Some(Value::Null) => {}
                     Some(v) => {
@@ -230,7 +274,11 @@ impl Headless {
             let was_error = r.is_err();
             let result = match r {
                 Ok(v) => json!({"ok": true, "result": v}),
-                Err(e) => json!({"ok": false, "error": e.to_string()}),
+                Err(e) => {
+                    let mut obj = json!({"ok": false, "error": e.to_string()});
+                    attach_memory_error_details(&mut obj, &e);
+                    obj
+                }
             };
             if let Err(error) = reply_budget.charge(&result) {
                 failed += 1;
@@ -268,7 +316,11 @@ pub fn respond(h: &Mutex<Headless>, line: &str) -> Value {
         .unwrap_or_else(|_| Err(AutomationError::Other(format!("internal error: `{method}` panicked"))));
     match r {
         Ok(v) => json!({"id": id, "ok": true, "result": v}),
-        Err(e) => json!({"id": id, "ok": false, "error": e.to_string()}),
+        Err(e) => {
+            let mut obj = json!({"id": id, "ok": false, "error": e.to_string()});
+            attach_memory_error_details(&mut obj, &e);
+            obj
+        }
     }
 }
 

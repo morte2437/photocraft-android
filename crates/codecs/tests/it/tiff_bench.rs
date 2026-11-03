@@ -105,3 +105,20 @@ fn decode_30mp() {
     let d = strips(W, H, 8, 3, 2, 64, &rgb);
     time("RGB 8 BigTIFF strips, none", &build(le, true, &[d], &[0]).bytes);
 }
+
+/// Save Image Pyramid's cost on top of a plain encode (#8827): RGB/8 and RGBA/16.
+#[test]
+#[ignore = "benchmark: run in release with --ignored --nocapture"]
+fn encode_with_pyramid() {
+    for (layout, sample, spp) in [(ChannelLayout::Rgb, SampleType::U8, 3), (ChannelLayout::Rgba, SampleType::U16, 4)] {
+        let raw = pixels(spp);
+        let data = if sample == SampleType::U16 { raw.iter().flat_map(|&v| (u16::from(v) * 257).to_ne_bytes()).collect() } else { raw };
+        let img = Image::from_raw(W, H, layout, sample, data).unwrap();
+        for pyramid in [false, true] {
+            let opts = EncodeOptions { tiff_pyramid: pyramid, ..Default::default() };
+            let t = Instant::now();
+            let bytes = encode(&img, Format::Tiff, &opts).unwrap();
+            println!("{layout:?} {sample:?} pyramid {pyramid}: {:.0} ms, {} MB", t.elapsed().as_secs_f64() * 1000.0, bytes.len() >> 20);
+        }
+    }
+}

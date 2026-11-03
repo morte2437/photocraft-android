@@ -185,6 +185,13 @@ fn type_checked(app: &PhotocraftApp, id: &str) -> Option<bool> {
         return Some(t.is_some_and(|t| (t.orientation == photocraft_doc::text::Orientation::Vertical) == (k == "vertical")));
     }
     let t = t?;
+    // The style where the menu reads: the selection start while editing a range (as the Character
+    // panel shows it), else the layer's first run.
+    let start = crate::type_tool::target(app).and_then(|(_, range)| range).map_or(0, |r| r[0]);
+    if let Some(key) = id.strip_prefix("type.openType.numerals.") {
+        let want = photocraft_engine::type_extra_cmds::NumeralsStyle::from_id(key)?;
+        return Some(photocraft_engine::type_extra_cmds::numerals_style_at(t, start) == Some(want));
+    }
     let tag = match id.strip_prefix("type.openType.")? {
         "standardLigatures" => "liga",
         "contextualAlternates" => "calt",
@@ -198,7 +205,7 @@ fn type_checked(app: &PhotocraftApp, id: &str) -> Option<bool> {
         "fractions" => "frac",
         _ => return None,
     };
-    Some(t.char_runs().first().is_some_and(|r| photocraft_engine::type_extra_cmds::feature_on(&r.style, tag)))
+    Some(photocraft_engine::type_extra_cmds::feature_on_at(t, start, tag))
 }
 
 /// Engine commands that get a dialog or file picker here when invoked without parameters.

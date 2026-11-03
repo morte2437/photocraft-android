@@ -874,7 +874,9 @@ fn mask_unselected(sel: &Surface, area: Rect, w: usize, h: usize, rgba: &mut [[f
     true
 }
 
+/// Validate the selected layer, then open cropped scan photos without editing the source document.
 fn crop_and_straighten(s: &mut Session, _p: &Value) -> Result<Value> {
+    crop_ready(s)?;
     let st = s.active().ok_or(EngineError::NoDocument)?;
     let doc = st.doc.clone();
     let fmt = doc.pixel_format();
@@ -942,13 +944,18 @@ fn crop_and_straighten(s: &mut Session, _p: &Value) -> Result<Value> {
 
 // ---------- specs ----------
 
-/// Photoshop greys Crop and Straighten Photos out for Indexed Color documents.
-fn not_indexed(s: &Session) -> std::result::Result<(), String> {
-    let st = s.active().ok_or("no document open")?;
+/// Crop needs a selected, visible, pixel-unlocked layer, including inherited state.
+fn crop_ready(s: &Session) -> Result<()> {
+    let st = s.active().ok_or(EngineError::NoDocument)?;
     if st.doc.mode == ColorMode::Indexed {
-        return Err("not available for Indexed Color documents".into());
+        return Err(EngineError::Other("not available for Indexed Color documents".into()));
     }
-    Ok(())
+    let id = st.active_layer.ok_or_else(|| EngineError::Other("no layer selected".into()))?;
+    let path = st.doc.path_of(id).ok_or(EngineError::NoLayer(id))?;
+    if !st.doc.shown_at(&path) {
+        return Err(EngineError::Other("the selected layer is hidden".into()));
+    }
+    crate::commands::check_pixels_unlocked(&st.doc, id)
 }
 
 fn always(_: &Session) -> std::result::Result<(), String> {
@@ -983,7 +990,7 @@ pub fn specs() -> Vec<CommandSpec> {
             menu: &["File", "Automate"],
             shortcut: None,
             params: "{} → one new document per photo found on the scan (inside the selection when there is one)",
-            enabled: not_indexed,
+            enabled: |s| crop_ready(s).map_err(|e| e.to_string()),
             run: crop_and_straighten,
             journal: true,
         },

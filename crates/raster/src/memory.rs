@@ -6,6 +6,8 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError};
 
+pub mod system;
+
 const MIB: u64 = 1 << 20;
 
 #[derive(Clone, Copy, Debug, Default, serde::Serialize)]
@@ -76,14 +78,23 @@ pub fn configuration_generation() -> u64 {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn measure() -> Snapshot {
     use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
-    static SYSTEM: OnceLock<Mutex<System>> = OnceLock::new();
-    let mut s = SYSTEM.get_or_init(|| Mutex::new(System::new())).lock().unwrap_or_else(PoisonError::into_inner);
+    static SYSTEM: OnceLock<Mutex<Option<System>>> = OnceLock::new();
+    let mut guard = SYSTEM.get_or_init(|| Mutex::new(System::new().ok())).lock().unwrap_or_else(PoisonError::into_inner);
+    // No provider: an unknown total keeps the configured ceiling (see [`budgets`]).
+    let Some(s) = guard.as_mut() else { return Snapshot::default() };
     s.refresh_memory();
     let pid = Pid::from_u32(std::process::id());
     s.refresh_processes_specifics(ProcessesToUpdate::Some(&[pid]), true, ProcessRefreshKind::nothing().with_memory());
+    // The shared detector bounds host memory by the process's cgroup and, on macOS, counts only
+    // reclaimable pages. A constraint it could not read keeps the host figure here: the tile
+    // budget only decides what to spill, and a fail-closed zero would stall every operation.
+    let available = match system::current() {
+        system::SystemMemory { available_ram: Some(ram), constraint_unreadable: false, .. } => ram,
+        _ => s.available_memory(),
+    };
     Snapshot {
         total_bytes: s.total_memory(),
-        available_bytes: s.available_memory(),
+        available_bytes: available,
         process_resident_bytes: s.process(pid).map_or(0, |p| p.memory()),
         process_virtual_bytes: s.process(pid).map_or(0, |p| p.virtual_memory()),
     }

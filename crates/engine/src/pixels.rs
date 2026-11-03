@@ -83,6 +83,11 @@ fn tile_rects(r: Rect) -> impl Iterator<Item = Rect> {
 
 const TOO_SPARSE: &str = "the adjustment would have to fill too large an area around the pixels the layer holds";
 
+/// Refuse adjustments that would materialize too much previously unstored pixel data.
+pub(crate) fn check_adjustment_tile_budget(area: Rect, stored: usize, format: &photocraft_color::PixelFormat) -> Result<(), String> {
+    if unstored_bytes(area, stored as u64, format) > MAX_UNSTORED_BYTES { Err(TOO_SPARSE.into()) } else { Ok(()) }
+}
+
 /// Apply an adjustment destructively to a surface, weighted by an optional selection.
 /// Applies `adj` to a surface (any colour model and depth, via straight RGBA) through the
 /// selection; `mode` is the document's, for the tone transfer (e.g. Exposure in Grayscale).

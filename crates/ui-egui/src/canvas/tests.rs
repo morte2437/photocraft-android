@@ -373,6 +373,31 @@ fn drive_until(app: &mut PhotocraftApp, ctx: &egui::Context, what: &str, done: i
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
+fn a_held_preview_frame_stays_on_the_canvas_when_the_proxy_factor_changes() {
+    // #10474: Minimum and Maximum take their proxy factor from the radius, so a radius drag across
+    // a whole pixel changes `FilterPreviewKey::k`. The frame for the old factor stays on the
+    // canvas, drawn at its own factor, until the one for the new factor lands.
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+    app.run("file.new", json!({"width": 2400, "height": 2200})).unwrap();
+    app.background_jobs = true;
+    app.ui.views.get_mut(0).expect("the new document's view").zoom = 0.25;
+    crate::filter_dialog::open(&mut app, "filter.other.maximum").unwrap();
+    app.ui.dialogs[0].fields.insert("radius".into(), json!(6.0));
+    let ctx = egui::Context::default();
+    drive_until(&mut app, &ctx, "the first frame", |a| a.filter_preview.as_ref().is_some_and(|p| p.result.is_some()));
+    assert_eq!(app.filter_preview.as_ref().map(|p| p.key.k), Some(2), "6 px on a reduced document previews on the proxy");
+
+    // 1.5 px previews at full resolution: a new request at a new factor, computed on the worker.
+    app.ui.dialogs[0].fields.insert("radius".into(), json!(1.5));
+    let (k, _, size) = ensure_filter_preview(&mut app, 0, &ctx).expect("the held frame stays on the canvas");
+    assert_eq!((k, size), (2, [1200, 1100]), "drawn at its own factor");
+    drive_until(&mut app, &ctx, "the full-resolution frame", |a| a.filter_preview.as_ref().is_some_and(|p| p.key.k == 1 && p.result.is_some()));
+    let (k, _, size) = ensure_filter_preview(&mut app, 0, &ctx).expect("the new frame");
+    assert_eq!((k, size), (1, [2400, 2200]));
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
 fn a_preview_computed_mid_drag_reaches_the_canvas_and_then_converges() {
     // A drag used to paint nothing at all: every completion was dropped for carrying stale
     // parameters, so the canvas only ever showed an effect once the pointer had come to rest.

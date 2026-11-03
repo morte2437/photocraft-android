@@ -35,7 +35,7 @@
 
 pub mod meta;
 
-use std::io::{self, Write};
+use std::io::{self, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -56,6 +56,15 @@ pub trait AtomicFs {
         let _ = progress;
         self.write_new(tmp, bytes)
     }
+    /// Create `tmp` (it must not exist), let `write` fill it as it serializes, and flush it
+    /// ([`sync_file`]). By default the bytes are collected in memory and handed to
+    /// [`write_new`](Self::write_new) (test doubles); [`RealFs`] streams them into the file, so the
+    /// whole file never sits in memory (#6607).
+    fn write_new_stream(&self, tmp: &Path, write: &mut StreamWriter<'_>) -> io::Result<()> {
+        let mut bytes = io::Cursor::new(Vec::new());
+        write(&mut bytes)?;
+        self.write_new(tmp, bytes.get_ref())
+    }
     /// Rename `from` over `to`, replacing it.
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()>;
     /// Remove a (temporary) file.
@@ -73,6 +82,13 @@ pub trait AtomicFs {
         self.rename(from, to)
     }
 }
+
+/// A stream [`atomic_write_stream`]'s writer fills: the temporary file (or, in tests, memory).
+pub trait WriteSeek: Write + Seek {}
+impl<T: Write + Seek + ?Sized> WriteSeek for T {}
+
+/// Fills the temporary file of a streaming atomic write, starting at its beginning.
+pub type StreamWriter<'a> = dyn FnMut(&mut dyn WriteSeek) -> io::Result<()> + 'a;
 
 /// The real file system.
 #[derive(Debug, Clone, Copy, Default)]
@@ -93,6 +109,16 @@ impl AtomicFs for RealFs {
             written = written.saturating_add(chunk.len());
             progress(written as f32 / bytes.len().max(1) as f32);
         }
+        sync_file(&f)
+    }
+    fn write_new_stream(&self, tmp: &Path, write: &mut StreamWriter<'_>) -> io::Result<()> {
+        let f = std::fs::OpenOptions::new().write(true).create_new(true).open(tmp)?;
+        let mut out = io::BufWriter::new(f);
+        // `AlreadyExists` means a temporary name collided, which makes the caller retry with
+        // another name and leave this one alone: from the writer, once the file is ours, it is
+        // a plain failure (the partial file is removed, the writer is not run again).
+        write(&mut out).map_err(|e| if e.kind() == io::ErrorKind::AlreadyExists { io::Error::other(e) } else { e })?;
+        let f = out.into_inner().map_err(io::IntoInnerError::into_error)?;
         sync_file(&f)
     }
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
@@ -207,6 +233,75 @@ pub fn atomic_write_with(fs: &dyn AtomicFs, retry: RenameRetry, path: &Path, byt
 
 /// [`atomic_write_with`] reporting write progress (see [`atomic_write_progress`]).
 pub fn atomic_write_with_progress(fs: &dyn AtomicFs, retry: RenameRetry, path: &Path, bytes: &[u8], progress: &dyn Fn(f32)) -> io::Result<()> {
+    replace_with(fs, retry, path, &mut |tmp| fs.write_new_progress(tmp, bytes, progress))
+}
+
+/// [`atomic_write`] for a file serialized as it is written (#6607): `write` fills the temporary
+/// file beside `path` from its start (it may seek back to patch lengths), then the file is
+/// flushed and renamed over `path` with [`atomic_write`]'s retries and errors. If `write` fails,
+/// the temporary file is removed and `path` is left as it was. `write` runs once (again only if
+/// a temporary name collided before anything was written).
+pub fn atomic_write_stream(path: &Path, write: &mut StreamWriter<'_>) -> io::Result<()> {
+    atomic_write_stream_with(&RealFs, RenameRetry::platform(), path, write)
+}
+
+/// [`atomic_write_stream`] reporting the fraction written to `progress` as it goes: the furthest
+/// position reached over `expected_len` (an estimate; capped below 1.0 until `write` is done).
+pub fn atomic_write_stream_progress(path: &Path, expected_len: u64, progress: &dyn Fn(f32), write: &mut StreamWriter<'_>) -> io::Result<()> {
+    atomic_write_stream_with(&RealFs, RenameRetry::platform(), path, &mut |w| {
+        let mut counted = Progress { w, pos: 0, reached: 0, reported: 0, expected: expected_len.max(1), progress };
+        write(&mut counted)?;
+        progress(1.0);
+        Ok(())
+    })
+}
+
+/// [`atomic_write_stream`] through an explicit file system and retry policy.
+pub fn atomic_write_stream_with(fs: &dyn AtomicFs, retry: RenameRetry, path: &Path, write: &mut StreamWriter<'_>) -> io::Result<()> {
+    replace_with(fs, retry, path, &mut |tmp| fs.write_new_stream(tmp, write))
+}
+
+/// A stream reporting how far it has got (see [`atomic_write_stream_progress`]), every
+/// [`WRITE_CHUNK`] bytes.
+struct Progress<'a, 'p> {
+    w: &'a mut dyn WriteSeek,
+    /// Tracked here: asking a buffered file for its position flushes it.
+    pos: u64,
+    reached: u64,
+    reported: u64,
+    expected: u64,
+    progress: &'p dyn Fn(f32),
+}
+
+impl Write for Progress<'_, '_> {
+    fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+        let n = self.w.write(b)?;
+        self.pos += n as u64;
+        let at = self.pos;
+        if at > self.reached {
+            self.reached = at;
+            if at - self.reported >= WRITE_CHUNK as u64 {
+                self.reported = at;
+                (self.progress)((at as f64 / self.expected as f64).min(0.999) as f32);
+            }
+        }
+        Ok(n)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.w.flush()
+    }
+}
+
+impl Seek for Progress<'_, '_> {
+    fn seek(&mut self, to: io::SeekFrom) -> io::Result<u64> {
+        self.pos = self.w.seek(to)?;
+        Ok(self.pos)
+    }
+}
+
+/// The steps every atomic write shares: `write_tmp` fills a fresh temporary file beside the
+/// target, which is then renamed over it.
+fn replace_with(fs: &dyn AtomicFs, retry: RenameRetry, path: &Path, write_tmp: &mut dyn FnMut(&Path) -> io::Result<()>) -> io::Result<()> {
     let target = resolve_symlink(path).map_err(|e| context(e, format!("cannot save {}", path.display())))?;
     let name = target.file_name().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, format!("{}: not a file path", path.display())))?;
     let dir = match target.parent() {
@@ -223,7 +318,7 @@ pub fn atomic_write_with_progress(fs: &dyn AtomicFs, retry: RenameRetry, path: &
     let mut tmp = None;
     for _ in 0..8 {
         let candidate = dir.join(temp_name(&name.to_string_lossy()));
-        match fs.write_new_progress(&candidate, bytes, progress) {
+        match write_tmp(&candidate) {
             Ok(()) => {
                 tmp = Some(candidate);
                 break;

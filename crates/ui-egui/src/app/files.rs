@@ -58,6 +58,19 @@ impl PhotocraftApp {
     /// [`Self::open_bytes`] for a file read from `path` (File › Save writes back there; it goes
     /// to Open Recent), when known.
     pub(crate) fn open_bytes_from(&mut self, name: &str, bytes: &[u8], path: Option<&str>) -> Result<Vec<String>, String> {
+        self.open_bytes_placed(name, bytes, path, None, None)
+    }
+
+    /// [`Self::open_bytes_from`] for a file dropped on a tab slot (`slot`) or opened as one of a
+    /// set (`order`): both survive the inline decode, a memory prompt and the final placement.
+    pub(crate) fn open_bytes_placed(
+        &mut self,
+        name: &str,
+        bytes: &[u8],
+        path: Option<&str>,
+        slot: Option<usize>,
+        order: Option<crate::jobs_ui::OpenOrder>,
+    ) -> Result<Vec<String>, String> {
         if let Some(r) = preset_files_ui::open(self, name, bytes) {
             return r.map(|()| Vec::new());
         }
@@ -65,15 +78,28 @@ impl PhotocraftApp {
         // Decoded on a worker: a tab with progress appears now, the document when it's ready
         // (warnings are shown then).
         if self.background_jobs {
-            jobs_ui::start_open(self, name, path.map(str::to_string), jobs_ui::bytes(bytes))?;
+            jobs_ui::start_open(self, name, path.map(str::to_string), jobs_ui::bytes(bytes), slot, order)?;
             return Ok(Vec::new());
         }
         let import = self.services.import.as_ref().ok_or("no importer configured")?;
         let opts = photocraft_engine::jobs::import_options(self.session.prefs());
-        let (mut doc, warnings, damaged) = if photocraft_io::is_psd(bytes) {
+        // A PSD and a magic-detected TIFF both go through the typed IO path: only it carries
+        // `PsdApprovalRequired` (and, for a PSD, the structured damaged flag), so a layered
+        // TIFF's high-memory decision can raise its prompt instead of becoming a terminal
+        // string. Every other format keeps the shell's import service.
+        let typed_open = photocraft_io::is_psd(bytes) || photocraft_codecs::detect(bytes) == Some(photocraft_codecs::Format::Tiff);
+        let (mut doc, warnings, damaged) = if typed_open {
             // Read PSD damage as structured information in the same decode, not by
-            // retrying an error or matching the text of a compatibility warning.
-            let (r, damaged) = photocraft_io::import_for_open(name, bytes, &opts).map_err(|e| e.to_string())?;
+            // retrying an error or matching the text of a compatibility warning. A TIFF never
+            // sets it: its layered import has no damaged-content confirmation.
+            let (r, damaged) = match photocraft_io::import_for_open(name, bytes, &opts) {
+                Ok(result) => result,
+                Err(photocraft_io::IoError::PsdApprovalRequired { .. }) => {
+                    jobs_ui::start_open(self, name, path.map(str::to_string), jobs_ui::bytes(bytes), slot, order)?;
+                    return Ok(Vec::new());
+                }
+                Err(error) => return Err(error.to_string()),
+            };
             (r.document, r.warnings, damaged)
         } else {
             let (doc, warnings) = import(name, bytes, &opts)?;
@@ -99,7 +125,8 @@ impl PhotocraftApp {
                 path: path.map(str::to_string),
                 warnings: warnings.clone(),
                 bytes: (wants_raw && path.is_none()).then(|| std::sync::Arc::new(bytes.to_vec())),
-                slot: None,
+                slot,
+                order,
                 question,
                 policy_applied: false,
             },
@@ -112,13 +139,18 @@ impl PhotocraftApp {
     /// Returns the import warnings (also shown to the user). Brush and gradient
     /// files go to the preset libraries, as for interactive opens.
     pub fn open_automation_bytes(&mut self, name: &str, bytes: &[u8]) -> Result<Vec<String>, String> {
+        self.open_automation_bytes_with_approval(name, bytes, false)
+    }
+
+    /// [`Self::open_automation_bytes`] with the caller's high-memory approval for the imported bytes.
+    pub fn open_automation_bytes_with_approval(&mut self, name: &str, bytes: &[u8], approved: bool) -> Result<Vec<String>, String> {
         let events_enabled = self.session.prefs().script_events.enabled;
         if events_enabled {
             self.session.edit_prefs(|prefs| prefs.script_events.enabled = false);
         }
         let result = match preset_files_ui::open(self, name, bytes) {
             Some(r) => r.map(|()| Vec::new()),
-            None => self.import_automation_document(name, bytes),
+            None => self.import_automation_document(name, bytes, approved),
         };
         if events_enabled {
             self.session.edit_prefs(|prefs| prefs.script_events.enabled = true);
@@ -128,9 +160,10 @@ impl PhotocraftApp {
 
     /// The document half of [`open_automation_bytes`](Self::open_automation_bytes): no script
     /// events and no Color Settings policy (which may read user-configured profile paths).
-    fn import_automation_document(&mut self, name: &str, bytes: &[u8]) -> Result<Vec<String>, String> {
+    fn import_automation_document(&mut self, name: &str, bytes: &[u8], approved: bool) -> Result<Vec<String>, String> {
         let import = self.services.import.as_ref().ok_or("no importer configured")?;
-        let opts = photocraft_engine::jobs::import_options(self.session.prefs());
+        let mut opts = photocraft_engine::jobs::import_options(self.session.prefs());
+        opts.psd_high_memory_approved = approved;
         let (mut doc, warnings) = import(name, bytes, &opts)?;
         photocraft_engine::file_cmds::raw_defaults(&self.session, &warnings, &mut doc);
         // The caller records the path it read from.
@@ -215,9 +248,10 @@ impl PhotocraftApp {
                 {
                     return r;
                 }
+                let from = app.session.journal.len();
                 let r = app.save_to(path.clone(), choices)?;
                 if plain_save && own.as_deref() == Some(path.as_str()) {
-                    app.journal_as_plain_save(&path);
+                    app.journal_as_plain_save(&path, from);
                 }
                 Ok(r)
             })
@@ -248,13 +282,14 @@ impl PhotocraftApp {
             jpeg_options_ui::park(self, path.clone(), copy, "file.saveAs")?;
             return Ok(serde_json::json!({"path": path, "warnings": []}));
         }
-        // A layered TIFF asks about its layers first (Preferences › File Handling); the save
+        // A TIFF asks for TIFF Options (compression, pyramid, transparency, layers); the save
         // continues from the prompt, which records the step once answered.
-        if tiff_options_ui::wants_prompt(self, &path) {
-            tiff_options_ui::park(self, path.clone())?;
+        if choices.tiff.is_none() && tiff_options_ui::wants_prompt(self, &path) {
+            tiff_options_ui::park(self, path.clone(), false, "file.saveAs")?;
             return Ok(serde_json::json!({"path": path, "warnings": []}));
         }
-        self.save_as_step(path, None, choices)
+        let tiff_layers = choices.tiff.and_then(|t| t.layers);
+        self.save_as_step(path, tiff_layers, choices)
     }
 
     /// File › Save back to the document's own file, recorded as a `file.save` step with the
@@ -276,8 +311,8 @@ impl PhotocraftApp {
     /// Writes the Save As and journals it as a `file.saveAs` step with its path (and TIFF,
     /// Targa, DDS or JPEG answer), so an action being recorded keeps it (#2032).
     fn save_as_step(&mut self, path: String, tiff_layers: Option<bool>, choices: FormatChoices) -> Result<Value, String> {
-        let r = self.write_save(path.clone(), tiff_layers, choices)?;
-        let mut step = serde_json::json!({"path": path});
+        let mut step = self.save_as_record(&path);
+        let r = self.write_save(path, tiff_layers, choices)?;
         if let Some(layers) = tiff_layers {
             step["tiffLayers"] = layers.into();
         }
@@ -286,15 +321,72 @@ impl PhotocraftApp {
         Ok(r)
     }
 
+    /// The `file.saveAs` step that records a Save As of the active document to `path`, taken
+    /// before the save renames the document. With the document's own name kept (the name Save
+    /// As suggests), only the folder and the extension are recorded, so the action saves each
+    /// document it is played on under that document's name, as in Photoshop (#5305); a name
+    /// typed in is recorded as it is.
+    pub(crate) fn save_as_record(&self, path: &str) -> Value {
+        let file = std::path::Path::new(path);
+        let kept = self.own_file_stem().is_some_and(|own| file.file_stem().is_some_and(|s| s.to_string_lossy() == own));
+        match (kept, file.extension()) {
+            (true, Some(ext)) => {
+                let folder = file.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
+                serde_json::json!({"folder": folder, "extension": ext.to_string_lossy()})
+            }
+            _ => serde_json::json!({"path": path}),
+        }
+    }
+
+    /// `step` (a save answered in a format prompt, recorded with its `path`) as
+    /// [`Self::save_as_record`] records it when it is a Save As of the active document.
+    pub(crate) fn record_answered_save_as(&self, record: &str, step: &mut Value) {
+        if record != "file.saveAs" {
+            return;
+        }
+        let Some(path) = step.get("path").and_then(Value::as_str).map(str::to_owned) else { return };
+        if let (Some(s), Value::Object(r)) = (step.as_object_mut(), self.save_as_record(&path)) {
+            s.remove("path");
+            s.extend(r);
+        }
+    }
+
+    /// The name Save As suggests for the active document, without its extension: its file's,
+    /// or its own for a document never saved ("Untitled" for one with no name).
+    fn own_file_stem(&self) -> Option<String> {
+        let st = self.session.active()?;
+        let source = st.path.as_deref().unwrap_or(&st.doc.name);
+        let stem = std::path::Path::new(source).file_stem().map(|s| s.to_string_lossy().into_owned()).filter(|s| !s.is_empty());
+        Some(stem.unwrap_or_else(|| "Untitled".into()))
+    }
+
+    /// The file a recorded `file.saveAs` step writes: its `path`, or for a step recorded with
+    /// the document's own name, that folder and extension with the active document's name.
+    fn recorded_save_path(&self, params: &Value) -> Result<String, String> {
+        if let Some(path) = params.get("path").and_then(Value::as_str).filter(|p| !p.is_empty()) {
+            return Ok(path.to_string());
+        }
+        let (Some(folder), Some(ext)) =
+            (params.get("folder").and_then(Value::as_str), params.get("extension").and_then(Value::as_str).filter(|e| !e.is_empty()))
+        else {
+            return Err("Save As needs a `path`, or a `folder` and an `extension`".into());
+        };
+        let stem = self.own_file_stem().ok_or("no document")?;
+        let name = format!("{stem}.{ext}");
+        Ok(if folder.is_empty() { name } else { std::path::Path::new(folder).join(name).to_string_lossy().into_owned() })
+    }
+
     /// Re-label the Save As just journaled for `path` as File › Save (see [`Self::save_dialog_flow`]),
-    /// keeping its Targa, DDS or JPEG answer so playback writes the file the same way. A save
-    /// parked behind Targa, DDS or JPEG Options hasn't been journaled yet: it is recorded as
-    /// File › Save once answered.
-    pub(crate) fn journal_as_plain_save(&mut self, path: &str) {
+    /// keeping its Targa, DDS, JPEG or TIFF answer so playback writes the file the same way. A save
+    /// parked behind Targa, DDS, JPEG or TIFF Options hasn't been journaled yet: it is recorded as
+    /// File › Save once answered. Only a step journaled at index `from` or later (by this save)
+    /// is re-labeled.
+    pub(crate) fn journal_as_plain_save(&mut self, path: &str, from: usize) {
         let parked = [
             self.targa_options.as_mut().map(|p| (&p.path, &mut p.record)),
             self.dds_options.as_mut().map(|p| (&p.path, &mut p.record)),
             self.jpeg_options.as_mut().map(|p| (&p.path, &mut p.record)),
+            self.tiff_options.as_mut().map(|p| (&p.path, &mut p.record)),
         ];
         if let Some((_, record)) = parked.into_iter().flatten().find(|(p, record)| p.as_str() == path && **record == "file.saveAs") {
             *record = "file.save";
@@ -302,14 +394,34 @@ impl PhotocraftApp {
         }
         // Only the path goes: a script's format answer stays, so a replay writes the file it is
         // played on the same way. Any other answer (TIFF layers) keeps the Save As.
-        if let Some(last) = self.session.journal.last_mut()
-            && last.0 == "file.saveAs"
-            && last.1.get("path").and_then(Value::as_str) == Some(path)
+        // A Save As that kept the document's own name was recorded as its folder (#5305); the
+        // document now has that file, so it resolves back to `path`.
+        let journal = &self.session.journal;
+        let recorded = journal.last().filter(|last| last.0 == "file.saveAs" && journal.len() > from).and_then(|last| self.recorded_save_path(&last.1).ok());
+        if recorded.is_some_and(|r| std::path::Path::new(&r) == std::path::Path::new(path))
+            && let Some(last) = self.session.journal.last_mut()
             && let Some(step) = last.1.as_object()
-            && step.keys().all(|k| matches!(k.as_str(), "path" | "tgaBits" | "ddsCompression" | "ddsMipmaps" | "quality" | "jpegFormat"))
+            && step.keys().all(|k| {
+                matches!(
+                    k.as_str(),
+                    "path"
+                        | "folder"
+                        | "extension"
+                        | "tgaBits"
+                        | "ddsCompression"
+                        | "ddsMipmaps"
+                        | "quality"
+                        | "jpegFormat"
+                        | "tiffCompression"
+                        | "tiffTransparency"
+                        | "tiffPyramid"
+                )
+            })
         {
             let mut step = step.clone();
-            step.remove("path");
+            for k in ["path", "folder", "extension"] {
+                step.remove(k);
+            }
             *last = ("file.save".into(), Value::Object(step));
         }
     }
@@ -342,14 +454,15 @@ impl PhotocraftApp {
             // Export As has its own settings, its TGA bits included (#7207).
             return crate::export_dialog::replay(self, params);
         }
-        let path = params.get("path").and_then(Value::as_str).filter(|p| !p.is_empty()).ok_or("Save As needs a `path`")?;
         let choices = FormatChoices::from_step(params, id)?;
         if id == "file.saveACopy" {
+            let path = params.get("path").and_then(Value::as_str).filter(|p| !p.is_empty()).ok_or("Save a Copy needs a `path`")?;
             // A copy: the document keeps its own file and unsaved state, as when recorded (#4373).
             let doc = self.session.active().ok_or("no document")?.doc.clone();
             return crate::view_cmds::write_copy(self, &doc, path, choices);
         }
-        self.save_as_step(path.to_string(), params.get("tiffLayers").and_then(Value::as_bool), choices)
+        let path = self.recorded_save_path(params)?;
+        self.save_as_step(path, params.get("tiffLayers").and_then(Value::as_bool), choices)
     }
 
     /// What a save writes by default under the preferences: File Handling › Image Previews
@@ -558,15 +671,21 @@ impl PhotocraftApp {
         self.tiff_options.is_some() || self.targa_options.is_some() || self.dds_options.is_some() || self.jpeg_options.is_some()
     }
 
-    /// Writes a save that waited on a format prompt (Targa, DDS or JPEG Options) once answered:
+    /// Writes a save that waited on a format prompt (Targa, DDS, JPEG or TIFF Options) once answered:
     /// journals `step` as its command (`file.saveAs` for Save As, `file.saveACopy` for Save a
     /// Copy, `file.save` for a plain Save), so an action being recorded keeps it with this answer
     /// (#2032, #4373), reports a failure in the status bar, and releases a close prompt waiting on
     /// the save.
     pub(crate) fn write_answered_save(&mut self, ctx: &egui::Context, doc: DocId, path: String, settings: &ExportSettings, copy: bool, step: (&str, Value)) {
-        let written = self.with_document(doc, |app| app.write_document(path, settings, copy));
+        let (record, mut step) = step;
+        let written = self.with_document(doc, |app| {
+            // Before the save renames the document: a Save As that keeps its own name records
+            // only the folder (#5305).
+            app.record_answered_save_as(record, &mut step);
+            app.write_document(path, settings, copy)
+        });
         if written.is_ok() {
-            self.session.journal.push((step.0.into(), step.1));
+            self.session.journal.push((record.into(), step));
         }
         match written {
             Err(e) => {
