@@ -250,6 +250,5 @@ The measurements establish equivalence to the starting PhotoCraft kernel, not a
 new Photoshop oracle or broader parity increase. Cold startup, actual GUI
 input/frame latency, allocation counts and other platforms' native performance
 remain unmeasured. No performance budget, scorecard checklist or parity floor is
-raised from these local results. The shared craftrules checkout was unavailable
-at the documented paths; the repository's own contributor and validation rules
+raised from these local results. The repository's own contributor and validation rules
 were followed.

@@ -18,15 +18,18 @@ use crate::error::{RawError, Result};
 
 /// The browser build has no JPEG XL decoder (see the module docs).
 #[cfg(target_arch = "wasm32")]
-pub(crate) fn decode(_src: &[u8], _w: usize, _h: usize, _samples: usize, _bits: u32, _limits: &Limits) -> Result<Vec<u16>> {
+pub(crate) fn decode(_src: &[u8], _w: usize, _h: usize, _samples: usize, _bits: u32, _float_scale: Option<f32>, _limits: &Limits) -> Result<Vec<u16>> {
     Err(RawError::unsupported("JPEG XL-compressed DNG (DNG 1.7) can't be opened in the browser version of PhotoCraft; open it in the desktop app"))
 }
 
 /// Decodes one segment into `w * h * samples` interleaved samples at `bits` per sample (the
-/// TIFF BitsPerSample, which DNG requires the codestream's bit depth to match).
+/// TIFF BitsPerSample, which DNG requires the codestream's bit depth to match). Floating-point
+/// samples (SampleFormat 3) come back multiplied by `float_scale`, clipped to 0..=65535.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn decode(src: &[u8], w: usize, h: usize, samples: usize, bits: u32, limits: &Limits) -> Result<Vec<u16>> {
-    limits.check(w as u64, h as u64, samples as u64 * 2)?;
+pub(crate) fn decode(src: &[u8], w: usize, h: usize, samples: usize, bits: u32, float_scale: Option<f32>, limits: &Limits) -> Result<Vec<u16>> {
+    // Floating-point samples are read into an f32 buffer first: four bytes a sample, not two.
+    let sample_bytes = if float_scale.is_some() { 4 } else { 2 };
+    limits.check(w as u64, h as u64, samples as u64 * sample_bytes)?;
     // jxl-oxide decodes into f32/i32 planes: allow a few times the output size, and never more
     // than the caller's per-buffer limit.
     let budget = (w as u64).saturating_mul(h as u64).saturating_mul(samples as u64).saturating_mul(16).min(limits.max_alloc);
@@ -50,6 +53,13 @@ pub(crate) fn decode(src: &[u8], w: usize, h: usize, samples: usize, bits: u32, 
             return Err(RawError::unsupported("rotated JPEG XL raw tile"));
         }
         let n = w.checked_mul(h).and_then(|p| p.checked_mul(samples)).ok_or_else(|| RawError::malformed("JPEG XL raw tile is too large"))?;
+        if let Some(scale) = float_scale {
+            let mut f = vec![0f32; n];
+            if stream.write_to_buffer(&mut f) != n {
+                return Err(RawError::malformed("JPEG XL raw data is truncated"));
+            }
+            return Ok(f.into_iter().map(|v| if v.is_nan() { 0 } else { (v * scale).clamp(0.0, 65535.0).round() as u16 }).collect());
+        }
         let mut out = vec![0u16; n];
         if stream.write_to_buffer(&mut out) != n {
             return Err(RawError::malformed("JPEG XL raw data is truncated"));

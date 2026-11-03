@@ -40,8 +40,12 @@ impl<'a> Rd<'a> {
     fn u64(&mut self) -> Option<u64> {
         self.take(8).map(|b| u64::from_be_bytes(b.try_into().unwrap_or([0; 8])))
     }
+    /// Decode a bounded metadata filename without trusting its declared allocation size.
     fn unicode(&mut self) -> Option<String> {
         let n = self.u32()? as usize;
+        if n > 32_768 {
+            return None;
+        } // A file name is metadata, never an unbounded allocation.
         let raw = self.take(n.checked_mul(2)?)?;
         let units: Vec<u16> = raw.as_chunks::<2>().0.iter().map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
         Some(String::from_utf16_lossy(&units).trim_end_matches('\0').to_string())
@@ -95,6 +99,12 @@ pub fn embedded_file_name(meta: &Metadata, uuid: &str) -> Option<String> {
     })
 }
 
+/// Borrow the selected item payload without copying it.
+fn item_data(item: &[u8]) -> Option<(String, String, &[u8])> {
+    let (uuid, name, start, len) = item_header(item)?;
+    Some((uuid, name, item.get(start..start.checked_add(len)?)?))
+}
+
 /// Every embedded (`liFD`) file in one linked-layer block's data.
 pub fn parse_linked_files(data: &[u8]) -> Vec<LinkedFile> {
     let mut out = Vec::new();
@@ -113,12 +123,63 @@ pub fn find_linked_file(meta: &Metadata, uuid: &str) -> Option<LinkedFile> {
     find_in_blocks(meta.psd_global_blocks.iter().map(|(_, k, d)| (k, d.as_slice())), uuid)
 }
 
+/// Borrow only the selected embedded payload, without copying other smart objects or reading disk.
+pub fn embedded_payload<'a>(meta: &'a Metadata, uuid: &str) -> Option<(String, &'a [u8])> {
+    embedded_payload_in_blocks(meta.psd_global_blocks.iter().map(|(_, key, data)| (key, data.as_slice())), uuid)
+}
+
+/// Borrow one selected payload from PSD global blocks without copying unrelated files.
+pub fn embedded_payload_in_blocks<'a>(blocks: impl IntoIterator<Item = (&'a [u8; 4], &'a [u8])>, uuid: &str) -> Option<(String, &'a [u8])> {
+    if uuid.is_empty() {
+        return None;
+    }
+    for (key, data) in blocks {
+        if !matches!(key, b"lnk2" | b"lnk3" | b"lnkD") {
+            continue;
+        }
+        let mut r = Rd { d: data, p: 0 };
+        while let Some(len) = r.u64().and_then(|n| usize::try_from(n).ok()) {
+            let Some(item) = r.take(len) else { break };
+            if let Some((id, name, bytes)) = item_data(item)
+                && id == uuid
+            {
+                return Some((name, bytes));
+            }
+            r.p = r.p.checked_add(3)? & !3;
+        }
+    }
+    None
+}
+
 /// The embedded file for smart-object `uuid` among PSD global blocks given as (key, data).
 pub fn find_in_blocks<'a>(blocks: impl IntoIterator<Item = (&'a [u8; 4], &'a [u8])>, uuid: &str) -> Option<LinkedFile> {
     if uuid.is_empty() {
         return None;
     }
-    blocks.into_iter().filter(|(k, _)| matches!(*k, b"lnk2" | b"lnk3" | b"lnkD")).flat_map(|(_, d)| parse_linked_files(d)).find(|f| f.uuid == uuid)
+    let (uuid, file_name, bytes) = find_slice_in_blocks(blocks, uuid)?;
+    Some(LinkedFile { uuid, file_name, bytes: bytes.to_vec() })
+}
+
+/// [`find_in_blocks`] without copying: the uuid, file name and bytes of the embedded file, as a
+/// slice of the block. Only the matching item's header is parsed beyond the uuid, and no other
+/// embedded file is copied (a `lnk2` block can hold gigabytes of them).
+fn find_slice_in_blocks<'a>(blocks: impl IntoIterator<Item = (&'a [u8; 4], &'a [u8])>, uuid: &str) -> Option<(String, String, &'a [u8])> {
+    if uuid.is_empty() {
+        return None;
+    }
+    blocks.into_iter().filter(|(k, _)| matches!(*k, b"lnk2" | b"lnk3" | b"lnkD")).find_map(|(_, d)| {
+        let mut r = Rd { d, p: 0 };
+        while let Some(len) = r.u64() {
+            let Ok(len) = usize::try_from(len) else { return None };
+            let item = r.take(len)?;
+            let found = item_header(item).filter(|h| h.0 == uuid).and_then(|(id, name, start, n)| Some((id, name, item.get(start..start.checked_add(n)?)?)));
+            if found.is_some() {
+                return found;
+            }
+            r.p = r.p.next_multiple_of(4);
+        }
+        None
+    })
 }
 
 /// The size of embedded file `uuid` among PSD global blocks given as (key, data), when it is there
@@ -128,17 +189,19 @@ pub(crate) fn source_size_in_blocks<'a>(
     uuid: &str,
     ctl: &photocraft_raster::Interrupt,
 ) -> Option<(f64, f64)> {
-    let f = find_in_blocks(blocks, uuid)?;
+    let (_, _, bytes) = find_slice_in_blocks(blocks, uuid)?;
     if ctl.cancelled() {
         return None;
     }
-    source_size_probe(&f.bytes).filter(|(w, h)| *w > 0.0 && *h > 0.0)
+    source_size_probe(bytes).filter(|(w, h)| *w > 0.0 && *h > 0.0)
 }
 
 /// Pixel size of an embedded source file from its header: PSD/PSB, TIFF (the default page's
-/// directory), PNG (`IHDR`) and JPEG (the frame header); any other image is decoded flat by
-/// `photocraft-codecs`. It never imports a document: a layered TIFF can carry PSD layer data
-/// whose `lnkD` holds another file, so a full import here would nest without bound (#2465).
+/// directory), PNG (`IHDR`) and JPEG (the frame header); WebP, GIF, BMP, EXR and the rest of
+/// `photocraft_codecs::probe_size`'s formats from their decoder's header; anything else (or a
+/// header that probe cannot read) is decoded flat by `photocraft-codecs`. It never imports a
+/// document: a layered TIFF can carry PSD layer data whose `lnkD` holds another file, so a full
+/// import here would nest without bound (#2465).
 pub(crate) fn source_size_probe(bytes: &[u8]) -> Option<(f64, f64)> {
     let be32 = |at: usize| bytes.get(at..at + 4).map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]));
     let size = |w: u32, h: u32| (f64::from(w), f64::from(h));
@@ -151,10 +214,7 @@ pub(crate) fn source_size_probe(bytes: &[u8]) -> Option<(f64, f64)> {
         }
         [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, ..] => be32(16).zip(be32(20)).map(|(w, h)| size(w, h)),
         [0xFF, 0xD8, ..] => jpeg_size(bytes),
-        _ => photocraft_codecs::decode(bytes).ok().map(|img| {
-            let (w, h) = img.dimensions();
-            size(w, h)
-        }),
+        _ => photocraft_codecs::probe_size(bytes).or_else(|_| photocraft_codecs::decode(bytes).map(|img| img.dimensions())).ok().map(|(w, h)| size(w, h)),
     }
 }
 
@@ -408,9 +468,11 @@ mod tests {
     fn source_size_probe_reads_headers() {
         use photocraft_codecs::{ChannelLayout, EncodeOptions, Format, Image, SampleType};
         let img = Image::new(7, 5, ChannelLayout::Rgb, SampleType::U8).unwrap();
-        for format in [Format::Png, Format::Jpeg, Format::Tiff, Format::Bmp] {
+        for format in [Format::Png, Format::Jpeg, Format::Tiff, Format::Bmp, Format::WebP, Format::Gif, Format::OpenExr, Format::Tga] {
             let bytes = photocraft_codecs::encode(&img, format, &EncodeOptions::default()).unwrap();
             assert_eq!(source_size_probe(&bytes), Some((7.0, 5.0)), "{format:?}");
+            // A header cut short neither panics nor invents a size (the decode fallback fails too).
+            assert_eq!(source_size_probe(&bytes[..10]), None, "{format:?} truncated");
         }
         let mut psd = b"8BPS\0\x01".to_vec();
         psd.extend([0; 6]);
@@ -571,5 +633,28 @@ mod tests {
         // A literal replacement character can itself be a valid UTF-8 identity.
         let valid_unicode = encode_linked_file(&LinkedFile { uuid: "\u{fffd}".into(), file_name: "unicode.psb".into(), bytes: vec![4; 2] });
         assert!(select_items(&valid_unicode, &|uuid, _| uuid == "\u{fffd}").unwrap().is_none());
+    }
+}
+
+#[cfg(test)]
+mod bounded_payload_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn selected_payload_is_borrowed_and_other_sources_are_not_copied() {
+        let a = LinkedFile { uuid: "a".into(), file_name: "Other.psb".into(), bytes: vec![1; 1024 * 1024] };
+        let b = LinkedFile { uuid: "b".into(), file_name: "Logo.ai".into(), bytes: b"%PDF-1.6".to_vec() };
+        let mut data = encode_linked_file(&a);
+        data.extend(encode_linked_file(&b));
+        let mut meta = Metadata::default();
+        meta.psd_global_blocks.push((*b"8BIM", *b"lnk2", Arc::new(data)));
+        let (name, bytes) = embedded_payload(&meta, "b").unwrap();
+        assert_eq!(name, "Logo.ai");
+        assert_eq!(bytes, b.bytes);
+        let original = meta.psd_global_blocks[0].2.as_slice();
+        assert!((original.as_ptr_range()).contains(&bytes.as_ptr()));
+        assert!(embedded_payload(&meta, "").is_none());
+        assert!(embedded_payload(&meta, "/dev/zero").is_none());
     }
 }

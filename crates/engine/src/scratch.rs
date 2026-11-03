@@ -118,7 +118,8 @@ mod native {
 pub(crate) fn configure(prefs: &Preferences) {
     let budget = photocraft_raster::memory::configure(photocraft_raster::memory::Policy {
         percent: prefs.performance.memory_usage_percent,
-        absolute_bytes: u64::from(prefs.performance.memory_usage_mb).saturating_mul(1 << 20),
+        // The web build's cap applies here too (effective_memory_usage_mb).
+        absolute_bytes: u64::from(prefs.performance.effective_memory_usage_mb()).saturating_mul(1 << 20),
     });
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -128,13 +129,16 @@ pub(crate) fn configure(prefs: &Preferences) {
             .iter()
             .find(|d| d.enabled && !d.path.trim().is_empty())
             .map(|d| if d.path.trim() == "(system temp)" { std::env::temp_dir() } else { std::path::PathBuf::from(d.path.trim()) });
-        // An unusable directory disables eviction without dropping resident pixels.
+        // An unusable or full directory pauses eviction without dropping resident pixels and
+        // is retried with backoff; History's byte limit applies meanwhile (sync_scratch_state).
         // The reason is exposed in ui.inspect and the application's status bar.
         let tiles = if std::env::var_os("PHOTOCRAFT_TILE_BUDGET_MB").is_some() {
             prefs.performance.tile_budget_bytes()
         } else {
             usize::try_from(budget.tile_bytes).unwrap_or(usize::MAX)
         };
+        let limit = prefs.scratch_disks.size_limit_mb;
+        photocraft_raster::spill::set_size_cap((limit > 0).then(|| u64::from(limit).saturating_mul(1 << 20)));
         let _ = photocraft_raster::spill::configure(dir.as_deref(), tiles);
     }
     #[cfg(target_arch = "wasm32")]

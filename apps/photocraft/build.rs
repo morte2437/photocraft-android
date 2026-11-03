@@ -11,6 +11,14 @@ fn main() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }
+    // Printing to PDF (winprint's `PdfCreateRenderer`) imports Windows.Data.Pdf.dll, which
+    // stripped Windows images (NTLite, some N/LTSC builds) lack. A load-time import stops the exe
+    // from starting at all ("windows.data.pdf.dll was not found", #5884), so load it on first use;
+    // the print command checks for it first and reports an error instead.
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        println!("cargo:rustc-link-arg-bins=/DELAYLOAD:windows.data.pdf.dll");
+        println!("cargo:rustc-link-arg-bins=delayimp.lib");
+    }
     let mut res = winresource::WindowsResource::new();
     res.set_icon("../../assets/app-icon/photocraft.ico")
         .set("ProductName", "PhotoCraft")

@@ -55,9 +55,15 @@ fn map_fill(a: &Affine, f: &mut Fill) {
     if let Fill::Gradient { angle, offset, .. } = f {
         *angle = map_angle(a, *angle);
         // The centre offset (a fraction of the frame) turns with the canvas: exact for 90° turns
-        // and flips, where the frame's sides swap with the axes.
+        // and flips, where the frame's sides swap with the axes. Scale (Image Size) resizes the
+        // frame too, so only each axis's direction applies.
+        let unit = |x: f64, y: f64| {
+            let n = x.hypot(y);
+            if n < EPS { (x, y) } else { (x / n, y / n) }
+        };
+        let ((m0, m1), (m2, m3)) = (unit(a.m[0], a.m[1]), unit(a.m[2], a.m[3]));
         let (ox, oy) = (f64::from(offset.0), f64::from(offset.1));
-        *offset = ((a.m[0] * ox + a.m[2] * oy) as f32, (a.m[1] * ox + a.m[3] * oy) as f32);
+        *offset = ((m0 * ox + m2 * oy) as f32, (m1 * ox + m3 * oy) as f32);
     }
 }
 
@@ -69,6 +75,81 @@ fn retag_text(dpi: f32, t: &mut TextLayer) {
     let mut eng = photocraft_text::shared().lock().unwrap_or_else(|e| e.into_inner());
     let layout = eng.layout(t, dpi);
     t.psd_raw = Some(Arc::new(photocraft_text::psd::build_tysh(t, dpi, layout.bounds())));
+}
+
+/// Sets the document resolution keeping every type layer's size in pixels, as Photoshop does (its
+/// point size changes instead). Text space is in pixels at `pt x dpi / 72`, so it grows by
+/// new / old: box and path scale with it, and the layer transform undoes that.
+pub(crate) fn set_resolution(doc: &mut Document, dpi: f32) {
+    let old = std::mem::replace(&mut doc.resolution_dpi, dpi);
+    if !(old.is_finite() && old > 0.0 && dpi.is_finite() && dpi > 0.0) || old == dpi {
+        return;
+    }
+    let k = f64::from(dpi) / f64::from(old);
+    let grow = Affine::scale(k);
+    crate::image_cmds::for_each_layer(&mut doc.layers, &mut |l| {
+        let LayerContent::Text(t) = &mut l.content else { return };
+        t.transform = t.transform.mul(&Affine::scale(1.0 / k));
+        match &mut t.shape {
+            photocraft_doc::text::TextShape::Box { x, y, width, height } => {
+                for v in [x, y, width, height] {
+                    *v = grown(*v, k);
+                }
+            }
+            photocraft_doc::text::TextShape::Path { path, start, .. } => {
+                path.knots.iter_mut().for_each(|kn| *kn = kn.transform(&grow));
+                *start = grown(*start, k);
+            }
+            photocraft_doc::text::TextShape::Area { path } => *path = path.transform(&grow),
+            photocraft_doc::text::TextShape::Point => {}
+        }
+        retag_text(dpi, t);
+    });
+}
+
+/// Moves the type of `doc` (scratch copies on their way to another document) to `dpi` keeping its
+/// pixels, as the reference application does when a type layer is copied between documents of
+/// different resolutions: every size in points is rewritten by old / new (24 pt at 72 ppi is
+/// 5.76 pt at 300 ppi), so `pt x dpi / 72` pixels stay the same and the layer gets no
+/// compensating transform. Box, path and transform are in pixels and stay; tracking and kerning
+/// (1/1000 em) and auto leading (a multiple of the size) follow the size.
+pub(crate) fn retarget_type_resolution(doc: &mut Document, dpi: f32) {
+    // The text engine lays out a resolution that isn't a positive number at 72 ppi.
+    let effective = |d: f32| if d.is_finite() && d > 0.0 { f64::from(d) } else { 72.0 };
+    let old = std::mem::replace(&mut doc.resolution_dpi, dpi);
+    let k = effective(old) / effective(dpi);
+    if !(k.is_finite() && k > 0.0) || k == 1.0 {
+        return;
+    }
+    crate::image_cmds::for_each_layer(&mut doc.layers, &mut |l| {
+        let LayerContent::Text(t) = &mut l.content else { return };
+        t.size_pt = point_size(t.size_pt, k);
+        for r in &mut t.runs {
+            let st = &mut r.style;
+            st.size_pt = point_size(st.size_pt, k);
+            st.leading_pt = st.leading_pt.map(|v| point_size(v, k));
+            st.baseline_shift_pt = grown(st.baseline_shift_pt, k);
+        }
+        for p in &mut t.paragraphs {
+            let st = &mut p.style;
+            for v in [&mut st.first_line_indent_pt, &mut st.start_indent_pt, &mut st.end_indent_pt, &mut st.space_before_pt, &mut st.space_after_pt] {
+                *v = grown(*v, k);
+            }
+        }
+        retag_text(dpi, t);
+    });
+}
+
+/// A positive size in points times `k`, kept finite and above zero (a tiny ratio must not make
+/// the text vanish).
+fn point_size(v: f32, k: f64) -> f32 {
+    let out = grown(v, k);
+    if v > 0.0 && out <= 0.0 { f32::MIN_POSITIVE } else { out }
+}
+
+/// `v x k` kept finite (a huge box from a file must not become infinite).
+fn grown(v: f32, k: f64) -> f32 {
+    (f64::from(v) * k).clamp(-f64::from(f32::MAX), f64::from(f32::MAX)) as f32
 }
 
 /// Applies `a` to one layer's (and its children's) non-pixel geometry. With `content` false only
@@ -95,6 +176,9 @@ pub(crate) fn transform_layer_geometry(l: &mut Layer, a: &Affine, content: bool,
         LayerContent::Shape(sh) => {
             if let Some(f) = &mut sh.fill {
                 map_fill(a, f);
+            }
+            if let Some(st) = &mut sh.stroke {
+                map_fill(a, &mut st.paint);
             }
             if content {
                 crate::vector_cmds::transform_shape(sh, a);
@@ -150,15 +234,24 @@ pub(crate) fn transform_doc_marks(doc: &mut Document, a: &Affine) {
     if m1.abs() < EPS && m2.abs() < EPS {
         g.horizontal.iter_mut().for_each(|y| *y = m3 * *y + ty);
         g.vertical.iter_mut().for_each(|x| *x = m0 * *x + tx);
+        // Colours are keyed by exact position, so they move by the same expressions.
+        for c in &mut g.colors {
+            c.position = if c.vertical { m0 * c.position + tx } else { m3 * c.position + ty };
+        }
     } else if m0.abs() < EPS && m3.abs() < EPS {
         // A horizontal guide at y becomes a vertical one at x' = m2·y + tx, and vice versa.
         let v: Vec<f64> = g.horizontal.iter().map(|y| m2 * y + tx).collect();
         let h: Vec<f64> = g.vertical.iter().map(|x| m1 * x + ty).collect();
         g.horizontal = h;
         g.vertical = v;
+        for c in &mut g.colors {
+            c.position = if c.vertical { m1 * c.position + ty } else { m2 * c.position + tx };
+            c.vertical = !c.vertical;
+        }
     } else {
         g.horizontal.clear();
         g.vertical.clear();
+        g.colors.clear();
     }
 }
 
@@ -238,7 +331,8 @@ impl Turn {
 }
 
 /// Every pixel surface a canvas turn moves: content, rendered caches (type, shape, smart object,
-/// fill), masks (layer, smart filter), alpha channels, Quick Mask and the selection.
+/// fill), stored video frames (current and original), masks (layer, smart filter), alpha
+/// channels, Quick Mask and the selection.
 fn remap_pixels(doc: &mut Document, map: &dyn Fn(i32, i32) -> (i32, i32)) {
     fn rec(layers: &mut [Layer], map: &dyn Fn(i32, i32) -> (i32, i32)) {
         let re = |s: &mut Surface| *s = remap_surface(s, map);
@@ -248,6 +342,10 @@ fn remap_pixels(doc: &mut Document, map: &dyn Fn(i32, i32) -> (i32, i32)) {
             }
             if let Some(fc) = &mut l.fill_cache {
                 re(&mut fc.surface);
+            }
+            // Frames away from the playhead come back on scrubbing; they turn with the canvas (#4956).
+            if let Some(v) = &mut l.video {
+                v.frames.iter_mut().chain(v.original_frames.iter_mut().flatten()).for_each(re);
             }
             match &mut l.content {
                 LayerContent::Raster(s) => re(s),

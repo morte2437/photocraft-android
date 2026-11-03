@@ -8,4 +8,6 @@
   <String Id="WelcomeDlgDescription" Value="The Setup Wizard will install [ProductName] version [PhotocraftVersion] on your computer. Click Next to continue or Cancel to exit the Setup Wizard." />
   <String Id="VerifyReadyDlgInstallTitle" Value="{\WixUI_Font_Title}Ready to install [ProductName] [PhotocraftVersion]" />
   <String Id="ExitDialogTitle" Value="{\WixUI_Font_Bigger}Completed the [ProductName] [PhotocraftVersion] Setup Wizard" />
+  <String Id="PhotocraftInstallDirNote" Value="PhotoCraft installs for your user account only, into your own Programs folder, without asking an administrator for permission." />
+  <String Id="PhotocraftAllUsers" Value="Install for all users of this computer (asks an administrator)" />
 </WixLocalization>

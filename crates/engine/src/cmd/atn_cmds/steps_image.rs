@@ -1,0 +1,885 @@
+use super::descriptors::{
+    PX, Target, ang, boolean, class, code, desc, enm, enumerated, get_bool, get_enum, get_list, get_num, get_obj, get_ref, jbool, jnum, jstr, layer_ref,
+    layer_target, long, num, pct, px, ref_class, target, trimmed,
+};
+use super::events::pixel_target;
+use super::fields::{F, Kind, Mapped, fields_from, fields_to, step};
+use super::tables::{CHANNELS, INTERPOLATION, RADIAL_METHOD, RADIAL_QUALITY, channel_of, lookup, lookup_back};
+use super::{D, Descriptor, Map, ReferenceItem, UnicodeString, Value, json};
+
+/// The reference point of a Free Transform (`QCSt`): `Qcsa` the centre (average), `Qcs0`..`Qcs3`
+/// the corners clockwise from the top left, `Qcs4`..`Qcs7` the sides top, right, bottom, left.
+/// `Qcsi` (independent) and unknown codes have no mapping and stay kept steps.
+const TRANSFORM_REFERENCE: &[(&str, &str)] = &[
+    ("Qcsa", "center"),
+    ("Qcs0", "topLeft"),
+    ("Qcs4", "top"),
+    ("Qcs1", "topRight"),
+    ("Qcs7", "left"),
+    ("Qcs5", "right"),
+    ("Qcs3", "bottomLeft"),
+    ("Qcs6", "bottom"),
+    ("Qcs2", "bottomRight"),
+];
+
+/// `transform`: Photoshop records a Free Transform relative to the frame (offset of its centre,
+/// width/height in percent, angle). A layer moved only becomes `layer.translate`; anything
+/// else is `edit.transform`'s relative form; the selection's frame is `select.transformSelection`.
+pub(super) fn transform_from(d: &Descriptor) -> Mapped {
+    // No reference (a smart object replaced in place, `replaceLayer`) means the target layer.
+    let target_layer = [ReferenceItem::Enumerated { class: class("Lyr "), type_id: code("Ordn"), value: code("Trgt") }];
+    let r: &[ReferenceItem] = get_ref(d, "null").unwrap_or(&target_layer);
+    let unsupported = Mapped::Unsupported { harmless: false };
+    let mut p = Map::new();
+    if let Some(o) = get_obj(d, "Ofst") {
+        let in_px = |k: &str| matches!(o.get(k), Some(D::UnitFloat { unit: PX, .. }));
+        if !in_px("Hrzn") || !in_px("Vrtc") {
+            return unsupported;
+        }
+        if let Some(x) = get_num(o, "Hrzn") {
+            p.insert("dx".into(), x.into());
+        }
+        if let Some(y) = get_num(o, "Vrtc") {
+            p.insert("dy".into(), y.into());
+        }
+    }
+    for (key, param) in [("Wdth", "scaleX"), ("Hght", "scaleY"), ("Angl", "rotate")] {
+        if let Some(v) = get_num(d, key) {
+            p.insert(param.into(), v.into());
+        }
+    }
+    if d.get("Skew").is_some() || d.get("Usng").is_some() {
+        return unsupported;
+    }
+    // A whole-pixel move is a plain `layer.translate`; a fractional one needs `edit.transform`
+    // to keep its sub-pixel placement and interpolation.
+    let whole_pixels = ["dx", "dy"].iter().all(|k| p.get(*k).and_then(Value::as_f64).is_none_or(|v| v.fract() == 0.0));
+    let geometry_only = p.keys().all(|k| k == "dx" || k == "dy") && whole_pixels;
+    if let Some(value) = d.get("FTcs") {
+        let D::Enumerated { type_id, value } = value else { return unsupported };
+        let Some(reference) = lookup(TRANSFORM_REFERENCE, &trimmed(value)).filter(|_| type_id.is("QCSt")) else { return unsupported };
+        if reference != "center" && !geometry_only {
+            p.insert("reference".into(), reference.into());
+        }
+    }
+    // The resampling applies to a selection as much as to a layer (#7515).
+    // Photoshop's bicubic variants are kept (the transforms render them as Bicubic, and they export
+    // back unchanged); Automatic and Preserve Details become the nearest bicubic choice. Dropping
+    // them fell back to the command's default, bilinear for a selection (#8697).
+    let interpolation = get_enum(d, "Intr").and_then(|i| lookup(INTERPOLATION, &i)).and_then(|i| match i {
+        "bicubic" | "bilinear" | "nearest" | "bicubicSharper" | "bicubicSmoother" | "bicubicAutomatic" => Some(i),
+        "automatic" => Some("bicubicAutomatic"),
+        "preserveDetails" => Some("bicubic"),
+        _ => None,
+    });
+    match (ref_class(r).as_deref(), target(r)) {
+        (Some("Chnl"), Target::Property(prop)) if prop == "fsel" => {
+            if let Some(i) = interpolation {
+                p.insert("interpolation".into(), i.into());
+            }
+            step("select.transformSelection", Value::Object(p))
+        }
+        (Some("Lyr"), _) => {
+            let Some(mut lp) = layer_target(r) else { return unsupported };
+            if geometry_only {
+                lp.insert("dx".into(), p.get("dx").and_then(Value::as_f64).unwrap_or(0.0).into());
+                lp.insert("dy".into(), p.get("dy").and_then(Value::as_f64).unwrap_or(0.0).into());
+                return step("layer.translate", Value::Object(lp));
+            }
+            lp.extend(p);
+            if let Some(i) = interpolation {
+                lp.insert("interpolation".into(), i.into());
+            }
+            step("edit.transform", Value::Object(lp))
+        }
+        _ => unsupported,
+    }
+}
+
+/// Export relative transforms with frame anchors, refusing unsupported geometry and targets.
+pub(super) fn transform_to(id: &str, p: &Value) -> Option<Descriptor> {
+    let given = |k: &str| p.get(k).is_some_and(|v| !v.is_null());
+    if ["quad", "corners", "matrix", "rect"].iter().any(|k| given(k)) {
+        return None;
+    }
+    // Skew and warp still have no descriptor mapping (#7517, #7518, #7519).
+    let nonzero = |k: &str| p.get(k).is_some_and(|v| !v.is_null() && v.as_f64() != Some(0.0));
+    if nonzero("skewX") || nonzero("skewY") || ["warp", "style", "mesh", "grid"].iter().any(|k| given(k)) {
+        return None;
+    }
+    let target = match id {
+        // The `Trnf` descriptor has no field for a mask, Quick Mask or alpha channel target; a
+        // layer reference would transform the layer's pixels instead.
+        "edit.transform" if !pixel_target(p) => return None,
+        "edit.transform" => layer_ref(p)?,
+        "select.transformSelection" => D::Reference(vec![ReferenceItem::Property { class: class("Chnl"), key: code("fsel") }]),
+        _ => return None,
+    };
+    let reference = match p.get("reference").filter(|v| !v.is_null()) {
+        Some(v) => lookup_back(TRANSFORM_REFERENCE, v.as_str()?)?,
+        None => "Qcsa",
+    };
+    let mut d = desc("null").with("null", target).with("FTcs", enm("QCSt", reference));
+    d = d.with("Ofst", D::Descriptor(desc("Ofst").with("Hrzn", px(jnum(p, "dx").unwrap_or(0.0))).with("Vrtc", px(jnum(p, "dy").unwrap_or(0.0)))));
+    for (key, param) in [("Wdth", "scaleX"), ("Hght", "scaleY")] {
+        if let Some(v) = jnum(p, param) {
+            d = d.with(key, pct(v));
+        }
+    }
+    if let Some(a) = jnum(p, "rotate") {
+        d = d.with("Angl", ang(a));
+    }
+    if let Some(i) = jstr(p, "interpolation").and_then(|i| lookup_back(INTERPOLATION, i)) {
+        d = d.with("Intr", enm("Intp", i));
+    }
+    Some(d)
+}
+
+/// `Clcn` (Apply Image / Calculations blending) ↔ `image.applyImage`'s `blending`.
+const CALC_BLEND: &[(&str, &str)] = &[
+    ("Nrml", "normal"),
+    ("Mltp", "multiply"),
+    ("Scrn", "screen"),
+    ("Ovrl", "overlay"),
+    ("SftL", "softLight"),
+    ("HrdL", "hardLight"),
+    ("CDdg", "colorDodge"),
+    ("CBrn", "colorBurn"),
+    ("Drkn", "darken"),
+    ("Lghn", "lighten"),
+    ("Dfrn", "difference"),
+    ("Xclu", "exclusion"),
+    ("linearBurn", "linearBurn"),
+    ("linearDodge", "linearDodge"),
+    ("Add ", "add"),
+    ("Sbtr", "subtract"),
+];
+
+const SOURCE_CHANNELS: &[(&str, &str)] =
+    &[("RGB", "composite"), ("CMYK", "composite"), ("Lab", "composite"), ("Trsp", "transparency"), ("Msk", "mask"), ("fsel", "selection")];
+
+pub(super) fn apply_image_from(d: &Descriptor) -> Mapped {
+    let unsupported = Mapped::Unsupported { harmless: false };
+    let Some(with) = get_obj(d, "With") else { return unsupported };
+    let Some(r) = get_ref(with, "T   ") else { return unsupported };
+    let mut source = Map::new();
+    for item in r {
+        match item {
+            ReferenceItem::Enumerated { class, value, .. } if class.class_id.is("Chnl") => {
+                let v = trimmed(value);
+                let Some(channel) = lookup(SOURCE_CHANNELS, &v).or_else(|| channel_of(&v)) else { return unsupported };
+                source.insert("channel".into(), channel.into());
+            }
+            // A named (alpha) channel.
+            ReferenceItem::Name { class, name } if class.class_id.is("Chnl") => {
+                source.insert("channel".into(), name.to_string_lossy().into());
+            }
+            ReferenceItem::Name { class, name } if class.class_id.is("Lyr ") => {
+                source.insert("layer".into(), name.to_string_lossy().into());
+            }
+            ReferenceItem::Enumerated { class, value, .. } if class.class_id.is("Lyr ") && trimmed(value) == "Mrgd" => {
+                source.insert("layer".into(), "merged".into());
+            }
+            _ => return unsupported,
+        }
+    }
+    if let Some(i) = get_bool(with, "Invr") {
+        source.insert("invert".into(), i.into());
+    }
+    let mut p = json!({"source": source});
+    if let Some(c) = get_enum(with, "Clcl") {
+        match lookup(CALC_BLEND, &c) {
+            Some(b) => p["blending"] = json!(b),
+            None => return unsupported,
+        }
+    }
+    for (key, param) in [("Scl ", "scale"), ("Ofst", "offset"), ("Opct", "opacity")] {
+        if let Some(v) = get_num(with, key) {
+            p[param] = json!(v);
+        }
+    }
+    if let Some(t) = get_bool(with, "PrsT") {
+        p["preserveTransparency"] = json!(t);
+    }
+    step("image.applyImage", p)
+}
+
+/// Apply Image's source channel as a `Chnl` reference item. The dialog sends Channels-panel names
+/// ("RGB", "Red", "Alpha 1"), which the command reads case-insensitively: the composite names map to
+/// the composite, colour names to their enumeration, and any other name to a named (alpha) channel,
+/// as Photoshop records it.
+fn apply_image_channel(channel: &str) -> Option<ReferenceItem> {
+    let l = channel.to_ascii_lowercase();
+    let key = match l.as_str() {
+        "rgb" | "cmyk" | "lab" | "merged" => "composite",
+        "layermask" => "mask",
+        // Sources the command knows by keyword but Photoshop has no channel for.
+        "quickmask" | "quick mask" | "vectormask" | "vector mask" => return None,
+        other => other,
+    };
+    Some(match lookup_back(SOURCE_CHANNELS, key).or_else(|| lookup_back(CHANNELS, key)) {
+        Some(chan) => ReferenceItem::Enumerated { class: class("Chnl"), type_id: code("Chnl"), value: code(chan) },
+        None if !channel.trim().is_empty() => ReferenceItem::Name { class: class("Chnl"), name: UnicodeString::new_nul(channel) },
+        None => return None,
+    })
+}
+
+pub(super) fn apply_image_to(_: &str, p: &Value) -> Option<Descriptor> {
+    // The optional blending mask has no descriptor mapping: refuse it rather than drop it,
+    // which would widen the edit to the whole layer.
+    let mask_channel = match p.get("mask") {
+        Some(m) => m.get("channel"),
+        None => p.get("maskChannel"),
+    };
+    if mask_channel.is_some_and(|c| !(c.is_null() || c == "none" || c == "")) {
+        return None;
+    }
+    // The Apply Image dialog sends flat `sourceLayer`/`sourceChannel`/`sourceInvert` fields; read
+    // them as the command does, or the export would quietly reset them to the merged composite.
+    let source = crate::channel_cmds::source_spec(p, "source", "source").unwrap_or(json!({}));
+    // A source from another open document has no event form here: skip the step, don't rewrite it.
+    if source.get("document").is_some_and(|d| !d.is_null()) {
+        return None;
+    }
+    // A layer id or channel index has no name to record: refuse it rather than write the composite.
+    let not_name = |k: &str| source.get(k).is_some_and(|v| !(v.is_null() || v.is_string()));
+    if !source.is_object() || not_name("layer") || not_name("channel") {
+        return None;
+    }
+    let mut items = vec![apply_image_channel(jstr(&source, "channel").unwrap_or("composite"))?];
+    match jstr(&source, "layer") {
+        Some("merged") | None => items.push(ReferenceItem::Enumerated { class: class("Lyr "), type_id: code("Ordn"), value: code("Mrgd") }),
+        Some(name) => items.push(ReferenceItem::Name { class: class("Lyr "), name: UnicodeString::new_nul(name) }),
+    }
+    let mut with = desc("null").with("T   ", D::Reference(items));
+    if let Some(i) = jbool(&source, "invert") {
+        with = with.with("Invr", D::Boolean(i));
+    }
+    with = with.with("Clcl", enm("Clcn", lookup_back(CALC_BLEND, jstr(p, "blending").unwrap_or("multiply"))?));
+    if let Some(v) = jnum(p, "opacity") {
+        with = with.with("Opct", pct(v));
+    }
+    if let Some(v) = jnum(p, "scale") {
+        with = with.with("Scl ", D::Double(v));
+    }
+    if let Some(v) = jnum(p, "offset") {
+        with = with.with("Ofst", D::Double(v));
+    }
+    if let Some(t) = jbool(p, "preserveTransparency") {
+        with = with.with("PrsT", D::Boolean(t));
+    }
+    Some(desc("null").with("With", D::Descriptor(with)))
+}
+
+pub(super) const RIPPLE_SIZE: &[(&str, &str)] = &[("Sml", "small"), ("Mdm", "medium"), ("Lrg", "large")];
+
+/// Camera Raw Filter's scalar sliders. Every one is an integer in recorded steps except `Ex12`
+/// and `ShpR` (doubles); the layout is from 62 recorded steps in 14 sets (#6745) and matches the
+/// verified PSD Smart Filter mapping (`photocraft-io`'s `camera_raw_map.rs`).
+const CAMERA_RAW: &[F] = &[
+    F("Temp", "temperature", Kind::Long),
+    F("Tint", "tint", Kind::Long),
+    F("Ex12", "exposure", Kind::Dbl),
+    F("Cr12", "contrast", Kind::Long),
+    F("Hi12", "highlights", Kind::Long),
+    F("Sh12", "shadows", Kind::Long),
+    F("Wh12", "whites", Kind::Long),
+    F("Bk12", "blacks", Kind::Long),
+    F("CrTx", "texture", Kind::Long),
+    F("Cl12", "clarity", Kind::Long),
+    F("Dhze", "dehaze", Kind::Long),
+    F("Vibr", "vibrance", Kind::Long),
+    F("Strt", "saturation", Kind::Long),
+    F("PC_H", "curveHighlights", Kind::Long),
+    F("PC_L", "curveLights", Kind::Long),
+    F("PC_D", "curveDarks", Kind::Long),
+    F("PC_S", "curveShadows", Kind::Long),
+    F("CgBl", "gradeBlending", Kind::Long),
+    F("STB ", "gradeBalance", Kind::Long),
+    F("Shrp", "sharpenAmount", Kind::Long),
+    F("ShpR", "sharpenRadius", Kind::Dbl),
+    F("ShpD", "sharpenDetail", Kind::Long),
+    F("ShpM", "sharpenMasking", Kind::Long),
+    F("LNR ", "noiseLuminance", Kind::Long),
+    F("LNRD", "noiseLuminanceDetail", Kind::Long),
+    F("CNR ", "noiseColor", Kind::Long),
+    F("CNRD", "noiseColorDetail", Kind::Long),
+    F("GRNA", "grainAmount", Kind::Long),
+    F("GRNS", "grainSize", Kind::Long),
+    F("GRNF", "grainRoughness", Kind::Long),
+    F("PCVA", "vignetteAmount", Kind::Long),
+    F("PCVM", "vignetteMidpoint", Kind::Long),
+    F("PCVR", "vignetteRoundness", Kind::Long),
+    F("PCVF", "vignetteFeather", Kind::Long),
+    F("PCVH", "vignetteHighlights", Kind::Long),
+];
+
+/// The range a Camera Raw Filter descriptor key's value can take, as `filter.cameraRaw` and the
+/// PSD Smart Filter mapping (`photocraft-io`'s `camera_raw_map.rs`) accept it.
+fn camera_raw_range(key: &str) -> std::ops::RangeInclusive<f64> {
+    match key {
+        "Ex12" => -5.0..=5.0,
+        "ShpR" => 0.5..=3.0,
+        "Shrp" => 0.0..=150.0,
+        "STSH" | "STHH" | "CgMH" | "CgGH" => 0.0..=360.0,
+        "PC_1" | "PC_2" | "PC_3" | "ShpD" | "ShpM" | "LNR " | "LNRD" | "CNR " | "CNRD" | "STSS" | "STHS" | "CgMS" | "CgGS" | "CgBl" | "GRNA" | "GRNS"
+        | "GRNF" | "PCVM" | "PCVF" | "PCVH" => 0.0..=100.0,
+        _ => -100.0..=100.0,
+    }
+}
+
+/// The hidden param an imported Camera Raw Filter step keeps its recorded descriptor in, so
+/// Save Actions writes the step back unchanged while its settings are the ones it imported with.
+const CAMERA_RAW_DESCRIPTOR: &str = "__atnDescriptor";
+
+/// The colour grading wheels' keys, the tone curve splits and the vignette style.
+const CAMERA_RAW_GRADES: &[&str] =
+    &["STSH", "STSS", "CgSL", "CgMH", "CgMS", "CgML", "STHH", "STHS", "CgHL", "CgGH", "CgGS", "CgGL", "PC_1", "PC_2", "PC_3", "PCVS"];
+
+/// A recorded Camera Raw Filter step (`Adobe Camera Raw Filter`) as `filter.cameraRaw` (#6745).
+/// Settings the command has no counterpart for refuse the step rather than replaying a different
+/// look: the Calibration panel, a white balance other than Custom, the controls the PSD mapping
+/// keeps only at their neutral values, and any key outside this table (lens, geometry, profile,
+/// masks…), as the PSD mapping's `known_key` does, and a process version the PSD mapping hasn't
+/// verified (Camera Raw renders each version differently).
+pub(super) fn camera_raw_from(d: &Descriptor) -> Mapped {
+    const CALIBRATION: &[&str] = &["RHue", "RSat", "GHue", "GSat", "BHue", "BSat", "BlkB"];
+    const NEUTRAL_ONLY: &[(&str, f64)] =
+        &[("LNRC", 0.0), ("CNRS", 50.0), ("MDis", 0.0), ("VigA", 0.0), ("VigM", 50.0), ("crfs", 100.0), ("TMMs", 0.0), ("PGTM", 0.0), ("RGBt", 0.0)];
+    const OTHER: &[&str] = &["CrVe", "PrVe", "PrVN", "WBal", "Crv ", "CrvR", "CrvG", "CrvB"];
+    let known = |k: &str| {
+        (k.len() == 4 && ["HA_", "SA_", "LA_"].iter().any(|p| k.starts_with(p)) && ["R", "O", "Y", "G", "A", "B", "P", "M"].iter().any(|c| k.ends_with(c)))
+            || CAMERA_RAW.iter().any(|F(f, ..)| *f == k)
+            || CAMERA_RAW_GRADES.contains(&k)
+            || OTHER.contains(&k)
+            || CALIBRATION.contains(&k)
+            || NEUTRAL_ONLY.iter().any(|(n, _)| *n == k)
+    };
+    // An empty step (no descriptor) would play as a no-op, and a key the table doesn't know may
+    // be active processing (lens, geometry, profile, masks) that playback would leave out.
+    if d.items.is_empty() || d.items.iter().any(|(k, _)| !std::str::from_utf8(k.as_bytes()).is_ok_and(known)) {
+        return Mapped::Unsupported { harmless: false };
+    }
+    let version = (get_num(d, "PrVN"), get_num(d, "PrVe"));
+    let verified = [(5.0, 184_549_376.0), (6.0, 251_920_384.0)].iter().any(|(n, v)| version == (Some(*n), Some(*v)));
+    if !verified || !matches!(d.get("CrVe"), Some(D::Text(_))) {
+        return Mapped::Unsupported { harmless: false };
+    }
+    let active = |k: &str, neutral: f64| d.get(k).is_some() && get_num(d, k) != Some(neutral);
+    let custom_wb = d.get("WBal").is_none() || get_enum(d, "WBal").as_deref() == Some("Cst");
+    if !custom_wb || CALIBRATION.iter().any(|k| active(k, 0.0)) || NEUTRAL_ONLY.iter().any(|(k, n)| active(k, *n)) {
+        return Mapped::Unsupported { harmless: false };
+    }
+    // A value that is recorded but isn't a number, or lies outside the slider's range, can't
+    // replay: `fields_from` and `nums` would drop it (or read it as 0), and playback would clamp
+    // it, so the step would play a different look. The ranges are the PSD mapping's.
+    let unreadable = |k: &str| match (d.get(k), get_num(d, k)) {
+        (None, _) => false,
+        (Some(_), None) => true,
+        (Some(_), Some(v)) => k != "PCVS" && !(v.is_finite() && camera_raw_range(k).contains(&v)),
+    };
+    let grouped = ["HA_", "SA_", "LA_"].iter().flat_map(|p| ["R", "O", "Y", "G", "A", "B", "P", "M"].map(|c| format!("{p}{c}")));
+    if CAMERA_RAW.iter().any(|F(k, ..)| unreadable(k)) || grouped.into_iter().any(|k| unreadable(&k)) || CAMERA_RAW_GRADES.iter().any(|k| unreadable(k)) {
+        return Mapped::Unsupported { harmless: false };
+    }
+    let Some(mut m) = fields_from(d, CAMERA_RAW) else { return Mapped::Unsupported { harmless: false } };
+    let nums = |keys: &[&str]| -> Option<Vec<Value>> {
+        let v: Vec<Option<f64>> = keys.iter().map(|k| get_num(d, k)).collect();
+        // Absent members keep the command's defaults only when the whole group is absent.
+        if v.iter().all(Option::is_none) { None } else { Some(v.into_iter().map(|n| Value::from(n.unwrap_or(0.0))).collect()) }
+    };
+    // The splits are one setting: all three, or none (the defaults); a partial set can't replay,
+    // nor can splits outside 0..=100 or out of order, which would build a different curve.
+    match (get_num(d, "PC_1"), get_num(d, "PC_2"), get_num(d, "PC_3")) {
+        (Some(a), Some(b), Some(c)) if (0.0..=100.0).contains(&a) && a < b && b < c && c <= 100.0 => {
+            m.insert("curveSplits".into(), json!([a, b, c]));
+        }
+        (Some(_), Some(_), Some(_)) => return Mapped::Unsupported { harmless: false },
+        _ if ["PC_1", "PC_2", "PC_3"].iter().any(|k| d.get(k).is_some()) => return Mapped::Unsupported { harmless: false },
+        _ => {}
+    }
+    for (prefix, param) in [("HA_", "hslHue"), ("SA_", "hslSat"), ("LA_", "hslLum")] {
+        let keys: Vec<String> = ["R", "O", "Y", "G", "A", "B", "P", "M"].iter().map(|c| format!("{prefix}{c}")).collect();
+        if let Some(v) = nums(&keys.iter().map(String::as_str).collect::<Vec<_>>()) {
+            m.insert(param.into(), Value::Array(v));
+        }
+    }
+    for (keys, param) in [
+        (["STSH", "STSS", "CgSL"], "gradeShadows"),
+        (["CgMH", "CgMS", "CgML"], "gradeMidtones"),
+        (["STHH", "STHS", "CgHL"], "gradeHighlights"),
+        (["CgGH", "CgGS", "CgGL"], "gradeGlobal"),
+    ] {
+        if let Some(v) = nums(&keys) {
+            m.insert(param.into(), json!({"hue": v[0], "sat": v[1], "lum": v[2]}));
+        }
+    }
+    match get_num(d, "PCVS") {
+        None => {}
+        Some(n) => match [(1.0, "highlightPriority"), (2.0, "colorPriority"), (3.0, "paintOverlay")].iter().find(|(k, _)| *k == n) {
+            Some((_, style)) => {
+                m.insert("vignetteStyle".into(), json!(style));
+            }
+            None => return Mapped::Unsupported { harmless: false },
+        },
+    }
+    // Point curves: flat `[in0, out0, in1, out1, …]` lists on 0..255, as the command's pairs.
+    for (key, param) in [("Crv ", "pointCurve"), ("CrvR", "pointCurveRed"), ("CrvG", "pointCurveGreen"), ("CrvB", "pointCurveBlue")] {
+        if d.get(key).is_none() {
+            continue;
+        }
+        let Some(list) = get_list(d, key) else { return Mapped::Unsupported { harmless: false } };
+        let Some(flat) = list.iter().map(num).collect::<Option<Vec<f64>>>() else { return Mapped::Unsupported { harmless: false } };
+        // Odd lengths, and curves `filter.cameraRaw` refuses (one point, out of range, inputs not
+        // increasing), stay Photoshop steps rather than failing on playback.
+        let points: Vec<[f32; 2]> = flat.as_chunks::<2>().0.iter().map(|[a, b]| [*a as f32, *b as f32]).collect();
+        if flat.len() % 2 != 0 || photocraft_algo::camera_raw::validate_curve(&points).is_err() {
+            return Mapped::Unsupported { harmless: false };
+        }
+        let identity = flat == [0.0, 0.0, 255.0, 255.0];
+        if !identity {
+            m.insert(param.into(), Value::Array(flat.as_chunks::<2>().0.iter().map(|[a, b]| json!([a, b])).collect()));
+        }
+    }
+    m.insert(CAMERA_RAW_DESCRIPTOR.into(), json!(photocraft_paint::tile::b64_encode(&d.to_bytes())));
+    step(crate::lens_cmds::RAW, Value::Object(m))
+}
+
+/// An imported Camera Raw Filter step back as its recorded descriptor, unchanged. Only while the
+/// params are still what that descriptor imports as: an edited step, or one PhotoCraft recorded,
+/// has no verified Photoshop form and Save Actions refuses it.
+pub(super) fn camera_raw_to(_: &str, p: &Value) -> Option<Descriptor> {
+    let d = Descriptor::from_bytes(&photocraft_paint::tile::b64_decode(jstr(p, CAMERA_RAW_DESCRIPTOR)?)?).ok()?;
+    let Mapped::Steps(steps) = camera_raw_from(&d) else { return None };
+    let [(_, imported)] = steps.as_slice() else { return None };
+    let (mut a, mut b) = (imported.clone(), p.clone());
+    for v in [&mut a, &mut b] {
+        super::convert::normalise(v);
+        v.as_object_mut()?.remove(CAMERA_RAW_DESCRIPTOR);
+    }
+    (a == b).then_some(d)
+}
+
+/// Whether a Select and Mask step carries Refine Edge Brush strokes or the workspace's tool
+/// edits (Quick Selection, Brush, Lasso…), which no descriptor holds.
+pub(super) fn has_refine_strokes(p: &Value) -> bool {
+    p.get("refineStrokes").is_some_and(|v| !v.is_null() && v.as_array().is_none_or(|a| !a.is_empty())) || crate::select_mask_edits::has_edits(p)
+}
+
+/// Select and Mask to Photoshop. The descriptor has no field for the Refine Edge Brush or the
+/// workspace's tools, so a step with `refineStrokes` or `edits` can't be exported faithfully. One with `sampleAllLayers` is not
+/// exported here either: it exports as `smartBrushWorkspace`.
+pub(super) fn refine_edge_to(_: &str, p: &Value) -> Option<Descriptor> {
+    if !pixel_target(p) || p.get("sampleAllLayers").is_some() || has_refine_strokes(p) {
+        return None;
+    }
+    fields_to(p, REFINE_EDGE, desc("null"))
+}
+
+/// Select and Mask (`refineSelectionEdge`). Smart Radius, decontamination and the output follow
+/// Photoshop's; the edge itself is PhotoCraft's own matting, so results differ in detail.
+pub(super) const REFINE_EDGE: &[F] = &[
+    F("refineEdgeBorderRadius", "radius", Kind::Px),
+    F("refineEdgeAutoRadius", "smartRadius", Kind::Bool),
+    F("refineEdgeSmooth", "smooth", Kind::Long),
+    F("refineEdgeFeatherRadius", "feather", Kind::Px),
+    F("refineEdgeBorderContrast", "contrast", Kind::Pct),
+    F("refineEdgeChoke", "shiftEdge", Kind::Pct),
+    F("refineEdgeDecontaminate", "decontaminate", Kind::Bool),
+    F("refineEdgeDeconAmount", "amount", Kind::Pct),
+    F("refineEdgeOutput", "output", Kind::Enum("refineEdgeOutput", REFINE_OUTPUT)),
+];
+
+const REFINE_OUTPUT: &[(&str, &str)] = &[
+    ("refineEdgeOutputSelection", "selection"),
+    ("refineEdgeOutputUserMask", "layerMask"),
+    ("refineEdgeOutputNewLayer", "newLayer"),
+    ("refineEdgeOutputNewLayerWithMask", "newLayerWithMask"),
+    ("refineEdgeOutputNewDocument", "newDocument"),
+    ("refineEdgeOutputNewDocumentWithMask", "newDocumentWithMask"),
+    // Newer Photoshop's name for Output To: Selection.
+    ("selectionOutputToSelection", "selection"),
+];
+
+pub(super) use super::steps_gallery::{GALLERY_IDS, gallery_from, gallery_to};
+
+/// Select and Mask as Photoshop CC 2015.5 and later record it (`smartBrushWorkspace`); the
+/// older Refine Edge event is [`REFINE_EDGE`], which is also what Select and Mask exports as.
+pub(super) const SMART_BRUSH: &[F] = &[
+    F("smartBrushRadius", "radius", Kind::Px),
+    F("smartBrushUseSmartRadius", "smartRadius", Kind::Bool),
+    F("smartBrushSmooth", "smooth", Kind::Long),
+    F("smartBrushFeather", "feather", Kind::Px),
+    F("smartBrushContrast", "contrast", Kind::Pct),
+    F("smartBrushShiftEdge", "shiftEdge", Kind::Pct),
+    F("smartBrushDecontaminate", "decontaminate", Kind::Bool),
+    F("smartBrushDeconAmount", "amount", Kind::Pct),
+    F("refineEdgeOutput", "output", Kind::Enum("refineEdgeOutput", REFINE_OUTPUT)),
+    F("sampleAllLayers", "sampleAllLayers", Kind::Bool),
+];
+
+/// Select › Color Range's `Clrs` presets ↔ `select.colorRange`'s `select`.
+const COLOR_RANGE: &[(&str, &str)] = &[
+    ("Rds", "reds"),
+    ("Ylws", "yellows"),
+    ("Grns", "greens"),
+    ("Cyns", "cyans"),
+    ("Bls", "blues"),
+    ("Mgnt", "magentas"),
+    ("Hghl", "highlights"),
+    ("Mdtn", "midtones"),
+    ("Shdw", "shadows"),
+    ("OtOf", "outOfGamut"),
+    ("skinTone", "skinTones"),
+];
+
+/// The Color Range keys the converter reads (or that don't change a preset's result:
+/// `colorModel` is the model of sampled colours).
+const COLOR_RANGE_KEYS: &[&str] = &[
+    "Clrs",
+    "Fzns",
+    "Invr",
+    "colorModel",
+    "shadowsFuzziness",
+    "shadowsUpperLimit",
+    "midtonesFuzziness",
+    "midtonesLowerLimit",
+    "midtonesUpperLimit",
+    "highlightsFuzziness",
+    "highlightsLowerLimit",
+];
+
+/// Color Range (`ClrR`) with a preset. Sampled Colors records Lab minimum and maximum colours,
+/// which `select.colorRange` (eyedropper points on the image) can't reproduce, and an unknown
+/// key (Detect Faces, Localized Color Clusters…) could change the result: both stay
+/// unsupported.
+pub(super) fn color_range_from(d: &Descriptor) -> Mapped {
+    let unsupported = Mapped::Unsupported { harmless: false };
+    if d.items.iter().any(|(k, _)| !COLOR_RANGE_KEYS.contains(&trimmed(k).as_str())) {
+        return unsupported;
+    }
+    let Some(preset) = get_enum(d, "Clrs").and_then(|c| lookup(COLOR_RANGE, &c)) else { return unsupported };
+    let mut p = Map::new();
+    p.insert("select".into(), preset.into());
+    let key = |suffix: &str| get_num(d, &format!("{preset}{suffix}"));
+    match preset {
+        "skinTones" => {
+            if let Some(f) = get_num(d, "Fzns") {
+                p.insert("fuzziness".into(), f.into());
+            }
+        }
+        "shadows" | "midtones" | "highlights" => {
+            if let Some(f) = key("Fuzziness") {
+                p.insert("fuzziness".into(), f.into());
+            }
+            let range = match (preset, key("LowerLimit"), key("UpperLimit")) {
+                ("shadows", _, hi) => hi.map(Value::from),
+                ("highlights", lo, _) => lo.map(Value::from),
+                (_, Some(lo), Some(hi)) => Some(json!([lo, hi])),
+                (_, None, None) => None,
+                _ => return unsupported,
+            };
+            if let Some(r) = range {
+                p.insert("tonalRange".into(), r);
+            }
+        }
+        _ => {}
+    }
+    if get_bool(d, "Invr") == Some(true) {
+        p.insert("invert".into(), true.into());
+    }
+    step("select.colorRange", Value::Object(p))
+}
+
+pub(super) fn color_range_to(_: &str, p: &Value) -> Option<Descriptor> {
+    let preset = jstr(p, "select")?;
+    if p.as_object()?.keys().any(|k| !matches!(k.as_str(), "select" | "fuzziness" | "tonalRange" | "invert")) {
+        return None;
+    }
+    let mut d = desc("null").with("Clrs", enm("Clrs", lookup_back(COLOR_RANGE, preset)?));
+    let tonal = matches!(preset, "shadows" | "midtones" | "highlights");
+    if let Some(f) = jnum(p, "fuzziness") {
+        match preset {
+            "skinTones" => d = d.with("Fzns", long(f)),
+            _ if tonal => d = d.with(&format!("{preset}Fuzziness"), long(f)),
+            _ => {}
+        }
+    }
+    if let Some(r) = p.get("tonalRange") {
+        match preset {
+            "shadows" => d = d.with("shadowsUpperLimit", long(r.as_f64()?)),
+            "highlights" => d = d.with("highlightsLowerLimit", long(r.as_f64()?)),
+            "midtones" => {
+                let a = r.as_array()?;
+                d = d.with("midtonesLowerLimit", long(a.first()?.as_f64()?)).with("midtonesUpperLimit", long(a.get(1)?.as_f64()?));
+            }
+            _ => return None,
+        }
+    }
+    if jbool(p, "invert") == Some(true) {
+        d = d.with("Invr", D::Boolean(true));
+    }
+    Some(d)
+}
+
+const RADIAL_BLUR_FIELDS: &[F] =
+    &[F("Amnt", "amount", Kind::Long), F("BlrM", "method", Kind::Enum("BlrM", RADIAL_METHOD)), F("BlrQ", "quality", Kind::Enum("BlrQ", RADIAL_QUALITY))];
+
+pub(super) fn radial_blur_from(d: &Descriptor) -> Mapped {
+    match fields_from(d, RADIAL_BLUR_FIELDS) {
+        Some(m) => step("filter.blur.radialBlur", Value::Object(m)),
+        None => Mapped::Unsupported { harmless: false },
+    }
+}
+
+pub(super) fn radial_blur_to(_: &str, p: &Value) -> Option<Descriptor> {
+    if !pixel_target(p) {
+        return None;
+    }
+    // Photoshop's Radial Blur has no center parameter and always blurs from the center (0.5, 0.5).
+    // An explicit center must match 0.5 exactly; any non-default center cannot be faithfully exported.
+    let is_default_center = |k: &str| match p.get(k) {
+        None | Some(Value::Null) => true,
+        Some(v) => v.as_f64() == Some(0.5),
+    };
+    if !is_default_center("centerX") || !is_default_center("centerY") {
+        return None;
+    }
+    fields_to(p, RADIAL_BLUR_FIELDS, desc("null"))
+}
+
+// ------------------------------------------------------------------ newer features (#10610)
+
+/// Whether every key of `d` is one of `keys` (codes compare without their space padding).
+fn only_keys(d: &Descriptor, keys: &[&str]) -> bool {
+    d.items.iter().all(|(k, _)| keys.contains(&trimmed(k).as_str()))
+}
+
+/// The step's `key` read by `read` (its space padding ignored, as `only_keys` admits it),
+/// `default` when the step leaves it out, `None` when it holds a value `read` can't take: that
+/// is still the step's setting, so the step is kept rather than played with the default. A key
+/// recorded more than once is `None` too: the step saves one value, so it would drop the other.
+fn setting<T>(d: &Descriptor, key: &str, read: impl Fn(&D) -> Option<T>, default: T) -> Option<T> {
+    let mut found = d.items.iter().filter(|(k, _)| trimmed(k) == key.trim_end());
+    match (found.next(), found.next()) {
+        (Some((_, v)), None) => read(v),
+        (None, _) => Some(default),
+        (Some(_), Some(_)) => None,
+    }
+}
+
+/// Whether `p` sets nothing but `allowed` (a `null` counts as unset).
+fn sets_only(p: &Value, allowed: &[&str]) -> bool {
+    p.is_null() || p.as_object().is_some_and(|m| m.iter().all(|(k, v)| v.is_null() || allowed.contains(&k.as_str())))
+}
+
+/// Focus Area (`focusMask`) and Remove Background (`removeBackground`): Photoshop runs both with
+/// an empty descriptor. A step that carries settings keeps them as a Photoshop step.
+pub(super) fn empty_from(d: &Descriptor, id: &str) -> Mapped {
+    if d.items.is_empty() { step(id, json!({})) } else { Mapped::Unsupported { harmless: false } }
+}
+
+/// Only a step with no settings writes the empty descriptor; any setting would be lost.
+pub(super) fn empty_to(_: &str, p: &Value) -> Option<Descriptor> {
+    sets_only(p, &[]).then(|| desc("null"))
+}
+
+/// Select Sky (`selectSky`): `sampleAllLayers` only, false when the step leaves it out
+/// (the command's own default is true).
+pub(super) fn select_sky_from(d: &Descriptor) -> Mapped {
+    match setting(d, "sampleAllLayers", boolean, false) {
+        Some(all) if only_keys(d, &["sampleAllLayers"]) => step("select.sky", json!({"sampleAllLayers": all})),
+        _ => Mapped::Unsupported { harmless: false },
+    }
+}
+
+/// The event has no mode, threshold or softness: only their replay values survive.
+pub(super) fn select_sky_to(_: &str, p: &Value) -> Option<Descriptor> {
+    let at = |k: &str, v: Value| p.get(k).is_none_or(|x| x.is_null() || *x == v || (x.as_f64().is_some() && x.as_f64() == v.as_f64()));
+    if !sets_only(p, &["sampleAllLayers", "mode", "threshold", "softness"])
+        || !at("mode", json!("replace"))
+        || !at("threshold", json!(50))
+        || !at("softness", json!(50))
+    {
+        return None;
+    }
+    let all = match p.get("sampleAllLayers") {
+        None | Some(Value::Null) => true,
+        Some(v) => v.as_bool()?,
+    };
+    Some(desc("null").with("sampleAllLayers", D::Boolean(all)))
+}
+
+/// A plain double, as Photoshop records Oil Paint's settings and the step saves them back: a
+/// value with a unit, or an integer, would save back as another value.
+fn double(v: &D) -> Option<f64> {
+    match v {
+        D::Double(n) if n.is_finite() => Some(*n),
+        _ => None,
+    }
+}
+
+/// An integer, as Photoshop records Oil Paint's light direction and the step saves it back.
+fn integer(v: &D) -> Option<i32> {
+    match v {
+        D::Integer(n) => Some(*n),
+        _ => None,
+    }
+}
+
+/// Oil Paint's keys in recorded order: (key, param, Photoshop's default, the command's default).
+const OIL_PAINT: &[(&str, &str, f64, f64)] = &[
+    ("stylization", "stylization", 4.0, 4.0),
+    ("cleanliness", "cleanliness", 2.299_999_952_316_28, 5.0),
+    ("brushScale", "scale", 0.800_000_011_920_93, 1.0),
+    ("microBrush", "bristleDetail", 10.0, 5.0),
+];
+
+/// `filter.stylize.oilPaint`'s ranges (the light direction's is the command's -180..180). Photoshop
+/// clamps a recorded value outside them when the step plays, so the import clamps it too; export
+/// refuses one, as the dialog cannot hold it.
+const OIL_PAINT_LIMITS: &[(&str, f64, f64)] = &[
+    ("stylization", 0.1, 10.0),
+    ("cleanliness", 0.0, 10.0),
+    ("scale", 0.1, 10.0),
+    ("bristleDetail", 0.0, 10.0),
+    ("angle", -180.0, 180.0),
+    ("shine", 0.0, 10.0),
+];
+
+/// Whether `n` is within `filter.stylize.oilPaint`'s range for `param` (a param without one is).
+fn in_oil_paint_limits(param: &str, n: f64) -> bool {
+    OIL_PAINT_LIMITS.iter().all(|(p, min, max)| *p != param || (*min..=*max).contains(&n))
+}
+
+/// `n` clamped to `filter.stylize.oilPaint`'s range for `param` (unchanged for a param without one).
+fn oil_paint_clamped(param: &str, n: f64) -> f64 {
+    OIL_PAINT_LIMITS.iter().find(|(p, ..)| *p == param).map_or(n, |(_, min, max)| n.clamp(*min, *max))
+}
+
+/// Oil Paint (`oilPaint`). Missing keys take Photoshop's defaults, which differ from the
+/// command's for cleanliness, scale, bristle detail and shine, so they are written out. A
+/// setting of another number type or with a unit keeps the Photoshop step; one outside the
+/// command's ranges is clamped, as Photoshop clamps it.
+pub(super) fn oil_paint_from(d: &Descriptor) -> Mapped {
+    match oil_paint_params(d) {
+        Some(p) => step("filter.stylize.oilPaint", Value::Object(p)),
+        None => Mapped::Unsupported { harmless: false },
+    }
+}
+
+fn oil_paint_params(d: &Descriptor) -> Option<Map<String, Value>> {
+    let keys = ["lightingOn", "stylization", "cleanliness", "brushScale", "microBrush", "LghD", "specularity"];
+    if !only_keys(d, &keys) {
+        return None;
+    }
+    let mut p = Map::new();
+    p.insert("lighting".into(), setting(d, "lightingOn", boolean, true)?.into());
+    for (key, param, ps, _) in OIL_PAINT {
+        p.insert((*param).into(), oil_paint_clamped(param, setting(d, key, double, *ps)?).into());
+    }
+    p.insert("angle".into(), oil_paint_clamped("angle", setting(d, "LghD", |v| integer(v).map(f64::from), -60.0)?).into());
+    p.insert("shine".into(), oil_paint_clamped("shine", setting(d, "specularity", double, 1.299_999_952_316_28)?).into());
+    Some(p)
+}
+
+/// Every key in recorded order, the command's defaults for what the step leaves out. The light
+/// direction is an integer: a fractional angle would replay rounded, so the step is refused, as
+/// is a setting outside the command's ranges.
+pub(super) fn oil_paint_to(_: &str, p: &Value) -> Option<Descriptor> {
+    if !pixel_target(p) || !sets_only(p, &["target", "lighting", "stylization", "cleanliness", "scale", "bristleDetail", "angle", "shine"]) {
+        return None;
+    }
+    let num = |k: &str, default: f64| match p.get(k) {
+        None | Some(Value::Null) => Some(default),
+        Some(v) => v.as_f64().filter(|n| n.is_finite() && in_oil_paint_limits(k, *n)),
+    };
+    let lighting = match p.get("lighting") {
+        None | Some(Value::Null) => true,
+        Some(v) => v.as_bool()?,
+    };
+    let angle = num("angle", -60.0)?;
+    if angle.fract() != 0.0 || !(f64::from(i32::MIN)..=f64::from(i32::MAX)).contains(&angle) {
+        return None;
+    }
+    let mut d = desc("null").with("lightingOn", D::Boolean(lighting));
+    for (key, param, _, ours) in OIL_PAINT {
+        d = d.with(key, D::Double(num(param, *ours)?));
+    }
+    Some(d.with("LghD", D::Integer(angle as i32)).with("specularity", D::Double(num("shine", 1.0)?)))
+}
+
+/// A unit double in `unit`: the step saves `Amnt` in `#Prc` and the radius in `#Pxl`, so a
+/// value in another unit, or without one, would save back as another value.
+fn in_unit(unit: [u8; 4]) -> impl Fn(&D) -> Option<f64> {
+    move |v| match v {
+        D::UnitFloat { unit: u, value } if *u == unit && value.is_finite() => Some(*value),
+        _ => None,
+    }
+}
+
+/// `filter.sharpen.smartSharpen`'s amount, radius and noise reduction limits, in
+/// `smart_sharpen_params`' key order. Photoshop clamps a recorded value outside them when the step
+/// plays, so the import clamps it too; export refuses one, as the dialog cannot hold it.
+const SMART_SHARPEN_LIMITS: &[(&str, f64, f64)] = &[("amount", 1.0, 500.0), ("radius", 0.1, 64.0), ("reduceNoise", 0.0, 100.0)];
+
+/// Smart Sharpen (`smartSharpen`) in the one form the command plays, the same form PSD smart
+/// filters map (`photocraft-io`'s `smart_map`): the newer filter (`useLegacy` false) removing a
+/// Gaussian blur (`blur` `GsnB`), both recorded. The legacy filter (Photoshop's default, which
+/// removes Lens Blur), Lens Blur, Motion Blur, a preset other than Custom or any other key, or an
+/// amount, radius or noise reduction in another unit, keeps it as a Photoshop step. A missing
+/// amount, radius or noise reduction takes Photoshop's default (200 %, 1 px, 10 %).
+pub(super) fn smart_sharpen_from(d: &Descriptor) -> Mapped {
+    match smart_sharpen_params(d) {
+        Some(p) => step("filter.sharpen.smartSharpen", Value::Object(p)),
+        None => Mapped::Unsupported { harmless: false },
+    }
+}
+
+/// A `blurType` enumeration's value (`enumerated` alone does not check the type).
+fn blur_type(v: &D) -> Option<String> {
+    match v {
+        D::Enumerated { type_id, .. } if trimmed(type_id) == "blurType" => enumerated(v),
+        _ => None,
+    }
+}
+
+fn smart_sharpen_params(d: &Descriptor) -> Option<Map<String, Value>> {
+    let keys = ["presetKind", "useLegacy", "Amnt", "Rds", "noiseReduction", "blur"];
+    let gaussian = only_keys(d, &keys)
+        && setting(d, "presetKind", enumerated, "presetKindCustom".into())? == "presetKindCustom"
+        && !setting(d, "useLegacy", boolean, true)?
+        && setting(d, "blur", blur_type, "lensBlur".into())? == "GsnB";
+    if !gaussian {
+        return None;
+    }
+    let mut p = Map::new();
+    let read = [("Amnt", *b"#Prc", 200.0), ("Rds", PX, 1.0), ("noiseReduction", *b"#Prc", 10.0)];
+    for ((key, unit, default), (param, min, max)) in read.into_iter().zip(SMART_SHARPEN_LIMITS) {
+        let n = setting(d, key, in_unit(unit), default)?.clamp(*min, *max);
+        p.insert((*param).into(), n.into());
+    }
+    Some(p)
+}
+
+/// The form `smart_sharpen_params` reads, with the keys in the order Photoshop records them (as
+/// recorded steps carry them, `presetKind` Custom first). The command's defaults fill what the
+/// step leaves out.
+pub(super) fn smart_sharpen_to(_: &str, p: &Value) -> Option<Descriptor> {
+    if !pixel_target(p) || !sets_only(p, &["target", "amount", "radius", "reduceNoise"]) {
+        return None;
+    }
+    let num = |k: &str, default: f64| match p.get(k) {
+        None | Some(Value::Null) => Some(default),
+        Some(v) => v.as_f64().filter(|n| SMART_SHARPEN_LIMITS.iter().any(|(param, min, max)| *param == k && (*min..=*max).contains(n))),
+    };
+    Some(
+        desc("null")
+            .with("presetKind", enm("presetKindType", "presetKindCustom"))
+            .with("useLegacy", D::Boolean(false))
+            .with("Amnt", pct(num("amount", 100.0)?))
+            .with("Rds ", px(num("radius", 1.0)?))
+            .with("noiseReduction", pct(num("reduceNoise", 10.0)?))
+            .with("blur", enm("blurType", "GsnB")),
+    )
+}

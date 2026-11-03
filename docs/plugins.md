@@ -41,6 +41,7 @@ build. Limits (`photocraft_plugins::Limits`, defaults):
 | Host imports | none: no WASI, file system, network, clock or randomness | module rejected at install |
 | Module size | 32 MiB | rejected |
 | Linear memory | 512 MiB per instance | `memory.grow` returns -1; oversized initial memory fails |
+| Linear memory per run | 2 GiB across parallel bands (4 instances at the 512 MiB cap) | fewer bands run at once |
 | Instructions (fuel) | 50 M per call + 4,000 per sample for `pc_filter` | `Limit("instruction budget")` |
 | Wall clock | 60 s per run (native; checked every 20 M instructions) | `Limit("time budget")` |
 | Call depth | 1,024 frames | trap |
@@ -84,6 +85,7 @@ exports. All integers are `i32` unless noted; pointers are offsets into the modu
   "description": "What it does.",
   "params": {
     "amount": {"type": "number", "min": 0, "max": 100, "default": 50},
+    "shift":  {"type": "number", "min": 0, "max": 40, "default": 4, "unit": "px"},
     "steps":  {"type": "int", "min": 1, "max": 16, "default": 4},
     "mono":   {"type": "bool", "default": false},
     "mode":   {"type": "choice", "options": ["soft", "hard"], "default": "soft"}
@@ -102,6 +104,15 @@ exports. All integers are `i32` unless noted; pointers are offsets into the modu
 - `params`: in dialog order. Names are `[A-Za-z0-9_]`, not starting with `_`, not `id`/`layer`.
   The host validates the user's values before calling: missing values take the default, numbers are
   clamped to `min..max` (ints rounded), a wrong type or an unknown choice is an error.
+- `unit` (optional, on `number` and `int` params): `"px"` marks a length in document pixels (a
+  radius, distance, shift or size); `"none"`, the default, is everything else (levels, factors,
+  counts, percentages). Any other value (an unknown string, a number…) is treated as `"none"`, as
+  when the field is absent, so older manifests keep installing. A filter dialog's live preview on a
+  large document runs on a reduced copy (Preferences › Performance › Low Resolution Previews), and
+  the host divides each `px` param by that reduction (ints rounded, kept within `min..max`) so the
+  preview shows the same lengths OK applies; when a `px` param with a positive `min` would drop below
+  it, the preview runs less reduced instead. Unitless params reach the preview unchanged, whatever
+  their name. OK, actions and smart filters always get the values as given.
 - `overlap` (0–256): pixels of context the filter needs around each output pixel (a blur radius).
   The host pads each band by `overlap` on every side, repeating the edge pixels of the canvas (or of
   off-canvas layer content), and keeps only the inner rectangle of the result.

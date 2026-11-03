@@ -21,7 +21,7 @@ fn px(doc: &Document, x: i32, y: i32) -> [f32; 4] {
 }
 
 fn stroke(size: f32, position: StrokePosition, paint: FxPaint) -> Effect {
-    Effect::Stroke(StrokeFx { common: FxCommon::new(BlendMode::Normal, 1.0), size, position, paint })
+    Effect::Stroke(StrokeFx { common: FxCommon::new(BlendMode::Normal, 1.0), size, position, paint, overprint: false })
 }
 
 fn blue() -> FxPaint {
@@ -31,7 +31,7 @@ fn blue() -> FxPaint {
 /// A shape layer over the square `x0..x1` with its Photoshop-style cached pixels.
 fn shape(x0: f64, x1: f64, fill: Fill, stroke: Option<ShapeStroke>) -> Layer {
     let path = Path::new(vec![Subpath::polygon(&[(x0, x0), (x1, x0), (x1, x1), (x0, x1)])]);
-    let mut sh = ShapeLayer { path, fill: Some(fill), stroke, live: None, cache: None, psd_raw: None };
+    let mut sh = ShapeLayer { path, fill: Some(fill), stroke, live: None, cache: None, psd_raw: None, ..ShapeLayer::default() };
     sh.cache = Some(photocraft_vector::render_shape(&sh, PixelFormat::RGBA8, Rect::new(0, 0, 40, 40)));
     Layer::new("shape", LayerContent::Shape(sh))
 }
@@ -45,6 +45,7 @@ fn gradient_shape(width: u32, height: u32) -> ShapeLayer {
         live: None,
         cache: None,
         psd_raw: None,
+        ..ShapeLayer::default()
     }
 }
 
@@ -91,6 +92,7 @@ fn outline_share_treats_stroke_and_shape_as_disjoint_areas() {
     // Outside the shape the stroke covers the pixel; inside it nothing.
     assert_eq!(effects::outline_share(0.0, 0.0), 1.0);
     assert_eq!(effects::outline_share(1.0, 0.3), 0.0);
+    assert_eq!(effects::outline_share(1.0, 1.0), 0.0);
     // Beneath an opaque edge pixel the result ends opaque: share + l (1 - share) = 1 - cov + l.
     let (cov, l) = (0.6, 0.6);
     let s = effects::outline_share(cov, l);
@@ -234,7 +236,15 @@ fn hairline_vector_stroke_keeps_the_files_edge_pixel_colour() {
         let mut cache = photocraft_raster::Surface::new(fmt);
         cache.fill_rect(Rect::new(10, 10, 30, 30), &[edge, edge, edge, 1.0]);
         cache.fill_rect(Rect::new(11, 11, 29, 29), &[fill, fill, fill, 1.0]);
-        let sh = ShapeLayer { path, fill: Some(Fill::Solid(Color::rgb(fill, fill, fill))), stroke: Some(vs), live: None, cache: Some(cache), psd_raw: None };
+        let sh = ShapeLayer {
+            path,
+            fill: Some(Fill::Solid(Color::rgb(fill, fill, fill))),
+            stroke: Some(vs),
+            live: None,
+            cache: Some(cache),
+            psd_raw: None,
+            ..ShapeLayer::default()
+        };
         let mut l = Layer::new("shape", LayerContent::Shape(sh));
         // Any layer effect sends the shape through the fill/stroke split.
         l.effects.items = vec![Effect::default_drop_shadow()];
@@ -246,4 +256,70 @@ fn hairline_vector_stroke_keeps_the_files_edge_pixel_colour() {
         // The interior keeps the fill.
         assert!(close4(px(&d, 20, 20), [fill, fill, fill, 1.0]), "{sample:?} {:?}", px(&d, 20, 20));
     }
+}
+
+#[test]
+fn outside_stroke_on_raster_layer_does_not_paint_inside_opaque_pixels() {
+    let mut d = doc(40, 40);
+    let mut pixels = photocraft_raster::Surface::new(PixelFormat::RGBA8);
+    pixels.fill_rect(Rect::new(15, 15, 25, 25), &[1.0, 0.0, 0.0, 1.0]);
+    let mut l = Layer::new("raster", LayerContent::Raster(pixels));
+    l.effects.items = vec![stroke(3.0, StrokePosition::Outside, blue())];
+    d.layers.push(l);
+    let center = px(&d, 20, 20);
+    assert!(close4(center, [1.0, 0.0, 0.0, 1.0]), "interior must stay red, got: {center:?}");
+    let stroke_pixel = px(&d, 13, 20);
+    assert!(close4(stroke_pixel, [0.0, 0.0, 1.0, 1.0]), "outside stroke must be blue, got: {stroke_pixel:?}");
+}
+
+/// Beneath an opaque pixel the Outside stroke has no share, so a Multiply layer blended as a
+/// group with its interior effects (where the layer's mode meets what lies beneath it inside the
+/// style) multiplies the backdrop there, not the stroke colour (red × blue would be black), for a
+/// raster layer and a filled shape alike.
+#[test]
+fn outside_stroke_under_multiply_layer_leaves_interior_to_backdrop() {
+    let mut pixels = photocraft_raster::Surface::new(PixelFormat::RGBA8);
+    pixels.fill_rect(Rect::new(15, 15, 25, 25), &[1.0, 0.0, 0.0, 1.0]);
+    let layers = [("raster", Layer::new("raster", LayerContent::Raster(pixels))), ("shape", shape(15.0, 25.0, Fill::Solid(Color::rgb(1.0, 0.0, 0.0)), None))];
+    for (what, mut l) in layers {
+        let mut d = doc(40, 40);
+        l.blend = BlendMode::Multiply;
+        l.advanced.blend_interior = true;
+        l.effects.items = vec![stroke(3.0, StrokePosition::Outside, blue())];
+        d.layers.push(l);
+        let center = px(&d, 20, 20);
+        assert!(close4(center, [1.0, 0.0, 0.0, 1.0]), "{what}: interior must be red × white, got: {center:?}");
+        let stroke_pixel = px(&d, 13, 20);
+        assert!(close4(stroke_pixel, [0.0, 0.0, 1.0, 1.0]), "{what}: outside stroke must be blue, got: {stroke_pixel:?}");
+    }
+}
+
+#[test]
+fn outside_stroke_on_zero_fill_raster_layer_keeps_interior_clear() {
+    let mut d = Document::new("t", Size::new(40, 40), ColorMode::Rgb, SampleType::U8);
+    let mut pixels = photocraft_raster::Surface::new(PixelFormat::RGBA8);
+    pixels.fill_rect(Rect::new(15, 15, 25, 25), &[1.0, 0.0, 0.0, 1.0]);
+    let mut l = Layer::new("raster", LayerContent::Raster(pixels));
+    l.fill_opacity = 0.0;
+    l.effects.items = vec![stroke(3.0, StrokePosition::Outside, blue())];
+    d.layers.push(l);
+    let center = px(&d, 20, 20);
+    assert_eq!(center[3], 0.0, "interior with 0% fill must stay clear: {center:?}");
+    let stroke_pixel = px(&d, 13, 20);
+    assert!(close4(stroke_pixel, [0.0, 0.0, 1.0, 1.0]), "outside stroke must be blue: {stroke_pixel:?}");
+}
+
+#[test]
+fn outside_stroke_on_partial_fill_raster_layer_keeps_interior_free_of_stroke() {
+    let mut d = Document::new("t", Size::new(40, 40), ColorMode::Rgb, SampleType::U8);
+    let mut pixels = photocraft_raster::Surface::new(PixelFormat::RGBA8);
+    pixels.fill_rect(Rect::new(15, 15, 25, 25), &[1.0, 0.0, 0.0, 1.0]);
+    let mut l = Layer::new("raster", LayerContent::Raster(pixels));
+    l.fill_opacity = 0.5;
+    l.effects.items = vec![stroke(3.0, StrokePosition::Outside, blue())];
+    d.layers.push(l);
+    let center = px(&d, 20, 20);
+    assert!(close4(center, [1.0, 0.0, 0.0, 0.5]), "interior must be 50% red: {center:?}");
+    let stroke_pixel = px(&d, 13, 20);
+    assert!(close4(stroke_pixel, [0.0, 0.0, 1.0, 1.0]), "outside stroke must be blue: {stroke_pixel:?}");
 }

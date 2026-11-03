@@ -285,7 +285,8 @@ pub fn decode_wbmp(bytes: &[u8]) -> Result<(u32, u32, Vec<bool>), CodecError> {
 }
 
 /// JPEG from 8-bit RGB (`rgb.len() == 3·w·h`): quality 1..=100, optional progressive scans and
-/// optimised Huffman tables (Save for Web's "Optimized"), optional ICC profile, density and XMP.
+/// optimised Huffman tables (Save for Web's "Optimized"), optional ICC profile, density, EXIF and
+/// XMP. EXIF that doesn't fit in one segment is left out (see [`jpeg_exif_fits`]).
 #[allow(clippy::too_many_arguments)]
 pub fn encode_jpeg_rgb8(
     width: u32,
@@ -296,6 +297,7 @@ pub fn encode_jpeg_rgb8(
     optimized: bool,
     icc: Option<&[u8]>,
     dpi: Option<f32>,
+    exif: Option<&[u8]>,
     xmp: Option<&str>,
 ) -> Result<Vec<u8>, CodecError> {
     let e = |e: jpeg_encoder::EncodingError| CodecError::encode(Format::Jpeg, e);
@@ -319,9 +321,14 @@ pub fn encode_jpeg_rgb8(
         let v = d.round().min(65535.0) as u16;
         enc.set_density(jpeg_encoder::Density::Inch { x: v, y: v });
     }
+    let ppi = dpi.filter(|d| *d >= 1.0).map(|d| (d, d));
+    // Upright, without the source's thumbnail, at the JFIF resolution, as Save As writes it.
+    if let Some(seg) = exif.and_then(|x| crate::codecs::jpeg::exif_segment(x, ppi)) {
+        enc.add_app_segment(1, &seg).map_err(e)?;
+    }
     if let Some(x) = xmp {
         // Its `tiff:` resolution, if any, says what the JFIF density says (#1691).
-        let x = crate::resolution::export_xmp(x, dpi.filter(|d| *d >= 1.0).map(|d| (d, d)));
+        let x = crate::resolution::export_xmp(x, ppi);
         let mut seg = b"http://ns.adobe.com/xap/1.0/\0".to_vec();
         seg.extend_from_slice(x.as_bytes());
         enc.add_app_segment(1, &seg).map_err(e)?;
@@ -331,6 +338,11 @@ pub fn encode_jpeg_rgb8(
     }
     enc.encode(rgb, w16, h16, jpeg_encoder::ColorType::Rgb).map_err(e)?;
     Ok(out)
+}
+
+/// Whether [`encode_jpeg_rgb8`] can write `exif` at `dpi` (it must fit in one APP1 segment).
+pub fn jpeg_exif_fits(exif: &[u8], dpi: Option<f32>) -> bool {
+    crate::codecs::jpeg::exif_segment(exif, dpi.filter(|d| *d >= 1.0).map(|d| (d, d))).is_some()
 }
 
 #[cfg(test)]
@@ -359,7 +371,7 @@ mod tests {
         let rgb: Vec<u8> = (0..16 * 16 * 3).map(|i| (i * 37 % 256) as u8).collect();
         for (q, want) in [(1, (2, 2)), (50, (2, 2)), (51, (1, 1)), (60, (1, 1)), (89, (1, 1)), (100, (1, 1))] {
             for progressive in [false, true] {
-                let bytes = encode_jpeg_rgb8(16, 16, &rgb, q, progressive, false, None, None, None).unwrap();
+                let bytes = encode_jpeg_rgb8(16, 16, &rgb, q, progressive, false, None, None, None, None).unwrap();
                 assert_eq!(luma_sampling(&bytes), Some(want), "quality {q} progressive {progressive}");
             }
         }
@@ -428,8 +440,8 @@ mod tests {
     #[test]
     fn progressive_jpeg_decodes() {
         let rgb: Vec<u8> = (0..64 * 48 * 3).map(|i| (i % 251) as u8).collect();
-        let base = encode_jpeg_rgb8(64, 48, &rgb, 80, false, false, None, Some(72.0), Some("<x:xmpmeta/>")).unwrap();
-        let prog = encode_jpeg_rgb8(64, 48, &rgb, 80, true, true, None, None, None).unwrap();
+        let base = encode_jpeg_rgb8(64, 48, &rgb, 80, false, false, None, Some(72.0), None, Some("<x:xmpmeta/>")).unwrap();
+        let prog = encode_jpeg_rgb8(64, 48, &rgb, 80, true, true, None, None, None, None).unwrap();
         assert_ne!(base, prog);
         assert_eq!(crate::decode(&base).unwrap().meta.xmp.as_deref(), Some("<x:xmpmeta/>"));
         // SOF2 marks a progressive frame.
@@ -442,7 +454,7 @@ mod tests {
     fn web_jpeg_xmp_resolution_follows_the_density() {
         let rgb = vec![100u8; 8 * 8 * 3];
         let xmp = r#"<rdf:Description tiff:XResolution="300/1" tiff:YResolution="300/1"/>"#;
-        let out = encode_jpeg_rgb8(8, 8, &rgb, 80, false, false, None, Some(72.0), Some(xmp)).unwrap();
+        let out = encode_jpeg_rgb8(8, 8, &rgb, 80, false, false, None, Some(72.0), None, Some(xmp)).unwrap();
         let img = crate::decode(&out).unwrap();
         assert_eq!(img.meta.dpi, Some((72.0, 72.0)));
         assert_eq!(img.meta.xmp.as_deref().and_then(crate::xmp_resolution), Some((72.0, 72.0)));
@@ -461,7 +473,7 @@ mod subsampling_tests {
         let rgb: Vec<u8> = (0..w * h).flat_map(|i| [((i % w) * 4) as u8, 76, ((i / w) * 5) as u8]).collect();
         for q in [30, 60, 95] {
             for (prog, opt) in [(false, false), (false, true), (true, false), (true, true)] {
-                let bytes = encode_jpeg_rgb8(w, h, &rgb, q, prog, opt, None, None, None).unwrap();
+                let bytes = encode_jpeg_rgb8(w, h, &rgb, q, prog, opt, None, None, None, None).unwrap();
                 let ours = crate::decode(&bytes).unwrap().convert(crate::ChannelLayout::Rgb, crate::SampleType::U8);
                 let err = ours.data().iter().zip(&rgb).map(|(a, b)| i32::from(*a).abs_diff(i32::from(*b))).max().unwrap();
                 assert!(err < 24, "q{q} progressive={prog} optimized={opt}: max error {err}");

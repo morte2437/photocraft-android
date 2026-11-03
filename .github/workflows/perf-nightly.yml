@@ -4,10 +4,13 @@ name: Perf (nightly)
 # Metal), every night and on demand. It never runs on pull requests, so it can't block one.
 # It fails when an enforced budget in perf/budgets.toml breaks or a scenario's p50 regresses
 # more than 15 % against perf/baseline.json from the same machine class (other classes are
-# never compared). The table goes to the job summary; results.json is uploaded as an artifact.
+# never compared; a baseline built from several runs is judged against its highest p50). The
+# table goes to the job summary; results.json is uploaded as the `perf-results` artifact.
 #
-# To give this runner class its own baseline: run it by hand with "update_baseline", download
-# the `perf-baseline` artifact and commit it as perf/baseline.json in a PR.
+# To give this runner class its own baseline: download the `perf-results` artifact of the last
+# five or more nightly runs (`gh run download <run id> -n perf-results -D runs/<run id>`), run
+# `cargo xtask perf --update-baseline --from runs/<id>/results.json ... --allow-contended` (this
+# runner is never idle) and commit perf/baseline.json and docs/scorecard.md in a PR.
 
 on:
   schedule:
@@ -40,13 +43,13 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: perf-release
 
@@ -58,7 +61,8 @@ jobs:
         run: |
           args=()
           if [ "$QUICK" = "true" ]; then args+=(--quick); fi
-          if [ "$UPDATE" = "true" ]; then args+=(--update-baseline); fi
+          # This runner is never idle: a baseline from it is recorded labelled as contended.
+          if [ "$UPDATE" = "true" ]; then args+=(--update-baseline --allow-contended); fi
           cargo xtask perf "${args[@]}"
 
       - name: Job summary
@@ -72,7 +76,7 @@ jobs:
 
       - name: Upload results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: perf-results
           path: |
@@ -83,7 +87,7 @@ jobs:
 
       - name: Upload baseline
         if: always() && inputs.update_baseline
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: perf-baseline
           path: perf/baseline.json

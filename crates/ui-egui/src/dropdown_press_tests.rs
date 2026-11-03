@@ -74,3 +74,56 @@ fn a_click_still_opens_the_list_for_a_second_click() {
     h.run_steps(3);
     assert_eq!(blend(&h), BlendMode::Screen, "a second click picks");
 }
+
+/// #7113: on macOS a trackpad tap-to-click delivers `Pressed` and `Released` in the same frame,
+/// which raises both the modal dialog (`pointer_pressed_on_area`) and the reopened ComboBox popup
+/// (`!visible_last_frame`) in the same pass. When the popup's static LayerId already sits before
+/// the dialog's in `Areas::order` (from an earlier open or `ui.ron`), egui's stable sort left the
+/// dropdown menu behind the dialog window.
+#[test]
+fn single_frame_trackpad_tap_keeps_dialog_dropdown_above_modal_and_selects_option() {
+    let mut h = app_with_a_layer();
+    let tap = |h: &mut Harness<'_, PhotocraftApp>, at: egui::Pos2| {
+        h.input_mut().events.push(egui::Event::PointerMoved(at));
+        for pressed in [true, false] {
+            h.input_mut().events.push(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE });
+        }
+        h.run_steps(3);
+    };
+
+    // First dialog: open the Palette dropdown once so its static popup LayerId enters `Areas::order`,
+    // then close the dialog.
+    let d1 = crate::filter_dialog::open(h.state_mut(), "image.mode.indexedColor").unwrap();
+    h.run_steps(3);
+    let palette_box = blend_box(&h, "Selective").center();
+    tap(&mut h, palette_box);
+    assert!(egui::Popup::is_any_open(&h.ctx));
+    crate::dialogs::cancel(h.state_mut(), d1).unwrap();
+    h.run_steps(2);
+
+    // Second dialog gets a newer `("dialog", d2)` LayerId placed after the popup's static LayerId
+    // in `Areas::order` (the same ordering `ui.ron` restores across launches).
+    let d2 = crate::filter_dialog::open(h.state_mut(), "image.mode.indexedColor").unwrap();
+    h.run_steps(3);
+    let palette_box = blend_box(&h, "Selective").center();
+    let dialog_layer = h.ctx.layer_id_at(palette_box).expect("dialog layer at ComboBox");
+
+    // 1-frame trackpad tap on the Palette dropdown: the list must open IN FRONT OF the dialog.
+    tap(&mut h, palette_box);
+    assert!(egui::Popup::is_any_open(&h.ctx), "tap opens the dropdown");
+    let perceptual_pos = h.get_by_label("Perceptual").rect().center();
+    let top_at_item = h.ctx.layer_id_at(perceptual_pos);
+    assert!(
+        top_at_item.is_some() && top_at_item != Some(dialog_layer),
+        "#7113: dropdown popup layer ({top_at_item:?}) must be above the modal dialog ({dialog_layer:?})"
+    );
+
+    // Second 1-frame trackpad tap on "Perceptual" selects it and closes the list.
+    tap(&mut h, perceptual_pos);
+    assert!(!egui::Popup::is_any_open(&h.ctx), "tap on option closes the dropdown");
+    assert_eq!(
+        h.state().ui.dialogs.iter().find(|d| d.id == d2).and_then(|d| d.fields.get("palette")).and_then(|v| v.as_str()),
+        Some("perceptual"),
+        "tap on Perceptual selected it"
+    );
+}

@@ -182,6 +182,9 @@ pub enum DepthSource {
     None,
     Transparency,
     LayerMask,
+    /// An alpha channel of the document (Photoshop lists them after Layer Mask), supplied by the
+    /// caller like the layer mask.
+    Channel,
 }
 
 /// Built-in Shape Blur kernels.

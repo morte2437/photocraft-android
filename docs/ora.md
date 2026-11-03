@@ -12,13 +12,19 @@ entry, so an OpenRaster file with another extension still opens as one.
 |---|---|---|
 | Pixel layers (any size and position, also off-canvas) | yes | yes, cropped to their pixels |
 | Groups, nested | yes | yes |
-| Pass-through groups | `isolation="auto"` without a blend mode | `isolation="auto"` |
+| Pass-through groups | `isolation="auto"` (before 0.0.6, only without a blend mode) | `isolation="auto"` |
 | Names, visibility, opacity | yes | yes |
 | Blend modes | the `svg:*` names, `svg:plus`, and Krita's `krita:*` names | `svg:*` where the spec has the mode, else `krita:*` (read back by Krita, Normal elsewhere) |
 | Locks | `edit-locked`, `alpha-preserve` | the same |
 | 8 and 16-bit | yes (the deepest layer sets the depth) | 8-bit documents as 8-bit PNGs, 16 and 32-bit as 16-bit PNGs |
 | Resolution | `xres` | `xres` and `yres` |
 | Merged image and thumbnail | not read (we render our own) | written (`mergedimage.png`, `Thumbnails/thumbnail.png`) |
+
+Files declaring OpenRaster 0.0.6 or newer default to isolated groups; an explicit
+`isolation="auto"` passes through regardless of the group's own composite operation. Older
+files and files without a recognized version keep the legacy inference from the group's
+blend mode. Pass-through group opacity still uses PhotoCraft's interpolation against the
+backdrop, which can differ from 0.0.6's per-child opacity multiplication for overlapping children.
 
 Saving reports what OpenRaster can't hold, layer by layer: pixel masks are applied to the
 layer's pixels, fill opacity is folded into the pixels, text, shape, fill and smart object layers
@@ -37,8 +43,9 @@ everything: the document keeps its file and its unsaved changes. Automation foll
 
 OpenRaster elements other than `stack` and `layer` (MyPaint's text, for example), missing
 layer images and unknown composite operations open with a warning instead of failing the file.
-Krita's W3C Soft Light (`svg:soft-light`, `krita:soft_light_svg`) and its own Hard Mix open as
-Photoshop's Soft Light and Hard Mix, which differ slightly, also with a warning.
+Krita's W3C Soft Light (`svg:soft-light`, `krita:soft_light_svg`) is Photoshop's Soft Light and
+opens as it. Krita's own Soft Light (`krita:soft_light`, `sqrt` over dark backdrops) and its own
+Hard Mix open as Photoshop's Soft Light and Hard Mix, which differ slightly, with a warning.
 
 ## Limits and safety
 
@@ -53,7 +60,9 @@ are covered by tests.
 
 Unit tests (`crates/io/src/ora/tests.rs`) round-trip layers, groups, pass-through, offsets,
 opacity, visibility, locks and every blend mode at 8 and 16 bit, check masks, rendered layer
-kinds, the archive layout and malformed input. `crates/automation/tests/openraster.rs` saves,
+kinds, the archive layout and malformed input. Synthetic 8/16-bit pixel fixtures check modern
+and legacy group-isolation defaults, explicit isolation and pass-through.
+`crates/automation/tests/it/openraster.rs` saves,
 reopens, edits and saves in place through the agent surface, and checks that a document with an
 adjustment layer never overwrites its `.ora`; the CLI test converts both ways.
 
@@ -63,11 +72,11 @@ Real-file checks use Krita-authored oracles from
 `mergedimage.png`:
 
 ```sh
-KRITA_TEST_DIR=/path/to/photocraft-corpus/krita cargo test -p photocraft-io --test krita_corpus -- --ignored --nocapture
+KRITA_TEST_DIR=/path/to/photocraft-corpus/krita cargo test -p photocraft-io --test it -- krita_corpus:: --ignored --nocapture
 ```
 
 2026-10-09, Krita 5.2.9: 32 of 35 `.ora` files render within 3/255 of Krita's merged image; the
-other three differ for known reasons listed in `crates/io/tests/krita_corpus.rs` (Krita's
+other three differ for known reasons listed in `crates/io/tests/it/krita_corpus.rs` (Krita's
 tie-break in Darker and Lighter Color, and Hard Mix at a channel sum of exactly 1). In the other
 direction, Krita opened every PhotoCraft re-export of the first 34 of those files and rendered 33
 of them identically to its original; the exception is Photoshop's Soft Light, which is written

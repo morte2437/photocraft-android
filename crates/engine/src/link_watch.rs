@@ -16,6 +16,9 @@
 //! keeps waiting for Update Modified Content, as in Photoshop); one that can't be read (another app
 //! is still writing it) is tried again once it changes again, not on every look. Only smart objects
 //! of the document itself follow their files, not ones nested in another smart object's contents.
+//! While a background job runs on the document, its files aren't looked at: an update would replace
+//! the snapshot the job works on and its result would be thrown away. The first look after the job
+//! ends catches up.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -32,15 +35,17 @@ pub type Stamp = (u64, u128);
 /// ids, stamp)]).
 pub type LinkScan = Arc<Mutex<Option<(u64, Vec<(String, Vec<u64>, Option<Stamp>)>)>>>;
 
+/// Stamps `file`, a linked path resolved by [`crate::doc_path`]; `None` (not looked at, like a
+/// missing file) when it is not followed.
 #[cfg(not(target_arch = "wasm32"))]
-fn stamp(path: &str) -> Option<Stamp> {
-    let meta = std::fs::metadata(path).ok()?;
+fn stamp(file: Option<&std::path::Path>) -> Option<Stamp> {
+    let meta = std::fs::metadata(file?).ok()?;
     let modified = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
     Some((meta.len(), modified.as_nanos()))
 }
 
 #[cfg(target_arch = "wasm32")]
-fn stamp(_: &str) -> Option<Stamp> {
+fn stamp(_: Option<&std::path::Path>) -> Option<Stamp> {
     None
 }
 
@@ -61,9 +66,22 @@ pub fn linked_files(d: &Document) -> Vec<(String, Vec<u64>)> {
 /// the layers of the ones that changed.
 pub(crate) fn update_changed(s: &mut Session, _: &Value) -> Result<Value> {
     let st = s.active().ok_or(EngineError::NoDocument)?;
-    let (doc, files) = (st.doc.id.0, linked_files(&st.doc));
-    let now = files.into_iter().map(|(p, ids)| (p.clone(), ids, stamp(&p))).collect();
+    let (doc, files) = (st.doc.id.0, resolved_files(st));
+    let now = files.into_iter().map(|(p, file, ids)| (p, ids, stamp(file.as_deref()))).collect();
     s.apply_link_stamps(doc, now)
+}
+
+/// [`linked_files`] of `st`'s document with the file each path resolves to, or `None` for a path
+/// that is not followed ([`crate::doc_path`]).
+fn resolved_files(st: &crate::DocState) -> Vec<(String, Option<std::path::PathBuf>, Vec<u64>)> {
+    let document = st.path.as_deref().map(std::path::Path::new);
+    linked_files(&st.doc)
+        .into_iter()
+        .map(|(p, ids)| {
+            let file = crate::doc_path::resolve_in(&p, document).ok();
+            (p, file, ids)
+        })
+        .collect()
 }
 
 impl Session {
@@ -74,14 +92,15 @@ impl Session {
             return;
         }
         let Some(st) = self.active() else { return };
-        let (doc, files) = (st.doc.id.0, linked_files(&st.doc));
-        if files.is_empty() {
+        let (doc, files) = (st.doc.id.0, resolved_files(st));
+        // Nothing to look at: no links, or none that is followed.
+        if files.iter().all(|(_, file, _)| file.is_none()) {
             return;
         }
         let slot: LinkScan = Arc::default();
         let out = slot.clone();
         let spawned = std::thread::Builder::new().name("link-watch".into()).spawn(move || {
-            let stamps = files.into_iter().map(|(p, ids)| (p.clone(), ids, stamp(&p))).collect();
+            let stamps = files.into_iter().map(|(p, file, ids)| (p, ids, stamp(file.as_deref()))).collect();
             *out.lock().unwrap_or_else(PoisonError::into_inner) = Some((doc, stamps));
         });
         if spawned.is_ok() {
@@ -101,6 +120,12 @@ impl Session {
     fn apply_link_stamps(&mut self, doc: u64, now: Vec<(String, Vec<u64>, Option<Stamp>)>) -> Result<Value> {
         // The document went to the back meanwhile: it's looked at when it's in front again.
         if self.active().map(|d| d.doc.id.0) != Some(doc) {
+            return Ok(json!({"updated": []}));
+        }
+        // A background job holds the document: refreshing now would replace the snapshot it works
+        // on and its result would be discarded. The stamps stay as they were, so the change is
+        // seen again by the first look after the job ends.
+        if self.active_job().is_some() {
             return Ok(json!({"updated": []}));
         }
         // This document's last stamps; those of closed documents are dropped.
@@ -155,7 +180,7 @@ mod tests {
     use photocraft_geom::Rect;
     use serde_json::json;
 
-    use crate::Session;
+    use crate::{EngineError, Session};
 
     fn dir(name: &str) -> std::path::PathBuf {
         let d = std::env::temp_dir().join(format!("photocraft-link-watch-{name}-{}", std::process::id()));
@@ -279,5 +304,54 @@ mod tests {
         assert_eq!(look(&mut s), json!({"updated": [id]}));
         assert!(is(centre(&s), BLUE));
         assert!(s.link_scan.is_none());
+    }
+
+    #[test]
+    fn a_refresh_waits_for_a_running_job_on_the_document() {
+        let d = dir("job");
+        let path = d.join("art.png");
+        std::fs::write(&path, png(10, 10, "#ff0000")).unwrap();
+        let (mut s, id) = placed(&path);
+        s.execute("layer.smartObjects.updateChanged", json!({})).unwrap();
+        let (release, job) = gated_job(&mut s);
+        save(&path, &png(10, 10, "#0000ff"));
+        let snapshot = s.active().unwrap().doc.clone();
+        // The path the desktop app's timer takes: it doesn't go through the command conflict check.
+        assert_eq!(super::update_changed(&mut s, &json!({})).unwrap(), json!({"updated": []}));
+        assert!(std::sync::Arc::ptr_eq(&s.active().unwrap().doc, &snapshot), "the job's snapshot must stay in place");
+        release.send(()).unwrap();
+        s.wait_job(job).unwrap();
+        // The job finished; the change that came meanwhile is picked up exactly once.
+        assert_eq!(s.execute("layer.smartObjects.updateChanged", json!({})).unwrap(), json!({"updated": [id]}));
+        assert!(is(centre(&s), BLUE));
+        assert_eq!(s.execute("layer.smartObjects.updateChanged", json!({})).unwrap(), json!({"updated": []}));
+    }
+
+    #[test]
+    fn a_job_on_another_document_does_not_hold_up_a_refresh() {
+        let d = dir("job-other");
+        let path = d.join("art.png");
+        std::fs::write(&path, png(10, 10, "#ff0000")).unwrap();
+        let (mut s, id) = placed(&path);
+        s.execute("layer.smartObjects.updateChanged", json!({})).unwrap();
+        s.execute("file.new", json!({"width": 10, "height": 10})).unwrap();
+        let (release, job) = gated_job(&mut s);
+        s.set_active(0);
+        save(&path, &png(10, 10, "#0000ff"));
+        assert_eq!(super::update_changed(&mut s, &json!({})).unwrap(), json!({"updated": [id]}));
+        assert!(is(centre(&s), BLUE));
+        release.send(()).unwrap();
+        s.wait_job(job).unwrap();
+    }
+
+    /// A background job that locks the active document until something is sent on the returned
+    /// sender.
+    fn gated_job(s: &mut Session) -> (std::sync::mpsc::Sender<()>, crate::jobs::JobId) {
+        let (release, gate) = std::sync::mpsc::channel::<()>();
+        let r = s.start_job("test.gated", json!({}), "Gated job", true, move |_| gate.recv().map_err(|_| EngineError::Cancelled), |_, ()| Ok(json!(null)));
+        match r.unwrap() {
+            crate::jobs::Started::Job(j) => (release, j),
+            other => panic!("expected a background job, got {other:?}"),
+        }
     }
 }

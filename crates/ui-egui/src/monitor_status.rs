@@ -218,19 +218,24 @@ pub fn apply(app: &mut PhotocraftApp, r: Detection) {
             })
             .collect()
     };
-    for (id, name, reason) in fallbacks {
-        if app.monitors.reported.iter().any(|(i, r)| *i == id && *r == reason) {
-            continue;
-        }
-        app.monitors.reported.push((id, reason.clone()));
-        let template = if name.is_empty() {
-            "The canvas is shown as sRGB. Choose a monitor profile in Edit › Color Settings."
-        } else {
-            "The canvas on {display} is shown as sRGB. Choose a monitor profile in Edit › Color Settings."
-        };
-        let lines = vec![reason, crate::i18n::fmt(tl!(template), &[("display", &name)])];
-        crate::notices::post(app, FALLBACK_TITLE, lines, true, None);
+    let fresh: Vec<_> = fallbacks.into_iter().filter(|(id, _, reason)| !app.monitors.reported.iter().any(|(i, r)| i == id && r == reason)).collect();
+    if fresh.is_empty() {
+        return;
     }
+    app.monitors.reported.extend(fresh.iter().map(|(id, _, reason)| (*id, reason.clone())));
+    // One notice per reading, not one per display: two profile-less monitors (common on Linux
+    // desks) gave two cards saying the same thing at every launch. Each display keeps its own
+    // reason line; the names share the existing template, so no catalog change is needed.
+    let names: Vec<&str> = fresh.iter().map(|(_, name, _)| name.as_str()).filter(|n| !n.is_empty()).collect();
+    let template = if names.is_empty() {
+        "The canvas is shown as sRGB. Choose a monitor profile in Edit › Color Settings."
+    } else {
+        "The canvas on {display} is shown as sRGB. Choose a monitor profile in Edit › Color Settings."
+    };
+    let advice = crate::i18n::fmt(tl!(template), &[("display", &names.join(", "))]);
+    let mut lines: Vec<String> = fresh.into_iter().map(|(_, _, reason)| reason).collect();
+    lines.push(advice);
+    crate::notices::post(app, FALLBACK_TITLE, lines, true, None);
 }
 
 /// The frame of the window `ctx` draws, in OS points (as `Display::frame`). egui reports it in
@@ -425,6 +430,29 @@ mod tests {
         let lines = summary_lines(&app);
         assert_eq!(lines[1], "Monitor profile on ROG PG32UQX (main window): Apple_Display (auto)", "{lines:?}");
         assert!(lines[0].starts_with("Monitor profile on Built-in Retina Display: sRGB"), "{lines:?}");
+    }
+
+    #[test]
+    fn displays_without_profiles_share_one_notice() {
+        // Two profile-less monitors (a Linux desk: DP-4 and DP-5) gave two identical cards.
+        let mut app = app();
+        let desk = |id, name: &str, x| Display { id, name: name.into(), frame: [x, 0.0, 1920.0, 1080.0], profile_name: None, icc: None };
+        apply(&mut app, Ok(vec![desk(1, "DP-4", 0.0), desk(2, "DP-5", 1920.0)]));
+        assert_eq!(app.ui.notices.len(), 1);
+        let lines = &app.ui.notices[0].lines;
+        assert_eq!(lines[0], "DP-4 has no ICC profile");
+        assert_eq!(lines[1], "DP-5 has no ICC profile");
+        assert!(lines[2].starts_with("The canvas on DP-4, DP-5 is shown as sRGB."), "{lines:?}");
+        // The same reading again: nothing new to say.
+        apply(&mut app, Ok(vec![desk(1, "DP-4", 0.0), desk(2, "DP-5", 1920.0)]));
+        assert_eq!(app.ui.notices.len(), 1);
+        // A third display plugged in later: a card for it alone.
+        apply(&mut app, Ok(vec![desk(1, "DP-4", 0.0), desk(2, "DP-5", 1920.0), desk(3, "HDMI-A-1", 3840.0)]));
+        assert_eq!(app.ui.notices.len(), 2);
+        let lines = &app.ui.notices[1].lines;
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0], "HDMI-A-1 has no ICC profile");
+        assert!(lines[1].starts_with("The canvas on HDMI-A-1 is shown"), "{lines:?}");
     }
 
     #[test]

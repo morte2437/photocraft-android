@@ -6,8 +6,10 @@ static site in `photocraft-web-<version>/`:
 | File | What it is |
 |---|---|
 | `index.html` | The page. It loads everything through relative URLs. |
-| `photocraft-web-<hash>.js` | wasm-bindgen glue (generated, ES module) |
-| `photocraft-web-<hash>_bg.wasm` | The app: about 23 MiB raw, 10.5 MiB with gzip (see [Sizes](#sizes)) |
+| `photocraft-web-boot-<hash>.js`, `photocraft-web-boot-<hash>_bg.wasm` | A small module (about 120 KB) that starts the app from its parts, with its wasm-bindgen glue |
+| `app/photocraft-web-<hash>.part-aa`, `-ab`, … | The app's WebAssembly, gzipped and cut into parts of at most 20 MiB (see [Sizes](#sizes)) |
+| `app/parts.txt` | The parts, in order |
+| `app/photocraft-web.js` | The app's wasm-bindgen glue (generated, ES module) |
 | `_headers`, `.htaccess` | Sample header rules for Netlify/Cloudflare Pages and Apache |
 | `fonts/` (optional) | Fonts loaded on demand, listed in `fonts/manifest.txt` (see [Fonts](#fonts)) |
 
@@ -68,44 +70,67 @@ The editor and image processing run on the visitor's device. Open uses the brows
 picker; Save and Export download files. Preferences use browser localStorage. There is no
 server-side document storage, desktop TCP control server, or web autosave/crash recovery;
 save/download work before closing or reloading the page. A browser with WebGPU or WebGL2 is
-required; `?webgl` forces the fallback when troubleshooting.
+required; `?webgl` forces the fallback when troubleshooting. In a browser that can't
+inflate a stream itself (no `DecompressionStream`: before Safari 16.4 and Firefox 113), the
+release zip's site inflates the app's parts in its own code, a little slower.
+A server that recognises the gzip in a part and sends it with `Content-Encoding: gzip` or
+`x-gzip` (Apache with `mod_mime_magic` does) works too: the browser inflates it on the way, and
+the page then uses it as it is. (That holds while the app ships as one part, as it does today:
+such a server labels only the first part, the one that starts with gzip's header.)
 
 To verify the browser deployment, open the page, open an image and save/export it.
 
 ## Sizes
 
-Measured on 2026-10-12 (0.8.0, `packaging/web/package.sh`; gzip `-9`):
+Measured on 2026-10-13 (0.8.2, `packaging/web/package.sh`):
 
-| File | Raw | gzip |
-|---|---|---|
-| `photocraft-web-<hash>_bg.wasm` | 24,167,186 bytes (23.0 MiB) | 10,998,053 (10.5 MiB) |
-| `photocraft-web-<hash>.js` | about 170 KB | about 26 KB |
+| File | Size |
+|---|---|
+| `app/photocraft-web-<hash>.part-aa` (the only part today) | 11,401,527 bytes (10.9 MiB) |
+| `app/photocraft-web.js` | about 170 KB (26 KB with gzip) |
+| `photocraft-web-boot-<hash>_bg.wasm` and `.js` | about 120 KB together |
+
+The app's WebAssembly is 25,019,043 bytes (23.9 MiB) before gzip.
 
 Per-file upload limits: Cloudflare Pages and Workers static assets reject any file over
-**25 MiB** (26,214,400 bytes). The wasm fits, and `packaging/web/package.sh` fails the build if
-it ever grows past 24 MiB, so a release can't ship a file a common host refuses. (Releases up to
-0.2.0 shipped a 25.8 MiB wasm, which Cloudflare rejected; issue #198.) The size comes from the
-`wasm-release` Cargo profile (fat LTO, size-optimized code with the pixel and file-decoding
-crates kept at speed) plus `wasm-opt -Oz`, and from storing the bundled fonts (PhotoCraft's and
-egui's) and the translation catalogs compressed, unpacked on first use.
+**25 MiB** (26,214,400 bytes), and the app's WebAssembly is at that size. (Releases up to 0.2.0
+shipped a 25.8 MiB wasm, which Cloudflare rejected; issue #198.) So the site doesn't hold it as
+one file: packaging gzips it and cuts the result into parts of at most 20 MiB, and the page puts
+them back together while it downloads them. `packaging/web/package.sh` fails if any file in the
+site is over 24 MiB, so a release can't ship a file a common host refuses, and the app can grow
+without reaching that limit (issue #5302). A build straight from Trunk (`trunk build --release`
+in `apps/photocraft-web`, or the Docker image above) still has the app in one `.wasm`, for hosts
+without such a cap.
+
+The app is built with the `wasm-release` Cargo profile (fat LTO, size-optimized code with the
+pixel and file-decoding crates kept at speed) plus `wasm-opt -Oz`, and stores the bundled fonts
+(PhotoCraft's and egui's) and the translation catalogs compressed, unpacked on first use.
 
 ## Any path works
 
 All URLs in `index.html` are relative (`public_url = "./"` in `apps/photocraft-web/Trunk.toml`),
 so the site works at a domain root (`https://example.com/`), under a prefix
 (`https://example.com/tools/photocraft/`) and from a CDN bucket. The asset names carry a content
-hash, so they can be cached forever. Only `index.html` needs revalidation.
+hash, so they can be cached forever. `index.html`, `app/photocraft-web.js` and `app/parts.txt` keep
+their names and need revalidation.
 
 ## Required server settings
 
 - **MIME type:** serve `.wasm` as `application/wasm`. Browsers refuse to stream-compile it under
   any other type, and the app then loads slowly or not at all. Serve `.js` as `text/javascript`.
   Most hosts already do both. For nginx, check that `mime.types` has `application/wasm wasm;`.
-- **Compression:** turn on gzip or Brotli for `.wasm`, `.js` and `.html`. That takes the
-  download from about 19 MiB to about 8 MiB (gzip) or 5.6 MiB (Brotli). You can also
-  precompress (`brotli -k *.wasm`) and let the server send `Content-Encoding: br`.
-- **Caching:** `Cache-Control: public, max-age=31536000, immutable` on the hashed `.wasm` and
-  `.js` files, and `no-cache` on `index.html`.
+- **The parts as they are:** serve `app/*.part-*` byte for byte, with no `Content-Encoding` (they
+  are gzip already, and the page inflates them). Their extension is one servers don't
+  know, so the usual result, `application/octet-stream` and no compression, is right.
+- **Missing files are 404s:** a host that answers every unknown path with `index.html` (a
+  single-page-app fallback) hides a failed upload. PhotoCraft notices and says the download
+  failed, but a 404 is clearer in the server's logs.
+- **Compression:** turn on gzip or Brotli for `.wasm`, `.js` and `.html`. It matters little for
+  the download, since the parts are compressed already; it shrinks the two `.js` files and the
+  small boot module. You can also precompress and let the server send `Content-Encoding: br`.
+- **Caching:** `Cache-Control: public, max-age=31536000, immutable` on the files whose names
+  carry a hash (the parts and `photocraft-web-boot-<hash>.*`), and `no-cache` on `index.html`,
+  `app/photocraft-web.js` and `app/parts.txt`. The sample `_headers` and `.htaccess` do this.
 - **HTTPS:** WebGPU (and the clipboard) only work in a secure context, which means `https://`
   or `http://localhost`. Over plain HTTP elsewhere, the app falls back to WebGL2.
 - **No special isolation headers:** PhotoCraft doesn't use `SharedArrayBuffer`, so it doesn't
@@ -120,8 +145,9 @@ location /photocraft/ {
     types { application/wasm wasm; text/javascript js; text/html html; }
     gzip on;
     gzip_types application/wasm text/javascript text/html;
-    location ~* \.(wasm|js)$ { add_header Cache-Control "public, max-age=31536000, immutable"; }
-    location ~* index\.html$ { add_header Cache-Control "no-cache"; }
+    # The first matching line wins, so the files that keep their names come first.
+    location ~* (index\.html|app/photocraft-web\.js|app/parts\.txt)$ { add_header Cache-Control "no-cache"; }
+    location ~* (\.(wasm|js)|\.part-[a-z]+)$ { add_header Cache-Control "public, max-age=31536000, immutable"; }
 }
 ```
 

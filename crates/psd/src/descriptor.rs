@@ -364,7 +364,7 @@ impl VersionedDescriptor {
 /// count must not drive the up-front reservation (or abort on allocation).
 const MAX_PREALLOC: usize = 4096;
 
-fn vec_for_count<T>(n: u32) -> Vec<T> {
+pub(crate) fn vec_for_count<T>(n: u32) -> Vec<T> {
     Vec::with_capacity((n as usize).min(MAX_PREALLOC))
 }
 
@@ -422,7 +422,7 @@ fn read_typed_value(r: &mut Reader<'_>, ty: &[u8; 4], depth: usize) -> Result<Va
             let unit = r.array()?;
             let n = r.u32()?;
             r.check_count(u64::from(n), 8)?;
-            let mut values = Vec::with_capacity(n as usize);
+            let mut values = vec_for_count(n);
             for _ in 0..n {
                 values.push(r.f64()?);
             }

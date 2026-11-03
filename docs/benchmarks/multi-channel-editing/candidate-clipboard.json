@@ -1,0 +1,43 @@
+{
+  "clipboard_pixel": true,
+  "depth": 16,
+  "repeats": 6,
+  "rows": [
+    {
+      "case": 0,
+      "command": "edit.paste",
+      "p50_ms": 0.458816,
+      "p95_ms": 0.478796,
+      "samples_ms": [
+        0.478796,
+        0.458596,
+        0.458816,
+        0.454116,
+        0.458136,
+        0.46384600000000004
+      ],
+      "target": "single"
+    },
+    {
+      "case": 0,
+      "command": "edit.paste",
+      "p50_ms": 1.003902,
+      "p95_ms": 1.017852,
+      "samples_ms": [
+        0.982531,
+        1.012902,
+        1.017852,
+        1.003902,
+        0.924632,
+        0.954002
+      ],
+      "target": "subset"
+    }
+  ],
+  "selection": null,
+  "size": [
+    6000,
+    4000
+  ],
+  "warmups": 1
+}

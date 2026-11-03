@@ -441,15 +441,47 @@ fn active_gradient_fill(s: &Session) -> Option<photocraft_doc::LayerId> {
     matches!(d.doc.layer(id)?.content, LayerContent::Fill(Fill::Gradient { .. })).then_some(id)
 }
 
+fn active_shape(s: &Session) -> Option<photocraft_doc::LayerId> {
+    let d = s.active()?;
+    let id = d.active_layer?;
+    matches!(d.doc.layer(id)?.content, LayerContent::Shape(_)).then_some(id)
+}
+
 fn select(s: &mut Session, p: &Value) -> Result<Value> {
     let g = preset_param(s, p, CMD_SELECT)?;
+    let apply = p.get("applyToLayer").and_then(Value::as_bool).unwrap_or(true);
+    let shape = active_shape(s).filter(|_| apply);
+    // A locked shape refuses before anything changes, the Gradient tool's gradient included.
+    if let (Some(id), Some(d)) = (shape, s.active()) {
+        let locks = d.doc.effective_locks(id);
+        if locks.all || locks.pixels {
+            return Err(bad(CMD_SELECT, "the selected shape layer is locked"));
+        }
+    }
     s.presets.gradient = g.clone();
     s.presets_changed();
     let mut out = json!({"current": g.to_json()});
+    // Clicking a preset with a shape layer selected fills the shape with it (Photoshop, #5568);
+    // a gradient fill keeps its angle, style, scale and reverse.
+    if let Some(id) = shape {
+        let (stops_new, opacity_new) = g.fill_stops(s.tools.foreground, s.tools.background);
+        crate::vector_cmds::with_shape(s, id, "Edit Shape", |sh, _| {
+            let (angle, scale, style, reverse) = match &sh.fill {
+                Some(Fill::Gradient { angle, scale, style, reverse, .. }) => (*angle, *scale, *style, *reverse),
+                _ => (90.0, 1.0, photocraft_doc::GradientStyle::Linear, false),
+            };
+            let mut fill = Fill::gradient(stops_new, angle, scale, style, reverse);
+            if let Fill::Gradient { opacity_stops, .. } = &mut fill {
+                *opacity_stops = opacity_new;
+            }
+            sh.fill = Some(fill);
+            Ok(())
+        })?;
+        out["layer"] = json!(id.0);
+        return Ok(out);
+    }
     // Clicking a preset with a Gradient Fill layer selected changes that layer (Photoshop).
-    if p.get("applyToLayer").and_then(Value::as_bool).unwrap_or(true)
-        && let Some(id) = active_gradient_fill(s)
-    {
+    if apply && let Some(id) = active_gradient_fill(s) {
         let (stops_new, opacity_new) = g.fill_stops(s.tools.foreground, s.tools.background);
         s.edit("Change Gradient Fill", |doc, _| {
             let mode = doc.mode;
@@ -603,13 +635,14 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "gradient.presets.apply";
     let g = preset_param(s, p, CMD)?;
     let stops = g.doc_stops(s.tools.foreground, s.tools.background);
-    let angle = p.get("angle").and_then(Value::as_f64).unwrap_or(90.0) as f32;
-    let scale = (p.get("scale").and_then(Value::as_f64).unwrap_or(100.0) as f32 / 100.0).clamp(0.1, 1.5);
+    let angle = crate::gradient_fill_cmds::angle_param(CMD, p, 90.0)?;
+    let scale = crate::gradient_fill_cmds::clamp_scale(p.get("scale").and_then(Value::as_f64).unwrap_or(100.0) as f32 / 100.0);
     let style = crate::layer_style::gradient_style(p.get("style").and_then(Value::as_str).unwrap_or("linear"));
     let reverse = p.get("reverse").and_then(Value::as_bool).unwrap_or(false);
     let id = s.edit("New Gradient Fill Layer", |doc, active| {
         let fill = Fill::gradient(stops, angle, scale, style, reverse).in_mode(doc.mode);
-        let id = doc.insert_above(*active, Layer::new(doc.next_layer_name("Gradient Fill"), LayerContent::Fill(fill)));
+        let layer = Layer::new(doc.next_layer_name("Gradient Fill"), LayerContent::Fill(fill));
+        let id = crate::layer_place::insert_new(doc, *active, layer, crate::layer_place::Place::Auto);
         *active = Some(id);
         Ok(id)
     })?;
@@ -674,7 +707,7 @@ pub fn specs() -> Vec<CommandSpec> {
             menu: &[],
             shortcut: None,
             params: leak(format!(
-                r##"{{"preset":name|{stops},"group":name?,"applyToLayer":bool=true (also recolours a selected Gradient Fill layer)}} → {{current,layer?}}. The Gradient tool paints with it."##
+                r##"{{"preset":name|{stops},"group":name?,"applyToLayer":bool=true (also recolours a selected Gradient Fill layer, or fills a selected shape layer with it)}} → {{current,layer?}}. The Gradient tool paints with it."##
             )),
             enabled: always,
             run: select,
@@ -696,7 +729,7 @@ pub fn specs() -> Vec<CommandSpec> {
             menu: &[],
             shortcut: None,
             params: leak(format!(
-                r##"{{"preset":name?=current|{stops},"angle":deg=90,"style":"linear|radial|angle|reflected|diamond"="linear","scale":10..150=100,"reverse":bool}} → {{layer}}"##
+                r##"{{"preset":name?=current|{stops},"angle":deg=90,"style":"linear|radial|angle|reflected|diamond"="linear","scale":1..1000=100,"reverse":bool}} → {{layer}}"##
             )),
             enabled: super::has_doc,
             run: apply,

@@ -8,7 +8,8 @@ use crate::image::Image;
 use crate::{Ctx, HsbModel};
 
 /// Custom: `Σ kernel·pixel / scale + offset/255` per colour channel (alpha
-/// kept). Kernels shorter than 25 entries are zero-padded.
+/// kept). Kernels shorter than 25 entries are zero-padded. CMYK samples are
+/// ink, so there it runs on `1 - ink` and a positive offset brightens.
 pub(crate) fn custom(src: &Image, out: Rect, ctx: &Ctx, kernel: &[f32], scale: f32, offset: f32) -> Vec<f32> {
     let n = src.ch;
     let cc = ncol(ctx, n);
@@ -16,6 +17,7 @@ pub(crate) fn custom(src: &Image, out: Rect, ctx: &Ctx, kernel: &[f32], scale: f
         (0..25).filter_map(|i| kernel.get(i).copied().filter(|v| *v != 0.0).map(|v| (i as i32 % 5 - 2, i as i32 / 5 - 2, v))).collect();
     let s = if scale == 0.0 { 1.0 } else { scale };
     let off = offset / 255.0;
+    let sub = crate::fxutil::subtractive(ctx);
     let mut res = src.crop(out);
     if k.is_empty() {
         return res;
@@ -23,8 +25,10 @@ pub(crate) fn custom(src: &Image, out: Rect, ctx: &Ctx, kernel: &[f32], scale: f
     for (i, px) in res.chunks_exact_mut(n).enumerate() {
         let (x, y) = xy(out, i);
         for (c, v) in px.iter_mut().enumerate().take(cc) {
-            let sum: f32 = k.iter().map(|&(dx, dy, w)| src.get(x + dx, y + dy, c) * w).sum();
-            *v = sum / s + off;
+            // CMYK: convolve brightness (1 - ink), then back to ink.
+            let lum = |v: f32| if sub { 1.0 - v } else { v };
+            let sum: f32 = k.iter().map(|&(dx, dy, w)| lum(src.get(x + dx, y + dy, c)) * w).sum();
+            *v = lum(sum / s + off);
         }
     }
     res
@@ -120,6 +124,179 @@ pub(crate) fn hsb_hsl(src: &Image, out: Rect, ctx: &Ctx, input: HsbModel, output
 #[cfg(test)]
 mod tests {
     use super::*;
+    use photocraft_color::{PixelFormat, SampleType};
+    use photocraft_raster::Surface;
+
+    const DEPTHS: [SampleType; 3] = [SampleType::U8, SampleType::U16, SampleType::F32];
+
+    fn custom_fixture(depth: SampleType, mode: ColorMode, alpha: bool) -> (Surface, Rect) {
+        let b = Rect::new(-2, -1, 3, 4);
+        let format = PixelFormat::new(mode, depth, alpha);
+        let mut src = Surface::new(format);
+        let mut pixels = Vec::new();
+        for y in b.y0..b.y1 {
+            for x in b.x0..b.x1 {
+                for c in 0..format.channels() {
+                    pixels.push(((x - b.x0) + 5 * (y - b.y0) + 3 * c as i32) as f32 / 40.0);
+                }
+            }
+        }
+        src.write_region(b, &pixels);
+        (src, b)
+    }
+
+    fn assert_sample(actual: f32, expected: f32, depth: SampleType) {
+        let (expected, tolerance) = match depth {
+            SampleType::U8 => (expected.clamp(0.0, 1.0), 1.0 / 255.0),
+            SampleType::U16 => (expected.clamp(0.0, 1.0), 1.0 / 65535.0),
+            SampleType::F32 => (expected, 1e-6),
+        };
+        assert!((actual - expected).abs() <= tolerance, "{depth:?}: {actual} != {expected}");
+    }
+
+    fn run_custom(src: &Surface, b: Rect, kernel: Vec<f32>, scale: f32, offset: f32) -> Surface {
+        crate::apply_in(src, &crate::FilterParams::Custom { kernel, scale, offset }, b, b, None, b)
+    }
+
+    #[test]
+    fn custom_all_25_taps_use_row_major_offsets_and_repeat_canvas_edges() {
+        for depth in DEPTHS {
+            let (src, b) = custom_fixture(depth, ColorMode::Rgb, true);
+            for tap in 0..25 {
+                let mut kernel = vec![0.0; 25];
+                kernel[tap] = 1.0;
+                let out = run_custom(&src, b, kernel, 1.0, 0.0);
+                let (dx, dy) = (tap as i32 % 5 - 2, tap as i32 / 5 - 2);
+                for y in b.y0..b.y1 {
+                    for x in b.x0..b.x1 {
+                        let expected = src.pixel((x + dx).clamp(b.x0, b.x1 - 1), (y + dy).clamp(b.y0, b.y1 - 1));
+                        let actual = out.pixel(x, y);
+                        for c in 0..3 {
+                            assert_sample(actual[c], expected[c], depth);
+                        }
+                        assert_eq!(actual[3], src.pixel(x, y)[3], "tap={tap}, alpha must not shift");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn custom_short_kernel_zero_pads_and_ignores_entries_after_25() {
+        for depth in DEPTHS {
+            let (src, b) = custom_fixture(depth, ColorMode::Rgb, true);
+            let mut short = vec![0.0; 13];
+            short[0] = 0.25;
+            short[12] = 0.75;
+            let mut padded = short.clone();
+            padded.resize(25, 0.0);
+            let mut long = padded.clone();
+            long.extend([1e6, -1e6, f32::NAN]);
+            let out = run_custom(&src, b, short, 1.0, 0.0);
+            assert_eq!(out.read_region(b), run_custom(&src, b, padded, 1.0, 0.0).read_region(b));
+            assert_eq!(out.read_region(b), run_custom(&src, b, long, 1.0, 0.0).read_region(b));
+            for y in b.y0..b.y1 {
+                for x in b.x0..b.x1 {
+                    let corner = src.pixel((x - 2).max(b.x0), (y - 2).max(b.y0));
+                    let centre = src.pixel(x, y);
+                    let actual = out.pixel(x, y);
+                    for c in 0..3 {
+                        assert_sample(actual[c], 0.25 * corner[c] + 0.75 * centre[c], depth);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn custom_scale_zero_is_one_and_offset_is_in_255ths() {
+        for depth in DEPTHS {
+            let (src, b) = custom_fixture(depth, ColorMode::Rgb, true);
+            let before = src.read_region(b);
+            let mut kernel = vec![0.0; 25];
+            kernel[12] = 2.0;
+            let out = run_custom(&src, b, kernel.clone(), 0.0, -51.0);
+            assert_eq!(out.read_region(b), run_custom(&src, b, kernel, 1.0, -51.0).read_region(b));
+            for y in b.y0..b.y1 {
+                for x in b.x0..b.x1 {
+                    let original = src.pixel(x, y);
+                    let actual = out.pixel(x, y);
+                    for c in 0..3 {
+                        assert_sample(actual[c], 2.0 * original[c] - 0.2, depth);
+                    }
+                    assert_eq!(actual[3], original[3]);
+                }
+            }
+            assert_eq!(src.read_region(b), before);
+        }
+    }
+
+    #[test]
+    fn custom_neighbourhood_convolution_preserves_each_pixels_alpha() {
+        for depth in DEPTHS {
+            for mode in [ColorMode::Rgb, ColorMode::Cmyk] {
+                let (src, b) = custom_fixture(depth, mode, true);
+                let out = run_custom(&src, b, vec![1.0; 25], 25.0, 0.0);
+                let alpha = src.channels() - 1;
+                assert_ne!(out.pixel(b.x0, b.y0)[0], src.pixel(b.x0, b.y0)[0], "fixture must change colour");
+                for y in b.y0..b.y1 {
+                    for x in b.x0..b.x1 {
+                        assert_eq!(out.pixel(x, y)[alpha], src.pixel(x, y)[alpha], "{depth:?}, {mode:?}, {x},{y}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn custom_cmyk_convolves_brightness_including_black_with_or_without_alpha() {
+        for depth in DEPTHS {
+            for alpha in [false, true] {
+                let (src, b) = custom_fixture(depth, ColorMode::Cmyk, alpha);
+                for offset in [-51.0, 51.0] {
+                    let mut kernel = vec![0.0; 25];
+                    kernel[12] = 2.0;
+                    let out = run_custom(&src, b, kernel, 1.0, offset);
+                    for y in b.y0..b.y1 {
+                        for x in b.x0..b.x1 {
+                            let original = src.pixel(x, y);
+                            let actual = out.pixel(x, y);
+                            for c in 0..4 {
+                                // Twice the reflected brightness, plus offset, then back to ink.
+                                assert_sample(actual[c], 2.0 * original[c] - 1.0 - offset / 255.0, depth);
+                            }
+                            if alpha {
+                                assert_eq!(actual[4], original[4]);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn custom_float_retains_hdr_while_integer_storage_clamps() {
+        let b = Rect::new(0, 0, 1, 1);
+        for depth in DEPTHS {
+            let mut src = Surface::new(PixelFormat::new(ColorMode::Rgb, depth, true));
+            src.fill_rect(b, &[0.0, 0.5, 1.0, 0.4]);
+            let mut kernel = vec![0.0; 25];
+            kernel[12] = 2.0;
+            let out = run_custom(&src, b, kernel, 1.0, -51.0);
+            let actual = out.pixel(0, 0);
+            let original = src.pixel(0, 0);
+            for c in 0..3 {
+                assert_sample(actual[c], 2.0 * original[c] - 0.2, depth);
+            }
+            assert_eq!(actual[3], original[3]);
+            if depth == SampleType::F32 {
+                assert!(actual[0] < 0.0 && actual[2] > 1.0);
+            } else {
+                assert_eq!((actual[0], actual[2]), (0.0, 1.0));
+            }
+        }
+    }
 
     #[test]
     fn hsb_hsl_round_trip() {
