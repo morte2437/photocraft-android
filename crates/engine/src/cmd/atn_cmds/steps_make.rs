@@ -1,7 +1,7 @@
 use super::adjustments::{HUE_RANGES, adjustment_by_class, adjustment_by_suffix, adjustment_steps, levels_complete};
 use super::descriptors::{
-    PX, Target, ang, class, class_ref, code, color_desc, color_hex, desc, enm, get_bool, get_enum, get_list, get_num, get_obj, get_ref, get_text, jbool, jnum,
-    jstr, layer_ref, layer_target, long, name_ref, pct, px, ref_class, target, target_ref, text, trimmed,
+    PCT, PX, Target, ang, class, class_ref, code, color_desc, color_hex, desc, enm, get_bool, get_enum, get_list, get_num, get_obj, get_ref, get_text, jbool,
+    jnum, jstr, layer_ref, layer_target, long, name_ref, pct, px, ref_class, target, target_ref, text, trimmed,
 };
 use super::fields::{Mapped, none, step, steps};
 use super::steps_layer::quick_mask_ref;
@@ -103,13 +103,35 @@ fn mask_from_descriptor(d: &Descriptor) -> Option<Mapped> {
     })
 }
 
+/// Import New Document and selection-based Copy/Cut, retaining the new layer's options.
 fn new_document_from_descriptor(d: &Descriptor) -> Option<Mapped> {
     let nw = get_obj(d, "Nw  ")?;
     if get_enum(d, "Usng").as_deref() == Some("Slct") {
         let id = if get_bool(d, "Cpy ") == Some(true) { "layer.new.layerViaCopy" } else { "layer.new.layerViaCut" };
         let mut mapped_steps = vec![(id, json!({}))];
+        let mut props = Map::new();
         if let Some(n) = get_text(nw, "Nm  ") {
-            mapped_steps.push(("layer.setProps", json!({"name": n})));
+            props.insert("name".into(), n.into());
+        }
+        if nw.get("Opct").is_some() {
+            if matches!(nw.get("Opct"), Some(D::UnitFloat { unit, .. }) if *unit != PCT) {
+                return Some(Mapped::Unsupported { harmless: false });
+            }
+            let Some(o) = get_num(nw, "Opct").filter(|o| (0.0..=100.0).contains(o)) else {
+                return Some(Mapped::Unsupported { harmless: false });
+            };
+            props.insert("opacity".into(), (o / 100.0).into());
+        }
+        if let Some(m) = get_enum(nw, "Md  ") {
+            let Some(mode) = blend_label(&m) else { return Some(Mapped::Unsupported { harmless: false }) };
+            props.insert("blend".into(), mode.into());
+        }
+        if let Some(c) = get_enum(nw, "Clr ") {
+            let Some(color) = lookup(LABEL_COLORS, &c) else { return Some(Mapped::Unsupported { harmless: false }) };
+            mapped_steps.push(("layer.setLabelColor", json!({"color": color})));
+        }
+        if !props.is_empty() {
+            mapped_steps.push(("layer.setProps", Value::Object(props)));
         }
         return Some(steps(mapped_steps));
     }
@@ -150,6 +172,7 @@ fn new_document_from_descriptor(d: &Descriptor) -> Option<Mapped> {
 /// New Snapshot's From: the full document, the layers merged, or the current layer.
 const SNAPSHOT_FROM: &[(&str, &str)] = &[("FllD", "fullDocument"), ("MrgL", "mergedLayers"), ("CrnL", "currentLayer")];
 
+/// Import Make events only when their geometry and options can be represented faithfully.
 pub(super) fn make_from(d: &Descriptor) -> Mapped {
     if let Some(mapped) = duplicate_layer_from_descriptor(d) {
         return mapped;
@@ -176,13 +199,46 @@ pub(super) fn make_from(d: &Descriptor) -> Mapped {
                 if let Some(m) = get_enum(u, "Md  ").and_then(|m| blend_label(&m)) {
                     p.insert("mode".into(), m.into());
                 }
+                match u.get("Grup") {
+                    Some(D::Boolean(true)) => {
+                        p.insert("clipToPrevious".into(), true.into());
+                    }
+                    Some(D::Boolean(false)) | None => {}
+                    _ => return Mapped::Unsupported { harmless: false },
+                }
             }
             step("layer.new.layer", Value::Object(p))
         }
         Some("AdjL") => match type_desc.and_then(|t| adjustment_by_class(&trimmed(&t.class_id))) {
-            Some(a) => adjustment_steps(a, "layer.newAdjustmentLayer.", type_desc),
+            Some(a) => {
+                let Mapped::Steps(mut mapped) = adjustment_steps(a, "layer.newAdjustmentLayer.", type_desc) else {
+                    return Mapped::Unsupported { harmless: false };
+                };
+                if let Some(u) = using
+                    && u.get("Opct").is_some()
+                {
+                    if matches!(u.get("Opct"), Some(D::UnitFloat { unit, .. }) if *unit != PCT) {
+                        return Mapped::Unsupported { harmless: false };
+                    }
+                    let Some(opacity) = get_num(u, "Opct").filter(|o| (0.0..=100.0).contains(o)) else {
+                        return Mapped::Unsupported { harmless: false };
+                    };
+                    let Some((_, Value::Object(params))) = mapped.first_mut() else { return Mapped::Unsupported { harmless: false } };
+                    // Recorded layer opacity uses 0..255 even in a 16-bit document.
+                    params.insert("opacity".into(), ((opacity * 255.0 / 100.0).round() / 255.0).into());
+                }
+                if let Some(c) = using.and_then(|u| get_enum(u, "Clr ")) {
+                    let Some(color) = lookup(LABEL_COLORS, &c) else { return Mapped::Unsupported { harmless: false } };
+                    mapped.push(("layer.setLabelColor".into(), json!({"color": color})));
+                }
+                Mapped::Steps(mapped)
+            }
             None => Mapped::Unsupported { harmless: false },
         },
+        Some("contentLayer") if d.get("Shp ").is_some() || using.is_some_and(|u| u.get("Shp ").is_some() || u.get("strokeStyle").is_some()) => {
+            // A shape's geometry and stroke cannot be represented by a canvas-wide fill.
+            Mapped::Unsupported { harmless: false }
+        }
         Some("contentLayer") => match type_desc {
             Some(t) if t.class_id.is("solidColorLayer") => match get_obj(t, "Clr ").and_then(color_hex) {
                 Some(c) => step("layer.newFillLayer.solidColor", json!({"color": c})),
@@ -196,7 +252,7 @@ pub(super) fn make_from(d: &Descriptor) -> Mapped {
         },
         Some("layerSection") => {
             let mut p = Map::new();
-            if let Some(n) = using.and_then(|u| get_text(u, "Nm  ")) {
+            if let Some(n) = using.and_then(|u| get_text(u, "Nm  ")).or_else(|| get_text(d, "Nm  ")) {
                 p.insert("name".into(), n.into());
             }
             match get_ref(d, "From") {
@@ -234,6 +290,17 @@ pub(super) fn make_from(d: &Descriptor) -> Mapped {
     }
 }
 
+/// The percent to save for an adjustment layer's opacity. Loading quantises a recorded percent
+/// to 8 bits (70 % becomes 179/255); a whole percent that quantises to that same level is the
+/// one that was recorded, so it is saved back (load then save keeps `70`, not `70.196`).
+fn recorded_percent(opacity: f64) -> f64 {
+    let level = opacity * 255.0;
+    let percent = opacity * 100.0;
+    let whole = percent.round();
+    if (level - level.round()).abs() < 1e-6 && (whole * 255.0 / 100.0).round() == level.round() { whole } else { percent }
+}
+
+/// Write a creation step, refusing native options the target descriptor cannot carry.
 pub(super) fn make_to(id: &str, p: &Value) -> Option<Descriptor> {
     let with_name = |cls: &str| {
         let mut u = desc(cls);
@@ -244,12 +311,12 @@ pub(super) fn make_to(id: &str, p: &Value) -> Option<Descriptor> {
     };
     Some(match id {
         "layer.new.layer" => {
-            // The descriptor carries the name, opacity and mode only. A step that also clips to
-            // the layer below, labels the layer, fills it with the neutral colour or places it
+            // The descriptor carries the name, opacity, mode and clipping flag. A step that
+            // labels the layer, fills it with the neutral colour or places it
             // below the active layer would replay as a different layer, so it isn't exported
-            // (strict export fails, a partial one skips it: #7502, #7512, #7513, #7514).
+            // (strict export fails, a partial one skips it: #7512, #7513, #7514).
             let set = |key: &str, default: Value| p.get(key).is_some_and(|v| !v.is_null() && *v != default);
-            if set("clipToPrevious", Value::Bool(false))
+            if p.get("clipToPrevious").is_some_and(|v| !v.is_null() && !v.is_boolean())
                 || set("color", json!("none"))
                 || set("fillNeutral", Value::Bool(false))
                 || set("position", json!("above"))
@@ -257,6 +324,9 @@ pub(super) fn make_to(id: &str, p: &Value) -> Option<Descriptor> {
                 return None;
             }
             let mut u = with_name("Lyr ");
+            if jbool(p, "clipToPrevious") == Some(true) {
+                u = u.with("Grup", D::Boolean(true));
+            }
             if let Some(o) = jnum(p, "opacity") {
                 u = u.with("Opct", pct(o * 100.0));
             }
@@ -360,16 +430,30 @@ pub(super) fn make_to(id: &str, p: &Value) -> Option<Descriptor> {
         _ => {
             let suffix = id.strip_prefix("layer.newAdjustmentLayer.")?;
             let a = adjustment_by_suffix(suffix)?;
-            let t = if p.as_object().is_some_and(|o| o.is_empty()) {
+            let opacity = match p.get("opacity") {
+                None => None,
+                Some(value) => Some(value.as_f64().filter(|o| o.is_finite() && (0.0..=1.0).contains(o))?),
+            };
+            let mut params = p.clone();
+            if let Some(params) = params.as_object_mut() {
+                params.remove("opacity");
+            }
+            // Layer opacity must not turn default adjustment settings into a custom preset.
+            let t = if params.as_object().is_some_and(|o| o.is_empty()) {
                 desc(a.class).with("presetKind", enm("presetKindType", "presetKindDefault"))
             } else {
-                (a.to)(p)?
+                (a.to)(&params)?
             };
-            desc("null").with("null", class_ref("AdjL")).with("Usng", D::Descriptor(desc("AdjL").with("Type", D::Descriptor(t))))
+            let mut using = desc("AdjL").with("Type", D::Descriptor(t));
+            if let Some(opacity) = opacity {
+                using = using.with("Opct", pct(recorded_percent(opacity)));
+            }
+            desc("null").with("null", class_ref("AdjL")).with("Usng", D::Descriptor(using))
         }
     })
 }
 
+/// Import selection geometry or a channel source, including its optional source layer.
 fn selection_from(d: &Descriptor) -> Mapped {
     let unsupported = Mapped::Unsupported { harmless: false };
     match d.get("T   ") {
@@ -380,7 +464,24 @@ fn selection_from(d: &Descriptor) -> Mapped {
             _ => unsupported,
         },
         Some(D::Reference(t)) => match (ref_class(t).as_deref(), target(t)) {
-            (Some("Chnl"), Target::Ordinal(o)) if o == "Trsp" => step("select.loadSelection", json!({"channel": "transparency"})),
+            (Some("Chnl"), Target::Ordinal(o)) if o == "Trsp" => {
+                let mut p = Map::new();
+                p.insert("channel".into(), "transparency".into());
+                if t.len() > 1 {
+                    if t.len() != 2 || ref_class(&t[1..]).as_deref() != Some("Lyr") {
+                        return unsupported;
+                    }
+                    let Some(mut layer) = layer_target(&t[1..]) else { return unsupported };
+                    if let Some(Value::String(name)) = layer.get("layer")
+                        && (name.is_empty() || name == "merged")
+                    {
+                        let selector = json!({"name": name});
+                        layer.insert("layer".into(), selector);
+                    }
+                    p.extend(layer);
+                }
+                step("select.loadSelection", Value::Object(p))
+            }
             // ⌘-click on the targeted channel (a layer mask after `select` of `Msk`).
             (Some("Chnl"), Target::Ordinal(o)) if o == "Trgt" => step("select.loadSelection", json!({"channel": "targeted"})),
             (Some("Chnl"), Target::Name(n)) => step("select.loadSelection", json!({"channel": n})),
@@ -659,6 +760,7 @@ fn layer_set_to(p: &Value) -> Option<Descriptor> {
     Some(desc("null").with("null", layer_ref(p)?).with("T   ", D::Descriptor(t)))
 }
 
+/// Encode selection and colour-setting steps as Photoshop Set descriptors.
 pub(super) fn set_to(id: &str, p: &Value) -> Option<Descriptor> {
     let fsel = D::Reference(vec![ReferenceItem::Property { class: class("Chnl"), key: Id::new("fsel") }]);
     let sel = |t: D| desc("null").with("null", fsel.clone()).with("T   ", t);
@@ -675,7 +777,22 @@ pub(super) fn set_to(id: &str, p: &Value) -> Option<Descriptor> {
             return None;
         }
         "select.loadSelection" => match jstr(p, "channel")? {
-            "transparency" => sel(D::Reference(vec![ReferenceItem::Enumerated { class: class("Chnl"), type_id: Id::new("Chnl"), value: Id::new("Trsp") }])),
+            "transparency" => {
+                let mut r = vec![ReferenceItem::Enumerated { class: class("Chnl"), type_id: Id::new("Chnl"), value: Id::new("Trsp") }];
+                if p.get("layer").is_some_and(|v| !v.is_null()) {
+                    let reference = match p.get("layer") {
+                        // These native source defaults mean the active layer for transparency.
+                        Some(Value::String(name)) if name.is_empty() || name == "merged" => target_ref("Lyr "),
+                        Some(Value::Object(selector)) if selector.len() == 1 && selector.contains_key("name") => {
+                            name_ref("Lyr ", selector.get("name")?.as_str()?)
+                        }
+                        _ => layer_ref(p)?,
+                    };
+                    let D::Reference(layer) = reference else { return None };
+                    r.extend(layer);
+                }
+                sel(D::Reference(r))
+            }
             "targeted" => sel(D::Reference(vec![ReferenceItem::Enumerated { class: class("Chnl"), type_id: Id::new("Ordn"), value: Id::new("Trgt") }])),
             name => sel(name_ref("Chnl", name)),
         },

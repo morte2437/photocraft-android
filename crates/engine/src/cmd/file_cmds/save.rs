@@ -9,7 +9,8 @@ pub fn tiff_would_write_layers(doc: &Document) -> bool {
 }
 
 /// What a headless save writes beyond the format: JPEG quality and format, TIFF layers, Targa
-/// bits, DPX bits, DDS compression and mipmaps, PSD previews and the PSD merged image.
+/// bits, DPX bits, DDS compression and mipmaps, PSD previews, the PSD merged image and the
+/// `.pcraft` full-size composite.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SaveOpts {
     /// Photoshop's 0–12 JPEG scale.
@@ -33,6 +34,10 @@ pub(crate) struct SaveOpts {
     /// PSD/PSB: write the real merged image (Preferences › File Handling › Maximize PSD and PSB
     /// File Compatibility).
     pub psd_maximize_compatibility: bool,
+    /// `.pcraft`: request the full-size composite (`"pcraftFullComposite"`; unset, Preferences ›
+    /// File Handling › Save Full-Size Composite in .pcraft Files, off by default). The save may
+    /// omit it; check the manifest's `full_composite` member.
+    pub pcraft_full_composite: bool,
 }
 
 impl Default for SaveOpts {
@@ -47,6 +52,7 @@ impl Default for SaveOpts {
             dds: photocraft_io::DdsOptions::default(),
             image_previews: true,
             psd_maximize_compatibility: true,
+            pcraft_full_composite: false,
         }
     }
 }
@@ -56,7 +62,8 @@ impl SaveOpts {
     /// `jpegFormat` it doesn't name or a `tgaBits` other than 24 or 32 is an error); the image
     /// previews and the PSD merged image from the session's File Handling preferences (Ask When
     /// Saving has no dialog here, so it saves them, as Photoshop's Save As checkbox and its
-    /// Maximize Compatibility checkbox both start on).
+    /// Maximize Compatibility checkbox both start on). The `.pcraft` full-size composite comes from
+    /// `pcraftFullComposite`, or without it from the File Handling preference.
     pub(crate) fn from_params(s: &Session, p: &Value, cmd: &str) -> Result<Self> {
         let file_handling = &s.prefs().file_handling;
         Ok(SaveOpts {
@@ -69,6 +76,7 @@ impl SaveOpts {
             dds: dds_param(p, cmd)?.unwrap_or_default(),
             image_previews: file_handling.image_previews != crate::prefs::Ask::Never,
             psd_maximize_compatibility: file_handling.maximize_psd_compatibility != crate::prefs::Ask::Never,
+            pcraft_full_composite: pcraft_full_composite_param(p, cmd)?.unwrap_or(file_handling.pcraft_full_composite),
         })
     }
 
@@ -95,6 +103,18 @@ pub fn tga_bits_param(p: &Value, cmd: &str) -> Result<Option<photocraft_io::TgaB
             .and_then(photocraft_io::TgaBits::from_bits)
             .map(Some)
             .ok_or_else(|| EngineError::BadParams { cmd: cmd.into(), msg: format!("`tgaBits` must be 24 or 32, got {v}") }),
+    }
+}
+
+/// Whether `p` asks a `.pcraft` save for the full-size composite (`"pcraftFullComposite": bool`;
+/// absent or null: `None`, the caller's default). Anything else is a bad parameter of command `cmd`.
+pub fn pcraft_full_composite_param(p: &Value, cmd: &str) -> Result<Option<bool>> {
+    match p.get("pcraftFullComposite") {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v
+            .as_bool()
+            .map(Some)
+            .ok_or_else(|| EngineError::BadParams { cmd: cmd.into(), msg: format!("`pcraftFullComposite` must be true or false, got {v}") }),
     }
 }
 
@@ -178,6 +198,7 @@ pub(crate) fn encode(doc: &Document, path: &str, save: impl Into<SaveOpts>) -> R
         tga_bits: save.tga_bits,
         image_previews: save.image_previews,
         psd_maximize_compatibility: save.psd_maximize_compatibility,
+        pcraft_full_composite: save.pcraft_full_composite,
         // Linked files a PSD embeds are resolved against the document being worked on.
         document_path: crate::doc_path::current(),
         // An untrusted session's stored paths are document data: embed none of them.

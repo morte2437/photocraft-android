@@ -163,6 +163,7 @@ fn restrict_surface_impl(before: &Surface, after: &mut Surface, colors: ColorCha
             let mut merged = before.clone();
             for coord in coords {
                 let source = after.tile(coord);
+                let source_bytes = source.map(|t| t.bytes());
                 let dest = merged.try_tile_mut(coord).map_err(|e| EngineError::Other(e.to_string()))?;
                 let rect = coord.rect();
                 let width = rect.width() as usize;
@@ -174,7 +175,8 @@ fn restrict_surface_impl(before: &Surface, after: &mut Surface, colors: ColorCha
                         continue;
                     }
                     let offset = i.saturating_mul(warped.bytes_per_pixel());
-                    let input = source.and_then(|t| t.bytes().get(offset..offset.saturating_add(warped.bytes_per_pixel()))).unwrap_or(after.default_bytes());
+                    let input =
+                        source_bytes.as_deref().and_then(|t| t.get(offset..offset.saturating_add(warped.bytes_per_pixel()))).unwrap_or(after.default_bytes());
                     for channel in colors.indices() {
                         let offset = channel.saturating_mul(bytes);
                         let range = offset..offset.saturating_add(bytes);
@@ -229,9 +231,10 @@ fn restrict_coords(before: &Surface, after: &mut Surface, colors: ColorChannels,
     }
     for c in coords {
         let old = before.tile(c);
+        let old_bytes = old.map(|t| t.bytes());
         let tile = after.try_tile_mut(c).map_err(|e| EngineError::Other(e.to_string()))?;
         for (i, pixel) in tile.bytes_mut().chunks_exact_mut(stride).enumerate() {
-            let original = old.and_then(|t| t.bytes().get(i * stride..(i + 1) * stride)).unwrap_or(before.default_bytes());
+            let original = old_bytes.as_deref().and_then(|t| t.get(i * stride..(i + 1) * stride)).unwrap_or(before.default_bytes());
             for (ch, (out, src)) in pixel.chunks_exact_mut(bytes).zip(original.chunks_exact(bytes)).enumerate() {
                 if !colors.contains(ch) {
                     out.copy_from_slice(src);
@@ -329,6 +332,7 @@ pub(crate) fn scatter_selected(
             }
             .map_err(|e| EngineError::Other(e.to_string()))?;
             let src = plane.tile(coord);
+            let src_bytes = src.map(|t| t.bytes());
             let default = plane.default_bytes();
             let stride = fmt.bytes_per_pixel();
             let size = photocraft_geom::TILE_SIZE as usize;
@@ -339,7 +343,7 @@ pub(crate) fn scatter_selected(
                     continue;
                 }
                 let offset = i * fmt.sample.bytes();
-                let bytes = src.and_then(|t| t.bytes().get(offset..offset + fmt.sample.bytes())).unwrap_or(default);
+                let bytes = src_bytes.as_deref().and_then(|t| t.get(offset..offset + fmt.sample.bytes())).unwrap_or(default);
                 let v = read_sample(bytes, fmt.sample, 0);
                 let v = if fmt.mode == ColorMode::Cmyk { 1.0 - v } else { v };
                 write_sample(pixel, fmt.sample, component, v);

@@ -41,7 +41,7 @@ fn previous_read_region(surface: &Surface, r: Rect) -> Vec<f32> {
                     Some(t) => {
                         let base = (((y - tc.ty * TILE_SIZE) as usize) * TILE_SIZE as usize + (x - tc.tx * TILE_SIZE) as usize) * n;
                         for i in 0..n {
-                            out[o + i] = read_sample(&t.data, surface.format.sample, base + i);
+                            out[o + i] = read_sample(&t.bytes(), surface.format.sample, base + i);
                         }
                     }
                     None => out[o..o + n].copy_from_slice(&dp),
@@ -137,7 +137,7 @@ fn write_region_reference(surface: &mut Surface, r: Rect, data: &[f32]) {
                 let o = (((y - r.y0) as usize) * w + (x - r.x0) as usize) * n;
                 let base = (((y - tc.ty * TILE_SIZE) as usize) * TILE_SIZE as usize + (x - tc.tx * TILE_SIZE) as usize) * n;
                 for i in 0..n {
-                    write_sample(&mut t.data, sample, base + i, data[o + i]);
+                    write_sample(&mut t.bytes_mut(), sample, base + i, data[o + i]);
                 }
             }
         }
@@ -571,13 +571,13 @@ fn tile_content_bounds_match_a_per_pixel_scan() {
                 for &s in &spots {
                     data[s - s % bpp + byte] ^= 0x5a;
                 }
-                let t = Tile { data: data.into_boxed_slice() };
+                let t = Tile::from_vec(data);
                 assert_eq!(t.content_bounds(&dp), per_pixel(&t, &dp), "bpp {bpp}, spots {spots:?}, byte {byte}");
             }
         }
         let mut data = dp.repeat(TILE_SIZE as usize * TILE_SIZE as usize);
         data[row * 3 + 9 * bpp..row * 3 + 10 * bpp].iter_mut().for_each(|b| *b = !*b);
-        let t = Tile { data: data.into_boxed_slice() };
+        let t = Tile::from_vec(data);
         assert_eq!(t.content_bounds(&dp), Some((9, 3, 10, 4)), "bpp {bpp}");
     }
 }

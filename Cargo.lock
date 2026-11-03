@@ -93,8 +93,8 @@ dependencies = [
  "accesskit_consumer",
  "hashbrown 0.17.1",
  "static_assertions",
- "windows",
- "windows-core",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
 ]
 
 [[package]]
@@ -650,7 +650,7 @@ dependencies = [
  "bitflags 2.13.2",
  "cexpr",
  "clang-sys",
- "itertools 0.10.5",
+ "itertools 0.13.0",
  "proc-macro2",
  "quote",
  "regex",
@@ -1021,7 +1021,7 @@ dependencies = [
  "num-traits",
  "serde",
  "wasm-bindgen",
- "windows-link",
+ "windows-link 0.2.1",
 ]
 
 [[package]]
@@ -1385,6 +1385,16 @@ name = "craft-jpeg"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=c5a1cbfb5f9049f9270955caffb5bee5997aebf7#c5a1cbfb5f9049f9270955caffb5bee5997aebf7"
 dependencies = [
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-pcraft-format"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=b8f7d93b00dfb8f172938f3d2d796ae62dcfe123#b8f7d93b00dfb8f172938f3d2d796ae62dcfe123"
+dependencies = [
+ "serde",
+ "serde_json",
  "thiserror 2.0.21",
 ]
 
@@ -2362,8 +2372,8 @@ dependencies = [
  "read-fonts",
  "roxmltree 0.21.1",
  "smallvec",
- "windows",
- "windows-core",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
  "yeslogic-fontconfig-sys",
 ]
 
@@ -2562,7 +2572,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1bd49230192a3797a9a4d6abe9b3eed6f7fa4c8a8a4947977c6f80025f92cbd8"
 dependencies = [
  "rustix 1.1.5",
- "windows-link",
+ "windows-link 0.2.1",
 ]
 
 [[package]]
@@ -2764,7 +2774,7 @@ dependencies = [
  "log",
  "presser",
  "thiserror 2.0.21",
- "windows",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -2988,7 +2998,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core",
+ "windows-core 0.62.2",
 ]
 
 [[package]]
@@ -3347,15 +3357,6 @@ checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
 
 [[package]]
 name = "itertools"
-version = "0.10.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b0fd2260e829bddf4cb6ea802289de2f86d6a7a690192fbe91b3f46e0f2c8473"
-dependencies = [
- "either",
-]
-
-[[package]]
-name = "itertools"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "413ee7dfc52ee1a4949ceeb7dbc8a33f2d6c088194d9f922fb8318faf1f01186"
@@ -3401,7 +3402,7 @@ dependencies = [
  "simd_cesu8",
  "thiserror 2.0.21",
  "walkdir",
- "windows-link",
+ "windows-link 0.2.1",
 ]
 
 [[package]]
@@ -3751,7 +3752,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55"
 dependencies = [
  "cfg-if",
- "windows-link",
+ "windows-link 0.2.1",
 ]
 
 [[package]]
@@ -3888,6 +3889,12 @@ name = "lru-slab"
 version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4050469837a6ff301cd14c1f8f24f88549e6d548f24f64e2148eb0f72cebc51f"
+
+[[package]]
+name = "lz4_flex"
+version = "0.11.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "373f5eceeeab7925e0c1098212f2fbc4d416adec9d35051a6ab251e824c1854a"
 
 [[package]]
 name = "maybe-owned"
@@ -4834,7 +4841,7 @@ dependencies = [
  "libc",
  "redox_syscall 0.5.18",
  "smallvec",
- "windows-link",
+ "windows-link 0.2.1",
 ]
 
 [[package]]
@@ -4982,7 +4989,7 @@ dependencies = [
 
 [[package]]
 name = "photocraft"
-version = "0.19.0"
+version = "0.20.1"
 dependencies = [
  "arboard",
  "async-io",
@@ -5037,7 +5044,7 @@ dependencies = [
 
 [[package]]
 name = "photocraft-affinity"
-version = "0.19.0"
+version = "0.20.1"
 dependencies = [
  "crc32fast",
  "flate2",
@@ -5047,7 +5054,7 @@ dependencies = [
 
 [[package]]
 name = "photocraft-algo"
-version = "0.19.0"
+version = "0.20.1"
 dependencies = [
  "criterion",
  "photocraft-color",
@@ -5062,7 +5069,7 @@ dependencies = [
 
 [[package]]
 name = "photocraft-automation"
-version = "0.19.0"
+version = "0.20.1"
 dependencies = [
  "base64 0.23.1",
  "cap-std",
@@ -5073,6 +5080,7 @@ dependencies = [
  "photocraft-doc",
  "photocraft-engine",
  "photocraft-format",
+ "photocraft-geom",
  "photocraft-io",
  "photocraft-psd",
  "photocraft-raster",
@@ -5088,7 +5096,7 @@ dependencies = [
 
 [[package]]
 name = "photocraft-cli"
-version = "0.19.0"
+version = "0.20.1"
 dependencies = [
  "clap",
  "clap_complete",
@@ -5107,7 +5115,7 @@ dependencies = [
 
 [[package]]
 name = "photocraft-cms"
-version = "0.19.0"
+version = "0.20.1"
 dependencies = [
  "moxcms",
  "rayon",
@@ -5115,7 +5123,7 @@ dependencies = [
 
 [[package]]
 name = "photocraft-codecs"
-version = "0.19.0"
+version = "0.20.1"
 dependencies = [
  "craft-jpeg",
  "exr",
@@ -5139,7 +5147,7 @@ dependencies = [
 
 [[package]]
 name = "photocraft-color"
-version = "0.19.0"
+version = "0.20.1"
 dependencies = [
  "photocraft-cms",
  "serde",
@@ -5147,7 +5155,7 @@ dependencies = [
 
 [[package]]
 name = "photocraft-compose"
-version = "0.19.0"
+version = "0.20.1"
 dependencies = [
  "criterion",
  "photocraft-cms",
@@ -5163,7 +5171,7 @@ dependencies = [
 
 [[package]]
 name = "photocraft-doc"
-version = "0.19.0"
+version = "0.20.1"
 dependencies = [
  "photocraft-color",
  "photocraft-geom",
@@ -5174,7 +5182,7 @@ dependencies = [
 
 [[package]]
 name = "photocraft-engine"
-version = "0.19.0"
+version = "0.20.1"
 dependencies = [
  "base64 0.22.1",
  "blake3",
@@ -5216,9 +5224,10 @@ dependencies = [
 
 [[package]]
 name = "photocraft-format"
-version = "0.19.0"
+version = "0.20.1"
 dependencies = [
  "blake3",
+ "craft-pcraft-format",
  "crc32fast",
  "exacl",
  "flate2",
@@ -5239,14 +5248,14 @@ dependencies = [
 
 [[package]]
 name = "photocraft-geom"
-version = "0.19.0"
+version = "0.20.1"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "photocraft-gpu"
-version = "0.19.0"
+version = "0.20.1"
 dependencies = [
  "bytemuck",
  "half",
@@ -5266,14 +5275,14 @@ dependencies = [
 
 [[package]]
 name = "photocraft-heif"
-version = "0.19.0"
+version = "0.20.1"
 dependencies = [
  "heic-rs",
 ]
 
 [[package]]
 name = "photocraft-io"
-version = "0.19.0"
+version = "0.20.1"
 dependencies = [
  "blake3",
  "craft-docpath",
@@ -5301,7 +5310,7 @@ dependencies = [
  "resvg",
  "roxmltree 0.21.1",
  "serde_json",
- "sysinfo",
+ "sysinfo 0.40.1",
  "thiserror 2.0.21",
  "tiff",
  "winsafe",
@@ -5311,18 +5320,18 @@ dependencies = [
 
 [[package]]
 name = "photocraft-ipp"
-version = "0.19.0"
+version = "0.20.1"
 
 [[package]]
 name = "photocraft-ops"
-version = "0.19.0"
+version = "0.20.1"
 dependencies = [
  "photocraft-doc",
 ]
 
 [[package]]
 name = "photocraft-paint"
-version = "0.19.0"
+version = "0.20.1"
 dependencies = [
  "photocraft-cms",
  "photocraft-color",
@@ -5336,7 +5345,7 @@ dependencies = [
 
 [[package]]
 name = "photocraft-plugins"
-version = "0.19.0"
+version = "0.20.1"
 dependencies = [
  "photocraft-color",
  "photocraft-geom",
@@ -5352,7 +5361,7 @@ dependencies = [
 
 [[package]]
 name = "photocraft-psd"
-version = "0.19.0"
+version = "0.20.1"
 dependencies = [
  "encoding_rs",
  "flate2",
@@ -5364,18 +5373,21 @@ dependencies = [
 
 [[package]]
 name = "photocraft-raster"
-version = "0.19.0"
+version = "0.20.1"
 dependencies = [
+ "crc32fast",
+ "lz4_flex",
  "photocraft-color",
  "photocraft-geom",
  "proptest",
  "rayon",
  "serde",
+ "sysinfo 0.37.2",
 ]
 
 [[package]]
 name = "photocraft-raw"
-version = "0.19.0"
+version = "0.20.1"
 dependencies = [
  "flate2",
  "image",
@@ -5390,7 +5402,7 @@ dependencies = [
 
 [[package]]
 name = "photocraft-tablet"
-version = "0.19.0"
+version = "0.20.1"
 dependencies = [
  "block2 0.6.2",
  "objc2 0.6.5",
@@ -5402,7 +5414,7 @@ dependencies = [
 
 [[package]]
 name = "photocraft-testkit"
-version = "0.19.0"
+version = "0.20.1"
 dependencies = [
  "memory-stats",
  "serde_json",
@@ -5410,7 +5422,7 @@ dependencies = [
 
 [[package]]
 name = "photocraft-text"
-version = "0.19.0"
+version = "0.20.1"
 dependencies = [
  "flate2",
  "parley",
@@ -5425,7 +5437,7 @@ dependencies = [
 
 [[package]]
 name = "photocraft-ui-egui"
-version = "0.19.0"
+version = "0.20.1"
 dependencies = [
  "base64 0.23.1",
  "craft-print",
@@ -5470,7 +5482,7 @@ dependencies = [
 
 [[package]]
 name = "photocraft-vector"
-version = "0.19.0"
+version = "0.20.1"
 dependencies = [
  "photocraft-color",
  "photocraft-doc",
@@ -5481,7 +5493,7 @@ dependencies = [
 
 [[package]]
 name = "photocraft-web"
-version = "0.19.0"
+version = "0.20.1"
 dependencies = [
  "eframe",
  "egui",
@@ -5503,7 +5515,7 @@ dependencies = [
 
 [[package]]
 name = "photocraft-web-boot"
-version = "0.19.0"
+version = "0.20.1"
 dependencies = [
  "flate2",
  "js-sys",
@@ -6674,6 +6686,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
+name = "sctk-adwaita"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6277f0217056f77f1d8f49f2950ac6c278c0d607c45f5ee99328d792ede24ec"
+dependencies = [
+ "log",
+ "smithay-client-toolkit 0.19.2",
+ "tiny-skia",
+]
+
+[[package]]
 name = "security-framework"
 version = "3.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7361,6 +7384,20 @@ dependencies = [
 
 [[package]]
 name = "sysinfo"
+version = "0.37.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "16607d5caffd1c07ce073528f9ed972d88db15dd44023fa57142963be3feb11f"
+dependencies = [
+ "libc",
+ "memchr",
+ "ntapi",
+ "objc2-core-foundation",
+ "objc2-io-kit",
+ "windows 0.61.3",
+]
+
+[[package]]
+name = "sysinfo"
 version = "0.40.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0e8a3edbe0394ce115f3917a00349dd242be09eb5a091ed509eaf67b55cfb8a8"
@@ -7370,7 +7407,7 @@ dependencies = [
  "ntapi",
  "objc2-core-foundation",
  "objc2-io-kit",
- "windows",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -8644,9 +8681,9 @@ dependencies = [
  "web-sys",
  "wgpu-naga-bridge",
  "wgpu-types",
- "windows",
- "windows-core",
- "windows-result",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
+ "windows-result 0.4.1",
 ]
 
 [[package]]
@@ -8714,14 +8751,36 @@ checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
 
 [[package]]
 name = "windows"
+version = "0.61.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9babd3a767a4c1aef6900409f85f5d53ce2544ccdfaa86dad48c91782c6d6893"
+dependencies = [
+ "windows-collections 0.2.0",
+ "windows-core 0.61.2",
+ "windows-future 0.2.1",
+ "windows-link 0.1.3",
+ "windows-numerics 0.2.0",
+]
+
+[[package]]
+name = "windows"
 version = "0.62.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "527fadee13e0c05939a6a05d5bd6eec6cd2e3dbd648b9f8e447c6518133d8580"
 dependencies = [
- "windows-collections",
- "windows-core",
- "windows-future",
- "windows-numerics",
+ "windows-collections 0.3.2",
+ "windows-core 0.62.2",
+ "windows-future 0.3.2",
+ "windows-numerics 0.3.1",
+]
+
+[[package]]
+name = "windows-collections"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3beeceb5e5cfd9eb1d76b381630e82c4241ccd0d27f1a39ed41b2760b255c5e8"
+dependencies = [
+ "windows-core 0.61.2",
 ]
 
 [[package]]
@@ -8730,7 +8789,20 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "23b2d95af1a8a14a3c7367e1ed4fc9c20e0a26e79551b1454d72583c97cc6610"
 dependencies = [
- "windows-core",
+ "windows-core 0.62.2",
+]
+
+[[package]]
+name = "windows-core"
+version = "0.61.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0fdd3ddb90610c7638aa2b3a3ab2904fb9e5cdbecc643ddb3647212781c4ae3"
+dependencies = [
+ "windows-implement",
+ "windows-interface",
+ "windows-link 0.1.3",
+ "windows-result 0.3.4",
+ "windows-strings 0.4.2",
 ]
 
 [[package]]
@@ -8741,9 +8813,20 @@ checksum = "b8e83a14d34d0623b51dce9581199302a221863196a1dde71a7663a4c2be9deb"
 dependencies = [
  "windows-implement",
  "windows-interface",
- "windows-link",
- "windows-result",
- "windows-strings",
+ "windows-link 0.2.1",
+ "windows-result 0.4.1",
+ "windows-strings 0.5.1",
+]
+
+[[package]]
+name = "windows-future"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc6a41e98427b19fe4b73c550f060b59fa592d7d686537eebf9385621bfbad8e"
+dependencies = [
+ "windows-core 0.61.2",
+ "windows-link 0.1.3",
+ "windows-threading 0.1.0",
 ]
 
 [[package]]
@@ -8752,9 +8835,9 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e1d6f90251fe18a279739e78025bd6ddc52a7e22f921070ccdc67dde84c605cb"
 dependencies = [
- "windows-core",
- "windows-link",
- "windows-threading",
+ "windows-core 0.62.2",
+ "windows-link 0.2.1",
+ "windows-threading 0.2.1",
 ]
 
 [[package]]
@@ -8781,9 +8864,25 @@ dependencies = [
 
 [[package]]
 name = "windows-link"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5e6ad25900d524eaabdbbb96d20b4311e1e7ae1699af4fb28c17ae66c80d798a"
+
+[[package]]
+name = "windows-link"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5"
+
+[[package]]
+name = "windows-numerics"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9150af68066c4c5c07ddc0ce30421554771e528bde427614c61038bc2c92c2b1"
+dependencies = [
+ "windows-core 0.61.2",
+ "windows-link 0.1.3",
+]
 
 [[package]]
 name = "windows-numerics"
@@ -8791,8 +8890,8 @@ version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6e2e40844ac143cdb44aead537bbf727de9b044e107a0f1220392177d15b0f26"
 dependencies = [
- "windows-core",
- "windows-link",
+ "windows-core 0.62.2",
+ "windows-link 0.2.1",
 ]
 
 [[package]]
@@ -8801,9 +8900,18 @@ version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "02752bf7fbdcce7f2a27a742f798510f3e5ad88dbe84871e5168e2120c3d5720"
 dependencies = [
- "windows-link",
- "windows-result",
- "windows-strings",
+ "windows-link 0.2.1",
+ "windows-result 0.4.1",
+ "windows-strings 0.5.1",
+]
+
+[[package]]
+name = "windows-result"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "56f42bd332cc6c8eac5af113fc0c1fd6a8fd2aa08a0119358686e5160d0586c6"
+dependencies = [
+ "windows-link 0.1.3",
 ]
 
 [[package]]
@@ -8812,7 +8920,16 @@ version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7781fa89eaf60850ac3d2da7af8e5242a5ea78d1a11c49bf2910bb5a73853eb5"
 dependencies = [
- "windows-link",
+ "windows-link 0.2.1",
+]
+
+[[package]]
+name = "windows-strings"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "56e6c93f3a0c3b36176cb1327a4958a0353d5d166c2a35cb268ace15e91d3b57"
+dependencies = [
+ "windows-link 0.1.3",
 ]
 
 [[package]]
@@ -8821,7 +8938,7 @@ version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7837d08f69c77cf6b07689544538e017c1bfcf57e34b4c0ff58e6c2cd3b37091"
 dependencies = [
- "windows-link",
+ "windows-link 0.2.1",
 ]
 
 [[package]]
@@ -8848,7 +8965,7 @@ version = "0.61.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ae137229bcbd6cdf0f7b80a31df61766145077ddf49416a728b02cb3921ff3fc"
 dependencies = [
- "windows-link",
+ "windows-link 0.2.1",
 ]
 
 [[package]]
@@ -8869,11 +8986,20 @@ dependencies = [
 
 [[package]]
 name = "windows-threading"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b66463ad2e0ea3bbf808b7f1d371311c80e115c0b71d60efc142cafbcfb057a6"
+dependencies = [
+ "windows-link 0.1.3",
+]
+
+[[package]]
+name = "windows-threading"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3949bd5b99cafdf1c7ca86b43ca564028dfe27d66958f2470940f73d86d75b37"
 dependencies = [
- "windows-link",
+ "windows-link 0.2.1",
 ]
 
 [[package]]
@@ -8956,6 +9082,7 @@ dependencies = [
  "raw-window-handle",
  "redox_syscall 0.4.1",
  "rustix 0.38.44",
+ "sctk-adwaita",
  "smithay-client-toolkit 0.19.2",
  "smol_str",
  "tracing",
@@ -8998,8 +9125,8 @@ dependencies = [
  "strum",
  "tar",
  "thiserror 2.0.21",
- "windows",
- "windows-core",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
  "windows-implement",
  "xml",
 ]
@@ -9172,7 +9299,7 @@ dependencies = [
  "thiserror 2.0.21",
  "url",
  "widestring",
- "windows",
+ "windows 0.62.2",
  "xcb",
  "zbus",
 ]
@@ -9233,7 +9360,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 
 [[package]]
 name = "xtask"
-version = "0.19.0"
+version = "0.20.1"
 dependencies = [
  "chrono",
  "serde",

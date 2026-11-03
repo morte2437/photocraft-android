@@ -143,6 +143,7 @@ impl PhotocraftApp {
             clone_preview: None,
             info_sample: None,
             os_clip_sig: None,
+            os_clip_svg: None,
             clip_unmirrored: true,
             clip_external: false,
             clip_read_for_paste: false,
@@ -272,6 +273,14 @@ impl eframe::App for PhotocraftApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        photocraft_compose::discard_unreadable_pixel_caches();
+        if let Err(error) = photocraft_raster::spill::check_integrity() {
+            self.ui.status = error;
+            self.ui.status_error = true;
+        } else if let Some(error) = photocraft_raster::spill::last_error() {
+            self.ui.status = error;
+            self.ui.status_error = true;
+        }
         self.ui_frame(ui, frame);
         self.finish_type_reset_pass(ui.ctx());
     }

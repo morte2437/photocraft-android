@@ -1025,6 +1025,26 @@ fn tiff_output_is_flat_unless_tiff_layers_is_given() {
     std::fs::remove_dir_all(d).unwrap();
 }
 
+#[test]
+fn pcraft_output_has_no_full_composite_unless_asked() {
+    let d = tmp("pcraft-full-composite");
+    let full = |path: &std::path::Path| photocraft_format::read_full_composite(&std::fs::read(path).unwrap()).unwrap().is_some();
+    for (name, flag, expect) in [("plain.pcraft", None, false), ("full.pcraft", Some("--pcraft-full-composite"), true)] {
+        let out = d.join(name);
+        let mut cmd = bin();
+        cmd.args(["run", "--new", r#"{"width":16,"height":16}"#]);
+        if let Some(flag) = flag {
+            cmd.arg(flag);
+        }
+        ok(cmd.arg("--out").arg(&out));
+        assert_eq!(full(&out), expect, "{name}");
+    }
+    let converted = d.join("converted.pcraft");
+    ok(bin().arg("convert").arg(d.join("plain.pcraft")).arg(&converted).arg("--pcraft-full-composite"));
+    assert!(full(&converted));
+    std::fs::remove_dir_all(d).unwrap();
+}
+
 /// Issue #1108: a non-Unicode argument (a Latin-1 file name on Linux) used to panic in
 /// `std::env::args()` before anything was printed. clap reads the arguments as they are: a path
 /// takes one, and text (`--filter`) refuses it with a usage error.
@@ -1088,6 +1108,20 @@ fn batch_plays_a_photoshop_actions_file() {
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(err.contains("Generative Fill"), "{err}");
     assert!(!o.status.success());
+}
+
+/// A version 12 Actions file (Photoshop 5, often saved on classic Mac OS without an extension) is
+/// recognised by its version word like version 16, not read as a JSON actions list.
+#[test]
+fn extensionless_version_12_actions_file_is_read_as_atn() {
+    let d = tmp("atn-v12");
+    let path = d.join("Legacy Actions");
+    std::fs::write(&path, include_bytes!("../../../../crates/psd/tests/fixtures/atn/v12-commands.atn")).unwrap();
+    let (steps, set, warnings) = photocraft_cli::load_actions_file(&path, None).unwrap();
+    assert_eq!(set.len(), 1);
+    assert_eq!(steps, vec![("actions.play".to_string(), json!({"action": set[0].name}))]);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    std::fs::remove_dir_all(d).unwrap();
 }
 
 /// What `photocraft_cli::run` returned and wrote, in-process.

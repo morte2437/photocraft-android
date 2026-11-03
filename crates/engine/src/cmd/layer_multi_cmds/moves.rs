@@ -396,6 +396,38 @@ fn apply_move(doc: &mut Document, moved_ids: &[LayerId], target: LayerId, pos: &
 /// selected nodes are detached, and every reference is validated before editing.
 pub fn move_to(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "layer.moveTo";
+    let indexed = p.get("target").is_some_and(Value::is_object);
+    let resolved;
+    let p = if let Some(Value::Object(selector)) = p.get("target") {
+        let index = selector
+            .get("index")
+            .filter(|_| selector.len() == 1)
+            .and_then(Value::as_u64)
+            .ok_or_else(|| bad(CMD, "target reference needs one non-negative index"))?;
+        if p.get("position").is_some_and(|value| !value.is_null()) {
+            return Err(bad(CMD, "an indexed target already defines its drop position"));
+        }
+        let doc = &s.active().ok_or(EngineError::NoDocument)?.doc;
+        let (target, position) = crate::commands::recorded_drop(doc, index)?;
+        let mut fields = p.as_object().cloned().ok_or_else(|| bad(CMD, "params must be an object"))?;
+        fields.insert("target".into(), json!(target.0));
+        fields.insert("position".into(), json!(position));
+        if !fields.contains_key("layer") && !fields.contains_key("layers") {
+            match selected(s).as_slice() {
+                [layer] => {
+                    fields.insert("layer".into(), json!(layer.0));
+                }
+                layers if !layers.is_empty() => {
+                    fields.insert("layers".into(), json!(layers.iter().map(|layer| layer.0).collect::<Vec<_>>()));
+                }
+                _ => {}
+            }
+        }
+        resolved = Value::Object(fields);
+        &resolved
+    } else {
+        p
+    };
     let pos = p.get("position").and_then(Value::as_str).unwrap_or("above");
     if !matches!(pos, "above" | "below" | "into") {
         return Err(bad(CMD, "position must be above, below, or into"));
@@ -432,7 +464,7 @@ pub fn move_to(s: &mut Session, p: &Value) -> Result<Value> {
         }
     }
     let moved_ids = top_level(doc, &requested);
-    if moved_ids.len() == 1 && moved_ids[0] == target && batch.is_none() && !copy {
+    if moved_ids.len() == 1 && moved_ids[0] == target && (batch.is_none() || indexed) && !copy {
         // Preserve single-layer drag-to-self semantics.
         return Ok(Value::Null);
     }
@@ -447,6 +479,26 @@ pub fn move_to(s: &mut Session, p: &Value) -> Result<Value> {
     }
     if pos == "into" && doc.layer(target).is_none_or(|l| !l.is_group()) {
         return Err(bad(CMD, "target is not a group"));
+    }
+
+    if indexed
+        && !copy
+        && let [source] = moved_ids.as_slice()
+    {
+        let source_path = doc.path_of(*source).ok_or(EngineError::NoLayer(*source))?;
+        if let Some((&at, parent)) = source_path.split_last() {
+            let unchanged = match pos {
+                "below" => target_path.split_last().is_some_and(|(&to, target_parent)| parent == target_parent && at.checked_add(1) == Some(to)),
+                "into" => {
+                    parent == target_path.as_slice()
+                        && doc.layer(target).and_then(Layer::children).is_some_and(|children| at.checked_add(1) == Some(children.len()))
+                }
+                _ => false,
+            };
+            if unchanged {
+                return Ok(Value::Null);
+            }
+        }
     }
 
     let original_active = st.active_layer;

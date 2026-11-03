@@ -81,6 +81,12 @@ fn cache() -> &'static Mutex<Cache> {
     C.get_or_init(|| Mutex::new(Cache::default()))
 }
 
+pub(crate) fn purge() {
+    let mut c = cache().lock().unwrap_or_else(|e| e.into_inner());
+    c.clear();
+    c.in_flight.clear();
+}
+
 /// Entries kept (least recently used dropped first).
 const CAPACITY: usize = 64;
 
@@ -116,7 +122,11 @@ fn lookup(c: &Mutex<Cache>, k: u64) -> CachedMask {
 fn finish_mask(c: &Mutex<Cache>, k: u64, slot: &Arc<OnceLock<Surface>>, generation: u64, build: impl FnOnce() -> (Surface, Option<Surface>)) -> Surface {
     slot.get_or_init(|| {
         // Never hold the global cache mutex while rasterizing or feathering.
+        let read_generation = photocraft_raster::spill::read_error_generation();
         let (surface, pixel_input) = build();
+        if photocraft_raster::spill::check_since(read_generation).is_err() || pixel_input.as_ref().is_some_and(|p| p.scratch_health().is_err()) {
+            return surface;
+        }
         let bytes = entry_bytes(&surface, pixel_input.as_ref());
         let mut c = c.lock().unwrap_or_else(|e| e.into_inner());
         if c.in_flight.get(&k).and_then(Weak::upgrade).is_some_and(|active| Arc::ptr_eq(&active, slot)) {
@@ -135,7 +145,7 @@ fn cached_mask(c: &Mutex<Cache>, k: u64, build: impl FnOnce() -> (Surface, Optio
 }
 
 fn surface_bytes(surface: &Surface) -> usize {
-    surface.tiles().fold(surface.default_bytes().len(), |bytes, (_, tile)| bytes.saturating_add(tile.bytes().len()))
+    surface.tiles().fold(surface.default_bytes().len(), |bytes, (_, tile)| bytes.saturating_add(tile.len()))
 }
 
 fn entry_bytes(surface: &Surface, pixel_input: Option<&Surface>) -> usize {

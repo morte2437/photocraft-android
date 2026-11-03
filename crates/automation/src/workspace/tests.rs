@@ -694,6 +694,8 @@ fn documents_filesystem_path_params(id: &str, params: &str) -> bool {
             | "layer.vectorMask.info"
             | "paint.symmetryFromPath"
             | "edit.defineCustomShape"
+            // `"as":"path"` pastes the clipboard as a vector path (#10694).
+            | "edit.paste"
             | "layer.combineShapes.unite"
             | "layer.combineShapes.subtractFrontShape"
             | "layer.combineShapes.intersectShapeAreas"
