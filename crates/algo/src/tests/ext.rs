@@ -493,6 +493,25 @@ fn lens_flare_with_an_overflowing_centre_leaves_finite_pixels() {
 }
 
 #[test]
+fn lens_flare_between_two_measured_brightnesses_blends_their_light() {
+    // 75 % and 100 % are measured levels; 87.5 % is halfway, so its light is their mean. On black
+    // 32-bit the result is the light itself; at 0 and 1 the clamp makes the blend nonlinear.
+    let black = flat(SampleType::F32, R, [0.0, 0.0, 0.0, 1.0]);
+    for lens in [LensType::Zoom, LensType::Prime35, LensType::Prime105, LensType::MoviePrime] {
+        let at = |brightness: f32| run(&black, &FilterParams::LensFlare { brightness, center_x: 0.25, center_y: 0.5, lens }).read_region(R);
+        let (lo, mid, hi) = (at(75.0), at(87.5), at(100.0));
+        let mut checked = 0;
+        for ((l, m), h) in lo.iter().zip(&mid).zip(&hi) {
+            if [*l, *m, *h].iter().all(|v| *v > 0.0 && *v < 1.0) {
+                assert!((m - 0.5 * (l + h)).abs() < 1e-4, "{lens:?}: {m} is not the mean of {l} and {h}");
+                checked += 1;
+            }
+        }
+        assert!(checked >= 100, "{lens:?}: too few unclipped values ({checked})");
+    }
+}
+
+#[test]
 fn lens_flare_never_darkens_32_bit_values_above_one() {
     // #5785: the screen formula turned 2.0 into 1.5 (and 1.0 at the core).
     let p = FilterParams::LensFlare { brightness: 150.0, center_x: 0.25, center_y: 0.5, lens: LensType::Zoom };

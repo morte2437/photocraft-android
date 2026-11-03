@@ -180,6 +180,12 @@ fn add_level(level: &Level, weight: f32, g: &Geometry, light: &mut [[f32; 3]]) {
         let (r0, r1) = (r.r0 * g.unit, r.r1 * g.unit);
         let length = (r1 - r0).max(1e-6);
         let fade = r.fade.max(1e-3);
+        // Skip a ray whose segment misses this tile: none of its samples can land inside it.
+        let (sx, sy) = (g.centre.0 + r0 * cos, g.centre.1 + r0 * sin);
+        let (ex, ey) = (g.centre.0 + r1 * cos, g.centre.1 + r1 * sin);
+        if sx.max(ex) < ox - 1.0 || sx.min(ex) > ox + w as f32 + 1.0 || sy.max(ey) < oy - 1.0 || sy.min(ey) > oy + h as f32 + 1.0 {
+            continue;
+        }
         let steps = ((r1 - r0) / 0.35).ceil().clamp(0.0, 1e6) as usize;
         let mut last = None;
         for i in 0..steps {
@@ -258,8 +264,8 @@ mod tests {
         let (lo, hi, f) = bracket(lv, mid).unwrap();
         assert!(std::ptr::eq(lo, a) && std::ptr::eq(hi, b) && (f - 0.5).abs() < 1e-6);
         // Exactly on a level, and outside the measured range, one level is used as is.
-        let (lo, _, f) = bracket(lv, b.brightness).unwrap();
-        assert!(std::ptr::eq(lo, b) || f == 1.0);
+        let (_, hi, f) = bracket(lv, b.brightness).unwrap();
+        assert!(std::ptr::eq(hi, b) && f == 1.0);
         let (lo, hi, f) = bracket(lv, 1.0).unwrap();
         assert!(std::ptr::eq(lo, a) && std::ptr::eq(hi, a) && f == 0.0);
         let last = lv.last().unwrap();
