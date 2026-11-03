@@ -166,11 +166,7 @@ fn caf_unrepresented_descriptors_are_kept_and_never_partially_play() {
 /// Known native defaults become explicit values; unsupported defaults/options cannot disappear.
 #[test]
 fn caf_native_exports_preserve_effective_defaults_and_refuse_unrepresented_options() {
-    for p in [
-        json!({"sampling":"rectangular","output":"new"}),
-        json!({"sampling":"rectangular","output":"new","seed":1,"target":"pixels"}),
-        params(),
-    ] {
+    for p in [json!({"sampling":"rectangular","output":"new"}), json!({"sampling":"rectangular","output":"new","seed":1,"target":"pixels"}), params()] {
         let a = load(exported(p).unwrap().descriptor.unwrap());
         assert_eq!(a.steps, vec![(CMD.into(), params())]);
     }
@@ -181,14 +177,29 @@ fn caf_native_exports_preserve_effective_defaults_and_refuse_unrepresented_optio
         assert_eq!(a.steps, vec![(CMD.into(), current.clone())]);
     }
     for (key, value) in [
-        ("sampling", json!("auto")), ("sampling", json!("custom")), ("sampling", json!("unknown")),
+        ("sampling", json!("auto")),
+        ("sampling", json!("custom")),
+        ("sampling", json!("unknown")),
         ("output", json!("duplicate")),
-        ("colorAdaptation", json!("none")), ("colorAdaptation", json!("high")), ("colorAdaptation", json!("veryHigh")),
-        ("rotationAdaptation", json!("low")), ("rotationAdaptation", json!("medium")),
-        ("rotationAdaptation", json!("high")), ("rotationAdaptation", json!("full")),
-        ("sampleAllLayers", json!(0)), ("scale", Value::Null), ("mirror", json!("true")), ("seed", json!(2)),
-        ("layer", json!(1)), ("margin", json!(10)), ("area", json!([0,0,4,4])), ("channel", json!(0)),
-        ("samplingStrokes", json!([])), ("fillEdits", json!([])), ("target", json!("mask")), ("_atnCafDescriptor", Value::Null),
+        ("colorAdaptation", json!("none")),
+        ("colorAdaptation", json!("high")),
+        ("colorAdaptation", json!("veryHigh")),
+        ("rotationAdaptation", json!("low")),
+        ("rotationAdaptation", json!("medium")),
+        ("rotationAdaptation", json!("high")),
+        ("rotationAdaptation", json!("full")),
+        ("sampleAllLayers", json!(0)),
+        ("scale", Value::Null),
+        ("mirror", json!("true")),
+        ("seed", json!(2)),
+        ("layer", json!(1)),
+        ("margin", json!(10)),
+        ("area", json!([0, 0, 4, 4])),
+        ("channel", json!(0)),
+        ("samplingStrokes", json!([])),
+        ("fillEdits", json!([])),
+        ("target", json!("mask")),
+        ("_atnCafDescriptor", Value::Null),
     ] {
         let mut p = params();
         p[key] = value;

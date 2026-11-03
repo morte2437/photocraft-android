@@ -12,15 +12,7 @@ const COLOR: &[(&str, &str)] = &[("cafColorAdaptationDefault", "default")];
 const ROTATION: &[(&str, &str)] = &[("cafRotationAmountNone", "none")];
 // Current Layer is also explicit in the primary Action Manager example cited in docs/atn.md.
 const OUTPUT: &[(&str, &str)] = &[("cafOutputToNewLayer", "new"), ("cafOutputToCurrentLayer", "current")];
-const KEYS: &[&str] = &[
-    "cafSamplingRegion",
-    "cafSampleAllLayers",
-    "cafColorAdaptationLevel",
-    "cafRotationAmount",
-    "cafScale",
-    "cafMirror",
-    "cafOutput",
-];
+const KEYS: &[&str] = &["cafSamplingRegion", "cafSampleAllLayers", "cafColorAdaptationLevel", "cafRotationAmount", "cafScale", "cafMirror", "cafOutput"];
 const PARAMS: &[&str] = &["sampling", "sampleAllLayers", "colorAdaptation", "rotationAdaptation", "scale", "mirror", "output"];
 
 /// All seven settings are recorded. Missing keys have no measured Photoshop default here.
@@ -29,12 +21,7 @@ fn recorded(d: &Descriptor) -> Option<Value> {
         return None;
     }
     let mut p = Map::new();
-    for (key, param, table) in [
-        (KEYS[0], PARAMS[0], SAMPLING),
-        (KEYS[2], PARAMS[2], COLOR),
-        (KEYS[3], PARAMS[3], ROTATION),
-        (KEYS[6], PARAMS[6], OUTPUT),
-    ] {
+    for (key, param, table) in [(KEYS[0], PARAMS[0], SAMPLING), (KEYS[2], PARAMS[2], COLOR), (KEYS[3], PARAMS[3], ROTATION), (KEYS[6], PARAMS[6], OUTPUT)] {
         let D::Enumerated { type_id, value } = d.get(key)? else { return None };
         if !type_id.is(key) {
             return None;
