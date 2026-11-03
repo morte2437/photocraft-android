@@ -376,7 +376,10 @@ fn miskeyed_effects_reference_stays_whole_without_a_blank_layer_edit() {
     assert!(
         s.active().unwrap().doc == before,
         "miskeyed Lefx reference changed the document: layers {} -> {}, history {} -> {}",
-        before.layers.len(), s.active().unwrap().doc.layers.len(), past, s.active().unwrap().history.past_len()
+        before.layers.len(),
+        s.active().unwrap().doc.layers.len(),
+        past,
+        s.active().unwrap().history.past_len()
     );
     assert_eq!(s.active().unwrap().history.past_len(), past);
     assert_eq!(result["ran"], 0);
