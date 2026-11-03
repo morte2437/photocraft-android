@@ -345,7 +345,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Content-Aware Fill…",
             ["Edit"],
             None,
-            r##"{"sampling":"auto|rectangular|custom","margin":px?,"area":[x,y,w,h]?,"channel":index|name?,"samplingStrokes":[{"mode":"add|subtract","size":px,"points":[[x,y],…]}]? (the workspace's Sampling Brush, after the sampling option's area; added strokes may lie outside the window),"fillEdits":[{"op":"new|add|subtract|intersect","points":[[x,y],…]}|{"op":"expand|contract","by":px}]? (the workspace's lasso edits of the fill area, in order),"sampleAllLayers":bool=false,"colorAdaptation":"default|none|high|veryHigh","rotationAdaptation":"none|low|medium|high|full","scale":bool=false,"mirror":bool=false,"output":"current|new|duplicate","layer":id?=active (the layer filled and sampled),"seed":u64=1}"##,
+            r##"{"sampling":"auto|rectangular|custom","margin":px?,"area":[x,y,w,h]?,"channel":index|name?,"samplingStrokes":[{"mode":"add|subtract","size":px,"points":[[x,y],…]}]? (the workspace's Sampling Brush, after the sampling option's area; added strokes may lie outside the window),"fillEdits":[{"op":"new|add|subtract|intersect","points":[[x,y],…]}|{"op":"expand|contract","by":px}]? (the workspace's lasso edits of the fill area, in order),"sampleAllLayers":bool=false,"colorAdaptation":"default|none|high|veryHigh","rotationAdaptation":"none|low|medium|high|full","scale":bool=false,"mirror":bool=false,"output":"current|new|duplicate","layer":id|name?=active (the layer filled and sampled),"seed":u64=1}"##,
             can_caf,
             content_aware_fill
         ),

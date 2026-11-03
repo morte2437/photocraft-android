@@ -58,25 +58,67 @@ pub(crate) fn batch(a: &BatchArgs, out: &mut dyn Write, err: &mut dyn Write) -> 
     if !a.in_place && same_dir(in_dir, out_dir) {
         return Err(CliError::OutIsIn(out_dir.to_path_buf()));
     }
-    std::fs::create_dir_all(out_dir)?;
-    let mut inputs: Vec<PathBuf> = std::fs::read_dir(in_dir)
-        .map_err(|source| CliError::ReadDir { path: in_dir.to_path_buf(), source })?
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| is_input(p))
-        .collect();
-    inputs.sort();
+    let inputs: Vec<photocraft_engine::file_cmds::BatchInput> = if a.recursive {
+        photocraft_engine::file_cmds::list_images_tree(&in_dir.to_string_lossy(), &out_dir.to_string_lossy(), "photocraft-cli batch")?
+            .into_iter()
+            .filter(|input| is_input(Path::new(&input.path)))
+            .collect()
+    } else {
+        let mut images = Vec::new();
+        let entries = std::fs::read_dir(in_dir).map_err(|source| CliError::ReadDir { path: in_dir.to_path_buf(), source })?;
+        for entry in entries {
+            let path = entry.map_err(|source| CliError::ReadDir { path: in_dir.to_path_buf(), source })?.path();
+            if is_input(&path) {
+                images.push(photocraft_engine::file_cmds::BatchInput { path: path.to_string_lossy().into_owned(), rel_dir: String::new() });
+            }
+        }
+        // The tree listing already holds the engine's order (each folder's files, then its
+        // subfolders), which `{serial}` numbers; only the flat listing needs sorting.
+        images.sort_by(|a, b| a.path.cmp(&b.path));
+        images
+    };
     let (mut ok, mut failed) = (0, 0);
-    let mut written = photocraft_engine::file_cmds::OutputClaims::default();
     // `--format .jpg` names outputs `<stem>.jpg`, as `--format jpg` does (#490).
     let format = a.export.format.as_deref().map(|f| f.strip_prefix('.').unwrap_or(f));
-    for input in &inputs {
-        let ext = format.map(str::to_owned).or_else(|| input.extension().map(|e| e.to_string_lossy().into_owned())).unwrap_or_else(|| "png".into());
-        let stem = input.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-        let target = out_dir.join(format!("{stem}.{ext}"));
-        let target_text = target.to_string_lossy();
+    let named = photocraft_engine::file_cmds::plan_batch_names(
+        &inputs,
+        &out_dir.to_string_lossy(),
+        format.unwrap_or("same"),
+        &json!({"naming": a.naming.as_deref().unwrap_or(""), "startingSerial": a.start_serial.unwrap_or(1)}),
+    )
+    .map_err(|error| CliError::Naming(error.to_string()))?;
+    let targets: Vec<PathBuf> = match named {
+        Some(paths) => paths.into_iter().map(PathBuf::from).collect(),
+        None => inputs
+            .iter()
+            .map(|input| {
+                let path = Path::new(&input.path);
+                let ext = format.map_or_else(|| photocraft_engine::file_cmds::batch_same_format(&input.path), str::to_owned);
+                let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                out_dir.join(format!("{stem}.{ext}"))
+            })
+            .collect(),
+    };
+    let plan: Vec<_> = inputs.iter().zip(&targets).map(|(input, target)| (input.path.clone(), target.to_string_lossy().into_owned())).collect();
+    photocraft_engine::file_cmds::validate_flat_outputs(&plan).map_err(|error| CliError::Naming(error.to_string()))?;
+    if let Some(log) = &a.error_log {
+        let same = |path: &Path| photocraft_engine::file_cmds::same_destination(log, path);
+        if inputs.iter().any(|input| same(Path::new(&input.path))) || targets.iter().any(|target| same(target)) {
+            return Err(CliError::BatchOption("--error-log must not replace an input or batch output".into()));
+        }
+    }
+    std::fs::create_dir_all(out_dir)?;
+    let mut failures = Vec::new();
+    for (input, target) in inputs.iter().zip(targets) {
+        let input = Path::new(&input.path);
+        // The selected format encodes the bytes, whatever extension `--naming` gives the file.
+        // Without --format, a file PhotoCraft only opens (.kra, raw, …) is saved as PSD, the
+        // same format `--naming`'s {ext} plans.
+        let ext = format.map_or_else(|| photocraft_engine::file_cmds::batch_same_format(&input.to_string_lossy()), str::to_owned);
         let r = (|| -> Result<Vec<String>> {
-            written.check(&target_text).map_err(CliError::OutputClaimed)?;
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
             let mut h = Headless::trusted_local();
             // Steps that play another action find it in the set; the session's playback stack
             // stops an action that calls itself.
@@ -101,17 +143,31 @@ pub(crate) fn batch(a: &BatchArgs, out: &mut dyn Write, err: &mut dyn Write) -> 
         match r {
             Ok(ws) => {
                 ok += 1;
-                written.record(&target_text, &input.to_string_lossy());
                 let _ = writeln!(out, "ok    {} -> {}", input.display(), target.display());
                 warn_all(err, &ws);
             }
             Err(e) => {
                 failed += 1;
                 let _ = writeln!(err, "FAIL  {}: {e}", input.display());
+                failures.push((input.to_string_lossy().into_owned(), e.to_string()));
+                if a.stop_on_error {
+                    break;
+                }
             }
         }
     }
-    let _ = writeln!(out, "{ok} succeeded, {failed} failed");
+    let skipped = inputs.len().saturating_sub(ok + failed);
+    if skipped > 0 {
+        let _ = writeln!(err, "--stop-on-error: {skipped} remaining input(s) skipped");
+        let _ = writeln!(out, "{ok} succeeded, {failed} failed, {skipped} skipped");
+    } else {
+        let _ = writeln!(out, "{ok} succeeded, {failed} failed");
+    }
+    // After the summary, so a log that can't be written doesn't hide the counts.
+    if let Some(path) = &a.error_log {
+        let bytes = photocraft_engine::file_cmds::encode_batch_error_log(failures.iter().map(|(file, error)| (file.as_str(), error.as_str())));
+        photocraft_format::atomic_write(path, &bytes)?;
+    }
     if failed > 0 { Err(CliError::FilesFailed(failed)) } else { Ok(()) }
 }
 

@@ -877,9 +877,15 @@ pub fn specs() -> Vec<CommandSpec> {
             if all == d.doc.bounds() {
                 return Ok(json!({"changed": false}));
             }
-            // One History step named as in Photoshop, not the crop's "Crop".
+            // One History step named as in Photoshop, not the crop's "Crop". The Background stays a
+            // Background, unlike a Crop tool crop with Delete Cropped Pixels off (#10867).
             let p = json!({"x": all.x0, "y": all.y0, "width": all.width(), "height": all.height(), "deleteCroppedPixels": false});
-            crate::analysis_cmds::compound(s, "Reveal All", |s| s.execute("image.crop", p))?;
+            // The crop runs without `Session::execute`, so it passes the session's gate here, as a
+            // command run on Reveal All's behalf would.
+            if let Some(gate) = s.authorize {
+                gate("image.crop", &p)?;
+            }
+            crate::analysis_cmds::compound(s, "Reveal All", |s| crate::image_cmds::crop_keeping_background(s, &p))?;
             Ok(json!({"changed": true}))
         }),
         spec!(

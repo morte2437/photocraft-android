@@ -3,6 +3,8 @@
 mod affinity;
 mod artboard_export_names;
 mod atn_crystallize_cell_size;
+mod atn_direct_adjustments;
+mod atn_newer_events;
 mod atn_reference_forms;
 mod atn_ripple_amount;
 mod atn_selective_color;
@@ -20,6 +22,7 @@ mod convert_keeps_references;
 mod copy_shape_placement;
 mod corpus_atn;
 mod crop_content_aware;
+mod crop_delete_off_background;
 mod current_affinity_artboards;
 mod duplicate_layer_comps;
 mod duplicate_slices;

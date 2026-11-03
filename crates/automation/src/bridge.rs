@@ -227,17 +227,38 @@ async fn exchange(conn: &mut Conn, id: u64, method: &str, params: &Value) -> Res
         if v.get("id").and_then(Value::as_u64) != Some(id) {
             continue; // stale reply from an earlier, timed-out request
         }
-        return Ok(if v.get("ok").and_then(Value::as_bool) == Some(true) {
-            Ok(v.get("result").cloned().unwrap_or(Value::Null))
-        } else {
-            Err(AutomationError::App(v.get("error").and_then(Value::as_str).unwrap_or("unknown error").to_owned()))
-        });
+        return Ok(reply_result(&v));
     }
+}
+
+/// An app reply as the caller's result. A failed reply can still carry a `result`: a cancelled
+/// Batch lists the outputs it already wrote, so the error keeps it rather than dropping it.
+fn reply_result(v: &Value) -> Result<Value, AutomationError> {
+    if v.get("ok").and_then(Value::as_bool) == Some(true) {
+        return Ok(v.get("result").cloned().unwrap_or(Value::Null));
+    }
+    let error = v.get("error").and_then(Value::as_str).unwrap_or("unknown error");
+    Err(AutomationError::App(match v.get("result") {
+        Some(result) if !result.is_null() => format!("{error}; partial result: {result}"),
+        _ => error.to_owned(),
+    }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_reply_keeps_its_partial_result() {
+        assert_eq!(reply_result(&json!({"ok": true, "result": {"files": ["a.png"]}})).unwrap(), json!({"files": ["a.png"]}));
+        let Err(AutomationError::App(message)) = reply_result(&json!({"ok": false, "error": "cancelled", "result": {"files": ["a.png"], "cancelled": true}}))
+        else {
+            panic!("a failed reply is an app error")
+        };
+        assert!(message.starts_with("cancelled; partial result: ") && message.contains("a.png"), "{message}");
+        let Err(AutomationError::App(message)) = reply_result(&json!({"ok": false, "error": "cancelled"})) else { panic!("a failed reply is an app error") };
+        assert_eq!(message, "cancelled");
+    }
 
     #[test]
     fn the_call_timeout_stays_below_the_app_reply_deadline() {

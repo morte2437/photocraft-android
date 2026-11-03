@@ -674,8 +674,10 @@ pub struct PhotocraftApp {
     pub(crate) discard: Option<discard_ui::Prompt>,
     /// The Open or Save dialog in progress, and the action waiting on it (see `file_dialog`).
     pub(crate) file_dialog: Option<file_dialog::Pending>,
-    /// A Save As to a layered TIFF parked behind the TIFF Options prompt (see `tiff_options_ui`).
+    /// A Save As or Save a Copy to a TIFF parked behind the TIFF Options prompt (see `tiff_options_ui`).
     pub(crate) tiff_options: Option<tiff_options_ui::Prompt>,
+    /// The last TIFF Options compression and pyramid answer, where the next prompt starts. Session-only.
+    pub(crate) tiff_remembered: tiff_options_ui::Remembered,
     /// Where each document was last saved or exported to through a dialog (#1826): its next Save
     /// As or export dialog starts there rather than beside the document. Session-only.
     pub(crate) save_dirs: HashMap<photocraft_doc::DocId, std::path::PathBuf>,

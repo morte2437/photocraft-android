@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+mod actions_record;
 pub mod adjust_params;
 mod allocation;
 pub mod build_info;
@@ -200,6 +201,8 @@ pub struct Session {
     pub tools: ToolState,
     /// Log of executed commands (for action recording and debugging).
     pub journal: Vec<(String, Value)>,
+    /// Text layer changed by the last journal entry, for folding Type tool keystrokes.
+    typed_layer: Option<(photocraft_doc::DocId, LayerId)>,
     /// Coalescing key of the command being executed.
     coalesce_request: Option<String>,
     /// Pixels copied with Edit › Copy / Cut (shared by all documents, like Photoshop).
@@ -270,6 +273,9 @@ pub struct Session {
     pub link_stamps: std::collections::HashMap<(u64, String), link_watch::Stamp>,
     /// The stamps being taken on a worker thread ([`Session::start_link_scan`]).
     pub link_scan: Option<link_watch::LinkScan>,
+    /// Each open document's linked smart objects' files that were not there when last looked at
+    /// ([`Session::missing_links`]).
+    link_missing: std::collections::HashSet<(u64, String)>,
     /// Select Subject's last result, reused while the pixels are unchanged (#2865).
     subject_cache: smartselect_cmds::SubjectCache,
     /// Object Selection's Object Finder results (#4087), shared by the hover preview and the

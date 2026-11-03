@@ -422,6 +422,216 @@ fn jobs_cancel_command_and_bad_params() {
     assert_eq!(s.execute("jobs.cancel", json!({})).unwrap()["cancelled"], 0);
 }
 
+/// A fake save of the active document to `target`, gated by the test: it waits for `go`, calls
+/// [`JobCtx::commit`] and reports whether it got through, then waits for `finish` and replaces
+/// the file. `done` disconnects once the worker has returned.
+struct GatedSave {
+    id: JobId,
+    go: std::sync::mpsc::Sender<()>,
+    committed: std::sync::mpsc::Receiver<bool>,
+    finish: std::sync::mpsc::Sender<()>,
+    done: std::sync::mpsc::Receiver<()>,
+}
+
+impl GatedSave {
+    fn start(s: &mut Session, target: &std::path::Path) -> Self {
+        let (go, go_rx) = std::sync::mpsc::channel();
+        let (committed_tx, committed) = std::sync::mpsc::channel();
+        let (finish, finish_rx) = std::sync::mpsc::channel::<()>();
+        let (done_tx, done) = std::sync::mpsc::channel::<()>();
+        let target = target.to_path_buf();
+        let id = job(s
+            .start_job(
+                "file.save",
+                json!({"path": target}),
+                "Saving w.psd",
+                true,
+                move |ctx| {
+                    let _done = done_tx;
+                    go_rx.recv().ok();
+                    let r = ctx.commit();
+                    committed_tx.send(r.is_ok()).ok();
+                    r?;
+                    finish_rx.recv().ok();
+                    std::fs::write(&target, b"new").map_err(|e| EngineError::Other(e.to_string()))?;
+                    Ok(target.display().to_string())
+                },
+                |_, path: String| Ok(json!({"path": path})),
+            )
+            .unwrap());
+        Self { id, go, committed, finish, done }
+    }
+
+    /// Let the worker reach its commit; true if it committed.
+    fn commit(&self) -> bool {
+        self.go.send(()).unwrap();
+        self.committed.recv_timeout(Duration::from_secs(60)).unwrap()
+    }
+
+    /// Let a committed worker write the file.
+    fn finish(&self) {
+        self.finish.send(()).unwrap();
+    }
+
+    /// Block until the worker has returned.
+    fn join(&self) {
+        assert!(matches!(self.done.recv_timeout(Duration::from_secs(60)), Err(std::sync::mpsc::RecvTimeoutError::Disconnected)));
+    }
+}
+
+/// A fresh directory for a [`GatedSave`] test (on every platform, unlike the Unix-only
+/// fixtures' `tmp_dir`).
+fn save_dir(name: &str) -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!("photocraft-engine-gated-save-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+/// A job on the active document that runs until it is cancelled.
+fn open_job(s: &mut Session) -> JobId {
+    job(s
+        .start_job(
+            "test.spin",
+            json!({}),
+            "Spinning",
+            true,
+            |ctx| loop {
+                ctx.check()?;
+                std::thread::sleep(Duration::from_millis(1));
+            },
+            |_, ()| Ok(json!(null)),
+        )
+        .unwrap())
+}
+
+fn index_of(s: &Session, doc: photocraft_doc::DocId) -> usize {
+    s.documents().iter().position(|st| st.doc.id == doc).unwrap()
+}
+
+#[test]
+fn cancelling_a_save_before_it_commits_stops_it_without_touching_the_target() {
+    let dir = save_dir("cancel-before-commit");
+    let target = dir.join("w.psd");
+    std::fs::write(&target, b"old").unwrap();
+    let mut s = session(64, 64);
+    let save = GatedSave::start(&mut s, &target);
+    assert_eq!(s.execute("jobs.cancel", json!({"job": save.id.0})).unwrap(), json!({"cancelled": 1}));
+    assert_eq!(wait_event(&mut s, save.id).outcome, JobOutcome::Cancelled);
+    // The worker learns it lost at its commit point and writes nothing.
+    assert!(!save.commit(), "commit after a cancel must fail");
+    save.join();
+    assert_eq!(std::fs::read(&target).unwrap(), b"old", "target untouched");
+    assert!(s.job(save.id).is_none());
+}
+
+#[test]
+fn cancelling_a_committed_save_is_refused_and_it_reports_its_real_outcome() {
+    let dir = save_dir("cancel-after-commit");
+    let target = dir.join("w.psd");
+    std::fs::write(&target, b"old").unwrap();
+    let mut s = session(64, 64);
+    let save = GatedSave::start(&mut s, &target);
+    assert!(save.commit());
+    // Every single-job entry point says it was not cancelled.
+    assert!(!s.cancel_job(save.id));
+    assert_eq!(s.try_cancel_job(save.id), Err(CancelRefused::Committing));
+    assert_eq!(
+        s.execute("jobs.cancel", json!({"job": save.id.0})).unwrap(),
+        json!({"cancelled": 0, "notCancelled": [{"job": save.id.0, "reason": "committing"}]})
+    );
+    assert!(s.job(save.id).is_some(), "still running, document still locked");
+    assert!(s.poll_jobs().is_empty(), "no Cancelled event");
+    save.finish();
+    let e = wait_event(&mut s, save.id);
+    assert_eq!(e.outcome, JobOutcome::Done(json!({"path": target.display().to_string()})));
+    save.join();
+    assert_eq!(std::fs::read(&target).unwrap(), b"new");
+}
+
+#[test]
+fn cancel_all_cancels_open_jobs_and_reports_a_committed_save_it_left_running() {
+    let dir = save_dir("cancel-all-mixed");
+    let (committed_target, open_target) = (dir.join("a.psd"), dir.join("c.psd"));
+    std::fs::write(&committed_target, b"old").unwrap();
+    std::fs::write(&open_target, b"old").unwrap();
+    let mut s = session(64, 64);
+    let committed = GatedSave::start(&mut s, &committed_target);
+    assert!(committed.commit());
+    s.execute("file.new", json!({"width": 8, "height": 8})).unwrap();
+    let spinning = open_job(&mut s);
+    s.execute("file.new", json!({"width": 8, "height": 8})).unwrap();
+    let open = GatedSave::start(&mut s, &open_target);
+
+    let report = s.cancel_all_jobs();
+    assert_eq!(report.cancelled, vec![spinning, open.id]);
+    assert_eq!(report.refused, vec![(committed.id, CancelRefused::Committing)]);
+    assert_eq!(report.to_json(), json!({"cancelled": 2, "notCancelled": [{"job": committed.id.0, "reason": "committing"}]}));
+    // `jobs.cancel {}` again: only the committed save is left, and it is still not cancelled.
+    assert_eq!(s.execute("jobs.cancel", json!({})).unwrap(), json!({"cancelled": 0, "notCancelled": [{"job": committed.id.0, "reason": "committing"}]}));
+
+    // One poll reports both cancellations.
+    let ended: Vec<_> = s.poll_jobs().into_iter().map(|e| (e.id, e.outcome)).collect();
+    assert_eq!(ended, vec![(spinning, JobOutcome::Cancelled), (open.id, JobOutcome::Cancelled)]);
+    assert!(!open.commit());
+    open.join();
+    assert_eq!(std::fs::read(&open_target).unwrap(), b"old");
+    committed.finish();
+    assert!(matches!(wait_event(&mut s, committed.id).outcome, JobOutcome::Done(_)));
+    committed.join();
+    assert_eq!(std::fs::read(&committed_target).unwrap(), b"new");
+    assert!(s.jobs().is_empty());
+}
+
+#[test]
+fn closing_documents_cancels_open_saves_but_a_committed_save_finishes() {
+    let dir = save_dir("cancel-on-close-mixed");
+    let (committed_target, open_target) = (dir.join("a.psd"), dir.join("c.psd"));
+    std::fs::write(&committed_target, b"old").unwrap();
+    std::fs::write(&open_target, b"old").unwrap();
+    let mut s = session(64, 64);
+    let a = s.active().unwrap().doc.id;
+    let committed = GatedSave::start(&mut s, &committed_target);
+    assert!(committed.commit());
+    s.execute("file.new", json!({"width": 8, "height": 8})).unwrap();
+    let b = s.active().unwrap().doc.id;
+    let spinning = open_job(&mut s);
+    s.execute("file.new", json!({"width": 8, "height": 8})).unwrap();
+    let c = s.active().unwrap().doc.id;
+    let open = GatedSave::start(&mut s, &open_target);
+
+    assert_eq!(s.cancel_jobs_on(a).refused, vec![(committed.id, CancelRefused::Committing)]);
+    s.close(index_of(&s, a));
+    s.close(index_of(&s, c));
+    assert_eq!(wait_event(&mut s, open.id).outcome, JobOutcome::Cancelled);
+    assert!(!open.commit());
+    open.join();
+    assert_eq!(std::fs::read(&open_target).unwrap(), b"old", "the open save's target is untouched");
+    // The other document's job is not affected.
+    assert!(s.job(spinning).is_some());
+    // The committed save outlives its document and reports what it did, not "document closed".
+    committed.finish();
+    assert_eq!(wait_event(&mut s, committed.id).outcome, JobOutcome::Done(json!({"path": committed_target.display().to_string()})));
+    committed.join();
+    assert_eq!(std::fs::read(&committed_target).unwrap(), b"new");
+    assert!(s.cancel_job(spinning));
+    assert_eq!(s.documents().iter().map(|st| st.doc.id).collect::<Vec<_>>(), vec![b]);
+}
+
+#[test]
+fn commit_and_cancel_race_with_exactly_one_winner() {
+    for _ in 0..200 {
+        let ctx = JobCtx::default();
+        let other = ctx.clone();
+        let t = std::thread::spawn(move || other.commit().is_ok());
+        let cancelled = ctx.try_cancel();
+        let committed = t.join().unwrap();
+        assert_ne!(cancelled, committed, "exactly one of commit and cancel wins");
+        assert_eq!(ctx.cancelled(), cancelled);
+        assert_eq!(ctx.committed(), committed);
+    }
+}
+
 #[test]
 fn non_job_commands_still_finish_inline_with_start() {
     let mut s = session(16, 16);
@@ -541,6 +751,142 @@ fn open_runs_as_a_job_and_cancel_adds_nothing() {
 
     let id = job(s.start_open("missing.psd", OpenSource::Path("/no/such/file.psd".into())).unwrap());
     assert!(matches!(wait_event(&mut s, id).outcome, JobOutcome::Failed(_)));
+}
+
+#[test]
+fn cancelled_batch_job_returns_its_partial_result() {
+    let mut s = Session::new();
+    let id = job(s
+        .start_job(
+            "file.automate.batch",
+            json!({}),
+            "Batch",
+            false,
+            |ctx| {
+                while !ctx.cancelled() {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                Ok(json!({"files": ["done.png"], "skipped": ["later.png"], "cancelled": true}))
+            },
+            |_, result| Ok(result),
+        )
+        .unwrap());
+    assert!(s.cancel_job(id));
+    let event = wait_event(&mut s, id);
+    let JobOutcome::Done(result) = &event.outcome else { panic!("batch result was discarded: {:?}", event.outcome) };
+    assert_eq!(result["files"], json!(["done.png"]));
+    assert_eq!(result["skipped"], json!(["later.png"]));
+    assert_eq!(result["cancelled"], true);
+    let info = s.jobs_with_recent().into_iter().find(|info| info.id == id).unwrap();
+    assert_eq!(info.state, "cancelled");
+    assert_eq!(info.result.unwrap()["files"], json!(["done.png"]));
+    assert!(matches!(s.wait_job(id), Err(EngineError::Cancelled)));
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn programmatic_cancel_wakes_a_batch_waiting_for_the_desktop_decision() {
+    let mut s = Session::new();
+    let id = job(s
+        .start_job(
+            "file.automate.batch",
+            json!({}),
+            "Batch",
+            false,
+            |ctx| {
+                while !ctx.batch_take_interrupt() {
+                    ctx.check()?;
+                    std::thread::yield_now();
+                }
+                let continued = ctx.batch_wait_for_decision();
+                Ok(json!({"continued": continued, "files": [], "cancelled": ctx.cancelled()}))
+            },
+            |_, result| Ok(result),
+        )
+        .unwrap());
+    assert!(s.request_batch_interrupt_job(id));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !s.batch_interrupt_waiting(id) && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert!(s.batch_interrupt_waiting(id));
+    assert!(s.cancel_job(id), "jobs.cancel remains direct and wakes the worker");
+    let JobOutcome::Done(result) = wait_event(&mut s, id).outcome else { panic!("batch partial result was lost") };
+    assert_eq!(result["continued"], false);
+    assert_eq!(result["cancelled"], true);
+}
+
+#[test]
+fn accepted_batch_cancellation_after_result_snapshot_is_reported() {
+    let mut s = Session::new();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+    let id = job(s
+        .start_job(
+            "file.automate.batch",
+            json!({}),
+            "Batch",
+            false,
+            move |ctx| {
+                let cancelled = ctx.cancelled();
+                ready_tx.send(()).unwrap();
+                resume_rx.recv().unwrap();
+                Ok(json!({"files": ["done.png"], "cancelled": cancelled}))
+            },
+            |_, result| Ok(result),
+        )
+        .unwrap());
+    ready_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert!(s.cancel_job(id));
+    resume_tx.send(()).unwrap();
+    let event = wait_event(&mut s, id);
+    let JobOutcome::Done(result) = event.outcome else { panic!("batch result was discarded") };
+    assert_eq!(result["cancelled"], true);
+    assert_eq!(result["files"], json!(["done.png"]));
+    let info = s.jobs_with_recent().into_iter().find(|info| info.id == id).unwrap();
+    assert_eq!(info.state, "cancelled");
+}
+
+#[test]
+fn cancel_all_counts_an_accepted_batch_cancellation() {
+    let mut s = Session::new();
+    let id = job(s
+        .start_job(
+            "file.automate.batch",
+            json!({}),
+            "Batch",
+            false,
+            |ctx| {
+                while !ctx.cancelled() {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                Ok(json!({"files": [], "cancelled": true}))
+            },
+            |_, result| Ok(result),
+        )
+        .unwrap());
+    assert_eq!(s.execute("jobs.cancel", json!({})).unwrap()["cancelled"], 1);
+    assert_eq!(s.execute("jobs.cancel", json!({})).unwrap()["cancelled"], 0, "a repeated request is not a new cancellation");
+    assert_eq!(s.execute("jobs.cancel", json!({"job": id.0})).unwrap()["cancelled"], 0, "a repeated batch request is not a print error");
+    assert!(matches!(wait_event(&mut s, id).outcome, JobOutcome::Done(_)));
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_finished_batch_worker_rejects_late_cancellation() {
+    let mut s = Session::new();
+    let id = job(s
+        .start_job("file.automate.batch", json!({}), "Batch", false, |_| Ok(json!({"files": ["done.png"], "cancelled": false})), |_, result| Ok(result))
+        .unwrap());
+    let started = Instant::now();
+    while !s.jobs.running.iter().any(|running| running.id == id && running.handle.as_ref().is_some_and(|handle| handle.is_finished())) {
+        assert!(started.elapsed() < Duration::from_secs(10), "batch worker did not finish");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(!s.cancel_job(id), "a result already sent cannot be cancelled");
+    let JobOutcome::Done(result) = wait_event(&mut s, id).outcome else { panic!("completed batch result was lost") };
+    assert_eq!(result["files"], json!(["done.png"]));
+    assert_eq!(result["cancelled"], false);
 }
 
 /// A flat scanline EXR opened from a path goes through the band decoder in the open job and

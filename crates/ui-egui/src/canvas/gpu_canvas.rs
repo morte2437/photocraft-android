@@ -42,6 +42,7 @@ mod callback;
 mod doc_textures;
 mod pages;
 mod perf;
+mod residency;
 mod resources;
 mod setup;
 mod shaders;
@@ -349,24 +350,43 @@ impl GpuCanvas {
         r.callback_resources.get::<Resources>()?.compositor_budget
     }
 
-    /// Set the GPU bytes one document's display texture set may take (see [`canvas_budget`]).
+    /// Set the GPU bytes the open documents' display textures may take together (see
+    /// [`canvas_budget`] and [`GpuCanvas::show_documents`]).
     pub fn set_canvas_budget(&self, bytes: u64) {
         self.canvas_budget.store(bytes, Ordering::Relaxed);
     }
 
-    /// Whether `doc`'s display textures fit [`canvas_budget`]; when they don't, nothing is
-    /// created for it and it is drawn on the CPU canvas.
+    /// Whether `doc`'s display textures fit its share of [`canvas_budget`]; when they don't,
+    /// nothing is created for it and it is drawn from viewport pages or on the CPU canvas.
     pub fn fits_canvas(&self, doc: &photocraft_doc::Document) -> bool {
         self.canvas_fit(doc).is_some_and(|(bytes, budget)| bytes <= budget)
     }
 
-    /// The bytes `doc`'s display textures would take and [`canvas_budget`] (`None` without a GPU
-    /// canvas): the numbers of a [`CpuReason::CanvasTooLarge`].
-    pub fn canvas_fit(&self, doc: &photocraft_doc::Document) -> Option<(u64, u64)> {
+    /// The bytes `doc`'s whole-document texture set would take.
+    pub fn canvas_bytes(&self, doc: &photocraft_doc::Document) -> u64 {
         let size = [doc.size.width, doc.size.height];
-        let bytes = canvas_texture_bytes(size, self.tile, texel_bytes(self.format_for(doc.depth, size)));
+        canvas_texture_bytes(size, self.tile, texel_bytes(self.format_for(doc.depth, size)))
+    }
+
+    /// The bytes `doc`'s display textures would take and its share of [`canvas_budget`] (`None`
+    /// without a GPU canvas): the numbers of a [`CpuReason::CanvasTooLarge`]. Alone on screen a
+    /// document has the whole budget; see [`GpuCanvas::show_documents`].
+    pub fn canvas_fit(&self, doc: &photocraft_doc::Document) -> Option<(u64, u64)> {
+        let bytes = self.canvas_bytes(doc);
         let r = self.rs.renderer.read();
-        r.callback_resources.get::<Resources>().map(|res| (bytes, res.canvas_budget.load(Ordering::Relaxed)))
+        r.callback_resources.get::<Resources>().map(|res| (bytes, res.residency.share(res.canvas_budget.load(Ordering::Relaxed), doc.id.0, bytes)))
+    }
+
+    /// The documents the app's windows show now, with [`GpuCanvas::canvas_bytes`] of each: they
+    /// split [`canvas_budget`] (see [`residency`]), and the textures of documents not among them
+    /// are freed first when a shown one needs the room. Cheap when nothing changed.
+    pub fn show_documents(&self, shown: &[(u64, u64)]) {
+        if self.rs.renderer.read().callback_resources.get::<Resources>().is_none_or(|res| res.residency.shows(shown)) {
+            return;
+        }
+        if let Some(res) = self.rs.renderer.write().callback_resources.get_mut::<Resources>() {
+            res.residency.publish(shown);
+        }
     }
 
     /// Act as if the driver couldn't build the compositor's pipelines (the DX12 FXC X3507 case,
@@ -513,7 +533,7 @@ impl GpuCanvas {
         let mut renderer = self.rs.renderer.write();
         let Some(res) = renderer.callback_resources.get_mut::<Resources>() else { return };
         if res.docs.get(&doc).is_none_or(|d| d.size != size || d.format != format) {
-            let Some(tex) = DocTextures::new(device, res, size, self.tile, format) else {
+            let Some(tex) = DocTextures::new_for(device, res, doc, size, self.tile, format) else {
                 res.docs.remove(&doc);
                 return;
             };
@@ -646,7 +666,7 @@ impl GpuCanvas {
             }
         }
         if fresh {
-            let Some(tex) = DocTextures::new(device, res, size, self.tile, format) else {
+            let Some(tex) = DocTextures::new_for(device, res, key, size, self.tile, format) else {
                 res.docs.remove(&key);
                 res.compositor = Some(comp);
                 return Err(photocraft_gpu::Unsupported(OVER_CANVAS_BUDGET.into()));
@@ -861,7 +881,7 @@ impl GpuCanvas {
         let mut renderer = self.rs.renderer.write();
         let res = renderer.callback_resources.get_mut::<Resources>()?;
         if res.docs.get(&key).is_none_or(|d| d.size != size || d.format != format) {
-            let Some(tex) = DocTextures::new(&self.rs.device, res, size, self.tile, format) else {
+            let Some(tex) = DocTextures::new_for(&self.rs.device, res, key, size, self.tile, format) else {
                 res.docs.remove(&key);
                 return None;
             };
@@ -886,6 +906,7 @@ impl GpuCanvas {
         // LUTs and identity-transform signatures can outlive document textures. Prune both,
         // or a preserved-ID reopen can skip rebuilding a missing LUT.
         res.luts.retain(|k, _| live.contains(&k.0));
+        res.residency.retain(|d| live.contains(&d));
         res.display_lut_signatures.retain(|k, _| live.contains(&k.0));
     }
 

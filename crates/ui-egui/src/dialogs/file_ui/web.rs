@@ -27,7 +27,7 @@ pub fn open_web(app: &mut PhotocraftApp) -> u64 {
         .unwrap_or_else(|| json!({"format": "jpeg", "quality": 60}));
     if let Value::Object(m) = last {
         for (k, v) in m {
-            if !matches!(k.as_str(), "path" | "dir" | "width" | "height" | "percent" | "colorTable" | "colorTableEdits") {
+            if !matches!(k.as_str(), "path" | "dir" | "folder" | "width" | "height" | "percent" | "colorTable" | "colorTableEdits") {
                 f.insert(k, v);
             }
         }
@@ -562,7 +562,11 @@ pub(super) fn web_confirm(app: &mut PhotocraftApp, f: &Map<String, Value>) -> Re
         authorize(&prepared)?;
         p = prepared;
     }
-    if p.get("path").is_some() || p.get("dir").is_some() {
+    // A null or empty destination is none: the picker asks for one.
+    if let Some(fields) = p.as_object_mut() {
+        fields.retain(|key, value| !(matches!(key.as_str(), "path" | "dir" | "folder") && (value.is_null() || value.as_str() == Some(""))));
+    }
+    if p.get("path").is_some() || p.get("dir").is_some() || p.get("folder").is_some() {
         return save_for_web(app, p);
     }
     let doc = app.session.active().ok_or("no document")?.doc.clone();
@@ -577,11 +581,28 @@ pub(super) fn web_confirm(app: &mut PhotocraftApp, f: &Map<String, Value>) -> Re
             let dir = path.rfind(['/', '\\']).map(|i| path[..i].to_string()).unwrap_or_else(|| ".".into());
             p["dir"] = json!(dir);
             p["html"] = json!(html);
+        } else if let Some(folder) = kept_name_folder(&path, &base, st.format.ext())
+            // A save that renamed the document meanwhile: the engine would name the file after
+            // the new name, not the one picked.
+            && app.session.active().is_some_and(|state| photocraft_doc::slices::base_name(&state.doc) == base)
+        {
+            // The suggested name kept: only the folder, so a recorded action saves each
+            // document under its own name, as in Photoshop (#5305).
+            p["folder"] = json!(folder);
         } else {
             p["path"] = json!(path);
         }
         save_for_web(app, p)
     })
+}
+
+/// The folder of `path` when its file is the one Save for Web suggests and writes from a folder
+/// alone: `base` (a name usable on Windows as it is) with the format's own extension `ext`.
+fn kept_name_folder(path: &str, base: &str, ext: &str) -> Option<String> {
+    let file = std::path::Path::new(path);
+    let portable = photocraft_engine::file_cmds::portable_device_name(base.to_string()) == base;
+    let kept = portable && file.file_stem().is_some_and(|s| s.to_string_lossy() == base) && file.extension().is_some_and(|e| e.to_string_lossy() == ext);
+    kept.then(|| file.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default())
 }
 
 /// Runs Save for Web with `p`, which says where to write.

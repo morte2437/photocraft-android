@@ -15,11 +15,14 @@ use crate::blocks;
 use crate::pixels::{deinterleave, encode_be, psd_depth};
 use crate::psd_import::REGENERATED;
 
+mod banded;
 mod document;
 mod estimate;
 mod merged;
 mod resources;
 mod smart;
+mod stage;
+pub(crate) use stage::STAGE_DOCUMENTS_FROM;
 
 pub(crate) use document::document_to_psd_interruptible;
 #[cfg(test)]
@@ -41,10 +44,6 @@ const PSD_MAX_FILE_SIZE: u64 = 2 * 1024 * 1024 * 1024;
 /// Room kept under [`PSD_MAX_FILE_SIZE`] for what the save adds after the conversion (the image
 /// preview resource, a few KB).
 const PSD_SAVE_HEADROOM: u64 = 1024 * 1024;
-/// Most bytes of one layer's interleaved samples the exporter gathers. The interleaved bytes and
-/// the channel planes made from them (or the band parts and the joined buffer) are alive together,
-/// so the peak is about twice this; it is also what fits in a file of at most [`PSD_MAX_FILE_SIZE`].
-const MAX_LAYER_GATHER_BYTES: u64 = if cfg!(target_pointer_width = "64") { 1 << 30 } else { 256 << 20 };
 
 /// Options for [`document_to_psd_with`].
 #[derive(Debug, Clone)]
@@ -74,6 +73,10 @@ pub struct PsdExportOptions {
     /// off, since a stored path is document data rather than a granted file: such a layer is
     /// then written as pixels, with a warning.
     pub read_linked_files: bool,
+    /// Park each encoded channel on the scratch disk, not in memory, when the document's raw
+    /// pixel bytes (layers and composite) reach this and spilling is on (`None`: never). The
+    /// save then holds the file model's structure, not a second copy of its pixels (#5333).
+    pub stage_on_scratch_from: Option<u64>,
 }
 
 impl Default for PsdExportOptions {
@@ -86,11 +89,15 @@ impl Default for PsdExportOptions {
             maximize_compatibility: true,
             document_path: None,
             read_linked_files: true,
+            stage_on_scratch_from: None,
         }
     }
 }
 
-struct Ex {
+struct Ex<'c> {
+    /// The save's interrupt: a layer saved in bands checks it between bands and channels, so a
+    /// cancelled save stops within a band (#5333).
+    ctl: Interrupt<'c>,
     fmt: PixelFormat,
     /// Document resolution (for generated type-layer data).
     dpi: f32,
@@ -126,6 +133,8 @@ struct Ex {
     patterns: Vec<photocraft_doc::Pattern>,
     /// The layer written as Photoshop's Background (see [`psd_background`]).
     background: Option<photocraft_doc::LayerId>,
+    /// Where encoded channels go instead of memory ([`PsdExportOptions::stage_on_scratch_from`]).
+    stage: Option<std::sync::Arc<stage::Stage>>,
 }
 
 /// The layer Photoshop should open as its Background: the bottom top-level layer when it is a
@@ -175,7 +184,7 @@ fn q255(v: f32) -> u8 {
     (v.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
-impl Ex {
+impl Ex<'_> {
     fn compression(&self) -> Compression {
         if self.fmt.sample == SampleType::F32 { Compression::ZipPrediction } else { Compression::Rle }
     }
@@ -186,9 +195,13 @@ impl Ex {
         // A ZIP stream for a zero-sized channel makes readers try to decompress an
         // invalid image extent (notably psd-tools for 32-bit adjustment layers).
         let compression = if w == 0 || h == 0 { Compression::Raw } else { self.compression() };
-        ChannelData::encode(id, compression, plane, w, h, depth, self.version)
+        let c = ChannelData::encode(id, compression, plane, w, h, depth, self.version)
             .or_else(|_| ChannelData::encode(id, Compression::Raw, plane, w, h, depth, self.version))
-            .unwrap_or(ChannelData::new(id, Some(Compression::Raw), plane.to_vec()))
+            .unwrap_or(ChannelData::new(id, Some(Compression::Raw), plane.to_vec()));
+        match &self.stage {
+            Some(stage) => stage.channel(c),
+            None => c,
+        }
     }
 
     fn empty_channels(&self) -> Vec<ChannelData> {
@@ -208,11 +221,11 @@ impl Ex {
             return (PsdRect::default(), self.empty_channels(), warnings);
         }
         // A layer record is one dense rectangle, so a few pixels far apart make a box of mostly
-        // nothing, gathered and then copied again. Past the cap the layer is saved empty, said so.
+        // nothing, gathered and then copied again. Past `banded_from` the layer is gathered and
+        // encoded a band of rows at a time instead (#5333).
         let dense = u64::from(r.width()).saturating_mul(u64::from(r.height())).saturating_mul(s.format().bytes_per_pixel() as u64);
-        if dense > MAX_LAYER_GATHER_BYTES {
-            warnings.push(format!("layer \"{name}\" spans {}×{} px, too large to write: saved without its pixels", r.width(), r.height()));
-            return (PsdRect::default(), self.empty_channels(), warnings);
+        if dense > banded::banded_from() {
+            return (to_psd_rect(r), self.banded_channels(&s, r), warnings);
         }
         // The interleaved gather is the sequential pass for full-canvas layers, so it runs
         // in row bands on all cores and the band results concatenate in order.

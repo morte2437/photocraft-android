@@ -282,6 +282,65 @@ fn the_save_for_web_dialog_seeds_from_the_remembered_preferences() {
     assert_eq!(f["colors"], 64);
 }
 
+/// #5305: Save for Web with the suggested name runs (and so is recorded) with only the
+/// folder, so an action saves each document under its own name; another name is kept.
+#[test]
+fn save_for_web_with_the_suggested_name_records_only_the_folder() {
+    let dir = std::env::temp_dir().join(format!("pc-webui-kept-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for (name, expected) in [
+        ("web.png", json!({"folder": dir.to_string_lossy()})),
+        ("other.png", json!({"path": dir.join("other.png").to_string_lossy()})),
+        ("web.gif", json!({"path": dir.join("web.gif").to_string_lossy()})),
+    ] {
+        let (mut app, ctx) = app();
+        let target = dir.join(name).to_string_lossy().into_owned();
+        let (dialog, _) = crate::file_dialog::fake(vec![Some(crate::file_dialog::FileDialogAnswer::SaveTo(target.clone()))]);
+        app.services.file_dialog = Some(dialog);
+        let id = open_web(&mut app);
+        app.ui.dialog_mut(id).unwrap().fields.insert("format".into(), json!("png24"));
+        crate::dialogs::confirm(&mut app, id).unwrap();
+        app.poll_file_dialog(&ctx, None);
+        assert!(std::path::Path::new(&target).exists(), "{target}");
+        let (id, params) = app.session.journal.last().unwrap();
+        assert_eq!(id, WEB_COMMAND);
+        for (k, v) in expected.as_object().unwrap() {
+            assert_eq!(&params[k], v, "{params}");
+        }
+        assert!(params.get(if name == "web.png" { "path" } else { "folder" }).is_none(), "{params}");
+        assert!(!dir.join("web.png").exists() || name == "web.png", "only the picked file is written");
+        let _ = std::fs::remove_file(&target);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A null `folder` is no destination: the picker asks. A document renamed while the picker is
+/// open writes the picked file, not one named after the new name.
+#[test]
+fn save_for_web_writes_the_picked_file_when_no_folder_is_given_or_the_name_changed() {
+    let dir = std::env::temp_dir().join(format!("pc-webui-renamed-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for rename in [false, true] {
+        let (mut app, ctx) = app();
+        let target = dir.join("web.png").to_string_lossy().into_owned();
+        let (dialog, _) = crate::file_dialog::fake(vec![Some(crate::file_dialog::FileDialogAnswer::SaveTo(target.clone()))]);
+        app.services.file_dialog = Some(dialog);
+        let id = open_web(&mut app);
+        let fields = &mut app.ui.dialog_mut(id).unwrap().fields;
+        fields.insert("format".into(), json!("png24"));
+        fields.insert("folder".into(), Value::Null);
+        crate::dialogs::confirm(&mut app, id).unwrap();
+        if rename {
+            std::sync::Arc::make_mut(&mut app.session.active_mut().unwrap().doc).name = "renamed".into();
+        }
+        app.poll_file_dialog(&ctx, None);
+        assert!(std::path::Path::new(&target).exists(), "rename {rename}: {target}");
+        assert!(!dir.join("renamed.png").exists(), "rename {rename}");
+        let _ = std::fs::remove_file(&target);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn save_for_web_starts_at_the_current_document_size() {
     let (mut app, _) = app();

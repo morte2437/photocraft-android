@@ -133,6 +133,15 @@ pub(super) fn same_named_targets(doc: &photocraft_doc::Document, name: &str, mov
 /// (omitting `layer`) so that the recorded step applies to whatever layer is targeted when
 /// replayed or exported to `.atn` (#7248).
 pub(crate) fn recorded_step(s: &Session, id: &str, p: Value, pre_selected: Option<&[LayerId]>) -> Value {
+    if id == "select.loadSelection"
+        && let Some(layer_id) = p.get("layer").and_then(Value::as_u64).map(LayerId)
+    {
+        return recorded_source_layer(s, p, layer_id);
+    }
+    if crate::actions_record::needs_source_layer(id) {
+        // An explicit layer supplies content, even when it is the sole selection.
+        return p;
+    }
     if id == "layer.select" {
         return recorded_selection(s, p);
     }
@@ -158,9 +167,6 @@ pub(crate) fn recorded_step(s: &Session, id: &str, p: Value, pre_selected: Optio
             fields.remove("layer");
         }
         return p;
-    }
-    if id == "select.loadSelection" {
-        return recorded_source_layer(s, p, layer_id);
     }
     p
 }

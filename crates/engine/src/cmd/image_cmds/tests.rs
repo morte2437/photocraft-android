@@ -486,6 +486,17 @@ fn extending_the_canvas_keeps_the_backgrounds_hidden_pixels() {
             })
             .unwrap();
             s.execute("image.crop", json!({"x": 50, "y": 0, "width": 50, "height": 100, "deleteCroppedPixels": false})).unwrap();
+            // That crop makes the Background "Layer 0" now (#10867); a Background with pixels past
+            // the canvas is still in documents saved before, so lock it back into one.
+            s.edit("relock", |doc, _| {
+                let l = doc.layers.first_mut().unwrap();
+                l.name = "Background".into();
+                l.locks.transparency = true;
+                l.locks.position = true;
+                Ok(())
+            })
+            .unwrap();
+            assert!(doc(s).background().is_some());
             s.tools.background = [0.0, 0.0, 0.0, 1.0];
         };
         let mut s = Session::new();

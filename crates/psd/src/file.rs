@@ -2,7 +2,7 @@
 
 use std::io::{Seek, Write};
 
-use crate::compression::{Compression, MAX_DECODED_BYTES, decode_planes, rle_widening, validate_planes};
+use crate::compression::{Compression, MAX_DECODED_BYTES, decode_planes, rle_widening_len, validate_planes};
 use crate::error::{PsdError, Result};
 use crate::header::{ColorMode, Header, Version};
 use crate::image_data::ImageData;
@@ -382,10 +382,9 @@ impl PsdFile {
             o.put_u16(self.image_data.compression.as_u16());
             Ok(())
         })?;
-        let merged = self.image_data.encoded()?;
         match self.merged_widened_rows(widen)? {
-            0 => out.put(&merged),
-            rows => out.put_widened_rle(&merged, rows),
+            0 => out.put_encoded(&self.image_data.data, self.image_data.stored.as_ref()),
+            rows => out.put_widened_encoded(&self.image_data.data, self.image_data.stored.as_ref(), rows),
         }
     }
 
@@ -415,13 +414,13 @@ impl PsdFile {
             for c in &layer.channels {
                 match layer.widened_rows(c, true)? {
                     0 => {}
-                    rows => n = n.saturating_add(rle_widening(&c.encoded()?, rows)?),
+                    rows => n = n.saturating_add(rle_widening_len(c.encoded_len(), rows)?),
                 }
             }
         }
         match self.merged_widened_rows(true)? {
             0 => Ok(n),
-            rows => Ok(n.saturating_add(rle_widening(&self.image_data.encoded()?, rows)?)),
+            rows => Ok(n.saturating_add(rle_widening_len(self.image_data.encoded_len(), rows)?)),
         }
     }
 
@@ -464,7 +463,7 @@ impl PsdFile {
         }
         let merged = match self.merged_widened_rows(widen)? {
             0 => 0,
-            rows => rle_widening(&self.image_data.encoded()?, rows)?,
+            rows => rle_widening_len(self.image_data.encoded_len(), rows)?,
         };
         Ok(n.saturating_add(2).saturating_add(self.image_data.encoded_len()).saturating_add(merged))
     }
@@ -717,6 +716,77 @@ mod write_tests {
                 assert!(streamed(&lazy, stage) == bytes, "{} source-backed, stage {stage}", case.name);
             }
         }
+    }
+
+    /// Channel data and a merged image still in their source (an imported file's, or what an
+    /// exporter spilled to scratch) are copied through in short reads, never read whole.
+    #[test]
+    fn source_backed_data_is_copied_in_short_reads() {
+        struct Reads(Vec<u8>, std::sync::Mutex<usize>);
+        impl crate::source::ReadAt for Reads {
+            fn len(&self) -> u64 {
+                self.0.len() as u64
+            }
+            fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<()> {
+                let mut most = self.1.lock().unwrap();
+                *most = (*most).max(buf.len());
+                self.0.as_slice().read_at(offset, buf)
+            }
+        }
+        let mut file = testgen::small(Version::Psd, Compression::Raw);
+        file.image_data = ImageData::new(Compression::Raw, vec![5; 300]);
+        let info = file.layer_info.as_mut().unwrap();
+        info.layers[0].channels[0] = crate::layer::ChannelData::new(0, Some(Compression::Raw), vec![6; 301]);
+        let bytes = file.to_bytes().unwrap();
+        let source = std::sync::Arc::new(Reads(bytes.clone(), std::sync::Mutex::new(0)));
+        let lazy = PsdFile::from_source(crate::Source::from_arc(source.clone())).unwrap();
+        *source.1.lock().unwrap() = 0;
+        let mut w = std::io::Cursor::new(Vec::new());
+        lazy.write_to(&mut w).unwrap();
+        assert!(w.into_inner() == bytes);
+        assert!(*source.1.lock().unwrap() <= 7, "read {} bytes at once", source.1.lock().unwrap());
+    }
+
+    /// #5333: RLE data still in its source widens to PSB in short reads too, the count table and
+    /// then the packed rows, one consecutive pass, never the whole merged image or channel at once.
+    #[test]
+    fn source_backed_rle_widens_in_short_reads() {
+        struct Reads(Vec<u8>, std::sync::Mutex<(usize, Vec<(u64, usize)>)>);
+        impl crate::source::ReadAt for Reads {
+            fn len(&self) -> u64 {
+                self.0.len() as u64
+            }
+            fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<()> {
+                let mut seen = self.1.lock().unwrap();
+                seen.0 = seen.0.max(buf.len());
+                seen.1.push((offset, buf.len()));
+                self.0.as_slice().read_at(offset, buf)
+            }
+        }
+        let file = testgen::small(Version::Psd, Compression::Rle);
+        assert_eq!(file.image_data.compression, Compression::Rle);
+        let bytes = file.to_bytes().unwrap();
+        let mut promoted = file.clone();
+        promoted.promote_to_psb().unwrap();
+        let want = promoted.to_bytes().unwrap();
+        let source = std::sync::Arc::new(Reads(bytes, std::sync::Mutex::new((0, Vec::new()))));
+        let mut lazy = PsdFile::from_source(crate::Source::from_arc(source.clone())).unwrap();
+        assert!(lazy.image_data.stored.is_some(), "the merged image stays in the source");
+        lazy.promote_to_psb().unwrap();
+        *source.1.lock().unwrap() = (0, Vec::new());
+        let mut w = std::io::Cursor::new(Vec::new());
+        lazy.write_to(&mut w).unwrap();
+        assert!(w.into_inner() == want);
+        let seen = source.1.lock().unwrap();
+        assert!(seen.0 <= 7, "read {} bytes at once", seen.0);
+        let merged = lazy.image_data.stored.as_ref().unwrap();
+        let reads: Vec<_> = seen.1.iter().filter(|(at, _)| (merged.offset..merged.offset + merged.len).contains(at)).collect();
+        let mut next = merged.offset;
+        for &&(at, n) in &reads {
+            assert_eq!(at, next, "the merged image is read in one consecutive pass");
+            next += n as u64;
+        }
+        assert_eq!(next, merged.offset + merged.len);
     }
 
     /// #6607: pixel data goes to the stream as it is, never through a staging copy, so a save
