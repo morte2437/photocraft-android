@@ -23,6 +23,12 @@ pub(crate) fn pointer_sample(app: &mut PhotocraftApp, (x, y): (i32, i32)) -> Opt
     Some(v)
 }
 
+/// The Info panel's W and H for a size of `wh` px (the selection's or the pending crop frame's):
+/// both go through the ruler unit's formatter at `dpi`, percent of the document's `extent`.
+pub(crate) fn wh_readout(ur: &photocraft_engine::prefs::UnitsAndRulers, dpi: f64, extent: [f64; 2], wh: [f64; 2]) -> [String; 2] {
+    [ur.format(wh[0], dpi, extent[0]), ur.format(wh[1], dpi, extent[1])]
+}
+
 /// Photoshop's Info panel: colour under the pointer (RGB and CMYK), position, selection size.
 pub(super) fn info_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
@@ -37,8 +43,14 @@ pub(super) fn info_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let dpi = st.doc.resolution_dpi as f64;
     let fx = move |px: f64| units.format(px, dpi, size.width as f64);
     let units_y = app.session.prefs().units_and_rulers.clone();
+    let units_wh = app.session.prefs().units_and_rulers.clone();
     let fy = move |px: f64| units_y.format(px, dpi, size.height as f64);
-    let sel = st.doc.selection.as_ref().map(photocraft_compose::bounds::content_bounds);
+    let sel = st.doc.selection.as_ref().map(photocraft_compose::bounds::content_bounds).map(|r| [r.width() as f64, r.height() as f64]);
+    // With the Crop tool, W and H are the pending frame's, as in Photoshop (#3145).
+    let crop = crate::crop_ui::info_size(app);
+    let wh = crop.or(sel);
+    // And the frame's ratio, to match another photo's (#3145).
+    let ratio = crop.and_then(crate::crop_ui::ratio_label);
     let pos = hover_pixel(app);
     // While a guide is dragged (#5728), the Info panel shows its position in one axis only, even
     // when the pointer is outside the canvas (ruler drags do not update `hover_doc` there).
@@ -75,8 +87,15 @@ pub(super) fn info_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         // Measured from the rulers' zero point (#2955).
         row(&mut cols[0], "X:", guide_x.map(|p| fx(p - origin[0])).or_else(|| pos.map(|p| fx(p.0 as f64 - origin[0]))).unwrap_or_else(dash));
         row(&mut cols[0], "Y:", guide_y.map(|p| fy(p - origin[1])).or_else(|| pos.map(|p| fy(p.1 as f64 - origin[1]))).unwrap_or_else(dash));
-        row(&mut cols[1], "W:", sel.map_or_else(dash, |r| fx(r.width() as f64)));
-        row(&mut cols[1], "H:", sel.map_or_else(dash, |r| fy(r.height() as f64)));
+        let [w, h] = wh.map_or_else(|| [dash(), dash()], |s| wh_readout(&units_wh, dpi, [size.width as f64, size.height as f64], s));
+        row(&mut cols[1], "W:", w);
+        row(&mut cols[1], "H:", h);
+        if let Some(r) = ratio {
+            cols[1].horizontal(|ui| {
+                ui.label(RichText::new(format!("{}:", tl!("Ratio"))).color(t.text_dim).size(11.5));
+                ui.label(RichText::new(r).font(mono.clone()).color(t.text));
+            });
+        }
     });
     widgets::hairline(ui);
     ui.label(
