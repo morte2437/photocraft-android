@@ -131,9 +131,11 @@ fn a_command_held_straighten_line_keeps_the_frame_size() {
                 let size = (frame[2] - frame[0], frame[3] - frame[1]);
                 assert_eq!(committed(&mut app), (size.0 as u32, size.1 as u32), "{what}");
                 // The corners the turn uncovered take the background colour, the others and the
-                // middle are the image.
+                // middle are the image. With Delete Cropped Pixels off the Background becomes
+                // Layer 0 (#10867), so the uncovered corners stay transparent.
                 for (p, out) in corners(&app).into_iter().zip(outside) {
-                    assert!(if out { is_blue(p) } else { is_white(p) }, "{what}: a corner {} the canvas is {p:?}", if out { "off" } else { "on" });
+                    let uncovered = if delete { is_blue(p) } else { p[3] < 0.02 };
+                    assert!(if out { uncovered } else { is_white(p) }, "{what}: a corner {} the canvas is {p:?}", if out { "off" } else { "on" });
                 }
                 assert_eq!(outside, if ratio.is_empty() { [true; 4] } else { [false, true, false, true] }, "{what}");
                 let mid = pixel(&app, (size.0 / 2.0) as usize, (size.1 / 2.0) as usize);
