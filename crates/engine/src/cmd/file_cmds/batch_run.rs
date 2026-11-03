@@ -221,24 +221,27 @@ fn process_one(raw_ppi: f64, path: &str, out: &str, save: SaveOpts, options: Pro
         ctx.publish_batch_preview(path, scratch.active().map(|state| state.doc.clone()));
     }
     let saved_by_action = f(&mut scratch, out)?;
+    if saved_by_action {
+        // The action's saved snapshot is already written: a cancel or Esc arriving now stops the
+        // inputs after this one, not this result.
+        return Ok(());
+    }
     if let Some(ctx) = options.ctx {
         ctx.check()?;
         if ctx.batch_interrupt_requested() {
             return Err(EngineError::Cancelled);
         }
     }
-    if !saved_by_action {
-        let d = scratch.active().ok_or(EngineError::NoDocument)?;
-        if let Some(format) = options.format {
-            let ext = if format == "same" { same_format(path) } else { format.trim_start_matches('.').to_ascii_lowercase() };
-            if let Some(ctx) = options.ctx {
-                save_batch_doc(&d.doc, out, &ext, save, ctx)?;
-            } else {
-                save_doc_as(&d.doc, out, &ext, save)?;
-            }
+    let d = scratch.active().ok_or(EngineError::NoDocument)?;
+    if let Some(format) = options.format {
+        let ext = if format == "same" { same_format(path) } else { format.trim_start_matches('.').to_ascii_lowercase() };
+        if let Some(ctx) = options.ctx {
+            save_batch_doc(&d.doc, out, &ext, save, ctx)?;
         } else {
-            save_doc(&d.doc, out, save)?;
+            save_doc_as(&d.doc, out, &ext, save)?;
         }
+    } else {
+        save_doc(&d.doc, out, save)?;
     }
     Ok(())
 }

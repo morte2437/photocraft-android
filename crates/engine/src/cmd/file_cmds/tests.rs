@@ -89,6 +89,28 @@ fn batch_cancelled_during_an_action_does_not_save_that_input() {
     assert!(!std::path::Path::new(&out).exists());
 }
 
+/// An action that saved and then closed its document has its saved snapshot written by the time
+/// it returns: a cancel landing then counts that file as written, not skipped.
+#[test]
+fn batch_cancel_after_a_saved_snapshot_is_written_keeps_that_file() {
+    let dir = tmp("batch-cancel-after-snapshot");
+    let first = png(&dir, "first.png", 8, 6, "#ff0000");
+    let second = png(&dir, "second.png", 8, 6, "#00ff00");
+    let first_out = join(&dir, "out/first.png");
+    let ctx = crate::jobs::JobCtx::new();
+    let policy = super::batch_run::BatchPolicy { stop_on_error: false, error_log: None };
+    let outputs = vec![(first, first_out.clone()), (second.clone(), join(&dir, "out/second.png"))];
+    let result = super::batch_run::process_batch_outputs(72.0, outputs, "png", SaveOpts::default(), &policy, &ctx, &|s, out| {
+        save_doc(&s.active().unwrap().doc, out, None).unwrap();
+        ctx.cancel();
+        Ok(true)
+    })
+    .unwrap();
+    assert_eq!(result["files"], json!([first_out]), "{result}");
+    assert_eq!(result["skipped"], json!([second]), "{result}");
+    assert_eq!(result["cancelled"], json!(true), "{result}");
+}
+
 /// A cancel that lands while an input fails on its own keeps that failure and its reason; only
 /// the inputs after it are skipped.
 #[test]
