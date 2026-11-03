@@ -257,3 +257,29 @@ fn the_artboard_filter_walks_deep_groups_without_recursion() {
         .join()
         .unwrap();
 }
+
+#[test]
+fn the_artboard_filter_lists_the_outer_artboard_for_a_layer_in_a_nested_artboard() {
+    use photocraft_color::{ColorMode, SampleType};
+    use photocraft_doc::{Artboard, Group, Layer, LayerContent, Size};
+    use photocraft_geom::Rect;
+    use std::collections::HashSet;
+
+    fn group(name: &str, children: Vec<Layer>, artboard: Option<Artboard>) -> Layer {
+        Layer::new(name, LayerContent::Group(Group { children, expanded: true, artboard, frame_stroke: None }))
+    }
+    let leaf = group("Leaf", vec![], None);
+    let inner = group("Inner", vec![leaf.clone()], Some(Artboard::new(Rect::new(0, 0, 4, 4))));
+    let sibling = group("Sibling", vec![], None);
+    let outer = group("Outer", vec![inner.clone(), sibling.clone()], Some(Artboard::new(Rect::new(0, 0, 8, 8))));
+    let other = group("Other", vec![], Some(Artboard::new(Rect::new(8, 0, 8, 8))));
+    let mut doc = Document::new("Nested artboards", Size::new(16, 8), ColorMode::Rgb, SampleType::U8);
+    let (outer_id, inner_id, leaf_id, sibling_id, other_id) = (outer.id, inner.id, leaf.id, sibling.id, other.id);
+    doc.layers.push(outer);
+    doc.layers.push(other);
+    let outer_rows = HashSet::from([outer_id, inner_id, leaf_id, sibling_id]);
+    assert_eq!(super::board_rows(&doc, &[leaf_id]), outer_rows, "a layer in a nested artboard: the outer artboard's rows");
+    assert_eq!(super::board_rows(&doc, &[inner_id]), outer_rows, "the nested artboard itself: the outer artboard's rows");
+    let both: HashSet<_> = outer_rows.iter().copied().chain([other_id]).collect();
+    assert_eq!(super::board_rows(&doc, &[leaf_id, other_id]), both);
+}
