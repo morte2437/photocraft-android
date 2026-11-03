@@ -126,7 +126,8 @@ fn a_command_held_straighten_line_keeps_the_frame_size() {
                 // Where the turned frame's corners land on the canvas: the whole-canvas frame's
                 // all leave it; the 500 × 500 one's top-right and bottom-left leave it at the top
                 // and bottom, the other two stay inside the 800 px width.
-                let outside = turned_corners(frame, angle(&app)).map(|c| !(0.0..=800.0).contains(&c[0]) || !(0.0..=500.0).contains(&c[1]));
+                let turn = angle(&app);
+                let outside = turned_corners(frame, turn).map(|c| !(0.0..=800.0).contains(&c[0]) || !(0.0..=500.0).contains(&c[1]));
                 let size = (frame[2] - frame[0], frame[3] - frame[1]);
                 assert_eq!(committed(&mut app), (size.0 as u32, size.1 as u32), "{what}");
                 // The corners the turn uncovered take the background colour, the others and the
@@ -137,6 +138,23 @@ fn a_command_held_straighten_line_keeps_the_frame_size() {
                 assert_eq!(outside, if ratio.is_empty() { [true; 4] } else { [false, true, false, true] }, "{what}");
                 let mid = pixel(&app, (size.0 / 2.0) as usize, (size.1 / 2.0) as usize);
                 assert!(is_white(mid), "{what}: the white image in the middle, not {mid:?}");
+                // Delete Cropped Pixels off keeps the turned image outside the frame: Reveal All
+                // brings it back. Both frames are centred on the canvas's centre, so the revealed
+                // canvas is too. The point 300 px left of and 270 px above that centre (on the
+                // turned frame's axes) lies outside the frame and on the white image.
+                let q = [300.0, 270.0];
+                let [on_image, ..] = turned_corners([400.0 - q[0], 250.0 - q[1], 400.0 + q[0], 250.0 + q[1]], turn);
+                assert!(on_image[0] > 10.0 && on_image[1] > 10.0 && on_image[0] < 270.0, "{what}: the point is on the image, at {on_image:?}");
+                let revealed = app.run("image.revealAll", json!({})).expect("reveal all");
+                let doc_size = app.session.active().expect("document").doc.size;
+                let (w, h) = (f64::from(doc_size.width), f64::from(doc_size.height));
+                if delete {
+                    assert_eq!((revealed["changed"].clone(), w, h), (json!(false), size.0, size.1), "{what}: nothing left to reveal");
+                } else {
+                    assert!(w > size.0 + 40.0 && h > size.1 + 40.0, "{what}: revealed {w} × {h}");
+                    let p = pixel(&app, (w / 2.0 - q[0]) as usize, (h / 2.0 - q[1]) as usize);
+                    assert!(is_white(p), "{what}: the image outside the frame is kept, not {p:?}");
+                }
             }
         }
     }
@@ -162,9 +180,20 @@ fn a_command_held_line_keeps_a_drawn_frame_where_it_is() {
         assert!((angle(&app) - 4.0).abs() < 1e-6, "classic {classic}: {}", app.ui.crop_angle);
         assert_eq!(app.ui.crop_rect, Some(frame), "classic {classic}: after the second line");
         assert_eq!(committed(&mut app), (400, 300), "classic {classic}");
-        // The crop is centred on the red square, where the frame was; turned 4° the frame stays
-        // inside the image, so nothing is filled.
-        assert!(is_red(pixel(&app, 200, 150)), "classic {classic}: the square in the middle, not {:?}", pixel(&app, 200, 150));
+        // The crop is centred on the red square, where the frame was (its red pixels' centroid
+        // is the middle, which one pixel in the 40 px square can't tell); turned 4° the frame
+        // stays inside the image, so nothing is filled.
+        let flat = photocraft_compose::flatten(&app.session.active().expect("document").doc);
+        let red: Vec<(f64, f64)> = (0..300usize)
+            .flat_map(|y| (0..400usize).map(move |x| (x, y)))
+            .filter(|&(x, y)| is_red(flat.px[y * 400 + x]))
+            .map(|(x, y)| (x as f64, y as f64))
+            .collect();
+        assert!(red.len() > 1000, "classic {classic}: the square is in the crop ({} red pixels)", red.len());
+        let n = red.len() as f64;
+        let (cx, cy) = (red.iter().map(|p| p.0).sum::<f64>() / n, red.iter().map(|p| p.1).sum::<f64>() / n);
+        // Pixel centres sit at +0.5, so the middle of 400 × 300 is (199.5, 149.5).
+        assert!((cx - 199.5).abs() <= 1.0 && (cy - 149.5).abs() <= 1.0, "classic {classic}: the red centroid is ({cx:.1}, {cy:.1})");
         for p in corners(&app) {
             assert!(is_white(p), "classic {classic}: a corner is {p:?}");
         }
