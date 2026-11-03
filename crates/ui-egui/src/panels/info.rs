@@ -49,8 +49,6 @@ pub(super) fn info_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     // With the Crop tool, W and H are the pending frame's, as in Photoshop (#3145).
     let crop = crate::crop_ui::info_size(app);
     let wh = crop.or(sel);
-    // And the frame's ratio, to match another photo's (#3145).
-    let ratio = crop.and_then(crate::crop_ui::ratio_label);
     let pos = hover_pixel(app);
     // While a guide is dragged (#5728), the Info panel shows its position in one axis only, even
     // when the pointer is outside the canvas (ruler drags do not update `hover_doc` there).
@@ -90,12 +88,6 @@ pub(super) fn info_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         let [w, h] = wh.map_or_else(|| [dash(), dash()], |s| wh_readout(&units_wh, dpi, [size.width as f64, size.height as f64], s));
         row(&mut cols[1], "W:", w);
         row(&mut cols[1], "H:", h);
-        if let Some(r) = ratio {
-            cols[1].horizontal(|ui| {
-                ui.label(RichText::new(format!("{}:", tl!("Ratio"))).color(t.text_dim).size(11.5));
-                ui.label(RichText::new(r).font(mono.clone()).color(t.text));
-            });
-        }
     });
     widgets::hairline(ui);
     ui.label(

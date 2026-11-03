@@ -738,31 +738,6 @@ pub fn info_size(app: &PhotocraftApp) -> Option<[f64; 2]> {
     frame_size(app.ui.crop_rect?)
 }
 
-/// The Info panel's ratio for a frame of `size` (whole px, as [`info_size`] gives): reduced to
-/// whole numbers when both are small ("4:3", "16:9", "1:1"), else as a decimal against 1 on the
-/// short side ("1.413:1", "1:1.5"), so a photo's ratio can be matched (#3145).
-pub fn ratio_label(size: [f64; 2]) -> Option<String> {
-    let [w, h] = size;
-    if !(w.is_finite() && h.is_finite() && w >= 1.0 && h >= 1.0) {
-        return None;
-    }
-    // Whole px from `frame_size`; `as` saturates for huge values and the gcd stays positive.
-    let (a, b) = (w.round() as u64, h.round() as u64);
-    let (mut x, mut y) = (a, b);
-    while y != 0 {
-        (x, y) = (y, x % y);
-    }
-    let (rw, rh) = (a / x.max(1), b / x.max(1));
-    if rw <= 32 && rh <= 32 {
-        return Some(format!("{rw}:{rh}"));
-    }
-    let trim = |v: f64| {
-        let s = format!("{v:.3}");
-        s.trim_end_matches('0').trim_end_matches('.').to_string()
-    };
-    Some(if w >= h { format!("{}:1", trim(w / h)) } else { format!("1:{}", trim(h / w)) })
-}
-
 /// The Crop tool owns the arrow keys and X: a pending frame and no gesture in progress.
 pub fn takes_keys(app: &PhotocraftApp) -> bool {
     app.ui.tool == Tool::Crop && app.crop.drag.is_none() && app.ui.transform.is_none() && app.ui.crop_rect.is_some_and(|r| r.iter().all(|v| v.is_finite()))
