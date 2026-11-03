@@ -81,11 +81,31 @@ pub(super) fn scale_from(d: &Descriptor) -> Mapped {
     from(SCALE, d)
 }
 
+/// Find typed effects references in parsed values; opaque data and class names are not references.
+fn has_style_reference(value: &D) -> bool {
+    let mut pending = vec![value];
+    while let Some(value) = pending.pop() {
+        match value {
+            D::Reference(parts) => {
+                if parts.iter().any(|part| matches!(part, ReferenceItem::Property { key, .. } if key.is("Lefx"))) {
+                    return true;
+                }
+            }
+            D::Descriptor(d) | D::GlobalObject(d) => pending.extend(d.items.iter().map(|(_, value)| value)),
+            D::List(values) => pending.extend(values),
+            D::ObjectArray(array) => pending.extend(array.body.items.iter().map(|(_, value)| value)),
+            _ => {}
+        }
+    }
+    false
+}
+
 /// Intercept layer-style Make intent before generic Make can turn it into a blank layer.
 pub(super) fn create_from_descriptor(d: &Descriptor) -> Option<Mapped> {
     let layer_make = get_ref(d, "null").and_then(ref_class).as_deref() == Some("Lyr");
     let style_intent = d.items.iter().any(|(item_key, value)| {
-        let style_reference = matches!(value, D::Reference(r) if r.iter().any(|part| matches!(part, ReferenceItem::Property { key, .. } if key.is("Lefx"))));
+        // Deep inspection belongs to Layer Make; other Make classes retain direct-reference handling.
+        let style_reference = (layer_make || matches!(value, D::Reference(_))) && has_style_reference(value);
         if item_key.is("Usng") {
             // A layer Make may omit Usng, or use the ordinary layer-options object. Other
             // shapes must not be discarded as if they were an empty layer-options object.
