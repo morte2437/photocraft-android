@@ -23,6 +23,7 @@ use super::steps_layer::{
     move_from, move_to, paste_effects_from, paste_effects_to, play_from, play_to, rotate_from, rotate_to, select_from, select_to, stroke_to, visibility_from,
     visibility_to,
 };
+use super::steps_layer_style::{scale_from, style_to};
 use super::steps_make::{locking_from, locking_to, make_from, make_to, set_from, set_to};
 use super::steps_other::{DE_INTERLACE, HSB_HSL, bare_from, bare_to, custom_from, custom_to, enums_from, enums_to};
 use super::tables::{NOISE, OFFSET_FILL, SMART_BLUR_MODE, SMART_BLUR_QUALITY, TRIM};
@@ -764,6 +765,7 @@ pub(super) const EVENTS: &[Event] = &[
     },
     Event { code: "Dplc", name: "duplicate", label: "Duplicate", ids: &["layer.duplicate", "image.duplicate"], from: duplicate_from, to: duplicate_to },
     // Layers.
+    Event { code: "", name: "scaleEffectsEvent", label: "Scale Effects", ids: &["layer.layerStyle.scaleEffects"], from: scale_from, to: style_to },
     target_event!("reverse", "Reverse", "layer.arrange.reverse"),
     target_event!("selectLinkedLayers", "Select Linked Layers", "layer.selectLinkedLayers"),
     target_event!("disableLayerStyle", "Clear Layer Style", "layer.layerStyle.clear"),
@@ -798,6 +800,7 @@ pub(super) const EVENTS: &[Event] = &[
         ids: &[
             "type.convertToShape",
             "layer.new.layer",
+            "layer.layerStyle.createLayer",
             "layer.new.group",
             "layer.groupLayers",
             "layer.duplicate",
