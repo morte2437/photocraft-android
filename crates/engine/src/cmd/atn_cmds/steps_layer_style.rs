@@ -84,11 +84,16 @@ pub(super) fn scale_from(d: &Descriptor) -> Mapped {
 /// Intercept layer-style Make intent before generic Make can turn it into a blank layer.
 pub(super) fn create_from_descriptor(d: &Descriptor) -> Option<Mapped> {
     let layer_make = get_ref(d, "null").and_then(ref_class).as_deref() == Some("Lyr");
-    let style_intent = d.items.iter().filter(|(key, _)| key.is("Usng")).any(|(_, value)| {
+    let style_intent = d.items.iter().any(|(item_key, value)| {
         let style_reference = matches!(value, D::Reference(r) if r.iter().any(|part| matches!(part, ReferenceItem::Property { key, .. } if key.is("Lefx"))));
-        // A layer Make may omit Usng, or use the ordinary layer-options object. Other
-        // shapes must not be discarded as if they were an empty layer-options object.
-        style_reference || (layer_make && !matches!(value, D::Descriptor(u) if u.class_id.is("Lyr ")))
+        if item_key.is("Usng") {
+            // A layer Make may omit Usng, or use the ordinary layer-options object. Other
+            // shapes must not be discarded as if they were an empty layer-options object.
+            style_reference || (layer_make && !matches!(value, D::Descriptor(u) if u.class_id.is("Lyr ")))
+        } else {
+            // A miskeyed effects reference is still style intent, not an ordinary blank layer.
+            layer_make && style_reference
+        }
     });
     style_intent.then(|| from(CREATE, d))
 }
