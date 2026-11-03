@@ -53,14 +53,14 @@ pub fn inverse_surface(source: &Surface, area: Rect) -> Surface {
             let cell = cache.get(&(Arc::as_ptr(input) as usize))?;
             let tile = cell.get_or_init(|| {
                 if format == PixelFormat::GRAY8 {
-                    if input.bytes() == full.bytes() {
+                    if *input.bytes() == *full.bytes() {
                         return None;
                     }
-                    if input.bytes() == blank.bytes() {
+                    if *input.bytes() == *blank.bytes() {
                         return Some(Arc::clone(&full));
                     }
                     let mut tile = Tile::clone(input);
-                    for b in tile.bytes_mut() {
+                    for b in tile.bytes_mut().iter_mut() {
                         *b = 255 - *b;
                     }
                     return Some(Arc::new(tile));
@@ -78,7 +78,8 @@ pub fn inverse_surface(source: &Surface, area: Rect) -> Surface {
         let (x0, x1) = ((cut.x0 - rect.x0) as usize, (cut.x1 - rect.x0) as usize);
         for y in (cut.y0 - rect.y0) as usize..(cut.y1 - rect.y0) as usize {
             let start = y * TILE_SIZE as usize + x0;
-            if let Some(row) = tile.bytes_mut().get_mut(start..start + x1 - x0) {
+            let mut data = tile.bytes_mut();
+            if let Some(row) = data.get_mut(start..start + x1 - x0) {
                 for (i, b) in (start..).zip(row) {
                     *b = input.map_or(default, |t| value(t, i));
                 }
@@ -91,9 +92,9 @@ pub fn inverse_surface(source: &Surface, area: Rect) -> Surface {
 }
 
 fn canonical(tile: Tile, blank: &Arc<Tile>, full: &Arc<Tile>) -> Option<Arc<Tile>> {
-    if tile.bytes() == blank.bytes() {
+    if *tile.bytes() == *blank.bytes() {
         None
-    } else if tile.bytes() == full.bytes() {
+    } else if *tile.bytes() == *full.bytes() {
         Some(Arc::clone(full))
     } else {
         Some(Arc::new(tile))

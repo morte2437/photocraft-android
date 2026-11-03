@@ -3361,6 +3361,7 @@ curves	Smooth	Jevn ut
 	This document's layers: {needed} of {budget} for layers	Dette dokumentets lag: {needed} av {budget} for lag
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	Dette dokumentets lag trenger {needed}, men kan holde {budget}: gjentegning av hele dokumentet bruker CPU-en
 	GPU Memory (MB, 0 = Automatic)	GPU-minne (MB, 0 = automatisk)
+	Scratch Size Limit (MB, 0 = No Limit)	Størrelsesgrense for arbeidsdisk (MB, 0 = ingen grense)
 	{path}: the path is not valid Unicode; save under another name.	{path}: banen er ikke gyldig Unicode. Lagre under et annet navn.
 	Replace	Erstatt
 	{name} was changed by another app after it was opened or saved here.	{name} ble endret av et annet program etter at den ble åpnet eller lagret her.

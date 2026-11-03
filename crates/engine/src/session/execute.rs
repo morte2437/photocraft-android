@@ -227,15 +227,21 @@ impl Session {
         // through this entry; the requesting session's authority must reach those renders.
         let _authorization = crate::jobs::render_authorization_scope(self.authorize);
         let _document = crate::doc_path::scope(self.active().and_then(|d| d.path.as_deref()).map(std::path::Path::new));
+        photocraft_compose::discard_unreadable_pixel_caches();
+        let scratch_generation = photocraft_raster::spill::read_error_generation();
         let restrict = self.color_restrict;
         let filter_mask_layer = self.filter_mask_layer;
         let sampler_map = self.sampler_map.take();
         let symmetry_map = self.symmetry_map.take();
         let st = self.active_mut().ok_or(EngineError::NoDocument)?;
         let before = st.doc.clone();
+        // Only this document's pixels gate its edits: an unreadable tile elsewhere (another
+        // open document) does not block it.
+        before.scratch_health().map_err(EngineError::Other)?;
         // Selecting layers is not a step, so the state this edit leaves behind targets what was
         // selected just before it (#1356): undoing a stroke keeps the painted layer active.
         let prior = st.layer_target();
+        let previous_active_layer = st.active_layer;
         let mut doc = (*before).clone();
         let mut active = st.active_layer;
         let r = f(&mut doc, &mut active)?;
@@ -244,6 +250,11 @@ impl Session {
         }
         if let Some(id) = filter_mask_layer {
             smart_cmds::refresh_after_filter_mask_edit(&mut doc, id)?;
+        }
+        if let Err(error) = photocraft_raster::spill::check_since(scratch_generation).and_then(|()| before.scratch_health()).and_then(|()| doc.scratch_health())
+        {
+            st.active_layer = previous_active_layer;
+            return Err(EngineError::Other(error));
         }
         st.doc = Arc::new(doc);
         st.active_layer = active;

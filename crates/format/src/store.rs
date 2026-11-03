@@ -44,27 +44,34 @@ struct SourceReader {
 }
 
 impl SourceReader {
-    fn all(&self) -> &[u8] {
+    fn len(&self) -> usize {
         match &self.source {
-            Source::Tile(t) => t.bytes(),
-            Source::Blob(b) => b.as_slice(),
-            Source::Owned(v) => v.as_slice(),
+            Source::Tile(t) => t.len(),
+            Source::Blob(b) => b.len(),
+            Source::Owned(v) => v.len(),
         }
     }
+}
 
-    fn len(&self) -> usize {
-        self.all().len()
+/// Copies the source bytes from `pos` into `buf`, returning how many were copied.
+fn read_from(all: &[u8], pos: usize, buf: &mut [u8]) -> usize {
+    let rest = all.get(pos..).unwrap_or(&[]);
+    let n = rest.len().min(buf.len());
+    if let (Some(dst), Some(src)) = (buf.get_mut(..n), rest.get(..n)) {
+        dst.copy_from_slice(src);
     }
+    n
 }
 
 impl Read for SourceReader {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let all = self.all();
-        let rest = all.get(self.pos..).unwrap_or(&[]);
-        let n = rest.len().min(buf.len());
-        if let (Some(dst), Some(src)) = (buf.get_mut(..n), rest.get(..n)) {
-            dst.copy_from_slice(src);
-        }
+        // A tile's bytes are borrowed only for this call, so its scratch-disk backing may
+        // page out between reads (a later read reloads it).
+        let n = match &self.source {
+            Source::Tile(t) => read_from(&t.bytes(), self.pos, buf),
+            Source::Blob(b) => read_from(b, self.pos, buf),
+            Source::Owned(v) => read_from(v, self.pos, buf),
+        };
         self.pos += n;
         Ok(n)
     }
@@ -105,7 +112,7 @@ impl Compressor {
     fn object(&mut self, obj: &Object) -> Vec<u8> {
         let source = match obj {
             Object::Tile(tile, _) if cfg!(target_endian = "little") => Source::Tile(Arc::clone(tile)),
-            Object::Tile(tile, sample) => Source::Owned(tile_le(tile, *sample).into_owned()),
+            Object::Tile(tile, sample) => Source::Owned(tile_le(tile, *sample).to_vec()),
             Object::Blob(blob) => Source::Blob(Arc::clone(blob)),
         };
         self.run(source)
@@ -505,13 +512,32 @@ impl Sink for Collect<'_> {
     }
 }
 
-fn tile_le(t: &Tile, sample: SampleType) -> std::borrow::Cow<'_, [u8]> {
+/// A tile's bytes in little-endian order: the tile itself (kept in memory while this lives), or
+/// a byte-swapped copy on big-endian machines.
+enum LeBytes<'a> {
+    Native(photocraft_raster::TileBytes<'a>),
+    Swapped(Vec<u8>),
+    Borrowed(&'a [u8]),
+}
+
+impl std::ops::Deref for LeBytes<'_> {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match self {
+            LeBytes::Native(b) => b,
+            LeBytes::Swapped(b) => b,
+            LeBytes::Borrowed(b) => b,
+        }
+    }
+}
+
+fn tile_le(t: &Tile, sample: SampleType) -> LeBytes<'_> {
     if cfg!(target_endian = "big") {
         let mut b = t.bytes().to_vec();
         swap_to_le(&mut b, sample);
-        std::borrow::Cow::Owned(b)
+        LeBytes::Swapped(b)
     } else {
-        std::borrow::Cow::Borrowed(t.bytes())
+        LeBytes::Native(t.bytes())
     }
 }
 
@@ -621,6 +647,14 @@ struct Prepared {
     stats: SaveStats,
 }
 
+/// Refuse to write pixels of `doc` that are unreadable now, or that may have been read as a
+/// placeholder because some tile failed or recovered since `generation` (the save's start).
+/// Other documents' scratch failures do not block this save.
+fn scratch_ok(doc: &Document, generation: u64) -> Result<()> {
+    doc.scratch_health().map_err(FormatError::corrupt)?;
+    photocraft_raster::spill::check_since(generation).map_err(FormatError::corrupt)
+}
+
 impl Prepared {
     /// Takes the full-size composite out of the manifest when `previews` does not hold it.
     fn match_previews(&mut self, previews: &[(&str, Vec<u8>)]) -> Result<()> {
@@ -644,10 +678,10 @@ impl Object {
     }
 
     /// The bytes this object stores (tiles little-endian).
-    fn content(&self) -> std::borrow::Cow<'_, [u8]> {
+    fn content(&self) -> LeBytes<'_> {
         match self {
             Object::Tile(tile, sample) => tile_le(tile, *sample),
-            Object::Blob(blob) => std::borrow::Cow::Borrowed(blob.as_slice()),
+            Object::Blob(blob) => LeBytes::Borrowed(blob.as_slice()),
         }
     }
 }
@@ -1028,6 +1062,19 @@ impl PcraftWriter {
     }
 
     fn prepare(&mut self, doc: &Document, opts: &SaveOptions) -> Result<Prepared> {
+        doc.scratch_health().map_err(FormatError::corrupt)?;
+        let generation = photocraft_raster::spill::read_error_generation();
+        let prepared = self.prepare_inner(doc, opts);
+        if let Err(error) = photocraft_raster::spill::check_since(generation) {
+            // Failed reads may have hashed display placeholders. Never reuse those hashes
+            // when the original backing becomes readable and the same writer retries.
+            self.hash_cache.clear();
+            return Err(FormatError::corrupt(error));
+        }
+        prepared
+    }
+
+    fn prepare_inner(&mut self, doc: &Document, opts: &SaveOptions) -> Result<Prepared> {
         self.hash_cache.retain(|_, (w, _)| w.strong_count() > 0);
         self.blob_hash_cache.retain(|_, (w, _)| w.strong_count() > 0);
         convert::check_nesting(&doc.layers)?;
@@ -1047,6 +1094,7 @@ impl PcraftWriter {
         for (h, b) in c.blobs {
             objects.insert(blob_path(&h).ok_or_else(|| invalid(&h))?, Object::Blob(b));
         }
+        doc.scratch_health().map_err(FormatError::corrupt)?;
         Ok(Prepared { manifest, model, full_composite, objects, stats })
     }
 
@@ -1058,6 +1106,7 @@ impl PcraftWriter {
     /// [`Self::save_zip`] with `limit` (bytes, entries) in place of [`ZIP_LIMIT`]: an archive that
     /// the full-size composite would take past either is saved without that composite.
     fn save_zip_within(&mut self, doc: &Document, opts: &SaveOptions, limit: (u64, usize)) -> Result<(Vec<u8>, SaveStats)> {
+        let generation = photocraft_raster::spill::read_error_generation();
         // Another thread encodes the previews while the document is collected and its new
         // objects are compressed on all cores (zstd dominates a full save).
         let (previews, prepared) = beside(
@@ -1141,6 +1190,7 @@ impl PcraftWriter {
                 next.insert(key.unwrap_or_else(|| path.clone()), data);
             }
         }
+        scratch_ok(doc, generation)?;
         self.compressed = next;
         Ok((z.finish()?, stats))
     }
@@ -1155,6 +1205,7 @@ impl PcraftWriter {
 
     /// The same save path with an injectable publication barrier, for failure/GC ordering tests.
     fn save_dir_with(&mut self, doc: &Document, dir: &Path, opts: &SaveOptions, fs: &dyn crate::atomic::AtomicFs) -> Result<SaveStats> {
+        let scratch_generation = photocraft_raster::spill::read_error_generation();
         let canonical_dir = bundle_root(dir)?;
         let dir = canonical_dir.as_path();
         // Held until the end of the save: listing, writing, publishing and cleanup (#4957).
@@ -1215,7 +1266,9 @@ impl PcraftWriter {
                 Object::Tile(..) => stats.tiles_written += 1,
                 Object::Blob(_) => stats.blobs_written += 1,
             }
-            write_bundle_file(dir, &object_path, &obj.compressed(compressor.get_or_insert_with(Compressor::new)), fs)?;
+            let compressed = obj.compressed(compressor.get_or_insert_with(Compressor::new));
+            scratch_ok(doc, scratch_generation)?;
+            write_bundle_file(dir, &object_path, &compressed, fs)?;
             let written = path_signature(&object_path)?;
             if let Some(cache) = &mut self.verified_directory {
                 match written {
@@ -1251,6 +1304,7 @@ impl PcraftWriter {
                 confirm_flushed(&folder, &folder)?;
             }
         }
+        scratch_ok(doc, scratch_generation)?;
         write_bundle_file(dir, &dir.join(MANIFEST), &p.manifest, fs)?;
         // Omitted previews belong to the previous manifest until the new one commits.
         // After commit, a locked leftover is only housekeeping, just like unused objects.
