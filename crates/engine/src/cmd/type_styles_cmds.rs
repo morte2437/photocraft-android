@@ -42,21 +42,21 @@ fn text_of(doc: &Document, id: LayerId) -> Option<&TextLayer> {
 }
 
 /// Type layers a style command acts on: `layer`, `layers`, else the selected type layers.
-fn targets(s: &Session, p: &Value) -> Vec<LayerId> {
-    let Some(st) = s.active() else { return Vec::new() };
-    let ids: Vec<LayerId> = if let Some(id) = p.get("layer").and_then(Value::as_u64) {
-        vec![LayerId(id)]
+fn targets(s: &Session, p: &Value) -> Result<Vec<LayerId>> {
+    let Some(st) = s.active() else { return Ok(Vec::new()) };
+    let ids: Vec<LayerId> = if let Some(id) = crate::commands::explicit_layer(s, p)? {
+        vec![id]
     } else if let Some(a) = p.get("layers").and_then(Value::as_array) {
         a.iter().filter_map(Value::as_u64).map(LayerId).collect()
     } else {
         st.selected_layers()
     };
-    ids.into_iter().filter(|id| text_of(&st.doc, *id).is_some()).collect()
+    Ok(ids.into_iter().filter(|id| text_of(&st.doc, *id).is_some()).collect())
 }
 
 fn has_target(s: &Session) -> std::result::Result<(), String> {
     has_doc(s)?;
-    if targets(s, &Value::Null).is_empty() { Err("select a type layer".into()) } else { Ok(()) }
+    if targets(s, &Value::Null).is_ok_and(|targets| !targets.is_empty()) { Ok(()) } else { Err("select a type layer".into()) }
 }
 
 fn byte_at(text: &str, ci: usize) -> usize {
@@ -317,7 +317,7 @@ type Target = (LayerId, Option<(usize, usize)>);
 /// Target list with byte ranges (`range` applies only to a single layer).
 fn target_ranges(s: &Session, p: &Value) -> Result<Vec<Target>> {
     let st = s.active().ok_or(EngineError::NoDocument)?;
-    let ids = targets(s, p);
+    let ids = targets(s, p)?;
     if ids.is_empty() {
         return Err(EngineError::Other("no type layer to apply the style to".into()));
     }
@@ -334,7 +334,7 @@ fn target_ranges(s: &Session, p: &Value) -> Result<Vec<Target>> {
 /// run's byte range.
 fn sample(s: &Session, p: &Value) -> Option<(CharStyle, ParagraphStyle, LayerId, (usize, usize))> {
     let st = s.active()?;
-    let id = *targets(s, p).first()?;
+    let id = *targets(s, p).ok()?.first()?;
     let t = text_of(&st.doc, id)?;
     let (a, _) = range_of(&t.text, p);
     let mut at = 0;
@@ -430,6 +430,9 @@ fn new_style(s: &mut Session, p: &Value, paragraph: bool) -> Result<Value> {
     let (mut ca, mut pa) = parse_attrs(cmd, p.get("attrs").unwrap_or(&Value::Null))?;
     // With a type layer targeted, the style starts from the text's formatting (as Photoshop).
     let from_text = p.get("fromSelection").and_then(Value::as_bool).unwrap_or(true);
+    if from_text {
+        crate::commands::explicit_layer(s, p)?;
+    }
     if from_text && let Some((run, para, _, _)) = sample(s, p) {
         if paragraph {
             let base_c = st.resolve_char(None, None, FAMILY);

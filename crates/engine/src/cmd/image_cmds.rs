@@ -614,6 +614,26 @@ const MAX_CROP_SIDE: i32 = 300_000;
 
 /// Image → Crop (to the selection bounds).
 fn crop(s: &mut Session, p: &Value) -> Result<Value> {
+    crop_with(s, p, false)
+}
+
+/// Image › Reveal All's crop: as `image.crop` with Delete Cropped Pixels off, but the Background
+/// stays a Background and an extension takes the background colour (Reveal All keeps its own
+/// behaviour; only the Crop tool's was measured, #10867).
+pub(crate) fn crop_keeping_background(s: &mut Session, p: &Value) -> Result<Value> {
+    crop_with(s, p, true)
+}
+
+/// A Delete Cropped Pixels off crop turns the Background into a normal layer ("Layer 0", as Layer ›
+/// New › Layer from Background names it), as in Photoshop: it keeps the pixels past the canvas,
+/// and an extension is transparent on every layer (#10867).
+fn unlock_background_for_crop(doc: &mut Document) {
+    if let Some(bg) = doc.background_mut() {
+        crate::extra_cmds::unlock_background(bg);
+    }
+}
+
+fn crop_with(s: &mut Session, p: &Value, keep_background: bool) -> Result<Value> {
     let delete = p.get("deleteCroppedPixels").and_then(Value::as_bool).unwrap_or(true);
     // The Crop tool's Fill: Content-Aware Fill of what the crop uncovers (#3823).
     let content_aware = match p.get("contentAware") {
@@ -621,6 +641,8 @@ fn crop(s: &mut Session, p: &Value) -> Result<Value> {
         Some(Value::Bool(b)) => *b,
         Some(v) => return Err(bad("image.crop", format!("`contentAware` must be true or false, not {v}"))),
     };
+    // Content-Aware Fill with Delete off wasn't measured: it keeps filling the Background (#10867).
+    let unlock = !delete && !content_aware && !keep_background;
     // Values beyond i32 would wrap through the narrowing casts into a rectangle unrelated to
     // the numbers passed; reject them (see `commands::int_i32`).
     let explicit = match (
@@ -652,7 +674,7 @@ fn crop(s: &mut Session, p: &Value) -> Result<Value> {
     }
     if let Some(a) = crop_angle(p)? {
         let rect = explicit.ok_or_else(|| bad("image.crop", "an `angle` needs an explicit `x`, `y`, `width` and `height`"))?;
-        return rotated_crop(s, rect, a, delete, content_aware, &target);
+        return rotated_crop(s, rect, a, delete, content_aware, unlock, &target);
     }
     // An explicit rectangle (the Crop tool) may extend past the canvas; a selection crop is clamped.
     let r = explicit
@@ -665,6 +687,9 @@ fn crop(s: &mut Session, p: &Value) -> Result<Value> {
     let extension = s.tools.background;
     s.edit("Crop", |doc, active| {
         let original = doc.size;
+        if unlock {
+            unlock_background_for_crop(doc);
+        }
         crop_doc(doc, "image.crop", r, delete, extension)?;
         // A straight crop fills all of the area past the old canvas, pixels an earlier Delete Cropped
         // Pixels off crop hid there included, as Photoshop does; only a turned frame keeps them (#8060).
@@ -796,8 +821,10 @@ fn crop_angle(p: &Value) -> Result<Option<f64>> {
 /// background colour, other layers keep transparency there and every pixel of theirs), which makes
 /// the frame upright, then cropped to it (`deleteCroppedPixels` as for an unrotated crop), all in
 /// one undo step. With `content_aware`, the corners the rotation uncovers (and any area past the
-/// rotated image) are then filled from their surroundings, in the same step (#3823).
-fn rotated_crop(s: &mut Session, r: Rect, angle: f64, delete: bool, content_aware: bool, crop_target: &CropTarget) -> Result<Value> {
+/// rotated image) are then filled from their surroundings, in the same step (#3823). With `unlock`
+/// the Background becomes a normal layer before the turn, so it turns like the others, keeping its
+/// overhang and leaving the uncovered corners transparent (#10867).
+fn rotated_crop(s: &mut Session, r: Rect, angle: f64, delete: bool, content_aware: bool, unlock: bool, crop_target: &CropTarget) -> Result<Value> {
     const CMD: &str = "image.crop";
     let size = s.active().ok_or(EngineError::NoDocument)?.doc.size;
     let (w, h) = (f64::from(r.width()), f64::from(r.height()));
@@ -857,6 +884,12 @@ fn rotated_crop(s: &mut Session, r: Rect, angle: f64, delete: bool, content_awar
                 }
                 // The crop drops the selection anyway.
                 doc.selection = None;
+                Ok(())
+            })?;
+        }
+        if unlock {
+            s.edit("Crop", |doc, _| {
+                unlock_background_for_crop(doc);
                 Ok(())
             })?;
         }
@@ -1042,7 +1075,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "image.crop",
             "Crop",
             ["Image"],
-            r##"{"x":px,"y":px,"width":px,"height":px,"angle":-3600..3600=0,"deleteCroppedPixels":bool=true,"contentAware":bool=false,"targetWidth":px,"targetHeight":px,"resolution":ppi,"resample":"bicubic|bilinear|nearest|lanczos|preserveDetails"="bicubic"} → {x,y,width,height,documentWidth,documentHeight,resolution} (targetWidth/targetHeight, both or neither: the cropped area is resampled to exactly that size, as Image Size, in the same undo step; resolution: the document's new ppi; contentAware: the Crop tool's Fill › Content-Aware Fill, the area a rotated or extending crop uncovers filled from its surroundings on the Background, else the active pixel layer)"##,
+            r##"{"x":px,"y":px,"width":px,"height":px,"angle":-3600..3600=0,"deleteCroppedPixels":bool=true,"contentAware":bool=false,"targetWidth":px,"targetHeight":px,"resolution":ppi,"resample":"bicubic|bilinear|nearest|lanczos|preserveDetails"="bicubic"} → {x,y,width,height,documentWidth,documentHeight,resolution} (targetWidth/targetHeight, both or neither: the cropped area is resampled to exactly that size, as Image Size, in the same undo step; resolution: the document's new ppi; deleteCroppedPixels false: the pixels past the frame are kept and, unless contentAware, the Background becomes a normal layer, "Layer 0", so an extension is transparent on every layer (with contentAware the Background stays); contentAware: the Crop tool's Fill › Content-Aware Fill, the area a rotated or extending crop uncovers filled from its surroundings on the Background, else the active pixel layer)"##,
             has_doc,
             crop
         ),

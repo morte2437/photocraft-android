@@ -26,6 +26,12 @@ fn layers_hit(doc: &Document, x: i32, y: i32, type_bounds: bool) -> Vec<LayerId>
     if x.checked_add(1).is_none() || y.checked_add(1).is_none() {
         return Vec::new();
     }
+    // Off the canvas nothing is drawn (only artboard documents show layers over the pasteboard,
+    // #5712), so pixels hanging past the edge and fill layers can't be hit there: a pasteboard
+    // click with Auto-Select clears the layer selection instead of picking them (#10665).
+    if !doc.has_artboards() && !doc.bounds().contains(x, y) {
+        return Vec::new();
+    }
     let rows = doc.walk();
     let mut out = Vec::new();
     for (path, _, l) in rows.iter().rev() {
@@ -114,13 +120,15 @@ fn pick(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// Layers whose content touches document rect `r`, top to bottom: visible, not fully locked, not
 /// the locked Background (as Select › All Layers). A layer on an artboard counts only where the
-/// board shows it. With `group`, each counts as its outermost group (deduplicated).
+/// board shows it, and without artboards only where the canvas does (#10665). With `group`, each
+/// counts as its outermost group (deduplicated).
 pub fn layers_in_rect(doc: &Document, r: Rect, group: bool) -> Vec<LayerId> {
     let mut out = Vec::new();
+    let canvas = doc.bounds();
+    let r = if doc.has_artboards() { r } else { r.intersect(&canvas) };
     if r.is_empty() {
         return out;
     }
-    let canvas = doc.bounds();
     for (path, _, l) in doc.walk().iter().rev() {
         if matches!(l.content, LayerContent::Group(_) | LayerContent::Adjustment(_))
             || doc.is_background(l.id)
@@ -445,6 +453,30 @@ mod tests {
         }
         let mut empty = Session::new();
         assert!(empty.execute("layer.pickAt", json!({"x": 1, "y": 1})).is_err());
+    }
+
+    /// #10665: off the canvas nothing is drawn, so a fill layer or pixels hanging past the edge
+    /// are neither picked there nor caught by a marquee that touches only the pasteboard.
+    #[test]
+    fn nothing_is_hit_off_the_canvas() {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 40, "height": 40, "background": "transparent"})).unwrap();
+        let fill = s.execute("layer.newFillLayer.solidColor", json!({"color": "#00ff00"})).unwrap()["layer"].as_u64().unwrap();
+        s.execute("layer.new.layer", json!({"name": "Off"})).unwrap();
+        let off = s.active().unwrap().active_layer.unwrap();
+        s.edit("paint past the edge", |doc, _| {
+            doc.layer_mut(off).unwrap().surface_mut().unwrap().fill_rect(Rect::new(-20, 0, 10, 40), &[1.0, 0.0, 0.0, 1.0]);
+            Ok(())
+        })
+        .unwrap();
+        let pick = |s: &mut Session, x: i32, y: i32| s.execute("layer.pickAt", json!({"x": x, "y": y, "select": false})).unwrap()["layer"].clone();
+        assert_eq!(pick(&mut s, 5, 5), off.0, "on the canvas");
+        assert_eq!(pick(&mut s, 20, 5), fill, "the fill layer covers the canvas");
+        assert_eq!(pick(&mut s, -10, 5), Value::Null, "the pasteboard, over Off's hidden pixels and the fill");
+        assert_eq!(s.execute("layer.pickAt", json!({"x": -10, "y": 5, "list": true})).unwrap()["layers"], json!([]));
+        let in_rect = |s: &mut Session, x: f64| s.execute("layer.selectInRect", json!({"x": x, "y": 0, "width": 5, "height": 5})).unwrap()["layers"].clone();
+        assert_eq!(in_rect(&mut s, -15.0), json!([]), "a marquee on the pasteboard only");
+        assert_eq!(in_rect(&mut s, -3.0), json!([off.0, fill]), "a marquee reaching onto the canvas");
     }
 
     /// A hide-all mask at density 0 hides nothing (the compositor applies density through

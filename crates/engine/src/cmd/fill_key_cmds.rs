@@ -18,7 +18,7 @@ use crate::{EngineError, Result, Session};
 /// The fill-key command ids (routed to the Channels panel target like `edit.fill`).
 pub const IDS: [&str; 5] = ["edit.fillForeground", "edit.fillBackground", "edit.fillForegroundPreserve", "edit.fillBackgroundPreserve", "edit.fillHistory"];
 
-const PARAMS: &str = r##"{"layer":id?,"target":"pixels"|"mask"|"filterMask"|"quickMask"|{"channel":i}?}"##;
+const PARAMS: &str = r##"{"layer":id|name?,"target":"pixels"|"mask"|"filterMask"|"quickMask"|{"channel":i}?}"##;
 
 /// The shape or type layer the colour fill keys recolor instead of filling pixels.
 fn target_live_layer(s: &Session, p: &Value) -> Option<LayerId> {
@@ -31,7 +31,7 @@ fn target_live_layer(s: &Session, p: &Value) -> Option<LayerId> {
     if st.channel_view.target == crate::channel_cmds::ChannelTarget::LayerMask {
         return None;
     }
-    let id = if let Some(v) = p.get("layer") { LayerId(v.as_u64()?) } else { st.active_layer? };
+    let id = crate::commands::layer_param(s, p).ok()?;
     let layer = st.doc.layer(id)?;
     if matches!(layer.content, LayerContent::Shape(_) | LayerContent::Text(_)) { Some(id) } else { None }
 }
@@ -410,5 +410,16 @@ mod tests {
             assert!(err.contains("locked"), "{id}: {err}");
         }
         assert_eq!(type_colors(&s), [[1.0, 0.0, 0.0]]);
+    }
+
+    #[test]
+    fn fill_key_recolors_a_named_nonactive_type_layer() {
+        let mut s = session();
+        let id = s.execute("type.create", json!({"x": 1, "y": 5, "text": "Hello", "size": 4, "color": "#000000"})).unwrap()["layer"].as_u64().unwrap();
+        let name = s.active().unwrap().doc.layer(LayerId(id)).unwrap().name.clone();
+        s.execute("layer.new.layer", json!({"name": "Top"})).unwrap();
+        s.execute("edit.fillForeground", json!({"layer": name})).unwrap();
+        let LayerContent::Text(text) = &s.active().unwrap().doc.layer(LayerId(id)).unwrap().content else { panic!("type layer was replaced") };
+        assert_eq!(text.char_runs()[0].style.color.to_rgb(), [1.0, 0.0, 0.0]);
     }
 }

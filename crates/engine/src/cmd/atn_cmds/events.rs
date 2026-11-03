@@ -1,9 +1,12 @@
 const DIFFUSE_MODE: &[(&str, &str)] = &[("Nrml", "normal"), ("DrkO", "darkenOnly"), ("LghO", "lightenOnly"), ("Anst", "anisotropic")];
 use super::adjustments::{adjustment_by_class, adjustment_steps, levels_from, levels_to, shadows_highlights_from, shadows_highlights_to};
-use super::descriptors::{desc, get_bool, get_ref, jbool, layer_ref, layer_target, ref_class};
+use super::descriptors::{
+    class, code, desc, get_bool, get_obj, get_ref, jbool, layer_ref, layer_target, path_text, path_value, ref_class, target_ref, trimmed,
+};
 use super::fields::{F, Kind, Mapped, fields_from, fields_to, none, step};
-
+use super::steps_artboard::{artboard_edit_from, artboard_edit_to, artboard_from, artboard_to};
 use super::steps_channels::{match_color_from, match_color_to, merge_spot_from, merge_spot_to, split_from, split_to, trap_from, trap_to};
+use super::steps_direct_adjustments::{gradient_from, gradient_to, replace_from, replace_to};
 use super::steps_distort::{PINCH, POLAR, SPHERIZE, TWIRL, ZIGZAG, keys_from, keys_to, wave_from, wave_to};
 use super::steps_doc::{
     align_from, align_to, canvas_size_from, canvas_size_to, close_from, close_to, conditional_from, conditional_to, convert_mode_from, convert_mode_to,
@@ -23,7 +26,7 @@ use super::steps_layer::{
 use super::steps_make::{locking_from, locking_to, make_from, make_to, set_from, set_to};
 use super::steps_other::{DE_INTERLACE, HSB_HSL, bare_from, bare_to, custom_from, custom_to, enums_from, enums_to};
 use super::tables::{NOISE, OFFSET_FILL, SMART_BLUR_MODE, SMART_BLUR_QUALITY, TRIM};
-use super::{AtnEvent, D, Descriptor, STOP_MESSAGE, Value, json};
+use super::{AtnEvent, D, Descriptor, Id, Map, ReferenceItem, STOP_MESSAGE, Value, json};
 
 /// An event: code (empty when Photoshop only has a string name), string name, the panel
 /// label, the command ids it exports (the first is the one simple events import to), and the
@@ -187,6 +190,162 @@ fn clipping_to(_: &str, p: &Value) -> Option<Descriptor> {
     Some(desc("null").with("null", layer_ref(p)?))
 }
 
+/// Check Spelling's `null`: the `spellCheck` property of all text layers.
+fn spell_check_ref() -> D {
+    D::Reference(vec![
+        ReferenceItem::Property { class: class("Prpr"), key: Id::new("spellCheck") },
+        ReferenceItem::Enumerated { class: class("TxLr"), type_id: code("Ordn"), value: code("Al") },
+    ])
+}
+
+/// Edit › Check Spelling (`spellCheck`): `null` is [`spell_check_ref`] and `Usng` holds only
+/// `checkAll`. Any other form stays a kept Photoshop step.
+fn spell_check_from(d: &Descriptor) -> Mapped {
+    let same_ref = |r: &[ReferenceItem]| match r {
+        [ReferenceItem::Property { class: p, key }, ReferenceItem::Enumerated { class: t, type_id, value }] => {
+            trimmed(&p.class_id) == "Prpr" && key.is("spellCheck") && trimmed(&t.class_id) == "TxLr" && trimmed(type_id) == "Ordn" && trimmed(value) == "Al"
+        }
+        _ => false,
+    };
+    // Two keys, read by name: `null` and `Usng` in either order, each once.
+    let using = get_obj(d, "Usng").filter(|u| u.class_id.is("spellCheck") && u.items.len() == 1);
+    match (d.items.len(), get_ref(d, "null"), using.and_then(|u| get_bool(u, "checkAll"))) {
+        (2, Some(r), Some(all)) if same_ref(r) => step("edit.checkSpelling", json!({"allLayers": all})),
+        _ => Mapped::Unsupported { harmless: false },
+    }
+}
+
+/// A Check Spelling step that holds nothing but `allLayers` (Check All Layers, on by default).
+fn spell_check_to(_: &str, p: &Value) -> Option<Descriptor> {
+    let params = p.as_object()?;
+    if params.keys().any(|k| k != "allLayers") {
+        return None;
+    }
+    let all = match params.get("allLayers") {
+        None => true,
+        Some(v) => v.as_bool()?,
+    };
+    Some(desc("null").with("null", spell_check_ref()).with("Usng", D::Descriptor(desc("spellCheck").with("checkAll", D::Boolean(all)))))
+}
+
+// Adapter-only transport bit: the reference permits either no target key or the
+// current-layer target. Save must retain that distinction; native behavior is identical.
+const NO_TARGET: &str = "_atnNoTarget";
+
+/// Accept only bare or current-layer targets, retaining their key-presence distinction for save.
+fn target_params(d: &Descriptor) -> Option<Map<String, Value>> {
+    let mut p = Map::new();
+    if d.items.is_empty() {
+        p.insert(NO_TARGET.into(), Value::Bool(true));
+    } else if d.items != desc("null").with("null", target_ref("Lyr ")).items {
+        return None;
+    }
+    Some(p)
+}
+
+/// Restore the bare or explicit current-layer descriptor selected by the private transport bit.
+fn target_descriptor(p: &Value) -> Option<Descriptor> {
+    match p.get(NO_TARGET) {
+        None => Some(desc("null").with("null", target_ref("Lyr "))),
+        Some(Value::Bool(true)) => Some(desc("null")),
+        Some(_) => None,
+    }
+}
+
+// Native-parameter allowlist adapted from #10628; refuse unrepresented options on export.
+/// Refuse native options that the selected Photoshop form cannot represent.
+fn params(p: &Value, allowed: &[&str]) -> bool {
+    p.as_object().is_some_and(|p| p.keys().all(|key| allowed.contains(&key.as_str())))
+}
+
+/// Import a target-only event, refusing other targets and extra descriptor settings.
+fn target_only_from(d: &Descriptor, id: &str) -> Mapped {
+    target_params(d).map_or(Mapped::Unsupported { harmless: false }, |p| step(id, Value::Object(p)))
+}
+
+/// Export a current-target native step only when no unrepresented options are present.
+fn target_only_to(_: &str, p: &Value) -> Option<Descriptor> {
+    if !params(p, &[NO_TARGET]) {
+        return None;
+    }
+    target_descriptor(p)
+}
+
+const SHAPE_BLUR: &[F] = &[F("Rds ", "radius", Kind::Px)];
+
+/// Map the radius-only Shape Blur form; keep custom assets or extra keys unsupported.
+fn shape_blur_from(d: &Descriptor) -> Mapped {
+    let unsupported = Mapped::Unsupported { harmless: false };
+    let Some(p) = fields_from(d, SHAPE_BLUR) else { return unsupported };
+    let p = Value::Object(p);
+    if shape_blur_to("filter.blur.shapeBlur", &p).is_some_and(|expected| d.items == expected.items) { step("filter.blur.shapeBlur", p) } else { unsupported }
+}
+
+/// Write an optional finite 5–1000 pixel radius, refusing explicit shapes and other options.
+fn shape_blur_to(_: &str, p: &Value) -> Option<Descriptor> {
+    if !params(p, &["radius"]) {
+        return None;
+    }
+    if let Some(radius) = p.get("radius") {
+        let radius = radius.as_f64()?;
+        if !radius.is_finite() || !(5.0..=1000.0).contains(&radius) {
+            return None;
+        }
+    }
+    fields_to(p, SHAPE_BLUR, desc("null"))
+}
+
+// Recorded Link and Unlink need explicit state: replaying the UI toggle can
+// perform the opposite operation. Target matching follows #10628's adapter.
+/// Import Link or Unlink as an explicit operation rather than the state-dependent UI toggle.
+fn link_from(d: &Descriptor, linked: bool) -> Mapped {
+    let Some(mut p) = target_params(d) else { return Mapped::Unsupported { harmless: false } };
+    p.insert("linked".into(), Value::Bool(linked));
+    step("layer.linkLayers", Value::Object(p))
+}
+
+/// Export only the matching explicit link state and supported current-layer target form.
+fn link_to(p: &Value, linked: bool) -> Option<Descriptor> {
+    if !params(p, &["linked", NO_TARGET]) || p.get("linked") != Some(&Value::Bool(linked)) {
+        return None;
+    }
+    target_descriptor(p)
+}
+
+/// Map canonical Smart Object file descriptors, refusing unrepresented paths, targets or keys.
+fn smart_path_from(d: &Descriptor, id: &str) -> Mapped {
+    let unsupported = Mapped::Unsupported { harmless: false };
+    let key = if id == "layer.smartObjects.convertToLinked" { "Usng" } else { "null" };
+    let Some(path) = d.get(key).and_then(path_text) else { return unsupported };
+    let p = json!({"path": path});
+    let Some(mut expected) = smart_path_to(id, &p) else { return unsupported };
+    if let Some(hint) = d.get("LyrI") {
+        // The reference explicitly omits recording-session IDs on save (#10603,
+        // docs/atn.md:200). They must never become PhotoCraft's playback target.
+        if !matches!(id, "layer.smartObjects.relinkToFile" | "layer.smartObjects.replaceContents") || !matches!(hint, D::Integer(n) if *n > 0) {
+            return unsupported;
+        }
+        expected = expected.with("LyrI", hint.clone());
+    }
+    // Normalize the top-level header as Open/Place do, but refuse unknown keys,
+    // targets and path encodings rather than partly replaying them.
+    if d.items == expected.items { step(id, p) } else { unsupported }
+}
+
+/// Export path-only native parameters using the existing Open/Place path encoding.
+fn smart_path_to(id: &str, p: &Value) -> Option<Descriptor> {
+    let p = p.as_object()?;
+    let path = p.get("path")?.as_str()?;
+    if p.len() != 1 || path.is_empty() || path.contains('\0') {
+        return None;
+    }
+    Some(if id == "layer.smartObjects.convertToLinked" {
+        desc("null").with("null", target_ref("Lyr ")).with("Usng", path_value(path))
+    } else {
+        desc("null").with("null", path_value(path))
+    })
+}
+
 /// A clipping mask event: `clipping_from` / `clipping_to` with one command id.
 macro_rules! clipping_event {
     ($code:literal, $name:literal, $label:literal, $id:literal) => {
@@ -198,6 +357,12 @@ macro_rules! clipping_event {
 macro_rules! selection_event {
     ($code:literal, $name:literal, $label:literal, $ids:expr, $from:expr, $to:expr) => {
         Event { code: $code, name: $name, label: $label, ids: $ids, from: |d| super::steps_selection::from(d, $from), to: $to }
+    };
+}
+
+macro_rules! target_event {
+    ($name:literal, $label:literal, $id:literal) => {
+        Event { code: "", name: $name, label: $label, ids: &[$id], from: |d| target_only_from(d, $id), to: target_only_to }
     };
 }
 
@@ -353,6 +518,7 @@ pub(super) const EVENTS: &[Event] = &[
     ev!("MtnB", "motionBlur", "Motion Blur", "filter.blur.motionBlur", &[F("Angl", "angle", Kind::Ang), F("Dstn", "distance", Kind::Px)]),
     ev!("", "boxblur", "Box Blur", "filter.blur.boxBlur", &[F("Rds ", "radius", Kind::Px)]),
     ev!("", "surfaceBlur", "Surface Blur", "filter.blur.surfaceBlur", &[F("Rds ", "radius", Kind::Px), F("Thsh", "threshold", Kind::Long)]),
+    Event { code: "", name: "shapeBlur", label: "Shape Blur", ids: &["filter.blur.shapeBlur"], from: shape_blur_from, to: shape_blur_to },
     ev!(
         "SmrB",
         "smartBlur",
@@ -518,7 +684,9 @@ pub(super) const EVENTS: &[Event] = &[
     adjustment_event!("", "PhtF", "photoFilter", "Photo Filter"),
     adjustment_event!("", "BanW", "blackAndWhite", "Black & White", "image.adjustments.blackWhite"),
     adjustment_event!("ChnM", "ChnM", "channelMixer", "Channel Mixer"),
+    Event { code: "GrMp", name: "", label: "Gradient Map", ids: &["image.adjustments.gradientMap"], from: gradient_from, to: gradient_to },
     adjustment_event!("", "GdMp", "gradientMapEvent", "Gradient Map", "image.adjustments.gradientMap"),
+    Event { code: "RplC", name: "replaceColor", label: "Replace Color", ids: &["image.adjustments.replaceColor"], from: replace_from, to: replace_to },
     adjustment_event!("SlcC", "SlcC", "selectiveColor", "Selective Color"),
     Event { code: "", name: "matchColor", label: "Match Color", ids: &["image.adjustments.matchColor"], from: match_color_from, to: match_color_to },
     ev!("Dstt", "desaturate", "Desaturate", "image.adjustments.desaturate", &[]),
@@ -595,11 +763,39 @@ pub(super) const EVENTS: &[Event] = &[
     },
     Event { code: "Dplc", name: "duplicate", label: "Duplicate", ids: &["layer.duplicate", "image.duplicate"], from: duplicate_from, to: duplicate_to },
     // Layers.
+    target_event!("reverse", "Reverse", "layer.arrange.reverse"),
+    target_event!("selectLinkedLayers", "Select Linked Layers", "layer.selectLinkedLayers"),
+    target_event!("disableLayerStyle", "Clear Layer Style", "layer.layerStyle.clear"),
+    target_event!("rasterizeAll", "Rasterize All Layers", "layer.rasterize.allLayers"),
+    target_event!("addBlankVideoLayer", "New Blank Video Layer", "layer.videoLayers.newBlankVideoLayer"),
+    target_event!("isolateLayers", "Isolate Layers", "select.isolateLayers"),
+    target_event!("textLoadDefaultTypeStyles", "Load Default Type Styles", "type.loadDefaultTypeStyles"),
+    target_event!("textSaveDefaultTypeStyles", "Save Default Type Styles", "type.saveDefaultTypeStyles"),
+    target_event!("recordMeasurements", "Record Measurements", "image.analysis.recordMeasurements"),
+    target_event!("CropPhotosAuto0001", "Crop and Straighten Photos", "file.automate.cropAndStraightenPhotos"),
+    Event {
+        code: "",
+        name: "artboardFromLayerGroupEvent",
+        label: "Artboard from Group",
+        ids: &["layer.new.artboardFromGroup"],
+        from: artboard_from,
+        to: artboard_to,
+    },
+    Event { code: "", name: "editArtboardEvent", label: "Edit Artboard", ids: &["layer.artboard.set"], from: artboard_edit_from, to: artboard_edit_to },
+    Event {
+        code: "",
+        name: "unlinkSelectedLayers",
+        label: "Unlink Layers",
+        ids: &["layer.linkLayers"],
+        from: |d| link_from(d, false),
+        to: |_, p| link_to(p, false),
+    },
     Event {
         code: "Mk  ",
         name: "make",
         label: "Make",
         ids: &[
+            "type.convertToShape",
             "layer.new.layer",
             "layer.new.group",
             "layer.groupLayers",
@@ -714,6 +910,42 @@ pub(super) const EVENTS: &[Event] = &[
     ev!("", "newPlacedLayer", "Convert to Smart Object", "layer.smartObjects.convertToSmartObject", &[]),
     ev!("", "placedLayerEditContents", "Edit Contents", "layer.smartObjects.editContents", &[]),
     ev!("", "updatePlacedLayer", "Update Smart Objects", "layer.smartObjects.updateModifiedContent", &[]),
+    target_event!("placedLayerMakeCopy", "New Smart Object via Copy", "layer.smartObjects.newSmartObjectViaCopy"),
+    target_event!("placedLayerConvertToLayers", "Convert to Layers", "layer.smartObjects.convertToLayers"),
+    target_event!("placedLayerConvertToEmbedded", "Convert to Embedded", "layer.smartObjects.convertToEmbedded"),
+    target_event!("placedLayerUpdateAllModified", "Update All Modified Content", "layer.smartObjects.updateAllModifiedContent"),
+    Event {
+        code: "",
+        name: "placedLayerExportContents",
+        label: "Export Contents",
+        ids: &["layer.smartObjects.exportContents"],
+        from: |d| smart_path_from(d, "layer.smartObjects.exportContents"),
+        to: smart_path_to,
+    },
+    Event {
+        code: "",
+        name: "placedLayerConvertToLinked",
+        label: "Convert to Linked",
+        ids: &["layer.smartObjects.convertToLinked"],
+        from: |d| smart_path_from(d, "layer.smartObjects.convertToLinked"),
+        to: smart_path_to,
+    },
+    Event {
+        code: "",
+        name: "placedLayerRelinkToFile",
+        label: "Relink to File",
+        ids: &["layer.smartObjects.relinkToFile"],
+        from: |d| smart_path_from(d, "layer.smartObjects.relinkToFile"),
+        to: smart_path_to,
+    },
+    Event {
+        code: "",
+        name: "placedLayerReplaceContents",
+        label: "Replace Contents",
+        ids: &["layer.smartObjects.replaceContents"],
+        from: |d| smart_path_from(d, "layer.smartObjects.replaceContents"),
+        to: smart_path_to,
+    },
     Event { code: "Hd  ", name: "hide", label: "Hide", ids: &["layer.hideLayers"], from: |d| visibility_from(d, "layer.hideLayers"), to: visibility_to },
     Event {
         code: "Shw ",
@@ -841,6 +1073,7 @@ pub(super) const EVENTS: &[Event] = &[
     },
     Event { code: "Rset", name: "reset", label: "Reset", ids: &["tools.defaultColors"], from: reset_from, to: reset_to },
     ev!("Exch", "exchange", "Exchange", "tools.swapColors", &[]),
+    Event { code: "", name: "spellCheck", label: "Check Spelling", ids: &["edit.checkSpelling"], from: spell_check_from, to: spell_check_to },
     Event {
         code: "",
         name: "assignProfile",

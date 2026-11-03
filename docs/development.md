@@ -638,6 +638,22 @@ PhotoCraft equivalent.
 Events outside the table load as `actions.photoshopStep` steps that keep the descriptor
 verbatim (so Save Actions writes them back) and fail at playback with the step's Photoshop name.
 
+Recorded direct Gradient Map (`GrMp`) and Replace Color (`RplC`) forms are described in
+[the ATN reference](atn.md#supported-direct-adjustment-settings), based on davidmann4's
+measurements in #10603. Gradient Map keeps its event, fractional RGB stops and recorded name;
+unsupported interpolation, midpoint and transparency settings remain preserved steps.
+Replace Color accepts `labMinimum` / `labMaximum` (three D50 Lab numbers each), mutually
+exclusive with RGB samples and localized settings. The new option matches native surface samples through
+the document profile, retains alpha and untouched native pixels, and uses one undoable edit.
+A zero tone shift validates its inputs without changing pixels. The existing RGB option keeps
+its previous behavior. Explicit Lab bounds require a composite pixel-layer target.
+
+Artboard from Group action settings follow [the measured guide/background behavior](atn.md#newer-events-string-id-only):
+guide IDs are ignored session metadata, 1 or absent `changeBackground` applies the
+background, and other integer flags give white. The group's bounds are retained.
+Background-only `editArtboardEvent` uses the existing Artboard edit command; its
+recorded rectangle/preset are retained for saving, without resizing the target.
+
 `crates/psd/tests/it/atn_contract.rs` checks the parser's public API against small, independently
 encoded version-16 fixtures (the version-12 ones are read by `atn_v12::`) in `crates/psd/tests/fixtures/atn/` (provenance and checksums in
 its README): `cargo test -p photocraft-psd --test it atn_contract::`.

@@ -8,8 +8,8 @@
 //!   being drawn;
 //! - inside the frame, a drag moves it;
 //! - on an edge or corner, a drag resizes it along the frame's own (possibly turned) axes; ⇧ keeps
-//!   the frame's aspect ratio, ⌥ resizes about the centre, and an options-bar ratio preset always
-//!   holds;
+//!   the frame's aspect ratio (on a corner the pointer is followed along the frame's diagonal),
+//!   ⌥ resizes about the centre, and an options-bar ratio preset always holds;
 //! - outside the frame (off its handles) the pointer is the rotate cursor and a drag turns the
 //!   frame about its centre, ⇧ in 15° steps, with the angle beside the pointer (#1792). As in
 //!   Photoshop, a new frame is drawn after the pending one is committed or cancelled;
@@ -202,6 +202,30 @@ pub fn resized_turned(r: [f64; 4], deg: f64, hx: i8, hy: i8, d: [f64; 2], ratio:
     let nc = turn(center(n), c, deg);
     let (hw, hh) = ((n[2] - n[0]) / 2.0, (n[3] - n[1]) / 2.0);
     [nc[0] - hw, nc[1] - hh, nc[0] + hw, nc[1] + hh]
+}
+
+/// Drag `d` on corner (`hx`, `hy`) of frame `r` turned `deg` degrees, projected onto the frame's
+/// diagonal through that corner: a ⇧ corner drag with a free ratio slides the corner along it, as
+/// in Photoshop (#10871). A corner drag on a ratio otherwise lets the larger relative extent win,
+/// so (−100, −50) on 800 × 500 gave 720 × 450 instead of Photoshop's 706 × 441.
+fn along_diagonal(r: [f64; 4], deg: f64, hx: i8, hy: i8, d: [f64; 2]) -> [f64; 2] {
+    let v = turn([f64::from(hx) * (r[2] - r[0]), f64::from(hy) * (r[3] - r[1])], [0.0, 0.0], deg);
+    let vv = v[0] * v[0] + v[1] * v[1];
+    let t = (d[0] * v[0] + d[1] * v[1]) / vv;
+    if vv > 0.0 && t.is_finite() { [t * v[0], t * v[1]] } else { d }
+}
+
+/// The pointer at `q` of a resize drag on handle (`hx`, `hy`) of frame `rect`, pressed at
+/// `start`, as the resize reads it. ⇧ on a corner with no ratio preset and no ⌥ follows the
+/// frame's diagonal ([`along_diagonal`]); a preset, ⌥ ⇧ and the edge handles keep the
+/// larger-extent rule, and the point is unchanged. The resize, Auto Center Preview and handle
+/// snapping all read the pointer through this, so the handle snaps where it is drawn.
+pub(crate) fn resize_point(app: &PhotocraftApp, rect: [f64; 4], hx: i8, hy: i8, start: [f64; 2], q: [f64; 2], mods: Modifiers) -> [f64; 2] {
+    if !(mods.shift && !mods.alt && hx != 0 && hy != 0 && preset_ratio(app).is_none()) {
+        return q;
+    }
+    let d = along_diagonal(rect, angle(app), hx, hy, [q[0] - start[0], q[1] - start[1]]);
+    [start[0] + d[0], start[1] + d[1]]
 }
 
 /// `[x0, y0, x1, y1]` with x0 ≤ x1, y0 ≤ y1.
@@ -935,7 +959,7 @@ fn follow_view_drag(app: &mut PhotocraftApp, p: [f64; 2], mods: Modifiers) -> bo
         }
         Some(CropDrag::Resize { hx, hy, start, rect, view: Some(view) }) => {
             // Auto Center Preview keeps the box centred while the handle follows the pointer.
-            let at = crate::crop_mode::to_press(app, Some(view), p);
+            let at = resize_point(app, rect, hx, hy, start, crate::crop_mode::to_press(app, Some(view), p), mods);
             let ratio = resize_ratio(app, rect, mods);
             let deg = angle(app);
             crate::crop_mode::live_resize(app, crate::crop_mode::LiveResize { rect, deg, hx, hy, start, q: at, ratio, alt: mods.alt }, view);
@@ -950,6 +974,10 @@ fn dragged_frame(app: &mut PhotocraftApp, p: [f64; 2], mods: Modifiers) -> Optio
     let ratio = preset_ratio(app);
     let space = app.crop.space;
     let deg = angle(app);
+    let resize_at = match app.crop.drag {
+        Some(CropDrag::Resize { hx, hy, start, rect, .. }) => resize_point(app, rect, hx, hy, start, p, mods),
+        _ => p,
+    };
     match app.crop.drag.as_mut()? {
         CropDrag::Draw { anchor, cur, last, .. } => {
             if space {
@@ -973,7 +1001,7 @@ fn dragged_frame(app: &mut PhotocraftApp, p: [f64; 2], mods: Modifiers) -> Optio
                 (w > 0.0 && h > 0.0).then(|| w / h)
             };
             let ratio = ratio.or_else(|| if mods.shift { keep() } else { None });
-            Some(resized_turned(*rect, deg, *hx, *hy, [p[0] - start[0], p[1] - start[1]], ratio, mods.alt))
+            Some(resized_turned(*rect, deg, *hx, *hy, [resize_at[0] - start[0], resize_at[1] - start[1]], ratio, mods.alt))
         }
         CropDrag::Rotate { .. } | CropDrag::TurnImage { .. } | CropDrag::MoveImage { .. } => None,
     }

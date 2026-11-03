@@ -687,6 +687,9 @@ fn a_canvas_over_the_texture_budget_draws_its_viewport_pages_on_the_gpu() {
     gpu.set_canvas_budget(1);
     g.harness.run_steps(3);
     assert_eq!(render_path_of(&g), (Some("canvasTooLarge"), Some("CPU Rendering")));
+    // Its pages and their work are freed meanwhile (#5332 review).
+    assert!(gpu.pages(key).0.is_empty(), "pages freed");
+    assert!(!g.harness.state().streams.contains_key(&doc.id), "stream dropped");
     gpu.set_canvas_budget(set - 1);
     settle_pages(&mut g);
     // Closing the document cancels its work and frees its pages.
@@ -694,6 +697,63 @@ fn a_canvas_over_the_texture_budget_draws_its_viewport_pages_on_the_gpu() {
     g.harness.run_steps(3);
     assert!(g.harness.state().streams.is_empty());
     assert!(gpu.pages(key).0.is_empty());
+}
+
+/// #5332 review: the open documents share one texture budget rather than each having all of
+/// it. A document alone on screen keeps the whole budget; one in a background tab gives its
+/// textures up when the shown one needs the room; and documents shown side by side split it,
+/// a document over its share drawing from viewport pages.
+#[test]
+fn open_documents_share_one_texture_budget_with_the_shown_ones_first() {
+    let _gpu = photocraft_testkit::gpu_lock();
+    let Some(mut g) = gpu_app() else { return };
+    let gpu = g.harness.state().gpu.clone().expect("gpu canvas");
+    let new = |g: &mut Gpu| {
+        g.harness.state_mut().run("file.new", json!({"width": 3000, "height": 2000, "background": "#336699"})).expect("new");
+        g.harness.run_steps(3);
+        assert!(on_gpu_canvas(g), "{:?}", render_path_of(g));
+        g.harness.state().session.active().expect("document").doc.clone()
+    };
+    let a = new(&mut g);
+    let (set, _) = gpu.canvas_fit(&a).expect("fit");
+    // Room for one texture set and a half: a document alone on screen has all of it.
+    let budget = set + set / 2;
+    gpu.set_canvas_budget(budget);
+    assert_eq!(gpu.canvas_fit(&a), Some((set, budget)), "alone, the whole budget");
+    assert!(gpu.texture_info(a.id.0).is_some());
+    // A second tab: the shown document's texture set takes the room of the background one's.
+    let b = new(&mut g);
+    assert_eq!(gpu.canvas_fit(&b), Some((set, budget)));
+    assert!(gpu.texture_info(b.id.0).is_some());
+    assert!(gpu.texture_info(a.id.0).is_none(), "the background document's textures are freed");
+    // Back to the first tab: it gets its texture set back and the other gives its up.
+    g.harness.state_mut().session.set_active(0);
+    g.harness.run_steps(3);
+    assert!(on_gpu_canvas(&g), "{:?}", render_path_of(&g));
+    assert!(gpu.texture_info(a.id.0).is_some());
+    assert!(gpu.texture_info(b.id.0).is_none());
+    // Side by side, they split the budget: neither set fits its half, so both draw from pages.
+    g.harness.state_mut().ui.view.arrange = "twoUpVertical".into();
+    g.harness.run_steps(3);
+    assert_eq!(gpu.canvas_fit(&a), Some((set, budget / 2)));
+    assert_eq!(gpu.canvas_fit(&b), Some((set, budget - budget / 2)));
+    settle_pages(&mut g);
+    assert!(on_gpu_canvas(&g), "{:?}", render_path_of(&g));
+    let streams = &g.harness.state().streams;
+    assert!(streams.contains_key(&a.id) && streams.contains_key(&b.id), "both on pages");
+    assert!(gpu.texture_info(a.id.0).is_none() && gpu.texture_info(b.id.0).is_none());
+    // Switching between them re-splits nothing: no page set is dropped.
+    let held = gpu.pages(crate::canvas::viewport_pages::stream_key(a.id.0)).0;
+    g.harness.state_mut().session.set_active(1);
+    g.harness.run_steps(3);
+    assert_eq!(gpu.canvas_fit(&a), Some((set, budget / 2)));
+    assert_eq!(gpu.pages(crate::canvas::viewport_pages::stream_key(a.id.0)).0, held, "no churn on a switch");
+    // Back to tabs: the shown document has the whole budget, and its texture set, again.
+    g.harness.state_mut().ui.view.arrange = "tabs".into();
+    g.harness.run_steps(3);
+    assert_eq!(gpu.canvas_fit(&b), Some((set, budget)));
+    assert!(on_gpu_canvas(&g), "{:?}", render_path_of(&g));
+    assert!(gpu.texture_info(b.id.0).is_some());
 }
 
 #[test]

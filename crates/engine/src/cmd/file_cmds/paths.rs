@@ -40,12 +40,19 @@ pub(crate) fn write_file(path: &str, _bytes: &[u8]) -> Result<()> {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn list_images(dir: &str) -> Result<Vec<String>> {
     let rd = std::fs::read_dir(dir).map_err(|e| EngineError::Other(format!("{dir}: {e}")))?;
-    let mut out: Vec<String> = rd
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| p.is_file() && openable_name(&p.to_string_lossy()))
-        .map(|p| p.to_string_lossy().into_owned())
-        .collect();
+    let mut out = Vec::new();
+    for entry in rd {
+        let path = entry.map_err(|e| EngineError::Other(format!("{dir}: {e}")))?.path();
+        if !openable_name(&path.to_string_lossy()) {
+            continue;
+        }
+        match std::fs::metadata(&path) {
+            Ok(metadata) if metadata.is_file() => out.push(path.to_string_lossy().into_owned()),
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {} // broken link or entry removed during traversal
+            Err(error) => return Err(EngineError::Other(format!("{}: {error}", path.display()))),
+        }
+    }
     out.sort();
     Ok(out)
 }
@@ -178,6 +185,95 @@ pub fn same_file(a: impl AsRef<std::path::Path>, b: impl AsRef<std::path::Path>)
             return x.to_string_lossy().to_lowercase() == y.to_string_lossy().to_lowercase();
         }
     }
+    false
+}
+
+/// Resolve a future output path component by component. Existing symlinks are followed before
+/// applying a later `..`, while components not created yet are kept so a new `x/../file` still
+/// resolves to the file it would reach after `x` is created.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn destination_identity(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    use std::path::{Component, PathBuf};
+    let absolute = if path.is_absolute() { path.to_path_buf() } else { std::env::current_dir().ok()?.join(path) };
+    let mut resolved = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                resolved.pop();
+            }
+            Component::Normal(_) => {
+                resolved.push(component.as_os_str());
+                match std::fs::symlink_metadata(&resolved) {
+                    Ok(_) => resolved = std::fs::canonicalize(&resolved).ok()?,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(_) => return None,
+                }
+            }
+            Component::Prefix(_) | Component::RootDir => resolved.push(component.as_os_str()),
+        }
+    }
+    Some(resolved)
+}
+
+/// Probe the actual destination directory. macOS volumes and Windows directories may use either
+/// case behavior; the OS name alone cannot tell whether two future names will alias.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub(super) fn case_sensitive_destination(path: &std::path::Path) -> Option<bool> {
+    let parent = path.ancestors().skip(1).find(|ancestor| ancestor.is_dir())?;
+    let probe = tempfile::Builder::new().prefix(".PhotoCraftCaseProbe-").tempfile_in(parent).ok()?;
+    let name = probe.path().file_name()?.to_str()?;
+    let alternate = parent.join(name.replacen("PhotoCraft", "photocraft", 1));
+    match std::fs::metadata(&alternate) {
+        Ok(_) => Some(!same_file(probe.path(), &alternate)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(true),
+        Err(_) => None,
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn resolved_paths_match(a: &std::path::Path, b: &std::path::Path, case_sensitive: impl FnOnce() -> Option<bool>) -> bool {
+    if a == b {
+        return true;
+    }
+    match (a.to_str(), b.to_str()) {
+        (Some(a_text), Some(b_text)) if a_text.to_lowercase() == b_text.to_lowercase() => !case_sensitive().unwrap_or(false),
+        _ => false,
+    }
+}
+
+#[cfg(all(test, any(target_os = "macos", target_os = "windows")))]
+#[test]
+fn identical_resolved_paths_conflict_on_a_case_sensitive_volume() {
+    let path = std::path::Path::new("/future/result.png");
+    assert!(resolved_paths_match(path, path, || Some(true)));
+    assert!(!resolved_paths_match(path, std::path::Path::new("/future/other.png"), || panic!("unrelated names must not probe the volume")));
+}
+
+/// Whether two paths would name the same destination even before the file exists. This is used
+/// when a batch error log must not be allowed to replace a result that will be written later.
+pub fn same_destination(a: impl AsRef<std::path::Path>, b: impl AsRef<std::path::Path>) -> bool {
+    let (a, b) = (a.as_ref(), b.as_ref());
+    if same_file(a, b) {
+        return true;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        match (destination_identity(a), destination_identity(b)) {
+            (Some(a), Some(b)) => {
+                #[cfg(any(target_os = "windows", target_os = "macos"))]
+                {
+                    resolved_paths_match(&a, &b, || case_sensitive_destination(&a))
+                }
+                #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+                {
+                    a == b
+                }
+            }
+            _ => true,
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
     false
 }
 
