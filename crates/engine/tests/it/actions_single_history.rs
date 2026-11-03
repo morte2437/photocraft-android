@@ -182,6 +182,91 @@ fn snapshot_source_identity_is_bound_to_the_dialog_continuation() {
     }
 }
 
+/// Undo Clear History inside playback restores rows, rather than recording another clear baseline.
+#[test]
+fn in_action_undo_clear_restores_history_and_keeps_grouped_image_undo() {
+    for single_state in [false, true] {
+        for prefix in [false, true] {
+            let mut s = history_control_session(single_state);
+            let before = s.active().unwrap().doc.clone();
+            let past = s.active().unwrap().history.past_len();
+            let rows = s.active().unwrap().history.entries();
+            let mut steps = Vec::new();
+            if prefix {
+                steps.push(("layer.renameLayer".into(), json!({"name":"Prefix"})));
+            }
+            steps.extend([
+                ("history.clear".into(), json!({})),
+                ("edit.undo".into(), json!({})),
+                ("edit.undo".into(), json!({})),
+                ("edit.redo".into(), json!({})),
+            ]);
+            s.actions.list = vec![Action::new("Undo Clear", steps)];
+            let result = s.execute("actions.play", json!({"action":0})).unwrap();
+            assert!(result.get("failed").is_none(), "{result}");
+            assert!(!s.active().unwrap().history.is_cleared(), "singleState={single_state}, prefix={prefix}");
+            assert_eq!(s.active().unwrap().history.past_len(), past + usize::from(prefix));
+            if prefix {
+                let after = s.active().unwrap().doc.clone();
+                assert!(s.undo());
+                assert_eq!(s.active().unwrap().doc.as_ref(), before.as_ref());
+                assert!(s.redo());
+                assert_eq!(s.active().unwrap().doc.as_ref(), after.as_ref());
+            } else {
+                assert!(std::sync::Arc::ptr_eq(&s.active().unwrap().doc, &before));
+                assert_eq!(s.active().unwrap().history.entries(), rows);
+            }
+        }
+    }
+}
+
+/// A source held by Clear History becomes active on Undo Clear, with no additional image Undo row.
+#[test]
+fn cleared_intermediate_source_restores_exact_pixels_after_undo_redo() {
+    for single_state in [false, true] {
+        for undo_clear in [false, true] {
+            let mut s = history_control_session(single_state);
+            let before = s.active().unwrap().doc.clone();
+            let past = s.active().unwrap().history.past_len();
+            s.actions.list = vec![Action::new(
+                "Cleared Source",
+                vec![
+                    ("edit.fill".into(), json!({"color":"#0000ff"})),
+                    ("history.setSource".into(), json!({"state":past+1})),
+                    ("edit.fill".into(), json!({"color":"#00ffff"})),
+                    ("history.clear".into(), json!({})),
+                ],
+            )];
+            let result = s.execute("actions.play", json!({"action":0})).unwrap();
+            assert!(result.get("failed").is_none(), "{result}");
+            assert!(s.active().unwrap().history.is_cleared());
+            assert_eq!(s.active().unwrap().history.past_len(), 0);
+            if undo_clear {
+                let after = s.active().unwrap().doc.clone();
+                assert!(s.undo());
+                assert!(!s.active().unwrap().history.is_cleared());
+                assert!(std::sync::Arc::ptr_eq(&s.active().unwrap().doc, &after));
+                let added = if single_state { 1 } else { 2 };
+                assert_eq!(s.active().unwrap().history.past_len(), past + added);
+                for _ in 0..added {
+                    assert!(s.undo());
+                }
+                assert_eq!(s.active().unwrap().doc.as_ref(), before.as_ref());
+                for _ in 0..added {
+                    assert!(s.redo());
+                }
+                assert_eq!(s.active().unwrap().doc.as_ref(), after.as_ref());
+            }
+            // Before Undo Clear the source is the current cyan document. Afterwards it is the
+            // explicitly selected intermediate blue document, including after image Undo/Redo.
+            s.execute("edit.fill", json!({"contents":"history"})).unwrap();
+            let pixel = s.active().unwrap().doc.layers[0].surface().unwrap().rgba(0, 0);
+            let expected = if undo_clear { [0.0, 0.0, 1.0, 1.0] } else { [0.0, 1.0, 1.0, 1.0] };
+            assert_eq!(pixel, expected, "singleState={single_state}, undoClear={undo_clear}");
+        }
+    }
+}
+
 /// Default playback is one named edit, including the complete Undo and Redo states.
 #[test]
 fn default_playback_is_one_named_history_state() {
