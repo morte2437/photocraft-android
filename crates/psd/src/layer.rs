@@ -858,10 +858,9 @@ impl LayerInfo {
                         o.put_u16(comp.as_u16());
                         Ok(())
                     })?;
-                    let data = c.encoded()?;
                     match l.widened_rows(c, widen)? {
-                        0 => out.put(&data)?,
-                        rows => out.put_widened_rle(&data, rows)?,
+                        0 => out.put_encoded(&c.data, c.stored.as_ref())?,
+                        rows => out.put_widened_rle(&c.encoded()?, rows)?,
                     }
                 }
             }

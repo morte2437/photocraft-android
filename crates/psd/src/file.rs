@@ -382,10 +382,9 @@ impl PsdFile {
             o.put_u16(self.image_data.compression.as_u16());
             Ok(())
         })?;
-        let merged = self.image_data.encoded()?;
         match self.merged_widened_rows(widen)? {
-            0 => out.put(&merged),
-            rows => out.put_widened_rle(&merged, rows),
+            0 => out.put_encoded(&self.image_data.data, self.image_data.stored.as_ref()),
+            rows => out.put_widened_rle(&self.image_data.encoded()?, rows),
         }
     }
 
@@ -717,6 +716,35 @@ mod write_tests {
                 assert!(streamed(&lazy, stage) == bytes, "{} source-backed, stage {stage}", case.name);
             }
         }
+    }
+
+    /// Channel data and a merged image still in their source (an imported file's, or what an
+    /// exporter spilled to scratch) are copied through in short reads, never read whole.
+    #[test]
+    fn source_backed_data_is_copied_in_short_reads() {
+        struct Reads(Vec<u8>, std::sync::Mutex<usize>);
+        impl crate::source::ReadAt for Reads {
+            fn len(&self) -> u64 {
+                self.0.len() as u64
+            }
+            fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<()> {
+                let mut most = self.1.lock().unwrap();
+                *most = (*most).max(buf.len());
+                self.0.as_slice().read_at(offset, buf)
+            }
+        }
+        let mut file = testgen::small(Version::Psd, Compression::Raw);
+        file.image_data = ImageData::new(Compression::Raw, vec![5; 300]);
+        let info = file.layer_info.as_mut().unwrap();
+        info.layers[0].channels[0] = crate::layer::ChannelData::new(0, Some(Compression::Raw), vec![6; 301]);
+        let bytes = file.to_bytes().unwrap();
+        let source = std::sync::Arc::new(Reads(bytes.clone(), std::sync::Mutex::new(0)));
+        let lazy = PsdFile::from_source(crate::Source::from_arc(source.clone())).unwrap();
+        *source.1.lock().unwrap() = 0;
+        let mut w = std::io::Cursor::new(Vec::new());
+        lazy.write_to(&mut w).unwrap();
+        assert!(w.into_inner() == bytes);
+        assert!(*source.1.lock().unwrap() <= 7, "read {} bytes at once", source.1.lock().unwrap());
     }
 
     /// #6607: pixel data goes to the stream as it is, never through a staging copy, so a save
