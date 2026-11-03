@@ -5887,9 +5887,15 @@ fn a_move_to_an_ordinal_that_is_not_a_layer_is_kept() {
 /// Nonfinite recorded doubles remain unsupported before native parameters can be constructed.
 #[test]
 fn shear_nonfinite_coordinates_stay_kept() {
+    let point = |x, y| D::Descriptor(desc("Pnt ").with("Hrzn", D::Double(x)).with("Vrtc", D::Double(y)));
+    let finite = desc("null").with("ShrP", D::List(vec![point(-10000.0, -1000.0), point(10000.0, 1000.0)]));
+    assert!(matches!(steps_distort::shear_from(&finite), Mapped::Steps(_)), "finite coordinates still clamp and map");
     for n in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-        let point = |x, y| D::Descriptor(desc("Pnt ").with("Hrzn", D::Double(x)).with("Vrtc", D::Double(y)));
-        let d = desc("null").with("ShrP", D::List(vec![point(n, 1.0), point(0.0, 128.0)]));
-        assert!(matches!(steps_distort::shear_from(&d), Mapped::Unsupported { .. }));
+        for d in [
+            desc("null").with("ShrP", D::List(vec![point(n, 1.0), point(0.0, 128.0)])),
+            desc("null").with("ShrP", D::List(vec![point(0.0, 1.0), point(0.0, n)])),
+        ] {
+            assert!(matches!(steps_distort::shear_from(&d), Mapped::Unsupported { .. }), "{d:?}");
+        }
     }
 }
