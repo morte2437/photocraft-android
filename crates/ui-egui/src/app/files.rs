@@ -661,12 +661,13 @@ impl PhotocraftApp {
         let what = crate::i18n::fmt(tl!("Saved {name}"), &[("name", file_open::display_name(path).as_str())]);
         notices::io_warnings(self, &what, warnings);
         // #11117: a successful save whose Image Assets partially failed must say which outputs
-        // did not land: the status line shows the first, a notice lists them all.
+        // did not land, and of which document: the status line shows the first failure under the
+        // saved file's name, a notice lists them all.
         if !asset_errors.is_empty() {
             let n = asset_errors.len();
             let title = crate::i18n::fmt(
-                &crate::i18n::trn(crate::i18n::current(), n as u64, "Image Assets: {n} output failed", "Image Assets: {n} outputs failed"),
-                &[("n", &n.to_string())],
+                &crate::i18n::trn(crate::i18n::current(), n as u64, "{what}: {n} Image Assets output failed", "{what}: {n} Image Assets outputs failed"),
+                &[("what", &what), ("n", &n.to_string())],
             );
             self.ui.status = if n == 1 { format!("{title}: {}", asset_errors[0]) } else { format!("{title}: {} …", asset_errors[0]) };
             self.ui.status_error = true;
@@ -871,7 +872,7 @@ mod tests {
         assert_eq!(app.session.active().unwrap().path.as_deref(), Some(path.as_str()), "the document save itself succeeded");
         assert!(assets.join("good.png").is_file(), "the good asset was exported");
         let notice = app.ui.notices.iter().find(|notice| notice.error).expect("the failed asset is reported as an error notice");
-        assert_eq!(notice.title, "Image Assets: 1 output failed");
+        assert_eq!(notice.title, "Saved probe.psd: 1 Image Assets output failed", "the failure names the saved document");
         assert_eq!(notice.lines.len(), 1, "{:?}", notice.lines);
         assert!(notice.lines[0].starts_with("blocked/fail.png: asset path"), "{:?}", notice.lines[0]);
         assert!(app.ui.status_error, "the status line carries the failure");
