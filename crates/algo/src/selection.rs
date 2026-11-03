@@ -134,10 +134,22 @@ pub fn mask_to_surface(m: &[f32], area: Rect) -> Surface {
     surface_from_masks(area, m, None, |_, v| v)
 }
 
+mod combine_mask;
+pub use combine_mask::combine_band;
+
 /// Combines `new` with `old` by `mode`. Returns `None` when nothing is selected.
 pub fn combine(old: Option<&Surface>, new: &[f32], area: Rect, mode: SelectionMode) -> Option<Surface> {
     if area.is_empty() {
         return None;
+    }
+    // Replace already writes straight from the input mask to tiles; it needs no old mask.
+    if mode == SelectionMode::Replace || (old.is_none() && mode == SelectionMode::Add) {
+        let s = mask_to_surface(new, area);
+        return (s.tile_count() > 0).then_some(s);
+    }
+    let old = old?;
+    if old.format() == PixelFormat::GRAY8 {
+        return combine_mask::gray8(Some(old), new, area, mode, false);
     }
     // Quantize to the 8-bit grid selections are stored on, so combining a mask with itself is
     // exact. Below half an 8-bit step is nothing.
@@ -145,7 +157,7 @@ pub fn combine(old: Option<&Surface>, new: &[f32], area: Rect, mode: SelectionMo
     let s = match mode {
         SelectionMode::Replace => surface_from_masks(area, new, None, |_, v| v),
         _ => {
-            let prev = mask_from_surface(old, area);
+            let prev = mask_from_surface(Some(old), area);
             match mode {
                 SelectionMode::Add => surface_from_masks(area, new, Some(&prev), |p, v| p.max(q(v))),
                 SelectionMode::Subtract => surface_from_masks(area, new, Some(&prev), |p, v| (p - q(v)).max(0.0)),
@@ -381,6 +393,9 @@ pub fn combine_region(old: Option<&Surface>, new: Option<&Region>, mode: Selecti
     let empty = Region { bbox: Rect::EMPTY, mask: Vec::new() };
     let new = new.unwrap_or(&empty);
     let b = new.bbox;
+    if old.is_none_or(|s| s.format() == PixelFormat::GRAY8) {
+        return combine_mask::gray8_bytes(old, &new.mask, b, mode);
+    }
     let prev_u8 = |s: &Surface| -> Vec<u8> {
         let mut v = Vec::new();
         s.read_region_into(b, &mut v);
@@ -761,11 +776,13 @@ pub fn tone_range(px: &[[f32; 4]], lo: f32, hi: f32, falloff: f32) -> Vec<f32> {
 }
 
 mod distance;
+mod inverse;
 mod lasso;
 mod marquee;
 mod morphology;
 
 pub use distance::edt;
+pub use inverse::inverse_surface;
 pub(crate) use lasso::clip_segment;
 pub use lasso::{MAX_PAINTED_TILES, polygon_edge_tiles, polygon_surface};
 pub use marquee::{combine_sparse, combine_surfaces, ellipse_surface};

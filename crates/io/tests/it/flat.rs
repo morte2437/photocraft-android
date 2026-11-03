@@ -350,7 +350,7 @@ fn layered_to_png_warns_flatten() {
     assert!(r.warnings.iter().any(|w| w.contains("flattened")), "{:?}", r.warnings);
     let back = import("out.png", &r.bytes).unwrap().document;
     // Composite equals our flatten.
-    let flat = photocraft_compose::flatten(&d).px;
+    let flat = photocraft_compose::flatten(&d).into_px();
     let s = back.layers[0].surface().unwrap();
     let px: Vec<[f32; 4]> = s.read_region(back.bounds()).as_chunks::<4>().0.iter().map(|p| [p[0], p[1], p[2], p[3]]).collect();
     assert!(max_diff(&px, &flat) <= 1.0 / 255.0 + 1e-4);

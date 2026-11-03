@@ -229,14 +229,12 @@ pub fn composite_to_surface(doc: &Document, rect: Rect, fmt: photocraft_color::P
     let mut s = Surface::new(fmt);
     let n = fmt.channels();
     let empty = s.default_pixel();
-    let mut data = Vec::new();
     let _ = render_bands(doc, rect, 0, |band| -> Result<(), ()> {
         let band = match background {
             Some(bg) => band.over_background(bg),
             None => band,
         };
-        data.clear();
-        data.resize(band.px.len() * n, 0.0);
+        let mut data = photocraft_raster::scratch::take(band.px.len() * n, 0.0f32);
         photocraft_color::convert::with_cmyk_space(space.as_ref(), || {
             for (p, out) in band.px.iter().zip(data.chunks_exact_mut(n)) {
                 if fmt.alpha && (p[3] <= 0.0 || p[3].is_nan()) && empty.len() == n {
@@ -247,6 +245,7 @@ pub fn composite_to_surface(doc: &Document, rect: Rect, fmt: photocraft_color::P
             }
         });
         s.write_region(band.rect, &data);
+        photocraft_raster::scratch::give(data);
         Ok(())
     });
     s.prune();

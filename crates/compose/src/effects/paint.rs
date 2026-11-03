@@ -339,8 +339,7 @@ pub(super) fn paint_pattern(
         m,
         |i| {
             let (x, y) = (f64::from(big.x0 + (i % w) as i32) + 0.5, f64::from(big.y0 + (i / w) as i32) + 0.5);
-            let (u, v) = place.map(x, y);
-            tile.sample(u, v)
+            tile.sample_area(&place, x, y)
         },
         blend,
         opacity,

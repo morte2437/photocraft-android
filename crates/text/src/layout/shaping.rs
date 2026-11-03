@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use std::cell::Cell;
 use std::ops::Range;
 
-use parley::{Alignment, AlignmentOptions, FontFeatures, Layout, LayoutContext, StyleProperty};
+use parley::{Alignment, AlignmentOptions, FontFeatures, Layout, LayoutContext, PositionedLayoutItem, StyleProperty};
 use photocraft_doc::text::{CharStyle, ParagraphStyle, TextAlign, TextDirection};
 
 use super::area::{LineMetrics, MAX_AREA_PASSES, area_metrics, break_area};
@@ -161,7 +161,10 @@ impl VerticalPiece<'_> {
     fn push_all(&self, b: &mut parley::RangedBuilder<'_, RunBrush>, piece: &str) {
         let mut seg: Option<(usize, VClass)> = None;
         for (i, ch) in piece.char_indices() {
-            let cls = vertical_class(ch);
+            let cls = match vertical_class(ch) {
+                VClass::Rotate if !self.style.rotate_roman && upright_roman(ch) => VClass::Upright,
+                cls => cls,
+            };
             match seg {
                 Some((_, c)) if c == cls => {}
                 Some((from, c)) => {
@@ -193,6 +196,7 @@ pub(super) struct Para<'a> {
     /// Runs intersecting the paragraph: `si0..si_end`.
     si0: usize,
     si_end: usize,
+    roman: Vec<(Range<usize>, f32, f32, usize)>,
     fallback: Vec<String>,
     pub(super) indent_start: f32,
     indent_end: f32,
@@ -242,6 +246,7 @@ impl<'a> Para<'a> {
             tabs,
             si0,
             si_end,
+            roman: Vec::new(),
             fallback,
             indent_start,
             indent_end,
@@ -253,7 +258,31 @@ impl<'a> Para<'a> {
             area_budget: Cell::new(MAX_AREA_PASSES),
         };
         para.break_scale = para.horizontal_break_scale();
+        para.roman = para.roman_ranges();
         para
+    }
+
+    fn roman_ranges(&self) -> Vec<(Range<usize>, f32, f32, usize)> {
+        let env = self.env;
+        let mut roman = Vec::new();
+        if env.vertical {
+            for (ri, st) in env.styles.iter().enumerate().take(self.si_end).skip(self.si0) {
+                let rs = env.run_starts[ri];
+                let (a, z) = (rs.max(self.start), (rs + env.runs[ri].len).min(self.content_end));
+                if a >= z || st.rotate_roman {
+                    continue;
+                }
+                let base = a - self.start + self.prefix.len();
+                let piece = self.ptext.get(base..base + (z - a)).unwrap_or("");
+                let px = st.size_pt * env.k;
+                for (i, ch) in piece.char_indices() {
+                    if upright_roman(ch) && !ch.is_whitespace() {
+                        roman.push(((base + i)..(base + i + ch.len_utf8()), st.tracking / 1000.0 * px, px, ri));
+                    }
+                }
+            }
+        }
+        roman
     }
 
     pub(super) fn first_style(&self) -> &'a CharStyle {
@@ -290,7 +319,7 @@ impl<'a> Para<'a> {
     }
 
     /// Shapes the paragraph, each tab widened by its letter spacing in `tab_spacing` (px).
-    fn shape(&self, lcx: &mut LayoutContext<RunBrush>, fcx: &mut parley::FontContext, tab_spacing: &[f32]) -> Layout<RunBrush> {
+    fn shape(&self, lcx: &mut LayoutContext<RunBrush>, fcx: &mut parley::FontContext, tab_spacing: &[f32], roman_spacing: &[f32]) -> Layout<RunBrush> {
         let env = self.env;
         let mut b = lcx.ranged_builder(fcx, &self.ptext, 1.0, false);
         // Paragraph-start style as the default (covers the direction mark and empty
@@ -317,6 +346,12 @@ impl<'a> Para<'a> {
         }
         for (&at, &spacing) in self.tabs.iter().zip(tab_spacing) {
             b.push(StyleProperty::LetterSpacing(spacing), at..at + 1);
+        }
+        for ((range, _, _, ri), &spacing) in self.roman.iter().zip(roman_spacing) {
+            b.push(StyleProperty::LetterSpacing(spacing), range.clone());
+            let mut feats = feature_list(&env.styles[*ri], env.small_caps[*ri]);
+            feats.extend(["kern", "liga", "clig", "dlig"].map(|f| format!("\"{f}\" 0")));
+            b.push(StyleProperty::FontFeatures(FontFeatures::Source(Cow::Owned(feats.join(", ")))), range.clone());
         }
         b.build(&self.ptext)
     }
@@ -383,11 +418,18 @@ impl<'a> Para<'a> {
     /// that layout gives until they agree; if they don't settle, keep the safe layout.
     pub(super) fn break_paragraph(&self, lcx: &mut LayoutContext<RunBrush>, fcx: &mut parley::FontContext, flow: &Flow) -> (Layout<RunBrush>, Vec<Slot>, bool) {
         let wide = if self.env.wraps { self.tab_px } else { 0.0 };
-        let mut layout = self.shape(lcx, fcx, &vec![wide; self.tabs.len()]);
+        let mut roman_spacing: Vec<f32> = self.roman.iter().map(|r| r.1).collect();
+        let mut layout = self.shape(lcx, fcx, &vec![wide; self.tabs.len()], &roman_spacing);
+        if !self.roman.is_empty() {
+            let _ = self.break_lines(&mut layout, flow);
+            let advances = cluster_advances(&layout, &self.roman);
+            roman_spacing = self.roman.iter().zip(&advances).map(|((_, track, em, _), a)| a.map_or(*track, |a| em + track - (a - track))).collect();
+            layout = self.shape(lcx, fcx, &vec![wide; self.tabs.len()], &roman_spacing);
+        }
         let (mut slots, mut full) = self.break_lines(&mut layout, flow);
         if self.env.wraps
             && !self.tabs.is_empty()
-            && let Some((settled, settled_slots, settled_full)) = self.settle_tabs(lcx, fcx, &layout, flow)
+            && let Some((settled, settled_slots, settled_full)) = self.settle_tabs(lcx, fcx, &layout, flow, &roman_spacing)
         {
             layout = settled;
             slots = settled_slots;
@@ -403,12 +445,13 @@ impl<'a> Para<'a> {
         fcx: &mut parley::FontContext,
         layout: &Layout<RunBrush>,
         flow: &Flow,
+        roman_spacing: &[f32],
     ) -> Option<(Layout<RunBrush>, Vec<Slot>, bool)> {
         let first = self.tab_widths(layout);
         let mut want: Vec<f32> = first.iter().map(|t| t.width).collect();
         for _ in 0..4 {
             let spacing: Vec<f32> = first.iter().zip(&want).map(|(t, w)| w / t.scale - (t.advance - self.tab_px)).collect();
-            let mut next = self.shape(lcx, fcx, &spacing);
+            let mut next = self.shape(lcx, fcx, &spacing, roman_spacing);
             let (next_slots, next_full) = self.break_lines(&mut next, flow);
             let got: Vec<f32> = self.tab_widths(&next).iter().map(|t| t.width).collect();
             if got.iter().zip(&want).all(|(a, b)| (a - b).abs() < 0.01) {
@@ -435,4 +478,29 @@ impl<'a> Para<'a> {
     pub(super) fn align_options(&self) -> AlignmentOptions {
         AlignmentOptions { align_when_overflowing: !self.env.wraps }
     }
+}
+
+/// Whether vertical type sets `c` upright when its style doesn't rotate roman text (#9470): the
+/// rotating class except half-width katakana and Hangul, which keep their rotated setting.
+fn upright_roman(c: char) -> bool {
+    vertical_class(c) == VClass::Rotate && !(0xFF61..=0xFFDC).contains(&(c as u32))
+}
+
+/// The shaped advance (px, letter spacing included) of the cluster starting each of `ranges`
+/// (sorted byte ranges of the shaped text), `None` where no cluster starts there.
+fn cluster_advances(layout: &Layout<RunBrush>, ranges: &[(Range<usize>, f32, f32, usize)]) -> Vec<Option<f32>> {
+    let mut out = vec![None; ranges.len()];
+    for line in layout.lines() {
+        for item in line.items() {
+            let PositionedLayoutItem::GlyphRun(gr) = item else {
+                continue;
+            };
+            for c in gr.run().visual_clusters() {
+                if let Ok(i) = ranges.binary_search_by_key(&c.text_range().start, |r| r.0.start) {
+                    out[i] = Some(c.advance());
+                }
+            }
+        }
+    }
+    out
 }

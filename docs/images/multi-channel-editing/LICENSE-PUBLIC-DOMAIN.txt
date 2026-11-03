@@ -1,0 +1,10 @@
+The Great Wave off Kanagawa, Katsushika Hokusai, c. 1830–1832.
+Source: https://commons.wikimedia.org/wiki/File:Tsunami_by_hokusai_19th_century.jpg
+Original: https://upload.wikimedia.org/wikipedia/commons/a/a5/Tsunami_by_hokusai_19th_century.jpg
+The artist died in 1849. This work was published before 1931 and is in the
+public domain in the United States and countries with life-plus-100 or shorter terms.
+Wikimedia Commons identifies this faithful reproduction as public domain (PD-Art).
+Public Domain Mark 1.0: https://creativecommons.org/publicdomain/mark/1.0/
+The artwork is included unchanged as great-wave.jpg. PhotoCraft renders, scales
+and converts it to RGB, CMYK and Lab for the adjacent screenshots.
+PhotoCraft UI and screenshot scripts: MIT OR Apache-2.0 (adjacent license files).

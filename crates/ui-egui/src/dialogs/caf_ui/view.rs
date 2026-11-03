@@ -129,7 +129,7 @@ fn caf_props_panel(
         widgets::slider_row(ui, tl!("Opacity"), &mut w.opts.opacity, 0.0..=100.0, "%", None);
         ui.horizontal(|ui| {
             ui.label(tl!("Color"));
-            widgets::color_edit_button_srgb(ui, &mut w.opts.color);
+            widgets::color_edit_button_srgb(ui, &mut w.opts.color, &crate::color_picker_ui::title_for(tl!("Sampling Area Overlay")));
             ui.add_space(8.0);
             ui.label(tl!("Indicates"));
             widgets::dropdown(

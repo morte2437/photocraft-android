@@ -301,16 +301,63 @@ pub fn preview_move(doc: &Document, p: &Value, add_copy: bool) -> Option<Documen
     Some(preview)
 }
 
+/// The rect of the artboard layer `id` sits in, or `None` when it sits in none (or is itself a
+/// board: boards are never nested, and moving one beside another carries its own rect).
+fn board_rect_of(doc: &Document, id: LayerId) -> Option<photocraft_geom::Rect> {
+    if doc.layer(id)?.artboard().is_some() {
+        return None;
+    }
+    doc.layer(doc.artboard_of(id)?)?.artboard().map(|board| board.rect)
+}
+
+/// Where a dropped layer came from: the rect of the board it sat on, and whether its position was
+/// locked there (by its own lock or one on a group or board around it).
+#[derive(Clone, Copy)]
+struct Origin {
+    board: Option<photocraft_geom::Rect>,
+    pinned: bool,
+}
+
+/// The moves that keep each of `ids` where it sat on its board after a drop into another board.
+/// Boards share one canvas, so a layer re-parented without moving keeps its canvas position and
+/// lands outside (and is clipped by) the board it was dropped on. `from[i]` is where `ids[i]` was
+/// before the drop; the layer shifts by the offset between the two boards' origins. A layer that
+/// stays on its board, joins one from outside any board, leaves for the top level, or has its
+/// position locked stays where it is. The lock is read on both sides: a lock the layer had from a
+/// group or board it left no longer shows on it once it has left (#10489 review).
+fn board_offsets(doc: &Document, ids: &[LayerId], from: &[Origin]) -> Vec<(LayerId, i32, i32)> {
+    ids.iter()
+        .zip(from)
+        .filter_map(|(&id, src)| {
+            let (board, dst) = (src.board.as_ref()?, board_rect_of(doc, id)?);
+            let (dx, dy) = (dst.x0.checked_sub(board.x0)?, dst.y0.checked_sub(board.y0)?);
+            let locks = doc.effective_locks(id);
+            ((dx != 0 || dy != 0) && !src.pinned && !(locks.position || locks.all)).then_some((id, dx, dy))
+        })
+        .collect()
+}
+
 /// The document-only part of `move_to`, shared with [`preview_move`] so the Layers panel's hover
 /// preview cannot drift from what the drop commits. Moves (or, with `copy`, duplicates) the
 /// top-level `moved_ids` to `pos` (`above`, `below` or `into`) `target`, then applies the
 /// group-depth cap, the Background-stays-at-the-bottom rule and the clip-group rules
-/// (`clip_group::settle`). Returns the ids of the new copies (empty for a move). On `Err` `doc` is
-/// half edited: run it inside `Session::edit` or on a scratch copy.
+/// (`clip_group::settle`). A layer dropped on a different artboard keeps its place on its board
+/// (see [`board_offsets`]). Returns the ids of the new copies (empty for a move). On `Err` `doc`
+/// is half edited: run it inside `Session::edit` or on a scratch copy.
 fn apply_move(doc: &mut Document, moved_ids: &[LayerId], target: LayerId, pos: &str, copy: bool, add_copy: bool) -> Result<Vec<LayerId>> {
     const CMD: &str = "layer.moveTo";
     let background = crate::background_cmds::background_id(doc);
     let before = if copy { Default::default() } else { crate::clip_group::Before::read(doc, moved_ids) };
+    // Read before the layers are lifted out: afterwards the source board, and any lock the layer
+    // had from the groups around it, are out of reach. A copy is a new layer, so only its own
+    // locks (which it keeps) can pin it.
+    let from: Vec<Origin> = moved_ids
+        .iter()
+        .map(|&id| {
+            let locks = doc.effective_locks(id);
+            Origin { board: board_rect_of(doc, id), pinned: !copy && (locks.position || locks.all) }
+        })
+        .collect();
     let mut moved = Vec::with_capacity(moved_ids.len());
     for &id in moved_ids {
         moved.push(if copy { crate::commands::layer_copy(doc, id, add_copy)? } else { doc.remove(id).ok_or(EngineError::NoLayer(id))? });
@@ -332,8 +379,16 @@ fn apply_move(doc: &mut Document, moved_ids: &[LayerId], target: LayerId, pos: &
         siblings.splice(at..at, moved);
     }
     check_group_depth(doc, "Reorder Layer")?;
+    // The layers now sit in their new parents; carry each across to its new board. Copies keep the
+    // order of `moved_ids`, so `from` lines up with either list.
+    let landed: &[LayerId] = if copy { &copies } else { moved_ids };
+    let shifts = board_offsets(doc, landed, &from);
+    if !shifts.is_empty() {
+        let snapshot = doc.clone();
+        move_layers(doc, &snapshot, &shifts)?;
+    }
     crate::background_cmds::keep_background_at_bottom(background, doc)?;
-    crate::clip_group::settle(doc, if copy { &copies } else { moved_ids }, &before, false);
+    crate::clip_group::settle(doc, landed, &before, false);
     Ok(copies)
 }
 
@@ -341,6 +396,38 @@ fn apply_move(doc: &mut Document, moved_ids: &[LayerId], target: LayerId, pos: &
 /// selected nodes are detached, and every reference is validated before editing.
 pub fn move_to(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "layer.moveTo";
+    let indexed = p.get("target").is_some_and(Value::is_object);
+    let resolved;
+    let p = if let Some(Value::Object(selector)) = p.get("target") {
+        let index = selector
+            .get("index")
+            .filter(|_| selector.len() == 1)
+            .and_then(Value::as_u64)
+            .ok_or_else(|| bad(CMD, "target reference needs one non-negative index"))?;
+        if p.get("position").is_some_and(|value| !value.is_null()) {
+            return Err(bad(CMD, "an indexed target already defines its drop position"));
+        }
+        let doc = &s.active().ok_or(EngineError::NoDocument)?.doc;
+        let (target, position) = crate::commands::recorded_drop(doc, index)?;
+        let mut fields = p.as_object().cloned().ok_or_else(|| bad(CMD, "params must be an object"))?;
+        fields.insert("target".into(), json!(target.0));
+        fields.insert("position".into(), json!(position));
+        if !fields.contains_key("layer") && !fields.contains_key("layers") {
+            match selected(s).as_slice() {
+                [layer] => {
+                    fields.insert("layer".into(), json!(layer.0));
+                }
+                layers if !layers.is_empty() => {
+                    fields.insert("layers".into(), json!(layers.iter().map(|layer| layer.0).collect::<Vec<_>>()));
+                }
+                _ => {}
+            }
+        }
+        resolved = Value::Object(fields);
+        &resolved
+    } else {
+        p
+    };
     let pos = p.get("position").and_then(Value::as_str).unwrap_or("above");
     if !matches!(pos, "above" | "below" | "into") {
         return Err(bad(CMD, "position must be above, below, or into"));
@@ -377,7 +464,7 @@ pub fn move_to(s: &mut Session, p: &Value) -> Result<Value> {
         }
     }
     let moved_ids = top_level(doc, &requested);
-    if moved_ids.len() == 1 && moved_ids[0] == target && batch.is_none() && !copy {
+    if moved_ids.len() == 1 && moved_ids[0] == target && (batch.is_none() || indexed) && !copy {
         // Preserve single-layer drag-to-self semantics.
         return Ok(Value::Null);
     }
@@ -392,6 +479,26 @@ pub fn move_to(s: &mut Session, p: &Value) -> Result<Value> {
     }
     if pos == "into" && doc.layer(target).is_none_or(|l| !l.is_group()) {
         return Err(bad(CMD, "target is not a group"));
+    }
+
+    if indexed
+        && !copy
+        && let [source] = moved_ids.as_slice()
+    {
+        let source_path = doc.path_of(*source).ok_or(EngineError::NoLayer(*source))?;
+        if let Some((&at, parent)) = source_path.split_last() {
+            let unchanged = match pos {
+                "below" => target_path.split_last().is_some_and(|(&to, target_parent)| parent == target_parent && at.checked_add(1) == Some(to)),
+                "into" => {
+                    parent == target_path.as_slice()
+                        && doc.layer(target).and_then(Layer::children).is_some_and(|children| at.checked_add(1) == Some(children.len()))
+                }
+                _ => false,
+            };
+            if unchanged {
+                return Ok(Value::Null);
+            }
+        }
     }
 
     let original_active = st.active_layer;

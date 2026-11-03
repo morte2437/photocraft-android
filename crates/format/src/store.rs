@@ -15,23 +15,93 @@ use crate::manifest::{ContentM, FORMAT_VERSION, Hash, LayerM, Manifest};
 use crate::zip::{ZipReader, ZipWriter};
 use crate::{FormatError, LoadOptions, Result, SaveOptions};
 
-pub(crate) const MANIFEST: &str = "manifest.json";
-pub(crate) const THUMB: &str = "thumb.png";
-pub(crate) const COMPOSITE: &str = "composite/preview.png";
-/// The file a directory save holds an exclusive lock on for its whole transaction (#4957).
-pub(crate) const SAVE_LOCK: &str = "save.lock";
+use craft_pcraft_format::{BLOBS_DIR, COMPOSITE_DIR, TILES_DIR, blob_path, tile_path};
+// `SAVE_LOCK` is the file a directory save holds an exclusive lock on for its whole transaction (#4957).
+pub(crate) use craft_pcraft_format::{COMPOSITE, MANIFEST, SAVE_LOCK, THUMB};
 /// How long a directory save waits for another save of the same bundle to finish.
 const SAVE_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
-fn tile_path(h: &str) -> String {
-    format!("tiles/{h}.zst")
-}
-fn blob_path(h: &str) -> String {
-    format!("blobs/{h}.zst")
+/// The bytes an [`Object`] stores, owned by (or shared with) the compressor's source so one
+/// [`Compressor`] can be reused for objects of any lifetime.
+enum Source {
+    Tile(Arc<Tile>),
+    Blob(Arc<Vec<u8>>),
+    /// A little-endian copy of a tile (big-endian hosts only).
+    Owned(Vec<u8>),
 }
 
-fn compress(data: &[u8]) -> Vec<u8> {
-    ruzstd::encoding::compress_to_vec(data, ruzstd::encoding::CompressionLevel::Fastest)
+struct SourceReader {
+    source: Source,
+    pos: usize,
+}
+
+impl SourceReader {
+    fn all(&self) -> &[u8] {
+        match &self.source {
+            Source::Tile(t) => t.bytes(),
+            Source::Blob(b) => b.as_slice(),
+            Source::Owned(v) => v.as_slice(),
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.all().len()
+    }
+}
+
+impl Read for SourceReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let all = self.all();
+        let rest = all.get(self.pos..).unwrap_or(&[]);
+        let n = rest.len().min(buf.len());
+        if let (Some(dst), Some(src)) = (buf.get_mut(..n), rest.get(..n)) {
+            dst.copy_from_slice(src);
+        }
+        self.pos += n;
+        Ok(n)
+    }
+}
+
+/// A reusable zstd compressor. `ruzstd` allocates a block buffer, a ~1 MiB suffix table and a
+/// block output buffer per frame; keeping the [`FrameCompressor`](ruzstd::encoding::FrameCompressor)
+/// between objects reuses the first two (its matcher resets itself on every `compress`).
+/// Output is byte-identical to `compress_to_vec` at the same level.
+struct Compressor {
+    inner: ruzstd::encoding::FrameCompressor<SourceReader, Vec<u8>, ruzstd::encoding::MatchGeneratorDriver>,
+}
+
+impl Compressor {
+    fn new() -> Self {
+        Self { inner: ruzstd::encoding::FrameCompressor::new(ruzstd::encoding::CompressionLevel::Fastest) }
+    }
+
+    fn run(&mut self, source: Source) -> Vec<u8> {
+        let reader = SourceReader { source, pos: 0 };
+        // Room for the worst case (raw blocks: 3 bytes per 128 KiB, plus frame header and
+        // checksum), so the output never regrows; shrunk afterwards to what it used. Untouched
+        // pages cost nothing.
+        let len = reader.len();
+        let mut drain = Vec::new();
+        if drain.try_reserve_exact(len.saturating_add(len / 16384).saturating_add(64)).is_err() {
+            drain = Vec::new();
+        }
+        self.inner.set_source(reader);
+        self.inner.set_drain(drain);
+        self.inner.compress();
+        self.inner.take_source();
+        let mut out = self.inner.take_drain().unwrap_or_default();
+        out.shrink_to_fit();
+        out
+    }
+
+    fn object(&mut self, obj: &Object) -> Vec<u8> {
+        let source = match obj {
+            Object::Tile(tile, _) if cfg!(target_endian = "little") => Source::Tile(Arc::clone(tile)),
+            Object::Tile(tile, sample) => Source::Owned(tile_le(tile, *sample).into_owned()),
+            Object::Blob(blob) => Source::Blob(Arc::clone(blob)),
+        };
+        self.run(source)
+    }
 }
 
 /// Decodes a zstd frame of at most `max` bytes (`LimitExceeded` beyond). With `exact`, the
@@ -149,64 +219,27 @@ pub fn read_entry(file: &mut impl std::io::Read, len: u64, max: usize, path: &st
 // Loading
 // ---------------------------------------------------------------------------
 
-/// Deepest JSON nesting a manifest may have: each group level adds three (the layer object, its
-/// content object and the `children` array), with headroom for the document and leaf layer fields.
-/// The saver checks the same bound, so every bundle it writes loads again.
-const MAX_MANIFEST_DEPTH: usize = 3 * (convert::MAX_GROUP_DEPTH + 1) + 64;
-
-/// Most JSON items (arrays and objects opened, plus elements and members after a comma) a
-/// manifest may hold. Parsing builds a `serde_json::Value` tree of tens of bytes per item, so
-/// `[0,0,…]` costs about 16× its size in memory; a typical manifest spends 20 bytes or more per
-/// item, so this still admits manifests of about 80 MiB.
-const MAX_MANIFEST_ITEMS: usize = 4 << 20;
-
-/// Rejects JSON nested deeper than [`MAX_MANIFEST_DEPTH`] or holding more than
-/// [`MAX_MANIFEST_ITEMS`] items with a linear scan (no recursion), so parsing with serde_json's
-/// recursion limit disabled can't exhaust the stack, nor tiny values the memory, on hostile input.
-fn check_manifest_depth(json: &[u8]) -> Result<()> {
-    let (mut depth, mut items, mut in_str, mut escaped) = (0usize, 0usize, false, false);
-    for &b in json {
-        if in_str {
-            match b {
-                _ if escaped => escaped = false,
-                b'\\' => escaped = true,
-                b'"' => in_str = false,
-                _ => {}
-            }
-            continue;
-        }
-        match b {
-            b'"' => in_str = true,
-            b'[' | b'{' => {
-                depth += 1;
-                if depth > MAX_MANIFEST_DEPTH {
-                    return Err(FormatError::LimitExceeded(format!("manifest JSON nested deeper than {MAX_MANIFEST_DEPTH} levels")));
-                }
-            }
-            b']' | b'}' => depth = depth.saturating_sub(1),
-            _ => {}
-        }
-        if matches!(b, b'[' | b'{' | b',') {
-            items += 1;
-            if items > MAX_MANIFEST_ITEMS {
-                return Err(FormatError::LimitExceeded(format!("manifest JSON holds more than {MAX_MANIFEST_ITEMS} values")));
-            }
-        }
-    }
-    Ok(())
+/// The limits a manifest is checked against: craft-pcraft-format's item limit, the JSON nesting
+/// of [`convert::MAX_GROUP_DEPTH`] nested groups ([`craft_pcraft_format::manifest_depth`]) and at
+/// most `max_manifest_bytes` bytes. The saver checks the same nesting and items, so every bundle
+/// it writes loads again.
+fn manifest_limits(max_manifest_bytes: usize) -> craft_pcraft_format::Limits {
+    let mut limits = craft_pcraft_format::Limits::default();
+    limits.max_manifest_bytes = max_manifest_bytes;
+    limits.max_depth = craft_pcraft_format::manifest_depth(convert::MAX_GROUP_DEPTH);
+    limits
 }
 
 pub(crate) fn read_manifest(src: &dyn ByteSource, opts: &LoadOptions) -> Result<Manifest> {
     let raw = src.get(MANIFEST, opts.max_manifest_bytes)?;
-    // serde_json stops at 128 levels (about 40 nested groups); the bounded check replaces that limit.
-    check_manifest_depth(&raw)?;
-    let mut de = serde_json::Deserializer::from_slice(&raw);
-    de.disable_recursion_limit();
-    let mut v = <serde_json::Value as serde::Deserialize>::deserialize(&mut de)?;
-    de.end()?;
-    crate::migrate::migrate(&mut v)?;
-    let layers = take_array(&mut v, "/document/layers");
-    let mut m: Manifest = serde_json::from_value(v)?;
+    // serde_json stops at 128 levels (about 40 nested groups); `read_manifest_with` checks the
+    // nesting and the items in one pass, then parses without that limit.
+    let limits = manifest_limits(opts.max_manifest_bytes);
+    let mut layers = Vec::new();
+    let mut m: Manifest = craft_pcraft_format::read_manifest_with(&raw, &limits, crate::migrate::STEPS, FORMAT_VERSION, |mut document| {
+        layers = take_array(&mut document, "/layers");
+        Ok::<_, FormatError>(serde_json::from_value(document)?)
+    })?;
     m.document.layers = layers_from_json(layers)?;
     // A number past f32's range decodes as infinity, which no save could write back (#6862).
     if let Err(crate::finite::Problem::NonFinite { path }) = crate::finite::check(&m) {
@@ -263,11 +296,10 @@ impl LoadFetch<'_> {
 
 impl Fetch for LoadFetch<'_> {
     fn tile(&mut self, hash: &str, len: usize) -> Result<Vec<u8>> {
-        if !is_valid_hash(hash) {
+        let Some(path) = tile_path(hash) else {
             return Err(FormatError::corrupt(format!("invalid tile hash `{hash}`")));
-        }
+        };
         self.account(len)?;
-        let path = tile_path(hash);
         let z = self.src.get(&path, len + len / 8 + 4096)?;
         let data = decompress(&z, len, &path)?;
         if hash_bytes(&data) != hash {
@@ -277,17 +309,26 @@ impl Fetch for LoadFetch<'_> {
     }
 
     fn blob(&mut self, hash: &str) -> Result<Arc<Vec<u8>>> {
+        self.blob_bounded(hash, self.opts.max_blob_bytes)
+    }
+
+    /// A content-addressed blob of at most `limit` bytes (never more than `max_blob_bytes`):
+    /// read once, decompressed within the limit, counted against the load's memory budget and
+    /// checked against its hash, then shared. Optional vector previews pass a 16 MiB limit.
+    fn blob_bounded(&mut self, hash: &str, limit: usize) -> Result<Arc<Vec<u8>>> {
+        let limit = limit.min(self.opts.max_blob_bytes);
         if let Some(b) = self.blobs.get(hash) {
-            return Ok(b.clone());
+            return if b.len() <= limit { Ok(b.clone()) } else { Err(FormatError::LimitExceeded("optional preview blob exceeds its limit".into())) };
         }
-        if !is_valid_hash(hash) {
+        let Some(path) = blob_path(hash) else {
             return Err(FormatError::corrupt(format!("invalid blob hash `{hash}`")));
-        }
-        let path = blob_path(hash);
-        let z = self.src.get(&path, self.opts.max_blob_bytes)?;
+        };
+        // The stored zstd frame of incompressible data is a little larger than the data, so a
+        // blob right at `limit` must still be read; `decompress_bounded` enforces `limit`.
+        let z = self.src.get(&path, limit.saturating_add(limit / 8).saturating_add(4096))?;
         // Blob length is not in the manifest; the frame header bounds it and
         // we cap at max_blob_bytes.
-        let data = decompress_bounded(&z, self.opts.max_blob_bytes, None, &path)?;
+        let data = decompress_bounded(&z, limit, None, &path)?;
         self.account(data.len())?;
         if hash_bytes(&data) != hash {
             return Err(FormatError::corrupt(format!("{path}: content does not match its hash")));
@@ -518,8 +559,8 @@ enum Object {
 }
 
 impl Object {
-    fn compressed(&self) -> Vec<u8> {
-        compress(&self.content())
+    fn compressed(&self, compressor: &mut Compressor) -> Vec<u8> {
+        compressor.object(self)
     }
 
     /// The bytes this object stores (tiles little-endian).
@@ -597,7 +638,7 @@ fn bundle_root(dir: &Path) -> Result<PathBuf> {
     std::fs::create_dir_all(&dir)?;
     let root = std::fs::canonicalize(&dir)?;
     plain_directory_or_missing(&root)?;
-    for sub in ["tiles", "blobs", "composite"] {
+    for sub in [TILES_DIR, BLOBS_DIR, COMPOSITE_DIR] {
         let path = root.join(sub);
         plain_directory_or_missing(&path)?;
         if !path.exists() {
@@ -617,7 +658,7 @@ fn bundle_root(dir: &Path) -> Result<PathBuf> {
 
 fn validate_bundle_file(root: &Path, path: &Path) -> Result<()> {
     let parent = path.parent().ok_or_else(|| unsafe_bundle_entry(path))?;
-    if parent != root && parent != root.join("tiles") && parent != root.join("blobs") && parent != root.join("composite") {
+    if parent != root && parent != root.join(TILES_DIR) && parent != root.join(BLOBS_DIR) && parent != root.join(COMPOSITE_DIR) {
         return Err(unsafe_bundle_entry(path));
     }
     plain_directory_or_missing(parent)?;
@@ -774,9 +815,9 @@ impl BundleGc {
 
         let flags = gc_directory_flags();
         let root = open(root, flags, Mode::empty()).map_err(std::io::Error::from)?;
-        let tiles = openat(&root, "tiles", flags, Mode::empty()).map_err(std::io::Error::from)?;
-        let blobs = openat(&root, "blobs", flags, Mode::empty()).map_err(std::io::Error::from)?;
-        let composite = openat(&root, "composite", flags, Mode::empty()).map_err(std::io::Error::from)?;
+        let tiles = openat(&root, TILES_DIR, flags, Mode::empty()).map_err(std::io::Error::from)?;
+        let blobs = openat(&root, BLOBS_DIR, flags, Mode::empty()).map_err(std::io::Error::from)?;
+        let composite = openat(&root, COMPOSITE_DIR, flags, Mode::empty()).map_err(std::io::Error::from)?;
         Ok(Self { root, tiles, blobs, composite })
     }
 
@@ -786,8 +827,8 @@ impl BundleGc {
             THUMB => (&self.root, THUMB),
             COMPOSITE => (&self.composite, "preview.png"),
             _ => match relative.split_once('/') {
-                Some(("tiles", name)) if name.strip_suffix(".zst").is_some_and(is_valid_hash) => (&self.tiles, name),
-                Some(("blobs", name)) if name.strip_suffix(".zst").is_some_and(is_valid_hash) => (&self.blobs, name),
+                Some((TILES_DIR, name)) if name.strip_suffix(craft_pcraft_format::OBJECT_SUFFIX).is_some_and(is_valid_hash) => (&self.tiles, name),
+                Some((BLOBS_DIR, name)) if name.strip_suffix(craft_pcraft_format::OBJECT_SUFFIX).is_some_and(is_valid_hash) => (&self.blobs, name),
                 _ => return Err(FormatError::Unsupported(format!("invalid bundle cleanup target: {relative}"))),
             },
         };
@@ -850,7 +891,8 @@ type Compressed<'a> = (&'a String, Arc<Vec<u8>>);
 fn par_compress<'a>(objects: &[(&'a String, &'a Object)]) -> Result<Vec<Compressed<'a>>> {
     let threads = if cfg!(target_arch = "wasm32") { 1 } else { std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, 32) };
     if threads < 2 || objects.len() < 2 {
-        return Ok(objects.iter().map(|(p, o)| (*p, Arc::new(o.compressed()))).collect());
+        let mut compressor = Compressor::new();
+        return Ok(objects.iter().map(|(p, o)| (*p, Arc::new(o.compressed(&mut compressor)))).collect());
     }
     let next = std::sync::atomic::AtomicUsize::new(0);
     std::thread::scope(|sc| {
@@ -858,10 +900,11 @@ fn par_compress<'a>(objects: &[(&'a String, &'a Object)]) -> Result<Vec<Compress
             .map(|_| {
                 sc.spawn(|| {
                     let mut out = Vec::new();
+                    let mut compressor = Compressor::new();
                     loop {
                         let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         let Some((p, o)) = objects.get(i) else { break };
-                        out.push((*p, Arc::new(o.compressed())));
+                        out.push((*p, Arc::new(o.compressed(&mut compressor))));
                     }
                     out
                 })
@@ -909,13 +952,9 @@ impl PcraftWriter {
         convert::check_nesting(&doc.layers)?;
         let mut c = Collect { hash_cache: Some(&mut self.hash_cache), blob_hash_cache: Some(&mut self.blob_hash_cache), ..Default::default() };
         let document = convert::doc_m(doc, &mut c);
-        let manifest = Manifest {
-            format_version: FORMAT_VERSION,
-            generator: format!("photocraft-format {}", env!("CARGO_PKG_VERSION")),
-            document,
-            thumbnail: opts.thumbnail.as_ref().map(|_| THUMB.to_owned()),
-            composite: opts.composite.as_ref().map(|_| COMPOSITE.to_owned()),
-        };
+        let mut manifest = Manifest::new(format!("photocraft-format {}", env!("CARGO_PKG_VERSION")), document);
+        manifest.thumbnail = opts.thumbnail.as_ref().map(|_| THUMB.to_owned());
+        manifest.composite = opts.composite.as_ref().map(|_| COMPOSITE.to_owned());
         // serde_json writes NaN and the infinities as `null`, which the manifest's float fields
         // refuse on load (issue #1101): refuse the save instead, naming the value.
         crate::finite::check(&manifest).map_err(|e| match e {
@@ -923,14 +962,16 @@ impl PcraftWriter {
             crate::finite::Problem::Other(m) => FormatError::Unsupported(format!("manifest: {m}")),
         })?;
         let manifest = serde_json::to_vec_pretty(&manifest)?;
-        check_manifest_depth(&manifest)?;
+        // The nesting and the items only: a save checks no manifest size.
+        craft_pcraft_format::check_manifest(&manifest, &manifest_limits(usize::MAX))?;
         let stats = SaveStats { tiles_total: c.tiles.len(), blobs_total: c.blobs.len(), manifest_bytes: manifest.len(), ..Default::default() };
+        let invalid = |h: &str| FormatError::corrupt(format!("invalid object hash `{h}`"));
         let mut objects = BTreeMap::new();
         for (h, (t, s)) in c.tiles {
-            objects.insert(tile_path(&h), Object::Tile(t, s));
+            objects.insert(tile_path(&h).ok_or_else(|| invalid(&h))?, Object::Tile(t, s));
         }
         for (h, b) in c.blobs {
-            objects.insert(blob_path(&h), Object::Blob(b));
+            objects.insert(blob_path(&h).ok_or_else(|| invalid(&h))?, Object::Blob(b));
         }
         Ok(Prepared { manifest, objects, stats })
     }
@@ -966,6 +1007,7 @@ impl PcraftWriter {
         for (name, data) in &previews {
             z.add(name, data)?;
         }
+        let mut compressor: Option<Compressor> = None;
         for (path, obj) in &p.objects {
             let (key, data) = match self.compressed.remove_entry(path) {
                 Some((key, data)) => {
@@ -979,7 +1021,7 @@ impl PcraftWriter {
                         Object::Tile(..) => stats.tiles_written += 1,
                         Object::Blob(_) => stats.blobs_written += 1,
                     }
-                    (None, fresh.remove(path).unwrap_or_else(|| Arc::new(obj.compressed())))
+                    (None, fresh.remove(path).unwrap_or_else(|| Arc::new(obj.compressed(compressor.get_or_insert_with(Compressor::new)))))
                 }
             };
             z.add(path, &data)?;
@@ -1026,6 +1068,7 @@ impl PcraftWriter {
             None => 0,
         };
         let recheck = self.rolling_recheck(&p.objects);
+        let mut compressor: Option<Compressor> = None;
         for (path, obj) in &p.objects {
             let object_path = dir.join(path);
             // bundle_root and list_objects validated the fixed parent directories once. Check
@@ -1060,7 +1103,7 @@ impl PcraftWriter {
                 Object::Tile(..) => stats.tiles_written += 1,
                 Object::Blob(_) => stats.blobs_written += 1,
             }
-            write_bundle_file(dir, &object_path, &obj.compressed(), fs)?;
+            write_bundle_file(dir, &object_path, &obj.compressed(compressor.get_or_insert_with(Compressor::new)), fs)?;
             let written = path_signature(&object_path)?;
             if let Some(cache) = &mut self.verified_directory {
                 match written {
@@ -1085,12 +1128,12 @@ impl PcraftWriter {
             // flush. The retry can reuse those valid bytes (including cached ones), so flush
             // both object directories again before publishing a manifest that references them.
             // This also persists the fixed subdirectories of a newly created bundle.
-            for sub in ["tiles", "blobs"] {
+            for sub in [TILES_DIR, BLOBS_DIR] {
                 fs.sync_dir(&dir.join(sub)).map_err(|e| crate::atomic::publication_error(e, &dir.join(sub)))?;
             }
         }
         #[cfg(not(windows))]
-        for sub in ["tiles", "blobs"] {
+        for sub in [TILES_DIR, BLOBS_DIR] {
             let folder = dir.join(sub);
             if folder.is_dir() {
                 confirm_flushed(&folder, &folder)?;
@@ -1410,3 +1453,65 @@ pub(crate) fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
 
 #[cfg(all(test, windows))]
 mod durability_tests;
+
+#[cfg(test)]
+#[test]
+fn reused_compressor_matches_compress_to_vec_and_round_trips() {
+    let mut state = 0x9e37_79b9_u32;
+    let mut noise = |n: usize| -> Vec<u8> {
+        (0..n)
+            .map(|_| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (state >> 24) as u8
+            })
+            .collect()
+    };
+    let inputs: Vec<Vec<u8>> = vec![
+        Vec::new(),
+        vec![7],
+        b"hello hello hello hello hello".to_vec(),
+        noise(1000),
+        (0..300_000u32).map(|i| (i / 7 % 251) as u8).collect(),
+        noise(300_000),
+        vec![0; 262_144],
+        // A repeat after a big one proves the matcher state is reset between objects.
+        b"hello hello hello hello hello".to_vec(),
+    ];
+    let mut compressor = Compressor::new();
+    for data in inputs {
+        let expected = ruzstd::encoding::compress_to_vec(data.as_slice(), ruzstd::encoding::CompressionLevel::Fastest);
+        let got = compressor.object(&Object::Blob(Arc::new(data.clone())));
+        assert_eq!(got, expected, "len {}", data.len());
+        assert_eq!(decompress(&got, data.len(), "test").unwrap(), data);
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn an_incompressible_blob_at_its_limit_still_loads() {
+    struct One(String, Vec<u8>);
+    impl ByteSource for One {
+        fn get(&self, path: &str, max: usize) -> Result<Vec<u8>> {
+            if path != self.0 || self.1.len() > max {
+                return Err(FormatError::LimitExceeded(format!("{path} over {max}")));
+            }
+            Ok(self.1.clone())
+        }
+    }
+    let mut x = 0x9e37_79b9_u32;
+    let data: Vec<u8> = (0..64 * 1024)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            x as u8
+        })
+        .collect();
+    let z = Compressor::new().object(&Object::Blob(Arc::new(data.clone())));
+    assert!(z.len() > data.len(), "the fixture must not compress");
+    let hash = hash_bytes(&data);
+    let src = One(blob_path(&hash).unwrap(), z);
+    let mut fetch = LoadFetch { src: &src, opts: crate::LoadOptions::default(), total: 0, blobs: HashMap::new() };
+    assert_eq!(fetch.blob_bounded(&hash, data.len()).unwrap().as_slice(), data.as_slice());
+    assert!(LoadFetch { src: &src, opts: crate::LoadOptions::default(), total: 0, blobs: HashMap::new() }.blob_bounded(&hash, data.len() - 1).is_err());
+}

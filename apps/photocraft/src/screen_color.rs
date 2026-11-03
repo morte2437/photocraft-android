@@ -38,6 +38,12 @@ pub fn service(cc: &eframe::CreationContext<'_>, wayland: bool) -> Option<Servic
         Pending { receiver: rx, cancelled }
     }))
 }
+/// Whether to pick through the desktop portal: on a Wayland desktop, whichever display server the
+/// window opened on. Xwayland serves only its own windows, so reading its root window fails (#8977).
+#[cfg(target_os = "linux")]
+pub fn uses_portal(desktop: crate::linux_libs::DisplaySession) -> bool {
+    desktop == crate::linux_libs::DisplaySession::Wayland
+}
 #[derive(Clone, Copy)]
 #[cfg_attr(not(any(target_os = "linux", target_os = "macos", target_os = "windows", test)), allow(dead_code))]
 struct Placement {
@@ -479,6 +485,15 @@ mod tests {
         let y = (200.0 - first.position.y) as usize;
         let offset = (y * first.width + x) * 4;
         assert_eq!(&first.rgba[offset..offset + 4], &[255, 128, 64, 255]);
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_wayland_desktop_picks_through_the_portal_even_with_an_xwayland_window() {
+        use crate::linux_libs::DisplaySession;
+        // A pen or the X11 display-server preference opens the window through Xwayland, but the
+        // session is still Wayland: the X11 grab fails there with BadMatch (#8977).
+        assert!(uses_portal(DisplaySession::Wayland));
+        assert!(!uses_portal(DisplaySession::X11));
     }
     #[test]
     fn screen_capture_matches_negative_and_hidpi_monitor_geometry() {

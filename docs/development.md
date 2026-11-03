@@ -36,6 +36,8 @@ building locally; the downloaded app is still subject to Windows application-con
 
 ## Build and run
 
+On Linux, PhotoCraft keeps its integrated client-side decorated title bar by default (#4439), including desktop-matched buttons. Enabling **System Title Bar** in Preferences switches to the system frame at the next launch: on GNOME/Wayland, winit provides font-free Adwaita controls; on X11, the window manager supplies the frame. Explicit saved choices are respected and Windows/macOS defaults are unchanged.
+
 ```sh
 cargo run --release -p photocraft -- path/to/image.psd      # desktop app
 cargo run --release -p photocraft -- --control 7878 --control-token-file .private/control.token \
@@ -63,6 +65,22 @@ cargo test --doc --workspace               # nextest does not run doctests
 ```
 
 [cargo-nextest](https://nexte.st) runs each test in its own process. `.config/nextest.toml` puts the GPU tests (`photocraft-gpu`, and ui-egui's integration and canvas/GPU tests) in a group of at most 4 at a time, because each process opens its own wgpu device and the in-process `gpu_lock()` no longer serializes them. On a 32-thread Windows machine the full workspace went from 297 s (`cargo test`) to about 120 s (#2204). Ignored tests run with `cargo nextest run --run-ignored only`. The longest sweeps (`photocraft-testkit`'s `Sweep`) run a quarter of their cases, a different quarter each UTC day; `PHOTOCRAFT_FULL_SWEEP=1` runs all of them, and `PHOTOCRAFT_SWEEP_PART=<n>` replays the part a failing run printed. CI runs it with `--profile ci` (fail-fast, a 10-minute hang timeout), plus `cargo test --doc` for the doctests (#6117); `PHOTOCRAFT_FULL_SWEEP=1 cargo test --workspace` stays the final check before a PR.
+
+### Long matrix tests and CI timings
+
+Nextest's `SLOW` line at 60 seconds is a progress warning, not a sleep or a failed test.
+The existing ten-minute hang limit and all GPU concurrency limits remain in force.
+The PSD file/bytes import equivalence matrix and swept-block reference comparison each expose
+four test functions so nextest can schedule their cases independently. Every formerly selected
+case still runs once, with the same assertions. The extrude matrix retains the existing daily
+sweep selection; splitting it does not sample fewer cases. PSD temporary directories include the
+part number so ordinary `cargo test` can also run the parts concurrently in one process.
+
+For a like-for-like timing comparison, use the CI workflow's `full_sweep` manual input, or set
+`PHOTOCRAFT_FULL_SWEEP=1` locally. Compare the complete nextest summary and runner wall time,
+not only the longest individual test: partitioning adds scheduling opportunities, not less work.
+Keep the same runner, feature set, fonts, and warm/cold build state. No speedup should be claimed
+from changing the 60-second warning threshold or omitting tests.
 
 ### Shortcut capture without a GPU, and native snapshots
 
@@ -97,7 +115,7 @@ Rust test and variable work on Windows with the native shell's environment-varia
 
 ## Fonts (craft-fonts)
 
-Font assets shared by the Crafting Apps live in [storytold/craft-fonts](https://github.com/storytold/craft-fonts), never in this repo: don't commit font files here (Inter and JetBrains Mono in `assets/fonts/` are the only exceptions; new fonts go to craft-fonts). The rules are in `craftrules/standards/fonts.md` in a sibling `craftrules` checkout (see below); that repository is not public, so outside contributors can ask a maintainer for the rules that apply to their change.
+Font assets shared by the Crafting Apps live in [storytold/craft-fonts](https://github.com/storytold/craft-fonts), never in this repo: don't commit font files here (Inter and JetBrains Mono in `assets/fonts/` are the only exceptions; new fonts go to craft-fonts).
 
 craft-fonts is an **optional build input**, never a Cargo dependency:
 
@@ -137,7 +155,7 @@ The window itself draws with the same device (or, with the CPU canvas, one it wa
 
 ## Logs
 
-The desktop app writes its `log` records to standard error and to `logs/photocraft.log` in the settings directory (Linux `~/.config/photocraft/logs/`, macOS `~/Library/Application Support/Photocraft/logs/`, Windows `%APPDATA%\Photocraft\logs\`, or under `PHOTOCRAFT_CONFIG_DIR` / the portable data folder). A start launched from a desktop menu or the Dock has no terminal, so this file is what to attach to a bug report: GPU startup fallbacks, a lost device and the crash guard's panic report all land there. Each launch moves the previous log to `photocraft.1.log` (and that one to `photocraft.2.log`), so the log of a run that crashed survives the next start. A launch while another PhotoCraft is still running leaves that instance's log where it is and writes its own `photocraft-<pid>.log` next to it (the newest two of those are kept once their instances have exited; the `PhotoCraft <version>, log file <path>` line at startup names the file in use). The file stops growing at 16 MiB. `--version` and command-line errors write no file.
+The desktop app writes its `log` records to standard error and to `logs/photocraft.log` in the settings directory (Linux `~/.config/photocraft/logs/`, macOS `~/Library/Application Support/Photocraft/logs/`, Windows `%APPDATA%\Photocraft\logs\`, or under `PHOTOCRAFT_CONFIG_DIR` / the portable data folder). A start launched from a desktop menu or the Dock has no terminal, so this file is what to attach to a bug report: GPU startup fallbacks, a lost device and the crash guard's panic report all land there. Each launch moves the previous log to `photocraft.1.log` (and that one to `photocraft.2.log`), so the log of a run that crashed survives the next start. A launch while another PhotoCraft is still running leaves that instance's log where it is and writes its own `photocraft-<pid>.log` next to it (the newest two of those are kept once their instances have exited; the `PhotoCraft <version>, log file <path>` line at startup names the file in use). The file stops growing at 16 MiB. `--version` and command-line errors write no file. A desktop start that fails before any window exists logs the error and, when no terminal, automation client or headless session can report it, shows it in a dialog naming this file (#7643).
 
 By default PhotoCraft's own crates log at `info` and everything else at `warn`. `RUST_LOG` replaces that with env_logger-style directives, for example `RUST_LOG=debug`, `RUST_LOG=warn,photocraft_gpu=trace` or `RUST_LOG=info,wgpu_core=warn`; a directive ending in `*` covers every target starting with it (`photocraft*=debug`). The logger is `apps/photocraft/src/logging.rs`; the web build logs to the browser console instead.
 
@@ -158,7 +176,7 @@ By default PhotoCraft's own crates log at `info` and everything else at `warn`. 
 | `PHOTOCRAFT_CPU_CANVAS=1` | Force the CPU canvas path instead of the wgpu shader canvas |
 | `PHOTOCRAFT_NATIVE_WAYLAND=1` | Linux: stay on native Wayland when a pen is attached (by default the window then opens through Xwayland, because Wayland gives the app no pen input; #639). A pen is an input device with `BTN_TOOL_PEN` and the `ABS_X`/`ABS_Y` axes; virtual keyboards that claim every key are not pens (#1072) |
 | `PHOTOCRAFT_GPU_ADAPTER=nvidia` | Linux: use the graphics adapter whose name contains this (case-insensitive); overrides `performance.gpuAdapter` for one launch |
-| `WGPU_BACKEND=dx12` | Pick the wgpu backend(s) (`vulkan`, `dx12`, `metal`, `gl`); overrides `performance.gpuBackend` and the startup fallback |
+| `WGPU_BACKEND=dx12` | Pick the wgpu backend(s) (`vulkan`, `dx12`, `metal`, `gl`); overrides `performance.gpuBackend` and the startup fallback. Tests read it too: on Windows with an Intel GPU, run them with `WGPU_BACKEND=dx12`, since loading the Intel Vulkan driver crashes the test process with `STATUS_ACCESS_VIOLATION` (#4) |
 | `WGPU_DX12_COMPILER=fxc` | DX12 shader compiler (`fxc`, `dxc`, `auto`); `dxc` and `auto` look `dxcompiler.dll` up through the DLL search path |
 | `PHOTOCRAFT_GPU_TILE=2048` | Force GPU canvas tiling (tests tile seams) |
 | `PHOTOCRAFT_TEXEL_GUARD=1` (or `=0`) | Force on (off) uploading egui's fully transparent texels as alpha 1/255. On by default only for Intel Iris Xe on DX12, whose driver shows stale memory in all-zero texture blocks: red squares in brush previews and tool icons (`ui-egui/src/texel_guard.rs`; check a GPU with `cargo run --release -p photocraft-gpu --example zero_block_probe -- dx12 400`) |
@@ -234,6 +252,17 @@ cargo run -p photocraft-cli -- batch --actions actions.json --in photos/ --out d
 cargo run -p photocraft-cli -- commands --filter blur                    # the command registry
 cargo run -p photocraft-cli --example man-and-completions -- out/       # man pages + bash/zsh/fish/elvish/PowerShell completions
 ```
+
+The Linux AppImage includes the same CLI. Select it with a leading `--cli`:
+
+```sh
+./photocraft-<version>-linux-x86_64.AppImage --cli --help
+./photocraft-<version>-linux-x86_64.AppImage --cli mcp
+ln -s photocraft-<version>-linux-x86_64.AppImage photocraft-cli
+./photocraft-cli commands --filter blur
+```
+
+The `--cli` selector is removed; all remaining arguments, stdin, stdout, stderr and the exit status are passed through. CLI launches skip desktop integration. The symlink form uses the AppImage runtime's `ARGV0`; the normal AppImage name launches the GUI.
 
 `actions.json` holds the steps of a recorded action: `[["<id>", {…}], …]`, `[{"command": "<id>", "params": {…}}, …]` or bare ids, as a list or wrapped in `{"actions": …}` or `{"steps": …}`; a droplet file works too. It can also be an Actions set (the Actions panel's `actions.json`, `{"actions": [{"name": …, "steps": […]}, …]}`): `--action <name>` picks the action to play (optional when the set holds one), and the whole set is loaded for each file, so a step that plays another action of the set works. `batch` refuses an `--out` folder that is the `--in` folder, since the results would replace the originals, unless `--in-place` is given. `run` prints one JSON line per command result.
 
@@ -476,6 +505,8 @@ cargo run --release -p photocraft-ui-egui --example perf_scenarios -- \
 That writes the row's own report and stops there: it does **not** evaluate the budget, so read
 `p50_ms`/`p95_ms`/`max_ms` out of the JSON yourself. Use `cargo xtask perf --bench <name>` when you
 want the verdict, the merged `results.json`/`summary.md` and the regression check.
+Every `--bench` name must match a `[[bench]]` name in `perf/budgets.toml`; an unknown name
+is rejected before any benchmark runs or any report or baseline is written.
 
 Read the sample count before quoting a percentile. `--reps` defaults to 7 in `--quick` and 15
 otherwise, it is per bench, and some rows cap it themselves (the `#211` algorithm rows use
@@ -583,8 +614,8 @@ so a following `ui.inspect` observes their effect.
 
 ## Photoshop Actions (.atn)
 
-`photocraft-psd` reads and writes Photoshop Actions files (`atn`, version 16: Photoshop 6 and
-later); `photocraft-engine`'s `atn_cmds` maps their events onto commands (`actions.load`,
+`photocraft-psd` reads Photoshop Actions files (`atn`, versions 12 and 16) and writes version 16
+(Photoshop 6 and later); `photocraft-engine`'s `atn_cmds` maps their events onto commands (`actions.load`,
 `actions.save`; the Actions panel menu's Load/Save Actions…; `photocraft-cli batch --actions
 set.atn`). To see what a set holds (event ids, panel names, the parameter keys Photoshop
 recorded) when adding an event to the table:
@@ -601,6 +632,18 @@ PhotoCraft equivalent.
 
 Events outside the table load as `actions.photoshopStep` steps that keep the descriptor
 verbatim (so Save Actions writes them back) and fail at playback with the step's Photoshop name.
+
+`crates/psd/tests/it/atn_contract.rs` checks the parser's public API against small, independently
+encoded version-16 fixtures (the version-12 ones are read by `atn_v12::`) in `crates/psd/tests/fixtures/atn/` (provenance and checksums in
+its README): `cargo test -p photocraft-psd --test it atn_contract::`.
+Recorded layer indexes and ordinals resolve against the full stack, including collapsed children
+and hidden group-end positions. Indexed moves use the stack before the move. Recorded document
+indexes are one-based opening order; a native numeric `document` parameter remains a zero-based
+tab index. Layer comp references retain their name, index, ID or ordinal form when saved, including
+the measured comp ordinals that reapply the current or first comp. Invalid comp indexes do nothing,
+even with an empty comp list. Recording-document layer IDs and layer/comp offsets stay kept steps.
+These rules follow [davidmann4's measured reference](https://github.com/storytold/photocraft/pull/10603)
+(#10701).
 
 ## Remove Tool quality
 
@@ -622,6 +665,40 @@ photos are public domain, not committed; download them at 1920 px wide into `<di
 `https://commons.wikimedia.org/wiki/Special:FilePath/<file name>?width=1600` serves each at the
 size the cases were placed for (Commons rounds it to 1920). Timing on a 24 MP document through the
 command: `cargo run --release -p photocraft-engine --example remove_bench`.
+
+## PSD import pixel memory limits
+
+PSD/PSB imports preflight layer, user-mask, merged-image, extra-channel and pattern pixel storage
+before merged-image validation or decoding. The conservative estimate sums retained tile
+storage (including padding and negative offsets) and the largest decode/conversion workspace.
+It does not credit uniform-tile sharing or pruning, so some files that could fit after decoding
+are refused. Valid off-canvas pixels are preserved; oversized layers are rejected rather than
+clipped. Defaults are 2 GiB on native targets and 1 GiB on wasm. Applications can lower the
+allowance with `ImportOptions::psd_max_pixel_bytes`; values above the default are capped.
+The source-only convenience API uses the default; `import_file_for_open_with` honours options.
+
+An over-budget ordinary or interactive import returns `IoError::PsdImportBudget` with the
+estimated and allowed byte counts; damaged-file recovery never bypasses that error. The legacy
+`psd_to_document` conversion APIs cannot return an error, so they return an empty document and
+an explicit warning on preflight refusal. Layer and mask pixel allocation failures also fail
+ordinary imports instead of opening partial content.
+
+User and real masks decode into tiles one tile row at a time, converting sample byte order
+in place. Raw and RLE source-backed masks read only the current band (plus the RLE row index);
+ZIP still inflates one whole plane before handing out bands. No full-mask interleave copy is
+needed. A damaged later band discards all previously written bands of that mask.
+
+Pattern block headers are inspected without decoding pixels. The same allowance includes
+all decoded pattern planes, padded tiles, bitmap/indexed expansion and conversion copies,
+including earlier records in a block that later proves malformed. Pattern conversion reserves
+pixel buffers fallibly. Multichannel conversion uses one tile-row buffer and applies alpha/ink
+polarity before writing tiles, without a full-plane float buffer or alpha readback.
+
+The #8593 allowance covers these pixel paths, not total process
+RSS: encoded input, parser metadata, smart-filter caches, embedded smart-object
+contents, generated vector caches, and text preparation are outside it and retain their
+existing limits. Joining these paths to a shared budget and streaming ZIP inflation are follow-up work. An accepted
+estimate does not guarantee allocation success on a memory-constrained host.
 
 ## Test corpora
 

@@ -53,6 +53,23 @@ pub enum Value {
     /// `None` is a null object.
     Obj(Option<ObjId>),
     Array(Vec<Value>),
+    /// An array of fixed-size records (`0x2c`, curve nodes) held in one buffer: `size` bytes each.
+    /// Counts as one value per record against [`MAX_VALUES`], like the array of `Bytes` it replaces.
+    Records {
+        size: u16,
+        data: Vec<u8>,
+    },
+}
+
+impl Value {
+    /// Slot count of an array field (including null slots); `None` for a scalar.
+    pub fn array_len(&self) -> Option<usize> {
+        match self {
+            Value::Array(a) => Some(a.len()),
+            Value::Records { size, data } => Some(data.len() / usize::from(*size).max(1)),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,39 +90,50 @@ pub struct Object {
     pub chain: Vec<Tag>,
     /// Fields in stream order; positional fields have tag 0.
     pub fields: Vec<(Tag, Value)>,
-    /// First-occurrence index of each non-positional tag, so `get` is O(1). A shared object
-    /// can be referenced by many sibling layers, and each reference used to rescan all of its
-    /// fields; indexing once keeps repeated lookups from multiplying into quadratic work.
-    index: std::collections::HashMap<Tag, usize>,
+    /// Index for objects with more than [`SCAN`] fields: (tag, index of its first occurrence)
+    /// sorted by tag, so `get` is a binary search. A shared object can be referenced by many
+    /// sibling layers, and each reference used to rescan all of its fields; indexing once keeps
+    /// repeated lookups from multiplying into quadratic work. Smaller objects have no index
+    /// (and no per-object hash map to build): scanning a handful of fields is cheaper.
+    index: Vec<(Tag, u32)>,
+}
+
+/// Objects with at most this many fields are scanned instead of indexed.
+const SCAN: usize = 12;
+
+fn build_index(fields: &[(Tag, Value)]) -> Vec<(Tag, u32)> {
+    if fields.len() <= SCAN {
+        return Vec::new();
+    }
+    // Positional fields share tag 0 and are not looked up by tag. Sorting by (tag, index) and
+    // keeping the first of each tag preserves first-match semantics.
+    let mut index: Vec<(Tag, u32)> = fields.iter().zip(0u32..).filter(|((t, _), _)| t.0 != 0).map(|((t, _), i)| (*t, i)).collect();
+    index.sort_unstable();
+    index.dedup_by_key(|e| e.0);
+    index
 }
 
 impl Object {
     pub fn new(class: Tag, kind: Kind, chain: Vec<Tag>, fields: Vec<(Tag, Value)>) -> Self {
-        let mut index = std::collections::HashMap::with_capacity(fields.len());
-        for (i, (t, _)) in fields.iter().enumerate() {
-            // Positional fields share tag 0 and are not looked up by tag; keep first-match
-            // semantics for real tags.
-            if t.0 != 0 {
-                index.entry(*t).or_insert(i);
-            }
-        }
+        let index = build_index(&fields);
         Object { class, kind, chain, fields, index }
     }
 
     pub fn get(&self, tag: Tag) -> Option<&Value> {
-        self.index.get(&tag).map(|&i| &self.fields[i].1)
+        if tag.0 == 0 {
+            return None;
+        }
+        if self.fields.len() <= SCAN {
+            return self.fields.iter().find(|(t, _)| *t == tag).map(|(_, v)| v);
+        }
+        let at = self.index.binary_search_by_key(&tag, |e| e.0).ok()?;
+        self.index.get(at).and_then(|&(_, i)| self.fields.get(i as usize)).map(|(_, v)| v)
     }
 
     /// Replaces the fields (the root object is filled in after it is pushed) and rebuilds the
     /// tag index so `get` stays correct.
     fn set_fields(&mut self, fields: Vec<(Tag, Value)>) {
-        self.index.clear();
-        self.index.reserve(fields.len());
-        for (i, (t, _)) in fields.iter().enumerate() {
-            if t.0 != 0 {
-                self.index.entry(*t).or_insert(i);
-            }
-        }
+        self.index = build_index(&fields);
         self.fields = fields;
     }
 }
@@ -336,11 +364,13 @@ impl Parser<'_> {
                 if size == 0 || n.checked_mul(size).is_none_or(|b| b > self.c.remaining()) {
                     return Err(Error::Malformed("array longer than its data"));
                 }
-                let mut v = self.vec(n)?;
-                for _ in 0..n {
-                    v.push(Value::Bytes(self.c.take(size)?.to_vec()));
-                }
-                Ok(Value::Array(v))
+                // Still one value per record against the budget, but a single allocation.
+                self.spend(n)?;
+                let bytes = self.c.take(n * size)?;
+                let mut data = Vec::new();
+                data.try_reserve_exact(bytes.len()).map_err(|_| Error::Limit("not enough memory for the document stream"))?;
+                data.extend_from_slice(bytes);
+                Ok(Value::Records { size: size as u16, data })
             }
             0x32 => {
                 let n = self.count(1)?;

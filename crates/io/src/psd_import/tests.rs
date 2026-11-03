@@ -388,3 +388,215 @@ fn layer_bands_end_on_tile_rows_and_cover_the_layer() {
     // A small layer is one band.
     assert_eq!(band_rows(0, 2000, 8000), vec![(0, 2000)]);
 }
+
+// Tall, narrow masks cross tile bands while keeping these cases only a few KiB.
+fn banded_mask_file(depth: u16, compression: Compression, version: Version, real: bool) -> (PsdFile, Vec<u8>, photocraft_psd::Rect) {
+    use photocraft_psd::{ChannelData, LayerMask as PsdMask, MaskData, MaskParameters, RealMask};
+    let mut file = testgen::layered(version, PsdMode::Rgb, depth, compression);
+    file.layer_info.as_mut().unwrap().layers.truncate(1);
+    let rect = photocraft_psd::Rect::from_xywh(-3, -17, 5, 600);
+    let mut plane = Vec::new();
+    for i in 0..3000 {
+        match depth {
+            8 => plane.push((i % 251) as u8),
+            16 => plane.extend(((i * 73) as u16).to_be_bytes()),
+            32 => plane.extend(((i % 251) as f32 / 125.0 - 0.5).to_be_bytes()),
+            _ => panic!("unexpected test case"),
+        }
+    }
+    let mut mask = PsdMask::new(rect, 0, 3 | 16);
+    mask.flags |= PsdMask::FLAG_PARAMETERS;
+    mask.parameters = Some(MaskParameters { flags: 3, user_density: Some(123), user_feather: Some(2.5), ..Default::default() });
+    let record = &mut file.layers_mut()[0];
+    record.channels.retain(|c| c.id != CHANNEL_USER_MASK && c.id != CHANNEL_REAL_USER_MASK);
+    let id = if real {
+        // Different synthetic bounds/defaults ensure -3's own metadata is selected.
+        mask.rect = photocraft_psd::Rect::from_xywh(1, 1, 1, 1);
+        mask.real = Some(RealMask { flags: 3, background: 255, rect });
+        record.channels.push(ChannelData::encode(CHANNEL_USER_MASK, compression, &vec![0; usize::from(depth / 8)], 1, 1, depth, version).unwrap());
+        CHANNEL_REAL_USER_MASK
+    } else {
+        CHANNEL_USER_MASK
+    };
+    record.mask = MaskData::Mask(mask);
+    record.channels.push(ChannelData::encode(id, compression, &plane, 5, 600, depth, version).unwrap());
+    (file, plane, rect)
+}
+
+fn assert_banded_mask(file: &PsdFile, plane: &[u8], rect: photocraft_psd::Rect, real: bool) {
+    let (doc, warnings, damaged) = psd_to_document_decoded_integrity(file, &photocraft_raster::Interrupt::NONE, None).unwrap();
+    assert!(!damaged, "{warnings:?}");
+    let mask = doc.layers[0].mask.as_ref().unwrap();
+    let sample = sample_for_depth(file.header.depth);
+    let expected = crate::pixels::interleave(&[Some(plane)], &[zero_sample(sample)], 3000, sample, &[false]);
+    assert_eq!(mask.surface.to_interleaved(Rect::new(rect.left, rect.top, rect.right, rect.bottom)), expected);
+    assert_eq!(mask.surface.pixel(-4, -18), vec![if real { 1.0 } else { 0.0 }]);
+    assert!(!mask.enabled);
+    assert!(!mask.linked);
+    assert_eq!(mask.density, 123.0 / 255.0);
+    assert_eq!(mask.feather, 2.5);
+}
+
+#[test]
+fn mask_bands_preserve_samples_bounds_defaults_and_parameters() {
+    for depth in [8, 16, 32] {
+        for compression in Compression::ALL {
+            for version in [Version::Psd, Version::Psb] {
+                for real in [false, true] {
+                    let (file, plane, rect) = banded_mask_file(depth, compression, version, real);
+                    assert_banded_mask(&file, &plane, rect, real);
+                    let bytes = file.to_bytes().unwrap();
+                    let eager = PsdFile::from_bytes(&bytes).unwrap();
+                    let lazy = PsdFile::from_source(photocraft_psd::Source::new(bytes)).unwrap();
+                    assert_banded_mask(&eager, &plane, rect, real);
+                    assert_banded_mask(&lazy, &plane, rect, real);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn raw_and_rle_mask_sources_are_read_in_bands() {
+    use photocraft_psd::{ReadAt, Source, Stored};
+    use std::sync::{Arc, Mutex};
+    struct Reads {
+        bytes: Vec<u8>,
+        sizes: Arc<Mutex<Vec<usize>>>,
+    }
+    impl ReadAt for Reads {
+        fn len(&self) -> u64 {
+            self.bytes.len() as u64
+        }
+        fn read_at(&self, offset: u64, buf: &mut [u8]) -> photocraft_psd::Result<()> {
+            self.sizes.lock().unwrap().push(buf.len());
+            self.bytes.read_at(offset, buf)
+        }
+    }
+    for depth in [8, 16, 32] {
+        for compression in [Compression::Raw, Compression::Rle] {
+            for real in [false, true] {
+                let (mut file, plane, rect) = banded_mask_file(depth, compression, Version::Psb, real);
+                let id = if real { CHANNEL_REAL_USER_MASK } else { CHANNEL_USER_MASK };
+                let channel = file.layers_mut()[0].channels.iter_mut().find(|c| c.id == id).unwrap();
+                let bytes = std::mem::take(&mut channel.data);
+                let len = bytes.len();
+                let sizes = Arc::new(Mutex::new(Vec::new()));
+                channel.stored = Some(Stored { source: Source::new(Reads { bytes, sizes: sizes.clone() }), offset: 0, len: len as u64 });
+                assert_banded_mask(&file, &plane, rect, real);
+                let reads = sizes.lock().unwrap();
+                match compression {
+                    Compression::Raw => {
+                        assert_eq!(*reads, [17, 256, 256, 71].map(|rows| 5 * rows * usize::from(depth / 8)).to_vec())
+                    }
+                    Compression::Rle => {
+                        assert_eq!(reads.len(), 5, "one index read and four payload bands: {reads:?}");
+                        assert_eq!(reads[0], 600 * 4, "PSB row index");
+                    }
+                    _ => panic!("unexpected test case"),
+                }
+                assert!(reads.iter().all(|&n| n < len), "read whole {len}-byte mask: {reads:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_damaged_later_mask_band_discards_earlier_bands() {
+    let (mut file, _, rect) = banded_mask_file(8, Compression::Rle, Version::Psd, false);
+    let channel = file.layers_mut()[0].channels.iter_mut().find(|c| c.id == CHANNEL_USER_MASK).unwrap();
+    channel.data = [0, 2].repeat(600);
+    for y in 0..600 {
+        // Each valid row repeats five bytes; row 400 promises two literal bytes but has one.
+        channel.data.extend(if y == 400 { [1, 9] } else { [0xFC, 7] });
+    }
+    assert!(channel.row_decoder(5, 600, 8, Version::Psd).unwrap().rows(0, 17).is_ok());
+    let (doc, warnings, damaged) = psd_to_document_decoded_integrity(&file, &photocraft_raster::Interrupt::NONE, None).unwrap();
+    assert!(damaged);
+    assert!(warnings.iter().any(|w| w.contains("channel -2 could not be decoded")));
+    let mask = doc.layers[0].mask.as_ref().unwrap();
+    assert_eq!(mask.surface.tile_count(), 0);
+    assert_eq!(mask.surface.pixel(rect.left, rect.top), vec![0.0]);
+}
+
+/// An allocation or read that fails while the layers are built fails the open, and the merged
+/// image's extra channels are not converted on the way out: that is another full plane per
+/// channel, asked for after the import was already reported as failing.
+#[test]
+fn a_fatal_layer_error_skips_the_extra_channel_conversion() {
+    use photocraft_psd::ReadAt;
+    struct Failing {
+        bytes: Vec<u8>,
+        data: Vec<(u64, u64)>,
+        armed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+    impl ReadAt for Failing {
+        fn len(&self) -> u64 {
+            self.bytes.len() as u64
+        }
+        fn read_at(&self, offset: u64, buf: &mut [u8]) -> photocraft_psd::Result<()> {
+            let end = offset + buf.len() as u64;
+            if self.armed.load(std::sync::atomic::Ordering::SeqCst) && self.data.iter().any(|&(a, b)| offset < b && end > a) {
+                return Err(PsdError::Read("the drive went away".into()));
+            }
+            self.bytes.as_slice().read_at(offset, buf)
+        }
+    }
+    let bytes = crate::psd_export::document_to_psd(&channels_document(SampleType::U8)).to_bytes().unwrap();
+    let whole = PsdFile::from_bytes(&bytes).unwrap();
+    assert!(merged_needed(&whole), "the extra channels come from the merged image");
+    let converted = psd_to_document_global(&whole, &photocraft_raster::Interrupt::NONE, None, Vec::new(), false).unwrap();
+    assert!(converted.3.is_none() && converted.0.channels.len() == 3, "the control file converts its channels");
+
+    let lazy = PsdFile::from_source(photocraft_psd::Source::new(bytes.clone())).unwrap();
+    let data: Vec<(u64, u64)> =
+        lazy.layers().iter().flat_map(|l| &l.channels).filter_map(|c| c.stored.as_ref()).filter(|s| s.len > 0).map(|s| (s.offset, s.offset + s.len)).collect();
+    assert!(!data.is_empty());
+    // Reads fail only once the file is parsed: the layers decode lazily from the source.
+    let armed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let file = PsdFile::from_source(photocraft_psd::Source::new(Failing { bytes, data, armed: armed.clone() })).unwrap();
+    armed.store(true, std::sync::atomic::Ordering::SeqCst);
+    let (doc, _, _, fatal) = psd_to_document_global(&file, &photocraft_raster::Interrupt::NONE, None, Vec::new(), false).unwrap();
+    assert!(matches!(fatal, Some(crate::IoError::Read(_))), "{fatal:?}");
+    assert!(doc.channels.is_empty(), "no extra channel was converted after the failure");
+}
+
+/// Only a failed allocation fails the open; a size limit or damaged compressed data still
+/// leaves the layer empty with a damage warning, and the rest of the file opens. A failed
+/// allocation names the layer and its channel.
+#[test]
+fn only_allocation_failures_are_fatal_to_a_layer_channel() {
+    let file = testgen::small(Version::Psd, Compression::Raw);
+    let fmt = PixelFormat::new(ColorMode::Rgb, SampleType::U8, true);
+    let mut cx = Ctx {
+        file: &file,
+        global: Vec::new(),
+        fmt,
+        mask_fmt: PixelFormat::new(ColorMode::Grayscale, SampleType::U8, false),
+        cc: 3,
+        cmyk: false,
+        warnings: Vec::new(),
+        damaged: false,
+        fatal_error: None,
+        dpi: 72.0,
+        txt2: None,
+        filter_effects: Vec::new(),
+        filter_masks: Default::default(),
+        unfiltered: Default::default(),
+        unfiltered_bytes: 0,
+        smart_contents: Default::default(),
+        plld_sizes: Default::default(),
+        vector_previews: Default::default(),
+        ctl: photocraft_raster::Interrupt::NONE,
+        done: 0,
+        uniform: Default::default(),
+        total: 0,
+    };
+    assert!(!cx.channel_failed("Layer 1", 0, &PsdError::LimitExceeded("decoded channel data exceeds MAX_DECODED_BYTES")));
+    assert!(cx.fatal_error.is_none() && cx.damaged);
+    assert!(cx.channel_failed("Layer 1", 2, &PsdError::OutOfMemory("not enough memory for the decoded channel data")));
+    match cx.fatal_error {
+        Some(crate::IoError::OutOfMemory(message)) => assert!(message.contains("layer \"Layer 1\" channel 2"), "{message}"),
+        other => panic!("{other:?}"),
+    }
+}

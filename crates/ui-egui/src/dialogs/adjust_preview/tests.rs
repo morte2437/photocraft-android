@@ -461,3 +461,27 @@ fn a_reveal_all_mask_does_not_empty_the_damage_region() {
     assert_eq!(region, bounds, "the whole document, not the mask's empty content");
     assert!(!live_switch_damage(&mut app, k2, region, bounds).is_empty(), "something is composited");
 }
+
+#[test]
+fn captured_subset_preview_stays_on_the_command_path_when_the_panel_changes() {
+    for kind in ["levels", "curves"] {
+        let (doc, target) = document(ColorMode::Rgb, SampleType::U16, false);
+        let mut app = app_with(doc, target);
+        app.session.execute("channel.target", json!({"colors":[0,2]})).unwrap();
+        let command = format!("image.adjustments.{kind}");
+        let id = crate::adjust_dialog::open(&mut app, &command).unwrap();
+        if let Some(values) = sample(kind).as_object() {
+            app.ui.dialog_mut(id).unwrap().fields.extend(values.clone());
+        }
+        app.session.execute("channel.target", json!({"channel":"composite"})).unwrap();
+        assert!(!on_layer(&mut app, 0), "captured colour set cannot use an all-channel adjustment layer");
+        let params = crate::filter_dialog::params_of(&app.ui.dialog_mut(id).unwrap().fields);
+        let doc = app.session.active().unwrap().doc.clone();
+        let preview = crate::filter_dialog::preview_document(&doc, Some(target), &command, &params, 1).unwrap();
+        let expected = destructive(&doc, target, kind, &params).unwrap();
+        assert!(max_diff(&preview, &expected) <= 1e-6);
+        app.session.execute("channel.target", json!({"colors":[0,2]})).unwrap();
+        app.ui.dialog_mut(id).unwrap().fields.insert("target".into(), json!("pixels"));
+        assert!(on_layer(&mut app, 0), "explicit composite target overrides the panel too");
+    }
+}

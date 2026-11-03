@@ -181,3 +181,34 @@ pub fn handle(app: &mut PhotocraftApp, ctx: &egui::Context, req: &ControlRequest
 
 #[cfg(test)]
 mod tests;
+
+pub(super) const METHODS: &[&str] = &[
+    "app.open",
+    "app.quit",
+    "app.save",
+    "engine.commands",
+    "engine.execute",
+    "jobs.cancel",
+    "jobs.list",
+    "ui.click",
+    "ui.context.choose",
+    "ui.dialog.apply",
+    "ui.dialog.cancel",
+    "ui.dialog.confirm",
+    "ui.dialog.open",
+    "ui.dialog.set",
+    "ui.focus",
+    "ui.gpu.simulateLoss",
+    "ui.inspect",
+    "ui.key",
+    "ui.menu.invoke",
+    "ui.menu.list",
+    "ui.move",
+    "ui.pointer",
+    "ui.resize",
+    "ui.screenshot",
+    "ui.set",
+    "ui.type",
+    "ui.window.close",
+    "ui.window.open",
+];

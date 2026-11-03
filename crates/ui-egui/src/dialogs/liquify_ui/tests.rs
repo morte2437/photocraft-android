@@ -15,10 +15,13 @@ fn alt_right_drag_resizes_the_liquify_brush_and_does_not_paint() {
     assert!(brush_resize_gesture(egui::Modifiers::CTRL | egui::Modifiers::ALT, false));
     assert!(!brush_resize_gesture(egui::Modifiers::ALT, false), "Alt+left stays the tool's opposite");
     assert!(!brush_resize_gesture(egui::Modifiers::NONE, true));
-    let (size, density) = resized_brush(40.0, 50.0, 25.0, crate::brush_resize::HARDNESS_TRAVEL);
-    assert_eq!((size, density), (65.0, 100.0));
-    let (size, density) = resized_brush(40.0, 50.0, -100.0, 0.0);
+    let (size, density) = resized_brush(40.0, 50.0, 25.0, crate::brush_resize::HARDNESS_TRAVEL, 1.0);
+    assert_eq!((size, density), (90.0, 100.0), "native brush movement grows the radius by screen pixels");
+    let (size, density) = resized_brush(40.0, 50.0, -100.0, 0.0, 1.0);
     assert_eq!((size, density), (1.0, 50.0));
+    // Screen travel changes density identically at different preview zoom levels.
+    assert_eq!(resized_brush(40.0, 50.0, 25.0, 100.0, 2.0).1, 100.0);
+    assert_eq!(resized_brush(40.0, 50.0, 0.0, -100.0, 1.0).1, 0.0);
 }
 
 fn app_with_layer() -> PhotocraftApp {
@@ -39,6 +42,50 @@ fn app_with_layer() -> PhotocraftApp {
         .unwrap();
     app.sync_views();
     app
+}
+
+#[test]
+fn native_component_liquify_preserves_proxy_detail_and_captured_commit_targets() {
+    for mode in ["rgb", "cmyk", "lab"] {
+        for depth in [8, 16, 32] {
+            for alpha in [true, false] {
+                let fixture = crate::distort_ui::component_tests::app(mode, depth);
+                let mut app = if alpha { fixture } else { crate::distort_ui::component_tests::without_alpha(fixture) };
+                open(&mut app, &egui::Context::default()).unwrap();
+                let d = app.distort.liquify.as_mut().unwrap();
+                let layer = d.layer;
+                let before = d.source.clone();
+                let bounds = d.canvas;
+                let mut field = LiquifyField::new(bounds, 8.0);
+                field.d.fill([2.0, 0.0]);
+                let mut out = vec![[0; 4]; 64 * 48];
+                assert!(render_components(&before, bounds, &field, 1.0, &d.target, bounds, bounds, &mut out));
+                for y in 0..48 {
+                    for x in 0..64 {
+                        let mut native = before.pixel(x, y);
+                        for k in [0, 2] {
+                            native[k] = before.sample_channel((x + 2).min(63), y, k);
+                        }
+                        let rgba = photocraft_raster::to_rgba(&before.format(), &native);
+                        let expected = [rgba[0] * rgba[3], rgba[1] * rgba[3], rgba[2] * rgba[3], rgba[3]].map(|v| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+                        assert!(out[(y * 64 + x) as usize].iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 1), "{mode}@{depth}");
+                    }
+                }
+                d.strokes
+                    .push(LiquifyStroke { points: vec![vec![24.0, 24.0, 1.0], vec![34.0, 24.0, 1.0]], ..LiquifyStroke::new(LiquifyTool::ForwardWarp, 30.0) });
+                d.rebuild();
+                d.render_dirty();
+                let mut detail = vec![[0; 4]; 64 * 48];
+                assert!(render_components(&before, bounds, &d.field, 1.0, &d.target, bounds, bounds, &mut detail));
+                assert_eq!(d.out, detail, "proxy at 100% equals the detail path");
+                app.run("channel.target", json!({"channel":{"color":1}})).unwrap();
+                commit(&mut app).unwrap();
+                let after = app.session.active().unwrap().doc.layer(layer).unwrap().surface().unwrap();
+                crate::distort_ui::component_tests::protected(&before, after, bounds);
+                assert_ne!(after.read_region(bounds), before.read_region(bounds));
+            }
+        }
+    }
 }
 
 #[test]
@@ -149,6 +196,60 @@ fn brush_settings_are_remembered_between_uses() {
     app.session.prefs.edit(|p| p.dialogs.insert(REMEMBERED.into(), json!("not an object")));
     cancel(&mut app);
     assert!(open(&mut app, &ctx).is_ok());
+}
+
+/// The reference application's Liquify has Twirl Clockwise only: no Twirl Counterclockwise
+/// tool on the strip or a shortcut, and a script or saved setting naming it is refused with a
+/// clear error instead of selecting it (Alt with Twirl Clockwise twirls counterclockwise).
+#[test]
+fn the_tool_strip_has_no_twirl_counterclockwise() {
+    assert!(!LiquifyTool::ALL.contains(&LiquifyTool::TwirlCcw));
+    assert!(LiquifyTool::ALL.contains(&LiquifyTool::TwirlCw));
+    for t in LiquifyTool::ALL {
+        assert_ne!(tl!(t.label()), tl!("Twirl Counterclockwise"), "{t:?}");
+        let svg = crate::icon_data::ICONS.iter().any(|(n, _)| *n == tool_icon(t));
+        assert!(svg, "{t:?}: {}", tool_icon(t));
+    }
+    assert_eq!(shortcut(LiquifyTool::TwirlCw), "C");
+    let ctx = egui::Context::default();
+    let mut app = app_with_layer();
+    open(&mut app, &ctx).unwrap();
+    control(&mut app, &json!({"tool": "pucker"})).unwrap();
+    let err = control(&mut app, &json!({"tool": "twirlCcw"})).unwrap_err();
+    assert!(err.contains("twirlCw") && err.contains("Alt"), "{err}");
+    assert_eq!(app.distort.liquify.as_ref().unwrap().opts.tool, LiquifyTool::Pucker, "the tool stays");
+    // A preference saved by an older version that names it opens, and on another tool.
+    cancel(&mut app);
+    app.session.prefs.edit(|p| p.dialogs.insert(REMEMBERED.into(), json!({"tool": "twirlCcw", "density": 70})));
+    open(&mut app, &ctx).unwrap();
+    let o = &app.distort.liquify.as_ref().unwrap().opts;
+    assert_ne!(o.tool, LiquifyTool::TwirlCcw);
+    assert_eq!(o.density, 70.0, "the rest of the saved settings still apply");
+}
+
+/// Alt held with Twirl Clockwise twirls the other way: at the same point, the displacement a
+/// dab leaves points the opposite way from one without Alt.
+#[test]
+fn alt_with_twirl_clockwise_twirls_counterclockwise() {
+    let ctx = egui::Context::default();
+    let displacement = |mods: egui::Modifiers| {
+        let mut app = app_with_layer();
+        open(&mut app, &ctx).unwrap();
+        control(&mut app, &json!({"tool": "twirlCw", "size": 40, "rate": 80})).unwrap();
+        pointer(&mut app, ToolEvent::Down { x: 60.0, y: 40.0, pressure: 1.0 }, mods);
+        for _ in 0..4 {
+            pointer(&mut app, ToolEvent::Move { x: 60.0, y: 40.0, pressure: 1.0 }, mods);
+        }
+        pointer(&mut app, ToolEvent::Up { x: 60.0, y: 40.0 }, mods);
+        let d = app.distort.liquify.as_ref().unwrap();
+        assert_eq!(d.opts.tool, LiquifyTool::TwirlCw);
+        // Right of the centre: clockwise (y down) moves content down, so it samples from above.
+        d.field.sample(70.0, 40.0)
+    };
+    let (plain, alt) = (displacement(egui::Modifiers::NONE), displacement(egui::Modifiers::ALT));
+    assert!(plain[1] < -0.1, "clockwise samples from above: {plain:?}");
+    assert!(alt[1] > 0.1, "Alt twirls counterclockwise and samples from below: {alt:?}");
+    assert!((plain[1] + alt[1]).abs() < 0.05 * plain[1].abs(), "the same twirl, mirrored: {plain:?} vs {alt:?}");
 }
 
 /// Follow-up to #1494 / #1484: Alt is captured at stroke-down and stays recorded
@@ -358,7 +459,6 @@ fn alt_reverses_twirl_and_swaps_pucker_and_bloat() {
     };
     for (tool, plain, alt) in [
         ("twirlCw", LiquifyTool::TwirlCw, LiquifyTool::TwirlCcw),
-        ("twirlCcw", LiquifyTool::TwirlCcw, LiquifyTool::TwirlCw),
         ("pucker", LiquifyTool::Pucker, LiquifyTool::Bloat),
         ("bloat", LiquifyTool::Bloat, LiquifyTool::Pucker),
         ("forwardWarp", LiquifyTool::ForwardWarp, LiquifyTool::ForwardWarp),
@@ -836,4 +936,84 @@ fn liquify_that_cannot_be_applied_reports_the_error() {
     assert!(!app.ui.status.is_empty());
     assert_eq!(app.session.active().unwrap().history.past_len(), steps);
     assert_eq!(r, Err(app.ui.status.clone()));
+}
+
+/// Liquify, Adaptive Wide Angle and the Filter Gallery open on the layer when no colour set is
+/// targeted, as before colour sets: with its mask, an alpha channel or the Quick Mask targeted.
+/// OK sends the command no `target`, so it routes the targeted surface exactly as it did then.
+#[test]
+fn workspaces_open_on_the_layer_with_a_mask_channel_or_quick_mask_targeted() {
+    let setup = |case: &str| {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+        app.run("file.new", json!({"width": 64, "height": 48})).unwrap();
+        app.run("layer.new.layer", json!({})).unwrap();
+        app.run("edit.fill", json!({"contents": "color", "color": "#ff0000"})).unwrap();
+        app.run("select.rect", json!({"x": 20, "y": 16, "width": 16, "height": 16})).unwrap();
+        app.run("edit.fill", json!({"contents": "color", "color": "#0000ff"})).unwrap();
+        app.run("select.deselect", json!({})).unwrap();
+        match case {
+            "mask" => drop(app.run("layer.layerMask.revealAll", json!({})).unwrap()),
+            "alpha" => {
+                app.run("channel.new", json!({"fill": "black"})).unwrap();
+                app.run("channel.target", json!({"channel": 0})).unwrap();
+            }
+            _ => drop(app.run("select.editInQuickMaskMode", json!({"on": true})).unwrap()),
+        }
+        app.sync_views();
+        app
+    };
+    let surfaces = |app: &PhotocraftApp| {
+        let st = app.session.active().unwrap();
+        let l = st.doc.layer(st.active_layer.unwrap()).unwrap();
+        (
+            l.surface().cloned(),
+            l.mask.as_ref().map(|m| m.surface.clone()),
+            st.doc.channels.iter().map(|c| c.surface.clone()).collect::<Vec<_>>(),
+            st.doc.quick_mask.as_ref().map(|c| c.surface.clone()),
+        )
+    };
+    let ctx = egui::Context::default();
+    for case in ["mask", "alpha", "quickMask"] {
+        let mut app = setup(case);
+        assert!(crate::canvas::paint_target(&app).get("colors").is_none(), "{case}");
+        crate::wide_angle_ui::open(&mut app, &ctx).unwrap_or_else(|e| panic!("{case}: Adaptive Wide Angle: {e}"));
+        crate::gallery_ui::open(&mut app).unwrap_or_else(|e| panic!("{case}: Filter Gallery: {e}"));
+        open(&mut app, &ctx).unwrap_or_else(|e| panic!("{case}: Liquify: {e}"));
+        let d = app.distort.liquify.as_mut().unwrap();
+        let stroke = LiquifyStroke { points: vec![vec![20.0, 24.0, 1.0], vec![36.0, 24.0, 1.0]], ..LiquifyStroke::new(LiquifyTool::ForwardWarp, 30.0) };
+        d.strokes.push(stroke.clone());
+        let cell = d.cell;
+        commit(&mut app).unwrap();
+        let mut before = setup(case);
+        let layer = before.session.active().unwrap().active_layer.unwrap();
+        before.run("filter.liquify", json!({"strokes": [stroke], "meshSize": cell, "layer": layer.0})).unwrap();
+        assert!(surfaces(&app) == surfaces(&before), "{case}: OK edits what the command without a target edits");
+        assert!(surfaces(&app) != surfaces(&setup(case)), "{case}: the stroke changed something");
+    }
+}
+
+/// A smart object's targeted filter mask: the workspaces open on the smart object, and Liquify's
+/// OK adds a smart filter, as the filter mask doesn't take it.
+#[test]
+fn workspaces_open_on_a_smart_object_with_its_filter_mask_targeted() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+    app.run("file.new", json!({"width": 64, "height": 48})).unwrap();
+    app.run("layer.new.layer", json!({})).unwrap();
+    app.run("edit.fill", json!({"contents": "color", "color": "#ff0000"})).unwrap();
+    app.run("layer.smartObjects.convertToSmartObject", json!({})).unwrap();
+    app.run("filter.blur.gaussianBlur", json!({"radius": 2})).unwrap();
+    let layer = app.session.active().unwrap().active_layer.unwrap();
+    app.ui.filter_mask_target = Some(layer.0);
+    app.sync_views();
+    assert!(app.filter_mask_targeted());
+    let ctx = egui::Context::default();
+    crate::wide_angle_ui::open(&mut app, &ctx).unwrap();
+    crate::gallery_ui::open(&mut app).unwrap();
+    open(&mut app, &ctx).unwrap();
+    let d = app.distort.liquify.as_mut().unwrap();
+    d.strokes.push(LiquifyStroke { points: vec![vec![20.0, 24.0, 1.0], vec![36.0, 24.0, 1.0]], ..LiquifyStroke::new(LiquifyTool::ForwardWarp, 30.0) });
+    commit(&mut app).unwrap();
+    let st = app.session.active().unwrap();
+    let Some(photocraft_doc::LayerContent::Smart(sm)) = st.doc.layer(layer).map(|l| &l.content) else { panic!("not a smart object") };
+    assert_eq!(sm.smart_filters.iter().map(|f| f.command.as_str()).collect::<Vec<_>>(), ["filter.blur.gaussianBlur", photocraft_engine::distort_cmds::LIQUIFY]);
 }

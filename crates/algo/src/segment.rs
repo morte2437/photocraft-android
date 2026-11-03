@@ -252,14 +252,28 @@ pub fn grid_cut_cancellable(
     weight: impl Fn(f32) -> f32,
     cancel: &dyn Fn() -> bool,
 ) -> Option<Vec<bool>> {
-    grid_cut_impl::<true>(img, cost_fg, cost_bg, fixed, weight, cancel)
+    grid_cut_impl::<true>(img, cost_fg, cost_bg, fixed, weight, cancel, false)
+}
+
+/// [`grid_cut_cancellable`] solved with Boykov–Kolmogorov instead of push/relabel: faster when
+/// the data costs come from colour models (GrabCut and the band re-cut), where terminal links
+/// are few and paths short. The minimum cut value is the same.
+pub fn grid_cut_bk_cancellable(
+    img: &RgbImage,
+    cost_fg: &[f32],
+    cost_bg: &[f32],
+    fixed: &[u8],
+    weight: impl Fn(f32) -> f32,
+    cancel: &dyn Fn() -> bool,
+) -> Option<Vec<bool>> {
+    grid_cut_impl::<true>(img, cost_fg, cost_bg, fixed, weight, cancel, true)
 }
 
 mod edge_starts;
 
 // The const parameter also runs the previous full scan in before/after workflow tests.
 fn grid_cut_weighted<const OPTIMIZED: bool>(img: &RgbImage, cost_fg: &[f32], cost_bg: &[f32], fixed: &[u8], weight: impl Fn(f32) -> f32) -> Vec<bool> {
-    grid_cut_impl::<OPTIMIZED>(img, cost_fg, cost_bg, fixed, weight, &|| false).unwrap_or_default()
+    grid_cut_impl::<OPTIMIZED>(img, cost_fg, cost_bg, fixed, weight, &|| false, false).unwrap_or_default()
 }
 
 fn grid_cut_impl<const OPTIMIZED: bool>(
@@ -269,6 +283,7 @@ fn grid_cut_impl<const OPTIMIZED: bool>(
     fixed: &[u8],
     weight: impl Fn(f32) -> f32,
     cancel: &dyn Fn() -> bool,
+    bk: bool,
 ) -> Option<Vec<bool>> {
     let (w, h) = (img.w as i32, img.h as i32);
     let Some(n) = img.w.checked_mul(img.h).filter(|&n| n < u32::MAX as usize - 2) else { return Some(Vec::new()) };
@@ -336,7 +351,9 @@ fn grid_cut_impl<const OPTIMIZED: bool>(
     if cancel() {
         return None;
     }
-    if OPTIMIZED {
+    if OPTIMIZED && bk {
+        g.maxflow_bk_with(cancel)?;
+    } else if OPTIMIZED {
         g.maxflow_with(cancel)?;
     } else {
         g.maxflow_bk();
@@ -733,7 +750,7 @@ fn refine_band(
         }
         let beta = contrast_beta(&img);
         // `grid_cut`'s weight, with the cut stopping on cancel.
-        let cut = grid_cut_cancellable(&img, &cfg, &cbg, &fixed, |d2| 50.0 * (-beta * d2).exp(), &cancel).ok_or(Cancelled)?;
+        let cut = grid_cut_bk_cancellable(&img, &cfg, &cbg, &fixed, |d2| 50.0 * (-beta * d2).exp(), &cancel).ok_or(Cancelled)?;
         let (cw, ch) = (t.width() as usize, t.height() as usize);
         let mut core = Vec::with_capacity(cw * ch);
         for yy in 0..ch {

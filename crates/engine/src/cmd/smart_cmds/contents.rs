@@ -177,6 +177,11 @@ pub(crate) fn on_close(s: &mut Session, index: usize) {
         let _ = commit_child(s, index);
     }
     s.smart_links.retain(|l| l.child != id && l.parent != id);
+    // Decoded sources are shared by content hash across documents, so the closing document's
+    // can't be told apart: drop them all. Other documents decode again on their next re-render.
+    if s.docs.get(index).is_some_and(|st| st.doc.walk().iter().any(|(_, _, l)| matches!(l.content, LayerContent::Smart(_)))) {
+        super::purge_source_cache();
+    }
 }
 
 pub(super) fn is_smart_child(s: &Session) -> std::result::Result<(), String> {

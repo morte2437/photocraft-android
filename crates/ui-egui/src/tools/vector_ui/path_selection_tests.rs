@@ -67,7 +67,8 @@ fn cmd_enter_while_drawing_finishes_the_path_and_loads_it() {
     let mut h = harness();
     h.state_mut().ui.tool = Tool::Pen;
     let p = |x: f64, y: f64| [[x, y], [x, y], [x, y]];
-    h.state_mut().ui.pen = Some(PenPath { knots: vec![p(20.0, 20.0), p(120.0, 20.0), p(120.0, 80.0)], ..Default::default() });
+    let owner = crate::vector_ui::capture_pen_owner(h.state());
+    h.state_mut().ui.pen = Some(PenPath { knots: vec![p(20.0, 20.0), p(120.0, 20.0), p(120.0, 80.0)], owner, ..Default::default() });
     h.run_steps(2);
     press(&mut h, Key::Enter, command());
     let app = h.state();
@@ -80,7 +81,8 @@ fn cmd_enter_while_drawing_finishes_the_path_and_loads_it() {
     // Plain ↩ still only finishes a path.
     let mut h = harness();
     h.state_mut().ui.tool = Tool::Pen;
-    h.state_mut().ui.pen = Some(PenPath { knots: vec![p(20.0, 20.0), p(120.0, 20.0), p(120.0, 80.0)], ..Default::default() });
+    let owner = crate::vector_ui::capture_pen_owner(h.state());
+    h.state_mut().ui.pen = Some(PenPath { knots: vec![p(20.0, 20.0), p(120.0, 20.0), p(120.0, 80.0)], owner, ..Default::default() });
     h.run_steps(2);
     press(&mut h, Key::Enter, Modifiers::NONE);
     assert!(h.state().session.active().unwrap().doc.work_path.is_some());
@@ -94,7 +96,8 @@ fn selecting_a_saved_path_keeps_the_hidden_work_path_hidden() {
     h.state_mut().run("path.set", json!({"name": "Saved", "path": rect_path(100.0, 40.0, 60.0, 50.0)})).unwrap();
     h.state_mut().ui.tool = Tool::Pen;
     let p = |x: f64, y: f64| [[x, y], [x, y], [x, y]];
-    h.state_mut().ui.pen = Some(PenPath { knots: vec![p(20.0, 20.0), p(120.0, 20.0), p(120.0, 80.0)], ..Default::default() });
+    let owner = crate::vector_ui::capture_pen_owner(h.state());
+    h.state_mut().ui.pen = Some(PenPath { knots: vec![p(20.0, 20.0), p(120.0, 20.0), p(120.0, 80.0)], owner, ..Default::default() });
     h.run_steps(2);
     press(&mut h, Key::Enter, command());
     assert!(!crate::vector_ui::work_path_shown(h.state()), "⌘↩ hid the work path");
@@ -123,7 +126,8 @@ fn reselecting_the_hidden_work_path_ends_the_hide() {
     let mut h = harness();
     h.state_mut().ui.tool = Tool::Pen;
     let p = |x: f64, y: f64| [[x, y], [x, y], [x, y]];
-    h.state_mut().ui.pen = Some(PenPath { knots: vec![p(20.0, 20.0), p(120.0, 20.0), p(120.0, 80.0)], ..Default::default() });
+    let owner = crate::vector_ui::capture_pen_owner(h.state());
+    h.state_mut().ui.pen = Some(PenPath { knots: vec![p(20.0, 20.0), p(120.0, 20.0), p(120.0, 80.0)], owner, ..Default::default() });
     h.run_steps(2);
     press(&mut h, Key::Enter, command());
     assert!(!crate::vector_ui::work_path_shown(h.state()), "⌘↩ hid the work path");
@@ -494,4 +498,42 @@ fn a_hidden_work_path_stays_hidden_when_another_tile_is_clicked() {
     };
     assert!(right_outlines_on_switch(false) > 0, "a shown Work Path is drawn in that frame");
     assert_eq!(right_outlines_on_switch(true), 0, "the hidden one isn't");
+}
+
+/// ⌘⇧↩ / ⌘⌥↩ (#8015) take the same path as ⌘↩: a path being drawn with the Pen is finished first
+/// and combined, not the old work path.
+#[test]
+fn cmd_shift_enter_while_drawing_finishes_the_path_and_adds_it() {
+    let mut h = harness();
+    h.state_mut().run("path.set", json!({"name": "work", "path": rect_path(0.0, 0.0, 10.0, 10.0)})).unwrap();
+    h.state_mut().run("select.rect", json!({"x": 150, "y": 60, "width": 20, "height": 20})).unwrap();
+    h.state_mut().ui.tool = Tool::Pen;
+    // The work path isn't selected in the Paths panel, so the Pen starts a new work path.
+    h.state_mut().ui.selected_path = None;
+    let p = |x: f64, y: f64| [[x, y], [x, y], [x, y]];
+    let owner = crate::vector_ui::capture_pen_owner(h.state());
+    h.state_mut().ui.pen = Some(PenPath { knots: vec![p(20.0, 20.0), p(120.0, 20.0), p(120.0, 80.0)], owner, ..Default::default() });
+    h.run_steps(2);
+    press(&mut h, Key::Enter, Modifiers { shift: true, ..command() });
+    assert!(h.state().ui.pen.is_none(), "the pen path was finished: {}", h.state().ui.status);
+    // The new triangle (20..120 × 20..80) joins the selected square; the old work path is not used.
+    assert_eq!(selection(&h), Some([20, 20, 150, 60]));
+    assert_eq!(h.state().ui.selected_path, None, "loaded path deselected, as with ⌘↩");
+}
+
+#[test]
+fn cmd_shift_and_alt_enter_use_the_path_selected_in_the_paths_panel() {
+    let mut h = harness();
+    h.state_mut().run("path.set", json!({"name": "work", "path": rect_path(0.0, 0.0, 30.0, 30.0)})).unwrap();
+    h.state_mut().run("path.set", json!({"name": "Path 1", "path": rect_path(100.0, 40.0, 60.0, 50.0)})).unwrap();
+    h.state_mut().run("select.rect", json!({"x": 40, "y": 40, "width": 20, "height": 20})).unwrap();
+    h.state_mut().ui.tool = Tool::Brush;
+    h.state_mut().ui.selected_path = Some("Path 1".into());
+    h.run_steps(2);
+    press(&mut h, Key::Enter, Modifiers { shift: true, ..command() });
+    assert_eq!(selection(&h), Some([40, 40, 120, 50]), "{}", h.state().ui.status);
+    // ⌘⌥↩ with the saved path selected again takes it back out, leaving the square.
+    h.state_mut().ui.selected_path = Some("Path 1".into());
+    press(&mut h, Key::Enter, Modifiers { alt: true, ..command() });
+    assert_eq!(selection(&h), Some([40, 40, 20, 20]), "{}", h.state().ui.status);
 }

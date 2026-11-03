@@ -98,7 +98,7 @@ impl ChannelData {
                 }
                 let table = bytes.get(0, table_len)?;
                 let mut offsets = Vec::new();
-                offsets.try_reserve_exact(height + 1).map_err(|_| PsdError::LimitExceeded("not enough memory for the RLE row table"))?;
+                offsets.try_reserve_exact(height + 1).map_err(|_| PsdError::OutOfMemory("not enough memory for the RLE row table"))?;
                 let mut at = table_len;
                 offsets.push(at);
                 for c in table.chunks_exact(size as usize) {
@@ -150,7 +150,7 @@ impl RowDecoder<'_> {
             return Err(PsdError::LimitExceeded("decoded channel data exceeds MAX_DECODED_BYTES"));
         }
         let mut out = Vec::new();
-        out.try_reserve_exact(n).map_err(|_| PsdError::LimitExceeded("not enough memory for the decoded channel data"))?;
+        out.try_reserve_exact(n).map_err(|_| PsdError::OutOfMemory("not enough memory for the decoded channel data"))?;
         match &self.kind {
             Kind::Empty => {}
             Kind::Raw(bytes) => out.extend_from_slice(&bytes.get((r0 * self.row_bytes) as u64, n as u64)?),

@@ -44,11 +44,13 @@ fn open(name: &str, path: &std::path::Path) -> Result<ImportResult, photocraft_i
     import_file(name, path, &photocraft_io::ImportOptions::default(), &Interrupt::NONE)
 }
 
-#[test]
-fn import_file_opens_what_importing_the_bytes_opens() {
-    let dir = TempDir::new("same");
+// Every generated case still runs once, with the same document and warning comparisons.
+// Separate nextest processes let the runner schedule the matrix alongside other tests rather
+// than leaving one multi-minute test on the critical path.
+fn import_file_opens_what_importing_the_bytes_opens_part(part: usize) {
+    let dir = TempDir::new(&format!("same-{part}"));
     let mut checked = 0;
-    for case in testgen::all_cases() {
+    for case in testgen::all_cases().into_iter().skip(part).step_by(4) {
         let ext = if case.file.header.version.is_psb() { "psb" } else { "psd" };
         let name = format!("case.{ext}");
         let bytes = case.file.to_bytes().unwrap();
@@ -66,7 +68,29 @@ fn import_file_opens_what_importing_the_bytes_opens() {
             (a, b) => panic!("{}: bytes {:?}, file {:?}", case.name, a.map(|r| r.warnings), b.map(|r| r.warnings)),
         }
     }
-    assert!(checked > 50, "only {checked} cases opened");
+    // Four parts each opening at least 13 cases retain (and slightly strengthen) the former
+    // aggregate floor of more than 50 successful opens.
+    assert!(checked >= 13, "part {part}: only {checked} cases opened");
+}
+
+#[test]
+fn import_file_opens_what_importing_the_bytes_opens_part_0() {
+    import_file_opens_what_importing_the_bytes_opens_part(0);
+}
+
+#[test]
+fn import_file_opens_what_importing_the_bytes_opens_part_1() {
+    import_file_opens_what_importing_the_bytes_opens_part(1);
+}
+
+#[test]
+fn import_file_opens_what_importing_the_bytes_opens_part_2() {
+    import_file_opens_what_importing_the_bytes_opens_part(2);
+}
+
+#[test]
+fn import_file_opens_what_importing_the_bytes_opens_part_3() {
+    import_file_opens_what_importing_the_bytes_opens_part(3);
 }
 
 #[test]

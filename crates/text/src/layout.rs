@@ -10,8 +10,8 @@
 //! into text space: a line becomes a column running top to bottom, and successive columns advance
 //! right to left. Within a column, CJK characters stay upright (centred on the column, placed with
 //! the font's vertical metrics: `VORG`, `vhea`/`vmtx`, else the ideographic em box) and use the
-//! font's vertical alternates (`vert`) for punctuation, brackets and the long-vowel mark; other
-//! text (Latin, digits) runs rotated 90° clockwise, Photoshop's default. Lines, clusters, carets
+//! font's vertical alternates (`vert`) for punctuation, brackets and the long-vowel mark. Roman
+//! letters stand upright one per em unless the run sets `rotate_roman`. Lines, clusters, carets
 //! and hit tests stay in line space; [`TextLayout::to_text`] / [`TextLayout::to_line`] convert.
 
 use std::borrow::Cow;
@@ -175,6 +175,17 @@ impl TextLayout {
                 Some(a) => [a[0].min(r[0]), a[1].min(r[1]), a[2].max(r[2]), a[3].max(r[3])],
             })
         })
+    }
+
+    /// Whether boxed text doesn't all fit its shape: a box's layout drops the lines that
+    /// overflow (`layout` breaks out of the line loop), so any character the laid-out lines
+    /// don't cover — the last line's range ends short of the whole text — points at dropped
+    /// content. Text that fits completely covers its end: paragraph breaks are inside their
+    /// lines, and a trailing empty paragraph that fits gains its own (empty) line. Empty text
+    /// has nothing to drop. Callers gate this on the shape being a box; point text has no box
+    /// to overflow.
+    pub fn overflows(&self, text: &str) -> bool {
+        !text.is_empty() && self.lines.last().is_none_or(|ln| ln.range.end < text.len())
     }
 
     /// Byte offset of the caret nearest to a text-space point.

@@ -7,6 +7,8 @@ use super::{ColorMode, DocState, Document, PixelFormat, Rect, Surface};
 pub struct IsolatedCurveChannel {
     /// Channels-panel name, including a custom alpha name or "{layer} Mask".
     pub name: String,
+    /// A partial colour selection exposes its combined entry and individual components.
+    pub components: Option<crate::color_channels::ColorChannels>,
     /// Curves param key: empty = composite `points`; otherwise `red`/`green`/…
     pub key: &'static str,
     /// Index into the tone-space histograms (composite = 0 for RGB/CMYK).
@@ -45,27 +47,36 @@ pub fn isolated_curve_channel(st: &DocState) -> Option<IsolatedCurveChannel> {
 /// must give the same Curves dropdown (#5335).
 pub fn isolated_curve_channel_for(st: &DocState, layers_panel_mask: bool) -> Option<IsolatedCurveChannel> {
     let doc = &st.doc;
-    let mode = edit_mode(doc);
+    if (matches!(st.channel_view.target, ChannelTarget::Color(_)) || (st.channel_view.target == ChannelTarget::Composite && doc.quick_mask.is_none()))
+        && crate::mask_view_cmds::current(st).is_some_and(|v| v.filter)
+    {
+        return filter_mask_curve_channel(st);
+    }
+    if matches!(st.channel_view.target, ChannelTarget::Color(_)) && (crate::mask_view_cmds::current(st).is_some() || layers_panel_mask) {
+        return layer_mask_curve_channel(st);
+    }
+    if let Some(colors) = st.channel_view.color_selection(color_count(doc)) {
+        return curve_channel_for_colors(doc, colors);
+    }
     match st.channel_view.target {
-        ChannelTarget::Color(k) => {
-            let names = color_names(mode);
-            let keys = crate::adjust_params::channel_keys(crate::adjust_params::default_space(mode));
-            let name = names.get(k)?.to_string();
-            let key = *keys.get(k)?;
-            let hist = if matches!(mode, ColorMode::Lab) { k } else { k.saturating_add(1) };
-            Some(IsolatedCurveChannel { name, key, hist, tint: true, translate: true, gray: None })
-        }
         ChannelTarget::Alpha(i) => doc.channels.get(i).map(|c| IsolatedCurveChannel {
             name: c.name.clone(),
+            components: None,
             key: "",
             hist: 0,
             tint: false,
             translate: false,
             gray: Some(GraySurface::Alpha(i)),
         }),
-        ChannelTarget::Composite if doc.quick_mask.is_some() => {
-            Some(IsolatedCurveChannel { name: "Quick Mask".into(), key: "", hist: 0, tint: false, translate: true, gray: Some(GraySurface::QuickMask) })
-        }
+        ChannelTarget::Composite if doc.quick_mask.is_some() => Some(IsolatedCurveChannel {
+            name: "Quick Mask".into(),
+            components: None,
+            key: "",
+            hist: 0,
+            tint: false,
+            translate: true,
+            gray: Some(GraySurface::QuickMask),
+        }),
         ChannelTarget::LayerMask => layer_mask_curve_channel(st),
         ChannelTarget::Composite if crate::mask_view_cmds::current(st).is_some_and(|v| v.filter) => filter_mask_curve_channel(st),
         ChannelTarget::Composite if crate::mask_view_cmds::current(st).is_some() || layers_panel_mask => layer_mask_curve_channel(st),
@@ -73,11 +84,33 @@ pub fn isolated_curve_channel_for(st: &DocState, layers_panel_mask: bool) -> Opt
     }
 }
 
-fn layer_mask_curve_channel(st: &DocState) -> Option<IsolatedCurveChannel> {
+/// Tone editor descriptor for captured native colour targets, without cloning document history.
+pub fn curve_channel_for_colors(doc: &Document, colors: crate::color_channels::ColorChannels) -> Option<IsolatedCurveChannel> {
+    let mode = edit_mode(doc);
+    let names = color_names(mode);
+    if colors.len() > 1 {
+        let name = colors.indices().filter_map(|i| names.get(i)).filter_map(|n| n.chars().next()).collect();
+        return Some(IsolatedCurveChannel { name, components: Some(colors), key: "", hist: 0, tint: false, translate: false, gray: None });
+    }
+    let k = colors.indices().next()?;
+    let keys = crate::adjust_params::channel_keys(crate::adjust_params::default_space(mode));
+    Some(IsolatedCurveChannel {
+        name: names.get(k)?.to_string(),
+        components: None,
+        key: keys.get(k)?,
+        hist: if mode == ColorMode::Lab { k } else { k.saturating_add(1) },
+        tint: true,
+        translate: true,
+        gray: None,
+    })
+}
+
+/// The active layer mask's tone descriptor, independent of the selected colour rows.
+pub fn layer_mask_curve_channel(st: &DocState) -> Option<IsolatedCurveChannel> {
     let layer = st.active_layer.and_then(|id| st.doc.layer(id))?;
     layer.mask.as_ref()?;
     let name = format!("{} Mask", layer.name);
-    Some(IsolatedCurveChannel { name, key: "", hist: 0, tint: false, translate: false, gray: Some(GraySurface::LayerMask) })
+    Some(IsolatedCurveChannel { name, components: None, key: "", hist: 0, tint: false, translate: false, gray: Some(GraySurface::LayerMask) })
 }
 
 /// The Curves target when the active smart object's filter mask is targeted (its thumbnail on the
@@ -86,7 +119,7 @@ pub fn filter_mask_curve_channel(st: &DocState) -> Option<IsolatedCurveChannel> 
     let layer = st.active_layer.and_then(|id| st.doc.layer(id))?;
     crate::smart_cmds::filter_mask_paintable(layer).ok()?;
     let name = format!("{} Filter Mask", layer.name);
-    Some(IsolatedCurveChannel { name, key: "", hist: 0, tint: false, translate: false, gray: Some(GraySurface::FilterMask) })
+    Some(IsolatedCurveChannel { name, components: None, key: "", hist: 0, tint: false, translate: false, gray: Some(GraySurface::FilterMask) })
 }
 
 pub(super) fn edit_mode(doc: &Document) -> ColorMode {

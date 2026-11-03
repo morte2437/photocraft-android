@@ -131,6 +131,72 @@ fn alphas(h: &egui_kittest::Harness<'_, PhotocraftApp>) -> Vec<String> {
     h.state().session.active().unwrap().doc.channels.iter().map(|c| c.name.clone()).collect()
 }
 
+/// Row selection sets the visible components; eye clicks subsequently override only the
+/// view. Exercise real Shift-clicks so panel event routing and later frames keep that split.
+#[test]
+fn channel_selection_sets_visibility_and_eye_overrides_do_not_retarget() {
+    use egui::{Event, Modifiers, PointerButton};
+    for (mode, first, second, third, selected) in
+        [("rgb", "Red", "Blue", "Green", vec![0, 2]), ("cmyk", "Cyan", "Magenta", "Yellow", vec![0, 1]), ("lab", "a", "b", "Lightness", vec![1, 2])]
+    {
+        let (mut h, _) = channels_harness();
+        if mode != "rgb" {
+            h.state_mut().run(&format!("image.mode.{mode}"), json!({})).unwrap();
+            h.run_steps(2);
+        }
+        let click = |h: &mut egui_kittest::Harness<'_, PhotocraftApp>, label: &str, modifiers| {
+            let pos = at(h, label);
+            h.event(Event::ModifiersChanged(modifiers));
+            h.hover_at(pos);
+            h.run_steps(1);
+            for pressed in [true, false] {
+                h.event(Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers });
+                h.run_steps(1);
+            }
+            h.event(Event::ModifiersChanged(Modifiers::NONE));
+            h.run_steps(3);
+        };
+        let visible = |h: &egui_kittest::Harness<'_, PhotocraftApp>| {
+            let st = h.state().session.active().unwrap();
+            (0..st.doc.pixel_format().mode.color_channels()).filter(|k| st.channel_view.color_visible(*k)).collect::<Vec<_>>()
+        };
+        let colors = |h: &egui_kittest::Harness<'_, PhotocraftApp>| {
+            photocraft_engine::color_channels::selected(&h.state().session).unwrap().indices().collect::<Vec<_>>()
+        };
+
+        click(&mut h, first, Modifiers::NONE);
+        assert_eq!(visible(&h), vec![selected[0]], "{mode}: clicking one row shows it alone");
+        assert!(!h.state().session.active().unwrap().channel_view.alpha_shown(0));
+        click(&mut h, second, Modifiers::SHIFT);
+        assert_eq!(colors(&h), selected);
+        assert_eq!(visible(&h), selected, "{mode}: extending the selection shows just its components");
+
+        click(&mut h, &format!("Visibility {third}"), Modifiers::NONE);
+        assert_eq!(visible(&h).len(), 3, "{mode}: the eye adds a visible component");
+        assert_eq!(colors(&h), selected, "the eye does not extend the editing target");
+        click(&mut h, &format!("Visibility {first}"), Modifiers::NONE);
+        let manual = visible(&h);
+        assert!(!manual.contains(&selected[0]));
+        assert_eq!(colors(&h), selected, "a selected component can be hidden manually");
+        h.state_mut().run("image.adjustments.invert", json!({})).unwrap();
+        h.run_steps(3);
+        assert_eq!(visible(&h), manual, "editing and rendering preserve manual visibility");
+
+        click(&mut h, first, Modifiers::NONE);
+        assert_eq!(visible(&h), vec![selected[0]], "a new row selection resets its default view");
+        click(&mut h, second, Modifiers::SHIFT);
+        assert_eq!(visible(&h), selected);
+        click(&mut h, third, Modifiers::SHIFT);
+        assert_eq!(visible(&h).len(), 3);
+        if mode == "cmyk" {
+            click(&mut h, "Black", Modifiers::SHIFT);
+        }
+        let st = h.state().session.active().unwrap();
+        assert_eq!(st.channel_view.target, ChannelTarget::Composite);
+        assert_eq!(visible(&h).len(), st.doc.pixel_format().mode.color_channels());
+    }
+}
+
 /// #9163: alpha channels reorder by dragging, as in Photoshop: a drop in a row's upper half
 /// lands above it, over the colour channels it lands first among the alphas, colour channels
 /// don't move, and each reorder is one history step.
@@ -311,4 +377,66 @@ fn the_layer_mask_row_on_the_trash_asks_first() {
     assert!(h.state().ui.dialogs.iter().any(|d| crate::mask_trash_prompt::owns(&d.fields)), "the prompt is open");
     let st = h.state().session.active().unwrap();
     assert!(st.doc.layer(photocraft_doc::LayerId(masked)).unwrap().mask.is_some(), "nothing deleted yet");
+}
+
+/// A colour channel click recorded into an action saves as Photoshop's component select and
+/// targets the same channel as the index did.
+#[test]
+fn recorded_colour_clicks_save_as_component_selects() {
+    use photocraft_doc::ColorMode;
+    for (mode, color_mode, count) in [("rgb", ColorMode::Rgb, 3), ("cmyk", ColorMode::Cmyk, 4), ("lab", ColorMode::Lab, 3)] {
+        for k in 0..count {
+            let mut s = photocraft_engine::Session::new();
+            s.execute("file.new", json!({"width": 2, "height": 1, "mode": mode})).unwrap();
+            let by_index = s.execute("channel.target", json!({"channel": Row::Color(k).reference(), "extend": false})).unwrap();
+            s.execute("channel.target", json!({"channel": "composite"})).unwrap();
+            let params = json!({"channel": Row::Color(k).target_reference(color_mode), "extend": false});
+            assert_eq!(s.execute("channel.target", params.clone()).unwrap(), by_index, "{mode}/{k}");
+            s.actions.list.push(photocraft_engine::actions_cmds::Action::new("Click", vec![("channel.target".into(), params)]));
+            let saved = s.execute("actions.save", json!({"action": "Click"})).unwrap_or_else(|e| panic!("{mode}/{k}: {e}"));
+            assert_eq!(saved["skipped"], json!([]));
+            let loaded = s.execute("actions.load", json!({"data": saved["data"]})).unwrap();
+            assert_eq!(loaded["unsupported"], json!([]), "{mode}/{k}");
+            let name = photocraft_engine::channel_cmds::color_names(color_mode)[k].to_ascii_lowercase();
+            assert_eq!(s.actions.list.last().unwrap().steps, vec![("channel.target".to_string(), json!({"channel": {"color": name}}))]);
+        }
+    }
+    // Rows the colour names can't express keep their reference.
+    assert_eq!(Row::Color(0).target_reference(ColorMode::Grayscale), Row::Color(0).reference());
+    assert_eq!(Row::Alpha(1).target_reference(ColorMode::Rgb), json!(1));
+    assert_eq!(Row::QuickMask.target_reference(ColorMode::Rgb), json!("composite"));
+}
+
+/// A real click on a colour row while recording records the colour by name, and the recorded
+/// action saves strictly and reloads as the same step.
+#[test]
+fn recording_a_colour_row_click_saves_as_photoshop_select() {
+    use egui::{Event, Modifiers, PointerButton};
+    for (mode, label, name) in [("rgb", "Red", "red"), ("cmyk", "Cyan", "cyan"), ("lab", "Lightness", "lightness")] {
+        let (mut h, _) = channels_harness();
+        if mode != "rgb" {
+            h.state_mut().run(&format!("image.mode.{mode}"), json!({})).unwrap();
+            h.run_steps(2);
+        }
+        h.state_mut().run("actions.record", json!({"name": "Click"})).unwrap();
+        let pos = at(&h, label);
+        h.hover_at(pos);
+        h.run_steps(1);
+        for pressed in [true, false] {
+            h.event(Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
+            h.run_steps(1);
+        }
+        h.run_steps(3);
+        h.state_mut().run("actions.stop", json!({})).unwrap();
+        let s = &mut h.state_mut().session;
+        let recorded = s.actions.list.iter().find(|a| a.name == "Click").unwrap().steps.clone();
+        let step = ("channel.target".to_string(), json!({"channel": {"color": name}, "extend": false}));
+        assert_eq!(recorded, vec![step], "{mode}");
+        let saved = s.execute("actions.save", json!({"action": "Click"})).unwrap_or_else(|e| panic!("{mode}: {e}"));
+        assert_eq!(saved["skipped"], json!([]), "{mode}");
+        let loaded = s.execute("actions.load", json!({"data": saved["data"]})).unwrap();
+        assert_eq!(loaded["unsupported"], json!([]), "{mode}");
+        let reloaded = &s.actions.list.last().unwrap().steps;
+        assert_eq!(reloaded, &vec![("channel.target".to_string(), json!({"channel": {"color": name}}))], "{mode}");
+    }
 }

@@ -16,6 +16,7 @@ pub fn dock_area(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     }
     egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| crate::panel_docking::show(app, ui));
     crate::dock::persist(app, ui.ctx());
+    crate::color_panel_ui::persist(app);
 }
 
 /// The docking layout's protected canvas panel: the document area, with the icon rail on its end

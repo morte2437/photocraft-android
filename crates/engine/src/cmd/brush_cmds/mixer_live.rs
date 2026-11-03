@@ -30,6 +30,7 @@ fn valid_state(state: &MixerState) -> bool {
         && state.reservoir.as_ref().is_none_or(valid_color)
         && state.pickup.as_ref().is_none_or(valid_color)
         && state.color.as_ref().is_none_or(valid_color)
+        && state.sampled_over.as_ref().is_none_or(valid_color)
         && state.spatial.as_ref().is_none_or(|colors| colors.len() == 4096 && colors.iter().all(valid_color))
 }
 
@@ -48,7 +49,7 @@ struct Core {
     params: Value,
     selection: Option<Surface>,
     lock: bool,
-    color_restrict: Option<usize>,
+    color_restrict: Option<crate::color_channels::Restriction>,
     count: usize,
     last: Option<StrokePoint>,
     bounds: Rect,
@@ -89,7 +90,7 @@ impl Core {
             }
             // Render the visible document including the active layer exactly once, before
             // deposition. Masks, transforms, blend modes and adjustments use the compositor.
-            let sample = self.settings.sample_all_layers.then(|| {
+            let sample = (self.settings.sample_all_layers && self.settings.samples_canvas(dab)).then(|| {
                 let buf = photocraft_compose::render(&self.doc, r);
                 let fmt = self.pre.format();
                 let mut sample = Region::new(r, fmt.channels());
@@ -105,18 +106,8 @@ impl Core {
             let original = Region::read(&self.pre, r);
             let (target, _) = crate::channel_cmds::target_surface(Arc::make_mut(&mut self.doc), self.layer, &self.params)?;
             mix_back(target, &original, &region, r, 1.0, self.selection.as_ref(), self.lock);
-            if let Some(k) = self.color_restrict {
-                let n = target.channels();
-                let mut values = target.read_region(r);
-                let before = self.pre.read_region(r);
-                for (new, old) in values.chunks_exact_mut(n).zip(before.chunks_exact(n)) {
-                    for (c, (new, old)) in new.iter_mut().zip(old).enumerate() {
-                        if c != k {
-                            *new = *old;
-                        }
-                    }
-                }
-                target.write_region(r, &values);
+            if let Some(restrict) = self.color_restrict {
+                crate::color_channels::restrict_region(&self.pre, target, restrict.colors, r)?;
             }
             damage = damage.union(&r);
         }
@@ -160,6 +151,8 @@ impl LiveMixer {
 
     /// Validate the params and capture the document and paint load, without rendering a dab.
     fn prepare(s: &Session, p: &Value, preview_limits: bool) -> Result<(Self, Vec<StrokePoint>)> {
+        let captured = crate::channel_cmds::inject_target(s, CMD, p.clone());
+        let p = &captured;
         has_paintable(s).map_err(EngineError::Other)?;
         if preview_limits && p.get("points").and_then(Value::as_array).is_some_and(|v| v.len() > 65_536) {
             return Err(bad(CMD, "stroke exceeds 65536 recorded input samples"));

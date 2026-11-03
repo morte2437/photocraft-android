@@ -986,7 +986,7 @@ fn parse_planes(v: &Value) -> Result<(Vec<VpPlane>, Vec<Option<Torn>>), String> 
         };
         let angle = p.get("angle").and_then(Value::as_f64).unwrap_or(90.0);
         let depth = p.get("depth").and_then(Value::as_f64).unwrap_or(1.0);
-        if !(0.0..=360.0).contains(&angle) || !(depth > 0.0 && depth <= 1000.0) {
+        if !((0.0..=360.0).contains(&angle) && depth > 0.0 && depth <= 1000.0) {
             return Err(format!("plane {i}: angle 0..360, depth above 0 and at most 1000"));
         }
         planes.push(VpPlane { corners: [[0.0; 2]; 4] });

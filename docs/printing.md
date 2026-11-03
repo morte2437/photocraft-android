@@ -25,19 +25,23 @@ the preview and generated PDF continue to share `print_cmds::layout`.
 
 | Route | When | What the user sees |
 |---|---|---|
-| **`craft-print`** (`lp` on CUPS, the Windows spooler) | Whenever `lp` is on the path (macOS, Linux outside a sandbox) or on Windows | `Sent to the printer (request id is Office-42)` |
-| **CUPS over IPP** (`photocraft-ipp`) | No `lp` on the path (a Flatpak) and a print server answers: `CUPS_SERVER`, then `/run/cups/cups.sock`, `/var/run/cups/cups.sock`, `/private/var/run/cupsd`, then `localhost:631`; always for a `printServer` named in the request | `Sent to the printer (job 42 on Office)` |
-| **Print portal** (`org.freedesktop.portal.Print`, desktop app on Linux) | No print server reachable or no printer set up, or always with `PHOTOCRAFT_PRINT_PORTAL=1` | The system print dialog, seeded with the copies and paper; the outcome goes to the log |
+| **`craft-print`** (`lp` on CUPS, the Windows spooler) | `lp` is on the path (macOS, Linux, the Flatpak, which bundles it) and CUPS lists a printer, or on Windows | `Sent to the printer (request id is Office-42)` |
+| **CUPS over IPP** (`photocraft-ipp`) | No `lp` on the path and a print server answers: `CUPS_SERVER`, then `/run/cups/cups.sock`, `/var/run/cups/cups.sock`, `/private/var/run/cupsd`, then `localhost:631`; always for a `printServer` named in the request | `Sent to the printer (job 42 on Office)` |
+| **Print portal** (`org.freedesktop.portal.Print`, desktop app on Linux) | Linux only (the Flatpak included): no print server reachable or no printer set up (including when `lp` is there but CUPS lists no printer and none was named), or always with `PHOTOCRAFT_PRINT_PORTAL=1`. Elsewhere a missing route is an error | The system print dialog, seeded with the copies and paper; the outcome goes to the log |
 | **Print to PDF** | `output` given (the Output field of the dialog) | The file; nothing is spooled unless `send` is true |
 
 A route that exists but fails (an unknown printer, a job the queue refuses) is an error; only a
-missing route (no `lp`, no print server, no printer) moves on to the next one.
+missing route (no `lp`, no print server, no printer) moves on to the next one. With no printer
+named and no default, the only printer takes the job on the `lp` and IPP routes; Windows needs
+a named or default printer.
 
 The IPP client is in-process, pure Rust (RFC 8010/8011: `CUPS-Get-Printers`, `CUPS-Get-Classes`,
-`CUPS-Get-Default`, `Print-Job` with the PDF as the document), so no `lp` binary is needed. That
-is what makes printing work in the Flatpak: the manifest grants `--socket=cups`, which mounts the
-host's CUPS socket, and the sandbox has no `lp`. On a system without CUPS, or in a sandbox
-without the socket, the app falls back to the print portal, whose dialog runs outside the sandbox.
+`CUPS-Get-Default`, `Print-Job` with the PDF as the document), so no `lp` binary is needed. It
+only sees queues the server has, not driverless network printers, which is why the Flatpak
+bundles `lp`/`lpstat` (the manifest's `cups-client` module) and grants `--socket=cups` (the
+host's CUPS socket) and `org.freedesktop.Avahi` (`lpstat -e` finds driverless printers). On a
+system without CUPS, or in a sandbox without the socket, the app falls back to the print portal,
+whose dialog runs outside the sandbox.
 
 ## Which printer
 
@@ -64,6 +68,11 @@ turned settings as `printerSettings`, with the page they give. A print sent to a
 whose layout is the driver's paper the other way round (a landscape layout, portrait settings)
 turns the settings to the layout before printing, rather than stopping with "the driver paper or
 orientation differs"; another paper is still refused.
+
+Scale to Fit Media fills the printable area the driver reports for that page (`printable` in
+`file.print.page`), so borderless paper prints edge to edge (#7782). The area turns with the
+paper, and a print sent to a Windows printer reads it from the driver itself. Without a driver
+page (CUPS, IPP, a PDF or a preview) it fits the paper less an 18 pt margin, as before.
 
 ## Results
 

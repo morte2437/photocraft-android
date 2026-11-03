@@ -56,7 +56,7 @@ fn alpha_type_channels_import_as_alpha_and_round_trip() {
         as_ink.channels[1].surface = s;
         as_ink.channels[1].spot = Some((photocraft_color::Color::BLACK, 0.0));
         // Within f32 rounding: the inverted copy is re-quantised to the channel depth.
-        let (shown, inked) = (photocraft_compose::flatten(&d).px, photocraft_compose::flatten(&as_ink).px);
+        let (shown, inked) = (photocraft_compose::flatten(&d).into_px(), photocraft_compose::flatten(&as_ink).into_px());
         assert_eq!(shown.len(), inked.len());
         for (a, b) in shown.iter().zip(&inked) {
             assert!(a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-5), "{a:?} vs {b:?} ({depth}-bit)");
@@ -115,7 +115,7 @@ fn alpha_type_channels_are_stored_as_is_not_as_ink() {
         assert_eq!(values(&d.channels[0]), [1.0, 0.0, 1.0, 0.0], "spot channel ({depth}-bit)");
 
         // The composite is what Photoshop shows: the alpha prints as black ink where unselected.
-        let px = photocraft_compose::flatten(&d).px;
+        let px = photocraft_compose::flatten(&d).into_px();
         assert_eq!(px.iter().map(|p| [p[0], p[1], p[2]]).collect::<Vec<_>>(), [[0.0, 1.0, 1.0], [1.0, 1.0, 1.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]);
 
         // Saved back byte for byte.
@@ -222,4 +222,32 @@ fn corpus_multichannel_round_trip_keeps_channels_and_resources() {
     assert!(lost.is_empty(), "resources lost on save: {lost:?}");
     let keys = |f: &PsdFile| f.global_blocks.iter().map(|b| b.key).collect::<Vec<_>>();
     assert_eq!(keys(&back), keys(&f));
+}
+
+#[test]
+fn tile_row_conversion_preserves_spot_and_alpha_planes() {
+    for depth in [8, 16, 32] {
+        let mut f = testgen::merged_only(Version::Psb, ColorMode::Multichannel, depth, Compression::Rle, 5, 600);
+        let mut info = 1u32.to_be_bytes().to_vec();
+        display_record(&mut info, [0, 0, 0], 0, 2);
+        display_record(&mut info, [65535, 0, 0], 50, 1);
+        f.resources.push(ImageResource::new(1077, info));
+        let raw = f.decode_merged().unwrap();
+        let (doc, _) = psd_to_document(&f);
+        let sample = usize::from(depth / 8);
+        let plane = 5 * 600 * sample;
+        for (k, channel) in doc.channels.iter().enumerate() {
+            let values = channel.surface.read_region(doc.bounds());
+            for (i, value) in values.iter().enumerate() {
+                let bytes = &raw[k * plane + i * sample..k * plane + (i + 1) * sample];
+                let original = match depth {
+                    8 => f32::from(bytes[0]) / 255.0,
+                    16 => f32::from(u16::from_be_bytes(bytes.try_into().unwrap())) / 65535.0,
+                    _ => f32::from_be_bytes(bytes.try_into().unwrap()),
+                };
+                let expected = if channel.spot.is_some() { 1.0 - original } else { original };
+                assert!((value - expected).abs() < 0.00001, "depth {depth}, channel {k}, pixel {i}");
+            }
+        }
+    }
 }

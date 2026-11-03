@@ -192,7 +192,28 @@ fn read_vma_body<'a>(r: &mut Rd<'a>) -> Result<&'a [u8]> {
     r.take(len)
 }
 
+/// Pixel storage needed by a pattern, inspected without decoding channel data.
+#[derive(Debug, Clone)]
+pub struct PatternMemory {
+    /// Pattern width in pixels.
+    pub width: u32,
+    /// Pattern height in pixels.
+    pub height: u32,
+    /// Bits per sample, including packed bitmap samples.
+    pub depth: u16,
+    /// PSD colour mode number.
+    pub mode: u32,
+    /// All written planes, including any ignored extra arrays.
+    pub planes: usize,
+    /// Sum of full padded channel plane sizes.
+    pub decoded_bytes: u64,
+}
+
 fn read_pattern(r: &mut Rd, budget: &mut PatternBudget) -> Result<PsdPattern> {
+    read_pattern_with(r, budget, true, &mut |_| {})
+}
+
+fn read_pattern_with(r: &mut Rd, budget: &mut PatternBudget, decode: bool, visit: &mut dyn FnMut(PatternMemory)) -> Result<PsdPattern> {
     let PatternHeader { mode, name, id, palette } = read_header(r)?;
     let body = read_vma_body(r)?;
     let mut v = Rd { b: body, p: 0 };
@@ -289,8 +310,18 @@ fn read_pattern(r: &mut Rd, budget: &mut PatternBudget) -> Result<PsdPattern> {
     if channels.len() < nc {
         return Err(PsdError::invalid("pattern has fewer channels than its colour mode"));
     }
+    visit(PatternMemory {
+        width: w,
+        height: h,
+        depth: first_depth.unwrap_or(8),
+        mode,
+        planes: channels.len(),
+        decoded_bytes: channels
+            .iter()
+            .try_fold(0u64, |sum, c| sum.checked_add(c.destination.total_bytes()?).ok_or(PsdError::LimitExceeded("pattern memory size overflow")))?,
+    });
     let mut planes = Vec::new();
-    for channel in channels {
+    for channel in channels.into_iter().filter(|_| decode) {
         let plane = decode_planes(channel.compression, channel.data, &channel.source)?;
         planes.push(place_channel_plane(plane, &channel.source, channel.x, channel.y, &channel.destination)?);
     }
@@ -377,7 +408,7 @@ fn place_channel_plane(mut plane: Vec<u8>, source: &PlaneLayout, x: usize, y: us
 
 fn zeroed_pattern_plane(len: usize) -> Result<Vec<u8>> {
     let mut out = Vec::new();
-    out.try_reserve_exact(len).map_err(|_| PsdError::LimitExceeded("not enough memory for the padded pattern channel"))?;
+    out.try_reserve_exact(len).map_err(|_| PsdError::OutOfMemory("not enough memory for the padded pattern channel"))?;
     out.resize(len, 0);
     Ok(out)
 }
@@ -470,6 +501,28 @@ pub fn parse_pattern_block_with(data: &[u8], budget: &mut PatternBudget) -> Resu
         r.p = (r.p + pad).min(data.len());
     }
     Ok(out)
+}
+
+/// Inspect a pattern block's dimensions and decoded sizes without allocating pixel planes.
+/// Uses the pixel parser’s structural validation and shared decode limits. Returns
+/// earlier records even if a later record is malformed, since those can decode first.
+pub fn pattern_block_memory(data: &[u8], budget: &mut PatternBudget) -> Vec<PatternMemory> {
+    let mut r = Rd { b: data, p: 0 };
+    let mut out = Vec::new();
+    while r.p + 4 <= data.len() {
+        let Ok(len) = r.u32() else { break };
+        let len = len as usize;
+        if len == 0 {
+            break;
+        }
+        let Ok(body) = r.take(len) else { break };
+        // Earlier patterns may already have decoded when a later record is malformed.
+        if read_pattern_with(&mut Rd { b: body, p: 0 }, budget, false, &mut |m| out.push(m)).is_err() {
+            break;
+        }
+        r.p = (r.p + (4 - len % 4) % 4).min(data.len());
+    }
+    out
 }
 
 /// Whether `Patt` / `Pat2` / `Pat3` block data keeps a pattern's transparency in the user mask

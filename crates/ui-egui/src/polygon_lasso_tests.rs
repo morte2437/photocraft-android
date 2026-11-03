@@ -26,6 +26,7 @@ fn harness() -> Harness<'static, PhotocraftApp> {
             }
             crate::shortcuts::handle(app, &ctx);
             egui::CentralPanel::default().show(ui, |ui| crate::canvas::document_area(app, ui));
+            crate::dialogs::show(app, &ctx);
         },
         app,
     );
@@ -207,6 +208,217 @@ fn triangle(h: &mut Harness<'static, PhotocraftApp>, x: f32, y: f32, m: Modifier
 
 fn steps(h: &Harness<'static, PhotocraftApp>) -> usize {
     h.state().session.active().unwrap().history.entries().len()
+}
+
+fn zoomed_polygon() -> Harness<'static, PhotocraftApp> {
+    let mut h = harness();
+    h.state_mut().ui.views[0].zoom = 4.0;
+    h.run_steps(2);
+    click(&mut h, 170.0, 130.0, Modifiers::NONE);
+    h.run_steps(30);
+    h
+}
+
+#[test]
+fn polygon_edge_scroll_continues_with_button_up_and_keeps_vertices_fixed() {
+    for (dx, dy, flip, rotation) in [
+        (-1.0, 0.0, false, 0.0),
+        (1.0, 0.0, false, 0.0),
+        (0.0, -1.0, false, 0.0),
+        (0.0, 1.0, false, 0.0),
+        (-1.0, -1.0, false, 0.0),
+        (1.0, -1.0, false, 0.0),
+        (-1.0, 1.0, false, 0.0),
+        (1.0, 1.0, false, 0.0),
+        (1.0, 0.0, true, 0.0),
+        (1.0, 0.0, false, 90.0),
+    ] {
+        let mut h = zoomed_polygon();
+        h.state_mut().ui.view.flip_horizontal = flip;
+        h.state_mut().ui.views[0].rotation = rotation;
+        h.run_steps(1);
+        let xf = ViewXform::active(h.state()).unwrap();
+        // Just beyond each viewport edge, still inside the application's window.
+        let at = xf.rect.center() + vec2(dx * (xf.rect.width() / 2.0 + 4.0), dy * (xf.rect.height() / 2.0 + 4.0));
+        let points = h.state().ui.polygon.clone();
+        let before = steps(&h);
+        h.event(egui::Event::PointerMoved(at));
+        h.run_steps(1);
+        let first = h.state().ui.views[0].center;
+        h.run_steps(4); // No pointer events or pressed buttons: scrolling must keep going.
+        let next = h.state().ui.views[0].center;
+        let direction = xf.unmap_vec(vec2(dx, dy));
+        let movement = vec2(next[0] - xf.center[0], next[1] - xf.center[1]);
+        assert!(movement.dot(direction) > 0.1, "edge ({dx},{dy}), flip={flip}, rotation={rotation}: {movement:?}");
+        assert!((movement.x * direction.y - movement.y * direction.x).abs() < 0.001, "scroll follows the displayed axes");
+        assert!((next[0] - first[0]).hypot(next[1] - first[1]) > 0.1, "stationary pointer keeps scrolling");
+        assert_eq!(h.state().ui.polygon, points, "view motion never adds or moves vertices");
+        assert_eq!(steps(&h), before);
+        assert!(selection(&h).is_none());
+        assert!(!h.ctx.input(|i| i.pointer.any_down()));
+        assert!(h.output().viewport_output[&egui::ViewportId::ROOT].repaint_delay.is_zero());
+        h.event(egui::Event::PointerMoved(xf.rect.center()));
+        h.run_steps(1);
+        let stopped = h.state().ui.views[0].center;
+        h.run_steps(4);
+        assert_eq!(h.state().ui.views[0].center, stopped, "returning to the interior stops scrolling");
+    }
+
+    let mut h = zoomed_polygon();
+    h.state_mut().run("prefs.set", json!({"path":"tools.overscroll","value":false})).unwrap();
+    let xf = ViewXform::active(h.state()).unwrap();
+    let (points, before) = (h.state().ui.polygon.clone(), steps(&h));
+    h.event(egui::Event::PointerMoved(xf.rect.right_center() + vec2(4.0, 0.0)));
+    h.run_steps(90);
+    let center = h.state().ui.views[0].center;
+    assert!((center[0] - (400.0 - xf.rect.width() / (2.0 * xf.zoom))).abs() < 0.001, "Overscroll off stops at the image's right edge");
+    h.run_steps(10);
+    assert_eq!(h.state().ui.views[0].center, center, "a long edge hold stays clamped");
+    assert_eq!(h.state().ui.polygon, points);
+    assert_eq!(steps(&h), before);
+}
+
+#[test]
+fn polygon_edge_scroll_places_the_next_vertex_in_the_panned_view_and_commits_once() {
+    let mut h = zoomed_polygon();
+    let before = steps(&h);
+    let original = ViewXform::active(h.state()).unwrap();
+    h.event(egui::Event::PointerMoved(original.rect.right_center() - vec2(4.0, 0.0)));
+    h.run_steps(10);
+    let panned = ViewXform::active(h.state()).unwrap();
+    assert!(panned.center[0] > original.center[0], "the zoomed image pans toward the right edge");
+    let at = panned.rect.center() + vec2(60.0, 0.0);
+    let expected = panned.to_doc(at);
+    h.event(egui::Event::PointerMoved(at));
+    h.run_steps(20);
+    button(&mut h, at, true, Modifiers::NONE);
+    button(&mut h, at, false, Modifiers::NONE);
+    assert_eq!(h.state().ui.polygon[1], expected, "the next click uses the updated view transform");
+    h.run_steps(30);
+    click(&mut h, expected[0] as f32, 190.0, Modifiers::NONE);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert!(h.state().ui.polygon.is_empty());
+    assert!(selection(&h).is_some_and(|r| near(r, 170, 130, expected[0].ceil() as i32, 190)), "{:?}", selection(&h));
+    assert_eq!(steps(&h), before + 1);
+    let finished_center = h.state().ui.views[0].center;
+    h.event(egui::Event::PointerMoved(original.rect.right_center()));
+    h.run_steps(4);
+    assert_eq!(h.state().ui.views[0].center, finished_center, "a finished polygon never scrolls");
+    h.state_mut().run("edit.undo", json!({})).unwrap();
+    assert!(selection(&h).is_none(), "one undo removes the completed selection");
+}
+
+#[test]
+fn polygon_edge_scroll_keeps_pixel_aspect_and_shift_constrained_segments() {
+    for (flip, rotation) in [(false, 0.0), (true, 0.0), (false, 45.0), (true, 90.0)] {
+        let mut h = zoomed_polygon();
+        h.state_mut().ui.view.pixel_aspect = "custom:2:Wide".into();
+        h.state_mut().ui.view.flip_horizontal = flip;
+        h.state_mut().ui.views[0].rotation = rotation;
+        h.run_steps(2);
+        let original = ViewXform::active(h.state()).unwrap();
+        let points = h.state().ui.polygon.clone();
+        h.event(egui::Event::PointerMoved(original.rect.right_center() + vec2(4.0, 0.0)));
+        h.run_steps(5);
+        let panned = ViewXform::active(h.state()).unwrap();
+        let movement = original.map_vec(vec2(panned.center[0] - original.center[0], panned.center[1] - original.center[1]));
+        assert!(movement.x > 1.0 && movement.y.abs() < 0.001, "wide pixels, flip={flip}, rotation={rotation}: {movement:?}");
+        assert_eq!(h.state().ui.polygon, points, "scrolling keeps existing document-space vertices");
+
+        let at = panned.rect.center() + vec2(60.0, 30.0);
+        let expected = crate::canvas::constrained_polygon_point(points[0], panned.to_doc(at));
+        h.event(egui::Event::PointerMoved(at));
+        h.event(egui::Event::ModifiersChanged(Modifiers::SHIFT));
+        h.run_steps(30);
+        button(&mut h, at, true, Modifiers::SHIFT);
+        button(&mut h, at, false, Modifiers::SHIFT);
+        assert_eq!(h.state().ui.polygon.len(), 2);
+        assert_eq!(h.state().ui.polygon[1], expected, "Shift still snaps in document space after panning");
+        assert_eq!(h.state().ui.polygon_mode, "replace", "Shift after the first vertex does not change selection intent");
+    }
+
+    let mut h = zoomed_polygon();
+    h.state_mut().ui.view.pixel_aspect = "custom:2:Wide".into();
+    h.state_mut().run("prefs.set", json!({"path":"tools.overscroll","value":false})).unwrap();
+    let xf = ViewXform::active(h.state()).unwrap();
+    h.event(egui::Event::PointerMoved(xf.rect.right_center() + vec2(4.0, 0.0)));
+    h.run_steps(180);
+    let center = h.state().ui.views[0].center;
+    let rightmost = 400.0 - xf.rect.width() / (2.0 * xf.zoom_x());
+    assert!((center[0] - rightmost).abs() < 0.001, "Overscroll off clamps using the displayed pixel aspect");
+    h.run_steps(10);
+    assert_eq!(h.state().ui.views[0].center, center);
+}
+
+#[test]
+fn polygon_edge_scroll_pauses_for_dialogs_and_temporary_navigation() {
+    for pause in ["dialog", "space", "middle"] {
+        let mut h = zoomed_polygon();
+        let rect = ViewXform::active(h.state()).unwrap().rect;
+        let edge = rect.right_center() + vec2(4.0, 0.0);
+        h.event(egui::Event::PointerMoved(edge));
+        h.run_steps(1);
+        match pause {
+            "dialog" => {
+                h.state_mut().ui.open_dialog(crate::state::DialogKind::Error, json!({"message":"Pause"}).as_object().unwrap().clone());
+            }
+            "space" => h.event(egui::Event::Key { key: egui::Key::Space, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE }),
+            _ => h.event(egui::Event::PointerButton { pos: edge, button: PointerButton::Middle, pressed: true, modifiers: Modifiers::NONE }),
+        }
+        h.run_steps(2);
+        let center = h.state().ui.views[0].center;
+        let points = h.state().ui.polygon.clone();
+        h.run_steps(5);
+        assert_eq!(h.state().ui.views[0].center, center, "paused for {pause}");
+        assert_eq!(h.state().ui.polygon, points, "{pause} retains the unfinished selection");
+    }
+}
+
+#[test]
+fn polygon_edge_scroll_never_moves_an_inactive_pane_or_survives_a_document_or_tool_switch() {
+    let mut h = zoomed_polygon();
+    // Creating a document now cancels the old polygon immediately. Start a fresh one after
+    // returning, so the inactive-pane and Enter checks exercise an outline that can commit.
+    h.state_mut().run("file.new", json!({"width":400,"height":300})).unwrap();
+    h.state_mut().session.set_active(0);
+    h.run_steps(2);
+    for (x, y) in [(170.0, 130.0), (200.0, 130.0), (200.0, 170.0)] {
+        click(&mut h, x, y, Modifiers::NONE);
+        h.run_steps(30);
+    }
+    assert_eq!(h.state().ui.polygon.len(), 3);
+    h.state_mut().ui.views[1].zoom = 4.0;
+    h.state_mut().ui.views[1].center = [200.0, 150.0];
+    h.state_mut().ui.views[1].fit_pending = false;
+    h.state_mut().ui.view.arrange = "twoUpVertical".into();
+    h.run_steps(2);
+    let other = crate::canvas::arranged_cells(h.state(), h.state().last_canvas_rect).unwrap().into_iter().find(|(i, _)| *i == 1).unwrap().1;
+    let centers: Vec<_> = h.state().ui.views.iter().map(|v| v.center).collect();
+    h.event(egui::Event::PointerMoved(other.left_center() + vec2(4.0, 0.0)));
+    h.run_steps(5);
+    assert_eq!(h.state().ui.views.iter().map(|v| v.center).collect::<Vec<_>>(), centers, "hovering the other pane never pans either view");
+    assert_eq!(h.state().ui.polygon.len(), 3, "the active polygon is still unfinished");
+    h.state_mut().session.set_active(1);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert!(h.state().ui.polygon.is_empty(), "the old document's unfinished polygon is discarded before Enter");
+    assert!(selection(&h).is_none());
+
+    let mut h = zoomed_polygon();
+    h.state_mut().ui.tool = Tool::Brush;
+    h.run_steps(2);
+    assert!(h.state().ui.polygon.is_empty(), "changing tools drops the polygon");
+    h.state_mut().ui.tool = Tool::PolygonLasso;
+    click(&mut h, 170.0, 130.0, Modifiers::NONE);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    let center = h.state().ui.views[0].center;
+    let edge = ViewXform::active(h.state()).unwrap().rect.right_center();
+    h.event(egui::Event::PointerMoved(edge));
+    h.run_steps(5);
+    assert!(h.state().ui.polygon.is_empty());
+    assert_eq!(h.state().ui.views[0].center, center, "Escape stops edge scrolling");
 }
 
 /// A new polygon hides the selection it will replace; Esc brings it back untouched.

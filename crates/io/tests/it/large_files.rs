@@ -42,7 +42,7 @@ fn check_grid(g: &Grid, doc: &Document, what: &str) {
     ];
     assert_eq!(census(doc), want, "{what}: [raster, groups, masked, with effects, hidden]");
     for (x, y) in g.sample_points() {
-        let px = photocraft_compose::render(doc, Rect::from_xywh(x as i32, y as i32, 1, 1)).px;
+        let px = photocraft_compose::render(doc, Rect::from_xywh(x as i32, y as i32, 1, 1)).into_px();
         let got = px.first().copied().unwrap_or_default();
         let want = g.expected(x, y);
         for c in 0..3 {

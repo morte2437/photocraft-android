@@ -116,11 +116,11 @@ fn cmyk_fills_survive_psd_roundtrip_at_every_depth() {
                 let mut doc = Document::new("CMYK fill", photocraft_geom::Size::new(9, 6), ColorMode::Cmyk, depth);
                 doc.icc_profile = profile.clone();
                 doc.layers.push(Layer::new("Fill", LayerContent::Fill(fill)));
-                let expected = photocraft_compose::flatten(&doc).px;
+                let expected = photocraft_compose::flatten(&doc).into_px();
                 assert!(max_diff(&expected, &photocraft_compose::render_tiled(&doc, doc.bounds(), 3).px) <= 1e-6);
                 let bytes = export(&doc, "x.psd", &ExportOptions::default()).unwrap().bytes;
                 let back = import("x.psd", &bytes).unwrap().document;
-                let actual = photocraft_compose::flatten(&back).px;
+                let actual = photocraft_compose::flatten(&back).into_px();
                 let diff = max_diff(&expected, &actual);
                 assert!(diff <= 1e-6, "{depth:?} {style:?}: round-trip error {diff}");
                 assert_eq!(back.icc_profile, doc.icc_profile);
@@ -144,7 +144,7 @@ fn uncached_cmyk_gradient_corpus_roundtrip() {
     let bytes = std::fs::read(path).expect("run cargo xtask corpus --all");
     let doc = import("x.psd", &bytes).unwrap().document;
     assert!(doc.layers.iter().any(|l| matches!(l.content, photocraft_doc::LayerContent::Fill(_)) && l.fill_cache.is_none()));
-    let expected = photocraft_compose::flatten(&doc).px;
+    let expected = photocraft_compose::flatten(&doc).into_px();
     let saved = export(&doc, "x.psd", &ExportOptions::default()).unwrap().bytes;
     let back = import("x.psd", &saved).unwrap().document;
     let diff = max_diff(&expected, &photocraft_compose::flatten(&back).px);
@@ -177,6 +177,53 @@ fn rgb_fill_colours_separate_through_the_document_cmyk_profile() {
         for (actual, expected) in samples.iter().zip(expected) {
             assert!((actual - expected).abs() <= tolerance, "{depth:?}: {actual} vs {expected}");
         }
+    }
+}
+
+#[test]
+fn cmyk_merged_composite_reads_through_the_embedded_profile() {
+    // The merged image of a CMYK file tagged with a non-default profile is turned into RGB through
+    // that profile, as the layers are, or every comparison against it is off (#3778).
+    use photocraft_cms::{Intent, Transform};
+    use photocraft_psd::{Compression, ImageResource, Version, testgen};
+    let profile = photocraft_cms::synth::cmyk_profile(&photocraft_cms::synth::CmykParams {
+        tvi: [0.26, 0.26, 0.26, 0.3],
+        grid_a2b: 5,
+        grid_b2a: 9,
+        ..Default::default()
+    });
+    let reference = |p: &Profile, ink: &[f32; 4]| {
+        let t = Transform::new(p, Builtin::Srgb.profile(), Intent::RelativeColorimetric, true).unwrap();
+        let mut o = [0.0f32; 4];
+        t.eval(ink, &mut o);
+        [o[0].clamp(0.0, 1.0), o[1].clamp(0.0, 1.0), o[2].clamp(0.0, 1.0)]
+    };
+    for depth in [8u16, 16] {
+        let mut f = testgen::merged_only(Version::Psd, photocraft_psd::ColorMode::Cmyk, depth, Compression::Raw, 4, 1);
+        let inks: [[f32; 4]; 4] = [[0.1, 0.6, 0.7, 0.05], [0.8, 0.2, 0.1, 0.0], [0.3, 0.3, 0.3, 0.5], [0.0, 0.0, 0.0, 0.0]];
+        let max = if depth == 8 { 255.0 } else { 65535.0 };
+        let mut data = Vec::new();
+        for c in 0..4 {
+            for ink in &inks {
+                // PSD stores CMYK inverted: full scale is no ink.
+                let v = ((1.0 - ink[c]) * max).round();
+                if depth == 8 { data.push(v as u8) } else { data.extend((v as u16).to_be_bytes()) }
+            }
+        }
+        f.image_data = photocraft_psd::ImageData { compression: Compression::Raw, data, stored: None };
+        f.resources.push(ImageResource::new(1039, profile.to_bytes().to_vec()));
+        let merged = merged_composite(&f).unwrap();
+        let mut seen_far = false;
+        for (px, ink) in merged.iter().zip(&inks) {
+            let ink = ink.map(|v| ((v * max).round()) / max);
+            let want = reference(&profile, &ink);
+            let coated = reference(Builtin::CoatedCmyk.profile(), &ink);
+            seen_far |= (0..3).any(|k| (want[k] - coated[k]).abs() > 4.0 / 255.0);
+            for k in 0..3 {
+                assert!((px[k] - want[k]).abs() <= 2.0 / 255.0, "{depth}-bit {ink:?}: {px:?} vs {want:?} (built-in {coated:?})");
+            }
+        }
+        assert!(seen_far, "the fixture profile differs from the built-in one");
     }
 }
 
@@ -258,7 +305,7 @@ fn gradient_maps_with_cmyk_lab_gray_stops_import_and_keep_their_space() {
                 _ => assert_eq!((first, last), ([1.0; 3], [0.0; 3])),
             }
             // The layer now renders: the composite differs from the background alone.
-            let with_map = photocraft_compose::flatten(&back).px;
+            let with_map = photocraft_compose::flatten(&back).into_px();
             let mut hidden = back.clone();
             hidden.layers[1].visible = false;
             assert!(max_diff(&with_map, &photocraft_compose::flatten(&hidden).px) > 0.01, "{mode:?} {depth:?}");

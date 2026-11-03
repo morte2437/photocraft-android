@@ -79,26 +79,32 @@ pub(super) fn path_set(s: &mut Session, p: &Value) -> Result<Value> {
     let name = p.get("name").and_then(Value::as_str).map(str::to_string);
     let append = p.get("op").and_then(Value::as_str).map(|o| op_from(o).ok_or_else(|| bad(CMD, format!("unknown op `{o}`")))).transpose()?;
     s.edit(if is_work(name.as_deref()) { "Work Path" } else { "Save Path" }, |doc, _| {
-        let merge = |old: Option<&Path>, new: Path| match (old, append) {
-            (Some(o), Some(op)) => {
-                let mut o = o.clone();
-                o.subpaths.extend(new.subpaths.into_iter().map(|mut sp| {
-                    sp.op = op;
-                    sp
-                }));
-                o
-            }
-            _ => new,
+        let merge = |old: Option<&Path>, new: Path| -> Result<Path> {
+            let merged = match (old, append) {
+                (Some(o), Some(op)) => {
+                    let mut o = o.clone();
+                    o.subpaths.extend(new.subpaths.into_iter().map(|mut sp| {
+                        sp.op = op;
+                        sp
+                    }));
+                    o
+                }
+                _ => new,
+            };
+            // Appending small Pen components must not bypass the complete path's bounds and
+            // tessellation budget. Validate before changing the document or its history.
+            vector::flatten::validate_path(&merged).map_err(|e| bad(CMD, e))?;
+            Ok(merged)
         };
         if is_work(name.as_deref()) {
-            doc.work_path = Some(merge(doc.work_path.as_ref(), path));
+            doc.work_path = Some(merge(doc.work_path.as_ref(), path)?);
         } else {
             let n = name.clone().unwrap_or_default();
             match doc.paths.iter_mut().find(|q| q.name == n) {
                 Some(q) => {
-                    q.path = merge(Some(&q.path), path);
+                    q.path = merge(Some(&q.path), path)?;
                 }
-                None => doc.paths.push(NamedPath { name: n, path, psd_raw: None }),
+                None => doc.paths.push(NamedPath { name: n, path: merge(None, path)?, psd_raw: None }),
             }
         }
         Ok(())
@@ -365,6 +371,17 @@ pub(super) fn path_to_selection(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({ "selected": selected }))
 }
 
+/// `path.toSelection` with the combine mode fixed by the command (⌘⇧↩ adds, ⌘⌥↩ subtracts);
+/// a `mode` in the params is overridden, the rest is forwarded and validated as usual.
+pub(super) fn path_to_selection_with_mode(s: &mut Session, p: &Value, mode: &str) -> Result<Value> {
+    let mut q = match p {
+        Value::Object(_) => p.clone(),
+        _ => json!({}),
+    };
+    q["mode"] = json!(mode);
+    path_to_selection(s, &q)
+}
+
 pub(super) fn select_to_work_path(s: &mut Session, p: &Value) -> Result<Value> {
     let tol = f64p(p, "tolerance").unwrap_or(2.0).clamp(0.5, 10.0);
     let d = s.active().ok_or(EngineError::NoDocument)?;
@@ -586,6 +603,7 @@ pub(super) fn path_stroke(s: &mut Session, p: &Value) -> Result<Value> {
     let lines = vector::flatten_path(&path, 0.1);
     let id = layer_id(s, p)?;
     let bg = s.tools.background;
+    let channels = crate::color_channels::target(s, p)?.is_some();
     let dmg = s.edit("Stroke Path", |doc, _| {
         let sel = doc.selection.clone();
         let locks = doc.effective_locks(id);
@@ -597,7 +615,7 @@ pub(super) fn path_stroke(s: &mut Session, p: &Value) -> Result<Value> {
         let lock = locks.transparency;
         let surf = l.surface_mut().ok_or_else(|| EngineError::Other("Stroke Path needs a pixel layer".into()))?;
         let mut brush = brush.clone();
-        if brush.erase && lock {
+        if brush.erase && (lock || channels) {
             // Locked transparency (e.g. the Background): the Eraser paints the background colour (#76).
             brush.erase = false;
             brush.color = bg;

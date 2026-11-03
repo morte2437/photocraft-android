@@ -15,6 +15,7 @@ photocraft-color = { workspace = true }
 photocraft-raster = { workspace = true }
 photocraft-doc = { workspace = true }
 photocraft-codecs = { workspace = true }
+craft-pcraft-format = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["unbounded_depth", "float_roundtrip"] }
 thiserror = { workspace = true }

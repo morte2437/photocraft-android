@@ -1,0 +1,68 @@
+[
+  [
+    "engine.execute",
+    {
+      "command": "file.new",
+      "params": {
+        "width": 800,
+        "height": 560,
+        "depth": 16,
+        "background": "white"
+      }
+    }
+  ],
+  [
+    "engine.execute",
+    {
+      "command": "layer.new.layer",
+      "params": {}
+    }
+  ],
+  [
+    "engine.execute",
+    {
+      "command": "paint.gradient",
+      "params": {
+        "from": [
+          0,
+          0
+        ],
+        "to": [
+          800,
+          560
+        ],
+        "colors": [
+          "#143b9b",
+          "#f6b552"
+        ]
+      }
+    }
+  ],
+  [
+    "engine.execute",
+    {
+      "command": "channel.target",
+      "params": {
+        "colors": [
+          0,
+          2
+        ]
+      }
+    }
+  ],
+  [
+    "ui.set",
+    {
+      "dockTabs": {
+        "layers": 1
+      },
+      "fit": true
+    }
+  ],
+  [
+    "ui.menu.invoke",
+    {
+      "id": "image.adjustments.levels"
+    }
+  ]
+]

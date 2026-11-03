@@ -1407,6 +1407,23 @@ fn clear_mode_erases_with_the_brush_or_pencil() {
     }
 }
 
+#[test]
+fn behind_brush_and_pencil_preserve_foreground_and_round_trip_history() {
+    for cmd in ["paint.stroke", "paint.pencil"] {
+        let mut s = session(40, 20);
+        s.execute(cmd, json!({"points": [[10, 10]], "size": 6, "color": "#ff0000", "hardness": 1.0})).unwrap();
+        let before = surface(&s);
+        s.execute(cmd, json!({"points": [[2, 10], [38, 10]], "size": 6, "color": "#0000ff", "mode": "behind", "hardness": 1.0})).unwrap();
+        assert_eq!(rgba(&s, 10, 10), [1.0, 0.0, 0.0, 1.0], "{cmd}: existing opaque paint");
+        assert_eq!(rgba(&s, 25, 10), [0.0, 0.0, 1.0, 1.0], "{cmd}: transparent pixels");
+        let painted = surface(&s);
+        s.execute("edit.undo", json!({})).unwrap();
+        assert!(same_pixels(&surface(&s), &before, Rect::new(0, 0, 40, 20)));
+        s.execute("edit.redo", json!({})).unwrap();
+        assert!(same_pixels(&surface(&s), &painted, Rect::new(0, 0, 40, 20)));
+    }
+}
+
 /// #4344: a foreground picked as CMYK 100/0/0/0 is painted into a CMYK document as those inks by
 /// the Brush and the Pencil, not as whatever its sRGB stand-in converts back to (100/28/0/17).
 #[test]
@@ -1423,4 +1440,37 @@ fn brush_and_pencil_paint_a_cmyk_pick_with_the_picked_inks() {
         let got: Vec<f32> = surf.read_region(Rect::new(8, 8, 9, 9)).into_iter().take(4).collect();
         assert!(got.iter().zip(cyan).all(|(a, b)| (a - b).abs() < 0.02), "{cmd}: {got:?}");
     }
+}
+
+#[test]
+fn mixer_load_fills_the_reservoir_from_the_canvas_and_keeps_the_foreground() {
+    let mut s = session(80, 40);
+    s.execute("paint.stroke", json!({"points": [[4, 20], [60, 20]], "size": 6, "color": "#0000ff"})).unwrap();
+    s.execute("tools.setColors", json!({"foreground": "#ff0000"})).unwrap();
+    // Over transparency nothing is loaded.
+    let r = s.execute("paint.mixerLoad", json!({"x": 30, "y": 5})).unwrap();
+    assert_eq!(r["loaded"], json!(false));
+    assert!(s.tools.mixer.reservoir.is_none());
+    // On the blue stroke the reservoir takes its colour; the foreground stays red.
+    let r = s.execute("paint.mixerLoad", json!({"x": 30, "y": 20})).unwrap();
+    assert_eq!(r["loaded"], json!(true));
+    assert_eq!(s.tools.mixer.reservoir, Some([0.0, 0.0, 1.0, 1.0]));
+    assert_eq!(s.tools.foreground, [1.0, 0.0, 0.0, 1.0]);
+    // The next dry stroke paints the sampled blue, not the foreground.
+    let brush = json!({"pressureSize": false, "spacing": 0.25});
+    let dry = |y: i32, size: u32| json!({"points": [[5, y], [40, y]], "size": size, "wet": 0, "load": 100, "mix": 0, "brush": brush});
+    s.execute("paint.mixerBrush", dry(30, 8)).unwrap();
+    assert_eq!(rgba(&s, 20, 30), [0.0, 0.0, 1.0, 1.0]);
+    // A new foreground colour takes the reservoir back.
+    s.execute("tools.setColors", json!({"foreground": "#00ff00"})).unwrap();
+    s.execute("paint.mixerBrush", dry(36, 4)).unwrap();
+    assert_eq!(rgba(&s, 20, 36), [0.0, 1.0, 0.0, 1.0]);
+    // Bad coordinates are an error, not a panic, and leave the reservoir, the foreground and the
+    // document untouched.
+    let (mixer, foreground) = (s.tools.mixer.clone(), s.tools.foreground);
+    let revision = s.active().unwrap().revision;
+    assert!(s.execute("paint.mixerLoad", json!({"x": "a", "y": 1})).is_err());
+    assert_eq!(s.tools.mixer, mixer);
+    assert_eq!(s.tools.foreground, foreground);
+    assert_eq!(s.active().unwrap().revision, revision);
 }

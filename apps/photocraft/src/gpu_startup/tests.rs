@@ -37,6 +37,8 @@ fn display_server_preference_is_read_before_the_window_opens() {
     // Unknown values, other types, broken JSON and a missing file all start as Auto.
     assert_eq!(read(r#"{"performance":{"linuxDisplayServer":"wayland"}}"#), LinuxDisplayServer::Auto);
     assert_eq!(read(r#"{"performance":{"linuxDisplayServer":11}}"#), LinuxDisplayServer::Auto);
+    // A bad value beside it resets only itself, as when the app loads the file (#6611).
+    assert_eq!(read(r#"{"performance":{"linuxDisplayServer":"x11","cacheLevels":"four"}}"#), LinuxDisplayServer::X11);
     assert_eq!(read("{not json"), LinuxDisplayServer::Auto);
     assert_eq!(read_display_server(Some(&dir.join("missing.json"))), LinuxDisplayServer::Auto);
     assert_eq!(read_display_server(None), LinuxDisplayServer::Auto);
@@ -210,6 +212,8 @@ fn gpu_adapter_is_read_before_the_window_opens() {
     };
     assert_eq!(read(r#"{"performance":{"gpuAdapter":"nvidia"}}"#), "nvidia");
     assert_eq!(read(r#"{"performance":{"gpuAdapter":7}}"#), "");
+    // A bad value beside it resets only itself, as when the app loads the file (#6611).
+    assert_eq!(read(r#"{"performance":{"gpuAdapter":"nvidia","cacheLevels":"four"}}"#), "nvidia");
     assert_eq!(read(r#"{"performance":{}}"#), "");
     assert_eq!(read("not json"), "");
     assert_eq!(read_gpu_adapter(None), "");

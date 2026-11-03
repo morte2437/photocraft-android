@@ -330,6 +330,29 @@ fn load_frames(path: &str, fmt: photocraft_color::PixelFormat) -> Result<Footage
             done.map_err(|e| EngineError::Other(format!("`{}`: {e}", f.display())))?;
             continue;
         }
+        // A multi-page TIFF: every full-resolution page of the main chain, in order, as the
+        // GIF's frames are (#6379). Thumbnails, reduced-resolution copies and masks are left out.
+        if photocraft_codecs::detect(&bytes) == Some(photocraft_codecs::Format::Tiff) {
+            let (pages, complete) = tiff_pages(&bytes);
+            if pages.len() > 1 {
+                // A damaged or looping page chain, or one past the 10,000-directory limit, lists
+                // only its first pages: refuse it rather than silently import part of the file.
+                if !complete {
+                    return Err(EngineError::Other(format!(
+                        "`{}`: only the first {} pages could be read (its page list is damaged or too long), so not every page would be imported",
+                        f.display(),
+                        pages.len()
+                    )));
+                }
+                for page in pages {
+                    let doc = photocraft_io::import_tiff_page(&name, &bytes, Some(page))
+                        .map_err(|e| EngineError::Other(format!("`{}` page {}: {e}", f.display(), page + 1)))?
+                        .document;
+                    frames.push(crate::file_cmds::flattened(&doc, fmt));
+                }
+                continue;
+            }
+        }
         let mut doc = crate::file_cmds::import(&name, &bytes)?;
         // A Targa's alpha opens as a channel (as in Photoshop); a frame's alpha is transparency.
         if f.extension().is_some_and(|e| e.eq_ignore_ascii_case("tga")) {
@@ -429,6 +452,15 @@ fn reload_frame(s: &mut Session, _p: &Value) -> Result<Value> {
         v.frames = frames;
         Ok(())
     })
+}
+
+/// The pages of a TIFF that are pages of the document: full-resolution directories of the main
+/// chain (not SubIFDs, thumbnails or masks), by index into [`photocraft_codecs::tiff_info`]'s
+/// pages, and whether the walk listed every directory. Empty when the file can't be listed.
+fn tiff_pages(bytes: &[u8]) -> (Vec<usize>, bool) {
+    let Ok(info) = photocraft_codecs::tiff_info(bytes) else { return (Vec::new(), true) };
+    let pages = info.pages.iter().enumerate().filter(|(_, p)| p.parent.is_none() && p.kind == photocraft_codecs::TiffPageKind::Page).map(|(i, _)| i).collect();
+    (pages, info.complete)
 }
 
 /// Import › Video Frames to Layers: load frames from a file/sequence and add each as its own layer.

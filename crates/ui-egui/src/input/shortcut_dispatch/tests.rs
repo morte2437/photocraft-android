@@ -14,6 +14,56 @@ use crate::PhotocraftApp;
 use crate::shortcuts::parse;
 use crate::state::Tool;
 
+#[test]
+fn svg_editor_prompt_owns_later_shortcuts_in_same_frame() {
+    let launched = std::rc::Rc::new(std::cell::Cell::new(false));
+    let launch_flag = launched.clone();
+    let services = crate::Services {
+        open_external_svg: Some(Box::new(move |_, _| {
+            launch_flag.set(true);
+            Err("The editor must not launch before a choice is confirmed".into())
+        })),
+        ..Default::default()
+    };
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), services);
+    app.session.execute("file.new", json!({"width": 32, "height": 32})).unwrap();
+    photocraft_engine::file_cmds::place_bytes(
+        &mut app.session,
+        "Artwork.svg",
+        br#"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8"/></svg>"#.to_vec(),
+        None,
+        &json!({"smartObject":true}),
+    )
+    .unwrap();
+    app.run("edit.keyboardShortcuts", json!({"set": {"layer.smartObjects.editContents": "F6"}})).unwrap();
+    app.sync_views();
+    let before = app.session.active().unwrap().doc.clone();
+    let revision = app.session.active().unwrap().revision;
+    let history = app.session.active().unwrap().history.past_len();
+    let modifiers = platform(Modifiers::COMMAND);
+    let input = egui::RawInput {
+        events: vec![
+            egui::Event::Key { key: egui::Key::F6, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE },
+            egui::Event::ModifiersChanged(modifiers),
+            egui::Event::Key { key: egui::Key::J, physical_key: None, pressed: true, repeat: false, modifiers },
+        ],
+        ..Default::default()
+    };
+    let ctx = egui::Context::default();
+    let mut output = ctx.run_ui(input, |ui| {
+        assert!(super::dispatch_pressed(&mut app, ui.ctx(), Focus::None, false));
+        assert!(ui.ctx().input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Key { key: egui::Key::J, pressed: true, .. }))));
+    });
+    output.textures_delta.clear();
+    assert!(app.smart_svg.modal_open());
+    assert!(!launched.get());
+    let st = app.session.active().unwrap();
+    assert_eq!(st.doc, before);
+    assert_eq!(st.revision, revision);
+    assert_eq!(st.history.past_len(), history);
+    assert_eq!(take_log(&ctx), vec![("layer.smartObjects.editContents".into(), Outcome::Ran)]);
+}
+
 /// Background, a filled pixel layer "paint" (active, with a selection), a type layer and a group
 /// holding a layer: what a real layout PSD looks like.
 fn realistic() -> photocraft_engine::Session {
@@ -638,10 +688,12 @@ fn delete_with_several_layers_selected_deletes_them_even_with_the_mask_targeted(
     let first = photocraft_doc::LayerId(s.execute("layer.newAdjustmentLayer.curves", json!({})).unwrap()["layer"].as_u64().unwrap());
     let second = photocraft_doc::LayerId(s.execute("layer.newAdjustmentLayer.invert", json!({})).unwrap()["layer"].as_u64().unwrap());
     s.execute("layer.select", json!({"layer": first.0, "mode": "add"})).unwrap();
+    // The new layers took the harness's selection as their masks (#8801): select again.
+    s.execute("select.all", json!({})).unwrap();
     let st = s.active().unwrap();
     assert_eq!(st.selected_layers().len(), 2);
     assert!(st.active_layer.and_then(|l| st.doc.layer(l)).is_some_and(|l| l.mask.is_some()), "the active adjustment layer has a mask");
-    assert!(st.doc.selection.is_some(), "the harness keeps a selection");
+    assert!(st.doc.selection.is_some(), "a selection is active");
     h.state_mut().ui.mask_target = true;
     h.run_steps(2);
     let n = names(&h).len();

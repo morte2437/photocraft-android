@@ -19,6 +19,28 @@ fn session() -> Session {
     s
 }
 
+/// Recorded Lens Flare centers can be beyond the canvas, without clipping to its edge.
+#[test]
+fn lens_flare_keeps_off_canvas_centers_and_native_defaults() {
+    let Some(FilterParams::LensFlare { center_x, center_y, .. }) = params_for("filter.render.lensFlare", &json!({"centerX": 5.0, "centerY": -5.0})) else {
+        panic!("Lens Flare")
+    };
+    assert_eq!((center_x, center_y), (5.0, -5.0));
+    let Some(FilterParams::LensFlare { center_x, center_y, .. }) = params_for("filter.render.lensFlare", &json!({})) else { panic!("Lens Flare") };
+    assert_eq!((center_x, center_y), (0.5, 0.5));
+}
+
+/// Extreme centers and malformed inputs remain bounded command executions with finite pixels.
+#[test]
+fn lens_flare_extreme_centers_do_not_panic_or_corrupt_pixels() {
+    for p in [json!({"centerX": 1e300, "centerY": -1e300}), json!({"centerX": null, "centerY": []}), json!({"centerX": 5, "centerY": -5, "brightness": -100})] {
+        let mut s = session();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| s.execute("filter.render.lensFlare", p)));
+        assert!(result.is_ok());
+        assert!(pixels(&s).iter().all(|v| v.is_finite()));
+    }
+}
+
 fn pixels(s: &Session) -> Vec<f32> {
     let d = s.active().unwrap();
     d.doc.layer(d.active_layer.unwrap()).unwrap().surface().unwrap().read_region(Rect::new(0, 0, 48, 32))

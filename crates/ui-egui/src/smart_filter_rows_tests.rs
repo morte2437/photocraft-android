@@ -9,6 +9,7 @@ use photocraft_doc::{LayerContent, LayerId};
 use serde_json::json;
 
 use crate::PhotocraftApp;
+use crate::canvas::ToolEvent;
 
 /// Smart objects "Smart A" (Gaussian Blur and Offset) and "Smart B" (no filters), and a pixel
 /// layer "Pixels" on top: (harness, A, B, pixels).
@@ -338,4 +339,58 @@ fn a_click_selects_a_filter_of_the_bottom_layer() {
     assert_eq!(st.active_layer, Some(LayerId(id)), "the smart object stays active");
     assert_eq!(st.selected_layers(), [LayerId(id)], "the click did not deselect the layers");
     assert!(selected(&h, "Gaussian Blur"));
+}
+
+/// A double-click whose two clicks land in one frame, as a real mouse delivers them when a frame
+/// takes longer than the gap between the clicks (`Harness::event` would run a frame per event).
+fn double_click_in_one_frame(h: &mut egui_kittest::Harness<'static, PhotocraftApp>, p: Pos2) {
+    h.hover_at(p);
+    h.run_steps(1);
+    for pressed in [true, false, true, false] {
+        h.input_mut().events.push(egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
+    }
+    h.run_steps(4);
+}
+
+/// #7153: a double-click on a filter of a smart object that isn't the active layer also selects
+/// it. That selection must not land after the editor captured its target, or OK refuses the edit
+/// ("The document or Smart Filter changed").
+#[test]
+fn double_clicking_a_filter_of_an_inactive_smart_object_edits_it() {
+    let (mut h, a, _, c) = panel();
+    assert_eq!(h.state().session.active().unwrap().active_layer, Some(LayerId(c)));
+    let blur = at(&h, "Gaussian Blur");
+    double_click_in_one_frame(&mut h, blur);
+    assert_eq!(h.state().session.active().unwrap().active_layer, Some(LayerId(a)), "the smart object becomes active");
+    let d = h.state_mut().ui.dialogs.last_mut().expect("the filter's dialog opened");
+    d.fields.insert("radius".into(), json!(3.0));
+    let dialog = d.id;
+    crate::dialogs::confirm(h.state_mut(), dialog).unwrap();
+    assert!(!h.state().ui.status_error, "{}", h.state().ui.status);
+    let LayerContent::Smart(sm) = &h.state().session.active().unwrap().doc.layer(LayerId(a)).unwrap().content else { panic!("smart object") };
+    assert_eq!(sm.smart_filters.len(), 2, "edited in place, not added");
+    assert_eq!(sm.smart_filters[0].params["radius"], json!(3.0));
+}
+
+/// The same for Liquify, whose workspace takes the strokes with it: a refused OK lost them.
+#[test]
+fn double_clicking_the_liquify_filter_of_an_inactive_smart_object_edits_it() {
+    let (mut h, a, _, c) = panel();
+    let stroke = json!({"tool": "forwardWarp", "size": 8, "points": [[4.0, 8.0, 1.0], [8.0, 8.0, 1.0]]});
+    h.state_mut().run("layer.select", json!({"layer": a})).unwrap();
+    h.state_mut().run("filter.liquify", json!({"strokes": [stroke], "meshSize": 3.0})).unwrap();
+    h.state_mut().run("layer.select", json!({"layer": c})).unwrap();
+    h.run_steps(4);
+    let liquify = at(&h, "Liquify");
+    double_click_in_one_frame(&mut h, liquify);
+    assert!(h.state().distort.liquify.is_some(), "the Liquify workspace opens");
+    for ev in [ToolEvent::Down { x: 6.0, y: 4.0, pressure: 1.0 }, ToolEvent::Move { x: 10.0, y: 4.0, pressure: 1.0 }, ToolEvent::Up { x: 10.0, y: 4.0 }] {
+        crate::liquify_ui::pointer(h.state_mut(), ev, Modifiers::NONE);
+    }
+    h.run_steps(2);
+    crate::liquify_ui::control(h.state_mut(), &json!({"commit": true})).unwrap();
+    assert!(!h.state().ui.status_error, "{}", h.state().ui.status);
+    let LayerContent::Smart(sm) = &h.state().session.active().unwrap().doc.layer(LayerId(a)).unwrap().content else { panic!("smart object") };
+    let liquify = sm.smart_filters.iter().find(|f| f.command == photocraft_engine::distort_cmds::LIQUIFY).unwrap();
+    assert_eq!(liquify.params["strokes"].as_array().map(Vec::len), Some(2), "the new stroke was kept");
 }
