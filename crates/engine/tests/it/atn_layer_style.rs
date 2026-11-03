@@ -241,7 +241,20 @@ fn layer_style_descriptors_roundtrip_and_edited_scale_does_not_revive_source() {
 #[test]
 fn layer_style_native_exports_are_strict_and_make_defaults_explicit() {
     assert_eq!(exported(SCALE, json!({})).unwrap().descriptor, Some(scale(100.0)));
-    assert_eq!(exported(CREATE, json!({})).unwrap().descriptor, Some(create()));
+    let mut canonical_create = create();
+    // The shared canonical class constructor writes nul-terminated display names;
+    // imported empty names remain separate wire data in the round-trip fixtures.
+    for (_, value) in &mut canonical_create.items {
+        let D::Reference(parts) = value else { panic!("fixture must contain references") };
+        for part in parts {
+            let class = match part {
+                ReferenceItem::Class(class) | ReferenceItem::Property { class, .. } | ReferenceItem::Enumerated { class, .. } => class,
+                _ => panic!("fixture must contain class/property/target references"),
+            };
+            class.name = UnicodeString::new_nul("");
+        }
+    }
+    assert_eq!(exported(CREATE, json!({})).unwrap().descriptor, Some(canonical_create));
     for percent in [1, 100, 200, 1000] {
         assert_eq!(exported(SCALE, json!({"scale":percent})).unwrap().descriptor, Some(scale(f64::from(percent))));
     }
