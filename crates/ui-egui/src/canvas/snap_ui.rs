@@ -381,10 +381,13 @@ fn crop_handle(app: &PhotocraftApp, p: [f64; 2], mods: egui::Modifiers, targets:
     let deg = crate::crop_ui::angle(app);
     let ratio = crate::crop_ui::resize_ratio(app, rect, mods);
     let q = view.map_or(p, |view| crate::crop_mode::to_press(app, Some(view), p));
-    // The frame for the pointer at `q`, as `crop_ui` resizes it.
-    let frame_at = |q: [f64; 2]| match view {
-        Some(_) => crate::crop_mode::resized_frame(crate::crop_mode::LiveResize { rect, deg, hx, hy, start, q, ratio, alt: mods.alt }).map(|(f, _)| f),
-        None => Some(crate::crop_ui::resized_turned(rect, deg, hx, hy, [q[0] - start[0], q[1] - start[1]], ratio, mods.alt)),
+    // The frame for the pointer at `q`, as `crop_ui` resizes it (a ⇧ corner along its diagonal).
+    let frame_at = |q: [f64; 2]| {
+        let q = crate::crop_ui::resize_point(app, rect, hx, hy, start, q, mods);
+        match view {
+            Some(_) => crate::crop_mode::resized_frame(crate::crop_mode::LiveResize { rect, deg, hx, hy, start, q, ratio, alt: mods.alt }).map(|(f, _)| f),
+            None => Some(crate::crop_ui::resized_turned(rect, deg, hx, hy, [q[0] - start[0], q[1] - start[1]], ratio, mods.alt)),
+        }
     };
     let frame = frame_at(q)?;
     let at = |r: [f64; 4]| {
