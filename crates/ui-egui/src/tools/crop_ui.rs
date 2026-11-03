@@ -215,10 +215,17 @@ fn along_diagonal(r: [f64; 4], deg: f64, hx: i8, hy: i8, d: [f64; 2]) -> [f64; 2
     if vv > 0.0 && t.is_finite() { [t * v[0], t * v[1]] } else { d }
 }
 
-/// ⇧ on a corner with no ratio preset and no ⌥: the corner follows the frame's diagonal
-/// ([`along_diagonal`]). A preset, ⌥ ⇧ and the edge handles keep the larger-extent rule.
-fn follows_diagonal(app: &PhotocraftApp, hx: i8, hy: i8, mods: Modifiers) -> bool {
-    mods.shift && !mods.alt && hx != 0 && hy != 0 && preset_ratio(app).is_none()
+/// The pointer at `q` of a resize drag on handle (`hx`, `hy`) of frame `rect`, pressed at
+/// `start`, as the resize reads it. ⇧ on a corner with no ratio preset and no ⌥ follows the
+/// frame's diagonal ([`along_diagonal`]); a preset, ⌥ ⇧ and the edge handles keep the
+/// larger-extent rule, and the point is unchanged. The resize, Auto Center Preview and handle
+/// snapping all read the pointer through this, so the handle snaps where it is drawn.
+pub(crate) fn resize_point(app: &PhotocraftApp, rect: [f64; 4], hx: i8, hy: i8, start: [f64; 2], q: [f64; 2], mods: Modifiers) -> [f64; 2] {
+    if !(mods.shift && !mods.alt && hx != 0 && hy != 0 && preset_ratio(app).is_none()) {
+        return q;
+    }
+    let d = along_diagonal(rect, angle(app), hx, hy, [q[0] - start[0], q[1] - start[1]]);
+    [start[0] + d[0], start[1] + d[1]]
 }
 
 /// `[x0, y0, x1, y1]` with x0 ≤ x1, y0 ≤ y1.
@@ -952,13 +959,9 @@ fn follow_view_drag(app: &mut PhotocraftApp, p: [f64; 2], mods: Modifiers) -> bo
         }
         Some(CropDrag::Resize { hx, hy, start, rect, view: Some(view) }) => {
             // Auto Center Preview keeps the box centred while the handle follows the pointer.
-            let mut at = crate::crop_mode::to_press(app, Some(view), p);
+            let at = resize_point(app, rect, hx, hy, start, crate::crop_mode::to_press(app, Some(view), p), mods);
             let ratio = resize_ratio(app, rect, mods);
             let deg = angle(app);
-            if follows_diagonal(app, hx, hy, mods) {
-                let d = along_diagonal(rect, deg, hx, hy, [at[0] - start[0], at[1] - start[1]]);
-                at = [start[0] + d[0], start[1] + d[1]];
-            }
             crate::crop_mode::live_resize(app, crate::crop_mode::LiveResize { rect, deg, hx, hy, start, q: at, ratio, alt: mods.alt }, view);
         }
         _ => return false,
@@ -971,7 +974,10 @@ fn dragged_frame(app: &mut PhotocraftApp, p: [f64; 2], mods: Modifiers) -> Optio
     let ratio = preset_ratio(app);
     let space = app.crop.space;
     let deg = angle(app);
-    let diagonal = matches!(app.crop.drag, Some(CropDrag::Resize { hx, hy, .. }) if follows_diagonal(app, hx, hy, mods));
+    let resize_at = match app.crop.drag {
+        Some(CropDrag::Resize { hx, hy, start, rect, .. }) => resize_point(app, rect, hx, hy, start, p, mods),
+        _ => p,
+    };
     match app.crop.drag.as_mut()? {
         CropDrag::Draw { anchor, cur, last, .. } => {
             if space {
@@ -995,9 +1001,7 @@ fn dragged_frame(app: &mut PhotocraftApp, p: [f64; 2], mods: Modifiers) -> Optio
                 (w > 0.0 && h > 0.0).then(|| w / h)
             };
             let ratio = ratio.or_else(|| if mods.shift { keep() } else { None });
-            let d = [p[0] - start[0], p[1] - start[1]];
-            let d = if diagonal { along_diagonal(*rect, deg, *hx, *hy, d) } else { d };
-            Some(resized_turned(*rect, deg, *hx, *hy, d, ratio, mods.alt))
+            Some(resized_turned(*rect, deg, *hx, *hy, [resize_at[0] - start[0], resize_at[1] - start[1]], ratio, mods.alt))
         }
         CropDrag::Rotate { .. } | CropDrag::TurnImage { .. } | CropDrag::MoveImage { .. } => None,
     }
