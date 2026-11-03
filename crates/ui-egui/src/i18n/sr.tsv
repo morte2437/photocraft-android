@@ -4292,6 +4292,9 @@ shape	Appearance	Izgled
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} korak još nema ekvivalent u PhotoCraftu|{n} koraka još nemaju ekvivalent u PhotoCraftu|{n} koraka još nema ekvivalent u PhotoCraftu
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	Sačuvana je {n} radnja u {file}|Sačuvane su {n} radnje u {file}|Sačuvano je {n} radnji u {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	Izostavljen je {n} korak bez ekvivalenta u Photoshopu|Izostavljena su {n} koraka bez ekvivalenta u Photoshopu|Izostavljeno je {n} koraka bez ekvivalenta u Photoshopu
+@plural	{n} action file loaded|{n} action files loaded	Učitana je {n} datoteka radnji|Učitane su {n} datoteke radnji|Učitano je {n} datoteka radnji
+	{set} from {file} replaced the one from {earlier}	Skup {set} iz {file} zamenio je skup iz {earlier}
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	Nije moguće učitati {n} datoteku: {errors}|Nije moguće učitati {n} datoteke: {errors}|Nije moguće učitati {n} datoteka: {errors}
 	Insert Stop…	Umetni zaustavljanje…
 	Save Set…	Sačuvaj skup…
 	Message:	Poruka:
@@ -4331,6 +4334,7 @@ shape	Appearance	Izgled
 	Kept {name}: written by another application	{name} je zadržan: upisala ga je druga aplikacija
 	Shadow Tint	Nijansa senki
 	Redrawing	Ponovno iscrtavanje
+	Memory usage percent	Проценат употребе меморије
 	Show Favorite Fonts	Прикажи омиљене фонтове
 	No favorite fonts yet: click the star beside a font to add it.	Још нема омиљених фонтова: кликните на звездицу поред фонта да бисте га додали.
 	Favorite fonts	Омиљени фонтови
@@ -4393,6 +4397,7 @@ shape	Appearance	Izgled
 	Chisel Soft	Meko klesanje
 	Open color-less EXR as ACEScg	Otvori EXR bez podatka o bojama kao ACEScg
 	Do not append "copy" to filename when saving a copy	Ne dodaji „copy“ u ime fajla pri čuvanju kopije
+	Save Full-Size Composite in .pcraft Files	Čuvaj složenu sliku u punoj veličini u .pcraft fajlovima
 	Show home recent files	Prikaži nedavne datoteke na početnom ekranu
 	Edit Selected Guides	Uredi izabrane vodilje
 	Clear Selected Guides	Ukloni izabrane vodilje
@@ -4469,6 +4474,7 @@ shape	Appearance	Izgled
 	This document's layers: {needed} of {budget} for layers	Slojevi ovog dokumenta: {needed} od {budget} za slojeve
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	Slojevima ovog dokumenta treba {needed}, a smeju da zauzmu {budget}: ceo dokument se ponovo iscrtava na CPU-u
 	GPU Memory (MB, 0 = Automatic)	GPU memorija (MB, 0 = Automatski)
+	Scratch Size Limit (MB, 0 = No Limit)	Ograničenje veličine radnog diska (MB, 0 = bez ograničenja)
 	{path}: the path is not valid Unicode; save under another name.	{path}: putanja nije ispravan Unicode; sačuvajte pod drugim imenom.
 	{name} was changed by another app after it was opened or saved here.	Datoteku {name} je izmenila druga aplikacija nakon što je ovde otvorena ili sačuvana.
 	Replace it with this document, or cancel and use File › Save As to keep both.	Zameni je ovim dokumentom ili otkaži i koristi Datoteka › Sačuvaj kao da zadržiš obe.

@@ -115,6 +115,7 @@ pub fn adjust_surface(s: &mut Surface, adj: &Adjustment, selection: Option<&Surf
             let tr = tc.rect().intersect(&r);
             let out = adjusted(&one, tr, adj, selection, mode);
             one.write_region(tr, &out);
+            photocraft_raster::scratch::give(out);
             one.take_tiles(tc.rect())
         })
         .collect();
@@ -184,6 +185,7 @@ pub(crate) fn adjust_mask_with_transfer(
         for t in &tiles {
             let out = adjusted_with_transfer(s, *t, adj, Some(sel), mode, transfer);
             s.write_region(*t, &out);
+            photocraft_raster::scratch::give(out);
         }
         if !tiles.is_empty() {
             s.prune();
@@ -197,7 +199,9 @@ pub(crate) fn adjust_mask_with_transfer(
     // So only the stored tiles are adjusted, not the (possibly huge) rectangle around them.
     let stored: Vec<Rect> = s.tiles().map(|(c, _)| c.rect()).collect();
     for r in stored {
-        out.write_region(r, &adjusted_with_transfer(s, r, adj, None, mode, transfer));
+        let data = adjusted_with_transfer(s, r, adj, None, mode, transfer);
+        out.write_region(r, &data);
+        photocraft_raster::scratch::give(data);
     }
     out.prune();
     *s = out;
@@ -233,7 +237,10 @@ fn adjusted_with_transfer(
     }
     let n = fmt.channels();
     let raw = s.read_region(r);
-    let mut buf = Buffer { rect: r, px: raw.chunks_exact(n).map(|p| to_rgba(&fmt, p)).collect() };
+    let mut px = photocraft_raster::scratch::take_cap(raw.len() / n.max(1));
+    px.extend(raw.chunks_exact(n).map(|p| to_rgba(&fmt, p)));
+    photocraft_raster::scratch::give(raw);
+    let mut buf = Buffer { rect: r, px };
     let orig = buf.clone();
     // 32-bit documents get the float behaviour of an adjustment layer there (Levels doesn't clip);
     // integer depths keep the unrounded, clipped curves, except that 16-bit Posterize and
@@ -311,7 +318,7 @@ pub(crate) fn mix_through_selection(
     selection: Option<&Surface>,
 ) -> Vec<f32> {
     let w = (r.width() as usize).max(1);
-    let mut out = Vec::with_capacity(orig.len() * fmt.channels());
+    let mut out = photocraft_raster::scratch::take_cap(orig.len() * fmt.channels());
     // The selection's coverage (channel 0) one row at a time, each of its tiles looked up once
     // per row rather than once per pixel.
     let mut coverage = vec![1.0f32; w];
@@ -472,6 +479,7 @@ fn edit_tiles(
                 None => {}
             }
             let Some(src) = current.map(|t| &**t).or(blank.as_ref()) else { return Ok(None) };
+            let source = src.try_bytes().map_err(|e| crate::EngineError::Other(format!("could not read pixels while {purpose}: {e}")))?;
             let mut out: Option<Tile> = None;
             let (mut px, mut enc) = ([0.0f32; 8], [0u8; 32]);
             let (Some(px), Some(enc)) = (px.get_mut(..n), enc.get_mut(..bpp)) else { return Ok(None) };
@@ -479,7 +487,7 @@ fn edit_tiles(
                 let row = (y - tc.ty * TILE_SIZE) as usize * TILE_SIZE as usize;
                 for x in tr.x0..tr.x1 {
                     let i = (row + (x - tc.tx * TILE_SIZE) as usize) * bpp;
-                    let Some(old) = src.bytes().get(i..i + bpp) else { continue };
+                    let Some(old) = source.get(i..i + bpp) else { continue };
                     for (c, v) in px.iter_mut().enumerate() {
                         *v = photocraft_color::read_sample(old, fmt.sample, c);
                     }
@@ -491,10 +499,15 @@ fn edit_tiles(
                         continue;
                     }
                     if out.is_none() {
-                        out = Some(src.try_clone().map_err(oom)?);
+                        let mut tile = surf.try_default_tile().map_err(oom)?;
+                        tile.bytes_mut().copy_from_slice(&source);
+                        out = Some(tile);
                     }
-                    if let Some(dst) = out.as_mut().and_then(|t| t.bytes_mut().get_mut(i..i + bpp)) {
-                        dst.copy_from_slice(enc);
+                    if let Some(tile) = out.as_mut() {
+                        let mut bytes = tile.bytes_mut();
+                        if let Some(dst) = bytes.get_mut(i..i + bpp) {
+                            dst.copy_from_slice(enc);
+                        }
                     }
                 }
             }

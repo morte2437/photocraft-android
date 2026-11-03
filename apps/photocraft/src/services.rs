@@ -361,9 +361,20 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     photocraft_format::atomic_write(path, bytes).map_err(|e| e.to_string())
 }
 
-/// [`write_atomic`] reporting the fraction written (a background save's progress, #3389).
-fn write_atomic_progress(path: &Path, bytes: &[u8], progress: &dyn Fn(f32)) -> Result<(), String> {
-    photocraft_format::atomic_write_progress(path, bytes, progress).map_err(|e| e.to_string())
+/// [`write_atomic`] for an encoded save, reporting the fraction written (a background save's
+/// progress, #3389). A PSD/PSB is serialized straight into the temporary file, so the whole file
+/// is never held in memory next to its model (#6607).
+fn write_encoded_atomic(path: &Path, encoded: &photocraft_io::Encoded, progress: &dyn Fn(f32)) -> Result<(), String> {
+    match encoded {
+        photocraft_io::Encoded::Bytes(bytes) => photocraft_format::atomic_write_progress(path, bytes, progress),
+        photocraft_io::Encoded::Psd(_) => {
+            // Only the progress bar's scale: a model whose length can't be worked out fails the
+            // write the same way, through the atomic write's "not changed" error.
+            let len = encoded.encoded_len().unwrap_or(0);
+            photocraft_format::atomic_write_stream_progress(path, len, progress, &mut |w| encoded.write_to(w))
+        }
+    }
+    .map_err(|e| e.to_string())
 }
 
 /// Whether `a` and `b` reach the same file: the same device and inode on Unix, the same final path
@@ -413,26 +424,26 @@ fn export_options(settings: &photocraft_ui_egui::ExportSettings) -> photocraft_i
 const ENCODE_SHARE: f32 = 0.85;
 
 /// A save on a worker thread (`Services::save_file` and `Services::automation_save`, #2017):
-/// encode, then write through `write`. Cancelling while encoding leaves the target untouched;
-/// once writing starts the save can't be cancelled. The encoder's progress fills the first
+/// encode, then write through `write` (a PSD/PSB is serialized as it is written). Cancelling
+/// while encoding leaves the target untouched; once writing starts the save can't be cancelled. The encoder's progress fills the first
 /// [`ENCODE_SHARE`] of the job's progress, so the status bar and tab read "Saving NN%" (#3389).
 fn save_through(
     doc: &Document,
     path: &str,
     settings: &photocraft_ui_egui::ExportSettings,
     ctl: &photocraft_ui_egui::jobs_ui::SaveCtl,
-    write: impl Fn(&str, &[u8], &dyn Fn(f32)) -> Result<(), String>,
+    write: impl Fn(&str, &photocraft_io::Encoded, &dyn Fn(f32)) -> Result<(), String>,
 ) -> Result<Vec<String>, String> {
     ctl.progress(0.0, "Encoding");
     let opts = export_options(settings);
     let cancelled = || ctl.check().is_err();
     let progress = |f: f32| ctl.progress(f * ENCODE_SHARE, "");
     let interrupt = photocraft_raster::Interrupt::new(&cancelled, &progress);
-    let r = crate::crash_guard::guard("Save", || photocraft_io::export_with(doc, path, &opts, &interrupt).map_err(|e| e.to_string()))?;
+    let r = crate::crash_guard::guard("Save", || photocraft_io::encode_with(doc, path, &opts, &interrupt).map_err(|e| e.to_string()))?;
     ctl.commit()?;
     ctl.progress(ENCODE_SHARE, "Writing");
     // The last bit is the flush and rename after the last chunk: 100% only once they're done.
-    write(path, &r.bytes, &|f| ctl.progress(ENCODE_SHARE + (0.99 - ENCODE_SHARE) * f, ""))?;
+    write(path, &r.encoded, &|f| ctl.progress(ENCODE_SHARE + (0.99 - ENCODE_SHARE) * f, ""))?;
     ctl.progress(1.0, "");
     Ok(r.warnings)
 }
@@ -443,7 +454,7 @@ fn save_file(
     settings: &photocraft_ui_egui::ExportSettings,
     ctl: &photocraft_ui_egui::jobs_ui::SaveCtl,
 ) -> Result<Vec<String>, String> {
-    save_through(doc, path, settings, ctl, |p, b, progress| write_atomic_progress(Path::new(p), b, progress))
+    save_through(doc, path, settings, ctl, |p, encoded, progress| write_encoded_atomic(Path::new(p), encoded, progress))
 }
 
 type SharedRecovery = Rc<RefCell<Option<RecoveryStore>>>;
@@ -494,6 +505,11 @@ fn recovery_services(dir: Option<PathBuf>) -> Services {
 /// panic in arboard, or in decoding a copied file, becomes the paste's (or copy's) error and the
 /// app keeps its documents.
 fn guarded_clipboard_get(mut read: impl FnMut() -> Result<Option<(u32, u32, Vec<u8>)>, String> + 'static) -> photocraft_ui_egui::ClipboardGetFn {
+    Box::new(move || crate::crash_guard::guard("Paste", &mut read))
+}
+
+/// SVG reads use the same recovery boundary as raster clipboard reads.
+fn guarded_clipboard_svg(mut read: impl FnMut() -> Result<Option<Vec<u8>>, String> + 'static) -> photocraft_ui_egui::ClipboardGetSvgFn {
     Box::new(move || crate::crash_guard::guard("Paste", &mut read))
 }
 
@@ -616,6 +632,18 @@ fn clipboard_text(read: Result<String, arboard::Error>) -> Result<Option<String>
     }
 }
 
+/// Keep SVG source for Paste As without accepting an unbounded clipboard string as a new copy.
+fn svg_clipboard_source(text: Option<String>) -> Result<Option<Vec<u8>>, String> {
+    let Some(text) = text else { return Ok(None) };
+    if !photocraft_io::svg::is_svg(text.as_bytes()) {
+        return Ok(None);
+    }
+    if text.len() > 16 << 20 {
+        return Err("SVG clipboard data exceeds the 16 MiB limit".into());
+    }
+    Ok(Some(text.into_bytes()))
+}
+
 /// The shell command that starts this install under XWayland, where winit delivers file drops
 /// (winit 0.30 has none on Wayland, #386). A Flatpak gets the X11 socket only without the Wayland
 /// one, an AppImage relaunches by its own path, and anything else is `photocraft` on the PATH.
@@ -657,7 +685,7 @@ pub fn native(automation: Option<photocraft_automation::AuthorizedWorkspace>) ->
     });
     let automation_save = automation.clone().map(|workspace| {
         std::sync::Arc::new(move |doc: &Document, path: &str, settings: &photocraft_ui_egui::ExportSettings, ctl: &photocraft_ui_egui::jobs_ui::SaveCtl| {
-            save_through(doc, path, settings, ctl, |p, b, _| workspace.write(p, b).map_err(|e| e.to_string()))
+            save_through(doc, path, settings, ctl, |p, encoded, _| workspace.write(p, &encoded.bytes().map_err(|e| e.to_string())?).map_err(|e| e.to_string()))
         }) as photocraft_ui_egui::SaveFileFn
     });
     let step: fn(&str, &serde_json::Value) -> photocraft_engine::Result<()> = photocraft_automation::workspace::authorize_desktop_engine_step;
@@ -746,6 +774,17 @@ pub fn native(automation: Option<photocraft_automation::AuthorizedWorkspace>) ->
                     },
                     |cb| clipboard_text(cb.get_text()),
                 )
+            })
+        }),
+        clipboard_get_svg: Some({
+            let clip = clip.clone();
+            guarded_clipboard_svg(move || {
+                let mut slot = clip.try_borrow_mut().map_err(|_| "clipboard is busy".to_string())?;
+                let cb = match slot.as_mut() {
+                    Some(c) => c,
+                    None => slot.insert(arboard::Clipboard::new().map_err(|e| e.to_string())?),
+                };
+                svg_clipboard_source(clipboard_text(cb.get_text())?)
             })
         }),
         clipboard_unreadable: Some(Box::new(move || clip_unreadable.get())),

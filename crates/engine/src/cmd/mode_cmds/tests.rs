@@ -568,7 +568,7 @@ fn bitmap_budgets_a_conversion_at_the_document_resolution_too() {
 
 /// The Bitmap conversion of `d` the pre-#8477 way, from one full-canvas composite over white.
 fn bitmap_oracle(d: &Document, method: Option<BitmapMethod>, custom: Option<(&[f32], usize, usize)>) -> Vec<f32> {
-    let px = photocraft_compose::flatten(d).over_background([1.0; 3]).px;
+    let px = photocraft_compose::flatten(d).over_background([1.0; 3]).into_px();
     let mut gray: Vec<f32> = px.iter().map(|q| photocraft_color::convert::rgb_to_gray([q[0], q[1], q[2]])).collect();
     let w = d.size.width as usize;
     match (method, custom) {
@@ -730,7 +730,7 @@ fn duotone_to_colour_modes_keeps_the_ink_colours() {
                 s.execute("image.mode.duotone", cfg.clone()).unwrap();
                 let before = s.active().unwrap().doc.clone();
                 let gray: Vec<f32> = (0..16).map(|x| before.layers[0].surface().unwrap().pixel(x, 1)[0]).collect();
-                let shown = photocraft_compose::render(&display_document(&before).unwrap(), Rect::from_xywh(0, 1, 16, 1)).px;
+                let shown = photocraft_compose::render(&display_document(&before).unwrap(), Rect::from_xywh(0, 1, 16, 1)).into_px();
                 s.execute(&format!("image.mode.{mode}"), json!({})).unwrap();
                 let d = doc(&s);
                 assert!(d.duotone.is_none(), "{ctx}");

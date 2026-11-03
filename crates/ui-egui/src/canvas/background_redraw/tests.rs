@@ -612,6 +612,90 @@ fn a_canvas_over_the_texture_budget_records_its_reason() {
     assert_eq!(g.harness.state().render_path.history().filter(|c| c.doc == doc).count(), 1, "once, not every frame");
 }
 
+/// Frames until the active document's viewport pages are all rendered and uploaded.
+fn settle_pages(g: &mut Gpu) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        g.harness.step();
+        let app = g.harness.state();
+        let id = app.session.active().expect("document").doc.id;
+        if app.streams.get(&id).is_some_and(|s| !s.busy() && s.stats.wanted > 0 && s.stats.ready == s.stats.wanted) {
+            return;
+        }
+        assert!(std::time::Instant::now() < deadline, "the viewport pages didn't finish");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+}
+
+/// The screen pixel at the window's centre.
+fn centre_pixel(g: &mut Gpu) -> [u8; 4] {
+    let img = g.harness.render().expect("render");
+    let p = img.get_pixel(img.width() / 2, img.height() / 2);
+    p.0
+}
+
+/// #5332: a document whose texture set doesn't fit the canvas budget stays on the GPU canvas,
+/// drawn from the pages in view instead of the CPU canvas, with the same pixels; an edit
+/// re-renders only the pages, and closing it frees them.
+#[test]
+fn a_canvas_over_the_texture_budget_draws_its_viewport_pages_on_the_gpu() {
+    let _gpu = photocraft_testkit::gpu_lock();
+    let Some(mut g) = gpu_app() else { return };
+    g.harness.state_mut().run("file.new", json!({"width": 3000, "height": 2000, "background": "#336699"})).expect("new");
+    g.harness.run_steps(3);
+    assert!(on_gpu_canvas(&g));
+    let whole = centre_pixel(&mut g);
+    let gpu = g.harness.state().gpu.clone().expect("gpu canvas");
+    let doc = g.harness.state().session.active().expect("document").doc.clone();
+    let key = crate::canvas::viewport_pages::stream_key(doc.id.0);
+    // Room for pages (half the budget), not for the document's texture set.
+    let (set, _) = gpu.canvas_fit(&doc).expect("fit");
+    gpu.set_canvas_budget(set - 1);
+    settle_pages(&mut g);
+    assert!(on_gpu_canvas(&g), "{:?}", render_path_of(&g));
+    assert!(gpu.texture_info(doc.id.0).is_none(), "no texture set");
+    let (pages, bytes) = gpu.pages(key);
+    let stats = g.harness.state().streams[&doc.id].stats.clone();
+    assert_eq!(pages.len(), stats.resident);
+    assert!(stats.wanted > 0 && stats.last_error.is_none(), "{stats:?}");
+    assert!(bytes <= (set - 1) / 2, "pages stay within half the budget: {bytes}");
+    let shown = centre_pixel(&mut g);
+    assert!((0..3).all(|i| shown[i].abs_diff(whole[i]) <= 2), "pages {shown:?}, texture set {whole:?}");
+    // An edit re-renders the pages it reaches.
+    let uploads = stats.uploads;
+    g.harness.state_mut().run("edit.fill", json!({"color": "#cc8844"})).expect("fill");
+    settle_pages(&mut g);
+    let stats = g.harness.state().streams[&doc.id].stats.clone();
+    assert!(stats.dirtied > 0 && stats.uploads > uploads, "{stats:?}");
+    let filled = centre_pixel(&mut g);
+    assert!(filled[0] > 0xb0 && filled[2] < 0x60, "the fill is shown: {filled:?}");
+    // A small edit re-renders only the part of each page it reaches, into the page held.
+    let (held, partial) = (gpu.pages(key).0.len(), stats.partial);
+    // (A frame between the steps, as in use: the edit's damage is known one revision at a time.)
+    g.harness.state_mut().run("select.rect", json!({"x": 1400, "y": 900, "width": 200, "height": 200})).expect("select");
+    settle_pages(&mut g);
+    g.harness.state_mut().run("edit.fill", json!({"color": "#22aa22"})).expect("small fill");
+    settle_pages(&mut g);
+    let stats = g.harness.state().streams[&doc.id].stats.clone();
+    assert!(stats.partial > partial, "{stats:?}");
+    assert_eq!(gpu.pages(key).0.len(), held, "no new page textures");
+    // Just its square is shown: 200 px at about 20% zoom, some 40 screen pixels a side.
+    let img = g.harness.render().expect("render");
+    let green = img.pixels().filter(|p| p.0[1] > 0x90 && p.0[0] < 0x50 && p.0[2] < 0x50).count();
+    assert!((1000..2500).contains(&green), "the small fill is shown: {green} pixels");
+    // A budget too small for one page draws it on the CPU canvas, as before.
+    gpu.set_canvas_budget(1);
+    g.harness.run_steps(3);
+    assert_eq!(render_path_of(&g), (Some("canvasTooLarge"), Some("CPU Rendering")));
+    gpu.set_canvas_budget(set - 1);
+    settle_pages(&mut g);
+    // Closing the document cancels its work and frees its pages.
+    g.harness.state_mut().run("file.close", json!({"save": false})).expect("close");
+    g.harness.run_steps(3);
+    assert!(g.harness.state().streams.is_empty());
+    assert!(gpu.pages(key).0.is_empty());
+}
+
 #[test]
 fn a_flipped_view_records_why_it_draws_on_the_cpu() {
     let _gpu = photocraft_testkit::gpu_lock();

@@ -34,11 +34,13 @@ use eframe::wgpu;
 
 use crate::render_path::CpuReason;
 
+pub use pages::{MAX_PAGE_SIDE, PageUpload};
 pub use photocraft_gpu::{DeviceHealth, Fault};
 
 mod budget;
 mod callback;
 mod doc_textures;
+mod pages;
 mod perf;
 mod resources;
 mod setup;
@@ -93,7 +95,7 @@ const FORMAT_HIGH: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 pub const F16_BUDGET_PX: u64 = 100_000_000;
 const VIEW_UNIFORM_SIZE: u64 = 128;
 const VIEW_FLOATS: usize = 32;
-const TILE_UNIFORM_SIZE: u64 = 16;
+const TILE_UNIFORM_SIZE: u64 = 32;
 
 /// Whether this view can use the GPU canvas. Flip and non-square pixel aspect correction are
 /// still CPU blits (the shader's filtering assumes square pixels); rotation is a shader uniform.

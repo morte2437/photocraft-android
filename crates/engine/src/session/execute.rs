@@ -143,6 +143,16 @@ impl Session {
         if self.names_existing_layer(spec.id, params) {
             return Ok(());
         }
+        // A recorded invalid comp index succeeds without an edit, even with no comps.
+        // Ordinary Apply and references by id/name retain the command's usual precondition.
+        if spec.id == "layerComp.apply"
+            && params
+                .get("comp")
+                .and_then(Value::as_object)
+                .is_some_and(|fields| fields.len() == 1 && fields.get("index").is_some_and(|index| index.as_u64().is_some() || index.as_i64().is_some()))
+        {
+            return self.active().map(|_| ()).ok_or_else(|| "no document open".into());
+        }
         // `ifPresent`: with no Background there is nothing to do, which isn't an error.
         if spec.id == "layer.new.layerFromBackground" && params.get("ifPresent").and_then(Value::as_bool) == Some(true) {
             return self.active().map(|_| ()).ok_or_else(|| "no document open".into());
@@ -171,11 +181,21 @@ impl Session {
         if !spec.params.contains("\"layer\":id") {
             return None;
         }
-        let target = LayerId(params.get("layer")?.as_u64()?);
+        let layer = params.get("layer")?;
+        if !(layer.is_number() || layer.is_object()) {
+            return None;
+        }
+        let target = commands::explicit_layer(self, params).ok()??;
         let d = self.active_mut()?;
         d.doc.layer(target)?;
         let active = d.active_layer.replace(target);
-        let r = self.precondition(spec, params);
+        // The checks see the resolved id: a relative ordinal (`Frwr`, `Bckw`) would otherwise
+        // resolve again from the swapped-in active layer and land one layer further.
+        let mut resolved = params.clone();
+        if let Some(fields) = resolved.as_object_mut() {
+            fields.insert("layer".into(), Value::from(target.0));
+        }
+        let r = self.precondition(spec, &resolved);
         if let Some(d) = self.active_mut() {
             d.active_layer = active;
         }
@@ -207,15 +227,21 @@ impl Session {
         // through this entry; the requesting session's authority must reach those renders.
         let _authorization = crate::jobs::render_authorization_scope(self.authorize);
         let _document = crate::doc_path::scope(self.active().and_then(|d| d.path.as_deref()).map(std::path::Path::new));
+        photocraft_compose::discard_unreadable_pixel_caches();
+        let scratch_generation = photocraft_raster::spill::read_error_generation();
         let restrict = self.color_restrict;
         let filter_mask_layer = self.filter_mask_layer;
         let sampler_map = self.sampler_map.take();
         let symmetry_map = self.symmetry_map.take();
         let st = self.active_mut().ok_or(EngineError::NoDocument)?;
         let before = st.doc.clone();
+        // Only this document's pixels gate its edits: an unreadable tile elsewhere (another
+        // open document) does not block it.
+        before.scratch_health().map_err(EngineError::Other)?;
         // Selecting layers is not a step, so the state this edit leaves behind targets what was
         // selected just before it (#1356): undoing a stroke keeps the painted layer active.
         let prior = st.layer_target();
+        let previous_active_layer = st.active_layer;
         let mut doc = (*before).clone();
         let mut active = st.active_layer;
         let r = f(&mut doc, &mut active)?;
@@ -224,6 +250,11 @@ impl Session {
         }
         if let Some(id) = filter_mask_layer {
             smart_cmds::refresh_after_filter_mask_edit(&mut doc, id)?;
+        }
+        if let Err(error) = photocraft_raster::spill::check_since(scratch_generation).and_then(|()| before.scratch_health()).and_then(|()| doc.scratch_health())
+        {
+            st.active_layer = previous_active_layer;
+            return Err(EngineError::Other(error));
         }
         st.doc = Arc::new(doc);
         st.active_layer = active;

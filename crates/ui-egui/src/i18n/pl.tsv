@@ -3883,6 +3883,9 @@ curves	Smooth	Wygładź
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} krok nie ma jeszcze odpowiednika w PhotoCraft|{n} kroki nie mają jeszcze odpowiednika w PhotoCraft|{n} kroków nie ma jeszcze odpowiednika w PhotoCraft
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	Zapisano {n} operację do {file}|Zapisano {n} operacje do {file}|Zapisano {n} operacji do {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	Pominięto {n} krok bez odpowiednika w Photoshopie|Pominięto {n} kroki bez odpowiednika w Photoshopie|Pominięto {n} kroków bez odpowiednika w Photoshopie
+@plural	{n} action file loaded|{n} action files loaded	Wczytano {n} plik operacji|Wczytano {n} pliki operacji|Wczytano {n} plików operacji
+	{set} from {file} replaced the one from {earlier}	Zestaw {set} z {file} zastąpił zestaw z {earlier}
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	Nie udało się wczytać {n} pliku: {errors}|Nie udało się wczytać {n} plików: {errors}|Nie udało się wczytać {n} plików: {errors}
 	File Naming	Nazewnictwo plików
 	Starting serial	Początkowy numer seryjny
 	Insert Stop…	Wstaw zatrzymanie…
@@ -3903,6 +3906,7 @@ curves	Smooth	Wygładź
 	Sent to {printer}	Wysłano do {printer}
 	set in Print Settings…	ustawiane w ustawieniach druku…
 	ICO is limited to 256 × 256 pixels	ICO jest ograniczony do 256 × 256 pikseli
+	Memory usage percent	Użycie pamięci (%)
 	Show Favorite Fonts	Pokaż ulubione czcionki
 	No favorite fonts yet: click the star beside a font to add it.	Brak ulubionych czcionek: kliknij gwiazdkę obok czcionki, aby ją dodać.
 	Favorite fonts	Ulubione czcionki
@@ -3965,6 +3969,7 @@ curves	Smooth	Wygładź
 	Chisel Soft	Dłuto miękkie
 	Open color-less EXR as ACEScg	Otwieraj EXR bez profilu koloru jako ACEScg
 	Do not append "copy" to filename when saving a copy	Nie dodawaj „copy” do nazwy pliku przy zapisywaniu kopii
+	Save Full-Size Composite in .pcraft Files	Zapisuj obraz złożony w pełnym rozmiarze w plikach .pcraft
 	Edit Selected Guides	Edytuj zaznaczone prowadnice
 	Clear Selected Guides	Usuń zaznaczone prowadnice
 	Bicubic Automatic	Dwusześcienna automatyczna
@@ -4017,6 +4022,7 @@ curves	Smooth	Wygładź
 	This document's layers: {needed} of {budget} for layers	Warstwy tego dokumentu: {needed} z {budget} na warstwy
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	Warstwy tego dokumentu potrzebują {needed}, ale mogą zająć {budget}: odświeżanie całego dokumentu używa CPU
 	GPU Memory (MB, 0 = Automatic)	Pamięć GPU (MB, 0 = Automatycznie)
+	Scratch Size Limit (MB, 0 = No Limit)	Limit rozmiaru dysku roboczego (MB, 0 = bez limitu)
 	{path}: the path is not valid Unicode; save under another name.	{path}: ścieżka nie jest prawidłowym Unicode; zapisz pod inną nazwą.
 	Replace	Zastąp
 	{name} was changed by another app after it was opened or saved here.	Plik {name} został zmieniony przez inną aplikację po otwarciu lub zapisaniu go tutaj.

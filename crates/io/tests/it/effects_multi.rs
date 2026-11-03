@@ -17,7 +17,7 @@ fn roundtrip(doc: &Document) -> Document {
 }
 
 fn max_diff(a: &Document, b: &Document) -> f32 {
-    let (x, y) = (photocraft_compose::flatten(a).px, photocraft_compose::flatten(b).px);
+    let (x, y) = (photocraft_compose::flatten(a).into_px(), photocraft_compose::flatten(b).into_px());
     assert_eq!(x.len(), y.len());
     x.iter().zip(&y).flat_map(|(p, q)| (0..4).map(move |c| (p[c] * p[3] - q[c] * q[3]).abs())).fold(0.0, f32::max)
 }

@@ -3180,6 +3180,9 @@ curves	Smooth	Jämna ut
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} steg saknar ännu motsvarighet i PhotoCraft|{n} steg saknar ännu motsvarighet i PhotoCraft
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	Sparade {n} åtgärd i {file}|Sparade {n} åtgärder i {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	{n} steg utan motsvarighet i Photoshop utelämnades|{n} steg utan motsvarighet i Photoshop utelämnades
+@plural	{n} action file loaded|{n} action files loaded	{n} åtgärdsfil inläst|{n} åtgärdsfiler inlästa
+	{set} from {file} replaced the one from {earlier}	Uppsättningen {set} från {file} ersatte den från {earlier}
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	{n} fil kunde inte läsas in: {errors}|{n} filer kunde inte läsas in: {errors}
 
 	File Naming	Filnamngivning
 	Starting serial	Startnummer
@@ -3356,6 +3359,7 @@ curves	Smooth	Jämna ut
 	This document's layers: {needed} of {budget} for layers	Lagren i det här dokumentet: {needed} av {budget} för lager
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	Lagren i det här dokumentet behöver {needed} men får använda {budget}: omritningar av hela dokumentet använder CPU:n
 	GPU Memory (MB, 0 = Automatic)	GPU-minne (MB, 0 = automatisk)
+	Scratch Size Limit (MB, 0 = No Limit)	Storleksgräns för arbetsdisk (MB, 0 = ingen gräns)
 	{path}: the path is not valid Unicode; save under another name.	{path}: sökvägen är inte giltig Unicode; spara under ett annat namn.
 	Replace	Ersätt
 	{name} was changed by another app after it was opened or saved here.	{name} har ändrats av en annan app efter att den öppnades eller sparades här.

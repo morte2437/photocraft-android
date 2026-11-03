@@ -157,7 +157,7 @@ fn replayed(s: &mut Session, id: LayerId, params: serde_json::Value) -> Vec<[f32
     })
     .unwrap();
     let doc = &s.active().unwrap().doc;
-    photocraft_compose::render(doc, doc.bounds()).px
+    photocraft_compose::render(doc, doc.bounds()).into_px()
 }
 
 #[test]
@@ -202,12 +202,12 @@ fn smart_displace_keeps_a_relative_map_path() {
     png(&d.join("map.png"), |_| [255, 255, 255]);
     let (mut s, id) = document(&d, &d.join("ramp.png"));
     let path = d.join("map.png").to_string_lossy().into_owned();
-    let unfiltered = photocraft_compose::render(&s.active().unwrap().doc, s.active().unwrap().doc.bounds()).px;
+    let unfiltered = photocraft_compose::render(&s.active().unwrap().doc, s.active().unwrap().doc.bounds()).into_px();
     s.execute("filter.distort.displace", json!({"layer": id.0, "mapPath": path, "horizontal": 50, "vertical": 0})).unwrap();
     let state = |s: &Session| {
         let doc = &s.active().unwrap().doc;
         let Some(LayerContent::Smart(sm)) = doc.layer(id).map(|l| &l.content) else { panic!("a smart object") };
-        (sm.smart_filters[0].params.clone(), photocraft_compose::render(doc, doc.bounds()).px)
+        (sm.smart_filters[0].params.clone(), photocraft_compose::render(doc, doc.bounds()).into_px())
     };
     let (params, displaced) = state(&s);
     assert_eq!(params["mapPath"], json!(path));

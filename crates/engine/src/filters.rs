@@ -259,6 +259,8 @@ pub(crate) fn run_filter(s: &mut Session, id: &str, p: &Value) -> Result<Value> 
         &label,
         move |doc, _, ctx| {
             let filter = |surf: &photocraft_raster::Surface, fp: &FilterParams, area, bounds, sel: Option<&photocraft_raster::Surface>, extent| {
+                let _working = photocraft_raster::memory::try_reserve_operation(algo::working_bytes(fp, area, bounds, surf.format().channels()))
+                    .map_err(EngineError::Other)?;
                 ctx.stage(0.0, 1.0, &msg, |ctl| algo::apply_in_with(surf, fp, area, bounds, sel, extent, ctl)).ok_or(EngineError::Cancelled)
             };
             let selection = doc.selection.clone();
@@ -397,6 +399,8 @@ pub(crate) fn keep_alpha(old: &photocraft_raster::Surface, new: &mut photocraft_
                 }
             }
             s.write_region(*r, &v);
+            photocraft_raster::scratch::give(o);
+            photocraft_raster::scratch::give(v);
             true
         })
         .reduce(|| true, |a, b| a && b);

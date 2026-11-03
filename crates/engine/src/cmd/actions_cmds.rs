@@ -137,9 +137,16 @@ pub(crate) fn recorded_params(s: &Session, id: &str, mut p: Value) -> Value {
     p
 }
 
-/// Resolve the recorded visibility target identically in engine and shell playback.
+/// Resolve the recorded visibility target identically in engine and shell playback, and drop
+/// the `.atn` event a Filter Gallery step remembers for Save Actions: the command, its journal
+/// entry (Last Filter), a smart filter and the step's dialog never see it.
 pub fn playback_params(s: &Session, id: &str, p: &Value) -> Result<Value> {
     let mut p = p.clone();
+    if id.starts_with("filter.gallery.")
+        && let Some(object) = p.as_object_mut()
+    {
+        object.remove(crate::atn_cmds::RECORDED_EVENT);
+    }
     if id == "layer.setProps"
         && let Some(target) = p.get("_actionLayer")
     {

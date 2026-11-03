@@ -14,7 +14,7 @@ fn history_bytes(s: &Session, all: bool) -> usize {
 }
 
 fn clip_bytes(s: &Session) -> usize {
-    s.clipboard.as_ref().map_or(0, |c| c.surface.tiles().map(|(_, t)| t.bytes().len()).sum())
+    s.clipboard.as_ref().map_or(0, |c| c.surface.tiles().map(|(_, t)| t.len()).sum())
 }
 
 pub(super) fn purge(s: &mut Session, what: &str) -> Result<Value> {

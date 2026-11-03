@@ -44,7 +44,7 @@ fn modes_toggle_and_show_in_inspect_without_history() {
 fn a_mask_view_never_alters_pixels() {
     let (mut s, masked, _) = session();
     let before = s.active().unwrap().doc.clone();
-    let px = |s: &Session| photocraft_compose::render(&s.active().unwrap().doc, Rect::new(0, 0, 40, 20)).px;
+    let px = |s: &Session| photocraft_compose::render(&s.active().unwrap().doc, Rect::new(0, 0, 40, 20)).into_px();
     let composite = px(&s);
     for mode in ["gray", "overlay", "toggleOverlay", "toggleGray", "off"] {
         s.execute(ID, json!({"layer": masked, "mode": mode})).unwrap();

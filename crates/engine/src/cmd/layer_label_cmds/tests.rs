@@ -1,6 +1,6 @@
 use super::*;
 use photocraft_color::SampleType;
-use photocraft_doc::{Layer, LayerContent};
+use photocraft_doc::{Layer, LayerContent, LayerId};
 
 fn fixture(depth: u8) -> (Session, [LayerId; 4]) {
     let mut s = Session::new();

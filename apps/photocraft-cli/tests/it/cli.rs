@@ -1025,6 +1025,26 @@ fn tiff_output_is_flat_unless_tiff_layers_is_given() {
     std::fs::remove_dir_all(d).unwrap();
 }
 
+#[test]
+fn pcraft_output_has_no_full_composite_unless_asked() {
+    let d = tmp("pcraft-full-composite");
+    let full = |path: &std::path::Path| photocraft_format::read_full_composite(&std::fs::read(path).unwrap()).unwrap().is_some();
+    for (name, flag, expect) in [("plain.pcraft", None, false), ("full.pcraft", Some("--pcraft-full-composite"), true)] {
+        let out = d.join(name);
+        let mut cmd = bin();
+        cmd.args(["run", "--new", r#"{"width":16,"height":16}"#]);
+        if let Some(flag) = flag {
+            cmd.arg(flag);
+        }
+        ok(cmd.arg("--out").arg(&out));
+        assert_eq!(full(&out), expect, "{name}");
+    }
+    let converted = d.join("converted.pcraft");
+    ok(bin().arg("convert").arg(d.join("plain.pcraft")).arg(&converted).arg("--pcraft-full-composite"));
+    assert!(full(&converted));
+    std::fs::remove_dir_all(d).unwrap();
+}
+
 /// Issue #1108: a non-Unicode argument (a Latin-1 file name on Linux) used to panic in
 /// `std::env::args()` before anything was printed. clap reads the arguments as they are: a path
 /// takes one, and text (`--filter`) refuses it with a usage error.
@@ -1088,6 +1108,20 @@ fn batch_plays_a_photoshop_actions_file() {
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(err.contains("Generative Fill"), "{err}");
     assert!(!o.status.success());
+}
+
+/// A version 12 Actions file (Photoshop 5, often saved on classic Mac OS without an extension) is
+/// recognised by its version word like version 16, not read as a JSON actions list.
+#[test]
+fn extensionless_version_12_actions_file_is_read_as_atn() {
+    let d = tmp("atn-v12");
+    let path = d.join("Legacy Actions");
+    std::fs::write(&path, include_bytes!("../../../../crates/psd/tests/fixtures/atn/v12-commands.atn")).unwrap();
+    let (steps, set, warnings) = photocraft_cli::load_actions_file(&path, None).unwrap();
+    assert_eq!(set.len(), 1);
+    assert_eq!(steps, vec![("actions.play".to_string(), json!({"action": set[0].name}))]);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    std::fs::remove_dir_all(d).unwrap();
 }
 
 /// What `photocraft_cli::run` returned and wrote, in-process.
@@ -1495,4 +1529,36 @@ fn batch_skips_deselect_with_nothing_selected() {
     let info: Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!((info["width"].as_u64(), info["height"].as_u64()), (Some(6), Some(8)), "the step after Deselect ran: {info}");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// TIFF Options from the command line (#8827): `--tiff-compression`, `--tiff-transparency on|off`
+/// and `--tiff-pyramid`; a bad value is a usage error that writes nothing.
+#[test]
+fn tiff_options_choose_compression_transparency_and_pyramid() {
+    let d = tmp("tiff-options");
+    let a = d.join("a.png");
+    write_png(&a, 200, 100, 3);
+    // (flags, compression tag, alpha, directories)
+    for (flags, compression, alpha, dirs) in [
+        (&[][..], 1, true, 1),
+        (&["--tiff-compression", "lzw"][..], 5, true, 1),
+        (&["--tiff-transparency", "off", "--tiff-compression", "zip"][..], 8, false, 1),
+        (&["--tiff-transparency", "on", "--tiff-pyramid"][..], 1, true, 3),
+    ] {
+        let out = d.join("a.tif");
+        ok(bin().arg("convert").arg(&a).arg(&out).args(flags));
+        let bytes = std::fs::read(&out).unwrap();
+        let info = photocraft_codecs::tiff_info(&bytes).unwrap();
+        assert_eq!(info.pages.len(), dirs, "{flags:?}");
+        assert!(info.pages.iter().all(|p| p.compression == compression), "{flags:?}: {:?}", info.pages);
+        assert_eq!(photocraft_codecs::decode(&bytes).unwrap().layout().has_alpha(), alpha, "{flags:?}");
+    }
+    for (flag, bad, expected) in [("--tiff-transparency", "maybe", "expected on or off"), ("--tiff-compression", "jpeg", "expected none, lzw or zip")] {
+        let out = d.join("bad.tif");
+        let o = bin().arg("convert").arg(&a).arg(&out).args([flag, bad]).output().unwrap();
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert_eq!(o.status.code(), Some(2), "{flag} {bad}");
+        assert!(err.contains(flag) && err.contains(expected), "{flag} {bad}: {err}");
+        assert!(!out.exists(), "{flag} {bad} wrote a file");
+    }
 }
