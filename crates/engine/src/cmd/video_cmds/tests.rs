@@ -99,11 +99,9 @@ fn write_tiff(path: &str, pages: &[(u32, u32, u8, u32)]) {
     std::fs::write(path, f).unwrap();
 }
 
-/// A real layered TIFF from the exporter (Photoshop layer data in tag 37724), extended to two
-/// pages by appending a copy of its first directory as the next one. The copied directory keeps
-/// the original tag and pixel offsets, so both pages carry genuine layer data without hand-written
-/// Photoshop blocks; the file stays small, and the second page is never decoded.
-fn write_layered_multipage_tiff(path: &str) {
+/// A real layered TIFF from the exporter: two 8×6 raster layers and Photoshop layer data in tag
+/// 37724, in one full-resolution page.
+fn layered_tiff_bytes() -> Vec<u8> {
     let mut doc = Document::new("layered", photocraft_geom::Size::new(8, 6), photocraft_color::ColorMode::Rgb, photocraft_color::SampleType::U8);
     let fmt = doc.pixel_format();
     for name in ["bottom", "top"] {
@@ -114,8 +112,17 @@ fn write_layered_multipage_tiff(path: &str) {
     let bytes =
         photocraft_io::export(&doc, "layered.tif", &photocraft_io::ExportOptions { tiff_layers: true, ..Default::default() }).expect("a layered TIFF").bytes;
     assert_eq!(bytes.get(0..2), Some(&b"II"[..]), "the TIFF exporter writes little-endian files here");
+    assert_eq!(u16::from_le_bytes([bytes[2], bytes[3]]), 42, "a classic TIFF");
+    bytes
+}
+
+/// [`layered_tiff_bytes`] extended to two pages by appending a copy of its first directory as the
+/// next one. The copied directory keeps the original tag and pixel offsets, so both pages carry
+/// genuine layer data without hand-written Photoshop blocks; the file stays small, and the second
+/// page is never decoded.
+fn write_layered_multipage_tiff(path: &str) {
+    let bytes = layered_tiff_bytes();
     let u16_at = |o: usize| u16::from_le_bytes([bytes[o], bytes[o + 1]]);
-    assert_eq!(u16_at(2), 42, "a classic TIFF");
     let first_ifd = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as usize;
     let count = u16_at(first_ifd) as usize;
     let dir_len = 2 + count * 12 + 4;
@@ -258,6 +265,39 @@ fn video_frames_to_layers_enforces_the_footage_limit_on_every_tiff_page() {
     let err = s.execute("file.import.videoFramesToLayers", json!({"path": path})).unwrap_err().to_string();
     assert!(err.contains("pages.tif") && err.contains("more than 1 MiB"), "{err}");
     assert_eq!(s.active().unwrap().doc.layers.len(), before, "nothing imported");
+}
+
+/// #10897 review: a single-page layered TIFF does not take the multi-page branch, so it falls
+/// through to the ordinary single-file import. That import must carry the footage import settings,
+/// including the PSD/layered-TIFF memory limit the caller lowered; before, it called the default
+/// import and ignored the limit, so this refusal was never typed (and a caller limit could be
+/// bypassed). The same file imports as one frame when the limit is not lowered.
+#[test]
+fn video_frames_to_layers_uses_the_footage_limit_for_a_single_page_layered_tiff() {
+    let dir = tmpdir("tiff-single-typed");
+    let path = format!("{dir}/layered.tif");
+    std::fs::write(&path, layered_tiff_bytes()).expect("write the layered TIFF");
+    let mut s = session();
+    let before_layers = s.active().unwrap().doc.layers.len();
+    let before_active = s.active().unwrap().active_layer;
+    {
+        let _limit = super::limits::Scoped::psd_max_pixel_bytes(1);
+        let err = s.execute("file.import.videoFramesToLayers", json!({"path": path})).unwrap_err();
+        match err {
+            EngineError::PsdHardBudget { name, required, limit } => {
+                assert_eq!(name, path);
+                assert_eq!(limit, 1);
+                assert!(required > limit, "the page estimate must be past the caller's limit: {required} > {limit}");
+            }
+            other => panic!("the single-page layered TIFF's refusal lost its typed fields: {other:?}"),
+        }
+    }
+    assert_eq!(s.active().unwrap().doc.layers.len(), before_layers, "no partial frame layers");
+    assert_eq!(s.active().unwrap().active_layer, before_active, "the active layer is unchanged");
+    // The same page imports normally under the budget the footage command always applied.
+    let r = s.execute("file.import.videoFramesToLayers", json!({"path": path})).unwrap();
+    assert_eq!(r["layers"], 1, "one page is one frame");
+    assert_eq!(s.active().unwrap().doc.layers.len(), before_layers + 1);
 }
 
 #[test]

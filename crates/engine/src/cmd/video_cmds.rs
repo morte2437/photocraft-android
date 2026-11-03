@@ -439,7 +439,7 @@ fn load_frames(path: &str, fmt: photocraft_color::PixelFormat, opts: &photocraft
                 continue;
             }
         }
-        let mut doc = crate::file_cmds::import(&name, &bytes)?;
+        let mut doc = crate::file_cmds::import_with_options(&name, &bytes, opts)?;
         // A Targa's alpha opens as a channel (as in Photoshop); a frame's alpha is transparency.
         if f.extension().is_some_and(|e| e.eq_ignore_ascii_case("tga")) {
             photocraft_io::tga_alpha_channel_to_transparency(&mut doc);

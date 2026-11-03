@@ -5,7 +5,13 @@ use super::{
 };
 
 pub(crate) fn import(name: &str, bytes: &[u8]) -> Result<Document> {
-    import_result(name, bytes).map(|r| r.document)
+    import_with_options(name, bytes, &photocraft_io::ImportOptions::default())
+}
+
+/// [`import`] with the caller's import settings. Footage passes its PSD/layered-TIFF memory limit,
+/// so a frame import cannot bypass the admission the rest of the open path applies.
+pub(crate) fn import_with_options(name: &str, bytes: &[u8], opts: &photocraft_io::ImportOptions) -> Result<Document> {
+    import_result_with(name, bytes, opts).map(|r| r.document)
 }
 
 /// [`import`] for a file that becomes a document of its own (Revert, Load Files into Stack;
@@ -23,8 +29,15 @@ pub(super) fn import_at_raw_ppi(raw_ppi: f64, name: &str, bytes: &[u8]) -> Resul
 }
 
 fn import_result(name: &str, bytes: &[u8]) -> Result<photocraft_io::ImportResult> {
+    import_result_with(name, bytes, &photocraft_io::ImportOptions::default())
+}
+
+/// The one import path every caller shares: allocation checkpoint, native `.pcraft` and format
+/// dispatch through `photocraft_io::import_with_options`, typed memory refusals, and the
+/// preview-only refusal wherever the import came from.
+fn import_result_with(name: &str, bytes: &[u8], opts: &photocraft_io::ImportOptions) -> Result<photocraft_io::ImportResult> {
     crate::allocation::checkpoint("importing document")?;
-    let r = photocraft_io::import(name, bytes).map_err(|e| crate::error::io_open_error(name, e))?;
+    let r = photocraft_io::import_with_options(name, bytes, opts).map_err(|e| crate::error::io_open_error(name, e))?;
     // Auxiliary imports return only a document and cannot surface the preview's fidelity warning.
     // Open has its own warning-preserving path; never silently place or process a thumbnail.
     if r.preview_only {

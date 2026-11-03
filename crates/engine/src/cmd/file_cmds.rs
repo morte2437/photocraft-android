@@ -41,7 +41,7 @@ pub use info::{CAMERA_FIELDS, camera_data, read_file_info, write_file_info};
 use info::{exposure_text, find_element};
 pub use open::{PLACE_EMBEDDED, open_bytes_as, open_bytes_as_with_options, place_bytes, raw_defaults};
 use open::{approve_memory, close_all, close_others, open_as, place, revert};
-pub(crate) use open::{import, tag_exr_colorspace};
+pub(crate) use open::{import, import_with_options, tag_exr_colorspace};
 use paths::is_file;
 #[cfg(test)]
 use paths::openable_name;
