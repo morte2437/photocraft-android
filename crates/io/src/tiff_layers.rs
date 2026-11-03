@@ -282,7 +282,10 @@ pub(crate) fn export_layered(doc: &Document, opts: &ExportOptions, ctl: &photocr
     ctl.check().map_err(|_| IoError::Cancelled)?;
     warnings.extend(w);
     let order = if codecs::tiff_writes_little_endian() { ByteOrder::Little } else { ByteOrder::Big };
-    let (layers, w) = match tiff_image_source(doc, &file).to_bytes(order) {
+    let mut has_alpha = file.layer_info.as_ref().is_some_and(|l| l.merged_alpha);
+    // The layers move out of the model rather than being copied, and are freed once written
+    // (#6607); the model keeps its header, resources and composite for the image below.
+    let (layers, w) = match tiff_image_source(doc, &mut file).into_bytes(order) {
         Err(photocraft_psd::PsdError::LimitExceeded(_)) if !force_psb => {
             let psb_opts = PsdExportOptions { force_psb: true, ..psd_opts };
             let (psb, w) = crate::with_span(ctl, 0.0, TIFF_MODEL_DONE, |ctl| crate::psd_export::document_to_psd_interruptible(doc, &psb_opts, ctl));
@@ -290,7 +293,8 @@ pub(crate) fn export_layered(doc: &Document, opts: &ExportOptions, ctl: &photocr
             warnings.extend(w);
             warnings.push("layer data exceeds 4 GB; written with PSB-sized lengths, which some readers do not open".into());
             file = psb;
-            tiff_image_source(doc, &file).to_bytes(order)?
+            has_alpha = file.layer_info.as_ref().is_some_and(|l| l.merged_alpha);
+            tiff_image_source(doc, &mut file).into_bytes(order)?
         }
         r => r?,
     };
@@ -304,7 +308,6 @@ pub(crate) fn export_layered(doc: &Document, opts: &ExportOptions, ctl: &photocr
 
     let fmt = doc.pixel_format();
     let cc = fmt.mode.color_channels();
-    let has_alpha = file.layer_info.as_ref().is_some_and(|l| l.merged_alpha);
     let channels = cc + usize::from(has_alpha);
     let extra_n = usize::from(file.header.channels).saturating_sub(channels);
     let kept = extra_n.min(codecs::MAX_EXTRA_SAMPLES);
@@ -351,6 +354,8 @@ pub(crate) fn export_layered(doc: &Document, opts: &ExportOptions, ctl: &photocr
     let cmyk = fmt.mode == ColorMode::Cmyk;
     let data = interleave(&file.image_data.data, w, h, ifd_channels, cc, sample, cmyk)?;
     let extras = native_extra_planes(&file.image_data.data, w, h, channels, kept, sample)?;
+    // Likewise the planar composite, now interleaved.
+    drop(file);
     ctl.check().map_err(|_| IoError::Cancelled)?;
     ctl.progress(TIFF_COMPOSITE_DONE);
     let layout = layout_for(fmt.mode, write_alpha);
@@ -373,17 +378,18 @@ pub(crate) fn export_layered(doc: &Document, opts: &ExportOptions, ctl: &photocr
 }
 
 /// The layer data (`ImageSourceData`) of a layered TIFF saved from `file`, adjusted the way
-/// Photoshop writes it.
-fn tiff_image_source(doc: &Document, file: &photocraft_psd::PsdFile) -> ImageSourceData {
+/// Photoshop writes it. The layers, global mask and global blocks move out of `file` (the
+/// export's own model), which keeps its header, resources and merged image.
+fn tiff_image_source(doc: &Document, file: &mut photocraft_psd::PsdFile) -> ImageSourceData {
     // Photoshop pairs alpha-name resources with samples past the colour channels and ignores
     // the ExtraSamples kind. The merged transparency must not occupy that first slot when a
     // spot is also stored. Layer transparency stays in each layer's channel −1.
-    let mut isd = ImageSourceData::from_psd(file);
     let spot_extras = file.header.channels as usize > {
         let cc = doc.pixel_format().mode.color_channels();
         let alpha = file.layer_info.as_ref().is_some_and(|l| l.merged_alpha);
         cc + usize::from(alpha)
     };
+    let mut isd = ImageSourceData::take_from_psd(file);
     // Positive layer count: the merged image's first extra sample is not transparency
     // (Photoshop's own spot TIFF does this; a negative count would claim the spot plane is alpha).
     if spot_extras && let Some(info) = &mut isd.layer_info {

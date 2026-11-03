@@ -4,6 +4,41 @@ use photocraft_format::list_recovery;
 use photocraft_ui_egui::{PhotocraftApp, prefs_ui};
 use serde_json::{Value, json};
 
+/// #6607: a PSD/PSB save streams the file model into the temporary file, which then holds
+/// exactly the exported bytes; a serializer error halfway leaves the old file and no
+/// temporary file behind.
+#[test]
+fn a_psd_save_streams_the_exported_bytes_and_keeps_the_old_file_on_error() {
+    let dir = temp("stream");
+    let mut doc = Document::new("streamed", photocraft_geom::Size::new(64, 48), photocraft_doc::ColorMode::Rgb, photocraft_color::SampleType::U8);
+    let fmt = doc.pixel_format();
+    let px: Vec<u8> = (0..64 * 48 * fmt.bytes_per_pixel()).map(|i| (i * 7 % 251) as u8).collect();
+    doc.layers
+        .push(photocraft_doc::Layer::new("A", photocraft_doc::LayerContent::Raster(photocraft_raster::Surface::from_interleaved(fmt, doc.bounds(), &px))));
+    let opts = photocraft_io::ExportOptions::default();
+    for name in ["a.psd", "a.psb"] {
+        let path = dir.join(name);
+        std::fs::write(&path, b"old").unwrap();
+        let want = photocraft_io::export(&doc, name, &opts).unwrap().bytes;
+        let r = photocraft_io::encode_with(&doc, name, &opts, &photocraft_raster::Interrupt::NONE).unwrap();
+        let photocraft_io::Encoded::Psd(mut file) = r.encoded else { panic!("{name}: not streamed") };
+        let seen = std::cell::RefCell::new(Vec::new());
+        write_encoded_atomic(&path, &photocraft_io::Encoded::Psd(file.clone()), &|f| seen.borrow_mut().push(f)).unwrap();
+        assert!(std::fs::read(&path).unwrap() == want, "{name}: the saved file differs from the export");
+        assert_eq!(seen.borrow().last().copied(), Some(1.0), "{name}");
+
+        let info = file.layer_info.as_mut().unwrap();
+        let layer = info.layers[0].clone();
+        info.layers = vec![layer; 32768];
+        let e = write_encoded_atomic(&path, &photocraft_io::Encoded::Psd(file), &|_| {}).unwrap_err();
+        assert!(e.contains("32767") && e.contains("not changed"), "{name}: {e}");
+        assert!(std::fs::read(&path).unwrap() == want, "{name}: a failed save replaced the file");
+        let temps: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name()).filter(|n| n.to_string_lossy().ends_with(".tmp")).collect();
+        assert!(temps.is_empty(), "{name}: left behind {temps:?}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// #6601: a chosen path whose name isn't valid Unicode is reported, never handed on lossily
 /// (Open would fail with "No such file", Save would write a second, renamed file).
 #[test]
