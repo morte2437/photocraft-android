@@ -120,6 +120,12 @@ fn the_preset_dropdown_lists_selection_while_the_frame_is_the_selections() {
     assert!(selection.rect().top() < presets.rect().top(), "Selection sits above the Ratio presets");
     assert_eq!(selection.accesskit_node().toggled(), Some(egui::accesskit::Toggled::True), "Selection is checked");
 
+    // Picking it is a label, not a preset: the frame and the ratio stay as they are (#10872).
+    let before = (h.state().ui.crop_rect, h.state().ui.tool_options.crop_ratio.clone());
+    h.get_by_label("Selection").click();
+    h.run();
+    assert_eq!((h.state().ui.crop_rect, h.state().ui.tool_options.crop_ratio.clone()), before, "choosing Selection changes neither the frame nor the ratio");
+
     h.state_mut().crop.default_frame = false;
     h.run();
     assert!(!drawn(&h).iter().any(|t| t == "Selection"), "edited frame: {:?}", drawn(&h));
