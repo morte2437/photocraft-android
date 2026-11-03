@@ -403,10 +403,7 @@ fn adjust_inks(adj: &Adjustment, buf: &mut CmykBuffer, depth: SampleType) {
 /// Mixes an adjustment's result back into `base` in the layer's blend mode, by its opacity and
 /// mask; coverage is unchanged (the compositor's adjustment mix).
 fn mix_adjusted(l: &Layer, base: &mut CmykBuffer, adjusted: &CmykBuffer, cx: &Ctx) {
-    // Fill below 100% in one of the special eight changes the blend itself and leaves
-    // coverage to Opacity, as on the RGB compositor (psblend::composite_fill, #9501).
-    let special = l.fill_opacity < 1.0 && super::psblend::fill_is_special(l.blend);
-    let opacity = if special { l.opacity } else { l.opacity * l.fill_opacity };
+    let opacity = l.opacity * l.fill_opacity;
     let rect = base.rect;
     let w = (rect.width() as usize).max(1);
     let mv = mask_vals(l, rect, cx);
@@ -425,15 +422,7 @@ fn mix_adjusted(l: &Layer, base: &mut CmykBuffer, adjusted: &CmykBuffer, cx: &Ct
             }
             continue;
         }
-        let bl = if special {
-            let b = |i: usize| 1.0 - p[i];
-            let s = |i: usize| 1.0 - a[i];
-            let cmy = super::psblend::blend_rgb_fill(l.blend, [b(0), b(1), b(2)], [s(0), s(1), s(2)], l.fill_opacity);
-            let k = super::psblend::blend_rgb_fill(l.blend, [b(3); 3], [s(3); 3], l.fill_opacity);
-            [1.0 - cmy[0], 1.0 - cmy[1], 1.0 - cmy[2], 1.0 - k[0]]
-        } else {
-            blend_ink(l.blend, [p[0], p[1], p[2], p[3]], [a[0], a[1], a[2], a[3]])
-        };
+        let bl = blend_ink(l.blend, [p[0], p[1], p[2], p[3]], [a[0], a[1], a[2], a[3]]);
         for (v, b) in p.iter_mut().zip(bl) {
             *v = if k >= 1.0 { b } else { *v + (b - *v) * k };
         }
