@@ -45,6 +45,8 @@ mod channel_map;
 pub mod comps_map;
 pub mod doc_path;
 pub mod effects_map;
+#[cfg(any(unix, windows))]
+mod exr_native;
 pub mod exr_parts;
 mod flat;
 mod gradient_bake;
@@ -202,6 +204,68 @@ pub struct ExportResult {
     pub bytes: Vec<u8>,
     /// Human-readable notes about anything approximated or dropped.
     pub warnings: Vec<String>,
+}
+
+/// What [`encode_with`] produced: the file's bytes, or for PSD/PSB the file model, which
+/// [`Encoded::write_to`] serializes straight into the file, so a save never holds the whole
+/// encoded file next to the model (#6607). Either way the bytes are exactly [`export`]'s.
+#[derive(Debug, Clone)]
+pub enum Encoded {
+    /// The encoded file.
+    Bytes(Vec<u8>),
+    /// A PSD/PSB file, serialized when written.
+    Psd(Box<PsdFile>),
+}
+
+impl Encoded {
+    /// The file's bytes, serializing a PSD/PSB model in memory.
+    pub fn into_bytes(self) -> Result<Vec<u8>, IoError> {
+        match self {
+            Encoded::Bytes(b) => Ok(b),
+            Encoded::Psd(file) => Ok(file.to_bytes()?),
+        }
+    }
+
+    /// [`Self::into_bytes`] without giving up the model.
+    pub fn bytes(&self) -> Result<std::borrow::Cow<'_, [u8]>, IoError> {
+        match self {
+            Encoded::Bytes(b) => Ok(std::borrow::Cow::Borrowed(b)),
+            Encoded::Psd(file) => Ok(std::borrow::Cow::Owned(file.to_bytes()?)),
+        }
+    }
+
+    /// The exact length [`Self::write_to`] writes. Fails, as the write would, for a PSD/PSB
+    /// model its writer refuses.
+    pub fn encoded_len(&self) -> Result<u64, IoError> {
+        match self {
+            Encoded::Bytes(b) => Ok(b.len() as u64),
+            Encoded::Psd(file) => Ok(file.encoded_len()?),
+        }
+    }
+
+    /// Writes the file into `w` from its current position (PSD/PSB seeks back to patch lengths).
+    /// A PSD/PSB serializer error comes back as `InvalidData`.
+    pub fn write_to<W: std::io::Write + std::io::Seek + ?Sized>(&self, w: &mut W) -> std::io::Result<()> {
+        match self {
+            Encoded::Bytes(b) => w.write_all(b),
+            Encoded::Psd(file) => file.write_to(w),
+        }
+    }
+}
+
+/// Result of [`encode_with`].
+#[derive(Debug, Clone)]
+pub struct EncodedExport {
+    /// The file, ready to write.
+    pub encoded: Encoded,
+    /// Human-readable notes about anything approximated or dropped.
+    pub warnings: Vec<String>,
+}
+
+impl From<ExportResult> for EncodedExport {
+    fn from(r: ExportResult) -> Self {
+        EncodedExport { encoded: Encoded::Bytes(r.bytes), warnings: r.warnings }
+    }
 }
 
 /// Which part of the document's XMP packet and free-form text a flat export embeds.
@@ -462,7 +526,9 @@ fn import_psd(
 /// ([`PsdFile::from_source`]) rather than read whole: its channel data is read layer by layer as
 /// it is decoded, so opening it needs memory for the document, not for the document plus the
 /// file. A read that fails meanwhile (the file is truncated or rewritten, its drive goes away)
-/// fails the open. Other formats are read whole.
+/// fails the open. A single-part flat scanline EXR is decoded one compression block at a time
+/// into tiles, so its size is bounded by the tile budget (or the scratch disk), not by a
+/// whole-file buffer and a decoded image. Other formats are read whole.
 #[cfg(any(unix, windows))]
 pub fn import_file_for_open_with(
     name: &str,
@@ -477,6 +543,23 @@ pub fn import_file_for_open_with(
     let psd = !has_extension(name, photocraft_format::EXTENSION) && photocraft_psd::ReadAt::read_at(&source, 0, &mut magic).is_ok() && is_psd(&magic);
     if !psd {
         drop(source);
+        // A flat scanline EXR is decoded block by block straight into tiles; other EXR
+        // layouts, and EXR headers the band decoder refuses, are read whole below.
+        if !has_extension(name, photocraft_format::EXTENSION) && photocraft_codecs::detect(&magic) == Some(photocraft_codecs::Format::OpenExr) {
+            let before = photocraft_raster::spill::read_error_generation();
+            let mut file = std::fs::File::open(path).map_err(read_failed)?;
+            let original = file.metadata().map_err(read_failed)?;
+            if let Some(mut result) = exr_native::import(&mut file, ctl)? {
+                let current = std::fs::metadata(path).map_err(read_failed)?;
+                if current.len() != original.len() || current.modified().ok() != original.modified().ok() {
+                    return Err(IoError::Read(format!("{}: the file changed while it was being opened; open it again", path.display())));
+                }
+                photocraft_raster::spill::check_since(before).map_err(IoError::Read)?;
+                ctl.check().map_err(|_| IoError::Cancelled)?;
+                result.document.name = name.to_string();
+                return Ok((result, false));
+            }
+        }
         let bytes = photocraft_format::read_file(path).map_err(read_failed)?;
         return import_for_open_with(name, &bytes, opts, ctl);
     }
@@ -608,6 +691,28 @@ pub fn export(doc: &Document, name_or_ext: &str, opts: &ExportOptions) -> Result
 /// layered TIFF, in coarse steps for the other formats) and checks it between stages. A cancelled
 /// export fails with [`IoError::Cancelled`]; otherwise the bytes are exactly [`export`]'s.
 pub fn export_with(doc: &Document, name_or_ext: &str, opts: &ExportOptions, ctl: &photocraft_raster::Interrupt) -> Result<ExportResult, IoError> {
+    let r = checked_stages(doc, name_or_ext, opts, ctl)?;
+    let bytes = r.encoded.into_bytes()?;
+    ctl.check().map_err(|_| IoError::Cancelled)?;
+    ctl.progress(1.0);
+    Ok(ExportResult { bytes, warnings: r.warnings })
+}
+
+/// [`export_with`] up to the point where the file can be written: PSD/PSB stop at the file model,
+/// which [`Encoded::write_to`] serializes into the file as it goes (#6607); every other format is
+/// encoded. Every pixel is read from the document (scratch included, and checked as
+/// [`export_with`] checks it) before this returns: the model holds the encoded channels, never a
+/// reference to the document's tiles. Reports progress up to `1.0` once the result is ready.
+pub fn encode_with(doc: &Document, name_or_ext: &str, opts: &ExportOptions, ctl: &photocraft_raster::Interrupt) -> Result<EncodedExport, IoError> {
+    let r = checked_stages(doc, name_or_ext, opts, ctl)?;
+    ctl.check().map_err(|_| IoError::Cancelled)?;
+    ctl.progress(1.0);
+    Ok(r)
+}
+
+/// [`export_stages`] refused when the document's scratch was, or became, unreadable while its
+/// pixels were read (previews included): their placeholders must never be saved.
+fn checked_stages(doc: &Document, name_or_ext: &str, opts: &ExportOptions, ctl: &photocraft_raster::Interrupt) -> Result<EncodedExport, IoError> {
     ctl.check().map_err(|_| IoError::Cancelled)?;
     photocraft_compose::discard_unreadable_pixel_caches();
     doc.scratch_health().map_err(IoError::Unsupported)?;
@@ -616,7 +721,6 @@ pub fn export_with(doc: &Document, name_or_ext: &str, opts: &ExportOptions, ctl:
     photocraft_raster::spill::check_since(scratch_generation).map_err(IoError::Unsupported)?;
     doc.scratch_health().map_err(IoError::Unsupported)?;
     ctl.check().map_err(|_| IoError::Cancelled)?;
-    ctl.progress(1.0);
     Ok(r)
 }
 
@@ -639,7 +743,7 @@ const PCRAFT_FULL_COMPOSITE_PIXELS: u64 = 1 << 26;
 /// before its bytes are assembled: about 2.7 s of 3.0 s for a 24 MP, 5-layer RGB/8 document.
 const PSD_MODEL_DONE: f32 = 0.9;
 
-fn export_stages(doc: &Document, name_or_ext: &str, opts: &ExportOptions, ctl: &photocraft_raster::Interrupt) -> Result<ExportResult, IoError> {
+fn export_stages(doc: &Document, name_or_ext: &str, opts: &ExportOptions, ctl: &photocraft_raster::Interrupt) -> Result<EncodedExport, IoError> {
     let ext = extension(name_or_ext);
     if ext == "pdn" {
         return Err(IoError::Unsupported("PDN is import-only; save as .pcraft to preserve all layers and blend modes".into()));
@@ -656,10 +760,10 @@ fn export_stages(doc: &Document, name_or_ext: &str, opts: &ExportOptions, ctl: &
         ));
     }
     if ext == "ora" {
-        return ora::export(doc);
+        return ora::export(doc).map(EncodedExport::from);
     }
     if ext == "pdf" {
-        return pdf::export(doc);
+        return pdf::export(doc).map(EncodedExport::from);
     }
     if ext == photocraft_format::EXTENSION {
         let doc = named_for_file(doc, name_or_ext);
@@ -681,7 +785,7 @@ fn export_stages(doc: &Document, name_or_ext: &str, opts: &ExportOptions, ctl: &
             Some(cache) => cache.encode(doc.as_ref(), &previews)?,
             None => photocraft_format::save_to_bytes(doc.as_ref(), &previews)?,
         };
-        return Ok(ExportResult { bytes, warnings: Vec::new() });
+        return Ok(ExportResult { bytes, warnings: Vec::new() }.into());
     }
     if ext == "psd" || ext == "psb" {
         let o = PsdExportOptions {
@@ -691,6 +795,9 @@ fn export_stages(doc: &Document, name_or_ext: &str, opts: &ExportOptions, ctl: &
             read_linked_files: opts.read_linked_files,
             ..Default::default()
         };
+        // The preview is rendered first, while only the document is in memory: its full-size
+        // render would otherwise come on top of the finished file model (#6607).
+        let preview = opts.image_previews.then(|| psd_thumbnail::resource(doc));
         let (mut file, mut warnings) = with_span(ctl, 0.0, PSD_MODEL_DONE, |ctl| psd_export::document_to_psd_interruptible(doc, &o, ctl));
         // A cancelled conversion stops early with an incomplete model: never write it.
         ctl.check().map_err(|_| IoError::Cancelled)?;
@@ -698,8 +805,8 @@ fn export_stages(doc: &Document, name_or_ext: &str, opts: &ExportOptions, ctl: &
             warnings.push("free-form text metadata is not supported by PSD/PSB; it will be dropped".into());
         }
         warnings.extend(tiff_layers::strip_foreign_order_blocks(&mut file));
-        if opts.image_previews {
-            match psd_thumbnail::resource(doc) {
+        if let Some(preview) = preview {
+            match preview {
                 // Beside the other resources Photoshop writes ahead of the version info.
                 Ok(r) => {
                     let at = file.resources.iter().position(|r| r.id == photocraft_psd::resources::ids::VERSION_INFO).unwrap_or(file.resources.len());
@@ -710,14 +817,13 @@ fn export_stages(doc: &Document, name_or_ext: &str, opts: &ExportOptions, ctl: &
         }
         // Never write a header the reader would refuse (e.g. a zero-sized canvas).
         file.header.validate()?;
-        let bytes = file.to_bytes()?;
-        return Ok(ExportResult { bytes, warnings });
+        return Ok(EncodedExport { encoded: Encoded::Psd(Box::new(file)), warnings });
     }
     let format = photocraft_codecs::from_extension(&ext).ok_or_else(|| IoError::UnknownFormat(name_or_ext.to_string()))?;
     if format == photocraft_codecs::Format::Tiff && opts.tiff_layers && tiff_layers::would_write_layers(doc) {
-        return tiff_layers::export_layered(doc, opts, ctl);
+        return tiff_layers::export_layered(doc, opts, ctl).map(EncodedExport::from);
     }
-    flat::export_flat_with(doc, format, opts, ctl)
+    flat::export_flat_with(doc, format, opts, ctl).map(EncodedExport::from)
 }
 
 /// The flattened document at its canvas size, in 8-bit RGBA like a `.pcraft` file's two previews,

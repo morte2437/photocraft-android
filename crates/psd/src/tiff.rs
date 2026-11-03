@@ -152,16 +152,54 @@ impl ImageSourceData {
     /// Serializes the data in `order`. Returns the bytes and warnings about blocks that were
     /// dropped because they could not be converted to a little-endian layout.
     pub fn to_bytes(&self, order: ByteOrder) -> Result<(Vec<u8>, Vec<String>)> {
+        Self::finish(self.body()?, self.version, order)
+    }
+
+    /// [`Self::to_bytes`] that frees the layers once their block is written, before the bytes
+    /// are converted to `order` (a copy of them all): a layered TIFF save holds them one time
+    /// fewer (#6607).
+    pub fn into_bytes(self, order: ByteOrder) -> Result<(Vec<u8>, Vec<String>)> {
+        let (body, version) = (self.body()?, self.version);
+        drop(self);
+        Self::finish(body, version, order)
+    }
+
+    /// The signature, then the blocks in big-endian order.
+    fn body(&self) -> Result<Vec<u8>> {
         let version = self.version;
+        let signature = if version.is_psb() { SIGNATURE_PSB } else { SIGNATURE };
+        let len_field = |key: &[u8; 4]| if uses_long_length(version, key) { 8u64 } else { 4 };
+        // Reserved at its exact length, as the buffer holds all the layers' pixels: one that is a
+        // few bytes short doubles at its last append, copying them once more (#6607).
+        let mut len = signature.len() as u64;
+        let info_pad = match &self.layer_info {
+            Some(info) => {
+                let pad = info.pad_len(version, 4)?;
+                len = len.saturating_add(8 + len_field(&self.layer_info_key)).saturating_add(info.unpadded_len(version)?).saturating_add(pad as u64);
+                pad
+            }
+            None => 0,
+        };
+        if let Some(m) = &self.global_layer_mask {
+            let pad = TaggedBlock::default_padding(m.data.len(), 4);
+            len = len.saturating_add(8 + len_field(b"LMsk")).saturating_add(m.data.len() as u64).saturating_add(pad as u64);
+        }
+        len = self.global_blocks.iter().fold(len, |n, b| n.saturating_add(b.encoded_len_aligned(version, 4) as u64));
+        len = len.saturating_add(self.trailing.len() as u64);
+        let no_memory = || PsdError::OutOfMemory("not enough memory for the layer data");
         let mut body = Vec::new();
+        body.try_reserve_exact(usize::try_from(len).map_err(|_| no_memory())?).map_err(|_| no_memory())?;
+        body.put(signature);
         if let Some(info) = &self.layer_info {
-            // Pad to 4 without cloning the layers (and all their pixel data) just to set `padding`.
-            let pad = info.pad_len(version, 4)?;
-            let mut data = Vec::new();
-            data.try_reserve(info.channel_data_len().saturating_add(pad)).map_err(|_| PsdError::OutOfMemory("not enough memory for the layer data"))?;
-            info.write_unpadded(&mut data, version)?;
-            data.resize(data.len() + pad, 0);
-            padded_block(self.layer_info_key, data).write(&mut body, version, 4)?;
+            // Written straight into the body, padded to 4 inside its length (as a padded copy
+            // would be): a separate buffer for it would hold all the pixels a second time.
+            let long = uses_long_length(version, &self.layer_info_key);
+            body.put(b"8BIM");
+            body.put(&self.layer_info_key);
+            let at = body.begin_len(long);
+            info.write_unpadded(&mut body, version)?;
+            body.resize(body.len() + info_pad, 0);
+            body.end_len(at, long)?;
         }
         // Blocks without explicit padding are padded to 4 as they are written (alignment 4), so
         // the global mask and blocks are written from the model, without a copy of their data.
@@ -173,12 +211,18 @@ impl ImageSourceData {
             b.write(&mut body, version, 4)?;
         }
         body.put(&self.trailing);
-        let (body, warnings) =
-            if order.is_little() { transcode::transcode_blocks(&body, version, ByteOrder::Big, ByteOrder::Little)? } else { (body, Vec::new()) };
-        let mut out = Vec::with_capacity(36 + body.len());
-        out.put(if version.is_psb() { SIGNATURE_PSB } else { SIGNATURE });
-        out.put(&body);
-        Ok((out, warnings))
+        Ok(body)
+    }
+
+    /// The `body` (signature included) converted to `order`.
+    fn finish(body: Vec<u8>, version: Version, order: ByteOrder) -> Result<(Vec<u8>, Vec<String>)> {
+        if !order.is_little() {
+            return Ok((body, Vec::new()));
+        }
+        let signature = if version.is_psb() { SIGNATURE_PSB } else { SIGNATURE };
+        let blocks = body.get(signature.len()..).ok_or_else(|| PsdError::invalid("image source data without its signature"))?;
+        // Converted behind the signature, into one buffer sized for both.
+        transcode::transcode_blocks_after(signature, blocks, version, ByteOrder::Big, ByteOrder::Little)
     }
 
     /// The layers, global mask and global blocks of a PSD as image source data (byte order Big).
@@ -195,6 +239,25 @@ impl ImageSourceData {
             global_layer_mask: file.global_layer_mask.clone(),
             global_blocks: file.global_blocks.clone(),
             trailing: file.layer_mask_trailing.clone(),
+        }
+    }
+
+    /// [`Self::from_psd`] that moves the layers, global mask and global blocks out of `file`
+    /// instead of copying them: a layered TIFF save would otherwise hold every layer's pixels
+    /// twice (#6607). `file` keeps its header, resources and merged image.
+    pub fn take_from_psd(file: &mut PsdFile) -> Self {
+        let key = match &file.layer_info_placement {
+            LayerInfoPlacement::GlobalBlock { key, .. } => *key,
+            LayerInfoPlacement::Section => layer_info_key(file.header.depth),
+        };
+        ImageSourceData {
+            version: file.header.version,
+            byte_order: ByteOrder::Big,
+            layer_info: file.layer_info.take(),
+            layer_info_key: key,
+            global_layer_mask: file.global_layer_mask.take(),
+            global_blocks: std::mem::take(&mut file.global_blocks),
+            trailing: std::mem::take(&mut file.layer_mask_trailing),
         }
     }
 
@@ -223,6 +286,7 @@ impl ImageSourceData {
 }
 
 /// A block padded to a multiple of 4, as Photoshop writes them in TIFFs.
+#[cfg(test)]
 fn padded_block(key: [u8; 4], data: Vec<u8>) -> TaggedBlock {
     let pad = (4 - data.len() % 4) % 4;
     TaggedBlock { signature: *b"8BIM", key, data, padding: Some(vec![0; pad]) }
