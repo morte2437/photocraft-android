@@ -4,7 +4,7 @@
 //! can read and set them.
 
 use photocraft_color::BlendMode;
-use photocraft_doc::{Layer, LayerContent};
+use photocraft_doc::{Fill, Layer, LayerContent};
 use serde::{Deserialize, Serialize};
 
 use crate::state::UiState;
@@ -63,7 +63,8 @@ pub const KINDS: [&str; 5] = ["pixel", "adjustment", "type", "shape", "smart"];
 
 /// `ui.set {layerFilter: {by?, kinds?, name?, mode?}}`: `current` with the given fields replaced,
 /// or an error naming the bad field (nothing changes then). `by` is `kind`, `name` or `mode`;
-/// `kinds` a list of [`KINDS`]; `mode` a blend mode name such as `Multiply` or `Pass Through`.
+/// `kinds` a list of [`KINDS`]; `mode` one of the layer blend modes such as `Multiply` (not
+/// Pass Through, which the Mode list doesn't offer, #10878).
 pub fn patched(current: &UiState, v: &serde_json::Value) -> Result<Filter, String> {
     let Some(o) = v.as_object() else { return Err("layerFilter must be an object".into()) };
     if let Some(k) = o.keys().find(|k| !["by", "kinds", "name", "mode"].contains(&k.as_str())) {
@@ -91,9 +92,10 @@ pub fn patched(current: &UiState, v: &serde_json::Value) -> Result<Filter, Strin
     }
     if let Some(mode) = o.get("mode") {
         let name = mode.as_str().ok_or("layerFilter.mode must be a blend mode name")?;
-        f.mode = photocraft_engine::commands::blend_from_str(name)
-            .filter(|m| *m == BlendMode::PassThrough || BlendMode::LAYER_MODES.contains(m))
-            .ok_or_else(|| format!("layerFilter.mode: unknown blend mode `{name}`"))?;
+        f.mode = photocraft_engine::commands::blend_from_str(name).filter(|m| BlendMode::LAYER_MODES.contains(m)).ok_or_else(|| {
+            let modes: Vec<&str> = BlendMode::LAYER_MODES.iter().map(|m| m.label()).collect();
+            format!("layerFilter.mode: `{name}` is not a layer blend mode the filter lists (modes: {})", modes.join(", "))
+        })?;
     }
     Ok(f)
 }
@@ -110,7 +112,11 @@ pub fn apply(ui: &mut UiState, f: Filter) {
 fn kind(l: &Layer) -> &'static str {
     match &l.content {
         LayerContent::Raster(_) => "pixel",
-        LayerContent::Adjustment(_) | LayerContent::Fill(_) => "adjustment",
+        LayerContent::Adjustment(_) => "adjustment",
+        // A fill layer (Layer › New Fill Layer) matches no Kind button, as in the reference
+        // application, except a solid colour with a vector mask, which lists as a shape (#10878).
+        LayerContent::Fill(Fill::Solid(_)) if l.vector_mask.is_some() => "shape",
+        LayerContent::Fill(_) => "",
         LayerContent::Text(_) => "type",
         LayerContent::Shape(_) => "shape",
         LayerContent::Smart(_) => "smart",
@@ -149,7 +155,9 @@ pub fn bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 widgets::text_field(ui, ui.scope_id().with("layer-filter-name"), &mut app.ui.layer_filter_name, tl!("Search"), width, false);
             }
             FilterBy::Mode => {
-                let modes: Vec<(BlendMode, &str)> = std::iter::once(BlendMode::PassThrough).chain(BlendMode::LAYER_MODES).map(|m| (m, m.label())).collect();
+                // The 27 layer modes, without Pass Through: a group set to Pass Through is never
+                // listed by Mode (#10878).
+                let modes: Vec<(BlendMode, &str)> = BlendMode::LAYER_MODES.into_iter().map(|m| (m, m.label())).collect();
                 let width = ui.available_width().max(96.0);
                 widgets::dropdown(ui, "layer-filter-mode", tl!("Mode"), &mut app.ui.layer_filter_mode, &modes, width);
             }
@@ -159,3 +167,6 @@ pub fn bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod kind_mode_tests;

@@ -16,7 +16,7 @@ pub use panel_state::{
 };
 pub use tool::Tool;
 pub use tool_options::{SampleAllLayers, ToolOptions};
-use tool_options::{default_brush_tool, default_layer_filter_mode, yes};
+use tool_options::{default_brush_tool, default_layer_filter_mode, layer_filter_mode_or_normal, yes};
 pub use transform::{
     BoxResize, CamTransform, ContentAwareOptions, Extras, MadeLayer, TextEdit, TransformMode, TransformSession, TypeInsertionStyle, TypeTransform,
 };
@@ -362,7 +362,7 @@ pub struct UiState {
     #[serde(default)]
     pub layer_filter_name: String,
     /// Layers panel blend-mode filter.
-    #[serde(default = "default_layer_filter_mode")]
+    #[serde(default = "default_layer_filter_mode", deserialize_with = "layer_filter_mode_or_normal")]
     pub layer_filter_mode: photocraft_color::BlendMode,
     /// Actions panel: which row is selected and which are expanded. The list lives on the session.
     #[serde(default)]
