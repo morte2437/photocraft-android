@@ -214,7 +214,7 @@ fn score(enc: &'static Encoding, name: &[u8], hint_letters: &std::collections::B
         // Letters, typographic punctuation and the degree sign ("Rotation 90°") are common, as
         // the double-byte pages' punctuation rows are, with two readings held back: the letters
         // windows-1252 alone has at 0x80–0x9F, where Mac Roman keeps its accented lowercase (Mac
-        // "Opacité" is 1252 "OpacitŽ"), unless a capital one starts a word ("Škoda") and the
+        // "Opacité" is 1252 "OpacitŽ"), unless a capital one starts a word ("Škoda", "ŠKODA") and the
         // file's own text doesn't write the Mac Roman letter instead (a French "état"); and a
         // windows-1251 Cyrillic letter glued into an ASCII word (Mac "Höhe" is 1251 "Hшhe"),
         // unless the name's letters are mostly Cyrillic ("CMYKканал", Ukrainian "Копiя") or the
@@ -229,7 +229,9 @@ fn score(enc: &'static Encoding, name: &[u8], hint_letters: &std::collections::B
             high += 1;
             let counts = if enc == WINDOWS_1252 && RARE_1252_LETTERS.contains(&ch) {
                 let after_ascii = i.checked_sub(1).and_then(|k| chars.get(k)).is_some_and(|c| c.is_ascii_alphanumeric());
-                let word_initial = ch.is_uppercase() && !after_ascii && chars.get(i + 1).is_some_and(|c| c.is_ascii_lowercase());
+                // Followed by an ASCII letter of either case: Mac Roman's lowercase ä before a
+                // capital ("äKODA") is no word either.
+                let word_initial = ch.is_uppercase() && !after_ascii && chars.get(i + 1).is_some_and(|c| c.is_ascii_alphabetic());
                 // The same byte as Mac Roman reads it: a letter the file's text writes, where it
                 // never writes this one, says the writer meant that ("état", not "Žtat").
                 let written = |c: char| c.to_lowercase().all(|l| hint_letters.contains(&l));
@@ -304,8 +306,9 @@ fn is_cyrillic(ch: char) -> bool {
 }
 
 /// Whether the Cyrillic letter at `i` is in a Cyrillic word of its own: a run of two or more,
-/// not glued to an ASCII letter ("Слой" beside "Layer", "Слой1"; not "OpacitЋ"; a lone letter
-/// after a digit, "90Ў", is no word).
+/// not glued to an ASCII letter, and not right after a digit ("Слой" beside "Layer", "Слой1";
+/// not "OpacitЋ", nor "90ЎЋ", which is Mac Roman "90°é": a digit ends a number, not a word, so
+/// what follows it without a space is its unit or suffix).
 fn cyrillic_word(chars: &[char], i: usize) -> bool {
     let mut start = i;
     while start > 0 && chars.get(start - 1).is_some_and(|c| is_cyrillic(*c)) {
@@ -315,8 +318,9 @@ fn cyrillic_word(chars: &[char], i: usize) -> bool {
     while chars.get(end).is_some_and(|c| is_cyrillic(*c)) {
         end += 1;
     }
-    let glued = |k: Option<usize>| k.and_then(|k| chars.get(k)).is_some_and(|c| c.is_ascii_alphabetic());
-    end - start >= 2 && !glued(start.checked_sub(1)) && !glued(Some(end))
+    let glued_before = start.checked_sub(1).and_then(|k| chars.get(k)).is_some_and(|c| c.is_ascii_alphanumeric());
+    let glued_after = chars.get(end).is_some_and(|c| c.is_ascii_alphabetic());
+    end - start >= 2 && !glued_before && !glued_after
 }
 
 /// Latin-1 symbols people type in names (windows-1252 0xA2–0xB7) whose byte is not a letter in
@@ -517,8 +521,16 @@ mod tests {
     fn mac_roman_degree_sign_is_not_cyrillic() {
         // #10774: Mac Roman ° (0xA1) is windows-1251 Ў and windows-1252 ¡; the degree sign is
         // common text, a lone Cyrillic letter among Latin ones is not.
-        let cases: [(&[&str], &str); 4] =
-            [(&["Rotation 90°"], "Définir"), (&["Rotation 90°"], "Set 1"), (&["Rotation 90°"], "Größe ändern"), (&["Rotation 90°", "Arrière-plan"], "Définir")];
+        // "Layer 90°é" (review): ° and é are windows-1251 Ў and Ћ, two Cyrillic letters in a row,
+        // but glued to the number, so no word of their own.
+        let cases: [(&[&str], &str); 6] = [
+            (&["Rotation 90°"], "Définir"),
+            (&["Rotation 90°"], "Set 1"),
+            (&["Rotation 90°"], "Größe ändern"),
+            (&["Rotation 90°", "Arrière-plan"], "Définir"),
+            (&["Layer 90°é"], "Set 1"),
+            (&["Layer 90°é"], "Définir"),
+        ];
         for (words, hint) in cases {
             let g = guess_words(MACINTOSH, words, hint);
             assert_eq!(g, Guess { encoding: MACINTOSH, uncertain: false }, "{words:?} with hint {hint:?}");
@@ -549,8 +561,9 @@ mod tests {
     #[test]
     fn a_capital_rare_letter_starting_a_word_keeps_windows_1252() {
         // windows-1252 Š Ž Ÿ (0x8A 0x8E 0x9F) are Mac Roman ä é ü: a capital one starting a word
-        // ("Škoda") counts, an accent inside a word (Mac "Opacité" as "OpacitŽ") does not.
-        for words in [&["Škoda"][..], &["Žaba"], &["Šibenik", "Žaba"]] {
+        // ("Škoda", all caps "ŠKODA") counts, an accent inside a word (Mac "Opacité" as
+        // "OpacitŽ") does not.
+        for words in [&["Škoda"][..], &["ŠKODA"], &["Žaba"], &["Šibenik", "Žaba"], &["ŽUPA", "Set"]] {
             assert_eq!(guess_words(WINDOWS_1252, words, "Nastavení"), Guess { encoding: WINDOWS_1252, uncertain: false }, "{words:?}");
             assert_eq!(guess_words(WINDOWS_1252, words, "Set 1").encoding, WINDOWS_1252, "{words:?}");
         }
@@ -669,15 +682,20 @@ mod tests {
 
     #[test]
     fn uncertain_fallback_stays_among_the_highest_scoring_candidates() {
-        // Mac Roman "Ändern": Mac Roman and windows-1251 both score every non-ASCII byte
-        // as a letter. Windows-1252 reads "€ndern", so it must not win their unresolved tie.
-        let names: &[&[u8]] = &[b"\x80ndern"];
+        // Mac Roman "éäé" (0x8E 0x8A 0x8E) is windows-1251 "ЋЉЋ", three Cyrillic letters in a
+        // row, a word of their own: both pages score every non-ASCII byte as a letter (an odd
+        // count of bytes, so no double-byte page reads it). Windows-1252 reads "ŽŠŽ", no
+        // word-initial capital among them, so it must not win their unresolved tie. (Mac Roman
+        // "Ändern" no longer ties: its lone Cyrillic letter glued into a Latin word, 1251
+        // "Ђndern", doesn't count, #10774.)
+        let names: &[&[u8]] = &[b"\x8e\x8a\x8e"];
         for hint in ["Set 1", "保存"] {
             let g = guess(names, hint);
             assert!([MACINTOSH, WINDOWS_1251].contains(&g.encoding), "{hint}: {g:?}");
             assert!(g.uncertain, "{hint}: {g:?}");
-            assert_eq!(score(g.encoding, names[0]), (1, 1));
+            assert_eq!(score(g.encoding, names[0], &Default::default()), (3, 3));
         }
+        assert_eq!(guess(&[b"\x80ndern"], "Set 1"), Guess { encoding: MACINTOSH, uncertain: false }, "Mac Roman \"Ändern\" is certain now");
     }
 
     #[test]
