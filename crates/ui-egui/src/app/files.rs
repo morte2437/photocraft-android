@@ -601,6 +601,9 @@ impl PhotocraftApp {
     fn saved_inner(&mut self, doc: DocId, revision: u64, path: &str, warnings: &[String], copy: bool, kind: SaveKind) {
         // Per-output Image Assets failures from the after-save hook, reported with this save (#11117).
         let mut asset_errors: Vec<String> = Vec::new();
+        // The successful outputs and their folder, kept for the partial-failure status line.
+        let mut asset_ok = 0usize;
+        let mut asset_dir = String::new();
         // Automation: only a layered save becomes the document's file; a flat one is a
         // copy, as in the headless server (#2579).
         let (hooks, arm) = match kind {
@@ -630,7 +633,10 @@ impl PhotocraftApp {
                     && let Some(i) = app.session.active_index()
                     && let Some(r) = photocraft_engine::automate_cmds::document_saved(&mut app.session, i)
                 {
-                    let n = r["files"].as_array().map_or(0, Vec::len).to_string();
+                    let files = r["files"].as_array().map_or(0, Vec::len);
+                    asset_ok = files;
+                    asset_dir = r["dir"].as_str().unwrap_or("").to_string();
+                    let n = files.to_string();
                     let dir = r["dir"].as_str().unwrap_or("");
                     asset_errors = r["errors"]
                         .as_array()
@@ -661,15 +667,17 @@ impl PhotocraftApp {
         let what = crate::i18n::fmt(tl!("Saved {name}"), &[("name", file_open::display_name(path).as_str())]);
         notices::io_warnings(self, &what, warnings);
         // #11117: a successful save whose Image Assets partially failed must say which outputs
-        // did not land, and of which document: the status line shows the first failure under the
-        // saved file's name, a notice lists them all.
+        // did not land, and of which document: the status keeps the full saved path (same-named
+        // documents only differ by their folder) and what did go out, the notice lists every failure.
         if !asset_errors.is_empty() {
-            let n = asset_errors.len();
+            let e = asset_errors.len();
+            let full = crate::i18n::fmt(tl!("Saved {name}"), &[("name", path)]);
             let title = crate::i18n::fmt(
-                &crate::i18n::trn(crate::i18n::current(), n as u64, "{what}: {n} Image Assets output failed", "{what}: {n} Image Assets outputs failed"),
-                &[("what", &what), ("n", &n.to_string())],
+                &crate::i18n::trn(crate::i18n::current(), e as u64, "{what}: {n} Image Assets output failed", "{what}: {n} Image Assets outputs failed"),
+                &[("what", &full), ("n", &e.to_string())],
             );
-            self.ui.status = if n == 1 { format!("{title}: {}", asset_errors[0]) } else { format!("{title}: {} …", asset_errors[0]) };
+            let written = crate::i18n::fmt(tl!("{ok} written to {dir}"), &[("ok", &asset_ok.to_string()), ("dir", &asset_dir)]);
+            self.ui.status = format!("{title} ({written}): {}", asset_errors[0]);
             self.ui.status_error = true;
             notices::post(self, title, asset_errors, true, None);
         }
@@ -872,11 +880,16 @@ mod tests {
         assert_eq!(app.session.active().unwrap().path.as_deref(), Some(path.as_str()), "the document save itself succeeded");
         assert!(assets.join("good.png").is_file(), "the good asset was exported");
         let notice = app.ui.notices.iter().find(|notice| notice.error).expect("the failed asset is reported as an error notice");
-        assert_eq!(notice.title, "Saved probe.psd: 1 Image Assets output failed", "the failure names the saved document");
+        assert_eq!(notice.title, format!("Saved {path}: 1 Image Assets output failed"), "the failure names the saved document by its full path");
         assert_eq!(notice.lines.len(), 1, "{:?}", notice.lines);
         assert!(notice.lines[0].starts_with("blocked/fail.png: asset path"), "{:?}", notice.lines[0]);
         assert!(app.ui.status_error, "the status line carries the failure");
-        assert!(app.ui.status.starts_with(&notice.title) && app.ui.status.contains("blocked/fail.png"), "{}", app.ui.status);
+        assert!(app.ui.status.starts_with(&notice.title), "{}", app.ui.status);
+        assert!(
+            app.ui.status.contains("1 written to") && app.ui.status.contains("blocked/fail.png"),
+            "the status keeps the success count, folder and first failure: {}",
+            app.ui.status
+        );
         // A clean generation afterwards reports the success line with no error notice (#11079 control).
         app.ui.notices.clear();
         std::fs::remove_file(assets.join("blocked")).unwrap();
