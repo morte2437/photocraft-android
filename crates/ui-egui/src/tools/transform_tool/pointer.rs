@@ -61,6 +61,11 @@ pub(super) fn accepts_outside_click(g: Gesture, end: [f64; 2], tol: f64) -> bool
     g.hit == Hit::Outside && (end[0] - g.start[0]).hypot(end[1] - g.start[1]) <= 2.0 * tol / HANDLE_PX
 }
 
+/// Whether a document point is outside the document, on the pasteboard around the canvas.
+fn on_pasteboard(app: &PhotocraftApp, p: [f64; 2]) -> bool {
+    app.session.active().is_some_and(|st| p[0] < 0.0 || p[1] < 0.0 || p[0] >= f64::from(st.doc.size.width) || p[1] >= f64::from(st.doc.size.height))
+}
+
 /// Pointer input while transforming. Returns false when no transform is active.
 pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) -> bool {
     let Some(t) = app.ui.transform.clone() else { return false };
@@ -95,11 +100,13 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) ->
             if matches!(ev, ToolEvent::Up { .. }) {
                 pv.gesture = None;
             }
-            // Clicking an empty spot commits instead of silently arming rotation (#2851).
-            // Dragging the rotation zone and Option-clicking to move the pivot
-            // keep their existing behavior.
+            // Clicking the pasteboard (outside the document) commits; a click outside the box on the
+            // image does nothing and the box stays open (#11100). Dragging the rotation zone and
+            // Option-clicking to move the pivot keep their existing behavior.
             if matches!(ev, ToolEvent::Up { .. }) && g.is_some_and(|g| accepts_outside_click(g, [x, y], tol)) {
-                commit(app);
+                if on_pasteboard(app, [x, y]) {
+                    commit(app);
+                }
                 return true;
             }
             let type_layer = moves_type(app, &t);
