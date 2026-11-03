@@ -66,6 +66,37 @@ fn canvas_mips_preserve_opaque_pixels_and_partial_updates() {
     }
     // On the same device (see the top of the file).
     canvas_textures_the_gpu_refuses_leave_it_working(&gpu);
+    refused_viewport_page_work_is_caught(&gpu);
+}
+
+/// #5332 review: viewport page uploads run their texture, buffer and bind group creation and
+/// their write inside the same error scopes as a texture set, so an error the GPU raises there
+/// (out of memory, in use) is returned instead of disabling the GPU for the session. A texture
+/// wider than the device allows is refused the same way, synchronously, on any adapter.
+fn refused_viewport_page_work_is_caught(gpu: &GpuCanvas) {
+    let device = &gpu.rs.device;
+    let max = device.limits().max_texture_dimension_2d;
+    let (texture, error) = super::doc_textures::catch_gpu_errors(device, || {
+        device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("too_wide_page"),
+            size: wgpu::Extent3d { width: max + 1, height: 1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: FORMAT,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        })
+    });
+    drop(texture);
+    assert!(error.is_some(), "the refusal is caught");
+    assert!(gpu.health.is_ok(), "{:?}", gpu.fault());
+    // A page the GPU accepts is stored as before.
+    let buf = Buffer::filled(Rect::from_xywh(0, 0, 64, 64), [0.5, 0.5, 0.5, 1.0]);
+    let core = Rect::new(1, 1, 63, 63);
+    assert!(gpu.upload_page(PageUpload { key: 9, page: 1, size: [64, 64], depth: SampleType::U8, factor: 1, core, buf: &buf }));
+    assert_eq!(gpu.pages(9).0, vec![1]);
+    assert!(gpu.health.is_ok(), "{:?}", gpu.fault());
 }
 
 /// #4017: a 3 GP canvas's 16 GB of textures failed with Out of Memory, and the uncaptured error

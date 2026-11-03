@@ -14,6 +14,11 @@
 //!   On wasm `start` runs inline (same API, written once).
 //! - [`Session::cancel_job`] sets the flag; the algorithms check it per tile, row band or
 //!   iteration, and the result is discarded. The document is never touched by a worker.
+//! - A job with an effect outside the session (a save replacing its file) calls
+//!   [`JobCtx::commit`] right before it. From then on it can't be cancelled: every cancel
+//!   path ([`Session::try_cancel_job`], [`Session::cancel_all_jobs`], closing its document,
+//!   `jobs.cancel`) leaves it running and says so ([`CancelRefused::Committing`]), so nothing
+//!   reports a job as cancelled after its effect has happened.
 //! - A panic in the worker becomes an error; the document is unchanged.
 //! - While a job runs on a document, commands that would edit that document are disabled with a
 //!   message naming the job (queries and document-independent commands still run).
@@ -84,6 +89,8 @@ pub struct JobCtx {
 
 #[derive(Default)]
 struct Shared {
+    /// [`CANCEL_REQUESTED`], [`WORK_FINISHED`] and [`COMMITTED`] bits. One atomic orders a cancel
+    /// against [`JobCtx::commit`] and against the worker finishing, so exactly one of them wins.
     state: AtomicU8,
     /// `f32` bits of the progress fraction. Non-negative floats order like their bits, so
     /// `fetch_max` keeps progress monotonic even with several reporting threads.
@@ -120,8 +127,12 @@ enum BatchInterrupt {
     Closed,
 }
 
+/// Cancelled before it committed.
 const CANCEL_REQUESTED: u8 = 1;
+/// The worker has sent its result; a Batch no longer accepts a cancel.
 const WORK_FINISHED: u8 = 2;
+/// Past [`JobCtx::commit`]: the job runs to the end and can no longer be cancelled.
+const COMMITTED: u8 = 4;
 
 impl std::fmt::Debug for JobCtx {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -153,9 +164,41 @@ impl JobCtx {
         self.shared.state.load(Ordering::Acquire) & CANCEL_REQUESTED != 0
     }
 
-    /// Ask the job to stop (idempotent).
+    /// Ask the job to stop (idempotent). Does nothing once it has [committed](Self::commit).
     pub fn cancel(&self) {
-        self.shared.state.fetch_or(CANCEL_REQUESTED, Ordering::AcqRel);
+        let _ = self.try_cancel();
+    }
+
+    /// Cancel unless the job has [committed](Self::commit): true if it is cancelled (now or
+    /// before), false if it is past its point of no return and will run to the end.
+    pub fn try_cancel(&self) -> bool {
+        let r = self.shared.state.try_update(Ordering::AcqRel, Ordering::Acquire, |state| (state & COMMITTED == 0).then_some(state | CANCEL_REQUESTED));
+        if r.is_ok() {
+            self.wake_batch_worker();
+        }
+        r.is_ok()
+    }
+
+    /// The job's point of no return, for work with an effect outside the session (a save calls
+    /// it right before replacing the file). `Ok`: no cancel can stop the job any more; it must
+    /// run to the end, and its result is applied even if its document was closed meanwhile.
+    /// `Err(Cancelled)`: it was cancelled first, and nothing may be done.
+    pub fn commit(&self) -> Result<()> {
+        self.check()?;
+        self.shared
+            .state
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |state| (state & CANCEL_REQUESTED == 0).then_some(state | COMMITTED))
+            .map(|_| ())
+            .map_err(|_| EngineError::Cancelled)
+    }
+
+    /// Has the job passed [`Self::commit`]?
+    pub fn committed(&self) -> bool {
+        self.shared.state.load(Ordering::Acquire) & COMMITTED != 0
+    }
+
+    /// Wake a Batch worker waiting for the Esc decision, so it sees a cancel.
+    fn wake_batch_worker(&self) {
         let _phase = self.shared.batch.lock().unwrap_or_else(PoisonError::into_inner);
         self.shared.batch_decision.notify_all();
     }
@@ -166,11 +209,12 @@ impl JobCtx {
         let accepted = self
             .shared
             .state
-            .try_update(Ordering::AcqRel, Ordering::Acquire, |state| (state & (CANCEL_REQUESTED | WORK_FINISHED) == 0).then_some(state | CANCEL_REQUESTED))
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |state| {
+                (state & (CANCEL_REQUESTED | WORK_FINISHED | COMMITTED) == 0).then_some(state | CANCEL_REQUESTED)
+            })
             .is_ok();
         if accepted {
-            let _phase = self.shared.batch.lock().unwrap_or_else(PoisonError::into_inner);
-            self.shared.batch_decision.notify_all();
+            self.wake_batch_worker();
         }
         accepted
     }
@@ -308,6 +352,53 @@ impl JobCtx {
         let cancel = || self.cancelled();
         let progress = |p: f32| self.progress(lo + (hi - lo) * p, "");
         f(&Interrupt::new(&cancel, &progress))
+    }
+}
+
+/// Why [`Session::try_cancel_job`] left a job running.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CancelRefused {
+    /// No such job is running.
+    NotRunning,
+    /// A print belongs to the system print queue once it has started.
+    Printing,
+    /// Past its [commit](JobCtx::commit): it is writing its result (a save replacing its file)
+    /// and will report its real outcome when it ends.
+    Committing,
+    /// A Batch already asked to stop, or past its last input: it ends on its own and reports
+    /// the outputs it wrote.
+    Finishing,
+}
+
+impl CancelRefused {
+    /// The scripting name (`jobs.cancel`'s `notCancelled[].reason`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NotRunning => "notRunning",
+            Self::Printing => "printing",
+            Self::Committing => "committing",
+            Self::Finishing => "finishing",
+        }
+    }
+}
+
+/// What a cancel of several jobs did ([`Session::cancel_all_jobs`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CancelReport {
+    pub cancelled: Vec<JobId>,
+    /// The jobs left running, and why.
+    pub refused: Vec<(JobId, CancelRefused)>,
+}
+
+impl CancelReport {
+    /// The `jobs.cancel` reply: `{cancelled: n}`, with `notCancelled: [{job, reason}]` when a
+    /// job was left running.
+    pub fn to_json(&self) -> Value {
+        let mut v = json!({"cancelled": self.cancelled.len()});
+        if !self.refused.is_empty() {
+            v["notCancelled"] = self.refused.iter().map(|(id, why)| json!({"job": id.0, "reason": why.as_str()})).collect();
+        }
+        v
     }
 }
 
@@ -1233,29 +1324,39 @@ impl Session {
         }
     }
 
-    /// Cancel job `id`: ordinary jobs stop at their next check and discard their result.
-    /// A batch finishes the current input and reports outputs already written. False if no
-    /// such job is running.
+    /// Cancel job `id`: ordinary jobs stop at their next check, discard their result and leave
+    /// the document unchanged; the document is unlocked at once. A batch finishes the current
+    /// input and reports outputs already written. False if no such job is running or it
+    /// can't be cancelled (see [`Self::try_cancel_job`]).
     pub fn cancel_job(&mut self, id: JobId) -> bool {
-        let Some(i) = self.jobs.running.iter().position(|r| r.id == id) else { return false };
+        self.try_cancel_job(id).is_ok()
+    }
+
+    /// [`Self::cancel_job`], saying why a job was not cancelled.
+    pub fn try_cancel_job(&mut self, id: JobId) -> std::result::Result<(), CancelRefused> {
+        let Some(i) = self.jobs.running.iter().position(|r| r.id == id) else { return Err(CancelRefused::NotRunning) };
         // Earlier batch outputs are already on disk. Let the worker stop after its current
         // input and return the completed and skipped lists.
         if self.jobs.running[i].command == "file.automate.batch" {
-            return self.jobs.running[i].ctx.cancel_if_running();
+            return if self.jobs.running[i].ctx.cancel_if_running() { Ok(()) } else { Err(CancelRefused::Finishing) };
         }
         // A print worker can already have handed the job to the OS. Discarding its result
         // would falsely report cancellation; removal belongs to the system print queue.
         if matches!(self.jobs.running[i].command.as_str(), "file.print" | "file.printOneCopy") {
-            return false;
+            return Err(CancelRefused::Printing);
+        }
+        // Past its commit (a save replacing its file) the job runs to the end and reports its
+        // real outcome; calling it cancelled would be false.
+        if !self.jobs.running[i].ctx.try_cancel() {
+            return Err(CancelRefused::Committing);
         }
         let job = self.jobs.running.remove(i);
-        job.ctx.cancel();
         self.end_job(&job, JobOutcome::Cancelled);
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(handle) = job.handle {
             self.jobs.draining.push(Draining { handle, doc: job.doc, release: false });
         }
-        true
+        Ok(())
     }
 
     /// Ask an interactive Batch worker to stop its current input at the next safe checkpoint.
@@ -1283,12 +1384,22 @@ impl Session {
         self.jobs.running.iter().find(|job| job.id == id && job.command == "file.automate.batch").and_then(|job| job.ctx.batch_preview())
     }
 
-    /// Cancel every running job (e.g. before quitting).
-    pub fn cancel_all_jobs(&mut self) {
+    /// Cancel every running job (e.g. before quitting). Prints and jobs past their commit keep
+    /// running; the report lists them.
+    pub fn cancel_all_jobs(&mut self) -> CancelReport {
         let ids: Vec<JobId> = self.jobs.running.iter().map(|r| r.id).collect();
+        self.cancel_each(ids)
+    }
+
+    fn cancel_each(&mut self, ids: Vec<JobId>) -> CancelReport {
+        let mut report = CancelReport::default();
         for id in ids {
-            self.cancel_job(id);
+            match self.try_cancel_job(id) {
+                Ok(()) => report.cancelled.push(id),
+                Err(why) => report.refused.push((id, why)),
+            }
         }
+        report
     }
 
     /// Is any job running? (Cheap: the UI asks every frame.)
@@ -1346,17 +1457,17 @@ impl Session {
         Some(format!("“{}” is still running on this document; wait for it to finish or cancel it (Esc)", job.label))
     }
 
-    /// Cancel the jobs editing document `doc` (it is closing).
-    pub(crate) fn cancel_jobs_on(&mut self, doc: DocId) {
+    /// Cancel the jobs editing document `doc` (it is closing). A job past its commit keeps
+    /// running and its result is still applied (see [`JobCtx::commit`]).
+    pub(crate) fn cancel_jobs_on(&mut self, doc: DocId) -> CancelReport {
         let ids: Vec<JobId> = self.jobs.running.iter().filter(|r| r.doc == Some(doc)).map(|r| r.id).collect();
-        for id in ids {
-            self.cancel_job(id);
-        }
+        let report = self.cancel_each(ids);
         // Workers cancelled now, or earlier and still unwinding, hold the closing document.
         #[cfg(not(target_arch = "wasm32"))]
         for d in self.jobs.draining.iter_mut().filter(|d| d.doc == Some(doc)) {
             d.release = true;
         }
+        report
     }
 
     /// Run the command `id`: inline, or (with `background`) as a job when it is one.
@@ -1637,6 +1748,10 @@ impl Session {
         }
         let prev_active = self.active;
         let target = match doc {
+            // A job past its commit has done its work outside the session (a save wrote its
+            // file); a closed document doesn't undo that, so its result still applies, to no
+            // document.
+            Some(d) if job.ctx.committed() && !self.documents().iter().any(|st| st.doc.id == *d) => None,
             Some(d) => {
                 let i =
                     self.documents().iter().position(|st| st.doc.id == *d).ok_or_else(|| EngineError::Other(format!("`{label}`: the document was closed")))?;
@@ -1765,21 +1880,17 @@ pub fn specs() -> Vec<crate::commands::CommandSpec> {
             params: r##"{"job":u64? (default: every running job)}"##,
             enabled: |_| Ok(()),
             run: |s, p| match p.get("job") {
-                None | Some(Value::Null) => {
-                    let ids: Vec<JobId> = s.jobs.running.iter().map(|job| job.id).collect();
-                    let accepted = ids.into_iter().filter(|id| s.cancel_job(*id)).count();
-                    Ok(json!({"cancelled": accepted}))
-                }
+                None | Some(Value::Null) => Ok(s.cancel_all_jobs().to_json()),
                 Some(v) => {
                     let id = v.as_u64().ok_or_else(|| EngineError::BadParams { cmd: "jobs.cancel".into(), msg: "`job` must be a job id".into() })?;
-                    if s.cancel_job(JobId(id)) {
-                        Ok(json!({"cancelled": 1}))
-                    } else if s.job(JobId(id)).is_some_and(|job| job.command == "file.automate.batch") {
-                        Ok(json!({"cancelled": 0}))
-                    } else if s.job(JobId(id)).is_some() {
-                        Err(EngineError::Other("printing cannot be cancelled here; use the system print queue".into()))
-                    } else {
-                        Err(EngineError::Other(format!("no running job {id}")))
+                    match s.try_cancel_job(JobId(id)) {
+                        Ok(()) => Ok(json!({"cancelled": 1})),
+                        // Not an error: the job is fine and will report how it ended.
+                        Err(why @ (CancelRefused::Committing | CancelRefused::Finishing)) => {
+                            Ok(CancelReport { cancelled: Vec::new(), refused: vec![(JobId(id), why)] }.to_json())
+                        }
+                        Err(CancelRefused::Printing) => Err(EngineError::Other("printing cannot be cancelled here; use the system print queue".into())),
+                        Err(CancelRefused::NotRunning) => Err(EngineError::Other(format!("no running job {id}"))),
                     }
                 }
             },

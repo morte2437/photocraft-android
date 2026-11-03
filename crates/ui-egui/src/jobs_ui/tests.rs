@@ -604,6 +604,95 @@ fn a_save_that_has_started_writing_cannot_be_cancelled() {
     assert!(!h.state().session.active().unwrap().is_dirty(), "the written save is recorded");
 }
 
+/// A `save_file` service held by `gates` that really replaces the file: it encodes until
+/// `encode` opens, commits, then writes `new` once `write` opens.
+fn file_save(gates: &Gates) -> crate::SaveFileFn {
+    let g = gates.clone();
+    Arc::new(move |_, path, _, ctl| {
+        ctl.progress(0.0, "Encoding");
+        while !g.encode.load(Ordering::Relaxed) {
+            ctl.check()?;
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        ctl.commit()?;
+        ctl.progress(0.0, "Writing");
+        while !g.write.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        std::fs::write(path, b"new").map_err(|e| e.to_string())?;
+        Ok(Vec::new())
+    })
+}
+
+/// A file holding `old`, in a fresh directory named for the test.
+fn old_file(test: &str) -> String {
+    let dir = std::env::temp_dir().join(format!("photocraft-jobs-ui-{}-{test}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("w.psd");
+    std::fs::write(&path, b"old").unwrap();
+    path.to_string_lossy().into_owned()
+}
+
+fn control(h: &mut Harness<'static, PhotocraftApp>, method: &str, params: Value) -> Value {
+    let (req, _rx) = crate::ControlRequest::new(method, params);
+    let ctx = h.ctx.clone();
+    let crate::control::Outcome::Done(v) = crate::control::handle(h.state_mut(), &ctx, &req) else { panic!("{method} replies at once") };
+    v
+}
+
+#[test]
+fn jobs_cancel_before_a_save_writes_stops_it_and_leaves_the_target_untouched() {
+    let mut h = app_harness();
+    let path = old_file("cancel-before-write");
+    let gates = Gates::default();
+    h.state_mut().services.save_file = Some(file_save(&gates));
+    h.state_mut().save_as(Some(path.clone())).unwrap();
+    h.run_steps(2);
+    let job = h.state().jobs.saves[0].job;
+    let v = control(&mut h, "jobs.cancel", json!({"job": job.0}));
+    assert_eq!(v["result"], json!({"cancelled": 1}), "{v}");
+    // The worker reaches its commit point only now, and must give up there.
+    gates.encode.store(true, Ordering::Relaxed);
+    gates.write.store(true, Ordering::Relaxed);
+    step_until(&mut h, |a| !a.saving());
+    assert_eq!(std::fs::read(&path).unwrap(), b"old", "target untouched");
+    let st = h.state().session.active().unwrap();
+    assert!(st.is_dirty() && st.path.is_none(), "the document is not marked saved");
+    assert_eq!(h.state().ui.status, "Cancelled Saving w.psd");
+}
+
+#[test]
+fn jobs_cancel_during_the_write_reports_the_save_as_not_cancelled_and_it_finishes() {
+    let mut h = app_harness();
+    let path = old_file("cancel-during-write");
+    let gates = Gates { encode: Arc::new(AtomicBool::new(true)), ..Gates::default() };
+    h.state_mut().services.save_file = Some(file_save(&gates));
+    h.state_mut().save_as(Some(path.clone())).unwrap();
+    let saved_doc = h.state().session.active().unwrap().doc.id;
+    until_writing(&mut h);
+    let save = h.state().jobs.saves[0].job;
+    // A second document with a job that can still be cancelled.
+    h.state_mut().session.execute("file.new", json!({"width": 32, "height": 32})).unwrap();
+    let slow = slow_job(h.state_mut(), &Arc::new(AtomicBool::new(false)));
+
+    let refused = json!([{"job": save.0, "reason": "committing"}]);
+    let v = control(&mut h, "jobs.cancel", json!({"job": save.0}));
+    assert_eq!(v["result"], json!({"cancelled": 0, "notCancelled": refused}), "{v}");
+    assert_eq!(h.state().ui.status, "Saving w.psd is writing the file and can no longer be cancelled");
+    // Cancel everything: the other job stops, the save is reported as left running.
+    let v = control(&mut h, "jobs.cancel", json!({}));
+    assert_eq!(v["result"], json!({"cancelled": 1, "notCancelled": refused}), "{v}");
+    assert!(h.state().session.job(slow).is_none());
+    assert!(h.state().session.job(save).is_some(), "the save still runs and keeps its document locked");
+
+    gates.write.store(true, Ordering::Relaxed);
+    step_until(&mut h, |a| !a.saving());
+    assert_eq!(std::fs::read(&path).unwrap(), b"new");
+    let st = h.state().session.documents().iter().find(|st| st.doc.id == saved_doc).unwrap();
+    assert!(!st.is_dirty() && st.path.as_deref() == Some(path.as_str()), "the save that happened is recorded");
+}
+
 /// #3389: like Photoshop, a running save reads "Saving 45%" in the status bar and appends
 /// " - Saving 45%" to its document's tab title, in both tab strips; both go when it ends.
 #[test]
