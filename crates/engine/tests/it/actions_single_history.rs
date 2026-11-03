@@ -629,6 +629,30 @@ fn assert_delete_rows(s: &Session, originals: &[(u64, String, std::sync::Arc<pho
     }
 }
 
+/// Compare Undo with the unchanged oracle for this deletion and history mode.
+fn assert_delete_boundary(
+    s: &Session,
+    case: &str,
+    single_state: bool,
+    prefix: bool,
+    before: &std::sync::Arc<photocraft_doc::Document>,
+    originals: &[(u64, String, std::sync::Arc<photocraft_doc::Document>)],
+) {
+    let boundary = if case == "linear-past" {
+        &originals[0].2
+    } else if case == "nonlinear-redo" {
+        // Non-linear history appends the retained future after the original current.
+        &originals[3].2
+    } else if single_state {
+        before
+    } else if case == "nonlinear-past" && prefix {
+        &originals[3].2
+    } else {
+        &originals[4].2
+    };
+    assert_eq!(s.active().unwrap().doc.as_ref(), boundary.as_ref(), "{case}, singleState={single_state}, prefix={prefix}");
+}
+
 /// Play the real Delete State command, retaining identities of the older rows it did not delete.
 fn recorded_delete_case(case: &str) {
     for single_state in [false, true] {
@@ -695,19 +719,7 @@ fn recorded_delete_case(case: &str) {
             for _ in 0..count {
                 assert!(s.undo());
             }
-            let boundary = if case == "linear-past" {
-                &originals[0].2
-            } else if case == "nonlinear-redo" {
-                // Non-linear history appends the retained future after the original current.
-                &originals[3].2
-            } else if single_state {
-                &before
-            } else if case == "nonlinear-past" && prefix {
-                &originals[3].2
-            } else {
-                &originals[4].2
-            };
-            assert_eq!(s.active().unwrap().doc.as_ref(), boundary.as_ref(), "{case}, singleState={single_state}, prefix={prefix}");
+            assert_delete_boundary(&s, case, single_state, prefix, &before, &originals);
             for _ in 0..count {
                 assert!(s.redo());
             }
