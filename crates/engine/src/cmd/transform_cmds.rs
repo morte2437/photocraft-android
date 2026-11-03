@@ -574,8 +574,12 @@ pub fn split_selected(surf: &Surface, sel: &Surface) -> Result<(Surface, Surface
     for (i, (l, r)) in lp.chunks_exact_mut(n).zip(rp.chunks_exact_mut(n)).enumerate() {
         let (x, y) = (src.x0 + (i % w) as i32, src.y0 + (i / w) as i32);
         let k = sel.sample_channel(x, y, 0);
-        l[n - 1] *= k;
-        r[n - 1] *= 1.0 - k;
+        // The selection lifts its share of a pixel's coverage, up to all of it, as Move does
+        // (`float_cmds::cut_piece`, #7655): a layer's own transparency loaded as the selection
+        // lifts it whole and leaves no ghost behind (#5595). An opaque pixel splits as k and 1 − k.
+        let a = l[n - 1];
+        l[n - 1] = a.min(k);
+        r[n - 1] = (a - k).max(0.0);
         // Likewise an unselected pixel leaves nothing in the lifted surface, so its bounds are the
         // selected pixels' (what a stretch repeats at the edge, #3773).
         if l[n - 1] <= 0.0 {
