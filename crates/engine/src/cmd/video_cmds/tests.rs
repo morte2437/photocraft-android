@@ -99,6 +99,39 @@ fn write_tiff(path: &str, pages: &[(u32, u32, u8, u32)]) {
     std::fs::write(path, f).unwrap();
 }
 
+/// A real layered TIFF from the exporter (Photoshop layer data in tag 37724), extended to two
+/// pages by appending a copy of its first directory as the next one. The copied directory keeps
+/// the original tag and pixel offsets, so both pages carry genuine layer data without hand-written
+/// Photoshop blocks; the file stays small, and the second page is never decoded.
+fn write_layered_multipage_tiff(path: &str) {
+    let mut doc = Document::new("layered", photocraft_geom::Size::new(8, 6), photocraft_color::ColorMode::Rgb, photocraft_color::SampleType::U8);
+    let fmt = doc.pixel_format();
+    for name in ["bottom", "top"] {
+        let mut surface = Surface::new(fmt);
+        surface.write_interleaved(photocraft_geom::Rect::new(0, 0, 8, 6), &vec![96u8; 8 * 6 * fmt.bytes_per_pixel()]);
+        doc.layers.push(Layer::new(name, LayerContent::Raster(surface)));
+    }
+    let bytes =
+        photocraft_io::export(&doc, "layered.tif", &photocraft_io::ExportOptions { tiff_layers: true, ..Default::default() }).expect("a layered TIFF").bytes;
+    assert_eq!(bytes.get(0..2), Some(&b"II"[..]), "the TIFF exporter writes little-endian files here");
+    let u16_at = |o: usize| u16::from_le_bytes([bytes[o], bytes[o + 1]]);
+    assert_eq!(u16_at(2), 42, "a classic TIFF");
+    let first_ifd = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as usize;
+    let count = u16_at(first_ifd) as usize;
+    let dir_len = 2 + count * 12 + 4;
+    let mut f = bytes.clone();
+    if f.len() % 2 == 1 {
+        f.push(0);
+    }
+    let second_ifd = f.len();
+    f.extend_from_slice(&bytes[first_ifd..first_ifd + dir_len]);
+    let second_next = second_ifd + 2 + count * 12;
+    f[second_next..second_next + 4].copy_from_slice(&0u32.to_le_bytes());
+    let first_next = first_ifd + 2 + count * 12;
+    f[first_next..first_next + 4].copy_from_slice(&u32::try_from(second_ifd).expect("a small TIFF").to_le_bytes());
+    std::fs::write(path, f).expect("write the two-page TIFF");
+}
+
 /// #6379: Video Frames to Layers takes every page of a multi-page TIFF, one layer each, in
 /// order, as it takes a GIF's frames; a thumbnail is not a page. A single-page TIFF is one frame.
 #[test]
@@ -176,6 +209,55 @@ fn tiff_page_errors_keep_memory_refusals_typed_and_other_context() {
     assert!(matches!(err, EngineError::Other(_)), "{err:?}");
     let msg = err.to_string();
     assert!(msg.contains("pages.tif") && msg.contains("page 1") && msg.contains("corrupt page"), "{msg}");
+}
+
+/// #10897 review: a multi-page TIFF page with Photoshop layer data is admitted like a PSD. A tiny
+/// explicit caller limit must reach the caller as the typed `PsdHardBudget`, with the file name,
+/// required bytes and limit intact, and the document must be left untouched. A helper-only test
+/// would still pass if the page loop turned that refusal into text.
+#[test]
+fn video_frames_to_layers_keeps_a_layered_tiff_page_refusal_typed() {
+    let dir = tmpdir("tiff-typed");
+    let path = format!("{dir}/layered.tif");
+    write_layered_multipage_tiff(&path);
+    let mut s = session();
+    let before_layers = s.active().unwrap().doc.layers.len();
+    let before_active = s.active().unwrap().active_layer;
+    let _limit = super::limits::Scoped::psd_max_pixel_bytes(1);
+    let err = s.execute("file.import.videoFramesToLayers", json!({"path": path})).unwrap_err();
+    match err {
+        EngineError::PsdHardBudget { name, required, limit } => {
+            assert_eq!(name, path);
+            assert_eq!(limit, 1);
+            assert!(required > limit, "the page estimate must be past the caller's limit: {required} > {limit}");
+        }
+        other => panic!("the layered page's refusal lost its typed fields: {other:?}"),
+    }
+    assert_eq!(s.active().unwrap().doc.layers.len(), before_layers, "no partial frame layers");
+    assert_eq!(s.active().unwrap().active_layer, before_active, "the active layer is unchanged");
+}
+
+/// #10897 review: every page of a multi-page TIFF goes through the footage `keep` budget, as a
+/// GIF's frames do. Before, the pages were pushed straight into `frames`, so many large pages could
+/// keep more than the cap without an error. A thread-local test scope lowers the cap, so the
+/// regression needs a few tiles of memory rather than gibibytes.
+#[test]
+fn video_frames_to_layers_enforces_the_footage_limit_on_every_tiff_page() {
+    let dir = tmpdir("tiff-budget");
+    let path = format!("{dir}/pages.tif");
+    let mut s = session();
+    let fmt = s.active().unwrap().doc.pixel_format();
+    let tile = u64::from(photocraft_geom::TILE_SIZE.unsigned_abs()).pow(2) * fmt.bytes_per_pixel() as u64;
+    let budget = 1u64 << 20;
+    assert!(tile < budget, "one page must fit in the lowered budget");
+    // One more page than fits in the budget: only the accumulation can refuse it.
+    let pages = usize::try_from(budget / tile + 1).expect("a small page count");
+    write_tiff(&path, &vec![(16, 16, 40, 0); pages]);
+    let before = s.active().unwrap().doc.layers.len();
+    let _limit = super::limits::Scoped::max_footage_bytes(budget);
+    let err = s.execute("file.import.videoFramesToLayers", json!({"path": path})).unwrap_err().to_string();
+    assert!(err.contains("pages.tif") && err.contains("more than 1 MiB"), "{err}");
+    assert_eq!(s.active().unwrap().doc.layers.len(), before, "nothing imported");
 }
 
 #[test]
