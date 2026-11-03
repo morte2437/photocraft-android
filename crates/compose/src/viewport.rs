@@ -25,56 +25,63 @@ pub fn preview_page(doc: &Document, source: Rect, factor: u32, interrupt: Interr
     if rect.width() > 1024 || rect.height() > 1024 {
         return Err("viewport page is too large".into());
     }
-    fn shrink(s: &Surface, r: Rect, k: i32, i: Interrupt<'_>) -> Result<Surface, String> {
+    // Cell `c` samples source pixel `c·k + k/2`, clamped to the last document pixel: a partial
+    // cell at the document's edge samples inside it, not the layer's default past it. (Document
+    // bounds, not this page's, so neighbouring pages agree.)
+    let bounds = doc.bounds();
+    let last = (bounds.x1 - 1, bounds.y1 - 1);
+    fn shrink(s: &Surface, r: Rect, k: i32, last: (i32, i32), i: Interrupt<'_>) -> Result<Surface, String> {
         let mut out = Surface::with_default(s.format(), &s.default_pixel());
         let bpp = s.format().bytes_per_pixel();
+        let x0 = r.x0.saturating_mul(k);
         for y in r.y0..r.y1 {
             i.check().map_err(|e| e.to_string())?;
-            let sy = y.saturating_mul(k).saturating_add(k / 2);
-            let row = s.to_interleaved(Rect::new(r.x0.saturating_mul(k), sy, r.x1.saturating_mul(k), sy.saturating_add(1)));
+            let sy = y.saturating_mul(k).saturating_add(k / 2).min(last.1);
+            let row = s.to_interleaved(Rect::new(x0, sy, r.x1.saturating_mul(k).min(last.0 + 1), sy.saturating_add(1)));
             let mut reduced = Vec::with_capacity(r.width() as usize * bpp);
-            for x in 0..r.width() as usize {
-                let offset = (x * k as usize + k as usize / 2) * bpp;
+            for x in r.x0..r.x1 {
+                let sx = x.saturating_mul(k).saturating_add(k / 2).min(last.0);
+                let offset = (sx - x0) as usize * bpp;
                 reduced.extend_from_slice(row.get(offset..offset + bpp).ok_or("invalid viewport sample")?);
             }
             out.write_interleaved(Rect::new(r.x0, y, r.x1, y + 1), &reduced);
         }
         Ok(out)
     }
-    fn layer(l: &mut photocraft_doc::Layer, r: Rect, k: i32, i: Interrupt<'_>, depth: usize) -> Result<(), String> {
+    fn layer(l: &mut photocraft_doc::Layer, r: Rect, k: i32, i: Interrupt<'_>, depth: usize, last: (i32, i32)) -> Result<(), String> {
         if depth > 256 {
             return Err("viewport layer nesting limit exceeded".into());
         }
         if let Some(m) = &mut l.mask {
-            m.surface = shrink(&m.surface, r, k, i)?;
+            m.surface = shrink(&m.surface, r, k, last, i)?;
         }
         if let Some(c) = &mut l.fill_cache {
-            c.surface = shrink(&c.surface, r, k, i)?;
+            c.surface = shrink(&c.surface, r, k, last, i)?;
         }
         use photocraft_doc::LayerContent;
         match &mut l.content {
-            LayerContent::Raster(s) => *s = shrink(s, r, k, i)?,
+            LayerContent::Raster(s) => *s = shrink(s, r, k, last, i)?,
             LayerContent::Group(g) => {
                 if let Some(a) = &mut g.artboard {
                     a.rect = Rect::new(a.rect.x0.div_euclid(k), a.rect.y0.div_euclid(k), a.rect.x1.div_euclid(k), a.rect.y1.div_euclid(k));
                 }
                 for c in &mut g.children {
-                    layer(c, r, k, i, depth + 1)?;
+                    layer(c, r, k, i, depth + 1, last)?;
                 }
             }
             LayerContent::Text(t) => {
                 if let Some(s) = &mut t.cache {
-                    *s = shrink(s, r, k, i)?;
+                    *s = shrink(s, r, k, last, i)?;
                 }
             }
             LayerContent::Shape(t) => {
                 if let Some(s) = &mut t.cache {
-                    *s = shrink(s, r, k, i)?;
+                    *s = shrink(s, r, k, last, i)?;
                 }
             }
             LayerContent::Smart(t) => {
                 if let Some(s) = &mut t.cache {
-                    *s = shrink(s, r, k, i)?;
+                    *s = shrink(s, r, k, last, i)?;
                 }
             }
             _ => {}
@@ -84,10 +91,10 @@ pub fn preview_page(doc: &Document, source: Rect, factor: u32, interrupt: Interr
     let mut p = doc.clone();
     p.size = photocraft_doc::Size::new(doc.size.width.div_ceil(factor), doc.size.height.div_ceil(factor));
     for l in &mut p.layers {
-        layer(l, rect, k, interrupt, 0)?;
+        layer(l, rect, k, interrupt, 0, last)?;
     }
     for c in &mut p.channels {
-        c.surface = shrink(&c.surface, rect, k, interrupt)?;
+        c.surface = shrink(&c.surface, rect, k, last, interrupt)?;
     }
     interrupt.check().map_err(|e| e.to_string())?;
     Ok(render(&p, rect))
@@ -197,6 +204,22 @@ mod tests {
                         whole.px[(y * whole.rect.width() as i32 + x) as usize]
                     );
                 }
+            }
+        }
+    }
+    /// A partial cell at the document's right and bottom edges samples the last document pixel,
+    /// not the layer's (transparent) default past it (#5332 review).
+    #[test]
+    fn preview_edge_cells_sample_inside_the_document() {
+        let mut d = Document::new("edge", Size::new(10, 10), ColorMode::Rgb, SampleType::U8);
+        let mut s = photocraft_raster::Surface::new(d.pixel_format());
+        s.fill_rect(d.bounds(), &[1.0, 0.0, 0.0, 1.0]);
+        d.layers.push(photocraft_doc::Layer::new("red", photocraft_doc::LayerContent::Raster(s)));
+        for source in [d.bounds(), Rect::new(4, 4, 10, 10)] {
+            let p = preview_page(&d, source, 4, Interrupt::NONE).unwrap();
+            assert_eq!(p.rect, Rect::new(source.x0 / 4, source.y0 / 4, 3, 3));
+            for (i, px) in p.px.iter().enumerate() {
+                assert!((px[0] - 1.0).abs() < 1e-6 && (px[3] - 1.0).abs() < 1e-6, "{source:?} cell {i}: {px:?}");
             }
         }
     }
