@@ -955,6 +955,9 @@ pub fn resume(app: &mut PhotocraftApp, fields: &serde_json::Map<String, Value>) 
         && let Err(e) = history.resume(&mut app.session)
     {
         restore_recording(app, owner.as_ref());
+        let template = "Action playback failed: {error}";
+        app.ui.status = crate::i18n::fmt(tl!(template), &[("error", &e.to_string())]);
+        app.ui.status_error = true;
         return Err(e.to_string());
     }
     // The dialog's command may run as a background job; the next step needs its result.
