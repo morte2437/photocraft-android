@@ -1,7 +1,10 @@
 use super::ime::interrupt_incoming;
 use super::ime_edit::note_ime_application_change;
 use super::layout::{hit_layer, hit_offset, shows_own_layout};
-use super::*;
+use super::{
+    Arc, FontFieldEdit, HashMap, LayerId, PhotocraftApp, TextEdit, TextLayer, accept_row, active_doc_id, apply, byte_range, current_text, families,
+    font_labels_id, font_menu_rows, insertion_style, json, selected_range, session_key, text_layer,
+};
 
 /// Start editing an existing type layer. Like Photoshop, editing shows the text as the type
 /// engine lays it out, so a PSD layer is re-rendered first (inside the edit session's history
@@ -20,6 +23,7 @@ pub(super) fn begin_edit(app: &mut PhotocraftApp, id: LayerId, key: &str) -> Res
 /// Edit the active type layer from its thumbnail, selecting all text like Photoshop. Reuse the
 /// current session when already editing it, so Cancel and undo still cover the whole edit.
 pub fn edit_active(app: &mut PhotocraftApp) -> Result<(), String> {
+    app.ui.type_insertion_style = None;
     let st = app.session.active().ok_or("no document open")?;
     let id = st.active_layer.ok_or("no active layer")?;
     let n = text_layer(&st.doc, id).ok_or("active layer is not a type layer")?.text.chars().count();
@@ -142,7 +146,7 @@ pub(super) fn insert(app: &mut PhotocraftApp, s: &str) {
         return;
     }
     crate::type_transform::finish(app);
-    let applied = app.run("type.edit", json!({"layer": ed.layer, "replace": {"start": a, "end": b, "text": s}, "coalesce": ed.session})).is_ok();
+    let applied = insertion_style::replace(app, a, b, &s);
     if applied {
         let mut cancelled = false;
         if let Some(e) = app.ui.text_edit.as_mut() {
@@ -257,7 +261,7 @@ impl CharToggle {
 
 /// The character styles of the selection, or of the typing style when the text is empty. Empty
 /// when nothing is selected in non-empty text.
-fn selected_styles(t: &TextLayer, a: usize, b: usize) -> Vec<photocraft_doc::text::CharStyle> {
+pub(super) fn selected_styles(t: &TextLayer, a: usize, b: usize) -> Vec<photocraft_doc::text::CharStyle> {
     let runs = t.char_runs();
     if t.text.is_empty() {
         return runs.into_iter().take(1).map(|r| r.style).collect();
@@ -350,10 +354,63 @@ pub fn commit(app: &mut PhotocraftApp) {
     commit_with(app, egui::Modifiers::NONE);
 }
 
+/// The document's commit shortcut also works while a Type field owns keyboard input.
+/// Resolve a pending font query before ending the edit; composition still owns its keys.
+pub(crate) fn commit_shortcut(app: &mut PhotocraftApp, ctx: &egui::Context) -> bool {
+    let Some(ed) = app.ui.text_edit.as_ref() else { return false };
+    let composing = ed.preedit.is_some();
+    let mods = ctx.input(|i| {
+        i.events.iter().find_map(|e| match e {
+            egui::Event::Key { key: egui::Key::Enter, pressed: true, modifiers, .. } if modifiers.command => Some(*modifiers),
+            _ => None,
+        })
+    });
+    let Some(mods) = mods else { return false };
+    let focused = ctx.memory(|m| m.focused());
+    let font_edit = focused.and_then(|id| ctx.data(|d| d.get_temp::<FontFieldEdit>(id.with("edit"))));
+    ctx.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Key { key: egui::Key::Enter, modifiers, .. } if modifiers.command)));
+    if composing || font_edit.as_ref().is_some_and(|e| e.composing) || ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Ime(_)))) {
+        // Suppress the document/path shortcut, but leave IME events for their focused editor.
+        return false;
+    }
+    end_if_left(app);
+    if app.ui.text_edit.is_none() {
+        return true;
+    }
+    if let Some(edit) = font_edit.filter(|e| !e.accepted && !e.text.trim().is_empty() && !e.query.is_empty()) {
+        let families = families();
+        let labels: Option<Arc<HashMap<String, String>>> = ctx.data(|d| d.get_temp(font_labels_id()));
+        let (rows, _) = font_menu_rows(&families, labels.as_deref(), &edit.query, &edit.recents);
+        let selected =
+            edit.row.filter(|&i| rows.get(i).is_some_and(|(f, _)| **f == edit.current)).or_else(|| rows.iter().position(|(f, _)| **f == edit.current));
+        let family = accept_row(&rows, &edit.text, selected).and_then(|i| rows.get(i)).map(|(f, _)| (*f).clone());
+        if let Some(family) = family {
+            photocraft_text::served::request(&family);
+            app.note_recent_font(&family);
+            app.ui.tool_options.type_font = family.clone();
+            apply(app, ctx, json!({"font": family}));
+        }
+    }
+    if let Some(field) = focused {
+        ctx.memory_mut(|m| m.surrender_focus(field));
+        ctx.data_mut(|d| d.remove::<FontFieldEdit>(field.with("edit")));
+    }
+    egui::Popup::close_all(ctx);
+    ctx.data_mut(|d| {
+        d.remove::<String>(egui::Id::unique("type-font-hover"));
+        d.remove::<(String, f64)>(egui::Id::unique("type-font-hover-since"));
+    });
+    crate::type_font_preview::clear(app);
+    commit_with(app, mods);
+    true
+}
+
 /// [`commit`] with the modifiers held while committing: a Type Mask adds its glyphs to the
 /// selection with ⇧, subtracts them with ⌥ and intersects with ⇧⌥ (Photoshop); with none it
 /// replaces the selection.
 pub fn commit_with(app: &mut PhotocraftApp, mods: egui::Modifiers) {
+    app.ui.type_insertion_style = None;
+    crate::type_font_preview::clear(app);
     let current = app.session.active_index();
     let Some(home) = app.ui.text_edit.as_ref().map(|ed| edit_home(app, ed)) else {
         return commit_here(app, mods);
@@ -450,6 +507,7 @@ pub fn end_if_left(app: &mut PhotocraftApp) {
 
 /// Cancel the editing session: undo it back to where it started (removes a new layer).
 pub fn cancel(app: &mut PhotocraftApp) {
+    app.ui.type_insertion_style = None;
     crate::type_transform::reset(app);
     let Some(ed) = app.ui.text_edit.take() else { return };
     app.type_ime.clear_preedit();

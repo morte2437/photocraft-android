@@ -390,7 +390,7 @@ fn stage_copy(from: &Path, to: &Path) -> std::io::Result<PathBuf> {
 fn remove_stale_staging(folder: &Path) {
     let Ok(entries) = std::fs::read_dir(folder) else { return };
     for entry in entries.flatten() {
-        if !entry.file_name().to_str().is_some_and(|n| side_of(n, STAGED).is_some()) {
+        if entry.file_name().to_str().is_none_or(|n| side_of(n, STAGED).is_none()) {
             continue;
         }
         let removed = match entry.file_type() {
@@ -491,14 +491,31 @@ pub fn portable_marker(exe_dir: &Path) -> Option<PathBuf> {
     PORTABLE_MARKERS.iter().map(|m| exe_dir.join(m)).find(|p| p.is_file())
 }
 
+/// Probe names tried before giving up on a portable data folder.
+const WRITE_PROBE_ATTEMPTS: u32 = 64;
+
 /// Create `dir` and prove a file can be written in it (a folder can exist yet be read-only).
+///
+/// The probe is created exclusively (`create_new`), so an entry already at its name (a link
+/// someone else placed there, say) is never opened, written through or removed: the next name
+/// is tried instead. Only a probe this call created is removed.
 fn ensure_writable(dir: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
-    let probe = dir.join(format!(".write-test-{}", std::process::id()));
-    std::fs::write(&probe, b"")?;
-    // A leftover probe is harmless; don't fail portable mode over it.
-    let _ = std::fs::remove_file(&probe);
-    Ok(())
+    let pid = std::process::id();
+    for attempt in 0..WRITE_PROBE_ATTEMPTS {
+        let probe = dir.join(format!(".write-test-{pid}-{attempt}"));
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&probe) {
+            Ok(file) => {
+                drop(file);
+                // A leftover probe is harmless; don't fail portable mode over it.
+                let _ = std::fs::remove_file(&probe);
+                return Ok(());
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "every write-test name is already taken"))
 }
 
 #[cfg(test)]

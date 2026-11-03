@@ -4,10 +4,13 @@ name: Perf (nightly)
 # Metal), every night and on demand. It never runs on pull requests, so it can't block one.
 # It fails when an enforced budget in perf/budgets.toml breaks or a scenario's p50 regresses
 # more than 15 % against perf/baseline.json from the same machine class (other classes are
-# never compared). The table goes to the job summary; results.json is uploaded as an artifact.
+# never compared; a baseline built from several runs is judged against its highest p50). The
+# table goes to the job summary; results.json is uploaded as the `perf-results` artifact.
 #
-# To give this runner class its own baseline: run it by hand with "update_baseline", download
-# the `perf-baseline` artifact and commit it as perf/baseline.json in a PR.
+# To give this runner class its own baseline: download the `perf-results` artifact of the last
+# five or more nightly runs (`gh run download <run id> -n perf-results -D runs/<run id>`), run
+# `cargo xtask perf --update-baseline --from runs/<id>/results.json ... --allow-contended` (this
+# runner is never idle) and commit perf/baseline.json and docs/scorecard.md in a PR.
 
 on:
   schedule:
@@ -58,7 +61,8 @@ jobs:
         run: |
           args=()
           if [ "$QUICK" = "true" ]; then args+=(--quick); fi
-          if [ "$UPDATE" = "true" ]; then args+=(--update-baseline); fi
+          # This runner is never idle: a baseline from it is recorded labelled as contended.
+          if [ "$UPDATE" = "true" ]; then args+=(--update-baseline --allow-contended); fi
           cargo xtask perf "${args[@]}"
 
       - name: Job summary

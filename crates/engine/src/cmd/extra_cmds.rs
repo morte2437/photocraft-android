@@ -76,7 +76,7 @@ pub(crate) fn step_key(s: &Session, what: &str) -> String {
 /// Quick Mask or the layer mask (`Session::execute` fills that in from the Channels panel), that
 /// grayscale surface is rewritten instead, as the core filters do (#935).
 fn map_pixels(s: &mut Session, label: &str, p: &Value, f: impl FnOnce(Rect, &mut [[f32; 4]], &[f32])) -> Result<Value> {
-    let id = layer_param(s, &Value::Null)?;
+    let id = layer_param(s, p)?;
     let channel = crate::channel_cmds::target_of(p) != crate::channel_cmds::Target::Pixels;
     s.edit(label, |doc, _| {
         let canvas = doc.bounds();
@@ -361,6 +361,15 @@ fn paste_into(s: &mut Session, p: &Value, outside: bool) -> Result<Value> {
     if let Some(c) = p.get("center") {
         params["center"] = c.clone();
     }
+    if let Some(colors) = crate::color_channels::target(s, p)?
+        .filter(|c| c.len() > 1 || p.get("target").is_some() || s.clipboard.as_ref().is_some_and(|clip| clip.components.is_some()))
+    {
+        params["target"] = colors.params();
+        if let Some(layer) = p.get("layer") {
+            params["layer"] = layer.clone();
+        }
+        return crate::channel_clip::paste_colors(s, &params, colors, false, Some(&limit), label);
+    }
     // A targeted colour channel (#2307): the paste goes into it, only where `limit` allows.
     if let Some(k) = crate::channel_clip::paste_color_target(s, p) {
         return crate::channel_clip::paste(s, &params, k, false, Some(&limit), label);
@@ -431,7 +440,7 @@ fn visible_bounds(s: &photocraft_raster::Surface, canvas: Rect) -> Rect {
         }
         out
     };
-    tiles.par_iter().map(|(c, t)| tile_bounds(c.rect(), t.bytes())).reduce(|| Rect::EMPTY, |a, b| a.union(&b))
+    tiles.par_iter().map(|(c, t)| tile_bounds(c.rect(), &t.bytes())).reduce(|| Rect::EMPTY, |a, b| a.union(&b))
 }
 
 // ---------- layers ----------
@@ -903,13 +912,31 @@ pub fn specs() -> Vec<CommandSpec> {
             "Paste Layer Style",
             &["Layer", "Layer Style"],
             None,
-            r##"{"layer":id?} (no layer: every selected layer but the Background)"##,
+            r##"{"layer":id?,"allowGroups":bool=true} (no layer: every selected layer but the Background; false skips groups, refusing if none remain)"##,
             |s| {
                 has_layer(s)?;
                 s.style_clipboard.as_ref().map(|_| ()).ok_or_else(|| "no layer style has been copied".into())
             },
             |s, p| {
-                let ids = style_targets(s, p, |_| true)?;
+                let allow_groups = match p.get("allowGroups") {
+                    None | Some(Value::Null) => true,
+                    Some(Value::Bool(value)) => *value,
+                    Some(_) => {
+                        return Err(EngineError::BadParams {
+                            cmd: "layer.layerStyle.pasteLayerStyle".into(),
+                            msg: "`allowGroups` must be true or false".into(),
+                        });
+                    }
+                };
+                let mut ids = style_targets(s, p, |_| true)?;
+                if !allow_groups {
+                    // Apply this after resolution: the shared helper keeps single targets verbatim.
+                    let doc = &s.active().ok_or(EngineError::NoDocument)?.doc;
+                    ids.retain(|id| doc.layer(*id).is_some_and(|layer| !layer.is_group()));
+                    if ids.is_empty() {
+                        return Err(EngineError::Other("none of the selected layers can take this layer style change".into()));
+                    }
+                }
                 let style = s.style_clipboard.clone().ok_or(EngineError::Other("no layer style has been copied".into()))?;
                 let mut fx = style.effects;
                 s.edit("Paste Layer Style", |doc, _| {

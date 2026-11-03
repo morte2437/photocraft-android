@@ -451,7 +451,7 @@ fn sweep_orphans(recovery_dir: &Path, min_age: std::time::Duration) {
         }
         // Anything at the sidecar's path (even a broken one) keeps the bundle.
         let has_sidecar = std::fs::symlink_metadata(recovery_dir.join(format!("{key}.json"))).is_ok();
-        let parts = [path.clone(), path.join("tiles"), path.join("blobs")];
+        let parts = [path.clone(), path.join(craft_pcraft_format::TILES_DIR), path.join(craft_pcraft_format::BLOBS_DIR)];
         // A committed bundle is recoverable work: keep exactly what `list_recovery` lists.
         if !has_sidecar && sidecarless_entry(recovery_dir, &path).is_none() && parts.iter().all(|p| untouched_for(p, min_age, true)) {
             let _ = std::fs::remove_dir_all(&path);

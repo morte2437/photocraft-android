@@ -23,3 +23,8 @@ rayon = { workspace = true }
 [dev-dependencies]
 photocraft-testkit = { workspace = true }
 serde_json = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "blur"
+harness = false

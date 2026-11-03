@@ -4,7 +4,6 @@
 //! runs on a window around each click plus the mask-filter halo.
 
 use photocraft_algo::redeye::{self, MAX_POINTS, MAX_WINDOW};
-use photocraft_doc::LayerId;
 use photocraft_geom::Rect;
 use photocraft_raster::{Surface, from_rgba_into};
 use serde_json::{Value, json};
@@ -223,10 +222,7 @@ fn red_eye(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let pupil = pupil_raw.clamp(1.0, 100.0);
     let darken = darken.clamp(0.0, 100.0);
-    let id = match p.get("layer").and_then(Value::as_u64) {
-        Some(id) => Some(LayerId(id)),
-        None => s.active().and_then(|d| d.active_layer),
-    };
+    let id = if p.get("layer").is_some() { Some(crate::commands::layer_param(s, p)?) } else { s.active().and_then(|d| d.active_layer) };
     let (damage, total) = s.edit("Red Eye", |doc, active| {
         let canvas = doc.bounds();
         let sel = doc.selection.clone();
@@ -243,9 +239,7 @@ fn red_eye(s: &mut Session, p: &Value) -> Result<Value> {
         }
         Ok((damage, total))
     })?;
-    if let Some(st) = s.active_mut() {
-        st.last_damage = Some(damage);
-    }
+    s.hint_damage(damage);
     Ok(json!({ "damage": [damage.x0, damage.y0, damage.width(), damage.height()], "pixels": total }))
 }
 

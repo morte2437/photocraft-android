@@ -87,8 +87,10 @@ fn selected_type_properties_preserve_each_layers_other_attributes_and_one_histor
             if indices.contains(&i) {
                 assert_ne!(actual.psd_raw, before[i].psd_raw, "editable PSD data refreshed");
                 let damage = s.active().unwrap().last_damage.unwrap();
+                // The pixels the layer draws, before and after (the cache's tiles, narrowed to the
+                // layer's extents by the edit's own damage, #9329).
                 for t in [&before[i], &actual] {
-                    let bounds = t.cache.as_ref().unwrap().tile_bounds();
+                    let bounds = t.cache.as_ref().unwrap().content_bounds();
                     assert_eq!(damage.intersect(&bounds), bounds);
                 }
             }

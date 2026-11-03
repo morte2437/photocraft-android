@@ -60,7 +60,7 @@ fn selection_sampling_refuses_oversized_canvases_before_reading_pixels() {
         None,
     );
     for all_layers in [false, true] {
-        assert!(sample_pixels(&s, all_layers).unwrap_err().to_string().contains("too large to sample"));
+        assert!(sample_pixels(&s, all_layers, None).unwrap_err().to_string().contains("too large to sample"));
     }
     assert!(!s.active().unwrap().history.can_undo());
 }
@@ -275,7 +275,7 @@ fn color_range_prepared_query_samples_visible_layers_not_the_active_layer() {
         clear_selection(&mut s);
         let p = json!({"points": [[7, 7]], "sampleAllLayers": all_layers, "fuzziness": 0});
         let query = ColorRangeSamples::new(&s, &p).unwrap();
-        let (area, px) = sample_pixels(&s, all_layers).unwrap();
+        let (area, px) = sample_pixels(&s, all_layers, None).unwrap();
         let shown = query.coverage(&px, area.width() as usize, 1.0, [0.0, 0.0]);
         s.execute("select.colorRange", p).unwrap();
         assert_eq!(shown[7 * 40 + 7], coverage(&s, 7, 7));

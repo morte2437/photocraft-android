@@ -425,25 +425,43 @@ fn color_lookup_default_domains_stay_supported() {
 
 #[test]
 fn malformed_falls_back_to_unsupported() {
-    assert!(matches!(parse(b"levl", &[0, 2, 1], None, Channels::Rgb), Adjustment::Unsupported { .. }));
-    assert!(matches!(parse(b"curv", &[0, 0, 9], None, Channels::Rgb), Adjustment::Unsupported { .. }));
-    assert!(matches!(parse(b"thrs", &[], None, Channels::Rgb), Adjustment::Unsupported { .. }));
-    assert!(matches!(parse(b"blnc", &[0; 18], None, Channels::Rgb), Adjustment::Unsupported { .. }));
-    assert!(matches!(parse(b"vibA", &[0, 0, 0, 15, 0], None, Channels::Rgb), Adjustment::Unsupported { .. }));
-    assert!(matches!(parse(b"blwh", &[], None, Channels::Rgb), Adjustment::Unsupported { .. }));
-    assert!(matches!(parse(b"mixr", &[0, 2, 0, 0], None, Channels::Rgb), Adjustment::Unsupported { .. }));
-    // A CMYK mixer (black source used) stays raw in CMYK documents; our own RGB layout maps.
+    malformed_adjustments_are_unsupported();
+    malformed_channel_mixers_are_unsupported();
+    malformed_photo_filters_are_unsupported();
+    arbitrary_adjustment_bytes_do_not_panic();
+}
+
+fn malformed_adjustments_are_unsupported() {
+    for (key, bytes) in [
+        (&b"levl"[..], &[0, 2, 1][..]),
+        (&b"curv"[..], &[0, 0, 9][..]),
+        (&b"thrs"[..], &[][..]),
+        (&b"blnc"[..], &[0; 18][..]),
+        (&b"vibA"[..], &[0, 0, 0, 15, 0][..]),
+        (&b"blwh"[..], &[][..]),
+        (&b"mixr"[..], &[0, 2, 0, 0][..]),
+    ] {
+        let key: &[u8; 4] = key.try_into().unwrap_or(b"????");
+        assert!(matches!(parse(key, bytes, None, Channels::Rgb), Adjustment::Unsupported { .. }), "{key:?}");
+    }
+}
+
+fn malformed_channel_mixers_are_unsupported() {
     let mut cmyk = i16s(&[1, 0]);
     for r in 0..4 {
         cmyk.extend(i16s(&std::array::from_fn::<i16, 5, _>(|k| if k == r { 100 } else { 0 })));
     }
-    assert!(matches!(parse(b"mixr", &cmyk, None, Channels::Cmyk), Adjustment::Unsupported { .. }));
-    assert!(matches!(parse(b"mixr", &cmyk, None, Channels::Other), Adjustment::Unsupported { .. }));
+    for channels in [Channels::Cmyk, Channels::Other] {
+        assert!(matches!(parse(b"mixr", &cmyk, None, channels), Adjustment::Unsupported { .. }));
+    }
     let ours = write(&Adjustment::ChannelMixer { matrix: [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]], monochrome: false });
-    assert!(matches!(parse(b"mixr", &ours[0].1, None, Channels::Cmyk), Adjustment::ChannelMixer { .. }));
-    assert!(matches!(parse(b"mixr", &ours[0].1, None, Channels::Other), Adjustment::ChannelMixer { .. }));
+    for channels in [Channels::Cmyk, Channels::Other] {
+        assert!(matches!(parse(b"mixr", &ours[0].1, None, channels), Adjustment::ChannelMixer { .. }));
+    }
     assert!(matches!(parse(b"mixr", &[0, 1, 0, 0, 0, 100], None, Channels::Rgb), Adjustment::Unsupported { .. }));
-    // Photo Filter: unknown version, HSB colour space, out-of-range version-3 XYZ, truncated.
+}
+
+fn malformed_photo_filters_are_unsupported() {
     assert!(matches!(parse(b"phfl", &[0, 4, 0, 0], None, Channels::Rgb), Adjustment::Unsupported { .. }));
     assert!(matches!(parse(b"phfl", &[0, 2, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 25, 1], None, Channels::Rgb), Adjustment::Unsupported { .. }));
     for bad in [[200_000u32, 0, 0], [0, u32::MAX, 0]] {
@@ -455,12 +473,14 @@ fn malformed_falls_back_to_unsupported() {
         assert!(matches!(parse(b"phfl", &xyz, None, Channels::Rgb), Adjustment::Unsupported { .. }));
     }
     assert!(matches!(parse(b"phfl", &[0, 2, 0, 0, 0, 0], None, Channels::Rgb), Adjustment::Unsupported { .. }));
-    // Arbitrary bytes never panic, whatever the key.
+}
+
+fn arbitrary_adjustment_bytes_do_not_panic() {
     for key in ADJUSTMENT_KEYS {
         for len in 0..64usize {
-            let d: Vec<u8> = (0..len).map(|i| (i * 37 + len) as u8).collect();
-            let _ = parse(key, &d, Some(&d), Channels::Rgb);
-            let _ = parse(key, &d, None, Channels::Other);
+            let data: Vec<u8> = (0..len).map(|i| (i * 37 + len) as u8).collect();
+            let _ = parse(key, &data, Some(&data), Channels::Rgb);
+            let _ = parse(key, &data, None, Channels::Other);
         }
     }
 }

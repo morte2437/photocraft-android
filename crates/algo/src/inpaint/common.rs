@@ -1,4 +1,4 @@
-use super::*;
+use super::Cow;
 
 /// Below this many cells a pass runs on the calling thread (thread hand-off costs more than it
 /// saves). Every pass gives the same result either way.

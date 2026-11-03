@@ -90,6 +90,17 @@ pub fn step(zoom: f32, dir: i32, size: [u32; 2]) -> f32 {
     step_in_range(zoom, dir, min(size), MAX)
 }
 
+/// Applies the percent a zoom field reported as changed, as Zoom In/Out and Actual Pixels do: the
+/// zoom is set to the target at once, and the camera glides there when General › Animated Zoom is
+/// on. A scrub (a drag on the field or its label) follows the pointer, with no glide. Any later zoom
+/// replaces the transition, and the zoom lands exactly on the target.
+pub fn set_from_field(view: &mut crate::state::View, scrub: bool, percent: f32, animated_zoom: bool) {
+    view.zoom = clamp(percent / 100.0, view.doc_size);
+    view.fit_pending = false;
+    view.fill_pending = false;
+    view.request_zoom_animation(!scrub && animated_zoom);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,5 +180,23 @@ mod tests {
         assert_eq!(clamp(f32::NAN, PHOTO), 1.0);
         assert_eq!(clamp(f32::INFINITY, PHOTO), 1.0);
         assert_eq!(clamp(3.3, PHOTO), 3.3);
+    }
+
+    #[test]
+    fn a_typed_zoom_lands_exactly_and_glides_only_with_animated_zoom() {
+        let mut v = crate::state::View { zoom: 1.0, doc_size: PHOTO, fit_pending: true, ..Default::default() };
+        set_from_field(&mut v, false, 1600.0, true);
+        assert_eq!(v.zoom, 16.0, "the target, exactly");
+        assert!(v.zoom_animating && !v.fit_pending, "Animated Zoom on: the camera glides there");
+        let mut v = crate::state::View { zoom: 1.0 / 7.5, doc_size: PHOTO, ..Default::default() };
+        set_from_field(&mut v, false, 6400.0, false);
+        assert_eq!(v.zoom, 64.0);
+        assert!(!v.zoom_animating, "Animated Zoom off: a jump");
+        assert_eq!(v.display_camera, Some((64.0, v.center)));
+        set_from_field(&mut v, true, 200.0, true);
+        assert_eq!(v.zoom, 2.0);
+        assert!(!v.zoom_animating, "a scrub follows the pointer, with no glide");
+        set_from_field(&mut v, false, 1.0e9, true);
+        assert_eq!(v.zoom, MAX, "the target is clamped to the zoom range");
     }
 }

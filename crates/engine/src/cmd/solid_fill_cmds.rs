@@ -4,7 +4,7 @@ use photocraft_color::{Color, ColorMode};
 use photocraft_doc::{Fill, LayerContent};
 use serde_json::{Value, json};
 
-use crate::commands::{CommandSpec, check_pixels_unlocked, layer_param};
+use crate::commands::{CommandSpec, check_pixels_unlocked, cmyk_param, layer_param};
 use crate::{EngineError, Result, Session};
 
 pub const SET: &str = "layer.fill.solidColor.set";
@@ -57,7 +57,13 @@ fn set(s: &mut Session, p: &Value) -> Result<Value> {
     let id = layer_param(s, p)?;
     let layer = st.doc.layer(id).ok_or(EngineError::NoLayer(id))?;
     let LayerContent::Fill(Fill::Solid(original)) = layer.content else { return Err(bad("the target must be a Solid Color Fill layer")) };
-    let color = color_param(p.get("color").ok_or_else(|| bad("color is required"))?, original, st.doc.mode)?;
+    let mut color = color_param(p.get("color").ok_or_else(|| bad("color is required"))?, original, st.doc.mode)?;
+    // The inks the colour was picked as: a CMYK document keeps them exactly (#8568).
+    if let Some(k) = cmyk_param(SET, p, "cmyk")?
+        && st.doc.mode == ColorMode::Cmyk
+    {
+        color = Color { mode: ColorMode::Cmyk, c: k, alpha: color.alpha };
+    }
     if color != original {
         check_pixels_unlocked(&st.doc, id)?;
         if st.doc.effective_locks(id).transparency && color.alpha != original.alpha {
@@ -78,7 +84,7 @@ pub fn specs() -> Vec<CommandSpec> {
         label: "Solid Color…",
         menu: &[],
         shortcut: None,
-        params: r##"{"layer":id? (default active),"document":id? (reject a stale dialog),"color":"#rrggbb"|"#rrggbbaa"|[r,g,b,a?]|{mode,c:[f32;4],alpha:f32}}; RGB values without alpha preserve it; stored Color preserves its model and precision"##,
+        params: r##"{"layer":id? (default active),"document":id? (reject a stale dialog),"color":"#rrggbb"|"#rrggbbaa"|[r,g,b,a?]|{mode,c:[f32;4],alpha:f32},"cmyk":[c,m,y,k]? (inks 0..1 the colour was picked as: a CMYK document keeps exactly these)}; RGB values without alpha preserve it; stored Color preserves its model and precision"##,
         enabled: |s| s.active().map(|_| ()).ok_or_else(|| "no document open".into()),
         run: set,
         journal: true,
@@ -88,6 +94,47 @@ pub fn specs() -> Vec<CommandSpec> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #8568: CMYK 50/50/50/100 entered for a Solid Color fill in a CMYK document stays exactly
+    /// those inks, on creation and on edit, instead of what its sRGB stand-in converts back to
+    /// through the document profile. RGB documents ignore the inks.
+    #[test]
+    fn cmyk_inks_survive_solid_color_fills_in_a_cmyk_document() {
+        let inks = [0.5, 0.5, 0.5, 1.0];
+        let hex = |k: [f32; 4]| {
+            let [r, g, b] = photocraft_color::convert::cmyk_to_rgb(k).map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8);
+            format!("#{r:02x}{g:02x}{b:02x}")
+        };
+        let stored = |s: &Session, id: u64| match s.active().unwrap().doc.layer(photocraft_doc::LayerId(id)).unwrap().content {
+            LayerContent::Fill(Fill::Solid(c)) => c,
+            _ => panic!("not a solid fill"),
+        };
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 8, "height": 8})).unwrap();
+        s.execute("image.mode.cmyk", json!({})).unwrap();
+        let id = s.execute("layer.newFillLayer.solidColor", json!({"color": hex(inks), "cmyk": inks})).unwrap()["layer"].as_u64().unwrap();
+        assert_eq!(stored(&s, id), Color { mode: ColorMode::Cmyk, c: inks, alpha: 1.0 });
+        // The sRGB stand-in alone does drift: that is what the inks prevent.
+        let drifted = s.execute("layer.newFillLayer.solidColor", json!({"color": hex(inks)})).unwrap()["layer"].as_u64().unwrap();
+        assert_ne!(stored(&s, drifted).c, inks);
+        // Editing keeps the new inks too.
+        let edit = [0.2, 0.3, 0.4, 0.5];
+        s.execute(SET, json!({"layer": id, "color": hex(edit), "cmyk": edit})).unwrap();
+        assert_eq!(stored(&s, id), Color { mode: ColorMode::Cmyk, c: edit, alpha: 1.0 });
+        // A foreground picked as CMYK seeds a new fill with its inks, as fills do (#4196).
+        s.execute("tools.setColors", json!({"foreground": hex(edit), "foregroundCmyk": edit})).unwrap();
+        let seeded = s.execute("layer.newFillLayer.solidColor", json!({})).unwrap()["layer"].as_u64().unwrap();
+        assert_eq!(stored(&s, seeded).c, edit);
+        for bad in [json!([0.1, 0.2, 0.3]), json!("50,50,50,100"), json!([0.1, 0.2, 0.3, f64::NAN])] {
+            assert!(s.execute("layer.newFillLayer.solidColor", json!({"cmyk": bad})).is_err(), "{bad}");
+            assert!(s.execute(SET, json!({"layer": id, "color": "#000000", "cmyk": bad})).is_err(), "{bad}");
+        }
+        // An RGB document takes the colour, not the inks.
+        let mut rgb = Session::new();
+        rgb.execute("file.new", json!({"width": 8, "height": 8})).unwrap();
+        let id = rgb.execute("layer.newFillLayer.solidColor", json!({"color": "#336699", "cmyk": inks})).unwrap()["layer"].as_u64().unwrap();
+        assert_eq!(stored(&rgb, id).mode, ColorMode::Rgb);
+    }
 
     #[test]
     fn edit_preserves_layer_and_masks_at_all_depths_and_undo_redo() {

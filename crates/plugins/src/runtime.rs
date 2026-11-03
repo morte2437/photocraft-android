@@ -23,6 +23,10 @@ pub struct Limits {
     pub max_module_bytes: usize,
     /// Cap on a plug-in's linear memory.
     pub max_memory_bytes: usize,
+    /// Cap on the linear memory of all of one run's instances together: bands run in parallel
+    /// only as far as their [`Limits::max_memory_bytes`] fit in it, so a run's peak memory does
+    /// not grow with the number of cores (#8603).
+    pub max_total_memory_bytes: usize,
     /// Target size of one band of `f32` pixels handed to the plug-in.
     pub band_bytes: usize,
     /// Instructions (fuel) any call may use, plus [`Limits::fuel_per_sample`] per sample for
@@ -37,16 +41,28 @@ pub struct Limits {
 }
 
 impl Default for Limits {
+    /// The limits plug-ins run under unless a caller narrows them; see `docs/plugins.md`.
     fn default() -> Self {
         Self {
             max_module_bytes: 32 << 20,
             max_memory_bytes: 512 << 20,
+            max_total_memory_bytes: 2 << 30,
             band_bytes: 4 << 20,
             fuel_base: 50_000_000,
             fuel_per_sample: 4_000,
             max_recursion_depth: 1024,
             wall_time_ms: 60_000,
         }
+    }
+}
+
+impl Limits {
+    /// How many bands of one run may hold an instance at once on `threads` workers: no more
+    /// than [`Limits::max_memory_bytes`] fits into [`Limits::max_total_memory_bytes`], and always
+    /// at least one, so a tight budget runs bands one at a time instead of refusing the run.
+    pub fn parallel_bands(&self, threads: usize) -> usize {
+        let fit = self.max_total_memory_bytes.checked_div(self.max_memory_bytes).unwrap_or(threads);
+        threads.min(fit).max(1)
     }
 }
 

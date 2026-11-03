@@ -14,6 +14,17 @@ set -u
 APPDIR="$(dirname "$(readlink -f "$0")")"
 DESK_ID=ai.storyteller.photocraft
 
+# Select the bundled headless binary before desktop integration. In particular,
+# an MCP launch must leave stdio untouched and must not install a GUI launcher.
+if [ "${1:-}" = --cli ]; then
+  shift
+  exec "$APPDIR/usr/bin/photocraft-cli" "$@"
+fi
+# Type 2 runtimes preserve a symlink's original name in ARGV0.
+case "${ARGV0:-}" in
+  photocraft-cli | */photocraft-cli) exec "$APPDIR/usr/bin/photocraft-cli" "$@" ;;
+esac
+
 integrate() {
   case "${PHOTOCRAFT_NO_DESKTOP_INTEGRATION:-}" in
     1 | true | yes) return 0 ;;

@@ -268,7 +268,8 @@ fn doc_save_rejects_a_bad_quality_instead_of_ignoring_or_clamping_it() {
     }
     h.handle("doc.save", json!({"path": path.to_string_lossy(), "quality": 85})).unwrap();
     let bytes = std::fs::read(&path).unwrap();
-    assert_eq!(bytes.get(12..16), Some(&b"VP8 "[..]), "a WebP saved with a quality is lossy");
+    // The lossy chunk; an extended WebP (one carrying a colour profile) puts `VP8X` first.
+    assert!(bytes.windows(4).any(|c| c == b"VP8 ") && !bytes.windows(4).any(|c| c == b"VP8L"), "a WebP saved with a quality is lossy");
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -817,6 +818,23 @@ fn methods_lists_the_job_methods_and_every_listed_name_is_served() {
     assert!(h.handle("jobs.nope", Value::Null).unwrap_err().to_string().contains("unknown method"));
 }
 
+/// #3674: a guessed name gets a pointer to the right one, in both directions.
+#[test]
+fn unknown_names_suggest_the_right_method_or_command() {
+    let mut h = Headless::new();
+    let err = |h: &mut Headless, m: &str, p: Value| h.handle(m, p).unwrap_err().to_string();
+    let e = err(&mut h, "engine.execute", json!({"command": "engine.commands"}));
+    assert!(e.contains("did you mean `command.list`") && e.contains("protocol method"), "{e}");
+    let e = err(&mut h, "engine.execute", json!({"command": "doc.inspect"}));
+    assert!(e.contains("`doc.inspect` is a protocol method"), "{e}");
+    let e = err(&mut h, "engine.execute", json!({"command": "edit.undoo"}));
+    assert!(e.contains("did you mean `edit.undo`"), "{e}");
+    let e = err(&mut h, "doc.inspct", Value::Null);
+    assert!(e.contains("did you mean `doc.inspect`") && e.contains("(try `methods`)"), "{e}");
+    let e = err(&mut h, "edit.undo", Value::Null);
+    assert!(e.contains("engine.execute {\"command\": \"edit.undo\"}"), "{e}");
+}
+
 #[test]
 fn batch_response_budget_stops_later_steps_even_when_stop_on_error_is_false() {
     let mut h = Headless::new();
@@ -1009,4 +1027,89 @@ fn invalid_document_index_is_rejected_not_the_active_document() {
     let reply = respond(&h, r#"{"method":"doc.close","params":{"index":0}}"#);
     assert_eq!(reply["ok"], true, "{reply}");
     assert_eq!(count(&h), 1);
+}
+
+#[test]
+fn approve_high_memory_rejects_invalid_types_and_formats_structured_error() {
+    let h = session();
+    // Non-boolean approveHighMemory is rejected strictly
+    let reply = respond(&h, r#"{"method":"doc.open","params":{"path":"test.psd","approveHighMemory":"yes"}}"#);
+    assert_eq!(reply["ok"], false);
+    assert!(reply["error"].as_str().unwrap().contains("must be a boolean"));
+
+    let reply_place = respond(&h, r#"{"method":"doc.place","params":{"path":"test.psd","approveHighMemory":123}}"#);
+    assert_eq!(reply_place["ok"], false);
+    assert!(reply_place["error"].as_str().unwrap().contains("must be a boolean"));
+
+    // Verify attach_memory_error_details adds machine-readable fields
+    let mut err_obj = json!({"id": 1, "ok": false, "error": "test"});
+    let auto_err = crate::AutomationError::Import(photocraft_io::IoError::PsdApprovalRequired {
+        required: 5000,
+        soft_limit: 2000,
+        hard_limit: 8000,
+        available_ram: Some(10000),
+    });
+    super::attach_memory_error_details(&mut err_obj, &auto_err);
+    assert_eq!(err_obj["required"], 5000);
+    assert_eq!(err_obj["soft"], 2000);
+    assert_eq!(err_obj["softLimit"], 2000);
+    assert_eq!(err_obj["hard"], 8000);
+    assert_eq!(err_obj["hardLimit"], 8000);
+    assert_eq!(err_obj["available"], 10000);
+    assert_eq!(err_obj["availableRam"], 10000);
+
+    // An engine-command hard refusal (Open As / Place go through `EngineError`) keeps its typed
+    // fields, and only the fields an approval request has: no soft limit and no capacity, since
+    // no approval can raise the ceiling.
+    let mut hard_obj = json!({"id": 2, "ok": false, "error": "test"});
+    let hard = crate::AutomationError::Engine(photocraft_engine::EngineError::PsdHardBudget { name: "big.psd".into(), required: 9000, limit: 8000 });
+    super::attach_memory_error_details(&mut hard_obj, &hard);
+    assert_eq!(hard_obj["required"], 9000);
+    assert_eq!(hard_obj["hard"], 8000);
+    assert_eq!(hard_obj["hardLimit"], 8000);
+    for absent in ["soft", "softLimit", "available", "availableRam"] {
+        assert!(hard_obj.get(absent).is_none(), "a hard refusal has no {absent}: {hard_obj}");
+    }
+}
+
+/// #10897: `doc.place` forwards the strict one-shot high-memory approval on both routes: the
+/// read-root route (the bytes are imported in-process) and trusted local (the ambient
+/// `file.placeEmbedded` command reads the path). A tiny PSD plus the scoped estimate charge
+/// reaches the real approval window without allocating anything close to a gigabyte.
+#[test]
+fn doc_place_forwards_high_memory_approval() {
+    if cfg!(target_pointer_width = "32") {
+        return; // the 3 GiB charge would exceed a 32-bit process cap
+    }
+    let gb = 1u64 << 30;
+    let root = std::env::temp_dir().join(format!("pc-doc-place-approval-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let psd = photocraft_psd::testgen::small(photocraft_psd::Version::Psd, photocraft_psd::Compression::Zip).to_bytes().unwrap();
+    std::fs::write(root.join("high.psd"), &psd).unwrap();
+    // Known 5 GiB RAM: S = 2.5 GiB, H = 3.75 GiB. A 3 GiB estimate charge lands in (S, H].
+    let snap = photocraft_io::memory::MemorySnapshot { available_ram: Some(5 * gb), swap_free: None, commit_headroom: None };
+    let trial = |h: &mut Headless, path: &str| {
+        photocraft_io::psd_budget::with_test_estimate_charge(3 * gb, || {
+            photocraft_io::memory::with_mock_memory(snap, || {
+                let refused = h.handle("doc.place", json!({"path": path})).unwrap_err();
+                assert!(
+                    matches!(refused, crate::AutomationError::Engine(photocraft_engine::EngineError::PsdApprovalRequired { .. })),
+                    "an unapproved high-memory place must ask for approval: {refused}"
+                );
+                let placed = h.handle("doc.place", json!({"path": path, "approveHighMemory": true})).unwrap();
+                assert!(placed["layer"].as_u64().is_some(), "the approval lets the same place proceed: {placed}");
+            });
+        });
+    };
+    let mut h = Headless::with_workspace(crate::AuthorizedWorkspace::new(Some(&root), Some(&root)).unwrap());
+    h.handle("doc.new", json!({"width": 40, "height": 30})).unwrap();
+    trial(&mut h, "high.psd");
+    // Release directory capabilities before cleanup on Windows.
+    drop(h);
+    let mut t = Headless::trusted_local();
+    t.handle("doc.new", json!({"width": 40, "height": 30})).unwrap();
+    let absolute = root.join("high.psd").to_string_lossy().into_owned();
+    trial(&mut t, &absolute);
+    drop(t);
+    std::fs::remove_dir_all(root).unwrap();
 }

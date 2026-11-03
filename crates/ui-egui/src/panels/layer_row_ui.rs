@@ -127,14 +127,14 @@ pub fn truncated(painter: &Painter, text: &str, font: FontId, color: egui::Color
         }
         painter.layout_job(job)
     };
-    // A right-to-left name (Arabic, Hebrew) too long for the row is cut at its logical end and
-    // then put in display order, so its start stays and "…" is at the left (`bidi_text::elide`).
+    // A right-to-left name (Arabic, Hebrew) too long for the row is cut at its logical end, so its
+    // start stays and "…" is at the left (`bidi_text::elide`).
     if let Some(shown) = crate::bidi_text::elide(text, |s| layout(s, false).size().x <= max_width) {
         return Some(layout(&shown, false));
     }
-    // Right-to-left names in display order: egui lays words out left to right. Left-to-right
-    // names are cut at their right end by egui.
-    Some(layout(&crate::bidi_text::visual(text), true))
+    // egui puts a right-to-left name into display order itself; left-to-right names are cut at
+    // their right end by egui.
+    Some(layout(text, true))
 }
 
 /// Paint `l`'s right-hand indicators in `row` and handle the effects triangle. Returns the

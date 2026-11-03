@@ -70,7 +70,7 @@ fn every_effect_row_shows_a_checkbox() {
                 return;
             }
             let mut f = fields.clone();
-            body(app, ui, &mut f);
+            body_with_response(app, ui, &mut f, false);
         },
         app,
     );
@@ -103,7 +103,7 @@ fn default_buttons_wrap_inside_the_page_column_with_long_labels() {
         app.run("file.new", json!({"width": 32, "height": 32})).unwrap();
         let l = Layer::raster("x", photocraft_doc::PixelFormat::RGBA8);
         let fields = initial_fields(&l, Some("dropShadow"), 120.0);
-        let mut h = egui_kittest::Harness::builder().with_size(vec2(900.0, 700.0)).build_ui_state(
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(660.0, 700.0)).build_ui_state(
             move |ui, app: &mut PhotocraftApp| {
                 if !ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
                     return;
@@ -146,6 +146,30 @@ fn effect_row_of_another_layer_opens_that_layers_style() {
     assert_eq!(fx.len(), 1);
     assert_eq!(fx[0]["kind"], json!("dropShadow"));
     assert!(fx[0]["fx"].is_object(), "the existing drop shadow, not a new instance");
+}
+
+/// Make Default (#9477): a stroke added afterwards, by opening the dialog on it or with the
+/// list's checkbox or +, starts from the saved values; other kinds keep the factory ones.
+#[test]
+fn new_effects_start_from_the_made_default() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 32, "height": 32})).unwrap();
+    app.run("layer.new.layer", json!({})).unwrap();
+    app.run("layer.layerStyle.makeDefault", json!({"kind": "stroke", "params": {"size": 7, "position": "outside"}})).unwrap();
+
+    let id = open(&mut app, Some("stroke")).unwrap();
+    let mut f = app.ui.dialogs.iter().find(|d| d.id == id).unwrap().fields.clone();
+    add_instance(&mut f, "stroke");
+    add_instance(&mut f, "dropShadow");
+    let fx = effects_of(&f);
+    let strokes: Vec<_> = fx.iter().filter(|e| e["kind"] == json!("stroke")).collect();
+    assert_eq!(strokes.len(), 2);
+    for e in strokes {
+        assert_eq!((&e["params"]["size"], &e["params"]["position"]), (&json!(7), &json!("outside")));
+        assert_eq!(e["params"]["opacity"], defaults("stroke")["opacity"], "unsaved keys keep the factory value");
+    }
+    let shadow = fx.iter().find(|e| e["kind"] == json!("dropShadow")).unwrap();
+    assert_eq!(shadow["params"]["size"], defaults("dropShadow")["size"]);
 }
 
 #[test]
@@ -252,6 +276,32 @@ fn add_and_remove_instances() {
     assert_eq!(strokes[0].size, 3.0);
 }
 
+/// The list bar's arrows move an instance among those of its kind only, and stop at the ends.
+#[test]
+fn move_instance_reorders_within_its_kind() {
+    let mut s = session();
+    s.execute("layer.layerStyle.stroke", json!({"size": 3})).unwrap();
+    let st = s.active().unwrap();
+    let mut f = initial_fields(st.doc.layer(st.active_layer.unwrap()).unwrap(), None, 120.0);
+    add_instance(&mut f, "dropShadow");
+    add_instance(&mut f, "stroke");
+    assert_eq!(ids(&f), ["fx1", "fx3", "fx2"], "a new stroke goes after the last stroke");
+    move_instance(&mut f, "fx3", -1);
+    assert_eq!(ids(&f), ["fx3", "fx1", "fx2"]);
+    move_instance(&mut f, "fx3", -1);
+    assert_eq!(ids(&f), ["fx3", "fx1", "fx2"], "already the first stroke");
+    move_instance(&mut f, "fx2", 1);
+    assert_eq!(ids(&f), ["fx3", "fx1", "fx2"], "the only drop shadow stays put");
+    for (id, by) in [("fx1", isize::MAX), ("fx1", isize::MIN), ("nope", 1)] {
+        move_instance(&mut f, id, by);
+    }
+    assert_eq!(ids(&f), ["fx3", "fx1", "fx2"], "out-of-range moves and unknown ids change nothing");
+}
+
+fn ids(f: &Map<String, Value>) -> Vec<&str> {
+    effects_of(f).iter().filter_map(|e| e.get("id").and_then(Value::as_str)).collect()
+}
+
 #[test]
 fn disabled_instances_are_kept() {
     let mut s = session();
@@ -269,6 +319,49 @@ fn disabled_instances_are_kept() {
     assert!(!items[0].enabled());
 }
 
+/// The preview swatch shows the dialog's pending style, built away from the document.
+#[test]
+fn pending_style_is_the_dialogs_and_leaves_the_document_alone() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+    app.run("file.new", json!({"width": 16, "height": 16})).unwrap();
+    app.run("layer.new.layer", json!({})).unwrap();
+    let id = app.session.active().unwrap().active_layer.unwrap();
+    let mut f = initial_fields(app.session.active().unwrap().doc.layer(id).unwrap(), Some("stroke"), 120.0);
+    set_param(&mut f, "fx1", "size", json!(9));
+    let style = pending_style(&app, &f).expect("the pending style builds");
+    let sizes: Vec<f32> = style
+        .effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::Stroke(s) => Some(s.size),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(sizes, [9.0]);
+    assert!(app.session.active().unwrap().doc.layer(id).unwrap().effects.items.is_empty(), "the document is untouched");
+    let rgba = photocraft_engine::presets::styles::thumbnail(&app.session, &style, 32);
+    assert_eq!(rgba.len(), 32 * 32 * 4);
+}
+
+/// The fx menu adds another instance of a kind that takes several, and turns on and shows the
+/// layer's one of a kind that takes one.
+#[test]
+fn fx_menu_adds_or_shows_an_effect() {
+    let mut s = session();
+    s.execute("layer.layerStyle.stroke", json!({"size": 3})).unwrap();
+    s.execute("layer.layerStyle.satin", json!({"enabled": false})).unwrap();
+    let st = s.active().unwrap();
+    let mut f = initial_fields(st.doc.layer(st.active_layer.unwrap()).unwrap(), None, 120.0);
+    let before = effects_of(&f).len();
+    pick_from_fx_menu(&mut f, "stroke");
+    assert_eq!(effects_of(&f).len(), before + 1, "a second stroke");
+    let satin = effects_of(&f).iter().find(|e| e["kind"] == "satin").and_then(|e| e["id"].as_str()).unwrap().to_string();
+    pick_from_fx_menu(&mut f, "satin");
+    assert_eq!(effects_of(&f).len(), before + 1, "no second satin");
+    assert_eq!(f["selected"], json!(satin));
+    assert_eq!(entry(&f, &satin).unwrap()["on"], json!(true));
+}
+
 #[test]
 fn baked_gradient_overlay_keeps_endpoint_colours_on_reopen() {
     let mut s = session();
@@ -280,8 +373,9 @@ fn baked_gradient_overlay_keeps_endpoint_colours_on_reopen() {
     assert!(gradient.stops.len() > 2, "classic bakes intermediate stops");
     let f = initial_fields(layer, Some("gradientOverlay"), st.doc.global_light.angle);
     let params = &effects_of(&f)[0]["params"];
-    assert_eq!(params["from"], json!("#ff0000"));
-    assert_eq!(params["to"], json!("#0000ff"));
+    let source_stops = gradient_field::stops_of(params.get("stops")).expect("complete gradient stops");
+    assert_eq!(source_stops.first().unwrap().1, photocraft_color::Color::rgb(1.0, 0.0, 0.0));
+    assert_eq!(source_stops.last().unwrap().1, photocraft_color::Color::rgb(0.0, 0.0, 1.0));
     apply(&f, |cmd, p| s.execute(cmd, p).map_err(|e| e.to_string())).unwrap();
     let Effect::GradientOverlay { gradient, .. } = &s.active().unwrap().doc.layer(id).unwrap().effects.items[0] else { panic!() };
     assert!(gradient.stops.len() > 2);
@@ -398,7 +492,9 @@ fn body_keeps_invalid_params_and_renders_without_panicking() {
         fields.insert("selected".into(), json!("fx1"));
         fields.insert("effects".into(), json!([{"id": "fx1", "kind": "dropShadow", "on": true, "params": bad.clone()}]));
 
-        let mut out = ctx.run_ui(Default::default(), |ui| body(&mut app, ui, &mut fields));
+        let mut out = ctx.run_ui(Default::default(), |ui| {
+            body_with_response(&mut app, ui, &mut fields, false);
+        });
         out.textures_delta.clear();
 
         assert_eq!(entry(&fields, "fx1").unwrap()["params"], bad);
@@ -408,7 +504,9 @@ fn body_keeps_invalid_params_and_renders_without_panicking() {
         fields.insert("selected".into(), json!(BLENDING));
         fields.insert("p:blendingOptions".into(), bad.clone());
         fields.insert("effects".into(), bad.clone());
-        let mut out = ctx.run_ui(Default::default(), |ui| body(&mut app, ui, &mut fields));
+        let mut out = ctx.run_ui(Default::default(), |ui| {
+            body_with_response(&mut app, ui, &mut fields, false);
+        });
         out.textures_delta.clear();
         assert_eq!(fields.get("p:blendingOptions"), Some(&bad));
     }
@@ -435,7 +533,9 @@ fn blending_page_renders_for_every_mode_and_odd_fields() {
     {
         let mut f = initial_fields(&layer, Some(BLENDING), 120.0);
         set_blending_fields(&mut f, &layer, mode);
-        let mut out = ctx.run_ui(Default::default(), |ui| body(&mut app, ui, &mut f));
+        let mut out = ctx.run_ui(Default::default(), |ui| {
+            body_with_response(&mut app, ui, &mut f, false);
+        });
         out.textures_delta.clear();
         assert_eq!(f["p:blendingOptions"]["knockout"], "deep", "{mode:?}");
         // Hostile dialog state (only reachable through `ui.dialog.set`) still renders.
@@ -444,7 +544,9 @@ fn blending_page_renders_for_every_mode_and_odd_fields() {
         bo["channels"] = json!("x");
         bo["blendIf"] = json!([{"thisLayer": [300, -5, "a"]}]);
         f.insert("channelNames".into(), json!([]));
-        let mut out = ctx.run_ui(Default::default(), |ui| body(&mut app, ui, &mut f));
+        let mut out = ctx.run_ui(Default::default(), |ui| {
+            body_with_response(&mut app, ui, &mut f, false);
+        });
         out.textures_delta.clear();
     }
 }
@@ -513,6 +615,39 @@ fn blend_if_values_stay_ordered() {
     assert_eq!(blend_quad(Some(&json!([200, 10, 5, 300]))), [200, 200, 200, 255]);
     assert_eq!(blend_quad(None), [0, 0, 255, 255]);
     assert_eq!(blend_quad(Some(&json!(["x", null]))), [0, 0, 255, 255]);
+}
+
+#[test]
+fn blend_if_alt_split_and_drag_behavior() {
+    // Case 1: Alt-drag on unsplit black handle [0, 0, 255, 255] splits the right half
+    let mut mode = BlendDrag::Pair { pair: 0, origin_v: 0 };
+    let q = [0, 0, 255, 255];
+    let q1 = step_blend_drag(&mut mode, &q, 45, true);
+    assert_eq!(q1, [0, 45, 255, 255], "Alt-drag right must split black triangle into [0, 45]");
+
+    // Case 2: Moving the split right half further to 70
+    let q2 = step_blend_drag(&mut mode, &q1, 70, false);
+    assert_eq!(q2, [0, 70, 255, 255]);
+
+    // Case 3: Dragging the split half back to 0 merges the handle
+    let q3 = step_blend_drag(&mut mode, &q2, 0, false);
+    assert_eq!(q3, [0, 0, 255, 255], "Dragging back to origin reunites the triangle");
+
+    // Case 4: Alt-drag on unsplit white handle [0, 0, 255, 255] splits the left half
+    let mut mode_w = BlendDrag::Pair { pair: 2, origin_v: 255 };
+    let qw1 = step_blend_drag(&mut mode_w, &q, 200, true);
+    assert_eq!(qw1, [0, 0, 200, 255], "Alt-drag left must split white triangle into [200, 255]");
+
+    // Case 5: Dragging without Alt moves both halves together
+    let mut mode_solid = BlendDrag::Pair { pair: 0, origin_v: 0 };
+    let qs1 = step_blend_drag(&mut mode_solid, &q, 35, false);
+    assert_eq!(qs1, [35, 35, 255, 255], "Drag without Alt moves solid handle together");
+
+    // Case 6: Clamping prevents black handle from crossing white handle
+    let q_close = [0, 100, 150, 255];
+    let mut mode_single = BlendDrag::Single(1);
+    let q_clamped = step_blend_drag(&mut mode_single, &q_close, 180, false);
+    assert_eq!(q_clamped, [0, 150, 150, 255], "Black max cannot exceed white min");
 }
 
 #[test]

@@ -33,6 +33,9 @@ pub enum LiquifyTool {
     Reconstruct,
     Smooth,
     TwirlCw,
+    /// Twirl Clockwise with Alt (Option) held: a stroke's direction, not a tool of its own. The
+    /// reference application's Liquify has Twirl Clockwise only; strokes may still name
+    /// `twirlCcw` (Alt-strokes record it, and older scripts and saved strokes use it).
     TwirlCcw,
     Pucker,
     Bloat,
@@ -49,12 +52,13 @@ pub enum LiquifyTool {
 }
 
 impl LiquifyTool {
-    pub const ALL: [LiquifyTool; 11] = [
+    /// The tool strip, in order. Twirl Counterclockwise is not on it: it is Twirl Clockwise with
+    /// Alt (Option) held.
+    pub const ALL: [LiquifyTool; 10] = [
         LiquifyTool::ForwardWarp,
         LiquifyTool::Reconstruct,
         LiquifyTool::Smooth,
         LiquifyTool::TwirlCw,
-        LiquifyTool::TwirlCcw,
         LiquifyTool::Pucker,
         LiquifyTool::Bloat,
         LiquifyTool::PushLeft,

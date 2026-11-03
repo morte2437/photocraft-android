@@ -58,7 +58,6 @@ pub fn run(s: &mut Session, p: &Value) -> Result<Value> {
         *active = Some(id);
         Ok(id)
     })?;
-    crate::layer_multi_cmds::note_inert_insert(s, id);
     Ok(json!({ "layer": id.0 }))
 }
 

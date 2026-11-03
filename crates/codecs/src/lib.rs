@@ -7,8 +7,9 @@
 //!   metadata (EXIF, XMP, DPI, text) are preserved where the format allows.
 //! * [`caps`] declares per-format capabilities and [`fidelity_warnings`]
 //!   tells the UI exactly what an export will lose.
-//! * The API is I/O free (`&[u8]` in, `Vec<u8>` out) and builds for
-//!   `wasm32-unknown-unknown`. Decoders enforce [`Limits`] before allocating.
+//! * APIs use bytes or caller-provided readers, with no ambient filesystem access,
+//!   and build for `wasm32-unknown-unknown`. Byte decoders enforce [`Limits`];
+//!   [`exr_stream`] instead bounds metadata and one decoded compression block.
 
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
@@ -17,6 +18,7 @@ pub mod cicp;
 mod codecs;
 mod error;
 pub mod exif_color;
+pub mod exr_stream;
 mod fidelity;
 mod format;
 mod image;
@@ -29,8 +31,10 @@ pub mod web;
 pub use crate::cicp::Cicp;
 pub use crate::codecs::exr_cryptomatte::{cryptomatte_id, cryptomatte_key, cryptomatte_preview_color};
 pub use crate::codecs::gif_frames::{AnimationFrame, MAX_GIF_FRAMES};
-pub use crate::codecs::png::{PngPalette, encode_indexed as encode_png_indexed, palette as png_palette, stereo as png_stereo};
-pub use crate::codecs::tiff::{PhotoshopTags as TiffPhotoshopTags, photoshop_tags as tiff_photoshop_tags, writes_little_endian as tiff_writes_little_endian};
+pub use crate::codecs::png::{PngPalette, PngRows, encode_indexed as encode_png_indexed, palette as png_palette, stereo as png_stereo};
+pub use crate::codecs::tiff::{
+    PhotoshopTags as TiffPhotoshopTags, TiffBands, photoshop_tags as tiff_photoshop_tags, writes_little_endian as tiff_writes_little_endian,
+};
 pub use crate::codecs::tiff_ifd::{TiffInfo, TiffPage, TiffPageKind};
 pub use crate::error::CodecError;
 pub use crate::exif_color::{EXIF_COLOR_SPACE_SRGB, exif_color_space};
@@ -48,7 +52,7 @@ pub use crate::resolution::{exif_resolution, export_exif, export_xmp, photoshop_
 pub use crate::source_settings::{WebpEncoding, jpeg_quality, webp_encoding};
 pub use half::f16;
 
-use crate::codecs::{dds, dicom, dpx, exr, fits, heif, iff, jpeg, pcx, png, pnm, tiff, via_image, webp, xpm};
+use crate::codecs::{dds, dicom, dpx, exr, fits, heif, iff, jpeg, jxl, pcx, png, pnm, tiff, via_image, webp, xpm};
 
 /// Detect the format and decode with default [`Limits`].
 pub fn decode(bytes: &[u8]) -> Result<Image, CodecError> {
@@ -69,7 +73,7 @@ pub fn decode_as(format: Format, bytes: &[u8]) -> Result<Image, CodecError> {
 /// Decode as a specific format.
 pub fn decode_as_with(format: Format, bytes: &[u8], opts: &DecodeOptions) -> Result<Image, CodecError> {
     // HEIF without the `heif` feature: its decoder stub says what is missing from this build.
-    if !caps(format).read && format != Format::Heif {
+    if !caps(format).read && !matches!(format, Format::Heif | Format::Jxl) {
         return Err(CodecError::unsupported(format, "decoding is not available for this format"));
     }
     let l = &opts.limits;
@@ -89,6 +93,7 @@ pub fn decode_as_with(format: Format, bytes: &[u8], opts: &DecodeOptions) -> Res
         Format::Iff => iff::decode(bytes, l),
         Format::OpenExr => exr::decode(bytes, l),
         Format::Heif => heif::decode(bytes, l, opts.keep_orientation),
+        Format::Jxl => Err(CodecError::unsupported(format, "JPEG XL reading is not yet available; export is supported")),
         Format::Gif | Format::Bmp | Format::Tga | Format::Ico | Format::Qoi | Format::Hdr | Format::Avif => via_image::decode(format, bytes, l),
     }?;
     // Without a resolution of the format's own (PNG pHYs, TIFF tags, JPEG's metadata), the
@@ -270,6 +275,7 @@ pub fn decode_exr_channels(bytes: &[u8], part: usize, names: &[&str], opts: &Dec
 /// [`decode_as_with`] instead flattens a deep file into a normal [`Image`] with a
 /// [`DecodeWarning::DeepFlattened`]. `Err(Unsupported)` when the file has no deep part.
 pub fn decode_deep_exr(bytes: &[u8], limits: &Limits) -> Result<DeepImage, CodecError> {
+    codecs::exr::check_previews(bytes)?;
     let mut cur = std::io::Cursor::new(bytes);
     let meta = ::exr::meta::MetaData::read_from_buffered(&mut cur, false).map_err(|e| CodecError::malformed(Format::OpenExr, e))?;
     codecs::deep_exr::decode_deep(&meta, bytes, limits)
@@ -307,6 +313,7 @@ pub fn encode(image: &Image, format: Format, opts: &EncodeOptions) -> Result<Vec
         Format::Iff => iff::encode(image, plan),
         Format::OpenExr => exr::encode(image, plan, opts),
         Format::Heif => Err(CodecError::unsupported(format, "encoding is not available in this build")),
+        Format::Jxl => jxl::encode(image, plan),
         Format::Gif | Format::Bmp | Format::Tga | Format::Ico | Format::Qoi | Format::Hdr | Format::Avif => via_image::encode(format, image, plan, opts),
     }
 }

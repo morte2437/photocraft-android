@@ -3,7 +3,7 @@ use super::consts::{MAP16, MAP32};
 use super::kit::MapDraw;
 use super::paging::field_reaches;
 use super::textures::{FxEntry, FxKey, ProgState, Stats, Tex};
-use super::*;
+use super::{Arc, Compositor, Document, FieldKind, HashMap, LayerContent, Rect, Unsupported, fx, plan};
 
 impl Compositor {
     /// Build or update the effect maps of one layer over `region`: its whole effect region, or
@@ -60,6 +60,7 @@ impl Compositor {
                 e.region = region;
                 rebuild = false;
             }
+            photocraft_raster::scratch::give(v);
         }
         if rebuild {
             let shape = Tex::map(device, "pc_fx_shape", region, MAP32);
@@ -108,6 +109,7 @@ impl Compositor {
             fx::paste(&mut e.shape_cpu, region, damage, &v);
             e.shape.write_r32(queue, region, damage, &v);
             staged += v.len() as u64 * 4;
+            photocraft_raster::scratch::give(v);
         }
 
         // Programs, and the distance fields they read (max reach per field).

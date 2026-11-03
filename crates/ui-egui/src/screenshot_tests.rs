@@ -509,114 +509,151 @@ fn actual_callback(output: &egui::FullOutput) -> Option<egui::ScreenshotCallback
     })
 }
 
-#[test]
-fn completed_callback_revalidates_next_raw_input_before_actual_app_writes() {
+type ScreenshotWrites = std::rc::Rc<std::cell::RefCell<Vec<(String, Vec<u8>)>>>;
+type ScreenshotEncodes = std::rc::Rc<std::cell::RefCell<Vec<(u32, u32, Vec<u8>)>>>;
+
+struct ActualCallbackFixture {
+    app: crate::PhotocraftApp,
+    ctx: Context,
+    writes: ScreenshotWrites,
+    encodes: ScreenshotEncodes,
+    reply: std::sync::mpsc::Receiver<serde_json::Value>,
+    document: Option<DocumentId>,
+    old_geometry: CaptureGeometry,
+    old_pixels: std::sync::Weak<ColorImage>,
+}
+
+fn actual_callback_fixture() -> ActualCallbackFixture {
     use std::cell::RefCell;
     use std::rc::Rc;
-    // Unchanged success, resize, DPI change, and minimized are separate real app instances.
+
+    let writes = Rc::new(RefCell::new(Vec::new()));
+    let encodes = Rc::new(RefCell::new(Vec::new()));
+    let (written, encoded) = (writes.clone(), encodes.clone());
+    let services = crate::Services {
+        automation_write: Some(Box::new(move |path, bytes| {
+            written.borrow_mut().push((path.to_owned(), bytes.to_vec()));
+            Ok(())
+        })),
+        encode_png: Some(Box::new(move |w, h, rgba| {
+            encoded.borrow_mut().push((w, h, rgba.get(..4).unwrap_or_default().to_vec()));
+            let image = photocraft_codecs::Image::from_u8(w, h, photocraft_codecs::ChannelLayout::Rgba, rgba.to_vec()).map_err(|error| error.to_string())?;
+            photocraft_codecs::encode(&image, photocraft_codecs::Format::Png, &photocraft_codecs::EncodeOptions::default()).map_err(|error| error.to_string())
+        })),
+        ..Default::default()
+    };
+    let mut app = crate::PhotocraftApp::new(photocraft_engine::Session::new(), services);
+    app.run("file.new", serde_json::json!({"width": 32, "height": 32})).unwrap();
+    let ctx = Context::default();
+    for _ in 0..4 {
+        actual_capture_frame(&mut app, &ctx, vec2(600.0, 400.0), 1.0, false);
+    }
+    let old_geometry = app.captures.last_geometry().expect("the old real UI geometry");
+    let document = app.document_identity();
+    let (tx, reply) = std::sync::mpsc::channel();
+    app.captures.admit(91, Some("fixture/current.png".into()), tx, document, 0.0, super::screenshot::now()).unwrap();
+    let mut callback = None;
+    for _ in 0..8 {
+        let output = actual_capture_frame(&mut app, &ctx, vec2(600.0, 400.0), 1.0, false);
+        if let Some(found) = actual_callback(&output) {
+            callback = Some(found);
+            break;
+        }
+    }
+    let old_image = Arc::new(ColorImage::filled(old_geometry.expected_pixels().unwrap(), Color32::RED));
+    let old_pixels = Arc::downgrade(&old_image);
+    callback.expect("actual app issued one screenshot callback").complete(old_image);
+    assert!(writes.borrow().is_empty() && encodes.borrow().is_empty(), "the real callback only stores pixels");
+    ActualCallbackFixture { app, ctx, writes, encodes, reply, document, old_geometry, old_pixels }
+}
+
+#[test]
+fn completed_callback_revalidates_next_raw_input_before_actual_app_writes() {
     for (size, scale, minimized) in
         [(vec2(600.0, 400.0), 1.0, false), (vec2(640.0, 400.0), 1.0, false), (vec2(600.0, 400.0), 2.0, false), (vec2(600.0, 400.0), 1.0, true)]
     {
-        let changed = size != vec2(600.0, 400.0) || scale != 1.0 || minimized;
-        let writes = Rc::new(RefCell::new(Vec::new()));
-        let encodes = Rc::new(RefCell::new(Vec::new()));
-        let (written, encoded) = (writes.clone(), encodes.clone());
-        let services = crate::Services {
-            automation_write: Some(Box::new(move |path, bytes| {
-                written.borrow_mut().push((path.to_owned(), bytes.to_vec()));
-                Ok(())
-            })),
-            encode_png: Some(Box::new(move |w, h, rgba| {
-                encoded.borrow_mut().push((w, h, rgba.get(..4).unwrap_or_default().to_vec()));
-                let image =
-                    photocraft_codecs::Image::from_u8(w, h, photocraft_codecs::ChannelLayout::Rgba, rgba.to_vec()).map_err(|error| error.to_string())?;
-                photocraft_codecs::encode(&image, photocraft_codecs::Format::Png, &photocraft_codecs::EncodeOptions::default())
-                    .map_err(|error| error.to_string())
-            })),
-            ..Default::default()
-        };
-        let mut app = crate::PhotocraftApp::new(photocraft_engine::Session::new(), services);
-        app.run("file.new", serde_json::json!({"width": 32, "height": 32})).unwrap();
-        let ctx = Context::default();
-        for _ in 0..4 {
-            actual_capture_frame(&mut app, &ctx, vec2(600.0, 400.0), 1.0, false);
+        let mut fixture = actual_callback_fixture();
+        if size == vec2(600.0, 400.0) && scale == 1.0 && !minimized {
+            verify_unchanged_capture(&mut fixture);
+        } else {
+            verify_changed_capture(&mut fixture, size, scale, minimized);
         }
-        let old = app.captures.last_geometry().expect("the old real UI geometry");
-        let document = app.document_identity();
-        let (tx, rx) = std::sync::mpsc::channel();
-        app.captures.admit(91, Some("fixture/current.png".into()), tx, document, 0.0, super::screenshot::now()).unwrap();
-        let mut callback = None;
-        for _ in 0..8 {
-            let output = actual_capture_frame(&mut app, &ctx, vec2(600.0, 400.0), 1.0, false);
-            if let Some(found) = actual_callback(&output) {
-                callback = Some(found);
-                break;
-            }
-        }
-        let old_image = Arc::new(ColorImage::filled(old.expected_pixels().unwrap(), Color32::RED));
-        let old_pixels = Arc::downgrade(&old_image);
-        callback.expect("actual app issued one screenshot callback").complete(old_image);
-        assert!(writes.borrow().is_empty() && encodes.borrow().is_empty(), "the real callback only stores pixels");
-        let output = actual_capture_frame(&mut app, &ctx, size, scale, minimized);
-        if changed {
-            assert!(writes.borrow().is_empty() && encodes.borrow().is_empty(), "no stale encode/write on the first changed input");
-            assert!(old_pixels.upgrade().is_none(), "old pixels are released on geometry rejection");
-            let current = app.captures.last_geometry().unwrap();
-            assert!(current.logical_size != old.logical_size || current.pixels_per_point != old.pixels_per_point || current.minimized != old.minimized);
-            if minimized {
-                // A minimized surface cannot be retried. It fails once, then an independent
-                // request after restoration proves that cancellation releases its budget.
-                let reply = rx.try_recv().expect("one minimized error");
-                assert_eq!(reply["ok"], false, "{reply}");
-                assert!(reply["error"].as_str().unwrap().contains("minimized"));
-                assert_eq!(app.captures.pending(), 0);
-                assert_eq!(app.captures.reserved_bytes(), 0);
-                assert!(actual_callback(&output).is_none());
-                actual_capture_frame(&mut app, &ctx, size, scale, false);
-                let (tx, restored_rx) = std::sync::mpsc::channel();
-                app.captures.admit(92, Some("fixture/restored.png".into()), tx, document, 0.0, super::screenshot::now()).unwrap();
-                for _ in 0..8 {
-                    let output = actual_capture_frame(&mut app, &ctx, size, scale, false);
-                    if let Some(callback) = actual_callback(&output) {
-                        callback.complete(Arc::new(ColorImage::filled(app.captures.last_geometry().unwrap().expected_pixels().unwrap(), Color32::BLUE)));
-                        break;
-                    }
-                }
-                actual_capture_frame(&mut app, &ctx, size, scale, false);
-                let reply = restored_rx.try_recv().expect("the restored window accepts a new request");
-                assert_eq!(reply["ok"], true, "{reply}");
-                assert_eq!(writes.borrow().len(), 1);
-                assert!(writes.borrow()[0].1.starts_with(b"\x89PNG\r\n\x1a\n"));
-                assert_eq!(encodes.borrow().len(), 1);
-                assert_eq!(encodes.borrow()[0].2, [0, 0, 255, 255]);
-                assert_eq!(app.captures.pending(), 0);
-                assert_eq!(app.captures.reserved_bytes(), 0);
-                assert!(rx.try_recv().is_err() && restored_rx.try_recv().is_err());
-                continue;
-            }
-            assert!(rx.try_recv().is_err(), "bounded retry has not delivered a stale success");
-            let mut retry = actual_callback(&output);
-            for _ in 0..8 {
-                if retry.is_some() {
-                    break;
-                }
-                retry = actual_callback(&actual_capture_frame(&mut app, &ctx, size, scale, minimized));
-            }
-            retry
-                .expect("the actual app reissues at bounded current geometry")
-                .complete(Arc::new(ColorImage::filled(current.expected_pixels().unwrap(), Color32::BLUE)));
-            actual_capture_frame(&mut app, &ctx, size, scale, minimized);
-            assert_eq!(encodes.borrow().first().map(|entry| entry.2.as_slice()), Some([0, 0, 255, 255].as_slice()), "only the new callback image is encoded");
-        }
-        let reply = rx.try_recv().expect("one response after the valid callback");
-        assert_eq!(reply["ok"], true, "{reply}");
-        assert_eq!(writes.borrow().len(), 1);
-        assert!(writes.borrow()[0].1.starts_with(b"\x89PNG\r\n\x1a\n"), "real PNG encoding and automation_write ran");
-        assert_eq!(encodes.borrow().len(), 1);
-        assert_eq!(app.captures.pending(), 0);
-        assert_eq!(app.captures.reserved_bytes(), 0);
-        actual_capture_frame(&mut app, &ctx, size, scale, minimized);
-        assert_eq!(writes.borrow().len(), 1, "no duplicate output");
-        assert!(rx.try_recv().is_err());
     }
+}
+
+fn verify_unchanged_capture(fixture: &mut ActualCallbackFixture) {
+    actual_capture_frame(&mut fixture.app, &fixture.ctx, vec2(600.0, 400.0), 1.0, false);
+    assert_successful_capture(fixture, vec2(600.0, 400.0), 1.0, false);
+}
+
+fn verify_changed_capture(fixture: &mut ActualCallbackFixture, size: egui::Vec2, scale: f32, minimized: bool) {
+    let output = actual_capture_frame(&mut fixture.app, &fixture.ctx, size, scale, minimized);
+    assert!(fixture.writes.borrow().is_empty() && fixture.encodes.borrow().is_empty(), "no stale encode/write on the first changed input");
+    assert!(fixture.old_pixels.upgrade().is_none(), "old pixels are released on geometry rejection");
+    let current = fixture.app.captures.last_geometry().unwrap();
+    assert!(
+        current.logical_size != fixture.old_geometry.logical_size
+            || current.pixels_per_point != fixture.old_geometry.pixels_per_point
+            || current.minimized != fixture.old_geometry.minimized
+    );
+    if minimized {
+        verify_minimized_capture(fixture, size, scale, &output);
+        return;
+    }
+    assert!(fixture.reply.try_recv().is_err(), "bounded retry has not delivered a stale success");
+    let mut retry = actual_callback(&output);
+    for _ in 0..8 {
+        if retry.is_some() {
+            break;
+        }
+        retry = actual_callback(&actual_capture_frame(&mut fixture.app, &fixture.ctx, size, scale, minimized));
+    }
+    retry
+        .expect("the actual app reissues at bounded current geometry")
+        .complete(Arc::new(ColorImage::filled(current.expected_pixels().unwrap(), Color32::BLUE)));
+    actual_capture_frame(&mut fixture.app, &fixture.ctx, size, scale, minimized);
+    assert_eq!(fixture.encodes.borrow().first().map(|entry| entry.2.as_slice()), Some([0, 0, 255, 255].as_slice()), "only the new callback image is encoded");
+    assert_successful_capture(fixture, size, scale, minimized);
+}
+
+fn verify_minimized_capture(fixture: &mut ActualCallbackFixture, size: egui::Vec2, scale: f32, output: &egui::FullOutput) {
+    let reply = fixture.reply.try_recv().expect("one minimized error");
+    assert_eq!(reply["ok"], false, "{reply}");
+    assert!(reply["error"].as_str().unwrap().contains("minimized"));
+    assert_eq!(fixture.app.captures.pending(), 0);
+    assert_eq!(fixture.app.captures.reserved_bytes(), 0);
+    assert!(actual_callback(output).is_none());
+    actual_capture_frame(&mut fixture.app, &fixture.ctx, size, scale, false);
+    let (tx, restored_rx) = std::sync::mpsc::channel();
+    fixture.app.captures.admit(92, Some("fixture/restored.png".into()), tx, fixture.document, 0.0, super::screenshot::now()).unwrap();
+    for _ in 0..8 {
+        let output = actual_capture_frame(&mut fixture.app, &fixture.ctx, size, scale, false);
+        if let Some(callback) = actual_callback(&output) {
+            callback.complete(Arc::new(ColorImage::filled(fixture.app.captures.last_geometry().unwrap().expected_pixels().unwrap(), Color32::BLUE)));
+            break;
+        }
+    }
+    actual_capture_frame(&mut fixture.app, &fixture.ctx, size, scale, false);
+    let reply = restored_rx.try_recv().expect("the restored window accepts a new request");
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert_eq!(fixture.writes.borrow().len(), 1);
+    assert!(fixture.writes.borrow()[0].1.starts_with(b"\x89PNG\r\n\x1a\n"));
+    assert_eq!(fixture.encodes.borrow().len(), 1);
+    assert_eq!(fixture.encodes.borrow()[0].2, [0, 0, 255, 255]);
+    assert_eq!(fixture.app.captures.pending(), 0);
+    assert_eq!(fixture.app.captures.reserved_bytes(), 0);
+    assert!(fixture.reply.try_recv().is_err() && restored_rx.try_recv().is_err());
+}
+
+fn assert_successful_capture(fixture: &mut ActualCallbackFixture, size: egui::Vec2, scale: f32, minimized: bool) {
+    let reply = fixture.reply.try_recv().expect("one response after the valid callback");
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert_eq!(fixture.writes.borrow().len(), 1);
+    assert!(fixture.writes.borrow()[0].1.starts_with(b"\x89PNG\r\n\x1a\n"), "real PNG encoding and automation_write ran");
+    assert_eq!(fixture.encodes.borrow().len(), 1);
+    assert_eq!(fixture.app.captures.pending(), 0);
+    assert_eq!(fixture.app.captures.reserved_bytes(), 0);
+    actual_capture_frame(&mut fixture.app, &fixture.ctx, size, scale, minimized);
+    assert_eq!(fixture.writes.borrow().len(), 1, "no duplicate output");
+    assert!(fixture.reply.try_recv().is_err());
 }

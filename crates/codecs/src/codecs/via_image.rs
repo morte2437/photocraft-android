@@ -109,7 +109,7 @@ fn open<'a>(f: Format, bytes: &'a [u8], limits: &Limits) -> Result<impl ImageDec
         Some((fw, fh)) => u64::from(fw).saturating_mul(u64::from(fh)).saturating_mul(bpp).max(declared.saturating_sub(1 << 28)),
         _ => declared,
     };
-    if !matches!(f, Format::Avif | Format::Hdr) && !(f == Format::Bmp && bmp_is_rle(bytes)) {
+    if !(matches!(f, Format::Avif | Format::Hdr) || f == Format::Bmp && bmp_is_rle(bytes)) {
         Limits::check_plausible(declared, bytes.len(), 1 << 14)?;
     }
     Ok(dec)

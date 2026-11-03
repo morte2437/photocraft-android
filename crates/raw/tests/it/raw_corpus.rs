@@ -68,9 +68,8 @@ const WANTS: &[Want] = &[
         model: "DSC-RX0",
         size: (4832, 3224),
         cfa: [0, 1, 1, 2],
-        // No readable BlackLevel tag: the cRAW fallback of 512 (#1902). The file's darkest
-        // samples sit near 800, so this body's real level is still to be read.
-        black: &[512.0],
+        // SR2SubIFD black levels, verified with the metadata oracle (not the 512 fallback).
+        black: &[800.0; 4],
         white: [16301.0; 3],
     },
     // The G9's high-resolution mode: a 10480 × 7794 sensor cropped to 10368 × 7776.
@@ -109,6 +108,9 @@ fn decode_matches_the_measured_oracles() {
         let cfa = s.cfa.as_ref().unwrap_or_else(|| panic!("{}: no CFA", w.file));
         assert_eq!(cfa.colors, w.cfa, "{}", w.file);
         assert_eq!(s.black.values, w.black, "{}", w.file);
+        if w.file == "DSC00009.ARW" {
+            assert_eq!(s.camera_wb, Some([2056.0 / 1024.0, 1.0, 1908.0 / 1024.0]));
+        }
         for ch in 0..3 {
             assert!((s.white[ch] - w.white[ch]).abs() < 0.5, "{} white[{ch}] = {}", w.file, s.white[ch]);
         }
@@ -130,11 +132,11 @@ fn developing_produces_the_crop_in_16bit_rgb() {
             hi = (*v).max(hi);
         }
         // A real exposure covers a sane share of the range and never leaves it. The PowerShot
-        // CR2 and the RX0 ARW are the documented exceptions: neither carries an as-shot white
+        // CR2 is the documented exception: it carries no as-shot white
         // balance we read, so the grey-world estimate brightens these scenes (the PowerShot's
         // own DNG, with its file WB, develops blacks to ~0 — reading the maker-note WB of
-        // Canon and Sony is the follow-up).
-        let estimated_wb = matches!(w.file, "IMG_4059.CR2" | "DSC00009.ARW");
+        // Canon is the follow-up). Sony's SR2SubIFD now supplies the applied gains and black.
+        let estimated_wb = w.file == "IMG_4059.CR2";
         let black_cap: u16 = if estimated_wb { 16384 } else { 4096 };
         assert!(lo < black_cap, "{}: developed blacks at {lo}", w.file);
         assert!(hi > u16::MAX / 4, "{}: developed highlights at {hi}", w.file);

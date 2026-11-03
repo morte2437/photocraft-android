@@ -32,6 +32,15 @@ impl Default for Limits {
 }
 
 impl Limits {
+    /// For a decoder that writes a band of rows at a time into the document's tiles instead of
+    /// one buffer (TIFF, #8169): the largest document size, 300,000 px a side, on 64-bit
+    /// targets, with `max_alloc` bounding each group of bands. 32-bit targets keep the
+    /// [`Default`] limits: wasm32's 4 GiB address space can't hold a larger document anyway.
+    pub fn banded() -> Self {
+        let l = Limits::default();
+        if cfg!(target_pointer_width = "64") { Limits { max_width: 300_000, max_height: 300_000, max_pixels: 300_000 * 300_000, ..l } } else { l }
+    }
+
     /// Effectively unlimited (still bounded by `usize` overflow checks).
     pub fn none() -> Self {
         Limits { max_width: u32::MAX, max_height: u32::MAX, max_pixels: u64::MAX, max_alloc: u64::MAX }
@@ -44,6 +53,20 @@ impl Limits {
     }
 
     pub(crate) fn check_bytes(&self, width: u32, height: u32, bytes_per_pixel: u64) -> Result<(), CodecError> {
+        self.check_size(width, height)?;
+        let bytes = (width as u64 * height as u64).saturating_mul(bytes_per_pixel);
+        if bytes > self.max_alloc {
+            return Err(CodecError::LimitExceeded(format!("{bytes} bytes exceed max_alloc {}", self.max_alloc)));
+        }
+        if usize::try_from(bytes).is_err() {
+            return Err(CodecError::LimitExceeded(format!("{bytes} bytes do not fit in memory")));
+        }
+        Ok(())
+    }
+
+    /// The dimension and pixel-count checks of [`Limits::check`], for a decoder that never holds
+    /// the whole image in one buffer (`max_alloc` then bounds each piece it decodes).
+    pub(crate) fn check_size(&self, width: u32, height: u32) -> Result<(), CodecError> {
         if width == 0 || height == 0 {
             return Err(CodecError::InvalidImage(format!("zero-sized image {width}x{height}")));
         }
@@ -53,13 +76,6 @@ impl Limits {
         let pixels = width as u64 * height as u64;
         if pixels > self.max_pixels {
             return Err(CodecError::LimitExceeded(format!("{pixels} pixels exceed max {}", self.max_pixels)));
-        }
-        let bytes = pixels.saturating_mul(bytes_per_pixel);
-        if bytes > self.max_alloc {
-            return Err(CodecError::LimitExceeded(format!("{bytes} bytes exceed max_alloc {}", self.max_alloc)));
-        }
-        if usize::try_from(bytes).is_err() {
-            return Err(CodecError::LimitExceeded(format!("{bytes} bytes do not fit in memory")));
         }
         Ok(())
     }

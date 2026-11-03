@@ -1,6 +1,6 @@
 use super::invoke::{panel_alias, proof_preset, workspace_name};
 use super::state::{checked, is_enabled, reveal_label};
-use super::*;
+use super::{DOCUMENT_ITEM, PhotocraftApp, UI_COMMANDS};
 
 /// Menu tree entry for rendering and for `ui.inspect`.
 #[derive(Clone, Debug, serde::Serialize)]

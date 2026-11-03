@@ -1,7 +1,7 @@
 use super::planes::{channel_format, next_alpha_name, plane_surface, read_plane};
 use super::refs::{ChanRef, bad, doc_index, parse_ref, source};
 use super::view::{ChannelTarget, QuickMaskOptions};
-use super::*;
+use super::{AlphaChannel, ColorIndicates, Document, EngineError, PixelFormat, Rect, Result, SelectionMode, Session, Surface, Value, json, operation, sel};
 
 pub(super) fn save_selection(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "select.saveSelection";

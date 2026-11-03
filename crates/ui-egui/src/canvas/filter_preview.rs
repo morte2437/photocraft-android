@@ -1,6 +1,6 @@
 use super::display::canvas_display;
 use super::textures::texture_buffer;
-use super::*;
+use super::{Document, LayerContent, PhotocraftApp};
 
 /// The proxy factor of a live preview of filter `cmd` with `params` on `doc`, the active document:
 /// reduced on a large document (Preferences › Performance › Low Resolution Previews), except for
@@ -125,7 +125,7 @@ pub(crate) fn ensure_filter_preview(app: &mut PhotocraftApp, idx: usize, ctx: &e
                     let buffer = photocraft_compose::flatten(&doc);
                     (std::sync::Arc::new(doc), buffer)
                 });
-                crate::filter_preview_worker::Computed { result, ms: crate::gpu_canvas::now_ms() - t0 }
+                crate::dialogs::filter_preview_worker::Computed { result, ms: crate::gpu_canvas::now_ms() - t0 }
             }) {
                 app.filter_preview = Some(crate::filter_dialog::FilterPreview { key: request.clone(), result: None, committing: false });
                 crate::notices::error(app, error);

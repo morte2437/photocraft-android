@@ -1,7 +1,8 @@
 use super::content::RENDER_TILE;
 use super::ctx::Ctx;
 use super::render::{band_rows_for, render, render_bands, render_tiled_with};
-use super::*;
+use super::{Buffer, Document, Rect, Rgba8Image, pattern, proxy, uniform};
+use photocraft_raster::Interrupt;
 
 /// Documents above this many pixels get thumbnails from a proxy (see [`proxy`]) when that is
 /// faithful; smaller ones are reduced from the exact composite.
@@ -101,23 +102,66 @@ pub(crate) fn render_reduced_with(
     uniform: bool,
     stats: &mut ReducedStats,
 ) -> Buffer {
+    match render_reduced_cells(doc, b, Cells::Fit(w, h), damage, band_rows, uniform, stats, Interrupt::NONE) {
+        Ok(buf) => buf,
+        // Only an interrupt fails a reduction, and this one has none.
+        Err(_) => Buffer::transparent(Rect::EMPTY),
+    }
+}
+
+/// How a reduced render maps document pixels of its area to output pixels.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Cells {
+    /// `w`×`h` output pixels spread evenly over the area ([`render_reduced`]).
+    Fit(u32, u32),
+    /// Output pixel `t` covers the area's pixels `[t·k, (t+1)·k)`, clipped to the area: a
+    /// globally aligned reduction by `k` when the area starts on a multiple of `k`
+    /// ([`crate::viewport::render_page`]).
+    Factor(u32),
+}
+
+/// [`render_reduced_with`] on a cell grid, checking `interrupt` between bands.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn render_reduced_cells(
+    doc: &Document,
+    b: Rect,
+    cells: Cells,
+    damage: Option<Rect>,
+    band_rows: i32,
+    uniform: bool,
+    stats: &mut ReducedStats,
+    interrupt: Interrupt<'_>,
+) -> Result<Buffer, String> {
     let (fw, fh) = (b.width() as usize, b.height() as usize);
-    let (w, h) = (w.clamp(1, b.width().max(1)) as usize, h.clamp(1, b.height().max(1)) as usize);
+    let (w, h, k) = match cells {
+        Cells::Fit(w, h) => (w.clamp(1, b.width().max(1)) as usize, h.clamp(1, b.height().max(1)) as usize, None),
+        Cells::Factor(k) => {
+            let k = k.max(1);
+            (b.width().div_ceil(k).max(1) as usize, b.height().div_ceil(k).max(1) as usize, Some(k as usize))
+        }
+    };
     let full = Rect::from_xywh(0, 0, w as u32, h as u32);
     if fw == 0 || fh == 0 {
-        return Buffer::transparent(if damage.is_some() { Rect::EMPTY } else { full });
+        return Ok(Buffer::transparent(if damage.is_some() { Rect::EMPTY } else { full }));
     }
-    // Output column / row of each document column / row: output pixel t covers [t·f/n, (t+1)·f/n).
-    let span = |t: usize, f: usize, n: usize| (t * f / n, ((t + 1) * f / n).max(t * f / n + 1).min(f));
+    // Output column / row of each document column / row: output pixel t covers [t·f/n, (t+1)·f/n)
+    // (or [t·k, (t+1)·k) on a factor grid).
+    let span = |t: usize, f: usize, n: usize| match k {
+        Some(k) => ((t * k).min(f), ((t + 1) * k).min(f)),
+        None => (t * f / n, ((t + 1) * f / n).max(t * f / n + 1).min(f)),
+    };
     // The output pixel whose span holds document column / row `x` (spans are contiguous: n <= f).
-    let cell = |x: usize, f: usize, n: usize| ((x + 1) * n).saturating_sub(1) / f;
+    let cell = |x: usize, f: usize, n: usize| match k {
+        Some(k) => x / k,
+        None => ((x + 1) * n).saturating_sub(1) / f,
+    };
     // Output pixels to produce and the document area they cover.
     let out = match damage {
         None => full,
         Some(d) => {
             let d = d.intersect(&b);
             if d.is_empty() {
-                return Buffer::transparent(Rect::EMPTY);
+                return Ok(Buffer::transparent(Rect::EMPTY));
             }
             let (x0, x1) = ((d.x0 - b.x0) as usize, (d.x1 - b.x0) as usize);
             let (y0, y1) = ((d.y0 - b.y0) as usize, (d.y1 - b.y0) as usize);
@@ -131,7 +175,7 @@ pub(crate) fn render_reduced_with(
     if (w, h) == (fw, fh) {
         let mut px = render(doc, src);
         px.rect = out;
-        return px;
+        return Ok(px);
     }
     let map = |f: usize, n: usize| {
         let mut m = vec![0u32; f];
@@ -200,6 +244,7 @@ pub(crate) fn render_reduced_with(
         let band_h = band_rows_for(src.width(), band_rows).max(RENDER_TILE) as usize;
         let mut y = grid(sy0, b.y0);
         while y < sy1 as i64 {
+            interrupt.check().map_err(|e| e.to_string())?;
             let y1 = (y + band_h as i64).min(sy1 as i64);
             let tiles: Vec<(Rect, Rect)> = (y..y1)
                 .step_by(t)
@@ -255,7 +300,8 @@ pub(crate) fn render_reduced_with(
             y = y1;
         }
     } else {
-        let ok: Result<(), ()> = render_bands(doc, src, band_rows, |band| {
+        render_bands(doc, src, band_rows, |band| -> Result<(), String> {
+            interrupt.check().map_err(|e| e.to_string())?;
             stats.composited += band.px.len() as u64;
             let (by0, by1) = ((band.rect.y0 - b.y0) as usize, (band.rect.y1 - b.y0) as usize);
             let sw = sx1 - sx0;
@@ -265,8 +311,7 @@ pub(crate) fn render_reduced_with(
                 }
             });
             Ok(())
-        });
-        debug_assert!(ok.is_ok());
+        })?;
     }
     let col_w: Vec<usize> = (0..ow)
         .map(|x| {
@@ -296,5 +341,6 @@ pub(crate) fn render_reduced_with(
     for (row, out) in acc.chunks_mut(ow).enumerate() {
         norm_row(row, out);
     }
-    Buffer { rect: out, px: acc }
+    interrupt.check().map_err(|e| e.to_string())?;
+    Ok(Buffer { rect: out, px: acc })
 }

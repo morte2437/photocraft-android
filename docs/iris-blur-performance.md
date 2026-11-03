@@ -241,7 +241,6 @@ remain the performance evidence used to retain the change.
 
 Native Iris GUI frame/slider latency, ARM/macOS/Linux performance and wasm runtime
 speed were not measured. Compilation confirms wasm compatibility only. Photoshop
-equivalence beyond the base implementation's semantics is not asserted. The private
-shared craftrules checkout was unavailable at the supplied locations; repository
+equivalence beyond the base implementation's semantics is not asserted. Repository
 AGENTS.md and architecture/development/contributing/control/performance rules were
 followed. Existing source allocation and per-tile cancellation limits are retained.

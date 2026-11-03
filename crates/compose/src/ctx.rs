@@ -1,6 +1,6 @@
 use super::content::empty_in;
 use super::fx_cache::{effect_maps, fx_over_budget, layer_identity};
-use super::*;
+use super::{Buffer, Document, Layer, LayerContent, Rect, adjust, advanced, effects, pattern};
 
 type VectorMaskSlot = std::sync::Arc<std::sync::OnceLock<photocraft_vector::CompiledVectorMask>>;
 

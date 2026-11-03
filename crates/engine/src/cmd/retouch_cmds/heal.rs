@@ -1,6 +1,9 @@
 use super::clone::{blend_param, clamp_samples, clone_mapping, clone_result, clone_sample};
 use super::sampling::{SampleLayers, composite_region, sample_all_layers, sample_layers};
-use super::*;
+use super::{
+    BlendMode, CompleteParams, Document, EngineError, LayerId, PixelFormat, Rect, Region, Result, Session, Stroke, Surface, Value, apply_coverage, bad,
+    coverage, damage_json, flag, inpaint, json, parse_brush, poisson, reject_huge_stroke, run_stroke, string,
+};
 
 /// Grow a stroke's coverage map by `m` pixels of zero coverage (a Dirichlet boundary for the solve).
 fn pad_coverage(bounds: Rect, cov: &[f32], m: i32) -> (Rect, Vec<f32>) {

@@ -1,4 +1,4 @@
-use super::*;
+use super::{BTreeMap, Value};
 
 /// Most further keys one command may hold; Photoshop's own defaults use one.
 pub const MAX_ALTERNATES: usize = 8;

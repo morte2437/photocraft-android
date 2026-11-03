@@ -26,6 +26,7 @@ mod blur2;
 pub mod camera_raw;
 pub mod color_to_alpha;
 pub mod content_aware;
+mod cutout;
 mod denoise;
 pub mod dff;
 pub mod direct;
@@ -74,6 +75,7 @@ pub mod seam;
 pub mod segment;
 pub mod selection;
 mod selection_blur;
+pub mod separable;
 mod shape_blur;
 mod sharpen;
 pub mod stack;
@@ -566,6 +568,9 @@ impl FilterParams {
     pub fn halo(&self) -> Halo {
         let g = |sigma: f32| Halo::Radius(((sigma.max(0.0) * 3.0).ceil() as i32).saturating_add(1));
         match self {
+            // Small Gaussian radii use the calibrated seven-tap kernel as well: its reach is
+            // three pixels even when ceil(3 * radius) + 1 would be smaller.
+            FilterParams::GaussianBlur { radius } | FilterParams::HighPass { radius } if (0.05..1.0).contains(radius) => Halo::Radius(3),
             FilterParams::GaussianBlur { radius } | FilterParams::HighPass { radius } => g(*radius),
             FilterParams::UnsharpMask { radius, .. } => Halo::Radius(sharpen::exact::halo(*radius)),
             FilterParams::SmartSharpen { radius, .. } => g(*radius),
@@ -732,6 +737,7 @@ fn halo_ext(p: &FilterParams) -> Halo {
         FilterParams::PathBlur { paths } => r(paths.iter().map(|p| p.speed.abs()).fold(0.0, f32::max) / 2.0 + 1.0),
         FilterParams::Custom { .. } => r(2.0),
         FilterParams::DeInterlace { .. } => r(1.0),
+        FilterParams::FilterGallery { effects } if artistic_fx::is_global(effects) => Halo::Bounds,
         FilterParams::FilterGallery { effects } => Halo::Radius(artistic_fx::reach(effects)),
         _ => Halo::Radius(0),
     }
@@ -1019,6 +1025,31 @@ fn auto_tile(params: &FilterParams, bounds: Rect) -> i32 {
     }
 }
 
+/// Conservative transient allocation estimate for filter admission. Output tiles remain in
+/// the paged store; whole-image kernels must admit their float input before reading it.
+pub fn working_bytes(params: &FilterParams, area: Rect, bounds: Rect, channels: usize) -> u64 {
+    if area.is_empty() {
+        return 0;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    let threads = rayon::current_num_threads().max(1) as u64;
+    #[cfg(target_arch = "wasm32")]
+    let threads = 1u64;
+    let tile = auto_tile(params, bounds).max(1) as u64;
+    let floats = (channels as u64).saturating_mul(4);
+    // Result groups hold at most RESULT_BUDGET bytes of floats, and never more than the area.
+    let base = area.size().area().saturating_mul(floats).min(RESULT_BUDGET as u64).saturating_mul(3);
+    match params.halo_for(bounds) {
+        Halo::Bounds => base.saturating_add(bounds.union(&area).size().area().saturating_mul(floats)),
+        Halo::Radius(r) => {
+            let side = tile.saturating_add((r.max(0) as u64).saturating_mul(2));
+            base.saturating_add(
+                side.saturating_mul(side).saturating_add(tile.saturating_mul(tile).saturating_mul(3)).saturating_mul(floats).saturating_mul(threads),
+            )
+        }
+    }
+}
+
 /// [`apply`] / [`apply_in`] with an explicit tile size (tests use it to check tile independence).
 /// Nonpositive tile sizes are treated as one pixel.
 pub fn apply_tiled(
@@ -1122,6 +1153,14 @@ fn apply_tiled_with_impl(
         }
     }
     let shared = (halo == Halo::Bounds).then(|| Image::read(surface, bounds.union(&area)));
+    // A Filter Gallery stack with a Cutout traces the whole image once; tiles only fill it in.
+    let gallery = match (params, &shared) {
+        (FilterParams::FilterGallery { effects }, Some(src)) => artistic_fx::Prepared::new(effects, src, &ctx),
+        _ => None,
+    };
+    if ctl.cancelled() {
+        return None;
+    }
     // Shape rasterization depends only on params, not on a tile's pixels.
     let shape = match params {
         FilterParams::ShapeBlur { radius, shape } => {
@@ -1199,6 +1238,7 @@ fn apply_tiled_with_impl(
             }
         };
         let Some(mut data) = (match (&shape, &radial) {
+            _ if gallery.is_some() => gallery.as_ref().map(|g| g.run(src, *t, &ctx)),
             (Some(shape), _) => shape.checked_run(src, *t, &ctx),
             (None, Some(plan)) => match plan.filter(src, *t, &ctx, ctl) {
                 Some(data) => Some(data),
@@ -1256,7 +1296,10 @@ fn apply_tiled_with_impl(
         }
         for (t, data) in results {
             match data {
-                TileData::Samples(data) => out.write_region(t, &data),
+                TileData::Samples(data) => {
+                    out.write_region(t, &data);
+                    photocraft_raster::scratch::give(data);
+                }
                 TileData::Encoded(data) => out.write_interleaved(t, &data),
             }
         }
@@ -1311,6 +1354,7 @@ fn apply_box_blur(
                     mix_selection(data, *t, sel, &Image::read(surface, *t), fmt.alpha);
                 }
                 s.write_region(*t, data);
+                photocraft_raster::scratch::give(std::mem::take(data));
             }
         };
         #[cfg(not(target_arch = "wasm32"))]

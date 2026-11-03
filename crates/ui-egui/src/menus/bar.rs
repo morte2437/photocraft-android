@@ -2,7 +2,7 @@ use super::invoke::invoke;
 use super::items::{ItemCache, MenuItem, menu_items};
 use super::render::{alt_click, render_level, render_level_rows};
 use super::search::help_search;
-use super::*;
+use super::{PhotocraftApp, TOP_MENUS, Value, json};
 
 /// Draws the menu bar; returns the inner edge of the menu titles, facing the rest of the title bar
 /// (the right edge of the last title, or its left edge in a right-to-left UI, where File is at the
@@ -107,6 +107,9 @@ pub fn menu_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> f32 {
                 buttons.push(title);
             }
             edge = if rtl { buttons.iter().map(|b| b.rect.left()).fold(edge, f32::min) } else { buttons.iter().map(|b| b.rect.right()).fold(edge, f32::max) };
+            if let (Some(first), Some(last)) = (buttons.first(), buttons.last()) {
+                crate::zoom_field::set_menu_bar_rect(ui.ctx(), first.rect.union(last.rect));
+            }
             switch_on_hover(ui.ctx(), &buttons);
             // ← and → step to the menu on that side, so in screen order.
             let mut tops: Vec<egui::Id> = buttons.iter().map(egui::Popup::default_response_id).collect();

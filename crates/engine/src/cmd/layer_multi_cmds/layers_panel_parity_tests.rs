@@ -242,16 +242,18 @@ fn fill_layers_without_default_masks_keep_selection_and_explicit_path_masks() {
         assert!(mask.is_none() && !vector, "{cmd}: no selection, no path: no mask at all");
     }
 
-    s.execute("select.rect", json!({"x": 4, "y": 4, "width": 8, "height": 6})).unwrap();
     for (cmd, params) in KINDS {
+        s.execute("select.rect", json!({"x": 4, "y": 4, "width": 8, "height": 6})).unwrap();
         let (mask, vector) = create(&mut s, cmd, params, None);
         let mask = mask.unwrap_or_else(|| panic!("{cmd}: the selection still becomes the layer mask"));
         assert!(!vector, "{cmd}");
         assert!(mask.surface.pixel(6, 6)[0] > 0.99, "{cmd}: inside the selection reveals");
         assert!(mask.surface.pixel(20, 12)[0] < 0.01, "{cmd}: outside the selection hides");
+        assert!(s.active().unwrap().doc.selection.is_none(), "{cmd}: the selection went into the mask (#8801)");
     }
 
     // An explicit path wins over the selection, as with the option on.
+    s.execute("select.rect", json!({"x": 4, "y": 4, "width": 8, "height": 6})).unwrap();
     for selected in [true, false] {
         if !selected {
             s.execute("select.deselect", json!({})).unwrap();

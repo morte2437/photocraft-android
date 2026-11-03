@@ -1,4 +1,10 @@
-use super::*;
+use super::{
+    PhotocraftApp, analysis_ui, brush_panel, brush_picker, camera_raw_ui, canvas, dds_options_ui, dialogs, discard_ui, distort_ui, field_wheel, file_open,
+    gpu_canvas, gpu_status, gradient_ui, i18n, jobs_ui, jpeg_options_ui, kys_import, last_brush, layers_panel_ui, monitor_status, native_menu, notices,
+    paint_mouse, palette, panels, prefs_ui, preset_panels, rasterize_prompt, screen_picker, shape_stroke_ui, shortcuts, smart_svg_ui, targa_options_ui,
+    text_field_menu, theme, tiff_options_ui, timeline_ui, titlebar, tool_cursor, tool_memory, transform_tool, type_panels_ui, type_tool, updates_ui, vector_ui,
+    view_cmds, wide_angle_ui, work_area, workspace_ui,
+};
 
 impl PhotocraftApp {
     /// Wait out the rest of [`Self::min_frame_ms`] since the last frame started.
@@ -48,15 +54,14 @@ impl PhotocraftApp {
         self.drain_captures(ctx);
         self.drain_control(ctx);
         native_menu::run(self, ctx);
+        view_cmds::leave_full_screen_without_document(self, ctx);
         // Switching tools commits, also between the Type and Type Mask tools.
         if self.ui.text_edit.as_ref().is_some_and(|ed| !self.ui.tool.is_type() || ed.mask != self.ui.tool.is_type_mask()) {
             type_tool::commit(self);
         }
         // So does selecting another layer or document by any route (#6483).
         type_tool::end_if_left(self);
-        if self.ui.pen.as_ref().is_some_and(|p| !p.drawn_with(self.ui.tool)) {
-            vector_ui::pen_commit(self, false);
-        }
+        vector_ui::finish_pen_if_left(self);
         transform_tool::end_if_left(self);
         shape_stroke_ui::sync_editor(self, ctx);
         prefs_ui::tick(self, ctx);
@@ -69,12 +74,16 @@ impl PhotocraftApp {
         // maximize it into the work area once (#315).
         work_area::fit_window(ctx);
         discard_ui::guard_window_close(self, ctx);
+        // A zoom field being typed in: plays its alert, and notes a click on the pasteboard.
+        crate::zoom_field::tick(self, ctx);
+        // A colour swatch's Color Picker OK hands its colour back to the swatch widget.
+        crate::color_picker_ui::widget_tick(self, ctx);
         // Background jobs: apply finished ones, keep frames coming, Esc cancels (before the
         // shortcuts see Esc).
         if !screen_picker::tick(self, ctx) {
             jobs_ui::tick(self, ctx);
             #[cfg(not(target_arch = "wasm32"))]
-            filter_preview_worker::discard_closed(self);
+            crate::dialogs::filter_preview_worker::discard_closed(self);
             if type_tool::in_ui_pass(ctx) {
                 if self.fonts_ready {
                     shortcuts::handle(self, ctx);
@@ -161,11 +170,67 @@ impl PhotocraftApp {
             self.automation_input = false;
             // No editor was drawn this pass: end its IME context rather than keep a stale owner.
             type_tool::sync_ime(self, &ctx);
+            // The frame's stage record was started with its input: close it here too.
+            self.finish_frame(0.0);
             return;
         }
         let t0 = gpu_canvas::now_ms();
-        self.perf.frame_refresh_ms = 0.0;
-        self.stroke_trace.cpu_prev(frame.info().cpu_usage);
+        self.perf.stage.ui_start(t0, frame.info().cpu_usage);
+        // A software adapter or CPU mode chosen at startup is every document's reason.
+        crate::render_path::frame(self);
+        // Every frame that started its stage record closes it, whichever way `ui_body` returns.
+        let drawn = self.ui_body(ui);
+        let ui_ms = gpu_canvas::now_ms() - t0;
+        // A GPU measurement lands a frame or two after the refresh it belongs to. Refreshes
+        // carry them out, but the last refresh before the app settles has none following it, so
+        // drain the timer here too or its number is never reported. Drain it either way: a
+        // measurement left sitting would surface later against an unrelated refresh. Report it
+        // only while the canvas is still on the GPU, since a CPU refresh clears `gpu_ms`
+        // precisely so a GPU number is never shown as that refresh's.
+        if let Some(gpu) = &self.gpu
+            && let Some(t) = gpu.take_gpu_timing()
+            && self.perf.last_refresh.starts_with("gpu")
+        {
+            self.perf.record_gpu(t);
+        }
+        self.perf.frame(ui_ms);
+        self.finish_frame(ui_ms);
+        if !drawn {
+            return;
+        }
+        // This pass handled its input: the in-flight synthetic batch is delivered once and the
+        // next step may be injected on the next frame.
+        self.finish_synthetic_pass();
+        // Synthetic input is injected one press/release step per frame: keep frames coming until
+        // the queue is empty, then release control replies waiting on it.
+        // Only a pass that reached the end of the UI and delivered the in-flight batch counts as
+        // settled input; an early-returning pass keeps the batch (and the waiting replies).
+        if !self.synthetic.is_empty() || self.synthetic_batch.is_some() {
+            ctx.request_repaint();
+        } else if !self.input_waiters.is_empty() {
+            for w in self.input_waiters.drain(..) {
+                let _ = w.send(serde_json::json!({"ok": true, "result": null}));
+            }
+        }
+        // A menu or dialog can start a filter after `jobs_ui::tick` ran in this frame. Keep
+        // polling it even when the platform would otherwise put the event loop to sleep.
+        jobs_ui::keep_polling(self, &ctx);
+        // Menus and buttons in this frame may have asked for a file dialog.
+        self.poll_file_dialog(&ctx, Some(frame));
+        // The Type tool's IME descriptor is the last writer of this pass: every panel and the
+        // canvas have finished mutating the model, and an absent/focus-moved editor ends here.
+        type_tool::sync_ime(self, &ctx);
+        // Issue any due `ui.screenshot` now that this pass's state is settled: a queued request
+        // that has waited its passes and animation delay captures exactly this frame.
+        self.issue_captures(&ctx);
+        // Last, after everything drawn this frame: a lost window device can't draw it (#3438).
+        gpu_status::check_window(self, &ctx);
+    }
+
+    /// The frame's UI, between `ui_start` and `finish_frame`. False when the screen picker's
+    /// wait modal took the frame (its input, IME and window check already handled).
+    fn ui_body(&mut self, ui: &mut egui::Ui) -> bool {
+        let ctx = ui.ctx().clone();
         // A text field's right-click menu, before any field is drawn (text_field_menu.rs).
         text_field_menu::show(&ctx);
         // The wheel goes to a focused value field before the canvas or a panel sees it (#5473).
@@ -196,7 +261,7 @@ impl PhotocraftApp {
             self.automation_input = false;
             type_tool::sync_ime(self, &ctx);
             gpu_status::check_window(self, &ctx);
-            return;
+            return false;
         }
         if screen_picker::busy(&ctx) {
             ui.disable();
@@ -252,6 +317,8 @@ impl PhotocraftApp {
         targa_options_ui::show(self, &ctx);
         jpeg_options_ui::show(self, &ctx);
         dds_options_ui::show(self, &ctx);
+        smart_svg_ui::poll(self, &ctx);
+        smart_svg_ui::show(self, &ctx);
         distort_ui::show(self, &ctx);
         camera_raw_ui::show(self, &ctx);
         wide_angle_ui::show(self, &ctx);
@@ -291,54 +358,6 @@ impl PhotocraftApp {
             egui::Modal::new(egui::Id::unique("screen-color-wait")).frame(egui::Frame::NONE).backdrop_color(egui::Color32::TRANSPARENT).show(&ctx, |_| {});
             ctx.set_cursor_icon(egui::CursorIcon::Wait);
         }
-        let ui_ms = gpu_canvas::now_ms() - t0;
-        // A GPU measurement lands a frame or two after the refresh it belongs to. Refreshes
-        // carry them out, but the last refresh before the app settles has none following it, so
-        // drain the timer here too or its number is never reported. Drain it either way: a
-        // measurement left sitting would surface later against an unrelated refresh. Report it
-        // only while the canvas is still on the GPU, since a CPU refresh clears `gpu_ms`
-        // precisely so a GPU number is never shown as that refresh's.
-        if let Some(gpu) = &self.gpu
-            && let Some(t) = gpu.take_gpu_timing()
-            && self.perf.last_refresh.starts_with("gpu")
-        {
-            self.perf.record_gpu(t);
-        }
-        self.perf.frame(ui_ms);
-        if self.stroke_trace.enabled() {
-            self.stroke_trace.canvas(self.perf.frame_refresh_ms);
-            let info = &self.perf.gpu_info;
-            self.stroke_trace.end_frame(ui_ms, self.live_stroke.is_some(), || {
-                let gpu = format!("{} {}", info.backend, info.adapter).trim().to_string();
-                if info.present.is_empty() { gpu } else { format!("{gpu}, {}", info.present) }
-            });
-        }
-        // This pass handled its input: the in-flight synthetic batch is delivered once and the
-        // next step may be injected on the next frame.
-        self.finish_synthetic_pass();
-        // Synthetic input is injected one press/release step per frame: keep frames coming until
-        // the queue is empty, then release control replies waiting on it.
-        // Only a pass that reached the end of the UI and delivered the in-flight batch counts as
-        // settled input; an early-returning pass keeps the batch (and the waiting replies).
-        if !self.synthetic.is_empty() || self.synthetic_batch.is_some() {
-            ctx.request_repaint();
-        } else if !self.input_waiters.is_empty() {
-            for w in self.input_waiters.drain(..) {
-                let _ = w.send(serde_json::json!({"ok": true, "result": null}));
-            }
-        }
-        // A menu or dialog can start a filter after `jobs_ui::tick` ran in this frame. Keep
-        // polling it even when the platform would otherwise put the event loop to sleep.
-        jobs_ui::keep_polling(self, &ctx);
-        // Menus and buttons in this frame may have asked for a file dialog.
-        self.poll_file_dialog(&ctx, Some(frame));
-        // The Type tool's IME descriptor is the last writer of this pass: every panel and the
-        // canvas have finished mutating the model, and an absent/focus-moved editor ends here.
-        type_tool::sync_ime(self, &ctx);
-        // Issue any due `ui.screenshot` now that this pass's state is settled: a queued request
-        // that has waited its passes and animation delay captures exactly this frame.
-        self.issue_captures(&ctx);
-        // Last, after everything drawn this frame: a lost window device can't draw it (#3438).
-        gpu_status::check_window(self, &ctx);
+        true
     }
 }

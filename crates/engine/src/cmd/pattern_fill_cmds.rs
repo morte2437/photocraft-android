@@ -37,7 +37,7 @@ fn edited(s: &Session, base: &Fill, p: &Value) -> Result<(Fill, Option<Pattern>)
     let (mut scale, mut angle, mut link, mut phase, mut pat) = (*scale, *angle, *link, *phase, None);
     if let Some(v) = p.get("pattern").filter(|v| !v.is_null()) {
         let key = v.as_str().filter(|k| !k.is_empty()).ok_or_else(|| bad("`pattern` is a pattern id or name"))?;
-        pat = Some(crate::pattern_cmds::resolve(s, key).ok_or_else(|| bad(format!("no pattern \"{key}\" (see pattern.list)")))?);
+        pat = Some(crate::pattern_cmds::resolve_or_named(s, key, p).map_err(bad)?);
     }
     if let Some(v) = num("scale", SCALE_RANGE)? {
         scale = v / 100.0;
@@ -139,7 +139,7 @@ pub fn specs() -> Vec<CommandSpec> {
         label: "Pattern Fill…",
         menu: &[],
         shortcut: None,
-        params: r##"{"layer":id? (default active; a Pattern Fill layer),"document":id? (reject a stale dialog),"pattern":id|name?,"scale":1..1000?,"angle":-180..180?,"link":bool?,"phase":[x,y]? (Snap to Origin: [0,0])}; omitted values keep the layer's"##,
+        params: r##"{"layer":id? (default active; a Pattern Fill layer),"document":id? (reject a stale dialog),"pattern":id|name?,"patternName":name? (then `pattern` is an id; the name is used when no pattern has that id),"scale":1..1000?,"angle":-180..180?,"link":bool?,"phase":[x,y]? (Snap to Origin: [0,0])}; omitted values keep the layer's"##,
         enabled: |s| s.active().map(|_| ()).ok_or_else(|| "no document open".into()),
         run: set,
         journal: true,
@@ -194,6 +194,77 @@ mod tests {
             let count = s.active().unwrap().history.entries().len();
             s.execute(SET, json!({"scale": 250, "angle": -45})).unwrap();
             assert_eq!(s.active().unwrap().history.entries().len(), count, "an unchanged fill is not a history step");
+        }
+    }
+
+    #[test]
+    fn an_empty_pixel_layer_becomes_the_fill_other_layers_get_one_above() {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 40, "height": 30})).unwrap();
+        let empty = LayerId(s.execute("layer.new.layer", json!({})).unwrap()["layer"].as_u64().unwrap());
+        let before = s.active().unwrap().doc.clone();
+        let count = s.active().unwrap().doc.layers.len();
+        let p = json!({"pattern": "Checkerboard"});
+        let shown = preview(&s, CREATE, &p).unwrap();
+        let id = s.execute(CREATE, p).unwrap()["layer"].as_u64().unwrap();
+        assert_eq!(id, empty.0, "the empty layer itself is filled");
+        assert_eq!(s.active().unwrap().doc.layers.len(), count, "no layer is added");
+        assert!(matches!(fill(&s, empty), Fill::Pattern { .. }));
+        assert!(s.active().unwrap().doc.layer(empty).unwrap().name.starts_with("Pattern Fill"), "a default name follows the content");
+        assert_eq!(*s.active().unwrap().doc, shown, "the preview shows what OK commits");
+        s.undo();
+        assert_eq!(*s.active().unwrap().doc, *before);
+        // A name the user gave the layer is kept.
+        s.execute("layer.renameLayer", json!({"layer": empty.0, "name": "Sky"})).unwrap();
+        s.execute(CREATE, json!({"pattern": "Checkerboard"})).unwrap();
+        assert_eq!(s.active().unwrap().doc.layer(empty).unwrap().name, "Sky");
+        s.undo();
+        s.undo();
+        // A layer with pixels (the white Background) keeps them: the fill goes above it.
+        let bg = s.active().unwrap().doc.layers[0].id;
+        s.execute("layer.select", json!({"layer": bg.0})).unwrap();
+        let id = LayerId(s.execute(CREATE, json!({"pattern": "Checkerboard"})).unwrap()["layer"].as_u64().unwrap());
+        assert_ne!(id, bg);
+        assert!(matches!(s.active().unwrap().doc.layer(bg).unwrap().content, LayerContent::Raster(_)));
+        assert_eq!(s.active().unwrap().doc.layers.len(), count + 1);
+    }
+
+    /// Not empty: a layer opaque only through its default pixel (no tiles stored, as KRA imports
+    /// it) and a blank video layer. Both get a fill above and keep what they had.
+    #[test]
+    fn a_default_pixel_or_video_layer_is_not_taken_for_an_empty_one() {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 40, "height": 30})).unwrap();
+        let opaque = LayerId(s.execute("layer.new.layer", json!({})).unwrap()["layer"].as_u64().unwrap());
+        let doc = Arc::make_mut(&mut s.active_mut().unwrap().doc);
+        let l = doc.layer_mut(opaque).unwrap();
+        let fmt = l.surface().unwrap().format();
+        l.content = LayerContent::Raster(photocraft_raster::Surface::with_default(fmt, &[0.2, 0.4, 0.6, 1.0]));
+        let video = LayerId(s.execute("layer.videoLayers.newBlankVideoLayer", json!({})).unwrap()["layer"].as_u64().unwrap());
+        for old in [opaque, video] {
+            s.execute("layer.select", json!({"layer": old.0})).unwrap();
+            let before = s.active().unwrap().doc.layer(old).unwrap().clone();
+            let count = s.active().unwrap().doc.layers.len();
+            let id = LayerId(s.execute(CREATE, json!({"pattern": "Checkerboard"})).unwrap()["layer"].as_u64().unwrap());
+            assert_ne!(id, old, "a fill above {old:?}");
+            assert_eq!(s.active().unwrap().doc.layers.len(), count + 1);
+            assert_eq!(*s.active().unwrap().doc.layer(old).unwrap(), before, "{old:?} keeps its pixels and video");
+        }
+    }
+
+    /// An empty layer stays empty through a mode change (its default pixel stays transparent).
+    #[test]
+    fn an_empty_layer_is_still_the_fill_after_a_mode_change() {
+        for mode in ["image.mode.cmyk", "image.mode.lab"] {
+            let mut s = Session::new();
+            s.execute("file.new", json!({"width": 40, "height": 30})).unwrap();
+            let empty = s.execute("layer.new.layer", json!({})).unwrap()["layer"].as_u64().unwrap();
+            s.execute(mode, json!({})).unwrap();
+            s.execute("layer.select", json!({"layer": empty})).unwrap();
+            let count = s.active().unwrap().doc.layers.len();
+            let id = s.execute(CREATE, json!({"pattern": "Checkerboard"})).unwrap()["layer"].as_u64().unwrap();
+            assert_eq!(id, empty, "{mode}");
+            assert_eq!(s.active().unwrap().doc.layers.len(), count, "{mode}");
         }
     }
 

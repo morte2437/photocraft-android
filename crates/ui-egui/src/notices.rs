@@ -119,7 +119,7 @@ pub fn clipboard_unreadable(app: &mut PhotocraftApp) {
 /// A full refresh of document `doc` fell back to the CPU compositor (`reason`, the GPU's) and took
 /// `ms`. The canvas doesn't respond while it runs, so once per document say why it was slow and
 /// which edits will do it again (#1015).
-pub fn slow_cpu_refresh(app: &mut PhotocraftApp, doc: u64, ms: f64, reason: Option<&str>) {
+pub fn slow_cpu_refresh(app: &mut PhotocraftApp, doc: u64, ms: f64, reason: Option<&crate::render_path::CpuReason>) {
     if ms.is_nan() || ms < SLOW_CPU_REFRESH_MS || app.ui.slow_refresh_noticed.contains(&doc) {
         return;
     }
@@ -129,11 +129,11 @@ pub fn slow_cpu_refresh(app: &mut PhotocraftApp, doc: u64, ms: f64, reason: Opti
         crate::i18n::fmt(tl!("This redraw took {seconds} s on the CPU."), &[("seconds", &seconds)]),
         tl!("Edits that change the whole document, such as a layer's blend mode, opacity or visibility, redraw all of it.").into(),
     ];
-    if reason == Some(crate::gpu_canvas::OVER_BUDGET) {
-        if let Some(fit) = app.perf.gpu_layer_fit.filter(|f| f.doc == doc && !f.fits()) {
+    if let Some(&crate::render_path::CpuReason::OverBudget { needed, budget }) = reason {
+        if needed > budget {
             lines.push(crate::i18n::fmt(
                 tl!("Its layers need {needed} of GPU memory; the budget leaves them {budget}."),
-                &[("needed", &crate::chrome_ui::fmt_bytes(fit.needed)), ("budget", &crate::chrome_ui::fmt_bytes(fit.budget))],
+                &[("needed", &crate::chrome_ui::fmt_bytes(needed)), ("budget", &crate::chrome_ui::fmt_bytes(budget))],
             ));
         }
         lines.push(
@@ -141,7 +141,7 @@ pub fn slow_cpu_refresh(app: &mut PhotocraftApp, doc: u64, ms: f64, reason: Opti
                 .into(),
         );
     } else if let Some(r) = reason {
-        lines.push(crate::i18n::fmt(tl!("The GPU compositor wasn't used: {reason}"), &[("reason", r)]));
+        lines.push(crate::i18n::fmt(tl!("The GPU compositor wasn't used: {reason}"), &[("reason", &r.to_string())]));
     }
     post(app, tl!("Large document: redrawing on the CPU"), lines, false, None);
 }
@@ -405,13 +405,13 @@ mod tests {
     #[test]
     fn a_slow_cpu_refresh_is_explained_once_per_document() {
         let mut app = PhotocraftApp::new(Session::new(), Services::default());
-        slow_cpu_refresh(&mut app, 1, 400.0, Some(crate::gpu_canvas::OVER_BUDGET));
-        slow_cpu_refresh(&mut app, 1, f64::NAN, Some(crate::gpu_canvas::OVER_BUDGET));
+        let over = crate::render_path::CpuReason::OverBudget { needed: 3600 << 20, budget: 3400 << 20 };
+        slow_cpu_refresh(&mut app, 1, 400.0, Some(&over));
+        slow_cpu_refresh(&mut app, 1, f64::NAN, Some(&over));
         assert!(app.ui.notices.is_empty(), "a quick refresh needs no explanation");
 
         // The layers of document 1 need 3.6 GB and may hold 3.4 GB: the notice says so.
-        app.perf.gpu_layer_fit = Some(crate::gpu_canvas::LayerFit { doc: 1, needed: 3600 << 20, budget: 3400 << 20 });
-        slow_cpu_refresh(&mut app, 1, 55_000.0, Some(crate::gpu_canvas::OVER_BUDGET));
+        slow_cpu_refresh(&mut app, 1, 55_000.0, Some(&over));
         assert_eq!(app.ui.notices.len(), 1);
         let text = app.ui.notices[0].lines.join(" ");
         assert!(text.contains("55.0 s"), "{text}");
@@ -420,10 +420,10 @@ mod tests {
         assert!(text.contains("GPU Memory in Preferences › Performance"), "{text}");
         assert!(!app.ui.notices[0].error);
 
-        slow_cpu_refresh(&mut app, 1, 55_000.0, Some(crate::gpu_canvas::OVER_BUDGET));
+        slow_cpu_refresh(&mut app, 1, 55_000.0, Some(&over));
         assert_eq!(app.ui.notices.len(), 1, "once per document");
 
-        slow_cpu_refresh(&mut app, 2, 3_000.0, Some("Blend If on `Overlay` (composited on the CPU)"));
+        slow_cpu_refresh(&mut app, 2, 3_000.0, Some(&crate::render_path::CpuReason::Unsupported("Blend If on `Overlay` (composited on the CPU)".into())));
         assert_eq!(app.ui.notices.len(), 2);
         let text = app.ui.notices[1].lines.join(" ");
         assert!(text.contains("Blend If on `Overlay`"), "{text}");

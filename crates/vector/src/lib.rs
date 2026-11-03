@@ -567,14 +567,21 @@ pub struct CompiledShape {
 
 impl CompiledShape {
     /// Compiles the shape at flattening tolerance `tol`. `canvas` is the frame gradients
-    /// without "Align with layer" are laid out in.
+    /// without "Align with layer" are laid out in, and the area a feather is computed over.
     pub fn new(shape: &ShapeLayer, tol: f64, canvas: Rect) -> Self {
+        Self::with_frames(shape, tol, canvas, canvas)
+    }
+
+    /// [`CompiledShape::new`] with the feather computed over `coverage` while gradients still lay
+    /// out in `gradient_frame`: measuring a shape beyond the canvas it is drawn in.
+    pub fn with_frames(shape: &ShapeLayer, tol: f64, coverage: Rect, gradient_frame: Rect) -> Self {
         let pb = shape.path.control_bounds().unwrap_or((0.0, 0.0, 0.0, 0.0));
-        let cb = (f64::from(canvas.x0), f64::from(canvas.y0), f64::from(canvas.x1), f64::from(canvas.y1));
+        let g = gradient_frame;
+        let cb = (f64::from(g.x0), f64::from(g.y0), f64::from(g.x1), f64::from(g.y1));
         let area = fill_rasterizer(&shape.path, tol);
         let mut bounds = None;
         let fill = shape.fill.as_ref().map(|f| {
-            let coverage = FillCoverage::new(shape, &area, canvas);
+            let coverage = FillCoverage::new(shape, &area, coverage);
             bounds = coverage.bounds();
             (coverage, Paint::from_fill(f, pb, cb))
         });

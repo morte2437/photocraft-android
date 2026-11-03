@@ -1,4 +1,4 @@
-use super::*;
+use super::{PhotocraftApp, dock, panel_docking, single_line_drag, text_field_menu, theme, tool_cursor, wheel_nav};
 
 impl PhotocraftApp {
     /// Records a picked type family for the font menu's Recent group, capped by

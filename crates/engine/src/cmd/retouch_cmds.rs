@@ -169,10 +169,7 @@ fn parse_brush(s: &Session, p: &Value, cmd: &str) -> Result<(Stroke, Option<Laye
     if crate::channel_cmds::is_channel_target(p) {
         return Ok((Stroke { brush, points: pts }, None));
     }
-    let id = match p.get("layer").and_then(Value::as_u64) {
-        Some(id) => LayerId(id),
-        None => s.active().and_then(|d| d.active_layer).ok_or(EngineError::Other("no active layer".into()))?,
-    };
+    let id = crate::commands::layer_param(s, p)?;
     Ok((Stroke { brush, points: pts }, Some(id)))
 }
 
@@ -193,9 +190,7 @@ fn run_stroke(
         // large layer would dominate the cost of a dab.
         f(&pre, surf, pre.selection.as_ref(), lock)
     })?;
-    if let Some(st) = s.active_mut() {
-        st.last_damage = Some(dmg);
-    }
+    s.hint_damage(dmg);
     Ok(dmg)
 }
 
@@ -222,6 +217,8 @@ mod sampling;
 pub use clone::{LiveRetouch, clone_preview, clone_preview_periodic};
 use clone::{blend_param, clamp_samples, clone_stamp};
 pub(crate) use dab::DabEffect;
+#[cfg(test)]
+use dab::DabTool;
 pub use dab::LiveDab;
 use dab::dab_cmd;
 #[cfg(test)]

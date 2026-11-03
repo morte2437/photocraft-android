@@ -1,5 +1,9 @@
-use super::history::fix_selection;
-use super::*;
+use super::history::{fix_selection, visibility_changes};
+use super::{
+    Arc, Document, EngineError, LayerId, Result, Session, Value, brush_cmds, channel_cmds, commands, hidden_target, jobs, layer_multi_cmds, retouch_cmds,
+    smart_cmds,
+};
+use crate::color_channels;
 
 impl Session {
     /// Run a command by id with JSON params. Returns a JSON result.
@@ -92,6 +96,9 @@ impl Session {
     /// may run.
     pub(crate) fn admit(&mut self, id: &str, spec: &commands::CommandSpec, params: &Value) -> Result<Value> {
         let run_params = channel_cmds::inject_target(self, id, commands::inject_kind(id, params.clone()));
+        if let Some(why) = color_channels::refusal(self, id, &run_params) {
+            return Err(EngineError::Disabled(id.into(), why));
+        }
         if let Err(why) = self.explicit_layer_enabled(spec, params).unwrap_or_else(|| self.precondition(spec, &run_params)) {
             return Err(EngineError::Disabled(id.to_string(), why));
         }
@@ -124,18 +131,34 @@ impl Session {
 
     /// [`Self::disabled_reason`] for a call with `params`.
     pub fn disabled_reason_with(&self, id: &str, params: &Value) -> Option<String> {
-        let Some(s) = commands::find(id) else { return Some(format!("unknown command `{id}`")) };
+        let Some(s) = commands::find(id) else { return Some(EngineError::UnknownCommand(id.into()).to_string()) };
         self.precondition(s, &channel_cmds::inject_target(self, id, params.clone())).err().or_else(|| self.job_conflict(id, s.journal))
     }
 
     /// The command's own precondition for a call with `params` (their target filled in).
     fn precondition(&self, spec: &commands::CommandSpec, params: &Value) -> std::result::Result<(), String> {
+        if let Some(why) = color_channels::refusal(self, spec.id, params) {
+            return Err(why);
+        }
         if self.names_existing_layer(spec.id, params) {
             return Ok(());
+        }
+        // A recorded invalid comp index succeeds without an edit, even with no comps.
+        // Ordinary Apply and references by id/name retain the command's usual precondition.
+        if spec.id == "layerComp.apply"
+            && params
+                .get("comp")
+                .and_then(Value::as_object)
+                .is_some_and(|fields| fields.len() == 1 && fields.get("index").is_some_and(|index| index.as_u64().is_some() || index.as_i64().is_some()))
+        {
+            return self.active().map(|_| ()).ok_or_else(|| "no document open".into());
         }
         // `ifPresent`: with no Background there is nothing to do, which isn't an error.
         if spec.id == "layer.new.layerFromBackground" && params.get("ifPresent").and_then(Value::as_bool) == Some(true) {
             return self.active().map(|_| ()).ok_or_else(|| "no document open".into());
+        }
+        if spec.id == "layer.smartFilter.deleteFilterMask" && params.get("ifPresent").and_then(Value::as_bool) == Some(true) {
+            return smart_cmds::smart_layer_active(self);
         }
         channel_cmds::mask_target_enabled(self, spec.id, params).unwrap_or_else(|| (spec.enabled)(self))
     }
@@ -143,7 +166,9 @@ impl Session {
     /// Whether `id` is a layer command whose `"layer"` param names an existing layer, so it needs no
     /// active layer (#2457). Matches how `layer_param` resolves the layer when the command runs.
     fn names_existing_layer(&self, id: &str, params: &Value) -> bool {
-        matches!(id, "layer.hideLayers" | "layer.showLayers" | "layer.renameLayer")
+        (matches!(id, "layer.hideLayers" | "layer.showLayers" | "layer.renameLayer")
+            || (id == "layer.setProps"
+                && params.as_object().is_some_and(|o| o.contains_key("visible") && o.keys().all(|k| matches!(k.as_str(), "layer" | "visible" | "coalesce")))))
             && params.get("layer").and_then(Value::as_u64).is_some_and(|l| self.active().is_some_and(|st| st.doc.layer(LayerId(l)).is_some()))
     }
 
@@ -156,11 +181,21 @@ impl Session {
         if !spec.params.contains("\"layer\":id") {
             return None;
         }
-        let target = LayerId(params.get("layer")?.as_u64()?);
+        let layer = params.get("layer")?;
+        if !(layer.is_number() || layer.is_object()) {
+            return None;
+        }
+        let target = commands::explicit_layer(self, params).ok()??;
         let d = self.active_mut()?;
         d.doc.layer(target)?;
         let active = d.active_layer.replace(target);
-        let r = self.precondition(spec, params);
+        // The checks see the resolved id: a relative ordinal (`Frwr`, `Bckw`) would otherwise
+        // resolve again from the swapped-in active layer and land one layer further.
+        let mut resolved = params.clone();
+        if let Some(fields) = resolved.as_object_mut() {
+            fields.insert("layer".into(), Value::from(target.0));
+        }
+        let r = self.precondition(spec, &resolved);
         if let Some(d) = self.active_mut() {
             d.active_layer = active;
         }
@@ -192,23 +227,34 @@ impl Session {
         // through this entry; the requesting session's authority must reach those renders.
         let _authorization = crate::jobs::render_authorization_scope(self.authorize);
         let _document = crate::doc_path::scope(self.active().and_then(|d| d.path.as_deref()).map(std::path::Path::new));
+        photocraft_compose::discard_unreadable_pixel_caches();
+        let scratch_generation = photocraft_raster::spill::read_error_generation();
         let restrict = self.color_restrict;
         let filter_mask_layer = self.filter_mask_layer;
         let sampler_map = self.sampler_map.take();
         let symmetry_map = self.symmetry_map.take();
         let st = self.active_mut().ok_or(EngineError::NoDocument)?;
         let before = st.doc.clone();
+        // Only this document's pixels gate its edits: an unreadable tile elsewhere (another
+        // open document) does not block it.
+        before.scratch_health().map_err(EngineError::Other)?;
         // Selecting layers is not a step, so the state this edit leaves behind targets what was
         // selected just before it (#1356): undoing a stroke keeps the painted layer active.
         let prior = st.layer_target();
+        let previous_active_layer = st.active_layer;
         let mut doc = (*before).clone();
         let mut active = st.active_layer;
         let r = f(&mut doc, &mut active)?;
-        if let (Some(k), Some(id)) = (restrict, active) {
-            channel_cmds::restrict_to_color(&before, &mut doc, id, k);
+        if let Some(restrict) = restrict {
+            channel_cmds::restrict_to_color(&before, &mut doc, restrict.layer, restrict.colors)?;
         }
         if let Some(id) = filter_mask_layer {
             smart_cmds::refresh_after_filter_mask_edit(&mut doc, id)?;
+        }
+        if let Err(error) = photocraft_raster::spill::check_since(scratch_generation).and_then(|()| before.scratch_health()).and_then(|()| doc.scratch_health())
+        {
+            st.active_layer = previous_active_layer;
+            return Err(EngineError::Other(error));
         }
         st.doc = Arc::new(doc);
         st.active_layer = active;
@@ -245,6 +291,8 @@ impl Session {
         // report its own, tighter damage after this.
         let damage = layer_multi_cmds::step_damage(&before, &st.doc);
         let keep_clean = st.keeps_clean(&before);
+        #[cfg(any(test, debug_assertions))]
+        let hint_before = before.clone();
         let key = self.coalesce_request.clone();
         let st = self.active_mut().ok_or(EngineError::NoDocument)?;
         let layers = st.layer_target();
@@ -265,11 +313,37 @@ impl Session {
         st.bump_revision(keep_clean);
         st.last_damage = damage;
         self.samplers_removed += samplers_removed;
+        #[cfg(any(test, debug_assertions))]
+        {
+            self.hint_before = Some(hint_before);
+        }
         if damage.is_none_or(|d| !d.is_empty()) {
             // Free the mask early; a stale entry would only miss (it is keyed by pixels).
             self.subject_cache = Default::default();
             self.object_finder = Default::default();
         }
         Ok(r)
+    }
+
+    /// A command's own rect for the pixels its latest [`Session::edit`] changed: sub-tile precise
+    /// for a brush dab, where the edit's own damage ([`layer_multi_cmds::step_damage`]) has tile
+    /// precision. The redraw area becomes the intersection of the two, so a hint can only narrow
+    /// it (or bound a change `step_damage` can't). In debug and test builds, a hint that misses a
+    /// tile the edit changed is counted in [`Session::damage_misses`] and logged; it never panics.
+    pub fn hint_damage(&mut self, rect: photocraft_geom::Rect) {
+        #[cfg(any(test, debug_assertions))]
+        if let Some(before) = self.hint_before.take()
+            && let Some(st) = self.active()
+            && st.doc.id == before.id
+        {
+            let misses = layer_multi_cmds::hint_misses(&before, &st.doc, rect);
+            if misses > 0 {
+                let step = st.history.undo_label().unwrap_or("?");
+                eprintln!("warning: `{step}` hinted damage {rect:?} that misses {misses} changed tile(s); the canvas may not redraw them");
+                self.damage_misses += misses;
+            }
+        }
+        let Some(st) = self.active_mut() else { return };
+        st.last_damage = Some(st.last_damage.map_or(rect, |d| d.intersect(&rect)));
     }
 }

@@ -1,4 +1,4 @@
-use super::*;
+use super::{Color32, PhotocraftApp, Pos2, Rect, Sense, Stroke, StrokeKind, Tokens, empty, icons, pos2, vec2, widgets};
 
 pub(super) fn navigator(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
@@ -121,7 +121,8 @@ pub(super) fn navigator(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             let field = widgets::compact_wrapping_value_field(ui, &mut pct, crate::zoom_levels::percent_range(&app.ui.views[idx]), "%", vec2(64.0, NAV_ROW_H))
                 .accessible_name(tl!("Zoom"));
             if field.changed() {
-                set(app, pct / 100.0, false);
+                let animated = app.session.prefs().general.animated_zoom;
+                crate::zoom_levels::set_from_field(&mut app.ui.views[idx], field.dragged() || field.drag_started(), pct, animated);
             }
             let out = crate::brush_picker::named(icons::button(ui, "minus", NAV_ROW_H, false, tl!("Zoom Out")), "Zoom Out");
             if out.clicked() {

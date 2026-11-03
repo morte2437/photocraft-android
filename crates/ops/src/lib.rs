@@ -6,7 +6,8 @@
 //! same approach Photoshop's History panel exposes to users (one state per step).
 //!
 //! Memory is bounded by `max_states` plus an approximate byte budget. The current document's
-//! tiles and tiles only history holds count against it, including selection masks.
+//! tiles and tiles only history holds count against it, including selection masks, and so do the
+//! embedded contents of smart objects (shared `Arc` bytes, counted once however many states hold them).
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
@@ -48,8 +49,8 @@ pub struct History {
     /// Lazily initialized when a byte budget is used; unlimited histories pay no counting cost.
     tiles: Option<tiles::Tiles>,
     pub max_states: usize,
-    /// Pixel memory budget in bytes for the current document plus the tiles only history holds
-    /// (0 = unlimited). [`History::trim`] drops the oldest states beyond it.
+    /// Pixel memory budget in bytes for the current document plus the tiles (and embedded smart
+    /// object contents) only history holds (0 = unlimited). [`History::trim`] drops the oldest states beyond it.
     pub max_bytes: usize,
     /// Label of the step that produced the current document.
     current_label: String,
@@ -534,8 +535,8 @@ impl History {
         self.held_states().map(|s| tile_bytes(&s.doc, &mut seen)).sum()
     }
 
-    /// Pixel bytes of `current` plus the tiles only history holds (what [`History::trim`]
-    /// bounds by [`History::max_bytes`]).
+    /// Pixel bytes of `current` plus the tiles only history holds, embedded smart object contents
+    /// included (what [`History::trim`] bounds by [`History::max_bytes`]).
     pub fn pixel_bytes(&self, current: &Document) -> usize {
         if let Some(tiles) = &self.tiles {
             return usize::try_from(tiles.bytes_with(current)).unwrap_or(usize::MAX);
@@ -571,24 +572,25 @@ impl History {
     }
 
     /// Keep pixel memory within [`History::max_bytes`]: the current document's tiles plus the
-    /// tiles only history holds (newest states first). The oldest undo states that don't fit are
-    /// dropped; the most recent one is always kept so the last step can be undone. The History
-    /// Brush's source state ([`History::set_brush_source`]) is never dropped: its unique tiles are
-    /// counted first, and the newest states fill what remains. Returns how many states were
-    /// dropped.
+    /// tiles only history holds (newest states first), both with embedded smart object contents.
+    /// The oldest undo states that don't fit are dropped; the most recent one is always kept so
+    /// the last step can be undone. The History Brush's source state ([`History::set_brush_source`])
+    /// is never dropped: its unique tiles are counted first, and the newest states fill what
+    /// remains. Returns how many states were dropped.
     pub fn trim(&mut self, current: &Document) -> usize {
         self.trim_with(current, &[])
     }
 
-    /// [`History::trim`] counting the tiles only `pinned` documents hold (History panel
-    /// snapshots, which outlive the states) against the budget too, so they can't take memory
-    /// beyond it unseen (#4530). The most recent state is still always kept.
+    /// [`History::trim`] counting the tiles (and embedded smart object contents) only `pinned`
+    /// documents hold (History panel snapshots, which outlive the states) against the budget too,
+    /// so they can't take memory beyond it unseen (#4530). The most recent state is still always
+    /// kept.
     pub fn trim_with(&mut self, current: &Document, pinned: &[&Document]) -> usize {
         // While Clear History can be undone, the cleared states are what history holds: the
-        // oldest of them go first, as the list's would.
-        let (undo, redo) = match &mut self.cleared {
-            Some(c) => (&mut c.undo, &c.redo),
-            None => (&mut self.undo, &self.redo),
+        // oldest of them go first, as the list's would. The source set before it stays pinned.
+        let (undo, redo, brush_source) = match &mut self.cleared {
+            Some(c) => (&mut c.undo, &c.redo, c.brush_source),
+            None => (&mut self.undo, &self.redo, self.brush_source),
         };
         if self.max_bytes == 0 || undo.len() <= 1 {
             return 0;
@@ -622,7 +624,7 @@ impl History {
         }
         // The History Brush's source is kept whatever its age, so its own tiles come first; the
         // newest states then fill what remains of the budget (the most recent one always).
-        let source = self.brush_source.and_then(|id| undo.iter().position(|s| s.id == id));
+        let source = brush_source.and_then(|id| undo.iter().position(|s| s.id == id));
         if let Some(state) = source.and_then(|i| undo.get(i)) {
             total = total.saturating_add(tile_bytes(&state.doc, &mut seen));
         }
@@ -632,7 +634,7 @@ impl History {
                 continue;
             }
             total = total.saturating_add(tile_bytes(&s.doc, &mut seen));
-            if total > self.max_bytes && keep >= 1 {
+            if total > self.max_bytes && (keep >= 1 || source == Some(undo.len() - 1)) {
                 break;
             }
             keep += 1;
@@ -666,14 +668,13 @@ fn merge_ids(into: &mut Vec<LayerId>, from: &[LayerId]) {
     }
 }
 
-/// Bytes of the pixel tiles of `doc` (layers, masks, fill caches, smart filter masks, alpha channels, selection) not already in `seen`.
+/// Bytes of the pixel tiles of `doc` (layers, masks, fill caches, smart filter masks, alpha channels, selection) and the
+/// embedded contents of its smart objects not already in `seen`.
 fn tile_bytes(doc: &Document, seen: &mut HashSet<usize>) -> usize {
     let mut n = 0usize;
-    tiles::surfaces(doc, |surface| {
-        for (_, tile) in surface.tiles() {
-            if seen.insert(Arc::as_ptr(tile) as usize) {
-                n = n.saturating_add(tile.bytes().len());
-            }
+    tiles::blocks(doc, |ptr, len| {
+        if seen.insert(ptr) {
+            n = n.saturating_add(len);
         }
     });
     n

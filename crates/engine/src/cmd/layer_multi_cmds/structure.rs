@@ -1,5 +1,5 @@
 use super::selection::{reselect, selected, top_level};
-use super::*;
+use super::{Document, EngineError, Layer, LayerContent, LayerId, PixelFormat, Result, Session, Value, bad, json};
 
 // ---------- structural commands ----------
 

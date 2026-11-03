@@ -249,8 +249,9 @@ fn an_edit_damaging_most_of_a_large_document_is_drawn_in_the_background_too() {
     let Some(mut g) = gpu_app() else { return };
     let doc = cpu_only_document(g.harness.state_mut(), 2600, 1700);
     settle(&mut g);
-    // Filling part of the Blend If layer can change the composite anywhere: the whole canvas.
-    g.harness.state_mut().run("select.rect", json!({"x": 100, "y": 100, "width": 300, "height": 300})).expect("select");
+    // Filling most of the Blend If layer touches tiles all over it: the whole canvas (a fill of a
+    // small part damages only its own tiles, #9329).
+    g.harness.state_mut().run("select.rect", json!({"x": 100, "y": 100, "width": 2500, "height": 1500})).expect("select");
     g.harness.step();
     g.harness.state_mut().run("edit.fill", json!({"color": "#22ee22"})).expect("fill");
     assert_eq!(g.harness.state().session.active().expect("document").last_damage, Some(Rect::new(0, 0, 2600, 1700)));
@@ -523,6 +524,189 @@ fn hiding_a_large_layer_over_the_gpu_budget_redraws_in_the_background() {
     assert!(g.harness.state().redraws.contains_key(&doc), "not composited inline: {}", g.harness.state().perf.last_refresh);
     settle(&mut g);
     assert_eq!(g.harness.state().perf.last_refresh, "background");
-    assert_eq!(g.harness.state().perf.gpu_fallback.as_deref(), Some(crate::gpu_canvas::OVER_BUDGET));
+    let app = g.harness.state();
+    assert!(matches!(app.render_path.current(doc.0), Some(crate::render_path::CpuReason::OverBudget { .. })), "{:?}", app.perf.gpu_fallback);
     assert_matches_synchronous(&mut g, doc);
+}
+
+/// The active document's render path: its reason's kind and the status bar's label.
+fn render_path_of(g: &Gpu) -> (Option<&'static str>, Option<&'static str>) {
+    let app = g.harness.state();
+    let doc = app.session.active().expect("document").doc.id.0;
+    (app.render_path.current(doc).map(crate::render_path::CpuReason::kind), crate::chrome_ui::render_path_label(app).map(|l| l.0))
+}
+
+/// On the GPU canvas: no reason, or only a software adapter's (CI's runners have one).
+fn on_gpu_canvas(g: &Gpu) -> bool {
+    matches!(render_path_of(g).0, None | Some("softwareAdapter"))
+}
+
+#[test]
+fn advanced_blending_fallback_is_shown_in_the_status_bar() {
+    use egui_kittest::kittest::Queryable;
+    let _gpu = photocraft_testkit::gpu_lock();
+    let Some(mut g) = gpu_app() else { return };
+    cpu_only_document(g.harness.state_mut(), 800, 600);
+    g.harness.step();
+    settle(&mut g);
+    g.harness.run_steps(2);
+    assert_eq!(render_path_of(&g), (Some("unsupported"), Some("CPU Rendering")));
+    assert!(g.harness.query_by_label("CPU Rendering").is_some(), "the status bar says so");
+    let tip = crate::chrome_ui::render_path_label(g.harness.state()).map(|l| l.1).unwrap_or_default();
+    assert!(tip.contains("Advanced Blending"), "{tip}");
+}
+
+#[test]
+fn over_budget_fallback_shows_working_set_and_budget() {
+    use egui_kittest::kittest::Queryable;
+    let _gpu = photocraft_testkit::gpu_lock();
+    let Some(mut g) = gpu_app() else { return };
+    // As in `hiding_a_large_layer_over_the_gpu_budget_redraws_in_the_background`: a large damage
+    // rect over a budget the whole width's pages don't fit.
+    let app = g.harness.state_mut();
+    app.run("file.new", json!({"width": 5000, "height": 2000, "background": "#336699"})).expect("new");
+    app.run("layer.new.layer", json!({})).expect("layer");
+    app.run("select.rect", json!({"x": 0, "y": 0, "width": 4800, "height": 1800})).expect("select");
+    app.run("edit.fill", json!({"color": "#cc8844"})).expect("fill");
+    app.run("select.deselect", json!({})).expect("deselect");
+    let layer = app.session.active().expect("document").active_layer.expect("layer");
+    settle(&mut g);
+    assert!(on_gpu_canvas(&g), "the document fits the GPU");
+    g.observer.set_memory_budget(48 << 20);
+    g.harness.state_mut().run("layer.setProps", json!({"layer": layer.0, "visible": false})).expect("hide");
+    g.harness.step();
+    settle(&mut g);
+    g.harness.run_steps(2);
+    assert_eq!(render_path_of(&g), (Some("overBudget"), Some("GPU Memory Full")));
+    assert!(g.harness.query_by_label("GPU Memory Full").is_some());
+    let text = g.harness.state().perf.gpu_fallback.clone().unwrap_or_default();
+    assert!(text.contains("of GPU memory, budget") && text.contains('M'), "{text}");
+}
+
+#[test]
+fn a_compositor_build_failure_shows_its_reason() {
+    use egui_kittest::kittest::Queryable;
+    let _gpu = photocraft_testkit::gpu_lock();
+    let Some(mut g) = gpu_app() else { return };
+    // The DX12 FXC failure of #8733, which no Mac reproduces.
+    g.observer.fail_compositor("Shader compilation failed: error X3507: not all control paths return a value");
+    g.harness.state_mut().run("file.new", json!({"width": 400, "height": 300, "background": "#336699"})).expect("new");
+    g.harness.step();
+    settle(&mut g);
+    g.harness.run_steps(2);
+    assert_eq!(render_path_of(&g), (Some("compositorBuild"), Some("CPU Rendering")));
+    assert!(g.harness.query_by_label("CPU Rendering").is_some());
+    assert!(g.harness.state().perf.gpu_fallback.as_deref().is_some_and(|f| f.contains("X3507")));
+}
+
+#[test]
+fn a_canvas_over_the_texture_budget_records_its_reason() {
+    let _gpu = photocraft_testkit::gpu_lock();
+    let Some(mut g) = gpu_app() else { return };
+    // The app's canvas, not the observer: each `GpuCanvas::new` shares a new budget.
+    g.harness.state().gpu.as_ref().expect("gpu canvas").set_canvas_budget(1);
+    g.harness.state_mut().run("file.new", json!({"width": 400, "height": 300, "background": "#336699"})).expect("new");
+    g.harness.run_steps(3);
+    assert_eq!(render_path_of(&g), (Some("canvasTooLarge"), Some("CPU Rendering")));
+    let doc = g.harness.state().session.active().expect("document").doc.id.0;
+    assert_eq!(g.harness.state().render_path.history().filter(|c| c.doc == doc).count(), 1, "once, not every frame");
+}
+
+/// Frames until the active document's viewport pages are all rendered and uploaded.
+fn settle_pages(g: &mut Gpu) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        g.harness.step();
+        let app = g.harness.state();
+        let id = app.session.active().expect("document").doc.id;
+        if app.streams.get(&id).is_some_and(|s| !s.busy() && s.stats.wanted > 0 && s.stats.ready == s.stats.wanted) {
+            return;
+        }
+        assert!(std::time::Instant::now() < deadline, "the viewport pages didn't finish");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+}
+
+/// The screen pixel at the window's centre.
+fn centre_pixel(g: &mut Gpu) -> [u8; 4] {
+    let img = g.harness.render().expect("render");
+    let p = img.get_pixel(img.width() / 2, img.height() / 2);
+    p.0
+}
+
+/// #5332: a document whose texture set doesn't fit the canvas budget stays on the GPU canvas,
+/// drawn from the pages in view instead of the CPU canvas, with the same pixels; an edit
+/// re-renders only the pages, and closing it frees them.
+#[test]
+fn a_canvas_over_the_texture_budget_draws_its_viewport_pages_on_the_gpu() {
+    let _gpu = photocraft_testkit::gpu_lock();
+    let Some(mut g) = gpu_app() else { return };
+    g.harness.state_mut().run("file.new", json!({"width": 3000, "height": 2000, "background": "#336699"})).expect("new");
+    g.harness.run_steps(3);
+    assert!(on_gpu_canvas(&g));
+    let whole = centre_pixel(&mut g);
+    let gpu = g.harness.state().gpu.clone().expect("gpu canvas");
+    let doc = g.harness.state().session.active().expect("document").doc.clone();
+    let key = crate::canvas::viewport_pages::stream_key(doc.id.0);
+    // Room for pages (half the budget), not for the document's texture set.
+    let (set, _) = gpu.canvas_fit(&doc).expect("fit");
+    gpu.set_canvas_budget(set - 1);
+    settle_pages(&mut g);
+    assert!(on_gpu_canvas(&g), "{:?}", render_path_of(&g));
+    assert!(gpu.texture_info(doc.id.0).is_none(), "no texture set");
+    let (pages, bytes) = gpu.pages(key);
+    let stats = g.harness.state().streams[&doc.id].stats.clone();
+    assert_eq!(pages.len(), stats.resident);
+    assert!(stats.wanted > 0 && stats.last_error.is_none(), "{stats:?}");
+    assert!(bytes <= (set - 1) / 2, "pages stay within half the budget: {bytes}");
+    let shown = centre_pixel(&mut g);
+    assert!((0..3).all(|i| shown[i].abs_diff(whole[i]) <= 2), "pages {shown:?}, texture set {whole:?}");
+    // An edit re-renders the pages it reaches.
+    let uploads = stats.uploads;
+    g.harness.state_mut().run("edit.fill", json!({"color": "#cc8844"})).expect("fill");
+    settle_pages(&mut g);
+    let stats = g.harness.state().streams[&doc.id].stats.clone();
+    assert!(stats.dirtied > 0 && stats.uploads > uploads, "{stats:?}");
+    let filled = centre_pixel(&mut g);
+    assert!(filled[0] > 0xb0 && filled[2] < 0x60, "the fill is shown: {filled:?}");
+    // A small edit re-renders only the part of each page it reaches, into the page held.
+    let (held, partial) = (gpu.pages(key).0.len(), stats.partial);
+    // (A frame between the steps, as in use: the edit's damage is known one revision at a time.)
+    g.harness.state_mut().run("select.rect", json!({"x": 1400, "y": 900, "width": 200, "height": 200})).expect("select");
+    settle_pages(&mut g);
+    g.harness.state_mut().run("edit.fill", json!({"color": "#22aa22"})).expect("small fill");
+    settle_pages(&mut g);
+    let stats = g.harness.state().streams[&doc.id].stats.clone();
+    assert!(stats.partial > partial, "{stats:?}");
+    assert_eq!(gpu.pages(key).0.len(), held, "no new page textures");
+    // Just its square is shown: 200 px at about 20% zoom, some 40 screen pixels a side.
+    let img = g.harness.render().expect("render");
+    let green = img.pixels().filter(|p| p.0[1] > 0x90 && p.0[0] < 0x50 && p.0[2] < 0x50).count();
+    assert!((1000..2500).contains(&green), "the small fill is shown: {green} pixels");
+    // A budget too small for one page draws it on the CPU canvas, as before.
+    gpu.set_canvas_budget(1);
+    g.harness.run_steps(3);
+    assert_eq!(render_path_of(&g), (Some("canvasTooLarge"), Some("CPU Rendering")));
+    gpu.set_canvas_budget(set - 1);
+    settle_pages(&mut g);
+    // Closing the document cancels its work and frees its pages.
+    g.harness.state_mut().run("file.close", json!({"save": false})).expect("close");
+    g.harness.run_steps(3);
+    assert!(g.harness.state().streams.is_empty());
+    assert!(gpu.pages(key).0.is_empty());
+}
+
+#[test]
+fn a_flipped_view_records_why_it_draws_on_the_cpu() {
+    let _gpu = photocraft_testkit::gpu_lock();
+    let Some(mut g) = gpu_app() else { return };
+    g.harness.state_mut().run("file.new", json!({"width": 400, "height": 300, "background": "#336699"})).expect("new");
+    g.harness.run_steps(3);
+    assert!(on_gpu_canvas(&g));
+    g.harness.state_mut().ui.view.flip_horizontal = true;
+    g.harness.run_steps(3);
+    assert_eq!(render_path_of(&g), (Some("viewTransform"), Some("CPU Rendering")));
+    g.harness.state_mut().ui.view.flip_horizontal = false;
+    g.harness.run_steps(3);
+    assert!(on_gpu_canvas(&g), "back on the GPU");
 }

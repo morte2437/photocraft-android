@@ -173,7 +173,7 @@ impl Source {
             return Err(out_of_range(offset, n, self.0.len()));
         }
         let mut out = Vec::new();
-        out.try_reserve_exact(n).map_err(|_| PsdError::LimitExceeded("not enough memory to read the data"))?;
+        out.try_reserve_exact(n).map_err(|_| PsdError::OutOfMemory("not enough memory to read the data"))?;
         out.resize(n, 0);
         self.0.read_at(offset, &mut out)?;
         Ok(out)

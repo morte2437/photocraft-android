@@ -1,5 +1,5 @@
 use super::moves::{link_groups, recorded_move};
-use super::*;
+use super::{DocState, Document, EngineError, Layer, LayerContent, LayerId, Rect, Result, Session, Value, bad, json};
 
 // ---------- selection state ----------
 
@@ -139,6 +139,14 @@ pub(crate) fn recorded_step(s: &Session, id: &str, p: Value, pre_selected: Optio
     if id == "layer.moveTo" {
         return recorded_move(s, p, pre_selected);
     }
+    if id == "edit.transform" {
+        // Multi-layer transforms carry the set of ids separately. A single-layer transform
+        // uses the ordinary `layer` target, which should follow the sole selected layer when
+        // the action is replayed in a document with different ids.
+        if p.get("layers").is_some_and(Value::is_array) {
+            return recorded_transform(s, p, pre_selected);
+        }
+    }
     let Some(layer_id) = p.get("layer").and_then(Value::as_u64).map(LayerId) else { return p };
     let is_sole_selected = match pre_selected {
         Some(sel) => sel == [layer_id],
@@ -150,6 +158,50 @@ pub(crate) fn recorded_step(s: &Session, id: &str, p: Value, pre_selected: Optio
             fields.remove("layer");
         }
         return p;
+    }
+    if id == "select.loadSelection" {
+        return recorded_source_layer(s, p, layer_id);
+    }
+    p
+}
+
+/// ⌘-clicking another layer's thumbnail loads that layer's transparency. The step refers to the
+/// layer the way the reference application records it, by name (or as the Background), so it
+/// replays in another document and saves to `.atn`. A layer that the name would not find (a
+/// same-named layer above it) keeps its id.
+fn recorded_source_layer(s: &Session, mut p: Value, id: LayerId) -> Value {
+    let Some(doc) = s.active().map(|st| &st.doc) else { return p };
+    let Some(layer) = doc.layer(id) else { return p };
+    let reference = if doc.background().is_some_and(|b| b.id == id) {
+        json!({"background": true})
+    } else if doc.walk().into_iter().rev().find(|(_, _, l)| l.name == layer.name).is_some_and(|(_, _, l)| l.id == id) {
+        json!({"name": layer.name})
+    } else {
+        return p;
+    };
+    if let Some(fields) = p.as_object_mut() {
+        fields.insert("layer".into(), reference);
+    }
+    p
+}
+
+/// A Free Transform of several layers lists their ids (the box's session keeps them while it is
+/// open). When they are the layers the selection gave it, the step drops `layers`, so it replays on
+/// the layers selected then, in any document, rather than on these ids (#6501).
+fn recorded_transform(s: &Session, mut p: Value, pre_selected: Option<&[LayerId]>) -> Value {
+    let Some(st) = s.active() else { return p };
+    let Some(listed) = p.get("layers").and_then(Value::as_array) else { return p };
+    let Some(listed) = listed.iter().map(|v| v.as_u64().map(LayerId)).collect::<Option<Vec<_>>>() else { return p };
+    let selected = pre_selected.map_or_else(|| st.selected_layers(), <[LayerId]>::to_vec);
+    let mut moved = top_level(&st.doc, &listed);
+    let mut targets = crate::transform_cmds::targets_of(&st.doc, &selected, st.active_layer);
+    moved.sort_unstable();
+    moved.dedup();
+    targets.sort_unstable();
+    if moved == targets
+        && let Some(fields) = p.as_object_mut()
+    {
+        fields.remove("layers");
     }
     p
 }
@@ -193,6 +245,20 @@ fn range_order(layers: &[Layer], include_collapsed: bool, out: &mut Vec<LayerId>
 
 /// `layer.select`: `{"layer": id, "mode": "replace|toggle|range|add|remove"}`.
 pub fn select(s: &mut Session, p: &Value) -> Result<Value> {
+    if let Some(selector @ Value::Object(fields)) = p.get("layer")
+        && (fields.contains_key("index") || fields.contains_key("ordinal"))
+        && crate::commands::recorded_layer(s, selector)?.is_none()
+    {
+        if p.get("name").is_some() || p.get("occurrence").is_some() {
+            return Err(bad("layer.select", "a layer reference cannot be combined with name or occurrence"));
+        }
+        let mode = p.get("mode").and_then(Value::as_str).unwrap_or("replace");
+        if !matches!(mode, "replace" | "toggle" | "range" | "add" | "remove") {
+            return Err(bad("layer.select", format!("unknown mode `{mode}`")));
+        }
+        // A group-end index leaves the active layer, anchor and full selection unchanged.
+        return Ok(json!({"selected": selected(s).iter().map(|id| id.0).collect::<Vec<_>>()}));
+    }
     let id = selection_target(s, p)?;
     let mode = p.get("mode").and_then(Value::as_str).unwrap_or("replace");
     let st = s.active().ok_or(EngineError::NoDocument)?;

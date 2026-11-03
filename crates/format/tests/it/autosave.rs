@@ -34,19 +34,26 @@ fn background_save_outcomes_report_failure_then_recovery() {
     let root = temp_dir("retry-failed-write");
     let blocked = root.join("recovery");
     std::fs::write(&blocked, b"not a directory").unwrap();
-    let saver = Autosaver::new(&blocked, "doc");
+    // Not dropped on a failure: dropping joins the worker, which waits for a write in progress,
+    // so a stuck write would hold the test past its own bound until nextest kills it.
+    let saver = std::mem::ManuallyDrop::new(Autosaver::new(&blocked, "doc"));
     let doc = Arc::new(rich_doc(ColorMode::Rgb, SampleType::U8));
     saver.request_checked(doc.clone(), 7, None, SaveOptions::default()).unwrap();
 
+    // The bound only turns a worker that never reports into a failure instead of a hang. A real
+    // write flushes every tile to disk and took over 30 s on a busy Windows CI runner (normally
+    // 2-3 s), so it is generous, and still under the 10 minutes after which nextest's `ci`
+    // profile kills a test.
+    const PATIENCE: std::time::Duration = std::time::Duration::from_secs(5 * 60);
     let receive = |saver: &Autosaver| {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let deadline = std::time::Instant::now() + PATIENCE;
         while std::time::Instant::now() < deadline {
             if let Some(outcome) = saver.take_completed().into_iter().next() {
                 return outcome;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        panic!("autosave worker did not report its completed write within 30 seconds");
+        panic!("autosave worker did not report its completed write within {PATIENCE:?}");
     };
     let (revision, result) = receive(&saver);
     assert_eq!(revision, 7);
@@ -60,7 +67,7 @@ fn background_save_outcomes_report_failure_then_recovery() {
     result.unwrap();
     assert_eq!(list_recovery(&blocked).len(), 1);
     assert_eq!(recover(&list_recovery(&blocked)[0]).unwrap(), *doc);
-    drop(saver);
+    drop(std::mem::ManuallyDrop::into_inner(saver));
     std::fs::remove_dir_all(root).unwrap();
 }
 

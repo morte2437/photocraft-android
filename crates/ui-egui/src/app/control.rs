@@ -1,10 +1,23 @@
-use super::*;
+use super::{ControlRequest, PhotocraftApp, Receiver, gpu_canvas};
 
 impl PhotocraftApp {
     /// Attach a control channel (requests arrive from a transport thread: TCP, stdin, tests).
     pub fn with_control(mut self, rx: Receiver<ControlRequest>) -> Self {
         self.control_rx = Some(rx);
         self
+    }
+
+    /// Close this frame's stage record (`frame_stages`): keep it if it was slow, and hand it to
+    /// the stroke trace. `ui_ms` is the UI build's time.
+    pub(crate) fn finish_frame(&mut self, ui_ms: f64) {
+        let mut stages = std::mem::take(&mut self.perf.stage);
+        stages.ui_ms = ui_ms;
+        let stages = self.slow_frames.finish(stages, gpu_canvas::now_ms(), self.perf.gpu, self.perf.gpu_ms);
+        let info = &self.perf.gpu_info;
+        self.stroke_trace.frame(&stages, self.live_stroke.is_some(), || {
+            let gpu = format!("{} {}", info.backend, info.adapter).trim().to_string();
+            if info.present.is_empty() { gpu } else { format!("{gpu}, {}", info.present) }
+        });
     }
 
     pub(crate) fn drain_control(&mut self, ctx: &egui::Context) {

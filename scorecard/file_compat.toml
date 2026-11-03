@@ -59,7 +59,7 @@ id = "FILE-215-8"
 target = "Large and BigTIFF import with banded decode across all IFDs"
 status = "done"
 issue = 215
-note = "codecs tiff_ifd.rs (bounds-checked IFD chain + SubIFD walk, classic and BigTIFF, cycle-safe; tiff_info / decode_tiff_page), tiff.rs banded parallel strip/tile decode, planar 1 and 2, BigTIFF write (tiff_bigtiff or > 4 GiB); io import_tiff_page; 30 MP RGB8 Deflate 345 -> 32 ms; no page picker in the UI yet"
+note = "codecs tiff_ifd.rs (bounds-checked IFD chain + SubIFD walk, classic and BigTIFF, cycle-safe; tiff_info / decode_tiff_page), tiff.rs banded parallel strip/tile decode, planar 1 and 2, BigTIFF write (tiff_bigtiff or > 4 GiB); io import_tiff_page; 30 MP RGB8 Deflate 345 -> 32 ms; flat pages up to 300000 px a side decode a group of rows at a time into the layer (codecs TiffBands, #8169): the 117504 x 22464 px banner from #8456 opens in 3.3 s at 11.45 GB peak; refused with an error past free memory (io memory.rs); layered TIFFs still decode whole; no page picker in the UI yet"
 
 [[item]]
 id = "FILE-215-9"

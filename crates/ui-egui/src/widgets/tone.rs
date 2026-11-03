@@ -15,9 +15,10 @@ use crate::theme::Tokens;
 
 static EMPTY: [u32; 256] = [0; 256];
 
-/// 256-bin histograms: the composite then one per channel of the space (RGB: the channel mean,
-/// R, G, B; CMYK: composite, C, M, Y, K as channel brightness; Lab: L, a, b). `tag` identifies
-/// what they were computed from (see [`HistSource`]).
+/// 256-bin histograms: the composite then one per channel of the space (RGB: the channel mean, R, G, B;
+/// CMYK: composite, C, M, Y, K as channel brightness; Lab: L, a, b). Native partial selections
+/// ([`HistSource::Colors`]) always use combined, then native components, including Lab.
+/// `tag` identifies what they were computed from (see [`HistSource`]).
 #[derive(Clone, Debug)]
 pub struct Histograms {
     pub tag: u64,
@@ -48,6 +49,8 @@ impl std::ops::Index<usize> for Histograms {
 pub enum HistSource {
     /// The image below an adjustment layer (what the adjustment receives).
     BelowLayer(LayerId),
+    /// Native histograms of a partial colour selection, combined then individual.
+    Colors { layer: LayerId, colors: photocraft_engine::color_channels::ColorChannels },
     /// One layer on its own (the target of a destructive Image › Adjustments command).
     Layer(LayerId),
     /// The gray plane a Curves target edits: a layer mask, a saved channel or the Quick Mask.
@@ -67,6 +70,7 @@ pub const MAX_CACHE_LEVEL: u32 = 8;
 pub(crate) fn tag(source: HistSource, space: ToneSpace) -> u64 {
     let (k, id) = match source {
         HistSource::BelowLayer(l) => (1u64, l.0),
+        HistSource::Colors { layer, colors } => (8, layer.0 ^ colors.indices().fold(0u64, |m, k| m | (1u64 << k))),
         HistSource::Layer(l) => (2, l.0),
         HistSource::Channel { layer, surface } => match surface {
             photocraft_engine::channel_cmds::GraySurface::LayerMask => (3, layer.0),
@@ -129,6 +133,24 @@ pub fn compute_histograms_at(doc: &Document, source: HistSource, space: ToneSpac
         }
     ];
     match source {
+        HistSource::Colors { layer, colors } => {
+            h = vec![[0; 256]; 1 + doc.pixel_format().mode.color_channels()];
+            if let Some(surface) = doc.layer(layer).and_then(Layer::surface) {
+                for k in colors.indices() {
+                    {
+                        let bins = component_bins(surface, doc.bounds(), k);
+                        if let Some(channel) = h.get_mut(k + 1) {
+                            *channel = bins;
+                        }
+                        if let Some(combined) = h.first_mut() {
+                            for (a, b) in combined.iter_mut().zip(bins) {
+                                *a = a.saturating_add(b);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         // The gray plane itself: its levels are what the curve edits, whatever the document's
         // colour mode (#5335).
         HistSource::Channel { layer, surface } => {
@@ -206,7 +228,7 @@ fn composite_bins(doc: &Document, source: HistSource, space: ToneSpace, max_leve
         HistSource::UpTo(id) => {
             hide_above(&mut d.layers, id);
         }
-        HistSource::Channel { .. } => {}
+        HistSource::Channel { .. } | HistSource::Colors { .. } => {}
     }
     let level = cache_level(&d, max_level);
     let d = if level > 1 { photocraft_compose::proxy::proxy_document(&d, proxy_factor(&d, level)) } else { d };
@@ -301,6 +323,29 @@ fn count_pixels(px: &[[f32; 4]], space: ToneSpace, h: &mut [[u32; 256]]) {
 
 /// 256-bin histogram of a gray plane: its levels in 0–255, sampled like the engine's auto-tone
 /// histograms so a big canvas costs no more than about a megapixel here (#5335).
+fn component_bins(surface: &photocraft_raster::Surface, area: photocraft_geom::Rect, component: usize) -> [u32; 256] {
+    let mut bins = [0u32; 256];
+    let format = surface.format();
+    let step = ((u64::from(area.width()) * u64::from(area.height())) / 1_000_000).max(1).isqrt().max(1) as usize;
+    for y in (area.y0..area.y1).step_by(step) {
+        for x in (area.x0..area.x1).step_by(step) {
+            if format.alpha {
+                let alpha = surface.sample_channel(x, y, format.mode.color_channels());
+                if alpha.is_nan() || alpha <= 0.0 {
+                    continue;
+                }
+            }
+            let v = surface.sample_channel(x, y, component);
+            let v = if surface.format().mode == photocraft_doc::ColorMode::Cmyk { 1.0 - v } else { v };
+            let v = if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 };
+            if let Some(bin) = bins.get_mut((v * 255.0).round() as usize) {
+                *bin = bin.saturating_add(1);
+            }
+        }
+    }
+    bins
+}
+
 fn gray_bins(surf: &photocraft_raster::Surface, area: photocraft_geom::Rect) -> [u32; 256] {
     let mut h = [0u32; 256];
     let step = ((u64::from(area.width()) * u64::from(area.height())) / 1_000_000).max(1).isqrt().max(1) as i32;
@@ -327,7 +372,7 @@ pub fn histograms(app: &mut PhotocraftApp, source: HistSource, space: ToneSpace)
     let want = tag(source, space);
     let layer = match source {
         HistSource::BelowLayer(l) | HistSource::Layer(l) | HistSource::UpTo(l) => l,
-        HistSource::Channel { layer, .. } => layer,
+        HistSource::Channel { layer, .. } | HistSource::Colors { layer, .. } => layer,
     };
     let pixels_kept = view_only(st);
     if let Some((d, l, r, h)) = app.tone_hist.as_mut()
@@ -417,6 +462,21 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn subset_histograms_skip_transparent_unstored_and_nan_alpha_pixels() {
+        let mut surface = photocraft_raster::Surface::new(photocraft_color::PixelFormat::RGBA8);
+        let area = photocraft_geom::Rect::new(0, 0, 32, 24);
+        surface.fill_rect(photocraft_geom::Rect::new(0, 0, 16, 24), &[0.5, 0.4, 0.3, 1.0]);
+        let bins = component_bins(&surface, area, 0);
+        assert_eq!(bins.iter().sum::<u32>(), 16 * 24);
+        assert_eq!(bins[0], 0);
+        let nan = photocraft_raster::Surface::with_default(
+            photocraft_color::PixelFormat::new(photocraft_doc::ColorMode::Rgb, photocraft_doc::SampleType::F32, true),
+            &[0.5, 0.4, 0.3, f32::NAN],
+        );
+        assert_eq!(component_bins(&nan, area, 0), [0; 256]);
+    }
+
+    #[test]
     fn histogram_ignores_the_edited_adjustment() {
         let mut s = photocraft_engine::Session::new();
         s.execute("file.new", json!({"width": 64, "height": 64})).unwrap(); // white
@@ -481,6 +541,7 @@ mod tests {
             HistSource::BelowLayer(layer),
             HistSource::Layer(layer),
             HistSource::UpTo(layer),
+            HistSource::Colors { layer, colors: photocraft_engine::color_channels::ColorChannels::from_indices([0, 2], 3).unwrap() },
             HistSource::Channel { layer, surface: GraySurface::LayerMask },
             HistSource::Channel { layer, surface: GraySurface::QuickMask },
             HistSource::Channel { layer, surface: GraySurface::FilterMask },

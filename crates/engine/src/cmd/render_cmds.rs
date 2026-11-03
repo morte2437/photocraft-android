@@ -6,7 +6,7 @@
 //! can verify them without screenshots.
 
 use photocraft_algo::render2::{self, FlameSpec, FrameSpec, Prim, TreeSpec};
-use photocraft_doc::{Layer, LayerContent, LayerId};
+use photocraft_doc::{Layer, LayerContent};
 use photocraft_geom::Rect;
 use photocraft_raster::Surface;
 use serde_json::{Map, Value, json};
@@ -102,7 +102,7 @@ fn flame_paths(s: &Session, p: &Value) -> Option<Vec<Vec<(f32, f32)>>> {
 /// Draws `prims` onto the target layer as one undo step.
 fn draw(s: &mut Session, label: &str, p: &Value, prims: Vec<Prim>, extra: Value) -> Result<Value> {
     let want_new = p.get("newLayer").and_then(Value::as_bool).unwrap_or(false);
-    let target = p.get("layer").and_then(Value::as_u64).map(LayerId);
+    let target = p.get("layer").map(|_| crate::commands::layer_param(s, p)).transpose()?;
     let count = prims.len();
     let (layer, created, used) = s.edit(label, |doc, active| {
         let id = target.or(*active);

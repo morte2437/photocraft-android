@@ -16,7 +16,10 @@
 
 use super::content_aware_move::{Target, replace};
 use super::patch::coverage;
-use super::*;
+use super::{
+    Document, EngineError, LayerId, PixelFormat, Rect, Region, Result, SampleLayers, Session, Stroke, Surface, Value, alpha_index, bad, clamp_samples,
+    composite_region, damage_json, flag, json, parse_brush, reject_huge_stroke, targets_pixels,
+};
 use photocraft_doc::Layer;
 
 const CMD: &str = "paint.remove";
@@ -249,15 +252,11 @@ pub(super) fn remove(s: &mut Session, p: &Value) -> Result<Value> {
                     *active = Some(r.1);
                     Ok(r)
                 })?;
-                if let Some(st) = s.active_mut() {
-                    st.last_damage = Some(damage);
-                }
+                s.hint_damage(damage);
                 return Ok(json!({ "damage": damage_json(damage), "layer": nid.0 }));
             }
             let damage = s.edit(label, |doc, _| replace(doc, Target { id, all_layers: false }, &p, &out, &hole))?;
-            if let Some(st) = s.active_mut() {
-                st.last_damage = Some(damage);
-            }
+            s.hint_damage(damage);
             Ok(json!({ "damage": damage_json(damage) }))
         },
     )

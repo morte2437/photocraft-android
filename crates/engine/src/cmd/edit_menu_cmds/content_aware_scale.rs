@@ -1,5 +1,7 @@
 use super::content_aware::channel_mask;
-use super::*;
+use super::{
+    Document, EngineError, LayerId, PixelFormat, Rect, Result, Session, Surface, Value, bad, bool_or, f32_or, json, pixel_layer, to_rgba, writable_surface,
+};
 
 // ------------------------------------------------------------------ Content-Aware Scale
 

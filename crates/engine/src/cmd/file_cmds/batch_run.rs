@@ -2,7 +2,7 @@ use super::open::import_at_raw_ppi;
 use super::paths::{extension, file_name, join, list_images, read_file, stem};
 use super::processing::parse_steps;
 use super::save::{SaveOpts, save_doc};
-use super::*;
+use super::{Arc, Document, EngineError, Result, Session, Value, batch_naming, json, str_param};
 
 /// Inputs of a batch command: `"input"` is a folder or an array of files.
 pub(crate) fn batch_inputs(p: &Value, cmd: &str) -> Result<Vec<String>> {
@@ -307,7 +307,15 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
             let mut saved: Option<Arc<Document>> = None;
             for (id, params) in &steps {
                 if batch_save_point(id) {
-                    saved = Some(scratch.active().ok_or(EngineError::NoDocument)?.doc.clone());
+                    let st = scratch.active_mut().ok_or(EngineError::NoDocument)?;
+                    saved = Some(st.doc.clone());
+                    // Batch performs the action's Save / Save As (to its destination), so the
+                    // document is saved there as far as the steps after it see: a Close recorded
+                    // without a save policy (`"save":"ask"`) then closes it. A Save a Copy leaves
+                    // the document as changed as it was.
+                    if id != "file.saveACopy" {
+                        st.saved_revision = st.revision;
+                    }
                     continue;
                 }
                 let r = scratch.execute(id, params.clone())?;

@@ -1851,6 +1851,104 @@ fn live_dab_strokes_commit_their_pixels_and_they_are_the_commands() {
                 assert!(layer_pixels(&s) == want, "{cmd} at {depth}-bit, hardness {hardness}: the live pixels aren't the command's");
                 s.execute("edit.undo", json!({})).unwrap();
                 assert!(layer_pixels(&s) == before, "{cmd} {depth} {hardness}: undo restores the layer");
+                s.execute("edit.redo", json!({})).unwrap();
+                assert_eq!(layer_pixels(&s), want, "{cmd} {depth} {hardness}: redo restores the live commit");
+                s.execute("edit.undo", json!({})).unwrap();
+            }
+        }
+    }
+}
+
+/// Compare every displayed batch and the finishing dabs with the former StrokeRenderer path,
+/// including features whose coverage is unnecessary to sequential effects (dual tips/Wet Edges).
+#[test]
+fn live_dab_batches_match_the_accumulating_renderer() {
+    use photocraft_paint::{GrayTile, StrokeRenderer, TipShape};
+
+    for depth in DEPTHS {
+        let mut s = session(200, 90, depth, "rgb");
+        s.execute("layer.new.layer", json!({})).unwrap();
+        paint_layer(&mut s, |x, y| {
+            let mut c = texture(x, y);
+            c[3] = 0.25 + ((x + y) % 7) as f32 * 0.1;
+            c
+        });
+        let id = s.active().unwrap().active_layer.unwrap();
+        let pre = s.active().unwrap().doc.layer(id).unwrap().surface().unwrap().clone();
+        for case in ["soft", "hard", "sampled", "dynamics", "smoothing"] {
+            s.tools.brush = BrushSettings::default();
+            match case {
+                "sampled" => s.tools.brush.tip = TipShape::Sampled(GrayTile::from_fn(9, 7, |x, y| ((x * 3 + y) % 11) as f32 / 10.0)),
+                "dynamics" => {
+                    let b = &mut s.tools.brush;
+                    b.scattering.enabled = true;
+                    b.scattering.scatter.jitter = 0.5;
+                    b.scattering.count = 2;
+                    b.shape_dynamics.enabled = true;
+                    b.shape_dynamics.angle.jitter = 0.7;
+                    b.shape_dynamics.size.jitter = 0.3;
+                    b.dual_brush.enabled = true;
+                    b.dual_brush.size = 12.0;
+                    b.wet_edges = true;
+                    b.noise = true;
+                    b.texture.enabled = true;
+                    b.texture.each_tip = true;
+                    b.texture.pattern = photocraft_paint::Pattern::Tile(GrayTile::from_fn(3, 3, |x, y| (x + y) as f32 / 4.0));
+                }
+                "smoothing" => s.tools.brush.smoothing.amount = 0.65,
+                _ => {}
+            }
+            let points = [
+                StrokePoint::new(-5.0, 30.0, 0.3),
+                StrokePoint::new(70.0, 40.0, 1.0),
+                StrokePoint::new(150.0, 55.0, 0.6),
+                StrokePoint::new(60.0, 35.0, 0.8),
+                StrokePoint::new(61.0, 35.5, 0.2),
+            ];
+            for (cmd, extra) in dab_cases() {
+                let mut p = dab_opts(&[[-5.0, 30.0]], if case == "hard" { 100 } else { 0 }, &extra);
+                p["points"] = json!([[-5.0, 30.0, 0.3]]);
+                p["opacity"] = json!(57);
+                p["flow"] = json!(63);
+                let (stroke, _) = parse_brush(&s, &p, cmd).unwrap();
+                let (tool, _) = DabTool::parse(&s, cmd, &p, &stroke).unwrap();
+                let mut effect = tool.effect(pre.format(), stroke.brush.spacing);
+                let mut reference = StrokeRenderer::new(&stroke.brush, None, 1.0).record_dabs();
+                // A fixed region containing all dabs plus their read neighbourhoods.
+                let orig = Region::read(&pre, Rect::new(-128, -128, 384, 256));
+                let mut work = orig.clone();
+                let mut shown = pre.clone();
+                let mut done = 0;
+                let mut live = LiveDab::begin(&s, cmd, &p).unwrap();
+                let mut bounds = Rect::EMPTY;
+                let mut render_new = |reference: &StrokeRenderer| {
+                    let mut damage = Rect::EMPTY;
+                    for (i, dab) in reference.dabs().iter().enumerate().skip(done) {
+                        let fp = reference.ctx.footprint(dab, i);
+                        effect(&mut work, &fp);
+                        damage = damage.union(&fp.rect);
+                    }
+                    done = reference.dabs().len();
+                    if !damage.is_empty() {
+                        photocraft_paint::retouch::mix_back(&mut shown, &orig, &work, damage, stroke.brush.opacity, None, false);
+                    }
+                    bounds = bounds.union(&damage);
+                    (bounds, shown.read_region(bounds))
+                };
+                for (batch_index, batch) in std::iter::once(&points[..1]).chain(points[1..].chunks(2)).enumerate() {
+                    reference.push(batch);
+                    if batch_index > 0 {
+                        live.push(batch).unwrap();
+                    }
+                    let (bounds, expected) = render_new(&reference);
+                    let actual = live.doc.layer(id).unwrap().surface().unwrap();
+                    assert!(actual.read_region(bounds) == expected, "{cmd} {depth} {case} batch={batch_index}");
+                }
+                reference.finish();
+                let (bounds, expected) = render_new(&reference);
+                let commit = live.into_commit(&s).unwrap();
+                assert_eq!(commit.bounds, bounds, "{cmd} {depth} {case}: final damage");
+                assert!(commit.surface.read_region(bounds) == expected, "{cmd} {depth} {case}: finishing dabs");
             }
         }
     }

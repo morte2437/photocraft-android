@@ -1,6 +1,11 @@
 use super::bands::convert_ab;
 use super::tags::{F, TAG_IMAGE_SOURCE_DATA, TAG_PHOTOSHOP, TAG_XMP, TEXT_TAGS};
-use super::*;
+use super::{
+    ChannelLayout, CmykA16, CmykA32F, CodecError, Cow, EncodeOptions, ExifDirs, GrayA8, GrayA16, GrayA32F, Image, Lab8, Lab16, LabA8, LabA16,
+    PhotometricInterpretation, Plan, Rational, ResolutionUnit, SampleFormat, SampleType, Tag, TiffColorType, TiffCompression, TiffEncoder, TiffKind,
+    TiffKindBig, TiffKindStandard, TiffValue, Type, colortype, io, tiff_exif,
+};
+use std::io::Cursor;
 
 // ---------------------------------------------------------------------------
 // Encoding
@@ -476,8 +481,19 @@ fn encode_ready(img: &Image, opts: &EncodeOptions) -> Result<Vec<u8>, CodecError
     // BigTIFF when asked, or when the file could pass the 4 GiB a classic TIFF can address. A
     // classic write that still runs out of 32-bit offsets (compression grew the data) is redone
     // as BigTIFF.
+    let estimate = estimated_size(img, &tags);
     let write = |big: bool| -> tiff::TiffResult<Vec<u8>> {
-        let mut cursor = Cursor::new(Vec::new());
+        // An uncompressed file is allocated once at its estimated size: grown as written, the
+        // buffer would double near the end and copy the file (#6607). Compressed output is
+        // usually a fraction of the estimate, so it grows as written instead: reserving the
+        // estimate would hold a second full-size buffer while encoding, which wasm32 never
+        // returns and Windows counts as committed memory.
+        let mut out = Vec::new();
+        if matches!(opts.tiff_compression, TiffCompression::None) {
+            // Best effort: without the room the buffer grows as before.
+            let _ = out.try_reserve(usize::try_from(estimate).unwrap_or(usize::MAX));
+        }
+        let mut cursor = Cursor::new(out);
         if big {
             let mut enc = TiffEncoder::new_big(&mut cursor)?.with_compression(compression).with_predictor(predictor);
             write_image::<TiffKindBig>(&mut enc, img, &tags)?;
@@ -485,9 +501,15 @@ fn encode_ready(img: &Image, opts: &EncodeOptions) -> Result<Vec<u8>, CodecError
             let mut enc = TiffEncoder::new(&mut cursor)?.with_compression(compression).with_predictor(predictor);
             write_image::<TiffKindStandard>(&mut enc, img, &tags)?;
         }
-        Ok(cursor.into_inner())
+        // Growth (or an estimate that was too high) can leave spare capacity: give it back
+        // instead of holding it while the file is saved.
+        let mut out = cursor.into_inner();
+        if out.capacity() - out.len() > out.len() / 8 {
+            out.shrink_to_fit();
+        }
+        Ok(out)
     };
-    let big = opts.tiff_bigtiff || estimated_size(img, &tags) > CLASSIC_LIMIT;
+    let big = opts.tiff_bigtiff || estimate > CLASSIC_LIMIT;
     match write(big) {
         Ok(v) => Ok(v),
         Err(tiff::TiffError::IntSizeError) if !big => write(true).map_err(|e| CodecError::encode(F, e)),

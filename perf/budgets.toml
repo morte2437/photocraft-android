@@ -16,12 +16,30 @@
 regression_pct = 15.0
 # …and by more than this many milliseconds (timer noise on very fast rows).
 regression_min_ms = 1.0
+# A run whose 1-minute load at the start is above this many per core is contended: its numbers
+# measure the machine's load, so `--update-baseline` refuses it (`--allow-contended` records it,
+# labelled as contended, and the scorecard says so).
+max_load_per_core = 1.0
+# `--update-baseline --from <results.json>...` needs at least this many saved runs. Each scenario
+# gets the median p50 and the highest (the noise ceiling regressions are judged against).
+baseline_min_runs = 5
+# `--from` lists a budget as "could enforce" when its metric stays within this share of the
+# budget in every run.
+enforce_margin = 0.6
 
 [[bench]]
 name = "perf_scenarios"
 package = "photocraft-ui-egui"
 quick_args = ["--quick"]
 note = "the #209/#210/#211 rows: layered 20 MP, 150 layers, 16/32-bit, open, retouch, selection"
+
+[[bench]]
+name = "perf_scenarios_cpu"
+package = "photocraft-ui-egui"
+example = "perf_scenarios"
+args = ["--cpu", "--group", "layered"]
+quick_args = ["--quick", "--cpu", "--group", "layered"]
+note = "the layered #209 rows on the forced CPU compositor (#9330); run with perf_scenarios so the machine class keeps the GPU"
 
 [[bench]]
 name = "interactive_bench"
@@ -237,7 +255,10 @@ issue = 209
 bench = "perf_scenarios"
 row = "brush dab 60 px on 32-bit 20 layers + refresh"
 budget_ms = 100
-enforce = false  # over budget in the 2026-10-05 baseline
+# Not enforced: met on an idle M4 Pro (p95 2.95 ms), but over budget once in the 8 nightlies on
+# macos-15 (p95 103.7 ms on 2026-10-18). `cargo xtask perf --update-baseline --from` over those
+# 8 nightlies (2026-10-18 to 10-25) lists it as flaky. Budget enforcement applies on the runner.
+enforce = false
 
 [[scenario]]
 id = "P17"
@@ -323,7 +344,9 @@ title = "Cancel a Gaussian Blur job on 24 MP (until the worker exits)"
 issue = 210
 bench = "perf_scenarios"
 row = "cancel Gaussian Blur r 50 job on 24 MP"
-metric = "max"
+# Judged on p95, not max. Note: with n <= 20, `rank()` makes p95 equal max, so on the nightly
+# runner (n = 8) this has no effect until reps >= 21. The 2026-10-18 nightly read 299 ms either way.
+metric = "p95"
 budget_ms = 200
 
 [[scenario]]
@@ -631,3 +654,130 @@ issue = 7758
 bench = "bench_multiband"
 row = "Photomerge multiband blend"
 target = "track timing and peak RSS; no calibrated performance budget"
+
+# ---- cliff rows (#7494): off-happy-path paths, reported only ---------------------------------
+
+[[scenario]]
+id = "P69"
+title = "Move a layer with layer styles, CPU compositor"
+issue = 9330
+bench = "perf_scenarios_cpu"
+row = "move styled layer 10 px + refresh"
+enforce = false  # tracked only
+
+[[scenario]]
+id = "P70"
+title = "Change layer opacity, CPU compositor"
+issue = 9330
+bench = "perf_scenarios_cpu"
+row = "set layer opacity + refresh"
+budget_ms = 40
+enforce = false  # #9330 done-when: within 2x the GPU budget
+
+[[scenario]]
+id = "P71"
+title = "Change layer fill, CPU compositor"
+issue = 9330
+bench = "perf_scenarios_cpu"
+row = "set layer fill + refresh"
+budget_ms = 40
+enforce = false  # #9330 done-when: within 2x the GPU budget
+
+[[scenario]]
+id = "P72"
+title = "Change blend mode, CPU compositor"
+issue = 9330
+bench = "perf_scenarios_cpu"
+row = "set blend mode + refresh"
+budget_ms = 40
+enforce = false  # #9330 done-when: within 2x the GPU budget
+
+[[scenario]]
+id = "P73"
+title = "Toggle visibility, CPU compositor"
+issue = 9330
+bench = "perf_scenarios_cpu"
+row = "toggle visibility + refresh"
+budget_ms = 20
+enforce = false  # #9330 done-when: within 2x the GPU budget
+
+[[scenario]]
+id = "P74"
+title = "Undo a move, CPU compositor"
+issue = 9330
+bench = "perf_scenarios_cpu"
+row = "undo move + refresh"
+enforce = false  # tracked only
+
+[[scenario]]
+id = "P75"
+title = "Redo an opacity change, CPU compositor"
+issue = 9330
+bench = "perf_scenarios_cpu"
+row = "redo opacity change + refresh"
+enforce = false  # tracked only
+
+[[scenario]]
+id = "P76"
+title = "Change layer opacity with Advanced Blending on another layer"
+issue = 6689
+bench = "perf_scenarios"
+row = "set opacity on a layer with Advanced Blending + refresh"
+budget_ms = 40
+enforce = false  # new; 2x P2
+
+[[scenario]]
+id = "P77"
+title = "Toggle an adjustment layer's visibility"
+issue = 6535
+bench = "perf_scenarios"
+row = "toggle adjustment layer visibility + refresh"
+budget_ms = 10
+enforce = false  # new; as P5
+
+[[scenario]]
+id = "P78"
+title = "Hide the top adjustment layer among 150 full-canvas layers, 6 MP, GPU budget forced to 512 MB (CPU fallback)"
+issue = 6533
+bench = "perf_scenarios"
+row = "hide the top adjustment layer among many full-canvas layers, over the GPU budget + refresh"
+budget_ms = 30
+enforce = false  # new; as P61
+
+[[scenario]]
+id = "P79"
+title = "Zoomed-out reduced composite of a 30000x30000 document with one painted layer (#9330 target: 60000x60000)"
+issue = 1015
+bench = "perf_scenarios"
+row = "zoomed-out reduced composite of the huge document with one painted layer"
+enforce = false  # tracked only
+
+[[scenario]]
+id = "P80"
+title = "App frame: full CPU refresh of a 24 MP document"
+issue = 9328
+bench = "perf_scenarios"
+row = "app frame: full CPU refresh of a 24 MP document"
+budget_ms = 50
+enforce = false  # track only: the worst case for the slow-frame ring (#9328 PR B)
+
+# ---- #9329: redraw area of edits on full-canvas layers (track only) ---------------------------
+#
+# Each row checks it hits the path it claims (a full-canvas layer; a non-empty edit; a small
+# selection) and prints `refresh px <p50>` after its timing line.
+
+[[scenario]]
+id = "P81"
+title = "Undo a brush dab on a full-canvas 16-bit 15000 x 10000 layer + refresh"
+issue = 9329
+bench = "perf_scenarios"
+row = "undo a brush dab on a full-canvas 16-bit 15000x10000 layer + refresh"
+enforce = false  # new; no baseline yet
+
+[[scenario]]
+id = "P82"
+title = "Fill a 2 % selection on a full-canvas 24 MP layer + refresh"
+issue = 9329
+bench = "perf_scenarios"
+row = "fill a 2 % selection on a full-canvas 24 MP layer + refresh"
+enforce = false  # new; no baseline yet

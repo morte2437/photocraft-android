@@ -140,9 +140,10 @@ impl Plugin {
             }
             r
         };
-        // A few bands at a time (one per worker), so peak memory stays near one band per thread.
+        // A few bands at a time: one per worker, and no more instances than the run's memory
+        // budget holds at their cap, so peak memory stays bounded however many cores run (#8603).
         #[cfg(not(target_arch = "wasm32"))]
-        let group = rayon::current_num_threads().max(1);
+        let group = self.limits().parallel_bands(rayon::current_num_threads());
         #[cfg(target_arch = "wasm32")]
         let group = 1;
         for chunk in bands.chunks(group) {
@@ -155,7 +156,7 @@ impl Plugin {
             let results: Vec<Result<Surface>> = chunk.iter().map(run).collect();
             for r in results {
                 for (c, t) in r?.tiles() {
-                    out.tile_mut(*c).bytes_mut().copy_from_slice(t.bytes());
+                    out.tile_mut(*c).bytes_mut().copy_from_slice(&t.bytes());
                 }
             }
         }
@@ -210,7 +211,8 @@ impl Plugin {
                         v = v.clamp(0.0, 1.0);
                     }
                     if let Some(d) = out.get_mut(di + ch) {
-                        *d = o + (v - o) * k;
+                        // As a built-in edit mixes through the selection (#9483).
+                        *d = o * (1.0 - k) + v * k;
                     }
                 }
             }
@@ -225,7 +227,7 @@ fn encode_band(surface: &Surface, band: Rect, data: &[f32]) -> Surface {
     let mut s = Surface::with_default(surface.format(), &surface.default_pixel());
     for c in band.tiles() {
         if let Some(t) = surface.tile(c) {
-            s.tile_mut(c).bytes_mut().copy_from_slice(t.bytes());
+            s.tile_mut(c).bytes_mut().copy_from_slice(&t.bytes());
         } else {
             s.tile_mut(c);
         }

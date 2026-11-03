@@ -30,7 +30,8 @@ pub(crate) fn convert(a: &ConvertArgs, _out: &mut dyn Write, err: &mut dyn Write
     let (input, output) = (&a.input, &a.output);
     let opts = ExportOptions::from(&a.export);
     refuse_overwriting_input(a.in_place, input, output)?;
-    let mut o = files::open(input)?;
+    let import_opts = photocraft_io::ImportOptions { psd_high_memory_approved: a.approve_high_memory, ..Default::default() };
+    let mut o = files::open_with_options(input, &import_opts)?;
     // Preferences › Raw Defaults › Resolution at its default, as `run` and `info` open a raw.
     photocraft_engine::file_cmds::raw_defaults(&photocraft_engine::Session::new(), &o.warnings, &mut o.document);
     warn_all(err, &o.warnings);
@@ -43,7 +44,7 @@ pub(crate) fn convert(a: &ConvertArgs, _out: &mut dyn Write, err: &mut dyn Write
 pub(crate) fn info(a: &InfoArgs, out: &mut dyn Write) -> Result {
     let file = &a.file;
     let mut h = Headless::trusted_local();
-    let opened = h.open(file)?;
+    let opened = h.open_with_approval(file, a.approve_high_memory)?;
     let mut doc = h.inspect(None)?;
     let mut warnings = opened["warnings"].as_array().cloned().unwrap_or_default();
     if let Some(st) = h.session.active() {
@@ -86,13 +87,18 @@ pub(crate) fn run_cmds(a: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) ->
         if let Some(out) = &a.out {
             refuse_overwriting_input(a.in_place, file, out)?;
         }
-        let o = h.open(file)?;
+        let o = h.open_with_approval(file, a.approve_high_memory)?;
         let ws: Vec<String> = serde_json::from_value(o["warnings"].clone()).unwrap_or_default();
         warn_all(err, &ws);
         reported_fonts.extend(ws);
     }
     let cmds = command_list(a)?;
     for (id, params) in cmds {
+        // A step that is a silent no-op in action playback (Deselect with nothing selected, an Arrange that cannot move the layer) is one in a script too (#8802).
+        if photocraft_engine::actions_cmds::noop_step(&h.session, &id, &params) {
+            print_json(out, &json!({"command": id, "result": null}), JsonStyle::Compact)?;
+            continue;
+        }
         let r = h.command_run(&id, params).map_err(|source| CliError::Command { id: id.clone(), source })?;
         if let Some(message) = photocraft_engine::actions_cmds::nested_failure(&id, &r) {
             return Err(CliError::NestedFailure { id, message });

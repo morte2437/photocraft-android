@@ -17,6 +17,7 @@ use photocraft_geom::Rect;
 use crate::Ctx;
 use crate::artistic::GalleryEffect;
 use crate::artistic::GalleryFilter as F;
+use crate::cutout;
 use crate::fxutil::{box_blur_n, cell_point, gauss_blur_n, gauss_box_radii, rgba, set_rgba};
 use crate::image::Image;
 use crate::noise::hash01;
@@ -409,7 +410,8 @@ pub(crate) fn effect_reach(e: &GalleryEffect) -> i32 {
     let g = |k: &str| e.get(k);
     match e.filter {
         F::ColoredPencil => 2,
-        F::Cutout => gs(cutout_sigma(e)),
+        // Traced over the whole image before tiling (see [`Prepared`]).
+        F::Cutout => 0,
         F::DryBrush | F::Fresco => kuwahara_reach(1 + g("brushSize") as usize) + gs(1.0) + 2,
         F::FilmGrain | F::DiffuseGlow | F::ChalkCharcoal | F::Reticulation | F::Grain | F::MosaicTiles | F::Texturizer => 0,
         F::RoughPastels => gs(0.6 + 1.2) + ((2.0 + g("strokeLength")) / 2.0) as i32 + 3,
@@ -451,8 +453,8 @@ pub(crate) fn effect_reach(e: &GalleryEffect) -> i32 {
     }
 }
 
-fn cutout_sigma(e: &GalleryEffect) -> f32 {
-    0.5 + e.get("edgeSimplicity") * (1.1 - 0.3 * e.get("edgeFidelity"))
+fn cutout_settings(e: &GalleryEffect) -> cutout::Settings {
+    cutout::Settings { levels: e.get("numberOfLevels").round().clamp(2.0, 8.0) as usize, simplicity: e.get("edgeSimplicity"), fidelity: e.get("edgeFidelity") }
 }
 /// Halftone Pattern's screen spacing in pixels (about 3.5 at Size 1, 25.5 at 12).
 fn halftone_cell(e: &GalleryEffect) -> f32 {
@@ -541,6 +543,54 @@ pub(crate) fn run(effects: &[GalleryEffect], src: &Image, out: Rect, ctx: &Ctx) 
     for e in effects {
         apply(e, &mut win, ctx);
     }
+    finish(&win, src, out, ctx)
+}
+
+/// Whether a stack needs the whole image at once (Cutout traces it).
+pub(crate) fn is_global(effects: &[GalleryEffect]) -> bool {
+    effects.iter().any(|e| e.filter == F::Cutout)
+}
+
+/// A stack with a Cutout, prepared once for all tiles: the effects up to the last Cutout run
+/// over the whole image and it is traced; each tile then only fills in the traced shapes and
+/// runs the effects after it.
+pub(crate) struct Prepared {
+    traced: cutout::Traced,
+    rest: Vec<GalleryEffect>,
+}
+
+impl Prepared {
+    /// `None` for a stack that has no Cutout (it runs tile by tile as usual).
+    pub(crate) fn new(effects: &[GalleryEffect], src: &Image, ctx: &Ctx) -> Option<Prepared> {
+        let last = effects.iter().rposition(|e| e.filter == F::Cutout)?;
+        let r = src.rect;
+        let (w, h) = (r.width() as usize, r.height() as usize);
+        let mut win = Win { r, w, h, c: src.data.chunks_exact(src.ch).map(|px| rgb(rgba(ctx, px))).collect() };
+        for e in effects.get(..last).unwrap_or_default() {
+            apply(e, &mut win, ctx);
+        }
+        let traced = cutout::trace(&win.c, r, &cutout_settings(effects.get(last)?));
+        Some(Prepared { traced, rest: effects.get(last + 1..).unwrap_or_default().to_vec() })
+    }
+
+    /// The stack's result over `out` (`src` is the image it was prepared from).
+    pub(crate) fn run(&self, src: &Image, out: Rect, ctx: &Ctx) -> Vec<f32> {
+        let r = out.inflate(reach(&self.rest)).intersect(&src.rect);
+        let (w, h) = (r.width() as usize, r.height() as usize);
+        if w == 0 || h == 0 {
+            return src.crop(out);
+        }
+        let mut win = Win { r, w, h, c: self.traced.render(r) };
+        for e in &self.rest {
+            apply(e, &mut win, ctx);
+        }
+        finish(&win, src, out, ctx)
+    }
+}
+
+/// `out` of the source with its colour from `win` (alpha kept).
+fn finish(win: &Win, src: &Image, out: Rect, ctx: &Ctx) -> Vec<f32> {
+    let n = src.ch;
     let mut res = src.crop(out);
     let ow = out.width() as usize;
     for (i, px) in res.chunks_exact_mut(n).enumerate() {
@@ -555,13 +605,20 @@ pub(crate) fn run(effects: &[GalleryEffect], src: &Image, out: Rect, ctx: &Ctx) 
     res
 }
 
-/// Applies one gallery effect to the working window in place.
+/// Applies one gallery effect to the working window in place. Each category handles its own
+/// filters and reports whether the effect was one of them.
 fn apply(e: &GalleryEffect, win: &mut Win, ctx: &Ctx) {
+    let handled =
+        apply_artistic(e, win) || apply_brush_strokes(e, win) || apply_distort(e, win) || apply_sketch(e, win, ctx) || apply_stylize_texture(e, win, ctx);
+    debug_assert!(handled, "every gallery filter belongs to a category");
+}
+
+/// Artistic filters: the painterly looks of the gallery.
+fn apply_artistic(e: &GalleryEffect, win: &mut Win) -> bool {
     let g = |k: &str| e.get(k);
     let (w, h) = (win.w, win.h);
     let (fg, bg) = (rgb(e.foreground), rgb(e.background));
     match e.filter {
-        // ---------------- Artistic ----------------
         F::ColoredPencil => {
             let pw = g("pencilWidth");
             let pressure = g("strokePressure") / 15.0;
@@ -578,16 +635,7 @@ fn apply(e: &GalleryEffect, win: &mut Win, ctx: &Ctx) {
                 win.c[i] = mix(paper, map(win.c[i], |v| v * 0.88), cov);
             }
         }
-        F::Cutout => {
-            blur3(&mut win.c, w, h, cutout_sigma(e));
-            let levels = g("numberOfLevels").round();
-            for p in &mut win.c {
-                // Flat tones per luminance level, keeping each region's hue.
-                let l = lum(p).max(1e-4);
-                let k = posterize(l, levels) / l;
-                *p = map(*p, |v| posterize(clamp01(v * k), levels * 2.0));
-            }
-        }
+        F::Cutout => win.c = cutout::trace(&win.c, win.r, &cutout_settings(e)).render(win.r),
         F::DryBrush | F::Fresco => {
             let fresco = e.filter == F::Fresco;
             kuwahara(win, 1 + g("brushSize") as usize);
@@ -745,7 +793,16 @@ fn apply(e: &GalleryEffect, win: &mut Win, ctx: &Ctx) {
                 win.c[i] = map(saturate(win.c[i], 1.2), |v| clamp01(v * k + n).powf(1.1 + sh * 0.6));
             }
         }
-        // ---------------- Brush Strokes ----------------
+        _ => return false,
+    }
+    true
+}
+
+/// Brush Strokes filters.
+fn apply_brush_strokes(e: &GalleryEffect, win: &mut Win) -> bool {
+    let g = |k: &str| e.get(k);
+    let (w, h) = (win.w, win.h);
+    match e.filter {
         F::AccentedEdges => {
             let mut l = win.lum();
             blur1(&mut l, w, h, 0.4 + g("smoothness") * 0.3);
@@ -859,7 +916,17 @@ fn apply(e: &GalleryEffect, win: &mut Win, ctx: &Ctx) {
                 *p = map(*p, |v| clamp01((v - 0.5) * (1.0 + con) + 0.5) * (1.0 - ink * 0.9 * (0.5 + con)));
             }
         }
-        // ---------------- Distort ----------------
+        _ => return false,
+    }
+    true
+}
+
+/// Distort filters.
+fn apply_distort(e: &GalleryEffect, win: &mut Win) -> bool {
+    let g = |k: &str| e.get(k);
+    let (w, h) = (win.w, win.h);
+    let bg = rgb(e.background);
+    match e.filter {
         F::DiffuseGlow => {
             let (gr, ga, ca) = (g("graininess") / 10.0, g("glowAmount") / 20.0, g("clearAmount") / 20.0);
             let thr = 0.2 + ca * 0.7;
@@ -903,7 +970,17 @@ fn apply(e: &GalleryEffect, win: &mut Win, ctx: &Ctx) {
                 win.c[i] = src.sample(x as f32 + 0.5 + dx, y as f32 + 0.5 + dy);
             }
         }
-        // ---------------- Sketch ----------------
+        _ => return false,
+    }
+    true
+}
+
+/// Sketch filters (foreground is ink, background is paper).
+fn apply_sketch(e: &GalleryEffect, win: &mut Win, ctx: &Ctx) -> bool {
+    let g = |k: &str| e.get(k);
+    let (w, h) = (win.w, win.h);
+    let (fg, bg) = (rgb(e.foreground), rgb(e.background));
+    match e.filter {
         F::BasRelief => {
             let mut l = win.lum();
             let orig = l.clone();
@@ -1107,7 +1184,17 @@ fn apply(e: &GalleryEffect, win: &mut Win, ctx: &Ctx) {
                 win.c[i] = map(win.c[i], |v| (v * (0.85 + 0.25 * fib) - 0.5) * (co * 1.6 + 0.2) + 0.5 + (br - 0.5) * 0.8);
             }
         }
-        // ---------------- Stylize ----------------
+        _ => return false,
+    }
+    true
+}
+
+/// Stylize and Texture filters.
+fn apply_stylize_texture(e: &GalleryEffect, win: &mut Win, ctx: &Ctx) -> bool {
+    let g = |k: &str| e.get(k);
+    let (w, h) = (win.w, win.h);
+    let (fg, bg) = (rgb(e.foreground), rgb(e.background));
+    match e.filter {
         F::GlowingEdges => {
             blur3(&mut win.c, w, h, 0.3 + g("smoothness") * 0.25);
             let mut e3 = vec![[0.0f32; 3]; win.c.len()];
@@ -1123,7 +1210,6 @@ fn apply(e: &GalleryEffect, win: &mut Win, ctx: &Ctx) {
                 *p = map(*q, |v| clamp01(v * k));
             }
         }
-        // ---------------- Texture ----------------
         F::Craquelure => {
             let (sp, dep, bri) = (g("crackSpacing"), g("crackDepth") / 10.0, g("crackBrightness") / 10.0);
             let cell = sp * 1.3 + 1.0;
@@ -1239,7 +1325,9 @@ fn apply(e: &GalleryEffect, win: &mut Win, ctx: &Ctx) {
             }
         }
         F::Texturizer => texturize(win, e.choice("texture"), g("scaling"), g("relief"), e.choice("light"), e.flag("invert")),
+        _ => return false,
     }
+    true
 }
 
 fn normalize3(v: [f32; 3]) -> [f32; 3] {
@@ -1297,6 +1385,8 @@ mod tests {
             let fp = FilterParams::FilterGallery { effects: vec![e.clone()] };
             apply_tiled(&s, &fp, b, b, None, tile, Some(b)).read_region(b)
         };
+        // Cutout has its own test below: its tone bands are of the channel mean, which this
+        // pattern keeps nearly constant.
         for f in [G::RoughPastels, G::AngledStrokes] {
             let base = run(&GalleryEffect::new(f), 256);
             for prm in f.params() {
@@ -1312,6 +1402,123 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn cutout_responds_to_every_slider() {
+        // A radial gradient (curved band edges, tones to quantize) with a 10 px square in it.
+        let rows: Vec<Vec<f32>> = (0..96)
+            .map(|y| {
+                (0..96)
+                    .map(|x| {
+                        if (70..80).contains(&x) && (14..24).contains(&y) {
+                            return 0.05;
+                        }
+                        let d = (((x as f32 - 40.0).powi(2) + (y as f32 - 52.0).powi(2)).sqrt() / 60.0).min(1.0);
+                        1.0 - d
+                    })
+                    .collect()
+            })
+            .collect();
+        let base = cutout_on(&rows, &[]);
+        for (key, v) in
+            [("numberOfLevels", 2.0), ("numberOfLevels", 8.0), ("edgeSimplicity", 0.0), ("edgeSimplicity", 10.0), ("edgeFidelity", 1.0), ("edgeFidelity", 3.0)]
+        {
+            assert_ne!(cutout_on(&rows, &[(key, v)]), base, "cutout {key} = {v} changed nothing");
+        }
+    }
+
+    /// Runs one Cutout over a grey image given as rows of values; returns the red channel.
+    fn cutout_on(rows: &[Vec<f32>], set: &[(&str, f32)]) -> Vec<Vec<f32>> {
+        let (w, h) = (rows[0].len() as i32, rows.len() as i32);
+        let mut s = Surface::new(PixelFormat::new(ColorMode::Rgb, SampleType::F32, true));
+        for (y, row) in rows.iter().enumerate() {
+            for (x, v) in row.iter().enumerate() {
+                s.write_pixel(x as i32, y as i32, &[*v, *v, *v, 1.0]);
+            }
+        }
+        let mut e = GalleryEffect::new(crate::GalleryFilter::Cutout);
+        for (k, v) in set {
+            e.set(k, *v);
+        }
+        let b = Rect::new(0, 0, w, h);
+        let out = apply_tiled(&s, &FilterParams::FilterGallery { effects: vec![e] }, b, b, None, 256, Some(b)).read_region(b);
+        out.chunks(4 * w as usize).map(|r| r.chunks(4).map(|p| p[0]).collect()).collect()
+    }
+
+    #[test]
+    fn cutout_makes_flat_shapes_with_clean_edges() {
+        // It used to posterize every pixel after a blur: noise survived as speckle, edges were
+        // ragged and smooth gradients banded instead of becoming flat paper.
+        let noisy: Vec<Vec<f32>> = (0..32).map(|y| (0..64).map(|x| if x < 32 { 0.2 } else { 0.8 } + (hash01(x, y, 0, 7) - 0.5) * 0.16).collect()).collect();
+        let out = cutout_on(&noisy, &[]);
+        for (x0, x1) in [(2, 28), (36, 62)] {
+            let vals: Vec<f32> = (2..30).flat_map(|y| out[y][x0..x1].to_vec()).collect();
+            let spread = vals.iter().fold(f32::MIN, |a, &v| a.max(v)) - vals.iter().fold(f32::MAX, |a, &v| a.min(v));
+            assert!(spread < 1e-4, "a noisy area should be one flat tone, spread {spread}");
+        }
+        // The cut is an anti-aliased pixel or two, not a blur.
+        for y in 0..32 {
+            let (lo, hi) = (out[y][16], out[y][48]);
+            let soft = out[y].iter().filter(|&&v| (v - lo).abs() > 0.01 && (v - hi).abs() > 0.01).count();
+            assert!(soft <= 2, "row {y}: {soft} edge pixels");
+        }
+        // A grey ramp becomes `numberOfLevels` equal-width bands, each its own mean tone, as in the
+        // reference application (0–255 over 256 px at 4 levels: steps at 64, 128 and 192, the
+        // upper bands 96, 160 and 224).
+        let ramp: Vec<Vec<f32>> = (0..64).map(|_| (0..256).map(|x| x as f32 / 255.0).collect()).collect();
+        let row = &cutout_on(&ramp, &[("numberOfLevels", 4.0), ("edgeSimplicity", 0.0), ("edgeFidelity", 3.0)])[32];
+        for (x, want) in [(100, 95.5), (160, 159.5), (230, 223.5)] {
+            assert!((row[x] * 255.0 - want).abs() < 0.6, "band at {x}: {} vs {want}", row[x] * 255.0);
+        }
+        for step in [64usize, 128, 192] {
+            assert!(row[step - 2] < row[step + 1] - 0.2, "a step at {step}: {} / {}", row[step - 2], row[step + 1]);
+        }
+        // Edge Simplicity drops small shapes by their size alone (measured in the reference
+        // application: 6 px squares stay at 0–2 and 4 px go; 12 px stay at 4 and 8 px go).
+        let square = |n: usize| -> Vec<Vec<f32>> {
+            (0..48).map(|y| (0..48).map(|x| if (20..20 + n).contains(&x) && (20..20 + n).contains(&y) { 0.9 } else { 0.2 }).collect()).collect()
+        };
+        for (n, simplicity, kept) in [(6, 0.0, true), (4, 0.0, false), (6, 2.0, true), (12, 4.0, true), (8, 4.0, false), (12, 10.0, false)] {
+            let out = cutout_on(&square(n), &[("edgeSimplicity", simplicity)]);
+            let c = 20 + n / 2;
+            assert_eq!(out[c][c] - out[2][2] > 0.5, kept, "{n} px square at simplicity {simplicity}");
+        }
+    }
+
+    #[test]
+    fn cutout_keeps_the_tone_of_surviving_islands_at_low_fidelity() {
+        for (size, simplicity) in [(6, 0.0), (6, 2.0), (8, 0.0), (12, 4.0)] {
+            let rows: Vec<Vec<f32>> =
+                (0..32).map(|y| (0..32).map(|x| if (12..12 + size).contains(&x) && (12..12 + size).contains(&y) { 0.9 } else { 0.2 }).collect()).collect();
+            let reference = cutout_on(&rows, &[("edgeSimplicity", simplicity), ("edgeFidelity", 2.0)]);
+            let centre = 12 + size / 2;
+            for fidelity in [1.0, 1.5, 2.0] {
+                let out = cutout_on(&rows, &[("edgeSimplicity", simplicity), ("edgeFidelity", fidelity)]);
+                assert!(
+                    (out[centre][centre] - reference[centre][centre]).abs() < 0.02,
+                    "{size}x{size}, simplicity {simplicity}, fidelity {fidelity}: {} vs {}",
+                    out[centre][centre],
+                    reference[centre][centre]
+                );
+                assert!(out[centre][centre] - out[2][2] > 0.5, "the island keeps its contrast");
+            }
+        }
+    }
+
+    #[test]
+    fn a_stack_around_a_cutout_is_tile_independent() {
+        // Effects before a Cutout are traced with it over the whole image; effects after it run
+        // per tile on the filled-in shapes.
+        use crate::GalleryFilter as G;
+        let b = Rect::new(0, 0, 56, 40);
+        let s = pattern(SampleType::F32);
+        let fp =
+            FilterParams::FilterGallery { effects: vec![GalleryEffect::new(G::Spatter), GalleryEffect::new(G::Cutout), GalleryEffect::new(G::GlowingEdges)] };
+        let a = apply_tiled(&s, &fp, b, b, None, 256, Some(b)).read_region(b);
+        let t = apply_tiled(&s, &fp, b, b, None, 16, Some(b)).read_region(b);
+        let worst = a.iter().zip(&t).map(|(x, y)| (x - y).abs()).fold(0.0, f32::max);
+        assert!(worst < 1e-3, "differs across tilings by {worst}");
     }
 
     /// Flat greys keep their tone through every pattern and Contrast, black and white stay

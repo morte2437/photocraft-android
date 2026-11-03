@@ -2,7 +2,7 @@ use super::manage::{fix_view_now, gray_document};
 use super::planes::{channel_format, edit_mode, plane_surface, read_plane, tone};
 use super::refs::{ChanRef, alpha_index, bad, gray_plane, native_pixels};
 use super::view::{ChannelTarget, ChannelView, color_names};
-use super::*;
+use super::{AlphaChannel, ColorMode, DocState, Document, EngineError, Layer, Result, Session, Value, from_rgba, json};
 
 /// Merge Spot Channel: flattens the image and prints the spot ink into the colour channels.
 pub(super) fn merge_spot(s: &mut Session, p: &Value) -> Result<Value> {
@@ -55,9 +55,21 @@ pub(super) fn merge_spot(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(Value::Null)
 }
 
+/// Whether `doc` has a single layer (a Background or a normal one; a group counts as a layer,
+/// so a lone group is refused too). As in the reference application only such an image can be
+/// split: the split closes the original, so a layered one would lose its layers.
+pub(super) fn is_flat(doc: &Document) -> bool {
+    matches!(doc.layers.as_slice(), [l] if l.children().is_none())
+}
+
+pub(super) const NOT_FLAT: &str = "only a single-layer image can be split: flatten the image first";
+
 /// Split Channels: one grayscale document per colour and alpha channel; closes the original.
 pub(super) fn split(s: &mut Session, p: &Value) -> Result<Value> {
     let idx = s.active_index().ok_or(EngineError::NoDocument)?;
+    if !s.documents().get(idx).is_some_and(|d| is_flat(&d.doc)) {
+        return Err(bad("channel.split", NOT_FLAT));
+    }
     let doc = s.documents()[idx].doc.clone();
     let area = doc.bounds();
     let (px, n) = native_pixels(&doc, None)?;

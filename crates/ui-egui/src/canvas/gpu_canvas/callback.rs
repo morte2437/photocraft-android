@@ -1,5 +1,5 @@
 use super::resources::{CanvasStyle, Resources, ViewGpu, f32_bytes};
-use super::*;
+use super::{CallbackResources, CallbackTrait, ScreenDescriptor, VIEW_FLOATS, VIEW_UNIFORM_SIZE, ViewParams, wgpu};
 
 // ---------------------------------------------------------------------------------------------
 // Per-frame callback

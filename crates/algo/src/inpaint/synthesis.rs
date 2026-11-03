@@ -1,7 +1,7 @@
 use super::common::{Bounds, Px, Rng};
 use super::solver::{Best, LANES, known_sse, known_sse_any, known_sse_lanes, least_sum};
 use super::sources::{hole_bbox, integral, window_count};
-use super::*;
+use super::{HoleIntegral, membrane_fill, par};
 
 /// Fill the hole from its edge inwards, one ring at a time: each pixel takes the centre of the
 /// source patch that best matches what is already known around it (the first in `sources` of

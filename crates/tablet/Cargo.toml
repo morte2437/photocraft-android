@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 description = "Pen tablet pressure, tilt, rotation and eraser end on macOS (AppKit) and Linux X11 (XInput2), and barrel button on Windows"
 
-# The one isolated `unsafe` helper crate (craftrules never-crash, AGENTS.md): the AppKit event
+# The one isolated `unsafe` helper crate (see AGENTS.md, Never crash): the AppKit event
 # monitor on macOS and the WH_GETMESSAGE pointer hook on Windows need platform interop. Only
 # `src/macos.rs` and `src/windows.rs` allow `unsafe`; everything else is denied, and every other
 # crate keeps the workspace's `unsafe_code = "forbid"`.
@@ -13,8 +13,11 @@ description = "Pen tablet pressure, tilt, rotation and eraser end on macOS (AppK
 unsafe_code = "deny"
 
 [lints.clippy]
-dbg_macro = "warn"
-todo = "warn"
+ cognitive_complexity = "deny"
+ too_many_arguments = "deny"
+ wildcard_imports = "deny"
+ dbg_macro = "warn"
+ todo = "warn"
 
 # Already in Cargo.lock (eframe/wgpu/fmv-macos-events and winit pull them in); pinned exactly:
 # review the diff before bumping.

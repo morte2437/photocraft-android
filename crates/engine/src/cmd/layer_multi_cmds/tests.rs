@@ -1,3 +1,6 @@
+use photocraft_color::SampleType;
+
+use super::damage::{align_bounds, shape_pixel_bounds};
 use super::*;
 
 #[test]
@@ -386,9 +389,6 @@ fn clipped_adjustment_in_pass_through_clip_base_damages_its_group() {
     let LayerContent::Group(g) = &mut deleted.layers[2].content else { panic!("group") };
     g.children.remove(1);
     assert_eq!(step_damage(&before, &deleted), group);
-    let LayerContent::Group(g) = &before.layers[2].content else { panic!("group") };
-    let ids = [g.children[1].id];
-    assert_eq!(layers_damage(&before, &after, &ids), group);
     // Without the layer clipped to the group it stays pass-through: just A's base.
     before.layers.truncate(3);
     after.layers.truncate(3);
@@ -636,6 +636,86 @@ fn align_each_edge() {
             s.undo();
             assert_eq!(bounds(&s, a), Rect::new(10, 5, 20, 15));
         }
+    }
+}
+
+/// #8660: a shape partly off the canvas aligns by everything it draws, not the part on the
+/// canvas, so one click aligns the layers and a second moves nothing.
+#[test]
+fn align_uses_a_shape_layers_full_extent_off_the_canvas() {
+    let mut s = session(8);
+    let drawn = |s: &Session, id: LayerId| align_bounds(doc(s).layer(id).unwrap(), doc(s).bounds(), SampleType::U8).unwrap();
+    let shape = LayerId(s.execute("shape.create", json!({"kind": "rect", "rect": [-20, 10, 40, 20], "fill": "#ff0000"})).unwrap()["layer"].as_u64().unwrap());
+    let measured = align_bounds(doc(&s).layer(shape).unwrap(), doc(&s).bounds(), SampleType::U8);
+    assert_eq!(measured, Some(Rect::new(-20, 10, 20, 30)), "Align: the shape's own extent, not the canvas-clipped render");
+    // Everything else keeps the cheap measure of the cached render (no re-render per layer).
+    assert_eq!(bounds(&s, shape), Rect::new(0, 10, 20, 30), "layer_bounds: the cache, clipped to the canvas");
+    let pixels = rect_layer(&mut s, Rect::new(30, 40, 60, 50));
+    select_all(&mut s, &[shape, pixels]);
+    s.execute("layer.align.leftEdges", json!({})).unwrap();
+    assert_eq!(bounds(&s, pixels), Rect::new(-20, 40, 10, 50));
+    assert_eq!(drawn(&s, shape), Rect::new(-20, 10, 20, 30));
+    s.execute("layer.align.leftEdges", json!({})).unwrap();
+    assert_eq!(bounds(&s, pixels), Rect::new(-20, 40, 10, 50), "a second click moves nothing");
+    // Centred: the union is -20..20 wide on the shape's side and 30 px for the pixel layer.
+    s.execute("layer.align.horizontalCenters", json!({})).unwrap();
+    assert_eq!(drawn(&s, shape), Rect::new(-20, 10, 20, 30));
+    assert_eq!(bounds(&s, pixels), Rect::new(-15, 40, 15, 50));
+    // A feathered shape is measured by its soft edge too, which reaches past the path.
+    let soft = LayerId(s.execute("shape.create", json!({"kind": "rect", "rect": [-20, 50, 40, 20], "fill": "#00ff00"})).unwrap()["layer"].as_u64().unwrap());
+    s.edit("feather", |doc, _| {
+        if let Some(LayerContent::Shape(sh)) = doc.layer_mut(soft).map(|l| &mut l.content) {
+            sh.feather = 4.0;
+        }
+        Ok(())
+    })
+    .unwrap();
+    // Measured as Align does, in the document's frame: the feather off the canvas still counts.
+    let b = drawn(&s, soft);
+    assert!(b.x0 < -20 && b.x1 > 20 && b.y0 < 50 && b.y1 > 70, "{b:?}");
+    // A fill that shows everywhere keeps the canvas-clipped measure.
+    s.edit("invert", |doc, _| {
+        if let Some(LayerContent::Shape(sh)) = doc.layer_mut(soft).map(|l| &mut l.content) {
+            sh.feather = 0.0;
+            sh.path.inverted = true;
+        }
+        Ok(())
+    })
+    .unwrap();
+    let LayerContent::Shape(sh) = &doc(&s).layer(soft).unwrap().content else { panic!("shape") };
+    assert_eq!(shape_pixel_bounds(sh, doc(&s).bounds(), SampleType::U8), None);
+    // Without a cached render yet, such a fill still measures as the canvas, not as empty.
+    let mut uncached = doc(&s).layer(soft).unwrap().clone();
+    if let LayerContent::Shape(sh) = &mut uncached.content {
+        sh.cache = None;
+    }
+    assert_eq!(align_bounds(&uncached, doc(&s).bounds(), SampleType::U8), Some(doc(&s).bounds()));
+}
+
+/// Review of #8779: shape extents are measured at the document's own alpha precision. A faint
+/// stroke (0.001 opacity) is stored by a 16-bit or float document, so it counts in the extent
+/// and Align moves the opaque body as the document draws it; an 8-bit document stores it as
+/// nothing, so it does not widen the measure.
+#[test]
+fn align_bounds_follow_the_documents_alpha_precision() {
+    for (depth, sample, expected) in [
+        (8, SampleType::U8, Rect::new(60, 60, 120, 120)),
+        (16, SampleType::U16, Rect::new(50, 50, 130, 130)),
+        (32, SampleType::F32, Rect::new(50, 50, 130, 130)),
+    ] {
+        let mut s = session(depth);
+        let id = LayerId(s.execute("shape.create", json!({"kind": "rect", "rect": [60, 60, 60, 60], "fill": "#000000"})).unwrap()["layer"].as_u64().unwrap());
+        s.edit("faint stroke", |doc, _| {
+            if let Some(LayerContent::Shape(sh)) = doc.layer_mut(id).map(|l| &mut l.content) {
+                sh.stroke = Some(photocraft_doc::ShapeStroke { width: 20.0, opacity: 0.001, ..Default::default() });
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(doc(&s).pixel_format().sample, sample);
+        let LayerContent::Shape(sh) = &doc(&s).layer(id).unwrap().content else { panic!("shape") };
+        assert_eq!(shape_pixel_bounds(sh, doc(&s).bounds(), sample), Some(expected), "depth {depth}");
+        assert_eq!(align_bounds(doc(&s).layer(id).unwrap(), doc(&s).bounds(), sample), Some(expected), "depth {depth}");
     }
 }
 

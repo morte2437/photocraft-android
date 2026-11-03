@@ -138,32 +138,81 @@ const PRO_TO_P3: [[f32; 3]; 3] = [[1.632638, -0.379816, -0.252821], [-0.153846, 
 /// A change of log₂ luminance computed on a reduced copy, carried to full size along the image's
 /// own edges (guided upsampling): a local linear model `change = a · log₂ Y + b` per reduced pixel.
 struct Upsampled {
-    sw: usize,
-    sh: usize,
-    a: Vec<f32>,
-    b: Vec<f32>,
+    grid: Grid,
+    /// `[a, b]` per reduced pixel (one cache line serves both lookups).
+    ab: Vec<[f32; 2]>,
     /// log₂ luminance floor (the reduced copy's 0.1th percentile).
     floor: f32,
 }
 
 impl Upsampled {
-    /// The change at full-size pixel (`x`, `y`) of a `w × h` image, of linear luminance `lum`.
-    fn change(&self, w: usize, h: usize, x: usize, y: usize, lum: f32) -> f32 {
-        let l = if lum > 0.0 { lum.log2().max(self.floor) } else { self.floor };
-        bilinear(&self.a, self.sw, self.sh, w, h, x, y) * l + bilinear(&self.b, self.sw, self.sh, w, h, x, y)
+    fn new(sw: usize, sh: usize, w: usize, h: usize, a: &[f32], b: &[f32], floor: f32) -> Self {
+        Upsampled { grid: Grid::new(sw, sh, w, h), ab: a.iter().zip(b).map(|(a, b)| [*a, *b]).collect(), floor }
+    }
+
+    /// The change at full-size pixel (`x`, `y`) whose linear luminance has the log₂ `log` (`None`: not above 0).
+    fn change(&self, x: usize, y: usize, log: Option<f32>) -> f32 {
+        let l = log.map_or(self.floor, |l| l.max(self.floor));
+        let [a, b] = self.grid.at2(&self.ab, x, y);
+        a * l + b
     }
 }
 
-/// `v` (`sw × sh`) at full-size pixel (`x`, `y`) of a `w × h` image, bilinearly.
-fn bilinear(v: &[f32], sw: usize, sh: usize, w: usize, h: usize, x: usize, y: usize) -> f32 {
-    let sx = ((x as f32 + 0.5) * sw as f32 / w as f32 - 0.5).clamp(0.0, (sw - 1) as f32);
-    let sy = ((y as f32 + 0.5) * sh as f32 / h as f32 - 0.5).clamp(0.0, (sh - 1) as f32);
-    let (x0, y0) = (sx as usize, sy as usize);
-    let (x1, y1) = ((x0 + 1).min(sw - 1), (y0 + 1).min(sh - 1));
-    let (fx, fy) = (sx - x0 as f32, sy - y0 as f32);
-    let top = v[y0 * sw + x0] * (1.0 - fx) + v[y0 * sw + x1] * fx;
-    let bottom = v[y1 * sw + x0] * (1.0 - fx) + v[y1 * sw + x1] * fx;
-    top * (1.0 - fy) + bottom * fy
+/// Where one full-size coordinate reads a reduced axis: the two neighbours and the weight of the
+/// second (and one minus it).
+#[derive(Clone, Copy)]
+struct Tap {
+    i0: u32,
+    i1: u32,
+    f: f32,
+    g: f32,
+}
+
+/// The bilinear lookup of a reduced `sw × sh` plane at the pixels of a `w × h` image, with the
+/// taps of every column and row worked out once instead of for every pixel.
+struct Grid {
+    sw: usize,
+    cols: Vec<Tap>,
+    rows: Vec<Tap>,
+}
+
+impl Grid {
+    fn new(sw: usize, sh: usize, w: usize, h: usize) -> Self {
+        let axis = |s: usize, n: usize| -> Vec<Tap> {
+            (0..n)
+                .map(|i| {
+                    let p = ((i as f32 + 0.5) * s as f32 / n as f32 - 0.5).clamp(0.0, (s - 1) as f32);
+                    let i0 = p as usize;
+                    let f = p - i0 as f32;
+                    Tap { i0: i0 as u32, i1: (i0 + 1).min(s - 1) as u32, f, g: 1.0 - f }
+                })
+                .collect()
+        };
+        Grid { sw, cols: axis(sw, w), rows: axis(sh, h) }
+    }
+
+    /// `v` (the reduced plane) at full-size pixel (`x`, `y`), bilinearly.
+    #[inline]
+    fn at(&self, v: &[f32], x: usize, y: usize) -> f32 {
+        let (cx, cy) = (self.cols[x], self.rows[y]);
+        let (r0, r1) = (cy.i0 as usize * self.sw, cy.i1 as usize * self.sw);
+        let top = v[r0 + cx.i0 as usize] * cx.g + v[r0 + cx.i1 as usize] * cx.f;
+        let bottom = v[r1 + cx.i0 as usize] * cx.g + v[r1 + cx.i1 as usize] * cx.f;
+        top * cy.g + bottom * cy.f
+    }
+
+    /// [`at`](Self::at) for two planes stored together.
+    #[inline]
+    fn at2(&self, v: &[[f32; 2]], x: usize, y: usize) -> [f32; 2] {
+        let (cx, cy) = (self.cols[x], self.rows[y]);
+        let (r0, r1) = (cy.i0 as usize * self.sw, cy.i1 as usize * self.sw);
+        let (p00, p01, p10, p11) = (v[r0 + cx.i0 as usize], v[r0 + cx.i1 as usize], v[r1 + cx.i0 as usize], v[r1 + cx.i1 as usize]);
+        [0, 1].map(|k| {
+            let top = p00[k] * cx.g + p01[k] * cx.f;
+            let bottom = p10[k] * cx.g + p11[k] * cx.f;
+            top * cy.g + bottom * cy.f
+        })
+    }
 }
 
 /// Box means of `f` over `k × k` cells, `k` the smallest factor that brings the long side to
@@ -193,11 +242,55 @@ fn reduce<const N: usize>(w: usize, h: usize, side: usize, f: impl Fn(usize) -> 
     (sw, sh, rows.concat())
 }
 
+/// [`reduce`] of one plane at two sizes in a single pass over the pixels (each pixel's value
+/// worked out once): the means of `f` for `sides[0]` and for `sides[1]`, as `reduce` gives them.
+fn reduce_pair(w: usize, h: usize, sides: [usize; 2], f: impl Fn(usize) -> f32 + Sync) -> [(usize, usize, Vec<f32>); 2] {
+    let k = sides.map(|side| w.max(h).div_ceil(side).max(1));
+    let sizes = k.map(|k| (w.div_ceil(k), h.div_ceil(k)));
+    // Bands of whole cell rows of both sizes.
+    let step = {
+        let (mut a, mut b) = (k[0], k[1]);
+        while b != 0 {
+            (a, b) = (b, a % b);
+        }
+        k[0] / a * k[1]
+    };
+    let bands = par::map(h.div_ceil(step), |band| {
+        let (y0, y1) = (band * step, ((band + 1) * step).min(h));
+        let mut row = vec![0.0f32; w];
+        let mut sums = [vec![0.0f64; sizes[0].0], vec![0.0f64; sizes[1].0]];
+        let mut out = [Vec::new(), Vec::new()];
+        for y in y0..y1 {
+            for (x, v) in row.iter_mut().enumerate() {
+                *v = f(y * w + x).max(0.0);
+            }
+            for g in 0..2 {
+                for (cell, vs) in sums[g].iter_mut().zip(row.chunks(k[g])) {
+                    let mut s = *cell;
+                    for v in vs {
+                        s += f64::from(*v);
+                    }
+                    *cell = s;
+                }
+                // The cell row ends here.
+                if (y + 1) % k[g] == 0 || y + 1 == h {
+                    let rows = y + 1 - y / k[g] * k[g];
+                    for (sx, s) in sums[g].iter_mut().enumerate() {
+                        let n = ((((sx + 1) * k[g]).min(w) - sx * k[g]) * rows) as f64;
+                        out[g].push((*s / n) as f32);
+                        *s = 0.0;
+                    }
+                }
+            }
+        }
+        out
+    });
+    [0, 1].map(|g| (sizes[g].0, sizes[g].1, bands.iter().flat_map(|b| b[g].iter().copied()).collect()))
+}
+
 /// The luminance change of one image (Shadows, Highlights, Clarity on the work copy; Texture on
 /// a half-size copy) and the black point.
 pub(crate) struct ToneMap {
-    w: usize,
-    h: usize,
     work: Option<Upsampled>,
     texture: Option<Upsampled>,
     /// Linear black point to subtract (0: none).
@@ -212,11 +305,20 @@ impl ToneMap {
         if w == 0 || h == 0 || (tone.gain_neutral() && black_point <= 0.0) {
             return None;
         }
-        let (sw, sh, y) = reduce(w, h, WORK_SIDE, |i| [lum(i)]);
-        let y: Vec<f32> = y.into_iter().map(|[v]| v).collect();
-        let p01 = quantile(&y, 0.001).max(2f32.powi(-20));
+        // The work copy serves the black point and Shadows, Highlights and Clarity, Texture has
+        // its own; when both are needed they are reduced in one pass over the pixels.
+        let plane = |(sw, sh, y): (usize, usize, Vec<[f32; 1]>)| (sw, sh, y.into_iter().map(|[v]| v).collect::<Vec<f32>>());
+        let (work_copy, texture_copy) = match (!tone.work_neutral() || black_point > 0.0, tone.texture != 0.0) {
+            (true, true) => {
+                let [work, texture] = reduce_pair(w, h, [WORK_SIDE, TEXTURE_SIDE], &lum);
+                (Some(work), Some(texture))
+            }
+            (true, false) => (Some(plane(reduce(w, h, WORK_SIDE, |i| [lum(i)]))), None),
+            _ => (None, Some(plane(reduce(w, h, TEXTURE_SIDE, |i| [lum(i)])))),
+        };
+        let p01 = work_copy.as_ref().map_or(0.0, |(_, _, y)| quantile(y, 0.001).max(2f32.powi(-20)));
         let black = if black_point > 0.0 { black_point * p01 } else { 0.0 };
-        let work = (!tone.work_neutral()).then(|| {
+        let work = work_copy.filter(|_| !tone.work_neutral()).map(|(sw, sh, y)| {
             let l: Vec<f32> = y.iter().map(|v| v.max(p01).log2()).collect();
             let n = l.len() as f64;
             let geo = (l.iter().map(|v| f64::from(*v)).sum::<f64>() / n) as f32;
@@ -237,10 +339,10 @@ impl ToneMap {
             // change follow strong edges only: inside texture it stays smooth, so fine detail keeps
             // its contrast as in Camera Raw (with ε 0.01 shadow detail lost a fifth of it; with ε 4 the change bled ~16 px over 3-stop edges).
             let (a, b) = linear_fit(&l, &change, sw, sh, 2, UPSAMPLE_EPS);
-            Upsampled { sw, sh, a, b, floor: p01.log2() }
+            Upsampled::new(sw, sh, w, h, &a, &b, p01.log2())
         });
-        let texture = (tone.texture != 0.0).then(|| texture(w, h, &lum, tone.texture));
-        Some(ToneMap { w, h, work, texture, black })
+        let texture = texture_copy.map(|copy| texture(w, h, copy, tone.texture));
+        Some(ToneMap { work, texture, black })
     }
 
     /// The gain at full-size pixel (`x`, `y`) of linear luminance `lum`.
@@ -248,7 +350,8 @@ impl ToneMap {
         if self.work.is_none() && self.texture.is_none() {
             return 1.0;
         }
-        let c = [&self.work, &self.texture].iter().filter_map(|u| u.as_ref()).map(|u| u.change(self.w, self.h, x, y, lum)).sum::<f32>();
+        let log = (lum > 0.0).then(|| lum.log2());
+        let c = [&self.work, &self.texture].iter().filter_map(|u| u.as_ref()).map(|u| u.change(x, y, log)).sum::<f32>();
         c.clamp(-6.0, 6.0).exp2()
     }
 
@@ -300,11 +403,9 @@ fn clarity(change: &mut [f32], l: &[f32], sw: usize, sh: usize, geo: f32, scale:
     }
 }
 
-/// Texture `s` on a half-size copy: each Gaussian band of log₂ luminance through its measured
+/// Texture `s` on its reduced copy `(sw, sh, y)` of the luminance: each Gaussian band of log₂ luminance through its measured
 /// response (zero for flat areas), carried to full size.
-fn texture(w: usize, h: usize, lum: &(impl Fn(usize) -> f32 + Sync), s: f32) -> Upsampled {
-    let (sw, sh, y) = reduce(w, h, TEXTURE_SIDE, |i| [lum(i)]);
-    let y: Vec<f32> = y.into_iter().map(|[v]| v).collect();
+fn texture(w: usize, h: usize, (sw, sh, y): (usize, usize, Vec<f32>), s: f32) -> Upsampled {
     let p01 = quantile(&y, 0.001).max(2f32.powi(-20));
     let l: Vec<f32> = y.iter().map(|v| v.max(p01).log2()).collect();
     let scale = sw.max(sh) as f32 / TEXTURE_SIDE as f32;
@@ -320,7 +421,7 @@ fn texture(w: usize, h: usize, lum: &(impl Fn(usize) -> f32 + Sync), s: f32) -> 
         prev = base;
     }
     let (a, b) = linear_fit(&l, &change, sw, sh, 2, TEXTURE_UPSAMPLE_EPS);
-    Upsampled { sw, sh, a, b, floor: p01.log2() }
+    Upsampled::new(sw, sh, w, h, &a, &b, p01.log2())
 }
 
 /// Texture's band response on the knots [`tables::TEXTURE_KNOTS`], read linearly, flat beyond.
@@ -332,7 +433,13 @@ fn knots(c: &[f32; 11], d: f32) -> f32 {
     c[i - 1] + (c[i] - c[i - 1]) * f
 }
 
+/// Columns (or output samples) one pass of [`gauss`] and [`box_mean`] accumulates at a time.
+const BLOCK: usize = 64;
+
 /// Gaussian blur of `v` (`w × h`), σ `sigma`, radius ⌈3σ⌉, mirrored edges.
+///
+/// Every output sample is the taps' sum in tap order, as a plain loop over the kernel would
+/// give; the passes run along the rows so that neighbouring samples are summed side by side.
 fn gauss(v: &[f32], w: usize, h: usize, sigma: f32) -> Vec<f32> {
     if sigma <= 0.05 {
         return v.to_vec();
@@ -341,21 +448,47 @@ fn gauss(v: &[f32], w: usize, h: usize, sigma: f32) -> Vec<f32> {
     let mut k: Vec<f32> = (-r..=r).map(|x| (-(x * x) as f32 / (2.0 * sigma * sigma)).exp()).collect();
     let sum: f32 = k.iter().sum();
     k.iter_mut().for_each(|v| *v /= sum);
-    let rows = par::map(h, |y| {
-        let src = &v[y * w..(y + 1) * w];
-        (0..w as isize).map(|x| k.iter().enumerate().map(|(j, kv)| kv * src[mirror(x + j as isize - r, w)]).sum::<f32>()).collect::<Vec<f32>>()
-    });
-    let tmp = rows.concat();
-    let cols = par::map(w, |x| {
-        (0..h as isize).map(|y| k.iter().enumerate().map(|(j, kv)| kv * tmp[mirror(y + j as isize - r, h) * w + x]).sum::<f32>()).collect::<Vec<f32>>()
-    });
+    let r = r as usize;
+    let mut tmp = vec![0.0f32; w * h];
+    par::chunks_mut(&mut tmp, w, |y, out| blur_row(&v[y * w..(y + 1) * w], out, &k, r));
     let mut out = vec![0.0f32; w * h];
-    for (x, col) in cols.iter().enumerate() {
-        for (y, v) in col.iter().enumerate() {
-            out[y * w + x] = *v;
+    par::chunks_mut(&mut out, w, |y, row| {
+        // The rows the taps of output row `y` read.
+        let src: Vec<&[f32]> = (0..k.len()).map(|j| mirror(y as isize + j as isize - r as isize, h)).map(|m| &tmp[m * w..(m + 1) * w]).collect();
+        for (x0, block) in row.chunks_mut(BLOCK).enumerate().map(|(i, b)| (i * BLOCK, b)) {
+            let mut acc = [-0.0f32; BLOCK];
+            let acc = &mut acc[..block.len()];
+            for (kv, s) in k.iter().zip(&src) {
+                for (a, s) in acc.iter_mut().zip(&s[x0..]) {
+                    *a += kv * s;
+                }
+            }
+            block.copy_from_slice(acc);
         }
-    }
+    });
     out
+}
+
+/// One row of [`gauss`]: `out[x]` is the sum over the taps `j` of `k[j] · src[mirror(x + j − r)]`.
+fn blur_row(src: &[f32], out: &mut [f32], k: &[f32], r: usize) {
+    let w = src.len();
+    let edge = |x: usize| k.iter().enumerate().map(|(j, kv)| kv * src[mirror(x as isize + j as isize - r as isize, w)]).sum::<f32>();
+    if w <= 2 * r {
+        out.iter_mut().enumerate().for_each(|(x, o)| *o = edge(x));
+        return;
+    }
+    (0..r).chain(w - r..w).for_each(|x| out[x] = edge(x));
+    // Inside, the taps read `src[x - r + j]` without mirroring.
+    for (off, block) in out[r..w - r].chunks_mut(BLOCK).enumerate().map(|(i, b)| (i * BLOCK, b)) {
+        let mut acc = [-0.0f32; BLOCK];
+        let acc = &mut acc[..block.len()];
+        for (j, kv) in k.iter().enumerate() {
+            for (a, s) in acc.iter_mut().zip(&src[off + j..]) {
+                *a += kv * s;
+            }
+        }
+        block.copy_from_slice(acc);
+    }
 }
 
 /// Minimum over a `(2r + 1)²` window, edges clamped.
@@ -378,10 +511,7 @@ fn min_filter(v: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
 
 /// Camera Raw's Dehaze on linear ProPhoto RGB (see the module docs).
 pub(crate) struct Haze {
-    w: usize,
-    h: usize,
-    sw: usize,
-    sh: usize,
+    grid: Grid,
     /// Transmission per work-copy pixel (Dehaze > 0); empty for the veil of Dehaze < 0.
     t: Vec<f32>,
     /// Airlight, linear ProPhoto.
@@ -413,7 +543,7 @@ impl Haze {
         }
         let air = air.map(|v| v.max(1e-6));
         if amount < 0.0 {
-            return Some(Haze { w, h, sw, sh, t: Vec::new(), air, veil: HAZE_DOWN * -amount });
+            return Some(Haze { grid: Grid::new(sw, sh, w, h), t: Vec::new(), air, veil: HAZE_DOWN * -amount });
         }
         let air_p3 = p3(&air).map(|v| v.max(1e-6));
         let scale = sw.max(sh) as f32 / WORK_SIDE as f32;
@@ -426,15 +556,16 @@ impl Haze {
         let smooth = guided(&guide, &dark, sw, sh, ((HAZE_SMOOTH * scale).round() as usize).max(1), HAZE_EPS);
         let wgt = HAZE_UP * amount;
         let t = smooth.iter().map(|d| (1.0 - wgt * d).max(HAZE_T0)).collect();
-        Some(Haze { w, h, sw, sh, t, air, veil: 0.0 })
+        Some(Haze { grid: Grid::new(sw, sh, w, h), t, air, veil: 0.0 })
     }
 
     /// Dehaze at full-size pixel (`x`, `y`) of linear ProPhoto `v`.
+    #[inline(always)]
     pub(crate) fn apply(&self, x: usize, y: usize, v: [f32; 3]) -> [f32; 3] {
         if self.t.is_empty() {
             return [0, 1, 2].map(|c| v[c] * (1.0 - self.veil) + self.air[c] * self.veil);
         }
-        let t = bilinear(&self.t, self.sw, self.sh, self.w, self.h, x, y).max(HAZE_T0);
+        let t = self.grid.at(&self.t, x, y).max(HAZE_T0);
         [0, 1, 2].map(|c| ((v[c] - self.air[c]) / t + self.air[c]).max(0.0))
     }
 }
@@ -489,33 +620,46 @@ fn mirror(i: isize, n: usize) -> usize {
 fn box_mean(v: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
     let k = (2 * r + 1) as f64;
     let ri = r as isize;
-    let rows = par::map(h, |y| {
+    let mut tmp = vec![0.0f32; w * h];
+    par::chunks_mut(&mut tmp, w, |y, out| {
         let src = &v[y * w..(y + 1) * w];
         let mut acc: f64 = (-ri..=ri).map(|i| f64::from(src[mirror(i, w)])).sum();
-        let mut out = vec![0.0f32; w];
         for (x, o) in out.iter_mut().enumerate() {
             *o = (acc / k) as f32;
             let x = x as isize;
             acc += f64::from(src[mirror(x + ri + 1, w)]) - f64::from(src[mirror(x - ri, w)]);
         }
-        out
     });
-    let tmp = rows.concat();
-    let cols = par::map(w, |x| {
-        let at = |y: isize| f64::from(tmp[mirror(y, h) * w + x]);
-        let mut acc: f64 = (-ri..=ri).map(at).sum();
-        let mut out = vec![0.0f32; h];
-        for (y, o) in out.iter_mut().enumerate() {
-            *o = (acc / k) as f32;
+    // Down the columns: every column's running sum advances by one row at a time, the columns
+    // of a block side by side. Blocks in parallel, each into its own buffer.
+    let blocks = par::map(w.div_ceil(BLOCK), |bi| {
+        let (x0, x1) = (bi * BLOCK, ((bi + 1) * BLOCK).min(w));
+        let n = x1 - x0;
+        let row = |y: isize| &tmp[mirror(y, h) * w + x0..mirror(y, h) * w + x1];
+        let mut acc = [-0.0f64; BLOCK];
+        let acc = &mut acc[..n];
+        for i in -ri..=ri {
+            for (a, s) in acc.iter_mut().zip(row(i)) {
+                *a += f64::from(*s);
+            }
+        }
+        let mut out = vec![0.0f32; h * n];
+        for (y, o) in out.chunks_exact_mut(n).enumerate() {
             let y = y as isize;
-            acc += at(y + ri + 1) - at(y - ri);
+            let (add, sub) = (row(y + ri + 1), row(y - ri));
+            for (((o, a), p), q) in o.iter_mut().zip(acc.iter_mut()).zip(add).zip(sub) {
+                *o = (*a / k) as f32;
+                *a += f64::from(*p) - f64::from(*q);
+            }
         }
         out
     });
     let mut out = vec![0.0f32; w * h];
-    for (x, col) in cols.iter().enumerate() {
-        for (y, v) in col.iter().enumerate() {
-            out[y * w + x] = *v;
+    for (bi, block) in blocks.iter().enumerate() {
+        let x0 = bi * BLOCK;
+        let n = block.len() / h.max(1);
+        for (y, src) in block.chunks_exact(n.max(1)).enumerate() {
+            out[y * w + x0..y * w + x0 + n].copy_from_slice(src);
         }
     }
     out
@@ -754,6 +898,149 @@ mod tests {
         let g = gains(&y, w, h, SHADOWS);
         for i in [60 * w + 50, 60 * w + 150, 60 * w + 250] {
             assert!((out[i][0] - enc(y[i] * g[i])).abs() < 0.003, "{i}: {} vs {}", out[i][0], enc(y[i] * g[i]));
+        }
+    }
+
+    // The code the faster versions replaced, kept to prove they give the same bits.
+
+    /// `v` (`sw × sh`) at full-size pixel (`x`, `y`) of a `w × h` image, bilinearly.
+    fn bilinear_ref(v: &[f32], sw: usize, sh: usize, w: usize, h: usize, x: usize, y: usize) -> f32 {
+        let sx = ((x as f32 + 0.5) * sw as f32 / w as f32 - 0.5).clamp(0.0, (sw - 1) as f32);
+        let sy = ((y as f32 + 0.5) * sh as f32 / h as f32 - 0.5).clamp(0.0, (sh - 1) as f32);
+        let (x0, y0) = (sx as usize, sy as usize);
+        let (x1, y1) = ((x0 + 1).min(sw - 1), (y0 + 1).min(sh - 1));
+        let (fx, fy) = (sx - x0 as f32, sy - y0 as f32);
+        let top = v[y0 * sw + x0] * (1.0 - fx) + v[y0 * sw + x1] * fx;
+        let bottom = v[y1 * sw + x0] * (1.0 - fx) + v[y1 * sw + x1] * fx;
+        top * (1.0 - fy) + bottom * fy
+    }
+
+    fn gauss_ref(v: &[f32], w: usize, h: usize, sigma: f32) -> Vec<f32> {
+        if sigma <= 0.05 {
+            return v.to_vec();
+        }
+        let r = (3.0 * sigma).ceil() as isize;
+        let mut k: Vec<f32> = (-r..=r).map(|x| (-(x * x) as f32 / (2.0 * sigma * sigma)).exp()).collect();
+        let sum: f32 = k.iter().sum();
+        k.iter_mut().for_each(|v| *v /= sum);
+        let rows = par::map(h, |y| {
+            let src = &v[y * w..(y + 1) * w];
+            (0..w as isize).map(|x| k.iter().enumerate().map(|(j, kv)| kv * src[mirror(x + j as isize - r, w)]).sum::<f32>()).collect::<Vec<f32>>()
+        });
+        let tmp = rows.concat();
+        let cols = par::map(w, |x| {
+            (0..h as isize).map(|y| k.iter().enumerate().map(|(j, kv)| kv * tmp[mirror(y + j as isize - r, h) * w + x]).sum::<f32>()).collect::<Vec<f32>>()
+        });
+        let mut out = vec![0.0f32; w * h];
+        for (x, col) in cols.iter().enumerate() {
+            for (y, v) in col.iter().enumerate() {
+                out[y * w + x] = *v;
+            }
+        }
+        out
+    }
+
+    fn box_mean_ref(v: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
+        let k = (2 * r + 1) as f64;
+        let ri = r as isize;
+        let rows = par::map(h, |y| {
+            let src = &v[y * w..(y + 1) * w];
+            let mut acc: f64 = (-ri..=ri).map(|i| f64::from(src[mirror(i, w)])).sum();
+            let mut out = vec![0.0f32; w];
+            for (x, o) in out.iter_mut().enumerate() {
+                *o = (acc / k) as f32;
+                let x = x as isize;
+                acc += f64::from(src[mirror(x + ri + 1, w)]) - f64::from(src[mirror(x - ri, w)]);
+            }
+            out
+        });
+        let tmp = rows.concat();
+        let cols = par::map(w, |x| {
+            let at = |y: isize| f64::from(tmp[mirror(y, h) * w + x]);
+            let mut acc: f64 = (-ri..=ri).map(at).sum();
+            let mut out = vec![0.0f32; h];
+            for (y, o) in out.iter_mut().enumerate() {
+                *o = (acc / k) as f32;
+                let y = y as isize;
+                acc += at(y + ri + 1) - at(y - ri);
+            }
+            out
+        });
+        let mut out = vec![0.0f32; w * h];
+        for (x, col) in cols.iter().enumerate() {
+            for (y, v) in col.iter().enumerate() {
+                out[y * w + x] = *v;
+            }
+        }
+        out
+    }
+
+    /// Values around log₂ luminance, from a fixed LCG.
+    fn noise(n: usize, seed: u64) -> Vec<f32> {
+        let mut s = seed;
+        (0..n)
+            .map(|_| {
+                s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                ((s >> 40) as f32 / (1u64 << 24) as f32) * 14.0 - 12.0
+            })
+            .collect()
+    }
+
+    fn same(a: &[f32], b: &[f32]) -> bool {
+        a.len() == b.len() && a.iter().zip(b).all(|(a, b)| a.to_bits() == b.to_bits())
+    }
+
+    #[test]
+    fn gauss_gives_the_bits_of_the_tap_loop() {
+        // Sizes below, around and above the kernel (edges only, a few interior samples, mostly interior).
+        for (w, h) in [(1, 1), (5, 3), (13, 40), (64, 7), (65, 70), (131, 97), (300, 41)] {
+            let v = noise(w * h, (w * 31 + h) as u64);
+            for sigma in [0.04, 0.42, 1.0, 2.1, 4.2, 8.4, 13.44] {
+                assert!(same(&gauss(&v, w, h, sigma), &gauss_ref(&v, w, h, sigma)), "{w}x{h} sigma {sigma}");
+            }
+        }
+    }
+
+    #[test]
+    fn box_mean_gives_the_bits_of_the_column_loop() {
+        for (w, h) in [(1, 1), (5, 3), (13, 40), (64, 7), (65, 70), (131, 97), (300, 41)] {
+            let v = noise(w * h, (w * 17 + h) as u64);
+            for r in [1, 2, 8, 32, 128] {
+                assert!(same(&box_mean(&v, w, h, r), &box_mean_ref(&v, w, h, r)), "{w}x{h} r {r}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_tap_tables_give_the_bits_of_the_per_pixel_lookup() {
+        for ((sw, sh), (w, h)) in [((1, 1), (7, 5)), ((3, 2), (3, 2)), ((12, 9), (97, 61)), ((308, 205), (1232, 820)), ((1232, 616), (8256, 4128))] {
+            let a = noise(sw * sh, 5);
+            let b = noise(sw * sh, 6);
+            let grid = Grid::new(sw, sh, w, h);
+            let ab: Vec<[f32; 2]> = a.iter().zip(&b).map(|(a, b)| [*a, *b]).collect();
+            for y in (0..h).step_by(if h > 1000 { 7 } else { 1 }) {
+                for x in (0..w).step_by(if w > 1000 { 5 } else { 1 }) {
+                    let (ra, rb) = (bilinear_ref(&a, sw, sh, w, h, x, y), bilinear_ref(&b, sw, sh, w, h, x, y));
+                    assert_eq!(grid.at(&a, x, y).to_bits(), ra.to_bits(), "{sw}x{sh} to {w}x{h} at {x},{y}");
+                    let [pa, pb] = grid.at2(&ab, x, y);
+                    assert!(pa.to_bits() == ra.to_bits() && pb.to_bits() == rb.to_bits(), "{sw}x{sh} to {w}x{h} at {x},{y}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn reduce_pair_gives_the_bits_of_two_reductions() {
+        for (w, h) in [(1, 1), (7, 5), (100, 61), (1233, 77), (2500, 1700), (333, 2999)] {
+            let v = noise(w * h, (w + 3 * h) as u64);
+            for sides in [[1232, 2464], [100, 50], [7, 8], [1232, 1232], [3, 600]] {
+                let pair = reduce_pair(w, h, sides, |i| v[i]);
+                for (g, side) in sides.iter().enumerate() {
+                    let (sw, sh, one) = reduce(w, h, *side, |i| [v[i]]);
+                    let one: Vec<f32> = one.into_iter().map(|[v]| v).collect();
+                    assert!((sw, sh) == (pair[g].0, pair[g].1) && same(&one, &pair[g].2), "{w}x{h} side {side}");
+                }
+            }
         }
     }
 }

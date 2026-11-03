@@ -2,7 +2,7 @@ use super::manage::gray_document;
 use super::planes::{channel_format, edit_mode, next_alpha_name, plane_surface, read_plane, tone};
 use super::refs::{Blending, bad, doc_index, mask_plane, source, source_spec};
 use super::targeting::{Target, is_channel_target, is_spot_target, target_of, target_surface};
-use super::*;
+use super::{AlphaChannel, ColorMode, EngineError, Result, SelectionMode, Session, Value, json, sel};
 
 // ---------------------------------------------------------------------------------------------
 // Apply Image / Calculations

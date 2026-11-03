@@ -17,7 +17,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::perf;
 
@@ -591,12 +591,14 @@ here supersede estimates elsewhere.\n\n## Summary\n\n| Area | Done | Partial | M
 
     // Performance.
     s.push_str("\n## Performance\n\n");
+    let class = inp.baseline.as_ref().and_then(|b| b.get("machine_class")).and_then(Value::as_str).unwrap_or("none");
     s.push_str(&format!(
         "Budgets: `perf/budgets.toml` (targets from #209, #210, #211). Numbers: the committed baseline \
 (`perf/baseline.json`, full run), updated only by `cargo xtask perf --update-baseline`. The nightly \
 `perf-nightly` workflow runs `cargo xtask perf` on a fixed macOS runner and fails on a broken enforced \
-budget or a p50 regression over {:.0} % against a baseline from the same machine class. \"Over budget\" \
-rows are targets the code doesn't meet yet: they are reported, and only their regressions fail.\n\n",
+budget. Its p50 regression check (over {:.0} %, against the baseline's highest p50 when it was built from \
+several runs) runs only on machine class `{class}`, the baseline's. \"Over budget\" rows are targets the \
+code doesn't meet yet: they are reported, and only their regressions fail.\n\n",
         inp.budgets.settings.regression_pct
     ));
     match (&base_date, full) {
@@ -604,12 +606,22 @@ rows are targets the code doesn't meet yet: they are reported, and only their re
             let load = perf::fmt_load(f.get("load_avg_start"));
             let commit = f.get("commit").and_then(Value::as_str).map_or_else(|| "unknown".into(), |c| c.get(..10).unwrap_or(c).to_string());
             let ram = machine.and_then(|m| m.get("ram_bytes")).and_then(Value::as_u64).map_or_else(|| "?".into(), |b| format!("{} GB", b >> 30));
+            let runs = f.get("runs").and_then(Value::as_u64).unwrap_or(1);
+            let runs = if runs == 1 { "1 run".to_string() } else { format!("{runs} runs (median p50; the latest run's date and commit)") };
             s.push_str(&format!(
-                "Baseline: {d}, commit `{commit}`, {} ({ram}), GPU {}, {}; load average {load} (1/5/15 min) at the start of the run.\n\n",
+                "Baseline: {d}, {runs}, commit `{commit}`, {} ({ram}), GPU {}, {}; load average {load} (1/5/15 min) at the start of the run.\n\n",
                 ms("cpu"),
                 ms("gpu_adapter"),
                 ms("os_version")
             ));
+            let cores = f.get("cores").or_else(|| machine.and_then(|m| m.get("cores")));
+            let contended = f.get("contended").and_then(Value::as_bool) == Some(true)
+                || perf::run_contended(f.get("load_avg_start"), Some(&json!({"cores": cores})), inp.budgets.settings.max_load_per_core);
+            if contended {
+                let one = f.get("load_avg_start").and_then(|l| l.get(0)).and_then(Value::as_f64).map_or_else(|| "?".into(), |x| format!("{x:.2}"));
+                let n = cores.and_then(Value::as_u64).map_or_else(|| "?".into(), |c| c.to_string());
+                s.push_str(&format!("**contended baseline** (load {one} on {n} cores): these numbers measure machine load, not the code.\n\n"));
+            }
         }
         _ => s.push_str("Baseline: **not run** (no `perf/baseline.json` full run yet).\n\n"),
     }
@@ -889,6 +901,29 @@ cc  c.psd
     fn anchors() {
         assert_eq!(anchor("Workspace and UI"), "workspace-and-ui");
         assert_eq!(anchor("File compatibility"), "file-compatibility");
+    }
+
+    #[test]
+    fn scorecard_labels_a_contended_baseline() {
+        let mut inp = gather(&crate::root()).unwrap_or_else(|e| panic!("{e}"));
+        let base = |load: f64, extra: Value| {
+            let mut full = json!({"date": "2026-10-05T00:00:00Z", "commit": "f5d2bcb54abd", "load_avg_start": [load, 1.0, 1.0], "scenarios": {}});
+            if let (Some(f), Some(x)) = (full.as_object_mut(), extra.as_object()) {
+                f.extend(x.clone());
+            }
+            json!({"machine_class": "mac-m4", "machine": {"cores": 14, "cpu": "Apple M4 Pro"}, "modes": {"full": full}})
+        };
+        inp.baseline = Some(base(224.9, json!({})));
+        let a = render(&inp);
+        assert!(a.contains("**contended baseline** (load 224.90 on 14 cores)"), "labelled from the load the baseline already has");
+        assert!(a.contains("runs only on machine class `mac-m4`"));
+        assert!(a.contains("2026-10-05, 1 run,"));
+        inp.baseline = Some(base(2.0, json!({"runs": 5})));
+        let a = render(&inp);
+        assert!(!a.contains("contended baseline"));
+        assert!(a.contains("5 runs (median p50"));
+        inp.baseline = Some(base(2.0, json!({"contended": true, "cores": 3})));
+        assert!(render(&inp).contains("(load 2.00 on 3 cores)"), "a baseline recorded with --allow-contended");
     }
 
     #[test]

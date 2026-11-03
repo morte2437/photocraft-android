@@ -12,7 +12,6 @@
 use egui::{Align2, Color32, FontId, Pos2, Rect as ERect, Sense, Stroke, TextureHandle, pos2, vec2};
 use photocraft_algo::transform::Interp;
 use photocraft_algo::wideangle::{self, Camera, Constraint, Orientation, WideAngle, WideModel};
-use photocraft_color::PixelFormat;
 use photocraft_doc::LayerId;
 use photocraft_geom::Rect;
 use photocraft_raster::Surface;
@@ -34,6 +33,7 @@ pub struct WideAngleDialog {
     frame: Rect,
     scale: f64,
     proxy: Surface,
+    target: Value,
     pw: usize,
     ph: usize,
     src_tex: Option<TextureHandle>,
@@ -71,13 +71,23 @@ impl WideAngleDialog {
         p
     }
 
-    fn render(&mut self, ctx: &egui::Context) {
-        let t0 = crate::gpu_canvas::now_ms();
+    fn preview_surface(&mut self) -> Result<Surface, String> {
         let pf = Rect::new(0, 0, self.pw as i32, self.ph as i32);
         let p = self.proxy_params();
         let mesh = wideangle::solve(&p, pf);
         self.residual = mesh.residual / self.scale;
-        let out = photocraft_algo::warp::warp_triangles(&self.proxy, pf, &mesh.verts, &mesh.triangles(), Interp::Bilinear);
+        let mut out = photocraft_algo::warp::warp_triangles(&self.proxy, pf, &mesh.verts, &mesh.triangles(), Interp::Bilinear);
+        if let Some(colors) =
+            photocraft_engine::color_channels::explicit(&json!({"target":self.target}), self.proxy.format().mode.color_channels()).map_err(|e| e.to_string())?
+        {
+            photocraft_engine::color_channels::restrict_surface_in(&self.proxy, &mut out, colors, pf).map_err(|e| e.to_string())?;
+        }
+        Ok(out)
+    }
+
+    fn render(&mut self, ctx: &egui::Context) {
+        let t0 = crate::gpu_canvas::now_ms();
+        let Ok(out) = self.preview_surface() else { return };
         let img = tex_image(&out, self.pw, self.ph);
         match &mut self.out_tex {
             Some(t) => t.set(img, egui::TextureOptions::LINEAR),
@@ -100,27 +110,26 @@ impl WideAngleDialog {
     fn command_params(&self) -> Value {
         let mut v = serde_json::to_value(&self.params).unwrap_or(json!({}));
         v["layer"] = json!(self.layer.0);
-        v
+        crate::distort_ui::with_filter_target(v, &self.target)
     }
 }
 
 pub fn open(app: &mut PhotocraftApp, ctx: &egui::Context) -> Result<(), String> {
     photocraft_engine::commands::find("filter.adaptiveWideAngle").map(|c| (c.enabled)(&app.session)).unwrap_or(Err("unknown command".into()))?;
-    let (layer, surf, _) = crate::distort_ui::active_pixels(app)?;
+    let (layer, surf, _) = crate::distort_ui::active_filter_target(app)?;
     let st = app.session.active().ok_or("no document")?;
     let frame = st.doc.bounds();
     let name = st.doc.layer(layer).map(|l| l.name.clone()).unwrap_or_default();
     let (w, h) = (frame.width() as usize, frame.height() as usize);
     let k = w.max(h).div_ceil(PROXY_SIDE).max(1);
     let (pw, ph) = (w.div_ceil(k), h.div_ceil(k));
-    let proxy = photocraft_algo::resample::resize_surface(
-        &surf.convert(PixelFormat::RGBA8),
-        1.0 / k as f64,
-        1.0 / k as f64,
-        photocraft_algo::resample::Resample::Bilinear,
-    );
+    let proxy = if k == 1 {
+        surf.clone()
+    } else {
+        photocraft_algo::resample::resize_surface(&surf, 1.0 / k as f64, 1.0 / k as f64, photocraft_algo::resample::Resample::Bilinear)
+    };
     // Normalise the proxy to start at the origin.
-    let mut px = Surface::new(PixelFormat::RGBA8);
+    let mut px = Surface::new(surf.format());
     let src_r = Rect::new(
         (frame.x0 as f64 / k as f64) as i32,
         (frame.y0 as f64 / k as f64) as i32,
@@ -139,6 +148,7 @@ pub fn open(app: &mut PhotocraftApp, ctx: &egui::Context) -> Result<(), String> 
         frame,
         scale: 1.0 / k as f64,
         proxy: px,
+        target: crate::distort_ui::colour_set_target(app),
         pw,
         ph,
         src_tex: None,
@@ -465,6 +475,34 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_component_wide_angle_previews_and_commit_keep_unselected_samples() {
+        for mode in ["rgb", "cmyk", "lab"] {
+            for depth in [8, 16, 32] {
+                for alpha in [true, false] {
+                    let fixture = crate::distort_ui::component_tests::app(mode, depth);
+                    let mut app = if alpha { fixture } else { crate::distort_ui::component_tests::without_alpha(fixture) };
+                    open(&mut app, &egui::Context::default()).unwrap();
+                    let d = app.wide_angle.as_mut().unwrap();
+                    d.params.model = WideModel::Fisheye;
+                    d.params.focal_length = 10.0;
+                    d.params.constraints.push(Constraint { a: [8.0, 8.0], b: [56.0, 16.0], orientation: Orientation::Horizontal });
+                    let layer = d.layer;
+                    let before = d.proxy.clone();
+                    let bounds = Rect::new(0, 0, d.pw as i32, d.ph as i32);
+                    let preview = d.preview_surface().unwrap();
+                    crate::distort_ui::component_tests::protected(&before, &preview, bounds);
+                    assert_ne!(preview.read_region(bounds), before.read_region(bounds));
+                    app.run("channel.target", json!({"channel":{"color":1}})).unwrap();
+                    commit(&mut app).unwrap();
+                    let after = app.session.active().unwrap().doc.layer(layer).unwrap().surface().unwrap();
+                    crate::distort_ui::component_tests::protected(&before, after, bounds);
+                    assert_ne!(after.read_region(bounds), before.read_region(bounds));
+                }
+            }
+        }
+    }
 
     #[test]
     fn dialog_adds_constraints_and_commits() {

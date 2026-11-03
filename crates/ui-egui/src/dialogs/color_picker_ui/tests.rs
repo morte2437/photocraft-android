@@ -39,6 +39,33 @@ fn picker(color: &str) -> Harness<'static, Map<String, Value>> {
     h
 }
 
+/// #8968: at the extremes the marker sits on the field's edge and must not paint past it.
+#[test]
+fn field_marker_stays_inside_the_field() {
+    // Black in the default "h" mode: the marker is at the bottom-left corner.
+    let h = picker("#000000");
+    let mut field = None;
+    let mut circles = Vec::new();
+    for clipped in &h.output().shapes {
+        match &clipped.shape {
+            egui::Shape::Mesh(m) if m.vertices.len() == 33 * 33 => {
+                // The component slider is a 33 x 33 mesh too, drawn after the field.
+                field.get_or_insert(m.calc_bounds());
+            }
+            egui::Shape::Circle(c) => circles.push((c.center, c.radius, clipped.clip_rect)),
+            _ => {}
+        }
+    }
+    let field = field.expect("colour field drawn");
+    // The radio buttons draw circles too: keep the ones on the field.
+    circles.retain(|(center, _, _)| field.expand(6.0).contains(*center));
+    assert!(!circles.is_empty(), "the marker is drawn");
+    for (center, radius, clip) in circles {
+        let visible = Rect::from_center_size(center, vec2(2.0 * radius, 2.0 * radius)).intersect(clip);
+        assert!(field.contains_rect(visible), "marker {visible:?} leaves the field {field:?}");
+    }
+}
+
 /// Type `text` into the focused field one key per frame, like a person typing.
 fn type_keys(h: &mut Harness<'static, Map<String, Value>>, text: &str) {
     for ch in text.chars() {
@@ -100,7 +127,7 @@ fn field_and_slider_pick_on_press_and_follow_small_moves() {
     press(&mut h, o + vec2(FIELD + gap + 9.0, FIELD * 0.95));
     assert_ne!(color(&h), before, "the slider picks on press");
     let hue = rgb_to_hsb(parse_hex(&color(&h)).unwrap())[0];
-    assert!(hue < 30.0 || hue > 330.0, "hue {hue}");
+    assert!(hue.is_finite() && !(30.0..=330.0).contains(&hue), "hue {hue}");
 }
 
 /// Only the primary button picks: a right or middle press (and its release) on the field or

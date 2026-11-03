@@ -74,6 +74,10 @@ pub(crate) struct ExportArgs {
     /// and CMYK shrink) or progressive
     #[arg(long, value_name = "baseline|optimized|progressive", value_parser = jpeg_format)]
     pub(crate) jpeg_format: Option<JpegFormat>,
+    /// Request the flattened document at its canvas size in .pcraft output as
+    /// composite/full.png; it may be omitted. Check the manifest's full_composite member.
+    #[arg(long)]
+    pub(crate) pcraft_full_composite: bool,
 }
 
 /// Convert between formats (.pcraft, .psd, .png, .jpg, .tif, .webp, .exr, …)
@@ -91,6 +95,9 @@ pub(crate) struct ConvertArgs {
     /// Allow an <OUT> that is the <IN> file, replacing the original
     #[arg(long)]
     pub(crate) in_place: bool,
+    /// Explicitly approve high-memory PSD/PSB imports within the hard memory budget
+    #[arg(long)]
+    pub(crate) approve_high_memory: bool,
     #[command(flatten)]
     pub(crate) export: ExportArgs,
 }
@@ -102,6 +109,9 @@ pub(crate) struct InfoArgs {
     /// One line of JSON instead of pretty-printed
     #[arg(long)]
     pub(crate) compact: bool,
+    /// Explicitly approve high-memory PSD/PSB imports within the hard memory budget
+    #[arg(long)]
+    pub(crate) approve_high_memory: bool,
 }
 
 /// Open a file (or start a new document), run engine commands in order, save the result
@@ -130,6 +140,9 @@ pub(crate) struct RunArgs {
     /// Allow an --out that is the <FILE>, replacing the original
     #[arg(long)]
     pub(crate) in_place: bool,
+    /// Explicitly approve high-memory PSD/PSB imports within the hard memory budget
+    #[arg(long)]
+    pub(crate) approve_high_memory: bool,
     #[command(flatten)]
     pub(crate) export: ExportArgs,
     /// `--cmd` and `--params` values in command-line order, set by [`parse`].
@@ -169,6 +182,9 @@ pub(crate) struct BatchArgs {
     /// originals; --in-place allows it
     #[arg(long)]
     pub(crate) in_place: bool,
+    /// Explicitly approve high-memory PSD/PSB imports within the hard memory budget
+    #[arg(long)]
+    pub(crate) approve_high_memory: bool,
     #[command(flatten)]
     pub(crate) export: ExportArgs,
 }
