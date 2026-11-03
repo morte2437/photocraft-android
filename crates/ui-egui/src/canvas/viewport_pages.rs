@@ -628,8 +628,9 @@ pub(super) fn show(app: &mut PhotocraftApp, ctx: &egui::Context, idx: usize, xf:
         return false;
     }
     let key = stream_key(id.0);
-    // Half the per-document canvas budget: the rest is headroom for what the compositor needs.
-    let limit = gpu.canvas_budget() / 2;
+    // Half the document's share of the canvas budget: the rest is headroom for what the
+    // compositor needs.
+    let limit = gpu.canvas_fit(&doc).map_or(0, |(_, share)| share) / 2;
     let page_bytes = gpu.page_texture_bytes(doc.depth, size, PAGE_SIDE + 2, PAGE_SIDE + 2).max(1);
     let max_pages = usize::try_from(limit / page_bytes).unwrap_or(usize::MAX);
     // No room for a single page: the CPU canvas draws the document, as main does for every

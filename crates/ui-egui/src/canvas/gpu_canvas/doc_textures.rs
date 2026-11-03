@@ -81,6 +81,16 @@ impl DocTextures {
         Some(set)
     }
 
+    /// [`DocTextures::new`] for key `key`, first freeing the textures of documents no window
+    /// shows when the open documents' together wouldn't fit the canvas budget.
+    pub(super) fn new_for(device: &wgpu::Device, res: &mut Resources, key: u64, size: [u32; 2], tile: u32, format: wgpu::TextureFormat) -> Option<Self> {
+        let bytes = canvas_texture_bytes(size, tile, texel_bytes(format));
+        if bytes <= res.canvas_budget.load(Ordering::Relaxed) {
+            res.make_room(key, bytes);
+        }
+        Self::new(device, res, size, tile, format)
+    }
+
     fn create(device: &wgpu::Device, res: &Resources, size: [u32; 2], tile: u32, format: wgpu::TextureFormat) -> Self {
         let mut tiles = Vec::new();
         for ty in (0..size[1]).step_by(tile as usize) {

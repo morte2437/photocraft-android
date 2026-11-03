@@ -108,6 +108,8 @@ impl GpuCanvas {
         if held.saturating_add(bytes) > budget {
             return false;
         }
+        // Room among the other documents: those no window shows give theirs up first.
+        res.make_room(key, held + bytes);
         let rect = [x, y, dw, dh];
         // A page the GPU refuses (out of memory) fails alone: it falls back to the CPU canvas
         // instead of the uncaptured error disabling the GPU canvas for the session.
@@ -189,7 +191,8 @@ impl GpuCanvas {
         (d.tiles.iter().filter_map(|t| t.page.map(|(id, _)| id)).collect(), d.page_bytes())
     }
 
-    /// The per-document display texture budget ([`super::canvas_budget`]) pages are held to.
+    /// The display texture budget all documents share ([`super::canvas_budget`]); a document's
+    /// pages are held to its share ([`GpuCanvas::canvas_fit`]).
     pub fn canvas_budget(&self) -> u64 {
         self.canvas_budget.load(Ordering::Relaxed)
     }
