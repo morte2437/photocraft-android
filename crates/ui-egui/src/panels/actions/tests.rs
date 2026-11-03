@@ -16,6 +16,89 @@ fn action_set_bytes(set: &str, action: &str) -> Vec<u8> {
     .unwrap()
 }
 
+/// Dialog confirmation, worker completion and cancellation retain the original action boundary.
+#[test]
+fn single_history_dialog_confirmation_and_cancel() {
+    for (single, confirm, background) in [(true, true, false), (true, true, true), (true, false, false), (false, true, false)] {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"width":4,"height":4,"background":"#804020"})).unwrap();
+        app.run("actions.setHistory", json!({"singleState":single})).unwrap();
+        app.background_jobs = background;
+        let before = app.session.active().unwrap().doc.clone();
+        let count = app.session.active().unwrap().history.past_len();
+        let mut action = Action::new(
+            "Dialog",
+            vec![
+                ("layer.renameLayer".into(), json!({"name":"Prefix"})),
+                ("filter.blur.gaussianBlur".into(), json!({"radius":1})),
+                ("layer.renameLayer".into(), json!({"name":"Suffix"})),
+            ],
+        );
+        action.dialogs.insert(1);
+        app.session.actions.list.push(action);
+        let paused = play(&mut app, &json!({"action":"Dialog"})).unwrap();
+        let dialog = paused["paused"]["dialog"].as_u64().unwrap();
+        assert_eq!(app.session.active().unwrap().history.past_len(), count + 1);
+        if confirm {
+            crate::dialogs::confirm(&mut app, dialog).unwrap();
+        } else {
+            crate::dialogs::cancel(&mut app, dialog).unwrap();
+        }
+        let st = app.session.active().unwrap();
+        let after = st.doc.clone();
+        assert_eq!(st.doc.layer(st.active_layer.unwrap()).unwrap().name, if confirm { "Suffix" } else { "Prefix" });
+        if single {
+            assert_eq!(st.history.past_len(), count + 1);
+            assert_eq!(st.history.undo_label(), Some("Action: Dialog"));
+        } else {
+            assert!(st.history.past_len() >= count + 2);
+        }
+        assert!(app.session.undo());
+        if single {
+            assert_eq!(app.session.active().unwrap().doc.as_ref(), before.as_ref());
+        } else {
+            assert_ne!(app.session.active().unwrap().doc.as_ref(), before.as_ref());
+        }
+        assert!(app.session.redo());
+        assert_eq!(app.session.active().unwrap().doc.as_ref(), after.as_ref());
+        assert!(app.paused_playbacks.paused.is_empty());
+        assert_eq!(app.session.actions.playing, 0);
+        let count = app.session.active().unwrap().history.past_len();
+        app.session.execute("layer.renameLayer", json!({"name":"Outside"})).unwrap();
+        assert_eq!(app.session.active().unwrap().history.past_len(), count + 1);
+        assert!(app.session.undo());
+        assert_eq!(app.session.active().unwrap().doc.as_ref(), after.as_ref());
+    }
+}
+
+/// A stale dialog must reject its own edit before it can change an unrelated document/history.
+#[test]
+fn single_history_dialog_refuses_intervening_edit_or_document_switch() {
+    for switch in [false, true] {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"width":4,"height":4,"background":"#804020"})).unwrap();
+        let mut action =
+            Action::new("Bound", vec![("layer.renameLayer".into(), json!({"name":"Prefix"})), ("filter.blur.gaussianBlur".into(), json!({"radius":1}))]);
+        action.dialogs.insert(1);
+        app.session.actions.list.push(action);
+        let paused = play(&mut app, &json!({"action":0})).unwrap();
+        let dialog = paused["paused"]["dialog"].as_u64().unwrap();
+        if switch {
+            app.session.execute("file.new", json!({"width":2,"height":2})).unwrap();
+        } else {
+            app.session.execute("layer.renameLayer", json!({"name":"Unrelated"})).unwrap();
+        }
+        let before = app.session.active().unwrap().doc.clone();
+        let history = app.session.active().unwrap().history.entries();
+        assert!(crate::dialogs::confirm(&mut app, dialog).is_err());
+        assert!(std::sync::Arc::ptr_eq(&app.session.active().unwrap().doc, &before));
+        assert_eq!(app.session.active().unwrap().history.entries(), history);
+        assert!(app.filter_preview.is_none());
+        assert!(app.paused_playbacks.paused.is_empty());
+        assert_eq!(app.session.actions.playing, 0);
+    }
+}
+
 #[test]
 /// Browser multi-selection must not be truncated to the first file.
 fn bulk_load_imports_every_chosen_action_file() {

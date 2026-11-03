@@ -25,6 +25,8 @@ use crate::{EngineError, Result, Session};
 
 mod history;
 pub(crate) use history::ActionHistory;
+pub use history::{ActionHistoryContinuation, finish_pending_history, suspend_history};
+pub(crate) use history::{before_edit as before_action_edit, begin_document_history, finish_document_history};
 
 fn bad(cmd: &str, msg: impl Into<String>) -> EngineError {
     EngineError::BadParams { cmd: cmd.into(), msg: msg.into() }
@@ -492,7 +494,7 @@ fn run_recorded(s: &mut Session, action: &Action, from: usize) -> (u64, Option<V
 pub fn begin_playback(s: &mut Session, action: &Action) -> Result<Option<(usize, usize)>> {
     flush_recording(s)?;
     if s.actions.playing == 0 {
-        history::begin(s, &action.name)?;
+        history::begin(s, &action.name);
         s.actions.playback_steps = 0;
     }
     let recording = s.actions.recording.take();
@@ -505,7 +507,7 @@ pub fn finish_playback(s: &mut Session, recording: Option<(usize, usize)>, actio
     s.actions.playback_stack.pop();
     s.actions.playing = s.actions.playing.saturating_sub(1);
     if s.actions.playing == 0 {
-        history::finish(s);
+        history::finish_playback(s);
     }
     if let Some((_, idx)) = recording {
         restore_recording(s, idx, &action.name, from);

@@ -14,6 +14,31 @@ fn edit(h: &mut History, cur: &mut Arc<Document>, label: &str, f: impl FnOnce(&m
     h.record(label, before, LayerTarget::default());
 }
 
+/// A failed local transaction drops its visibility flags; a successful local purge keeps them.
+#[test]
+fn visibility_capture_follows_rollback_snapshot_and_purge() {
+    let mut doc = base();
+    doc.insert_above(None, Layer::raster("Second", doc.pixel_format()));
+    let ids = [doc.layers[0].id, doc.layers[1].id];
+    let mut cur = Arc::new(doc);
+    let mut history = History::default();
+    history.begin_visibility_capture(&[]);
+    edit(&mut history, &mut cur, "Prefix", |doc| doc.layer_mut(ids[0]).unwrap().visible = false);
+    history.add_current_visibility(&ids[..1]);
+    let prefix = cur.clone();
+    let checkpoint = history.clone();
+    edit(&mut history, &mut cur, "Failed part", |doc| doc.layer_mut(ids[1]).unwrap().visible = false);
+    history.add_current_visibility(&ids[1..]);
+    cur = history.rollback().unwrap().0;
+    assert_eq!(cur.as_ref(), prefix.as_ref());
+    assert_eq!(history.captured_visibility(), Some(ids[..1].as_ref()));
+    assert_eq!(checkpoint.captured_visibility(), Some(ids[..1].as_ref()), "a cloned snapshot is isolated");
+    edit(&mut history, &mut cur, "Successful part", |doc| doc.layer_mut(ids[1]).unwrap().visible = false);
+    history.add_current_visibility(&ids[1..]);
+    assert!(history.purge_last());
+    assert_eq!(history.captured_visibility(), Some(ids.as_ref()), "purging a local record keeps its actual change");
+}
+
 #[test]
 fn undo_redo_cycle() {
     let mut h = History::default();

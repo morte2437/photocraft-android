@@ -184,6 +184,7 @@ fn process_outputs<'a>(
 ) -> Value {
     // The scratch sessions have default preferences; a raw opens at the user's Raw Defaults.
     let raw_ppi = s.prefs().raw_defaults.resolution;
+    let action_prefs = s.prefs().actions.clone();
     let mut files = Vec::new();
     let mut errors = Vec::new();
     let mut written = OutputClaims::default();
@@ -192,6 +193,7 @@ fn process_outputs<'a>(
             written.check(&out).map_err(EngineError::Other)?;
             let bytes = read_file(path)?;
             let mut scratch = Session::new();
+            scratch.prefs.edit(|prefs| prefs.actions = action_prefs.clone());
             let doc = import_at_raw_ppi(raw_ppi, &file_name(path), &bytes)?;
             scratch.add_document(doc, Some(path.to_string()));
             if !f(&mut scratch, &out)? {
@@ -246,6 +248,14 @@ pub(crate) fn batch_keeps_step(id: &str) -> bool {
 
 pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "file.automate.batch";
+    let action_name = s
+        .action_history
+        .as_ref()
+        .map(|group| group.name.clone())
+        .or_else(|| s.actions.playback_stack.first().cloned())
+        .or_else(|| p.get("action").and_then(Value::as_str).map(str::to_string))
+        .or_else(|| p.get("action").and_then(|action| action.get("name")).and_then(Value::as_str).map(str::to_string))
+        .unwrap_or_else(|| "Batch".into());
     let mut steps =
         parse_steps(p.get("steps").or_else(|| p.get("action")).ok_or_else(|| EngineError::BadParams { cmd: cmd.into(), msg: "missing \"steps\"".into() })?)?;
     // Each result goes to the destination folder, which overrides the action's recorded Save /
@@ -297,10 +307,13 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     // one input to the next (failed or not) and back to this session, not restarted per input.
     let carried = std::cell::Cell::new(playback_steps);
     let carried = &carried;
+    #[cfg(test)]
+    let history_observer = s.batch_history_observer;
     let run = move |scratch: &mut Session, out: &str| {
         scratch.authorize = authorize;
         scratch.actions = actions.clone();
         scratch.actions.playback_steps = carried.get();
+        crate::actions_cmds::begin_document_history(scratch, &action_name);
         let result = (|| {
             // The document as the last recorded save found it, written once the action has run so a
             // failing step still writes nothing.
@@ -335,6 +348,11 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
                 _ => Ok(false),
             }
         })();
+        crate::actions_cmds::finish_document_history(scratch);
+        #[cfg(test)]
+        if let Some(observe) = history_observer {
+            observe(scratch);
+        }
         carried.set(scratch.actions.playback_steps);
         result
     };
@@ -346,4 +364,101 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
         s.actions.playback_steps = carried.get();
     }
     Ok(r)
+}
+
+#[cfg(test)]
+mod action_history_tests {
+    use super::*;
+    use crate::actions_cmds::Action;
+    use std::cell::RefCell;
+
+    #[derive(Debug)]
+    struct Observed {
+        id: photocraft_doc::DocId,
+        past: usize,
+        label: String,
+        name: String,
+        undo_name: String,
+    }
+
+    thread_local! { static OBSERVED: RefCell<Vec<Observed>> = const { RefCell::new(Vec::new()) }; }
+
+    /// Inspect the real scratch boundary without retaining or changing the scratch session.
+    fn observe(s: &Session) {
+        let st = s.active().unwrap();
+        let mut history = st.history.clone();
+        let (before, _) = history.undo(st.doc.clone()).unwrap();
+        let undo_name = before.layer(st.active_layer.unwrap()).unwrap().name.clone();
+        let (after, _) = history.redo(before).unwrap();
+        assert_eq!(after.as_ref(), st.doc.as_ref(), "redo restores exact document and layer identities");
+        let name = st.doc.layer(st.active_layer.unwrap()).unwrap().name.clone();
+        OBSERVED.with(|seen| {
+            seen.borrow_mut().push(Observed { id: st.doc.id, past: st.history.past_len(), label: st.history.undo_label().unwrap().into(), name, undo_name })
+        });
+    }
+
+    /// Batch and droplets keep one independent named entry per input, including nested and stopped runs.
+    #[test]
+    fn batch_and_droplet_document_history_boundaries() {
+        let dir = tempfile::tempdir().unwrap();
+        let image = photocraft_codecs::Image::from_u8(4, 4, photocraft_codecs::ChannelLayout::Rgb, vec![255; 48]).unwrap();
+        let bytes = photocraft_codecs::encode(&image, photocraft_codecs::Format::Png, &Default::default()).unwrap();
+        let paths: Vec<_> = ["a.png", "b.png"]
+            .iter()
+            .map(|name| {
+                let path = dir.path().join(name);
+                std::fs::write(&path, &bytes).unwrap();
+                path
+            })
+            .collect();
+        for (case, single, nested, stopped, droplet) in [
+            ("batch", true, false, false, false),
+            ("off", false, false, false, false),
+            ("nested", true, true, false, false),
+            ("stopped", true, false, true, false),
+            ("droplet", true, false, false, true),
+        ] {
+            OBSERVED.with(|seen| seen.borrow_mut().clear());
+            let mut s = Session::new();
+            s.batch_history_observer = Some(observe);
+            s.execute("actions.setHistory", json!({"singleState":single})).unwrap();
+            let mut steps = vec![("layer.renameLayer".into(), json!({"name":"Prefix"}))];
+            if stopped {
+                steps.push(("actions.stopMessage".into(), json!({"message":"Stop here"})));
+            }
+            steps.push(("layer.renameLayer".into(), json!({"name":"Final"})));
+            let action_steps = if nested {
+                s.actions.list.push(Action::new("Child", steps));
+                vec![("actions.play".to_string(), json!({"action":"Child"}))]
+            } else {
+                steps
+            };
+            let output = dir.path().join(case);
+            let result = if droplet {
+                let path = dir.path().join("named.pcdroplet");
+                s.execute("file.automate.createDroplet", json!({"path":path,"name":"Named","steps":action_steps,"output":output,"shim":false})).unwrap();
+                s.execute("file.automate.runDroplet", json!({"droplet":path,"input":paths})).unwrap()
+            } else {
+                s.execute("file.automate.batch", json!({"action":"Named","steps":action_steps,"input":paths,"output":output})).unwrap()
+            };
+            assert_eq!(result["errors"].as_array().unwrap().len(), if stopped { 2 } else { 0 }, "{case}: {result}");
+            OBSERVED.with(|seen| {
+                let seen = seen.borrow();
+                assert_eq!(seen.len(), 2, "{case}");
+                assert_ne!(seen[0].id, seen[1].id, "inputs have separate editing identities");
+                for entry in seen.iter() {
+                    assert_eq!(entry.past, if single { 1 } else { 2 }, "{case}: {entry:?}");
+                    if single {
+                        assert_eq!(entry.label, "Action: Named", "{case}");
+                    }
+                    assert_eq!(entry.name, if stopped { "Prefix" } else { "Final" }, "{case}");
+                    if !single {
+                        assert_eq!(entry.undo_name, "Prefix", "OFF undoes only the last step");
+                    } else {
+                        assert_ne!(entry.undo_name, "Prefix", "ON undoes the whole play");
+                    }
+                }
+            });
+        }
+    }
 }

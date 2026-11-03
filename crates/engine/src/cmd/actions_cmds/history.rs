@@ -1,31 +1,192 @@
-//! An outer action shares one history key across its document edits and nested calls.
+//! Consolidate document history after commands finish their own atomic transactions.
 use super::{EngineError, Result, Session};
+use photocraft_doc::{DocId, Document};
+use photocraft_ops::{History, LayerTarget};
+use std::sync::Arc;
+
+#[derive(Clone, Debug)]
+struct BeforeDocument {
+    id: DocId,
+    doc: Arc<Document>,
+    history: History,
+    layers: LayerTarget,
+    coalesce: Option<String>,
+    saved_revision: u64,
+    clean: bool,
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct ActionHistory {
-    pub key: String,
-    pub label: String,
+    pub name: String,
+    external: bool,
+    before: Vec<BeforeDocument>,
 }
 
-pub(super) fn begin(s: &mut Session, name: &str) -> Result<()> {
-    if !s.prefs().actions.create_single_history_state {
-        return Ok(());
+pub(super) fn begin(s: &mut Session, name: &str) {
+    if s.action_history.is_none() && s.prefs().actions.create_single_history_state {
+        s.action_history = Some(ActionHistory { name: name.into(), external: false, before: Vec::new() });
     }
-    let next = s.next_action_history.checked_add(1).ok_or_else(|| EngineError::Other("action history identifier exhausted".into()))?;
-    s.next_action_history = next;
-    // A caller-supplied coalesce key must never join the first edit to a previous gesture.
-    for st in &mut s.docs {
+}
+
+/// Capture each document lazily, before its first ordinary or compound edit. Commands retain
+/// their own records, purge and rollback semantics until the outer action finishes.
+pub(crate) fn before_edit(s: &mut Session) {
+    let Some(group) = &s.action_history else { return };
+    let Some(st) = s.active() else { return };
+    if group.before.iter().any(|before| before.id == st.doc.id) {
+        return;
+    }
+    let before = BeforeDocument {
+        id: st.doc.id,
+        doc: st.doc.clone(),
+        history: st.history.clone(),
+        layers: st.layer_target(),
+        coalesce: st.coalesce.clone(),
+        saved_revision: st.saved_revision,
+        clean: !st.is_dirty(),
+    };
+    if let Some(group) = &mut s.action_history {
+        group.before.push(before);
+    }
+    if let Some(st) = s.active_mut() {
         st.coalesce = None;
+        st.history.begin_visibility_capture(&[]);
     }
-    s.action_history = Some(ActionHistory { key: format!("action-history:{next}"), label: format!("Action: {name}") });
-    Ok(())
+}
+
+fn consolidate(s: &mut Session, group: &ActionHistory) {
+    for before in &group.before {
+        let Some(st) = s.docs.iter_mut().find(|st| st.doc.id == before.id) else { continue };
+        let mut history = before.history.clone();
+        // Discarded command-local rows may have been visible while a dialog was open. Their
+        // identifiers must not be allocated to a different state after consolidation.
+        history.reserve_ids_from(&st.history);
+        history.max_states = st.history.max_states;
+        history.max_bytes = st.history.max_bytes;
+        history.non_linear = st.history.non_linear;
+        if st.doc.as_ref() == before.doc.as_ref() {
+            st.doc = before.doc.clone();
+            st.history = history;
+            st.coalesce = before.coalesce.clone();
+            if before.clean && st.saved_revision == before.saved_revision {
+                st.saved_revision = st.revision;
+            }
+        } else {
+            let visibility = st.history.captured_visibility().unwrap_or(st.history.current_visibility()).to_vec();
+            history.set_current_layers(before.layers.clone());
+            history.record(format!("Action: {}", group.name), before.doc.clone(), st.layer_target());
+            history.add_current_visibility(&visibility);
+            st.history = history;
+            st.coalesce = None;
+            st.trim_history();
+        }
+    }
 }
 
 pub(super) fn finish(s: &mut Session) {
-    let Some(group) = s.action_history.take() else { return };
-    for st in &mut s.docs {
-        if st.coalesce.as_deref() == Some(group.key.as_str()) {
-            st.coalesce = None;
+    if let Some(group) = s.action_history.take() {
+        consolidate(s, &group);
+    }
+}
+
+/// Batch owns its scope across nested plays without adding an artificial playback depth.
+pub(crate) fn begin_document_history(s: &mut Session, name: &str) {
+    begin(s, name);
+    if let Some(group) = &mut s.action_history {
+        group.external = true;
+    }
+}
+
+pub(crate) fn finish_document_history(s: &mut Session) {
+    finish(s);
+}
+
+pub(super) fn finish_playback(s: &mut Session) {
+    if s.action_history.as_ref().is_none_or(|group| !group.external) {
+        finish(s);
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct HistoryBinding {
+    past: usize,
+    rows: Vec<(Option<u64>, String)>,
+    source: Option<usize>,
+    cleared: bool,
+}
+
+impl HistoryBinding {
+    fn of(history: &History) -> Self {
+        let labels = history.entries().into_iter().chain(history.redo_labels().map(str::to_string));
+        Self {
+            past: history.past_len(),
+            rows: labels.enumerate().map(|(i, label)| (history.row_id(i), label)).collect(),
+            source: history.brush_source(),
+            cleared: history.is_cleared(),
         }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct PausedDocument {
+    id: DocId,
+    doc: Arc<Document>,
+    history: HistoryBinding,
+}
+
+/// Exact document/history binding of a dialog continuation. Never stored in dialog JSON.
+#[derive(Clone, Debug)]
+pub struct ActionHistoryContinuation {
+    group: ActionHistory,
+    active: Option<DocId>,
+    documents: Vec<PausedDocument>,
+}
+
+impl ActionHistoryContinuation {
+    /// Resume before the dialog's edit; intervening edits must never join the original play.
+    pub fn resume(&self, s: &mut Session) -> Result<()> {
+        if s.action_history.is_some() || s.active().map(|st| st.doc.id) != self.active {
+            return Err(EngineError::Other("the paused action's document is no longer current".into()));
+        }
+        for before in &self.documents {
+            let Some(st) = s.docs.iter().find(|st| st.doc.id == before.id) else {
+                return Err(EngineError::Other("a paused action's document was closed".into()));
+            };
+            if !Arc::ptr_eq(&st.doc, &before.doc) || HistoryBinding::of(&st.history) != before.history {
+                return Err(EngineError::Other("the paused action's document or history changed".into()));
+            }
+        }
+        for before in &self.group.before {
+            if let Some(st) = s.docs.iter_mut().find(|st| st.doc.id == before.id) {
+                let prefix = st.history.current_visibility().to_vec();
+                st.history.begin_visibility_capture(&prefix);
+            }
+        }
+        s.action_history = Some(self.group.clone());
+        Ok(())
+    }
+}
+
+/// Publish the completed prefix, then release the active scope while a dialog is open.
+pub fn suspend_history(s: &mut Session) -> Option<ActionHistoryContinuation> {
+    if s.actions.playing != 1 {
+        return None;
+    }
+    let group = s.action_history.take()?;
+    consolidate(s, &group);
+    let active = s.active().map(|st| st.doc.id);
+    let documents = s
+        .docs
+        .iter()
+        .filter(|st| Some(st.doc.id) == active || group.before.iter().any(|b| b.id == st.doc.id))
+        .map(|st| PausedDocument { id: st.doc.id, doc: st.doc.clone(), history: HistoryBinding::of(&st.history) })
+        .collect();
+    Some(ActionHistoryContinuation { group, active, documents })
+}
+
+/// End a dialog scope if its command or continuation fails before playback starts.
+pub fn finish_pending_history(s: &mut Session) {
+    if s.actions.playing == 0 {
+        finish_playback(s);
     }
 }

@@ -58,6 +58,8 @@ pub struct History {
     current_layers: LayerTarget,
     /// [`HistoryState::visibility`] of the current state.
     current_visibility: Vec<LayerId>,
+    /// Optional compound-operation accumulator; snapshots and rollback carry it with the history.
+    visibility_capture: Option<Arc<Vec<LayerId>>>,
     /// History Options › Allow Non-Linear History: a step recorded while later states exist
     /// (after stepping back) keeps them and goes to the end of the list, instead of discarding
     /// them; see [`History::record`] and [`History::remove`].
@@ -80,6 +82,7 @@ pub struct History {
 /// What [`History::rollback`] needs to take the most recent [`History::record`] back.
 #[derive(Clone, Debug)]
 struct LastRecord {
+    visibility_capture_before: Option<Arc<Vec<LayerId>>>,
     /// The document it replaced (the state a rollback makes current again).
     before: Arc<Document>,
     /// How many former redo states it moved onto the undo side (always 0 in linear history).
@@ -121,6 +124,7 @@ impl History {
             current_label: "Open".into(),
             current_layers: LayerTarget::default(),
             current_visibility: Vec::new(),
+            visibility_capture: None,
             non_linear: false,
             last_record: None,
             cleared: None,
@@ -179,7 +183,7 @@ impl History {
             }
             evicted.push((at, state));
         }
-        self.last_record = Some(LastRecord { before, moved, evicted });
+        self.last_record = Some(LastRecord { before, moved, evicted, visibility_capture_before: self.visibility_capture.clone() });
     }
 
     pub fn can_undo(&self) -> bool {
@@ -221,6 +225,18 @@ impl History {
     /// again when a later change coalesces into the step).
     pub fn add_current_visibility(&mut self, ids: &[LayerId]) {
         merge_ids(&mut self.current_visibility, ids);
+        if let Some(capture) = &mut self.visibility_capture {
+            merge_ids(Arc::make_mut(capture), ids);
+        }
+    }
+
+    /// Retain only changes that recorded edits make undoable, across trimming and local purges.
+    pub fn begin_visibility_capture(&mut self, prefix: &[LayerId]) {
+        self.visibility_capture = Some(Arc::new(prefix.to_vec()));
+    }
+
+    pub fn captured_visibility(&self) -> Option<&[LayerId]> {
+        self.visibility_capture.as_deref().map(Vec::as_slice)
     }
 
     /// Undo: `current` becomes redoable; returns the document to make current and the layers it
@@ -244,6 +260,9 @@ impl History {
         let label = std::mem::replace(&mut self.current_label, prev.label);
         let layers = std::mem::replace(&mut self.current_layers, prev.layers.clone());
         let visibility = std::mem::replace(&mut self.current_visibility, prev.visibility);
+        if let Some(capture) = &mut self.visibility_capture {
+            merge_ids(Arc::make_mut(capture), &visibility);
+        }
         let id = std::mem::replace(&mut self.current_id, prev.id);
         self.redo.push(HistoryState { label, doc: current, layers, visibility, id });
         Some((prev.doc, prev.layers))
@@ -260,6 +279,9 @@ impl History {
         let label = std::mem::replace(&mut self.current_label, next.label);
         let layers = std::mem::replace(&mut self.current_layers, next.layers.clone());
         let visibility = std::mem::replace(&mut self.current_visibility, next.visibility);
+        if let Some(capture) = &mut self.visibility_capture {
+            merge_ids(Arc::make_mut(capture), &self.current_visibility);
+        }
         let id = std::mem::replace(&mut self.current_id, next.id);
         self.undo.push_back(HistoryState { label, doc: current, layers, visibility, id });
         Some((next.doc, next.layers))
@@ -429,7 +451,8 @@ impl History {
         if self.undo.len().saturating_add(held.evicted.len()) <= held.moved {
             return None;
         }
-        let LastRecord { moved, evicted, .. } = self.last_record.take()?;
+        let LastRecord { moved, evicted, visibility_capture_before, .. } = self.last_record.take()?;
+        self.visibility_capture = visibility_capture_before;
         // Put each back where it was taken off, the last one taken off first.
         for (at, state) in evicted.into_iter().rev() {
             if let Some(tiles) = &mut self.tiles {
@@ -457,6 +480,12 @@ impl History {
     /// can still take that record back.
     pub fn recorded_before(&self) -> Option<Arc<Document>> {
         self.last_record.as_ref().map(|held| held.before.clone())
+    }
+
+    /// Keep identifiers consumed by a completed compound operation reserved when its history
+    /// is consolidated from an earlier snapshot. Removed rows must not name a later state.
+    pub fn reserve_ids_from(&mut self, later: &Self) {
+        self.next_id = self.next_id.max(later.next_id);
     }
 
     /// Forget the redo states, e.g. after undoing half of a compound step that failed.

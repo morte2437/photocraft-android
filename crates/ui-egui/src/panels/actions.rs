@@ -183,6 +183,7 @@ fn play_owned(app: &mut PhotocraftApp, params: &Value, suspended: Option<Value>)
     let (action, from) = match actions_cmds::playback_plan(&app.session, params) {
         Ok(plan) => plan,
         Err(e) => {
+            actions_cmds::finish_pending_history(&mut app.session);
             restore_recording(app, suspended.as_ref());
             return Err(e.to_string());
         }
@@ -190,6 +191,7 @@ fn play_owned(app: &mut PhotocraftApp, params: &Value, suspended: Option<Value>)
     let recording = match actions_cmds::begin_playback(&mut app.session, &action) {
         Ok(r) => r,
         Err(e) => {
+            actions_cmds::finish_pending_history(&mut app.session);
             restore_recording(app, suspended.as_ref());
             return Err(e.to_string());
         }
@@ -280,18 +282,28 @@ fn play_owned(app: &mut PhotocraftApp, params: &Value, suspended: Option<Value>)
             }
         }
     }
+    let history = if failed.is_none() && paused.is_some() { actions_cmds::suspend_history(&mut app.session) } else { None };
     actions_cmds::finish_playback(&mut app.session, None, &action, from);
     match paused.as_ref().and_then(|p| p.get("dialog")).and_then(Value::as_u64).and_then(|d| app.ui.dialog_mut(d)) {
         // Paused for a dialog: the call goes on after it, so recording stays suspended.
         Some(d) if failed.is_none() => {
             let entry = d.fields.get(RESUME).and_then(Value::as_u64).and_then(|t| app.paused_playbacks.paused.get_mut(&t));
-            match (owner, entry) {
-                (Some(owner), Some(p)) => p.record = Some(owner),
+            match entry {
+                Some(p) => {
+                    p.record = owner;
+                    p.history = history;
+                }
                 // No continuation to carry the recording: the call ends here.
-                (owner, _) => restore_recording(app, owner.as_ref()),
+                _ => {
+                    drop(history);
+                    restore_recording(app, owner.as_ref());
+                }
             }
         }
-        _ => restore_recording(app, owner.as_ref()),
+        _ => {
+            drop(history);
+            restore_recording(app, owner.as_ref());
+        }
     }
     Ok(match (failed, paused) {
         (Some(f), _) => json!({"action": action.name, "ran": ran, "failed": f}),
@@ -764,7 +776,12 @@ pub(crate) fn suspended_guard(app: &PhotocraftApp, id: &str) -> Result<(), Strin
 
 /// A step dialog's command failed: the action ends there.
 pub fn abandoned(app: &mut PhotocraftApp, fields: &serde_json::Map<String, Value>) {
-    let record = fields.get(RESUME).and_then(|t| app.paused_playbacks.take(t)).and_then(|p| p.record);
+    let paused = fields.get(RESUME).and_then(|t| app.paused_playbacks.take(t));
+    let record = paused.and_then(|p| {
+        drop(p.history);
+        p.record
+    });
+    actions_cmds::finish_pending_history(&mut app.session);
     restore_recording(app, record.as_ref());
 }
 
@@ -784,6 +801,7 @@ pub(crate) struct PausedPlayback {
     /// box, automation), which end the call through `resume`, `abandoned` or `stopped`, so the
     /// recording comes back exactly once.
     record: Option<Value>,
+    history: Option<actions_cmds::ActionHistoryContinuation>,
     /// The actions still to play after this one, as they were when Play started a whole set.
     /// Actions have no id, so the whole action stands in for one: an action deleted and made again
     /// under the same name, or edited, while the dialog is open no longer matches.
@@ -804,13 +822,28 @@ pub(crate) struct PausedPlaybacks {
 impl PausedPlaybacks {
     fn pause(&mut self, action: String, from: usize, gate: Option<Gate>) -> u64 {
         self.last = self.last.wrapping_add(1);
-        self.paused.insert(self.last, PausedPlayback { action, from, gate, record: None, then: Vec::new(), ran: 0 });
+        self.paused.insert(self.last, PausedPlayback { action, from, gate, record: None, history: None, then: Vec::new(), ran: 0 });
         self.last
     }
 
     fn take(&mut self, token: &Value) -> Option<PausedPlayback> {
         token.as_u64().and_then(|token| self.paused.remove(&token))
     }
+}
+
+/// Bind the dialog's own edit to its suspended action before it runs or starts a worker.
+pub(crate) fn prepare_history(app: &mut PhotocraftApp, fields: &serde_json::Map<String, Value>) -> Result<(), String> {
+    let Some(token) = fields.get(RESUME).and_then(Value::as_u64) else { return Ok(()) };
+    let history = app.paused_playbacks.paused.get_mut(&token).ok_or("this dialog doesn't belong to a paused action")?.history.take();
+    if let Some(history) = history
+        && let Err(e) = history.resume(&mut app.session)
+    {
+        if let Some(paused) = app.paused_playbacks.paused.get_mut(&token) {
+            paused.history = Some(history);
+        }
+        return Err(e.to_string());
+    }
+    Ok(())
 }
 
 /// A step dialog confirmed: continue the action after it (`dialogs::confirm` calls this).
@@ -823,11 +856,18 @@ pub fn resume(app: &mut PhotocraftApp, fields: &serde_json::Map<String, Value>) 
         return Err("this dialog doesn't belong to a paused action".into());
     };
     let owner = paused.record.clone();
+    if let Some(history) = &paused.history
+        && let Err(e) = history.resume(&mut app.session)
+    {
+        restore_recording(app, owner.as_ref());
+        return Err(e.to_string());
+    }
     // The dialog's command may run as a background job; the next step needs its result.
     if let Some(doc) = app.session.active().map(|d| d.doc.id)
         && let Some(job) = app.session.job_on(doc)
         && let Err(e) = app.session.wait_job(job.id)
     {
+        actions_cmds::finish_pending_history(&mut app.session);
         restore_recording(app, owner.as_ref());
         let template = "Action playback failed: {error}";
         app.ui.status = crate::i18n::fmt(tl!(template), &[("error", &e.to_string())]);

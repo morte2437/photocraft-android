@@ -201,9 +201,11 @@ pub struct Session {
     pub journal: Vec<(String, Value)>,
     /// Coalescing key of the command being executed.
     coalesce_request: Option<String>,
-    /// The outer action's document-edit grouping, independent of nested command dispatch.
+    /// The outer action's original document/history states, independent of command transactions.
     action_history: Option<actions_cmds::ActionHistory>,
-    next_action_history: u64,
+    /// Tests observe the actual scratch-session boundary without retaining it or changing output.
+    #[cfg(test)]
+    batch_history_observer: Option<fn(&Session)>,
     /// Pixels copied with Edit › Copy / Cut (shared by all documents, like Photoshop).
     pub clipboard: Option<edit_cmds::Clip>,
     /// Layer › Layer Style › Copy Layer Style: the effects and the Blending Options

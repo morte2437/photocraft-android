@@ -1,14 +1,5 @@
 # Actions files (`.atn`)
 
-## Action playback history
-
-Actions create one history entry named `Action: <name>` by default. Nested plays
-share the outer action's entry, and a failing step keeps the completed prefix.
-`actions.setHistory {"singleState":false}` restores per-step history. The option
-is saved as `actions.createSingleHistoryState` in preferences and defaults to true
-when loading older preferences. It is separate from Playback Options' performance
-modes; the Playback Options dialog can use the same setting when #5212 lands.
-
 PhotoCraft loads and saves action sets in the reference application's `.atn` format: Load Actions and
 Save Actions in the Actions panel menu, `actions.load` / `actions.save` for agents, and
 `photocraft batch --actions set.atn` on the command line. Reading and writing the file lives in
@@ -26,6 +17,23 @@ This page covers the events PhotoCraft maps today, the settings some of them sti
 layers and documents, newer and older events and files, and a measured reference for the events it does not
 map yet, with everything needed to implement them without
 the reference application.
+
+## Action playback history
+
+Actions create one history entry named `Action: <name>` by default. Nested plays
+share the outer action's entry, and a failing or Stop step keeps the completed
+prefix. A play with no document change adds no entry and preserves redo.
+`actions.setHistory {"singleState":false}` restores per-step history. The option
+is saved as `actions.createSingleHistoryState` in preferences and defaults to true
+when loading older preferences. It is separate from Playback Options' performance
+modes; the Playback Options dialog can use the same setting when #5212 lands.
+
+Step-dialog confirmation joins the original play only while its document and
+history still match the paused state. Cancel keeps the completed prefix; an
+intervening edit or document switch prevents the stale dialog from applying.
+Batch and droplets group each processed document independently under the action's
+name and use the same saved option.
+Existing non-linear History ordering and visibility options continue to apply.
 
 ## Supported events (144)
 

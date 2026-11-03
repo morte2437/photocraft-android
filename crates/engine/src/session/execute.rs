@@ -223,6 +223,9 @@ impl Session {
     /// [`Self::edit`], recording a history state only when `record` is set. An unrecorded change
     /// still marks the document modified and leaves the redo states alone.
     pub(crate) fn edit_with<R>(&mut self, label: &str, record: bool, f: impl FnOnce(&mut Document, &mut Option<LayerId>) -> Result<R>) -> Result<R> {
+        if record {
+            crate::actions_cmds::before_action_edit(self);
+        }
         // Every mutation path (linked-file refresh, transform, place) re-renders smart objects
         // through this entry; the requesting session's authority must reach those renders.
         let _authorization = crate::jobs::render_authorization_scope(self.authorize);
@@ -282,16 +285,12 @@ impl Session {
         let keep_clean = st.keeps_clean(&before);
         #[cfg(any(test, debug_assertions))]
         let hint_before = before.clone();
-        let group = self.action_history.clone();
-        let key = group.as_ref().map(|g| g.key.clone()).or_else(|| self.coalesce_request.clone());
-        let label = group.as_ref().map_or(label, |g| g.label.as_str());
+        let key = self.coalesce_request.clone();
         let st = self.active_mut().ok_or(EngineError::NoDocument)?;
         let layers = st.layer_target();
         if !record {
             // Nothing to coalesce with: the next recorded step starts a state of its own.
-            if group.is_none() {
-                st.coalesce = None;
-            }
+            st.coalesce = None;
         } else if key.is_none() || st.coalesce != key || !st.history.can_undo() {
             st.history.set_current_layers(prior);
             st.history.record(label, before.clone(), layers);
