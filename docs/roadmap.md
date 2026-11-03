@@ -122,3 +122,5 @@ Each milestone has a **definition of done (DoD)** and must leave `main` green on
 | 2026-10-10 | major | Progress docs restructured: honest assessment and dated measurements moved to `target-app-parity.md`, Affinity notes to `file-format-parity.md`; new Current focus and estimates; `parity.md` renamed `parity-checklist.md` |
 | 2026-10-08 | minor | Tools, Affinity import and performance measurements added |
 | 2026-10-05 | major | Honest parity assessment added |
+
+2026-10-13: native scratch storage pages current and history tiles through compressed, CRC-checked files. Fresh RAM budgets default to 70%; engine-owned memory supervision stops with its last session. Scratch errors block edit/save commits and permit retry. Unix files are private and stale files swept at startup; Windows files use delete-on-close. See [scratch disks](scratch-disks.md). Streaming import and viewport rendering follow separately.

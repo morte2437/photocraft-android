@@ -11,40 +11,10 @@ pub(crate) struct Tiles {
     bytes: u128,
 }
 
-pub(crate) fn surfaces(doc: &Document, mut visit: impl FnMut(&Surface)) {
-    for (_, _, layer) in doc.walk() {
-        if let Some(surface) = layer.surface() {
-            visit(surface);
-        }
-        if let Some(mask) = &layer.mask {
-            visit(&mask.surface);
-        }
-        if let Some(cache) = &layer.fill_cache {
-            visit(&cache.surface);
-        }
-        if let LayerContent::Smart(smart) = &layer.content
-            && let Some(mask) = &smart.filter_mask
-        {
-            visit(&mask.surface);
-        }
-        if let Some(video) = &layer.video {
-            // Undo retains the whole clip, not only the displayed frame. Visit aliases too:
-            // Tiles tracks every owner and counts their shared allocations only once.
-            for frame in video.frames.iter().chain(video.original_frames.iter().flatten()) {
-                visit(frame);
-            }
-        }
-    }
-    for channel in doc.channels.iter().chain(&doc.quick_mask) {
-        visit(&channel.surface);
-    }
-    // A pattern fill or layer style copies its pattern into the document.
-    for pattern in &doc.patterns {
-        visit(&pattern.surface);
-    }
-    if let Some(selection) = &doc.selection {
-        visit(selection);
-    }
+pub(crate) fn surfaces(doc: &Document, visit: impl FnMut(&Surface)) {
+    // Undo retains the whole clip, not only the displayed frame. Video aliases are visited
+    // too: Tiles tracks every owner and counts their shared allocations only once.
+    doc.for_each_surface(visit);
 }
 
 /// Every shared allocation `doc` holds that history can retain, as `visit(address, length)`:
@@ -53,7 +23,7 @@ pub(crate) fn surfaces(doc: &Document, mut visit: impl FnMut(&Surface)) {
 pub(crate) fn blocks(doc: &Document, mut visit: impl FnMut(usize, usize)) {
     surfaces(doc, |surface| {
         for (_, tile) in surface.tiles() {
-            visit(Arc::as_ptr(tile) as usize, tile.bytes().len());
+            visit(Arc::as_ptr(tile) as usize, tile.len());
         }
     });
     for (_, _, layer) in doc.walk() {

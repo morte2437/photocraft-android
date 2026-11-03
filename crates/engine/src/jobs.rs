@@ -377,6 +377,18 @@ pub fn run<T: Send + 'static>(
     work: impl FnOnce(&JobCtx) -> Result<T> + Send + 'static,
     apply: impl FnOnce(&mut Session, T) -> Result<Value> + Send + 'static,
 ) -> Result<Value> {
+    // The job reads the active document it captured; only that document's pixels gate it.
+    let source = s.active().map(|d| d.doc.clone());
+    let work = move |ctx: &JobCtx| -> Result<T> {
+        photocraft_compose::discard_unreadable_pixel_caches();
+        let health = || source.as_deref().map_or(Ok(()), photocraft_doc::Document::scratch_health).map_err(EngineError::Other);
+        health()?;
+        let generation = photocraft_raster::spill::read_error_generation();
+        let value = work(ctx)?;
+        photocraft_raster::spill::check_since(generation).map_err(EngineError::Other)?;
+        health()?;
+        Ok(value)
+    };
     let authorization = s.authorize.or_else(|| RENDER_AUTHORIZATION.with(std::cell::Cell::get));
     let _authorization = AuthorizationScope::enter(authorization);
     // The job's document: stored paths it follows are resolved against it on any thread.
@@ -813,6 +825,7 @@ impl Session {
         // The offer belongs to this one dispatch. Early errors drop it locally, including
         // authorization, validation, floating-selection and admission failures.
         let live_commit = self.live_commit.take();
+        self.sync_scratch_state();
         let spec = crate::commands::find(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
         // Params are named fields: anything but an object (or null, meaning none) is a caller
         // mistake, not "use every default".

@@ -122,7 +122,7 @@ fn dither_tile(s: &Surface, out: &Surface, t: &Transform, bounds: Rect, c: TileC
     for (index, dp) in dest.bytes_mut().chunks_exact_mut(ds).enumerate() {
         let x = x0 + (index % TILE_SIZE as usize) as i32;
         let y = y0 + (index / TILE_SIZE as usize) as i32;
-        let sp = match source {
+        let sp = match &source {
             Some(bytes) => bytes.get(index * ss..index * ss + ss).ok_or_else(|| bad("a stored tile has invalid sample storage"))?,
             None => default,
         };
