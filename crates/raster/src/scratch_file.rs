@@ -247,7 +247,7 @@ fn reap_abandoned(dir: &Path, own: &File) {
     use std::os::unix::fs::MetadataExt;
     use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
     let Ok(metadata) = own.metadata() else { return };
-    let mut system = System::new();
+    let Ok(mut system) = System::new() else { return };
     system.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
     // Fail closed when process enumeration isn't available. Live files are never removed.
     if system.process(Pid::from_u32(std::process::id())).is_none() {

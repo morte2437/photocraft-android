@@ -25,18 +25,26 @@ pub struct PsdMemoryEstimate {
     pub workspace_bytes: u64,
     /// Total peak requirement (retained + workspace).
     pub total_bytes: u64,
+    /// The part of `retained_bytes` that is tile pixels (layer, mask, channel, fallback and
+    /// pattern surfaces). Tiles can be spilled to the scratch disk while it is on, so admission
+    /// does not bound them by physical RAM; the merged planes, pattern decodes and the workspace
+    /// are ordinary memory.
+    pub tile_bytes: u64,
 }
 
 #[derive(Default)]
 struct ImportBudget {
     retained: u64,
     workspace: u64,
+    tiles: u64,
 }
 
 #[cfg(any(test, feature = "testgen"))]
 thread_local! {
     /// Extra bytes added to every estimate on this thread by [`with_test_estimate_charge`].
     static TEST_ESTIMATE_CHARGE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Extra tile-pixel bytes added by [`with_test_tile_charge`].
+    static TEST_TILE_CHARGE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// Adds `bytes` to every PSD memory estimate made on this thread while `f` runs.
@@ -64,28 +72,45 @@ pub fn with_test_estimate_charge<R>(bytes: u64, f: impl FnOnce() -> R) -> R {
     f()
 }
 
-/// The calling thread's current estimate charge, for an explicit scope to capture.
+/// [`with_test_estimate_charge`] for tile pixels: `bytes` are added to every estimate made on
+/// this thread while `f` runs, as spillable tile bytes ([`PsdMemoryEstimate::tile_bytes`]), so a
+/// scratch-aware admission test needs no huge fixture. Captured by
+/// [`crate::memory::TestMemoryScope`] like the plain charge.
 #[cfg(any(test, feature = "testgen"))]
-pub(crate) fn test_estimate_charge() -> u64 {
-    TEST_ESTIMATE_CHARGE.with(|c| c.get())
+pub fn with_test_tile_charge<R>(bytes: u64, f: impl FnOnce() -> R) -> R {
+    struct Reset(u64);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_TILE_CHARGE.with(|c| c.set(self.0));
+        }
+    }
+    let prev = TEST_TILE_CHARGE.with(|c| c.replace(bytes));
+    let _reset = Reset(prev);
+    f()
 }
 
-/// Enters a captured estimate charge (an explicit [`crate::memory::TestMemoryScope`] worker) and
-/// returns the charge it replaced, to restore after the scope ends.
+/// The calling thread's current (plain, tile) estimate charges, for an explicit scope to capture.
 #[cfg(any(test, feature = "testgen"))]
-pub(crate) fn enter_test_estimate_charge(bytes: u64) -> u64 {
-    TEST_ESTIMATE_CHARGE.with(|c| c.replace(bytes))
+pub(crate) fn test_estimate_charge() -> (u64, u64) {
+    (TEST_ESTIMATE_CHARGE.with(|c| c.get()), TEST_TILE_CHARGE.with(|c| c.get()))
 }
 
-/// The test seam's extra charge; zero in every other build.
-fn test_estimate_charge_value() -> u64 {
+/// Enters captured estimate charges (an explicit [`crate::memory::TestMemoryScope`] worker) and
+/// returns the charges they replaced, to restore after the scope ends.
+#[cfg(any(test, feature = "testgen"))]
+pub(crate) fn enter_test_estimate_charge(bytes: u64, tiles: u64) -> (u64, u64) {
+    (TEST_ESTIMATE_CHARGE.with(|c| c.replace(bytes)), TEST_TILE_CHARGE.with(|c| c.replace(tiles)))
+}
+
+/// The test seam's extra (plain, tile) charges; zero in every other build.
+fn test_estimate_charge_value() -> (u64, u64) {
     #[cfg(any(test, feature = "testgen"))]
     {
         test_estimate_charge()
     }
     #[cfg(not(any(test, feature = "testgen")))]
     {
-        0
+        (0, 0)
     }
 }
 
@@ -125,7 +150,15 @@ impl ImportBudget {
         // origin occupies four tiles. Widen first, including the exclusive right/bottom edge.
         let nx = (i64::from(rect.right) - 1).div_euclid(tile) - i64::from(rect.left).div_euclid(tile) + 1;
         let ny = (i64::from(rect.bottom) - 1).div_euclid(tile) - i64::from(rect.top).div_euclid(tile) + 1;
-        self.retain(mul(mul(mul(nx as u64, ny as u64)?, (TILE_SIZE as u64).pow(2))?, mul(channels, sample)?)?)
+        let bytes = mul(mul(mul(nx as u64, ny as u64)?, (TILE_SIZE as u64).pow(2))?, mul(channels, sample)?)?;
+        self.tile(bytes)
+    }
+
+    /// Retained tile pixels: spillable to the scratch disk.
+    fn tile(&mut self, bytes: u64) -> Result<(), IoError> {
+        self.retain(bytes)?;
+        self.tiles = self.tiles.checked_add(bytes).ok_or_else(overflow)?;
+        Ok(())
     }
 }
 
@@ -205,9 +238,11 @@ pub fn estimate(file: &PsdFile) -> Result<PsdMemoryEstimate, IoError> {
             budget.scratch(converted.checked_add(p.decoded_bytes).ok_or_else(overflow)?);
         }
     }
-    budget.retain(test_estimate_charge_value())?;
+    let (charge, tile_charge) = test_estimate_charge_value();
+    budget.retain(charge)?;
+    budget.tile(tile_charge)?;
     let total_bytes = budget.required()?;
-    Ok(PsdMemoryEstimate { retained_bytes: budget.retained, workspace_bytes: budget.workspace, total_bytes })
+    Ok(PsdMemoryEstimate { retained_bytes: budget.retained, workspace_bytes: budget.workspace, total_bytes, tile_bytes: budget.tiles })
 }
 
 /// Checks that `file`'s estimate does not exceed `limit`.

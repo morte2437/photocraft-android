@@ -508,13 +508,8 @@ fn no_room(dir: &Path, cap: Option<u64>) -> String {
 #[cfg(not(target_arch = "wasm32"))]
 fn free_space(dir: &Path) -> Option<(u64, u64)> {
     let dir = std::fs::canonicalize(dir).ok()?;
-    let disks = sysinfo::Disks::new_with_refreshed_list_specifics(sysinfo::DiskRefreshKind::nothing().with_storage());
-    disks
-        .list()
-        .iter()
-        .filter(|d| dir.starts_with(d.mount_point()))
-        .max_by_key(|d| d.mount_point().as_os_str().len())
-        .map(|d| (d.available_space(), d.total_space()))
+    let disks = sysinfo::Disks::new_with_refreshed_list_specifics(sysinfo::DiskRefreshKind::nothing().with_storage()).ok()?;
+    disks.iter().filter(|d| dir.starts_with(d.mount_point())).max_by_key(|d| d.mount_point().as_os_str().len()).map(|d| (d.available_space(), d.total_space()))
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -693,6 +688,29 @@ pub fn stats() -> SpillStats {
 /// Last storage error, without scanning the scratch allocator for UI status updates.
 pub fn last_error() -> Option<String> {
     M.config().last_error.clone()
+}
+
+/// Uncompressed tile bytes the scratch disk can still take before it reaches its size limit
+/// ([`set_size_cap`]) or the volume's free-space reserve, so an import can admit tile pixels
+/// beyond physical RAM. `None` while spilling is off or paused, and when neither the free space
+/// nor a size limit is known (nothing to promise). Tiles are written compressed; this counts
+/// them uncompressed, less 1/64 for the allocator's block rounding, so it never over-promises.
+pub fn scratch_capacity() -> Option<u64> {
+    if !enabled() || paused() {
+        return None;
+    }
+    let (dir, used, cap) = {
+        let c = M.config();
+        (c.dir.clone()?, c.file.as_ref().map_or(0, |f| f.used()), c.size_cap)
+    };
+    let room = free_space(&dir).map(|(available, total)| available.saturating_sub(RESERVE_MIN.max(total / 20)));
+    let room = match (room, cap) {
+        (Some(room), Some(cap)) => room.min(cap.saturating_sub(used)),
+        (Some(room), None) => room,
+        (None, Some(cap)) => cap.saturating_sub(used),
+        (None, None) => return None,
+    };
+    Some(room - room / 64)
 }
 
 /// Whether spilling is on (tiles beyond the budget go to disk).

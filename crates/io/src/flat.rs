@@ -331,7 +331,7 @@ fn import_tiff_layered(
     let plan = crate::tiff_layers::preflight(&bands)?;
     // A file this machine cannot open is refused here, before any composite pixel is decoded,
     // and an eligible one rechecks a fresh measurement after the gate.
-    let _admission = tiff_admission(plan.required, opts, ctl)?;
+    let _admission = tiff_admission(plan.required, plan.tiles, opts, ctl)?;
     drop(bands);
     before_composite_decode();
     // The orientation is applied after the layer check: rotating the composite but not the
@@ -356,7 +356,8 @@ fn import_tiff_layered(
     Ok(r)
 }
 
-/// Admits a layered TIFF import for `required` bytes and holds decode admission for it.
+/// Admits a layered TIFF import for `required` bytes, `spillable` of them tile pixels (see
+/// [`crate::memory::evaluate_psd_admission`]), and holds decode admission for it.
 ///
 /// A nested import of a different file spends the enclosing attempt's remaining allowance: it
 /// never resolves a fresh budget, resets the parent or charges the parent's image again. A
@@ -364,10 +365,15 @@ fn import_tiff_layered(
 /// measurement once admitted, so a memory drop during the wait is seen before pixels are
 /// decoded. Cancellation is checked before an allowance is consumed, so a cancelled nested
 /// import never spends its parent's budget.
-fn tiff_admission(required: u64, opts: &crate::ImportOptions, ctl: &photocraft_raster::Interrupt) -> Result<crate::psd_gate::AdmissionGuard, IoError> {
+fn tiff_admission(
+    required: u64,
+    spillable: u64,
+    opts: &crate::ImportOptions,
+    ctl: &photocraft_raster::Interrupt,
+) -> Result<crate::psd_gate::AdmissionGuard, IoError> {
     let caller_limit = opts.psd_max_pixel_bytes;
     let admit = |snapshot: crate::memory::MemorySnapshot| {
-        crate::memory::evaluate_psd_admission(required, caller_limit, opts.psd_high_memory_approved, opts.psd_approved_estimate, snapshot)
+        crate::memory::evaluate_psd_admission(required, spillable, caller_limit, opts.psd_high_memory_approved, opts.psd_approved_estimate, snapshot)
     };
     if crate::psd_gate::is_holding_admission() {
         // A nested, independent TIFF: the same-file continuation never gets here, because
@@ -422,7 +428,11 @@ fn tiff_to_document(
         // they can't be backed, and writing them would have the process killed: refuse first.
         let group = bands.group_bytes()? as u64;
         let group_px = group / (layout.channels() as u64 * sample.bytes() as u64).max(1);
-        let needed = surface_bytes(w, h, fmt).saturating_add(group.saturating_mul(3)).saturating_add(group_px.saturating_mul(bpp));
+        let surface = surface_bytes(w, h, fmt);
+        let needed = surface.saturating_add(group.saturating_mul(3)).saturating_add(group_px.saturating_mul(bpp));
+        // The layer is streamed into tiles a group at a time, so while the scratch disk is
+        // spilling the tiles it has room for need no RAM; the groups always do.
+        let needed = needed.saturating_sub(crate::memory::scratch_credit(surface));
         crate::memory::check_fits(w, h, needed, available())?;
     }
     let mut s = Surface::new(fmt);
@@ -1835,7 +1845,7 @@ mod streamed_png_tests {
         crate::psd_gate::set_active_attempt_budget(1000);
         let yes = || true;
         let cancelled = Interrupt::cancel_only(&yes);
-        match tiff_admission(100, &crate::ImportOptions::default(), &cancelled) {
+        match tiff_admission(100, 0, &crate::ImportOptions::default(), &cancelled) {
             Err(IoError::Cancelled) => {}
             other => panic!("expected a cancelled nested admission, got {:?}", other.map(|_| ())),
         }
@@ -1852,21 +1862,21 @@ mod streamed_png_tests {
         crate::psd_gate::set_active_attempt_budget(ample);
 
         let lowered = crate::ImportOptions { psd_max_pixel_bytes: 99, ..Default::default() };
-        match tiff_admission(100, &lowered, &ctl) {
+        match tiff_admission(100, 0, &lowered, &ctl) {
             Err(IoError::PsdImportBudget { required, limit }) => assert_eq!((required, limit), (100, 99)),
             other => panic!("expected the caller's limit to refuse, got {:?}", other.map(|_| ())),
         }
         assert_eq!(crate::psd_gate::active_attempt_remaining(), Some(ample), "a refused nested import leaves the parent's allowance untouched");
 
         let stale = crate::ImportOptions { psd_high_memory_approved: true, psd_approved_estimate: Some(99), ..Default::default() };
-        match tiff_admission(100, &stale, &ctl) {
+        match tiff_admission(100, 0, &stale, &ctl) {
             Err(IoError::PsdImportBudget { required, limit }) => assert_eq!((required, limit), (100, 99)),
             other => panic!("expected the approved estimate bound to refuse, got {:?}", other.map(|_| ())),
         }
         assert_eq!(crate::psd_gate::active_attempt_remaining(), Some(ample), "a refused nested import leaves the parent's allowance untouched");
 
         let allowed = crate::ImportOptions { psd_max_pixel_bytes: 100, psd_high_memory_approved: true, psd_approved_estimate: Some(100), ..Default::default() };
-        let guard = tiff_admission(100, &allowed, &ctl).expect("within the caller's bounds");
+        let guard = tiff_admission(100, 0, &allowed, &ctl).expect("within the caller's bounds");
         assert_eq!(crate::psd_gate::active_attempt_remaining(), Some(ample - 100), "the nested import is charged once");
         drop(guard);
         assert_eq!(crate::psd_gate::active_attempt_remaining(), Some(ample - 100), "releasing the nested guard neither refunds nor resets the parent");
@@ -1886,7 +1896,7 @@ mod streamed_png_tests {
                 crate::ImportOptions { psd_high_memory_approved: true, ..Default::default() },
                 crate::ImportOptions { psd_high_memory_approved: true, psd_approved_estimate: Some(u64::MAX), ..Default::default() },
             ] {
-                match tiff_admission(u64::MAX, &opts, &Interrupt::NONE) {
+                match tiff_admission(u64::MAX, 0, &opts, &Interrupt::NONE) {
                     Err(IoError::PsdImportBudget { required, limit }) => assert_eq!((required, limit), (u64::MAX, u64::MAX)),
                     other => panic!("expected a hard refusal for {opts:?}, got {:?}", other.map(|_| ())),
                 }

@@ -328,15 +328,15 @@ fn retry_estimate_cap_rejects_altered_or_enlarged_file() {
     // S = 6 GiB, H = 9 GiB
 
     // 1. Within approved_estimate: passes
-    let res = crate::memory::evaluate_psd_admission(7 * gb, 0, true, Some(7 * gb), snap);
+    let res = crate::memory::evaluate_psd_admission(7 * gb, 0, 0, true, Some(7 * gb), snap);
     assert!(res.is_ok());
 
     // 2. Fresh requirement exceeds approved_estimate: requires fresh approval
-    let res = crate::memory::evaluate_psd_admission(8 * gb, 0, true, Some(7 * gb), snap);
+    let res = crate::memory::evaluate_psd_admission(8 * gb, 0, 0, true, Some(7 * gb), snap);
     assert!(matches!(res, Err(IoError::PsdApprovalRequired { required, .. }) if required == 8 * gb));
 
     // 3. Exceeds hard limit: refused completely regardless of approval
-    let res = crate::memory::evaluate_psd_admission(10 * gb, 0, true, Some(10 * gb), snap);
+    let res = crate::memory::evaluate_psd_admission(10 * gb, 0, 0, true, Some(10 * gb), snap);
     assert!(matches!(res, Err(IoError::PsdImportBudget { required, limit }) if required == 10 * gb && limit == 9 * gb));
 }
 
@@ -531,4 +531,50 @@ fn memory_drop_while_waiting_for_the_gate_refuses_before_decoding() {
         other => panic!("expected the post-gate recheck to refuse with a zero budget, got {other:?}"),
     }
     handle.join().expect("worker thread");
+}
+
+/// A real import counts its tile pixels as spillable: with a spilling scratch disk they are
+/// admitted against RAM plus its room, while non-spillable working memory still needs RAM, and
+/// with spilling off the RAM-only policy applies unchanged. Nothing near a gigabyte is allocated.
+#[test]
+fn real_import_admits_tile_pixels_against_scratch_room_only_while_spilling() {
+    if cfg!(any(target_arch = "wasm32", target_pointer_width = "32")) {
+        return;
+    }
+    let gb = 1u64 << 30;
+    let file = testgen::small(Version::Psd, Compression::Zip);
+    let bytes = file.to_bytes().unwrap();
+    let est = estimate(&file);
+    let snapshot = crate::memory::MemorySnapshot { available_ram: Some(12 * gb), swap_free: None, commit_headroom: None };
+    let import = |opts: &crate::ImportOptions| crate::import_with_options("scratch.psd", &bytes, opts);
+    crate::memory::with_mock_memory(snapshot, || {
+        assert!(super::estimate(&file).unwrap().tile_bytes > 0, "layer surfaces are tile pixels");
+        with_test_tile_charge(18 * gb, || {
+            let charged = super::estimate(&file).unwrap();
+            assert_eq!(charged.total_bytes, est + 18 * gb);
+            // Spilling off (or paused): 18 GiB of tiles is over H = 9 GiB.
+            crate::memory::with_mock_scratch(None, || {
+                assert!(matches!(import(&Default::default()), Err(IoError::PsdImportBudget { limit, .. }) if limit == 9 * gb));
+            });
+            // Spilling with room for every tile: automatic, no approval.
+            crate::memory::with_mock_scratch(Some(40 * gb), || {
+                assert!(import(&Default::default()).is_ok());
+            });
+            // Room for only part of the tiles: the rest must fit RAM.
+            crate::memory::with_mock_scratch(Some(4 * gb), || {
+                assert!(matches!(import(&Default::default()), Err(IoError::PsdImportBudget { .. })));
+            });
+        });
+        // Non-spillable memory gets no scratch credit: 7 GiB still asks for approval.
+        with_test_estimate_charge(7 * gb, || {
+            crate::memory::with_mock_scratch(Some(40 * gb), || match import(&Default::default()) {
+                Err(IoError::PsdApprovalRequired { required, soft_limit, .. }) => {
+                    let tiles = super::estimate(&file).unwrap().tile_bytes;
+                    assert_eq!(soft_limit, 6 * gb + tiles);
+                    assert!(required > soft_limit);
+                }
+                other => panic!("expected an approval request, got {other:?}"),
+            });
+        });
+    });
 }

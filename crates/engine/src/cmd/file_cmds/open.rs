@@ -214,8 +214,10 @@ pub(super) fn approve_memory(s: &mut Session, p: &Value) -> Result<Value> {
         .ok_or_else(|| EngineError::BadParams { cmd: "file.approveMemory".into(), msg: format!("no pending high-memory preflight for id {id}") })?;
     // The resolved policy is the platform's: desktop uses its measured adaptive budget, the web
     // its 1 GiB automatic / 2 GiB hard product cap. Explicit consent is available on both; the
-    // hard ceiling is never raised by an approval.
-    let budget = photocraft_io::memory::resolve_budget(photocraft_io::memory::MemorySnapshot::current(), None);
+    // hard ceiling is never raised by an approval. While the scratch disk is spilling, tile
+    // pixels may use its room too; this fast refusal grants the whole room (the pending prompt
+    // does not keep the tile share), and the import re-checks the exact split before decoding.
+    let budget = photocraft_io::memory::resolve_budget_with_scratch(photocraft_io::memory::MemorySnapshot::current(), None, u64::MAX);
     if preflight.required > budget.hard_limit {
         return Err(EngineError::PsdHardBudget { name: preflight.name, required: preflight.required, limit: budget.hard_limit });
     }

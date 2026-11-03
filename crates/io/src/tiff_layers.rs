@@ -64,6 +64,10 @@ pub(crate) struct LayeredPlan {
     /// Bytes this import needs beside what it already holds, for admission; see
     /// [`layered_import_bytes`].
     pub(crate) required: u64,
+    /// The part of `required` that is tile pixels, spillable to the scratch disk
+    /// ([`crate::psd_budget::PsdMemoryEstimate::tile_bytes`]); 0 for a flattened fallback, whose
+    /// admission charge is decode and conversion memory.
+    pub(crate) tiles: u64,
 }
 
 struct LayeredModel {
@@ -97,7 +101,7 @@ pub(crate) fn preflight(bands: &codecs::TiffBands<'_>) -> Result<LayeredPlan, Io
             // bounded: its whole-image decode and the conversion are admitted too.
             let warning = format!("the PSD layer data could not be read ({e}); opened flattened");
             let required = crate::flat::flattened_import_bytes(w, h, layout, sample, extras, scratch);
-            return Ok(LayeredPlan { model: None, flatten_warning: Some(warning), warnings: Vec::new(), required });
+            return Ok(LayeredPlan { model: None, flatten_warning: Some(warning), warnings: Vec::new(), required, tiles: 0 });
         }
     };
     let mut warnings: Vec<String> = isd_warnings.into_iter().map(|w| format!("layer data: {w}")).collect();
@@ -159,7 +163,7 @@ pub(crate) fn preflight(bands: &codecs::TiffBands<'_>) -> Result<LayeredPlan, Io
     // copies are already made and are bounded by the file, not by the image size.
     let tags = layers.len().saturating_add(bands.meta.photoshop_resources.as_ref().map_or(0, |r| r.len()));
     let required = layered_import_bytes(est.total_bytes, w, h, layout.channels(), sample, extras, scratch, tags);
-    Ok(LayeredPlan { model: Some(Box::new(LayeredModel { file })), flatten_warning: None, warnings, required })
+    Ok(LayeredPlan { model: Some(Box::new(LayeredModel { file })), flatten_warning: None, warnings, required, tiles: est.tile_bytes })
 }
 
 /// Bytes a layered TIFF import needs beyond [`crate::psd_budget::estimate`]'s layer, mask,
@@ -199,7 +203,7 @@ pub(crate) fn layered_import_bytes(est: u64, w: u32, h: u32, channels: usize, sa
 /// the enclosing attempt again: a top-level TIFF is charged once, and a nested independent one
 /// spends only what its parent still has. `ctl` stops the PSD conversion between layers.
 pub(crate) fn import_layered(name: &str, img: &Image, plan: LayeredPlan, ctl: &photocraft_raster::Interrupt) -> Result<ImportResult, IoError> {
-    let LayeredPlan { model, flatten_warning, mut warnings, required: _ } = plan;
+    let LayeredPlan { model, flatten_warning, mut warnings, required: _, tiles: _ } = plan;
     let Some(model) = model else {
         let mut r = image_to_document(name, img)?;
         if let Some(warning) = flatten_warning {

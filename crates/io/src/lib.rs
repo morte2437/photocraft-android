@@ -534,6 +534,7 @@ fn import_psd(
                 // Invalid or unapproved files fail fast without blocking other decodes or acquiring gate.
                 memory::evaluate_psd_admission(
                     est.total_bytes,
+                    est.tile_bytes,
                     opts.psd_max_pixel_bytes,
                     opts.psd_high_memory_approved,
                     opts.psd_approved_estimate,
@@ -548,6 +549,7 @@ fn import_psd(
                 // guard is dropped (releasing gate immediately), and error is returned before prompting.
                 let outcome = memory::evaluate_psd_admission(
                     est.total_bytes,
+                    est.tile_bytes,
                     opts.psd_max_pixel_bytes,
                     opts.psd_high_memory_approved,
                     opts.psd_approved_estimate,

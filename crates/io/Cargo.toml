@@ -52,16 +52,6 @@ resvg = { version = "0.45", default-features = false, features = ["text", "syste
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 resvg = { version = "0.45", default-features = false, features = ["text", "raster-images"] }
 
-[target.'cfg(windows)'.dependencies]
-winsafe = { version = "=0.0.29", default-features = false, features = ["kernel"] }
-
-# Available physical memory for the adaptive import budget (memory.rs). `sysinfo` is a safe
-# Rust API over `host_statistics64`'s `vm_statistics64` on macOS; memory.rs derives the
-# reclaimable capacity from its total/free/available/used counters (see its doc comment).
-# Only the `system` feature is needed, and its MSRV 1.95 matches the workspace.
-[target.'cfg(target_os = "macos")'.dependencies]
-sysinfo = { version = "=0.40.1", default-features = false, features = ["system"] }
-
 [dev-dependencies]
 miniz_oxide = "0.9"
 crc32fast = "1.5"

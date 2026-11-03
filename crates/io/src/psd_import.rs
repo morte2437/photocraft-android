@@ -1245,9 +1245,9 @@ fn legacy_admission(est: &crate::psd_budget::PsdMemoryEstimate, ctl: &photocraft
     }
     let snapshot = || crate::memory::MemorySnapshot::current();
     // Legacy standalone is unconfirmed: it cannot silently auto allow an estimate above S.
-    crate::memory::evaluate_psd_admission(est.total_bytes, 0, false, None, snapshot())?;
+    crate::memory::evaluate_psd_admission(est.total_bytes, est.tile_bytes, 0, false, None, snapshot())?;
     let guard = crate::psd_gate::acquire_decode_admission(ctl)?;
-    let outcome = crate::memory::evaluate_psd_admission(est.total_bytes, 0, false, None, snapshot())?;
+    let outcome = crate::memory::evaluate_psd_admission(est.total_bytes, est.tile_bytes, 0, false, None, snapshot())?;
     crate::psd_gate::set_active_attempt_budget(outcome.authorized_total.saturating_sub(est.total_bytes));
     Ok(guard)
 }
