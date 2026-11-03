@@ -68,7 +68,9 @@ pub use extents::{
 };
 #[cfg(test)]
 use extents::{mask_k, shapeless_stroke_bounds, trim_to_painted};
-pub use fx_cache::{DEFAULT_FX_CACHE_BUDGET, effect_cache_budget, effect_cache_bytes, purge_effect_cache, set_effect_cache_budget};
+pub use fx_cache::{
+    DEFAULT_FX_CACHE_BUDGET, discard_unreadable_pixel_caches, effect_cache_budget, effect_cache_bytes, purge_effect_cache, set_effect_cache_budget,
+};
 #[cfg(test)]
 use fx_cache::{effect_maps, effect_region, fx_region_bytes};
 pub use reduced::{PROXY_THUMBNAIL_PIXELS, render_reduced, render_reduced_damage, render_reduced_rect, thumbnail, thumbnail_buffer, thumbnail_size};

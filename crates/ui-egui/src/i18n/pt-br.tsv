@@ -4089,6 +4089,7 @@ layerLabel	No Color	Sem cor
 	Sent to {printer}	Enviado para {printer}
 	set in Print Settings…	definido nas configurações de impressão…
 	ICO is limited to 256 × 256 pixels	ICO é limitado a 256 × 256 pixels
+	Memory usage percent	Uso de memória (%)
 	Show Favorite Fonts	Mostrar fontes favoritas
 	No favorite fonts yet: click the star beside a font to add it.	Ainda não há fontes favoritas: clique na estrela ao lado de uma fonte para adicioná-la.
 	Favorite fonts	Fontes favoritas
@@ -4204,6 +4205,7 @@ layerLabel	No Color	Sem cor
 	This document's layers: {needed} of {budget} for layers	Camadas deste documento: {needed} de {budget} para camadas
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	As camadas deste documento precisam de {needed} mas podem ocupar {budget}: o documento inteiro é redesenhado na CPU
 	GPU Memory (MB, 0 = Automatic)	Memória da GPU (MB, 0 = Automático)
+	Scratch Size Limit (MB, 0 = No Limit)	Limite de tamanho do disco de rascunho (MB, 0 = sem limite)
 	{path}: the path is not valid Unicode; save under another name.	{path}: o caminho não é Unicode válido; salve com outro nome.
 	{name} was changed by another app after it was opened or saved here.	{name} foi alterado por outro app depois de ser aberto ou salvo aqui.
 	Replace it with this document, or cancel and use File › Save As to keep both.	Substitua-o por este documento, ou cancele e use Arquivo › Salvar como para manter os dois.

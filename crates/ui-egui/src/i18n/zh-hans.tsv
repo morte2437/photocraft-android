@@ -2947,6 +2947,7 @@ curves	Smooth	平滑
 	Sent to {printer}	已发送到 {printer}
 	set in Print Settings…	在打印设置中设置…
 	ICO is limited to 256 × 256 pixels	ICO 最大为 256 × 256 像素
+	Memory usage percent	内存使用比例 (%)
 	Show Favorite Fonts	显示收藏的字体
 	No favorite fonts yet: click the star beside a font to add it.	还没有收藏的字体：点击字体旁边的星标即可添加。
 	Favorite fonts	收藏的字体
@@ -3069,6 +3070,7 @@ curves	Smooth	平滑
 	This document's layers: {needed} of {budget} for layers	此文档的图层：图层可用 {budget} 中的 {needed}
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	此文档的图层需要 {needed}，但只能占用 {budget}：整个文档的重绘使用 CPU
 	GPU Memory (MB, 0 = Automatic)	GPU 内存（MB，0 = 自动）
+	Scratch Size Limit (MB, 0 = No Limit)	暂存盘大小上限（MB，0 = 无限制）
 	{path}: the path is not valid Unicode; save under another name.	{path}：路径不是有效的 Unicode；请以其他名称存储。
 	Replace	替换
 	{name} was changed by another app after it was opened or saved here.	{name} 在此处打开或存储后已被其他应用更改。

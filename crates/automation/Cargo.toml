@@ -29,6 +29,7 @@ cap-std = "4"
 clap = { workspace = true }
 
 [dev-dependencies]
+photocraft-geom = { workspace = true }
 # Synthetic camera raws (#7789).
 photocraft-raw = { workspace = true, features = ["testgen"] }
 rmcp = { version = "3.5", default-features = false, features = ["client", "server", "macros", "transport-io"] }

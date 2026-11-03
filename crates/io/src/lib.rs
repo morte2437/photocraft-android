@@ -393,11 +393,16 @@ pub fn import_for_open(name: &str, bytes: &[u8], opts: &ImportOptions) -> Result
 
 /// [`import_for_open`] with cancellation and progress, shared with [`import_with_options_and_interrupt`].
 pub fn import_for_open_with(name: &str, bytes: &[u8], opts: &ImportOptions, ctl: &photocraft_raster::Interrupt) -> Result<(ImportResult, bool), IoError> {
+    photocraft_compose::discard_unreadable_pixel_caches();
+    let scratch_generation = photocraft_raster::spill::read_error_generation();
     ctl.check().map_err(|_| IoError::Cancelled)?;
     let mut damaged = false;
     let result = import_stages(name, bytes, ctl, opts, &mut damaged)?;
     ctl.check().map_err(|_| IoError::Cancelled)?;
     ctl.progress(1.0);
+    // The imported document's own tiles, and anything that failed or recovered meanwhile.
+    photocraft_raster::spill::check_since(scratch_generation).map_err(IoError::Unsupported)?;
+    result.document.scratch_health().map_err(IoError::Unsupported)?;
     Ok((result, damaged))
 }
 
@@ -604,7 +609,12 @@ pub fn export(doc: &Document, name_or_ext: &str, opts: &ExportOptions) -> Result
 /// export fails with [`IoError::Cancelled`]; otherwise the bytes are exactly [`export`]'s.
 pub fn export_with(doc: &Document, name_or_ext: &str, opts: &ExportOptions, ctl: &photocraft_raster::Interrupt) -> Result<ExportResult, IoError> {
     ctl.check().map_err(|_| IoError::Cancelled)?;
+    photocraft_compose::discard_unreadable_pixel_caches();
+    doc.scratch_health().map_err(IoError::Unsupported)?;
+    let scratch_generation = photocraft_raster::spill::read_error_generation();
     let r = export_stages(doc, name_or_ext, opts, ctl)?;
+    photocraft_raster::spill::check_since(scratch_generation).map_err(IoError::Unsupported)?;
+    doc.scratch_health().map_err(IoError::Unsupported)?;
     ctl.check().map_err(|_| IoError::Cancelled)?;
     ctl.progress(1.0);
     Ok(r)
