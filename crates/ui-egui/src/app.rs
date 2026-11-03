@@ -188,6 +188,7 @@ impl PhotocraftApp {
             discard: None,
             file_dialog: None,
             tiff_options: None,
+            tiff_remembered: Default::default(),
             save_dirs: HashMap::new(),
             disk_stamps: HashMap::new(),
             targa_options: None,

@@ -45,7 +45,8 @@ pub use crate::image::{
     MAX_EXTRA_SAMPLES, Metadata, SampleType,
 };
 pub use crate::options::{
-    DdsCompression, DdsOptions, DecodeOptions, DpxBits, EncodeOptions, ExrCompression, JpegFormat, Limits, PngCompression, PngStereo, TiffCompression,
+    DdsCompression, DdsOptions, DecodeOptions, DpxBits, EncodeOptions, ExrCompression, JpegFormat, Limits, PngCompression, PngStereo, TIFF_PYRAMID_MIN,
+    TiffCompression,
 };
 pub use crate::orientation::{exif_orientation, upright_exif, upright_xmp};
 pub use crate::resolution::{exif_resolution, export_exif, export_xmp, photoshop_resolution, xmp_resolution};

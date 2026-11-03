@@ -1530,3 +1530,35 @@ fn batch_skips_deselect_with_nothing_selected() {
     assert_eq!((info["width"].as_u64(), info["height"].as_u64()), (Some(6), Some(8)), "the step after Deselect ran: {info}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// TIFF Options from the command line (#8827): `--tiff-compression`, `--tiff-transparency on|off`
+/// and `--tiff-pyramid`; a bad value is a usage error that writes nothing.
+#[test]
+fn tiff_options_choose_compression_transparency_and_pyramid() {
+    let d = tmp("tiff-options");
+    let a = d.join("a.png");
+    write_png(&a, 200, 100, 3);
+    // (flags, compression tag, alpha, directories)
+    for (flags, compression, alpha, dirs) in [
+        (&[][..], 1, true, 1),
+        (&["--tiff-compression", "lzw"][..], 5, true, 1),
+        (&["--tiff-transparency", "off", "--tiff-compression", "zip"][..], 8, false, 1),
+        (&["--tiff-transparency", "on", "--tiff-pyramid"][..], 1, true, 3),
+    ] {
+        let out = d.join("a.tif");
+        ok(bin().arg("convert").arg(&a).arg(&out).args(flags));
+        let bytes = std::fs::read(&out).unwrap();
+        let info = photocraft_codecs::tiff_info(&bytes).unwrap();
+        assert_eq!(info.pages.len(), dirs, "{flags:?}");
+        assert!(info.pages.iter().all(|p| p.compression == compression), "{flags:?}: {:?}", info.pages);
+        assert_eq!(photocraft_codecs::decode(&bytes).unwrap().layout().has_alpha(), alpha, "{flags:?}");
+    }
+    for (flag, bad, expected) in [("--tiff-transparency", "maybe", "expected on or off"), ("--tiff-compression", "jpeg", "expected none, lzw or zip")] {
+        let out = d.join("bad.tif");
+        let o = bin().arg("convert").arg(&a).arg(&out).args([flag, bad]).output().unwrap();
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert_eq!(o.status.code(), Some(2), "{flag} {bad}");
+        assert!(err.contains(flag) && err.contains(expected), "{flag} {bad}: {err}");
+        assert!(!out.exists(), "{flag} {bad} wrote a file");
+    }
+}

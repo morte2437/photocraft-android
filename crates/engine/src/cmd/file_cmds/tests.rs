@@ -2026,6 +2026,36 @@ fn save_a_copy_writes_the_tiff_compression_asked_for() {
     }
 }
 
+/// #8827: `tiffPyramid` writes reduced-resolution levels after the image and `tiffTransparency`
+/// false composites a transparent document over white. Bad values are refused before anything is
+/// written.
+#[test]
+fn save_a_copy_writes_the_tiff_pyramid_and_transparency_asked_for() {
+    let dir = tmp("tiff-options");
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 200, "height": 100, "background": "transparent"})).unwrap();
+    let out = join(&dir, "p.tif");
+    s.execute("file.saveACopy", json!({"path": out, "tiffPyramid": true})).unwrap();
+    let bytes = std::fs::read(&out).unwrap();
+    let sizes: Vec<(u32, u32)> = photocraft_codecs::tiff_info(&bytes).unwrap().pages.iter().map(|p| (p.width, p.height)).collect();
+    assert_eq!(sizes, [(200, 100), (100, 50), (50, 25)]);
+    for (t, alpha) in [(None, true), (Some(true), true), (Some(false), false)] {
+        let mut p = json!({"path": out});
+        if let Some(t) = t {
+            p["tiffTransparency"] = json!(t);
+        }
+        s.execute("file.saveACopy", p).unwrap();
+        let img = photocraft_codecs::decode(&std::fs::read(&out).unwrap()).unwrap();
+        assert_eq!(img.layout().has_alpha(), alpha, "{t:?}");
+    }
+    for (key, bad) in [("tiffPyramid", json!("yes")), ("tiffPyramid", json!(1)), ("tiffTransparency", json!("off")), ("tiffTransparency", json!([]))] {
+        let out = join(&dir, "bad.tif");
+        let r = s.execute("file.saveACopy", json!({"path": out, key: bad}));
+        assert!(matches!(r, Err(EngineError::BadParams { .. })), "{key} {bad}: {r:?}");
+        assert!(!std::path::Path::new(&out).exists(), "{key} {bad}: nothing written");
+    }
+}
+
 #[test]
 fn sanitize_keeps_windows_device_names_off_the_disk() {
     assert_eq!(sanitize("nul"), "nul_");
