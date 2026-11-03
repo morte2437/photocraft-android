@@ -31,10 +31,12 @@ mod save;
 pub use batch_naming::plan as plan_batch_names;
 #[cfg(test)]
 pub(crate) use batch_run::MAX_SUBFOLDER_DEPTH;
+use batch_run::batch;
+pub use batch_run::same_format as batch_same_format;
+use batch_run::same_format;
 #[cfg(not(target_arch = "wasm32"))]
 pub use batch_run::validate_flat_outputs;
 pub use batch_run::{BatchInput, OutputClaims, encode_batch_error_log, list_images_tree};
-use batch_run::{batch, same_format};
 pub(crate) use batch_run::{batch_inputs, batch_keeps_step, batch_save_point, process_files};
 pub use export::{LayerExportReport, SkippedExportLayer, bake_cube, export_layers_report_with, export_layers_with};
 use export::{color_lookup_tables, layers_to_files, push_unique};

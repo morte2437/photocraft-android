@@ -182,7 +182,8 @@ pub(crate) struct BatchArgs {
     /// originals; --in-place allows it
     #[arg(long)]
     pub(crate) in_place: bool,
-    /// Include images in subfolders and mirror their folders under --out
+    /// Include images in subfolders; every result goes straight into --out, so a later file of
+    /// the same name replaces an earlier one
     #[arg(long)]
     pub(crate) recursive: bool,
     /// Name each result with Batch tokens such as {name}, {serial}, {date}, and {ext}

@@ -556,6 +556,37 @@ fn batch_naming_keeps_the_tree_order_and_the_selected_encoder() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// Without --format, a file PhotoCraft only opens is saved as PSD, with or without --naming:
+/// the encoder gets the format the planned name uses, not the input's import-only extension.
+#[test]
+fn batch_saves_import_only_inputs_as_psd() {
+    let root = tmp("batch-import-only");
+    let input = root.join("in");
+    std::fs::create_dir_all(&input).unwrap();
+    std::fs::write(
+        input.join("logo.xpm"),
+        "/* XPM */
+static char *logo[] = {
+\"2 2 1 1\",
+\"a c #FF0000\",
+\"aa\",
+\"aa\"
+};
+",
+    )
+    .unwrap();
+    let actions = root.join("actions.json");
+    std::fs::write(&actions, "[]").unwrap();
+    for (name, extra) in [("plain", &[][..]), ("named", &["--naming", "{name}.{ext}"][..])] {
+        let out = root.join(name);
+        let result = bin().args(["batch", "--actions"]).arg(&actions).arg("--in").arg(&input).arg("--out").arg(&out).args(extra).output().unwrap();
+        assert!(result.status.success(), "{name}: {}{}", String::from_utf8_lossy(&result.stdout), String::from_utf8_lossy(&result.stderr));
+        assert!(std::fs::read(out.join("logo.psd")).unwrap().starts_with(b"8BPS"), "{name}: PSD bytes");
+        assert!(!out.join("logo.xpm").exists(), "{name}");
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn batch_skips_recorded_view_and_save_steps() {
     let d = tmp("batch-shell-steps");

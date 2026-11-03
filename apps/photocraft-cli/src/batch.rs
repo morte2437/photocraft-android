@@ -93,7 +93,7 @@ pub(crate) fn batch(a: &BatchArgs, out: &mut dyn Write, err: &mut dyn Write) -> 
             .iter()
             .map(|input| {
                 let path = Path::new(&input.path);
-                let ext = format.map(str::to_owned).or_else(|| path.extension().map(|e| e.to_string_lossy().into_owned())).unwrap_or_else(|| "png".into());
+                let ext = format.map_or_else(|| photocraft_engine::file_cmds::batch_same_format(&input.path), str::to_owned);
                 let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
                 out_dir.join(format!("{stem}.{ext}"))
             })
@@ -112,7 +112,9 @@ pub(crate) fn batch(a: &BatchArgs, out: &mut dyn Write, err: &mut dyn Write) -> 
     for (input, target) in inputs.iter().zip(targets) {
         let input = Path::new(&input.path);
         // The selected format encodes the bytes, whatever extension `--naming` gives the file.
-        let ext = format.map(str::to_owned).or_else(|| input.extension().map(|e| e.to_string_lossy().into_owned())).unwrap_or_else(|| "png".into());
+        // Without --format, a file PhotoCraft only opens (.kra, raw, …) is saved as PSD, the
+        // same format `--naming`'s {ext} plans.
+        let ext = format.map_or_else(|| photocraft_engine::file_cmds::batch_same_format(&input.to_string_lossy()), str::to_owned);
         let r = (|| -> Result<Vec<String>> {
             if let Some(parent) = target.parent() {
                 std::fs::create_dir_all(parent)?;

@@ -116,6 +116,8 @@ enum BatchInterrupt {
     Continue,
     Stop,
     Saving,
+    /// Every input has been handled; Esc is no longer accepted.
+    Closed,
 }
 
 const CANCEL_REQUESTED: u8 = 1;
@@ -245,6 +247,13 @@ impl JobCtx {
         }
         *phase = BatchInterrupt::Saving;
         Ok(())
+    }
+
+    /// The worker has passed its last checkpoint. A pending request is dropped (nothing is left to
+    /// interrupt) and later requests return false.
+    pub(crate) fn batch_close_interrupts(&self) {
+        *self.shared.batch.lock().unwrap_or_else(PoisonError::into_inner) = BatchInterrupt::Closed;
+        self.shared.batch_decision.notify_all();
     }
 
     /// A completed write allows Esc on the next input.

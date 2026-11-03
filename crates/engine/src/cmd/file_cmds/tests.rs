@@ -89,6 +89,78 @@ fn batch_cancelled_during_an_action_does_not_save_that_input() {
     assert!(!std::path::Path::new(&out).exists());
 }
 
+/// A cancel that lands while an input fails on its own keeps that failure and its reason; only
+/// the inputs after it are skipped.
+#[test]
+fn batch_cancel_during_a_failing_input_keeps_its_error() {
+    let dir = tmp("batch-cancel-failing");
+    let first = png(&dir, "first.png", 8, 6, "#ff0000");
+    let second = png(&dir, "second.png", 8, 6, "#00ff00");
+    let ctx = crate::jobs::JobCtx::new();
+    let policy = super::batch_run::BatchPolicy { stop_on_error: false, error_log: None };
+    let outputs = vec![(first.clone(), join(&dir, "out/first.png")), (second.clone(), join(&dir, "out/second.png"))];
+    let result = super::batch_run::process_batch_outputs(72.0, outputs, "png", SaveOpts::default(), &policy, &ctx, &|_, _| {
+        ctx.cancel();
+        Err(EngineError::Other("boom".into()))
+    })
+    .unwrap();
+    assert_eq!(result["errors"], json!([{"file": first, "error": "boom"}]), "{result}");
+    assert_eq!(result["skipped"], json!([second]), "{result}");
+    assert_eq!(result["cancelled"], json!(true), "{result}");
+}
+
+/// Esc during an input that fails on its own: Continue records the failure (not an interrupted
+/// input) and goes on with the next one.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn batch_interruption_during_a_failing_input_keeps_its_error() {
+    use std::time::Duration;
+
+    let dir = tmp("batch-interrupt-failing");
+    let first = png(&dir, "first.png", 8, 6, "#ff0000");
+    let second = png(&dir, "second.png", 8, 6, "#00ff00");
+    let second_out = join(&dir, "out/second.png");
+    let ctx = crate::jobs::JobCtx::new();
+    let worker_ctx = ctx.clone();
+    let outputs = vec![(first.clone(), join(&dir, "out/first.png")), (second, second_out.clone())];
+    let worker = std::thread::spawn(move || {
+        let policy = super::batch_run::BatchPolicy { stop_on_error: false, error_log: None };
+        super::batch_run::process_batch_outputs(72.0, outputs, "png", SaveOpts::default(), &policy, &worker_ctx, &|_, path| {
+            if path.ends_with("first.png") {
+                assert!(worker_ctx.request_batch_interrupt());
+                return Err(EngineError::Other("boom".into()));
+            }
+            Ok(false)
+        })
+    });
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !ctx.batch_waiting_for_decision() && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert!(ctx.decide_batch_interrupt(true));
+    let result = worker.join().unwrap().unwrap();
+    assert_eq!(result["errors"], json!([{"file": first, "error": "boom"}]), "{result}");
+    assert_eq!(result["files"], json!([second_out]), "{result}");
+    assert!(result.get("skipped").is_none(), "{result}");
+}
+
+/// Once the last input is handled, Esc has nothing to interrupt and is refused, so the desktop
+/// never waits for a question that will not come.
+#[test]
+fn batch_refuses_esc_after_its_last_input() {
+    let dir = tmp("batch-late-esc");
+    let input = png(&dir, "source.png", 8, 6, "#ff0000");
+    let ctx = crate::jobs::JobCtx::new();
+    let policy = super::batch_run::BatchPolicy { stop_on_error: false, error_log: None };
+    let result =
+        super::batch_run::process_batch_outputs(72.0, vec![(input, join(&dir, "out/source.png"))], "png", SaveOpts::default(), &policy, &ctx, &|_, _| {
+            Ok(false)
+        })
+        .unwrap();
+    assert_eq!(result["errors"], json!([]), "{result}");
+    assert!(!ctx.request_batch_interrupt());
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn batch_interruption_continues_with_the_original_next_output() {

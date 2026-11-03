@@ -143,7 +143,9 @@ pub(crate) fn process_tree(
 /// codec formats without a writer in this build. Those are saved as PSD, the format Photoshop's
 /// Save As offers for a raw. An input whose file name has no extension (a dot in a folder name
 /// doesn't count) is saved as PNG.
-pub(super) fn same_format(path: &str) -> String {
+/// The format Batch's "Save in the same format" writes for `path`: its own, or PSD for a file
+/// PhotoCraft only opens.
+pub fn same_format(path: &str) -> String {
     const IMPORT_ONLY: &[&str] =
         &["pdn", "kra", "krz", "af", "afdesign", "afphoto", "afpub", "heic", "heif", "hif", "svg", "svgz", "cin", "pcx", "xpm", "xcf", "xcfgz", "gz", "psdt"];
     let ext = extension(path).unwrap_or_else(|| "png".into());
@@ -364,11 +366,18 @@ pub(super) fn process_batch_outputs(
         }
         ctx.progress(index as f32 / total.max(1) as f32, &format!("{} of {total}: {}", index + 1, file_name(path)));
         let result = process_one(raw_ppi, path, out, save, ProcessOptions { format: Some(format), written: None, ctx: Some(ctx) }, f);
+        // An input that failed on its own (not because it was stopped) stays a failure with its
+        // reason, even when a cancel or Esc lands while it runs.
+        let failure =
+            result.as_ref().err().filter(|error| !matches!(error, EngineError::Cancelled)).map(|error| json!({"file": path, "error": error.to_string()}));
         if ctx.cancelled() {
             ctx.publish_batch_preview(path, None);
             // A cancel that lands while the result is written still leaves that file written.
             if result.is_ok() {
                 files.push(out.clone());
+                done = index + 1;
+            } else if let Some(failure) = failure {
+                errors.push(failure);
                 done = index + 1;
             } else {
                 done = index;
@@ -376,13 +385,22 @@ pub(super) fn process_batch_outputs(
             break;
         }
         if ctx.batch_take_interrupt() {
-            if ctx.batch_wait_for_decision() {
-                ctx.publish_batch_preview(path, None);
-                interrupted.push(path.clone());
-                done = index + 1;
+            let continue_next = ctx.batch_wait_for_decision();
+            ctx.publish_batch_preview(path, None);
+            match failure {
+                Some(failure) => {
+                    errors.push(failure);
+                    done = index + 1;
+                }
+                None if continue_next => {
+                    interrupted.push(path.clone());
+                    done = index + 1;
+                }
+                None => {}
+            }
+            if continue_next {
                 continue;
             }
-            ctx.publish_batch_preview(path, None);
             ctx.cancel();
             break;
         }
@@ -402,6 +420,8 @@ pub(super) fn process_batch_outputs(
             }
         }
     }
+    // No checkpoint follows the last input: a later Esc has nothing to interrupt.
+    ctx.batch_close_interrupts();
     let log_failure = error_log_failure(policy.error_log.as_deref(), &errors);
     let cancelled = ctx.cancelled();
     if !cancelled {
