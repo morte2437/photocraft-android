@@ -542,8 +542,9 @@ pub(crate) fn run(effects: &[GalleryEffect], src: &Image, out: Rect, ctx: &Ctx) 
         return src.crop(out);
     }
     let mut win = Win { r, w, h, c: src.data.chunks_exact(n).map(|px| rgb(rgba(ctx, px))).collect() };
-    for e in effects {
-        apply(e, &mut win, ctx);
+    // The reach that sized `src` comes from the clamped values, so the pixels must use them too.
+    for e in effects.iter().map(GalleryEffect::clamped) {
+        apply(&e, &mut win, ctx);
     }
     finish(&win, src, out, ctx)
 }
@@ -564,6 +565,8 @@ pub(crate) struct Prepared {
 impl Prepared {
     /// `None` for a stack that has no Cutout (it runs tile by tile as usual).
     pub(crate) fn new(effects: &[GalleryEffect], src: &Image, ctx: &Ctx) -> Option<Prepared> {
+        // Held to the declared ranges once here (see `run`), so the traced shapes and the tiles agree.
+        let effects = &effects.iter().map(GalleryEffect::clamped).collect::<Vec<_>>();
         let last = effects.iter().rposition(|e| e.filter == F::Cutout)?;
         let r = src.rect;
         let (w, h) = (r.width() as usize, r.height() as usize);
