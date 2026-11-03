@@ -235,6 +235,40 @@ pub fn replace_existing(from: &Path, to: &Path) -> io::Result<()> {
     }
 }
 
+/// What the recovery ladder leaves behind after a `ReplaceFileW` answered
+/// `ERROR_UNABLE_TO_MOVE_REPLACEMENT_2` (the destination's old content now lives at the backup
+/// name and the replacement still at its temporary name).
+#[cfg(any(windows, test))]
+#[derive(Debug)]
+pub(crate) enum MoveReplacement2 {
+    /// The replacement was renamed onto the destination: the save completed with its metadata.
+    Completed,
+    /// Completion failed but the original was put back on the destination: the save did not
+    /// happen and the destination still holds the user's file. Carries the completion error.
+    Restored(io::Error),
+    /// Neither completion nor restoration succeeded: the original survives only at `recovery`
+    /// and the destination is currently missing. The caller must report that location and must
+    /// not claim an unchanged destination (#11178).
+    Unresolved { completion: io::Error, restoration: io::Error, recovery: std::path::PathBuf },
+}
+
+/// The recovery ladder of [`MoveReplacement2`], kept free of the Windows call so the branch is
+/// testable on every platform as branch coverage (#11178): first finish the save (`complete`,
+/// the rename of the replacement onto the destination); if that fails, put the original back
+/// (`restore`, the rename of the backup onto the destination).
+#[cfg(any(windows, test))]
+pub(crate) fn recover_after_1177(
+    complete: impl FnOnce() -> io::Result<()>,
+    restore: impl FnOnce() -> io::Result<()>,
+    recovery: std::path::PathBuf,
+) -> MoveReplacement2 {
+    let Err(completion) = complete() else { return MoveReplacement2::Completed };
+    match restore() {
+        Ok(()) => MoveReplacement2::Restored(completion),
+        Err(restoration) => MoveReplacement2::Unresolved { completion, restoration, recovery },
+    }
+}
+
 /// `ReplaceFileW`, with the plain rename as the fallback. See [`replace_existing`].
 ///
 /// **A backup name is not optional.** `ReplaceFile` without one deletes the replaced file before
@@ -249,7 +283,8 @@ pub fn replace_existing(from: &Path, to: &Path) -> io::Result<()> {
 ///   replacement keeps its name but has already inherited the destination's streams and
 ///   attributes, and the destination's old content is at the backup name. Finishing the rename
 ///   by hand completes the save *with* its metadata; if even that fails, the backup goes back to
-///   the destination so the user's file is where they left it.
+///   the destination so the user's file is where they left it — and if even *that* fails, the
+///   error names the backup, because the original survives nowhere else (#11178).
 /// - Every other error leaves the replaced and replacement files under their own names, so a
 ///   plain rename still saves the document — without the metadata, which is where this started.
 #[cfg(windows)]
@@ -273,17 +308,28 @@ fn windows_replace(from: &Path, to: &Path) -> io::Result<()> {
             remove_backup(backup.as_deref());
             Ok(())
         }
-        Err(e) if e.raw() as i32 == MOVE_REPLACEMENT_2 => match std::fs::rename(from, to) {
-            Ok(()) => {
-                remove_backup(backup.as_deref());
-                Ok(())
-            }
-            Err(rename_failed) => {
-                if let Some(backup) = backup.as_deref() {
-                    let _ = std::fs::rename(backup, to);
+        Err(e) if e.raw() as i32 == MOVE_REPLACEMENT_2 => match backup.clone() {
+            // `backup_str` came from `backup`, so it is `Some` here; if that ever changed, leave
+            // the destination alone rather than guess where the original went (#11178).
+            None => Err(io::Error::other(format!(
+                "cannot save {}: the replacement moved the original to an unknown backup name and cannot report where",
+                to.display()
+            ))),
+            Some(backup_path) => match recover_after_1177(|| std::fs::rename(from, to), || std::fs::rename(&backup_path, to), backup_path.clone()) {
+                MoveReplacement2::Completed => {
+                    remove_backup(Some(&backup_path));
+                    Ok(())
                 }
-                Err(rename_failed)
-            }
+                // The original is back where the user left it; the completion error stands, and
+                // a `PermissionDenied` one may still be retried (the temporary file is intact).
+                MoveReplacement2::Restored(completion) => Err(completion),
+                // Unresolved: the destination is missing and the original survives only at the
+                // backup. Report the recovery location and stop the retry loop from picking a
+                // fresh backup name over it (#11178).
+                MoveReplacement2::Unresolved { completion, restoration, recovery } => {
+                    Err(super::unresolved_recovery_error(to, &completion, &restoration, &recovery))
+                }
+            },
         },
         Err(_) => {
             remove_backup(backup.as_deref());
