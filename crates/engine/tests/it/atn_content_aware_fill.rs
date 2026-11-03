@@ -84,10 +84,12 @@ fn caf_settings_roundtrip_seven_fields_and_boolean_choices() {
     }
 }
 
-/// A noncanonical source order is preservation data, and cannot overwrite an edited option.
+/// Unedited source identity, order and flags survive; damaged preservation metadata is refused.
 #[test]
 fn caf_source_order_and_flags_survive_without_reviving_stale_settings() {
     let mut d = descriptor();
+    d.name = UnicodeString::new_nul("Recorded CAF");
+    d.class_id = Id::Str(b"null".to_vec());
     d.items.reverse();
     let mut source = item(d);
     source.enabled = false;
@@ -99,12 +101,53 @@ fn caf_source_order_and_flags_survive_without_reviving_stale_settings() {
     assert!(a.steps[0].1.get("_atnCafDescriptor").is_some());
     let bytes = export("S", &[a], &[], false).unwrap().0;
     assert_eq!(atn::parse(&bytes).unwrap().actions[0].items[0], source);
-    let mut edited = a.steps[0].1.clone();
-    edited["mirror"] = json!(true);
-    assert!(exported(edited).is_none());
     let mut damaged = a.steps[0].1.clone();
     damaged["_atnCafDescriptor"] = json!("not base64");
     assert!(exported(damaged).is_none());
+    let invalid = descriptor().with("extra", D::Boolean(true));
+    let mut damaged = a.steps[0].1.clone();
+    damaged["_atnCafDescriptor"] = json!(photocraft_paint::tile::b64_encode(&invalid.to_bytes()));
+    assert!(exported(damaged).is_none(), "valid base64 cannot hide an unrepresented source field");
+}
+
+/// Representable edits export their new values canonically, retaining step flags without skips.
+#[test]
+fn caf_edited_settings_export_without_stale_wire_metadata() {
+    let mut d = descriptor();
+    d.name = UnicodeString::new_nul("Recorded CAF");
+    d.class_id = Id::Str(b"null".to_vec());
+    d.items.reverse();
+    let mut source = item(d);
+    source.enabled = false;
+    source.with_dialog = true;
+    source.dialog_options = 2;
+    let imported = import(&atn::write(&file(source.clone())).unwrap()).unwrap();
+    assert!(imported.unsupported.is_empty());
+    let a = &imported.actions[0];
+    assert!(a.steps[0].1.get("_atnCafDescriptor").is_some());
+    for (param, index, value, wire) in [
+        ("sampleAllLayers", 1, json!(true), D::Boolean(true)),
+        ("scale", 4, json!(true), D::Boolean(true)),
+        ("mirror", 5, json!(true), D::Boolean(true)),
+        ("output", 6, json!("current"), enm("cafOutput", "cafOutputToCurrentLayer")),
+    ] {
+        let mut edited = a.clone();
+        edited.steps[0].1[param] = value.clone();
+        let mut expected_params = params();
+        expected_params[param] = value;
+        let mut canonical = descriptor();
+        canonical.items[index].1 = wire;
+        let mut expected = source.clone();
+        expected.descriptor = Some(canonical);
+        for skip in [false, true] {
+            let (bytes, skipped) = export("S", &[&edited], &[], skip).unwrap();
+            assert!(skipped.is_empty(), "a supported {param} edit must not be skipped");
+            assert_eq!(atn::parse(&bytes).unwrap().actions[0].items, vec![expected.clone()]);
+            let reloaded = import(&bytes).unwrap();
+            assert!(reloaded.unsupported.is_empty());
+            assert_eq!(reloaded.actions[0].steps[0].1, expected_params);
+        }
+    }
 }
 
 /// Missing defaults, malformed/repeated fields and unrepresented workspace state stay complete.
@@ -220,6 +263,7 @@ fn session(depth: u32) -> Session {
     s
 }
 
+/// Compare the complete small fixture, including pixels outside the selected fill area.
 fn assert_same_pixels(actual: &Surface, expected: &Surface, depth: u32, output: &str) {
     for y in 0..8 {
         for x in 0..8 {
@@ -293,6 +337,68 @@ fn caf_action_matches_native_pixels_and_undo_at_each_depth() {
         assert_eq!(recorded.active().unwrap().doc, before);
         assert!(recorded.redo());
         assert_eq!(recorded.active().unwrap().doc, after);
+    }
+}
+
+/// A translucent active layer over white makes layer-only and composite samples differ.
+fn multilayer_session(depth: u32) -> Session {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width":8,"height":8,"depth":depth,"background":"white"})).unwrap();
+    s.execute("layer.new.layer", json!({"name":"Translucent sample"})).unwrap();
+    let layer = s.active().unwrap().active_layer.unwrap();
+    s.edit("Translucent sample pixels", |doc, _| {
+        let bounds = doc.bounds();
+        doc.layer_mut(layer).unwrap().surface_mut().unwrap().write_region(bounds, &[0.0, 0.0, 1.0, 0.5].repeat(64));
+        Ok(())
+    })
+    .unwrap();
+    s.execute("select.rect", json!({"x":3,"y":3,"width":2,"height":2})).unwrap();
+    s
+}
+
+/// Current Layer preserves both sampling choices; distinct native controls detect a forced false.
+#[test]
+fn caf_current_layer_sampling_matches_distinct_multilayer_controls() {
+    for depth in [8, 16, 32] {
+        let mut native_centers = Vec::new();
+        for all_layers in [false, true] {
+            let mut native = multilayer_session(depth);
+            let mut p = params();
+            p["output"] = json!("current");
+            p["sampleAllLayers"] = json!(all_layers);
+            native.execute(CMD, p).unwrap();
+            let native_id = native.active().unwrap().active_layer.unwrap();
+            let expected = native.active().unwrap().doc.layer(native_id).unwrap().surface().unwrap();
+            native_centers.push(expected.rgba(3, 3));
+
+            let mut recorded = multilayer_session(depth);
+            let before = recorded.active().unwrap().doc.clone();
+            let source = recorded.active().unwrap().active_layer.unwrap();
+            let past = recorded.active().unwrap().history.past_len();
+            let mut d = descriptor();
+            d.items[1].1 = D::Boolean(all_layers);
+            d.items[6].1 = enm("cafOutput", "cafOutputToCurrentLayer");
+            recorded.actions.list.push(load(d));
+            let result = recorded.execute("actions.play", json!({"action":0})).unwrap();
+            assert_eq!(result["ran"], 1);
+            assert!(result.get("failed").is_none(), "{depth}/{all_layers}: {result}");
+            let after = recorded.active().unwrap().doc.clone();
+            assert_eq!(after.layers.len(), 2);
+            assert_eq!(after.selection, before.selection);
+            assert_eq!(recorded.active().unwrap().active_layer, Some(source));
+            assert_eq!(recorded.active().unwrap().history.past_len(), past + 1);
+            let actual = after.layer(source).unwrap().surface().unwrap();
+            assert_same_pixels(actual, expected, depth, "current multilayer");
+            assert_eq!(actual.rgba(0, 0), before.layer(source).unwrap().surface().unwrap().rgba(0, 0));
+            for layer in before.layers.iter().filter(|layer| layer.id != source) {
+                assert_eq!(after.layer(layer.id), Some(layer));
+            }
+            assert!(recorded.undo());
+            assert_eq!(recorded.active().unwrap().doc, before);
+            assert!(recorded.redo());
+            assert_eq!(recorded.active().unwrap().doc, after);
+        }
+        assert_ne!(native_centers[0], native_centers[1], "{depth}: fixture must distinguish layer-only from composite sampling");
     }
 }
 
