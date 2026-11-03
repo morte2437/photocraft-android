@@ -170,9 +170,11 @@ the reference application.
 
 ### Content-Aware Fill recordings
 
-`cafWorkspace` maps the measured Rectangular / Default color adaptation / None rotation /
-New Layer form to `edit.contentAwareFill`, retaining all seven keys and the three booleans:
+`cafWorkspace` maps Rectangular / Default color adaptation / None rotation with New Layer or
+Current Layer output to `edit.contentAwareFill`, retaining all seven keys and the three booleans:
 Sample All Layers, Scale and Mirror. The selection comes from the preceding selection step.
+New Layer is in the measured reference; Current Layer and the enumeration type IDs are explicit
+in [Stephen Marsh's published Action Manager example](https://community.adobe.com/questions-712/expand-and-content-aware-fill-functions-are-not-working-via-javascript-1172085).
 
 | Recorded key, in order | Supported value | Native parameter |
 |---|---|---|
@@ -182,15 +184,15 @@ Sample All Layers, Scale and Mirror. The selection comes from the preceding sele
 | `cafRotationAmount` | `cafRotationAmountNone` | `rotationAdaptation: "none"` |
 | `cafScale` | boolean | `scale` |
 | `cafMirror` | boolean | `mirror` |
-| `cafOutput` | `cafOutputToNewLayer` | `output: "new"` |
+| `cafOutput` | `cafOutputToNewLayer`, `cafOutputToCurrentLayer` | `output: "new"`, `"current"` |
 
 Descriptor types, source identity and key order survive save while its native settings are
 unchanged. Native export writes the seven keys explicitly; the known native boolean, color
-adaptation and rotation defaults are supported when sampling is Rectangular and output is New
-Layer. A native call using Auto or Current Layer defaults cannot yet be exported.
+adaptation, rotation and Current Layer output defaults are supported when sampling is explicitly
+Rectangular. A native call using the Auto sampling default cannot yet be exported.
 
 The reference's ellipses do not establish additional enum forms. Auto/Custom sampling,
-other adaptation levels, Current/Duplicate Layer output, absent keys, unknown settings and
+other adaptation levels, Duplicate Layer output, absent keys, unknown settings and
 malformed or repeated fields remain complete kept steps. Native layer targets, sampling/fill
 edits and nondefault seeds also refuse export rather than lose their settings. Playback uses
 the existing native fill and its selection, authorization, job and Undo/Redo behavior. The

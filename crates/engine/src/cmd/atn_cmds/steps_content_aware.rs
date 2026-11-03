@@ -6,11 +6,12 @@ use super::{D, Descriptor, Map, Value};
 
 const CMD: &str = "edit.contentAwareFill";
 const SOURCE: &str = "_atnCafDescriptor";
-// The measured row names these values; its ellipses are not additional enum bindings.
+// The measured row bounds these values; its ellipses are not additional enum bindings.
 const SAMPLING: &[(&str, &str)] = &[("cafSamplingRegionRectangular", "rectangular")];
 const COLOR: &[(&str, &str)] = &[("cafColorAdaptationDefault", "default")];
 const ROTATION: &[(&str, &str)] = &[("cafRotationAmountNone", "none")];
-const OUTPUT: &[(&str, &str)] = &[("cafOutputToNewLayer", "new")];
+// Current Layer is also explicit in the primary Action Manager example cited in docs/atn.md.
+const OUTPUT: &[(&str, &str)] = &[("cafOutputToNewLayer", "new"), ("cafOutputToCurrentLayer", "current")];
 const KEYS: &[&str] = &[
     "cafSamplingRegion",
     "cafSampleAllLayers",

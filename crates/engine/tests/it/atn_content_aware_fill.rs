@@ -69,6 +69,11 @@ fn caf_settings_roundtrip_seven_fields_and_boolean_choices() {
         }
         cases.push((d, p));
     }
+    let mut current = base.clone();
+    current.items[6].1 = enm("cafOutput", "cafOutputToCurrentLayer");
+    let mut p = params();
+    p["output"] = json!("current");
+    cases.push((current, p));
     for (d, p) in cases {
         let action = load(d.clone());
         assert_eq!(action.steps, vec![(CMD.into(), p.clone())]);
@@ -129,7 +134,6 @@ fn caf_unrepresented_descriptors_are_kept_and_never_partially_play() {
         (3, "cafRotationAmount", "cafRotationAmountHigh"),
         (3, "cafRotationAmount", "cafRotationAmountFull"),
         (3, "cafRotationAmount", "unknown"),
-        (6, "cafOutput", "cafOutputToCurrentLayer"),
         (6, "cafOutput", "cafOutputToDuplicateLayer"),
     ] {
         let mut d = base.clone();
@@ -170,9 +174,15 @@ fn caf_native_exports_preserve_effective_defaults_and_refuse_unrepresented_optio
         let a = load(exported(p).unwrap().descriptor.unwrap());
         assert_eq!(a.steps, vec![(CMD.into(), params())]);
     }
+    let mut current = params();
+    current["output"] = json!("current");
+    for p in [json!({"sampling":"rectangular"}), current.clone()] {
+        let a = load(exported(p).unwrap().descriptor.unwrap());
+        assert_eq!(a.steps, vec![(CMD.into(), current.clone())]);
+    }
     for (key, value) in [
         ("sampling", json!("auto")), ("sampling", json!("custom")), ("sampling", json!("unknown")),
-        ("output", json!("current")), ("output", json!("duplicate")),
+        ("output", json!("duplicate")),
         ("colorAdaptation", json!("none")), ("colorAdaptation", json!("high")), ("colorAdaptation", json!("veryHigh")),
         ("rotationAdaptation", json!("low")), ("rotationAdaptation", json!("medium")),
         ("rotationAdaptation", json!("high")), ("rotationAdaptation", json!("full")),
@@ -184,7 +194,7 @@ fn caf_native_exports_preserve_effective_defaults_and_refuse_unrepresented_optio
         p[key] = value;
         assert!(exported(p.clone()).is_none(), "{p}");
     }
-    for p in [json!({}), json!({"sampling":"rectangular"}), json!({"output":"new"}), json!([])] {
+    for p in [json!({}), json!({"output":"new"}), json!([])] {
         assert!(exported(p.clone()).is_none(), "unrepresented native default: {p}");
     }
 }
@@ -237,7 +247,7 @@ fn caf_action_matches_native_pixels_and_undo_at_each_depth() {
         assert!(s.redo());
         assert_eq!(s.active().unwrap().doc, after);
 
-        // Current-layer native calls still work, although their ATN form is outside this increment.
+        // Current Layer keeps one layer and matches the ordinary native operation as well.
         let mut current = session(depth);
         let mut p = params();
         p["output"] = json!("current");
@@ -245,6 +255,32 @@ fn caf_action_matches_native_pixels_and_undo_at_each_depth() {
         assert_eq!(current.active().unwrap().doc.layers.len(), 1);
         let center = current.active().unwrap().doc.layers[0].surface().unwrap().rgba(3, 3);
         assert!(center.iter().all(|v| (*v - 1.0).abs() < 0.01), "{depth}: native Current Layer control failed: {center:?}");
+        let mut recorded = session(depth);
+        let before = recorded.active().unwrap().doc.clone();
+        let source = recorded.active().unwrap().active_layer.unwrap();
+        let past = recorded.active().unwrap().history.past_len();
+        let mut d = descriptor();
+        d.items[6].1 = enm("cafOutput", "cafOutputToCurrentLayer");
+        recorded.actions.list.push(load(d));
+        let result = recorded.execute("actions.play", json!({"action":0})).unwrap();
+        assert_eq!(result["ran"], 1);
+        assert!(result.get("failed").is_none(), "{depth}: {result}");
+        let after = recorded.active().unwrap().doc.clone();
+        assert_eq!(after.layers.len(), before.layers.len());
+        assert_eq!(after.selection, before.selection);
+        assert_eq!(recorded.active().unwrap().active_layer, Some(source));
+        assert_eq!(recorded.active().unwrap().history.past_len(), past + 1);
+        let expected = current.active().unwrap().doc.layers[0].surface().unwrap();
+        let actual = after.layer(source).unwrap().surface().unwrap();
+        for y in 0..8 {
+            for x in 0..8 {
+                assert_eq!(actual.rgba(x, y), expected.rgba(x, y), "{depth}: Current Layer pixel{x},{y}");
+            }
+        }
+        assert!(recorded.undo());
+        assert_eq!(recorded.active().unwrap().doc, before);
+        assert!(recorded.redo());
+        assert_eq!(recorded.active().unwrap().doc, after);
     }
 }
 
