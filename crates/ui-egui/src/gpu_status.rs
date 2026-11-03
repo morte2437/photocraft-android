@@ -154,6 +154,8 @@ pub fn fall_back(app: &mut PhotocraftApp, fault: &photocraft_gpu::Fault) {
     app.gpu_fault = Some(fault.clone());
     // Canvas caches pointed at GPU textures: rebuild them as egui textures.
     app.canvases.clear();
+    // Viewport pages lived on the GPU too: their work stops, and the CPU canvas draws instead.
+    app.streams.clear();
     app.proxy_uploaded = None;
     app.prefs_rt.gpu_style = None;
     app.perf.gpu = false;
