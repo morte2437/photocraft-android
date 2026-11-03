@@ -45,6 +45,8 @@ mod channel_map;
 pub mod comps_map;
 pub mod doc_path;
 pub mod effects_map;
+#[cfg(any(unix, windows))]
+mod exr_native;
 pub mod exr_parts;
 mod flat;
 mod gradient_bake;
@@ -524,7 +526,9 @@ fn import_psd(
 /// ([`PsdFile::from_source`]) rather than read whole: its channel data is read layer by layer as
 /// it is decoded, so opening it needs memory for the document, not for the document plus the
 /// file. A read that fails meanwhile (the file is truncated or rewritten, its drive goes away)
-/// fails the open. Other formats are read whole.
+/// fails the open. A single-part flat scanline EXR is decoded one compression block at a time
+/// into tiles, so its size is bounded by the tile budget (or the scratch disk), not by a
+/// whole-file buffer and a decoded image. Other formats are read whole.
 #[cfg(any(unix, windows))]
 pub fn import_file_for_open_with(
     name: &str,
@@ -539,6 +543,23 @@ pub fn import_file_for_open_with(
     let psd = !has_extension(name, photocraft_format::EXTENSION) && photocraft_psd::ReadAt::read_at(&source, 0, &mut magic).is_ok() && is_psd(&magic);
     if !psd {
         drop(source);
+        // A flat scanline EXR is decoded block by block straight into tiles; other EXR
+        // layouts, and EXR headers the band decoder refuses, are read whole below.
+        if !has_extension(name, photocraft_format::EXTENSION) && photocraft_codecs::detect(&magic) == Some(photocraft_codecs::Format::OpenExr) {
+            let before = photocraft_raster::spill::read_error_generation();
+            let mut file = std::fs::File::open(path).map_err(read_failed)?;
+            let original = file.metadata().map_err(read_failed)?;
+            if let Some(mut result) = exr_native::import(&mut file, ctl)? {
+                let current = std::fs::metadata(path).map_err(read_failed)?;
+                if current.len() != original.len() || current.modified().ok() != original.modified().ok() {
+                    return Err(IoError::Read(format!("{}: the file changed while it was being opened; open it again", path.display())));
+                }
+                photocraft_raster::spill::check_since(before).map_err(IoError::Read)?;
+                ctl.check().map_err(|_| IoError::Cancelled)?;
+                result.document.name = name.to_string();
+                return Ok((result, false));
+            }
+        }
         let bytes = photocraft_format::read_file(path).map_err(read_failed)?;
         return import_for_open_with(name, &bytes, opts, ctl);
     }
