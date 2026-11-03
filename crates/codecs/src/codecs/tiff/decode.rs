@@ -165,6 +165,18 @@ impl<'a> TiffBands<'a> {
         self.p.lay.out_row().checked_mul(rows).ok_or_else(|| CodecError::LimitExceeded("band size".into()))
     }
 
+    /// A conservative bound on the decoder's own scratch memory in a whole-image decode of this
+    /// page (as `decode_page` does it): one strip or tile per worker that decodes a band at
+    /// once. Zero when strips are decoded in place. Add the decoded image itself and any
+    /// extra-sample planes.
+    pub fn decode_scratch_bytes(&self) -> u64 {
+        #[cfg(not(target_arch = "wasm32"))]
+        let workers = rayon::current_num_threads() as u64;
+        #[cfg(target_arch = "wasm32")]
+        let workers = 1;
+        scratch_bound(self.p.lay.direct(), self.p.scratch_bytes as u64, self.p.band_rows, self.p.h, workers)
+    }
+
     /// Decodes the image a group of bands at a time, in order, handing each group to `sink`
     /// with the position of its top-left pixel in the image [`TiffBands::dimensions`] gives. A
     /// group is about 64 MiB (at least one strip or row of tiles per worker, at most `max_alloc`;
@@ -217,6 +229,16 @@ impl<'a> TiffBands<'a> {
         }
         Ok(())
     }
+}
+
+/// [`TiffBands::decode_scratch_bytes`]'s bound: none when chunks are decoded in place,
+/// otherwise one chunk per worker that decodes a band, and never more chunks than the image has.
+fn scratch_bound(direct: bool, chunk_bytes: u64, band_rows: usize, h: u32, workers: u64) -> u64 {
+    if direct {
+        return 0;
+    }
+    let bands = u64::from(h).div_ceil(band_rows.max(1) as u64).max(1);
+    chunk_bytes.saturating_mul(workers.min(bands))
 }
 
 /// The Orientation (1–8) of page `page` (`None`: the default page); 1 when absent, malformed
@@ -559,6 +581,9 @@ pub(super) struct Prepared {
     extras_over_limit: usize,
     /// Extra samples left out because they did not fit the allocation budget beside the image.
     extras_dropped: u32,
+    /// Bytes one strip or tile decodes to, before clipping to the image: a worker's scratch
+    /// buffer. A strip is the full width; a tile keeps its declared size even at an edge.
+    scratch_bytes: usize,
 }
 
 impl Prepared {
@@ -803,6 +828,9 @@ fn prepare(f: &File<'_>, dir: &Ifd, limits: &Limits, whole: bool) -> Result<Prep
         .and_then(|s| s.checked_mul(src.bytes()))
         .ok_or_else(|| CodecError::LimitExceeded("tile size".into()))?;
     let scratch_cap = chunk_bytes.saturating_mul(2).max(64 << 20).min(limits.alloc_usize());
+    // One chunk as the decoder actually reads it: a tile keeps its declared size at an edge,
+    // which can be more than the clipped image bytes above.
+    let scratch_bytes = cw.saturating_mul(ch).saturating_mul(chunk_spp).saturating_mul(src.bytes());
     let (extra_at, extras_over_limit) = extra_sample_indices(spp as usize, color, alpha_at, out_layout.has_alpha());
     let mut lay = Layout {
         w: wu,
@@ -846,6 +874,7 @@ fn prepare(f: &File<'_>, dir: &Ifd, limits: &Limits, whole: bool) -> Result<Prep
         extra_kinds: extra,
         extras_over_limit,
         extras_dropped,
+        scratch_bytes,
     })
 }
 
@@ -872,5 +901,16 @@ mod tests {
         assert!(prepared_warnings(&prepare(&file, &dir, &Limits::default(), true).unwrap()).is_empty());
         let whole = decode(&bytes, &tight).unwrap();
         assert_eq!(whole.warnings, prepared_warnings(&p));
+    }
+
+    /// The scratch bound a whole-image decode reserves: none for chunks decoded in place, one
+    /// chunk per worker otherwise, never more chunks than the image has bands.
+    #[test]
+    fn whole_image_scratch_is_one_chunk_per_worker() {
+        assert_eq!(scratch_bound(true, 1 << 20, 16, 1024, 8), 0, "strips decoded in place need no scratch");
+        assert_eq!(scratch_bound(false, 1 << 20, 16, 1024, 8), 8 << 20, "one strip per worker");
+        assert_eq!(scratch_bound(false, 1 << 20, 16, 32, 8), 2 << 20, "never more strips than the image has");
+        assert_eq!(scratch_bound(false, 1 << 20, 0, 2, 8), 2 << 20, "a zero band height counts as one row");
+        assert_eq!(scratch_bound(false, u64::MAX, 1, 1, 8), u64::MAX, "the bound saturates");
     }
 }

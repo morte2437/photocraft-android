@@ -4002,6 +4002,7 @@ cameraData	Lens	Lens
 	Kept {name}: written by another application	{name} korundu: başka bir uygulama tarafından yazılmış
 	Shadow Tint	Gölge tonu
 	Redrawing	Yeniden çiziliyor
+	Memory usage percent	Bellek kullanım yüzdesi
 	Show Favorite Fonts	Favori yazı tiplerini göster
 	No favorite fonts yet: click the star beside a font to add it.	Henüz favori yazı tipi yok: eklemek için bir yazı tipinin yanındaki yıldıza tıklayın.
 	Favorite fonts	Favori yazı tipleri
@@ -4051,6 +4052,7 @@ cameraData	Lens	Lens
 	Chisel Soft	Yumuşak Keski
 	Open color-less EXR as ACEScg	Renk bilgisi olmayan EXR'yi ACEScg olarak aç
 	Do not append "copy" to filename when saving a copy	Kopya kaydederken dosya adına "copy" ekleme
+	Save Full-Size Composite in .pcraft Files	.pcraft dosyalarına tam boyutlu bileşik görüntüyü kaydet
 	Edit Selected Guides	Seçili Kılavuzları Düzenle
 	Clear Selected Guides	Seçili Kılavuzları Temizle
 	Bicubic Automatic	Bikübik Otomatik
@@ -4126,6 +4128,7 @@ cameraData	Lens	Lens
 	This document's layers: {needed} of {budget} for layers	Bu belgenin katmanları: katmanlar için {budget} içinden {needed}
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	Bu belgenin katmanlarının {needed} belleğe ihtiyacı var ama en fazla {budget} kullanabilirler: tüm belgenin yeniden çizimi CPU'yu kullanır
 	GPU Memory (MB, 0 = Automatic)	GPU Belleği (MB, 0 = Otomatik)
+	Scratch Size Limit (MB, 0 = No Limit)	Geçici disk boyut sınırı (MB, 0 = Sınırsız)
 	{path}: the path is not valid Unicode; save under another name.	{path}: yol geçerli bir Unicode değil; başka bir adla kaydedin.
 	{name} was changed by another app after it was opened or saved here.	{name}, burada açıldıktan veya kaydedildikten sonra başka bir uygulama tarafından değiştirildi.
 	Replace it with this document, or cancel and use File › Save As to keep both.	Bu belgeyle değiştirin ya da iptal edip ikisini de korumak için Dosya › Farklı Kaydet'i kullanın.

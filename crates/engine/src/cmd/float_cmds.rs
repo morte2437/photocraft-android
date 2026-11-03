@@ -174,9 +174,10 @@ fn cut_piece(base: &Surface, sel: &Surface, b: photocraft_geom::Rect, with_alpha
             {
                 return Ok(Some((tc, t.clone())));
             }
-            let src_bytes = src_tile.map_or(base.default_bytes(), |t| t.bytes());
+            let src_guard = src_tile.map(|t| t.bytes());
+            let src_bytes: &[u8] = src_guard.as_deref().unwrap_or(base.default_bytes());
             let mut out = piece.try_default_tile().map_err(oom)?;
-            let out_bytes = out.bytes_mut();
+            let mut out_bytes = out.bytes_mut();
             let mut px = [0.0f32; 8];
             let mut has_content = false;
             for y in tr.y0..tr.y1 {
@@ -224,6 +225,7 @@ fn cut_piece(base: &Surface, sel: &Surface, b: photocraft_geom::Rect, with_alpha
                     has_content |= non_zero;
                 }
             }
+            drop(out_bytes);
             Ok(has_content.then(|| (tc, Arc::new(out))))
         })
         .collect::<Result<Vec<_>>>()?;

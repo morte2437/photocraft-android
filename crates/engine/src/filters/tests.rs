@@ -80,6 +80,28 @@ const ALL: [&str; 24] = [
 ];
 
 #[test]
+fn enormous_global_filter_is_refused_before_allocating_and_preserves_document() {
+    let mut s = Session::new();
+    // A sparse document exercises admission without allocating a giant background first.
+    s.add_document(
+        photocraft_doc::Document::new("large", photocraft_doc::Size::new(300000, 300000), photocraft_color::ColorMode::Rgb, photocraft_color::SampleType::U8),
+        None,
+    );
+    s.execute("layer.new.layer", json!({})).unwrap();
+    s.edit("one pixel", |doc, active| {
+        doc.layer_mut(active.unwrap()).unwrap().surface_mut().unwrap().write_pixel(0, 0, &[0.2, 0.4, 0.6, 1.0]);
+        Ok(())
+    })
+    .unwrap();
+    let before = s.active().unwrap().doc.clone();
+    let revision = s.active().unwrap().revision;
+    let err = s.execute("filter.distort.twirl", json!({})).unwrap_err().to_string();
+    assert!(err.contains("working memory"), "{err}");
+    assert_eq!(s.active().unwrap().revision, revision);
+    assert_eq!(s.active().unwrap().doc, before);
+}
+
+#[test]
 fn every_filter_command_runs_changes_pixels_and_undoes() {
     for id in ALL {
         let mut s = session();

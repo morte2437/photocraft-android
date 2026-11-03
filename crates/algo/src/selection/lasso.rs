@@ -202,7 +202,8 @@ pub fn polygon_surface(points: &[(f32, f32)], clip: Rect) -> Option<Surface> {
             }
             for ((r, tile), row) in spans.iter().zip(&mut tiles).zip(acc.as_chunks::<TS>().0) {
                 let base = y.rem_euclid(TILE_SIZE) as usize * TS + r.x0.rem_euclid(TILE_SIZE) as usize;
-                let Some(dst) = tile.bytes_mut().get_mut(base..base + r.width() as usize) else { continue };
+                let mut data = tile.bytes_mut();
+                let Some(dst) = data.get_mut(base..base + r.width() as usize) else { continue };
                 for (d, v) in dst.iter_mut().zip(row) {
                     *d = (v.min(1.0).clamp(0.0, 1.0) * 255.0).round() as u8;
                 }

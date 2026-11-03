@@ -381,10 +381,13 @@ fn crop_handle(app: &PhotocraftApp, p: [f64; 2], mods: egui::Modifiers, targets:
     let deg = crate::crop_ui::angle(app);
     let ratio = crate::crop_ui::resize_ratio(app, rect, mods);
     let q = view.map_or(p, |view| crate::crop_mode::to_press(app, Some(view), p));
-    // The frame for the pointer at `q`, as `crop_ui` resizes it.
-    let frame_at = |q: [f64; 2]| match view {
-        Some(_) => crate::crop_mode::resized_frame(crate::crop_mode::LiveResize { rect, deg, hx, hy, start, q, ratio, alt: mods.alt }).map(|(f, _)| f),
-        None => Some(crate::crop_ui::resized_turned(rect, deg, hx, hy, [q[0] - start[0], q[1] - start[1]], ratio, mods.alt)),
+    // The frame for the pointer at `q`, as `crop_ui` resizes it (a ⇧ corner along its diagonal).
+    let frame_at = |q: [f64; 2]| {
+        let q = crate::crop_ui::resize_point(app, rect, hx, hy, start, q, mods);
+        match view {
+            Some(_) => crate::crop_mode::resized_frame(crate::crop_mode::LiveResize { rect, deg, hx, hy, start, q, ratio, alt: mods.alt }).map(|(f, _)| f),
+            None => Some(crate::crop_ui::resized_turned(rect, deg, hx, hy, [q[0] - start[0], q[1] - start[1]], ratio, mods.alt)),
+        }
     };
     let frame = frame_at(q)?;
     let at = |r: [f64; 4]| {
@@ -417,17 +420,37 @@ fn crop_handle(app: &PhotocraftApp, p: [f64; 2], mods: egui::Modifiers, targets:
     let original = at(rect);
     let travel = crate::crop_ui::turn([handle[0] - original[0], handle[1] - original[1]], [0.0, 0.0], -deg);
     let mut local = [(travel[0] + d[0]) / scale, (travel[1] + d[1]) / scale];
-    if deg == 0.0
-        && hx != 0
+    if hx != 0
         && hy != 0
         && let Some(k) = ratio
     {
-        // A corner with a ratio has one degree of freedom. Put the other axis on the same
-        // ratio, rather than letting the raw pointer's unused axis override the snapped edge.
-        if lines.iter().any(|line| line.vertical) {
-            local[1] = f64::from(hy) * ((rect[2] - rect[0] + grow * f64::from(hx) * local[0]) / k - (rect[3] - rect[1])) / grow;
+        if deg == 0.0 {
+            // A corner with a ratio has one degree of freedom. Put the other axis on the same
+            // ratio, rather than letting the raw pointer's unused axis override the snapped edge.
+            if lines.iter().any(|line| line.vertical) {
+                local[1] = f64::from(hy) * ((rect[2] - rect[0] + grow * f64::from(hx) * local[0]) / k - (rect[3] - rect[1])) / grow;
+            } else {
+                local[0] = f64::from(hx) * ((rect[3] - rect[1] + grow * f64::from(hy) * local[1]) * k - (rect[2] - rect[0])) / grow;
+            }
         } else {
-            local[0] = f64::from(hx) * ((rect[3] - rect[1] + grow * f64::from(hy) * local[1]) * k - (rect[2] - rect[0])) / grow;
+            // A turned corner with a ratio slides along its turned diagonal, which crosses the
+            // guides at an angle: slide it onto the nearest line it reached. Moved sideways onto
+            // the line instead, the ratio (a ⇧ corner's diagonal) put it back off the line.
+            let along = [f64::from(hx) * k, f64::from(hy)];
+            let v = crate::crop_ui::turn(along, [0.0, 0.0], deg);
+            // A diagonal nearly parallel to the line meets it far along: snap only to a crossing
+            // inside the tolerance box `snap_point` read the handle in (|s·v| ≤ tol on each axis).
+            let reach = tol / v[0].abs().max(v[1].abs());
+            let slide = lines
+                .iter()
+                .filter_map(|line| {
+                    let (gap, step) = if line.vertical { (line.pos - handle[0], v[0]) } else { (line.pos - handle[1], v[1]) };
+                    (step.abs() > 1e-9).then(|| gap / step)
+                })
+                .filter(|s| s.abs() <= reach)
+                .min_by(|a, b| a.abs().total_cmp(&b.abs()));
+            let Some(s) = slide else { return Some((p, Vec::new())) };
+            local = [(travel[0] + s * along[0]) / scale, (travel[1] + s * along[1]) / scale];
         }
     }
     let d = crate::crop_ui::turn(local, [0.0, 0.0], deg);

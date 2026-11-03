@@ -227,6 +227,16 @@ fn blob_session(depth: u32) -> Session {
 }
 
 #[test]
+fn content_aware_fill_uses_a_named_nonactive_source_layer() {
+    let mut s = blob_session(8);
+    let id = s.active().unwrap().active_layer.unwrap();
+    let name = s.active().unwrap().doc.layer(id).unwrap().name.clone();
+    s.execute("layer.new.layer", json!({"name": "Top"})).unwrap();
+    let result = s.execute("edit.contentAwareFill", json!({"layer": name, "colorAdaptation": "none"})).unwrap();
+    assert_eq!(result["layer"], id.0, "fill must use the recorded source rather than the active layer");
+}
+
+#[test]
 fn content_aware_fill_huge_area_neither_panics_nor_wraps() {
     let mut s = blob_session(8);
     // `[1e30, 0, 1e30, 10]` overflowed the i32 additions in the area parser (a debug-build

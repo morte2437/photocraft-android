@@ -415,7 +415,7 @@ fn blend_into(surf: &mut Surface, area: Rect, source: &Source, sel: Option<&Surf
                 .try_clone()
                 .map_err(|e| EngineError::Other(format!("not enough memory while blending a pixel tile ({e}); the document was not changed")))?,
         };
-        blend_tile(tile.bytes_mut(), &fmt, tc.rect(), tr, source, mask.as_ref(), b);
+        blend_tile(&mut tile.bytes_mut(), &fmt, tc.rect(), tr, source, mask.as_ref(), b);
         done.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((tc, std::sync::Arc::new(tile)));
         Ok(())
     })?;
@@ -426,7 +426,8 @@ fn blend_into(surf: &mut Surface, area: Rect, source: &Source, sel: Option<&Surf
 
 /// The selection's coverage over one tile (its channel 0).
 pub(crate) struct Mask<'a> {
-    bytes: &'a [u8],
+    bytes: Option<photocraft_raster::TileBytes<'a>>,
+    default: &'a [u8],
     fmt: photocraft_color::PixelFormat,
     origin: Rect,
 }
@@ -434,13 +435,14 @@ pub(crate) struct Mask<'a> {
 impl<'a> Mask<'a> {
     /// `sel` over the tile at `tc` (its default pixel where it has no tile there).
     pub(crate) fn of(sel: &'a Surface, tc: photocraft_geom::TileCoord) -> Self {
-        Mask { bytes: sel.tile(tc).map_or(sel.default_bytes(), |t| t.bytes()), fmt: sel.format(), origin: tc.rect() }
+        Mask { bytes: sel.tile(tc).map(|t| t.bytes()), default: sel.default_bytes(), fmt: sel.format(), origin: tc.rect() }
     }
     pub(crate) fn at(&self, x: i32, y: i32) -> f32 {
+        let bytes = self.bytes.as_deref().unwrap_or(self.default);
         let bpp = self.fmt.bytes_per_pixel();
         // A default-pixel mask is one pixel long: every position reads it.
-        let i = if self.bytes.len() == bpp { 0 } else { ((y - self.origin.y0) as usize * TILE_SIZE as usize + (x - self.origin.x0) as usize) * bpp };
-        self.bytes.get(i..i + bpp).map_or(0.0, |px| photocraft_color::read_sample(px, self.fmt.sample, 0))
+        let i = if bytes.len() == bpp { 0 } else { ((y - self.origin.y0) as usize * TILE_SIZE as usize + (x - self.origin.x0) as usize) * bpp };
+        bytes.get(i..i + bpp).map_or(0.0, |px| photocraft_color::read_sample(px, self.fmt.sample, 0))
     }
     /// Fully selected over `r`?
     pub(crate) fn full(&self, r: Rect) -> bool {

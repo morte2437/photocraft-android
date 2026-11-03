@@ -18,6 +18,8 @@ use serde_json::{Value, json};
 use crate::commands::CommandSpec;
 use crate::{EngineError, Result, Session};
 
+mod replace_color_range;
+
 /// Built-in Color Lookup looks `(id, label)`.
 pub use photocraft_cms::lutfile::BUILTIN as LOOKS;
 
@@ -401,7 +403,11 @@ fn shadows_highlights_params(p: &Value) -> ShadowsHighlights {
     }
 }
 
+/// Recorded Lab bounds use native profile matching; ordinary RGB samples keep their existing path.
 fn replace_color(s: &mut Session, p: &Value) -> Result<Value> {
+    if let Some(result) = replace_color_range::apply(s, p)? {
+        return Ok(result);
+    }
     const CMD: &str = "image.adjustments.replaceColor";
     let c = crate::commands::color_param(CMD, p, "color", s.tools.foreground)?;
     let fuzz = num(p, "fuzziness", 40.0).clamp(0.0, 200.0);
@@ -562,7 +568,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "image.adjustments.replaceColor",
             "Replace Color…",
             ["Image", "Adjustments"],
-            r##"{"localized":bool=false,"color":color,"fuzziness":0..200=40,"range":0..100=100,"hue":-180..180=0,"saturation":-100..100=0,"lightness":-100..100=0,"points":[[x,y],…]?} (color: "#rrggbb", default the foreground colour; Localized Color Clusters: "points" where the colour was picked, "range" % of the longer side)"##,
+            r##"{"localized":bool=false,"color":color,"fuzziness":0..200=40,"range":0..100=100,"hue":-180..180=0,"saturation":-100..100=0,"lightness":-100..100=0,"points":[[x,y],…]?,"labMinimum":[L,a,b]?,"labMaximum":[L,a,b]?} (Lab bounds: a finite ordered D50 box, mutually exclusive with color/points/localized/range; composite pixel-layer target only. Otherwise color defaults to the foreground; localized points use range % of the longer side.)"##,
             has_pixels,
             replace_color
         ),
