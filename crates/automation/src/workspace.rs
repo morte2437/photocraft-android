@@ -117,7 +117,11 @@ impl AuthorizedWorkspace {
         let tmp = parent.join(photocraft_format::atomic::temp_name(&leaf));
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
-        let written = root.dir.open_with(&tmp, &options).and_then(|file| {
+        let opened = root.dir.open_with(&tmp, &options);
+        // Removes the temporary file on every way out but a rename, a panicking writer included
+        // (unwinding closes the handle inside the closure first), and only one this call made.
+        let mut cleanup = TempRemoval { dir: &root.dir, path: &tmp, armed: opened.is_ok() };
+        let written = opened.and_then(|file| {
             let mut file = file.into_std();
             write(&mut file)?;
             #[cfg(unix)]
@@ -137,9 +141,9 @@ impl AuthorizedWorkspace {
         });
         let renamed = written.and_then(|()| photocraft_format::atomic::retry_rename(RenameRetry::platform(), || root.dir.rename(&tmp, &root.dir, &relative)));
         if let Err(e) = renamed {
-            let _ = root.dir.remove_file(&tmp);
             return Err(file_error("write", path, e));
         }
+        cleanup.armed = false;
         // Flush the directory entry (Unix); best effort, the new bytes are already in place.
         #[cfg(unix)]
         {
@@ -149,6 +153,21 @@ impl AuthorizedWorkspace {
             }
         }
         Ok(())
+    }
+}
+
+/// Removes a temporary file on drop unless `armed` was cleared after its rename.
+struct TempRemoval<'a> {
+    dir: &'a Dir,
+    path: &'a Path,
+    armed: bool,
+}
+
+impl Drop for TempRemoval<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = self.dir.remove_file(self.path);
+        }
     }
 }
 

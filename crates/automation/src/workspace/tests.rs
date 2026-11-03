@@ -152,6 +152,22 @@ fn write_stream_seeks_back_and_keeps_the_original_on_failure() {
     assert_eq!(std::fs::read(inside.join("notes.txt")).unwrap(), b"keep");
 }
 
+/// A writer that panics leaves the original and no temporary file behind.
+#[test]
+fn write_stream_cleans_up_after_a_panicking_writer() {
+    let (inside, _, workspace) = roots("stream-panic");
+    workspace.write("big.psb", b"original").unwrap();
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = workspace.write_stream("big.psb", &mut |w| {
+            w.write_all(b"partial")?;
+            panic!("encoder bug")
+        });
+    }));
+    assert!(unwound.is_err());
+    assert_eq!(std::fs::read(inside.join("big.psb")).unwrap(), b"original");
+    assert!(temp_files(&inside).is_empty());
+}
+
 /// A directory at the target is refused before anything is opened, even under an image name.
 #[test]
 fn write_refuses_a_directory_target_before_opening_it() {
