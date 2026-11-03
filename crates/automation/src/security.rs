@@ -1,11 +1,11 @@
 //! Shared security primitives for the loopback JSON control transports.
 
 use std::fs::OpenOptions;
-use std::io::{BufRead, Write};
-use std::path::{Path, PathBuf};
+use std::io::{BufRead, Read, Write};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
@@ -21,6 +21,10 @@ pub const MAX_CONNECTIONS: usize = 16;
 pub const MAX_BATCH_STEPS: usize = 256;
 /// Idle/read and write timeout for loopback TCP connections.
 pub const IO_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a new TCP connection has to authenticate, however active it is. [`IO_TIMEOUT`] starts
+/// again with every read, so a client that kept sending without ever completing `auth` held one
+/// of the [`MAX_CONNECTIONS`] permits for as long as it liked (#4965).
+pub const AUTH_DEADLINE: Duration = Duration::from_secs(10);
 
 const TOKEN_BYTES: usize = 32;
 const TOKEN_HEX_LEN: usize = TOKEN_BYTES * 2;
@@ -93,11 +97,15 @@ pub fn validate_token(token: &str) -> Result<(), AutomationError> {
 }
 
 /// Compare fixed-width tokens without an early exit on a mismatching byte.
+///
+/// Hex letters match in either case: [`validate_token`] accepts uppercase, and the server keeps
+/// the token lowercased, so a client sending the token exactly as it was configured must still
+/// authenticate (#6425). Only `A`–`Z` fold, so a non-hex byte never matches a hex digit.
 pub fn token_matches(expected: &str, supplied: &str) -> bool {
     if expected.len() != TOKEN_HEX_LEN || supplied.len() != TOKEN_HEX_LEN {
         return false;
     }
-    expected.bytes().zip(supplied.bytes()).fold(0u8, |different, (a, b)| different | (a ^ b)) == 0
+    expected.bytes().zip(supplied.bytes()).fold(0u8, |different, (a, b)| different | (a.to_ascii_lowercase() ^ b.to_ascii_lowercase())) == 0
 }
 
 /// Validate the first TCP frame without exposing any control method before authentication.
@@ -131,7 +139,27 @@ pub fn repeat_auth_reply(line: &str) -> Option<Value> {
 }
 
 fn read_token_file(path: &Path) -> Result<String, AutomationError> {
-    let token = std::fs::read_to_string(path).map_err(|e| AutomationError::Io(format!("{}: {e}", path.display())))?;
+    // Validate what we actually opened, not just the name: an existing control-token file must be
+    // a regular file that no other local principal can read. A freshly created one is 0600
+    // (`create_token_file`); an operator-supplied one is checked here so a group- or world-readable
+    // token is refused rather than trusted as the control credential (#4966).
+    let mut file = std::fs::File::open(path).map_err(|e| AutomationError::Io(format!("{}: {e}", path.display())))?;
+    let meta = file.metadata().map_err(|e| AutomationError::Io(format!("{}: {e}", path.display())))?;
+    if !meta.is_file() {
+        return Err(AutomationError::Io(format!("{}: control token file is not a regular file", path.display())));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if meta.mode() & 0o077 != 0 {
+            return Err(AutomationError::Io(format!(
+                "{}: control token file is readable by group or others (mode {:o}); restrict it to its owner (e.g. chmod 600)",
+                path.display(),
+                meta.mode() & 0o777
+            )));
+        }
+    }
+    let token = std::io::read_to_string(&mut file).map_err(|e| AutomationError::Io(format!("{}: {e}", path.display())))?;
     let token = token.trim().to_owned();
     validate_token(&token)?;
     Ok(token)
@@ -242,11 +270,42 @@ pub fn configure_stream(stream: &std::net::TcpStream) -> std::io::Result<()> {
     stream.set_write_timeout(Some(IO_TIMEOUT))
 }
 
-/// Environment-aware token inputs shared by the desktop app and CLI.
-pub fn token_inputs(supplied: Option<String>, token_file: Option<PathBuf>) -> (Option<String>, Option<PathBuf>) {
-    let supplied = supplied.or_else(|| std::env::var("PHOTOCRAFT_CONTROL_TOKEN").ok());
-    let token_file = token_file.or_else(|| std::env::var_os("PHOTOCRAFT_CONTROL_TOKEN_FILE").map(PathBuf::from));
-    (supplied, token_file)
+/// The read half of a control connection. Until [`Self::authenticated`] is called, reads fail
+/// with `TimedOut` once the authentication deadline has passed, whatever arrived in the meantime;
+/// the caller then drops the connection and its [`ConnectionPermit`].
+pub struct AuthDeadlineStream {
+    stream: std::net::TcpStream,
+    /// `None` once authenticated.
+    deadline: Option<Instant>,
+}
+
+impl AuthDeadlineStream {
+    /// `stream` must authenticate within `limit` from now (normally [`AUTH_DEADLINE`]).
+    pub fn new(stream: std::net::TcpStream, limit: Duration) -> Self {
+        // A limit too large to represent expires at once rather than never.
+        let now = Instant::now();
+        Self { stream, deadline: Some(now.checked_add(limit).unwrap_or(now)) }
+    }
+
+    /// The connection authenticated: only the idle timeout applies from here on.
+    pub fn authenticated(&mut self) -> std::io::Result<()> {
+        self.deadline = None;
+        self.stream.set_read_timeout(Some(IO_TIMEOUT))
+    }
+}
+
+impl Read for AuthDeadlineStream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if let Some(deadline) = self.deadline {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "not authenticated in time"));
+            }
+            // Wait no longer than what is left, so a silent client is dropped at the deadline too.
+            self.stream.set_read_timeout(Some(left.min(IO_TIMEOUT)))?;
+        }
+        self.stream.read(buf)
+    }
 }
 
 #[cfg(test)]
@@ -306,6 +365,45 @@ mod tests {
         assert_eq!(reply["result"]["authenticated"], true);
     }
 
+    fn auth_line(token: &str) -> String {
+        json!({"id": 1, "method": AUTH_METHOD, "params": {"token": token}}).to_string()
+    }
+
+    /// #6425: `validate_token` accepts uppercase hex and the server keeps the token lowercased, so a
+    /// client sending the token exactly as it was configured was refused.
+    #[test]
+    fn a_token_authenticates_in_any_letter_case() {
+        let configured = "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF";
+        let mixed = "0123456789AbCdEf0123456789aBcDeF0123456789ABCDEF0123456789abcdef";
+        let expected = server_token(Some(configured), None).unwrap();
+        for supplied in [configured, &configured.to_ascii_lowercase(), mixed] {
+            let (reply, authenticated) = authentication_reply(&auth_line(supplied), &expected);
+            assert!(authenticated, "{supplied}: {reply}");
+            assert_eq!(reply["result"]["authenticated"], true);
+        }
+        // The comparison is case-insensitive in both directions.
+        assert!(token_matches(configured, &configured.to_ascii_lowercase()));
+
+        // A different token, or a non-hex character that only folds to a hex one, still fails.
+        let other = "1123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF";
+        let (_, authenticated) = authentication_reply(&auth_line(other), &expected);
+        assert!(!authenticated);
+        let not_hex = "0123456789ABCDEG0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF";
+        assert!(!token_matches(&expected, not_hex));
+    }
+
+    /// #6425: the same for a token file whose contents are uppercase.
+    #[test]
+    fn an_uppercase_token_file_authenticates_its_exact_contents() {
+        let path = std::env::temp_dir().join(format!("photocraft-control-token-upper-{}-{}.txt", std::process::id(), generate_token().unwrap()));
+        let contents = generate_token().unwrap().to_ascii_uppercase();
+        create_token_file(&path, &contents).unwrap();
+        let expected = server_token(None, Some(&path));
+        std::fs::remove_file(&path).unwrap();
+        let (reply, authenticated) = authentication_reply(&auth_line(&contents), &expected.unwrap());
+        assert!(authenticated, "{reply}");
+    }
+
     #[test]
     fn repeat_auth_on_an_authenticated_connection_says_so() {
         let line = json!({"id": 3, "method": AUTH_METHOD, "params": {"token": "anything"}}).to_string();
@@ -325,6 +423,98 @@ mod tests {
         assert_eq!(server, client);
         assert!(token_matches(&server, &client));
         std::fs::remove_file(path).unwrap();
+    }
+
+    /// A connected loopback pair: the accepted (server) end and the client end.
+    fn tcp_pair() -> (std::net::TcpStream, std::net::TcpStream) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        configure_stream(&server).unwrap();
+        (server, client)
+    }
+
+    /// #4965: activity must not extend the time a connection may stay unauthenticated.
+    #[test]
+    fn an_active_connection_is_dropped_at_the_authentication_deadline() {
+        let (server, mut client) = tcp_pair();
+        // A byte every 20 ms and never a newline: each read succeeds long before the idle timeout.
+        let trickle = std::thread::spawn(move || {
+            for _ in 0..150 {
+                if client.write_all(b"x").is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        });
+        let mut reader = std::io::BufReader::new(AuthDeadlineStream::new(server, Duration::from_millis(300)));
+        let mut line = String::new();
+        let started = Instant::now();
+        let err = read_bounded_line(&mut reader, &mut line).unwrap_err();
+        assert!(matches!(err.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock), "{err}");
+        assert!(started.elapsed() >= Duration::from_millis(250), "not before the deadline: {:?}", started.elapsed());
+        assert!(started.elapsed() < Duration::from_secs(3), "the trickle did not extend it: {:?}", started.elapsed());
+        // It stays expired.
+        assert!(read_bounded_line(&mut reader, &mut line).is_err());
+        drop(reader);
+        trickle.join().unwrap();
+    }
+
+    #[test]
+    fn a_silent_connection_is_dropped_at_the_authentication_deadline() {
+        let (server, _client) = tcp_pair();
+        let mut reader = std::io::BufReader::new(AuthDeadlineStream::new(server, Duration::from_millis(200)));
+        let mut line = String::new();
+        let started = Instant::now();
+        assert!(read_bounded_line(&mut reader, &mut line).is_err());
+        assert!(started.elapsed() < Duration::from_secs(3), "{:?}", started.elapsed());
+    }
+
+    #[test]
+    fn an_authenticated_connection_outlives_the_authentication_deadline() {
+        let (server, mut client) = tcp_pair();
+        // The test thread writes the first line before the deadline starts. The sender writes the
+        // second line once the connection has authenticated and the deadline has passed.
+        client.write_all(b"one\n").unwrap();
+        let limit = Duration::from_secs(1);
+        let mut reader = std::io::BufReader::new(AuthDeadlineStream::new(server, limit));
+        let deadline = Instant::now() + limit;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let sender = std::thread::spawn(move || {
+            rx.recv().unwrap();
+            std::thread::sleep((deadline + Duration::from_millis(300)).saturating_duration_since(Instant::now()));
+            client.write_all(b"two\n").unwrap();
+        });
+        let mut line = String::new();
+        assert_eq!(read_bounded_line(&mut reader, &mut line).unwrap(), LineRead::Line);
+        assert_eq!(line, "one\n");
+        reader.get_mut().authenticated().unwrap();
+        tx.send(()).unwrap();
+        // Sent 300 ms after the deadline: only the idle timeout applies now.
+        assert_eq!(read_bounded_line(&mut reader, &mut line).unwrap(), LineRead::Line);
+        assert_eq!(line, "two\n");
+        sender.join().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_existing_token_file_must_be_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("photocraft-token-perm-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("token.txt");
+        let token = "0123456789abcdef".repeat(4); // 64 hex chars, passes validate_token
+        std::fs::write(&path, &token).unwrap();
+
+        // A group- or world-readable token is refused: the control credential must not be shared (#4966).
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(read_token_file(&path).is_err(), "a 0644 token file must be refused");
+
+        // Owner-only is opened, read and validated.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(read_token_file(&path).unwrap(), token, "a 0600 token file must be read");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

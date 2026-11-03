@@ -1,21 +1,28 @@
 //! The scratch file: where cold tiles go when pixel memory is over budget.
 //!
-//! - One file per configured directory. Windows deletes it even after a crash; Unix uses private
-//!   permissions and reaps files of dead processes when the directory is next configured.
+//! - One file per configured directory, never visible after the process ends. Unix creates it
+//!   with private permissions and unlinks it right after opening, so the space is returned when
+//!   the last handle closes, even on a crash or `exit` without destructors. Windows opens it
+//!   delete-on-close. Files of dead processes (an older build, or a crash between creating and
+//!   unlinking) are reaped when the directory is next configured.
 //! - Space is handed out in 4 KiB-aligned extents from a free list (best fit, coalescing), else
 //!   appended at the end.
 //! - All I/O is positioned: no shared cursor, no lock held during I/O. The allocator lock only
 //!   guards the free list.
-//! - Reads go through one handle per thread (the file opened again by path): Windows serialises
-//!   I/O on one synchronous handle, so parallel readers sharing it would run one at a time.
+//! - Unix reads and writes with `pread`/`pwrite` on the one handle (no reopen by path, which
+//!   is impossible once unlinked). Windows reads through one handle per thread (the file opened
+//!   again by path): it serialises I/O on one synchronous handle, so parallel readers sharing it
+//!   would run one at a time.
 //!
 //! Ported from Fotox's `fx-tiles` scratch file (same author), minus its `unsafe` `ReOpenFile`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::path::{Path, PathBuf};
+#[cfg(windows)]
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, OnceLock, PoisonError};
+use std::sync::{Mutex, PoisonError};
 
 const ALIGN: u64 = 4096;
 
@@ -94,8 +101,12 @@ impl Allocator {
 
 pub(crate) struct ScratchFile {
     main: File,
+    #[cfg(windows)]
     readers: OnceLock<Vec<File>>,
     path: PathBuf,
+    /// The directory entry still exists (Unix unlink failed): remove it on drop.
+    #[cfg(not(windows))]
+    linked: bool,
     allocator: Mutex<Allocator>,
 }
 
@@ -132,7 +143,24 @@ impl ScratchFile {
         let main = options.open(&path)?;
         #[cfg(unix)]
         reap_abandoned(dir, &main);
-        Ok(Self { main, readers: OnceLock::new(), path, allocator: Mutex::new(Allocator::default()) })
+        // Unix: the open handle keeps the inode; nothing is left behind at any exit. A
+        // filesystem that refuses the unlink keeps the name until drop or the next reap.
+        #[cfg(not(windows))]
+        let linked = std::fs::remove_file(&path).is_err();
+        Ok(Self {
+            main,
+            #[cfg(windows)]
+            readers: OnceLock::new(),
+            path,
+            #[cfg(not(windows))]
+            linked,
+            allocator: Mutex::new(Allocator::default()),
+        })
+    }
+
+    /// Another handle to the open file (the Unix one has no name), for fault-injection tests.
+    pub(crate) fn duplicate_handle(&self) -> std::io::Result<File> {
+        self.main.try_clone()
     }
 
     pub fn path(&self) -> &Path {
@@ -180,7 +208,14 @@ impl ScratchFile {
         self.allocator.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// Positioned reads on one handle run in parallel on Unix.
+    #[cfg(not(windows))]
+    fn reader(&self) -> &File {
+        &self.main
+    }
+
     /// A handle for reading on the calling thread.
+    #[cfg(windows)]
     fn reader(&self) -> &File {
         let extra = self.readers.get_or_init(|| {
             // The same file opened again by path: std shares read, write and delete, so this
@@ -242,8 +277,9 @@ fn reap_with(dir: &Path, uid: u32, live: impl Fn(u32) -> bool) {
 
 impl Drop for ScratchFile {
     fn drop(&mut self) {
-        // On Windows the file is already gone (delete-on-close); elsewhere remove it.
-        if !cfg!(windows) {
+        // Windows deletes on close and Unix unlinked at creation; only a refused unlink remains.
+        #[cfg(not(windows))]
+        if self.linked {
             let _ = std::fs::remove_file(&self.path);
         }
     }
@@ -251,6 +287,7 @@ impl Drop for ScratchFile {
 
 /// A stable small number per thread, handed out in turn, so the worker threads of a pool land
 /// on different handles.
+#[cfg(windows)]
 fn thread_slot() -> usize {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
     thread_local! {
@@ -344,11 +381,15 @@ mod tests {
             .status()
             .unwrap();
         assert!(result.success());
-        #[cfg(windows)]
-        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "delete-on-close survives exit without Drop");
+        // Windows: delete-on-close. Unix: unlinked right after opening. Neither needs Drop.
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "no scratch file outlives an exit without destructors");
         let next = ScratchFile::create(&dir).unwrap();
-        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "a new launch reaps the dead process's files");
+        // Unix unlinks the open file; Windows keeps the entry until the delete-on-close handle closes.
+        let live_entries = if cfg!(unix) { 0 } else { 1 };
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), live_entries, "a live scratch file is unlinked on Unix only");
+        next.write(b"still usable").unwrap();
         drop(next);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "closing the last scratch file leaves the directory empty");
         std::fs::remove_dir(dir).unwrap();
     }
 
@@ -373,9 +414,31 @@ mod tests {
         assert!(stale.exists(), "another owner's files remain");
         reap_with(&dir, meta.uid(), |pid| pid == 124);
         assert!(!stale.exists());
-        assert!(live.exists() && unrelated.exists() && link.exists() && own.path.exists());
+        assert!(live.exists() && unrelated.exists() && link.exists());
+        assert!(!own.path.exists() && !own.linked, "the open scratch file is already unlinked");
         drop(own);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn parallel_positioned_reads_share_one_unlinked_file() {
+        let dir = std::env::temp_dir().join(format!("pc-scratch-parallel-{}", std::process::id()));
+        let scratch = ScratchFile::create(&dir).unwrap();
+        let extents: Vec<_> = (0..32u8).map(|i| scratch.write(&vec![i; 5000 + usize::from(i)]).unwrap()).collect();
+        std::thread::scope(|s| {
+            for t in 0..8 {
+                let (scratch, extents) = (&scratch, &extents);
+                s.spawn(move || {
+                    let mut buf = Vec::new();
+                    for (i, e) in extents.iter().enumerate().skip(t) {
+                        scratch.read_into(*e, &mut buf).unwrap();
+                        assert_eq!(buf, vec![i as u8; 5000 + i]);
+                    }
+                });
+            }
+        });
+        drop(scratch);
+        std::fs::remove_dir(dir).unwrap();
     }
 
     #[test]

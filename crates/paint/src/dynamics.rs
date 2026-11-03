@@ -21,11 +21,25 @@ pub const SPEED_SPACING_MS: f64 = 8.0;
 
 /// Longest pixel-grid segment (in pixels) before falling back to distance spacing.
 const MAX_GRID_STEPS: f64 = 1e7;
+/// Widest gap (in pixels) [`PathWalker::bridge`] fills between two pixel-grid segments.
+const MAX_BRIDGE: f64 = 4.0;
 
 /// Densest speed spacing, in pixels between dabs (a slow, long stroke never floods the buffer).
 const MIN_SPEED_STEP: f64 = 0.5;
 /// Maximum airbrush catch-up dabs for one input segment.
 const MAX_AIRBRUSH_DABS_PER_SEGMENT: usize = 512;
+/// Most steps one distance-spaced segment emits: two far-apart points at a quarter-pixel spacing
+/// would otherwise be billions of steps, all buffered before the first is drawn.
+const MAX_DISTANCE_STEPS_PER_SEGMENT: usize = 1 << 20;
+
+/// The dab centre of the pixel-grid cell holding `v` (see [`PathWalker::pixel_grid`]): the
+/// pixel's centre for `offset` 0.5, the nearest pixel corner for 0. A value within rounding
+/// noise of a cell boundary counts as on it, so snapping and line stepping agree.
+pub(crate) fn grid_cell(v: f64, offset: f64) -> f64 {
+    let w = v - offset + 0.5;
+    let w = if (w - w.round()).abs() < 1e-7 { w.round() } else { w };
+    w.floor() + offset
+}
 
 #[inline]
 fn lerp_pt(a: &StrokePoint, b: &StrokePoint, f: f64) -> StrokePoint {
@@ -45,6 +59,39 @@ fn lerp_pt(a: &StrokePoint, b: &StrokePoint, f: f64) -> StrokePoint {
 // ---------------------------------------------------------------------------
 // Smoothing
 // ---------------------------------------------------------------------------
+
+/// The smoothed brush moved `f` of the way from `brush` towards the pointer `p`. Its pose
+/// (pressure, tilt, rotation, wheel) moves with it, so the lagging brush paints with the pose the
+/// pen had along the way, not the pointer's newest one. Taking the pointer's pressure made a fast
+/// stroke's lift thin the brush while it still trailed far behind, and the end catch-up a hairline
+/// (#5713). Time is the pointer's.
+fn pull(brush: &StrokePoint, p: &StrokePoint, f: f64) -> StrokePoint {
+    let ff = f as f32;
+    // Barrel rotation takes the shorter way round.
+    let dr = (p.rotation - brush.rotation + 540.0).rem_euclid(360.0) - 180.0;
+    StrokePoint {
+        x: brush.x + (p.x - brush.x) * f,
+        y: brush.y + (p.y - brush.y) * f,
+        pressure: brush.pressure + (p.pressure - brush.pressure) * ff,
+        tilt_x: brush.tilt_x + (p.tilt_x - brush.tilt_x) * ff,
+        tilt_y: brush.tilt_y + (p.tilt_y - brush.tilt_y) * ff,
+        rotation: (brush.rotation + dr * ff).rem_euclid(360.0),
+        wheel: brush.wheel + (p.wheel - brush.wheel) * ff,
+        time: p.time,
+    }
+}
+
+/// Does the brush's pose (pressure, tilt, rotation, wheel) differ from `p`'s by more than `eps`?
+/// [`pull`] moves the pose with the position, so a pen that only changes pressure or tilt in place
+/// leaves the brush behind too (#7747).
+fn pose_differs(brush: &StrokePoint, p: &StrokePoint, eps: f32) -> bool {
+    let dr = (p.rotation - brush.rotation + 540.0).rem_euclid(360.0) - 180.0;
+    (p.pressure - brush.pressure).abs() > eps
+        || (p.tilt_x - brush.tilt_x).abs() > eps
+        || (p.tilt_y - brush.tilt_y).abs() > eps
+        || dr.abs() > eps
+        || (p.wheel - brush.wheel).abs() > eps
+}
 
 /// Incremental stroke smoothing: exponential (with optional time-based catch-up) or pulled string.
 #[derive(Clone, Debug)]
@@ -87,7 +134,7 @@ impl Smoother {
             let d = (dx * dx + dy * dy).sqrt();
             if d > len {
                 let k = (d - len) / d;
-                let np = StrokePoint { x: pos.x + dx * k, y: pos.y + dy * k, ..p };
+                let np = pull(&pos, &p, k);
                 self.pos = Some(np);
                 out.push(np);
             }
@@ -113,7 +160,7 @@ impl Smoother {
         };
         let mut cur = pos;
         for _ in 0..iters {
-            cur = StrokePoint { x: cur.x + (p.x - cur.x) * step, y: cur.y + (p.y - cur.y) * step, ..p };
+            cur = pull(&cur, &p, step);
             out.push(cur);
         }
         self.pos = Some(cur);
@@ -123,7 +170,7 @@ impl Smoother {
     /// stroke needs time to keep passing (repeats of the last point) while the pointer is held.
     pub fn lagging(&self) -> bool {
         match (self.active() && self.cfg.catch_up && !self.cfg.pulled_string, self.pos, self.last_input) {
-            (true, Some(pos), Some(last)) => (pos.x - last.x).abs() + (pos.y - last.y).abs() > 0.01,
+            (true, Some(pos), Some(last)) => (pos.x - last.x).abs() + (pos.y - last.y).abs() > 0.01 || pose_differs(&pos, &last, 1e-3),
             _ => false,
         }
     }
@@ -136,13 +183,14 @@ impl Smoother {
         (self.active() && (pos.x != last.x || pos.y != last.y)).then_some(([pos.x, pos.y], [last.x, last.y]))
     }
 
-    /// End of stroke: with Catch-Up On Stroke End the brush finishes at the last pointer position.
+    /// End of stroke: with Catch-Up On Stroke End the brush finishes at the last pointer position
+    /// and pose.
     pub fn finish(&mut self, out: &mut Vec<StrokePoint>) {
         if !self.active() || !self.cfg.catch_up_on_end {
             return;
         }
         if let (Some(pos), Some(last)) = (self.pos, self.last_input)
-            && (pos.x != last.x || pos.y != last.y)
+            && (pos.x != last.x || pos.y != last.y || pose_differs(&pos, &last, 0.0))
         {
             self.pos = Some(last);
             out.push(last);
@@ -196,6 +244,8 @@ pub struct PathWalker {
     /// Pixel-grid stepping for small aliased tips: the dab-centre offset inside a pixel (see
     /// [`PathWalker::pixel_grid`]).
     grid: Option<f64>,
+    /// The grid cell of the last pixel-grid step, so the next segment joins it (#8040).
+    cell: Option<(f64, f64)>,
 }
 
 impl PathWalker {
@@ -212,14 +262,19 @@ impl PathWalker {
             speed: None,
             speed_acc: 0.0,
             grid: None,
+            cell: None,
         }
     }
 
     /// Step pixel by pixel instead of by distance: one step per pixel along the segment's major
-    /// axis, on the line between the pixels holding its ends, each at the pixel's dab centre
-    /// (`offset` 0.5 for odd tip diameters, 0 for even ones, as `render::grid_center` snaps). A
-    /// small aliased tip (the Pencil) then draws a clean 8-connected staircase: stepping by
-    /// distance put two dabs in a row wherever the line crossed a pixel corner (#2139).
+    /// axis, each at the dab centre (`offset` 0.5 for odd tip diameters, 0 for even ones, as
+    /// `render::grid_center` snaps) of the pixel the segment's line crosses at that column (or
+    /// row, when steep). A small aliased tip (the Pencil) then draws a clean 8-connected
+    /// staircase: stepping by distance put two dabs in a row wherever the line crossed a pixel
+    /// corner (#2139). The line is sampled where it really runs, not between the pixels holding
+    /// the segment's ends, so a straight line split into pieces (by Smoothing, or the pointer
+    /// samples of a ⇧-drag) paints the pixels of the whole line, whichever end it starts from
+    /// (#6336).
     pub fn pixel_grid(mut self, offset: f64) -> Self {
         self.grid = Some(offset);
         self
@@ -228,22 +283,48 @@ impl PathWalker {
     /// Emits the pixel steps from `a` to `p` (see [`PathWalker::pixel_grid`]). False, emitting
     /// nothing, when the span is not finite or implausibly long: distance spacing takes over.
     fn grid_steps(&mut self, a: &StrokePoint, p: &StrokePoint, offset: f64, out: &mut impl FnMut(StepInput)) -> bool {
-        let cell = |v: f64| if offset > 0.0 { v.floor() } else { v.round() };
-        let (x0, y0) = (cell(a.x), cell(a.y));
-        let (dx, dy) = (cell(p.x) - x0, cell(p.y) - y0);
-        let n = dx.abs().max(dy.abs());
-        if !n.is_finite() || n > MAX_GRID_STEPS {
+        // The pieces of a 45° line differ in rounding noise: keep them all on one major axis.
+        let steep = (p.y - a.y).abs() > (p.x - a.x).abs() * (1.0 + 1e-9);
+        let (am, an, pm, pn) = if steep { (a.y, a.x, p.y, p.x) } else { (a.x, a.y, p.x, p.y) };
+        let (m0, m1) = (grid_cell(am, offset), grid_cell(pm, offset));
+        let (dm, dn) = (pm - am, pn - an);
+        let n = (m1 - m0).abs();
+        if !(n.is_finite() && dn.is_finite()) || n > MAX_GRID_STEPS || dm == 0.0 {
             return false;
         }
-        let steps = n as u64;
-        for i in 1..=steps {
-            let i = i as f64;
-            let mut q = lerp_pt(a, p, i / n);
-            q.x = x0 + (dx * i / n).round() + offset;
-            q.y = y0 + (dy * i / n).round() + offset;
+        let dir = (m1 - m0).signum();
+        for i in 1..=n as u64 {
+            let c = m0 + dir * i as f64;
+            // The last column's centre can sit up to half a pixel past `p`: the line goes on to
+            // it, so the next piece of a straight line picks up where this one left off.
+            let t = (c - am) / dm;
+            let mut q = lerp_pt(a, p, t.clamp(0.0, 1.0));
+            let cn = grid_cell(an + dn * t, offset);
+            (q.x, q.y) = if steep { (cn, c) } else { (c, cn) };
+            self.bridge(&q, out);
             self.emit(q, out);
         }
         true
+    }
+
+    /// Fills the pixels between the last grid step and `q` when they don't touch. Each segment
+    /// samples its own line, so where a freehand stroke turns, the last pixel of one segment and
+    /// the first of the next can sit two pixels apart, and the 1 px Pencil line breaks (#8040).
+    fn bridge(&mut self, q: &StrokePoint, out: &mut impl FnMut(StepInput)) {
+        let Some((mut x, mut y)) = self.cell else { return };
+        // Only a turn's small gap: a step cut off by the walker's budget is not filled in.
+        if (q.x - x).abs().max((q.y - y).abs()) > MAX_BRIDGE {
+            return;
+        }
+        while (q.x - x).abs() > 1.5 || (q.y - y).abs() > 1.5 {
+            if (q.x - x).abs() > 0.5 {
+                x += (q.x - x).signum();
+            }
+            if (q.y - y).abs() > 0.5 {
+                y += (q.y - y).signum();
+            }
+            self.emit(StrokePoint { x, y, ..*q }, out);
+        }
     }
 
     /// Space steps by stroke time instead of distance ([`SPEED_SPACING_MS`]): faster movement
@@ -254,6 +335,9 @@ impl PathWalker {
     }
 
     fn emit(&mut self, point: StrokePoint, out: &mut impl FnMut(StepInput)) {
+        if let Some(g) = self.grid {
+            self.cell = Some((grid_cell(point.x, g), grid_cell(point.y, g)));
+        }
         let s = StepInput { point, direction: self.dir, initial_direction: self.initial_dir.unwrap_or(self.dir), step: self.step };
         self.step += 1;
         out(s);
@@ -284,12 +368,17 @@ impl PathWalker {
             match self.speed.filter(|_| dt > 0.0 && dt.is_finite()) {
                 None => {
                     if !self.grid.is_some_and(|g| self.grid_steps(&a, &p, g, out)) {
-                        while self.next_at <= len + 1e-9 {
+                        let mut emitted = 0usize;
+                        while self.next_at <= len + 1e-9 && emitted < MAX_DISTANCE_STEPS_PER_SEGMENT {
                             let q = lerp_pt(&a, &p, (self.next_at / len).min(1.0));
                             self.emit(q, out);
                             self.next_at += step_len(&q).max(0.25);
+                            emitted += 1;
                         }
-                        self.next_at -= len;
+                        // Cut short: the rest of the segment is skipped, spacing restarts at its end.
+                        // Only when the cap held back a step that was still due; a segment that ends right at the cap keeps its carry-over.
+                        let cut_short = emitted == MAX_DISTANCE_STEPS_PER_SEGMENT && self.next_at <= len + 1e-9;
+                        self.next_at = if cut_short { step_len(&p).max(0.25) } else { self.next_at - len };
                     }
                 }
                 Some(iv) => {
@@ -356,6 +445,16 @@ pub fn control_value(c: Control, fade_steps: u32, s: &StepInput) -> f32 {
     }
 }
 
+/// A dynamic's control value passed through its own response curve ([`Dynamic::curve`]). Controls
+/// with no 0..1 input (Off, the direction controls) read 1 and skip the curve.
+pub fn dynamic_value(d: &Dynamic, s: &StepInput) -> f32 {
+    let v = control_value(d.control, d.fade_steps, s);
+    match d.control {
+        Control::Off | Control::InitialDirection | Control::Direction => v,
+        Control::Fade | Control::PenPressure | Control::PenTilt | Control::StylusWheel | Control::Rotation => d.curve.eval(v),
+    }
+}
+
 /// Angle contributed by a control, in degrees (counter-clockwise).
 pub fn control_angle(c: Control, fade_steps: u32, s: &StepInput) -> f32 {
     let p = &s.point;
@@ -384,7 +483,7 @@ fn scalar(d: &Dynamic, s: &StepInput, r: f32) -> f32 {
         return 1.0;
     }
     let min = d.minimum.clamp(0.0, 1.0);
-    let cv = control_value(d.control, d.fade_steps, s);
+    let cv = dynamic_value(d, s);
     let v = (min + (1.0 - min) * cv) * (1.0 - d.jitter.clamp(0.0, 1.0) * r);
     v.max(min)
 }
@@ -425,7 +524,7 @@ pub fn dynamic_color(b: &BrushSettings, s: &StepInput, seed: u64, index: u64) ->
     let cd = &b.color_dynamics;
     let (fg, bg) = (b.color, b.background);
     let r = |st: u64| rand01(seed, index, st);
-    let base = if cd.fg_bg.control != Control::Off { 1.0 - control_value(cd.fg_bg.control, cd.fg_bg.fade_steps, s) } else { 0.0 };
+    let base = if cd.fg_bg.control != Control::Off { 1.0 - dynamic_value(&cd.fg_bg, s) } else { 0.0 };
     let t = (base + (1.0 - base) * cd.fg_bg.jitter.clamp(0.0, 1.0) * r(stream::FG_BG)).clamp(0.0, 1.0);
     let rgb = [fg[0] + (bg[0] - fg[0]) * t, fg[1] + (bg[1] - fg[1]) * t, fg[2] + (bg[2] - fg[2]) * t];
     let [mut h, mut sat, mut v] = rgb_to_hsv(rgb);
@@ -444,7 +543,7 @@ pub fn base_diameter(b: &BrushSettings, s: &StepInput) -> f32 {
     let mut f = 1.0;
     if sd.enabled && sd.size.control != Control::Off {
         let min = sd.size.minimum.clamp(0.0, 1.0);
-        f = min + (1.0 - min) * control_value(sd.size.control, sd.size.fade_steps, s);
+        f = min + (1.0 - min) * dynamic_value(&sd.size, s);
     } else if b.pressure_size {
         f = s.point.pressure.clamp(0.0, 1.0);
     }
@@ -530,7 +629,7 @@ impl DabBuilder {
             // Scatter.
             let mut c = Point::new(s.point.x, s.point.y);
             if sc.enabled && sc.scatter.jitter > 0.0 {
-                let cv = control_value(sc.scatter.control, sc.scatter.fade_steps, s);
+                let cv = dynamic_value(&sc.scatter, s);
                 let amt = f64::from(sc.scatter.jitter * cv * radius);
                 let (ox, oy) = (rand_signed(seed, i, stream::SCATTER_X) as f64 * amt, rand_signed(seed, i, stream::SCATTER_Y) as f64 * amt);
                 if sc.both_axes {
@@ -644,8 +743,10 @@ impl DualBuilder {
 pub fn apply_pose(b: &BrushSettings, mut p: StrokePoint) -> StrokePoint {
     let pose = &b.pose;
     if pose.enabled {
-        if pose.override_tilt {
+        if pose.override_tilt_x {
             p.tilt_x = pose.tilt_x;
+        }
+        if pose.override_tilt_y {
             p.tilt_y = pose.tilt_y;
         }
         if pose.override_rotation {
@@ -749,5 +850,40 @@ impl DabGenerator {
                 db.build(s, dual);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod walker_budget_tests {
+    use super::*;
+
+    #[test]
+    fn one_far_segment_emits_a_bounded_number_of_steps() {
+        let steps = std::cell::Cell::new(0usize);
+        let mut count = |_: StepInput| steps.set(steps.get() + 1);
+        let mut walker = PathWalker::new(None);
+        walker.push(StrokePoint::new(0.0, 0.0, 1.0), &|_: &StrokePoint| 1.0, &mut count);
+        // At a quarter pixel, a billion-pixel segment is four billion steps.
+        walker.push(StrokePoint::new(1.0e9, 0.0, 1.0), &|_: &StrokePoint| 0.25, &mut count);
+        assert!(steps.get() <= MAX_DISTANCE_STEPS_PER_SEGMENT + 1, "{}", steps.get());
+        // Spacing carries on from the end of the cut segment.
+        let before = steps.get();
+        walker.push(StrokePoint::new(1.0e9 + 10.0, 0.0, 1.0), &|_: &StrokePoint| 1.0, &mut count);
+        assert!(steps.get() > before && steps.get() - before <= 11, "{} more steps", steps.get() - before);
+    }
+
+    #[test]
+    fn a_segment_ending_at_the_cap_keeps_its_carry_over() {
+        let steps = std::cell::Cell::new(0usize);
+        let mut count = |_: StepInput| steps.set(steps.get() + 1);
+        let mut walker = PathWalker::new(None);
+        let one = |_: &StrokePoint| 1.0;
+        walker.push(StrokePoint::new(0.0, 0.0, 1.0), &one, &mut count);
+        // Exactly the cap in steps, then 0.75 left before the next is due.
+        let end = MAX_DISTANCE_STEPS_PER_SEGMENT as f64 + 0.25;
+        walker.push(StrokePoint::new(end, 0.0, 1.0), &one, &mut count);
+        let before = steps.get();
+        walker.push(StrokePoint::new(end + 0.8, 0.0, 1.0), &one, &mut count);
+        assert_eq!(steps.get(), before + 1);
     }
 }

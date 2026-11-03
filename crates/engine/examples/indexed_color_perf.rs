@@ -25,7 +25,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let path = std::env::args().nth(1).ok_or("provide a local image path")?;
     let bytes = photocraft_format::read::read_file(std::path::Path::new(&path))?;
     let doc = photocraft_io::import(&path, &bytes)?.document;
-    let px = photocraft_compose::flatten(&doc).px;
+    let px = photocraft_compose::flatten(&doc).into_px();
     println!("{}", json!({"width":doc.size.width,"height":doc.size.height,"preview_factor":1}));
     for count in [8usize, 16, 32, 64, 128, 256] {
         for run in 0..4 {

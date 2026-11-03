@@ -5,6 +5,7 @@
 //! mask back into a path for "Make Work Path").
 //!
 //! * [`edit`]: point-level path editing (Direct Selection, Convert Point) and hit testing.
+//! * [`feather`]: the Gaussian blur of a feathered mask (vector masks, pixel masks, soft shapes).
 //! * [`flatten`]: cubic Bézier flattening with a distance tolerance.
 //! * [`map`]: non-affine maps of paths (Distort, Perspective, Warp).
 //! * [`raster`]: exact area-coverage scanline rasterizer (non-zero / even-odd per component,
@@ -20,6 +21,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 pub mod edit;
+pub mod feather;
 pub mod flatten;
 pub mod map;
 pub mod raster;
@@ -43,10 +45,12 @@ pub const DEFAULT_TOLERANCE: f64 = 0.01;
 /// folded with the subpath operations; open subpaths are closed implicitly.
 pub fn fill_rasterizer(path: &Path, tol: f64) -> Rasterizer {
     let mut r = Rasterizer::new(path.inverted);
+    // One point budget for the whole path, then one edge sort for all components.
+    let polys: Vec<Vec<(f64, f64)>> = flatten_path(path, tol).into_iter().map(|l| l.pts).collect();
     for c in path.components() {
-        let polys: Vec<Vec<(f64, f64)>> = path.subpaths[c.clone()].iter().map(|s| flatten_subpath(s, tol).pts).collect();
-        r.add_component(&polys, path.effective_op(c.start), path.fill_rule);
+        r.push_component(polys.get(c.clone()).unwrap_or_default(), path.effective_op(c.start), path.fill_rule);
     }
+    r.sort_edges();
     r
 }
 
@@ -105,26 +109,26 @@ impl CompiledVectorMask {
 
     /// Effective mask values over `rect`, with invocation-local rasterization state.
     pub fn render(&self, rect: Rect) -> Vec<f32> {
-        let mut v = match &self.geometry {
-            MaskGeometry::Constant(value) => vec![*value; rect.width() as usize * rect.height() as usize],
-            MaskGeometry::Path(rasterizer) => rasterizer.render(rect),
-        };
-        self.apply_density(&mut v);
-        v
+        self.render_with(rect, Rasterizer::render)
     }
 
     /// Effective mask values without entering a thread pool. Use this while
     /// initializing a shared result that other Rayon workers may wait for.
     pub fn render_sequential(&self, rect: Rect) -> Vec<f32> {
+        self.render_with(rect, |rasterizer, rect| {
+            let mut v = vec![0.0; rect.width() as usize * rect.height() as usize];
+            if !v.is_empty() {
+                rasterizer.render_into(rect, &mut v);
+            }
+            v
+        })
+    }
+
+    /// Mask values over `rect`, with a path's coverage from `coverage`.
+    fn render_with(&self, rect: Rect, coverage: impl FnOnce(&Rasterizer, Rect) -> Vec<f32>) -> Vec<f32> {
         let mut v = match &self.geometry {
             MaskGeometry::Constant(value) => vec![*value; rect.width() as usize * rect.height() as usize],
-            MaskGeometry::Path(rasterizer) => {
-                let mut v = vec![0.0; rect.width() as usize * rect.height() as usize];
-                if !v.is_empty() {
-                    rasterizer.render_into(rect, &mut v);
-                }
-                v
-            }
+            MaskGeometry::Path(rasterizer) => coverage(rasterizer, rect),
         };
         self.apply_density(&mut v);
         v
@@ -152,11 +156,14 @@ fn tile_bands(r: Rect) -> Vec<Rect> {
     if r.is_empty() {
         return out;
     }
-    let mut y = r.y0.div_euclid(TILE_SIZE) * TILE_SIZE;
-    while y < r.y1 {
-        let band = Rect::new(r.x0, y.max(r.y0), r.x1, (y + TILE_SIZE).min(r.y1));
+    let step = i64::from(TILE_SIZE);
+    let (y0, y1) = (i64::from(r.y0), i64::from(r.y1));
+    let mut y = y0.div_euclid(step) * step;
+    while y < y1 {
+        let next = (y + step).min(y1);
+        let band = Rect::new(r.x0, y.max(y0) as i32, r.x1, next as i32);
         out.push(band);
-        y += TILE_SIZE;
+        y = next;
     }
     out
 }
@@ -166,9 +173,15 @@ fn tile_bands(r: Rect) -> Vec<Rect> {
 fn band_tiles(band: Rect, data: &[f32], channels: usize, keep: impl Fn(&[f32]) -> bool) -> Vec<(Rect, Vec<f32>)> {
     let w = band.width() as usize;
     let mut out = Vec::new();
-    let mut x = band.x0.div_euclid(TILE_SIZE) * TILE_SIZE;
-    while x < band.x1 {
-        let tr = Rect::new(x.max(band.x0), band.y0, (x + TILE_SIZE).min(band.x1), band.y1);
+    if band.is_empty() {
+        return out;
+    }
+    let step = i64::from(TILE_SIZE);
+    let (x0, x1) = (i64::from(band.x0), i64::from(band.x1));
+    let mut x = x0.div_euclid(step) * step;
+    while x < x1 {
+        let next = (x + step).min(x1);
+        let tr = Rect::new(x.max(x0) as i32, band.y0, next as i32, band.y1);
         let tw = tr.width() as usize;
         let mut buf = Vec::with_capacity(tw * tr.height() as usize * channels);
         let mut any = false;
@@ -183,7 +196,7 @@ fn band_tiles(band: Rect, data: &[f32], channels: usize, keep: impl Fn(&[f32]) -
         if any {
             out.push((tr, buf));
         }
-        x += TILE_SIZE;
+        x = next;
     }
     out
 }
@@ -411,15 +424,13 @@ fn sample_color(stops: &[(f32, [f32; 4])], mids: &[f32], t: f32) -> [f32; 4] {
     if t <= first.0 {
         return first.1;
     }
-    for (i, w) in stops.windows(2).enumerate() {
-        let (a, b) = (&w[0], &w[1]);
-        if t <= b.0 {
-            let u = if b.0 > a.0 { (t - a.0) / (b.0 - a.0) } else { 0.0 };
-            let k = midpoint_remap(u, mids.get(i).copied().unwrap_or(0.5));
-            return std::array::from_fn(|ch| a.1[ch] + (b.1[ch] - a.1[ch]) * k);
-        }
-    }
-    last.1
+    // The segment ending at the first stop at or past `t` (bisection: this runs per pixel, and a
+    // gradient can carry any number of stops). Past the last stop, or for a NaN, there is none.
+    let at = stops.partition_point(|s| s.0 < t);
+    let (Some(a), Some(b)) = (at.checked_sub(1).and_then(|k| stops.get(k)), stops.get(at)) else { return last.1 };
+    let u = if b.0 > a.0 { (t - a.0) / (b.0 - a.0) } else { 0.0 };
+    let k = midpoint_remap(u, mids.get(at - 1).copied().unwrap_or(0.5));
+    std::array::from_fn(|ch| a.1[ch] + (b.1[ch] - a.1[ch]) * k)
 }
 
 /// Opacity stops at `t` (stops sorted by location; 1.0 when empty).
@@ -428,13 +439,10 @@ fn sample_opacity(stops: &[(f32, f32)], t: f32) -> f32 {
     if t <= first.0 {
         return first.1;
     }
-    for w in stops.windows(2) {
-        if t <= w[1].0 {
-            let u = if w[1].0 > w[0].0 { (t - w[0].0) / (w[1].0 - w[0].0) } else { 0.0 };
-            return w[0].1 + (w[1].1 - w[0].1) * u;
-        }
-    }
-    last.1
+    let at = stops.partition_point(|s| s.0 < t);
+    let (Some(a), Some(b)) = (at.checked_sub(1).and_then(|k| stops.get(k)), stops.get(at)) else { return last.1 };
+    let u = if b.0 > a.0 { (t - a.0) / (b.0 - a.0) } else { 0.0 };
+    a.1 + (b.1 - a.1) * u
 }
 
 /// Colour and alpha at `t`: colour stops with midpoints, alpha times opacity stops. Mirrors
@@ -456,9 +464,101 @@ fn dither(c: &mut [f32; 4], x: i32, y: i32) {
     }
 }
 
+/// How much of a shape's fill shows at each pixel: the path's coverage, or (with a density or
+/// feather) the path as the fill's soft vector mask.
+enum FillCoverage {
+    Path(Rasterizer),
+    /// Density without feather: `1 - density × (1 - coverage)`.
+    Dense(Rasterizer, f32),
+    /// Feathered (and maybe less dense): the mask over `area`, `outside` everywhere else.
+    Plane {
+        area: Rect,
+        values: Vec<f32>,
+        outside: f32,
+    },
+}
+
+impl FillCoverage {
+    /// Builds the fill's coverage for `shape` over the frame `canvas` (a feather is blurred
+    /// within it, as the compositor blurs a vector mask within the canvas).
+    fn new(shape: &ShapeLayer, area: &Rasterizer, canvas: Rect) -> Self {
+        if !shape.has_soft_mask() {
+            return FillCoverage::Path(area.clone());
+        }
+        let density = if shape.density.is_finite() { shape.density.clamp(0.0, 1.0) } else { 1.0 };
+        let sigma = feather::feather_sigma(shape.feather);
+        if sigma <= 0.0 {
+            return FillCoverage::Dense(area.clone(), density);
+        }
+        // Exactly what the compositor does for a vector mask with these settings
+        // (`photocraft-compose::masks::build_mask`): coverage with density, blurred.
+        let soften = |v: &mut [f32]| {
+            if density < 1.0 {
+                for x in v.iter_mut() {
+                    *x = 1.0 - density * (1.0 - *x);
+                }
+            }
+        };
+        let mut far = area.render(Rect::from_xywh(canvas.x0.saturating_sub(1_000_000), canvas.y0.saturating_sub(1_000_000), 1, 1));
+        soften(&mut far);
+        let outside = far.first().copied().unwrap_or(0.0);
+        let region = feather::path_area(&shape.path, sigma).intersect(&canvas);
+        let (w, h) = (region.width() as usize, region.height() as usize);
+        let mut values = Vec::new();
+        if values.try_reserve_exact(w.saturating_mul(h)).is_err() {
+            // Too large to blur: keep the edge hard rather than fail the render.
+            return FillCoverage::Dense(area.clone(), density);
+        }
+        values.resize(w * h, 0.0);
+        if !values.is_empty() {
+            area.render_into(region, &mut values);
+            soften(&mut values);
+            feather::gaussian(&mut values, w, h, sigma);
+        }
+        FillCoverage::Plane { area: region, values, outside }
+    }
+
+    /// Pixel bounds of the visible fill (`None` = nothing).
+    fn bounds(&self) -> Option<Rect> {
+        const ALL: Rect = Rect::new(i32::MIN / 4, i32::MIN / 4, i32::MAX / 4, i32::MAX / 4);
+        match self {
+            FillCoverage::Path(r) => r.pixel_bounds(),
+            FillCoverage::Dense(_, d) if *d < 1.0 => Some(ALL),
+            FillCoverage::Dense(r, _) => r.pixel_bounds(),
+            FillCoverage::Plane { outside, .. } if *outside > 0.0 => Some(ALL),
+            FillCoverage::Plane { area, .. } => (!area.is_empty()).then_some(*area),
+        }
+    }
+
+    fn render(&self, rect: Rect) -> Vec<f32> {
+        match self {
+            FillCoverage::Path(r) => r.render(rect),
+            FillCoverage::Dense(r, d) => {
+                let mut v = r.render(rect);
+                for x in &mut v {
+                    *x = 1.0 - d * (1.0 - *x);
+                }
+                v
+            }
+            FillCoverage::Plane { area, values, outside } => {
+                let w = area.width() as usize;
+                let mut v = Vec::with_capacity(rect.width() as usize * rect.height() as usize);
+                for y in rect.y0..rect.y1 {
+                    for x in rect.x0..rect.x1 {
+                        let inside = area.contains(x, y);
+                        let i = if inside { (y - area.y0) as usize * w + (x - area.x0) as usize } else { usize::MAX };
+                        v.push(values.get(i).copied().unwrap_or(*outside));
+                    }
+                }
+                v
+            }
+        }
+    }
+}
+
 /// Everything needed to render a shape layer, compiled once.
 pub struct CompiledShape {
-    fill: Option<(Rasterizer, Paint)>,
+    fill: Option<(FillCoverage, Paint)>,
     stroke: Option<(Rasterizer, Paint, f32)>,
     /// Fill area used to clip inside/outside strokes.
     align: Option<(Rasterizer, bool)>,
@@ -467,15 +567,23 @@ pub struct CompiledShape {
 
 impl CompiledShape {
     /// Compiles the shape at flattening tolerance `tol`. `canvas` is the frame gradients
-    /// without "Align with layer" are laid out in.
+    /// without "Align with layer" are laid out in, and the area a feather is computed over.
     pub fn new(shape: &ShapeLayer, tol: f64, canvas: Rect) -> Self {
+        Self::with_frames(shape, tol, canvas, canvas)
+    }
+
+    /// [`CompiledShape::new`] with the feather computed over `coverage` while gradients still lay
+    /// out in `gradient_frame`: measuring a shape beyond the canvas it is drawn in.
+    pub fn with_frames(shape: &ShapeLayer, tol: f64, coverage: Rect, gradient_frame: Rect) -> Self {
         let pb = shape.path.control_bounds().unwrap_or((0.0, 0.0, 0.0, 0.0));
-        let cb = (f64::from(canvas.x0), f64::from(canvas.y0), f64::from(canvas.x1), f64::from(canvas.y1));
+        let g = gradient_frame;
+        let cb = (f64::from(g.x0), f64::from(g.y0), f64::from(g.x1), f64::from(g.y1));
         let area = fill_rasterizer(&shape.path, tol);
         let mut bounds = None;
         let fill = shape.fill.as_ref().map(|f| {
-            bounds = area.pixel_bounds();
-            (area.clone(), Paint::from_fill(f, pb, cb))
+            let coverage = FillCoverage::new(shape, &area, coverage);
+            bounds = coverage.bounds();
+            (coverage, Paint::from_fill(f, pb, cb))
         });
         let all_closed = shape.path.subpaths.iter().all(|s| s.closed);
         let mut align = None;

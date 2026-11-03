@@ -88,6 +88,7 @@ fn stroke_fx(size: f32, c: [f32; 3]) -> Effect {
         size,
         position: StrokePosition::Outside,
         paint: FxPaint::Color(Color::rgb(c[0], c[1], c[2])),
+        overprint: false,
     })
 }
 
@@ -96,6 +97,7 @@ fn gradient_overlay(a: [f32; 3], b: [f32; 3]) -> Effect {
         common: FxCommon::new(BlendMode::Normal, 0.6),
         gradient: Gradient { stops: vec![(0.0, Color::rgb(a[0], a[1], a[2])), (1.0, Color::rgb(b[0], b[1], b[2]))], angle: 90.0, ..Default::default() },
         dither: false,
+        interpolation: None,
     }
 }
 

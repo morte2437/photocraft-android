@@ -4,5 +4,7 @@
 pub mod gpu;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod perf;
+pub mod sweep;
 
 pub use gpu::gpu_lock;
+pub use sweep::Sweep;

@@ -1,0 +1,6 @@
+# Built by packaging/web/package.sh:  trunk build --release   (from apps/photocraft-web-boot)
+[build]
+target = "index.html"
+dist = "../../dist/web-boot"
+public_url = "./"
+filehash = true

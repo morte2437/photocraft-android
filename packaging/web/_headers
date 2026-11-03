@@ -11,3 +11,16 @@
 
 /index.html
   Cache-Control: no-cache
+
+# app/ holds the app's wasm, gzipped and cut into parts whose names carry a content hash...
+/app/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# ...and the app's loader and its list of parts, which keep their names from release to release.
+/app/photocraft-web.js
+  ! Cache-Control
+  Cache-Control: no-cache
+
+/app/parts.txt
+  ! Cache-Control
+  Cache-Control: no-cache

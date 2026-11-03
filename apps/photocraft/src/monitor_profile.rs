@@ -495,6 +495,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_hung_helper_is_stopped_and_big_replies_dont_block() {
+        let _spawns = crate::CHILD_SPAWNS.read().unwrap_or_else(std::sync::PoisonError::into_inner);
         let t0 = std::time::Instant::now();
         let e = run_helper(std::process::Command::new("sleep").arg("30"), std::time::Duration::from_millis(300)).unwrap_err();
         assert!(e.contains("took longer than"), "{e}");

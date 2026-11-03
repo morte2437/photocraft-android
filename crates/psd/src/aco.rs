@@ -166,6 +166,36 @@ pub fn parse(data: &[u8]) -> Result<AcoFile> {
     }
 }
 
+/// How many bytes the `.aco` sections at the start of `data` span (what [`parse`] reads), or
+/// `None` when they are truncated or the version is unknown. Tells a real `.aco` apart from
+/// bytes that only start like one, such as an `.act` whose first colour is `0, 1, x`.
+pub fn sections_len(data: &[u8]) -> Option<usize> {
+    fn skip_section(r: &mut Reader<'_>, named: bool) -> Result<()> {
+        let count = r.u16()?;
+        for _ in 0..count {
+            r.skip(10)?;
+            if named {
+                let n = u64::from(r.u32()?);
+                r.bytes_u64(n * 2)?;
+            }
+        }
+        Ok(())
+    }
+    let mut r = Reader::new(data);
+    match r.u16().ok()? {
+        1 => {
+            skip_section(&mut r, false).ok()?;
+            if r.remaining() >= 4 && r.peek_rest().get(..2) == Some(&[0, 2]) {
+                r.u16().ok()?;
+                skip_section(&mut r, true).ok()?;
+            }
+        }
+        2 => skip_section(&mut r, true).ok()?,
+        _ => return None,
+    }
+    Some(r.pos())
+}
+
 /// Write an `.aco` file: a version 1 section followed by a version 2 section with the names,
 /// as Photoshop writes them. Fails when there are more than [`MAX_SWATCHES`] swatches.
 pub fn write(swatches: &[AcoSwatch]) -> Result<Vec<u8>> {
@@ -208,6 +238,18 @@ mod tests {
             AcoSwatch { name: "Book 日本".into(), color: AcoColor::Other { space: 3, values: [1, 2, 3, 4] } },
             AcoSwatch { name: String::new(), color: AcoColor::Rgb([1, 2, 3]) },
         ]
+    }
+
+    #[test]
+    fn sections_len_is_what_parse_reads() {
+        let file = write(&sample()).unwrap();
+        assert_eq!(sections_len(&file), Some(file.len()));
+        let mut padded = file.clone();
+        padded.extend_from_slice(&[0; 6]);
+        assert_eq!(sections_len(&padded), Some(file.len()), "trailing bytes are not part of it");
+        assert_eq!(sections_len(&file[..file.len() - 1]), None, "truncated");
+        assert_eq!(sections_len(&[0, 3, 0, 0]), None, "unknown version");
+        assert_eq!(sections_len(&[0, 1, 0, 0]), Some(4));
     }
 
     #[test]

@@ -15,14 +15,18 @@
 //! - **Off by default.** Until [`configure`] sets a directory and a budget nothing is evicted
 //!   (tests, the web build).
 //!
-//! Failures never panic: a scratch write that fails keeps the tile in memory and turns spilling
-//! off (reported in [`SpillStats::last_error`]). A failed read retains its disk extent and
-//! poisons the tile: edits and saves must check [`check_integrity`] before committing. The
+//! Failures never panic: a scratch write or file creation that fails, or a volume running low
+//! on free space, keeps the tile in memory and pauses spilling (reported in
+//! [`SpillStats::last_error`]); it is retried with exponential backoff and resumes on its own.
+//! [`epoch`] tells owners of memory caps (history) to re-apply them meanwhile. A failed read retains its disk extent and
+//! poisons the tile: edits and saves check the health of the document they publish, plus
+//! [`check_since`] for failures that came and went during the operation. The
 //! infallible display API uses a temporary placeholder, never replacement pixel storage.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak};
+use std::time::{Duration, Instant};
 
 use crate::scratch_file::{Extent, ScratchFile};
 
@@ -55,10 +59,6 @@ impl Cell {
 
     pub(crate) fn read_error(&self) -> Option<String> {
         self.error.lock().unwrap_or_else(PoisonError::into_inner).clone()
-    }
-
-    pub(crate) fn is_resident(&self) -> bool {
-        self.data.try_read().is_ok_and(|data| data.is_some())
     }
 
     fn set_error(&self, error: Option<String>) {
@@ -167,7 +167,6 @@ impl Cell {
 
     /// Move this tile to disk if nobody is using it. Returns the bytes freed.
     fn evict(&self, file: &Arc<ScratchFile>) -> Result<usize, String> {
-        let Ok(_residency) = RESIDENCY_BARRIER.try_lock() else { return Ok(0) };
         let Ok(mut w) = self.data.try_write() else { return Ok(0) };
         let Some(bytes) = w.as_ref() else { return Ok(0) };
         let mut slot = self.slot.lock().unwrap_or_else(PoisonError::into_inner);
@@ -191,9 +190,10 @@ impl Drop for Cell {
             M.read_errors.fetch_add(1, Ordering::Release);
             M.failed.fetch_sub(1, Ordering::Release);
         }
-        let resident = self.data.get_mut().unwrap_or_else(PoisonError::into_inner).is_some();
-        if resident {
+        if let Some(bytes) = self.data.get_mut().unwrap_or_else(PoisonError::into_inner).take() {
             M.resident.fetch_sub(self.len, Ordering::Relaxed);
+            // The next tile of this size reuses the buffer, as main's pool expects.
+            crate::scratch::give(bytes);
         }
         if let Some((file, extent)) = self.slot.get_mut().unwrap_or_else(PoisonError::into_inner).take() {
             file.free(extent);
@@ -203,8 +203,18 @@ impl Drop for Cell {
 }
 
 fn unpack(packed: &[u8], len: usize) -> Result<Vec<u8>, String> {
-    let bytes = lz4_flex::block::decompress(packed, len).map_err(|e| e.to_string())?;
-    if bytes.len() == len { Ok(bytes) } else { Err(format!("tile decoded to {} bytes, expected {len}", bytes.len())) }
+    let mut bytes = crate::scratch::take_exact(len, 0u8);
+    match lz4_flex::block::decompress_into(packed, &mut bytes) {
+        Ok(n) if n == len => Ok(bytes),
+        Ok(n) => {
+            crate::scratch::give(bytes);
+            Err(format!("tile decoded to {n} bytes, expected {len}"))
+        }
+        Err(e) => {
+            crate::scratch::give(bytes);
+            Err(e.to_string())
+        }
+    }
 }
 
 /// Process-wide state. Plain statics: everything here is const-constructible.
@@ -213,8 +223,18 @@ struct Manager {
     read_errors: AtomicU64,
     resident: AtomicUsize,
     live: AtomicUsize,
-    /// Pixel bytes to keep resident; 0 = spilling off.
+    /// Pixel bytes to keep resident; 0 = spilling off or paused.
     budget: AtomicUsize,
+    /// Spilling is paused after a write, create or free-space failure ([`Config::paused`]).
+    paused: AtomicBool,
+    /// Changes whenever spilling turns on or off, so owners of memory caps re-apply them.
+    epoch: AtomicU64,
+    /// Scratch bytes allowed before the volume would run low or the size cap is reached.
+    space_limit: AtomicU64,
+    /// Re-read the volume's free space once the scratch file grows past this.
+    next_space_check: AtomicU64,
+    /// A sweep wrote successfully since the last resume: reset the retry backoff.
+    recovering: AtomicBool,
     registry: Mutex<Registry>,
     config: Mutex<Config>,
     evictions: AtomicU64,
@@ -232,7 +252,26 @@ struct Config {
     /// Opened at configuration time; startup also reaps abandoned Unix files.
     file: Option<Arc<ScratchFile>>,
     last_error: Option<String>,
+    /// The budget [`configure`] / [`set_budget`] asked for; restored when a pause ends.
+    budget: usize,
+    paused: Option<Pause>,
+    /// Delay before the next retry; doubles per failed retry up to [`RETRY_MAX`].
+    backoff: Duration,
+    /// Explicit scratch size limit ([`set_size_cap`]); the free-space reserve always applies.
+    size_cap: Option<u64>,
 }
+
+struct Pause {
+    message: String,
+    retry_at: Instant,
+}
+
+const RETRY_FIRST: Duration = Duration::from_secs(1);
+const RETRY_MAX: Duration = Duration::from_secs(60);
+/// Re-check free space after this much scratch growth.
+const SPACE_CHECK_EVERY: u64 = 64 << 20;
+/// Leave at least max(1 GiB, 5 % of the volume) free for the system and other programs.
+const RESERVE_MIN: u64 = 1 << 30;
 
 static M: Manager = Manager {
     failed: AtomicUsize::new(0),
@@ -240,20 +279,17 @@ static M: Manager = Manager {
     resident: AtomicUsize::new(0),
     live: AtomicUsize::new(0),
     budget: AtomicUsize::new(0),
+    paused: AtomicBool::new(false),
+    epoch: AtomicU64::new(0),
+    space_limit: AtomicU64::new(u64::MAX),
+    next_space_check: AtomicU64::new(0),
+    recovering: AtomicBool::new(false),
     registry: Mutex::new(Registry { cells: Vec::new(), hand: 0 }),
-    config: Mutex::new(Config { dir: None, file: None, last_error: None }),
+    config: Mutex::new(Config { dir: None, file: None, last_error: None, budget: 0, paused: None, backoff: RETRY_FIRST, size_cap: None }),
     evictions: AtomicU64::new(0),
     reloads: AtomicU64::new(0),
     written: AtomicU64::new(0),
 };
-
-static RESIDENCY_BARRIER: Mutex<()> = Mutex::new(());
-
-/// A short nonblocking barrier for consumers that must never fault disk pixels on the UI
-/// thread. After checking all their input tiles, eviction cannot invalidate that check.
-pub fn try_resident_scope() -> Option<std::sync::MutexGuard<'static, ()>> {
-    RESIDENCY_BARRIER.try_lock().ok()
-}
 
 impl Manager {
     fn register(&self, cell: &Arc<Cell>) {
@@ -275,28 +311,118 @@ impl Manager {
         self.config().last_error = Some(msg);
     }
 
-    /// The scratch file, created on first use; `None` (and spilling off) if it can't be.
+    /// Set the active budget, bumping [`epoch`] when spilling turns on or off.
+    fn set_active(&self, budget: usize) {
+        let old = self.budget.swap(budget, Ordering::AcqRel);
+        if (old > 0) != (budget > 0) {
+            self.epoch.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    /// Pause spilling after a failure: every tile stays in memory (owners re-apply their
+    /// memory caps through [`epoch`]) and a retry is scheduled with exponential backoff.
+    fn pause(&self, c: &mut Config, reason: &str) {
+        let wait = c.backoff;
+        c.backoff = c.backoff.saturating_mul(2).min(RETRY_MAX);
+        let message = format!("{reason}; spilling is paused (tiles stay in memory), retrying in {} s", wait.as_secs());
+        log_error(&message);
+        c.last_error = Some(message.clone());
+        c.paused = Some(Pause { message, retry_at: Instant::now().checked_add(wait).unwrap_or_else(Instant::now) });
+        self.recovering.store(false, Ordering::Relaxed);
+        self.paused.store(true, Ordering::Release);
+        self.set_active(0);
+    }
+
+    /// End a pause: the directory is usable and has room again.
+    fn resume(&self, c: &mut Config) {
+        if let Some(p) = c.paused.take()
+            && c.last_error.as_deref() == Some(p.message.as_str())
+        {
+            c.last_error = None;
+        }
+        self.paused.store(false, Ordering::Release);
+        self.recovering.store(true, Ordering::Relaxed);
+        self.set_active(c.budget);
+    }
+
+    /// Open the scratch file and check its volume's room; pause (and say why) if either fails.
+    /// The caller holds the config lock. Returns whether spilling can go ahead.
+    fn prepare(&self, c: &mut Config) -> bool {
+        let Some(dir) = c.dir.clone() else { return false };
+        if c.file.is_none() {
+            match std::fs::create_dir_all(&dir).and_then(|()| ScratchFile::create(&dir)) {
+                Ok(f) => c.file = Some(Arc::new(f)),
+                Err(e) => {
+                    self.pause(c, &format!("could not create a scratch file in {}: {e}", dir.display()));
+                    return false;
+                }
+            }
+        }
+        let used = c.file.as_ref().map_or(0, |f| f.used());
+        refresh_space(c, &dir, used);
+        if used >= self.space_limit.load(Ordering::Relaxed) {
+            let msg = no_room(&dir, c.size_cap);
+            self.pause(c, &msg);
+            return false;
+        }
+        true
+    }
+
+    /// Retry a paused scratch disk once its backoff has elapsed. Cheap when not paused.
+    fn retry(&self) {
+        if !self.paused.load(Ordering::Acquire) {
+            return;
+        }
+        let mut c = match self.config.try_lock() {
+            Ok(c) => c,
+            Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+            // Someone else is configuring or retrying.
+            Err(std::sync::TryLockError::WouldBlock) => return,
+        };
+        let due = c.paused.as_ref().is_some_and(|p| Instant::now() >= p.retry_at);
+        if !due {
+            return;
+        }
+        if c.dir.is_none() || c.budget == 0 {
+            c.paused = None;
+            self.paused.store(false, Ordering::Release);
+            return;
+        }
+        if self.prepare(&mut c) {
+            self.resume(&mut c);
+        }
+    }
+
+    /// The scratch file, if spilling is on and the volume still has room.
     fn file(&self) -> Option<Arc<ScratchFile>> {
         let mut c = self.config();
-        if let Some(f) = &c.file {
-            return Some(f.clone());
+        if self.budget.load(Ordering::Relaxed) == 0 {
+            return None;
         }
-        let dir = c.dir.clone()?;
-        match ScratchFile::create(&dir) {
-            Ok(f) => {
-                let f = Arc::new(f);
-                c.file = Some(f.clone());
-                Some(f)
-            }
-            Err(e) => {
-                let msg = format!("could not create a scratch file in {}: {e}; spilling is off", dir.display());
-                log_error(&msg);
-                c.last_error = Some(msg);
-                c.dir = None;
-                self.budget.store(0, Ordering::Relaxed);
-                None
-            }
+        if c.file.is_none() && !self.prepare(&mut c) {
+            return None;
         }
+        c.file.clone()
+    }
+
+    /// Whether the scratch file may grow further; re-reads free space every
+    /// [`SPACE_CHECK_EVERY`] bytes and pauses spilling when the volume runs low.
+    fn has_room(&self, file: &ScratchFile) -> bool {
+        let used = file.used();
+        if used < self.next_space_check.load(Ordering::Relaxed) && used < self.space_limit.load(Ordering::Relaxed) {
+            return true;
+        }
+        let mut c = self.config();
+        let Some(dir) = c.dir.clone() else { return false };
+        refresh_space(&c, &dir, used);
+        if used < self.space_limit.load(Ordering::Relaxed) {
+            return true;
+        }
+        if c.paused.is_none() {
+            let msg = no_room(&dir, c.size_cap);
+            self.pause(&mut c, &msg);
+        }
+        false
     }
 
     /// Evict until resident memory is at most `target` or `max_scan` cells were looked at.
@@ -339,25 +465,68 @@ impl Manager {
                 }
             }
             for cell in victims {
+                if !self.has_room(&file) {
+                    return freed;
+                }
                 match cell.evict(&file) {
                     Ok(n) => freed += n,
                     Err(e) => {
-                        // Disk full or gone: keep everything in memory from now on.
-                        self.budget.store(0, Ordering::Relaxed);
-                        self.error(format!("{e}; spilling is off"));
+                        // Disk full or gone: keep tiles in memory until a retry succeeds.
+                        let mut c = self.config();
+                        if c.paused.is_none() {
+                            self.pause(&mut c, &e);
+                        }
                         return freed;
                     }
                 }
             }
         }
+        if freed > 0 && self.recovering.swap(false, Ordering::Relaxed) {
+            self.config().backoff = RETRY_FIRST;
+        }
         freed
     }
+}
+
+/// Free space on the volume holding `dir`, minus the reserve, sets how far the file may grow.
+fn refresh_space(c: &Config, dir: &Path, used: u64) {
+    let room = free_space(dir).map_or(u64::MAX, |(available, total)| used.saturating_add(available.saturating_sub(RESERVE_MIN.max(total / 20))));
+    let limit = c.size_cap.map_or(room, |cap| cap.min(room));
+    M.space_limit.store(limit, Ordering::Relaxed);
+    M.next_space_check.store(used.saturating_add(SPACE_CHECK_EVERY), Ordering::Relaxed);
+}
+
+fn no_room(dir: &Path, cap: Option<u64>) -> String {
+    match cap {
+        Some(cap) => format!("scratch disk {} reached its size limit ({} MB) or is low on free space", dir.display(), cap >> 20),
+        None => format!("scratch disk {} is low on free space", dir.display()),
+    }
+}
+
+/// (available, total) bytes of the volume holding `dir`: the mount point that is its longest
+/// prefix. `None` if unknown, which disables only the free-space check, not spilling.
+#[cfg(not(target_arch = "wasm32"))]
+fn free_space(dir: &Path) -> Option<(u64, u64)> {
+    let dir = std::fs::canonicalize(dir).ok()?;
+    let disks = sysinfo::Disks::new_with_refreshed_list_specifics(sysinfo::DiskRefreshKind::nothing().with_storage());
+    disks
+        .list()
+        .iter()
+        .filter(|d| dir.starts_with(d.mount_point()))
+        .max_by_key(|d| d.mount_point().as_os_str().len())
+        .map(|d| (d.available_space(), d.total_space()))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn free_space(_dir: &Path) -> Option<(u64, u64)> {
+    None
 }
 
 /// Called after resident memory grew.
 fn maybe_evict() {
     let budget = M.budget.load(Ordering::Relaxed);
     if budget == 0 {
+        M.retry();
         return;
     }
     let resident = M.resident.load(Ordering::Relaxed);
@@ -393,8 +562,10 @@ impl Drop for Maintenance {
     }
 }
 
-/// One bounded clock pass. The caller owns scheduling and shutdown.
+/// One bounded clock pass, plus a due retry of a paused scratch disk. The caller owns
+/// scheduling and shutdown.
 pub fn maintain_budget() -> usize {
+    M.retry();
     let budget = M.budget.load(Ordering::Relaxed);
     if budget == 0 || M.resident.load(Ordering::Relaxed) <= budget {
         return 0;
@@ -402,47 +573,81 @@ pub fn maintain_budget() -> usize {
     M.sweep(low_water(budget), 4096)
 }
 
-/// Turn the scratch disk on (`dir` and a non-zero `budget_bytes`) or off. Tiles already on disk
-/// stay readable either way. Changing the directory starts a new scratch file there; the old one
-/// is deleted once its last tile is freed or changed.
+/// Change the memory budget of a configured scratch disk (the memory limit moved). A paused
+/// disk keeps its pause and resumes with this budget.
 pub fn set_budget(budget_bytes: usize) {
-    if enabled() {
-        M.budget.store(budget_bytes.max(1), Ordering::Relaxed);
-        maybe_evict();
+    let mut c = M.config();
+    if c.dir.is_none() || c.budget == 0 {
+        return;
     }
+    c.budget = budget_bytes.max(1);
+    if c.paused.is_none() {
+        M.set_active(c.budget);
+    }
+    drop(c);
+    maybe_evict();
 }
 
+/// Limit how large the scratch file may grow (`None`: only the free-space reserve applies).
+/// Reaching the limit pauses spilling like a full disk; changing it retries a paused disk now.
+pub fn set_size_cap(cap: Option<u64>) {
+    let mut c = M.config();
+    if c.size_cap == cap {
+        return;
+    }
+    c.size_cap = cap;
+    M.next_space_check.store(0, Ordering::Relaxed);
+    if let Some(p) = &mut c.paused {
+        p.retry_at = Instant::now();
+        c.backoff = RETRY_FIRST;
+    }
+    drop(c);
+    M.retry();
+}
+
+/// Turn the scratch disk on (`dir` and a non-zero `budget_bytes`) or off. Tiles already on disk
+/// stay readable either way. Changing the directory starts a new scratch file there; the old one
+/// is deleted once its last tile is freed or changed. A directory that can't be used is kept and
+/// retried with backoff (spilling stays paused meanwhile); the error is returned and reported.
 pub fn configure(dir: Option<&Path>, budget_bytes: usize) -> Result<(), String> {
     let mut c = M.config();
     let dir = dir.filter(|_| budget_bytes > 0).map(Path::to_path_buf);
-    if let Some(d) = &dir
-        && let Err(e) = std::fs::create_dir_all(d)
-    {
-        let msg = format!("scratch disk {}: {e}; spilling is off", d.display());
-        c.dir = None;
+    if dir != c.dir {
         c.file = None;
-        c.last_error = Some(msg.clone());
-        M.budget.store(0, Ordering::Relaxed);
-        return Err(msg);
-    }
-    if dir != c.dir || (dir.is_some() && c.file.is_none()) {
-        c.file = match dir.as_deref().map(ScratchFile::create).transpose() {
-            Ok(file) => file.map(Arc::new),
-            Err(e) => {
-                let msg = format!("scratch disk: {e}; spilling is off");
-                c.dir = None;
-                c.last_error = Some(msg.clone());
-                M.budget.store(0, Ordering::Relaxed);
-                return Err(msg);
-            }
-        };
     }
     c.dir = dir.clone();
+    c.budget = if dir.is_some() { budget_bytes } else { 0 };
+    c.backoff = RETRY_FIRST;
+    c.paused = None;
     c.last_error = None;
-    M.budget.store(if dir.is_some() { budget_bytes } else { 0 }, Ordering::Relaxed);
+    M.paused.store(false, Ordering::Release);
+    M.next_space_check.store(0, Ordering::Relaxed);
+    if dir.is_some() && !M.prepare(&mut c) {
+        return Err(c.last_error.clone().unwrap_or_default());
+    }
+    M.set_active(c.budget);
     drop(c);
     maybe_evict();
     Ok(())
+}
+
+/// Changes whenever spilling turns on or off, including a pause after a disk error and the
+/// resume after it. Owners of memory caps that depend on [`enabled`] re-apply them on a change.
+pub fn epoch() -> u64 {
+    M.epoch.load(Ordering::Acquire)
+}
+
+/// Whether spilling is paused after a scratch disk failure (it retries on its own).
+pub fn paused() -> bool {
+    M.paused.load(Ordering::Acquire)
+}
+
+/// Retry a paused scratch disk on the next maintenance pass instead of after its backoff.
+#[doc(hidden)]
+pub fn retry_now_for_tests() {
+    if let Some(p) = &mut M.config().paused {
+        p.retry_at = Instant::now();
+    }
 }
 
 /// Where the tile memory stands.
@@ -462,6 +667,10 @@ pub struct SpillStats {
     /// Compressed bytes written to scratch so far.
     pub written_bytes: u64,
     pub last_error: Option<String>,
+    /// Spilling is paused after a scratch disk failure and will be retried.
+    pub paused: bool,
+    /// Scratch file size limit ([`set_size_cap`]); `None` = only the free-space reserve.
+    pub size_cap_bytes: Option<u64>,
 }
 
 pub fn stats() -> SpillStats {
@@ -476,6 +685,8 @@ pub fn stats() -> SpillStats {
         reloads: M.reloads.load(Ordering::Relaxed),
         written_bytes: M.written.load(Ordering::Relaxed),
         last_error: c.last_error.clone(),
+        paused: c.paused.is_some(),
+        size_cap_bytes: c.size_cap,
     }
 }
 
@@ -489,30 +700,48 @@ pub fn enabled() -> bool {
     M.budget.load(Ordering::Relaxed) > 0
 }
 
-/// Refuse to publish edited or serialized pixels after a scratch read failure. A failed
-/// tile can retry its original extent; changing preferences cannot clear this protection.
+/// Whether any live tile in the process is currently unreadable (cheap; the fast path of
+/// every per-document health check).
+pub fn any_failed() -> bool {
+    M.failed.load(Ordering::Acquire) > 0
+}
+
+/// Process-wide status for the UI: some live tile, in any document, is unreadable. Commit
+/// guards check only the pixels they publish ([`Tile::scratch_health`](crate::Tile::scratch_health)
+/// and the document's health) so one document's failure does not block the others.
 pub fn check_integrity() -> Result<(), String> {
-    if M.failed.load(Ordering::Acquire) == 0 {
-        Ok(())
-    } else {
+    if any_failed() {
         Err(M.config().last_error.clone().unwrap_or_else(|| "scratch pixels are unreadable; editing and saving are blocked".into()))
+    } else {
+        Ok(())
     }
 }
 
-/// Capture before an edit/import/save or derived cache computation. A failed tile might be dropped or repaired
-/// before the operation ends; its placeholder must still never be committed as real pixels.
-/// Both failure and recovery change this generation, including computations begun during a failure.
+/// Capture before an edit/import/save or derived cache computation. A tile that fails or
+/// recovers while the operation runs might have fed it placeholder pixels and then been
+/// dropped or repaired; its result must still never be committed as real pixels. Both failure
+/// and recovery change this generation. Tiles that were already unreadable when the operation
+/// began do not change it: callers also check the health of the pixels they read.
 pub fn read_error_generation() -> u64 {
     M.read_errors.load(Ordering::Acquire)
 }
 
+/// Refuse a result if any tile failed or recovered since `generation` was captured. A retry
+/// (capturing a new generation) succeeds once the transition is over.
 pub fn check_since(generation: u64) -> Result<(), String> {
-    check_integrity()?;
     if generation == read_error_generation() {
         Ok(())
     } else {
         Err(last_error().unwrap_or_else(|| "scratch read failed during this operation; the result was discarded".into()))
     }
+}
+
+/// A second handle to the current scratch file, for tests that damage or restore its bytes.
+/// The Unix file is unlinked, so it cannot be reopened by path. All scratch I/O is positioned,
+/// so the shared file offset of a duplicated handle does not affect it.
+#[doc(hidden)]
+pub fn scratch_handle_for_tests() -> Option<std::fs::File> {
+    M.config().file.as_ref().and_then(|f| f.duplicate_handle().ok())
 }
 
 /// Evict down to the budget now, on this thread (tests, and before a measurement).
@@ -536,31 +765,9 @@ fn log_error(msg: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // These tests exercise the same process-wide eviction barrier and integrity counters.
-    static EVICTION_TESTS: Mutex<()> = Mutex::new(());
-
-    #[test]
-    fn resident_scope_prevents_eviction_and_check_never_reloads() {
-        let _test = EVICTION_TESTS.lock().unwrap();
-        let dir = std::env::temp_dir().join(format!("pc-resident-scope-{}", std::process::id()));
-        let file = Arc::new(ScratchFile::create(&dir).unwrap());
-        let cell = Cell::new(vec![23; 1024]);
-        let scope = try_resident_scope().unwrap();
-        assert!(cell.is_resident());
-        assert_eq!(cell.evict(&file).unwrap(), 0);
-        assert!(try_resident_scope().is_none(), "busy must not block the UI");
-        drop(scope);
-        assert_eq!(cell.evict(&file).unwrap(), 1024);
-        let reloads = stats().reloads;
-        assert!(!cell.is_resident());
-        assert_eq!(stats().reloads, reloads);
-        drop((cell, file));
-        let _ = std::fs::remove_dir(dir);
-    }
 
     #[test]
     fn failed_read_retains_backing_and_blocks_commit_until_repaired() {
-        let _test = EVICTION_TESTS.lock().unwrap();
         let dir = std::env::temp_dir().join(format!("photocraft-read-failure-{}", std::process::id()));
         let file = Arc::new(ScratchFile::create(&dir).unwrap());
         let mut tile = crate::Tile { cell: Cell::new(vec![73; 1024]) };
@@ -573,6 +780,10 @@ mod tests {
         let failed_generation = read_error_generation();
         assert!(tile.cell.data.read().unwrap().is_none(), "placeholder must never become stored pixels");
         assert!(check_integrity().is_err());
+        assert!(tile.scratch_health().is_err(), "the tile reports its own failure");
+        assert!(crate::Tile::from_vec(vec![1; 16]).scratch_health().is_ok(), "other tiles stay healthy");
+        assert!(tile.try_bytes().is_err());
+        assert!(check_since(failed_generation).is_ok(), "re-reading a tile that already failed is not a new transition");
         tile.bytes_mut()[0] = 9;
         assert!(tile.cell.data.read().unwrap().is_none());
         assert!(tile.cell.slot.lock().unwrap().is_some(), "a failed mutation must preserve the original extent");
@@ -584,6 +795,7 @@ mod tests {
         tile.cell.slot.lock().unwrap().as_mut().unwrap().1 = good;
         assert_eq!(&*tile.try_bytes().unwrap(), &[73; 1024]);
         assert!(check_integrity().is_ok());
+        assert!(tile.scratch_health().is_ok());
         assert!(check_since(generation).is_err(), "repairing or dropping a failed tile must not validate an earlier result");
         assert!(check_since(failed_generation).is_err(), "recovery must reject a computation begun during the failure");
         assert_eq!(tile.cell.evict(&file).unwrap(), 1024);

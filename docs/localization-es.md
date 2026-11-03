@@ -1,12 +1,12 @@
-# Spanish terminology
+# Spanish terminology and dynamic UI labels
 
-This note goes with the review of the Spanish catalog
-(`crates/ui-egui/src/i18n/es.tsv`). The catalog already covered every measured key; the review
-aligned its wording with the terminology a Spanish-speaking Photoshop user already knows, fixed
-mistranslations, and made the register consistent. No proprietary translation resources, fonts,
-screenshots or user documents are included: the terms are the ones a Spanish Photoshop user sees
-in the product and its public help, and each was checked against the meaning of PhotoCraft's own
-English label.
+This note goes with the review and completion of the Spanish catalog
+(`crates/ui-egui/src/i18n/es.tsv`). It already covered every key measured by
+`cargo xtask i18n-coverage`; the terminology review aligned its wording with the vocabulary a
+Spanish-speaking image editor already knows, fixed mistranslations, and made the register
+consistent. A later pass added the 1,276 runtime-only labels it still lacked. No proprietary
+translation resources, fonts, screenshots or user documents are included: every translation was
+written from the meaning of PhotoCraft's own English label.
 
 ## Register and style
 
@@ -16,6 +16,19 @@ English label.
   as in Photoshop: «Panel Carácter», «Herramienta Pluma».
 - Quotation marks are «angulares»: «{name}».
 - Neutral Spanish, matching Adobe's single Spanish catalog (for example «coma flotante»).
+
+## Dynamic UI coverage
+
+After merging the newer upstream catalog rows, the catalog has 4,010 entries. It covers the
+complete Italian runtime key set and retains two Spanish profile-prompt labels that other
+catalogs also use. The additional labels include filter and adjustment parameters and choices,
+Filter Gallery names, Camera Raw, Lighting Effects, History and Layers controls, metadata,
+dialogs, status wrappers and System Info labels. Before this pass, those controls fell back to
+English because many are assembled dynamically and cannot be found by the static coverage scan.
+
+A future generated label without a Spanish row shows in English. `cargo xtask i18n-coverage`
+lists missing rows for the keys it scans, which don't include these generated labels. A few
+unused legacy labels are retained so the complete catalogs stay aligned.
 
 ## Terminology
 
@@ -61,7 +74,9 @@ Raw, droplet, OpenType, sRGB, Wayland) are not translated.
 
 ## Out of scope
 
-Engine error, status and parameter-help messages are still English in every language (see
-[`localization-parity.md`](localization-parity.md)); this review does not change that. The review
-was AI-assisted, row by row against Photoshop's Spanish terminology; a review by a native
-speaker is still welcome.
+Engine-generated error details, status text and parameter help that do not pass through the UI
+catalog remain English in every language (see
+[`localization-parity.md`](localization-parity.md)). User document, layer and preset names and
+automation command IDs also remain unchanged. The completion was contributed by
+@gorevyoneticisi with OpenAI Codex as an AI contributor under the repository's MIT OR
+Apache-2.0 terms; a review by a native speaker is still welcome.

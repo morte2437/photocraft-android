@@ -27,6 +27,13 @@ pub fn preview_factor(doc: &Document, reduced: bool) -> u32 {
     if reduced { factor(doc) } else { 1 }
 }
 
+/// A live preview's factor `k` capped for a view at `zoom` (physical screen pixels per document
+/// pixel): never coarser than the screen ([`crate::adjust_preview::proxy_factor`]), so a view at
+/// 100 % shows full resolution instead of k-pixel blocks while a control moves (#5764).
+pub fn view_factor(k: u32, zoom: f32) -> u32 {
+    k.min(crate::adjust_preview::proxy_factor(zoom)).max(1)
+}
+
 pub use photocraft_compose::proxy::{downsample, proxy_document};
 
 #[cfg(test)]
@@ -46,6 +53,23 @@ mod tests {
         assert_eq!(preview_factor(&big, true), k);
         assert_eq!(preview_factor(&big, false), 1);
         assert_eq!(preview_factor(&small, true), 1);
+    }
+
+    /// #5764: dragging a Curves point on a large document showed the canvas in k-pixel blocks at
+    /// any zoom. The proxy may only be as coarse as the screen.
+    #[test]
+    fn view_factor_never_coarser_than_the_screen() {
+        let big = Document::new("b", Size::new(6016, 6016), ColorMode::Rgb, SampleType::U8);
+        let k = preview_factor(&big, true);
+        assert!(k > 2, "{k}");
+        assert_eq!(view_factor(k, 1.0), 1, "100 %: full resolution");
+        assert_eq!(view_factor(k, 2.0), 1, "zoomed in: full resolution");
+        assert_eq!(view_factor(k, 0.6), 1);
+        assert_eq!(view_factor(k, 0.5), 2);
+        assert_eq!(view_factor(k, 0.1), k, "far out: the document's proxy");
+        assert_eq!(view_factor(1, 0.1), 1, "small documents stay full size");
+        assert_eq!(view_factor(k, f32::NAN), 1);
+        assert_eq!(view_factor(0, 0.1), 1);
     }
 
     #[test]

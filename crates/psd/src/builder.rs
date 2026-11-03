@@ -84,7 +84,8 @@ impl PixelData {
     }
 
     fn composite_plane(&self, c: usize, n: usize) -> Vec<u8> {
-        // Photoshop stores transparent RGB composites against white; layer channels stay straight.
+        // Photoshop stores transparent RGB composites against white; layer channels stay straight,
+        // and so do Gray and CMYK composites here (see `PsdBuilder::composite`).
         match self {
             Self::Rgba8(v) if c < 3 => v
                 .as_chunks::<4>()
@@ -290,7 +291,9 @@ impl PsdBuilder {
         Ok(self)
     }
     /// Supplies the merged composite (straight samples, same format as layers, full canvas).
-    /// Transparent RGB is stored against white, quantized at the document depth.
+    /// Transparent RGB is stored against white, quantized at the document depth. Gray and CMYK
+    /// composites with alpha are stored straight (not matted against white as Photoshop would):
+    /// a test that reads them as a Photoshop merged image has to allow for that.
     pub fn composite(&mut self, pixels: PixelData) -> &mut Self {
         self.composite = Some(pixels);
         self
@@ -457,6 +460,7 @@ impl PsdBuilder {
             global_blocks: Vec::new(),
             layer_mask_trailing: Vec::new(),
             image_data,
+            write_as_psb: false,
         })
     }
 

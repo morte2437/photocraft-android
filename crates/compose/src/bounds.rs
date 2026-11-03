@@ -62,7 +62,7 @@ pub fn content_bounds(s: &Surface) -> Rect {
             None => {
                 let generation = photocraft_raster::spill::read_error_generation();
                 let b = t.content_bounds(&dp);
-                if photocraft_raster::spill::check_since(generation).is_ok() {
+                if photocraft_raster::spill::check_since(generation).is_ok() && t.scratch_health().is_ok() {
                     c.entries.insert(key, Entry { tile: Arc::downgrade(t), default: dp.clone().into_boxed_slice(), bounds: b });
                 }
                 b

@@ -22,6 +22,8 @@ use crate::io::{Reader, WriteExt};
 pub const SIGNATURE: &[u8; 4] = b"ASEF";
 /// Most colour entries read from one file.
 pub const MAX_SWATCHES: usize = 100_000;
+/// Most groups read from one file.
+pub const MAX_GROUPS: usize = 10_000;
 /// Longest name read or written, in UTF-16 code units.
 pub const MAX_NAME_UNITS: usize = 1024;
 // `put_name` writes the name length as `units.len() as u16 + 1`, so the cap must leave room in a
@@ -172,9 +174,9 @@ fn read_color(body: &mut Reader<'_>) -> Result<AseSwatch> {
 }
 
 /// Parse an `.ase` file. A wrong signature or version, a truncated block, a block count beyond
-/// the data or more than [`MAX_SWATCHES`] colours is an error; never panics. Unknown block
-/// types are skipped, a group end without a start is ignored, and a group left open at the end
-/// (or a group started inside another) is closed.
+/// the data, more than [`MAX_SWATCHES`] colors or more than [`MAX_GROUPS`] groups is an error;
+/// never panics. Unknown block types are skipped, a group end without a start is ignored, and a
+/// group left open at the end (or a group started inside another) is closed.
 pub fn parse(data: &[u8]) -> Result<AseFile> {
     let mut r = Reader::new(data);
     let sig: [u8; 4] = r.array()?;
@@ -192,12 +194,17 @@ pub fn parse(data: &[u8]) -> Result<AseFile> {
     let mut entries = Vec::new();
     let mut open: Option<(String, Vec<AseSwatch>)> = None;
     let mut total = 0usize;
+    let mut groups = 0usize;
     for _ in 0..count {
         let kind = r.u16()?;
         let len = u64::from(r.u32()?);
         let mut body = r.sub(len)?;
         match kind {
             GROUP_START => {
+                groups += 1;
+                if groups > MAX_GROUPS {
+                    return Err(PsdError::LimitExceeded("too many groups in an .ase file"));
+                }
                 if let Some((name, swatches)) = open.take() {
                     entries.push(AseEntry::Group { name, swatches });
                 }
@@ -279,10 +286,14 @@ fn put_color(out: &mut Vec<u8>, s: &AseSwatch) -> Result<()> {
 }
 
 /// Write an `.ase` file (version 1.0). Fails only when a block or the block count overflows the
-/// format's 32-bit fields or there are more than [`MAX_SWATCHES`] colours.
+/// format's 32-bit fields or there are more than [`MAX_SWATCHES`] colors or more than
+/// [`MAX_GROUPS`] groups.
 pub fn write(file: &AseFile) -> Result<Vec<u8>> {
     if file.swatch_count() > MAX_SWATCHES {
         return Err(PsdError::LimitExceeded("too many swatches for an .ase file"));
+    }
+    if file.entries.iter().filter(|e| matches!(e, AseEntry::Group { .. })).count() > MAX_GROUPS {
+        return Err(PsdError::LimitExceeded("too many groups for an .ase file"));
     }
     let mut body = Vec::with_capacity(64 * file.swatch_count().max(1));
     let mut blocks = 0u64;
@@ -414,5 +425,15 @@ mod tests {
         let s = sw("", AseColor::Gray(0.0), AseKind::Process);
         let f = AseFile { entries: vec![AseEntry::Group { name: "g".into(), swatches: vec![s; MAX_SWATCHES + 1] }] };
         assert!(write(&f).is_err());
+    }
+
+    #[test]
+    fn too_many_groups() {
+        let g = AseEntry::Group { name: "g".into(), swatches: vec![] };
+        let mut f = AseFile { entries: vec![g; MAX_GROUPS + 1] };
+        assert!(write(&f).is_err());
+        // At the limit the file is written, and every group reads back.
+        f.entries.pop();
+        assert_eq!(parse(&write(&f).unwrap()).unwrap().entries.len(), MAX_GROUPS);
     }
 }

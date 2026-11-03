@@ -1,0 +1,61 @@
+{
+  "workspace": "Essentials",
+  "panels": {
+    "layers": true,
+    "history": true,
+    "properties": true,
+    "color": true,
+    "navigator": false,
+    "toolbar": true,
+    "options_bar": true,
+    "status_bar": true,
+    "brush_settings": false,
+    "brushes": false,
+    "character": false,
+    "toolbar_double": false,
+    "dock": true,
+    "rail": true,
+    "menu_bar": true
+  },
+  "dockTabs": {"properties": 0, "color": 0, "layers": 0, "navigator": 0, "history": 1, "character": 0, "brushes": 0},
+  "dock": {
+    "order": [],
+    "heights": {},
+    "collapsed": [],
+    "hidden_tabs": {"history": ["Layer Comps"], "layers": ["Paths"]},
+    "tabOrder": {}
+  },
+  "timelineOpen": false,
+  "docking": {
+    "root": {"Split": {
+      "axis": "Vertical",
+      "size": {"FixedFirst": 180.0},
+      "first": {"Tabs": {"panels": ["swatches"], "active": 0}},
+      "second": {"Split": {
+        "axis": "Vertical",
+        "size": {"FixedFirst": 260.0},
+        "first": {"Tabs": {"panels": ["color", "gradients", "patterns"], "active": 0}},
+        "second": {"Split": {
+          "axis": "Vertical",
+          "size": {"Ratio": 0.4},
+          "first": {"Tabs": {"panels": ["history", "actions"], "active": 1}},
+          "second": {"Tabs": {"panels": ["layers", "channels"], "active": 0}}
+        }}
+      }}
+    }},
+    "floating": [{"panels": ["properties", "adjustments"], "active": 0, "rect": [420.0, 150.0, 320.0, 440.0]}]
+  },
+  "dockingHidden": {
+    "layerComps": {"floating": null, "anchor": "actions", "placement": {"Tab": {"before": null}}, "size": null, "stack": null, "sibling": []},
+    "paths": {"floating": null, "anchor": "channels", "placement": {"Tab": {"before": null}}, "size": null, "stack": null, "sibling": []},
+    "properties": {
+      "floating": null,
+      "anchor": "layers",
+      "placement": {"Split": "Top"},
+      "size": {"FixedFirst": 300.0},
+      "stack": null,
+      "sibling": ["layers", "channels"]
+    }
+  },
+  "dockingCollapsed": ["history", "actions"]
+}

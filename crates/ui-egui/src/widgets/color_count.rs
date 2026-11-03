@@ -1,6 +1,6 @@
 //! Integer-only Indexed Color field and a linear slider with common palette sizes.
 
-use super::*;
+use super::{Align2, Color32, Rect, Response, Sense, Stroke, StrokeKind, Tokens, Ui, pos2, surface, theme, vec2};
 
 const STOPS: [u32; 6] = [8, 16, 32, 64, 128, 256];
 
@@ -42,7 +42,7 @@ pub fn color_count_row(ui: &mut Ui, label: &str, count: &mut u32) -> Response {
             child.style_mut().visuals.widgets.inactive.bg_stroke = Stroke::NONE;
             child.style_mut().visuals.widgets.hovered.bg_stroke = Stroke::NONE;
             child.style_mut().override_font_id = Some(theme::mono(12.0));
-            child.add(egui::DragValue::new(count).range(2..=256).speed(1.0).max_decimals(0).custom_parser(parse_count));
+            child.add(egui::DragValue::new(count).range(2..=256).speed(1.0).max_decimals(0).custom_parser(parse_count)).accessible_name(tl!(label));
         });
     });
     let (rect, mut response) = ui.allocate_exact_size(vec2(ui.available_width().max(60.0), 36.0), Sense::click_and_drag());
@@ -102,6 +102,7 @@ pub fn color_count_row(ui: &mut Ui, label: &str, count: &mut u32) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use egui::Pos2;
     use egui_kittest::{Harness, kittest::Queryable};
 
     #[test]

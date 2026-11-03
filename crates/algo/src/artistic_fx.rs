@@ -17,6 +17,7 @@ use photocraft_geom::Rect;
 use crate::Ctx;
 use crate::artistic::GalleryEffect;
 use crate::artistic::GalleryFilter as F;
+use crate::cutout;
 use crate::fxutil::{box_blur_n, cell_point, gauss_blur_n, gauss_box_radii, rgba, set_rgba};
 use crate::image::Image;
 use crate::noise::hash01;
@@ -409,7 +410,8 @@ pub(crate) fn effect_reach(e: &GalleryEffect) -> i32 {
     let g = |k: &str| e.get(k);
     match e.filter {
         F::ColoredPencil => 2,
-        F::Cutout => gs(cutout_sigma(e)),
+        // Traced over the whole image before tiling (see [`Prepared`]).
+        F::Cutout => 0,
         F::DryBrush | F::Fresco => kuwahara_reach(1 + g("brushSize") as usize) + gs(1.0) + 2,
         F::FilmGrain | F::DiffuseGlow | F::ChalkCharcoal | F::Reticulation | F::Grain | F::MosaicTiles | F::Texturizer => 0,
         F::RoughPastels => gs(0.6 + 1.2) + ((2.0 + g("strokeLength")) / 2.0) as i32 + 3,
@@ -437,7 +439,7 @@ pub(crate) fn effect_reach(e: &GalleryEffect) -> i32 {
         F::Chrome => gs(1.0 + g("smoothness") * 0.4) + 2,
         F::ConteCrayon => 0,
         F::GraphicPen => (g("strokeLength") / 2.0) as i32 + 2,
-        F::HalftonePattern => gs(0.5 + g("size") * 0.3),
+        F::HalftonePattern => gs(halftone_cell(e) * 0.15),
         F::NotePaper => gs(1.0) + gs(1.2) + 2,
         F::Photocopy => gs(1.0 + g("detail") * 0.5),
         F::Plaster => gs(0.5 + g("smoothness") * 0.8) + gs(1.5) + 2,
@@ -451,8 +453,57 @@ pub(crate) fn effect_reach(e: &GalleryEffect) -> i32 {
     }
 }
 
-fn cutout_sigma(e: &GalleryEffect) -> f32 {
-    0.5 + e.get("edgeSimplicity") * (1.1 - 0.3 * e.get("edgeFidelity"))
+fn cutout_settings(e: &GalleryEffect) -> cutout::Settings {
+    cutout::Settings { levels: e.get("numberOfLevels").round().clamp(2.0, 8.0) as usize, simplicity: e.get("edgeSimplicity"), fidelity: e.get("edgeFidelity") }
+}
+/// Halftone Pattern's screen spacing in pixels (about 3.5 at Size 1, 25.5 at 12).
+fn halftone_cell(e: &GalleryEffect) -> f32 {
+    1.5 + 2.0 * e.get("size").clamp(1.0, 12.0)
+}
+/// The round-dot spot function `(cos 2πu + cos 2πv) / 2` sampled over a cell and sorted: a
+/// value's rank among them is the share of the cell below it, which makes the thresholds even.
+fn halftone_dot_ranks() -> &'static [f32] {
+    static RANKS: std::sync::OnceLock<Vec<f32>> = std::sync::OnceLock::new();
+    RANKS.get_or_init(|| {
+        const N: usize = 128;
+        let mut v: Vec<f32> = (0..N * N)
+            .map(|i| {
+                let (u, w) = (((i % N) as f32 + 0.5) / N as f32, ((i / N) as f32 + 0.5) / N as f32);
+                ((2.0 * PI * u).cos() + (2.0 * PI * w).cos()) / 2.0
+            })
+            .collect();
+        v.sort_by(f32::total_cmp);
+        v
+    })
+}
+/// For each tone (0 = paper … 1 = solid ink, 256 steps), the level `τ` at which the soft
+/// threshold `clamp(0.5 + (τ − s) · gain)` over evenly spread thresholds `s` inks exactly that
+/// share of a cell on average.
+fn halftone_offsets(gain: f32) -> Vec<f32> {
+    let half = 0.5 / gain.max(1e-3);
+    // Average ink over s in [0, 1] for level τ: 1 below τ − half, a ramp to 0 at τ + half.
+    let cover = |tau: f32| {
+        let (a, z) = (tau - half, tau + half);
+        let solid = a.clamp(0.0, 1.0);
+        let (r0, r1) = (a.clamp(0.0, 1.0), z.clamp(0.0, 1.0));
+        let ramp = if r1 > r0 { (0.5 + tau * gain) * (r1 - r0) - 0.5 * gain * (r1 * r1 - r0 * r0) } else { 0.0 };
+        solid + ramp
+    };
+    (0..256)
+        .map(|i| {
+            let target = i as f32 / 255.0;
+            let (mut lo, mut hi) = (-half - 1.0, 1.0 + half + 1.0);
+            for _ in 0..40 {
+                let mid = (lo + hi) / 2.0;
+                if cover(mid) < target { lo = mid } else { hi = mid }
+            }
+            match i {
+                0 => -half - 1.0,
+                255 => 1.0 + half + 1.0,
+                _ => (lo + hi) / 2.0,
+            }
+        })
+        .collect()
 }
 fn daubs_radius(e: &GalleryEffect) -> usize {
     let wide = matches!(e.choice("brushType"), "wideSharp" | "wideBlurry");
@@ -492,6 +543,54 @@ pub(crate) fn run(effects: &[GalleryEffect], src: &Image, out: Rect, ctx: &Ctx) 
     for e in effects {
         apply(e, &mut win, ctx);
     }
+    finish(&win, src, out, ctx)
+}
+
+/// Whether a stack needs the whole image at once (Cutout traces it).
+pub(crate) fn is_global(effects: &[GalleryEffect]) -> bool {
+    effects.iter().any(|e| e.filter == F::Cutout)
+}
+
+/// A stack with a Cutout, prepared once for all tiles: the effects up to the last Cutout run
+/// over the whole image and it is traced; each tile then only fills in the traced shapes and
+/// runs the effects after it.
+pub(crate) struct Prepared {
+    traced: cutout::Traced,
+    rest: Vec<GalleryEffect>,
+}
+
+impl Prepared {
+    /// `None` for a stack that has no Cutout (it runs tile by tile as usual).
+    pub(crate) fn new(effects: &[GalleryEffect], src: &Image, ctx: &Ctx) -> Option<Prepared> {
+        let last = effects.iter().rposition(|e| e.filter == F::Cutout)?;
+        let r = src.rect;
+        let (w, h) = (r.width() as usize, r.height() as usize);
+        let mut win = Win { r, w, h, c: src.data.chunks_exact(src.ch).map(|px| rgb(rgba(ctx, px))).collect() };
+        for e in effects.get(..last).unwrap_or_default() {
+            apply(e, &mut win, ctx);
+        }
+        let traced = cutout::trace(&win.c, r, &cutout_settings(effects.get(last)?));
+        Some(Prepared { traced, rest: effects.get(last + 1..).unwrap_or_default().to_vec() })
+    }
+
+    /// The stack's result over `out` (`src` is the image it was prepared from).
+    pub(crate) fn run(&self, src: &Image, out: Rect, ctx: &Ctx) -> Vec<f32> {
+        let r = out.inflate(reach(&self.rest)).intersect(&src.rect);
+        let (w, h) = (r.width() as usize, r.height() as usize);
+        if w == 0 || h == 0 {
+            return src.crop(out);
+        }
+        let mut win = Win { r, w, h, c: self.traced.render(r) };
+        for e in &self.rest {
+            apply(e, &mut win, ctx);
+        }
+        finish(&win, src, out, ctx)
+    }
+}
+
+/// `out` of the source with its colour from `win` (alpha kept).
+fn finish(win: &Win, src: &Image, out: Rect, ctx: &Ctx) -> Vec<f32> {
+    let n = src.ch;
     let mut res = src.crop(out);
     let ow = out.width() as usize;
     for (i, px) in res.chunks_exact_mut(n).enumerate() {
@@ -506,12 +605,20 @@ pub(crate) fn run(effects: &[GalleryEffect], src: &Image, out: Rect, ctx: &Ctx) 
     res
 }
 
+/// Applies one gallery effect to the working window in place. Each category handles its own
+/// filters and reports whether the effect was one of them.
 fn apply(e: &GalleryEffect, win: &mut Win, ctx: &Ctx) {
+    let handled =
+        apply_artistic(e, win) || apply_brush_strokes(e, win) || apply_distort(e, win) || apply_sketch(e, win, ctx) || apply_stylize_texture(e, win, ctx);
+    debug_assert!(handled, "every gallery filter belongs to a category");
+}
+
+/// Artistic filters: the painterly looks of the gallery.
+fn apply_artistic(e: &GalleryEffect, win: &mut Win) -> bool {
     let g = |k: &str| e.get(k);
     let (w, h) = (win.w, win.h);
     let (fg, bg) = (rgb(e.foreground), rgb(e.background));
     match e.filter {
-        // ---------------- Artistic ----------------
         F::ColoredPencil => {
             let pw = g("pencilWidth");
             let pressure = g("strokePressure") / 15.0;
@@ -528,16 +635,7 @@ fn apply(e: &GalleryEffect, win: &mut Win, ctx: &Ctx) {
                 win.c[i] = mix(paper, map(win.c[i], |v| v * 0.88), cov);
             }
         }
-        F::Cutout => {
-            blur3(&mut win.c, w, h, cutout_sigma(e));
-            let levels = g("numberOfLevels").round();
-            for p in &mut win.c {
-                // Flat tones per luminance level, keeping each region's hue.
-                let l = lum(p).max(1e-4);
-                let k = posterize(l, levels) / l;
-                *p = map(*p, |v| posterize(clamp01(v * k), levels * 2.0));
-            }
-        }
+        F::Cutout => win.c = cutout::trace(&win.c, win.r, &cutout_settings(e)).render(win.r),
         F::DryBrush | F::Fresco => {
             let fresco = e.filter == F::Fresco;
             kuwahara(win, 1 + g("brushSize") as usize);
@@ -695,7 +793,16 @@ fn apply(e: &GalleryEffect, win: &mut Win, ctx: &Ctx) {
                 win.c[i] = map(saturate(win.c[i], 1.2), |v| clamp01(v * k + n).powf(1.1 + sh * 0.6));
             }
         }
-        // ---------------- Brush Strokes ----------------
+        _ => return false,
+    }
+    true
+}
+
+/// Brush Strokes filters.
+fn apply_brush_strokes(e: &GalleryEffect, win: &mut Win) -> bool {
+    let g = |k: &str| e.get(k);
+    let (w, h) = (win.w, win.h);
+    match e.filter {
         F::AccentedEdges => {
             let mut l = win.lum();
             blur1(&mut l, w, h, 0.4 + g("smoothness") * 0.3);
@@ -809,7 +916,17 @@ fn apply(e: &GalleryEffect, win: &mut Win, ctx: &Ctx) {
                 *p = map(*p, |v| clamp01((v - 0.5) * (1.0 + con) + 0.5) * (1.0 - ink * 0.9 * (0.5 + con)));
             }
         }
-        // ---------------- Distort ----------------
+        _ => return false,
+    }
+    true
+}
+
+/// Distort filters.
+fn apply_distort(e: &GalleryEffect, win: &mut Win) -> bool {
+    let g = |k: &str| e.get(k);
+    let (w, h) = (win.w, win.h);
+    let bg = rgb(e.background);
+    match e.filter {
         F::DiffuseGlow => {
             let (gr, ga, ca) = (g("graininess") / 10.0, g("glowAmount") / 20.0, g("clearAmount") / 20.0);
             let thr = 0.2 + ca * 0.7;
@@ -853,7 +970,17 @@ fn apply(e: &GalleryEffect, win: &mut Win, ctx: &Ctx) {
                 win.c[i] = src.sample(x as f32 + 0.5 + dx, y as f32 + 0.5 + dy);
             }
         }
-        // ---------------- Sketch ----------------
+        _ => return false,
+    }
+    true
+}
+
+/// Sketch filters (foreground is ink, background is paper).
+fn apply_sketch(e: &GalleryEffect, win: &mut Win, ctx: &Ctx) -> bool {
+    let g = |k: &str| e.get(k);
+    let (w, h) = (win.w, win.h);
+    let (fg, bg) = (rgb(e.foreground), rgb(e.background));
+    match e.filter {
         F::BasRelief => {
             let mut l = win.lum();
             let orig = l.clone();
@@ -933,36 +1060,46 @@ fn apply(e: &GalleryEffect, win: &mut Win, ctx: &Ctx) {
             }
         }
         F::HalftonePattern => {
-            let size = g("size");
-            let con = g("contrast") / 50.0;
-            let cell = 3.0 + size * 2.0;
+            // A halftone screen that keeps a continuous range of tones: each pixel compares its
+            // ink (the darkness of the image) with the screen's threshold there, and Contrast is
+            // how steeply: at 0 the image keeps its tones with the screen faintly through it, at
+            // 50 it is crisp dots, lines or rings. The thresholds are spread evenly over each cell,
+            // and each tone is offset so a cell's average ink is exactly that tone: black stays
+            // solid and white stays paper at any Contrast.
+            let cell = halftone_cell(e);
+            let gain = 0.5 + g("contrast") * 0.6;
+            let offsets = halftone_offsets(gain);
             let mut l = win.lum();
-            blur1(&mut l, w, h, 0.5 + size * 0.3);
+            blur1(&mut l, w, h, cell * 0.15);
             let b = ctx.bounds;
             let (cx, cy) = ((b.x0 + b.x1) as f32 / 2.0, (b.y0 + b.y1) as f32 / 2.0);
             let ty = e.choice("patternType");
+            let dots = halftone_dot_ranks();
             for i in 0..win.c.len() {
                 let (x, y) = win.xy(i);
                 let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
-                let d = clamp01((1.0 - l[i] - 0.5) * (1.0 + con * 3.0) + 0.5);
-                let aa = 1.0 / cell;
-                let ink = match ty {
-                    "circle" => {
-                        let r = ((fx - cx).powi(2) + (fy - cy).powi(2)).sqrt() / cell;
-                        let q = (r.fract() - 0.5).abs() * 2.0;
-                        smoothstep(d + aa, d - aa, q)
-                    }
-                    "line" => {
-                        let q = ((fy / cell).fract() - 0.5).abs() * 2.0;
-                        smoothstep(d + aa, d - aa, q)
-                    }
+                let band = |t: f32| ((t / cell).rem_euclid(1.0) - 0.5).abs() * 2.0;
+                let spot = match ty {
+                    // Rings round the middle of the image, inked from the middle of each ring.
+                    "circle" => band(((fx - cx).powi(2) + (fy - cy).powi(2)).sqrt()),
+                    // Horizontal lines, inked from the middle of each.
+                    "line" => band(fy),
+                    // Round dots on a screen at 45° (as a black halftone screen is), that grow
+                    // from each cell's centre, meet at 50% as a checkerboard of squares square to
+                    // the image, and fill the cell at 100%.
                     _ => {
-                        let (u, v) = ((fx / cell).fract() - 0.5, (fy / cell).fract() - 0.5);
-                        let q = (u * u + v * v).sqrt() * 2.0;
-                        let rr = d.sqrt() * 1.15;
-                        smoothstep(rr + aa, rr - aa, q)
+                        let (rx, ry) = ((fx + fy) * std::f32::consts::FRAC_1_SQRT_2, (fy - fx) * std::f32::consts::FRAC_1_SQRT_2);
+                        let (u, v) = ((rx / cell).rem_euclid(1.0), (ry / cell).rem_euclid(1.0));
+                        let f = ((2.0 * PI * u).cos() + (2.0 * PI * v).cos()) / 2.0;
+                        let k = dots.partition_point(|&r| r < f);
+                        k as f32 / dots.len().max(1) as f32
                     }
                 };
+                let tone = clamp01(1.0 - l[i]) * (offsets.len() - 1) as f32;
+                let (k, f) = (tone.floor() as usize, tone.fract());
+                let at = |j: usize| offsets.get(j.min(offsets.len() - 1)).copied().unwrap_or(0.5);
+                let level = at(k) + (at(k + 1) - at(k)) * f;
+                let ink = clamp01(0.5 + (level - spot) * gain);
                 win.c[i] = mix(bg, fg, ink);
             }
         }
@@ -1047,7 +1184,17 @@ fn apply(e: &GalleryEffect, win: &mut Win, ctx: &Ctx) {
                 win.c[i] = map(win.c[i], |v| (v * (0.85 + 0.25 * fib) - 0.5) * (co * 1.6 + 0.2) + 0.5 + (br - 0.5) * 0.8);
             }
         }
-        // ---------------- Stylize ----------------
+        _ => return false,
+    }
+    true
+}
+
+/// Stylize and Texture filters.
+fn apply_stylize_texture(e: &GalleryEffect, win: &mut Win, ctx: &Ctx) -> bool {
+    let g = |k: &str| e.get(k);
+    let (w, h) = (win.w, win.h);
+    let (fg, bg) = (rgb(e.foreground), rgb(e.background));
+    match e.filter {
         F::GlowingEdges => {
             blur3(&mut win.c, w, h, 0.3 + g("smoothness") * 0.25);
             let mut e3 = vec![[0.0f32; 3]; win.c.len()];
@@ -1063,7 +1210,6 @@ fn apply(e: &GalleryEffect, win: &mut Win, ctx: &Ctx) {
                 *p = map(*q, |v| clamp01(v * k));
             }
         }
-        // ---------------- Texture ----------------
         F::Craquelure => {
             let (sp, dep, bri) = (g("crackSpacing"), g("crackDepth") / 10.0, g("crackBrightness") / 10.0);
             let cell = sp * 1.3 + 1.0;
@@ -1179,7 +1325,9 @@ fn apply(e: &GalleryEffect, win: &mut Win, ctx: &Ctx) {
             }
         }
         F::Texturizer => texturize(win, e.choice("texture"), g("scaling"), g("relief"), e.choice("light"), e.flag("invert")),
+        _ => return false,
     }
+    true
 }
 
 fn normalize3(v: [f32; 3]) -> [f32; 3] {
@@ -1237,6 +1385,8 @@ mod tests {
             let fp = FilterParams::FilterGallery { effects: vec![e.clone()] };
             apply_tiled(&s, &fp, b, b, None, tile, Some(b)).read_region(b)
         };
+        // Cutout has its own test below: its tone bands are of the channel mean, which this
+        // pattern keeps nearly constant.
         for f in [G::RoughPastels, G::AngledStrokes] {
             let base = run(&GalleryEffect::new(f), 256);
             for prm in f.params() {
@@ -1251,6 +1401,160 @@ mod tests {
                     assert!(worst < 1e-3, "{} {} = {v} differs across tilings by {worst}", f.key(), prm.key);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn cutout_responds_to_every_slider() {
+        // A radial gradient (curved band edges, tones to quantize) with a 10 px square in it.
+        let rows: Vec<Vec<f32>> = (0..96)
+            .map(|y| {
+                (0..96)
+                    .map(|x| {
+                        if (70..80).contains(&x) && (14..24).contains(&y) {
+                            return 0.05;
+                        }
+                        let d = (((x as f32 - 40.0).powi(2) + (y as f32 - 52.0).powi(2)).sqrt() / 60.0).min(1.0);
+                        1.0 - d
+                    })
+                    .collect()
+            })
+            .collect();
+        let base = cutout_on(&rows, &[]);
+        for (key, v) in
+            [("numberOfLevels", 2.0), ("numberOfLevels", 8.0), ("edgeSimplicity", 0.0), ("edgeSimplicity", 10.0), ("edgeFidelity", 1.0), ("edgeFidelity", 3.0)]
+        {
+            assert_ne!(cutout_on(&rows, &[(key, v)]), base, "cutout {key} = {v} changed nothing");
+        }
+    }
+
+    /// Runs one Cutout over a grey image given as rows of values; returns the red channel.
+    fn cutout_on(rows: &[Vec<f32>], set: &[(&str, f32)]) -> Vec<Vec<f32>> {
+        let (w, h) = (rows[0].len() as i32, rows.len() as i32);
+        let mut s = Surface::new(PixelFormat::new(ColorMode::Rgb, SampleType::F32, true));
+        for (y, row) in rows.iter().enumerate() {
+            for (x, v) in row.iter().enumerate() {
+                s.write_pixel(x as i32, y as i32, &[*v, *v, *v, 1.0]);
+            }
+        }
+        let mut e = GalleryEffect::new(crate::GalleryFilter::Cutout);
+        for (k, v) in set {
+            e.set(k, *v);
+        }
+        let b = Rect::new(0, 0, w, h);
+        let out = apply_tiled(&s, &FilterParams::FilterGallery { effects: vec![e] }, b, b, None, 256, Some(b)).read_region(b);
+        out.chunks(4 * w as usize).map(|r| r.chunks(4).map(|p| p[0]).collect()).collect()
+    }
+
+    #[test]
+    fn cutout_makes_flat_shapes_with_clean_edges() {
+        // It used to posterize every pixel after a blur: noise survived as speckle, edges were
+        // ragged and smooth gradients banded instead of becoming flat paper.
+        let noisy: Vec<Vec<f32>> = (0..32).map(|y| (0..64).map(|x| if x < 32 { 0.2 } else { 0.8 } + (hash01(x, y, 0, 7) - 0.5) * 0.16).collect()).collect();
+        let out = cutout_on(&noisy, &[]);
+        for (x0, x1) in [(2, 28), (36, 62)] {
+            let vals: Vec<f32> = (2..30).flat_map(|y| out[y][x0..x1].to_vec()).collect();
+            let spread = vals.iter().fold(f32::MIN, |a, &v| a.max(v)) - vals.iter().fold(f32::MAX, |a, &v| a.min(v));
+            assert!(spread < 1e-4, "a noisy area should be one flat tone, spread {spread}");
+        }
+        // The cut is an anti-aliased pixel or two, not a blur.
+        for y in 0..32 {
+            let (lo, hi) = (out[y][16], out[y][48]);
+            let soft = out[y].iter().filter(|&&v| (v - lo).abs() > 0.01 && (v - hi).abs() > 0.01).count();
+            assert!(soft <= 2, "row {y}: {soft} edge pixels");
+        }
+        // A grey ramp becomes `numberOfLevels` equal-width bands, each its own mean tone, as in the
+        // reference application (0–255 over 256 px at 4 levels: steps at 64, 128 and 192, the
+        // upper bands 96, 160 and 224).
+        let ramp: Vec<Vec<f32>> = (0..64).map(|_| (0..256).map(|x| x as f32 / 255.0).collect()).collect();
+        let row = &cutout_on(&ramp, &[("numberOfLevels", 4.0), ("edgeSimplicity", 0.0), ("edgeFidelity", 3.0)])[32];
+        for (x, want) in [(100, 95.5), (160, 159.5), (230, 223.5)] {
+            assert!((row[x] * 255.0 - want).abs() < 0.6, "band at {x}: {} vs {want}", row[x] * 255.0);
+        }
+        for step in [64usize, 128, 192] {
+            assert!(row[step - 2] < row[step + 1] - 0.2, "a step at {step}: {} / {}", row[step - 2], row[step + 1]);
+        }
+        // Edge Simplicity drops small shapes by their size alone (measured in the reference
+        // application: 6 px squares stay at 0–2 and 4 px go; 12 px stay at 4 and 8 px go).
+        let square = |n: usize| -> Vec<Vec<f32>> {
+            (0..48).map(|y| (0..48).map(|x| if (20..20 + n).contains(&x) && (20..20 + n).contains(&y) { 0.9 } else { 0.2 }).collect()).collect()
+        };
+        for (n, simplicity, kept) in [(6, 0.0, true), (4, 0.0, false), (6, 2.0, true), (12, 4.0, true), (8, 4.0, false), (12, 10.0, false)] {
+            let out = cutout_on(&square(n), &[("edgeSimplicity", simplicity)]);
+            let c = 20 + n / 2;
+            assert_eq!(out[c][c] - out[2][2] > 0.5, kept, "{n} px square at simplicity {simplicity}");
+        }
+    }
+
+    #[test]
+    fn cutout_keeps_the_tone_of_surviving_islands_at_low_fidelity() {
+        for (size, simplicity) in [(6, 0.0), (6, 2.0), (8, 0.0), (12, 4.0)] {
+            let rows: Vec<Vec<f32>> =
+                (0..32).map(|y| (0..32).map(|x| if (12..12 + size).contains(&x) && (12..12 + size).contains(&y) { 0.9 } else { 0.2 }).collect()).collect();
+            let reference = cutout_on(&rows, &[("edgeSimplicity", simplicity), ("edgeFidelity", 2.0)]);
+            let centre = 12 + size / 2;
+            for fidelity in [1.0, 1.5, 2.0] {
+                let out = cutout_on(&rows, &[("edgeSimplicity", simplicity), ("edgeFidelity", fidelity)]);
+                assert!(
+                    (out[centre][centre] - reference[centre][centre]).abs() < 0.02,
+                    "{size}x{size}, simplicity {simplicity}, fidelity {fidelity}: {} vs {}",
+                    out[centre][centre],
+                    reference[centre][centre]
+                );
+                assert!(out[centre][centre] - out[2][2] > 0.5, "the island keeps its contrast");
+            }
+        }
+    }
+
+    #[test]
+    fn a_stack_around_a_cutout_is_tile_independent() {
+        // Effects before a Cutout are traced with it over the whole image; effects after it run
+        // per tile on the filled-in shapes.
+        use crate::GalleryFilter as G;
+        let b = Rect::new(0, 0, 56, 40);
+        let s = pattern(SampleType::F32);
+        let fp =
+            FilterParams::FilterGallery { effects: vec![GalleryEffect::new(G::Spatter), GalleryEffect::new(G::Cutout), GalleryEffect::new(G::GlowingEdges)] };
+        let a = apply_tiled(&s, &fp, b, b, None, 256, Some(b)).read_region(b);
+        let t = apply_tiled(&s, &fp, b, b, None, 16, Some(b)).read_region(b);
+        let worst = a.iter().zip(&t).map(|(x, y)| (x - y).abs()).fold(0.0, f32::max);
+        assert!(worst < 1e-3, "differs across tilings by {worst}");
+    }
+
+    /// Flat greys keep their tone through every pattern and Contrast, black and white stay
+    /// solid, and Contrast makes the screen crisper.
+    #[test]
+    fn halftone_keeps_tones_and_contrast_sets_how_hard() {
+        // It used to be all ink or paper at any Contrast, with white crosses in the shadows
+        // (dots could never fill their cell) and mid-greys that came out the wrong darkness.
+        use crate::GalleryFilter as G;
+        let b = Rect::new(0, 0, 60, 60);
+        let run = |grey: f32, pattern: &str, contrast: f32| {
+            let mut s = Surface::new(PixelFormat::new(ColorMode::Rgb, SampleType::F32, true));
+            s.fill_rect(b, &[grey, grey, grey, 1.0]);
+            let mut e = GalleryEffect::new(G::HalftonePattern);
+            assert!(e.set_choice("patternType", pattern));
+            e.set("size", 4.0);
+            e.set("contrast", contrast);
+            let out = apply_tiled(&s, &FilterParams::FilterGallery { effects: vec![e] }, b, b, None, 256, Some(b)).read_region(b);
+            // Ink (1 = foreground black) of every pixel away from the canvas edge.
+            out.chunks(4).enumerate().filter(|(i, _)| (6..54).contains(&(i % 60)) && (6..54).contains(&(i / 60))).map(|(_, p)| 1.0 - p[0]).collect::<Vec<f32>>()
+        };
+        for pattern in ["dot", "circle", "line"] {
+            for contrast in [0.0, 5.0, 50.0] {
+                for grey in [0.2, 0.5, 0.8] {
+                    let ink = run(grey, pattern, contrast);
+                    let mean = ink.iter().sum::<f32>() / ink.len() as f32;
+                    assert!((mean - (1.0 - grey)).abs() < 0.06, "{pattern} contrast {contrast}: grey {grey} inks {mean}");
+                }
+                let solid = run(0.0, pattern, contrast);
+                assert!(solid.iter().all(|&v| v > 0.99), "{pattern} contrast {contrast}: black isn't solid");
+                let paper = run(1.0, pattern, contrast);
+                assert!(paper.iter().all(|&v| v < 0.01), "{pattern} contrast {contrast}: white isn't paper");
+            }
+            let soft = run(0.5, pattern, 0.0).iter().filter(|&&v| v > 0.05 && v < 0.95).count();
+            let hard = run(0.5, pattern, 50.0).iter().filter(|&&v| v > 0.05 && v < 0.95).count();
+            assert!(hard * 4 < soft, "{pattern}: contrast 50 should be much crisper ({hard} vs {soft} grey pixels)");
         }
     }
 
@@ -1305,7 +1609,7 @@ mod tests {
     }
 
     /// Visual check: `GALLERY_RAW=src.raw GALLERY_W=480 GALLERY_H=322 cargo test -p photocraft-algo --release gallery_sheet -- --ignored`
-    /// writes `<key>.raw` (RGB8) beside the input for every filter.
+    /// writes `<key>.raw` (RGB8) beside the input for every filter (or one, see `GALLERY_ONLY`).
     #[test]
     #[ignore]
     fn gallery_sheet() {
@@ -1318,11 +1622,29 @@ mod tests {
         let b = Rect::new(0, 0, w, h);
         s.write_region(b, &data);
         let dir = std::path::Path::new(&path).parent().unwrap().to_path_buf();
-        for f in crate::GalleryFilter::ALL {
-            let fp = FilterParams::FilterGallery { effects: vec![GalleryEffect::new(*f)] };
+        // Optional: GALLERY_ONLY=<key> renders one filter; GALLERY_SET="key=value,key=name" sets its
+        // sliders (numbers) or choices (names); GALLERY_TAG is appended to the file name.
+        let only = std::env::var("GALLERY_ONLY").ok();
+        let set = std::env::var("GALLERY_SET").unwrap_or_default();
+        let tag = std::env::var("GALLERY_TAG").unwrap_or_default();
+        if let Some(k) = &only {
+            assert!(crate::GalleryFilter::ALL.iter().any(|f| f.key() == k), "GALLERY_ONLY={k} is not a gallery filter");
+        }
+        for f in crate::GalleryFilter::ALL.iter().filter(|f| only.as_deref().is_none_or(|k| k == f.key())) {
+            let mut e = GalleryEffect::new(*f);
+            for kv in set.split(',').filter(|kv| !kv.is_empty()) {
+                let (k, v) = kv.split_once('=').unwrap();
+                // `set` ignores unknown keys; a misspelt one would render the default unnoticed.
+                assert!(f.params().iter().any(|p| p.key == k), "{k} is not a parameter of {}", f.key());
+                match v.parse::<f32>() {
+                    Ok(n) => e.set(k, n),
+                    Err(_) => assert!(e.set_choice(k, v), "{k} has no choice {v}"),
+                }
+            }
+            let fp = FilterParams::FilterGallery { effects: vec![e] };
             let out = crate::apply_in(&s, &fp, b, b, None, b).read_region(b);
             let raw: Vec<u8> = out.chunks(4).flat_map(|p| [p[0], p[1], p[2]].map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)).collect();
-            std::fs::write(dir.join(format!("{}.raw", f.key())), raw).unwrap();
+            std::fs::write(dir.join(format!("{}{tag}.raw", f.key())), raw).unwrap();
         }
     }
 }

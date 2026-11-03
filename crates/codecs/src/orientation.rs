@@ -331,6 +331,12 @@ impl Image {
         }
         let data = orient_bytes(self.data(), bpp, o, (w, h), ow)?;
         let mut meta = self.meta.clone();
+        // Extra samples (a TIFF's alpha and spot planes, one sample a pixel) turn with the image.
+        // A plane of the wrong size is left as it is: importers drop it with a warning.
+        let plane_len = w.saturating_mul(h).saturating_mul(sample.bytes());
+        for e in meta.extra_samples.iter_mut().filter(|e| e.data.len() == plane_len) {
+            e.data = orient_bytes(&e.data, sample.bytes(), o, (w, h), ow)?;
+        }
         if let Some(e) = &mut meta.exif
             && let Cow::Owned(fixed) = upright_exif(e)
         {

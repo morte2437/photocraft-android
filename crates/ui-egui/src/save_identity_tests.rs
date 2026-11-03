@@ -9,8 +9,8 @@ fn app() -> PhotocraftApp {
     let mut app = PhotocraftApp::new(
         Session::new(),
         Services {
-            import: Some(Box::new(|name, bytes, max_svg_group_depth| {
-                photocraft_io::import_with_svg_group_depth(name, bytes, max_svg_group_depth).map(|r| (r.document, r.warnings)).map_err(|e| e.to_string())
+            import: Some(Box::new(|name, bytes, opts| {
+                photocraft_io::import_with_options(name, bytes, opts).map(|r| (r.document, r.warnings)).map_err(|e| e.to_string())
             })),
             export: Some(Box::new(|doc, path, _| {
                 photocraft_io::export(doc, path, &Default::default()).map(|r| (r.bytes, r.warnings)).map_err(|e| e.to_string())
@@ -31,40 +31,13 @@ fn identity(app: &PhotocraftApp) -> (String, Option<String>, u64, u64) {
 }
 
 #[test]
-fn synchronous_path_save_records_identity_only_after_success() {
+fn save_settings_share_only_the_open_documents_native_cache() {
     let mut app = app();
-    let before = identity(&app);
-    app.background_jobs = false;
-    app.services.export = Some(Box::new(|_, _, _| panic!("path save must not use the byte exporter")));
-    app.services.write = Some(Box::new(|_, _| panic!("path save owns its atomic writer")));
-    app.services.export_path = Some(Box::new(|_, _, _| Err("cancelled before publication".into())));
-    assert!(app.save_as(Some("saved.psb".into())).is_err());
-    assert_eq!(identity(&app), before);
-    app.services.export_path = Some(Box::new(|_, path, _| {
-        assert_eq!(path, "saved.psb");
-        Ok(Vec::new())
-    }));
-    app.save_as(Some("saved.psb".into())).unwrap();
-    let st = app.session.active().unwrap();
-    assert_eq!(st.path.as_deref(), Some("saved.psb"));
-    assert!(!st.is_dirty());
-}
-
-#[test]
-fn automation_path_save_is_synchronous_and_uses_only_its_authorized_service() {
-    let mut app = app();
-    app.background_jobs = true;
-    app.services.export = Some(Box::new(|_, _, _| panic!("must not materialize output bytes")));
-    app.services.export_path = Some(Box::new(|_, _, _| panic!("automation must not use ambient output authority")));
-    app.services.automation_write = Some(Box::new(|_, _| panic!("authorized stream owns publication")));
-    app.services.automation_export_path = Some(Box::new(|_, path, _| {
-        assert_eq!(path, "agent.psb");
-        Ok(Vec::new())
-    }));
-    let result = app.save_automation(Some("agent.psb".into())).unwrap();
-    assert_eq!(result["path"], "agent.psb");
-    assert!(!app.session.has_jobs());
-    assert!(!app.session.active().unwrap().is_dirty());
+    let first = app.save_settings().io_options().pcraft_cache.unwrap();
+    assert_eq!(first, app.session.active().unwrap().pcraft_cache);
+    assert_eq!(first, app.save_settings().io_options().pcraft_cache.unwrap());
+    app.run("file.new", json!({"width": 2, "height": 2})).unwrap();
+    assert_ne!(first, app.save_settings().io_options().pcraft_cache.unwrap());
 }
 
 #[test]
@@ -176,7 +149,8 @@ fn save_as_flat_keeps_the_layered_original() {
         app.run("edit.fill", json!({"color": "#000000"})).unwrap();
         let before = identity(&app);
         for flat in ["art.jpg", "art.png"] {
-            menus::invoke(&mut app, &ctx, "file.saveAs", json!({"path": flat})).unwrap();
+            // A JPEG Options answer, so the JPEG doesn't wait on the prompt.
+            menus::invoke(&mut app, &ctx, "file.saveAs", json!({"path": flat, "jpegFormat": "baseline"})).unwrap();
             assert_eq!(identity(&app), before, "{flat}, layered: {layered}");
         }
         menus::invoke(&mut app, &ctx, "file.save", json!({})).unwrap();
@@ -186,8 +160,15 @@ fn save_as_flat_keeps_the_layered_original() {
     }
     // An untitled layered document saved as a JPEG is still untitled and unsaved.
     let mut app = app();
+    let written = Rc::new(RefCell::new(Vec::new()));
+    let w = written.clone();
+    app.services.write = Some(Box::new(move |path, _| {
+        w.borrow_mut().push(path.to_string());
+        Ok(())
+    }));
     let before = identity(&app);
-    app.save_as(Some("flat.jpg".into())).unwrap();
+    menus::invoke(&mut app, &ctx, "file.saveAs", json!({"path": "flat.jpg", "jpegFormat": "baseline"})).unwrap();
+    assert_eq!(*written.borrow(), ["flat.jpg"]);
     assert_eq!(identity(&app), before);
 }
 
@@ -199,6 +180,8 @@ fn save_as_flat_retargets_a_flat_document() {
     app.save_as(Some("shot.png".into())).unwrap();
     assert_eq!(app.session.active().unwrap().path.as_deref(), Some("shot.png"));
     app.save_as(Some("shot.jpg".into())).unwrap();
+    // JPEG Options asks first; OK writes.
+    crate::jpeg_options_ui::confirm(&mut app, &egui::Context::default());
     let st = app.session.active().unwrap();
     assert_eq!((st.doc.name.as_str(), st.path.as_deref()), ("shot.jpg", Some("shot.jpg")));
     assert_eq!(st.saved_revision, st.revision);
@@ -265,6 +248,29 @@ fn maximize_compatibility_preference_reaches_the_exporter() {
     }
 }
 
+/// Preferences › File Handling › Save Full-Size Composite in .pcraft Files reaches the exporter
+/// of Save As, Save and automation saves, and is off by default.
+#[test]
+fn full_composite_preference_reaches_the_exporter() {
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let mut app = app();
+    assert!(!app.save_settings().pcraft_full_composite, "off by default");
+    let log = seen.clone();
+    app.services.export = Some(Box::new(move |_, _, settings: &ExportSettings| {
+        log.borrow_mut().push(settings.io_options().pcraft_full_composite);
+        Ok((b"out".to_vec(), Vec::new()))
+    }));
+    let ctx = egui::Context::default();
+    for value in [true, false] {
+        app.run("prefs.set", json!({"path": "fileHandling.pcraftFullComposite", "value": value})).unwrap();
+        seen.borrow_mut().clear();
+        menus::invoke(&mut app, &ctx, "file.saveAs", json!({"path": format!("{value}.pcraft")})).unwrap();
+        menus::invoke(&mut app, &ctx, "file.save", json!({})).unwrap();
+        app.save_automation(Some(format!("{value} agent.pcraft"))).unwrap();
+        assert_eq!(*seen.borrow(), [value; 3], "{value}");
+    }
+}
+
 /// #2399: Save and Save As start at the opened file's own encoding: a JPEG's estimated quality,
 /// a WebP lossy (at its quality) or lossless; a new document keeps the codec defaults.
 #[test]
@@ -290,4 +296,22 @@ fn save_settings_start_at_the_opened_files_encoding() {
     let lossless = photocraft_codecs::encode(&img, Format::WebP, &EncodeOptions::default()).unwrap();
     app.open_bytes("art.webp", &lossless).unwrap();
     assert!(app.save_settings().webp_lossless);
+}
+
+/// A browser download is only requested: the document takes the name but keeps its unsaved
+/// changes, so the leave-page guard stays armed (#4962). A confirmed write still saves it.
+#[test]
+fn unconfirmed_download_names_the_document_but_keeps_it_unsaved() {
+    assert_eq!(crate::saved_revision_after_write(true, 7, 3), 7);
+    assert_eq!(crate::saved_revision_after_write(false, 7, 3), 3);
+    let mut app = app();
+    app.services.write_unconfirmed = true;
+    let (_, _, revision, saved) = identity(&app);
+    app.save_as(Some("download.psd".into())).unwrap();
+    assert_eq!(identity(&app), ("download.psd".into(), Some("download.psd".into()), revision, saved));
+    assert!(app.session.active().unwrap().is_dirty());
+    assert!(app.has_unsaved_work());
+    app.services.write_unconfirmed = false;
+    app.save_as(Some("download.psd".into())).unwrap();
+    assert!(!app.has_unsaved_work());
 }

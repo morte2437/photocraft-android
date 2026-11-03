@@ -5,6 +5,7 @@
 
 use photocraft_geom::Rect;
 
+pub(crate) mod cells;
 mod facet;
 #[cfg(test)]
 mod reference;
@@ -120,7 +121,7 @@ pub(crate) fn color_halftone(src: &Image, out: Rect, ctx: &Ctx, max_radius: f32,
 /// being distressed) keeps hard edges and its weight instead of greying where cells straddle
 /// an edge. A cell whose point falls outside the image takes the (premultiplied) average
 /// colour of its pixels.
-pub(crate) fn crystallize(src: &Image, out: Rect, ctx: &Ctx, cell_size: f32, seed: u32) -> Vec<f32> {
+fn crystallize_direct(src: &Image, out: Rect, ctx: &Ctx, cell_size: f32, seed: u32) -> Vec<f32> {
     let n = src.ch;
     let cell = cell_size.max(2.0);
     let b = ctx.bounds;
@@ -320,7 +321,7 @@ pub(crate) fn mezzotint(src: &Image, out: Rect, ctx: &Ctx, kind: MezzotintType, 
 
 /// Pointillize: randomly sized dots, coloured from the image at their centre,
 /// on a canvas of the background colour.
-pub(crate) fn pointillize(src: &Image, out: Rect, ctx: &Ctx, cell_size: f32, seed: u32, background: [f32; 4]) -> Vec<f32> {
+fn pointillize_direct(src: &Image, out: Rect, ctx: &Ctx, cell_size: f32, seed: u32, background: [f32; 4]) -> Vec<f32> {
     let n = src.ch;
     let cell = cell_size.max(2.0);
     let b = ctx.bounds;
@@ -373,4 +374,12 @@ pub(crate) fn pointillize(src: &Image, out: Rect, ctx: &Ctx, cell_size: f32, see
         px.copy_from_slice(&canvas[..n]);
     }
     res
+}
+
+pub(crate) fn crystallize(src: &Image, out: Rect, ctx: &Ctx, cell_size: f32, seed: u32) -> Vec<f32> {
+    cells::crystallize(src, out, ctx, cell_size, seed).unwrap_or_else(|| crystallize_direct(src, out, ctx, cell_size, seed))
+}
+
+pub(crate) fn pointillize(src: &Image, out: Rect, ctx: &Ctx, cell_size: f32, seed: u32, background: [f32; 4]) -> Vec<f32> {
+    cells::pointillize(src, out, ctx, cell_size, seed, background).unwrap_or_else(|| pointillize_direct(src, out, ctx, cell_size, seed, background))
 }

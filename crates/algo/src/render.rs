@@ -1,4 +1,4 @@
-//! Render: Fibers, Lens Flare, Lighting Effects.
+//! Render: Clouds, Difference Clouds, Fibers, Lens Flare, Lighting Effects.
 
 use photocraft_geom::Rect;
 
@@ -18,6 +18,57 @@ fn value_noise(x: f32, y: f32, seed: u32) -> f32 {
     top + (bot - top) * sy
 }
 
+fn cloud_hash(x: i32, y: i32, seed: u32) -> f32 {
+    let mut h = (x as u32).wrapping_mul(0x8da6_b343) ^ (y as u32).wrapping_mul(0xd816_3841) ^ seed.wrapping_mul(0xcb1a_b31f);
+    h ^= h >> 13;
+    h = h.wrapping_mul(0x5bd1_e995);
+    h ^= h >> 15;
+    (h & 0x00ff_ffff) as f32 / 0x00ff_ffff as f32
+}
+
+/// Smooth value noise, summed over octaves (fBm), in 0..1.
+fn clouds_value(x: f32, y: f32, base: f32, seed: u32) -> f32 {
+    let (mut sum, mut amp, mut freq, mut norm) = (0.0, 1.0, 1.0 / base, 0.0);
+    for o in 0..8u32 {
+        let (fx, fy) = (x * freq, y * freq);
+        let (ix, iy) = (fx.floor() as i32, fy.floor() as i32);
+        let (tx, ty) = (fx - ix as f32, fy - iy as f32);
+        let (sx, sy) = (tx * tx * (3.0 - 2.0 * tx), ty * ty * (3.0 - 2.0 * ty));
+        let s = seed.wrapping_add(o * 7919);
+        let top = cloud_hash(ix, iy, s) + (cloud_hash(ix + 1, iy, s) - cloud_hash(ix, iy, s)) * sx;
+        let bot = cloud_hash(ix, iy + 1, s) + (cloud_hash(ix + 1, iy + 1, s) - cloud_hash(ix, iy + 1, s)) * sx;
+        sum += (top + (bot - top) * sy) * amp;
+        norm += amp;
+        amp *= 0.5;
+        freq *= 2.0;
+    }
+    // Stretch the bell-shaped sum so the clouds use the full foreground→background range.
+    ((sum / norm - 0.5) * 2.2 + 0.5).clamp(0.0, 1.0)
+}
+
+/// Clouds between the foreground and background colours; Difference Clouds subtracts them from
+/// the pixels (alpha kept). The cloud size is a quarter of the bounds' longer side, and the
+/// pattern is anchored at the bounds' corner (so it moves with a smart object).
+pub(crate) fn clouds(src: &Image, out: Rect, ctx: &Ctx, seed: u32, difference: bool, colours: ([f32; 4], [f32; 4])) -> Vec<f32> {
+    let n = src.ch;
+    let (fg, bg) = colours;
+    let base = (ctx.bounds.width().max(ctx.bounds.height()) as f32 / 4.0).clamp(16.0, 512.0);
+    let mut res = src.crop(out);
+    for (i, px) in res.chunks_exact_mut(n).enumerate() {
+        let (x, y) = xy(out, i);
+        let (x, y) = (x - ctx.bounds.x0, y - ctx.bounds.y0);
+        let t = clouds_value(x as f32, y as f32, base, seed);
+        let c: [f32; 3] = std::array::from_fn(|k| fg[k] + (bg[k] - fg[k]) * t);
+        if difference {
+            let p = rgba(ctx, px);
+            set_rgba(ctx, px, [(p[0] - c[0]).abs(), (p[1] - c[1]).abs(), (p[2] - c[2]).abs(), p[3]]);
+        } else {
+            set_rgba(ctx, px, [c[0], c[1], c[2], 1.0]);
+        }
+    }
+    res
+}
+
 /// Fibers: vertical fibrous streaks between the foreground and background
 /// colours. Variance sets how quickly the colour varies across fibres (and
 /// how short they are); strength stretches each fibre vertically.
@@ -32,8 +83,9 @@ pub(crate) fn fibers(src: &Image, out: Rect, ctx: &Ctx, variance: f32, strength:
     let fy = fx / (2.0 + st * 1.5) * (0.5 + var / 32.0);
     let mut res = src.crop(out);
     for (i, px) in res.chunks_exact_mut(n).enumerate() {
+        // Anchored at the bounds' corner, so the fibres move with a smart object.
         let (x, y) = xy(out, i);
-        let (xf, yf) = (x as f32, y as f32);
+        let (xf, yf) = ((x - ctx.bounds.x0) as f32, (y - ctx.bounds.y0) as f32);
         let mut sum = 0.0;
         let mut amp = 1.0;
         let mut norm = 0.0;
@@ -146,8 +198,9 @@ pub(crate) fn lens_flare(src: &Image, out: Rect, ctx: &Ctx, brightness: f32, cen
         let mut c = rgba(ctx, px);
         for k in 0..3 {
             let a = (f[k] * bright).max(0.0);
-            // Screen keeps highlights below white for display-referred values.
-            c[k] = 1.0 - (1.0 - c[k]) * (1.0 - a.min(1.0));
+            // Screen (c + a·(1 − c)) keeps display-referred values below white; a 32-bit
+            // value already above white is left as is rather than pulled down towards it.
+            c[k] += a.min(1.0) * (1.0 - c[k]).max(0.0);
         }
         set_rgba(ctx, px, c);
     }
