@@ -62,13 +62,15 @@ fn field(ui: &mut egui::Ui, id: &str, label: (&str, &str), name: &str, current: 
     let key = ui.make_persistent_id(("layer-props-field", id));
     let mut v = ui.data(|d| d.get_temp::<f32>(key)).unwrap_or_else(|| u.shown(f64::from(current), extent));
     // A field showing percent keeps its own 100%, so a length typed into it converts as shown.
-    // Otherwise the size the edit began with: egui reads the text once more the frame after it
-    // commits, which against the new size would apply `50%` twice.
+    // Otherwise the current size, while the field is edited: clicking from W into a linked H
+    // commits W as H gains focus, and H's `50%` must take half the height W left. Only the size
+    // a commit was read against is kept, for the next frame: egui reads the text once more the
+    // frame after it commits, which against the new size would apply `50%` twice.
     let pct_key = key.with("pct");
     let typed_extent = if u.unit == photocraft_engine::prefs::Unit::Percent { extent } else { ui.data(|d| d.get_temp(pct_key)).unwrap_or(typed_pct) };
     let units = widgets::FieldUnits { unit: u.unit, dpi: u.dpi, ppi: u.ppi };
     let resp = widgets::value_field_len(ui, &mut v, -300_000.0..=300_000.0, u.unit.suffix(), width, units, typed_extent).accessible_name(tl!(name));
-    if resp.has_focus() || resp.lost_focus() {
+    if resp.lost_focus() {
         ui.data_mut(|d| d.insert_temp(pct_key, typed_extent));
     } else {
         ui.data_mut(|d| d.remove::<f64>(pct_key));
@@ -364,8 +366,14 @@ mod tests {
     /// Types each `(name, text)` of `edits` in turn into the Transform field named `name` of an
     /// 80 × 40 px rectangle shape at (10, 10) in a 200 × 120 document, with the rulers in `unit`,
     /// and returns its path's [x, y, w, h] (a shape's path scales exactly, where resampled pixels
-    /// would blur its edge).
+    /// would blur its edge). Each edit is committed with Enter.
     fn type_into_transform_fields(unit: photocraft_engine::prefs::Unit, edits: &[(&str, &str)]) -> [f64; 4] {
+        type_into_transform_fields_by(unit, edits, true)
+    }
+
+    /// [`type_into_transform_fields`], committing each edit with Enter when `enter`, or else by
+    /// clicking into the next field (the last edit still with Enter).
+    fn type_into_transform_fields_by(unit: photocraft_engine::prefs::Unit, edits: &[(&str, &str)], enter: bool) -> [f64; 4] {
         use egui_kittest::kittest::Queryable;
         let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
         app.session.prefs.edit(|p| p.units_and_rulers.rulers = unit);
@@ -384,15 +392,17 @@ mod tests {
             app,
         );
         h.run_steps(3);
-        for (name, text) in edits {
+        for (i, (name, text)) in edits.iter().enumerate() {
             h.get_by_label(name).click();
             h.run();
             for c in text.chars() {
                 h.event(egui::Event::Text(c.to_string()));
                 h.run();
             }
-            h.key_press(egui::Key::Enter);
-            h.run_steps(3);
+            if enter || i + 1 == edits.len() {
+                h.key_press(egui::Key::Enter);
+                h.run_steps(3);
+            }
         }
         let st = h.state().session.active().unwrap();
         let LayerContent::Shape(sh) = &st.doc.layer(st.active_layer.unwrap()).unwrap().content else { panic!("still a shape") };
@@ -412,6 +422,12 @@ mod tests {
         assert_eq!(type_into_transform_fields(Unit::Pixels, &[("Y", "50%")]), [10.0, 60.0, 80.0, 40.0]);
         // A second edit takes its percentage of the size the first one left.
         assert_eq!(type_into_transform_fields(Unit::Pixels, &[("Width", "50%"), ("Width", "50%")]), [10.0, 10.0, 20.0, 10.0]);
+        // Clicking into the linked H commits W as H takes the focus: H's `50%` is half the height
+        // W left (#10802 review), and the same from H into W.
+        assert_eq!(type_into_transform_fields_by(Unit::Pixels, &[("Width", "50%"), ("Height", "50%")], false), [10.0, 10.0, 20.0, 10.0]);
+        assert_eq!(type_into_transform_fields_by(Unit::Pixels, &[("Height", "50%"), ("Width", "50%")], false), [10.0, 10.0, 20.0, 10.0]);
+        // And with Enter between them.
+        assert_eq!(type_into_transform_fields(Unit::Pixels, &[("Width", "50%"), ("Height", "50%")]), [10.0, 10.0, 20.0, 10.0]);
         // In inches too (72 dpi: 80 px is 1.11 in).
         assert_eq!(type_into_transform_fields(Unit::Inches, &[("Width", "50%")]), [10.0, 10.0, 40.0, 20.0]);
         // A plain number and another length are unchanged.
