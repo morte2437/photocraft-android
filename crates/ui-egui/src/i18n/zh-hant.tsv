@@ -2970,6 +2970,7 @@ curves	Smooth	平滑
 	Chisel Soft	雕刻柔和
 	Open color-less EXR as ACEScg	將無色彩空間資訊的 EXR 以 ACEScg 開啟
 	Do not append "copy" to filename when saving a copy	儲存副本時不在檔名後加上「copy」
+	Save Full-Size Composite in .pcraft Files	在 .pcraft 檔案中儲存全尺寸合成影像
 	Color Profile	色彩描述檔
 	EXIF	EXIF
 	Edit Selected Guides	編輯所選參考線

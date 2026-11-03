@@ -4052,6 +4052,7 @@ curves	Smooth	Εξομάλυνση
 	Chisel Soft	Μαλακή σμίλευση
 	Open color-less EXR as ACEScg	Άνοιγμα EXR χωρίς χρωματική δήλωση ως ACEScg
 	Do not append "copy" to filename when saving a copy	Να μην προστίθεται «copy» στο όνομα αρχείου κατά την αποθήκευση αντιγράφου
+	Save Full-Size Composite in .pcraft Files	Αποθήκευση σύνθετης εικόνας πλήρους μεγέθους στα αρχεία .pcraft
 	EXIF	EXIF
 	Edit Selected Guides	Επεξεργασία επιλεγμένων οδηγών
 	Clear Selected Guides	Απαλοιφή επιλεγμένων οδηγών

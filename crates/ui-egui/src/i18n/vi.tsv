@@ -3820,6 +3820,7 @@ curves	Smooth	Làm mượt
 	Chisel Soft	Đục mềm
 	Open color-less EXR as ACEScg	Mở EXR không khai báo màu sắc dưới dạng ACEScg
 	Do not append "copy" to filename when saving a copy	Không thêm "copy" vào tên tệp khi lưu bản sao
+	Save Full-Size Composite in .pcraft Files	Lưu ảnh tổng hợp kích thước đầy đủ trong tệp .pcraft
 	Edit Selected Guides	Sửa đường căn đã chọn
 	Clear Selected Guides	Xóa đường căn đã chọn
 	Bicubic Automatic	Bicubic tự động

@@ -4051,6 +4051,7 @@ cameraData	Lens	Lens
 	Chisel Soft	Yumuşak Keski
 	Open color-less EXR as ACEScg	Renk bilgisi olmayan EXR'yi ACEScg olarak aç
 	Do not append "copy" to filename when saving a copy	Kopya kaydederken dosya adına "copy" ekleme
+	Save Full-Size Composite in .pcraft Files	.pcraft dosyalarına tam boyutlu bileşik görüntüyü kaydet
 	Edit Selected Guides	Seçili Kılavuzları Düzenle
 	Clear Selected Guides	Seçili Kılavuzları Temizle
 	Bicubic Automatic	Bikübik Otomatik

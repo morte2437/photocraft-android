@@ -3364,6 +3364,7 @@ curves	Smooth	Haluskan
 	Chisel Soft	Pahat Lembut
 	Open color-less EXR as ACEScg	Buka EXR tanpa informasi warna sebagai ACEScg
 	Do not append "copy" to filename when saving a copy	Jangan tambahkan "copy" ke nama file saat menyimpan salinan
+	Save Full-Size Composite in .pcraft Files	Simpan gambar komposit ukuran penuh di file .pcraft
 	Edit Selected Guides	Edit Panduan Terpilih
 	Clear Selected Guides	Hapus Panduan Terpilih
 	Bicubic Automatic	Bicubic otomatis

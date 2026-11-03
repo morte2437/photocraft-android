@@ -4265,6 +4265,7 @@ navigator	Zoom	Zoom
 	Chisel Soft	Cincelar suave
 	Open color-less EXR as ACEScg	Abrir EXR sin espacio de color como ACEScg
 	Do not append "copy" to filename when saving a copy	No añadir «copy» al nombre de archivo al guardar una copia
+	Save Full-Size Composite in .pcraft Files	Guardar la imagen compuesta a tamaño completo en los archivos .pcraft
 	Edit Selected Guides	Editar guías seleccionadas
 	Clear Selected Guides	Borrar guías seleccionadas
 	Bicubic Automatic	Bicúbica automática

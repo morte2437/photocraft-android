@@ -4396,6 +4396,7 @@ shape	Appearance	Izgled
 	Chisel Soft	Meko klesanje
 	Open color-less EXR as ACEScg	Otvori EXR bez podatka o bojama kao ACEScg
 	Do not append "copy" to filename when saving a copy	Ne dodaji „copy“ u ime fajla pri čuvanju kopije
+	Save Full-Size Composite in .pcraft Files	Čuvaj složenu sliku u punoj veličini u .pcraft fajlovima
 	Show home recent files	Prikaži nedavne datoteke na početnom ekranu
 	Edit Selected Guides	Uredi izabrane vodilje
 	Clear Selected Guides	Ukloni izabrane vodilje

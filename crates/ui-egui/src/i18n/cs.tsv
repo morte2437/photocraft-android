@@ -3969,6 +3969,7 @@ navigator	Zoom	Zvětšení
 	Chisel Soft	Měkké tesání
 	Open color-less EXR as ACEScg	Otevřít EXR bez údaje o barevném prostoru jako ACEScg
 	Do not append "copy" to filename when saving a copy	Nepřidávat „copy“ k názvu souboru při ukládání kopie
+	Save Full-Size Composite in .pcraft Files	Ukládat složený obraz v plné velikosti do souborů .pcraft
 	Edit Selected Guides	Upravit vybraná vodítka
 	Clear Selected Guides	Vymazat vybraná vodítka
 	Bicubic Automatic	Bikubická automatická

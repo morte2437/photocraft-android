@@ -54,7 +54,18 @@ pub fn open(path: &Path) -> Result<Opened, AutomationError> {
 
 /// Previews for a `.pcraft` bundle.
 pub fn previews(doc: &Document) -> SaveOptions {
-    SaveOptions { thumbnail: Some(photocraft_compose::thumbnail(doc, 256)), composite: Some(photocraft_compose::thumbnail(doc, 1024)) }
+    SaveOptions { thumbnail: Some(photocraft_compose::thumbnail(doc, 256)), composite: Some(photocraft_compose::thumbnail(doc, 1024)), ..Default::default() }
+}
+
+/// [`previews`], plus the full-size composite when `opts` asks for it and it can be rendered
+/// ([`ExportOptions::pcraft_full_composite`]).
+fn native_options(doc: &Document, opts: &ExportOptions) -> SaveOptions {
+    let mut out = previews(doc);
+    if opts.pcraft_full_composite {
+        out.full_composite = photocraft_io::pcraft_full_composite(doc);
+        out.full_composite_icc = out.full_composite.as_ref().map(|_| photocraft_io::pcraft_full_composite_icc(doc));
+    }
+    out
 }
 
 /// Encode the name the saved native bundle will report on reopening. Save As updates
@@ -86,7 +97,7 @@ pub fn save(
         let named = named_for_output(doc, &path.to_string_lossy());
         let mut local = PcraftWriter::new();
         let w = writer.unwrap_or(&mut local);
-        w.save_path(&named, path, &previews(&named))?;
+        w.save_path(&named, path, &native_options(&named, opts))?;
         return Ok(Vec::new());
     }
     let r = photocraft_io::export(doc, &ext, opts)?;
@@ -104,7 +115,7 @@ pub fn save_bytes(doc: &Document, name: &str, format_override: Option<&str>, opt
         .ok_or_else(|| AutomationError::BadRequest(format!("cannot tell the format of `{name}`; pass a format")))?;
     if ext == photocraft_format::EXTENSION {
         let named = named_for_output(doc, name);
-        return Ok((photocraft_format::save_to_bytes(&named, &previews(&named))?, Vec::new()));
+        return Ok((photocraft_format::save_to_bytes(&named, &native_options(&named, opts))?, Vec::new()));
     }
     let result = photocraft_io::export(doc, &ext, opts)?;
     Ok((result.bytes, result.warnings))

@@ -4111,6 +4111,7 @@ curves	Smooth	Vloeiend maken
 	Chisel Soft	Beitel zacht
 	Open color-less EXR as ACEScg	EXR zonder kleurruimte als ACEScg openen
 	Do not append "copy" to filename when saving a copy	Geen "copy" aan de bestandsnaam toevoegen bij het opslaan van een kopie
+	Save Full-Size Composite in .pcraft Files	Samengestelde afbeelding op volle grootte opslaan in .pcraft-bestanden
 	Edit Selected Guides	Geselecteerde hulplijnen bewerken
 	Clear Selected Guides	Geselecteerde hulplijnen wissen
 	Bicubic Automatic	Bicubisch automatisch
