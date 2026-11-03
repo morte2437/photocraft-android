@@ -97,8 +97,47 @@ fn shear_clamps_points_and_preserves_fractional_wire_values() {
     let mut p = loaded.actions[0].steps[0].1.clone();
     assert!(p.get("_atnShearPoints").is_some(), "the measured inverse loses a wire bit");
     assert_eq!(export_item("filter.distort.shear", &p, "S").unwrap().descriptor, Some(d));
+    let mut edited = p.clone();
+    let position = p["points"][1][0].as_f64().unwrap();
+    edited["points"][1][0] = json!(position + 1e-12);
+    assert_ne!(edited["points"][1][0], p["points"][1][0]);
+    assert_eq!(edited["points"][1][0].as_f64().unwrap() as f32, position as f32);
+    assert!(export_item("filter.distort.shear", &edited, "S").is_none(), "stored wire metadata rejects even an edit below native precision");
     p["points"][1][1] = json!(0.25);
     assert!(export_item("filter.distort.shear", &p, "S").is_none(), "stale wire metadata must not replace a native edit");
+}
+
+/// The adapter's engineering budget admits its boundary and preserves larger recordings intact.
+#[test]
+fn shear_point_budget_preserves_recordings_and_refuses_oversized_native_exports() {
+    const LIMIT: usize = 4096;
+    for count in [LIMIT, LIMIT + 1] {
+        let grid: Vec<_> = (0..count).map(|i| [0.0, 1.0 + 127.0 * i as f64 / (count - 1) as f64]).collect();
+        let label = if count == LIMIT { "Shear" } else { "Budget curve" };
+        let mut source = item("Shr ", label, Some(shear_descriptor(&grid, "WrpA")));
+        source.enabled = false;
+        let loaded = import(&atn::write(&one_action(vec![source.clone()])).unwrap()).unwrap();
+        let action = &loaded.actions[0];
+        if count == LIMIT {
+            assert!(loaded.unsupported.is_empty());
+            assert_eq!(action.steps[0].0, "filter.distort.shear");
+            assert_eq!(action.steps[0].1["points"].as_array().unwrap().len(), LIMIT);
+        } else {
+            assert_eq!(loaded.unsupported.len(), 1);
+            assert_eq!(action.steps[0].0, "actions.photoshopStep");
+        }
+        let saved = export("S", &[action], &[], false).unwrap().0;
+        assert!(atn::parse(&saved).unwrap().actions[0].items[0] == source, "{count}-point item changed on save");
+
+        let native = json!({"points":grid.iter().map(|p| [(p[1] - 1.0) / 127.0, p[0] / 64.0]).collect::<Vec<_>>()});
+        let before = native.clone();
+        assert_eq!(export_item("filter.distort.shear", &native, "S").is_some(), count == LIMIT);
+        assert_eq!(native, before, "export never edits the caller's curve");
+        if count > LIMIT {
+            let metadata = json!({"points":[[0,0],[1,0]],"_atnShearPoints":grid});
+            assert!(export_item("filter.distort.shear", &metadata, "S").is_none());
+        }
+    }
 }
 
 /// Unmeasured subranges, malformed points and repeated settings remain whole, including their flags.
@@ -150,7 +189,12 @@ fn shear_unrepresentable_steps_stay_kept_without_partial_playback() {
 /// Native exports follow points-before-amount and refuse settings that the measured curve cannot carry.
 #[test]
 fn shear_native_exports_keep_effective_defaults_and_refuse_lossy_options() {
-    for p in [json!({}), json!({"amount":25}), json!({"points":[[0,0],[1,0.5]],"amount":-80,"undefinedAreas":"repeat"})] {
+    for p in [
+        json!({}),
+        json!({"amount":25}),
+        json!({"points":[[0,0],[1,0.5]],"amount":-80,"undefinedAreas":"repeat"}),
+        json!({"points":[[0,0],[0.009,0.125],[1,0]]}),
+    ] {
         let item = export_item("filter.distort.shear", &p, "S").unwrap();
         let loaded = mapped_recording("Shr ", item.descriptor.unwrap());
         assert!(loaded.unsupported.is_empty());
