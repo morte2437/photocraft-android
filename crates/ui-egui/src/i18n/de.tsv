@@ -3368,6 +3368,7 @@ curves	Smooth	Glätten
 	Chisel Soft	Meißeln weich
 	Open color-less EXR as ACEScg	Farbangabenloses EXR als ACEScg öffnen
 	Do not append "copy" to filename when saving a copy	Beim Speichern einer Kopie „copy“ nicht an den Dateinamen anhängen
+	Save Full-Size Composite in .pcraft Files	Kompositbild in voller Größe in .pcraft-Dateien speichern
 	Color Profile	Farbprofil
 	EXIF	EXIF
 	Edit Selected Guides	Ausgewählte Hilfslinien bearbeiten

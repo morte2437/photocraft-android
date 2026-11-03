@@ -4244,6 +4244,7 @@ cameraRaw	Yellow	Sárga
 	Chisel Soft	Lágy vésés
 	Open color-less EXR as ACEScg	Színinformáció nélküli EXR megnyitása ACEScg-ként
 	Do not append "copy" to filename when saving a copy	Ne fűzze a „copy” szót a fájlnévhez másolat mentésekor
+	Save Full-Size Composite in .pcraft Files	Teljes méretű kompozit kép mentése a .pcraft fájlokba
 	Edit Selected Guides	Kijelölt segédvonalak szerkesztése
 	Clear Selected Guides	Kijelölt segédvonalak törlése
 	Bicubic Automatic	Automatikus bikubikus

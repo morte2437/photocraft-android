@@ -3359,6 +3359,7 @@ curves	Smooth	Lisser
 	Chisel Soft	Ciselage doux
 	Open color-less EXR as ACEScg	Ouvrir les EXR sans espace colorimétrique en ACEScg
 	Do not append "copy" to filename when saving a copy	Ne pas ajouter « copy » au nom de fichier lors de l’enregistrement d’une copie
+	Save Full-Size Composite in .pcraft Files	Enregistrer l’image composite en taille réelle dans les fichiers .pcraft
 	Edit Selected Guides	Modifier les repères sélectionnés
 	Clear Selected Guides	Effacer les repères sélectionnés
 	Bicubic Automatic	Bicubique automatique

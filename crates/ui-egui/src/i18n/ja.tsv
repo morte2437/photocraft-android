@@ -4027,6 +4027,7 @@ curves	Smooth	スムーズ
 	Chisel Soft	チゼルソフト
 	Open color-less EXR as ACEScg	色空間のないEXRをACEScgとして開く
 	Do not append "copy" to filename when saving a copy	コピーを保存するときにファイル名に「copy」を付けない
+	Save Full-Size Composite in .pcraft Files	.pcraftファイルにフルサイズの合成画像を保存
 	Edit Selected Guides	選択したガイドを編集
 	Clear Selected Guides	選択したガイドを消去
 	Bicubic Automatic	バイキュービック法 (自動)

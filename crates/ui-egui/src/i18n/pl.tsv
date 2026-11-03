@@ -3968,6 +3968,7 @@ curves	Smooth	Wygładź
 	Chisel Soft	Dłuto miękkie
 	Open color-less EXR as ACEScg	Otwieraj EXR bez profilu koloru jako ACEScg
 	Do not append "copy" to filename when saving a copy	Nie dodawaj „copy” do nazwy pliku przy zapisywaniu kopii
+	Save Full-Size Composite in .pcraft Files	Zapisuj obraz złożony w pełnym rozmiarze w plikach .pcraft
 	Edit Selected Guides	Edytuj zaznaczone prowadnice
 	Clear Selected Guides	Usuń zaznaczone prowadnice
 	Bicubic Automatic	Dwusześcienna automatyczna

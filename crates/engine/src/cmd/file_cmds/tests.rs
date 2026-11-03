@@ -456,6 +456,37 @@ fn maximize_compatibility_preference_controls_the_psd_merged_image() {
     }
 }
 
+/// Preferences › File Handling › Save Full-Size Composite in .pcraft Files decides whether a
+/// `.pcraft` save writes `composite/full.png` (off by default); a command's
+/// `"pcraftFullComposite"` overrides it.
+#[test]
+fn full_composite_preference_controls_the_pcraft_full_size_composite() {
+    let dir = tmp("full-composite");
+    let mut s = session(300, 200, 16);
+    let full = |path: &str| photocraft_format::read_full_composite(&std::fs::read(path).unwrap()).unwrap().is_some();
+    let out = join(&dir, "default.pcraft");
+    s.execute("file.saveACopy", json!({"path": out})).unwrap();
+    assert!(!full(&out), "off by default");
+    for on in [true, false] {
+        s.edit_prefs(|p| p.file_handling.pcraft_full_composite = on);
+        let out = join(&dir, &format!("{on}.pcraft"));
+        s.execute("file.saveACopy", json!({"path": out})).unwrap();
+        assert_eq!(full(&out), on, "preference {on}");
+        let out = join(&dir, &format!("{on} param.pcraft"));
+        s.execute("file.saveACopy", json!({"path": out, "pcraftFullComposite": !on})).unwrap();
+        assert_eq!(full(&out), !on, "preference {on}, param {}", !on);
+    }
+    let out = join(&dir, "null param.pcraft");
+    s.execute("file.saveACopy", json!({"path": out, "pcraftFullComposite": null})).unwrap();
+    assert!(!full(&out), "null takes the preference");
+    for bad in [json!("true"), json!(1)] {
+        let out = join(&dir, "bad param.pcraft");
+        let err = s.execute("file.saveACopy", json!({"path": out, "pcraftFullComposite": bad})).unwrap_err().to_string();
+        assert!(err.contains("`pcraftFullComposite` must be true or false"), "{bad}: {err}");
+        assert!(!std::path::Path::new(&out).exists(), "{bad}: nothing is written");
+    }
+}
+
 #[test]
 fn open_as_forces_the_decoder() {
     let dir = tmp("openas");

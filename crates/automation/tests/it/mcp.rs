@@ -360,6 +360,8 @@ async fn bridge_doc_save_rejects_headless_only_options_instead_of_saving_with_de
         json!({"path": "out.jpg", "quality": 50}),
         json!({"path": "out.png", "format": "png"}),
         json!({"path": "out.tif", "tiffLayers": true}),
+        json!({"path": "out.pcraft", "pcraftFullComposite": true}),
+        json!({"path": "out.pcraft", "pcraftFullComposite": false}),
         json!({"path": "out.pcraft", "index": 0}),
     ] {
         let r = call(&client, "doc_save", params.clone()).await;

@@ -251,6 +251,11 @@ pub struct ExportOptions {
     /// PSD/PSB and layered TIFF: read and embed the files linked smart objects name (see
     /// [`PsdExportOptions::read_linked_files`]). On by default; automation turns it off.
     pub read_linked_files: bool,
+    /// `.pcraft`: request the flattened document at its canvas size as `composite/full.png`
+    /// (Preferences › File Handling › Save Full-Size Composite in .pcraft Files). The save may
+    /// omit it; check the manifest's `full_composite` member ([`photocraft_format::read_full_composite`]
+    /// reads it). Off by default.
+    pub pcraft_full_composite: bool,
 }
 
 impl Default for ExportOptions {
@@ -266,6 +271,7 @@ impl Default for ExportOptions {
             document_path: None,
             pcraft_cache: None,
             read_linked_files: true,
+            pcraft_full_composite: false,
         }
     }
 }
@@ -612,9 +618,13 @@ pub(crate) fn with_span<R>(ctl: &photocraft_raster::Interrupt, lo: f32, hi: f32,
 }
 
 /// Where a .pcraft save's progress stands once its thumbnail, then its 1024 px composite preview,
-/// are rendered (the bundle itself is written after them).
+/// then its full-size composite when [`ExportOptions::pcraft_full_composite`] asks for one, are
+/// rendered (the bundle itself is written after them).
 const PCRAFT_THUMBNAIL_DONE: f32 = 0.15;
 const PCRAFT_PREVIEWS_DONE: f32 = 0.4;
+const PCRAFT_FULL_COMPOSITE_DONE: f32 = 0.6;
+/// Bounds the optional full-size RGBA8 composite to 256 MiB before PNG and ZIP encoding.
+const PCRAFT_FULL_COMPOSITE_PIXELS: u64 = 1 << 26;
 /// The share of a PSD/PSB export spent converting the document (layers, then the composite)
 /// before its bytes are assembled: about 2.7 s of 3.0 s for a 24 MP, 5-layer RGB/8 document.
 const PSD_MODEL_DONE: f32 = 0.9;
@@ -649,7 +659,14 @@ fn export_stages(doc: &Document, name_or_ext: &str, opts: &ExportOptions, ctl: &
         let composite = Some(photocraft_compose::thumbnail(doc.as_ref(), 1024));
         ctl.check().map_err(|_| IoError::Cancelled)?;
         ctl.progress(PCRAFT_PREVIEWS_DONE);
-        let previews = photocraft_format::SaveOptions { thumbnail, composite };
+        let mut full_composite = None;
+        if opts.pcraft_full_composite {
+            full_composite = with_span(ctl, PCRAFT_PREVIEWS_DONE, PCRAFT_FULL_COMPOSITE_DONE, |ctl| pcraft_full_composite_with(doc.as_ref(), ctl))?;
+            ctl.check().map_err(|_| IoError::Cancelled)?;
+            ctl.progress(PCRAFT_FULL_COMPOSITE_DONE);
+        }
+        let full_composite_icc = full_composite.as_ref().map(|_| pcraft_full_composite_icc(doc.as_ref()));
+        let previews = photocraft_format::SaveOptions { thumbnail, composite, full_composite, full_composite_icc };
         let bytes = match &opts.pcraft_cache {
             Some(cache) => cache.encode(doc.as_ref(), &previews)?,
             None => photocraft_format::save_to_bytes(doc.as_ref(), &previews)?,
@@ -691,6 +708,55 @@ fn export_stages(doc: &Document, name_or_ext: &str, opts: &ExportOptions, ctl: &
         return tiff_layers::export_layered(doc, opts, ctl);
     }
     flat::export_flat_with(doc, format, opts, ctl)
+}
+
+/// The flattened document at its canvas size, in 8-bit RGBA like a `.pcraft` file's two previews,
+/// for the bundle's `composite/full.png`. `None` for a canvas past
+/// 2^26 pixels, or when its pixels cannot be allocated.
+pub fn pcraft_full_composite(doc: &Document) -> Option<photocraft_raster::Rgba8Image> {
+    pcraft_full_composite_with(doc, &photocraft_raster::Interrupt::NONE).ok().flatten()
+}
+
+/// The ICC profile of [`pcraft_full_composite`]'s pixels: an RGB document's own profile as stored,
+/// a gray document's gray profile as RGB, and sRGB for CMYK, Lab and documents without a usable
+/// profile ([`psd_thumbnail::composite_profile`]).
+pub fn pcraft_full_composite_icc(doc: &Document) -> Vec<u8> {
+    let own = doc.icc_profile.as_ref().filter(|bytes| {
+        doc.mode == photocraft_color::ColorMode::Rgb && photocraft_cms::Profile::parse(bytes).is_ok_and(|p| p.color_space == photocraft_cms::ColorSpace::Rgb)
+    });
+    match own {
+        Some(bytes) => bytes.to_vec(),
+        None => psd_thumbnail::composite_profile(doc).to_bytes().to_vec(),
+    }
+}
+
+/// [`pcraft_full_composite`] rendered in bands: `ctl` gets the fraction of rows done, and a
+/// cancelled render fails with [`IoError::Cancelled`].
+fn pcraft_full_composite_with(doc: &Document, ctl: &photocraft_raster::Interrupt) -> Result<Option<photocraft_raster::Rgba8Image>, IoError> {
+    let canvas = doc.bounds();
+    if canvas.is_empty() || u64::from(canvas.width()) * u64::from(canvas.height()) > PCRAFT_FULL_COMPOSITE_PIXELS {
+        return Ok(None);
+    }
+    let Ok(len) = usize::try_from(u64::from(canvas.width()) * u64::from(canvas.height()) * 4) else { return Ok(None) };
+    let mut pixels = Vec::new();
+    if pixels.try_reserve_exact(len).is_err() {
+        return Ok(None);
+    }
+    pixels.resize(len, 0);
+    let mut image = photocraft_raster::Rgba8Image { width: canvas.width(), height: canvas.height(), pixels };
+    let row = canvas.width() as usize * 4;
+    let rows = canvas.height() as f32;
+    photocraft_compose::render_bands(doc, canvas, 0, |band| -> Result<(), IoError> {
+        ctl.check().map_err(|_| IoError::Cancelled)?;
+        let start = (band.rect.y0 - canvas.y0) as usize * row;
+        let pixels = band.to_rgba8().pixels;
+        if let Some(dst) = image.pixels.get_mut(start..start + pixels.len()) {
+            dst.copy_from_slice(&pixels);
+        }
+        ctl.progress((band.rect.y1 - canvas.y0) as f32 / rows);
+        Ok(())
+    })?;
+    Ok(Some(image))
 }
 
 /// The PSD's merged composite as straight RGBA floats (row-major), converted

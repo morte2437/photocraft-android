@@ -3332,6 +3332,7 @@ curves	Smooth	Сгладить
 	Chisel Soft	Мягкая огранка
 	Open color-less EXR as ACEScg	Открывать EXR без цветового профиля как ACEScg
 	Do not append "copy" to filename when saving a copy	Не добавлять «copy» к имени файла при сохранении копии
+	Save Full-Size Composite in .pcraft Files	Сохранять сведённое изображение в полном размере в файлах .pcraft
 	Edit Selected Guides	Изменить выбранные направляющие
 	Clear Selected Guides	Удалить выбранные направляющие
 	Bicubic Automatic	Бикубическая, автоматически
