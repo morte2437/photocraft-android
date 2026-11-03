@@ -467,7 +467,8 @@ fn spawn(
     (page, epoch, exact): (PageId, u64, bool),
     cancel: Arc<AtomicBool>,
 ) -> bool {
-    if ACTIVE.fetch_update(Ordering::AcqRel, Ordering::Relaxed, |n| (n < MAX_JOBS).then_some(n + 1)).is_err() {
+    if ACTIVE.fetch_add(1, Ordering::AcqRel) >= MAX_JOBS {
+        ACTIVE.fetch_sub(1, Ordering::AcqRel);
         return false;
     }
     struct Slot(egui::Context);
@@ -522,9 +523,12 @@ pub(super) fn show(app: &mut PhotocraftApp, ctx: &egui::Context, idx: usize, xf:
     if app.ui.view.pattern_preview || gpu.fault().is_some() {
         return false;
     }
-    let Some((revision, last_damage, id, size)) = app.session.documents().get(idx).map(|st| {
-        (st.revision, st.last_damage.map(|r| if r.is_empty() { r } else { r.inflate(effect_reach(&st.doc.layers)) }), st.doc.id, st.doc.size)
-    }) else {
+    let Some((revision, last_damage, id, size)) = app
+        .session
+        .documents()
+        .get(idx)
+        .map(|st| (st.revision, st.last_damage.map(|r| if r.is_empty() { r } else { r.inflate(effect_reach(&st.doc.layers)) }), st.doc.id, st.doc.size))
+    else {
         return false;
     };
     let size = [size.width, size.height];
@@ -542,7 +546,9 @@ pub(super) fn show(app: &mut PhotocraftApp, ctx: &egui::Context, idx: usize, xf:
     let now = Identity { revision, preview: raw_key, display: display_key, size };
     let seen = app.streams.get(&id).and_then(|s| s.seen);
     if seen != Some(now) {
-        let damage = seen.filter(|s| s.size == size && s.display == display_key).and_then(|s| damage_since(app, idx, (s.revision, s.preview ^ display_key), (revision, raw_key), display_key, last_damage));
+        let damage = seen
+            .filter(|s| s.size == size && s.display == display_key)
+            .and_then(|s| damage_since(app, idx, (s.revision, s.preview ^ display_key), (revision, raw_key), display_key, last_damage));
         app.streams.entry(id).or_default().invalidate(now, damage);
     }
     let key = stream_key(id.0);
@@ -551,6 +557,10 @@ pub(super) fn show(app: &mut PhotocraftApp, ctx: &egui::Context, idx: usize, xf:
     let page_bytes = gpu.page_texture_bytes(doc.depth, size, PAGE_SIDE + 2, PAGE_SIDE + 2).max(1);
     let max_pages = usize::try_from(limit / page_bytes).unwrap_or(usize::MAX);
     let wanted = pages(size, visible_doc_rect(xf), zoom, max_pages);
+    if gpu.texture_info(id.0).is_some() {
+        // Switching from the texture set: free it, the pages are budgeted against that memory.
+        gpu.release_texture_set(id.0);
+    }
     let stream = app.streams.entry(id).or_default();
     stream.retry_after((photocraft_raster::spill::read_error_generation(), photocraft_raster::memory::configuration_generation()));
     // No room for a single page, or a page that failed: the CPU canvas draws the document, as
@@ -583,7 +593,15 @@ pub(super) fn show(app: &mut PhotocraftApp, ctx: &egui::Context, idx: usize, xf:
                 if evicted {
                     gpu.retain_pages(key, &stream.ids());
                 }
-                gpu.upload_page(crate::gpu_canvas::PageUpload { key, page: d.page.id(), size, depth: doc.depth, factor: d.page.factor, core: d.page.core(size), buf })
+                gpu.upload_page(crate::gpu_canvas::PageUpload {
+                    key,
+                    page: d.page.id(),
+                    size,
+                    depth: doc.depth,
+                    factor: d.page.factor,
+                    core: d.page.core(size),
+                    buf,
+                })
             }
         };
         stream.uploaded(&d, bytes, ok);

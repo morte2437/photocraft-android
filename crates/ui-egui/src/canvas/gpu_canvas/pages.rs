@@ -72,7 +72,8 @@ impl GpuCanvas {
         }
         let Some(d) = res.docs.get_mut(&key) else { return false };
         let replaced = d.tiles.iter().position(|t| t.page.is_some_and(|(id, _)| id == page));
-        let held = d.page_bytes() - replaced.map_or(0, |i| u64::from(d.tiles[i].texture.width()) * u64::from(d.tiles[i].texture.height()) * texel_bytes(format));
+        let held =
+            d.page_bytes() - replaced.map_or(0, |i| u64::from(d.tiles[i].texture.width()) * u64::from(d.tiles[i].texture.height()) * texel_bytes(format));
         if held.saturating_add(bytes) > budget {
             return false;
         }
@@ -88,7 +89,8 @@ impl GpuCanvas {
         });
         let view = texture.create_view(&Default::default());
         let rect = [x, y, dw, dh];
-        let uniform = init_buffer(device, "pc_viewport_page", &f32_bytes(&tile_uniform(rect, Some([core.x0, core.y0, core.x1, core.y1]))), wgpu::BufferUsages::UNIFORM);
+        let uniform =
+            init_buffer(device, "pc_viewport_page", &f32_bytes(&tile_uniform(rect, Some([core.x0, core.y0, core.x1, core.y1]))), wgpu::BufferUsages::UNIFORM);
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("pc_viewport_page"),
             layout: &res.tile_bgl,
@@ -125,6 +127,17 @@ impl GpuCanvas {
         }
     }
 
+    /// Free document `key`'s texture set and what the compositor holds for it, once it is drawn
+    /// from pages instead: memory the pages are budgeted against.
+    pub fn release_texture_set(&self, key: u64) {
+        let mut renderer = self.rs.renderer.write();
+        let Some(res) = renderer.callback_resources.get_mut::<Resources>() else { return };
+        res.docs.remove(&key);
+        if let Some(c) = res.compositor.as_mut() {
+            c.forget_doc(photocraft_doc::DocId(key));
+        }
+    }
+
     /// The pages of `key` the GPU holds (page ids), and the bytes they take.
     pub fn pages(&self, key: u64) -> (Vec<u64>, u64) {
         let r = self.rs.renderer.read();
@@ -137,4 +150,3 @@ impl GpuCanvas {
         self.canvas_budget.load(Ordering::Relaxed)
     }
 }
-
