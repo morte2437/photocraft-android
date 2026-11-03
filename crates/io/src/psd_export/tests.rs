@@ -619,3 +619,56 @@ fn a_linked_fifo_is_not_read() {
     let _ = std::fs::remove_dir_all(&dir);
     assert!(warnings.iter().any(|w| w.contains("smart object written as pixels") && w.contains("not a regular file")), "{warnings:?}");
 }
+
+/// #5333: with staging on, every large encoded channel and the merged image are parked on the
+/// scratch disk as they are encoded, and the file written from that model is the same, byte for
+/// byte, as one assembled in memory: as PSD, as PSB, and as a PSD promoted to PSB on the way out.
+#[test]
+fn staged_channels_write_the_same_file_as_in_memory_ones() {
+    let dir = std::env::temp_dir().join(format!("pc-psd-stage-{}", std::process::id()));
+    stage::DIR_FOR_TESTS.with(|d| *d.borrow_mut() = Some(dir.clone()));
+    let doc = sized_document(true, SampleType::U8);
+    let ctl = Interrupt::NONE;
+    for (force_psb, limit) in [(false, PSD_MAX_FILE_SIZE), (true, PSD_MAX_FILE_SIZE), (false, SIZED_LIMIT)] {
+        let plain = PsdExportOptions { force_psb, ..Default::default() };
+        let staged = PsdExportOptions { stage_on_scratch_from: Some(0), ..plain.clone() };
+        let (want, _) = document_to_psd_sized(&doc, &plain, 0, &ctl, limit);
+        let (file, _) = document_to_psd_sized(&doc, &staged, 0, &ctl, limit);
+        let layer = &file.layers()[0];
+        // The opaque alpha packs to a few KB and stays in memory; the noise colour channels go.
+        assert!(layer.channels.iter().filter(|c| c.id >= 0).all(|c| c.stored.is_some() && c.data.is_empty()), "every noise channel is staged");
+        assert!(layer.channels.iter().filter(|c| c.id == -1).all(|c| c.stored.is_none()), "the short alpha stays in memory");
+        assert!(file.image_data.stored.is_some() && file.image_data.data.is_empty(), "the merged image is staged");
+        assert_eq!(file.write_as_psb, want.write_as_psb);
+        let bytes = want.to_bytes().unwrap();
+        assert!(file.to_bytes().unwrap() == bytes, "psb {force_psb}, limit {limit}: staged bytes differ");
+        let mut w = std::io::Cursor::new(Vec::new());
+        file.write_to(&mut w).unwrap();
+        assert!(w.into_inner() == bytes, "psb {force_psb}, limit {limit}: streamed staged bytes differ");
+    }
+    // Under the threshold, or with no stage asked for, nothing is staged.
+    let (file, _) = document_to_psd_sized(&doc, &PsdExportOptions { stage_on_scratch_from: Some(u64::MAX), ..Default::default() }, 0, &ctl, PSD_MAX_FILE_SIZE);
+    assert!(file.layers()[0].channels.iter().all(|c| c.stored.is_none()) && file.image_data.stored.is_none());
+    stage::DIR_FOR_TESTS.with(|d| *d.borrow_mut() = None);
+    #[cfg(unix)]
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "the stage file has no name on disk");
+    let _ = std::fs::remove_dir(&dir);
+}
+
+/// Short channels stay in memory, and a stage that cannot be written keeps the data in memory.
+#[test]
+fn staging_keeps_short_or_unwritable_data_in_memory() {
+    let dir = std::env::temp_dir().join(format!("pc-psd-stage-short-{}", std::process::id()));
+    stage::DIR_FOR_TESTS.with(|d| *d.borrow_mut() = Some(dir.clone()));
+    let stage = stage::Stage::for_document(1, Some(0)).unwrap();
+    stage::DIR_FOR_TESTS.with(|d| *d.borrow_mut() = None);
+    let short = stage.channel(ChannelData::new(0, Some(Compression::Raw), vec![1; 100]));
+    assert!(short.stored.is_none() && short.data.len() == 100);
+    let long = stage.channel(ChannelData::new(0, Some(Compression::Raw), vec![2; 1 << 17]));
+    assert!(long.stored.is_some() && long.data.is_empty());
+    assert_eq!(long.encoded().unwrap().as_ref(), &vec![2u8; 1 << 17][..]);
+    assert_eq!(stage.len(), 1 << 17);
+    assert!(stage::Stage::for_document(10, Some(11)).is_none(), "under the threshold");
+    assert!(stage::Stage::for_document(10, None).is_none(), "not asked for");
+    let _ = std::fs::remove_dir(&dir);
+}
