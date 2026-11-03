@@ -174,6 +174,9 @@ const SNAPSHOT_FROM: &[(&str, &str)] = &[("FllD", "fullDocument"), ("MrgL", "mer
 
 /// Import Make events only when their geometry and options can be represented faithfully.
 pub(super) fn make_from(d: &Descriptor) -> Mapped {
+    if let Some(mapped) = super::steps_layer_style::create_from_descriptor(d) {
+        return mapped;
+    }
     if let Some(mapped) = duplicate_layer_from_descriptor(d) {
         return mapped;
     }
@@ -302,6 +305,9 @@ fn recorded_percent(opacity: f64) -> f64 {
 
 /// Write a creation step, refusing native options the target descriptor cannot carry.
 pub(super) fn make_to(id: &str, p: &Value) -> Option<Descriptor> {
+    if id == super::steps_layer_style::CREATE {
+        return super::steps_layer_style::style_to(id, p);
+    }
     let with_name = |cls: &str| {
         let mut u = desc(cls);
         if let Some(n) = jstr(p, "name") {
