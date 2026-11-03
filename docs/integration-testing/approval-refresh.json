@@ -1,0 +1,2602 @@
+{
+  "refreshed_at": "2026-10-29T12:06:14.628928+00:00",
+  "frozen_count": 108,
+  "currently_qualifying_frozen_heads": 107,
+  "prs": [
+    {
+      "number": 9703,
+      "url": "https://github.com/storytold/photocraft/pull/9703",
+      "frozen_head": "3605d30c38294c4d970e52f4a02f44f97e8bc1a9",
+      "current_head": "3605d30c38294c4d970e52f4a02f44f97e8bc1a9",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-26T17:06:00Z",
+        "url": "https://github.com/storytold/photocraft/pull/9703#pullrequestreview-5655990760",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "3605d30c38294c4d970e52f4a02f44f97e8bc1a9"
+        }
+      }
+    },
+    {
+      "number": 9651,
+      "url": "https://github.com/storytold/photocraft/pull/9651",
+      "frozen_head": "67666bdf72a58066df868868cef82e5b9cc838de",
+      "current_head": "67666bdf72a58066df868868cef82e5b9cc838de",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-26T11:38:57Z",
+        "url": "https://github.com/storytold/photocraft/pull/9651#pullrequestreview-5651366614",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "67666bdf72a58066df868868cef82e5b9cc838de"
+        }
+      }
+    },
+    {
+      "number": 9623,
+      "url": "https://github.com/storytold/photocraft/pull/9623",
+      "frozen_head": "652075f4da7fe905ad651eebc3a6c276fe1d7a5d",
+      "current_head": "652075f4da7fe905ad651eebc3a6c276fe1d7a5d",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-26T08:29:25Z",
+        "url": "https://github.com/storytold/photocraft/pull/9623#pullrequestreview-5649212328",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "652075f4da7fe905ad651eebc3a6c276fe1d7a5d"
+        }
+      }
+    },
+    {
+      "number": 9606,
+      "url": "https://github.com/storytold/photocraft/pull/9606",
+      "frozen_head": "6cc516a3d20120b678040050d95ccadc8d1dfd3f",
+      "current_head": "6cc516a3d20120b678040050d95ccadc8d1dfd3f",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-26T05:50:41Z",
+        "url": "https://github.com/storytold/photocraft/pull/9606#pullrequestreview-5647898187",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "6cc516a3d20120b678040050d95ccadc8d1dfd3f"
+        }
+      }
+    },
+    {
+      "number": 9598,
+      "url": "https://github.com/storytold/photocraft/pull/9598",
+      "frozen_head": "47aea89e9220b996f0d5a0d2bb8b5938100b4ad1",
+      "current_head": "47aea89e9220b996f0d5a0d2bb8b5938100b4ad1",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-26T05:45:19Z",
+        "url": "https://github.com/storytold/photocraft/pull/9598#pullrequestreview-5647858443",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "47aea89e9220b996f0d5a0d2bb8b5938100b4ad1"
+        }
+      }
+    },
+    {
+      "number": 9597,
+      "url": "https://github.com/storytold/photocraft/pull/9597",
+      "frozen_head": "9429df26b371c04c2afa65228a60ded739b5fbc2",
+      "current_head": "9429df26b371c04c2afa65228a60ded739b5fbc2",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-26T07:55:42Z",
+        "url": "https://github.com/storytold/photocraft/pull/9597#pullrequestreview-5648898287",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "9429df26b371c04c2afa65228a60ded739b5fbc2"
+        }
+      }
+    },
+    {
+      "number": 9596,
+      "url": "https://github.com/storytold/photocraft/pull/9596",
+      "frozen_head": "e62013cfd652fa60470a0f7a185fbc8f3d2a2c92",
+      "current_head": "e62013cfd652fa60470a0f7a185fbc8f3d2a2c92",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-26T05:46:37Z",
+        "url": "https://github.com/storytold/photocraft/pull/9596#pullrequestreview-5647870259",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "e62013cfd652fa60470a0f7a185fbc8f3d2a2c92"
+        }
+      }
+    },
+    {
+      "number": 9595,
+      "url": "https://github.com/storytold/photocraft/pull/9595",
+      "frozen_head": "75fa71a4f55a098061b12d91508b514565ab8dcf",
+      "current_head": "75fa71a4f55a098061b12d91508b514565ab8dcf",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-26T05:48:01Z",
+        "url": "https://github.com/storytold/photocraft/pull/9595#pullrequestreview-5647882992",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "75fa71a4f55a098061b12d91508b514565ab8dcf"
+        }
+      }
+    },
+    {
+      "number": 9594,
+      "url": "https://github.com/storytold/photocraft/pull/9594",
+      "frozen_head": "46512521fec2b4b462c29d9fefd16398cb81212c",
+      "current_head": "46512521fec2b4b462c29d9fefd16398cb81212c",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-26T05:49:21Z",
+        "url": "https://github.com/storytold/photocraft/pull/9594#pullrequestreview-5647890395",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "46512521fec2b4b462c29d9fefd16398cb81212c"
+        }
+      }
+    },
+    {
+      "number": 9590,
+      "url": "https://github.com/storytold/photocraft/pull/9590",
+      "frozen_head": "a9744ed44dc782613b19a97b8c159a091f73e669",
+      "current_head": "a9744ed44dc782613b19a97b8c159a091f73e669",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-26T05:54:47Z",
+        "url": "https://github.com/storytold/photocraft/pull/9590#pullrequestreview-5647923229",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "a9744ed44dc782613b19a97b8c159a091f73e669"
+        }
+      }
+    },
+    {
+      "number": 9589,
+      "url": "https://github.com/storytold/photocraft/pull/9589",
+      "frozen_head": "da157945077190e550b53a5e14b0536f62761292",
+      "current_head": "da157945077190e550b53a5e14b0536f62761292",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-26T03:32:19Z",
+        "url": "https://github.com/storytold/photocraft/pull/9589#pullrequestreview-5647036365",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "da157945077190e550b53a5e14b0536f62761292"
+        }
+      }
+    },
+    {
+      "number": 9584,
+      "url": "https://github.com/storytold/photocraft/pull/9584",
+      "frozen_head": "fc0f7b1132f799b5bba7be642c9047499d95a887",
+      "current_head": "fc0f7b1132f799b5bba7be642c9047499d95a887",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-26T03:41:38Z",
+        "url": "https://github.com/storytold/photocraft/pull/9584#pullrequestreview-5647082363",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "fc0f7b1132f799b5bba7be642c9047499d95a887"
+        }
+      }
+    },
+    {
+      "number": 9523,
+      "url": "https://github.com/storytold/photocraft/pull/9523",
+      "frozen_head": "728782c595e768bdb6febc7f30e4d1456d13fd36",
+      "current_head": "728782c595e768bdb6febc7f30e4d1456d13fd36",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-25T23:36:04Z",
+        "url": "https://github.com/storytold/photocraft/pull/9523#pullrequestreview-5645920841",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "728782c595e768bdb6febc7f30e4d1456d13fd36"
+        }
+      }
+    },
+    {
+      "number": 9517,
+      "url": "https://github.com/storytold/photocraft/pull/9517",
+      "frozen_head": "81b434c6149732eadc94e0465fea81bd075facd4",
+      "current_head": "81b434c6149732eadc94e0465fea81bd075facd4",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-25T19:39:44Z",
+        "url": "https://github.com/storytold/photocraft/pull/9517#pullrequestreview-5644911791",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "81b434c6149732eadc94e0465fea81bd075facd4"
+        }
+      }
+    },
+    {
+      "number": 9512,
+      "url": "https://github.com/storytold/photocraft/pull/9512",
+      "frozen_head": "6c55561128caf5ac917eb3d174e8e7bb4bd48e23",
+      "current_head": "6c55561128caf5ac917eb3d174e8e7bb4bd48e23",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-25T19:23:44Z",
+        "url": "https://github.com/storytold/photocraft/pull/9512#pullrequestreview-5644863033",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "6c55561128caf5ac917eb3d174e8e7bb4bd48e23"
+        }
+      }
+    },
+    {
+      "number": 9509,
+      "url": "https://github.com/storytold/photocraft/pull/9509",
+      "frozen_head": "d78d7493d3f0b6e760c88de969ac810e9bc5d910",
+      "current_head": "d78d7493d3f0b6e760c88de969ac810e9bc5d910",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-25T18:46:42Z",
+        "url": "https://github.com/storytold/photocraft/pull/9509#pullrequestreview-5644707748",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "d78d7493d3f0b6e760c88de969ac810e9bc5d910"
+        }
+      }
+    },
+    {
+      "number": 9504,
+      "url": "https://github.com/storytold/photocraft/pull/9504",
+      "frozen_head": "993c9ed167c6acd9bc8f87c6cff6e2c7abba17a8",
+      "current_head": "993c9ed167c6acd9bc8f87c6cff6e2c7abba17a8",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-25T18:30:54Z",
+        "url": "https://github.com/storytold/photocraft/pull/9504#pullrequestreview-5644657832",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "993c9ed167c6acd9bc8f87c6cff6e2c7abba17a8"
+        }
+      }
+    },
+    {
+      "number": 9493,
+      "url": "https://github.com/storytold/photocraft/pull/9493",
+      "frozen_head": "61a413d8df9e90ee545eb08e57c5615aa2b29cea",
+      "current_head": "61a413d8df9e90ee545eb08e57c5615aa2b29cea",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-25T18:35:43Z",
+        "url": "https://github.com/storytold/photocraft/pull/9493#pullrequestreview-5644672718",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "61a413d8df9e90ee545eb08e57c5615aa2b29cea"
+        }
+      }
+    },
+    {
+      "number": 9481,
+      "url": "https://github.com/storytold/photocraft/pull/9481",
+      "frozen_head": "7937adff961027154d795b8905e821244ae4f929",
+      "current_head": "7937adff961027154d795b8905e821244ae4f929",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-25T18:03:55Z",
+        "url": "https://github.com/storytold/photocraft/pull/9481#pullrequestreview-5644538284",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "7937adff961027154d795b8905e821244ae4f929"
+        }
+      }
+    },
+    {
+      "number": 9478,
+      "url": "https://github.com/storytold/photocraft/pull/9478",
+      "frozen_head": "cc208ee0440bbdf1858565dca49667272a490c56",
+      "current_head": "cc208ee0440bbdf1858565dca49667272a490c56",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-25T17:58:39Z",
+        "url": "https://github.com/storytold/photocraft/pull/9478#pullrequestreview-5644503679",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "cc208ee0440bbdf1858565dca49667272a490c56"
+        }
+      }
+    },
+    {
+      "number": 9472,
+      "url": "https://github.com/storytold/photocraft/pull/9472",
+      "frozen_head": "4bab657cd4fb4a91ced44d3721e63a002ca5068c",
+      "current_head": "4bab657cd4fb4a91ced44d3721e63a002ca5068c",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-25T19:17:41Z",
+        "url": "https://github.com/storytold/photocraft/pull/9472#pullrequestreview-5644841088",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "4bab657cd4fb4a91ced44d3721e63a002ca5068c"
+        }
+      }
+    },
+    {
+      "number": 9457,
+      "url": "https://github.com/storytold/photocraft/pull/9457",
+      "frozen_head": "2863c3281c2a22dade0ce92d42bf8900074f76c6",
+      "current_head": "2863c3281c2a22dade0ce92d42bf8900074f76c6",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-25T15:24:36Z",
+        "url": "https://github.com/storytold/photocraft/pull/9457#pullrequestreview-5643852329",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "2863c3281c2a22dade0ce92d42bf8900074f76c6"
+        }
+      }
+    },
+    {
+      "number": 9436,
+      "url": "https://github.com/storytold/photocraft/pull/9436",
+      "frozen_head": "819f2692db4302019638c57b6ea34cd1e8f4c24b",
+      "current_head": "819f2692db4302019638c57b6ea34cd1e8f4c24b",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-25T22:16:33Z",
+        "url": "https://github.com/storytold/photocraft/pull/9436#pullrequestreview-5645623601",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "819f2692db4302019638c57b6ea34cd1e8f4c24b"
+        }
+      }
+    },
+    {
+      "number": 9418,
+      "url": "https://github.com/storytold/photocraft/pull/9418",
+      "frozen_head": "da4b838e54f6073cda4798fa7b63b3b7214aaf93",
+      "current_head": "da4b838e54f6073cda4798fa7b63b3b7214aaf93",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-25T18:18:42Z",
+        "url": "https://github.com/storytold/photocraft/pull/9418#pullrequestreview-5644614398",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "da4b838e54f6073cda4798fa7b63b3b7214aaf93"
+        }
+      }
+    },
+    {
+      "number": 9416,
+      "url": "https://github.com/storytold/photocraft/pull/9416",
+      "frozen_head": "742b06805284d8d76d5a29ec1821193f4835fedf",
+      "current_head": "742b06805284d8d76d5a29ec1821193f4835fedf",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-25T11:36:34Z",
+        "url": "https://github.com/storytold/photocraft/pull/9416#pullrequestreview-5642992245",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "742b06805284d8d76d5a29ec1821193f4835fedf"
+        }
+      }
+    },
+    {
+      "number": 9401,
+      "url": "https://github.com/storytold/photocraft/pull/9401",
+      "frozen_head": "f241bba1adfb9c7ec5dd5ed9d86f95b63c7bc2c3",
+      "current_head": "f241bba1adfb9c7ec5dd5ed9d86f95b63c7bc2c3",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-25T11:13:17Z",
+        "url": "https://github.com/storytold/photocraft/pull/9401#pullrequestreview-5642877921",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "f241bba1adfb9c7ec5dd5ed9d86f95b63c7bc2c3"
+        }
+      }
+    },
+    {
+      "number": 9354,
+      "url": "https://github.com/storytold/photocraft/pull/9354",
+      "frozen_head": "41eb1de5cff17f5f5b9c22913e48b71565b56a2a",
+      "current_head": "41eb1de5cff17f5f5b9c22913e48b71565b56a2a",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-25T06:55:52Z",
+        "url": "https://github.com/storytold/photocraft/pull/9354#pullrequestreview-5641946837",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "41eb1de5cff17f5f5b9c22913e48b71565b56a2a"
+        }
+      }
+    },
+    {
+      "number": 9342,
+      "url": "https://github.com/storytold/photocraft/pull/9342",
+      "frozen_head": "c46a74621d36adae9707ab8f3eb39cf6b4c302b9",
+      "current_head": "c46a74621d36adae9707ab8f3eb39cf6b4c302b9",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-25T07:21:10Z",
+        "url": "https://github.com/storytold/photocraft/pull/9342#pullrequestreview-5642054720",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "c46a74621d36adae9707ab8f3eb39cf6b4c302b9"
+        }
+      }
+    },
+    {
+      "number": 9339,
+      "url": "https://github.com/storytold/photocraft/pull/9339",
+      "frozen_head": "393645ab91460af2e37cc3ba8f6921e7551f676e",
+      "current_head": "393645ab91460af2e37cc3ba8f6921e7551f676e",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-25T07:36:38Z",
+        "url": "https://github.com/storytold/photocraft/pull/9339#pullrequestreview-5642090549",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "393645ab91460af2e37cc3ba8f6921e7551f676e"
+        }
+      }
+    },
+    {
+      "number": 9282,
+      "url": "https://github.com/storytold/photocraft/pull/9282",
+      "frozen_head": "20803d1f15900ed6ecc7b5c79b4c68f6c3d6dcce",
+      "current_head": "20803d1f15900ed6ecc7b5c79b4c68f6c3d6dcce",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-26T04:14:47Z",
+        "url": "https://github.com/storytold/photocraft/pull/9282#pullrequestreview-5647322262",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "20803d1f15900ed6ecc7b5c79b4c68f6c3d6dcce"
+        }
+      }
+    },
+    {
+      "number": 9172,
+      "url": "https://github.com/storytold/photocraft/pull/9172",
+      "frozen_head": "8ebb04999d25790f71f9bd88f7a268a6a2754aec",
+      "current_head": "8ebb04999d25790f71f9bd88f7a268a6a2754aec",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-24T18:18:17Z",
+        "url": "https://github.com/storytold/photocraft/pull/9172#pullrequestreview-5639390920",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "8ebb04999d25790f71f9bd88f7a268a6a2754aec"
+        }
+      }
+    },
+    {
+      "number": 9110,
+      "url": "https://github.com/storytold/photocraft/pull/9110",
+      "frozen_head": "2e716f93b2e2135944e07d821be4eb38fce13ec9",
+      "current_head": "2e716f93b2e2135944e07d821be4eb38fce13ec9",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-24T16:41:50Z",
+        "url": "https://github.com/storytold/photocraft/pull/9110#pullrequestreview-5639002103",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "2e716f93b2e2135944e07d821be4eb38fce13ec9"
+        }
+      }
+    },
+    {
+      "number": 9019,
+      "url": "https://github.com/storytold/photocraft/pull/9019",
+      "frozen_head": "364c4be1c19728aefa601ee924bc7a0cd6a09789",
+      "current_head": "364c4be1c19728aefa601ee924bc7a0cd6a09789",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-24T16:33:36Z",
+        "url": "https://github.com/storytold/photocraft/pull/9019#pullrequestreview-5638973719",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "364c4be1c19728aefa601ee924bc7a0cd6a09789"
+        }
+      }
+    },
+    {
+      "number": 9015,
+      "url": "https://github.com/storytold/photocraft/pull/9015",
+      "frozen_head": "afb4364a8795c42e6353762891b4890d878f9a68",
+      "current_head": "afb4364a8795c42e6353762891b4890d878f9a68",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-24T16:33:42Z",
+        "url": "https://github.com/storytold/photocraft/pull/9015#pullrequestreview-5638974295",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "afb4364a8795c42e6353762891b4890d878f9a68"
+        }
+      }
+    },
+    {
+      "number": 9004,
+      "url": "https://github.com/storytold/photocraft/pull/9004",
+      "frozen_head": "39cf823cdfe486bb967cf81df725d229f7eed903",
+      "current_head": "39cf823cdfe486bb967cf81df725d229f7eed903",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-24T16:33:48Z",
+        "url": "https://github.com/storytold/photocraft/pull/9004#pullrequestreview-5638974843",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "39cf823cdfe486bb967cf81df725d229f7eed903"
+        }
+      }
+    },
+    {
+      "number": 8986,
+      "url": "https://github.com/storytold/photocraft/pull/8986",
+      "frozen_head": "390dfbbcb026b33d46c52c62360b65deca00f258",
+      "current_head": "390dfbbcb026b33d46c52c62360b65deca00f258",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-24T16:36:01Z",
+        "url": "https://github.com/storytold/photocraft/pull/8986#pullrequestreview-5638981860",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "390dfbbcb026b33d46c52c62360b65deca00f258"
+        }
+      }
+    },
+    {
+      "number": 8985,
+      "url": "https://github.com/storytold/photocraft/pull/8985",
+      "frozen_head": "8e695caf885b529f01f482b3f0c90cdb34df1915",
+      "current_head": "8e695caf885b529f01f482b3f0c90cdb34df1915",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-24T16:33:54Z",
+        "url": "https://github.com/storytold/photocraft/pull/8985#pullrequestreview-5638975214",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "8e695caf885b529f01f482b3f0c90cdb34df1915"
+        }
+      }
+    },
+    {
+      "number": 8931,
+      "url": "https://github.com/storytold/photocraft/pull/8931",
+      "frozen_head": "d42dd4c6302c77c1f9dc46b7b53ffa5eb0047a13",
+      "current_head": "d42dd4c6302c77c1f9dc46b7b53ffa5eb0047a13",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-24T16:59:36Z",
+        "url": "https://github.com/storytold/photocraft/pull/8931#pullrequestreview-5639059166",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "d42dd4c6302c77c1f9dc46b7b53ffa5eb0047a13"
+        }
+      }
+    },
+    {
+      "number": 8905,
+      "url": "https://github.com/storytold/photocraft/pull/8905",
+      "frozen_head": "0fdc6259193aab32b8feab7347ddc36196f40a19",
+      "current_head": "0fdc6259193aab32b8feab7347ddc36196f40a19",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-24T16:38:23Z",
+        "url": "https://github.com/storytold/photocraft/pull/8905#pullrequestreview-5638989196",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "0fdc6259193aab32b8feab7347ddc36196f40a19"
+        }
+      }
+    },
+    {
+      "number": 8903,
+      "url": "https://github.com/storytold/photocraft/pull/8903",
+      "frozen_head": "d387f52f1f2f5681b2c7d1c517aa5b5992c7bc88",
+      "current_head": "d387f52f1f2f5681b2c7d1c517aa5b5992c7bc88",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-24T16:38:30Z",
+        "url": "https://github.com/storytold/photocraft/pull/8903#pullrequestreview-5638989541",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "d387f52f1f2f5681b2c7d1c517aa5b5992c7bc88"
+        }
+      }
+    },
+    {
+      "number": 8897,
+      "url": "https://github.com/storytold/photocraft/pull/8897",
+      "frozen_head": "eb06798f15516eb7e4fac24c98346fd9052e7f8e",
+      "current_head": "eb06798f15516eb7e4fac24c98346fd9052e7f8e",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-24T16:38:48Z",
+        "url": "https://github.com/storytold/photocraft/pull/8897#pullrequestreview-5638990476",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "eb06798f15516eb7e4fac24c98346fd9052e7f8e"
+        }
+      }
+    },
+    {
+      "number": 8896,
+      "url": "https://github.com/storytold/photocraft/pull/8896",
+      "frozen_head": "19fa473039ef11deda7c3200c8fac1de41309086",
+      "current_head": "19fa473039ef11deda7c3200c8fac1de41309086",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-28T13:25:04Z",
+        "url": "https://github.com/storytold/photocraft/pull/8896#pullrequestreview-5683297464",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "19fa473039ef11deda7c3200c8fac1de41309086"
+        }
+      }
+    },
+    {
+      "number": 8892,
+      "url": "https://github.com/storytold/photocraft/pull/8892",
+      "frozen_head": "9267c4fcf83a260d4bae0e441dc1af9bc48aa23b",
+      "current_head": "9267c4fcf83a260d4bae0e441dc1af9bc48aa23b",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-24T16:40:01Z",
+        "url": "https://github.com/storytold/photocraft/pull/8892#pullrequestreview-5638996509",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "9267c4fcf83a260d4bae0e441dc1af9bc48aa23b"
+        }
+      }
+    },
+    {
+      "number": 8347,
+      "url": "https://github.com/storytold/photocraft/pull/8347",
+      "frozen_head": "2b1364393cfcd09380cf18a221e7cdd325fc4deb",
+      "current_head": "2b1364393cfcd09380cf18a221e7cdd325fc4deb",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-25T17:48:01Z",
+        "url": "https://github.com/storytold/photocraft/pull/8347#pullrequestreview-5644437741",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "2b1364393cfcd09380cf18a221e7cdd325fc4deb"
+        }
+      }
+    },
+    {
+      "number": 8193,
+      "url": "https://github.com/storytold/photocraft/pull/8193",
+      "frozen_head": "864024609b872de3d869879f1632b951c896c6cd",
+      "current_head": "864024609b872de3d869879f1632b951c896c6cd",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-25T12:43:15Z",
+        "url": "https://github.com/storytold/photocraft/pull/8193#pullrequestreview-5643244034",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "864024609b872de3d869879f1632b951c896c6cd"
+        }
+      }
+    },
+    {
+      "number": 8192,
+      "url": "https://github.com/storytold/photocraft/pull/8192",
+      "frozen_head": "412e3b7cf1f4836a5772d93391d21728dbe1f74f",
+      "current_head": "412e3b7cf1f4836a5772d93391d21728dbe1f74f",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-25T09:50:41Z",
+        "url": "https://github.com/storytold/photocraft/pull/8192#pullrequestreview-5642599218",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "412e3b7cf1f4836a5772d93391d21728dbe1f74f"
+        }
+      }
+    },
+    {
+      "number": 8191,
+      "url": "https://github.com/storytold/photocraft/pull/8191",
+      "frozen_head": "91e4cec43525ca739c05cff614701fbd3576e389",
+      "current_head": "91e4cec43525ca739c05cff614701fbd3576e389",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-25T09:46:29Z",
+        "url": "https://github.com/storytold/photocraft/pull/8191#pullrequestreview-5642584382",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "91e4cec43525ca739c05cff614701fbd3576e389"
+        }
+      }
+    },
+    {
+      "number": 8074,
+      "url": "https://github.com/storytold/photocraft/pull/8074",
+      "frozen_head": "290f924d0fecc3bf6bea159c0d9e86255d326a96",
+      "current_head": "290f924d0fecc3bf6bea159c0d9e86255d326a96",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-22T10:39:23Z",
+        "url": "https://github.com/storytold/photocraft/pull/8074#pullrequestreview-5612886202",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "290f924d0fecc3bf6bea159c0d9e86255d326a96"
+        }
+      }
+    },
+    {
+      "number": 8039,
+      "url": "https://github.com/storytold/photocraft/pull/8039",
+      "frozen_head": "5579cf5439856fed93f41a669a3fc9b56d5813cf",
+      "current_head": "5579cf5439856fed93f41a669a3fc9b56d5813cf",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-20T22:54:54Z",
+        "url": "https://github.com/storytold/photocraft/pull/8039#pullrequestreview-5592809677",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "5579cf5439856fed93f41a669a3fc9b56d5813cf"
+        }
+      }
+    },
+    {
+      "number": 7903,
+      "url": "https://github.com/storytold/photocraft/pull/7903",
+      "frozen_head": "5c30699087b02edcaa23397a0f7076bf503be048",
+      "current_head": "5c30699087b02edcaa23397a0f7076bf503be048",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-25T12:55:08Z",
+        "url": "https://github.com/storytold/photocraft/pull/7903#pullrequestreview-5643279271",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "5c30699087b02edcaa23397a0f7076bf503be048"
+        }
+      }
+    },
+    {
+      "number": 7848,
+      "url": "https://github.com/storytold/photocraft/pull/7848",
+      "frozen_head": "389a1d5bd67072d5581c27989080222a7065b585",
+      "current_head": "389a1d5bd67072d5581c27989080222a7065b585",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-20T14:05:42Z",
+        "url": "https://github.com/storytold/photocraft/pull/7848#pullrequestreview-5586186420",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "389a1d5bd67072d5581c27989080222a7065b585"
+        }
+      }
+    },
+    {
+      "number": 7743,
+      "url": "https://github.com/storytold/photocraft/pull/7743",
+      "frozen_head": "fd6fc92015fd08560362b4b32844edf97722f292",
+      "current_head": "fd6fc92015fd08560362b4b32844edf97722f292",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-19T17:02:06Z",
+        "url": "https://github.com/storytold/photocraft/pull/7743#pullrequestreview-5574964336",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "fd6fc92015fd08560362b4b32844edf97722f292"
+        }
+      }
+    },
+    {
+      "number": 7742,
+      "url": "https://github.com/storytold/photocraft/pull/7742",
+      "frozen_head": "ab844f9cbcd1f1839ed7f286776331cb72e399aa",
+      "current_head": "ab844f9cbcd1f1839ed7f286776331cb72e399aa",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-20T14:12:28Z",
+        "url": "https://github.com/storytold/photocraft/pull/7742#pullrequestreview-5586281249",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "ab844f9cbcd1f1839ed7f286776331cb72e399aa"
+        }
+      }
+    },
+    {
+      "number": 7648,
+      "url": "https://github.com/storytold/photocraft/pull/7648",
+      "frozen_head": "d24669d412f64ab079a668b0b8520ddbc607410c",
+      "current_head": "d24669d412f64ab079a668b0b8520ddbc607410c",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-28T17:15:54Z",
+        "url": "https://github.com/storytold/photocraft/pull/7648#pullrequestreview-5686770506",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "d24669d412f64ab079a668b0b8520ddbc607410c"
+        }
+      }
+    },
+    {
+      "number": 7255,
+      "url": "https://github.com/storytold/photocraft/pull/7255",
+      "frozen_head": "1b810052bc3a876c1eaf1a8766870ffdba9f8a80",
+      "current_head": "1b810052bc3a876c1eaf1a8766870ffdba9f8a80",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-19T23:37:36Z",
+        "url": "https://github.com/storytold/photocraft/pull/7255#pullrequestreview-5579038009",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "1b810052bc3a876c1eaf1a8766870ffdba9f8a80"
+        }
+      }
+    },
+    {
+      "number": 7153,
+      "url": "https://github.com/storytold/photocraft/pull/7153",
+      "frozen_head": "6f5d929d6172cf211a070f12cde9507aca9eb30a",
+      "current_head": "6f5d929d6172cf211a070f12cde9507aca9eb30a",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-27T23:20:12Z",
+        "url": "https://github.com/storytold/photocraft/pull/7153#pullrequestreview-5675752399",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "6f5d929d6172cf211a070f12cde9507aca9eb30a"
+        }
+      }
+    },
+    {
+      "number": 6621,
+      "url": "https://github.com/storytold/photocraft/pull/6621",
+      "frozen_head": "ead45134d320cb1002724d5ef44f5c56588bbe1d",
+      "current_head": "ead45134d320cb1002724d5ef44f5c56588bbe1d",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-25T15:33:29Z",
+        "url": "https://github.com/storytold/photocraft/pull/6621#pullrequestreview-5643879866",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "ead45134d320cb1002724d5ef44f5c56588bbe1d"
+        }
+      }
+    },
+    {
+      "number": 6510,
+      "url": "https://github.com/storytold/photocraft/pull/6510",
+      "frozen_head": "8bb0a5e67474d36ae08d565251edb1ae780dd044",
+      "current_head": "8bb0a5e67474d36ae08d565251edb1ae780dd044",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-27T08:54:40Z",
+        "url": "https://github.com/storytold/photocraft/pull/6510#pullrequestreview-5664421033",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "8bb0a5e67474d36ae08d565251edb1ae780dd044"
+        }
+      }
+    },
+    {
+      "number": 6492,
+      "url": "https://github.com/storytold/photocraft/pull/6492",
+      "frozen_head": "657cfd503d4ce276df6b5e9f763cb3a5cf2deaeb",
+      "current_head": "657cfd503d4ce276df6b5e9f763cb3a5cf2deaeb",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-20T09:49:00Z",
+        "url": "https://github.com/storytold/photocraft/pull/6492#pullrequestreview-5583441089",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "657cfd503d4ce276df6b5e9f763cb3a5cf2deaeb"
+        }
+      }
+    },
+    {
+      "number": 6449,
+      "url": "https://github.com/storytold/photocraft/pull/6449",
+      "frozen_head": "25c38a0b69b7bff31badcdbe2ef9f2ff6aba1c63",
+      "current_head": "25c38a0b69b7bff31badcdbe2ef9f2ff6aba1c63",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-16T14:07:53Z",
+        "url": "https://github.com/storytold/photocraft/pull/6449#pullrequestreview-5548906956",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "25c38a0b69b7bff31badcdbe2ef9f2ff6aba1c63"
+        }
+      }
+    },
+    {
+      "number": 6387,
+      "url": "https://github.com/storytold/photocraft/pull/6387",
+      "frozen_head": "8bfbbf816025942b74130adf16fb07265817b691",
+      "current_head": "8bfbbf816025942b74130adf16fb07265817b691",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-17T00:45:37Z",
+        "url": "https://github.com/storytold/photocraft/pull/6387#pullrequestreview-5555146754",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "8bfbbf816025942b74130adf16fb07265817b691"
+        }
+      }
+    },
+    {
+      "number": 6383,
+      "url": "https://github.com/storytold/photocraft/pull/6383",
+      "frozen_head": "74aadae69e3b3f5cd257bca1926acc1b1297b1a2",
+      "current_head": "74aadae69e3b3f5cd257bca1926acc1b1297b1a2",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-16T13:09:48Z",
+        "url": "https://github.com/storytold/photocraft/pull/6383#pullrequestreview-5548207780",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "74aadae69e3b3f5cd257bca1926acc1b1297b1a2"
+        }
+      }
+    },
+    {
+      "number": 6236,
+      "url": "https://github.com/storytold/photocraft/pull/6236",
+      "frozen_head": "ce546dd4b5451a17b843ef1e129bdb40fbfe3160",
+      "current_head": "ce546dd4b5451a17b843ef1e129bdb40fbfe3160",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-25T16:15:01Z",
+        "url": "https://github.com/storytold/photocraft/pull/6236#pullrequestreview-5644088784",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "ce546dd4b5451a17b843ef1e129bdb40fbfe3160"
+        }
+      }
+    },
+    {
+      "number": 6139,
+      "url": "https://github.com/storytold/photocraft/pull/6139",
+      "frozen_head": "e2347f8ead85d929193044f139788b850e31c06f",
+      "current_head": "e2347f8ead85d929193044f139788b850e31c06f",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-16T02:15:01Z",
+        "url": "https://github.com/storytold/photocraft/pull/6139#pullrequestreview-5542220545",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "e2347f8ead85d929193044f139788b850e31c06f"
+        }
+      }
+    },
+    {
+      "number": 6026,
+      "url": "https://github.com/storytold/photocraft/pull/6026",
+      "frozen_head": "248ba660576f4896f69cbb6639353e2f1d295271",
+      "current_head": "248ba660576f4896f69cbb6639353e2f1d295271",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-16T09:43:20Z",
+        "url": "https://github.com/storytold/photocraft/pull/6026#pullrequestreview-5545897025",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "248ba660576f4896f69cbb6639353e2f1d295271"
+        }
+      }
+    },
+    {
+      "number": 5939,
+      "url": "https://github.com/storytold/photocraft/pull/5939",
+      "frozen_head": "7348e060b4be7204fb69b59079c3b9d808e9aad3",
+      "current_head": "7348e060b4be7204fb69b59079c3b9d808e9aad3",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-17T23:23:14Z",
+        "url": "https://github.com/storytold/photocraft/pull/5939#pullrequestreview-5560602826",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "7348e060b4be7204fb69b59079c3b9d808e9aad3"
+        }
+      }
+    },
+    {
+      "number": 5870,
+      "url": "https://github.com/storytold/photocraft/pull/5870",
+      "frozen_head": "f9de0a6abc78aa405b1ef46f5da6cba424106204",
+      "current_head": "f9de0a6abc78aa405b1ef46f5da6cba424106204",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-16T18:02:42Z",
+        "url": "https://github.com/storytold/photocraft/pull/5870#pullrequestreview-5551781697",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "f9de0a6abc78aa405b1ef46f5da6cba424106204"
+        }
+      }
+    },
+    {
+      "number": 5744,
+      "url": "https://github.com/storytold/photocraft/pull/5744",
+      "frozen_head": "50b1f6734799cf7b5d45dd84868976afd31aa711",
+      "current_head": "50b1f6734799cf7b5d45dd84868976afd31aa711",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-21T00:22:49Z",
+        "url": "https://github.com/storytold/photocraft/pull/5744#pullrequestreview-5593443602",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "50b1f6734799cf7b5d45dd84868976afd31aa711"
+        }
+      }
+    },
+    {
+      "number": 5650,
+      "url": "https://github.com/storytold/photocraft/pull/5650",
+      "frozen_head": "4b1bd6fb6d264f885cb9caa3b8a6578ee527bd7b",
+      "current_head": "4b1bd6fb6d264f885cb9caa3b8a6578ee527bd7b",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-21T00:12:41Z",
+        "url": "https://github.com/storytold/photocraft/pull/5650#pullrequestreview-5593380251",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "4b1bd6fb6d264f885cb9caa3b8a6578ee527bd7b"
+        }
+      }
+    },
+    {
+      "number": 5515,
+      "url": "https://github.com/storytold/photocraft/pull/5515",
+      "frozen_head": "375d4894a119b6cd5933d53e8fe7f506d2783392",
+      "current_head": "375d4894a119b6cd5933d53e8fe7f506d2783392",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-21T00:12:20Z",
+        "url": "https://github.com/storytold/photocraft/pull/5515#pullrequestreview-5593377843",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "375d4894a119b6cd5933d53e8fe7f506d2783392"
+        }
+      }
+    },
+    {
+      "number": 5493,
+      "url": "https://github.com/storytold/photocraft/pull/5493",
+      "frozen_head": "f97eb2849a68e1ed1c08c5b378770cf35cbcb72d",
+      "current_head": "67f57c3cf1e7de045aee03a305663d9560daa3e3",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": false,
+      "exclusions": [
+        "head changed; newer head remains excluded",
+        "latest FredApps review is not an approval of current head"
+      ],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-27T12:23:56Z",
+        "url": "https://github.com/storytold/photocraft/pull/5493#pullrequestreview-5666969724",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "f97eb2849a68e1ed1c08c5b378770cf35cbcb72d"
+        }
+      }
+    },
+    {
+      "number": 5453,
+      "url": "https://github.com/storytold/photocraft/pull/5453",
+      "frozen_head": "e22a9baedceefd97daffe84403b23c99c56d6919",
+      "current_head": "e22a9baedceefd97daffe84403b23c99c56d6919",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-17T20:51:16Z",
+        "url": "https://github.com/storytold/photocraft/pull/5453#pullrequestreview-5560030568",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "e22a9baedceefd97daffe84403b23c99c56d6919"
+        }
+      }
+    },
+    {
+      "number": 5270,
+      "url": "https://github.com/storytold/photocraft/pull/5270",
+      "frozen_head": "9db1c7ae1d48ce4f31622b5f9029c70c590842f8",
+      "current_head": "9db1c7ae1d48ce4f31622b5f9029c70c590842f8",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-20T13:29:14Z",
+        "url": "https://github.com/storytold/photocraft/pull/5270#pullrequestreview-5585703891",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "9db1c7ae1d48ce4f31622b5f9029c70c590842f8"
+        }
+      }
+    },
+    {
+      "number": 5176,
+      "url": "https://github.com/storytold/photocraft/pull/5176",
+      "frozen_head": "c96891c298151c5cb11a55928b9e1c27911f38bd",
+      "current_head": "c96891c298151c5cb11a55928b9e1c27911f38bd",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-20T13:39:04Z",
+        "url": "https://github.com/storytold/photocraft/pull/5176#pullrequestreview-5585830576",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "c96891c298151c5cb11a55928b9e1c27911f38bd"
+        }
+      }
+    },
+    {
+      "number": 5165,
+      "url": "https://github.com/storytold/photocraft/pull/5165",
+      "frozen_head": "27bc6e4b37b701480efa69559ab13eafc52bd94c",
+      "current_head": "27bc6e4b37b701480efa69559ab13eafc52bd94c",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-16T15:13:12Z",
+        "url": "https://github.com/storytold/photocraft/pull/5165#pullrequestreview-5549755629",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "27bc6e4b37b701480efa69559ab13eafc52bd94c"
+        }
+      }
+    },
+    {
+      "number": 5090,
+      "url": "https://github.com/storytold/photocraft/pull/5090",
+      "frozen_head": "61d9e8cc1aed29ed6bea0d0fd2702fa87c4f0206",
+      "current_head": "61d9e8cc1aed29ed6bea0d0fd2702fa87c4f0206",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-20T13:46:28Z",
+        "url": "https://github.com/storytold/photocraft/pull/5090#pullrequestreview-5585928498",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "61d9e8cc1aed29ed6bea0d0fd2702fa87c4f0206"
+        }
+      }
+    },
+    {
+      "number": 5082,
+      "url": "https://github.com/storytold/photocraft/pull/5082",
+      "frozen_head": "23bab3cc9204568aaeb012b9e1da70a2caacb879",
+      "current_head": "23bab3cc9204568aaeb012b9e1da70a2caacb879",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-18T09:23:19Z",
+        "url": "https://github.com/storytold/photocraft/pull/5082#pullrequestreview-5562323692",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "23bab3cc9204568aaeb012b9e1da70a2caacb879"
+        }
+      }
+    },
+    {
+      "number": 5010,
+      "url": "https://github.com/storytold/photocraft/pull/5010",
+      "frozen_head": "cc865221894e21f846d92b721cce7421ea338363",
+      "current_head": "cc865221894e21f846d92b721cce7421ea338363",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-20T13:51:11Z",
+        "url": "https://github.com/storytold/photocraft/pull/5010#pullrequestreview-5585991159",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "cc865221894e21f846d92b721cce7421ea338363"
+        }
+      }
+    },
+    {
+      "number": 4993,
+      "url": "https://github.com/storytold/photocraft/pull/4993",
+      "frozen_head": "81964dc5ef77a71a2ae2a938958cf3ed77d90719",
+      "current_head": "81964dc5ef77a71a2ae2a938958cf3ed77d90719",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-16T15:10:55Z",
+        "url": "https://github.com/storytold/photocraft/pull/4993#pullrequestreview-5549725641",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "81964dc5ef77a71a2ae2a938958cf3ed77d90719"
+        }
+      }
+    },
+    {
+      "number": 4992,
+      "url": "https://github.com/storytold/photocraft/pull/4992",
+      "frozen_head": "194a8976cd6c14441222b287b9b4f4841a0eb2f9",
+      "current_head": "194a8976cd6c14441222b287b9b4f4841a0eb2f9",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-16T15:10:53Z",
+        "url": "https://github.com/storytold/photocraft/pull/4992#pullrequestreview-5549725271",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "194a8976cd6c14441222b287b9b4f4841a0eb2f9"
+        }
+      }
+    },
+    {
+      "number": 4985,
+      "url": "https://github.com/storytold/photocraft/pull/4985",
+      "frozen_head": "1dc98f80f60e993f3edf20af815391b6a7e7add7",
+      "current_head": "1dc98f80f60e993f3edf20af815391b6a7e7add7",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-28T08:02:27Z",
+        "url": "https://github.com/storytold/photocraft/pull/4985#pullrequestreview-5679506261",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "1dc98f80f60e993f3edf20af815391b6a7e7add7"
+        }
+      }
+    },
+    {
+      "number": 4938,
+      "url": "https://github.com/storytold/photocraft/pull/4938",
+      "frozen_head": "63b7c921634835259139e4d3e7b9d3c396998b4d",
+      "current_head": "63b7c921634835259139e4d3e7b9d3c396998b4d",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-20T13:55:39Z",
+        "url": "https://github.com/storytold/photocraft/pull/4938#pullrequestreview-5586050980",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "63b7c921634835259139e4d3e7b9d3c396998b4d"
+        }
+      }
+    },
+    {
+      "number": 4890,
+      "url": "https://github.com/storytold/photocraft/pull/4890",
+      "frozen_head": "ab84cab7355ac999fb1be226950978bafec39605",
+      "current_head": "ab84cab7355ac999fb1be226950978bafec39605",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-21T00:37:37Z",
+        "url": "https://github.com/storytold/photocraft/pull/4890#pullrequestreview-5593534344",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "ab84cab7355ac999fb1be226950978bafec39605"
+        }
+      }
+    },
+    {
+      "number": 4883,
+      "url": "https://github.com/storytold/photocraft/pull/4883",
+      "frozen_head": "ea500486fb40511d3b4782dfacbb89fbff846d8a",
+      "current_head": "ea500486fb40511d3b4782dfacbb89fbff846d8a",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-20T10:27:22Z",
+        "url": "https://github.com/storytold/photocraft/pull/4883#pullrequestreview-5583810948",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "ea500486fb40511d3b4782dfacbb89fbff846d8a"
+        }
+      }
+    },
+    {
+      "number": 4783,
+      "url": "https://github.com/storytold/photocraft/pull/4783",
+      "frozen_head": "a9d62726bed607bc540db9d09c8dc1be4f9895aa",
+      "current_head": "a9d62726bed607bc540db9d09c8dc1be4f9895aa",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-20T10:26:56Z",
+        "url": "https://github.com/storytold/photocraft/pull/4783#pullrequestreview-5583807081",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "a9d62726bed607bc540db9d09c8dc1be4f9895aa"
+        }
+      }
+    },
+    {
+      "number": 4763,
+      "url": "https://github.com/storytold/photocraft/pull/4763",
+      "frozen_head": "f2804a7cf013519d9ba8bac1da3d96458c4f656b",
+      "current_head": "f2804a7cf013519d9ba8bac1da3d96458c4f656b",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-20T10:17:19Z",
+        "url": "https://github.com/storytold/photocraft/pull/4763#pullrequestreview-5583718187",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "f2804a7cf013519d9ba8bac1da3d96458c4f656b"
+        }
+      }
+    },
+    {
+      "number": 4742,
+      "url": "https://github.com/storytold/photocraft/pull/4742",
+      "frozen_head": "b7145b5a8afb85d0eef3922931d6749436966943",
+      "current_head": "b7145b5a8afb85d0eef3922931d6749436966943",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-16T15:12:19Z",
+        "url": "https://github.com/storytold/photocraft/pull/4742#pullrequestreview-5549743037",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "b7145b5a8afb85d0eef3922931d6749436966943"
+        }
+      }
+    },
+    {
+      "number": 4711,
+      "url": "https://github.com/storytold/photocraft/pull/4711",
+      "frozen_head": "db546ff4822a011a7915b66af3834f94c05767db",
+      "current_head": "db546ff4822a011a7915b66af3834f94c05767db",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-21T03:44:19Z",
+        "url": "https://github.com/storytold/photocraft/pull/4711#pullrequestreview-5594717250",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "db546ff4822a011a7915b66af3834f94c05767db"
+        }
+      }
+    },
+    {
+      "number": 4547,
+      "url": "https://github.com/storytold/photocraft/pull/4547",
+      "frozen_head": "a08f7a2295488c2692f68902835a693322017b64",
+      "current_head": "a08f7a2295488c2692f68902835a693322017b64",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-20T10:18:20Z",
+        "url": "https://github.com/storytold/photocraft/pull/4547#pullrequestreview-5583727527",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "a08f7a2295488c2692f68902835a693322017b64"
+        }
+      }
+    },
+    {
+      "number": 4305,
+      "url": "https://github.com/storytold/photocraft/pull/4305",
+      "frozen_head": "1b74873991dbb2e9803d228a969291f09c6f1032",
+      "current_head": "1b74873991dbb2e9803d228a969291f09c6f1032",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-21T03:52:30Z",
+        "url": "https://github.com/storytold/photocraft/pull/4305#pullrequestreview-5594762253",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "1b74873991dbb2e9803d228a969291f09c6f1032"
+        }
+      }
+    },
+    {
+      "number": 4042,
+      "url": "https://github.com/storytold/photocraft/pull/4042",
+      "frozen_head": "f05098562220a663d052ee3918fd36c8c3e17a51",
+      "current_head": "f05098562220a663d052ee3918fd36c8c3e17a51",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-20T10:20:17Z",
+        "url": "https://github.com/storytold/photocraft/pull/4042#pullrequestreview-5583745473",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "f05098562220a663d052ee3918fd36c8c3e17a51"
+        }
+      }
+    },
+    {
+      "number": 4035,
+      "url": "https://github.com/storytold/photocraft/pull/4035",
+      "frozen_head": "15ebf8fc940031abdf772e5fdd687c8b55938639",
+      "current_head": "15ebf8fc940031abdf772e5fdd687c8b55938639",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-21T04:40:10Z",
+        "url": "https://github.com/storytold/photocraft/pull/4035#pullrequestreview-5595033656",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "15ebf8fc940031abdf772e5fdd687c8b55938639"
+        }
+      }
+    },
+    {
+      "number": 4023,
+      "url": "https://github.com/storytold/photocraft/pull/4023",
+      "frozen_head": "303a5346fcb5961cf3a776024db58507b401e4ea",
+      "current_head": "303a5346fcb5961cf3a776024db58507b401e4ea",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-21T04:44:05Z",
+        "url": "https://github.com/storytold/photocraft/pull/4023#pullrequestreview-5595056228",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "303a5346fcb5961cf3a776024db58507b401e4ea"
+        }
+      }
+    },
+    {
+      "number": 3967,
+      "url": "https://github.com/storytold/photocraft/pull/3967",
+      "frozen_head": "3a77519ce2cef0fb60cebd4ea796d599f68868cb",
+      "current_head": "3a77519ce2cef0fb60cebd4ea796d599f68868cb",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-21T04:46:51Z",
+        "url": "https://github.com/storytold/photocraft/pull/3967#pullrequestreview-5595072511",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "3a77519ce2cef0fb60cebd4ea796d599f68868cb"
+        }
+      }
+    },
+    {
+      "number": 3874,
+      "url": "https://github.com/storytold/photocraft/pull/3874",
+      "frozen_head": "92488307722c3b840507827cac7ee9a88470fc8a",
+      "current_head": "92488307722c3b840507827cac7ee9a88470fc8a",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-21T04:51:17Z",
+        "url": "https://github.com/storytold/photocraft/pull/3874#pullrequestreview-5595098959",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "92488307722c3b840507827cac7ee9a88470fc8a"
+        }
+      }
+    },
+    {
+      "number": 3748,
+      "url": "https://github.com/storytold/photocraft/pull/3748",
+      "frozen_head": "c45d01eafe84e600bb28033a6853cc19c827b7bf",
+      "current_head": "c45d01eafe84e600bb28033a6853cc19c827b7bf",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-20T10:26:31Z",
+        "url": "https://github.com/storytold/photocraft/pull/3748#pullrequestreview-5583803054",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "c45d01eafe84e600bb28033a6853cc19c827b7bf"
+        }
+      }
+    },
+    {
+      "number": 3554,
+      "url": "https://github.com/storytold/photocraft/pull/3554",
+      "frozen_head": "dd21e325b515cbf67fd4a461ae5b3e1b195aa53d",
+      "current_head": "dd21e325b515cbf67fd4a461ae5b3e1b195aa53d",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-20T10:23:03Z",
+        "url": "https://github.com/storytold/photocraft/pull/3554#pullrequestreview-5583771056",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "dd21e325b515cbf67fd4a461ae5b3e1b195aa53d"
+        }
+      }
+    },
+    {
+      "number": 3520,
+      "url": "https://github.com/storytold/photocraft/pull/3520",
+      "frozen_head": "d36ec9a21e9c1ed70de2e0d185efd7e084644157",
+      "current_head": "d36ec9a21e9c1ed70de2e0d185efd7e084644157",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-20T10:19:14Z",
+        "url": "https://github.com/storytold/photocraft/pull/3520#pullrequestreview-5583735883",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "d36ec9a21e9c1ed70de2e0d185efd7e084644157"
+        }
+      }
+    },
+    {
+      "number": 3519,
+      "url": "https://github.com/storytold/photocraft/pull/3519",
+      "frozen_head": "807de6c043a512cb947d86b944c758b3db1277c7",
+      "current_head": "807de6c043a512cb947d86b944c758b3db1277c7",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-20T10:19:34Z",
+        "url": "https://github.com/storytold/photocraft/pull/3519#pullrequestreview-5583738841",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "807de6c043a512cb947d86b944c758b3db1277c7"
+        }
+      }
+    },
+    {
+      "number": 3464,
+      "url": "https://github.com/storytold/photocraft/pull/3464",
+      "frozen_head": "1eecd00b2dff4ae4c642269cec211cd06ce1c3aa",
+      "current_head": "1eecd00b2dff4ae4c642269cec211cd06ce1c3aa",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-21T08:42:37Z",
+        "url": "https://github.com/storytold/photocraft/pull/3464#pullrequestreview-5597090618",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "1eecd00b2dff4ae4c642269cec211cd06ce1c3aa"
+        }
+      }
+    },
+    {
+      "number": 3461,
+      "url": "https://github.com/storytold/photocraft/pull/3461",
+      "frozen_head": "5d8cb2a39ad70e31260f1f3fc2010ca132daff65",
+      "current_head": "5d8cb2a39ad70e31260f1f3fc2010ca132daff65",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-21T08:45:31Z",
+        "url": "https://github.com/storytold/photocraft/pull/3461#pullrequestreview-5597122170",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "5d8cb2a39ad70e31260f1f3fc2010ca132daff65"
+        }
+      }
+    },
+    {
+      "number": 3455,
+      "url": "https://github.com/storytold/photocraft/pull/3455",
+      "frozen_head": "d84fa7955d260505378a1a596ec80d602036319d",
+      "current_head": "d84fa7955d260505378a1a596ec80d602036319d",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-21T08:46:06Z",
+        "url": "https://github.com/storytold/photocraft/pull/3455#pullrequestreview-5597131410",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "d84fa7955d260505378a1a596ec80d602036319d"
+        }
+      }
+    },
+    {
+      "number": 3387,
+      "url": "https://github.com/storytold/photocraft/pull/3387",
+      "frozen_head": "58b83f42a4b39cf56751be53ec8d227efee70f68",
+      "current_head": "58b83f42a4b39cf56751be53ec8d227efee70f68",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-21T08:51:49Z",
+        "url": "https://github.com/storytold/photocraft/pull/3387#pullrequestreview-5597200428",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "58b83f42a4b39cf56751be53ec8d227efee70f68"
+        }
+      }
+    },
+    {
+      "number": 3345,
+      "url": "https://github.com/storytold/photocraft/pull/3345",
+      "frozen_head": "bfb691f84896fe68543980426632153dc4b4ea69",
+      "current_head": "bfb691f84896fe68543980426632153dc4b4ea69",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-21T08:57:39Z",
+        "url": "https://github.com/storytold/photocraft/pull/3345#pullrequestreview-5597265645",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "bfb691f84896fe68543980426632153dc4b4ea69"
+        }
+      }
+    },
+    {
+      "number": 3142,
+      "url": "https://github.com/storytold/photocraft/pull/3142",
+      "frozen_head": "e2ed234e654e574109ffcdb9756f8e8d1b8a00b2",
+      "current_head": "e2ed234e654e574109ffcdb9756f8e8d1b8a00b2",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-21T09:18:10Z",
+        "url": "https://github.com/storytold/photocraft/pull/3142#pullrequestreview-5597503674",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "e2ed234e654e574109ffcdb9756f8e8d1b8a00b2"
+        }
+      }
+    },
+    {
+      "number": 3139,
+      "url": "https://github.com/storytold/photocraft/pull/3139",
+      "frozen_head": "4da79e8d16ded8b51f06c1ac64e50ccba288274e",
+      "current_head": "4da79e8d16ded8b51f06c1ac64e50ccba288274e",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-21T09:17:33Z",
+        "url": "https://github.com/storytold/photocraft/pull/3139#pullrequestreview-5597496876",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "4da79e8d16ded8b51f06c1ac64e50ccba288274e"
+        }
+      }
+    },
+    {
+      "number": 2300,
+      "url": "https://github.com/storytold/photocraft/pull/2300",
+      "frozen_head": "ebf3777aec961d1815aa141d9987eaa645c2273f",
+      "current_head": "ebf3777aec961d1815aa141d9987eaa645c2273f",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-18T18:14:16Z",
+        "url": "https://github.com/storytold/photocraft/pull/2300#pullrequestreview-5564229610",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "ebf3777aec961d1815aa141d9987eaa645c2273f"
+        }
+      }
+    },
+    {
+      "number": 1991,
+      "url": "https://github.com/storytold/photocraft/pull/1991",
+      "frozen_head": "202266b90613280e16ae285b53dd4e10d5f0c7ac",
+      "current_head": "202266b90613280e16ae285b53dd4e10d5f0c7ac",
+      "state": "OPEN",
+      "isDraft": false,
+      "current_rollup": {
+        "state": "SUCCESS"
+      },
+      "currently_qualifies": true,
+      "exclusions": [],
+      "approval_receipt": {
+        "state": "APPROVED",
+        "submittedAt": "2026-10-21T09:51:24Z",
+        "url": "https://github.com/storytold/photocraft/pull/1991#pullrequestreview-5597895651",
+        "author": {
+          "login": "FredApps"
+        },
+        "commit": {
+          "oid": "202266b90613280e16ae285b53dd4e10d5f0c7ac"
+        }
+      }
+    }
+  ]
+}

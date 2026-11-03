@@ -13,8 +13,11 @@ use photocraft_doc::{Color, ColorMode, Document, SampleType, Size};
 use photocraft_engine::Session;
 use serde_json::Value;
 
-const USE: &str = "Use the embedded profile (instead of the working space)";
-const CONVERT: &str = "Convert document's colors to the working space";
+/// The embedded-profile choice uses the current built-in profile's displayed name.
+fn use_embedded() -> String {
+    format!("Use the embedded profile ({})", photocraft_cms::Builtin::AdobeRgbCompat.description())
+}
+const CONVERT: &str = "Convert to the working space (sRGB IEC61966-2.1)";
 const DISCARD: &str = "Discard the embedded profile (don't color manage)";
 
 /// A PNG tagged with Adobe RGB, which doesn't match the sRGB working space.
@@ -30,8 +33,8 @@ fn harness(background: bool) -> Harness<'static, PhotocraftApp> {
         PhotocraftApp::new(
             Session::new(),
             Services {
-                import: Some(Box::new(|name, bytes, depth| {
-                    photocraft_io::import_with_svg_group_depth(name, bytes, depth).map(|r| (r.document, r.warnings)).map_err(|e| e.to_string())
+                import: Some(Box::new(|name, bytes, opts| {
+                    photocraft_io::import_with_options(name, bytes, opts).map(|r| (r.document, r.warnings)).map_err(|e| e.to_string())
                 })),
                 ..Default::default()
             },
@@ -125,7 +128,7 @@ fn files_opened_together_ask_one_at_a_time_before_each_opens() {
             assert_eq!(docs(&h), answered, "background {background}: a file opens only after its prompt");
             let name = asked(&h);
             assert!(!answered.contains(&name), "background {background}: {name} asked twice");
-            answer(&mut h, USE);
+            answer(&mut h, &use_embedded());
             answered.push(name);
         }
         in_order(background, &answered);
@@ -135,40 +138,17 @@ fn files_opened_together_ask_one_at_a_time_before_each_opens() {
     }
 }
 
-/// The prompt reads in the interface language: its sentence, the Embedded and Working lines and
-/// the mode's name (French "RVB"). The file's name goes in as it is, braces and all.
+/// The prompt reads in the interface language: its sentence, the mode's name (French "RVB") and
+/// the choices, which name the embedded and working profiles. The file's name goes in as it is,
+/// braces and all.
 #[test]
 fn the_prompt_is_translated_and_still_names_its_file() {
     let png = adobe_png();
-    for (code, sentence, embedded, working) in [
-        (
-            "en",
-            "The document “shot {mode}.png” has an embedded color profile that does not match the current RGB working space.",
-            "Embedded: Adobe RGB",
-            "Working: sRGB",
-        ),
-        (
-            "de",
-            "Das Dokument „shot {mode}.png“ hat ein eingebettetes Farbprofil, das nicht zum aktuellen RGB-Arbeitsfarbraum passt.",
-            "Eingebettet: Adobe RGB",
-            "Arbeitsfarbraum: sRGB",
-        ),
-        (
-            "fr",
-            "Le document «NBSPshot {mode}.pngNBSP» a un profil colorimétrique incorporé qui ne correspond pas à l'espace de travail RVB actuel.",
-            "IncorporéNBSP: Adobe RGB",
-            "Espace de travailNBSP: sRGB",
-        ),
-        (
-            "ja",
-            "ドキュメント「shot {mode}.png」の埋め込みカラープロファイルは、現在の RGB 作業用スペースと一致しません。",
-            "埋め込み: Adobe RGB",
-            "作業用スペース: sRGB",
-        ),
-    ] {
+    let template = "The document “{name}” has an embedded color profile that does not match the current {mode} working space.";
+    for code in ["en", "de", "fr", "ja"] {
         let services = Services {
-            import: Some(Box::new(|name, bytes, depth| {
-                photocraft_io::import_with_svg_group_depth(name, bytes, depth).map(|r| (r.document, r.warnings)).map_err(|e| e.to_string())
+            import: Some(Box::new(|name, bytes, opts| {
+                photocraft_io::import_with_options(name, bytes, opts).map(|r| (r.document, r.warnings)).map_err(|e| e.to_string())
             })),
             ..Default::default()
         };
@@ -177,12 +157,16 @@ fn the_prompt_is_translated_and_still_names_its_file() {
         let lang = crate::i18n::Lang::from_code(code).unwrap();
         crate::i18n::with_language(lang, || app.open_file("/pics/shot {mode}.png", &png)).unwrap();
         assert!(app.session.documents().is_empty(), "{code}: held until answered");
-        let message = app.ui.dialogs[0].fields.get("message").and_then(Value::as_str).unwrap().to_string();
-        let lines: Vec<&str> = message.lines().collect();
-        assert_eq!(lines.len(), 3, "{code}: {message}");
-        assert_eq!(lines[0], sentence.replace("NBSP", "\u{a0}"), "{code}");
-        assert!(lines[1].starts_with(&embedded.replace("NBSP", "\u{a0}")), "{code}: {}", lines[1]);
-        assert!(lines[2].starts_with(&working.replace("NBSP", "\u{a0}")), "{code}: {}", lines[2]);
+        let fields = app.ui.dialogs[0].fields.clone();
+        let message = fields.get("message").and_then(Value::as_str).unwrap().to_string();
+        let expected = crate::i18n::fmt(crate::i18n::tr(lang, template), &[("mode", crate::i18n::tr(lang, "RGB")), ("name", "shot {mode}.png")]);
+        assert_eq!(message, expected, "{code}: one line, the profiles are on the choices");
+        if code == "en" {
+            assert_eq!(message, "The document “shot {mode}.png” has an embedded color profile that does not match the current RGB working space.");
+        }
+        let name = |k: &str| fields.get(k).and_then(Value::as_str).unwrap().to_string();
+        assert!(name("embedded").starts_with("Adobe RGB"), "{code}: {}", name("embedded"));
+        assert!(name("working").starts_with("sRGB"), "{code}: {}", name("working"));
     }
 }
 
@@ -197,7 +181,8 @@ fn a_held_file_still_reports_its_missing_fonts() {
     s.execute("type.create", serde_json::json!({"text": "Hi", "x": 2, "y": 12, "size": 10, "font": MISSING})).unwrap();
     let mut doc = (*s.active().unwrap().doc).clone();
     doc.icc_profile = Some(photocraft_cms::Builtin::from_id("adobe-rgb-compat").unwrap().profile().to_bytes());
-    let services = Services { import: Some(Box::new(move |_: &str, _: &[u8], _: usize| Ok((doc.clone(), Vec::new())))), ..Default::default() };
+    let services =
+        Services { import: Some(Box::new(move |_: &str, _: &[u8], _: &photocraft_io::ImportOptions| Ok((doc.clone(), Vec::new())))), ..Default::default() };
     let mut app = PhotocraftApp::new(Session::new(), services);
     app.run("edit.colorSettings", serde_json::json!({"askOnMismatch": true, "policyRgb": "preserve"})).unwrap();
     assert_eq!(app.open_bytes("poster.psd", b"x").unwrap(), vec![warning.clone()]);
@@ -210,6 +195,7 @@ fn a_held_file_still_reports_its_missing_fonts() {
 
 #[test]
 fn each_answer_applies_to_its_own_file() {
+    let use_embedded = use_embedded();
     for background in [false, true] {
         let mut h = harness(background);
         open_three(&mut h);
@@ -222,7 +208,7 @@ fn each_answer_applies_to_its_own_file() {
                 match name {
                     "a.png" => CONVERT,
                     "b.png" => DISCARD,
-                    _ => USE,
+                    _ => &use_embedded,
                 },
             );
             answered.push(name);
@@ -242,7 +228,7 @@ fn cancel_opens_neither_the_file_nor_the_ones_still_to_come() {
         open_three(&mut h);
         let first = asked(&h);
         in_order(background, &[first]);
-        answer(&mut h, USE);
+        answer(&mut h, &use_embedded());
         click(&mut h, "Cancel");
         settle(&mut h);
         assert!(h.state().ui.dialogs.is_empty(), "background {background}: no prompt left");
@@ -252,4 +238,41 @@ fn cancel_opens_neither_the_file_nor_the_ones_still_to_come() {
         settle(&mut h);
         assert_eq!(asked(&h), "d.png");
     }
+}
+
+/// "Remember this choice": one answer opens the files still waiting with it, saves it as the
+/// Color Settings policy and stops asking, so the next mismatched file opens without a prompt.
+#[test]
+fn remember_answers_the_waiting_files_and_stops_asking() {
+    for background in [false, true] {
+        let mut h = harness(background);
+        open_three(&mut h);
+        click(&mut h, CONVERT);
+        click(&mut h, "Remember this choice for future images");
+        click(&mut h, "OK");
+        assert!(h.state().ui.dialogs.is_empty(), "background {background}: no prompt is left");
+        let mut opened = docs(&h);
+        opened.sort();
+        assert_eq!(opened, ["a.png", "b.png", "c.png"], "background {background}");
+        for name in ["a.png", "b.png", "c.png"] {
+            assert_eq!(profile(&h, name).as_deref(), Some("sRGB IEC61966-2.1"), "background {background}: {name} converted");
+        }
+        let settings = &h.state().session.color.settings;
+        assert_eq!(settings.policy(photocraft_doc::ColorMode::Rgb), photocraft_engine::color_cmds::Policy::Convert);
+        assert!(!settings.ask_on_mismatch, "background {background}");
+        h.state_mut().open_file("/pics/d.png", &adobe_png()).unwrap();
+        settle(&mut h);
+        assert!(h.state().ui.dialogs.is_empty(), "background {background}: the next file doesn't ask");
+        assert_eq!(profile(&h, "d.png").as_deref(), Some("sRGB IEC61966-2.1"), "background {background}");
+    }
+}
+
+/// Without Remember, OK answers only the file asked about.
+#[test]
+fn without_remember_the_next_file_still_asks() {
+    let mut h = harness(false);
+    open_three(&mut h);
+    answer(&mut h, CONVERT);
+    assert_eq!(h.state().ui.dialogs.len(), 1);
+    assert!(h.state().session.color.settings.ask_on_mismatch);
 }

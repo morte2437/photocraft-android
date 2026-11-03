@@ -1,5 +1,52 @@
 # MCP conventions
 
+## Install and register
+
+From the repository root, with the [source-build prerequisites](development.md#prerequisites)
+installed, install the CLI independently of the build directory:
+
+```sh
+cargo install --path apps/photocraft-cli --locked
+# POSIX shells, for Cargo's default install location:
+export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
+photocraft-cli --help
+photocraft-cli mcp --help
+```
+
+Cargo installs a binary, not a symlink into `target/`, so it survives `cargo clean`.
+Re-run the install command after updating the checkout.
+By default the executable goes in `$CARGO_HOME/bin` (`~/.cargo/bin` when unset), or
+`%USERPROFILE%\.cargo\bin` on Windows. If you set `--root`, `CARGO_INSTALL_ROOT`, or
+Cargo's `install.root`, use that installation root's `bin` directory instead. Add it
+to the `PATH` inherited by the MCP client, not just an interactive shell, and restart
+the client after changing its environment.
+
+Register the installed command explicitly (replace `/work/project` with an existing folder):
+
+```sh
+claude mcp add photocraft -- photocraft-cli mcp --automation-read-root /work/project --automation-write-root /work/project
+```
+
+Other MCP clients can use this bare-name configuration:
+
+```json
+{"mcpServers":{"photocraft":{"command":"photocraft-cli","args":["mcp","--automation-read-root","/work/project","--automation-write-root","/work/project"]}}}
+```
+
+Linux `.deb` and `.rpm` packages already install `/usr/bin/photocraft-cli`; those users
+can skip the source install. Other release locations are listed in the
+[installed-release guide](../book/src/automation/mcp.md#from-an-installed-release).
+Installing the CLI does not start or register an MCP server automatically.
+
+If a client reports `ENOENT` or "Executable not found in $PATH", verify the install with
+`command -v photocraft-cli` (PowerShell: `Get-Command photocraft-cli`) in the client's
+environment. If that environment cannot be changed, set JSON `command` to the absolute
+installed binary path, not a literal `~` or `$HOME` expression. Avoid symlinks into
+`target/release`: cleaning the build directory breaks them. A source build alone does
+not put the CLI on `PATH`.
+
+## Start a session
+
 PhotoCraft follows the same conventions as FilmCraft #28. Start a headless session:
 
 ```sh
@@ -9,6 +56,27 @@ photocraft-cli mcp --automation-read-root /work/project --automation-write-root 
 Paths are relative to the corresponding root, or absolute paths beneath it; without a root that
 filesystem authority is absent. Bridge mode uses `--bridge` and `--control-token-file` as
 described in [development.md](development.md). UI tools require a running desktop app.
+
+A client has the full rights of the roots it is given: it can read any file below the read
+root, and `doc_save`, `doc_export` and the export tools can create files anywhere below the
+write root. `doc_save` and `doc_export` replace an existing file only when its extension is an
+image or document format PhotoCraft writes (PNG, JPEG, TIFF, PSD, PSB, .pcraft, OpenRaster,
+PDF, …) or its bytes are an image; anything else (`src/main.rs`, `.env`) is refused and left
+untouched. The multi-file exports (layers, data sets) never replace a file. An agent reads
+text from documents (layer names, metadata) that may try to steer it, so prefer a dedicated
+output folder as the write root over a whole project.
+
+Use absolute root paths in MCP client configurations, since a relative root is resolved from
+the client's launch directory. In bridge mode, configure roots on the **desktop app**; root
+flags on `photocraft-cli mcp --bridge` are rejected. Explicit `--control-token` and
+`--control-token-file` flags require `--bridge` (or `PHOTOCRAFT_CONTROL_PORT`) and are mutually
+exclusive. Bridge credentials can also come from `PHOTOCRAFT_CONTROL_TOKEN` or `PHOTOCRAFT_CONTROL_TOKEN_FILE`.
+
+MCP and `serve` launch options (all but `--help`/`-h`) take one non-empty value each and cannot
+be repeated. Missing values, stray positional arguments and options for the wrong mode are
+usage errors (exit 2), reported on stderr before the server starts; stdout stays available for
+protocol messages. For `serve`, explicit credential flags require `--port` (or
+`PHOTOCRAFT_CONTROL_PORT`); stdio needs no control token.
 
 ## Tools and resources
 
@@ -30,7 +98,7 @@ described in [development.md](development.md). UI tools require a running deskto
 Existing document/session/job/UI tools remain listed, including the documented
 `doc_render_preview` spelling. There are no hidden legacy aliases. Every tool has a title
 and all four annotation hints. Generic command/control tools conservatively advertise writes;
-file saves may replace existing targets. Hints do not grant permission.
+file saves may replace existing image and document files. Hints do not grant permission.
 
 After a failed batch, `completed` and per-step `results` report successful steps, not a
 rolled-back transaction. Inspect the document and its history with `doc_inspect`; commands

@@ -122,7 +122,7 @@ pub struct Reservation(u64);
 pub fn try_reserve(bytes: u64) -> Result<Reservation, String> {
     let (_, b, _) = stats();
     RESERVED
-        .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |n| n.checked_add(bytes).filter(|next| *next <= b.transient_bytes))
+        .try_update(Ordering::AcqRel, Ordering::Relaxed, |n| n.checked_add(bytes).filter(|next| *next <= b.transient_bytes))
         .map_err(|_| "not enough working memory; reduce the operation or wait for other jobs".to_string())?;
     Ok(Reservation(bytes))
 }
@@ -133,16 +133,51 @@ pub fn try_reserve(bytes: u64) -> Result<Reservation, String> {
 pub fn try_reserve_operation(bytes: u64) -> Result<Reservation, String> {
     let b = refresh();
     let (sample, _, _) = stats();
-    let available = if sample.total_bytes == 0 { b.transient_bytes } else { b.effective_process_bytes.saturating_sub(sample.process_resident_bytes) };
-    RESERVED
-        .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |n| n.checked_add(bytes).filter(|next| *next <= available))
-        .map_err(|_| "not enough working memory for this operation; reduce its region or use a streaming format".to_string())?;
-    Ok(Reservation(bytes))
+    // Resident tiles are evictable when spilling is on, so only the untiled part of RSS is
+    // charged. The transient allowance is always admissible: it is what the budget reserves
+    // for working sets, so normal-sized operations are never refused by a high RSS sample.
+    let evictable = if crate::spill::enabled() { crate::spill::stats().resident_bytes as u64 } else { 0 };
+    let untiled = sample.process_resident_bytes.saturating_sub(evictable);
+    let available = if sample.total_bytes == 0 { b.transient_bytes } else { b.effective_process_bytes.saturating_sub(untiled).max(b.transient_bytes) };
+    let refused = || "not enough working memory for this operation; reduce its region or use a streaming format".to_string();
+    if bytes > available {
+        return Err(refused());
+    }
+    // It fits on its own: wait (bounded) for concurrent operations to return their working
+    // sets instead of failing an operation that only overlapped another one.
+    #[cfg(not(target_arch = "wasm32"))]
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        if RESERVED.try_update(Ordering::AcqRel, Ordering::Relaxed, |n| n.checked_add(bytes).filter(|next| *next <= available)).is_ok() {
+            return Ok(Reservation(bytes));
+        }
+        #[cfg(target_arch = "wasm32")]
+        return Err(refused());
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return Err(refused());
+            }
+            let guard = RELEASED.0.lock().unwrap_or_else(PoisonError::into_inner);
+            // Re-checked after the wake-up; a missed notification costs at most this slice.
+            let slice = deadline.saturating_duration_since(now).min(std::time::Duration::from_millis(50));
+            drop(RELEASED.1.wait_timeout(guard, slice).unwrap_or_else(PoisonError::into_inner));
+        }
+    }
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+static RELEASED: (Mutex<()>, std::sync::Condvar) = (Mutex::new(()), std::sync::Condvar::new());
 
 impl Drop for Reservation {
     fn drop(&mut self) {
         RESERVED.fetch_sub(self.0, Ordering::AcqRel);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let _guard = RELEASED.0.lock().unwrap_or_else(PoisonError::into_inner);
+            RELEASED.1.notify_all();
+        }
     }
 }
 
@@ -168,6 +203,19 @@ mod tests {
         let b = budgets(Policy { percent: Some(255), absolute_bytes: u64::MAX }, Snapshot { total_bytes: u64::MAX, ..Snapshot::default() }, u64::MAX);
         assert!(b.process_ceiling_bytes < u64::MAX);
         assert_eq!(b.tile_bytes, MIB);
+    }
+    #[test]
+    fn an_operation_that_fits_alone_waits_for_a_concurrent_one() {
+        let available = refresh().transient_bytes;
+        let first = try_reserve_operation(available / 2 + 1).unwrap();
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            drop(first);
+        });
+        let second = try_reserve_operation(available / 2 + 1);
+        releaser.join().unwrap();
+        assert!(second.is_ok(), "overlapping work is serialized, not refused");
+        assert!(try_reserve_operation(u64::MAX).is_err(), "work that can never fit is refused at once");
     }
     #[test]
     fn reservations_are_bounded_and_returned() {

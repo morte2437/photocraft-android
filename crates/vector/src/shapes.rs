@@ -111,6 +111,101 @@ pub fn polygon(x: f64, y: f64, w: f64, h: f64, sides: u32, star_ratio: f64) -> P
     Path::new(vec![Subpath::polygon(&pts)])
 }
 
+/// A rounded vertex: see [`fillet`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Fillet {
+    /// The arc's centre and its tangent points on the edge to the previous and the next vertex.
+    pub centre: [f64; 2],
+    pub from: [f64; 2],
+    pub to: [f64; 2],
+    /// The radius used (the one asked for, capped at what the edges allow).
+    pub radius: f64,
+    /// Unit direction from the vertex towards the arc's centre, and half the vertex's angle.
+    pub bisector: [f64; 2],
+    pub half_angle: f64,
+}
+
+/// Where a vertex's rounding sits: the vertex `v` between neighbours `prev` and `next`, rounded
+/// with radius `r`, capped so its tangent points stay within half of each edge (two neighbouring
+/// roundings never overlap). `None` for `r <= 0` or a degenerate vertex (a zero-length edge, or
+/// a straight or folded angle).
+pub fn fillet(prev: [f64; 2], v: [f64; 2], next: [f64; 2], r: f64) -> Option<Fillet> {
+    let unit = |a: [f64; 2], b: [f64; 2]| {
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let l = dx.hypot(dy);
+        (l > 1e-9).then(|| ([dx / l, dy / l], l))
+    };
+    if r.is_nan() || r <= 0.0 {
+        return None;
+    }
+    let (u1, l1) = unit(v, prev)?;
+    let (u2, l2) = unit(v, next)?;
+    let cos = (u1[0] * u2[0] + u1[1] * u2[1]).clamp(-1.0, 1.0);
+    let half = cos.acos() / 2.0;
+    if !(1e-6..=std::f64::consts::FRAC_PI_2 - 1e-6).contains(&half) {
+        return None;
+    }
+    let r = r.min(l1.min(l2) / 2.0 * half.tan());
+    let t = r / half.tan();
+    let (bx, by) = (u1[0] + u2[0], u1[1] + u2[1]);
+    let bl = bx.hypot(by);
+    if bl < 1e-9 {
+        return None;
+    }
+    let bisector = [bx / bl, by / bl];
+    let c = r / half.sin();
+    Some(Fillet {
+        centre: [v[0] + bisector[0] * c, v[1] + bisector[1] * c],
+        from: [v[0] + u1[0] * t, v[1] + u1[1] * t],
+        to: [v[0] + u2[0] * t, v[1] + u2[1] * t],
+        radius: r,
+        bisector,
+        half_angle: half,
+    })
+}
+
+/// `path` (closed subpaths of corner knots, as [`polygon`] makes) with every vertex rounded by a
+/// circular arc of radius `r` tangent to both its edges, each capped as [`fillet`] does, like
+/// Photoshop's rounded triangles and polygons. `r <= 0` leaves it sharp.
+pub fn round_corners(path: Path, r: f64) -> Path {
+    if r.is_nan() || r <= 0.0 {
+        return path;
+    }
+    let subpaths = path
+        .subpaths
+        .into_iter()
+        .map(|sp| {
+            let n = sp.knots.len();
+            if n < 3 || !sp.closed {
+                return sp;
+            }
+            let pt = |i: usize| sp.knots.get(i % n).map_or([0.0; 2], |k| [k.anchor.x, k.anchor.y]);
+            let mut knots = Vec::with_capacity(n * 2);
+            for i in 0..n {
+                let (prev, v, next) = (pt(i + n - 1), pt(i), pt(i + 1));
+                let Some(f) = fillet(prev, v, next, r) else {
+                    knots.push(Knot::corner(v[0], v[1]));
+                    continue;
+                };
+                // The arc as one cubic: handles 4/3 tan(sweep/4) r long, along the tangents
+                // towards the vertex; the sweep is pi minus the vertex's angle.
+                let sweep = std::f64::consts::PI - 2.0 * f.half_angle;
+                let h = 4.0 / 3.0 * (sweep / 4.0).tan() * f.radius;
+                let toward = |a: [f64; 2]| {
+                    let (dx, dy) = (v[0] - a[0], v[1] - a[1]);
+                    let l = dx.hypot(dy).max(1e-12);
+                    Point::new(a[0] + dx / l * h, a[1] + dy / l * h)
+                };
+                let (from, to) = (Point::new(f.from[0], f.from[1]), Point::new(f.to[0], f.to[1]));
+                knots.push(Knot { anchor: from, in_ctrl: from, out_ctrl: toward(f.from), smooth: false });
+                knots.push(Knot { anchor: to, in_ctrl: toward(f.to), out_ctrl: to, smooth: false });
+            }
+            Subpath { knots, ..sp }
+        })
+        .collect();
+    Path { subpaths, ..path }
+}
+
 /// A line drawn as a filled bar of `weight` px from `a` to `b`.
 pub fn line(a: (f64, f64), b: (f64, f64), weight: f64) -> Path {
     let (dx, dy) = (b.0 - a.0, b.1 - a.1);
@@ -120,19 +215,163 @@ pub fn line(a: (f64, f64), b: (f64, f64), weight: f64) -> Path {
     Path::new(vec![Subpath::polygon(&[(a.0 + nx, a.1 + ny), (b.0 + nx, b.1 + ny), (b.0 - nx, b.1 - ny), (a.0 - nx, a.1 - ny)])])
 }
 
+/// A filled vector line with optional arrowheads at its endpoints (#6408).
+/// `width` and `length` measure the head in document pixels, independently of the shaft weight.
+/// `concavity` is 0..100 percent: 0 has a flat rear edge, 100 a deep V-shaped notch.
+/// The shaft stops at the notch, so a concave head remains concave after filling.
+// The arguments correspond to the stored LiveShape::ArrowLine parameters.
+#[allow(clippy::too_many_arguments)]
+pub fn arrow_line(a: (f64, f64), b: (f64, f64), weight: f64, start: bool, end: bool, width: f64, length: f64, concavity: f64) -> Path {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let distance = dx.hypot(dy);
+    if !distance.is_finite() || !weight.is_finite() {
+        return Path::default();
+    }
+    // Without arrowheads, use the ordinary line even for segments shorter than 1 px.
+    if !start && !end {
+        return line(a, b, weight);
+    }
+    if distance < 1.0 {
+        return Path::default();
+    }
+    let (ux, uy) = (dx / distance, dy / distance);
+    let (vx, vy) = (-uy, ux);
+    let size = (if length.is_finite() { length.max(1.0) } else { 1.0 }).min(distance * if start && end { 0.49 } else { 0.9 });
+    let half = (if width.is_finite() { width.max(1.0) } else { 1.0 }) / 2.0;
+    let requested_notch = concavity.clamp(0.0, 100.0) / 100.0;
+    // Preserve 0..50%. Beyond that compress the usable range so the head never collapses.
+    let max_notch = 0.75;
+    let notch = if requested_notch <= 0.5 { requested_notch } else { 0.5 + (requested_notch - 0.5) * (max_notch - 0.5) / 0.5 };
+    // Put the shaft up to the notch, leaving the head's concave edges visible.
+    let inner = size * (1.0 - notch);
+    let shaft_a = if start { (a.0 + ux * inner, a.1 + uy * inner) } else { a };
+    let shaft_b = if end { (b.0 - ux * inner, b.1 - uy * inner) } else { b };
+    let hw = weight.max(0.1) / 2.0;
+    let mut pieces = vec![Subpath::polygon(&[
+        (shaft_a.0 + vx * hw, shaft_a.1 + vy * hw),
+        (shaft_b.0 + vx * hw, shaft_b.1 + vy * hw),
+        (shaft_b.0 - vx * hw, shaft_b.1 - vy * hw),
+        (shaft_a.0 - vx * hw, shaft_a.1 - vy * hw),
+    ])];
+    // The tip, both outer corners of the head and the recessed midpoint.
+    // Positive `sign` points towards the tail of the head (away from its tip).
+    let mut head = |tip: (f64, f64), sign: f64| {
+        let base = (tip.0 + ux * sign * size, tip.1 + uy * sign * size);
+        let rear_middle = (base.0 - ux * sign * size * notch, base.1 - uy * sign * size * notch);
+        pieces.push(Subpath::polygon(&[tip, (base.0 + vx * half, base.1 + vy * half), rear_middle, (base.0 - vx * half, base.1 - vy * half)]));
+    };
+    if start {
+        head(a, 1.0);
+    }
+    if end {
+        head(b, -1.0);
+    }
+    // Never return non-finite arrow geometry.
+    // Large but valid scaled arrowheads remain unchanged.
+    if pieces.iter().flat_map(|sp| &sp.knots).any(|k| !k.anchor.x.is_finite() || !k.anchor.y.is_finite()) {
+        return Path::default();
+    }
+    Path::new(pieces)
+}
+
 /// The path of a live shape.
 pub fn live_path(s: &LiveShape) -> Path {
     match s {
         LiveShape::Rect { rect: [x, y, w, h], radii } => rounded_rect(*x, *y, *w, *h, *radii),
         LiveShape::Ellipse { rect: [x, y, w, h] } => ellipse(*x, *y, *w, *h),
-        LiveShape::Polygon { rect: [x, y, w, h], sides, star_ratio } => polygon(*x, *y, *w, *h, *sides, *star_ratio),
+        LiveShape::Polygon { rect: [x, y, w, h], sides, star_ratio, corner_radius } => {
+            round_corners(polygon(*x, *y, *w, *h, *sides, *star_ratio), *corner_radius)
+        }
         LiveShape::Line { from, to, weight } => line((from[0], from[1]), (to[0], to[1]), *weight),
+        LiveShape::ArrowLine { from, to, weight, start, end, width, length, concavity } => {
+            arrow_line((from[0], from[1]), (to[0], to[1]), *weight, *start, *end, *width, *length, *concavity)
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejects_non_finite_arrowhead_coordinates() {
+        let path = arrow_line((1.5e308, 0.0), (1.5e308, 200.0), 8.0, false, true, f64::MAX, 50.0, 0.0);
+        assert!(path.subpaths.is_empty());
+    }
+
+    #[test]
+    fn preserves_scaled_head_dimensions_above_ui_limit() {
+        let path = arrow_line((0.0, 0.0), (20000.0, 0.0), 8.0, false, true, 5200.0, 5200.0, 0.0);
+        let head = &path.subpaths[1].knots;
+        assert!((head[1].anchor.x - 14800.0).abs() < 1e-6);
+        assert!((head[1].anchor.y - 2600.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn live_arrow_can_be_regenerated_after_edit() {
+        let shape =
+            LiveShape::ArrowLine { from: [10.0, 10.0], to: [200.0, 10.0], weight: 4.0, start: false, end: true, width: 31.0, length: 31.0, concavity: 50.0 };
+        let before = live_path(&shape);
+        assert_eq!(before.subpaths.len(), 2);
+        let mut edited = shape;
+        if let LiveShape::ArrowLine { width, .. } = &mut edited {
+            *width = 60.0;
+        }
+        let after = live_path(&edited);
+        assert_ne!(before, after);
+    }
+    /// The point at `t` of the cubic leaving `a` towards `b`.
+    fn at(a: &Knot, b: &Knot, t: f64) -> [f64; 2] {
+        let u = 1.0 - t;
+        let w = [u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t];
+        let p = [a.anchor, a.out_ctrl, b.in_ctrl, b.anchor];
+        [p.iter().zip(w).map(|(p, w)| p.x * w).sum(), p.iter().zip(w).map(|(p, w)| p.y * w).sum()]
+    }
+
+    #[test]
+    fn a_rounded_triangle_has_one_arc_per_vertex_on_a_true_circle() {
+        let sharp = polygon(0.0, 0.0, 300.0, 300.0, 3, 1.0);
+        assert_eq!(sharp.subpaths[0].knots.len(), 3);
+        let p = round_corners(sharp.clone(), 20.0);
+        let k = &p.subpaths[0].knots;
+        assert_eq!(k.len(), 6, "two knots per rounded vertex");
+        // Each arc stays 20 px from its centre along its length (one cubic, within 0.1 px).
+        let verts: Vec<[f64; 2]> = sharp.subpaths[0].knots.iter().map(|k| [k.anchor.x, k.anchor.y]).collect();
+        for i in 0..3 {
+            let f = fillet(verts[(i + 2) % 3], verts[i], verts[(i + 1) % 3], 20.0).unwrap();
+            assert!((f.radius - 20.0).abs() < 1e-9);
+            assert_eq!([k[2 * i].anchor.x, k[2 * i].anchor.y], f.from);
+            for t in [0.25, 0.5, 0.75] {
+                let q = at(&k[2 * i], &k[2 * i + 1], t);
+                let d = (q[0] - f.centre[0]).hypot(q[1] - f.centre[1]);
+                assert!((d - 20.0).abs() < 0.1, "vertex {i} t {t}: {d}");
+            }
+        }
+        // The edges between the arcs stay straight.
+        assert_eq!((k[1].out_ctrl, k[2].in_ctrl), (k[1].anchor, k[2].anchor));
+    }
+
+    #[test]
+    fn huge_radii_are_capped_and_zero_stays_sharp() {
+        let sharp = polygon(0.0, 0.0, 100.0, 100.0, 6, 1.0);
+        assert_eq!(round_corners(sharp.clone(), 0.0), sharp);
+        assert_eq!(round_corners(sharp.clone(), f64::NAN), sharp);
+        let p = round_corners(sharp, 1.0e9);
+        // Capped: the tangent points of neighbouring vertices meet halfway along each edge.
+        let k = &p.subpaths[0].knots;
+        assert_eq!(k.len(), 12);
+        for w in k.windows(2).skip(1).step_by(2) {
+            let d = (w[0].anchor.x - w[1].anchor.x).hypot(w[0].anchor.y - w[1].anchor.y);
+            assert!(d < 1e-6, "no straight left between arcs: {d}");
+        }
+        assert!(k.iter().all(|k| k.anchor.x.is_finite() && k.anchor.y.is_finite()));
+    }
+
+    #[test]
+    fn a_star_rounds_its_inner_vertices_too() {
+        let p = live_path(&LiveShape::Polygon { rect: [0.0, 0.0, 200.0, 200.0], sides: 5, star_ratio: 0.5, corner_radius: 6.0 });
+        assert_eq!(p.subpaths[0].knots.len(), 20);
+    }
 
     #[test]
     fn rounded_rect_knots() {
@@ -165,5 +404,35 @@ mod tests {
         assert_eq!(polygon(0.0, 0.0, 10.0, 10.0, 6, 1.0).subpaths[0].knots.len(), 6);
         let top = polygon(0.0, 0.0, 10.0, 10.0, 3, 1.0).subpaths[0].knots[0].anchor;
         assert!((top.x - 5.0).abs() < 1e-9 && top.y.abs() < 1e-9);
+    }
+}
+
+#[cfg(test)]
+mod line_arrow_6408_tests {
+    use super::*;
+
+    #[test]
+    fn short_line_without_heads_matches_regular_line() {
+        let a = (0.0, 0.0);
+        let b = (0.25, 0.0);
+        assert_eq!(arrow_line(a, b, 5.0, false, false, 52.0, 50.0, 0.0), line(a, b, 5.0));
+    }
+
+    #[test]
+    fn plain_line_has_single_subpath() {
+        let p = arrow_line((0.0, 0.0), (100.0, 0.0), 5.0, false, false, 52.0, 50.0, 0.0);
+        assert_eq!(p.subpaths.len(), 1);
+    }
+
+    #[test]
+    fn start_end_arrowheads_add_two_vector_subpaths() {
+        let p = arrow_line((0.0, 0.0), (100.0, 0.0), 5.0, true, true, 52.0, 50.0, 25.0);
+        assert_eq!(p.subpaths.len(), 3);
+    }
+
+    #[test]
+    fn degenerate_line_returns_empty_path() {
+        let p = arrow_line((2.0, 2.0), (2.0, 2.0), 5.0, true, true, 52.0, 50.0, 0.0);
+        assert!(p.subpaths.is_empty());
     }
 }

@@ -13,4 +13,12 @@ AddType text/javascript .js
   <FilesMatch "^index\.html$">
     Header set Cache-Control "no-cache"
   </FilesMatch>
+  # app/: the app's loader and its list of parts keep their names from release to release; the
+  # parts (the app's wasm, gzipped and cut up) carry a content hash.
+  <FilesMatch "^(photocraft-web\.js|parts\.txt)$">
+    Header set Cache-Control "no-cache"
+  </FilesMatch>
+  <FilesMatch "\.part-[a-z]+$">
+    Header set Cache-Control "public, max-age=31536000, immutable"
+  </FilesMatch>
 </IfModule>

@@ -6,10 +6,113 @@ use crate::stream::{ObjId, Tag, Value};
 
 /// Nodes per curve object.
 const MAX_NODES: usize = 4_000_000;
+const MAX_COMPOUND_DEPTH: usize = 64;
+const MAX_OUTLINE_VISITS: usize = 500_000;
+const MAX_OUTLINE_POINTS: usize = 4_000_000;
+/// Curve records decoded across the document. A shared curve is decoded again for each
+/// occurrence, and records that only move handles add no points.
+const MAX_OUTLINE_RECORDS: usize = 8_000_000;
+
+/// Geometry is expanded per occurrence, since parametric outlines can depend on their world
+/// transform. Bound work across the entire document instead of memoizing by object id alone.
+pub(crate) struct Budget {
+    visits_left: usize,
+    points_left: usize,
+    records_left: usize,
+}
+
+impl Default for Budget {
+    fn default() -> Self {
+        Self { visits_left: MAX_OUTLINE_VISITS, points_left: MAX_OUTLINE_POINTS, records_left: MAX_OUTLINE_RECORDS }
+    }
+}
+
+impl Budget {
+    /// Charge an outline call or a raw compound operand slot before inspecting it.
+    fn visit(&mut self) -> Result<(), &'static str> {
+        self.visits_left = self.visits_left.checked_sub(1).ok_or("compound geometry budget exhausted")?;
+        Ok(())
+    }
+
+    /// Charge curve records before they are decoded.
+    fn records(&mut self, n: usize) -> Result<(), &'static str> {
+        self.records_left = self.records_left.checked_sub(n).ok_or("curve geometry budget exhausted")?;
+        Ok(())
+    }
+
+    /// Charge both leaf geometry and each copy into a compound before allocating that copy.
+    fn path(&mut self, path: &Path) -> Result<(), &'static str> {
+        let points = path.subpaths.iter().fold(0usize, |n, s| n.saturating_add(1).saturating_add(s.segments.len().saturating_mul(3)));
+        let Some(left) = self.points_left.checked_sub(points) else {
+            // Do not rebuild an expensive leaf for every subsequent root after exhaustion.
+            self.visits_left = 0;
+            return Err("compound geometry budget exhausted");
+        };
+        self.points_left = left;
+        Ok(())
+    }
+}
 
 /// The node-space outline of a curve, shape or compound node, and whether it fills even-odd.
 /// Instances (master-page or symbol copies) take the geometry of their master.
 pub(crate) fn outline(r: &mut Reader, id: ObjId, class: Tag, world: Affine) -> Option<(Path, bool)> {
+    match outline_inner(r, id, class, world, &mut Vec::new()) {
+        Ok(path) => path,
+        Err(reason) => {
+            r.warn(reason);
+            None
+        }
+    }
+}
+
+fn outline_inner(r: &mut Reader, id: ObjId, class: Tag, world: Affine, active: &mut Vec<ObjId>) -> Result<Option<(Path, bool)>, &'static str> {
+    r.geometry_budget.visit()?;
+    if active.contains(&id) {
+        return Err("cyclic compound shape");
+    }
+    // Independent of the layer-tree limit: Comp operands do not pass through Reader::node.
+    if active.len() >= MAX_COMPOUND_DEPTH {
+        return Err("compound depth exceeds 64 levels");
+    }
+    if class != Tag::of(b"Comp") {
+        let path = leaf_outline(r, id, class, world);
+        if let Some((path, _)) = &path {
+            r.geometry_budget.path(path)?;
+        }
+        return Ok(path);
+    }
+    active.push(id);
+    let result = compound(r, id, world, active);
+    active.pop();
+    result
+}
+
+fn compound(r: &mut Reader, id: ObjId, world: Affine, active: &mut Vec<ObjId>) -> Result<Option<(Path, bool)>, &'static str> {
+    let s = r.s;
+    // One path of all operands' contours, filled even-odd, as before. A safety failure rejects
+    // the whole outline: a partial add/subtract shape could silently change its meaning.
+    let mut path = Path::default();
+    // Charge every slot before filtering nulls or malformed values. Stream::objs would scan
+    // and allocate the whole list first, repeating uncharged work for each shared occurrence.
+    let children = if let Some(Value::Array(children)) = s.field(id, b"Chld") { children.as_slice() } else { &[] };
+    for child in children {
+        r.geometry_budget.visit()?;
+        let Value::Obj(Some(c)) = child else { continue };
+        let c = *c;
+        let local = s.floats::<6>(c, b"Xfrm").map(Affine::from_xfrm).unwrap_or(Affine::IDENTITY);
+        let Some(class) = s.class(c) else { return Ok(None) };
+        if s.enumeration(c, b"ComO").is_some_and(|(op, _)| op != 0 && op != 2) {
+            r.warn("compound shapes that intersect or exclude (imported as add)");
+        }
+        if let Some((p, _)) = outline_inner(r, c, class, local.then(world), active)? {
+            r.geometry_budget.path(&p)?;
+            path.subpaths.extend(p.transformed(local).subpaths);
+        }
+    }
+    Ok(Some((path, true)))
+}
+
+fn leaf_outline(r: &mut Reader, id: ObjId, class: Tag, world: Affine) -> Option<(Path, bool)> {
     let s = r.s;
     match &class.0.to_be_bytes() {
         b"PCrv" | b"TxtC" => {
@@ -17,23 +120,6 @@ pub(crate) fn outline(r: &mut Reader, id: ObjId, class: Tag, world: Affine) -> O
             let path = curves(r, crvs)?;
             let multi = path.subpaths.len() > 1;
             Some((path, multi))
-        }
-        b"Comp" => {
-            // One path of all the operands' contours in the compound's space, filled even-odd: this
-            // matches add and subtract operands in every public sample; a true union of overlapping
-            // added operands would differ.
-            let mut path = Path::default();
-            for c in s.objs(id, b"Chld") {
-                let local = s.floats::<6>(c, b"Xfrm").map(Affine::from_xfrm).unwrap_or(Affine::IDENTITY);
-                let class = s.class(c)?;
-                if s.enumeration(c, b"ComO").is_some_and(|(op, _)| op != 0 && op != 2) {
-                    r.warn("compound shapes that intersect or exclude (imported as add)");
-                }
-                if let Some((p, _)) = outline(r, c, class, local.then(world)) {
-                    path.subpaths.extend(p.transformed(local).subpaths);
-                }
-            }
-            Some((path, true))
         }
         _ => {
             let (shape, box_owner) = match s.obj(id, b"Shpe") {
@@ -62,7 +148,21 @@ pub(crate) fn curves(r: &mut Reader, crvs: ObjId) -> Option<Path> {
         Value::UInt(n) => usize::try_from(*n).ok()?,
         _ => return None,
     };
-    let corners = s.obj(crvs, b"CnrD").and_then(|c| corner_radii(s.positional(c).collect()));
+    let corners = match s.obj(crvs, b"CnrD") {
+        Some(c) => {
+            let fields: Vec<&Value> = s.positional(c).collect();
+            // The corner arrays are scanned for every occurrence of a shared curve, so charge
+            // them like records before they are walked.
+            if let Some(len) = fields.get(1).and_then(|v| v.array_len())
+                && let Err(reason) = r.geometry_budget.records(len)
+            {
+                r.warn(reason);
+                return None;
+            }
+            corner_radii(fields)
+        }
+        None => None,
+    };
     let mut path = Path::default();
     let mut seen = 0usize;
     for index in 0..count {
@@ -70,13 +170,23 @@ pub(crate) fn curves(r: &mut Reader, crvs: ObjId) -> Option<Path> {
             Value::Bool(b) => *b,
             _ => return None,
         };
-        let Value::Array(records) = fields.next()? else { return None };
-        seen = seen.checked_add(records.len())?;
+        let records = fields.next()?;
+        let len = records.array_len()?;
+        seen = seen.checked_add(len)?;
         if seen > MAX_NODES {
             r.warn("curves with more than four million nodes");
             return None;
         }
-        let anchors = anchors(records)?;
+        if let Err(reason) = r.geometry_budget.records(len) {
+            r.warn(reason);
+            return None;
+        }
+        let anchors = match records {
+            Value::Array(a) => anchors(a.iter().map(record)),
+            Value::Records { size: 18, data } => anchors(data.as_chunks::<18>().0.iter().map(record18)),
+            // Records of another width are no curve nodes.
+            _ => anchors(std::iter::repeat_n(None, len)),
+        }?;
         let radii = if index == 0 { corners.as_ref() } else { None };
         if let Some(sp) = subpath(&anchors, closed, radii) {
             path.subpaths.push(sp);
@@ -98,22 +208,24 @@ struct Anchor {
 
 fn record(v: &Value) -> Option<(Point, u8)> {
     let Value::Bytes(b) = v else { return None };
-    if b.len() != 18 {
-        return None;
-    }
-    let x = f64::from_le_bytes(b.get(0..8)?.try_into().ok()?);
-    let y = f64::from_le_bytes(b.get(8..16)?.try_into().ok()?);
+    record18(b.as_slice().try_into().ok()?)
+}
+
+/// One 18-byte curve node: f64 x, f64 y, u8 kind, u8 role.
+fn record18(b: &[u8; 18]) -> Option<(Point, u8)> {
+    let x = f64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]);
+    let y = f64::from_le_bytes([b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]]);
     if !x.is_finite() || !y.is_finite() {
         return None;
     }
-    Some((Point { x, y }, *b.get(17)?))
+    Some((Point { x, y }, b[17]))
 }
 
-fn anchors(records: &[Value]) -> Option<Vec<Anchor>> {
+fn anchors(records: impl ExactSizeIterator<Item = Option<(Point, u8)>>) -> Option<Vec<Anchor>> {
     let mut out: Vec<Anchor> = Vec::with_capacity(records.len() / 3 + 1);
     let mut pending_in = None;
-    for (i, v) in records.iter().enumerate() {
-        let (p, role) = record(v)?;
+    for (i, v) in records.enumerate() {
+        let (p, role) = v?;
         match role {
             0 => {
                 out.push(Anchor { p, inh: pending_in.take(), out: None, record: i });
@@ -134,7 +246,16 @@ fn anchors(records: &[Value]) -> Option<Vec<Anchor>> {
 fn subpath(anchors: &[Anchor], closed: bool, radii: Option<&Vec<(usize, f64)>>) -> Option<SubPath> {
     let first = anchors.first()?;
     if let Some(radii) = radii.filter(|r| !r.is_empty()) {
-        let corner = |a: &Anchor| radii.iter().filter(|(rec, _)| *rec == a.record).map(|(_, r)| *r).fold(0.0, f64::max);
+        // Index each record's maximum radius once. Scanning the whole radius list per anchor
+        // was O(anchors * radii), which a file with large anchor and radius arrays could drive
+        // into quadratic work. Duplicate record indices keep the maximum, matching the prior
+        // fold(0.0, f64::max) behavior.
+        let mut radius_by_record: std::collections::HashMap<usize, f64> = std::collections::HashMap::with_capacity(radii.len());
+        for &(rec, r) in radii {
+            let slot = radius_by_record.entry(rec).or_insert(0.0);
+            *slot = slot.max(r);
+        }
+        let corner = |a: &Anchor| radius_by_record.get(&a.record).copied().unwrap_or(0.0);
         let polyline = anchors.iter().all(|a| a.inh.is_none_or(|h| h == a.p) && a.out.is_none_or(|h| h == a.p));
         if polyline {
             let mut pts: Vec<(Point, f64)> = anchors.iter().map(|a| (a.p, corner(a))).collect();
@@ -172,4 +293,16 @@ fn corner_radii(fields: Vec<&Value>) -> Option<Vec<(usize, f64)>> {
             })
             .collect(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn curve_records_are_charged_across_the_document() {
+        let mut b = Budget::default();
+        assert!(b.records(MAX_OUTLINE_RECORDS).is_ok());
+        assert_eq!(b.records(1), Err("curve geometry budget exhausted"));
+    }
 }

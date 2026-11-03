@@ -15,11 +15,16 @@ use photocraft_geom::Point;
 pub fn map_points(path: &Path, f: impl Fn(Point) -> Point) -> Path {
     let mut out = path.clone();
     for s in &mut out.subpaths {
-        for k in &mut s.knots {
-            *k = Knot { anchor: f(k.anchor), in_ctrl: f(k.in_ctrl), out_ctrl: f(k.out_ctrl), smooth: k.smooth };
-        }
+        map_knots(s, &f);
     }
     out
+}
+
+/// Sends every anchor and control point of `s` through `f`, in place.
+fn map_knots(s: &mut Subpath, f: &impl Fn(Point) -> Point) {
+    for k in &mut s.knots {
+        *k = Knot { anchor: f(k.anchor), in_ctrl: f(k.in_ctrl), out_ctrl: f(k.out_ctrl), smooth: k.smooth };
+    }
 }
 
 /// Pieces a path may be split into, in total: bounds the work and memory on hostile input.
@@ -47,7 +52,9 @@ fn map_subpath(s: &Subpath, f: &impl Fn(Point) -> Point, tol: f64, depth: u32) -
     let n = s.knots.len();
     let segs = s.segments();
     if segs.is_empty() {
-        return map_points(&Path::new(vec![s.clone()]), f).subpaths.pop().unwrap_or_default();
+        let mut out = s.clone();
+        map_knots(&mut out, f);
+        return out;
     }
     // The mapped pieces of each segment (segment i runs from knot i to knot i + 1).
     let pieces: Vec<Vec<[Point; 4]>> = segs.iter().map(|seg| map_segment(seg, f, tol, depth)).collect();

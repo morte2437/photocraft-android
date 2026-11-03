@@ -188,6 +188,71 @@ fn gradient_fill_angle_follows_the_canvas() {
     assert_eq!(map_angle(&Turn::Ccw90.affine(10.0, 20.0), 0.0), 90.0);
 }
 
+/// The gradient fill's centre offset after `cmd`, as `gradient.fill.get` reports it (% of the frame).
+fn fill_offset_after(cmd: &str, p: serde_json::Value) -> (f64, f64) {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 100, "height": 100})).unwrap();
+    s.execute("gradient.fill.create", json!({"from": [10, 50], "to": [90, 50], "style": "radial"})).unwrap();
+    s.execute("gradient.fill.set", json!({"angle": 0, "offset": [25, 0]})).unwrap();
+    s.execute(cmd, p).unwrap();
+    let g = s.execute("gradient.fill.get", json!({})).unwrap();
+    (g["offset"][0].as_f64().unwrap(), g["offset"][1].as_f64().unwrap())
+}
+
+#[test]
+fn gradient_fill_offset_stays_a_fraction_of_the_frame() {
+    let near = |a: (f64, f64), b: (f64, f64)| (a.0 - b.0).abs() < 1e-3 && (a.1 - b.1).abs() < 1e-3;
+    // Image Size scales the frame, so the offset (a fraction of it) stays put.
+    for (w, h) in [(200, 200), (50, 50), (200, 50)] {
+        let o = fill_offset_after("image.imageSize", json!({"width": w, "height": h}));
+        assert!(near(o, (25.0, 0.0)), "{w}x{h}: {o:?}");
+    }
+    // Flips and 90° turns still mirror and turn it.
+    assert!(near(fill_offset_after("image.imageRotation.flipCanvasHorizontal", json!({})), (-25.0, 0.0)));
+    assert!(near(fill_offset_after("image.imageRotation.90cw", json!({})), (0.0, 25.0)));
+    assert!(near(fill_offset_after("image.imageRotation.180", json!({})), (-25.0, 0.0)));
+    // Non-uniform scale with a turn: only the axis swap applies.
+    let mut f = Fill::gradient(Vec::new(), 0.0, 1.0, photocraft_doc::GradientStyle::Linear, false);
+    if let Fill::Gradient { offset, .. } = &mut f {
+        *offset = (0.25, -0.1);
+    }
+    map_fill(&Affine { m: [0.0, 3.0, -0.5, 0.0, 7.0, 1.0] }, &mut f);
+    let Fill::Gradient { offset, .. } = f else { panic!("not a gradient") };
+    assert!((offset.0 - 0.1).abs() < 1e-6 && (offset.1 - 0.25).abs() < 1e-6, "{offset:?}");
+}
+
+/// The shape's (fill, stroke) gradient angles after `cmd` on a shape whose fill and stroke both
+/// start as a 0° (left to right) gradient.
+fn shape_gradient_angles_after(cmd: &str, p: serde_json::Value) -> (f32, f32) {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": W, "height": H})).unwrap();
+    let g = json!({"gradient": {"stops": [[0, "#ff0000"], [1, "#0000ff"]], "angle": 0}});
+    s.execute("shape.create", json!({"kind": "rect", "rect": [10, 8, 30, 20], "fill": g, "stroke": {"width": 6, "fill": g}})).unwrap();
+    s.execute(cmd, p).unwrap();
+    let angle = |f: &Fill| if let Fill::Gradient { angle, .. } = f { *angle } else { panic!("not a gradient: {f:?}") };
+    let sh = doc(&s).walk().into_iter().find_map(|(_, _, l)| if let LayerContent::Shape(sh) = &l.content { Some(sh.clone()) } else { None }).unwrap();
+    (angle(sh.fill.as_ref().unwrap()), angle(&sh.stroke.as_ref().unwrap().paint))
+}
+
+/// A gradient stroke turns and mirrors with the canvas like the fill does (#9239).
+#[test]
+fn shape_gradient_stroke_turns_with_the_canvas() {
+    let same = |a: f32, b: f32| {
+        let d = (a - b).rem_euclid(360.0);
+        d.is_finite() && !(1e-3..=360.0 - 1e-3).contains(&d)
+    };
+    for (cmd, p, want) in [
+        ("image.imageRotation.90cw", json!({}), -90.0),
+        ("image.imageRotation.flipCanvasHorizontal", json!({}), 180.0),
+        ("image.imageRotation.flipCanvasVertical", json!({}), 0.0),
+        ("image.rotation.arbitrary", json!({"angle": 30, "direction": "cw"}), -30.0),
+    ] {
+        let (fill, stroke) = shape_gradient_angles_after(cmd, p);
+        assert!(same(fill, want), "{cmd}: fill {fill}, want {want}");
+        assert!(same(stroke, want), "{cmd}: stroke {stroke}, want {want}");
+    }
+}
+
 fn type_and_shape_origin(d: &Document) -> ([f64; 6], [f64; 2]) {
     let mut t = None;
     let mut k = None;
@@ -231,6 +296,28 @@ fn canvas_size_and_crop_move_vector_geometry() {
 }
 
 #[test]
+fn guide_colours_follow_their_guides() {
+    const MAGENTA: [u8; 3] = [255, 0, 255];
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": W, "height": H})).unwrap();
+    s.execute("view.newGuide", json!({"orientation": "vertical", "position": 20, "color": "#ff00ff"})).unwrap();
+    s.execute("view.newGuide", json!({"orientation": "vertical", "position": 30})).unwrap();
+    // Crop shifts both guides by 10: the colour goes with the guide at 20, not to the one now there.
+    s.execute("image.crop", json!({"x": 10, "y": 0, "width": W - 10, "height": H})).unwrap();
+    let g = &doc(&s).guides;
+    assert_eq!(g.vertical, vec![10.0, 20.0]);
+    assert_eq!((g.color(true, 10.0), g.color(true, 20.0)), (Some(MAGENTA), None));
+    // A quarter turn makes it a horizontal guide at y = 10, still magenta.
+    s.execute("image.imageRotation.90cw", json!({})).unwrap();
+    let g = &doc(&s).guides;
+    assert_eq!(g.horizontal, vec![10.0, 20.0]);
+    assert_eq!((g.color(false, 10.0), g.color(true, 10.0)), (Some(MAGENTA), None));
+    // An arbitrary angle drops the guides, so their colours go too.
+    s.execute("image.rotation.arbitrary", json!({"angle": 33})).unwrap();
+    assert!(doc(&s).guides.colors.is_empty());
+}
+
+#[test]
 fn image_size_scales_vector_geometry() {
     let mut s = mixed(8, "rgb");
     let (t0, k0) = type_and_shape_origin(doc(&s));
@@ -268,6 +355,30 @@ fn arbitrary_rotation_moves_marks_and_unlinked_vector_masks() {
     s2.execute("image.imageRotation.90cw", json!({})).unwrap();
     let (mean, big) = diff(&photocraft_compose::flatten(d).px, &photocraft_compose::flatten(doc(&s2)).px);
     assert!(mean < 3.0 / 255.0 && big < 0.02, "mean {mean} big {big}");
+}
+
+/// A canvas turn moves every stored video frame, not just the displayed one (#4956).
+#[test]
+fn turns_move_stored_video_frames() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": W, "height": H})).unwrap();
+    s.execute("layer.new.layer", json!({})).unwrap();
+    paint(&mut s, |x, y| if (x, y) == (1, 2) { [1.0, 0.0, 0.0, 1.0] } else { [0.0; 4] });
+    s.edit("video", |doc, active| {
+        let l = doc.layer_mut(active.unwrap()).unwrap();
+        let frame = l.surface().unwrap().clone();
+        let mut v = photocraft_doc::VideoData::new(vec![frame.clone(), frame.clone()], 24.0);
+        v.original_frames = Some(vec![frame.clone(), frame]);
+        l.video = Some(v);
+        Ok(())
+    })
+    .unwrap();
+    s.execute(command(Turn::FlipHorizontal), json!({})).unwrap();
+    let v = doc(&s).layers[1].video.as_ref().unwrap();
+    for frame in v.frames.iter().chain(v.original_frames.iter().flatten()) {
+        assert_eq!(frame.pixel(W as i32 - 2, 2), vec![1.0, 0.0, 0.0, 1.0]);
+        assert_eq!(frame.pixel(1, 2)[3], 0.0);
+    }
 }
 
 #[test]

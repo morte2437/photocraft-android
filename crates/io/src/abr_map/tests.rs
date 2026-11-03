@@ -129,6 +129,43 @@ fn grit_pattern() -> PsdPattern {
 }
 
 #[test]
+fn pose_axes_abr_import_preserves_independent_stylus_tilt() {
+    let input = photocraft_paint::StrokePoint { tilt_x: 13.0, tilt_y: -27.0, pressure: 0.71, rotation: 67.0, wheel: 0.24, time: 73.0, ..Default::default() };
+    for subversion in [1, 2] {
+        for (x, y) in [(false, false), (true, false), (false, true), (true, true)] {
+            let preset = Descriptor::new("brushPreset")
+                .with("Brsh", Value::Descriptor(Descriptor::new("computedBrush").with("Dmtr", u(b"#Pxl", 47.0))))
+                .with("useBrushPose", Value::Boolean(true))
+                .with("brushPoseTiltX", prc(50.0))
+                .with("brushPoseTiltY", prc(-20.0))
+                .with("overridePoseTiltX", Value::Boolean(x))
+                .with("overridePoseTiltY", Value::Boolean(y));
+            let bytes = write_v6(subversion, &[], &[], &[preset], false).unwrap();
+            let imported = read_abr(&bytes, "Pose axes").unwrap();
+            assert_eq!(imported.presets.len(), 1);
+            let b = &imported.presets[0].brush;
+            assert!(b.pose.enabled);
+            assert_eq!((b.pose.tilt_x, b.pose.tilt_y), (45.0, -18.0), "ABR percentages retain the W3C degree conversion");
+            let mut expected = input;
+            if x {
+                expected.tilt_x = 45.0;
+            }
+            if y {
+                expected.tilt_y = -18.0;
+            }
+            assert_eq!(
+                photocraft_paint::dynamics::apply_pose(b, input),
+                expected,
+                "v6.{subversion}, X={x}, Y={y}: one axis must not override the other's tablet data"
+            );
+            let stored = serde_json::to_vec(&imported.presets[0]).unwrap();
+            let restored: photocraft_paint::BrushPreset = serde_json::from_slice(&stored).unwrap();
+            assert_eq!(photocraft_paint::dynamics::apply_pose(&restored.brush, input), expected, "preset persistence retains the independent flags");
+        }
+    }
+}
+
+#[test]
 fn v6_settings_map_onto_brush_sections() {
     for sub in [1, 2] {
         let computed = Descriptor::new("brushPreset")
@@ -166,7 +203,7 @@ fn v6_settings_map_onto_brush_sections() {
         assert!(b.transfer.enabled);
         assert_eq!((b.transfer.opacity.control, b.transfer.opacity.minimum), (Control::PenPressure, 0.1));
         assert_eq!((b.transfer.flow.control, b.transfer.flow.jitter), (Control::Fade, 0.15));
-        assert!(b.pose.enabled && b.pose.override_rotation && !b.pose.override_tilt);
+        assert!(b.pose.enabled && b.pose.override_rotation && !b.pose.override_tilt_x && !b.pose.override_tilt_y);
         assert_eq!((b.pose.tilt_x, b.pose.rotation), (45.0, 90.0));
         assert!(b.wet_edges && b.noise && b.build_up);
         assert_eq!((b.opacity, b.flow, b.smoothing.amount, b.pressure_size), (0.8, 0.6, 0.4, true));
@@ -175,6 +212,29 @@ fn v6_settings_map_onto_brush_sections() {
         let r = &imp.presets[1].brush;
         assert_eq!((r.tip.clone(), r.size, r.hardness, r.spacing, r.pressure_size), (TipShape::Round, 19.0, 0.0, 0.1, false));
     }
+}
+
+#[test]
+fn dual_brush_tip_spacing_takes_precedence_over_wrapper_spacing() {
+    let preset = Descriptor::new("brushPreset")
+        .with("Nm  ", t("Close-spaced dual brush"))
+        .with("Brsh", Value::Descriptor(Descriptor::new("computedBrush").with("Dmtr", u(b"#Pxl", 40.0))))
+        .with(
+            "dualBrush",
+            Value::Descriptor(
+                Descriptor::new("dualBrush")
+                    .with("useDualBrush", Value::Boolean(true))
+                    .with("Spcn", prc(100.0))
+                    .with("Brsh", Value::Descriptor(Descriptor::new("computedBrush").with("Dmtr", u(b"#Pxl", 12.0)).with("Spcn", prc(5.0)))),
+            ),
+        );
+    let bytes = write_v6(2, &[], &[], &[preset], false).unwrap();
+    let imported = read_abr(&bytes, "Dual").unwrap();
+    assert_eq!(imported.presets.len(), 1);
+    let brush = &imported.presets[0].brush;
+    assert!(brush.dual_brush.enabled);
+    assert!((brush.dual_brush.spacing - 0.05).abs() < 1e-6, "the tip's 5% spacing must not be replaced with the wrapper's 100%");
+    assert!((brush.spacing - 0.25).abs() < 1e-6, "main brush spacing is independent");
 }
 
 #[test]

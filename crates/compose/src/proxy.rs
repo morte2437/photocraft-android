@@ -4,8 +4,8 @@
 //! channel thumbnails, histograms, file previews), where a full-resolution composite of a 200 MP
 //! document would cost seconds and gigabytes.
 
-use photocraft_doc::{Document, Layer, LayerContent, Size};
-use photocraft_geom::Rect;
+use photocraft_doc::{Document, Layer, LayerContent, Size, SmartObject};
+use photocraft_geom::{Affine, Rect};
 use photocraft_raster::Surface;
 
 /// Nearest-neighbour downsample of a surface by integer factor `k` (document coordinates / k).
@@ -60,8 +60,27 @@ fn shrink_layer(l: &mut Layer, k: u32) {
         }
         LayerContent::Text(t) => t.cache = t.cache.as_ref().map(|s| downsample(s, k)),
         LayerContent::Shape(sh) => sh.cache = sh.cache.as_ref().map(|s| downsample(s, k)),
-        LayerContent::Smart(so) => so.cache = so.cache.as_ref().map(|s| downsample(s, k)),
+        LayerContent::Smart(so) => shrink_smart(so, k),
         LayerContent::Adjustment(_) | LayerContent::Fill(_) => {}
+    }
+}
+
+/// Scales a smart object with its proxy: the cache and filter mask like any surface, and the
+/// placement too. A preview that adds a smart filter re-renders the source through the placement;
+/// left in full-size document coordinates, that render came out `k` times too large on the proxy
+/// canvas, so the Curves preview on a smart object zoomed in (#5766).
+fn shrink_smart(so: &mut SmartObject, k: u32) {
+    so.cache = so.cache.as_ref().map(|s| downsample(s, k));
+    if let Some(m) = &mut so.filter_mask {
+        m.surface = downsample(&m.surface, k);
+    }
+    let s = 1.0 / f64::from(k);
+    so.transform = Affine::scale(s).mul(&so.transform);
+    // Row-major source → document map: scaling the document side scales its first two rows.
+    if let Some(h) = &mut so.perspective {
+        for v in h.iter_mut().take(6) {
+            *v *= s;
+        }
     }
 }
 
@@ -93,7 +112,8 @@ pub fn proxy_document(doc: &Document, k: u32) -> Document {
 /// with it. Empty vector masks have constant coverage, including inversion and density.
 /// Nonempty paths can still anchor fill layouts even when their mask density is zero.
 pub fn proxy_faithful(doc: &Document) -> bool {
-    doc.walk().iter().all(|(_, _, l)| !crate::effects::has_effects(l) && l.vector_mask.as_ref().is_none_or(|v| !v.enabled || v.path.is_empty()))
+    // Hidden layers (and what they hold) are not composited, so they don't count.
+    crate::visible_layers(&doc.layers).iter().all(|l| !crate::effects::has_effects(l) && l.vector_mask.as_ref().is_none_or(|v| !v.enabled || v.path.is_empty()))
 }
 
 #[cfg(test)]
@@ -166,6 +186,33 @@ mod tests {
         assert!(proxy_faithful(&doc));
     }
 
+    /// #5766: a smart object re-rendered on the proxy (a smart filter preview) goes through its
+    /// placement, which must shrink with the canvas, cache and filter mask.
+    #[test]
+    fn proxy_scales_smart_object_placement() {
+        use photocraft_doc::SmartSource;
+        let mut doc = Document::new("smart", Size::new(64, 64), ColorMode::Rgb, SampleType::U8);
+        let mut cache = Surface::new(doc.pixel_format());
+        cache.fill_rect(Rect::new(16, 16, 32, 48), &[0.0, 0.0, 0.0, 1.0]);
+        let source = SmartSource::Embedded { file_name: "s.png".into(), bytes: std::sync::Arc::new(Vec::new()) };
+        let mut sm = SmartObject::new(source, Affine::translate(16.0, 16.0).mul(&Affine::scale(2.0)), Some(cache));
+        let mut mask = LayerMask::hide_all();
+        mask.surface.fill_rect(Rect::new(16, 16, 32, 32), &[1.0]);
+        sm.filter_mask = Some(mask);
+        sm.perspective = Some([2.0, 0.0, 16.0, 0.0, 2.0, 16.0, 0.0, 0.0, 1.0]);
+        doc.layers.push(Layer::new("smart", LayerContent::Smart(sm)));
+        let p = proxy_document(&doc, 4);
+        let LayerContent::Smart(sm) = &p.layers[0].content else { panic!("a smart object") };
+        assert_eq!(sm.transform, Affine { m: [0.5, 0.0, 0.0, 0.5, 4.0, 4.0] });
+        assert_eq!(sm.perspective, Some([0.5, 0.0, 4.0, 0.0, 0.5, 4.0, 0.0, 0.0, 1.0]));
+        assert_eq!(sm.cache.as_ref().unwrap().content_bounds(), Rect::new(4, 4, 8, 12));
+        let mask = &sm.filter_mask.as_ref().unwrap().surface;
+        assert_eq!((mask.pixel(4, 4)[0], mask.pixel(8, 8)[0]), (1.0, 0.0));
+        // The document keeps its full-size placement.
+        let LayerContent::Smart(orig) = &doc.layers[0].content else { panic!("a smart object") };
+        assert_eq!(orig.transform.m[4], 16.0);
+    }
+
     #[test]
     fn proxy_scales_the_selection() {
         let mut doc = Document::with_background("d", Size::new(64, 64), ColorMode::Rgb, SampleType::U8, Color::WHITE);
@@ -214,6 +261,25 @@ mod tests {
         doc.layers[1].effects.enabled = true;
         assert!(!proxy_faithful(&doc));
         doc.layers[1].effects.items[0].set_enabled(false);
+        assert!(proxy_faithful(&doc));
+    }
+
+    #[test]
+    fn a_hidden_layer_with_effects_does_not_rule_out_the_proxy_or_the_uniform_shortcut() {
+        let mut doc = two_colors(Size::new(32, 16), SampleType::U8);
+        doc.layers[1].effects.items.push(Effect::default_drop_shadow());
+        doc.layers[1].effects.enabled = true;
+        assert!(!proxy_faithful(&doc));
+        assert!(crate::uniform::UniformAreas::new(&doc).is_none());
+        doc.layers[1].visible = false;
+        assert!(proxy_faithful(&doc));
+        assert!(crate::uniform::UniformAreas::new(&doc).is_some());
+        // Inside a hidden group too.
+        doc.layers[1].visible = true;
+        let group = Layer::group("g", vec![doc.layers.remove(1)]);
+        doc.layers.push(group);
+        assert!(!proxy_faithful(&doc));
+        doc.layers[1].visible = false;
         assert!(proxy_faithful(&doc));
     }
 

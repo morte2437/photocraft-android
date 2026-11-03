@@ -5,26 +5,22 @@ use std::io::{BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use photocraft_automation::budgets::write_reply;
 use photocraft_automation::security::{
-    ConnectionLimiter, LineRead, MAX_CONNECTIONS, MAX_REQUEST_BYTES, authentication_reply, configure_stream, read_bounded_line, repeat_auth_reply,
+    AUTH_DEADLINE, AuthDeadlineStream, ConnectionLimiter, LineRead, MAX_CONNECTIONS, MAX_REQUEST_BYTES, authentication_reply, configure_stream,
+    read_bounded_line, repeat_auth_reply,
 };
 use photocraft_ui_egui::ControlRequest;
 use photocraft_ui_egui::control::REPLY_DEADLINE;
 use serde_json::{Value, json};
 
-pub fn start(port: u16, token: String, ctx: egui::Context) -> Receiver<ControlRequest> {
+/// Start serving a listener already bound during startup, before a window is opened.
+pub fn start(listener: TcpListener, token: String, ctx: egui::Context) -> Receiver<ControlRequest> {
     let (tx, rx) = channel::<ControlRequest>();
-    let listener = match TcpListener::bind(("127.0.0.1", port)) {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("photocraft: control server failed to bind 127.0.0.1:{port}: {e}");
-            return rx;
-        }
-    };
-    eprintln!("photocraft: control server listening on 127.0.0.1:{port}");
+    let port = listener.local_addr().map_or(0, |a| a.port());
+    eprintln!("photocraft: control server listening on {}", listening_addr(&listener, port));
     std::thread::spawn(move || {
         let limiter = ConnectionLimiter::new(MAX_CONNECTIONS);
         let token = Arc::new(token);
@@ -46,12 +42,28 @@ pub fn start(port: u16, token: String, ctx: egui::Context) -> Receiver<ControlRe
     rx
 }
 
+/// The address `listener` is bound to: with `--control 0` the OS picks the port, and a client
+/// needs that one, not the requested 0 (#6427). Falls back to the requested port if the OS
+/// can't report it.
+fn listening_addr(listener: &TcpListener, requested_port: u16) -> String {
+    match listener.local_addr() {
+        Ok(addr) => addr.to_string(),
+        Err(_) => format!("127.0.0.1:{requested_port}"),
+    }
+}
+
 fn serve(stream: TcpStream, token: &str, tx: Sender<ControlRequest>, ctx: egui::Context) {
+    serve_with_auth_deadline(stream, token, tx, ctx, AUTH_DEADLINE);
+}
+
+/// [`serve`] for a connection that must complete `auth` within `auth_deadline` of connecting,
+/// however much it sends meanwhile (#4965); after that only the idle timeout applies.
+fn serve_with_auth_deadline(stream: TcpStream, token: &str, tx: Sender<ControlRequest>, ctx: egui::Context, auth_deadline: Duration) {
     if configure_stream(&stream).is_err() {
         return;
     }
     let Ok(read) = stream.try_clone() else { return };
-    let mut reader = BufReader::new(read);
+    let mut reader = BufReader::new(AuthDeadlineStream::new(read, auth_deadline));
     let mut out = stream;
     let mut line = String::new();
     let mut authenticated = false;
@@ -74,6 +86,9 @@ fn serve(stream: TcpStream, token: &str, tx: Sender<ControlRequest>, ctx: egui::
         if !authenticated {
             let (reply, ok) = authentication_reply(&line, token);
             authenticated = ok;
+            if ok && reader.get_mut().authenticated().is_err() {
+                break;
+            }
             if write_reply(&mut out, &reply).is_err() || out.flush().is_err() || !authenticated {
                 break;
             }
@@ -120,7 +135,69 @@ fn serve(stream: TcpStream, token: &str, tx: Sender<ControlRequest>, ctx: egui::
 mod tests {
     use super::*;
     use std::io::BufRead;
-    use std::time::Duration;
+
+    /// #6427: with port 0 the log names the port the OS bound, which a client can connect to.
+    #[test]
+    fn port_zero_logs_the_bound_port() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let bound = listener.local_addr().unwrap();
+        assert_ne!(bound.port(), 0);
+        let logged = listening_addr(&listener, 0);
+        assert_eq!(logged, format!("127.0.0.1:{}", bound.port()));
+        TcpStream::connect(&logged).unwrap();
+    }
+
+    #[test]
+    fn a_prebound_listener_authenticates_and_dispatches_requests() {
+        const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let requests = start(listener, TOKEN.into(), egui::Context::default());
+        let mut stream = TcpStream::connect(address).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut replies = BufReader::new(stream.try_clone().unwrap());
+        writeln!(stream, "{}", json!({"id": 1, "method": "auth", "params": {"token": TOKEN}})).unwrap();
+        let mut line = String::new();
+        replies.read_line(&mut line).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&line).unwrap()["result"]["authenticated"], true);
+        writeln!(stream, "{}", json!({"id": 2, "method": "test.bound"})).unwrap();
+        let request = requests.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(request.method, "test.bound");
+        request.reply.send(json!({"ok": true, "result": "served"})).unwrap();
+        line.clear();
+        replies.read_line(&mut line).unwrap();
+        let reply: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(reply["id"], 2);
+        assert_eq!(reply["result"], "served");
+    }
+
+    /// #4965: a connection that keeps sending without authenticating is closed at the deadline
+    /// (releasing its connection permit), and nothing it sent is dispatched.
+    #[test]
+    fn an_unauthenticated_connection_is_closed_at_the_deadline_whatever_it_sends() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = channel::<ControlRequest>();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let started = Instant::now();
+            serve_with_auth_deadline(stream, "unused", tx, egui::Context::default(), Duration::from_millis(300));
+            started.elapsed()
+        });
+        // Blank lines and partial frames, one byte every 20 ms: each read succeeds long before
+        // the idle timeout.
+        let mut stream = TcpStream::connect(addr).unwrap();
+        for i in 0..150 {
+            let byte: &[u8] = if i % 5 == 0 { b"\n" } else { b" " };
+            if stream.write_all(byte).is_err() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let served = server.join().unwrap();
+        assert!(served < Duration::from_secs(3), "the trickle did not extend the deadline: {served:?}");
+        assert!(rx.try_recv().is_err(), "nothing was dispatched");
+    }
 
     #[test]
     fn oversized_reply_preserves_framing_id_and_the_next_control_request() {

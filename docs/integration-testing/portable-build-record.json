@@ -1,0 +1,64 @@
+{
+  "source_sha": "f5b3f1238bb414b43851ebe86f3a58ce83bb9b48",
+  "base_sha": "5f9b4391874aabc9deb2fcb905267613e4d93ec8",
+  "version": "0.17.0-integration.20261029.f5b3f123",
+  "architecture": "Windows x64",
+  "ci_run": 40858867520,
+  "ci_url": "https://github.com/FredApps/photocraft/actions/runs/40858867520",
+  "packaging_lint_run": 40858747395,
+  "build_run": 40867283787,
+  "build_url": "https://github.com/FredApps/photocraft/actions/runs/40867283787",
+  "workflow_id": 390299892,
+  "workflow_restored_state": "disabled_manually",
+  "fonts_pin": "b076417b5880bd4154bd22f00695b1d28c6bea83",
+  "artifact_verified": true,
+  "artifact": {
+    "id": 12895845995,
+    "name": "release-windows-x64",
+    "job_id": 123425396034,
+    "url": "https://github.com/FredApps/photocraft/actions/runs/40867283787/artifacts/12895845995",
+    "source_sha": "f5b3f1238bb414b43851ebe86f3a58ce83bb9b48",
+    "filename": "photocraft-0.17.0-integration.20261029.f5b3f123-windows-x64-portable.zip",
+    "sha256": "4125eccd5b009f30dc2d72f64bfafcf32220dc5574f765d0b3664ac4d9f992ba",
+    "size_bytes": 127391123,
+    "github_artifact_digest": "sha256:d642eb3969b9b3afbf3898c71d08a979b3bef01b51d26bae32e384ed8a28bf4f",
+    "expires_at": "2027-01-27T11:41:10Z",
+    "zip_crc": "PASSED",
+    "portable_marker": "PRESENT",
+    "pe_headers": {
+      "photocraft.exe": {
+        "signature": "PE",
+        "machine": "0x8664 (x64)",
+        "size": 149296640
+      },
+      "photocraft-cli.exe": {
+        "signature": "PE",
+        "machine": "0x8664 (x64)",
+        "size": 107922432
+      }
+    },
+    "manual_gui": "NOT RUN"
+  },
+  "manual_tests": "NOT RUN",
+  "packaging_platform_blocker": "macOS universal job could not start: GitHub reports recent account payments failed or spending limit needs increase. No billing/settings changes attempted. Windows jobs continue independently.",
+  "other_platform_failures": [
+    {
+      "platform": "macOS universal",
+      "job_id": 123425395799,
+      "reason": "GitHub runner did not start: account payment/spending restriction; no settings changed."
+    },
+    {
+      "platform": "FreeBSD aarch64",
+      "job_id": 123425395796,
+      "reason": "VM provisioning failed because pkg could not find cmake in configured repositories; no PhotoCraft build executed."
+    }
+  ],
+  "build_run_status": "in_progress",
+  "build_run_conclusion": null,
+  "windows_job_conclusion": "success",
+  "signing": "UNSIGNED: fork has no Windows signing secrets; no credentials/settings changed",
+  "packaging_cli_version_check": {
+    "status": "PASSED in GitHub packaging job",
+    "output": "photocraft-cli 0.17.0-integration.20261029.f5b3f123 (f5b3f1238, 2026-10-29)"
+  }
+}

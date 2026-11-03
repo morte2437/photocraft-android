@@ -70,6 +70,9 @@ fn read_clamped(s: &Surface, rect: Rect, extent: Rect) -> Vec<f32> {
     out
 }
 
+/// Most bands one run is split into.
+const MAX_BANDS: u64 = 1 << 16;
+
 impl Plugin {
     /// The rectangle a run writes: the layer's content (grown by the plug-in's overlap) or the
     /// canvas, limited to the selection's bounds.
@@ -113,6 +116,13 @@ impl Plugin {
         }
         let mut bands = Vec::new();
         let (t0, t1) = (TileCoord::containing(area.x0, area.y0), TileCoord::containing(area.x1 - 1, area.y1 - 1));
+        // Counted before any is made: a few distant tiles make `area` a grid of millions of
+        // bands, each a call into the plug-in, planned before the deadline starts.
+        let columns = (i64::from(t1.tx) - i64::from(t0.tx) + 1).max(0) as u64;
+        let rows = (i64::from(t1.ty) - i64::from(t0.ty) + 1).max(0) as u64;
+        if columns.div_ceil(across as u64).saturating_mul(rows) > MAX_BANDS {
+            return Err(Error::Limit(format!("more than {MAX_BANDS} bands (the layer's content is spread too widely)")));
+        }
         for ty in t0.ty..=t1.ty {
             let mut tx = t0.tx;
             while tx <= t1.tx {
@@ -130,9 +140,10 @@ impl Plugin {
             }
             r
         };
-        // A few bands at a time (one per worker), so peak memory stays near one band per thread.
+        // A few bands at a time: one per worker, and no more instances than the run's memory
+        // budget holds at their cap, so peak memory stays bounded however many cores run (#8603).
         #[cfg(not(target_arch = "wasm32"))]
-        let group = rayon::current_num_threads().max(1);
+        let group = self.limits().parallel_bands(rayon::current_num_threads());
         #[cfg(target_arch = "wasm32")]
         let group = 1;
         for chunk in bands.chunks(group) {
@@ -200,7 +211,8 @@ impl Plugin {
                         v = v.clamp(0.0, 1.0);
                     }
                     if let Some(d) = out.get_mut(di + ch) {
-                        *d = o + (v - o) * k;
+                        // As a built-in edit mixes through the selection (#9483).
+                        *d = o * (1.0 - k) + v * k;
                     }
                 }
             }

@@ -10,10 +10,14 @@
 //! width * height bytes (horizontal map, vertical map), then padding
 //! ```
 //!
+//! Photoshop does not always embed the map: a Displace can carry only `DspF`, a `Pth ` to the map
+//! file (ag-psd models the filter with no `DspD` at all), and Photoshop reads that file again. Such
+//! a filter imports with the path as its `mapPath`, read on re-render like any stored path (#9162).
+//!
 //! The whole `filterFX` item (with the map) is kept verbatim in the params as a template
 //! ([`TEMPLATE_KEY`]), so the filter re-renders, survives `.pcraft` and is written back to PSD
-//! with only the editable settings replaced. Anything else (another mode, a missing or truncated
-//! map, unknown enum values) stays an opaque [`super::UNSUPPORTED_FILTER`].
+//! with only the editable settings replaced. Anything else (another mode, a truncated map, no map
+//! and no readable path, unknown enum values) stays an opaque [`super::UNSUPPORTED_FILTER`].
 
 use std::sync::Arc;
 
@@ -38,6 +42,10 @@ const HEADER: usize = 10;
 const MODE_TWO_PLANES: u16 = 3;
 /// 8K × 8K: far beyond the observed document-sized maps, and bounds the f32 map we build.
 const MAX_MAP_PIXELS: usize = 1 << 26;
+/// 4K × 4K: the largest map PhotoCraft embeds itself. Params hold it as hex, about 4 bytes per
+/// pixel, copied with every history state and written into `.pcraft`'s manifest, so a few of the
+/// largest readable maps would make a file the reader refuses.
+const MAX_EMBED_PIXELS: usize = 1 << 24;
 /// The template is the item plus the map; a little room for the rest of the descriptor.
 const MAX_TEMPLATE_BYTES: usize = 2 * MAX_MAP_PIXELS + (1 << 20);
 
@@ -76,6 +84,35 @@ fn fltr_map(item: &Descriptor) -> Option<EmbeddedMap<'_>> {
     }
 }
 
+/// The map file `DspF` names, when it is a `Pth `: `txtu`, u32 LE total size (`12 + 2 * units`),
+/// u32 LE count of UTF-16 units, then the UTF-16LE path ending in one NUL (ag-psd's layout). A
+/// record whose size disagrees with its units, or that lacks the NUL, is not trusted as a path. A
+/// Mac alias (`alis`) is not decoded.
+fn fltr_path(item: &Descriptor) -> Option<String> {
+    let Value::Path(b) = get_desc(item, "Fltr")?.get("DspF")? else { return None };
+    let u32_at = |i: usize| usize::try_from(u32::from_le_bytes(b.get(i..i.checked_add(4)?)?.try_into().ok()?)).ok();
+    if b.get(..4)? != b"txtu" {
+        return None;
+    }
+    let (size, units) = (u32_at(4)?, u32_at(8)?);
+    if size != 12usize.checked_add(units.checked_mul(2)?)? || b.len() != size {
+        return None;
+    }
+    let text: Vec<u16> = b.get(12..)?.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect();
+    let (&0, path) = text.split_last()? else { return None };
+    let path = String::from_utf16(path).ok()?;
+    (!path.is_empty() && !path.contains('\0')).then_some(path)
+}
+
+/// The `DspF` path a Displace reads its map from, only when no `DspD` is embedded at all: a
+/// damaged embedded map keeps the filter opaque rather than falling back to the path.
+fn path_only(item: &Descriptor) -> Option<String> {
+    if get_desc(item, "Fltr")?.get(MAP_KEY).is_some() {
+        return None;
+    }
+    fltr_path(item)
+}
+
 fn lookup<'a>(table: &[(&[u8], &'a str)], v: &[u8]) -> Option<&'a str> {
     table.iter().find(|(k, _)| *k == v).map(|(_, s)| *s)
 }
@@ -91,14 +128,17 @@ fn settings(f: &Descriptor) -> Option<J> {
     }))
 }
 
-/// `filter.distort.displace` params for a Displace item with an embedded map.
+/// `filter.distort.displace` params for a Displace item with an embedded map, or else a map file
+/// path (then `mapPath`).
 pub(super) fn import_params(item: &Descriptor) -> Option<J> {
     let f = get_desc(item, "Fltr")?;
     if !f.class_id.is(CLASS) {
         return None;
     }
     let mut params = settings(f)?;
-    fltr_map(item)?;
+    if fltr_map(item).is_none() {
+        params.as_object_mut()?.insert("mapPath".into(), json!(path_only(item)?));
+    }
     // Neutral blending in the template: the model's own fields replace it on export.
     let mut template = item.clone();
     let neutral = SmartFilter { command: String::new(), params: J::Null, blend: photocraft_color::BlendMode::Normal, opacity: 1.0, visible: true };
@@ -108,7 +148,7 @@ pub(super) fn import_params(item: &Descriptor) -> Option<J> {
     Some(params)
 }
 
-/// The template item of `params`, checked to be a Displace filter with a readable map.
+/// The template item of `params`, checked to be a Displace filter with a readable map or map path.
 fn template(params: &J) -> Result<Descriptor, String> {
     let raw = params.get(TEMPLATE_KEY).ok_or("a Displace map from a file or document is not written to PSD")?;
     let raw = raw.as_str().ok_or("the Displace PSD data must be hex text")?;
@@ -117,8 +157,8 @@ fn template(params: &J) -> Result<Descriptor, String> {
     }
     let bytes = from_hex(raw).ok_or("the Displace PSD data is not valid hex")?;
     let item = Descriptor::from_bytes(&bytes).map_err(|e| format!("the Displace PSD data is unreadable ({e})"))?;
-    if !item.class_id.is("filterFX") || int(&item, "filterID") != Some(FILTER_ID) || fltr_map(&item).is_none() {
-        return Err("the Displace PSD data is not a Displace filter with an embedded map".into());
+    if !item.class_id.is("filterFX") || int(&item, "filterID") != Some(FILTER_ID) || (fltr_map(&item).is_none() && path_only(&item).is_none()) {
+        return Err("the Displace PSD data is not a Displace filter with an embedded map or map file".into());
     }
     Ok(item)
 }
@@ -126,10 +166,18 @@ fn template(params: &J) -> Result<Descriptor, String> {
 /// The `filterFXList` item: the template with the current scales, fit and undefined areas.
 pub(super) fn export_item(params: &J) -> Result<Descriptor, String> {
     let object = params.as_object().ok_or("Displace parameters must be an object")?;
-    if let Some(k) = object.keys().find(|k| !super::is_meta(k) && !["horizontal", "vertical", "fit", "undefinedAreas"].contains(&k.as_str())) {
+    let mut item = template(params)?;
+    // The `mapPath` imported from the template's own `DspF` is already in it; another one isn't.
+    // A path-only template also needs that `mapPath`: without it the filter renders no map while
+    // the PSD would still name one.
+    let template_path = path_only(&item);
+    if template_path.is_some() && params.get("mapPath").and_then(J::as_str) != template_path.as_deref() {
+        return Err("a Displace that reads its map from a file needs that file as `mapPath` to be written to PSD".into());
+    }
+    let own_path = |k: &str| k == "mapPath" && template_path.is_some();
+    if let Some(k) = object.keys().find(|k| !super::is_meta(k) && !own_path(k) && !["horizontal", "vertical", "fit", "undefinedAreas"].contains(&k.as_str())) {
         return Err(format!("Displace setting `{k}` has no PSD equivalent next to its embedded map"));
     }
-    let mut item = template(params)?;
     let mut f = get_desc(&item, "Fltr").ok_or("the Displace PSD data has no filter")?.clone();
     let scale = |k: &str, d: f64| -> Result<Value, String> {
         let v = params.get(k).map_or(Some(d), J::as_f64).filter(|v| v.is_finite()).ok_or(format!("Displace `{k}` must be a number"))?;
@@ -154,6 +202,69 @@ pub(super) fn export_item(params: &J) -> Result<Descriptor, String> {
     set_enum(&mut f, "UndA", choice("undefinedAreas", &UNDEFINED, "repeat")?);
     set(&mut item, "Fltr", Value::Descriptor(f));
     Ok(item)
+}
+
+/// `filter.distort.displace` params with `map` embedded the way Photoshop embeds a Displace
+/// smart filter's map: a `filterFX` item ([`TEMPLATE_KEY`]) holding it as two 8-bit planes. A
+/// smart filter re-renders from its params alone, so a map read from a file or an open document
+/// must travel with them (#7423); embedded, it also saves to `.pcraft` and PSD like an imported
+/// one. `map`'s first channel is the horizontal map and its second the vertical one (the first
+/// again for one or two channels), as the filter reads them. `mapPath`, `mapDocument` and
+/// `mapLayer` are dropped: `map` was already read from them (from that layer, when one was
+/// named), and the embedded map replaces them. `None` for params that are not an
+/// object, or an empty, short or oversized map.
+pub fn embed_map(params: &J, map: &Image) -> Option<J> {
+    let (w, h) = (map.rect.width(), map.rect.height());
+    let n = usize::try_from(w).ok()?.checked_mul(usize::try_from(h).ok()?)?;
+    if n == 0 || n > MAX_EMBED_PIXELS || map.ch == 0 || map.data.len() < n.checked_mul(map.ch)? {
+        return None;
+    }
+    let vertical = if map.ch >= 3 { 1 } else { 0 };
+    let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let pixels = || map.data.chunks_exact(map.ch).take(n);
+    let mut planes = Vec::with_capacity(HEADER + 2 * n);
+    planes.extend(h.to_le_bytes());
+    planes.extend(w.to_le_bytes());
+    planes.extend(MODE_TWO_PLANES.to_le_bytes());
+    planes.extend(pixels().map(|px| px.first().map_or(0, |v| byte(*v))));
+    planes.extend(pixels().map(|px| px.get(vertical).map_or(0, |v| byte(*v))));
+    let enumerated = |t: &str, v: &str| Value::Enumerated { type_id: Id::new(t), value: Id::new(v) };
+    // The settings here are placeholders: the params' own replace them when the filter renders
+    // and when it is written to PSD (`export_item`).
+    let neutral = SmartFilter { command: String::new(), params: J::Null, blend: photocraft_color::BlendMode::Normal, opacity: 1.0, visible: true };
+    let item = Descriptor::new("filterFX")
+        .with("Nm  ", Value::Text(photocraft_psd::descriptor::UnicodeString::new_nul("Displace...")))
+        .with("blendOptions", blend_options(&neutral))
+        .with("enab", Value::Boolean(true))
+        .with("hasoptions", Value::Boolean(true))
+        .with(
+            "Fltr",
+            Value::Descriptor(
+                Descriptor::new(CLASS)
+                    .with("HrzS", Value::Integer(10))
+                    .with("VrtS", Value::Integer(10))
+                    .with("DspM", enumerated("DspM", "StrF"))
+                    .with("UndA", enumerated("UndA", "RptE"))
+                    .with("EmbF", Value::Boolean(true))
+                    .with(MAP_KEY, Value::RawData(planes)),
+            ),
+        )
+        .with("filterID", Value::Integer(FILTER_ID));
+    let mut out = params.as_object()?.clone();
+    for key in ["mapPath", "mapDocument", "mapLayer"] {
+        out.remove(key);
+    }
+    out.insert(TEMPLATE_KEY.into(), json!(to_hex(&item.to_bytes())));
+    Some(J::Object(out))
+}
+
+/// `params` without the embedded map, for a Displace that names another one to read instead.
+pub fn without_map(params: &J) -> J {
+    let mut out = params.clone();
+    if let J::Object(m) = &mut out {
+        m.remove(TEMPLATE_KEY);
+    }
+    out
 }
 
 /// The displacement map embedded in Displace params imported from PSD (`None` when there is
@@ -318,6 +429,69 @@ mod tests {
         }
     }
 
+    /// A `Pth ` value as ag-psd reads it: `txtu`, sizes (LE), UTF-16LE path with a trailing NUL.
+    fn pth(path: &str) -> Value {
+        let units: Vec<u16> = path.encode_utf16().chain([0]).collect();
+        let mut b = b"txtu".to_vec();
+        b.extend((12 + 2 * units.len() as u32).to_le_bytes());
+        b.extend((units.len() as u32).to_le_bytes());
+        b.extend(units.iter().flat_map(|u| u.to_le_bytes()));
+        Value::Path(b)
+    }
+
+    /// #9162: Photoshop can save a Displace with only `DspF`, the map file's path, and no
+    /// embedded map. It imports as Displace reading that file, and writes back unchanged.
+    #[test]
+    fn a_map_named_only_by_its_path_imports_as_map_path() {
+        let with_file = |file: Value| {
+            let mut i = item(Vec::new());
+            let mut f = get_desc(&i, "Fltr").unwrap().clone();
+            f.items.retain(|(k, _)| !k.is(MAP_KEY));
+            set(&mut f, "DspF", file);
+            set(&mut i, "Fltr", Value::Descriptor(f));
+            i
+        };
+        let src = with_file(pth("C:\\maps\\repro-map.psd"));
+        let f = filter_from_item(&src);
+        assert_eq!(f.command, COMMAND);
+        assert_eq!(f.params["mapPath"], json!("C:\\maps\\repro-map.psd"));
+        assert!(embedded_map(&f.params).is_none());
+        assert_eq!(item_for_filter(&f).unwrap(), src, "written back as it was");
+        let mut moved = f.clone();
+        moved.params["mapPath"] = json!("/elsewhere/map.png");
+        assert!(item_for_filter(&moved).is_err(), "another map path has no place in the template");
+        let mut no_path = f.clone();
+        no_path.params.as_object_mut().unwrap().remove("mapPath");
+        assert!(item_for_filter(&no_path).is_err(), "a path-only template needs its mapPath, or the PSD names a map the render never read");
+        // A record whose size field disagrees with its units, or without the final NUL.
+        let mut wrong_size = pth("map.psd");
+        if let Value::Path(b) = &mut wrong_size {
+            b[4] = b[4].wrapping_add(2);
+        }
+        let mut no_nul = b"txtu".to_vec();
+        no_nul.extend(16u32.to_le_bytes());
+        no_nul.extend(2u32.to_le_bytes());
+        no_nul.extend([b'a', 0, b'b', 0]);
+        // Not a path we can read: kept opaque, as before.
+        for bad in [
+            Value::Path(b"txtu".to_vec()),
+            Value::Path(b"abcd\0\0\0\0\x02\0\0\0a\0\0\0".to_vec()),
+            Value::Path(b"txtu\0\0\0\0\x09\0\0\0a\0".to_vec()),
+            pth(""),
+            wrong_size,
+            Value::Path(no_nul),
+        ] {
+            let src = with_file(bad);
+            assert_eq!(filter_from_item(&src).command, UNSUPPORTED_FILTER);
+        }
+        // A damaged embedded map is never replaced by a readable path.
+        let mut damaged = item(vec![0; 4]);
+        let mut fltr = get_desc(&damaged, "Fltr").unwrap().clone();
+        set(&mut fltr, "DspF", pth("C:\\maps\\repro-map.psd"));
+        set(&mut damaged, "Fltr", Value::Descriptor(fltr));
+        assert_eq!(filter_from_item(&damaged).command, UNSUPPORTED_FILTER);
+    }
+
     #[test]
     fn bad_exports_report_errors() {
         let ok = filter_from_item(&item(tdta(2, 2, |_| 0, |_| 0, 0))).params;
@@ -339,5 +513,39 @@ mod tests {
             assert!(export_item(&p).is_err(), "{p}");
         }
         assert!(embedded_map(&json!({TEMPLATE_KEY: "0".repeat(MAX_TEMPLATE_BYTES * 2 + 2)})).is_none());
+    }
+
+    /// #7423: a map from a file or an open document, embedded for a smart filter, is read back as
+    /// the filter's map and written to PSD like an imported one.
+    #[test]
+    fn an_embedded_map_reads_back_and_exports() {
+        let rect = Rect::new(0, 0, 3, 2);
+        // RGBA: red is the horizontal map, green the vertical one.
+        let rgba = Image { rect, ch: 4, data: (0..6).flat_map(|i| [i as f32 / 5.0, 1.0 - i as f32 / 5.0, 0.0, 1.0]).collect() };
+        let params = json!({"horizontal": 20, "vertical": -5, "fit": "tile", "undefinedAreas": "wrap", "mapDocument": 0, "mapLayer": 3});
+        let embedded = embed_map(&params, &rgba).unwrap();
+        for key in ["mapPath", "mapDocument", "mapLayer"] {
+            assert!(embedded.get(key).is_none(), "{key}");
+        }
+        assert_eq!(embedded["horizontal"], json!(20));
+        let map = embedded_map(&embedded).unwrap();
+        assert_eq!((map.rect, map.ch), (rect, 3));
+        let h: Vec<f32> = map.data.chunks(3).map(|p| p[0]).collect();
+        let v: Vec<f32> = map.data.chunks(3).map(|p| p[1]).collect();
+        assert_eq!(h, [0.0, 51.0 / 255.0, 102.0 / 255.0, 153.0 / 255.0, 204.0 / 255.0, 1.0]);
+        assert_eq!(v, [1.0, 204.0 / 255.0, 153.0 / 255.0, 102.0 / 255.0, 51.0 / 255.0, 0.0]);
+        // Written to PSD with the params' own settings.
+        let f = export_item(&embedded).unwrap();
+        let fltr = get_desc(&f, "Fltr").unwrap();
+        assert_eq!(num(fltr.get("HrzS")), Some(20.0));
+        assert_eq!(enum_of(fltr, "DspM"), Some(&b"Tile"[..]));
+        // A grey map displaces the same both ways.
+        let grey = Image { rect, ch: 1, data: vec![0.25; 6] };
+        let map = embedded_map(&embed_map(&json!({}), &grey).unwrap()).unwrap();
+        assert_eq!(map.ch, 1);
+        // Nothing to embed.
+        assert!(embed_map(&json!({}), &Image { rect: Rect::new(0, 0, 0, 0), ch: 4, data: vec![] }).is_none());
+        assert!(embed_map(&json!({}), &Image { rect, ch: 4, data: vec![0.0; 5] }).is_none(), "short data");
+        assert!(embed_map(&json!(3), &grey).is_none(), "params not an object");
     }
 }

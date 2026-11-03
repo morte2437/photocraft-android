@@ -17,13 +17,13 @@ fn failed_effect_build_is_not_reused_after_original_pixels_recover() {
     foreground.surface_mut().unwrap().fill_rect(Rect::new(16, 16, 48, 48), &[1.0, 0.0, 0.0, 1.0]);
     foreground.effects.items.push(Effect::default_drop_shadow());
     doc.layers.extend([background, foreground]);
-    let expected = photocraft_compose::flatten(&doc).px;
+    let expected = photocraft_compose::flatten(&doc).px.clone();
     // Keep the known-good bounds, but force a new effect-map build from the damaged source.
     photocraft_compose::purge_effect_cache();
     spill::settle();
     assert_eq!(spill::stats().resident_bytes, 0);
-    let path = std::fs::read_dir(&dir).unwrap().filter_map(Result::ok).map(|e| e.path()).find(|p| p.extension().is_some_and(|e| e == "scratch")).unwrap();
-    let mut file = std::fs::OpenOptions::new().read(true).write(true).open(path).unwrap();
+    let mut file = spill::scratch_handle_for_tests().unwrap();
+    file.seek(SeekFrom::Start(0)).unwrap();
     let mut good = Vec::new();
     file.read_to_end(&mut good).unwrap();
     file.seek(SeekFrom::Start(0)).unwrap();

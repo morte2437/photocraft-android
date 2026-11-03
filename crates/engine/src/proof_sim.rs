@@ -18,6 +18,7 @@
 
 use photocraft_cms::{Builtin, Intent, Lut3d, Transform};
 use photocraft_color::SampleType;
+use photocraft_color::convert::{linear_to_srgb, srgb_to_linear};
 use photocraft_doc::Document;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -91,14 +92,16 @@ impl Default for HdrPreview {
 }
 
 impl HdrPreview {
+    /// Whether the preview passes values through unchanged.
     pub fn is_identity(&self) -> bool {
         self.highlight_compression || (self.exposure == 0.0 && self.gamma == 1.0)
     }
+    /// One encoded channel value through the 32-bit preview's exposure and gamma.
     fn apply(&self, v: f32) -> f32 {
         if self.is_identity() {
             return v;
         }
-        let lin = srgb_decode(v) * 2f32.powf(self.exposure);
+        let lin = srgb_to_linear(v) * 2f32.powf(self.exposure);
         srgb_encode(lin.max(0.0).powf(1.0 / self.gamma).min(1.0))
     }
 }
@@ -115,13 +118,9 @@ pub fn signature(c: &ColorState, doc: &Document) -> String {
     format!("{:?} {:?}", pv.setup.kind, h)
 }
 
-fn srgb_decode(v: f32) -> f32 {
-    if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
-}
-
+/// sRGB-encodes linear light after clamping it to 0..=1.
 fn srgb_encode(v: f32) -> f32 {
-    let v = v.clamp(0.0, 1.0);
-    if v <= 0.003_130_8 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 }
+    linear_to_srgb(v.clamp(0.0, 1.0))
 }
 
 /// Viénot et al. (1999): linear RGB → LMS.
@@ -201,7 +200,7 @@ pub fn display_lut_with(c: &ColorState, doc: &Document, size: usize, include_hdr
             let protan = kind == ProofKind::Protanopia;
             Box::new(move |v| {
                 let s = eval3(&to_srgb, &v);
-                let sim = dichromat(s.map(srgb_decode), protan).map(srgb_encode);
+                let sim = dichromat(s.map(srgb_to_linear), protan).map(srgb_encode);
                 eval3(&to_mon, &sim)
             })
         }
@@ -262,6 +261,7 @@ fn run_kind(s: &mut Session, id: &str) -> Result<Value> {
     set_kind(s, kind)
 }
 
+/// View › 32-bit Preview Options for the active document.
 fn preview_32(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "view.thirtyTwoBitPreviewOptions";
     let id = s.active().ok_or(EngineError::NoDocument)?.doc.id;
@@ -298,6 +298,7 @@ macro_rules! kind_spec {
     };
 }
 
+/// The View › Proof Setup commands.
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         kind_spec!("view.proofSetup.workingCyanPlate", "Working Cyan Plate"),
@@ -324,6 +325,21 @@ pub fn specs() -> Vec<CommandSpec> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The shared sRGB functions match the removed copies bit for bit.
+    #[test]
+    fn srgb_transfer_output_is_unchanged() {
+        let decode = |v: f32| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
+        let encode = |v: f32| {
+            let v = v.clamp(0.0, 1.0);
+            if v <= 0.003_130_8 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 }
+        };
+        for i in -2000..=6000 {
+            let v = i as f32 / 4000.0;
+            assert_eq!(srgb_to_linear(v).to_bits(), decode(v).to_bits(), "decode {v}");
+            assert_eq!(srgb_encode(v).to_bits(), encode(v).to_bits(), "encode {v}");
+        }
+    }
 
     fn session(mode: &str, depth: u32) -> Session {
         let mut s = Session::new();

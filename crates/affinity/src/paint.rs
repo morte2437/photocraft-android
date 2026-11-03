@@ -129,13 +129,29 @@ const MAX_STOPS: usize = 1024;
 fn floats(v: &Value) -> Option<Vec<f64>> {
     match v {
         Value::Floats(f) => Some(f.clone()),
-        Value::Bytes(b) if b.len() % 4 == 0 => Some(b.as_chunks::<4>().0.iter().map(|c| f64::from(f32::from_le_bytes(*c))).collect()),
+        Value::Bytes(b) if b.len() % 4 == 0 => Some(f32_samples(b)),
         _ => None,
     }
 }
 
+/// Little-endian `f32` samples widened to `f64`.
+fn f32_samples(b: &[u8]) -> Vec<f64> {
+    b.as_chunks::<4>().0.iter().map(|c| f64::from(f32::from_le_bytes(*c))).collect()
+}
+
+/// Spot colours defined through spot colours. A spot colour (`Pant`) is read through its RGB
+/// equivalent, else its base colour, which in real files hold plain colours. Colours are shared
+/// objects, so one can link to itself, and with both links followed at every level a colour read
+/// costs up to 2^(depth+1) lookups.
+const MAX_SPOT_DEPTH: usize = 4;
+
 /// A colour object (`RGBA`, `HSLA`, `CMYK`, `GRAY`, `LABA`, `Pant`).
 pub(crate) fn color(r: &mut Reader, id: ObjId) -> Option<Color> {
+    color_at(r, id, 0)
+}
+
+/// [`color`] of an object `depth` spot colours down.
+fn color_at(r: &mut Reader, id: ObjId, depth: usize) -> Option<Color> {
     let s = r.s;
     let class = s.class(id)?;
     let col = || -> Option<Vec<f64>> {
@@ -166,8 +182,12 @@ pub(crate) fn color(r: &mut Reader, id: ObjId) -> Option<Color> {
             Color::Lab { l: 100.0 * u(0)?, a: 255.0 * u(1)? - 128.0, b: 255.0 * u(2)? - 128.0, alpha: u(3)? }
         }
         b"Pant" => {
+            if depth >= MAX_SPOT_DEPTH {
+                r.warn("spot colours nested deeper than 4 levels (left empty)");
+                return None;
+            }
             r.warn("spot colours (imported as their RGB equivalent)");
-            return s.obj(id, b"srgb").and_then(|c| color(r, c)).or_else(|| s.obj(id, b"base").and_then(|c| color(r, c)));
+            return s.obj(id, b"srgb").and_then(|c| color_at(r, c, depth + 1)).or_else(|| s.obj(id, b"base").and_then(|c| color_at(r, c, depth + 1)));
         }
         b"RegC" => Color::Cmyk { c: 1.0, m: 1.0, y: 1.0, k: 1.0, a: 1.0 },
         _ => {
@@ -217,9 +237,18 @@ pub(crate) fn descriptor(r: &mut Reader, id: ObjId, local: Affine) -> Option<Pai
                 }
             };
             let grad = s.obj(fill, b"Grad")?;
+            // A shared gradient is decoded again for every occurrence: charge the arrays scanned
+            // and copy only as many positions as there are stops to keep.
+            if r.charge_slots(s.array_len(grad, b"Cols").unwrap_or(0).saturating_add(s.array_len(grad, b"Posn").unwrap_or(0))).is_err() {
+                r.warn("gradients beyond the document work budget (left empty)");
+                return Some(Paint::None);
+            }
             let cols = s.objs(grad, b"Cols");
             let posn: Vec<Vec<f64>> = match s.field(grad, b"Posn") {
-                Some(Value::Array(a)) => a.iter().filter_map(floats).collect(),
+                Some(Value::Array(a)) => a.iter().filter_map(floats).take(MAX_STOPS).collect(),
+                Some(Value::Records { size, data }) if *size % 4 == 0 && *size > 0 => {
+                    data.chunks_exact(usize::from(*size)).map(f32_samples).take(MAX_STOPS).collect()
+                }
                 _ => Vec::new(),
             };
             let mut stops = Vec::new();

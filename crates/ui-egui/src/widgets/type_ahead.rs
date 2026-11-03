@@ -10,7 +10,7 @@ const PAUSE: f64 = 1.0;
 
 /// Where the frame number of the last frame an open dropdown list was drawn is kept.
 fn open_id() -> Id {
-    Id::new("pc-dropdown-list-open")
+    Id::unique("pc-dropdown-list-open")
 }
 
 /// Is a dropdown list open? It then owns the keyboard, like an open menu: a letter picks an
@@ -137,7 +137,7 @@ mod tests {
         let mut h = Harness::builder().with_size(egui::vec2(300.0, 400.0)).build_ui_state(
             |ui, selected: &mut usize| {
                 let options = [(0, "Normal"), (1, "Dissolve"), (2, "Darken"), (3, "Multiply"), (4, "Darker Color")];
-                crate::widgets::dropdown(ui, "blend-mode", selected, &options, 120.0);
+                crate::widgets::dropdown(ui, "blend-mode", tl!("Blend Mode"), selected, &options, 120.0);
             },
             0,
         );

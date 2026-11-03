@@ -17,14 +17,13 @@ Exactly three colours:
 ## Geometry
 
 A 512-unit tile (`viewBox="0 0 512 512"`), rounded square with `rx=112`, no border. The macOS
-renders pad it onto Apple's 824/1024 icon grid; the Windows and Linux renders crop 22 units off
-each side so the figure reads at 16–48 px.
+renders pad it onto Apple's 824/1024 icon grid; the Windows and Linux renders use the whole tile,
+as the other Crafting Apps do.
 
 ## Provenance
 
 The owner's original drawing, made in ArtCraft (2880 px, engraving style, keyed to the palette),
-vectorised with craftrules `assets/logo-options/_tools/vectorize_tile.py`. The source PNG stays in
-craftrules at `assets/app-icons/photocraft/source.png`. License: see `LICENSE.txt`.
+vectorised. License: see `LICENSE.txt`.
 
 ## Files
 

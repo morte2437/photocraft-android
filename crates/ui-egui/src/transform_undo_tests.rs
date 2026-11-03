@@ -343,3 +343,46 @@ fn the_first_drag_from_the_move_tools_controls_undoes() {
     key(&mut h, Modifiers::COMMAND, Key::Z);
     assert!(close(quad(&h), [[100.0, 100.0], [200.0, 100.0], [200.0, 160.0], [100.0, 160.0]]), "{:?}", quad(&h));
 }
+
+/// #3402's layer-switch case (#5297): selected pixels moved with the Move tool, then moved again
+/// in the Free Transform box, land where the box left them when another layer is picked.
+#[test]
+fn picking_another_layer_applies_the_transform_of_moved_selected_pixels() {
+    let mut h = harness();
+    let layer = h.state().session.active().unwrap().active_layer.unwrap();
+    h.state_mut().run("select.rect", json!({"x": 100, "y": 100, "width": 100, "height": 60})).unwrap();
+    drag(&mut h, [150.0, 130.0], [250.0, 180.0]);
+    begin(&mut h);
+    // Away from the centre, where a press would take the reference point instead.
+    drag(&mut h, [220.0, 165.0], [240.0, 175.0]);
+    assert_eq!(quad(&h), [[220.0, 160.0], [320.0, 160.0], [320.0, 220.0], [220.0, 220.0]]);
+    let other = h.state().session.active().unwrap().doc.layers.iter().map(|l| l.id).find(|id| *id != layer).unwrap();
+    h.state_mut().run("layer.select", json!({"layer": other.0})).unwrap();
+    crate::transform_tool::end_if_left(h.state_mut());
+    h.run_steps(3);
+    assert!(h.state().ui.transform.is_none(), "picking another layer applies the transform");
+    let st = h.state().session.active().unwrap();
+    let landed = photocraft_geom::Rect::new(220, 160, 320, 220);
+    let (pixels, selection) = (st.doc.layer(layer).unwrap().surface().unwrap().content_bounds(), st.doc.selection.as_ref().map(|s| s.content_bounds()));
+    assert_eq!((pixels, selection), (landed, Some(landed)));
+}
+
+/// #5297 through the real canvas: ⌘T with a selection wider than the layer opens the box on the
+/// selection, and dragging it moves the selected pixels and the selection together.
+#[test]
+fn free_transform_opens_on_the_selection_and_moves_it_with_the_pixels() {
+    let mut h = harness();
+    let layer = h.state().session.active().unwrap().active_layer.unwrap();
+    // The left 60 px of the red rectangle, and empty layer to its left, above and below.
+    h.state_mut().run("select.rect", json!({"x": 60, "y": 80, "width": 100, "height": 120})).unwrap();
+    begin(&mut h);
+    assert_eq!(quad(&h), [[60.0, 80.0], [160.0, 80.0], [160.0, 200.0], [60.0, 200.0]]);
+    drag(&mut h, [80.0, 100.0], [130.0, 130.0]);
+    assert_eq!(quad(&h), [[110.0, 110.0], [210.0, 110.0], [210.0, 230.0], [110.0, 230.0]]);
+    key(&mut h, Modifiers::NONE, Key::Enter);
+    assert!(h.state().ui.transform.is_none());
+    let st = h.state().session.active().unwrap();
+    assert_eq!(st.doc.selection.as_ref().unwrap().content_bounds(), photocraft_geom::Rect::new(110, 110, 210, 230));
+    // What stayed (160..200 × 100..160) and what moved (to 150..210 × 130..190).
+    assert_eq!(st.doc.layer(layer).unwrap().surface().unwrap().content_bounds(), photocraft_geom::Rect::new(150, 100, 210, 190));
+}
