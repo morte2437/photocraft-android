@@ -174,7 +174,8 @@ fn invalid_link_state_fails_without_editing() {
 #[test]
 fn atn_link_events_keep_descriptors_and_replay_the_requested_operation() {
     // Link Layers keeps the measured toggle (main's Group F mapping); Unlink is explicit.
-    for (event, linked) in [("unlinkSelectedLayers", false)] {
+    {
+        let (event, linked) = ("unlinkSelectedLayers", false);
         for initial in [vec![None, None, None, Some(93), Some(93)], vec![Some(77), Some(77), Some(77), Some(93), Some(93)]] {
             let descriptor = Descriptor::new("null").with("null", target());
             let mut s = fixture(&initial, &[0, 1]);
@@ -287,7 +288,8 @@ fn target_events_keep_empty_and_explicit_target_descriptors_distinct() {
 #[test]
 fn bare_link_events_keep_their_operation_and_empty_keys() {
     // Link Layers keeps the measured toggle (main's Group F mapping); Unlink is explicit.
-    for (event, linked) in [("unlinkSelectedLayers", false)] {
+    {
+        let (event, linked) = ("unlinkSelectedLayers", false);
         let initial = if linked { None } else { Some(77) };
         let mut s = fixture(&[initial, initial], &[0, 1]);
         assert_eq!(load(&mut s, &file(event, Descriptor::new(event)))["unsupported"], json!([]));

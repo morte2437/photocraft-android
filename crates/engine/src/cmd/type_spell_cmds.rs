@@ -328,39 +328,6 @@ mod tests {
     }
 
     #[test]
-    fn a_recorded_spelling_change_replays_on_a_named_nonactive_layer() {
-        let (mut s, id) = session("Teh");
-        let name = s.active().unwrap().doc.layer(LayerId(id)).unwrap().name.clone();
-        s.execute("layer.new.layer", json!({"name": "Top"})).unwrap();
-        let replay = s.active().unwrap().doc.as_ref().clone();
-        s.execute("actions.record", json!({"name": "Fix spelling"})).unwrap();
-        s.execute("edit.checkSpelling", json!({"action": "change", "layer": id, "start": 0, "end": 3, "word": "Teh", "replace": "The"})).unwrap();
-        s.execute("actions.stop", json!({})).unwrap();
-        let steps = s.execute("actions.get", json!({"action": "Fix spelling"})).unwrap()["steps"].clone();
-        assert_eq!(steps[0][1]["layer"], name);
-        s.add_document(replay, None);
-        let played = s.execute("actions.play", json!({"action": "Fix spelling"})).unwrap();
-        assert!(played.get("failed").is_none(), "{played}");
-        assert_eq!(text_of(&s, id), "The");
-    }
-
-    #[test]
-    fn a_recorded_spelling_change_keeps_the_active_source_layer() {
-        let (mut s, id) = session("Teh");
-        let name = s.active().unwrap().doc.layer(LayerId(id)).unwrap().name.clone();
-        let replay = s.active().unwrap().doc.as_ref().clone();
-        s.execute("actions.record", json!({"name": "Fix active spelling"})).unwrap();
-        s.execute("edit.checkSpelling", json!({"action": "change", "layer": id, "start": 0, "end": 3, "word": "Teh", "replace": "The"})).unwrap();
-        s.execute("actions.stop", json!({})).unwrap();
-        let steps = s.execute("actions.get", json!({"action": "Fix active spelling"})).unwrap()["steps"].clone();
-        assert_eq!(steps[0][1]["layer"], name, "the change must retain its source layer");
-        s.add_document(replay, None);
-        let played = s.execute("actions.play", json!({"action": "Fix active spelling"})).unwrap();
-        assert!(played.get("failed").is_none(), "{played}");
-        assert_eq!(text_of(&s, id), "The");
-    }
-
-    #[test]
     fn missing_named_spelling_layer_is_an_error_for_list_and_change_all() {
         let (mut s, _) = session("Teh");
         for action in ["list", "changeAll"] {

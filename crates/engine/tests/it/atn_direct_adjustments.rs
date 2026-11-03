@@ -460,7 +460,7 @@ fn lab_replace_crosses_tile_edges_without_changing_unselected_native_pixels() {
             let original = raw(&s);
             s.execute("image.adjustments.replaceColor", json!({"labMinimum":[49,0,0],"labMaximum":[51,0,0],"fuzziness":0,"lightness":100})).unwrap();
             let after = raw(&s);
-            for (i, (pixel, original)) in after.chunks_exact(4).zip(original.chunks_exact(4)).enumerate() {
+            for (i, (pixel, original)) in after.as_chunks::<4>().0.iter().zip(original.as_chunks::<4>().0).enumerate() {
                 let inside = window.contains((i % width) as i32, (i / width) as i32);
                 let changed = selected == "none" || (selected == "window") == inside;
                 if changed {
@@ -629,7 +629,7 @@ fn lab_replace_preserves_alpha_and_rejects_locked_or_mismatched_surfaces() {
     let mut s = fixture("rgb", 32);
     let before = raw(&s);
     s.execute("image.adjustments.replaceColor", p.clone()).unwrap();
-    for (a, b) in raw(&s).chunks_exact(4).zip(before.chunks_exact(4)) {
+    for (a, b) in raw(&s).as_chunks::<4>().0.iter().zip(before.as_chunks::<4>().0) {
         assert_eq!(a[3], b[3]);
     }
     assert!(s.undo());
@@ -669,7 +669,7 @@ fn lab_replace_fractional_selection_preserves_f32_alpha_bits() {
         s.execute("image.adjustments.replaceColor", json!({"labMinimum":[0,-128,-128],"labMaximum":[100,127,127],"lightness":100})).unwrap();
         let after = raw(&s);
         assert_ne!(&after[8..11], &original[8..11]);
-        for (after, before) in after.chunks_exact(4).zip(original.chunks_exact(4)) {
+        for (after, before) in after.as_chunks::<4>().0.iter().zip(original.as_chunks::<4>().0) {
             assert_eq!(after[3].to_bits(), before[3].to_bits(), "coverage {coverage}");
         }
         assert!(s.undo());
