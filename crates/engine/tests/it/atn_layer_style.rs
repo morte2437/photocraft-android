@@ -7,7 +7,7 @@ use photocraft_engine::{
 };
 use photocraft_psd::{
     atn::{self, AtnAction, AtnEvent, AtnFile, AtnItem},
-    descriptor::{Class, Descriptor, Id, ReferenceItem, UnicodeString, Value as D},
+    descriptor::{Class, Descriptor, Id, MAX_DEPTH, ObjectArray, ReferenceItem, UnicodeString, Value as D},
 };
 use serde_json::{Value, json};
 
@@ -414,4 +414,88 @@ fn ordinary_layer_make_remains_a_legitimate_control() {
         assert_eq!(after.layer(source), before.layer(source));
         undo_redo(&mut s, &before, &after, 1);
     }
+}
+
+/// Every typed container must retain nested effects intent without changing the document or history.
+#[test]
+fn nested_effects_references_stay_whole_without_a_blank_layer_edit() {
+    let reference = create().items.pop().unwrap().1;
+    let nested = Descriptor::new("Lyr ").with("Nm  ", D::Text(UnicodeString::new_nul("Before"))).with("data", reference.clone());
+    let mut deepest = reference.clone();
+    // Root descriptor depth0, Usng value depth1, options descriptor depth2, data value depth3.
+    for _ in 3..MAX_DEPTH {
+        deepest = D::List(vec![D::Boolean(false), deepest]);
+    }
+    let cases = [
+        ("reference", reference.clone()),
+        ("descriptor", D::Descriptor(nested.clone())),
+        ("global object", D::GlobalObject(nested.clone())),
+        ("list", D::List(vec![D::Boolean(false), reference])),
+        ("object array", D::ObjectArray(ObjectArray { prefix: 16, body: nested.clone() })),
+        (
+            "mixed containers",
+            D::List(vec![
+                D::Boolean(false),
+                D::GlobalObject(Descriptor::new("Lyr ").with("data", D::ObjectArray(ObjectArray { prefix: 16, body: nested }))),
+            ]),
+        ),
+        ("parser depth limit", deepest),
+    ];
+    for (label, value) in cases {
+        for key in ["Usng", "Usin"] {
+            let d = Descriptor::new("null").with("null", D::Reference(vec![ReferenceItem::Class(class("Lyr "))])).with(
+                key,
+                D::Descriptor(Descriptor::new("Lyr ").with("Nm  ", D::Text(UnicodeString::new_nul("Ordinary"))).with("data", value.clone())),
+            );
+            let source = item(CREATE, d);
+            let loaded = import(&atn::write(&file(vec![source.clone()])).unwrap()).unwrap();
+            let (mut s, _) = fixture(8);
+            let before = s.active().unwrap().doc.clone();
+            let past = s.active().unwrap().history.past_len();
+            s.actions.list.extend(loaded.actions.clone());
+            let result = s.execute("actions.play", json!({"action": 0})).unwrap();
+            // Playback precedes classification so the baseline exposes the actual blank-layer edit.
+            assert!(
+                s.active().unwrap().doc == before,
+                "{label}/{key}: nested Lefx changed the document: layers {} -> {}, history {} -> {}",
+                before.layers.len(),
+                s.active().unwrap().doc.layers.len(),
+                past,
+                s.active().unwrap().history.past_len()
+            );
+            assert_eq!(s.active().unwrap().history.past_len(), past, "{label}/{key}");
+            assert_eq!(result["ran"], 0, "{label}/{key}");
+            assert!(result.get("failed").is_some(), "{label}/{key}");
+            assert_eq!(loaded.unsupported.len(), 1, "{label}/{key}");
+            assert_eq!(loaded.actions[0].steps[0].0, "actions.photoshopStep", "{label}/{key}");
+            let (bytes, skipped) = export("S", &[&loaded.actions[0]], &[], false).unwrap();
+            assert!(skipped.is_empty(), "{label}/{key}");
+            let saved = atn::parse(&bytes).unwrap().actions.into_iter().next().unwrap().items;
+            assert_eq!(saved.len(), 1, "{label}/{key}");
+            same_item_wire(saved.into_iter().next().unwrap(), source);
+        }
+    }
+}
+
+/// Native-exported layer options, including a name equal to Lefx, retain their actual settings.
+#[test]
+fn ordinary_layer_make_native_export_matches_native_playback() {
+    let params = json!({"name": "Lefx", "opacity": 0.375, "mode": "Multiply", "clipToPrevious": true});
+    let a = action(vec![exported("layer.new.layer", params.clone()).unwrap()]);
+    assert_eq!(a.steps[0], ("layer.new.layer".into(), params.clone()));
+    let (mut native, _) = fixture(8);
+    native.execute("layer.new.layer", params).unwrap();
+    let (mut recorded, source) = fixture(8);
+    let before = recorded.active().unwrap().doc.clone();
+    let past = recorded.active().unwrap().history.past_len();
+    recorded.actions.list.push(a);
+    let result = recorded.execute("actions.play", json!({"action": 0})).unwrap();
+    assert_eq!(result["ran"], 1);
+    assert!(result.get("failed").is_none());
+    let after = recorded.active().unwrap().doc.clone();
+    assert_eq!(after.layers.len(), before.layers.len() + 1);
+    assert_eq!(after.layer(source), before.layer(source));
+    assert_eq!(recorded.active().unwrap().history.past_len(), past + 1);
+    equivalent(&recorded, &native);
+    undo_redo(&mut recorded, &before, &after, 1);
 }
