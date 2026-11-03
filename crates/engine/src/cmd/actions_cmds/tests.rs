@@ -475,6 +475,8 @@ fn record_keeps_only_replayable_steps() {
 fn play_on_another_document_matches_pixels_at_each_depth() {
     for depth in [8, 16, 32] {
         let mut s = Session::new();
+        // This control checks the optional, per-step history behavior.
+        s.execute("actions.setHistory", json!({"singleState": false})).unwrap();
         record_red(&mut s, depth);
         s.execute("file.new", json!({"width": 40, "height": 40, "depth": depth})).unwrap();
         let before = s.active().unwrap().history.past_len();
@@ -1169,6 +1171,8 @@ fn button_color_is_one_of_the_photoshop_swatches() {
 fn arrange_that_cannot_move_is_a_noop_in_playback() {
     // #8453: imported actions make an adjustment layer, then Bring it to Front, where it already is.
     let mut s = Session::new();
+    // Keep individual rows visible so grouping cannot hide an extra no-op record.
+    s.execute("actions.setHistory", json!({"singleState": false})).unwrap();
     s.execute("file.new", json!({"width": 8, "height": 8})).unwrap();
     let steps = vec![
         ("layer.newAdjustmentLayer.curves".to_string(), json!({})),
