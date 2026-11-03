@@ -1,4 +1,4 @@
-//! #10889: every Crop overlay has its own embedded glyph, the options bar's overlay button paints
+﻿//! #10889: every Crop overlay has its own embedded glyph, the options bar's overlay button paints
 //! the one of the overlay in use, and the overlay menu lists a glyph per entry.
 
 use std::collections::HashSet;
@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use egui_kittest::Harness;
 use photocraft_ui_egui::crop_overlay::CropOverlay;
 use photocraft_ui_egui::icons;
-use photocraft_ui_egui::state::ToolOptions;
+use photocraft_ui_egui::state::{Tool, ToolOptions};
 
 fn collect(shape: &egui::Shape, ids: &mut HashSet<egui::TextureId>) {
     match shape {
@@ -26,7 +26,7 @@ fn collect(shape: &egui::Shape, ids: &mut HashSet<egui::TextureId>) {
     }
 }
 
-fn drawn_textures(h: &Harness<'_, ToolOptions>) -> HashSet<egui::TextureId> {
+fn drawn_textures<State>(h: &Harness<'_, State>) -> HashSet<egui::TextureId> {
     let mut ids = HashSet::new();
     for shape in &h.output().shapes {
         collect(&shape.shape, &mut ids);
@@ -89,4 +89,27 @@ fn the_overlay_menu_lists_a_glyph_per_entry() {
     h.run();
     let ids = drawn_textures(&h);
     assert!(ids.len() >= CropOverlay::ALL.len(), "one glyph per overlay entry plus the button: {ids:?}");
+}
+
+/// The canvas right-click Crop menu's overlay rows carry the same glyphs (#10889).
+#[test]
+fn the_canvas_crop_menu_lists_a_glyph_per_overlay() {
+    let mut h = Harness::builder().with_size(egui::vec2(1200.0, 800.0)).with_max_steps(64).with_accessibility_check(false).build_eframe(|cc| {
+        photocraft_ui_egui::PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
+        let mut app = photocraft_ui_egui::PhotocraftApp::new(photocraft_engine::Session::new(), photocraft_ui_egui::Services::default());
+        app.run("file.new", serde_json::json!({"name": "crop menu", "width": 400, "height": 300})).expect("new document");
+        app.ui.tool = Tool::Crop;
+        photocraft_ui_egui::crop_ui::ensure_frame(&mut app);
+        // The menu opens on a crop the user has started, so nudge the untouched frame once.
+        photocraft_ui_egui::crop_ui::nudge(&mut app, 1.0, 0.0);
+        app
+    });
+    h.run();
+    let before = drawn_textures(&h);
+    let ctx = h.ctx.clone();
+    let opened = photocraft_ui_egui::canvas::canvas_tool_menu::open_crop(h.state_mut(), &ctx, Tool::Crop, [600.0, 400.0]);
+    assert!(opened, "the crop menu opens on a pending crop");
+    h.run();
+    let added: Vec<_> = drawn_textures(&h).difference(&before).copied().collect();
+    assert!(added.len() >= CropOverlay::ALL.len(), "the menu adds a glyph per overlay: {added:?}");
 }
