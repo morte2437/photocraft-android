@@ -592,6 +592,9 @@ pub fn set_budget(budget_bytes: usize) {
 /// Reaching the limit pauses spilling like a full disk; changing it retries a paused disk now.
 pub fn set_size_cap(cap: Option<u64>) {
     let mut c = M.config();
+    if c.size_cap == cap {
+        return;
+    }
     c.size_cap = cap;
     M.next_space_check.store(0, Ordering::Relaxed);
     if let Some(p) = &mut c.paused {
@@ -666,6 +669,8 @@ pub struct SpillStats {
     pub last_error: Option<String>,
     /// Spilling is paused after a scratch disk failure and will be retried.
     pub paused: bool,
+    /// Scratch file size limit ([`set_size_cap`]); `None` = only the free-space reserve.
+    pub size_cap_bytes: Option<u64>,
 }
 
 pub fn stats() -> SpillStats {
@@ -681,6 +686,7 @@ pub fn stats() -> SpillStats {
         written_bytes: M.written.load(Ordering::Relaxed),
         last_error: c.last_error.clone(),
         paused: c.paused.is_some(),
+        size_cap_bytes: c.size_cap,
     }
 }
 

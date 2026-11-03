@@ -71,6 +71,10 @@ pub(super) fn humanize(key: &str) -> String {
         return "Low-Latency Drawing (vsync off, applies at next launch)".into();
     }
     // Performance: the canvas compositor's GPU memory, 0 for the automatic budget (L3).
+    // Scratch Disks: how large the scratch file may grow; the free-space reserve always applies.
+    if key == "sizeLimitMb" {
+        return "Scratch Size Limit (MB, 0 = No Limit)".into();
+    }
     if key == "gpuMemoryMb" {
         return "GPU Memory (MB, 0 = Automatic)".into();
     }

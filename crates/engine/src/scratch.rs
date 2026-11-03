@@ -118,7 +118,8 @@ mod native {
 pub(crate) fn configure(prefs: &Preferences) {
     let budget = photocraft_raster::memory::configure(photocraft_raster::memory::Policy {
         percent: prefs.performance.memory_usage_percent,
-        absolute_bytes: u64::from(prefs.performance.memory_usage_mb).saturating_mul(1 << 20),
+        // The web build's cap applies here too (effective_memory_usage_mb).
+        absolute_bytes: u64::from(prefs.performance.effective_memory_usage_mb()).saturating_mul(1 << 20),
     });
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -136,6 +137,8 @@ pub(crate) fn configure(prefs: &Preferences) {
         } else {
             usize::try_from(budget.tile_bytes).unwrap_or(usize::MAX)
         };
+        let limit = prefs.scratch_disks.size_limit_mb;
+        photocraft_raster::spill::set_size_cap((limit > 0).then(|| u64::from(limit).saturating_mul(1 << 20)));
         let _ = photocraft_raster::spill::configure(dir.as_deref(), tiles);
     }
     #[cfg(target_arch = "wasm32")]

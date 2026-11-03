@@ -3,7 +3,8 @@
 Native PhotoCraft keeps pixel tiles in RAM and spills cold tiles to a configured scratch
 directory. A read or write guard keeps a tile resident while a consumer uses its bytes. Undo
 snapshots keep their copy-on-write tiles, including disk-backed tiles, until History States
-retires them. Web builds retain their explicit memory limit and do not use a filesystem.
+retires them. Web builds retain their explicit memory limit (capped like Memory Usage) and do not use a
+filesystem.
 
 New preferences use **70% of physical RAM** as the process ceiling. This is configurable from
 1–95%; older preferences without `performance.memoryUsagePercent` retain their absolute
@@ -42,7 +43,9 @@ than max(1 GiB, 5% of the volume) would stay free), pauses spilling: tiles stay 
 the status bar shows the reason, and History's Memory Usage byte limit applies again from the
 next command, as without a scratch disk. The pause is retried after 1 s, doubling up to 60 s;
 spilling resumes on its own once the directory is usable and has room, and changing
-preferences retries at once. `spill::set_size_cap` adds an explicit scratch size limit.
+preferences retries at once. Preferences → Scratch Disks → Scratch Size Limit
+(`scratchDisks.sizeLimitMb`, 0 = no limit; `spill::set_size_cap`) caps the scratch file:
+reaching it pauses spilling the same way, and the free-space reserve applies regardless.
 A failed read retains its backing extent and blocks editing, saving and exporting of the
 document that holds the tile until it is readable again; other open documents keep working.
 Each commit checks the health of its own document (before and after an edit, the document a

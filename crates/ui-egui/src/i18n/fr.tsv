@@ -3414,6 +3414,7 @@ curves	Smooth	Lisser
 	This document's layers: {needed} of {budget} for layers	Calques de ce document : {needed} sur {budget} pour les calques
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	Les calques de ce document ont besoin de {needed} mais peuvent occuper {budget} : le document entier se redessine sur le CPU
 	GPU Memory (MB, 0 = Automatic)	Mémoire GPU (Mo, 0 = Automatique)
+	Scratch Size Limit (MB, 0 = No Limit)	Limite de taille du disque de travail (Mo, 0 = aucune limite)
 	{path}: the path is not valid Unicode; save under another name.	{path} : le chemin n’est pas un Unicode valide ; enregistrez sous un autre nom.
 	Replace	Remplacer
 	{name} was changed by another app after it was opened or saved here.	{name} a été modifié par une autre application après avoir été ouvert ou enregistré ici.

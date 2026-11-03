@@ -698,11 +698,15 @@ pub struct ScratchDisk {
 pub struct ScratchDisks {
     /// Disks for spilling tiles once the memory budget is reached (in priority order).
     pub disks: Vec<ScratchDisk>,
+    /// Largest the scratch file may grow, in MB; 0 = no limit. Reaching it pauses spilling
+    /// like a full disk (History's byte limit applies again). At least max(1 GB, 5 % of the
+    /// volume) is always left free, whatever this is set to.
+    pub size_limit_mb: u32,
 }
 
 impl Default for ScratchDisks {
     fn default() -> Self {
-        Self { disks: vec![ScratchDisk { path: "(system temp)".into(), enabled: true }] }
+        Self { disks: vec![ScratchDisk { path: "(system temp)".into(), enabled: true }], size_limit_mb: 0 }
     }
 }
 

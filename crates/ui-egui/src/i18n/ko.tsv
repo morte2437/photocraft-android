@@ -3615,6 +3615,7 @@ curves	Smooth	매끄럽게
 	This document's layers: {needed} of {budget} for layers	이 문서의 레이어: 레이어용 {budget} 중 {needed}
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	이 문서의 레이어에 {needed}가 필요하지만 {budget}만 사용할 수 있습니다: 문서 전체 다시 그리기는 CPU를 사용합니다
 	GPU Memory (MB, 0 = Automatic)	GPU 메모리(MB, 0 = 자동)
+	Scratch Size Limit (MB, 0 = No Limit)	임시 디스크 크기 제한(MB, 0 = 제한 없음)
 	{path}: the path is not valid Unicode; save under another name.	{path}: 경로가 올바른 유니코드가 아닙니다. 다른 이름으로 저장하세요.
 	Replace	대치
 	{name} was changed by another app after it was opened or saved here.	{name}이(가) 여기서 열거나 저장한 뒤 다른 앱에서 변경되었습니다.

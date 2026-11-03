@@ -16,6 +16,12 @@ fn paused_scratch_disk_restores_the_history_limit() {
         p.performance.memory_usage_mb = 64;
     });
     assert!(spill::enabled());
+    assert_eq!(spill::stats().size_cap_bytes, None, "0 MB = no scratch size limit");
+    // Preferences › Scratch Disks › Scratch Size Limit becomes the scratch file's cap.
+    session.edit_prefs(|p| p.scratch_disks.size_limit_mb = 4096);
+    assert_eq!(spill::stats().size_cap_bytes, Some(4096 << 20));
+    session.edit_prefs(|p| p.scratch_disks.size_limit_mb = 0);
+    assert_eq!(spill::stats().size_cap_bytes, None);
     let mut doc = Document::new("Pause fixture", Size::new(1024, 256), ColorMode::Rgb, SampleType::U8);
     let mut layer = Layer::raster("Pixels", PixelFormat::RGBA8);
     let id = layer.id;
