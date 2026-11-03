@@ -162,7 +162,8 @@ fn add_level(level: &Level, weight: f32, g: &Geometry, light: &mut [[f32; 3]]) {
             let fx = ox + (i % w) as f32 + 0.5 - p.0;
             let fy = oy + (i / w) as f32 + 0.5 - p.1;
             let across = (-fx * sin + fy * cos) / g.unit / width;
-            if across.abs() > 4.0 {
+            // NaN comes from overflowing geometry and must not reach the pixels.
+            if across.is_nan() || across.abs() > 4.0 {
                 continue;
             }
             let along = ((fx * cos + fy * sin) / g.unit).abs();
@@ -211,6 +212,11 @@ pub(crate) fn lens_flare(src: &Image, out: Rect, ctx: &Ctx, brightness: f32, cen
     let mid = (b.x0 as f32 + bw / 2.0, b.y0 as f32 + bh / 2.0);
     let axis = (mid.0 - c.0, mid.1 - c.1);
     let len = axis.0.hypot(axis.1);
+    // A centre so far off the canvas that the geometry overflows f32 (e.g. 1e300 from a command)
+    // lights nothing here; without this, NaN would reach every pixel through the streaks.
+    if ![c.0, c.1, len].iter().all(|v| v.is_finite()) {
+        return src.crop(out);
+    }
     // At the image centre the axis has no direction; the offsets across it are tiny anyway.
     let normal = if len > 1e-6 { (-axis.1 / len, axis.0 / len) } else { (0.0, 1.0) };
     let (w, h) = (out.width() as usize, out.height() as usize);
@@ -229,7 +235,8 @@ pub(crate) fn lens_flare(src: &Image, out: Rect, ctx: &Ctx, brightness: f32, cen
         let Some(f) = light.get(i) else { break };
         let mut c = rgba(ctx, px);
         for k in 0..3 {
-            let a = f[k].clamp(0.0, 1.0);
+            // `clamp` keeps NaN; a non-finite amount adds no light.
+            let a = if f[k].is_finite() { f[k].clamp(0.0, 1.0) } else { 0.0 };
             // Screen (c + a·(1 − c)) keeps display-referred values below white; a 32-bit value
             // already above white is left as is rather than pulled down towards it.
             c[k] += a * (1.0 - c[k]).max(0.0);
