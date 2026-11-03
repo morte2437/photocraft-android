@@ -40,6 +40,37 @@ impl GpuCanvas {
     /// Store (or replace) page `page` of `key`. False, with nothing changed, when the device is
     /// not healthy, the page is malformed, or the pages of `key` would exceed the canvas budget
     /// (the caller evicts its cold pages first; this is the backstop).
+    /// Writes `buf` (texels at the page's reduction, a part of it) into the page `page` of `key`
+    /// already resident: an edit's re-render, without a new texture. False when that page isn't
+    /// held or `buf` falls outside it.
+    pub fn update_page(&self, key: u64, page: u64, buf: &photocraft_compose::Buffer) -> bool {
+        let (w, h) = (buf.rect.width(), buf.rect.height());
+        if !self.health.is_ok() || w == 0 || h == 0 || buf.px.len() as u64 != u64::from(w) * u64::from(h) {
+            return false;
+        }
+        let renderer = self.rs.renderer.read();
+        let Some(res) = renderer.callback_resources.get::<Resources>() else { return false };
+        let Some(tile) = res.docs.get(&key).and_then(|d| d.tiles.iter().find(|t| t.page.is_some_and(|(id, _)| id == page))) else {
+            return false;
+        };
+        let Some((_, factor)) = tile.page.filter(|(_, f)| *f > 0) else { return false };
+        // The texture's first texel, at the page's reduction.
+        let (ox, oy) = (i64::from(tile.rect[0] / factor), i64::from(tile.rect[1] / factor));
+        let (x, y) = (i64::from(buf.rect.x0) - ox, i64::from(buf.rect.y0) - oy);
+        let texture = &tile.texture;
+        if x < 0 || y < 0 || x + i64::from(w) > i64::from(texture.width()) || y + i64::from(h) > i64::from(texture.height()) {
+            return false;
+        }
+        let format = texture.format();
+        self.rs.queue.write_texture(
+            wgpu::TexelCopyTextureInfo { texture, mip_level: 0, origin: wgpu::Origin3d { x: x as u32, y: y as u32, z: 0 }, aspect: wgpu::TextureAspect::All },
+            &texels(format, &buf.px),
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w * texel_bytes(format) as u32), rows_per_image: Some(h) },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        true
+    }
+
     pub fn upload_page(&self, p: PageUpload<'_>) -> bool {
         let PageUpload { key, page, size, depth, factor, core, buf } = p;
         let (w, h) = (buf.rect.width(), buf.rect.height());

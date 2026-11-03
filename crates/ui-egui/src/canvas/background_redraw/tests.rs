@@ -669,6 +669,20 @@ fn a_canvas_over_the_texture_budget_draws_its_viewport_pages_on_the_gpu() {
     assert!(stats.dirtied > 0 && stats.uploads > uploads, "{stats:?}");
     let filled = centre_pixel(&mut g);
     assert!(filled[0] > 0xb0 && filled[2] < 0x60, "the fill is shown: {filled:?}");
+    // A small edit re-renders only the part of each page it reaches, into the page held.
+    let (held, partial) = (gpu.pages(key).0.len(), stats.partial);
+    // (A frame between the steps, as in use: the edit's damage is known one revision at a time.)
+    g.harness.state_mut().run("select.rect", json!({"x": 1400, "y": 900, "width": 200, "height": 200})).expect("select");
+    settle_pages(&mut g);
+    g.harness.state_mut().run("edit.fill", json!({"color": "#22aa22"})).expect("small fill");
+    settle_pages(&mut g);
+    let stats = g.harness.state().streams[&doc.id].stats.clone();
+    assert!(stats.partial > partial, "{stats:?}");
+    assert_eq!(gpu.pages(key).0.len(), held, "no new page textures");
+    // Just its square is shown: 200 px at about 20% zoom, some 40 screen pixels a side.
+    let img = g.harness.render().expect("render");
+    let green = img.pixels().filter(|p| p.0[1] > 0x90 && p.0[0] < 0x50 && p.0[2] < 0x50).count();
+    assert!((1000..2500).contains(&green), "the small fill is shown: {green} pixels");
     // A budget too small for one page draws it on the CPU canvas, as before.
     gpu.set_canvas_budget(1);
     g.harness.run_steps(3);

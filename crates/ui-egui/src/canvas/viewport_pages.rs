@@ -7,7 +7,8 @@
 //! Documents that fit keep the texture set and everything around it (the layer budget, deferred
 //! refresh, background redraw). Without a GPU canvas the CPU canvas draws every document.
 //!
-//! Pages are derived data: an edit marks the pages its damage reaches dirty (the rest stay), a
+//! Pages are derived data: an edit marks the pages its damage reaches dirty (the rest stay) and,
+//! for a small one, re-renders just the texels it reaches into the page held; a
 //! dirty page stays on screen until its replacement is uploaded, and work for pages that are no
 //! longer wanted (a pan, a zoom, an edit) is cancelled.
 
@@ -93,6 +94,19 @@ pub(crate) fn factor(zoom: f32) -> u32 {
     k
 }
 
+/// The part of `page` a change to `damage` reaches, widened to whole texels: rendered from just
+/// that area, its texels are the ones the whole page has (reductions are globally aligned).
+fn partial_region(page: PageId, size: [u32; 2], damage: DRect) -> DRect {
+    let k = page.factor.max(1) as i32;
+    let source = page.source(size);
+    let d = damage.intersect(&source);
+    if d.is_empty() {
+        return DRect::EMPTY;
+    }
+    let up = |v: i32| v.div_euclid(k).saturating_add(i32::from(v.rem_euclid(k) != 0)).saturating_mul(k);
+    DRect::new(d.x0.div_euclid(k) * k, d.y0.div_euclid(k) * k, up(d.x1), up(d.y1)).intersect(&source)
+}
+
 /// The pages covering `visible` of a `size` document at `zoom`, centre first: at most
 /// `max_pages` (coarser when the view needs more).
 pub(crate) fn pages(size: [u32; 2], visible: DRect, zoom: f32, max_pages: usize) -> Vec<PageId> {
@@ -135,6 +149,9 @@ struct Page {
     dirty: bool,
     /// The exact reduction (not the quick preview).
     exact: bool,
+    /// While dirty, the only document area that changed since it was uploaded (aligned to its
+    /// texels): just that part is rendered again and written into the page. `None`: all of it.
+    partial: Option<DRect>,
     /// Bumped whenever the page's content is invalidated: a result from older work is dropped.
     epoch: u64,
     touched: u64,
@@ -152,6 +169,8 @@ pub(crate) struct Done {
     pub page: PageId,
     pub epoch: u64,
     pub exact: bool,
+    /// Rendered for [`Page::partial`]: written into the page held, not a page of its own.
+    pub region: Option<DRect>,
     pub result: Result<photocraft_compose::Buffer, String>,
 }
 
@@ -169,6 +188,8 @@ pub(crate) struct Stats {
     pub uploads: u64,
     pub cancelled: u64,
     pub dirtied: u64,
+    /// Pages updated in part, by re-rendering only what an edit reached.
+    pub partial: u64,
     pub evicted: u64,
     pub last_error: Option<String>,
 }
@@ -248,8 +269,16 @@ impl Stream {
         let pages: Vec<PageId> = self.pages.keys().copied().filter(|p| hit(*p)).collect();
         for p in &pages {
             if let Some(page) = self.pages.get_mut(p) {
+                // An exact page that is current, or only partly stale, takes the new damage too.
+                let partial = damage.filter(|_| page.exact && (!page.dirty || page.partial.is_some())).and_then(|d| {
+                    let r = page.partial.unwrap_or(DRect::EMPTY).union(&partial_region(*p, now.size, d));
+                    let source = p.source(now.size);
+                    // Most of the page: rendering it whole is no slower.
+                    (r.width() as u64 * r.height() as u64 * 2 <= source.width() as u64 * source.height() as u64).then_some(r)
+                });
                 page.dirty = true;
-                page.exact = false;
+                page.exact &= partial.is_some();
+                page.partial = partial;
             }
             self.bump(*p);
         }
@@ -290,8 +319,9 @@ impl Stream {
 
     /// Take finished work, cancel work for pages not `wanted`, and start work for wanted pages
     /// that are missing, dirty or still a quick preview (`faithful`: the document has a quick
-    /// preview at reductions), as `spawn(page, epoch, exact, cancel)` allows.
-    pub fn update(&mut self, wanted: &[PageId], faithful: bool, mut spawn: impl FnMut(PageId, u64, bool, Arc<AtomicBool>) -> bool) {
+    /// preview at reductions), as `spawn(page, epoch, exact, cancel, region)` allows: `region`, the
+    /// part of a held page to render again ([`Page::partial`]), or the whole page.
+    pub fn update(&mut self, wanted: &[PageId], faithful: bool, mut spawn: impl FnMut(PageId, u64, bool, Arc<AtomicBool>, Option<DRect>) -> bool) {
         self.clock += 1;
         let want: HashSet<PageId> = wanted.iter().copied().collect();
         while let Ok(d) = self.rx.try_recv() {
@@ -299,6 +329,10 @@ impl Stream {
             // Cancelled work ends in an interruption, not a failure: the page is asked for again.
             let cancelled = self.jobs.swap_remove(i).cancel.load(Ordering::Relaxed);
             if cancelled || d.epoch != self.epoch(d.page) || !want.contains(&d.page) {
+                continue;
+            }
+            // A part of a page no longer held (evicted meanwhile): the whole page is asked for.
+            if d.region.is_some() && !self.pages.get(&d.page).is_some_and(|q| q.dirty && q.partial == d.region) {
                 continue;
             }
             match &d.result {
@@ -342,8 +376,9 @@ impl Stream {
             if have.is_some_and(|e| e || !exact) {
                 continue;
             }
+            let region = self.pages.get(p).filter(|q| q.dirty).and_then(|q| q.partial);
             let cancel = Arc::new(AtomicBool::new(false));
-            if !spawn(*p, epoch, exact, cancel.clone()) {
+            if !spawn(*p, epoch, exact || region.is_some(), cancel.clone(), region) {
                 break;
             }
             self.jobs.push(Job { page: *p, epoch, cancel });
@@ -424,7 +459,20 @@ impl Stream {
         }
         self.stats.uploads += 1;
         self.epochs.remove(&done.page);
-        self.pages.insert(done.page, Page { dirty: false, exact: done.exact, epoch: done.epoch, touched: self.clock, bytes });
+        if done.region.is_some()
+            && let Some(page) = self.pages.get_mut(&done.page)
+        {
+            (page.dirty, page.partial, page.epoch, page.touched) = (false, None, done.epoch, self.clock);
+            self.stats.partial += 1;
+            return;
+        }
+        self.pages.insert(done.page, Page { dirty: false, exact: done.exact, partial: None, epoch: done.epoch, touched: self.clock, bytes });
+    }
+
+    /// The part of `page` written by `done` couldn't be stored: drop the page, so it is
+    /// rendered whole.
+    pub fn partial_failed(&mut self, page: PageId) {
+        self.drop_page(page);
     }
 
     /// Drop pages no longer worth keeping: once every wanted page is shown and current, the
@@ -464,7 +512,7 @@ fn spawn(
     tx: mpsc::Sender<Done>,
     doc: Arc<Document>,
     display: Option<Arc<CanvasDisplay>>,
-    (page, epoch, exact): (PageId, u64, bool),
+    (page, epoch, exact, region): (PageId, u64, bool, Option<DRect>),
     cancel: Arc<AtomicBool>,
 ) -> bool {
     if ACTIVE.fetch_add(1, Ordering::AcqRel) >= MAX_JOBS {
@@ -482,9 +530,9 @@ fn spawn(
     let slot = Slot(ctx.clone());
     let work = move || {
         let _slot = slot;
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| render(&doc, page, exact, display.as_deref(), &cancel)))
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| render(&doc, page, exact, region, display.as_deref(), &cancel)))
             .unwrap_or_else(|_| Err("viewport page render panicked".into()));
-        let _ = tx.send(Done { page, epoch, exact, result });
+        let _ = tx.send(Done { page, epoch, exact, region, result });
     };
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -498,9 +546,16 @@ fn spawn(
 }
 
 /// One page as the GPU canvas stores it (encoded for the display like the texture set).
-fn render(doc: &Document, page: PageId, exact: bool, display: Option<&CanvasDisplay>, cancel: &AtomicBool) -> Result<photocraft_compose::Buffer, String> {
+fn render(
+    doc: &Document,
+    page: PageId,
+    exact: bool,
+    region: Option<DRect>,
+    display: Option<&CanvasDisplay>,
+    cancel: &AtomicBool,
+) -> Result<photocraft_compose::Buffer, String> {
     let size = [doc.size.width, doc.size.height];
-    let source = page.source(size);
+    let source = region.unwrap_or_else(|| page.source(size));
     let rows = u64::from(source.height().min(128));
     let _working = photocraft_raster::memory::try_reserve(u64::from(source.width()) * rows * 16 + (16 << 20))?;
     let before = photocraft_raster::spill::read_error_generation();
@@ -583,9 +638,20 @@ pub(super) fn show(app: &mut PhotocraftApp, ctx: &egui::Context, idx: usize, xf:
     crate::render_path::note(app, id.0, crate::render_path::Path::Gpu { full: true });
     let stream = app.streams.entry(id).or_default();
     let tx = stream.tx.clone();
-    stream.update(&wanted, faithful, |page, epoch, exact, cancel| spawn(ctx, tx.clone(), doc.clone(), display.clone(), (page, epoch, exact), cancel));
+    stream.update(&wanted, faithful, |page, epoch, exact, cancel, region| {
+        spawn(ctx, tx.clone(), doc.clone(), display.clone(), (page, epoch, exact, region), cancel)
+    });
     for d in stream.take_uploads(&wanted, texel_bytes) {
         let Ok(buf) = &d.result else { continue };
+        if d.region.is_some() {
+            if gpu.update_page(key, d.page.id(), buf) {
+                stream.uploaded(&d, 0, true);
+            } else {
+                stream.partial_failed(d.page);
+                gpu.retain_pages(key, &stream.ids());
+            }
+            continue;
+        }
         let bytes = buf.px.len() as u64 * texel_bytes;
         let ok = match stream.make_room(d.page, bytes, limit, &wanted) {
             None => false,
@@ -632,7 +698,7 @@ mod tests {
 
     fn done(p: PageId, epoch: u64, exact: bool, side: i32) -> Done {
         let rect = DRect::new(0, 0, side, side);
-        Done { page: p, epoch, exact, result: Ok(photocraft_compose::Buffer { rect, px: vec![[0.0; 4]; (side * side) as usize] }) }
+        Done { page: p, epoch, exact, region: None, result: Ok(photocraft_compose::Buffer { rect, px: vec![[0.0; 4]; (side * side) as usize] }) }
     }
 
     /// A stream holding `held` clean, exact pages.
@@ -646,8 +712,8 @@ mod tests {
     }
 
     /// Spawns every job it is offered, recording it with its cancel flag.
-    fn recorder(log: &mut Vec<(PageId, u64, bool, Arc<AtomicBool>)>) -> impl FnMut(PageId, u64, bool, Arc<AtomicBool>) -> bool + '_ {
-        |p, e, x, c| {
+    fn recorder(log: &mut Vec<(PageId, u64, bool, Arc<AtomicBool>)>) -> impl FnMut(PageId, u64, bool, Arc<AtomicBool>, Option<DRect>) -> bool + '_ {
+        |p, e, x, c, _| {
             log.push((p, e, x, c));
             true
         }
@@ -733,16 +799,16 @@ mod tests {
         s.invalidate(id(2), Some(DRect::new(600, 0, 601, 1)));
         assert!(log[1].3.load(Ordering::Relaxed), "work on an edited page is cancelled");
         // Its old result is dropped when it arrives, and so is a cancelled job's interruption.
-        s.tx.send(Done { page: log[0].0, epoch: log[0].1, exact: true, result: Err("interrupted".into()) }).unwrap();
+        s.tx.send(Done { page: log[0].0, epoch: log[0].1, exact: true, region: None, result: Err("interrupted".into()) }).unwrap();
         s.tx.send(done(log[1].0, log[1].1, true, 4)).unwrap();
-        s.update(&view[1..], true, |_, _, _, _| false);
+        s.update(&view[1..], true, |_, _, _, _, _| false);
         assert!(s.ready.is_empty(), "stale result dropped");
         assert!(!s.stuck(&view) && s.stats.last_error.is_none(), "a cancellation is not a failure");
         // Zoom: every page changes factor.
         let mut log2 = Vec::new();
         s.update(&[page(1, 1, 0)], true, recorder(&mut log2));
         let jobs = s.jobs.len();
-        s.update(&[page(2, 0, 0)], true, |_, _, _, _| true);
+        s.update(&[page(2, 0, 0)], true, |_, _, _, _, _| true);
         assert!(log2.iter().all(|j| j.3.load(Ordering::Relaxed)), "zoom cancels the old factor's work");
         assert!(s.stats.cancelled >= 3 && jobs > 0);
     }
@@ -762,6 +828,53 @@ mod tests {
         let mut log3 = Vec::new();
         holding(&[]).update(&view, false, recorder(&mut log3));
         assert!(log3[0].2, "an unfaithful preview is skipped");
+    }
+
+    #[test]
+    fn a_small_edit_re_renders_only_the_texels_it_reaches() {
+        let (a, b) = (page(4, 1, 1), page(4, 3, 3));
+        let mut s = holding(&[a, b]);
+        // Page a: core 2048..4096 at 4 px per texel, source one texel more.
+        s.invalidate(id(2), Some(DRect::new(2101, 2102, 2110, 2111)));
+        assert_eq!(s.pages[&a].partial, Some(DRect::new(2100, 2100, 2112, 2112)), "whole texels");
+        assert!(s.pages[&a].dirty && s.pages[&a].exact);
+        // More damage on a dirty page adds to its part.
+        s.invalidate(id(3), Some(DRect::new(2200, 2100, 2204, 2104)));
+        assert_eq!(s.pages[&a].partial, Some(DRect::new(2100, 2100, 2204, 2112)));
+        let mut regions = Vec::new();
+        s.update(&[a], true, |p, e, x, _, r| {
+            regions.push((p, e, x, r));
+            true
+        });
+        assert_eq!(regions, vec![(a, s.epoch(a), true, s.pages[&a].partial)]);
+        // The part is written into the page held: same page, same bytes, current again.
+        let mut d = done(a, regions[0].1, true, 4);
+        d.region = regions[0].3;
+        s.tx.send(d).unwrap();
+        s.update(&[a], true, |_, _, _, _, _| panic!("nothing left to render"));
+        let up = s.take_uploads(&[a], 16);
+        assert_eq!(up.len(), 1);
+        s.uploaded(&up[0], 0, true);
+        assert!(!s.pages[&a].dirty && s.pages[&a].partial.is_none() && s.pages[&a].bytes == 100);
+        assert_eq!(s.stats.partial, 1);
+        // Most of a page, or damage of unknown extent, renders it whole.
+        s.invalidate(id(4), Some(DRect::new(2048, 2048, 4000, 4000)));
+        assert!(s.pages[&a].dirty && s.pages[&a].partial.is_none() && !s.pages[&a].exact);
+        s.invalidate(id(5), None);
+        assert!(s.pages[&b].partial.is_none());
+        // A part of a page evicted meanwhile is dropped: the whole page is asked for.
+        let mut s = holding(&[a]);
+        s.invalidate(id(2), Some(DRect::new(2101, 2102, 2110, 2111)));
+        let region = s.pages[&a].partial;
+        let epoch = s.epoch(a);
+        s.partial_failed(a);
+        let mut d = done(a, epoch, true, 4);
+        d.region = region;
+        s.tx.send(d).unwrap();
+        let mut log = Vec::new();
+        s.update(&[a], true, recorder(&mut log));
+        assert!(s.ready.is_empty());
+        assert_eq!(log.len(), 1, "the whole page");
     }
 
     #[test]
@@ -803,8 +916,8 @@ mod tests {
         let view = [page(1, 0, 0)];
         let mut log = Vec::new();
         s.update(&view, true, recorder(&mut log));
-        s.tx.send(Done { page: view[0], epoch: log[0].1, exact: true, result: Err("out of memory".into()) }).unwrap();
-        s.update(&view, true, |_, _, _, _| panic!("no retry while failed"));
+        s.tx.send(Done { page: view[0], epoch: log[0].1, exact: true, region: None, result: Err("out of memory".into()) }).unwrap();
+        s.update(&view, true, |_, _, _, _, _| panic!("no retry while failed"));
         assert!(s.stuck(&view));
         assert_eq!(s.stats.last_error.as_deref(), Some("out of memory"));
         s.retry_after((7, 7));
