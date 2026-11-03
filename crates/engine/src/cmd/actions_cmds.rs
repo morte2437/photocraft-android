@@ -14,7 +14,7 @@
 //! step, because the outer `actions.play` id would otherwise hide a recorded `file.*` command from
 //! the top-level check.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -273,7 +273,7 @@ pub fn called_actions(list: &[Action], steps: &mut [(String, Value)]) -> Vec<Act
             _ => None,
         }
     }
-    fn targets(list: &[Action], steps: &mut [(String, Value)], depth: usize, queue: &mut Vec<(usize, usize)>) {
+    fn targets(list: &[Action], steps: &mut [(String, Value)], depth: usize, queue: &mut VecDeque<(usize, usize)>) {
         let mut pending = Vec::new();
         for (id, params) in steps.iter_mut() {
             pending.push((id.clone(), params));
@@ -303,14 +303,14 @@ pub fn called_actions(list: &[Action], steps: &mut [(String, Value)]) -> Vec<Act
                         if let (Some(action), Some(obj)) = (list.get(i), params.as_object_mut()) {
                             obj.insert("action".into(), json!(action.name));
                         }
-                        queue.push((i, depth));
+                        queue.push_back((i, depth));
                     }
                     // Conditional branches only take names, so there is nothing to rewrite.
                     "actions.conditional" => {
                         for key in ["then", "else"] {
                             let Some(name) = params.get(key).and_then(Value::as_str) else { continue };
                             if let Some(i) = list.iter().position(|a| a.name == name) {
-                                queue.push((i, depth));
+                                queue.push_back((i, depth));
                             }
                         }
                     }
@@ -319,10 +319,11 @@ pub fn called_actions(list: &[Action], steps: &mut [(String, Value)]) -> Vec<Act
             }
         }
     }
-    let mut queue = Vec::new();
+    let mut queue = VecDeque::new();
     targets(list, steps, 1, &mut queue);
     let mut found = std::collections::BTreeMap::new();
-    while let Some((i, depth)) = queue.pop() {
+    // Visit each action at its shallowest call depth so a deeper path cannot hide its children.
+    while let Some((i, depth)) = queue.pop_front() {
         // Playback stops at 16 levels, so deeper calls never run.
         if depth > 16 || found.contains_key(&i) {
             continue;

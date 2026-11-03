@@ -370,6 +370,9 @@ Save and Close keeps TIFF layers by default; explicit tiffLayers false is
 refused when it would lose layer data. TIFF color modes the writer cannot
 preserve are refused. Existing Folder save defaults are unchanged.
 
+Save and Close assumes that other processes do not modify or replace its inputs
+during the batch. The source-data checks do not provide concurrent-write protection.
+
 Save and Close refuses format conversion, sources already open in the caller,
 and a result from a different document. An input must have an encoder for its
 exact extension; import-only/unknown/extensionless inputs require Save As and

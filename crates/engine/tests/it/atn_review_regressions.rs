@@ -173,6 +173,8 @@ fn custom_duplicate_kernel_fields_are_kept_with_their_enabled_state() {
                 assert_eq!(action.steps[0].0, atn_cmds::PHOTOSHOP_STEP);
                 assert_eq!(action.disabled.contains(&0), !enabled);
                 assert_eq!(exported(action), d);
+                let (bytes, _) = atn_cmds::export("Parent", &[action], &[], false).unwrap();
+                assert_eq!(atn::parse(&bytes).unwrap().actions[0].items[0].enabled, enabled);
             }
         }
     }
@@ -708,6 +710,39 @@ fn called_actions_packages_explicit_batch_children_and_replays_them() {
             let doc = photocraft_io::import("saved.png", &std::fs::read(result["files"][0].as_str().unwrap()).unwrap()).unwrap().document;
             assert_eq!(doc.size, photocraft_doc::Size::new(3, 1));
         }
+    }
+}
+
+/// A deep route to a shared action must not hide children reached by a shallower playable branch.
+#[test]
+fn called_actions_packages_shared_descendants_at_the_shallowest_depth() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("input.png");
+    std::fs::write(&input, small_image(photocraft_codecs::Format::Png)).unwrap();
+    let mut list = vec![
+        Action::new("Shared", vec![("actions.play".into(), json!({"action":1}))]),
+        Action::new("Child", vec![("image.imageSize".into(), json!({"width":3,"height":1,"resample":"nearest"}))]),
+    ];
+    // The long branch reaches Shared at depth16 and its child beyond the playback limit.
+    for i in 0..15 {
+        list.push(Action::new(format!("A{i}"), vec![("actions.play".into(), json!({"action":if i == 14 { 0 } else { i + 3 }}))]));
+    }
+    for (condition, then, otherwise) in [("always", "Shared", "A0"), ("never", "A0", "Shared")] {
+        let mut steps = vec![(
+            "file.automate.batch".into(),
+            json!({"input":[input],"output":dir.path().join(condition),"steps":[["actions.conditional",{"if":condition,"then":then,"else":otherwise}]]}),
+        )];
+        let captured = photocraft_engine::actions_cmds::called_actions(&list, &mut steps);
+        assert_eq!(captured.iter().map(|a| &a.name).collect::<Vec<_>>(), list.iter().map(|a| &a.name).collect::<Vec<_>>());
+        assert_eq!(captured[0].steps[0].1["action"], "Child");
+        let mut s = Session::new();
+        s.actions.list = captured;
+        let result = s.execute(&steps[0].0, steps[0].1.clone()).unwrap();
+        assert!(result["errors"].as_array().unwrap().is_empty(), "{result}");
+        assert_eq!(result["files"].as_array().unwrap().len(), 1, "{result}");
+        let saved = std::fs::read(result["files"][0].as_str().unwrap()).unwrap();
+        let doc = photocraft_io::import("saved.png", &saved).unwrap().document;
+        assert_eq!(doc.size, photocraft_doc::Size::new(3, 1));
     }
 }
 
