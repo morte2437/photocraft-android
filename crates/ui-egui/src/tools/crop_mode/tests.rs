@@ -537,7 +537,7 @@ fn arrows_nudge_the_image_shift_by_ten_and_x_recentres() {
 #[test]
 fn classic_mode_shows_the_cropped_area_and_h_does_nothing() {
     let mut app = app();
-    crate::crop_ui::ensure_frame(&mut app);
+    with_frame(&mut app);
     app.ui.tool_options.crop_shield.show_cropped_area = false;
     assert!(crate::crop_shield::hides_outside(&app));
     app.ui.tool_options.crop_shield.classic_mode = true;
@@ -554,9 +554,9 @@ fn classic_mode_shows_the_cropped_area_and_h_does_nothing() {
 }
 
 #[test]
-fn p_toggles_classic_mode_while_the_crop_tool_shows_a_box() {
+fn p_toggles_classic_mode_while_a_crop_is_in_progress() {
     let mut app = app();
-    crate::crop_ui::ensure_frame(&mut app);
+    with_frame(&mut app);
     let press = |app: &mut PhotocraftApp| {
         let ctx = egui::Context::default();
         ctx.input_mut(|i| i.events.push(egui::Event::Key { key: egui::Key::P, physical_key: None, pressed: true, repeat: false, modifiers: NONE }));
@@ -577,6 +577,26 @@ fn p_toggles_classic_mode_while_the_crop_tool_shows_a_box() {
     press(&mut app);
     assert_ne!(app.ui.tool, Tool::Crop);
     assert!(!classic(&app));
+}
+
+/// After a commit the tool shows its untouched default frame again: H and P are the Hand and Pen
+/// keys there, as when the tool is picked, not Show Cropped Area and Classic Mode (#9731, #6536).
+#[test]
+fn h_and_p_pick_their_tools_over_the_default_frame_after_a_commit() {
+    for (k, tool) in [(egui::Key::H, Tool::Hand), (egui::Key::P, Tool::Pen)] {
+        let mut app = app();
+        with_frame(&mut app);
+        key(&mut app, egui::Key::Enter, NONE);
+        assert_eq!(app.session.active().map(|st| st.doc.size), Some(Size::new(60, 40)), "the crop committed");
+        crate::crop_ui::ensure_frame(&mut app);
+        assert!(app.ui.crop_rect.is_some() && app.crop.default_frame, "the default frame is back");
+        key(&mut app, k, NONE);
+        assert_eq!(app.ui.tool, tool, "{k:?}");
+        let s = &app.ui.tool_options.crop_shield;
+        assert!(s.show_cropped_area && !s.classic_mode, "{k:?} changed no crop option");
+        crate::crop_ui::ensure_frame(&mut app);
+        assert!(app.ui.crop_rect.is_none(), "leaving the tool drops the default frame");
+    }
 }
 
 #[test]
