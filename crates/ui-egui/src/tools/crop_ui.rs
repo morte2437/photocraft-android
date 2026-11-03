@@ -98,8 +98,9 @@ pub enum CropDrag {
     MoveImage { start: [f64; 2], rect: [f64; 4], view: Option<crate::crop_mode::PressView> },
     /// Default mode, outside the box: the image turns about the frame's `center` (which stays put
     /// on screen). `grab` is the pointer's direction from it at the press (radians, in the press
-    /// `view`), `from` the frame's angle then (degrees).
-    TurnImage { center: [f64; 2], grab: f64, from: f64, view: Option<crate::crop_mode::PressView> },
+    /// `view`), `from` the frame's angle then (degrees) and `rect` the frame then, which the turn
+    /// keeps inside the turned image (`crop_mode::keep_inside`).
+    TurnImage { center: [f64; 2], grab: f64, from: f64, rect: [f64; 4], view: Option<crate::crop_mode::PressView> },
 }
 
 /// What the pointer is over, relative to a crop frame.
@@ -950,7 +951,7 @@ fn outside_drag(app: &PhotocraftApp, p: [f64; 2], rect: [f64; 4], deg: f64) -> C
     let c = center(rect);
     let grab = (p[1] - c[1]).atan2(p[0] - c[0]);
     if crate::crop_mode::moves_image(app) {
-        CropDrag::TurnImage { center: c, grab, from: deg, view: crate::crop_mode::press_view(app) }
+        CropDrag::TurnImage { center: c, grab, from: deg, rect, view: crate::crop_mode::press_view(app) }
     } else {
         // Outside the frame a drag turns it, as in Photoshop (#1792).
         CropDrag::Rotate { center: c, grab, from: deg }
@@ -1018,13 +1019,14 @@ fn update(app: &mut PhotocraftApp, p: [f64; 2], mods: Modifiers) {
 fn follow_view_drag(app: &mut PhotocraftApp, p: [f64; 2], mods: Modifiers) -> bool {
     match app.crop.drag {
         Some(CropDrag::Rotate { center, grab, from }) => app.ui.crop_angle = turned_angle(center, grab, from, p, mods.shift),
-        Some(CropDrag::TurnImage { center, grab, from, view }) => {
+        Some(CropDrag::TurnImage { center, grab, from, rect, view }) => {
             // The image turns with the pointer's sweep on screen, so the frame turns against it.
             let at = crate::crop_mode::to_press(app, view, p);
             let turned = from - ((at[1] - center[1]).atan2(at[0] - center[0]) - grab).to_degrees();
             if turned.is_finite() {
                 app.ui.crop_angle = normalized_angle(if mods.shift { (turned / 15.0).round() * 15.0 } else { turned });
                 crate::crop_mode::sync_frame(app);
+                crate::crop_mode::keep_inside(app, rect, from, mods.command);
             }
         }
         Some(CropDrag::MoveImage { start, rect, view }) => {
