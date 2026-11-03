@@ -479,6 +479,15 @@ impl GatedSave {
     }
 }
 
+/// A fresh directory for a [`GatedSave`] test (on every platform, unlike the Unix-only
+/// fixtures' `tmp_dir`).
+fn save_dir(name: &str) -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!("photocraft-engine-gated-save-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
 /// A job on the active document that runs until it is cancelled.
 fn open_job(s: &mut Session) -> JobId {
     job(s
@@ -502,7 +511,7 @@ fn index_of(s: &Session, doc: photocraft_doc::DocId) -> usize {
 
 #[test]
 fn cancelling_a_save_before_it_commits_stops_it_without_touching_the_target() {
-    let dir = tmp_dir("cancel-before-commit");
+    let dir = save_dir("cancel-before-commit");
     let target = dir.join("w.psd");
     std::fs::write(&target, b"old").unwrap();
     let mut s = session(64, 64);
@@ -518,7 +527,7 @@ fn cancelling_a_save_before_it_commits_stops_it_without_touching_the_target() {
 
 #[test]
 fn cancelling_a_committed_save_is_refused_and_it_reports_its_real_outcome() {
-    let dir = tmp_dir("cancel-after-commit");
+    let dir = save_dir("cancel-after-commit");
     let target = dir.join("w.psd");
     std::fs::write(&target, b"old").unwrap();
     let mut s = session(64, 64);
@@ -542,7 +551,7 @@ fn cancelling_a_committed_save_is_refused_and_it_reports_its_real_outcome() {
 
 #[test]
 fn cancel_all_cancels_open_jobs_and_reports_a_committed_save_it_left_running() {
-    let dir = tmp_dir("cancel-all-mixed");
+    let dir = save_dir("cancel-all-mixed");
     let (committed_target, open_target) = (dir.join("a.psd"), dir.join("c.psd"));
     std::fs::write(&committed_target, b"old").unwrap();
     std::fs::write(&open_target, b"old").unwrap();
@@ -576,7 +585,7 @@ fn cancel_all_cancels_open_jobs_and_reports_a_committed_save_it_left_running() {
 
 #[test]
 fn closing_documents_cancels_open_saves_but_a_committed_save_finishes() {
-    let dir = tmp_dir("cancel-on-close-mixed");
+    let dir = save_dir("cancel-on-close-mixed");
     let (committed_target, open_target) = (dir.join("a.psd"), dir.join("c.psd"));
     std::fs::write(&committed_target, b"old").unwrap();
     std::fs::write(&open_target, b"old").unwrap();
