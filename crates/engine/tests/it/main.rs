@@ -2,6 +2,7 @@
 
 mod affinity;
 mod artboard_export_names;
+mod atn_content_aware_fill;
 mod atn_crystallize_cell_size;
 mod atn_reference_forms;
 mod atn_ripple_amount;

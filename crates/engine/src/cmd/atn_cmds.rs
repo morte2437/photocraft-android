@@ -34,6 +34,7 @@ mod fields;
 mod files;
 
 mod steps_channels;
+mod steps_content_aware;
 mod steps_distort;
 mod steps_doc;
 mod steps_gallery;

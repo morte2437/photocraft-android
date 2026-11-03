@@ -4,6 +4,7 @@ use super::descriptors::{desc, get_bool, get_ref, jbool, layer_ref, layer_target
 use super::fields::{F, Kind, Mapped, fields_from, fields_to, none, step};
 
 use super::steps_channels::{match_color_from, match_color_to, merge_spot_from, merge_spot_to, split_from, split_to, trap_from, trap_to};
+use super::steps_content_aware::{caf_from, caf_to};
 use super::steps_distort::{PINCH, POLAR, SPHERIZE, TWIRL, ZIGZAG, keys_from, keys_to, wave_from, wave_to};
 use super::steps_doc::{
     align_from, align_to, canvas_size_from, canvas_size_to, close_from, close_to, conditional_from, conditional_to, convert_mode_from, convert_mode_to,
@@ -857,6 +858,7 @@ pub(super) const EVENTS: &[Event] = &[
         from: |d| profile_from(d, "edit.convertToProfile"),
         to: profile_to,
     },
+    Event { code: "", name: "cafWorkspace", label: "Content-Aware Fill", ids: &["edit.contentAwareFill"], from: caf_from, to: caf_to },
     // File and actions.
     Event { code: "Cls ", name: "close", label: "Close", ids: &["file.close"], from: close_from, to: close_to },
     Event { code: "Expr", name: "export", label: "Export", ids: &["file.export.saveForWebLegacy"], from: export_from, to: export_to },

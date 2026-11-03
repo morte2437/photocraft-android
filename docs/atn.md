@@ -18,7 +18,7 @@ layers and documents, newer and older events and files, and a measured reference
 map yet, with everything needed to implement them without
 the reference application.
 
-## Supported events (144)
+## Supported events (145)
 
 | Code | String ID | Label | PhotoCraft command(s) |
 |---|---|---|---|
@@ -45,6 +45,7 @@ the reference application.
 | (string ID only) | collapseAllGroupsEvent | Collapse All Groups | `layer.setExpanded` |
 | `ClrB` | colorBalance | Color Balance | `image.adjustments.colorBalance` |
 | `ClrR` | colorRange | Color Range | `select.colorRange` |
+| (string ID only) | cafWorkspace | Content-Aware Fill | `edit.contentAwareFill` |
 | `Cntc` | contract | Contract | `select.modify.contract` |
 | `CnvM` | convertMode | Convert Mode | `image.mode.rgb`, `image.mode.grayscale`, `image.mode.cmyk`, `image.mode.lab`, `image.mode.multichannel`, `image.mode.bits8`, `image.mode.bits16`, `image.mode.bits32`, `image.mode.bitmap` |
 | (string ID only) | convertToProfile | Convert to Profile | `edit.convertToProfile` |
@@ -166,6 +167,34 @@ the reference application.
 | (string ID only) | vibrance | Vibrance | `image.adjustments.vibrance` |
 | `Wave` | wave | Wave | `filter.distort.wave` |
 | `ZgZg` | zigZag | ZigZag | `filter.distort.zigZag` |
+
+### Content-Aware Fill recordings
+
+`cafWorkspace` maps the measured Rectangular / Default color adaptation / None rotation /
+New Layer form to `edit.contentAwareFill`, retaining all seven keys and the three booleans:
+Sample All Layers, Scale and Mirror. The selection comes from the preceding selection step.
+
+| Recorded key, in order | Supported value | Native parameter |
+|---|---|---|
+| `cafSamplingRegion` | `cafSamplingRegionRectangular` | `sampling: "rectangular"` |
+| `cafSampleAllLayers` | boolean | `sampleAllLayers` |
+| `cafColorAdaptationLevel` | `cafColorAdaptationDefault` | `colorAdaptation: "default"` |
+| `cafRotationAmount` | `cafRotationAmountNone` | `rotationAdaptation: "none"` |
+| `cafScale` | boolean | `scale` |
+| `cafMirror` | boolean | `mirror` |
+| `cafOutput` | `cafOutputToNewLayer` | `output: "new"` |
+
+Descriptor types, source identity and key order survive save while its native settings are
+unchanged. Native export writes the seven keys explicitly; the known native boolean, color
+adaptation and rotation defaults are supported when sampling is Rectangular and output is New
+Layer. A native call using Auto or Current Layer defaults cannot yet be exported.
+
+The reference's ellipses do not establish additional enum forms. Auto/Custom sampling,
+other adaptation levels, Current/Duplicate Layer output, absent keys, unknown settings and
+malformed or repeated fields remain complete kept steps. Native layer targets, sampling/fill
+edits and nondefault seeds also refuse export rather than lose their settings. Playback uses
+the existing native fill and its selection, authorization, job and Undo/Redo behavior. The
+remaining CAF forms and the other recorded tools in #10710 are still separate work.
 
 ### Settings retained by mapped events
 
@@ -460,7 +489,6 @@ the recorded steps back from the saved Actions panel. Ranges come from the dialo
 | Shear (`Shr `) | `ShrP` list of `Pnt ` (`Hrzn`, `Vrtc` doubles), `UndA` (`WrpA` wrap around, `RptE` repeat edge pixels), `ShrS` long, `ShrE` long | The dialog writes whole numbers: `Hrzn` -64..63 (dragging past the grid clamps), `Vrtc` 1..128 with the first point at 1 and the last at 128; dragging a point out of the grid deletes it. `ShrS` is 0 and `ShrE` the last point's index (count - 1). Script runs take any value unclamped and crashed on far-off `ShrE`/`ShrS` or a first `Vrtc` below 1. |
 | Gradient tool, classic (`Grdn` / `gradientClassEvent`) | `From`, `T   ` points in pixels; `Opct` percent, `Md  ` blend mode, `Type` (`GrdT`: `Lnr `, `Rdl `, `Angl`, `Rflc`, `Dmnd`), `Rvrs` bool, `Dthr` bool, `UsMs` bool (transparency), `gradientsInterpolationMethod` (`Perc` perceptual, …), `Grad` gradient object (as in Gradient Map) | Recorded in that order. `Opct`, `Md  ` and `Rvrs` appear only when they differ from 100 %, Normal and off; `Dthr` and `UsMs` only when on. The five types are the only accepted values. A step without `Grad` fails. |
 | Gradient tool, default mode | two steps: Make (`null` = class `contentLayer`, `Usng` = `Type` gradient layer object) then Set (`null` = `contentLayer` target, `T   ` = the same object plus `Algn` false) | The object: `Dthr`, `gradientsInterpolationMethod`, `Angl` angle, `Type`, `Scl ` percent, `Ofst` (`Hrzn`, `Vrtc` percent), `Grad`. The new tool makes a gradient fill layer; Make holds the first click, Set the finished drag. |
-| Content-Aware Fill (`cafWorkspace`) | `cafSamplingRegion` (`cafSamplingRegionRectangular`, …), `cafSampleAllLayers` bool, `cafColorAdaptationLevel` (`cafColorAdaptationDefault`, …), `cafRotationAmount` (`cafRotationAmountNone`, …), `cafScale` bool, `cafMirror` bool, `cafOutput` (`cafOutputToNewLayer`, …) | Runs on the selection, which is recorded as its own step before it. |
 | Perspective Warp (`perspectiveWarpTransform`) | `null` = layer target, `Md  ` (`perspectiveWarpMode`: `warp`), `referenceRect` rectangle in pixels, `vertices` list of points in pixels (the layout quad), `warpedVertices` (the same points after warping), `quads` list of `indices` (4 vertex indexes each) | Layout and warp are one step. |
 | Print (`print`) then Print One Copy (`printOneCopy`) | `print`: `null` = reference `printOutput` property of the target document; `printOutput` (`PstS`, `Inte`, `printSixteenBit`, `printerName` text, `printProofSetup`), `printViewProofSetup`, `printOutputOptions` (caption, marks, `Bckg` colour, `BrdT`, `Bld `, `Rslt`, `vectorData`, `PgPs`, `Left`, `Top `, `Scl `, crop rectangle), `osSpecificPrintInfo` raw data, `Cptn` text. `printOneCopy` has no keys. | Pressing Print in the dialog records both steps. |
 | Create Droplet (`CrtD`) | `In  ` alias: the droplet file; `Fldr` bool (include subfolders); `Usng` reference to the action; then the Batch keys below (destination, file naming, error log) when set | The same settings as Batch, with the droplet file instead of a source folder. |
