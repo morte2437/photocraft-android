@@ -267,7 +267,7 @@ Paragraph; the rest open as in-app floating windows.
 | Date | Change | Summary |
 |---|---|---|
 | 2026-11-01 | minor | Every preference takes effect: 11 of 183 do nothing (was 12); Graphics Adapter always worked, but startup read it by raw JSON key, which the scorecard audit can't see |
-| 2026-10-31 | minor | Layers panel filter-type dropdown: Color filters by the layers' label colour (#5898); Kind, Name, Mode and Color, the other five missing; no percentage changed |
+| 2026-10-31 | minor | Layers panel filter-type dropdown: Color filters by the layers' label colour (#5898); Kind, Name, Mode, Color, Smart Object and Artboard, the other three missing; no percentage changed |
 | 2026-10-29 | minor | Paragraph box overflow: text a box can't hold enlarges the box's lower-right handle and shows a black + in it, as the reference application does (#8311); agents read `typeBoxOverflow` in `ui.inspect`. Not a new command, so no percentage changed |
 | 2026-10-28 | minor | The text and gradient stop Color Pickers preview the picked colour on the canvas before OK, as Photoshop's do (#5530); no percentage changed |
 | 2026-10-27 | minor | Shape Fill/Stroke popover as Photoshop's (paint types, Color Picker button, Recently Used Colors, swatch folders, with the Gradient tab) and every colour swatch opens the full Color Picker; rows added (partial, done); Recently Used Colors is a new preference, so 12 of 183 do nothing; no percentage changed; 2026-10-30: the swatches preview live while their Color Picker is open |

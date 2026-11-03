@@ -66,6 +66,7 @@ dot only at the end. `batch_include_all_subfolders`,
 `batch_naming_later_result_replaces_the_earlier_one`, and
 `extension_component_only_adds_a_dot_at_the_end` check those cases. PhotoCraft deliberately
 rejects a plan that would replace another input file before it is read, to prevent data loss.
-It keeps a progress display and immediate cancellation in the UI so headless control clients can
-observe and stop a batch. The measured Photoshop dialog has no progress display and asks whether
-to continue or stop after Esc; those differences remain open under AUTO-219-5.
+The desktop Batch follows the measured flow: it shows no progress in the status bar, previews each
+input read-only on the canvas, and Esc asks whether to continue or stop. Headless control clients
+still read the job's progress and stop it with `jobs.cancel`. The inputs are not live tabs with
+Layers panel content, so AUTO-219-5 stays partial.

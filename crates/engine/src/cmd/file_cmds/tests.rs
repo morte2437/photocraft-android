@@ -445,6 +445,41 @@ fn batch_open_source_save_as_then_close_ask_writes_the_result() {
     assert!(session.documents().is_empty());
 }
 
+#[test]
+fn batch_open_source_refuses_a_result_that_replaces_another_open_file() {
+    let dir = tmp("batch-open-replaces-input");
+    let mut session = Session::new();
+    // Saved as PNG under its default name, `a.jpg`'s result is the open `a.png`'s file.
+    for (name, format) in [("a.jpg", "jpg"), ("a.png", "png")] {
+        let path = png(&dir, name, 8, 6, "#ff0000");
+        session.execute("file.openAs", json!({"path": path, "as": format})).unwrap();
+    }
+    let before = std::fs::read(join(&dir, "a.png")).unwrap();
+    let error = session
+        .execute("file.automate.batch", json!({"source": "open", "steps": [["image.imageRotation.90cw", {}]], "output": dir, "format": "png"}))
+        .unwrap_err();
+    assert!(error.to_string().contains("replace another input"), "{error}");
+    assert_eq!(std::fs::read(join(&dir, "a.png")).unwrap(), before, "nothing is written before the refusal");
+}
+
+#[test]
+fn batch_open_source_save_step_leaves_an_unwritten_document_changed() {
+    let mut session = Session::new();
+    session.execute("file.new", json!({"name": "First", "width": 8, "height": 6})).unwrap();
+    let steps = json!([["image.adjustments.invert", {}], ["file.save", {}]]);
+    // No destination: nothing is written.
+    let result = session.execute("file.automate.batch", json!({"source": "open", "steps": steps})).unwrap();
+    assert_eq!(result["errors"], json!([]), "{result}");
+    assert!(session.documents()[0].is_dirty(), "a document Batch did not write stays changed");
+    // A destination that can't be written: the write fails.
+    let dir = tmp("batch-open-save-fails");
+    let blocker = join(&dir, "not-a-folder");
+    std::fs::write(&blocker, b"file").unwrap();
+    let result = session.execute("file.automate.batch", json!({"source": "open", "steps": steps, "output": blocker, "format": "png"})).unwrap();
+    assert_eq!(result["errors"].as_array().map(Vec::len), Some(1), "{result}");
+    assert!(session.documents()[0].is_dirty(), "a failed write leaves the document changed");
+}
+
 #[cfg(unix)]
 #[test]
 fn batch_error_log_rejects_a_dangling_link_to_a_planned_output() {

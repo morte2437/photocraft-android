@@ -1606,6 +1606,24 @@ fn a_check_spelling_step_with_its_dialog_opens_it_and_done_continues() {
     assert_eq!(texts, ["Teh cat"]);
 }
 
+/// Check Spelling opened by hand keeps its place: an action's Check Spelling step fails instead
+/// of replacing it.
+#[test]
+fn a_check_spelling_step_fails_while_the_dialog_is_open_by_hand() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 300, "height": 100})).unwrap();
+    app.run("type.create", json!({"x": 10, "y": 50, "text": "Teh cat"})).unwrap();
+    let mut a = Action::new("Spell", vec![("edit.checkSpelling".into(), json!({"allLayers": false})), ("layer.new.layer".into(), json!({"name": "after"}))]);
+    a.dialogs.insert(0);
+    app.session.actions.list.push(a);
+    crate::type_panels_ui::open_spelling(&mut app, true).unwrap();
+    let v = play(&mut app, &json!({"action": "Spell"})).unwrap();
+    assert_eq!(v["failed"]["error"], "Check Spelling is already open", "{v}");
+    let d = app.ui.type_panels.spell.as_ref().expect("the dialog stays open");
+    assert!(d.all_layers && d.resume.is_none(), "the hand-opened dialog is kept");
+    assert!(!layer_names(&app).contains(&"after".to_string()));
+}
+
 /// A correction step (`action` set) runs as it did before the dialog toggle applied to Check
 /// Spelling: its dialog switch opens nothing.
 #[test]

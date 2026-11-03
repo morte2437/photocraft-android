@@ -366,7 +366,13 @@ pub(super) fn process_batch_outputs(
         let result = process_one(raw_ppi, path, out, save, ProcessOptions { format: Some(format), written: None, ctx: Some(ctx) }, f);
         if ctx.cancelled() {
             ctx.publish_batch_preview(path, None);
-            done = index;
+            // A cancel that lands while the result is written still leaves that file written.
+            if result.is_ok() {
+                files.push(out.clone());
+                done = index + 1;
+            } else {
+                done = index;
+            }
             break;
         }
         if ctx.batch_take_interrupt() {
@@ -642,12 +648,21 @@ fn batch_open_documents(
                 .collect(),
         })
     };
+    // As for a folder: no result may replace another open document's file.
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(paths) = &planned {
+        let plan: Vec<(String, String)> = originals.iter().map(|(_, _, path)| path.clone()).zip(paths.iter().cloned()).collect();
+        validate_flat_outputs(&plan)?;
+    }
     validate_error_log(policy, originals.iter().map(|(_, _, path)| path.clone()), planned.iter().flat_map(|paths| paths.iter().cloned()))?;
     let mut files = Vec::new();
     let mut errors = Vec::new();
     let mut stopped = None;
     let mut done = 0;
     for (index, (id, name, path)) in originals.iter().enumerate() {
+        // The document a recorded Save / Save As marked as saved, with its earlier saved
+        // revision: when Batch then writes nothing, it reads as changed again.
+        let mut marked: Option<(u64, u64)> = None;
         let result = (|| -> Result<()> {
             let position = s.documents().iter().position(|state| state.doc.id.0 == *id).ok_or(EngineError::NoDocument)?;
             s.set_active(position);
@@ -656,7 +671,11 @@ fn batch_open_documents(
                 if batch_save_point(command) {
                     let state = s.active_mut().ok_or(EngineError::NoDocument)?;
                     saved = Some(state.doc.clone());
-                    if command != "file.saveACopy" {
+                    // With no destination nothing is written, so the document stays changed.
+                    if command != "file.saveACopy" && planned.is_some() {
+                        if marked.is_none() {
+                            marked = Some((state.doc.id.0, state.saved_revision));
+                        }
                         state.saved_revision = state.revision;
                     }
                     continue;
@@ -679,6 +698,15 @@ fn batch_open_documents(
             Ok(())
         })();
         done = index + 1;
+        if result.is_err()
+            && let Some((doc, revision)) = marked
+            && let Some(position) = s.documents().iter().position(|state| state.doc.id.0 == doc)
+        {
+            s.set_active(position);
+            if let Some(state) = s.active_mut() {
+                state.saved_revision = revision;
+            }
+        }
         if let Err(error) = result {
             errors.push(json!({"document": name, "error": error.to_string()}));
             if policy.stop_on_error {

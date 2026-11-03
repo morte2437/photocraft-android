@@ -207,7 +207,7 @@ fn remove_word(s: &mut Session, p: &Value) -> Result<Value> {
 /// Whether an action records this call: only Check Spelling itself (no `action`), which the
 /// dialog runs when it closes. Its corrections, dictionary edits and lookups are not recorded.
 pub(crate) fn records(p: &Value) -> bool {
-    p.get("action").is_none()
+    p.get("action").is_none_or(Value::is_null)
 }
 
 /// The step a recorded Check Spelling becomes: `{"allLayers"}`, `false` when it checked one layer.
@@ -440,6 +440,16 @@ mod tests {
         let steps: Vec<&Value> = s.actions.list[0].steps.iter().map(|(_, p)| p).collect();
         assert_eq!(steps, [&json!({"allLayers": false}), &json!({"allLayers": false})]);
         assert_eq!(s.actions.list[0].dialogs.len(), 2);
+    }
+
+    /// `"action": null` runs Check Spelling itself, so it is recorded as one.
+    #[test]
+    fn a_null_action_is_recorded_as_check_spelling() {
+        let (mut s, _) = session("Teh end");
+        s.execute("actions.record", json!({"name": "Null"})).unwrap();
+        s.execute("edit.checkSpelling", json!({"action": null})).unwrap();
+        s.execute("actions.stop", json!({})).unwrap();
+        assert_eq!(s.actions.list[0].steps, [("edit.checkSpelling".to_string(), json!({"allLayers": true}))]);
     }
 
     #[test]

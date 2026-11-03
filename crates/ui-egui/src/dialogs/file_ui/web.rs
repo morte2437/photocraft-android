@@ -531,6 +531,10 @@ pub(super) fn web_confirm(app: &mut PhotocraftApp, f: &Map<String, Value>) -> Re
         authorize(&prepared)?;
         p = prepared;
     }
+    // A null or empty destination is none: the picker asks for one.
+    if let Some(fields) = p.as_object_mut() {
+        fields.retain(|key, value| !(matches!(key.as_str(), "path" | "dir" | "folder") && (value.is_null() || value.as_str() == Some(""))));
+    }
     if p.get("path").is_some() || p.get("dir").is_some() || p.get("folder").is_some() {
         return save_for_web(app, p);
     }
@@ -546,7 +550,11 @@ pub(super) fn web_confirm(app: &mut PhotocraftApp, f: &Map<String, Value>) -> Re
             let dir = path.rfind(['/', '\\']).map(|i| path[..i].to_string()).unwrap_or_else(|| ".".into());
             p["dir"] = json!(dir);
             p["html"] = json!(html);
-        } else if let Some(folder) = kept_name_folder(&path, &base, st.format.ext()) {
+        } else if let Some(folder) = kept_name_folder(&path, &base, st.format.ext())
+            // A save that renamed the document meanwhile: the engine would name the file after
+            // the new name, not the one picked.
+            && app.session.active().is_some_and(|state| photocraft_doc::slices::base_name(&state.doc) == base)
+        {
             // The suggested name kept: only the folder, so a recorded action saves each
             // document under its own name, as in Photoshop (#5305).
             p["folder"] = json!(folder);

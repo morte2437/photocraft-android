@@ -395,6 +395,20 @@ fn recording_folds_one_run_of_move_tool_nudges() {
     assert_eq!(steps, &[("layer.translate".into(), json!({"dx": 3.0, "dy": 10.0})), ("layer.translate".into(), json!({"dx": 0.0, "dy": 1.0}))]);
 }
 
+/// Each nudge moves by whole pixels, so two 0.6 px steps fold into the 2 px they moved, not 1.2.
+#[test]
+fn folded_nudges_add_whole_pixel_steps() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 24, "height": 24, "background": "transparent"})).unwrap();
+    s.execute("layer.new.layer", json!({"name": "Target"})).unwrap();
+    s.execute("actions.record", json!({"name": "Nudge"})).unwrap();
+    for _ in 0..2 {
+        s.execute("layer.translate", json!({"dx": 0.6, "dy": 0.0, "coalesce": "nudge:1"})).unwrap();
+    }
+    s.execute("actions.stop", json!({})).unwrap();
+    assert_eq!(s.actions.list[0].steps, [("layer.translate".into(), json!({"dx": 2.0, "dy": 0.0}))]);
+}
+
 #[test]
 fn recording_document_activation_uses_opening_order_offset() {
     let mut s = Session::new();

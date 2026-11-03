@@ -459,8 +459,9 @@ fn fold_recorded_nudges(steps: impl IntoIterator<Item = (String, Value)>) -> Vec
             .and_then(|p| p.get("coalesce").and_then(Value::as_str).filter(|run| run.starts_with("nudge:")))
             .map(str::to_string);
         if let Some(run) = &run {
-            let dx = params.get("dx").and_then(Value::as_f64);
-            let dy = params.get("dy").and_then(Value::as_f64);
+            // `layer.translate` moves each step by whole pixels, so the fold adds rounded steps.
+            let dx = params.get("dx").and_then(Value::as_f64).map(f64::round);
+            let dy = params.get("dy").and_then(Value::as_f64).map(f64::round);
             if let (Some(dx), Some(dy)) = (dx, dy)
                 && dx.is_finite()
                 && dy.is_finite()

@@ -58,7 +58,7 @@ pub(crate) fn batch(a: &BatchArgs, out: &mut dyn Write, err: &mut dyn Write) -> 
     if !a.in_place && same_dir(in_dir, out_dir) {
         return Err(CliError::OutIsIn(out_dir.to_path_buf()));
     }
-    let mut inputs: Vec<photocraft_engine::file_cmds::BatchInput> = if a.recursive {
+    let inputs: Vec<photocraft_engine::file_cmds::BatchInput> = if a.recursive {
         photocraft_engine::file_cmds::list_images_tree(&in_dir.to_string_lossy(), &out_dir.to_string_lossy(), "photocraft-cli batch")?
             .into_iter()
             .filter(|input| is_input(Path::new(&input.path)))
@@ -72,9 +72,11 @@ pub(crate) fn batch(a: &BatchArgs, out: &mut dyn Write, err: &mut dyn Write) -> 
                 images.push(photocraft_engine::file_cmds::BatchInput { path: path.to_string_lossy().into_owned(), rel_dir: String::new() });
             }
         }
+        // The tree listing already holds the engine's order (each folder's files, then its
+        // subfolders), which `{serial}` numbers; only the flat listing needs sorting.
+        images.sort_by(|a, b| a.path.cmp(&b.path));
         images
     };
-    inputs.sort_by(|a, b| a.path.cmp(&b.path));
     let (mut ok, mut failed) = (0, 0);
     // `--format .jpg` names outputs `<stem>.jpg`, as `--format jpg` does (#490).
     let format = a.export.format.as_deref().map(|f| f.strip_prefix('.').unwrap_or(f));
@@ -109,7 +111,8 @@ pub(crate) fn batch(a: &BatchArgs, out: &mut dyn Write, err: &mut dyn Write) -> 
     let mut failures = Vec::new();
     for (input, target) in inputs.iter().zip(targets) {
         let input = Path::new(&input.path);
-        let ext = target.extension().map(|ext| ext.to_string_lossy().into_owned()).unwrap_or_else(|| "png".into());
+        // The selected format encodes the bytes, whatever extension `--naming` gives the file.
+        let ext = format.map(str::to_owned).or_else(|| input.extension().map(|e| e.to_string_lossy().into_owned())).unwrap_or_else(|| "png".into());
         let r = (|| -> Result<Vec<String>> {
             if let Some(parent) = target.parent() {
                 std::fs::create_dir_all(parent)?;
@@ -151,16 +154,17 @@ pub(crate) fn batch(a: &BatchArgs, out: &mut dyn Write, err: &mut dyn Write) -> 
             }
         }
     }
-    if let Some(path) = &a.error_log {
-        let bytes = photocraft_engine::file_cmds::encode_batch_error_log(failures.iter().map(|(file, error)| (file.as_str(), error.as_str())));
-        photocraft_format::atomic_write(path, &bytes)?;
-    }
     let skipped = inputs.len().saturating_sub(ok + failed);
     if skipped > 0 {
         let _ = writeln!(err, "--stop-on-error: {skipped} remaining input(s) skipped");
         let _ = writeln!(out, "{ok} succeeded, {failed} failed, {skipped} skipped");
     } else {
         let _ = writeln!(out, "{ok} succeeded, {failed} failed");
+    }
+    // After the summary, so a log that can't be written doesn't hide the counts.
+    if let Some(path) = &a.error_log {
+        let bytes = photocraft_engine::file_cmds::encode_batch_error_log(failures.iter().map(|(file, error)| (file.as_str(), error.as_str())));
+        photocraft_format::atomic_write(path, &bytes)?;
     }
     if failed > 0 { Err(CliError::FilesFailed(failed)) } else { Ok(()) }
 }

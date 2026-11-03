@@ -513,6 +513,49 @@ fn batch_recursive_naming_stop_and_error_log() {
     assert!(!collision.join("a.png").exists());
 }
 
+/// `{serial}` numbers a recursive batch in the engine's order (a folder's files before its
+/// subfolders), `--format` encodes the bytes whatever extension `--naming` writes, and an
+/// `--error-log` that can't be written still leaves the summary printed.
+#[test]
+fn batch_naming_keeps_the_tree_order_and_the_selected_encoder() {
+    let root = tmp("batch-naming-order");
+    let input = root.join("in");
+    std::fs::create_dir_all(input.join("sub")).unwrap();
+    write_png(&input.join("z.png"), 8, 6, 3);
+    write_png(&input.join("sub/a.png"), 5, 4, 3);
+    let actions = root.join("actions.json");
+    std::fs::write(&actions, "[]").unwrap();
+    let run = |out: &Path, extra: &[&str]| {
+        bin().args(["batch", "--actions"]).arg(&actions).arg("--in").arg(&input).arg("--out").arg(out).args(extra).output().unwrap()
+    };
+    let png_width = |path: &Path| {
+        let bytes = std::fs::read(path).unwrap();
+        u32::from_be_bytes(bytes[16..20].try_into().unwrap())
+    };
+    let ordered = root.join("ordered");
+    let result = run(&ordered, &["--recursive", "--naming", "{serial:2}.{ext}"]);
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    assert_eq!(png_width(&ordered.join("01.png")), 8, "the root file comes first");
+    assert_eq!(png_width(&ordered.join("02.png")), 5);
+
+    let jpeg = root.join("jpeg");
+    let result = run(&jpeg, &["--format", "jpg", "--naming", "{name}_{serial}"]);
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    assert!(std::fs::read(jpeg.join("z_001")).unwrap().starts_with(&[0xff, 0xd8]), "JPEG bytes without an extension");
+    let png = root.join("png");
+    let result = run(&png, &["--format", "png", "--naming", "{name}.jpg"]);
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    assert!(std::fs::read(png.join("z.jpg")).unwrap().starts_with(b"\x89PNG"), "PNG bytes under a .jpg name");
+
+    let log = root.join("log-is-a-folder");
+    std::fs::create_dir_all(&log).unwrap();
+    let result = run(&root.join("logged"), &["--error-log", &log.to_string_lossy()]);
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    assert!(!result.status.success(), "{stdout}");
+    assert!(stdout.contains("1 succeeded, 0 failed"), "{stdout}");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn batch_skips_recorded_view_and_save_steps() {
     let d = tmp("batch-shell-steps");

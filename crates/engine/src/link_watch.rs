@@ -96,8 +96,10 @@ impl Session {
         }
         let Some(st) = self.active() else { return };
         let (doc, files) = (st.doc.id.0, resolved_files(st));
-        // Nothing to look at: no links, or none that is followed.
+        // Nothing to look at: no links, or none that is followed. None of them is listed as
+        // missing either, so a link added back isn't shown missing before its first look.
         if files.iter().all(|(_, file, _)| file.is_none()) {
+            self.link_missing.retain(|(d, _)| *d != doc);
             return;
         }
         let slot: LinkScan = Arc::default();
@@ -139,6 +141,13 @@ impl Session {
     pub fn poll_link_scan(&mut self) -> Option<Result<Value>> {
         let (doc, stamps) = self.link_scan.as_ref()?.lock().unwrap_or_else(PoisonError::into_inner).take()?;
         self.link_scan = None;
+        // A relink or embed while the look ran: it stamped files the document no longer links in
+        // that way, so drop it; the next look takes the current links.
+        if let Some(st) = self.active().filter(|st| st.doc.id.0 == doc)
+            && !linked_files(&st.doc).iter().map(|(p, ids)| (p, ids)).eq(stamps.iter().map(|(p, ids, _)| (p, ids)))
+        {
+            return Some(Ok(json!({"updated": []})));
+        }
         Some(self.apply_link_stamps(doc, stamps))
     }
 
@@ -390,6 +399,42 @@ mod tests {
         *scan.lock().unwrap() = Some((id.0, vec![(stored, vec![layer], None)]));
         assert!(s.poll_link_scan().is_none());
         assert!(s.missing_links().is_empty());
+    }
+
+    #[test]
+    fn a_document_without_links_lists_none_missing() {
+        let d = dir("unlinked");
+        let path = d.join("art.png");
+        std::fs::write(&path, png(10, 10, "#ff0000")).unwrap();
+        let (mut s, id) = placed(&path);
+        std::fs::remove_file(&path).unwrap();
+        s.execute("layer.smartObjects.updateChanged", json!({})).unwrap();
+        assert_eq!(s.missing_links().len(), 1);
+        s.execute("layer.delete", json!({"layer": id})).unwrap();
+        s.start_link_scan();
+        assert!(s.missing_links().is_empty(), "the last linked layer is gone");
+    }
+
+    #[test]
+    fn a_look_at_links_that_changed_meanwhile_is_dropped() {
+        let d = dir("relinked");
+        let path = d.join("art.png");
+        std::fs::write(&path, png(10, 10, "#ff0000")).unwrap();
+        let (mut s, layer) = placed(&path);
+        let doc = s.active().unwrap().doc.id.0;
+        let stored = super::linked_files(&s.active().unwrap().doc)[0].0.clone();
+        let inject = |s: &mut Session, file: &str| {
+            let scan = std::sync::Arc::new(std::sync::Mutex::new(Some((doc, vec![(file.to_string(), vec![layer], None)]))));
+            s.link_scan = Some(scan);
+        };
+        // Taken before a relink: its file is no longer linked.
+        inject(&mut s, &d.join("before-relink.png").to_string_lossy());
+        assert_eq!(s.poll_link_scan().unwrap().unwrap(), json!({"updated": []}));
+        assert!(s.missing_links().is_empty(), "a file no longer linked is not listed");
+        // Taken of the current links: applied.
+        inject(&mut s, &stored);
+        s.poll_link_scan().unwrap().unwrap();
+        assert_eq!(s.missing_links(), [stored].into());
     }
 
     #[test]
