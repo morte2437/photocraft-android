@@ -1188,7 +1188,13 @@ pub fn show(app: &mut PhotocraftApp, ctx: &Context) {
                         continue;
                     };
                     let text = if crop_label_is_ui(&command) { tl!(&label).to_string() } else { label };
-                    let item = egui::Button::selectable(mode_checked(app, &menu, &command), text).min_size(egui::vec2(200.0, 20.0));
+                    // The overlay rows carry their own glyph (#10889); the rest stay text-only.
+                    let mut atoms = egui::Atoms::default();
+                    if let Some(kind) = command.strip_prefix(CROP_OVERLAY).and_then(crate::crop_overlay::CropOverlay::from_id) {
+                        atoms.push_right(crate::icons::image(kind.icon(), 14.0, t.icon));
+                    }
+                    atoms.push_right(text);
+                    let item = egui::Button::selectable(mode_checked(app, &menu, &command), atoms).min_size(egui::vec2(200.0, 20.0));
                     if ui.add_enabled(entry_enabled(app, &menu, &command), item).clicked() {
                         selected = Some(command);
                     }
